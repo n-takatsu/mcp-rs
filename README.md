@@ -6,6 +6,8 @@ Rust implementation of the Model Context Protocol (MCP) for AI-agent integration
 
 `mcp-rs` provides a robust, type-safe implementation of the MCP (Model Context Protocol) in Rust. It enables AI agents to interact with various services through a standardized JSON-RPC interface. The library features strong completion support and structural suggestions, making it ideal for use with GitHub Copilot and other AI coding assistants.
 
+**Current Status**: Development Phase - WordPress integration and core infrastructure complete.
+
 ## Features
 
 ### 🚀 Core Capabilities
@@ -14,7 +16,8 @@ Rust implementation of the Model Context Protocol (MCP) for AI-agent integration
 - **Type-Safe Protocol**: Strongly-typed message definitions using `serde_json`
 - **Trait-Based Abstraction**: MCP protocol abstracted through the `McpProtocol` trait for easy customization
 - **Async/Await**: Built on `tokio` for high-performance async operations
-- **Client Library**: Ready-to-use client for connecting to MCP servers
+- **Configuration Management**: TOML-based configuration with environment variable overrides
+- **WordPress Integration**: Complete WordPress REST API integration with authentication
 
 ### 🛠️ Protocol Support
 
@@ -23,10 +26,10 @@ Rust implementation of the Model Context Protocol (MCP) for AI-agent integration
 - **Prompts**: Create and retrieve prompts with argument support
 - **Error Handling**: Comprehensive error types with JSON-RPC error codes
 
-### 🔌 Integration Examples
+### 🔌 Current Integrations
 
-- **WordPress**: Full WordPress REST API integration example
-- **Basic Server**: Simple example showing core functionality
+- **WordPress**: Full WordPress REST API integration with Application Password authentication
+- **Configuration**: TOML-based configuration with hierarchical overrides
 
 ## Installation
 
@@ -66,6 +69,25 @@ async fn main() {
     server.serve(([0, 0, 0, 0], 3000)).await.unwrap();
 }
 ```
+
+### Configuration Setup
+
+Create `mcp-config.toml`:
+
+```toml
+[server]
+bind_addr = "127.0.0.1:8080"
+stdio = false
+log_level = "info"
+
+[handlers.wordpress]
+url = "https://your-wordpress-site.com"
+username = "your-username"
+password = "your-app-password"
+enabled = true
+```
+
+**Note**: The configuration file is excluded from git for security. Use environment variables for production deployment.
 
 ### Implementing Custom Protocol
 
@@ -128,6 +150,49 @@ async fn main() {
 }
 ```
 
+## WordPress Integration
+
+### Setup WordPress Application Password
+
+1. WordPress Admin → Users → Profile
+2. Scroll to "Application Passwords" section
+3. Add new application name (e.g., "MCP-RS")
+4. Copy the generated password to your configuration
+
+### Example WordPress Operations
+
+```bash
+# Get recent posts
+curl -X POST http://localhost:8080/jsonrpc \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "method": "tools/call",
+    "params": {
+      "name": "wordpress_get_posts",
+      "arguments": {"per_page": 5}
+    },
+    "id": 1
+  }'
+
+# Create a new post
+curl -X POST http://localhost:8080/jsonrpc \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "method": "tools/call",
+    "params": {
+      "name": "wordpress_create_post",
+      "arguments": {
+        "title": "My New Post",
+        "content": "<p>Post content here</p>",
+        "status": "draft"
+      }
+    },
+    "id": 2
+  }'
+```
+
 ## Examples
 
 Run the examples:
@@ -136,8 +201,17 @@ Run the examples:
 # Basic server with echo and add tools
 cargo run --example basic_server
 
-# WordPress integration server
-WORDPRESS_URL=http://your-wordpress-site.com cargo run --example wordpress_server
+# WordPress integration server (requires configuration)
+cargo run --bin mcp-rs
+```
+
+### Configuration for Examples
+
+Copy `mcp-config.toml.example` to `mcp-config.toml` and update with your settings:
+
+```bash
+cp mcp-config.toml.example mcp-config.toml
+# Edit mcp-config.toml with your WordPress credentials
 ```
 
 ## Project Structure
@@ -146,14 +220,29 @@ WORDPRESS_URL=http://your-wordpress-site.com cargo run --example wordpress_serve
 mcp-rs/
 ├── src/
 │   ├── lib.rs          # Library entry point
+│   ├── main.rs         # Binary entry point
 │   ├── error.rs        # Error types and handling
 │   ├── types.rs        # JSON-RPC and MCP type definitions
 │   ├── protocol.rs     # McpProtocol trait and implementations
 │   ├── server.rs       # Axum-based JSON-RPC server
-│   └── client.rs       # MCP client implementation
+│   ├── config.rs       # Configuration management
+│   ├── handlers/       # Handler implementations
+│   │   ├── mod.rs      # Handler module exports
+│   │   └── wordpress.rs # WordPress API handler
+│   ├── mcp/            # MCP protocol implementation
+│   └── [core/transport/plugins/] # Future modules
 ├── examples/
 │   ├── basic_server.rs     # Simple example server
-│   └── wordpress_server.rs # WordPress integration example
+│   ├── timeout_test.rs     # Timeout handling example
+│   └── wordpress_*.rs      # WordPress integration examples
+├── docs/
+│   └── architecture.md     # Architecture documentation
+├── website/docs/           # GitHub Pages documentation
+│   ├── index.md           # Main documentation
+│   ├── api/               # API reference
+│   ├── architecture/      # Architecture docs
+│   └── guides/            # Implementation guides
+├── mcp-config.toml.example # Configuration template
 └── Cargo.toml
 ```
 
@@ -227,10 +316,38 @@ cargo run --example basic_server
 ## Use Cases
 
 - **WordPress Management**: Automate WordPress content creation and management
-- **API Integration**: Connect AI agents to REST APIs
+- **API Integration**: Connect AI agents to REST APIs and web services
 - **Tool Orchestration**: Create composable tools for complex workflows
 - **Resource Management**: Expose file systems, databases, or other resources
-- **Prompt Templates**: Define reusable prompt templates for AI interactions
+- **AI Agent Integration**: Standardized interface for AI-driven automation
+
+## Documentation
+
+- **[Complete Documentation](https://n-takatsu.github.io/mcp-rs/)** - Full documentation with guides and API reference
+- **[Architecture Guide](docs/architecture.md)** - Detailed system architecture and design decisions
+- **[API Reference](https://n-takatsu.github.io/mcp-rs/api/)** - Complete API documentation
+- **[Implementation Guides](https://n-takatsu.github.io/mcp-rs/guides/)** - Step-by-step implementation tutorials
+
+## Current Implementation Status
+
+### ✅ Completed
+- WordPress REST API integration with full CRUD operations
+- Configuration management (TOML + environment variables)
+- MCP protocol implementation (JSON-RPC 2.0)
+- Error handling and structured logging
+- Security features (Application Password authentication)
+- Documentation and guides
+
+### 🔄 In Development
+- Core application modules
+- Transport abstraction layer
+- Plugin system for dynamic loading
+
+### 📋 Planned
+- stdio transport for CLI integration
+- WebSocket transport for real-time communication
+- Additional service integrations (GitHub, file system, databases)
+- Performance monitoring and metrics
 
 ## Contributing
 

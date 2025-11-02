@@ -1,0 +1,36 @@
+# MCP-RS Configuration File
+# 
+# このファイルは mcp-config.toml として保存してください
+# 環境変数での上書きも可能です (例: MCP_SERVER_BIND_ADDR=0.0.0.0:8080)
+
+[server]
+bind_addr = "127.0.0.1:8080"
+stdio = false
+log_level = "info"
+
+[handlers.wordpress]
+url = "https://redring.jp"
+username = "wpmaster"
+password = "jmaO ec5l 3koA hK5I kUu8 PKZu"
+enabled = true
+
+
+# 設定説明:
+# 
+# [server]
+# bind_addr = TCP サーバーのバインドアドレス (stdio=false の場合)
+# stdio = true にすると標準入出力モードで動作 (MCP クライアント用)
+# log_level = ログレベル (trace, debug, info, warn, error)
+#
+# [handlers.wordpress]
+# url = WordPress サイトの URL
+# username = WordPress ユーザー名
+# password = Application Password (WordPress管理画面で生成)
+# enabled = このハンドラーを有効にするか
+#
+# Application Password の生成方法:
+# 1. WordPress管理画面 > ユーザー > プロフィール
+# 2. 'アプリケーションパスワード' セクション
+# 3. 新しいアプリケーション名を入力 (例: "MCP-RS")
+# 4. 'Add New Application Password' をクリック
+# 5. 生成されたパスワードをコピーして上記 password に設定
