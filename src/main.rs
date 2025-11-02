@@ -1,13 +1,8 @@
-mod config;
-mod core;
-mod plugins;
-
 use clap::Parser;
 use config::{McpConfig, ConfigLoader};
-use core::{McpServer, transport::Transport};
+use core::{McpServer, transport::Transport, logging::{Logger, LogConfig, LogFormat}};
 use plugins::PluginRegistry;
 use std::sync::Arc;
-use tracing_subscriber;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -41,17 +36,32 @@ struct Cli {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
-    // Initialize logging
-    let log_level = if cli.debug { "debug" } else { "info" };
-    std::env::set_var("RUST_LOG", log_level);
-    tracing_subscriber::fmt::init();
-
-    // Load configuration
+    // Load configuration first
     let config = ConfigLoader::new()
         .load_from_file(cli.config.as_deref())
         .load_from_env()
         .load_from_cli(&cli)
         .build()?;
+
+    // Initialize structured logging system
+    let mut log_config = LogConfig {
+        level: if cli.debug { "debug".to_string() } else { config.logging.level.clone() },
+        format: match config.logging.format {
+            config::LogFormat::Json => LogFormat::Json,
+            _ => LogFormat::Human,
+        },
+        file: config.logging.file.clone(),
+        request_logging: config.logging.request_logging,
+        performance_metrics: config.logging.performance_metrics,
+        plugins: config.logging.plugins.clone(),
+    };
+    
+    // Override log level if debug flag is set
+    if cli.debug {
+        log_config.level = "debug".to_string();
+    }
+    
+    let _logger = Logger::init(log_config)?;
 
     // Initialize plugin registry
     let mut plugin_registry = PluginRegistry::new();

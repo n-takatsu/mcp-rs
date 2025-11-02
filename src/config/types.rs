@@ -145,14 +145,59 @@ pub struct WebSocketConfig {
 /// Logging configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoggingConfig {
-    /// Log level
+    /// Log level (error, warn, info, debug, trace)
     pub level: String,
     
     /// Log format
     pub format: LogFormat,
     
-    /// Log output
+    /// Log output destination
     pub output: LogOutput,
+    
+    /// Enable request-level logging
+    #[serde(default = "default_true")]
+    pub request_logging: bool,
+    
+    /// Enable performance metrics
+    #[serde(default = "default_true")]
+    pub performance_metrics: bool,
+    
+    /// Plugin-specific log levels
+    #[serde(default)]
+    pub plugins: HashMap<String, String>,
+    
+    /// Optional log file path
+    pub file: Option<String>,
+    
+    /// Log rotation settings
+    pub rotation: Option<LogRotation>,
+}
+
+/// Log rotation configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LogRotation {
+    /// Rotation strategy (daily, size, hourly)
+    pub strategy: RotationStrategy,
+    
+    /// Maximum file size in bytes (for size-based rotation)
+    pub max_size: Option<u64>,
+    
+    /// Number of files to keep
+    pub keep_files: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum RotationStrategy {
+    #[serde(rename = "daily")]
+    Daily,
+    #[serde(rename = "hourly")]
+    Hourly,
+    #[serde(rename = "size")]
+    Size,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -231,6 +276,11 @@ impl Default for McpConfig {
                 level: "info".to_string(),
                 format: LogFormat::Pretty,
                 output: LogOutput::Stderr,
+                request_logging: true,
+                performance_metrics: true,
+                plugins: HashMap::new(),
+                file: None,
+                rotation: None,
             },
         }
     }
