@@ -35,6 +35,7 @@ pub struct WordPressPost {
     pub content: WordPressContent,
     pub excerpt: Option<WordPressContent>,
     pub author: Option<u64>,
+    pub featured_media: Option<u64>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -56,6 +57,33 @@ pub struct WordPressComment {
     pub content: HashMap<String, String>,
     pub author_name: String,
     pub author_email: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct WordPressMedia {
+    pub id: Option<u64>,
+    pub date: Option<String>,
+    pub date_gmt: Option<String>,
+    pub guid: Option<WordPressGuid>,
+    pub modified: Option<String>,
+    pub modified_gmt: Option<String>,
+    pub slug: Option<String>,
+    pub status: String,
+    #[serde(rename = "type")]
+    pub media_type: Option<String>,
+    pub link: Option<String>,
+    pub title: Option<WordPressContent>,
+    pub author: Option<u64>,
+    pub comment_status: Option<String>,
+    pub ping_status: Option<String>,
+    pub template: Option<String>,
+    pub description: Option<WordPressContent>,
+    pub caption: Option<WordPressContent>,
+    pub alt_text: Option<String>,
+    pub mime_type: Option<String>,
+    pub media_details: Option<serde_json::Value>,
+    pub post: Option<u64>,
+    pub source_url: Option<String>,
 }
 
 impl WordPressHandler {
@@ -195,6 +223,7 @@ impl WordPressHandler {
             },
             excerpt: None,
             author: None,
+            featured_media: None,
         };
 
         let mut request = self.client.post(&url);
@@ -240,6 +269,87 @@ impl WordPressHandler {
 
         let comments: Vec<WordPressComment> = response.json().await?;
         Ok(comments)
+    }
+
+    /// Upload media file to WordPress
+    async fn upload_media(&self, file_data: &[u8], filename: &str, mime_type: &str) -> Result<WordPressMedia, McpError> {
+        let url = format!("{}/wp-json/wp/v2/media", self.base_url);
+
+        let form = reqwest::multipart::Form::new()
+            .part("file", reqwest::multipart::Part::bytes(file_data.to_vec())
+                .file_name(filename.to_string())
+                .mime_str(mime_type)
+                .map_err(|e| McpError::Other(format!("Failed to set MIME type: {}", e)))?);
+
+        let mut request = self.client.post(&url).multipart(form);
+
+        if let (Some(username), Some(password)) = (&self.username, &self.password) {
+            request = request.basic_auth(username, Some(password));
+        }
+
+        info!("Uploading media file: {} ({})", filename, mime_type);
+        self.execute_request_with_retry(request).await
+    }
+
+    /// Create post with featured image
+    async fn create_post_with_featured_image(
+        &self, 
+        title: String, 
+        content: String, 
+        featured_media_id: u64
+    ) -> Result<WordPressPost, McpError> {
+        let url = format!("{}/wp-json/wp/v2/posts", self.base_url);
+
+        let post = WordPressPost {
+            id: None,
+            date: None,
+            date_gmt: None,
+            guid: None,
+            modified: None,
+            modified_gmt: None,
+            slug: None,
+            status: "publish".to_string(),
+            post_type: Some("post".to_string()),
+            link: None,
+            title: WordPressContent {
+                rendered: title,
+                protected: false,
+            },
+            content: WordPressContent {
+                rendered: content,
+                protected: false,
+            },
+            excerpt: None,
+            author: None,
+            featured_media: Some(featured_media_id),
+        };
+
+        let mut request = self.client.post(&url).json(&post);
+
+        if let (Some(username), Some(password)) = (&self.username, &self.password) {
+            request = request.basic_auth(username, Some(password));
+        }
+
+        info!("Creating post with featured image: {}", featured_media_id);
+        self.execute_request_with_retry(request).await
+    }
+
+    /// Set featured image for existing post
+    async fn set_featured_image(&self, post_id: u64, media_id: u64) -> Result<WordPressPost, McpError> {
+        let url = format!("{}/wp-json/wp/v2/posts/{}", self.base_url, post_id);
+
+        let update_data = serde_json::json!({
+            "featured_media": media_id
+        });
+
+        let mut request = self.client.put(&url).json(&update_data);
+
+        if let (Some(username), Some(password)) = (&self.username, &self.password) {
+            request = request.basic_auth(username, Some(password));
+        }
+
+        info!("Setting featured image {} for post {}", media_id, post_id);
+        self.execute_request_with_retry(request).await
     }
 }
 
@@ -308,6 +418,68 @@ impl McpHandler for WordPressHandler {
                     "required": []
                 }),
             },
+            Tool {
+                name: "upload_media".to_string(),
+                description: "Upload media file to WordPress".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "file_data": {
+                            "type": "string",
+                            "description": "Base64 encoded file data"
+                        },
+                        "filename": {
+                            "type": "string",
+                            "description": "Original filename"
+                        },
+                        "mime_type": {
+                            "type": "string",
+                            "description": "MIME type of the file (e.g., 'image/jpeg')"
+                        }
+                    },
+                    "required": ["file_data", "filename", "mime_type"]
+                }),
+            },
+            Tool {
+                name: "create_post_with_featured_image".to_string(),
+                description: "Create a new WordPress post with featured image".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "title": {
+                            "type": "string",
+                            "description": "The post title"
+                        },
+                        "content": {
+                            "type": "string",
+                            "description": "The post content"
+                        },
+                        "featured_media_id": {
+                            "type": "number",
+                            "description": "Media ID for featured image"
+                        }
+                    },
+                    "required": ["title", "content", "featured_media_id"]
+                }),
+            },
+            Tool {
+                name: "set_featured_image".to_string(),
+                description: "Set featured image for existing post".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "post_id": {
+                            "type": "number",
+                            "description": "Post ID to update"
+                        },
+                        "media_id": {
+                            "type": "number",
+                            "description": "Media ID for featured image"
+                        }
+                    },
+                    "required": ["post_id", "media_id"]
+                }),
+            },
         ])
     }
 
@@ -354,6 +526,82 @@ impl McpHandler for WordPressHandler {
                     "content": [{
                         "type": "text",
                         "text": format!("Found {} comments", comments.len())
+                    }],
+                    "isError": false
+                }))
+            }
+            "upload_media" => {
+                let args = params.arguments.unwrap_or_default();
+                let file_data_b64 = args
+                    .get("file_data")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| McpError::InvalidParams("Missing file_data".to_string()))?;
+                let filename = args
+                    .get("filename")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| McpError::InvalidParams("Missing filename".to_string()))?;
+                let mime_type = args
+                    .get("mime_type")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| McpError::InvalidParams("Missing mime_type".to_string()))?;
+
+                // Decode base64 file data
+                use base64::{engine::general_purpose, Engine as _};
+                let file_data = general_purpose::STANDARD
+                    .decode(file_data_b64)
+                    .map_err(|e| McpError::InvalidParams(format!("Invalid base64 data: {}", e)))?;
+
+                let media = self.upload_media(&file_data, filename, mime_type).await?;
+                Ok(serde_json::json!({
+                    "content": [{
+                        "type": "text",
+                        "text": format!("Uploaded media with ID: {:?}", media.id)
+                    }],
+                    "isError": false
+                }))
+            }
+            "create_post_with_featured_image" => {
+                let args = params.arguments.unwrap_or_default();
+                let title = args
+                    .get("title")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| McpError::InvalidParams("Missing title".to_string()))?;
+                let content = args
+                    .get("content")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| McpError::InvalidParams("Missing content".to_string()))?;
+                let featured_media_id = args
+                    .get("featured_media_id")
+                    .and_then(|v| v.as_u64())
+                    .ok_or_else(|| McpError::InvalidParams("Missing featured_media_id".to_string()))?;
+
+                let post = self
+                    .create_post_with_featured_image(title.to_string(), content.to_string(), featured_media_id)
+                    .await?;
+                Ok(serde_json::json!({
+                    "content": [{
+                        "type": "text",
+                        "text": format!("Created post with featured image. Post ID: {:?}", post.id)
+                    }],
+                    "isError": false
+                }))
+            }
+            "set_featured_image" => {
+                let args = params.arguments.unwrap_or_default();
+                let post_id = args
+                    .get("post_id")
+                    .and_then(|v| v.as_u64())
+                    .ok_or_else(|| McpError::InvalidParams("Missing post_id".to_string()))?;
+                let media_id = args
+                    .get("media_id")
+                    .and_then(|v| v.as_u64())
+                    .ok_or_else(|| McpError::InvalidParams("Missing media_id".to_string()))?;
+
+                let post = self.set_featured_image(post_id, media_id).await?;
+                Ok(serde_json::json!({
+                    "content": [{
+                        "type": "text",
+                        "text": format!("Set featured image {} for post {}. Updated post ID: {:?}", media_id, post_id, post.id)
                     }],
                     "isError": false
                 }))

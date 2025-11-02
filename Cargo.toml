@@ -21,9 +21,10 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"], defaul
 thiserror = "1.0"
 async-trait = "0.1"
 # reqwest機能も最小限に
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "multipart"] }
 config = "0.14"
 toml = "0.8"
+base64 = "0.21"
 
 [dev-dependencies]
 tokio-test = "0.4"
