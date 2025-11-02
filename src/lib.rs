@@ -22,15 +22,15 @@
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
 //!     let mut server = McpServer::new();
-//!     
+//!
 //!     let wordpress_handler = WordPressHandler::new(
 //!         "https://your-wordpress-site.com".to_string(),
 //!         Some("username".to_string()),
 //!         Some("password".to_string()),
 //!     );
-//!     
+//!
 //!     server.add_handler("wordpress".to_string(), Arc::new(wordpress_handler));
-//!     
+//!
 //!     // Run on stdio for MCP clients
 //!     server.run_stdio().await?;
 //!     Ok(())
@@ -60,22 +60,22 @@
 //!         // Implementation here
 //!         Ok(serde_json::json!({"status": "initialized"}))
 //!     }
-//!     
+//!
 //!     async fn list_tools(&self) -> Result<Vec<Tool>, McpError> {
 //!         // Return available tools
 //!         Ok(vec![])
 //!     }
-//!     
+//!
 //!     async fn call_tool(&self, params: ToolCallParams) -> Result<serde_json::Value, McpError> {
 //!         // Handle tool calls
 //!         Ok(serde_json::json!({"result": "success"}))
 //!     }
-//!     
+//!
 //!     async fn list_resources(&self) -> Result<Vec<Resource>, McpError> {
 //!         // Return available resources
 //!         Ok(vec![])
 //!     }
-//!     
+//!
 //!     async fn read_resource(&self, params: ResourceReadParams) -> Result<serde_json::Value, McpError> {
 //!         // Handle resource reads
 //!         Ok(serde_json::json!({"content": "resource data"}))
@@ -83,8 +83,8 @@
 //! }
 //! ```
 
-pub mod core;
 pub mod config;
+pub mod core;
 pub mod plugins;
 pub mod sdk;
 
@@ -94,9 +94,9 @@ pub use sdk::macros::*;
 // Legacy compatibility (deprecated)
 pub mod mcp {
     //! Legacy MCP module for backward compatibility
-    //! 
+    //!
     //! This module is deprecated. Use `core` module instead.
-    
+
     pub use crate::core::protocol::*;
     pub use crate::core::server::*;
     pub use crate::core::transport::*;
@@ -104,19 +104,17 @@ pub mod mcp {
 
 pub mod handlers {
     //! Legacy handlers module for backward compatibility
-    //! 
+    //!
     //! This module is deprecated. Use `plugins` module instead.
-    
+
     pub use crate::plugins::wordpress::*;
 }
 
 // Re-export commonly used types for convenience
 pub use core::{
-    McpError, Tool, Resource, Prompt, Content,
-    JsonRpcRequest, JsonRpcResponse, JsonRpcError,
-    ToolCallResult, ResourceReadResult, InitializeResult,
-    McpServer, Transport
+    Content, InitializeResult, JsonRpcError, JsonRpcRequest, JsonRpcResponse, McpError, McpServer,
+    Prompt, Resource, ResourceReadResult, Tool, ToolCallResult, Transport,
 };
 
-pub use config::{McpConfig, ConfigLoader};
-pub use plugins::{Plugin, PluginRegistry, ToolProvider, ResourceProvider, PromptProvider};
+pub use config::{ConfigLoader, McpConfig};
+pub use plugins::{Plugin, PluginRegistry, PromptProvider, ResourceProvider, ToolProvider};

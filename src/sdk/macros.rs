@@ -58,7 +58,7 @@ macro_rules! resource {
             mime_type: Some($mime_type.to_string()),
         }
     };
-    
+
     ($uri:expr, $name:expr) => {
         $crate::core::Resource {
             uri: $uri.to_string(),
@@ -98,7 +98,7 @@ macro_rules! prompt {
             ]),
         }
     };
-    
+
     ($name:expr, $description:expr) => {
         $crate::core::Prompt {
             name: $name.to_string(),
@@ -126,16 +126,18 @@ macro_rules! tool_result {
                 text: $content.to_string(),
             }],
             is_error: Some(false),
-        }).unwrap()
+        })
+        .unwrap()
     };
-    
+
     (json $content:expr) => {
         serde_json::to_value($crate::core::ToolCallResult {
             content: vec![$crate::core::Content::Text {
                 text: serde_json::to_string_pretty(&$content).unwrap(),
             }],
             is_error: Some(false),
-        }).unwrap()
+        })
+        .unwrap()
     };
 }
 
@@ -156,7 +158,8 @@ macro_rules! tool_error {
                 text: format!("Error: {}", $message),
             }],
             is_error: Some(true),
-        }).unwrap()
+        })
+        .unwrap()
     };
 }
 
@@ -179,9 +182,10 @@ macro_rules! resource_result {
                 text: Some($content.to_string()),
                 blob: None,
             }],
-        }).unwrap()
+        })
+        .unwrap()
     };
-    
+
     (blob $uri:expr, $mime_type:expr, $blob:expr) => {
         serde_json::to_value($crate::core::ResourceReadResult {
             contents: vec![$crate::core::ResourceContent {
@@ -190,7 +194,8 @@ macro_rules! resource_result {
                 text: None,
                 blob: Some($blob.to_string()),
             }],
-        }).unwrap()
+        })
+        .unwrap()
     };
 }
 
@@ -205,7 +210,7 @@ macro_rules! resource_result {
 ///     let args = args.unwrap_or_default();
 ///     let location = extract_param!(args, "location", as_str, "Missing location parameter")?;
 ///     let units = extract_param!(args, "units", as_str).unwrap_or("celsius");
-///     
+///
 ///     // Use location and units...
 ///     Ok(tool_result!("Weather data"))
 /// }
@@ -213,13 +218,13 @@ macro_rules! resource_result {
 #[macro_export]
 macro_rules! extract_param {
     ($args:expr, $key:expr, $method:ident, $error:expr) => {
-        $args.get($key)
-            .and_then(|v| v.$method())
-            .ok_or_else(|| $crate::core::McpError::InvalidParams { 
-                message: $error.to_string() 
-            })
+        $args.get($key).and_then(|v| v.$method()).ok_or_else(|| {
+            $crate::core::McpError::InvalidParams {
+                message: $error.to_string(),
+            }
+        })
     };
-    
+
     ($args:expr, $key:expr, $method:ident) => {
         $args.get($key).and_then(|v| v.$method())
     };
@@ -240,17 +245,17 @@ macro_rules! extract_param {
 macro_rules! plugin_factory {
     ($plugin_type:ty, $name:expr, $constructor:expr) => {
         pub struct Factory;
-        
+
         impl $crate::plugins::PluginFactory for Factory {
             fn create(&self) -> Box<dyn $crate::plugins::Plugin> {
                 $constructor()
             }
-            
+
             fn name(&self) -> &str {
                 $name
             }
         }
-        
+
         pub fn factory() -> Factory {
             Factory
         }

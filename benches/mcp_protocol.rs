@@ -26,7 +26,10 @@ fn benchmark_json_rpc_parsing(c: &mut Criterion) {
 fn benchmark_tool_call_params(c: &mut Criterion) {
     let mut args = HashMap::new();
     args.insert("title".to_string(), serde_json::json!("Test Post"));
-    args.insert("content".to_string(), serde_json::json!("This is test content"));
+    args.insert(
+        "content".to_string(),
+        serde_json::json!("This is test content"),
+    );
 
     c.bench_function("tool_call_params_creation", |b| {
         b.iter(|| {
@@ -41,7 +44,7 @@ fn benchmark_tool_call_params(c: &mut Criterion) {
 fn benchmark_json_serialization(c: &mut Criterion) {
     let mut args = HashMap::new();
     args.insert("title".to_string(), serde_json::json!("Test Post"));
-    
+
     let params = ToolCallParams {
         name: "create_post".to_string(),
         arguments: Some(args),

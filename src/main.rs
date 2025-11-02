@@ -1,6 +1,10 @@
 use clap::Parser;
-use config::{McpConfig, ConfigLoader};
-use core::{McpServer, transport::Transport, logging::{Logger, LogConfig, LogFormat}};
+use config::{ConfigLoader, McpConfig};
+use core::{
+    logging::{LogConfig, LogFormat, Logger},
+    transport::Transport,
+    McpServer,
+};
 use plugins::PluginRegistry;
 use std::sync::Arc;
 
@@ -45,7 +49,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Initialize structured logging system
     let mut log_config = LogConfig {
-        level: if cli.debug { "debug".to_string() } else { config.logging.level.clone() },
+        level: if cli.debug {
+            "debug".to_string()
+        } else {
+            config.logging.level.clone()
+        },
         format: match config.logging.format {
             config::LogFormat::Json => LogFormat::Json,
             _ => LogFormat::Human,
@@ -55,12 +63,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         performance_metrics: config.logging.performance_metrics,
         plugins: config.logging.plugins.clone(),
     };
-    
+
     // Override log level if debug flag is set
     if cli.debug {
         log_config.level = "debug".to_string();
     }
-    
+
     let _logger = Logger::init(log_config)?;
 
     // Initialize plugin registry

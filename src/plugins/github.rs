@@ -14,7 +14,7 @@ use crate::plugins::{
 use crate::sdk::prelude::*;
 
 // Import macros explicitly
-use crate::{tool, resource, extract_param, tool_result, resource_result};
+use crate::{extract_param, resource, resource_result, tool, tool_result};
 
 /// GitHub plugin configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -99,11 +99,9 @@ impl GitHubPlugin {
     }
 
     fn get_config(&self) -> Result<&GitHubConfig, McpError> {
-        self.config
-            .as_ref()
-            .ok_or_else(|| McpError::Other { 
-                message: "GitHub plugin not initialized".to_string() 
-            })
+        self.config.as_ref().ok_or_else(|| McpError::Other {
+            message: "GitHub plugin not initialized".to_string(),
+        })
     }
 
     fn get_base_url(&self) -> String {
@@ -134,12 +132,12 @@ impl GitHubPlugin {
         let response = request.send().await?;
 
         if !response.status().is_success() {
-            return Err(McpError::ExternalApi { 
+            return Err(McpError::ExternalApi {
                 message: format!(
                     "GitHub API error: {} - {}",
                     response.status(),
                     response.text().await.unwrap_or_default()
-                )
+                ),
             });
         }
 
@@ -328,8 +326,8 @@ impl ToolProvider for GitHubPlugin {
                 Ok(tool_result!(json search_result))
             }
 
-            _ => Err(McpError::ToolNotFound { 
-                name: name.to_string() 
+            _ => Err(McpError::ToolNotFound {
+                name: name.to_string(),
             }),
         }
     }
@@ -374,9 +372,10 @@ impl ResourceProvider for GitHubPlugin {
                 let repo = uri
                     .strip_prefix("github://repos/")
                     .and_then(|s| s.strip_suffix("/issues"))
-                     .ok_or_else(|| McpError::ResourceNotFound { 
-                         uri: uri.to_string() 
-                     })?;                let issues = self.get_issues(repo, None).await?;
+                    .ok_or_else(|| McpError::ResourceNotFound {
+                        uri: uri.to_string(),
+                    })?;
+                let issues = self.get_issues(repo, None).await?;
                 Ok(resource_result!(
                     uri,
                     "application/json",
@@ -384,8 +383,8 @@ impl ResourceProvider for GitHubPlugin {
                 ))
             }
 
-            _ => Err(McpError::ResourceNotFound { 
-                uri: uri.to_string() 
+            _ => Err(McpError::ResourceNotFound {
+                uri: uri.to_string(),
             }),
         }
     }

@@ -7,13 +7,13 @@ use std::path::PathBuf;
 pub struct McpConfig {
     /// Server configuration
     pub server: ServerConfig,
-    
+
     /// Plugin configurations
     pub plugins: HashMap<String, PluginConfig>,
-    
+
     /// Transport configurations
     pub transport: TransportConfig,
-    
+
     /// Logging configuration
     pub logging: LoggingConfig,
 }
@@ -23,16 +23,16 @@ pub struct McpConfig {
 pub struct ServerConfig {
     /// Server name
     pub name: String,
-    
+
     /// Server version
     pub version: String,
-    
+
     /// Maximum concurrent connections
     pub max_connections: Option<usize>,
-    
+
     /// Request timeout in seconds
     pub timeout: Option<u64>,
-    
+
     /// Server capabilities
     pub capabilities: ServerCapabilities,
 }
@@ -42,10 +42,10 @@ pub struct ServerConfig {
 pub struct ServerCapabilities {
     /// Tools capability
     pub tools: Option<ToolsCapability>,
-    
+
     /// Resources capability
     pub resources: Option<ResourcesCapability>,
-    
+
     /// Prompts capability
     pub prompts: Option<PromptsCapability>,
 }
@@ -54,7 +54,7 @@ pub struct ServerCapabilities {
 pub struct ToolsCapability {
     /// Support for listing tools
     pub list: bool,
-    
+
     /// Support for tool notifications
     pub list_changed: bool,
 }
@@ -63,10 +63,10 @@ pub struct ToolsCapability {
 pub struct ResourcesCapability {
     /// Support for listing resources
     pub list: bool,
-    
+
     /// Support for subscribing to resources
     pub subscribe: bool,
-    
+
     /// Support for resource notifications
     pub list_changed: bool,
 }
@@ -75,7 +75,7 @@ pub struct ResourcesCapability {
 pub struct PromptsCapability {
     /// Support for listing prompts
     pub list: bool,
-    
+
     /// Support for prompt notifications
     pub list_changed: bool,
 }
@@ -85,10 +85,10 @@ pub struct PromptsCapability {
 pub struct PluginConfig {
     /// Plugin enabled state
     pub enabled: bool,
-    
+
     /// Plugin priority (lower number = higher priority)
     pub priority: Option<i32>,
-    
+
     /// Plugin-specific configuration
     pub config: serde_json::Value,
 }
@@ -98,10 +98,10 @@ pub struct PluginConfig {
 pub struct TransportConfig {
     /// Stdio transport configuration
     pub stdio: Option<StdioConfig>,
-    
+
     /// TCP transport configuration
     pub tcp: Option<TcpConfig>,
-    
+
     /// WebSocket transport configuration
     pub websocket: Option<WebSocketConfig>,
 }
@@ -110,7 +110,7 @@ pub struct TransportConfig {
 pub struct StdioConfig {
     /// Enable stdio transport
     pub enabled: bool,
-    
+
     /// Buffer size for stdio operations
     pub buffer_size: Option<usize>,
 }
@@ -119,10 +119,10 @@ pub struct StdioConfig {
 pub struct TcpConfig {
     /// Enable TCP transport
     pub enabled: bool,
-    
+
     /// Bind address
     pub bind_address: String,
-    
+
     /// Bind port
     pub port: u16,
 }
@@ -131,13 +131,13 @@ pub struct TcpConfig {
 pub struct WebSocketConfig {
     /// Enable WebSocket transport
     pub enabled: bool,
-    
+
     /// Bind address
     pub bind_address: String,
-    
+
     /// Bind port
     pub port: u16,
-    
+
     /// WebSocket path
     pub path: String,
 }
@@ -147,28 +147,28 @@ pub struct WebSocketConfig {
 pub struct LoggingConfig {
     /// Log level (error, warn, info, debug, trace)
     pub level: String,
-    
+
     /// Log format
     pub format: LogFormat,
-    
+
     /// Log output destination
     pub output: LogOutput,
-    
+
     /// Enable request-level logging
     #[serde(default = "default_true")]
     pub request_logging: bool,
-    
+
     /// Enable performance metrics
     #[serde(default = "default_true")]
     pub performance_metrics: bool,
-    
+
     /// Plugin-specific log levels
     #[serde(default)]
     pub plugins: HashMap<String, String>,
-    
+
     /// Optional log file path
     pub file: Option<String>,
-    
+
     /// Log rotation settings
     pub rotation: Option<LogRotation>,
 }
@@ -178,10 +178,10 @@ pub struct LoggingConfig {
 pub struct LogRotation {
     /// Rotation strategy (daily, size, hourly)
     pub strategy: RotationStrategy,
-    
+
     /// Maximum file size in bytes (for size-based rotation)
     pub max_size: Option<u64>,
-    
+
     /// Number of files to keep
     pub keep_files: Option<u32>,
 }
@@ -205,11 +205,11 @@ pub enum LogFormat {
     /// Pretty-printed format
     #[serde(rename = "pretty")]
     Pretty,
-    
+
     /// JSON format
     #[serde(rename = "json")]
     Json,
-    
+
     /// Compact format
     #[serde(rename = "compact")]
     Compact,
@@ -220,11 +220,11 @@ pub enum LogOutput {
     /// Output to stdout
     #[serde(rename = "stdout")]
     Stdout,
-    
+
     /// Output to stderr
     #[serde(rename = "stderr")]
     Stderr,
-    
+
     /// Output to file
     #[serde(rename = "file")]
     File { path: PathBuf },

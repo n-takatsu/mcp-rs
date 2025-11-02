@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
-use tracing::{field, info, warn, error, debug, Span};
+use tracing::{debug, error, field, info, warn, Span};
 use tracing_subscriber::{
     fmt::{self, format::FmtSpan},
     layer::SubscriberExt,
@@ -19,19 +19,19 @@ static REQUEST_COUNTER: AtomicU64 = AtomicU64::new(1);
 pub struct LogConfig {
     /// Log level (error, warn, info, debug, trace)
     pub level: String,
-    
+
     /// Log format (json, human)
     pub format: LogFormat,
-    
+
     /// Optional log file path
     pub file: Option<String>,
-    
+
     /// Enable request-level logging
     pub request_logging: bool,
-    
+
     /// Enable performance metrics
     pub performance_metrics: bool,
-    
+
     /// Plugin-specific log levels
     pub plugins: HashMap<String, String>,
 }
@@ -47,7 +47,11 @@ impl Default for LogConfig {
     fn default() -> Self {
         Self {
             level: "info".to_string(),
-            format: if cfg!(debug_assertions) { LogFormat::Human } else { LogFormat::Json },
+            format: if cfg!(debug_assertions) {
+                LogFormat::Human
+            } else {
+                LogFormat::Json
+            },
             file: None,
             request_logging: true,
             performance_metrics: true,
@@ -75,7 +79,7 @@ impl RequestContext {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis();
-            
+
         Self {
             request_id: format!("req_{}_{}", timestamp, counter),
             session_id: None,
@@ -85,7 +89,7 @@ impl RequestContext {
             start_time: SystemTime::now(),
         }
     }
-    
+
     /// Create context with specific request ID
     pub fn with_id(request_id: String) -> Self {
         Self {
@@ -97,37 +101,34 @@ impl RequestContext {
             start_time: SystemTime::now(),
         }
     }
-    
+
     /// Set session ID
     pub fn with_session(mut self, session_id: String) -> Self {
         self.session_id = Some(session_id);
         self
     }
-    
+
     /// Set user ID
     pub fn with_user(mut self, user_id: String) -> Self {
         self.user_id = Some(user_id);
         self
     }
-    
+
     /// Set operation name
     pub fn with_operation(mut self, operation: String) -> Self {
         self.operation = Some(operation);
         self
     }
-    
+
     /// Set plugin name
     pub fn with_plugin(mut self, plugin: String) -> Self {
         self.plugin = Some(plugin);
         self
     }
-    
+
     /// Calculate elapsed time since request start
     pub fn elapsed_ms(&self) -> u64 {
-        self.start_time
-            .elapsed()
-            .unwrap_or_default()
-            .as_millis() as u64
+        self.start_time.elapsed().unwrap_or_default().as_millis() as u64
     }
 }
 
@@ -139,8 +140,8 @@ pub struct Logger {
 impl Logger {
     /// Initialize global logging with configuration
     pub fn init(config: LogConfig) -> Result<Self, Box<dyn std::error::Error>> {
-        let filter = EnvFilter::try_from_default_env()
-            .or_else(|_| EnvFilter::try_new(&config.level))?;
+        let filter =
+            EnvFilter::try_from_default_env().or_else(|_| EnvFilter::try_new(&config.level))?;
 
         let registry = tracing_subscriber::registry().with(filter);
 
@@ -150,7 +151,7 @@ impl Logger {
                     .with_span_events(FmtSpan::CLOSE)
                     .with_thread_ids(true)
                     .with_thread_names(true);
-                
+
                 registry.with(fmt_layer).init();
             }
             LogFormat::Human => {
@@ -159,7 +160,7 @@ impl Logger {
                     .with_target(true)
                     .with_thread_ids(true)
                     .with_thread_names(true);
-                
+
                 registry.with(fmt_layer).init();
             }
         }
@@ -174,7 +175,7 @@ impl Logger {
 
         Ok(Self { config })
     }
-    
+
     /// Create a request span with context
     pub fn request_span(&self, ctx: &RequestContext) -> Span {
         let span = tracing::info_span!(
@@ -186,7 +187,7 @@ impl Logger {
             plugin = field::Empty,
             duration_ms = field::Empty,
         );
-        
+
         if let Some(ref session_id) = ctx.session_id {
             span.record("session_id", session_id);
         }
@@ -199,10 +200,10 @@ impl Logger {
         if let Some(ref plugin) = ctx.plugin {
             span.record("plugin", plugin);
         }
-        
+
         span
     }
-    
+
     /// Create a plugin operation span
     pub fn plugin_span(&self, plugin: &str, operation: &str, request_id: &str) -> Span {
         tracing::info_span!(
@@ -214,11 +215,11 @@ impl Logger {
             error = field::Empty,
         )
     }
-    
+
     /// Log request completion with metrics
     pub fn log_request_complete(&self, ctx: &RequestContext, success: bool) {
         let duration_ms = ctx.elapsed_ms();
-        
+
         if success {
             info!(
                 request_id = %ctx.request_id,
@@ -237,13 +238,14 @@ impl Logger {
             );
         }
     }
-    
+
     /// Log plugin operation with context
-    pub fn log_plugin_operation(&self, 
-        plugin: &str, 
-        operation: &str, 
-        request_id: &str, 
-        params: Option<&serde_json::Value>
+    pub fn log_plugin_operation(
+        &self,
+        plugin: &str,
+        operation: &str,
+        request_id: &str,
+        params: Option<&serde_json::Value>,
     ) {
         debug!(
             plugin = plugin,
@@ -253,12 +255,13 @@ impl Logger {
             "Plugin operation started"
         );
     }
-    
+
     /// Log security event
-    pub fn log_security_event(&self, 
-        event_type: &str, 
-        request_id: &str, 
-        details: serde_json::Value
+    pub fn log_security_event(
+        &self,
+        event_type: &str,
+        request_id: &str,
+        details: serde_json::Value,
     ) {
         warn!(
             event_type = event_type,
@@ -267,13 +270,14 @@ impl Logger {
             "Security event detected"
         );
     }
-    
+
     /// Log performance metrics
-    pub fn log_performance_metrics(&self,
+    pub fn log_performance_metrics(
+        &self,
         operation: &str,
         duration_ms: u64,
         success: bool,
-        details: Option<serde_json::Value>
+        details: Option<serde_json::Value>,
     ) {
         if self.config.performance_metrics {
             info!(
@@ -285,13 +289,9 @@ impl Logger {
             );
         }
     }
-    
+
     /// Log configuration change
-    pub fn log_config_change(&self, 
-        change_type: &str, 
-        old_value: Option<&str>, 
-        new_value: &str
-    ) {
+    pub fn log_config_change(&self, change_type: &str, old_value: Option<&str>, new_value: &str) {
         info!(
             change_type = change_type,
             old_value = old_value,
@@ -299,7 +299,7 @@ impl Logger {
             "Configuration changed"
         );
     }
-    
+
     /// Get plugin-specific log level
     pub fn get_plugin_level(&self, plugin: &str) -> Option<&String> {
         self.config.plugins.get(plugin)
@@ -370,22 +370,22 @@ impl ErrorContext {
             user_data: None,
         }
     }
-    
+
     pub fn with_operation(mut self, operation: String) -> Self {
         self.operation = Some(operation);
         self
     }
-    
+
     pub fn with_plugin(mut self, plugin: String) -> Self {
         self.plugin = Some(plugin);
         self
     }
-    
+
     pub fn with_user_data(mut self, data: serde_json::Value) -> Self {
         self.user_data = Some(data);
         self
     }
-    
+
     /// Log this error context
     pub fn log(&self) {
         error!(

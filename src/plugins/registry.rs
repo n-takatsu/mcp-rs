@@ -211,7 +211,7 @@ impl PluginRegistry {
 
     /// Get a mutable plugin instance
     pub fn get_plugin_mut<F, R>(&mut self, name: &str, f: F) -> Option<R>
-    where 
+    where
         F: FnOnce(&mut dyn UnifiedPlugin) -> R,
     {
         self.instances.get_mut(name).map(|p| f(p.as_mut()))

@@ -5,10 +5,7 @@ pub enum Transport {
     /// Standard input/output transport for MCP clients
     Stdio,
     /// TCP transport for development and testing
-    Tcp {
-        address: String,
-        port: u16,
-    },
+    Tcp { address: String, port: u16 },
 }
 
 impl Default for Transport {

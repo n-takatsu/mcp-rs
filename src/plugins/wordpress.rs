@@ -149,11 +149,9 @@ impl WordPressPlugin {
         }
 
         let response = self.make_request(&endpoint).await?;
-        let posts: Vec<WordPressPost> = response
-            .json()
-            .await
-            .map_err(|e| McpError::Serialization { 
-                message: e.to_string() 
+        let posts: Vec<WordPressPost> =
+            response.json().await.map_err(|e| McpError::Serialization {
+                message: e.to_string(),
             })?;
 
         Ok(posts)
@@ -167,11 +165,9 @@ impl WordPressPlugin {
         }
 
         let response = self.make_request(&endpoint).await?;
-        let comments: Vec<WordPressComment> = response
-            .json()
-            .await
-            .map_err(|e| McpError::Serialization { 
-                message: e.to_string() 
+        let comments: Vec<WordPressComment> =
+            response.json().await.map_err(|e| McpError::Serialization {
+                message: e.to_string(),
             })?;
 
         Ok(comments)
@@ -192,9 +188,9 @@ impl Plugin for WordPressPlugin {
     }
 
     async fn initialize(&mut self, config: &PluginConfig) -> PluginResult {
-        let wp_config: WordPressConfig = serde_json::from_value(config.config.clone())
-            .map_err(|e| McpError::InvalidParams { 
-                message: format!("Invalid WordPress config: {}", e) 
+        let wp_config: WordPressConfig =
+            serde_json::from_value(config.config.clone()).map_err(|e| McpError::InvalidParams {
+                message: format!("Invalid WordPress config: {}", e),
             })?;
 
         info!("Initializing WordPress plugin with URL: {}", wp_config.url);
@@ -313,8 +309,8 @@ impl ToolProvider for WordPressPlugin {
 
             "wordpress_search_posts" => {
                 let query = args.get("query").and_then(|v| v.as_str()).ok_or_else(|| {
-                    McpError::InvalidParams { 
-                        message: "Missing query parameter".to_string() 
+                    McpError::InvalidParams {
+                        message: "Missing query parameter".to_string(),
                     }
                 })?;
 
@@ -327,11 +323,9 @@ impl ToolProvider for WordPressPlugin {
                 );
 
                 let response = self.make_request(&endpoint).await?;
-                let posts: Vec<WordPressPost> = response
-                    .json()
-                    .await
-                    .map_err(|e| McpError::Serialization { 
-                        message: e.to_string() 
+                let posts: Vec<WordPressPost> =
+                    response.json().await.map_err(|e| McpError::Serialization {
+                        message: e.to_string(),
                     })?;
 
                 let result = ToolCallResult {
@@ -343,8 +337,8 @@ impl ToolProvider for WordPressPlugin {
                 Ok(serde_json::to_value(result)?)
             }
 
-            _ => Err(McpError::ToolNotFound { 
-                name: name.to_string() 
+            _ => Err(McpError::ToolNotFound {
+                name: name.to_string(),
             }),
         }
     }
@@ -397,8 +391,8 @@ impl ResourceProvider for WordPressPlugin {
                 Ok(serde_json::to_value(result)?)
             }
 
-            _ => Err(McpError::ResourceNotFound { 
-                uri: uri.to_string() 
+            _ => Err(McpError::ResourceNotFound {
+                uri: uri.to_string(),
             }),
         }
     }
