@@ -1,0 +1,36 @@
+name: Documentation
+
+# ドキュメントサイトのタイトル
+title: MCP-RS Documentation
+description: Rust implementation of the Model Context Protocol (MCP) for AI-agent integration
+
+# GitHub Pages設定
+url: "https://n-takatsu.github.io"
+baseurl: "/mcp-rs"
+
+# Markdownプロセッサー
+markdown: kramdown
+highlighter: rouge
+
+# プラグイン
+plugins:
+  - jekyll-feed
+  - jekyll-sitemap
+
+# テーマ
+theme: minima
+
+# Kramdown設定
+kramdown:
+  input: GFM
+  syntax_highlighter: rouge
+
+# ナビゲーション
+header_pages:
+  - index.md
+  - architecture/index.md
+  - api/index.md
+  - guides/index.md
+
+# サイト設定
+show_excerpts: true
