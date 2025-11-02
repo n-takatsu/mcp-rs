@@ -1,8 +1,8 @@
-# 管理者除外設定とREST API影響の詳細分析
+# 管理者除外設定と REST API 影響の詳細分析
 
 ## ⚠️ 重要な結論
 
-**管理者がメンテナンス画面を回避できても、REST APIエンドポイントは依然としてブロックされる可能性が高い**
+**管理者がメンテナンス画面を回避できても、REST API エンドポイントは依然としてブロックされる可能性が高い**
 
 ## 🔍 技術的な理由
 
@@ -25,6 +25,7 @@ if (defined('REST_REQUEST') && REST_REQUEST) {
 ### 2. プラグイン別の実装パターン
 
 #### WP Maintenance Mode
+
 ```
 設定項目：
 ✅ 「Backend Role」→ フロントエンド表示制御
@@ -32,6 +33,7 @@ if (defined('REST_REQUEST') && REST_REQUEST) {
 ```
 
 #### Coming Soon Page & Maintenance Mode
+
 ```
 設定項目：
 ✅ 「User Role Access」→ 管理者サイト閲覧許可
@@ -39,6 +41,7 @@ if (defined('REST_REQUEST') && REST_REQUEST) {
 ```
 
 #### SeedProd
+
 ```
 動作：
 ✅ 管理者：カスタムページ回避
@@ -47,21 +50,24 @@ if (defined('REST_REQUEST') && REST_REQUEST) {
 
 ## 📊 実際の影響パターン
 
-### パターン1：部分的影響（50%のプラグイン）
+### パターン 1：部分的影響（50%のプラグイン）
+
 ```
 フロントエンド：管理者アクセス可能
 REST API：引き続きブロック
 結果：MCPサーバー接続失敗
 ```
 
-### パターン2：完全ブロック（30%のプラグイン）
+### パターン 2：完全ブロック（30%のプラグイン）
+
 ```
 フロントエンド：管理者アクセス可能
 REST API：設定に関係なくブロック
 結果：MCPサーバー接続失敗
 ```
 
-### パターン3：適切な設定（20%のプラグイン）
+### パターン 3：適切な設定（20%のプラグイン）
+
 ```
 フロントエンド：管理者アクセス可能
 REST API：明示的に許可設定あり
@@ -70,9 +76,10 @@ REST API：明示的に許可設定あり
 
 ## 🛠️ 推奨対策
 
-### 1. 明示的REST API設定
+### 1. 明示的 REST API 設定
 
 #### WP Maintenance Mode
+
 ```
 手順：
 1. WordPress管理画面 → 設定 → WP Maintenance Mode
@@ -82,6 +89,7 @@ REST API：明示的に許可設定あり
 ```
 
 #### Coming Soon Page & Maintenance Mode
+
 ```
 手順：
 1. 管理画面 → 設定 → Coming Soon Mode
@@ -90,7 +98,7 @@ REST API：明示的に許可設定あり
 4. 「Allowed User Roles」→ Administrator追加
 ```
 
-### 2. wp-config.php追加設定
+### 2. wp-config.php 追加設定
 
 ```php
 // REST API専用の除外設定
@@ -104,7 +112,7 @@ if (defined('REST_REQUEST') && REST_REQUEST && is_user_logged_in()) {
 }
 ```
 
-### 3. functions.php回避コード
+### 3. functions.php 回避コード
 
 ```php
 function bypass_maintenance_for_rest_api() {
@@ -117,7 +125,7 @@ function bypass_maintenance_for_rest_api() {
 add_action('plugins_loaded', 'bypass_maintenance_for_rest_api', 1);
 ```
 
-## 🔧 MCPサーバー側強化対策
+## 🔧 MCP サーバー側強化対策
 
 ### エラーメッセージ改善
 
@@ -125,9 +133,9 @@ add_action('plugins_loaded', 'bypass_maintenance_for_rest_api', 1);
 // 実装済み：メンテナンス検出機能
 if maintenance_detected {
     return Err(McpError::external_api(
-        "WordPress appears to be in maintenance mode. 
-         Even if you can access the admin panel, 
-         REST API endpoints may still be blocked. 
+        "WordPress appears to be in maintenance mode.
+         Even if you can access the admin panel,
+         REST API endpoints may still be blocked.
          Please check maintenance plugin REST API settings."
     ));
 }
@@ -136,19 +144,22 @@ if maintenance_detected {
 ## 📋 確認手順
 
 ### 1. 直接テスト
+
 ```bash
 # 管理者としてログイン後
 curl -u "admin:app_password" https://your-site.com/wp-json/wp/v2/posts?per_page=1
 ```
 
 ### 2. ブラウザ確認
+
 ```
 1. 管理者でWordPressにログイン
 2. 新しいタブで https://your-site.com/wp-json/ を開く
 3. JSONレスポンスが表示されるか確認
 ```
 
-### 3. MCPサーバーテスト
+### 3. MCP サーバーテスト
+
 ```rust
 // 実装済み：接続テスト機能
 // メンテナンス状態でも詳細な診断情報を提供
@@ -160,27 +171,28 @@ curl -u "admin:app_password" https://your-site.com/wp-json/wp/v2/posts?per_page=
 
 ```json
 {
-  "maintenance_mode": {
-    "frontend_access": ["administrator"],
-    "rest_api_access": "always_allow",
-    "exclude_paths": ["wp-json", "wp-admin"],
-    "ip_whitelist": ["MCP_SERVER_IP"]
-  }
+    "maintenance_mode": {
+        "frontend_access": ["administrator"],
+        "rest_api_access": "always_allow",
+        "exclude_paths": ["wp-json", "wp-admin"],
+        "ip_whitelist": ["MCP_SERVER_IP"]
+    }
 }
 ```
 
 ### 緊急時対応
 
-1. **プラグイン設定確認** - REST API許可設定
+1. **プラグイン設定確認** - REST API 許可設定
 2. **除外リスト追加** - wp-json パス追加
-3. **IP許可リスト** - MCPサーバーIP追加
+3. **IP 許可リスト** - MCP サーバー IP 追加
 4. **一時無効化** - 最終手段としてプラグイン無効化
 
 ## 📈 統計と予測
 
 **経験則：**
-- 70%のケース：管理者除外設定だけではREST APIブロック継続
-- 20%のケース：適切な設定でREST API使用可能
-- 10%のケース：プラグインの仕様でREST API完全ブロック
 
-**結論：管理者がサイトを見れても、MCPサーバーは引き続き接続できない可能性が高い**
+-   70%のケース：管理者除外設定だけでは REST API ブロック継続
+-   20%のケース：適切な設定で REST API 使用可能
+-   10%のケース：プラグインの仕様で REST API 完全ブロック
+
+**結論：管理者がサイトを見れても、MCP サーバーは引き続き接続できない可能性が高い**

@@ -1,28 +1,31 @@
-# WordPressメンテナンスモード対応ガイド
+# WordPress メンテナンスモード対応ガイド
 
 ## ⚠️ 重要な注意事項
 
-**メンテナンスモードプラグインは、MCPサーバーのWordPress REST API接続を完全にブロックする可能性があります。**
+**メンテナンスモードプラグインは、MCP サーバーの WordPress REST API 接続を完全にブロックする可能性があります。**
 
 ## 🔍 影響を受けるプラグイン
 
-### 高リスク（REST APIブロック）
-- **WP Maintenance Mode** - デフォルトでREST APIブロック
-- **Coming Soon Page & Maintenance Mode** - API無効化オプション
-- **Maintenance Mode** by WebFactory - 全API制限
-- **WP Site Guard** - メンテナンス機能でAPI制限
-- **SeedProd** - カスタムページでAPI隠蔽
+### 高リスク（REST API ブロック）
+
+-   **WP Maintenance Mode** - デフォルトで REST API ブロック
+-   **Coming Soon Page & Maintenance Mode** - API 無効化オプション
+-   **Maintenance Mode** by WebFactory - 全 API 制限
+-   **WP Site Guard** - メンテナンス機能で API 制限
+-   **SeedProd** - カスタムページで API 隠蔽
 
 ### 中リスク（条件付きブロック）
-- **WP Cerber Security** - REST API制限機能
-- **All In One WP Security** - API無効化オプション
-- **Wordfence** - ライブトラフィックビューでAPI監視
+
+-   **WP Cerber Security** - REST API 制限機能
+-   **All In One WP Security** - API 無効化オプション
+-   **Wordfence** - ライブトラフィックビューで API 監視
 
 ## 🛠️ 対策方法
 
 ### 1. プラグイン設定での回避
 
 #### WP Maintenance Mode
+
 ```
 設定項目：
 - 「Backend Role」→ Administrator追加
@@ -31,6 +34,7 @@
 ```
 
 #### Coming Soon Page & Maintenance Mode
+
 ```
 設定項目：
 - 「Advanced Settings」→「Allow REST API」→ 有効
@@ -38,6 +42,7 @@
 ```
 
 #### WP Cerber Security
+
 ```
 設定項目：
 - 「Antispam」→「REST API」→ 「Allow REST API for logged in users」有効
@@ -47,6 +52,7 @@
 ### 2. 一時的な無効化
 
 #### 緊急時対応手順
+
 ```bash
 # FTPまたはファイルマネージャーで
 wp-content/plugins/maintenance-plugin-name/
@@ -56,7 +62,8 @@ wp-content/plugins/maintenance-plugin-name-disabled/
 
 ### 3. 設定ファイルでの回避
 
-#### wp-config.php追加
+#### wp-config.php 追加
+
 ```php
 // MCPサーバー用REST API許可
 if (defined('REST_REQUEST') && REST_REQUEST) {
@@ -64,14 +71,15 @@ if (defined('REST_REQUEST') && REST_REQUEST) {
 }
 ```
 
-## 🔧 MCPサーバー側対策
+## 🔧 MCP サーバー側対策
 
 ### エラーハンドリング強化
 
 メンテナンスモード検出機能：
-- HTTP 503エラーの検出
-- メンテナンスページのHTML検出
-- 適切なエラーメッセージ表示
+
+-   HTTP 503 エラーの検出
+-   メンテナンスページの HTML 検出
+-   適切なエラーメッセージ表示
 
 ### 接続テスト改善
 
@@ -88,21 +96,24 @@ async fn detect_maintenance_mode(&self) -> Result<bool, McpError> {
 
 ### よくある症状
 
-#### 症状1: 接続完全失敗
+#### 症状 1: 接続完全失敗
+
 ```
 エラー: HTTP 503 Service Unavailable
 原因: メンテナンスモードでREST API完全ブロック
 対処: プラグイン設定でREST API許可
 ```
 
-#### 症状2: 認証エラー
+#### 症状 2: 認証エラー
+
 ```
-エラー: HTTP 401 Unauthorized  
+エラー: HTTP 401 Unauthorized
 原因: メンテナンス時の認証システム変更
 対処: 管理者権限の確認とIP許可リスト追加
 ```
 
-#### 症状3: 部分的アクセス可能
+#### 症状 3: 部分的アクセス可能
+
 ```
 現象: 一部のエンドポイントのみアクセス可能
 原因: 選択的API制限設定
@@ -112,35 +123,39 @@ async fn detect_maintenance_mode(&self) -> Result<bool, McpError> {
 ### 確認手順
 
 1. **直接テスト**
-   ```bash
-   curl https://your-site.com/wp-json/wp/v2/posts?per_page=1
-   ```
+
+    ```bash
+    curl https://your-site.com/wp-json/wp/v2/posts?per_page=1
+    ```
 
 2. **ブラウザ確認**
-   ```
-   https://your-site.com/wp-json/
-   ```
+
+    ```
+    https://your-site.com/wp-json/
+    ```
 
 3. **認証テスト**
-   ```bash
-   curl -u "username:app_password" https://your-site.com/wp-json/wp/v2/users/me
-   ```
+    ```bash
+    curl -u "username:app_password" https://your-site.com/wp-json/wp/v2/users/me
+    ```
 
 ## 🎯 推奨設定パターン
 
-### パターン1: メンテナンス中も API許可
+### パターン 1: メンテナンス中も API 許可
+
 ```json
 {
-  "maintenance_mode": {
-    "enabled": true,
-    "rest_api_access": true,
-    "allowed_users": ["administrator"],
-    "allowed_ips": ["MCP_SERVER_IP"]
-  }
+    "maintenance_mode": {
+        "enabled": true,
+        "rest_api_access": true,
+        "allowed_users": ["administrator"],
+        "allowed_ips": ["MCP_SERVER_IP"]
+    }
 }
 ```
 
-### パターン2: 条件付きメンテナンス
+### パターン 2: 条件付きメンテナンス
+
 ```php
 // functions.phpに追加
 function allow_rest_api_during_maintenance() {
@@ -153,11 +168,11 @@ add_action('plugins_loaded', 'allow_rest_api_during_maintenance');
 
 ## ⚡ 緊急時対応
 
-### MCPサーバー接続復旧手順
+### MCP サーバー接続復旧手順
 
 1. **メンテナンスプラグイン設定確認**
-2. **REST API個別許可設定**
-3. **IP許可リスト追加**
+2. **REST API 個別許可設定**
+3. **IP 許可リスト追加**
 4. **一時的プラグイン無効化**（必要時）
 5. **接続テスト実行**
 

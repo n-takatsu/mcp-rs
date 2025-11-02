@@ -5,17 +5,19 @@
 ### 1. **SiteGuard WP Plugin 管理ページアクセス制限**
 
 #### スクリーンショット確認事項
+
 ```
 ✅ 除外パス設定欄が存在
 現在の設定：
 - css
-- images  
+- images
 - admin-ajax.php
 - load-styles.php
 - site-health.php
 ```
 
-#### **MCPサーバー用追加設定（必須）**
+#### **MCP サーバー用追加設定（必須）**
+
 ```
 除外パス欄に追加：
 wp-json
@@ -27,6 +29,7 @@ wp-json/wp/v2/users
 ### 2. **AFFINGER6 メンテナンス機能**
 
 #### 機能確認
+
 ```
 AFFINGER6管理 → 投稿・固定記事設定 → メンテナンス設定
 または
@@ -41,6 +44,7 @@ AFFINGER6管理 → 投稿・固定記事設定 → メンテナンス設定
 ### 3. **LightStart（メンテナンスプラグイン）**
 
 #### 確認済み機能
+
 ```
 ✅ 除外設定ページ存在
 ✅ フィード、ページ、アーカイブ除外可能
@@ -50,9 +54,10 @@ AFFINGER6管理 → 投稿・固定記事設定 → メンテナンス設定
 
 ## 🛠️ **推奨設定手順**
 
-### Phase 1: SiteGuard設定（即座実行）
+### Phase 1: SiteGuard 設定（即座実行）
 
 #### 管理ページアクセス制限 除外パス追加
+
 ```
 現在の設定：
 css
@@ -69,9 +74,10 @@ wp-json/wp/v2/users
 rest_route
 ```
 
-### Phase 2: AFFINGER6確認
+### Phase 2: AFFINGER6 確認
 
 #### メンテナンス機能の場所
+
 ```
 確認手順：
 1. WordPress管理画面 → AFFINGER6管理
@@ -85,9 +91,10 @@ rest_route
 3. 「メンテナンス」セクション確認
 ```
 
-### Phase 3: LightStart設定（推奨）
+### Phase 3: LightStart 設定（推奨）
 
 #### 除外設定の最適化
+
 ```
 LightStart設定画面で追加：
 
@@ -104,6 +111,7 @@ admin-ajax.php
 ## 🚨 **重要な技術的注意点**
 
 ### REST API アクセスパターン
+
 ```
 WordPressのREST APIは以下のパターンでアクセス：
 
@@ -115,7 +123,8 @@ WordPressのREST APIは以下のパターンでアクセス：
 全パターンを除外する必要があります。
 ```
 
-### AFFINGER6制限事項
+### AFFINGER6 制限事項
+
 ```
 AFFINGER6のメンテナンス機能：
 ✅ フロントエンド制御は優秀
@@ -125,9 +134,10 @@ AFFINGER6のメンテナンス機能：
 
 ## 🔧 **実装可能な解決策**
 
-### 解決策1: SiteGuard + wp-config.php（推奨）
+### 解決策 1: SiteGuard + wp-config.php（推奨）
 
-#### SiteGuard除外設定
+#### SiteGuard 除外設定
+
 ```
 管理ページアクセス制限 → 除外パスに追加：
 wp-json
@@ -135,7 +145,8 @@ wp-json/wp/v2
 rest_route
 ```
 
-#### wp-config.php追加
+#### wp-config.php 追加
+
 ```php
 // REST API用特別処理
 if (defined('REST_REQUEST') && REST_REQUEST) {
@@ -144,13 +155,14 @@ if (defined('REST_REQUEST') && REST_REQUEST) {
 }
 ```
 
-### 解決策2: LightStart専用運用
+### 解決策 2: LightStart 専用運用
 
-#### LightStartの除外設定
+#### LightStart の除外設定
+
 ```
 除外欄に追加：
 feed
-wp-login  
+wp-login
 login
 wp-json
 wp-json/wp/v2
@@ -160,9 +172,10 @@ rest_route
 admin-ajax.php
 ```
 
-### 解決策3: AFFINGER6 + functions.php
+### 解決策 3: AFFINGER6 + functions.php
 
-#### functions.php追加コード
+#### functions.php 追加コード
+
 ```php
 // AFFINGER6メンテナンス時のREST API許可
 function affinger_maintenance_rest_api_bypass() {
@@ -177,23 +190,26 @@ add_action('plugins_loaded', 'affinger_maintenance_rest_api_bypass', 1);
 
 ## 📋 **動作確認手順**
 
-### テスト1: REST API直接アクセス
+### テスト 1: REST API 直接アクセス
+
 ```bash
 # ブラウザまたはcurlで確認
 https://your-site.com/wp-json/
 https://your-site.com/wp-json/wp/v2/posts?per_page=1
 ```
 
-### テスト2: MCPサーバー接続テスト
+### テスト 2: MCP サーバー接続テスト
+
 ```rust
 // 実装済みのテスト機能使用
 // メンテナンス検出とREST API接続の同時確認
 ```
 
-### テスト3: 段階的確認
+### テスト 3: 段階的確認
+
 ```
 1. メンテナンス無し → REST API動作確認
-2. メンテナンス有効 → フロントエンド制限確認  
+2. メンテナンス有効 → フロントエンド制限確認
 3. メンテナンス有効 → REST API動作確認
 4. 管理者ログイン → フロントエンド表示確認
 5. 管理者ログイン → REST API動作確認
@@ -203,7 +219,8 @@ https://your-site.com/wp-json/wp/v2/posts?per_page=1
 
 ### 運用推奨パターン
 
-#### パターンA: SiteGuard中心
+#### パターン A: SiteGuard 中心
+
 ```
 - SiteGuard: 除外設定でREST API許可
 - AFFINGER6: メンテナンス機能は使用しない
@@ -211,7 +228,8 @@ https://your-site.com/wp-json/wp/v2/posts?per_page=1
 - 利点: シンプル、軽量
 ```
 
-#### パターンB: LightStart中心（推奨）
+#### パターン B: LightStart 中心（推奨）
+
 ```
 - LightStart: メンテナンス＋除外設定
 - SiteGuard: セキュリティ機能のみ
@@ -219,7 +237,8 @@ https://your-site.com/wp-json/wp/v2/posts?per_page=1
 - 利点: 高機能、柔軟性
 ```
 
-#### パターンC: ハイブリッド
+#### パターン C: ハイブリッド
+
 ```
 - 通常時: SiteGuardのみ
 - メンテナンス時: LightStart一時有効化
@@ -229,7 +248,8 @@ https://your-site.com/wp-json/wp/v2/posts?per_page=1
 
 ## ⚡ **緊急対応**
 
-### 即座実行（MCPサーバー復旧）
+### 即座実行（MCP サーバー復旧）
+
 ```php
 // wp-config.phpに一時追加（最優先）
 if (defined('REST_REQUEST') && REST_REQUEST) {
@@ -238,7 +258,8 @@ if (defined('REST_REQUEST') && REST_REQUEST) {
 }
 ```
 
-### SiteGuard設定更新
+### SiteGuard 設定更新
+
 ```
 管理ページアクセス制限 → 除外パス：
 css
@@ -251,15 +272,16 @@ wp-json/wp/v2             ← 追加
 rest_route                ← 追加
 ```
 
-### LightStart除外設定
+### LightStart 除外設定
+
 ```
 除外欄：
 feed
 wp-login
-login  
+login
 wp-json                   ← 重要
 wp-json/wp/v2            ← 重要
 rest_route               ← 重要
 ```
 
-この設定により、メンテナンス時でもMCPサーバーが正常に動作するはずです。
+この設定により、メンテナンス時でも MCP サーバーが正常に動作するはずです。
