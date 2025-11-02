@@ -2,12 +2,14 @@ use async_trait::async_trait;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use tracing::info;
+use std::time::Duration;
+use tracing::{info, warn};
 
 use crate::mcp::{
     McpHandler, McpError, Tool, Resource, InitializeParams, 
     ToolCallParams, ResourceReadParams
 };
+use crate::config::WordPressConfig;
 
 #[derive(Debug, Clone)]
 pub struct WordPressHandler {
@@ -20,10 +22,32 @@ pub struct WordPressHandler {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct WordPressPost {
     pub id: Option<u64>,
-    pub title: HashMap<String, String>,
-    pub content: HashMap<String, String>,
+    pub date: Option<String>,
+    pub date_gmt: Option<String>,
+    pub guid: Option<WordPressGuid>,
+    pub modified: Option<String>,
+    pub modified_gmt: Option<String>,
+    pub slug: Option<String>,
     pub status: String,
+    #[serde(rename = "type")]
+    pub post_type: Option<String>,
+    pub link: Option<String>,
+    pub title: WordPressContent,
+    pub content: WordPressContent,
+    pub excerpt: Option<WordPressContent>,
     pub author: Option<u64>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct WordPressGuid {
+    pub rendered: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct WordPressContent {
+    pub rendered: String,
+    #[serde(default)]
+    pub protected: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -36,13 +60,93 @@ pub struct WordPressComment {
 }
 
 impl WordPressHandler {
-    pub fn new(base_url: String, username: Option<String>, password: Option<String>) -> Self {
+    pub fn new(config: WordPressConfig) -> Self {
+        // タイムアウト設定付きのHTTPクライアントを作成
+        let timeout_secs = config.timeout_seconds.unwrap_or(30);
+        let client = Client::builder()
+            .timeout(Duration::from_secs(timeout_secs))        // 設定可能なタイムアウト
+            .connect_timeout(Duration::from_secs(10)) // 接続タイムアウト: 10秒
+            .user_agent("mcp-rs/1.0")                // User-Agentを設定
+            .build()
+            .expect("HTTP client build failed");
+
         Self {
-            client: Client::new(),
-            base_url,
-            username,
-            password,
+            client,
+            base_url: config.url,
+            username: Some(config.username),
+            password: Some(config.password),
         }
+    }
+
+    /// リトライ機能付きでHTTPリクエストを実行
+    async fn execute_request_with_retry<T>(&self, request_builder: reqwest::RequestBuilder) -> Result<T, McpError> 
+    where 
+        T: for<'de> serde::Deserialize<'de>,
+    {
+        const MAX_RETRIES: u32 = 3;
+        const RETRY_DELAY: Duration = Duration::from_millis(1000);
+
+        for attempt in 1..=MAX_RETRIES {
+            let request = request_builder.try_clone()
+                .ok_or_else(|| McpError::Other("Failed to clone request".to_string()))?;
+
+            match request.send().await {
+                Ok(response) => {
+                    let status = response.status();
+                    
+                    if status.is_success() {
+                        // レスポンステキストを取得してデバッグ
+                        let text = response.text().await.map_err(McpError::Http)?;
+                        warn!("Response body (first 500 chars): {}", text.chars().take(500).collect::<String>());
+                        
+                        match serde_json::from_str::<T>(&text) {
+                            Ok(data) => return Ok(data),
+                            Err(e) => {
+                                warn!("JSON parse error on attempt {}: {}", attempt, e);
+                                if attempt == MAX_RETRIES {
+                                    return Err(McpError::ExternalApi(format!("JSON parse error: {}", e)));
+                                }
+                            }
+                        }
+                    } else if status.as_u16() >= 500 || status.as_u16() == 429 {
+                        // サーバーエラーまたはレート制限の場合はリトライ
+                        warn!("HTTP error {} on attempt {}, retrying...", status, attempt);
+                        if attempt == MAX_RETRIES {
+                            return Err(McpError::ExternalApi(format!(
+                                "WordPress API error after {} attempts: {}",
+                                MAX_RETRIES, status
+                            )));
+                        }
+                    } else {
+                        // クライアントエラー（4xx）はリトライしない
+                        return Err(McpError::ExternalApi(format!(
+                            "WordPress API client error: {}",
+                            status
+                        )));
+                    }
+                }
+                Err(e) => {
+                    if e.is_timeout() {
+                        warn!("Request timeout on attempt {}: {}", attempt, e);
+                    } else if e.is_connect() {
+                        warn!("Connection error on attempt {}: {}", attempt, e);
+                    } else {
+                        warn!("Request error on attempt {}: {}", attempt, e);
+                    }
+                    
+                    if attempt == MAX_RETRIES {
+                        return Err(McpError::Http(e));
+                    }
+                }
+            }
+
+            // リトライ前に少し待機
+            if attempt < MAX_RETRIES {
+                tokio::time::sleep(RETRY_DELAY * attempt).await;
+            }
+        }
+
+        unreachable!()
     }
 
     async fn get_posts(&self) -> Result<Vec<WordPressPost>, McpError> {
@@ -54,33 +158,33 @@ impl WordPressHandler {
             request = request.basic_auth(username, Some(password));
         }
 
-        let response = request.send().await?;
-        
-        if !response.status().is_success() {
-            return Err(McpError::ExternalApi(format!(
-                "WordPress API error: {}",
-                response.status()
-            )));
-        }
-
-        let posts: Vec<WordPressPost> = response.json().await?;
-        Ok(posts)
+        info!("Fetching WordPress posts from: {}", url);
+        self.execute_request_with_retry(request).await
     }
 
     async fn create_post(&self, title: String, content: String) -> Result<WordPressPost, McpError> {
         let url = format!("{}/wp-json/wp/v2/posts", self.base_url);
         
-        let mut title_map = HashMap::new();
-        title_map.insert("rendered".to_string(), title);
-        
-        let mut content_map = HashMap::new();
-        content_map.insert("rendered".to_string(), content);
-        
         let post = WordPressPost {
             id: None,
-            title: title_map,
-            content: content_map,
+            date: None,
+            date_gmt: None,
+            guid: None,
+            modified: None,
+            modified_gmt: None,
+            slug: None,
             status: "publish".to_string(),
+            post_type: Some("post".to_string()),
+            link: None,
+            title: WordPressContent { 
+                rendered: title, 
+                protected: false 
+            },
+            content: WordPressContent { 
+                rendered: content, 
+                protected: false 
+            },
+            excerpt: None,
             author: None,
         };
 
