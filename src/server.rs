@@ -5,12 +5,7 @@ use crate::{
     protocol::McpProtocol,
     types::{JsonRpcError, JsonRpcRequest, JsonRpcResponse},
 };
-use axum::{
-    extract::State,
-    response::IntoResponse,
-    routing::post,
-    Json, Router,
-};
+use axum::{extract::State, response::IntoResponse, routing::post, Json, Router};
 use serde_json::json;
 use std::sync::Arc;
 use tower_http::trace::TraceLayer;
@@ -59,30 +54,27 @@ async fn handle_request<P: McpProtocol>(
 ) -> impl IntoResponse {
     info!("Received request: method={}", request.method);
 
-    let result = match request.method.as_str() {
-        "initialize" => {
-            match protocol.initialize().await {
+    let result =
+        match request.method.as_str() {
+            "initialize" => match protocol.initialize().await {
                 Ok((info, capabilities)) => Ok(json!({
                     "serverInfo": info,
                     "capabilities": capabilities,
                 })),
                 Err(e) => Err(e),
-            }
-        }
-        "tools/list" => {
-            match protocol.list_tools().await {
+            },
+            "tools/list" => match protocol.list_tools().await {
                 Ok(tools) => Ok(json!({ "tools": tools })),
                 Err(e) => Err(e),
-            }
-        }
-        "tools/call" => {
-            match request.params.clone() {
-                None => Err(Error::InvalidParams("Missing parameters for tools/call".to_string())),
+            },
+            "tools/call" => match request.params.clone() {
+                None => Err(Error::InvalidParams(
+                    "Missing parameters for tools/call".to_string(),
+                )),
                 Some(params) => {
-                    let name = params
-                        .get("name")
-                        .and_then(|v| v.as_str())
-                        .ok_or_else(|| Error::InvalidParams("Missing 'name' parameter".to_string()));
+                    let name = params.get("name").and_then(|v| v.as_str()).ok_or_else(|| {
+                        Error::InvalidParams("Missing 'name' parameter".to_string())
+                    });
 
                     match name {
                         Err(e) => Err(e),
@@ -92,17 +84,15 @@ async fn handle_request<P: McpProtocol>(
                         }
                     }
                 }
-            }
-        }
-        "resources/list" => {
-            match protocol.list_resources().await {
+            },
+            "resources/list" => match protocol.list_resources().await {
                 Ok(resources) => Ok(json!({ "resources": resources })),
                 Err(e) => Err(e),
-            }
-        }
-        "resources/read" => {
-            match request.params.clone() {
-                None => Err(Error::InvalidParams("Missing parameters for resources/read".to_string())),
+            },
+            "resources/read" => match request.params.clone() {
+                None => Err(Error::InvalidParams(
+                    "Missing parameters for resources/read".to_string(),
+                )),
                 Some(params) => {
                     let uri = params
                         .get("uri")
@@ -114,22 +104,19 @@ async fn handle_request<P: McpProtocol>(
                         Ok(uri) => protocol.read_resource(uri).await,
                     }
                 }
-            }
-        }
-        "prompts/list" => {
-            match protocol.list_prompts().await {
+            },
+            "prompts/list" => match protocol.list_prompts().await {
                 Ok(prompts) => Ok(json!({ "prompts": prompts })),
                 Err(e) => Err(e),
-            }
-        }
-        "prompts/get" => {
-            match request.params.clone() {
-                None => Err(Error::InvalidParams("Missing parameters for prompts/get".to_string())),
+            },
+            "prompts/get" => match request.params.clone() {
+                None => Err(Error::InvalidParams(
+                    "Missing parameters for prompts/get".to_string(),
+                )),
                 Some(params) => {
-                    let name = params
-                        .get("name")
-                        .and_then(|v| v.as_str())
-                        .ok_or_else(|| Error::InvalidParams("Missing 'name' parameter".to_string()));
+                    let name = params.get("name").and_then(|v| v.as_str()).ok_or_else(|| {
+                        Error::InvalidParams("Missing 'name' parameter".to_string())
+                    });
 
                     match name {
                         Err(e) => Err(e),
@@ -139,10 +126,9 @@ async fn handle_request<P: McpProtocol>(
                         }
                     }
                 }
-            }
-        }
-        _ => Err(Error::MethodNotFound(request.method.clone())),
-    };
+            },
+            _ => Err(Error::MethodNotFound(request.method.clone())),
+        };
 
     let response = match result {
         Ok(result) => JsonRpcResponse {
