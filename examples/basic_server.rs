@@ -11,7 +11,6 @@ use mcp_rs::{
     Error, McpServer, Result,
 };
 use serde_json::{json, Value};
-use tracing_subscriber;
 
 /// Basic MCP Protocol implementation
 struct BasicProtocol {

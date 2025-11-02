@@ -13,7 +13,6 @@ use mcp_rs::{
 };
 use reqwest::Client;
 use serde_json::{json, Value};
-use tracing_subscriber;
 
 /// WordPress MCP Protocol implementation
 struct WordPressMcpProtocol {
@@ -128,12 +127,12 @@ impl McpProtocol for WordPressMcpProtocol {
                     .get(&url)
                     .send()
                     .await
-                    .map_err(|e| Error::NetworkError(e))?;
+                    .map_err(Error::NetworkError)?;
 
                 let posts: Value = response
                     .json()
                     .await
-                    .map_err(|e| Error::NetworkError(e))?;
+                    .map_err(Error::NetworkError)?;
 
                 Ok(json!({
                     "posts": posts
@@ -170,12 +169,12 @@ impl McpProtocol for WordPressMcpProtocol {
                     }))
                     .send()
                     .await
-                    .map_err(|e| Error::NetworkError(e))?;
+                    .map_err(Error::NetworkError)?;
 
                 let post: Value = response
                     .json()
                     .await
-                    .map_err(|e| Error::NetworkError(e))?;
+                    .map_err(Error::NetworkError)?;
 
                 Ok(json!({
                     "post": post
@@ -211,12 +210,12 @@ impl McpProtocol for WordPressMcpProtocol {
             .get(uri)
             .send()
             .await
-            .map_err(|e| Error::NetworkError(e))?;
+            .map_err(Error::NetworkError)?;
 
         let data: Value = response
             .json()
             .await
-            .map_err(|e| Error::NetworkError(e))?;
+            .map_err(Error::NetworkError)?;
 
         Ok(data)
     }
