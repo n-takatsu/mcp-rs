@@ -10,15 +10,44 @@ repository = "https://github.com/n-takatsu/mcp-rs"
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-tokio = { version = "1.0", features = ["full"] }
-axum = "0.7"
-tower = "0.4"
-tower-http = { version = "0.5", features = ["trace"] }
+# Tokio機能を必要最小限に
+tokio = { version = "1.0", features = ["rt-multi-thread", "net", "io-util", "time", "macros"] }
+# Axumも軽量化（HTTPサーバー機能追加）
+axum = { version = "0.7", default-features = false, features = ["tokio", "json", "http1", "http2"] }
+tower = { version = "0.4", default-features = false }
+tower-http = { version = "0.5", features = ["trace"], default-features = false }
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"], default-features = false }
 thiserror = "1.0"
 async-trait = "0.1"
-reqwest = { version = "0.12", features = ["json"] }
+# reqwest機能も最小限に
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+config = "0.14"
+toml = "0.8"
 
 [dev-dependencies]
 tokio-test = "0.4"
+
+# 開発時のビルド高速化設定
+[profile.dev]
+opt-level = 0          # 最適化なし（最速ビルド）
+debug = true           # デバッグ情報有効
+incremental = true     # インクリメンタルコンパイル有効
+
+# 依存関係は最適化（実行時パフォーマンス改善）
+[profile.dev.package."*"]
+opt-level = 3          # 依存関係は最適化
+
+# より高速な開発プロファイル（オプション）
+[profile.dev-fast]
+inherits = "dev"
+opt-level = 1          # 軽い最適化
+debug = "line-tables-only"  # 軽量デバッグ情報
+
+# 本番用設定
+[profile.release]
+opt-level = 3          # 最大最適化
+debug = false          # デバッグ情報なし
+lto = true            # Link Time Optimization
+codegen-units = 1     # 最適化重視
+panic = "abort"       # panic時即座に終了

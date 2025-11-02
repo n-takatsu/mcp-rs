@@ -6,9 +6,12 @@
 //! with support for tool integration, resource management, and prompt handling.
 
 pub mod error;
-pub mod protocol;
+pub mod protocol; 
 pub mod server;
 pub mod types;
+pub mod config;
+pub mod handlers;
+pub mod mcp;
 
 pub use error::{Error, Result};
 pub use protocol::McpProtocol;
