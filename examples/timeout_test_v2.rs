@@ -29,7 +29,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Err(e) => {
             error!("❌ 設定ファイル読み込み失敗: {}", e);
-            return Err(e.into());
+            return Err(e);
         }
     };
 

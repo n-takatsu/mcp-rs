@@ -1,5 +1,5 @@
+use base64::{engine::general_purpose, Engine as _};
 use reqwest::Client;
-use serde_json::json;
 use std::env;
 
 #[tokio::main]
@@ -102,7 +102,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ];
 
             for header_name in &important_headers {
-                if let Some(value) = headers.get(header_name) {
+                if let Some(value) = headers.get(*header_name) {
                     println!("      {}: {:?}", header_name, value);
                 }
             }
@@ -192,7 +192,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // Basic認証のヘッダーを手動で作成
         let auth_string = format!("{}:{}", user, pass);
-        let auth_b64 = base64::encode(auth_string);
+        let auth_b64 = general_purpose::STANDARD.encode(auth_string);
         let auth_header = format!("Basic {}", auth_b64);
 
         println!(

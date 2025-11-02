@@ -28,6 +28,7 @@ toml = "0.8"
 [dev-dependencies]
 tokio-test = "0.4"
 criterion = { version = "0.5", features = ["html_reports"] }
+base64 = "0.21"
 
 [[bench]]
 name = "mcp_protocol"
