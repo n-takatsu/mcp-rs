@@ -2,6 +2,7 @@ use crate::mcp::JsonRpcError;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
+#[allow(dead_code)]
 pub enum McpError {
     #[error("JSON-RPC error: {0}")]
     JsonRpc(String),

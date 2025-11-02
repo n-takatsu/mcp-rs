@@ -30,6 +30,7 @@ pub struct JsonRpcError {
 /// MCP Protocol Messages
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "method")]
+#[allow(dead_code)]
 pub enum McpMessage {
     #[serde(rename = "initialize")]
     Initialize { params: InitializeParams },

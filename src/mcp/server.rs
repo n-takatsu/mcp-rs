@@ -28,17 +28,20 @@ pub struct McpServer {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct ServerCapabilities {
     pub tools: Option<ToolsCapability>,
     pub resources: Option<ResourcesCapability>,
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct ToolsCapability {
     pub list_changed: Option<bool>,
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct ResourcesCapability {
     pub subscribe: Option<bool>,
     pub list_changed: Option<bool>,
