@@ -1,9 +1,9 @@
-use std::env;
-use std::time::Instant;
 use mcp_rs::config::McpConfig;
 use mcp_rs::handlers::wordpress::WordPressHandler;
 use mcp_rs::mcp::McpHandler;
-use tracing::{info, warn, error, debug};
+use std::env;
+use std::time::Instant;
+use tracing::{debug, error, info, warn};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -16,9 +16,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_line_number(true)
         .init();
     println!("🕒 WordPress接続タイムアウトテスト");
-    
-    let wordpress_url = env::var("WORDPRESS_URL")
-        .unwrap_or_else(|_| "https://redring.jp".to_string());
+
+    let wordpress_url =
+        env::var("WORDPRESS_URL").unwrap_or_else(|_| "https://redring.jp".to_string());
     let username = env::var("WORDPRESS_USERNAME").ok();
     let password = env::var("WORDPRESS_PASSWORD").ok();
 
@@ -27,20 +27,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!();
 
     // MCP-RSのWordPressHandlerを使用
-    let handler = mcp_rs::handlers::WordPressHandler::new(
-        wordpress_url,
-        username,
-        password,
-    );
+    let handler = mcp_rs::handlers::WordPressHandler::new(wordpress_url, username, password);
 
     // 1. 正常な接続テスト
     println!("1️⃣  正常接続テスト（タイムアウト: 30秒）...");
     let start = Instant::now();
-    
+
     match handler.list_tools().await {
         Ok(tools) => {
             let elapsed = start.elapsed();
-            println!("   ✅ 成功 ({}ms) - 利用可能ツール: {}", elapsed.as_millis(), tools.len());
+            println!(
+                "   ✅ 成功 ({}ms) - 利用可能ツール: {}",
+                elapsed.as_millis(),
+                tools.len()
+            );
         }
         Err(e) => {
             let elapsed = start.elapsed();
@@ -76,7 +76,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 3. 遅いレスポンスシミュレーション（httpbin.org使用）
     println!("\n3️⃣  遅いレスポンステスト...");
     let slow_handler = mcp_rs::handlers::WordPressHandler::new(
-        "https://httpbin.org/delay/5".to_string(),  // 5秒遅延
+        "https://httpbin.org/delay/5".to_string(), // 5秒遅延
         None,
         None,
     );

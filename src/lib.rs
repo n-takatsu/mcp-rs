@@ -5,13 +5,13 @@
 //! This crate provides a JSON-RPC based server implementation that follows the MCP specification,
 //! with support for tool integration, resource management, and prompt handling.
 
-pub mod error;
-pub mod protocol; 
-pub mod server;
-pub mod types;
 pub mod config;
+pub mod error;
 pub mod handlers;
 pub mod mcp;
+pub mod protocol;
+pub mod server;
+pub mod types;
 
 pub use error::{Error, Result};
 pub use protocol::McpProtocol;

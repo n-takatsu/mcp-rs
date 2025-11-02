@@ -1,11 +1,11 @@
-mod mcp;
-mod handlers;
 mod config;
+mod handlers;
+mod mcp;
 
-use std::sync::Arc;
-use mcp::{McpServer};
-use handlers::WordPressHandler;
 use config::McpConfig;
+use handlers::WordPressHandler;
+use mcp::McpServer;
+use std::sync::Arc;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -18,23 +18,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 設定を読み込み
     let config = McpConfig::load()?;
-    
+
     // ログレベルを設定
     if let Some(log_level) = &config.server.log_level {
         std::env::set_var("RUST_LOG", log_level);
     }
-    
+
     // Initialize logging
     tracing_subscriber::fmt::init();
 
     println!("🚀 MCP-RS サーバーを開始します...");
-    
+
     // 設定情報を表示
     if config.server.stdio.unwrap_or(false) {
         println!("📡 モード: STDIO (MCP クライアント接続用)");
     } else {
         println!("📡 モード: TCP サーバー");
-        println!("🌐 バインドアドレス: {}", config.server.bind_addr.as_deref().unwrap_or("127.0.0.1:8080"));
+        println!(
+            "🌐 バインドアドレス: {}",
+            config
+                .server
+                .bind_addr
+                .as_deref()
+                .unwrap_or("127.0.0.1:8080")
+        );
     }
 
     // Create MCP server
@@ -44,7 +51,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(wp_config) = &config.handlers.wordpress {
         if wp_config.enabled.unwrap_or(true) {
             println!("🔗 WordPress統合を有効化: {}", wp_config.url);
-            
+
             let wordpress_handler = WordPressHandler::new(wp_config.clone());
 
             server.add_handler("wordpress".to_string(), Arc::new(wordpress_handler));
@@ -61,7 +68,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("📞 STDIO モードで待機中...");
         server.run_stdio().await?;
     } else {
-        let addr = config.server.bind_addr.as_deref().unwrap_or("127.0.0.1:8080");
+        let addr = config
+            .server
+            .bind_addr
+            .as_deref()
+            .unwrap_or("127.0.0.1:8080");
         println!("🌍 TCP サーバーを開始: http://{}", addr);
         server.run(addr).await?;
     }

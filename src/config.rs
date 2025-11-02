@@ -38,9 +38,7 @@ impl Default for McpConfig {
                 stdio: Some(false),
                 log_level: Some("info".to_string()),
             },
-            handlers: HandlersConfig {
-                wordpress: None,
-            },
+            handlers: HandlersConfig { wordpress: None },
         }
     }
 }
@@ -57,7 +55,7 @@ impl McpConfig {
         // 設定ファイルを読み込み（複数の場所を試行）
         let config_paths = [
             "mcp-config.toml",
-            "config.toml", 
+            "config.toml",
             "config/mcp.toml",
             "~/.config/mcp-rs/config.toml",
         ];
@@ -74,7 +72,7 @@ impl McpConfig {
         settings = settings.add_source(
             config::Environment::with_prefix("MCP")
                 .separator("_")
-                .try_parsing(true)
+                .try_parsing(true),
         );
 
         // 特定の環境変数も直接対応（後方互換性）
@@ -138,9 +136,9 @@ impl McpConfig {
         };
 
         let toml_content = toml::to_string_pretty(&sample_config)?;
-        
+
         let sample_content = format!(
-r#"# MCP-RS Configuration File
+            r#"# MCP-RS Configuration File
 # 
 # このファイルは mcp-config.toml として保存してください
 # 環境変数での上書きも可能です (例: MCP_SERVER_BIND_ADDR=0.0.0.0:8080)
@@ -166,7 +164,9 @@ r#"# MCP-RS Configuration File
 # 3. 新しいアプリケーション名を入力 (例: "MCP-RS")
 # 4. 'Add New Application Password' をクリック
 # 5. 生成されたパスワードをコピーして上記 password に設定
-"#, toml_content);
+"#,
+            toml_content
+        );
 
         std::fs::write("mcp-config.toml.example", sample_content)?;
         println!("📝 サンプル設定ファイルを生成しました: mcp-config.toml.example");

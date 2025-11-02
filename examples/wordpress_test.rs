@@ -5,11 +5,11 @@
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("WordPress MCP Handler Test Example");
     println!("This would test the WordPress integration...");
-    
+
     // Conceptual usage:
     // let handler = WordPressHandler::new(...);
     // let tools = handler.list_tools().await?;
     // println!("Available tools: {}", serde_json::to_string_pretty(&tools)?);
-    
+
     Ok(())
 }

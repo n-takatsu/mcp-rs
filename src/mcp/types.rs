@@ -32,25 +32,15 @@ pub struct JsonRpcError {
 #[serde(tag = "method")]
 pub enum McpMessage {
     #[serde(rename = "initialize")]
-    Initialize {
-        params: InitializeParams,
-    },
+    Initialize { params: InitializeParams },
     #[serde(rename = "tools/list")]
-    ToolsList {
-        params: Option<serde_json::Value>,
-    },
+    ToolsList { params: Option<serde_json::Value> },
     #[serde(rename = "tools/call")]
-    ToolsCall {
-        params: ToolCallParams,
-    },
+    ToolsCall { params: ToolCallParams },
     #[serde(rename = "resources/list")]
-    ResourcesList {
-        params: Option<serde_json::Value>,
-    },
+    ResourcesList { params: Option<serde_json::Value> },
     #[serde(rename = "resources/read")]
-    ResourcesRead {
-        params: ResourceReadParams,
-    },
+    ResourcesRead { params: ResourceReadParams },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

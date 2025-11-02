@@ -6,8 +6,8 @@ use tokio::net::{TcpListener, TcpStream};
 use tracing::{error, info, warn};
 
 use crate::mcp::{
-    JsonRpcRequest, JsonRpcResponse, McpError, Tool, Resource,
-    InitializeParams, ToolCallParams, ResourceReadParams
+    InitializeParams, JsonRpcRequest, JsonRpcResponse, McpError, Resource, ResourceReadParams,
+    Tool, ToolCallParams,
 };
 
 #[async_trait]
@@ -16,7 +16,10 @@ pub trait McpHandler: Send + Sync {
     async fn list_tools(&self) -> Result<Vec<Tool>, McpError>;
     async fn call_tool(&self, params: ToolCallParams) -> Result<serde_json::Value, McpError>;
     async fn list_resources(&self) -> Result<Vec<Resource>, McpError>;
-    async fn read_resource(&self, params: ResourceReadParams) -> Result<serde_json::Value, McpError>;
+    async fn read_resource(
+        &self,
+        params: ResourceReadParams,
+    ) -> Result<serde_json::Value, McpError>;
 }
 
 pub struct McpServer {
@@ -75,7 +78,7 @@ impl McpServer {
             let (stream, _) = listener.accept().await?;
             let handlers = self.handlers.clone();
             let capabilities = self.capabilities.clone();
-            
+
             tokio::spawn(async move {
                 if let Err(e) = Self::handle_connection(stream, handlers, capabilities).await {
                     error!("Error handling connection: {}", e);
@@ -96,7 +99,7 @@ impl McpServer {
         loop {
             line.clear();
             let bytes_read = reader.read_line(&mut line).await?;
-            
+
             if bytes_read == 0 {
                 break; // Connection closed
             }
@@ -122,13 +125,12 @@ impl McpServer {
         handlers: &HashMap<String, Arc<dyn McpHandler>>,
     ) -> Result<JsonRpcResponse, McpError> {
         let request: JsonRpcRequest = serde_json::from_str(line.trim())?;
-        
+
         let result = match request.method.as_str() {
             "initialize" => {
                 if let Some(handler) = handlers.values().next() {
-                    let params: InitializeParams = serde_json::from_value(
-                        request.params.unwrap_or_default()
-                    )?;
+                    let params: InitializeParams =
+                        serde_json::from_value(request.params.unwrap_or_default())?;
                     handler.initialize(params).await
                 } else {
                     Err(McpError::InvalidMethod("No handlers available".to_string()))
@@ -144,9 +146,8 @@ impl McpServer {
             }
             "tools/call" => {
                 if let Some(handler) = handlers.values().next() {
-                    let params: ToolCallParams = serde_json::from_value(
-                        request.params.unwrap_or_default()
-                    )?;
+                    let params: ToolCallParams =
+                        serde_json::from_value(request.params.unwrap_or_default())?;
                     handler.call_tool(params).await
                 } else {
                     Err(McpError::InvalidMethod("No handlers available".to_string()))
@@ -162,9 +163,8 @@ impl McpServer {
             }
             "resources/read" => {
                 if let Some(handler) = handlers.values().next() {
-                    let params: ResourceReadParams = serde_json::from_value(
-                        request.params.unwrap_or_default()
-                    )?;
+                    let params: ResourceReadParams =
+                        serde_json::from_value(request.params.unwrap_or_default())?;
                     handler.read_resource(params).await
                 } else {
                     Err(McpError::InvalidMethod("No handlers available".to_string()))
@@ -191,9 +191,9 @@ impl McpServer {
 
     pub async fn run_stdio(&self) -> Result<(), Box<dyn std::error::Error>> {
         use tokio::io::{stdin, stdout, AsyncBufReadExt, AsyncWriteExt, BufReader};
-        
+
         info!("MCP Server running on stdio");
-        
+
         let stdin = stdin();
         let mut stdout = stdout();
         let mut reader = BufReader::new(stdin);
@@ -202,7 +202,7 @@ impl McpServer {
         loop {
             line.clear();
             let bytes_read = reader.read_line(&mut line).await?;
-            
+
             if bytes_read == 0 {
                 break; // EOF
             }

@@ -5,11 +5,10 @@ use std::collections::HashMap;
 use std::time::Duration;
 use tracing::{info, warn};
 
-use crate::mcp::{
-    McpHandler, McpError, Tool, Resource, InitializeParams, 
-    ToolCallParams, ResourceReadParams
-};
 use crate::config::WordPressConfig;
+use crate::mcp::{
+    InitializeParams, McpError, McpHandler, Resource, ResourceReadParams, Tool, ToolCallParams,
+};
 
 #[derive(Debug, Clone)]
 pub struct WordPressHandler {
@@ -64,9 +63,9 @@ impl WordPressHandler {
         // タイムアウト設定付きのHTTPクライアントを作成
         let timeout_secs = config.timeout_seconds.unwrap_or(30);
         let client = Client::builder()
-            .timeout(Duration::from_secs(timeout_secs))        // 設定可能なタイムアウト
+            .timeout(Duration::from_secs(timeout_secs)) // 設定可能なタイムアウト
             .connect_timeout(Duration::from_secs(10)) // 接続タイムアウト: 10秒
-            .user_agent("mcp-rs/1.0")                // User-Agentを設定
+            .user_agent("mcp-rs/1.0") // User-Agentを設定
             .build()
             .expect("HTTP client build failed");
 
@@ -79,32 +78,42 @@ impl WordPressHandler {
     }
 
     /// リトライ機能付きでHTTPリクエストを実行
-    async fn execute_request_with_retry<T>(&self, request_builder: reqwest::RequestBuilder) -> Result<T, McpError> 
-    where 
+    async fn execute_request_with_retry<T>(
+        &self,
+        request_builder: reqwest::RequestBuilder,
+    ) -> Result<T, McpError>
+    where
         T: for<'de> serde::Deserialize<'de>,
     {
         const MAX_RETRIES: u32 = 3;
         const RETRY_DELAY: Duration = Duration::from_millis(1000);
 
         for attempt in 1..=MAX_RETRIES {
-            let request = request_builder.try_clone()
+            let request = request_builder
+                .try_clone()
                 .ok_or_else(|| McpError::Other("Failed to clone request".to_string()))?;
 
             match request.send().await {
                 Ok(response) => {
                     let status = response.status();
-                    
+
                     if status.is_success() {
                         // レスポンステキストを取得してデバッグ
                         let text = response.text().await.map_err(McpError::Http)?;
-                        warn!("Response body (first 500 chars): {}", text.chars().take(500).collect::<String>());
-                        
+                        warn!(
+                            "Response body (first 500 chars): {}",
+                            text.chars().take(500).collect::<String>()
+                        );
+
                         match serde_json::from_str::<T>(&text) {
                             Ok(data) => return Ok(data),
                             Err(e) => {
                                 warn!("JSON parse error on attempt {}: {}", attempt, e);
                                 if attempt == MAX_RETRIES {
-                                    return Err(McpError::ExternalApi(format!("JSON parse error: {}", e)));
+                                    return Err(McpError::ExternalApi(format!(
+                                        "JSON parse error: {}",
+                                        e
+                                    )));
                                 }
                             }
                         }
@@ -133,7 +142,7 @@ impl WordPressHandler {
                     } else {
                         warn!("Request error on attempt {}: {}", attempt, e);
                     }
-                    
+
                     if attempt == MAX_RETRIES {
                         return Err(McpError::Http(e));
                     }
@@ -151,9 +160,9 @@ impl WordPressHandler {
 
     async fn get_posts(&self) -> Result<Vec<WordPressPost>, McpError> {
         let url = format!("{}/wp-json/wp/v2/posts", self.base_url);
-        
+
         let mut request = self.client.get(&url);
-        
+
         if let (Some(username), Some(password)) = (&self.username, &self.password) {
             request = request.basic_auth(username, Some(password));
         }
@@ -164,7 +173,7 @@ impl WordPressHandler {
 
     async fn create_post(&self, title: String, content: String) -> Result<WordPressPost, McpError> {
         let url = format!("{}/wp-json/wp/v2/posts", self.base_url);
-        
+
         let post = WordPressPost {
             id: None,
             date: None,
@@ -176,26 +185,26 @@ impl WordPressHandler {
             status: "publish".to_string(),
             post_type: Some("post".to_string()),
             link: None,
-            title: WordPressContent { 
-                rendered: title, 
-                protected: false 
+            title: WordPressContent {
+                rendered: title,
+                protected: false,
             },
-            content: WordPressContent { 
-                rendered: content, 
-                protected: false 
+            content: WordPressContent {
+                rendered: content,
+                protected: false,
             },
             excerpt: None,
             author: None,
         };
 
         let mut request = self.client.post(&url);
-        
+
         if let (Some(username), Some(password)) = (&self.username, &self.password) {
             request = request.basic_auth(username, Some(password));
         }
 
         let response = request.json(&post).send().await?;
-        
+
         if !response.status().is_success() {
             return Err(McpError::ExternalApi(format!(
                 "WordPress API error: {}",
@@ -209,19 +218,19 @@ impl WordPressHandler {
 
     async fn get_comments(&self, post_id: Option<u64>) -> Result<Vec<WordPressComment>, McpError> {
         let mut url = format!("{}/wp-json/wp/v2/comments", self.base_url);
-        
+
         if let Some(post_id) = post_id {
             url = format!("{}?post={}", url, post_id);
         }
-        
+
         let mut request = self.client.get(&url);
-        
+
         if let (Some(username), Some(password)) = (&self.username, &self.password) {
             request = request.basic_auth(username, Some(password));
         }
 
         let response = request.send().await?;
-        
+
         if !response.status().is_success() {
             return Err(McpError::ExternalApi(format!(
                 "WordPress API error: {}",
@@ -316,14 +325,18 @@ impl McpHandler for WordPressHandler {
             }
             "create_post" => {
                 let args = params.arguments.unwrap_or_default();
-                let title = args.get("title")
+                let title = args
+                    .get("title")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| McpError::InvalidParams("Missing title".to_string()))?;
-                let content = args.get("content")
+                let content = args
+                    .get("content")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| McpError::InvalidParams("Missing content".to_string()))?;
-                
-                let post = self.create_post(title.to_string(), content.to_string()).await?;
+
+                let post = self
+                    .create_post(title.to_string(), content.to_string())
+                    .await?;
                 Ok(serde_json::json!({
                     "content": [{
                         "type": "text",
@@ -334,9 +347,8 @@ impl McpHandler for WordPressHandler {
             }
             "get_comments" => {
                 let args = params.arguments.unwrap_or_default();
-                let post_id = args.get("post_id")
-                    .and_then(|v| v.as_u64());
-                
+                let post_id = args.get("post_id").and_then(|v| v.as_u64());
+
                 let comments = self.get_comments(post_id).await?;
                 Ok(serde_json::json!({
                     "content": [{
@@ -367,7 +379,10 @@ impl McpHandler for WordPressHandler {
         ])
     }
 
-    async fn read_resource(&self, params: ResourceReadParams) -> Result<serde_json::Value, McpError> {
+    async fn read_resource(
+        &self,
+        params: ResourceReadParams,
+    ) -> Result<serde_json::Value, McpError> {
         match params.uri.as_str() {
             "wordpress://posts" => {
                 let posts = self.get_posts().await?;

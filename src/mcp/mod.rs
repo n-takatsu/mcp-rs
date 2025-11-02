@@ -1,7 +1,7 @@
-pub mod types;
-pub mod server;
 pub mod error;
+pub mod server;
+pub mod types;
 
-pub use types::*;
-pub use server::*;
 pub use error::*;
+pub use server::*;
+pub use types::*;

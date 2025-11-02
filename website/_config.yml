@@ -8,7 +8,7 @@ description: Rust implementation of the Model Context Protocol (MCP) for AI-agen
 url: "https://n-takatsu.github.io"
 baseurl: "/mcp-rs"
 
-# Markdownプロセッサー
+# Build settings
 markdown: kramdown
 highlighter: rouge
 
@@ -34,3 +34,25 @@ header_pages:
 
 # サイト設定
 show_excerpts: true
+
+# Build exclusions
+exclude:
+  - Gemfile
+  - Gemfile.lock
+  - node_modules
+  - vendor/bundle/
+  - vendor/cache/
+  - vendor/gems/
+  - vendor/ruby/
+  - .sass-cache/
+  - .jekyll-cache/
+  - gemfiles/
+
+# Permalink structure
+permalink: /:categories/:title/
+
+# Future posts
+future: false
+
+# Incremental builds
+incremental: true

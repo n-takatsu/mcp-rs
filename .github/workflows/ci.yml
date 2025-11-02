@@ -70,8 +70,8 @@ jobs:
     - uses: actions/checkout@v4
     - uses: actions-rs/audit@v1
 
-  docs:
-    name: Documentation
+  rustdoc:
+    name: Rust Documentation
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
@@ -79,12 +79,11 @@ jobs:
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
     
-    - name: Build documentation
+    - name: Build Rust documentation
       run: cargo doc --no-deps --document-private-items
     
-    - name: Deploy to GitHub Pages
-      if: github.ref == 'refs/heads/main'
-      uses: peaceiris/actions-gh-pages@v3
+    - name: Upload Rust docs artifact
+      uses: actions/upload-artifact@v3
       with:
-        github_token: ${{ secrets.GITHUB_TOKEN }}
-        publish_dir: ./target/doc
+        name: rust-docs
+        path: ./target/doc
