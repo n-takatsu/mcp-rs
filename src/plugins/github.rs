@@ -90,6 +90,12 @@ pub struct GitHubPlugin {
     client: Client,
 }
 
+impl Default for GitHubPlugin {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl GitHubPlugin {
     pub fn new() -> Self {
         Self {
@@ -205,7 +211,7 @@ impl Plugin for GitHubPlugin {
     }
 
     async fn health_check(&self) -> PluginResult<bool> {
-        if let Ok(_) = self.get_config() {
+        if self.get_config().is_ok() {
             match self.make_request("user").await {
                 Ok(_) => Ok(true),
                 Err(e) => {

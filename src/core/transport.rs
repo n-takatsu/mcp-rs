@@ -1,17 +1,12 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub enum Transport {
     /// Standard input/output transport for MCP clients
+    #[default]
     Stdio,
     /// TCP transport for development and testing
     Tcp { address: String, port: u16 },
-}
-
-impl Default for Transport {
-    fn default() -> Self {
-        Transport::Stdio
-    }
 }
 
 impl Transport {

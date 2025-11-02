@@ -7,9 +7,8 @@ use tracing_subscriber::{
     fmt::{self, format::FmtSpan},
     layer::SubscriberExt,
     util::SubscriberInitExt,
-    EnvFilter, Layer,
+    EnvFilter,
 };
-use uuid::Uuid;
 
 /// Global request counter for generating unique request IDs
 static REQUEST_COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -69,6 +68,12 @@ pub struct RequestContext {
     pub operation: Option<String>,
     pub plugin: Option<String>,
     pub start_time: SystemTime,
+}
+
+impl Default for RequestContext {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl RequestContext {
@@ -364,7 +369,7 @@ impl ErrorContext {
             request_id,
             operation: None,
             plugin: None,
-            error_type: std::any::type_name_of_val(error).to_string(),
+            error_type: std::any::type_name::<dyn std::error::Error>().to_string(),
             error_message: error.to_string(),
             stack_trace: None,
             user_data: None,

@@ -1,0 +1,18 @@
+{
+  "plugins": {
+    "wordpress": {
+      "enabled": true,
+      "config": {
+        "url": "https://your-wordpress-site.com",
+        "auth": {
+          "type": "application_password",
+          "username": "your-username",
+          "password": "xxxx xxxx xxxx xxxx xxxx xxxx"
+        },
+        "timeout": 30,
+        "max_posts": 100,
+        "cache_ttl": 300
+      }
+    }
+  }
+}

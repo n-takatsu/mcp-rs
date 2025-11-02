@@ -4,7 +4,6 @@ use crate::core::transport::Transport;
 use crate::plugins::PluginRegistry;
 use anyhow::Result;
 use serde_json::{json, Value};
-use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::io::{self, AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};

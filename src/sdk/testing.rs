@@ -2,7 +2,7 @@
 
 use crate::config::PluginConfig;
 use crate::core::{McpError, Resource, Tool};
-use crate::plugins::{Plugin, PromptProvider, ResourceProvider, ToolProvider};
+use crate::plugins::{Plugin, ResourceProvider, ToolProvider};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 
@@ -13,7 +13,7 @@ pub struct PluginTestHarness<P: Plugin> {
 
 impl<P: Plugin> PluginTestHarness<P> {
     /// Create a new test harness
-    pub fn new(mut plugin: P) -> Self {
+    pub fn new(plugin: P) -> Self {
         Self { plugin }
     }
 
@@ -206,7 +206,7 @@ pub struct IntegrationTestUtils;
 
 impl IntegrationTestUtils {
     /// Create a test plugin configuration file
-    pub fn create_test_config(plugin_name: &str, config: Value) -> PluginConfig {
+    pub fn create_test_config(_plugin_name: &str, config: Value) -> PluginConfig {
         PluginConfig {
             enabled: true,
             priority: Some(1),

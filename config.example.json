@@ -1,0 +1,48 @@
+{
+  "server": {
+    "name": "mcp-rs",
+    "version": "0.1.0",
+    "max_connections": 10
+  },
+  "plugins": {
+    "wordpress": {
+      "enabled": true,
+      "config": {
+        "url": "https://your-wordpress-site.com",
+        "auth": {
+          "type": "application_password",
+          "username": "your-username",
+          "password": "xxxx xxxx xxxx xxxx xxxx xxxx"
+        },
+        "timeout": 30,
+        "max_posts": 100,
+        "cache_ttl": 300
+      }
+    },
+    "github": {
+      "enabled": true,
+      "config": {
+        "token": "your-github-token",
+        "owner": "your-username"
+      }
+    }
+  },
+  "transport": {
+    "stdio": {
+      "enabled": true
+    },
+    "tcp": {
+      "enabled": false,
+      "bind_address": "127.0.0.1",
+      "port": 8080
+    }
+  },
+  "logging": {
+    "level": "info",
+    "format": "pretty",
+    "file": null,
+    "request_logging": true,
+    "performance_metrics": true,
+    "plugins": {}
+  }
+}

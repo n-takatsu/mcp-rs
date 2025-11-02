@@ -1,0 +1,14 @@
+# 設定ファイルの保護
+
+## .gitignore に追加
+config.json
+config.local.json
+.env
+*.env.local
+
+## ファイル権限設定 (Linux/macOS)
+chmod 600 config.json
+
+## Windows でのファイル権限
+# ファイルのプロパティ → セキュリティ → 詳細設定
+# 他のユーザーのアクセスを削除

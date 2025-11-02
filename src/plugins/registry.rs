@@ -1,7 +1,6 @@
 use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::HashMap;
-use std::sync::Arc;
 
 use crate::config::PluginConfig;
 use crate::core::{McpError, Prompt, Resource, Tool};
@@ -305,7 +304,7 @@ impl PluginRegistry {
         tool_name: &str,
         arguments: Option<HashMap<String, Value>>,
     ) -> PluginResult<Value> {
-        for (plugin_name, plugin) in &self.instances {
+        for plugin in self.instances.values() {
             if plugin.capabilities().contains(&PluginCapability::Tools) {
                 // Check if this plugin has the requested tool
                 if let Ok(tools) = plugin.list_tools().await {
@@ -321,7 +320,7 @@ impl PluginRegistry {
 
     /// Read a resource by URI across all resource providers
     pub async fn read_resource(&self, uri: &str) -> PluginResult<Value> {
-        for (plugin_name, plugin) in &self.instances {
+        for plugin in self.instances.values() {
             if plugin.capabilities().contains(&PluginCapability::Resources) {
                 // Check if this plugin can handle the URI
                 if let Ok(resources) = plugin.list_resources().await {
@@ -341,7 +340,7 @@ impl PluginRegistry {
         prompt_name: &str,
         arguments: Option<HashMap<String, Value>>,
     ) -> PluginResult<Value> {
-        for (plugin_name, plugin) in &self.instances {
+        for plugin in self.instances.values() {
             if plugin.capabilities().contains(&PluginCapability::Prompts) {
                 // Check if this plugin has the requested prompt
                 if let Ok(prompts) = plugin.list_prompts().await {

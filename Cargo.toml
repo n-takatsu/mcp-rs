@@ -43,6 +43,7 @@ tokio-util = { version = "0.7", features = ["codec"] }
 reqwest = { version = "0.11", features = ["json"] }
 urlencoding = "2.1"
 url = "2.5"
+base64 = "0.21"
 futures = "0.3"
 
 # Error handling
@@ -70,3 +71,5 @@ harness = false
 [features]
 default = ["wordpress"]
 wordpress = []
+http = []
+test-server = []
