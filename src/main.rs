@@ -4,7 +4,6 @@ mod handlers;
 use std::sync::Arc;
 use mcp::{McpServer};
 use handlers::WordPressHandler;
-use tracing_subscriber;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
