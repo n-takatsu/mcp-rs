@@ -1,5 +1,5 @@
 use mcp_rs::config::WordPressConfig;
-use mcp_rs::handlers::wordpress::{WordPressHandler, SettingsUpdateParams};
+use mcp_rs::handlers::wordpress::{SettingsUpdateParams, WordPressHandler};
 use tracing::{error, Level};
 
 #[tokio::main]
@@ -26,19 +26,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     match handler.get_settings().await {
         Ok(settings) => {
             println!("✅ Current settings retrieved:");
-            println!("   - Site Title: {}", settings.title.unwrap_or("N/A".to_string()));
-            println!("   - Description: {}", settings.description.unwrap_or("N/A".to_string()));
-            println!("   - Show on Front: {}", settings.show_on_front.unwrap_or("posts".to_string()));
-            println!("   - Posts per Page: {}", settings.posts_per_page.unwrap_or(10));
-            println!("   - Language: {}", settings.language.unwrap_or("en_US".to_string()));
-            println!("   - Timezone: {}", settings.timezone.unwrap_or("UTC".to_string()));
+            println!(
+                "   - Site Title: {}",
+                settings.title.unwrap_or("N/A".to_string())
+            );
+            println!(
+                "   - Description: {}",
+                settings.description.unwrap_or("N/A".to_string())
+            );
+            println!(
+                "   - Show on Front: {}",
+                settings.show_on_front.unwrap_or("posts".to_string())
+            );
+            println!(
+                "   - Posts per Page: {}",
+                settings.posts_per_page.unwrap_or(10)
+            );
+            println!(
+                "   - Language: {}",
+                settings.language.unwrap_or("en_US".to_string())
+            );
+            println!(
+                "   - Timezone: {}",
+                settings.timezone.unwrap_or("UTC".to_string())
+            );
             if let Some(page_id) = settings.page_on_front {
                 println!("   - Front Page ID: {}", page_id);
             }
             if let Some(page_id) = settings.page_for_posts {
                 println!("   - Posts Page ID: {}", page_id);
             }
-        },
+        }
         Err(e) => {
             error!("❌ Failed to get settings: {}", e);
             println!("Note: This requires WordPress admin permissions and proper configuration");
@@ -60,10 +78,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     match handler.update_settings(update_params).await {
         Ok(settings) => {
             println!("✅ Settings updated successfully:");
-            println!("   - New Title: {}", settings.title.unwrap_or("N/A".to_string()));
-            println!("   - New Description: {}", settings.description.unwrap_or("N/A".to_string()));
-            println!("   - Posts per Page: {}", settings.posts_per_page.unwrap_or(10));
-        },
+            println!(
+                "   - New Title: {}",
+                settings.title.unwrap_or("N/A".to_string())
+            );
+            println!(
+                "   - New Description: {}",
+                settings.description.unwrap_or("N/A".to_string())
+            );
+            println!(
+                "   - Posts per Page: {}",
+                settings.posts_per_page.unwrap_or(10)
+            );
+        }
         Err(e) => {
             error!("❌ Failed to update settings: {}", e);
         }
@@ -87,7 +114,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("   - Type: {}", page.post_type.unwrap_or("page".to_string()));
 
             let page_id = page.id.unwrap_or(0);
-            
+
             // Test 4: Set this page as front page
             if page_id > 0 {
                 println!();
@@ -133,9 +160,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     match handler.update_settings(timezone_params).await {
         Ok(settings) => {
             println!("✅ Timezone and language updated:");
-            println!("   - Timezone: {}", settings.timezone.unwrap_or("UTC".to_string()));
-            println!("   - Language: {}", settings.language.unwrap_or("en_US".to_string()));
-        },
+            println!(
+                "   - Timezone: {}",
+                settings.timezone.unwrap_or("UTC".to_string())
+            );
+            println!(
+                "   - Language: {}",
+                settings.language.unwrap_or("en_US".to_string())
+            );
+        }
         Err(e) => {
             error!("❌ Failed to update timezone/language: {}", e);
         }
@@ -148,13 +181,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     match handler.get_settings().await {
         Ok(settings) => {
             println!("✅ Final settings:");
-            println!("   - Title: {}", settings.title.unwrap_or("N/A".to_string()));
-            println!("   - Description: {}", settings.description.unwrap_or("N/A".to_string()));
-            println!("   - Show on Front: {}", settings.show_on_front.unwrap_or("posts".to_string()));
-            println!("   - Posts per Page: {}", settings.posts_per_page.unwrap_or(10));
-            println!("   - Timezone: {}", settings.timezone.unwrap_or("UTC".to_string()));
-            println!("   - Language: {}", settings.language.unwrap_or("en_US".to_string()));
-        },
+            println!(
+                "   - Title: {}",
+                settings.title.unwrap_or("N/A".to_string())
+            );
+            println!(
+                "   - Description: {}",
+                settings.description.unwrap_or("N/A".to_string())
+            );
+            println!(
+                "   - Show on Front: {}",
+                settings.show_on_front.unwrap_or("posts".to_string())
+            );
+            println!(
+                "   - Posts per Page: {}",
+                settings.posts_per_page.unwrap_or(10)
+            );
+            println!(
+                "   - Timezone: {}",
+                settings.timezone.unwrap_or("UTC".to_string())
+            );
+            println!(
+                "   - Language: {}",
+                settings.language.unwrap_or("en_US".to_string())
+            );
+        }
         Err(e) => {
             error!("❌ Failed to get final settings: {}", e);
         }
@@ -166,6 +217,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("   - Set up static front pages for business sites");
     println!("   - Manage international settings (timezone, language)");
     println!("   - Control content display (posts per page, categories)");
-    
+
     Ok(())
 }

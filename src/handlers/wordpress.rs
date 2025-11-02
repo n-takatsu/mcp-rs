@@ -629,9 +629,9 @@ impl WordPressHandler {
     /// Get WordPress site settings
     pub async fn get_settings(&self) -> Result<WordPressSettings, McpError> {
         let url = format!("{}/wp-json/wp/v2/settings", self.base_url);
-        
+
         let mut request = self.client.get(&url);
-        
+
         if let (Some(username), Some(password)) = (&self.username, &self.password) {
             request = request.basic_auth(username, Some(password));
         }
@@ -655,25 +655,43 @@ impl WordPressHandler {
             settings_data.insert("title".to_string(), serde_json::Value::String(title));
         }
         if let Some(description) = params.description {
-            settings_data.insert("description".to_string(), serde_json::Value::String(description));
+            settings_data.insert(
+                "description".to_string(),
+                serde_json::Value::String(description),
+            );
         }
         if let Some(timezone) = params.timezone {
             settings_data.insert("timezone".to_string(), serde_json::Value::String(timezone));
         }
         if let Some(show_on_front) = params.show_on_front {
-            settings_data.insert("show_on_front".to_string(), serde_json::Value::String(show_on_front));
+            settings_data.insert(
+                "show_on_front".to_string(),
+                serde_json::Value::String(show_on_front),
+            );
         }
         if let Some(page_on_front) = params.page_on_front {
-            settings_data.insert("page_on_front".to_string(), serde_json::Value::Number(page_on_front.into()));
+            settings_data.insert(
+                "page_on_front".to_string(),
+                serde_json::Value::Number(page_on_front.into()),
+            );
         }
         if let Some(page_for_posts) = params.page_for_posts {
-            settings_data.insert("page_for_posts".to_string(), serde_json::Value::Number(page_for_posts.into()));
+            settings_data.insert(
+                "page_for_posts".to_string(),
+                serde_json::Value::Number(page_for_posts.into()),
+            );
         }
         if let Some(posts_per_page) = params.posts_per_page {
-            settings_data.insert("posts_per_page".to_string(), serde_json::Value::Number(posts_per_page.into()));
+            settings_data.insert(
+                "posts_per_page".to_string(),
+                serde_json::Value::Number(posts_per_page.into()),
+            );
         }
         if let Some(default_category) = params.default_category {
-            settings_data.insert("default_category".to_string(), serde_json::Value::Number(default_category.into()));
+            settings_data.insert(
+                "default_category".to_string(),
+                serde_json::Value::Number(default_category.into()),
+            );
         }
         if let Some(language) = params.language {
             settings_data.insert("language".to_string(), serde_json::Value::String(language));
@@ -705,7 +723,10 @@ impl WordPressHandler {
     }
 
     /// Set front page to latest posts
-    pub async fn set_front_page_to_posts(&self, posts_page_id: Option<u64>) -> Result<WordPressSettings, McpError> {
+    pub async fn set_front_page_to_posts(
+        &self,
+        posts_page_id: Option<u64>,
+    ) -> Result<WordPressSettings, McpError> {
         let params = SettingsUpdateParams {
             show_on_front: Some("posts".to_string()),
             page_for_posts: posts_page_id,
@@ -2139,7 +2160,7 @@ impl McpHandler for WordPressHandler {
                             "description": "Site title"
                         },
                         "description": {
-                            "type": "string", 
+                            "type": "string",
                             "description": "Site tagline/description"
                         },
                         "timezone": {
@@ -3013,17 +3034,32 @@ impl McpHandler for WordPressHandler {
             }
             "update_settings" => {
                 let args = params.arguments.unwrap_or_default();
-                
+
                 let params = SettingsUpdateParams {
-                    title: args.get("title").and_then(|v| v.as_str()).map(|s| s.to_string()),
-                    description: args.get("description").and_then(|v| v.as_str()).map(|s| s.to_string()),
-                    timezone: args.get("timezone").and_then(|v| v.as_str()).map(|s| s.to_string()),
-                    show_on_front: args.get("show_on_front").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                    title: args
+                        .get("title")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
+                    description: args
+                        .get("description")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
+                    timezone: args
+                        .get("timezone")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
+                    show_on_front: args
+                        .get("show_on_front")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
                     page_on_front: args.get("page_on_front").and_then(|v| v.as_u64()),
                     page_for_posts: args.get("page_for_posts").and_then(|v| v.as_u64()),
                     posts_per_page: args.get("posts_per_page").and_then(|v| v.as_u64()),
                     default_category: args.get("default_category").and_then(|v| v.as_u64()),
-                    language: args.get("language").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                    language: args
+                        .get("language")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
                 };
 
                 let settings = self.update_settings(params).await?;
