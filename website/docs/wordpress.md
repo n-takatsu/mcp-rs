@@ -297,6 +297,50 @@ Delete a WordPress tag.
 }
 ```
 
+### `create_post_with_categories_tags`
+Create a new WordPress post with categories and tags.
+
+**Parameters:**
+- `title` (string): Post title
+- `content` (string): Post content
+- `categories` (array, optional): Array of category IDs
+- `tags` (array, optional): Array of tag IDs
+- `featured_media_id` (number, optional): Featured image media ID
+
+**Example Usage:**
+```json
+{
+  "tool": "create_post_with_categories_tags",
+  "arguments": {
+    "title": "Complete Guide to Rust",
+    "content": "<p>This comprehensive guide covers Rust programming...</p>",
+    "categories": [5, 12],
+    "tags": [23, 45, 67],
+    "featured_media_id": 89
+  }
+}
+```
+
+### `update_post_categories_tags`
+Update categories and tags for an existing WordPress post.
+
+**Parameters:**
+- `post_id` (number): ID of post to update
+- `categories` (array, optional): Array of category IDs to set
+- `tags` (array, optional): Array of tag IDs to set
+
+**Example Usage:**
+```json
+{
+  "tool": "update_post_categories_tags",
+  "arguments": {
+    "post_id": 123,
+    "categories": [5, 8],
+    "tags": [15, 20, 25]
+  }
+}
+```
+
 ## Workflow Examples
 
 ### Basic Blog Post
@@ -354,6 +398,37 @@ AI automatically:
 1. Uses get_tags to find tag ID
 2. Uses update_tag with new description
 3. Confirms update success
+```
+
+### Smart Content Creation Workflow
+```
+User: "Create a post about web development in the technology category"
+AI intelligently:
+1. Uses get_categories to find existing categories
+2. Finds "Technology" category (avoids creating duplicates)
+3. Suggests relevant tags from get_tags
+4. Uses create_post_with_categories_tags with proper taxonomy
+5. Creates well-organized content
+
+User: "Add the 'tutorial' tag to post #456"
+AI automatically:
+1. Gets current post categories/tags using get_posts
+2. Adds new tag to existing taxonomy
+3. Uses update_post_categories_tags to preserve existing data
+4. Confirms successful update
+```
+
+### AI-Assisted Taxonomy Management
+```
+User: "Create a post about 'ウェブ開発' (Japanese for web development)"
+AI intelligently:
+1. Uses get_categories to scan existing categories
+2. Finds similar: "Web Development", "ウェブ技術", "webdev"
+3. Suggests: "Should I use existing 'Web Development' or create new 'ウェブ開発'?"
+4. User confirms choice
+5. Creates post with appropriate categorization
+
+This workflow prevents duplicate/similar categories and maintains clean taxonomy structure.
 ```
 
 ## Error Handling

@@ -208,6 +208,9 @@ cargo run --example wordpress_health_check
 # WordPress categories and tags management test
 cargo run --example wordpress_categories_tags_test
 
+# WordPress posts with categories and tags integration test
+cargo run --example wordpress_posts_with_taxonomy_test
+
 # WordPress security diagnosis and setup
 cargo run --example wordpress_security_diagnosis
 ```

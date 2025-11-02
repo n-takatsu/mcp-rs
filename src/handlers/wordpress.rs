@@ -36,6 +36,8 @@ pub struct WordPressPost {
     pub excerpt: Option<WordPressContent>,
     pub author: Option<u64>,
     pub featured_media: Option<u64>,
+    pub categories: Option<Vec<u64>>,
+    pub tags: Option<Vec<u64>>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -270,6 +272,8 @@ impl WordPressHandler {
             excerpt: None,
             author: None,
             featured_media: None,
+            categories: None,
+            tags: None,
         };
 
         let mut request = self.client.post(&url);
@@ -368,6 +372,8 @@ impl WordPressHandler {
             excerpt: None,
             author: None,
             featured_media: Some(featured_media_id),
+            categories: None,
+            tags: None,
         };
 
         let mut request = self.client.post(&url).json(&post);
@@ -377,6 +383,88 @@ impl WordPressHandler {
         }
 
         info!("Creating post with featured image: {}", featured_media_id);
+        self.execute_request_with_retry(request).await
+    }
+
+    /// Create post with categories and tags
+    pub async fn create_post_with_categories_tags(
+        &self,
+        title: String,
+        content: String,
+        categories: Option<Vec<u64>>,
+        tags: Option<Vec<u64>>,
+        featured_media_id: Option<u64>,
+    ) -> Result<WordPressPost, McpError> {
+        let url = format!("{}/wp-json/wp/v2/posts", self.base_url);
+
+        info!("Creating post with categories: {:?}, tags: {:?}", categories, tags);
+
+        let post = WordPressPost {
+            id: None,
+            date: None,
+            date_gmt: None,
+            guid: None,
+            modified: None,
+            modified_gmt: None,
+            slug: None,
+            status: "publish".to_string(),
+            post_type: Some("post".to_string()),
+            link: None,
+            title: WordPressContent {
+                rendered: title,
+                protected: false,
+            },
+            content: WordPressContent {
+                rendered: content,
+                protected: false,
+            },
+            excerpt: None,
+            author: None,
+            featured_media: featured_media_id,
+            categories,
+            tags,
+        };
+
+        let mut request = self.client.post(&url).json(&post);
+
+        if let (Some(username), Some(password)) = (&self.username, &self.password) {
+            request = request.basic_auth(username, Some(password));
+        }
+
+        self.execute_request_with_retry(request).await
+    }
+
+    /// Update post categories and tags
+    pub async fn update_post_categories_tags(
+        &self,
+        post_id: u64,
+        categories: Option<Vec<u64>>,
+        tags: Option<Vec<u64>>,
+    ) -> Result<WordPressPost, McpError> {
+        let url = format!("{}/wp-json/wp/v2/posts/{}", self.base_url, post_id);
+
+        info!("Updating post {} with categories: {:?}, tags: {:?}", post_id, categories, tags);
+
+        let mut update_data = serde_json::Map::new();
+
+        if let Some(cats) = categories {
+            update_data.insert("categories".to_string(), serde_json::Value::Array(
+                cats.into_iter().map(|id| serde_json::Value::Number(serde_json::Number::from(id))).collect()
+            ));
+        }
+
+        if let Some(tag_ids) = tags {
+            update_data.insert("tags".to_string(), serde_json::Value::Array(
+                tag_ids.into_iter().map(|id| serde_json::Value::Number(serde_json::Number::from(id))).collect()
+            ));
+        }
+
+        let mut request = self.client.put(&url).json(&update_data);
+
+        if let (Some(username), Some(password)) = (&self.username, &self.password) {
+            request = request.basic_auth(username, Some(password));
+        }
+
         self.execute_request_with_retry(request).await
     }
 
@@ -1057,6 +1145,62 @@ impl McpHandler for WordPressHandler {
                     "required": ["tag_id"]
                 }),
             },
+            Tool {
+                name: "create_post_with_categories_tags".to_string(),
+                description: "Create a new WordPress post with categories and tags".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "title": {
+                            "type": "string",
+                            "description": "The post title"
+                        },
+                        "content": {
+                            "type": "string",
+                            "description": "The post content"
+                        },
+                        "categories": {
+                            "type": "array",
+                            "items": {"type": "number"},
+                            "description": "Array of category IDs (optional)"
+                        },
+                        "tags": {
+                            "type": "array",
+                            "items": {"type": "number"},
+                            "description": "Array of tag IDs (optional)"
+                        },
+                        "featured_media_id": {
+                            "type": "number",
+                            "description": "Featured image media ID (optional)"
+                        }
+                    },
+                    "required": ["title", "content"]
+                }),
+            },
+            Tool {
+                name: "update_post_categories_tags".to_string(),
+                description: "Update categories and tags for an existing WordPress post".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "post_id": {
+                            "type": "number",
+                            "description": "Post ID to update"
+                        },
+                        "categories": {
+                            "type": "array",
+                            "items": {"type": "number"},
+                            "description": "Array of category IDs (optional)"
+                        },
+                        "tags": {
+                            "type": "array",
+                            "items": {"type": "number"},
+                            "description": "Array of tag IDs (optional)"
+                        }
+                    },
+                    "required": ["post_id"]
+                }),
+            },
         ])
     }
 
@@ -1348,6 +1492,66 @@ impl McpHandler for WordPressHandler {
                     "content": [{
                         "type": "text",
                         "text": format!("Deleted tag ID {} (force: {})", tag_id, force)
+                    }],
+                    "isError": false
+                }))
+            }
+            "create_post_with_categories_tags" => {
+                let args = params.arguments.unwrap_or_default();
+                let title = args
+                    .get("title")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| McpError::InvalidParams("Missing title".to_string()))?;
+                let content = args
+                    .get("content")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| McpError::InvalidParams("Missing content".to_string()))?;
+                
+                let categories = args.get("categories")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| arr.iter().filter_map(|v| v.as_u64()).collect());
+                
+                let tags = args.get("tags")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| arr.iter().filter_map(|v| v.as_u64()).collect());
+                
+                let featured_media_id = args.get("featured_media_id").and_then(|v| v.as_u64());
+
+                let post = self
+                    .create_post_with_categories_tags(title.to_string(), content.to_string(), categories, tags, featured_media_id)
+                    .await?;
+                
+                Ok(serde_json::json!({
+                    "content": [{
+                        "type": "text",
+                        "text": format!("Created post '{}' with ID: {:?}, categories: {:?}, tags: {:?}", 
+                            title, post.id, post.categories, post.tags)
+                    }],
+                    "isError": false
+                }))
+            }
+            "update_post_categories_tags" => {
+                let args = params.arguments.unwrap_or_default();
+                let post_id = args
+                    .get("post_id")
+                    .and_then(|v| v.as_u64())
+                    .ok_or_else(|| McpError::InvalidParams("Missing post_id".to_string()))?;
+                
+                let categories = args.get("categories")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| arr.iter().filter_map(|v| v.as_u64()).collect());
+                
+                let tags = args.get("tags")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| arr.iter().filter_map(|v| v.as_u64()).collect());
+
+                let post = self.update_post_categories_tags(post_id, categories, tags).await?;
+                
+                Ok(serde_json::json!({
+                    "content": [{
+                        "type": "text",
+                        "text": format!("Updated post ID {} with categories: {:?}, tags: {:?}", 
+                            post_id, post.categories, post.tags)
                     }],
                     "isError": false
                 }))
