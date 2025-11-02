@@ -1,0 +1,63 @@
+[package]
+name = "mcp-rs"
+version = "0.1.0"
+edition = "2021"
+authors = ["n-takatsu <contact@redring.co.jp>"]
+description = "High-performance Rust implementation of the Model Context Protocol (MCP) for AI agent integration"
+license = "MIT"
+repository = "https://github.com/n-takatsu/mcp-rs"
+documentation = "https://docs.rs/mcp-rs"
+homepage = "https://github.com/n-takatsu/mcp-rs"
+readme = "README.md"
+keywords = ["mcp", "json-rpc", "ai", "protocol", "copilot"]
+categories = ["web-programming", "api-bindings", "development-tools"]
+rust-version = "1.70"
+exclude = [
+    ".github/*",
+    "examples/*",
+    "docs/*",
+]
+
+[lib]
+name = "mcp_rs"
+path = "src/lib.rs"
+
+[[bin]]
+name = "mcp-rs"
+path = "src/main.rs"
+
+[dependencies]
+# JSON-RPC and serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1.0", features = ["full"] }
+tokio-util = { version = "0.7", features = ["codec"] }
+
+# HTTP client for external APIs
+reqwest = { version = "0.11", features = ["json"] }
+
+# Error handling
+anyhow = "1.0"
+thiserror = "1.0"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Async traits
+async-trait = "0.1"
+
+# UUID generation
+uuid = { version = "1.0", features = ["v4"] }
+
+[dev-dependencies]
+tokio-test = "0.4"
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "mcp_protocol"
+harness = false
+
+[features]
+default = ["wordpress"]
+wordpress = []
