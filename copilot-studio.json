@@ -1,0 +1,26 @@
+{
+  "mcpServers": {
+    "mcp-rs-wordpress": {
+      "command": "mcp-rs",
+      "env": {
+        "MCP_STDIO": "1",
+        "WORDPRESS_URL": "https://your-wordpress-site.com",
+        "WORDPRESS_USERNAME": "your_username",
+        "WORDPRESS_PASSWORD": "your_password",
+        "RUST_LOG": "info"
+      },
+      "disabled": false
+    },
+    "mcp-rs-custom": {
+      "command": "mcp-rs",
+      "args": ["--handler", "custom"],
+      "env": {
+        "MCP_STDIO": "1",
+        "CUSTOM_API_URL": "https://api.example.com",
+        "CUSTOM_API_KEY": "your_api_key",
+        "RUST_LOG": "debug"
+      },
+      "disabled": true
+    }
+  }
+}
