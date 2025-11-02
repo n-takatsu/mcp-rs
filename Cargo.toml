@@ -1,0 +1,24 @@
+[package]
+name = "mcp-rs"
+version = "0.1.0"
+edition = "2021"
+authors = ["n-takatsu"]
+description = "Rust implementation of the Model Context Protocol (MCP) for AI-agent integration"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/n-takatsu/mcp-rs"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1.0", features = ["full"] }
+axum = "0.7"
+tower = "0.4"
+tower-http = { version = "0.5", features = ["trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+thiserror = "1.0"
+async-trait = "0.1"
+reqwest = { version = "0.12", features = ["json"] }
+
+[dev-dependencies]
+tokio-test = "0.4"
