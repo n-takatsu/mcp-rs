@@ -1,5 +1,126 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use thiserror::Error;
+
+/// MCP Error types
+#[derive(Debug, Clone, Error, Serialize, Deserialize)]
+pub enum McpError {
+    #[error("Protocol error: {message}")]
+    Protocol { message: String },
+    
+    #[error("Invalid request: {message}")]
+    InvalidRequest { message: String },
+    
+    #[error("Method not found: {method}")]
+    MethodNotFound { method: String },
+    
+    #[error("Invalid parameters: {message}")]
+    InvalidParams { message: String },
+    
+    #[error("Internal error: {message}")]
+    Internal { message: String },
+    
+    #[error("Plugin error: {plugin}: {message}")]
+    Plugin { plugin: String, message: String },
+    
+    #[error("Configuration error: {message}")]
+    Config { message: String },
+    
+    #[error("Transport error: {message}")]
+    Transport { message: String },
+    
+    #[error("Tool not found: {name}")]
+    ToolNotFound { name: String },
+    
+    #[error("Resource not found: {uri}")]
+    ResourceNotFound { uri: String },
+    
+    #[error("External API error: {message}")]
+    ExternalApi { message: String },
+    
+    #[error("Serialization error: {message}")]
+    Serialization { message: String },
+    
+    #[error("HTTP error: {message}")]
+    Http { message: String },
+    
+    #[error("IO error: {message}")]
+    Io { message: String },
+    
+    #[error("Other error: {message}")]
+    Other { message: String },
+}
+
+impl McpError {
+    pub fn protocol(message: impl Into<String>) -> Self {
+        Self::Protocol { message: message.into() }
+    }
+    
+    pub fn invalid_request(message: impl Into<String>) -> Self {
+        Self::InvalidRequest { message: message.into() }
+    }
+    
+    pub fn method_not_found(method: impl Into<String>) -> Self {
+        Self::MethodNotFound { method: method.into() }
+    }
+    
+    pub fn invalid_params(message: impl Into<String>) -> Self {
+        Self::InvalidParams { message: message.into() }
+    }
+    
+    pub fn internal(message: impl Into<String>) -> Self {
+        Self::Internal { message: message.into() }
+    }
+    
+    pub fn plugin(plugin: impl Into<String>, message: impl Into<String>) -> Self {
+        Self::Plugin { plugin: plugin.into(), message: message.into() }
+    }
+    
+    pub fn config(message: impl Into<String>) -> Self {
+        Self::Config { message: message.into() }
+    }
+    
+    pub fn transport(message: impl Into<String>) -> Self {
+        Self::Transport { message: message.into() }
+    }
+    
+    pub fn tool_not_found(name: impl Into<String>) -> Self {
+        Self::ToolNotFound { name: name.into() }
+    }
+    
+    pub fn resource_not_found(uri: impl Into<String>) -> Self {
+        Self::ResourceNotFound { uri: uri.into() }
+    }
+    
+    pub fn external_api(message: impl Into<String>) -> Self {
+        Self::ExternalApi { message: message.into() }
+    }
+}
+
+// Convert from external error types
+impl From<serde_json::Error> for McpError {
+    fn from(err: serde_json::Error) -> Self {
+        Self::Serialization { message: err.to_string() }
+    }
+}
+
+impl From<reqwest::Error> for McpError {
+    fn from(err: reqwest::Error) -> Self {
+        Self::Http { message: err.to_string() }
+    }
+}
+
+impl From<std::io::Error> for McpError {
+    fn from(err: std::io::Error) -> Self {
+        Self::Io { message: err.to_string() }
+    }
+}
+
+impl From<anyhow::Error> for McpError {
+    fn from(err: anyhow::Error) -> Self {
+        Self::Other { message: err.to_string() }
+    }
+}
 
 /// JSON-RPC 2.0 Request
 #[derive(Debug, Clone, Serialize, Deserialize)]

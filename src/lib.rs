@@ -86,7 +86,6 @@
 pub mod core;
 pub mod config;
 pub mod plugins;
-pub mod transport;
 pub mod sdk;
 
 // Legacy compatibility (deprecated)
@@ -95,7 +94,9 @@ pub mod mcp {
     //! 
     //! This module is deprecated. Use `core` module instead.
     
-    pub use crate::core::*;
+    pub use crate::core::protocol::*;
+    pub use crate::core::server::*;
+    pub use crate::core::transport::*;
 }
 
 pub mod handlers {
@@ -110,8 +111,9 @@ pub mod handlers {
 pub use core::{
     McpError, Tool, Resource, Prompt, Content,
     JsonRpcRequest, JsonRpcResponse, JsonRpcError,
-    ToolCallResult, ResourceReadResult, InitializeResult
+    ToolCallResult, ResourceReadResult, InitializeResult,
+    McpServer, Transport
 };
 
-pub use config::{McpConfig, load_config};
+pub use config::{McpConfig, ConfigLoader};
 pub use plugins::{Plugin, PluginRegistry, ToolProvider, ResourceProvider, PromptProvider};
