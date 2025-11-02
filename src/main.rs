@@ -1,11 +1,13 @@
 use clap::Parser;
-use config::{ConfigLoader, McpConfig};
-use core::{
-    logging::{LogConfig, LogFormat, Logger},
-    transport::Transport,
-    McpServer,
+use mcp_rs::{
+    config::{ConfigLoader, LogFormat as ConfigLogFormat},
+    core::{
+        logging::{LogConfig, LogFormat, Logger},
+        transport::Transport,
+        McpServer,
+    },
+    plugins::PluginRegistry,
 };
-use plugins::PluginRegistry;
 use std::sync::Arc;
 
 #[derive(Parser)]
@@ -55,7 +57,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             config.logging.level.clone()
         },
         format: match config.logging.format {
-            config::LogFormat::Json => LogFormat::Json,
+            ConfigLogFormat::Json => LogFormat::Json,
             _ => LogFormat::Human,
         },
         file: config.logging.file.clone(),
@@ -72,8 +74,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _logger = Logger::init(log_config)?;
 
     // Initialize plugin registry
-    let mut plugin_registry = PluginRegistry::new();
-    plugin_registry.load_from_config(&config).await?;
+    let plugin_registry = PluginRegistry::new();
+
+    // TODO: Register and initialize plugins based on configuration
+    // This would require implementing plugin loading logic
 
     // Create MCP server
     let server = McpServer::new(Arc::new(config), Arc::new(plugin_registry));

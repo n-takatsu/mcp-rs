@@ -127,17 +127,20 @@ macro_rules! tool_result {
             }],
             is_error: Some(false),
         })
-        .unwrap()
+        .unwrap_or_else(|_| serde_json::Value::String(format!("Serialization error: {}", $content)))
     };
 
     (json $content:expr) => {
         serde_json::to_value($crate::core::ToolCallResult {
             content: vec![$crate::core::Content::Text {
-                text: serde_json::to_string_pretty(&$content).unwrap(),
+                text: serde_json::to_string_pretty(&$content)
+                    .unwrap_or_else(|_| "JSON serialization failed".to_string()),
             }],
             is_error: Some(false),
         })
-        .unwrap()
+        .unwrap_or_else(|_| {
+            serde_json::Value::String("Tool result serialization failed".to_string())
+        })
     };
 }
 
@@ -159,7 +162,9 @@ macro_rules! tool_error {
             }],
             is_error: Some(true),
         })
-        .unwrap()
+        .unwrap_or_else(|_| {
+            serde_json::Value::String(format!("Error: {} (plus serialization failed)", $message))
+        })
     };
 }
 
@@ -183,7 +188,9 @@ macro_rules! resource_result {
                 blob: None,
             }],
         })
-        .unwrap()
+        .unwrap_or_else(|_| {
+            serde_json::Value::String(format!("Resource result serialization failed for {}", $uri))
+        })
     };
 
     (blob $uri:expr, $mime_type:expr, $blob:expr) => {
@@ -195,7 +202,12 @@ macro_rules! resource_result {
                 blob: Some($blob.to_string()),
             }],
         })
-        .unwrap()
+        .unwrap_or_else(|_| {
+            serde_json::Value::String(format!(
+                "Resource blob result serialization failed for {}",
+                $uri
+            ))
+        })
     };
 }
 
