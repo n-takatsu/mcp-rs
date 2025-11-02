@@ -1,6 +1,6 @@
+use base64::{engine::general_purpose, Engine as _};
 use reqwest::Client;
 use std::env;
-use base64::{engine::general_purpose, Engine as _};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
