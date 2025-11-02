@@ -27,6 +27,11 @@ toml = "0.8"
 
 [dev-dependencies]
 tokio-test = "0.4"
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "mcp_protocol"
+harness = false
 
 # 開発時のビルド高速化設定
 [profile.dev]

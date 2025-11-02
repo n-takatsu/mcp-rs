@@ -2,6 +2,15 @@
 
 This section contains detailed architectural documentation for the MCP-RS project.
 
+## 📋 Main Architecture Document
+
+For the complete and authoritative architecture documentation, please see:
+**[Main Architecture Document](../../../project-docs/architecture.md)**
+
+The document below provides a web-friendly overview of the current architecture status.
+
+---
+
 ## Architecture Overview
 
 MCP-RS follows a layered architecture pattern designed for extensibility, maintainability, and performance.
