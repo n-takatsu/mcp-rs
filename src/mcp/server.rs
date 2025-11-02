@@ -41,6 +41,12 @@ pub struct ResourcesCapability {
     pub list_changed: Option<bool>,
 }
 
+impl Default for McpServer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl McpServer {
     pub fn new() -> Self {
         Self {
