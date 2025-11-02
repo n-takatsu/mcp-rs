@@ -8,9 +8,10 @@ Welcome to the MCP-RS documentation! This site contains comprehensive guides, AP
 
 ## Quick Links
 
-- **[Getting Started](guides/)** - Implementation guides and tutorials
-- **[API Reference](api/)** - Complete API documentation  
-- **[Architecture](architecture/)** - System design and technical architecture
+- **[Getting Started](docs/guides/)** - Implementation guides and tutorials
+- **[API Reference](docs/api/)** - Complete API documentation  
+- **[Architecture](docs/architecture/)** - System design and technical architecture
+- **[Rust Documentation](rustdoc/)** - Generated API documentation from source code
 - **[GitHub Repository](https://github.com/n-takatsu/mcp-rs)** - Source code and issues
 
 ## What is MCP-RS?

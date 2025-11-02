@@ -23,6 +23,7 @@ MCP-RS is a robust, type-safe Rust implementation of the Model Context Protocol 
 - **[Architecture](architecture/)** - System design and technical architecture
 - **[API Reference](api/)** - Complete API documentation
 - **[Guides](guides/)** - Implementation guides and tutorials
+- **[Rust API Docs](../rustdoc/)** - Generated documentation from source code
 
 ### 🚀 Getting Started
 
