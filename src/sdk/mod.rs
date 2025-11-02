@@ -22,7 +22,7 @@
 //!             })
 //!         ])
 //!     }
-//!     
+//!
 //!     async fn call_tool(&self, name: &str, args: Option<HashMap<String, Value>>) -> PluginResult<Value> {
 //!         match name {
 //!             "my_tool" => {

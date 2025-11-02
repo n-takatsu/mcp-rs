@@ -19,7 +19,7 @@ struct Cli {
     #[arg(long, default_value = "127.0.0.1")]
     bind_address: String,
 
-    /// Port for TCP transport  
+    /// Port for TCP transport
     #[arg(long, default_value = "8080")]
     port: u16,
 
