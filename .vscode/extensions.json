@@ -1,0 +1,42 @@
+{
+  "recommendations": [
+    // Rust開発必須
+    "rust-lang.rust-analyzer",
+    "vadimcn.vscode-lldb",
+    "serayuzgur.crates",
+    
+    // GitHub Copilot
+    "github.copilot",
+    "github.copilot-chat",
+    
+    // Git関連
+    "eamodio.gitlens",
+    "github.vscode-pull-request-github",
+    
+    // フォーマッティング・リンティング
+    "esbenp.prettier-vscode",
+    "ms-vscode.vscode-json",
+    
+    // TOML サポート
+    "tamasfe.even-better-toml",
+    
+    // Markdown
+    "yzhang.markdown-all-in-one",
+    "davidanson.vscode-markdownlint",
+    
+    // YAML
+    "redhat.vscode-yaml",
+    
+    // Docker (将来的な展開用)
+    "ms-vscode-remote.remote-containers",
+    
+    // テーマとアイコン
+    "pkief.material-icon-theme",
+    "github.github-vscode-theme",
+    
+    // 生産性向上
+    "ms-vscode.vscode-typescript-next",
+    "bradlc.vscode-tailwindcss",
+    "ms-vscode.powershell"
+  ]
+}

@@ -1,0 +1,67 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Debug mcp-rs",
+      "type": "lldb",
+      "request": "launch",
+      "program": "${workspaceFolder}/target/debug/mcp-rs",
+      "args": ["--debug", "--stdio"],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "RUST_LOG": "debug",
+        "MCP_STDIO": "1"
+      },
+      "preLaunchTask": "cargo build"
+    },
+    {
+      "name": "Debug mcp-rs (TCP mode)",
+      "type": "lldb",
+      "request": "launch",
+      "program": "${workspaceFolder}/target/debug/mcp-rs",
+      "args": ["--debug", "--bind-address", "127.0.0.1", "--port", "8080"],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "RUST_LOG": "debug"
+      },
+      "preLaunchTask": "cargo build"
+    },
+    {
+      "name": "Debug WordPress Plugin",
+      "type": "lldb",
+      "request": "launch",
+      "program": "${workspaceFolder}/target/debug/mcp-rs",
+      "args": ["--debug", "--stdio", "--enable-plugin", "wordpress"],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "RUST_LOG": "debug",
+        "MCP_STDIO": "1",
+        "WORDPRESS_URL": "https://demo.wp-api.org",
+        "WORDPRESS_USERNAME": "",
+        "WORDPRESS_PASSWORD": ""
+      },
+      "preLaunchTask": "cargo build"
+    },
+    {
+      "name": "Run Tests",
+      "type": "lldb",
+      "request": "launch",
+      "program": "${workspaceFolder}/target/debug/deps/mcp_rs",
+      "args": [],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "RUST_LOG": "debug"
+      },
+      "preLaunchTask": "cargo test build"
+    },
+    {
+      "name": "Benchmark",
+      "type": "lldb",
+      "request": "launch",
+      "program": "${workspaceFolder}/target/release/deps/mcp_protocol",
+      "args": ["--bench"],
+      "cwd": "${workspaceFolder}",
+      "preLaunchTask": "cargo bench build"
+    }
+  ]
+}

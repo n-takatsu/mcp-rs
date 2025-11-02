@@ -1,0 +1,128 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "cargo build",
+      "type": "cargo",
+      "command": "build",
+      "group": "build",
+      "problemMatcher": [
+        "$rustc"
+      ]
+    },
+    {
+      "label": "cargo check",
+      "type": "cargo",
+      "command": "check",
+      "group": "build",
+      "problemMatcher": [
+        "$rustc"
+      ]
+    },
+    {
+      "label": "cargo test",
+      "type": "cargo",
+      "command": "test",
+      "group": "test",
+      "problemMatcher": [
+        "$rustc"
+      ]
+    },
+    {
+      "label": "cargo test build",
+      "type": "cargo",
+      "command": "test",
+      "args": ["--no-run"],
+      "group": "build",
+      "problemMatcher": [
+        "$rustc"
+      ]
+    },
+    {
+      "label": "cargo bench build",
+      "type": "cargo",
+      "command": "bench",
+      "args": ["--no-run"],
+      "group": "build",
+      "problemMatcher": [
+        "$rustc"
+      ]
+    },
+    {
+      "label": "cargo clippy",
+      "type": "cargo",
+      "command": "clippy",
+      "args": ["--all-targets", "--all-features", "--", "-D", "warnings"],
+      "group": "build",
+      "problemMatcher": [
+        "$rustc"
+      ]
+    },
+    {
+      "label": "cargo fmt",
+      "type": "cargo",
+      "command": "fmt",
+      "group": "build"
+    },
+    {
+      "label": "cargo doc",
+      "type": "cargo",
+      "command": "doc",
+      "args": ["--open", "--no-deps"],
+      "group": "build"
+    },
+    {
+      "label": "Run mcp-rs (stdio)",
+      "type": "shell",
+      "command": "cargo",
+      "args": ["run", "--", "--stdio"],
+      "group": "test",
+      "isBackground": false,
+      "presentation": {
+        "echo": true,
+        "reveal": "always",
+        "focus": false,
+        "panel": "new"
+      },
+      "options": {
+        "env": {
+          "RUST_LOG": "debug",
+          "MCP_STDIO": "1"
+        }
+      }
+    },
+    {
+      "label": "Run mcp-rs (TCP)",
+      "type": "shell",
+      "command": "cargo",
+      "args": ["run", "--", "--bind-address", "127.0.0.1", "--port", "8080"],
+      "group": "test",
+      "isBackground": true,
+      "presentation": {
+        "echo": true,
+        "reveal": "always",
+        "focus": false,
+        "panel": "new"
+      },
+      "options": {
+        "env": {
+          "RUST_LOG": "debug"
+        }
+      }
+    },
+    {
+      "label": "Install dependencies",
+      "type": "shell",
+      "command": "cargo",
+      "args": ["fetch"],
+      "group": "build"
+    },
+    {
+      "label": "Clean build",
+      "type": "shell",
+      "command": "cargo",
+      "args": ["clean"],
+      "group": "build"
+    }
+  ]
+}

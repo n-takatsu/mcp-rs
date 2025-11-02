@@ -83,14 +83,35 @@
 //! }
 //! ```
 
-pub mod mcp;
-pub mod handlers;
+pub mod core;
+pub mod config;
+pub mod plugins;
+pub mod transport;
+pub mod sdk;
+
+// Legacy compatibility (deprecated)
+pub mod mcp {
+    //! Legacy MCP module for backward compatibility
+    //! 
+    //! This module is deprecated. Use `core` module instead.
+    
+    pub use crate::core::*;
+}
+
+pub mod handlers {
+    //! Legacy handlers module for backward compatibility
+    //! 
+    //! This module is deprecated. Use `plugins` module instead.
+    
+    pub use crate::plugins::wordpress::*;
+}
 
 // Re-export commonly used types for convenience
-pub use mcp::{
-    McpServer, McpHandler, McpError,
+pub use core::{
+    McpError, Tool, Resource, Prompt, Content,
     JsonRpcRequest, JsonRpcResponse, JsonRpcError,
-    Tool, Resource, InitializeParams, ToolCallParams, ResourceReadParams
+    ToolCallResult, ResourceReadResult, InitializeResult
 };
 
-pub use handlers::WordPressHandler;
+pub use config::{McpConfig, load_config};
+pub use plugins::{Plugin, PluginRegistry, ToolProvider, ResourceProvider, PromptProvider};
