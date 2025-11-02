@@ -1,36 +1,77 @@
-mod mcp;
-mod handlers;
+mod config;
+mod core;
+mod plugins;
 
+use clap::Parser;
+use config::{McpConfig, ConfigLoader};
+use core::{McpServer, transport::Transport};
+use plugins::PluginRegistry;
 use std::sync::Arc;
-use mcp::{McpServer};
-use handlers::WordPressHandler;
 use tracing_subscriber;
+
+#[derive(Parser)]
+#[command(author, version, about, long_about = None)]
+struct Cli {
+    /// Use STDIO transport (for MCP clients)
+    #[arg(long)]
+    stdio: bool,
+
+    /// Bind address for TCP transport
+    #[arg(long, default_value = "127.0.0.1")]
+    bind_address: String,
+
+    /// Port for TCP transport  
+    #[arg(long, default_value = "8080")]
+    port: u16,
+
+    /// Configuration file path
+    #[arg(short, long)]
+    config: Option<String>,
+
+    /// Enable debug logging
+    #[arg(long)]
+    debug: bool,
+
+    /// Enable specific plugins
+    #[arg(long)]
+    enable_plugin: Vec<String>,
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let cli = Cli::parse();
+
     // Initialize logging
+    let log_level = if cli.debug { "debug" } else { "info" };
+    std::env::set_var("RUST_LOG", log_level);
     tracing_subscriber::fmt::init();
 
+    // Load configuration
+    let config = ConfigLoader::new()
+        .load_from_file(cli.config.as_deref())
+        .load_from_env()
+        .load_from_cli(&cli)
+        .build()?;
+
+    // Initialize plugin registry
+    let mut plugin_registry = PluginRegistry::new();
+    plugin_registry.load_from_config(&config).await?;
+
     // Create MCP server
-    let mut server = McpServer::new();
+    let server = McpServer::new(Arc::new(config), Arc::new(plugin_registry));
 
-    // Add WordPress handler
-    let wordpress_handler = WordPressHandler::new(
-        std::env::var("WORDPRESS_URL").unwrap_or_else(|_| "http://localhost".to_string()),
-        std::env::var("WORDPRESS_USERNAME").ok(),
-        std::env::var("WORDPRESS_PASSWORD").ok(),
-    );
-
-    server.add_handler("wordpress".to_string(), Arc::new(wordpress_handler));
-
-    // Run server on stdio (for MCP clients)
-    if std::env::var("MCP_STDIO").is_ok() {
-        server.run_stdio().await?;
+    // Determine transport based on CLI arguments
+    let transport = if cli.stdio {
+        Transport::Stdio
     } else {
-        // Run server on TCP (for development/testing)
-        let addr = std::env::var("BIND_ADDR").unwrap_or_else(|_| "127.0.0.1:8080".to_string());
-        server.run(&addr).await?;
-    }
+        Transport::Tcp {
+            address: cli.bind_address,
+            port: cli.port,
+        }
+    };
+
+    // Run server
+    server.run(transport).await?;
 
     Ok(())
 }

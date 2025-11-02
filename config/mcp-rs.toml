@@ -1,0 +1,76 @@
+# MCP-RS Configuration File
+# This file supports TOML, YAML, and JSON formats
+
+[server]
+name = "mcp-rs"
+version = "0.1.0"
+max_connections = 100
+timeout = 30
+
+[server.capabilities]
+[server.capabilities.tools]
+list = true
+list_changed = false
+
+[server.capabilities.resources]
+list = true
+subscribe = false
+list_changed = false
+
+[server.capabilities.prompts]
+list = true
+list_changed = false
+
+[transport]
+[transport.stdio]
+enabled = true
+buffer_size = 8192
+
+[transport.tcp]
+enabled = false
+bind_address = "127.0.0.1"
+port = 8080
+
+[transport.websocket]
+enabled = false
+bind_address = "127.0.0.1"
+port = 8081
+path = "/mcp"
+
+[logging]
+level = "info"
+format = "pretty"
+output = "stderr"
+
+# Plugin configurations
+[plugins.wordpress]
+enabled = true
+priority = 10
+
+[plugins.wordpress.config]
+url = "https://your-wordpress-site.com"
+timeout = 30
+max_posts = 50
+cache_ttl = 300
+
+[plugins.wordpress.config.auth]
+type = "application_password"
+username = "your_username"
+password = "your_application_password"
+
+[plugins.github]
+enabled = false
+priority = 20
+
+[plugins.github.config]
+token = "ghp_your_github_token"
+owner = "your_username"
+repos = ["repo1", "repo2"]
+
+[plugins.slack]
+enabled = false
+priority = 30
+
+[plugins.slack.config]
+bot_token = "xoxb-your-bot-token"
+channels = ["general", "dev"]
