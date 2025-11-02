@@ -45,11 +45,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if wp_config.enabled.unwrap_or(true) {
             println!("🔗 WordPress統合を有効化: {}", wp_config.url);
             
-            let wordpress_handler = WordPressHandler::new(
-                wp_config.url.clone(),
-                if wp_config.username.is_empty() { None } else { Some(wp_config.username.clone()) },
-                if wp_config.password.is_empty() { None } else { Some(wp_config.password.clone()) },
-            );
+            let wordpress_handler = WordPressHandler::new(wp_config.clone());
 
             server.add_handler("wordpress".to_string(), Arc::new(wordpress_handler));
         } else {
