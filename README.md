@@ -4,6 +4,10 @@
 
 This project aims to provide a type-safe, extensible, and performant MCP server in Rust, with initial support for WordPress REST API integration.
 
+## License
+
+This project is licensed under the [MIT License](./LICENSE).
+
 ## Features
 
 - JSON-RPC 2.0 compliant server
