@@ -123,6 +123,40 @@ pub struct WordPressSiteInfo {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+pub struct WordPressSettings {
+    pub title: Option<String>,
+    pub description: Option<String>,
+    pub timezone: Option<String>,
+    pub date_format: Option<String>,
+    pub time_format: Option<String>,
+    pub start_of_week: Option<u8>,
+    pub language: Option<String>,
+    pub use_smilies: Option<bool>,
+    pub default_category: Option<u64>,
+    pub default_post_format: Option<String>,
+    pub posts_per_page: Option<u64>,
+    pub show_on_front: Option<String>, // "posts" or "page"
+    pub page_on_front: Option<u64>,    // Static front page ID
+    pub page_for_posts: Option<u64>,   // Posts page ID
+    pub default_ping_status: Option<String>,
+    pub default_comment_status: Option<String>,
+}
+
+/// WordPress settings update parameters
+#[derive(Debug, Clone, Default)]
+pub struct SettingsUpdateParams {
+    pub title: Option<String>,
+    pub description: Option<String>,
+    pub timezone: Option<String>,
+    pub show_on_front: Option<String>, // "posts" or "page"
+    pub page_on_front: Option<u64>,    // Static front page
+    pub page_for_posts: Option<u64>,   // Blog posts page
+    pub posts_per_page: Option<u64>,
+    pub default_category: Option<u64>,
+    pub language: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct WordPressCategory {
     pub id: Option<u64>,
     pub count: Option<u64>,
@@ -590,6 +624,94 @@ impl WordPressHandler {
             media_id, force_delete
         );
         self.execute_request_with_retry(request).await
+    }
+
+    /// Get WordPress site settings
+    pub async fn get_settings(&self) -> Result<WordPressSettings, McpError> {
+        let url = format!("{}/wp-json/wp/v2/settings", self.base_url);
+        
+        let mut request = self.client.get(&url);
+        
+        if let (Some(username), Some(password)) = (&self.username, &self.password) {
+            request = request.basic_auth(username, Some(password));
+        }
+
+        info!("Retrieving WordPress settings");
+        let response = self.execute_request_with_retry(request).await?;
+        let settings: WordPressSettings = serde_json::from_value(response)?;
+        Ok(settings)
+    }
+
+    /// Update WordPress site settings
+    pub async fn update_settings(
+        &self,
+        params: SettingsUpdateParams,
+    ) -> Result<WordPressSettings, McpError> {
+        let url = format!("{}/wp-json/wp/v2/settings", self.base_url);
+
+        let mut settings_data = serde_json::Map::new();
+
+        if let Some(title) = params.title {
+            settings_data.insert("title".to_string(), serde_json::Value::String(title));
+        }
+        if let Some(description) = params.description {
+            settings_data.insert("description".to_string(), serde_json::Value::String(description));
+        }
+        if let Some(timezone) = params.timezone {
+            settings_data.insert("timezone".to_string(), serde_json::Value::String(timezone));
+        }
+        if let Some(show_on_front) = params.show_on_front {
+            settings_data.insert("show_on_front".to_string(), serde_json::Value::String(show_on_front));
+        }
+        if let Some(page_on_front) = params.page_on_front {
+            settings_data.insert("page_on_front".to_string(), serde_json::Value::Number(page_on_front.into()));
+        }
+        if let Some(page_for_posts) = params.page_for_posts {
+            settings_data.insert("page_for_posts".to_string(), serde_json::Value::Number(page_for_posts.into()));
+        }
+        if let Some(posts_per_page) = params.posts_per_page {
+            settings_data.insert("posts_per_page".to_string(), serde_json::Value::Number(posts_per_page.into()));
+        }
+        if let Some(default_category) = params.default_category {
+            settings_data.insert("default_category".to_string(), serde_json::Value::Number(default_category.into()));
+        }
+        if let Some(language) = params.language {
+            settings_data.insert("language".to_string(), serde_json::Value::String(language));
+        }
+
+        let mut request = self
+            .client
+            .post(&url)
+            .json(&serde_json::Value::Object(settings_data));
+
+        if let (Some(username), Some(password)) = (&self.username, &self.password) {
+            request = request.basic_auth(username, Some(password));
+        }
+
+        info!("Updating WordPress settings");
+        let response = self.execute_request_with_retry(request).await?;
+        let settings: WordPressSettings = serde_json::from_value(response)?;
+        Ok(settings)
+    }
+
+    /// Set front page to static page
+    pub async fn set_front_page(&self, page_id: u64) -> Result<WordPressSettings, McpError> {
+        let params = SettingsUpdateParams {
+            show_on_front: Some("page".to_string()),
+            page_on_front: Some(page_id),
+            ..Default::default()
+        };
+        self.update_settings(params).await
+    }
+
+    /// Set front page to latest posts
+    pub async fn set_front_page_to_posts(&self, posts_page_id: Option<u64>) -> Result<WordPressSettings, McpError> {
+        let params = SettingsUpdateParams {
+            show_on_front: Some("posts".to_string()),
+            page_for_posts: posts_page_id,
+            ..Default::default()
+        };
+        self.update_settings(params).await
     }
 
     // YouTube video URL validation
@@ -1997,6 +2119,90 @@ impl McpHandler for WordPressHandler {
                     "required": ["title", "content"]
                 }),
             },
+            Tool {
+                name: "get_settings".to_string(),
+                description: "Get WordPress site settings".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }),
+            },
+            Tool {
+                name: "update_settings".to_string(),
+                description: "Update WordPress site settings".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "title": {
+                            "type": "string",
+                            "description": "Site title"
+                        },
+                        "description": {
+                            "type": "string", 
+                            "description": "Site tagline/description"
+                        },
+                        "timezone": {
+                            "type": "string",
+                            "description": "Site timezone (e.g., 'Asia/Tokyo')"
+                        },
+                        "show_on_front": {
+                            "type": "string",
+                            "description": "What to show on front page",
+                            "enum": ["posts", "page"]
+                        },
+                        "page_on_front": {
+                            "type": "number",
+                            "description": "Static front page ID (when show_on_front is 'page')"
+                        },
+                        "page_for_posts": {
+                            "type": "number",
+                            "description": "Posts page ID (when show_on_front is 'page')"
+                        },
+                        "posts_per_page": {
+                            "type": "number",
+                            "description": "Number of posts per page"
+                        },
+                        "default_category": {
+                            "type": "number",
+                            "description": "Default category for new posts"
+                        },
+                        "language": {
+                            "type": "string",
+                            "description": "Site language code (e.g., 'ja', 'en_US')"
+                        }
+                    },
+                    "required": []
+                }),
+            },
+            Tool {
+                name: "set_front_page".to_string(),
+                description: "Set a static page as the front page".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "page_id": {
+                            "type": "number",
+                            "description": "Page ID to set as front page"
+                        }
+                    },
+                    "required": ["page_id"]
+                }),
+            },
+            Tool {
+                name: "set_front_page_to_posts".to_string(),
+                description: "Set front page to show latest posts".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "posts_page_id": {
+                            "type": "number",
+                            "description": "Optional page ID to use for blog posts"
+                        }
+                    },
+                    "required": []
+                }),
+            },
         ])
     }
 
@@ -2782,6 +2988,96 @@ impl McpHandler for WordPressHandler {
                             post.id,
                             post.title.rendered,
                             post.status
+                        )
+                    }],
+                    "isError": false
+                }))
+            }
+            "get_settings" => {
+                let settings = self.get_settings().await?;
+
+                Ok(serde_json::json!({
+                    "content": [{
+                        "type": "text",
+                        "text": format!(
+                            "WordPress Settings:\n- Title: {}\n- Description: {}\n- Show on front: {}\n- Posts per page: {}\n- Language: {}",
+                            settings.title.unwrap_or("N/A".to_string()),
+                            settings.description.unwrap_or("N/A".to_string()),
+                            settings.show_on_front.unwrap_or("posts".to_string()),
+                            settings.posts_per_page.unwrap_or(10),
+                            settings.language.unwrap_or("en_US".to_string())
+                        )
+                    }],
+                    "isError": false
+                }))
+            }
+            "update_settings" => {
+                let args = params.arguments.unwrap_or_default();
+                
+                let params = SettingsUpdateParams {
+                    title: args.get("title").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                    description: args.get("description").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                    timezone: args.get("timezone").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                    show_on_front: args.get("show_on_front").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                    page_on_front: args.get("page_on_front").and_then(|v| v.as_u64()),
+                    page_for_posts: args.get("page_for_posts").and_then(|v| v.as_u64()),
+                    posts_per_page: args.get("posts_per_page").and_then(|v| v.as_u64()),
+                    default_category: args.get("default_category").and_then(|v| v.as_u64()),
+                    language: args.get("language").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                };
+
+                let settings = self.update_settings(params).await?;
+
+                Ok(serde_json::json!({
+                    "content": [{
+                        "type": "text",
+                        "text": format!(
+                            "Settings updated successfully:\n- Title: {}\n- Description: {}\n- Show on front: {}",
+                            settings.title.unwrap_or("N/A".to_string()),
+                            settings.description.unwrap_or("N/A".to_string()),
+                            settings.show_on_front.unwrap_or("posts".to_string())
+                        )
+                    }],
+                    "isError": false
+                }))
+            }
+            "set_front_page" => {
+                let args = params.arguments.unwrap_or_default();
+                let page_id = args
+                    .get("page_id")
+                    .and_then(|v| v.as_u64())
+                    .ok_or_else(|| McpError::InvalidParams("Missing page_id".to_string()))?;
+
+                let settings = self.set_front_page(page_id).await?;
+
+                Ok(serde_json::json!({
+                    "content": [{
+                        "type": "text",
+                        "text": format!(
+                            "Front page set to static page ID: {} (Show on front: {})",
+                            page_id,
+                            settings.show_on_front.unwrap_or("page".to_string())
+                        )
+                    }],
+                    "isError": false
+                }))
+            }
+            "set_front_page_to_posts" => {
+                let args = params.arguments.unwrap_or_default();
+                let posts_page_id = args.get("posts_page_id").and_then(|v| v.as_u64());
+
+                self.set_front_page_to_posts(posts_page_id).await?;
+
+                Ok(serde_json::json!({
+                    "content": [{
+                        "type": "text",
+                        "text": format!(
+                            "Front page set to latest posts{}",
+                            if let Some(page_id) = posts_page_id {
+                                format!(" (Posts page ID: {})", page_id)
+                            } else {
+                                String::new()
+                            }
                         )
                     }],
                     "isError": false
