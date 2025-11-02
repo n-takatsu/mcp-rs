@@ -1,0 +1,57 @@
+theme: jekyll-theme-cayman
+title: MCP-RS
+description: High-Performance Rust Implementation of the Model Context Protocol
+url: https://redring2020.github.io
+baseurl: /mcp-rs
+
+# GitHub Pages configuration
+plugins:
+  - jekyll-optional-front-matter
+  - jekyll-readme-index
+  - jekyll-default-layout
+  - jekyll-titles-from-headings
+
+# Markdown processing
+markdown: kramdown
+kramdown:
+  input: GFM
+  syntax_highlighter: rouge
+
+# File inclusion settings
+include:
+  - "_*_.html"
+  - "_*_.*.html"
+
+# Navigation structure
+nav_links:
+  - title: "Home"
+    url: "/"
+  - title: "Documentation"
+    url: "/website/docs/"
+  - title: "API Reference"
+    url: "/website/docs/api/"
+  - title: "GitHub"
+    url: "https://github.com/RedRing2020/mcp-rs"
+
+# SEO and social
+author:
+  name: "MCP-RS Project"
+  
+social:
+  name: "MCP-RS"
+  links:
+    - "https://github.com/RedRing2020/mcp-rs"
+
+google_analytics: # Add your GA tracking ID if needed
+
+# Exclude files from site
+exclude:
+  - target/
+  - Cargo.toml
+  - Cargo.lock
+  - src/
+  - tests/
+  - examples/
+  - .vscode/
+  - .git/
+  - .gitignore

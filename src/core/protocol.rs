@@ -95,6 +95,18 @@ impl McpError {
     pub fn external_api(message: impl Into<String>) -> Self {
         Self::ExternalApi { message: message.into() }
     }
+    
+    pub fn other(message: impl Into<String>) -> Self {
+        Self::Other { message: message.into() }
+    }
+    
+    pub fn serialization(message: impl Into<String>) -> Self {
+        Self::Serialization { message: message.into() }
+    }
+    
+    pub fn http(message: impl Into<String>) -> Self {
+        Self::Http { message: message.into() }
+    }
 }
 
 // Convert from external error types

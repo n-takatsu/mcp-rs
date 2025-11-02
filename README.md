@@ -1,8 +1,16 @@
-# mcp-rs
+# MCP-RS
 
-**mcp-rs** is a Rust implementation of the [Model Context Protocol (MCP)](https://learn.microsoft.com/en-us/microsoft-copilot-studio/mcp-overview), designed to enable AI agents—such as Copilot Studio—to interact with external systems like WordPress via JSON-RPC.
+**mcp-rs** is a high-performance Rust implementation of the [Model Context Protocol (MCP)](https://learn.microsoft.com/en-us/microsoft-copilot-studio/mcp-overview), designed to enable AI agents—such as Copilot Studio—to interact with external systems like WordPress via JSON-RPC.
 
-This project aims to provide a type-safe, extensible, and performant MCP server in Rust, with initial support for WordPress REST API integration.
+This project aims to provide a type-safe, extensible, and performant MCP server in Rust, with comprehensive logging, plugin architecture, and production-ready features.
+
+## 📖 Documentation
+
+- **[📚 Complete Documentation](https://redring2020.github.io/mcp-rs/)** - GitHub Pages site
+- **[🚀 Getting Started Guide](https://redring2020.github.io/mcp-rs/website/docs/guides/getting-started.html)** - Quick setup
+- **[📝 API Reference](https://redring2020.github.io/mcp-rs/website/docs/api/)** - Complete API docs
+- **[🏗️ Architecture Overview](https://redring2020.github.io/mcp-rs/website/docs/architecture/overview.html)** - System design
+- **[📊 Logging Strategy](https://redring2020.github.io/mcp-rs/website/docs/architecture/logging.html)** - Operational monitoring
 
 ## Features
 

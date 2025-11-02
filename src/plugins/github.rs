@@ -7,7 +7,7 @@ use tracing::{info, warn};
 
 use crate::core::{Tool, Resource, McpError};
 use crate::config::PluginConfig;
-use crate::plugins::{Plugin, PluginMetadata, PluginResult, ToolProvider, ResourceProvider, PluginFactory};
+use crate::plugins::{Plugin, PluginMetadata, PluginResult, ToolProvider, ResourceProvider, PluginFactory, UnifiedPlugin, PluginCapability};
 use crate::sdk::prelude::*;
 
 /// GitHub plugin configuration
@@ -349,6 +349,42 @@ impl ResourceProvider for GitHubPlugin {
     }
 }
 
-plugin_factory!(GitHubPlugin, "github", || {
-    Box::new(GitHubPlugin::new())
-});
+#[async_trait]
+impl UnifiedPlugin for GitHubPlugin {
+    fn capabilities(&self) -> Vec<PluginCapability> {
+        vec![PluginCapability::Tools, PluginCapability::Resources]
+    }
+    
+    async fn list_tools(&self) -> PluginResult<Vec<Tool>> {
+        ToolProvider::list_tools(self).await
+    }
+    
+    async fn call_tool(&self, name: &str, arguments: Option<HashMap<String, Value>>) -> PluginResult<Value> {
+        ToolProvider::call_tool(self, name, arguments).await
+    }
+    
+    async fn list_resources(&self) -> PluginResult<Vec<Resource>> {
+        ResourceProvider::list_resources(self).await
+    }
+    
+    async fn read_resource(&self, uri: &str) -> PluginResult<Value> {
+        ResourceProvider::read_resource(self, uri).await
+    }
+}
+
+/// GitHub plugin factory
+pub struct GitHubPluginFactory;
+
+impl PluginFactory for GitHubPluginFactory {
+    fn create(&self) -> Box<dyn UnifiedPlugin> {
+        Box::new(GitHubPlugin::new())
+    }
+    
+    fn name(&self) -> &str {
+        "github"
+    }
+    
+    fn capabilities(&self) -> Vec<PluginCapability> {
+        vec![PluginCapability::Tools, PluginCapability::Resources]
+    }
+}

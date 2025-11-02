@@ -168,7 +168,7 @@ impl McpServer {
     }
 
     async fn handle_tools_list(&self, request: &JsonRpcRequest) -> Option<Value> {
-        let tools = self.plugin_registry.list_tools().await;
+        let tools = self.plugin_registry.list_all_tools().await;
         
         Some(json!({
             "jsonrpc": "2.0",
@@ -182,7 +182,9 @@ impl McpServer {
     async fn handle_tools_call(&self, request: &JsonRpcRequest) -> Option<Value> {
         let params = request.params.as_ref()?;
         let tool_name = params.get("name")?.as_str()?;
-        let arguments = params.get("arguments")?;
+        let arguments = params.get("arguments")
+            .and_then(|v| v.as_object())
+            .map(|obj| obj.iter().map(|(k, v)| (k.clone(), v.clone())).collect());
 
         match self.plugin_registry.call_tool(tool_name, arguments).await {
             Ok(result) => Some(json!({
@@ -209,7 +211,7 @@ impl McpServer {
     }
 
     async fn handle_resources_list(&self, request: &JsonRpcRequest) -> Option<Value> {
-        let resources = self.plugin_registry.list_resources().await;
+        let resources = self.plugin_registry.list_all_resources().await;
         
         Some(json!({
             "jsonrpc": "2.0",
@@ -250,7 +252,7 @@ impl McpServer {
     }
 
     async fn handle_prompts_list(&self, request: &JsonRpcRequest) -> Option<Value> {
-        let prompts = self.plugin_registry.list_prompts().await;
+        let prompts = self.plugin_registry.list_all_prompts().await;
         
         Some(json!({
             "jsonrpc": "2.0",
@@ -264,7 +266,9 @@ impl McpServer {
     async fn handle_prompts_get(&self, request: &JsonRpcRequest) -> Option<Value> {
         let params = request.params.as_ref()?;
         let name = params.get("name")?.as_str()?;
-        let arguments = params.get("arguments");
+        let arguments = params.get("arguments")
+            .and_then(|v| v.as_object())
+            .map(|obj| obj.iter().map(|(k, v)| (k.clone(), v.clone())).collect());
 
         match self.plugin_registry.get_prompt(name, arguments).await {
             Ok(messages) => Some(json!({

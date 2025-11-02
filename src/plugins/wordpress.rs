@@ -10,7 +10,8 @@ use crate::core::{
 };
 use crate::config::PluginConfig;
 use crate::plugins::{
-    Plugin, PluginMetadata, PluginResult, ToolProvider, ResourceProvider, PluginFactory
+    Plugin, PluginMetadata, PluginResult, ToolProvider, ResourceProvider, PluginFactory, 
+    UnifiedPlugin, PluginCapability
 };
 
 /// WordPress plugin configuration
@@ -99,7 +100,7 @@ impl WordPressPlugin {
     
     fn get_config(&self) -> Result<&WordPressConfig, McpError> {
         self.config.as_ref()
-            .ok_or_else(|| McpError::Other("WordPress plugin not initialized".to_string()))
+            .ok_or_else(|| McpError::other("WordPress plugin not initialized"))
     }
     
     async fn make_request(&self, endpoint: &str) -> Result<reqwest::Response, McpError> {
@@ -126,10 +127,10 @@ impl WordPressPlugin {
         }
         
         let response = request.send().await
-            .map_err(|e| McpError::Http(e))?;
+            .map_err(|e| McpError::http(e.to_string()))?;
         
         if !response.status().is_success() {
-            return Err(McpError::ExternalApi(format!(
+            return Err(McpError::external_api(format!(
                 "WordPress API error: {} - {}",
                 response.status(),
                 response.text().await.unwrap_or_default()
@@ -378,15 +379,42 @@ impl ResourceProvider for WordPressPlugin {
     }
 }
 
+#[async_trait]
+impl UnifiedPlugin for WordPressPlugin {
+    fn capabilities(&self) -> Vec<PluginCapability> {
+        vec![PluginCapability::Tools, PluginCapability::Resources]
+    }
+    
+    async fn list_tools(&self) -> PluginResult<Vec<Tool>> {
+        ToolProvider::list_tools(self).await
+    }
+    
+    async fn call_tool(&self, name: &str, arguments: Option<HashMap<String, Value>>) -> PluginResult<Value> {
+        ToolProvider::call_tool(self, name, arguments).await
+    }
+    
+    async fn list_resources(&self) -> PluginResult<Vec<Resource>> {
+        ResourceProvider::list_resources(self).await
+    }
+    
+    async fn read_resource(&self, uri: &str) -> PluginResult<Value> {
+        ResourceProvider::read_resource(self, uri).await
+    }
+}
+
 /// WordPress plugin factory
 pub struct WordPressPluginFactory;
 
 impl PluginFactory for WordPressPluginFactory {
-    fn create(&self) -> Box<dyn Plugin> {
+    fn create(&self) -> Box<dyn UnifiedPlugin> {
         Box::new(WordPressPlugin::new())
     }
     
     fn name(&self) -> &str {
         "wordpress"
+    }
+    
+    fn capabilities(&self) -> Vec<PluginCapability> {
+        vec![PluginCapability::Tools, PluginCapability::Resources]
     }
 }

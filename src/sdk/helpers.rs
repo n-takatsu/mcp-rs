@@ -34,7 +34,7 @@ impl PluginUtils {
     }
     
     /// Safely extract array parameter
-    pub fn get_array_param(args: &HashMap<String, Value>, key: &str) -> Option<&Vec<Value>> {
+    pub fn get_array_param<'a>(args: &'a HashMap<String, Value>, key: &str) -> Option<&'a Vec<Value>> {
         args.get(key)?.as_array()
     }
     
