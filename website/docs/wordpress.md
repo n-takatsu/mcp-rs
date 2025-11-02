@@ -25,10 +25,13 @@ MCP-RS provides comprehensive WordPress integration through the WordPress REST A
 ## Features
 
 ### 📝 Content Management
-- **Post Creation**: Create new WordPress posts with rich content
+- **Advanced Post Creation**: Create posts and pages with comprehensive options
+- **Post Type Support**: Both posts (blog articles) and pages (static content)
+- **Status Control**: Draft, publish, private, and scheduled posts
+- **SEO Integration**: Meta fields for Yoast SEO and other plugins
 - **Post Retrieval**: Get all published posts with metadata
+- **Complete CRUD**: Create, read, update, and delete operations
 - **Comment Management**: Retrieve and manage post comments
-- **Status Control**: Publish, draft, or schedule posts
 
 ### 🖼️ Media Management
 - **File Upload**: Upload images, documents, and media files
@@ -47,6 +50,12 @@ MCP-RS provides comprehensive WordPress integration through the WordPress REST A
 - **Tag Operations**: Create, read, update, and delete tags
 - **Hierarchical Categories**: Support for parent-child category relationships
 - **Bulk Operations**: Efficient management of multiple categories and tags
+
+### ⚙️ Advanced Features
+- **Structured API**: Clean parameter structures for maintainable code
+- **Flexible Updates**: Partial updates with optional parameters
+- **Meta Data Support**: Custom fields and SEO metadata
+- **Post Scheduling**: Future publication with ISO8601 timestamps
 
 ## Configuration
 
@@ -70,8 +79,10 @@ timeout_seconds = 30
 
 ## Available Tools
 
-### `create_post`
-Create a new WordPress post.
+### Core Content Management
+
+#### `create_post`
+Create a new WordPress post (basic version).
 
 **Parameters:**
 - `title` (string): Post title
@@ -88,7 +99,93 @@ Create a new WordPress post.
 }
 ```
 
-### `upload_media`
+#### `create_advanced_post`
+Create a new WordPress post or page with advanced options.
+
+**Parameters:**
+- `title` (string): Post/page title
+- `content` (string): Post/page content
+- `post_type` (string): "post" (投稿) or "page" (固定ページ) [default: "post"]
+- `status` (string): "publish" (公開), "draft" (下書き), "private" (非公開), "future" (予約投稿) [default: "publish"]
+- `date` (string, optional): Publication date (ISO8601 format, required for "future" status)
+- `categories` (array, optional): Category IDs (posts only)
+- `tags` (array, optional): Tag IDs (posts only)  
+- `featured_media_id` (number, optional): Featured image media ID
+- `meta` (object, optional): Meta fields for SEO (e.g., Yoast SEO fields)
+
+**Example Usage:**
+```json
+{
+  "tool": "create_advanced_post",
+  "arguments": {
+    "title": "SEO-Optimized Post",
+    "content": "<p>Content with SEO optimization</p>",
+    "post_type": "post",
+    "status": "draft",
+    "categories": [1, 5],
+    "tags": [10, 15, 20],
+    "featured_media_id": 123,
+    "meta": {
+      "_yoast_wpseo_metadesc": "Custom meta description",
+      "_yoast_wpseo_meta-robots-noindex": "1"
+    }
+  }
+}
+```
+
+#### `update_post`
+Update an existing WordPress post.
+
+**Parameters:**
+- `post_id` (number): ID of the post to update
+- `title` (string, optional): New post title
+- `content` (string, optional): New post content
+- `status` (string, optional): New post status
+- `categories` (array, optional): New category IDs
+- `tags` (array, optional): New tag IDs
+- `featured_media_id` (number, optional): New featured image ID
+- `meta` (object, optional): New meta fields
+
+**Example Usage:**
+```json
+{
+  "tool": "update_post",
+  "arguments": {
+    "post_id": 123,
+    "title": "Updated Title",
+    "status": "publish",
+    "categories": [1, 2, 3]
+  }
+}
+```
+
+#### `delete_post`
+Delete a WordPress post.
+
+**Parameters:**
+- `post_id` (number): ID of the post to delete
+- `force` (boolean, optional): Permanently delete (true) or move to trash (false) [default: false]
+
+### Content Retrieval
+
+#### `get_posts`
+Retrieve WordPress posts.
+
+#### `get_pages`
+Retrieve WordPress pages.
+
+#### `get_all_content`
+Retrieve both WordPress posts and pages.
+
+#### `get_post`
+Retrieve a single WordPress post by ID.
+
+**Parameters:**
+- `post_id` (number): ID of the post to retrieve
+
+### Media Management
+
+#### `upload_media`
 Upload a media file to WordPress media library.
 
 **Parameters:**
@@ -108,7 +205,7 @@ Upload a media file to WordPress media library.
 }
 ```
 
-### `create_post_with_featured_image`
+#### `create_post_with_featured_image`
 Create a post with a featured image in one operation.
 
 **Parameters:**
@@ -116,42 +213,79 @@ Create a post with a featured image in one operation.
 - `content` (string): Post content
 - `featured_media_id` (number): Media ID from uploaded image
 
-**Example Usage:**
-```json
-{
-  "tool": "create_post_with_featured_image",
-  "arguments": {
-    "title": "Post with Featured Image", 
-    "content": "<p>This post has a beautiful featured image.</p>",
-    "featured_media_id": 123
-  }
-}
-```
-
-### `set_featured_image`
+#### `set_featured_image`
 Set featured image for an existing post.
 
 **Parameters:**
 - `post_id` (number): ID of the post to update
 - `media_id` (number): ID of the media to set as featured image
 
+### Category & Tag Management
+
+**Returns:** Array of post objects with metadata
+
+### `get_post`
+Retrieve a single WordPress post by ID.
+
+**Parameters:**
+- `post_id` (number): ID of the post to retrieve
+
 **Example Usage:**
 ```json
 {
-  "tool": "set_featured_image",
+  "tool": "get_post",
   "arguments": {
-    "post_id": 456,
-    "media_id": 123
+    "post_id": 123
   }
 }
 ```
 
-### `get_posts`
-Retrieve all WordPress posts.
+### `update_post`
+Update an existing WordPress post with comprehensive options.
 
-**Parameters:** None
+**Parameters:**
+- `post_id` (number): ID of post to update
+- `title` (string, optional): New post title
+- `content` (string, optional): New post content
+- `status` (string, optional): Post status (publish, draft, private)
+- `categories` (array, optional): Array of category IDs
+- `tags` (array, optional): Array of tag IDs
+- `featured_media_id` (number, optional): Featured image media ID
 
-**Returns:** Array of post objects with metadata
+**Example Usage:**
+```json
+{
+  "tool": "update_post",
+  "arguments": {
+    "post_id": 123,
+    "title": "Updated Post Title",
+    "content": "<p>Updated content here...</p>",
+    "status": "publish",
+    "categories": [5, 12],
+    "tags": [23, 45]
+  }
+}
+```
+
+### `delete_post`
+Delete a WordPress post.
+
+**Parameters:**
+- `post_id` (number): ID of post to delete
+- `force` (boolean, optional): Force delete (permanently delete, bypass trash)
+
+**Example Usage:**
+```json
+{
+  "tool": "delete_post",
+  "arguments": {
+    "post_id": 123,
+    "force": false
+  }
+}
+```
+
+**Note:** When `force` is `false` (default), the post is moved to trash. When `true`, it's permanently deleted.
 
 ### `get_comments`
 Retrieve WordPress comments.
@@ -416,6 +550,41 @@ AI automatically:
 2. Adds new tag to existing taxonomy
 3. Uses update_post_categories_tags to preserve existing data
 4. Confirms successful update
+```
+
+### Complete Content Management Workflow
+```
+User: "Edit post #123 to change the title and add categories"
+AI automatically:
+1. Uses get_post to retrieve current post details
+2. Shows current title, content, and taxonomy
+3. Uses update_post with new title and categories
+4. Preserves existing content and other metadata
+5. Confirms successful update
+
+User: "Delete the draft post about outdated technology"
+AI automatically:
+1. Uses get_posts to find draft posts
+2. Identifies the specific post by content analysis
+3. Uses delete_post with force=false (moves to trash)
+4. Confirms post moved to trash for recovery if needed
+```
+
+### Content Lifecycle Management
+```
+User: "Publish the draft post and add featured image"
+AI automatically:
+1. Uses get_post to retrieve draft details
+2. Uses upload_media for featured image
+3. Uses update_post with status="publish" and featured_media_id
+4. Complete publication workflow in one operation
+
+User: "Archive old posts from 2022"
+AI automatically:
+1. Uses get_posts to find posts from 2022
+2. Shows list for user confirmation
+3. Uses update_post to change status to "private"
+4. Bulk content management operation
 ```
 
 ### AI-Assisted Taxonomy Management

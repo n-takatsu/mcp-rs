@@ -40,14 +40,18 @@
 ### 🔌 Current Integrations
 
 - **✅ WordPress**: Full WordPress REST API integration with advanced features:
-  - Post/Page management (CRUD operations)
+  - **📝 Advanced Post Management**: Create posts/pages with comprehensive options
+  - **📊 Status Control**: Draft, publish, private, and scheduled posts  
+  - **🎯 SEO Integration**: Meta fields for Yoast SEO and other plugins
+  - **📅 Post Scheduling**: Future publication with ISO8601 timestamps
   - **🖼️ Featured Image Support**: Upload and set featured images
   - **📁 Media Library**: Complete media upload and management
   - **🎯 Base64 Upload**: Handle base64-encoded file uploads
-  - **🔍 Health Check System**: Comprehensive environment validation
-  - **🛠️ Production Monitoring**: 5-stage validation with detailed reporting
   - **🏷️ Category & Tag Management**: Full CRUD operations for taxonomies
   - **📂 Hierarchical Categories**: Support for parent-child relationships
+  - **⚙️ Structured API**: Clean parameter structures for maintainable code
+  - **🔍 Health Check System**: Comprehensive environment validation
+  - **🛠️ Production Monitoring**: 5-stage validation with detailed reporting
   - Comment management and retrieval
   - Timeout and retry handling with exponential backoff
   - Secure authentication with application passwords
@@ -210,6 +214,12 @@ cargo run --example wordpress_categories_tags_test
 
 # WordPress posts with categories and tags integration test
 cargo run --example wordpress_posts_with_taxonomy_test
+
+# Complete WordPress post CRUD operations test
+cargo run --example wordpress_post_crud_test
+
+# Advanced post creation with SEO and scheduling
+cargo run --example wordpress_advanced_post_test
 
 # WordPress security diagnosis and setup
 cargo run --example wordpress_security_diagnosis

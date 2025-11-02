@@ -1,7 +1,4 @@
-use mcp_rs::{
-    handlers::wordpress::WordPressHandler,
-    config::WordPressConfig,
-};
+use mcp_rs::{config::WordPressConfig, handlers::wordpress::WordPressHandler};
 use tracing::info;
 
 #[tokio::main]
@@ -13,12 +10,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Create WordPress configuration from environment variables or defaults
     let wp_config = WordPressConfig {
-        url: std::env::var("WORDPRESS_URL")
-            .unwrap_or_else(|_| "http://localhost".to_string()),
-        username: std::env::var("WORDPRESS_USERNAME")
-            .unwrap_or_else(|_| "admin".to_string()),
-        password: std::env::var("WORDPRESS_PASSWORD")
-            .unwrap_or_else(|_| "password".to_string()),
+        url: std::env::var("WORDPRESS_URL").unwrap_or_else(|_| "http://localhost".to_string()),
+        username: std::env::var("WORDPRESS_USERNAME").unwrap_or_else(|_| "admin".to_string()),
+        password: std::env::var("WORDPRESS_PASSWORD").unwrap_or_else(|_| "password".to_string()),
         enabled: Some(true),
         timeout_seconds: std::env::var("WORDPRESS_TIMEOUT")
             .ok()
@@ -41,7 +35,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let handler = WordPressHandler::new(wp_config);
 
     println!("=== WordPress Environment Health Check ===\n");
-    
+
     // Perform health check
     let health_result = handler.health_check().await;
 
@@ -55,11 +49,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn display_health_results(health: &mcp_rs::handlers::wordpress::WordPressHealthCheck) {
-    let status_emoji = if health.error_details.is_empty() { "✅" } else { "⚠️" };
-    let status_text = if health.error_details.is_empty() { "HEALTHY" } else { "ISSUES DETECTED" };
-    
+    let status_emoji = if health.error_details.is_empty() {
+        "✅"
+    } else {
+        "⚠️"
+    };
+    let status_text = if health.error_details.is_empty() {
+        "HEALTHY"
+    } else {
+        "ISSUES DETECTED"
+    };
+
     println!("{} Overall Status: {}\n", status_emoji, status_text);
-    
+
     if let Some(site_info) = &health.site_info {
         println!("🌐 Site Information:");
         println!("   Name: {}", site_info.name);
@@ -73,27 +75,64 @@ fn display_health_results(health: &mcp_rs::handlers::wordpress::WordPressHealthC
         }
         println!();
     }
-    
+
     println!("📊 Detailed Health Status:");
-    println!("   Site Accessible:        {}", if health.site_accessible { "✅ YES" } else { "❌ NO" });
-    println!("   REST API Available:     {}", if health.rest_api_available { "✅ YES" } else { "❌ NO" });
-    println!("   Authentication Valid:   {}", if health.authentication_valid { "✅ YES" } else { "❌ NO" });
-    println!("   Permissions Adequate:   {}", if health.permissions_adequate { "✅ YES" } else { "❌ NO" });
-    println!("   Media Upload Possible:  {}", if health.media_upload_possible { "✅ YES" } else { "❌ NO" });
-    
+    println!(
+        "   Site Accessible:        {}",
+        if health.site_accessible {
+            "✅ YES"
+        } else {
+            "❌ NO"
+        }
+    );
+    println!(
+        "   REST API Available:     {}",
+        if health.rest_api_available {
+            "✅ YES"
+        } else {
+            "❌ NO"
+        }
+    );
+    println!(
+        "   Authentication Valid:   {}",
+        if health.authentication_valid {
+            "✅ YES"
+        } else {
+            "❌ NO"
+        }
+    );
+    println!(
+        "   Permissions Adequate:   {}",
+        if health.permissions_adequate {
+            "✅ YES"
+        } else {
+            "❌ NO"
+        }
+    );
+    println!(
+        "   Media Upload Possible:  {}",
+        if health.media_upload_possible {
+            "✅ YES"
+        } else {
+            "❌ NO"
+        }
+    );
+
     if !health.error_details.is_empty() {
         println!("\n🚨 Issues Detected:");
         for (i, error) in health.error_details.iter().enumerate() {
             println!("   {}. {}", i + 1, error);
         }
     }
-    
+
     println!();
 }
 
 fn provide_recommendations(health: &mcp_rs::handlers::wordpress::WordPressHealthCheck) {
     if health.error_details.is_empty() {
-        println!("🎉 Congratulations! Your WordPress environment is fully configured and ready to use.");
+        println!(
+            "🎉 Congratulations! Your WordPress environment is fully configured and ready to use."
+        );
         println!("\n💡 You can now use the following MCP tools:");
         println!("   • create_post - Create new blog posts");
         println!("   • upload_media - Upload images and files");
@@ -151,5 +190,7 @@ fn provide_recommendations(health: &mcp_rs::handlers::wordpress::WordPressHealth
         println!();
     }
 
-    println!("📖 For more help, check the documentation or run this check again after making changes.");
+    println!(
+        "📖 For more help, check the documentation or run this check again after making changes."
+    );
 }
