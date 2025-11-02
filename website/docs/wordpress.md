@@ -259,3 +259,215 @@ RUST_LOG=debug cargo run
 ```
 
 This will show detailed HTTP requests and responses for troubleshooting.
+
+---
+
+## Health Check System
+
+The WordPress MCP integration includes a comprehensive health check system to validate your environment before performing operations. This ensures reliable operation and helps identify configuration issues early.
+
+### `wordpress_health_check`
+Perform comprehensive environment validation.
+
+**Parameters:** None
+
+**Usage Example:**
+```json
+{
+  "tool": "wordpress_health_check",
+  "arguments": {}
+}
+```
+
+### Check Process
+
+The health check performs five critical validation stages:
+
+#### 1. 🌐 Site Accessibility
+- **Purpose**: Verify WordPress site is reachable
+- **Test**: HTTP GET request to site URL
+- **Success**: Site responds with 200 OK status
+- **Failure**: Network timeout, DNS resolution, or server errors
+
+#### 2. 🔌 REST API Availability  
+- **Purpose**: Confirm WordPress REST API is enabled and accessible
+- **Test**: GET request to `/wp-json/wp/v2/` endpoint
+- **Success**: API responds with namespace information
+- **Failure**: REST API disabled, blocked, or misconfigured
+
+#### 3. 🔐 Authentication Validation
+- **Purpose**: Verify credentials are correct and user exists
+- **Test**: Authenticated request to `/wp-json/wp/v2/users/me`
+- **Success**: Returns user profile information
+- **Failure**: Invalid username, incorrect password, or user not found
+
+#### 4. ✅ Permission Verification
+- **Purpose**: Check user has required capabilities
+- **Test**: Validate publish_posts, upload_files, and edit_posts permissions
+- **Success**: User has all required capabilities
+- **Failure**: Insufficient permissions for content operations
+
+#### 5. 📁 Media Upload Capability
+- **Purpose**: Test file upload functionality end-to-end
+- **Test**: Upload small test image to media library
+- **Success**: File uploaded successfully and media ID returned
+- **Failure**: Upload restrictions, storage issues, or API limitations
+
+### Health Report
+
+The health check returns a comprehensive report with the following information:
+
+```json
+{
+  "status": "healthy",
+  "site_info": {
+    "url": "https://your-site.com",
+    "name": "Your Site Name",
+    "version": "6.3.2",
+    "api_version": "2.0"
+  },
+  "user_info": {
+    "id": 1,
+    "username": "admin",
+    "display_name": "Site Administrator",
+    "email": "admin@yoursite.com",
+    "roles": ["administrator"]
+  },
+  "capabilities": {
+    "publish_posts": true,
+    "upload_files": true, 
+    "edit_posts": true,
+    "manage_options": true
+  },
+  "media_upload": {
+    "supported": true,
+    "test_upload_id": 789,
+    "max_upload_size": "64M"
+  },
+  "performance": {
+    "response_time_ms": 245,
+    "api_response_time_ms": 89
+  }
+}
+```
+
+### Status Levels
+
+**🟢 Healthy**
+- All checks passed
+- System ready for full operation
+- No configuration issues detected
+
+**🟡 Warning**  
+- Minor issues detected
+- Basic functionality available
+- Some features may be limited
+
+**🔴 Critical**
+- Major issues prevent operation
+- Configuration required
+- System not usable
+
+### Troubleshooting Guide
+
+#### Site Accessibility Issues
+```
+❌ Error: Site not accessible
+🔧 Solutions:
+   • Verify URL is correct and includes https://
+   • Check site is online and responding
+   • Ensure firewall/security plugins allow access
+   • Test URL in browser manually
+```
+
+#### REST API Problems
+```
+❌ Error: REST API not available  
+🔧 Solutions:
+   • Enable REST API in WordPress settings
+   • Check security plugins aren't blocking API
+   • Verify .htaccess isn't blocking /wp-json/
+   • Test API endpoint in browser: /wp-json/wp/v2/
+```
+
+#### Authentication Failures
+```
+❌ Error: Authentication failed
+🔧 Solutions:
+   • Regenerate application password
+   • Verify username is exact match
+   • Check user account is active
+   • Ensure application passwords are enabled
+```
+
+#### Permission Issues
+```
+❌ Error: Insufficient permissions
+🔧 Solutions:
+   • Assign Editor or Administrator role
+   • Check user has publish_posts capability
+   • Verify upload_files permission enabled
+   • Review role-based access restrictions
+```
+
+#### Upload Problems
+```
+❌ Error: Media upload failed
+🔧 Solutions:
+   • Check upload_max_filesize in php.ini
+   • Verify post_max_size setting
+   • Ensure uploads directory is writable
+   • Check disk space availability
+```
+
+### Best Practices
+
+#### Before Production Use
+1. **Run Health Check**: Always validate environment first
+2. **Monitor Performance**: Check response times regularly  
+3. **Test Permissions**: Verify all required capabilities
+4. **Validate Uploads**: Confirm media functionality works
+
+#### Automated Monitoring
+```rust
+// Example: Periodic health validation
+use mcp_rs::handlers::wordpress::WordPressHandler;
+
+async fn monitor_wordpress_health() {
+    let handler = WordPressHandler::new(config).await?;
+    
+    match handler.health_check().await {
+        Ok(report) if report.status == "healthy" => {
+            println!("✅ WordPress system healthy");
+        },
+        Ok(report) => {
+            println!("⚠️ Issues detected: {}", report.status);
+            // Handle warnings or critical issues
+        },
+        Err(e) => {
+            println!("❌ Health check failed: {}", e);
+            // Alert administrators
+        }
+    }
+}
+```
+
+#### Integration Workflow
+```
+1. Environment Setup
+   ├── Configure mcp-config.toml
+   ├── Run wordpress_health_check
+   └── Address any issues found
+
+2. Validation Success  
+   ├── Proceed with content operations
+   ├── Monitor performance metrics
+   └── Schedule regular health checks
+
+3. Issue Detection
+   ├── Review detailed error messages
+   ├── Apply recommended solutions  
+   └── Re-run health check to verify fixes
+```
+
+This health check system ensures your WordPress integration is production-ready and helps prevent common configuration issues that could interrupt your workflow.

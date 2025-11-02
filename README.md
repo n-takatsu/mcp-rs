@@ -44,6 +44,8 @@
   - **🖼️ Featured Image Support**: Upload and set featured images
   - **📁 Media Library**: Complete media upload and management
   - **🎯 Base64 Upload**: Handle base64-encoded file uploads
+  - **🔍 Health Check System**: Comprehensive environment validation
+  - **🛠️ Production Monitoring**: 5-stage validation with detailed reporting
   - Comment management and retrieval
   - Tag and category operations
   - Timeout and retry handling with exponential backoff
@@ -199,11 +201,11 @@ cargo run --example http_timeout_test
 # WordPress API connection test
 cargo run --example wordpress_test
 
-# Security diagnosis for WordPress
-cargo run --example wordpress_security_diagnosis
+# WordPress environment health check
+cargo run --example wordpress_health_check
 
-# Timeout handling test (v2)
-cargo run --example timeout_test_v2
+# WordPress security diagnosis and setup
+cargo run --example wordpress_security_diagnosis
 ```
 
 ## MCP Usage Examples
