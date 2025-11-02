@@ -4,8 +4,8 @@ This guide will help you get MCP-RS up and running quickly.
 
 ## Prerequisites
 
-- Rust 1.70 or later
-- Git for cloning the repository
+-   Rust 1.70 or later
+-   Git for cloning the repository
 
 ## Installation
 
@@ -108,7 +108,7 @@ Each plugin can be configured independently through the configuration file or en
 
 ## Next Steps
 
-- [Configuration Guide](configuration.html) - Detailed configuration options
-- [Plugin Development](plugin-development.html) - Creating custom plugins
-- [Examples](examples.html) - Common usage patterns
-- [Architecture Overview](../architecture/overview.html) - Understanding the system design
+-   [Configuration Guide](configuration.html) - Detailed configuration options
+-   [Plugin Development](plugin-development.html) - Creating custom plugins
+-   [Examples](examples.html) - Common usage patterns
+-   [Architecture Overview](../architecture/overview.html) - Understanding the system design

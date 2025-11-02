@@ -3,15 +3,15 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
-use tracing::{info, warn, error};
+use tracing::{error, info, warn};
 
-use crate::core::{
-    Tool, Resource, ToolCallResult, ResourceReadResult, ResourceContent, Content, McpError
-};
 use crate::config::PluginConfig;
+use crate::core::{
+    Content, McpError, Resource, ResourceContent, ResourceReadResult, Tool, ToolCallResult,
+};
 use crate::plugins::{
-    Plugin, PluginMetadata, PluginResult, ToolProvider, ResourceProvider, PluginFactory, 
-    UnifiedPlugin, PluginCapability
+    Plugin, PluginCapability, PluginFactory, PluginMetadata, PluginResult, ResourceProvider,
+    ToolProvider, UnifiedPlugin,
 };
 
 /// WordPress plugin configuration
@@ -19,16 +19,16 @@ use crate::plugins::{
 pub struct WordPressConfig {
     /// WordPress site URL
     pub url: String,
-    
+
     /// Authentication method
     pub auth: AuthConfig,
-    
+
     /// Request timeout in seconds
     pub timeout: Option<u64>,
-    
+
     /// Maximum posts to fetch
     pub max_posts: Option<usize>,
-    
+
     /// Cache TTL in seconds
     pub cache_ttl: Option<u64>,
 }
@@ -38,23 +38,15 @@ pub struct WordPressConfig {
 pub enum AuthConfig {
     #[serde(rename = "none")]
     None,
-    
+
     #[serde(rename = "basic")]
-    Basic {
-        username: String,
-        password: String,
-    },
-    
+    Basic { username: String, password: String },
+
     #[serde(rename = "jwt")]
-    Jwt {
-        token: String,
-    },
-    
+    Jwt { token: String },
+
     #[serde(rename = "application_password")]
-    ApplicationPassword {
-        username: String,
-        password: String,
-    },
+    ApplicationPassword { username: String, password: String },
 }
 
 /// WordPress API models
@@ -97,38 +89,45 @@ impl WordPressPlugin {
             client: Client::new(),
         }
     }
-    
+
     fn get_config(&self) -> Result<&WordPressConfig, McpError> {
-        self.config.as_ref()
+        self.config
+            .as_ref()
             .ok_or_else(|| McpError::other("WordPress plugin not initialized"))
     }
-    
+
     async fn make_request(&self, endpoint: &str) -> Result<reqwest::Response, McpError> {
         let config = self.get_config()?;
-        let url = format!("{}/wp-json/wp/v2/{}", config.url.trim_end_matches('/'), endpoint);
-        
+        let url = format!(
+            "{}/wp-json/wp/v2/{}",
+            config.url.trim_end_matches('/'),
+            endpoint
+        );
+
         let mut request = self.client.get(&url);
-        
+
         // Apply authentication
         match &config.auth {
-            AuthConfig::None => {},
-            AuthConfig::Basic { username, password } |
-            AuthConfig::ApplicationPassword { username, password } => {
+            AuthConfig::None => {}
+            AuthConfig::Basic { username, password }
+            | AuthConfig::ApplicationPassword { username, password } => {
                 request = request.basic_auth(username, Some(password));
-            },
+            }
             AuthConfig::Jwt { token } => {
                 request = request.bearer_auth(token);
-            },
+            }
         }
-        
+
         // Apply timeout
         if let Some(timeout) = config.timeout {
             request = request.timeout(std::time::Duration::from_secs(timeout));
         }
-        
-        let response = request.send().await
+
+        let response = request
+            .send()
+            .await
             .map_err(|e| McpError::http(e.to_string()))?;
-        
+
         if !response.status().is_success() {
             return Err(McpError::external_api(format!(
                 "WordPress API error: {} - {}",
@@ -136,36 +135,40 @@ impl WordPressPlugin {
                 response.text().await.unwrap_or_default()
             )));
         }
-        
+
         Ok(response)
     }
-    
+
     async fn get_posts(&self) -> Result<Vec<WordPressPost>, McpError> {
         let config = self.get_config()?;
         let mut endpoint = "posts".to_string();
-        
+
         if let Some(max_posts) = config.max_posts {
             endpoint.push_str(&format!("?per_page={}", max_posts));
         }
-        
+
         let response = self.make_request(&endpoint).await?;
-        let posts: Vec<WordPressPost> = response.json().await
+        let posts: Vec<WordPressPost> = response
+            .json()
+            .await
             .map_err(|e| McpError::Serialization(serde_json::Error::custom(e)))?;
-        
+
         Ok(posts)
     }
-    
+
     async fn get_comments(&self, post_id: Option<u64>) -> Result<Vec<WordPressComment>, McpError> {
         let mut endpoint = "comments".to_string();
-        
+
         if let Some(post_id) = post_id {
             endpoint.push_str(&format!("?post={}", post_id));
         }
-        
+
         let response = self.make_request(&endpoint).await?;
-        let comments: Vec<WordPressComment> = response.json().await
+        let comments: Vec<WordPressComment> = response
+            .json()
+            .await
             .map_err(|e| McpError::Serialization(serde_json::Error::custom(e)))?;
-        
+
         Ok(comments)
     }
 }
@@ -182,23 +185,23 @@ impl Plugin for WordPressPlugin {
             dependencies: vec!["http".to_string()],
         }
     }
-    
+
     async fn initialize(&mut self, config: &PluginConfig) -> PluginResult {
         let wp_config: WordPressConfig = serde_json::from_value(config.config.clone())
             .map_err(|e| McpError::InvalidParams(format!("Invalid WordPress config: {}", e)))?;
-        
+
         info!("Initializing WordPress plugin with URL: {}", wp_config.url);
         self.config = Some(wp_config);
-        
+
         Ok(())
     }
-    
+
     async fn shutdown(&mut self) -> PluginResult {
         info!("Shutting down WordPress plugin");
         self.config = None;
         Ok(())
     }
-    
+
     async fn health_check(&self) -> PluginResult<bool> {
         if let Ok(_) = self.get_config() {
             // Try to make a simple request to check connectivity
@@ -269,10 +272,14 @@ impl ToolProvider for WordPressPlugin {
             },
         ])
     }
-    
-    async fn call_tool(&self, name: &str, arguments: Option<HashMap<String, Value>>) -> PluginResult<Value> {
+
+    async fn call_tool(
+        &self,
+        name: &str,
+        arguments: Option<HashMap<String, Value>>,
+    ) -> PluginResult<Value> {
         let args = arguments.unwrap_or_default();
-        
+
         match name {
             "wordpress_get_posts" => {
                 let posts = self.get_posts().await?;
@@ -283,8 +290,8 @@ impl ToolProvider for WordPressPlugin {
                     is_error: Some(false),
                 };
                 Ok(serde_json::to_value(result)?)
-            },
-            
+            }
+
             "wordpress_get_comments" => {
                 let post_id = args.get("post_id").and_then(|v| v.as_u64());
                 let comments = self.get_comments(post_id).await?;
@@ -295,24 +302,27 @@ impl ToolProvider for WordPressPlugin {
                     is_error: Some(false),
                 };
                 Ok(serde_json::to_value(result)?)
-            },
-            
+            }
+
             "wordpress_search_posts" => {
-                let query = args.get("query")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| McpError::InvalidParams("Missing query parameter".to_string()))?;
-                
-                let limit = args.get("limit")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(10);
-                
-                let endpoint = format!("posts?search={}&per_page={}", 
-                    urlencoding::encode(query), limit);
-                
+                let query = args.get("query").and_then(|v| v.as_str()).ok_or_else(|| {
+                    McpError::InvalidParams("Missing query parameter".to_string())
+                })?;
+
+                let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10);
+
+                let endpoint = format!(
+                    "posts?search={}&per_page={}",
+                    urlencoding::encode(query),
+                    limit
+                );
+
                 let response = self.make_request(&endpoint).await?;
-                let posts: Vec<WordPressPost> = response.json().await
+                let posts: Vec<WordPressPost> = response
+                    .json()
+                    .await
                     .map_err(|e| McpError::Serialization(serde_json::Error::custom(e)))?;
-                
+
                 let result = ToolCallResult {
                     content: vec![Content::Text {
                         text: format!("Found {} posts matching '{}'", posts.len(), query),
@@ -320,8 +330,8 @@ impl ToolProvider for WordPressPlugin {
                     is_error: Some(false),
                 };
                 Ok(serde_json::to_value(result)?)
-            },
-            
+            }
+
             _ => Err(McpError::ToolNotFound(name.to_string())),
         }
     }
@@ -345,7 +355,7 @@ impl ResourceProvider for WordPressPlugin {
             },
         ])
     }
-    
+
     async fn read_resource(&self, uri: &str) -> PluginResult<Value> {
         match uri {
             "wordpress://posts" => {
@@ -359,8 +369,8 @@ impl ResourceProvider for WordPressPlugin {
                     }],
                 };
                 Ok(serde_json::to_value(result)?)
-            },
-            
+            }
+
             "wordpress://comments" => {
                 let comments = self.get_comments(None).await?;
                 let result = ResourceReadResult {
@@ -372,8 +382,8 @@ impl ResourceProvider for WordPressPlugin {
                     }],
                 };
                 Ok(serde_json::to_value(result)?)
-            },
-            
+            }
+
             _ => Err(McpError::ResourceNotFound(uri.to_string())),
         }
     }
@@ -384,19 +394,23 @@ impl UnifiedPlugin for WordPressPlugin {
     fn capabilities(&self) -> Vec<PluginCapability> {
         vec![PluginCapability::Tools, PluginCapability::Resources]
     }
-    
+
     async fn list_tools(&self) -> PluginResult<Vec<Tool>> {
         ToolProvider::list_tools(self).await
     }
-    
-    async fn call_tool(&self, name: &str, arguments: Option<HashMap<String, Value>>) -> PluginResult<Value> {
+
+    async fn call_tool(
+        &self,
+        name: &str,
+        arguments: Option<HashMap<String, Value>>,
+    ) -> PluginResult<Value> {
         ToolProvider::call_tool(self, name, arguments).await
     }
-    
+
     async fn list_resources(&self) -> PluginResult<Vec<Resource>> {
         ResourceProvider::list_resources(self).await
     }
-    
+
     async fn read_resource(&self, uri: &str) -> PluginResult<Value> {
         ResourceProvider::read_resource(self, uri).await
     }
@@ -409,11 +423,11 @@ impl PluginFactory for WordPressPluginFactory {
     fn create(&self) -> Box<dyn UnifiedPlugin> {
         Box::new(WordPressPlugin::new())
     }
-    
+
     fn name(&self) -> &str {
         "wordpress"
     }
-    
+
     fn capabilities(&self) -> Vec<PluginCapability> {
         vec![PluginCapability::Tools, PluginCapability::Resources]
     }

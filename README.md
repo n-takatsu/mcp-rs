@@ -6,27 +6,27 @@ This project aims to provide a type-safe, extensible, and performant MCP server 
 
 ## 📖 Documentation
 
-- **[📚 Complete Documentation](https://redring2020.github.io/mcp-rs/)** - GitHub Pages site
-- **[🚀 Getting Started Guide](https://redring2020.github.io/mcp-rs/website/docs/guides/getting-started.html)** - Quick setup
-- **[📝 API Reference](https://redring2020.github.io/mcp-rs/website/docs/api/)** - Complete API docs
-- **[🏗️ Architecture Overview](https://redring2020.github.io/mcp-rs/website/docs/architecture/overview.html)** - System design
-- **[📊 Logging Strategy](https://redring2020.github.io/mcp-rs/website/docs/architecture/logging.html)** - Operational monitoring
+-   **[📚 Complete Documentation](https://redring2020.github.io/mcp-rs/)** - GitHub Pages site
+-   **[🚀 Getting Started Guide](https://redring2020.github.io/mcp-rs/website/docs/guides/getting-started.html)** - Quick setup
+-   **[📝 API Reference](https://redring2020.github.io/mcp-rs/website/docs/api/)** - Complete API docs
+-   **[🏗️ Architecture Overview](https://redring2020.github.io/mcp-rs/website/docs/architecture/overview.html)** - System design
+-   **[📊 Logging Strategy](https://redring2020.github.io/mcp-rs/website/docs/architecture/logging.html)** - Operational monitoring
 
 ## Features
 
-- 🚀 **JSON-RPC 2.0 compliant server** - Full MCP protocol implementation
-- 📝 **WordPress integration** - Post/comment/media/user operations
-- 🤖 **Copilot Studio ready** - Seamless AI agent integration
-- 🔧 **Modular architecture** - Easy to extend with new protocols
-- ⚡ **High performance** - Built with Rust and Tokio
-- 🔒 **Type-safe** - Comprehensive error handling and validation
+-   🚀 **JSON-RPC 2.0 compliant server** - Full MCP protocol implementation
+-   📝 **WordPress integration** - Post/comment/media/user operations
+-   🤖 **Copilot Studio ready** - Seamless AI agent integration
+-   🔧 **Modular architecture** - Easy to extend with new protocols
+-   ⚡ **High performance** - Built with Rust and Tokio
+-   🔒 **Type-safe** - Comprehensive error handling and validation
 
 ## Quick Start
 
 ### Prerequisites
 
-- Rust 1.70+
-- WordPress site with REST API enabled (optional for testing)
+-   Rust 1.70+
+-   WordPress site with REST API enabled (optional for testing)
 
 ### Installation
 
@@ -39,11 +39,13 @@ cargo build --release
 ### Configuration
 
 1. Copy the example environment file:
+
 ```bash
 cp .env.example .env
 ```
 
 2. Edit `.env` with your WordPress configuration:
+
 ```bash
 WORDPRESS_URL=https://your-wordpress-site.com
 WORDPRESS_USERNAME=your_username
@@ -53,11 +55,13 @@ WORDPRESS_PASSWORD=your_password
 ### Running the Server
 
 #### For MCP clients (stdio mode):
+
 ```bash
 MCP_STDIO=1 cargo run
 ```
 
 #### For development (TCP mode):
+
 ```bash
 cargo run
 ```
@@ -76,14 +80,14 @@ cargo run --example wordpress_test
 
 The WordPress handler provides the following tools:
 
-- **get_posts** - Retrieve WordPress posts
-- **create_post** - Create new WordPress posts
-- **get_comments** - Retrieve WordPress comments
+-   **get_posts** - Retrieve WordPress posts
+-   **create_post** - Create new WordPress posts
+-   **get_comments** - Retrieve WordPress comments
 
 ### Available Resources
 
-- **wordpress://posts** - Access to all WordPress posts
-- **wordpress://comments** - Access to all WordPress comments
+-   **wordpress://posts** - Access to all WordPress posts
+-   **wordpress://comments** - Access to all WordPress comments
 
 ## Development
 
@@ -148,19 +152,20 @@ To use this MCP server with Copilot Studio:
 3. Point to the compiled binary with `MCP_STDIO=1`
 
 Example configuration:
+
 ```json
 {
-  "mcpServers": {
-    "wordpress": {
-      "command": "path/to/mcp-rs",
-      "env": {
-        "MCP_STDIO": "1",
-        "WORDPRESS_URL": "https://your-site.com",
-        "WORDPRESS_USERNAME": "username",
-        "WORDPRESS_PASSWORD": "password"
-      }
+    "mcpServers": {
+        "wordpress": {
+            "command": "path/to/mcp-rs",
+            "env": {
+                "MCP_STDIO": "1",
+                "WORDPRESS_URL": "https://your-site.com",
+                "WORDPRESS_USERNAME": "username",
+                "WORDPRESS_PASSWORD": "password"
+            }
+        }
     }
-  }
 }
 ```
 
@@ -182,10 +187,10 @@ This project is licensed under the [MIT License](./LICENSE).
 
 ## Roadmap
 
-- [ ] Additional WordPress operations (media, users, taxonomies)
-- [ ] Support for other CMS platforms
-- [ ] WebSocket transport support
-- [ ] Advanced authentication methods
-- [ ] Caching layer for improved performance
-- [ ] Comprehensive test suite
-- [ ] Documentation improvements
+-   [ ] Additional WordPress operations (media, users, taxonomies)
+-   [ ] Support for other CMS platforms
+-   [ ] WebSocket transport support
+-   [ ] Advanced authentication methods
+-   [ ] Caching layer for improved performance
+-   [ ] Comprehensive test suite
+-   [ ] Documentation improvements

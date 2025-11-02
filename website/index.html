@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>MCP-RS - High-Performance Rust Implementation of Model Context Protocol</title>
     <meta name="description" content="Production-ready Rust implementation of the Model Context Protocol (MCP) for AI agent integration">
-    
+
     <!-- GitHub Pages compatible styling -->
     <style>
         :root {
@@ -16,52 +16,52 @@
             --border-color: #e2e8f0;
             --code-background: #f8fafc;
         }
-        
+
         * {
             margin: 0;
             padding: 0;
             box-sizing: border-box;
         }
-        
+
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
             line-height: 1.6;
             color: var(--text-color);
             background-color: var(--background-color);
         }
-        
+
         .container {
             max-width: 1200px;
             margin: 0 auto;
             padding: 0 2rem;
         }
-        
+
         header {
             background: linear-gradient(135deg, var(--primary-color), #3b82f6);
             color: white;
             padding: 3rem 0;
             text-align: center;
         }
-        
+
         h1 {
             font-size: 3rem;
             font-weight: 700;
             margin-bottom: 1rem;
         }
-        
+
         .subtitle {
             font-size: 1.25rem;
             opacity: 0.9;
             margin-bottom: 2rem;
         }
-        
+
         .badges {
             display: flex;
             justify-content: center;
             gap: 1rem;
             flex-wrap: wrap;
         }
-        
+
         .badge {
             background: rgba(255, 255, 255, 0.2);
             padding: 0.5rem 1rem;
@@ -69,7 +69,7 @@
             font-size: 0.875rem;
             backdrop-filter: blur(10px);
         }
-        
+
         nav {
             background: white;
             border-bottom: 1px solid var(--border-color);
@@ -78,14 +78,14 @@
             top: 0;
             z-index: 100;
         }
-        
+
         .nav-links {
             display: flex;
             justify-content: center;
             gap: 2rem;
             list-style: none;
         }
-        
+
         .nav-links a {
             color: var(--text-color);
             text-decoration: none;
@@ -94,32 +94,32 @@
             border-radius: 0.5rem;
             transition: background-color 0.2s;
         }
-        
+
         .nav-links a:hover {
             background-color: var(--code-background);
         }
-        
+
         main {
             padding: 3rem 0;
         }
-        
+
         .section {
             margin-bottom: 4rem;
         }
-        
+
         h2 {
             color: var(--primary-color);
             font-size: 2rem;
             margin-bottom: 1rem;
         }
-        
+
         .features {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
             gap: 2rem;
             margin-top: 2rem;
         }
-        
+
         .feature-card {
             background: white;
             border: 1px solid var(--border-color);
@@ -127,12 +127,12 @@
             padding: 2rem;
             box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
         }
-        
+
         .feature-card h3 {
             color: var(--primary-color);
             margin-bottom: 1rem;
         }
-        
+
         .code-block {
             background: var(--code-background);
             border: 1px solid var(--border-color);
@@ -142,14 +142,14 @@
             font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
             font-size: 0.875rem;
         }
-        
+
         .links {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
             gap: 1rem;
             margin-top: 2rem;
         }
-        
+
         .link-card {
             display: block;
             background: white;
@@ -161,17 +161,17 @@
             transition: all 0.2s;
             box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
         }
-        
+
         .link-card:hover {
             transform: translateY(-2px);
             box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
         }
-        
+
         .link-card h3 {
             color: var(--primary-color);
             margin-bottom: 0.5rem;
         }
-        
+
         footer {
             background: var(--code-background);
             border-top: 1px solid var(--border-color);
@@ -179,17 +179,17 @@
             text-align: center;
             color: var(--secondary-color);
         }
-        
+
         @media (max-width: 768px) {
             h1 {
                 font-size: 2rem;
             }
-            
+
             .nav-links {
                 flex-direction: column;
                 gap: 0.5rem;
             }
-            
+
             .container {
                 padding: 0 1rem;
             }
@@ -209,7 +209,7 @@
             </div>
         </div>
     </header>
-    
+
     <nav>
         <div class="container">
             <ul class="nav-links">
@@ -220,7 +220,7 @@
             </ul>
         </div>
     </nav>
-    
+
     <main>
         <div class="container">
             <section id="features" class="section">
@@ -230,34 +230,34 @@
                         <h3>🏗️ Modular Architecture</h3>
                         <p>Plugin-based system with trait-driven providers for tools, resources, and prompts. Easy to extend and customize for specific use cases.</p>
                     </div>
-                    
+
                     <div class="feature-card">
                         <h3>⚡ High Performance</h3>
                         <p>Built on Tokio async runtime with zero-copy serialization and efficient resource management for production workloads.</p>
                     </div>
-                    
+
                     <div class="feature-card">
                         <h3>🔧 Configuration Management</h3>
                         <p>Flexible configuration system supporting TOML, YAML, environment variables, and CLI arguments with hot-reload capabilities.</p>
                     </div>
-                    
+
                     <div class="feature-card">
                         <h3>📊 Observability</h3>
                         <p>Comprehensive logging with request correlation, performance metrics, security monitoring, and structured JSON output.</p>
                     </div>
-                    
+
                     <div class="feature-card">
                         <h3>🔌 Plugin SDK</h3>
                         <p>Complete SDK with macros, testing utilities, and helper functions for rapid plugin development and deployment.</p>
                     </div>
-                    
+
                     <div class="feature-card">
                         <h3>🛡️ Production Ready</h3>
                         <p>Type-safe error handling, comprehensive test suite, benchmarks, and security-focused design patterns.</p>
                     </div>
                 </div>
             </section>
-            
+
             <section id="quick-start" class="section">
                 <h2>Quick Start</h2>
                 <div class="code-block">
@@ -275,7 +275,7 @@ cargo build --release
 # Enable debug logging and specific plugins
 ./target/release/mcp-rs --debug --enable-plugin wordpress --enable-plugin github</div>
             </section>
-            
+
             <section id="documentation" class="section">
                 <h2>Documentation</h2>
                 <div class="links">
@@ -283,27 +283,27 @@ cargo build --release
                         <h3>📖 Getting Started</h3>
                         <p>Complete setup guide and basic usage examples</p>
                     </a>
-                    
+
                     <a href="docs/api/index.html" class="link-card">
                         <h3>📚 API Reference</h3>
                         <p>Complete API documentation and type definitions</p>
                     </a>
-                    
+
                     <a href="docs/architecture/logging.html" class="link-card">
                         <h3>🏗️ Architecture</h3>
                         <p>System design, logging strategy, and plugin architecture</p>
                     </a>
-                    
+
                     <a href="docs/guides/plugin-development.html" class="link-card">
                         <h3>🔌 Plugin Development</h3>
                         <p>Guide to building custom plugins with the SDK</p>
                     </a>
-                    
+
                     <a href="docs/guides/configuration.html" class="link-card">
                         <h3>⚙️ Configuration</h3>
                         <p>Configuration options and deployment strategies</p>
                     </a>
-                    
+
                     <a href="docs/guides/examples.html" class="link-card">
                         <h3>💡 Examples</h3>
                         <p>Practical examples and integration patterns</p>
@@ -312,7 +312,7 @@ cargo build --release
             </section>
         </div>
     </main>
-    
+
     <footer>
         <div class="container">
             <p>&copy; 2024 MCP-RS Project. Licensed under MIT License.</p>

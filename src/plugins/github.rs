@@ -5,9 +5,12 @@ use serde_json::Value;
 use std::collections::HashMap;
 use tracing::{info, warn};
 
-use crate::core::{Tool, Resource, McpError};
 use crate::config::PluginConfig;
-use crate::plugins::{Plugin, PluginMetadata, PluginResult, ToolProvider, ResourceProvider, PluginFactory, UnifiedPlugin, PluginCapability};
+use crate::core::{McpError, Resource, Tool};
+use crate::plugins::{
+    Plugin, PluginCapability, PluginFactory, PluginMetadata, PluginResult, ResourceProvider,
+    ToolProvider, UnifiedPlugin,
+};
 use crate::sdk::prelude::*;
 
 /// GitHub plugin configuration
@@ -15,16 +18,16 @@ use crate::sdk::prelude::*;
 pub struct GitHubConfig {
     /// GitHub token for authentication
     pub token: String,
-    
+
     /// Default owner/organization
     pub owner: String,
-    
+
     /// Default repositories to work with
     pub repos: Vec<String>,
-    
+
     /// Request timeout in seconds
     pub timeout: Option<u64>,
-    
+
     /// GitHub API base URL (for enterprise)
     pub base_url: Option<String>,
 }
@@ -91,35 +94,40 @@ impl GitHubPlugin {
             client: Client::new(),
         }
     }
-    
+
     fn get_config(&self) -> Result<&GitHubConfig, McpError> {
-        self.config.as_ref()
+        self.config
+            .as_ref()
             .ok_or_else(|| McpError::Other("GitHub plugin not initialized".to_string()))
     }
-    
+
     fn get_base_url(&self) -> String {
         self.get_config()
             .ok()
             .and_then(|c| c.base_url.clone())
             .unwrap_or_else(|| "https://api.github.com".to_string())
     }
-    
+
     async fn make_request(&self, endpoint: &str) -> Result<reqwest::Response, McpError> {
         let config = self.get_config()?;
         let url = format!("{}/{}", self.get_base_url().trim_end_matches('/'), endpoint);
-        
-        let mut request = self.client
+
+        let mut request = self
+            .client
             .get(&url)
             .header("Authorization", format!("token {}", config.token))
-            .header("User-Agent", format!("mcp-rs/{}", env!("CARGO_PKG_VERSION")))
+            .header(
+                "User-Agent",
+                format!("mcp-rs/{}", env!("CARGO_PKG_VERSION")),
+            )
             .header("Accept", "application/vnd.github.v3+json");
-        
+
         if let Some(timeout) = config.timeout {
             request = request.timeout(std::time::Duration::from_secs(timeout));
         }
-        
+
         let response = request.send().await?;
-        
+
         if !response.status().is_success() {
             return Err(McpError::ExternalApi(format!(
                 "GitHub API error: {} - {}",
@@ -127,31 +135,35 @@ impl GitHubPlugin {
                 response.text().await.unwrap_or_default()
             )));
         }
-        
+
         Ok(response)
     }
-    
+
     async fn get_repositories(&self) -> Result<Vec<GitHubRepo>, McpError> {
         let config = self.get_config()?;
         let endpoint = format!("users/{}/repos", config.owner);
-        
+
         let response = self.make_request(&endpoint).await?;
         let repos: Vec<GitHubRepo> = response.json().await?;
-        
+
         Ok(repos)
     }
-    
-    async fn get_issues(&self, repo: &str, state: Option<&str>) -> Result<Vec<GitHubIssue>, McpError> {
+
+    async fn get_issues(
+        &self,
+        repo: &str,
+        state: Option<&str>,
+    ) -> Result<Vec<GitHubIssue>, McpError> {
         let config = self.get_config()?;
         let mut endpoint = format!("repos/{}/{}/issues", config.owner, repo);
-        
+
         if let Some(state) = state {
             endpoint.push_str(&format!("?state={}", state));
         }
-        
+
         let response = self.make_request(&endpoint).await?;
         let issues: Vec<GitHubIssue> = response.json().await?;
-        
+
         Ok(issues)
     }
 }
@@ -168,22 +180,25 @@ impl Plugin for GitHubPlugin {
             dependencies: vec!["http".to_string()],
         }
     }
-    
+
     async fn initialize(&mut self, config: &PluginConfig) -> PluginResult {
         let github_config: GitHubConfig = ConfigUtils::load_plugin_config(config)?;
-        
-        info!("Initializing GitHub plugin for owner: {}", github_config.owner);
+
+        info!(
+            "Initializing GitHub plugin for owner: {}",
+            github_config.owner
+        );
         self.config = Some(github_config);
-        
+
         Ok(())
     }
-    
+
     async fn shutdown(&mut self) -> PluginResult {
         info!("Shutting down GitHub plugin");
         self.config = None;
         Ok(())
     }
-    
+
     async fn health_check(&self) -> PluginResult<bool> {
         if let Ok(_) = self.get_config() {
             match self.make_request("user").await {
@@ -211,7 +226,7 @@ impl ToolProvider for GitHubPlugin {
             }),
             tool!("github_get_issues", "Get issues from a repository", {
                 "repo": {
-                    "type": "string", 
+                    "type": "string",
                     "description": "Repository name"
                 },
                 "state": {
@@ -252,10 +267,14 @@ impl ToolProvider for GitHubPlugin {
             }),
         ])
     }
-    
-    async fn call_tool(&self, name: &str, arguments: Option<HashMap<String, Value>>) -> PluginResult<Value> {
+
+    async fn call_tool(
+        &self,
+        name: &str,
+        arguments: Option<HashMap<String, Value>>,
+    ) -> PluginResult<Value> {
         let args = arguments.unwrap_or_default();
-        
+
         match name {
             "github_list_repos" => {
                 let repos = self.get_repositories().await?;
@@ -263,40 +282,45 @@ impl ToolProvider for GitHubPlugin {
                     "repositories": repos,
                     "count": repos.len()
                 }))
-            },
-            
+            }
+
             "github_get_issues" => {
                 let repo = extract_param!(args, "repo", as_str, "Missing repo parameter")?;
                 let state = extract_param!(args, "state", as_str);
-                
+
                 let issues = self.get_issues(repo, state).await?;
                 Ok(tool_result!(json {
                     "issues": issues,
                     "count": issues.len()
                 }))
-            },
-            
+            }
+
             "github_create_issue" => {
                 // Implementation would create an issue via POST
-                Ok(tool_result!("Issue creation functionality would be implemented here"))
-            },
-            
+                Ok(tool_result!(
+                    "Issue creation functionality would be implemented here"
+                ))
+            }
+
             "github_search_repos" => {
                 let query = extract_param!(args, "query", as_str, "Missing query parameter")?;
                 let language = extract_param!(args, "language", as_str);
-                
+
                 let mut search_query = query.to_string();
                 if let Some(lang) = language {
                     search_query.push_str(&format!(" language:{}", lang));
                 }
-                
-                let endpoint = format!("search/repositories?q={}", urlencoding::encode(&search_query));
+
+                let endpoint = format!(
+                    "search/repositories?q={}",
+                    urlencoding::encode(&search_query)
+                );
                 let response = self.make_request(&endpoint).await?;
                 let search_result: Value = response.json().await?;
-                
+
                 Ok(tool_result!(json search_result))
-            },
-            
+            }
+
             _ => Err(McpError::ToolNotFound(name.to_string())),
         }
     }
@@ -306,15 +330,13 @@ impl ToolProvider for GitHubPlugin {
 impl ResourceProvider for GitHubPlugin {
     async fn list_resources(&self) -> PluginResult<Vec<Resource>> {
         let config = self.get_config()?;
-        let mut resources = vec![
-            resource!(
-                "github://repositories",
-                "GitHub Repositories",
-                "List of all repositories",
-                "application/json"
-            ),
-        ];
-        
+        let mut resources = vec![resource!(
+            "github://repositories",
+            "GitHub Repositories",
+            "List of all repositories",
+            "application/json"
+        )];
+
         // Add repository-specific resources
         for repo in &config.repos {
             resources.push(resource!(
@@ -324,26 +346,35 @@ impl ResourceProvider for GitHubPlugin {
                 "application/json"
             ));
         }
-        
+
         Ok(resources)
     }
-    
+
     async fn read_resource(&self, uri: &str) -> PluginResult<Value> {
         match uri {
             "github://repositories" => {
                 let repos = self.get_repositories().await?;
-                Ok(resource_result!(uri, "application/json", serde_json::to_string_pretty(&repos)?))
-            },
-            
+                Ok(resource_result!(
+                    uri,
+                    "application/json",
+                    serde_json::to_string_pretty(&repos)?
+                ))
+            }
+
             uri if uri.starts_with("github://repos/") && uri.ends_with("/issues") => {
-                let repo = uri.strip_prefix("github://repos/")
+                let repo = uri
+                    .strip_prefix("github://repos/")
                     .and_then(|s| s.strip_suffix("/issues"))
                     .ok_or_else(|| McpError::ResourceNotFound(uri.to_string()))?;
-                
+
                 let issues = self.get_issues(repo, None).await?;
-                Ok(resource_result!(uri, "application/json", serde_json::to_string_pretty(&issues)?))
-            },
-            
+                Ok(resource_result!(
+                    uri,
+                    "application/json",
+                    serde_json::to_string_pretty(&issues)?
+                ))
+            }
+
             _ => Err(McpError::ResourceNotFound(uri.to_string())),
         }
     }
@@ -354,19 +385,23 @@ impl UnifiedPlugin for GitHubPlugin {
     fn capabilities(&self) -> Vec<PluginCapability> {
         vec![PluginCapability::Tools, PluginCapability::Resources]
     }
-    
+
     async fn list_tools(&self) -> PluginResult<Vec<Tool>> {
         ToolProvider::list_tools(self).await
     }
-    
-    async fn call_tool(&self, name: &str, arguments: Option<HashMap<String, Value>>) -> PluginResult<Value> {
+
+    async fn call_tool(
+        &self,
+        name: &str,
+        arguments: Option<HashMap<String, Value>>,
+    ) -> PluginResult<Value> {
         ToolProvider::call_tool(self, name, arguments).await
     }
-    
+
     async fn list_resources(&self) -> PluginResult<Vec<Resource>> {
         ResourceProvider::list_resources(self).await
     }
-    
+
     async fn read_resource(&self, uri: &str) -> PluginResult<Value> {
         ResourceProvider::read_resource(self, uri).await
     }
@@ -379,11 +414,11 @@ impl PluginFactory for GitHubPluginFactory {
     fn create(&self) -> Box<dyn UnifiedPlugin> {
         Box::new(GitHubPlugin::new())
     }
-    
+
     fn name(&self) -> &str {
         "github"
     }
-    
+
     fn capabilities(&self) -> Vec<PluginCapability> {
         vec![PluginCapability::Tools, PluginCapability::Resources]
     }

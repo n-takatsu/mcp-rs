@@ -32,7 +32,7 @@ impl McpServer {
 
     async fn run_stdio(&self) -> Result<()> {
         info!("Starting MCP server on STDIO");
-        
+
         let stdin = io::stdin();
         let mut reader = BufReader::new(stdin);
         let mut stdout = io::stdout();
@@ -43,7 +43,7 @@ impl McpServer {
                 Ok(0) => break, // EOF
                 Ok(_) => {
                     debug!("Received: {}", line.trim());
-                    
+
                     if let Some(response) = self.handle_message(&line).await {
                         let response_str = serde_json::to_string(&response)?;
                         stdout.write_all(response_str.as_bytes()).await?;
@@ -66,7 +66,7 @@ impl McpServer {
         info!("Starting MCP server on TCP {}", bind_addr);
 
         let listener = TcpListener::bind(&bind_addr).await?;
-        
+
         loop {
             match listener.accept().await {
                 Ok((stream, addr)) => {
@@ -95,7 +95,7 @@ impl McpServer {
                 Ok(0) => break, // Connection closed
                 Ok(_) => {
                     debug!("Received: {}", line.trim());
-                    
+
                     if let Some(response) = self.handle_message(&line).await {
                         let response_str = serde_json::to_string(&response)?;
                         writer.write_all(response_str.as_bytes()).await?;
@@ -142,13 +142,13 @@ impl McpServer {
                     "code": -32601,
                     "message": "Method not found"
                 }
-            }))
+            })),
         }
     }
 
     async fn handle_initialize(&self, request: &JsonRpcRequest) -> Option<Value> {
         info!("Client initialized with MCP server");
-        
+
         Some(json!({
             "jsonrpc": "2.0",
             "id": request.id,
@@ -169,7 +169,7 @@ impl McpServer {
 
     async fn handle_tools_list(&self, request: &JsonRpcRequest) -> Option<Value> {
         let tools = self.plugin_registry.list_all_tools().await;
-        
+
         Some(json!({
             "jsonrpc": "2.0",
             "id": request.id,
@@ -182,7 +182,8 @@ impl McpServer {
     async fn handle_tools_call(&self, request: &JsonRpcRequest) -> Option<Value> {
         let params = request.params.as_ref()?;
         let tool_name = params.get("name")?.as_str()?;
-        let arguments = params.get("arguments")
+        let arguments = params
+            .get("arguments")
             .and_then(|v| v.as_object())
             .map(|obj| obj.iter().map(|(k, v)| (k.clone(), v.clone())).collect());
 
@@ -206,13 +207,13 @@ impl McpServer {
                     "code": -32603,
                     "message": e.to_string()
                 }
-            }))
+            })),
         }
     }
 
     async fn handle_resources_list(&self, request: &JsonRpcRequest) -> Option<Value> {
         let resources = self.plugin_registry.list_all_resources().await;
-        
+
         Some(json!({
             "jsonrpc": "2.0",
             "id": request.id,
@@ -247,13 +248,13 @@ impl McpServer {
                     "code": -32603,
                     "message": e.to_string()
                 }
-            }))
+            })),
         }
     }
 
     async fn handle_prompts_list(&self, request: &JsonRpcRequest) -> Option<Value> {
         let prompts = self.plugin_registry.list_all_prompts().await;
-        
+
         Some(json!({
             "jsonrpc": "2.0",
             "id": request.id,
@@ -266,7 +267,8 @@ impl McpServer {
     async fn handle_prompts_get(&self, request: &JsonRpcRequest) -> Option<Value> {
         let params = request.params.as_ref()?;
         let name = params.get("name")?.as_str()?;
-        let arguments = params.get("arguments")
+        let arguments = params
+            .get("arguments")
             .and_then(|v| v.as_object())
             .map(|obj| obj.iter().map(|(k, v)| (k.clone(), v.clone())).collect());
 
@@ -285,7 +287,7 @@ impl McpServer {
                     "code": -32603,
                     "message": e.to_string()
                 }
-            }))
+            })),
         }
     }
 }
