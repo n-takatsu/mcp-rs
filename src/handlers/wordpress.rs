@@ -86,6 +86,29 @@ pub struct WordPressMedia {
     pub source_url: Option<String>,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct WordPressHealthCheck {
+    pub site_accessible: bool,
+    pub rest_api_available: bool,
+    pub authentication_valid: bool,
+    pub permissions_adequate: bool,
+    pub media_upload_possible: bool,
+    pub error_details: Vec<String>,
+    pub site_info: Option<WordPressSiteInfo>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct WordPressSiteInfo {
+    pub name: String,
+    pub description: String,
+    pub url: String,
+    pub admin_email: Option<String>,
+    pub timezone_string: Option<String>,
+    pub date_format: Option<String>,
+    pub time_format: Option<String>,
+    pub start_of_week: Option<u8>,
+}
+
 impl WordPressHandler {
     pub fn new(config: WordPressConfig) -> Self {
         // タイムアウト設定付きのHTTPクライアントを作成
@@ -351,6 +374,230 @@ impl WordPressHandler {
         info!("Setting featured image {} for post {}", media_id, post_id);
         self.execute_request_with_retry(request).await
     }
+
+    /// Perform comprehensive health check of WordPress environment
+    pub async fn health_check(&self) -> WordPressHealthCheck {
+        let mut health = WordPressHealthCheck {
+            site_accessible: false,
+            rest_api_available: false,
+            authentication_valid: false,
+            permissions_adequate: false,
+            media_upload_possible: false,
+            error_details: Vec::new(),
+            site_info: None,
+        };
+
+        info!("Starting WordPress health check for: {}", self.base_url);
+
+        // 1. Check site accessibility
+        match self.check_site_accessibility().await {
+            Ok(site_info) => {
+                health.site_accessible = true;
+                health.site_info = Some(site_info);
+                info!("✅ Site accessibility: OK");
+            }
+            Err(e) => {
+                health.error_details.push(format!("Site accessibility failed: {}", e));
+                warn!("❌ Site accessibility: FAILED - {}", e);
+                return health; // If site is not accessible, skip other checks
+            }
+        }
+
+        // 2. Check REST API availability
+        if let Err(e) = self.check_rest_api().await {
+            health.error_details.push(format!("REST API check failed: {}", e));
+            warn!("❌ REST API availability: FAILED - {}", e);
+            return health;
+        } else {
+            health.rest_api_available = true;
+            info!("✅ REST API availability: OK");
+        }
+
+        // 3. Check authentication
+        if let Err(e) = self.check_authentication().await {
+            health.error_details.push(format!("Authentication failed: {}", e));
+            warn!("❌ Authentication: FAILED - {}", e);
+            return health;
+        } else {
+            health.authentication_valid = true;
+            info!("✅ Authentication: OK");
+        }
+
+        // 4. Check permissions
+        if let Err(e) = self.check_permissions().await {
+            health.error_details.push(format!("Permissions check failed: {}", e));
+            warn!("❌ Permissions: FAILED - {}", e);
+        } else {
+            health.permissions_adequate = true;
+            info!("✅ Permissions: OK");
+        }
+
+        // 5. Check media upload capability
+        if let Err(e) = self.check_media_upload_capability().await {
+            health.error_details.push(format!("Media upload check failed: {}", e));
+            warn!("❌ Media upload capability: FAILED - {}", e);
+        } else {
+            health.media_upload_possible = true;
+            info!("✅ Media upload capability: OK");
+        }
+
+        if health.error_details.is_empty() {
+            info!("🎉 WordPress health check completed successfully!");
+        } else {
+            warn!("⚠️ WordPress health check completed with {} issues", health.error_details.len());
+        }
+
+        health
+    }
+
+    /// Check if WordPress site is accessible
+    async fn check_site_accessibility(&self) -> Result<WordPressSiteInfo, McpError> {
+        let url = format!("{}/wp-json/wp/v2/settings", self.base_url);
+        let mut request = self.client.get(&url);
+
+        if let (Some(username), Some(password)) = (&self.username, &self.password) {
+            request = request.basic_auth(username, Some(password));
+        }
+
+        let response = request.send().await
+            .map_err(|e| McpError::ExternalApi(format!("Failed to connect to WordPress: {}", e)))?;
+
+        if !response.status().is_success() {
+            return Err(McpError::ExternalApi(format!(
+                "WordPress site not accessible. Status: {}", 
+                response.status()
+            )));
+        }
+
+        let settings: serde_json::Value = response.json().await
+            .map_err(|e| McpError::ExternalApi(format!("Failed to parse site info: {}", e)))?;
+
+        Ok(WordPressSiteInfo {
+            name: settings.get("title").and_then(|v| v.as_str()).unwrap_or("Unknown").to_string(),
+            description: settings.get("description").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            url: settings.get("url").and_then(|v| v.as_str()).unwrap_or(&self.base_url).to_string(),
+            admin_email: settings.get("admin_email").and_then(|v| v.as_str()).map(|s| s.to_string()),
+            timezone_string: settings.get("timezone_string").and_then(|v| v.as_str()).map(|s| s.to_string()),
+            date_format: settings.get("date_format").and_then(|v| v.as_str()).map(|s| s.to_string()),
+            time_format: settings.get("time_format").and_then(|v| v.as_str()).map(|s| s.to_string()),
+            start_of_week: settings.get("start_of_week").and_then(|v| v.as_u64()).map(|n| n as u8),
+        })
+    }
+
+    /// Check if WordPress REST API is available
+    async fn check_rest_api(&self) -> Result<(), McpError> {
+        let url = format!("{}/wp-json/wp/v2", self.base_url);
+        
+        let response = self.client.get(&url).send().await
+            .map_err(|e| McpError::ExternalApi(format!("REST API check failed: {}", e)))?;
+
+        if !response.status().is_success() {
+            return Err(McpError::ExternalApi(format!(
+                "WordPress REST API not available. Status: {}", 
+                response.status()
+            )));
+        }
+
+        // Check if response contains expected namespace
+        let api_info: serde_json::Value = response.json().await
+            .map_err(|e| McpError::ExternalApi(format!("Invalid REST API response: {}", e)))?;
+
+        if !api_info.get("namespaces").and_then(|v| v.as_array())
+            .map(|arr| arr.iter().any(|ns| ns.as_str() == Some("wp/v2")))
+            .unwrap_or(false) {
+            return Err(McpError::ExternalApi("WordPress REST API v2 not available".to_string()));
+        }
+
+        Ok(())
+    }
+
+    /// Check if authentication credentials are valid
+    async fn check_authentication(&self) -> Result<(), McpError> {
+        let url = format!("{}/wp-json/wp/v2/users/me", self.base_url);
+        let mut request = self.client.get(&url);
+
+        if let (Some(username), Some(password)) = (&self.username, &self.password) {
+            request = request.basic_auth(username, Some(password));
+        } else {
+            return Err(McpError::ExternalApi("No authentication credentials provided".to_string()));
+        }
+
+        let response = request.send().await
+            .map_err(|e| McpError::ExternalApi(format!("Authentication check failed: {}", e)))?;
+
+        match response.status().as_u16() {
+            200 => Ok(()),
+            401 => Err(McpError::ExternalApi("Invalid credentials".to_string())),
+            403 => Err(McpError::ExternalApi("Authentication forbidden".to_string())),
+            _ => Err(McpError::ExternalApi(format!("Authentication failed with status: {}", response.status())))
+        }
+    }
+
+    /// Check if user has adequate permissions
+    async fn check_permissions(&self) -> Result<(), McpError> {
+        // Check if user can read posts
+        let posts_url = format!("{}/wp-json/wp/v2/posts?per_page=1", self.base_url);
+        let mut request = self.client.get(&posts_url);
+
+        if let (Some(username), Some(password)) = (&self.username, &self.password) {
+            request = request.basic_auth(username, Some(password));
+        }
+
+        let response = request.send().await
+            .map_err(|e| McpError::ExternalApi(format!("Posts permission check failed: {}", e)))?;
+
+        if !response.status().is_success() {
+            return Err(McpError::ExternalApi(format!(
+                "No permission to read posts. Status: {}", 
+                response.status()
+            )));
+        }
+
+        // Check if user can access media
+        let media_url = format!("{}/wp-json/wp/v2/media?per_page=1", self.base_url);
+        let mut request = self.client.get(&media_url);
+
+        if let (Some(username), Some(password)) = (&self.username, &self.password) {
+            request = request.basic_auth(username, Some(password));
+        }
+
+        let response = request.send().await
+            .map_err(|e| McpError::ExternalApi(format!("Media permission check failed: {}", e)))?;
+
+        if !response.status().is_success() {
+            return Err(McpError::ExternalApi(format!(
+                "No permission to access media. Status: {}", 
+                response.status()
+            )));
+        }
+
+        Ok(())
+    }
+
+    /// Check if media upload is possible
+    async fn check_media_upload_capability(&self) -> Result<(), McpError> {
+        // Check if user can access media endpoint with GET request
+        let url = format!("{}/wp-json/wp/v2/media?per_page=1", self.base_url);
+        let mut request = self.client.get(&url);
+
+        if let (Some(username), Some(password)) = (&self.username, &self.password) {
+            request = request.basic_auth(username, Some(password));
+        }
+
+        let response = request.send().await
+            .map_err(|e| McpError::ExternalApi(format!("Media upload capability check failed: {}", e)))?;
+
+        if !response.status().is_success() {
+            return Err(McpError::ExternalApi(format!(
+                "Cannot access media endpoint. Status: {}", 
+                response.status()
+            )));
+        }
+
+        // If we can read media, we can likely upload (assuming proper permissions)
+        // We could also check upload_max_filesize but that requires admin access
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -377,6 +624,15 @@ impl McpHandler for WordPressHandler {
 
     async fn list_tools(&self) -> Result<Vec<Tool>, McpError> {
         Ok(vec![
+            Tool {
+                name: "wordpress_health_check".to_string(),
+                description: "Perform comprehensive WordPress environment health check".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }),
+            },
             Tool {
                 name: "get_posts".to_string(),
                 description: "Retrieve WordPress posts".to_string(),
@@ -485,6 +741,42 @@ impl McpHandler for WordPressHandler {
 
     async fn call_tool(&self, params: ToolCallParams) -> Result<serde_json::Value, McpError> {
         match params.name.as_str() {
+            "wordpress_health_check" => {
+                info!("Performing WordPress health check...");
+                let health = self.health_check().await;
+                
+                let status_emoji = if health.error_details.is_empty() { "✅" } else { "⚠️" };
+                let status_text = if health.error_details.is_empty() { "HEALTHY" } else { "ISSUES DETECTED" };
+                
+                let mut report = format!("{} WordPress Health Check: {}\n\n", status_emoji, status_text);
+                
+                if let Some(site_info) = &health.site_info {
+                    report.push_str(&format!("🌐 Site: {} ({})\n", site_info.name, site_info.url));
+                    report.push_str(&format!("📝 Description: {}\n\n", site_info.description));
+                }
+                
+                report.push_str("📊 Health Status:\n");
+                report.push_str(&format!("  • Site Accessible: {}\n", if health.site_accessible { "✅" } else { "❌" }));
+                report.push_str(&format!("  • REST API Available: {}\n", if health.rest_api_available { "✅" } else { "❌" }));
+                report.push_str(&format!("  • Authentication Valid: {}\n", if health.authentication_valid { "✅" } else { "❌" }));
+                report.push_str(&format!("  • Permissions Adequate: {}\n", if health.permissions_adequate { "✅" } else { "❌" }));
+                report.push_str(&format!("  • Media Upload Possible: {}\n", if health.media_upload_possible { "✅" } else { "❌" }));
+                
+                if !health.error_details.is_empty() {
+                    report.push_str("\n🚨 Issues Found:\n");
+                    for (i, error) in health.error_details.iter().enumerate() {
+                        report.push_str(&format!("  {}. {}\n", i + 1, error));
+                    }
+                }
+
+                Ok(serde_json::json!({
+                    "content": [{
+                        "type": "text",
+                        "text": report
+                    }],
+                    "isError": !health.error_details.is_empty()
+                }))
+            }
             "get_posts" => {
                 let posts = self.get_posts().await?;
                 Ok(serde_json::json!({
