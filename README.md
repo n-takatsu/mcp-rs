@@ -6,11 +6,11 @@ This project aims to provide a type-safe, extensible, and performant MCP server 
 
 ## 📖 Documentation
 
--   **[📚 Complete Documentation](https://redring2020.github.io/mcp-rs/)** - GitHub Pages site
--   **[🚀 Getting Started Guide](https://redring2020.github.io/mcp-rs/website/docs/guides/getting-started.html)** - Quick setup
--   **[📝 API Reference](https://redring2020.github.io/mcp-rs/website/docs/api/)** - Complete API docs
--   **[🏗️ Architecture Overview](https://redring2020.github.io/mcp-rs/website/docs/architecture/overview.html)** - System design
--   **[📊 Logging Strategy](https://redring2020.github.io/mcp-rs/website/docs/architecture/logging.html)** - Operational monitoring
+-   **[📚 Complete Documentation](https://n-takatsu.github.io/mcp-rs/)** - GitHub Pages site
+-   **[🚀 Getting Started Guide](https://n-takatsu.github.io/mcp-rs/website/docs/guides/getting-started.html)** - Quick setup
+-   **[📝 API Reference](https://n-takatsu.github.io/mcp-rs/website/docs/api/)** - Complete API docs
+-   **[🏗️ Architecture Overview](https://n-takatsu.github.io/mcp-rs/website/docs/architecture/overview.html)** - System design
+-   **[📊 Logging Strategy](https://n-takatsu.github.io/mcp-rs/website/docs/architecture/logging.html)** - Operational monitoring
 
 ## Features
 

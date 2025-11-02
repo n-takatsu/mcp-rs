@@ -147,9 +147,7 @@ impl Logger {
         match config.format {
             LogFormat::Json => {
                 let fmt_layer = fmt::layer()
-                    .json()
                     .with_span_events(FmtSpan::CLOSE)
-                    .with_current_span(true)
                     .with_thread_ids(true)
                     .with_thread_names(true);
                 

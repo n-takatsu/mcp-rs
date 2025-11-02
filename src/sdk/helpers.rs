@@ -15,10 +15,12 @@ impl PluginUtils {
     ) -> Result<(), McpError> {
         for param in required {
             if !args.contains_key(*param) {
-                return Err(McpError::InvalidParams(format!(
-                    "Missing required parameter: {}",
-                    param
-                )));
+                return Err(McpError::InvalidParams { 
+                    message: format!(
+                        "Missing required parameter: {}",
+                        param
+                    )
+                });
             }
         }
         Ok(())
@@ -84,9 +86,9 @@ impl PluginUtils {
                 }
                 Ok(())
             }
-            _ => Err(McpError::InvalidParams(
-                "Both values must be JSON objects".to_string(),
-            )),
+            _ => Err(McpError::InvalidParams { 
+                message: "Both values must be JSON objects".to_string() 
+            }),
         }
     }
 }
@@ -170,7 +172,9 @@ impl ConfigUtils {
         config: &crate::config::PluginConfig,
     ) -> Result<T, McpError> {
         serde_json::from_value(config.config.clone())
-            .map_err(|e| McpError::InvalidParams(format!("Invalid plugin configuration: {}", e)))
+            .map_err(|e| McpError::InvalidParams { 
+                message: format!("Invalid plugin configuration: {}", e) 
+            })
     }
 
     /// Get environment variable with fallback
@@ -183,7 +187,9 @@ impl ConfigUtils {
     /// Validate URL format
     pub fn validate_url(url: &str) -> Result<(), McpError> {
         url::Url::parse(url)
-            .map_err(|_| McpError::InvalidParams(format!("Invalid URL format: {}", url)))?;
+            .map_err(|_| McpError::InvalidParams { 
+                message: format!("Invalid URL format: {}", url) 
+            })?;
         Ok(())
     }
 
@@ -212,7 +218,9 @@ impl AsyncUtils {
 
         tokio::time::timeout(timeout, combined)
             .await
-            .map_err(|_| McpError::Other("Operation timed out".to_string()))
+            .map_err(|_| McpError::Other { 
+                message: "Operation timed out".to_string() 
+            })
     }
 
     /// Retry an operation with exponential backoff

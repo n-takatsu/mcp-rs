@@ -37,6 +37,6 @@ Welcome to the MCP-RS documentation. This is a high-performance Rust implementat
 
 ## Support
 
--   [GitHub Repository](https://github.com/RedRing2020/mcp-rs)
--   [Issue Tracker](https://github.com/RedRing2020/mcp-rs/issues)
--   [Discussions](https://github.com/RedRing2020/mcp-rs/discussions)
+-   [GitHub Repository](https://github.com/n-takatsu/mcp-rs)
+-   [Issue Tracker](https://github.com/n-takatsu/mcp-rs/issues)
+-   [Discussions](https://github.com/n-takatsu/mcp-rs/discussions)

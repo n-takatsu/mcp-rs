@@ -13,6 +13,9 @@ use crate::plugins::{
 };
 use crate::sdk::prelude::*;
 
+// Import macros explicitly
+use crate::{tool, resource, extract_param, tool_result, resource_result};
+
 /// GitHub plugin configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GitHubConfig {
@@ -98,7 +101,9 @@ impl GitHubPlugin {
     fn get_config(&self) -> Result<&GitHubConfig, McpError> {
         self.config
             .as_ref()
-            .ok_or_else(|| McpError::Other("GitHub plugin not initialized".to_string()))
+            .ok_or_else(|| McpError::Other { 
+                message: "GitHub plugin not initialized".to_string() 
+            })
     }
 
     fn get_base_url(&self) -> String {
@@ -129,11 +134,13 @@ impl GitHubPlugin {
         let response = request.send().await?;
 
         if !response.status().is_success() {
-            return Err(McpError::ExternalApi(format!(
-                "GitHub API error: {} - {}",
-                response.status(),
-                response.text().await.unwrap_or_default()
-            )));
+            return Err(McpError::ExternalApi { 
+                message: format!(
+                    "GitHub API error: {} - {}",
+                    response.status(),
+                    response.text().await.unwrap_or_default()
+                )
+            });
         }
 
         Ok(response)
@@ -278,10 +285,10 @@ impl ToolProvider for GitHubPlugin {
         match name {
             "github_list_repos" => {
                 let repos = self.get_repositories().await?;
-                Ok(tool_result!(json {
+                Ok(tool_result!(json serde_json::json!({
                     "repositories": repos,
                     "count": repos.len()
-                }))
+                })))
             }
 
             "github_get_issues" => {
@@ -289,10 +296,10 @@ impl ToolProvider for GitHubPlugin {
                 let state = extract_param!(args, "state", as_str);
 
                 let issues = self.get_issues(repo, state).await?;
-                Ok(tool_result!(json {
+                Ok(tool_result!(json serde_json::json!({
                     "issues": issues,
                     "count": issues.len()
-                }))
+                })))
             }
 
             "github_create_issue" => {
@@ -321,7 +328,9 @@ impl ToolProvider for GitHubPlugin {
                 Ok(tool_result!(json search_result))
             }
 
-            _ => Err(McpError::ToolNotFound(name.to_string())),
+            _ => Err(McpError::ToolNotFound { 
+                name: name.to_string() 
+            }),
         }
     }
 }
@@ -365,9 +374,9 @@ impl ResourceProvider for GitHubPlugin {
                 let repo = uri
                     .strip_prefix("github://repos/")
                     .and_then(|s| s.strip_suffix("/issues"))
-                    .ok_or_else(|| McpError::ResourceNotFound(uri.to_string()))?;
-
-                let issues = self.get_issues(repo, None).await?;
+                     .ok_or_else(|| McpError::ResourceNotFound { 
+                         uri: uri.to_string() 
+                     })?;                let issues = self.get_issues(repo, None).await?;
                 Ok(resource_result!(
                     uri,
                     "application/json",
@@ -375,7 +384,9 @@ impl ResourceProvider for GitHubPlugin {
                 ))
             }
 
-            _ => Err(McpError::ResourceNotFound(uri.to_string())),
+            _ => Err(McpError::ResourceNotFound { 
+                uri: uri.to_string() 
+            }),
         }
     }
 }

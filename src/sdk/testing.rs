@@ -59,7 +59,13 @@ impl<P: Plugin + ToolProvider> PluginTestHarness<P> {
     /// Test tool call with mock arguments
     pub async fn test_call_tool(&self, name: &str, args: Value) -> Result<Value, McpError> {
         let args_map = match args {
-            Value::Object(map) => map,
+            Value::Object(map) => {
+                let mut hashmap = HashMap::new();
+                for (k, v) in map {
+                    hashmap.insert(k, v);
+                }
+                hashmap
+            },
             _ => HashMap::new(),
         };
         

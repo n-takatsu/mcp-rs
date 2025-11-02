@@ -210,8 +210,11 @@ impl PluginRegistry {
     }
 
     /// Get a mutable plugin instance
-    pub fn get_plugin_mut(&mut self, name: &str) -> Option<&mut (dyn UnifiedPlugin + '_)> {
-        self.instances.get_mut(name).map(|p| p.as_mut())
+    pub fn get_plugin_mut<F, R>(&mut self, name: &str, f: F) -> Option<R>
+    where 
+        F: FnOnce(&mut dyn UnifiedPlugin) -> R,
+    {
+        self.instances.get_mut(name).map(|p| f(p.as_mut()))
     }
 
     /// Get all plugins with tool capability

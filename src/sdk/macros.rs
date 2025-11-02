@@ -215,7 +215,9 @@ macro_rules! extract_param {
     ($args:expr, $key:expr, $method:ident, $error:expr) => {
         $args.get($key)
             .and_then(|v| v.$method())
-            .ok_or_else(|| $crate::core::McpError::InvalidParams($error.to_string()))
+            .ok_or_else(|| $crate::core::McpError::InvalidParams { 
+                message: $error.to_string() 
+            })
     };
     
     ($args:expr, $key:expr, $method:ident) => {

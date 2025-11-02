@@ -13,7 +13,7 @@ This guide will help you get MCP-RS up and running quickly.
 
 ```bash
 # Clone the repository
-git clone https://github.com/RedRing2020/mcp-rs.git
+git clone https://github.com/n-takatsu/mcp-rs.git
 cd mcp-rs
 
 # Build in release mode

@@ -1,7 +1,7 @@
 theme: jekyll-theme-cayman
 title: MCP-RS
 description: High-Performance Rust Implementation of the Model Context Protocol
-url: https://redring2020.github.io
+url: https://n-takatsu.github.io
 baseurl: /mcp-rs
 
 # GitHub Pages configuration
@@ -31,7 +31,7 @@ nav_links:
   - title: "API Reference"
     url: "/website/docs/api/"
   - title: "GitHub"
-    url: "https://github.com/RedRing2020/mcp-rs"
+    url: "https://github.com/n-takatsu/mcp-rs"
 
 # SEO and social
 author:
@@ -40,7 +40,7 @@ author:
 social:
   name: "MCP-RS"
   links:
-    - "https://github.com/RedRing2020/mcp-rs"
+    - "https://github.com/n-takatsu/mcp-rs"
 
 google_analytics: # Add your GA tracking ID if needed
 

@@ -88,6 +88,9 @@ pub mod config;
 pub mod plugins;
 pub mod sdk;
 
+// Re-export macros at crate root level
+pub use sdk::macros::*;
+
 // Legacy compatibility (deprecated)
 pub mod mcp {
     //! Legacy MCP module for backward compatibility

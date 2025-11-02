@@ -13,6 +13,7 @@ use crate::plugins::{
     Plugin, PluginCapability, PluginFactory, PluginMetadata, PluginResult, ResourceProvider,
     ToolProvider, UnifiedPlugin,
 };
+use crate::sdk::prelude::*;
 
 /// WordPress plugin configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -151,7 +152,9 @@ impl WordPressPlugin {
         let posts: Vec<WordPressPost> = response
             .json()
             .await
-            .map_err(|e| McpError::Serialization(serde_json::Error::custom(e)))?;
+            .map_err(|e| McpError::Serialization { 
+                message: e.to_string() 
+            })?;
 
         Ok(posts)
     }
@@ -167,7 +170,9 @@ impl WordPressPlugin {
         let comments: Vec<WordPressComment> = response
             .json()
             .await
-            .map_err(|e| McpError::Serialization(serde_json::Error::custom(e)))?;
+            .map_err(|e| McpError::Serialization { 
+                message: e.to_string() 
+            })?;
 
         Ok(comments)
     }
@@ -188,7 +193,9 @@ impl Plugin for WordPressPlugin {
 
     async fn initialize(&mut self, config: &PluginConfig) -> PluginResult {
         let wp_config: WordPressConfig = serde_json::from_value(config.config.clone())
-            .map_err(|e| McpError::InvalidParams(format!("Invalid WordPress config: {}", e)))?;
+            .map_err(|e| McpError::InvalidParams { 
+                message: format!("Invalid WordPress config: {}", e) 
+            })?;
 
         info!("Initializing WordPress plugin with URL: {}", wp_config.url);
         self.config = Some(wp_config);
@@ -306,7 +313,9 @@ impl ToolProvider for WordPressPlugin {
 
             "wordpress_search_posts" => {
                 let query = args.get("query").and_then(|v| v.as_str()).ok_or_else(|| {
-                    McpError::InvalidParams("Missing query parameter".to_string())
+                    McpError::InvalidParams { 
+                        message: "Missing query parameter".to_string() 
+                    }
                 })?;
 
                 let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10);
@@ -321,7 +330,9 @@ impl ToolProvider for WordPressPlugin {
                 let posts: Vec<WordPressPost> = response
                     .json()
                     .await
-                    .map_err(|e| McpError::Serialization(serde_json::Error::custom(e)))?;
+                    .map_err(|e| McpError::Serialization { 
+                        message: e.to_string() 
+                    })?;
 
                 let result = ToolCallResult {
                     content: vec![Content::Text {
@@ -332,7 +343,9 @@ impl ToolProvider for WordPressPlugin {
                 Ok(serde_json::to_value(result)?)
             }
 
-            _ => Err(McpError::ToolNotFound(name.to_string())),
+            _ => Err(McpError::ToolNotFound { 
+                name: name.to_string() 
+            }),
         }
     }
 }
@@ -384,7 +397,9 @@ impl ResourceProvider for WordPressPlugin {
                 Ok(serde_json::to_value(result)?)
             }
 
-            _ => Err(McpError::ResourceNotFound(uri.to_string())),
+            _ => Err(McpError::ResourceNotFound { 
+                uri: uri.to_string() 
+            }),
         }
     }
 }
