@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use regex::Regex;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -88,6 +89,16 @@ pub struct WordPressMedia {
     pub source_url: Option<String>,
 }
 
+/// WordPress media update parameters
+#[derive(Debug, Clone, Default)]
+pub struct MediaUpdateParams {
+    pub title: Option<String>,
+    pub alt_text: Option<String>,
+    pub caption: Option<String>,
+    pub description: Option<String>,
+    pub post: Option<u64>, // 添付先の投稿ID
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct WordPressHealthCheck {
     pub site_accessible: bool,
@@ -139,13 +150,13 @@ pub struct WordPressTag {
 pub struct PostCreateParams {
     pub title: String,
     pub content: String,
-    pub post_type: String,                        // "post" or "page"
-    pub status: String,                           // "publish", "draft", "private", "future"
-    pub date: Option<String>,                     // 予約投稿用の日時 (ISO8601形式)
+    pub post_type: String,    // "post" or "page"
+    pub status: String,       // "publish", "draft", "private", "future"
+    pub date: Option<String>, // 予約投稿用の日時 (ISO8601形式)
     pub categories: Option<Vec<u64>>,
     pub tags: Option<Vec<u64>>,
     pub featured_media_id: Option<u64>,
-    pub meta: Option<HashMap<String, String>>,    // SEOメタデータ等
+    pub meta: Option<HashMap<String, String>>, // SEOメタデータ等
 }
 
 /// WordPress post update parameters
@@ -451,7 +462,7 @@ impl WordPressHandler {
     }
 
     /// Upload media file to WordPress
-    async fn upload_media(
+    pub async fn upload_media(
         &self,
         file_data: &[u8],
         filename: &str,
@@ -475,6 +486,214 @@ impl WordPressHandler {
 
         info!("Uploading media file: {} ({})", filename, mime_type);
         self.execute_request_with_retry(request).await
+    }
+
+    /// Get all media files
+    pub async fn get_media(&self) -> Result<Vec<WordPressMedia>, McpError> {
+        let url = format!("{}/wp-json/wp/v2/media", self.base_url);
+
+        let mut request = self.client.get(&url);
+
+        if let (Some(username), Some(password)) = (&self.username, &self.password) {
+            request = request.basic_auth(username, Some(password));
+        }
+
+        info!("Fetching WordPress media from: {}", url);
+        self.execute_request_with_retry(request).await
+    }
+
+    /// Get a single media file by ID
+    pub async fn get_media_item(&self, media_id: u64) -> Result<WordPressMedia, McpError> {
+        let url = format!("{}/wp-json/wp/v2/media/{}", self.base_url, media_id);
+
+        let mut request = self.client.get(&url);
+
+        if let (Some(username), Some(password)) = (&self.username, &self.password) {
+            request = request.basic_auth(username, Some(password));
+        }
+
+        info!("Fetching WordPress media item: {}", media_id);
+        self.execute_request_with_retry(request).await
+    }
+
+    /// Update media item (title, alt text, caption, description)
+    pub async fn update_media(
+        &self,
+        media_id: u64,
+        params: MediaUpdateParams,
+    ) -> Result<WordPressMedia, McpError> {
+        let url = format!("{}/wp-json/wp/v2/media/{}", self.base_url, media_id);
+
+        info!("Updating WordPress media: {}", media_id);
+
+        let mut update_data = serde_json::Map::new();
+
+        if let Some(title) = params.title {
+            update_data.insert("title".to_string(), serde_json::Value::String(title));
+        }
+
+        if let Some(alt_text) = params.alt_text {
+            update_data.insert("alt_text".to_string(), serde_json::Value::String(alt_text));
+        }
+
+        if let Some(caption) = params.caption {
+            update_data.insert("caption".to_string(), serde_json::Value::String(caption));
+        }
+
+        if let Some(description) = params.description {
+            update_data.insert(
+                "description".to_string(),
+                serde_json::Value::String(description),
+            );
+        }
+
+        if let Some(post_id) = params.post {
+            update_data.insert(
+                "post".to_string(),
+                serde_json::Value::Number(serde_json::Number::from(post_id)),
+            );
+        }
+
+        let mut request = self.client.put(&url).json(&update_data);
+
+        if let (Some(username), Some(password)) = (&self.username, &self.password) {
+            request = request.basic_auth(username, Some(password));
+        }
+
+        self.execute_request_with_retry(request).await
+    }
+
+    /// Delete a media file
+    pub async fn delete_media(
+        &self,
+        media_id: u64,
+        force: Option<bool>,
+    ) -> Result<WordPressMedia, McpError> {
+        let force_delete = force.unwrap_or(false);
+        let url = if force_delete {
+            format!(
+                "{}/wp-json/wp/v2/media/{}?force=true",
+                self.base_url, media_id
+            )
+        } else {
+            format!("{}/wp-json/wp/v2/media/{}", self.base_url, media_id)
+        };
+
+        let mut request = self.client.delete(&url);
+
+        if let (Some(username), Some(password)) = (&self.username, &self.password) {
+            request = request.basic_auth(username, Some(password));
+        }
+
+        info!(
+            "Deleting WordPress media: {} (force: {})",
+            media_id, force_delete
+        );
+        self.execute_request_with_retry(request).await
+    }
+
+    // YouTube video URL validation
+    pub fn validate_youtube_url(url: &str) -> bool {
+        url.contains("youtube.com/watch?v=")
+            || url.contains("youtu.be/")
+            || url.contains("youtube.com/embed/")
+    }
+
+    // Extract YouTube video ID from URL
+    pub fn extract_youtube_id(url: &str) -> Option<String> {
+        // YouTube URL patterns
+        let patterns = [
+            r"(?:youtube\.com/watch\?v=)([a-zA-Z0-9_-]+)",
+            r"(?:youtu\.be/)([a-zA-Z0-9_-]+)",
+            r"(?:youtube\.com/embed/)([a-zA-Z0-9_-]+)",
+        ];
+
+        for pattern in &patterns {
+            if let Ok(regex) = Regex::new(pattern) {
+                if let Some(caps) = regex.captures(url) {
+                    if let Some(video_id) = caps.get(1) {
+                        return Some(video_id.as_str().to_string());
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    // Generate YouTube embed HTML
+    pub fn generate_youtube_embed(
+        video_id: &str,
+        width: Option<u32>,
+        height: Option<u32>,
+    ) -> String {
+        let w = width.unwrap_or(560);
+        let h = height.unwrap_or(315);
+        format!(
+            r#"<iframe width="{}" height="{}" src="https://www.youtube.com/embed/{}" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>"#,
+            w, h, video_id
+        )
+    }
+
+    // Validate social media URLs
+    pub fn validate_social_url(url: &str) -> Option<&'static str> {
+        if url.contains("twitter.com/") || url.contains("x.com/") {
+            Some("twitter")
+        } else if url.contains("instagram.com/p/") {
+            Some("instagram")
+        } else if url.contains("facebook.com/") {
+            Some("facebook")
+        } else if url.contains("tiktok.com/") {
+            Some("tiktok")
+        } else {
+            None
+        }
+    }
+
+    // Create post with embedded content (YouTube, social media)
+    pub async fn create_post_with_embeds(
+        &self,
+        title: &str,
+        content: &str,
+        youtube_urls: Vec<&str>,
+        social_urls: Vec<&str>,
+        params: Option<PostCreateParams>,
+    ) -> Result<WordPressPost, McpError> {
+        let mut full_content = content.to_string();
+
+        // Add YouTube embeds
+        for url in youtube_urls {
+            if Self::validate_youtube_url(url) {
+                if let Some(video_id) = Self::extract_youtube_id(url) {
+                    let embed = Self::generate_youtube_embed(&video_id, None, None);
+                    full_content.push_str(&format!("\n\n{}", embed));
+                } else {
+                    // Fallback: just add the URL for WordPress oEmbed
+                    full_content.push_str(&format!("\n\n{}", url));
+                }
+            }
+        }
+
+        // Add social media embeds (WordPress oEmbed will handle these)
+        for url in social_urls {
+            if Self::validate_social_url(url).is_some() {
+                full_content.push_str(&format!("\n\n{}", url));
+            }
+        }
+
+        // Create post with the enhanced content
+        if let Some(mut post_params) = params {
+            post_params.content = full_content;
+            self.create_advanced_post(post_params).await
+        } else {
+            let post_params = PostCreateParams {
+                title: title.to_string(),
+                content: full_content,
+                post_type: "post".to_string(),
+                status: "publish".to_string(),
+                ..Default::default()
+            };
+            self.create_advanced_post(post_params).await
+        }
     }
 
     /// Create post with featured image
@@ -1359,6 +1578,83 @@ impl McpHandler for WordPressHandler {
                 }),
             },
             Tool {
+                name: "get_media".to_string(),
+                description: "Retrieve WordPress media files".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }),
+            },
+            Tool {
+                name: "get_media_item".to_string(),
+                description: "Retrieve a single WordPress media item by ID".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "media_id": {
+                            "type": "number",
+                            "description": "Media ID to retrieve"
+                        }
+                    },
+                    "required": ["media_id"]
+                }),
+            },
+            Tool {
+                name: "update_media".to_string(),
+                description:
+                    "Update WordPress media metadata (title, alt text, caption, description)"
+                        .to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "media_id": {
+                            "type": "number",
+                            "description": "Media ID to update"
+                        },
+                        "title": {
+                            "type": "string",
+                            "description": "Media title"
+                        },
+                        "alt_text": {
+                            "type": "string",
+                            "description": "Alternative text for accessibility"
+                        },
+                        "caption": {
+                            "type": "string",
+                            "description": "Media caption"
+                        },
+                        "description": {
+                            "type": "string",
+                            "description": "Media description"
+                        },
+                        "post": {
+                            "type": "number",
+                            "description": "Post ID to attach media to"
+                        }
+                    },
+                    "required": ["media_id"]
+                }),
+            },
+            Tool {
+                name: "delete_media".to_string(),
+                description: "Delete WordPress media file".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "media_id": {
+                            "type": "number",
+                            "description": "Media ID to delete"
+                        },
+                        "force": {
+                            "type": "boolean",
+                            "description": "Force delete (bypass trash)"
+                        }
+                    },
+                    "required": ["media_id"]
+                }),
+            },
+            Tool {
                 name: "create_post_with_featured_image".to_string(),
                 description: "Create a new WordPress post with featured image".to_string(),
                 input_schema: serde_json::json!({
@@ -1651,6 +1947,56 @@ impl McpHandler for WordPressHandler {
                     "required": ["post_id"]
                 }),
             },
+            Tool {
+                name: "create_post_with_embeds".to_string(),
+                description:
+                    "Create WordPress post with embedded YouTube videos and social media content"
+                        .to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "title": {
+                            "type": "string",
+                            "description": "Post title"
+                        },
+                        "content": {
+                            "type": "string",
+                            "description": "Base post content (embeds will be added)"
+                        },
+                        "youtube_urls": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "YouTube video URLs to embed"
+                        },
+                        "social_urls": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Social media URLs to embed (Twitter, Instagram, Facebook, TikTok)"
+                        },
+                        "post_type": {
+                            "type": "string",
+                            "description": "Post type (post or page)",
+                            "enum": ["post", "page"]
+                        },
+                        "status": {
+                            "type": "string",
+                            "description": "Post status",
+                            "enum": ["publish", "draft", "private", "future"]
+                        },
+                        "categories": {
+                            "type": "array",
+                            "items": {"type": "number"},
+                            "description": "Category IDs (posts only)"
+                        },
+                        "tags": {
+                            "type": "array",
+                            "items": {"type": "number"},
+                            "description": "Tag IDs (posts only)"
+                        }
+                    },
+                    "required": ["title", "content"]
+                }),
+            },
         ])
     }
 
@@ -1928,6 +2274,102 @@ impl McpHandler for WordPressHandler {
                     "content": [{
                         "type": "text",
                         "text": format!("Uploaded media with ID: {:?}", media.id)
+                    }],
+                    "isError": false
+                }))
+            }
+            "get_media" => {
+                let media_list = self.get_media().await?;
+                Ok(serde_json::json!({
+                    "content": [{
+                        "type": "text",
+                        "text": format!("Found {} media files", media_list.len())
+                    }],
+                    "isError": false
+                }))
+            }
+            "get_media_item" => {
+                let args = params.arguments.unwrap_or_default();
+                let media_id = args
+                    .get("media_id")
+                    .and_then(|v| v.as_u64())
+                    .ok_or_else(|| McpError::InvalidParams("Missing media_id".to_string()))?;
+
+                let media = self.get_media_item(media_id).await?;
+                Ok(serde_json::json!({
+                    "content": [{
+                        "type": "text",
+                        "text": format!(
+                            "Media ID: {:?}, Title: {}, Alt: {}, URL: {}",
+                            media.id,
+                            media.title.as_ref().map(|t| t.rendered.as_str()).unwrap_or("No title"),
+                            media.alt_text.as_deref().unwrap_or("No alt text"),
+                            media.source_url.as_deref().unwrap_or("No URL")
+                        )
+                    }],
+                    "isError": false
+                }))
+            }
+            "update_media" => {
+                let args = params.arguments.unwrap_or_default();
+                let media_id = args
+                    .get("media_id")
+                    .and_then(|v| v.as_u64())
+                    .ok_or_else(|| McpError::InvalidParams("Missing media_id".to_string()))?;
+
+                let title = args
+                    .get("title")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let alt_text = args
+                    .get("alt_text")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let caption = args
+                    .get("caption")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let description = args
+                    .get("description")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let post = args.get("post").and_then(|v| v.as_u64());
+
+                let update_params = MediaUpdateParams {
+                    title,
+                    alt_text,
+                    caption,
+                    description,
+                    post,
+                };
+
+                let media = self.update_media(media_id, update_params).await?;
+                Ok(serde_json::json!({
+                    "content": [{
+                        "type": "text",
+                        "text": format!("Updated media ID: {:?}", media.id)
+                    }],
+                    "isError": false
+                }))
+            }
+            "delete_media" => {
+                let args = params.arguments.unwrap_or_default();
+                let media_id = args
+                    .get("media_id")
+                    .and_then(|v| v.as_u64())
+                    .ok_or_else(|| McpError::InvalidParams("Missing media_id".to_string()))?;
+
+                let force = args.get("force").and_then(|v| v.as_bool());
+
+                let media = self.delete_media(media_id, force).await?;
+                Ok(serde_json::json!({
+                    "content": [{
+                        "type": "text",
+                        "text": format!(
+                            "Deleted media ID: {:?} (Force: {})",
+                            media.id,
+                            force.unwrap_or(false)
+                        )
                     }],
                     "isError": false
                 }))
@@ -2261,6 +2703,85 @@ impl McpHandler for WordPressHandler {
                         "text": format!("Deleted post ID {} ({})",
                             post_id,
                             if force { "permanently" } else { "moved to trash" }
+                        )
+                    }],
+                    "isError": false
+                }))
+            }
+            "create_post_with_embeds" => {
+                let args = params.arguments.unwrap_or_default();
+                let title = args
+                    .get("title")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| McpError::InvalidParams("Missing title".to_string()))?;
+                let content = args
+                    .get("content")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| McpError::InvalidParams("Missing content".to_string()))?;
+
+                let youtube_urls: Vec<&str> = args
+                    .get("youtube_urls")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
+                    .unwrap_or_default();
+
+                let social_urls: Vec<&str> = args
+                    .get("social_urls")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
+                    .unwrap_or_default();
+
+                let post_type = args
+                    .get("post_type")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("post")
+                    .to_string();
+
+                let status = args
+                    .get("status")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("publish")
+                    .to_string();
+
+                let categories = args
+                    .get("categories")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| arr.iter().filter_map(|v| v.as_u64()).collect::<Vec<u64>>());
+
+                let tags = args
+                    .get("tags")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| arr.iter().filter_map(|v| v.as_u64()).collect::<Vec<u64>>());
+
+                let params = PostCreateParams {
+                    title: title.to_string(),
+                    content: content.to_string(),
+                    post_type,
+                    status,
+                    categories,
+                    tags,
+                    ..Default::default()
+                };
+
+                let post = self
+                    .create_post_with_embeds(
+                        title,
+                        content,
+                        youtube_urls,
+                        social_urls,
+                        Some(params),
+                    )
+                    .await?;
+
+                Ok(serde_json::json!({
+                    "content": [{
+                        "type": "text",
+                        "text": format!(
+                            "Created {} with embedded content - ID: {:?}, Title: {}, Status: {}",
+                            if post.post_type.as_ref().unwrap_or(&"post".to_string()) == "page" { "page" } else { "post" },
+                            post.id,
+                            post.title.rendered,
+                            post.status
                         )
                     }],
                     "isError": false

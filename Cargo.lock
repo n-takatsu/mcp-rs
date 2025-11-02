@@ -948,6 +948,7 @@ dependencies = [
  "base64 0.21.7",
  "config",
  "criterion",
+ "regex",
  "reqwest",
  "serde",
  "serde_json",

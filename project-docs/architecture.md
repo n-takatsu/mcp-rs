@@ -1,158 +1,284 @@
-# MCP-RS アーキテクチャ設計ドキュメント
+# mcp-rs Architecture
 
----
-**📅 作成日時**: 2025年11月2日  
-**🔖 アーキテクチャバージョン**: v0.1.0-alpha  
-**🚀 実装バージョン**: v0.1.0 (開発中)  
-**✍️ 最終更新**: 2025年11月2日 - 初期設計策定  
-**📋 ステータス**: 設計策定段階 (WordPress Handler実装完了)  
----
+## Overview
 
-## ドキュメント履歴
+`mcp-rs` follows a layered architecture designed for production scalability, maintainability, and extensibility. The system is built around the Model Context Protocol (MCP) JSON-RPC specification with a focus on AI agent integration.
 
-| 日付 | バージョン | 変更内容 | 担当者 |
-|------|------------|----------|--------|
-| 2025-11-02 | v0.1.0-alpha | 初期アーキテクチャ設計策定、WordPress Handler実装完了 | 開発チーム |
+## Architecture Layers
 
-## 現在の実装状況と最終設計予想
+### 1. Application Layer (`src/main.rs`)
+- **Responsibility**: Entry point, configuration loading, server lifecycle
+- **Components**: Main server startup, signal handling, graceful shutdown
+- **Dependencies**: Configuration, Server layers
 
-### レイヤー構造
+### 2. API Layer (`src/server.rs`)
+- **Responsibility**: HTTP server, JSON-RPC protocol implementation
+- **Components**: Axum HTTP server, JSON-RPC request routing, response handling
+- **Dependencies**: Handler layer
+- **Features**: Timeout handling, error serialization, request logging
 
-```
-┌─────────────────────────────────────────────────────┐
-│ Application Layer                                   │
-│ ├── main.rs (エントリーポイント)                     │
-│ └── CLI/サーバー起動                                 │
-├─────────────────────────────────────────────────────┤
-│ API Layer                                           │
-│ ├── mcp/ (Model Context Protocol実装)               │
-│ ├── protocol.rs (プロトコル定義)                    │
-│ └── JSON-RPC インターフェース                        │
-├─────────────────────────────────────────────────────┤
-│ Service Layer                                       │
-│ ├── handlers/ (具体的機能実装)                      │
-│ │   └── wordpress.rs (✅実装済み)                   │
-│ └── plugins/ (動的プラグインシステム) [🔄予定]      │
-├─────────────────────────────────────────────────────┤
-│ Core Layer [🔄現在空 - 将来の中核機能]              │
-│ ├── runtime.rs (非同期ランタイム管理)               │
-│ ├── registry.rs (ハンドラー/プラグイン登録)         │
-│ ├── context.rs (実行コンテキスト)                   │
-│ ├── lifecycle.rs (アプリケーションライフサイクル)   │
-│ ├── events.rs (イベントシステム)                    │
-│ └── metrics.rs (監視・メトリクス)                   │
-├─────────────────────────────────────────────────────┤
-│ Infrastructure Layer                                │
-│ ├── transport/ (通信抽象化) [🔄予定]                │
-│ │   ├── stdio.rs (標準入出力)                       │
-│ │   ├── http.rs (HTTPサーバー)                      │
-│ │   └── websocket.rs (WebSocket)                    │
-│ ├── config/ (設定管理) ✅実装済み                   │
-│ └── error.rs (エラーハンドリング) ✅実装済み        │
-└─────────────────────────────────────────────────────┘
+### 3. Service Layer (`src/handlers/`)
+- **Responsibility**: Business logic, external API integration
+- **Components**: WordPress handler, future handlers (GitHub, Database, etc.)
+- **Dependencies**: MCP protocol types, Configuration
+- **Pattern**: Plugin-based architecture with `McpHandler` trait
+
+### 4. Core Layer (`src/mcp/`)
+- **Responsibility**: MCP protocol implementation, type definitions
+- **Components**: Protocol types, error handling, serialization
+- **Dependencies**: Serde, JSON-RPC types
+- **Standards**: Strict MCP JSON-RPC 2.0 compliance
+
+### 5. Infrastructure Layer (`src/config.rs`, `src/error.rs`)
+- **Responsibility**: Configuration management, error handling, logging
+- **Components**: TOML configuration, environment variables, structured errors
+- **Dependencies**: External crates (config, thiserror, tracing)
+
+## Handler Plugin Architecture
+
+### McpHandler Trait
+```rust
+#[async_trait]
+pub trait McpHandler: Send + Sync {
+    async fn initialize(&self, params: InitializeParams) -> Result<serde_json::Value, McpError>;
+    async fn list_tools(&self) -> Result<Vec<Tool>, McpError>;
+    async fn call_tool(&self, params: ToolCallParams) -> Result<serde_json::Value, McpError>;
+    async fn list_resources(&self) -> Result<Vec<Resource>, McpError>;
+    async fn read_resource(&self, params: ResourceReadParams) -> Result<serde_json::Value, McpError>;
+}
 ```
 
-## 設計原則
+### WordPress Handler Implementation
 
-### 1. プラグイン指向アーキテクチャ
-- **ハンドラーシステム**: `McpHandler`トレイトによる統一インターフェース
-- **動的プラグイン**: ランタイムでの機能追加・削除
-- **設定駆動**: TOMLファイルでの機能有効化制御
+The WordPress handler (`src/handlers/wordpress.rs`) provides 27 comprehensive tools:
 
-### 2. トランスポート抽象化
-- **マルチプロトコル対応**: stdio, HTTP, WebSocket等
-- **統一インターフェース**: `Transport`トレイトで抽象化
-- **非同期I/O**: tokioベースの高性能通信
+#### Content Management (10 tools)
+- Complete CRUD operations for posts and pages
+- Advanced post creation with SEO metadata
+- Post scheduling and status management
+- Embedded content support (YouTube, social media)
 
-### 3. 設定駆動設計
-- **階層化設定**: ファイル → 環境変数 → CLIの優先順位
-- **動的再読み込み**: 設定変更の即座反映
-- **型安全**: serdeによる強型設定管理
+#### Media Management (7 tools)
+- Full media library CRUD operations
+- Base64 and multipart file upload support
+- Accessibility features (alt text, captions, descriptions)
+- Featured image management
 
-## 実装進捗
+#### Taxonomy Management (8 tools)
+- Categories: hierarchical taxonomy with parent/child relationships
+- Tags: flat taxonomy for content labeling
+- Complete CRUD operations for both taxonomies
+- Post-taxonomy integration
 
-### ✅ 完成済み (2025-11-02現在)
-- **WordPress APIハンドラー**: タイムアウト・リトライ・エラーハンドリング完備
-- **設定管理システム**: TOML + 環境変数の階層化設定
-- **MCPプロトコル基本実装**: JSON-RPC + ハンドラートレイト
-- **エラーハンドリング**: thiserror ベースの型安全エラー管理
-- **詳細ログシステム**: tracing による構造化ログ
-- **HTTP通信基盤**: reqwest + タイムアウト + 指数バックオフリトライ
+#### Integration Tools (2 tools)
+- Health check and diagnostics
+- Comment management
 
-### 🔄 実装予定
-- `core/`モジュール（アプリケーション中核）
-- `transport/`モジュール（通信抽象化）
-- `plugins/`モジュール（動的プラグイン）
-- パフォーマンス監視
-- 統合テストスイート
+## Configuration Architecture
 
-### 🎯 想定される用途
-- AI エージェント統合基盤
-- WordPress などの CMS 操作自動化
-- GitHub などの開発ツール連携
-- カスタムツール・プラグイン開発プラットフォーム
+### Hierarchical Configuration
+1. **Default Values**: Hardcoded fallbacks
+2. **TOML Configuration**: `mcp-config.toml` file
+3. **Environment Variables**: Override any TOML setting
 
-## アーキテクチャの利点
+### Configuration Structure
+```toml
+[server]
+host = "0.0.0.0"
+port = 3000
 
-1. **拡張性**: プラグインシステムによる機能追加
-2. **保守性**: レイヤー分離による責任明確化
-3. **再利用性**: 共通インターフェースによるコンポーネント化
-4. **テスタビリティ**: 依存性注入による単体テスト容易性
-5. **パフォーマンス**: 非同期処理とリソース効率化
+[handlers.wordpress]
+url = "https://wordpress-site.com"
+username = "admin"
+password = "app_password"
+timeout_seconds = 30
+enabled = true
+```
 
----
+### Environment Override Pattern
+- `WORDPRESS_URL` overrides `handlers.wordpress.url`
+- `WORDPRESS_USERNAME` overrides `handlers.wordpress.username`
+- `WORDPRESS_PASSWORD` overrides `handlers.wordpress.password`
 
-## 📋 設計決定記録 (Architecture Decision Records)
+## Error Handling Architecture
 
-### ADR-001: レイヤードアーキテクチャの採用
-- **決定日**: 2025-11-02
-- **背景**: 拡張性と保守性を確保するため
-- **決定**: Core, Service, API, Infrastructure の4層構造
-- **影響**: モジュール間の依存関係明確化、テスト容易性向上
+### Error Types Hierarchy
+```rust
+#[derive(thiserror::Error, Debug)]
+pub enum McpError {
+    #[error("Invalid request: {0}")]
+    InvalidRequest(String),
+    
+    #[error("Tool not found: {0}")]
+    ToolNotFound(String),
+    
+    #[error("Invalid parameters: {0}")]
+    InvalidParams(String),
+    
+    #[error("HTTP error: {0}")]
+    Http(String),
+    
+    #[error("Configuration error: {0}")]
+    Config(String),
+}
+```
 
-### ADR-002: プラグイン指向設計
-- **決定日**: 2025-11-02  
-- **背景**: 多様なAIエージェント統合要件への対応
-- **決定**: `McpHandler`トレイトベースのプラグインシステム
-- **影響**: 動的機能追加、設定駆動での有効化制御
+### Error Flow
+1. **Handler Level**: Specific errors (HTTP, validation, business logic)
+2. **MCP Level**: Protocol-specific error transformation
+3. **JSON-RPC Level**: Standard JSON-RPC error response formatting
+4. **HTTP Level**: HTTP status code mapping
 
-### ADR-003: 非同期ファーストアプローチ
-- **決定日**: 2025-11-02
-- **背景**: I/O集約的なAPI操作の効率化
-- **決定**: tokio + async/await ベースの実装
-- **影響**: 高並行性、リソース効率化、タイムアウト制御
+## Performance Architecture
 
----
+### Async-First Design
+- Built on Tokio runtime for high concurrency
+- All I/O operations are non-blocking
+- Connection pooling for external APIs
+- Request timeout handling
 
-## 🔄 次期バージョン予定
+### Retry Logic
+```rust
+// Exponential backoff with jitter
+let delay = Duration::from_millis(base_delay_ms * 2_u64.pow(attempt) + random_jitter);
+```
 
-### v0.2.0 (予定: 2025年12月)
-- [ ] `core/`モジュール実装
-- [ ] `transport/`モジュール実装  
-- [ ] stdio トランスポート対応
-- [ ] プラグイン動的ロード機能
+### Resource Management
+- Automatic connection cleanup
+- Memory-efficient JSON streaming
+- Configurable timeouts per handler
 
-### v0.3.0 (予定: 2026年1月)
-- [ ] WebSocket トランスポート対応
-- [ ] メトリクス・監視機能
-- [ ] パフォーマンス最適化
-- [ ] 統合テストスイート完備
+## Security Architecture
 
-### v1.0.0 (予定: 2026年3月)
-- [ ] 本格運用対応
-- [ ] ドキュメント完備
-- [ ] セキュリティ監査
-- [ ] エコシステム構築
+### Authentication
+- WordPress: Application Password support
+- Secure credential storage (environment variables preferred)
+- No plaintext password logging
 
----
+### Input Validation
+- JSON schema validation for all tool inputs
+- Type-safe deserialization with Serde
+- SQL injection prevention (parameterized queries)
 
-## ⚠️ 重要な注意事項
+### Transport Security
+- HTTPS enforcement for external APIs
+- TLS certificate validation
+- Request/response logging (excluding sensitive data)
 
-このドキュメントは設計指針を示すものであり、実装過程での変更が予想されます。  
-**メジャーバージョンリリース時には、このドキュメントと実際の実装を比較検証し、アーキテクチャの整合性を確認することを強く推奨します。**
+## Testing Architecture
 
-最終判断基準:
-- 設計原則との整合性
-- パフォーマンス要件達成度  
-- 拡張性・保守性の実現度
-- テスタビリティの確保度
+### Test Organization
+```
+examples/
+├── wordpress_embed_test.rs          # Embedded content functionality
+├── wordpress_media_crud_test.rs     # Media management operations
+├── wordpress_post_crud_test.rs      # Post CRUD operations
+├── wordpress_advanced_post_test.rs  # Advanced post features
+├── wordpress_categories_tags_test.rs # Taxonomy management
+└── wordpress_posts_with_taxonomy_test.rs # Integration tests
+```
+
+### Test Patterns
+- **Integration Tests**: Full workflow testing with real API calls
+- **Unit Tests**: Individual function testing with mocked dependencies
+- **Error Path Testing**: Comprehensive error condition coverage
+
+## Scalability Considerations
+
+### Horizontal Scaling
+- Stateless handler design
+- No session storage requirements
+- Load balancer friendly
+
+### Vertical Scaling
+- Efficient memory usage with streaming
+- Connection pooling
+- Configurable concurrency limits
+
+### Handler Isolation
+- Each handler operates independently
+- Failure in one handler doesn't affect others
+- Plugin-based architecture allows selective enabling
+
+## Monitoring and Observability
+
+### Structured Logging
+```rust
+use tracing::{info, warn, error};
+
+info!(
+    "WordPress post created: ID={}, Title=\"{}\"", 
+    post.id, 
+    post.title.rendered
+);
+```
+
+### Health Checks
+- WordPress connectivity verification
+- API endpoint availability testing
+- Configuration validation
+
+### Metrics (Planned v0.3.0)
+- Request/response time tracking
+- Error rate monitoring
+- Resource utilization metrics
+
+## Roadmap Implementation
+
+### Phase 1: Core Stability (v0.1.0-alpha) ✅
+- WordPress handler completion
+- Configuration system maturity  
+- Error handling standardization
+- Comprehensive testing
+
+### Phase 2: Transport Expansion (v0.2.0)
+- Stdio transport implementation
+- Plugin dynamic loading
+- Enhanced configuration management
+
+### Phase 3: Ecosystem Growth (v0.3.0)
+- WebSocket transport support
+- GitHub API handler
+- Database integration handler
+- Performance monitoring
+
+### Phase 4: Production Readiness (v1.0.0)
+- Security audit and hardening
+- Comprehensive documentation
+- Container support
+- Plugin ecosystem
+
+## Design Principles
+
+1. **Type Safety**: Leverage Rust's type system for correctness
+2. **Performance**: Async-first with efficient resource usage
+3. **Extensibility**: Plugin architecture for easy feature addition
+4. **Reliability**: Comprehensive error handling and retry logic
+5. **Maintainability**: Clear separation of concerns and documentation
+6. **AI-Agent Optimized**: Designed specifically for AI interaction patterns
+
+## Contributing Guidelines
+
+### Code Organization
+- Place handlers in `src/handlers/`
+- Follow the `McpHandler` trait pattern
+- Use structured error types
+- Include comprehensive tests
+
+### Configuration
+- Support TOML configuration
+- Provide environment variable overrides
+- Include sensible defaults
+- Document all options
+
+### Testing
+- Write integration tests for new handlers
+- Include error path testing
+- Provide example usage
+- Test with real APIs when possible
+
+### Documentation
+- Update README.md for new features
+- Include code examples
+- Document configuration options
+- Maintain architecture documentation

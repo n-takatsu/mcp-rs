@@ -1,4 +1,5 @@
-use mcp_rs::{config::McpConfig, handlers::wordpress::WordPressHandler};
+use mcp_rs::config::WordPressConfig;
+use mcp_rs::handlers::wordpress::{PostUpdateParams, WordPressHandler};
 use tracing::{error, info, Level};
 
 #[tokio::main]
@@ -8,12 +9,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("✏️ WordPress Post CRUD Operations Test\n");
 
-    // Load configuration
-    let config = McpConfig::load()?;
-    let wp_config = config
-        .handlers
-        .wordpress
-        .ok_or("WordPress configuration missing")?;
+    // Direct WordPress configuration for testing
+    let wp_config = WordPressConfig {
+        url: "http://localhost:8080".to_string(),
+        username: "admin".to_string(),
+        password: "password".to_string(),
+        enabled: Some(true),
+        timeout_seconds: Some(30),
+    };
 
     // Create WordPress handler
     let handler = WordPressHandler::new(wp_config);
@@ -56,23 +59,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Update the post
-    println!("\n✏️ Updating the post...");
-    match handler.update_post(
-        post_id,
-        Some("Updated CRUD Test Post".to_string()),
-        Some("<p>This post has been updated through the MCP-RS CRUD API!</p><p>New content shows the update functionality is working correctly.</p>".to_string()),
-        Some("draft".to_string()), // Change status to draft
-        None, // No categories for this test
-        None, // No tags for this test
-        None, // No featured image
-    ).await {
+    info!("📝 Updating the post...");
+    let update_params = PostUpdateParams {
+        title: Some("Updated Test Post".to_string()),
+        content: Some("<p>This post has been updated through the MCP-RS CRUD API!</p><p>New content shows the update functionality is working correctly.</p>".to_string()),
+        status: Some("draft".to_string()),
+        ..Default::default()
+    };
+
+    match handler.update_post(post_id, update_params).await {
         Ok(updated_post) => {
-            info!("✅ Updated post: {}", updated_post.title.rendered);
-            println!("   New Title: {}", updated_post.title.rendered);
-            println!("   New Status: {}", updated_post.status);
+            println!("✅ Post updated successfully:");
+            println!("   - ID: {}", updated_post.id.unwrap_or(0));
+            println!("   - Title: {}", updated_post.title.rendered);
+            println!("   - Status: {}", updated_post.status);
+            println!(
+                "   - Modified: {}",
+                updated_post.modified.unwrap_or_default()
+            );
         }
         Err(e) => {
             error!("❌ Failed to update post: {}", e);
+            return Err(e.into());
         }
     }
 
@@ -109,26 +117,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .collect();
 
     if !category_ids.is_empty() || !tag_ids.is_empty() {
-        match handler
-            .update_post(
-                post_id,
-                None, // Keep existing title
-                None, // Keep existing content
-                None, // Keep existing status
-                if category_ids.is_empty() {
-                    None
-                } else {
-                    Some(category_ids.clone())
-                },
-                if tag_ids.is_empty() {
-                    None
-                } else {
-                    Some(tag_ids.clone())
-                },
-                None, // No featured image
-            )
-            .await
-        {
+        let update_params = PostUpdateParams {
+            categories: if category_ids.is_empty() {
+                None
+            } else {
+                Some(category_ids.clone())
+            },
+            tags: if tag_ids.is_empty() {
+                None
+            } else {
+                Some(tag_ids.clone())
+            },
+            ..Default::default()
+        };
+
+        match handler.update_post(post_id, update_params).await {
             Ok(updated_post) => {
                 info!("✅ Updated post with taxonomy");
                 println!("   Categories: {:?}", updated_post.categories);

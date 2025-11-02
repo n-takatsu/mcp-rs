@@ -185,6 +185,8 @@ Retrieve a single WordPress post by ID.
 
 ### Media Management
 
+### Media Management
+
 #### `upload_media`
 Upload a media file to WordPress media library.
 
@@ -204,6 +206,48 @@ Upload a media file to WordPress media library.
   }
 }
 ```
+
+#### `get_media`
+Retrieve all WordPress media files.
+
+**Parameters:** None
+
+#### `get_media_item`
+Retrieve a single WordPress media item by ID.
+
+**Parameters:**
+- `media_id` (number): Media ID to retrieve
+
+#### `update_media`
+Update WordPress media metadata (title, alt text, caption, description).
+
+**Parameters:**
+- `media_id` (number): Media ID to update
+- `title` (string, optional): Media title
+- `alt_text` (string, optional): Alternative text for accessibility
+- `caption` (string, optional): Media caption
+- `description` (string, optional): Media description
+- `post` (number, optional): Post ID to attach media to
+
+**Example Usage:**
+```json
+{
+  "tool": "update_media",
+  "arguments": {
+    "media_id": 123,
+    "alt_text": "Product image showing red handbag",
+    "caption": "Spring 2024 collection",
+    "description": "Detailed view of our latest handbag design"
+  }
+}
+```
+
+#### `delete_media`
+Delete WordPress media file.
+
+**Parameters:**
+- `media_id` (number): Media ID to delete
+- `force` (boolean, optional): Force delete (bypass trash) [default: false]
 
 #### `create_post_with_featured_image`
 Create a post with a featured image in one operation.
