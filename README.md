@@ -41,11 +41,14 @@
 
 - **✅ WordPress**: Full WordPress REST API integration with advanced features:
   - Post/Page management (CRUD operations)
-  - Media handling and uploads
-  - Comment management
+  - **🖼️ Featured Image Support**: Upload and set featured images
+  - **📁 Media Library**: Complete media upload and management
+  - **🎯 Base64 Upload**: Handle base64-encoded file uploads
+  - Comment management and retrieval
   - Tag and category operations
-  - Timeout and retry handling
-  - Authentication with application passwords
+  - Timeout and retry handling with exponential backoff
+  - Secure authentication with application passwords
+  - **📋 Multipart Uploads**: Efficient file upload handling
 
 ### 🔄 Planned Integrations
 
@@ -57,7 +60,8 @@
 ## Implementation Status
 
 ### ✅ Completed (v0.1.0-alpha)
-- **WordPress API Handler**: Complete with timeout, retry, and error handling
+- **WordPress API Handler**: Complete with featured image and media upload support
+- **Media Management**: Base64 upload, multipart form handling, featured image setting
 - **Configuration Management**: TOML + environment variable hierarchy
 - **MCP Protocol Foundation**: JSON-RPC + handler trait system
 - **Error Handling**: thiserror-based type-safe error management
@@ -201,6 +205,38 @@ cargo run --example wordpress_security_diagnosis
 # Timeout handling test (v2)
 cargo run --example timeout_test_v2
 ```
+
+## MCP Usage Examples
+
+Once the server is running, AI agents can interact with WordPress through natural language:
+
+### 📝 **Content Creation**
+**User:** "Create a blog post about Rust programming"
+**AI automatically:**
+1. Uses `create_post` tool
+2. Generates appropriate title and content
+3. Returns post URL and ID
+
+### 🖼️ **Featured Image Workflow**
+**User:** "Upload this image and create a post with it as featured image"
+**AI automatically:**
+1. Uses `upload_media` tool with base64 image data
+2. Uses `create_post_with_featured_image` with returned media ID
+3. Creates post with proper featured image
+
+### 🔄 **Content Management**
+**User:** "Show me recent posts and their comments"
+**AI automatically:**
+1. Uses `get_posts` to retrieve recent posts
+2. Uses `get_comments` for each post
+3. Presents organized summary
+
+### 🎯 **Advanced Workflows**
+**User:** "Add a featured image to post #123"
+**AI automatically:**
+1. Uploads provided image using `upload_media`
+2. Uses `set_featured_image` to update existing post
+3. Confirms successful update
 
 ## Architecture
 
