@@ -42,6 +42,12 @@ MCP-RS provides comprehensive WordPress integration through the WordPress REST A
 - **Retry Logic**: Automatic retry with exponential backoff
 - **Error Handling**: Comprehensive error reporting
 
+### 🏷️ Category & Tag Management
+- **Category Operations**: Create, read, update, and delete categories
+- **Tag Operations**: Create, read, update, and delete tags
+- **Hierarchical Categories**: Support for parent-child category relationships
+- **Bulk Operations**: Efficient management of multiple categories and tags
+
 ## Configuration
 
 Add WordPress configuration to your `mcp-config.toml`:
@@ -163,6 +169,134 @@ Retrieve WordPress comments.
 }
 ```
 
+### `get_categories`
+Retrieve all WordPress categories.
+
+**Parameters:** None
+
+**Returns:** Array of category objects with metadata
+
+### `create_category`
+Create a new WordPress category.
+
+**Parameters:**
+- `name` (string): Category name
+- `description` (string, optional): Category description  
+- `parent` (number, optional): Parent category ID for hierarchical structure
+
+**Example Usage:**
+```json
+{
+  "tool": "create_category",
+  "arguments": {
+    "name": "Technology",
+    "description": "Posts about technology and software",
+    "parent": 5
+  }
+}
+```
+
+### `update_category`
+Update an existing WordPress category.
+
+**Parameters:**
+- `category_id` (number): ID of category to update
+- `name` (string, optional): New category name
+- `description` (string, optional): New category description
+
+**Example Usage:**
+```json
+{
+  "tool": "update_category",
+  "arguments": {
+    "category_id": 10,
+    "name": "Web Development",
+    "description": "Updated description"
+  }
+}
+```
+
+### `delete_category`
+Delete a WordPress category.
+
+**Parameters:**
+- `category_id` (number): ID of category to delete
+- `force` (boolean, optional): Force delete (bypass trash)
+
+**Example Usage:**
+```json
+{
+  "tool": "delete_category",
+  "arguments": {
+    "category_id": 10,
+    "force": true
+  }
+}
+```
+
+### `get_tags`
+Retrieve all WordPress tags.
+
+**Parameters:** None
+
+**Returns:** Array of tag objects with metadata
+
+### `create_tag`
+Create a new WordPress tag.
+
+**Parameters:**
+- `name` (string): Tag name
+- `description` (string, optional): Tag description
+
+**Example Usage:**
+```json
+{
+  "tool": "create_tag",
+  "arguments": {
+    "name": "rust",
+    "description": "Posts about Rust programming language"
+  }
+}
+```
+
+### `update_tag`
+Update an existing WordPress tag.
+
+**Parameters:**
+- `tag_id` (number): ID of tag to update
+- `name` (string, optional): New tag name
+- `description` (string, optional): New tag description
+
+**Example Usage:**
+```json
+{
+  "tool": "update_tag",
+  "arguments": {
+    "tag_id": 15,
+    "name": "programming",
+    "description": "Updated tag description"
+  }
+}
+```
+
+### `delete_tag`
+Delete a WordPress tag.
+
+**Parameters:**
+- `tag_id` (number): ID of tag to delete
+- `force` (boolean, optional): Force delete (bypass trash)
+
+**Example Usage:**
+```json
+{
+  "tool": "delete_tag",
+  "arguments": {
+    "tag_id": 15,
+    "force": true
+  }
+}
+```
+
 ## Workflow Examples
 
 ### Basic Blog Post
@@ -190,6 +324,36 @@ AI automatically:
 1. Uploads image using upload_media
 2. Uses set_featured_image to update post
 3. Confirms successful update
+```
+
+### Category Management Workflow
+```
+User: "Create a new category for web development tutorials"
+AI automatically:
+1. Uses create_category with name and description
+2. Returns category ID and details
+3. Can be used for organizing posts
+
+User: "Create a subcategory under Technology"
+AI automatically:
+1. Uses get_categories to find Technology category ID
+2. Uses create_category with parent parameter
+3. Creates hierarchical category structure
+```
+
+### Tag Management Workflow
+```
+User: "Create tags for a Rust programming post"
+AI automatically:
+1. Uses create_tag for each relevant tag (rust, programming, tutorial)
+2. Returns tag IDs for future reference
+3. Tags can be applied to posts during creation
+
+User: "Update the description of the 'rust' tag"
+AI automatically:
+1. Uses get_tags to find tag ID
+2. Uses update_tag with new description
+3. Confirms update success
 ```
 
 ## Error Handling

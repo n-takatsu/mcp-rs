@@ -46,8 +46,9 @@
   - **🎯 Base64 Upload**: Handle base64-encoded file uploads
   - **🔍 Health Check System**: Comprehensive environment validation
   - **🛠️ Production Monitoring**: 5-stage validation with detailed reporting
+  - **🏷️ Category & Tag Management**: Full CRUD operations for taxonomies
+  - **📂 Hierarchical Categories**: Support for parent-child relationships
   - Comment management and retrieval
-  - Tag and category operations
   - Timeout and retry handling with exponential backoff
   - Secure authentication with application passwords
   - **📋 Multipart Uploads**: Efficient file upload handling
@@ -203,6 +204,9 @@ cargo run --example wordpress_test
 
 # WordPress environment health check
 cargo run --example wordpress_health_check
+
+# WordPress categories and tags management test
+cargo run --example wordpress_categories_tags_test
 
 # WordPress security diagnosis and setup
 cargo run --example wordpress_security_diagnosis

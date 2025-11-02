@@ -109,6 +109,29 @@ pub struct WordPressSiteInfo {
     pub start_of_week: Option<u8>,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct WordPressCategory {
+    pub id: Option<u64>,
+    pub count: Option<u64>,
+    pub description: String,
+    pub link: Option<String>,
+    pub name: String,
+    pub slug: String,
+    pub taxonomy: Option<String>,
+    pub parent: Option<u64>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct WordPressTag {
+    pub id: Option<u64>,
+    pub count: Option<u64>,
+    pub description: String,
+    pub link: Option<String>,
+    pub name: String,
+    pub slug: String,
+    pub taxonomy: Option<String>,
+}
+
 impl WordPressHandler {
     pub fn new(config: WordPressConfig) -> Self {
         // タイムアウト設定付きのHTTPクライアントを作成
@@ -372,6 +395,166 @@ impl WordPressHandler {
         }
 
         info!("Setting featured image {} for post {}", media_id, post_id);
+        self.execute_request_with_retry(request).await
+    }
+
+    /// Get all categories
+    pub async fn get_categories(&self) -> Result<Vec<WordPressCategory>, McpError> {
+        let url = format!("{}/wp-json/wp/v2/categories", self.base_url);
+
+        let mut request = self.client.get(&url);
+
+        if let (Some(username), Some(password)) = (&self.username, &self.password) {
+            request = request.basic_auth(username, Some(password));
+        }
+
+        info!("Fetching WordPress categories");
+        self.execute_request_with_retry(request).await
+    }
+
+    /// Create a new category
+    pub async fn create_category(&self, name: &str, description: Option<&str>, parent: Option<u64>) -> Result<WordPressCategory, McpError> {
+        let url = format!("{}/wp-json/wp/v2/categories", self.base_url);
+
+        let mut category_data = serde_json::json!({
+            "name": name
+        });
+
+        if let Some(desc) = description {
+            category_data["description"] = serde_json::Value::String(desc.to_string());
+        }
+
+        if let Some(parent_id) = parent {
+            category_data["parent"] = serde_json::Value::Number(serde_json::Number::from(parent_id));
+        }
+
+        let mut request = self.client.post(&url).json(&category_data);
+
+        if let (Some(username), Some(password)) = (&self.username, &self.password) {
+            request = request.basic_auth(username, Some(password));
+        }
+
+        info!("Creating category: {}", name);
+        self.execute_request_with_retry(request).await
+    }
+
+    /// Update an existing category
+    pub async fn update_category(&self, category_id: u64, name: Option<&str>, description: Option<&str>) -> Result<WordPressCategory, McpError> {
+        let url = format!("{}/wp-json/wp/v2/categories/{}", self.base_url, category_id);
+
+        let mut update_data = serde_json::Map::new();
+
+        if let Some(name) = name {
+            update_data.insert("name".to_string(), serde_json::Value::String(name.to_string()));
+        }
+
+        if let Some(desc) = description {
+            update_data.insert("description".to_string(), serde_json::Value::String(desc.to_string()));
+        }
+
+        let mut request = self.client.put(&url).json(&update_data);
+
+        if let (Some(username), Some(password)) = (&self.username, &self.password) {
+            request = request.basic_auth(username, Some(password));
+        }
+
+        info!("Updating category: {}", category_id);
+        self.execute_request_with_retry(request).await
+    }
+
+    /// Delete a category
+    pub async fn delete_category(&self, category_id: u64, force: bool) -> Result<serde_json::Value, McpError> {
+        let url = format!("{}/wp-json/wp/v2/categories/{}", self.base_url, category_id);
+
+        let mut request = self.client.delete(&url);
+
+        if force {
+            request = request.query(&[("force", "true")]);
+        }
+
+        if let (Some(username), Some(password)) = (&self.username, &self.password) {
+            request = request.basic_auth(username, Some(password));
+        }
+
+        info!("Deleting category: {} (force: {})", category_id, force);
+        self.execute_request_with_retry(request).await
+    }
+
+    /// Get all tags
+    pub async fn get_tags(&self) -> Result<Vec<WordPressTag>, McpError> {
+        let url = format!("{}/wp-json/wp/v2/tags", self.base_url);
+
+        let mut request = self.client.get(&url);
+
+        if let (Some(username), Some(password)) = (&self.username, &self.password) {
+            request = request.basic_auth(username, Some(password));
+        }
+
+        info!("Fetching WordPress tags");
+        self.execute_request_with_retry(request).await
+    }
+
+    /// Create a new tag
+    pub async fn create_tag(&self, name: &str, description: Option<&str>) -> Result<WordPressTag, McpError> {
+        let url = format!("{}/wp-json/wp/v2/tags", self.base_url);
+
+        let mut tag_data = serde_json::json!({
+            "name": name
+        });
+
+        if let Some(desc) = description {
+            tag_data["description"] = serde_json::Value::String(desc.to_string());
+        }
+
+        let mut request = self.client.post(&url).json(&tag_data);
+
+        if let (Some(username), Some(password)) = (&self.username, &self.password) {
+            request = request.basic_auth(username, Some(password));
+        }
+
+        info!("Creating tag: {}", name);
+        self.execute_request_with_retry(request).await
+    }
+
+    /// Update an existing tag
+    pub async fn update_tag(&self, tag_id: u64, name: Option<&str>, description: Option<&str>) -> Result<WordPressTag, McpError> {
+        let url = format!("{}/wp-json/wp/v2/tags/{}", self.base_url, tag_id);
+
+        let mut update_data = serde_json::Map::new();
+
+        if let Some(name) = name {
+            update_data.insert("name".to_string(), serde_json::Value::String(name.to_string()));
+        }
+
+        if let Some(desc) = description {
+            update_data.insert("description".to_string(), serde_json::Value::String(desc.to_string()));
+        }
+
+        let mut request = self.client.put(&url).json(&update_data);
+
+        if let (Some(username), Some(password)) = (&self.username, &self.password) {
+            request = request.basic_auth(username, Some(password));
+        }
+
+        info!("Updating tag: {}", tag_id);
+        self.execute_request_with_retry(request).await
+    }
+
+    /// Delete a tag
+    pub async fn delete_tag(&self, tag_id: u64, force: bool) -> Result<serde_json::Value, McpError> {
+        let url = format!("{}/wp-json/wp/v2/tags/{}", self.base_url, tag_id);
+
+        let mut request = self.client.delete(&url);
+
+        if force {
+            request = request.query(&[("force", "true")]);
+        }
+
+        if let (Some(username), Some(password)) = (&self.username, &self.password) {
+            request = request.basic_auth(username, Some(password));
+        }
+
+        info!("Deleting tag: {} (force: {})", tag_id, force);
         self.execute_request_with_retry(request).await
     }
 
@@ -736,6 +919,144 @@ impl McpHandler for WordPressHandler {
                     "required": ["post_id", "media_id"]
                 }),
             },
+            Tool {
+                name: "get_categories".to_string(),
+                description: "Retrieve WordPress categories".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }),
+            },
+            Tool {
+                name: "create_category".to_string(),
+                description: "Create a new WordPress category".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "description": "Category name"
+                        },
+                        "description": {
+                            "type": "string",
+                            "description": "Category description (optional)"
+                        },
+                        "parent": {
+                            "type": "number",
+                            "description": "Parent category ID (optional)"
+                        }
+                    },
+                    "required": ["name"]
+                }),
+            },
+            Tool {
+                name: "update_category".to_string(),
+                description: "Update an existing WordPress category".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "category_id": {
+                            "type": "number",
+                            "description": "Category ID to update"
+                        },
+                        "name": {
+                            "type": "string",
+                            "description": "New category name (optional)"
+                        },
+                        "description": {
+                            "type": "string",
+                            "description": "New category description (optional)"
+                        }
+                    },
+                    "required": ["category_id"]
+                }),
+            },
+            Tool {
+                name: "delete_category".to_string(),
+                description: "Delete a WordPress category".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "category_id": {
+                            "type": "number",
+                            "description": "Category ID to delete"
+                        },
+                        "force": {
+                            "type": "boolean",
+                            "description": "Force delete (bypass trash)"
+                        }
+                    },
+                    "required": ["category_id"]
+                }),
+            },
+            Tool {
+                name: "get_tags".to_string(),
+                description: "Retrieve WordPress tags".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }),
+            },
+            Tool {
+                name: "create_tag".to_string(),
+                description: "Create a new WordPress tag".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "description": "Tag name"
+                        },
+                        "description": {
+                            "type": "string",
+                            "description": "Tag description (optional)"
+                        }
+                    },
+                    "required": ["name"]
+                }),
+            },
+            Tool {
+                name: "update_tag".to_string(),
+                description: "Update an existing WordPress tag".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "tag_id": {
+                            "type": "number",
+                            "description": "Tag ID to update"
+                        },
+                        "name": {
+                            "type": "string",
+                            "description": "New tag name (optional)"
+                        },
+                        "description": {
+                            "type": "string",
+                            "description": "New tag description (optional)"
+                        }
+                    },
+                    "required": ["tag_id"]
+                }),
+            },
+            Tool {
+                name: "delete_tag".to_string(),
+                description: "Delete a WordPress tag".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "tag_id": {
+                            "type": "number",
+                            "description": "Tag ID to delete"
+                        },
+                        "force": {
+                            "type": "boolean",
+                            "description": "Force delete (bypass trash)"
+                        }
+                    },
+                    "required": ["tag_id"]
+                }),
+            },
         ])
     }
 
@@ -898,6 +1219,139 @@ impl McpHandler for WordPressHandler {
                     "isError": false
                 }))
             }
+            "get_categories" => {
+                let categories = self.get_categories().await?;
+                Ok(serde_json::json!({
+                    "content": [{
+                        "type": "text",
+                        "text": format!("Found {} categories:\n{}", 
+                            categories.len(),
+                            serde_json::to_string_pretty(&categories)
+                                .unwrap_or_else(|_| "Failed to serialize categories".to_string())
+                        )
+                    }],
+                    "isError": false
+                }))
+            }
+            "create_category" => {
+                let args = params.arguments.unwrap_or_default();
+                let name = args
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| McpError::InvalidParams("Missing name".to_string()))?;
+                let description = args.get("description").and_then(|v| v.as_str());
+                let parent = args.get("parent").and_then(|v| v.as_u64());
+
+                let category = self.create_category(name, description, parent).await?;
+                Ok(serde_json::json!({
+                    "content": [{
+                        "type": "text",
+                        "text": format!("Created category '{}' with ID: {:?}", name, category.id)
+                    }],
+                    "isError": false
+                }))
+            }
+            "update_category" => {
+                let args = params.arguments.unwrap_or_default();
+                let category_id = args
+                    .get("category_id")
+                    .and_then(|v| v.as_u64())
+                    .ok_or_else(|| McpError::InvalidParams("Missing category_id".to_string()))?;
+                let name = args.get("name").and_then(|v| v.as_str());
+                let description = args.get("description").and_then(|v| v.as_str());
+
+                let category = self.update_category(category_id, name, description).await?;
+                Ok(serde_json::json!({
+                    "content": [{
+                        "type": "text",
+                        "text": format!("Updated category ID {} to '{}'", category_id, category.name)
+                    }],
+                    "isError": false
+                }))
+            }
+            "delete_category" => {
+                let args = params.arguments.unwrap_or_default();
+                let category_id = args
+                    .get("category_id")
+                    .and_then(|v| v.as_u64())
+                    .ok_or_else(|| McpError::InvalidParams("Missing category_id".to_string()))?;
+                let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+
+                self.delete_category(category_id, force).await?;
+                Ok(serde_json::json!({
+                    "content": [{
+                        "type": "text",
+                        "text": format!("Deleted category ID {} (force: {})", category_id, force)
+                    }],
+                    "isError": false
+                }))
+            }
+            "get_tags" => {
+                let tags = self.get_tags().await?;
+                Ok(serde_json::json!({
+                    "content": [{
+                        "type": "text",
+                        "text": format!("Found {} tags:\n{}", 
+                            tags.len(),
+                            serde_json::to_string_pretty(&tags)
+                                .unwrap_or_else(|_| "Failed to serialize tags".to_string())
+                        )
+                    }],
+                    "isError": false
+                }))
+            }
+            "create_tag" => {
+                let args = params.arguments.unwrap_or_default();
+                let name = args
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| McpError::InvalidParams("Missing name".to_string()))?;
+                let description = args.get("description").and_then(|v| v.as_str());
+
+                let tag = self.create_tag(name, description).await?;
+                Ok(serde_json::json!({
+                    "content": [{
+                        "type": "text",
+                        "text": format!("Created tag '{}' with ID: {:?}", name, tag.id)
+                    }],
+                    "isError": false
+                }))
+            }
+            "update_tag" => {
+                let args = params.arguments.unwrap_or_default();
+                let tag_id = args
+                    .get("tag_id")
+                    .and_then(|v| v.as_u64())
+                    .ok_or_else(|| McpError::InvalidParams("Missing tag_id".to_string()))?;
+                let name = args.get("name").and_then(|v| v.as_str());
+                let description = args.get("description").and_then(|v| v.as_str());
+
+                let tag = self.update_tag(tag_id, name, description).await?;
+                Ok(serde_json::json!({
+                    "content": [{
+                        "type": "text",
+                        "text": format!("Updated tag ID {} to '{}'", tag_id, tag.name)
+                    }],
+                    "isError": false
+                }))
+            }
+            "delete_tag" => {
+                let args = params.arguments.unwrap_or_default();
+                let tag_id = args
+                    .get("tag_id")
+                    .and_then(|v| v.as_u64())
+                    .ok_or_else(|| McpError::InvalidParams("Missing tag_id".to_string()))?;
+                let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+
+                self.delete_tag(tag_id, force).await?;
+                Ok(serde_json::json!({
+                    "content": [{
+                        "type": "text",
+                        "text": format!("Deleted tag ID {} (force: {})", tag_id, force)
+                    }],
+                    "isError": false
+                }))
+            }
             _ => Err(McpError::ToolNotFound(params.name)),
         }
     }
@@ -914,6 +1368,18 @@ impl McpHandler for WordPressHandler {
                 uri: "wordpress://comments".to_string(),
                 name: "WordPress Comments".to_string(),
                 description: Some("All WordPress comments".to_string()),
+                mime_type: Some("application/json".to_string()),
+            },
+            Resource {
+                uri: "wordpress://categories".to_string(),
+                name: "WordPress Categories".to_string(),
+                description: Some("All WordPress categories".to_string()),
+                mime_type: Some("application/json".to_string()),
+            },
+            Resource {
+                uri: "wordpress://tags".to_string(),
+                name: "WordPress Tags".to_string(),
+                description: Some("All WordPress tags".to_string()),
                 mime_type: Some("application/json".to_string()),
             },
         ])
@@ -941,6 +1407,26 @@ impl McpHandler for WordPressHandler {
                         "uri": params.uri,
                         "mimeType": "application/json",
                         "text": serde_json::to_string_pretty(&comments)?
+                    }]
+                }))
+            }
+            "wordpress://categories" => {
+                let categories = self.get_categories().await?;
+                Ok(serde_json::json!({
+                    "contents": [{
+                        "uri": params.uri,
+                        "mimeType": "application/json",
+                        "text": serde_json::to_string_pretty(&categories)?
+                    }]
+                }))
+            }
+            "wordpress://tags" => {
+                let tags = self.get_tags().await?;
+                Ok(serde_json::json!({
+                    "contents": [{
+                        "uri": params.uri,
+                        "mimeType": "application/json",
+                        "text": serde_json::to_string_pretty(&tags)?
                     }]
                 }))
             }
