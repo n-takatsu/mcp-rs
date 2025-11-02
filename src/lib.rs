@@ -8,7 +8,6 @@
 pub mod error;
 pub mod protocol;
 pub mod server;
-pub mod client;
 pub mod types;
 
 pub use error::{Error, Result};

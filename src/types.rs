@@ -136,17 +136,8 @@ mod tests {
         let id_num = RequestId::Number(42);
         let id_null = RequestId::Null;
 
-        assert_eq!(
-            serde_json::to_string(&id_str).unwrap(),
-            "\"test\""
-        );
-        assert_eq!(
-            serde_json::to_string(&id_num).unwrap(),
-            "42"
-        );
-        assert_eq!(
-            serde_json::to_string(&id_null).unwrap(),
-            "null"
-        );
+        assert_eq!(serde_json::to_string(&id_str).unwrap(), "\"test\"");
+        assert_eq!(serde_json::to_string(&id_num).unwrap(), "42");
+        assert_eq!(serde_json::to_string(&id_null).unwrap(), "null");
     }
 }
