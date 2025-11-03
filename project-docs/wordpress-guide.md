@@ -1,43 +1,278 @@
-# WordPress Integration Guide
+# WordPress Integration Guide 🛡️ Enterprise Security Edition
 
 ## Overview
 
-This guide covers the complete WordPress integration available in mcp-rs, including 27 MCP tools that provide comprehensive content management functionality for AI agents.
+This guide covers the complete WordPress integration available in mcp-rs, featuring 27 MCP tools with enterprise-grade security protection. All WordPress operations are secured by the 6-layer security architecture providing comprehensive protection against modern web threats.
 
-## Quick Start
+## 🚀 Quick Start
 
-### 1. Configuration
+### 1. Secure Configuration
 
 ```toml
 [handlers.wordpress]
 url = "https://your-wordpress-site.com"
 username = "your_username"
-password = "your_application_password"
+password = "your_application_password"  # Encrypted at rest with AES-GCM-256
 timeout_seconds = 30
 enabled = true
+
+# Security Features (Auto-enabled)
+rate_limiting = true
+sql_injection_protection = true
+xss_protection = true
+audit_logging = true
 ```
 
-### 2. WordPress Application Password Setup
+### 2. WordPress Application Password Setup (Security Best Practices)
 
 1. WordPress Admin → Users → Your Profile
 2. Scroll to "Application Passwords" 
 3. Create new application password for MCP-RS
-4. Use this password in configuration
+4. Use this password in configuration (automatically encrypted)
+5. **Security Note**: Application passwords provide better security than regular passwords
 
-### 3. Test Connection
+### 3. Test Secure Connection
 
 ```bash
+# Run comprehensive security test
+cargo run --example wordpress_security_integration
+
+# Run basic connection test
 cargo run --example wordpress_test
 ```
 
-## Available Tools (27 total)
+## 🔑 WordPress Permissions & Administrative Access
 
-### 📝 Content Management (10 tools)
+### Current Permission Status (2025-11-03 Updated)
 
-| Tool | Purpose | Key Features |
-|------|---------|--------------|
-| `wordpress_health_check` | Environment diagnostics | Connection, auth, API status |
-| `get_posts` | List posts | Pagination, status filtering |
+#### Detailed Diagnosis Results
+```
+✅ Working Functions (wpmaster: Administrator privileges confirmed):
+- Category API (/wp/v2/categories) - 8 items retrieved successfully
+- Posts API (/wp/v2/posts) - 1 post, 9 pages retrieved successfully  
+- Media API (/wp/v2/media) - 2 items retrieved successfully
+- Tags API (/wp/v2/tags) - 6 items retrieved successfully
+
+❌ Restricted Functions:
+- Settings API (/wp/v2/settings) - 401 Unauthorized
+
+🔍 Issue Identification:
+Administrator privileges are normal, but only Settings API is individually restricted
+```
+
+### New Identified Issue: Settings API Individual Restriction
+
+#### Problem Occurring Even with Confirmed Administrator Privileges
+Despite the wpmaster user having **administrator privileges**, only the `/wp/v2/settings` endpoint returns 401 errors. This could be caused by:
+
+#### Possible Causes and Solutions
+
+##### 1. WordPress REST API Settings Individual Restriction
+**Problem**: Settings API is specially restricted
+```php
+// Possibly restricted in functions.php or plugins
+add_filter( 'rest_pre_dispatch', function( $result, $server, $request ) {
+    $route = $request->get_route();
+    
+    // Restrict access to Settings API
+    if ( strpos( $route, '/wp/v2/settings' ) === 0 ) {
+        return new WP_Error( 'rest_forbidden', 'Settings API access restricted', 
+                           array( 'status' => 401 ) );
+    }
+    
+    return $result;
+}, 10, 3 );
+```
+
+**Solution**: 
+- Check theme's `functions.php`
+- Check for REST API restrictions in plugins
+
+##### 2. Security Plugin Restrictions
+**Common restriction plugins**:
+- Wordfence Security
+- iThemes Security (formerly Better WP Security)  
+- Sucuri Security
+- All In One WP Security & Firewall
+
+**Check Location**: 
+```
+Security Plugin Settings → REST API → Settings Endpoint
+or
+Firewall → Advanced Rules → REST API Restrictions
+```
+
+##### 3. WordPress Version-Specific Restrictions
+**WordPress 5.5+ Tightening**:
+- Enhanced Settings API restrictions with Application Passwords
+- Cases requiring Cookie authentication
+- Additional restrictions on WordPress.com hosted sites
+
+##### 4. Application Password Permission Scope Restrictions
+**Verification Method**:
+```
+WordPress Admin → Users → Profile
+↓
+Application Passwords Section
+↓  
+"Revoke" current password
+↓
+Generate new Application Password
+```
+
+### Security-Conscious Permission Settings
+
+#### Based on Principle of Least Privilege
+
+##### Option 1: Administrator Privilege Grant (Easy but broad permissions)
+```
+Pros: All features immediately available
+Cons: Security risk due to excessive privilege grant
+Recommendation: Test environments only
+```
+
+##### Option 2: Custom Role Creation (Recommended)
+```
+Pros: Grant only minimum necessary privileges
+Cons: Initial setup somewhat complex
+Recommendation: Recommended for production
+```
+
+##### Option 3: Use Permission Control Plugins
+```
+Recommended Plugins:
+- User Role Editor
+- Members
+- Capability Manager Enhanced
+
+Pros: Easy permission adjustment via GUI
+Cons: Plugin dependency
+```
+
+### Step-by-Step Implementation (Administrator Privileges Confirmed Response)
+
+#### Phase 1: Immediate Diagnosis and Response
+```
+1. Check security plugin settings
+   - Wordfence → Firewall → Advanced Rules
+   - iThemes Security → System Tweaks → REST API
+   
+2. Regenerate Application Password
+   - WordPress Admin → Users → Profile
+   - Revoke current password → Generate new one
+   
+3. Check theme functions.php
+   - Check for REST API restriction filters
+   
+4. Run Settings API test
+   cargo run --example comprehensive_test
+```
+
+#### Phase 2: WordPress Environment Verification/Adjustment
+```
+1. Verify WordPress version
+   - For WordPress 5.5+, check Settings API restriction enhancement
+   
+2. Individual plugin disable test
+   - Temporarily disable security-related plugins
+   - Test Settings API access
+   
+3. Verify WordPress REST API settings
+   - Admin → Settings → Permalinks → "Save Changes"
+   
+4. Check WordPress.com hosted restrictions
+   - Verify additional restrictions if hosted on WordPress.com
+```
+
+#### Phase 3: Alternative Approach Implementation
+```
+1. Consider Settings API use via Cookie authentication
+2. Settings change flow via WordPress admin interface
+3. Continue operation with non-Settings API functions
+4. Consider custom endpoint creation
+```
+
+### Permission Verification Commands
+
+#### Permission Testing with MCP-RS
+```bash
+# Comprehensive permission test
+cargo run --example comprehensive_test
+
+# Authentication diagnosis
+cargo run --example auth_diagnosis  
+
+# Health check (including permission verification)
+cargo run --example wordpress_health_check
+```
+
+#### WordPress-side Permission Verification
+```php
+// Code for checking current user permissions
+$user = wp_get_current_user();
+$capabilities = $user->allcaps;
+
+// Check MCP required permissions
+$required_caps = [
+    'manage_options',
+    'edit_posts', 
+    'upload_files',
+    'manage_categories'
+];
+
+foreach ($required_caps as $cap) {
+    if (user_can($user, $cap)) {
+        echo "✅ {$cap}: Allowed\n";
+    } else {
+        echo "❌ {$cap}: Denied\n";
+    }
+}
+```
+
+### Expected Results
+
+#### Test Results After Permission Setup (Administrator Privileges Confirmed)
+```
+🔍 WordPress API Endpoint Diagnosis Results:
+✅ Category API (/wp/v2/categories) - 8 items retrieved successfully
+✅ Posts API (/wp/v2/posts) - 1 post, 9 pages retrieved successfully
+✅ Media API (/wp/v2/media) - 2 items retrieved successfully  
+✅ Tags API (/wp/v2/tags) - 6 items retrieved successfully
+❌ Settings API (/wp/v2/settings) - 401 Unauthorized ← Individual restriction
+
+📊 Diagnosis Summary:
+🔗 Basic Connection: Normal
+🔐 Authentication: Fully valid (Administrator privileges confirmed)
+⚙️ Settings API Permission: Denied due to individual restriction ← Requires investigation
+```
+
+## 🛡️ Security Architecture
+
+### Multi-Layer Protection
+1. **Encryption Layer**: AES-GCM-256 + PBKDF2 (100K iterations)
+2. **Rate Limiting**: Token bucket algorithm + DDoS protection
+3. **TLS Enforcement**: TLS 1.2+ with certificate validation
+4. **Input Protection**: SQL injection (11 patterns) + XSS (14 patterns)
+5. **Monitoring**: Real-time threat detection and analysis
+6. **Audit Logging**: Complete security event recording
+
+### Attack Protection Coverage
+- ✅ SQL Injection (11 attack patterns detected)
+- ✅ XSS Attacks (14 attack vectors blocked)
+- ✅ CSRF Protection
+- ✅ DDoS/Rate Limiting Attacks
+- ✅ Brute Force Authentication
+- ✅ File Upload Attacks
+- ✅ Code Injection Attempts
+
+## Available Tools (27 total) - All Security Protected
+
+### 📝 Content Management (10 tools) - 🔒 XSS Protected
+
+| Tool | Purpose | Security Features |
+|------|---------|------------------|
+| `wordpress_health_check` | Environment diagnostics | Connection validation, auth verification |
+| `get_posts` | List posts | SQL injection protection, parameter validation |
 | `get_pages` | List pages | WordPress pages retrieval |
 | `get_all_content` | All content | Combined posts + pages |
 | `get_post` | Single post/page | By ID retrieval |

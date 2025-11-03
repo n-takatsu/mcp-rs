@@ -15,9 +15,7 @@ use std::fmt;
 /// 暗号化された認証情報を管理する構造体
 #[derive(Clone)]
 pub struct SecureCredentials {
-    /// ユーザー名（平文、公開情報）
     pub username: String,
-    /// パスワード（メモリ保護付き）
     password: Secret<String>,
 }
 
@@ -129,7 +127,7 @@ impl SecureCredentials {
         })
     }
 
-    /// パスワードを安全に取得（一時的な露出）
+    /// パスワードを取得（Secretのまま返す）
     pub fn get_password(&self) -> &Secret<String> {
         &self.password
     }
@@ -140,8 +138,8 @@ impl SecureCredentials {
         general_purpose::STANDARD.encode(credentials.as_bytes())
     }
 
-    /// パスワードを更新
-    pub fn update_password(&mut self, new_password: String) {
+    /// パスワードを変更
+    pub fn change_password(&mut self, new_password: String) {
         self.password = Secret::new(new_password);
     }
 }
@@ -238,7 +236,7 @@ mod tests {
     #[test]
     fn test_password_update() {
         let mut creds = SecureCredentials::new("user".to_string(), "old_password".to_string());
-        creds.update_password("new_password".to_string());
+        creds.change_password("new_password".to_string());
         assert_eq!(creds.password.expose_secret(), "new_password");
     }
 

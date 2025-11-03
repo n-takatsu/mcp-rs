@@ -28,9 +28,12 @@ kramdown:
 # ナビゲーション
 header_pages:
   - index.md
-  - architecture/index.md
-  - api/index.md
-  - guides/index.md
+  - docs/index.md
+  - docs/architecture/index.md
+  - docs/api/index.md
+  - docs/guides/index.md
+  - docs/security.md
+  - docs/wordpress.md
 
 # サイト設定
 show_excerpts: true

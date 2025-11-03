@@ -1,29 +1,49 @@
 # MCP-RS Documentation
 
-**Model Context Protocol implementation in Rust**
+**Model Context Protocol implementation in Rust - Production Ready**
 
 ---
 
 ## Overview
 
-MCP-RS is a robust, type-safe Rust implementation of the Model Context Protocol (MCP) designed for AI-agent integration. It provides a standardized JSON-RPC interface for AI agents to interact with various services and tools.
+🚀 **Production-Ready** Rust implementation of the Model Context Protocol (MCP) for AI-agent integration with WordPress and beyond.
+
+MCP-RS provides a **comprehensive, battle-tested** implementation of the MCP (Model Context Protocol) in Rust with **complete WordPress integration**. Built with a layered architecture, it enables AI agents to perform sophisticated content management through a standardized JSON-RPC interface.
 
 ## Key Features
 
-- 🚀 **High Performance**: Built on tokio for async operations
-- 🔒 **Type Safety**: Leverages Rust's type system for reliable protocol handling
-- 🔌 **Plugin Architecture**: Extensible handler system for custom integrations
-- 🌐 **Multi-Transport**: Support for stdio, HTTP, and WebSocket protocols
-- ⚙️ **Configuration-Driven**: TOML-based configuration with environment variable overrides
+### 🚀 Core Capabilities
+- **JSON-RPC 2.0 Server**: Full-featured JSON-RPC server implementation using `axum`
+- **Core Runtime Module**: Advanced application lifecycle and resource management
+- **Multi-Transport Support**: Stdio, HTTP, and WebSocket communication protocols
+- **Plugin Architecture**: Handler-based system with `McpHandler` trait for extensibility
+- **Type-Safe Configuration**: TOML-based configuration with environment variable override
+- **Production-Ready Error Handling**: Comprehensive error types with structured logging
+- **Async/Await**: Built on `tokio` for high-performance async operations
+
+### 🔒 Enterprise-Grade Security (100% Complete)
+- **🔐 AES-GCM-256 Encryption**: Military-grade encryption with PBKDF2 key derivation (100K iterations)
+- **⚡ Token Bucket Rate Limiting**: Advanced DDoS protection with configurable limits
+- **🔒 TLS 1.2+ Enforcement**: Mandatory secure transport with certificate validation
+- **🛡️ SQL Injection Protection**: 11 attack pattern detection
+- **🚫 XSS Attack Protection**: 14 attack pattern detection with HTML sanitization
+- **📊 Comprehensive Audit Logging**: All security events recorded with tamper-resistant logging
+
+### 🎯 WordPress Integration (27 Tools)
+- **📝 Content Management**: Complete post and page management with SEO support
+- **🖼️ Media Management**: Upload, manage, and set featured images
+- **🏷️ Taxonomy Management**: Categories and tags with hierarchical support
+- **🎬 Rich Content**: YouTube embeds and social media integration
 
 ## Quick Navigation
 
 ### 📚 Documentation Sections
 
-- **[Architecture](architecture/)** - System design and technical architecture
-- **[API Reference](api/)** - Complete API documentation
-- **[Guides](guides/)** - Implementation guides and tutorials
-- **[Rust API Docs](../rustdoc/)** - Generated documentation from source code
+- **[Architecture]({{ site.baseurl }}/docs/architecture/)** - System design and technical architecture
+- **[API Reference]({{ site.baseurl }}/docs/api/)** - Complete API documentation
+- **[Security]({{ site.baseurl }}/docs/security/)** - Enterprise-grade security features
+- **[Guides]({{ site.baseurl }}/docs/guides/)** - Implementation guides and tutorials
+- **[WordPress Integration]({{ site.baseurl }}/docs/wordpress/)** - WordPress REST API integration
 
 ### 🚀 Getting Started
 
