@@ -7,6 +7,9 @@ pub enum McpError {
     #[error("JSON-RPC error: {0}")]
     JsonRpc(String),
 
+    #[error("Invalid request: {0}")]
+    InvalidRequest(String),
+
     #[error("Invalid method: {0}")]
     InvalidMethod(String),
 

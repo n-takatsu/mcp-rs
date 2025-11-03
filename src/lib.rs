@@ -6,6 +6,7 @@
 //! with support for tool integration, resource management, and prompt handling.
 
 pub mod config;
+pub mod core;
 pub mod error;
 pub mod handlers;
 pub mod mcp;

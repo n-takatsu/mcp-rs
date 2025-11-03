@@ -1,8 +1,10 @@
 mod config;
+mod core;
 mod handlers;
 mod mcp;
 
 use config::McpConfig;
+use core::{PluginInfo, Runtime, RuntimeConfig};
 use handlers::WordPressHandler;
 use mcp::McpServer;
 use std::sync::Arc;
@@ -19,6 +21,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 設定を読み込み
     let config = McpConfig::load()?;
 
+    // Core Runtime を初期化
+    let runtime_config = RuntimeConfig {
+        mcp_config: config.clone(),
+        max_concurrent_requests: 100,
+        default_timeout_seconds: 30,
+        enable_metrics: false,
+    };
+
+    let runtime = Runtime::new(runtime_config);
+
     // ログレベルを設定
     if let Some(log_level) = &config.server.log_level {
         std::env::set_var("RUST_LOG", log_level);
@@ -28,6 +40,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
 
     println!("🚀 MCP-RS サーバーを開始します...");
+
+    // Runtime を初期化
+    runtime.initialize().await?;
 
     // 設定情報を表示
     if config.server.stdio.unwrap_or(false) {
@@ -44,8 +59,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    // Create MCP server
+    // Create MCP server with runtime
     let mut server = McpServer::new();
+
+    // Handler Registry を取得してWordPressハンドラーを登録
+    let handler_registry = runtime.handler_registry();
 
     // WordPressハンドラーを追加（設定がある場合）
     if let Some(wp_config) = &config.handlers.wordpress {
@@ -53,7 +71,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("🔗 WordPress統合を有効化: {}", wp_config.url);
 
             let wordpress_handler = WordPressHandler::new(wp_config.clone());
+            let plugin_info = PluginInfo::new(
+                "wordpress".to_string(),
+                "0.1.0".to_string(),
+                "WordPress REST API integration".to_string(),
+            );
 
+            // Handler Registry に登録
+            {
+                let mut registry = handler_registry.write().await;
+                registry.register_handler(
+                    "wordpress".to_string(),
+                    Arc::new(wordpress_handler.clone()),
+                    plugin_info,
+                )?;
+            }
+
+            // Legacy MCP Server にも追加（段階的移行のため）
             server.add_handler("wordpress".to_string(), Arc::new(wordpress_handler));
         } else {
             println!("⚠️  WordPress統合は無効になっています");
@@ -76,6 +110,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("🌍 TCP サーバーを開始: http://{}", addr);
         server.run(addr).await?;
     }
+
+    // Graceful shutdown
+    runtime.shutdown().await?;
 
     Ok(())
 }

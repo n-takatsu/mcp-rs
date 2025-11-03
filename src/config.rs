@@ -1,20 +1,20 @@
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct McpConfig {
     pub server: ServerConfig,
     pub handlers: HandlersConfig,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ServerConfig {
     pub bind_addr: Option<String>,
     pub stdio: Option<bool>,
     pub log_level: Option<String>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct HandlersConfig {
     pub wordpress: Option<WordPressConfig>,
     // 将来の拡張用
