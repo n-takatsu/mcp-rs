@@ -15,6 +15,12 @@ password = "${WORDPRESS_PASSWORD}"
 enabled = true
 timeout_seconds = 30
 
+# レート制限の設定（省略可能、未設定の場合は制限なし）
+[handlers.wordpress.rate_limit]
+enabled = true              # レート制限を有効にするか
+requests_per_second = 10.0  # 1秒あたりのリクエスト数
+burst_size = 20            # バーストサイズ（短期間での許容リクエスト数）
+
 
 # 🔒 セキュリティ設定説明:
 # 
@@ -45,6 +51,12 @@ timeout_seconds = 30
 # username = WordPress ユーザー名
 # password = Application Password (WordPress管理画面で生成)
 # enabled = このハンドラーを有効にするか
+# timeout_seconds = APIリクエストのタイムアウト時間（秒）
+#
+# [handlers.wordpress.rate_limit] (省略可能)
+# enabled = レート制限を有効にするか
+# requests_per_second = 1秒あたりの最大リクエスト数
+# burst_size = 短期間で許容するリクエスト数（バースト）
 #
 # 🔑 Application Password の生成方法:
 # 1. WordPress管理画面 > ユーザー > プロフィール

@@ -10,3 +10,8 @@ username = "${WORDPRESS_USERNAME}"
 password = "${WORDPRESS_PASSWORD}"
 enabled = true
 timeout_seconds = 30
+
+[handlers.wordpress.rate_limit]
+enabled = false
+requests_per_second = 10.0
+burst_size = 20

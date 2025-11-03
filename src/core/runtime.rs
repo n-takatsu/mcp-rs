@@ -119,12 +119,12 @@ impl Runtime {
 
         let transport_config = self.config.mcp_config.to_transport_config();
         let mut transport = TransportFactory::create_transport(&transport_config)
-            .map_err(|e| McpError::InternalError(format!("Failed to create transport: {}", e)))?;
+            .map_err(|e| McpError::Internal(format!("Failed to create transport: {}", e)))?;
 
         transport
             .start()
             .await
-            .map_err(|e| McpError::InternalError(format!("Failed to start transport: {}", e)))?;
+            .map_err(|e| McpError::Internal(format!("Failed to start transport: {}", e)))?;
 
         info!("Transport initialized: {:?}", transport.transport_info());
 
@@ -258,7 +258,7 @@ impl Runtime {
         let mut transport_lock = self.transport.write().await;
         let transport = transport_lock
             .as_mut()
-            .ok_or_else(|| McpError::InternalError("Transport not initialized".to_string()))?;
+            .ok_or_else(|| McpError::Internal("Transport not initialized".to_string()))?;
 
         // Receive message (non-blocking)
         match transport.receive_message().await {
@@ -352,7 +352,7 @@ impl Runtime {
                 registry
                     .list_all_tools()
                     .await
-                    .map_err(|e| McpError::InternalError(e.to_string()))
+                    .map_err(|e| McpError::Internal(e.to_string()))
             }
             method => Err(McpError::MethodNotFound(format!(
                 "Unknown method: {}",
@@ -366,12 +366,12 @@ impl Runtime {
         let mut transport_lock = self.transport.write().await;
         let transport = transport_lock
             .as_mut()
-            .ok_or_else(|| McpError::InternalError("Transport not initialized".to_string()))?;
+            .ok_or_else(|| McpError::Internal("Transport not initialized".to_string()))?;
 
         transport
             .send_message(response)
             .await
-            .map_err(|e| McpError::InternalError(format!("Failed to send response: {}", e)))?;
+            .map_err(|e| McpError::Internal(format!("Failed to send response: {}", e)))?;
 
         Ok(())
     }

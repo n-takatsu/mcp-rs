@@ -157,6 +157,34 @@
 - **v0.3.0**: WebSocket transport, metrics, performance optimization
 - **v1.0.0**: Production readiness, security audit, ecosystem
 
+## 📚 Documentation
+
+This project uses a **hybrid documentation approach** with executable examples:
+
+### 🔗 Live Documentation (Recommended)
+All API examples are **executable and automatically tested**:
+
+```bash
+# View all documentation with live examples
+cargo doc --open
+
+# Test all documentation examples
+cargo test --doc
+```
+
+### 📖 Guides and Tutorials
+- **[Plugin System Guide](docs/plugin-system.md)** - Complete plugin development guide with links to tested examples
+- **[Architecture Overview](docs/architecture.md)** - System design and component interaction
+- **[WordPress Integration](docs/wordpress-integration.md)** - Detailed WordPress handler documentation
+
+### 🧪 Executable Examples
+All code examples link directly to tested documentation:
+- **Plugin APIs**: See `src/plugins/mod.rs` for working examples
+- **Configuration**: See `src/config.rs` for setup examples  
+- **Transport Layer**: See `src/transport/` modules for communication examples
+
+**💡 Why this approach?** Our documentation examples are verified with every build via `cargo test --doc`, ensuring they always work correctly.
+
 ## Installation
 
 Add to your `Cargo.toml`:

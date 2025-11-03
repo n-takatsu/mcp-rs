@@ -8,11 +8,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 直接WordPress設定を作成（テスト用）
     let wp_config = WordPressConfig {
-        url: "http://localhost:8080".to_string(),
-        username: "admin".to_string(),
-        password: "password".to_string(),
+        url: "https://demo.wp-api.org/wp-json".to_string(),
+        username: "demo".to_string(),
+        password: "demo".to_string(),
         enabled: Some(true),
         timeout_seconds: Some(30),
+        rate_limit: None, // テスト用なのでレート制限無し
     };
 
     let handler = WordPressHandler::new(wp_config);

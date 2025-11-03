@@ -101,6 +101,7 @@ async fn test_nonexistent_host_http() {
         password: "test".to_string(),
         enabled: Some(true),
         timeout_seconds: Some(5), // 短いタイムアウト
+        rate_limit: None,
     };
 
     let handler = WordPressHandler::new(fake_config);
@@ -147,6 +148,7 @@ async fn test_invalid_url_http() {
         password: "test".to_string(),
         enabled: Some(true),
         timeout_seconds: Some(3),
+        rate_limit: None,
     };
 
     let handler = WordPressHandler::new(fake_config);
