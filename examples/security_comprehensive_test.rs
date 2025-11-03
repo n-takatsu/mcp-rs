@@ -1,17 +1,18 @@
 //! 包括的セキュリティテストの実行例
-//! 
+//!
 //! このサンプルは、mcp-rsで実装された全セキュリティ機能のテストを実行し、
 //! エンタープライズグレードのセキュリティ実装を実証します。
 
+use mcp_rs::config::RateLimitConfig;
 use mcp_rs::security::{
-    encryption::{SecureCredentials, EncryptionError},
+    audit_log::{AuditCategory, AuditFilter, AuditLevel, AuditLogger},
+    encryption::{EncryptionError, SecureCredentials},
     rate_limiter::RateLimiter,
     sql_injection_protection::{SqlInjectionProtector, SqlProtectionConfig},
-    xss_protection::{XssProtector, XssProtectionConfig},
-    audit_log::{AuditLogger, AuditLevel, AuditCategory, AuditLogEntry, AuditFilter},
     validation::InputValidator,
+    xss_protection::{XssProtectionConfig, XssProtector},
 };
-use mcp_rs::config::RateLimitConfig;
+use secrecy::ExposeSecret;
 use std::time::Duration;
 use tokio::time::sleep;
 
@@ -22,28 +23,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 1. 暗号化システムテスト
     test_encryption_system().await?;
-    
+
     // 2. レート制限システムテスト
     test_rate_limiting_system().await?;
-    
+
     // 3. SQL インジェクション保護テスト
     test_sql_injection_protection().await?;
-    
+
     // 4. XSS攻撃保護テスト
     test_xss_protection().await?;
-    
+
     // 5. 監査ログシステムテスト
     test_audit_logging_system().await?;
-    
+
     // 6. 入力検証システムテスト
     test_input_validation_system().await?;
-    
+
     // 7. 統合セキュリティテスト
     test_integrated_security().await?;
 
     println!("\n🎉 全セキュリティテスト完了！");
     println!("   企業レベルのセキュリティ実装が確認されました。");
-    
+
     Ok(())
 }
 
@@ -56,21 +57,24 @@ async fn test_encryption_system() -> Result<(), Box<dyn std::error::Error>> {
     let username = "wordpress_admin";
     let password = "sensitive_app_password_123";
 
+    // 認証情報作成
+    let credentials = SecureCredentials::new(username.to_string(), password.to_string());
+
     // 暗号化実行
-    let encrypted = SecureCredentials::encrypt(username, password, master_password)?;
+    let encrypted = credentials.encrypt(master_password)?;
     println!("   ✅ 認証情報暗号化成功");
 
     // 復号化実行
-    let decrypted = encrypted.decrypt(master_password)?;
+    let decrypted = SecureCredentials::from_encrypted(&encrypted, master_password)?;
     println!("   ✅ 認証情報復号化成功");
 
     // 整合性検証
     assert_eq!(decrypted.username, username);
-    assert_eq!(decrypted.password, password);
+    assert_eq!(decrypted.get_password().expose_secret(), password);
     println!("   ✅ 暗号化ラウンドトリップ検証完了");
 
     // 間違ったパスワードでの復号化失敗テスト
-    match encrypted.decrypt("wrong_password") {
+    match SecureCredentials::from_encrypted(&encrypted, "wrong_password") {
         Err(EncryptionError::DecryptionFailed(_)) => {
             println!("   ✅ 不正なパスワードでの復号化を正しく拒否");
         }
@@ -87,7 +91,7 @@ async fn test_rate_limiting_system() -> Result<(), Box<dyn std::error::Error>> {
     println!("   Token Bucketアルゴリズム + DDoS防御");
 
     let config = RateLimitConfig {
-        requests_per_second: 5.0,
+        requests_per_second: 5,
         burst_size: 10,
         enabled: true,
     };
@@ -131,16 +135,29 @@ async fn test_sql_injection_protection() -> Result<(), Box<dyn std::error::Error
 
     // 攻撃パターンテスト
     let attacks = vec![
-        ("Union-based", "SELECT * FROM users UNION SELECT username, password FROM admin"),
+        (
+            "Union-based",
+            "SELECT * FROM users UNION SELECT username, password FROM admin",
+        ),
         ("Boolean-blind", "SELECT * FROM posts WHERE id = 1 AND 1=1"),
-        ("Time-based", "SELECT * FROM users WHERE id = 1; WAITFOR DELAY '00:00:05'"),
-        ("Comment injection", "SELECT * FROM posts WHERE id = 1-- AND status = 'published'"),
+        (
+            "Time-based",
+            "SELECT * FROM users WHERE id = 1; WAITFOR DELAY '00:00:05'",
+        ),
+        (
+            "Comment injection",
+            "SELECT * FROM posts WHERE id = 1-- AND status = 'published'",
+        ),
         ("Stacked queries", "SELECT * FROM posts; DROP TABLE users;"),
     ];
 
     for (attack_name, attack_query) in attacks {
         let result = protector.inspect_query(attack_query)?;
-        assert!(result.detected, "攻撃が検知されませんでした: {}", attack_name);
+        assert!(
+            result.detected,
+            "攻撃が検知されませんでした: {}",
+            attack_name
+        );
         println!("   ✅ {} 攻撃を検知・ブロック", attack_name);
     }
 
@@ -165,15 +182,28 @@ async fn test_xss_protection() -> Result<(), Box<dyn std::error::Error>> {
     let attacks = vec![
         ("Reflected XSS", "<script>alert('XSS')</script>"),
         ("Event-based XSS", r#"<img src="x" onerror="alert('XSS')">"#),
-        ("JavaScript Protocol", r#"<a href="javascript:alert('XSS')">Click</a>"#),
+        (
+            "JavaScript Protocol",
+            r#"<a href="javascript:alert('XSS')">Click</a>"#,
+        ),
         ("SVG-based XSS", "<svg><script>alert('XSS')</script></svg>"),
-        ("CSS-based XSS", r#"<div style="background: url('javascript:alert(1)')">test</div>"#),
-        ("Data URL XSS", r#"<iframe src="data:text/html,<script>alert('XSS')</script>"></iframe>"#),
+        (
+            "CSS-based XSS",
+            r#"<div style="background: url('javascript:alert(1)')">test</div>"#,
+        ),
+        (
+            "Data URL XSS",
+            r#"<iframe src="data:text/html,<script>alert('XSS')</script>"></iframe>"#,
+        ),
     ];
 
     for (attack_name, attack_payload) in attacks {
         let result = protector.scan_input(attack_payload)?;
-        assert!(result.is_attack_detected, "XSS攻撃が検知されませんでした: {}", attack_name);
+        assert!(
+            result.is_attack_detected,
+            "XSS攻撃が検知されませんでした: {}",
+            attack_name
+        );
         println!("   ✅ {} を検知・ブロック", attack_name);
     }
 
@@ -204,35 +234,35 @@ async fn test_audit_logging_system() -> Result<(), Box<dyn std::error::Error>> {
     let logger = AuditLogger::with_defaults();
 
     // セキュリティ攻撃ログ
-    logger.log_security_attack(
-        "XSS",
-        "Script injection attempt detected",
-        Some("192.168.1.100".to_string()),
-        Some("Mozilla/5.0 (Malicious Bot)".to_string()),
-    ).await?;
+    logger
+        .log_security_attack(
+            "XSS",
+            "Script injection attempt detected",
+            Some("192.168.1.100".to_string()),
+            Some("Mozilla/5.0 (Malicious Bot)".to_string()),
+        )
+        .await?;
     println!("   ✅ セキュリティ攻撃ログ記録成功");
 
     // 認証ログ
-    logger.log_authentication(
-        "admin_user",
-        false,
-        Some("192.168.1.100".to_string()),
-    ).await?;
+    logger
+        .log_authentication("admin_user", false, Some("192.168.1.100".to_string()))
+        .await?;
     println!("   ✅ 認証失敗ログ記録成功");
 
     // データアクセスログ
-    logger.log_data_access(
-        "editor_user",
-        "/wp-admin/edit.php",
-        "READ",
-        true,
-    ).await?;
+    logger
+        .log_data_access("editor_user", "/wp-admin/edit.php", "READ", true)
+        .await?;
     println!("   ✅ データアクセスログ記録成功");
 
     // ログ検索機能テスト
     let filter = AuditFilter {
         levels: Some(vec![AuditLevel::Critical, AuditLevel::Warning]),
-        categories: Some(vec![AuditCategory::SecurityAttack, AuditCategory::Authentication]),
+        categories: Some(vec![
+            AuditCategory::SecurityAttack,
+            AuditCategory::Authentication,
+        ]),
         ip_address: Some("192.168.1.100".to_string()),
         ..Default::default()
     };
@@ -245,7 +275,10 @@ async fn test_audit_logging_system() -> Result<(), Box<dyn std::error::Error>> {
     let stats = logger.get_statistics().await;
     assert!(stats.total_entries >= 3);
     assert!(stats.entries_by_level.contains_key(&AuditLevel::Critical));
-    println!("   ✅ 統計情報取得成功: {}件のログエントリ", stats.total_entries);
+    println!(
+        "   ✅ 統計情報取得成功: {}件のログエントリ",
+        stats.total_entries
+    );
 
     println!("   📊 監査ログシステム: 完全合格");
     Ok(())
@@ -273,7 +306,11 @@ async fn test_input_validation_system() -> Result<(), Box<dyn std::error::Error>
 
     for malicious_input in malicious_inputs {
         let result = validator.validate_security(malicious_input)?;
-        assert!(!result.is_valid, "悪意のある入力が検証を通過しました: {}", malicious_input);
+        assert!(
+            !result.is_valid,
+            "悪意のある入力が検証を通過しました: {}",
+            malicious_input
+        );
         println!("   ✅ 悪意のある入力を正しく拒否");
     }
 
@@ -290,7 +327,7 @@ async fn test_integrated_security() -> Result<(), Box<dyn std::error::Error>> {
     println!("   🎯 シナリオ: 悪意のあるボットによる複合攻撃");
 
     let rate_limiter = RateLimiter::new(RateLimitConfig {
-        requests_per_second: 2.0,
+        requests_per_second: 2,
         burst_size: 3,
         enabled: true,
     });
@@ -314,12 +351,14 @@ async fn test_integrated_security() -> Result<(), Box<dyn std::error::Error>> {
     for (i, payload) in malicious_payloads.iter().enumerate() {
         // レート制限チェック
         if let Err(_) = rate_limiter.check_rate_limit(attacker_ip).await {
-            logger.log_security_attack(
-                "Rate Limit Exceeded",
-                "DDoS attack blocked",
-                Some(attacker_ip.to_string()),
-                Some("AttackBot/1.0".to_string()),
-            ).await?;
+            logger
+                .log_security_attack(
+                    "Rate Limit Exceeded",
+                    "DDoS attack blocked",
+                    Some(attacker_ip.to_string()),
+                    Some("AttackBot/1.0".to_string()),
+                )
+                .await?;
             println!("   ✅ 攻撃 {} - レート制限によりブロック", i + 1);
             continue;
         }
@@ -327,12 +366,14 @@ async fn test_integrated_security() -> Result<(), Box<dyn std::error::Error>> {
         // 入力検証
         let validation_result = validator.validate_security(payload)?;
         if !validation_result.is_valid {
-            logger.log_security_attack(
-                "Input Validation Failed",
-                &format!("Malicious payload blocked: {}", payload),
-                Some(attacker_ip.to_string()),
-                Some("AttackBot/1.0".to_string()),
-            ).await?;
+            logger
+                .log_security_attack(
+                    "Input Validation Failed",
+                    &format!("Malicious payload blocked: {}", payload),
+                    Some(attacker_ip.to_string()),
+                    Some("AttackBot/1.0".to_string()),
+                )
+                .await?;
             println!("   ✅ 攻撃 {} - 入力検証によりブロック", i + 1);
             continue;
         }
@@ -340,25 +381,32 @@ async fn test_integrated_security() -> Result<(), Box<dyn std::error::Error>> {
         // SQL インジェクション検査
         let sql_result = sql_protector.inspect_query(payload)?;
         if sql_result.detected {
-            logger.log_security_attack(
-                "SQL Injection",
-                &format!("SQL injection blocked: {:?}", sql_result.matched_patterns),
-                Some(attacker_ip.to_string()),
-                Some("AttackBot/1.0".to_string()),
-            ).await?;
-            println!("   ✅ 攻撃 {} - SQL インジェクション保護によりブロック", i + 1);
+            logger
+                .log_security_attack(
+                    "SQL Injection",
+                    &format!("SQL injection blocked: {:?}", sql_result.matched_patterns),
+                    Some(attacker_ip.to_string()),
+                    Some("AttackBot/1.0".to_string()),
+                )
+                .await?;
+            println!(
+                "   ✅ 攻撃 {} - SQL インジェクション保護によりブロック",
+                i + 1
+            );
             continue;
         }
 
         // XSS攻撃検査
         let xss_result = xss_protector.scan_input(payload)?;
         if xss_result.is_attack_detected {
-            logger.log_security_attack(
-                "XSS Attack",
-                &format!("XSS attack blocked: {:?}", xss_result.detected_attacks),
-                Some(attacker_ip.to_string()),
-                Some("AttackBot/1.0".to_string()),
-            ).await?;
+            logger
+                .log_security_attack(
+                    "XSS Attack",
+                    &format!("XSS attack blocked: {:?}", xss_result.detected_attacks),
+                    Some(attacker_ip.to_string()),
+                    Some("AttackBot/1.0".to_string()),
+                )
+                .await?;
             println!("   ✅ 攻撃 {} - XSS保護によりブロック", i + 1);
             continue;
         }
@@ -368,9 +416,15 @@ async fn test_integrated_security() -> Result<(), Box<dyn std::error::Error>> {
 
     // 攻撃統計の確認
     let stats = logger.get_statistics().await;
-    println!("   📊 攻撃統計: {}件のセキュリティイベントを記録", stats.total_entries);
+    println!(
+        "   📊 攻撃統計: {}件のセキュリティイベントを記録",
+        stats.total_entries
+    );
 
-    let security_attacks = stats.entries_by_category.get(&AuditCategory::SecurityAttack).unwrap_or(&0);
+    let security_attacks = stats
+        .entries_by_category
+        .get(&AuditCategory::SecurityAttack)
+        .unwrap_or(&0);
     println!("   🛡️ セキュリティ攻撃ブロック数: {}件", security_attacks);
 
     println!("   🔗 統合セキュリティテスト: 完全合格");

@@ -806,8 +806,10 @@ mod tests {
 
     #[test]
     fn test_query_length_limit() {
-        let mut config = SqlProtectionConfig::default();
-        config.max_query_length = 50;
+        let config = SqlProtectionConfig {
+            max_query_length: 50,
+            ..Default::default()
+        };
         let mut protector = SqlInjectionProtector::new(config).unwrap();
 
         let long_query = "SELECT * FROM users WHERE name = 'this is a very long query that exceeds the length limit'";
@@ -821,8 +823,10 @@ mod tests {
 
     #[test]
     fn test_whitelist_mode() {
-        let mut config = SqlProtectionConfig::default();
-        config.whitelist_mode = true;
+        let config = SqlProtectionConfig {
+            whitelist_mode: true,
+            ..Default::default()
+        };
         let mut protector = SqlInjectionProtector::new(config).unwrap();
 
         let blocked_query = "DROP TABLE users";

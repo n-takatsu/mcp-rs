@@ -642,7 +642,7 @@ mod tests {
         // 長すぎる入力
         let long_input = "This is a very long input that exceeds the limit";
         let result = validator
-            .validate_with_rules(long_input, &vec!["short_limit".to_string()])
+            .validate_with_rules(long_input, &["short_limit".to_string()])
             .unwrap();
 
         assert!(!result.is_valid);
@@ -662,7 +662,7 @@ mod tests {
         // HTMLを含む入力
         let html_input = "<b>Bold</b> and <script>alert('bad')</script>";
         let result = validator
-            .validate_with_rules(html_input, &vec!["html_sanitize".to_string()])
+            .validate_with_rules(html_input, &["html_sanitize".to_string()])
             .unwrap();
 
         assert!(result.is_valid);
@@ -682,14 +682,14 @@ mod tests {
         // 有効なURL
         let valid_url = "https://example.com";
         let result = validator
-            .validate_with_rules(valid_url, &vec!["url_check".to_string()])
+            .validate_with_rules(valid_url, &["url_check".to_string()])
             .unwrap();
         assert!(result.is_valid);
 
         // 無効なURL
         let invalid_url = "not-a-url";
         let result = validator
-            .validate_with_rules(invalid_url, &vec!["url_check".to_string()])
+            .validate_with_rules(invalid_url, &["url_check".to_string()])
             .unwrap();
         assert!(!result.is_valid);
     }
@@ -706,14 +706,14 @@ mod tests {
         // 有効なEmail
         let valid_email = "test@example.com";
         let result = validator
-            .validate_with_rules(valid_email, &vec!["email_check".to_string()])
+            .validate_with_rules(valid_email, &["email_check".to_string()])
             .unwrap();
         assert!(result.is_valid);
 
         // 無効なEmail
         let invalid_email = "not-an-email";
         let result = validator
-            .validate_with_rules(invalid_email, &vec!["email_check".to_string()])
+            .validate_with_rules(invalid_email, &["email_check".to_string()])
             .unwrap();
         assert!(!result.is_valid);
     }
@@ -733,14 +733,14 @@ mod tests {
         // 数字のみの入力
         let numbers_input = "12345";
         let result = validator
-            .validate_with_rules(numbers_input, &vec!["numbers_only".to_string()])
+            .validate_with_rules(numbers_input, &["numbers_only".to_string()])
             .unwrap();
         assert!(result.is_valid);
 
         // 文字を含む入力
         let mixed_input = "123abc";
         let result = validator
-            .validate_with_rules(mixed_input, &vec!["numbers_only".to_string()])
+            .validate_with_rules(mixed_input, &["numbers_only".to_string()])
             .unwrap();
         assert!(!result.is_valid);
     }
