@@ -2,7 +2,7 @@
 
 🚀 **Production-Ready** Rust implementation of the Model Context Protocol (MCP) for AI-agent integration with WordPress and beyond.
 
-[![Architecture](https://img.shields.io/badge/Architecture-v0.1.0--alpha-blue)](#architecture)
+[![Architecture](https://img.shields.io/badge/Architecture-v0.2.0--alpha-blue)](#architecture)
 [![Implementation](https://img.shields.io/badge/WordPress_Tools-27_Available-green)](#wordpress-mcp-tools)
 [![License](https://img.shields.io/badge/License-MIT%2FApache--2.0-green)](#license)
 
@@ -24,6 +24,8 @@
 ### 🚀 Core Capabilities
 
 - **JSON-RPC 2.0 Server**: Full-featured JSON-RPC server implementation using `axum`
+- **Core Runtime Module**: Advanced application lifecycle and resource management
+- **Multi-Transport Support**: Stdio, HTTP, and WebSocket communication protocols
 - **Plugin Architecture**: Handler-based system with `McpHandler` trait for extensibility
 - **Type-Safe Configuration**: TOML-based configuration with environment variable override
 - **Production-Ready Error Handling**: Comprehensive error types with structured logging
@@ -47,7 +49,10 @@
 - **Resources**: Expose and read resources with URI-based access
 - **Prompts**: Create and retrieve prompts with argument support
 - **Error Handling**: Comprehensive error types with JSON-RPC error codes
-- **Transport Abstraction**: Pluggable transport layer (stdio, HTTP, WebSocket planned)
+- **Transport Layer**: Multiple communication protocols supported
+  - **📟 Stdio Transport**: Standard input/output for process-based communication
+  - **🌐 HTTP Transport**: RESTful API server with JSON-RPC over HTTP
+  - **🔮 WebSocket Transport**: Real-time bidirectional communication (planned)
 
 ### 🔌 Current Integrations
 
@@ -93,6 +98,15 @@
 - **HTTP Communication**: reqwest + timeout + exponential backoff retry
 - **Security Testing**: Comprehensive test suite with 95% security coverage
 
+### ✅ Recently Completed (v0.2.0-alpha)
+- **🏗️ Core Runtime Module**: Complete application lifecycle management with state tracking
+- **📟 Stdio Transport Support**: Standard input/output communication for process-based integration  
+- **🔌 Transport Abstraction**: Pluggable transport layer with configurable framing methods
+- **⚙️ Advanced Configuration**: Transport-specific settings with TOML integration
+- **🔄 Message Processing**: Async message routing and request handling pipeline
+- **📊 Execution Context**: Request-scoped context management with timeout handling
+- **🎯 Handler Registry**: Dynamic plugin management and tool discovery system
+
 ### 🎯 WordPress MCP Tools (27 tools available)
 
 **📝 Content Management:**
@@ -132,13 +146,14 @@
 - `get_comments` - Retrieve post comments
 
 ### 🔄 In Development
-- Core runtime module (application lifecycle)
-- Transport abstraction layer
-- Plugin dynamic loading system
-- Performance monitoring and metrics
+- **🌐 HTTP Transport Integration**: Integrate existing axum server with new transport layer
+- **🔮 WebSocket Transport**: Real-time bidirectional communication support
+- **📈 Performance Monitoring**: Runtime metrics collection and observability
+- **🔌 Plugin Dynamic Loading**: Hot-pluggable handler loading system
+- **⚡ Performance Optimization**: Benchmarking and performance tuning
 
 ### 🎯 Roadmap
-- **v0.2.0**: Core module implementation, stdio transport
+- **v0.2.0**: ✅ Core runtime module, ✅ stdio transport, HTTP transport integration
 - **v0.3.0**: WebSocket transport, metrics, performance optimization
 - **v1.0.0**: Production readiness, security audit, ecosystem
 
@@ -161,6 +176,25 @@ Create a `mcp-config.toml` file:
 [server]
 host = "0.0.0.0"
 port = 3000
+
+# Transport Configuration
+[transport]
+transport_type = "stdio"  # "stdio", "http", or "websocket"
+
+# Stdio Transport Settings
+[transport.stdio]
+buffer_size = 8192
+timeout_ms = 30000
+content_length_header = true
+framing_method = "content-length"  # "content-length" or "line-based"
+max_message_size = 1048576
+pretty_print = false
+
+# HTTP Transport Settings (alternative)
+[transport.http]
+addr = "127.0.0.1"
+port = 8080
+enable_cors = true
 
 [handlers.wordpress]
 url = "https://your-wordpress-site.com"
@@ -411,13 +445,17 @@ Once the server is running, AI agents can interact with WordPress through natura
 │ │   └── wordpress.rs (✅ Implemented)             │
 │ └── plugins/ (Dynamic plugin system) [🔄 Planned] │
 ├─────────────────────────────────────────────────────┤
-│ Core Layer [🔄 Planned]                            │
-│ ├── runtime.rs (Async runtime management)          │
-│ ├── registry.rs (Handler/plugin registry)          │
-│ └── context.rs (Execution context)                 │
+│ Core Layer ✅                                      │
+│ ├── runtime.rs (Async runtime management) ✅       │
+│ ├── registry.rs (Handler/plugin registry) ✅       │
+│ ├── context.rs (Execution context) ✅              │
+│ └── Message processing & lifecycle management       │
 ├─────────────────────────────────────────────────────┤
 │ Infrastructure Layer                                │
-│ ├── transport/ (Communication abstraction) [🔄]    │
+│ ├── transport/ (Communication abstraction) ✅      │
+│ │   ├── stdio.rs (Stdio transport) ✅             │
+│ │   ├── mod.rs (Transport traits) ✅              │
+│ │   └── http.rs (HTTP integration) [🔄 Planned]  │
 │ ├── config/ (Configuration management) ✅          │
 │ └── error.rs (Error handling) ✅                   │
 └─────────────────────────────────────────────────────┘
@@ -430,6 +468,8 @@ Once the server is running, AI agents can interact with WordPress through natura
 3. **Configuration-Driven**: TOML-based feature control and settings
 4. **Async-First**: tokio-based high-performance communication
 5. **Type Safety**: Strong typing with serde-based configuration
+6. **Runtime Management**: Complete application lifecycle with state tracking
+7. **Message Processing**: Efficient JSON-RPC routing and execution context
 
 ## Project Structure
 
@@ -443,6 +483,14 @@ mcp-rs/
 │   ├── protocol.rs         # Protocol implementations ✅
 │   ├── server.rs           # JSON-RPC server ✅
 │   ├── config.rs           # Configuration management ✅
+│   ├── core/               # Core runtime layer ✅
+│   │   ├── mod.rs          # Core module organization
+│   │   ├── runtime.rs      # Application lifecycle management ✅
+│   │   ├── registry.rs     # Handler and plugin registry ✅
+│   │   └── context.rs      # Execution context management ✅
+│   ├── transport/          # Transport abstraction layer ✅
+│   │   ├── mod.rs          # Transport traits and factory ✅
+│   │   └── stdio.rs        # Stdio transport implementation ✅
 │   ├── handlers/           # Service layer implementations
 │   │   ├── mod.rs          # Handler module organization
 │   │   └── wordpress.rs    # WordPress API handler ✅
@@ -595,6 +643,30 @@ cp mcp-config.toml.example mcp-config.toml
 - **WordPress Automation**: Content creation and management
 - **Multi-Platform Publishing**: Cross-platform content distribution
 - **API Orchestration**: Complex multi-step workflows
+
+### Transport Modes
+
+#### 📟 **Stdio Transport**
+Perfect for process-based integration and AI agent communication:
+```bash
+# AI agent spawns mcp-rs as child process
+echo '{"jsonrpc":"2.0","method":"tools/list","id":1}' | mcp-rs --stdio
+```
+
+#### 🌐 **HTTP Transport**  
+Ideal for web-based integrations and RESTful APIs:
+```bash
+# Start HTTP server
+mcp-rs --http --port 8080
+
+# Send requests via HTTP
+curl -X POST http://localhost:8080/ \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"tools/list","id":1}'
+```
+
+#### 🔮 **WebSocket Transport** *(Coming Soon)*
+Real-time bidirectional communication for live applications
 
 ### Development Workflows
 - **GitHub Integration**: Repository and issue management (planned)

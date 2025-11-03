@@ -192,6 +192,28 @@ impl HandlerRegistry {
             .collect()
     }
 
+    /// List all tools from all enabled handlers
+    pub async fn list_all_tools(&self) -> Result<serde_json::Value, McpError> {
+        let mut all_tools = Vec::new();
+
+        for (name, handler) in self.enabled_handlers() {
+            match handler.list_tools().await {
+                Ok(tools) => {
+                    info!("Handler '{}' provided {} tools", name, tools.len());
+                    all_tools.extend(tools);
+                }
+                Err(e) => {
+                    warn!("Failed to get tools from handler '{}': {}", name, e);
+                    // Continue with other handlers
+                }
+            }
+        }
+
+        Ok(serde_json::json!({
+            "tools": all_tools
+        }))
+    }
+
     /// Validate handler configuration
     pub fn validate_config(&self, name: &str, config: &serde_json::Value) -> Result<(), McpError> {
         // TODO: Implement configuration validation

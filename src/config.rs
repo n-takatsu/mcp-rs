@@ -4,6 +4,7 @@ use tracing::{debug, info, warn};
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct McpConfig {
     pub server: ServerConfig,
+    pub transport: TransportConfig,
     pub handlers: HandlersConfig,
 }
 
@@ -12,6 +13,33 @@ pub struct ServerConfig {
     pub bind_addr: Option<String>,
     pub stdio: Option<bool>,
     pub log_level: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct TransportConfig {
+    /// Transport type: "stdio", "http", "websocket"
+    pub transport_type: Option<String>,
+    /// Stdio transport configuration
+    pub stdio: Option<StdioTransportConfig>,
+    /// HTTP transport configuration
+    pub http: Option<HttpTransportConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct StdioTransportConfig {
+    pub buffer_size: Option<usize>,
+    pub timeout_ms: Option<u64>,
+    pub content_length_header: Option<bool>,
+    pub framing_method: Option<String>, // "content-length" | "line-based"
+    pub max_message_size: Option<usize>,
+    pub pretty_print: Option<bool>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct HttpTransportConfig {
+    pub addr: Option<String>,
+    pub port: Option<u16>,
+    pub enable_cors: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -38,6 +66,18 @@ impl Default for McpConfig {
                 bind_addr: Some("127.0.0.1:8080".to_string()),
                 stdio: Some(false),
                 log_level: Some("info".to_string()),
+            },
+            transport: TransportConfig {
+                transport_type: Some("stdio".to_string()),
+                stdio: Some(StdioTransportConfig {
+                    buffer_size: Some(8192),
+                    timeout_ms: Some(30000),
+                    content_length_header: Some(true),
+                    framing_method: Some("content-length".to_string()),
+                    max_message_size: Some(1048576),
+                    pretty_print: Some(false),
+                }),
+                http: None,
             },
             handlers: HandlersConfig { wordpress: None },
         }
@@ -216,6 +256,22 @@ impl McpConfig {
                 stdio: Some(false),
                 log_level: Some("info".to_string()),
             },
+            transport: TransportConfig {
+                transport_type: Some("stdio".to_string()),
+                stdio: Some(StdioTransportConfig {
+                    buffer_size: Some(8192),
+                    timeout_ms: Some(30000),
+                    content_length_header: Some(true),
+                    framing_method: Some("content-length".to_string()),
+                    max_message_size: Some(1048576),
+                    pretty_print: Some(false),
+                }),
+                http: Some(HttpTransportConfig {
+                    addr: Some("127.0.0.1".to_string()),
+                    port: Some(8080),
+                    enable_cors: Some(true),
+                }),
+            },
             handlers: HandlersConfig {
                 wordpress: Some(WordPressConfig {
                     url: "${WORDPRESS_URL}".to_string(),
@@ -284,5 +340,55 @@ impl McpConfig {
         println!("💡 このファイルを mcp-config.toml にコピーして編集してください");
 
         Ok(())
+    }
+
+    /// Convert to transport configuration
+    pub fn to_transport_config(&self) -> crate::transport::TransportConfig {
+        use crate::transport::{stdio::StdioConfig, FramingMethod, TransportType};
+
+        let transport_type = match self.transport.transport_type.as_deref() {
+            Some("stdio") => TransportType::Stdio,
+            Some("http") => {
+                let addr = self
+                    .transport
+                    .http
+                    .as_ref()
+                    .and_then(|h| h.addr.as_deref())
+                    .unwrap_or("127.0.0.1");
+                let port = self
+                    .transport
+                    .http
+                    .as_ref()
+                    .and_then(|h| h.port)
+                    .unwrap_or(8080);
+                TransportType::Http {
+                    addr: format!("{}:{}", addr, port)
+                        .parse()
+                        .unwrap_or_else(|_| "127.0.0.1:8080".parse().unwrap()),
+                }
+            }
+            _ => TransportType::Stdio, // Default fallback
+        };
+
+        let stdio_config = if let Some(stdio) = &self.transport.stdio {
+            StdioConfig {
+                buffer_size: stdio.buffer_size.unwrap_or(8192),
+                timeout_ms: stdio.timeout_ms.unwrap_or(30000),
+                content_length_header: stdio.content_length_header.unwrap_or(true),
+                framing_method: match stdio.framing_method.as_deref() {
+                    Some("line-based") => FramingMethod::LineBased,
+                    _ => FramingMethod::ContentLength,
+                },
+                max_message_size: stdio.max_message_size.unwrap_or(1048576),
+                pretty_print: stdio.pretty_print.unwrap_or(false),
+            }
+        } else {
+            StdioConfig::default()
+        };
+
+        crate::transport::TransportConfig {
+            transport_type,
+            stdio: stdio_config,
+        }
     }
 }

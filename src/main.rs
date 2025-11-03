@@ -1,7 +1,12 @@
 mod config;
 mod core;
+mod error;
 mod handlers;
 mod mcp;
+mod protocol;
+mod server;
+mod transport;
+mod types;
 
 use config::McpConfig;
 use core::{PluginInfo, Runtime, RuntimeConfig};

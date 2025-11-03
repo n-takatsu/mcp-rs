@@ -22,6 +22,12 @@ pub enum McpError {
     #[error("Resource not found: {0}")]
     ResourceNotFound(String),
 
+    #[error("Method not found: {0}")]
+    MethodNotFound(String),
+
+    #[error("Internal error: {0}")]
+    InternalError(String),
+
     #[error("External API error: {0}")]
     ExternalApi(String),
 
