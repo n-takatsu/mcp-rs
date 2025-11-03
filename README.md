@@ -562,6 +562,8 @@ cargo build --release
 cargo check
 ```
 
+> **Note**: This project tracks `Cargo.lock` in version control to ensure reproducible builds across environments, as it includes both library and binary components.
+
 ### Code Quality
 
 ```bash
