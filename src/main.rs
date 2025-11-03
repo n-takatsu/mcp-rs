@@ -124,30 +124,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .bind_addr
             .as_deref()
             .unwrap_or("127.0.0.1:8080");
-        
+
         // セキュアサーバーモードの確認
         let use_secure_mode = std::env::var("MCP_SECURE_MODE")
             .map(|v| v.to_lowercase() == "true")
             .unwrap_or(false);
-            
+
         if use_secure_mode {
             println!("🔒 セキュアMCPサーバーを開始: http://{}", addr);
-            
+
             // セキュリティ設定
-            let security_config = SecurityConfig {
+            let _security_config = SecurityConfig {
                 enable_input_validation: true,
                 enable_rate_limiting: true,
                 max_request_size: 1024 * 1024, // 1MB
                 log_security_events: true,
             };
-            
+
             // セキュアサーバーはサンプル実装（実際のプロトコル実装が必要）
             println!("ℹ️ セキュアサーバー機能は開発中です");
             println!("💡 現在は通常のMCPサーバーで起動します");
         } else {
             println!("🌍 TCP サーバーを開始: http://{}", addr);
         }
-        
+
         server.run(addr).await?;
     }
 

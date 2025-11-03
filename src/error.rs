@@ -63,7 +63,7 @@ impl Error {
             Error::InvalidParams(_) => -32602,
             Error::Internal(_) => -32603,
             Error::Security(_) => -32000, // Security related server error
-            _ => -32000, // Server error
+            _ => -32000,                  // Server error
         }
     }
 }

@@ -1,5 +1,5 @@
 //! セキュアなMCPサーバー実装
-//! 
+//!
 //! このモジュールは入力検証、レート制限、暗号化を統合したセキュアなサーバーを提供します。
 
 use crate::{
@@ -130,7 +130,7 @@ async fn handle_secure_request<P: McpProtocol>(
     Json(request): Json<JsonRpcRequest>,
 ) -> impl IntoResponse {
     let start_time = Instant::now();
-    
+
     // レート制限チェック
     if state.config.enable_rate_limiting {
         let client_id = addr.ip().to_string();
@@ -139,22 +139,22 @@ async fn handle_secure_request<P: McpProtocol>(
                 if state.config.log_security_events {
                     warn!("Rate limit exceeded for client: {}", addr);
                 }
-                
+
                 let error = JsonRpcError {
                     code: -32000,
                     message: "Rate limit exceeded".to_string(),
                     data: None,
                 };
-                
+
                 let response = JsonRpcResponse {
                     jsonrpc: "2.0".to_string(),
                     id: request.id.clone(),
                     result: None,
                     error: Some(error),
                 };
-                
+
                 return Json(response);
-            },
+            }
             Ok(_) => {
                 // Rate limit passed, continue processing
             }
@@ -163,82 +163,86 @@ async fn handle_secure_request<P: McpProtocol>(
 
     // 入力検証
     if state.config.enable_input_validation {
-        if let Err(validation_error) = validate_request(&*state.input_validator, &request) {
+        if let Err(validation_error) = validate_request(&state.input_validator, &request) {
             if state.config.log_security_events {
-                warn!("Input validation failed for client {}: {}", addr, validation_error);
+                warn!(
+                    "Input validation failed for client {}: {}",
+                    addr, validation_error
+                );
             }
-            
+
             let error = JsonRpcError {
                 code: -32602,
                 message: format!("Invalid input: {}", validation_error),
                 data: None,
             };
-            
+
             let response = JsonRpcResponse {
                 jsonrpc: "2.0".to_string(),
                 id: request.id.clone(),
                 result: None,
                 error: Some(error),
             };
-            
+
             return Json(response);
         }
     }
 
     // プロトコル処理
     let response = match request.method.as_str() {
-        "initialize" => {
-            match state.protocol.initialize().await {
-                Ok((server_info, capabilities)) => JsonRpcResponse {
-                    jsonrpc: "2.0".to_string(),
-                    id: request.id,
-                    result: Some(json!({
-                        "serverInfo": server_info,
-                        "capabilities": capabilities
-                    })),
-                    error: None,
-                },
-                Err(e) => JsonRpcResponse {
-                    jsonrpc: "2.0".to_string(),
-                    id: request.id,
-                    result: None,
-                    error: Some(JsonRpcError {
-                        code: e.to_json_rpc_code(),
-                        message: e.to_string(),
-                        data: None,
-                    }),
-                },
-            }
-        }
-        "tools/list" => {
-            match state.protocol.list_tools().await {
-                Ok(tools) => JsonRpcResponse {
-                    jsonrpc: "2.0".to_string(),
-                    id: request.id,
-                    result: Some(json!({ "tools": tools })),
-                    error: None,
-                },
-                Err(e) => JsonRpcResponse {
-                    jsonrpc: "2.0".to_string(),
-                    id: request.id,
-                    result: None,
-                    error: Some(JsonRpcError {
-                        code: e.to_json_rpc_code(),
-                        message: e.to_string(),
-                        data: None,
-                    }),
-                },
-            }
-        }
+        "initialize" => match state.protocol.initialize().await {
+            Ok((server_info, capabilities)) => JsonRpcResponse {
+                jsonrpc: "2.0".to_string(),
+                id: request.id,
+                result: Some(json!({
+                    "serverInfo": server_info,
+                    "capabilities": capabilities
+                })),
+                error: None,
+            },
+            Err(e) => JsonRpcResponse {
+                jsonrpc: "2.0".to_string(),
+                id: request.id,
+                result: None,
+                error: Some(JsonRpcError {
+                    code: e.to_json_rpc_code(),
+                    message: e.to_string(),
+                    data: None,
+                }),
+            },
+        },
+        "tools/list" => match state.protocol.list_tools().await {
+            Ok(tools) => JsonRpcResponse {
+                jsonrpc: "2.0".to_string(),
+                id: request.id,
+                result: Some(json!({ "tools": tools })),
+                error: None,
+            },
+            Err(e) => JsonRpcResponse {
+                jsonrpc: "2.0".to_string(),
+                id: request.id,
+                result: None,
+                error: Some(JsonRpcError {
+                    code: e.to_json_rpc_code(),
+                    message: e.to_string(),
+                    data: None,
+                }),
+            },
+        },
         "tools/call" => {
             if let Some(params) = request.params {
                 // パラメータから tool名と引数を抽出
-                let tool_name = params.get("name")
+                let tool_name = params
+                    .get("name")
                     .and_then(|v| v.as_str())
                     .unwrap_or("unknown");
                 let arguments = params.get("arguments");
-                
-                match state.protocol.call_tool(tool_name, arguments.cloned()).await {
+
+                match state
+                    .protocol
+                    .call_tool(tool_name, arguments.cloned())
+                    .await
+                {
                     Ok(result) => JsonRpcResponse {
                         jsonrpc: "2.0".to_string(),
                         id: request.id,
@@ -302,27 +306,32 @@ fn validate_request(
     request: &JsonRpcRequest,
 ) -> std::result::Result<(), SecurityError> {
     // メソッド名の検証
-    let method_result = validator.validate_security(&request.method)
+    let method_result = validator
+        .validate_security(&request.method)
         .map_err(|e| SecurityError::ValidationError(format!("Method validation failed: {}", e)))?;
-    
+
     if !method_result.is_valid {
-        return Err(SecurityError::ValidationError(
-            format!("Invalid method name: {}", method_result.errors.join(", "))
-        ));
+        return Err(SecurityError::ValidationError(format!(
+            "Invalid method name: {}",
+            method_result.errors.join(", ")
+        )));
     }
 
     // パラメータの検証（JSON文字列として）
     if let Some(ref params) = request.params {
-        let params_str = serde_json::to_string(params)
-            .map_err(|e| SecurityError::ValidationError(format!("Parameter serialization failed: {}", e)))?;
-        
-        let params_result = validator.validate_security(&params_str)
-            .map_err(|e| SecurityError::ValidationError(format!("Parameter validation failed: {}", e)))?;
-        
+        let params_str = serde_json::to_string(params).map_err(|e| {
+            SecurityError::ValidationError(format!("Parameter serialization failed: {}", e))
+        })?;
+
+        let params_result = validator.validate_security(&params_str).map_err(|e| {
+            SecurityError::ValidationError(format!("Parameter validation failed: {}", e))
+        })?;
+
         if !params_result.is_valid {
-            return Err(SecurityError::ValidationError(
-                format!("Invalid parameters: {}", params_result.errors.join(", "))
-            ));
+            return Err(SecurityError::ValidationError(format!(
+                "Invalid parameters: {}",
+                params_result.errors.join(", ")
+            )));
         }
     }
 
@@ -402,7 +411,7 @@ mod tests {
     #[tokio::test]
     async fn test_input_validation() {
         let validator = InputValidator::new();
-        
+
         // 正常なリクエスト
         let normal_request = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
@@ -410,9 +419,9 @@ mod tests {
             method: "initialize".to_string(),
             params: None,
         };
-        
+
         assert!(validate_request(&validator, &normal_request).is_ok());
-        
+
         // SQLインジェクションを含むリクエスト
         let malicious_request = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
@@ -420,7 +429,7 @@ mod tests {
             method: "'; DROP TABLE users; --".to_string(),
             params: None,
         };
-        
+
         assert!(validate_request(&validator, &malicious_request).is_err());
     }
 
@@ -432,7 +441,7 @@ mod tests {
             max_request_size: 512,
             log_security_events: false,
         };
-        
+
         assert!(config.enable_input_validation);
         assert!(!config.enable_rate_limiting);
         assert_eq!(config.max_request_size, 512);
