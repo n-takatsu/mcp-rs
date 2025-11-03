@@ -39,6 +39,14 @@ pub enum Error {
     /// I/O error
     #[error("I/O error: {0}")]
     IoError(#[from] std::io::Error),
+
+    /// Feature not supported
+    #[error("Not supported: {0}")]
+    NotSupported(String),
+
+    /// Transport error
+    #[error("Transport error: {0}")]
+    TransportError(#[from] crate::transport::TransportError),
 }
 
 impl Error {

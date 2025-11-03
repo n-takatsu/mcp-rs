@@ -253,7 +253,9 @@ mod tests {
     #[test]
     fn test_execution_context_lifecycle() {
         let mut ctx = ExecutionContext::new(Duration::from_millis(100));
-        let initial_id = ctx.request_id.clone();
+
+        // Verify initial state
+        assert!(!ctx.request_id.to_string().is_empty());
 
         // Set handler and tool
         ctx.set_handler("test_handler".to_string());
