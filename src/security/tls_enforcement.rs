@@ -1,4 +1,4 @@
-﻿#[cfg(test)]
+#[cfg(test)]
 mod security_tests {
     use crate::config::{RateLimitConfig, WordPressConfig};
     use crate::handlers::WordPressHandler;
