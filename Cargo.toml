@@ -11,7 +11,7 @@ repository = "https://github.com/n-takatsu/mcp-rs"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 # Tokio機能を必要最小限に + セキュリティ機能
-tokio = { version = "1.0", features = ["rt-multi-thread", "net", "io-util", "time", "macros", "fs", "sync"] }
+tokio = { version = "1.0", features = ["rt-multi-thread", "net", "io-util", "time", "macros", "fs", "sync", "signal"] }
 # Axumも軽量化（HTTPサーバー機能追加）
 axum = { version = "0.7", default-features = false, features = ["tokio", "json", "http1", "http2"] }
 tower = { version = "0.4", default-features = false }
@@ -35,6 +35,11 @@ aes-gcm = "0.10"
 argon2 = "0.5"
 pbkdf2 = "0.12"
 sha2 = "0.10"
+# 入力検証・セキュリティ強化用クレート
+validator = "0.16"
+url = "2.4"
+ammonia = "3.3"  # HTML sanitization
+fancy-regex = "0.11"  # Advanced regex with lookahead/lookbehind
 # プラグインシステム用依存関係
 libloading = "0.8"
 

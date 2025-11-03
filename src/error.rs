@@ -47,6 +47,10 @@ pub enum Error {
     /// Transport error
     #[error("Transport error: {0}")]
     TransportError(#[from] crate::transport::TransportError),
+
+    /// Security error
+    #[error("Security error: {0}")]
+    Security(#[from] SecurityError),
 }
 
 impl Error {
@@ -58,7 +62,40 @@ impl Error {
             Error::MethodNotFound(_) => -32601,
             Error::InvalidParams(_) => -32602,
             Error::Internal(_) => -32603,
+            Error::Security(_) => -32000, // Security related server error
             _ => -32000, // Server error
         }
     }
+}
+
+/// Security-related errors
+#[derive(Debug, Error)]
+pub enum SecurityError {
+    /// Encryption/decryption error
+    #[error("Encryption error: {0}")]
+    EncryptionError(String),
+
+    /// Rate limiting error
+    #[error("Rate limit exceeded: {0}")]
+    RateLimitExceeded(String),
+
+    /// TLS configuration error
+    #[error("TLS error: {0}")]
+    TlsError(String),
+
+    /// Input validation error
+    #[error("Validation error: {0}")]
+    ValidationError(String),
+
+    /// Authentication error
+    #[error("Authentication error: {0}")]
+    AuthenticationError(String),
+
+    /// Authorization error
+    #[error("Authorization error: {0}")]
+    AuthorizationError(String),
+
+    /// Security policy violation
+    #[error("Security policy violation: {0}")]
+    PolicyViolation(String),
 }
