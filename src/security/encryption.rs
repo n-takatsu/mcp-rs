@@ -2,7 +2,7 @@ use aes_gcm::{
     aead::{Aead, AeadCore, KeyInit, OsRng},
     Aes256Gcm, Key, Nonce,
 };
-use base64::{Engine as _, engine::general_purpose};
+use base64::{engine::general_purpose, Engine as _};
 use secrecy::{ExposeSecret, Secret};
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -76,7 +76,9 @@ impl SecureCredentials {
             .map_err(|e| EncryptionError::Base64DecodeError(e.to_string()))?;
 
         if nonce_bytes.len() != 12 {
-            return Err(EncryptionError::InvalidInput("無効なノンスサイズです".to_string()));
+            return Err(EncryptionError::InvalidInput(
+                "無効なノンスサイズです".to_string(),
+            ));
         }
 
         let nonce = Nonce::from_slice(&nonce_bytes);
@@ -151,24 +153,25 @@ impl fmt::Debug for SecureCredentials {
 
 impl fmt::Display for SecureCredentials {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "SecureCredentials {{ username: {}, password: [REDACTED] }}", self.username)
+        write!(
+            f,
+            "SecureCredentials {{ username: {}, password: [REDACTED] }}",
+            self.username
+        )
     }
 }
 
 /// PBKDF2を使用してパスワードからキーを派生
 fn derive_key(password: &str, salt: &[u8]) -> Result<Key<Aes256Gcm>, EncryptionError> {
-    use sha2::Sha256;
     use pbkdf2::pbkdf2_hmac_array;
-    
+    use sha2::Sha256;
+
     const ITERATIONS: u32 = 100_000; // PBKDF2反復回数
-    
+
     // PBKDF2-HMAC-SHA256を使用してキーを導出
-    let key_bytes: [u8; 32] = pbkdf2_hmac_array::<Sha256, 32>(
-        password.as_bytes(),
-        salt,
-        ITERATIONS,
-    );
-    
+    let key_bytes: [u8; 32] =
+        pbkdf2_hmac_array::<Sha256, 32>(password.as_bytes(), salt, ITERATIONS);
+
     Ok(*Key::<Aes256Gcm>::from_slice(&key_bytes))
 }
 
@@ -185,28 +188,33 @@ mod tests {
 
     #[test]
     fn test_encryption_roundtrip() {
-        let original = SecureCredentials::new("user123".to_string(), "secret_password_123".to_string());
+        let original =
+            SecureCredentials::new("user123".to_string(), "secret_password_123".to_string());
         let master_password = "master_key_for_encryption";
 
         // 暗号化
         let encrypted = original.encrypt(master_password).expect("暗号化に失敗");
-        
+
         // 復号化
-        let decrypted = SecureCredentials::from_encrypted(&encrypted, master_password)
-            .expect("復号化に失敗");
+        let decrypted =
+            SecureCredentials::from_encrypted(&encrypted, master_password).expect("復号化に失敗");
 
         assert_eq!(original.username, decrypted.username);
-        assert_eq!(original.password.expose_secret(), decrypted.password.expose_secret());
+        assert_eq!(
+            original.password.expose_secret(),
+            decrypted.password.expose_secret()
+        );
     }
 
     #[test]
     fn test_wrong_master_password() {
-        let original = SecureCredentials::new("user123".to_string(), "secret_password_123".to_string());
+        let original =
+            SecureCredentials::new("user123".to_string(), "secret_password_123".to_string());
         let correct_password = "correct_master_password";
         let wrong_password = "wrong_master_password";
 
         let encrypted = original.encrypt(correct_password).expect("暗号化に失敗");
-        
+
         // 間違ったパスワードで復号化を試行
         let result = SecureCredentials::from_encrypted(&encrypted, wrong_password);
         assert!(result.is_err());
@@ -216,7 +224,7 @@ mod tests {
     fn test_basic_auth_generation() {
         let creds = SecureCredentials::new("admin".to_string(), "password123".to_string());
         let basic_auth = creds.to_basic_auth();
-        
+
         // "admin:password123" をbase64エンコードした結果
         let expected = general_purpose::STANDARD.encode("admin:password123");
         assert_eq!(basic_auth, expected);

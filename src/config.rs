@@ -52,7 +52,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 // セキュリティ機能用のimport
-use crate::security::{SecureCredentials, EncryptedCredentials, EncryptionError};
+use crate::security::{EncryptedCredentials, EncryptionError, SecureCredentials};
 use secrecy::ExposeSecret;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -183,8 +183,9 @@ impl WordPressConfig {
         rate_limit: Option<RateLimitConfig>,
     ) -> Result<Self, EncryptionError> {
         // 復号化して平文認証情報を取得（後方互換性のため）
-        let secure_creds = SecureCredentials::from_encrypted(&encrypted_credentials, master_password)?;
-        
+        let secure_creds =
+            SecureCredentials::from_encrypted(&encrypted_credentials, master_password)?;
+
         Ok(Self {
             url,
             username: secure_creds.username.clone(),
@@ -204,10 +205,15 @@ impl WordPressConfig {
     }
 
     /// セキュア認証情報を取得（暗号化されている場合は復号化）
-    pub fn get_secure_credentials(&self, master_password: Option<&str>) -> Result<SecureCredentials, EncryptionError> {
+    pub fn get_secure_credentials(
+        &self,
+        master_password: Option<&str>,
+    ) -> Result<SecureCredentials, EncryptionError> {
         if let Some(encrypted) = &self.encrypted_credentials {
             let master_pw = master_password.ok_or_else(|| {
-                EncryptionError::InvalidInput("暗号化されたデータにはマスターパスワードが必要です".to_string())
+                EncryptionError::InvalidInput(
+                    "暗号化されたデータにはマスターパスワードが必要です".to_string(),
+                )
             })?;
             SecureCredentials::from_encrypted(encrypted, master_pw)
         } else {
