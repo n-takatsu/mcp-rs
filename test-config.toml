@@ -1,0 +1,12 @@
+
+[server]
+bind_addr = "127.0.0.1:8080"
+stdio = false
+log_level = "info"
+
+[handlers.wordpress]
+url = "${WORDPRESS_URL}"
+username = "${WORDPRESS_USERNAME}"
+password = "${WORDPRESS_PASSWORD}"
+enabled = true
+timeout_seconds = 30

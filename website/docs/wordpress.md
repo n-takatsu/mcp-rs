@@ -880,6 +880,62 @@ The health check returns a comprehensive report with the following information:
 3. **Test Permissions**: Verify all required capabilities
 4. **Validate Uploads**: Confirm media functionality works
 
+#### Production Operations
+
+##### Application Password Management
+WordPress application passwords may be invalidated by:
+- **Hosting Provider Policies**: Automatic expiration by hosting services
+- **Security Plugin Policies**: Plugins like SiteGuard enforcing rotation
+- **WordPress Updates**: Major core updates affecting authentication
+- **Server Changes**: PHP or environment configuration modifications
+
+**Monitoring Strategy:**
+```bash
+# Daily health monitoring (recommended)
+cargo run --example comprehensive_test
+
+# Deep diagnostic for authentication issues  
+cargo run --example settings_api_deep_diagnosis
+
+# Authentication verification
+cargo run --example auth_diagnosis
+```
+
+##### Maintenance Mode Operations
+
+**LightStart Plugin Configuration:**
+When using WordPress maintenance mode plugins, configure exclusions for REST API access:
+
+```
+# Add to LightStart exclusions (slug format, no leading slash):
+wp-json/*
+```
+
+This ensures MCP-RS can continue content operations during maintenance windows.
+
+**Benefits:**
+- ✅ Content management continuity during maintenance
+- ✅ Zero-downtime WordPress updates
+- ✅ Emergency content access during site maintenance
+
+##### Production Monitoring
+
+**Alert Criteria:**
+- **HTTP 401 Errors**: Application password expiration → Regenerate password
+- **Connection Timeouts**: Network/hosting issues → Check infrastructure
+- **API Changes**: Plugin/core updates → Verify endpoint compatibility
+- **SSL Issues**: Certificate problems → Update certificates
+
+**Incident Response:**
+1. **Detection**: Automated monitoring or error reports
+2. **Diagnosis**: Run `settings_api_deep_diagnosis` for detailed analysis
+3. **Classification**: 
+   - Password issue → WordPress Admin → Generate new application password
+   - Plugin interference → Configure maintenance mode exclusions
+   - Network problems → Infrastructure team investigation
+4. **Resolution**: Apply fix and verify with comprehensive test
+5. **Documentation**: Update operational logs and procedures
+
 #### Automated Monitoring
 ```rust
 // Example: Periodic health validation
@@ -920,6 +976,12 @@ async fn monitor_wordpress_health() {
    ├── Review detailed error messages
    ├── Apply recommended solutions  
    └── Re-run health check to verify fixes
+
+4. Production Monitoring
+   ├── Weekly comprehensive tests
+   ├── Application password rotation (as needed)
+   ├── Maintenance mode coordination
+   └── Incident response procedures
 ```
 
 This health check system ensures your WordPress integration is production-ready and helps prevent common configuration issues that could interrupt your workflow.

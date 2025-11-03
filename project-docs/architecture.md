@@ -23,13 +23,30 @@
 - **Dependencies**: MCP protocol types, Configuration
 - **Pattern**: Plugin-based architecture with `McpHandler` trait
 
-### 4. Core Layer (`src/mcp/`)
+### 4. Core Layer (`src/core/`) ✅ **NEW in v0.2.0**
+- **Responsibility**: Runtime management, execution context, plugin registry
+- **Components**: 
+  - `runtime.rs`: Application lifecycle and state management
+  - `registry.rs`: Handler and plugin registration system
+  - `context.rs`: Request-scoped execution context with timeout handling
+- **Dependencies**: Transport layer, Configuration
+- **Features**: Async message processing, metrics collection, graceful shutdown
+
+### 5. Transport Layer (`src/transport/`) ✅ **NEW in v0.2.0**
+- **Responsibility**: Communication protocol abstraction
+- **Components**:
+  - `mod.rs`: Transport traits and factory
+  - `stdio.rs`: Standard I/O transport for process-based communication
+- **Dependencies**: Core types, Configuration
+- **Features**: Pluggable transports (stdio, HTTP, WebSocket planned)
+
+### 6. MCP Protocol Layer (`src/mcp/`)
 - **Responsibility**: MCP protocol implementation, type definitions
 - **Components**: Protocol types, error handling, serialization
 - **Dependencies**: Serde, JSON-RPC types
 - **Standards**: Strict MCP JSON-RPC 2.0 compliance
 
-### 5. Infrastructure Layer (`src/config.rs`, `src/error.rs`)
+### 7. Infrastructure Layer (`src/config.rs`, `src/error.rs`)
 - **Responsibility**: Configuration management, error handling, logging
 - **Components**: TOML configuration, environment variables, structured errors
 - **Dependencies**: External crates (config, thiserror, tracing)
@@ -100,6 +117,39 @@ enabled = true
 - `WORDPRESS_USERNAME` overrides `handlers.wordpress.username`
 - `WORDPRESS_PASSWORD` overrides `handlers.wordpress.password`
 
+## Transport Architecture
+
+### Transport Abstraction
+```rust
+pub trait Transport: Send + Sync {
+    async fn send(&mut self, message: &str) -> Result<(), TransportError>;
+    async fn receive(&mut self) -> Result<String, TransportError>;
+    fn info(&self) -> TransportInfo;
+}
+```
+
+### Transport Factory
+- **Pluggable Design**: Easy addition of new transport types
+- **Configuration-Driven**: Transport selection based on configuration
+- **Error Handling**: Uniform error handling across transports
+
+### Stdio Transport Implementation
+```
+┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
+│   MCP Client    │────▶│ Stdio Transport │────▶│   MCP Server    │
+│    (Editor)     │     │   (Process)     │     │   (mcp-rs)      │
+└─────────────────┘     └─────────────────┘     └─────────────────┘
+```
+
+#### Message Framing
+1. **Content-Length Based**: HTTP-style headers with JSON payload
+2. **Line-Based**: Simple newline-delimited JSON (fallback)
+
+#### Flow Control
+- **Async I/O**: Non-blocking stdin/stdout operations
+- **Buffering**: Message buffering for performance
+- **Timeout Handling**: Configurable timeouts for operations
+
 ## Error Handling Architecture
 
 ### Error Types Hierarchy
@@ -120,22 +170,36 @@ pub enum McpError {
     
     #[error("Configuration error: {0}")]
     Config(String),
+    
+    #[error("Transport error: {0}")]
+    Transport(String),
 }
 ```
 
 ### Error Flow
-1. **Handler Level**: Specific errors (HTTP, validation, business logic)
-2. **MCP Level**: Protocol-specific error transformation
-3. **JSON-RPC Level**: Standard JSON-RPC error response formatting
-4. **HTTP Level**: HTTP status code mapping
+1. **Transport Level**: Connection and communication errors
+2. **Handler Level**: Specific errors (HTTP, validation, business logic)
+3. **MCP Level**: Protocol-specific error transformation
+4. **JSON-RPC Level**: Standard JSON-RPC error response formatting
 
 ## Performance Architecture
 
 ### Async-First Design
 - Built on Tokio runtime for high concurrency
 - All I/O operations are non-blocking
+- Transport-agnostic message processing
 - Connection pooling for external APIs
 - Request timeout handling
+
+### Transport Performance
+- **Stdio**: Direct process communication, minimal overhead
+- **HTTP**: Connection reuse, Keep-Alive support
+- **WebSocket** (planned): Persistent connections, low latency
+
+### Message Processing
+- **Concurrent Handling**: Multiple requests processed simultaneously
+- **Streaming Support**: Large payload handling with streaming
+- **Buffering**: Efficient message buffering for high throughput
 
 ### Retry Logic
 ```rust
@@ -145,6 +209,7 @@ let delay = Duration::from_millis(base_delay_ms * 2_u64.pow(attempt) + random_ji
 
 ### Resource Management
 - Automatic connection cleanup
+- Transport lifecycle management
 - Memory-efficient JSON streaming
 - Configurable timeouts per handler
 
@@ -231,22 +296,26 @@ info!(
 - Error handling standardization
 - Comprehensive testing
 
-### Phase 2: Transport Expansion (v0.2.0)
-- Stdio transport implementation
-- Plugin dynamic loading
-- Enhanced configuration management
+### Phase 2: Transport Expansion (v0.2.0-alpha) ✅
+- ✅ Stdio transport implementation
+- ✅ Core Runtime Module
+- ✅ Transport abstraction layer
+- ✅ Enhanced configuration management
+- 🔄 Plugin dynamic loading (in progress)
 
-### Phase 3: Ecosystem Growth (v0.3.0)
+### Phase 3: Ecosystem Growth (v0.3.0) 🎯
 - WebSocket transport support
+- HTTP transport enhancements
 - GitHub API handler
 - Database integration handler
-- Performance monitoring
+- Performance monitoring and metrics
 
 ### Phase 4: Production Readiness (v1.0.0)
 - Security audit and hardening
 - Comprehensive documentation
 - Container support
 - Plugin ecosystem
+- Production deployment guides
 
 ## Design Principles
 

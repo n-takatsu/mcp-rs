@@ -9,13 +9,18 @@
 - **Audience**: Developers, contributors, system architects
 - **Content**: Layered architecture, plugin system, error handling, security, performance
 
+#### [`security-guide.md`](security-guide.md)
+- **Purpose**: Comprehensive security documentation and best practices
+- **Audience**: Security engineers, system administrators, developers
+- **Content**: Security features, vulnerability management, testing, compliance
+
 #### [`wordpress-guide.md`](wordpress-guide.md) 
 - **Purpose**: Complete WordPress integration guide
 - **Audience**: Users, integrators, AI agents
 - **Content**: Setup, features, examples, troubleshooting, workflows
 
 #### [`api-reference.md`](api-reference.md)
-- **Purpose**: Quick API reference for all 27 tools
+- **Purpose**: Quick API reference for all 31 tools
 - **Audience**: Developers, API consumers, AI agents
 - **Content**: Tool parameters, response formats, examples, error codes
 
@@ -28,18 +33,26 @@
 
 ### For New Users
 1. **[README.md](../README.md)** - Project overview and features
-2. **[wordpress-guide.md](wordpress-guide.md)** - Complete setup and usage
-3. **[api-reference.md](api-reference.md)** - Quick API lookup
+2. **[security-guide.md](security-guide.md)** - Security setup and best practices
+3. **[wordpress-guide.md](wordpress-guide.md)** - Complete setup and usage
+4. **[api-reference.md](api-reference.md)** - Quick API lookup
 
 ### For Developers & Contributors
 1. **[architecture.md](architecture.md)** - System design and patterns
-2. **[wordpress-guide.md](wordpress-guide.md)** - Implementation details and examples
-3. **[Contributing Guidelines](../README.md#contributing)** - Development process
+2. **[security-guide.md](security-guide.md)** - Security implementation details
+3. **[wordpress-guide.md](wordpress-guide.md)** - Implementation details and examples
+4. **[Contributing Guidelines](../README.md#contributing)** - Development process
+
+### For Security Engineers
+1. **[security-guide.md](security-guide.md)** - Comprehensive security documentation
+2. **[architecture.md](architecture.md)** - Security architecture and design
+3. **[TEST_REPORT.md](../TEST_REPORT.md)** - Security test results and validation
 
 ### For AI Agents
 1. **[api-reference.md](api-reference.md)** - Tool parameters and examples
 2. **[wordpress-guide.md](wordpress-guide.md)** - Advanced features and workflows
-3. **[architecture.md](architecture.md)** - System understanding for complex tasks
+3. **[security-guide.md](security-guide.md)** - Security considerations for safe operation
+4. **[architecture.md](architecture.md)** - System understanding for complex tasks
 
 ## 🧹 Cleanup Status
 

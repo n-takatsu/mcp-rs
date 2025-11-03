@@ -7,6 +7,9 @@ pub enum McpError {
     #[error("JSON-RPC error: {0}")]
     JsonRpc(String),
 
+    #[error("Invalid request: {0}")]
+    InvalidRequest(String),
+
     #[error("Invalid method: {0}")]
     InvalidMethod(String),
 
@@ -18,6 +21,12 @@ pub enum McpError {
 
     #[error("Resource not found: {0}")]
     ResourceNotFound(String),
+
+    #[error("Method not found: {0}")]
+    MethodNotFound(String),
+
+    #[error("Internal error: {0}")]
+    InternalError(String),
 
     #[error("External API error: {0}")]
     ExternalApi(String),
