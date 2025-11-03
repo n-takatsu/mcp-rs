@@ -625,6 +625,92 @@ export MCP_SERVER_LOG_LEVEL="warn"
 export RUST_LOG="warn"
 ```
 
+## Configuration Guide
+
+This section provides comprehensive configuration options for MCP-RS.
+
+### Environment Variables
+
+MCP-RS supports environment variable expansion in configuration files using the `${VAR_NAME}` syntax:
+
+```toml
+[handlers.wordpress]
+url = "${WORDPRESS_URL}"
+username = "${WORDPRESS_USERNAME}"
+password = "${WORDPRESS_PASSWORD}"
+```
+
+#### Core Environment Variables
+
+| Variable | Description | Default | Example |
+|----------|-------------|---------|---------|
+| `MCP_SERVER_BIND_ADDR` | Server bind address | `127.0.0.1:8080` | `0.0.0.0:3000` |
+| `MCP_SERVER_LOG_LEVEL` | Logging level | `info` | `debug`, `warn`, `error` |
+| `RUST_LOG` | Rust logging configuration | `info` | `mcp_rs=debug` |
+
+#### WordPress Integration Variables
+
+| Variable | Description | Required | Example |
+|----------|-------------|----------|---------|
+| `WORDPRESS_URL` | WordPress site URL | Yes | `https://example.com` |
+| `WORDPRESS_USERNAME` | WordPress username | Yes | `admin` |
+| `WORDPRESS_PASSWORD` | Application password | Yes | `xxxx xxxx xxxx xxxx xxxx xxxx` |
+
+### Security Configuration
+
+#### Rate Limiting
+```toml
+[handlers.wordpress.rate_limit]
+max_requests_per_minute = 60
+burst_size = 10
+enabled = true
+```
+
+#### Timeout Settings
+```toml
+[handlers.wordpress]
+timeout_seconds = 30
+retry_attempts = 3
+retry_delay_ms = 1000
+```
+
+### Deployment Configurations
+
+#### Development
+```toml
+[server]
+bind_addr = "127.0.0.1:8080"
+log_level = "debug"
+
+[handlers.wordpress]
+timeout_seconds = 60  # Longer timeout for debugging
+```
+
+#### Production
+```toml
+[server]
+bind_addr = "0.0.0.0:8080"
+log_level = "warn"
+
+[handlers.wordpress]
+timeout_seconds = 30
+rate_limit.enabled = true
+rate_limit.max_requests_per_minute = 100
+```
+
+#### Docker
+```toml
+[server]
+bind_addr = "0.0.0.0:8080"
+log_level = "info"
+
+# Use environment variables for sensitive data
+[handlers.wordpress]
+url = "${WORDPRESS_URL}"
+username = "${WORDPRESS_USERNAME}"
+password = "${WORDPRESS_PASSWORD}"
+```
+
 ---
 
 For more advanced topics and API reference, see the [API Documentation](../api/).
