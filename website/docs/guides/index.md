@@ -2,6 +2,12 @@
 
 Step-by-step guides for implementing and using MCP-RS.
 
+## Quick Start Guides
+
+- **[WordPress Integration](../wordpress.md)** - Complete WordPress REST API integration with media management
+- **[Custom Handler Development](custom-handlers.md)** - Create your own MCP handlers
+- **[Configuration Guide](configuration.md)** - Configure MCP-RS for your environment
+
 ## Getting Started
 
 ### Installation and Setup
@@ -192,6 +198,100 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
   "id": 2
 }
 ```
+
+#### Environment Health Check
+
+Before using WordPress tools, validate your environment:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "tools/call",
+  "params": {
+    "name": "wordpress_health_check",
+    "arguments": {}
+  },
+  "id": 3
+}
+```
+
+**Response Example:**
+```json
+{
+  "jsonrpc": "2.0",
+  "result": {
+    "content": [{
+      "type": "text",
+      "text": "WordPress Health Check Report\n\n✅ Status: healthy\n\n🌐 Site Information:\n- URL: https://your-site.com\n- Name: Your Site Name\n- Version: 6.3.2\n\n👤 User Information:\n- Username: admin\n- Display Name: Site Administrator\n- Roles: administrator\n\n🔐 Capabilities:\n- publish_posts: ✅\n- upload_files: ✅\n- edit_posts: ✅\n\n📁 Media Upload:\n- Status: ✅ Supported\n- Max Upload Size: 64M\n\n⚡ Performance:\n- Site Response: 245ms\n- API Response: 89ms\n\n✅ All systems operational! WordPress is ready for MCP operations."
+    }],
+    "is_error": false
+  },
+  "id": 3
+}
+```
+
+#### Upload Media with Featured Image
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "tools/call",
+  "params": {
+    "name": "wordpress_upload_media",
+    "arguments": {
+      "file_data": "iVBORw0KGgoAAAANSUhEUgAA...",
+      "filename": "featured-image.jpg",
+      "mime_type": "image/jpeg"
+    }
+  },
+  "id": 4
+}
+```
+
+Then use the returned media ID to create a post:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "tools/call",
+  "params": {
+    "name": "wordpress_create_post_with_featured_image",
+    "arguments": {
+      "title": "Post with Featured Image",
+      "content": "<p>This post has a beautiful featured image.</p>",
+      "featured_media_id": 123
+    }
+  },
+  "id": 5
+}
+```
+
+### 4. Production Workflow
+
+#### Pre-Production Checklist
+
+1. **Environment Validation**
+   ```bash
+   # Run health check example
+   cargo run --example wordpress_health_check
+   ```
+
+2. **Configuration Verification**
+   - Verify WordPress URL is accessible
+   - Test application password authentication
+   - Check user permissions are sufficient
+
+3. **Functional Testing**  
+   - Test post creation and retrieval
+   - Verify media upload capabilities
+   - Confirm featured image functionality
+
+#### Monitoring and Maintenance
+
+- **Regular Health Checks**: Schedule periodic environment validation
+- **Performance Monitoring**: Track API response times and success rates
+- **Error Handling**: Implement proper error logging and alerting
+- **Backup Procedures**: Ensure WordPress content is properly backed up
 
 ## Custom Handler Development
 

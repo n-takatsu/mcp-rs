@@ -25,6 +25,11 @@ MCP-RS is a robust, type-safe Rust implementation of the Model Context Protocol 
 - 🔌 **Plugin Architecture**: Extensible handler system for custom integrations
 - 🌐 **Multi-Transport**: Support for stdio, HTTP, and WebSocket protocols
 - ⚙️ **Configuration-Driven**: TOML-based configuration with environment variable overrides
+- 🖼️ **WordPress Integration**: Complete WordPress REST API support with media management
+- 📝 **Content Management**: Full CRUD operations for posts, pages, and comments
+- 🎯 **Featured Image Support**: Upload and manage WordPress featured images
+- 🔍 **Health Monitoring**: Comprehensive environment validation and diagnostics
+- 🛠️ **Production Ready**: Built-in error handling, retry logic, and performance monitoring
 
 ## Current Status
 

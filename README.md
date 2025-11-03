@@ -1,22 +1,23 @@
 # mcp-rs
 
-🚀 Rust implementation of the Model Context Protocol (MCP) for AI-agent integration with WordPress and beyond.
+🚀 **Production-Ready** Rust implementation of the Model Context Protocol (MCP) for AI-agent integration with WordPress and beyond.
 
 [![Architecture](https://img.shields.io/badge/Architecture-v0.1.0--alpha-blue)](#architecture)
-[![Implementation](https://img.shields.io/badge/Implementation-v0.1.0--dev-orange)](#implementation-status)
+[![Implementation](https://img.shields.io/badge/WordPress_Tools-27_Available-green)](#wordpress-mcp-tools)
 [![License](https://img.shields.io/badge/License-MIT%2FApache--2.0-green)](#license)
 
 ## Overview
 
-`mcp-rs` provides a robust, extensible, plugin-oriented implementation of the MCP (Model Context Protocol) in Rust. Built with a layered architecture, it enables AI agents to interact with various services through a standardized JSON-RPC interface. The framework features comprehensive WordPress integration, strong type safety, and is optimized for use with GitHub Copilot and other AI coding assistants.
+`mcp-rs` provides a **comprehensive, battle-tested** implementation of the MCP (Model Context Protocol) in Rust with **complete WordPress integration**. Built with a layered architecture, it enables AI agents to perform sophisticated content management through a standardized JSON-RPC interface. The framework features 27 WordPress tools, strong type safety, and is optimized for production use with GitHub Copilot and other AI coding assistants.
 
-### Key Highlights
+### 🎯 Key Highlights
 
-- **🏗️ Layered Architecture**: Clean separation with Application, API, Service, Core, and Infrastructure layers
-- **🔌 Plugin-Oriented Design**: Extensible handler system with dynamic configuration
-- **⚡ Production Ready**: Timeout handling, retry logic, comprehensive error handling
-- **🛡️ Type-Safe**: Full Rust type safety with serde-based configuration
-- **🔄 Async-First**: Built on tokio for high-performance concurrent operations
+- **🏗️ Production Architecture**: Clean separation with layered design and comprehensive error handling  
+- **� Complete WordPress CMS**: 27 tools covering posts, pages, media, categories, tags, and embedded content
+- **🎬 Rich Media Support**: YouTube embeds, social media integration, and full accessibility features
+- **⚡ Performance Optimized**: Async-first with timeout handling, retry logic, and connection pooling
+- **🛡️ Type-Safe**: Full Rust type safety with structured configuration and error management
+- **🔄 AI-Agent Ready**: Designed specifically for seamless AI agent interaction
 
 ## Features
 
@@ -40,12 +41,25 @@
 ### 🔌 Current Integrations
 
 - **✅ WordPress**: Full WordPress REST API integration with advanced features:
-  - Post/Page management (CRUD operations)
-  - Media handling and uploads
-  - Comment management
-  - Tag and category operations
-  - Timeout and retry handling
-  - Authentication with application passwords
+  - **📝 Advanced Post Management**: Create posts/pages with comprehensive options
+  - **📊 Status Control**: Draft, publish, private, and scheduled posts  
+  - **🎯 SEO Integration**: Meta fields for Yoast SEO and other plugins
+  - **📅 Post Scheduling**: Future publication with ISO8601 timestamps
+  - **🖼️ Complete Media CRUD**: Full media library management with metadata
+  - **♿ Accessibility Support**: Alt text, captions, and descriptions
+  - **📁 Media Library**: Upload, read, update, and delete operations
+  - **🎯 Base64 Upload**: Handle base64-encoded file uploads
+  - **🎬 Embed Support**: YouTube and social media content embedding
+  - **📱 oEmbed Integration**: Automatic conversion of social media URLs
+  - **🏷️ Category & Tag Management**: Full CRUD operations for taxonomies
+  - **📂 Hierarchical Categories**: Support for parent-child relationships
+  - **⚙️ Structured API**: Clean parameter structures for maintainable code
+  - **🔍 Health Check System**: Comprehensive environment validation
+  - **🛠️ Production Monitoring**: 5-stage validation with detailed reporting
+  - Comment management and retrieval
+  - Timeout and retry handling with exponential backoff
+  - Secure authentication with application passwords
+  - **📋 Multipart Uploads**: Efficient file upload handling
 
 ### 🔄 Planned Integrations
 
@@ -57,12 +71,51 @@
 ## Implementation Status
 
 ### ✅ Completed (v0.1.0-alpha)
-- **WordPress API Handler**: Complete with timeout, retry, and error handling
+- **WordPress API Handler**: Complete with featured image and media upload support
+- **Media Management**: Base64 upload, multipart form handling, featured image setting
 - **Configuration Management**: TOML + environment variable hierarchy
 - **MCP Protocol Foundation**: JSON-RPC + handler trait system
 - **Error Handling**: thiserror-based type-safe error management
 - **Structured Logging**: tracing-based logging system
 - **HTTP Communication**: reqwest + timeout + exponential backoff retry
+
+### 🎯 WordPress MCP Tools (27 tools available)
+
+**📝 Content Management:**
+- `wordpress_health_check` - WordPress environment health check
+- `get_posts` - Retrieve WordPress posts
+- `get_pages` - Retrieve WordPress pages
+- `get_all_content` - Retrieve all content (posts + pages)
+- `get_post` - Get specific post/page by ID
+- `create_post` - Create basic WordPress post
+- `create_advanced_post` - Create post with advanced options (SEO, scheduling, etc.)
+- `create_post_with_embeds` - Create post with YouTube/social media embeds
+- `update_post` - Update existing post
+- `delete_post` - Delete post (trash or permanent)
+
+**🖼️ Media Management:**
+- `upload_media` - Upload media files (base64/multipart)
+- `get_media` - List media library items
+- `get_media_item` - Get specific media item details
+- `update_media` - Update media metadata (alt text, captions)
+- `delete_media` - Delete media files
+- `create_post_with_featured_image` - Create post with featured image
+- `set_featured_image` - Set featured image for existing post
+
+**📁 Taxonomy Management:**
+- `get_categories` - List all categories
+- `create_category` - Create new category
+- `update_category` - Update category details
+- `delete_category` - Delete category
+- `get_tags` - List all tags
+- `create_tag` - Create new tag
+- `update_tag` - Update tag details
+- `delete_tag` - Delete tag
+
+**🔗 Content Integration:**
+- `create_post_with_categories_tags` - Create post with taxonomy
+- `update_post_categories_tags` - Update post taxonomy
+- `get_comments` - Retrieve post comments
 
 ### 🔄 In Development
 - Core runtime module (application lifecycle)
@@ -95,12 +148,22 @@ Create a `mcp-config.toml` file:
 host = "0.0.0.0"
 port = 3000
 
-[wordpress]
+[handlers.wordpress]
 url = "https://your-wordpress-site.com"
 username = "your_username"
-password = "your_application_password"
+password = "your_application_password"  # WordPress Application Password
 timeout_seconds = 30
+enabled = true
+
+# Environment variable override support:
+# WORDPRESS_URL, WORDPRESS_USERNAME, WORDPRESS_PASSWORD
 ```
+
+**WordPress Application Password Setup:**
+1. WordPress Admin → Users → Your Profile
+2. Scroll to "Application Passwords"
+3. Create new application password for MCP-RS
+4. Use this password in configuration
 
 ### Running the Server
 
@@ -195,12 +258,93 @@ cargo run --example http_timeout_test
 # WordPress API connection test
 cargo run --example wordpress_test
 
-# Security diagnosis for WordPress
+# WordPress environment health check
 cargo run --example wordpress_security_diagnosis
 
-# Timeout handling test (v2)
-cargo run --example timeout_test_v2
+# WordPress content CRUD operations
+cargo run --example wordpress_post_crud_test
+
+# WordPress media management with accessibility
+cargo run --example wordpress_media_crud_test
+
+# WordPress embedded content creation
+cargo run --example wordpress_embed_test
+
+# WordPress advanced post creation with SEO
+cargo run --example wordpress_advanced_post_test
+
+# WordPress categories and tags management
+cargo run --example wordpress_categories_tags_test
+
+# WordPress posts with taxonomy integration
+cargo run --example wordpress_posts_with_taxonomy_test
+cargo run --example wordpress_health_check
+
+# WordPress categories and tags management test
+cargo run --example wordpress_categories_tags_test
+
+# WordPress posts with categories and tags integration test
+cargo run --example wordpress_posts_with_taxonomy_test
+
+# Complete WordPress post CRUD operations test
+cargo run --example wordpress_post_crud_test
+
+# Advanced post creation with SEO and scheduling
+cargo run --example wordpress_advanced_post_test
+
+# Complete media CRUD operations
+cargo run --example wordpress_media_crud_test
+
+# WordPress security diagnosis and setup
+cargo run --example wordpress_security_diagnosis
 ```
+
+## MCP Usage Examples
+
+Once the server is running, AI agents can interact with WordPress through natural language:
+
+### 📝 **Content Creation**
+**User:** "Create a blog post about Rust programming"
+**AI automatically:**
+1. Uses `create_post` tool
+2. Generates appropriate title and content
+3. Returns post URL and ID
+
+### 🖼️ **Featured Image Workflow**
+**User:** "Upload this image and create a post with it as featured image"
+**AI automatically:**
+1. Uses `upload_media` tool with base64 image data
+2. Uses `create_post_with_featured_image` with returned media ID
+3. Creates post with proper featured image
+
+### 🎬 **Embedded Content Creation**
+**User:** "Create a post with this YouTube video and Instagram post"
+**AI automatically:**
+1. Validates and extracts YouTube video ID
+2. Generates proper iframe embed code
+3. Adds social media URLs for WordPress oEmbed
+4. Creates post with combined content
+
+**Supported Embed Types:**
+- **YouTube**: Direct iframe embed or oEmbed
+- **Twitter/X**: oEmbed integration
+- **Instagram**: oEmbed integration  
+- **Facebook**: oEmbed integration
+- **TikTok**: oEmbed integration
+
+### 🔄 **Content Management**
+**User:** "Show me recent posts and their comments"
+**AI automatically:**
+1. Uses `get_posts` to retrieve recent posts
+2. Uses `get_comments` for each post
+3. Presents organized summary
+
+### 🎯 **Advanced Workflows**
+**User:** "Add a featured image to post #123"
+**AI automatically:**
+1. Uploads provided image using `upload_media`
+2. Uses `set_featured_image` to update existing post
+3. Confirms successful update
 
 ## Architecture
 
@@ -323,6 +467,39 @@ This codebase is optimized for AI-assisted development:
 - **Configuration Management**: TOML-first configuration patterns
 - **Logging Integration**: Structured logging with tracing crate
 
+### 🎬 **Embedded Content Examples**
+
+```rust
+// YouTube video embedding
+let youtube_urls = vec!["https://www.youtube.com/watch?v=dQw4w9WgXcQ"];
+let social_urls = vec!["https://twitter.com/user/status/123456789"];
+
+let post = handler.create_post_with_embeds(
+    "Video Tutorial Post",
+    "<p>Check out this tutorial:</p>",
+    youtube_urls,
+    social_urls,
+    Some(params),
+).await?;
+```
+
+**Generated WordPress Content:**
+```html
+<p>Check out this tutorial:</p>
+
+<iframe width="560" height="315" 
+  src="https://www.youtube.com/embed/dQw4w9WgXcQ" 
+  frameborder="0" allowfullscreen></iframe>
+
+https://twitter.com/user/status/123456789
+```
+
+**WordPress automatically converts:**
+- YouTube URLs → iframe embeds (with manual override)
+- Twitter URLs → Twitter cards via oEmbed
+- Instagram URLs → Instagram embeds via oEmbed
+- Facebook URLs → Facebook posts via oEmbed
+
 ## Development
 
 ### Building
@@ -384,6 +561,15 @@ cp mcp-config.toml.example mcp-config.toml
 
 We welcome contributions! Please see our contribution guidelines:
 
+### Documentation
+
+📚 **Complete documentation available in [`project-docs/`](project-docs/)**
+
+- **[WordPress Integration Guide](project-docs/wordpress-guide.md)** - Complete setup and usage
+- **[API Reference](project-docs/api-reference.md)** - Quick reference for all 27 tools  
+- **[Architecture](project-docs/architecture.md)** - System design and patterns
+- **[Documentation Index](project-docs/index.md)** - Documentation overview
+
 ### Development Process
 
 1. **Fork and Clone**: Fork the repository and clone locally
@@ -403,25 +589,37 @@ Please ensure contributions align with our layered architecture:
 
 ## Roadmap
 
-See [docs/architecture.md](docs/architecture.md) for detailed roadmap.
+See [project-docs/architecture.md](project-docs/architecture.md) for detailed roadmap.
+
+### ✅ Completed (v0.1.0-alpha)
+- [x] **WordPress Handler**: Complete CRUD operations (27 tools)
+- [x] **Media Management**: Upload, CRUD with accessibility support
+- [x] **Embedded Content**: YouTube, social media integration
+- [x] **Advanced Post Features**: SEO, scheduling, post types
+- [x] **Taxonomy System**: Categories and tags management
+- [x] **Type-Safe Configuration**: TOML + environment variables
+- [x] **Comprehensive Examples**: 6 complete test examples
 
 ### Near Term (v0.2.0)
 - [ ] Core runtime module implementation
 - [ ] Stdio transport support
 - [ ] Plugin dynamic loading system
 - [ ] Enhanced configuration management
+- [ ] Performance benchmarks
 
 ### Medium Term (v0.3.0)
 - [ ] WebSocket transport support
 - [ ] Performance monitoring and metrics
 - [ ] GitHub API handler
 - [ ] Database integration handler
+- [ ] File system operations handler
 
 ### Long Term (v1.0.0)
 - [ ] Production security audit
-- [ ] Comprehensive test suite
+- [ ] Comprehensive test suite  
 - [ ] Documentation website
 - [ ] Plugin ecosystem
+- [ ] Docker containerization
 
 ## License
 
