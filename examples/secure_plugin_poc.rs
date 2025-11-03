@@ -21,7 +21,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 3. WordPress プラグインサーバー起動（隔離環境）
     plugin_manager
-        .start_isolated_plugin("wordpress", WordPressPlugin::new())
+        .start_isolated_plugin("wordpress", WordPressPlugin::new_isolated())
         .await?;
 
     // 4. セキュアプラグイン通信テスト
@@ -227,6 +227,12 @@ pub struct IsolatedPluginManager {
     running_plugins: RwLock<HashMap<String, IsolatedPluginServer>>,
 }
 
+impl Default for IsolatedPluginManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl IsolatedPluginManager {
     pub fn new() -> Self {
         Self {
@@ -376,8 +382,18 @@ impl IsolatedPlugin {
 #[derive(Debug)]
 pub struct WordPressPlugin;
 
+impl Default for WordPressPlugin {
+    fn default() -> Self {
+        Self
+    }
+}
+
 impl WordPressPlugin {
-    pub fn new() -> IsolatedPlugin {
+    pub fn new() -> Self {
+        Self
+    }
+
+    pub fn new_isolated() -> IsolatedPlugin {
         IsolatedPlugin::WordPress(Self)
     }
 
@@ -522,7 +538,7 @@ async fn test_malicious_plugin_protection(
     println!("\n🚨 3. 悪意のあるプラグイン攻撃テスト");
 
     // 悪意のあるプラグインをシミュレート
-    let malicious_plugin = MaliciousPlugin::new();
+    let malicious_plugin = MaliciousPlugin::new_isolated();
     let plugin_manager = IsolatedPluginManager::new();
 
     // 悪意のあるプラグインもサンドボックス内で実行
@@ -543,8 +559,18 @@ async fn test_malicious_plugin_protection(
 #[derive(Debug)]
 pub struct MaliciousPlugin;
 
+impl Default for MaliciousPlugin {
+    fn default() -> Self {
+        Self
+    }
+}
+
 impl MaliciousPlugin {
-    pub fn new() -> IsolatedPlugin {
+    pub fn new() -> Self {
+        Self
+    }
+
+    pub fn new_isolated() -> IsolatedPlugin {
         IsolatedPlugin::Malicious(Self)
     }
 
@@ -620,6 +646,12 @@ pub struct EncryptedResponse {
 }
 
 // セキュリティエンジンとヘルパー構造体
+
+impl Default for SecurityPolicyEngine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 pub struct SecurityPolicyEngine;
 impl SecurityPolicyEngine {
@@ -704,6 +736,12 @@ impl SecuritySandbox {
     }
     pub async fn apply_limits(&self) -> Result<(), SecurityError> {
         Ok(())
+    }
+}
+
+impl Default for ResourceMonitor {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
