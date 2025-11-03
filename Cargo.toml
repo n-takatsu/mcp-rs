@@ -30,17 +30,18 @@ uuid = { version = "1.0", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 futures = "0.3"
 # セキュリティ強化用の暗号化クレート
-secrecy = { version = "0.8", features = ["serde"] }
-zeroize = "1.7"
+secrecy = { version = "0.8", features = ["serde"] }  # 0.8に戻す（API安定版）
+zeroize = "1.8"  # 最新版
 aes-gcm = "0.10"
 argon2 = "0.5"
 pbkdf2 = "0.12"
 sha2 = "0.10"
 # 入力検証・セキュリティ強化用クレート
-validator = "0.16"
-url = "2.4"
-ammonia = "3.3"  # HTML sanitization
-fancy-regex = "0.11"  # Advanced regex with lookahead/lookbehind
+url = "2.5"
+ammonia = "4.0"  # HTML sanitization（最新版）
+fancy-regex = "0.13"  # Advanced regex with lookahead/lookbehind（最新版）
+# idna脆弱性対応: 直接最新版を指定
+idna = "1.0.3"
 # プラグインシステム用依存関係
 libloading = "0.8"
 

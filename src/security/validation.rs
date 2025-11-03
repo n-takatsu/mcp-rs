@@ -16,7 +16,29 @@ use fancy_regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
-use validator::{Validate, ValidationError};
+
+/// 検証エラー（validator::ValidationErrorの代替）
+#[derive(Debug, Clone)]
+pub struct ValidationError {
+    pub code: String,
+    pub message: Option<String>,
+}
+
+impl ValidationError {
+    pub fn new(code: &str) -> Self {
+        Self {
+            code: code.to_string(),
+            message: None,
+        }
+    }
+
+    pub fn with_message(code: &str, message: &str) -> Self {
+        Self {
+            code: code.to_string(),
+            message: Some(message.to_string()),
+        }
+    }
+}
 
 /// 検証ルールの種類
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
