@@ -11,12 +11,15 @@ use crate::config::WordPressConfig;
 use crate::mcp::{
     InitializeParams, McpError, McpHandler, Resource, ResourceReadParams, Tool, ToolCallParams,
 };
-use crate::security::RateLimiter;
+use crate::security::{RateLimiter, SecureCredentials};
 
 #[derive(Debug, Clone)]
 pub struct WordPressHandler {
     client: Client,
     base_url: String,
+    /// セキュア認証情報（新しい暗号化対応）
+    secure_credentials: Option<SecureCredentials>,
+    /// 後方互換性のための平文認証情報
     username: Option<String>,
     password: Option<String>,
     #[allow(dead_code)]
@@ -255,16 +258,33 @@ impl WordPressHandler {
             .map_err(|e| format!("HTTP client build failed: {}", e))?;
 
         // レート制限設定
-        let rate_limit_config = config.rate_limit.unwrap_or_default();
+        let rate_limit_config = config.rate_limit.clone().unwrap_or_default();
         let rate_limiter = Arc::new(RateLimiter::new(rate_limit_config));
+
+        // セキュア認証情報の作成
+        let secure_credentials = Some(config.create_secure_credentials());
 
         Ok(Self {
             client,
-            base_url: config.url,
+            base_url: config.url.clone(),
+            secure_credentials,
             username: Some(config.username),
             password: Some(config.password),
             rate_limiter,
         })
+    }
+
+    /// 認証情報をリクエストに追加するヘルパーメソッド
+    fn add_authentication(&self, mut request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        // セキュア認証情報を優先的に使用
+        if let Some(secure_creds) = &self.secure_credentials {
+            let auth_header = format!("Basic {}", secure_creds.to_basic_auth());
+            request = request.header("Authorization", auth_header);
+        } else if let (Some(username), Some(password)) = (&self.username, &self.password) {
+            // 後方互換性のための平文認証
+            request = request.basic_auth(username, Some(password));
+        }
+        request
     }
 
     /// レート制限チェック付きでリクエストを実行
@@ -377,11 +397,8 @@ impl WordPressHandler {
     async fn get_posts(&self) -> Result<Vec<WordPressPost>, McpError> {
         let url = format!("{}/wp-json/wp/v2/posts", self.base_url);
 
-        let mut request = self.client.get(&url);
-
-        if let (Some(username), Some(password)) = (&self.username, &self.password) {
-            request = request.basic_auth(username, Some(password));
-        }
+        let request = self.client.get(&url);
+        let request = self.add_authentication(request);
 
         info!("Fetching WordPress posts from: {}", url);
         self.execute_request_with_retry(request).await
@@ -3270,6 +3287,7 @@ mod tests {
             enabled: Some(true),
             timeout_seconds: Some(30),
             rate_limit: Some(RateLimitConfig::default()),
+            encrypted_credentials: None,
         };
 
         let result = WordPressHandler::try_new(insecure_config);
@@ -3289,6 +3307,7 @@ mod tests {
             enabled: Some(true),
             timeout_seconds: Some(30),
             rate_limit: Some(RateLimitConfig::default()),
+            encrypted_credentials: None,
         };
 
         let result = WordPressHandler::try_new(secure_config);
@@ -3307,6 +3326,7 @@ mod tests {
                 enabled: Some(true),
                 timeout_seconds: Some(30),
                 rate_limit: Some(RateLimitConfig::default()),
+                encrypted_credentials: None,
             };
 
             let result = WordPressHandler::try_new(config);

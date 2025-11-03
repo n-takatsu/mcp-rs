@@ -13,7 +13,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         password: "demo".to_string(),
         enabled: Some(true),
         timeout_seconds: Some(30),
-        rate_limit: None, // テスト用なのでレート制限無し
+        rate_limit: None,            // テスト用なのでレート制限無し
+        encrypted_credentials: None, // 平文認証情報を使用
     };
 
     let handler = WordPressHandler::new(wp_config);

@@ -28,6 +28,13 @@ base64 = "0.21"
 regex = "1.10"
 uuid = { version = "1.0", features = ["v4"] }
 futures = "0.3"
+# セキュリティ強化用の暗号化クレート
+secrecy = { version = "0.8", features = ["serde"] }
+zeroize = "1.7"
+aes-gcm = "0.10"
+argon2 = "0.5"
+pbkdf2 = "0.12"
+sha2 = "0.10"
 # プラグインシステム用依存関係
 libloading = "0.8"
 

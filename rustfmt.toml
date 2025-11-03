@@ -1,0 +1,10 @@
+# Rust formatter configuration for mcp-rs project
+# Only stable rustfmt options for maximum compatibility
+
+edition = "2021"
+max_width = 100
+hard_tabs = false
+tab_spaces = 4
+reorder_imports = true
+fn_params_layout = "Tall"
+newline_style = "Unix"

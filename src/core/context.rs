@@ -8,8 +8,9 @@ use std::time::{Duration, Instant};
 use tracing::{info, warn};
 use uuid::Uuid;
 
-/// Request execution context
-#[derive(Debug)]
+/// Execution context for MCP operations
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct ExecutionContext {
     /// Unique request ID
     pub request_id: String,
@@ -27,8 +28,9 @@ pub struct ExecutionContext {
     pub metrics: ExecutionMetrics,
 }
 
-/// Execution metrics for a request
+/// Execution metrics for performance tracking
 #[derive(Debug, Clone, Default)]
+#[allow(dead_code)]
 pub struct ExecutionMetrics {
     /// Total execution time
     pub total_duration: Option<Duration>,
@@ -44,6 +46,7 @@ pub struct ExecutionMetrics {
     pub error_message: Option<String>,
 }
 
+#[allow(dead_code)]
 impl ExecutionContext {
     /// Create a new execution context
     pub fn new(timeout: Duration) -> Self {
@@ -188,7 +191,9 @@ impl ExecutionContext {
     }
 }
 
-/// Context manager for handling execution contexts
+/// Context manager for controlling execution contexts
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct ContextManager {
     /// Default timeout for requests
     default_timeout: Duration,
@@ -196,6 +201,7 @@ pub struct ContextManager {
     max_timeout: Duration,
 }
 
+#[allow(dead_code)]
 impl ContextManager {
     /// Create a new context manager
     pub fn new(default_timeout: Duration, max_timeout: Duration) -> Self {

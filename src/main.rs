@@ -1,3 +1,10 @@
+//! MCP-RS Binary Entry Point
+//!
+//! This binary provides the main executable for the MCP-RS server.
+
+#![allow(dead_code)] // Allow unused code for future extensibility
+#![allow(unused_imports)] // Allow unused imports during development
+
 mod config;
 mod core;
 mod error;

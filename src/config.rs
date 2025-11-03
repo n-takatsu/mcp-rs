@@ -51,6 +51,10 @@ use tracing::{debug, info, warn};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+// セキュリティ機能用のimport
+use crate::security::{EncryptedCredentials, EncryptionError, SecureCredentials};
+use secrecy::ExposeSecret;
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct McpConfig {
     pub server: ServerConfig,
@@ -134,11 +138,13 @@ impl Default for PluginsConfig {
 pub struct WordPressConfig {
     pub url: String,
     pub username: String,
-    pub password: String, // Application Password
+    pub password: String, // Application Password (平文 - 後方互換性のため)
     pub enabled: Option<bool>,
     pub timeout_seconds: Option<u64>,
     /// レート制限設定
     pub rate_limit: Option<RateLimitConfig>,
+    /// 暗号化された認証情報（オプション）
+    pub encrypted_credentials: Option<EncryptedCredentials>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -158,6 +164,71 @@ impl Default for RateLimitConfig {
             burst_size: 20,          // 20 burst requests
             enabled: true,
         }
+    }
+}
+
+impl WordPressConfig {
+    /// 平文パスワードからセキュア認証情報を作成
+    pub fn create_secure_credentials(&self) -> SecureCredentials {
+        SecureCredentials::new(self.username.clone(), self.password.clone())
+    }
+
+    /// 暗号化された認証情報から新しいWordPressConfigを作成
+    #[allow(dead_code)]
+    pub fn from_encrypted(
+        url: String,
+        encrypted_credentials: EncryptedCredentials,
+        master_password: &str,
+        enabled: Option<bool>,
+        timeout_seconds: Option<u64>,
+        rate_limit: Option<RateLimitConfig>,
+    ) -> Result<Self, EncryptionError> {
+        // 復号化して平文認証情報を取得（後方互換性のため）
+        let secure_creds =
+            SecureCredentials::from_encrypted(&encrypted_credentials, master_password)?;
+
+        Ok(Self {
+            url,
+            username: secure_creds.username.clone(),
+            password: secure_creds.get_password().expose_secret().clone(),
+            enabled,
+            timeout_seconds,
+            rate_limit,
+            encrypted_credentials: Some(encrypted_credentials),
+        })
+    }
+
+    /// 認証情報を暗号化して保存
+    #[allow(dead_code)]
+    pub fn encrypt_credentials(&mut self, master_password: &str) -> Result<(), EncryptionError> {
+        let secure_creds = self.create_secure_credentials();
+        self.encrypted_credentials = Some(secure_creds.encrypt(master_password)?);
+        Ok(())
+    }
+
+    /// セキュア認証情報を取得（暗号化されている場合は復号化）
+    #[allow(dead_code)]
+    pub fn get_secure_credentials(
+        &self,
+        master_password: Option<&str>,
+    ) -> Result<SecureCredentials, EncryptionError> {
+        if let Some(encrypted) = &self.encrypted_credentials {
+            let master_pw = master_password.ok_or_else(|| {
+                EncryptionError::InvalidInput(
+                    "暗号化されたデータにはマスターパスワードが必要です".to_string(),
+                )
+            })?;
+            SecureCredentials::from_encrypted(encrypted, master_pw)
+        } else {
+            // 平文データからセキュア認証情報を作成
+            Ok(self.create_secure_credentials())
+        }
+    }
+
+    /// 暗号化されているかどうかを確認
+    #[allow(dead_code)]
+    pub fn is_encrypted(&self) -> bool {
+        self.encrypted_credentials.is_some()
     }
 }
 
@@ -337,6 +408,7 @@ impl McpConfig {
                     enabled: Some(true),
                     timeout_seconds: Some(30),
                     rate_limit: Some(RateLimitConfig::default()),
+                    encrypted_credentials: None, // 環境変数では平文使用
                 });
             } else if let Some(ref mut wp_config) = final_config.handlers.wordpress {
                 wp_config.url = wp_url;
@@ -393,6 +465,7 @@ impl McpConfig {
                     enabled: Some(true),
                     timeout_seconds: Some(30),
                     rate_limit: Some(RateLimitConfig::default()),
+                    encrypted_credentials: None, // デフォルトでは平文
                 }),
             },
             plugins: Some(PluginsConfig {
@@ -517,6 +590,7 @@ impl McpConfig {
     }
 
     /// Convert to plugin configuration
+    #[allow(dead_code)]
     pub fn to_plugin_config(&self) -> Option<PluginConfig> {
         self.plugins.as_ref().map(|plugins| PluginConfig {
             search_paths: plugins
@@ -534,6 +608,7 @@ impl McpConfig {
 
 /// Plugin configuration structure
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct PluginConfig {
     /// Plugin search directories
     pub search_paths: Vec<PathBuf>,
