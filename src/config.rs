@@ -137,6 +137,28 @@ pub struct WordPressConfig {
     pub password: String, // Application Password
     pub enabled: Option<bool>,
     pub timeout_seconds: Option<u64>,
+    /// レート制限設定
+    pub rate_limit: Option<RateLimitConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct RateLimitConfig {
+    /// 最大リクエスト数/秒
+    pub requests_per_second: u32,
+    /// バーストリクエスト許可数
+    pub burst_size: u32,
+    /// レート制限有効化フラグ
+    pub enabled: bool,
+}
+
+impl Default for RateLimitConfig {
+    fn default() -> Self {
+        Self {
+            requests_per_second: 10,  // 10 requests/sec
+            burst_size: 20,           // 20 burst requests
+            enabled: true,
+        }
+    }
 }
 
 impl Default for McpConfig {
@@ -314,6 +336,7 @@ impl McpConfig {
                     password: std::env::var("WORDPRESS_PASSWORD").unwrap_or_default(),
                     enabled: Some(true),
                     timeout_seconds: Some(30),
+                    rate_limit: Some(RateLimitConfig::default()),
                 });
             } else if let Some(ref mut wp_config) = final_config.handlers.wordpress {
                 wp_config.url = wp_url;
@@ -369,6 +392,7 @@ impl McpConfig {
                     password: "${WORDPRESS_PASSWORD}".to_string(),
                     enabled: Some(true),
                     timeout_seconds: Some(30),
+                    rate_limit: Some(RateLimitConfig::default()),
                 }),
             },
             plugins: Some(PluginsConfig {

@@ -77,6 +77,7 @@
 //! - [`plugins`] - Dynamic plugin loading system
 //! - [`transport`] - Communication layer (stdio, HTTP, WebSocket)
 //! - [`handlers`] - Built-in handlers (WordPress, etc.)
+//! - [`security`] - Security features (rate limiting, authentication)
 //! - [`mcp`] - MCP protocol types and utilities
 
 pub mod config;
@@ -86,6 +87,7 @@ pub mod handlers;
 pub mod mcp;
 pub mod plugins;
 pub mod protocol;
+pub mod security;
 pub mod server;
 pub mod transport;
 pub mod types;

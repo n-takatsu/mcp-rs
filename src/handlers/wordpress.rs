@@ -3,6 +3,7 @@ use regex::Regex;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
 use tracing::{info, warn};
 
@@ -10,6 +11,7 @@ use crate::config::WordPressConfig;
 use crate::mcp::{
     InitializeParams, McpError, McpHandler, Resource, ResourceReadParams, Tool, ToolCallParams,
 };
+use crate::security::RateLimiter;
 
 #[derive(Debug, Clone)]
 pub struct WordPressHandler {
@@ -17,6 +19,7 @@ pub struct WordPressHandler {
     base_url: String,
     username: Option<String>,
     password: Option<String>,
+    rate_limiter: Arc<RateLimiter>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -223,21 +226,63 @@ impl Default for PostCreateParams {
 
 impl WordPressHandler {
     pub fn new(config: WordPressConfig) -> Self {
+        // 後方互換性のために一時的に残す - try_new()の使用を推奨
+        Self::try_new(config).unwrap_or_else(|e| {
+            panic!("WordPressHandler initialization failed: {}", e);
+        })
+    }
+
+    /// 安全なコンストラクタ - エラーハンドリング付き
+    pub fn try_new(config: WordPressConfig) -> Result<Self, String> {
+        // URL検証 - HTTPS強制
+        if !config.url.starts_with("https://") {
+            return Err(format!(
+                "Insecure URL detected: {}. Only HTTPS connections are allowed for security reasons.",
+                config.url
+            ));
+        }
+
         // タイムアウト設定付きのHTTPクライアントを作成
         let timeout_secs = config.timeout_seconds.unwrap_or(30);
         let client = Client::builder()
             .timeout(Duration::from_secs(timeout_secs)) // 設定可能なタイムアウト
             .connect_timeout(Duration::from_secs(10)) // 接続タイムアウト: 10秒
             .user_agent("mcp-rs/1.0") // User-Agentを設定
+            .https_only(true) // HTTPS強制
+            .min_tls_version(reqwest::tls::Version::TLS_1_2) // TLS 1.2以上を要求
             .build()
-            .expect("HTTP client build failed");
+            .map_err(|e| format!("HTTP client build failed: {}", e))?;
 
-        Self {
+        // レート制限設定
+        let rate_limit_config = config.rate_limit.unwrap_or_default();
+        let rate_limiter = Arc::new(RateLimiter::new(rate_limit_config));
+
+        Ok(Self {
             client,
             base_url: config.url,
             username: Some(config.username),
             password: Some(config.password),
+            rate_limiter,
+        })
+    }
+
+    /// レート制限チェック付きでリクエストを実行
+    async fn execute_request_with_rate_limit<T>(
+        &self,
+        request_builder: reqwest::RequestBuilder,
+        client_id: &str,
+    ) -> Result<T, McpError>
+    where
+        T: for<'de> serde::Deserialize<'de>,
+    {
+        // レート制限チェック
+        if let Err(rate_limit_error) = self.rate_limiter.check_rate_limit(client_id).await {
+            warn!("Rate limit exceeded for client {}: {}", client_id, rate_limit_error);
+            return Err(McpError::Other(format!("Rate limit exceeded: {}", rate_limit_error)));
         }
+
+        // 通常のリクエスト実行
+        self.execute_request_with_retry(request_builder).await
     }
 
     /// リトライ機能付きでHTTPリクエストを実行
@@ -3198,6 +3243,71 @@ impl McpHandler for WordPressHandler {
                 }))
             }
             _ => Err(McpError::ResourceNotFound(params.uri)),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::RateLimitConfig;
+
+    #[test]
+    fn test_https_enforcement() {
+        // HTTP URLは拒否される
+        let insecure_config = WordPressConfig {
+            url: "http://example.com".to_string(),
+            username: "test".to_string(),
+            password: "test".to_string(),
+            enabled: Some(true),
+            timeout_seconds: Some(30),
+            rate_limit: Some(RateLimitConfig::default()),
+        };
+
+        let result = WordPressHandler::try_new(insecure_config);
+        assert!(result.is_err());
+        let error_msg = result.unwrap_err();
+        assert!(error_msg.contains("Insecure URL detected"));
+        assert!(error_msg.contains("Only HTTPS connections are allowed"));
+    }
+
+    #[test]
+    fn test_https_allowed() {
+        // HTTPS URLは許可される
+        let secure_config = WordPressConfig {
+            url: "https://secure.example.com".to_string(),
+            username: "test".to_string(),
+            password: "test".to_string(),
+            enabled: Some(true),
+            timeout_seconds: Some(30),
+            rate_limit: Some(RateLimitConfig::default()),
+        };
+
+        let result = WordPressHandler::try_new(secure_config);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_malformed_urls_rejected() {
+        let bad_urls = vec![
+            "ftp://example.com",
+            "ws://example.com",
+            "",
+            "not-a-url",
+        ];
+
+        for url in bad_urls {
+            let config = WordPressConfig {
+                url: url.to_string(),
+                username: "test".to_string(),
+                password: "test".to_string(),
+                enabled: Some(true),
+                timeout_seconds: Some(30),
+                rate_limit: Some(RateLimitConfig::default()),
+            };
+
+            let result = WordPressHandler::try_new(config);
+            assert!(result.is_err(), "URL {} should be rejected", url);
         }
     }
 }
