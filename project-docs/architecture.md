@@ -4,6 +4,71 @@
 
 `mcp-rs` follows a 6-layer security-first architecture designed for enterprise production scalability, maintainability, and extensibility. The system is built around the Model Context Protocol (MCP) JSON-RPC specification with comprehensive security integration and AI agent protection.
 
+## Core Architecture Principles
+
+### 1. Security-First Design
+- Zero-trust input validation
+- Multi-layer defense systems
+- Physical process isolation for plugins
+- Comprehensive audit logging
+
+### 2. Plugin Security Architecture
+
+#### Current Risk Assessment
+The traditional plugin architecture presents significant security vulnerabilities:
+
+```
+┌─────────────────────────────────────┐
+│ Traditional Design (Vulnerable)      │
+├─────────────────────────────────────┤
+│ ┌─ MCP-RS Core ─────────────────┐   │
+│ │ ┌─ Plugin A ─┐ ┌─ Plugin B ─┐ │   │
+│ │ │ 悪意コード  │ │ 正常コード  │ │   │
+│ │ │ ↓直接実行  │ │           │ │   │
+│ │ └───────────┘ └───────────┘ │   │
+│ │ ← セキュリティ境界なし →      │   │
+│ └─────────────────────────────────┘   │
+└─────────────────────────────────────┘
+```
+
+**Risks:**
+- **Memory Contamination**: Plugins can access core memory space
+- **Privilege Escalation**: Plugins run with same privileges as core
+- **Data Leakage**: Access to other plugins' and core's sensitive data
+- **System Destruction**: Potential to crash entire system
+
+#### Proposed: Physical Isolation Security Architecture
+
+```
+┌─────────────────────────────────────────────────────────┐
+│ Physical Security Boundaries                            │
+├─────────────────────────────────────────────────────────┤
+│                                                         │
+│ ┌─ MCP Core Server (Protected) ─┐   Network Boundary   │
+│ │ - Authentication & Authorization│       │              │
+│ │ - Security Validation         │        │              │
+│ │ - Rate Limiting               │        │              │
+│ │ - Audit Logging               │        ▼              │
+│ │ - Request Distribution        │ ┌─ Plugin Servers ─┐  │
+│ └─────────────────────────────┘ │ │ ┌─ Plugin A ─┐  │  │
+│           ▲                       │ │ │ Isolated   │  │  │
+│           │ gRPC/HTTP API         │ │ └───────────┘  │  │
+│           │                       │ │ ┌─ Plugin B ─┐  │  │
+│ ┌─ API Gateway ─────────────────┐ │ │ │ Isolated   │  │  │
+│ │ - TLS Termination             │ │ │ └───────────┘  │  │
+│ │ - Token Validation            │ │ └─────────────────┘  │
+│ │ - Request Routing             │ └─────────────────────┘  │
+│ └─────────────────────────────┘                          │
+│           ▲                                              │
+│           │ HTTPS                                        │
+│           │                                              │
+│ ┌─ Client Applications ─────────┐                        │
+│ │ - Claude, ChatGPT etc         │                        │
+│ │ - Custom Clients              │                        │
+│ └─────────────────────────────┘                        │
+└─────────────────────────────────────────────────────────┘
+```
+
 ## 6-Layer Security Architecture
 
 ### 1. Application Layer (`src/main.rs`) + Security Layer
@@ -85,6 +150,138 @@
   - Security policy enforcement
   - Compliance configuration management
 - **Dependencies**: External crates (config, thiserror, tracing)
+
+## Plugin System Architecture
+
+### Dynamic Plugin System
+
+MCP-RS provides a powerful dynamic plugin system that allows extending functionality at runtime with comprehensive security isolation.
+
+#### Architecture Overview
+
+```
+┌─────────────────────┐    ┌─────────────────────┐
+│   Plugin Registry   │────│   Plugin Loader     │
+│                     │    │                     │
+│ - Discovery         │    │ - Dynamic Loading   │
+│ - Lifecycle Mgmt    │    │ - Search Paths      │
+│ - Dependency Res.   │    │ - Safety Checks     │
+└─────────────────────┘    └─────────────────────┘
+           │                           │
+           └───────────┬───────────────┘
+                       │
+          ┌─────────────────────┐
+          │   Handler Registry  │
+          │                     │
+          │ - Handler Management│
+          │ - Integration       │
+          └─────────────────────┘
+```
+
+#### Security Isolation Implementation
+
+```rust
+/// Isolated Plugin Server (Physical Separation)
+pub struct IsolatedPluginServer {
+    /// Plugin implementation
+    plugin: Box<dyn IsolatedPlugin>,
+    /// Security sandbox
+    sandbox: SecuritySandbox,
+    /// Resource limits
+    resource_limits: ResourceLimits,
+}
+
+pub trait IsolatedPlugin: Send + Sync {
+    /// Initialize in isolated environment
+    async fn initialize_isolated(&self, config: SandboxConfig) -> Result<(), PluginError>;
+    
+    /// Execute tool in sandbox
+    async fn execute_tool_sandboxed(
+        &self,
+        tool_name: &str,
+        parameters: SanitizedParameters,
+    ) -> Result<SanitizedResponse, PluginError>;
+}
+
+#[derive(Debug)]
+pub struct SecuritySandbox {
+    /// Memory limit (MB)
+    pub max_memory_mb: u64,
+    /// CPU limit (%)
+    pub max_cpu_percent: u8,
+    /// Network access restrictions
+    pub network_restrictions: NetworkPolicy,
+    /// Filesystem access restrictions
+    pub filesystem_restrictions: FilesystemPolicy,
+    /// Execution timeout (seconds)
+    pub execution_timeout_seconds: u64,
+}
+```
+
+#### Plugin Communication Security
+
+##### mTLS + JWT Authentication
+```rust
+/// Plugin inter-communication authentication system
+pub struct PluginAuthSystem {
+    /// Core server certificate (CA)
+    core_ca_cert: X509Certificate,
+    /// Plugin certificate validator
+    plugin_cert_validator: CertificateValidator,
+    /// JWT token manager
+    jwt_manager: JwtTokenManager,
+}
+
+impl PluginAuthSystem {
+    /// Establish secure connection with plugin server
+    pub async fn establish_secure_connection(
+        &self,
+        plugin_endpoint: &PluginEndpoint,
+    ) -> Result<SecureConnection, AuthError> {
+        // 1. Establish mTLS connection
+        let tls_connection = self.establish_mtls_connection(plugin_endpoint).await?;
+        
+        // 2. JWT token validation
+        let jwt_token = self.jwt_manager.create_plugin_token(
+            &plugin_endpoint.plugin_id,
+            plugin_endpoint.allowed_operations.clone(),
+        ).await?;
+        
+        Ok(SecureConnection {
+            tls_connection,
+            jwt_token,
+            plugin_endpoint: plugin_endpoint.clone(),
+        })
+    }
+}
+```
+
+### Core Plugin APIs
+
+- **Plugin Discovery**: Basic plugin discovery from directories
+- **Plugin Registry Usage**: Complete plugin registry lifecycle
+- **Plugin Loader**: Dynamic plugin loading fundamentals
+- **Search Path Management**: Managing plugin search paths
+
+### Configuration Examples
+
+- **Basic Configuration**: Default MCP configuration setup
+- **Plugin Configuration**: Advanced plugin configuration
+
+### Running Plugin Examples
+
+All plugin code examples are executable and tested:
+
+```bash
+# Test all plugin documentation examples
+cargo test --doc
+
+# Test specific plugin module examples
+cargo test --doc plugins
+
+# Run plugin integration tests
+cargo test plugin_integration_tests
+```
 
 ## Security Integration Architecture
 

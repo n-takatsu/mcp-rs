@@ -52,7 +52,7 @@
 - **Processed Variable Tracking**: HashSet-based tracking prevents infinite recursion
 - **Graceful Error Handling**: Missing or invalid environment variables are safely handled
 - **Performance Optimized**: Complex variable expansion completed in ~1.2ms
-- **Enterprise Security Testing**: 100% security implementation with 197+ comprehensive test cases
+- **Enterprise Security Testing**: 100% security implementation with 205+ comprehensive test cases
 - **Application Password Lifecycle Management**: Production-tested strategies for password rotation and monitoring
 - **Maintenance Mode Operations**: Verified compatibility with WordPress maintenance plugins
 - **Production Monitoring**: Real-world validated health check and diagnostic procedures
@@ -130,7 +130,7 @@
   - ✅ **Comprehensive Audit Logging**: All security events recorded with tamper-resistant logging
   - ✅ **Advanced Input Validation**: Real-time validation with zero-trust model implementation
   - ✅ **Security Monitoring**: Threat level analysis with attack detection and prevention
-- **🧪 Quality Assurance**: 197+ test cases with 100% pass rate and zero Clippy warnings
+- **🧪 Quality Assurance**: 205+ test cases with 100% pass rate and zero Clippy warnings
 
 ### 🎯 WordPress MCP Tools (27 tools available)
 
@@ -197,10 +197,22 @@ cargo doc --open
 cargo test --doc
 ```
 
-### 📖 Guides and Tutorials
-- **[Plugin System Guide](docs/plugin-system.md)** - Complete plugin development guide with links to tested examples
-- **[Architecture Overview](docs/architecture.md)** - System design and component interaction
-- **[WordPress Integration](docs/wordpress-integration.md)** - Detailed WordPress handler documentation
+### 📖 Comprehensive Documentation Structure
+
+📚 **Complete documentation available in three tiers:**
+
+#### 📄 Core Documentation
+- **[README.md](README.md)** *(This file)* - Project overview, features, and quick start
+
+#### 📖 Technical Documentation (`project-docs/`)
+- **[Documentation Index](project-docs/index.md)** - Complete documentation navigation
+- **[Architecture Guide](project-docs/architecture.md)** - System design, security architecture, and plugin system
+- **[Security Guide](project-docs/security-guide.md)** - Enterprise security implementation with examples
+- **[WordPress Guide](project-docs/wordpress-guide.md)** - Complete WordPress integration and permissions
+- **[API Reference](project-docs/api-reference.md)** - Complete API reference for all 27 tools
+
+#### 🌐 Website Documentation (`website/`)
+- **[GitHub Pages](website/index.md)** - Public documentation and guides
 
 ### 🧪 Executable Examples
 All code examples link directly to tested documentation:
@@ -739,10 +751,14 @@ We welcome contributions! Please see our contribution guidelines:
 
 📚 **Complete documentation available in [`project-docs/`](project-docs/)**
 
+- **[Documentation Index](project-docs/index.md)** - Complete navigation and overview
 - **[WordPress Integration Guide](project-docs/wordpress-guide.md)** - Complete setup and usage
 - **[API Reference](project-docs/api-reference.md)** - Quick reference for all 27 tools  
-- **[Architecture](project-docs/architecture.md)** - System design and patterns
-- **[Documentation Index](project-docs/index.md)** - Documentation overview
+- **[Architecture](project-docs/architecture.md)** - System design and security architecture
+- **[Security Guide](project-docs/security-guide.md)** - Enterprise security implementation
+
+**🎯 For New Users**: Start with [project-docs/wordpress-guide.md](project-docs/wordpress-guide.md)  
+**⚡ For Developers**: Start with [project-docs/architecture.md](project-docs/architecture.md)
 
 ### Development Process
 

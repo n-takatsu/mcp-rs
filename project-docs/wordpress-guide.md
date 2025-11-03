@@ -41,6 +41,211 @@ cargo run --example wordpress_security_integration
 cargo run --example wordpress_test
 ```
 
+## 🔑 WordPress Permissions & Administrative Access
+
+### Current Permission Status (2025-11-03 Updated)
+
+#### Detailed Diagnosis Results
+```
+✅ Working Functions (wpmaster: Administrator privileges confirmed):
+- Category API (/wp/v2/categories) - 8 items retrieved successfully
+- Posts API (/wp/v2/posts) - 1 post, 9 pages retrieved successfully  
+- Media API (/wp/v2/media) - 2 items retrieved successfully
+- Tags API (/wp/v2/tags) - 6 items retrieved successfully
+
+❌ Restricted Functions:
+- Settings API (/wp/v2/settings) - 401 Unauthorized
+
+🔍 Issue Identification:
+Administrator privileges are normal, but only Settings API is individually restricted
+```
+
+### New Identified Issue: Settings API Individual Restriction
+
+#### Problem Occurring Even with Confirmed Administrator Privileges
+Despite the wpmaster user having **administrator privileges**, only the `/wp/v2/settings` endpoint returns 401 errors. This could be caused by:
+
+#### Possible Causes and Solutions
+
+##### 1. WordPress REST API Settings Individual Restriction
+**Problem**: Settings API is specially restricted
+```php
+// Possibly restricted in functions.php or plugins
+add_filter( 'rest_pre_dispatch', function( $result, $server, $request ) {
+    $route = $request->get_route();
+    
+    // Restrict access to Settings API
+    if ( strpos( $route, '/wp/v2/settings' ) === 0 ) {
+        return new WP_Error( 'rest_forbidden', 'Settings API access restricted', 
+                           array( 'status' => 401 ) );
+    }
+    
+    return $result;
+}, 10, 3 );
+```
+
+**Solution**: 
+- Check theme's `functions.php`
+- Check for REST API restrictions in plugins
+
+##### 2. Security Plugin Restrictions
+**Common restriction plugins**:
+- Wordfence Security
+- iThemes Security (formerly Better WP Security)  
+- Sucuri Security
+- All In One WP Security & Firewall
+
+**Check Location**: 
+```
+Security Plugin Settings → REST API → Settings Endpoint
+or
+Firewall → Advanced Rules → REST API Restrictions
+```
+
+##### 3. WordPress Version-Specific Restrictions
+**WordPress 5.5+ Tightening**:
+- Enhanced Settings API restrictions with Application Passwords
+- Cases requiring Cookie authentication
+- Additional restrictions on WordPress.com hosted sites
+
+##### 4. Application Password Permission Scope Restrictions
+**Verification Method**:
+```
+WordPress Admin → Users → Profile
+↓
+Application Passwords Section
+↓  
+"Revoke" current password
+↓
+Generate new Application Password
+```
+
+### Security-Conscious Permission Settings
+
+#### Based on Principle of Least Privilege
+
+##### Option 1: Administrator Privilege Grant (Easy but broad permissions)
+```
+Pros: All features immediately available
+Cons: Security risk due to excessive privilege grant
+Recommendation: Test environments only
+```
+
+##### Option 2: Custom Role Creation (Recommended)
+```
+Pros: Grant only minimum necessary privileges
+Cons: Initial setup somewhat complex
+Recommendation: Recommended for production
+```
+
+##### Option 3: Use Permission Control Plugins
+```
+Recommended Plugins:
+- User Role Editor
+- Members
+- Capability Manager Enhanced
+
+Pros: Easy permission adjustment via GUI
+Cons: Plugin dependency
+```
+
+### Step-by-Step Implementation (Administrator Privileges Confirmed Response)
+
+#### Phase 1: Immediate Diagnosis and Response
+```
+1. Check security plugin settings
+   - Wordfence → Firewall → Advanced Rules
+   - iThemes Security → System Tweaks → REST API
+   
+2. Regenerate Application Password
+   - WordPress Admin → Users → Profile
+   - Revoke current password → Generate new one
+   
+3. Check theme functions.php
+   - Check for REST API restriction filters
+   
+4. Run Settings API test
+   cargo run --example comprehensive_test
+```
+
+#### Phase 2: WordPress Environment Verification/Adjustment
+```
+1. Verify WordPress version
+   - For WordPress 5.5+, check Settings API restriction enhancement
+   
+2. Individual plugin disable test
+   - Temporarily disable security-related plugins
+   - Test Settings API access
+   
+3. Verify WordPress REST API settings
+   - Admin → Settings → Permalinks → "Save Changes"
+   
+4. Check WordPress.com hosted restrictions
+   - Verify additional restrictions if hosted on WordPress.com
+```
+
+#### Phase 3: Alternative Approach Implementation
+```
+1. Consider Settings API use via Cookie authentication
+2. Settings change flow via WordPress admin interface
+3. Continue operation with non-Settings API functions
+4. Consider custom endpoint creation
+```
+
+### Permission Verification Commands
+
+#### Permission Testing with MCP-RS
+```bash
+# Comprehensive permission test
+cargo run --example comprehensive_test
+
+# Authentication diagnosis
+cargo run --example auth_diagnosis  
+
+# Health check (including permission verification)
+cargo run --example wordpress_health_check
+```
+
+#### WordPress-side Permission Verification
+```php
+// Code for checking current user permissions
+$user = wp_get_current_user();
+$capabilities = $user->allcaps;
+
+// Check MCP required permissions
+$required_caps = [
+    'manage_options',
+    'edit_posts', 
+    'upload_files',
+    'manage_categories'
+];
+
+foreach ($required_caps as $cap) {
+    if (user_can($user, $cap)) {
+        echo "✅ {$cap}: Allowed\n";
+    } else {
+        echo "❌ {$cap}: Denied\n";
+    }
+}
+```
+
+### Expected Results
+
+#### Test Results After Permission Setup (Administrator Privileges Confirmed)
+```
+🔍 WordPress API Endpoint Diagnosis Results:
+✅ Category API (/wp/v2/categories) - 8 items retrieved successfully
+✅ Posts API (/wp/v2/posts) - 1 post, 9 pages retrieved successfully
+✅ Media API (/wp/v2/media) - 2 items retrieved successfully  
+✅ Tags API (/wp/v2/tags) - 6 items retrieved successfully
+❌ Settings API (/wp/v2/settings) - 401 Unauthorized ← Individual restriction
+
+📊 Diagnosis Summary:
+🔗 Basic Connection: Normal
+🔐 Authentication: Fully valid (Administrator privileges confirmed)
+⚙️ Settings API Permission: Denied due to individual restriction ← Requires investigation
+```
+
 ## 🛡️ Security Architecture
 
 ### Multi-Layer Protection
