@@ -5,6 +5,9 @@ use thiserror::Error;
 /// Result type alias for MCP operations
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// MCP Error type alias for plugin isolation system
+pub type McpError = Error;
+
 /// Error types for MCP protocol operations
 #[derive(Debug, Error)]
 pub enum Error {
@@ -48,9 +51,25 @@ pub enum Error {
     #[error("Transport error: {0}")]
     TransportError(#[from] crate::transport::TransportError),
 
-    /// Security error
+    /// Security error (from SecurityError enum)
     #[error("Security error: {0}")]
     Security(#[from] SecurityError),
+
+    /// Security error (direct)
+    #[error("Security error: {0}")]
+    SecurityFailure(String),
+
+    /// Plugin error
+    #[error("Plugin error: {0}")]
+    Plugin(String),
+
+    /// Isolation error
+    #[error("Isolation error: {0}")]
+    Isolation(String),
+
+    /// Not implemented
+    #[error("Not implemented: {0}")]
+    NotImplemented(String),
 }
 
 impl Error {
