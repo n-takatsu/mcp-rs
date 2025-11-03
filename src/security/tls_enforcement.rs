@@ -1,4 +1,4 @@
-#[cfg(test)]
+﻿#[cfg(test)]
 mod security_tests {
     use crate::config::{RateLimitConfig, WordPressConfig};
     use crate::handlers::WordPressHandler;
@@ -13,6 +13,7 @@ mod security_tests {
             enabled: Some(true),
             timeout_seconds: Some(30),
             rate_limit: Some(RateLimitConfig::default()),
+            encrypted_credentials: None,
         };
 
         let result = WordPressHandler::try_new(insecure_config);
@@ -32,6 +33,7 @@ mod security_tests {
             enabled: Some(true),
             timeout_seconds: Some(30),
             rate_limit: Some(RateLimitConfig::default()),
+            encrypted_credentials: None,
         };
 
         let result = WordPressHandler::try_new(secure_config);
@@ -48,6 +50,7 @@ mod security_tests {
             enabled: Some(true),
             timeout_seconds: Some(30),
             rate_limit: Some(RateLimitConfig::default()),
+            encrypted_credentials: None,
         };
 
         // この場合は失敗する（小文字のhttps://のみを受け入れる）
@@ -75,6 +78,7 @@ mod security_tests {
                 enabled: Some(true),
                 timeout_seconds: Some(30),
                 rate_limit: Some(RateLimitConfig::default()),
+                encrypted_credentials: None,
             };
 
             let result = WordPressHandler::try_new(config);
@@ -91,6 +95,7 @@ mod security_tests {
             enabled: Some(true),
             timeout_seconds: Some(30),
             rate_limit: Some(RateLimitConfig::default()),
+            encrypted_credentials: None,
         };
 
         let result = WordPressHandler::try_new(config);
