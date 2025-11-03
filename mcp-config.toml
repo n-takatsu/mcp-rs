@@ -10,5 +10,5 @@ log_level = "info"
 [handlers.wordpress]
 url = "https://redring.jp"
 username = "wpmaster"
-password = "C5UF Ahbb bSFI h5ty WyaC V2gt"
+password = "P918 TMjJ cozy SuoA Tzwt FJB0"
 enabled = true

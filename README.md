@@ -37,6 +37,9 @@
 - **Graceful Error Handling**: Missing or invalid environment variables are safely handled
 - **Performance Optimized**: Complex variable expansion completed in ~1.2ms
 - **Comprehensive Security Testing**: 95% test coverage with dedicated security test suite
+- **Application Password Lifecycle Management**: Production-tested strategies for password rotation and monitoring
+- **Maintenance Mode Operations**: Verified compatibility with WordPress maintenance plugins
+- **Production Monitoring**: Real-world validated health check and diagnostic procedures
 
 ### 🛠️ Protocol Support
 
@@ -301,6 +304,12 @@ cargo run --example safe_env_test
 # WordPress authentication and access diagnosis
 cargo run --example auth_diagnosis
 
+# WordPress API deep diagnosis (production monitoring)
+cargo run --example settings_api_deep_diagnosis
+
+# Production monitoring suite with alerting
+cargo run --example production_monitoring
+
 # Comprehensive system test
 cargo run --example comprehensive_test
 
@@ -369,6 +378,18 @@ Once the server is running, AI agents can interact with WordPress through natura
 1. Uploads provided image using `upload_media`
 2. Uses `set_featured_image` to update existing post
 3. Confirms successful update
+
+### 🔧 **Production Operations**
+**User:** "Check if WordPress is healthy and accessible"
+**AI automatically:**
+1. Uses `wordpress_health_check` for comprehensive validation
+2. Uses `settings_api_deep_diagnosis` for detailed API analysis
+3. Reports authentication status and potential issues
+
+**Operational Scenarios:**
+- **Maintenance Mode**: Works seamlessly with WordPress maintenance plugins
+- **Password Expiration**: Automatic detection and clear resolution guidance
+- **Health Monitoring**: Proactive system validation and alerting
 
 ## Architecture
 
@@ -627,6 +648,10 @@ See [project-docs/architecture.md](project-docs/architecture.md) for detailed ro
 - [x] **Type-Safe Configuration**: TOML + secure environment variables
 - [x] **Health Check System**: 5-stage WordPress environment validation
 - [x] **Comprehensive Testing**: 95% security coverage, all integration tests passing
+- [x] **Performance Optimization**: Sub-millisecond environment variable expansion
+- [x] **Production Monitoring**: Automated health checks with alerting system
+- [x] **Operational Security**: Application password lifecycle management
+- [x] **Maintenance Mode Support**: Verified compatibility with WordPress maintenance plugins
 - [x] **Performance Optimization**: Sub-millisecond environment variable expansion
 - [x] **Production Ready**: Comprehensive error handling and logging
 

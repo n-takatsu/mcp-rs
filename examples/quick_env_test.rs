@@ -6,25 +6,23 @@ use tracing::{error, Level};
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize logging
-    tracing_subscriber::fmt()
-        .with_max_level(Level::INFO)
-        .init();
+    tracing_subscriber::fmt().with_max_level(Level::INFO).init();
 
     println!("🔒 WordPress環境変数展開テスト");
 
     // 現在の設定を直接使用して接続テスト
     println!("\n🧪 Test 1: 既存設定での接続確認");
     let config = McpConfig::load()?;
-    
+
     if let Some(wp_config) = &config.handlers.wordpress {
         println!("✅ WordPress設定読み込み成功:");
         println!("   - URL: {}", wp_config.url);
         println!("   - Username: {}", wp_config.username);
         println!("   - Password: {}***", &wp_config.password[..4]);
-        
+
         // WordPress接続テスト
         let handler = WordPressHandler::new(wp_config.clone());
-        
+
         println!("\n🔗 WordPress設定取得テスト中...");
         match handler.get_settings().await {
             Ok(settings) => {
@@ -49,12 +47,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 環境変数設定のデモ
     println!("\n🧪 Test 2: 環境変数展開のデモ");
-    
+
     // テスト用環境変数を設定
     env::set_var("TEST_WP_URL", "https://redring.jp");
     env::set_var("TEST_WP_USER", "wpmaster");
     env::set_var("TEST_WP_PASS", "C5UF Ahbb bSFI h5ty WyaC V2gt");
-    
+
     // 環境変数参照の文字列をテスト
     let test_strings = vec![
         "${TEST_WP_URL}",
@@ -63,7 +61,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "URL: ${TEST_WP_URL}, User: ${TEST_WP_USER}",
         "${NONEXISTENT_VAR}",
     ];
-    
+
     for test_str in test_strings {
         let expanded = McpConfig::expand_env_vars(test_str);
         println!("   '{}' → '{}'", test_str, expanded);
@@ -76,7 +74,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("username = \"${{WORDPRESS_USERNAME}}\"");
     println!("password = \"${{WORDPRESS_PASSWORD}}\"");
     println!("```");
-    
+
     println!("\n📝 環境変数設定コマンド例:");
     println!("set WORDPRESS_URL=https://redring.jp");
     println!("set WORDPRESS_USERNAME=wpmaster");

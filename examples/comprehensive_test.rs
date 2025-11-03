@@ -27,8 +27,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("   📝 WordPress設定:");
         println!("      URL: {}", wp_config.url);
         println!("      Username: {}", wp_config.username);
-        println!("      Password: {}***", &wp_config.password.chars().take(8).collect::<String>());
-        
+        println!(
+            "      Password: {}***",
+            &wp_config.password.chars().take(8).collect::<String>()
+        );
+
         // 環境変数が正しく設定されているかチェック
         let env_vars = ["TEST_WP_URL", "TEST_WP_USER", "TEST_WP_PASS"];
         for var in &env_vars {
@@ -62,23 +65,70 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 4. ヘルスチェック実行
     println!("\n4️⃣  WordPress ヘルスチェック実行");
     println!("   ⏱️  タイムアウト: 30秒");
-    
+
     let health_check = handler.health_check().await;
     println!("   📊 ヘルスチェック結果:");
-    println!("      総合ステータス: {}", if health_check.site_accessible && health_check.rest_api_available && health_check.authentication_valid && health_check.permissions_adequate && health_check.media_upload_possible { "✅ 正常" } else { "⚠️ 問題あり" });
-    println!("      サイトアクセス: {}", if health_check.site_accessible { "✅" } else { "❌" });
-    println!("      REST API: {}", if health_check.rest_api_available { "✅" } else { "❌" });
-    println!("      認証: {}", if health_check.authentication_valid { "✅" } else { "❌" });
-    println!("      権限: {}", if health_check.permissions_adequate { "✅" } else { "❌" });
-    println!("      メディアアップロード: {}", if health_check.media_upload_possible { "✅" } else { "❌" });
-    
+    println!(
+        "      総合ステータス: {}",
+        if health_check.site_accessible
+            && health_check.rest_api_available
+            && health_check.authentication_valid
+            && health_check.permissions_adequate
+            && health_check.media_upload_possible
+        {
+            "✅ 正常"
+        } else {
+            "⚠️ 問題あり"
+        }
+    );
+    println!(
+        "      サイトアクセス: {}",
+        if health_check.site_accessible {
+            "✅"
+        } else {
+            "❌"
+        }
+    );
+    println!(
+        "      REST API: {}",
+        if health_check.rest_api_available {
+            "✅"
+        } else {
+            "❌"
+        }
+    );
+    println!(
+        "      認証: {}",
+        if health_check.authentication_valid {
+            "✅"
+        } else {
+            "❌"
+        }
+    );
+    println!(
+        "      権限: {}",
+        if health_check.permissions_adequate {
+            "✅"
+        } else {
+            "❌"
+        }
+    );
+    println!(
+        "      メディアアップロード: {}",
+        if health_check.media_upload_possible {
+            "✅"
+        } else {
+            "❌"
+        }
+    );
+
     if !health_check.error_details.is_empty() {
         println!("   🚨 検出された問題:");
         for (i, issue) in health_check.error_details.iter().enumerate() {
             println!("      {}. {}", i + 1, issue);
         }
     }
-    
+
     if let Some(site_info) = &health_check.site_info {
         println!("   ℹ️  サイト情報:");
         println!("      名前: {}", site_info.name);
@@ -91,7 +141,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 5. 基本API呼び出しテスト
     println!("\n5️⃣  基本API呼び出しテスト");
-    
+
     // WordPressの設定取得
     println!("   ⚙️  WordPress設定取得中...");
     match handler.get_settings().await {
@@ -125,6 +175,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("\n🎯 テスト完了!");
     println!("=====================================");
-    
+
     Ok(())
 }

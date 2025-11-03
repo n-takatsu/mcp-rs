@@ -218,10 +218,96 @@ debug!("環境変数展開完了。反復回数: {}", iteration_count);
 - [ ] ✅ Security documentation reviewed
 
 ### Regular Security Maintenance
+- [ ] Weekly WordPress health checks using comprehensive_test example
 - [ ] Monthly security test execution
 - [ ] Quarterly dependency security audits
 - [ ] Semi-annual password rotation
 - [ ] Annual security architecture review
+
+## 🔄 Operational Security Lessons
+
+### Application Password Lifecycle Management
+
+#### WordPress Application Password Expiration
+WordPress application passwords can be invalidated by:
+- **Hosting Provider Security Policies**: Some hosting providers automatically expire application passwords
+- **Security Plugin Policies**: Security plugins like SiteGuard may enforce password rotation
+- **WordPress Core Updates**: Major updates may affect application password validity
+- **Server Environment Changes**: PHP/server configuration changes can impact authentication
+
+#### Monitoring and Detection
+**Symptoms of Password Expiration:**
+- HTTP 401 Unauthorized errors specifically for authenticated endpoints
+- Settings API returning 401 while public APIs return 200
+- Sudden authentication failures after working properly
+
+**Diagnostic Commands:**
+```bash
+# Test authentication status
+cargo run --example settings_api_deep_diagnosis
+
+# Run comprehensive health check
+cargo run --example comprehensive_test
+
+# Verify specific API access
+cargo run --example auth_diagnosis
+```
+
+#### Resolution Procedures
+1. **Password Regeneration**: Create new application password in WordPress Admin
+2. **Configuration Update**: Update mcp-config.toml with new password
+3. **Verification**: Run diagnostic tests to confirm resolution
+4. **Documentation**: Record incident for future reference
+
+### Maintenance Mode Operations
+
+#### LightStart Plugin Integration
+**Challenge**: WordPress maintenance mode plugins can block REST API access
+**Solution**: Configure maintenance mode exclusions for WordPress REST API
+
+**Required Exclusions:**
+```
+wp-json/*
+```
+
+**Configuration Location**: LightStart plugin settings → 除外 (Exclusions)
+**Format**: Slug format (without leading slash)
+
+#### Operational Benefits
+- **Content Management Continuity**: MCP-RS can operate during maintenance windows
+- **Zero-Downtime Updates**: WordPress updates don't interrupt AI agent operations
+- **Emergency Access**: Critical content operations possible during maintenance
+
+### Production Monitoring Strategy
+
+#### Proactive Health Monitoring
+```bash
+# Daily health check (recommended)
+cargo run --example comprehensive_test
+
+# Weekly deep diagnosis
+cargo run --example settings_api_deep_diagnosis
+
+# Authentication verification
+cargo run --example auth_diagnosis
+```
+
+#### Alert Criteria
+- **HTTP 401 Errors**: Immediate investigation required
+- **Connection Timeouts**: Network or hosting issues
+- **API Endpoint Changes**: WordPress plugin/core updates
+- **SSL Certificate Issues**: HTTPS connectivity problems
+
+#### Incident Response Workflow
+1. **Detection**: Automated monitoring or user reports
+2. **Diagnosis**: Run diagnostic examples to identify root cause
+3. **Classification**: 
+   - Password expiration → Regenerate application password
+   - Plugin interference → Configure exclusions
+   - Network issues → Infrastructure investigation
+4. **Resolution**: Apply appropriate fix based on classification
+5. **Verification**: Confirm resolution with comprehensive tests
+6. **Documentation**: Update operational logs and procedures
 
 ## 🔍 Security Architecture
 

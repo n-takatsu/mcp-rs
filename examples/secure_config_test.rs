@@ -6,9 +6,7 @@ use tracing::{error, Level};
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize logging
-    tracing_subscriber::fmt()
-        .with_max_level(Level::INFO)
-        .init();
+    tracing_subscriber::fmt().with_max_level(Level::INFO).init();
 
     println!("🔒 MCP-RS セキュア設定機能のテスト");
 
@@ -33,7 +31,7 @@ timeout_seconds = 30
 
     // Test 1: 環境変数が設定されていない場合
     println!("\n🧪 Test 1: 環境変数未設定の場合");
-    
+
     // 環境変数をクリア
     env::remove_var("WORDPRESS_URL");
     env::remove_var("WORDPRESS_USERNAME");
@@ -48,7 +46,7 @@ timeout_seconds = 30
                 println!("   - URL: {}", wp_config.url);
                 println!("   - Username: {}", wp_config.username);
                 println!("   - Password: {}", wp_config.password);
-                
+
                 // 環境変数が展開されていないことを確認
                 assert!(wp_config.url.contains("${WORDPRESS_URL}"));
                 assert!(wp_config.username.contains("${WORDPRESS_USERNAME}"));
@@ -63,7 +61,7 @@ timeout_seconds = 30
 
     // Test 2: 環境変数が設定されている場合
     println!("\n🧪 Test 2: 環境変数設定済みの場合");
-    
+
     // テスト用環境変数を設定
     env::set_var("WORDPRESS_URL", "https://test-site.example.com");
     env::set_var("WORDPRESS_USERNAME", "test_user");
@@ -77,7 +75,7 @@ timeout_seconds = 30
                 println!("   - URL: {}", wp_config.url);
                 println!("   - Username: {}", wp_config.username);
                 println!("   - Password: {}", wp_config.password);
-                
+
                 // 環境変数が正しく展開されていることを確認
                 assert_eq!(wp_config.url, "https://test-site.example.com");
                 assert_eq!(wp_config.username, "test_user");
@@ -92,7 +90,7 @@ timeout_seconds = 30
 
     // Test 3: 一部の環境変数のみ設定されている場合
     println!("\n🧪 Test 3: 一部環境変数のみ設定の場合");
-    
+
     env::set_var("WORDPRESS_URL", "https://partial-test.example.com");
     env::remove_var("WORDPRESS_USERNAME");
     env::remove_var("WORDPRESS_PASSWORD");
@@ -105,7 +103,7 @@ timeout_seconds = 30
                 println!("   - URL: {}", wp_config.url);
                 println!("   - Username: {}", wp_config.username);
                 println!("   - Password: {}", wp_config.password);
-                
+
                 // 一部のみ展開されていることを確認
                 assert_eq!(wp_config.url, "https://partial-test.example.com");
                 assert!(wp_config.username.contains("${WORDPRESS_USERNAME}"));
@@ -130,7 +128,7 @@ timeout_seconds = 30
     println!("\n🧹 テストファイルをクリーンアップしました");
 
     println!("\n🎉 すべてのセキュリティ設定テストが完了しました！");
-    
+
     Ok(())
 }
 

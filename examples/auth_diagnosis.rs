@@ -9,25 +9,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 設定読み込み
     let config = McpConfig::load()?;
-    
+
     if let Some(wp_config) = config.handlers.wordpress {
         println!("📍 接続先情報:");
         println!("   URL: {}", wp_config.url);
         println!("   Username: {}", wp_config.username);
-        println!("   Password: {}*** (長さ: {}文字)", 
-                 &wp_config.password.chars().take(8).collect::<String>(),
-                 wp_config.password.len());
-        
+        println!(
+            "   Password: {}*** (長さ: {}文字)",
+            &wp_config.password.chars().take(8).collect::<String>(),
+            wp_config.password.len()
+        );
+
         let handler = WordPressHandler::new(wp_config);
-        
+
         // 段階的な診断
         println!("\n🔍 段階的診断:");
-        
+
         // 1. サイトへの基本アクセス
         println!("1. 基本サイトアクセステスト...");
         match handler.get_categories().await {
             Ok(categories) => {
-                println!("   ✅ カテゴリー取得成功 ({}件) - サイトアクセス可能", categories.len());
+                println!(
+                    "   ✅ カテゴリー取得成功 ({}件) - サイトアクセス可能",
+                    categories.len()
+                );
                 for cat in categories.iter().take(3) {
                     println!("      - {} (投稿数: {:?})", cat.name, cat.count);
                 }
@@ -37,7 +42,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 return Ok(());
             }
         }
-        
+
         // 2. タグ取得テスト
         println!("\n2. タグ取得テスト...");
         match handler.get_tags().await {
@@ -51,7 +56,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("   ❌ タグ取得失敗: {}", e);
             }
         }
-        
+
         // 3. メディア取得テスト
         println!("\n3. メディア取得テスト...");
         match handler.get_media().await {
@@ -67,7 +72,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("   ❌ メディア取得失敗: {}", e);
             }
         }
-        
+
         // 4. 設定取得テスト（管理者権限が必要）
         println!("\n4. 設定取得テスト（管理者権限必要）...");
         match handler.get_settings().await {
@@ -82,7 +87,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("      → 管理者権限が不足している可能性があります");
             }
         }
-        
+
         // 5. 投稿一覧取得テスト
         println!("\n5. 投稿一覧取得テスト...");
         match handler.get_all_content().await {
@@ -90,14 +95,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("   ✅ コンテンツ取得成功");
                 println!("      投稿: {}件, ページ: {}件", posts.len(), pages.len());
                 for post in posts.iter().take(3) {
-                    println!("      - {} (ステータス: {})", post.title.rendered, post.status);
+                    println!(
+                        "      - {} (ステータス: {})",
+                        post.title.rendered, post.status
+                    );
                 }
             }
             Err(e) => {
                 println!("   ❌ コンテンツ取得失敗: {}", e);
             }
         }
-        
+
         println!("\n📊 診断結果まとめ:");
         println!("   🔗 基本接続: 正常（カテゴリー取得成功）");
         println!("   🔐 認証情報: 部分的に有効");
@@ -110,6 +118,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         println!("❌ WordPress設定が見つかりません");
     }
-    
+
     Ok(())
 }

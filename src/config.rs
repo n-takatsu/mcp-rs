@@ -51,49 +51,59 @@ impl McpConfig {
         let mut processed_vars = std::collections::HashSet::new();
         let max_iterations = 100; // 無限ループ防止
         let mut iteration_count = 0;
-        
+
         // ${VAR_NAME} パターンを検索して置換
         loop {
             iteration_count += 1;
             if iteration_count > max_iterations {
-                warn!("環境変数展開で最大反復回数({})に達しました。処理を停止します。", max_iterations);
+                warn!(
+                    "環境変数展開で最大反復回数({})に達しました。処理を停止します。",
+                    max_iterations
+                );
                 break;
             }
-            
+
             if let Some(start) = result.find("${") {
                 if let Some(end_pos) = result[start..].find('}') {
                     let end = start + end_pos;
                     let var_name = &result[start + 2..end];
-                    
+
                     // 既に処理済みで値が見つからなかった変数は再処理しない
                     let var_pattern = format!("${{{}}}", var_name);
                     if processed_vars.contains(&var_pattern) {
-                        warn!("環境変数 '{}' は既に処理済みで値が見つかりません。スキップします。", var_name);
+                        warn!(
+                            "環境変数 '{}' は既に処理済みで値が見つかりません。スキップします。",
+                            var_name
+                        );
                         // この変数をスキップして次を探す - より安全な方法で処理停止
                         break;
                     }
-                    
+
                     match std::env::var(var_name) {
                         Ok(env_value) => {
-                            debug!("環境変数展開成功: {} = {}", var_name, &env_value[..env_value.len().min(20)]);
+                            debug!(
+                                "環境変数展開成功: {} = {}",
+                                var_name,
+                                &env_value[..env_value.len().min(20)]
+                            );
                             result.replace_range(start..end + 1, &env_value);
                             // 成功した場合は続行
                         }
                         Err(_) => {
                             warn!("環境変数 '{}' が設定されていません。", var_name);
                             processed_vars.insert(var_pattern.clone());
-                            
+
                             // 環境変数が見つからない場合の処理選択肢：
                             // 1. エラーとして処理を停止
                             // 2. 空文字に置換
                             // 3. プレースホルダーに置換
-                            
+
                             // Option 1: エラーとして停止（推奨）
                             return result.replace(&var_pattern, &format!("[ERROR:{}]", var_name));
-                            
+
                             // Option 2: 空文字に置換（コメントアウト）
                             // result.replace_range(start..end + 1, "");
-                            
+
                             // Option 3: 分かりやすいプレースホルダー（コメントアウト）
                             // result.replace_range(start..end + 1, &format!("[MISSING:{}]", var_name));
                         }
@@ -108,7 +118,7 @@ impl McpConfig {
                 break; // ${がない場合は正常終了
             }
         }
-        
+
         debug!("環境変数展開完了。反復回数: {}", iteration_count);
         result
     }
