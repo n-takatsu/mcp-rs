@@ -186,4 +186,4 @@ MCP-RS follows a layered architecture pattern designed for extensibility, mainta
 
 ---
 
-For more detailed technical specifications, see the [main architecture document](../../docs/architecture.md).
+For more detailed technical specifications, see the [main architecture document](../../../project-docs/architecture.md).
