@@ -28,7 +28,7 @@ mod plugin_integration_tests {
 
         // セキュリティ検証の実装は将来追加予定
         // 現在は設計の一貫性を検証
-        let security_components = vec!["認証", "認可", "暗号化", "監査"];
+        let security_components = ["認証", "認可", "暗号化", "監査"];
         println!("✅ セキュリティ検証システムは設計完了");
         assert!(
             !security_components.is_empty(),
@@ -45,7 +45,7 @@ mod plugin_integration_tests {
 
         // パフォーマンス測定の実装は将来追加予定
         // 現在は設計の一貫性を検証
-        let metrics = vec!["レスポンス時間", "スループット", "リソース使用率"];
+        let metrics = ["レスポンス時間", "スループット", "リソース使用率"];
         println!("✅ パフォーマンス監視システムは設計完了");
         assert!(
             metrics.len() >= 3,
@@ -62,7 +62,7 @@ mod plugin_integration_tests {
 
         // 通信システムの実装は将来追加予定
         // 現在は設計の一貫性を検証
-        let protocols = vec!["mTLS", "WebSocket", "HTTP/2"];
+        let protocols = ["mTLS", "WebSocket", "HTTP/2"];
         println!("✅ 通信ブローカーシステムは設計完了");
         assert!(
             protocols.contains(&"mTLS"),
@@ -79,7 +79,7 @@ mod plugin_integration_tests {
 
         // 監視システムの実装は将来追加予定
         // 現在は設計の一貫性を検証
-        let monitoring_types = vec!["ヘルスチェック", "ログ監視", "メトリクス収集"];
+        let monitoring_types = ["ヘルスチェック", "ログ監視", "メトリクス収集"];
         println!("✅ 監視システムは設計完了");
         assert!(
             monitoring_types.len() >= 3,
@@ -96,7 +96,7 @@ mod plugin_integration_tests {
 
         // 障害処理の実装は将来追加予定
         // 現在は設計の一貫性を検証
-        let fault_mechanisms = vec!["自動復旧", "フェイルオーバー", "グレースフル停止"];
+        let fault_mechanisms = ["自動復旧", "フェイルオーバー", "グレースフル停止"];
         println!("✅ 障害処理システムは設計完了");
         assert!(
             fault_mechanisms.contains(&"自動復旧"),
@@ -113,7 +113,7 @@ mod plugin_integration_tests {
 
         // 負荷処理の実装は将来追加予定
         // 現在は設計の一貫性を検証
-        let load_strategies = vec!["レート制限", "バックプレッシャー", "負荷分散"];
+        let load_strategies = ["レート制限", "バックプレッシャー", "負荷分散"];
         println!("✅ 負荷処理システムは設計完了");
         assert!(
             load_strategies.contains(&"レート制限"),
@@ -135,7 +135,7 @@ mod plugin_integration_tests {
         println!("✅ 統合テストフレームワーク準備完了");
 
         // 全システムコンポーネントの設計完了を検証
-        let system_components = vec![
+        let system_components = [
             "プラグインシステム",
             "セキュリティ検証",
             "通信ブローカー",
