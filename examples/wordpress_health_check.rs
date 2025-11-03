@@ -10,14 +10,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Create WordPress configuration from environment variables or defaults
     let wp_config = WordPressConfig {
-        url: std::env::var("WORDPRESS_URL").unwrap_or_else(|_| "http://localhost".to_string()),
-        username: std::env::var("WORDPRESS_USERNAME").unwrap_or_else(|_| "admin".to_string()),
-        password: std::env::var("WORDPRESS_PASSWORD").unwrap_or_else(|_| "password".to_string()),
+        url: "https://demo.wp-api.org/wp-json".to_string(),
+        username: "demo".to_string(),
+        password: "demo".to_string(),
         enabled: Some(true),
-        timeout_seconds: std::env::var("WORDPRESS_TIMEOUT")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .or(Some(30)),
+        timeout_seconds: Some(30),
+        rate_limit: None,
     };
 
     info!("Configuration created");

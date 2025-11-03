@@ -77,8 +77,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if wp_config.enabled.unwrap_or(true) {
             println!("🔗 WordPress統合を有効化: {}", wp_config.url);
 
-            let wordpress_handler = WordPressHandler::try_new(wp_config.clone())
-                .map_err(|e| Error::Internal(format!("WordPress handler initialization failed: {}", e)))?;
+            let wordpress_handler = WordPressHandler::try_new(wp_config.clone()).map_err(|e| {
+                Error::Internal(format!("WordPress handler initialization failed: {}", e))
+            })?;
             let plugin_info = PluginInfo::new(
                 "wordpress".to_string(),
                 "0.1.0".to_string(),

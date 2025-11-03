@@ -1,0 +1,7 @@
+# Clippy設定ファイル
+# 
+# 開発中の段階で未使用のコードが多数存在するため、
+# 特定のlintを一時的に無効化
+
+# 未使用コードの警告を抑制（将来実装予定）
+avoid-breaking-exported-api = false

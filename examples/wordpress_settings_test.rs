@@ -16,6 +16,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         password: "password".to_string(),
         enabled: Some(true),
         timeout_seconds: Some(30),
+        rate_limit: None, // テスト用なので制限なし
     };
 
     // Create WordPress handler

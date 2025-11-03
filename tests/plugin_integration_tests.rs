@@ -131,12 +131,10 @@ async fn test_plugin_loading_errors() {
     let result = loader.load_plugin(&manifest, "Cargo.toml").await;
     assert!(result.is_err());
     // Should fail with safety mechanism error, not library loading error
-    match result.unwrap_err() {
-        PluginError::LoadingFailed(msg) => {
-            assert!(msg.contains("safety mechanisms") || msg.contains("library"));
-        }
-        _ => {} // Other errors are also acceptable
+    if let PluginError::LoadingFailed(msg) = result.unwrap_err() {
+        assert!(msg.contains("safety mechanisms") || msg.contains("library"));
     }
+    // Other errors are also acceptable
 }
 
 #[tokio::test]

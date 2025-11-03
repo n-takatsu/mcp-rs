@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod security_tests {
-    use crate::config::{WordPressConfig, RateLimitConfig};
+    use crate::config::{RateLimitConfig, WordPressConfig};
     use crate::handlers::WordPressHandler;
 
     #[test]
@@ -60,7 +60,7 @@ mod security_tests {
         // 不正なURL形式
         let malformed_configs = vec![
             "ftp://example.com",
-            "tcp://example.com", 
+            "tcp://example.com",
             "ws://example.com",
             "wss://example.com", // WebSocketも拒否
             "",
@@ -95,7 +95,7 @@ mod security_tests {
 
         let result = WordPressHandler::try_new(config);
         let error_msg = result.unwrap_err();
-        
+
         // セキュリティメッセージが適切に含まれているか確認
         assert!(error_msg.contains("Insecure URL detected"));
         assert!(error_msg.contains("http://insecure.site.com"));

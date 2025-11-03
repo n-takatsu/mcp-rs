@@ -19,6 +19,7 @@ pub struct WordPressHandler {
     base_url: String,
     username: Option<String>,
     password: Option<String>,
+    #[allow(dead_code)]
     rate_limiter: Arc<RateLimiter>,
 }
 
@@ -267,6 +268,7 @@ impl WordPressHandler {
     }
 
     /// レート制限チェック付きでリクエストを実行
+    #[allow(dead_code)]
     async fn execute_request_with_rate_limit<T>(
         &self,
         request_builder: reqwest::RequestBuilder,
@@ -277,8 +279,14 @@ impl WordPressHandler {
     {
         // レート制限チェック
         if let Err(rate_limit_error) = self.rate_limiter.check_rate_limit(client_id).await {
-            warn!("Rate limit exceeded for client {}: {}", client_id, rate_limit_error);
-            return Err(McpError::Other(format!("Rate limit exceeded: {}", rate_limit_error)));
+            warn!(
+                "Rate limit exceeded for client {}: {}",
+                client_id, rate_limit_error
+            );
+            return Err(McpError::Other(format!(
+                "Rate limit exceeded: {}",
+                rate_limit_error
+            )));
         }
 
         // 通常のリクエスト実行
@@ -3289,12 +3297,7 @@ mod tests {
 
     #[test]
     fn test_malformed_urls_rejected() {
-        let bad_urls = vec![
-            "ftp://example.com",
-            "ws://example.com",
-            "",
-            "not-a-url",
-        ];
+        let bad_urls = vec!["ftp://example.com", "ws://example.com", "", "not-a-url"];
 
         for url in bad_urls {
             let config = WordPressConfig {

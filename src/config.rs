@@ -154,8 +154,8 @@ pub struct RateLimitConfig {
 impl Default for RateLimitConfig {
     fn default() -> Self {
         Self {
-            requests_per_second: 10,  // 10 requests/sec
-            burst_size: 20,           // 20 burst requests
+            requests_per_second: 10, // 10 requests/sec
+            burst_size: 20,          // 20 burst requests
             enabled: true,
         }
     }
