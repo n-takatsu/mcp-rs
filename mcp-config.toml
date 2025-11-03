@@ -8,7 +8,8 @@ stdio = false
 log_level = "info"
 
 [handlers.wordpress]
-url = "https://redring.jp"
-username = "wpmaster"
-password = "P918 TMjJ cozy SuoA Tzwt FJB0"
+url = "url"
+username = "username"
+password = "password"
+
 enabled = true
