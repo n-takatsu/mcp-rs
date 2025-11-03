@@ -137,8 +137,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let _security_config = SecurityConfig {
                 enable_input_validation: true,
                 enable_rate_limiting: true,
+                enable_xss_protection: true,
+                enable_audit_logging: true,
                 max_request_size: 1024 * 1024, // 1MB
                 log_security_events: true,
+                enable_csp_headers: true,
             };
 
             // セキュアサーバーはサンプル実装（実際のプロトコル実装が必要）

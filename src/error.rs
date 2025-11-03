@@ -98,4 +98,8 @@ pub enum SecurityError {
     /// Security policy violation
     #[error("Security policy violation: {0}")]
     PolicyViolation(String),
+
+    /// Configuration error
+    #[error("Configuration error: {0}")]
+    Configuration(String),
 }

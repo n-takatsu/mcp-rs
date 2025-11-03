@@ -6,11 +6,15 @@ use crate::{
     config::RateLimitConfig,
     error::{Error, Result, SecurityError},
     protocol::McpProtocol,
-    security::{InputValidator, RateLimiter, ValidationResult},
+    security::{
+        AuditCategory, AuditLevel, AuditLogEntry, AuditLogger, InputValidator, RateLimiter,
+        ValidationResult, XssProtectionConfig, XssProtector,
+    },
     types::{JsonRpcError, JsonRpcRequest, JsonRpcResponse, RequestId},
 };
 use axum::{
     extract::{ConnectInfo, State},
+    http::{HeaderMap, HeaderValue},
     response::IntoResponse,
     routing::post,
     Json, Router,
@@ -27,10 +31,16 @@ pub struct SecurityConfig {
     pub enable_input_validation: bool,
     /// レート制限を有効にするか
     pub enable_rate_limiting: bool,
+    /// XSS保護を有効にするか
+    pub enable_xss_protection: bool,
+    /// 監査ログを有効にするか
+    pub enable_audit_logging: bool,
     /// 最大リクエストサイズ（バイト）
     pub max_request_size: usize,
     /// ログレベル
     pub log_security_events: bool,
+    /// CSPヘッダーを追加するか
+    pub enable_csp_headers: bool,
 }
 
 impl Default for SecurityConfig {
@@ -38,8 +48,11 @@ impl Default for SecurityConfig {
         Self {
             enable_input_validation: true,
             enable_rate_limiting: true,
+            enable_xss_protection: true,
+            enable_audit_logging: true,
             max_request_size: 1024 * 1024, // 1MB
             log_security_events: true,
+            enable_csp_headers: true,
         }
     }
 }
@@ -49,13 +62,17 @@ pub struct SecureMcpServer<P: McpProtocol> {
     protocol: Arc<P>,
     input_validator: Arc<InputValidator>,
     rate_limiter: Arc<RateLimiter>,
+    xss_protector: Arc<std::sync::Mutex<XssProtector>>,
+    audit_logger: Arc<AuditLogger>,
     config: SecurityConfig,
 }
 
 impl<P: McpProtocol + 'static> SecureMcpServer<P> {
     /// 新しいセキュアサーバーを作成
-    pub fn new(protocol: P, config: SecurityConfig) -> Self {
-        Self {
+    pub fn new(protocol: P, config: SecurityConfig) -> std::result::Result<Self, SecurityError> {
+        let xss_protector = XssProtector::new(XssProtectionConfig::default())?;
+
+        Ok(Self {
             protocol: Arc::new(protocol),
             input_validator: Arc::new(InputValidator::new()),
             rate_limiter: Arc::new(RateLimiter::new(RateLimitConfig {
@@ -63,12 +80,14 @@ impl<P: McpProtocol + 'static> SecureMcpServer<P> {
                 burst_size: 200,
                 enabled: true,
             })),
+            xss_protector: Arc::new(std::sync::Mutex::new(xss_protector)),
+            audit_logger: Arc::new(AuditLogger::with_defaults()),
             config,
-        }
+        })
     }
 
     /// デフォルト設定でセキュアサーバーを作成
-    pub fn with_defaults(protocol: P) -> Self {
+    pub fn with_defaults(protocol: P) -> std::result::Result<Self, SecurityError> {
         Self::new(protocol, SecurityConfig::default())
     }
 
@@ -90,6 +109,8 @@ impl<P: McpProtocol + 'static> SecureMcpServer<P> {
             protocol: Arc::clone(&self.protocol),
             input_validator: Arc::clone(&self.input_validator),
             rate_limiter: Arc::clone(&self.rate_limiter),
+            xss_protector: Arc::clone(&self.xss_protector),
+            audit_logger: Arc::clone(&self.audit_logger),
             config: self.config,
         });
 
@@ -120,6 +141,8 @@ struct ServerState<P: McpProtocol> {
     protocol: Arc<P>,
     input_validator: Arc<InputValidator>,
     rate_limiter: Arc<RateLimiter>,
+    xss_protector: Arc<std::sync::Mutex<XssProtector>>,
+    audit_logger: Arc<AuditLogger>,
     config: SecurityConfig,
 }
 
@@ -128,8 +151,24 @@ async fn handle_secure_request<P: McpProtocol>(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     State(state): State<Arc<ServerState<P>>>,
     Json(request): Json<JsonRpcRequest>,
-) -> impl IntoResponse {
+) -> (HeaderMap, Json<JsonRpcResponse>) {
     let start_time = Instant::now();
+    let client_ip = addr.ip().to_string();
+
+    // 監査ログ記録（リクエスト受信）
+    if state.config.enable_audit_logging {
+        let entry = AuditLogEntry::new(
+            AuditLevel::Info,
+            AuditCategory::NetworkActivity,
+            format!("Received request: {}", request.method),
+        )
+        .with_request_info(client_ip.clone(), "Unknown".to_string()) // User-Agentは後で取得可能
+        .with_action("request".to_string(), request.method.clone());
+
+        if let Err(e) = state.audit_logger.log(entry).await {
+            warn!("Failed to log audit entry: {}", e);
+        }
+    }
 
     // レート制限チェック
     if state.config.enable_rate_limiting {
@@ -138,6 +177,21 @@ async fn handle_secure_request<P: McpProtocol>(
             Err(_) => {
                 if state.config.log_security_events {
                     warn!("Rate limit exceeded for client: {}", addr);
+                }
+
+                // 監査ログ記録（レート制限）
+                if state.config.enable_audit_logging {
+                    let entry = AuditLogEntry::new(
+                        AuditLevel::Warning,
+                        AuditCategory::SecurityAttack,
+                        "Rate limit exceeded".to_string(),
+                    )
+                    .with_request_info(client_ip.clone(), "Unknown".to_string())
+                    .with_result("BLOCKED".to_string());
+
+                    if let Err(e) = state.audit_logger.log(entry).await {
+                        warn!("Failed to log rate limit audit entry: {}", e);
+                    }
                 }
 
                 let error = JsonRpcError {
@@ -153,7 +207,7 @@ async fn handle_secure_request<P: McpProtocol>(
                     error: Some(error),
                 };
 
-                return Json(response);
+                return (HeaderMap::new(), Json(response));
             }
             Ok(_) => {
                 // Rate limit passed, continue processing
@@ -161,14 +215,35 @@ async fn handle_secure_request<P: McpProtocol>(
         }
     }
 
-    // 入力検証
+    // 入力検証（XSS検証を含む）
     if state.config.enable_input_validation {
-        if let Err(validation_error) = validate_request(&state.input_validator, &request) {
+        if let Err(validation_error) = validate_request(
+            &state.input_validator,
+            &state.xss_protector,
+            &request,
+            state.config.enable_xss_protection,
+        ) {
             if state.config.log_security_events {
                 warn!(
                     "Input validation failed for client {}: {}",
                     addr, validation_error
                 );
+            }
+
+            // 監査ログ記録（入力検証失敗）
+            if state.config.enable_audit_logging {
+                let entry = AuditLogEntry::new(
+                    AuditLevel::Warning,
+                    AuditCategory::SecurityAttack,
+                    format!("Input validation failed: {}", validation_error),
+                )
+                .with_request_info(client_ip.clone(), "Unknown".to_string())
+                .with_action("validation".to_string(), request.method.clone())
+                .with_result("FAILED".to_string());
+
+                if let Err(e) = state.audit_logger.log(entry).await {
+                    warn!("Failed to log validation audit entry: {}", e);
+                }
             }
 
             let error = JsonRpcError {
@@ -184,7 +259,7 @@ async fn handle_secure_request<P: McpProtocol>(
                 error: Some(error),
             };
 
-            return Json(response);
+            return (HeaderMap::new(), Json(response));
         }
     }
 
@@ -297,13 +372,41 @@ async fn handle_secure_request<P: McpProtocol>(
         );
     }
 
-    Json(response)
+    // CSPヘッダーの追加
+    let mut headers = HeaderMap::new();
+    if state.config.enable_csp_headers {
+        if let Ok(protector) = state.xss_protector.lock() {
+            let csp_header = protector.generate_csp_header();
+            if let Ok(csp_value) = HeaderValue::from_str(&csp_header) {
+                headers.insert("Content-Security-Policy", csp_value);
+            }
+        }
+
+        // 追加のセキュリティヘッダー
+        headers.insert(
+            "X-Content-Type-Options",
+            HeaderValue::from_static("nosniff"),
+        );
+        headers.insert("X-Frame-Options", HeaderValue::from_static("DENY"));
+        headers.insert(
+            "X-XSS-Protection",
+            HeaderValue::from_static("1; mode=block"),
+        );
+        headers.insert(
+            "Referrer-Policy",
+            HeaderValue::from_static("strict-origin-when-cross-origin"),
+        );
+    }
+
+    (headers, Json(response))
 }
 
-/// リクエストの入力検証
+/// リクエストの入力検証（XSS検証を含む）
 fn validate_request(
     validator: &InputValidator,
+    xss_protector: &Arc<std::sync::Mutex<XssProtector>>,
     request: &JsonRpcRequest,
+    enable_xss_protection: bool,
 ) -> std::result::Result<(), SecurityError> {
     // メソッド名の検証
     let method_result = validator
@@ -315,6 +418,22 @@ fn validate_request(
             "Invalid method name: {}",
             method_result.errors.join(", ")
         )));
+    }
+
+    // XSS検証（メソッド名）
+    if enable_xss_protection {
+        if let Ok(mut protector) = xss_protector.lock() {
+            let xss_result = protector.scan_input(&request.method).map_err(|e| {
+                SecurityError::ValidationError(format!("XSS scan failed for method: {}", e))
+            })?;
+
+            if xss_result.is_attack_detected {
+                return Err(SecurityError::ValidationError(format!(
+                    "XSS attack detected in method name: {}",
+                    xss_result.detection_details.join(", ")
+                )));
+            }
+        }
     }
 
     // パラメータの検証（JSON文字列として）
@@ -332,6 +451,22 @@ fn validate_request(
                 "Invalid parameters: {}",
                 params_result.errors.join(", ")
             )));
+        }
+
+        // XSS検証（パラメータ）
+        if enable_xss_protection {
+            if let Ok(mut protector) = xss_protector.lock() {
+                let xss_result = protector.scan_input(&params_str).map_err(|e| {
+                    SecurityError::ValidationError(format!("XSS scan failed for parameters: {}", e))
+                })?;
+
+                if xss_result.is_attack_detected {
+                    return Err(SecurityError::ValidationError(format!(
+                        "XSS attack detected in parameters: {}",
+                        xss_result.detection_details.join(", ")
+                    )));
+                }
+            }
         }
     }
 
@@ -378,6 +513,8 @@ pub struct SecurityMetrics {
     pub rate_limited: u64,
     /// 検証失敗数
     pub validation_failures: u64,
+    /// XSS攻撃検出数
+    pub xss_attacks_detected: u64,
     /// 平均処理時間（ミリ秒）
     pub avg_processing_time_ms: f64,
 }
@@ -389,6 +526,7 @@ impl Default for SecurityMetrics {
             rejected_requests: 0,
             rate_limited: 0,
             validation_failures: 0,
+            xss_attacks_detected: 0,
             avg_processing_time_ms: 0.0,
         }
     }
@@ -404,13 +542,17 @@ mod tests {
     async fn test_secure_server_creation() {
         let protocol = BasicMcpProtocol::new("test-server", "0.1.0");
         let config = SecurityConfig::default();
-        let server = SecureMcpServer::new(protocol, config);
+        let server =
+            SecureMcpServer::new(protocol, config).expect("Failed to create secure server");
         let _router = server.router();
     }
 
     #[tokio::test]
     async fn test_input_validation() {
         let validator = InputValidator::new();
+        let xss_protector = Arc::new(std::sync::Mutex::new(
+            XssProtector::with_defaults().expect("Failed to create XSS protector"),
+        ));
 
         // 正常なリクエスト
         let normal_request = JsonRpcRequest {
@@ -420,7 +562,7 @@ mod tests {
             params: None,
         };
 
-        assert!(validate_request(&validator, &normal_request).is_ok());
+        assert!(validate_request(&validator, &xss_protector, &normal_request, true).is_ok());
 
         // SQLインジェクションを含むリクエスト
         let malicious_request = JsonRpcRequest {
@@ -430,7 +572,17 @@ mod tests {
             params: None,
         };
 
-        assert!(validate_request(&validator, &malicious_request).is_err());
+        assert!(validate_request(&validator, &xss_protector, &malicious_request, true).is_err());
+
+        // XSS攻撃を含むリクエスト
+        let xss_request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: RequestId::String("1".to_string()),
+            method: "<script>alert('XSS')</script>".to_string(),
+            params: None,
+        };
+
+        assert!(validate_request(&validator, &xss_protector, &xss_request, true).is_err());
     }
 
     #[tokio::test]
@@ -438,13 +590,19 @@ mod tests {
         let config = SecurityConfig {
             enable_input_validation: true,
             enable_rate_limiting: false,
+            enable_xss_protection: true,
+            enable_audit_logging: true,
             max_request_size: 512,
             log_security_events: false,
+            enable_csp_headers: true,
         };
 
         assert!(config.enable_input_validation);
         assert!(!config.enable_rate_limiting);
+        assert!(config.enable_xss_protection);
+        assert!(config.enable_audit_logging);
         assert_eq!(config.max_request_size, 512);
+        assert!(config.enable_csp_headers);
     }
 
     #[test]

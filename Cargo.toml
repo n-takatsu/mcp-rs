@@ -26,7 +26,8 @@ config = "0.14"
 toml = "0.8"
 base64 = "0.21"
 regex = "1.10"
-uuid = { version = "1.0", features = ["v4"] }
+uuid = { version = "1.0", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
 futures = "0.3"
 # セキュリティ強化用の暗号化クレート
 secrecy = { version = "0.8", features = ["serde"] }
