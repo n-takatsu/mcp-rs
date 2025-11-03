@@ -400,8 +400,10 @@ mod tests {
 
     #[test]
     fn test_invalid_config() {
-        let mut config = StdioConfig::default();
-        config.buffer_size = 0;
+        let config = StdioConfig {
+            buffer_size: 0,
+            ..Default::default()
+        };
 
         let result = StdioTransport::new(config);
         assert!(result.is_err());
@@ -429,7 +431,7 @@ mod tests {
     #[tokio::test]
     async fn test_transport_lifecycle() {
         let config = StdioConfig::default();
-        let mut transport = StdioTransport::new(config).unwrap();
+        let transport = StdioTransport::new(config).unwrap();
 
         assert!(!transport.is_connected());
 
