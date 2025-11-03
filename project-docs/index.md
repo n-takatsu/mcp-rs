@@ -1,33 +1,33 @@
-# mcp-rs Documentation
+# mcp-rs Documentation 🛡️ Enterprise Security Edition
 
 ## 📚 Documentation Structure
 
 ### 📖 Project Documentation (`project-docs/`)
 
-#### [`architecture.md`](architecture.md)
-- **Purpose**: System architecture and design patterns
-- **Audience**: Developers, contributors, system architects
-- **Content**: Layered architecture, plugin system, error handling, security, performance
+#### [`architecture.md`](architecture.md) - 🏗️ 6-Layer Security Architecture
+- **Purpose**: Enterprise-grade security architecture and design patterns
+- **Audience**: Developers, contributors, security architects, system administrators
+- **Content**: 6-layer security architecture, plugin system, encryption design, threat protection, compliance
 
-#### [`security-guide.md`](security-guide.md)
-- **Purpose**: Comprehensive security documentation and best practices
-- **Audience**: Security engineers, system administrators, developers
-- **Content**: Security features, vulnerability management, testing, compliance
+#### [`security-guide.md`](security-guide.md) - 🛡️ Enterprise Security Guide
+- **Purpose**: Comprehensive security documentation and enterprise best practices
+- **Audience**: Security engineers, DevSecOps teams, compliance officers, developers
+- **Content**: Multi-layer security features, vulnerability management, compliance (GDPR/SOC2), penetration testing
 
-#### [`wordpress-guide.md`](wordpress-guide.md) 
-- **Purpose**: Complete WordPress integration guide
-- **Audience**: Users, integrators, AI agents
-- **Content**: Setup, features, examples, troubleshooting, workflows
+#### [`wordpress-guide.md`](wordpress-guide.md) - 🔗 WordPress Security Integration
+- **Purpose**: Complete WordPress integration with enterprise security protection
+- **Audience**: Users, integrators, AI agents, content managers
+- **Content**: Secure setup, 27 security-protected tools, attack prevention, security examples
 
-#### [`api-reference.md`](api-reference.md)
-- **Purpose**: Quick API reference for all 31 tools
-- **Audience**: Developers, API consumers, AI agents
-- **Content**: Tool parameters, response formats, examples, error codes
+#### [`api-reference.md`](api-reference.md) - 📡 Secure API Reference  
+- **Purpose**: Quick API reference for all 27 security-enhanced tools
+- **Audience**: Developers, API consumers, AI agents, security teams
+- **Content**: Tool parameters, security validations, response formats, error codes, protection details
 
-#### [`index.md`](index.md) *(This file)*
-- **Purpose**: Documentation navigation and structure
-- **Audience**: All users
-- **Content**: Documentation overview and maintenance guidelines
+#### [`index.md`](index.md) *(This file)* - 📋 Documentation Hub
+- **Purpose**: Documentation navigation and security overview
+- **Audience**: All users, security professionals
+- **Content**: Documentation structure, security highlights, maintenance guidelines
 
 ## 🎯 Recommended Reading Order
 

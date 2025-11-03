@@ -1,40 +1,49 @@
-# WordPress MCP Tools - API Reference
+# WordPress MCP Tools - API Reference 🛡️ Security-Enhanced
 
 ## Quick Reference
 
-### Content Management
+### 🔐 Security Features
+All API calls are protected by the 6-layer security architecture:
+- ✅ AES-GCM-256 encryption for credentials
+- ✅ Token bucket rate limiting
+- ✅ SQL injection protection (11 patterns)
+- ✅ XSS attack protection (14 patterns)
+- ✅ Input validation and sanitization
+- ✅ Comprehensive audit logging
+
+### Content Management (Secured)
 ```json
-// Basic post creation
+// Basic post creation - XSS protected
 {"tool": "create_post", "arguments": {"title": "Title", "content": "Content"}}
 
-// Advanced post with SEO
+// Advanced post with SEO - Input validated
 {"tool": "create_advanced_post", "arguments": {
   "title": "Title", "content": "Content", "post_type": "post", 
   "status": "publish", "meta_description": "SEO description"
 }}
 
-// Post with embeds
+// Post with embeds - URL validation & sanitization
 {"tool": "create_post_with_embeds", "arguments": {
   "title": "Title", "content": "Content",
   "youtube_urls": ["https://youtube.com/watch?v=VIDEO_ID"],
   "social_urls": ["https://twitter.com/user/status/123"]
 }}
 
-// Update post
+// Update post - SQL injection protected
 {"tool": "update_post", "arguments": {
   "post_id": 123, "params": {"title": "New Title", "status": "draft"}
 }}
 ```
 
-### Media Management
+### Media Management (Secured)
 ```json
-// Upload media with accessibility
+// Upload media with accessibility - File type validation
 {"tool": "upload_media", "arguments": {
   "file_data": "base64_content", "filename": "image.jpg", "mime_type": "image/jpeg",
   "alt_text": "Description for screen readers", "caption": "Image caption"
 }}
 
-// Update media metadata
+// Update media metadata - XSS sanitization
 {"tool": "update_media", "arguments": {
   "media_id": 123, "alt_text": "Updated alt text", "caption": "New caption"
 }}

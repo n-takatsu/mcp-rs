@@ -2,9 +2,46 @@
 
 ## 🔒 Security Overview
 
-MCP-RS implements comprehensive security measures to ensure safe operation in production environments. This guide covers the security features, best practices, and vulnerability mitigations implemented in the system.
+MCP-RS implements a **comprehensive 6-layer security architecture** to ensure enterprise-grade protection in production environments. This guide covers the complete security features, best practices, and vulnerability mitigations implemented in the system.
 
-## 🛡️ Core Security Features
+## 🛡️ 6-Layer Security Architecture (100% Complete)
+
+### Layer 1: Encryption & Cryptography
+- **AES-GCM-256 Encryption**: Military-grade encryption for credential protection
+- **PBKDF2 Key Derivation**: 100,000 iterations with salt for secure key generation
+- **Memory Protection**: Secrecy crate for secure in-memory credential handling
+- **Zero-Copy Operations**: Prevents credential exposure in memory dumps
+
+### Layer 2: Rate Limiting & DDoS Protection  
+- **Token Bucket Algorithm**: Advanced rate limiting with configurable burst handling
+- **Per-Client Isolation**: Independent rate limits for different clients
+- **Adaptive Thresholds**: Dynamic adjustment based on traffic patterns
+- **Attack Mitigation**: Automatic blocking of excessive requests
+
+### Layer 3: Transport Security
+- **TLS 1.2+ Enforcement**: Mandatory secure transport layer
+- **Certificate Validation**: Full certificate chain verification
+- **HTTPS-Only Communication**: HTTP connections completely rejected
+- **Man-in-the-Middle Protection**: Certificate pinning support
+
+### Layer 4: Input Validation & Sanitization
+- **SQL Injection Protection**: 11 attack pattern detection (Union/Boolean/Time-based)
+- **XSS Attack Protection**: 14 attack pattern detection (Reflected/Stored/DOM-based)
+- **Zero-Trust Validation**: All inputs validated through multi-layer checks
+- **HTML Sanitization**: Ammonia-based safe content processing
+- **CSP Header Generation**: Content Security Policy enforcement
+
+### Layer 5: Real-time Security Monitoring
+- **Attack Pattern Recognition**: Real-time detection of malicious patterns
+- **Threat Level Analysis**: Dynamic risk assessment and response
+- **Security Event Correlation**: Pattern analysis across multiple requests
+- **Behavioral Anomaly Detection**: Deviation from normal usage patterns
+
+### Layer 6: Audit Logging & Compliance
+- **Comprehensive Event Logging**: All security events recorded with tamper detection
+- **Structured Audit Trails**: JSON-formatted logs with UUID tracking
+- **Compliance Reporting**: Automated security compliance documentation
+- **Forensic Analysis**: Detailed investigation capabilities
 
 ### 1. Environment Variable Security
 

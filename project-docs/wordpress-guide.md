@@ -1,43 +1,73 @@
-# WordPress Integration Guide
+# WordPress Integration Guide 🛡️ Enterprise Security Edition
 
 ## Overview
 
-This guide covers the complete WordPress integration available in mcp-rs, including 27 MCP tools that provide comprehensive content management functionality for AI agents.
+This guide covers the complete WordPress integration available in mcp-rs, featuring 27 MCP tools with enterprise-grade security protection. All WordPress operations are secured by the 6-layer security architecture providing comprehensive protection against modern web threats.
 
-## Quick Start
+## 🚀 Quick Start
 
-### 1. Configuration
+### 1. Secure Configuration
 
 ```toml
 [handlers.wordpress]
 url = "https://your-wordpress-site.com"
 username = "your_username"
-password = "your_application_password"
+password = "your_application_password"  # Encrypted at rest with AES-GCM-256
 timeout_seconds = 30
 enabled = true
+
+# Security Features (Auto-enabled)
+rate_limiting = true
+sql_injection_protection = true
+xss_protection = true
+audit_logging = true
 ```
 
-### 2. WordPress Application Password Setup
+### 2. WordPress Application Password Setup (Security Best Practices)
 
 1. WordPress Admin → Users → Your Profile
 2. Scroll to "Application Passwords" 
 3. Create new application password for MCP-RS
-4. Use this password in configuration
+4. Use this password in configuration (automatically encrypted)
+5. **Security Note**: Application passwords provide better security than regular passwords
 
-### 3. Test Connection
+### 3. Test Secure Connection
 
 ```bash
+# Run comprehensive security test
+cargo run --example wordpress_security_integration
+
+# Run basic connection test
 cargo run --example wordpress_test
 ```
 
-## Available Tools (27 total)
+## 🛡️ Security Architecture
 
-### 📝 Content Management (10 tools)
+### Multi-Layer Protection
+1. **Encryption Layer**: AES-GCM-256 + PBKDF2 (100K iterations)
+2. **Rate Limiting**: Token bucket algorithm + DDoS protection
+3. **TLS Enforcement**: TLS 1.2+ with certificate validation
+4. **Input Protection**: SQL injection (11 patterns) + XSS (14 patterns)
+5. **Monitoring**: Real-time threat detection and analysis
+6. **Audit Logging**: Complete security event recording
 
-| Tool | Purpose | Key Features |
-|------|---------|--------------|
-| `wordpress_health_check` | Environment diagnostics | Connection, auth, API status |
-| `get_posts` | List posts | Pagination, status filtering |
+### Attack Protection Coverage
+- ✅ SQL Injection (11 attack patterns detected)
+- ✅ XSS Attacks (14 attack vectors blocked)
+- ✅ CSRF Protection
+- ✅ DDoS/Rate Limiting Attacks
+- ✅ Brute Force Authentication
+- ✅ File Upload Attacks
+- ✅ Code Injection Attempts
+
+## Available Tools (27 total) - All Security Protected
+
+### 📝 Content Management (10 tools) - 🔒 XSS Protected
+
+| Tool | Purpose | Security Features |
+|------|---------|------------------|
+| `wordpress_health_check` | Environment diagnostics | Connection validation, auth verification |
+| `get_posts` | List posts | SQL injection protection, parameter validation |
 | `get_pages` | List pages | WordPress pages retrieval |
 | `get_all_content` | All content | Combined posts + pages |
 | `get_post` | Single post/page | By ID retrieval |
