@@ -1,3 +1,8 @@
+//! 認証情報の暗号化・復号化機能
+//! AES-GCM-256による安全な暗号化と、PBKDF2によるキー導出を実装
+
+#![allow(deprecated)] // generic-array v1.x移行中の一時的対応
+
 use aes_gcm::{
     aead::{Aead, AeadCore, KeyInit, OsRng},
     Aes256Gcm, Key, Nonce,
@@ -119,8 +124,8 @@ impl SecureCredentials {
         Ok(EncryptedCredentials {
             username: self.username.clone(),
             encrypted_password: general_purpose::STANDARD.encode(&encrypted_password),
-            nonce: general_purpose::STANDARD.encode(&nonce),
-            salt: general_purpose::STANDARD.encode(&salt_bytes),
+            nonce: general_purpose::STANDARD.encode(nonce),
+            salt: general_purpose::STANDARD.encode(salt_bytes),
         })
     }
 
