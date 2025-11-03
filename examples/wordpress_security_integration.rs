@@ -52,7 +52,7 @@ async fn test_wordpress_authentication() -> Result<(), Box<dyn std::error::Error
 
     // ブルートフォース攻撃テスト
     println!("   🚨 ブルートフォース攻撃シミュレーション");
-    let brute_force_attempts = vec!["password123", "admin", "123456", "qwerty", "letmein"];
+    let brute_force_attempts = ["password123", "admin", "123456", "qwerty", "letmein"];
 
     let mut blocked_attempts = 0;
     for (i, _password) in brute_force_attempts.iter().enumerate() {
@@ -78,7 +78,7 @@ async fn test_content_posting_security() -> Result<(), Box<dyn std::error::Error
     println!("   🚫 XSS攻撃検知テスト");
     let mut protector = XssProtector::new(XssProtectionConfig::default())?;
 
-    let xss_attacks = vec![
+    let xss_attacks = [
         "<script>alert('XSS')</script>",
         r#"<img src="x" onerror="document.location='http://evil.com'">"#,
         r#"<iframe src="javascript:alert('XSS')"></iframe>"#,
@@ -114,7 +114,7 @@ async fn test_api_security() -> Result<(), Box<dyn std::error::Error>> {
     println!("   💉 SQL インジェクション防御テスト");
     let mut protector = SqlInjectionProtector::new(SqlProtectionConfig::default())?;
 
-    let sql_attacks = vec![
+    let sql_attacks = [
         "'; DROP TABLE wp_posts; --",
         "' UNION SELECT user_login, user_pass FROM wp_users --",
         "' OR '1'='1' --",
