@@ -174,6 +174,7 @@ impl WordPressConfig {
     }
 
     /// 暗号化された認証情報から新しいWordPressConfigを作成
+    #[allow(dead_code)]
     pub fn from_encrypted(
         url: String,
         encrypted_credentials: EncryptedCredentials,
@@ -198,6 +199,7 @@ impl WordPressConfig {
     }
 
     /// 認証情報を暗号化して保存
+    #[allow(dead_code)]
     pub fn encrypt_credentials(&mut self, master_password: &str) -> Result<(), EncryptionError> {
         let secure_creds = self.create_secure_credentials();
         self.encrypted_credentials = Some(secure_creds.encrypt(master_password)?);
@@ -205,6 +207,7 @@ impl WordPressConfig {
     }
 
     /// セキュア認証情報を取得（暗号化されている場合は復号化）
+    #[allow(dead_code)]
     pub fn get_secure_credentials(
         &self,
         master_password: Option<&str>,
@@ -223,6 +226,7 @@ impl WordPressConfig {
     }
 
     /// 暗号化されているかどうかを確認
+    #[allow(dead_code)]
     pub fn is_encrypted(&self) -> bool {
         self.encrypted_credentials.is_some()
     }
@@ -586,6 +590,7 @@ impl McpConfig {
     }
 
     /// Convert to plugin configuration
+    #[allow(dead_code)]
     pub fn to_plugin_config(&self) -> Option<PluginConfig> {
         self.plugins.as_ref().map(|plugins| PluginConfig {
             search_paths: plugins
@@ -603,6 +608,7 @@ impl McpConfig {
 
 /// Plugin configuration structure
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct PluginConfig {
     /// Plugin search directories
     pub search_paths: Vec<PathBuf>,
