@@ -26,7 +26,7 @@ pub enum McpError {
     MethodNotFound(String),
 
     #[error("Internal error: {0}")]
-    InternalError(String),
+    Internal(String),
 
     #[error("External API error: {0}")]
     ExternalApi(String),

@@ -41,7 +41,7 @@ impl<P: McpProtocol + 'static> McpServer<P> {
         let listener = tokio::net::TcpListener::bind(addr).await?;
         axum::serve(listener, self.router())
             .await
-            .map_err(|e| Error::InternalError(e.to_string()))?;
+            .map_err(|e| Error::Internal(e.to_string()))?;
 
         Ok(())
     }

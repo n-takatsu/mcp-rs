@@ -22,23 +22,23 @@ pub enum Error {
 
     /// Internal server error
     #[error("Internal error: {0}")]
-    InternalError(String),
+    Internal(String),
 
     /// Parse error
     #[error("Parse error: {0}")]
-    ParseError(String),
+    Parse(String),
 
     /// Network error
     #[error("Network error: {0}")]
-    NetworkError(#[from] reqwest::Error),
+    Network(#[from] reqwest::Error),
 
     /// JSON serialization error
     #[error("JSON error: {0}")]
-    JsonError(#[from] serde_json::Error),
+    Json(#[from] serde_json::Error),
 
     /// I/O error
     #[error("I/O error: {0}")]
-    IoError(#[from] std::io::Error),
+    Io(#[from] std::io::Error),
 
     /// Feature not supported
     #[error("Not supported: {0}")]
@@ -53,11 +53,11 @@ impl Error {
     /// Convert error to JSON-RPC error code
     pub fn to_json_rpc_code(&self) -> i32 {
         match self {
-            Error::ParseError(_) => -32700,
+            Error::Parse(_) => -32700,
             Error::InvalidRequest(_) => -32600,
             Error::MethodNotFound(_) => -32601,
             Error::InvalidParams(_) => -32602,
-            Error::InternalError(_) => -32603,
+            Error::Internal(_) => -32603,
             _ => -32000, // Server error
         }
     }

@@ -1,0 +1,25 @@
+[metadata]
+name = "sample-plugin"
+version = "1.0.0"
+description = "A sample plugin for demonstration"
+author = "MCP-RS Team"
+license = "MIT OR Apache-2.0"
+homepage = "https://github.com/n-takatsu/mcp-rs"
+repository = "https://github.com/n-takatsu/mcp-rs"
+tags = ["sample", "demo"]
+
+[entry_points]
+main = "libsample_plugin.so"  # On Linux
+# main = "libsample_plugin.dylib"  # On macOS
+# main = "sample_plugin.dll"  # On Windows
+
+[dependencies]
+# No runtime dependencies for this sample
+
+min_mcp_version = "0.2.0"
+
+[config_schema]
+# JSON schema for plugin configuration (optional)
+type = "object"
+properties = {}
+additionalProperties = false
