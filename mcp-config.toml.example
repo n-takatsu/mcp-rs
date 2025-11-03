@@ -1,7 +1,7 @@
 # MCP-RS Configuration File
 # 
 # このファイルは mcp-config.toml として保存してください
-# 環境変数での上書きも可能です (例: MCP_SERVER_BIND_ADDR=0.0.0.0:8080)
+# セキュリティのため、認証情報は環境変数を使用することを推奨します
 
 [server]
 bind_addr = "127.0.0.1:8080"
@@ -9,14 +9,32 @@ stdio = false
 log_level = "info"
 
 [handlers.wordpress]
-url = "https://your-wordpress-site.com"
-username = "your_username"
-password = "your_application_password"
+url = "${WORDPRESS_URL}"
+username = "${WORDPRESS_USERNAME}"
+password = "${WORDPRESS_PASSWORD}"
 enabled = true
+timeout_seconds = 30
 
 
-# 設定説明:
+# 🔒 セキュリティ設定説明:
 # 
+# 環境変数を使用した安全な設定方法:
+# 
+# 1. 環境変数を設定:
+#    export WORDPRESS_URL="https://your-wordpress-site.com"
+#    export WORDPRESS_USERNAME="your_username"  
+#    export WORDPRESS_PASSWORD="your_app_password"
+#
+# 2. または .env ファイルを使用:
+#    WORDPRESS_URL=https://your-wordpress-site.com
+#    WORDPRESS_USERNAME=your_username
+#    WORDPRESS_PASSWORD=your_app_password
+#
+# 3. 設定ファイルでは ${VAR_NAME} 形式で参照:
+#    url = "${WORDPRESS_URL}"
+#    username = "${WORDPRESS_USERNAME}"
+#    password = "${WORDPRESS_PASSWORD}"
+#
 # [server]
 # bind_addr = TCP サーバーのバインドアドレス (stdio=false の場合)
 # stdio = true にすると標準入出力モードで動作 (MCP クライアント用)
@@ -28,9 +46,11 @@ enabled = true
 # password = Application Password (WordPress管理画面で生成)
 # enabled = このハンドラーを有効にするか
 #
-# Application Password の生成方法:
+# 🔑 Application Password の生成方法:
 # 1. WordPress管理画面 > ユーザー > プロフィール
 # 2. 'アプリケーションパスワード' セクション
 # 3. 新しいアプリケーション名を入力 (例: "MCP-RS")
 # 4. 'Add New Application Password' をクリック
-# 5. 生成されたパスワードをコピーして上記 password に設定
+# 5. 生成されたパスワードを環境変数に設定
+#
+# ⚠️  注意: パスワードを設定ファイルに直接記載しないでください！
