@@ -70,7 +70,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let start_time = std::time::Instant::now();
 
     for i in 0..10 {
-        env::set_var(&format!("PERF_VAR_{}", i), &format!("value_{}", i));
+        env::set_var(format!("PERF_VAR_{}", i), format!("value_{}", i));
     }
 
     let complex_string = (0..10)

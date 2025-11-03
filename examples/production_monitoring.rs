@@ -272,7 +272,7 @@ async fn health_assessment(
         "error_details": health_check.error_details,
         "site_info": health_check.site_info,
         "wordpress_version": health_check.site_info.as_ref()
-            .and_then(|info| Some("Available".to_string()))
+            .map(|_info| "Available".to_string())
             .unwrap_or_else(|| "Unknown".to_string()),
         "php_version": "Unknown", // Not available in current health check
         "active_plugins": 0, // Not available in current health check

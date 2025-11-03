@@ -1,6 +1,5 @@
 use mcp_rs::config::McpConfig;
 use mcp_rs::handlers::wordpress::WordPressHandler;
-use tokio;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -101,13 +100,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("   🎯 問題の特定:");
         println!("      • 基本的なコンテンツAPI (posts, categories, tags, media) = ✅ 正常");
         println!("      • 設定管理API (settings) = ❌ 401エラー");
-        println!("");
+        println!();
         println!("   🔍 考えられる原因:");
         println!("      1. WordPress REST API設定で /wp/v2/settings が特別に制限されている");
         println!("      2. セキュリティプラグインが設定APIへのアクセスを制限している");
         println!("      3. WordPressのバージョンによる設定API仕様の違い");
         println!("      4. アプリケーションパスワードの権限範囲制限");
-        println!("");
+        println!();
         println!("   💡 推奨調査項目:");
         println!("      • WordPress管理画面で「設定」→「パーマリンク」→「変更を保存」を実行");
         println!("      • セキュリティプラグイン（Wordfence等）の設定確認");

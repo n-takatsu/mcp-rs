@@ -1,6 +1,5 @@
 use mcp_rs::config::McpConfig;
 use mcp_rs::handlers::wordpress::WordPressHandler;
-use tokio;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -110,7 +109,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("   🔗 基本接続: 正常（カテゴリー取得成功）");
         println!("   🔐 認証情報: 部分的に有効");
         println!("   ⚙️ 管理者権限: 要確認（設定アクセス権限）");
-        println!("");
+        println!();
         println!("💡 推奨事項:");
         println!("   • WordPress管理画面でアプリケーションパスワードを再生成");
         println!("   • ユーザーに適切な権限（編集者以上）が付与されているか確認");

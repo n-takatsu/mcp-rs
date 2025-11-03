@@ -2,7 +2,6 @@ use mcp_rs::config::McpConfig;
 use mcp_rs::handlers::wordpress::WordPressHandler;
 use reqwest::Client;
 use serde_json::Value;
-use tokio;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
