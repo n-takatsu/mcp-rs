@@ -47,6 +47,10 @@ pub enum Error {
     #[error("Not supported: {0}")]
     NotSupported(String),
 
+    /// Configuration error
+    #[error("Configuration error: {0}")]
+    ConfigError(String),
+
     /// Transport error
     #[error("Transport error: {0}")]
     TransportError(#[from] crate::transport::TransportError),
