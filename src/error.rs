@@ -49,7 +49,7 @@ pub enum Error {
 
     /// Configuration error
     #[error("Configuration error: {0}")]
-    ConfigError(String),
+    Config(String),
 
     /// Transport error
     #[error("Transport error: {0}")]
