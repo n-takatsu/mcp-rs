@@ -1,0 +1,54 @@
+
+id = "warning-policy-001"
+name = "Warning Test Policy"
+version = "1.2"
+description = "警告が発生するテストポリシー"
+created_at = "2025-11-04T18:48:06.011868900+00:00"
+updated_at = "2025-11-04T18:48:06.011868900+00:00"
+
+[security]
+enabled = true
+
+[security.encryption]
+enabled = true
+algorithm = "AES-256-GCM"
+key_size = 256
+pbkdf2_iterations = 50000
+
+[security.tls]
+enforce = true
+min_version = "TLSv1.2"
+cipher_suites = ["TLS_AES_256_GCM_SHA384"]
+
+[security.rate_limiting]
+enabled = true
+requests_per_minute = 500
+burst_size = 300
+window_size_seconds = 60
+
+[security.input_validation]
+enabled = true
+max_input_length = 5242880
+sql_injection_protection = true
+xss_protection = true
+
+[monitoring]
+enabled = true
+interval_seconds = 600
+log_level = "warn"
+alerts_enabled = true
+
+[monitoring.metrics]
+enabled = true
+sampling_rate = 0.5
+buffer_size = 500
+
+[authentication]
+enabled = true
+method = "basic"
+require_mfa = false
+session_timeout_seconds = 7200
+
+[custom]
+environment = "staging"
+compliance_mode = "standard"

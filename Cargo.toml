@@ -10,6 +10,7 @@ repository = "https://github.com/n-takatsu/mcp-rs"
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+serde_yaml = "0.9"
 # Tokio機能を必要最小限に + セキュリティ機能
 tokio = { version = "1.0", features = ["rt-multi-thread", "net", "io-util", "time", "macros", "fs", "sync", "signal"] }
 tokio-util = "0.7"

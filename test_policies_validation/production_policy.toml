@@ -1,0 +1,58 @@
+
+id = "production-policy-001"
+name = "Production Security Policy"
+version = "2.1.0"
+description = "本番環境向け厳格セキュリティポリシー"
+created_at = "2025-11-04T18:48:06.012883200+00:00"
+updated_at = "2025-11-04T18:48:06.012883200+00:00"
+
+[security]
+enabled = true
+
+[security.encryption]
+enabled = true
+algorithm = "AES-256-GCM"
+key_size = 256
+pbkdf2_iterations = 150000
+
+[security.tls]
+enforce = true
+min_version = "TLSv1.3"
+cipher_suites = [
+    "TLS_AES_256_GCM_SHA384",
+    "TLS_CHACHA20_POLY1305_SHA256",
+    "TLS_AES_128_GCM_SHA256"
+]
+
+[security.rate_limiting]
+enabled = true
+requests_per_minute = 100
+burst_size = 20
+window_size_seconds = 60
+
+[security.input_validation]
+enabled = true
+max_input_length = 524288
+sql_injection_protection = true
+xss_protection = true
+
+[monitoring]
+enabled = true
+interval_seconds = 60
+log_level = "warn"
+alerts_enabled = true
+
+[monitoring.metrics]
+enabled = true
+sampling_rate = 1.0
+buffer_size = 2000
+
+[authentication]
+enabled = true
+method = "saml"
+require_mfa = true
+session_timeout_seconds = 1800
+
+[custom]
+environment = "production"
+compliance_mode = "strict"

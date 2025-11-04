@@ -51,6 +51,10 @@ pub enum Error {
     #[error("Configuration error: {0}")]
     Config(String),
 
+    /// Invalid configuration error
+    #[error("Invalid configuration: {0}")]
+    InvalidConfiguration(String),
+
     /// Transport error
     #[error("Transport error: {0}")]
     TransportError(#[from] crate::transport::TransportError),
