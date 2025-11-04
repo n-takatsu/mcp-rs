@@ -14,6 +14,10 @@ pub mod handlers;
 pub mod mcp;
 // pub mod plugin_isolation; // 将来実装予定
 pub mod plugins;
+pub mod policy_application;
+pub mod policy_config;
+pub mod policy_validation;
+pub mod policy_watcher;
 pub mod protocol;
 pub mod security;
 pub mod server;

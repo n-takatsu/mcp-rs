@@ -12,6 +12,23 @@
 
 `mcp-rs` provides a **comprehensive, battle-tested** implementation of the MCP (Model Context Protocol) in Rust with **complete WordPress integration**. Built with a layered architecture, it enables AI agents to perform sophisticated content management through a standardized JSON-RPC interface. The framework features 27 WordPress tools, strong type safety, and is optimized for production use with GitHub Copilot and other AI coding assistants.
 
+## 🎯 Who Is This For?
+
+### **AI Developers** 🤖
+Building Claude Desktop apps, GPT integrations, or custom AI agents? mcp-rs provides production-ready Model Context Protocol implementation with comprehensive WordPress tooling.
+
+### **Enterprise WordPress Teams** 🏢  
+Managing large-scale WordPress deployments? Get enterprise-grade security, automated content management, and seamless CI/CD integration.
+
+### **DevOps Engineers** ⚙️
+Automating WordPress operations? 27 battle-tested tools with comprehensive health checks, monitoring, and production-ready error handling.
+
+### **Rust Enthusiasts** 🦀
+Want to contribute to a high-quality Rust codebase? Join our 205+ test, zero-warning project with clean architecture and comprehensive documentation.
+
+### **Security Teams** 🔒
+Need WordPress security automation? 6-layer enterprise security architecture with SQL injection protection, XSS prevention, and comprehensive audit logging.
+
 ### 🎯 Key Highlights
 
 - **🏗️ Production Architecture**: Clean separation with layered design and comprehensive error handling  
@@ -234,6 +251,54 @@ mcp-rs = "0.1.0"
 ```
 
 ## Quick Start
+
+### 🚀 Choose Your Path
+
+#### **For AI Developers** 🤖
+```bash
+# 1. Clone and run with Claude Desktop
+git clone https://github.com/n-takatsu/mcp-rs.git
+cd mcp-rs
+cargo run --example wordpress_test
+
+# 2. Add to Claude Desktop config
+# ~/.config/claude-desktop/claude_desktop_config.json
+```
+
+#### **For Enterprise Teams** 🏢
+```bash
+# 1. Production-ready configuration
+cp .env.example .env
+# Edit .env with your WordPress credentials
+
+# 2. Run comprehensive health check
+cargo run --example wordpress_health_check
+
+# 3. Deploy with Docker (coming soon)
+```
+
+#### **For DevOps Engineers** ⚙️  
+```bash
+# 1. CI/CD integration
+cargo test --all-features
+
+# 2. Production monitoring
+cargo run --example comprehensive_test
+
+# 3. Health check automation
+curl -X POST http://localhost:3000/health
+```
+
+#### **For Contributors** 🦀
+```bash
+# 1. Development setup
+git clone https://github.com/n-takatsu/mcp-rs.git
+cd mcp-rs
+cargo test
+
+# 2. Join our Discord/Issues for collaboration
+# See CONTRIBUTING.md for guidelines
+```
 
 ### Configuration Setup
 
@@ -820,6 +885,40 @@ See [project-docs/architecture.md](project-docs/architecture.md) for detailed ro
 - [ ] Documentation website
 - [ ] Plugin ecosystem
 - [ ] Docker containerization
+
+## 🤝 Join Our Community
+
+### 🌟 We're Looking For
+
+**Security Experts** 🔒  
+Help us reach 100% security coverage. Contribute to our enterprise-grade security architecture.
+
+**WordPress Developers** 📝  
+Expand our 27-tool ecosystem. Add new WordPress integrations and improve existing ones.
+
+**Rust Enthusiasts** 🦀  
+Optimize our production-ready codebase. Join a 205+ test, zero-warning project.
+
+**DevOps Engineers** ⚙️  
+Scale our enterprise deployment. Help with CI/CD, monitoring, and operations.
+
+**AI/MCP Developers** 🤖  
+Build the future of AI-agent integrations. Create new handlers and improve the MCP implementation.
+
+### 🚀 Why Contribute Now?
+
+- **Alpha Stage Impact**: Your contributions shape the foundation
+- **Production Quality**: Already handles real workloads
+- **Enterprise Features**: Work on cutting-edge security implementation  
+- **Technical Excellence**: Join a high-quality, well-tested codebase
+- **Growing Community**: Be part of the WordPress MCP ecosystem
+
+### 📞 Get Involved
+
+- **Issues**: [Report bugs or request features](https://github.com/n-takatsu/mcp-rs/issues)
+- **Discussions**: [Join conversations](https://github.com/n-takatsu/mcp-rs/discussions)
+- **Contributing**: See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines
+- **Discord**: Coming soon - community chat and collaboration
 
 ## License
 
