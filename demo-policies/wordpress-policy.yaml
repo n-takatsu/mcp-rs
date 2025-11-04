@@ -1,0 +1,37 @@
+# WordPress Connection Policy for Demo
+# Real-time monitoring demonstration
+
+wordpress:
+  sites:
+    - name: "Demo Site 1"
+      url: "https://demo1.example.com"
+      enabled: true
+      security_level: "high"
+      features:
+        - "posts"
+        - "media"
+        - "categories"
+    
+    - name: "Demo Site 2" 
+      url: "https://demo2.example.com"
+      enabled: false
+      security_level: "medium"
+      features:
+        - "posts"
+
+  global_settings:
+    connection_timeout: 30
+    retry_attempts: 3
+    use_ssl_verification: true
+    
+  security_rules:
+    max_post_size: "1MB"
+    sanitize_html: true
+    validate_images: true
+    
+# Demo change tracking
+demo_config:
+  version: "1.0"
+  environment: "demonstration"
+  auto_reload: true
+  change_log_enabled: true
