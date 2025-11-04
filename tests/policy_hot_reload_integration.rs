@@ -449,11 +449,13 @@ compliance_mode = "standard"
 
     /// ヘルパー関数: テスト用ポリシー作成
     fn create_test_policy(id: &str, version: &str) -> PolicyConfig {
-        let mut policy = PolicyConfig::default();
-        policy.id = id.to_string();
-        policy.name = format!("Test Policy {}", id);
-        policy.version = version.to_string();
-        policy.description = Some(format!("テスト用ポリシー: {}", id));
+        let mut policy = PolicyConfig {
+            id: id.to_string(),
+            name: format!("Test Policy {}", id),
+            version: version.to_string(),
+            description: Some(format!("テスト用ポリシー: {}", id)),
+            ..Default::default()
+        };
 
         // テスト用の設定値
         policy.security.rate_limiting.requests_per_minute = 100;
