@@ -2,6 +2,8 @@
 
 🚀 **Production-Ready** Rust implementation of the Model Context Protocol (MCP) for AI-agent integration with WordPress and beyond.
 
+> **[English](README.md)** | **[日本語](README.ja.md)**
+
 [![Architecture](https://img.shields.io/badge/Architecture-v0.2.0--alpha-blue)](#architecture)
 [![Implementation](https://img.shields.io/badge/WordPress_Tools-27_Available-green)](#wordpress-mcp-tools)
 [![License](https://img.shields.io/badge/License-MIT%2FApache--2.0-green)](#license)
