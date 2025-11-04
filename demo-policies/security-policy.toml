@@ -1,0 +1,63 @@
+# MCP-RS Policy Hot-Reload Demo Configuration
+# セキュリティポリシー設定 - 統合形式
+id = "security-policy-v1"
+name = "High Security Policy"
+version = "1.0.0"
+description = "高セキュリティ環境向けのポリシー設定"
+created_at = "2025-11-05T00:00:00Z"
+updated_at = "2025-11-05T00:00:00Z"
+
+[security]
+enabled = true
+
+[security.encryption]
+algorithm = "AES-256-GCM"
+key_size = 256
+pbkdf2_iterations = 100000
+
+[security.tls]
+enforce = true
+min_version = "TLSv1.3"
+cipher_suites = [
+    "TLS_AES_256_GCM_SHA384",
+    "TLS_CHACHA20_POLY1305_SHA256"
+]
+
+[security.input_validation]
+enabled = true
+max_input_length = 524288  # 512KB
+sql_injection_protection = true
+xss_protection = true
+
+[security.rate_limiting]
+enabled = true
+requests_per_minute = 30
+burst_size = 5
+
+[wordpress_policy]
+# WordPress Specific Security
+require_https = true
+validate_ssl_certificates = true
+max_file_upload_size = "10MB"
+allowed_file_types = ["jpg", "png", "gif", "pdf", "doc", "docx"]
+
+# Authentication Requirements
+require_application_password = true
+password_expiry_days = 90
+max_login_attempts = 5
+
+[monitoring_policy]
+# Audit Logging
+audit_enabled = true
+log_level = "info"
+retention_days = 365
+
+# Health Check Settings
+health_check_interval = 60
+timeout_seconds = 30
+alert_on_failure = true
+
+# デモ用動的設定（この値を変更してリアルタイム反映をテスト）
+demo_mode = true
+demo_message = "初期設定: セキュリティポリシー有効"
+last_updated = "2025-11-05T00:00:00Z"# Updated demo policy

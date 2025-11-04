@@ -1,0 +1,45 @@
+{
+  "mcp_server_policy": {
+    "version": "1.0.0",
+    "environment": "demo",
+    "features": {
+      "hot_reload": {
+        "enabled": true,
+        "watch_directories": [
+          "./demo-policies",
+          "./config"
+        ],
+        "supported_formats": ["toml", "yaml", "yml", "json"],
+        "reload_delay_ms": 500
+      },
+      "security": {
+        "encryption": {
+          "algorithm": "AES-GCM-256",
+          "key_rotation_days": 30
+        },
+        "access_control": {
+          "require_authentication": true,
+          "session_timeout_minutes": 60,
+          "max_concurrent_sessions": 5
+        }
+      },
+      "monitoring": {
+        "metrics_enabled": true,
+        "health_checks": {
+          "interval_seconds": 30,
+          "endpoints": [
+            "/health",
+            "/metrics",
+            "/status"
+          ]
+        }
+      }
+    },
+    "demo_settings": {
+      "show_real_time_updates": true,
+      "log_policy_changes": true,
+      "simulate_load": false,
+      "demo_message": "Policy Hot-Reload Demonstration Active"
+    }
+  }
+}

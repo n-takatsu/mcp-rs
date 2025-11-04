@@ -1,0 +1,54 @@
+
+id = ""
+name = ""
+version = "invalid"
+description = "意図的に無効なテストポリシー"
+created_at = "2025-11-04T18:48:06.011454900+00:00"
+updated_at = "2025-11-04T18:48:06.011454900+00:00"
+
+[security]
+enabled = true
+
+[security.encryption]
+enabled = true
+algorithm = "AES-256-GCM"
+key_size = 64
+pbkdf2_iterations = 100
+
+[security.tls]
+enforce = true
+min_version = "TLSv1.0"
+cipher_suites = []
+
+[security.rate_limiting]
+enabled = true
+requests_per_minute = 2000
+burst_size = 5000
+window_size_seconds = 60
+
+[security.input_validation]
+enabled = true
+max_input_length = 20971520
+sql_injection_protection = false
+xss_protection = false
+
+[monitoring]
+enabled = true
+interval_seconds = 1200
+log_level = "debug"
+alerts_enabled = true
+
+[monitoring.metrics]
+enabled = true
+sampling_rate = 0.0
+buffer_size = 100
+
+[authentication]
+enabled = false
+method = "none"
+require_mfa = false
+session_timeout_seconds = 120
+
+[custom]
+environment = "unknown_env"
+compliance_mode = "invalid_mode"

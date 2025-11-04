@@ -1,0 +1,96 @@
+name: 🐛 Bug Report
+description: バグや問題の報告
+title: "[BUG] "
+labels: ["bug", "needs-investigation"]
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        # 🐛 Bug Report
+        
+        バグや問題を報告していただき、ありがとうございます。
+        問題の迅速な解決のため、以下の情報をご提供ください。
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: 🔧 影響コンポーネント
+      description: どのコンポーネントで問題が発生していますか？
+      options:
+        - "WordPress Integration"
+        - "Security System"
+        - "Plugin System"
+        - "Configuration"
+        - "Documentation"
+        - "Build/Test"
+        - "その他"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: severity
+    attributes:
+      label: 🚨 重要度
+      description: この問題の重要度は？
+      options:
+        - "Critical (システム停止・セキュリティ脆弱性)"
+        - "High (主要機能が使用不可)"
+        - "Medium (一部機能に影響)"
+        - "Low (軽微な問題)"
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: 📝 問題の説明
+      description: 発生している問題の詳細な説明
+      placeholder: |
+        何が起こっているかを詳細に説明してください。
+        期待される動作と実際の動作の違いを含めてください。
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: 🔄 再現手順
+      description: 問題を再現するための手順
+      placeholder: |
+        1. 
+        2. 
+        3. 
+        4. 
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: 🖥️ 環境情報
+      description: 問題が発生している環境の詳細
+      placeholder: |
+        - OS: Windows 11 / macOS 14 / Ubuntu 22.04
+        - Rust Version: 1.70.0
+        - mcp-rs Version: v0.1.0-alpha
+        - WordPress Version: 6.4
+        - 追加情報:
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 📊 ログ・エラーメッセージ
+      description: 関連するログやエラーメッセージ
+      placeholder: |
+        ```
+        エラーメッセージやログをここに貼り付けてください
+        ```
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: 📎 追加情報
+      description: その他の関連情報（スクリーンショット、設定ファイルなど）

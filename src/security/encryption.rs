@@ -169,7 +169,11 @@ fn derive_key(password: &str, salt: &[u8]) -> Result<Key<Aes256Gcm>, EncryptionE
     use pbkdf2::pbkdf2_hmac_array;
     use sha2::Sha256;
 
-    const ITERATIONS: u32 = 100_000; // PBKDF2反復回数
+    // テスト環境では反復回数を減らして高速化
+    #[cfg(test)]
+    const ITERATIONS: u32 = 1_000; // テスト用: 1,000回
+    #[cfg(not(test))]
+    const ITERATIONS: u32 = 100_000; // 本番用: 100,000回
 
     // PBKDF2-HMAC-SHA256を使用してキーを導出
     let key_bytes: [u8; 32] =
