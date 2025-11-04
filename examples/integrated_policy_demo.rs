@@ -129,9 +129,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn create_initial_policy() -> PolicyConfig {
-    let mut policy = PolicyConfig::default();
-    policy.name = "Initial Demo Policy".to_string();
-    policy.description = Some("デモ用初期ポリシー".to_string());
+    let mut policy = PolicyConfig {
+        name: "Initial Demo Policy".to_string(),
+        description: Some("デモ用初期ポリシー".to_string()),
+        ..Default::default()
+    };
     policy.security.rate_limiting.requests_per_minute = 60;
     policy.monitoring.interval_seconds = 60;
     policy.authentication.require_mfa = false;

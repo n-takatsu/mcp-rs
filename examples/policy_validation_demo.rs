@@ -1,6 +1,5 @@
 use std::path::Path;
 use tokio::time::{sleep, Duration};
-use tracing_subscriber;
 
 use mcp_rs::policy_application::{PolicyApplicationEngine, PolicyApplicationEvent};
 use mcp_rs::policy_config::PolicyConfig;
@@ -45,10 +44,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         PolicyApplicationEngine::with_validation_level(test_dir, ValidationLevel::Custom);
 
     // ポリシーファイルを追加
-    engine.add_policy_file(&format!("{}/valid_policy.toml", test_dir));
-    engine.add_policy_file(&format!("{}/invalid_policy.toml", test_dir));
-    engine.add_policy_file(&format!("{}/warning_policy.toml", test_dir));
-    engine.add_policy_file(&format!("{}/production_policy.toml", test_dir));
+    engine.add_policy_file(format!("{}/valid_policy.toml", test_dir));
+    engine.add_policy_file(format!("{}/invalid_policy.toml", test_dir));
+    engine.add_policy_file(format!("{}/warning_policy.toml", test_dir));
+    engine.add_policy_file(format!("{}/production_policy.toml", test_dir));
 
     // イベント監視を開始
     let mut event_receiver = engine.subscribe();
@@ -453,10 +452,12 @@ async fn test_individual_validation_engine() -> Result<(), Box<dyn std::error::E
     let mut validation_engine = PolicyValidationEngine::new();
 
     // テストポリシーを作成
-    let mut test_policy = PolicyConfig::default();
-    test_policy.id = "test-validation-001".to_string();
-    test_policy.name = "Individual Validation Test".to_string();
-    test_policy.version = "1.0.0".to_string();
+    let test_policy = PolicyConfig {
+        id: "test-validation-001".to_string(),
+        name: "Individual Validation Test".to_string(),
+        version: "1.0.0".to_string(),
+        ..Default::default()
+    };
 
     // 各検証レベルでテスト
     let levels = vec![

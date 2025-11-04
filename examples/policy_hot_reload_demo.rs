@@ -111,7 +111,7 @@ async fn handle_policy_change(event: PolicyChangeEvent, count: usize) {
         println!("   📄 Content: {} lines, {} bytes", line_count, size);
 
         // 設定ファイルの種類に応じた処理デモ
-        match event.file_path.split('.').last() {
+        match event.file_path.split('.').next_back() {
             Some("toml") => {
                 println!("   🔧 Processing TOML configuration...");
                 // 実際の環境では toml::from_str() でパース
