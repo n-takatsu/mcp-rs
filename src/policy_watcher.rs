@@ -111,7 +111,7 @@ impl PolicyFileWatcher {
     }
 
     /// ファイル監視イベントを処理
-    fn process_event(event: Event, watch_path: &str) -> Option<PolicyChangeEvent> {
+    fn process_event(event: Event, _watch_path: &str) -> Option<PolicyChangeEvent> {
         use notify::EventKind;
 
         let change_type = match event.kind {
