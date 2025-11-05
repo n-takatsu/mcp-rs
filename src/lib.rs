@@ -21,6 +21,7 @@ pub mod policy_config;
 pub mod policy_validation;
 pub mod policy_watcher;
 pub mod protocol;
+pub mod rollback;
 pub mod security;
 pub mod server;
 pub mod transport;
