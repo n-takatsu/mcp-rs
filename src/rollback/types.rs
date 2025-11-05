@@ -1,16 +1,13 @@
-use std::collections::{HashMap, VecDeque};
-use std::sync::Arc;
-use tokio::sync::{broadcast, RwLock};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, VecDeque};
+use std::sync::{atomic::AtomicBool, Arc};
+use tokio::sync::{broadcast, RwLock};
 use uuid::Uuid;
 
-use crate::canary_deployment::{
-    CanaryDeploymentManager, DeploymentState, 
-    TrafficSplit
-};
-use crate::policy_config::PolicyConfig;
+use crate::canary_deployment::{CanaryDeploymentManager, DeploymentState, TrafficSplit};
 use crate::error::McpError;
+use crate::policy_config::PolicyConfig;
 
 /// ロールバック管理システムのメイン構造体
 #[derive(Debug)]
@@ -27,6 +24,8 @@ pub struct RollbackManager {
     pub executor: Arc<RollbackExecutor>,
     /// ロールバックメトリクス
     pub rollback_metrics: Arc<RwLock<RollbackMetrics>>,
+    /// 監視停止フラグ
+    pub monitoring_stop_flag: Arc<AtomicBool>,
 }
 
 /// デプロイメントの完全なスナップショット
@@ -156,7 +155,7 @@ pub struct CustomRollbackCondition {
 }
 
 /// メトリクススナップショット
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct MetricsSnapshot {
     /// スナップショット時刻
     pub timestamp: DateTime<Utc>,
