@@ -515,6 +515,12 @@ impl MetricsMonitor {
     }
 }
 
+impl Default for MetricsMonitor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Default for AnomalyDetectionConfig {
     fn default() -> Self {
         Self {

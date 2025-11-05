@@ -200,10 +200,12 @@ async fn test_rollback_config_update() {
     let rollback_manager = Arc::new(RollbackManager::new(canary_manager));
 
     // 設定を更新
-    let mut new_config = RollbackConfig::default();
-    new_config.error_rate_threshold = 2.5;
-    new_config.response_time_threshold_ms = 300;
-    new_config.auto_rollback_enabled = false;
+    let new_config = RollbackConfig {
+        error_rate_threshold: 2.5,
+        response_time_threshold_ms: 300,
+        auto_rollback_enabled: false,
+        ..Default::default()
+    };
 
     rollback_manager
         .update_config(new_config.clone())
@@ -276,8 +278,10 @@ async fn test_snapshot_cleanup() {
     let rollback_manager = Arc::new(RollbackManager::new(canary_manager));
 
     // 設定を更新（最大スナップショット数を少なくする）
-    let mut config = RollbackConfig::default();
-    config.max_snapshots = 3;
+    let config = RollbackConfig {
+        max_snapshots: 3,
+        ..Default::default()
+    };
     rollback_manager.update_config(config).await.unwrap();
 
     // 最大数を超えるスナップショットを作成
@@ -416,7 +420,7 @@ async fn test_monitoring_functionality() {
         .unwrap();
 
     // 監視開始
-    let _monitoring_handle = rollback_manager.start_monitoring().await.unwrap();
+    rollback_manager.start_monitoring().await.unwrap();
 
     // 少し待機
     sleep(Duration::from_millis(100)).await;
@@ -424,6 +428,5 @@ async fn test_monitoring_functionality() {
     // 監視停止
     rollback_manager.stop_monitoring().await.unwrap();
 
-    // テスト完了を確認
-    assert!(true); // 監視が正常に開始/停止されたことを確認
+    // テスト完了を確認（監視が正常に開始/停止されたことを確認）
 }
