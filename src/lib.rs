@@ -13,6 +13,8 @@ pub mod error;
 pub mod handlers;
 pub mod mcp;
 // pub mod plugin_isolation; // 将来実装予定
+pub mod canary_deployment;
+pub mod dashboard;
 pub mod plugins;
 pub mod policy_application;
 pub mod policy_config;

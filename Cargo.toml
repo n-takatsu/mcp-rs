@@ -1,9 +1,9 @@
 [package]
 name = "mcp-rs"
-version = "0.1.0"
+version = "0.15.0"
 edition = "2021"
 authors = ["n-takatsu"]
-description = "Rust implementation of the Model Context Protocol (MCP) for AI-agent integration"
+description = "Rust implementation of the Model Context Protocol (MCP) for AI-agent integration with Canary Deployment System"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/n-takatsu/mcp-rs"
 
@@ -32,6 +32,10 @@ uuid = { version = "1.0", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 notify = "6.1"
 futures = "0.3"
+# TUIダッシュボード用依存関係
+ratatui = "0.27"
+crossterm = "0.27"
+tui-input = "0.8"
 # セキュリティ強化用の暗号化クレート
 secrecy = { version = "0.8", features = ["serde"] }  # 0.8に戻す（API安定版）
 zeroize = "1.8"  # 最新版
