@@ -4,8 +4,9 @@
 
 > **[English](README.md)** | **[日本語](README.ja.md)**
 
-[![Architecture](https://img.shields.io/badge/Architecture-v0.2.0--alpha-blue)](#architecture)
+[![Architecture](https://img.shields.io/badge/Architecture-v0.15.0--canary--deployment-blue)](#architecture)
 [![Implementation](https://img.shields.io/badge/WordPress_Tools-27_Available-green)](#wordpress-mcp-tools)
+[![Canary_System](https://img.shields.io/badge/Canary_Deployment-Real--time_Dashboard-orange)](#canary-deployment-system)
 [![License](https://img.shields.io/badge/License-MIT%2FApache--2.0-green)](#license)
 
 ## Overview
@@ -196,10 +197,65 @@ Need WordPress security automation? 6-layer enterprise security architecture wit
 - **🔌 Plugin Dynamic Loading**: Hot-pluggable handler loading system
 - **⚡ Performance Optimization**: Benchmarking and performance tuning
 
-### 🎯 Roadmap
-- **v0.2.0**: ✅ Core runtime module, ✅ stdio transport, HTTP transport integration
-- **v0.3.0**: WebSocket transport, metrics, performance optimization
-- **v1.0.0**: Production readiness, security audit, ecosystem
+### 🎯 Development Roadmap (0.01 Increment Versioning)
+
+#### 🎯 **Current: v0.15.0** - Canary Deployment System ✅
+- **v0.14.0**: ✅ Policy Hot-Reload System (Epic #15)
+  - Real-time policy file monitoring with debouncing
+  - 4-level validation pipeline (syntax → semantic → security → integration)
+  - Policy application engine with diff management
+  - Performance: 15-35ms reload times
+- **v0.15.0**: ✅ Canary Deployment System
+  - Traffic splitting with hash-based distribution
+  - Real-time monitoring dashboard (TUI)
+  - Event-driven architecture with metrics collection
+  - Interactive controls for deployment management
+
+#### 🚀 **Next Releases: v0.16.0 - v0.20.0**
+- **v0.16.0**: Advanced Dashboard Features
+  - Real-time charts and graphs visualization
+  - Historical metrics and trend analysis
+  - Alert system integration
+  - Export capabilities for monitoring data
+- **v0.17.0**: Auto-scaling & Health Checks
+  - Automatic traffic adjustment based on metrics
+  - Health check integration for canary validation
+  - Circuit breaker pattern implementation
+  - SLA-based promotion criteria
+- **v0.18.0**: Multi-Environment Deployment
+  - Staging → Production deployment pipelines
+  - Environment-specific policy management
+  - Cross-environment metrics comparison
+  - Rollback automation across environments
+- **v0.19.0**: API Integration & Webhooks
+  - REST API for deployment management
+  - Webhook notifications for deployment events
+  - Third-party monitoring system integration
+  - Slack/Teams notification support
+- **v0.20.0**: Enterprise Features
+  - Role-based access control (RBAC)
+  - Audit logging and compliance reporting
+  - Multi-tenant deployment management
+  - Enterprise security hardening
+
+#### 🎯 **Major Milestones: v0.21.0 - v0.30.0**
+- **v0.21.0**: Blue-Green Deployment Pattern
+- **v0.22.0**: A/B Testing Framework Integration
+- **v0.23.0**: Feature Flag Management
+- **v0.24.0**: Performance Testing Automation
+- **v0.25.0**: Container Orchestration (Kubernetes)
+- **v0.26.0**: Cloud Provider Integration (AWS/Azure/GCP)
+- **v0.27.0**: Microservices Deployment Coordination
+- **v0.28.0**: GitOps Integration (ArgoCD/Flux)
+- **v0.29.0**: Observability Stack Integration (Prometheus/Grafana)
+- **v0.30.0**: AI-Powered Deployment Optimization
+
+#### 🏆 **Long-term Vision: v1.0.0+**
+- **v1.0.0**: Production-Ready Release
+  - Complete security audit and penetration testing
+  - Performance benchmarking and optimization
+  - Comprehensive documentation and examples
+  - Enterprise support and maintenance plans
 
 ## 📚 Documentation
 
