@@ -1,8 +1,18 @@
-# mcp-rs Architecture
+# mcp-rs Architecture v0.15.0
 
 ## Overview
 
-`mcp-rs` follows a 6-layer security-first architecture designed for enterprise production scalability, maintainability, and extensibility. The system is built around the Model Context Protocol (MCP) JSON-RPC specification with comprehensive security integration and AI agent protection.
+`mcp-rs` follows a 6-layer security-first architecture designed for enterprise production scalability, maintainability, and extensibility. The system is built around the Model Context Protocol (MCP) JSON-RPC specification with comprehensive security integration, AI agent protection, and advanced canary deployment capabilities.
+
+## Current Version: v0.15.0 - Canary Deployment System
+
+This release introduces sophisticated deployment management with real-time monitoring capabilities:
+
+### New Architecture Components (v0.15.0)
+- **Canary Deployment Manager**: Traffic splitting and gradual rollout system
+- **Real-time Dashboard**: Terminal-based monitoring interface
+- **Policy Hot-Reload Engine**: Live configuration updates without downtime
+- **Event-Driven Metrics**: Comprehensive deployment telemetry
 
 ## Core Architecture Principles
 

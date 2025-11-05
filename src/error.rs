@@ -78,6 +78,22 @@ pub enum Error {
     /// Not implemented
     #[error("Not implemented: {0}")]
     NotImplemented(String),
+
+    /// Canary deployment error
+    #[error("Canary deployment error: {0}")]
+    CanaryDeployment(String),
+
+    /// Invalid input
+    #[error("Invalid input: {0}")]
+    InvalidInput(String),
+
+    /// Metrics collection error
+    #[error("Metrics error: {0}")]
+    Metrics(String),
+
+    /// Traffic splitting error
+    #[error("Traffic splitting error: {0}")]
+    TrafficSplitting(String),
 }
 
 impl Error {
