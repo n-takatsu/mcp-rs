@@ -492,6 +492,12 @@ impl Default for StagedRollbackConfig {
     }
 }
 
+impl Default for MetricsMonitor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MetricsMonitor {
     pub fn new() -> Self {
         Self {
