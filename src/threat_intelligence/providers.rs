@@ -323,8 +323,8 @@ impl ProviderManager {
     }
 
     /// プロバイダーを取得
-    pub fn get_provider(&self, name: &str) -> Option<&Box<dyn ThreatProvider>> {
-        self.providers.get(name)
+    pub fn get_provider(&self, name: &str) -> Option<&dyn ThreatProvider> {
+        self.providers.get(name).map(|p| p.as_ref())
     }
 
     /// すべてのプロバイダーを取得

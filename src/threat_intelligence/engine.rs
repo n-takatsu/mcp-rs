@@ -326,20 +326,15 @@ impl ThreatDetectionEngine {
             for cap in rules.url_regex.find_iter(input) {
                 let url_str = cap.as_str();
 
-                if !self.should_exclude(url_str, &rules) {
-                    if let Ok(_) = Url::parse(url_str) {
-                        indicators.push(ThreatIndicator {
-                            indicator_type: IndicatorType::Url,
-                            value: url_str.to_string(),
-                            pattern: None,
-                            tags: vec!["auto-extracted".to_string()],
-                            context: Some(format!(
-                                "Extracted from input at position {}",
-                                cap.start()
-                            )),
-                            first_seen: chrono::Utc::now(),
-                        });
-                    }
+                if !self.should_exclude(url_str, &rules) && Url::parse(url_str).is_ok() {
+                    indicators.push(ThreatIndicator {
+                        indicator_type: IndicatorType::Url,
+                        value: url_str.to_string(),
+                        pattern: None,
+                        tags: vec!["auto-extracted".to_string()],
+                        context: Some(format!("Extracted from input at position {}", cap.start())),
+                        first_seen: chrono::Utc::now(),
+                    });
                 }
             }
         }

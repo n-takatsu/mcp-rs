@@ -58,13 +58,14 @@ pub enum ThreatType {
 }
 
 /// 深刻度レベル
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Default)]
 pub enum SeverityLevel {
     /// 情報レベル
     Info,
     /// 低
     Low,
     /// 中
+    #[default]
     Medium,
     /// 高
     High,
@@ -337,7 +338,7 @@ impl SeverityLevel {
     }
 
     /// 文字列から変換
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn from_string(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "info" => Some(SeverityLevel::Info),
             "low" => Some(SeverityLevel::Low),
@@ -346,11 +347,5 @@ impl SeverityLevel {
             "critical" => Some(SeverityLevel::Critical),
             _ => None,
         }
-    }
-}
-
-impl Default for SeverityLevel {
-    fn default() -> Self {
-        SeverityLevel::Medium
     }
 }
