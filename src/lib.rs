@@ -12,6 +12,7 @@ pub mod core;
 pub mod error;
 pub mod handlers;
 pub mod mcp;
+pub mod threat_intelligence;
 // pub mod plugin_isolation; // 将来実装予定
 pub mod canary_deployment;
 pub mod dashboard;
