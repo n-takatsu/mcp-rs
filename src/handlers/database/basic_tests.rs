@@ -243,7 +243,8 @@ pub mod test_utils {
                 port: match db_type_clone {
                     DatabaseType::PostgreSQL => 5432,
                     DatabaseType::MySQL => 3306,
-                    DatabaseType::SQLite => 0,
+                    DatabaseType::MariaDB => 3306,
+                    DatabaseType::SQLite => 0, // SQLiteはファイルベース
                     DatabaseType::MongoDB => 27017,
                     DatabaseType::Redis => 6379,
                     DatabaseType::ClickHouse => 9000,

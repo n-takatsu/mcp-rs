@@ -247,6 +247,7 @@ async fn test_database_config_integration() {
                 port: match db_type {
                     DatabaseType::PostgreSQL => 5432,
                     DatabaseType::MySQL => 3306,
+                    DatabaseType::MariaDB => 3306,
                     DatabaseType::SQLite => 0,
                     DatabaseType::MongoDB => 27017,
                     DatabaseType::Redis => 6379,
@@ -271,6 +272,7 @@ async fn test_database_config_integration() {
             target_type: TargetType::Database(match db_type {
                 DatabaseType::PostgreSQL => GenericDatabaseType::PostgreSQL,
                 DatabaseType::MySQL => GenericDatabaseType::MySQL,
+                DatabaseType::MariaDB => GenericDatabaseType::MySQL, // MariaDBはMySQLとして扱う
                 DatabaseType::SQLite => GenericDatabaseType::SQLite,
                 DatabaseType::MongoDB => GenericDatabaseType::MongoDB,
                 DatabaseType::Redis => GenericDatabaseType::Redis,
@@ -282,6 +284,7 @@ async fn test_database_config_integration() {
                     match db_type {
                         DatabaseType::PostgreSQL => "postgresql",
                         DatabaseType::MySQL => "mysql",
+                        DatabaseType::MariaDB => "mariadb",
                         DatabaseType::SQLite => "sqlite",
                         DatabaseType::MongoDB => "mongodb",
                         DatabaseType::Redis => "redis",

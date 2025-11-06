@@ -11,6 +11,7 @@ use std::collections::HashMap;
 pub enum DatabaseType {
     PostgreSQL,
     MySQL,
+    MariaDB,
     SQLite,
     MongoDB,
     Redis,
@@ -22,6 +23,7 @@ impl std::fmt::Display for DatabaseType {
         match self {
             DatabaseType::PostgreSQL => write!(f, "postgresql"),
             DatabaseType::MySQL => write!(f, "mysql"),
+            DatabaseType::MariaDB => write!(f, "mariadb"),
             DatabaseType::SQLite => write!(f, "sqlite"),
             DatabaseType::MongoDB => write!(f, "mongodb"),
             DatabaseType::Redis => write!(f, "redis"),
@@ -172,6 +174,20 @@ pub enum DatabaseFeature {
     Sharding,
     Acid,
     EventualConsistency,
+    // Redis特有の機能
+    InMemoryStorage,
+    KeyValueStore,
+    PubSub,
+    Scripting,
+    Clustering,
+    Persistence,
+    // MongoDB特有の機能
+    DocumentStore,
+    AggregationPipeline,
+    GridFS,
+    ChangeStreams,
+    Geospatial,
+    CappedCollections,
 }
 
 /// クエリタイプ
@@ -349,7 +365,7 @@ pub struct HealthStatus {
 }
 
 /// 健全性ステータスタイプ
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum HealthStatusType {
     Healthy,
     Warning,
@@ -439,11 +455,30 @@ pub enum DatabaseError {
     #[error("Validation error: {0}")]
     ValidationError(String),
 
+    #[error("Invalid query: {0}")]
+    InvalidQuery(String),
+
     #[error("SQL syntax error: {0}")]
     SqlSyntaxError(String),
 
     #[error("Data conversion error: {0}")]
     ConversionError(String),
+
+    // MongoDB特有のエラー
+    #[error("Invalid document format: {0}")]
+    InvalidDocumentFormat(String),
+
+    #[error("Serialization error: {0}")]
+    SerializationError(String),
+
+    #[error("Collection not found: {0}")]
+    CollectionNotFound(String),
+
+    #[error("Index creation failed: {0}")]
+    IndexCreationFailed(String),
+
+    #[error("Aggregation pipeline error: {0}")]
+    AggregationError(String),
 
     #[error("Unknown error: {0}")]
     Unknown(String),
