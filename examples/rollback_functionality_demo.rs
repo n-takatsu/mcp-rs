@@ -52,7 +52,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ロールバック設定をカスタマイズ
     let config = RollbackConfig {
         auto_rollback_enabled: true,
-        error_rate_threshold: 3.0, // 3%
+        error_rate_threshold: 3.0,       // 3%
         response_time_threshold_ms: 500, // 500ms
         evaluation_window_minutes: 2,
         ..Default::default()
