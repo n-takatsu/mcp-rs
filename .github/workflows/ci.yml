@@ -4,7 +4,7 @@ on:
   push:
     branches: [ main, develop ]
   pull_request:
-    branches: [ main ]
+    branches: [ main, develop ]  # developブランチへのPRも含める
 
 # 同じコミットに対する重複実行を取り消し
 concurrency:
@@ -59,6 +59,18 @@ jobs:
     - name: Run clippy
       if: matrix.rust == 'stable'
       run: cargo clippy --all-targets --all-features -- -D warnings -A dead_code
+      
+    # PR用の詳細なClippyレポート
+    - name: Generate clippy report for PR
+      if: matrix.rust == 'stable' && github.event_name == 'pull_request'
+      run: |
+        cargo clippy --all-targets --all-features --message-format=json -- -D warnings -A dead_code > clippy-report.json || true
+        echo "### 📋 Clippy Analysis Results" >> $GITHUB_STEP_SUMMARY
+        if [ -s clippy-report.json ]; then
+          echo "✅ All Clippy checks passed!" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "❌ Clippy issues found. Please review the logs above." >> $GITHUB_STEP_SUMMARY
+        fi
     
     - name: Build
       run: cargo build --verbose

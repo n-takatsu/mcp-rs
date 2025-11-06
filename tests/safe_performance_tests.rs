@@ -10,6 +10,12 @@ pub struct SafePerformanceTest {
     safety_manager: SafetyManager,
 }
 
+impl Default for SafePerformanceTest {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SafePerformanceTest {
     pub fn new() -> Self {
         Self {
@@ -182,12 +188,12 @@ impl SafePerformanceTest {
     /// エラーハンドリングテスト（安全版）
     pub async fn safe_error_handling_test(&self) -> Result<TestResult, SafetyError> {
         let _error_scenarios = 3; // 本来の4から削減
-        let iterations_per_scenario = 2; // 本来の5から削減
+        let iterations_per_scenario: usize = 2; // 本来の5から削減
         let test_timeout = Duration::from_secs(20);
 
         let test_result = timeout(test_timeout, async {
             let mut all_results = Vec::new();
-            let scenarios = vec![
+            let scenarios = [
                 "INVALID SQL QUERY",
                 "SELECT * FROM non_existent_table",
                 "INSERT INTO",
@@ -196,7 +202,7 @@ impl SafePerformanceTest {
             for (scenario_idx, scenario) in scenarios.iter().enumerate() {
                 let loop_guard = LoopGuard::new(
                     &format!("error_scenario_{}", scenario_idx),
-                    iterations_per_scenario,
+                    iterations_per_scenario as u64,
                 );
 
                 for iteration in 0..iterations_per_scenario {
@@ -225,8 +231,7 @@ impl SafePerformanceTest {
 
                     let duration = start.elapsed();
                     all_results.push(QueryTestResult {
-                        iteration: (iteration as u64
-                            + scenario_idx as u64 * iterations_per_scenario as u64),
+                        iteration: (iteration + scenario_idx * iterations_per_scenario) as u64,
                         duration,
                         success: false, // エラーテストなので成功は期待しない
                         result: format!("Expected error for: {}", scenario),
