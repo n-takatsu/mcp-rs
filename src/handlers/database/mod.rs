@@ -20,6 +20,10 @@ pub mod advanced_security; // 高度なセキュリティ機能（MFA、RBAC、�
 pub mod integrated_security;
 pub mod security_config; // 拡張セキュリティ設定 // 統合セキュリティマネージャー
 
+// 動的データベース切り替えモジュール
+pub mod dynamic_engine; // 動的エンジン切り替え機能
+pub mod dynamic_tools; // 動的切り替えMCPツール
+
 // エンジン実装
 pub mod engines;
 

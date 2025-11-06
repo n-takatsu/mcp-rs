@@ -118,7 +118,8 @@ Need WordPress security automation? 6-layer enterprise security architecture wit
   - **🔴 Redis**: High-performance in-memory store with cluster support (558 lines)
   - **🍃 MongoDB**: Document-oriented NoSQL with aggregation pipelines (952 lines)
   - **📄 SQLite**: Lightweight embedded database for development
-  - **🔐 Security Integration**: 6-layer security architecture for all database operations
+  - **� Dynamic Engine Switching**: Zero-downtime switching between database engines with real-time monitoring
+  - **�🔐 Security Integration**: 6-layer security architecture for all database operations
   - **⚡ Multi-Engine Workflows**: Cache-aside patterns, hybrid data architectures
   - **📊 Health Monitoring**: Real-time database health checks and performance metrics
   - **🔧 Connection Pooling**: Advanced connection management with timeout handling
@@ -623,6 +624,77 @@ Once the server is running, AI agents can interact with WordPress through natura
 - **Maintenance Mode**: Works seamlessly with WordPress maintenance plugins
 - **Password Expiration**: Automatic detection and clear resolution guidance
 - **Health Monitoring**: Proactive system validation and alerting
+
+## Dynamic Database Engine Switching
+
+🚀 **Enterprise-Grade Feature**: Zero-downtime database engine switching with real-time monitoring and automatic failover capabilities.
+
+### Key Features
+
+- **⚡ Zero-Downtime Switching**: Seamlessly switch between database engines without service interruption
+- **🔄 Real-time Monitoring**: Continuous health monitoring and performance metrics for all engines
+- **🛡️ Automatic Failover**: Intelligent failover with policy-based switching rules
+- **📊 Performance Optimization**: Automatic selection of optimal engines based on workload characteristics
+- **🔧 Hot Configuration**: Dynamic configuration updates without service restart
+
+### Supported Engine Combinations
+
+| Primary Engine | Secondary Engines | Use Case |
+|---------------|------------------|----------|
+| PostgreSQL | Redis, MongoDB | High-throughput web applications |
+| MySQL | Redis, SQLite | Traditional web stacks with caching |
+| MongoDB | PostgreSQL, Redis | Document-heavy applications with relational needs |
+| Redis | PostgreSQL, MongoDB | Cache-first architectures with persistent fallback |
+
+### MCP Tools for Dynamic Switching
+
+```bash
+# Switch primary database engine
+switch_database_engine --target postgresql --mode graceful
+
+# Configure automatic switching policies
+configure_switch_policy --trigger performance --threshold 1000ms
+
+# Get real-time engine metrics
+get_engine_metrics --engine all --format json
+
+# Manual health check and failover
+check_engine_health --engine mongodb --auto-failover true
+
+# List all available engines
+list_available_engines --status all
+
+# Monitor switching events
+monitor_switch_events --real-time true
+```
+
+### Configuration Example
+
+```toml
+[database.dynamic_switching]
+enabled = true
+primary_engine = "postgresql"
+secondary_engines = ["redis", "mongodb"]
+
+[database.switching_policies]
+performance_threshold_ms = 1000
+error_rate_threshold = 0.05
+auto_failover_enabled = true
+rollback_on_failure = true
+
+[database.monitoring]
+health_check_interval_seconds = 30
+metrics_collection_enabled = true
+alert_on_degradation = true
+```
+
+### Use Cases
+
+1. **Performance Optimization**: Automatically switch to faster engines under high load
+2. **Disaster Recovery**: Instant failover to backup databases during outages
+3. **A/B Testing**: Compare performance across different database technologies
+4. **Cost Optimization**: Switch to cheaper engines during low-traffic periods
+5. **Compliance**: Route sensitive data to specific compliant database systems
 
 ## Architecture
 
