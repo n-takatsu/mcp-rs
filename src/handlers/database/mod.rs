@@ -15,6 +15,11 @@ pub mod loadbalancer;
 pub mod retry; // リトライ戦略 // 負荷分散
                // pub mod integrated_availability; // 統合可用性システム（一時的に無効化）
 
+// 高度なセキュリティモジュール
+pub mod advanced_security; // 高度なセキュリティ機能（MFA、RBAC、異常検知等）
+pub mod integrated_security;
+pub mod security_config; // 拡張セキュリティ設定 // 統合セキュリティマネージャー
+
 // エンジン実装
 pub mod engines;
 
@@ -33,3 +38,10 @@ pub use engine::{DatabaseConnection, DatabaseEngine, DatabaseTransaction};
 pub use handler::DatabaseHandler;
 pub use security::DatabaseSecurity;
 pub use types::{DatabaseConfig, DatabaseFeature, DatabaseType, ExecuteResult, QueryResult};
+
+// 高度なセキュリティAPI
+pub use advanced_security::{
+    AnomalyDetector, ColumnEncryption, MultiFactorAuth, RoleBasedAccessControl,
+};
+pub use integrated_security::{IntegratedSecurityManager, SecurityCheckResult};
+pub use security_config::AdvancedSecurityConfig;

@@ -693,7 +693,15 @@ mcp-rs/
 │   ├── wordpress_security_diagnosis.rs  # Security features
 │   └── timeout_test_v2.rs          # Advanced timeout test
 ├── docs/                  # Documentation
+│   ├── api/               # API documentation
+│   ├── design/            # Design documents
+│   ├── implementation/    # Implementation guides
+│   ├── database-availability-guide.md  # Database availability
+│   ├── database-security-enhancement-plan.md  # Security planning
 │   └── architecture.md    # Architecture design document
+├── reports/               # Implementation reports and results
+│   ├── README.md          # Report management guide
+│   └── database-security-implementation-report.md  # Security implementation
 ├── mcp-config.toml.example # Configuration template
 └── Cargo.toml            # Dependencies and metadata
 ```

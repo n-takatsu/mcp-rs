@@ -274,7 +274,7 @@ mod tests {
         let temp_path = temp_dir.path().to_string_lossy().to_string();
 
         let watcher = PolicyFileWatcher::new(&temp_path);
-        
+
         // ファイル監視の開始をテスト（実際のイベント待機なし）
         match watcher.start_watching().await {
             Ok(_) => {
@@ -286,7 +286,7 @@ mod tests {
                 eprintln!("警告: ファイル監視開始失敗（環境依存）: {}", e);
             }
         }
-        
+
         watcher.stop();
         assert!(watcher.cancellation_token.is_cancelled());
     }
