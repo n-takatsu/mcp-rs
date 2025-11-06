@@ -883,7 +883,7 @@ mod tests {
 
         assert_eq!(doc.get_field("name").unwrap().as_str().unwrap(), "John Doe");
         assert_eq!(doc.get_field("age").unwrap().as_i64().unwrap(), 30);
-        assert_eq!(doc.get_field("active").unwrap().as_bool().unwrap(), true);
+        assert!(doc.get_field("active").unwrap().as_bool().unwrap());
     }
 
     #[tokio::test]

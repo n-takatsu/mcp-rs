@@ -10,6 +10,6 @@ mod tests {
     #[test]
     fn placeholder_test() {
         // Empty placeholder test to keep the test file valid
-        assert!(true);
+        // Note: Actual performance tests are disabled to prevent CI hangs
     }
 }

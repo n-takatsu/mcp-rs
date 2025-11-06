@@ -176,7 +176,7 @@ impl LoopGuard {
 
         // 長時間実行の警告
         let elapsed = self.start_time.elapsed();
-        if elapsed > Duration::from_secs(10) && current % 100 == 0 {
+        if elapsed > Duration::from_secs(10) && current.is_multiple_of(100) {
             warn!(
                 "Long-running operation '{}': {} iterations in {:?}",
                 self.operation_name, current, elapsed
