@@ -31,6 +31,7 @@ MCP-RS provides a **comprehensive, battle-tested** implementation of the MCP (Mo
 
 ### 🗄️ Database Integration (Production Ready)
 - **Multi-Engine Support**: PostgreSQL, MySQL, Redis, MongoDB, SQLite
+- **🔄 Dynamic Engine Switching**: Zero-downtime switching with intelligent failover
 - **Enterprise Security**: 6-layer security architecture for all database operations
 - **Advanced Features**: Connection pooling, transaction management, schema introspection
 - **Performance Monitoring**: Real-time health checks and query optimization

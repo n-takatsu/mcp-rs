@@ -3,8 +3,8 @@
 //! 動的データベース切り替え機能のMCPツールインターフェース
 
 use super::dynamic_engine::{
-    DynamicEngineManager, EngineInfo, EngineMetrics, SwitchEvent, SwitchResult, SwitchStrategy,
-    SwitchPolicy, TriggerCondition,
+    DynamicEngineManager, EngineInfo, EngineMetrics, SwitchEvent, SwitchPolicy, SwitchResult,
+    SwitchStrategy, TriggerCondition,
 };
 use super::types::{DatabaseError, DatabaseType};
 use crate::mcp::{McpError, Tool, ToolCallParams};
@@ -31,7 +31,8 @@ impl DynamicDatabaseTools {
         vec![
             Tool {
                 name: "switch_database_engine".to_string(),
-                description: "Dynamically switch the active database engine with zero downtime".to_string(),
+                description: "Dynamically switch the active database engine with zero downtime"
+                    .to_string(),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
@@ -64,7 +65,8 @@ impl DynamicDatabaseTools {
             },
             Tool {
                 name: "list_available_engines".to_string(),
-                description: "List all available database engines and their current status".to_string(),
+                description: "List all available database engines and their current status"
+                    .to_string(),
                 input_schema: json!({
                     "type": "object",
                     "properties": {},
@@ -73,7 +75,8 @@ impl DynamicDatabaseTools {
             },
             Tool {
                 name: "get_engine_metrics".to_string(),
-                description: "Get real-time performance metrics for a specific database engine".to_string(),
+                description: "Get real-time performance metrics for a specific database engine"
+                    .to_string(),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
@@ -87,7 +90,9 @@ impl DynamicDatabaseTools {
             },
             Tool {
                 name: "configure_switch_policy".to_string(),
-                description: "Configure automatic switching policies based on performance thresholds".to_string(),
+                description:
+                    "Configure automatic switching policies based on performance thresholds"
+                        .to_string(),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
@@ -202,7 +207,8 @@ impl DynamicDatabaseTools {
             },
             Tool {
                 name: "get_current_active_engine".to_string(),
-                description: "Get information about the currently active database engine".to_string(),
+                description: "Get information about the currently active database engine"
+                    .to_string(),
                 input_schema: json!({
                     "type": "object",
                     "properties": {},
@@ -239,9 +245,10 @@ impl DynamicDatabaseTools {
 
     /// データベースエンジン切り替え
     async fn handle_switch_engine(&self, params: &ToolCallParams) -> Result<JsonValue, McpError> {
-        let args = params.arguments.as_ref().ok_or_else(|| {
-            McpError::InvalidRequest("Missing arguments".to_string())
-        })?;
+        let args = params
+            .arguments
+            .as_ref()
+            .ok_or_else(|| McpError::InvalidRequest("Missing arguments".to_string()))?;
 
         let target_engine = args
             .get("target_engine")
@@ -253,10 +260,7 @@ impl DynamicDatabaseTools {
             .and_then(|v| v.as_str())
             .unwrap_or("graceful");
 
-        let force = args
-            .get("force")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
+        let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
 
         let drain_timeout_seconds = args
             .get("drain_timeout_seconds")
@@ -302,10 +306,7 @@ impl DynamicDatabaseTools {
             }
             Err(e) => {
                 error!("Database engine switch failed: {}", e);
-                Err(McpError::Internal(format!(
-                    "Switch failed: {}",
-                    e
-                )))
+                Err(McpError::Internal(format!("Switch failed: {}", e)))
             }
         }
     }
@@ -334,9 +335,10 @@ impl DynamicDatabaseTools {
 
     /// エンジンメトリクス取得
     async fn handle_get_metrics(&self, params: &ToolCallParams) -> Result<JsonValue, McpError> {
-        let args = params.arguments.as_ref().ok_or_else(|| {
-            McpError::InvalidRequest("Missing arguments".to_string())
-        })?;
+        let args = params
+            .arguments
+            .as_ref()
+            .ok_or_else(|| McpError::InvalidRequest("Missing arguments".to_string()))?;
 
         let engine_id = args
             .get("engine_id")
@@ -365,10 +367,14 @@ impl DynamicDatabaseTools {
     }
 
     /// 切り替えポリシー設定
-    async fn handle_configure_policy(&self, params: &ToolCallParams) -> Result<JsonValue, McpError> {
-        let args = params.arguments.as_ref().ok_or_else(|| {
-            McpError::InvalidRequest("Missing arguments".to_string())
-        })?;
+    async fn handle_configure_policy(
+        &self,
+        params: &ToolCallParams,
+    ) -> Result<JsonValue, McpError> {
+        let args = params
+            .arguments
+            .as_ref()
+            .ok_or_else(|| McpError::InvalidRequest("Missing arguments".to_string()))?;
 
         let policy_name = args
             .get("policy_name")
@@ -390,10 +396,7 @@ impl DynamicDatabaseTools {
             .and_then(|v| v.as_str())
             .unwrap_or("graceful");
 
-        let priority = args
-            .get("priority")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(5) as u8;
+        let priority = args.get("priority").and_then(|v| v.as_u64()).unwrap_or(5) as u8;
 
         let enabled = args
             .get("enabled")
@@ -485,9 +488,10 @@ impl DynamicDatabaseTools {
 
     /// 手動切り替えトリガー
     async fn handle_manual_switch(&self, params: &ToolCallParams) -> Result<JsonValue, McpError> {
-        let args = params.arguments.as_ref().ok_or_else(|| {
-            McpError::InvalidRequest("Missing arguments".to_string())
-        })?;
+        let args = params
+            .arguments
+            .as_ref()
+            .ok_or_else(|| McpError::InvalidRequest("Missing arguments".to_string()))?;
 
         let target_engine = args
             .get("target_engine")
@@ -499,7 +503,10 @@ impl DynamicDatabaseTools {
             .and_then(|v| v.as_str())
             .ok_or_else(|| McpError::InvalidRequest("reason is required".to_string()))?;
 
-        info!("Manual switch triggered: {} -> {}, reason: {}", "current", target_engine, reason);
+        info!(
+            "Manual switch triggered: {} -> {}, reason: {}",
+            "current", target_engine, reason
+        );
 
         // 即座切り替え戦略で実行
         let strategy = SwitchStrategy::Immediate {
@@ -517,10 +524,7 @@ impl DynamicDatabaseTools {
                 "reason": reason,
                 "switch_result": result
             })),
-            Err(e) => Err(McpError::Internal(format!(
-                "Manual switch failed: {}",
-                e
-            ))),
+            Err(e) => Err(McpError::Internal(format!("Manual switch failed: {}", e))),
         }
     }
 
@@ -528,11 +532,8 @@ impl DynamicDatabaseTools {
     async fn handle_get_history(&self, params: &ToolCallParams) -> Result<JsonValue, McpError> {
         let empty_args = HashMap::new();
         let args = params.arguments.as_ref().unwrap_or(&empty_args);
-        
-        let limit = args
-            .get("limit")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(20) as usize;
+
+        let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
 
         let history = self.dynamic_manager.get_switch_history(limit).await;
 
@@ -560,10 +561,14 @@ impl DynamicDatabaseTools {
     }
 
     /// 切り替え準備状況の検証
-    async fn handle_validate_readiness(&self, params: &ToolCallParams) -> Result<JsonValue, McpError> {
-        let args = params.arguments.as_ref().ok_or_else(|| {
-            McpError::InvalidRequest("Missing arguments".to_string())
-        })?;
+    async fn handle_validate_readiness(
+        &self,
+        params: &ToolCallParams,
+    ) -> Result<JsonValue, McpError> {
+        let args = params
+            .arguments
+            .as_ref()
+            .ok_or_else(|| McpError::InvalidRequest("Missing arguments".to_string()))?;
 
         let target_engine = args
             .get("target_engine")
@@ -610,7 +615,7 @@ impl DynamicDatabaseTools {
         match self.dynamic_manager.get_active_engine().await {
             Some((engine_id, engine)) => {
                 let metrics = self.dynamic_manager.get_engine_metrics(&engine_id).await;
-                
+
                 Ok(json!({
                     "active_engine": {
                         "id": engine_id,
@@ -635,11 +640,9 @@ mod tests {
     #[tokio::test]
     async fn test_dynamic_tools_creation() {
         let pool_manager = Arc::new(PoolManager::new());
-        let dynamic_manager = Arc::new(
-            DynamicEngineManager::new(pool_manager).await.unwrap()
-        );
+        let dynamic_manager = Arc::new(DynamicEngineManager::new(pool_manager).await.unwrap());
         let _tools = DynamicDatabaseTools::new(dynamic_manager);
-        
+
         // ツール作成が成功することを確認
         assert!(!DynamicDatabaseTools::get_tools().is_empty());
     }
@@ -647,10 +650,10 @@ mod tests {
     #[test]
     fn test_tool_definitions() {
         let tools = DynamicDatabaseTools::get_tools();
-        
+
         // 期待されるツール数
         assert_eq!(tools.len(), 9);
-        
+
         // 主要ツールの存在確認
         let tool_names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
         assert!(tool_names.contains(&"switch_database_engine"));
@@ -662,16 +665,14 @@ mod tests {
     #[tokio::test]
     async fn test_list_engines_empty() {
         let pool_manager = Arc::new(PoolManager::new());
-        let dynamic_manager = Arc::new(
-            DynamicEngineManager::new(pool_manager).await.unwrap()
-        );
+        let dynamic_manager = Arc::new(DynamicEngineManager::new(pool_manager).await.unwrap());
         let tools = DynamicDatabaseTools::new(dynamic_manager);
-        
+
         let _params = ToolCallParams {
             name: "list_available_engines".to_string(),
             arguments: Some(HashMap::new()),
         };
-        
+
         let result = tools.handle_list_engines().await.unwrap();
         let engines = result.get("engines").unwrap().as_array().unwrap();
         assert!(engines.is_empty());
