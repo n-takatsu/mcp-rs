@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: [ main ]
 
+# 同じコミットに対する重複実行を取り消し
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -17,8 +22,9 @@ jobs:
       matrix:
         rust:
           - stable
-          - beta
-          - nightly
+          # beta と nightly を一時的に無効化して高速化
+          # - beta  
+          # - nightly
     steps:
     - uses: actions/checkout@v4
     

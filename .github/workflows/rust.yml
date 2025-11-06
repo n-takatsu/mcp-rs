@@ -1,10 +1,14 @@
 name: Rust
 
+# PRのみで実行し、pushでは実行しない（ci.ymlと重複回避）
 on:
-  push:
-    branches: [ "main" ]
   pull_request:
     branches: [ "main" ]
+
+# 同じコミットに対する重複実行を取り消し  
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always

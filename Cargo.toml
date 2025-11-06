@@ -51,12 +51,27 @@ fancy-regex = "0.13"  # Advanced regex with lookahead/lookbehind（最新版）
 idna = "1.0.3"
 # プラグインシステム用依存関係
 libloading = "0.8"
+# データベースハンドラー用依存関係
+deadpool = "0.12"  # 汎用接続プール
+# PostgreSQL関連（オプショナル）
+tokio-postgres = { version = "0.7", optional = true }
+deadpool-postgres = { version = "0.14", optional = true }
+# MySQL関連（将来実装）
+# sqlx = { version = "0.8", features = ["postgres", "mysql", "sqlite", "runtime-tokio-rustls"], optional = true }
+
+[features]
+default = ["database"]
+database = []
+postgres = ["dep:tokio-postgres", "dep:deadpool-postgres"]
+# mysql = ["sqlx/mysql"]
+# sqlite = ["sqlx/sqlite"]
 
 [dev-dependencies]
 tokio-test = "0.4"
 tempfile = "3.8"
 criterion = { version = "0.5", features = ["html_reports"] }
 base64 = "0.21"
+mockall = "0.12"  # モックテスト用
 
 [[bench]]
 name = "mcp_protocol"
