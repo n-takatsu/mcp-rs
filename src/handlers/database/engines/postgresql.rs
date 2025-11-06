@@ -54,7 +54,7 @@ impl PostgreSqlEngine {
     }
 
     /// PostgreSQL固有の設定を検証
-    fn validate_postgresql_config(config: &DatabaseConfig) -> Result<(), DatabaseError> {
+    pub fn validate_postgresql_config(config: &DatabaseConfig) -> Result<(), DatabaseError> {
         if config.database_type != DatabaseType::PostgreSQL {
             return Err(DatabaseError::ConfigurationError(
                 "Invalid database type for PostgreSQL engine".to_string(),

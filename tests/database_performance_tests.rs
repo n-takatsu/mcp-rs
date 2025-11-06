@@ -1,6 +1,5 @@
 use futures::future::join_all;
 use mcp_rs::handlers::database::{
-    engines::postgresql::PostgreSqlEngine,
     types::{
         ConnectionConfig, DatabaseConfig, DatabaseType, FeatureConfig, PoolConfig, QueryType,
         SecurityConfig,
