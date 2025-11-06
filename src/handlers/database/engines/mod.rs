@@ -2,9 +2,9 @@
 //!
 //! 各種データベースエンジンの実装を提供
 
+pub mod mysql;
 pub mod postgresql;
 pub mod sqlite;
-pub mod mysql;
 
 // エンジンを直接アクセス可能にする
 pub use mysql::MySqlEngine;

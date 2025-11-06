@@ -2,6 +2,7 @@
 //!
 //! データベース接続プールの管理と最適化
 
+use super::availability::{AvailabilityConfig, AvailabilityManager}; // 可用性管理を追加
 use super::engine::DatabaseEngine;
 use super::types::{DatabaseConfig, DatabaseError, HealthStatus, HealthStatusType, PoolConfig};
 use async_trait::async_trait;
@@ -249,7 +250,7 @@ impl ConnectionPool {
         &self,
     ) -> Option<Box<dyn super::engine::DatabaseConnection>> {
         use crate::handlers::database::safety::LoopGuard;
-        
+
         let mut connections = self.connections.write().await;
         let loop_guard = LoopGuard::new("pool_connection_check", 10); // 最大10回まで
 
@@ -260,12 +261,9 @@ impl ConnectionPool {
                 warn!("Connection pool health check loop limit exceeded");
                 break;
             }
-            
+
             // 接続の健全性をチェック（タイムアウト付き）
-            match tokio::time::timeout(
-                std::time::Duration::from_secs(1), 
-                connection.ping()
-            ).await {
+            match tokio::time::timeout(std::time::Duration::from_secs(1), connection.ping()).await {
                 Ok(Ok(_)) => return Some(connection),
                 Ok(Err(_)) => {
                     // 不健全な接続は破棄

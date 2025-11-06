@@ -45,6 +45,18 @@ pub struct DatabaseConfig {
     pub features: FeatureConfig,
 }
 
+impl Default for DatabaseConfig {
+    fn default() -> Self {
+        Self {
+            database_type: DatabaseType::PostgreSQL,
+            connection: ConnectionConfig::default(),
+            pool: PoolConfig::default(),
+            security: SecurityConfig::default(),
+            features: FeatureConfig::default(),
+        }
+    }
+}
+
 /// 接続設定
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConnectionConfig {
@@ -55,9 +67,24 @@ pub struct ConnectionConfig {
     pub password: String,
     pub ssl_mode: Option<String>,
     pub timeout_seconds: u32,
-    pub retry_attempts: u32,
-    /// データベース固有のオプション
+    pub retry_attempts: u8,
     pub options: HashMap<String, String>,
+}
+
+impl Default for ConnectionConfig {
+    fn default() -> Self {
+        Self {
+            host: "localhost".to_string(),
+            port: 5432,
+            database: "postgres".to_string(),
+            username: "postgres".to_string(),
+            password: "".to_string(),
+            ssl_mode: None,
+            timeout_seconds: 30,
+            retry_attempts: 3,
+            options: HashMap::new(),
+        }
+    }
 }
 
 /// 接続プール設定
@@ -158,6 +185,9 @@ pub enum QueryType {
     Drop,
     Alter,
     StoredProcedure,
+    Transaction, // 新しく追加
+    Ddl,         // 新しく追加
+    Unknown,     // 新しく追加
     Custom(String),
 }
 
@@ -352,7 +382,7 @@ impl QueryContext {
 }
 
 /// データベースエラー
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, thiserror::Error)]
 pub enum DatabaseError {
     #[error("Connection failed: {0}")]
     ConnectionFailed(String),
@@ -369,6 +399,9 @@ pub enum DatabaseError {
     #[error("Configuration error: {0}")]
     ConfigurationError(String),
 
+    #[error("Configuration validation failed: {0}")]
+    ConfigValidationError(String),
+
     #[error("Pool error: {0}")]
     PoolError(String),
 
@@ -377,6 +410,37 @@ pub enum DatabaseError {
 
     #[error("Unsupported operation: {0}")]
     UnsupportedOperation(String),
+
+    // 新しく追加するエラーバリアント
+    #[error("Recovery failed: {0}")]
+    RecoveryFailed(String),
+
+    #[error("Failover failed: {0}")]
+    FailoverFailed(String),
+
+    #[error("Operation failed: {0}")]
+    OperationFailed(String),
+
+    #[error("No available endpoints: {0}")]
+    NoAvailableEndpoints(String),
+
+    #[error("Network error: {0}")]
+    NetworkError(String),
+
+    #[error("Server unavailable: {0}")]
+    ServerUnavailable(String),
+
+    #[error("Deadlock detected: {0}")]
+    DeadlockDetected(String),
+
+    #[error("Authentication error: {0}")]
+    AuthenticationError(String),
+
+    #[error("Validation error: {0}")]
+    ValidationError(String),
+
+    #[error("SQL syntax error: {0}")]
+    SqlSyntaxError(String),
 
     #[error("Data conversion error: {0}")]
     ConversionError(String),

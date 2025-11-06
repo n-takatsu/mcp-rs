@@ -1,13 +1,13 @@
 //! Safety mechanisms for preventing infinite loops and deadlocks
-//! 
+//!
 //! 無限ループとデッドロックを防ぐための安全機構
 
-use std::sync::atomic::{AtomicU64, AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Semaphore;
 use tokio::time::timeout;
-use tracing::{warn, error, info};
+use tracing::{error, info, warn};
 
 /// 操作タイムアウト設定
 #[derive(Debug, Clone)]
@@ -39,9 +39,9 @@ impl Default for TimeoutConfig {
 /// サーキットブレーカーの状態
 #[derive(Debug, Clone, PartialEq)]
 pub enum CircuitState {
-    Closed,    // 正常状態
-    Open,      // 異常状態（リクエスト遮断）
-    HalfOpen,  // 復旧試行状態
+    Closed,   // 正常状態
+    Open,     // 異常状態（リクエスト遮断）
+    HalfOpen, // 復旧試行状態
 }
 
 /// サーキットブレーカー
@@ -113,7 +113,7 @@ impl CircuitBreaker {
     /// 操作成功を記録
     pub async fn record_success(&self) {
         let current_count = self.success_count.fetch_add(1, Ordering::SeqCst) + 1;
-        
+
         let state = self.state.read().await;
         if *state == CircuitState::HalfOpen && current_count >= self.config.success_threshold {
             drop(state);
@@ -165,7 +165,7 @@ impl LoopGuard {
     /// 反復処理をチェック（trueなら継続、falseなら停止）
     pub fn check_iteration(&self) -> bool {
         let current = self.current_iterations.fetch_add(1, Ordering::SeqCst) + 1;
-        
+
         if current > self.max_iterations {
             error!(
                 "Infinite loop detected in '{}': {} iterations exceeded limit of {}",
@@ -198,6 +198,8 @@ pub struct ResourceMonitor {
     max_memory_mb: u64,
     max_active_connections: u32,
     current_connections: AtomicU64,
+    peak_connections: AtomicU64,
+    memory_usage_mb: AtomicU64,
     emergency_shutdown: AtomicBool,
 }
 
@@ -207,6 +209,8 @@ impl ResourceMonitor {
             max_memory_mb,
             max_active_connections,
             current_connections: AtomicU64::new(0),
+            peak_connections: AtomicU64::new(0),
+            memory_usage_mb: AtomicU64::new(0),
             emergency_shutdown: AtomicBool::new(false),
         }
     }
@@ -214,13 +218,22 @@ impl ResourceMonitor {
     /// 接続数を増加
     pub fn increment_connections(&self) -> bool {
         let current = self.current_connections.fetch_add(1, Ordering::SeqCst) + 1;
-        
+
+        // ピーク値を更新
+        let current_peak = self.peak_connections.load(Ordering::SeqCst);
+        if current > current_peak {
+            self.peak_connections.store(current, Ordering::SeqCst);
+        }
+
         if current > self.max_active_connections as u64 {
-            warn!("Connection limit exceeded: {}/{}", current, self.max_active_connections);
+            warn!(
+                "Connection limit exceeded: {}/{}",
+                current, self.max_active_connections
+            );
             self.current_connections.fetch_sub(1, Ordering::SeqCst);
             return false;
         }
-        
+
         true
     }
 
@@ -244,6 +257,60 @@ impl ResourceMonitor {
     pub fn current_connections(&self) -> u64 {
         self.current_connections.load(Ordering::SeqCst)
     }
+
+    /// メモリ使用量を更新
+    pub fn update_memory_usage(&self, memory_mb: u64) {
+        self.memory_usage_mb.store(memory_mb, Ordering::SeqCst);
+
+        if memory_mb > self.max_memory_mb {
+            warn!(
+                "Memory usage is high: {} MB / {} MB",
+                memory_mb, self.max_memory_mb
+            );
+        }
+    }
+
+    /// 現在のメモリ使用量を取得
+    pub fn current_memory_usage(&self) -> u64 {
+        self.memory_usage_mb.load(Ordering::SeqCst)
+    }
+
+    /// ピーク接続数を取得
+    pub fn peak_connections(&self) -> u64 {
+        self.peak_connections.load(Ordering::SeqCst)
+    }
+}
+
+/// 安全機構統計情報
+#[derive(Debug, Clone)]
+pub struct SafetyStats {
+    pub total_operations: u64,
+    pub successful_operations: u64,
+    pub failed_operations: u64,
+    pub timeout_operations: u64,
+    pub circuit_breaker_trips: u64,
+    pub resource_limit_hits: u64,
+    pub current_connections: u64,
+    pub peak_connections: u64,
+    pub memory_usage_mb: u64,
+    pub circuit_state: CircuitState,
+}
+
+impl Default for SafetyStats {
+    fn default() -> Self {
+        Self {
+            total_operations: 0,
+            successful_operations: 0,
+            failed_operations: 0,
+            timeout_operations: 0,
+            circuit_breaker_trips: 0,
+            resource_limit_hits: 0,
+            current_connections: 0,
+            peak_connections: 0,
+            memory_usage_mb: 0,
+            circuit_state: CircuitState::Closed,
+        }
+    }
 }
 
 /// 包括的安全機構
@@ -264,7 +331,11 @@ impl SafetyManager {
     }
 
     /// 安全な操作実行（タイムアウト + サーキットブレーカー）
-    pub async fn safe_execute<T, F, Fut>(&self, operation: F, operation_name: &str) -> Result<T, SafetyError>
+    pub async fn safe_execute<T, F, Fut>(
+        &self,
+        operation: F,
+        operation_name: &str,
+    ) -> Result<T, SafetyError>
     where
         F: FnOnce() -> Fut,
         Fut: std::future::Future<Output = Result<T, Box<dyn std::error::Error + Send + Sync>>>,
@@ -307,13 +378,17 @@ impl SafetyManager {
     }
 
     /// プール操作専用の安全実行
-    pub async fn safe_pool_operation<T, F, Fut>(&self, operation: F, operation_name: &str) -> Result<T, SafetyError>
+    pub async fn safe_pool_operation<T, F, Fut>(
+        &self,
+        operation: F,
+        operation_name: &str,
+    ) -> Result<T, SafetyError>
     where
         F: FnOnce() -> Fut,
         Fut: std::future::Future<Output = Result<T, Box<dyn std::error::Error + Send + Sync>>>,
     {
         let result = timeout(self.timeout_config.pool_timeout, operation()).await;
-        
+
         match result {
             Ok(Ok(value)) => Ok(value),
             Ok(Err(e)) => {
@@ -321,10 +396,44 @@ impl SafetyManager {
                 Err(SafetyError::OperationFailed(e.to_string()))
             }
             Err(_) => {
-                error!("Pool operation '{}' timed out after {:?}", operation_name, self.timeout_config.pool_timeout);
+                error!(
+                    "Pool operation '{}' timed out after {:?}",
+                    operation_name, self.timeout_config.pool_timeout
+                );
                 Err(SafetyError::Timeout)
             }
         }
+    }
+
+    /// 統計情報を取得
+    pub async fn get_stats(&self) -> SafetyStats {
+        SafetyStats {
+            total_operations: 0, // 実装では実際のカウンターを使用
+            successful_operations: 0,
+            failed_operations: 0,
+            timeout_operations: 0,
+            circuit_breaker_trips: 0,
+            resource_limit_hits: 0,
+            current_connections: self
+                .resource_monitor
+                .current_connections
+                .load(Ordering::Relaxed),
+            peak_connections: self
+                .resource_monitor
+                .peak_connections
+                .load(Ordering::Relaxed),
+            memory_usage_mb: self
+                .resource_monitor
+                .memory_usage_mb
+                .load(Ordering::Relaxed),
+            circuit_state: self.circuit_breaker.state.read().await.clone(),
+        }
+    }
+}
+
+impl Default for SafetyManager {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -355,27 +464,26 @@ pub enum SafetyError {
 /// マクロ：安全なループ実行
 #[macro_export]
 macro_rules! safe_loop {
-    ($operation_name:expr, $max_iterations:expr, $body:block) => {
-        {
-            let loop_guard = $crate::safety::LoopGuard::new($operation_name, $max_iterations);
-            loop {
-                if !loop_guard.check_iteration() {
-                    break Err($crate::safety::SafetyError::OperationFailed(
-                        format!("Loop limit exceeded in {}", $operation_name)
-                    ));
+    ($operation_name:expr, $max_iterations:expr, $body:block) => {{
+        let loop_guard = $crate::safety::LoopGuard::new($operation_name, $max_iterations);
+        loop {
+            if !loop_guard.check_iteration() {
+                break Err($crate::safety::SafetyError::OperationFailed(format!(
+                    "Loop limit exceeded in {}",
+                    $operation_name
+                )));
+            }
+
+            match { $body } {
+                Ok(result) => break Ok(result),
+                Err(e) if loop_guard.current_iterations() > $max_iterations / 2 => {
+                    // 半分以上試行したら諦める
+                    break Err(e);
                 }
-                
-                match { $body } {
-                    Ok(result) => break Ok(result),
-                    Err(e) if loop_guard.current_iterations() > $max_iterations / 2 => {
-                        // 半分以上試行したら諦める
-                        break Err(e);
-                    }
-                    Err(_) => continue, // リトライ継続
-                }
+                Err(_) => continue, // リトライ継続
             }
         }
-    };
+    }};
 }
 
 #[cfg(test)]
@@ -417,12 +525,12 @@ mod tests {
     #[tokio::test]
     async fn test_loop_guard() {
         let guard = LoopGuard::new("test_operation", 5);
-        
+
         // 制限内は継続
         for _ in 0..5 {
             assert!(guard.check_iteration());
         }
-        
+
         // 制限を超えると停止
         assert!(!guard.check_iteration());
     }
@@ -430,23 +538,27 @@ mod tests {
     #[tokio::test]
     async fn test_safety_manager() {
         let safety = SafetyManager::new();
-        
+
         // 成功ケース
-        let result = safety.safe_execute(
-            || async { Ok::<i32, Box<dyn std::error::Error + Send + Sync>>(42) },
-            "test_operation"
-        ).await;
+        let result = safety
+            .safe_execute(
+                || async { Ok::<i32, Box<dyn std::error::Error + Send + Sync>>(42) },
+                "test_operation",
+            )
+            .await;
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), 42);
 
         // タイムアウトケース
-        let result = safety.safe_execute(
-            || async {
-                sleep(Duration::from_secs(60)).await;
-                Ok::<i32, Box<dyn std::error::Error + Send + Sync>>(42)
-            },
-            "timeout_operation"
-        ).await;
+        let result = safety
+            .safe_execute(
+                || async {
+                    sleep(Duration::from_secs(60)).await;
+                    Ok::<i32, Box<dyn std::error::Error + Send + Sync>>(42)
+                },
+                "timeout_operation",
+            )
+            .await;
         assert!(matches!(result, Err(SafetyError::Timeout)));
     }
 }
