@@ -10,6 +10,7 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{RwLock, Semaphore};
+use tracing::warn; // tracingマクロを追加
 
 /// 接続プール情報
 #[derive(Debug, Clone)]
@@ -247,15 +248,35 @@ impl ConnectionPool {
     async fn try_get_pooled_connection(
         &self,
     ) -> Option<Box<dyn super::engine::DatabaseConnection>> {
+        use crate::handlers::database::safety::LoopGuard;
+        
         let mut connections = self.connections.write().await;
+        let loop_guard = LoopGuard::new("pool_connection_check", 10); // 最大10回まで
 
-        // 健全な接続を探す
+        // 健全な接続を探す（安全なループ）
         while let Some(connection) = connections.pop_front() {
-            // 接続の健全性をチェック
-            if connection.ping().await.is_ok() {
-                return Some(connection);
+            // 無限ループ防止チェック
+            if !loop_guard.check_iteration() {
+                warn!("Connection pool health check loop limit exceeded");
+                break;
             }
-            // 不健全な接続は破棄
+            
+            // 接続の健全性をチェック（タイムアウト付き）
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(1), 
+                connection.ping()
+            ).await {
+                Ok(Ok(_)) => return Some(connection),
+                Ok(Err(_)) => {
+                    // 不健全な接続は破棄
+                    continue;
+                }
+                Err(_) => {
+                    // ping タイムアウトした接続も破棄
+                    warn!("Connection ping timed out, discarding connection");
+                    continue;
+                }
+            }
         }
 
         None

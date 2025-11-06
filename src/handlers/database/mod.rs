@@ -5,6 +5,7 @@
 pub mod engine;
 pub mod handler;
 pub mod pool;
+pub mod safety;   // 安全機構モジュールを追加
 pub mod security;
 pub mod types;
 
