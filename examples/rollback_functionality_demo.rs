@@ -50,11 +50,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("✅ Rollback management system initialized");
 
     // ロールバック設定をカスタマイズ
-    let mut config = RollbackConfig::default();
-    config.auto_rollback_enabled = true;
-    config.error_rate_threshold = 3.0; // 3%
-    config.response_time_threshold_ms = 500; // 500ms
-    config.evaluation_window_minutes = 2;
+    let config = RollbackConfig {
+        auto_rollback_enabled: true,
+        error_rate_threshold: 3.0, // 3%
+        response_time_threshold_ms: 500, // 500ms
+        evaluation_window_minutes: 2,
+        ..Default::default()
+    };
 
     rollback_manager.update_config(config).await?;
     println!("⚙️  Rollback configuration updated");
