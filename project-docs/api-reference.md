@@ -1,15 +1,124 @@
-# WordPress MCP Tools - API Reference 🛡️ Security-Enhanced
+# MCP-RS API Reference 🛡️ Security-Enhanced
+
+Complete API documentation for all available tools in the mcp-rs Model Context Protocol server.
 
 ## Quick Reference
 
 ### 🔐 Security Features
 All API calls are protected by the 6-layer security architecture:
 - ✅ AES-GCM-256 encryption for credentials
-- ✅ Token bucket rate limiting
+- ✅ Token bucket rate limiting  
 - ✅ SQL injection protection (11 patterns)
 - ✅ XSS attack protection (14 patterns)
 - ✅ Input validation and sanitization
 - ✅ Comprehensive audit logging
+
+## 🗄️ Database Tools
+
+### Core Database Operations
+
+#### `execute_query` - Execute SELECT Queries
+Execute secure database queries with automatic validation and SQL injection protection.
+
+**Parameters**:
+- `sql` (string, required): SQL query or database-specific command
+- `params` (array, optional): Query parameters for injection prevention  
+- `engine` (string, optional): Target database engine ID
+
+```json
+{
+  "tool": "execute_query",
+  "arguments": {
+    "sql": "SELECT * FROM users WHERE active = $1 LIMIT $2",
+    "params": [true, 50],
+    "engine": "primary_pg"
+  }
+}
+```
+
+#### `execute_command` - Data Modification Commands
+Execute INSERT, UPDATE, DELETE commands with transaction support and audit logging.
+
+**Parameters**:
+- `sql` (string, required): Command to execute
+- `params` (array, optional): Command parameters
+- `engine` (string, optional): Target database engine
+- `transaction` (boolean, optional): Execute within transaction
+
+```json
+{
+  "tool": "execute_command", 
+  "arguments": {
+    "sql": "INSERT INTO users (name, email) VALUES ($1, $2)",
+    "params": ["John Doe", "john@example.com"],
+    "engine": "primary_pg",
+    "transaction": true
+  }
+}
+```
+
+#### `begin_transaction` - Transaction Management
+Start database transactions with configurable isolation levels.
+
+**Parameters**:
+- `engine` (string, optional): Target database engine
+- `isolation_level` (string, optional): Transaction isolation level
+
+```json
+{
+  "tool": "begin_transaction",
+  "arguments": {
+    "engine": "primary_pg", 
+    "isolation_level": "REPEATABLE_READ"
+  }
+}
+```
+
+#### `get_schema` - Schema Information
+Retrieve database schema including tables, indexes, and relationships.
+
+**Parameters**:
+- `engine` (string, optional): Target database engine
+- `schema_name` (string, optional): Specific schema name
+
+```json
+{
+  "tool": "get_schema",
+  "arguments": {
+    "engine": "primary_pg",
+    "schema_name": "public"
+  }
+}
+```
+
+### Engine Management
+
+#### `list_engines` - Available Database Engines
+List all configured database engines and their health status.
+
+```json
+{
+  "tool": "list_engines",
+  "arguments": {}
+}
+```
+
+#### `switch_engine` - Change Active Engine
+Switch the default database engine for subsequent operations.
+
+**Parameters**:
+- `engine_id` (string, required): ID of engine to switch to
+
+```json
+{
+  "tool": "switch_engine",
+  "arguments": {
+    "engine_id": "cache_redis"
+  }
+}
+```
+
+## 📝 WordPress Tools
 
 ### Content Management (Secured)
 ```json
