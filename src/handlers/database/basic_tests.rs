@@ -3,7 +3,7 @@
 //! 基本的なテスト実装（コンパイルエラー修正版）
 
 #[cfg(test)]
-mod basic_tests {
+mod database_basic_tests {
     use crate::handlers::database::types::*;
     use serde_json::json;
 
@@ -22,7 +22,7 @@ mod basic_tests {
         let int_val = Value::from_i64(42);
         let string_val = Value::from_string("test".to_string());
         let bool_val = Value::from_bool(true);
-        let float_val = Value::from_f64(3.14);
+        let float_val = Value::from_f64(std::f64::consts::PI);
 
         match int_val {
             Value::Int(42) => {}
@@ -40,8 +40,8 @@ mod basic_tests {
         }
 
         match float_val {
-            Value::Float(f) if (f - 3.14).abs() < f64::EPSILON => {}
-            _ => panic!("Expected Float(3.14)"),
+            Value::Float(f) if (f - std::f64::consts::PI).abs() < f64::EPSILON => {}
+            _ => panic!("Expected Float(PI)"),
         }
     }
 

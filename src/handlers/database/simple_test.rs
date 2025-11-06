@@ -27,7 +27,7 @@ mod simple_tests {
         let int_val = Value::from_i64(42);
         let string_val = Value::from_string("test".to_string());
         let bool_val = Value::from_bool(true);
-        let float_val = Value::from_f64(3.14);
+        let float_val = Value::from_f64(std::f64::consts::PI);
 
         // パターンマッチングで確認
         match int_val {
@@ -46,8 +46,8 @@ mod simple_tests {
         }
 
         match float_val {
-            Value::Float(f) if (f - 3.14).abs() < 0.001 => {}
-            _ => panic!("Expected Float(3.14)"),
+            Value::Float(f) if (f - std::f64::consts::PI).abs() < 0.001 => {}
+            _ => panic!("Expected Float(PI)"),
         }
     }
 
