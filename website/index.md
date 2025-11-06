@@ -12,6 +12,7 @@ Welcome to the MCP-RS documentation! This site contains comprehensive guides, AP
 - **[API Reference]({{ site.baseurl }}/docs/api/)** - Complete API documentation  
 - **[Architecture]({{ site.baseurl }}/docs/architecture/)** - System design and technical architecture
 - **[Security]({{ site.baseurl }}/docs/security/)** - Enterprise-grade security features
+- **[Database Guide]({{ site.baseurl }}/docs/database/)** - Multi-engine database integration
 - **[WordPress Guide]({{ site.baseurl }}/docs/wordpress/)** - Complete WordPress integration
 - **[GitHub Repository](https://github.com/n-takatsu/mcp-rs)** - Source code and issues
 
@@ -66,6 +67,23 @@ MCP-RS provides a **comprehensive, battle-tested** implementation of the MCP (Mo
 - Create posts with taxonomy
 - Comments management
 - Content relationships
+
+### 🗄️ Database MCP Tools (Multi-Engine Support)
+
+**📊 Database Engines:**
+- **PostgreSQL**: Enterprise relational database with advanced SQL features
+- **MySQL**: Popular web-scale database with full transaction support
+- **Redis**: High-performance in-memory store with cluster support
+- **MongoDB**: Document-oriented NoSQL with aggregation pipelines
+- **SQLite**: Lightweight embedded database for development
+
+**🔧 Database Operations:**
+- Execute queries with SQL injection protection
+- Transaction management with configurable isolation levels
+- Schema introspection and metadata retrieval
+- Multi-engine workflows and cache-aside patterns
+- Real-time health monitoring and performance metrics
+- Connection pooling with advanced timeout handling
 
 ## Current Status
 

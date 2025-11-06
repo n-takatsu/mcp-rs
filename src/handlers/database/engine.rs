@@ -180,6 +180,12 @@ impl DatabaseEngineBuilder {
                     "MySQL engine not yet implemented".to_string(),
                 ))
             }
+            DatabaseType::MariaDB => {
+                // TODO: MariaDB実装
+                Err(DatabaseError::UnsupportedOperation(
+                    "MariaDB engine not yet implemented".to_string(),
+                ))
+            }
             DatabaseType::SQLite => {
                 // TODO: SQLite実装
                 Err(DatabaseError::UnsupportedOperation(
@@ -187,16 +193,14 @@ impl DatabaseEngineBuilder {
                 ))
             }
             DatabaseType::MongoDB => {
-                // TODO: MongoDB実装
-                Err(DatabaseError::UnsupportedOperation(
-                    "MongoDB engine not yet implemented".to_string(),
-                ))
+                // MongoDB実装
+                let engine = super::engines::mongodb::MongoEngine::new(config.clone()).await?;
+                Ok(Arc::new(engine))
             }
             DatabaseType::Redis => {
-                // TODO: Redis実装
-                Err(DatabaseError::UnsupportedOperation(
-                    "Redis engine not yet implemented".to_string(),
-                ))
+                // Redis実装
+                let engine = super::engines::redis::RedisEngine::new(config.clone()).await?;
+                Ok(Arc::new(engine))
             }
             DatabaseType::ClickHouse => {
                 // TODO: ClickHouse実装

@@ -11,6 +11,7 @@ use std::collections::HashMap;
 pub enum DatabaseType {
     PostgreSQL,
     MySQL,
+    MariaDB,
     SQLite,
     MongoDB,
     Redis,
@@ -22,6 +23,7 @@ impl std::fmt::Display for DatabaseType {
         match self {
             DatabaseType::PostgreSQL => write!(f, "postgresql"),
             DatabaseType::MySQL => write!(f, "mysql"),
+            DatabaseType::MariaDB => write!(f, "mariadb"),
             DatabaseType::SQLite => write!(f, "sqlite"),
             DatabaseType::MongoDB => write!(f, "mongodb"),
             DatabaseType::Redis => write!(f, "redis"),
@@ -45,6 +47,18 @@ pub struct DatabaseConfig {
     pub features: FeatureConfig,
 }
 
+impl Default for DatabaseConfig {
+    fn default() -> Self {
+        Self {
+            database_type: DatabaseType::PostgreSQL,
+            connection: ConnectionConfig::default(),
+            pool: PoolConfig::default(),
+            security: SecurityConfig::default(),
+            features: FeatureConfig::default(),
+        }
+    }
+}
+
 /// 接続設定
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConnectionConfig {
@@ -55,9 +69,24 @@ pub struct ConnectionConfig {
     pub password: String,
     pub ssl_mode: Option<String>,
     pub timeout_seconds: u32,
-    pub retry_attempts: u32,
-    /// データベース固有のオプション
+    pub retry_attempts: u8,
     pub options: HashMap<String, String>,
+}
+
+impl Default for ConnectionConfig {
+    fn default() -> Self {
+        Self {
+            host: "localhost".to_string(),
+            port: 5432,
+            database: "postgres".to_string(),
+            username: "postgres".to_string(),
+            password: "".to_string(),
+            ssl_mode: None,
+            timeout_seconds: 30,
+            retry_attempts: 3,
+            options: HashMap::new(),
+        }
+    }
 }
 
 /// 接続プール設定
@@ -145,6 +174,20 @@ pub enum DatabaseFeature {
     Sharding,
     Acid,
     EventualConsistency,
+    // Redis特有の機能
+    InMemoryStorage,
+    KeyValueStore,
+    PubSub,
+    Scripting,
+    Clustering,
+    Persistence,
+    // MongoDB特有の機能
+    DocumentStore,
+    AggregationPipeline,
+    GridFS,
+    ChangeStreams,
+    Geospatial,
+    CappedCollections,
 }
 
 /// クエリタイプ
@@ -158,6 +201,9 @@ pub enum QueryType {
     Drop,
     Alter,
     StoredProcedure,
+    Transaction, // 新しく追加
+    Ddl,         // 新しく追加
+    Unknown,     // 新しく追加
     Custom(String),
 }
 
@@ -319,7 +365,7 @@ pub struct HealthStatus {
 }
 
 /// 健全性ステータスタイプ
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum HealthStatusType {
     Healthy,
     Warning,
@@ -352,7 +398,7 @@ impl QueryContext {
 }
 
 /// データベースエラー
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, thiserror::Error)]
 pub enum DatabaseError {
     #[error("Connection failed: {0}")]
     ConnectionFailed(String),
@@ -369,6 +415,9 @@ pub enum DatabaseError {
     #[error("Configuration error: {0}")]
     ConfigurationError(String),
 
+    #[error("Configuration validation failed: {0}")]
+    ConfigValidationError(String),
+
     #[error("Pool error: {0}")]
     PoolError(String),
 
@@ -378,8 +427,58 @@ pub enum DatabaseError {
     #[error("Unsupported operation: {0}")]
     UnsupportedOperation(String),
 
+    // 新しく追加するエラーバリアント
+    #[error("Recovery failed: {0}")]
+    RecoveryFailed(String),
+
+    #[error("Failover failed: {0}")]
+    FailoverFailed(String),
+
+    #[error("Operation failed: {0}")]
+    OperationFailed(String),
+
+    #[error("No available endpoints: {0}")]
+    NoAvailableEndpoints(String),
+
+    #[error("Network error: {0}")]
+    NetworkError(String),
+
+    #[error("Server unavailable: {0}")]
+    ServerUnavailable(String),
+
+    #[error("Deadlock detected: {0}")]
+    DeadlockDetected(String),
+
+    #[error("Authentication error: {0}")]
+    AuthenticationError(String),
+
+    #[error("Validation error: {0}")]
+    ValidationError(String),
+
+    #[error("Invalid query: {0}")]
+    InvalidQuery(String),
+
+    #[error("SQL syntax error: {0}")]
+    SqlSyntaxError(String),
+
     #[error("Data conversion error: {0}")]
     ConversionError(String),
+
+    // MongoDB特有のエラー
+    #[error("Invalid document format: {0}")]
+    InvalidDocumentFormat(String),
+
+    #[error("Serialization error: {0}")]
+    SerializationError(String),
+
+    #[error("Collection not found: {0}")]
+    CollectionNotFound(String),
+
+    #[error("Index creation failed: {0}")]
+    IndexCreationFailed(String),
+
+    #[error("Aggregation pipeline error: {0}")]
+    AggregationError(String),
 
     #[error("Unknown error: {0}")]
     Unknown(String),
