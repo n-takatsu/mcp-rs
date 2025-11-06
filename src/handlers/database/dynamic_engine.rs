@@ -40,11 +40,10 @@ impl DynamicEngineManager {
         let active_manager = Arc::new(RwLock::new(ActiveEngineManager::new()));
         let monitoring_system = Arc::new(MonitoringSystem::new().await?);
         let metrics_collector = Arc::new(MetricsCollector::new());
-        
-        let switch_orchestrator = Arc::new(SwitchOrchestrator::new(
-            active_manager.clone(),
-            monitoring_system.clone(),
-        ).await?);
+
+        let switch_orchestrator = Arc::new(
+            SwitchOrchestrator::new(active_manager.clone(), monitoring_system.clone()).await?,
+        );
 
         Ok(Self {
             active_manager,
@@ -70,7 +69,9 @@ impl DynamicEngineManager {
         // アクティブエンジンマネージャーに登録
         {
             let mut manager = self.active_manager.write().await;
-            manager.add_engine(engine_id.clone(), engine.clone(), role).await?;
+            manager
+                .add_engine(engine_id.clone(), engine.clone(), role)
+                .await?;
         }
 
         // プールマネージャーにプールを作成
@@ -99,7 +100,10 @@ impl DynamicEngineManager {
             ));
         }
 
-        info!("Initiating engine switch to: {} with strategy: {:?}", target_engine_id, strategy);
+        info!(
+            "Initiating engine switch to: {} with strategy: {:?}",
+            target_engine_id, strategy
+        );
 
         // 切り替え前検証
         self.validate_switch_readiness(target_engine_id).await?;
@@ -111,9 +115,7 @@ impl DynamicEngineManager {
             .await?;
 
         // メトリクス記録
-        self.metrics_collector
-            .record_switch_event(&result)
-            .await;
+        self.metrics_collector.record_switch_event(&result).await;
 
         info!("Engine switch completed: {:?}", result);
         Ok(result)
@@ -150,7 +152,7 @@ impl DynamicEngineManager {
         }
 
         let policies = self.switch_policies.read().await;
-        
+
         for policy in policies.iter() {
             if !policy.enabled {
                 continue;
@@ -158,8 +160,11 @@ impl DynamicEngineManager {
 
             if self.should_trigger_switch(policy).await? {
                 info!("Auto-switch triggered by policy: {}", policy.name);
-                
-                match self.switch_to_engine(&policy.target_engine, policy.strategy.clone()).await {
+
+                match self
+                    .switch_to_engine(&policy.target_engine, policy.strategy.clone())
+                    .await
+                {
                     Ok(result) => {
                         info!("Auto-switch successful: {:?}", result);
                     }
@@ -178,17 +183,19 @@ impl DynamicEngineManager {
         // ターゲットエンジンの存在確認
         let manager = self.active_manager.read().await;
         if !manager.has_engine(target_engine_id).await {
-            return Err(DatabaseError::ConfigurationError(
-                format!("Target engine not found: {}", target_engine_id),
-            ));
+            return Err(DatabaseError::ConfigurationError(format!(
+                "Target engine not found: {}",
+                target_engine_id
+            )));
         }
 
         // ターゲットエンジンの健全性確認
         if let Some(metrics) = self.get_engine_metrics(target_engine_id).await {
             if metrics.availability_percent < 95.0 {
-                return Err(DatabaseError::ConfigurationError(
-                    format!("Target engine not healthy: availability {}%", metrics.availability_percent),
-                ));
+                return Err(DatabaseError::ConfigurationError(format!(
+                    "Target engine not healthy: availability {}%",
+                    metrics.availability_percent
+                )));
             }
         }
 
@@ -198,7 +205,10 @@ impl DynamicEngineManager {
     /// ポリシートリガーの評価
     async fn should_trigger_switch(&self, policy: &SwitchPolicy) -> Result<bool, DatabaseError> {
         match &policy.trigger {
-            TriggerCondition::PerformanceDegradation { response_time_threshold_ms, .. } => {
+            TriggerCondition::PerformanceDegradation {
+                response_time_threshold_ms,
+                ..
+            } => {
                 if let Some((current_engine_id, _)) = self.get_active_engine().await {
                     if let Some(metrics) = self.get_engine_metrics(&current_engine_id).await {
                         return Ok(metrics.response_time_ms > *response_time_threshold_ms as f64);
@@ -206,18 +216,23 @@ impl DynamicEngineManager {
                 }
                 Ok(false)
             }
-            TriggerCondition::LoadThreshold { cpu_threshold, memory_threshold, .. } => {
+            TriggerCondition::LoadThreshold {
+                cpu_threshold,
+                memory_threshold,
+                ..
+            } => {
                 if let Some((current_engine_id, _)) = self.get_active_engine().await {
                     if let Some(metrics) = self.get_engine_metrics(&current_engine_id).await {
-                        return Ok(
-                            metrics.cpu_usage_percent > *cpu_threshold ||
-                            metrics.memory_usage_percent > *memory_threshold
-                        );
+                        return Ok(metrics.cpu_usage_percent > *cpu_threshold
+                            || metrics.memory_usage_percent > *memory_threshold);
                     }
                 }
                 Ok(false)
             }
-            TriggerCondition::ErrorRate { error_rate_threshold, .. } => {
+            TriggerCondition::ErrorRate {
+                error_rate_threshold,
+                ..
+            } => {
                 if let Some((current_engine_id, _)) = self.get_active_engine().await {
                     if let Some(metrics) = self.get_engine_metrics(&current_engine_id).await {
                         return Ok(metrics.error_rate_percent > *error_rate_threshold);
@@ -259,6 +274,12 @@ pub struct ActiveEngineManager {
     engine_info: HashMap<String, EngineInfo>,
     /// エンジン状態
     engine_states: HashMap<String, EngineState>,
+}
+
+impl Default for ActiveEngineManager {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ActiveEngineManager {
@@ -331,9 +352,10 @@ impl ActiveEngineManager {
             self.primary_engine = Some((new_primary_id.to_string(), new_engine));
             Ok(())
         } else {
-            Err(DatabaseError::ConfigurationError(
-                format!("Engine not found for primary switch: {}", new_primary_id),
-            ))
+            Err(DatabaseError::ConfigurationError(format!(
+                "Engine not found for primary switch: {}",
+                new_primary_id
+            )))
         }
     }
 }
@@ -408,12 +430,16 @@ impl SwitchOrchestrator {
         let switch_id = self.switch_counter.fetch_add(1, Ordering::Relaxed);
         let start_time = Utc::now();
 
-        info!("Executing switch #{} to engine: {}", switch_id, target_engine_id);
+        info!(
+            "Executing switch #{} to engine: {}",
+            switch_id, target_engine_id
+        );
 
         // 切り替え実行（戦略に基づく）
         let result = match strategy {
             SwitchStrategy::Graceful { drain_timeout, .. } => {
-                self.execute_graceful_switch(target_engine_id, drain_timeout).await
+                self.execute_graceful_switch(target_engine_id, drain_timeout)
+                    .await
             }
             SwitchStrategy::Immediate { .. } => {
                 self.execute_immediate_switch(target_engine_id).await
@@ -441,7 +467,7 @@ impl SwitchOrchestrator {
         {
             let mut history = self.switch_history.lock().await;
             history.push_back(event);
-            
+
             // 履歴サイズ制限（最新1000件）
             if history.len() > 1000 {
                 history.pop_front();
@@ -509,12 +535,7 @@ impl SwitchOrchestrator {
     /// 切り替え履歴取得
     pub async fn get_switch_history(&self, limit: usize) -> Vec<SwitchEvent> {
         let history = self.switch_history.lock().await;
-        history
-            .iter()
-            .rev()
-            .take(limit)
-            .cloned()
-            .collect()
+        history.iter().rev().take(limit).cloned().collect()
     }
 }
 
@@ -527,9 +548,7 @@ pub enum SwitchStrategy {
         max_pending_transactions: usize,
     },
     /// 即座切り替え（緊急時）
-    Immediate {
-        force_transaction_abort: bool,
-    },
+    Immediate { force_transaction_abort: bool },
     /// ローリング切り替え
     Rolling {
         batch_size: usize,
@@ -575,9 +594,7 @@ pub enum TriggerCondition {
     /// 手動切り替え
     Manual,
     /// スケジュール切り替え
-    Scheduled {
-        cron_expression: String,
-    },
+    Scheduled { cron_expression: String },
 }
 
 /// 切り替え結果
@@ -671,6 +688,12 @@ pub struct MetricsCollector {
     switch_metrics: Arc<RwLock<Vec<SwitchMetrics>>>,
 }
 
+impl Default for MetricsCollector {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MetricsCollector {
     pub fn new() -> Self {
         Self {
@@ -719,10 +742,10 @@ mod tests {
     #[tokio::test]
     async fn test_active_engine_manager() {
         let manager = ActiveEngineManager::new();
-        
+
         // プライマリエンジンがないことを確認
         assert!(manager.get_primary_engine().await.is_none());
-        
+
         // エンジン一覧が空であることを確認
         assert!(manager.list_engines().await.is_empty());
     }
@@ -738,7 +761,10 @@ mod tests {
         let deserialized: SwitchStrategy = serde_json::from_str(&serialized).unwrap();
 
         match deserialized {
-            SwitchStrategy::Graceful { drain_timeout, max_pending_transactions } => {
+            SwitchStrategy::Graceful {
+                drain_timeout,
+                max_pending_transactions,
+            } => {
                 assert_eq!(drain_timeout, Duration::from_secs(30));
                 assert_eq!(max_pending_transactions, 100);
             }
