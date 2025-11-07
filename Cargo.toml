@@ -26,7 +26,7 @@ serde_yaml = "0.9"
 toml = "0.8"
 
 # Database and storage
-sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "mysql", "sqlite", "chrono", "uuid"] }
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "sqlite", "chrono", "uuid"] }
 redis = { version = "0.26", features = ["tokio-comp", "connection-manager"], optional = true }
 
 # Date and time
@@ -48,7 +48,7 @@ sha2 = "0.10"
 
 # Network and IP handling
 ipnet = "2.9"
-trust-dns-resolver = { version = "0.23", optional = true }
+hickory-resolver = { version = "0.24", optional = true }
 
 # Logging and tracing
 tracing = "0.1"
@@ -67,8 +67,8 @@ async-trait = "0.1"
 # HTTP client
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "multipart"] }
 
-# Validation
-validator = { version = "0.18", features = ["derive"] }
+# Validation  
+validator = { version = "0.19", features = ["derive"] }
 regex = "1.10"
 url = "2.5"
 ammonia = "4.0"
@@ -78,7 +78,7 @@ fancy-regex = "0.13"
 governor = "0.6"
 
 # Metrics and monitoring
-prometheus = { version = "0.13", optional = true }
+prometheus = { version = "0.14", optional = true }
 metrics = { version = "0.23", optional = true }
 
 # WebSocket
@@ -88,8 +88,8 @@ tokio-tungstenite = "0.24"
 # File system monitoring
 notify = "6.1"
 
-# TUI Dashboard (optional)
-ratatui = { version = "0.27", optional = true }
+# TUI Dashboard (optional)  
+ratatui = { version = "0.29", optional = true }
 crossterm = { version = "0.27", optional = true }
 tui-input = { version = "0.8", optional = true }
 
