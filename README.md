@@ -4,10 +4,11 @@
 
 > **[English](README.md)** | **[日本語](README.ja.md)**
 
-[![Architecture](https://img.shields.io/badge/Architecture-v0.15.0--realtime--editing-blue)](#architecture)
+[![Version](https://img.shields.io/badge/Version-v0.15.0-blue)](https://github.com/n-takatsu/mcp-rs/releases/tag/v0.15.0)
+[![Architecture](https://img.shields.io/badge/Architecture-Production--Ready-green)](#architecture)
 [![Implementation](https://img.shields.io/badge/WordPress_Tools-27_Available-green)](#wordpress-mcp-tools)
 [![Realtime_Editing](https://img.shields.io/badge/Real--time_Editing-WebSocket_Ready-brightgreen)](#real-time-collaborative-editing)
-[![Session_Management](https://img.shields.io/badge/Session_Management-Enterprise_Grade-orange)](#session-management)
+[![Dependencies](https://img.shields.io/badge/Dependencies-Latest_2025--11-orange)](#dependencies)
 [![License](https://img.shields.io/badge/License-MIT%2FApache--2.0-green)](#license)
 
 ## Overview
