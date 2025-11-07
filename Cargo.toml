@@ -9,14 +9,14 @@ repository = "https://github.com/n-takatsu/mcp-rs"
 
 [dependencies]
 # Core async runtime
-tokio = { version = "1.40", features = ["full"] }
+tokio = { version = "1.48", features = ["full"] }
 tokio-util = "0.7"
 futures = "0.3"
 
 # Web framework and HTTP
-axum = { version = "0.7", features = ["ws"] }
-tower = "0.4"
-tower-http = { version = "0.5", features = ["cors", "trace"] }
+axum = { version = "0.8", features = ["ws"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "trace"] }
 hyper = { version = "1.0", features = ["full"] }
 
 # Serialization
@@ -35,13 +35,13 @@ redis = { version = "0.26", features = ["tokio-comp", "connection-manager"], opt
 chrono = { version = "0.4", features = ["serde"] }
 
 # UUID generation
-uuid = { version = "1.10", features = ["v4", "serde"] }
+uuid = { version = "1.18", features = ["v4", "serde"] }
 
 # Cryptography and security
-ring = "0.17"
+ring = "0.17.14"
 argon2 = "0.5"
 jsonwebtoken = "9.3"
-base64 = "0.22"
+base64 = "0.22.1"
 secrecy = { version = "0.8", features = ["serde"] }
 zeroize = "1.8"
 aes-gcm = "0.10"
@@ -53,13 +53,13 @@ ipnet = "2.9"
 hickory-resolver = { version = "0.24", optional = true }
 
 # Logging and tracing
-tracing = "0.1"
+tracing = "0.1.41"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 tracing-appender = "0.2"
 
 # Configuration
 config = "0.14"
-clap = { version = "4.5", features = ["derive", "env"] }
+clap = { version = "4.5.51", features = ["derive", "env"] }
 
 # Error handling
 thiserror = "1.0"
@@ -67,11 +67,11 @@ anyhow = "1.0"
 async-trait = "0.1"
 
 # HTTP client
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "multipart"] }
+reqwest = { version = "0.12.24", default-features = false, features = ["json", "rustls-tls", "multipart"] }
 
 # Validation  
 validator = { version = "0.19", features = ["derive"] }
-regex = "1.10"
+regex = "1.12"
 url = "2.5"
 ammonia = "4.0"
 fancy-regex = "0.13"
@@ -105,7 +105,7 @@ mockall = { version = "0.13", optional = true }
 tokio-test = "0.4"
 criterion = { version = "0.5", features = ["html_reports"] }
 proptest = "1.5"
-tempfile = "3.12"
+tempfile = "3.23"
 
 # Mock data generation
 fake = { version = "2.9", features = ["derive", "chrono", "uuid"] }
