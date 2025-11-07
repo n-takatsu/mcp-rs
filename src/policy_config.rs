@@ -166,7 +166,7 @@ impl PolicyLoader {
 
     /// YAML形式をパース
     fn parse_yaml(content: &str) -> Result<PolicyConfig, McpError> {
-        serde_yaml::from_str(content)
+        serde_yaml_ng::from_str(content)
             .map_err(|e| McpError::Config(format!("YAMLパースエラー: {}", e)))
     }
 
@@ -191,7 +191,7 @@ impl PolicyLoader {
         let content = match extension.as_str() {
             "toml" => toml::to_string_pretty(policy)
                 .map_err(|e| McpError::Config(format!("TOMLシリアライズエラー: {}", e)))?,
-            "yaml" | "yml" => serde_yaml::to_string(policy)
+            "yaml" | "yml" => serde_yaml_ng::to_string(policy)
                 .map_err(|e| McpError::Config(format!("YAMLシリアライズエラー: {}", e)))?,
             "json" => serde_json::to_string_pretty(policy)
                 .map_err(|e| McpError::Config(format!("JSONシリアライズエラー: {}", e)))?,
