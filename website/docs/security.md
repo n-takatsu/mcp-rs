@@ -5,7 +5,7 @@ title: Security
 
 # Security
 
-**[Home]({{ site.baseurl }}/) > [Documentation]({{ site.baseurl }}/docs/) > Security**
+**[Home](../) > [Documentation](./) > Security**
 
 ## 🔒 Security Overview
 

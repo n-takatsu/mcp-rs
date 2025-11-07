@@ -526,23 +526,23 @@ We welcome contributions! Here's how you can help:
 ## 🔗 Resources
 
 ### Quick Links
-- 🏠 [Home](https://mcp-rs.dev)
-- 📖 [Documentation](https://docs.mcp-rs.dev)
-- 🎮 [Live Demo](http://localhost:8080/demo.html)
-- 💻 [GitHub Repository](https://github.com/your-org/mcp-rs)
+- 🏠 [Home](https://n-takatsu.github.io/mcp-rs/)
+- 📖 [Documentation](https://n-takatsu.github.io/mcp-rs/docs/)
+- 🎮 [Live Demo](../static/demo.html)
+- 💻 [GitHub Repository](https://github.com/n-takatsu/mcp-rs)
 - 📦 [Crate Registry](https://crates.io/crates/mcp-rs)
 
 ### Learning Resources
-- 🎓 [Tutorials](https://tutorials.mcp-rs.dev)
-- 📺 [Video Guides](https://youtube.com/mcp-rs)
-- 📚 [API Documentation](https://api-docs.mcp-rs.dev)
-- 🧪 [Example Projects](https://examples.mcp-rs.dev)
-- 💡 [Best Practices](https://best-practices.mcp-rs.dev)
+- 🎓 [Getting Started Guide](https://n-takatsu.github.io/mcp-rs/docs/guides/)
+- � [API Documentation](https://n-takatsu.github.io/mcp-rs/docs/api/)
+- 🏗️ [Architecture Guide](https://n-takatsu.github.io/mcp-rs/docs/architecture/)
+- 🛡️ [Security Guide](https://n-takatsu.github.io/mcp-rs/docs/security.html)
+- � [Database Integration](https://n-takatsu.github.io/mcp-rs/docs/database.html)
 
 ### Support
-- 💬 [Community Discord](https://discord.gg/mcp-rs)
-- 📧 [Email Support](mailto:support@mcp-rs.dev)
-- 🐛 [Bug Reports](https://github.com/your-org/mcp-rs/issues)
+- � [GitHub Discussions](https://github.com/n-takatsu/mcp-rs/discussions)
+- 📧 [Issues & Support](https://github.com/n-takatsu/mcp-rs/issues)
+- 🐛 [Bug Reports](https://github.com/n-takatsu/mcp-rs/issues/new?template=bug_report.md)
 - 💡 [Feature Requests](https://github.com/your-org/mcp-rs/discussions)
 - 📖 [Knowledge Base](https://help.mcp-rs.dev)
 

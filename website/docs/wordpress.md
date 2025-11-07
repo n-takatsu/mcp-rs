@@ -7,7 +7,7 @@ nav_order: 4
 # WordPress Integration
 {: .no_toc }
 
-**[Home]({{ site.baseurl }}/) > [Documentation]({{ site.baseurl }}/docs/) > WordPress Integration**
+**[Home](../) > [Documentation](./) > WordPress Integration**
 
 Complete WordPress REST API integration with advanced media management capabilities.
 {: .fs-6 .fw-300 }
