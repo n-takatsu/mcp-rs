@@ -1,16 +1,19 @@
 //! Database Engines Module
 //!
 //! 各種データベースエンジンの実装を提供
+//! MySQL: mysql_asyncライブラリを使用してセキュアに復活
 
 pub mod mongodb;
-pub mod mysql;
+#[cfg(feature = "mysql-backend")]
+pub mod mysql; // mysql_asyncライブラリでセキュア復活
 pub mod postgresql;
 pub mod redis;
 pub mod sqlite;
 
 // エンジンを直接アクセス可能にする
 pub use mongodb::MongoEngine;
-pub use mysql::MySqlEngine;
+#[cfg(feature = "mysql-backend")]
+pub use mysql::MySqlEngine; // mysql_asyncライブラリでセキュア復活
 pub use postgresql::PostgreSqlEngine;
 pub use redis::RedisEngine;
 pub use sqlite::SqliteEngine;

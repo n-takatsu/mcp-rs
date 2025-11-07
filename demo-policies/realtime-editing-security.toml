@@ -1,0 +1,146 @@
+# Real-time Editing Security Configuration
+
+[security]
+# Session Management Security
+session_ttl_hours = 24
+max_sessions_per_user = 5
+auto_activate_sessions = true
+enable_session_cleanup = true
+cleanup_interval_minutes = 30
+
+# WebSocket Connection Security
+max_websocket_connections = 100
+heartbeat_interval_seconds = 30
+connection_timeout_seconds = 60
+max_connections_per_session = 5
+enable_connection_throttling = true
+connection_rate_limit_per_minute = 10
+
+# Message Security
+max_message_size_bytes = 10240
+max_messages_per_minute = 100
+enable_message_validation = true
+enable_json_schema_validation = true
+
+# Content Security
+enable_xss_protection = true
+enable_content_filtering = true
+blocked_patterns = [
+    "<script",
+    "javascript:",
+    "data:",
+    "vbscript:",
+    "eval(",
+    "Function(",
+]
+max_content_length = 10000
+
+# Authentication Security
+require_session_authentication = true
+enable_header_validation = true
+supported_auth_headers = ["authorization", "x-session-id"]
+session_state_validation = "active_only"
+
+# Rate Limiting
+enable_rate_limiting = true
+global_rate_limit_per_minute = 1000
+per_session_rate_limit_per_minute = 100
+rate_limit_window_minutes = 1
+rate_limit_burst_size = 50
+
+# Violation Tracking
+enable_violation_tracking = true
+max_violations_per_session = 5
+violation_cooldown_minutes = 15
+auto_invalidate_on_violations = true
+violation_types = [
+    "authentication_failure",
+    "rate_limit_exceeded", 
+    "invalid_input",
+    "message_size_exceeded",
+    "connection_limit_exceeded"
+]
+
+# Security Monitoring
+enable_security_logging = true
+enable_audit_trail = true
+log_security_events = true
+log_access_patterns = true
+log_error_details = false  # Don't leak sensitive info in logs
+
+# Input Validation
+enable_input_sanitization = true
+strict_json_validation = true
+unicode_validation = true
+encoding_validation = "utf8"
+
+# Transport Security (Production)
+[security.transport]
+require_tls = false  # Set to true in production
+min_tls_version = "1.2"
+enable_certificate_validation = true
+allowed_cipher_suites = [
+    "TLS_AES_256_GCM_SHA384",
+    "TLS_CHACHA20_POLY1305_SHA256",
+    "TLS_AES_128_GCM_SHA256"
+]
+
+# Network Security
+[security.network]
+enable_ip_filtering = false
+allowed_ip_ranges = []  # Empty means allow all
+blocked_ip_ranges = []
+enable_geofencing = false
+allowed_countries = []
+
+# Content Security Policy
+[security.csp]
+enable_csp = true
+script_src = "'self'"
+connect_src = "'self' ws: wss:"
+img_src = "'self' data:"
+style_src = "'self' 'unsafe-inline'"
+font_src = "'self'"
+
+# Cross-Origin Security
+[security.cors]
+enable_cors = true
+allowed_origins = ["http://localhost:3000", "https://localhost:3000"]
+allowed_methods = ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+allowed_headers = ["Content-Type", "Authorization", "X-Session-ID"]
+allow_credentials = true
+max_age_seconds = 86400
+
+# Security Headers
+[security.headers]
+enable_security_headers = true
+x_content_type_options = "nosniff"
+x_frame_options = "DENY"
+x_xss_protection = "1; mode=block"
+strict_transport_security = "max-age=31536000; includeSubDomains"
+content_security_policy = "default-src 'self'; script-src 'self'; connect-src 'self' ws: wss:"
+
+# Incident Response
+[security.incident_response]
+enable_auto_response = true
+auto_disconnect_on_violations = true
+auto_ban_duration_minutes = 30
+notification_email = ""  # Set in production
+escalation_threshold = 10
+enable_emergency_shutdown = true
+
+# Development Security (Override for dev environment)
+[security.development]
+relaxed_validation = true
+allow_http = true
+disable_rate_limiting = false
+verbose_error_messages = true
+enable_debug_logging = true
+
+# Testing Security (Override for test environment) 
+[security.testing]
+mock_authentication = false
+disable_tls = true
+fast_violation_reset = true
+reduced_rate_limits = false
+test_mode_headers = true

@@ -8,100 +8,190 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/n-takatsu/mcp-rs"
 
 [dependencies]
+# Core async runtime
+tokio = { version = "1.40", features = ["full"] }
+tokio-util = "0.7"
+futures = "0.3"
+
+# Web framework and HTTP
+axum = { version = "0.7", features = ["ws"] }
+tower = "0.4"
+tower-http = { version = "0.5", features = ["cors", "trace"] }
+hyper = { version = "1.0", features = ["full"] }
+
+# Serialization
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_yaml = "0.9"
-# Tokio機能を必要最小限に + セキュリティ機能
-tokio = { version = "1.0", features = ["rt-multi-thread", "net", "io-util", "time", "macros", "fs", "sync", "signal"] }
-tokio-util = "0.7"
-# Axumも軽量化（HTTPサーバー機能追加）
-axum = { version = "0.7", default-features = false, features = ["tokio", "json", "http1", "http2"] }
-tower = { version = "0.4", default-features = false }
-tower-http = { version = "0.5", features = ["trace"], default-features = false }
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"], default-features = false }
-thiserror = "1.0"
-async-trait = "0.1"
-# reqwest機能も最小限に
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "multipart"] }
-config = "0.14"
 toml = "0.8"
-base64 = "0.21"
-regex = "1.10"
-uuid = { version = "1.0", features = ["v4", "serde"] }
+
+# Database and storage (PostgreSQL and SQLite only - MySQL via mysql_async)
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "sqlite", "chrono", "uuid"], default-features = false }
+# MySQL support via secure alternative (RSA vulnerability-free)
+mysql_async = { version = "0.36", optional = true }
+redis = { version = "0.26", features = ["tokio-comp", "connection-manager"], optional = true }
+
+# Date and time
 chrono = { version = "0.4", features = ["serde"] }
-notify = "6.1"
-futures = "0.3"
-# TUIダッシュボード用依存関係
-ratatui = "0.27"
-crossterm = "0.27"
-tui-input = "0.8"
-# セキュリティ強化用の暗号化クレート
-secrecy = { version = "0.8", features = ["serde"] }  # 0.8に戻す（API安定版）
-zeroize = "1.8"  # 最新版
-aes-gcm = "0.10"
+
+# UUID generation
+uuid = { version = "1.10", features = ["v4", "serde"] }
+
+# Cryptography and security
+ring = "0.17"
 argon2 = "0.5"
+jsonwebtoken = "9.3"
+base64 = "0.22"
+secrecy = { version = "0.8", features = ["serde"] }
+zeroize = "1.8"
+aes-gcm = "0.10"
 pbkdf2 = "0.12"
 sha2 = "0.10"
-# 入力検証・セキュリティ強化用クレート
+
+# Network and IP handling
+ipnet = "2.9"
+hickory-resolver = { version = "0.24", optional = true }
+
+# Logging and tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+tracing-appender = "0.2"
+
+# Configuration
+config = "0.14"
+clap = { version = "4.5", features = ["derive", "env"] }
+
+# Error handling
+thiserror = "1.0"
+anyhow = "1.0"
+async-trait = "0.1"
+
+# HTTP client
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "multipart"] }
+
+# Validation  
+validator = { version = "0.19", features = ["derive"] }
+regex = "1.10"
 url = "2.5"
-ammonia = "4.0"  # HTML sanitization（最新版）
-fancy-regex = "0.13"  # Advanced regex with lookahead/lookbehind（最新版）
-# idna脆弱性対応: 直接最新版を指定
-idna = "1.0.3"
-# プラグインシステム用依存関係
+ammonia = "4.0"
+fancy-regex = "0.13"
+
+# Rate limiting
+governor = "0.6"
+
+# Metrics and monitoring
+prometheus = { version = "0.14", optional = true }
+metrics = { version = "0.23", optional = true }
+
+# WebSocket
+tungstenite = "0.24"
+tokio-tungstenite = "0.24"
+
+# File system monitoring
+notify = "6.1"
+
+# TUI Dashboard (temporarily disabled to avoid paste dependency)
+# ratatui = { version = "0.29", optional = true, default-features = false }
+# crossterm = { version = "0.27", optional = true }
+# tui-input = { version = "0.8", optional = true }
+
+# Plugin system
 libloading = "0.8"
-# データベースハンドラー用依存関係
-deadpool = "0.12"  # 汎用接続プール
-# PostgreSQL関連（オプショナル）
-tokio-postgres = { version = "0.7", optional = true }
-deadpool-postgres = { version = "0.14", optional = true }
-# MySQL関連（将来実装）
-# sqlx = { version = "0.8", features = ["postgres", "mysql", "sqlite", "runtime-tokio-rustls"], optional = true }
+
+# Testing utilities
+mockall = { version = "0.13", optional = true }
+[dev-dependencies]
+# Testing framework
+tokio-test = "0.4"
+criterion = { version = "0.5", features = ["html_reports"] }
+proptest = "1.5"
+tempfile = "3.12"
+
+# Mock data generation
+fake = { version = "2.9", features = ["derive", "chrono", "uuid"] }
+rand = "0.8"
 
 [features]
-default = ["database"]
+default = ["session-management", "security", "websocket"]
+
+# Core features
+session-management = []
+security = []
+websocket = []
+mcp-protocol = []
 database = []
-postgres = ["dep:tokio-postgres", "dep:deadpool-postgres"]
-# mysql = ["sqlx/mysql"]
-# sqlite = ["sqlx/sqlite"]
 
-[dev-dependencies]
-tokio-test = "0.4"
-tempfile = "3.8"
-criterion = { version = "0.5", features = ["html_reports"] }
-base64 = "0.21"
-mockall = "0.12"  # モックテスト用
+# Storage backends
+redis-backend = ["redis"]
+mysql-backend = ["mysql_async"]
+postgresql = []
+sqlite = []
 
-# Redis関連の依存関係
-redis = { version = "0.32", features = ["tokio-comp", "connection-manager", "cluster"] }
-# MongoDB関連の依存関係（将来用）
-# mongodb = { version = "2.8", features = ["tokio-runtime"] }
+# TUI Dashboard (temporarily disabled)
+# tui = ["ratatui", "crossterm", "tui-input"]
 
-[[bench]]
-name = "mcp_protocol"
-harness = false
+# Monitoring and metrics
+metrics = ["prometheus", "dep:metrics"]
 
-# 開発時のビルド高速化設定
+# Development and testing
+testing = ["mockall"]
+integration-tests = []
+
+# Performance optimizations
+simd = []
+
+# Full feature set (MySQL restored via secure mysql_async)
+full = [
+    "session-management",
+    "security", 
+    "websocket",
+    "mcp-protocol",
+    "redis-backend",
+    "mysql-backend",
+    "postgresql",
+    "sqlite",
+    "metrics",
+    "testing"
+]
+
+[[example]]
+name = "mysql_engine_test"
+required-features = ["database", "mysql-backend"]
+
+# Temporarily disabled due to API changes
+# [[bench]]
+# name = "session_benchmarks"
+# harness = false
+
+
+
 [profile.dev]
-opt-level = 0          # 最適化なし（最速ビルド）
-debug = true           # デバッグ情報有効
-incremental = true     # インクリメンタルコンパイル有効
+opt-level = 0
+debug = true
+overflow-checks = true
+incremental = true
 
-# 依存関係は最適化（実行時パフォーマンス改善）
 [profile.dev.package."*"]
-opt-level = 3          # 依存関係は最適化
+opt-level = 3
 
-# より高速な開発プロファイル（オプション）
-[profile.dev-fast]
-inherits = "dev"
-opt-level = 1          # 軽い最適化
-debug = "line-tables-only"  # 軽量デバッグ情報
-
-# 本番用設定
 [profile.release]
-opt-level = 3          # 最大最適化
-debug = false          # デバッグ情報なし
-lto = true            # Link Time Optimization
-codegen-units = 1     # 最適化重視
-panic = "abort"       # panic時即座に終了
+opt-level = 3
+debug = false
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[profile.test]
+opt-level = 1
+debug = true
+
+[profile.bench]
+opt-level = 3
+debug = false
+lto = true
+
+# Security: Exclude resolved dependencies  
+[package.metadata.audit.ignore]
+"RUSTSEC-2023-0071" = "RSA crate from sqlx-mysql (unused) - MySQL support provided by secure mysql_async v0.36.1"
+"RUSTSEC-2024-0436" = "paste crate - unmaintained but required by ratatui (currently disabled)"

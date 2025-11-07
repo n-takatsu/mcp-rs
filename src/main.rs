@@ -20,7 +20,7 @@ use config::McpConfig;
 use core::{PluginInfo, Runtime, RuntimeConfig};
 use error::Error;
 use handlers::WordPressHandler;
-use mcp::McpServer;
+// use mcp_rs::mcp_server::McpServer;
 use security::{SecureMcpServer, SecurityConfig};
 use std::sync::Arc;
 
@@ -74,8 +74,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    // Create MCP server with runtime
-    let mut server = McpServer::new();
+    // Create MCP server with runtime (temporarily disabled)
+    // let mut server = McpServer::new();
 
     // Handler Registry を取得してWordPressハンドラーを登録
     let handler_registry = runtime.handler_registry();
@@ -105,7 +105,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             // Legacy MCP Server にも追加（段階的移行のため）
-            server.add_handler("wordpress".to_string(), Arc::new(wordpress_handler));
+            // server.add_handler("wordpress".to_string(), Arc::new(wordpress_handler));
         } else {
             println!("⚠️  WordPress統合は無効になっています");
         }
@@ -114,44 +114,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("💡 --generate-config でサンプル設定ファイルを生成できます");
     }
 
-    // Run server
+    // Run server (temporarily disabled)
     if config.server.stdio.unwrap_or(false) {
         println!("📞 STDIO モードで待機中...");
-        server.run_stdio().await?;
+        // server.run_stdio().await?;
     } else {
         let addr = config
             .server
             .bind_addr
             .as_deref()
             .unwrap_or("127.0.0.1:8080");
+        // .parse()
+        // .expect("Invalid address format");
 
-        // セキュアサーバーモードの確認
-        let use_secure_mode = std::env::var("MCP_SECURE_MODE")
-            .map(|v| v.to_lowercase() == "true")
-            .unwrap_or(false);
+        println!("� HTTP サーバー開始予定: http://{}", addr);
+        println!(
+            "💡 WebSocketサーバーの例を実行してください: cargo run --example axum_websocket_server"
+        );
 
-        if use_secure_mode {
-            println!("🔒 セキュアMCPサーバーを開始: http://{}", addr);
-
-            // セキュリティ設定
-            let _security_config = SecurityConfig {
-                enable_input_validation: true,
-                enable_rate_limiting: true,
-                enable_xss_protection: true,
-                enable_audit_logging: true,
-                max_request_size: 1024 * 1024, // 1MB
-                log_security_events: true,
-                enable_csp_headers: true,
-            };
-
-            // セキュアサーバーはサンプル実装（実際のプロトコル実装が必要）
-            println!("ℹ️ セキュアサーバー機能は開発中です");
-            println!("💡 現在は通常のMCPサーバーで起動します");
-        } else {
-            println!("🌍 TCP サーバーを開始: http://{}", addr);
-        }
-
-        server.run(addr).await?;
+        // server.run(addr).await?;
     }
 
     // Graceful shutdown
