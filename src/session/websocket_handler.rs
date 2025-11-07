@@ -1,28 +1,29 @@
-use crate::session::{
-    SessionManager, SessionSecurityMiddleware, SessionId, SessionError,
-    SessionState, SecurityEventType, SecuritySeverity
+use super::security_integration_basic::{
+    SecurityEventType, SecuritySeverity, SessionSecurityMiddleware,
 };
+use crate::error::SessionError;
+use crate::session::{SessionId, SessionManager, SessionState};
 use axum::{
     extract::{
-        ws::{WebSocket, Message as WsMessage},
-        WebSocketUpgrade, ConnectInfo, State
+        ws::{Message as WsMessage, WebSocket},
+        ConnectInfo, State, WebSocketUpgrade,
     },
-    response::Response,
     http::HeaderMap,
+    response::{IntoResponse, Response},
 };
-use futures_util::{SinkExt, StreamExt};
+use chrono::{DateTime, Utc};
+use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::{Arc, RwLock};
 use tokio::sync::broadcast;
-use tracing::{debug, error, info, warn, instrument};
+use tracing::{debug, error, info, instrument, warn};
 use uuid::Uuid;
-use chrono::{DateTime, Utc};
-use serde_json::{json, Value};
 
 /// WebSocketセッション管理ハンドラー
-/// 
+///
 /// リアルタイム編集システムの基盤として、セッション管理統合WebSocketハンドラーを提供
 #[derive(Debug)]
 pub struct SessionWebSocketHandler {
@@ -187,7 +188,7 @@ impl SessionWebSocketHandler {
     ) -> Self {
         let (broadcast_tx, _) = broadcast::channel(1000);
         let connection_manager = Arc::new(WebSocketConnectionManager::new(broadcast_tx.clone()));
-        
+
         Self {
             session_manager,
             security_middleware,
@@ -195,7 +196,7 @@ impl SessionWebSocketHandler {
             config,
         }
     }
-    
+
     /// WebSocket接続ハンドラー
     #[instrument(skip(self, ws, headers))]
     pub async fn handle_websocket_connection(
@@ -205,38 +206,59 @@ impl SessionWebSocketHandler {
         client_addr: Option<SocketAddr>,
     ) -> Result<Response, axum::response::Response> {
         debug!("WebSocket接続要求を処理中");
-        
+
         // セッション情報を抽出
-        let session_id = self.extract_session_from_headers(&headers).await?;
-        
+        let session_id = match self.extract_session_from_headers(&headers).await {
+            Ok(session_id) => {
+                debug!("セッションID抽出成功: {:?}", session_id);
+                session_id
+            }
+            Err(e) => {
+                error!("セッションID抽出エラー: {:?}", e);
+                return Err(e);
+            }
+        };
+
         if self.config.require_session && session_id.is_none() {
-            return self.create_rejection_response("Session required for WebSocket connection").await;
+            return self
+                .create_rejection_response("Session required for WebSocket connection")
+                .await;
         }
-        
+
         // セッション検証
         if let Some(ref session_id) = session_id {
+            debug!("セッション検証開始: {:?}", session_id);
             match self.validate_session_for_websocket(session_id).await {
                 Ok(false) => {
-                    return self.create_rejection_response("Invalid session for WebSocket connection").await;
+                    warn!("無効なセッション: {:?}", session_id);
+                    return self
+                        .create_rejection_response("Invalid session for WebSocket connection")
+                        .await;
                 }
                 Err(e) => {
                     error!("セッション検証エラー: {}", e);
-                    return self.create_rejection_response("Session validation failed").await;
+                    return self
+                        .create_rejection_response("Session validation failed")
+                        .await;
                 }
-                _ => {}
+                Ok(true) => {
+                    info!("セッション検証成功: {:?}", session_id);
+                }
             }
+        } else {
+            debug!("セッションIDなしで接続");
         }
-        
+
         // 接続メタデータを構築
         let metadata = self.build_connection_metadata(&headers);
-        
+
         // WebSocket接続を受諾
-        let handler = self.clone();
+        let handler = Arc::new(self.clone());
         Ok(ws.on_upgrade(move |socket| {
             handler.handle_socket(socket, session_id, client_addr, metadata)
         }))
     }
-    
+
     /// WebSocketソケット処理
     #[instrument(skip(self, socket, metadata))]
     async fn handle_socket(
@@ -247,8 +269,11 @@ impl SessionWebSocketHandler {
         metadata: ConnectionMetadata,
     ) {
         let connection_id = Uuid::new_v4();
-        info!("WebSocket接続開始: connection_id={}, session_id={:?}", connection_id, session_id);
-        
+        info!(
+            "WebSocket接続開始: connection_id={}, session_id={:?}",
+            connection_id, session_id
+        );
+
         // 接続を登録
         if let Some(ref session_id) = session_id {
             let connection = WebSocketConnection {
@@ -259,22 +284,26 @@ impl SessionWebSocketHandler {
                 last_activity: Utc::now(),
                 metadata: metadata.clone(),
             };
-            
-            if let Err(e) = self.connection_manager.register_connection(connection).await {
+
+            if let Err(e) = self
+                .connection_manager
+                .register_connection(connection)
+                .await
+            {
                 error!("接続登録失敗: {}", e);
                 let _ = socket.close().await;
                 return;
             }
         }
-        
+
         // ブロードキャスト受信設定
         let mut broadcast_rx = self.connection_manager.subscribe_broadcast();
-        
+
         // ハートビート設定
-        let mut heartbeat_interval = tokio::time::interval(
-            std::time::Duration::from_secs(self.config.heartbeat_interval_secs)
-        );
-        
+        let mut heartbeat_interval = tokio::time::interval(std::time::Duration::from_secs(
+            self.config.heartbeat_interval_secs,
+        ));
+
         // メッセージ処理ループ
         loop {
             tokio::select! {
@@ -322,7 +351,7 @@ impl SessionWebSocketHandler {
                         _ => {}
                     }
                 }
-                
+
                 // ブロードキャストメッセージ
                 broadcast_msg = broadcast_rx.recv() => {
                     match broadcast_msg {
@@ -344,7 +373,7 @@ impl SessionWebSocketHandler {
                         }
                     }
                 }
-                
+
                 // ハートビート
                 _ = heartbeat_interval.tick() => {
                     if let Err(e) = socket.send(WsMessage::Ping(vec![])).await {
@@ -354,17 +383,21 @@ impl SessionWebSocketHandler {
                 }
             }
         }
-        
+
         // 接続を解除
         if let Some(session_id) = session_id {
-            if let Err(e) = self.connection_manager.unregister_connection(&session_id, &connection_id).await {
+            if let Err(e) = self
+                .connection_manager
+                .unregister_connection(&session_id, &connection_id)
+                .await
+            {
                 error!("接続解除エラー: {}", e);
             }
         }
-        
+
         info!("WebSocket接続処理完了: connection_id={}", connection_id);
     }
-    
+
     /// テキストメッセージ処理
     async fn handle_text_message(
         &self,
@@ -372,28 +405,41 @@ impl SessionWebSocketHandler {
         session_id: &Option<SessionId>,
         text: &str,
     ) -> Result<(), SessionError> {
-        debug!("テキストメッセージ受信: connection_id={}, length={}", connection_id, text.len());
-        
+        debug!(
+            "テキストメッセージ受信: connection_id={}, length={}",
+            connection_id,
+            text.len()
+        );
+
         // メッセージサイズチェック
         if text.len() > self.config.max_message_size_bytes {
-            return Err(SessionError::Invalid("Message too large".to_string()));
+            return Err(SessionError::InvalidState("Message too large".to_string()));
         }
-        
+
         // JSONパース
-        let protocol_msg: WebSocketMessageProtocol = serde_json::from_str(text)
-            .map_err(|e| SessionError::Invalid(format!("Invalid JSON: {}", e)))?;
-        
+        let protocol_msg: WebSocketMessageProtocol =
+            serde_json::from_str(text).map_err(SessionError::Serialization)?;
+
         // セッション入力検証
-        if let Some(session_id) = session_id {
+        if let Some(_session_id) = session_id {
             // セキュリティ検証は必要に応じて実装
-            // self.security_middleware.validate_session_input(session_id, text, "websocket").await?;
+            // self.security_middleware.validate_session_input(_session_id, text, "websocket").await?;
         }
-        
+
         // メッセージタイプ別処理
         match protocol_msg.r#type.as_str() {
-            "heartbeat" => self.handle_heartbeat_message(connection_id, &protocol_msg).await,
-            "realtime_edit" => self.handle_realtime_edit_message(session_id, &protocol_msg).await,
-            "file_sync" => self.handle_file_sync_message(session_id, &protocol_msg).await,
+            "heartbeat" => {
+                self.handle_heartbeat_message(connection_id, &protocol_msg)
+                    .await
+            }
+            "realtime_edit" => {
+                self.handle_realtime_edit_message(session_id, &protocol_msg)
+                    .await
+            }
+            "file_sync" => {
+                self.handle_file_sync_message(session_id, &protocol_msg)
+                    .await
+            }
             "chat" => self.handle_chat_message(session_id, &protocol_msg).await,
             _ => {
                 warn!("未知のメッセージタイプ: {}", protocol_msg.r#type);
@@ -401,22 +447,26 @@ impl SessionWebSocketHandler {
             }
         }
     }
-    
+
     /// バイナリメッセージ処理
     async fn handle_binary_message(
         &self,
         connection_id: &Uuid,
-        session_id: &Option<SessionId>,
+        _session_id: &Option<SessionId>,
         data: &[u8],
     ) -> Result<(), SessionError> {
-        debug!("バイナリメッセージ受信: connection_id={}, size={}", connection_id, data.len());
-        
+        debug!(
+            "バイナリメッセージ受信: connection_id={}, size={}",
+            connection_id,
+            data.len()
+        );
+
         // バイナリデータの処理（ファイル転送、音声データなど）
         // 実装は用途に応じて詳細化
-        
+
         Ok(())
     }
-    
+
     /// ハートビートメッセージ処理
     async fn handle_heartbeat_message(
         &self,
@@ -427,7 +477,7 @@ impl SessionWebSocketHandler {
         // 最終アクティビティ時刻を更新
         Ok(())
     }
-    
+
     /// リアルタイム編集メッセージ処理
     async fn handle_realtime_edit_message(
         &self,
@@ -435,7 +485,7 @@ impl SessionWebSocketHandler {
         msg: &WebSocketMessageProtocol,
     ) -> Result<(), SessionError> {
         debug!("リアルタイム編集メッセージ: session_id={:?}", session_id);
-        
+
         // 編集イベントをブロードキャスト
         let broadcast_msg = BroadcastMessage {
             message_id: Uuid::new_v4(),
@@ -445,11 +495,13 @@ impl SessionWebSocketHandler {
             payload: msg.payload.clone(),
             timestamp: Utc::now(),
         };
-        
-        self.connection_manager.broadcast_message(broadcast_msg).await?;
+
+        self.connection_manager
+            .broadcast_message(broadcast_msg)
+            .await?;
         Ok(())
     }
-    
+
     /// ファイル同期メッセージ処理
     async fn handle_file_sync_message(
         &self,
@@ -457,7 +509,7 @@ impl SessionWebSocketHandler {
         msg: &WebSocketMessageProtocol,
     ) -> Result<(), SessionError> {
         debug!("ファイル同期メッセージ: session_id={:?}", session_id);
-        
+
         let broadcast_msg = BroadcastMessage {
             message_id: Uuid::new_v4(),
             sender_session_id: session_id.clone(),
@@ -466,11 +518,13 @@ impl SessionWebSocketHandler {
             payload: msg.payload.clone(),
             timestamp: Utc::now(),
         };
-        
-        self.connection_manager.broadcast_message(broadcast_msg).await?;
+
+        self.connection_manager
+            .broadcast_message(broadcast_msg)
+            .await?;
         Ok(())
     }
-    
+
     /// チャットメッセージ処理
     async fn handle_chat_message(
         &self,
@@ -478,7 +532,7 @@ impl SessionWebSocketHandler {
         msg: &WebSocketMessageProtocol,
     ) -> Result<(), SessionError> {
         debug!("チャットメッセージ: session_id={:?}", session_id);
-        
+
         let broadcast_msg = BroadcastMessage {
             message_id: Uuid::new_v4(),
             sender_session_id: session_id.clone(),
@@ -487,66 +541,102 @@ impl SessionWebSocketHandler {
             payload: msg.payload.clone(),
             timestamp: Utc::now(),
         };
-        
-        self.connection_manager.broadcast_message(broadcast_msg).await?;
+
+        self.connection_manager
+            .broadcast_message(broadcast_msg)
+            .await?;
         Ok(())
     }
-    
+
     /// ヘッダーからセッション抽出
-    async fn extract_session_from_headers(&self, headers: &HeaderMap) -> Result<Option<SessionId>, axum::response::Response> {
+    async fn extract_session_from_headers(
+        &self,
+        headers: &HeaderMap,
+    ) -> Result<Option<SessionId>, axum::response::Response> {
+        debug!("ヘッダーからセッション抽出開始");
+        debug!(
+            "利用可能なヘッダー: {:?}",
+            headers.keys().collect::<Vec<_>>()
+        );
+
         // セッションID抽出ロジック（Cookieまたはカスタムヘッダー）
         if let Some(session_header) = headers.get("x-session-id") {
+            debug!("x-session-idヘッダー発見: {:?}", session_header);
             if let Ok(session_str) = session_header.to_str() {
+                debug!("セッション文字列: {}", session_str);
                 return Ok(Some(SessionId::from_string(session_str.to_string())));
+            } else {
+                error!("x-session-idヘッダーの文字列変換に失敗");
             }
+        } else {
+            warn!("x-session-idヘッダーが見つかりません");
         }
-        
+
         Ok(None)
     }
-    
+
     /// WebSocket用セッション検証
-    async fn validate_session_for_websocket(&self, session_id: &SessionId) -> Result<bool, SessionError> {
+    async fn validate_session_for_websocket(
+        &self,
+        session_id: &SessionId,
+    ) -> Result<bool, SessionError> {
+        debug!("セッション取得試行: {:?}", session_id);
         match self.session_manager.get_session(session_id).await? {
             Some(session) => {
+                debug!("セッション発見: state={:?}", session.state);
                 match session.state {
-                    SessionState::Active => Ok(true),
-                    _ => Ok(false),
+                    SessionState::Active => {
+                        debug!("アクティブセッション確認");
+                        Ok(true)
+                    }
+                    _ => {
+                        debug!("非アクティブセッション: {:?}", session.state);
+                        Ok(false)
+                    }
                 }
             }
-            None => Ok(false),
+            None => {
+                error!("セッションが見つかりません: {:?}", session_id);
+                Ok(false)
+            }
         }
     }
-    
+
     /// 接続メタデータ構築
     fn build_connection_metadata(&self, headers: &HeaderMap) -> ConnectionMetadata {
-        let user_agent = headers.get("user-agent")
+        let user_agent = headers
+            .get("user-agent")
             .and_then(|h| h.to_str().ok())
             .map(|s| s.to_string());
-        
+
         ConnectionMetadata {
             user_agent,
             connection_type: ConnectionType::Editor, // デフォルト
             client_capabilities: ClientCapabilities::default(),
         }
     }
-    
+
     /// ブロードキャスト転送判定
-    fn should_forward_broadcast(&self, msg: &BroadcastMessage, session_id: &Option<SessionId>) -> bool {
+    fn should_forward_broadcast(
+        &self,
+        msg: &BroadcastMessage,
+        session_id: &Option<SessionId>,
+    ) -> bool {
         // 送信者自身には送信しない
         if let (Some(sender), Some(receiver)) = (&msg.sender_session_id, session_id) {
             if sender == receiver {
                 return false;
             }
         }
-        
+
         // ターゲット指定がある場合はチェック
         if let Some(target) = &msg.target_session_id {
             return session_id.as_ref() == Some(target);
         }
-        
+
         true
     }
-    
+
     /// ブロードキャストメッセージをWebSocketメッセージに変換
     fn convert_broadcast_to_websocket(&self, msg: &BroadcastMessage) -> String {
         let ws_msg = WebSocketMessageProtocol {
@@ -560,18 +650,19 @@ impl SessionWebSocketHandler {
                 state: "active".to_string(),
             }),
         };
-        
+
         serde_json::to_string(&ws_msg).unwrap_or_default()
     }
-    
+
     /// 拒否レスポンス作成
-    async fn create_rejection_response(&self, reason: &str) -> Result<Response, axum::response::Response> {
+    async fn create_rejection_response(
+        &self,
+        reason: &str,
+    ) -> Result<Response, axum::response::Response> {
         Err(axum::response::Response::builder()
             .status(axum::http::StatusCode::UNAUTHORIZED)
             .header("Content-Type", "application/json")
-            .body(axum::body::Body::from(
-                json!({"error": reason}).to_string()
-            ))
+            .body(axum::body::Body::from(json!({"error": reason}).to_string()))
             .unwrap()
             .into_response())
     }
@@ -595,15 +686,19 @@ impl WebSocketConnectionManager {
             broadcast_tx,
         }
     }
-    
-    async fn register_connection(&self, connection: WebSocketConnection) -> Result<(), SessionError> {
+
+    async fn register_connection(
+        &self,
+        connection: WebSocketConnection,
+    ) -> Result<(), SessionError> {
         let mut connections = self.connections.write().unwrap();
-        connections.entry(connection.session_id.clone())
-            .or_insert_with(Vec::new)
+        connections
+            .entry(connection.session_id.clone())
+            .or_default()
             .push(connection);
         Ok(())
     }
-    
+
     async fn unregister_connection(
         &self,
         session_id: &SessionId,
@@ -618,13 +713,14 @@ impl WebSocketConnectionManager {
         }
         Ok(())
     }
-    
+
     async fn broadcast_message(&self, message: BroadcastMessage) -> Result<(), SessionError> {
-        self.broadcast_tx.send(message)
+        self.broadcast_tx
+            .send(message)
             .map_err(|e| SessionError::Internal(format!("Broadcast failed: {}", e)))?;
         Ok(())
     }
-    
+
     fn subscribe_broadcast(&self) -> broadcast::Receiver<BroadcastMessage> {
         self.broadcast_tx.subscribe()
     }
@@ -658,7 +754,7 @@ impl Default for ClientCapabilities {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_websocket_handler_config_default() {
         let config = WebSocketHandlerConfig::default();
@@ -666,7 +762,7 @@ mod tests {
         assert_eq!(config.max_connections_per_session, 10);
         assert_eq!(config.heartbeat_interval_secs, 30);
     }
-    
+
     #[test]
     fn test_client_capabilities_default() {
         let capabilities = ClientCapabilities::default();

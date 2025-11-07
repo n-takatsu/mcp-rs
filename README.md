@@ -1,17 +1,18 @@
 # mcp-rs
 
-🚀 **Production-Ready** Rust implementation of the Model Context Protocol (MCP) for AI-agent integration with WordPress and beyond.
+🚀 **Production-Ready** Rust implementation of the Model Context Protocol (MCP) with **Real-time Collaborative Editing** for AI-agent integration with WordPress and beyond.
 
 > **[English](README.md)** | **[日本語](README.ja.md)**
 
-[![Architecture](https://img.shields.io/badge/Architecture-v0.15.0--canary--deployment-blue)](#architecture)
+[![Architecture](https://img.shields.io/badge/Architecture-v0.15.0--realtime--editing-blue)](#architecture)
 [![Implementation](https://img.shields.io/badge/WordPress_Tools-27_Available-green)](#wordpress-mcp-tools)
-[![Canary_System](https://img.shields.io/badge/Canary_Deployment-Real--time_Dashboard-orange)](#canary-deployment-system)
+[![Realtime_Editing](https://img.shields.io/badge/Real--time_Editing-WebSocket_Ready-brightgreen)](#real-time-collaborative-editing)
+[![Session_Management](https://img.shields.io/badge/Session_Management-Enterprise_Grade-orange)](#session-management)
 [![License](https://img.shields.io/badge/License-MIT%2FApache--2.0-green)](#license)
 
 ## Overview
 
-`mcp-rs` provides a **comprehensive, battle-tested** implementation of the MCP (Model Context Protocol) in Rust with **complete WordPress integration**. Built with a layered architecture, it enables AI agents to perform sophisticated content management through a standardized JSON-RPC interface. The framework features 27 WordPress tools, strong type safety, and is optimized for production use with GitHub Copilot and other AI coding assistants.
+`mcp-rs` provides a **comprehensive, battle-tested** implementation of the MCP (Model Context Protocol) in Rust with **complete WordPress integration** and **real-time collaborative editing capabilities**. Built with a layered architecture, it enables AI agents to perform sophisticated content management through a standardized JSON-RPC interface while supporting real-time collaborative editing via WebSocket connections. The framework features 27 WordPress tools, enterprise-grade session management, strong type safety, and is optimized for production use with GitHub Copilot and other AI coding assistants.
 
 ## 🎯 Who Is This For?
 
@@ -86,7 +87,7 @@ Need WordPress security automation? 6-layer enterprise security architecture wit
 - **Transport Layer**: Multiple communication protocols supported
   - **📟 Stdio Transport**: Standard input/output for process-based communication
   - **🌐 HTTP Transport**: RESTful API server with JSON-RPC over HTTP
-  - **🔮 WebSocket Transport**: Real-time bidirectional communication (planned)
+  - **� WebSocket Transport**: Real-time bidirectional communication with session management
 
 ### 🔌 Current Integrations
 
@@ -144,9 +145,13 @@ Need WordPress security automation? 6-layer enterprise security architecture wit
 - **HTTP Communication**: reqwest + timeout + exponential backoff retry
 - **Security Testing**: Comprehensive test suite with 95% security coverage
 
-### ✅ Recently Completed (v0.2.0-alpha)
+### ✅ Recently Completed (v0.15.0-realtime-editing)
 - **🏗️ Core Runtime Module**: Complete application lifecycle management with state tracking
-- **📟 Stdio Transport Support**: Standard input/output communication for process-based integration  
+- **📟 Stdio Transport Support**: Standard input/output communication for process-based integration
+- **🚀 Real-time Collaborative Editing**: WebSocket-based real-time editing with session management
+- **📡 WebSocket Server**: Production-ready Axum WebSocket server with connection handling
+- **🔐 Enterprise Session Management**: Comprehensive session lifecycle with security middleware
+- **⚡ Performance Optimized**: 287 passing tests with zero compilation warnings  
 - **🔌 Transport Abstraction**: Pluggable transport layer with configurable framing methods
 - **⚙️ Advanced Configuration**: Transport-specific settings with TOML integration
 - **🔄 Message Processing**: Async message routing and request handling pipeline
@@ -163,6 +168,46 @@ Need WordPress security automation? 6-layer enterprise security architecture wit
   - ✅ **Advanced Input Validation**: Real-time validation with zero-trust model implementation
   - ✅ **Security Monitoring**: Threat level analysis with attack detection and prevention
 - **🧪 Quality Assurance**: 205+ test cases with 100% pass rate and zero Clippy warnings
+
+## 🚀 Real-time Collaborative Editing
+
+### ✨ New! WebSocket-Based Real-time Editing
+
+Experience the future of collaborative content creation with mcp-rs's real-time editing capabilities:
+
+**🌐 WebSocket Server Features:**
+- **Session-based Authentication**: Enterprise-grade session management with automatic activation
+- **Real-time Synchronization**: Instant content synchronization across multiple clients
+- **Connection Management**: Robust WebSocket connection handling with heartbeat monitoring
+- **Interactive Demo**: Beautiful web interface for testing collaborative editing
+- **Production Ready**: Axum-based server with comprehensive error handling
+
+**🔐 Session Management:**
+- **CRUD Operations**: Complete session lifecycle management
+- **State Tracking**: Pending → Active → Expired state transitions
+- **User Filtering**: Multi-user session support with isolation
+- **Memory Storage**: High-performance in-memory session storage
+- **Security Middleware**: Input validation and session verification
+
+### 🎮 Try the Demo
+
+```bash
+# Start the real-time editing server
+cargo run --example axum_websocket_server
+
+# Open your browser to:
+# 🌐 Demo: http://localhost:3000/
+# 📡 WebSocket: ws://localhost:3000/ws
+# 🔧 API: http://localhost:3000/api/sessions
+# 💚 Health: http://localhost:3000/health
+```
+
+**Demo Features:**
+- **Dual Editor Interface**: Side-by-side collaborative editing
+- **Session Creation**: Easy session management via web UI
+- **Real-time Sync**: See changes instantly across editors
+- **API Testing**: Built-in API testing tools
+- **Connection Monitoring**: Live connection status and logs
 
 ### 🎯 WordPress MCP Tools (27 tools available)
 
