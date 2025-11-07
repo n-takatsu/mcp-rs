@@ -8,7 +8,7 @@ use aes_gcm::{
     Aes256Gcm, Key, Nonce,
 };
 use base64::{engine::general_purpose, Engine as _};
-use secrecy::{ExposeSecret, Secret};
+use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -16,7 +16,7 @@ use std::fmt;
 #[derive(Clone)]
 pub struct SecureCredentials {
     pub username: String,
-    password: Secret<String>,
+    password: SecretString,
 }
 
 /// 設定ファイル用の暗号化された認証情報
@@ -52,7 +52,7 @@ impl SecureCredentials {
     pub fn new(username: String, password: String) -> Self {
         Self {
             username,
-            password: Secret::new(password),
+            password: SecretString::new(password.into()),
         }
     }
 
@@ -97,7 +97,7 @@ impl SecureCredentials {
 
         Ok(Self {
             username: encrypted.username.clone(),
-            password: Secret::new(password),
+            password: SecretString::new(password.into()),
         })
     }
 
@@ -128,7 +128,7 @@ impl SecureCredentials {
     }
 
     /// パスワードを取得（Secretのまま返す）
-    pub fn get_password(&self) -> &Secret<String> {
+    pub fn get_password(&self) -> &SecretString {
         &self.password
     }
 
@@ -140,7 +140,7 @@ impl SecureCredentials {
 
     /// パスワードを変更
     pub fn change_password(&mut self, new_password: String) {
-        self.password = Secret::new(new_password);
+        self.password = SecretString::new(new_password.into());
     }
 }
 

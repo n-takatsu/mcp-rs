@@ -10,20 +10,20 @@ repository = "https://github.com/n-takatsu/mcp-rs"
 [dependencies]
 # Core async runtime
 tokio = { version = "1.48", features = ["full"] }
-tokio-util = "0.7"
-futures = "0.3"
+tokio-util = "0.7.17"
+futures = "0.3.31"
 
 # Web framework and HTTP
 axum = { version = "0.8", features = ["ws"] }
-tower = "0.5"
+tower = "0.5.2"
 tower-http = { version = "0.6", features = ["cors", "trace"] }
-hyper = { version = "1.0", features = ["full"] }
+hyper = { version = "1.7", features = ["full"] }
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-serde_yaml = "0.9"
-toml = "0.8"
+serde_json = "1.0.145"
+serde_yaml_ng = "0.10"
+toml = "0.9.8"
 
 # Database and storage (PostgreSQL and SQLite only - MySQL via mysql_async)
 sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "sqlite", "chrono", "uuid"], default-features = false }
@@ -40,55 +40,55 @@ uuid = { version = "1.18", features = ["v4", "serde"] }
 # Cryptography and security
 ring = "0.17.14"
 argon2 = "0.5"
-jsonwebtoken = "9.3"
+jsonwebtoken = { version = "10.2", default-features = false, features = ["rust_crypto"] }
 base64 = "0.22.1"
-secrecy = { version = "0.8", features = ["serde"] }
-zeroize = "1.8"
+secrecy = { version = "0.10.3", features = ["serde"] }
+zeroize = "1.8.2"
 aes-gcm = "0.10"
 pbkdf2 = "0.12"
 sha2 = "0.10"
 
 # Network and IP handling
-ipnet = "2.9"
-hickory-resolver = { version = "0.24", optional = true }
+ipnet = "2.11"
+hickory-resolver = { version = "0.24.4", optional = true }
 
 # Logging and tracing
 tracing = "0.1.41"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
-tracing-appender = "0.2"
+tracing-subscriber = { version = "0.3.20", features = ["env-filter", "json"] }
+tracing-appender = "0.2.3"
 
 # Configuration
-config = "0.14"
+config = "0.15.18"
 clap = { version = "4.5.51", features = ["derive", "env"] }
 
 # Error handling
-thiserror = "1.0"
-anyhow = "1.0"
-async-trait = "0.1"
+thiserror = "2.0.17"
+anyhow = "1.0.100"
+async-trait = "0.1.89"
 
 # HTTP client
 reqwest = { version = "0.12.24", default-features = false, features = ["json", "rustls-tls", "multipart"] }
 
 # Validation  
-validator = { version = "0.19", features = ["derive"] }
+validator = { version = "0.20", features = ["derive"] }
 regex = "1.12"
-url = "2.5"
-ammonia = "4.0"
-fancy-regex = "0.13"
+url = "2.5.7"
+ammonia = "4.1.2"
+fancy-regex = "0.16.2"
 
 # Rate limiting
-governor = "0.6"
+governor = "0.10.1"
 
 # Metrics and monitoring
 prometheus = { version = "0.14", optional = true }
-metrics = { version = "0.23", optional = true }
+metrics = { version = "0.24.2", optional = true }
 
 # WebSocket
-tungstenite = "0.24"
-tokio-tungstenite = "0.24"
+tungstenite = "0.28"
+tokio-tungstenite = "0.28"
 
 # File system monitoring
-notify = "6.1"
+notify = "8.2"
 
 # TUI Dashboard (temporarily disabled to avoid paste dependency)
 # ratatui = { version = "0.29", optional = true, default-features = false }
@@ -96,20 +96,20 @@ notify = "6.1"
 # tui-input = { version = "0.8", optional = true }
 
 # Plugin system
-libloading = "0.8"
+libloading = "0.9"
 
 # Testing utilities
-mockall = { version = "0.13", optional = true }
+mockall = { version = "0.13.1", optional = true }
 [dev-dependencies]
 # Testing framework
-tokio-test = "0.4"
-criterion = { version = "0.5", features = ["html_reports"] }
-proptest = "1.5"
+tokio-test = "0.4.4"
+criterion = { version = "0.7", features = ["html_reports"] }
+proptest = "1.9"
 tempfile = "3.23"
 
 # Mock data generation
-fake = { version = "2.9", features = ["derive", "chrono", "uuid"] }
-rand = "0.8"
+fake = { version = "4.4", features = ["derive", "chrono", "uuid"] }
+rand = "0.8.5"
 
 [features]
 default = ["session-management", "security", "websocket"]

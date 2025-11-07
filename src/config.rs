@@ -190,7 +190,7 @@ impl WordPressConfig {
         Ok(Self {
             url,
             username: secure_creds.username.clone(),
-            password: secure_creds.get_password().expose_secret().clone(),
+            password: secure_creds.get_password().expose_secret().to_string(),
             enabled,
             timeout_seconds,
             rate_limit,
