@@ -18,8 +18,8 @@ pub mod session;
 pub mod threat_intelligence;
 // pub mod plugin_isolation; // 将来実装予定
 pub mod canary_deployment;
-#[cfg(feature = "tui")]
-pub mod dashboard;
+// #[cfg(feature = "tui")]
+// pub mod dashboard;
 pub mod plugins;
 pub mod policy_application;
 pub mod policy_config;

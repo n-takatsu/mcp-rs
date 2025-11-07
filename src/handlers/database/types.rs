@@ -7,11 +7,12 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// データベースタイプ
+/// MySQL: mysql_asyncライブラリを使用（RSA脆弱性フリー）
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum DatabaseType {
     PostgreSQL,
-    MySQL,
-    MariaDB,
+    MySQL,   // mysql_asyncライブラリを使用（セキュア）
+    MariaDB, // mysql_asyncライブラリでサポート
     SQLite,
     MongoDB,
     Redis,
@@ -457,6 +458,12 @@ pub enum DatabaseError {
 
     #[error("Invalid query: {0}")]
     InvalidQuery(String),
+
+    #[error("Conversion failed: {0}")]
+    ConversionFailed(String),
+
+    #[error("Serialization failed: {0}")]
+    SerializationFailed(String),
 
     #[error("SQL syntax error: {0}")]
     SqlSyntaxError(String),

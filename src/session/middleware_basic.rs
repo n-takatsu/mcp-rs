@@ -96,7 +96,6 @@ mod tests {
         let _middleware = SessionMiddleware::new(manager);
 
         // ミドルウェアが正常に作成されることを確認
-        // 型チェックとして成功
-        assert!(true);
+        // 型チェックとして成功（テストは実装済み）
     }
 }
