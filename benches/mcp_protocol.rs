@@ -1,6 +1,7 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, criterion_main, Criterion};
 use mcp_rs::mcp::{JsonRpcRequest, ToolCallParams};
 use std::collections::HashMap;
+use std::hint::black_box;
 
 fn benchmark_json_rpc_parsing(c: &mut Criterion) {
     let json_request = r#"

@@ -358,7 +358,7 @@ impl SessionWebSocketHandler {
                         Ok(msg) => {
                             if self.should_forward_broadcast(&msg, &session_id) {
                                 let ws_msg = self.convert_broadcast_to_websocket(&msg);
-                                if let Err(e) = socket.send(WsMessage::Text(ws_msg)).await {
+                                if let Err(e) = socket.send(WsMessage::Text(ws_msg.into())).await {
                                     error!("ブロードキャストメッセージ送信エラー: {}", e);
                                     break;
                                 }
@@ -376,7 +376,7 @@ impl SessionWebSocketHandler {
 
                 // ハートビート
                 _ = heartbeat_interval.tick() => {
-                    if let Err(e) = socket.send(WsMessage::Ping(vec![])).await {
+                    if let Err(e) = socket.send(WsMessage::Ping(vec![].into())).await {
                         error!("ハートビート送信エラー: {}", e);
                         break;
                     }
