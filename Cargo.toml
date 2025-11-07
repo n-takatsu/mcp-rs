@@ -73,6 +73,11 @@ criterion = { version = "0.5", features = ["html_reports"] }
 base64 = "0.21"
 mockall = "0.12"  # モックテスト用
 
+# Redis関連の依存関係
+redis = { version = "0.32", features = ["tokio-comp", "connection-manager", "cluster"] }
+# MongoDB関連の依存関係（将来用）
+# mongodb = { version = "2.8", features = ["tokio-runtime"] }
+
 [[bench]]
 name = "mcp_protocol"
 harness = false

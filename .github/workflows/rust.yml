@@ -3,7 +3,7 @@ name: Rust
 # PRのみで実行し、pushでは実行しない（ci.ymlと重複回避）
 on:
   pull_request:
-    branches: [ "main" ]
+    branches: [ "main", "develop" ]  # developブランチへのPRも含める
 
 # 同じコミットに対する重複実行を取り消し  
 concurrency:

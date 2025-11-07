@@ -10,8 +10,6 @@ mod tests {
     #[test]
     fn placeholder_test() {
         // Empty placeholder test to keep the test file valid
-        // Using a meaningful assertion instead of assert!(true)
-        let test_passed = true;
-        assert!(test_passed);
+        // Note: Actual performance tests are disabled to prevent CI hangs
     }
 }

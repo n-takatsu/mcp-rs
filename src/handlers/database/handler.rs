@@ -5,6 +5,7 @@
 use crate::handlers::database::{
     engine::{DatabaseEngine, DatabaseEngineBuilder, EngineRegistry},
     pool::{ConnectionPool, PoolManager},
+    safety::{SafetyError, SafetyManager}, // 安全機構を追加
     security::DatabaseSecurity,
     types::{
         DatabaseConfig, DatabaseError, DatabaseType, ExecuteResult, QueryContext, QueryResult,
@@ -37,6 +38,8 @@ pub struct DatabaseHandler {
     security: Arc<DatabaseSecurity>,
     /// 脅威インテリジェンス
     threat_intelligence: Option<Arc<ThreatDetectionEngine>>,
+    /// 安全機構マネージャー
+    safety_manager: Arc<SafetyManager>,
 }
 
 impl DatabaseHandler {
@@ -56,6 +59,7 @@ impl DatabaseHandler {
             configs: Arc::new(RwLock::new(HashMap::new())),
             security,
             threat_intelligence,
+            safety_manager: Arc::new(SafetyManager::new()),
         })
     }
 
