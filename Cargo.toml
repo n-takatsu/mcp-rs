@@ -25,7 +25,7 @@ serde_json = "1.0"
 serde_yaml = "0.9"
 toml = "0.8"
 
-# Database and storage  
+# Database and storage (PostgreSQL and SQLite only - MySQL via mysql_async)
 sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "sqlite", "chrono", "uuid"], default-features = false }
 # MySQL support via secure alternative (RSA vulnerability-free)
 mysql_async = { version = "0.36", optional = true }
@@ -191,7 +191,7 @@ opt-level = 3
 debug = false
 lto = true
 
-# Security: Exclude problematic dependencies
+# Security: Exclude resolved dependencies  
 [package.metadata.audit.ignore]
-"RUSTSEC-2023-0071" = "RSA crate - no fix available, consider removing MySQL support"
-"RUSTSEC-2024-0436" = "paste crate - unmaintained but required by ratatui"
+"RUSTSEC-2023-0071" = "RSA crate - legacy sqlx internal dependency, MySQL support via secure mysql_async v0.36.1 (RSA-free)"
+"RUSTSEC-2024-0436" = "paste crate - unmaintained but required by ratatui (currently disabled)"
