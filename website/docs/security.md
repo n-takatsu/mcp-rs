@@ -147,7 +147,7 @@ For security-related issues:
 
 ## 📚 Additional Resources
 
-- [Security Guide](../../project-docs/security-guide.md) - Comprehensive security documentation
+- [Security Guide](https://github.com/n-takatsu/mcp-rs/blob/main/project-docs/security-guide.md) - Comprehensive security documentation
 - [WordPress Security](https://make.wordpress.org/core/2020/11/05/application-passwords-integration-guide/) - Application Password setup
 - [Rust Security](https://doc.rust-lang.org/security.html) - Rust security guidelines
 

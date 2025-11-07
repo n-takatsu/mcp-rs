@@ -340,7 +340,7 @@ spec:
 ### 🔧 Technical Documentation
 - [**WebSocket API Reference**](./docs/websocket-api.md) - Complete API specification
 - [**Session Management**](./docs/session-management-architecture.md) - Architecture and implementation
-- [**Development Guide**](./project-docs/realtime-editing-development-guide.md) - Comprehensive development documentation
+- [**Development Guide**](https://github.com/n-takatsu/mcp-rs/blob/main/project-docs/realtime-editing-development-guide.md) - Comprehensive development documentation
 
 ### 🛡️ Security & Compliance
 - [**Security Policy**](./demo-policies/realtime-editing-security-policy.md) - Security requirements and policies
@@ -528,9 +528,9 @@ We welcome contributions! Here's how you can help:
 ### Quick Links
 - 🏠 [Home](https://n-takatsu.github.io/mcp-rs/)
 - 📖 [Documentation](https://n-takatsu.github.io/mcp-rs/docs/)
-- 🎮 [Live Demo](../static/demo.html)
+- 🎮 [Live Demo](https://github.com/n-takatsu/mcp-rs/blob/main/static/demo.html)
 - 💻 [GitHub Repository](https://github.com/n-takatsu/mcp-rs)
-- 📦 [Crate Registry](https://crates.io/crates/mcp-rs)
+- 📦 [Releases](https://github.com/n-takatsu/mcp-rs/releases)
 
 ### Learning Resources
 - 🎓 [Getting Started Guide](https://n-takatsu.github.io/mcp-rs/docs/guides/)
