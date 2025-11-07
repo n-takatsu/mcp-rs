@@ -193,5 +193,5 @@ lto = true
 
 # Security: Exclude resolved dependencies  
 [package.metadata.audit.ignore]
-"RUSTSEC-2023-0071" = "RSA crate - legacy sqlx internal dependency, MySQL support via secure mysql_async v0.36.1 (RSA-free)"
+"RUSTSEC-2023-0071" = "RSA crate from sqlx-mysql (unused) - MySQL support provided by secure mysql_async v0.36.1"
 "RUSTSEC-2024-0436" = "paste crate - unmaintained but required by ratatui (currently disabled)"
