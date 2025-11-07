@@ -145,4 +145,36 @@ pub enum SecurityError {
     /// Configuration error
     #[error("Configuration error: {0}")]
     Configuration(String),
+
+    /// Session management error
+    #[error("Session error: {0}")]
+    Session(#[from] SessionError),
+}
+
+/// Session-specific error types
+#[derive(Debug, Error)]
+pub enum SessionError {
+    /// Session not found
+    #[error("Session not found: {0}")]
+    NotFound(String),
+
+    /// Session expired
+    #[error("Session expired: {0}")]
+    Expired(String),
+
+    /// Invalid session state
+    #[error("Invalid session state: {0}")]
+    InvalidState(String),
+
+    /// Storage error
+    #[error("Storage error: {0}")]
+    Storage(String),
+
+    /// Serialization error
+    #[error("Serialization error: {0}")]
+    Serialization(#[from] serde_json::Error),
+
+    /// Internal error
+    #[error("Internal error: {0}")]
+    Internal(String),
 }

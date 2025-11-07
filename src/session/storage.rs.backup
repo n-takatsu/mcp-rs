@@ -1,0 +1,727 @@
+//! Session Storage Implementationsuse crate::session::{
+
+//!    SessionConfig, SessionError, SessionId, Session, SessionFilter, SessionStats,
+
+//! セッション管理システムのストレージ実装    CreateSessionRequest, types::{SessionState, SecurityLevel}
+
+//! 複数のバックエンド（Memory, Redis, Database）をサポート};
+
+use async_trait::async_trait;
+
+use super::types::{Session, SessionId, SessionFilter, SessionStats};use std::collections::HashMap;
+
+use crate::error::{Error, Result};use std::sync::Arc;
+
+use async_trait::async_trait;use tokio::sync::RwLock;
+
+use chrono::{DateTime, Utc, Duration};use tracing::{debug, error, info, warn};
+
+use serde::{Deserialize, Serialize};use chrono::{DateTime, Utc};
+
+use std::collections::HashMap;
+
+use std::sync::Arc;/// セッションストレージの抽象化トレイト
+
+use tokio::sync::RwLock;#[async_trait]
+
+pub trait SessionStorage: Send + Sync {
+
+/// セッションストレージエラー    /// セッションを作成・保存
+
+#[derive(Debug, Clone, Serialize, Deserialize)]    async fn create_session(&self, session: Session) -> Result<SessionId, SessionError>;
+
+pub enum SessionStorageError {    
+
+    NotFound(String),    /// セッションを取得
+
+    Storage(String),    async fn get_session(&self, id: &SessionId) -> Result<Option<Session>, SessionError>;
+
+    Serialization(String),    
+
+    Network(String),    /// セッションを更新
+
+    Configuration(String),    async fn update_session(&self, session: &Session) -> Result<(), SessionError>;
+
+}    
+
+    /// セッションを削除
+
+impl std::fmt::Display for SessionStorageError {    async fn delete_session(&self, id: &SessionId) -> Result<(), SessionError>;
+
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {    
+
+        match self {    /// フィルター条件でセッションを検索
+
+            Self::NotFound(id) => write!(f, "Session not found: {}", id),    async fn find_sessions(&self, filter: &SessionFilter) -> Result<Vec<Session>, SessionError>;
+
+            Self::Storage(msg) => write!(f, "Storage error: {}", msg),    
+
+            Self::Serialization(msg) => write!(f, "Serialization error: {}", msg),    /// 期限切れセッションを削除
+
+            Self::Network(msg) => write!(f, "Network error: {}", msg),    async fn cleanup_expired(&self) -> Result<u64, SessionError>;
+
+            Self::Configuration(msg) => write!(f, "Configuration error: {}", msg),    
+
+        }    /// セッション統計を計算
+
+    }    async fn get_stats(&self) -> Result<SessionStats, SessionError>;
+
+}    
+
+    /// ヘルスチェック
+
+impl std::error::Error for SessionStorageError {}    async fn health_check(&self) -> Result<(), SessionError>;
+
+}
+
+impl From<SessionStorageError> for Error {
+
+    fn from(err: SessionStorageError) -> Self {/// メモリベースのセッションストレージ
+
+        Error::Storage(err.to_string())#[derive(Debug)]
+
+    }pub struct MemorySessionStorage {
+
+}    sessions: Arc<RwLock<HashMap<SessionId, Session>>>,
+
+    config: SessionConfig,
+
+/// セッションストレージトレイト}
+
+/// 
+
+/// セッションの CRUD 操作と高度なクエリ機能を提供impl MemorySessionStorage {
+
+#[async_trait]    pub fn new(config: SessionConfig) -> Self {
+
+pub trait SessionStorage: Send + Sync {        Self {
+
+    /// セッションを作成            sessions: Arc::new(RwLock::new(HashMap::new())),
+
+    async fn create_session(&self, session: Session) -> Result<SessionId>;            config,
+
+            }
+
+    /// セッションを取得    }
+
+    async fn get_session(&self, id: &SessionId) -> Result<Option<Session>>;}
+
+    
+
+    /// セッションを更新#[async_trait]
+
+    async fn update_session(&self, session: &Session) -> Result<()>;impl SessionStorage for MemorySessionStorage {
+
+        async fn create_session(&self, session: Session) -> Result<SessionId, SessionError> {
+
+    /// セッションを削除        let id = session.id.clone();
+
+    async fn delete_session(&self, id: &SessionId) -> Result<()>;        let mut sessions = self.sessions.write().await;
+
+            
+
+    /// フィルター条件でセッションを検索        // 最大セッション数チェック
+
+    async fn find_sessions(&self, filter: &SessionFilter) -> Result<Vec<Session>>;        if sessions.len() >= self.config.max_concurrent_sessions as usize {
+
+                return Err(SessionError::Storage(
+
+    /// 期限切れセッションを削除                "Maximum concurrent sessions reached".to_string()
+
+    async fn cleanup_expired(&self) -> Result<u64>;            ));
+
+            }
+
+    /// セッション統計を取得        
+
+    async fn get_stats(&self) -> Result<SessionStats>;        sessions.insert(id.clone(), session);
+
+            debug!("Session created: {}", id);
+
+    /// ストレージヘルスチェック        Ok(id)
+
+    async fn health_check(&self) -> Result<()>;    }
+
+}    
+
+    async fn get_session(&self, id: &SessionId) -> Result<Option<Session>, SessionError> {
+
+/// インメモリストレージ実装        let sessions = self.sessions.read().await;
+
+#[derive(Debug)]        match sessions.get(id) {
+
+pub struct MemorySessionStorage {            Some(session) => {
+
+    sessions: Arc<RwLock<HashMap<SessionId, Session>>>,                if session.is_expired() {
+
+}                    warn!("Attempted to access expired session: {}", id);
+
+                    Ok(None)
+
+impl MemorySessionStorage {                } else {
+
+    /// 新しいメモリストレージを作成                    Ok(Some(session.clone()))
+
+    pub fn new() -> Self {                }
+
+        Self {            }
+
+            sessions: Arc::new(RwLock::new(HashMap::new())),            None => Ok(None),
+
+        }        }
+
+    }    }
+
+        
+
+    /// フィルター条件に一致するかチェック    async fn update_session(&self, session: &Session) -> Result<(), SessionError> {
+
+    fn matches_filter(session: &Session, filter: &SessionFilter) -> bool {        let mut sessions = self.sessions.write().await;
+
+        // ユーザーIDフィルター        sessions.insert(session.id.clone(), session.clone());
+
+        if let Some(user_id) = &filter.user_id {        debug!("Session updated: {}", session.id);
+
+            if session.metadata.user_id != *user_id {        Ok(())
+
+                return false;    }
+
+            }    
+
+        }    async fn delete_session(&self, id: &SessionId) -> Result<(), SessionError> {
+
+                let mut sessions = self.sessions.write().await;
+
+        // 状態フィルター        match sessions.remove(id) {
+
+        if let Some(state) = &filter.state {            Some(_) => {
+
+            if session.state != *state {                info!("Session deleted: {}", id);
+
+                return false;                Ok(())
+
+            }            }
+
+        }            None => Err(SessionError::NotFound(id.to_string())),
+
+                }
+
+        // セキュリティレベルフィルター    }
+
+        if let Some(level) = &filter.security_level {    
+
+            if session.security.level != *level {    async fn find_sessions(&self, filter: &SessionFilter) -> Result<Vec<Session>, SessionError> {
+
+                return false;        let sessions = self.sessions.read().await;
+
+            }        let mut results = Vec::new();
+
+        }        
+
+                for session in sessions.values() {
+
+        // 作成日時フィルター            if self.matches_filter(session, filter) {
+
+        if let Some(after) = filter.created_after {                results.push(session.clone());
+
+            if session.created_at <= after {            }
+
+                return false;        }
+
+            }        
+
+        }        Ok(results)
+
+            }
+
+        if let Some(before) = filter.created_before {    
+
+            if session.created_at >= before {    async fn cleanup_expired(&self) -> Result<u64, SessionError> {
+
+                return false;        let mut sessions = self.sessions.write().await;
+
+            }        let now = Utc::now();
+
+        }        let mut removed_count = 0;
+
+                
+
+        // 期限フィルター        sessions.retain(|_, session| {
+
+        if let Some(after) = filter.expires_after {            if session.is_expired() || session.state == SessionState::Invalidated {
+
+            if session.expires_at <= after {                removed_count += 1;
+
+                return false;                false
+
+            }            } else {
+
+        }                true
+
+                    }
+
+        if let Some(before) = filter.expires_before {        });
+
+            if session.expires_at >= before {        
+
+                return false;        if removed_count > 0 {
+
+            }            info!("Cleaned up {} expired sessions", removed_count);
+
+        }        }
+
+                
+
+        // タグフィルター        Ok(removed_count)
+
+        if !filter.tags.is_empty() {    }
+
+            let session_tags = &session.metadata.tags;    
+
+            if !filter.tags.iter().all(|tag| session_tags.contains(tag)) {    async fn get_stats(&self) -> Result<SessionStats, SessionError> {
+
+                return false;        let sessions = self.sessions.read().await;
+
+            }        let now = Utc::now();
+
+        }        let today_start = now.date_naive().and_hms_opt(0, 0, 0).unwrap().and_utc();
+
+                
+
+        true        let mut stats = SessionStats::default();
+
+    }        stats.total_sessions = sessions.len() as u64;
+
+}        
+
+        let mut total_duration_secs = 0.0;
+
+#[async_trait]        let mut valid_durations = 0;
+
+impl SessionStorage for MemorySessionStorage {        
+
+    async fn create_session(&self, session: Session) -> Result<SessionId> {        for session in sessions.values() {
+
+        let mut sessions = self.sessions.write().await;            match session.state {
+
+                        SessionState::Active => stats.active_sessions += 1,
+
+        // 既存セッションIDのチェック                SessionState::Expired => stats.expired_sessions += 1,
+
+        if sessions.contains_key(&session.id) {                _ => {}
+
+            return Err(SessionStorageError::Storage(            }
+
+                format!("Session with ID {} already exists", session.id)            
+
+            ).into());            if session.metadata.created_at >= today_start {
+
+        }                stats.sessions_created_today += 1;
+
+                    }
+
+        let id = session.id.clone();            
+
+        sessions.insert(id.clone(), session);            stats.total_bytes_transferred += session.metadata.bytes_transferred;
+
+        Ok(id)            
+
+    }            // 平均継続時間計算
+
+                let duration = session.metadata.last_accessed - session.metadata.created_at;
+
+    async fn get_session(&self, id: &SessionId) -> Result<Option<Session>> {            if duration.num_seconds() > 0 {
+
+        let sessions = self.sessions.read().await;                total_duration_secs += duration.num_seconds() as f64;
+
+        Ok(sessions.get(id).cloned())                valid_durations += 1;
+
+    }            }
+
+            }
+
+    async fn update_session(&self, session: &Session) -> Result<()> {        
+
+        let mut sessions = self.sessions.write().await;        if valid_durations > 0 {
+
+        sessions.insert(session.id.clone(), session.clone());            stats.average_duration_minutes = (total_duration_secs / valid_durations as f64) / 60.0;
+
+        Ok(())        }
+
+    }        
+
+            stats.calculated_at = now;
+
+    async fn delete_session(&self, id: &SessionId) -> Result<()> {        Ok(stats)
+
+        let mut sessions = self.sessions.write().await;    }
+
+        match sessions.remove(id) {    
+
+            Some(_) => Ok(()),    async fn health_check(&self) -> Result<(), SessionError> {
+
+            None => Err(SessionStorageError::NotFound(id.to_string()).into()),        let sessions = self.sessions.read().await;
+
+        }        debug!("Health check: {} sessions in memory", sessions.len());
+
+    }        Ok(())
+
+        }
+
+    async fn find_sessions(&self, filter: &SessionFilter) -> Result<Vec<Session>> {}
+
+        let sessions = self.sessions.read().await;
+
+        impl MemorySessionStorage {
+
+        let mut results: Vec<Session> = sessions    /// フィルター条件をチェック
+
+            .values()    fn matches_filter(&self, session: &Session, filter: &SessionFilter) -> bool {
+
+            .filter(|session| Self::matches_filter(session, filter))        if let Some(ref user_id) = filter.user_id {
+
+            .cloned()            if session.user_id.as_ref() != Some(user_id) {
+
+            .collect();                return false;
+
+                    }
+
+        // ソート（作成日時の降順）        }
+
+        results.sort_by(|a, b| b.created_at.cmp(&a.created_at));        
+
+                if let Some(ref state) = filter.state {
+
+        // オフセットと制限の適用            if &session.state != state {
+
+        let offset = filter.offset.unwrap_or(0);                return false;
+
+        let limit = filter.limit.unwrap_or(results.len());            }
+
+                }
+
+        let end = std::cmp::min(offset + limit, results.len());        
+
+                if let Some(ref ip) = filter.ip_address {
+
+        if offset < results.len() {            if session.metadata.ip_address.as_ref() != Some(ip) {
+
+            Ok(results[offset..end].to_vec())                return false;
+
+        } else {            }
+
+            Ok(Vec::new())        }
+
+        }        
+
+    }        if let Some(ref after) = filter.created_after {
+
+                if session.metadata.created_at < *after {
+
+    async fn cleanup_expired(&self) -> Result<u64> {                return false;
+
+        let mut sessions = self.sessions.write().await;            }
+
+        let now = Utc::now();        }
+
+                
+
+        let expired_ids: Vec<SessionId> = sessions        if let Some(ref before) = filter.created_before {
+
+            .iter()            if session.metadata.created_at > *before {
+
+            .filter(|(_, session)| session.expires_at <= now)                return false;
+
+            .map(|(id, _)| id.clone())            }
+
+            .collect();        }
+
+                
+
+        let count = expired_ids.len() as u64;        if let Some(ref level) = filter.security_level {
+
+                    if &session.security.security_level != level {
+
+        for id in expired_ids {                return false;
+
+            sessions.remove(&id);            }
+
+        }        }
+
+                
+
+        Ok(count)        true
+
+    }    }
+
+    }
+
+    async fn get_stats(&self) -> Result<SessionStats> {
+
+        let sessions = self.sessions.read().await;/// Redis ベースのセッションストレージ（将来実装用）
+
+        let now = Utc::now();#[derive(Debug)]
+
+        let yesterday = now - Duration::hours(24);pub struct RedisSessionStorage {
+
+            // Redis 接続情報など
+
+        let mut stats = SessionStats::default();    _config: SessionConfig,
+
+        }
+
+        for session in sessions.values() {
+
+            stats.total_sessions += 1;impl RedisSessionStorage {
+
+            stats.total_access_count += session.access_count;    pub fn new(config: SessionConfig) -> Self {
+
+                    Self {
+
+            // 状態別統計            _config: config,
+
+            match session.state {        }
+
+                crate::session::types::SessionState::Active => stats.active_sessions += 1,    }
+
+                crate::session::types::SessionState::Pending => stats.pending_sessions += 1,}
+
+                crate::session::types::SessionState::Suspended => stats.suspended_sessions += 1,
+
+                crate::session::types::SessionState::Expired => stats.expired_sessions += 1,#[async_trait]
+
+                crate::session::types::SessionState::Invalidated => stats.invalidated_sessions += 1,impl SessionStorage for RedisSessionStorage {
+
+            }    async fn create_session(&self, _session: Session) -> Result<SessionId, SessionError> {
+
+                    // TODO: Redis実装
+
+            // セキュリティレベル別統計        Err(SessionError::Storage("Redis storage not implemented yet".to_string()))
+
+            *stats.security_level_distribution    }
+
+                .entry(session.security.level.clone())    
+
+                .or_insert(0) += 1;    async fn get_session(&self, _id: &SessionId) -> Result<Option<Session>, SessionError> {
+
+                    Err(SessionError::Storage("Redis storage not implemented yet".to_string()))
+
+            // 24時間以内の作成    }
+
+            if session.created_at >= yesterday {    
+
+                stats.created_last_24h += 1;    async fn update_session(&self, _session: &Session) -> Result<(), SessionError> {
+
+            }        Err(SessionError::Storage("Redis storage not implemented yet".to_string()))
+
+                }
+
+            // 24時間以内の期限切れ    
+
+            if session.expires_at >= yesterday && session.expires_at <= now {    async fn delete_session(&self, _id: &SessionId) -> Result<(), SessionError> {
+
+                stats.expired_last_24h += 1;        Err(SessionError::Storage("Redis storage not implemented yet".to_string()))
+
+            }    }
+
+        }    
+
+            async fn find_sessions(&self, _filter: &SessionFilter) -> Result<Vec<Session>, SessionError> {
+
+        // 平均セッション継続時間を計算        Err(SessionError::Storage("Redis storage not implemented yet".to_string()))
+
+        if stats.total_sessions > 0 {    }
+
+            let total_duration: i64 = sessions    
+
+                .values()    async fn cleanup_expired(&self) -> Result<u64, SessionError> {
+
+                .map(|s| {        Err(SessionError::Storage("Redis storage not implemented yet".to_string()))
+
+                    let end_time = if s.is_expired() ||     }
+
+                                    matches!(s.state,     
+
+                                           crate::session::types::SessionState::Expired |    async fn get_stats(&self) -> Result<SessionStats, SessionError> {
+
+                                           crate::session::types::SessionState::Invalidated) {        Err(SessionError::Storage("Redis storage not implemented yet".to_string()))
+
+                        s.updated_at    }
+
+                    } else {    
+
+                        now    async fn health_check(&self) -> Result<(), SessionError> {
+
+                    };        Err(SessionError::Storage("Redis storage not implemented yet".to_string()))
+
+                    (end_time - s.created_at).num_seconds()    }
+
+                })}
+
+                .sum();
+
+            /// ストレージバックエンドの種類
+
+            stats.average_session_duration = Duration::seconds(total_duration / stats.total_sessions as i64);#[derive(Debug, Clone)]
+
+        }pub enum SessionStorageBackend {
+
+            Memory(Arc<dyn SessionStorage>),
+
+        Ok(stats)    Redis(Arc<dyn SessionStorage>),
+
+    }    Database(Arc<dyn SessionStorage>),
+
+    }
+
+    async fn health_check(&self) -> Result<()> {
+
+        // メモリストレージは常に健康impl SessionStorageBackend {
+
+        Ok(())    /// 設定からストレージバックエンドを作成
+
+    }    pub fn from_config(config: &SessionConfig) -> Result<Self, SessionError> {
+
+}        match config.storage.backend.as_str() {
+
+            "memory" => Ok(SessionStorageBackend::Memory(
+
+impl Default for MemorySessionStorage {                Arc::new(MemorySessionStorage::new(config.clone()))
+
+    fn default() -> Self {            )),
+
+        Self::new()            "redis" => Ok(SessionStorageBackend::Redis(
+
+    }                Arc::new(RedisSessionStorage::new(config.clone()))
+
+}            )),
+
+            "database" => {
+
+/// Redis ストレージ実装（将来の実装）                // TODO: Database storage implementation
+
+#[derive(Debug)]                Err(SessionError::Configuration(
+
+pub struct RedisSessionStorage {                    "Database storage not implemented yet".to_string()
+
+    // Redis クライアント設定は後で実装                ))
+
+    _placeholder: (),            }
+
+}            other => Err(SessionError::Configuration(
+
+                format!("Unknown storage backend: {}", other)
+
+impl RedisSessionStorage {            )),
+
+    pub fn new(_connection_string: &str) -> Result<Self> {        }
+
+        // Redis接続は将来実装    }
+
+        Ok(Self { _placeholder: () })    
+
+    }    /// 内部ストレージへの参照を取得
+
+}    pub fn as_storage(&self) -> &Arc<dyn SessionStorage> {
+
+        match self {
+
+#[async_trait]            SessionStorageBackend::Memory(storage) => storage,
+
+impl SessionStorage for RedisSessionStorage {            SessionStorageBackend::Redis(storage) => storage,
+
+    async fn create_session(&self, _session: Session) -> Result<SessionId> {            SessionStorageBackend::Database(storage) => storage,
+
+        // Redis実装は将来対応        }
+
+        Err(SessionStorageError::Storage("Redis storage not implemented yet".to_string()).into())    }
+
+    }}
+    
+    async fn get_session(&self, _id: &SessionId) -> Result<Option<Session>> {
+        Err(SessionStorageError::Storage("Redis storage not implemented yet".to_string()).into())
+    }
+    
+    async fn update_session(&self, _session: &Session) -> Result<()> {
+        Err(SessionStorageError::Storage("Redis storage not implemented yet".to_string()).into())
+    }
+    
+    async fn delete_session(&self, _id: &SessionId) -> Result<()> {
+        Err(SessionStorageError::Storage("Redis storage not implemented yet".to_string()).into())
+    }
+    
+    async fn find_sessions(&self, _filter: &SessionFilter) -> Result<Vec<Session>> {
+        Err(SessionStorageError::Storage("Redis storage not implemented yet".to_string()).into())
+    }
+    
+    async fn cleanup_expired(&self) -> Result<u64> {
+        Err(SessionStorageError::Storage("Redis storage not implemented yet".to_string()).into())
+    }
+    
+    async fn get_stats(&self) -> Result<SessionStats> {
+        Err(SessionStorageError::Storage("Redis storage not implemented yet".to_string()).into())
+    }
+    
+    async fn health_check(&self) -> Result<()> {
+        Err(SessionStorageError::Storage("Redis storage not implemented yet".to_string()).into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::session::types::*;
+    
+    #[tokio::test]
+    async fn test_memory_storage_basic_operations() {
+        let storage = MemorySessionStorage::new();
+        let session = Session::new("user123".to_string(), Duration::hours(1));
+        let session_id = session.id.clone();
+        
+        // 作成
+        let created_id = storage.create_session(session).await.unwrap();
+        assert_eq!(created_id, session_id);
+        
+        // 取得
+        let retrieved = storage.get_session(&session_id).await.unwrap();
+        assert!(retrieved.is_some());
+        assert_eq!(retrieved.unwrap().metadata.user_id, "user123");
+        
+        // 削除
+        storage.delete_session(&session_id).await.unwrap();
+        let deleted = storage.get_session(&session_id).await.unwrap();
+        assert!(deleted.is_none());
+    }
+    
+    #[tokio::test]
+    async fn test_memory_storage_filtering() {
+        let storage = MemorySessionStorage::new();
+        
+        // テストセッションを作成
+        let mut session1 = Session::new("user1".to_string(), Duration::hours(1));
+        session1.activate();
+        let mut session2 = Session::new("user2".to_string(), Duration::hours(1));
+        session2.security.level = SecurityLevel::High;
+        
+        storage.create_session(session1).await.unwrap();
+        storage.create_session(session2).await.unwrap();
+        
+        // ユーザーIDでフィルター
+        let filter = SessionFilter {
+            user_id: Some("user1".to_string()),
+            ..Default::default()
+        };
+        let results = storage.find_sessions(&filter).await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].metadata.user_id, "user1");
+        
+        // セキュリティレベルでフィルター
+        let filter = SessionFilter {
+            security_level: Some(SecurityLevel::High),
+            ..Default::default()
+        };
+        let results = storage.find_sessions(&filter).await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].metadata.user_id, "user2");
+    }
+}

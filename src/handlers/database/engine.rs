@@ -174,16 +174,16 @@ impl DatabaseEngineBuilder {
                     super::engines::postgresql::PostgreSqlEngine::new(config.clone()).await?;
                 Ok(Arc::new(engine))
             }
-            DatabaseType::MySQL => {
-                // TODO: MySQL実装
-                Err(DatabaseError::UnsupportedOperation(
-                    "MySQL engine not yet implemented".to_string(),
-                ))
+            #[cfg(feature = "mysql-backend")]
+            DatabaseType::MySQL | DatabaseType::MariaDB => {
+                // MySQL/MariaDB: mysql_asyncライブラリを使用（RSA脆弱性フリー）
+                let engine = super::engines::mysql::MySqlEngine::new(config.clone()).await?;
+                Ok(Arc::new(engine))
             }
-            DatabaseType::MariaDB => {
-                // TODO: MariaDB実装
+            #[cfg(not(feature = "mysql-backend"))]
+            DatabaseType::MySQL | DatabaseType::MariaDB => {
                 Err(DatabaseError::UnsupportedOperation(
-                    "MariaDB engine not yet implemented".to_string(),
+                    "MySQL support not compiled. Enable mysql-backend feature.".to_string(),
                 ))
             }
             DatabaseType::SQLite => {

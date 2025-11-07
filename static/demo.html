@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MCP-RS リアルタイム編集デモ</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            color: white;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 15px;
+            padding: 30px;
+            backdrop-filter: blur(10px);
+        }
+        h1 {
+            text-align: center;
+            margin-bottom: 30px;
+            font-size: 2.5rem;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+        }
+        .demo-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 30px;
+            margin-bottom: 30px;
+        }
+        .panel {
+            background: rgba(255, 255, 255, 0.2);
+            border-radius: 10px;
+            padding: 20px;
+            backdrop-filter: blur(5px);
+        }
+        .editor {
+            min-height: 300px;
+            background: rgba(0, 0, 0, 0.3);
+            border: none;
+            border-radius: 8px;
+            padding: 15px;
+            color: white;
+            font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+            font-size: 14px;
+            resize: vertical;
+            width: 100%;
+        }
+        .editor:focus {
+            outline: 2px solid #4CAF50;
+        }
+        button {
+            background: linear-gradient(135deg, #4CAF50, #45a049);
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 16px;
+            margin: 5px;
+            transition: all 0.3s ease;
+        }
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(0,0,0,0.3);
+        }
+        button:disabled {
+            background: #666;
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+        }
+        .status {
+            background: rgba(0, 0, 0, 0.2);
+            padding: 10px;
+            border-radius: 5px;
+            margin: 10px 0;
+            font-family: monospace;
+        }
+        .connected { background-color: rgba(76, 175, 80, 0.3); }
+        .disconnected { background-color: rgba(244, 67, 54, 0.3); }
+        .log {
+            background: rgba(0, 0, 0, 0.4);
+            padding: 15px;
+            border-radius: 8px;
+            max-height: 200px;
+            overflow-y: auto;
+            font-family: monospace;
+            font-size: 12px;
+        }
+        .api-panel {
+            grid-column: 1 / -1;
+        }
+        input[type="text"] {
+            background: rgba(0, 0, 0, 0.3);
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            border-radius: 5px;
+            padding: 10px;
+            color: white;
+            width: 200px;
+            margin: 5px;
+        }
+        input[type="text"]:focus {
+            outline: none;
+            border-color: #4CAF50;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🚀 MCP-RS リアルタイム編集デモ</h1>
+        
+        <div class="demo-grid">
+            <!-- 左側: エディタ1 -->
+            <div class="panel">
+                <h3>👤 ユーザー1 エディタ</h3>
+                <div id="status1" class="status disconnected">
+                    状態: 未接続
+                </div>
+                <button onclick="createSession('user1', 1)">セッション作成</button>
+                <button onclick="connectWebSocket(1)" id="connect1" disabled>接続</button>
+                <button onclick="disconnectWebSocket(1)" id="disconnect1" disabled>切断</button>
+                <textarea id="editor1" class="editor" placeholder="ここに入力してください..."></textarea>
+            </div>
+            
+            <!-- 右側: エディタ2 -->
+            <div class="panel">
+                <h3>👤 ユーザー2 エディタ</h3>
+                <div id="status2" class="status disconnected">
+                    状態: 未接続
+                </div>
+                <button onclick="createSession('user2', 2)">セッション作成</button>
+                <button onclick="connectWebSocket(2)" id="connect2" disabled>接続</button>
+                <button onclick="disconnectWebSocket(2)" id="disconnect2" disabled>切断</button>
+                <textarea id="editor2" class="editor" placeholder="ここに入力してください..."></textarea>
+            </div>
+        </div>
+        
+        <!-- API管理パネル -->
+        <div class="panel api-panel">
+            <h3>🔧 API管理</h3>
+            <div>
+                <input type="text" id="sessionIdInput" placeholder="セッションID">
+                <button onclick="getSessionInfo()">セッション情報取得</button>
+                <button onclick="activateSession()">セッションアクティベート</button>
+                <button onclick="healthCheck()">健全性チェック</button>
+            </div>
+            <div id="apiResponse" class="log"></div>
+        </div>
+        
+        <!-- ログパネル -->
+        <div class="panel">
+            <h3>📝 リアルタイム通信ログ</h3>
+            <div id="log" class="log"></div>
+            <button onclick="clearLog()">ログクリア</button>
+        </div>
+    </div>
+
+    <script>
+        // グローバル状態
+        let sessions = {1: null, 2: null};
+        let websockets = {1: null, 2: null};
+        
+        // ログ出力
+        function log(message) {
+            const logElement = document.getElementById('log');
+            const timestamp = new Date().toLocaleTimeString();
+            logElement.innerHTML += `[${timestamp}] ${message}<br>`;
+            logElement.scrollTop = logElement.scrollHeight;
+        }
+        
+        // ログクリア
+        function clearLog() {
+            document.getElementById('log').innerHTML = '';
+        }
+        
+        // ステータス更新
+        function updateStatus(userId, message, connected = false) {
+            const statusElement = document.getElementById(`status${userId}`);
+            statusElement.textContent = `状態: ${message}`;
+            statusElement.className = `status ${connected ? 'connected' : 'disconnected'}`;
+        }
+        
+        // セッション作成
+        async function createSession(userName, userId) {
+            try {
+                const response = await fetch('/api/sessions', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({user_id: userName, client_info: 'web-demo'})
+                });
+                
+                if (response.ok) {
+                    const session = await response.json();
+                    sessions[userId] = session;
+                    log(`✅ ${userName} セッション作成: ${session.session_id}`);
+                    updateStatus(userId, `セッション作成済み: ${session.session_id.substring(0, 8)}...`);
+                    document.getElementById(`connect${userId}`).disabled = false;
+                } else {
+                    log(`❌ ${userName} セッション作成失敗: ${response.status}`);
+                }
+            } catch (error) {
+                log(`❌ ${userName} セッション作成エラー: ${error.message}`);
+            }
+        }
+        
+        // WebSocket接続
+        function connectWebSocket(userId) {
+            const session = sessions[userId];
+            if (!session) {
+                log(`❌ ユーザー${userId}: セッションが作成されていません`);
+                return;
+            }
+            
+            const wsUrl = `ws://localhost:3000/ws?session_id=${session.session_id}`;
+            const ws = new WebSocket(wsUrl);
+            
+            ws.onopen = function() {
+                log(`🔗 ユーザー${userId} WebSocket接続成功`);
+                updateStatus(userId, '接続済み', true);
+                document.getElementById(`connect${userId}`).disabled = true;
+                document.getElementById(`disconnect${userId}`).disabled = false;
+                
+                // ハートビート送信
+                setInterval(() => {
+                    if (ws.readyState === WebSocket.OPEN) {
+                        ws.send(JSON.stringify({
+                            id: crypto.randomUUID(),
+                            type: 'heartbeat',
+                            payload: {},
+                            timestamp: new Date().toISOString()
+                        }));
+                    }
+                }, 30000);
+            };
+            
+            ws.onmessage = function(event) {
+                try {
+                    const message = JSON.parse(event.data);
+                    log(`📨 ユーザー${userId} 受信: ${message.type}`);
+                    
+                    // リアルタイム編集メッセージの処理
+                    if (message.type === 'realtime_edit' && message.session_info) {
+                        const otherUserId = userId === 1 ? 2 : 1;
+                        const otherEditor = document.getElementById(`editor${otherUserId}`);
+                        if (otherEditor && message.payload.content) {
+                            otherEditor.value = message.payload.content;
+                            log(`🔄 ユーザー${otherUserId} エディタ同期`);
+                        }
+                    }
+                } catch (error) {
+                    log(`❌ ユーザー${userId} メッセージ解析エラー: ${error.message}`);
+                }
+            };
+            
+            ws.onclose = function() {
+                log(`🔌 ユーザー${userId} WebSocket切断`);
+                updateStatus(userId, '切断済み');
+                document.getElementById(`connect${userId}`).disabled = false;
+                document.getElementById(`disconnect${userId}`).disabled = true;
+            };
+            
+            ws.onerror = function(error) {
+                log(`❌ ユーザー${userId} WebSocketエラー: ${error}`);
+            };
+            
+            websockets[userId] = ws;
+            
+            // エディタイベント設定
+            const editor = document.getElementById(`editor${userId}`);
+            editor.oninput = function() {
+                if (ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({
+                        id: crypto.randomUUID(),
+                        type: 'realtime_edit',
+                        payload: {
+                            content: editor.value,
+                            cursor_position: editor.selectionStart,
+                            user_id: `user${userId}`
+                        },
+                        timestamp: new Date().toISOString()
+                    }));
+                }
+            };
+        }
+        
+        // WebSocket切断
+        function disconnectWebSocket(userId) {
+            const ws = websockets[userId];
+            if (ws) {
+                ws.close();
+                websockets[userId] = null;
+            }
+        }
+        
+        // セッション情報取得
+        async function getSessionInfo() {
+            const sessionId = document.getElementById('sessionIdInput').value;
+            if (!sessionId) {
+                alert('セッションIDを入力してください');
+                return;
+            }
+            
+            try {
+                const response = await fetch(`/api/sessions/${sessionId}`);
+                const result = response.ok ? await response.json() : {error: response.status};
+                document.getElementById('apiResponse').innerHTML = 
+                    '<pre>' + JSON.stringify(result, null, 2) + '</pre>';
+                log(`📋 セッション情報取得: ${sessionId}`);
+            } catch (error) {
+                document.getElementById('apiResponse').innerHTML = 
+                    '<pre>エラー: ' + error.message + '</pre>';
+            }
+        }
+        
+        // セッションアクティベート
+        async function activateSession() {
+            const sessionId = document.getElementById('sessionIdInput').value;
+            if (!sessionId) {
+                alert('セッションIDを入力してください');
+                return;
+            }
+            
+            try {
+                const response = await fetch(`/api/sessions/${sessionId}/activate`, {
+                    method: 'POST'
+                });
+                const result = response.ok ? await response.json() : {error: response.status};
+                document.getElementById('apiResponse').innerHTML = 
+                    '<pre>' + JSON.stringify(result, null, 2) + '</pre>';
+                log(`🔄 セッションアクティベート: ${sessionId}`);
+            } catch (error) {
+                document.getElementById('apiResponse').innerHTML = 
+                    '<pre>エラー: ' + error.message + '</pre>';
+            }
+        }
+        
+        // 健全性チェック
+        async function healthCheck() {
+            try {
+                const response = await fetch('/health');
+                const result = await response.json();
+                document.getElementById('apiResponse').innerHTML = 
+                    '<pre>' + JSON.stringify(result, null, 2) + '</pre>';
+                log('💚 健全性チェック実行');
+            } catch (error) {
+                document.getElementById('apiResponse').innerHTML = 
+                    '<pre>エラー: ' + error.message + '</pre>';
+            }
+        }
+        
+        // 初期化
+        log('🌟 MCP-RS リアルタイム編集デモが読み込まれました');
+        log('📝 使用方法:');
+        log('1. 各ユーザーのセッションを作成');
+        log('2. WebSocketに接続');
+        log('3. エディタに入力してリアルタイム同期を確認');
+    </script>
+</body>
+</html>

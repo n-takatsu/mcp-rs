@@ -12,10 +12,14 @@ pub mod core;
 pub mod error;
 pub mod handlers;
 pub mod mcp;
+pub mod mcp_server;
+pub mod server;
+pub mod session;
 pub mod threat_intelligence;
 // pub mod plugin_isolation; // 将来実装予定
 pub mod canary_deployment;
-pub mod dashboard;
+// #[cfg(feature = "tui")]
+// pub mod dashboard;
 pub mod plugins;
 pub mod policy_application;
 pub mod policy_config;
@@ -24,13 +28,35 @@ pub mod policy_watcher;
 pub mod protocol;
 pub mod rollback;
 pub mod security;
-pub mod server;
 pub mod transport;
 pub mod types;
 
-pub use error::{Error, Result};
+pub use error::{Error, Result, SessionError};
+pub use mcp_server::McpServer;
 pub use protocol::McpProtocol;
-pub use server::McpServer;
+
+// Session Management System exports
+pub use session::{
+    MemorySessionStorage,
+    SecurityConfig,
+    SecurityEvent,
+    SecurityEventType,
+    SecuritySeverity,
+    Session,
+    SessionFilter,
+    SessionId,
+    SessionManager,
+    SessionMiddleware,
+    SessionSecurityMiddleware,
+    SessionState,
+    SessionStorage,
+    // Real-time editing system
+    SessionWebSocketHandler,
+    WebSocketHandlerConfig,
+};
+
+// WebSocket Server exports moved to examples
+// pub use server::{...};
 
 #[cfg(test)]
 mod tests {
