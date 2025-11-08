@@ -176,8 +176,8 @@ We welcome contributions! Please see our [contributing guidelines](https://githu
 
 Licensed under either of:
 
-- Apache License, Version 2.0 ([LICENSE-APACHE](../../LICENSE-APACHE))
-- MIT license ([LICENSE-MIT](../../LICENSE-MIT))
+- Apache License, Version 2.0 ([LICENSE-APACHE](https://github.com/n-takatsu/mcp-rs/blob/main/LICENSE-APACHE))
+- MIT license ([LICENSE-MIT](https://github.com/n-takatsu/mcp-rs/blob/main/LICENSE-MIT))
 
 at your option.
 

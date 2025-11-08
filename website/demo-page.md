@@ -7,7 +7,7 @@
 ![Demo Status](https://img.shields.io/badge/Demo-Live-brightgreen?style=for-the-badge&logo=play)
 ![Real-time](https://img.shields.io/badge/Real--time-Editing-blue?style=for-the-badge&logo=edit)
 
-[🎮 **Launch Demo**](http://localhost:8080/demo.html) • [📖 **Documentation**](../README.md) • [🔧 **Source Code**](https://github.com/your-org/mcp-rs)
+[🎮 **Launch Demo**](https://github.com/n-takatsu/mcp-rs/blob/main/static/demo.html) • [📖 **Documentation**](https://n-takatsu.github.io/mcp-rs/docs/) • [🔧 **Source Code**](https://github.com/n-takatsu/mcp-rs)
 
 </div>
 
@@ -384,9 +384,9 @@ After using the demo, you will understand:
 ### Continue Learning
 
 1. **Read the Documentation**
-   - [WebSocket API Reference](../docs/websocket-api.md)
-   - [Session Management Guide](../docs/session-management-architecture.md)
-   - [Development Guide](../project-docs/realtime-editing-development-guide.md)
+   - [WebSocket API Reference](https://github.com/n-takatsu/mcp-rs/blob/main/docs/websocket-api.md)
+   - [Session Management Guide](https://github.com/n-takatsu/mcp-rs/blob/main/docs/session-management-architecture.md)
+   - [Development Guide](https://github.com/n-takatsu/mcp-rs/blob/main/project-docs/realtime-editing-development-guide.md)
 
 2. **Explore the Code**
    - Browse the [source code](https://github.com/your-org/mcp-rs)
