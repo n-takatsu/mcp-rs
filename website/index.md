@@ -1,5 +1,7 @@
 ---
 layout: home
+title: MCP-RS Documentation
+permalink: /
 ---
 
 # MCP-RS Documentation

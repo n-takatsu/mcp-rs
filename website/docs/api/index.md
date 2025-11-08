@@ -1,3 +1,9 @@
+---
+layout: page
+title: API Reference
+permalink: /docs/api/
+---
+
 # API Reference
 
 Complete API documentation for MCP-RS.

@@ -1,3 +1,9 @@
+---
+layout: page
+title: Documentation
+permalink: /docs/
+---
+
 # MCP-RS Documentation
 
 **Model Context Protocol implementation in Rust - Production Ready**
