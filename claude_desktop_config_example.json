@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "mcp-rs": {
+      "command": "C:\\Users\\takat\\Downloads\\mcp-rs-v0.15-windows-x64-fixed\\mcp-rs.exe",
+      "args": [],
+      "env": {
+        "WORDPRESS_URL": "https://redring.jp",
+        "WORDPRESS_USERNAME": "your_username",
+        "WORDPRESS_PASSWORD": "your_password"
+      }
+    }
+  }
+}

@@ -12,18 +12,27 @@ Enterprise-grade WordPress Model Context Protocol (MCP) Server implemented in Ru
 - **mcp-config-multi.toml.example** - Multi-site configuration template
 - **.env.example** - Environment variables template
 - **WORDPRESS_BLOG_SERVICE_GUIDE.md** - WordPress integration guide
+- **AI_AGENT_SETUP_GUIDE.md** - Claude Desktop & AI agent configuration guide
 - **LICENSE-MIT** & **LICENSE-APACHE** - License files
 
 ##  Quick Start
 
+### For Standalone Use:
 1. Copy mcp-config.toml.example to mcp-config.toml
 2. Copy .env.example to .env
 3. Configure your WordPress site credentials
 4. Run: ./mcp-rs.exe
 
+### For AI Agent Integration (Claude Desktop):
+1. Follow the **AI_AGENT_SETUP_GUIDE.md** for detailed Claude Desktop configuration
+2. Configure WordPress Application Password
+3. Set up MCP server connection in Claude Desktop config
+4. Restart Claude Desktop and test connection
+
 ##  Documentation
 
 - **Quick Reference**: See QUICK_REFERENCE.md
+- **AI Agent Setup**: See AI_AGENT_SETUP_GUIDE.md (Claude Desktop configuration)
 - **WordPress Integration**: See WORDPRESS_BLOG_SERVICE_GUIDE.md
 - **Full Documentation**: See README.md or README.ja.md
 
