@@ -353,8 +353,8 @@ spec:
 - [**Deployment Guide**](./docs/deployment.md) - Production deployment strategies
 
 ### 🔌 Integration Examples
-- [**Getting Started Guide**](./docs/guides/index.html) - Implementation guides and tutorials
-- [**API Documentation**](./docs/api/index.html) - Complete API reference
+- [**Getting Started Guide**](./docs/guides/) - Implementation guides and tutorials
+- [**API Documentation**](./docs/api/) - Complete API reference
 - [**Example Applications**](https://github.com/n-takatsu/mcp-rs/tree/main/examples) - Complete example implementations
 
 ---
@@ -536,8 +536,8 @@ We welcome contributions! Here's how you can help:
 - 🎓 [Getting Started Guide](https://n-takatsu.github.io/mcp-rs/docs/guides/)
 - � [API Documentation](https://n-takatsu.github.io/mcp-rs/docs/api/)
 - 🏗️ [Architecture Guide](https://n-takatsu.github.io/mcp-rs/docs/architecture/)
-- 🛡️ [Security Guide](https://n-takatsu.github.io/mcp-rs/docs/security.html)
-- � [Database Integration](https://n-takatsu.github.io/mcp-rs/docs/database.html)
+- 🛡️ [Security Guide](https://n-takatsu.github.io/mcp-rs/docs/security/)
+- 💾 [Database Integration](https://n-takatsu.github.io/mcp-rs/docs/database/)
 
 ### Support
 - � [GitHub Discussions](https://github.com/n-takatsu/mcp-rs/discussions)
