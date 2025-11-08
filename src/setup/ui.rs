@@ -112,7 +112,7 @@ impl ConfigSetupUI {
             println!("WordPress接続をテスト中...");
             println!("URL: {}", wp_config.url);
             
-            self.show_spinner("接続テスト実行中").await;
+            let _ = self.show_spinner("接続テスト実行中").await;
             
             match self.validator.test_wordpress_connection(wp_config).await {
                 Ok(_) => {
@@ -218,16 +218,31 @@ impl ConfigSetupUI {
     }
 
     fn input_required(&self, prompt: &str) -> Result<String, Error> {
+        let mut retry_count = 0;
+        const MAX_RETRIES: u32 = 5;
+        
         loop {
             print!("📝 {}: ", prompt);
             io::stdout().flush().map_err(|e| Error::Io(e))?;
             
             let mut input = String::new();
-            io::stdin().read_line(&mut input).map_err(|e| Error::Io(e))?;
-            let input = input.trim().to_string();
+            match io::stdin().read_line(&mut input) {
+                Ok(0) => {
+                    // EOF reached, no more input available
+                    return Err(Error::Config("入力ストリームが終了しました".to_string()));
+                },
+                Ok(_) => {
+                    let input = input.trim().to_string();
+                    if !input.is_empty() {
+                        return Ok(input);
+                    }
+                },
+                Err(e) => return Err(Error::Io(e)),
+            }
             
-            if !input.is_empty() {
-                return Ok(input);
+            retry_count += 1;
+            if retry_count >= MAX_RETRIES {
+                return Err(Error::Config("最大試行回数に達しました".to_string()));
             }
             
             println!("⚠️  この項目は必須です。値を入力してください。");
@@ -262,20 +277,37 @@ impl ConfigSetupUI {
 
     fn input_yes_no(&self, prompt: &str, default: bool) -> Result<bool, Error> {
         let default_str = if default { "Y/n" } else { "y/N" };
+        let mut retry_count = 0;
+        const MAX_RETRIES: u32 = 5;
         
         loop {
             print!("❓ {} [{}]: ", prompt, default_str);
             io::stdout().flush().map_err(|e| Error::Io(e))?;
             
             let mut input = String::new();
-            io::stdin().read_line(&mut input).map_err(|e| Error::Io(e))?;
-            let input = input.trim().to_lowercase();
-            
-            match input.as_str() {
-                "" => return Ok(default),
-                "y" | "yes" => return Ok(true),
-                "n" | "no" => return Ok(false),
-                _ => println!("⚠️  'y' または 'n' で答えてください。"),
+            match io::stdin().read_line(&mut input) {
+                Ok(0) => {
+                    // EOF reached, return default
+                    return Ok(default);
+                },
+                Ok(_) => {
+                    let input = input.trim().to_lowercase();
+                    
+                    match input.as_str() {
+                        "" => return Ok(default),
+                        "y" | "yes" => return Ok(true),
+                        "n" | "no" => return Ok(false),
+                        _ => {
+                            retry_count += 1;
+                            if retry_count >= MAX_RETRIES {
+                                println!("⚠️  最大試行回数に達しました。デフォルト値を使用します。");
+                                return Ok(default);
+                            }
+                            println!("⚠️  'y' または 'n' で答えてください。");
+                        },
+                    }
+                },
+                Err(e) => return Err(Error::Io(e)),
             }
         }
     }

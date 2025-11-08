@@ -23,7 +23,7 @@ use error::Error;
 use handlers::WordPressHandler;
 // use mcp_rs::mcp_server::McpServer;
 use security::{SecureMcpServer, SecurityConfig};
-use setup::setup_config_interactive;
+use setup::{setup_config_interactive, DemoSetup};
 use std::sync::Arc;
 
 #[tokio::main]
@@ -38,6 +38,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             "--setup-config" => {
                 setup_config_interactive().await?;
+                return Ok(());
+            }
+            "--demo-setup" => {
+                setup::DemoSetup::run_demo().await?;
                 return Ok(());
             }
             _ => {}
@@ -193,18 +197,37 @@ fn config_file_exists() -> bool {
 fn should_run_interactive_setup() -> Result<bool, Box<dyn std::error::Error>> {
     use std::io::{self, Write};
     
+    let mut retry_count = 0;
+    const MAX_RETRIES: u32 = 3;
+    
     loop {
         print!("対話的セットアップを実行しますか？ [Y/n]: ");
         io::stdout().flush()?;
         
         let mut input = String::new();
-        io::stdin().read_line(&mut input)?;
-        let input = input.trim().to_lowercase();
-        
-        match input.as_str() {
-            "" | "y" | "yes" => return Ok(true),
-            "n" | "no" => return Ok(false),
-            _ => println!("⚠️  'y' または 'n' で答えてください。"),
+        match io::stdin().read_line(&mut input) {
+            Ok(0) => {
+                // EOF reached, default to no
+                println!("デフォルト設定で続行します。");
+                return Ok(false);
+            },
+            Ok(_) => {
+                let input = input.trim().to_lowercase();
+                
+                match input.as_str() {
+                    "" | "y" | "yes" => return Ok(true),
+                    "n" | "no" => return Ok(false),
+                    _ => {
+                        retry_count += 1;
+                        if retry_count >= MAX_RETRIES {
+                            println!("⚠️  最大試行回数に達しました。デフォルト設定で続行します。");
+                            return Ok(false);
+                        }
+                        println!("⚠️  'y' または 'n' で答えてください。");
+                    },
+                }
+            },
+            Err(e) => return Err(e.into()),
         }
     }
 }

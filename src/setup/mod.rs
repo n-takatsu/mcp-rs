@@ -2,9 +2,11 @@
 //! 
 //! Interactive configuration setup functionality
 
+pub mod demo;
 pub mod ui;
 pub mod validator;
 
+pub use demo::DemoSetup;
 pub use ui::ConfigSetupUI;
 pub use validator::ConfigValidator;
 

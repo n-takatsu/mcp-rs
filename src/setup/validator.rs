@@ -164,7 +164,7 @@ impl ConfigValidator {
                 if response.status().is_success() {
                     match response.json::<Value>().await {
                         Ok(json) => {
-                            if let Some(gmt_offset) = json.get("gmt_offset") {
+                            if let Some(_gmt_offset) = json.get("gmt_offset") {
                                 // This is a rough indication that we're talking to WordPress
                                 Ok("WordPress (version detection limited)".to_string())
                             } else {
