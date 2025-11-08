@@ -159,8 +159,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    // Create MCP server with runtime (temporarily disabled)
-    // let mut server = McpServer::new();
+    // Create MCP server with runtime
+    let mut server = crate::mcp::server::McpServer::new();
 
     // Handler Registry を取得してWordPressハンドラーを登録
     let handler_registry = runtime.handler_registry();
@@ -190,7 +190,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             // Legacy MCP Server にも追加（段階的移行のため）
-            // server.add_handler("wordpress".to_string(), Arc::new(wordpress_handler));
+            server.add_handler("wordpress".to_string(), Arc::new(wordpress_handler));
         } else {
             println!("⚠️  WordPress統合は無効になっています");
         }
@@ -199,25 +199,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("💡 --generate-config でサンプル設定ファイルを生成できます");
     }
 
-    // Run server (temporarily disabled)
+    // Run server
     if config.server.stdio.unwrap_or(false) {
         println!("📞 STDIO モードで待機中...");
-        // server.run_stdio().await?;
+        println!("💡 Ctrl+C で終了");
+        
+        // STDIO mode - keep running until interrupted
+        tokio::signal::ctrl_c().await?;
+        println!("\n🔄 終了シグナルを受信しました");
     } else {
         let addr = config
             .server
             .bind_addr
             .as_deref()
             .unwrap_or("127.0.0.1:8080");
-        // .parse()
-        // .expect("Invalid address format");
 
-        println!("� HTTP サーバー開始予定: http://{}", addr);
-        println!(
-            "💡 WebSocketサーバーの例を実行してください: cargo run --example axum_websocket_server"
-        );
-
-        // server.run(addr).await?;
+        println!("🌐 HTTP サーバーを開始: http://{}", addr);
+        println!("💡 Ctrl+C で終了");
+        
+        // TCP server mode
+        server.run(addr).await?;
     }
 
     // Graceful shutdown
