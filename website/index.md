@@ -10,12 +10,13 @@ Welcome to the MCP-RS documentation! This site contains comprehensive guides, AP
 
 ## Quick Links
 
-- **[Getting Started]({{ site.baseurl }}/docs/guides/)** - Implementation guides and tutorials
-- **[API Reference]({{ site.baseurl }}/docs/api/)** - Complete API documentation  
-- **[Architecture]({{ site.baseurl }}/docs/architecture/)** - System design and technical architecture
-- **[Security]({{ site.baseurl }}/docs/security/)** - Enterprise-grade security features
-- **[Database Guide]({{ site.baseurl }}/docs/database/)** - Multi-engine database integration
-- **[WordPress Guide]({{ site.baseurl }}/docs/wordpress/)** - Complete WordPress integration
+- **[Getting Started](./docs/guides/index.html)** - Implementation guides and tutorials
+- **[API Reference](./docs/api/index.html)** - Complete API documentation  
+- **[Architecture](./docs/architecture/index.html)** - System design and technical architecture
+- **[Security](./docs/security.html)** - Enterprise-grade security features
+- **[Database Guide](./docs/database.html)** - Multi-engine database integration
+- **[WordPress Guide](./docs/wordpress.html)** - Complete WordPress integration
+- **[Full Documentation](./docs/index.html)** - Complete documentation index
 - **[GitHub Repository](https://github.com/n-takatsu/mcp-rs)** - Source code and issues
 
 ## What is MCP-RS?

@@ -298,10 +298,10 @@ master_key_rotation_days = 90
 
 ## Related Documentation
 
-- **[Complete Database Guide]({{ site.baseurl }}/project-docs/database-guide.md)** - Comprehensive developer documentation
-- **[API Reference]({{ site.baseurl }}/docs/api/)** - Complete API documentation
-- **[Security Guide]({{ site.baseurl }}/docs/security/)** - Enterprise security features
-- **[Architecture]({{ site.baseurl }}/docs/architecture/)** - System design overview
+- **[Complete Database Guide](https://github.com/n-takatsu/mcp-rs/blob/main/project-docs/database-guide.md)** - Comprehensive developer documentation
+- **[API Reference](./api/index.html)** - Complete API documentation
+- **[Security Guide](./security.html)** - Enterprise security features
+- **[Architecture](./architecture/index.html)** - System design overview
 
 ---
 

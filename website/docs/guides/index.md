@@ -720,4 +720,4 @@ password = "${WORDPRESS_PASSWORD}"
 
 ---
 
-For more advanced topics and API reference, see the [API Documentation](../api/).
+For more advanced topics and API reference, see the [API Documentation](../api/index.html).

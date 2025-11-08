@@ -4,47 +4,59 @@
 
 Our project follows a detailed 0.01 increment versioning strategy to provide granular tracking of development progress and feature implementation.
 
-### 🚀 v0.15.0 - Canary Deployment System (Current)
-**Release Date:** 2025-11-05  
-**Focus:** Advanced Deployment Management with Real-time Monitoring
+### 🚀 v0.15.0 - ユーザーフレンドリーな設定管理システム
+**Release Date:** 2025-11-08  
+**Focus:** 初心者から上級者まで使いやすい包括的な設定管理とセットアップ体験
 
 #### 🎯 Major Features
-- **Canary Deployment Manager**
-  - Hash-based traffic splitting algorithm
-  - Configurable traffic distribution (10%, 25%, 50%, 75%, 100%)
-  - User group management with force-canary capabilities
-  - Real-time metrics collection and analysis
-  
-- **Interactive Dashboard**
-  - Terminal-based UI using `ratatui` and `crossterm`
-  - 4 main tabs: Overview, Metrics, Events, Control
-  - Real-time traffic visualization with success rates
-  - Keyboard-driven controls for deployment management
-  
-- **Event-Driven Architecture**
-  - Broadcast channels for real-time event streaming
-  - Comprehensive event logging (50 events buffer)
-  - Auto-refresh capabilities with manual override
-  - Graceful shutdown handling
+
+##### 🔧 対話的設定セットアップ
+- **`--setup-config`**: WordPress接続テスト付きの対話的設定作成ウィザード
+- **`--demo-setup`**: 安全なデモンストレーションモードでの機能体験
+- **リアルタイム接続検証**: WordPress API接続の即座テストと詳細エラー診断
+- **クロスプラットフォーム対応**: crossterm使用のターミナルUI
+
+##### 🔄 動的設定管理システム
+- **`--switch-config`**: 実行時の設定ファイル動的切り替え
+- **`--config <file>`**: カスタム設定ファイルの指定起動
+- **`--reload-config`**: 設定の動的再読み込み（実行中サーバー向け）
+- **設定ファイル自動検出**: `mcp-config.toml` → `config.toml` → `config/mcp.toml`
+
+##### 🤖 自動化とユーザビリティ
+- **設定ファイル不存在時の自動セットアップ起動**
+- **包括的なヘルプシステム** (`--help`)
+- **WordPress接続テスト機能** - 認証情報の即座検証
+- **分かりやすい日本語エラーメッセージ**
 
 #### 🔧 Technical Improvements
-- **Performance Optimization**
-  - Traffic decision processing: <5ms per request
-  - Dashboard refresh rate: 500ms for optimal UX
-  - Memory-efficient event buffering
-  
-- **Code Quality**
-  - Zero compiler warnings achieved
-  - Comprehensive error handling with `Result<T, McpError>`
-  - Modular architecture with clear separation of concerns
-  - 100% async/await implementation
+
+##### 🏗️ 新しいモジュール構造
+- **`src/setup/`**: 対話的セットアップシステム
+  - `ui.rs`: crossterm使用のターミナルUI実装
+  - `validator.rs`: WordPress接続検証とテスト
+  - `demo.rs`: 安全なデモンストレーション環境
+- **`src/config/dynamic.rs`**: 動的設定管理とリアルタイム切り替え
+
+##### 🛡️ ロバストな入力処理
+- **EOF検出と再試行制限**: パイプ入力時の無限ループ防止
+- **入力ストリーム終了の適切な処理**
+- **非対話環境での自動フォールバック**
+
+##### 🎨 ユーザーエクスペリエンス向上
+- **スピナーアニメーション**: 接続テスト中の視覚的フィードバック
+- **カラフルなターミナル出力**: 成功/エラー/警告の色分け表示
+- **プログレス表示**: セットアップ進行状況の明確な表示
+
+#### 🌐 ドキュメントとGitHub Pages
+- **美しいランディングページ**: レスポンシブデザインのindex.html
+- **GitHub Pages 404エラー修正**: 適切なJekyll設定とpermalink構造
+- **包括的なREADME更新**: 動的設定管理機能の詳細説明
 
 #### 🧪 Testing & Validation
-- **Integration Tests**
-  - Keyboard input validation test (`keyboard_test.rs`)
-  - Full dashboard demo with traffic simulation
-  - External input termination verification
-  - Loop prevention and resource management
+- **フォーマットチェック完全対応**: `cargo fmt --all -- --check` 通過
+- **Clippy警告完全修正**: 冗長なクロージャの最適化
+- **全コマンドオプションの動作確認**: `--setup-config`, `--switch-config`, etc.
+- **WordPress接続テスト**: 実際のAPI接続による検証
 
 #### 📦 Dependencies Added
 - `ratatui = "0.27"` - Terminal UI framework
