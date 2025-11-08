@@ -275,9 +275,7 @@ impl ConfigSwitcher {
         io::stdout().flush().map_err(Error::Io)?;
 
         let mut input = String::new();
-        io::stdin()
-            .read_line(&mut input)
-            .map_err(Error::Io)?;
+        io::stdin().read_line(&mut input).map_err(Error::Io)?;
         let file_path = input.trim();
 
         if file_path.is_empty() {
@@ -338,17 +336,13 @@ impl ConfigSwitcher {
         print!("WordPress ユーザー名: ");
         io::stdout().flush().map_err(Error::Io)?;
         let mut username = String::new();
-        io::stdin()
-            .read_line(&mut username)
-            .map_err(Error::Io)?;
+        io::stdin().read_line(&mut username).map_err(Error::Io)?;
         let username = username.trim().to_string();
 
         print!("Application Password: ");
         io::stdout().flush().map_err(Error::Io)?;
         let mut password = String::new();
-        io::stdin()
-            .read_line(&mut password)
-            .map_err(Error::Io)?;
+        io::stdin().read_line(&mut password).map_err(Error::Io)?;
         let password = password.trim().to_string();
 
         // Update current configuration

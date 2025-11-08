@@ -170,8 +170,7 @@ impl ConfigSetupUI {
 
     // Helper methods
     fn clear_screen(&self) -> Result<(), Error> {
-        execute!(io::stdout(), Clear(ClearType::All), cursor::MoveTo(0, 0))
-            .map_err(Error::Io)?;
+        execute!(io::stdout(), Clear(ClearType::All), cursor::MoveTo(0, 0)).map_err(Error::Io)?;
         Ok(())
     }
 
@@ -255,9 +254,7 @@ impl ConfigSetupUI {
         io::stdout().flush().map_err(Error::Io)?;
 
         let mut input = String::new();
-        io::stdin()
-            .read_line(&mut input)
-            .map_err(Error::Io)?;
+        io::stdin().read_line(&mut input).map_err(Error::Io)?;
         let input = input.trim();
 
         if input.is_empty() {
@@ -274,9 +271,7 @@ impl ConfigSetupUI {
         // Note: For production, use a proper password input library
         // For now, use regular input (password will be visible)
         let mut input = String::new();
-        io::stdin()
-            .read_line(&mut input)
-            .map_err(Error::Io)?;
+        io::stdin().read_line(&mut input).map_err(Error::Io)?;
         Ok(input.trim().to_string())
     }
 
@@ -332,9 +327,7 @@ impl ConfigSetupUI {
             io::stdout().flush().map_err(Error::Io)?;
 
             let mut input = String::new();
-            io::stdin()
-                .read_line(&mut input)
-                .map_err(Error::Io)?;
+            io::stdin().read_line(&mut input).map_err(Error::Io)?;
             let input = input.trim();
 
             let level = match input {
@@ -380,9 +373,7 @@ impl ConfigSetupUI {
         io::stdout().flush().map_err(Error::Io)?;
 
         let mut input = String::new();
-        io::stdin()
-            .read_line(&mut input)
-            .map_err(Error::Io)?;
+        io::stdin().read_line(&mut input).map_err(Error::Io)?;
         Ok(())
     }
 
