@@ -25,7 +25,6 @@ jobs:
     
     permissions:
       issues: write
-      projects: write
       contents: write
       
     steps:
