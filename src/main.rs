@@ -13,6 +13,7 @@ mod mcp;
 mod protocol;
 mod security;
 mod server;
+mod setup;
 mod transport;
 mod types;
 
@@ -22,19 +23,54 @@ use error::Error;
 use handlers::WordPressHandler;
 // use mcp_rs::mcp_server::McpServer;
 use security::{SecureMcpServer, SecurityConfig};
+use setup::setup_config_interactive;
 use std::sync::Arc;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // コマンドライン引数チェック
     let args: Vec<String> = std::env::args().collect();
-    if args.len() > 1 && args[1] == "--generate-config" {
-        McpConfig::generate_sample_config()?;
-        return Ok(());
+    if args.len() > 1 {
+        match args[1].as_str() {
+            "--generate-config" => {
+                McpConfig::generate_sample_config()?;
+                return Ok(());
+            }
+            "--setup-config" => {
+                setup_config_interactive().await?;
+                return Ok(());
+            }
+            _ => {}
+        }
     }
 
-    // 設定を読み込み
-    let config = McpConfig::load()?;
+    // 設定を読み込み（見つからない場合は対話的セットアップを提案）
+    let config = match McpConfig::load() {
+        Ok(config) => config,
+        Err(_) => {
+            // 設定ファイルが見つからない場合
+            if !config_file_exists() {
+                println!("⚠️  設定ファイルが見つかりません。");
+                println!();
+                println!("📋 設定オプション:");
+                println!("  1. 対話的セットアップを実行: --setup-config");
+                println!("  2. サンプル設定を生成: --generate-config");
+                println!("  3. デフォルト設定で続行");
+                println!();
+                
+                if should_run_interactive_setup()? {
+                    setup_config_interactive().await?;
+                    // セットアップ完了後に設定を再読み込み
+                    McpConfig::load()?
+                } else {
+                    println!("ℹ️  デフォルト設定で続行します。");
+                    McpConfig::default()
+                }
+            } else {
+                return Err("設定ファイルの読み込みに失敗しました".into());
+            }
+        }
+    };
 
     // Core Runtime を初期化
     let runtime_config = RuntimeConfig {
@@ -139,4 +175,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     runtime.shutdown().await?;
 
     Ok(())
+}
+
+/// Check if any configuration file exists
+fn config_file_exists() -> bool {
+    let config_paths = [
+        "mcp-config.toml",
+        "config.toml",
+        "config/mcp.toml",
+        "~/.config/mcp-rs/config.toml",
+    ];
+
+    config_paths.iter().any(|path| std::path::Path::new(path).exists())
+}
+
+/// Ask user if they want to run interactive setup
+fn should_run_interactive_setup() -> Result<bool, Box<dyn std::error::Error>> {
+    use std::io::{self, Write};
+    
+    loop {
+        print!("対話的セットアップを実行しますか？ [Y/n]: ");
+        io::stdout().flush()?;
+        
+        let mut input = String::new();
+        io::stdin().read_line(&mut input)?;
+        let input = input.trim().to_lowercase();
+        
+        match input.as_str() {
+            "" | "y" | "yes" => return Ok(true),
+            "n" | "no" => return Ok(false),
+            _ => println!("⚠️  'y' または 'n' で答えてください。"),
+        }
+    }
 }
