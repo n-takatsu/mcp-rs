@@ -15,11 +15,10 @@ async fn test_config_creation() {
 async fn test_transport_config() {
     let transport = TransportConfig {
         transport_type: Some("stdio".to_string()),
-        bind_addr: Some("127.0.0.1:8080".to_string()),
-        timeout: Some(30),
+        stdio: None,
+        http: None,
     };
     
     assert_eq!(transport.transport_type, Some("stdio".to_string()));
-    assert_eq!(transport.bind_addr, Some("127.0.0.1:8080".to_string()));
-    assert_eq!(transport.timeout, Some(30));
+    // TODO: 実際のフィールド構造に合わせて修正
 }

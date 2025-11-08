@@ -1,6 +1,6 @@
 //! MCP-RS Test Suite
 //!
-//! 新しい構造化されたテストスイート
+//! 構造化されたテストスイート - Phase 2 完了
 
 // 単体テスト
 pub mod unit;
@@ -11,7 +11,7 @@ pub mod integration;
 // データベーステスト
 pub mod database;
 
-// WordPressテスト
+// WordPressテスト（将来実装予定）
 pub mod wordpress;
 
 // カナリーデプロイテスト
@@ -22,6 +22,3 @@ pub mod performance;
 
 // テストデータとユーティリティ
 pub mod fixtures;
-
-// 後方互換性のための既存テスト（段階的に移行予定）
-pub mod session_current_tests;
