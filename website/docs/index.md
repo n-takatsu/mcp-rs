@@ -56,6 +56,7 @@ MCP-RS provides a **comprehensive, battle-tested** implementation of the MCP (Mo
 - **[Architecture]({{ site.baseurl }}/docs/architecture/)** - System design and technical architecture
 - **[API Reference]({{ site.baseurl }}/docs/api/)** - Complete API documentation
 - **[Security]({{ site.baseurl }}/docs/security/)** - Enterprise-grade security features
+- **[Database Guide]({{ site.baseurl }}/docs/database/)** - Multi-engine database integration
 - **[Guides]({{ site.baseurl }}/docs/guides/)** - Implementation guides and tutorials
 - **[WordPress Integration]({{ site.baseurl }}/docs/wordpress/)** - WordPress REST API integration
 

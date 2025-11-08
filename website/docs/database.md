@@ -6,6 +6,8 @@ permalink: /docs/database/
 
 # Database Integration Guide
 
+**[Home]({{ site.baseurl }}/) > [Documentation]({{ site.baseurl }}/docs/) > Database Guide**
+
 **Multi-Engine Database System with Enterprise Security**
 
 ---

@@ -11,6 +11,7 @@ Step-by-step guides for implementing and using MCP-RS.
 ## Quick Start Guides
 
 - **[WordPress Integration]({{ site.baseurl }}/docs/wordpress/)** - Complete WordPress REST API integration with media management
+- **[Database Integration]({{ site.baseurl }}/docs/database/)** - Multi-engine database setup and configuration  
 - **[Security Setup]({{ site.baseurl }}/docs/security/)** - Enterprise-grade security configuration
 - **[Custom Handler Development](#custom-handler-development)** - Create your own MCP handlers
 - **[Configuration Guide](#configuration-guide)** - Configure MCP-RS for your environment

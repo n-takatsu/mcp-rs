@@ -16,6 +16,10 @@ highlighter: rouge
 plugins:
   - jekyll-feed
   - jekyll-sitemap
+  - jekyll-optional-front-matter
+
+# Collections設定
+collections_dir: docs
 
 # テーマ
 theme: minima
@@ -33,6 +37,7 @@ header_pages:
   - docs/api/index.md
   - docs/guides/index.md
   - docs/security.md
+  - docs/database.md
   - docs/wordpress.md
 
 # サイト設定
