@@ -1,76 +1,153 @@
-# 🚀 Database Engine Implementation & Security Enhancement
+# � [機能名] - 次回PR用詳細説明書
 
-## 📋 Summary
+## 🎯 このドキュメントについて
 
-This PR implements a comprehensive multi-database engine system with enterprise-grade security features for mcp-rs. The implementation includes support for 5 major database engines (PostgreSQL, MySQL, Redis, MongoDB, SQLite) with unified API access and a 6-layer security architecture.
+この `PR_DESCRIPTION.md` ファイルは次回のPR作成時に詳細な説明文を書くためのテンプレートです。
 
-## 🎯 Objectives Completed
+**使用方法:**
+1. 新機能開発開始時にこのテンプレートをコピーして使用
+2. 開発中に詳細を記録していく
+3. PR作成時にGitHub上で内容をコピー&ペースト
+4. PRマージ後にこのファイルを次回PR用にリセット
 
-### ✅ **Multi-Database Engine Implementation**
-- **PostgreSQL Engine**: Full relational database support with ACID transactions
-- **MySQL Engine**: Web-scale database support with clustering capabilities  
-- **Redis Engine**: High-performance in-memory store (558 lines of implementation)
-- **MongoDB Engine**: Document-oriented NoSQL database (952 lines of implementation)
-- **SQLite Engine**: Lightweight embedded database for development
-- **Unified API**: Common `DatabaseEngine` trait for consistent interface across all engines
+## 📋 機能概要 (Summary)
 
-### ✅ **Enterprise Security Architecture (6-Layer)**
-- **SQL Injection Protection**: 11 attack pattern detection with real-time analysis
-- **Multi-Factor Authentication (MFA)**: TOTP-based authentication with backup codes
-- **Role-Based Access Control (RBAC)**: Hierarchical permission system
-- **Real-time Anomaly Detection**: Machine learning-based threat detection
-- **Column-Level Encryption**: AES-GCM-256 encryption for sensitive data
-- **Comprehensive Audit Logging**: Tamper-resistant security event logging
+[実装予定の機能の詳細な説明を記載]
 
-### ✅ **High Availability & Performance**
-- **Connection Pooling**: Advanced connection management with deadpool
-- **Health Monitoring**: Real-time database health checks and metrics
-- **Load Balancing**: Round-robin, least connections, and response time strategies
-- **Failover Management**: Automatic failover with circuit breaker pattern
-- **Retry Logic**: Exponential backoff with timeout handling
+## 🎯 実装予定機能 (Planned Objectives)
 
-### ✅ **Documentation & Testing**
-- **📚 Comprehensive Documentation**: Complete database integration guide (9,000+ characters)
-- **🧪 Full Test Coverage**: 267 tests passing (187 lib + 144 main + 41 integration + 7 doc tests)
-- **🔍 Code Quality**: Zero Clippy warnings, complete formatting compliance
-- **📊 Performance Reports**: Database integration assessment and security implementation reports
+### 🚧 **[主要機能1]**
+- **[サブ機能1]**: [実装予定の詳細]
+- **[サブ機能2]**: [実装予定の詳細]
 
-## 🏗️ Technical Implementation
+### 🚧 **[主要機能2]**
+- **[サブ機能1]**: [実装予定の詳細]
+- **[サブ機能2]**: [実装予定の詳細]
 
-### **Database Engine Architecture**
+### 🚧 **[品質・テスト関連]**
+- **テストカバレッジ**: [目標値や範囲]
+- **ドキュメント**: [作成予定のドキュメント]
+- **コード品質**: [品質目標]
+
+## 🏗️ 技術実装詳細 (Technical Implementation)
+
+### **[メインコンポーネント]**
 ```rust
-pub trait DatabaseEngine: Send + Sync {
-    fn engine_type(&self) -> DatabaseType;
-    async fn connect(&self, config: &DatabaseConfig) -> Result<Box<dyn DatabaseConnection>, DatabaseError>;
-    async fn health_check(&self) -> Result<HealthStatus, DatabaseError>;
-    fn supports_transactions(&self) -> bool;
-    fn supports_json(&self) -> bool;
-}
+// 実装予定のコード例
 ```
 
-### **Security Integration**
-```rust
-pub struct DatabaseSecurity {
-    sql_injection_detector: SqlInjectionDetector,
-    query_whitelist: QueryWhitelist,
-    audit_logger: AuditLogger,
-    threat_intelligence: Option<Arc<ThreatDetectionEngine>>,
-    rate_limiter: RateLimiter,
-}
+### **[アーキテクチャ設計]**
+- [設計方針]
+- [技術選択理由]
+
+## 📁 追加・変更予定ファイル (Files to Add/Modify)
+
+### **新規実装**
+- `src/path/to/new_file.rs` - [機能説明]
+- `src/path/to/another.rs` - [機能説明]
+
+### **修正ファイル**
+- `src/existing/file.rs` - [変更予定内容]
+- `README.md` - [更新予定内容]
+
+### **ドキュメント**
+- `docs/feature-guide.md` - [新規ドキュメント]
+
+## 🧪 テスト計画 (Test Planning)
+
+### **テスト戦略**
+```bash
+# 目標テストカバレッジ
+Total Tests: XXX (目標)
+├── Library Tests: XX 
+├── Integration Tests: XX
+└── Doc Tests: XX
+
+Code Quality: 0 Clippy warnings (目標)
 ```
 
-### **Connection Management**
-```rust
-pub struct DatabaseHandler {
-    engines: HashMap<String, Box<dyn DatabaseEngine>>,
-    pool_manager: PoolManager,
-    load_balancer: LoadBalancer,
-    security: Arc<DatabaseSecurity>,
-    health_monitor: HealthMonitor,
-}
+### **テスト項目**
+- [機能テスト]: [テスト内容]
+- [統合テスト]: [テスト内容]
+
+## 🔒 セキュリティ考慮事項 (Security Considerations)
+
+### **セキュリティ影響評価**
+- [セキュリティ影響の詳細]
+- [対策予定]
+
+### **セキュリティテスト**
+- [実行予定のセキュリティテスト]
+
+## 📊 パフォーマンス影響 (Performance Impact)
+
+### **パフォーマンス目標**
+- [パフォーマンス指標]
+- [ベンチマーク計画]
+
+## 🚨 破壊的変更 (Breaking Changes)
+
+**[あり/なし]** - [破壊的変更がある場合の詳細説明]
+
+### 移行ガイド (該当する場合)
+```bash
+# 移行手順の計画
 ```
 
-## 📁 Files Added/Modified
+## 🔗 関連Issue (Related Issues)
+
+- Closes #XXX
+- Related to #XXX
+- Addresses #XXX
+
+## 🧭 依存関係 (Dependencies)
+
+### **新規依存関係**
+- `crate-name = "version"` - [用途説明]
+
+### **更新依存関係**
+- `existing-crate = "old-version" -> "new-version"` - [更新理由]
+
+## 📈 将来の拡張計画 (Future Roadmap)
+
+### **Phase 1: 今回実装 (Current)**
+- [今回実装予定の機能]
+
+### **Phase 2: 将来実装 (Future)**
+- [将来の拡張計画]
+
+## ✅ 実装前チェックリスト (Pre-implementation Checklist)
+
+- [ ] 要件定義完了
+- [ ] アーキテクチャ設計完了
+- [ ] テスト計画作成完了
+- [ ] セキュリティ影響評価完了
+- [ ] パフォーマンス影響評価完了
+- [ ] 依存関係確認完了
+- [ ] ドキュメント計画完了
+
+## 👥 レビュー観点 (Review Focus)
+
+実装時のレビュー観点:
+1. **[観点1]** - [詳細]
+2. **[観点2]** - [詳細]
+3. **[観点3]** - [詳細]
+
+## 📝 実装メモ (Implementation Notes)
+
+[実装中に気づいた点や注意事項を記録]
+
+---
+
+**実装準備完了時に PR 作成** 🚀
+
+<!-- 
+このファイルの使用方法:
+1. 機能開発開始時にテンプレートを具体的な内容に置き換え
+2. 開発中に詳細を随時更新
+3. PR作成時にGitHub上で詳細説明としてコピー
+4. PRマージ後に次回PR用にテンプレートにリセット
+-->## 📁 Files Added/Modified
 
 ### **New Database Implementation**
 - `src/handlers/database/engines/redis.rs` (558 lines) - Redis engine implementation

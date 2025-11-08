@@ -1,5 +1,24 @@
-//! セッション管理システムテスト
+//! MCP-RS Test Suite
 //!
-//! 現在の実装に合わせた基本的なテストスイート
+//! 構造化されたテストスイート - Phase 2 完了
 
-pub mod session_current_tests;
+// 単体テスト
+pub mod unit;
+
+// 統合テスト
+pub mod integration;
+
+// データベーステスト
+pub mod database;
+
+// WordPressテスト（将来実装予定）
+pub mod wordpress;
+
+// カナリーデプロイテスト
+pub mod canary;
+
+// パフォーマンステスト
+pub mod performance;
+
+// テストデータとユーティリティ
+pub mod fixtures;

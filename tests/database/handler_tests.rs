@@ -4,8 +4,7 @@
 
 #[cfg(test)]
 mod database_tests {
-    use super::*;
-    use crate::handlers::database::{
+    use mcp_rs::handlers::database::{
         engine::DatabaseEngineBuilder,
         handler::DatabaseHandler,
         types::{

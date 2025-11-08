@@ -3,6 +3,75 @@
 ## 🎯 目的
 このドキュメントは、mcp-rsプロジェクトにおけるIssue Template、Roadmap、ドキュメントファイルの適切な管理方法を定義します。
 
+## 📂 ファイル配置ルール
+
+### 🗂️ 配置場所の決定基準
+
+#### 📋 レポート・分析系ファイル
+```
+reports/
+├── TEST_REPORT.md                    # テスト実行結果レポート
+├── security-audit-report.md          # セキュリティ監査レポート
+├── performance-test-results.md       # パフォーマンステスト結果
+├── database-*-report.md              # データベース関連レポート
+└── README.md                        # レポートディレクトリの説明
+```
+
+#### 🏗️ プロジェクト管理系ファイル
+```
+.github/
+├── ISSUE_TEMPLATE/                  # Issue テンプレート
+├── PR_MANAGEMENT.md                 # PR管理ルール
+├── PULL_REQUEST_TEMPLATE.md         # PRテンプレート
+├── FILE_MANAGEMENT.md              # このファイル
+├── ROADMAP_UPDATE_TEMPLATE.md       # ROADMAP更新テンプレート
+└── workflows/                       # GitHub Actions
+```
+
+#### 📖 ドキュメント系ファイル
+```
+project-docs/     # プロジェクト関連ドキュメント
+docs/            # 技術仕様・設計書
+website/         # GitHub Pages用サイト
+examples/        # コードサンプル・デモ
+```
+
+#### 🧪 テスト系ファイル
+```
+tests/
+├── unit/                           # ユニットテスト
+├── integration/                    # 統合テスト
+├── database/                       # データベーステスト
+├── wordpress/                      # WordPress関連テスト
+├── canary/                        # カナリーテスト
+├── performance/                   # パフォーマンステスト
+└── fixtures/                      # テストデータ・モック
+```
+
+### 📁 ファイル種別判定ガイド
+
+#### 📊 レポート系 → `reports/`
+- **条件**: 実行結果、分析結果、監査結果を含む
+- **例**: TEST_REPORT.md, security-audit-report.md
+- **特徴**: 日付・バージョン・結果データを含む
+
+#### 🔧 管理系 → `.github/`
+- **条件**: GitHub機能、PR/Issue管理に関連
+- **例**: テンプレート、ワークフロー、管理ルール
+- **特徴**: GitHub標準の機能と連携
+
+#### 📚 ドキュメント系 → `project-docs/`, `docs/`, `website/`
+- **条件**: 継続的に更新される説明・仕様書
+- **分類基準**:
+  - `project-docs/`: プロジェクト概要・ガイド
+  - `docs/`: 技術仕様・API ドキュメント  
+  - `website/`: 外部公開用サイト
+
+#### 🧪 テスト系 → `tests/`
+- **条件**: テストコード、テストデータ、モック
+- **分類**: 機能別・種類別の階層構造
+- **特徴**: 実行可能なテストファイル
+
 ## 📂 ファイルライフサイクル
 
 ### 🔄 Issue Templates (.github/ISSUE_TEMPLATE/)
@@ -26,6 +95,13 @@
 - ❌ **削除しない**: プロジェクト成長の記録として価値
 - ✅ **履歴化**: 完了項目は「完了済み」セクションに移動
 - ✅ **定期更新**: 月次での進捗反映
+- ✅ **現実的計画**: 実際の開発ペースに基づくリリース計画
+- ✅ **GitHub連携**: Issues/Projects/Milestonesとの統合
+
+**更新スケジュール**:
+- **月初**: 前月の進捗反映と完了項目の履歴化
+- **四半期**: リリース計画の見直しと目標調整
+- **メジャー機能完了時**: 成果の記録と次期計画更新
 
 ### 📚 ドキュメント (project-docs/, website/)
 **状態**: 継続保守
@@ -38,7 +114,74 @@
 - ✅ **バージョン管理**: 機能追加に応じて更新
 - ✅ **品質維持**: 定期的な内容見直し
 
-## 🔄 具体的な運用フロー
+### 📈 レポート系 (reports/)
+**状態**: アーカイブ保存
+```
+作成 → 検証 → 分析 → [永続保存]
+```
+
+**管理方針**:
+- ❌ **削除しない**: 開発履歴として重要な記録
+- ✅ **定期作成**: 主要マイルストーン毎にテスト・セキュリティレポート
+- ✅ **バージョン管理**: 日付・バージョン番号による識別
+
+## 🚀 ファイル移動・整理の実践ルール
+
+### 📋 整理作業で確立されたベストプラクティス
+
+#### ✅ 成功パターン
+1. **段階的整理**: 一度にすべて移動せず、カテゴリ別に段階実行
+   - Phase 1: ディレクトリ構造作成
+   - Phase 2: ファイル移動と重複削除
+   - Phase 3: 参照・リンク修正
+
+2. **モジュール参照の更新**: テストファイル移動時は必須
+   - `mod.rs`からの参照をコメント化
+   - 古いテストファイルの削除
+   - `cargo fmt`で検証
+
+3. **Jekyll サイト修正**: ウェブサイトファイル変更時
+   - `_config.yml`の設定確認
+   - パーマリンクの修正
+   - ナビゲーションリンクの更新
+
+#### ⚠️ 注意すべきポイント
+- **cargo fmt エラー**: 移動後は必ず`mod.rs`の参照を確認
+- **リンク切れ**: Jekyll サイトのリンクを忘れずに更新
+- **テスト実行**: 移動後は`cargo test`で動作確認
+
+### 📁 ファイル種別毎の移動手順
+
+#### 📊 レポートファイル移動
+```bash
+# 例: TEST_REPORT.md → reports/
+Move-Item TEST_REPORT.md reports/TEST_REPORT.md
+```
+
+#### 🧪 テストファイル移動
+```bash
+# 1. 新しいテスト構造作成
+mkdir tests/unit tests/integration tests/database
+
+# 2. ファイル移動
+Move-Item src/handlers/database/basic_tests.rs tests/database/engine_tests.rs
+
+# 3. mod.rs の参照削除・コメント化
+# 4. cargo fmt で検証
+```
+
+#### 🌐 ウェブサイトリンク修正
+```yaml
+# _config.yml の更新
+header_pages:
+  - api-reference.md
+  - user-guide.md
+  
+# パーマリンク修正
+permalink: /api-reference/
+```
+
+## �🔄 具体的な運用フロー
 
 ### Phase 1: 機能開発開始
 1. **Issue作成**: テンプレートを使用してEpic Issue作成
@@ -60,6 +203,26 @@
 2. **ドキュメント更新**: 新機能の反映
 3. **年次レビュー**: 全体的な整理と改善
 
+### 📊 ROADMAP専用管理フロー
+
+#### Phase A: 月次更新 (毎月第1営業日)
+1. **進捗収集**: GitHub Issues/Projects から完了機能を特定
+2. **現状反映**: テスト数、機能数などの最新データ更新
+3. **履歴化**: 完了項目を「✅ 完了済み機能」に移動
+4. **計画調整**: 遅延・前倒し項目のスケジュール修正
+
+#### Phase B: 四半期レビュー (Q1,Q2,Q3,Q4終了時)
+1. **目標達成度**: 四半期目標の達成状況評価
+2. **リリース計画**: 次四半期のリリース計画見直し
+3. **優先度調整**: 市場・技術動向に基づく優先順位更新
+4. **コミュニティ反映**: GitHub Discussionsのフィードバック統合
+
+#### Phase C: メジャーリリース時 (v0.x.0リリース)
+1. **成果記録**: リリースした機能の詳細記録
+2. **メトリクス更新**: パフォーマンス指標・採用状況更新
+3. **次期計画**: 次のメジャーバージョン計画策定
+4. **GitHub連携**: Release Notes との整合性確保
+
 ## 📊 品質管理
 
 ### ✅ 推奨事項
@@ -68,15 +231,39 @@
 ✅ Roadmap: 履歴価値を保持する進捗管理
 ✅ Documentation: バージョン対応の継続更新
 ✅ GitHub Projects: 自動化による効率的管理
+✅ 段階的整理: カテゴリ別の段階的ファイル移動
+✅ 参照更新: mod.rs・リンクの確実な修正
+✅ 動作確認: cargo fmt・cargo test での検証
 ```
 
 ### ❌ 避けるべき事項
 ```markdown
 ❌ 完了機能のファイル削除
-❌ 履歴情報の破棄
+❌ 履歴情報の破棄  
 ❌ テンプレートの頻繁な削除・再作成
 ❌ ドキュメントの非継続的更新
+❌ 一括移動: 段階的整理を行わない大規模変更
+❌ 参照未更新: mod.rs やリンクの修正漏れ
+❌ 検証不足: 移動後の動作確認を怠る
 ```
+
+## 🎯 整理完了状況（2025年11月8日現在）
+
+### ✅ 完了済み整理作業
+1. **PR管理システム**: `.github/PR_MANAGEMENT.md`, `.github/PULL_REQUEST_TEMPLATE.md`
+2. **テストスイート再構築**: `tests/` ディレクトリ構造化（Phase 1-2完了）
+   - ユニット・統合・データベース・WordPress・カナリー・パフォーマンステスト分離
+   - 重複テスト削除と統合
+   - 古いテストファイル削除とmod.rs参照修正
+3. **ウェブサイト修正**: Jekyll設定とナビゲーションリンク修正
+4. **レポート整理**: `TEST_REPORT.md` → `reports/TEST_REPORT.md` 移動
+5. **ビルドエラー修正**: cargo fmt エラー解決
+
+### 📊 整理効果
+- **テスト実行**: 121テスト → 120テスト合格（1テスト無視）
+- **コード品質**: Clippy警告 0件
+- **ビルド**: cargo fmt エラー解決
+- **構造化**: 機能別ディレクトリ分離完了
 
 ## 🎯 期待される効果
 
@@ -96,7 +283,65 @@
 - [Contributing Guidelines](CONTRIBUTING.md)
 - [Project Roadmap](ROADMAP.md)
 
+### 📋 ROADMAPテンプレート活用法
+
+#### 🗂️ テンプレートファイル
+- **場所**: `.github/ROADMAP_UPDATE_TEMPLATE.md`
+- **用途**: ROADMAP.mdの定期的な更新作業の標準化
+- **更新頻度**: 月次（毎月第1営業日推奨）
+
+#### ✅ 使用手順
+1. **テンプレートコピー**: ROADMAP_UPDATE_TEMPLATE.mdを作業用にコピー
+2. **チェックリスト実行**: データ収集→履歴化→計画調整→検証の順で実行
+3. **ROADMAP.md更新**: 収集した最新情報でROADMAP.mdを更新
+4. **コミット**: 適切なコミットメッセージで変更を記録
+
+#### 🎯 定期更新のメリット
+- **透明性**: コミュニティへの進捗の透明性確保
+- **品質**: 一貫した更新品質の維持
+- **効率**: 更新作業の効率化と漏れ防止
+- **GitHub連携**: Issues/Projects/Milestonesとの整合性保持
+
+### 📚 参考: 実際の整理作業履歴
+
+### 🔄 テストスイート再構築（2025年11月8日）
+```bash
+# Phase 1: ディレクトリ構造作成
+mkdir tests/unit tests/integration tests/database tests/wordpress tests/canary tests/performance tests/fixtures
+
+# Phase 2: ファイル移動例
+Move-Item src/handlers/database/basic_tests.rs tests/database/engine_tests.rs
+Move-Item src/handlers/database/simple_test.rs tests/database/ # → 統合後削除
+Move-Item src/session/session_tests.rs tests/integration/session_management.rs
+
+# Phase 3: 参照修正
+# src/handlers/database/mod.rs の test モジュール参照をコメント化
+# cargo fmt エラー修正確認
+```
+
+### 📋 レポートファイル移動（2025年11月8日）
+```bash
+# 適切なディレクトリへの配置
+Move-Item TEST_REPORT.md reports/TEST_REPORT.md
+```
+
+### 🌐 Jekyll サイト修正例
+```yaml
+# website/_config.yml 更新
+baseurl: "/mcp-rs"
+header_pages:
+  - api-reference.md
+  - user-guide.md
+
+# パーマリンク修正
+---
+permalink: /api-reference/
+---
+```
+
 ---
 
-**最終更新**: 2025年11月4日  
-**次回レビュー予定**: 2025年12月4日
+**最終更新**: 2025年11月9日  
+**整理作業実績**: PR管理・テスト再構築・サイト修正・レポート整理・ROADMAP管理完了  
+**ROADMAP更新**: 2025年11月9日（v1.1 - 最新開発状況反映）  
+**次回レビュー予定**: 2025年12月9日
