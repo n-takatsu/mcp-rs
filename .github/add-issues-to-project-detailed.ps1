@@ -38,11 +38,6 @@ for ($i = 0; $i -lt $epicIssues.Length; $i++) {
 Write-Host "`n🔧 Sub-Issues をプロジェクトに追加中..." -ForegroundColor Cyan
 
 $subIssues = 42..55
-$subCategories = @{
-    "42-47" = "v0.2.0-beta"
-    "48-50" = "v0.3.0" 
-    "51-55" = "v1.0.0"
-}
 
 foreach ($issue in $subIssues) {
     $category = switch ($issue) {
