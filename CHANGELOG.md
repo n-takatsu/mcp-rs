@@ -9,24 +9,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.15.0] - 2025-11-08
 
-### 🚀 Major Release: Comprehensive Dependency Modernization + Production-Ready Real-time System
+### 🚀 Major Release: ユーザーフレンドリーな設定管理システム
 
 #### Added
-- **Real-time Collaborative Editing System**: Complete WebSocket-based real-time editing infrastructure
-  - WebSocket integration with axum 0.8.6
-  - Enterprise-grade session management
-  - Multi-user concurrent editing support
-  - Conflict resolution and auto-merge capabilities
-- **Comprehensive Dependency Updates**: 30+ crates updated to latest stable versions
-  - Core runtime modernization (tokio 1.48.0, tracing 0.1.48)
-  - Web framework evolution (axum 0.8.6, hyper 1.6.1)
-  - Security enhancements (jsonwebtoken 10.2.0, secrecy 0.10.3)
-  - Network optimizations (hickory-resolver 0.25.2)
-- **Production-Ready Architecture**: Enterprise-grade scalability and monitoring
-  - Horizontal scaling support
-  - Advanced metrics collection
-  - Comprehensive audit trails
-  - Docker and Kubernetes readiness
+- **対話的設定セットアップシステム** (`--setup-config`)
+  - WordPress接続テスト付きの設定ウィザード
+  - リアルタイム接続検証とエラー診断
+  - crossterm使用のクロスプラットフォーム対応UI
+  - スピナーアニメーションとカラー出力
+- **動的設定管理システム**
+  - `--switch-config`: 実行時設定ファイル切り替え
+  - `--config <file>`: カスタム設定ファイル指定
+  - `--reload-config`: 動的設定再読み込み
+  - 設定ファイル自動検出機能
+- **デモンストレーションモード** (`--demo-setup`)
+  - 安全なテスト環境での機能体験
+  - デモ設定ファイル自動生成
+- **包括的ヘルプシステム** (`--help`)
+  - 全オプションの詳細説明と使用例
+  - 設定ファイル検索順序の明示
+- **GitHub Pages統合**
+  - 美しいランディングページ (index.html)
+  - Jekyll設定の最適化とpermalink構造
+  - 404エラーの完全修正
+
+#### Enhanced  
+- **ユーザビリティの大幅向上**
+  - 設定ファイル不存在時の自動セットアップ起動
+  - 分かりやすい日本語エラーメッセージ
+  - 初心者から上級者まで対応の段階的ガイダンス
+- **ロバストな入力処理**
+  - EOF検出と再試行制限によるパイプ入力対応
+  - 非対話環境での自動フォールバック
+  - 入力ストリーム終了の適切な処理
 
 #### Changed
 - **Breaking Changes Resolved**: Complete migration to latest API versions
