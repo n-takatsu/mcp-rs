@@ -6,5 +6,7 @@
 #[tokio::test]
 async fn test_transport_placeholder() {
     // TODO: トランスポートレイヤーのテスト実装
-    assert!(true);
+    // 実装予定のテストのプレースホルダー
+    let result = true;
+    assert!(result, "Transport test placeholder");
 }

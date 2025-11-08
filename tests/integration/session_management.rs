@@ -5,8 +5,7 @@
 use chrono::{Duration, Utc};
 use mcp_rs::session::{
     manager::SessionManager,
-    storage::{MemorySessionStorage, SessionStorage},
-    types::{Session, SessionFilter, SessionId, SessionState},
+    types::{SessionFilter, SessionId, SessionState},
 };
 use std::sync::Arc;
 
@@ -172,9 +171,8 @@ async fn test_concurrent_session_operations() {
     // 全ての操作が完了することを確認
     let mut successful_sessions = 0;
     for handle in handles {
-        match handle.await.unwrap() {
-            Ok(_) => successful_sessions += 1,
-            Err(_) => {}
+        if handle.await.unwrap().is_ok() {
+            successful_sessions += 1;
         }
     }
 
