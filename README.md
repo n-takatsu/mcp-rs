@@ -838,6 +838,12 @@ alert_on_degradation = true
 
 ```
 mcp-rs/
+├── .github/                # GitHub configuration & templates
+│   ├── README.md           # .github folder documentation
+│   ├── PR_MANAGEMENT.md    # PR workflow rules
+│   ├── PULL_REQUEST_TEMPLATE.md # PR template
+│   ├── ISSUE_TEMPLATE/     # Issue templates
+│   └── workflows/          # GitHub Actions CI/CD
 ├── src/
 │   ├── lib.rs              # Library entry point
 │   ├── main.rs             # Application entry point
