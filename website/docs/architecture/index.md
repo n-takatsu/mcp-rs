@@ -1,3 +1,9 @@
+---
+layout: page
+title: Architecture Documentation
+permalink: /docs/architecture/
+---
+
 # MCP-RS Architecture Documentation
 
 This section contains detailed architectural documentation for the MCP-RS project.

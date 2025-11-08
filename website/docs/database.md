@@ -1,3 +1,9 @@
+---
+layout: page
+title: Database Integration Guide
+permalink: /docs/database/
+---
+
 # Database Integration Guide
 
 **Multi-Engine Database System with Enterprise Security**

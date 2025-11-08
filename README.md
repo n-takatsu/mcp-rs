@@ -463,20 +463,67 @@ enabled = true
 3. Create new application password for MCP-RS
 4. Use this password in configuration
 
+### Interactive Configuration Setup
+
+If no configuration file exists, mcp-rs provides an interactive setup wizard:
+
+```bash
+# Interactive configuration creation with connection testing
+cargo run -- --setup-config
+
+# Demo mode for safe testing
+cargo run -- --demo-setup
+
+# Generate sample configuration
+cargo run -- --generate-config
+```
+
+### Dynamic Configuration Management
+
+mcp-rs supports runtime configuration switching and reloading:
+
+```bash
+# Switch configuration files dynamically
+cargo run -- --switch-config
+
+# Use specific configuration file
+cargo run -- --config custom-config.toml
+
+# Reload current configuration (for running instances)
+cargo run -- --reload-config
+
+# Show all available options
+cargo run -- --help
+```
+
+**Dynamic Configuration Features:**
+- **Runtime Configuration Switching**: Change configuration without restarting
+- **Connection Testing**: Real-time WordPress connection validation
+- **Multiple Config Management**: Easy switching between environments
+- **Hot Reloading**: Apply configuration changes instantly
+
 ### Running the Server
 
 ```bash
 # Build the project
 cargo build
 
-# Run with default configuration
+# Run with automatic configuration detection
 cargo run
+
+# Configuration file search order:
+# 1. mcp-config.toml (current directory)
+# 2. config.toml (current directory)
+# 3. config/mcp.toml (subdirectory)
 
 # Run with specific config file
 cargo run -- --config custom-config.toml
 
 # Run with environment override
 WORDPRESS_URL=https://mysite.com cargo run
+
+# If no configuration found, interactive setup will start automatically
+# Use --setup-config to force interactive setup mode
 ```
 ### Creating a Custom Handler
 

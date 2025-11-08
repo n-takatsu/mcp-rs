@@ -43,6 +43,14 @@ pub enum Error {
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 
+    /// Config library error
+    #[error("Config error: {0}")]
+    ConfigError(#[from] config::ConfigError),
+
+    /// Generic boxed error
+    #[error("Error: {0}")]
+    Boxed(#[from] Box<dyn std::error::Error + Send + Sync>),
+
     /// Feature not supported
     #[error("Not supported: {0}")]
     NotSupported(String),

@@ -1,6 +1,7 @@
 ---
 layout: page
 title: WordPress Integration
+permalink: /docs/wordpress/
 nav_order: 4
 ---
 

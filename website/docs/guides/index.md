@@ -1,3 +1,9 @@
+---
+layout: page
+title: Implementation Guides  
+permalink: /docs/guides/
+---
+
 # MCP-RS Implementation Guides
 
 Step-by-step guides for implementing and using MCP-RS.

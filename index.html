@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MCP-RS - Model Context Protocol in Rust</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            line-height: 1.6;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: #333;
+            min-height: 100vh;
+        }
+        .container {
+            background: rgba(255, 255, 255, 0.95);
+            padding: 40px;
+            border-radius: 15px;
+            box-shadow: 0 15px 35px rgba(0, 0, 0, 0.1);
+        }
+        .header {
+            text-align: center;
+            margin-bottom: 40px;
+        }
+        .logo {
+            font-size: 3em;
+            color: #667eea;
+            margin-bottom: 10px;
+        }
+        h1 {
+            color: #2c3e50;
+            margin-bottom: 10px;
+            font-size: 2.5em;
+        }
+        .subtitle {
+            color: #7f8c8d;
+            font-size: 1.2em;
+            margin-bottom: 30px;
+        }
+        .features {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 30px;
+            margin: 40px 0;
+        }
+        .feature {
+            background: #f8f9fa;
+            padding: 25px;
+            border-radius: 10px;
+            border-left: 5px solid #667eea;
+        }
+        .feature h3 {
+            color: #2c3e50;
+            margin-bottom: 15px;
+        }
+        .actions {
+            display: flex;
+            gap: 20px;
+            justify-content: center;
+            flex-wrap: wrap;
+            margin: 40px 0;
+        }
+        .btn {
+            display: inline-block;
+            padding: 15px 30px;
+            text-decoration: none;
+            border-radius: 8px;
+            font-weight: 600;
+            transition: all 0.3s ease;
+            text-align: center;
+        }
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+        .btn-secondary {
+            background: white;
+            color: #667eea;
+            border: 2px solid #667eea;
+        }
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 25px rgba(0, 0, 0, 0.15);
+        }
+        .status-badges {
+            text-align: center;
+            margin: 30px 0;
+        }
+        .status-badges img {
+            margin: 0 5px;
+        }
+        .redirect-notice {
+            background: #e3f2fd;
+            border: 1px solid #2196f3;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 30px 0;
+            text-align: center;
+        }
+        @media (max-width: 768px) {
+            body { padding: 10px; }
+            .container { padding: 20px; }
+            h1 { font-size: 2em; }
+            .actions { flex-direction: column; align-items: center; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div class="logo">🚀</div>
+            <h1>MCP-RS</h1>
+            <p class="subtitle">Production-Ready Rust Implementation of Model Context Protocol</p>
+        </div>
+
+        <div class="redirect-notice">
+            <h3>📖 完全なドキュメントサイト</h3>
+            <p>詳細なドキュメント、API リファレンス、ガイドは下記のリンクからアクセスできます：</p>
+            <a href="./website/" class="btn btn-primary">📚 ドキュメントサイトへ</a>
+        </div>
+
+        <div class="status-badges">
+            <img src="https://img.shields.io/badge/Architecture-v0.15.0--realtime--editing-blue" alt="Architecture">
+            <img src="https://img.shields.io/badge/WordPress_Tools-27_Available-green" alt="WordPress Tools">
+            <img src="https://img.shields.io/badge/Real--time_Editing-WebSocket_Ready-brightgreen" alt="Realtime Editing">
+            <img src="https://img.shields.io/badge/License-MIT%2FApache--2.0-green" alt="License">
+        </div>
+
+        <div class="features">
+            <div class="feature">
+                <h3>🔧 ユーザーフレンドリーな設定</h3>
+                <p>対話的セットアップウィザード、動的設定管理、WordPress接続テスト機能を搭載。初心者から上級者まで簡単に利用開始できます。</p>
+            </div>
+            
+            <div class="feature">
+                <h3>🌐 完全なWordPress統合</h3>
+                <p>27の WordPress tools、投稿・ページ・メディア管理、カテゴリ・タグ操作、埋め込みコンテンツサポートを提供。</p>
+            </div>
+            
+            <div class="feature">
+                <h3>⚡ リアルタイム編集</h3>
+                <p>WebSocket対応のリアルタイム協調編集、セッション管理、エンタープライズグレードのセキュリティ機能。</p>
+            </div>
+            
+            <div class="feature">
+                <h3>🛡️ エンタープライズセキュリティ</h3>
+                <p>6層セキュリティアーキテクチャ、AES-GCM-256暗号化、レート制限、SQL インジェクション・XSS攻撃防止。</p>
+            </div>
+        </div>
+
+        <div class="actions">
+            <a href="https://github.com/n-takatsu/mcp-rs" class="btn btn-primary">
+                📦 GitHub Repository
+            </a>
+            <a href="./website/docs/guides/" class="btn btn-secondary">
+                📖 Getting Started
+            </a>
+            <a href="./website/docs/api/" class="btn btn-secondary">
+                🔧 API Reference  
+            </a>
+        </div>
+
+        <div style="margin-top: 40px; padding-top: 20px; border-top: 1px solid #eee; text-align: center; color: #666;">
+            <p>
+                <strong>Quick Start:</strong> 
+                <code>cargo run -- --setup-config</code> で対話的セットアップを開始
+            </p>
+            <p>
+                Built with ❤️ in Rust | 
+                <a href="https://github.com/n-takatsu/mcp-rs/blob/main/LICENSE-MIT" style="color: #667eea;">MIT License</a> |
+                <a href="https://github.com/n-takatsu/mcp-rs/blob/main/LICENSE-APACHE" style="color: #667eea;">Apache 2.0 License</a>
+            </p>
+        </div>
+    </div>
+
+    <script>
+        // 簡単なアニメーション
+        document.addEventListener('DOMContentLoaded', function() {
+            const container = document.querySelector('.container');
+            container.style.opacity = '0';
+            container.style.transform = 'translateY(20px)';
+            
+            setTimeout(() => {
+                container.style.transition = 'all 0.6s ease';
+                container.style.opacity = '1';
+                container.style.transform = 'translateY(0)';
+            }, 100);
+        });
+    </script>
+</body>
+</html>

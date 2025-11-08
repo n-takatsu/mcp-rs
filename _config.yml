@@ -1,0 +1,57 @@
+# GitHub Pages Configuration for MCP-RS
+# This file enables GitHub Pages to serve the website directory
+
+# Basic site settings
+title: MCP-RS
+description: Production-Ready Rust Implementation of Model Context Protocol
+url: "https://n-takatsu.github.io"
+baseurl: "/mcp-rs"
+
+# Build settings
+markdown: kramdown
+highlighter: rouge
+
+# GitHub Pages safe plugins
+plugins:
+  - jekyll-feed
+  - jekyll-sitemap
+
+# Theme (GitHub Pages safe)
+theme: minima
+
+# Source directory (GitHub Pages will serve from website/ directory via Actions)
+# This file is primarily for metadata; actual build is handled by GitHub Actions
+
+# Kramdown settings
+kramdown:
+  input: GFM
+  syntax_highlighter: rouge
+
+# Exclude from processing
+exclude:
+  - target/
+  - Cargo.toml
+  - Cargo.lock
+  - .github/
+  - README.md
+  - CHANGELOG.md
+  - LICENSE-*
+  - src/
+  - tests/
+  - examples/
+  - benches/
+  - clippy.toml
+  - rustfmt.toml
+  - .gitignore
+  - node_modules/
+  - vendor/
+
+# Include important files
+include:
+  - website/
+
+# Future posts
+future: false
+
+# Permalink structure
+permalink: /:categories/:title/

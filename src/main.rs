@@ -13,28 +13,113 @@ mod mcp;
 mod protocol;
 mod security;
 mod server;
+mod setup;
 mod transport;
 mod types;
 
-use config::McpConfig;
+use config::{ConfigSwitcher, DynamicConfigManager, McpConfig};
 use core::{PluginInfo, Runtime, RuntimeConfig};
 use error::Error;
 use handlers::WordPressHandler;
 // use mcp_rs::mcp_server::McpServer;
 use security::{SecureMcpServer, SecurityConfig};
+use setup::{setup_config_interactive, DemoSetup};
 use std::sync::Arc;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // コマンドライン引数チェック
+    // コマンドライン引数処理
     let args: Vec<String> = std::env::args().collect();
-    if args.len() > 1 && args[1] == "--generate-config" {
-        McpConfig::generate_sample_config()?;
-        return Ok(());
+    let mut custom_config_path: Option<String> = None;
+
+    // Parse command line arguments
+    if args.len() > 1 {
+        let mut i = 1;
+        while i < args.len() {
+            match args[i].as_str() {
+                "--generate-config" => {
+                    McpConfig::generate_sample_config()?;
+                    return Ok(());
+                }
+                "--setup-config" => {
+                    setup_config_interactive().await?;
+                    return Ok(());
+                }
+                "--demo-setup" => {
+                    setup::DemoSetup::run_demo().await?;
+                    return Ok(());
+                }
+                "--config" => {
+                    if i + 1 < args.len() {
+                        custom_config_path = Some(args[i + 1].clone());
+                        i += 1; // Skip next argument as it's the config file path
+                    } else {
+                        eprintln!("❌ --config オプションには設定ファイルのパスが必要です");
+                        return Err("Missing config file path".into());
+                    }
+                }
+                "--switch-config" => {
+                    // Load current config and run interactive switcher
+                    let config = McpConfig::load()?;
+                    let manager = Arc::new(DynamicConfigManager::new(config, None));
+                    let switcher = ConfigSwitcher::new(manager);
+                    switcher.run_interactive_switch().await?;
+                    return Ok(());
+                }
+                "--reload-config" => {
+                    println!("🔄 設定リロード機能はサーバー実行中のみ利用可能です");
+                    println!("💡 サーバー起動後に --switch-config を使用してください");
+                    return Ok(());
+                }
+                "--help" | "-h" => {
+                    print_help();
+                    return Ok(());
+                }
+                _ => {}
+            }
+            i += 1;
+        }
     }
 
-    // 設定を読み込み
-    let config = McpConfig::load()?;
+    // 設定を読み込み（カスタムパスまたはデフォルト）
+    let config = match custom_config_path {
+        Some(path) => {
+            println!("📁 カスタム設定ファイルを使用: {}", path);
+            match load_config_from_file(&path).await {
+                Ok(config) => config,
+                Err(e) => {
+                    eprintln!("❌ 設定ファイル読み込みエラー: {}", e);
+                    return Err(e.into());
+                }
+            }
+        }
+        None => match McpConfig::load() {
+            Ok(config) => config,
+            Err(_) => {
+                // 設定ファイルが見つからない場合
+                if !config_file_exists() {
+                    println!("⚠️  設定ファイルが見つかりません。");
+                    println!();
+                    println!("📋 設定オプション:");
+                    println!("  1. 対話的セットアップを実行: --setup-config");
+                    println!("  2. サンプル設定を生成: --generate-config");
+                    println!("  3. デフォルト設定で続行");
+                    println!();
+
+                    if should_run_interactive_setup()? {
+                        setup_config_interactive().await?;
+                        // セットアップ完了後に設定を再読み込み
+                        McpConfig::load()?
+                    } else {
+                        println!("ℹ️  デフォルト設定で続行します。");
+                        McpConfig::default()
+                    }
+                } else {
+                    return Err("設定ファイルの読み込みに失敗しました".into());
+                }
+            }
+        },
+    };
 
     // Core Runtime を初期化
     let runtime_config = RuntimeConfig {
@@ -139,4 +224,108 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     runtime.shutdown().await?;
 
     Ok(())
+}
+
+/// Load configuration from specific file
+async fn load_config_from_file(path: &str) -> Result<McpConfig, Error> {
+    if !std::path::Path::new(path).exists() {
+        return Err(Error::Config(format!(
+            "設定ファイルが存在しません: {}",
+            path
+        )));
+    }
+
+    let settings = ::config::Config::builder()
+        .add_source(::config::Config::try_from(&McpConfig::default())?)
+        .add_source(::config::File::with_name(path))
+        .build()?;
+
+    let mut loaded_config: McpConfig = settings.try_deserialize()?;
+
+    // Apply environment variable expansion for WordPress config
+    if let Some(ref mut wp_config) = loaded_config.handlers.wordpress {
+        McpConfig::expand_wordpress_config(wp_config);
+    }
+
+    Ok(loaded_config)
+}
+
+/// Print help message
+fn print_help() {
+    println!("🚀 MCP-RS - Model Context Protocol Server");
+    println!();
+    println!("使用方法:");
+    println!("  mcp-rs [オプション]");
+    println!();
+    println!("オプション:");
+    println!("  --config <file>      指定された設定ファイルを使用");
+    println!("  --generate-config    サンプル設定ファイルを生成");
+    println!("  --setup-config       対話的設定セットアップを実行");
+    println!("  --demo-setup         デモンストレーション モードで実行");
+    println!("  --switch-config      設定ファイルの動的切り替え");
+    println!("  --reload-config      設定の再読み込み (実行中のみ)");
+    println!("  --help, -h           このヘルプメッセージを表示");
+    println!();
+    println!("例:");
+    println!("  mcp-rs                              # デフォルト設定で起動");
+    println!("  mcp-rs --config custom.toml        # カスタム設定で起動");
+    println!("  mcp-rs --setup-config              # 対話的設定作成");
+    println!("  mcp-rs --switch-config              # 動的設定変更");
+    println!();
+    println!("設定ファイル:");
+    println!("  デフォルト検索順: mcp-config.toml, config.toml, config/mcp.toml");
+    println!();
+}
+
+/// Check if any configuration file exists
+fn config_file_exists() -> bool {
+    let config_paths = [
+        "mcp-config.toml",
+        "config.toml",
+        "config/mcp.toml",
+        "~/.config/mcp-rs/config.toml",
+    ];
+
+    config_paths
+        .iter()
+        .any(|path| std::path::Path::new(path).exists())
+}
+
+/// Ask user if they want to run interactive setup
+fn should_run_interactive_setup() -> Result<bool, Box<dyn std::error::Error>> {
+    use std::io::{self, Write};
+
+    let mut retry_count = 0;
+    const MAX_RETRIES: u32 = 3;
+
+    loop {
+        print!("対話的セットアップを実行しますか？ [Y/n]: ");
+        io::stdout().flush()?;
+
+        let mut input = String::new();
+        match io::stdin().read_line(&mut input) {
+            Ok(0) => {
+                // EOF reached, default to no
+                println!("デフォルト設定で続行します。");
+                return Ok(false);
+            }
+            Ok(_) => {
+                let input = input.trim().to_lowercase();
+
+                match input.as_str() {
+                    "" | "y" | "yes" => return Ok(true),
+                    "n" | "no" => return Ok(false),
+                    _ => {
+                        retry_count += 1;
+                        if retry_count >= MAX_RETRIES {
+                            println!("⚠️  最大試行回数に達しました。デフォルト設定で続行します。");
+                            return Ok(false);
+                        }
+                        println!("⚠️  'y' または 'n' で答えてください。");
+                    }
+                }
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
 }
