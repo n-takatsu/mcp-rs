@@ -1,0 +1,274 @@
+name: 📋 Issue Management Automation
+
+on:
+  issues:
+    types: [opened, edited, labeled, unlabeled]
+  issue_comment:
+    types: [created]
+  pull_request:
+    types: [opened, closed, merged]
+
+jobs:
+  issue-automation:
+    runs-on: ubuntu-latest
+    name: 🤖 Smart Issue Management
+    
+    permissions:
+      issues: write
+      projects: write
+      pull-requests: write
+      
+    steps:
+      - name: 🛒 Checkout
+        uses: actions/checkout@v4
+        
+      - name: 🏷️ Auto-label by Title Pattern
+        if: github.event_name == 'issues' && github.event.action == 'opened'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          title="${{ github.event.issue.title }}"
+          number="${{ github.event.issue.number }}"
+          
+          # Epic Issues の自動ラベル
+          if [[ "$title" == *"[EPIC]"* ]]; then
+            gh issue edit $number --add-label "epic,priority-high,roadmap-tracked"
+            echo "✅ Added Epic labels to #$number"
+          fi
+          
+          # Sub-Issues の自動ラベル  
+          if [[ "$title" == *"[SUB]"* ]]; then
+            gh issue edit $number --add-label "sub-issue,enhancement,roadmap-tracked"
+            echo "✅ Added Sub-Issue labels to #$number"
+          fi
+          
+          # Bug Issues の自動ラベル
+          if [[ "$title" == *"[BUG]"* ]] || [[ "$title" == *"bug"* ]] || [[ "$title" == *"Bug"* ]]; then
+            gh issue edit $number --add-label "bug,priority-high"
+            echo "✅ Added Bug labels to #$number"
+          fi
+          
+          # Security Issues の自動ラベル
+          if [[ "$title" == *"security"* ]] || [[ "$title" == *"Security"* ]] || [[ "$title" == *"セキュリティ"* ]]; then
+            gh issue edit $number --add-label "security,priority-critical"
+            echo "✅ Added Security labels to #$number"
+          fi
+          
+      - name: 🎯 Auto-assign Milestone by Labels
+        if: github.event_name == 'issues' && (github.event.action == 'opened' || github.event.action == 'labeled')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          number="${{ github.event.issue.number }}"
+          title="${{ github.event.issue.title }}"
+          
+          # v0.2.0-beta マイルストーン自動割り当て
+          if [[ "$title" == *"プラグイン隔離"* ]] || [[ "$title" == *"動的ポリシー"* ]] || [[ "$title" == *"Docker"* ]] || [[ "$title" == *"Kubernetes"* ]]; then
+            gh issue edit $number --milestone "v0.2.0-beta"
+            echo "✅ Assigned #$number to v0.2.0-beta milestone"
+          fi
+          
+          # v0.3.0 マイルストーン自動割り当て  
+          if [[ "$title" == *"WebSocket"* ]] || [[ "$title" == *"AI"* ]] || [[ "$title" == *"LLM"* ]] || [[ "$title" == *"監視"* ]]; then
+            gh issue edit $number --milestone "v0.3.0"
+            echo "✅ Assigned #$number to v0.3.0 milestone"
+          fi
+          
+          # v1.0.0 マイルストーン自動割り当て
+          if [[ "$title" == *"エンタープライズ"* ]] || [[ "$title" == *"SAML"* ]] || [[ "$title" == *"OAuth"* ]] || [[ "$title" == *"マルチテナント"* ]]; then
+            gh issue edit $number --milestone "v1.0.0"  
+            echo "✅ Assigned #$number to v1.0.0 milestone"
+          fi
+          
+      - name: 🔗 Auto-link Sub-Issues to Epic
+        if: github.event_name == 'issues' && github.event.action == 'opened' && contains(github.event.issue.title, '[SUB]')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          number="${{ github.event.issue.number }}"
+          title="${{ github.event.issue.title }}"
+          body="${{ github.event.issue.body }}"
+          
+          # Epic Issue 番号を本文から抽出
+          epic_number=$(echo "$body" | grep -o "Parent Epic: #[0-9]\+" | head -1 | grep -o "[0-9]\+")
+          
+          if [[ ! -z "$epic_number" ]]; then
+            echo "🔗 Linking Sub-Issue #$number to Epic #$epic_number"
+            
+            # Epic Issue にコメント追加
+            gh issue comment $epic_number --body "## 🔗 **Sub-Issue Created**
+
+            **#$number**: $title
+            
+            📋 **Progress Update**:
+            - New Sub-Issue automatically linked to this Epic
+            - Milestone inheritance applied
+            - Project board integration activated
+            
+            ➡️ [View Sub-Issue #$number](https://github.com/${{ github.repository }}/issues/$number)"
+            
+            # Epic の Milestone を Sub-Issue に継承
+            epic_milestone=$(gh issue view $epic_number --json milestone --jq '.milestone.title // empty')
+            if [[ ! -z "$epic_milestone" ]]; then
+              gh issue edit $number --milestone "$epic_milestone"
+              echo "✅ Inherited milestone '$epic_milestone' from Epic #$epic_number"
+            fi
+            
+            # Epic の Assignees を Sub-Issue に継承（オプション）
+            epic_assignees=$(gh issue view $epic_number --json assignees --jq '.assignees[].login // empty' | tr '\n' ' ')
+            if [[ ! -z "$epic_assignees" ]]; then
+              for assignee in $epic_assignees; do
+                gh issue edit $number --add-assignee "$assignee"
+              done
+              echo "✅ Inherited assignees from Epic #$epic_number: $epic_assignees"
+            fi
+          fi
+          
+      - name: 📊 Update Epic Progress
+        if: github.event_name == 'issues' && github.event.action == 'closed' && contains(github.event.issue.title, '[SUB]')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          closed_issue="${{ github.event.issue.number }}"
+          body="${{ github.event.issue.body }}"
+          
+          # Epic Issue 番号を抽出
+          epic_number=$(echo "$body" | grep -o "Parent Epic: #[0-9]\+" | head -1 | grep -o "[0-9]\+")
+          
+          if [[ ! -z "$epic_number" ]]; then
+            echo "📊 Updating progress for Epic #$epic_number"
+            
+            # Epic の Milestone から Sub-Issues を取得
+            epic_milestone=$(gh issue view $epic_number --json milestone --jq '.milestone.title // empty')
+            
+            if [[ ! -z "$epic_milestone" ]]; then
+              # Sub-Issues の進捗統計
+              total_subs=$(gh issue list --milestone "$epic_milestone" --label "sub-issue" --state all --json number | jq length)
+              closed_subs=$(gh issue list --milestone "$epic_milestone" --label "sub-issue" --state closed --json number | jq length)
+              
+              if [[ $total_subs -gt 0 ]]; then
+                progress=$((closed_subs * 100 / total_subs))
+                
+                # Epic Issue に進捗更新コメント  
+                gh issue comment $epic_number --body "## 📊 **Epic Progress Update**
+                
+                🎉 **Sub-Issue Completed**: #$closed_issue
+                
+                ### 📈 **Current Progress**:
+                - **Completed Sub-Issues**: $closed_subs/$total_subs  
+                - **Progress**: ${progress}%
+                - **Milestone**: $epic_milestone
+                
+                $(if [[ $progress -eq 100 ]]; then echo "🎯 **Epic Ready for Completion!** All Sub-Issues completed."; fi)
+                
+                ➡️ [View Project Board](https://github.com/${{ github.repository }}/projects/1)"
+                
+                # Epic が 100% 完了時の自動アクション
+                if [[ $progress -eq 100 ]]; then
+                  gh issue comment $epic_number --body "## 🎉 **Epic Completion Detected!**
+                  
+                  All Sub-Issues for this Epic have been completed. Consider:
+                  
+                  - [ ] Final integration testing
+                  - [ ] Documentation updates  
+                  - [ ] Epic closure and milestone review
+                  - [ ] Preparation for next milestone
+                  
+                  cc: @n-takatsu"
+                fi
+              fi
+            fi
+          fi
+          
+      - name: 🚨 Auto-triage Critical Issues
+        if: github.event_name == 'issues' && github.event.action == 'labeled'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          number="${{ github.event.issue.number }}"
+          label="${{ github.event.label.name }}"
+          
+          # Critical ラベルが付いた場合の緊急対応
+          if [[ "$label" == "priority-critical" ]] || [[ "$label" == "security" ]] || [[ "$label" == "bug" ]]; then
+            echo "🚨 Critical issue detected: #$number"
+            
+            # Critical Issue の自動コメント
+            gh issue comment $number --body "## 🚨 **Critical Issue Detected**
+            
+            This issue has been automatically flagged as **critical priority**.
+            
+            ### ⚡ **Immediate Actions Required**:
+            - [ ] Assign to team lead (@n-takatsu)
+            - [ ] Assess impact and severity  
+            - [ ] Create hotfix branch if needed
+            - [ ] Update stakeholders
+            
+            ### 📋 **Escalation Process**:
+            1. **Initial Response**: Within 2 hours
+            2. **Impact Assessment**: Within 4 hours  
+            3. **Resolution Plan**: Within 8 hours
+            4. **Implementation**: As per severity
+            
+            **Auto-escalated by**: Issue Management Automation"
+            
+            # Critical Issue を必ず Assignee 設定
+            gh issue edit $number --add-assignee "n-takatsu"
+            
+            # v0.2.0-beta の Critical Issue は最優先
+            current_milestone=$(gh issue view $number --json milestone --jq '.milestone.title // empty')
+            if [[ "$current_milestone" == "v0.2.0-beta" ]]; then
+              gh issue edit $number --add-label "priority-p0-critical"
+            fi
+          fi
+          
+      - name: 🔄 PR Integration with Issues
+        if: github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'closed')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          pr_number="${{ github.event.pull_request.number }}"
+          pr_title="${{ github.event.pull_request.title }}"
+          pr_body="${{ github.event.pull_request.body }}"
+          pr_state="${{ github.event.pull_request.state }}"
+          
+          # PR から関連 Issue を抽出
+          related_issues=$(echo "$pr_body" | grep -o "#[0-9]\+" | tr -d '#' | head -5)
+          
+          for issue_num in $related_issues; do
+            if [[ ! -z "$issue_num" ]]; then
+              echo "🔗 Found related issue: #$issue_num"
+              
+              if [[ "${{ github.event.action }}" == "opened" ]]; then
+                # PR 開始時のコメント
+                gh issue comment $issue_num --body "## 🔧 **Development Started**
+                
+                **Pull Request**: #$pr_number - $pr_title
+                
+                📝 **Status**: Development in progress
+                🔗 **PR Link**: [$pr_title](https://github.com/${{ github.repository }}/pull/$pr_number)
+                
+                ➡️ Ready for review and testing once PR is completed."
+                
+              elif [[ "${{ github.event.action }}" == "closed" && "${{ github.event.pull_request.merged }}" == "true" ]]; then
+                # PR マージ時のコメント
+                gh issue comment $issue_num --body "## ✅ **Implementation Completed**
+                
+                **Merged PR**: #$pr_number - $pr_title
+                
+                🎉 **Status**: Implementation completed and merged
+                📦 **Branch**: ${{ github.event.pull_request.head.ref }}
+                🔗 **Commit**: ${{ github.event.pull_request.merge_commit_sha }}
+                
+                This issue is now ready for final validation and closure."
+                
+                # Sub-Issue の場合は自動クローズ（オプション）
+                issue_title=$(gh issue view $issue_num --json title --jq '.title')
+                if [[ "$issue_title" == *"[SUB]"* ]]; then
+                  echo "🤖 Auto-closing Sub-Issue #$issue_num after successful PR merge"
+                  gh issue close $issue_num --comment "🤖 **Auto-closed**: Implementation completed via PR #$pr_number
+
+                  Sub-Issue automatically closed after successful merge. Epic progress updated."
+                fi
+              fi
+            fi
+          done

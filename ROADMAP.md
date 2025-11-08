@@ -148,9 +148,10 @@ mcp-rsは、エンタープライズグレードのWordPress Model Context Proto
 ## 🔗 関連リソース
 
 ### 📋 GitHub Issues
-- [動的ポリシー更新 Epic](https://github.com/n-takatsu/mcp-rs/issues/NEW)
-- [プラグイン隔離システム](https://github.com/n-takatsu/mcp-rs/issues/NEW)
-- [Docker統合](https://github.com/n-takatsu/mcp-rs/issues/NEW)
+- [Advanced Security Epic #17](https://github.com/n-takatsu/mcp-rs/issues/17) - プラグイン隔離・動的ポリシー更新
+- [Docker/Kubernetes統合 Epic #39](https://github.com/n-takatsu/mcp-rs/issues/39) - コンテナ化・オーケストレーション
+- [WebSocket/AI統合 Epic #40](https://github.com/n-takatsu/mcp-rs/issues/40) - リアルタイム通信・LLM統合
+- [エンタープライズ機能 Epic #41](https://github.com/n-takatsu/mcp-rs/issues/41) - 認証・マルチテナント
 
 ### 📚 ドキュメント
 - [アーキテクチャ設計](../project-docs/architecture.md)
