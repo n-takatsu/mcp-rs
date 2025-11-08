@@ -23,3 +23,9 @@ Thumbs.db
 .env
 .env.local
 .env.production
+
+# Release management
+# Keep versioned release folders but ignore temporary build artifacts
+mcp-rs-v*-release/*.zip
+mcp-rs-v*-release/temp/
+# Note: mcp-rs-v*-release/ folders themselves are tracked for version history
