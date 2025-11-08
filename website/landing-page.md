@@ -353,9 +353,9 @@ spec:
 - [**Deployment Guide**](./docs/deployment.md) - Production deployment strategies
 
 ### 🔌 Integration Examples
-- [**Client Libraries**](./docs/client-libraries.md) - JavaScript, Python, Go, and more
-- [**Framework Integration**](./docs/frameworks.md) - React, Vue, Angular, and others
-- [**Example Applications**](./examples/) - Complete example implementations
+- [**Getting Started Guide**](./docs/guides/index.html) - Implementation guides and tutorials
+- [**API Documentation**](./docs/api/index.html) - Complete API reference
+- [**Example Applications**](https://github.com/n-takatsu/mcp-rs/tree/main/examples) - Complete example implementations
 
 ---
 

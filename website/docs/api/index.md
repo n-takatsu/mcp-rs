@@ -364,4 +364,4 @@ Retrieves WordPress comments.
 
 ---
 
-For implementation examples, see the [Guides section](../guides/).
+For implementation examples, see the [Guides section](../guides/index.html).
