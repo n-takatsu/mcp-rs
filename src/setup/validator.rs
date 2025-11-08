@@ -3,8 +3,8 @@
 //! Validates and tests MCP-RS configuration settings
 
 use crate::config::WordPressConfig;
-use crate::handlers::wordpress::WordPressHandler;
 use crate::error::Error;
+use crate::handlers::wordpress::WordPressHandler;
 use reqwest::Client;
 use serde_json::Value;
 use std::time::Duration;
@@ -26,19 +26,22 @@ impl ConfigValidator {
     }
 
     /// Test WordPress connection with provided configuration
-    pub async fn test_wordpress_connection(&self, config: &WordPressConfig) -> Result<WordPressConnectionInfo, Error> {
+    pub async fn test_wordpress_connection(
+        &self,
+        config: &WordPressConfig,
+    ) -> Result<WordPressConnectionInfo, Error> {
         // URL validation
         self.validate_wordpress_url(&config.url)?;
-        
+
         // Basic connectivity test
         self.test_basic_connectivity(&config.url).await?;
-        
+
         // WordPress API test
         self.test_wordpress_api(config).await?;
-        
+
         // Authentication test
         self.test_wordpress_auth(config).await?;
-        
+
         Ok(WordPressConnectionInfo {
             url: config.url.clone(),
             version: self.get_wordpress_version(config).await?,
@@ -49,8 +52,8 @@ impl ConfigValidator {
 
     fn validate_wordpress_url(&self, url: &str) -> Result<(), Error> {
         // Parse URL
-        let parsed_url = Url::parse(url)
-            .map_err(|e| Error::Config(format!("Invalid URL format: {}", e)))?;
+        let parsed_url =
+            Url::parse(url).map_err(|e| Error::Config(format!("Invalid URL format: {}", e)))?;
 
         // Check scheme
         match parsed_url.scheme() {
@@ -58,7 +61,7 @@ impl ConfigValidator {
             "http" => {
                 // Allow HTTP but warn
                 Ok(())
-            },
+            }
             _ => Err(Error::Config(format!(
                 "Unsupported URL scheme: {}. Use http:// or https://",
                 parsed_url.scheme()
@@ -75,7 +78,7 @@ impl ConfigValidator {
 
     async fn test_basic_connectivity(&self, url: &str) -> Result<(), Error> {
         let test_url = format!("{}/wp-json/wp/v2", url.trim_end_matches('/'));
-        
+
         match self.http_client.get(&test_url).send().await {
             Ok(response) => {
                 if response.status().is_success() || response.status().as_u16() == 401 {
@@ -87,7 +90,7 @@ impl ConfigValidator {
                         response.status()
                     )))
                 }
-            },
+            }
             Err(e) => Err(Error::Config(format!(
                 "Failed to connect to WordPress site: {}",
                 e
@@ -97,7 +100,7 @@ impl ConfigValidator {
 
     async fn test_wordpress_api(&self, config: &WordPressConfig) -> Result<(), Error> {
         let api_url = format!("{}/wp-json/wp/v2", config.url.trim_end_matches('/'));
-        
+
         match self.http_client.get(&api_url).send().await {
             Ok(response) => {
                 if response.status().is_success() || response.status().as_u16() == 401 {
@@ -108,7 +111,7 @@ impl ConfigValidator {
                         response.status()
                     )))
                 }
-            },
+            }
             Err(e) => Err(Error::Config(format!(
                 "Failed to access WordPress REST API: {}",
                 e
@@ -117,9 +120,13 @@ impl ConfigValidator {
     }
 
     async fn test_wordpress_auth(&self, config: &WordPressConfig) -> Result<(), Error> {
-        let auth_test_url = format!("{}/wp-json/wp/v2/users/me", config.url.trim_end_matches('/'));
-        
-        let response = self.http_client
+        let auth_test_url = format!(
+            "{}/wp-json/wp/v2/users/me",
+            config.url.trim_end_matches('/')
+        );
+
+        let response = self
+            .http_client
             .get(&auth_test_url)
             .basic_auth(&config.username, Some(&config.password))
             .send()
@@ -136,29 +143,24 @@ impl ConfigValidator {
                         e
                     ))),
                 }
-            },
-            reqwest::StatusCode::UNAUTHORIZED => {
-                Err(Error::Config(
-                    "Authentication failed. Please check your username and Application Password.".to_string()
-                ))
-            },
-            reqwest::StatusCode::FORBIDDEN => {
-                Err(Error::Config(
-                    "Access forbidden. The user may not have sufficient permissions.".to_string()
-                ))
-            },
-            status => {
-                Err(Error::Config(format!(
-                    "Unexpected response during authentication test: {}",
-                    status
-                )))
-            },
+            }
+            reqwest::StatusCode::UNAUTHORIZED => Err(Error::Config(
+                "Authentication failed. Please check your username and Application Password."
+                    .to_string(),
+            )),
+            reqwest::StatusCode::FORBIDDEN => Err(Error::Config(
+                "Access forbidden. The user may not have sufficient permissions.".to_string(),
+            )),
+            status => Err(Error::Config(format!(
+                "Unexpected response during authentication test: {}",
+                status
+            ))),
         }
     }
 
     async fn get_wordpress_version(&self, config: &WordPressConfig) -> Result<String, Error> {
         let version_url = format!("{}/wp-json/", config.url.trim_end_matches('/'));
-        
+
         match self.http_client.get(&version_url).send().await {
             Ok(response) => {
                 if response.status().is_success() {
@@ -170,13 +172,13 @@ impl ConfigValidator {
                             } else {
                                 Ok("Unknown WordPress version".to_string())
                             }
-                        },
+                        }
                         Err(_) => Ok("Unknown WordPress version".to_string()),
                     }
                 } else {
                     Ok("Unknown WordPress version".to_string())
                 }
-            },
+            }
             Err(_) => Ok("Unknown WordPress version".to_string()),
         }
     }
@@ -207,14 +209,17 @@ impl ConfigValidator {
     /// Test if a port is available
     pub async fn test_port_availability(&self, bind_addr: &str) -> Result<bool, Error> {
         use tokio::net::TcpListener;
-        
+
         match TcpListener::bind(bind_addr).await {
             Ok(_) => Ok(true),
             Err(e) => {
                 if e.kind() == std::io::ErrorKind::AddrInUse {
                     Ok(false) // Port is in use
                 } else {
-                    Err(Error::Config(format!("Failed to test port availability: {}", e)))
+                    Err(Error::Config(format!(
+                        "Failed to test port availability: {}",
+                        e
+                    )))
                 }
             }
         }

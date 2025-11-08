@@ -1,5 +1,5 @@
 //! Setup Module
-//! 
+//!
 //! Interactive configuration setup functionality
 
 pub mod demo;

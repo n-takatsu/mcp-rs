@@ -2,9 +2,9 @@
 //!
 //! Safe demonstration of interactive setup without requiring real user input
 
-use crate::config::{McpConfig, WordPressConfig, ServerConfig, HandlersConfig, RateLimitConfig};
-use crate::setup::validator::ConfigValidator;
+use crate::config::{HandlersConfig, McpConfig, RateLimitConfig, ServerConfig, WordPressConfig};
 use crate::error::Error;
+use crate::setup::validator::ConfigValidator;
 
 pub struct DemoSetup {
     validator: ConfigValidator,
@@ -95,11 +95,11 @@ impl DemoSetup {
         println!("{}", "═".repeat(60));
         println!("WordPress接続をテスト中...");
         println!("URL: https://demo.wordpress.com");
-        
+
         // Simulate spinner
         let spinner_chars = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
         print!("接続テスト実行中");
-        
+
         for _ in 0..10 {
             for &ch in &spinner_chars {
                 print!("\r{} 接続テスト実行中", ch);
@@ -107,7 +107,7 @@ impl DemoSetup {
                 tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
             }
         }
-        
+
         println!("\r✅ WordPress接続テスト成功! (デモ)");
         println!();
         Ok(())
@@ -118,7 +118,7 @@ impl DemoSetup {
         println!("{}", "═".repeat(60));
         println!("設定を mcp-config-demo.toml に保存中...");
         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-        
+
         // Actually save a demo config file
         match config.save_to_file("mcp-config-demo.toml") {
             Ok(_) => println!("✅ デモ設定ファイルが正常に保存されました!"),
