@@ -18,7 +18,7 @@ async fn test_transport_config() {
         stdio: None,
         http: None,
     };
-    
+
     assert_eq!(transport.transport_type, Some("stdio".to_string()));
     // TODO: 実際のフィールド構造に合わせて修正
 }

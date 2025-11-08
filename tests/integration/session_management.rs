@@ -52,10 +52,7 @@ async fn test_session_activation() {
         .unwrap();
 
     // セッション有効化
-    let activated_session = manager
-        .activate_session(&session.id)
-        .await
-        .unwrap();
+    let activated_session = manager.activate_session(&session.id).await.unwrap();
 
     assert!(activated_session.is_some());
     let session_data = activated_session.unwrap();
@@ -75,10 +72,7 @@ async fn test_session_retrieval() {
         .unwrap();
 
     // セッション取得
-    let retrieved_session = manager
-        .get_session(&created_session.id)
-        .await
-        .unwrap();
+    let retrieved_session = manager.get_session(&created_session.id).await.unwrap();
 
     assert!(retrieved_session.is_some());
     let session = retrieved_session.unwrap();
@@ -91,14 +85,8 @@ async fn test_session_listing() {
     let manager = SessionManager::new();
 
     // 複数セッション作成
-    let session1 = manager
-        .create_session("user1".to_string())
-        .await
-        .unwrap();
-    let session2 = manager
-        .create_session("user2".to_string())
-        .await
-        .unwrap();
+    let session1 = manager.create_session("user1".to_string()).await.unwrap();
+    let session2 = manager.create_session("user2".to_string()).await.unwrap();
 
     // セッション一覧取得
     let empty_filter = SessionFilter {
@@ -106,7 +94,7 @@ async fn test_session_listing() {
         state: None,
     };
     let sessions = manager.list_sessions(&empty_filter).await.unwrap();
-    
+
     assert_eq!(sessions.len(), 2);
     assert!(sessions.iter().any(|s| s.id == session1.id));
     assert!(sessions.iter().any(|s| s.id == session2.id));
@@ -117,23 +105,17 @@ async fn test_session_filtering_by_user() {
     let manager = SessionManager::new();
 
     // 異なるユーザーのセッション作成
-    let _session1 = manager
-        .create_session("user1".to_string())
-        .await
-        .unwrap();
-    let session2 = manager
-        .create_session("user2".to_string())
-        .await
-        .unwrap();
+    let _session1 = manager.create_session("user1".to_string()).await.unwrap();
+    let session2 = manager.create_session("user2".to_string()).await.unwrap();
 
     // user2でフィルタリング
     let filter = SessionFilter {
         user_id: Some("user2".to_string()),
         state: None,
     };
-    
+
     let filtered_sessions = manager.list_sessions(&filter).await.unwrap();
-    
+
     assert_eq!(filtered_sessions.len(), 1);
     assert_eq!(filtered_sessions[0].id, session2.id);
     assert_eq!(filtered_sessions[0].user_id, "user2");
@@ -151,7 +133,7 @@ async fn test_session_expiration() {
 
     // 期限切れのテスト（実際の期限切れ処理のテスト）
     assert!(session.expires_at > Utc::now());
-    
+
     // セッションが将来の期限を持っていることを確認
     let future_time = Utc::now() + Duration::hours(23);
     assert!(session.expires_at > future_time);
@@ -169,10 +151,7 @@ async fn test_session_state_transitions() {
     assert_eq!(session.state, SessionState::Pending);
 
     // 有効化（Active状態）
-    let activated_session = manager
-        .activate_session(&session.id)
-        .await
-        .unwrap();
+    let activated_session = manager.activate_session(&session.id).await.unwrap();
     assert!(activated_session.is_some());
     assert_eq!(activated_session.unwrap().state, SessionState::Active);
 }
@@ -185,11 +164,8 @@ async fn test_concurrent_session_operations() {
     // 複数の並行セッション作成
     for i in 0..10 {
         let manager_clone = manager.clone();
-        let handle = tokio::spawn(async move {
-            manager_clone
-                .create_session(format!("user_{}", i))
-                .await
-        });
+        let handle =
+            tokio::spawn(async move { manager_clone.create_session(format!("user_{}", i)).await });
         handles.push(handle);
     }
 

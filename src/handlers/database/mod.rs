@@ -27,15 +27,12 @@ pub mod dynamic_tools; // 動的切り替えMCPツール
 // エンジン実装
 pub mod engines;
 
-// テストモジュール
-#[cfg(test)]
-pub mod basic_tests;
-#[cfg(test)]
-pub mod simple_test;
-#[cfg(test)]
-pub mod tests;
-#[cfg(test)]
-pub mod ultra_simple;
+// テストモジュール（tests/ディレクトリに移動済み）
+// #[cfg(test)]
+// pub mod basic_tests; // → tests/database/engine_tests.rs
+// #[cfg(test)]
+// pub mod tests; // → tests/database/handler_tests.rs
+// 残りのテストファイルも整理予定
 
 // 公開API
 pub use engine::{DatabaseConnection, DatabaseEngine, DatabaseTransaction};

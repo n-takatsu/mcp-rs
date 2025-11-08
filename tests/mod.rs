@@ -5,7 +5,7 @@
 // 単体テスト
 pub mod unit;
 
-// 統合テスト  
+// 統合テスト
 pub mod integration;
 
 // データベーステスト
