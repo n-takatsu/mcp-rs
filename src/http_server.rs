@@ -4,10 +4,10 @@
 //! and forwards them to the MCP handlers.
 
 use axum::{
-    extract::State,
+    extract::{Query, State},
     http::{HeaderMap, StatusCode},
     response::Json,
-    routing::post,
+    routing::{get, post},
     Router,
 };
 use serde_json::{json, Value};
@@ -39,6 +39,10 @@ impl HttpJsonRpcServer {
         let app = Router::new()
             .route("/", post(handle_json_rpc))
             .route("/mcp", post(handle_json_rpc))
+            .route("/api/categories", get(get_categories))
+            .route("/api/tags", get(get_tags))
+            .route("/api/tools", get(get_tools))
+            .route("/api/resources", get(get_resources))
             .layer(CorsLayer::permissive())
             .with_state(Arc::new(self.handlers.clone()));
 
@@ -142,5 +146,85 @@ async fn process_mcp_request(
             error: Some(e.into()),
             id: request.id.clone(),
         }),
+    }
+}
+
+/// GET endpoint for WordPress categories
+async fn get_categories(
+    State(handlers): State<Arc<HashMap<String, Arc<dyn McpHandler>>>>,
+) -> Result<Json<Value>, StatusCode> {
+    let request = JsonRpcRequest {
+        jsonrpc: "2.0".to_string(),
+        method: "resources/read".to_string(),
+        params: Some(json!({"uri": "wordpress://categories"})),
+        id: Some(json!(1)),
+    };
+
+    match process_mcp_request(&request, &handlers).await {
+        Ok(response) => match response.result {
+            Some(result) => Ok(Json(result)),
+            None => Err(StatusCode::INTERNAL_SERVER_ERROR),
+        },
+        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+    }
+}
+
+/// GET endpoint for WordPress tags
+async fn get_tags(
+    State(handlers): State<Arc<HashMap<String, Arc<dyn McpHandler>>>>,
+) -> Result<Json<Value>, StatusCode> {
+    let request = JsonRpcRequest {
+        jsonrpc: "2.0".to_string(),
+        method: "resources/read".to_string(),
+        params: Some(json!({"uri": "wordpress://tags"})),
+        id: Some(json!(1)),
+    };
+
+    match process_mcp_request(&request, &handlers).await {
+        Ok(response) => match response.result {
+            Some(result) => Ok(Json(result)),
+            None => Err(StatusCode::INTERNAL_SERVER_ERROR),
+        },
+        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+    }
+}
+
+/// GET endpoint for tools list
+async fn get_tools(
+    State(handlers): State<Arc<HashMap<String, Arc<dyn McpHandler>>>>,
+) -> Result<Json<Value>, StatusCode> {
+    let request = JsonRpcRequest {
+        jsonrpc: "2.0".to_string(),
+        method: "tools/list".to_string(),
+        params: Some(json!({})),
+        id: Some(json!(1)),
+    };
+
+    match process_mcp_request(&request, &handlers).await {
+        Ok(response) => match response.result {
+            Some(result) => Ok(Json(result)),
+            None => Err(StatusCode::INTERNAL_SERVER_ERROR),
+        },
+        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+    }
+}
+
+/// GET endpoint for resources list
+async fn get_resources(
+    State(handlers): State<Arc<HashMap<String, Arc<dyn McpHandler>>>>,
+) -> Result<Json<Value>, StatusCode> {
+    let request = JsonRpcRequest {
+        jsonrpc: "2.0".to_string(),
+        method: "resources/list".to_string(),
+        params: Some(json!({})),
+        id: Some(json!(1)),
+    };
+
+    match process_mcp_request(&request, &handlers).await {
+        Ok(response) => match response.result {
+            Some(result) => Ok(Json(result)),
+            None => Err(StatusCode::INTERNAL_SERVER_ERROR),
+        },
+        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
     }
 }
