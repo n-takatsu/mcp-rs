@@ -87,7 +87,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 設定を読み込み（カスタムパスまたはデフォルト）
     let config = match custom_config_path {
         Some(path) => {
-            eprintln!("📁 カスタム設定ファイルを使用: {}", path);
             match load_config_from_file(&path).await {
                 Ok(config) => config,
                 Err(e) => {
@@ -139,10 +138,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::env::set_var("RUST_LOG", log_level);
     }
 
-    // Initialize logging
-    tracing_subscriber::fmt::init();
-
     let is_stdio = config.server.stdio.unwrap_or(false);
+
+    // Initialize logging - STDIOモードでは無効化
+    if !is_stdio {
+        tracing_subscriber::fmt::init();
+    }
 
     // STDIOモード以外でのみログ出力
     if !is_stdio {
