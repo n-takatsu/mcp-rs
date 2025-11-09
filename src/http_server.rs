@@ -1,5 +1,5 @@
 //! HTTP JSON-RPC Server for MCP-RS
-//! 
+//!
 //! This module provides an HTTP server that accepts JSON-RPC requests
 //! and forwards them to the MCP handlers.
 
@@ -16,8 +16,9 @@ use tokio::net::TcpListener;
 use tower_http::cors::CorsLayer;
 use tracing::{error, info};
 
-use crate::{
-    mcp::{JsonRpcRequest, JsonRpcResponse, McpHandler, McpError, ResourceReadParams, InitializeParams, ToolCallParams, ClientCapabilities, ClientInfo},
+use crate::mcp::{
+    ClientCapabilities, ClientInfo, InitializeParams, JsonRpcRequest, JsonRpcResponse, McpError,
+    McpHandler, ResourceReadParams, ToolCallParams,
 };
 
 pub struct HttpJsonRpcServer {
@@ -53,10 +54,10 @@ impl HttpJsonRpcServer {
             .with_state(Arc::new(self.handlers.clone()));
 
         info!("Starting HTTP JSON-RPC server on {}", addr);
-        
+
         let listener = TcpListener::bind(addr).await?;
         axum::serve(listener, app).await?;
-        
+
         Ok(())
     }
 }
@@ -67,9 +68,9 @@ async fn handle_json_rpc(
     Json(request): Json<JsonRpcRequest>,
 ) -> Result<Json<JsonRpcResponse>, StatusCode> {
     info!("Received JSON-RPC request: method={}", request.method);
-    
+
     let result = process_mcp_request(&request, &handlers).await;
-    
+
     match result {
         Ok(response) => {
             info!("JSON-RPC request processed successfully");
@@ -121,9 +122,8 @@ async fn process_mcp_request(
             Ok(json!({ "tools": tools }))
         }
         "tools/call" => {
-            let params: ToolCallParams = serde_json::from_value(
-                request.params.clone().unwrap_or_default()
-            )?;
+            let params: ToolCallParams =
+                serde_json::from_value(request.params.clone().unwrap_or_default())?;
             handler.call_tool(params).await
         }
         "resources/list" => {
@@ -131,9 +131,8 @@ async fn process_mcp_request(
             Ok(json!({ "resources": resources }))
         }
         "resources/read" => {
-            let params: ResourceReadParams = serde_json::from_value(
-                request.params.clone().unwrap_or_default()
-            )?;
+            let params: ResourceReadParams =
+                serde_json::from_value(request.params.clone().unwrap_or_default())?;
             handler.read_resource(params).await
         }
         _ => Err(McpError::InvalidMethod(request.method.clone())),

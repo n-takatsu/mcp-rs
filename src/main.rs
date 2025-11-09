@@ -206,7 +206,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if config.server.stdio.unwrap_or(false) {
         println!("📞 STDIO モードで待機中...");
         println!("💡 Ctrl+C で終了");
-        
+
         // STDIO mode - keep running until interrupted
         tokio::signal::ctrl_c().await?;
         println!("\n🔄 終了シグナルを受信しました");
@@ -221,33 +221,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("� TCP JSON-RPC: ライン区切りプロトコル (既存クライアント用)");
         println!("🌐 HTTP JSON-RPC: POST /mcp (AI Agent用)");
         println!("�💡 Ctrl+C で終了");
-        
+
         // Create HTTP server with same handlers
         let mut http_server = HttpJsonRpcServer::new();
-        
+
         // Add WordPress handler to HTTP server if available
         if let Some(wp_config) = &config.handlers.wordpress {
             if wp_config.enabled.unwrap_or(true) {
-                let wordpress_handler = WordPressHandler::try_new(wp_config.clone()).map_err(|e| {
-                    Error::Internal(format!("WordPress handler initialization failed: {}", e))
-                })?;
+                let wordpress_handler =
+                    WordPressHandler::try_new(wp_config.clone()).map_err(|e| {
+                        Error::Internal(format!("WordPress handler initialization failed: {}", e))
+                    })?;
                 http_server.add_handler("wordpress".to_string(), Arc::new(wordpress_handler));
             }
         }
-        
+
         // Parse address for HTTP server (use different port to avoid conflict)
         let tcp_addr = addr;
         let http_port = if addr.contains(':') {
-            let port: u16 = addr.split(':').nth(1).unwrap_or("8080").parse().unwrap_or(8080);
+            let port: u16 = addr
+                .split(':')
+                .nth(1)
+                .unwrap_or("8080")
+                .parse()
+                .unwrap_or(8080);
             port + 1 // HTTP server on next port
         } else {
             8081
         };
         let http_addr = format!("127.0.0.1:{}", http_port);
-        
+
         println!("🔗 TCP サーバー: {}", tcp_addr);
         println!("🔗 HTTP サーバー: http://{}", http_addr);
-        
+
         // Start both servers concurrently
         let tcp_server_task = tokio::spawn({
             let server = server;
@@ -258,7 +264,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         });
-        
+
         let http_server_task = tokio::spawn({
             async move {
                 if let Err(e) = http_server.serve(&http_addr).await {
@@ -266,7 +272,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         });
-        
+
         // Wait for either server to complete (or Ctrl+C)
         tokio::select! {
             _ = tcp_server_task => println!("TCP サーバーが終了しました"),
