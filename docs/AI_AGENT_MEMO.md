@@ -218,7 +218,7 @@ stdio = true  # Claude Desktop mode
 log_level = "info"
 
 [handlers.wordpress]
-url = "https://redring.jp"
+url = "https://example.com"  # Replace with your WordPress site URL
 enabled = true
 burst_size = 20
 ```
