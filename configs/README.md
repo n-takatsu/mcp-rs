@@ -1,21 +1,33 @@
-# MCP-RS Configuration Files
+# MCP-RS Configuration Files v0.15.1
 
 MCP-RSの設定ファイル管理ディレクトリです。用途別に整理された設定ファイルを提供します。
+
+## 🆕 v0.15.1 統合アップデート
+- ルートレベルの分散設定ファイル（mcp-config*.toml）を `configs/` に統合
+- Transport統合アーキテクチャ対応
+- 必須ハンドラー設定の追加
+- 重複設定の解消
 
 ## 📁 ディレクトリ構成
 
 ### 🚀 Production (`production/`)
 本番環境で使用する設定ファイル
 
+- **`main.toml`** - メイン設定（デフォルトSTDIO）
+  - Transport統合アーキテクチャ対応
+  - ファイルシステムハンドラー（読み取り専用）
+  - 標準的な本番環境設定
+
 - **`claude-desktop.toml`** - Claude Desktop統合用設定
   - STDIO通信専用
-  - ログファイル出力のみ（コンソール出力無効）
+  - ログファイル出力のみ（コンソール出力制限）
   - 本番レベルのセキュリティ設定
 
 - **`web-ui.toml`** - Web UI用設定  
   - HTTP Transport使用
   - コンソール + ファイルログ出力
   - CORS設定有効
+  - WordPress + ファイルシステムハンドラー
 
 ### 🔧 Development (`development/`)
 開発・テスト用設定ファイル

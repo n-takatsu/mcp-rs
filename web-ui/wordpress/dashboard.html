@@ -1,0 +1,494 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WordPress管理ダッシュボード - MCP-RS Web UI</title>
+    <link rel="stylesheet" href="../shared/mcp-ui.css">
+</head>
+<body>
+    <div class="mcp-container mcp-fade-in">
+        <header class="mcp-header">
+            <h1>🔗 WordPress管理ダッシュボード</h1>
+            <p>WordPressサイトのリソース管理とAI分析</p>
+        </header>
+
+        <nav class="mcp-nav">
+            <ul>
+                <li><a href="../index.html" id="nav-home">🏠 ホーム</a></li>
+                <li><a href="dashboard.html" id="nav-wordpress" class="active">🔗 WordPress管理</a></li>
+                <li><a href="config.html" id="nav-wp-config">⚙️ WordPress設定</a></li>
+                <li><a href="../admin/config.html" id="nav-config">🔧 サーバー設定</a></li>
+                <li><a href="../admin/transport.html" id="nav-transport">🌐 Transport管理</a></li>
+                <li><a href="../admin/logs.html" id="nav-logs">📋 ログ管理</a></li>
+            </ul>
+        </nav>
+
+        <main class="mcp-main">
+            <!-- 接続ステータス -->
+            <div id="connection-status" class="mcp-status info">
+                <span class="mcp-loading"></span> WordPressサーバーに接続中...
+            </div>
+
+            <div class="mcp-grid cols-2">
+                <!-- 操作パネル -->
+                <div class="mcp-card">
+                    <h3>🎛️ WordPress操作パネル</h3>
+                    
+                    <div class="mb-2">
+                        <h4>📂 コンテンツ管理</h4>
+                        <button class="mcp-btn primary full-width" id="get-categories">
+                            📂 カテゴリ一覧を取得
+                        </button>
+                        <button class="mcp-btn primary full-width" id="get-tags">
+                            🏷️ タグ一覧を取得
+                        </button>
+                        <button class="mcp-btn primary full-width" id="get-posts">
+                            📝 記事一覧を取得
+                        </button>
+                        <button class="mcp-btn secondary full-width" id="get-media">
+                            🖼️ メディア一覧を取得
+                        </button>
+                    </div>
+
+                    <div class="mb-2">
+                        <h4>🤖 AI分析機能</h4>
+                        <button class="mcp-btn warning full-width" id="copilot-analysis" disabled>
+                            🤖 Copilot詳細分析
+                        </button>
+                        <button class="mcp-btn secondary full-width" id="export-data" disabled>
+                            📊 データエクスポート
+                        </button>
+                    </div>
+
+                    <div class="mb-2">
+                        <h4>⚙️ 接続設定</h4>
+                        <input type="text" class="mcp-input" id="server-url" 
+                               value="http://127.0.0.1:8081/mcp" 
+                               placeholder="MCP-RSサーバーURL">
+                        <button class="mcp-btn secondary full-width" id="reconnect">
+                            🔄 再接続
+                        </button>
+                        <button class="mcp-btn primary full-width" id="test-connection">
+                            🧪 接続テスト
+                        </button>
+                    </div>
+                </div>
+
+                <!-- 結果表示パネル -->
+                <div class="mcp-card">
+                    <h3>📊 実行結果</h3>
+                    <div id="response-area" class="mcp-result">
+WordPressデータの取得結果がここに表示されます...
+
+💡 使い方：
+1. 左の操作パネルでボタンをクリック
+2. WordPressデータが自動取得される
+3. AI分析機能でCopilotに連携
+
+🎯 主な機能：
+• リアルタイムデータ取得
+• JSON形式での詳細表示  
+• AI Copilot連携分析
+• データエクスポート機能
+                    </div>
+                </div>
+            </div>
+
+            <!-- 詳細分析セクション -->
+            <div class="mcp-card">
+                <h3>📈 WordPressサイト分析</h3>
+                <div id="analysis-section">
+                    <div class="mcp-grid cols-3">
+                        <div class="mcp-card">
+                            <h4>📊 統計情報</h4>
+                            <div id="stats-info">
+                                <p style="color: #6c757d;">データを取得して統計を表示</p>
+                            </div>
+                        </div>
+                        <div class="mcp-card">
+                            <h4>🏗️ サイト構造</h4>
+                            <div id="structure-info">
+                                <p style="color: #6c757d;">カテゴリ・タグ構造を分析</p>
+                            </div>
+                        </div>
+                        <div class="mcp-card">
+                            <h4>📝 コンテンツ品質</h4>
+                            <div id="quality-info">
+                                <p style="color: #6c757d;">記事の品質指標を分析</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 最近の操作履歴 -->
+            <div class="mcp-card">
+                <h3>📋 最近の操作履歴</h3>
+                <div id="operation-history">
+                    <div class="text-center" style="color: #6c757d; padding: 20px;">
+                        <p>操作履歴がここに表示されます</p>
+                    </div>
+                </div>
+            </div>
+        </main>
+
+        <footer class="mcp-footer">
+            <p>
+                🚀 MCP-RS v0.15.1 - WordPress Management Dashboard | 
+                💻 開発者: <strong>n-takatsu</strong> | 
+                🌐 <a href="https://github.com/n-takatsu/mcp-rs">GitHub</a>
+            </p>
+        </footer>
+    </div>
+
+    <script src="../shared/mcp-ui.js"></script>
+    <script>
+        class WordPressDashboard {
+            constructor() {
+                this.client = new MCPClient();
+                this.statusElement = document.getElementById('connection-status');
+                this.responseArea = document.getElementById('response-area');
+                this.serverUrlInput = document.getElementById('server-url');
+                this.lastResponseData = null;
+                this.lastResponseTitle = null;
+                this.operationHistory = [];
+                
+                this.initializeElements();
+                this.bindEvents();
+                this.testConnection();
+            }
+
+            initializeElements() {
+                this.buttons = {
+                    categories: document.getElementById('get-categories'),
+                    tags: document.getElementById('get-tags'),
+                    posts: document.getElementById('get-posts'),
+                    media: document.getElementById('get-media'),
+                    copilotAnalysis: document.getElementById('copilot-analysis'),
+                    exportData: document.getElementById('export-data'),
+                    reconnect: document.getElementById('reconnect'),
+                    testConnection: document.getElementById('test-connection')
+                };
+
+                // ナビゲーション設定
+                MCPUIComponents.setActiveNav('nav-wordpress');
+            }
+
+            bindEvents() {
+                this.buttons.categories.addEventListener('click', () => this.getCategories());
+                this.buttons.tags.addEventListener('click', () => this.getTags());
+                this.buttons.posts.addEventListener('click', () => this.getPosts());
+                this.buttons.media.addEventListener('click', () => this.getMedia());
+                this.buttons.copilotAnalysis.addEventListener('click', () => this.exportToCopilot());
+                this.buttons.exportData.addEventListener('click', () => this.exportData());
+                this.buttons.reconnect.addEventListener('click', () => this.reconnect());
+                this.buttons.testConnection.addEventListener('click', () => this.testConnection());
+            }
+
+            async testConnection() {
+                try {
+                    MCPUIComponents.updateStatus(
+                        this.statusElement, 
+                        'info', 
+                        'WordPressサーバーに接続中...', 
+                        true
+                    );
+
+                    const result = await this.client.testConnection();
+                    this.setConnected(true);
+                    
+                    // WordPress接続テスト
+                    await this.client.getWordPressResource('categories');
+                    
+                    MCPUIComponents.updateStatus(
+                        this.statusElement, 
+                        'success', 
+                        '✅ WordPressサーバーに接続済み - 全機能利用可能'
+                    );
+
+                    this.addOperationHistory('接続', 'WordPressサーバーに正常接続');
+                    
+                } catch (error) {
+                    this.setConnected(false);
+                    MCPUIComponents.showError(this.responseArea, `接続失敗: ${error.message}`);
+                    this.addOperationHistory('エラー', `接続失敗: ${error.message}`);
+                }
+            }
+
+            setConnected(connected) {
+                this.client.isConnected = connected;
+                
+                Object.values(this.buttons).forEach(btn => {
+                    if (btn.id !== 'reconnect' && btn.id !== 'test-connection') {
+                        btn.disabled = !connected;
+                    }
+                });
+
+                if (connected) {
+                    MCPUIComponents.updateStatus(
+                        this.statusElement, 
+                        'success', 
+                        '✅ WordPressサーバーに接続済み'
+                    );
+                } else {
+                    MCPUIComponents.updateStatus(
+                        this.statusElement, 
+                        'error', 
+                        '❌ WordPressサーバーに接続できません'
+                    );
+                }
+            }
+
+            async getCategories() {
+                MCPUIComponents.showLoading(this.responseArea, 'カテゴリを取得中...');
+                try {
+                    const result = await this.client.getWordPressResource('categories');
+                    MCPUIComponents.showResult(this.responseArea, '📂 WordPressカテゴリ一覧', result);
+                    
+                    this.lastResponseData = result;
+                    this.lastResponseTitle = '📂 WordPressカテゴリ一覧';
+                    this.enableAnalysisButtons();
+                    this.updateSiteAnalysis('categories', result);
+                    this.addOperationHistory('取得', 'カテゴリ一覧を取得しました');
+                    
+                } catch (error) {
+                    MCPUIComponents.showError(this.responseArea, `カテゴリ取得エラー: ${error.message}`);
+                    this.addOperationHistory('エラー', `カテゴリ取得失敗: ${error.message}`);
+                }
+            }
+
+            async getTags() {
+                MCPUIComponents.showLoading(this.responseArea, 'タグを取得中...');
+                try {
+                    const result = await this.client.getWordPressResource('tags');
+                    MCPUIComponents.showResult(this.responseArea, '🏷️ WordPressタグ一覧', result);
+                    
+                    this.lastResponseData = result;
+                    this.lastResponseTitle = '🏷️ WordPressタグ一覧';
+                    this.enableAnalysisButtons();
+                    this.updateSiteAnalysis('tags', result);
+                    this.addOperationHistory('取得', 'タグ一覧を取得しました');
+                    
+                } catch (error) {
+                    MCPUIComponents.showError(this.responseArea, `タグ取得エラー: ${error.message}`);
+                    this.addOperationHistory('エラー', `タグ取得失敗: ${error.message}`);
+                }
+            }
+
+            async getPosts() {
+                MCPUIComponents.showLoading(this.responseArea, '記事を取得中...');
+                try {
+                    const result = await this.client.getWordPressResource('posts');
+                    MCPUIComponents.showResult(this.responseArea, '📝 WordPress記事一覧', result);
+                    
+                    this.lastResponseData = result;
+                    this.lastResponseTitle = '📝 WordPress記事一覧';
+                    this.enableAnalysisButtons();
+                    this.updateSiteAnalysis('posts', result);
+                    this.addOperationHistory('取得', '記事一覧を取得しました');
+                    
+                } catch (error) {
+                    MCPUIComponents.showError(this.responseArea, `記事取得エラー: ${error.message}`);
+                    this.addOperationHistory('エラー', `記事取得失敗: ${error.message}`);
+                }
+            }
+
+            async getMedia() {
+                MCPUIComponents.showLoading(this.responseArea, 'メディアを取得中...');
+                try {
+                    const result = await this.client.getWordPressResource('media');
+                    MCPUIComponents.showResult(this.responseArea, '🖼️ WordPressメディア一覧', result);
+                    
+                    this.lastResponseData = result;
+                    this.lastResponseTitle = '🖼️ WordPressメディア一覧';
+                    this.enableAnalysisButtons();
+                    this.addOperationHistory('取得', 'メディア一覧を取得しました');
+                    
+                } catch (error) {
+                    MCPUIComponents.showError(this.responseArea, `メディア取得エラー: ${error.message}`);
+                    this.addOperationHistory('エラー', `メディア取得失敗: ${error.message}`);
+                }
+            }
+
+            enableAnalysisButtons() {
+                this.buttons.copilotAnalysis.disabled = false;
+                this.buttons.exportData.disabled = false;
+            }
+
+            async exportToCopilot() {
+                if (!this.lastResponseData) {
+                    MCPUIComponents.showError(this.responseArea, 'まずWordPressデータを取得してください');
+                    return;
+                }
+
+                const analysisPrompt = this.generateCopilotPrompt();
+                const analysisContent = `# WordPress データ分析 - Copilot用
+
+## 📋 分析対象データ
+${this.lastResponseTitle}
+取得時刻: ${new Date().toLocaleString('ja-JP')}
+
+## 🤖 Copilot分析プロンプト
+${analysisPrompt}
+
+## 📊 生データ (JSON)
+\`\`\`json
+${JSON.stringify(this.lastResponseData, null, 2)}
+\`\`\`
+
+## 💡 Copilot に聞くべき質問例:
+1. "このWordPressサイトのコンテンツ戦略を分析してください"
+2. "カテゴリ構造の改善案を提案してください"  
+3. "SEO観点での課題と改善点を教えてください"
+4. "このデータから読み取れるサイト運営の特徴は？"
+5. "コンテンツマーケティングの観点での分析をお願いします"
+
+---
+💻 このファイルをVS Codeで開いて、Copilotに上記の質問を投げてください！
+`;
+
+                MCPUIComponents.downloadFile(analysisContent, 'wordpress-analysis-for-copilot.md', 'text/markdown');
+                
+                MCPUIComponents.showModal(
+                    '🤖 Copilot分析ファイル作成完了',
+                    `<p><strong>wordpress-analysis-for-copilot.md</strong> がダウンロードされました！</p>
+                     <ol style="margin: 15px 0 0 20px;">
+                        <li>ダウンロードしたファイルをVS Codeで開く</li>
+                        <li>GitHub Copilotに質問を投げる</li>
+                        <li>より詳細な分析を取得する</li>
+                     </ol>`,
+                    [{ text: '閉じる', type: 'primary' }]
+                );
+
+                this.addOperationHistory('分析', 'Copilot分析ファイルを作成しました');
+            }
+
+            async exportData() {
+                if (!this.lastResponseData) {
+                    MCPUIComponents.showError(this.responseArea, 'まずWordPressデータを取得してください');
+                    return;
+                }
+
+                const exportData = {
+                    title: this.lastResponseTitle,
+                    timestamp: new Date().toISOString(),
+                    data: this.lastResponseData
+                };
+
+                MCPUIComponents.downloadFile(
+                    JSON.stringify(exportData, null, 2), 
+                    `wordpress-export-${Date.now()}.json`, 
+                    'application/json'
+                );
+
+                this.addOperationHistory('エクスポート', 'データをJSONファイルで出力しました');
+            }
+
+            generateCopilotPrompt() {
+                if (this.lastResponseTitle.includes('カテゴリ')) {
+                    return `以下はWordPressサイトのカテゴリデータです。このデータを分析して、サイトの構造、コンテンツ戦略、SEO観点での評価をお願いします。特に階層構造、命名規則、説明文の品質について詳しく分析してください。`;
+                } else if (this.lastResponseTitle.includes('タグ')) {
+                    return `以下はWordPressサイトのタグデータです。タグ付け戦略、コンテンツ分類の効率性、SEO効果について分析してください。`;
+                } else if (this.lastResponseTitle.includes('記事')) {
+                    return `以下はWordPressサイトの記事データです。公開頻度、コンテンツ品質、カテゴリ分散、更新パターンについて分析してください。`;
+                }
+                return `以下のWordPressデータを分析して、サイト運営の特徴と改善点を教えてください。`;
+            }
+
+            updateSiteAnalysis(type, data) {
+                try {
+                    if (type === 'categories') {
+                        const categories = JSON.parse(data.contents[0].text);
+                        document.getElementById('stats-info').innerHTML = `
+                            <p><strong>カテゴリ数:</strong> ${categories.length}</p>
+                            <p><strong>階層あり:</strong> ${categories.some(c => c.parent !== 0) ? 'Yes' : 'No'}</p>
+                        `;
+                        document.getElementById('structure-info').innerHTML = `
+                            <p><strong>最大階層:</strong> ${this.calculateMaxDepth(categories)}</p>
+                            <p><strong>説明付き:</strong> ${categories.filter(c => c.description).length}/${categories.length}</p>
+                        `;
+                    } else if (type === 'posts') {
+                        const posts = JSON.parse(data.contents[0].text);
+                        document.getElementById('stats-info').innerHTML = `
+                            <p><strong>記事数:</strong> ${posts.length}</p>
+                            <p><strong>公開済み:</strong> ${posts.filter(p => p.status === 'publish').length}</p>
+                        `;
+                        document.getElementById('quality-info').innerHTML = `
+                            <p><strong>平均文字数:</strong> ${this.calculateAvgLength(posts)}</p>
+                            <p><strong>最新記事:</strong> ${posts[0]?.title?.rendered || 'N/A'}</p>
+                        `;
+                    }
+                } catch (error) {
+                    console.error('Failed to update site analysis:', error);
+                }
+            }
+
+            calculateMaxDepth(categories) {
+                // カテゴリの最大階層深度を計算
+                let maxDepth = 1;
+                for (const cat of categories) {
+                    if (cat.parent !== 0) {
+                        maxDepth = Math.max(maxDepth, 2); // 簡易実装
+                    }
+                }
+                return maxDepth;
+            }
+
+            calculateAvgLength(posts) {
+                if (posts.length === 0) return 0;
+                const totalLength = posts.reduce((sum, post) => {
+                    const content = post.content?.rendered || '';
+                    return sum + content.replace(/<[^>]*>/g, '').length;
+                }, 0);
+                return Math.round(totalLength / posts.length);
+            }
+
+            reconnect() {
+                this.client.serverUrl = this.serverUrlInput.value;
+                this.testConnection();
+            }
+
+            addOperationHistory(type, message) {
+                this.operationHistory.unshift({
+                    type,
+                    message,
+                    timestamp: new Date().toLocaleString('ja-JP')
+                });
+
+                // 最大10件まで保持
+                if (this.operationHistory.length > 10) {
+                    this.operationHistory = this.operationHistory.slice(0, 10);
+                }
+
+                this.updateHistoryDisplay();
+            }
+
+            updateHistoryDisplay() {
+                const container = document.getElementById('operation-history');
+                
+                if (this.operationHistory.length === 0) {
+                    container.innerHTML = `
+                        <div class="text-center" style="color: #6c757d; padding: 20px;">
+                            <p>操作履歴がここに表示されます</p>
+                        </div>
+                    `;
+                    return;
+                }
+
+                container.innerHTML = this.operationHistory.map(op => `
+                    <div style="padding: 10px; border-left: 3px solid #28a745; margin-bottom: 10px; background: #f8f9fa;">
+                        <strong>${op.type}</strong> - ${op.message}
+                        <br><small style="color: #6c757d;">${op.timestamp}</small>
+                    </div>
+                `).join('');
+            }
+        }
+
+        // 初期化
+        document.addEventListener('DOMContentLoaded', () => {
+            window.wordpressDashboard = new WordPressDashboard();
+        });
+    </script>
+</body>
+</html>

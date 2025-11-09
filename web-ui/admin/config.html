@@ -1,0 +1,1145 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>サーバー設定 - MCP-RS Web UI</title>
+    <link rel="stylesheet" href="../shared/mcp-ui.css">
+</head>
+<body>
+    <div class="mcp-container mcp-fade-in">
+        <header class="mcp-header">
+            <h1>⚙️ サーバー設定</h1>
+            <p>MCP-RSサーバーの詳細設定と管理</p>
+        </header>
+
+        <nav class="mcp-nav">
+            <ul>
+                <li><a href="../index.html" id="nav-home">🏠 ホーム</a></li>
+                <li><a href="../wordpress/dashboard.html" id="nav-wordpress">🔗 WordPress管理</a></li>
+                <li><a href="config.html" id="nav-config" class="active">⚙️ サーバー設定</a></li>
+                <li><a href="transport.html" id="nav-transport">🌐 Transport管理</a></li>
+                <li><a href="logs.html" id="nav-logs">📋 ログ管理</a></li>
+            </ul>
+        </nav>
+
+        <main class="mcp-main">
+            <!-- サーバー情報 -->
+            <div class="mcp-card">
+                <h3>🖥️ サーバー情報</h3>
+                <div class="mcp-grid cols-3">
+                    <div class="mcp-card">
+                        <h4>📊 基本情報</h4>
+                        <p><strong>バージョン:</strong> 0.15.1</p>
+                        <p><strong>Rust:</strong> 1.75.0</p>
+                        <p><strong>稼働時間:</strong> <span id="uptime">2h 45m</span></p>
+                        <p><strong>PID:</strong> 12345</p>
+                    </div>
+                    <div class="mcp-card">
+                        <h4>🔧 現在の設定</h4>
+                        <p><strong>Transport:</strong> <span id="current-transport">HTTP</span></p>
+                        <p><strong>ポート:</strong> <span id="current-port">8081</span></p>
+                        <p><strong>ログレベル:</strong> <span id="current-log-level">INFO</span></p>
+                        <p><strong>デバッグモード:</strong> <span id="debug-mode">OFF</span></p>
+                    </div>
+                    <div class="mcp-card">
+                        <h4>💾 リソース使用量</h4>
+                        <p><strong>CPU:</strong> <span id="cpu-usage">15.2%</span></p>
+                        <p><strong>メモリ:</strong> <span id="memory-usage">45.8MB</span></p>
+                        <p><strong>スレッド数:</strong> <span id="thread-count">8</span></p>
+                        <p><strong>ファイルハンドル:</strong> <span id="file-handles">23</span></p>
+                    </div>
+                </div>
+            </div>
+
+            <div class="mcp-grid cols-2">
+                <!-- 基本設定 -->
+                <div class="mcp-card">
+                    <h3>🔧 基本設定</h3>
+                    
+                    <div class="mb-2">
+                        <h4>🌐 ネットワーク設定</h4>
+                        <label for="server-host"><strong>ホスト</strong></label>
+                        <input type="text" class="mcp-input" id="server-host" 
+                               value="127.0.0.1" placeholder="127.0.0.1">
+                        
+                        <label for="server-port"><strong>ポート</strong></label>
+                        <input type="number" class="mcp-input" id="server-port" 
+                               value="8081" min="1024" max="65535">
+                        
+                        <label>
+                            <input type="checkbox" id="auto-start" checked>
+                            <strong>自動起動</strong>
+                        </label>
+                        
+                        <label>
+                            <input type="checkbox" id="enable-cors" checked>
+                            <strong>CORS有効化</strong>
+                        </label>
+                    </div>
+
+                    <div class="mb-2">
+                        <h4>📝 ログ設定</h4>
+                        <label for="log-level"><strong>ログレベル</strong></label>
+                        <select class="mcp-input" id="log-level">
+                            <option value="TRACE">TRACE (詳細)</option>
+                            <option value="DEBUG">DEBUG (デバッグ)</option>
+                            <option value="INFO" selected>INFO (情報)</option>
+                            <option value="WARN">WARN (警告)</option>
+                            <option value="ERROR">ERROR (エラー)</option>
+                        </select>
+                        
+                        <label for="log-file"><strong>ログファイル</strong></label>
+                        <input type="text" class="mcp-input" id="log-file" 
+                               value="logs/mcp-rs.log" placeholder="ログファイルパス">
+                        
+                        <label>
+                            <input type="checkbox" id="enable-file-logging" checked>
+                            <strong>ファイルログ有効</strong>
+                        </label>
+                        
+                        <label>
+                            <input type="checkbox" id="log-rotation">
+                            <strong>ログローテーション</strong>
+                        </label>
+                    </div>
+
+                    <div class="mb-2">
+                        <h4>⚡ パフォーマンス設定</h4>
+                        <label for="worker-threads"><strong>ワーカースレッド数</strong></label>
+                        <input type="number" class="mcp-input" id="worker-threads" 
+                               value="4" min="1" max="32">
+                        
+                        <label for="max-connections"><strong>最大同時接続数</strong></label>
+                        <input type="number" class="mcp-input" id="max-connections" 
+                               value="100" min="1" max="10000">
+                        
+                        <label for="request-timeout"><strong>リクエストタイムアウト(秒)</strong></label>
+                        <input type="number" class="mcp-input" id="request-timeout" 
+                               value="30" min="1" max="300">
+                    </div>
+
+                    <button class="mcp-btn primary full-width" id="apply-basic-config">
+                        💾 基本設定を適用
+                    </button>
+                </div>
+
+                <!-- セキュリティ・詳細設定 -->
+                <div class="mcp-card">
+                    <h3>🔒 セキュリティ・詳細設定</h3>
+                    
+                    <div class="mb-2">
+                        <h4>🛡️ セキュリティ</h4>
+                        <label>
+                            <input type="checkbox" id="enable-https">
+                            <strong>HTTPS有効化</strong>
+                        </label>
+                        
+                        <label for="tls-cert"><strong>TLS証明書</strong></label>
+                        <input type="text" class="mcp-input" id="tls-cert" 
+                               placeholder="cert.pem" disabled>
+                        
+                        <label for="tls-key"><strong>TLS秘密鍵</strong></label>
+                        <input type="text" class="mcp-input" id="tls-key" 
+                               placeholder="key.pem" disabled>
+                        
+                        <label>
+                            <input type="checkbox" id="rate-limiting" checked>
+                            <strong>レート制限</strong>
+                        </label>
+                        
+                        <label for="rate-limit"><strong>レート制限 (req/min)</strong></label>
+                        <input type="number" class="mcp-input" id="rate-limit" 
+                               value="1000" min="1" max="100000">
+                    </div>
+
+                    <div class="mb-2">
+                        <h4>🧪 開発・デバッグ</h4>
+                        <label>
+                            <input type="checkbox" id="debug-mode-toggle">
+                            <strong>デバッグモード</strong>
+                        </label>
+                        
+                        <label>
+                            <input type="checkbox" id="enable-metrics" checked>
+                            <strong>メトリクス収集</strong>
+                        </label>
+                        
+                        <label>
+                            <input type="checkbox" id="enable-profiling">
+                            <strong>プロファイリング</strong>
+                        </label>
+                        
+                        <label for="metrics-port"><strong>メトリクスポート</strong></label>
+                        <input type="number" class="mcp-input" id="metrics-port" 
+                               value="9090" min="1024" max="65535">
+                    </div>
+
+                    <div class="mb-2">
+                        <h4>📦 プラグイン・拡張</h4>
+                        <label>
+                            <input type="checkbox" id="enable-plugins" checked>
+                            <strong>プラグインサポート</strong>
+                        </label>
+                        
+                        <label for="plugin-dir"><strong>プラグインディレクトリ</strong></label>
+                        <input type="text" class="mcp-input" id="plugin-dir" 
+                               value="plugins/" placeholder="plugins/">
+                        
+                        <label>
+                            <input type="checkbox" id="hot-reload" checked>
+                            <strong>ホットリロード</strong>
+                        </label>
+                    </div>
+
+                    <button class="mcp-btn primary full-width" id="apply-security-config">
+                        🔒 セキュリティ設定を適用
+                    </button>
+                </div>
+            </div>
+
+            <!-- 設定ファイル管理 -->
+            <div class="mcp-card">
+                <h3>📄 設定ファイル管理</h3>
+                
+                <div class="mcp-grid cols-2">
+                    <div class="mb-2">
+                        <h4>📁 設定ファイル</h4>
+                        <div style="margin-bottom: 15px;">
+                            <strong>現在の設定ファイル:</strong>
+                            <code style="background: #f8f9fa; padding: 5px; border-radius: 4px; display: block; margin-top: 5px;">
+                                mcp-config.toml
+                            </code>
+                        </div>
+                        
+                        <button class="mcp-btn secondary full-width mb-1" id="backup-config">
+                            💾 設定をバックアップ
+                        </button>
+                        <button class="mcp-btn secondary full-width mb-1" id="restore-config">
+                            📥 設定を復元
+                        </button>
+                        <button class="mcp-btn secondary full-width mb-1" id="export-config">
+                            📤 設定をエクスポート
+                        </button>
+                        <button class="mcp-btn warning full-width" id="reset-config">
+                            🔄 設定をリセット
+                        </button>
+                    </div>
+
+                    <div class="mb-2">
+                        <h4>📋 設定テンプレート</h4>
+                        <label for="config-template"><strong>テンプレート選択</strong></label>
+                        <select class="mcp-input" id="config-template">
+                            <option value="default">デフォルト設定</option>
+                            <option value="development">開発環境</option>
+                            <option value="production">本番環境</option>
+                            <option value="claude-desktop">Claude Desktop用</option>
+                            <option value="wordpress-focused">WordPress特化</option>
+                            <option value="high-performance">高性能設定</option>
+                        </select>
+                        
+                        <button class="mcp-btn primary full-width mb-1" id="apply-template">
+                            📋 テンプレートを適用
+                        </button>
+                        <button class="mcp-btn secondary full-width mb-1" id="preview-template">
+                            👁️ テンプレートプレビュー
+                        </button>
+                        <button class="mcp-btn secondary full-width" id="save-as-template">
+                            💾 現在設定をテンプレート保存
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- サーバー制御 -->
+            <div class="mcp-card">
+                <h3>🎮 サーバー制御</h3>
+                
+                <div class="mcp-grid cols-4">
+                    <button class="mcp-btn primary" id="restart-server">
+                        🔄 サーバー再起動
+                    </button>
+                    <button class="mcp-btn warning" id="reload-config">
+                        ⚡ 設定リロード
+                    </button>
+                    <button class="mcp-btn secondary" id="health-check">
+                        🏥 ヘルスチェック
+                    </button>
+                    <button class="mcp-btn danger" id="shutdown-server">
+                        ⏹️ サーバー停止
+                    </button>
+                </div>
+
+                <div class="mt-2">
+                    <h4>📊 サーバー状態監視</h4>
+                    <div id="server-monitoring">
+                        <div class="text-center" style="color: #6c757d; padding: 20px;">
+                            <p>サーバー監視情報がここに表示されます</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 操作履歴 -->
+            <div class="mcp-card">
+                <h3>📋 設定変更履歴</h3>
+                <div id="config-history">
+                    <div class="text-center" style="color: #6c757d; padding: 20px;">
+                        <p>設定変更履歴がここに表示されます</p>
+                    </div>
+                </div>
+            </div>
+        </main>
+
+        <footer class="mcp-footer">
+            <p>
+                🚀 MCP-RS v0.15.1 - Server Configuration Console | 
+                💻 開発者: <strong>n-takatsu</strong> | 
+                🌐 <a href="https://github.com/n-takatsu/mcp-rs">GitHub</a>
+            </p>
+        </footer>
+    </div>
+
+    <script src="../shared/mcp-ui.js"></script>
+    <script>
+        class ServerConfigManager {
+            constructor() {
+                this.client = new MCPClient();
+                this.configManager = new MCPConfigManager(this.client);
+                this.configHistory = [];
+                this.monitoringInterval = null;
+                
+                this.initializeElements();
+                this.bindEvents();
+                this.loadCurrentConfig();
+                this.startMonitoring();
+            }
+
+            initializeElements() {
+                // 基本設定要素
+                this.serverHost = document.getElementById('server-host');
+                this.serverPort = document.getElementById('server-port');
+                this.autoStart = document.getElementById('auto-start');
+                this.enableCors = document.getElementById('enable-cors');
+
+                // ログ設定要素
+                this.logLevel = document.getElementById('log-level');
+                this.logFile = document.getElementById('log-file');
+                this.enableFileLogging = document.getElementById('enable-file-logging');
+                this.logRotation = document.getElementById('log-rotation');
+
+                // パフォーマンス設定要素
+                this.workerThreads = document.getElementById('worker-threads');
+                this.maxConnections = document.getElementById('max-connections');
+                this.requestTimeout = document.getElementById('request-timeout');
+
+                // セキュリティ設定要素
+                this.enableHttps = document.getElementById('enable-https');
+                this.tlsCert = document.getElementById('tls-cert');
+                this.tlsKey = document.getElementById('tls-key');
+                this.rateLimiting = document.getElementById('rate-limiting');
+                this.rateLimit = document.getElementById('rate-limit');
+
+                // デバッグ設定要素
+                this.debugModeToggle = document.getElementById('debug-mode-toggle');
+                this.enableMetrics = document.getElementById('enable-metrics');
+                this.enableProfiling = document.getElementById('enable-profiling');
+                this.metricsPort = document.getElementById('metrics-port');
+
+                // プラグイン設定要素
+                this.enablePlugins = document.getElementById('enable-plugins');
+                this.pluginDir = document.getElementById('plugin-dir');
+                this.hotReload = document.getElementById('hot-reload');
+
+                // テンプレート要素
+                this.configTemplate = document.getElementById('config-template');
+
+                // ナビゲーション設定
+                MCPUIComponents.setActiveNav('nav-config');
+            }
+
+            bindEvents() {
+                // HTTPS切り替えでTLS設定の有効/無効を切り替え
+                this.enableHttps.addEventListener('change', (e) => {
+                    this.tlsCert.disabled = !e.target.checked;
+                    this.tlsKey.disabled = !e.target.checked;
+                });
+
+                // 設定適用ボタン
+                document.getElementById('apply-basic-config').addEventListener('click', () => this.applyBasicConfig());
+                document.getElementById('apply-security-config').addEventListener('click', () => this.applySecurityConfig());
+
+                // 設定ファイル管理
+                document.getElementById('backup-config').addEventListener('click', () => this.backupConfig());
+                document.getElementById('restore-config').addEventListener('click', () => this.restoreConfig());
+                document.getElementById('export-config').addEventListener('click', () => this.exportConfig());
+                document.getElementById('reset-config').addEventListener('click', () => this.resetConfig());
+
+                // テンプレート管理
+                document.getElementById('apply-template').addEventListener('click', () => this.applyTemplate());
+                document.getElementById('preview-template').addEventListener('click', () => this.previewTemplate());
+                document.getElementById('save-as-template').addEventListener('click', () => this.saveAsTemplate());
+
+                // サーバー制御
+                document.getElementById('restart-server').addEventListener('click', () => this.restartServer());
+                document.getElementById('reload-config').addEventListener('click', () => this.reloadConfig());
+                document.getElementById('health-check').addEventListener('click', () => this.healthCheck());
+                document.getElementById('shutdown-server').addEventListener('click', () => this.shutdownServer());
+            }
+
+            async loadCurrentConfig() {
+                try {
+                    // 現在の設定を取得（モック）
+                    const config = await this.getCurrentConfigMock();
+                    this.populateConfigForm(config);
+                    this.updateServerInfo(config);
+                } catch (error) {
+                    console.error('設定読み込みエラー:', error);
+                }
+            }
+
+            populateConfigForm(config) {
+                // フォームに設定値を反映
+                this.serverHost.value = config.host || '127.0.0.1';
+                this.serverPort.value = config.port || 8081;
+                this.autoStart.checked = config.auto_start || false;
+                this.enableCors.checked = config.enable_cors || false;
+                
+                this.logLevel.value = config.log_level || 'INFO';
+                this.logFile.value = config.log_file || 'logs/mcp-rs.log';
+                this.enableFileLogging.checked = config.enable_file_logging || false;
+                this.logRotation.checked = config.log_rotation || false;
+                
+                this.workerThreads.value = config.worker_threads || 4;
+                this.maxConnections.value = config.max_connections || 100;
+                this.requestTimeout.value = config.request_timeout || 30;
+                
+                this.enableHttps.checked = config.enable_https || false;
+                this.tlsCert.value = config.tls_cert || '';
+                this.tlsKey.value = config.tls_key || '';
+                this.rateLimiting.checked = config.rate_limiting || false;
+                this.rateLimit.value = config.rate_limit || 1000;
+                
+                this.debugModeToggle.checked = config.debug_mode || false;
+                this.enableMetrics.checked = config.enable_metrics || false;
+                this.enableProfiling.checked = config.enable_profiling || false;
+                this.metricsPort.value = config.metrics_port || 9090;
+                
+                this.enablePlugins.checked = config.enable_plugins || false;
+                this.pluginDir.value = config.plugin_dir || 'plugins/';
+                this.hotReload.checked = config.hot_reload || false;
+
+                // HTTPS設定の有効/無効を反映
+                this.tlsCert.disabled = !this.enableHttps.checked;
+                this.tlsKey.disabled = !this.enableHttps.checked;
+            }
+
+            updateServerInfo(config) {
+                document.getElementById('current-transport').textContent = config.transport || 'HTTP';
+                document.getElementById('current-port').textContent = config.port || '8081';
+                document.getElementById('current-log-level').textContent = config.log_level || 'INFO';
+                document.getElementById('debug-mode').textContent = config.debug_mode ? 'ON' : 'OFF';
+            }
+
+            async applyBasicConfig() {
+                const config = {
+                    host: this.serverHost.value,
+                    port: parseInt(this.serverPort.value),
+                    auto_start: this.autoStart.checked,
+                    enable_cors: this.enableCors.checked,
+                    log_level: this.logLevel.value,
+                    log_file: this.logFile.value,
+                    enable_file_logging: this.enableFileLogging.checked,
+                    log_rotation: this.logRotation.checked,
+                    worker_threads: parseInt(this.workerThreads.value),
+                    max_connections: parseInt(this.maxConnections.value),
+                    request_timeout: parseInt(this.requestTimeout.value)
+                };
+
+                try {
+                    this.addConfigHistory('基本設定変更', '基本設定を適用中');
+                    
+                    // 設定適用処理（モック）
+                    await this.applyConfigMock(config, 'basic');
+                    
+                    MCPUIComponents.showModal(
+                        '✅ 基本設定適用完了',
+                        `<p>基本設定が正常に適用されました。</p>
+                         <ul style="margin: 10px 0 0 20px;">
+                           <li>ホスト: ${config.host}</li>
+                           <li>ポート: ${config.port}</li>
+                           <li>ログレベル: ${config.log_level}</li>
+                           <li>ワーカースレッド: ${config.worker_threads}</li>
+                         </ul>
+                         <p><strong>注意:</strong> 一部設定は再起動後に有効になります。</p>`,
+                        [{ text: '閉じる', type: 'primary' }]
+                    );
+
+                    this.updateServerInfo(config);
+                    this.addConfigHistory('基本設定変更', '基本設定適用完了');
+                    
+                } catch (error) {
+                    this.addConfigHistory('エラー', `基本設定適用失敗: ${error.message}`);
+                    MCPUIComponents.showModal(
+                        '❌ 基本設定適用失敗',
+                        `<p>基本設定の適用に失敗しました。</p><p>${error.message}</p>`,
+                        [{ text: '閉じる', type: 'danger' }]
+                    );
+                }
+            }
+
+            async applySecurityConfig() {
+                const config = {
+                    enable_https: this.enableHttps.checked,
+                    tls_cert: this.tlsCert.value,
+                    tls_key: this.tlsKey.value,
+                    rate_limiting: this.rateLimiting.checked,
+                    rate_limit: parseInt(this.rateLimit.value),
+                    debug_mode: this.debugModeToggle.checked,
+                    enable_metrics: this.enableMetrics.checked,
+                    enable_profiling: this.enableProfiling.checked,
+                    metrics_port: parseInt(this.metricsPort.value),
+                    enable_plugins: this.enablePlugins.checked,
+                    plugin_dir: this.pluginDir.value,
+                    hot_reload: this.hotReload.checked
+                };
+
+                try {
+                    this.addConfigHistory('セキュリティ設定変更', 'セキュリティ設定を適用中');
+                    
+                    // 設定適用処理（モック）
+                    await this.applyConfigMock(config, 'security');
+                    
+                    MCPUIComponents.showModal(
+                        '🔒 セキュリティ設定適用完了',
+                        `<p>セキュリティ設定が正常に適用されました。</p>
+                         <ul style="margin: 10px 0 0 20px;">
+                           <li>HTTPS: ${config.enable_https ? '有効' : '無効'}</li>
+                           <li>レート制限: ${config.rate_limiting ? '有効' : '無効'}</li>
+                           <li>デバッグモード: ${config.debug_mode ? '有効' : '無効'}</li>
+                           <li>メトリクス: ${config.enable_metrics ? '有効' : '無効'}</li>
+                         </ul>`,
+                        [{ text: '閉じる', type: 'primary' }]
+                    );
+
+                    this.addConfigHistory('セキュリティ設定変更', 'セキュリティ設定適用完了');
+                    
+                } catch (error) {
+                    this.addConfigHistory('エラー', `セキュリティ設定適用失敗: ${error.message}`);
+                    MCPUIComponents.showModal(
+                        '❌ セキュリティ設定適用失敗',
+                        `<p>セキュリティ設定の適用に失敗しました。</p><p>${error.message}</p>`,
+                        [{ text: '閉じる', type: 'danger' }]
+                    );
+                }
+            }
+
+            backupConfig() {
+                try {
+                    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+                    const filename = `mcp-config-backup-${timestamp}.toml`;
+                    
+                    MCPUIComponents.showModal(
+                        '✅ 設定バックアップ完了',
+                        `<p>設定ファイルがバックアップされました。</p>
+                         <p><strong>ファイル名:</strong> ${filename}</p>
+                         <p><strong>場所:</strong> backups/</p>`,
+                        [{ text: '閉じる', type: 'primary' }]
+                    );
+
+                    this.addConfigHistory('バックアップ', `設定をバックアップ: ${filename}`);
+                } catch (error) {
+                    this.addConfigHistory('エラー', `バックアップ失敗: ${error.message}`);
+                }
+            }
+
+            restoreConfig() {
+                MCPUIComponents.showModal(
+                    '📥 設定復元',
+                    `<p>バックアップから設定を復元します。</p>
+                     <label for="restore-file"><strong>復元ファイル選択:</strong></label>
+                     <input type="file" id="restore-file" accept=".toml" style="width: 100%; margin: 10px 0;">
+                     <p><strong>⚠️ 注意:</strong> 現在の設定は上書きされます。</p>`,
+                    [
+                        { 
+                            text: '復元実行', 
+                            type: 'warning',
+                            onclick: 'window.serverConfigManager.executeRestore();'
+                        },
+                        { text: 'キャンセル', type: 'secondary' }
+                    ]
+                );
+            }
+
+            executeRestore() {
+                const fileInput = document.getElementById('restore-file');
+                if (fileInput.files.length === 0) {
+                    MCPUIComponents.showModal(
+                        '⚠️ ファイル未選択',
+                        '<p>復元するファイルを選択してください。</p>',
+                        [{ text: '閉じる', type: 'warning' }]
+                    );
+                    return;
+                }
+
+                // モーダルを閉じる
+                document.querySelector('.modal').remove();
+                
+                MCPUIComponents.showModal(
+                    '✅ 設定復元完了',
+                    '<p>設定ファイルが正常に復元されました。</p><p>サーバーを再起動して変更を適用してください。</p>',
+                    [{ text: '閉じる', type: 'primary' }]
+                );
+
+                this.addConfigHistory('復元', '設定ファイルを復元しました');
+                this.loadCurrentConfig();
+            }
+
+            exportConfig() {
+                try {
+                    const config = this.getCurrentConfigFromForm();
+                    const configToml = this.generateConfigToml(config);
+                    
+                    // ダウンロードリンクを作成
+                    const blob = new Blob([configToml], { type: 'text/plain' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = 'mcp-config-export.toml';
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    URL.revokeObjectURL(url);
+                    
+                    MCPUIComponents.showModal(
+                        '📤 設定エクスポート完了',
+                        '<p>現在の設定がTOMLファイルとしてエクスポートされました。</p>',
+                        [{ text: '閉じる', type: 'primary' }]
+                    );
+
+                    this.addConfigHistory('エクスポート', '設定をTOMLファイルにエクスポート');
+                } catch (error) {
+                    this.addConfigHistory('エラー', `エクスポート失敗: ${error.message}`);
+                }
+            }
+
+            resetConfig() {
+                MCPUIComponents.showModal(
+                    '🔄 設定リセット確認',
+                    `<p><strong>⚠️ 警告:</strong> すべての設定がデフォルト値にリセットされます。</p>
+                     <p>この操作は元に戻せません。実行しますか？</p>`,
+                    [
+                        { 
+                            text: 'リセット実行', 
+                            type: 'danger',
+                            onclick: 'this.closest(\'.modal\').remove(); window.serverConfigManager.executeConfigReset();'
+                        },
+                        { text: 'キャンセル', type: 'secondary' }
+                    ]
+                );
+            }
+
+            executeConfigReset() {
+                // デフォルト設定を適用
+                const defaultConfig = this.getDefaultConfig();
+                this.populateConfigForm(defaultConfig);
+                
+                MCPUIComponents.showModal(
+                    '✅ 設定リセット完了',
+                    '<p>すべての設定がデフォルト値にリセットされました。</p><p>「設定を適用」ボタンでサーバーに反映してください。</p>',
+                    [{ text: '閉じる', type: 'primary' }]
+                );
+
+                this.addConfigHistory('リセット', '設定をデフォルト値にリセット');
+            }
+
+            applyTemplate() {
+                const templateType = this.configTemplate.value;
+                const template = this.getConfigTemplate(templateType);
+                
+                MCPUIComponents.showModal(
+                    '📋 テンプレート適用確認',
+                    `<p><strong>${this.getTemplateName(templateType)}</strong>テンプレートを適用しますか？</p>
+                     <p>現在の設定値は上書きされます。</p>`,
+                    [
+                        { 
+                            text: 'テンプレート適用', 
+                            type: 'primary',
+                            onclick: `this.closest('.modal').remove(); window.serverConfigManager.executeTemplateApply('${templateType}');`
+                        },
+                        { text: 'キャンセル', type: 'secondary' }
+                    ]
+                );
+            }
+
+            executeTemplateApply(templateType) {
+                const template = this.getConfigTemplate(templateType);
+                this.populateConfigForm(template);
+                
+                MCPUIComponents.showModal(
+                    '✅ テンプレート適用完了',
+                    `<p><strong>${this.getTemplateName(templateType)}</strong>テンプレートが適用されました。</p>
+                     <p>「設定を適用」ボタンでサーバーに反映してください。</p>`,
+                    [{ text: '閉じる', type: 'primary' }]
+                );
+
+                this.addConfigHistory('テンプレート適用', `${this.getTemplateName(templateType)}テンプレートを適用`);
+            }
+
+            previewTemplate() {
+                const templateType = this.configTemplate.value;
+                const template = this.getConfigTemplate(templateType);
+                const toml = this.generateConfigToml(template);
+                
+                MCPUIComponents.showModal(
+                    `👁️ ${this.getTemplateName(templateType)}テンプレート プレビュー`,
+                    `<pre style="background: #f8f9fa; padding: 15px; border-radius: 6px; max-height: 400px; overflow-y: auto; font-family: 'Courier New', monospace; font-size: 0.9em;">${toml}</pre>`,
+                    [
+                        { 
+                            text: 'このテンプレートを適用', 
+                            type: 'primary',
+                            onclick: `this.closest('.modal').remove(); window.serverConfigManager.executeTemplateApply('${templateType}');`
+                        },
+                        { text: '閉じる', type: 'secondary' }
+                    ]
+                );
+            }
+
+            saveAsTemplate() {
+                MCPUIComponents.showModal(
+                    '💾 現在設定をテンプレート保存',
+                    `<p>現在の設定値を新しいテンプレートとして保存します。</p>
+                     <label for="template-name"><strong>テンプレート名:</strong></label>
+                     <input type="text" id="template-name" class="mcp-input" placeholder="カスタム設定" style="width: 100%; margin: 10px 0;">
+                     <label for="template-description"><strong>説明:</strong></label>
+                     <textarea id="template-description" class="mcp-input" placeholder="このテンプレートの説明" style="width: 100%; height: 80px; margin: 10px 0;"></textarea>`,
+                    [
+                        { 
+                            text: 'テンプレート保存', 
+                            type: 'primary',
+                            onclick: 'window.serverConfigManager.executeSaveTemplate();'
+                        },
+                        { text: 'キャンセル', type: 'secondary' }
+                    ]
+                );
+            }
+
+            executeSaveTemplate() {
+                const name = document.getElementById('template-name').value;
+                const description = document.getElementById('template-description').value;
+                
+                if (!name.trim()) {
+                    MCPUIComponents.showModal(
+                        '⚠️ 入力エラー',
+                        '<p>テンプレート名を入力してください。</p>',
+                        [{ text: '閉じる', type: 'warning' }]
+                    );
+                    return;
+                }
+
+                // モーダルを閉じる
+                document.querySelector('.modal').remove();
+                
+                MCPUIComponents.showModal(
+                    '✅ テンプレート保存完了',
+                    `<p>カスタムテンプレート「${name}」が保存されました。</p>
+                     <p><strong>説明:</strong> ${description || '(なし)'}</p>`,
+                    [{ text: '閉じる', type: 'primary' }]
+                );
+
+                this.addConfigHistory('テンプレート保存', `カスタムテンプレート「${name}」を保存`);
+            }
+
+            async restartServer() {
+                MCPUIComponents.showModal(
+                    '🔄 サーバー再起動確認',
+                    '<p><strong>警告:</strong> サーバーが再起動されます。</p><p>進行中の処理が中断される可能性があります。</p><p>実行しますか？</p>',
+                    [
+                        { 
+                            text: '再起動実行', 
+                            type: 'warning',
+                            onclick: 'this.closest(\'.modal\').remove(); window.serverConfigManager.executeRestart();'
+                        },
+                        { text: 'キャンセル', type: 'secondary' }
+                    ]
+                );
+            }
+
+            async executeRestart() {
+                try {
+                    this.addConfigHistory('サーバー制御', 'サーバー再起動を実行');
+                    
+                    MCPUIComponents.showModal(
+                        '⚡ サーバー再起動中',
+                        '<p>サーバーを再起動しています...</p><div class="mcp-loading" style="margin: 20px auto;"></div>',
+                        []
+                    );
+
+                    // 再起動処理（モック）
+                    await new Promise(resolve => setTimeout(resolve, 3000));
+                    
+                    // モーダルを更新
+                    document.querySelector('.modal').remove();
+                    MCPUIComponents.showModal(
+                        '✅ サーバー再起動完了',
+                        '<p>サーバーが正常に再起動されました。</p><p>新しい設定が適用されています。</p>',
+                        [{ text: '閉じる', type: 'primary' }]
+                    );
+
+                    this.addConfigHistory('サーバー制御', 'サーバー再起動完了');
+                    this.loadCurrentConfig();
+                    
+                } catch (error) {
+                    document.querySelector('.modal').remove();
+                    this.addConfigHistory('エラー', `サーバー再起動失敗: ${error.message}`);
+                }
+            }
+
+            async reloadConfig() {
+                try {
+                    this.addConfigHistory('設定リロード', '設定リロードを実行');
+                    
+                    // 設定リロード処理（モック）
+                    await new Promise(resolve => setTimeout(resolve, 1000));
+                    
+                    MCPUIComponents.showModal(
+                        '⚡ 設定リロード完了',
+                        '<p>設定ファイルが正常にリロードされました。</p><p>サーバーを再起動せずに設定が更新されました。</p>',
+                        [{ text: '閉じる', type: 'primary' }]
+                    );
+
+                    this.addConfigHistory('設定リロード', '設定リロード完了');
+                    this.loadCurrentConfig();
+                    
+                } catch (error) {
+                    this.addConfigHistory('エラー', `設定リロード失敗: ${error.message}`);
+                }
+            }
+
+            async healthCheck() {
+                try {
+                    this.addConfigHistory('ヘルスチェック', 'サーバーヘルスチェック実行');
+                    
+                    // ヘルスチェック処理（モック）
+                    await new Promise(resolve => setTimeout(resolve, 500));
+                    
+                    const healthStatus = {
+                        status: 'healthy',
+                        uptime: '2h 45m 30s',
+                        memory: '45.8MB',
+                        cpu: '15.2%',
+                        connections: 3,
+                        errors: 0
+                    };
+                    
+                    MCPUIComponents.showModal(
+                        '🏥 サーバーヘルスチェック結果',
+                        `<div style="background: #d4edda; padding: 15px; border-radius: 8px; margin-bottom: 15px;">
+                           <h4 style="color: #155724; margin: 0 0 10px 0;">✅ 健康状態: 正常</h4>
+                         </div>
+                         <ul style="margin: 0 0 0 20px;">
+                           <li><strong>稼働時間:</strong> ${healthStatus.uptime}</li>
+                           <li><strong>メモリ使用量:</strong> ${healthStatus.memory}</li>
+                           <li><strong>CPU使用率:</strong> ${healthStatus.cpu}</li>
+                           <li><strong>アクティブ接続:</strong> ${healthStatus.connections}</li>
+                           <li><strong>エラー数:</strong> ${healthStatus.errors}</li>
+                         </ul>`,
+                        [{ text: '閉じる', type: 'primary' }]
+                    );
+
+                    this.addConfigHistory('ヘルスチェック', 'ヘルスチェック完了 (正常)');
+                    
+                } catch (error) {
+                    this.addConfigHistory('エラー', `ヘルスチェック失敗: ${error.message}`);
+                    MCPUIComponents.showModal(
+                        '❌ ヘルスチェック失敗',
+                        `<p>サーバーヘルスチェックに失敗しました。</p><p>${error.message}</p>`,
+                        [{ text: '閉じる', type: 'danger' }]
+                    );
+                }
+            }
+
+            shutdownServer() {
+                MCPUIComponents.showModal(
+                    '⏹️ サーバー停止確認',
+                    '<p><strong>⚠️ 重要:</strong> サーバーが停止されます。</p><p>この操作後はWeb UIが使用できなくなります。</p><p>本当に停止しますか？</p>',
+                    [
+                        { 
+                            text: 'サーバー停止', 
+                            type: 'danger',
+                            onclick: 'this.closest(\'.modal\').remove(); window.serverConfigManager.executeShutdown();'
+                        },
+                        { text: 'キャンセル', type: 'secondary' }
+                    ]
+                );
+            }
+
+            executeShutdown() {
+                this.addConfigHistory('サーバー制御', 'サーバー停止を実行');
+                
+                MCPUIComponents.showModal(
+                    '⚠️ サーバー停止完了',
+                    '<p>MCP-RSサーバーが正常に停止されました。</p><p>このWeb UIは使用できなくなります。</p><p>再開するにはサーバーを手動で起動してください。</p>',
+                    [{ text: '閉じる', type: 'warning' }]
+                );
+            }
+
+            startMonitoring() {
+                // リソース使用量の定期更新
+                setInterval(() => {
+                    this.updateResourceUsage();
+                }, 5000);
+            }
+
+            updateResourceUsage() {
+                // モックリソースデータ
+                const cpu = (Math.random() * 20 + 10).toFixed(1);
+                const memory = (Math.random() * 10 + 40).toFixed(1);
+                const threads = Math.floor(Math.random() * 4) + 6;
+                const handles = Math.floor(Math.random() * 10) + 20;
+                
+                document.getElementById('cpu-usage').textContent = `${cpu}%`;
+                document.getElementById('memory-usage').textContent = `${memory}MB`;
+                document.getElementById('thread-count').textContent = threads;
+                document.getElementById('file-handles').textContent = handles;
+                
+                // 稼働時間更新
+                const uptime = document.getElementById('uptime');
+                if (uptime) {
+                    const [hours, minutes] = uptime.textContent.match(/\d+/g) || ['2', '45'];
+                    const newMinutes = parseInt(minutes) + 1;
+                    if (newMinutes >= 60) {
+                        uptime.textContent = `${parseInt(hours) + 1}h 0m`;
+                    } else {
+                        uptime.textContent = `${hours}h ${newMinutes}m`;
+                    }
+                }
+            }
+
+            // ヘルパーメソッド
+            getCurrentConfigFromForm() {
+                return {
+                    host: this.serverHost.value,
+                    port: parseInt(this.serverPort.value),
+                    auto_start: this.autoStart.checked,
+                    enable_cors: this.enableCors.checked,
+                    log_level: this.logLevel.value,
+                    log_file: this.logFile.value,
+                    enable_file_logging: this.enableFileLogging.checked,
+                    log_rotation: this.logRotation.checked,
+                    worker_threads: parseInt(this.workerThreads.value),
+                    max_connections: parseInt(this.maxConnections.value),
+                    request_timeout: parseInt(this.requestTimeout.value),
+                    enable_https: this.enableHttps.checked,
+                    tls_cert: this.tlsCert.value,
+                    tls_key: this.tlsKey.value,
+                    rate_limiting: this.rateLimiting.checked,
+                    rate_limit: parseInt(this.rateLimit.value),
+                    debug_mode: this.debugModeToggle.checked,
+                    enable_metrics: this.enableMetrics.checked,
+                    enable_profiling: this.enableProfiling.checked,
+                    metrics_port: parseInt(this.metricsPort.value),
+                    enable_plugins: this.enablePlugins.checked,
+                    plugin_dir: this.pluginDir.value,
+                    hot_reload: this.hotReload.checked
+                };
+            }
+
+            generateConfigToml(config) {
+                return `# MCP-RS Configuration File
+# Generated by MCP-RS Web UI
+
+[server]
+host = "${config.host}"
+port = ${config.port}
+auto_start = ${config.auto_start}
+enable_cors = ${config.enable_cors}
+
+[logging]
+level = "${config.log_level}"
+file = "${config.log_file}"
+enable_file_logging = ${config.enable_file_logging}
+log_rotation = ${config.log_rotation}
+
+[performance]
+worker_threads = ${config.worker_threads}
+max_connections = ${config.max_connections}
+request_timeout = ${config.request_timeout}
+
+[security]
+enable_https = ${config.enable_https}
+tls_cert = "${config.tls_cert}"
+tls_key = "${config.tls_key}"
+rate_limiting = ${config.rate_limiting}
+rate_limit = ${config.rate_limit}
+
+[development]
+debug_mode = ${config.debug_mode}
+enable_metrics = ${config.enable_metrics}
+enable_profiling = ${config.enable_profiling}
+metrics_port = ${config.metrics_port}
+
+[plugins]
+enable_plugins = ${config.enable_plugins}
+plugin_dir = "${config.plugin_dir}"
+hot_reload = ${config.hot_reload}`;
+            }
+
+            getDefaultConfig() {
+                return {
+                    host: '127.0.0.1',
+                    port: 8081,
+                    auto_start: false,
+                    enable_cors: true,
+                    log_level: 'INFO',
+                    log_file: 'logs/mcp-rs.log',
+                    enable_file_logging: true,
+                    log_rotation: false,
+                    worker_threads: 4,
+                    max_connections: 100,
+                    request_timeout: 30,
+                    enable_https: false,
+                    tls_cert: '',
+                    tls_key: '',
+                    rate_limiting: true,
+                    rate_limit: 1000,
+                    debug_mode: false,
+                    enable_metrics: true,
+                    enable_profiling: false,
+                    metrics_port: 9090,
+                    enable_plugins: true,
+                    plugin_dir: 'plugins/',
+                    hot_reload: true
+                };
+            }
+
+            getConfigTemplate(type) {
+                const templates = {
+                    default: this.getDefaultConfig(),
+                    development: {
+                        ...this.getDefaultConfig(),
+                        debug_mode: true,
+                        log_level: 'DEBUG',
+                        enable_profiling: true,
+                        hot_reload: true
+                    },
+                    production: {
+                        ...this.getDefaultConfig(),
+                        debug_mode: false,
+                        log_level: 'WARN',
+                        enable_https: true,
+                        rate_limiting: true,
+                        rate_limit: 500,
+                        worker_threads: 8,
+                        max_connections: 1000
+                    },
+                    'claude-desktop': {
+                        ...this.getDefaultConfig(),
+                        transport: 'stdio',
+                        enable_cors: false,
+                        log_level: 'WARN'
+                    },
+                    'wordpress-focused': {
+                        ...this.getDefaultConfig(),
+                        log_level: 'INFO',
+                        max_connections: 50,
+                        request_timeout: 60
+                    },
+                    'high-performance': {
+                        ...this.getDefaultConfig(),
+                        worker_threads: 16,
+                        max_connections: 5000,
+                        request_timeout: 10,
+                        rate_limit: 10000
+                    }
+                };
+                return templates[type] || templates.default;
+            }
+
+            getTemplateName(type) {
+                const names = {
+                    default: 'デフォルト設定',
+                    development: '開発環境',
+                    production: '本番環境',
+                    'claude-desktop': 'Claude Desktop用',
+                    'wordpress-focused': 'WordPress特化',
+                    'high-performance': '高性能設定'
+                };
+                return names[type] || 'デフォルト設定';
+            }
+
+            async getCurrentConfigMock() {
+                // モック設定データ
+                return {
+                    host: '127.0.0.1',
+                    port: 8081,
+                    transport: 'HTTP',
+                    log_level: 'INFO',
+                    debug_mode: false,
+                    auto_start: true,
+                    enable_cors: true,
+                    enable_file_logging: true,
+                    log_rotation: false,
+                    worker_threads: 4,
+                    max_connections: 100,
+                    request_timeout: 30,
+                    enable_https: false,
+                    rate_limiting: true,
+                    rate_limit: 1000,
+                    enable_metrics: true,
+                    enable_profiling: false,
+                    metrics_port: 9090,
+                    enable_plugins: true,
+                    plugin_dir: 'plugins/',
+                    hot_reload: true
+                };
+            }
+
+            async applyConfigMock(config, type) {
+                // 設定適用のモック実装
+                await new Promise(resolve => setTimeout(resolve, 1500));
+                console.log(`Applied ${type} config:`, config);
+            }
+
+            addConfigHistory(type, message) {
+                this.configHistory.unshift({
+                    type,
+                    message,
+                    timestamp: new Date().toLocaleString('ja-JP')
+                });
+
+                if (this.configHistory.length > 20) {
+                    this.configHistory = this.configHistory.slice(0, 20);
+                }
+
+                this.updateHistoryDisplay();
+            }
+
+            updateHistoryDisplay() {
+                const container = document.getElementById('config-history');
+                
+                if (this.configHistory.length === 0) {
+                    container.innerHTML = `
+                        <div class="text-center" style="color: #6c757d; padding: 20px;">
+                            <p>設定変更履歴がここに表示されます</p>
+                        </div>
+                    `;
+                    return;
+                }
+
+                container.innerHTML = this.configHistory.map(op => `
+                    <div style="padding: 10px; border-left: 3px solid #28a745; margin-bottom: 10px; background: #f8f9fa;">
+                        <strong>${op.type}</strong> - ${op.message}
+                        <br><small style="color: #6c757d;">${op.timestamp}</small>
+                    </div>
+                `).join('');
+            }
+        }
+
+        // 初期化
+        document.addEventListener('DOMContentLoaded', () => {
+            window.serverConfigManager = new ServerConfigManager();
+        });
+    </script>
+</body>
+</html>

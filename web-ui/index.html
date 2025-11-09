@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MCP-RS Web UI - Model Context Protocol Server</title>
+    <link rel="stylesheet" href="shared/mcp-ui.css">
+</head>
+<body>
+    <div class="mcp-container mcp-fade-in">
+        <header class="mcp-header">
+            <h1>🚀 MCP-RS Web UI</h1>
+            <p>Model Context Protocol Server - 統合管理コンソール</p>
+        </header>
+
+        <nav class="mcp-nav">
+            <ul>
+                <li><a href="#" id="nav-home" class="active">🏠 ホーム</a></li>
+                <li><a href="wordpress/dashboard.html" id="nav-wordpress">🔗 WordPress管理</a></li>
+                <li><a href="admin/config.html" id="nav-config">⚙️ サーバー設定</a></li>
+                <li><a href="admin/transport.html" id="nav-transport">🌐 Transport管理</a></li>
+                <li><a href="admin/logs.html" id="nav-logs">📋 ログ管理</a></li>
+            </ul>
+        </nav>
+
+        <main class="mcp-main">
+            <!-- 接続ステータス -->
+            <div id="connection-status" class="mcp-status info">
+                <span class="mcp-loading"></span> MCP-RSサーバーに接続中...
+            </div>
+
+            <!-- サーバー概要 -->
+            <div class="mcp-card mb-3">
+                <h3>📊 サーバー概要</h3>
+                <div id="server-overview" class="mcp-grid cols-3">
+                    <div class="mcp-card">
+                        <h4>🔧 サーバー状態</h4>
+                        <div id="server-status">接続中...</div>
+                    </div>
+                    <div class="mcp-card">
+                        <h4>🌐 Transport</h4>
+                        <div id="transport-info">確認中...</div>
+                    </div>
+                    <div class="mcp-card">
+                        <h4>📝 アクティブハンドラー</h4>
+                        <div id="handler-info">確認中...</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 主要機能 -->
+            <div class="mcp-grid cols-2">
+                <!-- WordPress管理 -->
+                <div class="mcp-card">
+                    <h3>🔗 WordPress管理</h3>
+                    <p>WordPressサイトのリソース管理、コンテンツ操作、AI分析機能を提供します。</p>
+                    
+                    <div class="mt-2">
+                        <a href="wordpress/dashboard.html" class="mcp-btn primary full-width">
+                            📂 WordPress ダッシュボード
+                        </a>
+                        <a href="wordpress/config.html" class="mcp-btn secondary full-width">
+                            ⚙️ WordPress 設定
+                        </a>
+                    </div>
+
+                    <div class="mt-2 p-2" style="background: #e7f3ff; border-radius: 6px;">
+                        <strong>💡 主要機能:</strong>
+                        <ul style="margin: 8px 0 0 20px; color: #0066cc;">
+                            <li>カテゴリ・タグ管理</li>
+                            <li>記事一覧・詳細表示</li>
+                            <li>AI Copilot連携分析</li>
+                            <li>リアルタイムデータ取得</li>
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- サーバー管理 -->
+                <div class="mcp-card">
+                    <h3>⚙️ サーバー管理</h3>
+                    <p>MCP-RSサーバーの設定変更、Transport切り替え、ログ管理を行います。</p>
+                    
+                    <div class="mt-2">
+                        <a href="admin/config.html" class="mcp-btn primary full-width">
+                            🔧 動的設定変更
+                        </a>
+                        <a href="admin/transport.html" class="mcp-btn secondary full-width">
+                            🔄 Transport切り替え
+                        </a>
+                        <a href="admin/logs.html" class="mcp-btn secondary full-width">
+                            📋 ログ管理
+                        </a>
+                    </div>
+
+                    <div class="mt-2 p-2" style="background: #fff3cd; border-radius: 6px;">
+                        <strong>⚡ 動的機能:</strong>
+                        <ul style="margin: 8px 0 0 20px; color: #856404;">
+                            <li>STDIO ⇄ HTTP 切り替え</li>
+                            <li>設定ファイル再読み込み</li>
+                            <li>ログレベル動的変更</li>
+                            <li>パフォーマンス監視</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+
+            <!-- クイックアクション -->
+            <div class="mcp-card">
+                <h3>🚀 クイックアクション</h3>
+                <div class="mcp-grid cols-3">
+                    <button class="mcp-btn primary" onclick="quickTest('wordpress')">
+                        🧪 WordPress接続テスト
+                    </button>
+                    <button class="mcp-btn secondary" onclick="quickTest('server')">
+                        📊 サーバー情報取得
+                    </button>
+                    <button class="mcp-btn warning" onclick="quickReconnect()">
+                        🔄 サーバー再接続
+                    </button>
+                </div>
+            </div>
+
+            <!-- 最近の活動 -->
+            <div class="mcp-card">
+                <h3>📈 最近の活動</h3>
+                <div id="recent-activity">
+                    <div class="text-center" style="color: #6c757d; padding: 20px;">
+                        <p>アクティビティログを読み込み中...</p>
+                    </div>
+                </div>
+            </div>
+        </main>
+
+        <footer class="mcp-footer">
+            <p>
+                🚀 MCP-RS v0.15.1 - Model Context Protocol for WordPress | 
+                💻 開発者: <strong>n-takatsu</strong> | 
+                🌐 <a href="https://github.com/n-takatsu/mcp-rs">GitHub</a>
+            </p>
+        </footer>
+    </div>
+
+    <script src="shared/mcp-ui.js"></script>
+    <script>
+        class MCPDashboard {
+            constructor() {
+                this.client = new MCPClient();
+                this.configManager = new MCPConfigManager(this.client);
+                this.statusElement = document.getElementById('connection-status');
+                this.activities = [];
+                
+                this.init();
+            }
+
+            async init() {
+                MCPUIComponents.setActiveNav('nav-home');
+                await this.testConnection();
+                await this.loadServerOverview();
+                await this.loadRecentActivity();
+                
+                // 定期更新
+                setInterval(() => this.updateStatus(), 30000);
+            }
+
+            async testConnection() {
+                try {
+                    MCPUIComponents.updateStatus(
+                        this.statusElement, 
+                        'info', 
+                        'MCP-RSサーバーに接続中...', 
+                        true
+                    );
+
+                    const result = await this.client.testConnection();
+                    
+                    MCPUIComponents.updateStatus(
+                        this.statusElement, 
+                        'success', 
+                        '✅ MCP-RSサーバーに接続済み - 全機能利用可能'
+                    );
+
+                    this.addActivity('接続', 'サーバーに正常接続しました');
+                    
+                } catch (error) {
+                    MCPUIComponents.updateStatus(
+                        this.statusElement, 
+                        'error', 
+                        `❌ 接続失敗: ${error.message}`
+                    );
+
+                    this.addActivity('エラー', `接続失敗: ${error.message}`);
+                    
+                    // 自動再接続を試行
+                    setTimeout(() => this.tryReconnect(), 5000);
+                }
+            }
+
+            async tryReconnect() {
+                try {
+                    MCPUIComponents.updateStatus(
+                        this.statusElement, 
+                        'warning', 
+                        '🔄 自動再接続を試行中...', 
+                        true
+                    );
+
+                    await this.client.reconnect();
+                    
+                    MCPUIComponents.updateStatus(
+                        this.statusElement, 
+                        'success', 
+                        '✅ 再接続成功 - サーバーが利用可能です'
+                    );
+
+                    this.addActivity('再接続', '自動再接続に成功しました');
+                    await this.loadServerOverview();
+                    
+                } catch (error) {
+                    MCPUIComponents.updateStatus(
+                        this.statusElement, 
+                        'error', 
+                        '❌ 再接続失敗 - 手動で確認してください'
+                    );
+                }
+            }
+
+            async loadServerOverview() {
+                if (!this.client.isConnected) return;
+
+                try {
+                    // サーバー情報取得
+                    const serverInfo = await this.client.getServerInfo();
+                    
+                    document.getElementById('server-status').innerHTML = `
+                        <span style="color: #28a745;">✅ 稼働中</span><br>
+                        <small>v${serverInfo.serverInfo?.version || 'Unknown'}</small>
+                    `;
+
+                    document.getElementById('transport-info').innerHTML = `
+                        <span style="color: #007bff;">🌐 HTTP</span><br>
+                        <small>Port: 8081</small>
+                    `;
+
+                    document.getElementById('handler-info').innerHTML = `
+                        <span style="color: #17a2b8;">🔗 WordPress</span><br>
+                        <small>REST API</small>
+                    `;
+
+                } catch (error) {
+                    console.error('Failed to load server overview:', error);
+                }
+            }
+
+            async loadRecentActivity() {
+                const container = document.getElementById('recent-activity');
+                
+                if (this.activities.length === 0) {
+                    container.innerHTML = `
+                        <div class="text-center" style="color: #6c757d; padding: 20px;">
+                            <p>まだアクティビティがありません</p>
+                            <small>WordPress管理やサーバー操作を行うと履歴が表示されます</small>
+                        </div>
+                    `;
+                    return;
+                }
+
+                const recentActivities = this.activities.slice(-5).reverse();
+                container.innerHTML = recentActivities.map(activity => `
+                    <div style="padding: 10px; border-left: 3px solid #4a90e2; margin-bottom: 10px; background: #f8f9fa;">
+                        <strong>${activity.type}</strong> - ${activity.message}
+                        <br><small style="color: #6c757d;">${activity.timestamp}</small>
+                    </div>
+                `).join('');
+            }
+
+            addActivity(type, message) {
+                this.activities.push({
+                    type,
+                    message,
+                    timestamp: new Date().toLocaleString('ja-JP')
+                });
+
+                // 最新の活動を更新
+                this.loadRecentActivity();
+            }
+
+            async updateStatus() {
+                if (this.client.isConnected) {
+                    try {
+                        await this.client.makeRequest('ping');
+                    } catch (error) {
+                        this.client.isConnected = false;
+                        MCPUIComponents.updateStatus(
+                            this.statusElement, 
+                            'warning', 
+                            '⚠️ 接続が失われました - 再接続を試行します', 
+                            true
+                        );
+                        setTimeout(() => this.tryReconnect(), 1000);
+                    }
+                }
+            }
+        }
+
+        // クイックアクション関数
+        async function quickTest(type) {
+            const dashboard = window.mcpDashboard;
+            
+            try {
+                if (type === 'wordpress') {
+                    const result = await dashboard.client.getWordPressResource('categories');
+                    dashboard.addActivity('テスト', 'WordPress接続テスト成功');
+                    
+                    MCPUIComponents.showModal(
+                        '✅ WordPress接続テスト成功',
+                        `<p>WordPressサーバーに正常に接続できました。</p>
+                         <p><strong>取得データ:</strong> カテゴリ ${JSON.parse(result.contents[0].text).length}件</p>`,
+                        [{ text: '閉じる', type: 'primary' }]
+                    );
+                    
+                } else if (type === 'server') {
+                    const result = await dashboard.client.getServerInfo();
+                    dashboard.addActivity('情報取得', 'サーバー情報を取得しました');
+                    
+                    MCPUIComponents.showModal(
+                        '📊 サーバー情報',
+                        `<pre style="background: #f8f9fa; padding: 15px; border-radius: 6px; font-size: 0.9em;">${JSON.stringify(result, null, 2)}</pre>`,
+                        [{ text: '閉じる', type: 'primary' }]
+                    );
+                }
+                
+            } catch (error) {
+                dashboard.addActivity('エラー', `${type}テスト失敗: ${error.message}`);
+                
+                MCPUIComponents.showModal(
+                    '❌ テスト失敗',
+                    `<p>${error.message}</p>`,
+                    [{ text: '閉じる', type: 'danger' }]
+                );
+            }
+        }
+
+        async function quickReconnect() {
+            const dashboard = window.mcpDashboard;
+            dashboard.testConnection();
+        }
+
+        // 初期化
+        document.addEventListener('DOMContentLoaded', () => {
+            window.mcpDashboard = new MCPDashboard();
+        });
+    </script>
+</body>
+</html>

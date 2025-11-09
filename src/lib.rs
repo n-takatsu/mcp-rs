@@ -12,6 +12,7 @@ pub mod core;
 pub mod error;
 pub mod handlers;
 pub mod logging;
+pub mod runtime_control;
 // pub mod http_server; // 削除: Transport統合により不要
 pub mod mcp;
 pub mod mcp_server;

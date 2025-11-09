@@ -1,25 +1,18 @@
-# MCP-RS Configuration File for Web UI
+# MCP-RS Web UI Configuration v0.15.1
 # 
-# Web UI専用設定 - HTTPモードで動作
+# Web UI専用設定 - HTTPモードで動作  
 # セキュリティのため、認証情報は環境変数を使用することを推奨します
 
 [server]
-bind_addr = "127.0.0.1:8081"
+name = "mcp-rs-webui"
+version = "0.15.1"
 stdio = false
 log_level = "info"
 
 [transport]
-transport_type = "http"
+type = "http"
 
-# HTTP サーバー設定（Web UI用）
-[transport.http]
-enabled = true
-bind_addr = "127.0.0.1:8081"
-cors_origins = ["*"]
-max_request_size = 1048576
-timeout_ms = 30000
-
-# STDIO設定（Web UI使用時は不要）
+# STDIO設定（Web UI使用時は無効）
 [transport.stdio]
 buffer_size = 8192
 timeout_ms = 30000
@@ -28,20 +21,33 @@ framing_method = "content-length"
 max_message_size = 1048576
 pretty_print = false
 
-# TCP サーバー設定（Web UI使用時は不要）
-[transport.tcp]
-enabled = false
-bind_addr = "127.0.0.1:8080"
-max_connections = 100
+# HTTP サーバー設定（Web UI用）
+[transport.http]
+addr = "127.0.0.1"
+port = 8081
+cors_enabled = true
+max_request_size = 1048576
 timeout_ms = 30000
 
-# WordPress設定
-[handlers.wordpress]
+[logging]
+level = "info"
+file_path = "logs/mcp-rs-webui.log"
+
+# 必須: ハンドラー設定
+[handlers]
+enabled = ["filesystem", "wordpress"]
+
+# ファイルシステムハンドラー（Web UI用）
+[filesystem]
+root_path = "."
+read_only = false
+
+# WordPress設定（環境変数使用推奨）
+[wordpress]
 url = "https://your-wordpress-site.com"
 username = "${WORDPRESS_USERNAME}"
 password = "${WORDPRESS_PASSWORD}"
-enabled = true
-timeout_seconds = 30
+verify_ssl = true
 
 [handlers.wordpress.rate_limit]
 enabled = true

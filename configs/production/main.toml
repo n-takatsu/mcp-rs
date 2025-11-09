@@ -1,0 +1,48 @@
+# MCP-RS メイン設定ファイル v0.15.1
+# Production環境のデフォルト設定
+# Transport統合アーキテクチャ対応
+
+[server]
+name = "mcp-rs-server"
+version = "0.15.1"
+# STDIOモード（Claude Desktop等との互換性）
+stdio = true
+log_level = "info"
+
+[transport]
+type = "stdio"
+
+# STDIO Transport設定（デフォルト）
+[transport.stdio]
+buffer_size = 8192
+timeout_ms = 30000
+content_length_header = true
+framing_method = "content-length"
+max_message_size = 1048576
+pretty_print = false
+
+# HTTP Transport設定（オプション）
+[transport.http]
+addr = "127.0.0.1"
+port = 8081
+cors_enabled = true
+
+[logging]
+level = "info"
+file_path = "logs/mcp-rs.log"
+
+# 必須: ハンドラー設定
+[handlers]
+enabled = ["filesystem"]
+
+# ファイルシステムハンドラー
+[filesystem]
+root_path = "."
+read_only = true
+
+# WordPress (オプション - 本番環境では環境変数推奨)
+# [wordpress]
+# url = "https://your-wordpress-site.com"
+# username = "your-username"  
+# password = "your-app-password"
+# verify_ssl = true
