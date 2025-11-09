@@ -1,0 +1,87 @@
+# MCP-RS Configuration File for Claude Desktop
+# 
+# Claude Desktop専用設定 - STDIO モードで動作
+# セキュリティのため、認証情報は環境変数を使用することを推奨します
+
+[server]
+bind_addr = "127.0.0.1:8080"
+stdio = true
+log_level = "info"
+
+[transport]
+transport_type = "stdio"
+
+[transport.stdio]
+buffer_size = 8192
+timeout_ms = 30000
+content_length_header = true
+framing_method = "content-length"
+max_message_size = 1048576
+pretty_print = false
+
+# HTTP サーバー設定 (Claude Desktop使用時は不要)
+[transport.http]
+enabled = false
+bind_addr = "127.0.0.1:8081"
+cors_origins = ["*"]
+max_request_size = 1048576
+timeout_ms = 30000
+
+# TCP サーバー設定 (Claude Desktop使用時は不要)  
+[transport.tcp]
+enabled = false
+
+# WordPress ハンドラー設定
+[handlers.wordpress]
+enabled = true
+url = "https://your-wordpress-site.com"
+username = "your_username" 
+password = "your_app_password"  # WordPress Application Password
+timeout_ms = 30000
+max_posts = 100
+default_post_status = "publish"
+allowed_post_types = ["post", "page"]
+allowed_post_statuses = ["publish", "draft", "private"]
+
+[handlers.wordpress.cache]
+enabled = true
+ttl_seconds = 300
+max_entries = 1000
+
+[handlers.wordpress.rate_limiting]
+enabled = true
+requests_per_minute = 60
+burst_size = 10
+
+[handlers.wordpress.retry]
+enabled = true
+max_attempts = 3
+initial_delay_ms = 1000
+max_delay_ms = 5000
+backoff_multiplier = 2.0
+
+# セキュリティ設定
+[security]
+enable_auth = false
+allowed_hosts = ["127.0.0.1", "localhost"]
+max_connections = 100
+connection_timeout_ms = 30000
+
+[security.rate_limiting]
+enabled = true
+requests_per_minute = 100
+burst_size = 20
+
+# ログ設定
+[logging]
+level = "info"
+format = "json"
+include_timestamp = true
+include_caller = false
+
+[logging.file]
+enabled = false
+path = "mcp-rs.log"
+max_size_mb = 10
+max_files = 5
+rotate_daily = true

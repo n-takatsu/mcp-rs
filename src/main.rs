@@ -87,7 +87,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 設定を読み込み（カスタムパスまたはデフォルト）
     let config = match custom_config_path {
         Some(path) => {
-            println!("📁 カスタム設定ファイルを使用: {}", path);
+            eprintln!("📁 カスタム設定ファイルを使用: {}", path);
             match load_config_from_file(&path).await {
                 Ok(config) => config,
                 Err(e) => {
@@ -142,15 +142,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize logging
     tracing_subscriber::fmt::init();
 
-    println!("🚀 MCP-RS サーバーを開始します...");
+    let is_stdio = config.server.stdio.unwrap_or(false);
 
-    // Runtime を初期化
-    runtime.initialize().await?;
-
-    // 設定情報を表示
-    if config.server.stdio.unwrap_or(false) {
-        println!("📡 モード: STDIO (MCP クライアント接続用)");
-    } else {
+    // STDIOモード以外でのみログ出力
+    if !is_stdio {
+        println!("� MCP-RS サーバーを開始します...");
         println!("📡 モード: TCP サーバー");
         println!(
             "🌐 バインドアドレス: {}",
@@ -162,6 +158,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
+    // Runtime を初期化
+    runtime.initialize().await?;
+
     // Create MCP server with runtime
     let mut server = crate::mcp::server::McpServer::new();
 
@@ -171,7 +170,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // WordPressハンドラーを追加（設定がある場合）
     if let Some(wp_config) = &config.handlers.wordpress {
         if wp_config.enabled.unwrap_or(true) {
-            println!("🔗 WordPress統合を有効化: {}", wp_config.url);
+            if !is_stdio {
+                println!("🔗 WordPress統合を有効化: {}", wp_config.url);
+            }
 
             let wordpress_handler = WordPressHandler::try_new(wp_config.clone()).map_err(|e| {
                 Error::Internal(format!("WordPress handler initialization failed: {}", e))
@@ -195,21 +196,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Legacy MCP Server にも追加（段階的移行のため）
             server.add_handler("wordpress".to_string(), Arc::new(wordpress_handler));
         } else {
-            println!("⚠️  WordPress統合は無効になっています");
+            if !is_stdio {
+                println!("⚠️  WordPress統合は無効になっています");
+            }
         }
     } else {
-        println!("ℹ️  WordPress設定が見つかりません");
-        println!("💡 --generate-config でサンプル設定ファイルを生成できます");
+        if !is_stdio {
+            println!("ℹ️  WordPress設定が見つかりません");
+            println!("💡 --generate-config でサンプル設定ファイルを生成できます");
+        }
     }
 
     // Run server
     if config.server.stdio.unwrap_or(false) {
-        println!("📞 STDIO モードで待機中...");
-        println!("💡 Ctrl+C で終了");
-
-        // STDIO mode - keep running until interrupted
-        tokio::signal::ctrl_c().await?;
-        println!("\n🔄 終了シグナルを受信しました");
+        // STDIO mode - STDIOサーバーを起動
+        server.run_stdio().await?;
     } else {
         let addr = config
             .server

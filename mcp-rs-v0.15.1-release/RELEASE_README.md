@@ -28,9 +28,13 @@
 ```
 mcp-rs-v0.15.1-release/
 ├── 🔧 mcp-rs.exe                           # 実行ファイル (6.26MB)
-├── ⚙️ mcp-config.toml                      # 設定ファイル
+├── ⚙️ mcp-config.toml                      # 汎用設定ファイル (HTTP+TCP)
+├── 🎯 mcp-config-claude.toml               # Claude Desktop専用設定 (STDIO)
 ├── 🔗 claude_desktop_config_example.json   # Claude Desktop統合設定
-├── 📝 README.md                           # メインドキュメント  
+├── � start-claude-mcp-server.bat          # Claude Desktop起動スクリプト (Windows)
+├── 🚀 start-claude-mcp-server.ps1          # Claude Desktop起動スクリプト (PowerShell)
+├── 🌐 start-http-mcp-server.bat            # HTTP+TCP起動スクリプト (Windows)
+├── �📝 README.md                           # メインドキュメント  
 ├── 🧪 test-*.ps1                          # テストスクリプト群
 ├── 🌐 test-get-endpoints.html             # HTTP APIテストページ
 └── 📋 RELEASE_README.md                   # このファイル
@@ -39,21 +43,67 @@ mcp-rs-v0.15.1-release/
 ## 🚀 **クイックスタート**
 
 ### Claude Desktop統合 (推奨)
-```bash
-# 1. Claude Desktop設定ファイルを配置
-copy claude_desktop_config_example.json %APPDATA%\Claude\claude_desktop_config.json
 
-# 2. 設定ファイルのパスを修正 (実際のパスに変更)
-# "command": "C:/path/to/mcp-rs.exe"
+#### **ステップ1: 設定ファイル配置**
+```powershell
+# Claude Desktop設定ディレクトリを作成
+mkdir $env:APPDATA\Claude -Force
 
-# 3. Claude Desktop再起動
-# 4. 動作確認
-# "WordPressサイトのカテゴリ一覧を取得してください"
+# 設定ファイルをコピー
+copy claude_desktop_config_example.json $env:APPDATA\Claude\claude_desktop_config.json
 ```
 
+#### **ステップ2: claude_desktop_config.json 編集**
+```json
+{
+  "mcpServers": {
+    "mcp-rs-wordpress": {
+      "command": "C:/Users/YOUR_USERNAME/Desktop/mcp-rs-server/mcp-rs.exe",
+      "args": ["--config", "C:/Users/YOUR_USERNAME/Desktop/mcp-rs-server/mcp-config-claude.toml"],
+      "env": { "RUST_LOG": "info" }
+    }
+  }
+}
+```
+
+**重要**: 
+- `YOUR_USERNAME` を実際のWindowsユーザー名に変更
+- パス区切りは `/` を使用 (`\` ではなく)
+- `mcp-config-claude.toml` を使用 (STDIO専用設定)
+
+#### **ステップ3: WordPress設定**
+`mcp-config-claude.toml` を編集:
+```toml
+[handlers.wordpress]
+url = "https://your-wordpress-site.com"
+username = "your_username"
+password = "your_app_password"
+```
+
+#### **ステップ4: MCPサーバー起動（オプション）**
+**Claude Desktopが自動起動しない場合は手動起動**:
+```batch
+# Windows バッチファイル
+start-claude-mcp-server.bat
+
+# または PowerShell
+./start-claude-mcp-server.ps1
+```
+
+#### **ステップ5: 動作確認**
+1. Claude Desktop を**完全終了**
+2. Claude Desktop を再起動  
+3. 新しい会話で実行:
+   ```
+   WordPressサイトのカテゴリ一覧を取得してください
+   ```
+
 ### HTTP JSON-RPC サーバー (AI Agent用)
-```bash
-# サーバー起動
+```batch
+# 簡単起動 (Windows)
+start-http-mcp-server.bat
+
+# 手動起動
 mcp-rs.exe --config mcp-config.toml
 
 # APIテスト
@@ -74,20 +124,34 @@ enabled = true
 ```
 
 ### Claude Desktop設定
+設定ファイル: `%APPDATA%\Claude\claude_desktop_config.json`
+
 ```json
 {
   "mcpServers": {
     "mcp-rs-wordpress": {
-      "command": "C:/path/to/mcp-rs.exe",
-      "args": ["--config", "C:/path/to/mcp-config.toml"],
+      "command": "C:/Users/YOUR_USERNAME/Desktop/mcp-rs-server/mcp-rs.exe",
+      "args": ["--config", "C:/Users/YOUR_USERNAME/Desktop/mcp-rs-server/mcp-config-claude.toml"],
       "env": { "RUST_LOG": "info" }
     }
   }
 }
 ```
 
-## 🧪 **テストツール**
+**設定のポイント**:
+- **設定ファイル場所**: Windows: `%APPDATA%\Claude\claude_desktop_config.json`
+- **実行ファイルパス**: 絶対パス推奨、パス区切りは `/`
+- **専用設定**: `mcp-config-claude.toml` (STDIO mode)
+- **環境変数**: `RUST_LOG=info` でデバッグ情報出力
 
+## 🧪 **テストツール & 起動スクリプト**
+
+### **起動スクリプト**
+- `start-claude-mcp-server.bat` - Claude Desktop用起動 (Windows)
+- `start-claude-mcp-server.ps1` - Claude Desktop用起動 (PowerShell)  
+- `start-http-mcp-server.bat` - HTTP+TCP用起動 (Windows)
+
+### **テストスクリプト**
 - `test-http-jsonrpc.ps1` - HTTP JSON-RPC完全テスト
 - `test-categories-stdio.ps1` - STDIO mode テスト  
 - `test-categories-tcp.ps1` - TCP mode テスト
@@ -96,10 +160,35 @@ enabled = true
 ## 🔍 **トラブルシューティング**
 
 ### Claude Desktop統合の問題
-1. **設定ファイル確認**: `%APPDATA%\Claude\claude_desktop_config.json`
-2. **パス確認**: 実行ファイルの絶対パス使用 (パス区切りは`/`)
-3. **Claude Desktop再起動**: 完全終了後に再起動
-4. **MCP Logs確認**: Settings → Developer → MCP Logs
+
+#### **1. 設定ファイル確認**
+```powershell
+# 設定ファイルの存在確認
+Test-Path "$env:APPDATA\Claude\claude_desktop_config.json"
+
+# 設定ファイルの内容確認
+Get-Content "$env:APPDATA\Claude\claude_desktop_config.json"
+```
+
+#### **2. パス設定の確認**
+- ❌ 間違い: `"C:\Users\takat\Desktop\mcp-rs.exe"`
+- ✅ 正しい: `"C:/Users/takat/Desktop/mcp-rs.exe"`
+- ❌ 間違い: `"--config", "mcp-config.toml"`  
+- ✅ 正しい: `"--config", "mcp-config-claude.toml"`
+
+#### **3. Claude Desktop プロセス確認**
+```powershell
+# Claude Desktop完全終了
+taskkill /f /im "claude.exe" 2>$null
+
+# プロセス確認
+Get-Process -Name "claude" -ErrorAction SilentlyContinue
+```
+
+#### **4. MCP接続診断**
+- Claude Desktop: Settings → Developer → MCP Logs  
+- エラーメッセージの確認
+- サーバー起動ログの確認
 
 ### HTTP サーバーアクセスエラー
 1. **ポート確認**: 8081番ポートが利用可能か
