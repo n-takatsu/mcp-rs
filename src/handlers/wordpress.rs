@@ -1613,17 +1613,17 @@ impl McpHandler for WordPressHandler {
     async fn initialize(&self, _params: InitializeParams) -> Result<serde_json::Value, McpError> {
         info!("WordPress MCP Handler initialized");
         Ok(serde_json::json!({
-            "protocol_version": "2024-11-05",
+            "protocolVersion": "2024-11-05",
             "capabilities": {
                 "tools": {
-                    "list_changed": false
+                    "listChanged": false
                 },
                 "resources": {
                     "subscribe": false,
-                    "list_changed": false
+                    "listChanged": false
                 }
             },
-            "server_info": {
+            "serverInfo": {
                 "name": "mcp-rs-wordpress",
                 "version": "0.1.0"
             }

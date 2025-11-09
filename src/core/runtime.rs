@@ -337,13 +337,14 @@ impl Runtime {
             "initialize" => {
                 // Handle initialization
                 Ok(serde_json::json!({
-                    "server": {
+                    "protocolVersion": "2024-11-05",
+                    "serverInfo": {
                         "name": "mcp-rs",
                         "version": env!("CARGO_PKG_VERSION")
                     },
                     "capabilities": {
-                        "tools": { "list_changed": false },
-                        "resources": { "subscribe": false, "list_changed": false }
+                        "tools": { "listChanged": false },
+                        "resources": { "subscribe": false, "listChanged": false }
                     }
                 }))
             }

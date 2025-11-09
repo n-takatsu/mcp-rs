@@ -29,6 +29,8 @@ impl DemoSetup {
                 bind_addr: Some("127.0.0.1:8080".to_string()),
                 stdio: Some(false),
                 log_level: Some("info".to_string()),
+                log_retention: None, // デモ用はデフォルト設定を使用
+                log_module: None,    // デモ用はデフォルト設定を使用
             },
             handlers: HandlersConfig {
                 wordpress: Some(WordPressConfig {

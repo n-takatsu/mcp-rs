@@ -72,6 +72,28 @@ pub struct ServerConfig {
     pub bind_addr: Option<String>,
     pub stdio: Option<bool>,
     pub log_level: Option<String>,
+    /// ログ保持ポリシー設定
+    pub log_retention: Option<LogRetentionConfig>,
+    /// ログモジュール分離設定
+    pub log_module: Option<LogModuleConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct LogRetentionConfig {
+    /// 保持ポリシータイプ: "external", "days", "count", "size"
+    pub policy: Option<String>,
+    /// 日数（days用）
+    pub days: Option<u32>,
+    /// ファイル数（count用）
+    pub count: Option<u32>,
+    /// サイズ（MB単位、size用）
+    pub size_mb: Option<u32>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct LogModuleConfig {
+    /// モジュール分離タイプ: "single", "separated", "hybrid"
+    pub separation: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -243,6 +265,15 @@ impl Default for McpConfig {
                 bind_addr: Some("127.0.0.1:8080".to_string()),
                 stdio: Some(false),
                 log_level: Some("info".to_string()),
+                log_retention: Some(LogRetentionConfig {
+                    policy: Some("external".to_string()), // 業界標準：外部管理
+                    days: Some(30),
+                    count: Some(10),
+                    size_mb: Some(100),
+                }),
+                log_module: Some(LogModuleConfig {
+                    separation: Some("separated".to_string()), // 本番推奨：モジュール分離
+                }),
             },
             transport: TransportConfig {
                 transport_type: Some("stdio".to_string()),
@@ -459,6 +490,15 @@ impl McpConfig {
                 bind_addr: Some("127.0.0.1:8080".to_string()),
                 stdio: Some(false),
                 log_level: Some("info".to_string()),
+                log_retention: Some(LogRetentionConfig {
+                    policy: Some("external".to_string()), // OS/ログ管理ツール任せ（推奨）
+                    days: Some(30),                       // 開発環境用：30日後削除
+                    count: Some(10),                      // 簡易環境用：10ファイル保持
+                    size_mb: Some(100),                   // リソース制約環境用：100MB制限
+                }),
+                log_module: Some(LogModuleConfig {
+                    separation: Some("separated".to_string()), // 本番推奨：モジュール分離
+                }),
             },
             transport: TransportConfig {
                 transport_type: Some("stdio".to_string()),
@@ -644,9 +684,26 @@ impl McpConfig {
             StdioConfig::default()
         };
 
+        let http_config = if let Some(ref http) = self.transport.http {
+            let addr = http.addr.as_deref().unwrap_or("127.0.0.1");
+            let port = http.port.unwrap_or(8081);
+            let bind_addr_str = format!("{}:{}", addr, port);
+            crate::transport::http::HttpConfig {
+                bind_addr: bind_addr_str
+                    .parse()
+                    .unwrap_or("127.0.0.1:8081".parse().unwrap()),
+                cors_enabled: http.enable_cors.unwrap_or(true),
+                max_request_size: 1048576,
+                timeout_ms: 30000,
+            }
+        } else {
+            crate::transport::http::HttpConfig::default()
+        };
+
         crate::transport::TransportConfig {
             transport_type,
             stdio: stdio_config,
+            http: http_config,
         }
     }
 

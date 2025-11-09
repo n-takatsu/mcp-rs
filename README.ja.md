@@ -59,6 +59,20 @@
 
 ### インストール
 
+#### 🚨 Claude Desktop利用時の重要な注意事項
+
+**Claude DesktopはSTDIO（標準入出力）通信を使用します。標準出力にログメッセージが混在すると通信が破綻するため、必ず専用設定を使用してください。**
+
+```bash
+# Claude Desktop用（重要：専用設定を使用）
+cargo run -- --config configs/production/claude-desktop.toml
+
+# Web UI用（HTTPアクセス）
+cargo run -- --config mcp-config-http-transport.toml
+```
+
+> 📖 詳細な設定方法は [Claude Desktop統合ガイド](./project-docs/CLAUDE_DESKTOP_INTEGRATION.md)を参照してください。
+
 #### オプション1: 対話的セットアップ（推奨）
 
 ```bash

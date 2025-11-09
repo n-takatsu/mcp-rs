@@ -58,9 +58,14 @@ copy claude_desktop_config_example.json $env:APPDATA\Claude\claude_desktop_confi
 {
   "mcpServers": {
     "mcp-rs-wordpress": {
-      "command": "C:/Users/YOUR_USERNAME/Desktop/mcp-rs-server/mcp-rs.exe",
-      "args": ["--config", "C:/Users/YOUR_USERNAME/Desktop/mcp-rs-server/mcp-config-claude.toml"],
-      "env": { "RUST_LOG": "info" }
+      "command": "C:/Users/YOUR_USERNAME/Desktop/mcp-rs-v0.15.1-final/mcp-rs.exe",
+      "args": [
+        "--config",
+        "C:/Users/YOUR_USERNAME/Desktop/mcp-rs-v0.15.1-final/mcp-config-claude.toml"
+      ],
+      "env": {
+        "RUST_LOG": "error"
+      }
     }
   }
 }
@@ -70,14 +75,16 @@ copy claude_desktop_config_example.json $env:APPDATA\Claude\claude_desktop_confi
 - `YOUR_USERNAME` を実際のWindowsユーザー名に変更
 - パス区切りは `/` を使用 (`\` ではなく)
 - `mcp-config-claude.toml` を使用 (STDIO専用設定)
+- `RUST_LOG: "error"` で最小限のログレベル設定
 
 #### **ステップ3: WordPress設定**
-`mcp-config-claude.toml` を編集:
+`C:/Users/YOUR_USERNAME/Desktop/mcp-rs-v0.15.1-final/mcp-config-claude.toml` を編集:
 ```toml
 [handlers.wordpress]
 url = "https://your-wordpress-site.com"
 username = "your_username"
-password = "your_app_password"
+password = "your_app_password"  # WordPress Application Password
+enabled = true
 ```
 
 #### **ステップ4: MCPサーバー起動（オプション）**
@@ -130,9 +137,14 @@ enabled = true
 {
   "mcpServers": {
     "mcp-rs-wordpress": {
-      "command": "C:/Users/YOUR_USERNAME/Desktop/mcp-rs-server/mcp-rs.exe",
-      "args": ["--config", "C:/Users/YOUR_USERNAME/Desktop/mcp-rs-server/mcp-config-claude.toml"],
-      "env": { "RUST_LOG": "info" }
+      "command": "C:/Users/YOUR_USERNAME/Desktop/mcp-rs-v0.15.1-final/mcp-rs.exe",
+      "args": [
+        "--config",
+        "C:/Users/YOUR_USERNAME/Desktop/mcp-rs-v0.15.1-final/mcp-config-claude.toml"
+      ],
+      "env": {
+        "RUST_LOG": "error"
+      }
     }
   }
 }
@@ -142,7 +154,8 @@ enabled = true
 - **設定ファイル場所**: Windows: `%APPDATA%\Claude\claude_desktop_config.json`
 - **実行ファイルパス**: 絶対パス推奨、パス区切りは `/`
 - **専用設定**: `mcp-config-claude.toml` (STDIO mode)
-- **環境変数**: `RUST_LOG=info` でデバッグ情報出力
+- **環境変数**: `RUST_LOG="error"` で最小限のログレベル
+- **パッケージ**: `mcp-rs-v0.15.1-final` ディレクトリを使用
 
 ## 🧪 **テストツール & 起動スクリプト**
 
@@ -171,10 +184,12 @@ Get-Content "$env:APPDATA\Claude\claude_desktop_config.json"
 ```
 
 #### **2. パス設定の確認**
-- ❌ 間違い: `"C:\Users\takat\Desktop\mcp-rs.exe"`
-- ✅ 正しい: `"C:/Users/takat/Desktop/mcp-rs.exe"`
-- ❌ 間違い: `"--config", "mcp-config.toml"`  
-- ✅ 正しい: `"--config", "mcp-config-claude.toml"`
+- ❌ 間違い: `"C:\Users\takat\Desktop\mcp-rs-server\mcp-rs.exe"`
+- ✅ 正しい: `"C:/Users/takat/Desktop/mcp-rs-v0.15.1-final/mcp-rs.exe"`
+- ❌ 間違い: `["--config", "mcp-config.toml"]`  
+- ✅ 正しい: `["--config", "C:/Users/takat/Desktop/mcp-rs-v0.15.1-final/mcp-config-claude.toml"]`
+- ❌ 間違い: `"RUST_LOG": "info"`
+- ✅ 正しい: `"RUST_LOG": "error"`
 
 #### **3. Claude Desktop プロセス確認**
 ```powershell

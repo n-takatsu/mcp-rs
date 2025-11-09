@@ -1,0 +1,105 @@
+# Claude Desktop用設定ファイル
+# 
+# 🚨 重要: Claude DesktopはSTDIO通信のため、標準出力にログが混在すると動作しません
+# この設定ではログをファイルのみに出力し、STDIOをJSON通信専用にします
+
+[server]
+# STDIO通信設定（Claude Desktop必須）
+stdio = true
+
+# ログレベルを制限（ERROR以上のみコンソール出力）
+# 通常のINFOログはファイルに出力されます
+log_level = "error"
+
+# ログ保持ポリシー（本番環境推奨）
+[server.log_retention]
+policy = "external"  # OS/ログ管理ツール任せ
+days = 30           # 開発時は30日で削除も可能
+count = 50          # または50ファイル保持
+size_mb = 100       # または100MB制限
+
+# ログモジュール分離（ファイル出力のみ）
+[server.log_module]
+separation = "separated"  # モジュール別ログファイル分離
+# 以下のログファイルが logs/ ディレクトリに作成されます:
+# - mcp-core.log      : MCPサーバー基本動作
+# - wordpress.log     : WordPress ハンドラー
+# - transport.log     : STDIO 通信
+# - security.log      : セキュリティ監査
+# - plugin.log        : プラグインシステム
+
+[transport]
+# Claude DesktopではSTDIO Transport必須
+transport_type = "stdio"
+
+# STDIO Transport設定
+[transport.stdio]
+buffer_size = 8192
+timeout_ms = 30000
+
+# HTTP サーバー設定 (Claude Desktop使用時は不要)
+[transport.http]
+enabled = false
+bind_addr = "127.0.0.1:8081"
+cors_origins = ["*"]
+max_request_size = 1048576
+timeout_ms = 30000
+
+# TCP サーバー設定 (Claude Desktop使用時は不要)  
+[transport.tcp]
+enabled = false
+
+# WordPress ハンドラー設定
+[handlers.wordpress]
+enabled = true
+url = "https://your-wordpress-site.com"
+username = "your_username" 
+password = "your_app_password"  # WordPress Application Password
+timeout_ms = 30000
+max_posts = 100
+default_post_status = "publish"
+allowed_post_types = ["post", "page"]
+allowed_post_statuses = ["publish", "draft", "private"]
+
+[handlers.wordpress.cache]
+enabled = true
+ttl_seconds = 300
+max_entries = 1000
+
+[handlers.wordpress.rate_limiting]
+enabled = true
+requests_per_minute = 60
+burst_size = 10
+
+[handlers.wordpress.retry]
+enabled = true
+max_attempts = 3
+initial_delay_ms = 1000
+max_delay_ms = 5000
+backoff_multiplier = 2.0
+
+# セキュリティ設定
+[security]
+enable_auth = false
+allowed_hosts = ["127.0.0.1", "localhost"]
+max_connections = 100
+connection_timeout_ms = 30000
+
+[security.rate_limiting]
+enabled = true
+requests_per_minute = 100
+burst_size = 20
+
+# ログ設定
+[logging]
+level = "info"
+format = "json"
+include_timestamp = true
+include_caller = false
+
+[logging.file]
+enabled = false
+path = "mcp-rs.log"
+max_size_mb = 10
+max_files = 5
+rotate_daily = true

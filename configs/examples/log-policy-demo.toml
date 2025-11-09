@@ -1,0 +1,41 @@
+# MCP-RS Configuration - ログ保持ポリシー設定例
+# 
+# ログローテーションと削除ポリシーの設定例を示します
+
+[server]
+bind_addr = "127.0.0.1:8081"
+stdio = false
+log_level = "info"
+
+# ログ保持ポリシー設定
+[server.log_retention]
+# 保持ポリシーのタイプを選択
+# - "external": OS/ログ管理ツール任せ（推奨・本番環境用）
+# - "days": 指定日数後に自動削除（開発・テスト環境用）
+# - "count": 最大ファイル数を保持（簡易環境用）
+# - "size": 最大ディスク使用量を制限（リソース制約環境用）
+
+policy = "external"  # 業界標準：外部管理
+
+# 各ポリシーの設定値（使用するポリシーに応じて有効化）
+days = 30        # daysポリシー用：30日後削除
+count = 10       # countポリシー用：10ファイル保持
+size_mb = 100    # sizeポリシー用：100MB制限
+
+[transport]
+transport_type = "http"
+
+[transport.http]
+addr = "127.0.0.1"
+port = 8081
+max_connections = 100
+timeout_ms = 30000
+enable_cors = true
+
+[handlers.wordpress]
+url = "https://demo.wordpress.com"
+username = "demo_user"
+password = "${WORDPRESS_PASSWORD}"
+timeout = 30000
+cache_ttl = 300
+max_retries = 3

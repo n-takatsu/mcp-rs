@@ -11,7 +11,8 @@ pub mod config;
 pub mod core;
 pub mod error;
 pub mod handlers;
-pub mod http_server;
+pub mod logging;
+// pub mod http_server; // 削除: Transport統合により不要
 pub mod mcp;
 pub mod mcp_server;
 pub mod server;
