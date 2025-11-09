@@ -654,3 +654,177 @@ RUST_LOG=mcp_rs::handlers::wordpress=debug cargo run
 - **Provide comprehensive examples**
 - **Test error conditions** thoroughly
 - **Document all parameters** clearly
+
+## 🤖 AI Agent Integration Guide
+
+### Claude Desktop Configuration
+
+To use MCP-RS with Claude Desktop, configure the MCP server connection:
+
+#### 1. Locate Claude Desktop Config File
+
+**Windows:**
+```
+C:\Users\[username]\AppData\Roaming\Claude\claude_desktop_config.json
+```
+
+**macOS:**
+```
+~/Library/Application Support/Claude/claude_desktop_config.json
+```
+
+**Linux:**
+```
+~/.config/claude/claude_desktop_config.json
+```
+
+#### 2. Add MCP-RS Configuration
+
+Create or edit the config file with the following JSON:
+
+```json
+{
+  "mcpServers": {
+    "mcp-rs": {
+      "command": "C:\\path\\to\\mcp-rs.exe",
+      "args": [],
+      "env": {
+        "WORDPRESS_URL": "https://your-wordpress-site.com",
+        "WORDPRESS_USERNAME": "your_username",
+        "WORDPRESS_PASSWORD": "your_application_password"
+      }
+    }
+  }
+}
+```
+
+#### 3. Important Configuration Notes
+
+**Path Configuration:**
+- Use double backslashes (`\\`) in Windows paths
+- Enclose paths in double quotes
+- Spaces in paths are supported within quotes
+
+**Password Configuration:**
+- Use WordPress Application Password (recommended)
+- Passwords with spaces are supported
+- **Do NOT remove spaces** from your actual password
+- Environment variables provide secure credential storage
+
+**Example with Spaces in Password:**
+```json
+"env": {
+  "WORDPRESS_PASSWORD": "AbC1 2DeF 3GhI 4JkL"
+}
+```
+
+#### 4. MCP-RS Server Configuration
+
+Ensure your `mcp-config.toml` is configured for STDIO mode:
+
+```toml
+[server]
+stdio = true           # Required for Claude Desktop
+log_level = "info"
+
+[handlers.wordpress]
+url = "${WORDPRESS_URL}"
+username = "${WORDPRESS_USERNAME}"
+password = "${WORDPRESS_PASSWORD}"
+enabled = true
+timeout_seconds = 30
+```
+
+#### 5. Restart Claude Desktop
+
+After configuration:
+1. **Close Claude Desktop completely**
+2. **Restart the application**
+3. **Verify MCP connection** in a new conversation
+4. **Test with a simple command**: "List available WordPress tools"
+
+### Testing AI Agent Connection
+
+#### Quick Connection Test
+```
+Please list all available WordPress tools and their descriptions.
+```
+
+#### Resource Access Test
+```
+Can you read the wordpress://categories resource to show me all available categories?
+```
+
+#### Tool Execution Test
+```
+Please get the list of WordPress categories using the get_categories tool.
+```
+
+### Expected AI Agent Capabilities
+
+With proper configuration, AI agents can:
+
+✅ **Content Management:**
+- Create, read, update, delete posts and pages
+- Manage categories and tags
+- Handle media uploads and organization
+
+✅ **Resource Access:**
+- Read `wordpress://posts`, `wordpress://categories`, `wordpress://tags`
+- Access structured content data via MCP resources
+- Retrieve taxonomy and metadata information
+
+✅ **Advanced Operations:**
+- Bulk content operations
+- SEO optimization and metadata management
+- Comment moderation and user interaction
+- Custom post type handling
+
+### Troubleshooting AI Agent Issues
+
+#### "Cannot connect to MCP server"
+1. **Verify file paths** in claude_desktop_config.json
+2. **Check MCP-RS executable** location and permissions
+3. **Ensure STDIO mode** is enabled in mcp-config.toml
+4. **Restart Claude Desktop** after configuration changes
+
+#### "WordPress authentication failed"
+1. **Verify Application Password** is correctly set
+2. **Check username spelling** and capitalization
+3. **Test credentials** manually via WordPress REST API
+4. **Ensure user has appropriate permissions**
+
+#### "Tools not available"
+1. **Confirm MCP connection** is established
+2. **Check WordPress handler** is enabled in configuration
+3. **Verify WordPress site** is accessible from MCP-RS server
+4. **Review server logs** for detailed error information
+
+### AI Agent Best Practices
+
+#### Prompt Engineering
+```
+When working with WordPress content:
+1. Always specify target categories for new posts
+2. Include SEO-friendly slugs and descriptions
+3. Request bulk operations for efficiency
+4. Verify content before publishing
+```
+
+#### Resource Management
+```
+For large content operations:
+1. Use wordpress://posts resource for content overview
+2. Filter by categories or tags when possible
+3. Batch similar operations together
+4. Monitor API rate limits and timeouts
+```
+
+#### Security Considerations
+```
+When using MCP-RS with AI agents:
+1. Use Application Passwords (never regular passwords)
+2. Limit user permissions to necessary functions only
+3. Monitor audit logs for unusual activity
+4. Regularly rotate Application Passwords
+```

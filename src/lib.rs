@@ -11,6 +11,7 @@ pub mod config;
 pub mod core;
 pub mod error;
 pub mod handlers;
+pub mod http_server;
 pub mod mcp;
 pub mod mcp_server;
 pub mod server;

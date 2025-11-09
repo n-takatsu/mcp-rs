@@ -9,6 +9,7 @@ mod config;
 mod core;
 mod error;
 mod handlers;
+mod http_server;
 mod mcp;
 mod protocol;
 mod security;
@@ -21,10 +22,12 @@ use config::{ConfigSwitcher, DynamicConfigManager, McpConfig};
 use core::{PluginInfo, Runtime, RuntimeConfig};
 use error::Error;
 use handlers::WordPressHandler;
+use http_server::HttpJsonRpcServer;
 // use mcp_rs::mcp_server::McpServer;
 use security::{SecureMcpServer, SecurityConfig};
 use setup::{setup_config_interactive, DemoSetup};
 use std::sync::Arc;
+use tracing::error;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -203,7 +206,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if config.server.stdio.unwrap_or(false) {
         println!("📞 STDIO モードで待機中...");
         println!("💡 Ctrl+C で終了");
-        
+
         // STDIO mode - keep running until interrupted
         tokio::signal::ctrl_c().await?;
         println!("\n🔄 終了シグナルを受信しました");
@@ -214,11 +217,68 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .as_deref()
             .unwrap_or("127.0.0.1:8080");
 
-        println!("🌐 HTTP サーバーを開始: http://{}", addr);
-        println!("💡 Ctrl+C で終了");
-        
-        // TCP server mode
-        server.run(addr).await?;
+        println!("🌐 HTTPとTCPの両サーバーを開始: http://{}", addr);
+        println!("� TCP JSON-RPC: ライン区切りプロトコル (既存クライアント用)");
+        println!("🌐 HTTP JSON-RPC: POST /mcp (AI Agent用)");
+        println!("�💡 Ctrl+C で終了");
+
+        // Create HTTP server with same handlers
+        let mut http_server = HttpJsonRpcServer::new();
+
+        // Add WordPress handler to HTTP server if available
+        if let Some(wp_config) = &config.handlers.wordpress {
+            if wp_config.enabled.unwrap_or(true) {
+                let wordpress_handler =
+                    WordPressHandler::try_new(wp_config.clone()).map_err(|e| {
+                        Error::Internal(format!("WordPress handler initialization failed: {}", e))
+                    })?;
+                http_server.add_handler("wordpress".to_string(), Arc::new(wordpress_handler));
+            }
+        }
+
+        // Parse address for HTTP server (use different port to avoid conflict)
+        let tcp_addr = addr;
+        let http_port = if addr.contains(':') {
+            let port: u16 = addr
+                .split(':')
+                .nth(1)
+                .unwrap_or("8080")
+                .parse()
+                .unwrap_or(8080);
+            port + 1 // HTTP server on next port
+        } else {
+            8081
+        };
+        let http_addr = format!("127.0.0.1:{}", http_port);
+
+        println!("🔗 TCP サーバー: {}", tcp_addr);
+        println!("🔗 HTTP サーバー: http://{}", http_addr);
+
+        // Start both servers concurrently
+        let tcp_server_task = tokio::spawn({
+            let server = server;
+            let addr = tcp_addr.to_string();
+            async move {
+                if let Err(e) = server.run(&addr).await {
+                    error!("TCP server error: {}", e);
+                }
+            }
+        });
+
+        let http_server_task = tokio::spawn({
+            async move {
+                if let Err(e) = http_server.serve(&http_addr).await {
+                    error!("HTTP server error: {}", e);
+                }
+            }
+        });
+
+        // Wait for either server to complete (or Ctrl+C)
+        tokio::select! {
+            _ = tcp_server_task => println!("TCP サーバーが終了しました"),
+            _ = http_server_task => println!("HTTP サーバーが終了しました"),
+            _ = tokio::signal::ctrl_c() => println!("\n🔄 終了シグナルを受信しました"),
+        }
     }
 
     // Graceful shutdown

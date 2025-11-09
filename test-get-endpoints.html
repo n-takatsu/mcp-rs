@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MCP-RS GET エンドポイント テスト</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .container { max-width: 800px; margin: 0 auto; }
+        .endpoint { margin: 20px 0; padding: 15px; border: 1px solid #ccc; border-radius: 5px; }
+        .result { background: #f5f5f5; padding: 10px; margin: 10px 0; border-radius: 3px; }
+        .error { background: #ffebee; color: #c62828; }
+        .success { background: #e8f5e9; color: #2e7d32; }
+        button { padding: 10px 20px; margin: 5px; cursor: pointer; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🚀 MCP-RS GET エンドポイント テスト</h1>
+        
+        <div class="endpoint">
+            <h3>📋 WordPress カテゴリ</h3>
+            <button onclick="testCategories()">カテゴリ取得テスト</button>
+            <div id="categories-result" class="result"></div>
+        </div>
+
+        <div class="endpoint">
+            <h3>🏷️ WordPress タグ</h3>
+            <button onclick="testTags()">タグ取得テスト</button>
+            <div id="tags-result" class="result"></div>
+        </div>
+
+        <div class="endpoint">
+            <h3>🔧 利用可能ツール</h3>
+            <button onclick="testTools()">ツール一覧テスト</button>
+            <div id="tools-result" class="result"></div>
+        </div>
+
+        <div class="endpoint">
+            <h3>📚 利用可能リソース</h3>
+            <button onclick="testResources()">リソース一覧テスト</button>
+            <div id="resources-result" class="result"></div>
+        </div>
+    </div>
+
+    <script>
+        const BASE_URL = 'https://complete-debut-among-pose.trycloudflare.com';
+        
+        async function fetchEndpoint(endpoint, resultElementId) {
+            const resultElement = document.getElementById(resultElementId);
+            resultElement.innerHTML = '⏳ 取得中...';
+            
+            try {
+                const response = await fetch(`${BASE_URL}${endpoint}`, {
+                    method: 'GET',
+                    headers: {
+                        'Accept': 'application/json',
+                    }
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+                
+                const data = await response.json();
+                resultElement.className = 'result success';
+                resultElement.innerHTML = `
+                    <h4>✅ 成功!</h4>
+                    <pre>${JSON.stringify(data, null, 2)}</pre>
+                `;
+            } catch (error) {
+                resultElement.className = 'result error';
+                resultElement.innerHTML = `
+                    <h4>❌ エラー</h4>
+                    <p>${error.message}</p>
+                `;
+            }
+        }
+        
+        function testCategories() {
+            fetchEndpoint('/api/categories', 'categories-result');
+        }
+        
+        function testTags() {
+            fetchEndpoint('/api/tags', 'tags-result');
+        }
+        
+        function testTools() {
+            fetchEndpoint('/api/tools', 'tools-result');
+        }
+        
+        function testResources() {
+            fetchEndpoint('/api/resources', 'resources-result');
+        }
+    </script>
+</body>
+</html>
