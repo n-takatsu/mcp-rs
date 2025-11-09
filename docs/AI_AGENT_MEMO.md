@@ -187,6 +187,76 @@ cargo test --all-features test_timeout_strategy
 - **Market Impact**: Consider user needs (e.g., MySQL market demand)
 - **Environment Parity**: Ensure local and CI environments behave identically
 
+## 🤖 Claude Desktop Integration (2025年11月9日)
+
+### Implementation Status: ✅ COMPLETED
+
+### Overview
+Claude Desktop MCP統合を完了し、AI AgentがWordPressリソースに直接アクセス可能になりました。
+
+### Package Location
+- **Standalone Package**: `C:\Users\takat\Desktop\mcp-rs-server\`
+- **Files**:
+  - `mcp-rs.exe` (6.26MB) - 実行ファイル
+  - `mcp-config-claude.toml` - STDIO mode設定
+  - `claude_desktop_config.json` - Claude Desktop統合設定
+  - `claude-desktop-diagnosis.ps1` - 診断ツール
+  - `README.md` - 使用方法
+
+### Technical Architecture
+- **Dual Server Mode**:
+  - STDIO mode (`stdio = true`): Claude Desktop MCP統合
+  - HTTP+TCP mode (`stdio = false`): AI Agent HTTP access
+- **Ports**:
+  - TCP: `127.0.0.1:8080` (line-delimited protocol)
+  - HTTP: `127.0.0.1:8081` (JSON-RPC for AI agents)
+
+### Configuration
+```toml
+[server]
+stdio = true  # Claude Desktop mode
+log_level = "info"
+
+[handlers.wordpress]
+url = "https://redring.jp"
+enabled = true
+burst_size = 20
+```
+
+### Claude Desktop Setup
+```json
+{
+  "mcpServers": {
+    "mcp-rs-wordpress": {
+      "command": "C:/Users/takat/Desktop/mcp-rs-server/mcp-rs.exe",
+      "args": ["--config", "C:/Users/takat/Desktop/mcp-rs-server/mcp-config-claude.toml"],
+      "env": { "RUST_LOG": "info" }
+    }
+  }
+}
+```
+
+### Validation Results (2025-11-09)
+- ✅ MCP-RS executable: 正常動作
+- ✅ Configuration files: 適切配置
+- ✅ WordPress integration: 正常初期化
+- ✅ Claude Desktop config: AppData配置完了
+
+### Resolved Issues
+1. **Path Separator**: Windows環境でのパス区切り統一 (`/` 使用)
+2. **Configuration Fields**: `burst_size`, `enabled` フィールド追加
+3. **Process Management**: Claude Desktop完全再起動手順確立
+
+### Usage Verification
+Claude Desktopでの動作確認:
+- "WordPressサイトのカテゴリ一覧を取得してください"
+- "ブログのタグ一覧を教えてください"
+
+### Future Enhancements
+- [ ] Claude.ai web_fetch統合
+- [ ] 外部トンネリング安定化
+- [ ] エラーハンドリング強化
+
 ---
 
 **Note**: This memo should be updated whenever significant changes are made to the project architecture, security posture, or development workflow.
