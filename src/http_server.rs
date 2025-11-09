@@ -17,7 +17,7 @@ use tower_http::cors::CorsLayer;
 use tracing::{error, info};
 
 use crate::{
-    mcp::{JsonRpcRequest, JsonRpcResponse, McpHandler, McpError, ResourceReadParams, InitializeParams, ToolCallParams},
+    mcp::{JsonRpcRequest, JsonRpcResponse, McpHandler, McpError, ResourceReadParams, InitializeParams, ToolCallParams, ClientCapabilities, ClientInfo},
 };
 
 pub struct HttpJsonRpcServer {
@@ -53,7 +53,7 @@ impl HttpJsonRpcServer {
 
 async fn handle_json_rpc(
     State(handlers): State<Arc<HashMap<String, Arc<dyn McpHandler>>>>,
-    headers: HeaderMap,
+    _headers: HeaderMap,
     Json(request): Json<JsonRpcRequest>,
 ) -> Result<Json<JsonRpcResponse>, StatusCode> {
     info!("Received JSON-RPC request: method={}", request.method);
@@ -94,8 +94,14 @@ async fn process_mcp_request(
             } else {
                 InitializeParams {
                     protocol_version: "2024-11-05".to_string(),
-                    capabilities: json!({}),
-                    client_info: json!({}),
+                    capabilities: ClientCapabilities {
+                        experimental: None,
+                        sampling: None,
+                    },
+                    client_info: ClientInfo {
+                        name: "HTTP JSON-RPC Client".to_string(),
+                        version: "1.0.0".to_string(),
+                    },
                 }
             };
             handler.initialize(params).await
