@@ -24,6 +24,12 @@ pub struct HttpJsonRpcServer {
     handlers: HashMap<String, Arc<dyn McpHandler>>,
 }
 
+impl Default for HttpJsonRpcServer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl HttpJsonRpcServer {
     pub fn new() -> Self {
         Self {
