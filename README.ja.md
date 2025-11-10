@@ -1,308 +1,245 @@
-# 🚀 WordPress MCP Server
+# mcp-rs
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![Rust](https://img.shields.io/badge/rust-1.70+-orange.svg)](https://rustlang.org)
-[![Tests](https://img.shields.io/badge/tests-205%20passing-green.svg)](https://github.com/n-takatsu/mcp-rs)
+🚀 **本番対応** Model Context Protocol (MCP) の Rust 実装。WordPress とそれ以外のシステムとの AI エージェント統合を実現します。
 
-> **日本語** | [English](README.md)
+> **[日本語](README.ja.md)** | **[English](README.md)**
 
-エンタープライズグレードのWordPress Model Context Protocol (MCP) サーバー。AIシステムと自動化ワークフロー向けの安全で高性能なWordPress統合を提供します。
+[![Version](https://img.shields.io/badge/Version-v0.15.0-blue)](https://github.com/n-takatsu/mcp-rs/releases/tag/v0.15.0)
+[![Architecture](https://img.shields.io/badge/Architecture-Production--Ready-green)](#アーキテクチャ)
+[![Implementation](https://img.shields.io/badge/WordPress_Tools-27_Available-green)](#wordpress-mcp-tools)
+[![License](https://img.shields.io/badge/License-MIT%2FApache--2.0-green)](#ライセンス)
 
-## 🎯 概要
+## 概要
 
-このMCPサーバーは、WordPressサイトとの包括的な統合機能を提供し、コンテンツ作成、メディア管理、セキュリティ監視を自動化します。軍事レベルの暗号化と多層防御セキュリティアーキテクチャを特徴としています。
+`mcp-rs` は、**包括的で実戦テスト済み**の MCP（Model Context Protocol）の Rust 実装で、**完全な WordPress 統合**を提供します。レイヤード・アーキテクチャで構築され、AI エージェントが標準化された JSON-RPC インターフェースを通じて高度なコンテンツ管理を実行できるようにします。このフレームワークは 27 の WordPress ツール、エンタープライズレベルのセキュリティ、強力な型安全性を備え、GitHub Copilot や他の AI コーディングアシスタントでの本番利用に最適化されています。
 
-## ✨ 主要機能
+## 🎯 対象ユーザー
 
-### 🔧 WordPress統合（27ツール）
-- **投稿・固定ページ管理**: SEO統合を含むCRUD操作
-- **高度なメディア管理**: base64サポートによるアップロード、リサイズ、整理
-- **カテゴリ・タグ管理**: 階層サポートとバルク操作
+### **AI 開発者** 🤖
+Claude Desktop アプリ、GPT 統合、カスタム AI エージェントを構築していますか？ mcp-rs は包括的な WordPress ツールを備えた本番対応の Model Context Protocol 実装を提供します。
+
+### **エンタープライズ WordPress チーム** 🏢  
+大規模な WordPress デプロイメントを管理していますか？エンタープライズグレードのセキュリティ、自動化されたコンテンツ管理、シームレスな CI/CD 統合を取得できます。
+
+### **DevOps エンジニア** ⚙️
+WordPress 運用を自動化していますか？包括的なヘルスチェック、監視、本番対応のエラーハンドリングを備えた 27 の実戦テスト済みツールを利用できます。
+
+### **Rust 愛好者** 🦀
+高品質な Rust コードベースに貢献したいですか？クリーンなアーキテクチャと包括的なドキュメントを備えた、205+ テスト、警告ゼロのプロジェクトにご参加ください。
+
+### **セキュリティチーム** 🔒
+WordPress セキュリティ自動化が必要ですか？SQL インジェクション保護、XSS 防御、包括的な監査ログを備えた 6 層エンタープライズセキュリティアーキテクチャをご利用ください。
+
+## 🚀 主要機能
+
+### **コア機能**
+- **JSON-RPC 2.0 サーバー**: `axum` を使用したフル機能 JSON-RPC サーバー実装
+- **マルチトランスポート対応**: STDIO、HTTP、WebSocket 通信プロトコル
+- **プラグインアーキテクチャ**: `McpHandler` トレイトによる拡張可能なハンドラーベースシステム
+- **型安全な設定**: 環境変数オーバーライドを備えた TOML ベース設定
+- **本番対応エラーハンドリング**: 構造化ログを備えた包括的なエラータイプ
+- **Async/Await**: 高性能非同期操作のための `tokio` ベース
+
+### **WordPress 統合（27 ツール）**
+- **投稿・固定ページ管理**: SEO 統合を含む完全な CRUD 操作
+- **高度なメディア管理**: base64 サポート付きのアップロード、リサイズ、整理
+- **カテゴリ・タグ管理**: 一括操作を伴う階層サポート
 - **コメントシステム**: 完全なコメント管理と取得
 - **YouTube・ソーシャル埋め込み**: セキュリティ検証付きリッチメディア統合
 - **ユーザー管理**: ロールベースアクセス制御とユーザー操作
 
-### 🛡️ エンタープライズセキュリティ（6層アーキテクチャ）
-- **AES-GCM-256暗号化**: PBKDF2鍵導出による軍事レベル暗号化
-- **SQLインジェクション保護**: 11種類の攻撃パターンのリアルタイム検出
-- **XSS防止**: 14種類のXSS攻撃ベクターに対する高度な保護
-- **レート制限**: DDoS保護付きトークンバケットアルゴリズム
-- **TLS強制**: 証明書検証付きTLS 1.2+
+### **エンタープライズセキュリティ（6 層アーキテクチャ）**
+- **AES-GCM-256 暗号化**: PBKDF2 鍵導出による軍用グレード暗号化
+- **SQL インジェクション保護**: 11 の攻撃パターンのリアルタイム検出
+- **XSS 防御**: 14 の XSS 攻撃ベクトルに対する高度な保護
+- **レート制限**: DDoS 保護付きトークンバケットアルゴリズム
+- **TLS 強制**: 証明書検証付き TLS 1.2+
 - **監査ログ**: 包括的なセキュリティイベント追跡
 
-### 🏗️ 技術的優秀性
-- **非同期アーキテクチャ**: 高性能並行処理のためのTokio構築
-- **型安全性**: 100%メモリ安全なRust実装
-- **JSON-RPC 2.0**: axumフレームワークを使用した標準準拠サーバー
-- **🔄 動的データベース切り替え**: ゼロダウンタイムでのデータベースエンジン切り替え
-- **包括的テスト**: 100%合格率の205+テスト
-- **警告ゼロ**: clippyワーニングゼロのクリーンなコードベース
+### **技術的優秀性**
+- **非同期アーキテクチャ**: 高性能並行処理のための Tokio ベース
+- **型安全性**: 100% メモリ安全な Rust 実装
+- **包括的テスト**: 100% 合格率の 205+ テスト
+- **警告ゼロ**: clippy 警告ゼロのクリーンなコードベース
 - **本番対応**: 最適化されたビルドプロファイルとエラーハンドリング
 
 ## 📊 品質指標
 
 | 指標 | 値 |
 |------|-----|
-| **総テスト数** | 205+ (100%合格) |
+| **総テスト数** | 205+ (100% 合格) |
 | **コードカバレッジ** | 包括的 |
-| **セキュリティテスト** | 6層検証 |
+| **セキュリティテスト** | 6 層検証 |
 | **パフォーマンス** | 本番最適化 |
-| **ドキュメント** | 完全なAPIドキュメント |
+| **ドキュメント** | 完全な API ドキュメント |
 
 ## 🚀 クイックスタート
 
 ### 前提条件
 - Rust 1.70+ (2021 edition)
-- アプリケーションパスワードが有効なWordPressサイト
-- WordPress REST APIへのネットワークアクセス
+- アプリケーションパスワードが有効な WordPress サイト
+- WordPress REST API へのネットワークアクセス
 
 ### インストール
 
-#### 🚨 Claude Desktop利用時の重要な注意事項
+#### 🚨 Claude Desktop ユーザーへの重要なお知らせ
 
-**Claude DesktopはSTDIO（標準入出力）通信を使用します。標準出力にログメッセージが混在すると通信が破綻するため、必ず専用設定を使用してください。**
+**Claude Desktop は STDIO（標準入出力）通信を使用します。ログメッセージが標準出力に混在すると通信が破綻するため、必ず専用設定をご使用ください。**
 
 ```bash
-# Claude Desktop用（重要：専用設定を使用）
+# Claude Desktop 用（重要：専用設定を使用）
 cargo run -- --config configs/production/claude-desktop.toml
 
-# Web UI用（HTTPアクセス）
-cargo run -- --config mcp-config-http-transport.toml
+# Web UI 用（HTTP アクセス）
+cargo run -- --config configs/development/http-transport.toml
 ```
 
-> 📖 詳細な設定方法は [Claude Desktop統合ガイド](./project-docs/CLAUDE_DESKTOP_INTEGRATION.md)を参照してください。
+> 📖 詳細な設定については [Claude Desktop 統合ガイド](./project-docs/CLAUDE_DESKTOP_INTEGRATION.md) をご覧ください。
 
-#### オプション1: 対話的セットアップ（推奨）
+#### オプション 1: 対話式設定（推奨）
 
 ```bash
 # リポジトリをクローン
 git clone https://github.com/n-takatsu/mcp-rs.git
 cd mcp-rs
 
-# リリースビルド
+# リリース版をビルド
 cargo build --release
 
-# 対話的設定セットアップを実行
+# 対話式設定セットアップを実行
 ./target/release/mcp-rs --setup-config
 ```
 
-対話的セットアップの特徴：
+対話式設定の特徴:
 - 📝 ユーザーフレンドリーな質問形式
 - 🔍 リアルタイム接続テスト  
 - ⚡ 自動設定ファイル生成
-- 🛡️ セキュリティ設定の推奨値適用
+- 🛡️ セキュリティ設定の推奨
 
-#### オプション2: 手動設定
+#### オプション 2: 手動設定
 
 ```bash
-# サンプル設定ファイル生成
+# サンプル設定ファイルを生成
 ./target/release/mcp-rs --generate-config
 
-# 設定ファイルをコピーして編集
+# 設定を編集
 cp mcp-config.toml.example mcp-config.toml
-# mcp-config.tomlを編集してWordPress認証情報を設定
+# mcp-config.toml を WordPress の詳細で編集
 
-# サーバー起動
-./target/release/mcp-rs
+# カスタム設定で実行
+./target/release/mcp-rs --config mcp-config.toml
 ```
 
-#### オプション3: 環境変数での設定
+### 基本設定
 
-```bash
-# 環境変数を設定
-export WORDPRESS_URL="https://your-wordpress-site.com"
-export WORDPRESS_USERNAME="your_username"  
-export WORDPRESS_PASSWORD="your_app_password"
+`mcp-config.toml` を作成:
 
-# サーバー起動（設定ファイルなしでも動作）
-./target/release/mcp-rs
-```
-
-### 設定
 ```toml
 [wordpress]
 base_url = "https://your-wordpress-site.com"
 username = "your-username"
-application_password = "your-app-password"
+password = "your-application-password"  # WordPress アプリケーションパスワード
 
-[security]
-encryption_enabled = true
-rate_limit_enabled = true
-sql_injection_protection = true
-xss_protection = true
-audit_logging = true
+[server]
+transport_type = "stdio"  # Claude Desktop 用
+# transport_type = "http"  # Web UI 用
+# bind_addr = "127.0.0.1:8080"  # HTTP モードのみ
+
+[logging]
+level = "error"  # Claude Desktop 用の最小ログ
+# level = "info"  # 開発用の詳細ログ
 ```
 
-### WordPressアプリケーションパスワード設定
+## 🏗️ アーキテクチャ
 
-1. WordPressダッシュボードにログイン
-2. **ユーザー** → **プロフィール** に移動
-3. **アプリケーションパスワード** セクションまでスクロール
-4. 新しいアプリケーション名を入力（例：「MCP Server」）
-5. **新しいアプリケーションパスワードを追加** をクリック
-6. 生成されたパスワードを `mcp-config.toml` にコピー
+```
+┌─────────────────────┐    ┌─────────────────────┐    ┌─────────────────────┐
+│   AI エージェント    │───▶│    MCP サーバー     │───▶│   WordPress サイト   │
+│  (Claude Desktop,   │    │   (mcp-rs)          │    │   (REST API)        │
+│   カスタム AI など)  │    │                     │    │                     │
+└─────────────────────┘    └─────────────────────┘    └─────────────────────┘
+                                      │
+                                      ▼
+                           ┌─────────────────────┐
+                           │   セキュリティ層    │
+                           │ • SQL インジェクション │
+                           │ • XSS 保護          │
+                           │ • レート制限        │
+                           │ • 暗号化            │
+                           └─────────────────────┘
+```
 
-## 🎯 対象ユーザー
+## 📚 ドキュメント
 
-- **WordPress開発者**: コンテンツ作成とサイト管理の自動化
-- **エンタープライズチーム**: ビジネスワークフロー向けの安全なWordPress統合
-- **AIシステム**: コンテンツ自動化のための信頼性の高いWordPress統合
-- **コンテンツクリエーター**: 合理化された公開とメディア管理
+- [🚀 クイックスタートガイド](./project-docs/quick-start.md)
+- [🔧 設定リファレンス](./project-docs/configuration.md)
+- [🔒 セキュリティガイド](./project-docs/security.md)
+- [🏗️ アーキテクチャ概要](./project-docs/architecture.md)
+- [📝 API リファレンス](./project-docs/api-reference.md)
+- [🔄 Claude Desktop 統合](./project-docs/CLAUDE_DESKTOP_INTEGRATION.md)
 
-## 🔧 利用可能なツール
+## 🛠️ 開発
 
-### コンテンツ管理
-- `wordpress_create_post` - 新しい投稿作成
-- `wordpress_update_post` - 既存投稿更新
-- `wordpress_delete_post` - 投稿削除
-- `wordpress_get_post` - 投稿取得
-- `wordpress_list_posts` - 投稿一覧取得
-- `wordpress_create_page` - 新しい固定ページ作成
-- `wordpress_update_page` - 固定ページ更新
-- `wordpress_get_page` - 固定ページ取得
+### ソースからのビルド
 
-### メディア管理
-- `wordpress_upload_media` - メディアファイルアップロード
-- `wordpress_get_media` - メディア情報取得
-- `wordpress_list_media` - メディアライブラリ一覧
-- `wordpress_delete_media` - メディア削除
-- `wordpress_update_media` - メディア情報更新
-
-### カテゴリ・タグ
-- `wordpress_create_category` - 新しいカテゴリ作成
-- `wordpress_list_categories` - カテゴリ一覧取得
-- `wordpress_create_tag` - 新しいタグ作成
-- `wordpress_list_tags` - タグ一覧取得
-
-### コメント管理
-- `wordpress_list_comments` - コメント一覧取得
-- `wordpress_get_comment` - 個別コメント取得
-- `wordpress_create_comment` - 新しいコメント作成
-- `wordpress_update_comment` - コメント更新
-- `wordpress_delete_comment` - コメント削除
-
-### 高度な機能
-- `wordpress_search_content` - コンテンツ検索
-- `wordpress_bulk_operations` - バルク操作
-- `wordpress_seo_analysis` - SEO分析
-- `wordpress_backup_content` - コンテンツバックアップ
-- `wordpress_security_scan` - セキュリティスキャン
-
-## 🔄 動的データベース切り替え機能
-
-### エンタープライズ機能
-MCP-RSは業界最先端の**ゼロダウンタイム データベースエンジン切り替え機能**を提供します。
-
-#### 主要機能
-- **⚡ ゼロダウンタイム切り替え**: サービス中断なしでのデータベースエンジン変更
-- **🔄 リアルタイム監視**: 全エンジンの健康状態とパフォーマンスの継続監視
-- **🛡️ 自動フェイルオーバー**: 障害検出時の自動切り替え
-- **📊 パフォーマンス最適化**: ワークロード特性に基づく最適エンジンの自動選択
-- **🔧 ホット設定**: サービス再起動なしでの設定変更
-
-#### サポート対象エンジン組み合わせ
-| プライマリ | セカンダリ | 用途 |
-|-----------|----------|------|
-| PostgreSQL | Redis, MongoDB | 高スループットWebアプリ |
-| MySQL | Redis, SQLite | 従来型Webスタック + キャッシュ |
-| MongoDB | PostgreSQL, Redis | ドキュメント重視 + リレーショナル |
-| Redis | PostgreSQL, MongoDB | キャッシュファースト + 永続化 |
-
-#### MCPツール
 ```bash
-# データベースエンジン切り替え
-switch_database_engine --target postgresql --mode graceful
+# 開発ビルド
+cargo build
 
-# 自動切り替えポリシー設定
-configure_switch_policy --trigger performance --threshold 1000ms
+# 最適化された本番ビルド
+cargo build --release
 
-# リアルタイムエンジンメトリクス取得
-get_engine_metrics --engine all --format json
+# テスト実行
+cargo test
+
+# 特定の設定で実行
+cargo run -- --config configs/development/http-transport.toml
 ```
 
-## 🔒 セキュリティ機能
-
-### 暗号化
-- **AES-GCM-256**: 認証付き暗号化モード
-- **PBKDF2**: 100,000回反復による鍵導出
-- **安全な鍵管理**: メモリ内での安全な鍵処理
-- **パスワード難読化**: 平文パスワードの漏洩防止
-
-### 攻撃防御
-- **SQLインジェクション**: 11種類の攻撃パターン検出
-- **XSS保護**: 14種類のクロスサイトスクリプティング防止
-- **入力検証**: 包括的なデータサニタイゼーション
-- **レート制限**: 設定可能なリクエスト制限
-
-### 監視・ログ
-- **リアルタイム監視**: セキュリティイベントの即座の検出
-- **構造化ログ**: JSON形式での詳細ログ記録
-- **メトリクス収集**: パフォーマンスと使用状況の追跡
-- **アラート機能**: 異常検出時の通知
-
-## 🧪 テスト
+### テスト
 
 ```bash
 # 全テスト実行
 cargo test
 
-# リリースモードテスト
-cargo test --release
-
-# 詳細出力付きテスト
+# 出力付きで実行
 cargo test -- --nocapture
 
-# ベンチマーク実行
-cargo bench
+# 特定のテストモジュール実行
+cargo test wordpress_api
 ```
 
-### テストカバレッジ
-- **ユニットテスト**: 93件 (コア機能)
-- **統合テスト**: 82件 (メイン機能)
-- **システムテスト**: 30件 (エンドツーエンド)
-- **セキュリティテスト**: 全セキュリティ機能カバー
+## 🤝 コントリビューション
 
-## 📚 ドキュメント
-
-- **[プロジェクトドキュメント](project-docs/)**: 技術仕様とアーキテクチャ
-- **[セキュリティガイド](project-docs/security-guide.md)**: セキュリティ実装の詳細
-- **[アーキテクチャ](project-docs/architecture.md)**: システム設計ドキュメント
-- **[WordPress ガイド](project-docs/wordpress-guide.md)**: WordPress統合の詳細
-- **[貢献ガイドライン](CONTRIBUTING.md)**: 開発参加方法
-
-## 🤝 貢献
-
-プロジェクトへの貢献を歓迎します！
+コントリビューションを歓迎します！ガイドラインについては [CONTRIBUTING.md](CONTRIBUTING.md) をご覧ください。
 
 1. リポジトリをフォーク
-2. 機能ブランチを作成 (`git checkout -b feature/amazing-feature`)
-3. 変更をコミット (`git commit -m 'Add amazing feature'`)
+2. フィーチャーブランチを作成 (`git checkout -b feature/amazing-feature`)
+3. 変更をコミット (`git commit -m 'Add some amazing feature'`)
 4. ブランチにプッシュ (`git push origin feature/amazing-feature`)
 5. プルリクエストを開く
 
-詳細は [CONTRIBUTING.md](CONTRIBUTING.md) をご覧ください。
-
 ## 📄 ライセンス
 
-このプロジェクトは MIT OR Apache-2.0 のデュアルライセンスです。
+このプロジェクトはデュアルライセンスです：
 
-- [MIT License](LICENSE-MIT)
+- [MIT ライセンス](LICENSE-MIT)
 - [Apache License 2.0](LICENSE-APACHE)
 
-## 🔗 リンク
-
-- **[GitHubリポジトリ](https://github.com/n-takatsu/mcp-rs)**
-- **[リリース](https://github.com/n-takatsu/mcp-rs/releases)**
-- **[Issue報告](https://github.com/n-takatsu/mcp-rs/issues)**
-- **[ディスカッション](https://github.com/n-takatsu/mcp-rs/discussions)**
+お好みのライセンスを選択できます。
 
 ## 🙏 謝辞
 
-- [Model Context Protocol](https://modelcontextprotocol.io/) による革新的なプロトコル仕様
-- [WordPress REST API](https://developer.wordpress.org/rest-api/) による包括的なAPI
-- [Rust](https://www.rust-lang.org/) による安全で高性能な実装基盤
+- Anthropic による [Model Context Protocol](https://modelcontextprotocol.io/)
+- [WordPress REST API](https://developer.wordpress.org/rest-api/)
+- 優秀なツールとライブラリを提供する Rust コミュニティ
+
+## 📞 サポート
+
+- 📖 [ドキュメント](./docs/)
+- 🐛 [イシュートラッカー](https://github.com/n-takatsu/mcp-rs/issues)
+- 💬 [ディスカッション](https://github.com/n-takatsu/mcp-rs/discussions)
 
 ---
 
-**⭐ このプロジェクトが役立つ場合は、スターをお願いします！**
+❤️ と Rust 🦀 で構築
