@@ -6,6 +6,8 @@
 mcp-config.toml
 
 # IDE files (但し.vscode/はプロジェクト設定として含める)
+# MCP設定はアクセストークンが含まれる可能性があるため除外
+.vscode/mcp.json
 .idea/
 *.swp
 *.swo

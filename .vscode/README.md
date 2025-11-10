@@ -41,6 +41,17 @@
 3. `Ctrl+Shift+P` → "Tasks: Run Task" で各タスクを実行
 4. `F5`でデバッグ開始
 
+## MCP設定
+
+### セキュリティ注意事項
+- `mcp.json` - 実際のMCP設定（アクセストークン含む）→ **Gitignore対象**
+- `mcp.json.example` - サンプル設定ファイル（環境変数参照）→ コミット可能
+
+### 設定方法
+1. `mcp.json.example` を `mcp.json` にコピー
+2. 環境変数 `GITHUB_PERSONAL_ACCESS_TOKEN` を設定
+3. 必要に応じて他のMCPサーバーを追加
+
 ## トラブルシューティング
 
 ### BOMエラーが再発した場合
