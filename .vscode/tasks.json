@@ -1,0 +1,163 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Cargo Build",
+            "type": "shell",
+            "command": "cargo",
+            "args": ["build"],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "presentation": {
+                "echo": true,
+                "reveal": "silent",
+                "focus": false,
+                "panel": "shared"
+            },
+            "problemMatcher": ["$rustc"]
+        },
+        {
+            "label": "Cargo Build Release",
+            "type": "shell",
+            "command": "cargo",
+            "args": ["build", "--release"],
+            "group": "build",
+            "presentation": {
+                "echo": true,
+                "reveal": "silent",
+                "focus": false,
+                "panel": "shared"
+            },
+            "problemMatcher": ["$rustc"]
+        },
+        {
+            "label": "Cargo Test",
+            "type": "shell",
+            "command": "cargo",
+            "args": ["test"],
+            "group": {
+                "kind": "test",
+                "isDefault": true
+            },
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared"
+            },
+            "problemMatcher": ["$rustc"]
+        },
+        {
+            "label": "Cargo Format",
+            "type": "shell",
+            "command": "cargo",
+            "args": ["fmt"],
+            "group": "build",
+            "presentation": {
+                "echo": true,
+                "reveal": "silent",
+                "focus": false,
+                "panel": "shared"
+            }
+        },
+        {
+            "label": "Cargo Format Check",
+            "type": "shell",
+            "command": "cargo",
+            "args": ["fmt", "--all", "--", "--check"],
+            "group": "build",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared"
+            }
+        },
+        {
+            "label": "Cargo Clippy",
+            "type": "shell",
+            "command": "cargo",
+            "args": ["clippy", "--all-targets", "--all-features", "--", "-D", "warnings"],
+            "group": "build",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared"
+            },
+            "problemMatcher": ["$rustc"]
+        },
+        {
+            "label": "Cargo Clean",
+            "type": "shell",
+            "command": "cargo",
+            "args": ["clean"],
+            "group": "build",
+            "presentation": {
+                "echo": true,
+                "reveal": "silent",
+                "focus": false,
+                "panel": "shared"
+            }
+        },
+        {
+            "label": "Run MCP Server (STDIO)",
+            "type": "shell",
+            "command": "cargo",
+            "args": ["run", "--", "--transport", "stdio"],
+            "group": "build",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": true,
+                "panel": "new"
+            },
+            "isBackground": true
+        },
+        {
+            "label": "Run MCP Server (HTTP)",
+            "type": "shell",
+            "command": "cargo",
+            "args": ["run", "--", "--transport", "http", "--port", "3000"],
+            "group": "build",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": true,
+                "panel": "new"
+            },
+            "isBackground": true
+        },
+        {
+            "label": "WordPress Health Check",
+            "type": "shell",
+            "command": "cargo",
+            "args": ["run", "--example", "wordpress_health_check"],
+            "group": "build",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared"
+            }
+        },
+        {
+            "label": "Pre-commit Check",
+            "dependsOrder": "sequence",
+            "dependsOn": [
+                "Cargo Format Check",
+                "Cargo Clippy",
+                "Cargo Test"
+            ],
+            "group": "build",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared"
+            }
+        }
+    ]
+}

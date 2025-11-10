@@ -1,0 +1,78 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug mcp-rs",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--bin=mcp-rs",
+                    "--package=mcp-rs"
+                ],
+                "filter": {
+                    "name": "mcp-rs",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "RUST_LOG": "debug",
+                "RUST_BACKTRACE": "1"
+            }
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--bin=mcp-rs",
+                    "--package=mcp-rs"
+                ],
+                "filter": {
+                    "name": "mcp-rs",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "RUST_LOG": "debug",
+                "RUST_BACKTRACE": "1"
+            }
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug with WordPress config",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--bin=mcp-rs",
+                    "--package=mcp-rs"
+                ],
+                "filter": {
+                    "name": "mcp-rs",
+                    "kind": "bin"
+                }
+            },
+            "args": [
+                "--config",
+                "mcp-config.toml"
+            ],
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "RUST_LOG": "debug",
+                "RUST_BACKTRACE": "1",
+                "WORDPRESS_URL": "http://localhost:8080",
+                "WORDPRESS_USERNAME": "admin",
+                "WORDPRESS_PASSWORD": "password"
+            }
+        }
+    ]
+}

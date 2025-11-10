@@ -5,8 +5,7 @@
 # Configuration files with sensitive information
 mcp-config.toml
 
-# IDE files
-.vscode/
+# IDE files (但し.vscode/はプロジェクト設定として含める)
 .idea/
 *.swp
 *.swo
