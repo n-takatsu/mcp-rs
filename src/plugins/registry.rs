@@ -1,4 +1,4 @@
-//! Dynamic Plugin Registry
+﻿//! Dynamic Plugin Registry
 //!
 //! Manages plugin discovery, loading, and integration with the main handler registry.
 

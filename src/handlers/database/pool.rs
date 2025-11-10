@@ -1,4 +1,4 @@
-//! Database Connection Pool Management
+﻿//! Database Connection Pool Management
 //!
 //! データベース接続プールの管理と最適化
 

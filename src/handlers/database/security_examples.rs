@@ -1,4 +1,4 @@
-//! セキュリティ強化の使用例とテストケース
+﻿//! セキュリティ強化の使用例とテストケース
 
 use super::*;
 use crate::handlers::database::{

@@ -1,4 +1,4 @@
-//! Generic Handler Trait Extensions
+﻿//! Generic Handler Trait Extensions
 //!
 //! 様々な対象システムに対応するためのハンドラー拡張
 

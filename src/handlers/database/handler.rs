@@ -1,4 +1,4 @@
-//! Database MCP Handler Implementation
+﻿//! Database MCP Handler Implementation
 //!
 //! データベース操作のためのMCPハンドラー実装
 

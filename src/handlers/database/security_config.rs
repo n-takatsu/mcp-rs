@@ -1,4 +1,4 @@
-//! 拡張セキュリティ設定とポリシー管理
+﻿//! 拡張セキュリティ設定とポリシー管理
 
 use chrono::{DateTime, NaiveTime, Utc};
 use serde::{Deserialize, Serialize};

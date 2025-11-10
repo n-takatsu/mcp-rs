@@ -1,4 +1,4 @@
-//! MCP Tools for Dynamic Database Switching
+﻿//! MCP Tools for Dynamic Database Switching
 //!
 //! 動的データベース切り替え機能のMCPツールインターフェース
 

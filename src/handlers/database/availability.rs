@@ -1,4 +1,4 @@
-//! Database Connection Availability Management
+﻿//! Database Connection Availability Management
 //!
 //! データベース接続の可用性を保つための機能群
 

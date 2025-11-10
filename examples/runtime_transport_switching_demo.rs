@@ -1,4 +1,4 @@
-//! Runtime STDIO/HTTP切り替えデモ
+﻿//! Runtime STDIO/HTTP切り替えデモ
 //!
 //! 既存のmain.rsに統合可能な動的Transport切り替え実装例
 

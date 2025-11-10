@@ -1,4 +1,4 @@
-//! Simplified MySQL Engine Implementation
+﻿//! Simplified MySQL Engine Implementation
 //!
 //! mysql_asyncライブラリを使用したシンプルなMySQLエンジン実装
 //! セキュリティ重視: RSA脆弱性（RUSTSEC-2023-0071）回避済み

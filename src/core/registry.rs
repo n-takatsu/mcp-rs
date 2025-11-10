@@ -1,4 +1,4 @@
-//! Handler Registry
+﻿//! Handler Registry
 //!
 //! Manages handler registration, lifecycle, and plugin loading.
 

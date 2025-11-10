@@ -1,4 +1,4 @@
-//! Threat Intelligence Manager
+﻿//! Threat Intelligence Manager
 //!
 //! 脅威インテリジェンスの統合管理とオーケストレーション
 

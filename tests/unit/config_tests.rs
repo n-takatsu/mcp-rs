@@ -1,4 +1,4 @@
-//! Configuration Tests
+﻿//! Configuration Tests
 //!
 //! 設定システムの単体テスト
 

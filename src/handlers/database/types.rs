@@ -1,4 +1,4 @@
-//! Database Types and Common Structures
+﻿//! Database Types and Common Structures
 //!
 //! データベースハンドラーで使用される共通の型定義
 

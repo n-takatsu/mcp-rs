@@ -1,4 +1,4 @@
-//! Database Engine Abstraction Layer
+﻿//! Database Engine Abstraction Layer
 //!
 //! 異なるデータベースエンジンに対する統一インターフェース
 

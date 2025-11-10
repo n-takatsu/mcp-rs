@@ -1,4 +1,4 @@
-//! Integration tests for plugin system
+﻿//! Integration tests for plugin system
 //!
 //! These tests exercise the plugin loading and management functionality.
 

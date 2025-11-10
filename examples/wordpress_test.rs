@@ -1,4 +1,4 @@
-// Note: This example needs the library to be built as a library crate
+﻿// Note: This example needs the library to be built as a library crate
 // For now, it's a conceptual example of how to use the WordPress handler
 
 #[tokio::main]

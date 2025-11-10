@@ -1,4 +1,4 @@
-//! WordPress Tests
+﻿//! WordPress Tests
 //!
 //! WordPress統合テスト（将来実装予定）
 

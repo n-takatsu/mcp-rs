@@ -1,4 +1,4 @@
-//! Standard I/O transport implementation for MCP.
+﻿//! Standard I/O transport implementation for MCP.
 //!
 //! This module provides a transport implementation that communicates via
 //! standard input and output streams, commonly used for process-based MCP servers.

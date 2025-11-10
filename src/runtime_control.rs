@@ -1,4 +1,4 @@
-//! Runtime Management for MCP-RS
+﻿//! Runtime Management for MCP-RS
 //!
 //! Provides runtime control including transport switching and configuration reloading
 

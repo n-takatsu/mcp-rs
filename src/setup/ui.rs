@@ -1,4 +1,4 @@
-//! Configuration Setup UI
+﻿//! Configuration Setup UI
 //!
 //! Interactive user interface for creating MCP-RS configuration
 

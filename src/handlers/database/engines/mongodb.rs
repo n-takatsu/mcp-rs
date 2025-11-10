@@ -1,4 +1,4 @@
-//! MongoDB Database Engine Implementation
+﻿//! MongoDB Database Engine Implementation
 //!
 //! MongoDBドキュメント指向データベースエンジンの具体的な実装
 //! NoSQLドキュメントストアとしてのMongoDB機能をサポート

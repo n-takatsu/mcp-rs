@@ -1,4 +1,4 @@
-//! Demo Mode for Interactive Setup
+﻿//! Demo Mode for Interactive Setup
 //!
 //! Safe demonstration of interactive setup without requiring real user input
 

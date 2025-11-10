@@ -1,4 +1,4 @@
-//! PostgreSQL Database Engine Implementation
+﻿//! PostgreSQL Database Engine Implementation
 //!
 //! PostgreSQLデータベースエンジンの具体的な実装
 

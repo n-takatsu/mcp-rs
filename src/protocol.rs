@@ -1,4 +1,4 @@
-//! MCP protocol trait abstraction.
+﻿//! MCP protocol trait abstraction.
 
 use crate::{
     error::Result,

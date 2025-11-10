@@ -1,4 +1,4 @@
-//! Transport abstraction layer for MCP-RS
+﻿//! Transport abstraction layer for MCP-RS
 //!
 //! This module provides a unified interface for different types of
 //! communication protocols including stdio, HTTP, and WebSocket.

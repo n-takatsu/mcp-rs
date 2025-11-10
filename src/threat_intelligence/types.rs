@@ -1,4 +1,4 @@
-//! Threat Intelligence Types
+﻿//! Threat Intelligence Types
 //!
 //! 脅威インテリジェンス統合で使用される基本的なデータ構造を定義
 

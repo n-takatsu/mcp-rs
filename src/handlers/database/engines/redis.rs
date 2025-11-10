@@ -1,4 +1,4 @@
-//! Redis Database Engine Implementation
+﻿//! Redis Database Engine Implementation
 //!
 //! Redisインメモリデータベースエンジンの具体的な実装
 //! Redis特有のデータ構造とコマンドをサポート

@@ -1,4 +1,4 @@
-//! Policy Hot-Reload Live Demonstration
+﻿//! Policy Hot-Reload Live Demonstration
 //!
 //! このデモは以下を実演します:
 //! 1. リアルタイムポリシーファイル監視

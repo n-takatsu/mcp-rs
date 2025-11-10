@@ -1,4 +1,4 @@
-//! Connection management utilities for MCP transports
+﻿//! Connection management utilities for MCP transports
 
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;

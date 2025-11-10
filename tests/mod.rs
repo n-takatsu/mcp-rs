@@ -1,4 +1,4 @@
-//! MCP-RS Test Suite
+﻿//! MCP-RS Test Suite
 //!
 //! 構造化されたテストスイート - Phase 2 完了
 

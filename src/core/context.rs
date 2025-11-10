@@ -1,4 +1,4 @@
-//! Execution Context
+﻿//! Execution Context
 //!
 //! Provides request-scoped context for handler execution.
 

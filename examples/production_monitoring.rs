@@ -1,4 +1,4 @@
-#!/usr/bin/env cargo-script
+﻿#!/usr/bin/env cargo-script
 
 //! 🔄 Production Monitoring Example
 //!

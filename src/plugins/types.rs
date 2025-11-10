@@ -1,4 +1,4 @@
-//! Plugin Type Definitions
+﻿//! Plugin Type Definitions
 //!
 //! Common types and utilities for the plugin system.
 

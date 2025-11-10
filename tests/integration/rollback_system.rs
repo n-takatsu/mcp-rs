@@ -1,4 +1,4 @@
-//! Rollback Manager Tests
+﻿//! Rollback Manager Tests
 //!
 //! ロールバック管理システムの包括的なテストスイート
 

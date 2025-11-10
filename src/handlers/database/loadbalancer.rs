@@ -1,4 +1,4 @@
-//! Database Load Balancing and Read/Write Splitting
+﻿//! Database Load Balancing and Read/Write Splitting
 //!
 //! データベースの負荷分散と読み書き分離機能
 

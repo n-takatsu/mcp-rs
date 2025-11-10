@@ -1,4 +1,4 @@
-//! Threat Intelligence Integration Module
+﻿//! Threat Intelligence Integration Module
 //!
 //! このモジュールは、外部脅威インテリジェンスプロバイダーとの統合を提供し、
 //! リアルタイムでの脅威検出・評価・対応機能を実装します。

@@ -1,4 +1,4 @@
-//! Dynamic Database Engine Manager
+﻿//! Dynamic Database Engine Manager
 //!
 //! リアルタイム動的データベース切り替え機能のコアエンジン
 
