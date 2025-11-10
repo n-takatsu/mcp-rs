@@ -67,7 +67,7 @@ jobs:
       run: |
         cargo clippy --all-targets --all-features --message-format=json -- -D warnings -A dead_code > clippy-report.json || true
         echo "### 📋 Clippy Analysis Results" >> $GITHUB_STEP_SUMMARY
-        if [ -s clippy-report.json ]; then
+        if test -s clippy-report.json; then
           echo "✅ All Clippy checks passed!" >> $GITHUB_STEP_SUMMARY
         else
           echo "❌ Clippy issues found. Please review the logs above." >> $GITHUB_STEP_SUMMARY
@@ -137,7 +137,7 @@ jobs:
         
         # configs/ディレクトリ構造の検証
         for config in configs/production/*.toml configs/development/*.toml; do
-          if [ -f "$config" ]; then
+          if test -f "$config"; then
             echo "✓ Found config: $config"
             
             # TOML構文の基本チェック（cargoがtomlライブラリを持っているため使用可能）
