@@ -18,6 +18,9 @@ Thumbs.db
 # Logs
 *.log
 
+# CI/CD generated files
+clippy-report.json
+
 # Environment files
 .env
 .env.local
