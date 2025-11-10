@@ -1,4 +1,4 @@
-﻿pub mod manager;
+pub mod manager;
 pub mod middleware_basic;
 pub mod security_integration_basic;
 pub mod storage;

@@ -1,4 +1,4 @@
-﻿//! MCP-RS Binary Entry Point
+//! MCP-RS Binary Entry Point
 //!
 //! This binary provides the main executable for the MCP-RS server.
 

@@ -1,4 +1,4 @@
-﻿use reqwest::Client;
+use reqwest::Client;
 use serde_json::json;
 use std::env;
 

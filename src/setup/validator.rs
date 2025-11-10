@@ -1,4 +1,4 @@
-﻿//! Configuration Validator
+//! Configuration Validator
 //!
 //! Validates and tests MCP-RS configuration settings
 

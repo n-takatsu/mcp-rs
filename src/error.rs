@@ -1,4 +1,4 @@
-﻿//! Error types for the MCP protocol implementation.
+//! Error types for the MCP protocol implementation.
 
 use thiserror::Error;
 

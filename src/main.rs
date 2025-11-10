@@ -1,4 +1,4 @@
-﻿//! MCP-RS Transport統合型エントリポイント
+//! MCP-RS Transport統合型エントリポイント
 //!
 //! 新しいTransport抽象化を使用したクリーンなアーキテクチャ
 

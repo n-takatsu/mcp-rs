@@ -1,4 +1,4 @@
-﻿//! Performance Tests
+//! Performance Tests
 //!
 //! パフォーマンスとベンチマークテスト
 

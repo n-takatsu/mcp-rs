@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env cargo
+#!/usr/bin/env cargo
 //! WordPress Blog Service Demo
 //!
 //! WordPressサイトをブログサービスとして活用するための包括的なデモ

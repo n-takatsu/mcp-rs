@@ -1,4 +1,4 @@
-﻿use mcp_rs::mcp::{JsonRpcRequest, JsonRpcResponse, ToolCallParams};
+use mcp_rs::mcp::{JsonRpcRequest, JsonRpcResponse, ToolCallParams};
 use std::collections::HashMap;
 
 #[test]

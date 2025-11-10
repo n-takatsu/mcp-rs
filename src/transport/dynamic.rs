@@ -1,4 +1,4 @@
-﻿//! Dynamic Transport Management
+//! Dynamic Transport Management
 //!
 //! Provides runtime transport switching capabilities for STDIO/HTTP switching
 

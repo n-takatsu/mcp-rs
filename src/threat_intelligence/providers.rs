@@ -1,4 +1,4 @@
-﻿//! Threat Intelligence Providers
+//! Threat Intelligence Providers
 //!
 //! 外部脅威インテリジェンスプロバイダーとの統合を抽象化
 

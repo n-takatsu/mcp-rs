@@ -1,4 +1,4 @@
-﻿//! Database Handler Module
+//! Database Handler Module
 //!
 //! 様々なデータベースエンジンに対する統一的なMCPインターフェースを提供
 

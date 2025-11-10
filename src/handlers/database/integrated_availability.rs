@@ -1,4 +1,4 @@
-﻿//! Integrated Database Availability Management
+//! Integrated Database Availability Management
 //!
 //! データベース可用性の統合管理システム
 

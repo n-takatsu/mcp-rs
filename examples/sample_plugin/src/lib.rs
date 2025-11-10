@@ -1,4 +1,4 @@
-﻿//! Sample Plugin Implementation
+//! Sample Plugin Implementation
 //!
 //! This is an example of how to create a plugin for mcp-rs.
 

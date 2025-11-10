@@ -1,4 +1,4 @@
-﻿use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// JSON-RPC 2.0 Request

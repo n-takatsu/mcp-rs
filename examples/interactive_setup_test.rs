@@ -1,4 +1,4 @@
-﻿//! Interactive Setup Test
+//! Interactive Setup Test
 //!
 //! Tests the new interactive configuration setup functionality
 

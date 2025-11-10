@@ -1,4 +1,4 @@
-﻿//! # MCP-RS: Model Context Protocol Implementation in Rust
+//! # MCP-RS: Model Context Protocol Implementation in Rust
 //!
 //! This library provides a complete implementation of the Model Context Protocol (MCP)
 //! in Rust, enabling secure and efficient communication between AI systems and external

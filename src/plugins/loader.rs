@@ -1,4 +1,4 @@
-﻿//! Dynamic Plugin Loader
+//! Dynamic Plugin Loader
 //!
 //! Provides functionality to load plugins at runtime using libloading.
 //!

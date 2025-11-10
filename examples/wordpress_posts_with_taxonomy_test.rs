@@ -1,4 +1,4 @@
-﻿use mcp_rs::{config::McpConfig, handlers::wordpress::WordPressHandler};
+use mcp_rs::{config::McpConfig, handlers::wordpress::WordPressHandler};
 use tracing::{error, info, Level};
 
 #[tokio::main]

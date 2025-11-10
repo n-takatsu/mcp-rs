@@ -1,4 +1,4 @@
-﻿//! Memory Benchmarks
+//! Memory Benchmarks
 //!
 //! メモリ使用量のベンチマークテスト（将来実装予定）
 

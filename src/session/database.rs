@@ -1,4 +1,4 @@
-﻿//! Database Integration for Session Management
+//! Database Integration for Session Management
 //! 
 //! セッション管理システムのデータベース統合機能
 //! PostgreSQL、SQLiteなどのRDBMSサポート（MySQLは除外）

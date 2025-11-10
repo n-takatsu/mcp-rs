@@ -1,4 +1,4 @@
-﻿//! Database Engines Module
+//! Database Engines Module
 //!
 //! 各種データベースエンジンの実装を提供
 //! MySQL: mysql_asyncライブラリを使用してセキュアに復活

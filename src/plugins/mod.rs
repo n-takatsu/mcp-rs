@@ -1,4 +1,4 @@
-﻿//! Plugin System for Dynamic Loading
+//! Plugin System for Dynamic Loading
 //!
 //! This module provides a complete plugin system for mcp-rs that allows
 //! dynamic loading of MCP handlers at runtime.

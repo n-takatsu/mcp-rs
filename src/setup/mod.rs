@@ -1,4 +1,4 @@
-﻿//! Setup Module
+//! Setup Module
 //!
 //! Interactive configuration setup functionality
 

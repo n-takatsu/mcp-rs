@@ -1,4 +1,4 @@
-﻿use crate::mcp::JsonRpcError;
+use crate::mcp::JsonRpcError;
 use thiserror::Error;
 
 #[derive(Error, Debug)]

@@ -1,4 +1,4 @@
-﻿#[cfg(test)]
+#[cfg(test)]
 mod canary_tests {
     use super::*;
     use crate::canary_deployment::{

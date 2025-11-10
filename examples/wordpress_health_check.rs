@@ -1,4 +1,4 @@
-﻿use mcp_rs::{config::WordPressConfig, handlers::wordpress::WordPressHandler};
+use mcp_rs::{config::WordPressConfig, handlers::wordpress::WordPressHandler};
 use tracing::info;
 
 #[tokio::main]

@@ -1,4 +1,4 @@
-﻿//! WebSocket transport implementation for MCP-RS
+//! WebSocket transport implementation for MCP-RS
 //!
 //! Provides WebSocket-based communication for MCP protocol
 

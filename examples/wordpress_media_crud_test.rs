@@ -1,4 +1,4 @@
-﻿use mcp_rs::config::WordPressConfig;
+use mcp_rs::config::WordPressConfig;
 use mcp_rs::handlers::wordpress::{MediaUpdateParams, WordPressHandler};
 use std::collections::HashMap;
 

@@ -1,4 +1,4 @@
-﻿//! Dynamic Configuration Management
+//! Dynamic Configuration Management
 //!
 //! Provides runtime configuration switching and reloading capabilities
 

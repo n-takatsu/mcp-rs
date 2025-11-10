@@ -1,4 +1,4 @@
-﻿//! Type definitions for MCP JSON-RPC messages.
+//! Type definitions for MCP JSON-RPC messages.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

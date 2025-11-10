@@ -1,4 +1,4 @@
-﻿//! Runtime Management
+//! Runtime Management
 //!
 //! Manages the application lifecycle, configuration, and global state.
 

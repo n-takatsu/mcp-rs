@@ -1,4 +1,4 @@
-﻿//! MySQL Engine Test Example
+//! MySQL Engine Test Example
 //!
 //! mysql_asyncライブラリを使用したMySQLエンジンの動作確認
 //! セキュリティ監査済み: RSA脆弱性フリー

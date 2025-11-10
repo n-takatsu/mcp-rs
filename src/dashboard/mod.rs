@@ -1,4 +1,4 @@
-﻿pub mod app;
+pub mod app;
 pub mod charts;
 pub mod events;
 pub mod runner;

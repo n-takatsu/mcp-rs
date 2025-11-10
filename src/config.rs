@@ -1,4 +1,4 @@
-﻿//! Configuration Management for MCP-RS
+//! Configuration Management for MCP-RS
 //!
 //! This module provides configuration structures and utilities for managing
 //! MCP (Model Context Protocol) server settings, including plugin configuration

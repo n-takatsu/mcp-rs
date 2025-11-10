@@ -1,4 +1,4 @@
-﻿use ratatui::{
+use ratatui::{
     style::{Color, Style},
     symbols,
     widgets::{Axis, BarChart, Chart, Dataset, GraphType},

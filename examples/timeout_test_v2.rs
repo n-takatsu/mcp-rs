@@ -1,4 +1,4 @@
-﻿use mcp_rs::config::McpConfig;
+use mcp_rs::config::McpConfig;
 use mcp_rs::handlers::wordpress::WordPressHandler;
 use mcp_rs::mcp::McpHandler;
 use std::time::{Duration, Instant};

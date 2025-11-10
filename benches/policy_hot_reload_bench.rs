@@ -1,4 +1,4 @@
-﻿use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use std::hint::black_box;
 use tempfile::TempDir;
 use tokio::runtime::Runtime;

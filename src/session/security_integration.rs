@@ -1,4 +1,4 @@
-﻿use crate::security::{
+use crate::security::{
     AuditCategory, AuditLevel, AuditLogEntry, AuditLogger, InputValidator, RateLimiter,
     ValidationResult as SecurityValidationResult, XssProtector, SqlInjectionProtector,
 };

@@ -1,4 +1,4 @@
-﻿//! XSS（Cross-Site Scripting）攻撃対策システム
+//! XSS（Cross-Site Scripting）攻撃対策システム
 //!
 //! このモジュールは包括的なXSS攻撃防御機能を提供します：
 //! - 14種類のXSS攻撃パターン検出

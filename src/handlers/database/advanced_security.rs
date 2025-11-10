@@ -1,4 +1,4 @@
-﻿//! 簡素化された高度なセキュリティ機能
+//! 簡素化された高度なセキュリティ機能
 
 use super::types::{QueryContext, SecurityError, ValidationResult};
 use chrono::{DateTime, Utc};

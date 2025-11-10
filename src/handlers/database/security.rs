@@ -1,4 +1,4 @@
-﻿//! Database Security Layer
+//! Database Security Layer
 //!
 //! データベース操作のセキュリティ機能を提供
 

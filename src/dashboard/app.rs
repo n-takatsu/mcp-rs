@@ -1,4 +1,4 @@
-﻿use crossterm::event::{Event, KeyCode, KeyEventKind};
+use crossterm::event::{Event, KeyCode, KeyEventKind};
 use ratatui::{
     backend::Backend,
     layout::{Constraint, Direction, Layout, Rect},

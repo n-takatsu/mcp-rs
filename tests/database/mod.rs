@@ -1,4 +1,4 @@
-﻿//! Database Tests
+//! Database Tests
 //!
 //! データベースエンジンとハンドラーのテスト
 

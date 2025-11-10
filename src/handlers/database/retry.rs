@@ -1,4 +1,4 @@
-﻿//! Database Retry and Timeout Strategies
+//! Database Retry and Timeout Strategies
 //!
 //! データベース操作のリトライとタイムアウト戦略
 

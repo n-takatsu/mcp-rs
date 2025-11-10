@@ -1,4 +1,4 @@
-﻿//! Database Security Tests
+//! Database Security Tests
 //!
 //! データベースセキュリティテスト（将来実装予定）
 

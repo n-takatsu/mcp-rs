@@ -1,4 +1,4 @@
-﻿//! Handler implementations for different target systems
+//! Handler implementations for different target systems
 //!
 //! このモジュールは様々な対象システムに対するMCPハンドラーを提供します。
 //! 各ハンドラーは共通のMcpHandlerトレイトを実装し、プラガブルな設計となっています。

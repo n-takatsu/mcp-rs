@@ -1,4 +1,4 @@
-﻿//! Safety mechanisms for preventing infinite loops and deadlocks
+//! Safety mechanisms for preventing infinite loops and deadlocks
 //!
 //! 無限ループとデッドロックを防ぐための安全機構
 

@@ -1,4 +1,4 @@
-﻿//! SQLite Database Engine Implementation
+//! SQLite Database Engine Implementation
 //!
 //! SQLiteデータベースエンジンの具体的な実装
 

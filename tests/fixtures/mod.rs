@@ -1,4 +1,4 @@
-﻿//! Test Fixtures and Utilities
+//! Test Fixtures and Utilities
 //!
 //! テストデータと共通ユーティリティ
 

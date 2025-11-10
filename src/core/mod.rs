@@ -1,4 +1,4 @@
-﻿//! Core Runtime Module
+//! Core Runtime Module
 //!
 //! Provides the central runtime system for MCP-RS, including:
 //! - Application lifecycle management

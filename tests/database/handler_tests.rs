@@ -1,4 +1,4 @@
-﻿//! Database Handler Test Cases
+//! Database Handler Test Cases
 //!
 //! データベースハンドラーの包括的なテストスイート
 

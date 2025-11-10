@@ -1,4 +1,4 @@
-﻿//! Multi-Handler Management System
+//! Multi-Handler Management System
 //!
 //! 複数のハンドラーを管理し、動的に追加・削除・切り替えを行うシステム
 

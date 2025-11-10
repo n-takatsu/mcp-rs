@@ -1,4 +1,4 @@
-﻿//! Transport Tests
+//! Transport Tests
 //!
 //! 通信レイヤーの単体テスト
 

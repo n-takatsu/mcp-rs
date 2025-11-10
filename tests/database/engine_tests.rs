@@ -1,4 +1,4 @@
-﻿//! Basic Database Handler Test
+//! Basic Database Handler Test
 //!
 //! 基本的なテスト実装（コンパイルエラー修正版）
 

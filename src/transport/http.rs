@@ -1,4 +1,4 @@
-﻿//! HTTP Transport implementation for MCP-RS
+//! HTTP Transport implementation for MCP-RS
 //!
 //! This module provides HTTP-based JSON-RPC transport for MCP communication.
 

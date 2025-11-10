@@ -1,4 +1,4 @@
-﻿//! MCP server implementation using axum.
+//! MCP server implementation using axum.
 
 use crate::{
     error::{Error, Result},
