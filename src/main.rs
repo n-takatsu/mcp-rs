@@ -11,7 +11,7 @@ mod error;
 mod handlers;
 mod mcp;
 mod protocol;
-mod runtime_control;
+// mod runtime_control;  // Use from lib.rs to avoid duplication
 mod security;
 mod server;
 mod setup;
