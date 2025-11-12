@@ -64,10 +64,11 @@ jobs:
     # PR用の詳細なClippyレポート
     - name: Generate clippy report for PR
       if: matrix.rust == 'stable' && github.event_name == 'pull_request'
+      shell: bash
       run: |
         cargo clippy --all-targets --all-features --message-format=json -- -D warnings -A dead_code > clippy-report.json || true
         echo "### 📋 Clippy Analysis Results" >> $GITHUB_STEP_SUMMARY
-        if test -s clippy-report.json; then
+        if [ -s clippy-report.json ]; then
           echo "✅ All Clippy checks passed!" >> $GITHUB_STEP_SUMMARY
         else
           echo "❌ Clippy issues found. Please review the logs above." >> $GITHUB_STEP_SUMMARY
@@ -130,14 +131,15 @@ jobs:
         }
 
     # 設定ファイル検証（全OS）
-    - name: Validate configuration files
+    - name: Validate project configuration
       if: matrix.rust == 'stable'
+      shell: bash
       run: |
         echo "🔍 Validating configuration files..."
         
         # configs/ディレクトリ構造の検証
         for config in configs/production/*.toml configs/development/*.toml; do
-          if test -f "$config"; then
+          if [ -f "$config" ]; then
             echo "✓ Found config: $config"
             
             # TOML構文の基本チェック（cargoがtomlライブラリを持っているため使用可能）
