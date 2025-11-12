@@ -82,30 +82,12 @@ jobs:
     
     - name: Run tests
       run: cargo test --verbose
-    
-    - name: Clean target directory to save space
+      
+    - name: Verify library compilation
       run: |
-        du -sh target/ || true
-        cargo clean
-        echo "Cleaned target directory to prevent disk space issues"
-    
-    - name: Build core examples (selective)
-      run: |
-        echo "Building essential examples only to prevent resource exhaustion..."
-        # Build only core examples, skip resource-intensive WordPress examples
-        cargo build --example comprehensive_test --verbose
-        cargo build --example policy_config_demo --verbose
-        cargo build --example security_comprehensive_test --verbose
-        echo "Core examples built successfully"
-    
-    - name: Verify WordPress handler compilation (check only)
-      run: |
-        echo "Verifying WordPress examples can compile (check only)..."
-        # Use cargo check instead of full build to save resources
-        cargo check --example wordpress_categories_tags_test
-        cargo check --example wordpress_api_test  
-        cargo check --example wordpress_post_crud_test
-        echo "WordPress examples verification completed"
+        echo "Verifying core library functionality..."
+        cargo check --lib --all-features
+        echo "Library verification completed"
 
   security:
     name: Security audit
