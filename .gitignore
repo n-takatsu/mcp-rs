@@ -16,8 +16,13 @@ mcp-config.toml
 .DS_Store
 Thumbs.db
 
-# Logs
+# Log files
 *.log
+
+# Backup files
+*.bak
+*.backup
+*.tmp
 
 # Environment files
 .env
