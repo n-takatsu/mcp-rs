@@ -136,6 +136,7 @@ metrics = ["prometheus", "dep:metrics"]
 # Development and testing
 testing = ["mockall"]
 integration-tests = []
+wordpress-examples = []  # Optional WordPress examples (resource-intensive)
 
 # Performance optimizations
 simd = []
@@ -158,39 +159,50 @@ full = [
 name = "mysql_engine_test"
 required-features = ["database", "mysql-backend"]
 
-# WordPress examples
+# WordPress examples (optional - use --features wordpress-examples to build)
 [[example]]
 name = "wordpress_categories_tags_test"
+required-features = ["wordpress-examples"]
 
 [[example]]
 name = "wordpress_blog_service_demo"
+required-features = ["wordpress-examples"]
 
 [[example]]
 name = "wordpress_api_test"
+required-features = ["wordpress-examples"]
 
 [[example]]
 name = "wordpress_advanced_post_test"
+required-features = ["wordpress-examples"]
 
 [[example]]
 name = "wordpress_embed_test"
+required-features = ["wordpress-examples"]
 
 [[example]]
 name = "wordpress_media_crud_test"
+required-features = ["wordpress-examples"]
 
 [[example]]
 name = "wordpress_health_check"
+required-features = ["wordpress-examples"]
 
 [[example]]
 name = "wordpress_posts_with_taxonomy_test"
+required-features = ["wordpress-examples"]
 
 [[example]]
 name = "wordpress_post_crud_test"
+required-features = ["wordpress-examples"]
 
 [[example]]
 name = "wordpress_security_diagnosis"
+required-features = ["wordpress-examples"]
 
 [[example]]
 name = "wordpress_security_integration"
+required-features = ["wordpress-examples"]
 
 # Temporarily disabled due to API changes
 # [[bench]]
