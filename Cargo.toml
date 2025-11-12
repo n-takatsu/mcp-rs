@@ -158,6 +158,40 @@ full = [
 name = "mysql_engine_test"
 required-features = ["database", "mysql-backend"]
 
+# WordPress examples (for demonstration and learning)
+[[example]]
+name = "wordpress_categories_tags_test"
+
+[[example]]
+name = "wordpress_blog_service_demo"
+
+[[example]]
+name = "wordpress_api_test"
+
+[[example]]
+name = "wordpress_advanced_post_test"
+
+[[example]]
+name = "wordpress_embed_test"
+
+[[example]]
+name = "wordpress_media_crud_test"
+
+[[example]]
+name = "wordpress_health_check"
+
+[[example]]
+name = "wordpress_posts_with_taxonomy_test"
+
+[[example]]
+name = "wordpress_post_crud_test"
+
+[[example]]
+name = "wordpress_security_diagnosis"
+
+[[example]]
+name = "wordpress_security_integration"
+
 # Temporarily disabled due to API changes
 # [[bench]]
 # name = "session_benchmarks"
