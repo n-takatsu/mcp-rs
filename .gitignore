@@ -17,7 +17,7 @@ mcp-config.toml
 .DS_Store
 Thumbs.db
 
-# Logs
+# Log files
 *.log
 
 # CI/CD generated files

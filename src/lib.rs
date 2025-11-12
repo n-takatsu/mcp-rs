@@ -30,6 +30,7 @@ pub mod policy_validation;
 pub mod policy_watcher;
 pub mod protocol;
 pub mod rollback;
+pub mod runtime_control;
 pub mod security;
 pub mod transport;
 pub mod types;
