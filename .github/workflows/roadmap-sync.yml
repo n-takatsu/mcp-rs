@@ -2,9 +2,7 @@
 
 on:
   issues:
-    types: [opened, edited, closed, reopened, labeled, unlabeled]
-  milestones:
-    types: [created, edited, deleted]
+    types: [opened, edited, closed, reopened, labeled, unlabeled, milestoned, demilestoned]
   schedule:
     # 毎日 9:00 JST に ROADMAP 同期チェック実行
     - cron: '0 0 * * *'  # UTC 00:00 = JST 09:00

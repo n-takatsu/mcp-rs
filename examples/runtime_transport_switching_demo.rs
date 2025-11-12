@@ -4,7 +4,6 @@
 
 use mcp_rs::config::{DynamicConfigManager, McpConfig};
 use mcp_rs::runtime_control::{InteractiveController, RuntimeCommand, RuntimeController};
-use mcp_rs::transport::{DynamicTransportManager, TransportConfig, TransportType};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::{error, info};
@@ -20,9 +19,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 動的設定管理の初期化
     let config_manager = Arc::new(DynamicConfigManager::new(config.clone(), get_config_path()));
 
+    // デフォルトのTransportConfigを作成
+    let transport_config = mcp_rs::transport::TransportConfig::default();
+
     // ランタイムコントローラー初期化
     let (runtime_controller, command_sender) =
-        RuntimeController::new(config.transport, config_manager.clone())?;
+        RuntimeController::new(transport_config, config_manager.clone())?;
 
     info!("🎛️ Runtime Control開始");
     info!("💡 実行中にSTDIO/HTTP切り替え可能");
@@ -35,7 +37,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     // インタラクティブコントロールの開始（オプション）
-    let interactive_controller = InteractiveController::new(command_sender.clone());
+    let _interactive_controller = InteractiveController::new(command_sender.clone());
     let interactive_task = tokio::spawn(async move {
         info!("🎮 Interactive Control利用可能");
         info!("💡 別ターミナルで制御可能、またはCLI引数で制御");
@@ -104,7 +106,7 @@ fn get_config_path() -> Option<String> {
 }
 
 /// ログ初期化（既存のものと同じ）
-async fn init_logging(config: &McpConfig) -> Result<(), Box<dyn std::error::Error>> {
+async fn init_logging(_config: &McpConfig) -> Result<(), Box<dyn std::error::Error>> {
     // 既存のログ初期化ロジック
     tracing_subscriber::fmt::init();
     Ok(())

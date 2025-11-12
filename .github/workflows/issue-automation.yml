@@ -6,7 +6,9 @@ on:
   issue_comment:
     types: [created]
   pull_request:
-    types: [opened, closed, merged]
+    types: [opened, closed]
+  pull_request_target:
+    types: [closed]
 
 jobs:
   issue-automation:
