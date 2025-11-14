@@ -29,10 +29,6 @@ addr = "127.0.0.1"
 port = 8081
 cors_enabled = false
 
-[logging]
-level = "warn"
-file_path = "logs/mcp-rs-claude.log"
-
 # 必須: ハンドラー設定
 [handlers]
 enabled = ["filesystem"]
@@ -85,7 +81,8 @@ burst_size = 20
 
 # ログ設定
 [logging]
-level = "info"
+level = "warn"
+file_path = "logs/mcp-rs-claude.log"
 format = "json"
 include_timestamp = true
 include_caller = false

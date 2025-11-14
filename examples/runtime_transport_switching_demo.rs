@@ -21,9 +21,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 動的設定管理の初期化
     let config_manager = Arc::new(DynamicConfigManager::new(config.clone(), get_config_path()));
 
-    // デフォルトのTransportConfigを作成
-    let transport_config = mcp_rs::transport::TransportConfig::default();
-
     // ランタイムコントローラー初期化
     let transport_config = convert_to_transport_config(&config.transport);
     let (runtime_controller, command_sender) =

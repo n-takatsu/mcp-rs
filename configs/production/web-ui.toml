@@ -29,10 +29,6 @@ cors_enabled = true
 max_request_size = 1048576
 timeout_ms = 30000
 
-[logging]
-level = "info"
-file_path = "logs/mcp-rs-webui.log"
-
 # 必須: ハンドラー設定
 [handlers]
 enabled = ["filesystem", "wordpress"]
@@ -69,7 +65,7 @@ request_timeout_ms = 30000
 # ログ設定
 [logging]
 level = "info"
+file_path = "logs/mcp-rs-webui.log"
 format = "json"
-file = ""
 max_size = 10
 max_files = 5
