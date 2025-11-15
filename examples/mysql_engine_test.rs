@@ -3,13 +3,17 @@
 //! mysql_asyncライブラリを使用したMySQLエンジンの動作確認
 //! セキュリティ監査済み: RSA脆弱性フリー
 
+#[cfg(feature = "database")]
 use mcp_rs::handlers::database::engines::mysql::MySqlEngine;
+#[cfg(feature = "database")]
 use mcp_rs::handlers::database::types::{
     ConnectionConfig, DatabaseConfig, DatabaseType, FeatureConfig, HealthStatusType, PoolConfig,
     SecurityConfig,
 };
+#[cfg(feature = "database")]
 use mcp_rs::handlers::database::DatabaseEngine;
 
+#[cfg(feature = "database")]
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 環境変数からMySQL接続情報を取得
@@ -88,6 +92,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+#[cfg(feature = "database")]
 fn create_mysql_config(database_url: &str) -> DatabaseConfig {
     // 簡単なURL解析 (実際の実装ではより堅牢な解析が必要)
     let url_parts: Vec<&str> = database_url.split("://").collect();
@@ -153,6 +158,7 @@ fn create_mysql_config(database_url: &str) -> DatabaseConfig {
     }
 }
 
+#[cfg(feature = "database")]
 fn mask_password(url: &str) -> String {
     // パスワード部分をマスク
     let parts: Vec<&str> = url.split("://").collect();
@@ -176,4 +182,10 @@ fn mask_password(url: &str) -> String {
     } else {
         url.to_string()
     }
+}
+
+#[cfg(not(feature = "database"))]
+fn main() {
+    println!("⚠️  このテストは'database'フィーチャーが必要です");
+    println!("実行方法: cargo run --example mysql_engine_test --features database,mysql-backend");
 }
