@@ -1,14 +1,14 @@
 //! プラグイン通信ブローカー
-//! 
+//!
 //! セキュアコアサーバーとプラグイン間の安全な通信を仲介するブローカーシステム
 //! 暗号化、認証、メッセージフィルタリング、レート制限機能を提供
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::{RwLock, Mutex, mpsc};
+use tokio::sync::{mpsc, Mutex, RwLock};
 use tokio::time::{Duration, Instant};
-use tracing::{info, warn, error, debug};
+use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 use crate::error::McpError;
@@ -544,23 +544,37 @@ impl CommunicationBroker {
     }
 
     /// プラグインの通信チャネルを登録
-    pub async fn register_plugin(&self, plugin_id: Uuid, channel_type: ChannelType) -> Result<Uuid, McpError> {
-        info!("Registering communication channel for plugin: {}", plugin_id);
+    pub async fn register_plugin(
+        &self,
+        plugin_id: Uuid,
+        channel_type: ChannelType,
+    ) -> Result<Uuid, McpError> {
+        info!(
+            "Registering communication channel for plugin: {}",
+            plugin_id
+        );
 
         // チャネル数制限チェック
         let channels = self.active_channels.read().await;
         if channels.len() >= self.config.max_concurrent_channels {
-            return Err(McpError::PluginError(
-                format!("Maximum number of channels reached: {}", self.config.max_concurrent_channels)
-            ));
+            return Err(McpError::PluginError(format!(
+                "Maximum number of channels reached: {}",
+                self.config.max_concurrent_channels
+            )));
         }
         drop(channels);
 
         // 認証情報を生成
-        let auth_info = self.auth_manager.generate_authentication_info(plugin_id).await?;
+        let auth_info = self
+            .auth_manager
+            .generate_authentication_info(plugin_id)
+            .await?;
 
         // 暗号化設定を生成
-        let encryption_config = self.encryption_manager.generate_channel_encryption(plugin_id).await?;
+        let encryption_config = self
+            .encryption_manager
+            .generate_channel_encryption(plugin_id)
+            .await?;
 
         // メッセージチャネルを作成
         let (sender, receiver) = mpsc::unbounded_channel();
@@ -590,13 +604,19 @@ impl CommunicationBroker {
         let mut channels = self.active_channels.write().await;
         channels.insert(channel_id, channel);
 
-        info!("Communication channel registered: {} -> {}", plugin_id, channel_id);
+        info!(
+            "Communication channel registered: {} -> {}",
+            plugin_id, channel_id
+        );
         Ok(channel_id)
     }
 
     /// プラグインの通信チャネルを削除
     pub async fn unregister_plugin(&self, plugin_id: Uuid) -> Result<(), McpError> {
-        info!("Unregistering communication channel for plugin: {}", plugin_id);
+        info!(
+            "Unregistering communication channel for plugin: {}",
+            plugin_id
+        );
 
         // チャネルを削除
         let mut channels = self.active_channels.write().await;
@@ -624,12 +644,17 @@ impl CommunicationBroker {
 
     /// メッセージを送信
     pub async fn send_message(&self, message: BrokerMessage) -> Result<(), McpError> {
-        debug!("Sending message: {} -> {:?}", message.message_id, message.destination_plugin_id);
+        debug!(
+            "Sending message: {} -> {:?}",
+            message.message_id, message.destination_plugin_id
+        );
 
         // メッセージフィルタリング
         if !self.message_filters.filter_message(&message).await? {
             warn!("Message blocked by filter: {}", message.message_id);
-            return Err(McpError::SecurityError("Message blocked by filter".to_string()));
+            return Err(McpError::SecurityError(
+                "Message blocked by filter".to_string(),
+            ));
         }
 
         // レート制限チェック
@@ -642,14 +667,19 @@ impl CommunicationBroker {
         let encrypted_message = self.encryption_manager.encrypt_message(&message).await?;
 
         // メッセージをキューに追加
-        self.message_queue.enqueue_message(encrypted_message).await?;
+        self.message_queue
+            .enqueue_message(encrypted_message)
+            .await?;
 
         debug!("Message queued for delivery: {}", message.message_id);
         Ok(())
     }
 
     /// メッセージを受信
-    pub async fn receive_message(&self, plugin_id: Uuid) -> Result<Option<BrokerMessage>, McpError> {
+    pub async fn receive_message(
+        &self,
+        plugin_id: Uuid,
+    ) -> Result<Option<BrokerMessage>, McpError> {
         // チャネルを取得
         let channels = self.active_channels.read().await;
         let channel_id = channels
@@ -688,7 +718,10 @@ impl CommunicationBroker {
     }
 
     /// チャネル統計を取得
-    pub async fn get_channel_stats(&self, plugin_id: Uuid) -> Result<Option<ChannelStats>, McpError> {
+    pub async fn get_channel_stats(
+        &self,
+        plugin_id: Uuid,
+    ) -> Result<Option<ChannelStats>, McpError> {
         let channels = self.active_channels.read().await;
         for channel in channels.values() {
             if channel.plugin_id == plugin_id {
@@ -788,7 +821,10 @@ impl EncryptionManager {
         })
     }
 
-    async fn generate_channel_encryption(&self, _plugin_id: Uuid) -> Result<ChannelEncryption, McpError> {
+    async fn generate_channel_encryption(
+        &self,
+        _plugin_id: Uuid,
+    ) -> Result<ChannelEncryption, McpError> {
         // TODO: 実装
         Ok(ChannelEncryption {
             algorithm: EncryptionAlgorithm::AesGcm256,
@@ -820,7 +856,10 @@ impl AuthenticationManager {
         })
     }
 
-    async fn generate_authentication_info(&self, plugin_id: Uuid) -> Result<AuthenticationInfo, McpError> {
+    async fn generate_authentication_info(
+        &self,
+        plugin_id: Uuid,
+    ) -> Result<AuthenticationInfo, McpError> {
         // TODO: 実装
         Ok(AuthenticationInfo {
             token: format!("token_{}", plugin_id),
@@ -877,7 +916,7 @@ mod tests {
     async fn test_plugin_registration() {
         let broker = CommunicationBroker::new().await.unwrap();
         let plugin_id = Uuid::new_v4();
-        
+
         let result = broker.register_plugin(plugin_id, ChannelType::Http).await;
         assert!(result.is_ok());
     }
@@ -890,7 +929,7 @@ mod tests {
             window_size_secs: 60,
             enabled: true,
         };
-        
+
         let limiter = RateLimiter::new(config);
         assert!(limiter.config.enabled);
     }

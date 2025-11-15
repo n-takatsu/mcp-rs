@@ -209,9 +209,7 @@ impl HandlerRegistry {
             }
         }
 
-        Ok(serde_json::json!({
-            "tools": all_tools
-        }))
+        Ok(serde_json::json!({ "tools": all_tools }))
     }
 
     /// Validate handler configuration

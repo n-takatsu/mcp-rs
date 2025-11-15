@@ -1,14 +1,14 @@
 //! プラグイン監視システム
-//! 
+//!
 //! プラグインのリアルタイム監視、ログ収集、アラート機能を提供
 //! パフォーマンス指標、セキュリティイベント、リソース使用量を追跡
 
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
-use tokio::sync::{RwLock, Mutex, watch, broadcast};
-use tokio::time::{Duration, Instant, interval};
-use tracing::{info, warn, error, debug};
+use tokio::sync::{broadcast, watch, Mutex, RwLock};
+use tokio::time::{interval, Duration, Instant};
+use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 use crate::error::McpError;
@@ -435,15 +435,9 @@ pub enum AlertAction {
         body_template: String,
     },
     /// プラグイン停止
-    StopPlugin {
-        plugin_id: Uuid,
-        force: bool,
-    },
+    StopPlugin { plugin_id: Uuid, force: bool },
     /// プラグイン再起動
-    RestartPlugin {
-        plugin_id: Uuid,
-        delay_seconds: u64,
-    },
+    RestartPlugin { plugin_id: Uuid, delay_seconds: u64 },
     /// カスタムアクション
     Custom {
         action_script: String,
@@ -741,7 +735,10 @@ impl MonitoringSystem {
 
     /// プラグインを監視対象に追加
     pub async fn add_plugin(&self, plugin_id: Uuid, plugin_name: String) -> Result<(), McpError> {
-        info!("Adding plugin to monitoring: {} ({})", plugin_name, plugin_id);
+        info!(
+            "Adding plugin to monitoring: {} ({})",
+            plugin_name, plugin_id
+        );
 
         let metrics = PluginMetrics {
             plugin_id,
@@ -790,7 +787,7 @@ impl MonitoringSystem {
             .get(&plugin_id)
             .map(|m| m.plugin_name.clone())
             .unwrap_or_else(|| "Unknown".to_string());
-        
+
         plugin_metrics.remove(&plugin_id);
 
         // 監視イベントを送信
@@ -812,11 +809,15 @@ impl MonitoringSystem {
     }
 
     /// プラグインメトリクスを更新
-    pub async fn update_plugin_metrics(&self, plugin_id: Uuid, metrics: PluginMetrics) -> Result<(), McpError> {
+    pub async fn update_plugin_metrics(
+        &self,
+        plugin_id: Uuid,
+        metrics: PluginMetrics,
+    ) -> Result<(), McpError> {
         let mut plugin_metrics = self.plugin_metrics.write().await;
         if let Some(existing_metrics) = plugin_metrics.get_mut(&plugin_id) {
             *existing_metrics = metrics;
-            
+
             // メトリクス更新イベントを送信
             let event = MonitoringEvent {
                 event_id: Uuid::new_v4(),
@@ -836,7 +837,10 @@ impl MonitoringSystem {
     }
 
     /// プラグインメトリクスを取得
-    pub async fn get_plugin_metrics(&self, plugin_id: Uuid) -> Result<Option<PluginMetrics>, McpError> {
+    pub async fn get_plugin_metrics(
+        &self,
+        plugin_id: Uuid,
+    ) -> Result<Option<PluginMetrics>, McpError> {
         let plugin_metrics = self.plugin_metrics.read().await;
         Ok(plugin_metrics.get(&plugin_id).cloned())
     }
@@ -925,10 +929,10 @@ impl MonitoringSystem {
 
         let handle = tokio::spawn(async move {
             let mut interval = interval(collection_interval);
-            
+
             loop {
                 interval.tick().await;
-                
+
                 // システムメトリクスを収集
                 if let Ok(metrics) = Self::collect_system_metrics().await {
                     let mut system_metrics = system_metrics.write().await;
@@ -955,15 +959,21 @@ impl MonitoringSystem {
 
         let handle = tokio::spawn(async move {
             let mut interval = interval(Duration::from_secs(10));
-            
+
             loop {
                 interval.tick().await;
-                
+
                 // アラート条件をチェック
                 let plugin_metrics = plugin_metrics.read().await;
                 for (plugin_id, metrics) in plugin_metrics.iter() {
-                    if let Err(e) = alert_manager.check_alert_conditions(*plugin_id, metrics).await {
-                        error!("Failed to check alert conditions for plugin {}: {}", plugin_id, e);
+                    if let Err(e) = alert_manager
+                        .check_alert_conditions(*plugin_id, metrics)
+                        .await
+                    {
+                        error!(
+                            "Failed to check alert conditions for plugin {}: {}",
+                            plugin_id, e
+                        );
                     }
                 }
             }
@@ -978,10 +988,10 @@ impl MonitoringSystem {
 
         let handle = tokio::spawn(async move {
             let mut interval = interval(Duration::from_secs(60));
-            
+
             loop {
                 interval.tick().await;
-                
+
                 // 古いイベントをクリーンアップ
                 if let Err(e) = event_store.cleanup_old_events().await {
                     error!("Failed to cleanup old events: {}", e);
@@ -1001,7 +1011,9 @@ impl MonitoringSystem {
     /// プラグインメトリクスを収集
     async fn collect_plugin_metrics(_plugin_id: Uuid) -> Result<PluginMetrics, McpError> {
         // TODO: 実際のプラグインメトリクス収集を実装
-        Err(McpError::NotImplemented("Plugin metrics collection not implemented".to_string()))
+        Err(McpError::NotImplemented(
+            "Plugin metrics collection not implemented".to_string(),
+        ))
     }
 }
 
@@ -1159,19 +1171,19 @@ impl LogCollector {
     async fn add_log_entry(&self, entry: LogEntry) -> Result<(), McpError> {
         if entry.level >= self.level_filter {
             let mut entries = self.log_entries.write().await;
-            
+
             // 最大エントリ数をチェック
             if entries.len() >= self.max_entries {
                 entries.pop_front();
             }
-            
+
             entries.push_back(entry.clone());
-            
+
             // リアルタイム送信
             let sender = self.log_sender.lock().await;
             let _ = sender.send(entry);
         }
-        
+
         Ok(())
     }
 
@@ -1192,7 +1204,11 @@ impl AlertManager {
         })
     }
 
-    async fn check_alert_conditions(&self, _plugin_id: Uuid, _metrics: &PluginMetrics) -> Result<(), McpError> {
+    async fn check_alert_conditions(
+        &self,
+        _plugin_id: Uuid,
+        _metrics: &PluginMetrics,
+    ) -> Result<(), McpError> {
         // TODO: アラート条件のチェック実装
         Ok(())
     }
@@ -1214,12 +1230,12 @@ impl EventStore {
 
     async fn add_event(&self, event: MonitoringEvent) -> Result<(), McpError> {
         let mut events = self.events.write().await;
-        
+
         // 最大イベント数をチェック
         if events.len() >= self.max_events {
             events.pop_front();
         }
-        
+
         events.push_back(event);
         Ok(())
     }
@@ -1244,10 +1260,12 @@ mod tests {
     async fn test_plugin_monitoring() {
         let monitoring = MonitoringSystem::new().await.unwrap();
         let plugin_id = Uuid::new_v4();
-        
-        let result = monitoring.add_plugin(plugin_id, "test_plugin".to_string()).await;
+
+        let result = monitoring
+            .add_plugin(plugin_id, "test_plugin".to_string())
+            .await;
         assert!(result.is_ok());
-        
+
         let metrics = monitoring.get_plugin_metrics(plugin_id).await.unwrap();
         assert!(metrics.is_some());
     }

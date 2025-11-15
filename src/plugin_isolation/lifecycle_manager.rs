@@ -1,17 +1,17 @@
 //! プラグインライフサイクル管理
-//! 
+//!
 //! プラグインの登録、起動、監視、更新、停止、削除を管理する
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::{RwLock, Mutex};
-use tokio::time::{Duration, interval};
-use tracing::{info, warn, error, debug};
+use tokio::sync::{Mutex, RwLock};
+use tokio::time::{interval, Duration};
+use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 use crate::error::McpError;
-use crate::plugin_isolation::{PluginState, PluginMetadata, PluginMetrics};
+use crate::plugin_isolation::{PluginMetadata, PluginMetrics, PluginState};
 
 /// ライフサイクル管理
 #[derive(Debug)]
@@ -152,10 +152,7 @@ impl Default for AutoRecoveryConfig {
             max_retry_attempts: 3,
             retry_interval_secs: 60,
             backoff_strategy: BackoffStrategy::Exponential,
-            recovery_methods: vec![
-                RecoveryMethod::Restart,
-                RecoveryMethod::Recreate,
-            ],
+            recovery_methods: vec![RecoveryMethod::Restart, RecoveryMethod::Recreate],
         }
     }
 }
@@ -331,7 +328,8 @@ impl LifecycleManager {
             "system".to_string(),
             true,
             None,
-        ).await?;
+        )
+        .await?;
 
         info!("Plugin registered in lifecycle manager: {}", plugin_id);
         Ok(())
@@ -341,12 +339,16 @@ impl LifecycleManager {
     pub async fn transition_state(
         &self,
         plugin_id: Uuid,
-        target_state: PluginState
+        target_state: PluginState,
     ) -> Result<(), McpError> {
-        info!("Transitioning plugin {} to state: {:?}", plugin_id, target_state);
+        info!(
+            "Transitioning plugin {} to state: {:?}",
+            plugin_id, target_state
+        );
 
         let mut plugins = self.plugins.write().await;
-        let lifecycle = plugins.get_mut(&plugin_id)
+        let lifecycle = plugins
+            .get_mut(&plugin_id)
             .ok_or_else(|| McpError::PluginError("Plugin not found".to_string()))?;
 
         let current_state = lifecycle.current_state;
@@ -374,7 +376,10 @@ impl LifecycleManager {
 
         lifecycle.current_state = target_state;
 
-        info!("Plugin {} transitioned to state: {:?}", plugin_id, target_state);
+        info!(
+            "Plugin {} transitioned to state: {:?}",
+            plugin_id, target_state
+        );
         Ok(())
     }
 
@@ -382,7 +387,7 @@ impl LifecycleManager {
     fn validate_state_transition(
         &self,
         current: PluginState,
-        target: PluginState
+        target: PluginState,
     ) -> Result<(), McpError> {
         let valid_transitions = match current {
             PluginState::Uninitialized => vec![PluginState::Starting],
@@ -401,9 +406,10 @@ impl LifecycleManager {
         };
 
         if !valid_transitions.contains(&target) {
-            return Err(McpError::PluginError(
-                format!("Invalid state transition from {:?} to {:?}", current, target)
-            ));
+            return Err(McpError::PluginError(format!(
+                "Invalid state transition from {:?} to {:?}",
+                current, target
+            )));
         }
 
         Ok(())
@@ -413,10 +419,11 @@ impl LifecycleManager {
     async fn check_dependencies(
         &self,
         plugin_id: Uuid,
-        target_state: PluginState
+        target_state: PluginState,
     ) -> Result<(), McpError> {
         let plugins = self.plugins.read().await;
-        let lifecycle = plugins.get(&plugin_id)
+        let lifecycle = plugins
+            .get(&plugin_id)
             .ok_or_else(|| McpError::PluginError("Plugin not found".to_string()))?;
 
         match target_state {
@@ -425,9 +432,10 @@ impl LifecycleManager {
                 for dep_id in &lifecycle.dependencies {
                     if let Some(dep_lifecycle) = plugins.get(dep_id) {
                         if dep_lifecycle.current_state != PluginState::Running {
-                            return Err(McpError::PluginError(
-                                format!("Dependency {} is not running", dep_id)
-                            ));
+                            return Err(McpError::PluginError(format!(
+                                "Dependency {} is not running",
+                                dep_id
+                            )));
                         }
                     }
                 }
@@ -437,9 +445,10 @@ impl LifecycleManager {
                 for dependent_id in &lifecycle.dependents {
                     if let Some(dependent_lifecycle) = plugins.get(dependent_id) {
                         if dependent_lifecycle.current_state == PluginState::Running {
-                            return Err(McpError::PluginError(
-                                format!("Dependent {} is still running", dependent_id)
-                            ));
+                            return Err(McpError::PluginError(format!(
+                                "Dependent {} is still running",
+                                dependent_id
+                            )));
                         }
                     }
                 }
@@ -465,7 +474,8 @@ impl LifecycleManager {
             "system".to_string(),
             true,
             None,
-        ).await?;
+        )
+        .await?;
 
         Ok(())
     }
@@ -485,7 +495,8 @@ impl LifecycleManager {
             "system".to_string(),
             true,
             None,
-        ).await?;
+        )
+        .await?;
 
         Ok(())
     }
@@ -505,7 +516,8 @@ impl LifecycleManager {
             "system".to_string(),
             true,
             None,
-        ).await?;
+        )
+        .await?;
 
         Ok(())
     }
@@ -557,7 +569,8 @@ impl LifecycleManager {
             "system".to_string(),
             true,
             None,
-        ).await?;
+        )
+        .await?;
 
         Ok(())
     }
@@ -566,11 +579,16 @@ impl LifecycleManager {
     pub async fn set_dependencies(
         &self,
         plugin_id: Uuid,
-        dependencies: Vec<Uuid>
+        dependencies: Vec<Uuid>,
     ) -> Result<(), McpError> {
-        info!("Setting dependencies for plugin {}: {:?}", plugin_id, dependencies);
+        info!(
+            "Setting dependencies for plugin {}: {:?}",
+            plugin_id, dependencies
+        );
 
-        self.dependency_manager.set_dependencies(plugin_id, dependencies.clone()).await?;
+        self.dependency_manager
+            .set_dependencies(plugin_id, dependencies.clone())
+            .await?;
 
         let mut plugins = self.plugins.write().await;
         if let Some(lifecycle) = plugins.get_mut(&plugin_id) {
@@ -592,7 +610,10 @@ impl LifecycleManager {
 
         for plugin_id in plugin_ids {
             if let Err(e) = self.health_checker.stop_health_check(plugin_id).await {
-                error!("Failed to stop health check for plugin {}: {}", plugin_id, e);
+                error!(
+                    "Failed to stop health check for plugin {}: {}",
+                    plugin_id, e
+                );
             }
         }
 
@@ -636,17 +657,19 @@ impl HealthChecker {
         // 定期的なヘルスチェックを開始
         let health_states = self.health_states.clone();
         let http_client = self.http_client.clone();
-        
+
         tokio::spawn(async move {
             let mut interval = interval(Duration::from_secs(30));
             loop {
                 interval.tick().await;
-                
+
                 if let Err(e) = Self::perform_health_check(
                     plugin_id,
                     health_states.clone(),
-                    http_client.clone()
-                ).await {
+                    http_client.clone(),
+                )
+                .await
+                {
                     error!("Health check failed for plugin {}: {}", plugin_id, e);
                 }
             }
@@ -668,7 +691,7 @@ impl HealthChecker {
         let mut states = health_states.write().await;
         if let Some(state) = states.get_mut(&plugin_id) {
             state.last_check = chrono::Utc::now();
-            
+
             if is_healthy {
                 state.status = HealthStatus::Healthy;
                 state.consecutive_successes += 1;
@@ -704,7 +727,8 @@ impl HealthChecker {
     /// ヘルス状態を取得
     pub async fn get_health_status(&self, plugin_id: Uuid) -> Result<HealthStatus, McpError> {
         let states = self.health_states.read().await;
-        let state = states.get(&plugin_id)
+        let state = states
+            .get(&plugin_id)
             .ok_or_else(|| McpError::PluginError("Plugin health state not found".to_string()))?;
         Ok(state.status.clone())
     }
@@ -750,7 +774,7 @@ impl DependencyManager {
     pub async fn set_dependencies(
         &self,
         plugin_id: Uuid,
-        dependencies: Vec<Uuid>
+        dependencies: Vec<Uuid>,
     ) -> Result<(), McpError> {
         let mut graph = self.dependency_graph.write().await;
         graph.insert(plugin_id, dependencies);
@@ -772,7 +796,7 @@ mod tests {
     async fn test_plugin_registration() {
         let manager = LifecycleManager::new().await.unwrap();
         let plugin_id = Uuid::new_v4();
-        
+
         let result = manager.register_plugin(plugin_id).await;
         assert!(result.is_ok());
     }

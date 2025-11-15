@@ -1100,9 +1100,7 @@ impl WordPressHandler {
     ) -> Result<WordPressPost, McpError> {
         let url = format!("{}/wp-json/wp/v2/posts/{}", self.base_url, post_id);
 
-        let update_data = serde_json::json!({
-            "featured_media": media_id
-        });
+        let update_data = serde_json::json!({ "featured_media": media_id });
 
         let mut request = self.client.put(&url).json(&update_data);
 
@@ -1137,9 +1135,7 @@ impl WordPressHandler {
     ) -> Result<WordPressCategory, McpError> {
         let url = format!("{}/wp-json/wp/v2/categories", self.base_url);
 
-        let mut category_data = serde_json::json!({
-            "name": name
-        });
+        let mut category_data = serde_json::json!({ "name": name });
 
         if let Some(desc) = description {
             category_data["description"] = serde_json::Value::String(desc.to_string());
@@ -1239,9 +1235,7 @@ impl WordPressHandler {
     ) -> Result<WordPressTag, McpError> {
         let url = format!("{}/wp-json/wp/v2/tags", self.base_url);
 
-        let mut tag_data = serde_json::json!({
-            "name": name
-        });
+        let mut tag_data = serde_json::json!({ "name": name });
 
         if let Some(desc) = description {
             tag_data["description"] = serde_json::Value::String(desc.to_string());

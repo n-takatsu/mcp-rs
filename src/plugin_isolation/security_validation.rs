@@ -1,5 +1,5 @@
 //! プラグインセキュリティ検証システム
-//! 
+//!
 //! プラグインの動的および静的セキュリティ検証を実行
 //! 脆弱性スキャン、動作解析、権限チェック機能を提供
 
@@ -7,9 +7,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tokio::sync::{RwLock, Mutex};
+use tokio::sync::{Mutex, RwLock};
 use tokio::time::{Duration, Instant};
-use tracing::{info, warn, error, debug};
+use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 use crate::error::McpError;
@@ -1157,11 +1157,16 @@ impl SecurityValidationSystem {
     pub async fn new_with_config(config: SecurityValidationConfig) -> Result<Self, McpError> {
         info!("Initializing security validation system");
 
-        let static_analyzer = Arc::new(StaticAnalyzer::new(config.static_analysis_config.clone()).await?);
-        let dynamic_analyzer = Arc::new(DynamicAnalyzer::new(config.dynamic_analysis_config.clone()).await?);
-        let vulnerability_scanner = Arc::new(VulnerabilityScanner::new(config.vulnerability_config.clone()).await?);
-        let permission_validator = Arc::new(PermissionValidator::new(config.permission_validation_config.clone()).await?);
-        let policy_engine = Arc::new(SecurityPolicyEngine::new(config.policy_engine_config.clone()).await?);
+        let static_analyzer =
+            Arc::new(StaticAnalyzer::new(config.static_analysis_config.clone()).await?);
+        let dynamic_analyzer =
+            Arc::new(DynamicAnalyzer::new(config.dynamic_analysis_config.clone()).await?);
+        let vulnerability_scanner =
+            Arc::new(VulnerabilityScanner::new(config.vulnerability_config.clone()).await?);
+        let permission_validator =
+            Arc::new(PermissionValidator::new(config.permission_validation_config.clone()).await?);
+        let policy_engine =
+            Arc::new(SecurityPolicyEngine::new(config.policy_engine_config.clone()).await?);
 
         Ok(Self {
             static_analyzer,
@@ -1181,7 +1186,10 @@ impl SecurityValidationSystem {
         plugin_path: &Path,
         validation_type: ValidationType,
     ) -> Result<ValidationResult, McpError> {
-        info!("Starting security validation for plugin: {}", plugin_metadata.name);
+        info!(
+            "Starting security validation for plugin: {}",
+            plugin_metadata.name
+        );
 
         let validation_id = Uuid::new_v4();
         let start_time = chrono::Utc::now();
@@ -1210,7 +1218,10 @@ impl SecurityValidationSystem {
         results.insert(plugin_metadata.id, result.clone());
         drop(results);
 
-        match self.perform_validation(plugin_metadata, plugin_path, &validation_type).await {
+        match self
+            .perform_validation(plugin_metadata, plugin_path, &validation_type)
+            .await
+        {
             Ok((static_result, dynamic_result, vuln_result, perm_result)) => {
                 result.static_analysis = static_result;
                 result.dynamic_analysis = dynamic_result;
@@ -1222,16 +1233,18 @@ impl SecurityValidationSystem {
                 self.calculate_overall_assessment(&mut result).await?;
             }
             Err(e) => {
-                error!("Validation failed for plugin {}: {}", plugin_metadata.name, e);
+                error!(
+                    "Validation failed for plugin {}: {}",
+                    plugin_metadata.name, e
+                );
                 result.status = ValidationStatus::Failed;
             }
         }
 
         let end_time = chrono::Utc::now();
         result.completed_at = Some(end_time);
-        result.validation_duration_secs = Some(
-            (end_time - start_time).num_milliseconds() as f64 / 1000.0
-        );
+        result.validation_duration_secs =
+            Some((end_time - start_time).num_milliseconds() as f64 / 1000.0);
 
         // 結果を更新
         let mut results = self.validation_results.write().await;
@@ -1251,12 +1264,15 @@ impl SecurityValidationSystem {
         plugin_metadata: &PluginMetadata,
         plugin_path: &Path,
         validation_type: &ValidationType,
-    ) -> Result<(
-        Option<StaticAnalysisResult>,
-        Option<DynamicAnalysisResult>,
-        Option<VulnerabilityResult>,
-        Option<PermissionValidationResult>,
-    ), McpError> {
+    ) -> Result<
+        (
+            Option<StaticAnalysisResult>,
+            Option<DynamicAnalysisResult>,
+            Option<VulnerabilityResult>,
+            Option<PermissionValidationResult>,
+        ),
+        McpError,
+    > {
         let mut static_result = None;
         let mut dynamic_result = None;
         let mut vuln_result = None;
@@ -1282,7 +1298,7 @@ impl SecurityValidationSystem {
                         self.vulnerability_scanner.scan(plugin_path),
                         self.permission_validator.validate(plugin_metadata)
                     )?;
-                    
+
                     static_result = Some(static_res);
                     dynamic_result = Some(dynamic_res);
                     vuln_result = Some(vuln_res);
@@ -1290,7 +1306,11 @@ impl SecurityValidationSystem {
                 } else {
                     // 順次実行
                     static_result = Some(self.static_analyzer.analyze(plugin_path).await?);
-                    dynamic_result = Some(self.dynamic_analyzer.analyze(plugin_metadata, plugin_path).await?);
+                    dynamic_result = Some(
+                        self.dynamic_analyzer
+                            .analyze(plugin_metadata, plugin_path)
+                            .await?,
+                    );
                     vuln_result = Some(self.vulnerability_scanner.scan(plugin_path).await?);
                     perm_result = Some(self.permission_validator.validate(plugin_metadata).await?);
                 }
@@ -1299,10 +1319,23 @@ impl SecurityValidationSystem {
                 // カスタム検証
                 for check in checks {
                     match check.as_str() {
-                        "static" => static_result = Some(self.static_analyzer.analyze(plugin_path).await?),
-                        "dynamic" => dynamic_result = Some(self.dynamic_analyzer.analyze(plugin_metadata, plugin_path).await?),
-                        "vulnerability" => vuln_result = Some(self.vulnerability_scanner.scan(plugin_path).await?),
-                        "permission" => perm_result = Some(self.permission_validator.validate(plugin_metadata).await?),
+                        "static" => {
+                            static_result = Some(self.static_analyzer.analyze(plugin_path).await?)
+                        }
+                        "dynamic" => {
+                            dynamic_result = Some(
+                                self.dynamic_analyzer
+                                    .analyze(plugin_metadata, plugin_path)
+                                    .await?,
+                            )
+                        }
+                        "vulnerability" => {
+                            vuln_result = Some(self.vulnerability_scanner.scan(plugin_path).await?)
+                        }
+                        "permission" => {
+                            perm_result =
+                                Some(self.permission_validator.validate(plugin_metadata).await?)
+                        }
                         _ => warn!("Unknown validation check: {}", check),
                     }
                 }
@@ -1313,7 +1346,10 @@ impl SecurityValidationSystem {
     }
 
     /// 全体評価を計算
-    async fn calculate_overall_assessment(&self, result: &mut ValidationResult) -> Result<(), McpError> {
+    async fn calculate_overall_assessment(
+        &self,
+        result: &mut ValidationResult,
+    ) -> Result<(), McpError> {
         let mut total_score = 100u32; // 満点から減点方式
         let mut findings = Vec::new();
         let mut recommendations = Vec::new();
@@ -1321,7 +1357,7 @@ impl SecurityValidationSystem {
         // 静的解析結果の評価
         if let Some(static_analysis) = &result.static_analysis {
             total_score = total_score.saturating_sub((100 - static_analysis.security_score as u32));
-            
+
             for issue in &static_analysis.security_issues {
                 findings.push(SecurityFinding {
                     finding_id: Uuid::new_v4(),
@@ -1392,8 +1428,10 @@ impl SecurityValidationSystem {
                     title: vuln.title.clone(),
                     description: vuln.description.clone(),
                     impact: format!("Known vulnerability in {}", vuln.affected_component),
-                    recommendation: format!("Update to version {} or later", 
-                        vuln.fixed_version.as_deref().unwrap_or("latest")),
+                    recommendation: format!(
+                        "Update to version {} or later",
+                        vuln.fixed_version.as_deref().unwrap_or("latest")
+                    ),
                     detected_at: vuln.discovered_date,
                     related_files: Vec::new(),
                     confidence: 95,
@@ -1433,7 +1471,8 @@ impl SecurityValidationSystem {
             }
 
             if perm_validation.permission_score < 80 {
-                recommendations.push("Review permission requirements and configuration".to_string());
+                recommendations
+                    .push("Review permission requirements and configuration".to_string());
             }
         }
 
@@ -1454,7 +1493,10 @@ impl SecurityValidationSystem {
     }
 
     /// 検証結果を取得
-    pub async fn get_validation_result(&self, plugin_id: Uuid) -> Result<Option<ValidationResult>, McpError> {
+    pub async fn get_validation_result(
+        &self,
+        plugin_id: Uuid,
+    ) -> Result<Option<ValidationResult>, McpError> {
         let results = self.validation_results.read().await;
         Ok(results.get(&plugin_id).cloned())
     }
@@ -1517,7 +1559,11 @@ impl DynamicAnalyzer {
         })
     }
 
-    async fn analyze(&self, _metadata: &PluginMetadata, _plugin_path: &Path) -> Result<DynamicAnalysisResult, McpError> {
+    async fn analyze(
+        &self,
+        _metadata: &PluginMetadata,
+        _plugin_path: &Path,
+    ) -> Result<DynamicAnalysisResult, McpError> {
         // TODO: 実装
         Ok(DynamicAnalysisResult {
             execution_time_secs: 1.0,
@@ -1593,7 +1639,10 @@ impl PermissionValidator {
         })
     }
 
-    async fn validate(&self, _metadata: &PluginMetadata) -> Result<PermissionValidationResult, McpError> {
+    async fn validate(
+        &self,
+        _metadata: &PluginMetadata,
+    ) -> Result<PermissionValidationResult, McpError> {
         // TODO: 実装
         Ok(PermissionValidationResult {
             validated_permissions: 0,
