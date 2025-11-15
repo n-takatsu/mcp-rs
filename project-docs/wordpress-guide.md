@@ -26,7 +26,7 @@ audit_logging = true
 ### 2. WordPress Application Password Setup (Security Best Practices)
 
 1. WordPress Admin → Users → Your Profile
-2. Scroll to "Application Passwords" 
+2. Scroll to "Application Passwords"
 3. Create new application password for MCP-RS
 4. Use this password in configuration (automatically encrypted)
 5. **Security Note**: Application passwords provide better security than regular passwords
@@ -49,7 +49,7 @@ cargo run --example wordpress_test
 ```
 ✅ Working Functions (wpmaster: Administrator privileges confirmed):
 - Category API (/wp/v2/categories) - 8 items retrieved successfully
-- Posts API (/wp/v2/posts) - 1 post, 9 pages retrieved successfully  
+- Posts API (/wp/v2/posts) - 1 post, 9 pages retrieved successfully
 - Media API (/wp/v2/media) - 2 items retrieved successfully
 - Tags API (/wp/v2/tags) - 6 items retrieved successfully
 
@@ -73,29 +73,29 @@ Despite the wpmaster user having **administrator privileges**, only the `/wp/v2/
 // Possibly restricted in functions.php or plugins
 add_filter( 'rest_pre_dispatch', function( $result, $server, $request ) {
     $route = $request->get_route();
-    
+
     // Restrict access to Settings API
     if ( strpos( $route, '/wp/v2/settings' ) === 0 ) {
-        return new WP_Error( 'rest_forbidden', 'Settings API access restricted', 
+        return new WP_Error( 'rest_forbidden', 'Settings API access restricted',
                            array( 'status' => 401 ) );
     }
-    
+
     return $result;
 }, 10, 3 );
 ```
 
-**Solution**: 
+**Solution**:
 - Check theme's `functions.php`
 - Check for REST API restrictions in plugins
 
 ##### 2. Security Plugin Restrictions
 **Common restriction plugins**:
 - Wordfence Security
-- iThemes Security (formerly Better WP Security)  
+- iThemes Security (formerly Better WP Security)
 - Sucuri Security
 - All In One WP Security & Firewall
 
-**Check Location**: 
+**Check Location**:
 ```
 Security Plugin Settings → REST API → Settings Endpoint
 or
@@ -114,7 +114,7 @@ Firewall → Advanced Rules → REST API Restrictions
 WordPress Admin → Users → Profile
 ↓
 Application Passwords Section
-↓  
+↓
 "Revoke" current password
 ↓
 Generate new Application Password
@@ -156,14 +156,14 @@ Cons: Plugin dependency
 1. Check security plugin settings
    - Wordfence → Firewall → Advanced Rules
    - iThemes Security → System Tweaks → REST API
-   
+
 2. Regenerate Application Password
    - WordPress Admin → Users → Profile
    - Revoke current password → Generate new one
-   
+
 3. Check theme functions.php
    - Check for REST API restriction filters
-   
+
 4. Run Settings API test
    cargo run --example comprehensive_test
 ```
@@ -172,14 +172,14 @@ Cons: Plugin dependency
 ```
 1. Verify WordPress version
    - For WordPress 5.5+, check Settings API restriction enhancement
-   
+
 2. Individual plugin disable test
    - Temporarily disable security-related plugins
    - Test Settings API access
-   
+
 3. Verify WordPress REST API settings
    - Admin → Settings → Permalinks → "Save Changes"
-   
+
 4. Check WordPress.com hosted restrictions
    - Verify additional restrictions if hosted on WordPress.com
 ```
@@ -200,7 +200,7 @@ Cons: Plugin dependency
 cargo run --example comprehensive_test
 
 # Authentication diagnosis
-cargo run --example auth_diagnosis  
+cargo run --example auth_diagnosis
 
 # Health check (including permission verification)
 cargo run --example wordpress_health_check
@@ -215,7 +215,7 @@ $capabilities = $user->allcaps;
 // Check MCP required permissions
 $required_caps = [
     'manage_options',
-    'edit_posts', 
+    'edit_posts',
     'upload_files',
     'manage_categories'
 ];
@@ -236,7 +236,7 @@ foreach ($required_caps as $cap) {
 🔍 WordPress API Endpoint Diagnosis Results:
 ✅ Category API (/wp/v2/categories) - 8 items retrieved successfully
 ✅ Posts API (/wp/v2/posts) - 1 post, 9 pages retrieved successfully
-✅ Media API (/wp/v2/media) - 2 items retrieved successfully  
+✅ Media API (/wp/v2/media) - 2 items retrieved successfully
 ✅ Tags API (/wp/v2/tags) - 6 items retrieved successfully
 ❌ Settings API (/wp/v2/settings) - 401 Unauthorized ← Individual restriction
 
@@ -358,7 +358,7 @@ foreach ($required_caps as $cap) {
 #### Social Media Support
 - **Twitter/X**: oEmbed integration
 - **Instagram**: Automatic post embedding
-- **Facebook**: Post and video embedding  
+- **Facebook**: Post and video embedding
 - **TikTok**: Video embedding
 
 ### Accessibility Features
@@ -367,7 +367,7 @@ foreach ($required_caps as $cap) {
 ```json
 {
   "alt_text": "Descriptive text for screen readers",
-  "caption": "Visible caption text", 
+  "caption": "Visible caption text",
   "description": "Detailed image description"
 }
 ```
@@ -412,7 +412,7 @@ foreach ($required_caps as $cap) {
 
 // 4. Create Advanced Post
 {
-  "tool": "create_advanced_post", 
+  "tool": "create_advanced_post",
   "arguments": {
     "title": "WordPress Development Tutorial",
     "content": "<p>Learn WordPress development...</p>",
@@ -480,7 +480,7 @@ foreach ($required_caps as $cap) {
 {
   "error": {
     "code": -32602,
-    "message": "Invalid params", 
+    "message": "Invalid params",
     "data": "Missing required parameter: title"
   }
 }
@@ -508,7 +508,7 @@ foreach ($required_caps as $cap) {
 # Basic functionality
 cargo run --example wordpress_test
 
-# Complete CRUD operations  
+# Complete CRUD operations
 cargo run --example wordpress_post_crud_test
 
 # Media management with accessibility
@@ -554,7 +554,7 @@ docker run -d \
 ### Best Practices
 
 - **Batch operations**: Group related API calls
-- **Pagination**: Handle large datasets efficiently  
+- **Pagination**: Handle large datasets efficiently
 - **Caching**: Cache taxonomy and media metadata
 - **Error handling**: Graceful degradation
 - **Resource cleanup**: Proper connection management
@@ -591,7 +591,7 @@ docker run -d \
    - Verify WordPress is running
    - Check firewall settings
 
-2. **Authentication failed** 
+2. **Authentication failed**
    - Verify Application Password
    - Check username spelling
    - Ensure user has required permissions

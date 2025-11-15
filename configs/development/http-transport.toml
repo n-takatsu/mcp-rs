@@ -1,11 +1,11 @@
 # MCP-RS HTTP Transport Configuration v0.15.1
-# 
+#
 # Development環境用HTTP Transport設定
 # Web UI開発・API テスト・デバッグ用
 
 [server]
 name = "mcp-rs-http-dev"
-version = "0.15.1" 
+version = "0.15.1"
 stdio = false
 log_level = "debug"
 
@@ -17,7 +17,7 @@ type = "http"
 addr = "127.0.0.1"
 port = 8081
 cors_enabled = true
-max_request_size = 2097152  # 2MB (開発用増量)
+max_request_size = 2097152 # 2MB (開発用増量)
 timeout_ms = 60000         # 60秒 (開発用延長)
 
 # STDIO設定（HTTP使用時は無効）
@@ -27,7 +27,7 @@ timeout_ms = 30000
 content_length_header = true
 framing_method = "content-length"
 max_message_size = 1048576
-pretty_print = true         # 開発用：JSON整形出力
+pretty_print = true               # 開発用：JSON整形出力
 
 [logging]
 level = "debug"
@@ -46,5 +46,5 @@ read_only = false
 [wordpress]
 url = "https://dev-wordpress-site.com"
 username = "dev-user"
-password = "dev-password" 
-verify_ssl = false  # 開発環境では無効化可能
+password = "dev-password"
+verify_ssl = false                     # 開発環境では無効化可能

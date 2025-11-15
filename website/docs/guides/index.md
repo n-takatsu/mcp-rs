@@ -1,6 +1,6 @@
 ---
 layout: page
-title: Implementation Guides  
+title: Implementation Guides
 permalink: /docs/guides/
 ---
 
@@ -11,7 +11,7 @@ Step-by-step guides for implementing and using MCP-RS.
 ## Quick Start Guides
 
 - **[WordPress Integration]({{ site.baseurl }}/docs/wordpress/)** - Complete WordPress REST API integration with media management
-- **[Database Integration]({{ site.baseurl }}/docs/database/)** - Multi-engine database setup and configuration  
+- **[Database Integration]({{ site.baseurl }}/docs/database/)** - Multi-engine database setup and configuration
 - **[Security Setup]({{ site.baseurl }}/docs/security/)** - Enterprise-grade security configuration
 - **[Custom Handler Development](#custom-handler-development)** - Create your own MCP handlers
 - **[Configuration Guide](#configuration-guide)** - Configure MCP-RS for your environment
@@ -57,10 +57,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Load configuration
     let config = Config::load("mcp-config.toml")?;
-    
+
     // Create server
     let mut server = McpServer::new();
-    
+
     // Add WordPress handler if configured
     if let Some(wp_config) = config.wordpress {
         let handler = WordPressHandler::new(wp_config);
@@ -136,7 +136,7 @@ Create a custom server with WordPress integration:
 
 ```rust
 use mcp_rs::{
-    McpServer, 
+    McpServer,
     config::Config,
     handlers::wordpress::WordPressHandler,
     protocol::BasicMcpProtocol,
@@ -148,10 +148,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Load configuration
     let config = Config::load()?;
-    
+
     // Create protocol
     let mut protocol = BasicMcpProtocol::new("wordpress-server", "1.0.0");
-    
+
     // Add WordPress handler if enabled
     if let Some(wp_config) = config.handlers.wordpress {
         if wp_config.enabled {
@@ -289,7 +289,7 @@ Then use the returned media ID to create a post:
    - Test application password authentication
    - Check user permissions are sufficient
 
-3. **Functional Testing**  
+3. **Functional Testing**
    - Test post creation and retrieval
    - Verify media upload capabilities
    - Confirm featured image functionality
@@ -433,10 +433,10 @@ use thiserror::Error;
 pub enum MyHandlerError {
     #[error("API request failed: {0}")]
     ApiError(String),
-    
+
     #[error("Invalid configuration: {0}")]
     ConfigError(String),
-    
+
     #[error("Timeout after {0}s")]
     Timeout(u64),
 }
@@ -490,12 +490,12 @@ mod tests {
     #[tokio::test]
     async fn test_my_custom_tool() {
         let handler = MyCustomHandler::new();
-        
+
         let result = handler.call_tool(
             "my_custom_tool",
             Some(json!({"input": "test"}))
         ).await.unwrap();
-        
+
         assert!(!result.is_error);
         // Add more assertions
     }
@@ -510,7 +510,7 @@ async fn test_server_integration() {
     // Start test server
     let protocol = BasicMcpProtocol::new("test", "1.0.0");
     let server = McpServer::new(protocol);
-    
+
     // Test with HTTP client
     // Add integration test logic
 }
@@ -535,7 +535,7 @@ impl OptimizedHandler {
             .pool_max_idle_per_host(10)
             .build()
             .unwrap();
-            
+
         Self {
             client: Arc::new(client),
         }
@@ -565,14 +565,14 @@ impl CachedHandler {
                 }
             }
         }
-        
+
         // Fetch and cache
         let value = self.fetch_data(key).await?;
         {
             let mut cache = self.cache.write().unwrap();
             cache.insert(key.to_string(), (value.clone(), std::time::Instant::now()));
         }
-        
+
         Ok(value)
     }
 }

@@ -28,7 +28,7 @@ function Write-TestResult($test, $success, $message = "") {
 
 function Test-StdioInitialize {
     Write-TestHeader "STDIO Initialize Test"
-    
+
     $request = @{
         "jsonrpc" = "2.0"
         "method" = "initialize"
@@ -41,12 +41,12 @@ function Test-StdioInitialize {
         }
         "id" = 1
     } | ConvertTo-Json -Depth 4 -Compress
-    
+
     $contentLength = [System.Text.Encoding]::UTF8.GetByteCount($request)
     $fullRequest = "Content-Length: $contentLength`r`n`r`n$request"
-    
+
     Write-Host "📡 Request: $fullRequest" -ForegroundColor Gray
-    
+
     try {
         # STDIO通信のシミュレーション（実際の実装では標準入出力を使用）
         Write-TestResult "STDIO Initialize Request Format" $true "Valid JSON-RPC 2.0 with MCP headers"
@@ -59,7 +59,7 @@ function Test-StdioInitialize {
 
 function Test-StdioResourceRead {
     Write-TestHeader "STDIO Resource Read Test"
-    
+
     $request = @{
         "jsonrpc" = "2.0"
         "method" = "resources/read"
@@ -68,12 +68,12 @@ function Test-StdioResourceRead {
         }
         "id" = 2
     } | ConvertTo-Json -Depth 3 -Compress
-    
+
     $contentLength = [System.Text.Encoding]::UTF8.GetByteCount($request)
     $fullRequest = "Content-Length: $contentLength`r`n`r`n$request"
-    
+
     Write-Host "📡 Request: $fullRequest" -ForegroundColor Gray
-    
+
     try {
         Write-TestResult "STDIO Resource Read Format" $true "WordPress categories URI format valid"
         return $true
@@ -85,19 +85,19 @@ function Test-StdioResourceRead {
 
 function Test-StdioToolsList {
     Write-TestHeader "STDIO Tools List Test"
-    
+
     $request = @{
         "jsonrpc" = "2.0"
         "method" = "tools/list"
         "params" = @{}
         "id" = 3
     } | ConvertTo-Json -Depth 2 -Compress
-    
+
     $contentLength = [System.Text.Encoding]::UTF8.GetByteCount($request)
     $fullRequest = "Content-Length: $contentLength`r`n`r`n$request"
-    
+
     Write-Host "📡 Request: $fullRequest" -ForegroundColor Gray
-    
+
     try {
         Write-TestResult "STDIO Tools List Format" $true "MCP tools list request valid"
         return $true
@@ -109,7 +109,7 @@ function Test-StdioToolsList {
 
 function Test-StdioToolCall {
     Write-TestHeader "STDIO Tool Call Test"
-    
+
     $request = @{
         "jsonrpc" = "2.0"
         "method" = "tools/call"
@@ -119,12 +119,12 @@ function Test-StdioToolCall {
         }
         "id" = 4
     } | ConvertTo-Json -Depth 3 -Compress
-    
+
     $contentLength = [System.Text.Encoding]::UTF8.GetByteCount($request)
     $fullRequest = "Content-Length: $contentLength`r`n`r`n$request"
-    
+
     Write-Host "📡 Request: $fullRequest" -ForegroundColor Gray
-    
+
     try {
         Write-TestResult "STDIO Tool Call Format" $true "WordPress tool call format valid"
         return $true

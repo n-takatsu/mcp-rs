@@ -1,5 +1,5 @@
 # MCP-RS Configuration File for Web UI (TCP Mode)
-# 
+#
 # Web UI用設定 - TCPモードで動作
 # HTTPが未実装のため、TCPモードを使用
 

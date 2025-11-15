@@ -64,7 +64,7 @@ tests/
 - **条件**: 継続的に更新される説明・仕様書
 - **分類基準**:
   - `project-docs/`: プロジェクト概要・ガイド
-  - `docs/`: 技術仕様・API ドキュメント  
+  - `docs/`: 技術仕様・API ドキュメント
   - `website/`: 外部公開用サイト
 
 #### 🧪 テスト系 → `tests/`
@@ -176,7 +176,7 @@ Move-Item src/handlers/database/basic_tests.rs tests/database/engine_tests.rs
 header_pages:
   - api-reference.md
   - user-guide.md
-  
+
 # パーマリンク修正
 permalink: /api-reference/
 ```
@@ -239,7 +239,7 @@ permalink: /api-reference/
 ### ❌ 避けるべき事項
 ```markdown
 ❌ 完了機能のファイル削除
-❌ 履歴情報の破棄  
+❌ 履歴情報の破棄
 ❌ テンプレートの頻繁な削除・再作成
 ❌ ドキュメントの非継続的更新
 ❌ 一括移動: 段階的整理を行わない大規模変更
@@ -341,7 +341,7 @@ permalink: /api-reference/
 
 ---
 
-**最終更新**: 2025年11月9日  
-**整理作業実績**: PR管理・テスト再構築・サイト修正・レポート整理・ROADMAP管理完了  
-**ROADMAP更新**: 2025年11月9日（v1.1 - 最新開発状況反映）  
+**最終更新**: 2025年11月9日
+**整理作業実績**: PR管理・テスト再構築・サイト修正・レポート整理・ROADMAP管理完了
+**ROADMAP更新**: 2025年11月9日（v1.1 - 最新開発状況反映）
 **次回レビュー予定**: 2025年12月9日

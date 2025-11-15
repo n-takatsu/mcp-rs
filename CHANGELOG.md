@@ -33,7 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Jekyll設定の最適化とpermalink構造
   - 404エラーの完全修正
 
-#### Enhanced  
+#### Enhanced
 - **ユーザビリティの大幅向上**
   - 設定ファイル不存在時の自動セットアップ起動
   - 分かりやすい日本語エラーメッセージ
@@ -94,13 +94,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Token bucket rate limiting with DDoS protection
   - TLS 1.2+ enforcement
   - Comprehensive audit logging
-- **Core Infrastructure**: 
+- **Core Infrastructure**:
   - JSON-RPC 2.0 server implementation using axum
   - Type-safe TOML configuration with environment variable override
   - Comprehensive error handling with thiserror
   - Async/await support with tokio runtime
   - Production-ready logging with tracing
-- **Documentation**: 
+- **Documentation**:
   - Complete README with usage examples
   - Technical documentation in project-docs/
   - GitHub Pages website preparation

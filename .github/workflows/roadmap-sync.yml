@@ -17,16 +17,16 @@ jobs:
   roadmap-sync:
     runs-on: ubuntu-latest
     name: 📊 ROADMAP Synchronization
-    
+
     steps:
     - name: Checkout
       uses: actions/checkout@v4
-      
+
     - name: Setup Node.js
       uses: actions/setup-node@v4
       with:
         node-version: '20'
-        
+
     - name: ROADMAP Sync Analysis
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -34,7 +34,7 @@ jobs:
         echo "🎯 ROADMAP synchronization processing..."
         echo "Issue Number: ${{ github.event.issue.number || 'scheduled' }}"
         echo "Milestone: ${{ github.event.issue.milestone.title || 'none' }}"
-        
+
         # Check if ROADMAP.md needs updating
         if [ -f "ROADMAP.md" ]; then
           echo "ROADMAP.md exists, checking for updates needed..."

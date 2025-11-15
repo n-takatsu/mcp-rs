@@ -14,7 +14,7 @@ Write-Host "`n📋 Epic Issues をプロジェクトに追加中..." -Foreground
 $epicIssues = @(17, 39, 40, 41)
 $epicTitles = @(
     "#17: Advanced Security Features",
-    "#39: Docker/Kubernetes統合", 
+    "#39: Docker/Kubernetes統合",
     "#40: WebSocket Transport & AI統合",
     "#41: エンタープライズ機能"
 )
@@ -22,7 +22,7 @@ $epicTitles = @(
 for ($i = 0; $i -lt $epicIssues.Length; $i++) {
     $issue = $epicIssues[$i]
     $title = $epicTitles[$i]
-    
+
     try {
         Write-Host "追加中: $title" -ForegroundColor White
         gh project item-add $ProjectNumber --owner n-takatsu --url "https://github.com/n-takatsu/mcp-rs/issues/$issue"
@@ -45,7 +45,7 @@ foreach ($issue in $subIssues) {
         {$_ -in 48..50} { "v0.3.0" }
         {$_ -in 51..55} { "v1.0.0" }
     }
-    
+
     try {
         Write-Host "追加中: Sub-Issue #$issue ($category)" -ForegroundColor White
         gh project item-add $ProjectNumber --owner n-takatsu --url "https://github.com/n-takatsu/mcp-rs/issues/$issue"
@@ -63,7 +63,7 @@ Write-Host "`n🎉 Issues 追加完了！" -ForegroundColor Green
 Write-Host "`n📊 追加されたIssues:" -ForegroundColor Magenta
 Write-Host "├─ Epic Issues: 4件 (#17, #39, #40, #41)" -ForegroundColor White
 Write-Host "├─ v0.2.0-beta Sub-Issues: 6件 (#42-#47)" -ForegroundColor Blue
-Write-Host "├─ v0.3.0 Sub-Issues: 3件 (#48-#50)" -ForegroundColor Yellow  
+Write-Host "├─ v0.3.0 Sub-Issues: 3件 (#48-#50)" -ForegroundColor Yellow
 Write-Host "├─ v1.0.0 Sub-Issues: 5件 (#51-#55)" -ForegroundColor Magenta
 Write-Host "└─ 合計: 18件" -ForegroundColor Green
 
@@ -71,7 +71,7 @@ Write-Host "`n🔗 プロジェクトURL: https://github.com/n-takatsu/mcp-rs/pr
 
 Write-Host "`n📋 次のステップ:" -ForegroundColor Yellow
 Write-Host "1. カスタムフィールドの設定（Priority, Issue Type, Release Version等）" -ForegroundColor White
-Write-Host "2. ビューの作成（Epic Dashboard, Active Sprint等）" -ForegroundColor White  
+Write-Host "2. ビューの作成（Epic Dashboard, Active Sprint等）" -ForegroundColor White
 Write-Host "3. 各Issueのフィールド値設定" -ForegroundColor White
 Write-Host "4. ワークフローのPROJECT_NUMBER更新" -ForegroundColor White
 

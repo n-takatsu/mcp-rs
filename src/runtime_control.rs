@@ -29,7 +29,7 @@ pub enum RuntimeCommand {
 pub struct RuntimeController {
     /// Transport manager
     transport_manager: Arc<DynamicTransportManager>,
-    /// Configuration manager  
+    /// Configuration manager
     config_manager: Arc<DynamicConfigManager>,
     /// Command receiver
     command_receiver: mpsc::Receiver<RuntimeCommand>,

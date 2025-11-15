@@ -20,7 +20,7 @@ Priority:
   - options: ["P0 (Critical)", "P1 (High)", "P2 (Medium)", "P3 (Low)"]
 
 Release Version:
-  - type: Single select  
+  - type: Single select
   - options: ["v0.2.0-beta", "v0.3.0", "v1.0.0", "Future"]
 
 Feature Category:
@@ -32,7 +32,7 @@ Effort Estimate:
   - description: "推定工数（週）"
 
 ROI Score:
-  - type: Number  
+  - type: Number
   - description: "ROI指標（%）"
 
 Dependencies:
@@ -50,7 +50,7 @@ Dependencies:
 3. **リリース計画**: Release Version フィールドを各バージョンと同期
 4. **進捗更新**: 完了項目をProjects上で"Done"ステータスに移動
 
-#### Phase 2: Projects → ROADMAP 反映  
+#### Phase 2: Projects → ROADMAP 反映
 1. **進捗収集**: Projects の完了状況を確認
 2. **ブロッカー特定**: 遅延している項目の特定と原因分析
 3. **計画調整**: 現実的なスケジュールへの調整
@@ -81,9 +81,9 @@ Epic Issue: プラグイン隔離システム (#42)
 Group by: Release Version
 Sort by: Due date
 Filter: Status != "Done"
-Display: 
+Display:
   - Title
-  - Priority  
+  - Priority
   - Effort Estimate
   - Dependencies
 ```
@@ -92,7 +92,7 @@ Display:
 ```yaml
 Columns:
   - 📋 Backlog (Status: Todo)
-  - 🚧 In Progress (Status: In Progress)  
+  - 🚧 In Progress (Status: In Progress)
   - 👀 In Review (Status: In Review)
   - ✅ Done (Status: Done)
 Group by: Feature Category
@@ -103,7 +103,7 @@ Filter: Release Version = "v0.2.0-beta"
 ```yaml
 Columns:
   - Title
-  - Status  
+  - Status
   - Priority
   - Release Version
   - Feature Category
@@ -162,7 +162,7 @@ gh project item-list <project-number> --format json | \
 
 ### 🏗️ 初期セットアップ
 - [ ] GitHub Projects v2 を作成
-- [ ] カスタムフィールドを設定  
+- [ ] カスタムフィールドを設定
 - [ ] Views (Timeline/Board/Table/Roadmap) を作成
 - [ ] ROADMAPの主要機能をEpic Issueとして作成
 - [ ] 各IssueをMilestoneとProjectsに関連付け
@@ -181,6 +181,6 @@ gh project item-list <project-number> --format json | \
 
 ---
 
-**作成日**: 2025年11月9日  
-**対象**: GitHub Projects v2 + ROADMAP.md v1.1  
+**作成日**: 2025年11月9日
+**対象**: GitHub Projects v2 + ROADMAP.md v1.1
 **次回更新**: 実装完了後のレビューと改善

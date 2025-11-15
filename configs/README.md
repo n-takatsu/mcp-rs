@@ -23,7 +23,7 @@ MCP-RSの設定ファイル管理ディレクトリです。用途別に整理�
   - ログファイル出力のみ（コンソール出力制限）
   - 本番レベルのセキュリティ設定
 
-- **`web-ui.toml`** - Web UI用設定  
+- **`web-ui.toml`** - Web UI用設定
   - HTTP Transport使用
   - コンソール + ファイルログ出力
   - CORS設定有効
@@ -34,7 +34,7 @@ MCP-RSの設定ファイル管理ディレクトリです。用途別に整理�
 
 - **`demo.toml`** - デモンストレーション用
 - **`http-transport.toml`** - HTTP Transport テスト用
-- **`tcp.toml`** - TCP通信テスト用  
+- **`tcp.toml`** - TCP通信テスト用
 - **`testing.toml`** - 単体テスト用設定
 
 ### 📚 Examples (`examples/`)
@@ -58,7 +58,7 @@ mcp-rs --config configs/production/claude-desktop.toml
 ```
 
 ### Web UI開発
-```bash  
+```bash
 mcp-rs --config configs/production/web-ui.toml
 ```
 
@@ -80,7 +80,7 @@ mcp-rs --config my-config.toml
 | 用途 | 設定ファイル | Transport | ログ出力 |
 |------|--------------|-----------|----------|
 | Claude Desktop使用 | `production/claude-desktop.toml` | STDIO | ファイルのみ |
-| Web UI使用 | `production/web-ui.toml` | HTTP | コンソール + ファイル |  
+| Web UI使用 | `production/web-ui.toml` | HTTP | コンソール + ファイル |
 | API開発・テスト | `development/http-transport.toml` | HTTP | 詳細ログ |
 | デモ・プレゼン | `development/demo.toml` | HTTP | 標準ログ |
 

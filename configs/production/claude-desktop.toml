@@ -1,5 +1,5 @@
 # MCP-RS Claude Desktop Configuration v0.15.1
-# 
+#
 # 🚨 重要: Claude DesktopはSTDIO通信のため、標準出力にログが混在すると動作しません
 # この設定ではログをファイルのみに出力し、STDIOをJSON通信専用にします
 
@@ -42,8 +42,8 @@ read_only = true
 [wordpress]
 enabled = true
 url = "https://your-wordpress-site.com"
-username = "your_username" 
-password = "your_app_password"  # WordPress Application Password
+username = "your_username"
+password = "your_app_password"                          # WordPress Application Password
 timeout_ms = 30000
 max_posts = 100
 default_post_status = "publish"

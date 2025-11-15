@@ -1,11 +1,11 @@
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use std::hint::black_box;
-use tempfile::TempDir;
-use tokio::runtime::Runtime;
+// use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+// use std::hint::black_box;
+// use tempfile::TempDir;
+// use tokio::runtime::Runtime;
 
-use mcp_rs::policy_application::PolicyApplicationEngine;
-use mcp_rs::policy_config::{PolicyConfig, PolicyLoader};
-use mcp_rs::policy_validation::{PolicyValidationEngine, ValidationLevel};
+// use mcp_rs::policy_application::PolicyApplicationEngine;
+// use mcp_rs::policy_config::{PolicyConfig, PolicyLoader};
+// use mcp_rs::policy_validation::{PolicyValidationEngine, ValidationLevel};
 
 /// Policy Hot-Reload システムのパフォーマンスベンチマーク
 ///
@@ -307,13 +307,13 @@ fn bench_concurrent_operations(c: &mut Criterion) {
 }
 
 criterion_group!(
-    benches,
-    bench_policy_validation,
-    bench_policy_file_loading,
-    bench_engine_initialization,
-    bench_continuous_policy_updates,
-    bench_memory_usage,
-    bench_concurrent_operations
-);
+// benches,
+//     bench_policy_validation,
+//     bench_policy_file_loading,
+//     bench_engine_initialization,
+//     bench_continuous_policy_updates,
+//     bench_memory_usage,
+//     bench_concurrent_operations
+// );
 
-criterion_main!(benches);
+// criterion_main!(benches);

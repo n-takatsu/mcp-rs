@@ -14,16 +14,16 @@ jobs:
   issue-automation:
     runs-on: ubuntu-latest
     name: 🤖 Smart Issue Management
-    
+
     steps:
     - name: Checkout
       uses: actions/checkout@v4
-      
+
     - name: Setup Node.js
       uses: actions/setup-node@v4
       with:
         node-version: '20'
-        
+
     - name: Issue Analysis and Automation
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -32,12 +32,12 @@ jobs:
         echo "Issue Number: ${{ github.event.issue.number }}"
         echo "Issue Title: ${{ github.event.issue.title }}"
         echo "Issue Labels: ${{ join(github.event.issue.labels.*.name, ', ') }}"
-        
+
         # Auto-label issues based on content
         if echo "${{ github.event.issue.title }}" | grep -i "bug\|error\|fail"; then
           echo "Adding bug label..."
         fi
-        
+
         if echo "${{ github.event.issue.title }}" | grep -i "feature\|enhance"; then
           echo "Adding enhancement label..."
         fi

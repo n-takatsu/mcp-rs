@@ -18,7 +18,7 @@ pub struct LogConfig {
     pub retention: LogRetention,
     /// コンソール出力有効
     pub console_enabled: bool,
-    /// ファイル出力有効  
+    /// ファイル出力有効
     pub file_enabled: bool,
     /// モジュール別ログ分離設定
     pub module_separation: ModuleSeparation,
@@ -123,7 +123,7 @@ impl LogConfig {
         self
     }
 
-    /// ファイル出力制御  
+    /// ファイル出力制御
     pub fn with_file(mut self, enabled: bool) -> Self {
         self.file_enabled = enabled;
         self

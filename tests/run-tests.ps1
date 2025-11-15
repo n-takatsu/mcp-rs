@@ -2,7 +2,7 @@
 
 param(
     [string]$TestSuite = "all",          # all, transport, api, integration
-    [string]$Transport = "http",         # http, stdio, both  
+    [string]$Transport = "http",         # http, stdio, both
     [string]$ServerUrl = "http://127.0.0.1:8081/mcp",
     [string]$ConfigPath = "configs/development/http-transport.toml",  # 統合後のデフォルト
     [switch]$StartServer = $false,       # 自動でサーバー起動
@@ -28,7 +28,7 @@ function Write-Header {
         [Parameter(Mandatory)]
         [string]$Text
     )
-    
+
     Write-Host ""
     Write-Host "=" * 80 -ForegroundColor $Colors.Header
     Write-Host "[TEST] $Text" -ForegroundColor $Colors.Header
@@ -42,7 +42,7 @@ function Write-SubHeader {
         [Parameter(Mandatory)]
         [string]$Text
     )
-    
+
     Write-Host ""
     Write-Host "--- $Text ---" -ForegroundColor $Colors.Header
 }
@@ -52,18 +52,18 @@ function Write-TestResult {
     param(
         [Parameter(Mandatory)]
         [string]$Suite,
-        
+
         [Parameter(Mandatory)]
         [bool]$Success,
-        
+
         [hashtable]$Details = @{}
     )
-    
+
     $status = if ($Success) { "[PASS]" } else { "[FAIL]" }
     $color = if ($Success) { $Colors.Success } else { $Colors.Error }
-    
+
     Write-Host "$status $Suite" -ForegroundColor $color
-    
+
     if ($Verbose -and $Details.Count -gt 0) {
         foreach ($detail in $Details.GetEnumerator()) {
             Write-Host "   $($detail.Key): $($detail.Value)" -ForegroundColor $Colors.Debug
@@ -73,7 +73,7 @@ function Write-TestResult {
 
 function Start-MCPServer {
     Write-SubHeader -Text "Starting MCP-RS Server"
-    
+
     # 既存プロセスを確認・停止
     $existingProcess = Get-Process -Name "mcp-rs" -ErrorAction SilentlyContinue
     if ($existingProcess) {
@@ -81,7 +81,7 @@ function Start-MCPServer {
         Stop-Process -Name "mcp-rs" -Force -ErrorAction SilentlyContinue
         Start-Sleep -Seconds 2
     }
-    
+
     # サーバー起動
     if (Test-Path ".\target\debug\mcp-rs.exe") {
         $serverPath = ".\target\debug\mcp-rs.exe"
@@ -91,15 +91,15 @@ function Start-MCPServer {
         Write-Host "[ERROR] MCP-RS executable not found. Run 'cargo build' first." -ForegroundColor $Colors.Error
         return $false
     }
-    
+
     try {
         Write-Host "[INFO] Starting server: $serverPath --config $ConfigPath" -ForegroundColor $Colors.Info
         Start-Process -FilePath $serverPath -ArgumentList "--config", $ConfigPath -WindowStyle Hidden
-        
+
         # サーバー起動待機
         Write-Host "[INFO] Waiting for server to start..." -ForegroundColor $Colors.Info
         Start-Sleep -Seconds 3
-        
+
         # 接続テスト
         $testRequest = @{
             "jsonrpc" = "2.0"
@@ -110,7 +110,7 @@ function Start-MCPServer {
             }
             "id" = 0
         } | ConvertTo-Json -Compress
-        
+
         for ($i = 1; $i -le 10; $i++) {
             try {
                 Invoke-RestMethod -Uri $ServerUrl -Method Post -Body $testRequest -ContentType "application/json" -TimeoutSec 5 -ErrorAction Stop | Out-Null
@@ -132,7 +132,7 @@ function Start-MCPServer {
 
 function Stop-MCPServer {
     Write-SubHeader -Text "Stopping MCP-RS Server"
-    
+
     $process = Get-Process -Name "mcp-rs" -ErrorAction SilentlyContinue
     if ($process) {
         Stop-Process -Name "mcp-rs" -Force -ErrorAction SilentlyContinue
@@ -142,9 +142,9 @@ function Stop-MCPServer {
 
 function Invoke-TransportTests {
     Write-SubHeader -Text "Transport Tests"
-    
+
     $results = @{}
-    
+
     if ($Transport -eq "stdio" -or $Transport -eq "both") {
         try {
             Write-Host "[INFO] Running STDIO transport tests..." -ForegroundColor $Colors.Info
@@ -154,7 +154,7 @@ function Invoke-TransportTests {
             $results["STDIO"] = $false
         }
     }
-    
+
     if ($Transport -eq "http" -or $Transport -eq "both") {
         try {
             Write-Host "[INFO] Running HTTP transport tests..." -ForegroundColor $Colors.Info
@@ -164,15 +164,15 @@ function Invoke-TransportTests {
             $results["HTTP"] = $false
         }
     }
-    
+
     return $results
 }
 
 function Invoke-APITests {
     Write-SubHeader -Text "API Tests"
-    
+
     $results = @{}
-    
+
     try {
         Write-Host "[INFO] Running WordPress API tests..." -ForegroundColor $Colors.Info
         & ".\api\test-wordpress.ps1" -ServerUrl $ServerUrl -TimeoutSeconds $TimeoutSeconds | Out-Null
@@ -180,13 +180,13 @@ function Invoke-APITests {
     } catch {
         $results["WordPress"] = $false
     }
-    
+
     return $results
 }
 
 function Invoke-IntegrationTests {
     Write-SubHeader -Text "Integration Tests"
-    
+
     # Rust統合テストを実行
     try {
         Write-Host "[INFO] Running Rust integration tests..." -ForegroundColor $Colors.Info
@@ -195,7 +195,7 @@ function Invoke-IntegrationTests {
     } catch {
         $results = @{ "Rust Integration" = $false }
     }
-    
+
     return $results
 }
 
@@ -225,21 +225,21 @@ try {
             $allResults[$key] = $transportResults[$key]
         }
     }
-    
+
     if ($TestSuite -eq "all" -or $TestSuite -eq "integration") {
         $integrationResults = Invoke-IntegrationTests
         foreach ($key in $integrationResults.Keys) {
             $allResults[$key] = $integrationResults[$key]
         }
     }
-    
+
     if ($TestSuite -eq "all" -or $TestSuite -eq "api") {
         $apiResults = Invoke-APITests
         foreach ($key in $apiResults.Keys) {
             $allResults[$key] = $apiResults[$key]
         }
     }
-    
+
 } finally {
     # サーバー停止
     if ($StartServer) {

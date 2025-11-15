@@ -1,6 +1,6 @@
 # MCP-RS Web UI Configuration v0.15.1
-# 
-# Web UI専用設定 - HTTPモードで動作  
+#
+# Web UI専用設定 - HTTPモードで動作
 # セキュリティのため、認証情報は環境変数を使用することを推奨します
 
 [server]
