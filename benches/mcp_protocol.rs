@@ -1,7 +1,12 @@
-// use criterion::{criterion_group, criterion_main, Criterion};
-// use mcp_rs::mcp::{JsonRpcRequest, ToolCallParams};
-// use std::collections::HashMap;
-// use std::hint::black_box;
+/*
+// ALL BENCHMARK TESTS TEMPORARILY DISABLED DUE TO DEPENDENCY ISSUES
+// These benchmarks require criterion crate which is not available
+// DO NOT RE-ENABLE WITHOUT PROPER DEPENDENCY MANAGEMENT
+
+use criterion::{criterion_group, criterion_main, Criterion};
+use mcp_rs::mcp::{JsonRpcRequest, ToolCallParams};
+use std::collections::HashMap;
+use std::hint::black_box;
 
 fn benchmark_json_rpc_parsing(c: &mut Criterion) {
     let json_request = r#"
@@ -58,10 +63,22 @@ fn benchmark_json_serialization(c: &mut Criterion) {
     });
 }
 
-// criterion_group!(
-//     benches,
-//     benchmark_json_rpc_parsing,
-//     benchmark_tool_call_params,
-//     benchmark_json_serialization
-// );
-// criterion_main!(benches);
+criterion_group!(
+    benches,
+    benchmark_json_rpc_parsing,
+    benchmark_tool_call_params,
+    benchmark_json_serialization
+);
+criterion_main!(benches);
+
+*/
+
+// Placeholder to keep the file valid
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn placeholder_test() {
+        // Empty placeholder test to keep the benchmark file valid
+        // Note: Actual benchmarks are disabled to prevent CI issues
+    }
+}
