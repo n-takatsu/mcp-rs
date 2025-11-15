@@ -196,6 +196,17 @@ cargo test
 cargo run -- --config configs/development/http-transport.toml
 ```
 
+### Examples
+
+The project includes comprehensive examples demonstrating various features:
+
+- **Core Examples**: Located in `examples/` directory
+- **Database Examples**: Located in `examples.disabled/` directory
+  - `mysql_engine_test.rs`: MySQL database engine testing (requires `database` feature)
+  - To use: `cargo run --example mysql_engine_test --features database,mysql-backend`
+
+> **Note**: Database-dependent examples are moved to `examples.disabled/` to ensure CI stability when the `database` feature is not enabled by default.
+
 ### Testing
 
 ```bash

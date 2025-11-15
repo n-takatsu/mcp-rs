@@ -196,6 +196,17 @@ cargo test
 cargo run -- --config configs/development/http-transport.toml
 ```
 
+### 使用例
+
+プロジェクトには様々な機能を示す包括的な例が含まれています：
+
+- **コア例**: `examples/` ディレクトリに格納
+- **データベース例**: `examples.disabled/` ディレクトリに格納
+  - `mysql_engine_test.rs`: MySQL データベースエンジンのテスト（`database` フィーチャーが必要）
+  - 使用方法: `cargo run --example mysql_engine_test --features database,mysql-backend`
+
+> **注意**: データベース依存の例は、`database` フィーチャーがデフォルトで有効でない場合のCI安定性を確保するため、`examples.disabled/` に移動されています。
+
 ### テスト
 
 ```bash
