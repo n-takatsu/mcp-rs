@@ -3,6 +3,8 @@
 //! mysql_asyncライブラリを使用したMySQLエンジンの動作確認
 //! セキュリティ監査済み: RSA脆弱性フリー
 
+#![cfg(feature = "database")]
+
 use mcp_rs::handlers::database::engines::mysql::MySqlEngine;
 use mcp_rs::handlers::database::types::{
     ConnectionConfig, DatabaseConfig, DatabaseType, FeatureConfig, HealthStatusType, PoolConfig,

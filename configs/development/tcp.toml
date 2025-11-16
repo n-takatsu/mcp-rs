@@ -1,0 +1,69 @@
+# MCP-RS Configuration File for Web UI (TCP Mode)
+#
+# Web UI用設定 - TCPモードで動作
+# HTTPが未実装のため、TCPモードを使用
+
+[server]
+bind_addr = "127.0.0.1:8080"
+stdio = false
+log_level = "info"
+
+[transport]
+transport_type = "tcp"
+
+# TCP サーバー設定（Web UI用）
+[transport.tcp]
+enabled = true
+bind_addr = "127.0.0.1:8080"
+max_connections = 100
+timeout_ms = 30000
+
+# STDIO設定（使用しない）
+[transport.stdio]
+buffer_size = 8192
+timeout_ms = 30000
+content_length_header = true
+framing_method = "content-length"
+max_message_size = 1048576
+pretty_print = false
+
+# HTTP設定（未実装のため無効）
+[transport.http]
+enabled = false
+bind_addr = "127.0.0.1:8081"
+cors_origins = ["*"]
+max_request_size = 1048576
+timeout_ms = 30000
+
+# WordPress設定
+[handlers.wordpress]
+url = "https://demo.wordpress.com"
+username = "dev_user"
+password = "dev_password"
+enabled = true
+timeout_seconds = 30
+
+[handlers.wordpress.rate_limit]
+enabled = true
+requests_per_second = 10
+burst_size = 20
+
+# ファイルシステム設定（オプション）
+[handlers.filesystem]
+enabled = false
+allowed_directories = []
+read_only = true
+
+# セキュリティ設定
+[security]
+allowed_origins = ["*"]
+max_concurrent_requests = 100
+request_timeout_ms = 30000
+
+# ログ設定
+[logging]
+level = "info"
+format = "json"
+file = ""
+max_size = 10
+max_files = 5

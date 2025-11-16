@@ -1,8 +1,8 @@
 # 🚀 GitHub Projects v2 手動セットアップガイド
 
-> **認証問題の回避**: Web UI でのプロジェクト作成手順  
-> **対象**: mcp-rs ROADMAP Management システム  
-> **完了時間**: 約15分  
+> **認証問題の回避**: Web UI でのプロジェクト作成手順
+> **対象**: mcp-rs ROADMAP Management システム
+> **完了時間**: 約15分
 
 ## 📋 ステップバイステップ手順
 

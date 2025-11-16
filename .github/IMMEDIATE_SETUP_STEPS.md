@@ -2,7 +2,7 @@
 
 ## ✅ 現在の完了状況
 - ✅ **プロジェクトボード**: 作成完了
-- ✅ **18 Issues**: 自動追加完了 
+- ✅ **18 Issues**: 自動追加完了
 - ✅ **Epic Issues**: #39, #40, #41, #42... 全て表示中
 - ✅ **デフォルトレイアウト**: Todo, In Progress, Done カラム
 
@@ -47,7 +47,7 @@ if ($test -eq "Y" -or $test -eq "y") {
 #### 📊 Priority (Single select)
 - **P0 (Critical)** - 🔴 赤
 - **P1 (High)** - 🟠 オレンジ
-- **P2 (Medium)** - 🟡 琥珀  
+- **P2 (Medium)** - 🟡 琥珀
 - **P3 (Low)** - 🟢 緑
 
 #### 🎯 Issue Type (Single select)
@@ -65,13 +65,13 @@ if ($test -eq "Y" -or $test -eq "y") {
 
 各Epic Issue に以下の値を設定：
 
-#### Epic #39 (Docker/K8s) 
+#### Epic #39 (Docker/K8s)
 - Priority: **P0 (Critical)**
 - Issue Type: **Epic**
 - Release Version: **v0.2.0-beta**
 
 #### Epic #40 (WebSocket/AI)
-- Priority: **P1 (High)** 
+- Priority: **P1 (High)**
 - Issue Type: **Epic**
 - Release Version: **v0.3.0**
 

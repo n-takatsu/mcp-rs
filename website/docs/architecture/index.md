@@ -23,8 +23,8 @@ MCP-RS follows a layered architecture pattern designed for extensibility, mainta
 
 ### Current Architecture Status
 
-**Last Updated**: November 3, 2025  
-**Architecture Version**: v0.1.0-alpha  
+**Last Updated**: November 3, 2025
+**Architecture Version**: v0.1.0-alpha
 **Implementation Status**: Development Phase
 
 ## Layer Structure

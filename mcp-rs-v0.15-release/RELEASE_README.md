@@ -1,4 +1,4 @@
-﻿#  mcp-rs v0.15 - WordPress MCP Server
+#  mcp-rs v0.15 - WordPress MCP Server
 
 Enterprise-grade WordPress Model Context Protocol (MCP) Server implemented in Rust.
 

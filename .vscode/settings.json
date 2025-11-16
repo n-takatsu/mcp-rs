@@ -1,0 +1,108 @@
+{
+    // ファイルエンコーディング設定（BOM問題を防ぐ）
+    "files.encoding": "utf8",
+    "files.autoGuessEncoding": false,
+    "files.insertFinalNewline": true,
+    "files.trimFinalNewlines": true,
+    "files.trimTrailingWhitespace": true,
+    
+    // 改行コード設定
+    "files.eol": "\n",
+    
+    // Rust固有設定
+    "rust-analyzer.cargo.loadOutDirsFromCheck": true,
+    "rust-analyzer.procMacro.enable": true,
+    "rust-analyzer.checkOnSave.command": "clippy",
+    "rust-analyzer.checkOnSave.allFeatures": true,
+    "rust-analyzer.cargo.allFeatures": true,
+    "rust-analyzer.completion.addCallParenthesis": false,
+    "rust-analyzer.completion.addCallArgumentSnippets": false,
+    
+    // フォーマッタ設定
+    "[rust]": {
+        "editor.formatOnSave": true,
+        "editor.defaultFormatter": "rust-lang.rust-analyzer"
+    },
+    
+    // TOML設定
+    "[toml]": {
+        "editor.formatOnSave": true,
+        "editor.insertSpaces": true,
+        "editor.tabSize": 2
+    },
+    
+    // JSON設定
+    "[json]": {
+        "editor.formatOnSave": true,
+        "editor.insertSpaces": true,
+        "editor.tabSize": 2
+    },
+    
+    // Markdown設定
+    "[markdown]": {
+        "editor.wordWrap": "on",
+        "editor.quickSuggestions": {
+            "comments": "off",
+            "strings": "off",
+            "other": "off"
+        }
+    },
+    
+    // エディター設定
+    "editor.rulers": [80, 100],
+    "editor.renderWhitespace": "boundary",
+    "editor.insertSpaces": true,
+    "editor.detectIndentation": false,
+    "editor.tabSize": 4,
+    
+    // ファイル除外設定
+    "files.exclude": {
+        "**/.git": true,
+        "**/.svn": true,
+        "**/.hg": true,
+        "**/CVS": true,
+        "**/.DS_Store": true,
+        "**/Thumbs.db": true,
+        "**/target": true,
+        "**/*.pdb": true,
+        "**/*.user": true,
+        "**/*.userosscache": true,
+        "**/*.sln.docstates": true,
+        "**/[Dd]ebug/": true,
+        "**/[Dd]ebugPublic/": true,
+        "**/[Rr]elease/": true,
+        "**/[Rr]eleases/": true,
+        "**/x64/": true,
+        "**/x86/": true,
+        "**/build/": true,
+        "**/bld/": true,
+        "**/[Bb]in/": true,
+        "**/[Oo]bj/": true
+    },
+    
+    // 検索除外設定
+    "search.exclude": {
+        "**/node_modules": true,
+        "**/bower_components": true,
+        "**/*.code-search": true,
+        "**/target": true,
+        "**/Cargo.lock": true
+    },
+    
+    // Git設定
+    "git.ignoreLimitWarning": true,
+    "git.autofetch": true,
+    "git.confirmSync": false,
+    "git.enableSmartCommit": true,
+    "git.autoStash": true,
+    
+    // ターミナル設定
+    "terminal.integrated.shell.windows": "powershell.exe",
+    "terminal.integrated.defaultProfile.windows": "PowerShell",
+    
+    // その他の便利な設定
+    "workbench.editor.enablePreview": false,
+    "breadcrumbs.enabled": true,
+    "problems.decorations.enabled": true,
+    "telemetry.telemetryLevel": "off"
+}

@@ -10,7 +10,7 @@ Welcome to the MCP-RS documentation! This site contains comprehensive guides, AP
 
 ### Quick Access
 - **[Getting Started](./docs/guides/)** - Implementation guides and tutorials
-- **[API Reference](./docs/api/)** - Complete API documentation  
+- **[API Reference](./docs/api/)** - Complete API documentation
 - **[Architecture](./docs/architecture/)** - System design and technical architecture
 
 ### Documentation Hub
@@ -90,7 +90,7 @@ MCP-RS provides a **comprehensive, battle-tested** implementation of the MCP (Mo
 
 ### ✅ Recently Completed (v0.2.0-alpha)
 - **🏗️ Core Runtime Module**: Complete application lifecycle management with state tracking
-- **� Stdio Transport Support**: Standard input/output communication for process-based integration  
+- **� Stdio Transport Support**: Standard input/output communication for process-based integration
 - **🔌 Transport Abstraction**: Pluggable transport layer with configurable framing methods
 - **🔒 Enterprise Security**: 6-layer security architecture (100% Complete)
 - **🧪 Quality Assurance**: 197+ test cases with 100% pass rate and zero Clippy warnings

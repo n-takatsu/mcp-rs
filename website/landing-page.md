@@ -164,11 +164,11 @@ use mcp_rs::{SessionManager, WebSocketServer};
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create a session manager
     let session_manager = SessionManager::new();
-    
+
     // Start the WebSocket server
     let server = WebSocketServer::new(session_manager);
     server.serve("127.0.0.1:8080").await?;
-    
+
     Ok(())
 }
 ```
@@ -225,11 +225,11 @@ use axum::Router;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let session_manager = SessionManager::new();
     let app = WebSocketServer::create_app(session_manager);
-    
+
     axum::Server::bind(&"0.0.0.0:8080".parse()?)
         .serve(app.into_make_service())
         .await?;
-    
+
     Ok(())
 }
 ```
@@ -427,8 +427,8 @@ spec:
 
 ### Contact Enterprise Sales
 
-📧 **Email**: enterprise@mcp-rs.dev  
-📞 **Phone**: +1 (555) 123-4567  
+📧 **Email**: enterprise@mcp-rs.dev
+📞 **Phone**: +1 (555) 123-4567
 💬 **Schedule a Demo**: [calendly.com/mcp-rs-demo](https://calendly.com/mcp-rs-demo)
 
 ---
@@ -437,19 +437,19 @@ spec:
 
 ### Join Our Community
 
-💬 **Discord**: [Join our Discord server](https://discord.gg/mcp-rs) - Get help, share projects, and connect with other developers  
-🐦 **Twitter**: [@mcp_rs](https://twitter.com/mcp_rs) - Latest updates and announcements  
-📧 **Newsletter**: [Subscribe for updates](mailto:newsletter@mcp-rs.dev) - Monthly updates and tips  
+💬 **Discord**: [Join our Discord server](https://discord.gg/mcp-rs) - Get help, share projects, and connect with other developers
+🐦 **Twitter**: [@mcp_rs](https://twitter.com/mcp_rs) - Latest updates and announcements
+📧 **Newsletter**: [Subscribe for updates](mailto:newsletter@mcp-rs.dev) - Monthly updates and tips
 📝 **Blog**: [Read our blog](https://blog.mcp-rs.dev) - Technical articles and tutorials
 
 ### Contributing
 
 We welcome contributions! Here's how you can help:
 
-🐛 **Report Bugs**: [GitHub Issues](https://github.com/your-org/mcp-rs/issues)  
-💡 **Feature Requests**: [GitHub Discussions](https://github.com/your-org/mcp-rs/discussions)  
-🔧 **Code Contributions**: [Contributing Guide](./CONTRIBUTING.md)  
-📖 **Documentation**: Help improve our documentation  
+🐛 **Report Bugs**: [GitHub Issues](https://github.com/your-org/mcp-rs/issues)
+💡 **Feature Requests**: [GitHub Discussions](https://github.com/your-org/mcp-rs/discussions)
+🔧 **Code Contributions**: [Contributing Guide](./CONTRIBUTING.md)
+📖 **Documentation**: Help improve our documentation
 🧪 **Testing**: Write tests and find edge cases
 
 ### Recent Contributors
@@ -512,13 +512,13 @@ We welcome contributions! Here's how you can help:
 
 ### Why Developers Choose MCP-RS
 
-💬 *"MCP-RS gave us the performance we needed for our real-time collaboration platform. The 0.8ms latency is incredible!"*  
+💬 *"MCP-RS gave us the performance we needed for our real-time collaboration platform. The 0.8ms latency is incredible!"*
 — **Sarah Chen**, CTO at CollabTech
 
-💬 *"The security features are enterprise-grade. We passed our SOC 2 audit easily with MCP-RS."*  
+💬 *"The security features are enterprise-grade. We passed our SOC 2 audit easily with MCP-RS."*
 — **Mike Rodriguez**, Security Engineer at FinanceCorp
 
-💬 *"Setup was incredibly easy. We had real-time editing working in our app within an hour."*  
+💬 *"Setup was incredibly easy. We had real-time editing working in our app within an hour."*
 — **Alex Thompson**, Full-stack Developer at StartupXYZ
 
 ---

@@ -82,6 +82,8 @@ impl ConfigSetupUI {
                 bind_addr: Some(bind_addr),
                 stdio: Some(stdio_mode),
                 log_level: Some(log_level),
+                log_retention: None, // UI設定時はデフォルト設定を使用
+                log_module: None,    // UI設定時はデフォルト設定を使用
             },
             handlers: HandlersConfig {
                 wordpress: Some(WordPressConfig {

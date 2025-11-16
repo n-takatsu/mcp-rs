@@ -10,7 +10,7 @@
 - 透明性がプロジェクトの価値を向上
 
 #### 2. **コミュニティエンゲージメント**
-- 潜在的コントリビューターの参加促進  
+- 潜在的コントリビューターの参加促進
 - 開発進捗の可視化による信頼性向上
 - Issue優先度の明確化
 
@@ -23,8 +23,8 @@
 
 #### 1. **プロジェクト説明の充実**
 ```
-Description: 
-mcp-rs Enterprise WordPress MCP Server - Strategic roadmap execution tracking. 
+Description:
+mcp-rs Enterprise WordPress MCP Server - Strategic roadmap execution tracking.
 Features priority-based planning, milestone management, and automated progress reporting.
 ```
 
@@ -38,7 +38,7 @@ Features priority-based planning, milestone management, and automated progress r
 プロジェクト上部にガイダンス追加：
 ```
 🗺️ mcp-rs ROADMAP Management Dashboard
-├─ 📋 Epic Issues: Major feature development tracking  
+├─ 📋 Epic Issues: Major feature development tracking
 ├─ 🔧 Sub-Issues: Detailed implementation tasks
 ├─ 📊 Progress Views: Real-time milestone tracking
 └─ 🤖 Automation: GitHub Actions integration
@@ -64,7 +64,7 @@ Features priority-based planning, milestone management, and automated progress r
 - GitHub Stars 増加の可能性
 - 開発プロセスの可視化
 
-#### 中期効果 (1-3ヶ月):  
+#### 中期効果 (1-3ヶ月):
 - コントリビューター増加
 - エンタープライズユーザーの関心
 - コミュニティフィードバック収集

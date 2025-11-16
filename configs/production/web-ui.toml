@@ -1,0 +1,71 @@
+# MCP-RS Web UI Configuration v0.15.1
+#
+# Web UI専用設定 - HTTPモードで動作
+# セキュリティのため、認証情報は環境変数を使用することを推奨します
+
+[server]
+name = "mcp-rs-webui"
+version = "0.15.1"
+stdio = false
+log_level = "info"
+
+[transport]
+type = "http"
+
+# STDIO設定（Web UI使用時は無効）
+[transport.stdio]
+buffer_size = 8192
+timeout_ms = 30000
+content_length_header = true
+framing_method = "content-length"
+max_message_size = 1048576
+pretty_print = false
+
+# HTTP サーバー設定（Web UI用）
+[transport.http]
+addr = "127.0.0.1"
+port = 8081
+cors_enabled = true
+max_request_size = 1048576
+timeout_ms = 30000
+
+# 必須: ハンドラー設定
+[handlers]
+enabled = ["filesystem", "wordpress"]
+
+# ファイルシステムハンドラー（Web UI用）
+[filesystem]
+root_path = "."
+read_only = false
+
+# WordPress設定（環境変数使用推奨）
+[wordpress]
+url = "https://your-wordpress-site.com"
+username = "${WORDPRESS_USERNAME}"
+password = "${WORDPRESS_PASSWORD}"
+verify_ssl = true
+
+[handlers.wordpress.rate_limit]
+enabled = true
+requests_per_second = 10
+burst_size = 20
+
+# ファイルシステム設定（オプション）
+[handlers.filesystem]
+enabled = false
+allowed_directories = []
+read_only = true
+
+# セキュリティ設定
+[security]
+allowed_origins = ["*"]
+max_concurrent_requests = 100
+request_timeout_ms = 30000
+
+# ログ設定
+[logging]
+level = "info"
+file_path = "logs/mcp-rs-webui.log"
+format = "json"
+max_size = 10
+max_files = 5

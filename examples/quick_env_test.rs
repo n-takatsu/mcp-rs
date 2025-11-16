@@ -49,9 +49,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n🧪 Test 2: 環境変数展開のデモ");
 
     // テスト用環境変数を設定
-    env::set_var("TEST_WP_URL", "https://redring.jp");
-    env::set_var("TEST_WP_USER", "wpmaster");
-    env::set_var("TEST_WP_PASS", "C5UF Ahbb bSFI h5ty WyaC V2gt");
+    env::set_var("TEST_WP_URL", "https://demo.wordpress.com");
+    env::set_var("TEST_WP_USER", "demo_user");
+    env::set_var("TEST_WP_PASS", "demo_password");
 
     // 環境変数参照の文字列をテスト
     let test_strings = vec![
@@ -76,9 +76,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("```");
 
     println!("\n📝 環境変数設定コマンド例:");
-    println!("set WORDPRESS_URL=https://redring.jp");
-    println!("set WORDPRESS_USERNAME=wpmaster");
-    println!("set WORDPRESS_PASSWORD=C5UF Ahbb bSFI h5ty WyaC V2gt");
+    println!("set WORDPRESS_URL=https://your-wordpress-site.com");
+    println!("set WORDPRESS_USERNAME=your_username");
+    println!("set WORDPRESS_PASSWORD=your_password");
 
     Ok(())
 }

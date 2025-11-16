@@ -112,7 +112,7 @@ Create a new WordPress post or page with advanced options.
 - `status` (string): "publish" (公開), "draft" (下書き), "private" (非公開), "future" (予約投稿) [default: "publish"]
 - `date` (string, optional): Publication date (ISO8601 format, required for "future" status)
 - `categories` (array, optional): Category IDs (posts only)
-- `tags` (array, optional): Tag IDs (posts only)  
+- `tags` (array, optional): Tag IDs (posts only)
 - `featured_media_id` (number, optional): Featured image media ID
 - `meta` (object, optional): Meta fields for SEO (e.g., Yoast SEO fields)
 
@@ -195,13 +195,13 @@ Upload a media file to WordPress media library.
 
 **Parameters:**
 - `file_data` (string): Base64-encoded file data
-- `filename` (string): Original filename with extension  
+- `filename` (string): Original filename with extension
 - `mime_type` (string): MIME type (e.g., "image/jpeg")
 
 **Example Usage:**
 ```json
 {
-  "tool": "upload_media", 
+  "tool": "upload_media",
   "arguments": {
     "file_data": "iVBORw0KGgoAAAANSUhEUgAA...",
     "filename": "hero-image.jpg",
@@ -362,7 +362,7 @@ Create a new WordPress category.
 
 **Parameters:**
 - `name` (string): Category name
-- `description` (string, optional): Category description  
+- `description` (string, optional): Category description
 - `parent` (number, optional): Parent category ID for hierarchical structure
 
 **Example Usage:**
@@ -533,7 +533,7 @@ AI automatically:
 3. Returns post URL and ID
 ```
 
-### Featured Image Workflow  
+### Featured Image Workflow
 ```
 User: "Upload this image and create a post with it as featured image"
 AI automatically:
@@ -652,7 +652,7 @@ This workflow prevents duplicate/similar categories and maintains clean taxonomy
 The WordPress integration includes comprehensive error handling:
 
 - **Authentication Errors**: Invalid credentials or permissions
-- **API Errors**: WordPress REST API specific errors  
+- **API Errors**: WordPress REST API specific errors
 - **Network Errors**: Timeout, connection failures
 - **Validation Errors**: Invalid parameters or data format
 - **File Upload Errors**: Unsupported file types or size limits
@@ -663,12 +663,12 @@ All errors include detailed messages for debugging and user feedback.
 
 ### Images
 - JPEG (.jpg, .jpeg)
-- PNG (.png) 
+- PNG (.png)
 - GIF (.gif)
 - WebP (.webp)
 - SVG (.svg)
 
-### Documents  
+### Documents
 - PDF (.pdf)
 - Microsoft Word (.doc, .docx)
 - Text files (.txt)
@@ -698,7 +698,7 @@ File size limits depend on your WordPress configuration (`upload_max_filesize` a
 
 **Upload Failed**
 - Check file size against WordPress limits
-- Verify MIME type is supported  
+- Verify MIME type is supported
 - Ensure proper base64 encoding
 
 **Connection Timeout**
@@ -744,7 +744,7 @@ The health check performs five critical validation stages:
 - **Success**: Site responds with 200 OK status
 - **Failure**: Network timeout, DNS resolution, or server errors
 
-#### 2. 🔌 REST API Availability  
+#### 2. 🔌 REST API Availability
 - **Purpose**: Confirm WordPress REST API is enabled and accessible
 - **Test**: GET request to `/wp-json/wp/v2/` endpoint
 - **Success**: API responds with namespace information
@@ -790,7 +790,7 @@ The health check returns a comprehensive report with the following information:
   },
   "capabilities": {
     "publish_posts": true,
-    "upload_files": true, 
+    "upload_files": true,
     "edit_posts": true,
     "manage_options": true
   },
@@ -813,7 +813,7 @@ The health check returns a comprehensive report with the following information:
 - System ready for full operation
 - No configuration issues detected
 
-**🟡 Warning**  
+**🟡 Warning**
 - Minor issues detected
 - Basic functionality available
 - Some features may be limited
@@ -837,7 +837,7 @@ The health check returns a comprehensive report with the following information:
 
 #### REST API Problems
 ```
-❌ Error: REST API not available  
+❌ Error: REST API not available
 🔧 Solutions:
    • Enable REST API in WordPress settings
    • Check security plugins aren't blocking API
@@ -879,7 +879,7 @@ The health check returns a comprehensive report with the following information:
 
 #### Before Production Use
 1. **Run Health Check**: Always validate environment first
-2. **Monitor Performance**: Check response times regularly  
+2. **Monitor Performance**: Check response times regularly
 3. **Test Permissions**: Verify all required capabilities
 4. **Validate Uploads**: Confirm media functionality works
 
@@ -897,7 +897,7 @@ WordPress application passwords may be invalidated by:
 # Daily health monitoring (recommended)
 cargo run --example comprehensive_test
 
-# Deep diagnostic for authentication issues  
+# Deep diagnostic for authentication issues
 cargo run --example settings_api_deep_diagnosis
 
 # Authentication verification
@@ -932,7 +932,7 @@ This ensures MCP-RS can continue content operations during maintenance windows.
 **Incident Response:**
 1. **Detection**: Automated monitoring or error reports
 2. **Diagnosis**: Run `settings_api_deep_diagnosis` for detailed analysis
-3. **Classification**: 
+3. **Classification**:
    - Password issue → WordPress Admin → Generate new application password
    - Plugin interference → Configure maintenance mode exclusions
    - Network problems → Infrastructure team investigation
@@ -946,7 +946,7 @@ use mcp_rs::handlers::wordpress::WordPressHandler;
 
 async fn monitor_wordpress_health() {
     let handler = WordPressHandler::new(config).await?;
-    
+
     match handler.health_check().await {
         Ok(report) if report.status == "healthy" => {
             println!("✅ WordPress system healthy");
@@ -970,14 +970,14 @@ async fn monitor_wordpress_health() {
    ├── Run wordpress_health_check
    └── Address any issues found
 
-2. Validation Success  
+2. Validation Success
    ├── Proceed with content operations
    ├── Monitor performance metrics
    └── Schedule regular health checks
 
 3. Issue Detection
    ├── Review detailed error messages
-   ├── Apply recommended solutions  
+   ├── Apply recommended solutions
    └── Re-run health check to verify fixes
 
 4. Production Monitoring

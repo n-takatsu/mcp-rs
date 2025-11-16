@@ -10,7 +10,19 @@ cargo audit --ignore RUSTSEC-2023-0071
 
 # MySQL-specific testing
 cargo test --features "database,mysql-backend"
+
+# Claude Desktop integration
+cargo run -- --config mcp-config-claude.toml
+
+# Web UI integration
+cargo run -- --config mcp-config-http-transport.toml
 ```
+
+## ⚠️ Claude Desktop Critical Notes
+- **STDIO Communication**: Use `mcp-config-claude.toml` only
+- **Log Level**: Set to `"error"` to prevent JSON/log mixing
+- **Console Output**: Disabled for clean STDIO communication
+- **Documentation**: See [Claude Desktop Integration Guide](./CLAUDE_DESKTOP_INTEGRATION.md)
 
 ## 🔐 Security Status
 - **RSA Vulnerability (RUSTSEC-2023-0071)**: ✅ RESOLVED
@@ -24,7 +36,7 @@ cargo test --features "database,mysql-backend"
 
 ## 🗄️ Database Support
 - **MySQL**: ✅ `mysql_async` (secure implementation)
-- **PostgreSQL**: ✅ `sqlx` 
+- **PostgreSQL**: ✅ `sqlx`
 - **SQLite**: ✅ `sqlx`
 - **MongoDB**: ✅ Native driver
 - **Redis**: ✅ Native driver

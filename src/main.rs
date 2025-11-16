@@ -1,392 +1,152 @@
-//! MCP-RS Binary Entry Point
+//! MCP-RS Transport統合型エントリポイント
 //!
-//! This binary provides the main executable for the MCP-RS server.
+//! 新しいTransport抽象化を使用したクリーンなアーキテクチャ
 
-#![allow(dead_code)] // Allow unused code for future extensibility
-#![allow(unused_imports)] // Allow unused imports during development
+#![allow(dead_code)]
+#![allow(unused_imports)]
 
 mod config;
 mod core;
 mod error;
 mod handlers;
-mod http_server;
 mod mcp;
 mod protocol;
+// mod runtime_control;  // Use from lib.rs to avoid duplication
 mod security;
 mod server;
 mod setup;
 mod transport;
 mod types;
 
-use config::{ConfigSwitcher, DynamicConfigManager, McpConfig};
-use core::{PluginInfo, Runtime, RuntimeConfig};
-use error::Error;
-use handlers::WordPressHandler;
-use http_server::HttpJsonRpcServer;
-// use mcp_rs::mcp_server::McpServer;
-use security::{SecureMcpServer, SecurityConfig};
-use setup::{setup_config_interactive, DemoSetup};
+use mcp_rs::config::McpConfig;
+use mcp_rs::core::{Runtime, RuntimeConfig};
+use mcp_rs::handlers::WordPressHandler;
+use mcp_rs::logging::{init_logging, LogConfig};
 use std::sync::Arc;
-use tracing::error;
+use tracing::{error, info};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // コマンドライン引数処理
-    let args: Vec<String> = std::env::args().collect();
-    let mut custom_config_path: Option<String> = None;
+    // 設定読み込み（ログ設定のため最初に実行）
+    let config = load_config().await?;
 
-    // Parse command line arguments
-    if args.len() > 1 {
-        let mut i = 1;
-        while i < args.len() {
-            match args[i].as_str() {
-                "--generate-config" => {
-                    McpConfig::generate_sample_config()?;
-                    return Ok(());
-                }
-                "--setup-config" => {
-                    setup_config_interactive().await?;
-                    return Ok(());
-                }
-                "--demo-setup" => {
-                    setup::DemoSetup::run_demo().await?;
-                    return Ok(());
-                }
-                "--config" => {
-                    if i + 1 < args.len() {
-                        custom_config_path = Some(args[i + 1].clone());
-                        i += 1; // Skip next argument as it's the config file path
-                    } else {
-                        eprintln!("❌ --config オプションには設定ファイルのパスが必要です");
-                        return Err("Missing config file path".into());
-                    }
-                }
-                "--switch-config" => {
-                    // Load current config and run interactive switcher
-                    let config = McpConfig::load()?;
-                    let manager = Arc::new(DynamicConfigManager::new(config, None));
-                    let switcher = ConfigSwitcher::new(manager);
-                    switcher.run_interactive_switch().await?;
-                    return Ok(());
-                }
-                "--reload-config" => {
-                    println!("🔄 設定リロード機能はサーバー実行中のみ利用可能です");
-                    println!("💡 サーバー起動後に --switch-config を使用してください");
-                    return Ok(());
-                }
-                "--help" | "-h" => {
-                    print_help();
-                    return Ok(());
-                }
-                _ => {}
-            }
-            i += 1;
-        }
-    }
+    // ログシステム初期化
+    let log_config = LogConfig::from_server_config(&config.server);
+    init_logging(&log_config)?;
 
-    // 設定を読み込み（カスタムパスまたはデフォルト）
-    let config = match custom_config_path {
-        Some(path) => {
-            println!("📁 カスタム設定ファイルを使用: {}", path);
-            match load_config_from_file(&path).await {
-                Ok(config) => config,
-                Err(e) => {
-                    eprintln!("❌ 設定ファイル読み込みエラー: {}", e);
-                    return Err(e.into());
-                }
-            }
-        }
-        None => match McpConfig::load() {
-            Ok(config) => config,
-            Err(_) => {
-                // 設定ファイルが見つからない場合
-                if !config_file_exists() {
-                    println!("⚠️  設定ファイルが見つかりません。");
-                    println!();
-                    println!("📋 設定オプション:");
-                    println!("  1. 対話的セットアップを実行: --setup-config");
-                    println!("  2. サンプル設定を生成: --generate-config");
-                    println!("  3. デフォルト設定で続行");
-                    println!();
+    info!("🚀 MCP-RS v0.15.1 - Transport統合アーキテクチャ");
+    info!("📂 ログファイル場所: {}", log_config.log_dir.display());
+    info!("✅ 設定読み込み完了");
 
-                    if should_run_interactive_setup()? {
-                        setup_config_interactive().await?;
-                        // セットアップ完了後に設定を再読み込み
-                        McpConfig::load()?
-                    } else {
-                        println!("ℹ️  デフォルト設定で続行します。");
-                        McpConfig::default()
-                    }
-                } else {
-                    return Err("設定ファイルの読み込みに失敗しました".into());
-                }
-            }
-        },
-    };
-
-    // Core Runtime を初期化
+    // Runtime初期化
     let runtime_config = RuntimeConfig {
         mcp_config: config.clone(),
-        max_concurrent_requests: 100,
+        enable_metrics: true,
         default_timeout_seconds: 30,
-        enable_metrics: false,
+        max_concurrent_requests: 100,
     };
 
     let runtime = Runtime::new(runtime_config);
 
-    // ログレベルを設定
-    if let Some(log_level) = &config.server.log_level {
-        std::env::set_var("RUST_LOG", log_level);
-    }
+    // ハンドラー登録
+    register_handlers(&runtime, &config).await?;
 
-    // Initialize logging
-    tracing_subscriber::fmt::init();
+    // Runtime開始
+    info!("🔄 Transport統合ランタイム初期化中...");
+    runtime.initialize().await.map_err(|e| {
+        error!("Runtime初期化失敗: {}", e);
+        Box::new(e) as Box<dyn std::error::Error>
+    })?;
 
-    println!("🚀 MCP-RS サーバーを開始します...");
+    info!("✅ MCP-RSサーバー起動完了");
+    info!("💡 Ctrl+C で終了");
 
-    // Runtime を初期化
-    runtime.initialize().await?;
-
-    // 設定情報を表示
-    if config.server.stdio.unwrap_or(false) {
-        println!("📡 モード: STDIO (MCP クライアント接続用)");
-    } else {
-        println!("📡 モード: TCP サーバー");
-        println!(
-            "🌐 バインドアドレス: {}",
-            config
-                .server
-                .bind_addr
-                .as_deref()
-                .unwrap_or("127.0.0.1:8080")
-        );
-    }
-
-    // Create MCP server with runtime
-    let mut server = crate::mcp::server::McpServer::new();
-
-    // Handler Registry を取得してWordPressハンドラーを登録
-    let handler_registry = runtime.handler_registry();
-
-    // WordPressハンドラーを追加（設定がある場合）
-    if let Some(wp_config) = &config.handlers.wordpress {
-        if wp_config.enabled.unwrap_or(true) {
-            println!("🔗 WordPress統合を有効化: {}", wp_config.url);
-
-            let wordpress_handler = WordPressHandler::try_new(wp_config.clone()).map_err(|e| {
-                Error::Internal(format!("WordPress handler initialization failed: {}", e))
-            })?;
-            let plugin_info = PluginInfo::new(
-                "wordpress".to_string(),
-                "0.1.0".to_string(),
-                "WordPress REST API integration".to_string(),
-            );
-
-            // Handler Registry に登録
-            {
-                let mut registry = handler_registry.write().await;
-                registry.register_handler(
-                    "wordpress".to_string(),
-                    Arc::new(wordpress_handler.clone()),
-                    plugin_info,
-                )?;
-            }
-
-            // Legacy MCP Server にも追加（段階的移行のため）
-            server.add_handler("wordpress".to_string(), Arc::new(wordpress_handler));
-        } else {
-            println!("⚠️  WordPress統合は無効になっています");
-        }
-    } else {
-        println!("ℹ️  WordPress設定が見つかりません");
-        println!("💡 --generate-config でサンプル設定ファイルを生成できます");
-    }
-
-    // Run server
-    if config.server.stdio.unwrap_or(false) {
-        println!("📞 STDIO モードで待機中...");
-        println!("💡 Ctrl+C で終了");
-
-        // STDIO mode - keep running until interrupted
-        tokio::signal::ctrl_c().await?;
-        println!("\n🔄 終了シグナルを受信しました");
-    } else {
-        let addr = config
-            .server
-            .bind_addr
-            .as_deref()
-            .unwrap_or("127.0.0.1:8080");
-
-        println!("🌐 HTTPとTCPの両サーバーを開始: http://{}", addr);
-        println!("� TCP JSON-RPC: ライン区切りプロトコル (既存クライアント用)");
-        println!("🌐 HTTP JSON-RPC: POST /mcp (AI Agent用)");
-        println!("�💡 Ctrl+C で終了");
-
-        // Create HTTP server with same handlers
-        let mut http_server = HttpJsonRpcServer::new();
-
-        // Add WordPress handler to HTTP server if available
-        if let Some(wp_config) = &config.handlers.wordpress {
-            if wp_config.enabled.unwrap_or(true) {
-                let wordpress_handler =
-                    WordPressHandler::try_new(wp_config.clone()).map_err(|e| {
-                        Error::Internal(format!("WordPress handler initialization failed: {}", e))
-                    })?;
-                http_server.add_handler("wordpress".to_string(), Arc::new(wordpress_handler));
+    // メインループ
+    let runtime_arc = Arc::new(runtime);
+    let main_task = tokio::spawn({
+        let runtime = runtime_arc.clone();
+        async move {
+            while runtime.is_ready().await {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             }
         }
+    });
 
-        // Parse address for HTTP server (use different port to avoid conflict)
-        let tcp_addr = addr;
-        let http_port = if addr.contains(':') {
-            let port: u16 = addr
-                .split(':')
-                .nth(1)
-                .unwrap_or("8080")
-                .parse()
-                .unwrap_or(8080);
-            port + 1 // HTTP server on next port
-        } else {
-            8081
-        };
-        let http_addr = format!("127.0.0.1:{}", http_port);
-
-        println!("🔗 TCP サーバー: {}", tcp_addr);
-        println!("🔗 HTTP サーバー: http://{}", http_addr);
-
-        // Start both servers concurrently
-        let tcp_server_task = tokio::spawn({
-            let server = server;
-            let addr = tcp_addr.to_string();
-            async move {
-                if let Err(e) = server.run(&addr).await {
-                    error!("TCP server error: {}", e);
-                }
-            }
-        });
-
-        let http_server_task = tokio::spawn({
-            async move {
-                if let Err(e) = http_server.serve(&http_addr).await {
-                    error!("HTTP server error: {}", e);
-                }
-            }
-        });
-
-        // Wait for either server to complete (or Ctrl+C)
-        tokio::select! {
-            _ = tcp_server_task => println!("TCP サーバーが終了しました"),
-            _ = http_server_task => println!("HTTP サーバーが終了しました"),
-            _ = tokio::signal::ctrl_c() => println!("\n🔄 終了シグナルを受信しました"),
-        }
+    // 終了シグナル待機
+    tokio::select! {
+        _ = main_task => info!("🔄 メインタスク終了"),
+        _ = tokio::signal::ctrl_c() => info!("🔄 終了シグナル受信"),
     }
 
     // Graceful shutdown
-    runtime.shutdown().await?;
+    runtime_arc
+        .shutdown()
+        .await
+        .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
 
+    info!("👋 MCP-RS終了");
     Ok(())
 }
 
-/// Load configuration from specific file
-async fn load_config_from_file(path: &str) -> Result<McpConfig, Error> {
-    if !std::path::Path::new(path).exists() {
-        return Err(Error::Config(format!(
-            "設定ファイルが存在しません: {}",
-            path
-        )));
-    }
+/// 設定ファイル読み込み（引数処理含む）
+async fn load_config() -> Result<McpConfig, Box<dyn std::error::Error>> {
+    let args: Vec<String> = std::env::args().collect();
 
-    let settings = ::config::Config::builder()
-        .add_source(::config::Config::try_from(&McpConfig::default())?)
-        .add_source(::config::File::with_name(path))
-        .build()?;
-
-    let mut loaded_config: McpConfig = settings.try_deserialize()?;
-
-    // Apply environment variable expansion for WordPress config
-    if let Some(ref mut wp_config) = loaded_config.handlers.wordpress {
-        McpConfig::expand_wordpress_config(wp_config);
-    }
-
-    Ok(loaded_config)
-}
-
-/// Print help message
-fn print_help() {
-    println!("🚀 MCP-RS - Model Context Protocol Server");
-    println!();
-    println!("使用方法:");
-    println!("  mcp-rs [オプション]");
-    println!();
-    println!("オプション:");
-    println!("  --config <file>      指定された設定ファイルを使用");
-    println!("  --generate-config    サンプル設定ファイルを生成");
-    println!("  --setup-config       対話的設定セットアップを実行");
-    println!("  --demo-setup         デモンストレーション モードで実行");
-    println!("  --switch-config      設定ファイルの動的切り替え");
-    println!("  --reload-config      設定の再読み込み (実行中のみ)");
-    println!("  --help, -h           このヘルプメッセージを表示");
-    println!();
-    println!("例:");
-    println!("  mcp-rs                              # デフォルト設定で起動");
-    println!("  mcp-rs --config custom.toml        # カスタム設定で起動");
-    println!("  mcp-rs --setup-config              # 対話的設定作成");
-    println!("  mcp-rs --switch-config              # 動的設定変更");
-    println!();
-    println!("設定ファイル:");
-    println!("  デフォルト検索順: mcp-config.toml, config.toml, config/mcp.toml");
-    println!();
-}
-
-/// Check if any configuration file exists
-fn config_file_exists() -> bool {
-    let config_paths = [
-        "mcp-config.toml",
-        "config.toml",
-        "config/mcp.toml",
-        "~/.config/mcp-rs/config.toml",
-    ];
-
-    config_paths
-        .iter()
-        .any(|path| std::path::Path::new(path).exists())
-}
-
-/// Ask user if they want to run interactive setup
-fn should_run_interactive_setup() -> Result<bool, Box<dyn std::error::Error>> {
-    use std::io::{self, Write};
-
-    let mut retry_count = 0;
-    const MAX_RETRIES: u32 = 3;
-
-    loop {
-        print!("対話的セットアップを実行しますか？ [Y/n]: ");
-        io::stdout().flush()?;
-
-        let mut input = String::new();
-        match io::stdin().read_line(&mut input) {
-            Ok(0) => {
-                // EOF reached, default to no
-                println!("デフォルト設定で続行します。");
-                return Ok(false);
-            }
-            Ok(_) => {
-                let input = input.trim().to_lowercase();
-
-                match input.as_str() {
-                    "" | "y" | "yes" => return Ok(true),
-                    "n" | "no" => return Ok(false),
-                    _ => {
-                        retry_count += 1;
-                        if retry_count >= MAX_RETRIES {
-                            println!("⚠️  最大試行回数に達しました。デフォルト設定で続行します。");
-                            return Ok(false);
-                        }
-                        println!("⚠️  'y' または 'n' で答えてください。");
-                    }
-                }
-            }
-            Err(e) => return Err(e.into()),
+    // --config引数処理
+    if let Some(config_index) = args.iter().position(|arg| arg == "--config") {
+        if let Some(path) = args.get(config_index + 1) {
+            return load_config_from_file(path).await;
         }
     }
+
+    // デフォルト設定読み込み
+    McpConfig::load()
+}
+
+/// 指定パスから設定読み込み
+async fn load_config_from_file(path: &str) -> Result<McpConfig, Box<dyn std::error::Error>> {
+    if !std::path::Path::new(path).exists() {
+        return Err(format!("設定ファイルが存在しません: {}", path).into());
+    }
+
+    let content = tokio::fs::read_to_string(path).await?;
+    let config: McpConfig = toml::from_str(&content)?;
+    info!("✅ カスタム設定読み込み: {}", path);
+    Ok(config)
+}
+
+/// ハンドラー登録
+async fn register_handlers(
+    runtime: &Runtime,
+    config: &McpConfig,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let registry = runtime.handler_registry();
+
+    // WordPressハンドラー
+    if let Some(wp_config) = &config.handlers.wordpress {
+        if wp_config.enabled.unwrap_or(false) {
+            let wp_handler = WordPressHandler::try_new(wp_config.clone())
+                .map_err(|e| format!("WordPress handler creation failed: {}", e))?;
+
+            let mut registry_lock = registry.write().await;
+            registry_lock
+                .register_handler(
+                    "wordpress".to_string(),
+                    Arc::new(wp_handler),
+                    mcp_rs::core::PluginInfo {
+                        name: "WordPress Handler".to_string(),
+                        version: "0.1.0".to_string(),
+                        description: "WordPress REST API integration".to_string(),
+                        author: Some("MCP-RS".to_string()),
+                        config: None,
+                        enabled: true,
+                    },
+                )
+                .map_err(|e| format!("Failed to register WordPress handler: {}", e))?;
+
+            info!("✅ WordPressハンドラー登録完了: {}", wp_config.url);
+        }
+    }
+
+    Ok(())
 }

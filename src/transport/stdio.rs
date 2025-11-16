@@ -12,7 +12,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::VecDeque,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime},
 };
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, BufWriter},
@@ -184,7 +184,7 @@ impl StdioTransport {
         let mut stats = self.stats.lock().await;
         stats.messages_received += 1;
         stats.bytes_received += content_length as u64;
-        stats.last_activity = Some(Instant::now());
+        stats.last_activity = Some(SystemTime::now());
 
         Ok(Some(message))
     }
@@ -219,7 +219,7 @@ impl StdioTransport {
         let mut stats = self.stats.lock().await;
         stats.messages_received += 1;
         stats.bytes_received += line.len() as u64;
-        stats.last_activity = Some(Instant::now());
+        stats.last_activity = Some(SystemTime::now());
 
         Ok(Some(message))
     }
@@ -278,7 +278,7 @@ impl StdioTransport {
         let mut stats = self.stats.lock().await;
         stats.messages_sent += 1;
         stats.bytes_sent += bytes_to_send.len() as u64;
-        stats.last_activity = Some(Instant::now());
+        stats.last_activity = Some(SystemTime::now());
 
         Ok(())
     }

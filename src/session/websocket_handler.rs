@@ -662,7 +662,9 @@ impl SessionWebSocketHandler {
         Err(axum::response::Response::builder()
             .status(axum::http::StatusCode::UNAUTHORIZED)
             .header("Content-Type", "application/json")
-            .body(axum::body::Body::from(json!({"error": reason}).to_string()))
+            .body(axum::body::Body::from(
+                json!({ "error": reason }).to_string(),
+            ))
             .unwrap()
             .into_response())
     }

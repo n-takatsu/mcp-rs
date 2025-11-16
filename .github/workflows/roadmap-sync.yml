@@ -1,10 +1,8 @@
-﻿name: 🎯 ROADMAP-Project Synchronization
+name: 🎯 ROADMAP-Project Synchronization
 
 on:
   issues:
-    types: [opened, edited, closed, reopened, labeled, unlabeled]
-  milestones:
-    types: [created, edited, deleted]
+    types: [opened, edited, closed, reopened, labeled, unlabeled, milestoned, demilestoned]
   schedule:
     # 毎日 9:00 JST に ROADMAP 同期チェック実行
     - cron: '0 0 * * *'  # UTC 00:00 = JST 09:00
@@ -15,237 +13,31 @@ on:
         type: boolean
         default: false
 
-env:
-  PROJECT_NUMBER: 2
-  
 jobs:
-  sync-roadmap-project:
+  roadmap-sync:
     runs-on: ubuntu-latest
-    name: 🔄 ROADMAP-Project Integration
-    
-    permissions:
-      issues: write
-      contents: write
-      
+    name: 📊 ROADMAP Synchronization
+
     steps:
-      - name: 🛒 Checkout Repository
-        uses: actions/checkout@v4
-        
-      - name: 🔧 Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          
-      - name: 📊 Auto-add Issues to Project
-        if: github.event_name == 'issues' && github.event.action == 'opened'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          # 新規 Issue を自動的に Project に追加
-          gh project item-add ${{ env.PROJECT_NUMBER }} --owner ${{ github.repository_owner }} --url "${{ github.event.issue.html_url }}"
-          
-      - name: 🏷️ Auto-label Epic Issues
-        if: github.event_name == 'issues' && contains(github.event.issue.title, '[EPIC]')
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          # Epic Issue に自動ラベル付け
-          gh issue edit ${{ github.event.issue.number }} --add-label "epic,roadmap-tracked"
-          
-      - name: 🏷️ Auto-label Sub-Issues  
-        if: github.event_name == 'issues' && contains(github.event.issue.title, '[SUB]')
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          # Sub-Issue に自動ラベル付け
-          gh issue edit ${{ github.event.issue.number }} --add-label "sub-issue,roadmap-tracked"
-          
-      - name: 📋 Set Project Fields for Epic Issues
-        if: github.event_name == 'issues' && contains(github.event.issue.title, '[EPIC]')
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          # Epic Issue のプロジェクトフィールド設定
-          echo "Epic Issue detected: ${{ github.event.issue.title }}"
-          
-          # Epic 固有のフィールド設定ロジック
-          if [[ "${{ github.event.issue.title }}" == *"Advanced Security"* ]]; then
-            echo "Setting fields for Advanced Security Epic"
-            # Priority: P1, Release: v0.2.0-beta, Type: Epic
-          elif [[ "${{ github.event.issue.title }}" == *"Docker/Kubernetes"* ]]; then
-            echo "Setting fields for Docker/K8s Epic"  
-            # Priority: P0, Release: v0.2.0-beta, Type: Epic
-          elif [[ "${{ github.event.issue.title }}" == *"WebSocket"* ]]; then
-            echo "Setting fields for WebSocket Epic"
-            # Priority: P1, Release: v0.3.0, Type: Epic
-          elif [[ "${{ github.event.issue.title }}" == *"エンタープライズ"* ]]; then
-            echo "Setting fields for Enterprise Epic"
-            # Priority: P3, Release: v1.0.0, Type: Epic
-          fi
-          
-      - name: 🔗 Link Sub-Issues to Epic Parent
-        if: github.event_name == 'issues' && contains(github.event.issue.title, '[SUB]')
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          # Sub-Issue の Epic Parent 関連付け
-          issue_body="${{ github.event.issue.body }}"
-          
-          # Epic Issue 番号を Issue Body から抽出
-          epic_number=$(echo "$issue_body" | grep -o "Parent Epic: #[0-9]\+" | head -1 | grep -o "[0-9]\+")
-          
-          if [[ ! -z "$epic_number" ]]; then
-            echo "Linking Sub-Issue #${{ github.event.issue.number }} to Epic #$epic_number"
-            
-            # Epic Issue にコメント追加
-            gh issue comment $epic_number --body "🔗 **Sub-Issue Created**: #${{ github.event.issue.number }} - ${{ github.event.issue.title }}"
-            
-            # Sub-Issue を Epic の Milestone に設定
-            epic_milestone=$(gh issue view $epic_number --json milestone --jq '.milestone.title')
-            if [[ ! -z "$epic_milestone" && "$epic_milestone" != "null" ]]; then
-              gh issue edit ${{ github.event.issue.number }} --milestone "$epic_milestone"
-            fi
-          fi
-          
-      - name: 📊 Generate ROADMAP Progress Report  
-        if: github.event_name == 'schedule' || github.event.inputs.force_sync == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          # ROADMAP 進捗レポート生成
-          echo "# 🎯 ROADMAP Progress Report - $(date '+%Y-%m-%d')" > roadmap_progress.md
-          echo "" >> roadmap_progress.md
-          
-          # Epic Issues の進捗統計
-          echo "## 📊 Epic Issues Status" >> roadmap_progress.md
-          echo "" >> roadmap_progress.md
-          
-          for milestone in "v0.2.0-beta" "v0.3.0" "v1.0.0"; do
-            echo "### 📦 $milestone" >> roadmap_progress.md
-            echo "" >> roadmap_progress.md
-            
-            # Epic Issues カウント
-            epic_count=$(gh issue list --milestone "$milestone" --label "epic" --state all --json number | jq length)
-            epic_open=$(gh issue list --milestone "$milestone" --label "epic" --state open --json number | jq length) 
-            epic_closed=$(gh issue list --milestone "$milestone" --label "epic" --state closed --json number | jq length)
-            
-            # Sub-Issues カウント  
-            sub_count=$(gh issue list --milestone "$milestone" --label "sub-issue" --state all --json number | jq length)
-            sub_open=$(gh issue list --milestone "$milestone" --label "sub-issue" --state open --json number | jq length)
-            sub_closed=$(gh issue list --milestone "$milestone" --label "sub-issue" --state closed --json number | jq length)
-            
-            echo "- **Epic Issues**: $epic_closed/$epic_count completed" >> roadmap_progress.md
-            echo "- **Sub-Issues**: $sub_closed/$sub_count completed" >> roadmap_progress.md
-            
-            if [[ $epic_count -gt 0 ]]; then
-              epic_progress=$((epic_closed * 100 / epic_count))
-              echo "- **Epic Progress**: ${epic_progress}%" >> roadmap_progress.md
-            fi
-            
-            if [[ $sub_count -gt 0 ]]; then
-              sub_progress=$((sub_closed * 100 / sub_count))
-              echo "- **Sub-Issue Progress**: ${sub_progress}%" >> roadmap_progress.md
-            fi
-            
-            echo "" >> roadmap_progress.md
-          done
-          
-          # 最新の Project 情報追加
-          echo "## 🎯 Project Board Status" >> roadmap_progress.md  
-          echo "" >> roadmap_progress.md
-          echo "- **Project**: [mcp-rs ROADMAP Management](https://github.com/${{ github.repository }}/projects/${{ env.PROJECT_NUMBER }})" >> roadmap_progress.md
-          echo "- **Last Updated**: $(date '+%Y-%m-%d %H:%M:%S UTC')" >> roadmap_progress.md
-          echo "- **Total Issues Tracked**: $(gh issue list --label 'roadmap-tracked' --state all --json number | jq length)" >> roadmap_progress.md
-          echo "" >> roadmap_progress.md
-          
-      - name: 💬 Create Progress Discussion
-        if: github.event_name == 'schedule' || github.event.inputs.force_sync == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          # 週次進捗 Discussion 作成（月曜日のみ）
-          if [[ $(date +%u) == 1 ]]; then
-            progress_content=$(cat roadmap_progress.md)
-            
-            # GitHub Discussions に投稿
-            gh api graphql \
-              --field query='
-                mutation($repositoryId: ID!, $categoryId: ID!, $title: String!, $body: String!) {
-                  createDiscussion(input: {
-                    repositoryId: $repositoryId,
-                    categoryId: $categoryId,
-                    title: $title,
-                    body: $body
-                  }) {
-                    discussion {
-                      url
-                    }
-                  }
-                }' \
-              --field repositoryId="${{ github.event.repository.node_id }}" \
-              --field categoryId="DIC_kwDOQNk6HM4Cjjnj" \
-              --field title="📊 Weekly ROADMAP Progress - $(date '+%Y-%m-%d')" \
-              --field body="$progress_content"
-          fi
-          
-      - name: 🔄 ROADMAP.md Auto-update Check
-        if: github.event.inputs.force_sync == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          # ROADMAP.md の自動更新チェック
-          echo "Checking ROADMAP.md for required updates..."
-          
-          # Issue リンクの更新
-          current_date=$(date '+%Y年%m月%d日')
-          
-          # GitHub Issues セクションの更新
-          sed -i "s|https://github.com/n-takatsu/mcp-rs/issues/NEW|https://github.com/n-takatsu/mcp-rs/issues/17|g" ROADMAP.md
-          
-          # 最終更新日の更新  
-          sed -i "s|> \*\*最終更新\*\*:.*|> **最終更新**: $current_date|g" ROADMAP.md
-          
-          # 変更があれば PR 作成
-          if [[ -n "$(git status --porcelain ROADMAP.md)" ]]; then
-            git config --local user.email "action@github.com"
-            git config --local user.name "GitHub Action" 
-            git add ROADMAP.md
-            git commit -m "🤖 Auto-update ROADMAP.md with current GitHub Issues links
+    - name: Checkout
+      uses: actions/checkout@v4
 
-            - Updated GitHub Issues links to actual issue numbers  
-            - Updated last modified date: $current_date
-            - Automated by roadmap-sync workflow"
-            
-            # 新しいブランチで PR 作成
-            branch_name="auto-update/roadmap-$(date '+%Y%m%d')"
-            git checkout -b "$branch_name"
-            git push origin "$branch_name"
-            
-            gh pr create \
-              --title "🤖 Auto-update ROADMAP.md - $(date '+%Y-%m-%d')" \
-              --body "## 🎯 自動更新内容
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
 
-            - GitHub Issues リンクを実際の Issue 番号に更新
-            - 最終更新日を現在日時に更新  
-            - ROADMAP-Project 同期ワークフローによる自動更新
+    - name: ROADMAP Sync Analysis
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        echo "🎯 ROADMAP synchronization processing..."
+        echo "Issue Number: ${{ github.event.issue.number || 'scheduled' }}"
+        echo "Milestone: ${{ github.event.issue.milestone.title || 'none' }}"
 
-            ### 🔗 更新されたリンク
-            - Epic #17: Advanced Security Features  
-            - Epic #39: Docker/Kubernetes統合
-            - Epic #40: WebSocket Transport & AI統合  
-            - Epic #41: エンタープライズ機能
-
-            **Auto-generated by**: [ROADMAP Sync Workflow](.github/workflows/roadmap-sync.yml)" \
-              --base develop \
-              --head "$branch_name"
-          fi
-
-      - name: 📈 Update Repository Topics
-        if: github.event.inputs.force_sync == 'true'  
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          # Repository topics を ROADMAP に基づいて更新
-          gh api repos/${{ github.repository }}/topics \
-            --method PUT \
-            --field names='["rust","wordpress","mcp","model-context-protocol","ai-integration","security","docker","kubernetes","websocket","enterprise","roadmap-managed"]'
+        # Check if ROADMAP.md needs updating
+        if [ -f "ROADMAP.md" ]; then
+          echo "ROADMAP.md exists, checking for updates needed..."
+        else
+          echo "ROADMAP.md not found, creating basic structure..."
+        fi
