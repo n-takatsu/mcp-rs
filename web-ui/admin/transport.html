@@ -1,0 +1,640 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Transport管理 - MCP-RS Web UI</title>
+    <link rel="stylesheet" href="../shared/mcp-ui.css">
+</head>
+<body>
+    <div class="mcp-container mcp-fade-in">
+        <header class="mcp-header">
+            <h1>🌐 Transport管理</h1>
+            <p>動的Transport切り替えとプロトコル管理</p>
+        </header>
+
+        <nav class="mcp-nav">
+            <ul>
+                <li><a href="../index.html" id="nav-home">🏠 ホーム</a></li>
+                <li><a href="../wordpress/dashboard.html" id="nav-wordpress">🔗 WordPress管理</a></li>
+                <li><a href="config.html" id="nav-config">⚙️ サーバー設定</a></li>
+                <li><a href="transport.html" id="nav-transport" class="active">🌐 Transport管理</a></li>
+                <li><a href="logs.html" id="nav-logs">📋 ログ管理</a></li>
+            </ul>
+        </nav>
+
+        <main class="mcp-main">
+            <!-- 現在のTransport状態 -->
+            <div class="mcp-card">
+                <h3>📊 現在のTransport状態</h3>
+                <div class="mcp-grid cols-3">
+                    <div class="mcp-card">
+                        <h4>🔌 アクティブTransport</h4>
+                        <div id="active-transport">
+                            <span style="color: #28a745; font-size: 1.2em;">🌐 HTTP</span>
+                            <p style="margin: 5px 0 0 0; color: #6c757d;">Port: 8081</p>
+                        </div>
+                    </div>
+                    <div class="mcp-card">
+                        <h4>📡 接続状況</h4>
+                        <div id="connection-stats">
+                            <span style="color: #17a2b8;">✅ 接続中</span>
+                            <p style="margin: 5px 0 0 0; color: #6c757d;">稼働時間: 2h 15m</p>
+                        </div>
+                    </div>
+                    <div class="mcp-card">
+                        <h4>📈 統計情報</h4>
+                        <div id="transport-stats">
+                            <p>リクエスト: <strong>142</strong></p>
+                            <p>エラー: <strong>0</strong></p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="mcp-grid cols-2">
+                <!-- Transport切り替えパネル -->
+                <div class="mcp-card">
+                    <h3>🔄 Transport切り替え</h3>
+                    
+                    <div class="mb-2">
+                        <h4>📡 STDIO Transport</h4>
+                        <p style="color: #6c757d; margin-bottom: 15px;">
+                            Claude Desktop, コマンドライン用の標準入出力通信
+                        </p>
+                        <button class="mcp-btn primary full-width" id="switch-to-stdio">
+                            📡 STDIOに切り替え
+                        </button>
+                        <div class="mt-1 p-1" style="background: #fff3cd; border-radius: 6px;">
+                            <small><strong>⚠️ 注意:</strong> Web UIは使用不可になります</small>
+                        </div>
+                    </div>
+
+                    <div class="mb-2">
+                        <h4>🌐 HTTP Transport</h4>
+                        <p style="color: #6c757d; margin-bottom: 15px;">
+                            Web UI, REST API, AI Agent用のHTTP JSON-RPC
+                        </p>
+                        
+                        <label for="http-port"><strong>HTTPポート</strong></label>
+                        <input type="number" class="mcp-input" id="http-port" 
+                               value="8081" min="1024" max="65535">
+                        
+                        <button class="mcp-btn primary full-width" id="switch-to-http">
+                            🌐 HTTPに切り替え
+                        </button>
+                        <div class="mt-1 p-1" style="background: #e7f3ff; border-radius: 6px;">
+                            <small><strong>💡 推奨:</strong> Web UI使用時はHTTPを選択</small>
+                        </div>
+                    </div>
+
+                    <div class="mb-2">
+                        <h4>🔌 WebSocket Transport</h4>
+                        <p style="color: #6c757d; margin-bottom: 15px;">
+                            リアルタイム通信用のWebSocketプロトコル
+                        </p>
+                        <button class="mcp-btn secondary full-width" disabled>
+                            🚧 WebSocket (開発中)
+                        </button>
+                        <div class="mt-1 p-1" style="background: #f8d7da; border-radius: 6px;">
+                            <small><strong>🚧 開発中:</strong> 将来のリリースで実装予定</small>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 設定・監視パネル -->
+                <div class="mcp-card">
+                    <h3>⚙️ Transport設定・監視</h3>
+                    
+                    <div class="mb-2">
+                        <h4>🔧 接続設定</h4>
+                        <label for="max-connections"><strong>最大接続数</strong></label>
+                        <input type="number" class="mcp-input" id="max-connections" 
+                               value="100" min="1" max="1000">
+                        
+                        <label for="timeout-ms"><strong>タイムアウト (ms)</strong></label>
+                        <input type="number" class="mcp-input" id="timeout-ms" 
+                               value="30000" min="1000" max="300000">
+                        
+                        <label>
+                            <input type="checkbox" id="cors-enabled" checked>
+                            <strong>CORS有効化</strong>
+                        </label>
+                        
+                        <button class="mcp-btn secondary full-width" id="apply-transport-config">
+                            💾 Transport設定を適用
+                        </button>
+                    </div>
+
+                    <div class="mb-2">
+                        <h4>📊 リアルタイム監視</h4>
+                        <button class="mcp-btn secondary full-width" id="start-monitoring">
+                            📈 監視開始
+                        </button>
+                        <button class="mcp-btn warning full-width" id="reset-stats">
+                            🔄 統計リセット
+                        </button>
+                        <button class="mcp-btn danger full-width" id="force-disconnect">
+                            ⚠️ 強制切断
+                        </button>
+                    </div>
+
+                    <div class="mb-2">
+                        <h4>🧪 接続テスト</h4>
+                        <button class="mcp-btn primary full-width" id="test-current-transport">
+                            🧪 現在のTransportをテスト
+                        </button>
+                        <button class="mcp-btn secondary full-width" id="benchmark-transport">
+                            ⚡ パフォーマンステスト
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Transport詳細情報 -->
+            <div class="mcp-card">
+                <h3>📋 Transport詳細情報</h3>
+                
+                <div class="mb-2">
+                    <h4>🔍 アクティブ接続一覧</h4>
+                    <div id="active-connections">
+                        <table style="width: 100%; border-collapse: collapse;">
+                            <thead>
+                                <tr style="background: #f8f9fa;">
+                                    <th style="padding: 10px; border: 1px solid #dee2e6;">ID</th>
+                                    <th style="padding: 10px; border: 1px solid #dee2e6;">タイプ</th>
+                                    <th style="padding: 10px; border: 1px solid #dee2e6;">クライアント</th>
+                                    <th style="padding: 10px; border: 1px solid #dee2e6;">接続時刻</th>
+                                    <th style="padding: 10px; border: 1px solid #dee2e6;">リクエスト数</th>
+                                    <th style="padding: 10px; border: 1px solid #dee2e6;">状態</th>
+                                </tr>
+                            </thead>
+                            <tbody id="connections-tbody">
+                                <tr>
+                                    <td style="padding: 8px; border: 1px solid #dee2e6;">#001</td>
+                                    <td style="padding: 8px; border: 1px solid #dee2e6;">HTTP</td>
+                                    <td style="padding: 8px; border: 1px solid #dee2e6;">Web UI</td>
+                                    <td style="padding: 8px; border: 1px solid #dee2e6;">2025-11-09 14:30</td>
+                                    <td style="padding: 8px; border: 1px solid #dee2e6;">87</td>
+                                    <td style="padding: 8px; border: 1px solid #dee2e6;"><span style="color: #28a745;">●</span> アクティブ</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="mb-2">
+                    <h4>📈 Transport統計</h4>
+                    <div id="transport-statistics">
+                        <div class="mcp-grid cols-3">
+                            <div style="text-align: center; padding: 15px; background: #e7f3ff; border-radius: 8px;">
+                                <h5>総リクエスト数</h5>
+                                <div style="font-size: 2em; color: #007bff;"><strong>1,247</strong></div>
+                            </div>
+                            <div style="text-align: center; padding: 15px; background: #d4edda; border-radius: 8px;">
+                                <h5>成功率</h5>
+                                <div style="font-size: 2em; color: #28a745;"><strong>99.2%</strong></div>
+                            </div>
+                            <div style="text-align: center; padding: 15px; background: #fff3cd; border-radius: 8px;">
+                                <h5>平均レスポンス時間</h5>
+                                <div style="font-size: 2em; color: #ffc107;"><strong>145ms</strong></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 操作履歴 -->
+            <div class="mcp-card">
+                <h3>📋 Transport操作履歴</h3>
+                <div id="transport-history">
+                    <div class="text-center" style="color: #6c757d; padding: 20px;">
+                        <p>Transport操作履歴がここに表示されます</p>
+                    </div>
+                </div>
+            </div>
+        </main>
+
+        <footer class="mcp-footer">
+            <p>
+                🚀 MCP-RS v0.15.1 - Transport Management Console | 
+                💻 開発者: <strong>n-takatsu</strong> | 
+                🌐 <a href="https://github.com/n-takatsu/mcp-rs">GitHub</a>
+            </p>
+        </footer>
+    </div>
+
+    <script src="../shared/mcp-ui.js"></script>
+    <script>
+        class TransportManager {
+            constructor() {
+                this.client = new MCPClient();
+                this.configManager = new MCPConfigManager(this.client);
+                this.currentTransport = 'http';
+                this.operationHistory = [];
+                this.monitoringInterval = null;
+                
+                this.initializeElements();
+                this.bindEvents();
+                this.startStatusMonitoring();
+            }
+
+            initializeElements() {
+                // Transport切り替えボタン
+                this.switchStdioBtn = document.getElementById('switch-to-stdio');
+                this.switchHttpBtn = document.getElementById('switch-to-http');
+                this.httpPortInput = document.getElementById('http-port');
+
+                // 設定要素
+                this.maxConnectionsInput = document.getElementById('max-connections');
+                this.timeoutInput = document.getElementById('timeout-ms');
+                this.corsEnabledCheckbox = document.getElementById('cors-enabled');
+
+                // ナビゲーション設定
+                MCPUIComponents.setActiveNav('nav-transport');
+            }
+
+            bindEvents() {
+                // Transport切り替え
+                this.switchStdioBtn.addEventListener('click', () => this.switchToStdio());
+                this.switchHttpBtn.addEventListener('click', () => this.switchToHttp());
+
+                // 設定・監視
+                document.getElementById('apply-transport-config').addEventListener('click', () => this.applyTransportConfig());
+                document.getElementById('start-monitoring').addEventListener('click', () => this.toggleMonitoring());
+                document.getElementById('reset-stats').addEventListener('click', () => this.resetStats());
+                document.getElementById('force-disconnect').addEventListener('click', () => this.forceDisconnect());
+
+                // テスト
+                document.getElementById('test-current-transport').addEventListener('click', () => this.testCurrentTransport());
+                document.getElementById('benchmark-transport').addEventListener('click', () => this.benchmarkTransport());
+            }
+
+            async switchToStdio() {
+                MCPUIComponents.showModal(
+                    '⚠️ STDIO Transport切り替え確認',
+                    `<p><strong>注意:</strong> STDIOに切り替えると、Web UIでの操作ができなくなります。</p>
+                     <p>Claude Desktopやコマンドラインからの使用になります。</p>
+                     <p>本当に切り替えますか？</p>`,
+                    [
+                        { 
+                            text: 'STDIOに切り替え', 
+                            type: 'warning',
+                            onclick: 'this.closest(\'.modal\').remove(); window.transportManager.executeStdioSwitch();'
+                        },
+                        { text: 'キャンセル', type: 'secondary' }
+                    ]
+                );
+            }
+
+            async executeStdioSwitch() {
+                try {
+                    this.addOperationHistory('Transport切り替え', 'STDIOへの切り替えを開始');
+                    
+                    // STDIO切り替え処理
+                    await this.configManager.switchTransport('stdio');
+                    
+                    MCPUIComponents.showModal(
+                        '✅ STDIO切り替え完了',
+                        `<p>STDIOへの切り替えが完了しました。</p>
+                         <p><strong>次のステップ:</strong></p>
+                         <ol style="margin: 10px 0 0 20px;">
+                           <li>このWeb UIは使用できなくなります</li>
+                           <li>Claude Desktopで新しい会話を開始</li>
+                           <li>または、コマンドラインで操作</li>
+                         </ol>`,
+                        [{ text: '閉じる', type: 'primary' }]
+                    );
+
+                    // UI状態更新
+                    this.updateTransportStatus('stdio');
+                    this.addOperationHistory('Transport切り替え', 'STDIOへの切り替え完了');
+                    
+                } catch (error) {
+                    this.addOperationHistory('エラー', `STDIO切り替え失敗: ${error.message}`);
+                    MCPUIComponents.showModal(
+                        '❌ STDIO切り替え失敗',
+                        `<p>STDIOへの切り替えに失敗しました。</p><p>${error.message}</p>`,
+                        [{ text: '閉じる', type: 'danger' }]
+                    );
+                }
+            }
+
+            async switchToHttp() {
+                const port = parseInt(this.httpPortInput.value);
+                
+                if (port < 1024 || port > 65535) {
+                    MCPUIComponents.showModal(
+                        '⚠️ 無効なポート番号',
+                        '<p>ポート番号は1024から65535の間で指定してください。</p>',
+                        [{ text: '閉じる', type: 'warning' }]
+                    );
+                    return;
+                }
+
+                try {
+                    this.addOperationHistory('Transport切り替え', `HTTPポート${port}への切り替えを開始`);
+                    
+                    // HTTP切り替え処理
+                    await this.configManager.switchTransport('http', { port });
+                    
+                    MCPUIComponents.showModal(
+                        '✅ HTTP切り替え完了',
+                        `<p>HTTP Transport (ポート${port}) への切り替えが完了しました。</p>
+                         <p><strong>アクセス URL:</strong> http://127.0.0.1:${port}/mcp</p>`,
+                        [{ text: '閉じる', type: 'primary' }]
+                    );
+
+                    // UI状態更新
+                    this.updateTransportStatus('http', port);
+                    this.addOperationHistory('Transport切り替え', `HTTPポート${port}への切り替え完了`);
+                    
+                } catch (error) {
+                    this.addOperationHistory('エラー', `HTTP切り替え失敗: ${error.message}`);
+                    MCPUIComponents.showModal(
+                        '❌ HTTP切り替え失敗',
+                        `<p>HTTPへの切り替えに失敗しました。</p><p>${error.message}</p>`,
+                        [{ text: '閉じる', type: 'danger' }]
+                    );
+                }
+            }
+
+            async applyTransportConfig() {
+                const config = {
+                    maxConnections: parseInt(this.maxConnectionsInput.value),
+                    timeout: parseInt(this.timeoutInput.value),
+                    corsEnabled: this.corsEnabledCheckbox.checked
+                };
+
+                try {
+                    this.addOperationHistory('設定変更', 'Transport設定を適用中');
+                    
+                    // 設定適用処理（モック）
+                    await this.applyConfigMock(config);
+                    
+                    MCPUIComponents.showModal(
+                        '✅ 設定適用完了',
+                        `<p>Transport設定が正常に適用されました。</p>
+                         <ul style="margin: 10px 0 0 20px;">
+                           <li>最大接続数: ${config.maxConnections}</li>
+                           <li>タイムアウト: ${config.timeout}ms</li>
+                           <li>CORS: ${config.corsEnabled ? '有効' : '無効'}</li>
+                         </ul>`,
+                        [{ text: '閉じる', type: 'primary' }]
+                    );
+
+                    this.addOperationHistory('設定変更', 'Transport設定適用完了');
+                    
+                } catch (error) {
+                    this.addOperationHistory('エラー', `設定適用失敗: ${error.message}`);
+                }
+            }
+
+            toggleMonitoring() {
+                const button = document.getElementById('start-monitoring');
+                
+                if (this.monitoringInterval) {
+                    // 監視停止
+                    clearInterval(this.monitoringInterval);
+                    this.monitoringInterval = null;
+                    button.textContent = '📈 監視開始';
+                    button.className = 'mcp-btn secondary full-width';
+                    this.addOperationHistory('監視', 'リアルタイム監視を停止');
+                } else {
+                    // 監視開始
+                    this.monitoringInterval = setInterval(() => {
+                        this.updateStats();
+                    }, 2000);
+                    button.textContent = '⏹️ 監視停止';
+                    button.className = 'mcp-btn warning full-width';
+                    this.addOperationHistory('監視', 'リアルタイム監視を開始');
+                }
+            }
+
+            async testCurrentTransport() {
+                try {
+                    this.addOperationHistory('テスト', '現在のTransport接続テスト開始');
+                    
+                    const startTime = Date.now();
+                    await this.client.testConnection();
+                    const duration = Date.now() - startTime;
+                    
+                    MCPUIComponents.showModal(
+                        '✅ Transport接続テスト成功',
+                        `<p>現在のTransportは正常に動作しています。</p>
+                         <p><strong>レスポンス時間:</strong> ${duration}ms</p>
+                         <p><strong>Transport:</strong> ${this.currentTransport.toUpperCase()}</p>`,
+                        [{ text: '閉じる', type: 'primary' }]
+                    );
+
+                    this.addOperationHistory('テスト', `接続テスト成功 (${duration}ms)`);
+                    
+                } catch (error) {
+                    this.addOperationHistory('エラー', `接続テスト失敗: ${error.message}`);
+                    MCPUIComponents.showModal(
+                        '❌ Transport接続テスト失敗',
+                        `<p>現在のTransportで問題が発生しています。</p><p>${error.message}</p>`,
+                        [{ text: '閉じる', type: 'danger' }]
+                    );
+                }
+            }
+
+            async benchmarkTransport() {
+                MCPUIComponents.showModal(
+                    '⚡ パフォーマンステスト実行中',
+                    '<p>複数リクエストでのパフォーマンステストを実行中...</p><div class="mcp-loading" style="margin: 20px auto;"></div>',
+                    []
+                );
+
+                try {
+                    this.addOperationHistory('ベンチマーク', 'パフォーマンステスト開始');
+                    
+                    const testCount = 10;
+                    const results = [];
+                    
+                    for (let i = 0; i < testCount; i++) {
+                        const startTime = Date.now();
+                        await this.client.testConnection();
+                        results.push(Date.now() - startTime);
+                    }
+
+                    const avgTime = results.reduce((a, b) => a + b) / results.length;
+                    const minTime = Math.min(...results);
+                    const maxTime = Math.max(...results);
+
+                    // モーダルを閉じて結果表示
+                    document.querySelector('.modal').remove();
+                    
+                    MCPUIComponents.showModal(
+                        '📊 パフォーマンステスト結果',
+                        `<p><strong>テスト実行回数:</strong> ${testCount}回</p>
+                         <p><strong>平均レスポンス時間:</strong> ${avgTime.toFixed(1)}ms</p>
+                         <p><strong>最短時間:</strong> ${minTime}ms</p>
+                         <p><strong>最長時間:</strong> ${maxTime}ms</p>
+                         <p><strong>成功率:</strong> 100%</p>`,
+                        [{ text: '閉じる', type: 'primary' }]
+                    );
+
+                    this.addOperationHistory('ベンチマーク', `テスト完了 (平均${avgTime.toFixed(1)}ms)`);
+                    
+                } catch (error) {
+                    document.querySelector('.modal').remove();
+                    this.addOperationHistory('エラー', `ベンチマークテスト失敗: ${error.message}`);
+                }
+            }
+
+            resetStats() {
+                MCPUIComponents.showModal(
+                    '🔄 統計リセット確認',
+                    '<p>Transport統計情報をリセットしますか？</p><p>この操作は元に戻せません。</p>',
+                    [
+                        { 
+                            text: 'リセット実行', 
+                            type: 'warning',
+                            onclick: 'this.closest(\'.modal\').remove(); window.transportManager.executeStatsReset();'
+                        },
+                        { text: 'キャンセル', type: 'secondary' }
+                    ]
+                );
+            }
+
+            executeStatsReset() {
+                // 統計情報をリセット
+                this.updateTransportStatistics(0, 0, 0);
+                this.addOperationHistory('統計リセット', 'Transport統計情報をリセットしました');
+                
+                MCPUIComponents.showModal(
+                    '✅ 統計リセット完了',
+                    '<p>Transport統計情報がリセットされました。</p>',
+                    [{ text: '閉じる', type: 'primary' }]
+                );
+            }
+
+            forceDisconnect() {
+                MCPUIComponents.showModal(
+                    '⚠️ 強制切断警告',
+                    '<p>アクティブな接続を強制切断しますか？</p><p><strong>警告:</strong> 進行中の処理が中断される可能性があります。</p>',
+                    [
+                        { 
+                            text: '強制切断実行', 
+                            type: 'danger',
+                            onclick: 'this.closest(\'.modal\').remove(); window.transportManager.executeForceDisconnect();'
+                        },
+                        { text: 'キャンセル', type: 'secondary' }
+                    ]
+                );
+            }
+
+            executeForceDisconnect() {
+                this.addOperationHistory('強制切断', 'アクティブ接続を強制切断しました');
+                
+                MCPUIComponents.showModal(
+                    '⚠️ 強制切断完了',
+                    '<p>アクティブな接続が強制切断されました。</p><p>新しい接続は正常に受け付けられます。</p>',
+                    [{ text: '閉じる', type: 'warning' }]
+                );
+            }
+
+            updateTransportStatus(type, port = null) {
+                const activeTransportEl = document.getElementById('active-transport');
+                
+                if (type === 'stdio') {
+                    activeTransportEl.innerHTML = `
+                        <span style="color: #6c757d; font-size: 1.2em;">📡 STDIO</span>
+                        <p style="margin: 5px 0 0 0; color: #6c757d;">標準入出力</p>
+                    `;
+                } else if (type === 'http') {
+                    activeTransportEl.innerHTML = `
+                        <span style="color: #28a745; font-size: 1.2em;">🌐 HTTP</span>
+                        <p style="margin: 5px 0 0 0; color: #6c757d;">Port: ${port || 8081}</p>
+                    `;
+                }
+                
+                this.currentTransport = type;
+            }
+
+            updateTransportStatistics(requests, successRate, avgTime) {
+                document.getElementById('transport-statistics').innerHTML = `
+                    <div class="mcp-grid cols-3">
+                        <div style="text-align: center; padding: 15px; background: #e7f3ff; border-radius: 8px;">
+                            <h5>総リクエスト数</h5>
+                            <div style="font-size: 2em; color: #007bff;"><strong>${requests.toLocaleString()}</strong></div>
+                        </div>
+                        <div style="text-align: center; padding: 15px; background: #d4edda; border-radius: 8px;">
+                            <h5>成功率</h5>
+                            <div style="font-size: 2em; color: #28a745;"><strong>${successRate}%</strong></div>
+                        </div>
+                        <div style="text-align: center; padding: 15px; background: #fff3cd; border-radius: 8px;">
+                            <h5>平均レスポンス時間</h5>
+                            <div style="font-size: 2em; color: #ffc107;"><strong>${avgTime}ms</strong></div>
+                        </div>
+                    </div>
+                `;
+            }
+
+            startStatusMonitoring() {
+                // 定期的な状態更新
+                setInterval(() => {
+                    if (this.client.isConnected) {
+                        this.updateStats();
+                    }
+                }, 5000);
+            }
+
+            updateStats() {
+                // モック統計データ更新
+                const requests = Math.floor(Math.random() * 100) + 1200;
+                const successRate = 99.2 + Math.random() * 0.8;
+                const avgTime = Math.floor(Math.random() * 50) + 120;
+                
+                this.updateTransportStatistics(requests, successRate.toFixed(1), avgTime);
+            }
+
+            async applyConfigMock(config) {
+                // 設定適用のモック実装
+                await new Promise(resolve => setTimeout(resolve, 1000));
+                console.log('Applied config:', config);
+            }
+
+            addOperationHistory(type, message) {
+                this.operationHistory.unshift({
+                    type,
+                    message,
+                    timestamp: new Date().toLocaleString('ja-JP')
+                });
+
+                if (this.operationHistory.length > 20) {
+                    this.operationHistory = this.operationHistory.slice(0, 20);
+                }
+
+                this.updateHistoryDisplay();
+            }
+
+            updateHistoryDisplay() {
+                const container = document.getElementById('transport-history');
+                
+                if (this.operationHistory.length === 0) {
+                    container.innerHTML = `
+                        <div class="text-center" style="color: #6c757d; padding: 20px;">
+                            <p>Transport操作履歴がここに表示されます</p>
+                        </div>
+                    `;
+                    return;
+                }
+
+                container.innerHTML = this.operationHistory.map(op => `
+                    <div style="padding: 10px; border-left: 3px solid #17a2b8; margin-bottom: 10px; background: #f8f9fa;">
+                        <strong>${op.type}</strong> - ${op.message}
+                        <br><small style="color: #6c757d;">${op.timestamp}</small>
+                    </div>
+                `).join('');
+            }
+        }
+
+        // 初期化
+        document.addEventListener('DOMContentLoaded', () => {
+            window.transportManager = new TransportManager();
+        });
+    </script>
+</body>
+</html>

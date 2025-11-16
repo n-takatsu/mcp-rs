@@ -5,8 +5,9 @@
 # Configuration files with sensitive information
 mcp-config.toml
 
-# IDE files
-.vscode/
+# IDE files (但し.vscode/はプロジェクト設定として含める)
+# MCP設定はアクセストークンが含まれる可能性があるため除外
+.vscode/mcp.json
 .idea/
 *.swp
 *.swo
@@ -19,10 +20,8 @@ Thumbs.db
 # Log files
 *.log
 
-# Backup files
-*.bak
-*.backup
-*.tmp
+# CI/CD generated files
+clippy-report.json
 
 # Environment files
 .env

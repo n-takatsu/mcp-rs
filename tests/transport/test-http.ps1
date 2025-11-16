@@ -23,11 +23,11 @@ function Write-TestResult($test, $success, $message = "", $response = $null) {
     } else {
         Write-Host "[FAIL] $test" -ForegroundColor Red
     }
-    
+
     if ($message) {
         Write-Host "   -> $message" -ForegroundColor Yellow
     }
-    
+
     if ($response -and $PSBoundParameters.ContainsKey('Verbose')) {
         Write-Host "   Response: $($response | ConvertTo-Json -Compress)" -ForegroundColor Gray
     }
@@ -35,7 +35,7 @@ function Write-TestResult($test, $success, $message = "", $response = $null) {
 
 function Test-ServerConnection {
     Write-TestHeader "Server Connection Test"
-    
+
     try {
         Invoke-RestMethod -Uri $ServerUrl -Method Post -Body '{"jsonrpc":"2.0","method":"ping","id":0}' -ContentType "application/json" -TimeoutSec $TimeoutSeconds -ErrorAction Stop | Out-Null
         Write-TestResult "Server Connection" $true "Server responding at $ServerUrl"
@@ -48,7 +48,7 @@ function Test-ServerConnection {
 
 function Test-HttpInitialize {
     Write-TestHeader "HTTP Initialize Test"
-    
+
     $request = @{
         "jsonrpc" = "2.0"
         "method" = "initialize"
@@ -61,10 +61,10 @@ function Test-HttpInitialize {
         }
         "id" = 1
     } | ConvertTo-Json -Depth 4 -Compress
-    
+
     try {
         $response = Invoke-RestMethod -Uri $ServerUrl -Method Post -Body $request -ContentType "application/json" -TimeoutSec $TimeoutSeconds -ErrorAction Stop
-        
+
         if ($response.result -and $response.result.protocolVersion) {
             Write-TestResult "HTTP Initialize" $true "Protocol version: $($response.result.protocolVersion)" $response
             return $true
@@ -80,17 +80,17 @@ function Test-HttpInitialize {
 
 function Test-HttpResourcesList {
     Write-TestHeader "HTTP Resources List Test"
-    
+
     $request = @{
         "jsonrpc" = "2.0"
         "method" = "resources/list"
         "params" = @{}
         "id" = 2
     } | ConvertTo-Json -Depth 2 -Compress
-    
+
     try {
         $response = Invoke-RestMethod -Uri $ServerUrl -Method Post -Body $request -ContentType "application/json" -TimeoutSec $TimeoutSeconds -ErrorAction Stop
-        
+
         if ($response.result -and $response.result.resources) {
             $resourceCount = $response.result.resources.Count
             Write-TestResult "HTTP Resources List" $true "Found $resourceCount resources" $response
@@ -107,7 +107,7 @@ function Test-HttpResourcesList {
 
 function Test-HttpResourceRead {
     Write-TestHeader "HTTP Resource Read Test"
-    
+
     $request = @{
         "jsonrpc" = "2.0"
         "method" = "resources/read"
@@ -116,10 +116,10 @@ function Test-HttpResourceRead {
         }
         "id" = 3
     } | ConvertTo-Json -Depth 3 -Compress
-    
+
     try {
         $response = Invoke-RestMethod -Uri $ServerUrl -Method Post -Body $request -ContentType "application/json" -TimeoutSec $TimeoutSeconds -ErrorAction Stop
-        
+
         if ($response.result -and $response.result.contents) {
             Write-TestResult "HTTP Resource Read (Categories)" $true "Successfully read WordPress categories" $response
             return $true
@@ -135,17 +135,17 @@ function Test-HttpResourceRead {
 
 function Test-HttpToolsList {
     Write-TestHeader "HTTP Tools List Test"
-    
+
     $request = @{
         "jsonrpc" = "2.0"
         "method" = "tools/list"
         "params" = @{}
         "id" = 4
     } | ConvertTo-Json -Depth 2 -Compress
-    
+
     try {
         $response = Invoke-RestMethod -Uri $ServerUrl -Method Post -Body $request -ContentType "application/json" -TimeoutSec $TimeoutSeconds -ErrorAction Stop
-        
+
         if ($response.result -and $response.result.tools) {
             $toolCount = $response.result.tools.Count
             Write-TestResult "HTTP Tools List" $true "Found $toolCount tools" $response
@@ -162,7 +162,7 @@ function Test-HttpToolsList {
 
 function Test-HttpToolCall {
     Write-TestHeader "HTTP Tool Call Test"
-    
+
     $request = @{
         "jsonrpc" = "2.0"
         "method" = "tools/call"
@@ -172,10 +172,10 @@ function Test-HttpToolCall {
         }
         "id" = 5
     } | ConvertTo-Json -Depth 3 -Compress
-    
+
     try {
         $response = Invoke-RestMethod -Uri $ServerUrl -Method Post -Body $request -ContentType "application/json" -TimeoutSec $TimeoutSeconds -ErrorAction Stop
-        
+
         if ($response.result) {
             Write-TestResult "HTTP Tool Call (WordPress Categories)" $true "Tool executed successfully" $response
             return $true
@@ -191,7 +191,7 @@ function Test-HttpToolCall {
 
 function Test-HttpResourceReadPosts {
     Write-TestHeader "HTTP Resource Read Posts Test"
-    
+
     $request = @{
         "jsonrpc" = "2.0"
         "method" = "resources/read"
@@ -200,10 +200,10 @@ function Test-HttpResourceReadPosts {
         }
         "id" = 6
     } | ConvertTo-Json -Depth 3 -Compress
-    
+
     try {
         $response = Invoke-RestMethod -Uri $ServerUrl -Method Post -Body $request -ContentType "application/json" -TimeoutSec $TimeoutSeconds -ErrorAction Stop
-        
+
         if ($response.result -and $response.result.contents) {
             Write-TestResult "HTTP Resource Read (Posts)" $true "Successfully read WordPress posts" $response
             return $true

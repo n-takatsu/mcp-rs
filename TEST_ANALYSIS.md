@@ -113,7 +113,7 @@ cargo test
 # ユニットテストのみ
 cargo test --lib
 
-# 統合テストのみ  
+# 統合テストのみ
 cargo test --test integration
 
 # カテゴリ別実行（新構造後）

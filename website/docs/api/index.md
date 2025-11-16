@@ -362,7 +362,7 @@ Retrieves WordPress comments.
 ### Resources
 
 - `wordpress://posts` - All published posts
-- `wordpress://pages` - All published pages  
+- `wordpress://pages` - All published pages
 - `wordpress://media` - Media library items
 - `wordpress://categories` - Post categories
 - `wordpress://tags` - Post tags

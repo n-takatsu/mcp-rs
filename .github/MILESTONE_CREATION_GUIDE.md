@@ -94,6 +94,6 @@ gh api repos/n-takatsu/mcp-rs/milestones \
 
 ---
 
-**作成日**: 2025年11月9日  
-**対象ROADMAP**: v1.1  
+**作成日**: 2025年11月9日
+**対象ROADMAP**: v1.1
 **次回更新**: Milestone作成完了後

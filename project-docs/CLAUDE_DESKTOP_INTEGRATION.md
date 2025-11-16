@@ -145,7 +145,7 @@ port = 8081
 stdio = true
 log_level = "error"  # ERRORレベルのみ
 
-[server.log_module]  
+[server.log_module]
 separation = "separated"  # ファイル出力
 ```
 
@@ -189,7 +189,7 @@ transport_type = "stdio"
 
 [handlers.wordpress]
 url = "https://your-wordpress-site.com"
-username = "your-username"  
+username = "your-username"
 password = "${WORDPRESS_PASSWORD}"
 ```
 

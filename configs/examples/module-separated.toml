@@ -1,5 +1,5 @@
 # MCP-RS Configuration - モジュール別ログ分離設定例
-# 
+#
 # 本番運用を想定したログ分離とパフォーマンス最適化設定
 
 [server]
@@ -9,14 +9,14 @@ log_level = "info"
 
 # ログ保持ポリシー設定
 [server.log_retention]
-policy = "external"  # 本番推奨：OS/ログ管理ツール任せ
+policy = "external" # 本番推奨：OS/ログ管理ツール任せ
 days = 30           # 開発環境用：30日後削除
 count = 50          # 分散ファイル用：各モジュール50ファイル保持
 size_mb = 500       # 大量ログ用：500MB制限
 
 # ログモジュール分離設定（本格運用推奨）
 [server.log_module]
-separation = "separated"  # モジュール別ファイル分離
+separation = "separated" # モジュール別ファイル分離
 
 # separation設定の選択肢：
 # - "single": 単一ファイル（mcp-rs.log）- 開発・小規模環境用

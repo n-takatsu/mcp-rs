@@ -1,66 +1,50 @@
-# MCP-RS Configuration File for HTTP Transport
-# 
-# Transport統合アーキテクチャでHTTPモードを使用
+# MCP-RS HTTP Transport Configuration v0.15.1
+#
+# Development環境用HTTP Transport設定
+# Web UI開発・API テスト・デバッグ用
 
 [server]
-bind_addr = "127.0.0.1:8081"
+name = "mcp-rs-http-dev"
+version = "0.15.1"
 stdio = false
-log_level = "info"
+log_level = "debug"
 
 [transport]
-transport_type = "http"
+type = "http"
 
-# HTTP Transport設定
+# HTTP Transport設定（開発用）
 [transport.http]
 addr = "127.0.0.1"
 port = 8081
-enable_cors = true
+cors_enabled = true
+max_request_size = 2097152 # 2MB (開発用増量)
+timeout_ms = 60000         # 60秒 (開発用延長)
 
-# STDIO設定（HTTP使用時は不要）
+# STDIO設定（HTTP使用時は無効）
 [transport.stdio]
 buffer_size = 8192
 timeout_ms = 30000
 content_length_header = true
 framing_method = "content-length"
 max_message_size = 1048576
-pretty_print = false
+pretty_print = true               # 開発用：JSON整形出力
 
-# TCP設定（HTTP使用時は不要）
-[transport.tcp]
-enabled = false
-bind_addr = "127.0.0.1:8080"
-max_connections = 100
-timeout_ms = 30000
-
-# WordPress設定
-[handlers.wordpress]
-url = "https://demo.wordpress.com"
-username = "dev_user"
-password = "dev_password"
-enabled = true
-timeout_seconds = 30
-
-[handlers.wordpress.rate_limit]
-enabled = true
-requests_per_second = 10
-burst_size = 20
-
-# ファイルシステム設定（オプション）
-[handlers.filesystem]
-enabled = false
-allowed_directories = []
-read_only = true
-
-# セキュリティ設定
-[security]
-allowed_origins = ["*"]
-max_concurrent_requests = 100
-request_timeout_ms = 30000
-
-# ログ設定
 [logging]
-level = "info"
-format = "json"
-file = ""
-max_size = 10
-max_files = 5
+level = "debug"
+file_path = "logs/mcp-rs-http-dev.log"
+
+# 必須: ハンドラー設定（開発用）
+[handlers]
+enabled = ["filesystem", "wordpress"]
+
+# ファイルシステムハンドラー（開発用：書き込み許可）
+[filesystem]
+root_path = "."
+read_only = false
+
+# WordPress（開発用：テスト設定）
+[wordpress]
+url = "https://dev-wordpress-site.com"
+username = "dev-user"
+password = "dev-password"
+verify_ssl = false                     # 開発環境では無効化可能

@@ -114,7 +114,7 @@ cargo run -- --switch-http
 transport_type = { Http = { addr = "127.0.0.1:8081" } }
 ```
 
-```toml  
+```toml
 # mcp-config-claude.toml - STDIOモード
 [transport]
 transport_type = "Stdio"
@@ -140,14 +140,14 @@ STDIO Transport使用時は**必ず`log_level="error"`**に設定:
 stdio = true
 log_level = "error"  # 標準出力とJSONの混在を防ぐ
 
-[transport]  
+[transport]
 transport_type = "Stdio"
 ```
 
 ### Transport切り替え時の挙動
 
 1. **現在のTransportは完全停止**
-2. **新Transportで再起動**  
+2. **新Transportで再起動**
 3. **ハンドラー（WordPress等）は継続**
 4. **進行中のリクエストは中断される可能性**
 
@@ -174,7 +174,7 @@ STDIO ←→ HTTP切り替え = サーバー再起動必須
      ❌ 面倒            ❌ 開発効率低下
 ```
 
-### After（新実装）  
+### After（新実装）
 ```
 STDIO ←→ HTTP切り替え = ランタイム切り替え
      ✅ 瞬時            ✅ 開発効率向上
@@ -187,20 +187,20 @@ STDIO ←→ HTTP切り替え = ランタイム切り替え
 ```rust
 use mcp_rs::runtime_control::{RuntimeController, RuntimeCommand};
 
-#[tokio::main]  
+#[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = load_config().await?;
-    
+
     // 動的Transport管理を追加
     let config_manager = Arc::new(DynamicConfigManager::new(config.clone(), None));
     let (runtime_controller, command_sender) = RuntimeController::new(
         config.transport,
         config_manager,
     )?;
-    
+
     // ランタイム制御を並列実行
     tokio::spawn(runtime_controller.run());
-    
+
     // 既存のサーバーロジック...
 }
 ```

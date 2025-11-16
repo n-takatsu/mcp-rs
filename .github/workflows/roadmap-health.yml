@@ -19,16 +19,16 @@ jobs:
   roadmap-health-check:
     runs-on: ubuntu-latest
     name: 🔍 ROADMAP Health Assessment
-    
+
     permissions:
       issues: write
       discussions: write
       contents: write
-      
+
     steps:
       - name: 🛒 Checkout
         uses: actions/checkout@v4
-        
+
       - name: 📊 Generate Health Metrics
         env:
           GH_TOKEN: ${{ github.token }}
@@ -36,80 +36,80 @@ jobs:
           echo "# 🎯 mcp-rs ROADMAP Health Check Report" > health_report.md
           echo "**Generated**: $(date '+%Y-%m-%d %H:%M:%S JST')" >> health_report.md
           echo "" >> health_report.md
-          
+
           # 📊 Overall Project Health
           echo "## 📊 Overall Project Health" >> health_report.md
           echo "" >> health_report.md
-          
+
           total_issues=$(gh issue list --state all --json number | jq length)
-          open_issues=$(gh issue list --state open --json number | jq length)  
+          open_issues=$(gh issue list --state open --json number | jq length)
           closed_issues=$((total_issues - open_issues))
-          
+
           if [[ $total_issues -gt 0 ]]; then
             completion_rate=$((closed_issues * 100 / total_issues))
             echo "- **Total Issues**: $total_issues" >> health_report.md
             echo "- **Completed**: $closed_issues ($completion_rate%)" >> health_report.md
             echo "- **In Progress**: $open_issues" >> health_report.md
           fi
-          
+
           echo "" >> health_report.md
-          
-          # 🎯 Milestone Progress Analysis  
+
+          # 🎯 Milestone Progress Analysis
           echo "## 🎯 Milestone Progress Analysis" >> health_report.md
           echo "" >> health_report.md
-          
+
           for milestone in "v0.2.0-beta" "v0.3.0" "v1.0.0"; do
             echo "### 📦 $milestone" >> health_report.md
             echo "" >> health_report.md
-            
+
             # マイルストーン統計
             milestone_total=$(gh issue list --milestone "$milestone" --state all --json number | jq length)
             milestone_open=$(gh issue list --milestone "$milestone" --state open --json number | jq length)
             milestone_closed=$((milestone_total - milestone_open))
-            
+
             # Epic 統計
             epic_total=$(gh issue list --milestone "$milestone" --label "epic" --state all --json number | jq length)
             epic_open=$(gh issue list --milestone "$milestone" --label "epic" --state open --json number | jq length)
             epic_closed=$((epic_total - epic_open))
-            
-            # Sub-Issue 統計  
+
+            # Sub-Issue 統計
             sub_total=$(gh issue list --milestone "$milestone" --label "sub-issue" --state all --json number | jq length)
             sub_open=$(gh issue list --milestone "$milestone" --label "sub-issue" --state open --json number | jq length)
             sub_closed=$((sub_total - sub_open))
-            
+
             if [[ $milestone_total -gt 0 ]]; then
               milestone_progress=$((milestone_closed * 100 / milestone_total))
               echo "**Progress**: ${milestone_progress}% ($milestone_closed/$milestone_total completed)" >> health_report.md
             else
-              echo "**Progress**: Not started" >> health_report.md  
+              echo "**Progress**: Not started" >> health_report.md
             fi
-            
+
             echo "" >> health_report.md
             echo "| Category | Total | Completed | In Progress | Progress |" >> health_report.md
             echo "|----------|-------|-----------|-------------|----------|" >> health_report.md
-            
+
             if [[ $epic_total -gt 0 ]]; then
               epic_progress=$((epic_closed * 100 / epic_total))
               echo "| Epic Issues | $epic_total | $epic_closed | $epic_open | ${epic_progress}% |" >> health_report.md
             else
               echo "| Epic Issues | 0 | 0 | 0 | N/A |" >> health_report.md
             fi
-            
+
             if [[ $sub_total -gt 0 ]]; then
-              sub_progress=$((sub_closed * 100 / sub_total))  
+              sub_progress=$((sub_closed * 100 / sub_total))
               echo "| Sub-Issues | $sub_total | $sub_closed | $sub_open | ${sub_progress}% |" >> health_report.md
             else
               echo "| Sub-Issues | 0 | 0 | 0 | N/A |" >> health_report.md
             fi
-            
+
             echo "" >> health_report.md
-            
+
             # マイルストーン期日チェック
             milestone_due=$(gh api repos/${{ github.repository }}/milestones --jq ".[] | select(.title == \"$milestone\") | .due_on")
             if [[ ! -z "$milestone_due" && "$milestone_due" != "null" ]]; then
               due_date=$(date -d "$milestone_due" '+%Y-%m-%d')
               current_date=$(date '+%Y-%m-%d')
-              
+
               if [[ "$current_date" > "$due_date" ]]; then
                 echo "⚠️ **Status**: OVERDUE (due: $due_date)" >> health_report.md
               else
@@ -117,25 +117,25 @@ jobs:
                 echo "⏰ **Status**: ${days_remaining} days remaining (due: $due_date)" >> health_report.md
               fi
             fi
-            
+
             echo "" >> health_report.md
           done
-          
+
           # 🚨 Health Alerts & Recommendations
           echo "## 🚨 Health Alerts & Recommendations" >> health_report.md
           echo "" >> health_report.md
-          
+
           # P0 Critical Issues チェック
           p0_issues=$(gh issue list --label "priority-p0-critical" --state open --json number | jq length)
           if [[ $p0_issues -gt 0 ]]; then
             echo "### 🚨 Critical Priority Issues" >> health_report.md
             echo "- **$p0_issues P0 Critical issues** require immediate attention" >> health_report.md
-            
+
             gh issue list --label "priority-p0-critical" --state open --json number,title,url \
               --jq '.[] | "- [#" + (.number|tostring) + "](" + .url + "): " + .title' >> health_report.md
             echo "" >> health_report.md
           fi
-          
+
           # 長期オープン Issue チェック
           old_issues=$(gh issue list --state open --json number,createdAt,title,url \
             --jq '[.[] | select((now - (.createdAt | fromdateiso8601)) > (30 * 86400))] | length')
@@ -145,15 +145,15 @@ jobs:
             echo "- Consider priority review or closure" >> health_report.md
             echo "" >> health_report.md
           fi
-          
+
           # v0.2.0-beta リリース健全性
-          beta_due="2026-01-31"  
+          beta_due="2026-01-31"
           beta_current_progress=$(gh issue list --milestone "v0.2.0-beta" --state all --json number | jq length)
           beta_completed=$(gh issue list --milestone "v0.2.0-beta" --state closed --json number | jq length)
-          
+
           if [[ $beta_current_progress -gt 0 ]]; then
             beta_completion_rate=$((beta_completed * 100 / beta_current_progress))
-            
+
             if [[ $beta_completion_rate -lt 50 ]]; then
               echo "### ⚠️ v0.2.0-beta Release Risk" >> health_report.md
               echo "- **Current Progress**: ${beta_completion_rate}%" >> health_report.md
@@ -162,52 +162,52 @@ jobs:
               echo "" >> health_report.md
             fi
           fi
-          
+
           # 🎯 Action Items
           echo "## 🎯 Recommended Action Items" >> health_report.md
           echo "" >> health_report.md
-          
+
           echo "### This Week Priority" >> health_report.md
           echo "- [ ] Review and address all P0 Critical issues" >> health_report.md
           echo "- [ ] Update Epic Issues with current Sub-Issue progress" >> health_report.md
           echo "- [ ] Validate v0.2.0-beta milestone timeline" >> health_report.md
           echo "- [ ] Close completed Sub-Issues and update Epic status" >> health_report.md
           echo "" >> health_report.md
-          
-          echo "### Process Improvements" >> health_report.md  
+
+          echo "### Process Improvements" >> health_report.md
           echo "- [ ] Ensure all new issues are properly labeled and milestoned" >> health_report.md
           echo "- [ ] Update ROADMAP.md if significant scope changes occurred" >> health_report.md
           echo "- [ ] Review and optimize automation workflows if needed" >> health_report.md
           echo "" >> health_report.md
-          
+
           # 📈 Trends & Insights
           echo "## 📈 Development Trends" >> health_report.md
           echo "" >> health_report.md
-          
+
           # 週次 Issue 作成/完了統計
           week_ago=$(date -d "7 days ago" '+%Y-%m-%d')
           created_this_week=$(gh issue list --state all --json createdAt \
             --jq "[.[] | select(.createdAt > \"${week_ago}T00:00:00Z\")] | length")
           closed_this_week=$(gh issue list --state closed --json closedAt \
             --jq "[.[] | select(.closedAt != null and .closedAt > \"${week_ago}T00:00:00Z\")] | length")
-          
+
           echo "### Weekly Activity" >> health_report.md
-          echo "- **Issues Created**: $created_this_week" >> health_report.md  
+          echo "- **Issues Created**: $created_this_week" >> health_report.md
           echo "- **Issues Completed**: $closed_this_week" >> health_report.md
-          
+
           if [[ $created_this_week -gt 0 && $closed_this_week -gt 0 ]]; then
             velocity_ratio=$((closed_this_week * 100 / created_this_week))
             echo "- **Completion Velocity**: ${velocity_ratio}%" >> health_report.md
-            
+
             if [[ $velocity_ratio -lt 80 ]]; then
               echo "- ⚠️ **Trend**: Issue backlog growing - consider capacity planning" >> health_report.md
             elif [[ $velocity_ratio -gt 120 ]]; then
-              echo "- ✅ **Trend**: Strong delivery velocity - on track" >> health_report.md  
+              echo "- ✅ **Trend**: Strong delivery velocity - on track" >> health_report.md
             fi
           fi
-          
+
           echo "" >> health_report.md
-          
+
           # 🔗 Quick Links
           echo "## 🔗 Quick Links" >> health_report.md
           echo "" >> health_report.md
@@ -217,7 +217,7 @@ jobs:
           echo "- 📋 [Epic Issues](https://github.com/${{ github.repository }}/issues?q=is%3Aopen+label%3Aepic)" >> health_report.md
           echo "- 🚨 [Critical Issues](https://github.com/${{ github.repository }}/issues?q=is%3Aopen+label%3Apriority-p0-critical)" >> health_report.md
           echo "" >> health_report.md
-          
+
       - name: 📊 Create Health Check Issue
         env:
           GH_TOKEN: ${{ github.token }}
@@ -225,118 +225,118 @@ jobs:
           # 健全性チェック Issue 作成
           current_date=$(date '+%Y-%m-%d')
           health_content=$(cat health_report.md)
-          
+
           gh issue create \
             --title "📊 Weekly ROADMAP Health Check - $current_date" \
             --body "$health_content
 
           ---
 
-          **Auto-generated by**: [ROADMAP Health Check Workflow](.github/workflows/roadmap-health.yml)  
-          **Report Type**: Weekly Automated Health Assessment  
+          **Auto-generated by**: [ROADMAP Health Check Workflow](.github/workflows/roadmap-health.yml)
+          **Report Type**: Weekly Automated Health Assessment
           **Next Check**: $(date -d "+7 days" '+%Y-%m-%d')
 
           This issue will be automatically closed after 7 days. For persistent tracking, use the Project Board." \
             --label "roadmap-health,automated,weekly-report" \
             --assignee "n-takatsu"
-            
-          # 前週の Health Check Issue を自動クローズ  
+
+          # 前週の Health Check Issue を自動クローズ
           week_ago_date=$(date -d "7 days ago" '+%Y-%m-%d')
           previous_issues=$(gh issue list --label "roadmap-health,weekly-report" --state open --json number,title \
             --jq ".[] | select(.title | contains(\"$week_ago_date\")) | .number")
-            
+
           for issue_num in $previous_issues; do
             if [[ ! -z "$issue_num" ]]; then
               gh issue close $issue_num --comment "🤖 **Auto-closed**: Replaced by newer weekly health check report.
-              
+
               Archive: This weekly health check has been completed and archived."
             fi
           done
-          
+
       - name: 🔄 Update ROADMAP Progress Indicators
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           # ROADMAP.md の進捗インジケーター更新
-          
+
           # 各マイルストーンの進捗計算
           beta_total=$(gh issue list --milestone "v0.2.0-beta" --state all --json number | jq length)
           beta_closed=$(gh issue list --milestone "v0.2.0-beta" --state closed --json number | jq length)
-          
-          v3_total=$(gh issue list --milestone "v0.3.0" --state all --json number | jq length)  
+
+          v3_total=$(gh issue list --milestone "v0.3.0" --state all --json number | jq length)
           v3_closed=$(gh issue list --milestone "v0.3.0" --state closed --json number | jq length)
-          
+
           v1_total=$(gh issue list --milestone "v1.0.0" --state all --json number | jq length)
           v1_closed=$(gh issue list --milestone "v1.0.0" --state closed --json number | jq length)
-          
+
           # 進捗パーセンテージ計算
           if [[ $beta_total -gt 0 ]]; then
-            beta_progress=$((beta_closed * 100 / beta_total))  
+            beta_progress=$((beta_closed * 100 / beta_total))
           else
             beta_progress=0
           fi
-          
+
           if [[ $v3_total -gt 0 ]]; then
             v3_progress=$((v3_closed * 100 / v3_total))
-          else  
+          else
             v3_progress=0
           fi
-          
+
           if [[ $v1_total -gt 0 ]]; then
             v1_progress=$((v1_closed * 100 / v1_total))
           else
             v1_progress=0
           fi
-          
+
           echo "Calculated Progress:"
-          echo "- v0.2.0-beta: ${beta_progress}% ($beta_closed/$beta_total)"  
+          echo "- v0.2.0-beta: ${beta_progress}% ($beta_closed/$beta_total)"
           echo "- v0.3.0: ${v3_progress}% ($v3_closed/$v3_total)"
           echo "- v1.0.0: ${v1_progress}% ($v1_closed/$v1_total)"
-          
+
           # 進捗バッジの更新（GitHub Issues リンクも更新）
           current_date=$(date '+%Y年%m月%d日')
-          
+
           # プラグイン隔離システムの進捗更新
           if [[ $beta_progress -gt 75 ]]; then
             plugin_isolation_progress="85%"  # 実際の進捗に基づき調整
           else
             plugin_isolation_progress="75%"
           fi
-          
-          # Docker統合の進捗更新  
+
+          # Docker統合の進捗更新
           if [[ $beta_progress -gt 30 ]]; then
             docker_progress="60%"  # 実際の進捗に基づき調整
           else
             docker_progress="50%"
           fi
-          
+
           # 最終更新日の更新
           sed -i "s|> \*\*最終更新\*\*:.*|> **最終更新**: $current_date|g" ROADMAP.md
-          
+
           # GitHub Issues リンクを実際のIssue番号に更新
           sed -i 's|https://github.com/n-takatsu/mcp-rs/issues/NEW|https://github.com/n-takatsu/mcp-rs/issues/17|g' ROADMAP.md
-          
+
           # プラグイン隔離システムの進捗更新
           sed -i "s|プラグイン隔離システム\*\* | 75%|プラグイン隔離システム** | ${plugin_isolation_progress}|g" ROADMAP.md
-          
+
           # Docker統合の進捗更新
           sed -i "s|Docker統合\*\* | 50%|Docker統合** | ${docker_progress}|g" ROADMAP.md
-          
-          # 変更があれば自動コミット  
+
+          # 変更があれば自動コミット
           if [[ -n "$(git status --porcelain ROADMAP.md)" ]]; then
             git config --local user.email "action@github.com"
             git config --local user.name "GitHub Action - Health Check"
             git add ROADMAP.md
             git commit -m "📊 Weekly ROADMAP progress update - $current_date
 
-            Auto-updated progress indicators:  
+            Auto-updated progress indicators:
             - v0.2.0-beta: ${beta_progress}%
-            - v0.3.0: ${v3_progress}%  
+            - v0.3.0: ${v3_progress}%
             - v1.0.0: ${v1_progress}%
             - Plugin isolation: ${plugin_isolation_progress}
             - Docker integration: ${docker_progress}
-            
+
             Generated by: roadmap-health.yml"
-            
+
             git push
           fi

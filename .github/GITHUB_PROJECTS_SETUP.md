@@ -1,7 +1,7 @@
 # 🎯 GitHub Projects v2 設定ガイド
 
-> **対象**: ROADMAP v1.1統合プロジェクト管理システム  
-> **作成日**: 2025年11月9日  
+> **対象**: ROADMAP v1.1統合プロジェクト管理システム
+> **作成日**: 2025年11月9日
 > **ステータス**: 設定準備完了
 
 ## 🚀 Projects v2 プロジェクトボード作成
@@ -24,7 +24,7 @@ gh project create --title "mcp-rs ROADMAP Management" --owner "n-takatsu"
 
 #### 📊 Priority フィールド（Single Select）
 - **P0 (Critical)** - `#DC2626` (赤)
-- **P1 (High)** - `#EA580C` (オレンジ)  
+- **P1 (High)** - `#EA580C` (オレンジ)
 - **P2 (Medium)** - `#D97706` (琥珀)
 - **P3 (Low)** - `#65A30D` (緑)
 
@@ -77,7 +77,7 @@ gh project create --title "mcp-rs ROADMAP Management" --owner "n-takatsu"
 **フィルター**: `label:epic is:open`
 **並び順**: Priority, Release Version
 
-#### ⚡ Active Sprint（Board View）  
+#### ⚡ Active Sprint（Board View）
 **グループ化**: Implementation Phase
 **フィルター**: `is:open -label:epic milestone:"v0.2.0-beta"`
 **並び順**: Priority, 更新日
@@ -97,7 +97,7 @@ gh project create --title "mcp-rs ROADMAP Management" --owner "n-takatsu"
 # .github/workflows/project-automation.yml で使用
 fields:
   priority: "P1 (High)"
-  issue_type: "Sub-Issue" 
+  issue_type: "Sub-Issue"
   release_version: "v0.2.0-beta"
   implementation_phase: "Planning"
   estimated_effort: "1 week"
@@ -112,7 +112,7 @@ fields:
 # Epic Issues を Project に追加
 gh project item-add PROJECT_NUMBER --owner n-takatsu --url "https://github.com/n-takatsu/mcp-rs/issues/17"
 gh project item-add PROJECT_NUMBER --owner n-takatsu --url "https://github.com/n-takatsu/mcp-rs/issues/39"
-gh project item-add PROJECT_NUMBER --owner n-takatsu --url "https://github.com/n-takatsu/mcp-rs/issues/40" 
+gh project item-add PROJECT_NUMBER --owner n-takatsu --url "https://github.com/n-takatsu/mcp-rs/issues/40"
 gh project item-add PROJECT_NUMBER --owner n-takatsu --url "https://github.com/n-takatsu/mcp-rs/issues/41"
 
 # Sub-Issues を Project に追加（#42-#55）
@@ -133,7 +133,7 @@ gh project item-edit --project-id PROJECT_ID --item-id ITEM_ID \
 ## 📋 設定完了チェックリスト
 
 - [ ] プロジェクトボード作成完了
-- [ ] 6つのカスタムフィールド設定完了  
+- [ ] 6つのカスタムフィールド設定完了
 - [ ] 4つの主要ビュー作成完了
 - [ ] Epic Issues (4件) 追加完了
 - [ ] Sub-Issues (14件) 追加完了
@@ -147,7 +147,7 @@ gh project item-edit --project-id PROJECT_ID --item-id ITEM_ID \
 2. Implementation Phase の更新
 3. ブロッカーの特定と解決
 
-### 週次作業  
+### 週次作業
 1. Epic Dashboard で全体進捗レビュー
 2. 優先度調整と리소스재분配
 3. 新規 Sub-Issues の追加

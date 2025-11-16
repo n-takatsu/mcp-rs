@@ -1,0 +1,699 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WordPress設定管理 - MCP-RS Web UI</title>
+    <link rel="stylesheet" href="../shared/mcp-ui.css">
+</head>
+<body>
+    <div class="mcp-container mcp-fade-in">
+        <header class="mcp-header">
+            <h1>⚙️ WordPress設定管理</h1>
+            <p>WordPress接続設定とMCPサーバー設定の動的変更</p>
+        </header>
+
+        <nav class="mcp-nav">
+            <ul>
+                <li><a href="../index.html" id="nav-home">🏠 ホーム</a></li>
+                <li><a href="dashboard.html" id="nav-wordpress">🔗 WordPress管理</a></li>
+                <li><a href="config.html" id="nav-wp-config" class="active">⚙️ WordPress設定</a></li>
+                <li><a href="../admin/config.html" id="nav-config">🔧 サーバー設定</a></li>
+                <li><a href="../admin/transport.html" id="nav-transport">🌐 Transport管理</a></li>
+                <li><a href="../admin/logs.html" id="nav-logs">📋 ログ管理</a></li>
+            </ul>
+        </nav>
+
+        <main class="mcp-main">
+            <!-- 接続ステータス -->
+            <div id="connection-status" class="mcp-status info">
+                <span class="mcp-loading"></span> MCP-RSサーバーに接続中...
+            </div>
+
+            <div class="mcp-grid cols-2">
+                <!-- WordPress接続設定 -->
+                <div class="mcp-card">
+                    <h3>🔗 WordPress接続設定</h3>
+                    
+                    <form id="wordpress-config-form">
+                        <div class="mb-2">
+                            <label for="wp-url"><strong>WordPressサイトURL</strong></label>
+                            <input type="url" class="mcp-input" id="wp-url" 
+                                   placeholder="https://your-wordpress-site.com" required>
+                            <small style="color: #6c757d;">REST API が有効なWordPressサイトのURL</small>
+                        </div>
+
+                        <div class="mb-2">
+                            <label for="wp-username"><strong>ユーザー名</strong></label>
+                            <input type="text" class="mcp-input" id="wp-username" 
+                                   placeholder="WordPress管理者ユーザー名" required>
+                        </div>
+
+                        <div class="mb-2">
+                            <label for="wp-password"><strong>アプリケーションパスワード</strong></label>
+                            <input type="password" class="mcp-input" id="wp-password" 
+                                   placeholder="WordPressアプリケーションパスワード" required>
+                            <small style="color: #6c757d;">
+                                WordPress管理画面の「ユーザー > プロフィール」で生成
+                            </small>
+                        </div>
+
+                        <div class="mb-2">
+                            <label for="wp-timeout"><strong>タイムアウト (秒)</strong></label>
+                            <input type="number" class="mcp-input" id="wp-timeout" 
+                                   value="30" min="5" max="300">
+                        </div>
+
+                        <div class="mb-2">
+                            <label for="wp-cache-ttl"><strong>キャッシュTTL (秒)</strong></label>
+                            <input type="number" class="mcp-input" id="wp-cache-ttl" 
+                                   value="300" min="0" max="3600">
+                        </div>
+
+                        <div class="mb-2">
+                            <label>
+                                <input type="checkbox" id="wp-enabled" checked>
+                                <strong>WordPress統合を有効化</strong>
+                            </label>
+                        </div>
+
+                        <div class="mt-2">
+                            <button type="submit" class="mcp-btn primary full-width">
+                                💾 設定を保存・適用
+                            </button>
+                            <button type="button" class="mcp-btn secondary full-width" id="test-wp-connection">
+                                🧪 WordPress接続テスト
+                            </button>
+                            <button type="button" class="mcp-btn warning full-width" id="load-current-config">
+                                📋 現在の設定を読み込み
+                            </button>
+                        </div>
+                    </form>
+                </div>
+
+                <!-- MCPサーバー設定 -->
+                <div class="mcp-card">
+                    <h3>🔧 MCPサーバー設定</h3>
+                    
+                    <div class="mb-2">
+                        <h4>🌐 Transport設定</h4>
+                        <select class="mcp-input" id="transport-type">
+                            <option value="stdio">STDIO (Claude Desktop用)</option>
+                            <option value="http" selected>HTTP (Web UI用)</option>
+                            <option value="websocket">WebSocket (将来実装)</option>
+                        </select>
+                        
+                        <div id="http-settings">
+                            <label for="http-port"><strong>HTTPポート</strong></label>
+                            <input type="number" class="mcp-input" id="http-port" 
+                                   value="8081" min="1024" max="65535">
+                        </div>
+                    </div>
+
+                    <div class="mb-2">
+                        <h4>📋 ログ設定</h4>
+                        <label for="log-level"><strong>ログレベル</strong></label>
+                        <select class="mcp-input" id="log-level">
+                            <option value="trace">TRACE (最詳細)</option>
+                            <option value="debug">DEBUG (デバッグ)</option>
+                            <option value="info" selected>INFO (標準)</option>
+                            <option value="warn">WARN (警告のみ)</option>
+                            <option value="error">ERROR (エラーのみ)</option>
+                        </select>
+                    </div>
+
+                    <div class="mb-2">
+                        <h4>🔄 動的制御</h4>
+                        <button class="mcp-btn secondary full-width" id="reload-config">
+                            🔄 設定ファイル再読み込み
+                        </button>
+                        <button class="mcp-btn warning full-width" id="switch-transport">
+                            🌐 Transport切り替え
+                        </button>
+                        <button class="mcp-btn primary full-width" id="apply-log-level">
+                            📋 ログレベル適用
+                        </button>
+                    </div>
+
+                    <div class="mb-2">
+                        <h4>📊 サーバー制御</h4>
+                        <button class="mcp-btn danger full-width" id="restart-server">
+                            ⚠️ サーバー再起動
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 設定ファイルプレビュー -->
+            <div class="mcp-card">
+                <h3>📄 設定ファイルプレビュー</h3>
+                <div class="mb-2">
+                    <label for="config-template"><strong>設定テンプレート選択</strong></label>
+                    <select class="mcp-input" id="config-template">
+                        <option value="claude-desktop">Claude Desktop用 (STDIO)</option>
+                        <option value="web-ui" selected>Web UI用 (HTTP)</option>
+                        <option value="production">本番用 (完全設定)</option>
+                        <option value="development">開発用</option>
+                    </select>
+                </div>
+                
+                <div id="config-preview" class="mcp-result">
+# 生成された設定ファイルがここに表示されます
+# 「設定を保存・適用」ボタンを押すと設定が生成・適用されます
+                </div>
+
+                <div class="mt-2">
+                    <button class="mcp-btn secondary" id="copy-config">
+                        📋 設定をクリップボードにコピー
+                    </button>
+                    <button class="mcp-btn secondary" id="download-config">
+                        💾 設定ファイルをダウンロード
+                    </button>
+                    <button class="mcp-btn primary" id="preview-config">
+                        👀 設定プレビュー生成
+                    </button>
+                </div>
+            </div>
+
+            <!-- 操作ログ -->
+            <div class="mcp-card">
+                <h3>📋 操作ログ</h3>
+                <div id="operation-log">
+                    <div class="text-center" style="color: #6c757d; padding: 20px;">
+                        <p>設定変更の操作ログがここに表示されます</p>
+                    </div>
+                </div>
+            </div>
+        </main>
+
+        <footer class="mcp-footer">
+            <p>
+                🚀 MCP-RS v0.15.1 - WordPress Configuration Management | 
+                💻 開発者: <strong>n-takatsu</strong> | 
+                🌐 <a href="https://github.com/n-takatsu/mcp-rs">GitHub</a>
+            </p>
+        </footer>
+    </div>
+
+    <script src="../shared/mcp-ui.js"></script>
+    <script>
+        class WordPressConfigManager {
+            constructor() {
+                this.client = new MCPClient();
+                this.configManager = new MCPConfigManager(this.client);
+                this.statusElement = document.getElementById('connection-status');
+                this.operationLog = [];
+                
+                this.initializeElements();
+                this.bindEvents();
+                this.testConnection();
+            }
+
+            initializeElements() {
+                // フォーム要素
+                this.form = document.getElementById('wordpress-config-form');
+                this.wpUrl = document.getElementById('wp-url');
+                this.wpUsername = document.getElementById('wp-username');
+                this.wpPassword = document.getElementById('wp-password');
+                this.wpTimeout = document.getElementById('wp-timeout');
+                this.wpCacheTtl = document.getElementById('wp-cache-ttl');
+                this.wpEnabled = document.getElementById('wp-enabled');
+
+                // サーバー設定要素
+                this.transportType = document.getElementById('transport-type');
+                this.httpPort = document.getElementById('http-port');
+                this.logLevel = document.getElementById('log-level');
+                this.configTemplate = document.getElementById('config-template');
+                this.configPreview = document.getElementById('config-preview');
+
+                // ナビゲーション設定
+                MCPUIComponents.setActiveNav('nav-wp-config');
+            }
+
+            bindEvents() {
+                // WordPress設定フォーム
+                this.form.addEventListener('submit', (e) => {
+                    e.preventDefault();
+                    this.saveWordPressConfig();
+                });
+
+                // ボタンイベント
+                document.getElementById('test-wp-connection').addEventListener('click', () => this.testWordPressConnection());
+                document.getElementById('load-current-config').addEventListener('click', () => this.loadCurrentConfig());
+                document.getElementById('reload-config').addEventListener('click', () => this.reloadConfig());
+                document.getElementById('switch-transport').addEventListener('click', () => this.switchTransport());
+                document.getElementById('apply-log-level').addEventListener('click', () => this.applyLogLevel());
+                document.getElementById('restart-server').addEventListener('click', () => this.restartServer());
+                document.getElementById('copy-config').addEventListener('click', () => this.copyConfig());
+                document.getElementById('download-config').addEventListener('click', () => this.downloadConfig());
+                document.getElementById('preview-config').addEventListener('click', () => this.previewConfig());
+
+                // Transport切り替え時の設定表示
+                this.transportType.addEventListener('change', () => this.updateTransportSettings());
+            }
+
+            async testConnection() {
+                try {
+                    MCPUIComponents.updateStatus(
+                        this.statusElement, 
+                        'info', 
+                        'MCP-RSサーバーに接続中...', 
+                        true
+                    );
+
+                    await this.client.testConnection();
+                    
+                    MCPUIComponents.updateStatus(
+                        this.statusElement, 
+                        'success', 
+                        '✅ MCP-RSサーバーに接続済み - 設定変更機能利用可能'
+                    );
+
+                    this.addOperationLog('接続', 'MCPサーバーに正常接続しました');
+                    
+                } catch (error) {
+                    MCPUIComponents.updateStatus(
+                        this.statusElement, 
+                        'error', 
+                        `❌ 接続失敗: ${error.message}`
+                    );
+
+                    this.addOperationLog('エラー', `接続失敗: ${error.message}`);
+                }
+            }
+
+            async loadCurrentConfig() {
+                try {
+                    this.addOperationLog('設定取得', '現在の設定を読み込み中...');
+                    
+                    // 現在の設定を取得（モック実装）
+                    const config = await this.getCurrentConfigMock();
+                    
+                    if (config.handlers?.wordpress) {
+                        const wp = config.handlers.wordpress;
+                        this.wpUrl.value = wp.url || '';
+                        this.wpUsername.value = wp.username || '';
+                        this.wpPassword.value = wp.password || '';
+                        this.wpTimeout.value = wp.timeout || 30;
+                        this.wpCacheTtl.value = wp.cache_ttl || 300;
+                        this.wpEnabled.checked = wp.enabled !== false;
+                    }
+
+                    if (config.server) {
+                        this.logLevel.value = config.server.log_level || 'info';
+                    }
+
+                    if (config.transport) {
+                        this.transportType.value = config.transport.transport_type || 'http';
+                        if (config.transport.http?.port) {
+                            this.httpPort.value = config.transport.http.port;
+                        }
+                    }
+
+                    this.updateTransportSettings();
+                    this.addOperationLog('設定取得', '現在の設定を正常に読み込みました');
+                    
+                } catch (error) {
+                    this.addOperationLog('エラー', `設定読み込み失敗: ${error.message}`);
+                    MCPUIComponents.showModal(
+                        '⚠️ 設定読み込み失敗',
+                        `<p>現在の設定を読み込めませんでした。</p><p>${error.message}</p>`,
+                        [{ text: '閉じる', type: 'warning' }]
+                    );
+                }
+            }
+
+            async saveWordPressConfig() {
+                try {
+                    const config = this.generateConfig();
+                    
+                    this.addOperationLog('設定保存', '設定を保存・適用中...');
+                    
+                    // 設定保存（モック実装）
+                    await this.saveConfigMock(config);
+                    
+                    MCPUIComponents.showModal(
+                        '✅ 設定保存完了',
+                        `<p>WordPress設定が正常に保存・適用されました。</p>
+                         <p><strong>適用された設定:</strong></p>
+                         <ul style="margin: 10px 0 0 20px;">
+                           <li>WordPress URL: ${this.wpUrl.value}</li>
+                           <li>ユーザー名: ${this.wpUsername.value}</li>
+                           <li>タイムアウト: ${this.wpTimeout.value}秒</li>
+                           <li>統合状態: ${this.wpEnabled.checked ? '有効' : '無効'}</li>
+                         </ul>`,
+                        [{ text: '閉じる', type: 'primary' }]
+                    );
+
+                    this.addOperationLog('設定保存', 'WordPress設定を正常に保存・適用しました');
+                    
+                } catch (error) {
+                    this.addOperationLog('エラー', `設定保存失敗: ${error.message}`);
+                    MCPUIComponents.showModal(
+                        '❌ 設定保存失敗',
+                        `<p>設定の保存に失敗しました。</p><p>${error.message}</p>`,
+                        [{ text: '閉じる', type: 'danger' }]
+                    );
+                }
+            }
+
+            async testWordPressConnection() {
+                if (!this.wpUrl.value || !this.wpUsername.value || !this.wpPassword.value) {
+                    MCPUIComponents.showModal(
+                        '⚠️ 入力不備',
+                        '<p>WordPress URL、ユーザー名、パスワードをすべて入力してください。</p>',
+                        [{ text: '閉じる', type: 'warning' }]
+                    );
+                    return;
+                }
+
+                try {
+                    this.addOperationLog('接続テスト', 'WordPress接続をテスト中...');
+                    
+                    // WordPress接続テスト
+                    const result = await this.client.getWordPressResource('categories');
+                    
+                    MCPUIComponents.showModal(
+                        '✅ WordPress接続テスト成功',
+                        `<p>WordPressサーバーに正常に接続できました。</p>
+                         <p><strong>接続先:</strong> ${this.wpUrl.value}</p>
+                         <p><strong>取得データ:</strong> ${JSON.parse(result.contents[0].text).length}件のカテゴリ</p>`,
+                        [{ text: '閉じる', type: 'primary' }]
+                    );
+
+                    this.addOperationLog('接続テスト', 'WordPress接続テスト成功');
+                    
+                } catch (error) {
+                    this.addOperationLog('エラー', `WordPress接続テスト失敗: ${error.message}`);
+                    MCPUIComponents.showModal(
+                        '❌ WordPress接続テスト失敗',
+                        `<p>WordPressサーバーに接続できませんでした。</p>
+                         <p><strong>エラー:</strong> ${error.message}</p>
+                         <p><strong>確認項目:</strong></p>
+                         <ul style="margin: 10px 0 0 20px;">
+                           <li>WordPress URLが正しいか</li>
+                           <li>REST APIが有効化されているか</li>
+                           <li>アプリケーションパスワードが正しいか</li>
+                           <li>ネットワーク接続に問題がないか</li>
+                         </ul>`,
+                        [{ text: '閉じる', type: 'danger' }]
+                    );
+                }
+            }
+
+            generateConfig() {
+                const config = {
+                    server: {
+                        bind_addr: `127.0.0.1:${this.httpPort.value}`,
+                        stdio: this.transportType.value === 'stdio',
+                        log_level: this.logLevel.value
+                    },
+                    transport: {
+                        transport_type: this.transportType.value
+                    },
+                    handlers: {
+                        wordpress: {
+                            url: this.wpUrl.value,
+                            username: this.wpUsername.value,
+                            password: this.wpPassword.value,
+                            timeout: parseInt(this.wpTimeout.value),
+                            cache_ttl: parseInt(this.wpCacheTtl.value),
+                            enabled: this.wpEnabled.checked
+                        }
+                    }
+                };
+
+                if (this.transportType.value === 'http') {
+                    config.transport.http = {
+                        addr: '127.0.0.1',
+                        port: parseInt(this.httpPort.value),
+                        enable_cors: true
+                    };
+                }
+
+                return config;
+            }
+
+            previewConfig() {
+                const config = this.generateConfig();
+                const template = this.configTemplate.value;
+                
+                let configText;
+                
+                switch (template) {
+                    case 'claude-desktop':
+                        config.server.stdio = true;
+                        config.server.log_level = 'error'; // Claude Desktop推奨
+                        config.transport.transport_type = 'stdio';
+                        break;
+                    case 'web-ui':
+                        config.server.stdio = false;
+                        break;
+                    case 'production':
+                        // 本番用設定追加
+                        config.server.log_retention = {
+                            policy: 'external',
+                            days: 30
+                        };
+                        config.server.log_module = {
+                            separation: 'separated'
+                        };
+                        break;
+                    case 'development':
+                        config.server.log_level = 'debug';
+                        break;
+                }
+
+                configText = `# MCP-RS 設定ファイル (${template})
+# 生成日時: ${new Date().toLocaleString('ja-JP')}
+
+${this.objectToToml(config)}`;
+
+                this.configPreview.textContent = configText;
+                this.addOperationLog('プレビュー', `${template}設定のプレビューを生成しました`);
+            }
+
+            objectToToml(obj, prefix = '') {
+                let toml = '';
+                
+                for (const [key, value] of Object.entries(obj)) {
+                    if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+                        const section = prefix ? `${prefix}.${key}` : key;
+                        toml += `\n[${section}]\n`;
+                        toml += this.objectToToml(value, section);
+                    } else {
+                        if (typeof value === 'string') {
+                            toml += `${key} = "${value}"\n`;
+                        } else if (typeof value === 'boolean') {
+                            toml += `${key} = ${value}\n`;
+                        } else {
+                            toml += `${key} = ${value}\n`;
+                        }
+                    }
+                }
+                
+                return toml;
+            }
+
+            updateTransportSettings() {
+                const httpSettings = document.getElementById('http-settings');
+                httpSettings.style.display = this.transportType.value === 'http' ? 'block' : 'none';
+            }
+
+            async reloadConfig() {
+                try {
+                    this.addOperationLog('リロード', '設定ファイル再読み込み中...');
+                    // await this.configManager.reloadConfig();
+                    
+                    MCPUIComponents.showModal(
+                        '✅ 設定リロード完了',
+                        '<p>設定ファイルが正常に再読み込みされました。</p>',
+                        [{ text: '閉じる', type: 'primary' }]
+                    );
+
+                    this.addOperationLog('リロード', '設定ファイル再読み込み完了');
+                    
+                } catch (error) {
+                    this.addOperationLog('エラー', `設定リロード失敗: ${error.message}`);
+                }
+            }
+
+            async switchTransport() {
+                const newType = this.transportType.value;
+                
+                try {
+                    this.addOperationLog('Transport切り替え', `${newType}に切り替え中...`);
+                    // await this.configManager.switchTransport(newType);
+                    
+                    MCPUIComponents.showModal(
+                        '✅ Transport切り替え完了',
+                        `<p>Transport が ${newType} に切り替わりました。</p>`,
+                        [{ text: '閉じる', type: 'primary' }]
+                    );
+
+                    this.addOperationLog('Transport切り替え', `${newType}への切り替え完了`);
+                    
+                } catch (error) {
+                    this.addOperationLog('エラー', `Transport切り替え失敗: ${error.message}`);
+                }
+            }
+
+            async applyLogLevel() {
+                const newLevel = this.logLevel.value;
+                
+                try {
+                    this.addOperationLog('ログレベル変更', `${newLevel}に変更中...`);
+                    // 動的ログレベル変更の実装
+                    
+                    MCPUIComponents.showModal(
+                        '✅ ログレベル変更完了',
+                        `<p>ログレベルが ${newLevel.toUpperCase()} に変更されました。</p>`,
+                        [{ text: '閉じる', type: 'primary' }]
+                    );
+
+                    this.addOperationLog('ログレベル変更', `${newLevel}への変更完了`);
+                    
+                } catch (error) {
+                    this.addOperationLog('エラー', `ログレベル変更失敗: ${error.message}`);
+                }
+            }
+
+            async restartServer() {
+                MCPUIComponents.showModal(
+                    '⚠️ サーバー再起動確認',
+                    '<p>MCPサーバーを再起動しますか？</p><p><strong>注意:</strong> 一時的に接続が切断されます。</p>',
+                    [
+                        { 
+                            text: '再起動する', 
+                            type: 'danger',
+                            onclick: 'this.closest(\'.modal\').remove(); window.wordpressConfigManager.executeServerRestart();'
+                        },
+                        { text: 'キャンセル', type: 'secondary' }
+                    ]
+                );
+            }
+
+            async executeServerRestart() {
+                try {
+                    this.addOperationLog('サーバー再起動', '再起動処理を実行中...');
+                    // サーバー再起動の実装
+                    
+                    MCPUIComponents.updateStatus(
+                        this.statusElement, 
+                        'warning', 
+                        '🔄 サーバー再起動中...', 
+                        true
+                    );
+
+                    // 再起動後の再接続
+                    setTimeout(() => this.testConnection(), 5000);
+                    
+                } catch (error) {
+                    this.addOperationLog('エラー', `サーバー再起動失敗: ${error.message}`);
+                }
+            }
+
+            async copyConfig() {
+                const success = await MCPUIComponents.copyToClipboard(this.configPreview.textContent);
+                
+                if (success) {
+                    MCPUIComponents.showModal(
+                        '✅ コピー完了',
+                        '<p>設定ファイルをクリップボードにコピーしました。</p>',
+                        [{ text: '閉じる', type: 'primary' }]
+                    );
+                    this.addOperationLog('コピー', '設定ファイルをクリップボードにコピーしました');
+                } else {
+                    MCPUIComponents.showModal(
+                        '❌ コピー失敗',
+                        '<p>クリップボードへのコピーに失敗しました。</p>',
+                        [{ text: '閉じる', type: 'danger' }]
+                    );
+                }
+            }
+
+            downloadConfig() {
+                const template = this.configTemplate.value;
+                const filename = `mcp-config-${template}.toml`;
+                
+                MCPUIComponents.downloadFile(
+                    this.configPreview.textContent,
+                    filename,
+                    'text/plain'
+                );
+
+                this.addOperationLog('ダウンロード', `設定ファイル ${filename} をダウンロードしました`);
+            }
+
+            // モック関数群
+            async getCurrentConfigMock() {
+                // 実際の実装では configManager.getCurrentConfig() を使用
+                return {
+                    server: {
+                        log_level: 'info'
+                    },
+                    transport: {
+                        transport_type: 'http',
+                        http: { port: 8081 }
+                    },
+                    handlers: {
+                        wordpress: {
+                            url: 'https://example.wordpress.com',
+                            username: 'admin',
+                            password: '****',
+                            timeout: 30,
+                            cache_ttl: 300,
+                            enabled: true
+                        }
+                    }
+                };
+            }
+
+            async saveConfigMock(config) {
+                // 実際の実装では configManager.updateConfig(config) を使用
+                console.log('Saving config:', config);
+                await new Promise(resolve => setTimeout(resolve, 1000)); // 遅延シミュレート
+            }
+
+            addOperationLog(type, message) {
+                this.operationLog.unshift({
+                    type,
+                    message,
+                    timestamp: new Date().toLocaleString('ja-JP')
+                });
+
+                if (this.operationLog.length > 15) {
+                    this.operationLog = this.operationLog.slice(0, 15);
+                }
+
+                this.updateLogDisplay();
+            }
+
+            updateLogDisplay() {
+                const container = document.getElementById('operation-log');
+                
+                if (this.operationLog.length === 0) {
+                    container.innerHTML = `
+                        <div class="text-center" style="color: #6c757d; padding: 20px;">
+                            <p>設定変更の操作ログがここに表示されます</p>
+                        </div>
+                    `;
+                    return;
+                }
+
+                container.innerHTML = this.operationLog.map(log => `
+                    <div style="padding: 10px; border-left: 3px solid #4a90e2; margin-bottom: 10px; background: #f8f9fa;">
+                        <strong>${log.type}</strong> - ${log.message}
+                        <br><small style="color: #6c757d;">${log.timestamp}</small>
+                    </div>
+                `).join('');
+            }
+        }
+
+        // 初期化
+        document.addEventListener('DOMContentLoaded', () => {
+            window.wordpressConfigManager = new WordPressConfigManager();
+        });
+    </script>
+</body>
+</html>

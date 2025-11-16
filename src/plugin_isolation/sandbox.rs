@@ -1,16 +1,16 @@
 //! セキュリティサンドボックス
-//! 
+//!
 //! プラグインの実行環境を厳格に制限し、システムリソースへの不正アクセスを防止する
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::{RwLock, Mutex};
-use tracing::{info, warn, error, debug};
+use tokio::sync::{Mutex, RwLock};
+use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 use crate::error::McpError;
-use crate::plugin_isolation::{SecurityPolicy, PluginMetadata};
+use crate::plugin_isolation::{PluginMetadata, SecurityPolicy};
 
 /// セキュリティサンドボックス
 #[derive(Debug)]
@@ -342,14 +342,18 @@ impl SecuritySandbox {
     }
 
     /// プラグインメタデータを検証
-    pub async fn validate_plugin_metadata(&self, metadata: &PluginMetadata) -> Result<(), McpError> {
+    pub async fn validate_plugin_metadata(
+        &self,
+        metadata: &PluginMetadata,
+    ) -> Result<(), McpError> {
         info!("Validating plugin metadata: {}", metadata.name);
 
         // セキュリティレベルチェック
         match metadata.security_level {
             crate::plugin_isolation::SecurityLevel::Maximum => {
                 // 最高レベルの制限を適用
-                self.apply_maximum_security_restrictions(metadata.id).await?;
+                self.apply_maximum_security_restrictions(metadata.id)
+                    .await?;
             }
             crate::plugin_isolation::SecurityLevel::Strict => {
                 // 厳格な制限を適用
@@ -357,11 +361,13 @@ impl SecuritySandbox {
             }
             crate::plugin_isolation::SecurityLevel::Standard => {
                 // 標準的な制限を適用
-                self.apply_standard_security_restrictions(metadata.id).await?;
+                self.apply_standard_security_restrictions(metadata.id)
+                    .await?;
             }
             crate::plugin_isolation::SecurityLevel::Minimal => {
                 // 最小限の制限を適用
-                self.apply_minimal_security_restrictions(metadata.id).await?;
+                self.apply_minimal_security_restrictions(metadata.id)
+                    .await?;
             }
         }
 
@@ -376,7 +382,10 @@ impl SecuritySandbox {
 
     /// 最大セキュリティ制限を適用
     async fn apply_maximum_security_restrictions(&self, plugin_id: Uuid) -> Result<(), McpError> {
-        debug!("Applying maximum security restrictions for plugin: {}", plugin_id);
+        debug!(
+            "Applying maximum security restrictions for plugin: {}",
+            plugin_id
+        );
 
         // システムコール制限
         let blocked_syscalls = vec![
@@ -391,22 +400,24 @@ impl SecuritySandbox {
             "setuid".to_string(),
             "setgid".to_string(),
         ];
-        self.syscall_monitor.set_blocked_syscalls(plugin_id, blocked_syscalls).await?;
+        self.syscall_monitor
+            .set_blocked_syscalls(plugin_id, blocked_syscalls)
+            .await?;
 
         // ネットワークアクセス制限（完全拒否）
         self.network_acl.deny_all_access(plugin_id).await?;
 
         // ファイルアクセス制限（読み取り専用、限定パス）
-        let allowed_read_paths = vec![
-            PathRule {
-                rule_id: "read-only-lib".to_string(),
-                path_pattern: "/usr/lib/**".to_string(),
-                access_type: FileAccessType::Read,
-                action: FileAction::Allow,
-                priority: 100,
-            }
-        ];
-        self.file_acl.set_read_allowed_paths(plugin_id, allowed_read_paths).await?;
+        let allowed_read_paths = vec![PathRule {
+            rule_id: "read-only-lib".to_string(),
+            path_pattern: "/usr/lib/**".to_string(),
+            access_type: FileAccessType::Read,
+            action: FileAction::Allow,
+            priority: 100,
+        }];
+        self.file_acl
+            .set_read_allowed_paths(plugin_id, allowed_read_paths)
+            .await?;
         self.file_acl.deny_all_write_access(plugin_id).await?;
         self.file_acl.deny_all_exec_access(plugin_id).await?;
 
@@ -415,7 +426,10 @@ impl SecuritySandbox {
 
     /// 厳格なセキュリティ制限を適用
     async fn apply_strict_security_restrictions(&self, plugin_id: Uuid) -> Result<(), McpError> {
-        debug!("Applying strict security restrictions for plugin: {}", plugin_id);
+        debug!(
+            "Applying strict security restrictions for plugin: {}",
+            plugin_id
+        );
 
         // 基本的なシステムコールのみ許可
         let allowed_syscalls = vec![
@@ -427,27 +441,35 @@ impl SecuritySandbox {
             "fstat".to_string(),
             "lstat".to_string(),
         ];
-        self.syscall_monitor.set_allowed_syscalls(plugin_id, allowed_syscalls).await?;
+        self.syscall_monitor
+            .set_allowed_syscalls(plugin_id, allowed_syscalls)
+            .await?;
 
         // 限定的なネットワークアクセス
-        let network_rules = vec![
-            NetworkRule {
-                rule_id: "https-only".to_string(),
-                host_pattern: "*".to_string(),
-                port_range: Some(PortRange { start: 443, end: 443 }),
-                protocol: NetworkProtocol::HTTPS,
-                action: NetworkAction::Allow,
-                priority: 100,
-            }
-        ];
-        self.network_acl.set_allowed_hosts(plugin_id, network_rules).await?;
+        let network_rules = vec![NetworkRule {
+            rule_id: "https-only".to_string(),
+            host_pattern: "*".to_string(),
+            port_range: Some(PortRange {
+                start: 443,
+                end: 443,
+            }),
+            protocol: NetworkProtocol::HTTPS,
+            action: NetworkAction::Allow,
+            priority: 100,
+        }];
+        self.network_acl
+            .set_allowed_hosts(plugin_id, network_rules)
+            .await?;
 
         Ok(())
     }
 
     /// 標準セキュリティ制限を適用
     async fn apply_standard_security_restrictions(&self, plugin_id: Uuid) -> Result<(), McpError> {
-        debug!("Applying standard security restrictions for plugin: {}", plugin_id);
+        debug!(
+            "Applying standard security restrictions for plugin: {}",
+            plugin_id
+        );
 
         // 一般的なシステムコールを許可
         let blocked_syscalls = vec![
@@ -456,27 +478,35 @@ impl SecuritySandbox {
             "ptrace".to_string(),
             "mount".to_string(),
         ];
-        self.syscall_monitor.set_blocked_syscalls(plugin_id, blocked_syscalls).await?;
+        self.syscall_monitor
+            .set_blocked_syscalls(plugin_id, blocked_syscalls)
+            .await?;
 
         // HTTP/HTTPS アクセスを許可
-        let network_rules = vec![
-            NetworkRule {
-                rule_id: "http-https".to_string(),
-                host_pattern: "*".to_string(),
-                port_range: Some(PortRange { start: 80, end: 443 }),
-                protocol: NetworkProtocol::All,
-                action: NetworkAction::Allow,
-                priority: 100,
-            }
-        ];
-        self.network_acl.set_allowed_hosts(plugin_id, network_rules).await?;
+        let network_rules = vec![NetworkRule {
+            rule_id: "http-https".to_string(),
+            host_pattern: "*".to_string(),
+            port_range: Some(PortRange {
+                start: 80,
+                end: 443,
+            }),
+            protocol: NetworkProtocol::All,
+            action: NetworkAction::Allow,
+            priority: 100,
+        }];
+        self.network_acl
+            .set_allowed_hosts(plugin_id, network_rules)
+            .await?;
 
         Ok(())
     }
 
     /// 最小セキュリティ制限を適用
     async fn apply_minimal_security_restrictions(&self, plugin_id: Uuid) -> Result<(), McpError> {
-        debug!("Applying minimal security restrictions for plugin: {}", plugin_id);
+        debug!(
+            "Applying minimal security restrictions for plugin: {}",
+            plugin_id
+        );
 
         // 最小限のブロック（危険なシステムコールのみ）
         let blocked_syscalls = vec![
@@ -484,20 +514,22 @@ impl SecuritySandbox {
             "umount".to_string(),
             "ptrace".to_string(),
         ];
-        self.syscall_monitor.set_blocked_syscalls(plugin_id, blocked_syscalls).await?;
+        self.syscall_monitor
+            .set_blocked_syscalls(plugin_id, blocked_syscalls)
+            .await?;
 
         // ネットワークアクセス全般を許可（ログ記録）
-        let network_rules = vec![
-            NetworkRule {
-                rule_id: "log-all".to_string(),
-                host_pattern: "*".to_string(),
-                port_range: None,
-                protocol: NetworkProtocol::All,
-                action: NetworkAction::Log,
-                priority: 1,
-            }
-        ];
-        self.network_acl.set_allowed_hosts(plugin_id, network_rules).await?;
+        let network_rules = vec![NetworkRule {
+            rule_id: "log-all".to_string(),
+            host_pattern: "*".to_string(),
+            port_range: None,
+            protocol: NetworkProtocol::All,
+            action: NetworkAction::Log,
+            priority: 1,
+        }];
+        self.network_acl
+            .set_allowed_hosts(plugin_id, network_rules)
+            .await?;
 
         Ok(())
     }
@@ -509,7 +541,10 @@ impl SecuritySandbox {
             "network.http" | "network.https" | "network.tcp" | "network.udp" => Ok(()),
             "file.read" | "file.write" | "file.execute" => Ok(()),
             "system.process" | "system.memory" => Ok(()),
-            _ => Err(McpError::SecurityError(format!("Unknown permission: {}", permission))),
+            _ => Err(McpError::SecurityError(format!(
+                "Unknown permission: {}",
+                permission
+            ))),
         }
     }
 
@@ -517,9 +552,12 @@ impl SecuritySandbox {
     pub async fn apply_sandbox_to_plugin(
         &self,
         plugin_id: Uuid,
-        container_id: &str
+        container_id: &str,
     ) -> Result<(), McpError> {
-        info!("Applying sandbox to plugin: {} in container: {}", plugin_id, container_id);
+        info!(
+            "Applying sandbox to plugin: {} in container: {}",
+            plugin_id, container_id
+        );
 
         // システムコール監視を開始
         self.syscall_monitor.start_monitoring(plugin_id).await?;
@@ -543,9 +581,12 @@ impl SecuritySandbox {
         plugin_id: Uuid,
         violation_type: ViolationType,
         details: String,
-        severity: ViolationSeverity
+        severity: ViolationSeverity,
     ) -> Result<(), McpError> {
-        warn!("Security violation detected for plugin {}: {:?}", plugin_id, violation_type);
+        warn!(
+            "Security violation detected for plugin {}: {:?}",
+            plugin_id, violation_type
+        );
 
         let violation = SecurityViolation {
             violation_id: Uuid::new_v4(),
@@ -559,7 +600,7 @@ impl SecuritySandbox {
 
         let mut tracker = self.violation_tracker.lock().await;
         tracker.violation_history.push(violation);
-        
+
         let count = tracker.violation_counts.entry(plugin_id).or_insert(0);
         *count += 1;
 
@@ -606,7 +647,7 @@ impl SyscallMonitor {
     pub async fn set_allowed_syscalls(
         &self,
         plugin_id: Uuid,
-        syscalls: Vec<String>
+        syscalls: Vec<String>,
     ) -> Result<(), McpError> {
         let mut allowed = self.allowed_syscalls.write().await;
         allowed.insert(plugin_id, syscalls);
@@ -617,7 +658,7 @@ impl SyscallMonitor {
     pub async fn set_blocked_syscalls(
         &self,
         plugin_id: Uuid,
-        syscalls: Vec<String>
+        syscalls: Vec<String>,
     ) -> Result<(), McpError> {
         let mut blocked = self.blocked_syscalls.write().await;
         blocked.insert(plugin_id, syscalls);
@@ -652,7 +693,7 @@ impl NetworkAccessControl {
     pub async fn set_allowed_hosts(
         &self,
         plugin_id: Uuid,
-        rules: Vec<NetworkRule>
+        rules: Vec<NetworkRule>,
     ) -> Result<(), McpError> {
         let mut hosts = self.allowed_hosts.write().await;
         hosts.insert(plugin_id, rules);
@@ -702,7 +743,7 @@ impl FileAccessControl {
     pub async fn set_read_allowed_paths(
         &self,
         plugin_id: Uuid,
-        paths: Vec<PathRule>
+        paths: Vec<PathRule>,
     ) -> Result<(), McpError> {
         let mut read_paths = self.read_allowed_paths.write().await;
         read_paths.insert(plugin_id, paths);
@@ -762,7 +803,7 @@ impl ResourceEnforcer {
             total_time_ms: 0,
             last_updated: chrono::Utc::now(),
         };
-        
+
         let mut cpu_monitor = self.cpu_monitor.lock().await;
         cpu_monitor.insert(plugin_id, cpu_tracker);
 
@@ -773,7 +814,7 @@ impl ResourceEnforcer {
             peak_usage_bytes: 0,
             last_updated: chrono::Utc::now(),
         };
-        
+
         let mut memory_monitor = self.memory_monitor.lock().await;
         memory_monitor.insert(plugin_id, memory_tracker);
 
@@ -811,7 +852,10 @@ mod tests {
         let rule = NetworkRule {
             rule_id: "test-rule".to_string(),
             host_pattern: "*.example.com".to_string(),
-            port_range: Some(PortRange { start: 80, end: 443 }),
+            port_range: Some(PortRange {
+                start: 80,
+                end: 443,
+            }),
             protocol: NetworkProtocol::HTTPS,
             action: NetworkAction::Allow,
             priority: 100,

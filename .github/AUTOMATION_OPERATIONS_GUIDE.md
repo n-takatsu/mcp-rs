@@ -1,8 +1,8 @@
 # 🤖 ROADMAP 自動化システム運用ガイド
 
-> **対象**: mcp-rs プロジェクト開発チーム  
-> **作成日**: 2025年11月9日  
-> **システム範囲**: GitHub Projects v2 + GitHub Actions 統合自動化  
+> **対象**: mcp-rs プロジェクト開発チーム
+> **作成日**: 2025年11月9日
+> **システム範囲**: GitHub Projects v2 + GitHub Actions 統合自動化
 
 ## 🎯 システム概要
 
@@ -39,7 +39,7 @@ https://github.com/n-takatsu/mcp-rs/projects/1?view=Active-Sprint
 
 #### 2. Issue トリアージ (新規Issue対応)
 - 新規 Issue は **自動ラベル付け** される
-- Epic/Sub-Issue は **自動的にProject追加** される  
+- Epic/Sub-Issue は **自動的にProject追加** される
 - **手動確認が必要な項目**:
   - [ ] Priority 設定 (P0/P1/P2/P3)
   - [ ] Assignee 割り当て
@@ -66,7 +66,7 @@ https://github.com/n-takatsu/mcp-rs/projects/1?view=Epic-Dashboard
 ### 🎯 マイルストーン作業 (月次)
 
 #### 1. リリース計画レビュー
-```bash  
+```bash
 # Milestone 進捗確認
 gh issue list --milestone "v0.2.0-beta" --json number,title,state
 ```
@@ -84,13 +84,13 @@ gh issue list --milestone "v0.2.0-beta" --json number,title,state
 #### Epic Issues (`[EPIC]` タイトル)
 ```yaml
 自動実行内容:
-- ラベル: "epic,priority-high,roadmap-tracked"  
+- ラベル: "epic,priority-high,roadmap-tracked"
 - Project 追加: 自動
 - フィールド設定: Issue Type = "Epic"
 - Milestone: タイトルベース自動判定
 ```
 
-#### Sub-Issues (`[SUB]` タイトル)  
+#### Sub-Issues (`[SUB]` タイトル)
 ```yaml
 自動実行内容:
 - ラベル: "sub-issue,enhancement,roadmap-tracked"
@@ -103,7 +103,7 @@ gh issue list --milestone "v0.2.0-beta" --json number,title,state
 #### Critical Issues
 ```yaml
 トリガー: "priority-critical", "security", "bug" ラベル
-自動実行内容:  
+自動実行内容:
 - Assignee: @n-takatsu 自動割り当て
 - 緊急対応コメント自動追加
 - エスカレーション手順通知
@@ -116,7 +116,7 @@ gh issue list --milestone "v0.2.0-beta" --json number,title,state
 2. **Epic コメント**: Epic Issue に Sub-Issue 作成通知
 3. **設定継承**: Milestone、Assignee を Epic から継承
 
-#### Sub-Issue 完了時  
+#### Sub-Issue 完了時
 1. **進捗更新**: Epic Issue に進捗統計コメント
 2. **完了検知**: 全 Sub-Issue 完了時に Epic 完了通知
 3. **自動クローズ**: PR マージ時の Sub-Issue 自動クローズ (オプション)
@@ -127,7 +127,7 @@ gh issue list --milestone "v0.2.0-beta" --json number,title,state
 ```yaml
 生成内容:
 - 全体プロジェクト健全性
-- Milestone 別進捗統計  
+- Milestone 別進捗統計
 - Critical Issue アラート
 - 長期オープン Issue 警告
 - 週次開発ベロシティ分析
@@ -136,7 +136,7 @@ gh issue list --milestone "v0.2.0-beta" --json number,title,state
 
 #### ROADMAP.md 自動更新
 ```yaml
-更新内容:  
+更新内容:
 - 進捗インジケーター (75% → 85%)
 - GitHub Issues リンク (NEW → 実際の Issue番号)
 - 最終更新日 (自動)
@@ -159,8 +159,8 @@ gh issue create --title "[EPIC] 新機能名" \
 ```
 
 #### 2. Sub-Issues 作成
-```bash  
-# Sub-Issue 作成テンプレート  
+```bash
+# Sub-Issue 作成テンプレート
 gh issue create --title "[SUB] 実装タスク名" \
   --body "Parent Epic: #XX" \
   --milestone "v0.X.0" \
@@ -183,7 +183,7 @@ gh issue list --milestone "v0.2.0-beta" --json number,title,state,assignees
 gh issue list --label "sub-issue" --json number,title,body | \
   jq '.[] | select(.body | contains("Parent Epic: #17"))'
 
-# 週次完了統計  
+# 週次完了統計
 gh issue list --state closed --json closedAt | \
   jq '[.[] | select(.closedAt > "'$(date -d "7 days ago" '+%Y-%m-%d')'T00:00:00Z")] | length'
 ```
@@ -204,7 +204,7 @@ gh project item-add 1 --owner n-takatsu --url "https://github.com/n-takatsu/mcp-
 - **確認**: Sub-Issue の Body に `Parent Epic: #XX` が正確に記載されているか
 - **修正**: Issue Body を編集して正しいフォーマットに修正
 
-#### ワークフロー権限エラー  
+#### ワークフロー権限エラー
 ```bash
 # GitHub CLI 権限更新
 gh auth refresh -s project,read:project,write:discussion
@@ -217,13 +217,13 @@ gh auth refresh -s project,read:project,write:discussion
 ### 🔧 メンテナンス作業
 
 #### 月次クリーンアップ
-- [ ] 完了した週次健全性チェック Issues をアーカイブ  
+- [ ] 完了した週次健全性チェック Issues をアーカイブ
 - [ ] 古い Discussion をピン留めから外す
 - [ ] Project Board ビューの最適化
 
 #### 四半期レビュー
 - [ ] ワークフロー効率性の評価
-- [ ] 自動化ルールの最適化  
+- [ ] 自動化ルールの最適化
 - [ ] カスタムフィールドとビューの見直し
 
 ---
@@ -235,13 +235,13 @@ gh auth refresh -s project,read:project,write:discussion
 - **Epic 進捗可視性**: リアルタイム進捗追跡精度
 - **ROADMAP 同期精度**: 自動更新の正確性
 
-### 📊 プロジェクト健全性指標  
+### 📊 プロジェクト健全性指標
 - **Milestone 達成率**: 期日内完了率
 - **Critical Issue 対応時間**: P0 Issue の平均解決時間
 - **開発ベロシティ**: 週次 Issue 完了数の推移
 
 ### 🔄 継続改善指標
-- **手動作業削減**: 自動化による工数削減効果  
+- **手動作業削減**: 自動化による工数削減効果
 - **品質向上**: バグ検出・対応の迅速化
 - **チーム生産性**: 開発フォーカス時間の増加
 
@@ -251,7 +251,7 @@ gh auth refresh -s project,read:project,write:discussion
 
 ### 📋 設定ファイル
 - [`.github/workflows/roadmap-sync.yml`](.github/workflows/roadmap-sync.yml)
-- [`.github/workflows/issue-automation.yml`](.github/workflows/issue-automation.yml)  
+- [`.github/workflows/issue-automation.yml`](.github/workflows/issue-automation.yml)
 - [`.github/workflows/roadmap-health.yml`](.github/workflows/roadmap-health.yml)
 - [`.github/GITHUB_PROJECTS_SETUP.md`](.github/GITHUB_PROJECTS_SETUP.md)
 

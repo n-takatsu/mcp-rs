@@ -1,5 +1,5 @@
 # MCP-RS Configuration - ログ保持ポリシー設定例
-# 
+#
 # ログローテーションと削除ポリシーの設定例を示します
 
 [server]
@@ -15,12 +15,12 @@ log_level = "info"
 # - "count": 最大ファイル数を保持（簡易環境用）
 # - "size": 最大ディスク使用量を制限（リソース制約環境用）
 
-policy = "external"  # 業界標準：外部管理
+policy = "external" # 業界標準：外部管理
 
 # 各ポリシーの設定値（使用するポリシーに応じて有効化）
-days = 30        # daysポリシー用：30日後削除
-count = 10       # countポリシー用：10ファイル保持
-size_mb = 100    # sizeポリシー用：100MB制限
+days = 30     # daysポリシー用：30日後削除
+count = 10    # countポリシー用：10ファイル保持
+size_mb = 100 # sizeポリシー用：100MB制限
 
 [transport]
 transport_type = "http"

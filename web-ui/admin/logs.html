@@ -1,0 +1,820 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ログ管理 - MCP-RS Web UI</title>
+    <link rel="stylesheet" href="../shared/mcp-ui.css">
+</head>
+<body>
+    <div class="mcp-container mcp-fade-in">
+        <header class="mcp-header">
+            <h1>📋 ログ管理</h1>
+            <p>MCP-RSサーバーのログ閲覧・管理・分析</p>
+        </header>
+
+        <nav class="mcp-nav">
+            <ul>
+                <li><a href="../index.html" id="nav-home">🏠 ホーム</a></li>
+                <li><a href="../wordpress/dashboard.html" id="nav-wordpress">🔗 WordPress管理</a></li>
+                <li><a href="config.html" id="nav-config">⚙️ サーバー設定</a></li>
+                <li><a href="transport.html" id="nav-transport">🌐 Transport管理</a></li>
+                <li><a href="logs.html" id="nav-logs" class="active">📋 ログ管理</a></li>
+            </ul>
+        </nav>
+
+        <main class="mcp-main">
+            <!-- ログ統計 -->
+            <div class="mcp-card">
+                <h3>📊 ログ統計</h3>
+                <div class="mcp-grid cols-4">
+                    <div class="mcp-card">
+                        <h4 style="color: #17a2b8;">📝 INFO</h4>
+                        <div style="font-size: 2em; color: #17a2b8;"><strong id="info-count">1,247</strong></div>
+                        <p style="margin: 5px 0 0 0; color: #6c757d;">24時間</p>
+                    </div>
+                    <div class="mcp-card">
+                        <h4 style="color: #ffc107;">⚠️ WARN</h4>
+                        <div style="font-size: 2em; color: #ffc107;"><strong id="warn-count">23</strong></div>
+                        <p style="margin: 5px 0 0 0; color: #6c757d;">24時間</p>
+                    </div>
+                    <div class="mcp-card">
+                        <h4 style="color: #dc3545;">❌ ERROR</h4>
+                        <div style="font-size: 2em; color: #dc3545;"><strong id="error-count">3</strong></div>
+                        <p style="margin: 5px 0 0 0; color: #6c757d;">24時間</p>
+                    </div>
+                    <div class="mcp-card">
+                        <h4 style="color: #6c757d;">🔍 DEBUG</h4>
+                        <div style="font-size: 2em; color: #6c757d;"><strong id="debug-count">8,492</strong></div>
+                        <p style="margin: 5px 0 0 0; color: #6c757d;">24時間</p>
+                    </div>
+                </div>
+            </div>
+
+            <div class="mcp-grid cols-3">
+                <!-- ログフィルター・設定 -->
+                <div class="mcp-card">
+                    <h3>🔍 ログフィルター・設定</h3>
+                    
+                    <div class="mb-2">
+                        <h4>📅 時間範囲</h4>
+                        <label for="log-start-time"><strong>開始時刻</strong></label>
+                        <input type="datetime-local" class="mcp-input" id="log-start-time">
+                        
+                        <label for="log-end-time"><strong>終了時刻</strong></label>
+                        <input type="datetime-local" class="mcp-input" id="log-end-time">
+                        
+                        <div class="mcp-grid cols-3" style="margin-top: 10px;">
+                            <button class="mcp-btn secondary" id="filter-1hour">1時間</button>
+                            <button class="mcp-btn secondary" id="filter-24hours">24時間</button>
+                            <button class="mcp-btn secondary" id="filter-7days">7日間</button>
+                        </div>
+                    </div>
+
+                    <div class="mb-2">
+                        <h4>🏷️ ログレベル</h4>
+                        <div style="display: flex; flex-direction: column; gap: 5px;">
+                            <label><input type="checkbox" id="level-trace"> TRACE</label>
+                            <label><input type="checkbox" id="level-debug" checked> DEBUG</label>
+                            <label><input type="checkbox" id="level-info" checked> INFO</label>
+                            <label><input type="checkbox" id="level-warn" checked> WARN</label>
+                            <label><input type="checkbox" id="level-error" checked> ERROR</label>
+                        </div>
+                        
+                        <button class="mcp-btn secondary full-width" id="toggle-all-levels">
+                            全選択/全解除
+                        </button>
+                    </div>
+
+                    <div class="mb-2">
+                        <h4>🔍 検索・フィルター</h4>
+                        <label for="search-text"><strong>テキスト検索</strong></label>
+                        <input type="text" class="mcp-input" id="search-text" 
+                               placeholder="ログメッセージを検索">
+                        
+                        <label for="filter-component"><strong>コンポーネント</strong></label>
+                        <select class="mcp-input" id="filter-component">
+                            <option value="">すべて</option>
+                            <option value="transport">Transport</option>
+                            <option value="wordpress">WordPress</option>
+                            <option value="config">Config</option>
+                            <option value="security">Security</option>
+                            <option value="plugin">Plugin</option>
+                        </select>
+                        
+                        <button class="mcp-btn primary full-width" id="apply-filters">
+                            🔍 フィルター適用
+                        </button>
+                        <button class="mcp-btn secondary full-width" id="clear-filters">
+                            🗑️ フィルタークリア
+                        </button>
+                    </div>
+                </div>
+
+                <!-- ログ表示・操作 -->
+                <div class="mcp-card" style="grid-column: span 2;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                        <h3>📋 ログ表示</h3>
+                        <div>
+                            <button class="mcp-btn secondary" id="auto-refresh-toggle">
+                                ⏰ 自動更新: OFF
+                            </button>
+                            <button class="mcp-btn secondary" id="refresh-logs">
+                                🔄 更新
+                            </button>
+                            <button class="mcp-btn primary" id="export-logs">
+                                📤 エクスポート
+                            </button>
+                        </div>
+                    </div>
+                    
+                    <div style="background: #f8f9fa; border: 1px solid #dee2e6; border-radius: 6px; height: 500px; overflow-y: auto; font-family: 'Courier New', monospace; font-size: 0.9em;">
+                        <div id="log-display">
+                            <div style="padding: 10px; color: #6c757d; text-align: center;">
+                                ログを読み込んでいます...
+                            </div>
+                        </div>
+                    </div>
+
+                    <div style="margin-top: 15px; display: flex; justify-content: space-between; align-items: center;">
+                        <div style="color: #6c757d;">
+                            <span id="log-count">0</span> エントリ表示中 | 
+                            最終更新: <span id="last-update">--:--:--</span>
+                        </div>
+                        <div>
+                            <button class="mcp-btn secondary" id="scroll-to-top">⬆️ 最上部</button>
+                            <button class="mcp-btn secondary" id="scroll-to-bottom">⬇️ 最下部</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ログファイル管理 -->
+            <div class="mcp-card">
+                <h3>📁 ログファイル管理</h3>
+                
+                <div class="mcp-grid cols-2">
+                    <div>
+                        <h4>📄 利用可能なログファイル</h4>
+                        <div id="log-files-list" style="max-height: 200px; overflow-y: auto; border: 1px solid #dee2e6; border-radius: 6px; padding: 10px; background: #f8f9fa;">
+                            <div style="display: flex; justify-content: space-between; padding: 5px; border-bottom: 1px solid #dee2e6;">
+                                <span><strong>📝 mcp-rs.log</strong> (現在)</span>
+                                <span style="color: #28a745;">45.2 MB</span>
+                            </div>
+                            <div style="display: flex; justify-content: space-between; padding: 5px; border-bottom: 1px solid #dee2e6;">
+                                <span>📝 mcp-rs.log.1</span>
+                                <span style="color: #6c757d;">89.1 MB</span>
+                            </div>
+                            <div style="display: flex; justify-content: space-between; padding: 5px; border-bottom: 1px solid #dee2e6;">
+                                <span>📝 mcp-rs.log.2</span>
+                                <span style="color: #6c757d;">95.7 MB</span>
+                            </div>
+                            <div style="display: flex; justify-content: space-between; padding: 5px;">
+                                <span>📝 mcp-rs-error.log</span>
+                                <span style="color: #dc3545;">1.2 MB</span>
+                            </div>
+                        </div>
+                        
+                        <div style="margin-top: 15px;">
+                            <button class="mcp-btn secondary full-width mb-1" id="download-current-log">
+                                💾 現在ログをダウンロード
+                            </button>
+                            <button class="mcp-btn secondary full-width mb-1" id="download-all-logs">
+                                📦 全ログをZIPダウンロード
+                            </button>
+                            <button class="mcp-btn warning full-width" id="rotate-logs">
+                                🔄 ログローテーション実行
+                            </button>
+                        </div>
+                    </div>
+
+                    <div>
+                        <h4>🗑️ ログクリーンアップ</h4>
+                        <div style="background: #fff3cd; padding: 15px; border-radius: 6px; margin-bottom: 15px;">
+                            <h5 style="margin: 0 0 10px 0;">⚠️ ストレージ使用量</h5>
+                            <div style="background: #e2e3e5; border-radius: 4px; height: 20px; position: relative;">
+                                <div style="background: #ffc107; height: 20px; width: 68%; border-radius: 4px;"></div>
+                                <span style="position: absolute; top: 2px; left: 50%; transform: translateX(-50%); font-size: 0.8em; font-weight: bold;">231MB / 340MB</span>
+                            </div>
+                            <p style="margin: 5px 0 0 0; font-size: 0.9em;">使用率: 68% (警告レベル)</p>
+                        </div>
+                        
+                        <label for="cleanup-days"><strong>保持期間 (日)</strong></label>
+                        <input type="number" class="mcp-input" id="cleanup-days" 
+                               value="30" min="1" max="365">
+                        
+                        <label for="max-file-size"><strong>最大ファイルサイズ (MB)</strong></label>
+                        <input type="number" class="mcp-input" id="max-file-size" 
+                               value="100" min="1" max="1000">
+                        
+                        <button class="mcp-btn warning full-width mb-1" id="cleanup-old-logs">
+                            🧹 古いログを削除
+                        </button>
+                        <button class="mcp-btn danger full-width" id="clear-all-logs">
+                            🗑️ 全ログ削除
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ログ分析 -->
+            <div class="mcp-card">
+                <h3>📈 ログ分析</h3>
+                
+                <div class="mcp-grid cols-2">
+                    <div>
+                        <h4>🔍 エラー分析</h4>
+                        <div id="error-analysis" style="background: #f8f9fa; padding: 15px; border-radius: 6px; min-height: 200px;">
+                            <div style="margin-bottom: 15px;">
+                                <h5>❌ 頻出エラー (24h)</h5>
+                                <div style="padding: 8px; background: #fff; border-left: 3px solid #dc3545; margin: 5px 0;">
+                                    <strong>Connection timeout</strong><br>
+                                    <small>発生回数: 8回 | 最終発生: 14:35</small>
+                                </div>
+                                <div style="padding: 8px; background: #fff; border-left: 3px solid #ffc107; margin: 5px 0;">
+                                    <strong>Rate limit exceeded</strong><br>
+                                    <small>発生回数: 3回 | 最終発生: 12:22</small>
+                                </div>
+                            </div>
+                            
+                            <button class="mcp-btn secondary full-width" id="generate-error-report">
+                                📋 エラーレポート生成
+                            </button>
+                        </div>
+                    </div>
+
+                    <div>
+                        <h4>📊 アクティビティ分析</h4>
+                        <div id="activity-analysis" style="background: #f8f9fa; padding: 15px; border-radius: 6px; min-height: 200px;">
+                            <div style="margin-bottom: 15px;">
+                                <h5>🚀 ピーク時間帯</h5>
+                                <div style="display: flex; justify-content: space-between; padding: 5px; border-bottom: 1px solid #dee2e6;">
+                                    <span>14:00 - 15:00</span>
+                                    <strong style="color: #dc3545;">342 req/h</strong>
+                                </div>
+                                <div style="display: flex; justify-content: space-between; padding: 5px; border-bottom: 1px solid #dee2e6;">
+                                    <span>10:00 - 11:00</span>
+                                    <strong style="color: #28a745;">287 req/h</strong>
+                                </div>
+                                <div style="display: flex; justify-content: space-between; padding: 5px;">
+                                    <span>02:00 - 03:00</span>
+                                    <strong style="color: #17a2b8;">15 req/h</strong>
+                                </div>
+                            </div>
+                            
+                            <button class="mcp-btn secondary full-width" id="generate-activity-report">
+                                📈 アクティビティレポート生成
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+
+        <footer class="mcp-footer">
+            <p>
+                🚀 MCP-RS v0.15.1 - Log Management Console | 
+                💻 開発者: <strong>n-takatsu</strong> | 
+                🌐 <a href="https://github.com/n-takatsu/mcp-rs">GitHub</a>
+            </p>
+        </footer>
+    </div>
+
+    <script src="../shared/mcp-ui.js"></script>
+    <script>
+        class LogManager {
+            constructor() {
+                this.client = new MCPClient();
+                this.logs = [];
+                this.filteredLogs = [];
+                this.autoRefreshInterval = null;
+                this.autoRefreshEnabled = false;
+                
+                this.initializeElements();
+                this.bindEvents();
+                this.loadInitialLogs();
+                this.setDefaultTimeRange();
+            }
+
+            initializeElements() {
+                // フィルター要素
+                this.startTimeInput = document.getElementById('log-start-time');
+                this.endTimeInput = document.getElementById('log-end-time');
+                this.searchTextInput = document.getElementById('search-text');
+                this.componentFilter = document.getElementById('filter-component');
+
+                // レベルチェックボックス
+                this.levelCheckboxes = {
+                    trace: document.getElementById('level-trace'),
+                    debug: document.getElementById('level-debug'),
+                    info: document.getElementById('level-info'),
+                    warn: document.getElementById('level-warn'),
+                    error: document.getElementById('level-error')
+                };
+
+                // ログ表示要素
+                this.logDisplay = document.getElementById('log-display');
+                this.logCountSpan = document.getElementById('log-count');
+                this.lastUpdateSpan = document.getElementById('last-update');
+
+                // ボタン要素
+                this.autoRefreshBtn = document.getElementById('auto-refresh-toggle');
+
+                // ナビゲーション設定
+                MCPUIComponents.setActiveNav('nav-logs');
+            }
+
+            bindEvents() {
+                // 時間範囲ショートカット
+                document.getElementById('filter-1hour').addEventListener('click', () => this.setTimeRange(1));
+                document.getElementById('filter-24hours').addEventListener('click', () => this.setTimeRange(24));
+                document.getElementById('filter-7days').addEventListener('click', () => this.setTimeRange(24 * 7));
+
+                // レベル選択
+                document.getElementById('toggle-all-levels').addEventListener('click', () => this.toggleAllLevels());
+
+                // フィルター操作
+                document.getElementById('apply-filters').addEventListener('click', () => this.applyFilters());
+                document.getElementById('clear-filters').addEventListener('click', () => this.clearFilters());
+
+                // ログ表示操作
+                document.getElementById('auto-refresh-toggle').addEventListener('click', () => this.toggleAutoRefresh());
+                document.getElementById('refresh-logs').addEventListener('click', () => this.refreshLogs());
+                document.getElementById('export-logs').addEventListener('click', () => this.exportLogs());
+
+                // スクロール操作
+                document.getElementById('scroll-to-top').addEventListener('click', () => {
+                    this.logDisplay.scrollTop = 0;
+                });
+                document.getElementById('scroll-to-bottom').addEventListener('click', () => {
+                    this.logDisplay.scrollTop = this.logDisplay.scrollHeight;
+                });
+
+                // ログファイル管理
+                document.getElementById('download-current-log').addEventListener('click', () => this.downloadCurrentLog());
+                document.getElementById('download-all-logs').addEventListener('click', () => this.downloadAllLogs());
+                document.getElementById('rotate-logs').addEventListener('click', () => this.rotateLogs());
+                document.getElementById('cleanup-old-logs').addEventListener('click', () => this.cleanupOldLogs());
+                document.getElementById('clear-all-logs').addEventListener('click', () => this.clearAllLogs());
+
+                // ログ分析
+                document.getElementById('generate-error-report').addEventListener('click', () => this.generateErrorReport());
+                document.getElementById('generate-activity-report').addEventListener('click', () => this.generateActivityReport());
+
+                // リアルタイム検索
+                this.searchTextInput.addEventListener('input', () => {
+                    clearTimeout(this.searchTimeout);
+                    this.searchTimeout = setTimeout(() => this.applyFilters(), 500);
+                });
+            }
+
+            setDefaultTimeRange() {
+                const now = new Date();
+                const oneDayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+                
+                this.endTimeInput.value = now.toISOString().slice(0, 16);
+                this.startTimeInput.value = oneDayAgo.toISOString().slice(0, 16);
+            }
+
+            setTimeRange(hours) {
+                const now = new Date();
+                const pastTime = new Date(now.getTime() - hours * 60 * 60 * 1000);
+                
+                this.endTimeInput.value = now.toISOString().slice(0, 16);
+                this.startTimeInput.value = pastTime.toISOString().slice(0, 16);
+                
+                this.applyFilters();
+            }
+
+            toggleAllLevels() {
+                const allChecked = Object.values(this.levelCheckboxes).every(cb => cb.checked);
+                
+                Object.values(this.levelCheckboxes).forEach(checkbox => {
+                    checkbox.checked = !allChecked;
+                });
+                
+                this.applyFilters();
+            }
+
+            async loadInitialLogs() {
+                try {
+                    // モックログデータを生成
+                    this.logs = this.generateMockLogs();
+                    this.applyFilters();
+                    this.updateLogStats();
+                } catch (error) {
+                    console.error('ログ読み込みエラー:', error);
+                    this.logDisplay.innerHTML = `
+                        <div style="padding: 20px; text-align: center; color: #dc3545;">
+                            <p>❌ ログの読み込みに失敗しました</p>
+                            <p>${error.message}</p>
+                        </div>
+                    `;
+                }
+            }
+
+            generateMockLogs() {
+                const levels = ['TRACE', 'DEBUG', 'INFO', 'WARN', 'ERROR'];
+                const components = ['transport', 'wordpress', 'config', 'security', 'plugin'];
+                const messages = [
+                    'Connection established successfully',
+                    'Configuration loaded from file',
+                    'WordPress API request processed',
+                    'Rate limit check passed',
+                    'Plugin loaded successfully',
+                    'Authentication completed',
+                    'Database connection established',
+                    'Cache miss for key: user_123',
+                    'Transport switching completed',
+                    'Security policy applied',
+                    'Connection timeout occurred',
+                    'Invalid API key provided',
+                    'Memory usage threshold exceeded'
+                ];
+
+                const logs = [];
+                const now = new Date();
+
+                for (let i = 0; i < 1000; i++) {
+                    const timestamp = new Date(now.getTime() - Math.random() * 7 * 24 * 60 * 60 * 1000);
+                    const level = levels[Math.floor(Math.random() * levels.length)];
+                    const component = components[Math.floor(Math.random() * components.length)];
+                    const message = messages[Math.floor(Math.random() * messages.length)];
+                    
+                    logs.push({
+                        timestamp: timestamp.toISOString(),
+                        level: level,
+                        component: component,
+                        message: `${message} [${component}:${Math.floor(Math.random() * 1000)}]`,
+                        raw: `${timestamp.toISOString()} [${level}] ${component}: ${message}`
+                    });
+                }
+
+                return logs.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+            }
+
+            applyFilters() {
+                const startTime = new Date(this.startTimeInput.value);
+                const endTime = new Date(this.endTimeInput.value);
+                const searchText = this.searchTextInput.value.toLowerCase();
+                const component = this.componentFilter.value;
+                
+                const selectedLevels = Object.entries(this.levelCheckboxes)
+                    .filter(([level, checkbox]) => checkbox.checked)
+                    .map(([level]) => level.toUpperCase());
+
+                this.filteredLogs = this.logs.filter(log => {
+                    const logTime = new Date(log.timestamp);
+                    
+                    // 時間範囲チェック
+                    if (logTime < startTime || logTime > endTime) return false;
+                    
+                    // レベルチェック
+                    if (!selectedLevels.includes(log.level)) return false;
+                    
+                    // コンポーネントチェック
+                    if (component && log.component !== component) return false;
+                    
+                    // テキスト検索
+                    if (searchText && !log.message.toLowerCase().includes(searchText)) return false;
+                    
+                    return true;
+                });
+
+                this.displayLogs();
+                this.updateLogCount();
+            }
+
+            displayLogs() {
+                if (this.filteredLogs.length === 0) {
+                    this.logDisplay.innerHTML = `
+                        <div style="padding: 20px; text-align: center; color: #6c757d;">
+                            <p>🔍 フィルター条件に一致するログがありません</p>
+                        </div>
+                    `;
+                    return;
+                }
+
+                const logsToShow = this.filteredLogs.slice(0, 500); // 最大500件表示
+                
+                this.logDisplay.innerHTML = logsToShow.map(log => {
+                    const levelColor = this.getLevelColor(log.level);
+                    const timestamp = new Date(log.timestamp).toLocaleString('ja-JP');
+                    
+                    return `
+                        <div style="padding: 5px 10px; border-bottom: 1px solid #e9ecef; font-size: 0.85em; line-height: 1.4;">
+                            <span style="color: #6c757d;">${timestamp}</span>
+                            <span style="color: ${levelColor}; font-weight: bold; margin: 0 10px;">[${log.level}]</span>
+                            <span style="color: #17a2b8; font-weight: bold;">${log.component}:</span>
+                            <span>${log.message}</span>
+                        </div>
+                    `;
+                }).join('');
+
+                // 自動スクロールを最下部に
+                this.logDisplay.scrollTop = this.logDisplay.scrollHeight;
+            }
+
+            getLevelColor(level) {
+                const colors = {
+                    'TRACE': '#6c757d',
+                    'DEBUG': '#6c757d',
+                    'INFO': '#17a2b8',
+                    'WARN': '#ffc107',
+                    'ERROR': '#dc3545'
+                };
+                return colors[level] || '#6c757d';
+            }
+
+            updateLogCount() {
+                this.logCountSpan.textContent = this.filteredLogs.length.toLocaleString();
+                this.lastUpdateSpan.textContent = new Date().toLocaleTimeString('ja-JP');
+            }
+
+            updateLogStats() {
+                // 24時間以内のログ統計を計算
+                const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+                const recent24h = this.logs.filter(log => new Date(log.timestamp) > oneDayAgo);
+                
+                const stats = {
+                    INFO: recent24h.filter(log => log.level === 'INFO').length,
+                    WARN: recent24h.filter(log => log.level === 'WARN').length,
+                    ERROR: recent24h.filter(log => log.level === 'ERROR').length,
+                    DEBUG: recent24h.filter(log => log.level === 'DEBUG').length
+                };
+
+                document.getElementById('info-count').textContent = stats.INFO.toLocaleString();
+                document.getElementById('warn-count').textContent = stats.WARN.toLocaleString();
+                document.getElementById('error-count').textContent = stats.ERROR.toLocaleString();
+                document.getElementById('debug-count').textContent = stats.DEBUG.toLocaleString();
+            }
+
+            clearFilters() {
+                // フィルターをクリア
+                this.searchTextInput.value = '';
+                this.componentFilter.value = '';
+                
+                // すべてのレベルをチェック
+                Object.values(this.levelCheckboxes).forEach(checkbox => {
+                    checkbox.checked = true;
+                });
+                
+                // 時間範囲を24時間に設定
+                this.setTimeRange(24);
+            }
+
+            toggleAutoRefresh() {
+                this.autoRefreshEnabled = !this.autoRefreshEnabled;
+                
+                if (this.autoRefreshEnabled) {
+                    this.autoRefreshBtn.textContent = '⏰ 自動更新: ON';
+                    this.autoRefreshBtn.className = 'mcp-btn primary';
+                    this.autoRefreshInterval = setInterval(() => {
+                        this.refreshLogs();
+                    }, 5000); // 5秒間隔
+                } else {
+                    this.autoRefreshBtn.textContent = '⏰ 自動更新: OFF';
+                    this.autoRefreshBtn.className = 'mcp-btn secondary';
+                    if (this.autoRefreshInterval) {
+                        clearInterval(this.autoRefreshInterval);
+                        this.autoRefreshInterval = null;
+                    }
+                }
+            }
+
+            async refreshLogs() {
+                try {
+                    // 新しいログを追加（モック）
+                    const newLogs = this.generateMockLogs().slice(0, 10);
+                    this.logs = newLogs.concat(this.logs).slice(0, 2000); // 最大2000件保持
+                    
+                    this.applyFilters();
+                    this.updateLogStats();
+                    
+                    if (!this.autoRefreshEnabled) {
+                        MCPUIComponents.showToast('✅ ログが更新されました', 'success');
+                    }
+                } catch (error) {
+                    MCPUIComponents.showToast('❌ ログ更新に失敗しました', 'error');
+                }
+            }
+
+            exportLogs() {
+                try {
+                    const exportData = this.filteredLogs.map(log => 
+                        `${log.timestamp}\t${log.level}\t${log.component}\t${log.message}`
+                    ).join('\n');
+                    
+                    const blob = new Blob([exportData], { type: 'text/plain' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    
+                    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+                    a.href = url;
+                    a.download = `mcp-rs-logs-${timestamp}.txt`;
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    URL.revokeObjectURL(url);
+                    
+                    MCPUIComponents.showToast('📤 ログがエクスポートされました', 'success');
+                } catch (error) {
+                    MCPUIComponents.showToast('❌ エクスポートに失敗しました', 'error');
+                }
+            }
+
+            downloadCurrentLog() {
+                MCPUIComponents.showModal(
+                    '💾 現在ログダウンロード',
+                    '<p>現在のログファイル (mcp-rs.log) をダウンロードしますか？</p><p><strong>サイズ:</strong> 45.2 MB</p>',
+                    [
+                        { 
+                            text: 'ダウンロード', 
+                            type: 'primary',
+                            onclick: 'this.closest(\'.modal\').remove(); window.logManager.executeDownload(\"current\");'
+                        },
+                        { text: 'キャンセル', type: 'secondary' }
+                    ]
+                );
+            }
+
+            downloadAllLogs() {
+                MCPUIComponents.showModal(
+                    '📦 全ログZIPダウンロード',
+                    '<p>すべてのログファイルをZIPアーカイブでダウンロードしますか？</p><p><strong>総サイズ:</strong> 231 MB</p>',
+                    [
+                        { 
+                            text: 'ZIPダウンロード', 
+                            type: 'primary',
+                            onclick: 'this.closest(\'.modal\').remove(); window.logManager.executeDownload(\"all\");'
+                        },
+                        { text: 'キャンセル', type: 'secondary' }
+                    ]
+                );
+            }
+
+            executeDownload(type) {
+                MCPUIComponents.showToast(
+                    type === 'current' ? '💾 現在ログをダウンロード中...' : '📦 全ログZIPを作成中...',
+                    'info'
+                );
+                
+                setTimeout(() => {
+                    MCPUIComponents.showToast(
+                        type === 'current' ? '✅ ログダウンロード完了' : '✅ ZIPダウンロード完了',
+                        'success'
+                    );
+                }, 2000);
+            }
+
+            rotateLogs() {
+                MCPUIComponents.showModal(
+                    '🔄 ログローテーション実行',
+                    '<p>現在のログファイルをローテーションしますか？</p><p>現在のログは .1 に移動され、新しいログファイルが作成されます。</p>',
+                    [
+                        { 
+                            text: 'ローテーション実行', 
+                            type: 'warning',
+                            onclick: 'this.closest(\'.modal\').remove(); window.logManager.executeRotation();'
+                        },
+                        { text: 'キャンセル', type: 'secondary' }
+                    ]
+                );
+            }
+
+            executeRotation() {
+                MCPUIComponents.showToast('🔄 ログローテーション実行中...', 'info');
+                
+                setTimeout(() => {
+                    MCPUIComponents.showToast('✅ ログローテーション完了', 'success');
+                }, 1500);
+            }
+
+            cleanupOldLogs() {
+                const days = parseInt(document.getElementById('cleanup-days').value);
+                
+                MCPUIComponents.showModal(
+                    '🧹 古いログ削除',
+                    `<p>${days}日より古いログファイルを削除しますか？</p><p><strong>⚠️ 警告:</strong> 削除されたログは復元できません。</p>`,
+                    [
+                        { 
+                            text: '削除実行', 
+                            type: 'danger',
+                            onclick: 'this.closest(\'.modal\').remove(); window.logManager.executeCleanup();'
+                        },
+                        { text: 'キャンセル', type: 'secondary' }
+                    ]
+                );
+            }
+
+            executeCleanup() {
+                MCPUIComponents.showToast('🧹 古いログを削除中...', 'info');
+                
+                setTimeout(() => {
+                    MCPUIComponents.showToast('✅ ログクリーンアップ完了', 'success');
+                }, 1500);
+            }
+
+            clearAllLogs() {
+                MCPUIComponents.showModal(
+                    '🗑️ 全ログ削除',
+                    '<p><strong>⚠️ 危険:</strong> すべてのログファイルが削除されます。</p><p>この操作は取り消せません。本当に実行しますか？</p>',
+                    [
+                        { 
+                            text: '全削除実行', 
+                            type: 'danger',
+                            onclick: 'this.closest(\'.modal\').remove(); window.logManager.executeClearAll();'
+                        },
+                        { text: 'キャンセル', type: 'secondary' }
+                    ]
+                );
+            }
+
+            executeClearAll() {
+                MCPUIComponents.showToast('🗑️ 全ログを削除中...', 'warning');
+                
+                setTimeout(() => {
+                    MCPUIComponents.showToast('⚠️ 全ログ削除完了', 'warning');
+                    // ログ表示をクリア
+                    this.logs = [];
+                    this.filteredLogs = [];
+                    this.displayLogs();
+                    this.updateLogStats();
+                }, 2000);
+            }
+
+            generateErrorReport() {
+                MCPUIComponents.showModal(
+                    '📋 エラーレポート',
+                    `<div style="font-family: 'Courier New', monospace; font-size: 0.9em; max-height: 400px; overflow-y: auto;">
+                       <h4>📊 エラー分析レポート</h4>
+                       <p><strong>期間:</strong> 過去24時間</p>
+                       <p><strong>総エラー数:</strong> 3件</p>
+                       
+                       <h5>❌ エラー詳細</h5>
+                       <div style="background: #f8f9fa; padding: 10px; margin: 10px 0; border-left: 3px solid #dc3545;">
+                         <strong>Connection timeout</strong><br>
+                         発生回数: 2回<br>
+                         最初の発生: 2025-11-09 12:34:56<br>
+                         最後の発生: 2025-11-09 14:35:12<br>
+                         影響コンポーネント: transport
+                       </div>
+                       
+                       <div style="background: #f8f9fa; padding: 10px; margin: 10px 0; border-left: 3px solid #dc3545;">
+                         <strong>Invalid API key</strong><br>
+                         発生回数: 1回<br>
+                         発生時刻: 2025-11-09 16:22:45<br>
+                         影響コンポーネント: wordpress
+                       </div>
+                       
+                       <h5>💡 推奨対処法</h5>
+                       <ul>
+                         <li>Connection timeout: ネットワーク設定を確認</li>
+                         <li>Invalid API key: WordPress認証情報を更新</li>
+                       </ul>
+                     </div>`,
+                    [{ text: '閉じる', type: 'primary' }]
+                );
+            }
+
+            generateActivityReport() {
+                MCPUIComponents.showModal(
+                    '📈 アクティビティレポート',
+                    `<div style="font-family: 'Courier New', monospace; font-size: 0.9em; max-height: 400px; overflow-y: auto;">
+                       <h4>📊 アクティビティ分析レポート</h4>
+                       <p><strong>期間:</strong> 過去24時間</p>
+                       <p><strong>総リクエスト数:</strong> 1,247件</p>
+                       
+                       <h5>🕐 時間別リクエスト数</h5>
+                       <div style="background: #f8f9fa; padding: 10px; margin: 10px 0;">
+                         00:00-01:00: ████ 23<br>
+                         01:00-02:00: ██ 8<br>
+                         02:00-03:00: █ 5<br>
+                         ...<br>
+                         14:00-15:00: ████████████████ 342 (ピーク)<br>
+                         15:00-16:00: ██████████████ 298<br>
+                         ...<br>
+                         23:00-00:00: █████ 45
+                       </div>
+                       
+                       <h5>🎯 コンポーネント別統計</h5>
+                       <div style="background: #f8f9fa; padding: 10px; margin: 10px 0;">
+                         transport: 456件 (36.6%)<br>
+                         wordpress: 423件 (33.9%)<br>
+                         config: 198件 (15.9%)<br>
+                         security: 123件 (9.9%)<br>
+                         plugin: 47件 (3.7%)
+                       </div>
+                     </div>`,
+                    [{ text: '閉じる', type: 'primary' }]
+                );
+            }
+        }
+
+        // 初期化
+        document.addEventListener('DOMContentLoaded', () => {
+            window.logManager = new LogManager();
+        });
+    </script>
+</body>
+</html>

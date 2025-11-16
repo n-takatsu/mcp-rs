@@ -22,11 +22,11 @@ function Write-TestResult($test, $success, $message = "", $data = $null) {
     } else {
         Write-Host "❌ $test" -ForegroundColor Red
     }
-    
+
     if ($message) {
         Write-Host "   💬 $message" -ForegroundColor Yellow
     }
-    
+
     if ($data -and $PSBoundParameters.ContainsKey('Verbose')) {
         Write-Host "   📄 Data: $($data | ConvertTo-Json -Compress)" -ForegroundColor Gray
     }
@@ -39,7 +39,7 @@ function Invoke-MCPRequest($method, $params = @{}, $id = 1) {
         "params" = $params
         "id" = $id
     } | ConvertTo-Json -Depth 5 -Compress
-    
+
     try {
         $response = Invoke-RestMethod -Uri $ServerUrl -Method Post -Body $request -ContentType "application/json" -TimeoutSec $TimeoutSeconds -ErrorAction Stop
         return $response
@@ -50,16 +50,16 @@ function Invoke-MCPRequest($method, $params = @{}, $id = 1) {
 
 function Test-WordPressCategories {
     Write-TestHeader "WordPress Categories Test"
-    
+
     try {
         # Resource読み取りテスト
         $response = Invoke-MCPRequest "resources/read" @{ "uri" = "wordpress://categories" } 1
-        
+
         if ($response.result -and $response.result.contents) {
             $content = $response.result.contents[0].text | ConvertFrom-Json
             $categoryCount = $content.Count
             Write-TestResult "WordPress Categories Resource" $true "Found $categoryCount categories" $content
-            
+
             # 最初のカテゴリの詳細をチェック
             if ($categoryCount -gt 0) {
                 $firstCategory = $content[0]
@@ -69,7 +69,7 @@ function Test-WordPressCategories {
                     Write-TestResult "Category Data Structure" $false "Missing required fields in category object"
                 }
             }
-            
+
             return $true
         } else {
             Write-TestResult "WordPress Categories Resource" $false "No categories data in response"
@@ -83,35 +83,35 @@ function Test-WordPressCategories {
 
 function Test-WordPressPosts {
     Write-TestHeader "WordPress Posts Test"
-    
+
     try {
         # 最新投稿取得
         $response = Invoke-MCPRequest "resources/read" @{ "uri" = "wordpress://posts?limit=10" } 2
-        
+
         if ($response.result -and $response.result.contents) {
             $content = $response.result.contents[0].text | ConvertFrom-Json
             $postCount = $content.Count
             Write-TestResult "WordPress Posts Resource" $true "Found $postCount posts" $content
-            
+
             # 最初の投稿の詳細をチェック
             if ($postCount -gt 0) {
                 $firstPost = $content[0]
                 $requiredFields = @('id', 'title', 'content', 'status', 'date')
                 $missingFields = @()
-                
+
                 foreach ($field in $requiredFields) {
                     if (-not ($firstPost.PSObject.Properties.Name -contains $field)) {
                         $missingFields += $field
                     }
                 }
-                
+
                 if ($missingFields.Count -eq 0) {
                     Write-TestResult "Post Data Structure" $true "All required fields present"
                 } else {
                     Write-TestResult "Post Data Structure" $false "Missing fields: $($missingFields -join ', ')"
                 }
             }
-            
+
             return $true
         } else {
             Write-TestResult "WordPress Posts Resource" $false "No posts data in response"
@@ -125,25 +125,25 @@ function Test-WordPressPosts {
 
 function Test-WordPressTools {
     Write-TestHeader "WordPress Tools Test"
-    
+
     try {
         # ツールリスト取得
         $response = Invoke-MCPRequest "tools/list" @{} 3
-        
+
         if ($response.result -and $response.result.tools) {
             $tools = $response.result.tools
             $wpTools = $tools | Where-Object { $_.name -like "*wordpress*" }
-            
+
             Write-TestResult "WordPress Tools List" $true "Found $($wpTools.Count) WordPress tools"
-            
+
             # 期待されるWordPressツールをチェック
             $expectedTools = @(
                 "wordpress_get_categories",
-                "wordpress_get_posts", 
+                "wordpress_get_posts",
                 "wordpress_create_post",
                 "wordpress_search_posts"
             )
-            
+
             $foundTools = @()
             foreach ($expectedTool in $expectedTools) {
                 $tool = $wpTools | Where-Object { $_.name -eq $expectedTool }
@@ -154,7 +154,7 @@ function Test-WordPressTools {
                     Write-TestResult "Tool: $expectedTool" $false "Not found"
                 }
             }
-            
+
             return $foundTools.Count -eq $expectedTools.Count
         } else {
             Write-TestResult "WordPress Tools List" $false "No tools in response"
@@ -168,17 +168,17 @@ function Test-WordPressTools {
 
 function Test-WordPressToolCall {
     Write-TestHeader "WordPress Tool Call Test"
-    
+
     try {
         # wordpress_get_categories ツールを呼び出し
         $response = Invoke-MCPRequest "tools/call" @{
             "name" = "wordpress_get_categories"
             "arguments" = @{}
         } 4
-        
+
         if ($response.result) {
             Write-TestResult "WordPress Get Categories Tool" $true "Tool executed successfully"
-            
+
             # レスポンスの内容をチェック
             if ($response.result.content -and $response.result.content[0].text) {
                 $categories = $response.result.content[0].text | ConvertFrom-Json
@@ -200,7 +200,7 @@ function Test-WordPressToolCall {
 
 function Test-WordPressSearch {
     Write-TestHeader "WordPress Search Test"
-    
+
     try {
         # 投稿検索ツール
         $response = Invoke-MCPRequest "tools/call" @{
@@ -210,10 +210,10 @@ function Test-WordPressSearch {
                 "limit" = 5
             }
         } 5
-        
+
         if ($response.result) {
             Write-TestResult "WordPress Search Posts Tool" $true "Search executed successfully"
-            
+
             if ($response.result.content -and $response.result.content[0].text) {
                 $posts = $response.result.content[0].text | ConvertFrom-Json
                 Write-TestResult "Search Results" $true "Found $($posts.Count) posts matching 'test'"

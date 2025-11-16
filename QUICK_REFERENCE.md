@@ -14,7 +14,7 @@ cargo test --features "database,mysql-backend"
 # Claude Desktop integration
 cargo run -- --config mcp-config-claude.toml
 
-# Web UI integration  
+# Web UI integration
 cargo run -- --config mcp-config-http-transport.toml
 ```
 
@@ -36,7 +36,7 @@ cargo run -- --config mcp-config-http-transport.toml
 
 ## 🗄️ Database Support
 - **MySQL**: ✅ `mysql_async` (secure implementation)
-- **PostgreSQL**: ✅ `sqlx` 
+- **PostgreSQL**: ✅ `sqlx`
 - **SQLite**: ✅ `sqlx`
 - **MongoDB**: ✅ Native driver
 - **Redis**: ✅ Native driver

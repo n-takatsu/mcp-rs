@@ -4,6 +4,8 @@
 
 use mcp_rs::config::{DynamicConfigManager, McpConfig};
 use mcp_rs::runtime_control::{InteractiveController, RuntimeCommand, RuntimeController};
+use mcp_rs::transport::{FramingMethod, HttpConfig, StdioConfig, TransportConfig, TransportType};
+use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::{error, info};
@@ -19,10 +21,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 動的設定管理の初期化
     let config_manager = Arc::new(DynamicConfigManager::new(config.clone(), get_config_path()));
 
-    // デフォルトのTransportConfigを作成
-    let transport_config = mcp_rs::transport::TransportConfig::default();
-
     // ランタイムコントローラー初期化
+    let transport_config = convert_to_transport_config(&config.transport);
     let (runtime_controller, command_sender) =
         RuntimeController::new(transport_config, config_manager.clone())?;
 
@@ -102,6 +102,74 @@ fn get_config_path() -> Option<String> {
         args.get(config_index + 1).cloned()
     } else {
         None
+    }
+}
+
+/// config::TransportConfig を transport::TransportConfig に変換
+fn convert_to_transport_config(
+    config_transport: &mcp_rs::config::TransportConfig,
+) -> TransportConfig {
+    let transport_type = match config_transport.transport_type.as_deref() {
+        Some("http") => {
+            let default_addr = "127.0.0.1".to_string();
+            let addr = config_transport
+                .http
+                .as_ref()
+                .and_then(|h| h.addr.as_ref())
+                .unwrap_or(&default_addr);
+            let port = config_transport
+                .http
+                .as_ref()
+                .and_then(|h| h.port)
+                .unwrap_or(8081);
+            let socket_addr: SocketAddr = format!("{}:{}", addr, port).parse().unwrap();
+            TransportType::Http { addr: socket_addr }
+        }
+        Some("websocket") => TransportType::WebSocket {
+            url: "ws://127.0.0.1:8081/ws".to_string(),
+        },
+        _ => TransportType::Stdio,
+    };
+
+    let stdio_config = config_transport
+        .stdio
+        .as_ref()
+        .map(|s| StdioConfig {
+            buffer_size: s.buffer_size.unwrap_or(8192),
+            timeout_ms: s.timeout_ms.unwrap_or(30000),
+            content_length_header: s.content_length_header.unwrap_or(true),
+            framing_method: match s.framing_method.as_deref() {
+                Some("line-based") => FramingMethod::LineBased,
+                Some("websocket-frame") => FramingMethod::WebSocketFrame,
+                _ => FramingMethod::ContentLength,
+            },
+            max_message_size: s.max_message_size.unwrap_or(1048576),
+            pretty_print: s.pretty_print.unwrap_or(false),
+        })
+        .unwrap_or_default();
+
+    let http_config = config_transport
+        .http
+        .as_ref()
+        .map(|h| {
+            let default_addr = "127.0.0.1".to_string();
+            let addr = h.addr.as_ref().unwrap_or(&default_addr);
+            let port = h.port.unwrap_or(8081);
+            let socket_addr: SocketAddr = format!("{}:{}", addr, port).parse().unwrap();
+
+            HttpConfig {
+                bind_addr: socket_addr,
+                cors_enabled: h.enable_cors.unwrap_or(true),
+                max_request_size: 1048576, // デフォルト値
+                timeout_ms: 30000,         // デフォルト値
+            }
+        })
+        .unwrap_or_default();
+
+    TransportConfig {
+        transport_type,
+        stdio: stdio_config,
+        http: http_config,
     }
 }
 

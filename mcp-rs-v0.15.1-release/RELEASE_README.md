@@ -1,7 +1,7 @@
 # MCP-RS v0.15.1 Release Package
 
-**Release Date**: 2025年11月9日  
-**Version**: v0.15.1  
+**Release Date**: 2025年11月9日
+**Version**: v0.15.1
 **Major Features**: Claude Desktop MCP Integration + HTTP JSON-RPC Server
 
 ## 🎯 **新機能 (v0.15.1)**
@@ -19,7 +19,7 @@
 
 ### 🔧 **デュアルサーバーアーキテクチャ**
 - **STDIO mode** (`stdio = true`): Claude Desktop用
-- **HTTP+TCP mode** (`stdio = false`): 
+- **HTTP+TCP mode** (`stdio = false`):
   - TCP: `127.0.0.1:8080` (既存クライアント)
   - HTTP: `127.0.0.1:8081` (AI Agent用)
 
@@ -34,7 +34,7 @@ mcp-rs-v0.15.1-release/
 ├── � start-claude-mcp-server.bat          # Claude Desktop起動スクリプト (Windows)
 ├── 🚀 start-claude-mcp-server.ps1          # Claude Desktop起動スクリプト (PowerShell)
 ├── 🌐 start-http-mcp-server.bat            # HTTP+TCP起動スクリプト (Windows)
-├── �📝 README.md                           # メインドキュメント  
+├── �📝 README.md                           # メインドキュメント
 ├── 🧪 test-*.ps1                          # テストスクリプト群
 ├── 🌐 test-get-endpoints.html             # HTTP APIテストページ
 └── 📋 RELEASE_README.md                   # このファイル
@@ -71,7 +71,7 @@ copy claude_desktop_config_example.json $env:APPDATA\Claude\claude_desktop_confi
 }
 ```
 
-**重要**: 
+**重要**:
 - `YOUR_USERNAME` を実際のWindowsユーザー名に変更
 - パス区切りは `/` を使用 (`\` ではなく)
 - `mcp-config-claude.toml` を使用 (STDIO専用設定)
@@ -99,7 +99,7 @@ start-claude-mcp-server.bat
 
 #### **ステップ5: 動作確認**
 1. Claude Desktop を**完全終了**
-2. Claude Desktop を再起動  
+2. Claude Desktop を再起動
 3. 新しい会話で実行:
    ```
    WordPressサイトのカテゴリ一覧を取得してください
@@ -161,12 +161,12 @@ enabled = true
 
 ### **起動スクリプト**
 - `start-claude-mcp-server.bat` - Claude Desktop用起動 (Windows)
-- `start-claude-mcp-server.ps1` - Claude Desktop用起動 (PowerShell)  
+- `start-claude-mcp-server.ps1` - Claude Desktop用起動 (PowerShell)
 - `start-http-mcp-server.bat` - HTTP+TCP用起動 (Windows)
 
 ### **テストスクリプト**
 - `test-http-jsonrpc.ps1` - HTTP JSON-RPC完全テスト
-- `test-categories-stdio.ps1` - STDIO mode テスト  
+- `test-categories-stdio.ps1` - STDIO mode テスト
 - `test-categories-tcp.ps1` - TCP mode テスト
 - `test-get-endpoints.html` - ブラウザ用APIテスト
 
@@ -186,7 +186,7 @@ Get-Content "$env:APPDATA\Claude\claude_desktop_config.json"
 #### **2. パス設定の確認**
 - ❌ 間違い: `"C:\Users\takat\Desktop\mcp-rs-server\mcp-rs.exe"`
 - ✅ 正しい: `"C:/Users/takat/Desktop/mcp-rs-v0.15.1-final/mcp-rs.exe"`
-- ❌ 間違い: `["--config", "mcp-config.toml"]`  
+- ❌ 間違い: `["--config", "mcp-config.toml"]`
 - ✅ 正しい: `["--config", "C:/Users/takat/Desktop/mcp-rs-v0.15.1-final/mcp-config-claude.toml"]`
 - ❌ 間違い: `"RUST_LOG": "info"`
 - ✅ 正しい: `"RUST_LOG": "error"`
@@ -201,7 +201,7 @@ Get-Process -Name "claude" -ErrorAction SilentlyContinue
 ```
 
 #### **4. MCP接続診断**
-- Claude Desktop: Settings → Developer → MCP Logs  
+- Claude Desktop: Settings → Developer → MCP Logs
 - エラーメッセージの確認
 - サーバー起動ログの確認
 

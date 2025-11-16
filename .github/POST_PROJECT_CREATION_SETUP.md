@@ -12,7 +12,7 @@
 
 #### 📊 Priority (Single select)
 - **P0 (Critical)** - 🔴 赤 `#DC2626`
-- **P1 (High)** - 🟠 オレンジ `#EA580C`  
+- **P1 (High)** - 🟠 オレンジ `#EA580C`
 - **P2 (Medium)** - 🟡 琥珀 `#D97706`
 - **P3 (Low)** - 🟢 緑 `#65A30D`
 
@@ -35,7 +35,7 @@
 - **Completed** - 🟢 エメラルド `#059669`
 - **Blocked** - 🔴 赤 `#DC2626`
 
-#### ⏱️ Estimated Effort (Single select)  
+#### ⏱️ Estimated Effort (Single select)
 - **1-2 days** - 🟢 緑 `#10B981`
 - **1 week** - 🔵 青 `#3B82F6`
 - **2-3 weeks** - 🟡 黄 `#F59E0B`
@@ -55,7 +55,7 @@
 - **Filter**: `is:open`
 
 #### 🎯 Epic Dashboard (Table View)
-- **View name**: `Epic Dashboard` 
+- **View name**: `Epic Dashboard`
 - **Filter**: `label:epic`
 - **Columns**: Title, Priority, Release Version, Implementation Phase, Assignees
 
@@ -68,7 +68,7 @@
 
 #### Epic #17 (Advanced Security)
 - Priority: **P1 (High)**
-- Issue Type: **Epic**  
+- Issue Type: **Epic**
 - Release Version: **v0.2.0-beta**
 - Implementation Phase: **In Progress**
 - Business Value: **High**
@@ -76,7 +76,7 @@
 #### Epic #39 (Docker/K8s)
 - Priority: **P0 (Critical)**
 - Issue Type: **Epic**
-- Release Version: **v0.2.0-beta**  
+- Release Version: **v0.2.0-beta**
 - Implementation Phase: **Planning**
 - Business Value: **Critical**
 
@@ -87,7 +87,7 @@
 - Implementation Phase: **Planning**
 - Business Value: **High**
 
-#### Epic #41 (Enterprise)  
+#### Epic #41 (Enterprise)
 - Priority: **P3 (Low)**
 - Issue Type: **Epic**
 - Release Version: **v1.0.0**
@@ -97,7 +97,7 @@
 ### 5. Sub-Issues 一括設定
 
 #### v0.2.0-beta Sub-Issues (#42-#47)
-- Priority: **P0-P1** 
+- Priority: **P0-P1**
 - Issue Type: **Sub-Issue**
 - Release Version: **v0.2.0-beta**
 - Implementation Phase: **Planning**
@@ -105,7 +105,7 @@
 
 #### v0.3.0 Sub-Issues (#48-#50)
 - Priority: **P1-P2**
-- Issue Type: **Sub-Issue**  
+- Issue Type: **Sub-Issue**
 - Release Version: **v0.3.0**
 - Implementation Phase: **Planning**
 - Business Value: **Medium-High**
@@ -114,7 +114,7 @@
 - Priority: **P2-P3**
 - Issue Type: **Sub-Issue**
 - Release Version: **v1.0.0**
-- Implementation Phase: **Planning**  
+- Implementation Phase: **Planning**
 - Business Value: **Medium**
 
 ### 6. 自動化ワークフロー有効化
@@ -140,7 +140,7 @@ Write-Host "🔗 プロジェクトURL: https://github.com/n-takatsu/mcp-rs/proj
 - Milestone 達成状況
 - 優先度別タスク管理
 
-### 🤖 **自動化機能**  
+### 🤖 **自動化機能**
 - 新規Issue の自動分類
 - Epic-Sub Issue 関連付け
 - 週次健全性レポート生成

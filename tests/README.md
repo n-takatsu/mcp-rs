@@ -261,7 +261,7 @@ cargo test integration::
 # データベーステスト
 cargo test database::
 
-# WordPressテスト  
+# WordPressテスト
 cargo test wordpress::
 
 # パフォーマンステスト（リリースモード推奨）

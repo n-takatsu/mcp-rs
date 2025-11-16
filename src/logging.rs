@@ -18,7 +18,7 @@ pub struct LogConfig {
     pub retention: LogRetention,
     /// コンソール出力有効
     pub console_enabled: bool,
-    /// ファイル出力有効  
+    /// ファイル出力有効
     pub file_enabled: bool,
     /// モジュール別ログ分離設定
     pub module_separation: ModuleSeparation,
@@ -123,7 +123,7 @@ impl LogConfig {
         self
     }
 
-    /// ファイル出力制御  
+    /// ファイル出力制御
     pub fn with_file(mut self, enabled: bool) -> Self {
         self.file_enabled = enabled;
         self
@@ -653,8 +653,8 @@ mod tests {
     fn test_log_config_default() {
         let config = LogConfig::default();
         assert_eq!(config.level, "info");
-        assert_eq!(config.console_enabled, true);
-        assert_eq!(config.file_enabled, true);
+        assert!(config.console_enabled);
+        assert!(config.file_enabled);
     }
 
     #[test]
@@ -682,9 +682,10 @@ mod tests {
 
     #[test]
     fn test_log_stats_format_size() {
-        let mut stats = LogStats::default();
-
-        stats.total_size = 1024;
+        let mut stats = LogStats {
+            total_size: 1024,
+            ..Default::default()
+        };
         assert_eq!(stats.format_size(), "1.00 KB");
 
         stats.total_size = 1024 * 1024;

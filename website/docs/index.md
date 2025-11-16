@@ -71,25 +71,25 @@ MCP-RS provides a **comprehensive, battle-tested** implementation of the MCP (Mo
 2. **Basic Usage**
    ```rust
    use mcp_rs::{
-       server::McpServer, 
+       server::McpServer,
        config::Config,
        handlers::wordpress::WordPressHandler
    };
-   
+
    #[tokio::main]
    async fn main() -> Result<(), Box<dyn std::error::Error>> {
        // Load configuration
        let config = Config::load("mcp-config.toml")?;
-       
+
        // Create server
        let mut server = McpServer::new();
-       
+
        // Add WordPress handler if configured
        if let Some(wp_config) = config.wordpress {
            let handler = WordPressHandler::new(wp_config);
            server.add_handler("wordpress", Box::new(handler));
        }
-       
+
        // Start server
        server.serve(config.server.address()).await?;
        Ok(())
@@ -102,7 +102,7 @@ MCP-RS provides a **comprehensive, battle-tested** implementation of the MCP (Mo
    [server]
    host = "127.0.0.1"
    port = 8080
-   
+
    [wordpress]
    url = "https://your-wordpress-site.com"
    username = "your_username"
@@ -183,5 +183,5 @@ at your option.
 
 ---
 
-**Last Updated**: November 3, 2025  
+**Last Updated**: November 3, 2025
 **Version**: v0.1.0 (Development)
