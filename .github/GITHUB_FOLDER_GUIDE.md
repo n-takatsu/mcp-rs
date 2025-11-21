@@ -1,4 +1,4 @@
-# .github フォルダ構成
+# .github フォルダ構成ガイド
 
 このフォルダには、GitHubリポジトリの管理・運用に関するファイルが格納されています。
 
@@ -6,7 +6,7 @@
 
 ```
 .github/
-├── README.md                    # このファイル
+├── GITHUB_FOLDER_GUIDE.md       # このファイル
 ├── README.ja.md                 # 日本語キーワード・SEO用
 ├── FILE_MANAGEMENT.md           # ファイル管理ガイドライン
 ├── PROJECT_SETUP.md             # プロジェクト設定ガイド
