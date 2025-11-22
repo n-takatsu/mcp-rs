@@ -28,6 +28,10 @@ clippy-report.json
 .env.local
 .env.production
 
+# Release directories (should use GitHub Releases instead)
+/mcp-rs-v*/
+mcp-rs-v*-release/
+
 # Release management
 # Keep versioned release folders but ignore temporary build artifacts
 mcp-rs-v*-release/*.zip
