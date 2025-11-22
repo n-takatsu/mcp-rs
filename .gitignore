@@ -32,6 +32,12 @@ clippy-report.json
 /mcp-rs-v*/
 mcp-rs-v*-release/
 
+# Report files (documentation should be in wiki or separate docs repo)
+*_REPORT.md
+*_TEST_REPORT.md
+MYSQL_SECURITY_TEST_REPORT.md
+/reports/
+
 # Release management
 # Keep versioned release folders but ignore temporary build artifacts
 mcp-rs-v*-release/*.zip
