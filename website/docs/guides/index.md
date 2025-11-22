@@ -18,9 +18,9 @@ Step-by-step guides for implementing and using MCP-RS.
 
 ## Getting Started
 
-### Installation and Setup
+## Installation and Setup
 
-#### 1. Project Setup
+### 1. Project Setup
 
 Create a new Rust project and add MCP-RS as a dependency:
 
@@ -37,7 +37,7 @@ tokio = { version = "1.0", features = ["full"] }
 serde_json = "1.0"
 ```
 
-#### 2. Basic Server Implementation
+### 2. Basic Server Implementation
 
 Create a basic MCP server in `src/main.rs`:
 
@@ -76,7 +76,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-#### 3. Configuration File
+### 3. Configuration File
 
 Create `mcp-config.toml`:
 
@@ -85,7 +85,8 @@ Create `mcp-config.toml`:
 host = "127.0.0.1"
 port = 3000
 
-# WordPress handler configuration (optional)
+## WordPress handler configuration (optional)
+
 [wordpress]
 url = "https://your-wordpress-site.com"
 username = "your_username"
@@ -95,9 +96,9 @@ timeout_seconds = 30
 
 ## WordPress Integration Guide
 
-### 1. WordPress Setup
+## 1. WordPress Setup
 
-#### Generate Application Password
+### Generate Application Password
 
 1. Log into your WordPress admin dashboard
 2. Go to **Users** → **Profile**
@@ -106,7 +107,7 @@ timeout_seconds = 30
 5. Click **Add New Application Password**
 6. Copy the generated password
 
-#### Configure WordPress Handler
+### Configure WordPress Handler
 
 Update `mcp-config.toml`:
 
@@ -130,7 +131,7 @@ password = "generated-app-password"
 enabled = true
 ```
 
-### 2. WordPress Handler Implementation
+## 2. WordPress Handler Implementation
 
 Create a custom server with WordPress integration:
 
@@ -170,9 +171,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-### 3. Using WordPress Tools
+## 3. Using WordPress Tools
 
-#### Get Posts
+### Get Posts
 
 ```json
 {
@@ -189,7 +190,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-#### Create a Post
+### Create a Post
 
 ```json
 {
@@ -207,7 +208,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-#### Environment Health Check
+### Environment Health Check
 
 Before using WordPress tools, validate your environment:
 
@@ -238,7 +239,7 @@ Before using WordPress tools, validate your environment:
 }
 ```
 
-#### Upload Media with Featured Image
+### Upload Media with Featured Image
 
 ```json
 {
@@ -274,13 +275,16 @@ Then use the returned media ID to create a post:
 }
 ```
 
-### 4. Production Workflow
+## 4. Production Workflow
 
-#### Pre-Production Checklist
+### Pre-Production Checklist
 
 1. **Environment Validation**
    ```bash
-   # Run health check example
+   
+
+## Run health check example
+
    cargo run --example wordpress_health_check
    ```
 
@@ -294,7 +298,7 @@ Then use the returned media ID to create a post:
    - Verify media upload capabilities
    - Confirm featured image functionality
 
-#### Monitoring and Maintenance
+### Monitoring and Maintenance
 
 - **Regular Health Checks**: Schedule periodic environment validation
 - **Performance Monitoring**: Track API response times and success rates
@@ -303,7 +307,7 @@ Then use the returned media ID to create a post:
 
 ## Custom Handler Development
 
-### 1. Implement the McpHandler Trait
+## 1. Implement the McpHandler Trait
 
 ```rust
 use async_trait::async_trait;
@@ -370,7 +374,7 @@ impl McpHandler for MyCustomHandler {
 }
 ```
 
-### 2. Register the Handler
+## 2. Register the Handler
 
 ```rust
 // Add to your server setup
@@ -380,7 +384,7 @@ protocol.add_handler("custom", Box::new(custom_handler));
 
 ## Configuration Management
 
-### 1. Configuration Structure
+## 1. Configuration Structure
 
 ```rust
 use serde::{Deserialize, Serialize};
@@ -400,7 +404,7 @@ pub struct MyHandlerConfig {
 }
 ```
 
-### 2. Environment Variable Overrides
+## 2. Environment Variable Overrides
 
 Set environment variables to override configuration:
 
@@ -410,7 +414,7 @@ export MCP_MY_HANDLER_API_KEY="your-api-key"
 export MCP_MY_HANDLER_ENABLED="true"
 ```
 
-### 3. Loading Configuration
+## 3. Loading Configuration
 
 ```rust
 use mcp_rs::config::Config;
@@ -424,7 +428,7 @@ let config = Config::load()?;
 
 ## Error Handling Best Practices
 
-### 1. Custom Error Types
+## 1. Custom Error Types
 
 ```rust
 use thiserror::Error;
@@ -449,7 +453,7 @@ impl From<MyHandlerError> for mcp_rs::Error {
 }
 ```
 
-### 2. Error Handling in Tools
+## 2. Error Handling in Tools
 
 ```rust
 async fn call_tool(&self, name: &str, args: Option<Value>) -> Result<CallToolResult> {
@@ -479,7 +483,7 @@ async fn call_tool(&self, name: &str, args: Option<Value>) -> Result<CallToolRes
 
 ## Testing
 
-### 1. Unit Testing Handlers
+## 1. Unit Testing Handlers
 
 ```rust
 #[cfg(test)]
@@ -502,7 +506,7 @@ mod tests {
 }
 ```
 
-### 2. Integration Testing
+## 2. Integration Testing
 
 ```rust
 #[tokio::test]
@@ -518,7 +522,7 @@ async fn test_server_integration() {
 
 ## Performance Optimization
 
-### 1. Connection Pooling
+## 1. Connection Pooling
 
 ```rust
 use reqwest::Client;
@@ -543,7 +547,7 @@ impl OptimizedHandler {
 }
 ```
 
-### 2. Caching
+## 2. Caching
 
 ```rust
 use std::collections::HashMap;
@@ -580,7 +584,7 @@ impl CachedHandler {
 
 ## Deployment
 
-### 1. Docker Deployment
+## 1. Docker Deployment
 
 Create `Dockerfile`:
 
@@ -601,7 +605,7 @@ EXPOSE 8080
 CMD ["my-mcp-server"]
 ```
 
-### 2. Systemd Service
+## 2. Systemd Service
 
 Create `/etc/systemd/system/mcp-rs.service`:
 
@@ -622,7 +626,7 @@ RestartSec=5
 WantedBy=multi-user.target
 ```
 
-### 3. Environment Configuration
+## 3. Environment Configuration
 
 Production environment variables:
 
@@ -636,7 +640,7 @@ export RUST_LOG="warn"
 
 This section provides comprehensive configuration options for MCP-RS.
 
-### Environment Variables
+## Environment Variables
 
 MCP-RS supports environment variable expansion in configuration files using the `${VAR_NAME}` syntax:
 
@@ -647,7 +651,7 @@ username = "${WORDPRESS_USERNAME}"
 password = "${WORDPRESS_PASSWORD}"
 ```
 
-#### Core Environment Variables
+### Core Environment Variables
 
 | Variable | Description | Default | Example |
 |----------|-------------|---------|---------|
@@ -655,7 +659,7 @@ password = "${WORDPRESS_PASSWORD}"
 | `MCP_SERVER_LOG_LEVEL` | Logging level | `info` | `debug`, `warn`, `error` |
 | `RUST_LOG` | Rust logging configuration | `info` | `mcp_rs=debug` |
 
-#### WordPress Integration Variables
+### WordPress Integration Variables
 
 | Variable | Description | Required | Example |
 |----------|-------------|----------|---------|
@@ -663,9 +667,10 @@ password = "${WORDPRESS_PASSWORD}"
 | `WORDPRESS_USERNAME` | WordPress username | Yes | `admin` |
 | `WORDPRESS_PASSWORD` | Application password | Yes | `xxxx xxxx xxxx xxxx xxxx xxxx` |
 
-### Security Configuration
+## Security Configuration
 
-#### Rate Limiting
+### Rate Limiting
+
 ```toml
 [handlers.wordpress.rate_limit]
 max_requests_per_minute = 60
@@ -673,7 +678,8 @@ burst_size = 10
 enabled = true
 ```
 
-#### Timeout Settings
+### Timeout Settings
+
 ```toml
 [handlers.wordpress]
 timeout_seconds = 30
@@ -681,19 +687,24 @@ retry_attempts = 3
 retry_delay_ms = 1000
 ```
 
-### Deployment Configurations
+## Deployment Configurations
 
-#### Development
+### Development
+
 ```toml
 [server]
 bind_addr = "127.0.0.1:8080"
 log_level = "debug"
 
 [handlers.wordpress]
-timeout_seconds = 60  # Longer timeout for debugging
+timeout_seconds = 60  
+
+## Longer timeout for debugging
+
 ```
 
-#### Production
+### Production
+
 ```toml
 [server]
 bind_addr = "0.0.0.0:8080"
@@ -705,13 +716,15 @@ rate_limit.enabled = true
 rate_limit.max_requests_per_minute = 100
 ```
 
-#### Docker
+### Docker
+
 ```toml
 [server]
 bind_addr = "0.0.0.0:8080"
 log_level = "info"
 
-# Use environment variables for sensitive data
+## Use environment variables for sensitive data
+
 [handlers.wordpress]
 url = "${WORDPRESS_URL}"
 username = "${WORDPRESS_USERNAME}"

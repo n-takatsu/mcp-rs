@@ -18,7 +18,8 @@ MCP-RS provides a **comprehensive, battle-tested** implementation of the MCP (Mo
 
 ## Key Features
 
-### 🚀 Core Capabilities
+## 🚀 Core Capabilities
+
 - **JSON-RPC 2.0 Server**: Full-featured JSON-RPC server implementation using `axum`
 - **Core Runtime Module**: Advanced application lifecycle and resource management
 - **Multi-Transport Support**: Stdio, HTTP, and WebSocket communication protocols
@@ -27,7 +28,8 @@ MCP-RS provides a **comprehensive, battle-tested** implementation of the MCP (Mo
 - **Production-Ready Error Handling**: Comprehensive error types with structured logging
 - **Async/Await**: Built on `tokio` for high-performance async operations
 
-### 🔒 Enterprise-Grade Security (100% Complete)
+## 🔒 Enterprise-Grade Security (100% Complete)
+
 - **🔐 AES-GCM-256 Encryption**: Military-grade encryption with PBKDF2 key derivation (100K iterations)
 - **⚡ Token Bucket Rate Limiting**: Advanced DDoS protection with configurable limits
 - **🔒 TLS 1.2+ Enforcement**: Mandatory secure transport with certificate validation
@@ -35,7 +37,8 @@ MCP-RS provides a **comprehensive, battle-tested** implementation of the MCP (Mo
 - **🚫 XSS Attack Protection**: 14 attack pattern detection with HTML sanitization
 - **📊 Comprehensive Audit Logging**: All security events recorded with tamper-resistant logging
 
-### 🗄️ Database Integration (Production Ready)
+## 🗄️ Database Integration (Production Ready)
+
 - **Multi-Engine Support**: PostgreSQL, MySQL, Redis, MongoDB, SQLite
 - **🔄 Dynamic Engine Switching**: Zero-downtime switching with intelligent failover
 - **Enterprise Security**: 6-layer security architecture for all database operations
@@ -43,7 +46,8 @@ MCP-RS provides a **comprehensive, battle-tested** implementation of the MCP (Mo
 - **Performance Monitoring**: Real-time health checks and query optimization
 - **Multi-Engine Workflows**: Cache-aside patterns and hybrid data architectures
 
-### 🎯 WordPress Integration (27 Tools)
+## 🎯 WordPress Integration (27 Tools)
+
 - **📝 Content Management**: Complete post and page management with SEO support
 - **🖼️ Media Management**: Upload, manage, and set featured images
 - **🏷️ Taxonomy Management**: Categories and tags with hierarchical support
@@ -51,7 +55,7 @@ MCP-RS provides a **comprehensive, battle-tested** implementation of the MCP (Mo
 
 ## Quick Navigation
 
-### 📚 Documentation Sections
+## 📚 Documentation Sections
 
 - **[Architecture]({{ site.baseurl }}/docs/architecture/)** - System design and technical architecture
 - **[API Reference]({{ site.baseurl }}/docs/api/)** - Complete API documentation
@@ -60,7 +64,7 @@ MCP-RS provides a **comprehensive, battle-tested** implementation of the MCP (Mo
 - **[Guides]({{ site.baseurl }}/docs/guides/)** - Implementation guides and tutorials
 - **[WordPress Integration]({{ site.baseurl }}/docs/wordpress/)** - WordPress REST API integration
 
-### 🚀 Getting Started
+## 🚀 Getting Started
 
 1. **Installation**
    ```toml
@@ -98,7 +102,10 @@ MCP-RS provides a **comprehensive, battle-tested** implementation of the MCP (Mo
 
 3. **Configuration**
    ```toml
-   # mcp-config.toml
+   
+
+## mcp-config.toml
+
    [server]
    host = "127.0.0.1"
    port = 8080
@@ -112,20 +119,23 @@ MCP-RS provides a **comprehensive, battle-tested** implementation of the MCP (Mo
 
 ## Current Implementation Status
 
-### ✅ Completed Features
+## ✅ Completed Features
+
 - WordPress API Handler with full REST API support
 - Configuration management system (TOML + environment variables)
 - MCP protocol implementation with JSON-RPC
 - Error handling and logging infrastructure
 - HTTP communication with timeout and retry logic
 
-### 🔄 In Development
+## 🔄 In Development
+
 - Core application modules
 - Transport abstraction layer
 - Plugin system for dynamic loading
 - Performance monitoring and metrics
 
-### 📋 Planned Features
+## 📋 Planned Features
+
 - WebSocket transport support
 - stdio transport for CLI integration
 - Advanced plugin ecosystem

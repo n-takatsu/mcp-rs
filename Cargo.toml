@@ -37,6 +37,13 @@ chrono = { version = "0.4", features = ["serde"] }
 # UUID generation
 uuid = { version = "1.18", features = ["v4", "serde"] }
 
+# Random number generation (for benchmarks and testing)
+rand = "0.8"
+
+# Testing dependencies
+log = "0.4"
+env_logger = "0.11"
+
 # Cryptography and security
 ring = "0.17.14"
 argon2 = "0.5"
@@ -69,7 +76,7 @@ async-trait = "0.1.89"
 # HTTP client
 reqwest = { version = "0.12.24", default-features = false, features = ["json", "rustls-tls", "multipart"] }
 
-# Validation  
+# Validation
 validator = { version = "0.20", features = ["derive"] }
 regex = "1.12"
 url = "2.5.7"
@@ -143,7 +150,7 @@ simd = []
 # Full feature set (MySQL restored via secure mysql_async)
 full = [
     "session-management",
-    "security", 
+    "security",
     "websocket",
     "mcp-protocol",
     "redis-backend",
@@ -230,7 +237,7 @@ opt-level = 3
 debug = false
 lto = true
 
-# Security: Exclude resolved dependencies  
+# Security: Exclude resolved dependencies
 [package.metadata.audit.ignore]
 "RUSTSEC-2023-0071" = "RSA crate from sqlx-mysql (unused) - MySQL support provided by secure mysql_async v0.36.1"
 "RUSTSEC-2024-0436" = "paste crate - unmaintained but required by ratatui (currently disabled)"

@@ -18,33 +18,38 @@ MCP-RS provides comprehensive database integration supporting 5 major database e
 
 ## Supported Database Engines
 
-### 🗄️ **PostgreSQL**
+## 🗄️ **PostgreSQL**
+
 - **Type**: Relational Database
 - **Features**: Advanced SQL, ACID transactions, JSON support
 - **Use Cases**: Enterprise applications, complex queries, data integrity
 - **Status**: ✅ Fully Implemented
 
-### 🐬 **MySQL**
+## 🐬 **MySQL**
+
 - **Type**: Relational Database
 - **Features**: Web-scale performance, replication, clustering
 - **Use Cases**: Web applications, content management, e-commerce
 - **Status**: ✅ Fully Implemented
 
-### 🔴 **Redis**
+## 🔴 **Redis**
+
 - **Type**: In-Memory Key-Value Store
 - **Features**: Sub-millisecond latency, data structures, clustering
 - **Use Cases**: Caching, session storage, real-time analytics
 - **Implementation**: 558 lines of code
 - **Status**: ✅ Fully Implemented
 
-### 🍃 **MongoDB**
+## 🍃 **MongoDB**
+
 - **Type**: Document-Oriented NoSQL
 - **Features**: Flexible schemas, aggregation pipelines, sharding
 - **Use Cases**: Content management, IoT data, flexible data models
 - **Implementation**: 952 lines of code
 - **Status**: ✅ Fully Implemented
 
-### 📄 **SQLite**
+## 📄 **SQLite**
+
 - **Type**: Embedded Database
 - **Features**: Zero-configuration, serverless, cross-platform
 - **Use Cases**: Development, testing, mobile applications
@@ -52,7 +57,7 @@ MCP-RS provides comprehensive database integration supporting 5 major database e
 
 ## Security Features
 
-### 🛡️ **6-Layer Security Architecture**
+## 🛡️ **6-Layer Security Architecture**
 
 All database operations are protected by:
 
@@ -63,7 +68,8 @@ All database operations are protected by:
 5. **🚫 XSS Attack Protection**: 14 attack pattern detection
 6. **📊 Comprehensive Audit Logging**: All operations logged with tamper-resistance
 
-### 🔍 **Security Monitoring**
+## 🔍 **Security Monitoring**
+
 - Real-time threat detection
 - Anomaly detection and alerting
 - Security event correlation
@@ -73,27 +79,30 @@ All database operations are protected by:
 
 🚀 **Enterprise Feature**: Industry-leading zero-downtime database engine switching with intelligent failover and real-time optimization.
 
-### Core Capabilities
+## Core Capabilities
 
-#### **Zero-Downtime Switching**
+### Zero-Downtime Switching
+
 - Seamless engine transitions without service interruption
 - Transaction coordination across engines
 - Connection state preservation
 - Automatic rollback on failure
 
-#### **Intelligent Monitoring**
+### Intelligent Monitoring
+
 - Real-time performance metrics collection
 - Health status monitoring for all engines
 - Automatic degradation detection
 - Predictive failure analysis
 
-#### **Policy-Based Automation**
+### Policy-Based Automation
+
 - Performance-triggered switching
 - Time-based engine selection
 - Load-aware engine routing
 - Custom business logic integration
 
-### Switching Strategies
+## Switching Strategies
 
 | Strategy | Trigger | Use Case |
 |----------|---------|----------|
@@ -103,9 +112,10 @@ All database operations are protected by:
 | **Manual** | Administrative command | Maintenance operations |
 | **Failover** | Engine health failure | Disaster recovery |
 
-### Architecture Benefits
+## Architecture Benefits
 
-#### **Multi-Engine Optimization**
+### Multi-Engine Optimization
+
 ```mermaid
 graph TD
     A[Application Layer] --> B[Dynamic Engine Manager]
@@ -120,7 +130,8 @@ graph TD
     G --> J[Auto-Failover]
 ```
 
-#### **Enterprise Integration**
+### Enterprise Integration
+
 - **Kubernetes Ready**: Native container orchestration support
 - **Prometheus Metrics**: Full observability integration
 - **Grafana Dashboards**: Real-time performance visualization
@@ -128,7 +139,8 @@ graph TD
 
 ## Key Features
 
-### ⚡ **Multi-Engine Workflows**
+## ⚡ **Multi-Engine Workflows**
+
 ```json
 // Cache-aside pattern with PostgreSQL + Redis
 {
@@ -139,13 +151,15 @@ graph TD
 }
 ```
 
-### 📊 **Health Monitoring**
+## 📊 **Health Monitoring**
+
 - Real-time database health checks
 - Performance metrics collection
 - Connection pool monitoring
 - Automated alerting
 
-### 🔧 **Connection Management**
+## 🔧 **Connection Management**
+
 - Advanced connection pooling
 - Automatic failover handling
 - Load balancing across replicas
@@ -153,9 +167,10 @@ graph TD
 
 ## Database Tools
 
-### Core Operations
+## Core Operations
 
-#### `execute_query` - Execute SELECT Queries
+### `execute_query` - Execute SELECT Queries
+
 ```json
 {
   "tool": "execute_query",
@@ -167,7 +182,8 @@ graph TD
 }
 ```
 
-#### `execute_command` - Data Modification
+### `execute_command` - Data Modification
+
 ```json
 {
   "tool": "execute_command",
@@ -180,7 +196,8 @@ graph TD
 }
 ```
 
-#### `begin_transaction` - Transaction Management
+### `begin_transaction` - Transaction Management
+
 ```json
 {
   "tool": "begin_transaction",
@@ -191,9 +208,10 @@ graph TD
 }
 ```
 
-### Engine Management
+## Engine Management
 
-#### `list_engines` - Available Engines
+### `list_engines` - Available Engines
+
 ```json
 {
   "tool": "list_engines",
@@ -201,7 +219,8 @@ graph TD
 }
 ```
 
-#### `switch_engine` - Change Active Engine
+### `switch_engine` - Change Active Engine
+
 ```json
 {
   "tool": "switch_engine",
@@ -213,10 +232,13 @@ graph TD
 
 ## Configuration
 
-### Multi-Engine Setup
+## Multi-Engine Setup
+
 ```toml
 [database]
-# PostgreSQL primary database
+
+## PostgreSQL primary database
+
 [[database.engines]]
 id = "primary"
 type = "postgresql"
@@ -226,7 +248,8 @@ database = "myapp"
 username = "user"
 password = "password"
 
-# Redis cache
+## Redis cache
+
 [[database.engines]]
 id = "cache"
 type = "redis"
@@ -234,7 +257,8 @@ host = "localhost"
 port = 6379
 database = 0
 
-# MongoDB documents
+## MongoDB documents
+
 [[database.engines]]
 id = "documents"
 type = "mongodb"
@@ -242,7 +266,8 @@ uri = "mongodb://localhost:27017"
 database = "docs"
 ```
 
-### Security Configuration
+## Security Configuration
+
 ```toml
 [database.security]
 enable_sql_injection_detection = true
@@ -257,31 +282,36 @@ master_key_rotation_days = 90
 
 ## Use Cases
 
-### 🏪 **E-Commerce Platform**
+## 🏪 **E-Commerce Platform**
+
 - **PostgreSQL**: Product catalog, orders, inventory
 - **Redis**: Shopping carts, session data, price caching
 - **MongoDB**: Product reviews, user-generated content
 
-### 📰 **Content Management System**
+## 📰 **Content Management System**
+
 - **MySQL**: Articles, users, permissions
 - **Redis**: Page caching, view counters
 - **MongoDB**: Media metadata, search indexes
 
-### 📊 **Analytics Platform**
+## 📊 **Analytics Platform**
+
 - **PostgreSQL**: User data, transactions
 - **Redis**: Real-time metrics, leaderboards
 - **MongoDB**: Event logs, flexible schemas
 
 ## Performance Optimization
 
-### 🚀 **Best Practices**
+## 🚀 **Best Practices**
+
 1. **Use appropriate engines** for different data types
 2. **Implement connection pooling** for high-traffic apps
 3. **Cache frequently accessed data** in Redis
 4. **Use read replicas** for scaling read operations
 5. **Monitor and optimize slow queries**
 
-### 📈 **Monitoring Metrics**
+## 📈 **Monitoring Metrics**
+
 - Query execution time
 - Connection pool utilization
 - Cache hit/miss ratios

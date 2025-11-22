@@ -6,7 +6,7 @@ The MCP-RS WebSocket API provides real-time collaborative editing capabilities t
 
 ## Architecture
 
-### System Components
+## System Components
 
 ```
 ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
@@ -27,7 +27,7 @@ The MCP-RS WebSocket API provides real-time collaborative editing capabilities t
                        └─────────────────┘    └─────────────────┘
 ```
 
-### Session Lifecycle
+## Session Lifecycle
 
 ```
    create_session()
@@ -48,15 +48,15 @@ The MCP-RS WebSocket API provides real-time collaborative editing capabilities t
 
 ## REST API Endpoints
 
-### Base URL
+## Base URL
 
 ```
 http://localhost:3000
 ```
 
-### Session Management
+## Session Management
 
-#### Create Session
+### Create Session
 
 **POST** `/api/sessions`
 
@@ -76,7 +76,7 @@ http://localhost:3000
 }
 ```
 
-#### Get Session Info
+### Get Session Info
 
 **GET** `/api/sessions/{session_id}`
 
@@ -91,7 +91,7 @@ http://localhost:3000
 }
 ```
 
-#### Activate Session
+### Activate Session
 
 **POST** `/api/sessions/{session_id}/activate`
 
@@ -106,7 +106,7 @@ http://localhost:3000
 }
 ```
 
-### Health Check
+## Health Check
 
 **GET** `/health`
 
@@ -122,7 +122,7 @@ http://localhost:3000
 
 ## WebSocket API
 
-### Connection
+## Connection
 
 **WebSocket URL:**
 ```
@@ -135,7 +135,7 @@ Authorization: Bearer {session_id}
 x-session-id: {session_id}
 ```
 
-### Message Protocol
+## Message Protocol
 
 All WebSocket messages follow this JSON structure:
 
@@ -150,9 +150,9 @@ All WebSocket messages follow this JSON structure:
 }
 ```
 
-### Message Types
+## Message Types
 
-#### 1. Heartbeat
+### 1. Heartbeat
 
 **Client → Server:**
 ```json
@@ -176,7 +176,7 @@ All WebSocket messages follow this JSON structure:
 }
 ```
 
-#### 2. Real-time Edit
+### 2. Real-time Edit
 
 **Client → Server:**
 ```json
@@ -221,7 +221,7 @@ All WebSocket messages follow this JSON structure:
 }
 ```
 
-#### 3. Session Events
+### 3. Session Events
 
 **Session Connected:**
 ```json
@@ -251,7 +251,7 @@ All WebSocket messages follow this JSON structure:
 }
 ```
 
-#### 4. Error Messages
+### 4. Error Messages
 
 ```json
 {
@@ -268,7 +268,7 @@ All WebSocket messages follow this JSON structure:
 }
 ```
 
-### Error Codes
+## Error Codes
 
 | Code | Description | Recovery |
 |------|-------------|----------|
@@ -281,7 +281,7 @@ All WebSocket messages follow this JSON structure:
 
 ## Client Integration Examples
 
-### JavaScript/Web
+## JavaScript/Web
 
 ```javascript
 class MCPWebSocketClient {
@@ -364,7 +364,7 @@ class MCPWebSocketClient {
 }
 ```
 
-### Rust Client
+## Rust Client
 
 ```rust
 use tokio_tungstenite::{connect_async, tungstenite::Message};
@@ -415,20 +415,20 @@ impl MCPWebSocketClient {
 
 ## Security Considerations
 
-### Authentication
+## Authentication
 
 - **Session-based**: All WebSocket connections require valid session IDs
 - **Header validation**: Multiple authentication methods supported
 - **Automatic expiration**: Sessions expire after 24 hours by default
 
-### Input Validation
+## Input Validation
 
 - **Message size limits**: Maximum 10KB per WebSocket message  
 - **JSON validation**: All messages must be valid JSON
 - **XSS protection**: Content is sanitized for dangerous patterns
 - **Rate limiting**: Per-session message rate limiting
 
-### Security Headers
+## Security Headers
 
 ```
 Authorization: Bearer {session_id}
@@ -438,7 +438,7 @@ X-Client-Type: web|mobile|desktop
 
 ## Performance Characteristics
 
-### Benchmarks
+## Benchmarks
 
 - **Session Creation**: ~1ms average latency
 - **WebSocket Connection**: ~5ms establishment time
@@ -446,7 +446,7 @@ X-Client-Type: web|mobile|desktop
 - **Memory Usage**: ~1MB per 1000 active sessions
 - **CPU Usage**: <5% at 100 concurrent connections
 
-### Scaling Recommendations
+## Scaling Recommendations
 
 - **Development**: Single server, memory storage
 - **Production**: Load balancer + Redis session store
@@ -454,16 +454,19 @@ X-Client-Type: web|mobile|desktop
 
 ## Demo Application
 
-### Running the Demo
+## Running the Demo
 
 ```bash
-# Start the WebSocket server
+
+## Start the WebSocket server
+
 cargo run --example axum_websocket_server
 
-# Open browser to http://localhost:3000/
+## Open browser to http://localhost:3000/
+
 ```
 
-### Demo Features
+## Demo Features
 
 1. **Dual Editor Interface**: Side-by-side collaborative editing
 2. **Session Management**: Create and manage user sessions
@@ -471,7 +474,7 @@ cargo run --example axum_websocket_server
 4. **Connection Monitoring**: Live connection status and logs
 5. **API Testing**: Built-in tools for testing REST endpoints
 
-### Demo Architecture
+## Demo Architecture
 
 ```
 ┌─────────────────┐
@@ -492,7 +495,7 @@ cargo run --example axum_websocket_server
 
 ## Troubleshooting
 
-### Common Issues
+## Common Issues
 
 **Connection Refused:**
 - Ensure server is running on port 3000
@@ -509,14 +512,16 @@ cargo run --example axum_websocket_server
 - Create new session via REST API
 - Check server logs for expiration events
 
-### Debug Mode
+## Debug Mode
 
 ```bash
-# Run with debug logging
+
+## Run with debug logging
+
 RUST_LOG=debug cargo run --example axum_websocket_server
 ```
 
-### Monitoring
+## Monitoring
 
 - **Health Endpoint**: `GET /health`
 - **Session Metrics**: Built into session manager  
@@ -525,7 +530,7 @@ RUST_LOG=debug cargo run --example axum_websocket_server
 
 ## Future Enhancements
 
-### Planned Features
+## Planned Features
 
 - **Operational Transform**: Conflict resolution for simultaneous edits
 - **Cursor Tracking**: Real-time cursor position sharing

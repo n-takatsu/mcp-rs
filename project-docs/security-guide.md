@@ -6,52 +6,59 @@ MCP-RS implements a **comprehensive 6-layer security architecture** to ensure en
 
 ## 🛡️ 6-Layer Security Architecture (100% Complete)
 
-### Layer 1: Encryption & Cryptography
+## Layer 1: Encryption & Cryptography
+
 - **AES-GCM-256 Encryption**: Military-grade encryption for credential protection
 - **PBKDF2 Key Derivation**: 100,000 iterations with salt for secure key generation
 - **Memory Protection**: Secrecy crate for secure in-memory credential handling
 - **Zero-Copy Operations**: Prevents credential exposure in memory dumps
 
-### Layer 2: Rate Limiting & DDoS Protection  
+## Layer 2: Rate Limiting & DDoS Protection  
+
 - **Token Bucket Algorithm**: Advanced rate limiting with configurable burst handling
 - **Per-Client Isolation**: Independent rate limits for different clients
 - **Adaptive Thresholds**: Dynamic adjustment based on traffic patterns
 - **Attack Mitigation**: Automatic blocking of excessive requests
 
-### Layer 3: Transport Security
+## Layer 3: Transport Security
+
 - **TLS 1.2+ Enforcement**: Mandatory secure transport layer
 - **Certificate Validation**: Full certificate chain verification
 - **HTTPS-Only Communication**: HTTP connections completely rejected
 - **Man-in-the-Middle Protection**: Certificate pinning support
 
-### Layer 4: Input Validation & Sanitization
+## Layer 4: Input Validation & Sanitization
+
 - **SQL Injection Protection**: 11 attack pattern detection (Union/Boolean/Time-based)
 - **XSS Attack Protection**: 14 attack pattern detection (Reflected/Stored/DOM-based)
 - **Zero-Trust Validation**: All inputs validated through multi-layer checks
 - **HTML Sanitization**: Ammonia-based safe content processing
 - **CSP Header Generation**: Content Security Policy enforcement
 
-### Layer 5: Real-time Security Monitoring
+## Layer 5: Real-time Security Monitoring
+
 - **Attack Pattern Recognition**: Real-time detection of malicious patterns
 - **Threat Level Analysis**: Dynamic risk assessment and response
 - **Security Event Correlation**: Pattern analysis across multiple requests
 - **Behavioral Anomaly Detection**: Deviation from normal usage patterns
 
-### Layer 6: Audit Logging & Compliance
+## Layer 6: Audit Logging & Compliance
+
 - **Comprehensive Event Logging**: All security events recorded with tamper detection
 - **Structured Audit Trails**: JSON-formatted logs with UUID tracking
 - **Compliance Reporting**: Automated security compliance documentation
 - **Forensic Analysis**: Detailed investigation capabilities
 
-### 1. Environment Variable Security
+## 1. Environment Variable Security
 
-#### Safe Environment Variable Expansion
+### Safe Environment Variable Expansion
+
 - **Infinite Loop Prevention**: Maximum 100 iterations prevent infinite recursion
 - **Processed Variable Tracking**: HashSet-based tracking prevents circular dependencies
 
 ## 🛠️ Security Implementation Examples
 
-### 1. Encryption Layer (AES-GCM-256 + PBKDF2)
+## 1. Encryption Layer (AES-GCM-256 + PBKDF2)
 
 ```rust
 // Enterprise-level credential encryption
@@ -70,7 +77,7 @@ assert_eq!(decrypted.password, password);
 println!("✅ Encryption round-trip verification completed");
 ```
 
-### 2. Rate Limiting Layer (Token Bucket + DDoS Defense)
+## 2. Rate Limiting Layer (Token Bucket + DDoS Defense)
 
 ```rust
 // DDoS attack defense implementation
@@ -96,7 +103,7 @@ match rate_limiter.check_rate_limit(client_id).await {
 }
 ```
 
-### 3. SQL Injection Protection (11 Attack Patterns)
+## 3. SQL Injection Protection (11 Attack Patterns)
 
 ```rust
 // SQL attack pattern detection
@@ -117,7 +124,7 @@ for (attack_name, attack_query) in attacks {
 }
 ```
 
-### 4. XSS Attack Protection (14 Patterns + HTML Sanitization)
+## 4. XSS Attack Protection (14 Patterns + HTML Sanitization)
 
 ```rust
 // XSS attack detection and sanitization
@@ -145,7 +152,7 @@ assert!(!clean_html.contains("<script>"));
 println!("✅ HTML sanitization successful");
 ```
 
-### 5. Real-time Audit Logging
+## 5. Real-time Audit Logging
 
 ```rust
 // Comprehensive security event recording
@@ -188,7 +195,7 @@ println!("✅ {} security events recorded", filtered_logs.len());
 
 ## 🔗 WordPress Integration Security
 
-### Comprehensive Attack Defense System
+## Comprehensive Attack Defense System
 
 ```rust
 // Malicious bot multi-attack simulation
@@ -232,7 +239,7 @@ for (i, payload) in malicious_payloads.iter().enumerate() {
 
 ## 🔧 Production Security Configuration
 
-### Enterprise-Grade Configuration
+## Enterprise-Grade Configuration
 
 ```rust
 let security_config = SecurityConfig {
@@ -268,7 +275,7 @@ let security_config = SecurityConfig {
 
 ## 📊 Security Evaluation Metrics
 
-### Implementation Completion: 100%
+## Implementation Completion: 100%
 
 1. **Encryption**: ✅ 100% - AES-GCM-256 + PBKDF2 (100K iterations)
 2. **Rate Limiting**: ✅ 100% - Token Bucket + DDoS defense
@@ -277,14 +284,14 @@ let security_config = SecurityConfig {
 5. **XSS Defense**: ✅ 100% - 14 attack pattern detection + sanitization
 6. **Audit Logging**: ✅ 100% - Comprehensive security event recording
 
-### Test Results: 197+ Test Cases, 100% Pass Rate
+## Test Results: 197+ Test Cases, 100% Pass Rate
 
 - **Unit Tests**: 154 passed
 - **Integration Tests**: 43 passed  
 - **Security Tests**: 28 passed
 - **Clippy Checks**: 0 warnings
 
-### Security Score: 100/100
+## Security Score: 100/100
 
 - Encryption Implementation: 20/20 points
 - Access Control: 15/15 points
@@ -309,7 +316,8 @@ These implementation examples provide comprehensive defense against modern cyber
 - **Graceful Error Handling**: Missing variables are safely handled with error markers
 - **Performance Optimized**: Complex expansions complete in ~1.2ms
 
-#### Security Implementation Details
+### Security Implementation Details
+
 ```rust
 // Safe expansion with max iterations and tracking
 pub fn expand_env_vars(input: &str) -> String {
@@ -319,68 +327,85 @@ pub fn expand_env_vars(input: &str) -> String {
 }
 ```
 
-#### Vulnerability Mitigation
+### Vulnerability Mitigation
+
 **Before (Vulnerable):**
 ```bash
 export SELF_REF='${SELF_REF}'
-# Would cause infinite loop and system freeze
+
+## Would cause infinite loop and system freeze
+
 ```
 
 **After (Secure):**
 ```bash
 export SELF_REF='${SELF_REF}'
-# Safely handled with max iterations, returns controlled result
+
+## Safely handled with max iterations, returns controlled result
+
 ```
 
-### 2. WordPress Authentication Security
+## 2. WordPress Authentication Security
 
-#### Application Password Authentication
+### Application Password Authentication
+
 - **No Plain Password Storage**: Uses WordPress Application Passwords
 - **Secure Token Transmission**: HTTPS-only communication
 - **Timeout Protection**: Request timeouts prevent hanging connections
 - **Retry Logic**: Exponential backoff with limited retries
 
-#### Configuration Security
+### Configuration Security
+
 ```toml
 [handlers.wordpress]
-# Secure environment variable expansion
+
+## Secure environment variable expansion
+
 url = "${WORDPRESS_URL}"
 username = "${WORDPRESS_USERNAME}"
 password = "${WORDPRESS_PASSWORD}"
 timeout_seconds = 30
 ```
 
-### 3. Health Check Security
+## 3. Health Check Security
 
-#### 5-Stage Validation System
+### 5-Stage Validation System
+
 1. **Site Accessibility**: Validates WordPress site availability
 2. **REST API Check**: Ensures API endpoints are accessible
 3. **Authentication Validation**: Verifies credentials without exposure
 4. **Permission Assessment**: Checks user capabilities safely
 5. **Media Upload Capability**: Tests file upload permissions
 
-#### Security Benefits
+### Security Benefits
+
 - **Early Problem Detection**: Identifies security issues before operations
 - **Minimal Attack Surface**: Limited API exposure during validation
 - **Comprehensive Logging**: Detailed security event logging
 
 ## 🧪 Security Testing
 
-### Comprehensive Test Suite
+## Comprehensive Test Suite
 
-#### Environment Variable Security Tests
+### Environment Variable Security Tests
+
 ```bash
-# Run security-focused tests
+
+## Run security-focused tests
+
 cargo run --example safe_env_test
 
-# Comprehensive system security test  
+## Comprehensive system security test  
+
 cargo run --example comprehensive_test
 
-# Authentication security diagnosis
+## Authentication security diagnosis
+
 cargo run --example auth_diagnosis
 ```
 
-#### Test Coverage Areas
+### Test Coverage Areas
+
 - ✅ **Infinite Loop Prevention**: Self-referencing variables
 - ✅ **Invalid Format Handling**: Malformed variable syntax
 - ✅ **Missing Variable Safety**: Undefined environment variables
@@ -388,7 +413,8 @@ cargo run --example auth_diagnosis
 - ✅ **WordPress Authentication**: Credential validation
 - ✅ **API Access Control**: Permission-based access testing
 
-### Security Test Results (2025-11-03)
+## Security Test Results (2025-11-03)
+
 ```
 🛡️ Security Test Results:
 ✅ Infinite loop prevention: PASSED
@@ -403,40 +429,59 @@ Overall Security Score: 95% ✅
 
 ## 🔐 Configuration Security
 
-### Environment Variable Best Practices
+## Environment Variable Best Practices
 
-#### Secure Variable Naming
+### Secure Variable Naming
+
 ```bash
-# Recommended naming conventions
+
+## Recommended naming conventions
+
 export WORDPRESS_URL="https://secure-site.com"
 export WORDPRESS_USERNAME="api_user"
 export WORDPRESS_PASSWORD="secure_app_password"
 
-# Avoid these patterns (potential security risks)
-export PASSWORD="plain_password"  # Too generic
-export SECRET="api_key"           # Non-descriptive
+## Avoid these patterns (potential security risks)
+
+export PASSWORD="plain_password"  
+
+## Too generic
+
+export SECRET="api_key"           
+
+## Non-descriptive
+
 ```
 
-#### Variable Expansion Security
+### Variable Expansion Security
+
 ```toml
-# Safe expansion patterns
+
+## Safe expansion patterns
+
 url = "${WORDPRESS_URL}"
 username = "${WP_USER:-default_user}"
 password = "${WP_PASS}"
 
-# Potentially unsafe (avoided by our implementation)
-# recursive = "${RECURSIVE_VAR}"  # Would be safely handled
+## Potentially unsafe (avoided by our implementation)
+
+## recursive = "${RECURSIVE_VAR}"  
+
+## Would be safely handled
+
 ```
 
-### WordPress Application Password Setup
+## WordPress Application Password Setup
 
-#### Secure Password Generation
+### Secure Password Generation
+
 1. **WordPress Admin**: Navigate to Users → Your Profile
 2. **Application Passwords**: Scroll to "Application Passwords" section
 3. **Create New**: Generate password for "MCP-RS Integration"
 4. **Secure Storage**: Store in environment variables, never in code
 
-#### Security Considerations
+### Security Considerations
+
 - **Unique Passwords**: Generate separate passwords for each application
 - **Regular Rotation**: Rotate passwords periodically
 - **Revocation**: Revoke unused passwords immediately
@@ -444,9 +489,10 @@ password = "${WP_PASS}"
 
 ## 🚨 Vulnerability Response
 
-### Identified and Fixed Vulnerabilities
+## Identified and Fixed Vulnerabilities
 
-#### CVE-2024-MCPRS-001 (Fixed)
+### CVE-2024-MCPRS-001 (Fixed)
+
 **Issue**: Environment Variable Infinite Loop  
 **Severity**: High  
 **Status**: ✅ Fixed in v0.1.0-alpha  
@@ -461,21 +507,27 @@ password = "${WP_PASS}"
 
 **Verification**:
 ```bash
-# Test the fix
+
+## Test the fix
+
 cargo run --example safe_env_test
-# Result: Safe handling with controlled termination
+
+## Result: Safe handling with controlled termination
+
 ```
 
-### Security Monitoring
+## Security Monitoring
 
-#### Logging and Monitoring
+### Logging and Monitoring
+
 ```rust
 // Security-relevant events are logged
 warn!("環境変数展開で最大反復回数(100)に達しました。処理を停止します。");
 debug!("環境変数展開完了。反復回数: {}", iteration_count);
 ```
 
-#### Recommended Monitoring
+### Recommended Monitoring
+
 - **Failed Authentication Attempts**: Monitor 401 responses
 - **Timeout Patterns**: Watch for connection timeouts
 - **Environment Variable Errors**: Track expansion failures
@@ -483,19 +535,22 @@ debug!("環境変数展開完了。反復回数: {}", iteration_count);
 
 ## 🎯 Security Best Practices
 
-### Development Security
+## Development Security
+
 1. **Secure Defaults**: All configurations default to secure settings
 2. **Input Validation**: All user inputs are validated and sanitized
 3. **Error Handling**: Security-relevant errors are properly handled
 4. **Logging**: Security events are comprehensively logged
 
-### Deployment Security
+## Deployment Security
+
 1. **Environment Variables**: Use secure environment variable management
 2. **HTTPS Only**: Always use HTTPS for WordPress connections
 3. **Network Security**: Implement proper network security controls
 4. **Access Control**: Limit API access to authorized systems only
 
-### Operational Security
+## Operational Security
+
 1. **Regular Updates**: Keep dependencies and WordPress installations updated
 2. **Monitoring**: Implement comprehensive security monitoring
 3. **Incident Response**: Have incident response procedures in place
@@ -503,7 +558,8 @@ debug!("環境変数展開完了。反復回数: {}", iteration_count);
 
 ## 📋 Security Checklist
 
-### Pre-Deployment Security Verification
+## Pre-Deployment Security Verification
+
 - [ ] ✅ Environment variables configured securely
 - [ ] ✅ WordPress Application Passwords generated and stored securely
 - [ ] ✅ HTTPS configured for WordPress connections
@@ -512,7 +568,8 @@ debug!("環境変数展開完了。反復回数: {}", iteration_count);
 - [ ] ✅ All security tests passing
 - [ ] ✅ Security documentation reviewed
 
-### Regular Security Maintenance
+## Regular Security Maintenance
+
 - [ ] Weekly WordPress health checks using comprehensive_test example
 - [ ] Monthly security test execution
 - [ ] Quarterly dependency security audits
@@ -521,16 +578,18 @@ debug!("環境変数展開完了。反復回数: {}", iteration_count);
 
 ## 🔄 Operational Security Lessons
 
-### Application Password Lifecycle Management
+## Application Password Lifecycle Management
 
-#### WordPress Application Password Expiration
+### WordPress Application Password Expiration
+
 WordPress application passwords can be invalidated by:
 - **Hosting Provider Security Policies**: Some hosting providers automatically expire application passwords
 - **Security Plugin Policies**: Security plugins like SiteGuard may enforce password rotation
 - **WordPress Core Updates**: Major updates may affect application password validity
 - **Server Environment Changes**: PHP/server configuration changes can impact authentication
 
-#### Monitoring and Detection
+### Monitoring and Detection
+
 **Symptoms of Password Expiration:**
 - HTTP 401 Unauthorized errors specifically for authenticated endpoints
 - Settings API returning 401 while public APIs return 200
@@ -538,25 +597,31 @@ WordPress application passwords can be invalidated by:
 
 **Diagnostic Commands:**
 ```bash
-# Test authentication status
+
+## Test authentication status
+
 cargo run --example settings_api_deep_diagnosis
 
-# Run comprehensive health check
+## Run comprehensive health check
+
 cargo run --example comprehensive_test
 
-# Verify specific API access
+## Verify specific API access
+
 cargo run --example auth_diagnosis
 ```
 
-#### Resolution Procedures
+### Resolution Procedures
+
 1. **Password Regeneration**: Create new application password in WordPress Admin
 2. **Configuration Update**: Update mcp-config.toml with new password
 3. **Verification**: Run diagnostic tests to confirm resolution
 4. **Documentation**: Record incident for future reference
 
-### Maintenance Mode Operations
+## Maintenance Mode Operations
 
-#### LightStart Plugin Integration
+### LightStart Plugin Integration
+
 **Challenge**: WordPress maintenance mode plugins can block REST API access
 **Solution**: Configure maintenance mode exclusions for WordPress REST API
 
@@ -568,32 +633,40 @@ wp-json/*
 **Configuration Location**: LightStart plugin settings → 除外 (Exclusions)
 **Format**: Slug format (without leading slash)
 
-#### Operational Benefits
+### Operational Benefits
+
 - **Content Management Continuity**: MCP-RS can operate during maintenance windows
 - **Zero-Downtime Updates**: WordPress updates don't interrupt AI agent operations
 - **Emergency Access**: Critical content operations possible during maintenance
 
-### Production Monitoring Strategy
+## Production Monitoring Strategy
 
-#### Proactive Health Monitoring
+### Proactive Health Monitoring
+
 ```bash
-# Daily health check (recommended)
+
+## Daily health check (recommended)
+
 cargo run --example comprehensive_test
 
-# Weekly deep diagnosis
+## Weekly deep diagnosis
+
 cargo run --example settings_api_deep_diagnosis
 
-# Authentication verification
+## Authentication verification
+
 cargo run --example auth_diagnosis
 ```
 
-#### Alert Criteria
+### Alert Criteria
+
 - **HTTP 401 Errors**: Immediate investigation required
 - **Connection Timeouts**: Network or hosting issues
 - **API Endpoint Changes**: WordPress plugin/core updates
 - **SSL Certificate Issues**: HTTPS connectivity problems
 
-#### Incident Response Workflow
+### Incident Response Workflow
+
 1. **Detection**: Automated monitoring or user reports
 2. **Diagnosis**: Run diagnostic examples to identify root cause
 3. **Classification**: 
@@ -606,7 +679,8 @@ cargo run --example auth_diagnosis
 
 ## 🔍 Security Architecture
 
-### Layered Security Approach
+## Layered Security Approach
+
 ```
 ┌─────────────────────────────────────────────────────┐
 │ Application Layer Security                          │

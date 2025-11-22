@@ -108,28 +108,28 @@ jobs:
       shell: powershell
       run: |
         Write-Host "Setting up PowerShell test environment..."
-        
+
         # サーバーをビルド（ライブラリのみ）
         cargo build --lib --release --verbose
-        
+
         # テスト設定ファイルの確認
         $configFound = $false
         $configPath = ""
-        
+
         if (Test-Path "configs/production/main.toml") {
             $configPath = "configs/production/main.toml"
             $configFound = $true
         }
         if (Test-Path "configs/development/http-transport.toml") {
-            $configPath = "configs/development/http-transport.toml" 
+            $configPath = "configs/development/http-transport.toml"
             $configFound = $true
         }
-        
+
         if (-not $configFound) {
             Write-Host "No config file found for testing"
             exit 1
         }
-        
+
         Write-Host "Using config: $configPath"
         Write-Host "PowerShell environment setup completed successfully"
 
@@ -146,7 +146,7 @@ jobs:
           if [ -f "$config" ]; then
             echo "Found config: $config"
             config_count=$((config_count + 1))
-            
+
             # TOML構文の基本チェック（簡易版 - フルvalidationは時間がかかるためスキップ）
             if grep -q "^\[" "$config"; then
               echo "Config $config appears to be valid TOML format"

@@ -4,13 +4,13 @@ Thank you for your interest in contributing to MCP-RS! We welcome contributions 
 
 ## Getting Started
 
-### Prerequisites
+## Prerequisites
 
 - Rust 1.70+ 
 - Cargo
 - Git
 
-### Development Setup
+## Development Setup
 
 1. Fork and clone the repository:
    ```bash
@@ -30,20 +30,20 @@ Thank you for your interest in contributing to MCP-RS! We welcome contributions 
 
 ## Development Guidelines
 
-### Code Style
+## Code Style
 
 - Follow Rust standard formatting with `rustfmt`
 - Use `clippy` to catch common mistakes
 - Write comprehensive tests for new functionality
 - Add documentation for public APIs
 
-### Testing
+## Testing
 
 - Run the full test suite: `cargo test`
 - Run specific tests: `cargo test test_name`
 - Check code coverage and ensure new code is tested
 
-### Security
+## Security
 
 - Follow secure coding practices
 - Test security-related changes thoroughly
@@ -51,7 +51,7 @@ Thank you for your interest in contributing to MCP-RS! We welcome contributions 
 
 ## Submitting Changes
 
-### Pull Request Process
+## Pull Request Process
 
 1. Ensure your code follows the project's coding standards
 2. Add tests for new functionality
@@ -59,7 +59,7 @@ Thank you for your interest in contributing to MCP-RS! We welcome contributions 
 4. Ensure all tests pass
 5. Submit a pull request with a clear description
 
-### Commit Messages
+## Commit Messages
 
 Use clear, descriptive commit messages:
 - `feat: add new WordPress media upload functionality`
@@ -69,7 +69,7 @@ Use clear, descriptive commit messages:
 
 ## Reporting Issues
 
-### Bug Reports
+## Bug Reports
 
 When reporting bugs, please include:
 - OS and Rust version
@@ -77,7 +77,7 @@ When reporting bugs, please include:
 - Expected vs actual behavior
 - Relevant logs or error messages
 
-### Feature Requests
+## Feature Requests
 
 For feature requests, please describe:
 - The use case and problem being solved

@@ -5,9 +5,9 @@
 > **[English](README.md)** | **[日本語](README.ja.md)**
 
 [![Version](https://img.shields.io/badge/Version-v0.15.0-blue)](https://github.com/n-takatsu/mcp-rs/releases/tag/v0.15.0)
-[![Architecture](https://img.shields.io/badge/Architecture-Production--Ready-green)](#architecture)
-[![Implementation](https://img.shields.io/badge/WordPress_Tools-27_Available-green)](#wordpress-mcp-tools)
-[![License](https://img.shields.io/badge/License-MIT%2FApache--2.0-green)](#license)
+![Architecture](https://img.shields.io/badge/Architecture-Production--Ready-green)
+![Implementation](https://img.shields.io/badge/WordPress_Tools-27_Available-green)
+![License](https://img.shields.io/badge/License-MIT%2FApache--2.0-green)
 
 ## Overview
 
@@ -15,24 +15,30 @@
 
 ## 🎯 Who Is This For?
 
-### **AI Developers** 🤖
+### AI Developers 🤖
+
 Building Claude Desktop apps, GPT integrations, or custom AI agents? mcp-rs provides production-ready Model Context Protocol implementation with comprehensive WordPress tooling.
 
-### **Enterprise WordPress Teams** 🏢  
+### Enterprise WordPress Teams 🏢
+
 Managing large-scale WordPress deployments? Get enterprise-grade security, automated content management, and seamless CI/CD integration.
 
-### **DevOps Engineers** ⚙️
+### DevOps Engineers ⚙️
+
 Automating WordPress operations? 27 battle-tested tools with comprehensive health checks, monitoring, and production-ready error handling.
 
-### **Rust Enthusiasts** 🦀
+### Rust Enthusiasts 🦀
+
 Want to contribute to a high-quality Rust codebase? Join our 205+ test, zero-warning project with clean architecture and comprehensive documentation.
 
-### **Security Teams** 🔒
+### Security Teams 🔒
+
 Need WordPress security automation? 6-layer enterprise security architecture with SQL injection protection, XSS prevention, and comprehensive audit logging.
 
 ## 🚀 Key Features
 
-### **Core Capabilities**
+## **Core Capabilities**
+
 - **JSON-RPC 2.0 Server**: Full-featured JSON-RPC server implementation using `axum`
 - **Multi-Transport Support**: STDIO, HTTP, and WebSocket communication protocols
 - **Plugin Architecture**: Handler-based system with `McpHandler` trait for extensibility
@@ -40,7 +46,8 @@ Need WordPress security automation? 6-layer enterprise security architecture wit
 - **Production-Ready Error Handling**: Comprehensive error types with structured logging
 - **Async/Await**: Built on `tokio` for high-performance async operations
 
-### **WordPress Integration (27 Tools)**
+## **WordPress Integration (27 Tools)**
+
 - **Posts & Pages Management**: Full CRUD operations with SEO integration
 - **Advanced Media Management**: Upload, resize, organize with base64 support
 - **Categories & Tags Management**: Hierarchical support with bulk operations
@@ -48,7 +55,8 @@ Need WordPress security automation? 6-layer enterprise security architecture wit
 - **YouTube & Social Embeds**: Rich media integration with security validation
 - **User Management**: Role-based access control and user operations
 
-### **Enterprise Security (6-Layer Architecture)**
+## **Enterprise Security (6-Layer Architecture)**
+
 - **AES-GCM-256 Encryption**: Military-grade encryption with PBKDF2 key derivation
 - **SQL Injection Protection**: Real-time detection of 11 attack patterns
 - **XSS Prevention**: Advanced protection against 14 XSS attack vectors
@@ -56,11 +64,12 @@ Need WordPress security automation? 6-layer enterprise security architecture wit
 - **TLS Enforcement**: TLS 1.2+ with certificate validation
 - **Audit Logging**: Comprehensive security event tracking
 
-### **Technical Excellence**
+## **Technical Excellence**
+
 - **Async Architecture**: Built on Tokio for high-performance concurrency
 - **Type Safety**: 100% memory-safe Rust implementation
 - **Comprehensive Testing**: 205+ tests with 100% pass rate
-- **Zero Warnings**: Clean codebase with zero clippy warnings
+- **Zero Warnings**: Clean codebase with zero Rust linter warnings
 - **Production Ready**: Optimized build profiles and error handling
 
 ## 📊 Quality Metrics
@@ -75,62 +84,76 @@ Need WordPress security automation? 6-layer enterprise security architecture wit
 
 ## 🚀 Quick Start
 
-### Prerequisites
+## Prerequisites
+
 - Rust 1.70+ (2021 edition)
 - WordPress site with Application Passwords enabled
 - Network access to WordPress REST API
 
-### Installation
+## Installation
 
-#### 🚨 Important Notice for Claude Desktop Users
+### 🚨 Important Notice for Claude Desktop Users
 
 **Claude Desktop uses STDIO (standard input/output) communication. Log messages mixed with standard output will break communication, so always use the dedicated configuration.**
 
 ```bash
-# For Claude Desktop (Important: Use dedicated config)
+
+## For Claude Desktop (Important: Use dedicated config)
+
 cargo run -- --config configs/production/claude-desktop.toml
 
-# For Web UI (HTTP access)
+## For Web UI (HTTP access)
+
 cargo run -- --config configs/development/http-transport.toml
 ```
 
 > 📖 See [Claude Desktop Integration Guide](./project-docs/CLAUDE_DESKTOP_INTEGRATION.md) for detailed configuration.
 
-#### Option 1: Interactive Setup (Recommended)
+### Option 1: Interactive Setup (Recommended)
 
 ```bash
-# Clone repository
+
+## Clone repository
+
 git clone https://github.com/n-takatsu/mcp-rs.git
 cd mcp-rs
 
-# Build release version
+## Build release version
+
 cargo build --release
 
-# Run interactive configuration setup
+## Run interactive configuration setup
+
 ./target/release/mcp-rs --setup-config
 ```
 
 Interactive setup features:
+
 - 📝 User-friendly question format
-- 🔍 Real-time connection testing  
+- 🔍 Real-time connection testing
 - ⚡ Automatic configuration file generation
 - 🛡️ Security setting recommendations
 
-#### Option 2: Manual Configuration
+### Option 2: Manual Configuration
 
 ```bash
-# Generate sample configuration file
+
+## Generate sample configuration file
+
 ./target/release/mcp-rs --generate-config
 
-# Edit configuration
-cp mcp-config.toml.example mcp-config.toml
-# Edit mcp-config.toml with your WordPress details
+## Edit configuration
 
-# Run with custom config
+cp mcp-config.toml.example mcp-config.toml
+
+## Edit mcp-config.toml with your WordPress details
+
+## Run with custom config
+
 ./target/release/mcp-rs --config mcp-config.toml
 ```
 
-### Basic Configuration
+## Basic Configuration
 
 Create `mcp-config.toml`:
 
@@ -138,21 +161,31 @@ Create `mcp-config.toml`:
 [wordpress]
 base_url = "https://your-wordpress-site.com"
 username = "your-username"
-password = "your-application-password"  # WordPress Application Password
+password = "your-application-password"
+
+## WordPress Application Password
 
 [server]
-transport_type = "stdio"  # For Claude Desktop
-# transport_type = "http"  # For Web UI
-# bind_addr = "127.0.0.1:8080"  # HTTP mode only
+transport_type = "stdio"
+
+## For Claude Desktop
+
+## transport_type = "http"  # For Web UI
+
+## bind_addr = "127.0.0.1:8080"
+
+## HTTP mode only
 
 [logging]
-level = "error"  # Minimal logging for Claude Desktop
-# level = "info"  # Detailed logging for development
-```
+level = "error"
+
+## Minimal logging for Claude Desktop
+
+## level = "info"  # Detailed logging for development
 
 ## 🏗️ Architecture
 
-```
+```text
 ┌─────────────────────┐    ┌─────────────────────┐    ┌─────────────────────┐
 │   AI Agent/Client   │───▶│    MCP Server       │───▶│   WordPress Site    │
 │  (Claude Desktop,   │    │   (mcp-rs)          │    │   (REST API)        │
@@ -180,23 +213,28 @@ level = "error"  # Minimal logging for Claude Desktop
 
 ## 🛠️ Development
 
-### Building from Source
+## Building from Source
 
 ```bash
-# Development build
+
+## Development build
+
 cargo build
 
-# Production build with optimizations
+## Production build with optimizations
+
 cargo build --release
 
-# Run tests
+## Run tests
+
 cargo test
 
-# Run with specific configuration
+## Run with specific configuration
+
 cargo run -- --config configs/development/http-transport.toml
 ```
 
-### Examples
+## Examples
 
 The project includes comprehensive examples demonstrating various features:
 
@@ -207,16 +245,20 @@ The project includes comprehensive examples demonstrating various features:
 
 > **Note**: Database-dependent examples are moved to `examples.disabled/` to ensure CI stability when the `database` feature is not enabled by default.
 
-### Testing
+## Testing
 
 ```bash
-# Run all tests
+
+## Run all tests
+
 cargo test
 
-# Run with output
-cargo test -- --nocapture
+## Run with output
 
-# Run specific test module
+cargo test -- --nocapture  # Show test output (no-capture flag) # cSpell:ignore nocapture
+
+## Run specific test module
+
 cargo test wordpress_api
 ```
 

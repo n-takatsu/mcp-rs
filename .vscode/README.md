@@ -4,14 +4,16 @@
 
 ## 設定ファイル
 
-### settings.json
+## settings.json
+
 - **UTF-8エンコーディング**: BOMなしのUTF-8を強制設定
 - **改行コード**: LF（`\n`）に統一（CI互換性）
 - **Rust Analyzer**: 最適化された設定
 - **自動フォーマット**: 保存時に自動実行
 - **ファイル除外**: `target`フォルダなどを非表示
 
-### tasks.json
+## tasks.json
+
 便利なタスク（Ctrl+Shift+P → "Tasks: Run Task"）:
 - **Cargo Build**: `cargo build`
 - **Cargo Test**: `cargo test` 
@@ -20,13 +22,15 @@
 - **Pre-commit Check**: フォーマット + Clippy + テスト
 - **Run MCP Server**: STDIO/HTTPモードでサーバー起動
 
-### launch.json
+## launch.json
+
 デバッグ設定（F5キー）:
 - **Debug mcp-rs**: メインアプリケーションのデバッグ
 - **Debug unit tests**: テストのデバッグ
 - **Debug with WordPress config**: WordPress設定付きデバッグ
 
-### extensions.json
+## extensions.json
+
 推奨拡張機能:
 - **rust-analyzer**: Rust言語サーバー
 - **CodeLLDB**: Rustデバッガ
@@ -43,20 +47,25 @@
 
 ## MCP設定
 
-### セキュリティ注意事項
+## セキュリティ注意事項
+
 - `mcp.json` - 実際のMCP設定（アクセストークン含む）→ **Gitignore対象**
 - `mcp.json.example` - サンプル設定ファイル（環境変数参照）→ コミット可能
 
-### 設定方法
+## 設定方法
+
 1. `mcp.json.example` を `mcp.json` にコピー
 2. 環境変数 `GITHUB_PERSONAL_ACCESS_TOKEN` を設定
 3. 必要に応じて他のMCPサーバーを追加
 
 ## トラブルシューティング
 
-### BOMエラーが再発した場合
+## BOMエラーが再発した場合
+
 ```bash
-# PowerShellでBOM除去
+
+## PowerShellでBOM除去
+
 Get-ChildItem -Path . -Include "*.rs" -Recurse | ForEach-Object { 
     $bytes = [System.IO.File]::ReadAllBytes($_.FullName)
     if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) { 
@@ -67,9 +76,12 @@ Get-ChildItem -Path . -Include "*.rs" -Recurse | ForEach-Object {
 }
 ```
 
-### フォーマットチェック
+## フォーマットチェック
+
 ```bash
-# CI前にローカルで確認
+
+## CI前にローカルで確認
+
 cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings
 ```

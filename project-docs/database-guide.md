@@ -6,7 +6,8 @@ mcp-rs provides a comprehensive multi-database engine system with enterprise-gra
 
 ## 🏗️ Architecture Overview
 
-### Multi-Engine Support
+## Multi-Engine Support
+
 mcp-rs supports 5 major database engines with unified API access:
 
 - **PostgreSQL** - Enterprise relational database
@@ -15,7 +16,8 @@ mcp-rs supports 5 major database engines with unified API access:
 - **MongoDB** - Document-oriented NoSQL database
 - **SQLite** - Lightweight embedded database
 
-### Security Integration
+## Security Integration
+
 All database operations are protected by the 6-layer security architecture:
 - ✅ **SQL Injection Protection** (11 attack patterns)
 - ✅ **Multi-Factor Authentication** with TOTP
@@ -26,13 +28,15 @@ All database operations are protected by the 6-layer security architecture:
 
 ## 🚀 Quick Start
 
-### 1. Database Configuration
+## 1. Database Configuration
 
 Configure multiple database engines in `mcp-config.toml`:
 
 ```toml
 [database]
-# Primary PostgreSQL database
+
+## Primary PostgreSQL database
+
 [[database.engines]]
 id = "primary_pg"
 type = "postgresql"
@@ -43,7 +47,8 @@ username = "appuser"
 password = "secure_password"
 ssl_mode = "require"
 
-# Redis cache
+## Redis cache
+
 [[database.engines]]
 id = "cache_redis"
 type = "redis"
@@ -52,7 +57,8 @@ port = 6379
 database = 0
 password = "redis_password"
 
-# MongoDB documents
+## MongoDB documents
+
 [[database.engines]]
 id = "docs_mongo"
 type = "mongodb"
@@ -60,9 +66,10 @@ uri = "mongodb://localhost:27017"
 database = "documents"
 ```
 
-### 2. Basic Database Operations
+## 2. Basic Database Operations
 
-#### Execute Query (PostgreSQL)
+### Execute Query (PostgreSQL)
+
 ```json
 {
   "tool": "execute_query",
@@ -74,7 +81,8 @@ database = "documents"
 }
 ```
 
-#### Redis Operations
+### Redis Operations
+
 ```json
 {
   "tool": "execute_query", 
@@ -85,7 +93,8 @@ database = "documents"
 }
 ```
 
-#### MongoDB Document Operations
+### MongoDB Document Operations
+
 ```json
 {
   "tool": "execute_query",
@@ -98,9 +107,10 @@ database = "documents"
 
 ## 📡 Database API Reference
 
-### Core Database Tools
+## Core Database Tools
 
-#### `execute_query` - Execute SELECT Queries
+### `execute_query` - Execute SELECT Queries
+
 **Description**: Execute SELECT queries with automatic security validation
 
 **Parameters**:
@@ -145,7 +155,8 @@ database = "documents"
 }
 ```
 
-#### `execute_command` - Execute Data Modification
+### `execute_command` - Execute Data Modification
+
 **Description**: Execute INSERT, UPDATE, DELETE commands with transaction support
 
 **Parameters**:
@@ -192,7 +203,8 @@ database = "documents"
 }
 ```
 
-#### `begin_transaction` - Start Database Transaction
+### `begin_transaction` - Start Database Transaction
+
 **Description**: Begin a database transaction with configurable isolation level
 
 **Parameters**:
@@ -214,7 +226,8 @@ database = "documents"
 }
 ```
 
-#### `get_schema` - Retrieve Database Schema
+### `get_schema` - Retrieve Database Schema
+
 **Description**: Get database schema information including tables, indexes, and relationships
 
 **Parameters**:
@@ -232,9 +245,10 @@ database = "documents"
 }
 ```
 
-### Engine Management Tools
+## Engine Management Tools
 
-#### `list_engines` - List Available Database Engines
+### `list_engines` - List Available Database Engines
+
 **Description**: List all configured database engines and their status
 
 **Examples**:
@@ -269,7 +283,8 @@ database = "documents"
 }
 ```
 
-#### `switch_engine` - Switch Active Database Engine
+### `switch_engine` - Switch Active Database Engine
+
 **Description**: Change the default database engine for subsequent operations
 
 **Parameters**:
@@ -287,38 +302,44 @@ database = "documents"
 
 ## 🔐 Security Configuration
 
-### Database-Specific Security Settings
+## Database-Specific Security Settings
 
 ```toml
 [database.security]
-# Enable comprehensive security features
+
+## Enable comprehensive security features
+
 enable_sql_injection_detection = true
 enable_query_whitelist = false
 enable_audit_logging = true
 threat_intelligence_enabled = true
 max_query_length = 10000
 
-# Multi-Factor Authentication
+## Multi-Factor Authentication
+
 [database.security.mfa]
 enable_totp = true
 backup_codes_count = 10
 device_trust_duration = "30d"
 
-# Role-Based Access Control
+## Role-Based Access Control
+
 [database.security.rbac]
 enable_hierarchical_roles = true
 enable_resource_policies = true
 default_role = "database_user"
 
-# Column-Level Encryption
+## Column-Level Encryption
+
 [database.security.encryption]
 enable_column_encryption = true
 master_key_rotation_days = 90
 ```
 
-### Security Integration Examples
+## Security Integration Examples
 
-#### Query with MFA Verification
+### Query with MFA Verification
+
 ```json
 {
   "tool": "execute_query",
@@ -334,7 +355,8 @@ master_key_rotation_days = 90
 }
 ```
 
-#### Role-Based Query Execution
+### Role-Based Query Execution
+
 ```json
 {
   "tool": "execute_command",
@@ -352,9 +374,10 @@ master_key_rotation_days = 90
 
 ## 🚀 Advanced Usage
 
-### Multi-Engine Workflows
+## Multi-Engine Workflows
 
-#### Cache-Aside Pattern with PostgreSQL + Redis
+### Cache-Aside Pattern with PostgreSQL + Redis
+
 ```json
 // 1. Check cache first
 {
@@ -385,7 +408,8 @@ master_key_rotation_days = 90
 }
 ```
 
-#### Document + Relational Hybrid
+### Document + Relational Hybrid
+
 ```json
 // Store structured data in PostgreSQL
 {
@@ -407,9 +431,10 @@ master_key_rotation_days = 90
 }
 ```
 
-### Performance Optimization
+## Performance Optimization
 
-#### Connection Pooling Configuration
+### Connection Pooling Configuration
+
 ```toml
 [database.pool]
 max_connections = 50
@@ -418,15 +443,22 @@ connection_timeout = 30
 idle_timeout = 600
 max_lifetime = 1800
 
-# Engine-specific optimizations
+## Engine-specific optimizations
+
 [database.engines.primary_pg.pool]
-max_connections = 100  # Higher for primary database
+max_connections = 100  
+
+## Higher for primary database
 
 [database.engines.cache_redis.pool] 
-max_connections = 20   # Lower for cache
+max_connections = 20   
+
+## Lower for cache
+
 ```
 
-#### Query Performance Monitoring
+### Query Performance Monitoring
+
 ```json
 {
   "tool": "execute_query",
@@ -445,9 +477,10 @@ max_connections = 20   # Lower for cache
 
 ## 🛠️ Troubleshooting
 
-### Common Issues
+## Common Issues
 
-#### Connection Problems
+### Connection Problems
+
 **Symptom**: "Connection failed" errors
 **Solutions**:
 1. Check database server status
@@ -455,7 +488,8 @@ max_connections = 20   # Lower for cache
 3. Validate credentials and permissions
 4. Check SSL/TLS configuration
 
-#### Performance Issues  
+### Performance Issues  
+
 **Symptom**: Slow query execution
 **Solutions**:
 1. Enable query execution plans
@@ -463,7 +497,8 @@ max_connections = 20   # Lower for cache
 3. Monitor connection pool status
 4. Review query optimization
 
-#### Security Violations
+### Security Violations
+
 **Symptom**: "Security violation detected" errors
 **Solutions**:
 1. Review audit logs for attack patterns
@@ -471,20 +506,25 @@ max_connections = 20   # Lower for cache
 3. Validate input sanitization
 4. Update security policies
 
-### Debug Mode
+## Debug Mode
+
 Enable detailed logging for troubleshooting:
 
 ```toml
 [database.logging]
 level = "debug"
 include_query_plans = true
-log_parameter_values = false  # Security: don't log sensitive data
+log_parameter_values = false  
+
+## Security: don't log sensitive data
+
 audit_all_operations = true
 ```
 
 ## 🔍 Monitoring and Metrics
 
-### Health Check Monitoring
+## Health Check Monitoring
+
 ```json
 {
   "tool": "list_engines",
@@ -500,7 +540,8 @@ audit_all_operations = true
 - Error rates and response times
 - Security event counts
 
-### Audit Log Review
+## Audit Log Review
+
 All database operations are automatically logged with:
 - User identification
 - Query/command executed
@@ -510,21 +551,24 @@ All database operations are automatically logged with:
 
 ## 📚 Best Practices
 
-### Security Best Practices
+## Security Best Practices
+
 1. **Always use parameterized queries** to prevent SQL injection
 2. **Enable MFA** for sensitive database operations
 3. **Implement least-privilege access** with RBAC
 4. **Regularly rotate encryption keys** and passwords
 5. **Monitor audit logs** for suspicious activity
 
-### Performance Best Practices
+## Performance Best Practices
+
 1. **Use appropriate database engines** for different data types
 2. **Implement connection pooling** for high-traffic applications
 3. **Cache frequently accessed data** in Redis
 4. **Use read replicas** for scaling read operations
 5. **Monitor and optimize slow queries**
 
-### Operational Best Practices
+## Operational Best Practices
+
 1. **Test database configurations** in staging environments
 2. **Implement backup and recovery procedures**
 3. **Monitor database health metrics**

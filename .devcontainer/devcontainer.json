@@ -1,0 +1,101 @@
+{
+	"name": "MCP-RS Development Environment",
+	"dockerComposeFile": "docker-compose.yml",
+	"service": "mcp-rs-dev",
+	"workspaceFolder": "/workspace",
+
+	// Setup development environment after container creation
+	"postCreateCommand": "bash -c 'cd /workspace && cargo fetch && cd web-ui && npm install'",
+
+	// VS Code customizations
+	"customizations": {
+		"vscode": {
+			"extensions": [
+			// Rust development
+			"rust-lang.rust-analyzer",
+			"tamasfe.even-better-toml", // cSpell:ignore tamasfe - TOML language support
+			"serayuzgur.crates", // cSpell:ignore serayuzgur
+			"vadimcn.vscode-lldb", // cSpell:ignore vadimcn
+
+			// Web development (for web-ui)
+				"ms-vscode.vscode-typescript-next",
+				"esbenp.prettier-vscode", // cSpell:ignore esbenp
+				"bradlc.vscode-tailwindcss", // cSpell:ignore bradlc
+				"formulahendry.auto-rename-tag", // cSpell:ignore formulahendry
+				"ms-vscode.vscode-json",
+				"ms-vscode.hexeditor", // cSpell:ignore hexeditor
+
+				// Git and GitHub
+				"github.vscode-pull-request-github",
+				"github.copilot",
+				"github.copilot-chat",
+
+				// Documentation and Markdown
+				"yzhang.markdown-all-in-one", // cSpell:ignore yzhang
+				"davidanson.vscode-markdownlint", // cSpell:ignore davidanson
+
+				// Testing and debugging
+				"hbenl.vscode-test-explorer", // cSpell:ignore hbenl
+				"ms-vscode.test-adapter-converter"
+			],
+			"settings": {
+				// Rust settings
+				"rust-analyzer.cargo.features": "all",
+				"rust-analyzer.checkOnSave.command": "clippy", // cSpell:ignore clippy
+				"rust-analyzer.checkOnSave.extraArgs": ["--all-targets", "--all-features"],
+				"rust-analyzer.cargo.buildScripts.enable": true,
+				"rust-analyzer.procMacro.enable": true,
+
+				// Editor settings
+				"editor.formatOnSave": true,
+				"editor.codeActionsOnSave": {
+					"source.fixAll": "explicit"
+				},
+
+				// Web development settings (formatter applied when prettier extension is loaded)
+				"[typescript]": {
+					"editor.formatOnSave": true
+				},
+				"[javascript]": {
+					"editor.formatOnSave": true
+				},
+				"[json]": {
+					"editor.formatOnSave": true
+				},
+				"[html]": {
+					"editor.formatOnSave": true
+				},
+				"[css]": {
+					"editor.formatOnSave": true
+				},
+
+				// File watching and search
+				"files.watcherExclude": {
+					"**/target/**": true,
+					"**/node_modules/**": true,
+					"**/dist/**": true,
+					"**/.next/**": true
+				},
+				"search.exclude": {
+					"**/target": true,
+					"**/*.lock": true,
+					"**/node_modules": true,
+					"**/dist": true,
+					"**/.next": true
+				},
+
+				// Terminal
+				"terminal.integrated.defaultProfile.linux": "zsh"
+			}
+		}
+	},
+
+	// Use root user for Docker Compose setup
+	"remoteUser": "root",
+
+	// Lifecycle hooks
+	"initializeCommand": "echo 'Initializing MCP-RS development container...'",
+	"onCreateCommand": "echo 'MCP-RS container created successfully!'",
+	"updateContentCommand": "echo 'Updating container content...'",
+	"postStartCommand": "echo 'MCP-RS development environment ready!'"
+}

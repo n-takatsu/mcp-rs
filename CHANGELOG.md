@@ -9,9 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.15.0] - 2025-11-08
 
-### 🚀 Major Release: ユーザーフレンドリーな設定管理システム
+## 🚀 Major Release: ユーザーフレンドリーな設定管理システム
 
-#### Added
+### Added
+
 - **対話的設定セットアップシステム** (`--setup-config`)
   - WordPress接続テスト付きの設定ウィザード
   - リアルタイム接続検証とエラー診断
@@ -33,7 +34,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Jekyll設定の最適化とpermalink構造
   - 404エラーの完全修正
 
-#### Enhanced
+### Enhanced
+
 - **ユーザビリティの大幅向上**
   - 設定ファイル不存在時の自動セットアップ起動
   - 分かりやすい日本語エラーメッセージ
@@ -43,7 +45,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - 非対話環境での自動フォールバック
   - 入力ストリーム終了の適切な処理
 
-#### Changed
+### Changed
+
 - **Breaking Changes Resolved**: Complete migration to latest API versions
   - axum 0.8 WebSocket API with `.into()` conversions
   - secrecy 0.10 Secret types (Secret<String> → SecretString)
@@ -56,7 +59,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - 10-20% faster cryptographic operations
   - Enhanced DNS resolution and network performance
 
-#### Security
+### Security
+
 - **Enhanced Cryptography**: Latest security algorithms and implementations
   - jsonwebtoken 10.x with improved crypto backends
   - secrecy 0.10 with strengthened Secret management
@@ -66,7 +70,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Alternative secure MySQL implementation via mysql_async
   - Comprehensive audit trail documentation
 
-#### Technical
+### Technical
+
 - **Quality Assurance**: 356+ tests passing with zero warnings
   - Complete test suite modernization
   - Strict clippy compliance (-D warnings)
@@ -80,7 +85,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.1.0-alpha] - 2025-11-04
 
-### Added
+## Added
+
 - **WordPress Integration**: Complete WordPress REST API integration with 27 tools
   - Advanced post/page management with SEO integration
   - Complete media management with base64 upload support
@@ -112,19 +118,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Application password lifecycle management
   - Production monitoring and health checks
 
-### Security
+## Security
+
 - Implemented military-grade AES-GCM-256 encryption
 - Added comprehensive input validation and sanitization
 - Enabled zero-trust data validation architecture
 - Implemented real-time security monitoring
 
-### Technical
+## Technical
+
 - Built with Rust 2021 edition for memory safety
 - Async-first architecture using tokio
 - Clean layered architecture with separation of concerns
 - Production-optimized build profiles
 
-### Documentation
+## Documentation
+
 - Comprehensive API documentation for all 27 WordPress tools
 - Security implementation guide with examples
 - Architecture documentation with design decisions
@@ -132,7 +141,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.0.0] - 2025-10-01
 
-### Added
+## Added
+
 - Initial project setup
 - Basic project structure
 - License files (MIT/Apache-2.0)

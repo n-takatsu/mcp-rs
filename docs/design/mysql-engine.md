@@ -7,21 +7,24 @@ MySQLは世界で最も普及しているオープンソースのリレーショ
 
 ## MySQLの特徴
 
-### 利点
+## 利点
+
 - **高性能**: 最適化されたクエリエンジン、効率的なインデックス
 - **スケーラビリティ**: 水平・垂直スケーリング、読み取りレプリカ
 - **堅牢性**: ACID準拠、クラッシュリカバリ、バックアップ機能
 - **エコシステム**: 豊富なツール、ライブラリ、サポート
 - **互換性**: MariaDB、Percona Server等との互換性
 
-### 特徴的機能
+## 特徴的機能
+
 - **レプリケーション**: マスター・スレーブ、マスター・マスター
 - **ストレージエンジン**: InnoDB、MyISAM、Memory等
 - **クラスタリング**: MySQL Cluster (NDB)
 - **パーティショニング**: テーブルパーティション
 - **JSON サポート**: JSON データ型、関数
 
-### 制約・考慮事項
+## 制約・考慮事項
+
 - **大文字小文字**: システムによる動作の違い
 - **文字エンコーディング**: UTF8、UTF8MB4の選択
 - **接続制限**: max_connections設定
@@ -29,7 +32,7 @@ MySQLは世界で最も普及しているオープンソースのリレーショ
 
 ## アーキテクチャ設計
 
-### 1. エンジン構造
+## 1. エンジン構造
 
 ```rust
 pub struct MySqlEngine {
@@ -47,7 +50,7 @@ pub struct MySqlConnection {
 }
 ```
 
-### 2. 設定構造
+## 2. 設定構造
 
 ```rust
 // MySQL固有の設定
@@ -83,19 +86,22 @@ pub struct MySqlSessionInfo {
 
 ## 実装戦略
 
-### Phase 1: 基本実装
+## Phase 1: 基本実装
+
 1. **基本エンジン**: MySqlEngine構造体
 2. **接続管理**: sqlx::MySqlPool使用
 3. **基本CRUD**: SELECT, INSERT, UPDATE, DELETE
 4. **設定検証**: 接続文字列、認証情報
 
-### Phase 2: 高度な機能
+## Phase 2: 高度な機能
+
 1. **トランザクション**: BEGIN, COMMIT, ROLLBACK, SAVEPOINT
 2. **プリペアドステートメント**: パラメータ化クエリ
 3. **スキーマ情報**: INFORMATION_SCHEMA活用
 4. **SSL/TLS**: セキュア接続
 
-### Phase 3: 最適化・統合
+## Phase 3: 最適化・統合
+
 1. **接続プール**: デッドロック検出、再接続
 2. **パフォーマンス**: クエリキャッシュ、バッチ処理
 3. **MCP統合**: 6つのツール実装
@@ -103,8 +109,10 @@ pub struct MySqlSessionInfo {
 
 ## 技術的考慮事項
 
-### 依存関係選択
-#### Option A: sqlx (推奨)
+## 依存関係選択
+
+### Option A: sqlx (推奨)
+
 ```toml
 [dependencies]
 sqlx = { version = "0.7", features = ["mysql", "runtime-tokio-rustls", "chrono", "uuid", "tls-rustls"] }
@@ -116,7 +124,8 @@ sqlx = { version = "0.7", features = ["mysql", "runtime-tokio-rustls", "chrono",
 - 統一されたAPI
 - 活発な開発
 
-#### Option B: mysql_async
+### Option B: mysql_async
+
 ```toml
 [dependencies]
 mysql_async = "0.34"
@@ -129,7 +138,8 @@ tokio = { version = "1.0", features = ["full"] }
 - 詳細な制御
 - 軽量
 
-### 接続文字列形式
+## 接続文字列形式
+
 ```
 mysql://username:password@host:port/database?option1=value1&option2=value2
 
@@ -140,9 +150,10 @@ mysql://user:pass@localhost:3306/mydb?ssl-mode=required&ssl-ca=/path/to/ca.pem
 mysql://user:pass@localhost:3306/mydb?charset=utf8mb4&collation=utf8mb4_unicode_ci
 ```
 
-### パフォーマンス最適化
+## パフォーマンス最適化
 
-#### 接続プール設定
+### 接続プール設定
+
 ```rust
 pub struct MySqlPoolConfig {
     pub max_connections: u32,      // 20-100
@@ -153,7 +164,8 @@ pub struct MySqlPoolConfig {
 }
 ```
 
-#### クエリ最適化
+### クエリ最適化
+
 - **プリペアドステートメント**: SQLインジェクション防止
 - **バッチ処理**: 複数行INSERT/UPDATE
 - **インデックスヒント**: USE INDEX, FORCE INDEX
@@ -161,7 +173,8 @@ pub struct MySqlPoolConfig {
 
 ## セキュリティ設計
 
-### 1. 接続セキュリティ
+## 1. 接続セキュリティ
+
 ```rust
 pub struct MySqlSecurityConfig {
     pub ssl_enabled: bool,
@@ -173,19 +186,22 @@ pub struct MySqlSecurityConfig {
 }
 ```
 
-### 2. 認証・認可
+## 2. 認証・認可
+
 - **MySQL認証プラグイン**: mysql_native_password, caching_sha2_password
 - **ユーザー権限**: GRANT/REVOKE管理
 - **データベース権限**: スキーマレベル制御
 
-### 3. 監査・ログ
+## 3. 監査・ログ
+
 - **スロークエリログ**: 性能問題の検出
 - **バイナリログ**: レプリケーション、Point-in-timeリカバリ
 - **エラーログ**: 接続エラー、権限エラー
 
 ## エラーハンドリング
 
-### MySQL特有のエラー
+## MySQL特有のエラー
+
 ```rust
 pub enum MySqlError {
     ConnectionError(String),
@@ -201,27 +217,31 @@ pub enum MySqlError {
 }
 ```
 
-### 復旧戦略
+## 復旧戦略
+
 - **自動再接続**: 接続失敗時の再試行
 - **デッドロック再試行**: 指数バックオフ
 - **フェイルオーバー**: レプリカへの切り替え
 
 ## テスト戦略
 
-### 単体テスト
+## 単体テスト
+
 - エンジン初期化
 - 接続文字列解析
 - 基本CRUD操作
 - トランザクション管理
 - エラーハンドリング
 
-### 統合テスト
+## 統合テスト
+
 - 実MySQL/MariaDBサーバーとの接続
 - 複雑なクエリ実行
 - 同時接続テスト
 - パフォーマンステスト
 
-### ベンチマーク
+## ベンチマーク
+
 - 接続時間
 - クエリレスポンス時間
 - スループット
@@ -231,28 +251,54 @@ pub enum MySqlError {
 
 ```
 src/handlers/database/engines/
-├── mysql.rs              # メインエンジン実装
+├── mysql.rs              
+
+## メインエンジン実装
+
 ├── mysql/
-│   ├── connection.rs      # 接続管理
-│   ├── transaction.rs     # トランザクション
-│   ├── prepared.rs        # プリペアドステートメント
-│   ├── config.rs         # MySQL固有設定
-│   ├── error.rs          # エラー定義
-│   ├── pool.rs           # 接続プール
-│   └── utils.rs          # ユーティリティ
+│   ├── connection.rs      
+
+## 接続管理
+
+│   ├── transaction.rs     
+
+## トランザクション
+
+│   ├── prepared.rs        
+
+## プリペアドステートメント
+
+│   ├── config.rs         
+
+## MySQL固有設定
+
+│   ├── error.rs          
+
+## エラー定義
+
+│   ├── pool.rs           
+
+## 接続プール
+
+│   └── utils.rs          
+
+## ユーティリティ
+
 ```
 
 ## MariaDB互換性
 
 MySQLエンジンをベースにMariaDBサポートを追加：
 
-### 相違点
+## 相違点
+
 - **ストレージエンジン**: Aria, ColumnStore
 - **レプリケーション**: Galera Cluster
 - **JSON機能**: 一部機能差異
 - **システム変数**: MariaDB固有の変数
 
-### 実装アプローチ
+## 実装アプローチ
+
 ```rust
 pub enum MySqlVariant {
     MySQL,
@@ -273,7 +319,8 @@ impl MySqlEngine {
 
 ## 使用例
 
-### 基本設定
+## 基本設定
+
 ```rust
 let config = DatabaseConfig {
     database_type: DatabaseType::MySQL,
@@ -304,7 +351,8 @@ let config = DatabaseConfig {
 };
 ```
 
-### 高可用性設定
+## 高可用性設定
+
 ```rust
 // レプリケーション対応（将来実装）
 let ha_config = MySqlHAConfig {

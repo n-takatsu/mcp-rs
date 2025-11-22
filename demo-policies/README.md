@@ -4,44 +4,66 @@
 
 ## 🚀 Quick Start
 
-### 1. デモ実行
+## 1. デモ実行
+
 ```bash
 cargo run --example policy_hot_reload_demo
 ```
 
-### 2. リアルタイム変更テスト
+## 2. リアルタイム変更テスト
+
 別のターミナルまたはエディタで以下のファイルを編集してください：
 
 ```bash
-# セキュリティポリシーの変更
+
+## セキュリティポリシーの変更
+
 notepad demo-policies/security-policy.toml
 
-# WordPress設定の変更  
+## WordPress設定の変更  
+
 notepad demo-policies/wordpress-policy.yaml
 
-# MCP設定の変更
+## MCP設定の変更
+
 notepad demo-policies/mcp-policy.json
 ```
 
-### 3. 変更例
+## 3. 変更例
 
-#### セキュリティポリシー更新例:
+### セキュリティポリシー更新例:
+
 ```toml
-# demo-policies/security-policy.toml
 
-# この値を変更してリアルタイム反映をテスト
+## demo-policies/security-policy.toml
+
+## この値を変更してリアルタイム反映をテスト
+
 demo_message = "🔥 セキュリティポリシー更新 - リアルタイム反映中!"
-requests_per_minute = 120  # 60から120に変更
-sql_injection_strictness = "maximum"  # "high"から"maximum"に変更
+requests_per_minute = 120  
+
+## 60から120に変更
+
+sql_injection_strictness = "maximum"  
+
+## "high"から"maximum"に変更
+
 ```
 
-#### WordPress設定更新例:
+### WordPress設定更新例:
+
 ```yaml
-# demo-policies/wordpress-policy.yaml
+
+## demo-policies/wordpress-policy.yaml
 
 global_settings:
-  connection_timeout: 45  # 30から45に変更
-  retry_attempts: 5       # 3から5に変更
+  connection_timeout: 45  
+
+## 30から45に変更
+
+  retry_attempts: 5       
+
+## 3から5に変更
 
 demo_config:
   change_log_enabled: true
@@ -50,18 +72,23 @@ demo_config:
 
 ## 🔍 実演される機能
 
-### ✅ リアルタイム監視
+## ✅ リアルタイム監視
+
 - **ファイル作成・更新・削除**の即座検知
 - **複数ファイル形式**のサポート (.toml, .yaml, .json)
 - **スレッドセーフ**な非同期イベント処理
 
-### ✅ エラーハンドリング
+## ✅ エラーハンドリング
+
 ```bash
-# 無効なファイルを作成してエラー処理をテスト
+
+## 無効なファイルを作成してエラー処理をテスト
+
 echo "invalid toml content = [" > demo-policies/invalid.toml
 ```
 
-### ✅ パフォーマンス
+## ✅ パフォーマンス
+
 - **500ms以内**での変更検知
 - **メモリ効率**的なイベント処理
 - **CPU負荷最小化**
@@ -96,7 +123,8 @@ echo "invalid toml content = [" > demo-policies/invalid.toml
 
 ## 🏗️ 技術アーキテクチャ
 
-### コンポーネント構成
+## コンポーネント構成
+
 ```
 ┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
 │  File System    │───▶│  notify Watcher  │───▶│ Event Processor │
@@ -110,7 +138,8 @@ echo "invalid toml content = [" > demo-policies/invalid.toml
 └─────────────────┘    └──────────────────┘    └─────────────────┘
 ```
 
-### パフォーマンス特性
+## パフォーマンス特性
+
 - **検知遅延**: < 500ms
 - **メモリ使用量**: < 1MB (監視中)
 - **CPU使用率**: < 1% (待機時)
@@ -118,9 +147,12 @@ echo "invalid toml content = [" > demo-policies/invalid.toml
 
 ## 🎯 Enterprise適用例
 
-### Production環境での活用
+## Production環境での活用
+
 ```toml
-# 本番環境での設定例
+
+## 本番環境での設定例
+
 [security_policy]
 hot_reload_enabled = true
 watch_directories = [
@@ -132,7 +164,8 @@ backup_on_change = true
 rollback_on_error = true
 ```
 
-### 運用シナリオ
+## 運用シナリオ
+
 1. **緊急セキュリティ対応**: 新しい脅威への即座対応
 2. **設定調整**: パフォーマンスチューニングの即座反映
 3. **A/Bテスト**: 異なる設定での動的切り替え
@@ -140,13 +173,15 @@ rollback_on_error = true
 
 ## 🔧 カスタマイズ
 
-### 監視対象の追加
+## 監視対象の追加
+
 ```rust
 // カスタム監視ディレクトリ
 let watcher = PolicyFileWatcher::new("/custom/policy/path");
 ```
 
-### イベントフィルタリング
+## イベントフィルタリング
+
 ```rust
 // 特定ファイル形式のみ監視
 let mut receiver = watcher.subscribe();

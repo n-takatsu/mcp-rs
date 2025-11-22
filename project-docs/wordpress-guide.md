@@ -6,24 +6,28 @@ This guide covers the complete WordPress integration available in mcp-rs, featur
 
 ## 🚀 Quick Start
 
-### 1. Secure Configuration
+## 1. Secure Configuration
 
 ```toml
 [handlers.wordpress]
 url = "https://your-wordpress-site.com"
 username = "your_username"
-password = "your_application_password"  # Encrypted at rest with AES-GCM-256
+password = "your_application_password"  
+
+## Encrypted at rest with AES-GCM-256
+
 timeout_seconds = 30
 enabled = true
 
-# Security Features (Auto-enabled)
+## Security Features (Auto-enabled)
+
 rate_limiting = true
 sql_injection_protection = true
 xss_protection = true
 audit_logging = true
 ```
 
-### 2. WordPress Application Password Setup (Security Best Practices)
+## 2. WordPress Application Password Setup (Security Best Practices)
 
 1. WordPress Admin → Users → Your Profile
 2. Scroll to "Application Passwords"
@@ -31,21 +35,25 @@ audit_logging = true
 4. Use this password in configuration (automatically encrypted)
 5. **Security Note**: Application passwords provide better security than regular passwords
 
-### 3. Test Secure Connection
+## 3. Test Secure Connection
 
 ```bash
-# Run comprehensive security test
+
+## Run comprehensive security test
+
 cargo run --example wordpress_security_integration
 
-# Run basic connection test
+## Run basic connection test
+
 cargo run --example wordpress_test
 ```
 
 ## 🔑 WordPress Permissions & Administrative Access
 
-### Current Permission Status (2025-11-03 Updated)
+## Current Permission Status (2025-11-03 Updated)
 
-#### Detailed Diagnosis Results
+### Detailed Diagnosis Results
+
 ```
 ✅ Working Functions (wpmaster: Administrator privileges confirmed):
 - Category API (/wp/v2/categories) - 8 items retrieved successfully
@@ -60,14 +68,16 @@ cargo run --example wordpress_test
 Administrator privileges are normal, but only Settings API is individually restricted
 ```
 
-### New Identified Issue: Settings API Individual Restriction
+## New Identified Issue: Settings API Individual Restriction
 
-#### Problem Occurring Even with Confirmed Administrator Privileges
+### Problem Occurring Even with Confirmed Administrator Privileges
+
 Despite the wpmaster user having **administrator privileges**, only the `/wp/v2/settings` endpoint returns 401 errors. This could be caused by:
 
-#### Possible Causes and Solutions
+### Possible Causes and Solutions
 
-##### 1. WordPress REST API Settings Individual Restriction
+#### 1. WordPress REST API Settings Individual Restriction
+
 **Problem**: Settings API is specially restricted
 ```php
 // Possibly restricted in functions.php or plugins
@@ -88,7 +98,8 @@ add_filter( 'rest_pre_dispatch', function( $result, $server, $request ) {
 - Check theme's `functions.php`
 - Check for REST API restrictions in plugins
 
-##### 2. Security Plugin Restrictions
+#### 2. Security Plugin Restrictions
+
 **Common restriction plugins**:
 - Wordfence Security
 - iThemes Security (formerly Better WP Security)
@@ -102,13 +113,15 @@ or
 Firewall → Advanced Rules → REST API Restrictions
 ```
 
-##### 3. WordPress Version-Specific Restrictions
+#### 3. WordPress Version-Specific Restrictions
+
 **WordPress 5.5+ Tightening**:
 - Enhanced Settings API restrictions with Application Passwords
 - Cases requiring Cookie authentication
 - Additional restrictions on WordPress.com hosted sites
 
-##### 4. Application Password Permission Scope Restrictions
+#### 4. Application Password Permission Scope Restrictions
+
 **Verification Method**:
 ```
 WordPress Admin → Users → Profile
@@ -120,25 +133,28 @@ Application Passwords Section
 Generate new Application Password
 ```
 
-### Security-Conscious Permission Settings
+## Security-Conscious Permission Settings
 
-#### Based on Principle of Least Privilege
+### Based on Principle of Least Privilege
 
-##### Option 1: Administrator Privilege Grant (Easy but broad permissions)
+#### Option 1: Administrator Privilege Grant (Easy but broad permissions)
+
 ```
 Pros: All features immediately available
 Cons: Security risk due to excessive privilege grant
 Recommendation: Test environments only
 ```
 
-##### Option 2: Custom Role Creation (Recommended)
+#### Option 2: Custom Role Creation (Recommended)
+
 ```
 Pros: Grant only minimum necessary privileges
 Cons: Initial setup somewhat complex
 Recommendation: Recommended for production
 ```
 
-##### Option 3: Use Permission Control Plugins
+#### Option 3: Use Permission Control Plugins
+
 ```
 Recommended Plugins:
 - User Role Editor
@@ -149,9 +165,10 @@ Pros: Easy permission adjustment via GUI
 Cons: Plugin dependency
 ```
 
-### Step-by-Step Implementation (Administrator Privileges Confirmed Response)
+## Step-by-Step Implementation (Administrator Privileges Confirmed Response)
 
-#### Phase 1: Immediate Diagnosis and Response
+### Phase 1: Immediate Diagnosis and Response
+
 ```
 1. Check security plugin settings
    - Wordfence → Firewall → Advanced Rules
@@ -168,7 +185,8 @@ Cons: Plugin dependency
    cargo run --example comprehensive_test
 ```
 
-#### Phase 2: WordPress Environment Verification/Adjustment
+### Phase 2: WordPress Environment Verification/Adjustment
+
 ```
 1. Verify WordPress version
    - For WordPress 5.5+, check Settings API restriction enhancement
@@ -184,7 +202,8 @@ Cons: Plugin dependency
    - Verify additional restrictions if hosted on WordPress.com
 ```
 
-#### Phase 3: Alternative Approach Implementation
+### Phase 3: Alternative Approach Implementation
+
 ```
 1. Consider Settings API use via Cookie authentication
 2. Settings change flow via WordPress admin interface
@@ -192,21 +211,27 @@ Cons: Plugin dependency
 4. Consider custom endpoint creation
 ```
 
-### Permission Verification Commands
+## Permission Verification Commands
 
-#### Permission Testing with MCP-RS
+### Permission Testing with MCP-RS
+
 ```bash
-# Comprehensive permission test
+
+## Comprehensive permission test
+
 cargo run --example comprehensive_test
 
-# Authentication diagnosis
+## Authentication diagnosis
+
 cargo run --example auth_diagnosis
 
-# Health check (including permission verification)
+## Health check (including permission verification)
+
 cargo run --example wordpress_health_check
 ```
 
-#### WordPress-side Permission Verification
+### WordPress-side Permission Verification
+
 ```php
 // Code for checking current user permissions
 $user = wp_get_current_user();
@@ -229,9 +254,10 @@ foreach ($required_caps as $cap) {
 }
 ```
 
-### Expected Results
+## Expected Results
 
-#### Test Results After Permission Setup (Administrator Privileges Confirmed)
+### Test Results After Permission Setup (Administrator Privileges Confirmed)
+
 ```
 🔍 WordPress API Endpoint Diagnosis Results:
 ✅ Category API (/wp/v2/categories) - 8 items retrieved successfully
@@ -248,7 +274,8 @@ foreach ($required_caps as $cap) {
 
 ## 🛡️ Security Architecture
 
-### Multi-Layer Protection
+## Multi-Layer Protection
+
 1. **Encryption Layer**: AES-GCM-256 + PBKDF2 (100K iterations)
 2. **Rate Limiting**: Token bucket algorithm + DDoS protection
 3. **TLS Enforcement**: TLS 1.2+ with certificate validation
@@ -256,7 +283,8 @@ foreach ($required_caps as $cap) {
 5. **Monitoring**: Real-time threat detection and analysis
 6. **Audit Logging**: Complete security event recording
 
-### Attack Protection Coverage
+## Attack Protection Coverage
+
 - ✅ SQL Injection (11 attack patterns detected)
 - ✅ XSS Attacks (14 attack vectors blocked)
 - ✅ CSRF Protection
@@ -267,7 +295,7 @@ foreach ($required_caps as $cap) {
 
 ## Available Tools (27 total) - All Security Protected
 
-### 📝 Content Management (10 tools) - 🔒 XSS Protected
+## 📝 Content Management (10 tools) - 🔒 XSS Protected
 
 | Tool | Purpose | Security Features |
 |------|---------|------------------|
@@ -282,7 +310,7 @@ foreach ($required_caps as $cap) {
 | `update_post` | Post modification | Structured updates |
 | `delete_post` | Post removal | Trash or permanent |
 
-### 🖼️ Media Management (7 tools)
+## 🖼️ Media Management (7 tools)
 
 | Tool | Purpose | Key Features |
 |------|---------|--------------|
@@ -294,7 +322,7 @@ foreach ($required_caps as $cap) {
 | `create_post_with_featured_image` | Post + image | Combined creation |
 | `set_featured_image` | Featured image | Update existing posts |
 
-### 📁 Taxonomy Management (8 tools)
+## 📁 Taxonomy Management (8 tools)
 
 | Tool | Purpose | Key Features |
 |------|---------|--------------|
@@ -307,7 +335,7 @@ foreach ($required_caps as $cap) {
 | `update_tag` | Tag changes | Name and description |
 | `delete_tag` | Tag removal | Cleanup |
 
-### 🔗 Integration Tools (2 tools)
+## 🔗 Integration Tools (2 tools)
 
 | Tool | Purpose | Key Features |
 |------|---------|--------------|
@@ -316,7 +344,7 @@ foreach ($required_caps as $cap) {
 
 ## Advanced Features
 
-### Post Types & Status
+## Post Types & Status
 
 **Supported Post Types:**
 - `post` - Blog articles, news posts
@@ -328,9 +356,10 @@ foreach ($required_caps as $cap) {
 - `private` - Logged-in users only
 - `future` - Scheduled publication
 
-### SEO Integration
+## SEO Integration
 
-#### Yoast SEO Support
+### Yoast SEO Support
+
 ```json
 {
   "meta_description": "SEO meta description",
@@ -340,7 +369,8 @@ foreach ($required_caps as $cap) {
 }
 ```
 
-#### Scheduled Publishing
+### Scheduled Publishing
+
 ```json
 {
   "status": "future",
@@ -348,22 +378,25 @@ foreach ($required_caps as $cap) {
 }
 ```
 
-### Embedded Content
+## Embedded Content
 
-#### YouTube Integration
+### YouTube Integration
+
 - **URL Formats**: `youtube.com/watch?v=`, `youtu.be/`, `youtube.com/embed/`
 - **Auto iframe**: Generates proper embed code
 - **Fallback**: WordPress oEmbed for unsupported URLs
 
-#### Social Media Support
+### Social Media Support
+
 - **Twitter/X**: oEmbed integration
 - **Instagram**: Automatic post embedding
 - **Facebook**: Post and video embedding
 - **TikTok**: Video embedding
 
-### Accessibility Features
+## Accessibility Features
 
-#### Media Accessibility
+### Media Accessibility
+
 ```json
 {
   "alt_text": "Descriptive text for screen readers",
@@ -372,7 +405,8 @@ foreach ($required_caps as $cap) {
 }
 ```
 
-#### Best Practices
+### Best Practices
+
 - Always provide alt text for images
 - Use descriptive captions
 - Include detailed descriptions for complex images
@@ -380,7 +414,7 @@ foreach ($required_caps as $cap) {
 
 ## Usage Examples
 
-### Complete Content Workflow
+## Complete Content Workflow
 
 ```json
 // 1. Health Check
@@ -425,7 +459,7 @@ foreach ($required_caps as $cap) {
 }
 ```
 
-### Embedded Content Creation
+## Embedded Content Creation
 
 ```json
 {
@@ -445,7 +479,7 @@ foreach ($required_caps as $cap) {
 }
 ```
 
-### Media Management Workflow
+## Media Management Workflow
 
 ```json
 // Upload with full accessibility
@@ -474,7 +508,7 @@ foreach ($required_caps as $cap) {
 
 ## Error Handling
 
-### Common Error Types
+## Common Error Types
 
 ```json
 {
@@ -493,7 +527,7 @@ foreach ($required_caps as $cap) {
 - **WordPress**: Plugin conflicts, permission issues
 - **Media**: File size limits, unsupported formats
 
-### Retry Strategy
+## Retry Strategy
 
 - **Exponential backoff**: Delays increase with each retry
 - **Maximum attempts**: 3 retries by default
@@ -502,48 +536,60 @@ foreach ($required_caps as $cap) {
 
 ## Testing & Examples
 
-### Available Test Examples
+## Available Test Examples
 
 ```bash
-# Basic functionality
+
+## Basic functionality
+
 cargo run --example wordpress_test
 
-# Complete CRUD operations
+## Complete CRUD operations
+
 cargo run --example wordpress_post_crud_test
 
-# Media management with accessibility
+## Media management with accessibility
+
 cargo run --example wordpress_media_crud_test
 
-# Embedded content creation
+## Embedded content creation
+
 cargo run --example wordpress_embed_test
 
-# Advanced post features (SEO, scheduling)
+## Advanced post features (SEO, scheduling)
+
 cargo run --example wordpress_advanced_post_test
 
-# Taxonomy management
+## Taxonomy management
+
 cargo run --example wordpress_categories_tags_test
 
-# Integrated workflows
+## Integrated workflows
+
 cargo run --example wordpress_posts_with_taxonomy_test
 ```
 
-### Test Environment Setup
+## Test Environment Setup
 
 ```bash
-# Local WordPress with Docker
+
+## Local WordPress with Docker
+
 docker run -d \
   -p 8080:80 \
   -e WORDPRESS_DB_HOST=db \
   -e WORDPRESS_DB_PASSWORD=wordpress \
   wordpress:latest
 
-# Or use existing WordPress site
-# Configure in mcp-config.toml
+## Or use existing WordPress site
+
+## Configure in mcp-config.toml
+
 ```
 
 ## Performance Considerations
 
-### Optimization Features
+## Optimization Features
 
 - **Connection pooling**: Reuse HTTP connections
 - **Async operations**: Non-blocking I/O
@@ -551,7 +597,7 @@ docker run -d \
 - **Retry logic**: Handle transient failures
 - **Structured logging**: Performance monitoring
 
-### Best Practices
+## Best Practices
 
 - **Batch operations**: Group related API calls
 - **Pagination**: Handle large datasets efficiently
@@ -561,21 +607,21 @@ docker run -d \
 
 ## Security Considerations
 
-### Authentication
+## Authentication
 
 - **Application Passwords**: WordPress-recommended method
 - **Environment Variables**: Secure credential storage
 - **No plaintext logging**: Credentials excluded from logs
 - **HTTPS enforcement**: Secure transport required
 
-### Input Validation
+## Input Validation
 
 - **JSON schema**: Strict parameter validation
 - **Type safety**: Rust compile-time checks
 - **SQL injection prevention**: Parameterized queries
 - **XSS protection**: Content sanitization
 
-### Access Control
+## Access Control
 
 - **Principle of least privilege**: Minimal required permissions
 - **User role verification**: WordPress role-based access
@@ -584,7 +630,7 @@ docker run -d \
 
 ## Troubleshooting
 
-### Common Issues
+## Common Issues
 
 1. **Connection refused**
    - Check WordPress URL and port
@@ -611,35 +657,46 @@ docker run -d \
    - Check network connectivity
    - Verify WordPress performance
 
-### Debug Mode
+## Debug Mode
 
 ```toml
 [handlers.wordpress]
-# ... other settings
-debug = true  # Enable verbose logging
-timeout_seconds = 60  # Increase timeout
+
+## ... other settings
+
+debug = true  
+
+## Enable verbose logging
+
+timeout_seconds = 60  
+
+## Increase timeout
+
 ```
 
-### Logging
+## Logging
 
 ```bash
-# Set log level
+
+## Set log level
+
 RUST_LOG=debug cargo run
 
-# Focus on WordPress handler
+## Focus on WordPress handler
+
 RUST_LOG=mcp_rs::handlers::wordpress=debug cargo run
 ```
 
 ## Contributing
 
-### Adding New Tools
+## Adding New Tools
 
 1. **Define tool schema** in `list_tools()`
 2. **Implement handler** in `call_tool()`
 3. **Add tests** in `examples/`
 4. **Update documentation**
 
-### WordPress API Extensions
+## WordPress API Extensions
 
 1. **Research WordPress REST API** endpoints
 2. **Design MCP tool interface**
@@ -647,7 +704,7 @@ RUST_LOG=mcp_rs::handlers::wordpress=debug cargo run
 4. **Test with real WordPress instance**
 5. **Add comprehensive examples**
 
-### Best Practices
+## Best Practices
 
 - **Follow existing patterns** in codebase
 - **Include accessibility features** for media
@@ -657,11 +714,11 @@ RUST_LOG=mcp_rs::handlers::wordpress=debug cargo run
 
 ## 🤖 AI Agent Integration Guide
 
-### Claude Desktop Configuration
+## Claude Desktop Configuration
 
 To use MCP-RS with Claude Desktop, configure the MCP server connection:
 
-#### 1. Locate Claude Desktop Config File
+### 1. Locate Claude Desktop Config File
 
 **Windows:**
 ```
@@ -678,7 +735,7 @@ C:\Users\[username]\AppData\Roaming\Claude\claude_desktop_config.json
 ~/.config/claude/claude_desktop_config.json
 ```
 
-#### 2. Add MCP-RS Configuration
+### 2. Add MCP-RS Configuration
 
 Create or edit the config file with the following JSON:
 
@@ -698,7 +755,7 @@ Create or edit the config file with the following JSON:
 }
 ```
 
-#### 3. Important Configuration Notes
+### 3. Important Configuration Notes
 
 **Path Configuration:**
 - Use double backslashes (`\\`) in Windows paths
@@ -718,13 +775,16 @@ Create or edit the config file with the following JSON:
 }
 ```
 
-#### 4. MCP-RS Server Configuration
+### 4. MCP-RS Server Configuration
 
 Ensure your `mcp-config.toml` is configured for STDIO mode:
 
 ```toml
 [server]
-stdio = true           # Required for Claude Desktop
+stdio = true           
+
+## Required for Claude Desktop
+
 log_level = "info"
 
 [handlers.wordpress]
@@ -735,7 +795,7 @@ enabled = true
 timeout_seconds = 30
 ```
 
-#### 5. Restart Claude Desktop
+### 5. Restart Claude Desktop
 
 After configuration:
 1. **Close Claude Desktop completely**
@@ -743,24 +803,27 @@ After configuration:
 3. **Verify MCP connection** in a new conversation
 4. **Test with a simple command**: "List available WordPress tools"
 
-### Testing AI Agent Connection
+## Testing AI Agent Connection
 
-#### Quick Connection Test
+### Quick Connection Test
+
 ```
 Please list all available WordPress tools and their descriptions.
 ```
 
-#### Resource Access Test
+### Resource Access Test
+
 ```
 Can you read the wordpress://categories resource to show me all available categories?
 ```
 
-#### Tool Execution Test
+### Tool Execution Test
+
 ```
 Please get the list of WordPress categories using the get_categories tool.
 ```
 
-### Expected AI Agent Capabilities
+## Expected AI Agent Capabilities
 
 With proper configuration, AI agents can:
 
@@ -780,29 +843,33 @@ With proper configuration, AI agents can:
 - Comment moderation and user interaction
 - Custom post type handling
 
-### Troubleshooting AI Agent Issues
+## Troubleshooting AI Agent Issues
 
-#### "Cannot connect to MCP server"
+### "Cannot connect to MCP server"
+
 1. **Verify file paths** in claude_desktop_config.json
 2. **Check MCP-RS executable** location and permissions
 3. **Ensure STDIO mode** is enabled in mcp-config.toml
 4. **Restart Claude Desktop** after configuration changes
 
-#### "WordPress authentication failed"
+### "WordPress authentication failed"
+
 1. **Verify Application Password** is correctly set
 2. **Check username spelling** and capitalization
 3. **Test credentials** manually via WordPress REST API
 4. **Ensure user has appropriate permissions**
 
-#### "Tools not available"
+### "Tools not available"
+
 1. **Confirm MCP connection** is established
 2. **Check WordPress handler** is enabled in configuration
 3. **Verify WordPress site** is accessible from MCP-RS server
 4. **Review server logs** for detailed error information
 
-### AI Agent Best Practices
+## AI Agent Best Practices
 
-#### Prompt Engineering
+### Prompt Engineering
+
 ```
 When working with WordPress content:
 1. Always specify target categories for new posts
@@ -811,7 +878,8 @@ When working with WordPress content:
 4. Verify content before publishing
 ```
 
-#### Resource Management
+### Resource Management
+
 ```
 For large content operations:
 1. Use wordpress://posts resource for content overview
@@ -820,7 +888,8 @@ For large content operations:
 4. Monitor API rate limits and timeouts
 ```
 
-#### Security Considerations
+### Security Considerations
+
 ```
 When using MCP-RS with AI agents:
 1. Use Application Passwords (never regular passwords)

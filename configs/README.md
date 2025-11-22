@@ -3,6 +3,7 @@
 MCP-RSの設定ファイル管理ディレクトリです。用途別に整理された設定ファイルを提供します。
 
 ## 🆕 v0.15.1 統合アップデート
+
 - ルートレベルの分散設定ファイル（mcp-config*.toml）を `configs/` に統合
 - Transport統合アーキテクチャ対応
 - 必須ハンドラー設定の追加
@@ -10,7 +11,8 @@ MCP-RSの設定ファイル管理ディレクトリです。用途別に整理�
 
 ## 📁 ディレクトリ構成
 
-### 🚀 Production (`production/`)
+## 🚀 Production (`production/`)
+
 本番環境で使用する設定ファイル
 
 - **`main.toml`** - メイン設定（デフォルトSTDIO）
@@ -29,7 +31,8 @@ MCP-RSの設定ファイル管理ディレクトリです。用途別に整理�
   - CORS設定有効
   - WordPress + ファイルシステムハンドラー
 
-### 🔧 Development (`development/`)
+## 🔧 Development (`development/`)
+
 開発・テスト用設定ファイル
 
 - **`demo.toml`** - デモンストレーション用
@@ -37,14 +40,16 @@ MCP-RSの設定ファイル管理ディレクトリです。用途別に整理�
 - **`tcp.toml`** - TCP通信テスト用
 - **`testing.toml`** - 単体テスト用設定
 
-### 📚 Examples (`examples/`)
+## 📚 Examples (`examples/`)
+
 設定例・学習用ファイル
 
 - **`multi-handler.toml`** - 複数ハンドラー設定例
 - **`log-policy-demo.toml`** - ログポリシー設定デモ
 - **`module-separated.toml`** - モジュール分離ログ例
 
-### 📝 Templates (`templates/`)
+## 📝 Templates (`templates/`)
+
 設定テンプレートファイル
 
 - **`basic.toml`** - 基本設定テンプレート
@@ -52,26 +57,34 @@ MCP-RSの設定ファイル管理ディレクトリです。用途別に整理�
 
 ## 🚀 使用方法
 
-### Claude Desktop統合
+## Claude Desktop統合
+
 ```bash
 mcp-rs --config configs/production/claude-desktop.toml
 ```
 
-### Web UI開発
+## Web UI開発
+
 ```bash
 mcp-rs --config configs/production/web-ui.toml
 ```
 
-### ローカル開発
+## ローカル開発
+
 ```bash
 mcp-rs --config configs/development/demo.toml
 ```
 
-### カスタム設定作成
+## カスタム設定作成
+
 ```bash
-# テンプレートをコピーして編集
+
+## テンプレートをコピーして編集
+
 cp configs/templates/basic.toml my-config.toml
-# 編集後
+
+## 編集後
+
 mcp-rs --config my-config.toml
 ```
 
@@ -86,17 +99,20 @@ mcp-rs --config my-config.toml
 
 ## ⚠️ 重要な注意事項
 
-### Claude Desktop使用時
+## Claude Desktop使用時
+
 - **必ず** `production/claude-desktop.toml` を使用
 - STDIO通信では標準出力にログが混在すると動作不能
 - `log_level = "error"` でコンソール出力を最小限に
 
-### セキュリティ
+## セキュリティ
+
 - 本番環境では環境変数 `${WORDPRESS_PASSWORD}` を使用
 - パスワードを平文で設定ファイルに記載しない
 - `.env` ファイルで機密情報を管理
 
-### ログ管理
+## ログ管理
+
 - `separation = "separated"` でモジュール別ログファイル分離推奨
 - ログ保持ポリシーを適切に設定
 - ディスク容量を定期的に監視

@@ -2,7 +2,8 @@
 
 ## ✅ 現在の完了状況
 
-### 📋 Issues 作成状況
+## 📋 Issues 作成状況
+
 - ✅ **Epic Issues**: 4件作成完了
   - `#17` [EPIC] Advanced Security Features Implementation
   - `#39` [EPIC] Docker/Kubernetes統合システム実装
@@ -19,14 +20,15 @@
   - `issue-automation.yml` - Issue管理自動化
   - `roadmap-health.yml` - 週次健全性チェック
 
-### 📊 Milestones 作成状況
+## 📊 Milestones 作成状況
+
 - ✅ **v0.2.0-beta** (2026-01-31)
 - ✅ **v0.3.0** (2026-04-30)
 - ✅ **v1.0.0** (2026-08-31)
 
 ## 🚀 次に必要な手順
 
-### Step 1: プロジェクトボード作成（Web UI）
+## Step 1: プロジェクトボード作成（Web UI）
 
 1. **GitHub Projects アクセス**:
    ```
@@ -42,81 +44,96 @@
    - 作成後のURL: `https://github.com/users/n-takatsu/projects/X`
    - `X` がプロジェクト番号
 
-### Step 2: Issues 自動追加（PowerShell）
+## Step 2: Issues 自動追加（PowerShell）
 
 プロジェクト番号確認後、以下を実行:
 
 ```powershell
-# プロジェクト番号を実際の値に更新
-$PROJECT_NUMBER = "1"  # 実際の番号に置き換え
 
-# Epic Issues 追加
+## プロジェクト番号を実際の値に更新
+
+$PROJECT_NUMBER = "1"  
+
+## 実際の番号に置き換え
+
+## Epic Issues 追加
+
 @(17, 39, 40, 41) | ForEach-Object {
     gh project item-add $PROJECT_NUMBER --owner n-takatsu --url "https://github.com/n-takatsu/mcp-rs/issues/$_"
 }
 
-# Sub-Issues 追加
+## Sub-Issues 追加
+
 42..55 | ForEach-Object {
     gh project item-add $PROJECT_NUMBER --owner n-takatsu --url "https://github.com/n-takatsu/mcp-rs/issues/$_"
 }
 ```
 
-### Step 3: カスタムフィールド設定（Web UI）
+## Step 3: カスタムフィールド設定（Web UI）
 
 プロジェクトボード右上の設定から以下のフィールドを追加:
 
-#### 📊 Priority (Single Select)
+### 📊 Priority (Single Select)
+
 - P0 (Critical) - 赤 #DC2626
 - P1 (High) - オレンジ #EA580C
 - P2 (Medium) - 琥珀 #D97706
 - P3 (Low) - 緑 #65A30D
 
-#### 🎯 Issue Type (Single Select)
+### 🎯 Issue Type (Single Select)
+
 - Epic - 紫 #7C3AED
 - Sub-Issue - 青 #2563EB
 - Bug - 赤 #DC2626
 - Enhancement - エメラルド #059669
 
-#### 📦 Release Version (Single Select)
+### 📦 Release Version (Single Select)
+
 - v0.2.0-beta - 青 #1D4ED8
 - v0.3.0 - 茶 #7C2D12
 - v1.0.0 - ピンク #BE185D
 - Future - グレー #6B7280
 
-#### 📅 Implementation Phase (Single Select)
+### 📅 Implementation Phase (Single Select)
+
 - Planning - グレー #6B7280
 - In Progress - 琥珀 #D97706
 - Testing - 青 #2563EB
 - Completed - エメラルド #059669
 - Blocked - 赤 #DC2626
 
-### Step 4: ビュー設定
+## Step 4: ビュー設定
 
-#### 🗺️ ROADMAP Overview (Board)
+### 🗺️ ROADMAP Overview (Board)
+
 - Group by: Release Version
 - Filter: `is:open`
 - Sort: Priority
 
-#### 🎯 Epic Dashboard (Table)
+### 🎯 Epic Dashboard (Table)
+
 - Columns: Title, Priority, Release Version, Implementation Phase, Assignees
 - Filter: `label:epic is:open`
 - Sort: Priority, Release Version
 
-#### ⚡ Active Sprint (Board)
+### ⚡ Active Sprint (Board)
+
 - Group by: Implementation Phase
 - Filter: `is:open -label:epic milestone:"v0.2.0-beta"`
 - Sort: Priority
 
-#### 🔍 Sub-Issues Tracking (Table)
+### 🔍 Sub-Issues Tracking (Table)
+
 - Columns: Title, Priority, Implementation Phase, Assignees
 - Filter: `is:open -label:epic`
 - Sort: Priority
 
-### Step 5: フィールド値設定
+## Step 5: フィールド値設定
 
 各 Issue に以下の値を設定:
 
-#### Epic Issues
+### Epic Issues
+
 ```
 #17 Advanced Security:
 - Priority: P1 (High)
@@ -143,7 +160,8 @@ $PROJECT_NUMBER = "1"  # 実際の番号に置き換え
 - Implementation Phase: Planning
 ```
 
-#### Sub-Issues (#42-#55)
+### Sub-Issues (#42-#55)
+
 ```
 v0.2.0-beta Sub-Issues (#42-#47):
 - Priority: P0-P1
@@ -166,16 +184,19 @@ v1.0.0 Sub-Issues (#51-#55):
 
 ## 🔄 自動化有効化
 
-### ワークフローファイル更新
+## ワークフローファイル更新
 
 プロジェクト番号確定後、`.github/workflows/roadmap-sync.yml` の `PROJECT_NUMBER` を更新:
 
 ```yaml
 env:
-  PROJECT_NUMBER: 1  # 実際のプロジェクト番号
+  PROJECT_NUMBER: 1  
+
+## 実際のプロジェクト番号
+
 ```
 
-### 動作テスト
+## 動作テスト
 
 1. **新規 Issue 作成テスト**:
    ```bash
@@ -199,17 +220,20 @@ env:
 
 ## 🎉 システム完成後の効果
 
-### 📊 可視化
+## 📊 可視化
+
 - リアルタイム ROADMAP 進捗追跡
 - Milestone 別進捗ダッシュボード
 - Epic-Sub Issue 関係図
 
-### 🤖 自動化
+## 🤖 自動化
+
 - Issue 作成時の自動分類・ラベル付け
 - Epic-Sub Issue 自動関連付け
 - 週次健全性レポート自動生成
 
-### 📈 効率化
+## 📈 効率化
+
 - 手動管理作業 70% 削減
 - 進捗可視性 リアルタイム化
 - チーム開発フォーカス時間 40% 増加

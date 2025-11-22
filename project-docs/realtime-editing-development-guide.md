@@ -6,60 +6,117 @@ This guide provides comprehensive information for developers working on the MCP-
 
 ## Quick Start
 
-### Prerequisites
+## Prerequisites
 
 - **Rust**: 1.70+ (2021 edition)
 - **Cargo**: Latest stable version
 - **Git**: For version control
 - **IDE**: VS Code with rust-analyzer recommended
 
-### Development Setup
+## Development Setup
 
 ```bash
-# Clone the repository
+
+## Clone the repository
+
 git clone https://github.com/n-takatsu/mcp-rs.git
 cd mcp-rs
 
-# Install dependencies and build
+## Install dependencies and build
+
 cargo build
 
-# Run tests to verify setup
+## Run tests to verify setup
+
 cargo test
 
-# Start the real-time editing demo
+## Start the real-time editing demo
+
 cargo run --example axum_websocket_server
 
-# Open browser to http://localhost:3000/
+## Open browser to http://localhost:3000/
+
 ```
 
-### Project Structure
+## Project Structure
 
 ```
 mcp-rs/
 ├── src/
-│   ├── session/                    # Session management system
-│   │   ├── manager.rs             # SessionManager - central orchestrator
-│   │   ├── storage.rs             # Storage abstractions and implementations
-│   │   ├── types.rs               # Core session types and enums
-│   │   ├── websocket_handler.rs   # WebSocket connection handling
-│   │   ├── middleware_basic.rs    # HTTP session middleware
-│   │   └── security_integration_basic.rs # Security layer
-│   ├── server/                     # Server implementations
-│   ├── handlers/                   # MCP protocol handlers
-│   └── lib.rs                     # Main library interface
+│   ├── session/                    
+
+## Session management system
+
+│   │   ├── manager.rs             
+
+## SessionManager - central orchestrator
+
+│   │   ├── storage.rs             
+
+## Storage abstractions and implementations
+
+│   │   ├── types.rs               
+
+## Core session types and enums
+
+│   │   ├── websocket_handler.rs   
+
+## WebSocket connection handling
+
+│   │   ├── middleware_basic.rs    
+
+## HTTP session middleware
+
+│   │   └── security_integration_basic.rs 
+
+## Security layer
+
+│   ├── server/                     
+
+## Server implementations
+
+│   ├── handlers/                   
+
+## MCP protocol handlers
+
+│   └── lib.rs                     
+
+## Main library interface
+
 ├── examples/
-│   ├── axum_websocket_server.rs   # Real-time editing WebSocket server
-│   ├── basic_session_usage.rs     # Session management examples
-│   └── websocket_realtime_editing.rs # WebSocket demo
-├── tests/                          # Test suites
-├── docs/                          # Technical documentation
-├── static/                        # Static web assets
-└── demo-policies/                 # Security policy configurations
+│   ├── axum_websocket_server.rs   
+
+## Real-time editing WebSocket server
+
+│   ├── basic_session_usage.rs     
+
+## Session management examples
+
+│   └── websocket_realtime_editing.rs 
+
+## WebSocket demo
+
+├── tests/                          
+
+## Test suites
+
+├── docs/                          
+
+## Technical documentation
+
+├── static/                        
+
+## Static web assets
+
+└── demo-policies/                 
+
+## Security policy configurations
+
 ```
 
 ## Architecture Overview
 
-### Real-time Editing System
+## Real-time Editing System
 
 ```
 ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
@@ -80,7 +137,7 @@ mcp-rs/
                        └─────────────────┘    └─────────────────┘
 ```
 
-### Core Components
+## Core Components
 
 1. **Session Management**: Enterprise-grade session lifecycle management
 2. **WebSocket Server**: Real-time communication with connection handling
@@ -90,7 +147,7 @@ mcp-rs/
 
 ## Development Workflow
 
-### Feature Development
+## Feature Development
 
 1. **Branch Creation**
    ```bash
@@ -99,37 +156,61 @@ mcp-rs/
 
 2. **Development Cycle**
    ```bash
-   # Make changes
-   # Run tests continuously
+   
+
+## Make changes
+
+   
+
+## Run tests continuously
+
    cargo watch -x test
    
-   # Check code quality
+   
+
+## Check code quality
+
    cargo clippy
    cargo fmt
    
-   # Run specific test suites
+   
+
+## Run specific test suites
+
    cargo test session
    cargo test websocket
    ```
 
 3. **Quality Gates**
    ```bash
-   # All tests must pass
+   
+
+## All tests must pass
+
    cargo test --all
    
-   # No clippy warnings
+   
+
+## No clippy warnings
+
    cargo clippy -- -D warnings
    
-   # Code formatting
+   
+
+## Code formatting
+
    cargo fmt --check
    
-   # Security audit
+   
+
+## Security audit
+
    cargo audit
    ```
 
-### Code Organization
+## Code Organization
 
-#### Session Management Module
+### Session Management Module
 
 **Core Types** (`src/session/types.rs`):
 ```rust
@@ -178,7 +259,7 @@ pub trait SessionStorage: Send + Sync + std::fmt::Debug {
 }
 ```
 
-#### WebSocket Integration
+### WebSocket Integration
 
 **WebSocket Handler** (`src/session/websocket_handler.rs`):
 ```rust
@@ -209,19 +290,31 @@ pub struct WebSocketMessageProtocol {
 }
 ```
 
-### Testing Strategy
+## Testing Strategy
 
-#### Test Organization
+### Test Organization
 
 ```
 tests/
-├── session_current_tests.rs        # Core session functionality
-├── basic_session_tests.rs          # Basic CRUD operations  
-├── integration_tests.rs            # Integration test suite
-└── mod.rs                          # Test module organization
+├── session_current_tests.rs        
+
+## Core session functionality
+
+├── basic_session_tests.rs          
+
+## Basic CRUD operations  
+
+├── integration_tests.rs            
+
+## Integration test suite
+
+└── mod.rs                          
+
+## Test module organization
+
 ```
 
-#### Test Categories
+### Test Categories
 
 **Unit Tests**: Test individual components
 ```rust
@@ -275,9 +368,9 @@ async fn test_concurrent_session_operations() {
 }
 ```
 
-### Error Handling
+## Error Handling
 
-#### Error Types
+### Error Types
 
 ```rust
 #[derive(Debug, thiserror::Error)]
@@ -302,7 +395,7 @@ pub enum SessionError {
 }
 ```
 
-#### Error Handling Patterns
+### Error Handling Patterns
 
 ```rust
 // Graceful error handling with detailed logging
@@ -322,9 +415,9 @@ match session_manager.get_session(&session_id).await {
 }
 ```
 
-### Performance Guidelines
+## Performance Guidelines
 
-#### Async/Await Best Practices
+### Async/Await Best Practices
 
 ```rust
 // Good: Use async/await for I/O operations
@@ -340,7 +433,7 @@ pub async fn get_multiple_sessions(&self, ids: Vec<SessionId>) -> Vec<Option<Ses
 }
 ```
 
-#### Memory Management
+### Memory Management
 
 ```rust
 // Use Arc for shared ownership
@@ -354,9 +447,9 @@ let session_id = SessionId::new();  // Uses UUID internally
 let user_id = user_id.into();       // Take ownership when possible
 ```
 
-### Security Guidelines
+## Security Guidelines
 
-#### Input Validation
+### Input Validation
 
 ```rust
 pub async fn validate_input(&self, input: &str, context: &str) -> Result<bool, SessionError> {
@@ -377,7 +470,7 @@ pub async fn validate_input(&self, input: &str, context: &str) -> Result<bool, S
 }
 ```
 
-#### Session Security
+### Session Security
 
 ```rust
 // Always validate session state for WebSocket connections
@@ -389,46 +482,73 @@ pub async fn validate_websocket_session(&self, session_id: &SessionId) -> Result
 }
 ```
 
-### Configuration Management
+## Configuration Management
 
-#### Development Configuration
+### Development Configuration
 
 ```toml
-# config/development.toml
+
+## config/development.toml
+
 [session]
-ttl_hours = 1           # Short TTL for development
-max_per_user = 10       # More sessions for testing
+ttl_hours = 1           
+
+## Short TTL for development
+
+max_per_user = 10       
+
+## More sessions for testing
 
 [security]
-enable_rate_limiting = false  # Disabled for development
-verbose_errors = true         # Detailed error messages
+enable_rate_limiting = false  
+
+## Disabled for development
+
+verbose_errors = true         
+
+## Detailed error messages
 
 [logging]
 level = "debug"
 enable_file_logging = false
 ```
 
-#### Production Configuration
+### Production Configuration
 
 ```toml
-# config/production.toml  
+
+## config/production.toml  
+
 [session]
-ttl_hours = 24          # Full 24-hour sessions
-max_per_user = 5        # Limited sessions per user
+ttl_hours = 24          
+
+## Full 24-hour sessions
+
+max_per_user = 5        
+
+## Limited sessions per user
 
 [security]
-enable_rate_limiting = true   # Full rate limiting
-verbose_errors = false        # Minimal error exposure
-require_tls = true           # Force HTTPS/WSS
+enable_rate_limiting = true   
+
+## Full rate limiting
+
+verbose_errors = false        
+
+## Minimal error exposure
+
+require_tls = true           
+
+## Force HTTPS/WSS
 
 [logging] 
 level = "info"
 enable_file_logging = true
 ```
 
-### Deployment
+## Deployment
 
-#### Docker Development
+### Docker Development
 
 ```dockerfile
 FROM rust:1.70
@@ -443,7 +563,7 @@ EXPOSE 3000
 CMD ["cargo", "run", "--release", "--example", "axum_websocket_server"]
 ```
 
-#### Docker Compose
+### Docker Compose
 
 ```yaml
 version: '3.8'
@@ -460,7 +580,7 @@ services:
     restart: unless-stopped
 ```
 
-#### Kubernetes Deployment
+### Kubernetes Deployment
 
 ```yaml
 apiVersion: apps/v1
@@ -519,9 +639,9 @@ spec:
   type: LoadBalancer
 ```
 
-### Monitoring and Observability
+## Monitoring and Observability
 
-#### Structured Logging
+### Structured Logging
 
 ```rust
 use tracing::{info, warn, error, debug, instrument};
@@ -544,7 +664,7 @@ pub async fn create_session(&self, user_id: String) -> Result<Session, SessionEr
 }
 ```
 
-#### Metrics Collection
+### Metrics Collection
 
 ```rust
 pub struct SessionMetrics {
@@ -565,7 +685,7 @@ impl SessionManager {
 }
 ```
 
-#### Health Checks
+### Health Checks
 
 ```rust
 pub async fn health_check() -> Json<serde_json::Value> {
@@ -578,16 +698,16 @@ pub async fn health_check() -> Json<serde_json::Value> {
 }
 ```
 
-### Contributing Guidelines
+## Contributing Guidelines
 
-#### Code Style
+### Code Style
 
 - **Formatting**: Use `cargo fmt` for consistent formatting
 - **Linting**: Address all `cargo clippy` warnings
 - **Documentation**: Document all public APIs with examples
 - **Testing**: Maintain test coverage above 80%
 
-#### Pull Request Process
+### Pull Request Process
 
 1. **Feature Branch**: Create feature branch from `main`
 2. **Implementation**: Implement feature with tests
@@ -596,7 +716,7 @@ pub async fn health_check() -> Json<serde_json::Value> {
 5. **Review**: Submit PR for code review
 6. **Merge**: Merge after approval and CI success
 
-#### Commit Messages
+### Commit Messages
 
 Use conventional commit format:
 ```
@@ -606,49 +726,61 @@ docs: update WebSocket API documentation
 test: add comprehensive session lifecycle tests
 ```
 
-### Troubleshooting
+## Troubleshooting
 
-#### Common Issues
+### Common Issues
 
 **Compilation Errors**:
 ```bash
-# Clean build artifacts
+
+## Clean build artifacts
+
 cargo clean
 
-# Update dependencies
+## Update dependencies
+
 cargo update
 
-# Check for conflicting versions
+## Check for conflicting versions
+
 cargo tree --duplicates
 ```
 
 **Test Failures**:
 ```bash
-# Run specific failing test
+
+## Run specific failing test
+
 cargo test test_name -- --nocapture
 
-# Run with debug output
+## Run with debug output
+
 RUST_LOG=debug cargo test
 
-# Check for test isolation issues
+## Check for test isolation issues
+
 cargo test -- --test-threads=1
 ```
 
 **Runtime Issues**:
 ```bash
-# Enable debug logging
+
+## Enable debug logging
+
 RUST_LOG=debug cargo run --example axum_websocket_server
 
-# Check port conflicts
+## Check port conflicts
+
 netstat -tlnp | grep 3000
 
-# Verify configuration
+## Verify configuration
+
 cargo run -- --check-config
 ```
 
-### Advanced Topics
+## Advanced Topics
 
-#### Custom Storage Implementation
+### Custom Storage Implementation
 
 ```rust
 use async_trait::async_trait;
@@ -677,7 +809,7 @@ impl SessionStorage for RedisSessionStorage {
 }
 ```
 
-#### WebSocket Message Extensions
+### WebSocket Message Extensions
 
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize)]
