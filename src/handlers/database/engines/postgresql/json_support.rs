@@ -140,11 +140,11 @@ impl PostgreSqlJsonSupport {
 
         let mut result = base.clone();
 
-        if let (JsonValue::Object(base_obj), JsonValue::Object(update_obj)) =
-            (result.as_mut(), update)
-        {
-            for (key, value) in update_obj {
-                base_obj.insert(key.clone(), value.clone());
+        if let JsonValue::Object(base_obj) = &mut result {
+            if let JsonValue::Object(update_obj) = update {
+                for (key, value) in update_obj {
+                    base_obj.insert(key.clone(), value.clone());
+                }
             }
         }
 

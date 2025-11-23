@@ -46,6 +46,7 @@ impl Default for PostgreSqlConfig {
 impl PostgreSqlConfig {
     /// Create connection string for PostgreSQL
     pub fn connection_string(&self) -> String {
+        let timeout_secs = self.connection_timeout.as_secs();
         format!(
             "postgresql://{}:{}@{}:{}/{}?connect_timeout={}",
             self.username,
@@ -53,7 +54,7 @@ impl PostgreSqlConfig {
             self.host,
             self.port,
             self.database,
-            self.connection_timeout
+            timeout_secs
         )
     }
 
@@ -81,7 +82,7 @@ impl PostgreSqlConfig {
         if self.max_connections == 0 || self.max_connections > 1000 {
             return Err(DatabaseError::ValidationError(format!(
                 "PostgreSQL max_connections must be 1-1000, got {}",
-                self.max_connections
+                self.max_connections as usize
             )));
         }
 
