@@ -29,7 +29,7 @@ impl PostgreSqlTransactionManager {
             IsolationLevel::ReadUncommitted => "BEGIN ISOLATION LEVEL READ UNCOMMITTED".to_string(),
             IsolationLevel::ReadCommitted => "BEGIN ISOLATION LEVEL READ COMMITTED".to_string(),
             IsolationLevel::RepeatableRead => "BEGIN ISOLATION LEVEL REPEATABLE READ".to_string(),
-            IsolationLevel::SerializableIsolation => {
+            IsolationLevel::Serializable => {
                 "BEGIN ISOLATION LEVEL SERIALIZABLE".to_string()
             }
         };
@@ -42,7 +42,7 @@ impl PostgreSqlTransactionManager {
                 isolation_level,
                 savepoints: Vec::new(),
             }),
-            Err(e) => Err(DatabaseError::TransactionError(format!(
+            Err(e) => Err(DatabaseError::TransactionFailed(format!(
                 "Failed to begin transaction: {}",
                 e
             ))),
@@ -79,7 +79,7 @@ impl PostgreSqlTransaction {
     /// Commit the transaction
     pub async fn commit(&mut self) -> Result<(), DatabaseError> {
         if !self.is_active {
-            return Err(DatabaseError::TransactionError(
+            return Err(DatabaseError::TransactionFailed(
                 "Transaction is not active".to_string(),
             ));
         }
@@ -90,7 +90,7 @@ impl PostgreSqlTransaction {
                 self.is_active = false;
                 Ok(())
             }
-            Err(e) => Err(DatabaseError::TransactionError(format!(
+            Err(e) => Err(DatabaseError::TransactionFailed(format!(
                 "Failed to commit transaction: {}",
                 e
             ))),
@@ -100,7 +100,7 @@ impl PostgreSqlTransaction {
     /// Rollback the transaction
     pub async fn rollback(&mut self) -> Result<(), DatabaseError> {
         if !self.is_active {
-            return Err(DatabaseError::TransactionError(
+            return Err(DatabaseError::TransactionFailed(
                 "Transaction is not active".to_string(),
             ));
         }
@@ -111,7 +111,7 @@ impl PostgreSqlTransaction {
                 self.is_active = false;
                 Ok(())
             }
-            Err(e) => Err(DatabaseError::TransactionError(format!(
+            Err(e) => Err(DatabaseError::TransactionFailed(format!(
                 "Failed to rollback transaction: {}",
                 e
             ))),
@@ -121,7 +121,7 @@ impl PostgreSqlTransaction {
     /// Create a savepoint
     pub async fn savepoint(&mut self, savepoint_name: &str) -> Result<String, DatabaseError> {
         if !self.is_active {
-            return Err(DatabaseError::TransactionError(
+            return Err(DatabaseError::TransactionFailed(
                 "Transaction is not active".to_string(),
             ));
         }
@@ -146,7 +146,7 @@ impl PostgreSqlTransaction {
                 self.savepoints.push(savepoint_name.to_string());
                 Ok(savepoint_name.to_string())
             }
-            Err(e) => Err(DatabaseError::TransactionError(format!(
+            Err(e) => Err(DatabaseError::TransactionFailed(format!(
                 "Failed to create savepoint: {}",
                 e
             ))),
@@ -159,7 +159,7 @@ impl PostgreSqlTransaction {
         savepoint_name: &str,
     ) -> Result<(), DatabaseError> {
         if !self.is_active {
-            return Err(DatabaseError::TransactionError(
+            return Err(DatabaseError::TransactionFailed(
                 "Transaction is not active".to_string(),
             ));
         }
@@ -181,7 +181,7 @@ impl PostgreSqlTransaction {
                 }
                 Ok(())
             }
-            Err(e) => Err(DatabaseError::TransactionError(format!(
+            Err(e) => Err(DatabaseError::TransactionFailed(format!(
                 "Failed to rollback to savepoint: {}",
                 e
             ))),
@@ -191,16 +191,9 @@ impl PostgreSqlTransaction {
     /// Release a savepoint
     pub async fn release_savepoint(&mut self, savepoint_name: &str) -> Result<(), DatabaseError> {
         if !self.is_active {
-            return Err(DatabaseError::TransactionError(
+            return Err(DatabaseError::TransactionFailed(
                 "Transaction is not active".to_string(),
             ));
-        }
-
-        if !self.savepoints.contains(&savepoint_name.to_string()) {
-            return Err(DatabaseError::ValidationError(format!(
-                "Savepoint '{}' does not exist in this transaction",
-                savepoint_name
-            )));
         }
 
         if !self.savepoints.contains(&savepoint_name.to_string()) {
@@ -217,7 +210,7 @@ impl PostgreSqlTransaction {
                 self.savepoints.retain(|s| s != savepoint_name);
                 Ok(())
             }
-            Err(e) => Err(DatabaseError::TransactionError(format!(
+            Err(e) => Err(DatabaseError::TransactionFailed(format!(
                 "Failed to release savepoint: {}",
                 e
             ))),
@@ -227,7 +220,13 @@ impl PostgreSqlTransaction {
 
 impl Drop for PostgreSqlTransaction {
     fn drop(&mut self) {
-        // In a real implementation, we would use async-aware cleanup
+        // Note: async cleanup cannot be performed in Drop
+        // In a real implementation, we would use async-aware cleanup patterns
+        #[allow(unreachable_code)]
+        if self.is_active {
+            // Transactions should be explicitly committed or rolled back
+            // Implicit rollback would happen at database level
+        }
         if self.is_active {
             // Log warning: transaction not explicitly closed
             eprintln!(
@@ -249,7 +248,7 @@ mod tests {
 
     #[test]
     fn test_savepoint_state_tracking() {
-        let mut txn = PostgreSqlTransaction {
+        let mut _txn = PostgreSqlTransaction {
             pool: Arc::new(
                 /* mock pool would go here - using placeholder for compilation */
                 unreachable!() as _,
@@ -259,42 +258,42 @@ mod tests {
             savepoints: Vec::new(),
         };
 
-        assert!(txn.is_active());
-        assert_eq!(txn.savepoints().len(), 0);
+        assert!(_txn.is_active());
+        assert_eq!(_txn.savepoints().len(), 0);
 
-        txn.savepoints.push("sp_1".to_string());
-        assert_eq!(txn.savepoints().len(), 1);
+        _txn.savepoints.push("sp_1".to_string());
+        assert_eq!(_txn.savepoints().len(), 1);
     }
 
     #[test]
     fn test_isolation_level_access() {
-        let txn = PostgreSqlTransaction {
+        let _txn = PostgreSqlTransaction {
             pool: Arc::new(unreachable!() as _),
             is_active: true,
-            isolation_level: IsolationLevel::SerializableIsolation,
+            isolation_level: IsolationLevel::Serializable,
             savepoints: Vec::new(),
         };
 
-        assert_eq!(txn.isolation_level(), IsolationLevel::SerializableIsolation);
+        assert_eq!(_txn.isolation_level(), IsolationLevel::Serializable);
     }
 
     #[test]
     fn test_transaction_active_check() {
-        let txn_active = PostgreSqlTransaction {
+        let _txn_active = PostgreSqlTransaction {
             pool: Arc::new(unreachable!() as _),
             is_active: true,
             isolation_level: IsolationLevel::ReadCommitted,
             savepoints: Vec::new(),
         };
 
-        let txn_inactive = PostgreSqlTransaction {
+        let _txn_inactive = PostgreSqlTransaction {
             pool: Arc::new(unreachable!() as _),
             is_active: false,
             isolation_level: IsolationLevel::ReadCommitted,
             savepoints: Vec::new(),
         };
 
-        assert!(txn_active.is_active());
-        assert!(!txn_inactive.is_active());
+        assert!(_txn_active.is_active());
+        assert!(!_txn_inactive.is_active());
     }
 }

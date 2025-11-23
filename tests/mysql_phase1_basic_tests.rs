@@ -85,6 +85,7 @@ fn test_savepoint_stack_operations() {
 #[test]
 fn test_transaction_state_transitions() {
     #[derive(Debug, PartialEq)]
+    #[allow(dead_code)]
     enum TransactionState {
         Inactive,
         Active,
@@ -116,6 +117,7 @@ fn test_multiple_savepoints_handling() {
 
 #[test]
 fn test_batch_operation_tracking() {
+    #[allow(dead_code)]
     struct Operation {
         id: usize,
         operation_type: String,
@@ -181,13 +183,14 @@ fn test_binary_data_preservation() {
 
 #[test]
 fn test_null_value_handling() {
+    #[allow(dead_code)]
     enum DataValue {
         Null,
         Int(i64),
         String(String),
     }
 
-    let null_val = DataValue::Null;
+    let _null_val = DataValue::Null;
     let int_val = DataValue::Int(42);
     let string_val = DataValue::String("test".to_string());
 
@@ -215,6 +218,7 @@ fn test_special_character_preservation() {
 
 #[test]
 fn test_transaction_recovery_simulation() {
+    #[allow(dead_code)]
     enum RecoveryState {
         Normal,
         ErrorOccurred,
@@ -222,10 +226,10 @@ fn test_transaction_recovery_simulation() {
         Recovered,
     }
 
-    let mut state = RecoveryState::Normal;
-    state = RecoveryState::ErrorOccurred;
-    state = RecoveryState::Recovering;
-    state = RecoveryState::Recovered;
+    let mut _state = RecoveryState::Normal;
+    _state = RecoveryState::ErrorOccurred;
+    _state = RecoveryState::Recovering;
+    _state = RecoveryState::Recovered;
 
     assert!(matches!(state, RecoveryState::Recovered));
 }

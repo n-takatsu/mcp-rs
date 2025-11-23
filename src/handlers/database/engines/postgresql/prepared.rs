@@ -214,7 +214,7 @@ impl PreparedStatement for PostgreSqlPreparedStatement {
             let param = &params[_idx];
             match param {
                 Value::Null => {
-                    query = query.bind::<Option<String>, _>(None);
+                    query = query.bind(None::<String>);
                 }
                 Value::Bool(b) => {
                     query = query.bind(*b);
@@ -247,7 +247,7 @@ impl PreparedStatement for PostgreSqlPreparedStatement {
         // Execute the query
         match query.fetch_all(self.pool.as_ref()).await {
             Ok(rows) => Self::convert_rows_to_query_result(rows).await,
-            Err(e) => Err(DatabaseError::QueryError(e.to_string())),
+            Err(e) => Err(DatabaseError::QueryFailed(e.to_string())),
         }
     }
 
@@ -262,7 +262,7 @@ impl PreparedStatement for PostgreSqlPreparedStatement {
         for param in params.iter() {
             match param {
                 Value::Null => {
-                    query = query.bind::<Option<String>, _>(None);
+                    query = query.bind(None::<String>);
                 }
                 Value::Bool(b) => {
                     query = query.bind(*b);
@@ -298,7 +298,7 @@ impl PreparedStatement for PostgreSqlPreparedStatement {
                 last_insert_id: None, // PostgreSQL uses RETURNING clause for this
                 execution_time_ms: 0,
             }),
-            Err(e) => Err(DatabaseError::ExecutionError(e.to_string())),
+            Err(e) => Err(DatabaseError::QueryFailed(e.to_string())),
         }
     }
 
