@@ -17,7 +17,7 @@ MCP-RSにおけるデータベースハンドラーは、様々なデータベ�
 ## レイヤー構造
 
 ```text
-┌─────────────────────────────────────┐
+
 │        MCP Protocol Layer          │ ← 統一MCPインターフェース
 ├─────────────────────────────────────┤
 │      Database Handler Layer        │ ← DB操作抽象化
@@ -28,6 +28,7 @@ MCP-RSにおけるデータベースハンドラーは、様々なデータベ�
 ├─────────────────────────────────────┤
 │       Security Layer              │ ← セキュリティ機能
 └─────────────────────────────────────┘
+
 ```
 
 ## コンポーネント設計
@@ -35,7 +36,7 @@ MCP-RSにおけるデータベースハンドラーは、様々なデータベ�
 ### 1. データベース抽象化トレイト
 
 ```rust
-#[async_trait]
+
 pub trait DatabaseEngine: Send + Sync {
     /// データベースタイプを返す
     fn engine_type(&self) -> DatabaseType;
@@ -82,12 +83,13 @@ pub trait DatabaseTransaction: Send + Sync {
     /// ロールバック
     async fn rollback(self: Box<Self>) -> Result<(), DatabaseError>;
 }
+
 ```
 
 ### 2. セキュリティレイヤー
 
 ```rust
-pub struct DatabaseSecurity {
+
     /// SQLインジェクション検知
     sql_injection_detector: SqlInjectionDetector,
     /// クエリ許可リスト
@@ -116,6 +118,7 @@ impl DatabaseSecurity {
         Ok(ValidationResult::Approved)
     }
 }
+
 ```
 
 ## 🔧 実装計画
@@ -152,8 +155,9 @@ impl DatabaseSecurity {
 ### 2.1 PostgreSQLエンジン
 
 **ファイル**: `src/handlers/database/engines/postgresql.rs`
+
 ```rust
-pub struct PostgreSqlEngine {
+
     pool: Arc<deadpool_postgres::Pool>,
     config: PostgreSqlConfig,
     security: Arc<DatabaseSecurity>,
@@ -180,13 +184,15 @@ impl DatabaseEngine for PostgreSqlEngine {
         ]
     }
 }
+
 ```
 
 ### 2.2 PostgreSQL接続実装
 
 **ファイル**: `src/handlers/database/engines/postgresql.rs`
+
 ```rust
-pub struct PostgreSqlConnection {
+
     client: deadpool_postgres::Client,
     security: Arc<DatabaseSecurity>,
 }
@@ -221,6 +227,7 @@ impl DatabaseConnection for PostgreSqlConnection {
         })
     }
 }
+
 ```
 
 ## Phase 3: MCPインターフェース実装
@@ -228,8 +235,9 @@ impl DatabaseConnection for PostgreSqlConnection {
 ### 3.1 Database MCPハンドラー
 
 **ファイル**: `src/handlers/database/handler.rs`
+
 ```rust
-pub struct DatabaseHandler {
+
     engines: HashMap<String, Arc<dyn DatabaseEngine>>,
     active_engine: String,
     security: Arc<DatabaseSecurity>,
@@ -301,6 +309,7 @@ impl McpHandler for DatabaseHandler {
         }
     }
 }
+
 ```
 
 ## Phase 4: 設定とテスト
@@ -308,8 +317,9 @@ impl McpHandler for DatabaseHandler {
 ### 4.1 設定拡張
 
 **ファイル**: `mcp-config-database.toml.example`
+
 ```toml
-[handlers.postgres_main]
+
 type = "database"
 database_type = "postgresql"
 name = "Main PostgreSQL Database"
@@ -344,6 +354,7 @@ enable_prepared_statements = true
 enable_stored_procedures = true
 query_timeout = 30
 max_query_length = 10000
+
 ```
 
 ### 4.2 テスト戦略

@@ -67,14 +67,17 @@ MCP-RS provides a **comprehensive, battle-tested** implementation of the MCP (Mo
 ## 🚀 Getting Started
 
 1. **Installation**
+
    ```toml
-   [dependencies]
+
    mcp-rs = "0.1.0"
+
    ```
 
 2. **Basic Usage**
+
    ```rust
-   use mcp_rs::{
+
        server::McpServer,
        config::Config,
        handlers::wordpress::WordPressHandler
@@ -98,11 +101,13 @@ MCP-RS provides a **comprehensive, battle-tested** implementation of the MCP (Mo
        server.serve(config.server.address()).await?;
        Ok(())
    }
+
    ```
 
 3. **Configuration**
+
    ```toml
-   
+
 
 ## mcp-config.toml
 
@@ -115,6 +120,7 @@ MCP-RS provides a **comprehensive, battle-tested** implementation of the MCP (Mo
    username = "your_username"
    password = "your_application_password"
    timeout_seconds = 30
+
    ```
 
 ## Current Implementation Status
@@ -144,7 +150,7 @@ MCP-RS provides a **comprehensive, battle-tested** implementation of the MCP (Mo
 ## Architecture Overview
 
 ```
-┌─────────────────────────────────────────┐
+
 │ Application Layer                       │
 │ ├── main.rs (Entry Point)              │
 │ └── CLI/Server Startup                 │
@@ -168,6 +174,7 @@ MCP-RS provides a **comprehensive, battle-tested** implementation of the MCP (Mo
 │ ├── config/ (Configuration)            │
 │ └── error/ (Error Handling)            │
 └─────────────────────────────────────────┘
+
 ```
 
 ## Use Cases

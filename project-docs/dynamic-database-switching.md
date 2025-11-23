@@ -20,12 +20,13 @@ The Dynamic Database Switching feature represents a breakthrough in database arc
 - **Thread Safety**: Full async/await support with Arc<RwLock> patterns
 
 ```rust
-pub struct DynamicEngineManager {
+
     engines: HashMap<String, Arc<dyn DatabaseEngine>>,
     active_manager: Arc<RwLock<ActiveEngineManager>>,
     switch_orchestrator: Arc<SwitchOrchestrator>,
     monitoring: Arc<MonitoringSystem>,
 }
+
 ```
 
 ### 2. **SwitchOrchestrator** 
@@ -49,7 +50,7 @@ pub struct DynamicEngineManager {
 ## Engine State Management
 
 ```mermaid
-stateDiagram-v2
+
     [*] --> Initializing
     Initializing --> Healthy: Health Check Pass
     Initializing --> Failed: Health Check Fail
@@ -60,6 +61,7 @@ stateDiagram-v2
     Switching --> Healthy: Switch Success
     Switching --> Failed: Switch Failure
     Failed --> Initializing: Recovery Attempt
+
 ```
 
 ## Switching Algorithms
@@ -67,7 +69,7 @@ stateDiagram-v2
 ## 1. **Graceful Switching**
 
 ```rust
-pub async fn graceful_switch(
+
     &self,
     target_engine: &str,
     switch_config: SwitchConfig,
@@ -93,12 +95,13 @@ pub async fn graceful_switch(
         new_engine: target_engine.to_string(),
     })
 }
+
 ```
 
 ## 2. **Emergency Failover**
 
 ```rust
-pub async fn emergency_failover(
+
     &self,
     failed_engine: &str,
 ) -> Result<FailoverResult, DynamicError> {
@@ -113,6 +116,7 @@ pub async fn emergency_failover(
     
     Ok(FailoverResult::Success)
 }
+
 ```
 
 ## Performance Optimizations
@@ -126,11 +130,12 @@ pub async fn emergency_failover(
 ## Caching Strategy
 
 ```toml
-[database.dynamic_switching.cache]
+
 engine_metadata_ttl_seconds = 300
 health_status_ttl_seconds = 60
 performance_metrics_ttl_seconds = 30
 connection_pool_stats_ttl_seconds = 10
+
 ```
 
 ## Memory Management
@@ -146,8 +151,9 @@ connection_pool_stats_ttl_seconds = 10
 ### `switch_database_engine`
 
 **Purpose**: Manual engine switching with full control
+
 ```json
-{
+
   "tool": "switch_database_engine",
   "arguments": {
     "target_engine": "postgresql",
@@ -157,13 +163,15 @@ connection_pool_stats_ttl_seconds = 10
     "rollback_on_failure": true
   }
 }
+
 ```
 
 ### `configure_switch_policy`
 
 **Purpose**: Configure automatic switching policies
+
 ```json
-{
+
   "tool": "configure_switch_policy",
   "arguments": {
     "policy_name": "performance_optimization",
@@ -173,13 +181,15 @@ connection_pool_stats_ttl_seconds = 10
     "enabled": true
   }
 }
+
 ```
 
 ### `get_engine_metrics`
 
 **Purpose**: Real-time engine performance monitoring
+
 ```json
-{
+
   "tool": "get_engine_metrics",
   "arguments": {
     "engine": "all",
@@ -187,6 +197,7 @@ connection_pool_stats_ttl_seconds = 10
     "time_range_seconds": 300
   }
 }
+
 ```
 
 ## Advanced Tools
@@ -194,8 +205,9 @@ connection_pool_stats_ttl_seconds = 10
 ### `monitor_switch_events`
 
 **Purpose**: Real-time switching event monitoring
+
 ```json
-{
+
   "tool": "monitor_switch_events",
   "arguments": {
     "real_time": true,
@@ -203,13 +215,15 @@ connection_pool_stats_ttl_seconds = 10
     "filter_level": "info"
   }
 }
+
 ```
 
 ### `check_engine_health`
 
 **Purpose**: Comprehensive engine health validation
+
 ```json
-{
+
   "tool": "check_engine_health",
   "arguments": {
     "engine": "mongodb",
@@ -217,6 +231,7 @@ connection_pool_stats_ttl_seconds = 10
     "auto_failover_on_failure": true
   }
 }
+
 ```
 
 ## Production Deployment
@@ -224,7 +239,7 @@ connection_pool_stats_ttl_seconds = 10
 ## Configuration Template
 
 ```toml
-[database.dynamic_switching]
+
 enabled = true
 primary_engine = "postgresql"
 secondary_engines = ["redis", "mongodb", "mysql"]
@@ -262,6 +277,7 @@ webhook_url = "https://alerts.company.com/database"
 enable_pagerduty = true
 enable_slack = true
 critical_failure_notification = true
+
 ```
 
 ## Monitoring Setup
@@ -278,6 +294,7 @@ scrape_configs:
       - targets: ['localhost:9090']
     scrape_interval: 15s
     metrics_path: '/metrics/database'
+
 ```
 
 ### Grafana Dashboard
@@ -292,11 +309,12 @@ scrape_configs:
 ### Access Control
 
 ```toml
-[database.dynamic_switching.security]
+
 require_admin_approval = true
 max_switches_per_hour = 10
 audit_all_operations = true
 encrypt_engine_credentials = true
+
 ```
 
 ### Audit Logging

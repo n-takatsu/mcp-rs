@@ -20,6 +20,7 @@ Our interactive demo showcases the power of MCP-RS real-time collaborative editi
 ## 🚀 Quick Demo Setup
 
 **Option 1: Run Locally (Recommended)**
+
 ```bash
 
 ## Clone the repository
@@ -34,6 +35,7 @@ cargo run --bin main
 ## Open the demo
 
 open http://localhost:8080/demo.html
+
 ```
 
 **Option 2: Try Online Demo**
@@ -105,7 +107,7 @@ open http://localhost:8080/demo.html
 ## Main Interface Components
 
 ```
-Demo Interface Layout:
+
 ┌─────────────────────────────────────────────────────────────────┐
 │                    MCP-RS Real-time Demo                        │
 ├─────────────────────────────────────────────────────────────────┤
@@ -131,6 +133,7 @@ Demo Interface Layout:
 │  │                 │    │                 │                    │
 │  └─────────────────┘    └─────────────────┘                    │
 └─────────────────────────────────────────────────────────────────┘
+
 ```
 
 ## Step-by-Step Demo Instructions
@@ -138,8 +141,9 @@ Demo Interface Layout:
 ### 🎯 1. Basic Collaboration Test
 
 1. **Start the Server**
+
    ```bash
-   cargo run --bin main
+
    ```
 
 2. **Open the Demo**
@@ -259,7 +263,7 @@ The demo displays live performance metrics:
 The demo can be customized by modifying the configuration:
 
 ```javascript
-// Demo configuration
+
 const config = {
     serverUrl: 'ws://localhost:8080/ws',
     maxMessageSize: 10240, // 10KB
@@ -268,13 +272,15 @@ const config = {
     enableLogging: true,
     logLevel: 'info'
 };
+
 ```
 
 ## Adding Custom Features
 
 **Custom Message Types:**
+
 ```javascript
-// Add custom message handling
+
 function handleCustomMessage(message) {
     switch(message.type) {
         case 'cursor_position':
@@ -287,6 +293,7 @@ function handleCustomMessage(message) {
             console.log('Unknown message type:', message.type);
     }
 }
+
 ```
 
 **Custom UI Elements:**
@@ -304,41 +311,49 @@ function handleCustomMessage(message) {
 ### Connection Problems
 
 **Issue**: WebSocket connection fails
+
 ```
-Solution:
+
 1. Ensure the server is running: cargo run --bin main
 2. Check the server URL: http://localhost:8080
 3. Verify firewall settings allow port 8080
 4. Check browser console for error messages
+
 ```
 
 **Issue**: Sessions not syncing
+
 ```
-Solution:
+
 1. Verify all tabs use the same session ID
 2. Check WebSocket connection status
 3. Look for error messages in the connection log
 4. Try creating a new session
+
 ```
 
 ### Performance Issues
 
 **Issue**: High latency or slow updates
+
 ```
-Solution:
+
 1. Check system resources (CPU, memory)
 2. Reduce message frequency
 3. Close unnecessary browser tabs
 4. Restart the server
+
 ```
 
 **Issue**: Memory usage growing over time
+
 ```
-Solution:
+
 1. Refresh browser tabs periodically
 2. Clear browser cache
 3. Restart the demo server
 4. Check for JavaScript memory leaks
+
 ```
 
 ## Debug Information
@@ -346,9 +361,10 @@ Solution:
 Enable debug logging to get detailed information:
 
 ```javascript
-// Enable debug mode in browser console
+
 localStorage.setItem('mcp-rs-debug', 'true');
 location.reload();
+
 ```
 
 This will show:

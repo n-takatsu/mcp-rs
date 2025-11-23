@@ -26,10 +26,12 @@ separation = "single"
 ```
 
 この設定では、以下のようなログがJSONレスポンスと混在してしまいます：
+
 ```
-2025-11-09T09:32:12.882526Z  INFO mcp_rs::logging: 📝 ログシステム初期化完了
+
 {"jsonrpc":"2.0","id":1,"result":{"status":"accepted"}}
 2025-11-09T09:32:13.156903Z  INFO mcp_rs: ✅ MCP-RSサーバー起動完了
+
 ```
 
 ## ✅ Claude Desktop用の正しい設定
@@ -67,13 +69,15 @@ url = "https://your-site.com"
 username = "your-username"
 password = "${WORDPRESS_PASSWORD}"
 timeout = 30000
+
 ```
 
 ## 🔧 Claude Desktop設定ファイル
 
 **Windows:**
+
 ```json
-// %APPDATA%\Claude\claude_desktop_config.json
+
 {
   "mcpServers": {
     "mcp-rs": {
@@ -82,11 +86,13 @@ timeout = 30000
     }
   }
 }
+
 ```
 
 **macOS:**
+
 ```json
-// ~/Library/Application Support/Claude/claude_desktop_config.json
+
 {
   "mcpServers": {
     "mcp-rs": {
@@ -95,11 +101,13 @@ timeout = 30000
     }
   }
 }
+
 ```
 
 **Linux:**
+
 ```json
-// ~/.config/claude-desktop/claude_desktop_config.json
+
 {
   "mcpServers": {
     "mcp-rs": {
@@ -108,6 +116,7 @@ timeout = 30000
     }
   }
 }
+
 ```
 
 ## 📊 ログ管理のベストプラクティス
@@ -144,6 +153,7 @@ transport_type = "http"
 [transport.http]
 addr = "127.0.0.1"
 port = 8081
+
 ```
 
 ## 🔄 Transport方式の選択
@@ -192,8 +202,9 @@ separation = "separated"
 ## WordPressハンドラーが動作しない
 
 1. **環境変数の確認**:
+
    ```bash
-   echo $WORDPRESS_PASSWORD  
+
 
 ## Linux/macOS
 
@@ -204,13 +215,15 @@ separation = "separated"
    ```
 
 2. **設定ファイルの検証**:
+
    ```bash
-   mcp-rs.exe --config configs/production/claude-desktop.toml --validate
+
    ```
 
 3. **ログファイルの確認**:
+
    ```bash
-   tail -f logs/wordpress.log  
+
 
 ## WordPress関連ログ
 
@@ -225,7 +238,7 @@ separation = "separated"
 ## Claude Desktop用最小設定
 
 ```toml
-[server]
+
 stdio = true
 log_level = "error"
 
@@ -236,12 +249,13 @@ transport_type = "stdio"
 url = "https://your-wordpress-site.com"
 username = "your-username"
 password = "${WORDPRESS_PASSWORD}"
+
 ```
 
 ## 本番環境用完全設定
 
 ```toml
-[server]
+
 stdio = true
 log_level = "warn"
 
@@ -266,6 +280,7 @@ timeout = 30000
 cache_ttl = 300
 max_retries = 3
 enabled = true
+
 ```
 
 ## 🔗 関連ドキュメント

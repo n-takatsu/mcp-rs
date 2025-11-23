@@ -55,6 +55,7 @@ enabled = true
 default_percentage = 10.0
 max_percentage = 100.0
 evaluation_window_minutes = 30
+
 ```
 
 ## 3. 環境変数の設定
@@ -83,6 +84,7 @@ cargo run
 
 cargo build --release
 ./target/release/mcp-rs
+
 ```
 
 ## 🎯 ブログサービス機能
@@ -92,7 +94,7 @@ cargo build --release
 ### 記事の作成
 
 ```json
-{
+
   "tool": "create_post",
   "arguments": {
     "title": "AIが変える未来のブログ",
@@ -103,12 +105,13 @@ cargo build --release
     "featured_media": 123
   }
 }
+
 ```
 
 ### 記事の一括管理
 
 ```json
-{
+
   "tool": "list_posts",
   "arguments": {
     "per_page": 50,
@@ -117,6 +120,7 @@ cargo build --release
     "order": "desc"
   }
 }
+
 ```
 
 ## B. メディア管理
@@ -124,7 +128,7 @@ cargo build --release
 ### 画像のアップロード
 
 ```json
-{
+
   "tool": "upload_media",
   "arguments": {
     "filename": "hero-image.jpg",
@@ -133,6 +137,7 @@ cargo build --release
     "alt_text": "記事のメイン画像"
   }
 }
+
 ```
 
 ## C. カテゴリ・タグ管理
@@ -140,7 +145,7 @@ cargo build --release
 ### カテゴリの作成
 
 ```json
-{
+
   "tool": "create_category",
   "arguments": {
     "name": "テクノロジー",
@@ -148,6 +153,7 @@ cargo build --release
     "parent": 0
   }
 }
+
 ```
 
 ## 🔒 セキュリティ機能
@@ -155,7 +161,7 @@ cargo build --release
 ## 1. 6層セキュリティアーキテクチャ
 
 ```yaml
-レイヤー1: 入力検証とサニタイゼーション
+
   - SQLインジェクション対策
   - XSS攻撃対策
   - CSRF対策
@@ -184,6 +190,7 @@ cargo build --release
   - リアルタイムスキャン
   - 定期的なセキュリティチェック
   - 自動パッチ適用推奨
+
 ```
 
 ## 2. セキュリティヘルスチェック
@@ -197,6 +204,7 @@ cargo run --example wordpress_security_diagnosis
 ## 定期的なヘルスチェック
 
 curl http://localhost:8080/health-check
+
 ```
 
 ## 🚀 カナリアデプロイメント
@@ -214,6 +222,7 @@ cargo run --example dashboard_demo
 curl -X POST http://localhost:8080/canary/start \
   -H "Content-Type: application/json" \
   -d '{"percentage": 10, "target": "new-theme"}'
+
 ```
 
 ## 2. パフォーマンス監視
@@ -225,7 +234,7 @@ curl -X POST http://localhost:8080/canary/start \
 ## 3. 自動ロールバック
 
 ```yaml
-条件:
+
   - エラー率が5%を超過
   - レスポンス時間が200ms以上増加
   - ユーザー離脱率が10%以上増加
@@ -234,6 +243,7 @@ curl -X POST http://localhost:8080/canary/start \
   - 自動的に安定版に切り戻し
   - 管理者に通知
   - 詳細なインシデントレポート生成
+
 ```
 
 ## 📊 運用・監視
@@ -245,6 +255,7 @@ curl -X POST http://localhost:8080/canary/start \
 ## ターミナルベースダッシュボード起動
 
 cargo run --example dashboard_demo
+
 ```
 
 機能:
@@ -272,6 +283,7 @@ GET /canary/status
 ## ヘルスチェック
 
 GET /health
+
 ```
 
 ## 🛠️ カスタマイズ
@@ -279,7 +291,7 @@ GET /health
 ## 1. プラグイン開発
 
 ```rust
-// カスタムハンドラーの作成例
+
 use mcp_rs::mcp::{McpHandler, Tool};
 
 #[derive(Debug)]
@@ -305,12 +317,13 @@ impl McpHandler for CustomBlogHandler {
         ])
     }
 }
+
 ```
 
 ## 2. テーマ統合
 
 ```php
-// WordPress テーマ内でMCPを活用
+
 function mcp_auto_content_generation($post_id) {
     $mcp_api = 'http://localhost:8080';
     
@@ -324,6 +337,7 @@ function mcp_auto_content_generation($post_id) {
         'body' => json_encode(['post_id' => $post_id])
     ]);
 }
+
 ```
 
 ## 3. 外部サービス統合
@@ -342,6 +356,7 @@ linkedin_enabled = true
 [integrations.analytics]
 google_analytics = true
 search_console = true
+
 ```
 
 ## 📈 パフォーマンス最適化
@@ -349,20 +364,22 @@ search_console = true
 ## 1. キャッシュ戦略
 
 ```rust
-// レスポンスキャッシュ設定
+
 [cache]
 enabled = true
 ttl_seconds = 300
 max_entries = 1000
+
 ```
 
 ## 2. 並行処理設定
 
 ```toml
-[performance]
+
 max_concurrent_requests = 100
 request_timeout_seconds = 30
 connection_pool_size = 10
+
 ```
 
 ## 💡 ベストプラクティス
@@ -393,14 +410,17 @@ connection_pool_size = 10
 ## よくある問題と解決方法
 
 1. **接続エラー**
+
 ```bash
 
 ## WordPress REST APIの確認
 
 curl https://your-site.com/wp-json/wp/v2/
+
 ```
 
 2. **認証エラー**
+
 ```bash
 
 ## アプリケーションパスワードの再生成
@@ -410,6 +430,7 @@ curl https://your-site.com/wp-json/wp/v2/
 ```
 
 3. **権限エラー**
+
 ```bash
 
 ## ユーザー権限の確認

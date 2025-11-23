@@ -9,7 +9,7 @@ The MCP-RS session management system provides enterprise-grade session lifecycle
 ## High-Level Architecture
 
 ```text
-┌─────────────────────────────────────────────────────────────────┐
+
 │                    MCP-RS Session Management                    │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                 │
@@ -37,12 +37,13 @@ The MCP-RS session management system provides enterprise-grade session lifecycle
 │  │ └─────────────┘ │    │ └─────────────┘ │    │ └─────────┘ │ │
 │  └─────────────────┘    └─────────────────┘    └─────────────┘ │
 └─────────────────────────────────────────────────────────────────┘
+
 ```
 
 ## Component Interaction Flow
 
 ```text
-Client Request
+
       │
       ▼
 ┌─────────────┐    ┌─────────────┐    ┌─────────────┐
@@ -55,6 +56,7 @@ Client Request
 │  WebSocket  │    │  Security   │    │   Memory    │
 │   Handler   │    │ Validation  │    │  Storage    │
 └─────────────┘    └─────────────┘    └─────────────┘
+
 ```
 
 ## Core Components
@@ -71,14 +73,16 @@ Client Request
 - Storage layer abstraction
 
 **Key Methods:**
+
 ```rust
-impl SessionManager {
+
     pub async fn create_session(&self, user_id: String) -> Result<Session, SessionError>
     pub async fn get_session(&self, id: &SessionId) -> Result<Option<Session>, SessionError>
     pub async fn activate_session(&self, id: &SessionId) -> Result<Option<Session>, SessionError>
     pub async fn delete_session(&self, id: &SessionId) -> Result<bool, SessionError>
     pub async fn list_sessions(&self, filter: &SessionFilter) -> Result<Vec<Session>, SessionError>
 }
+
 ```
 
 **Architecture Pattern**: Repository Pattern with async/await
@@ -100,8 +104,9 @@ impl SessionManager {
 - `FileSystemStorage`: Development/testing storage
 
 **Interface:**
+
 ```rust
-#[async_trait]
+
 pub trait SessionStorage: Send + Sync + std::fmt::Debug {
     async fn create(&self, session: Session) -> Result<Session, SessionError>;
     async fn get(&self, id: &SessionId) -> Result<Option<Session>, SessionError>;
@@ -109,6 +114,7 @@ pub trait SessionStorage: Send + Sync + std::fmt::Debug {
     async fn delete(&self, id: &SessionId) -> Result<bool, SessionError>;
     async fn list(&self, filter: &SessionFilter) -> Result<Vec<Session>, SessionError>;
 }
+
 ```
 
 ## 3. Session Types (`types.rs`)
@@ -116,7 +122,7 @@ pub trait SessionStorage: Send + Sync + std::fmt::Debug {
 **Core Data Structures:**
 
 ```rust
-#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
+
 pub struct SessionId(pub String);
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -142,6 +148,7 @@ pub struct SessionFilter {
     pub user_id: Option<String>,
     pub state: Option<SessionState>,
 }
+
 ```
 
 ## 4. Security Middleware (`SessionSecurityMiddleware`)
@@ -157,18 +164,21 @@ pub struct SessionFilter {
 - Violation tracking
 
 **Configuration:**
+
 ```rust
-#[derive(Debug, Clone)]
+
 pub struct SecurityConfig {
     pub max_violations: u32,
     pub violation_check_interval: u64,
     pub require_session_validation: bool,
 }
+
 ```
 
 **Security Event Types:**
+
 ```rust
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+
 pub enum SecurityEventType {
     SessionAuth,
     UnauthorizedAccess,
@@ -176,6 +186,7 @@ pub enum SecurityEventType {
     InvalidInput,
     SessionHijacking,
 }
+
 ```
 
 ## 5. WebSocket Handler (`SessionWebSocketHandler`)
@@ -191,14 +202,16 @@ pub enum SecurityEventType {
 - Error handling and recovery
 
 **Message Protocol:**
+
 ```rust
-#[derive(Debug, Clone, Serialize, Deserialize)]
+
 pub struct WebSocketMessage {
     pub id: String,
     pub message_type: String,
     pub payload: serde_json::Value,
     pub timestamp: DateTime<Utc>,
 }
+
 ```
 
 ## Session Lifecycle Management
@@ -206,7 +219,7 @@ pub struct WebSocketMessage {
 ## State Transitions
 
 ```text
-    create_session()
+
           │
           ▼
    ┌─────────────┐
@@ -227,6 +240,7 @@ pub struct WebSocketMessage {
    ┌─────────────┐         │
    │ Invalidated │◄────────┘
    └─────────────┘
+
 ```
 
 ## Lifecycle Operations
@@ -234,7 +248,7 @@ pub struct WebSocketMessage {
 ### Session Creation
 
 ```rust
-pub async fn create_session(&self, user_id: String) -> Result<Session, SessionError> {
+
     let session = Session {
         id: SessionId::new(),
         state: SessionState::Pending,  // Always starts as Pending
@@ -245,12 +259,13 @@ pub async fn create_session(&self, user_id: String) -> Result<Session, SessionEr
 
     self.storage.create(session).await
 }
+
 ```
 
 ### Session Activation
 
 ```rust
-pub async fn activate_session(&self, id: &SessionId) -> Result<Option<Session>, SessionError> {
+
     if let Some(mut session) = self.storage.get(id).await? {
         session.state = SessionState::Active; // Pending → Active
         let updated = self.storage.update(session).await?;
@@ -259,12 +274,13 @@ pub async fn activate_session(&self, id: &SessionId) -> Result<Option<Session>, 
         Ok(None)
     }
 }
+
 ```
 
 ### Session Validation
 
 ```rust
-pub async fn validate_session(&self, id: &SessionId) -> Result<bool, SessionError> {
+
     match self.storage.get(id).await? {
         Some(session) => {
             match session.state {
@@ -277,6 +293,7 @@ pub async fn validate_session(&self, id: &SessionId) -> Result<bool, SessionErro
         None => Ok(false),
     }
 }
+
 ```
 
 ## Security Architecture
@@ -284,7 +301,7 @@ pub async fn validate_session(&self, id: &SessionId) -> Result<bool, SessionErro
 ## Multi-Layer Security Model
 
 ```text
-┌─────────────────────────────────────────────────────────────┐
+
 │                     Security Layers                        │
 ├─────────────────────────────────────────────────────────────┤
 │                                                             │
@@ -331,12 +348,13 @@ pub async fn validate_session(&self, id: &SessionId) -> Result<bool, SessionErro
 │ │ • Force invalidation capabilities                      │ │
 │ └─────────────────────────────────────────────────────────┘ │
 └─────────────────────────────────────────────────────────────┘
+
 ```
 
 ## Security Event Flow
 
 ```text
-User Action
+
      │
      ▼
 ┌─────────────┐    Validate     ┌─────────────┐
@@ -356,6 +374,7 @@ User Action
 │  Session    │─────────────────►│  Process    │
 │ Validation  │                 │  Request    │
 └─────────────┘                 └─────────────┘
+
 ```
 
 ## Performance Characteristics
@@ -373,7 +392,7 @@ User Action
 ## Memory Usage Patterns
 
 ```text
-Session Memory Layout:
+
 ┌─────────────────────────────────────┐
 │ SessionId (String): ~36 bytes           │
 ├─────────────────────────────────────┤
@@ -388,6 +407,7 @@ Session Memory Layout:
 │ HashMap overhead: ~24 bytes             │
 └─────────────────────────────────────────┘
 Total: ~85 bytes + user_id length
+
 ```
 
 ## Concurrency Model
@@ -402,7 +422,7 @@ Total: ~85 bytes + user_id length
 ## Error Hierarchy
 
 ```rust
-#[derive(Debug, thiserror::Error)]
+
 pub enum SessionError {
     #[error("Session not found: {0}")]
     NotFound(String),
@@ -422,6 +442,7 @@ pub enum SessionError {
     #[error("Security violation: {0}")]
     SecurityViolation(String),
 }
+
 ```
 
 ## Error Recovery Patterns
@@ -437,7 +458,7 @@ pub enum SessionError {
 ## Test Coverage
 
 ```text
-Session Management Test Suite:
+
 ├── Unit Tests (87 tests)
 │   ├── Session creation/deletion
 │   ├── State transitions
@@ -458,13 +479,15 @@ Session Management Test Suite:
     ├── XSS prevention
     ├── Session hijacking
     └── Rate limiting
+
 ```
 
 ## Testing Patterns
 
 **Property-Based Testing:**
+
 ```rust
-#[quickcheck]
+
 fn session_create_idempotent(user_id: String) -> bool {
     // Sessions with same data should be functionally equivalent
 }
@@ -473,11 +496,13 @@ fn session_create_idempotent(user_id: String) -> bool {
 fn session_state_transitions_valid(initial_state: SessionState, action: Action) -> bool {
     // All state transitions should be valid
 }
+
 ```
 
 **Concurrent Testing:**
+
 ```rust
-#[tokio::test]
+
 async fn test_concurrent_session_operations() {
     let manager = Arc::new(SessionManager::new());
     let mut handles = vec![];
@@ -495,6 +520,7 @@ async fn test_concurrent_session_operations() {
         assert!(handle.await.unwrap().is_ok());
     }
 }
+
 ```
 
 ## Monitoring and Observability
@@ -502,7 +528,7 @@ async fn test_concurrent_session_operations() {
 ## Metrics Collection
 
 ```rust
-// Session metrics tracked
+
 pub struct SessionMetrics {
     pub total_sessions: u64,
     pub active_sessions: u64,
@@ -512,12 +538,13 @@ pub struct SessionMetrics {
     pub total_bytes_transferred: u64,
     pub calculated_at: DateTime<Utc>,
 }
+
 ```
 
 ## Logging Strategy
 
 ```rust
-// Structured logging with tracing
+
 #[instrument(skip(self))]
 pub async fn create_session(&self, user_id: String) -> Result<Session, SessionError> {
     info!("Creating session for user: {}", user_id);
@@ -535,12 +562,13 @@ pub async fn create_session(&self, user_id: String) -> Result<Session, SessionEr
     
     result
 }
+
 ```
 
 ## Health Checks
 
 ```rust
-pub async fn health_check(&self) -> Result<HealthStatus, SessionError> {
+
     let sessions_count = self.get_session_count().await?;
     let memory_usage = self.get_memory_usage().await?;
     
@@ -551,6 +579,7 @@ pub async fn health_check(&self) -> Result<HealthStatus, SessionError> {
         timestamp: Utc::now(),
     })
 }
+
 ```
 
 ## Deployment Considerations
@@ -572,6 +601,7 @@ services:
       - SESSION_TTL=3600
     volumes:
       - ./config:/app/config
+
 ```
 
 ## Production Environment
@@ -616,6 +646,7 @@ spec:
           limits:
             memory: "512Mi"
             cpu: "500m"
+
 ```
 
 ## Scaling Strategies

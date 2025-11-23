@@ -40,19 +40,23 @@ Parameterized queries, transaction management, and SQL injection prevention for 
 ## Development Setup
 
 1. Fork and clone the repository:
+
    ```bash
-   git clone https://github.com/your-username/mcp-rs.git
+
    cd mcp-rs
+
    ```
 
 2. Create a new branch for your feature:
+
    ```bash
-   git checkout -b feature/your-feature-name
+
    ```
 
 3. Run tests to ensure everything works:
+
    ```bash
-   cargo test
+
    ```
 
 ## Development Guidelines

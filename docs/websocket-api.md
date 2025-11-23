@@ -9,7 +9,7 @@ The MCP-RS WebSocket API provides real-time collaborative editing capabilities t
 ## System Components
 
 ```text
-┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
+
 │   Web Client    │    │  Axum WebSocket │    │ Session Manager │
 │                 │◄──►│     Server      │◄──►│                 │
 │  - Demo UI      │    │                 │    │  - CRUD Ops     │
@@ -25,12 +25,13 @@ The MCP-RS WebSocket API provides real-time collaborative editing capabilities t
                        │  - Session Ver. │    │  - Concurrent   │
                        │  - Event Log    │    │  - Thread Safe  │
                        └─────────────────┘    └─────────────────┘
+
 ```
 
 ## Session Lifecycle
 
 ```text
-   create_session()
+
         │
         ▼
 ┌─────────────┐    activate_session()    ┌─────────────┐
@@ -44,6 +45,7 @@ The MCP-RS WebSocket API provides real-time collaborative editing capabilities t
 ┌─────────────┐                         ┌─────────────┐
 │   Expired   │                         │ Invalidated │
 └─────────────┘                         └─────────────┘
+
 ```
 
 ## REST API Endpoints
@@ -51,7 +53,7 @@ The MCP-RS WebSocket API provides real-time collaborative editing capabilities t
 ## Base URL
 
 ```bash
-http://localhost:3000
+
 ```
 
 ## Session Management
@@ -61,19 +63,22 @@ http://localhost:3000
 **POST** `/api/sessions`
 
 ```json
-{
+
   "user_id": "string",
   "client_info": "string (optional)"
 }
+
 ```
 
 **Response:**
+
 ```json
-{
+
   "session_id": "uuid-string",
   "state": "Active",
   "websocket_url": "ws://localhost:3000/ws?session_id={session_id}"
 }
+
 ```
 
 ### Get Session Info
@@ -81,14 +86,16 @@ http://localhost:3000
 **GET** `/api/sessions/{session_id}`
 
 **Response:**
+
 ```json
-{
+
   "session_id": "uuid-string",
   "user_id": "string",
   "state": "Active",
   "created_at": "2025-11-07T10:00:00Z",
   "expires_at": "2025-11-08T10:00:00Z"
 }
+
 ```
 
 ### Activate Session
@@ -96,14 +103,16 @@ http://localhost:3000
 **POST** `/api/sessions/{session_id}/activate`
 
 **Response:**
+
 ```json
-{
+
   "session_id": "uuid-string",
   "user_id": "string", 
   "state": "Active",
   "created_at": "2025-11-07T10:00:00Z",
   "expires_at": "2025-11-08T10:00:00Z"
 }
+
 ```
 
 ## Health Check
@@ -111,13 +120,15 @@ http://localhost:3000
 **GET** `/health`
 
 **Response:**
+
 ```json
-{
+
   "status": "healthy",
   "service": "mcp-rs-realtime-editing",
   "timestamp": "2025-11-07T10:00:00Z",
   "version": "0.15.0"
 }
+
 ```
 
 ## WebSocket API
@@ -125,14 +136,17 @@ http://localhost:3000
 ## Connection
 
 **WebSocket URL:**
+
 ```bash
-ws://localhost:3000/ws?session_id={session_id}
+
 ```
 
 **Headers:**
+
 ```bash
-Authorization: Bearer {session_id}
+
 x-session-id: {session_id}
+
 ```
 
 ## Message Protocol
@@ -140,7 +154,7 @@ x-session-id: {session_id}
 All WebSocket messages follow this JSON structure:
 
 ```json
-{
+
   "id": "unique-message-id",
   "type": "message_type",
   "payload": {
@@ -148,6 +162,7 @@ All WebSocket messages follow this JSON structure:
   },
   "timestamp": "2025-11-07T10:00:00Z"
 }
+
 ```
 
 ## Message Types
@@ -155,18 +170,21 @@ All WebSocket messages follow this JSON structure:
 ### 1. Heartbeat
 
 **Client → Server:**
+
 ```json
-{
+
   "id": "msg-001",
   "type": "heartbeat",
   "payload": {},
   "timestamp": "2025-11-07T10:00:00Z"
 }
+
 ```
 
 **Server → Client:**
+
 ```json
-{
+
   "id": "msg-001",
   "type": "heartbeat_ack",
   "payload": {
@@ -174,13 +192,15 @@ All WebSocket messages follow this JSON structure:
   },
   "timestamp": "2025-11-07T10:00:00Z"
 }
+
 ```
 
 ### 2. Real-time Edit
 
 **Client → Server:**
+
 ```json
-{
+
   "id": "edit-001",
   "type": "realtime_edit",
   "payload": {
@@ -195,11 +215,13 @@ All WebSocket messages follow this JSON structure:
   },
   "timestamp": "2025-11-07T10:00:00Z"
 }
+
 ```
 
 **Server → Other Clients:**
+
 ```json
-{
+
   "id": "edit-001-broadcast",
   "type": "realtime_edit",
   "payload": {
@@ -219,13 +241,15 @@ All WebSocket messages follow this JSON structure:
   },
   "timestamp": "2025-11-07T10:00:00Z"
 }
+
 ```
 
 ### 3. Session Events
 
 **Session Connected:**
+
 ```json
-{
+
   "id": "session-001",
   "type": "session_connected",
   "payload": {
@@ -235,11 +259,13 @@ All WebSocket messages follow this JSON structure:
   },
   "timestamp": "2025-11-07T10:00:00Z"
 }
+
 ```
 
 **Session Disconnected:**
+
 ```json
-{
+
   "id": "session-002", 
   "type": "session_disconnected",
   "payload": {
@@ -249,12 +275,13 @@ All WebSocket messages follow this JSON structure:
   },
   "timestamp": "2025-11-07T10:00:00Z"
 }
+
 ```
 
 ### 4. Error Messages
 
 ```json
-{
+
   "id": "error-001",
   "type": "error",
   "payload": {
@@ -266,6 +293,7 @@ All WebSocket messages follow this JSON structure:
   },
   "timestamp": "2025-11-07T10:00:00Z"
 }
+
 ```
 
 ## Error Codes
@@ -284,7 +312,7 @@ All WebSocket messages follow this JSON structure:
 ## JavaScript/Web
 
 ```javascript
-class MCPWebSocketClient {
+
   constructor(sessionId) {
     this.sessionId = sessionId;
     this.ws = null;
@@ -362,12 +390,13 @@ class MCPWebSocketClient {
     console.log('Received edit:', payload);
   }
 }
+
 ```
 
 ## Rust Client
 
 ```rust
-use tokio_tungstenite::{connect_async, tungstenite::Message};
+
 use serde_json::{json, Value};
 use uuid::Uuid;
 
@@ -411,6 +440,7 @@ impl MCPWebSocketClient {
         Ok(())
     }
 }
+
 ```
 
 ## Security Considerations
@@ -431,9 +461,10 @@ impl MCPWebSocketClient {
 ## Security Headers
 
 ```
-Authorization: Bearer {session_id}
+
 X-Session-ID: {session_id}
 X-Client-Type: web|mobile|desktop
+
 ```
 
 ## Performance Characteristics
@@ -477,7 +508,7 @@ cargo run --example axum_websocket_server
 ## Demo Architecture
 
 ```
-┌─────────────────┐
+
 │   Static HTML   │  ← http://localhost:3000/
 │                 │  
 │  ┌─────────────┐│
@@ -491,6 +522,7 @@ cargo run --example axum_websocket_server
 │  │ API Panel   ││  ← REST API calls  
 │  └─────────────┘│
 └─────────────────┘
+
 ```
 
 ## Troubleshooting
@@ -522,6 +554,7 @@ cargo run --example axum_websocket_server
 ## Run with debug logging
 
 RUST_LOG=debug cargo run --example axum_websocket_server
+
 ```
 
 ## Monitoring
