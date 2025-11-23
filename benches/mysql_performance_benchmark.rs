@@ -16,7 +16,6 @@ use mcp_rs::handlers::database::{
 use serde_json::json;
 use std::{collections::HashMap, time::Instant};
 
-
 /// Performance benchmark configuration
 #[derive(Debug, Clone)]
 pub struct BenchmarkConfig {
@@ -423,7 +422,8 @@ impl MySqlPerformanceBenchmark {
                       (SELECT 1 UNION SELECT 2 UNION SELECT 3 UNION SELECT 4 UNION SELECT 5) t3,
                       (SELECT 1 UNION SELECT 2 UNION SELECT 3 UNION SELECT 4 UNION SELECT 5) t4,
                       (SELECT @row_number:=0) r
-                     ) numbers WHERE @row_number <= ?".to_string();
+                     ) numbers WHERE @row_number <= ?"
+                    .to_string();
 
                 match connection
                     .query(
