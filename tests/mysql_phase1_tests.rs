@@ -2,9 +2,10 @@
 //!
 //! Comprehensive test suite for MySQL Phase 1 implementation
 //! Tests parameterized queries, prepared statements, and transaction management
+#![cfg(feature = "database")]
 
 use chrono::Utc;
-use mcp_rs::handlers::database::types::{IsolationLevel, Value};
+use mcp_rs::handlers::database::{engine::IsolationLevel, types::Value};
 
 // ==================== Parameterized Query Tests ====================
 

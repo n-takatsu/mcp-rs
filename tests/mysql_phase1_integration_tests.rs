@@ -1,9 +1,10 @@
 //! MySQL Phase 1 Integration Tests
 //!
 //! End-to-end testing for parameterized queries, prepared statements, and transactions
+#![cfg(feature = "database")]
 
 use chrono::Utc;
-use mcp_rs::handlers::database::types::{IsolationLevel, Value};
+use mcp_rs::handlers::database::{engine::IsolationLevel, types::Value};
 
 // ==================== Prepared Statement Simulation Tests ====================
 
