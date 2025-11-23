@@ -119,6 +119,16 @@ pub trait PreparedStatement: Send + Sync {
 
     /// ステートメントを破棄
     async fn close(&self) -> Result<(), DatabaseError>;
+
+    /// パラメータ数を取得
+    fn parameter_count(&self) -> usize {
+        0
+    }
+
+    /// SQL文字列を取得
+    fn get_sql(&self) -> &str {
+        ""
+    }
 }
 
 /// 分離レベル
