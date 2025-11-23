@@ -79,8 +79,8 @@ impl DatabaseEngine for PostgreSqlEngine {
         vec![
             DatabaseFeature::Transactions,
             DatabaseFeature::PreparedStatements,
-            DatabaseFeature::SavePoints,
             DatabaseFeature::JsonSupport,
+            DatabaseFeature::Acid,
         ]
     }
 
