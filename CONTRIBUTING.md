@@ -2,7 +2,32 @@
 
 Thank you for your interest in contributing to MCP-RS! We welcome contributions from the community.
 
-## Getting Started
+## Current Projects
+
+### ✅ MySQL Phase 1 (Complete - Nov 2025)
+
+Parameterized queries, transaction management, and SQL injection prevention for MySQL.
+
+**Key Components**:
+- Prepared statements for safe parameterized queries
+- ACID-compliant transaction management
+- 4 isolation levels support
+- Savepoint functionality
+- 45 comprehensive tests
+
+**Related Files**:
+- `src/handlers/database/engines/mysql/prepared.rs`
+- `src/handlers/database/engines/mysql/transaction.rs`
+- `tests/mysql_phase1_*.rs`
+
+**For more info**: See [MySQL Phase 1 Guide](./docs/mysql-phase1-guide.md)
+
+### 🚧 Future Projects
+
+- **Phase 2**: PostgreSQL backend (Q1 2026)
+- **Phase 3**: Redis & SQLite support (Q2-Q3 2026)
+- **WebSocket**: Real-time communication (Q2 2026)
+- **AI Integration**: LLM direct integration (Q3 2026)
 
 ## Prerequisites
 
