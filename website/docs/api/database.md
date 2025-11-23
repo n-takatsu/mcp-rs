@@ -4,7 +4,7 @@ title: Database Engine API
 permalink: /docs/api/database/
 ---
 
-# Database Engine API
+## Database Engine API
 
 Comprehensive API reference for MySQL and PostgreSQL database engines in MCP-RS v0.16.0+.
 

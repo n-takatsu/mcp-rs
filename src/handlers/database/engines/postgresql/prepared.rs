@@ -62,7 +62,7 @@ impl PostgreSqlPreparedStatement {
         let mut max_placeholder = 0;
 
         // Find all $N placeholders in the SQL string
-        for (idx, _) in sql.match_indices('$').enumerate() {
+        for (_idx, _) in sql.match_indices('$').enumerate() {
             let pos = sql.find('$').unwrap_or(0);
             if pos + 1 < sql.len() {
                 if let Some(ch) = sql[pos + 1..].chars().next() {
@@ -210,8 +210,7 @@ impl PreparedStatement for PostgreSqlPreparedStatement {
         let mut query = sqlx::query(&self.sql);
 
         // Bind each parameter to the query
-        for _idx in 0..params.len() {
-            let param = &params[_idx];
+        for param in &params {
             match param {
                 Value::Null => {
                     query = query.bind(None::<String>);

@@ -4,7 +4,7 @@ title: PostgreSQL Integration Guide
 permalink: /docs/guides/postgres-integration/
 ---
 
-# PostgreSQL Integration Guide
+## PostgreSQL Integration Guide
 
 Complete setup and integration guide for PostgreSQL support in MCP-RS v0.16.0+.
 
@@ -105,6 +105,7 @@ docker-compose -f docker-compose.postgres.yml up -d
 ```
 
 Includes:
+
 - PostgreSQL 15 Alpine
 - pgAdmin for visual management
 - Health checks
@@ -487,6 +488,7 @@ conn.execute(&sql).await?;
 **Problem**: `connection refused`
 
 **Solution**:
+
 ```bash
 # Check PostgreSQL is running
 sudo systemctl status postgresql
@@ -503,6 +505,7 @@ psql -U postgres -h localhost -d mcp_rs
 **Problem**: `syntax error at or near`
 
 **Solution**:
+
 ```rust
 // Use parameterized queries
 let stmt = conn.prepare("SELECT * FROM users WHERE age > $1").await?;
@@ -517,6 +520,7 @@ stmt.query(&[Value::Int(18)]).await?;
 **Problem**: Slow queries
 
 **Solution**:
+
 ```rust
 // Enable query logging
 // Add execution_time_ms tracking
@@ -535,6 +539,7 @@ conn.query("EXPLAIN ANALYZE SELECT ...").await?;
 **Problem**: `pool limit reached`
 
 **Solution**:
+
 ```toml
 [database.postgres]
 max_connections = 50  # Increase pool size

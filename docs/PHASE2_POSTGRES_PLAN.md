@@ -37,6 +37,7 @@ pub mod json_support;
 ```
 
 **依存関係**:
+
 - `sqlx` (PostgreSQL driver)
 - `uuid` (PostgreSQL UUID 型)
 - `serde_json` (JSON 型対応)
@@ -46,6 +47,7 @@ pub mod json_support;
 **ファイル**: `src/handlers/database/engines/postgresql/prepared.rs`
 
 **主要機能**:
+
 - PostgreSQL parameterized queries (`$1`, `$2`, ...)
 - Type conversion for PostgreSQL-specific types
 - BYTEA binary support
@@ -53,6 +55,7 @@ pub mod json_support;
 - Range types support
 
 **実装例**:
+
 ```rust
 pub struct PostgreSqlPreparedStatement {
     query: String,
@@ -71,6 +74,7 @@ impl PostgreSqlPreparedStatement {
 **ファイル**: `src/handlers/database/engines/postgresql/transaction.rs`
 
 **機能**:
+
 - Transaction lifecycle (BEGIN, COMMIT, ROLLBACK)
 - Savepoint support
 - Isolation levels (READ UNCOMMITTED, READ COMMITTED, REPEATABLE READ, SERIALIZABLE)
@@ -82,6 +86,7 @@ impl PostgreSqlPreparedStatement {
 **ファイル**: `src/handlers/database/engines/postgresql/json_support.rs`
 
 **機能**:
+
 - `Value::Json` 型による JSON/JSONB サポート
 - JSON 比較演算子 (@>, <@, ?, ->, ->>)
 - JSON 関数 (jsonb_set, jsonb_delete など)

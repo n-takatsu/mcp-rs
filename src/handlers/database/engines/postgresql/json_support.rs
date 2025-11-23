@@ -27,7 +27,7 @@ impl PostgreSqlJsonSupport {
     }
 
     /// Create a Value from JSON
-    pub fn from_json(&self, json: &JsonValue) -> Result<Value, DatabaseError> {
+    pub fn to_value(json: &JsonValue) -> Result<Value, DatabaseError> {
         match json {
             JsonValue::Null => Ok(Value::Null),
             JsonValue::Bool(b) => Ok(Value::Bool(*b)),
@@ -171,14 +171,12 @@ mod tests {
 
     #[test]
     fn test_from_json_conversion() {
-        let support = PostgreSqlJsonSupport;
-
         let json = json!(42);
-        let val = support.from_json(&json).unwrap();
+        let val = PostgreSqlJsonSupport::to_value(&json).unwrap();
         assert!(matches!(val, Value::Int(42)));
 
         let json = json!("hello");
-        let val = support.from_json(&json).unwrap();
+        let val = PostgreSqlJsonSupport::to_value(&json).unwrap();
         assert!(matches!(val, Value::String(ref s) if s == "hello"));
     }
 

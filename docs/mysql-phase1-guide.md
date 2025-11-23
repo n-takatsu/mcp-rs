@@ -112,7 +112,7 @@ pub enum IsolationLevel {
 }
 ```
 
-### Usage Example
+### Transaction Example
 
 ```rust
 // Create transaction manager
@@ -169,6 +169,7 @@ All user-supplied values are bound as parameters, completely separated from SQL 
 ### Type Safety
 
 All data conversions are type-safe:
+
 - NULL values properly handled
 - String literals preserved
 - Binary data maintained
@@ -182,6 +183,7 @@ All data conversions are type-safe:
 #### `tests/mysql_phase1_basic_tests.rs` (21 tests)
 
 Core functionality tests:
+
 - Parameter counting and validation
 - SQL query complexity handling
 - Isolation level support
@@ -193,6 +195,7 @@ Core functionality tests:
 #### `tests/mysql_phase1_integration_complete.rs` (24 tests)
 
 End-to-end integration tests:
+
 - Prepared statement lifecycle
 - Transaction workflows
 - Savepoint scenarios

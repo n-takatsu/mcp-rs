@@ -61,7 +61,7 @@ impl PostgreSqlConfig {
             ));
         }
 
-        if self.port == 0 || self.port > 65535 {
+        if self.port == 0 {
             return Err(DatabaseError::ValidationError(format!(
                 "Invalid PostgreSQL port: {}",
                 self.port
@@ -137,7 +137,7 @@ impl PostgreSqlPool {
     pub fn stats(&self) -> PoolStats {
         PoolStats {
             num_idle: self.pool.num_idle() as u32,
-            size: self.pool.size() as u32,
+            size: self.pool.size(),
         }
     }
 

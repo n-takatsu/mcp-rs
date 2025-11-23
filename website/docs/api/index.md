@@ -4,7 +4,7 @@ title: API Reference
 permalink: /docs/api/
 ---
 
-# API Reference
+## API Reference
 
 Complete API documentation for MCP-RS v0.16.0+ - Multi-database support with MySQL and PostgreSQL.
 
@@ -15,6 +15,7 @@ Complete API documentation for MCP-RS v0.16.0+ - Multi-database support with MyS
 ### 1. Database Engine API
 
 Comprehensive reference for database engine implementations:
+
 - [📄 Database Engine API](./database.md)
   - Core types (Value, DatabaseError, QueryResult, ExecuteResult)
   - DatabaseEngine trait
@@ -27,6 +28,7 @@ Comprehensive reference for database engine implementations:
 ### 2. MCP Protocol API
 
 Standard JSON-RPC 2.0 protocol methods:
+
 - Initialization
 - Tools (list, call)
 - Resources (list, read)
@@ -36,6 +38,7 @@ Standard JSON-RPC 2.0 protocol methods:
 ### 3. Integration Guides
 
 Step-by-step guides for each database:
+
 - [PostgreSQL Integration Guide](../guides/postgres-integration.md)
 - MySQL Integration Guide (coming soon)
 - [Performance Tuning Guide](../guides/performance-tuning.md)
@@ -54,6 +57,7 @@ Step-by-step guides for each database:
 ## Core Data Types Quick Reference
 
 ### Value Enum
+
 ```rust
 pub enum Value {
     Null,                                    // SQL NULL
@@ -68,6 +72,7 @@ pub enum Value {
 ```
 
 ### DatabaseError Enum
+
 ```rust
 pub enum DatabaseError {
     ConnectionFailed(String),
@@ -84,6 +89,7 @@ pub enum DatabaseError {
 ```
 
 ### IsolationLevel Enum
+
 ```rust
 pub enum IsolationLevel {
     Serializable,       // Highest isolation
@@ -105,7 +111,8 @@ Establishes connection and negotiates capabilities.
 
 **Request:**
 ```json
-{
+
+{{
   "jsonrpc": "2.0",
   "method": "initialize",
   "params": {
@@ -125,7 +132,8 @@ Establishes connection and negotiates capabilities.
 
 **Response:**
 ```json
-{
+
+{{
   "jsonrpc": "2.0",
   "result": {
     "protocolVersion": "2024-11-05",
@@ -154,7 +162,8 @@ Lists available tools.
 
 **Request:**
 ```json
-{
+
+{{
   "jsonrpc": "2.0",
   "method": "tools/list",
   "id": 2
@@ -163,7 +172,8 @@ Lists available tools.
 
 **Response:**
 ```json
-{
+
+{{
   "jsonrpc": "2.0",
   "result": {
     "tools": [
@@ -188,7 +198,8 @@ Executes a tool.
 
 **Request:**
 ```json
-{
+
+{{
   "jsonrpc": "2.0",
   "method": "tools/call",
   "params": {
@@ -204,7 +215,8 @@ Executes a tool.
 
 **Response:**
 ```json
-{
+
+{{
   "jsonrpc": "2.0",
   "result": {
     "content": [
@@ -221,15 +233,16 @@ Executes a tool.
 
 ---
 
-### Resources
+## Resources (MCP)
 
-#### `resources/list`
+### `resources/list`
 
 Lists available resources.
 
 **Request:**
 ```json
-{
+
+{{
   "jsonrpc": "2.0",
   "method": "resources/list",
   "id": 4
@@ -238,7 +251,8 @@ Lists available resources.
 
 **Response:**
 ```json
-{
+
+{{
   "jsonrpc": "2.0",
   "result": {
     "resources": [
@@ -266,7 +280,8 @@ Reads a resource.
 
 **Request:**
 ```json
-{
+
+{{
   "jsonrpc": "2.0",
   "method": "resources/read",
   "params": {
@@ -278,7 +293,8 @@ Reads a resource.
 
 **Response:**
 ```json
-{
+
+{{
   "jsonrpc": "2.0",
   "result": {
     "contents": [
@@ -303,7 +319,8 @@ Lists available prompts.
 
 **Request:**
 ```json
-{
+
+{{
   "jsonrpc": "2.0",
   "method": "prompts/list",
   "id": 6
@@ -312,7 +329,8 @@ Lists available prompts.
 
 **Response:**
 ```json
-{
+
+{{
   "jsonrpc": "2.0",
   "result": {
     "prompts": [
@@ -339,7 +357,8 @@ Retrieves a prompt.
 
 **Request:**
 ```json
-{
+
+{{
   "jsonrpc": "2.0",
   "method": "prompts/get",
   "params": {
@@ -352,7 +371,8 @@ Retrieves a prompt.
 
 **Response:**
 ```json
-{
+
+{{
   "jsonrpc": "2.0",
   "result": {
     "description": "WordPress content analysis prompt",
@@ -473,3 +493,5 @@ For more details, see:
 - [📄 Database Engine API](./database.md) - Complete API reference
 - [📖 PostgreSQL Integration Guide](../guides/postgres-integration.md) - Setup and usage
 - [📖 Implementation Guides](../guides/) - All guides
+
+
