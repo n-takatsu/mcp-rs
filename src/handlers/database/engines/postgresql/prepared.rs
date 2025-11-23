@@ -62,7 +62,7 @@ impl PostgreSqlPreparedStatement {
         let mut max_placeholder = 0;
 
         // Find all $N placeholders in the SQL string
-        for (_idx, _) in sql.match_indices('$').enumerate() {
+        for _ in sql.match_indices('$') {
             let pos = sql.find('$').unwrap_or(0);
             if pos + 1 < sql.len() {
                 if let Some(ch) = sql[pos + 1..].chars().next() {
