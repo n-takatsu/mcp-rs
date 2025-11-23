@@ -1,7 +1,7 @@
 //! Redis data types and configuration structures
 
-use std::collections::{HashMap, BTreeMap};
 use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, HashMap};
 
 /// Redis configuration
 #[derive(Clone, Debug, Serialize, Deserialize)]

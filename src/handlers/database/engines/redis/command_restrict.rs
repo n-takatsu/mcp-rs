@@ -1,10 +1,10 @@
 //! Command restriction and authorization system for Redis
 //! Provides whitelist/blacklist-based command control with audit logging
 
-use crate::handlers::database::types::DatabaseError;
 use super::types::{RedisCommand, RedisSecuritySettings};
-use std::collections::{HashSet, HashMap};
+use crate::handlers::database::types::DatabaseError;
 use chrono::{DateTime, Utc};
+use std::collections::{HashMap, HashSet};
 
 /// Command execution audit entry
 #[derive(Clone, Debug)]
@@ -92,7 +92,10 @@ impl CommandRestrictor {
         };
 
         let reason = if !is_allowed {
-            Some(format!("Command '{}' not in whitelist or in blacklist", cmd_name))
+            Some(format!(
+                "Command '{}' not in whitelist or in blacklist",
+                cmd_name
+            ))
         } else {
             None
         };
@@ -106,9 +109,9 @@ impl CommandRestrictor {
         });
 
         if !is_allowed {
-            return Err(DatabaseError::SecurityViolation(
-                format!("Command execution not allowed"),
-            ));
+            return Err(DatabaseError::SecurityViolation(format!(
+                "Command execution not allowed"
+            )));
         }
 
         Ok(())

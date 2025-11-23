@@ -2,15 +2,15 @@
 //! Provides high-performance in-memory data operations with Sorted Set support
 //! and command restriction features for enterprise security.
 
+pub mod command_restrict;
 pub mod connection;
 pub mod sorted_set;
-pub mod command_restrict;
 pub mod types;
 
+pub use command_restrict::CommandRestrictor;
 pub use connection::RedisConnection;
 pub use sorted_set::SortedSetOperations;
-pub use command_restrict::CommandRestrictor;
-pub use types::{RedisValue, RedisCommand, RedisConfig};
+pub use types::{RedisCommand, RedisConfig, RedisValue};
 
 use crate::handlers::database::types::DatabaseError;
 use async_trait::async_trait;

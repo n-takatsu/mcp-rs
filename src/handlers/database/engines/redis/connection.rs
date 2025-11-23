@@ -1,7 +1,7 @@
 //! Redis connection management and pooling
 
-use crate::handlers::database::types::DatabaseError;
 use super::types::RedisConfig;
+use crate::handlers::database::types::DatabaseError;
 use async_trait::async_trait;
 
 /// Redis connection pool manager

@@ -1,9 +1,9 @@
 //! Sorted Set (ZSET) operations for Redis
 //! Provides ZADD, ZREM, ZRANGE, ZRANK, ZCOUNT, and related operations
 
-use std::collections::BTreeMap;
+use super::types::{RedisValue, SortedSetMember};
 use crate::handlers::database::types::DatabaseError;
-use super::types::{SortedSetMember, RedisValue};
+use std::collections::BTreeMap;
 
 /// Sorted Set operations handler
 pub struct SortedSetOperations;
@@ -50,8 +50,16 @@ impl SortedSetOperations {
         let len = members.len() as i32;
 
         // Normalize indices
-        let start = if start < 0 { (len + start).max(0) } else { start.min(len) } as usize;
-        let stop = if stop < 0 { (len + stop).max(-1) } else { stop.min(len - 1) } as usize;
+        let start = if start < 0 {
+            (len + start).max(0)
+        } else {
+            start.min(len)
+        } as usize;
+        let stop = if stop < 0 {
+            (len + stop).max(-1)
+        } else {
+            stop.min(len - 1)
+        } as usize;
 
         if start > stop || start >= members.len() {
             return Ok(vec![]);
@@ -72,8 +80,16 @@ impl SortedSetOperations {
         let members: Vec<_> = zset.iter().collect();
         let len = members.len() as i32;
 
-        let start = if start < 0 { (len + start).max(0) } else { start.min(len) } as usize;
-        let stop = if stop < 0 { (len + stop).max(-1) } else { stop.min(len - 1) } as usize;
+        let start = if start < 0 {
+            (len + start).max(0)
+        } else {
+            start.min(len)
+        } as usize;
+        let stop = if stop < 0 {
+            (len + stop).max(-1)
+        } else {
+            stop.min(len - 1)
+        } as usize;
 
         if start > stop || start >= members.len() {
             return Ok(vec![]);
@@ -108,7 +124,10 @@ impl SortedSetOperations {
     }
 
     /// ZSCORE - Get score of member
-    pub fn zscore(zset: &BTreeMap<String, f64>, member: &str) -> Result<Option<f64>, DatabaseError> {
+    pub fn zscore(
+        zset: &BTreeMap<String, f64>,
+        member: &str,
+    ) -> Result<Option<f64>, DatabaseError> {
         Ok(zset.get(member).copied())
     }
 
@@ -118,11 +137,7 @@ impl SortedSetOperations {
     }
 
     /// ZCOUNT - Count members within score range
-    pub fn zcount(
-        zset: &BTreeMap<String, f64>,
-        min: f64,
-        max: f64,
-    ) -> Result<u32, DatabaseError> {
+    pub fn zcount(zset: &BTreeMap<String, f64>, min: f64, max: f64) -> Result<u32, DatabaseError> {
         Ok(zset
             .iter()
             .filter(|(_, score)| **score >= min && **score <= max)
@@ -149,8 +164,16 @@ impl SortedSetOperations {
         let members: Vec<_> = zset.iter().map(|(k, _)| k.clone()).collect();
         let len = members.len() as i32;
 
-        let start = if start < 0 { (len + start).max(0) } else { start.min(len) } as usize;
-        let stop = if stop < 0 { (len + stop).max(-1) } else { stop.min(len - 1) } as usize;
+        let start = if start < 0 {
+            (len + start).max(0)
+        } else {
+            start.min(len)
+        } as usize;
+        let stop = if stop < 0 {
+            (len + stop).max(-1)
+        } else {
+            stop.min(len - 1)
+        } as usize;
 
         let mut removed = 0;
         if start <= stop && start < members.len() {
@@ -194,8 +217,16 @@ impl SortedSetOperations {
         members.reverse();
 
         let len = members.len() as i32;
-        let start = if start < 0 { (len + start).max(0) } else { start.min(len) } as usize;
-        let stop = if stop < 0 { (len + stop).max(-1) } else { stop.min(len - 1) } as usize;
+        let start = if start < 0 {
+            (len + start).max(0)
+        } else {
+            start.min(len)
+        } as usize;
+        let stop = if stop < 0 {
+            (len + stop).max(-1)
+        } else {
+            stop.min(len - 1)
+        } as usize;
 
         if start > stop || start >= members.len() {
             return Ok(vec![]);
@@ -215,7 +246,10 @@ mod tests {
     #[test]
     fn test_zadd() {
         let mut zset = BTreeMap::new();
-        let result = SortedSetOperations::zadd(&mut zset, vec![(1.0, "one".to_string()), (2.0, "two".to_string())]);
+        let result = SortedSetOperations::zadd(
+            &mut zset,
+            vec![(1.0, "one".to_string()), (2.0, "two".to_string())],
+        );
         assert_eq!(result.unwrap(), 2);
         assert_eq!(zset.len(), 2);
     }
@@ -223,7 +257,11 @@ mod tests {
     #[test]
     fn test_zrem() {
         let mut zset = BTreeMap::new();
-        SortedSetOperations::zadd(&mut zset, vec![(1.0, "one".to_string()), (2.0, "two".to_string())]).unwrap();
+        SortedSetOperations::zadd(
+            &mut zset,
+            vec![(1.0, "one".to_string()), (2.0, "two".to_string())],
+        )
+        .unwrap();
         let result = SortedSetOperations::zrem(&mut zset, vec!["one".to_string()]);
         assert_eq!(result.unwrap(), 1);
         assert_eq!(zset.len(), 1);
@@ -234,7 +272,11 @@ mod tests {
         let mut zset = BTreeMap::new();
         SortedSetOperations::zadd(
             &mut zset,
-            vec![(1.0, "one".to_string()), (2.0, "two".to_string()), (3.0, "three".to_string())],
+            vec![
+                (1.0, "one".to_string()),
+                (2.0, "two".to_string()),
+                (3.0, "three".to_string()),
+            ],
         )
         .unwrap();
         let result = SortedSetOperations::zrange(&zset, 0, 1).unwrap();
@@ -246,7 +288,11 @@ mod tests {
         let mut zset = BTreeMap::new();
         SortedSetOperations::zadd(
             &mut zset,
-            vec![(1.0, "one".to_string()), (2.0, "two".to_string()), (3.0, "three".to_string())],
+            vec![
+                (1.0, "one".to_string()),
+                (2.0, "two".to_string()),
+                (3.0, "three".to_string()),
+            ],
         )
         .unwrap();
         let rank = SortedSetOperations::zrank(&zset, "two").unwrap();
@@ -258,7 +304,11 @@ mod tests {
         let mut zset = BTreeMap::new();
         SortedSetOperations::zadd(
             &mut zset,
-            vec![(1.0, "one".to_string()), (2.0, "two".to_string()), (3.0, "three".to_string())],
+            vec![
+                (1.0, "one".to_string()),
+                (2.0, "two".to_string()),
+                (3.0, "three".to_string()),
+            ],
         )
         .unwrap();
         let result = SortedSetOperations::zrange_by_score(&zset, 1.5, 2.5).unwrap();
