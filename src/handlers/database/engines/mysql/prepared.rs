@@ -6,9 +6,10 @@
 use super::param_converter::MySqlParamConverter;
 use crate::handlers::database::{
     engine::PreparedStatement,
-    types::{DatabaseError, ExecuteResult, QueryResult, Value},
+    types::{ColumnInfo, DatabaseError, ExecuteResult, QueryResult, Value},
 };
 use async_trait::async_trait;
+use mysql_async::prelude::Queryable;
 use mysql_async::{Pool, Statement};
 use std::sync::Arc;
 
@@ -63,26 +64,37 @@ impl MySqlPreparedStatement {
 
         // Extract column information from first row if available
         if let Some(first_row) = rows.first() {
-            for (idx, _) in first_row.iter().enumerate() {
-                columns.push(format!("column_{}", idx));
+            let column_count = first_row.len();
+            for idx in 0..column_count {
+                columns.push(ColumnInfo {
+                    name: format!("column_{}", idx),
+                    data_type: "VARCHAR".to_string(),
+                    nullable: true,
+                    max_length: None,
+                });
             }
         }
 
         // Convert rows to our format
         for row in rows {
             let mut values = Vec::new();
-            for value in row.iter() {
-                values.push(MySqlParamConverter::convert_from_mysql_value(
-                    value.clone(),
-                )?);
+            // Use len() and index since Row doesn't implement IntoIterator
+            for idx in 0..row.len() {
+                if let Some(value) = row.as_ref(idx) {
+                    values.push(MySqlParamConverter::convert_from_mysql_value(value.clone())?);
+                } else {
+                    values.push(Value::Null);
+                }
             }
             result_rows.push(values);
         }
 
+        let total_rows = result_rows.len() as u64;
+
         Ok(QueryResult {
             columns,
             rows: result_rows,
-            total_rows: Some(result_rows.len()),
+            total_rows: Some(total_rows),
             execution_time_ms: 0, // TODO: track execution time
         })
     }
@@ -160,7 +172,7 @@ impl PreparedStatement for MySqlPreparedStatement {
 
         Ok(ExecuteResult {
             rows_affected,
-            last_insert_id: last_insert_id.map(Value::Int),
+            last_insert_id: last_insert_id.map(|id| Value::Int(id as i64)),
             execution_time_ms: execution_time,
         })
     }

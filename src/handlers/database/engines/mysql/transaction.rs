@@ -3,7 +3,8 @@
 //! Provides ACID transaction support with savepoint functionality
 //! Ensures data integrity and consistent database operations
 
-use crate::handlers::database::types::{DatabaseError, IsolationLevel};
+use crate::handlers::database::{engine::IsolationLevel, types::DatabaseError};
+use mysql_async::prelude::Queryable;
 use mysql_async::Pool;
 use std::sync::Arc;
 
