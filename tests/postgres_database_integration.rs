@@ -586,7 +586,7 @@ mod postgres_database_integration_tests {
         let result: Result<Vec<String>, _> = sqlx::query_scalar(
             "SELECT column_name FROM information_schema.columns 
              WHERE table_schema = 'test_schema' AND table_name = 'users'
-             ORDER BY ordinal_position"
+             ORDER BY ordinal_position",
         )
         .fetch_all(&pool)
         .await;
