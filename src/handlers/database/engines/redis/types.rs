@@ -67,6 +67,32 @@ impl Default for RedisSecuritySettings {
     }
 }
 
+impl Default for RedisConfig {
+    fn default() -> Self {
+        RedisConfig {
+            host: "localhost".to_string(),
+            port: 6379,
+            database: 0,
+            password: None,
+            timeout_seconds: 30,
+            use_tls: false,
+            pool_settings: RedisPoolSettings::default(),
+            security: RedisSecuritySettings::default(),
+        }
+    }
+}
+
+impl Default for RedisPoolSettings {
+    fn default() -> Self {
+        RedisPoolSettings {
+            max_connections: 50,
+            min_idle: 10,
+            connection_timeout_ms: 5000,
+            idle_timeout_seconds: 300,
+        }
+    }
+}
+
 /// Redis value types
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum RedisValue {
@@ -127,7 +153,7 @@ pub enum RedisCommand {
     Del(Vec<String>),
     Exists(Vec<String>),
     Expire(String, u64),
-    TTL(String),
+    Ttl(String),
     Keys(String),
 
     // Transactions

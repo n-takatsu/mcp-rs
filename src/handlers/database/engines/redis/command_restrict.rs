@@ -109,9 +109,9 @@ impl CommandRestrictor {
         });
 
         if !is_allowed {
-            return Err(DatabaseError::SecurityViolation(format!(
-                "Command execution not allowed"
-            )));
+            return Err(DatabaseError::SecurityViolation(
+                "Command execution not allowed".to_string(),
+            ));
         }
 
         Ok(())
@@ -157,7 +157,7 @@ impl CommandRestrictor {
             RedisCommand::Del(_) => "DEL",
             RedisCommand::Exists(_) => "EXISTS",
             RedisCommand::Expire(_, _) => "EXPIRE",
-            RedisCommand::TTL(_) => "TTL",
+            RedisCommand::Ttl(_) => "TTL",
             RedisCommand::Keys(_) => "KEYS",
 
             RedisCommand::Multi => "MULTI",

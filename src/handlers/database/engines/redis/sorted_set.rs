@@ -161,7 +161,7 @@ impl SortedSetOperations {
         start: i32,
         stop: i32,
     ) -> Result<u32, DatabaseError> {
-        let members: Vec<_> = zset.iter().map(|(k, _)| k.clone()).collect();
+        let members: Vec<_> = zset.keys().cloned().collect();
         let len = members.len() as i32;
 
         let start = if start < 0 {
