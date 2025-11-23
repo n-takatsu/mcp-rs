@@ -119,6 +119,7 @@ sqlx = { version = "0.7", features = ["mysql", "runtime-tokio-rustls", "chrono",
 ```
 
 **利点**:
+
 - 型安全なクエリ
 - コンパイル時検証
 - 統一されたAPI
@@ -133,6 +134,7 @@ tokio = { version = "1.0", features = ["full"] }
 ```
 
 **利点**:
+
 - MySQL特化設計
 - 高性能
 - 詳細な制御

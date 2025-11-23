@@ -138,12 +138,14 @@ psql postgresql://postgres:postgres@localhost:5432/testdb
 ### 作成されるスキーマ
 
 #### `test_schema` - 基本テスト用
+
 - `users` - ユーザーマスタテーブル
 - `posts` - 投稿テーブル (JSON メタデータ対応)
 - `comments` - コメントテーブル
 - `uuid_entities` - UUID テスト用テーブル
 
 #### `transaction_test` - トランザクション/JSON テスト用
+
 - `isolation_test` - 分離レベルテスト
 - `savepoint_test` - セーブポイントテスト
 - `constraint_test` - 制約テスト
@@ -152,10 +154,12 @@ psql postgresql://postgres:postgres@localhost:5432/testdb
 - `parameter_test` - パラメータバインディングテスト
 
 #### `performance_test` - パフォーマンステスト用
+
 - `large_dataset` - 大規模データセット
 - `complex_joins` - 複雑な結合テスト
 
 #### `security_test` - セキュリティテスト用
+
 - `sensitive_data` - 機密データテスト
 
 ## 初期化スクリプト

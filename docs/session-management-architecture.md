@@ -64,6 +64,7 @@ Client Request
 **Purpose**: Central orchestrator for all session operations.
 
 **Responsibilities:**
+
 - Session CRUD operations
 - State lifecycle management  
 - User session filtering
@@ -87,11 +88,13 @@ impl SessionManager {
 **Purpose**: Pluggable storage backend for session persistence.
 
 **Current Implementation**: `MemorySessionStorage`
+
 - **Thread Safety**: `Arc<RwLock<HashMap<SessionId, Session>>>`
 - **Concurrent Access**: Reader-writer locks for performance
 - **Memory Efficiency**: Direct HashMap storage with minimal overhead
 
 **Future Implementations**:
+
 - `RedisSessionStorage`: Distributed session storage
 - `DatabaseSessionStorage`: SQL-based persistence
 - `FileSystemStorage`: Development/testing storage
@@ -146,6 +149,7 @@ pub struct SessionFilter {
 **Purpose**: Enterprise-grade security layer for session operations.
 
 **Security Features:**
+
 - Input validation and sanitization
 - XSS attack prevention
 - Rate limiting per session
@@ -179,6 +183,7 @@ pub enum SecurityEventType {
 **Purpose**: WebSocket connection management with session integration.
 
 **Features:**
+
 - Session-based authentication
 - Real-time message broadcasting
 - Connection lifecycle management

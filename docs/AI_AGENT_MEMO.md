@@ -304,6 +304,7 @@ burst_size = 20
 ## Usage Verification
 
 Claude Desktopでの動作確認:
+
 - "WordPressサイトのカテゴリ一覧を取得してください"
 - "ブログのタグ一覧を教えてください"
 

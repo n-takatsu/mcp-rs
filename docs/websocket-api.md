@@ -498,16 +498,19 @@ cargo run --example axum_websocket_server
 ## Common Issues
 
 **Connection Refused:**
+
 - Ensure server is running on port 3000
 - Check firewall settings
 - Verify session ID is valid
 
 **Message Not Received:**
+
 - Check WebSocket connection status
 - Verify message format matches protocol
 - Check browser console for JavaScript errors
 
 **Session Expired:**
+
 - Sessions expire after 24 hours
 - Create new session via REST API
 - Check server logs for expiration events

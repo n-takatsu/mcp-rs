@@ -89,6 +89,7 @@ Parameterized queries, transaction management, and SQL injection prevention for 
 ## Commit Messages
 
 Use clear, descriptive commit messages:
+
 - `feat: add new WordPress media upload functionality`
 - `fix: resolve timeout issue in HTTP client`
 - `docs: update API documentation`
@@ -99,6 +100,7 @@ Use clear, descriptive commit messages:
 ## Bug Reports
 
 When reporting bugs, please include:
+
 - OS and Rust version
 - Steps to reproduce
 - Expected vs actual behavior
@@ -107,6 +109,7 @@ When reporting bugs, please include:
 ## Feature Requests
 
 For feature requests, please describe:
+
 - The use case and problem being solved
 - Proposed solution or approach
 - Any alternatives considered

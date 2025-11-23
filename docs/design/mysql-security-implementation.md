@@ -29,6 +29,7 @@ let result: Vec<mysql_async::Row> = conn
 ```
 
 **Impact**:
+
 - 🔴 **SQL Injection attacks possible**
 - 🔴 **Data breach risk**
 - 🔴 **Production environment unusable**
