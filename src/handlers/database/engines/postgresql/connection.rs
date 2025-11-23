@@ -141,8 +141,8 @@ impl PostgreSqlPool {
     /// Get pool statistics
     pub fn stats(&self) -> PoolStats {
         PoolStats {
-            num_idle: self.pool.num_idle(),
-            size: self.pool.size(),
+            num_idle: self.pool.num_idle() as u32,
+            size: self.pool.size() as u32,
         }
     }
 
