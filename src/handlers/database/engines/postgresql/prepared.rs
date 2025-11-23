@@ -9,7 +9,7 @@ use crate::handlers::database::{
 };
 use async_trait::async_trait;
 use sqlx::postgres::PgPool;
-use sqlx::{Postgres, Row};
+use sqlx::{Column, Postgres, Row};
 use std::sync::Arc;
 
 /// PostgreSQL Prepared Statement Implementation
@@ -65,8 +65,10 @@ impl PostgreSqlPreparedStatement {
         for (idx, _) in sql.match_indices('$').enumerate() {
             let pos = sql.find('$').unwrap_or(0);
             if pos + 1 < sql.len() {
-                if let Ok(num) = sql[pos + 1..].chars().next().unwrap().to_digit(10) {
-                    max_placeholder = max_placeholder.max(num as usize);
+                if let Some(ch) = sql[pos + 1..].chars().next() {
+                    if let Some(num) = ch.to_digit(10) {
+                        max_placeholder = max_placeholder.max(num as usize);
+                    }
                 }
             }
         }
