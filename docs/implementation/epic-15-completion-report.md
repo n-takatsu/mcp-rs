@@ -92,7 +92,7 @@ test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
 
 ## モジュール構成
 
-```
+```text
 src/
 ├── policy_config.rs      
 
@@ -148,7 +148,7 @@ docs/
 
 ## データフロー
 
-```
+```text
 ファイル変更 → 検知 → 検証 → 適用 → 通知
      ↓         ↓      ↓      ↓      ↓
   notify    watcher validation engine events

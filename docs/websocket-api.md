@@ -8,7 +8,7 @@ The MCP-RS WebSocket API provides real-time collaborative editing capabilities t
 
 ## System Components
 
-```
+```text
 ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
 │   Web Client    │    │  Axum WebSocket │    │ Session Manager │
 │                 │◄──►│     Server      │◄──►│                 │
@@ -29,7 +29,7 @@ The MCP-RS WebSocket API provides real-time collaborative editing capabilities t
 
 ## Session Lifecycle
 
-```
+```text
    create_session()
         │
         ▼
@@ -50,7 +50,7 @@ The MCP-RS WebSocket API provides real-time collaborative editing capabilities t
 
 ## Base URL
 
-```
+```bash
 http://localhost:3000
 ```
 
@@ -125,12 +125,12 @@ http://localhost:3000
 ## Connection
 
 **WebSocket URL:**
-```
+```bash
 ws://localhost:3000/ws?session_id={session_id}
 ```
 
 **Headers:**
-```
+```bash
 Authorization: Bearer {session_id}
 x-session-id: {session_id}
 ```

@@ -104,7 +104,7 @@ sqlx = { version = "0.7", features = ["sqlite", "runtime-tokio-rustls", "chrono"
 
 ## 接続文字列形式
 
-```
+```bash
 sqlite:path/to/database.db
 sqlite::memory:           
 
@@ -124,7 +124,7 @@ sqlite:database.db?mode=ro
 
 ## ファイル構造
 
-```
+```text
 src/handlers/database/engines/
 ├── sqlite.rs              
 

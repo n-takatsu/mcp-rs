@@ -140,10 +140,10 @@ tokio = { version = "1.0", features = ["full"] }
 
 ## 接続文字列形式
 
-```
+```bash
 mysql://username:password@host:port/database?option1=value1&option2=value2
 
-// SSL例
+# SSL例
 mysql://user:pass@localhost:3306/mydb?ssl-mode=required&ssl-ca=/path/to/ca.pem
 
 // 文字セット例
@@ -249,7 +249,7 @@ pub enum MySqlError {
 
 ## ファイル構造
 
-```
+```text
 src/handlers/database/engines/
 ├── mysql.rs              
 

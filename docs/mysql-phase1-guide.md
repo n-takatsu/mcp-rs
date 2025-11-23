@@ -226,7 +226,7 @@ cargo test --test mysql_phase1_basic_tests -- --nocapture
 
 ### Test Results
 
-```
+```text
 Total Tests:      45 ✅
 Passing:          45 ✅
 Failing:           0 ✅
@@ -247,7 +247,7 @@ Coverage:
 
 ### Parameter Conversion
 
-```
+```text
 Benchmark: 1000 SQL statements
 Time: ~164µs
 Per-statement: ~0.164µs
@@ -257,7 +257,7 @@ Status: ✅ Production-ready
 
 ### Batch Operations
 
-```
+```text
 Test: 10,000 operations
 Result: Successfully handled
 Memory: Linear scaling
@@ -267,7 +267,7 @@ Status: ✅ Scales well
 
 ### Savepoint Management
 
-```
+```text
 Test: 100+ savepoints
 Creation: Negligible overhead
 Rollback: O(1) with marker

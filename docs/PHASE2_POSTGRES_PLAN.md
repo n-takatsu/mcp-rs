@@ -132,7 +132,7 @@ pub trait DatabaseEngine {
 
 ### テストファイル構成
 
-```
+```text
 tests/
 ├── postgres_phase2_basic_tests.rs (30 テスト)
 │   ├── Connection tests
@@ -171,7 +171,7 @@ tests/
 
 ### ✅ 完了した実装段階
 
-```
+```text
 Phase 2a: PostgreSQL 基盤 ✅ COMPLETE
 ├── ✅ ブランチ作成
 ├── ✅ PostgreSQL engine 実装 (mod.rs - 141行)

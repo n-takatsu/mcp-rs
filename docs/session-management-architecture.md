@@ -8,7 +8,7 @@ The MCP-RS session management system provides enterprise-grade session lifecycle
 
 ## High-Level Architecture
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────────┐
 │                    MCP-RS Session Management                    │
 ├─────────────────────────────────────────────────────────────────┤
@@ -41,7 +41,7 @@ The MCP-RS session management system provides enterprise-grade session lifecycle
 
 ## Component Interaction Flow
 
-```
+```text
 Client Request
       │
       ▼
@@ -200,7 +200,7 @@ pub struct WebSocketMessage {
 
 ## State Transitions
 
-```
+```text
     create_session()
           │
           ▼
@@ -278,7 +278,7 @@ pub async fn validate_session(&self, id: &SessionId) -> Result<bool, SessionErro
 
 ## Multi-Layer Security Model
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────┐
 │                     Security Layers                        │
 ├─────────────────────────────────────────────────────────────┤
@@ -330,7 +330,7 @@ pub async fn validate_session(&self, id: &SessionId) -> Result<bool, SessionErro
 
 ## Security Event Flow
 
-```
+```text
 User Action
      │
      ▼
@@ -367,11 +367,11 @@ User Action
 
 ## Memory Usage Patterns
 
-```
+```text
 Session Memory Layout:
-┌─────────────────────────────────────────┐
+┌─────────────────────────────────────┐
 │ SessionId (String): ~36 bytes           │
-├─────────────────────────────────────────┤
+├─────────────────────────────────────┤
 │ SessionState (enum): 1 byte             │
 ├─────────────────────────────────────────┤
 │ user_id (String): ~variable             │
@@ -431,7 +431,7 @@ pub enum SessionError {
 
 ## Test Coverage
 
-```
+```text
 Session Management Test Suite:
 ├── Unit Tests (87 tests)
 │   ├── Session creation/deletion

@@ -221,7 +221,7 @@ docker network inspect mcp-rs_postgres-network
 
 コンテナ内では `postgres-primary`, `postgres-secondary` のホスト名で接続可能：
 
-```
+```bash
 postgresql://postgres:postgres@postgres-primary:5432/testdb
 postgresql://postgres:postgres@postgres-secondary:5432/testdb
 ```
