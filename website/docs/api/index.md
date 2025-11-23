@@ -6,54 +6,100 @@ permalink: /docs/api/
 
 # API Reference
 
-Complete API documentation for MCP-RS.
+Complete API documentation for MCP-RS v0.16.0+ - Multi-database support with MySQL and PostgreSQL.
 
-## Core Types
+---
 
-## JSON-RPC Messages
+## 📚 API Documentation Sections
 
-All MCP-RS communication follows the JSON-RPC 2.0 specification.
+### 1. Database Engine API
 
-### Request Format
+Comprehensive reference for database engine implementations:
+- [📄 Database Engine API](./database.md)
+  - Core types (Value, DatabaseError, QueryResult, ExecuteResult)
+  - DatabaseEngine trait
+  - DatabaseConnection trait
+  - PreparedStatement trait
+  - Transaction trait with ACID support
+  - Isolation levels
+  - Error handling
 
-```json
-{
-  "jsonrpc": "2.0",
-  "method": "method_name",
-  "params": { /* method parameters */ },
-  "id": 1
+### 2. MCP Protocol API
+
+Standard JSON-RPC 2.0 protocol methods:
+- Initialization
+- Tools (list, call)
+- Resources (list, read)
+- Prompts (list, get)
+- Error codes
+
+### 3. Integration Guides
+
+Step-by-step guides for each database:
+- [PostgreSQL Integration Guide](../guides/postgres-integration.md)
+- MySQL Integration Guide (coming soon)
+- [Performance Tuning Guide](../guides/performance-tuning.md)
+
+---
+
+## 🗄️ Supported Database Engines
+
+| Database | Status | Features | Driver | Version |
+|----------|--------|----------|--------|---------|
+| **MySQL** | ✅ Phase 1 Complete | Transactions, Prepared Statements, JSON | sqlx 0.8 | 5.7+ |
+| **PostgreSQL** | ✅ Phase 2 Complete | Transactions, Prepared Statements, JSON, UUID | sqlx 0.8 | 12+ |
+
+---
+
+## Core Data Types Quick Reference
+
+### Value Enum
+```rust
+pub enum Value {
+    Null,                                    // SQL NULL
+    Bool(bool),                              // Boolean
+    Int(i64),                                // 64-bit integer
+    Float(f64),                              // 64-bit float
+    String(String),                          // UTF-8 text
+    Binary(Vec<u8>),                         // Raw binary
+    Json(serde_json::Value),                 // JSON objects/arrays
+    DateTime(chrono::DateTime<Utc>),         // UTC timestamp
 }
 ```
 
-### Response Format
-
-```json
-{
-  "jsonrpc": "2.0",
-  "result": { /* response data */ },
-  "id": 1
+### DatabaseError Enum
+```rust
+pub enum DatabaseError {
+    ConnectionFailed(String),
+    QueryFailed(String),
+    TransactionFailed(String),
+    SecurityViolation(String),
+    ConfigurationError(String),
+    ConfigValidationError(String),
+    PoolError(String),
+    TimeoutError(String),
+    UnsupportedOperation(String),
+    ValidationError(String),
 }
 ```
 
-### Error Format
-
-```json
-{
-  "jsonrpc": "2.0",
-  "error": {
-    "code": -32000,
-    "message": "Error description",
-    "data": { /* additional error info */ }
-  },
-  "id": 1
+### IsolationLevel Enum
+```rust
+pub enum IsolationLevel {
+    Serializable,       // Highest isolation
+    RepeatableRead,     // Prevents dirty/non-repeatable reads
+    ReadCommitted,      // Prevents dirty reads
+    ReadUncommitted,    // Lowest isolation, fastest
 }
 ```
+
+---
 
 ## MCP Protocol Methods
 
-## Initialization
+### Initialization
 
-### `initialize`
+#### `initialize`
 
 Establishes connection and negotiates capabilities.
 
@@ -65,9 +111,7 @@ Establishes connection and negotiates capabilities.
   "params": {
     "protocolVersion": "2024-11-05",
     "capabilities": {
-      "roots": {
-        "listChanged": true
-      },
+      "roots": { "listChanged": true },
       "sampling": {}
     },
     "clientInfo": {
@@ -87,29 +131,24 @@ Establishes connection and negotiates capabilities.
     "protocolVersion": "2024-11-05",
     "capabilities": {
       "logging": {},
-      "tools": {
-        "listChanged": true
-      },
-      "resources": {
-        "subscribe": true,
-        "listChanged": true
-      },
-      "prompts": {
-        "listChanged": true
-      }
+      "tools": { "listChanged": true },
+      "resources": { "subscribe": true, "listChanged": true },
+      "prompts": { "listChanged": true }
     },
     "serverInfo": {
       "name": "mcp-rs",
-      "version": "0.1.0"
+      "version": "0.16.0"
     }
   },
   "id": 1
 }
 ```
 
-## Tools
+---
 
-### `tools/list`
+### Tools
+
+#### `tools/list`
 
 Lists available tools.
 
@@ -143,7 +182,7 @@ Lists available tools.
 }
 ```
 
-### `tools/call`
+#### `tools/call`
 
 Executes a tool.
 
@@ -180,9 +219,11 @@ Executes a tool.
 }
 ```
 
-## Resources
+---
 
-### `resources/list`
+### Resources
+
+#### `resources/list`
 
 Lists available resources.
 
@@ -219,7 +260,7 @@ Lists available resources.
 }
 ```
 
-### `resources/read`
+#### `resources/read`
 
 Reads a resource.
 
@@ -252,9 +293,11 @@ Reads a resource.
 }
 ```
 
-## Prompts
+---
 
-### `prompts/list`
+### Prompts
+
+#### `prompts/list`
 
 Lists available prompts.
 
@@ -290,7 +333,7 @@ Lists available prompts.
 }
 ```
 
-### `prompts/get`
+#### `prompts/get`
 
 Retrieves a prompt.
 
@@ -301,9 +344,7 @@ Retrieves a prompt.
   "method": "prompts/get",
   "params": {
     "name": "wordpress_content_analysis",
-    "arguments": {
-      "post_id": "123"
-    }
+    "arguments": { "post_id": "123" }
   },
   "id": 7
 }
@@ -320,7 +361,7 @@ Retrieves a prompt.
         "role": "user",
         "content": {
           "type": "text",
-          "text": "Please analyze the following WordPress post for SEO optimization and readability improvements..."
+          "text": "Please analyze the following WordPress post..."
         }
       }
     ]
@@ -329,9 +370,9 @@ Retrieves a prompt.
 }
 ```
 
-## Error Codes
+---
 
-MCP-RS uses standard JSON-RPC error codes plus custom MCP-specific codes:
+## Error Codes
 
 | Code | Message | Description |
 |------|---------|-------------|
@@ -347,32 +388,25 @@ MCP-RS uses standard JSON-RPC error codes plus custom MCP-specific codes:
 | -32004 | Resource read failed | Resource read error |
 | -32005 | Configuration error | Configuration validation error |
 
+---
+
 ## WordPress Handler API
 
-## Available Tools
+### Available Tools
 
-### `get_posts`
-
+#### `get_posts`
 Retrieves WordPress posts.
 
-**Parameters:** None (current implementation)
-
-### `create_post`
-
+#### `create_post`
 Creates a new WordPress post.
+- `title` (string, required)
+- `content` (string, required)
 
-**Parameters:**
-- `title` (string, required): Post title
-- `content` (string, required): Post content (HTML)
-
-### `get_comments`
-
+#### `get_comments`
 Retrieves WordPress comments.
+- `post_id` (number, optional)
 
-**Parameters:**
-- `post_id` (number, optional): Post ID to filter comments
-
-## Resources
+### Resources
 
 - `wordpress://posts` - All published posts
 - `wordpress://pages` - All published pages
@@ -383,4 +417,59 @@ Retrieves WordPress comments.
 
 ---
 
-For implementation examples, see the [Guides section](../guides/).
+## Version Information
+
+- **Current Version**: v0.16.0
+- **Phase 1**: MySQL (Complete)
+- **Phase 2**: PostgreSQL (Complete)
+- **Last Updated**: 2025-11-23
+
+---
+
+## Quick Start
+
+### Database Connection Example
+
+```rust
+use mcp_rs::handlers::database::engines::postgresql::PostgreSqlEngine;
+use mcp_rs::handlers::database::types::{DatabaseConfig, DatabaseEngine};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let config = DatabaseConfig {
+        engine_type: "postgresql".to_string(),
+        host: "localhost".to_string(),
+        port: 5432,
+        username: "postgres".to_string(),
+        password: "password".to_string(),
+        database: "myapp".to_string(),
+        ..Default::default()
+    };
+
+    let engine = PostgreSqlEngine::new(config)?;
+    let conn = engine.connect().await?;
+
+    // Execute query
+    let stmt = conn.prepare(
+        "SELECT * FROM users WHERE age > $1"
+    ).await?;
+    
+    let result = stmt.query(&[
+        Value::Int(18)
+    ]).await?;
+
+    for row in result.rows {
+        println!("{:?}", row);
+    }
+
+    conn.close().await?;
+    Ok(())
+}
+```
+
+---
+
+For more details, see:
+- [📄 Database Engine API](./database.md) - Complete API reference
+- [📖 PostgreSQL Integration Guide](../guides/postgres-integration.md) - Setup and usage
+- [📖 Implementation Guides](../guides/) - All guides
