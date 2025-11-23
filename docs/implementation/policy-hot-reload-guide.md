@@ -36,7 +36,7 @@ Policy Hot-Reload システムは、mcp-rs プロジェクトにおいて**リ�
 ## 基本的な使用例
 
 ```rust
-use mcp_rs::policy_application::PolicyApplicationEngine;
+
 use mcp_rs::policy_validation::ValidationLevel;
 
 #[tokio::main]
@@ -80,6 +80,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     Ok(())
 }
+
 ```
 
 ## 📝 ポリシーファイル形式
@@ -87,7 +88,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ## TOML形式の例
 
 ```toml
-id = "production-security-policy"
+
 name = "Production Security Policy"
 version = "2.1.0"
 description = "本番環境向け厳格セキュリティポリシー"
@@ -143,12 +144,13 @@ session_timeout_seconds = 3600
 [custom]
 environment = "production"
 compliance_mode = "strict"
+
 ```
 
 ## YAML形式の例
 
 ```yaml
-id: "development-policy"
+
 name: "Development Policy"
 version: "1.0.0"
 description: "開発環境向けポリシー"
@@ -197,6 +199,7 @@ authentication:
 custom:
   environment: "development"
   compliance_mode: "basic"
+
 ```
 
 ## 🔍 検証レベルの詳細
@@ -249,7 +252,7 @@ custom:
 ## 本番環境での推奨設定
 
 ```rust
-// 厳格な検証レベルを使用
+
 let engine = PolicyApplicationEngine::with_validation_level(
     policy_dir,
     ValidationLevel::Strict
@@ -268,6 +271,7 @@ engine.subscribe().await.for_each(|event| {
         _ => {}
     }
 });
+
 ```
 
 ## セキュリティ検証項目
@@ -296,6 +300,7 @@ engine.subscribe().await.for_each(|event| {
 **症状**: `PolicyValidationFailed` イベントが発生
 
 **原因と解決方法**:
+
 ```bash
 
 ## ログで詳細エラーを確認
@@ -317,10 +322,12 @@ RUST_LOG=debug cargo run
 **症状**: ポリシーファイルを更新してもイベントが発生しない
 
 **解決方法**:
+
 ```rust
-// ファイル権限を確認
+
 // パス指定が正しいかチェック
 // 一時的にValidationLevel::Basicで試行
+
 ```
 
 ### 3. パフォーマンスの低下
@@ -328,8 +335,9 @@ RUST_LOG=debug cargo run
 **症状**: ポリシー適用に時間がかかる
 
 **解決方法**:
+
 ```rust
-// 検証レベルを下げる
+
 let engine = PolicyApplicationEngine::with_validation_level(
     policy_dir,
     ValidationLevel::Basic  // Strictから変更
@@ -337,6 +345,7 @@ let engine = PolicyApplicationEngine::with_validation_level(
 
 // ファイルサイズを確認（1MB以下推奨）
 // 監視ファイル数を減らす
+
 ```
 
 ## 📚 API リファレンス
@@ -346,7 +355,7 @@ let engine = PolicyApplicationEngine::with_validation_level(
 ### 主要メソッド
 
 ```rust
-// エンジン作成
+
 pub fn new<P: AsRef<Path>>(watch_path: P) -> Self
 pub fn with_validation_level<P: AsRef<Path>>(
     watch_path: P, 
@@ -366,6 +375,7 @@ pub fn subscribe(&self) -> broadcast::Receiver<PolicyApplicationEvent>
 // 状態取得
 pub async fn get_current_policy(&self) -> PolicyConfig
 pub async fn get_validation_stats(&self) -> ValidationStats
+
 ```
 
 ## PolicyValidationEngine
@@ -373,7 +383,7 @@ pub async fn get_validation_stats(&self) -> ValidationStats
 ### 主要メソッド
 
 ```rust
-// エンジン作成
+
 pub fn new() -> Self
 pub fn with_rules(rules: ValidationRules) -> Self
 
@@ -386,17 +396,19 @@ pub async fn validate_policy(
 
 // 統計取得
 pub fn get_stats(&self) -> &ValidationStats
+
 ```
 
 ## イベント型
 
 ```rust
-pub enum PolicyApplicationEventType {
+
     PolicyLoaded,              // ポリシー読み込み
     PolicyApplied,            // ポリシー適用成功
     PolicyApplicationFailed,   // ポリシー適用失敗
     PolicyValidationFailed,   // ポリシー検証失敗
 }
+
 ```
 
 ## 🧪 テストとデバッグ
@@ -414,6 +426,7 @@ cargo test --test policy_hot_reload_integration
 cargo test test_complete_policy_hot_reload_workflow
 cargo test test_performance_bulk_policy_updates
 cargo test test_validation_integration
+
 ```
 
 ## デモの実行
@@ -431,6 +444,7 @@ cargo run --example policy_validation_demo
 ## 統合ポリシーデモ
 
 cargo run --example integrated_policy_demo
+
 ```
 
 ## デバッグログの有効化
@@ -444,6 +458,7 @@ RUST_LOG=debug cargo run
 ## 特定モジュールのログのみ
 
 RUST_LOG=mcp_rs::policy_application=debug cargo run
+
 ```
 
 ## 🔧 高度な設定
@@ -451,7 +466,7 @@ RUST_LOG=mcp_rs::policy_application=debug cargo run
 ## カスタム検証ルールの作成
 
 ```rust
-use mcp_rs::policy_validation::{ValidationRules, PolicyValidationEngine};
+
 
 let custom_rules = ValidationRules {
     require_mandatory_fields: true,
@@ -462,12 +477,13 @@ let custom_rules = ValidationRules {
 };
 
 let mut engine = PolicyValidationEngine::with_rules(custom_rules);
+
 ```
 
 ## 環境固有の設定
 
 ```rust
-// 環境別設定例
+
 match environment {
     "production" => {
         PolicyApplicationEngine::with_validation_level(
@@ -488,6 +504,7 @@ match environment {
         )
     }
 }
+
 ```
 
 ## 📈 モニタリングと運用
@@ -511,6 +528,7 @@ grep "PolicyValidationFailed" application.log | wc -l
 
 grep "ポリシー適用成功" application.log | \
   grep -o '[0-9]\+ms' | sort -n
+
 ```
 
 ## 🔄 アップグレードガイド

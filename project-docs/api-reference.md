@@ -16,7 +16,7 @@ All API calls are protected by the 6-layer security architecture:
 
 ## 🗄️ Database Tools
 
-## Core Database Operations
+### Core Database Operations
 
 ### `execute_query` - Execute SELECT Queries
 
@@ -127,7 +127,7 @@ Switch the default database engine for subsequent operations.
 
 ## 📝 WordPress Tools
 
-## Content Management (Secured)
+### Content Management (Secured)
 
 ```json
 // Basic post creation - XSS protected
@@ -272,13 +272,13 @@ Switch the default database engine for subsequent operations.
 
 ## URL Formats
 
-## YouTube
+### YouTube
 
 - `https://www.youtube.com/watch?v=VIDEO_ID`
 - `https://youtu.be/VIDEO_ID`
 - `https://www.youtube.com/embed/VIDEO_ID`
 
-## Social Media
+### Social Media
 
 - **Twitter**: `https://twitter.com/user/status/123456789`
 - **X**: `https://x.com/user/status/123456789`
@@ -306,3 +306,4 @@ Switch the default database engine for subsequent operations.
 | Categories per post | Unlimited | Recommended: 2-5 |
 | Tags per post | Unlimited | Recommended: 5-10 |
 | API requests | Rate limited | Depends on WordPress hosting |
+

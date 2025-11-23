@@ -9,6 +9,7 @@ Thank you for your interest in contributing to MCP-RS! We welcome contributions 
 Parameterized queries, transaction management, and SQL injection prevention for MySQL.
 
 **Key Components**:
+
 - Prepared statements for safe parameterized queries
 - ACID-compliant transaction management
 - 4 isolation levels support
@@ -16,6 +17,7 @@ Parameterized queries, transaction management, and SQL injection prevention for 
 - 45 comprehensive tests
 
 **Related Files**:
+
 - `src/handlers/database/engines/mysql/prepared.rs`
 - `src/handlers/database/engines/mysql/transaction.rs`
 - `tests/mysql_phase1_*.rs`
@@ -31,26 +33,30 @@ Parameterized queries, transaction management, and SQL injection prevention for 
 
 ## Prerequisites
 
-- Rust 1.70+ 
+- Rust 1.70+
 - Cargo
 - Git
 
 ## Development Setup
 
 1. Fork and clone the repository:
+
    ```bash
-   git clone https://github.com/your-username/mcp-rs.git
+
    cd mcp-rs
+
    ```
 
 2. Create a new branch for your feature:
+
    ```bash
-   git checkout -b feature/your-feature-name
+
    ```
 
 3. Run tests to ensure everything works:
+
    ```bash
-   cargo test
+
    ```
 
 ## Development Guidelines
@@ -87,6 +93,7 @@ Parameterized queries, transaction management, and SQL injection prevention for 
 ## Commit Messages
 
 Use clear, descriptive commit messages:
+
 - `feat: add new WordPress media upload functionality`
 - `fix: resolve timeout issue in HTTP client`
 - `docs: update API documentation`
@@ -97,6 +104,7 @@ Use clear, descriptive commit messages:
 ## Bug Reports
 
 When reporting bugs, please include:
+
 - OS and Rust version
 - Steps to reproduce
 - Expected vs actual behavior
@@ -105,6 +113,7 @@ When reporting bugs, please include:
 ## Feature Requests
 
 For feature requests, please describe:
+
 - The use case and problem being solved
 - Proposed solution or approach
 - Any alternatives considered

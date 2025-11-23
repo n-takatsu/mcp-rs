@@ -35,8 +35,7 @@ fn test_transaction_begin_commit() {
         RolledBack,
     }
 
-    let mut state = TransactionState::Inactive;
-    state = TransactionState::Active;
+    let mut state = TransactionState::Active;
     assert!(matches!(state, TransactionState::Active));
 
     state = TransactionState::Committed;
@@ -52,8 +51,7 @@ fn test_transaction_begin_rollback() {
         RolledBack,
     }
 
-    let mut state = TransactionState::Inactive;
-    state = TransactionState::Active;
+    let mut state = TransactionState::Active;
     assert!(matches!(state, TransactionState::Active));
 
     state = TransactionState::RolledBack;
@@ -130,8 +128,7 @@ fn test_transaction_commit_failure_recovery() {
         RolledBack,
     }
 
-    let mut result = TransactionResult::Success;
-    result = TransactionResult::CommitFailed;
+    let mut result = TransactionResult::CommitFailed;
     assert!(matches!(result, TransactionResult::CommitFailed));
 
     result = TransactionResult::RolledBack;

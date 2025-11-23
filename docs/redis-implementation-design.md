@@ -26,7 +26,7 @@ mcp-rsプロジェクトにおけるRedisインメモリデータベースエン
 
 ## コンポーネント構成
 
-```
+```rust
 RedisEngine
 ├── RedisConnection          // 基本接続管理
 ├── RedisClusterConnection   // クラスター接続管理

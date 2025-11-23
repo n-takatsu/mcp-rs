@@ -132,7 +132,7 @@ let doc = MongoDocument::new()
 
 ## 単体テスト: ✅ 5/5 成功
 
-```
+```text
 test_mongo_engine_creation ... ok
 test_mongo_health_check ... ok  
 test_mongo_document_creation ... ok
@@ -142,7 +142,7 @@ test_mongo_connection ... ok
 
 ## 集約テスト: ✅ 1/1 成功
 
-```
+```text
 test_aggregation_pipeline ... ok
 ```
 

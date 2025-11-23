@@ -72,11 +72,12 @@ MCP-RS provides comprehensive WordPress integration through the WordPress REST A
 Add WordPress configuration to your `mcp-config.toml`:
 
 ```toml
-[wordpress]
+
 url = "https://your-wordpress-site.com"
 username = "your_username"
 password = "your_application_password"
 timeout_seconds = 30
+
 ```
 
 ## Setting up Application Passwords
@@ -100,14 +101,16 @@ Create a new WordPress post (basic version).
 - `content` (string): Post content (HTML supported)
 
 **Example Usage:**
+
 ```json
-{
+
   "tool": "create_post",
   "arguments": {
     "title": "My New Blog Post",
     "content": "<p>This is the content of my post with <strong>HTML formatting</strong>.</p>"
   }
 }
+
 ```
 
 ### `create_advanced_post`
@@ -126,8 +129,9 @@ Create a new WordPress post or page with advanced options.
 - `meta` (object, optional): Meta fields for SEO (e.g., Yoast SEO fields)
 
 **Example Usage:**
+
 ```json
-{
+
   "tool": "create_advanced_post",
   "arguments": {
     "title": "SEO-Optimized Post",
@@ -143,6 +147,7 @@ Create a new WordPress post or page with advanced options.
     }
   }
 }
+
 ```
 
 ### `update_post`
@@ -160,8 +165,9 @@ Update an existing WordPress post.
 - `meta` (object, optional): New meta fields
 
 **Example Usage:**
+
 ```json
-{
+
   "tool": "update_post",
   "arguments": {
     "post_id": 123,
@@ -170,6 +176,7 @@ Update an existing WordPress post.
     "categories": [1, 2, 3]
   }
 }
+
 ```
 
 ### `delete_post`
@@ -215,8 +222,9 @@ Upload a media file to WordPress media library.
 - `mime_type` (string): MIME type (e.g., "image/jpeg")
 
 **Example Usage:**
+
 ```json
-{
+
   "tool": "upload_media",
   "arguments": {
     "file_data": "iVBORw0KGgoAAAANSUhEUgAA...",
@@ -224,6 +232,7 @@ Upload a media file to WordPress media library.
     "mime_type": "image/jpeg"
   }
 }
+
 ```
 
 ### `get_media`
@@ -252,8 +261,9 @@ Update WordPress media metadata (title, alt text, caption, description).
 - `post` (number, optional): Post ID to attach media to
 
 **Example Usage:**
+
 ```json
-{
+
   "tool": "update_media",
   "arguments": {
     "media_id": 123,
@@ -262,6 +272,7 @@ Update WordPress media metadata (title, alt text, caption, description).
     "description": "Detailed view of our latest handbag design"
   }
 }
+
 ```
 
 ### `delete_media`
@@ -301,13 +312,15 @@ Retrieve a single WordPress post by ID.
 - `post_id` (number): ID of the post to retrieve
 
 **Example Usage:**
+
 ```json
-{
+
   "tool": "get_post",
   "arguments": {
     "post_id": 123
   }
 }
+
 ```
 
 ## `update_post`
@@ -324,8 +337,9 @@ Update an existing WordPress post with comprehensive options.
 - `featured_media_id` (number, optional): Featured image media ID
 
 **Example Usage:**
+
 ```json
-{
+
   "tool": "update_post",
   "arguments": {
     "post_id": 123,
@@ -336,6 +350,7 @@ Update an existing WordPress post with comprehensive options.
     "tags": [23, 45]
   }
 }
+
 ```
 
 ## `delete_post`
@@ -347,14 +362,16 @@ Delete a WordPress post.
 - `force` (boolean, optional): Force delete (permanently delete, bypass trash)
 
 **Example Usage:**
+
 ```json
-{
+
   "tool": "delete_post",
   "arguments": {
     "post_id": 123,
     "force": false
   }
 }
+
 ```
 
 **Note:** When `force` is `false` (default), the post is moved to trash. When `true`, it's permanently deleted.
@@ -367,13 +384,15 @@ Retrieve WordPress comments.
 - `post_id` (number, optional): Filter comments by specific post
 
 **Example Usage:**
+
 ```json
-{
+
   "tool": "get_comments",
   "arguments": {
     "post_id": 123
   }
 }
+
 ```
 
 ## `get_categories`
@@ -394,8 +413,9 @@ Create a new WordPress category.
 - `parent` (number, optional): Parent category ID for hierarchical structure
 
 **Example Usage:**
+
 ```json
-{
+
   "tool": "create_category",
   "arguments": {
     "name": "Technology",
@@ -403,6 +423,7 @@ Create a new WordPress category.
     "parent": 5
   }
 }
+
 ```
 
 ## `update_category`
@@ -415,8 +436,9 @@ Update an existing WordPress category.
 - `description` (string, optional): New category description
 
 **Example Usage:**
+
 ```json
-{
+
   "tool": "update_category",
   "arguments": {
     "category_id": 10,
@@ -424,6 +446,7 @@ Update an existing WordPress category.
     "description": "Updated description"
   }
 }
+
 ```
 
 ## `delete_category`
@@ -435,14 +458,16 @@ Delete a WordPress category.
 - `force` (boolean, optional): Force delete (bypass trash)
 
 **Example Usage:**
+
 ```json
-{
+
   "tool": "delete_category",
   "arguments": {
     "category_id": 10,
     "force": true
   }
 }
+
 ```
 
 ## `get_tags`
@@ -462,14 +487,16 @@ Create a new WordPress tag.
 - `description` (string, optional): Tag description
 
 **Example Usage:**
+
 ```json
-{
+
   "tool": "create_tag",
   "arguments": {
     "name": "rust",
     "description": "Posts about Rust programming language"
   }
 }
+
 ```
 
 ## `update_tag`
@@ -482,8 +509,9 @@ Update an existing WordPress tag.
 - `description` (string, optional): New tag description
 
 **Example Usage:**
+
 ```json
-{
+
   "tool": "update_tag",
   "arguments": {
     "tag_id": 15,
@@ -491,6 +519,7 @@ Update an existing WordPress tag.
     "description": "Updated tag description"
   }
 }
+
 ```
 
 ## `delete_tag`
@@ -502,14 +531,16 @@ Delete a WordPress tag.
 - `force` (boolean, optional): Force delete (bypass trash)
 
 **Example Usage:**
+
 ```json
-{
+
   "tool": "delete_tag",
   "arguments": {
     "tag_id": 15,
     "force": true
   }
 }
+
 ```
 
 ## `create_post_with_categories_tags`
@@ -524,8 +555,9 @@ Create a new WordPress post with categories and tags.
 - `featured_media_id` (number, optional): Featured image media ID
 
 **Example Usage:**
+
 ```json
-{
+
   "tool": "create_post_with_categories_tags",
   "arguments": {
     "title": "Complete Guide to Rust",
@@ -535,6 +567,7 @@ Create a new WordPress post with categories and tags.
     "featured_media_id": 89
   }
 }
+
 ```
 
 ## `update_post_categories_tags`
@@ -547,8 +580,9 @@ Update categories and tags for an existing WordPress post.
 - `tags` (array, optional): Array of tag IDs to set
 
 **Example Usage:**
+
 ```json
-{
+
   "tool": "update_post_categories_tags",
   "arguments": {
     "post_id": 123,
@@ -556,6 +590,7 @@ Update categories and tags for an existing WordPress post.
     "tags": [15, 20, 25]
   }
 }
+
 ```
 
 ## Workflow Examples
@@ -563,37 +598,40 @@ Update categories and tags for an existing WordPress post.
 ## Basic Blog Post
 
 ```
-User: "Create a blog post about Rust programming"
+
 AI automatically:
 1. Uses create_post tool
 2. Generates title and content
 3. Returns post URL and ID
+
 ```
 
 ## Featured Image Workflow
 
 ```
-User: "Upload this image and create a post with it as featured image"
+
 AI automatically:
 1. Uses upload_media with base64 image data
 2. Uses create_post_with_featured_image with returned media ID
 3. Creates complete post with featured image
+
 ```
 
 ## Update Existing Post
 
 ```
-User: "Add a featured image to post #123"
+
 AI automatically:
 1. Uploads image using upload_media
 2. Uses set_featured_image to update post
 3. Confirms successful update
+
 ```
 
 ## Category Management Workflow
 
 ```
-User: "Create a new category for web development tutorials"
+
 AI automatically:
 1. Uses create_category with name and description
 2. Returns category ID and details
@@ -604,12 +642,13 @@ AI automatically:
 1. Uses get_categories to find Technology category ID
 2. Uses create_category with parent parameter
 3. Creates hierarchical category structure
+
 ```
 
 ## Tag Management Workflow
 
 ```
-User: "Create tags for a Rust programming post"
+
 AI automatically:
 1. Uses create_tag for each relevant tag (rust, programming, tutorial)
 2. Returns tag IDs for future reference
@@ -620,12 +659,13 @@ AI automatically:
 1. Uses get_tags to find tag ID
 2. Uses update_tag with new description
 3. Confirms update success
+
 ```
 
 ## Smart Content Creation Workflow
 
 ```
-User: "Create a post about web development in the technology category"
+
 AI intelligently:
 1. Uses get_categories to find existing categories
 2. Finds "Technology" category (avoids creating duplicates)
@@ -639,12 +679,13 @@ AI automatically:
 2. Adds new tag to existing taxonomy
 3. Uses update_post_categories_tags to preserve existing data
 4. Confirms successful update
+
 ```
 
 ## Complete Content Management Workflow
 
 ```
-User: "Edit post #123 to change the title and add categories"
+
 AI automatically:
 1. Uses get_post to retrieve current post details
 2. Shows current title, content, and taxonomy
@@ -658,12 +699,13 @@ AI automatically:
 2. Identifies the specific post by content analysis
 3. Uses delete_post with force=false (moves to trash)
 4. Confirms post moved to trash for recovery if needed
+
 ```
 
 ## Content Lifecycle Management
 
 ```
-User: "Publish the draft post and add featured image"
+
 AI automatically:
 1. Uses get_post to retrieve draft details
 2. Uses upload_media for featured image
@@ -676,12 +718,13 @@ AI automatically:
 2. Shows list for user confirmation
 3. Uses update_post to change status to "private"
 4. Bulk content management operation
+
 ```
 
 ## AI-Assisted Taxonomy Management
 
 ```
-User: "Create a post about 'ウェブ開発' (Japanese for web development)"
+
 AI intelligently:
 1. Uses get_categories to scan existing categories
 2. Finds similar: "Web Development", "ウェブ技術", "webdev"
@@ -690,6 +733,7 @@ AI intelligently:
 5. Creates post with appropriate categorization
 
 This workflow prevents duplicate/similar categories and maintains clean taxonomy structure.
+
 ```
 
 ## Error Handling
@@ -757,8 +801,9 @@ File size limits depend on your WordPress configuration (`upload_max_filesize` a
 ## Debug Mode
 
 Enable detailed logging by setting environment variable:
+
 ```bash
-RUST_LOG=debug cargo run
+
 ```
 
 This will show detailed HTTP requests and responses for troubleshooting.
@@ -776,11 +821,13 @@ Perform comprehensive environment validation.
 **Parameters:** None
 
 **Usage Example:**
+
 ```json
-{
+
   "tool": "wordpress_health_check",
   "arguments": {}
 }
+
 ```
 
 ## Check Process
@@ -827,7 +874,7 @@ The health check performs five critical validation stages:
 The health check returns a comprehensive report with the following information:
 
 ```json
-{
+
   "status": "healthy",
   "site_info": {
     "url": "https://your-site.com",
@@ -858,6 +905,7 @@ The health check returns a comprehensive report with the following information:
     "api_response_time_ms": 89
   }
 }
+
 ```
 
 ## Status Levels
@@ -882,56 +930,61 @@ The health check returns a comprehensive report with the following information:
 ### Site Accessibility Issues
 
 ```
-❌ Error: Site not accessible
+
 🔧 Solutions:
    • Verify URL is correct and includes https://
    • Check site is online and responding
    • Ensure firewall/security plugins allow access
    • Test URL in browser manually
+
 ```
 
 ### REST API Problems
 
 ```
-❌ Error: REST API not available
+
 🔧 Solutions:
    • Enable REST API in WordPress settings
    • Check security plugins aren't blocking API
    • Verify .htaccess isn't blocking /wp-json/
    • Test API endpoint in browser: /wp-json/wp/v2/
+
 ```
 
 ### Authentication Failures
 
 ```
-❌ Error: Authentication failed
+
 🔧 Solutions:
    • Regenerate application password
    • Verify username is exact match
    • Check user account is active
    • Ensure application passwords are enabled
+
 ```
 
 ### Permission Issues
 
 ```
-❌ Error: Insufficient permissions
+
 🔧 Solutions:
    • Assign Editor or Administrator role
    • Check user has publish_posts capability
    • Verify upload_files permission enabled
    • Review role-based access restrictions
+
 ```
 
 ### Upload Problems
 
 ```
-❌ Error: Media upload failed
+
 🔧 Solutions:
    • Check upload_max_filesize in php.ini
    • Verify post_max_size setting
    • Ensure uploads directory is writable
    • Check disk space availability
+
 ```
 
 ## Best Practices
@@ -954,6 +1007,7 @@ WordPress application passwords may be invalidated by:
 - **Server Changes**: PHP or environment configuration modifications
 
 **Monitoring Strategy:**
+
 ```bash
 
 ## Daily health monitoring (recommended)
@@ -967,6 +1021,7 @@ cargo run --example settings_api_deep_diagnosis
 ## Authentication verification
 
 cargo run --example auth_diagnosis
+
 ```
 
 #### Maintenance Mode Operations
@@ -979,6 +1034,7 @@ When using WordPress maintenance mode plugins, configure exclusions for REST API
 ## Add to LightStart exclusions (slug format, no leading slash):
 
 wp-json/*
+
 ```
 
 This ensures MCP-RS can continue content operations during maintenance windows.
@@ -1009,7 +1065,7 @@ This ensures MCP-RS can continue content operations during maintenance windows.
 ### Automated Monitoring
 
 ```rust
-// Example: Periodic health validation
+
 use mcp_rs::handlers::wordpress::WordPressHandler;
 
 async fn monitor_wordpress_health() {
@@ -1029,12 +1085,13 @@ async fn monitor_wordpress_health() {
         }
     }
 }
+
 ```
 
 ### Integration Workflow
 
 ```
-1. Environment Setup
+
    ├── Configure mcp-config.toml
    ├── Run wordpress_health_check
    └── Address any issues found
@@ -1054,6 +1111,7 @@ async fn monitor_wordpress_health() {
    ├── Application password rotation (as needed)
    ├── Maintenance mode coordination
    └── Incident response procedures
+
 ```
 
 This health check system ensures your WordPress integration is production-ready and helps prevent common configuration issues that could interrupt your workflow.

@@ -81,7 +81,7 @@ cargo run -- --status
 
 ## 1. Transport切り替えフロー
 
-```
+```text
 現在のTransport停止 → 新Transport作成 → 起動 → 通知
      ⏸️                    🔄              🚀       📢
 ```
@@ -204,14 +204,14 @@ transport_type = "Stdio"
 
 ## Before（従来）
 
-```
+```text
 STDIO ←→ HTTP切り替え = サーバー再起動必須
      ❌ 面倒            ❌ 開発効率低下
 ```
 
 ## After（新実装）
 
-```
+```text
 STDIO ←→ HTTP切り替え = ランタイム切り替え
      ✅ 瞬時            ✅ 開発効率向上
 ```

@@ -132,7 +132,7 @@ pub trait PreparedStatement: Send + Sync {
 }
 
 /// 分離レベル
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum IsolationLevel {
     ReadUncommitted,
     ReadCommitted,
