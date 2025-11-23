@@ -9,6 +9,7 @@ Thank you for your interest in contributing to MCP-RS! We welcome contributions 
 Parameterized queries, transaction management, and SQL injection prevention for MySQL.
 
 **Key Components**:
+
 - Prepared statements for safe parameterized queries
 - ACID-compliant transaction management
 - 4 isolation levels support
@@ -16,6 +17,7 @@ Parameterized queries, transaction management, and SQL injection prevention for 
 - 45 comprehensive tests
 
 **Related Files**:
+
 - `src/handlers/database/engines/mysql/prepared.rs`
 - `src/handlers/database/engines/mysql/transaction.rs`
 - `tests/mysql_phase1_*.rs`
@@ -31,7 +33,7 @@ Parameterized queries, transaction management, and SQL injection prevention for 
 
 ## Prerequisites
 
-- Rust 1.70+ 
+- Rust 1.70+
 - Cargo
 - Git
 
