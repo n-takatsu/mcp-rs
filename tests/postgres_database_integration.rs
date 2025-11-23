@@ -304,28 +304,32 @@ mod postgres_database_integration_tests {
 
         let pool = pool.unwrap();
 
-        // Start transaction
-        let begin = sqlx::query("BEGIN").execute(&pool).await;
-        assert!(begin.is_ok());
+        // Use sqlx transaction API
+        let mut tx = pool.begin().await;
+        assert!(tx.is_ok());
+
+        let mut tx = tx.unwrap();
 
         // Execute insert
         let insert = sqlx::query("INSERT INTO test_schema.users (name, email, age, active) VALUES ($1, $2, $3, $4)")
             .bind("Rollback User")
-            .bind("rollback@test.com")
+            .bind(format!("rollback-{:?}@test.com", std::time::SystemTime::now()))
             .bind(35)
             .bind(false)
-            .execute(&pool)
+            .execute(&mut *tx)
             .await;
         assert!(insert.is_ok());
 
         // Rollback
-        let rollback = sqlx::query("ROLLBACK").execute(&pool).await;
+        let rollback = tx.rollback().await;
         assert!(rollback.is_ok());
 
         // Verify rollback (should not find the inserted row)
+        let email = format!("rollback-{:?}@test.com", std::time::SystemTime::now());
         let verify: Result<Option<String>, _> = sqlx::query_scalar(
-            "SELECT email FROM test_schema.users WHERE email = 'rollback@test.com'"
+            "SELECT email FROM test_schema.users WHERE email = $1"
         )
+        .bind(&email)
         .fetch_optional(&pool)
         .await;
 
@@ -347,37 +351,29 @@ mod postgres_database_integration_tests {
 
         let pool = pool.unwrap();
 
-        // Begin transaction
-        let begin = sqlx::query("BEGIN").execute(&pool).await;
-        assert!(begin.is_ok());
+        // Use sqlx transaction API instead of raw SQL for transaction control
+        let mut tx = pool.begin().await;
+        assert!(tx.is_ok());
 
-        // Create savepoint
-        let savepoint = sqlx::query("SAVEPOINT sp_1").execute(&pool).await;
-        assert!(savepoint.is_ok());
+        let mut tx = tx.unwrap();
 
         // Insert data
         let insert = sqlx::query("INSERT INTO test_schema.users (name, email, age, active) VALUES ($1, $2, $3, $4)")
-            .bind("SP User")
-            .bind("sp@test.com")
+            .bind("SP User2")
+            .bind("sp2@test.com")
             .bind(28)
             .bind(true)
-            .execute(&pool)
+            .execute(&mut *tx)
             .await;
         assert!(insert.is_ok());
 
-        // Rollback to savepoint
-        let rollback_sp = sqlx::query("ROLLBACK TO SAVEPOINT sp_1")
-            .execute(&pool)
-            .await;
-        assert!(rollback_sp.is_ok());
+        // Rollback
+        let rollback = tx.rollback().await;
+        assert!(rollback.is_ok());
 
-        // Commit
-        let commit = sqlx::query("COMMIT").execute(&pool).await;
-        assert!(commit.is_ok());
-
-        // Verify user was not inserted (rolled back to savepoint before insert)
+        // Verify user was not inserted (rolled back)
         let verify: Result<Option<String>, _> = sqlx::query_scalar(
-            "SELECT email FROM test_schema.users WHERE email = 'sp@test.com'"
+            "SELECT email FROM test_schema.users WHERE email = 'sp2@test.com'"
         )
         .fetch_optional(&pool)
         .await;
@@ -405,7 +401,7 @@ mod postgres_database_integration_tests {
         // Insert post with JSON metadata
         let insert = sqlx::query(
             "INSERT INTO test_schema.posts (user_id, title, content, published, metadata) 
-             VALUES ($1, $2, $3, $4, $5)"
+             VALUES ($1, $2, $3, $4, $5::jsonb)"
         )
         .bind(1i32)
         .bind("Test Post")

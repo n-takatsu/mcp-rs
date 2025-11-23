@@ -9,15 +9,6 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       POSTGRES_DB: ${POSTGRES_DB:-testdb}
-      POSTGRES_INITDB_ARGS: >-
-        -c max_connections=200
-        -c shared_buffers=256MB
-        -c effective_cache_size=1GB
-        -c work_mem=8MB
-        -c wal_level=replica
-        -c max_wal_senders=10
-        -c max_replication_slots=10
-        -c hot_standby=on
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:
@@ -25,11 +16,11 @@ services:
       - ./scripts/postgres/init.sql:/docker-entrypoint-initdb.d/01-init.sql
       - ./scripts/postgres/test-schema.sql:/docker-entrypoint-initdb.d/02-test-schema.sql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-testdb}"]
+      test: ["CMD-SHELL", "pg_isready -U postgres || exit 1"]
       interval: 10s
       timeout: 5s
-      retries: 5
-      start_period: 10s
+      retries: 1
+      start_period: 60s
     networks:
       - postgres-network
     restart: unless-stopped
