@@ -4,7 +4,7 @@
 //! with query operators and manipulation functions.
 
 use crate::handlers::database::types::{DatabaseError, Value};
-use serde_json::{json, JsonValue};
+use serde_json::{json, Value as JsonValue};
 
 /// PostgreSQL JSON Support
 ///

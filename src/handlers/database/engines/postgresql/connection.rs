@@ -22,10 +22,10 @@ pub struct PostgreSqlConfig {
     pub password: String,
     /// Maximum pool connections
     pub max_connections: u32,
-    /// Connection timeout in seconds
-    pub connection_timeout: u64,
-    /// Idle timeout in seconds
-    pub idle_timeout: u64,
+    /// Connection timeout
+    pub connection_timeout: Duration,
+    /// Idle timeout
+    pub idle_timeout: Duration,
 }
 
 impl Default for PostgreSqlConfig {
@@ -37,8 +37,8 @@ impl Default for PostgreSqlConfig {
             username: "postgres".to_string(),
             password: String::new(),
             max_connections: 10,
-            connection_timeout: 30,
-            idle_timeout: 60,
+            connection_timeout: Duration::from_secs(30),
+            idle_timeout: Duration::from_secs(600),
         }
     }
 }
@@ -112,9 +112,9 @@ impl PostgreSqlPool {
 
         let pool_options = PgPoolOptions::new()
             .max_connections(config.max_connections)
-            .connect_timeout(Duration::from_secs(config.connection_timeout))
-            .idle_timeout(Some(Duration::from_secs(config.idle_timeout)))
-            .acquire_timeout(Duration::from_secs(config.connection_timeout));
+            .max_lifetime(Some(config.connection_timeout))
+            .idle_timeout(config.idle_timeout)
+            .acquire_timeout(config.connection_timeout);
 
         let pool = pool_options
             .connect(&config.connection_string())
@@ -171,8 +171,6 @@ mod tests {
         assert_eq!(config.port, 5432);
         assert_eq!(config.database, "postgres");
         assert_eq!(config.max_connections, 10);
-        assert_eq!(config.connection_timeout, 30);
-        assert_eq!(config.idle_timeout, 60);
     }
 
     #[test]
@@ -184,8 +182,8 @@ mod tests {
             username: "admin".to_string(),
             password: "secret".to_string(),
             max_connections: 20,
-            connection_timeout: 30,
-            idle_timeout: 60,
+            connection_timeout: Duration::from_secs(30),
+            idle_timeout: Duration::from_secs(600),
         };
 
         let conn_str = config.connection_string();
@@ -225,8 +223,8 @@ mod tests {
             username: "user".to_string(),
             password: "pass".to_string(),
             max_connections: 10,
-            connection_timeout: 30,
-            idle_timeout: 60,
+            connection_timeout: Duration::from_secs(30),
+            idle_timeout: Duration::from_secs(600),
         };
 
         assert!(config.validate().is_ok());

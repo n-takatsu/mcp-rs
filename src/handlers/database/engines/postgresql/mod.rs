@@ -8,7 +8,7 @@ pub mod json_support;
 pub mod prepared;
 pub mod transaction;
 
-pub use connection::PostgreSqlConnection;
+pub use connection::{PostgreSqlConfig, PostgreSqlPool};
 pub use json_support::PostgreSqlJsonSupport;
 pub use prepared::PostgreSqlPreparedStatement;
 pub use transaction::{PostgreSqlTransaction, PostgreSqlTransactionManager};

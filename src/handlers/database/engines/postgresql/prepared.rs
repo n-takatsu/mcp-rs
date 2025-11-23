@@ -118,20 +118,22 @@ impl PostgreSqlPreparedStatement {
     fn value_to_sql_string(value: &Value) -> Result<String, DatabaseError> {
         match value {
             Value::Null => Ok("NULL".to_string()),
-            Value::Boolean(b) => Ok(b.to_string()),
-            Value::Integer(i) => Ok(i.to_string()),
-            Value::BigInt(i) => Ok(i.to_string()),
+            Value::Bool(b) => Ok(b.to_string()),
+            Value::Int(i) => Ok(i.to_string()),
             Value::Float(f) => Ok(f.to_string()),
             Value::String(s) => {
                 // Escape single quotes in strings
                 let escaped = s.replace("'", "''");
                 Ok(format!("'{}'", escaped))
             }
-            Value::Bytes(_) => Err(DatabaseError::ValidationError(
-                "Bytes type not supported in parameter binding".to_string(),
+            Value::Binary(_) => Err(DatabaseError::ValidationError(
+                "Binary type not supported in parameter binding".to_string(),
             )),
             Value::Json(_) => Err(DatabaseError::ValidationError(
                 "JSON type needs special handling".to_string(),
+            )),
+            Value::DateTime(_) => Err(DatabaseError::ValidationError(
+                "DateTime type needs special handling".to_string(),
             )),
         }
     }
@@ -191,6 +193,13 @@ impl PostgreSqlPreparedStatement {
 
 #[async_trait]
 impl PreparedStatement for PostgreSqlPreparedStatement {
+    /// Close the prepared statement
+    async fn close(&self) -> Result<(), DatabaseError> {
+        // PostgreSQL doesn't require explicit closure of prepared statements
+        // when using connection pools, so this is a no-op
+        Ok(())
+    }
+
     /// Execute query (SELECT) with parameters
     async fn query(&self, params: &[Value]) -> Result<QueryResult, DatabaseError> {
         self.validate_params(params)?;
@@ -199,19 +208,16 @@ impl PreparedStatement for PostgreSqlPreparedStatement {
         let mut query = sqlx::query(&self.sql);
 
         // Bind each parameter to the query
-        for (idx, param) in params.iter().enumerate() {
-            let param_num = idx + 1;
+        for _idx in 0..params.len() {
+            let param = &params[_idx];
             match param {
                 Value::Null => {
                     query = query.bind::<Option<String>, _>(None);
                 }
-                Value::Boolean(b) => {
+                Value::Bool(b) => {
                     query = query.bind(*b);
                 }
-                Value::Integer(i) => {
-                    query = query.bind(*i);
-                }
-                Value::BigInt(i) => {
+                Value::Int(i) => {
                     query = query.bind(*i);
                 }
                 Value::Float(f) => {
@@ -220,15 +226,18 @@ impl PreparedStatement for PostgreSqlPreparedStatement {
                 Value::String(s) => {
                     query = query.bind(s.clone());
                 }
-                Value::Bytes(b) => {
+                Value::Binary(_b) => {
                     return Err(DatabaseError::ValidationError(
-                        "Bytes type not yet supported in parameter binding".to_string(),
+                        "Binary type not yet supported in parameter binding".to_string(),
                     ));
                 }
                 Value::Json(j) => {
                     // Convert JSON to string for binding
                     let json_str = j.to_string();
                     query = query.bind(json_str);
+                }
+                Value::DateTime(dt) => {
+                    query = query.bind(*dt);
                 }
             }
         }
@@ -253,13 +262,10 @@ impl PreparedStatement for PostgreSqlPreparedStatement {
                 Value::Null => {
                     query = query.bind::<Option<String>, _>(None);
                 }
-                Value::Boolean(b) => {
+                Value::Bool(b) => {
                     query = query.bind(*b);
                 }
-                Value::Integer(i) => {
-                    query = query.bind(*i);
-                }
-                Value::BigInt(i) => {
+                Value::Int(i) => {
                     query = query.bind(*i);
                 }
                 Value::Float(f) => {
@@ -268,14 +274,17 @@ impl PreparedStatement for PostgreSqlPreparedStatement {
                 Value::String(s) => {
                     query = query.bind(s.clone());
                 }
-                Value::Bytes(b) => {
+                Value::Binary(_b) => {
                     return Err(DatabaseError::ValidationError(
-                        "Bytes type not yet supported in parameter binding".to_string(),
+                        "Binary type not yet supported in parameter binding".to_string(),
                     ));
                 }
                 Value::Json(j) => {
                     let json_str = j.to_string();
                     query = query.bind(json_str);
+                }
+                Value::DateTime(dt) => {
+                    query = query.bind(*dt);
                 }
             }
         }
@@ -352,7 +361,7 @@ mod tests {
 
     #[test]
     fn test_value_to_sql_string_integer() {
-        let val = Value::Integer(42);
+        let val = Value::Int(42);
         let result = PostgreSqlPreparedStatement::value_to_sql_string(&val);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), "42");
@@ -376,7 +385,7 @@ mod tests {
 
     #[test]
     fn test_value_to_sql_string_boolean() {
-        let val = Value::Boolean(true);
+        let val = Value::Bool(true);
         let result = PostgreSqlPreparedStatement::value_to_sql_string(&val);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), "true");
@@ -392,7 +401,7 @@ mod tests {
 
     #[test]
     fn test_value_to_sql_string_bigint() {
-        let val = Value::BigInt(9223372036854775807i64);
+        let val = Value::Int(9223372036854775807i64);
         let result = PostgreSqlPreparedStatement::value_to_sql_string(&val);
         assert!(result.is_ok());
     }
