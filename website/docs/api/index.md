@@ -115,8 +115,7 @@ Establishes connection and negotiates capabilities.
 **Request:**
 
 ```json
-
-{{
+{
   "jsonrpc": "2.0",
   "method": "initialize",
   "params": {
@@ -132,14 +131,12 @@ Establishes connection and negotiates capabilities.
   },
   "id": 1
 }
-
 ```
 
 **Response:**
 
 ```json
-
-{{
+{
   "jsonrpc": "2.0",
   "result": {
     "protocolVersion": "2024-11-05",
@@ -156,7 +153,6 @@ Establishes connection and negotiates capabilities.
   },
   "id": 1
 }
-
 ```
 
 ---
@@ -170,20 +166,17 @@ Lists available tools.
 **Request:**
 
 ```json
-
-{{
+{
   "jsonrpc": "2.0",
   "method": "tools/list",
   "id": 2
 }
-
 ```
 
 **Response:**
 
 ```json
-
-{{
+{
   "jsonrpc": "2.0",
   "result": {
     "tools": [
@@ -200,7 +193,6 @@ Lists available tools.
   },
   "id": 2
 }
-
 ```
 
 #### `tools/call`
@@ -210,8 +202,7 @@ Executes a tool.
 **Request:**
 
 ```json
-
-{{
+{
   "jsonrpc": "2.0",
   "method": "tools/call",
   "params": {
@@ -223,14 +214,12 @@ Executes a tool.
   },
   "id": 3
 }
-
 ```
 
 **Response:**
 
 ```json
-
-{{
+{
   "jsonrpc": "2.0",
   "result": {
     "content": [
@@ -243,7 +232,6 @@ Executes a tool.
   },
   "id": 3
 }
-
 ```
 
 ---
@@ -257,20 +245,17 @@ Lists available resources.
 **Request:**
 
 ```json
-
-{{
+{
   "jsonrpc": "2.0",
   "method": "resources/list",
   "id": 4
 }
-
 ```
 
 **Response:**
 
 ```json
-
-{{
+{
   "jsonrpc": "2.0",
   "result": {
     "resources": [
@@ -290,7 +275,6 @@ Lists available resources.
   },
   "id": 4
 }
-
 ```
 
 #### `resources/read`
@@ -300,8 +284,7 @@ Reads a resource.
 **Request:**
 
 ```json
-
-{{
+{
   "jsonrpc": "2.0",
   "method": "resources/read",
   "params": {
@@ -309,14 +292,12 @@ Reads a resource.
   },
   "id": 5
 }
-
 ```
 
 **Response:**
 
 ```json
-
-{{
+{
   "jsonrpc": "2.0",
   "result": {
     "contents": [
@@ -329,7 +310,6 @@ Reads a resource.
   },
   "id": 5
 }
-
 ```
 
 ---
@@ -343,20 +323,17 @@ Lists available prompts.
 **Request:**
 
 ```json
-
-{{
+{
   "jsonrpc": "2.0",
   "method": "prompts/list",
   "id": 6
 }
-
 ```
 
 **Response:**
 
 ```json
-
-{{
+{
   "jsonrpc": "2.0",
   "result": {
     "prompts": [
@@ -375,7 +352,6 @@ Lists available prompts.
   },
   "id": 6
 }
-
 ```
 
 #### `prompts/get`
@@ -385,8 +361,7 @@ Retrieves a prompt.
 **Request:**
 
 ```json
-
-{{
+{
   "jsonrpc": "2.0",
   "method": "prompts/get",
   "params": {
@@ -395,14 +370,12 @@ Retrieves a prompt.
   },
   "id": 7
 }
-
 ```
 
 **Response:**
 
 ```json
-
-{{
+{
   "jsonrpc": "2.0",
   "result": {
     "description": "WordPress content analysis prompt",
@@ -418,7 +391,6 @@ Retrieves a prompt.
   },
   "id": 7
 }
-
 ```
 
 ---
@@ -446,15 +418,20 @@ Retrieves a prompt.
 ### Available Tools
 
 #### `get_posts`
+
 Retrieves WordPress posts.
 
 #### `create_post`
+
 Creates a new WordPress post.
+
 - `title` (string, required)
 - `content` (string, required)
 
 #### `get_comments`
+
 Retrieves WordPress comments.
+
 - `post_id` (number, optional)
 
 ### Resources
@@ -522,6 +499,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ---
 
 For more details, see:
+
 - [📄 Database Engine API](./database.md) - Complete API reference
 - [📖 PostgreSQL Integration Guide](../guides/postgres-integration.md) - Setup and usage
 - [📖 Implementation Guides](../guides/) - All guides
