@@ -190,7 +190,7 @@ fn test_null_value_handling() {
         String(String),
     }
 
-    let _null_val = DataValue::Null;
+    let null_val = DataValue::Null;
     let int_val = DataValue::Int(42);
     let string_val = DataValue::String("test".to_string());
 
@@ -226,10 +226,10 @@ fn test_transaction_recovery_simulation() {
         Recovered,
     }
 
-    let mut _state = RecoveryState::Normal;
-    _state = RecoveryState::ErrorOccurred;
-    _state = RecoveryState::Recovering;
-    _state = RecoveryState::Recovered;
+    let mut state = RecoveryState::Normal;
+    state = RecoveryState::ErrorOccurred;
+    state = RecoveryState::Recovering;
+    state = RecoveryState::Recovered;
 
     assert!(matches!(state, RecoveryState::Recovered));
 }
