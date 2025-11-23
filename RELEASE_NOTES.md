@@ -211,6 +211,7 @@ We use a **0.01 increment versioning** approach for granular development trackin
 ## Release Criteria for 0.01 Increments
 
 Each 0.01 version must include:
+
 1. **Functional Completeness**: All advertised features fully implemented
 2. **Test Coverage**: Comprehensive integration and unit tests
 3. **Documentation**: Updated README, architecture docs, and examples
@@ -247,6 +248,7 @@ No breaking changes to existing policy configuration files.
 ## 📞 Support & Feedback
 
 For questions about specific versions or upgrade assistance:
+
 - **GitHub Issues**: [mcp-rs/issues](https://github.com/n-takatsu/mcp-rs/issues)
 - **Discussions**: [mcp-rs/discussions](https://github.com/n-takatsu/mcp-rs/discussions)
 - **Documentation**: [project-docs/](project-docs/)
@@ -255,3 +257,4 @@ For questions about specific versions or upgrade assistance:
 
 *Last Updated: 2025-11-05*  
 *Current Version: v0.15.0*
+

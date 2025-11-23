@@ -306,3 +306,4 @@ Switch the default database engine for subsequent operations.
 | Categories per post | Unlimited | Recommended: 2-5 |
 | Tags per post | Unlimited | Recommended: 5-10 |
 | API requests | Rate limited | Depends on WordPress hosting |
+

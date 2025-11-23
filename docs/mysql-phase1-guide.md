@@ -143,24 +143,28 @@ All user-supplied values are bound as parameters, completely separated from SQL 
 **Tested Attack Vectors**:
 
 1. **Single Quote Injection**
+
    ```sql
    Input: 1'; DROP TABLE users; --
    Result: Treated as string data, not executed
    ```
 
 2. **UNION-Based Injection**
+
    ```sql
    Input: 1 UNION SELECT * FROM admin; --
    Result: Treated as string data, not executed
    ```
 
 3. **Boolean-Based Blind Injection**
+
    ```sql
    Input: 1 AND 1=1
    Result: Treated as string data, not executed
    ```
 
 4. **Time-Based Blind Injection**
+
    ```sql
    Input: 1; WAITFOR DELAY '00:00:05'--
    Result: Treated as string data, not executed

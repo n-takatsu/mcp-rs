@@ -226,8 +226,7 @@ fn test_transaction_recovery_simulation() {
         Recovered,
     }
 
-    let mut state = RecoveryState::Normal;
-    state = RecoveryState::ErrorOccurred;
+    let mut state = RecoveryState::ErrorOccurred;
     state = RecoveryState::Recovering;
     state = RecoveryState::Recovered;
 

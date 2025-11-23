@@ -172,7 +172,7 @@ pub trait DatabaseConnection {
 }
 ```
 
-### Methods
+### Connection Methods
 
 | Method | Params | Returns | Description |
 |--------|--------|---------|-------------|
@@ -182,7 +182,7 @@ pub trait DatabaseConnection {
 | `begin_transaction()` | - | `Transaction` | Start new transaction |
 | `close()` | - | `Result<()>` | Close connection |
 
-### Usage Example
+### Connection Usage Example
 
 ```rust
 let engine = MySqlEngine::new(config)?;
@@ -270,7 +270,7 @@ let stmt = conn.prepare("SELECT * FROM users WHERE id = ?").await?;
 let result = stmt.query(&[Value::String(user_input)]).await?; // Safe!
 ```
 
-### Usage Example
+### Prepared Statement Usage Example
 
 ```rust
 // Prepare statement
