@@ -1,0 +1,26 @@
+{
+  "Servers": {
+    "1": {
+      "Name": "MCP-RS PostgreSQL Primary",
+      "Group": "MCP-RS Testing",
+      "Host": "postgres-primary",
+      "Port": 5432,
+      "Username": "postgres",
+      "Password": "postgres",
+      "Database": "testdb",
+      "SSLMode": "prefer",
+      "MaintenanceDB": "postgres"
+    },
+    "2": {
+      "Name": "MCP-RS PostgreSQL Secondary",
+      "Group": "MCP-RS Testing",
+      "Host": "postgres-secondary",
+      "Port": 5432,
+      "Username": "postgres",
+      "Password": "postgres",
+      "Database": "testdb",
+      "SSLMode": "prefer",
+      "MaintenanceDB": "postgres"
+    }
+  }
+}

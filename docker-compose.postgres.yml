@@ -1,0 +1,101 @@
+version: '3.9'
+
+services:
+  # Primary PostgreSQL instance for testing
+  postgres-primary:
+    image: postgres:15-alpine
+    container_name: mcp-rs-postgres-primary
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-testdb}
+      POSTGRES_INITDB_ARGS: >-
+        -c max_connections=200
+        -c shared_buffers=256MB
+        -c effective_cache_size=1GB
+        -c work_mem=8MB
+        -c wal_level=replica
+        -c max_wal_senders=10
+        -c max_replication_slots=10
+        -c hot_standby=on
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_primary_data:/var/lib/postgresql/data
+      - ./scripts/postgres/init.sql:/docker-entrypoint-initdb.d/01-init.sql
+      - ./scripts/postgres/test-schema.sql:/docker-entrypoint-initdb.d/02-test-schema.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-testdb}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - postgres-network
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Secondary PostgreSQL instance for replication/failover testing
+  postgres-secondary:
+    image: postgres:15-alpine
+    container_name: mcp-rs-postgres-secondary
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      PGUSER: ${POSTGRES_USER:-postgres}
+      PGPASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    ports:
+      - "${POSTGRES_SECONDARY_PORT:-5433}:5432"
+    volumes:
+      - postgres_secondary_data:/var/lib/postgresql/data
+      - ./scripts/postgres/standby.sh:/usr/local/bin/standby.sh
+    entrypoint: /usr/local/bin/standby.sh
+    depends_on:
+      postgres-primary:
+        condition: service_healthy
+    networks:
+      - postgres-network
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # pgAdmin for PostgreSQL management (optional)
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: mcp-rs-pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@example.com}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-admin}
+      PGADMIN_CONFIG_PROXY_X_FOR_COUNT: 1
+      PGADMIN_CONFIG_PROXY_X_PROTO_COUNT: 1
+    ports:
+      - "${PGADMIN_PORT:-5050}:80"
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+      - ./scripts/pgadmin/servers.json:/pgadmin4/servers.json
+    depends_on:
+      - postgres-primary
+    networks:
+      - postgres-network
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  postgres-network:
+    driver: bridge
+
+volumes:
+  postgres_primary_data:
+  postgres_secondary_data:
+  pgadmin_data:
