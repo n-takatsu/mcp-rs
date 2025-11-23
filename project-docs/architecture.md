@@ -8,7 +8,8 @@
 
 This release introduces sophisticated deployment management with real-time monitoring capabilities:
 
-### New Architecture Components (v0.15.0)
+## New Architecture Components (v0.15.0)
+
 - **Canary Deployment Manager**: Traffic splitting and gradual rollout system
 - **Real-time Dashboard**: Terminal-based monitoring interface
 - **Policy Hot-Reload Engine**: Live configuration updates without downtime
@@ -16,15 +17,17 @@ This release introduces sophisticated deployment management with real-time monit
 
 ## Core Architecture Principles
 
-### 1. Security-First Design
+## 1. Security-First Design
+
 - Zero-trust input validation
 - Multi-layer defense systems
 - Physical process isolation for plugins
 - Comprehensive audit logging
 
-### 2. Plugin Security Architecture
+## 2. Plugin Security Architecture
 
-#### Current Risk Assessment
+### Current Risk Assessment
+
 The traditional plugin architecture presents significant security vulnerabilities:
 
 ```
@@ -47,7 +50,7 @@ The traditional plugin architecture presents significant security vulnerabilitie
 - **Data Leakage**: Access to other plugins' and core's sensitive data
 - **System Destruction**: Potential to crash entire system
 
-#### Proposed: Physical Isolation Security Architecture
+### Proposed: Physical Isolation Security Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────┐
@@ -81,13 +84,15 @@ The traditional plugin architecture presents significant security vulnerabilitie
 
 ## 6-Layer Security Architecture
 
-### 1. Application Layer (`src/main.rs`) + Security Layer
+## 1. Application Layer (`src/main.rs`) + Security Layer
+
 - **Responsibility**: Entry point, configuration loading, server lifecycle, security initialization
 - **Components**: Main server startup, signal handling, graceful shutdown, security context
 - **Security Features**: Secure configuration loading, memory protection, startup verification
 - **Dependencies**: Configuration, Server layers, Security modules
 
-### 2. API Layer (`src/server.rs`) + Rate Limiting Layer
+## 2. API Layer (`src/server.rs`) + Rate Limiting Layer
+
 - **Responsibility**: HTTP server, JSON-RPC protocol, DDoS protection
 - **Components**: Axum HTTP server, JSON-RPC routing, Token Bucket rate limiting
 - **Security Features**: 
@@ -98,7 +103,8 @@ The traditional plugin architecture presents significant security vulnerabilitie
 - **Dependencies**: Handler layer, Rate limiter
 - **Performance**: Timeout handling, error serialization, security logging
 
-### 3. Service Layer (`src/handlers/`) + Input Validation Layer
+## 3. Service Layer (`src/handlers/`) + Input Validation Layer
+
 - **Responsibility**: Business logic, external API integration, zero-trust validation
 - **Components**: WordPress handler, security validators, input sanitizers
 - **Security Features**:
@@ -110,7 +116,8 @@ The traditional plugin architecture presents significant security vulnerabilitie
 - **Dependencies**: MCP protocol types, Security modules
 - **Pattern**: Security-first plugin architecture with `McpHandler` trait
 
-### 4. Core Layer (`src/core/`) + TLS/Encryption Layer
+## 4. Core Layer (`src/core/`) + TLS/Encryption Layer
+
 - **Responsibility**: Runtime management, execution context, cryptographic operations
 - **Components**: 
   - `runtime.rs`: Secure application lifecycle and state management
@@ -125,7 +132,8 @@ The traditional plugin architecture presents significant security vulnerabilitie
 - **Dependencies**: Transport layer, Encryption modules
 - **Performance**: Async secure processing, encrypted metrics, protected shutdown
 
-### 5. Transport Layer (`src/transport/`) + Network Security Layer
+## 5. Transport Layer (`src/transport/`) + Network Security Layer
+
 - **Responsibility**: Secure communication protocols, network protection
 - **Components**:
   - `mod.rs`: Secure transport traits and factory
@@ -139,7 +147,8 @@ The traditional plugin architecture presents significant security vulnerabilitie
 - **Dependencies**: Core types, TLS configuration
 - **Protocols**: Secured stdio, HTTPS, WSS (WebSocket Secure)
 
-### 6. MCP Protocol Layer (`src/mcp/`) + Audit Layer
+## 6. MCP Protocol Layer (`src/mcp/`) + Audit Layer
+
 - **Responsibility**: MCP protocol compliance, comprehensive security auditing
 - **Components**: Protocol types, audit logging, compliance reporting
 - **Security Features**:
@@ -151,7 +160,8 @@ The traditional plugin architecture presents significant security vulnerabilitie
 - **Standards**: MCP JSON-RPC 2.0 + Enterprise Security Extensions
 - **Compliance**: GDPR, SOC 2 Type II, ISO 27001, PCI DSS ready
 
-### 7. Infrastructure Layer (`src/config.rs`, `src/error.rs`) + Security Configuration
+## 7. Infrastructure Layer (`src/config.rs`, `src/error.rs`) + Security Configuration
+
 - **Responsibility**: Secure configuration management, error handling, security logging
 - **Components**: TOML configuration, environment variables, structured security errors
 - **Security Features**:
@@ -163,11 +173,11 @@ The traditional plugin architecture presents significant security vulnerabilitie
 
 ## Plugin System Architecture
 
-### Dynamic Plugin System
+## Dynamic Plugin System
 
 MCP-RS provides a powerful dynamic plugin system that allows extending functionality at runtime with comprehensive security isolation.
 
-#### Architecture Overview
+### Architecture Overview
 
 ```
 ┌─────────────────────┐    ┌─────────────────────┐
@@ -188,7 +198,7 @@ MCP-RS provides a powerful dynamic plugin system that allows extending functiona
           └─────────────────────┘
 ```
 
-#### Security Isolation Implementation
+### Security Isolation Implementation
 
 ```rust
 /// Isolated Plugin Server (Physical Separation)
@@ -228,9 +238,10 @@ pub struct SecuritySandbox {
 }
 ```
 
-#### Plugin Communication Security
+### Plugin Communication Security
 
-##### mTLS + JWT Authentication
+#### mTLS + JWT Authentication
+
 ```rust
 /// Plugin inter-communication authentication system
 pub struct PluginAuthSystem {
@@ -266,36 +277,41 @@ impl PluginAuthSystem {
 }
 ```
 
-### Core Plugin APIs
+## Core Plugin APIs
 
 - **Plugin Discovery**: Basic plugin discovery from directories
 - **Plugin Registry Usage**: Complete plugin registry lifecycle
 - **Plugin Loader**: Dynamic plugin loading fundamentals
 - **Search Path Management**: Managing plugin search paths
 
-### Configuration Examples
+## Configuration Examples
 
 - **Basic Configuration**: Default MCP configuration setup
 - **Plugin Configuration**: Advanced plugin configuration
 
-### Running Plugin Examples
+## Running Plugin Examples
 
 All plugin code examples are executable and tested:
 
 ```bash
-# Test all plugin documentation examples
+
+## Test all plugin documentation examples
+
 cargo test --doc
 
-# Test specific plugin module examples
+## Test specific plugin module examples
+
 cargo test --doc plugins
 
-# Run plugin integration tests
+## Run plugin integration tests
+
 cargo test plugin_integration_tests
 ```
 
 ## Security Integration Architecture
 
-### Enterprise Security Stack
+## Enterprise Security Stack
+
 ```rust
 pub struct SecurityStack {
     // Layer 1: Encryption (AES-GCM-256 + PBKDF2)
@@ -322,7 +338,8 @@ pub struct SecurityStack {
 
 ## Handler Plugin Architecture
 
-### Secure McpHandler Trait
+## Secure McpHandler Trait
+
 ```rust
 #[async_trait]
 pub trait McpHandler: Send + Sync {
@@ -339,40 +356,46 @@ pub trait McpHandler: Send + Sync {
 }
 ```
 
-### WordPress Handler Implementation
+## WordPress Handler Implementation
 
 The WordPress handler (`src/handlers/wordpress.rs`) provides 27 comprehensive tools with full security integration:
 
-#### Content Management (10 tools) - 🛡️ Secured
+### Content Management (10 tools) - 🛡️ Secured
+
 - Complete CRUD operations for posts and pages with XSS protection
 - Advanced post creation with SEO metadata
 - Post scheduling and status management
 - Embedded content support (YouTube, social media)
 
-#### Media Management (7 tools)
+### Media Management (7 tools)
+
 - Full media library CRUD operations
 - Base64 and multipart file upload support
 - Accessibility features (alt text, captions, descriptions)
 - Featured image management
 
-#### Taxonomy Management (8 tools)
+### Taxonomy Management (8 tools)
+
 - Categories: hierarchical taxonomy with parent/child relationships
 - Tags: flat taxonomy for content labeling
 - Complete CRUD operations for both taxonomies
 - Post-taxonomy integration
 
-#### Integration Tools (2 tools)
+### Integration Tools (2 tools)
+
 - Health check and diagnostics
 - Comment management
 
 ## Configuration Architecture
 
-### Hierarchical Configuration
+## Hierarchical Configuration
+
 1. **Default Values**: Hardcoded fallbacks
 2. **TOML Configuration**: `mcp-config.toml` file
 3. **Environment Variables**: Override any TOML setting
 
-### Configuration Structure
+## Configuration Structure
+
 ```toml
 [server]
 host = "0.0.0.0"
@@ -386,14 +409,16 @@ timeout_seconds = 30
 enabled = true
 ```
 
-### Environment Override Pattern
+## Environment Override Pattern
+
 - `WORDPRESS_URL` overrides `handlers.wordpress.url`
 - `WORDPRESS_USERNAME` overrides `handlers.wordpress.username`
 - `WORDPRESS_PASSWORD` overrides `handlers.wordpress.password`
 
 ## Transport Architecture
 
-### Transport Abstraction
+## Transport Abstraction
+
 ```rust
 pub trait Transport: Send + Sync {
     async fn send(&mut self, message: &str) -> Result<(), TransportError>;
@@ -402,12 +427,14 @@ pub trait Transport: Send + Sync {
 }
 ```
 
-### Transport Factory
+## Transport Factory
+
 - **Pluggable Design**: Easy addition of new transport types
 - **Configuration-Driven**: Transport selection based on configuration
 - **Error Handling**: Uniform error handling across transports
 
-### Stdio Transport Implementation
+## Stdio Transport Implementation
+
 ```
 ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
 │   MCP Client    │────▶│ Stdio Transport │────▶│   MCP Server    │
@@ -415,18 +442,21 @@ pub trait Transport: Send + Sync {
 └─────────────────┘     └─────────────────┘     └─────────────────┘
 ```
 
-#### Message Framing
+### Message Framing
+
 1. **Content-Length Based**: HTTP-style headers with JSON payload
 2. **Line-Based**: Simple newline-delimited JSON (fallback)
 
-#### Flow Control
+### Flow Control
+
 - **Async I/O**: Non-blocking stdin/stdout operations
 - **Buffering**: Message buffering for performance
 - **Timeout Handling**: Configurable timeouts for operations
 
 ## Error Handling Architecture
 
-### Error Types Hierarchy
+## Error Types Hierarchy
+
 ```rust
 #[derive(thiserror::Error, Debug)]
 pub enum McpError {
@@ -450,7 +480,8 @@ pub enum McpError {
 }
 ```
 
-### Error Flow
+## Error Flow
+
 1. **Transport Level**: Connection and communication errors
 2. **Handler Level**: Specific errors (HTTP, validation, business logic)
 3. **MCP Level**: Protocol-specific error transformation
@@ -458,30 +489,35 @@ pub enum McpError {
 
 ## Performance Architecture
 
-### Async-First Design
+## Async-First Design
+
 - Built on Tokio runtime for high concurrency
 - All I/O operations are non-blocking
 - Transport-agnostic message processing
 - Connection pooling for external APIs
 - Request timeout handling
 
-### Transport Performance
+## Transport Performance
+
 - **Stdio**: Direct process communication, minimal overhead
 - **HTTP**: Connection reuse, Keep-Alive support
 - **WebSocket** (planned): Persistent connections, low latency
 
-### Message Processing
+## Message Processing
+
 - **Concurrent Handling**: Multiple requests processed simultaneously
 - **Streaming Support**: Large payload handling with streaming
 - **Buffering**: Efficient message buffering for high throughput
 
-### Retry Logic
+## Retry Logic
+
 ```rust
 // Exponential backoff with jitter
 let delay = Duration::from_millis(base_delay_ms * 2_u64.pow(attempt) + random_jitter);
 ```
 
-### Resource Management
+## Resource Management
+
 - Automatic connection cleanup
 - Transport lifecycle management
 - Memory-efficient JSON streaming
@@ -489,59 +525,86 @@ let delay = Duration::from_millis(base_delay_ms * 2_u64.pow(attempt) + random_ji
 
 ## Security Architecture
 
-### Authentication
+## Authentication
+
 - WordPress: Application Password support
 - Secure credential storage (environment variables preferred)
 - No plaintext password logging
 
-### Input Validation
+## Input Validation
+
 - JSON schema validation for all tool inputs
 - Type-safe deserialization with Serde
 - SQL injection prevention (parameterized queries)
 
-### Transport Security
+## Transport Security
+
 - HTTPS enforcement for external APIs
 - TLS certificate validation
 - Request/response logging (excluding sensitive data)
 
 ## Testing Architecture
 
-### Test Organization
+## Test Organization
+
 ```
 examples/
-├── wordpress_embed_test.rs          # Embedded content functionality
-├── wordpress_media_crud_test.rs     # Media management operations
-├── wordpress_post_crud_test.rs      # Post CRUD operations
-├── wordpress_advanced_post_test.rs  # Advanced post features
-├── wordpress_categories_tags_test.rs # Taxonomy management
-└── wordpress_posts_with_taxonomy_test.rs # Integration tests
+├── wordpress_embed_test.rs          
+
+## Embedded content functionality
+
+├── wordpress_media_crud_test.rs     
+
+## Media management operations
+
+├── wordpress_post_crud_test.rs      
+
+## Post CRUD operations
+
+├── wordpress_advanced_post_test.rs  
+
+## Advanced post features
+
+├── wordpress_categories_tags_test.rs 
+
+## Taxonomy management
+
+└── wordpress_posts_with_taxonomy_test.rs 
+
+## Integration tests
+
 ```
 
-### Test Patterns
+## Test Patterns
+
 - **Integration Tests**: Full workflow testing with real API calls
 - **Unit Tests**: Individual function testing with mocked dependencies
 - **Error Path Testing**: Comprehensive error condition coverage
 
 ## Scalability Considerations
 
-### Horizontal Scaling
+## Horizontal Scaling
+
 - Stateless handler design
 - No session storage requirements
 - Load balancer friendly
 
-### Vertical Scaling
+## Vertical Scaling
+
 - Efficient memory usage with streaming
 - Connection pooling
 - Configurable concurrency limits
 
-### Handler Isolation
+## Handler Isolation
+
 - Each handler operates independently
 - Failure in one handler doesn't affect others
 - Plugin-based architecture allows selective enabling
 
 ## Monitoring and Observability
 
-### Structured Logging
+## Structured Logging
+
 ```rust
 use tracing::{info, warn, error};
 
@@ -552,39 +615,45 @@ info!(
 );
 ```
 
-### Health Checks
+## Health Checks
+
 - WordPress connectivity verification
 - API endpoint availability testing
 - Configuration validation
 
-### Metrics (Planned v0.3.0)
+## Metrics (Planned v0.3.0)
+
 - Request/response time tracking
 - Error rate monitoring
 - Resource utilization metrics
 
 ## Roadmap Implementation
 
-### Phase 1: Core Stability (v0.1.0-alpha) ✅
+## Phase 1: Core Stability (v0.1.0-alpha) ✅
+
 - WordPress handler completion
 - Configuration system maturity  
 - Error handling standardization
 - Comprehensive testing
 
-### Phase 2: Transport Expansion (v0.2.0-alpha) ✅
+## Phase 2: Transport Expansion (v0.2.0-alpha) ✅
+
 - ✅ Stdio transport implementation
 - ✅ Core Runtime Module
 - ✅ Transport abstraction layer
 - ✅ Enhanced configuration management
 - 🔄 Plugin dynamic loading (in progress)
 
-### Phase 3: Ecosystem Growth (v0.3.0) 🎯
+## Phase 3: Ecosystem Growth (v0.3.0) 🎯
+
 - WebSocket transport support
 - HTTP transport enhancements
 - GitHub API handler
 - Database integration handler
 - Performance monitoring and metrics
 
-### Phase 4: Production Readiness (v1.0.0)
+## Phase 4: Production Readiness (v1.0.0)
+
 - Security audit and hardening
 - Comprehensive documentation
 - Container support
@@ -602,25 +671,29 @@ info!(
 
 ## Contributing Guidelines
 
-### Code Organization
+## Code Organization
+
 - Place handlers in `src/handlers/`
 - Follow the `McpHandler` trait pattern
 - Use structured error types
 - Include comprehensive tests
 
-### Configuration
+## Configuration
+
 - Support TOML configuration
 - Provide environment variable overrides
 - Include sensible defaults
 - Document all options
 
-### Testing
+## Testing
+
 - Write integration tests for new handlers
 - Include error path testing
 - Provide example usage
 - Test with real APIs when possible
 
-### Documentation
+## Documentation
+
 - Update README.md for new features
 - Include code examples
 - Document configuration options

@@ -19,7 +19,7 @@
 
 MCP-RS is a blazing-fast, secure, and scalable **real-time collaborative editing system** built with Rust. Designed for developers who need enterprise-grade real-time features with minimal complexity and maximum performance.
 
-### ✨ Key Features
+## ✨ Key Features
 
 🚀 **Lightning Fast Performance**
 - Sub-millisecond latencies (0.8ms average)
@@ -90,7 +90,7 @@ MCP-RS is a blazing-fast, secure, and scalable **real-time collaborative editing
 
 Experience MCP-RS in action with our interactive demo:
 
-### [**🎮 Try the Interactive Demo →**](http://localhost:8080/demo.html)
+## [**🎮 Try the Interactive Demo →**](http://localhost:8080/demo.html)
 
 **What you can do:**
 - ✏️ **Real-time Editing**: Type and see changes instantly across multiple tabs
@@ -103,21 +103,26 @@ Experience MCP-RS in action with our interactive demo:
 **🚦 Demo Setup (30 seconds)**
 
 ```bash
-# 1. Clone and run
+
+## 1. Clone and run
+
 git clone https://github.com/your-org/mcp-rs.git
 cd mcp-rs
 cargo run --bin main
 
-# 2. Open your browser
+## 2. Open your browser
+
 open http://localhost:8080/demo.html
 
-# 3. Start collaborating!
-# Open multiple tabs and see real-time editing in action
+## 3. Start collaborating!
+
+## Open multiple tabs and see real-time editing in action
+
 ```
 
 </div>
 
-### Demo Features Showcase
+## Demo Features Showcase
 
 🎬 **Interactive Real-time Editing**
 - Open multiple browser tabs
@@ -138,7 +143,7 @@ open http://localhost:8080/demo.html
 
 ## 💡 Why Choose MCP-RS?
 
-### 🏆 Performance Benchmarks
+## 🏆 Performance Benchmarks
 
 | Metric | MCP-RS | Competitors | Advantage |
 |--------|---------|-------------|-----------|
@@ -147,14 +152,14 @@ open http://localhost:8080/demo.html
 | **Memory/User** | 0.46KB | 0.8-1.8KB | **1.7-3.9x efficient** |
 | **Concurrent Users** | 100+ | 40-75 | **1.3-2.5x capacity** |
 
-### 🛡️ Security First
+## 🛡️ Security First
 
 - **Zero Critical Vulnerabilities**: Comprehensive security testing with 100% pass rate
 - **Multi-layer Protection**: 6-layer defense-in-depth security architecture
 - **Enterprise Grade**: A+ security rating with full audit compliance
 - **Rust Memory Safety**: Built-in protection against buffer overflows and memory leaks
 
-### 🔥 Developer Experience
+## 🔥 Developer Experience
 
 ```rust
 // Simple integration example
@@ -173,7 +178,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-### 📊 Production Proven
+## 📊 Production Proven
 
 - **287 Tests**: Comprehensive test suite with 100% pass rate
 - **Zero Warnings**: Clean codebase with no compilation warnings
@@ -184,16 +189,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## 🔧 Quick Start
 
-### Installation
+## Installation
 
 ```bash
-# Add to your Cargo.toml
+
+## Add to your Cargo.toml
+
 [dependencies]
 mcp-rs = "0.15.0"
 tokio = { version = "1.0", features = ["full"] }
 ```
 
-### Basic Usage
+## Basic Usage
 
 <details>
 <summary><strong>🎯 1. Session Management</strong></summary>
@@ -268,7 +275,7 @@ const sendUpdate = (content) => {
 
 </details>
 
-### Production Deployment
+## Production Deployment
 
 <details>
 <summary><strong>🐳 Docker Deployment</strong></summary>
@@ -287,7 +294,9 @@ CMD ["mcp-rs"]
 ```
 
 ```bash
-# Build and run
+
+## Build and run
+
 docker build -t mcp-rs .
 docker run -p 8080:8080 mcp-rs
 ```
@@ -332,27 +341,32 @@ spec:
 
 ## 📚 Documentation
 
-### 🎓 Getting Started
+## 🎓 Getting Started
+
 - [**Quick Start Guide**](./docs/quick-start.md) - Get up and running in 5 minutes
 - [**Installation Guide**](./docs/installation.md) - Detailed installation instructions
 - [**Basic Concepts**](./docs/concepts.md) - Core concepts and terminology
 
-### 🔧 Technical Documentation
+## 🔧 Technical Documentation
+
 - [**WebSocket API Reference**](./docs/websocket-api.md) - Complete API specification
 - [**Session Management**](./docs/session-management-architecture.md) - Architecture and implementation
 - [**Development Guide**](https://github.com/n-takatsu/mcp-rs/blob/main/project-docs/realtime-editing-development-guide.md) - Comprehensive development documentation
 
-### 🛡️ Security & Compliance
+## 🛡️ Security & Compliance
+
 - [**Security Policy**](./demo-policies/realtime-editing-security-policy.md) - Security requirements and policies
 - [**Security Audit Report**](./reports/security-audit-report.md) - Comprehensive security assessment
 - [**Compliance Guide**](./docs/compliance.md) - Standards and compliance information
 
-### 📊 Performance & Operations
+## 📊 Performance & Operations
+
 - [**Performance Benchmarks**](./reports/performance-test-results.md) - Detailed performance analysis
 - [**Monitoring Guide**](./docs/monitoring.md) - Production monitoring and observability
 - [**Deployment Guide**](./docs/deployment.md) - Production deployment strategies
 
-### 🔌 Integration Examples
+## 🔌 Integration Examples
+
 - [**Getting Started Guide**](./docs/guides/) - Implementation guides and tutorials
 - [**API Documentation**](./docs/api/) - Complete API reference
 - [**Example Applications**](https://github.com/n-takatsu/mcp-rs/tree/main/examples) - Complete example implementations
@@ -361,7 +375,7 @@ spec:
 
 ## 🏢 Enterprise
 
-### Enterprise Features
+## Enterprise Features
 
 🏗️ **Scalability**
 - Horizontal scaling with load balancers
@@ -383,7 +397,7 @@ spec:
 - Custom feature development
 - Performance optimization consulting
 
-### Pricing
+## Pricing
 
 <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 20px; margin: 20px 0;">
 
@@ -425,7 +439,7 @@ spec:
 
 </div>
 
-### Contact Enterprise Sales
+## Contact Enterprise Sales
 
 📧 **Email**: enterprise@mcp-rs.dev
 📞 **Phone**: +1 (555) 123-4567
@@ -435,14 +449,14 @@ spec:
 
 ## 🤝 Community
 
-### Join Our Community
+## Join Our Community
 
 💬 **Discord**: [Join our Discord server](https://discord.gg/mcp-rs) - Get help, share projects, and connect with other developers
 🐦 **Twitter**: [@mcp_rs](https://twitter.com/mcp_rs) - Latest updates and announcements
 📧 **Newsletter**: [Subscribe for updates](mailto:newsletter@mcp-rs.dev) - Monthly updates and tips
 📝 **Blog**: [Read our blog](https://blog.mcp-rs.dev) - Technical articles and tutorials
 
-### Contributing
+## Contributing
 
 We welcome contributions! Here's how you can help:
 
@@ -452,7 +466,7 @@ We welcome contributions! Here's how you can help:
 📖 **Documentation**: Help improve our documentation
 🧪 **Testing**: Write tests and find edge cases
 
-### Recent Contributors
+## Recent Contributors
 
 <div style="display: flex; gap: 10px; flex-wrap: wrap; margin: 20px 0;">
 <img src="https://github.com/contributor1.png" width="50" height="50" style="border-radius: 50%;" alt="Contributor 1">
@@ -465,31 +479,36 @@ We welcome contributions! Here's how you can help:
 
 ## 📈 Roadmap
 
-### Q4 2024 ✅ (Completed)
+## Q4 2024 ✅ (Completed)
+
 - ✅ **Core Real-time Editing**: Session management and WebSocket server
 - ✅ **Security Implementation**: 6-layer security architecture
 - ✅ **Performance Optimization**: Sub-millisecond latencies
 - ✅ **Production Readiness**: Docker, monitoring, and documentation
 
-### Q1 2025 🚧 (In Progress)
+## Q1 2025 🚧 (In Progress)
+
 - 🔄 **Redis Backend**: Distributed session storage for horizontal scaling
 - 🔄 **Operational Transform**: Advanced conflict resolution algorithms
 - 🔄 **Client Libraries**: JavaScript, Python, Go, and Rust client SDKs
 - 🔄 **Advanced Monitoring**: Enhanced observability and analytics
 
-### Q2 2025 📋 (Planned)
+## Q2 2025 📋 (Planned)
+
 - 📋 **User Presence**: Real-time user presence indicators and cursors
 - 📋 **Document Versioning**: Version control for collaborative documents
 - 📋 **Mobile SDKs**: Native mobile client libraries
 - 📋 **Performance Improvements**: Further latency and throughput optimizations
 
-### Q3 2025 📋 (Planned)
+## Q3 2025 📋 (Planned)
+
 - 📋 **Enterprise Features**: OAuth/SAML, RBAC, and compliance tools
 - 📋 **Microservices Architecture**: Split into specialized microservices
 - 📋 **Advanced Security**: Zero-trust architecture and enhanced threats protection
 - 📋 **Global Edge Network**: Multi-region deployment with edge caching
 
-### Long-term Vision 🔮
+## Long-term Vision 🔮
+
 - 🔮 **AI-Powered Collaboration**: AI-assisted editing and content suggestions
 - 🔮 **Voice and Video**: Integrated voice/video collaboration features
 - 🔮 **Advanced Analytics**: ML-powered usage analytics and insights
@@ -499,7 +518,7 @@ We welcome contributions! Here's how you can help:
 
 ## 🆚 Comparison
 
-### MCP-RS vs. Alternatives
+## MCP-RS vs. Alternatives
 
 | Feature | MCP-RS | ShareJS | Y.js | Socket.IO | Pusher |
 |---------|---------|---------|------|-----------|--------|
@@ -510,7 +529,7 @@ We welcome contributions! Here's how you can help:
 | **Cost** | FREE | FREE | FREE | FREE | $$$ |
 | **Self-hosted** | ✅ | ✅ | ✅ | ✅ | ❌ |
 
-### Why Developers Choose MCP-RS
+## Why Developers Choose MCP-RS
 
 💬 *"MCP-RS gave us the performance we needed for our real-time collaboration platform. The 0.8ms latency is incredible!"*
 — **Sarah Chen**, CTO at CollabTech
@@ -525,21 +544,24 @@ We welcome contributions! Here's how you can help:
 
 ## 🔗 Resources
 
-### Quick Links
+## Quick Links
+
 - 🏠 [Home](https://n-takatsu.github.io/mcp-rs/)
 - 📖 [Documentation](https://n-takatsu.github.io/mcp-rs/docs/)
 - 🎮 [Live Demo](https://github.com/n-takatsu/mcp-rs/blob/main/static/demo.html)
 - 💻 [GitHub Repository](https://github.com/n-takatsu/mcp-rs)
 - 📦 [Releases](https://github.com/n-takatsu/mcp-rs/releases)
 
-### Learning Resources
+## Learning Resources
+
 - 🎓 [Getting Started Guide](https://n-takatsu.github.io/mcp-rs/docs/guides/)
 - � [API Documentation](https://n-takatsu.github.io/mcp-rs/docs/api/)
 - 🏗️ [Architecture Guide](https://n-takatsu.github.io/mcp-rs/docs/architecture/)
 - 🛡️ [Security Guide](https://n-takatsu.github.io/mcp-rs/docs/security/)
 - 💾 [Database Integration](https://n-takatsu.github.io/mcp-rs/docs/database/)
 
-### Support
+## Support
+
 - � [GitHub Discussions](https://github.com/n-takatsu/mcp-rs/discussions)
 - 📧 [Issues & Support](https://github.com/n-takatsu/mcp-rs/issues)
 - 🐛 [Bug Reports](https://github.com/n-takatsu/mcp-rs/issues/new?template=bug_report.md)

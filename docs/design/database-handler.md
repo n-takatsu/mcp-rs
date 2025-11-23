@@ -4,7 +4,7 @@
 
 MCP-RSにおけるデータベースハンドラーは、様々なデータベースエンジンに対する統一的なインターフェースを提供し、安全で効率的なデータベース操作を可能にします。
 
-### 設計目標
+## 設計目標
 
 - **多様性**: PostgreSQL、MySQL、SQLite、MongoDB、Redisなど複数のDB対応
 - **セキュリティ**: SQLインジェクション対策、認証・認可、監査ログ
@@ -14,7 +14,7 @@ MCP-RSにおけるデータベースハンドラーは、様々なデータベ�
 
 ## 🏗️ アーキテクチャ設計
 
-### レイヤー構造
+## レイヤー構造
 
 ```
 ┌─────────────────────────────────────┐
@@ -30,9 +30,9 @@ MCP-RSにおけるデータベースハンドラーは、様々なデータベ�
 └─────────────────────────────────────┘
 ```
 
-### コンポーネント設計
+## コンポーネント設計
 
-#### 1. データベース抽象化トレイト
+### 1. データベース抽象化トレイト
 
 ```rust
 #[async_trait]
@@ -84,7 +84,7 @@ pub trait DatabaseTransaction: Send + Sync {
 }
 ```
 
-#### 2. セキュリティレイヤー
+### 2. セキュリティレイヤー
 
 ```rust
 pub struct DatabaseSecurity {
@@ -120,9 +120,9 @@ impl DatabaseSecurity {
 
 ## 🔧 実装計画
 
-### Phase 1: 基盤システム実装
+## Phase 1: 基盤システム実装
 
-#### 1.1 データベース抽象化レイヤー
+### 1.1 データベース抽象化レイヤー
 
 **ファイル**: `src/handlers/database/engine.rs`
 - `DatabaseEngine` トレイト実装
@@ -130,23 +130,23 @@ impl DatabaseSecurity {
 - `DatabaseTransaction` トレイト実装
 - 共通エラーハンドリング
 
-#### 1.2 接続プール管理
+### 1.2 接続プール管理
 
 **ファイル**: `src/handlers/database/pool.rs`
 - 接続プール実装
 - 接続ライフサイクル管理
 - 負荷分散とフェイルオーバー
 
-#### 1.3 セキュリティシステム
+### 1.3 セキュリティシステム
 
 **ファイル**: `src/handlers/database/security.rs`
 - SQLインジェクション検知
 - クエリホワイトリスト
 - 監査ログ機能
 
-### Phase 2: PostgreSQL実装
+## Phase 2: PostgreSQL実装
 
-#### 2.1 PostgreSQLエンジン
+### 2.1 PostgreSQLエンジン
 
 **ファイル**: `src/handlers/database/engines/postgresql.rs`
 ```rust
@@ -179,7 +179,7 @@ impl DatabaseEngine for PostgreSqlEngine {
 }
 ```
 
-#### 2.2 PostgreSQL接続実装
+### 2.2 PostgreSQL接続実装
 
 **ファイル**: `src/handlers/database/engines/postgresql.rs`
 ```rust
@@ -220,9 +220,9 @@ impl DatabaseConnection for PostgreSqlConnection {
 }
 ```
 
-### Phase 3: MCPインターフェース実装
+## Phase 3: MCPインターフェース実装
 
-#### 3.1 Database MCPハンドラー
+### 3.1 Database MCPハンドラー
 
 **ファイル**: `src/handlers/database/handler.rs`
 ```rust
@@ -300,9 +300,9 @@ impl McpHandler for DatabaseHandler {
 }
 ```
 
-### Phase 4: 設定とテスト
+## Phase 4: 設定とテスト
 
-#### 4.1 設定拡張
+### 4.1 設定拡張
 
 **ファイル**: `mcp-config-database.toml.example`
 ```toml
@@ -343,7 +343,7 @@ query_timeout = 30
 max_query_length = 10000
 ```
 
-#### 4.2 テスト戦略
+### 4.2 テスト戦略
 
 **ファイル**: `tests/database_handler_tests.rs`
 - 単体テスト：各エンジンの機能テスト
@@ -354,36 +354,43 @@ max_query_length = 10000
 
 ## 📊 サポート予定のデータベース
 
-### 優先度1（Phase 2で実装）
+## 優先度1（Phase 2で実装）
+
 - **PostgreSQL**: 高機能リレーショナルDB
 - **MySQL**: 広く使用されるリレーショナルDB
 
-### 優先度2（Phase 5で実装）
+## 優先度2（Phase 5で実装）
+
 - **SQLite**: 軽量組み込みDB
 - **MongoDB**: ドキュメント指向NoSQL
 
-### 優先度3（Phase 6で実装）
+## 優先度3（Phase 6で実装）
+
 - **Redis**: キー・バリューストア
 - **ClickHouse**: 分析用カラム型DB
 
 ## 🔒 セキュリティ機能
 
-### SQLインジェクション対策
+## SQLインジェクション対策
+
 - パラメータ化クエリの強制
 - 動的SQL構築の制限
 - 入力値サニタイゼーション
 
-### 認証・認可
+## 認証・認可
+
 - データベース接続認証
 - テーブル・カラムレベルアクセス制御
 - ロールベースアクセス制御（RBAC）
 
-### 監査ログ
+## 監査ログ
+
 - 全クエリ実行履歴
 - 接続・切断イベント
 - セキュリティ違反検知
 
-### 脅威インテリジェンス連携
+## 脅威インテリジェンス連携
+
 - 悪意のあるクエリパターン検知
 - 異常なアクセスパターン監視
 - リアルタイム脅威分析

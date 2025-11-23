@@ -6,7 +6,7 @@ The MCP-RS session management system provides enterprise-grade session lifecycle
 
 ## Architecture Overview
 
-### High-Level Architecture
+## High-Level Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -39,7 +39,7 @@ The MCP-RS session management system provides enterprise-grade session lifecycle
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-### Component Interaction Flow
+## Component Interaction Flow
 
 ```
 Client Request
@@ -59,7 +59,7 @@ Client Request
 
 ## Core Components
 
-### 1. Session Manager (`SessionManager`)
+## 1. Session Manager (`SessionManager`)
 
 **Purpose**: Central orchestrator for all session operations.
 
@@ -82,7 +82,7 @@ impl SessionManager {
 
 **Architecture Pattern**: Repository Pattern with async/await
 
-### 2. Session Storage (`SessionStorage` Trait)
+## 2. Session Storage (`SessionStorage` Trait)
 
 **Purpose**: Pluggable storage backend for session persistence.
 
@@ -108,7 +108,7 @@ pub trait SessionStorage: Send + Sync + std::fmt::Debug {
 }
 ```
 
-### 3. Session Types (`types.rs`)
+## 3. Session Types (`types.rs`)
 
 **Core Data Structures:**
 
@@ -141,7 +141,7 @@ pub struct SessionFilter {
 }
 ```
 
-### 4. Security Middleware (`SessionSecurityMiddleware`)
+## 4. Security Middleware (`SessionSecurityMiddleware`)
 
 **Purpose**: Enterprise-grade security layer for session operations.
 
@@ -174,7 +174,7 @@ pub enum SecurityEventType {
 }
 ```
 
-### 5. WebSocket Handler (`SessionWebSocketHandler`)
+## 5. WebSocket Handler (`SessionWebSocketHandler`)
 
 **Purpose**: WebSocket connection management with session integration.
 
@@ -198,7 +198,7 @@ pub struct WebSocketMessage {
 
 ## Session Lifecycle Management
 
-### State Transitions
+## State Transitions
 
 ```
     create_session()
@@ -224,9 +224,10 @@ pub struct WebSocketMessage {
    └─────────────┘
 ```
 
-### Lifecycle Operations
+## Lifecycle Operations
 
-#### Session Creation
+### Session Creation
+
 ```rust
 pub async fn create_session(&self, user_id: String) -> Result<Session, SessionError> {
     let session = Session {
@@ -241,7 +242,8 @@ pub async fn create_session(&self, user_id: String) -> Result<Session, SessionEr
 }
 ```
 
-#### Session Activation
+### Session Activation
+
 ```rust
 pub async fn activate_session(&self, id: &SessionId) -> Result<Option<Session>, SessionError> {
     if let Some(mut session) = self.storage.get(id).await? {
@@ -254,7 +256,8 @@ pub async fn activate_session(&self, id: &SessionId) -> Result<Option<Session>, 
 }
 ```
 
-#### Session Validation
+### Session Validation
+
 ```rust
 pub async fn validate_session(&self, id: &SessionId) -> Result<bool, SessionError> {
     match self.storage.get(id).await? {
@@ -273,7 +276,7 @@ pub async fn validate_session(&self, id: &SessionId) -> Result<bool, SessionErro
 
 ## Security Architecture
 
-### Multi-Layer Security Model
+## Multi-Layer Security Model
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -325,7 +328,7 @@ pub async fn validate_session(&self, id: &SessionId) -> Result<bool, SessionErro
 └─────────────────────────────────────────────────────────────┘
 ```
 
-### Security Event Flow
+## Security Event Flow
 
 ```
 User Action
@@ -352,7 +355,7 @@ User Action
 
 ## Performance Characteristics
 
-### Benchmarks
+## Benchmarks
 
 | Operation | Latency | Throughput | Memory |
 |-----------|---------|------------|--------|
@@ -362,7 +365,7 @@ User Action
 | Session Delete | ~0.2ms | 5000/sec | -1KB/op |
 | WebSocket Message | ~0.1ms | 5000/sec | 2KB/msg |
 
-### Memory Usage Patterns
+## Memory Usage Patterns
 
 ```
 Session Memory Layout:
@@ -382,7 +385,7 @@ Session Memory Layout:
 Total: ~85 bytes + user_id length
 ```
 
-### Concurrency Model
+## Concurrency Model
 
 - **Reader-Writer Locks**: Multiple concurrent reads, single writer
 - **Lock-Free Reads**: Session retrieval doesn't block other operations
@@ -391,7 +394,7 @@ Total: ~85 bytes + user_id length
 
 ## Error Handling Strategy
 
-### Error Hierarchy
+## Error Hierarchy
 
 ```rust
 #[derive(Debug, thiserror::Error)]
@@ -416,7 +419,7 @@ pub enum SessionError {
 }
 ```
 
-### Error Recovery Patterns
+## Error Recovery Patterns
 
 1. **Graceful Degradation**: Continue operation with reduced functionality
 2. **Automatic Retry**: Retry failed operations with exponential backoff
@@ -426,7 +429,7 @@ pub enum SessionError {
 
 ## Testing Strategy
 
-### Test Coverage
+## Test Coverage
 
 ```
 Session Management Test Suite:
@@ -452,7 +455,7 @@ Session Management Test Suite:
     └── Rate limiting
 ```
 
-### Testing Patterns
+## Testing Patterns
 
 **Property-Based Testing:**
 ```rust
@@ -491,7 +494,7 @@ async fn test_concurrent_session_operations() {
 
 ## Monitoring and Observability
 
-### Metrics Collection
+## Metrics Collection
 
 ```rust
 // Session metrics tracked
@@ -506,7 +509,7 @@ pub struct SessionMetrics {
 }
 ```
 
-### Logging Strategy
+## Logging Strategy
 
 ```rust
 // Structured logging with tracing
@@ -529,7 +532,7 @@ pub async fn create_session(&self, user_id: String) -> Result<Session, SessionEr
 }
 ```
 
-### Health Checks
+## Health Checks
 
 ```rust
 pub async fn health_check(&self) -> Result<HealthStatus, SessionError> {
@@ -547,10 +550,12 @@ pub async fn health_check(&self) -> Result<HealthStatus, SessionError> {
 
 ## Deployment Considerations
 
-### Development Environment
+## Development Environment
 
 ```yaml
-# Docker Compose for development
+
+## Docker Compose for development
+
 version: '3.8'
 services:
   mcp-rs:
@@ -564,10 +569,12 @@ services:
       - ./config:/app/config
 ```
 
-### Production Environment
+## Production Environment
 
 ```yaml
-# Kubernetes deployment
+
+## Kubernetes deployment
+
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -606,7 +613,7 @@ spec:
             cpu: "500m"
 ```
 
-### Scaling Strategies
+## Scaling Strategies
 
 1. **Horizontal Scaling**: Multiple server instances with load balancer
 2. **Session Affinity**: Route users to same server instance
@@ -616,7 +623,7 @@ spec:
 
 ## Future Enhancements
 
-### Planned Architecture Improvements
+## Planned Architecture Improvements
 
 1. **Distributed Sessions**: Redis-based session clustering
 2. **Event Sourcing**: Session state change audit trail
@@ -627,7 +634,7 @@ spec:
 7. **Encryption**: At-rest encryption for sensitive session data
 8. **Compliance**: GDPR/SOC2 compliance features
 
-### Performance Optimizations
+## Performance Optimizations
 
 1. **Lock-Free Data Structures**: Reduce contention in high-load scenarios
 2. **Connection Pooling**: Reuse WebSocket connections where possible  

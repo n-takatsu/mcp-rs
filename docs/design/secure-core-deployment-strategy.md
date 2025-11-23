@@ -6,7 +6,7 @@
 
 ## 2. デプロイメントアーキテクチャ
 
-### 2.1 物理分離デプロイメント
+## 2.1 物理分離デプロイメント
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -49,7 +49,7 @@
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-### 2.2 高可用性構成
+## 2.2 高可用性構成
 
 ```
 Primary Site (本番サイト)
@@ -76,7 +76,7 @@ Secondary Site (DR サイト)
 
 ## 3. セキュリティ要件
 
-### 3.1 ハードウェアセキュリティ
+## 3.1 ハードウェアセキュリティ
 
 | コンポーネント | 要件 | 推奨仕様 |
 |---------------|------|----------|
@@ -85,7 +85,7 @@ Secondary Site (DR サイト)
 | セキュアブート | UEFI Secure Boot有効 | 改ざん防止チェーン |
 | 暗号化ストレージ | 全ディスク暗号化 | AES-256-XTS |
 
-### 3.2 ネットワークセキュリティ
+## 3.2 ネットワークセキュリティ
 
 ```yaml
 ネットワーク構成:
@@ -107,7 +107,7 @@ Secondary Site (DR サイト)
     制限: 外部アクセス不可
 ```
 
-### 3.3 暗号化仕様
+## 3.3 暗号化仕様
 
 ```yaml
 暗号化標準:
@@ -129,58 +129,72 @@ Secondary Site (DR サイト)
 
 ## 4. デプロイメント手順
 
-### 4.1 事前準備
+## 4.1 事前準備
 
 ```bash
-# 1. システム要件確認
+
+## 1. システム要件確認
+
 ./scripts/check-system-requirements.sh
 
-# 2. セキュリティベースライン設定
+## 2. セキュリティベースライン設定
+
 ./scripts/security-hardening.sh
 
-# 3. HSM初期化
+## 3. HSM初期化
+
 ./scripts/hsm-initialization.sh
 
-# 4. 証明書生成
+## 4. 証明書生成
+
 ./scripts/generate-certificates.sh
 ```
 
-### 4.2 コアサーバーデプロイ
+## 4.2 コアサーバーデプロイ
 
 ```bash
-# 1. 設定ファイル準備
+
+## 1. 設定ファイル準備
+
 cp config/production.toml.example config/production.toml
 vim config/production.toml
 
-# 2. データベース初期化
+## 2. データベース初期化
+
 ./scripts/init-database.sh --env production
 
-# 3. セキュアコアサーバー起動
+## 3. セキュアコアサーバー起動
+
 ./scripts/deploy-secure-core.sh --env production --cluster primary
 
-# 4. ヘルスチェック
+## 4. ヘルスチェック
+
 ./scripts/health-check.sh --comprehensive
 ```
 
-### 4.3 プラグイン環境設定
+## 4.3 プラグイン環境設定
 
 ```bash
-# 1. Kubernetes クラスター準備
+
+## 1. Kubernetes クラスター準備
+
 kubectl apply -f k8s/namespace.yaml
 kubectl apply -f k8s/rbac.yaml
 
-# 2. セキュリティポリシー適用
+## 2. セキュリティポリシー適用
+
 kubectl apply -f k8s/network-policies.yaml
 kubectl apply -f k8s/pod-security-policies.yaml
 
-# 3. プラグインデプロイ
+## 3. プラグインデプロイ
+
 kubectl apply -f k8s/wordpress-plugin.yaml
 kubectl apply -f k8s/slack-plugin.yaml
 ```
 
 ## 5. 運用監視
 
-### 5.1 監視項目
+## 5.1 監視項目
 
 ```yaml
 セキュリティメトリクス:
@@ -205,7 +219,7 @@ kubectl apply -f k8s/slack-plugin.yaml
     - ディスク使用率 (アラート: >90%)
 ```
 
-### 5.2 ログ監視
+## 5.2 ログ監視
 
 ```yaml
 重要ログ:
@@ -230,7 +244,7 @@ kubectl apply -f k8s/slack-plugin.yaml
 
 ## 6. インシデント対応
 
-### 6.1 セキュリティインシデント対応
+## 6.1 セキュリティインシデント対応
 
 ```yaml
 対応レベル:
@@ -255,7 +269,7 @@ kubectl apply -f k8s/slack-plugin.yaml
     - 15分以内対応
 ```
 
-### 6.2 自動対応設定
+## 6.2 自動対応設定
 
 ```yaml
 自動対応ルール:
@@ -277,7 +291,7 @@ kubectl apply -f k8s/slack-plugin.yaml
 
 ## 7. コンプライアンス
 
-### 7.1 準拠規格
+## 7.1 準拠規格
 
 ```yaml
 セキュリティ標準:
@@ -297,7 +311,7 @@ kubectl apply -f k8s/slack-plugin.yaml
     - Common Criteria EAL4+
 ```
 
-### 7.2 監査要件
+## 7.2 監査要件
 
 ```yaml
 監査スケジュール:
@@ -319,7 +333,7 @@ kubectl apply -f k8s/slack-plugin.yaml
 
 ## 8. 災害復旧
 
-### 8.1 復旧時間目標
+## 8.1 復旧時間目標
 
 ```yaml
 RTO/RPO目標:
@@ -336,7 +350,7 @@ RTO/RPO目標:
     RPO: 0分 (データ損失不可)
 ```
 
-### 8.2 バックアップ戦略
+## 8.2 バックアップ戦略
 
 ```yaml
 バックアップ設定:
@@ -358,7 +372,7 @@ RTO/RPO目標:
 
 ## 9. 性能要件
 
-### 9.1 性能目標
+## 9.1 性能目標
 
 ```yaml
 性能指標:
@@ -378,7 +392,7 @@ RTO/RPO目標:
     監査システム: 100%
 ```
 
-### 9.2 スケーリング戦略
+## 9.2 スケーリング戦略
 
 ```yaml
 スケーリング設定:
@@ -400,7 +414,7 @@ RTO/RPO目標:
 
 ## 10. 運用チェックリスト
 
-### 10.1 日次チェック
+## 10.1 日次チェック
 
 ```yaml
 日次運用:
@@ -413,7 +427,7 @@ RTO/RPO目標:
   □ 監査ログ整合性確認
 ```
 
-### 10.2 週次チェック
+## 10.2 週次チェック
 
 ```yaml
 週次運用:
@@ -426,7 +440,7 @@ RTO/RPO目標:
   □ コンプライアンス状況確認
 ```
 
-### 10.3 月次チェック
+## 10.3 月次チェック
 
 ```yaml
 月次運用:

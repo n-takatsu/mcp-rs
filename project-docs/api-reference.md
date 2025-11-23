@@ -4,7 +4,8 @@ Complete API documentation for all available tools in the mcp-rs Model Context P
 
 ## Quick Reference
 
-### 🔐 Security Features
+## 🔐 Security Features
+
 All API calls are protected by the 6-layer security architecture:
 - ✅ AES-GCM-256 encryption for credentials
 - ✅ Token bucket rate limiting  
@@ -15,9 +16,10 @@ All API calls are protected by the 6-layer security architecture:
 
 ## 🗄️ Database Tools
 
-### Core Database Operations
+## Core Database Operations
 
-#### `execute_query` - Execute SELECT Queries
+### `execute_query` - Execute SELECT Queries
+
 Execute secure database queries with automatic validation and SQL injection protection.
 
 **Parameters**:
@@ -36,7 +38,8 @@ Execute secure database queries with automatic validation and SQL injection prot
 }
 ```
 
-#### `execute_command` - Data Modification Commands
+### `execute_command` - Data Modification Commands
+
 Execute INSERT, UPDATE, DELETE commands with transaction support and audit logging.
 
 **Parameters**:
@@ -57,7 +60,8 @@ Execute INSERT, UPDATE, DELETE commands with transaction support and audit loggi
 }
 ```
 
-#### `begin_transaction` - Transaction Management
+### `begin_transaction` - Transaction Management
+
 Start database transactions with configurable isolation levels.
 
 **Parameters**:
@@ -74,7 +78,8 @@ Start database transactions with configurable isolation levels.
 }
 ```
 
-#### `get_schema` - Schema Information
+### `get_schema` - Schema Information
+
 Retrieve database schema including tables, indexes, and relationships.
 
 **Parameters**:
@@ -91,9 +96,10 @@ Retrieve database schema including tables, indexes, and relationships.
 }
 ```
 
-### Engine Management
+## Engine Management
 
-#### `list_engines` - Available Database Engines
+### `list_engines` - Available Database Engines
+
 List all configured database engines and their health status.
 
 ```json
@@ -103,7 +109,8 @@ List all configured database engines and their health status.
 }
 ```
 
-#### `switch_engine` - Change Active Engine
+### `switch_engine` - Change Active Engine
+
 Switch the default database engine for subsequent operations.
 
 **Parameters**:
@@ -120,7 +127,8 @@ Switch the default database engine for subsequent operations.
 
 ## 📝 WordPress Tools
 
-### Content Management (Secured)
+## Content Management (Secured)
+
 ```json
 // Basic post creation - XSS protected
 {"tool": "create_post", "arguments": {"title": "Title", "content": "Content"}}
@@ -144,7 +152,8 @@ Switch the default database engine for subsequent operations.
 }}
 ```
 
-### Media Management (Secured)
+## Media Management (Secured)
+
 ```json
 // Upload media with accessibility - File type validation
 {"tool": "upload_media", "arguments": {
@@ -158,7 +167,8 @@ Switch the default database engine for subsequent operations.
 }}
 ```
 
-### Taxonomy Management
+## Taxonomy Management
+
 ```json
 // Create category
 {"tool": "create_category", "arguments": {"name": "Category Name", "description": "Description"}}
@@ -175,7 +185,8 @@ Switch the default database engine for subsequent operations.
 
 ## Tool Parameters
 
-### create_advanced_post
+## create_advanced_post
+
 **Required:**
 - `title` (string): Post title
 - `content` (string): Post content
@@ -191,7 +202,8 @@ Switch the default database engine for subsequent operations.
 - `meta_robots_noindex` (boolean): SEO noindex setting
 - `meta_robots_nofollow` (boolean): SEO nofollow setting
 
-### upload_media
+## upload_media
+
 **Required:**
 - `file_data` (string): Base64 encoded file content
 - `filename` (string): Original filename
@@ -203,7 +215,8 @@ Switch the default database engine for subsequent operations.
 - `caption` (string): Media caption
 - `description` (string): Media description
 
-### create_category
+## create_category
+
 **Required:**
 - `name` (string): Category name
 
@@ -213,7 +226,8 @@ Switch the default database engine for subsequent operations.
 
 ## Response Formats
 
-### Success Response
+## Success Response
+
 ```json
 {
   "content": [{
@@ -224,7 +238,8 @@ Switch the default database engine for subsequent operations.
 }
 ```
 
-### Error Response
+## Error Response
+
 ```json
 {
   "error": {
@@ -257,12 +272,14 @@ Switch the default database engine for subsequent operations.
 
 ## URL Formats
 
-### YouTube
+## YouTube
+
 - `https://www.youtube.com/watch?v=VIDEO_ID`
 - `https://youtu.be/VIDEO_ID`
 - `https://www.youtube.com/embed/VIDEO_ID`
 
-### Social Media
+## Social Media
+
 - **Twitter**: `https://twitter.com/user/status/123456789`
 - **X**: `https://x.com/user/status/123456789`
 - **Instagram**: `https://instagram.com/p/POST_ID/`

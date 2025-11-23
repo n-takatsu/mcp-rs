@@ -4,7 +4,7 @@ MCP-RSでは**サーバー再起動なし**でSTDIO/HTTP Transportを動的に�
 
 ## 🎯 実装内容
 
-### 1. 動的Transport管理 (`src/transport/dynamic.rs`)
+## 1. 動的Transport管理 (`src/transport/dynamic.rs`)
 
 ```rust
 // STDIO/HTTP切り替えマネージャー
@@ -17,7 +17,7 @@ transport_manager.switch_to_stdio().await?;
 transport_manager.switch_to_http(addr).await?;
 ```
 
-### 2. ランタイム制御 (`src/runtime_control.rs`)
+## 2. ランタイム制御 (`src/runtime_control.rs`)
 
 ```rust
 // ランタイム制御コマンド
@@ -32,29 +32,37 @@ pub enum RuntimeCommand {
 
 ## 🚀 使用方法
 
-### A. CLIコマンドでの制御
+## A. CLIコマンドでの制御
 
 ```bash
-# 基本起動
+
+## 基本起動
+
 cargo run
 
-# STDIO切り替え
+## STDIO切り替え
+
 cargo run -- --switch-stdio
 
-# HTTP切り替え
+## HTTP切り替え
+
 cargo run -- --switch-http
 
-# 設定リロード
+## 設定リロード
+
 cargo run -- --reload-config
 
-# ステータス確認
+## ステータス確認
+
 cargo run -- --status
 ```
 
-### B. 実行時インタラクティブ制御
+## B. 実行時インタラクティブ制御
 
 ```bash
-# サーバー起動後、別ターミナルで
+
+## サーバー起動後、別ターミナルで
+
 🎮 MCP-RS Interactive Control
 ════════════════════════════════════════════════════════════
 ランタイム制御コマンド:
@@ -71,14 +79,14 @@ cargo run -- --status
 
 ## 🔧 技術的な仕組み
 
-### 1. Transport切り替えフロー
+## 1. Transport切り替えフロー
 
 ```
 現在のTransport停止 → 新Transport作成 → 起動 → 通知
      ⏸️                    🔄              🚀       📢
 ```
 
-### 2. 設定変更監視
+## 2. 設定変更監視
 
 ```rust
 // 設定ファイル変更を監視
@@ -92,59 +100,83 @@ tokio::select! {
 
 ## 💡 使用シナリオ
 
-### Scenario 1: 開発時の柔軟な切り替え
+## Scenario 1: 開発時の柔軟な切り替え
 
 ```bash
-# 1. HTTP Transportで開発開始（Web UIでテスト）
+
+## 1. HTTP Transportで開発開始（Web UIでテスト）
+
 cargo run
 
-# 2. Claude Desktopでテストしたい時
-# 別ターミナルで
+## 2. Claude Desktopでテストしたい時
+
+## 別ターミナルで
+
 cargo run -- --switch-stdio
 
-# 3. 再度Web UIに戻る時
+## 3. 再度Web UIに戻る時
+
 cargo run -- --switch-http
 ```
 
-### Scenario 2: 設定ファイル変更による自動切り替え
+## Scenario 2: 設定ファイル変更による自動切り替え
 
 ```toml
-# mcp-config.toml - HTTPモード
+
+## mcp-config.toml - HTTPモード
+
 [transport]
 transport_type = { Http = { addr = "127.0.0.1:8081" } }
 ```
 
 ```toml
-# mcp-config-claude.toml - STDIOモード
+
+## mcp-config-claude.toml - STDIOモード
+
 [transport]
 transport_type = "Stdio"
 [server]
-log_level = "error"  # Claude Desktop対応
+log_level = "error"  
+
+## Claude Desktop対応
+
 ```
 
 ```bash
-# 設定ファイル変更で自動切り替え
-cargo run -- --config mcp-config.toml        # HTTP
-cargo run -- --config mcp-config-claude.toml # STDIO
+
+## 設定ファイル変更で自動切り替え
+
+cargo run -- --config mcp-config.toml        
+
+## HTTP
+
+cargo run -- --config mcp-config-claude.toml 
+
+## STDIO
+
 ```
 
 ## ⚠️ 重要な注意点
 
-### Claude Desktop使用時の注意
+## Claude Desktop使用時の注意
 
 STDIO Transport使用時は**必ず`log_level="error"`**に設定:
 
 ```toml
-# mcp-config-claude.toml
+
+## mcp-config-claude.toml
+
 [server]
 stdio = true
-log_level = "error"  # 標準出力とJSONの混在を防ぐ
+log_level = "error"  
+
+## 標準出力とJSONの混在を防ぐ
 
 [transport]
 transport_type = "Stdio"
 ```
 
-### Transport切り替え時の挙動
+## Transport切り替え時の挙動
 
 1. **現在のTransportは完全停止**
 2. **新Transportで再起動**
@@ -154,7 +186,9 @@ transport_type = "Stdio"
 ## 🔍 ステータス確認
 
 ```bash
-# ステータス表示例
+
+## ステータス表示例
+
 📊 MCP-RS Runtime Status
 ════════════════════════════════════════════════════════════
 🚀 Transport情報:
@@ -168,13 +202,15 @@ transport_type = "Stdio"
 
 ## 🎯 実装の意義
 
-### Before（従来）
+## Before（従来）
+
 ```
 STDIO ←→ HTTP切り替え = サーバー再起動必須
      ❌ 面倒            ❌ 開発効率低下
 ```
 
-### After（新実装）
+## After（新実装）
+
 ```
 STDIO ←→ HTTP切り替え = ランタイム切り替え
      ✅ 瞬時            ✅ 開発効率向上

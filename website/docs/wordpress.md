@@ -6,6 +6,7 @@ nav_order: 4
 ---
 
 # WordPress Integration
+
 {: .no_toc }
 
 **[Home](../) > [Documentation](./) > WordPress Integration**
@@ -14,6 +15,7 @@ Complete WordPress REST API integration with advanced media management capabilit
 {: .fs-6 .fw-300 }
 
 ## Table of contents
+
 {: .no_toc .text-delta }
 
 1. TOC
@@ -27,7 +29,8 @@ MCP-RS provides comprehensive WordPress integration through the WordPress REST A
 
 ## Features
 
-### 📝 Content Management
+## 📝 Content Management
+
 - **Advanced Post Creation**: Create posts and pages with comprehensive options
 - **Post Type Support**: Both posts (blog articles) and pages (static content)
 - **Status Control**: Draft, publish, private, and scheduled posts
@@ -36,25 +39,29 @@ MCP-RS provides comprehensive WordPress integration through the WordPress REST A
 - **Complete CRUD**: Create, read, update, and delete operations
 - **Comment Management**: Retrieve and manage post comments
 
-### 🖼️ Media Management
+## 🖼️ Media Management
+
 - **File Upload**: Upload images, documents, and media files
 - **Featured Images**: Set and manage post featured images
 - **Multiple Formats**: Support for JPEG, PNG, GIF, PDF, and more
 - **Base64 Processing**: Handle base64-encoded file data
 
-### 🔐 Security
+## 🔐 Security
+
 - **Application Passwords**: Secure authentication with WordPress
 - **Timeout Handling**: Configurable request timeouts
 - **Retry Logic**: Automatic retry with exponential backoff
 - **Error Handling**: Comprehensive error reporting
 
-### 🏷️ Category & Tag Management
+## 🏷️ Category & Tag Management
+
 - **Category Operations**: Create, read, update, and delete categories
 - **Tag Operations**: Create, read, update, and delete tags
 - **Hierarchical Categories**: Support for parent-child category relationships
 - **Bulk Operations**: Efficient management of multiple categories and tags
 
-### ⚙️ Advanced Features
+## ⚙️ Advanced Features
+
 - **Structured API**: Clean parameter structures for maintainable code
 - **Flexible Updates**: Partial updates with optional parameters
 - **Meta Data Support**: Custom fields and SEO metadata
@@ -72,7 +79,7 @@ password = "your_application_password"
 timeout_seconds = 30
 ```
 
-### Setting up Application Passwords
+## Setting up Application Passwords
 
 1. Go to **WordPress Admin** → **Users** → **Profile**
 2. Scroll to **Application Passwords** section
@@ -82,9 +89,10 @@ timeout_seconds = 30
 
 ## Available Tools
 
-### Core Content Management
+## Core Content Management
 
-#### `create_post`
+### `create_post`
+
 Create a new WordPress post (basic version).
 
 **Parameters:**
@@ -102,7 +110,8 @@ Create a new WordPress post (basic version).
 }
 ```
 
-#### `create_advanced_post`
+### `create_advanced_post`
+
 Create a new WordPress post or page with advanced options.
 
 **Parameters:**
@@ -136,7 +145,8 @@ Create a new WordPress post or page with advanced options.
 }
 ```
 
-#### `update_post`
+### `update_post`
+
 Update an existing WordPress post.
 
 **Parameters:**
@@ -162,35 +172,41 @@ Update an existing WordPress post.
 }
 ```
 
-#### `delete_post`
+### `delete_post`
+
 Delete a WordPress post.
 
 **Parameters:**
 - `post_id` (number): ID of the post to delete
 - `force` (boolean, optional): Permanently delete (true) or move to trash (false) [default: false]
 
-### Content Retrieval
+## Content Retrieval
 
-#### `get_posts`
+### `get_posts`
+
 Retrieve WordPress posts.
 
-#### `get_pages`
+### `get_pages`
+
 Retrieve WordPress pages.
 
-#### `get_all_content`
+### `get_all_content`
+
 Retrieve both WordPress posts and pages.
 
-#### `get_post`
+### `get_post`
+
 Retrieve a single WordPress post by ID.
 
 **Parameters:**
 - `post_id` (number): ID of the post to retrieve
 
-### Media Management
+## Media Management
 
-### Media Management
+## Media Management
 
-#### `upload_media`
+### `upload_media`
+
 Upload a media file to WordPress media library.
 
 **Parameters:**
@@ -210,18 +226,21 @@ Upload a media file to WordPress media library.
 }
 ```
 
-#### `get_media`
+### `get_media`
+
 Retrieve all WordPress media files.
 
 **Parameters:** None
 
-#### `get_media_item`
+### `get_media_item`
+
 Retrieve a single WordPress media item by ID.
 
 **Parameters:**
 - `media_id` (number): Media ID to retrieve
 
-#### `update_media`
+### `update_media`
+
 Update WordPress media metadata (title, alt text, caption, description).
 
 **Parameters:**
@@ -245,14 +264,16 @@ Update WordPress media metadata (title, alt text, caption, description).
 }
 ```
 
-#### `delete_media`
+### `delete_media`
+
 Delete WordPress media file.
 
 **Parameters:**
 - `media_id` (number): Media ID to delete
 - `force` (boolean, optional): Force delete (bypass trash) [default: false]
 
-#### `create_post_with_featured_image`
+### `create_post_with_featured_image`
+
 Create a post with a featured image in one operation.
 
 **Parameters:**
@@ -260,18 +281,20 @@ Create a post with a featured image in one operation.
 - `content` (string): Post content
 - `featured_media_id` (number): Media ID from uploaded image
 
-#### `set_featured_image`
+### `set_featured_image`
+
 Set featured image for an existing post.
 
 **Parameters:**
 - `post_id` (number): ID of the post to update
 - `media_id` (number): ID of the media to set as featured image
 
-### Category & Tag Management
+## Category & Tag Management
 
 **Returns:** Array of post objects with metadata
 
-### `get_post`
+## `get_post`
+
 Retrieve a single WordPress post by ID.
 
 **Parameters:**
@@ -287,7 +310,8 @@ Retrieve a single WordPress post by ID.
 }
 ```
 
-### `update_post`
+## `update_post`
+
 Update an existing WordPress post with comprehensive options.
 
 **Parameters:**
@@ -314,7 +338,8 @@ Update an existing WordPress post with comprehensive options.
 }
 ```
 
-### `delete_post`
+## `delete_post`
+
 Delete a WordPress post.
 
 **Parameters:**
@@ -334,7 +359,8 @@ Delete a WordPress post.
 
 **Note:** When `force` is `false` (default), the post is moved to trash. When `true`, it's permanently deleted.
 
-### `get_comments`
+## `get_comments`
+
 Retrieve WordPress comments.
 
 **Parameters:**
@@ -350,14 +376,16 @@ Retrieve WordPress comments.
 }
 ```
 
-### `get_categories`
+## `get_categories`
+
 Retrieve all WordPress categories.
 
 **Parameters:** None
 
 **Returns:** Array of category objects with metadata
 
-### `create_category`
+## `create_category`
+
 Create a new WordPress category.
 
 **Parameters:**
@@ -377,7 +405,8 @@ Create a new WordPress category.
 }
 ```
 
-### `update_category`
+## `update_category`
+
 Update an existing WordPress category.
 
 **Parameters:**
@@ -397,7 +426,8 @@ Update an existing WordPress category.
 }
 ```
 
-### `delete_category`
+## `delete_category`
+
 Delete a WordPress category.
 
 **Parameters:**
@@ -415,14 +445,16 @@ Delete a WordPress category.
 }
 ```
 
-### `get_tags`
+## `get_tags`
+
 Retrieve all WordPress tags.
 
 **Parameters:** None
 
 **Returns:** Array of tag objects with metadata
 
-### `create_tag`
+## `create_tag`
+
 Create a new WordPress tag.
 
 **Parameters:**
@@ -440,7 +472,8 @@ Create a new WordPress tag.
 }
 ```
 
-### `update_tag`
+## `update_tag`
+
 Update an existing WordPress tag.
 
 **Parameters:**
@@ -460,7 +493,8 @@ Update an existing WordPress tag.
 }
 ```
 
-### `delete_tag`
+## `delete_tag`
+
 Delete a WordPress tag.
 
 **Parameters:**
@@ -478,7 +512,8 @@ Delete a WordPress tag.
 }
 ```
 
-### `create_post_with_categories_tags`
+## `create_post_with_categories_tags`
+
 Create a new WordPress post with categories and tags.
 
 **Parameters:**
@@ -502,7 +537,8 @@ Create a new WordPress post with categories and tags.
 }
 ```
 
-### `update_post_categories_tags`
+## `update_post_categories_tags`
+
 Update categories and tags for an existing WordPress post.
 
 **Parameters:**
@@ -524,7 +560,8 @@ Update categories and tags for an existing WordPress post.
 
 ## Workflow Examples
 
-### Basic Blog Post
+## Basic Blog Post
+
 ```
 User: "Create a blog post about Rust programming"
 AI automatically:
@@ -533,7 +570,8 @@ AI automatically:
 3. Returns post URL and ID
 ```
 
-### Featured Image Workflow
+## Featured Image Workflow
+
 ```
 User: "Upload this image and create a post with it as featured image"
 AI automatically:
@@ -542,7 +580,8 @@ AI automatically:
 3. Creates complete post with featured image
 ```
 
-### Update Existing Post
+## Update Existing Post
+
 ```
 User: "Add a featured image to post #123"
 AI automatically:
@@ -551,7 +590,8 @@ AI automatically:
 3. Confirms successful update
 ```
 
-### Category Management Workflow
+## Category Management Workflow
+
 ```
 User: "Create a new category for web development tutorials"
 AI automatically:
@@ -566,7 +606,8 @@ AI automatically:
 3. Creates hierarchical category structure
 ```
 
-### Tag Management Workflow
+## Tag Management Workflow
+
 ```
 User: "Create tags for a Rust programming post"
 AI automatically:
@@ -581,7 +622,8 @@ AI automatically:
 3. Confirms update success
 ```
 
-### Smart Content Creation Workflow
+## Smart Content Creation Workflow
+
 ```
 User: "Create a post about web development in the technology category"
 AI intelligently:
@@ -599,7 +641,8 @@ AI automatically:
 4. Confirms successful update
 ```
 
-### Complete Content Management Workflow
+## Complete Content Management Workflow
+
 ```
 User: "Edit post #123 to change the title and add categories"
 AI automatically:
@@ -617,7 +660,8 @@ AI automatically:
 4. Confirms post moved to trash for recovery if needed
 ```
 
-### Content Lifecycle Management
+## Content Lifecycle Management
+
 ```
 User: "Publish the draft post and add featured image"
 AI automatically:
@@ -634,7 +678,8 @@ AI automatically:
 4. Bulk content management operation
 ```
 
-### AI-Assisted Taxonomy Management
+## AI-Assisted Taxonomy Management
+
 ```
 User: "Create a post about 'ウェブ開発' (Japanese for web development)"
 AI intelligently:
@@ -661,19 +706,22 @@ All errors include detailed messages for debugging and user feedback.
 
 ## Supported File Types
 
-### Images
+## Images
+
 - JPEG (.jpg, .jpeg)
 - PNG (.png)
 - GIF (.gif)
 - WebP (.webp)
 - SVG (.svg)
 
-### Documents
+## Documents
+
 - PDF (.pdf)
 - Microsoft Word (.doc, .docx)
 - Text files (.txt)
 
-### Media
+## Media
+
 - MP3 (.mp3)
 - MP4 (.mp4)
 - WAV (.wav)
@@ -689,7 +737,7 @@ File size limits depend on your WordPress configuration (`upload_max_filesize` a
 
 ## Troubleshooting
 
-### Common Issues
+## Common Issues
 
 **Authentication Failed**
 - Verify application password is correct
@@ -706,7 +754,7 @@ File size limits depend on your WordPress configuration (`upload_max_filesize` a
 - Check network connectivity
 - Verify WordPress URL is accessible
 
-### Debug Mode
+## Debug Mode
 
 Enable detailed logging by setting environment variable:
 ```bash
@@ -721,7 +769,8 @@ This will show detailed HTTP requests and responses for troubleshooting.
 
 The WordPress MCP integration includes a comprehensive health check system to validate your environment before performing operations. This ensures reliable operation and helps identify configuration issues early.
 
-### `wordpress_health_check`
+## `wordpress_health_check`
+
 Perform comprehensive environment validation.
 
 **Parameters:** None
@@ -734,41 +783,46 @@ Perform comprehensive environment validation.
 }
 ```
 
-### Check Process
+## Check Process
 
 The health check performs five critical validation stages:
 
-#### 1. 🌐 Site Accessibility
+### 1. 🌐 Site Accessibility
+
 - **Purpose**: Verify WordPress site is reachable
 - **Test**: HTTP GET request to site URL
 - **Success**: Site responds with 200 OK status
 - **Failure**: Network timeout, DNS resolution, or server errors
 
-#### 2. 🔌 REST API Availability
+### 2. 🔌 REST API Availability
+
 - **Purpose**: Confirm WordPress REST API is enabled and accessible
 - **Test**: GET request to `/wp-json/wp/v2/` endpoint
 - **Success**: API responds with namespace information
 - **Failure**: REST API disabled, blocked, or misconfigured
 
-#### 3. 🔐 Authentication Validation
+### 3. 🔐 Authentication Validation
+
 - **Purpose**: Verify credentials are correct and user exists
 - **Test**: Authenticated request to `/wp-json/wp/v2/users/me`
 - **Success**: Returns user profile information
 - **Failure**: Invalid username, incorrect password, or user not found
 
-#### 4. ✅ Permission Verification
+### 4. ✅ Permission Verification
+
 - **Purpose**: Check user has required capabilities
 - **Test**: Validate publish_posts, upload_files, and edit_posts permissions
 - **Success**: User has all required capabilities
 - **Failure**: Insufficient permissions for content operations
 
-#### 5. 📁 Media Upload Capability
+### 5. 📁 Media Upload Capability
+
 - **Purpose**: Test file upload functionality end-to-end
 - **Test**: Upload small test image to media library
 - **Success**: File uploaded successfully and media ID returned
 - **Failure**: Upload restrictions, storage issues, or API limitations
 
-### Health Report
+## Health Report
 
 The health check returns a comprehensive report with the following information:
 
@@ -806,7 +860,7 @@ The health check returns a comprehensive report with the following information:
 }
 ```
 
-### Status Levels
+## Status Levels
 
 **🟢 Healthy**
 - All checks passed
@@ -823,9 +877,10 @@ The health check returns a comprehensive report with the following information:
 - Configuration required
 - System not usable
 
-### Troubleshooting Guide
+## Troubleshooting Guide
 
-#### Site Accessibility Issues
+### Site Accessibility Issues
+
 ```
 ❌ Error: Site not accessible
 🔧 Solutions:
@@ -835,7 +890,8 @@ The health check returns a comprehensive report with the following information:
    • Test URL in browser manually
 ```
 
-#### REST API Problems
+### REST API Problems
+
 ```
 ❌ Error: REST API not available
 🔧 Solutions:
@@ -845,7 +901,8 @@ The health check returns a comprehensive report with the following information:
    • Test API endpoint in browser: /wp-json/wp/v2/
 ```
 
-#### Authentication Failures
+### Authentication Failures
+
 ```
 ❌ Error: Authentication failed
 🔧 Solutions:
@@ -855,7 +912,8 @@ The health check returns a comprehensive report with the following information:
    • Ensure application passwords are enabled
 ```
 
-#### Permission Issues
+### Permission Issues
+
 ```
 ❌ Error: Insufficient permissions
 🔧 Solutions:
@@ -865,7 +923,8 @@ The health check returns a comprehensive report with the following information:
    • Review role-based access restrictions
 ```
 
-#### Upload Problems
+### Upload Problems
+
 ```
 ❌ Error: Media upload failed
 🔧 Solutions:
@@ -875,17 +934,19 @@ The health check returns a comprehensive report with the following information:
    • Check disk space availability
 ```
 
-### Best Practices
+## Best Practices
 
-#### Before Production Use
+### Before Production Use
+
 1. **Run Health Check**: Always validate environment first
 2. **Monitor Performance**: Check response times regularly
 3. **Test Permissions**: Verify all required capabilities
 4. **Validate Uploads**: Confirm media functionality works
 
-#### Production Operations
+### Production Operations
 
-##### Application Password Management
+#### Application Password Management
+
 WordPress application passwords may be invalidated by:
 - **Hosting Provider Policies**: Automatic expiration by hosting services
 - **Security Plugin Policies**: Plugins like SiteGuard enforcing rotation
@@ -894,23 +955,29 @@ WordPress application passwords may be invalidated by:
 
 **Monitoring Strategy:**
 ```bash
-# Daily health monitoring (recommended)
+
+## Daily health monitoring (recommended)
+
 cargo run --example comprehensive_test
 
-# Deep diagnostic for authentication issues
+## Deep diagnostic for authentication issues
+
 cargo run --example settings_api_deep_diagnosis
 
-# Authentication verification
+## Authentication verification
+
 cargo run --example auth_diagnosis
 ```
 
-##### Maintenance Mode Operations
+#### Maintenance Mode Operations
 
 **LightStart Plugin Configuration:**
 When using WordPress maintenance mode plugins, configure exclusions for REST API access:
 
 ```
-# Add to LightStart exclusions (slug format, no leading slash):
+
+## Add to LightStart exclusions (slug format, no leading slash):
+
 wp-json/*
 ```
 
@@ -921,7 +988,7 @@ This ensures MCP-RS can continue content operations during maintenance windows.
 - ✅ Zero-downtime WordPress updates
 - ✅ Emergency content access during site maintenance
 
-##### Production Monitoring
+#### Production Monitoring
 
 **Alert Criteria:**
 - **HTTP 401 Errors**: Application password expiration → Regenerate password
@@ -939,7 +1006,8 @@ This ensures MCP-RS can continue content operations during maintenance windows.
 4. **Resolution**: Apply fix and verify with comprehensive test
 5. **Documentation**: Update operational logs and procedures
 
-#### Automated Monitoring
+### Automated Monitoring
+
 ```rust
 // Example: Periodic health validation
 use mcp_rs::handlers::wordpress::WordPressHandler;
@@ -963,7 +1031,8 @@ async fn monitor_wordpress_health() {
 }
 ```
 
-#### Integration Workflow
+### Integration Workflow
+
 ```
 1. Environment Setup
    ├── Configure mcp-config.toml
