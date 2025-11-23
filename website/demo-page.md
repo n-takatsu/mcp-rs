@@ -17,18 +17,22 @@
 
 Our interactive demo showcases the power of MCP-RS real-time collaborative editing system. See how multiple users can collaborate seamlessly with sub-millisecond synchronization.
 
-### 🚀 Quick Demo Setup
+## 🚀 Quick Demo Setup
 
 **Option 1: Run Locally (Recommended)**
 ```bash
-# Clone the repository
+
+## Clone the repository
+
 git clone https://github.com/your-org/mcp-rs.git
 cd mcp-rs
 
-# Start the server
+## Start the server
+
 cargo run --bin main
 
-# Open the demo
+## Open the demo
+
 open http://localhost:8080/demo.html
 ```
 
@@ -39,7 +43,7 @@ open http://localhost:8080/demo.html
 
 ## 🎯 Demo Features
 
-### 📝 Real-time Collaborative Editing
+## 📝 Real-time Collaborative Editing
 
 <div style="border: 1px solid #ddd; border-radius: 8px; padding: 20px; margin: 20px 0;">
 
@@ -56,7 +60,7 @@ open http://localhost:8080/demo.html
 
 </div>
 
-### 🔧 API Testing Tools
+## 🔧 API Testing Tools
 
 <div style="border: 1px solid #ddd; border-radius: 8px; padding: 20px; margin: 20px 0;">
 
@@ -76,7 +80,7 @@ open http://localhost:8080/demo.html
 
 </div>
 
-### 📊 Live Monitoring Dashboard
+## 📊 Live Monitoring Dashboard
 
 <div style="border: 1px solid #ddd; border-radius: 8px; padding: 20px; margin: 20px 0;">
 
@@ -98,7 +102,7 @@ open http://localhost:8080/demo.html
 
 ## 📱 Demo Interface Guide
 
-### Main Interface Components
+## Main Interface Components
 
 ```
 Demo Interface Layout:
@@ -129,9 +133,9 @@ Demo Interface Layout:
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-### Step-by-Step Demo Instructions
+## Step-by-Step Demo Instructions
 
-#### 🎯 1. Basic Collaboration Test
+### 🎯 1. Basic Collaboration Test
 
 1. **Start the Server**
    ```bash
@@ -147,7 +151,7 @@ Demo Interface Layout:
    - See instant updates in the right editor
    - Experience sub-millisecond synchronization
 
-#### 🎯 2. Multi-User Collaboration
+### 🎯 2. Multi-User Collaboration
 
 1. **Open Multiple Tabs**
    - Open 2-3 browser tabs with the same demo page
@@ -158,7 +162,7 @@ Demo Interface Layout:
    - Watch real-time updates across all tabs
    - Test simultaneous editing and conflict handling
 
-#### 🎯 3. API Testing
+### 🎯 3. API Testing
 
 1. **Create Sessions**
    - Use the API test panel to create new sessions
@@ -170,7 +174,7 @@ Demo Interface Layout:
    - Update session metadata
    - Delete unused sessions
 
-#### 🎯 4. Performance Monitoring
+### 🎯 4. Performance Monitoring
 
 1. **Connection Monitoring**
    - Watch connection status in the log panel
@@ -186,7 +190,7 @@ Demo Interface Layout:
 
 ## 🎮 Interactive Demo Scenarios
 
-### Scenario 1: Document Collaboration
+## Scenario 1: Document Collaboration
 
 **Simulate Google Docs-style collaboration:**
 
@@ -196,7 +200,7 @@ Demo Interface Layout:
 4. Observe real-time cursor positions and edits
 5. Test conflict resolution with simultaneous edits
 
-### Scenario 2: Chat Application
+## Scenario 2: Chat Application
 
 **Simulate real-time chat functionality:**
 
@@ -205,7 +209,7 @@ Demo Interface Layout:
 3. Watch messages appear instantly in other tabs
 4. Test message ordering and delivery
 
-### Scenario 3: Live Dashboard
+## Scenario 3: Live Dashboard
 
 **Simulate real-time dashboard updates:**
 
@@ -214,7 +218,7 @@ Demo Interface Layout:
 3. Test high-frequency updates (every second)
 4. Monitor performance under load
 
-### Scenario 4: Multiplayer Game State
+## Scenario 4: Multiplayer Game State
 
 **Simulate game state synchronization:**
 
@@ -227,7 +231,7 @@ Demo Interface Layout:
 
 ## 📊 Demo Performance Metrics
 
-### Expected Performance
+## Expected Performance
 
 | Metric | Typical Value | Excellent Value |
 |--------|---------------|-----------------|
@@ -236,7 +240,7 @@ Demo Interface Layout:
 | **Connection Setup** | < 10ms | < 5ms |
 | **Memory Usage** | < 1MB/session | < 0.5KB/session |
 
-### Real-time Measurements
+## Real-time Measurements
 
 The demo displays live performance metrics:
 
@@ -250,7 +254,7 @@ The demo displays live performance metrics:
 
 ## 🔧 Customizing the Demo
 
-### Configuration Options
+## Configuration Options
 
 The demo can be customized by modifying the configuration:
 
@@ -266,7 +270,7 @@ const config = {
 };
 ```
 
-### Adding Custom Features
+## Adding Custom Features
 
 **Custom Message Types:**
 ```javascript
@@ -295,9 +299,9 @@ function handleCustomMessage(message) {
 
 ## 🛠️ Troubleshooting
 
-### Common Issues
+## Common Issues
 
-#### Connection Problems
+### Connection Problems
 
 **Issue**: WebSocket connection fails
 ```
@@ -317,7 +321,7 @@ Solution:
 4. Try creating a new session
 ```
 
-#### Performance Issues
+### Performance Issues
 
 **Issue**: High latency or slow updates
 ```
@@ -337,7 +341,7 @@ Solution:
 4. Check for JavaScript memory leaks
 ```
 
-### Debug Information
+## Debug Information
 
 Enable debug logging to get detailed information:
 
@@ -359,19 +363,22 @@ This will show:
 
 After using the demo, you will understand:
 
-### Technical Concepts
+## Technical Concepts
+
 - ✅ **WebSocket Communication**: Real-time bidirectional communication
 - ✅ **Session Management**: Stateful collaboration sessions
 - ✅ **Event-driven Architecture**: Message-based system design
 - ✅ **Performance Optimization**: Low-latency real-time systems
 
-### Practical Skills
+## Practical Skills
+
 - ✅ **API Integration**: REST API usage patterns
 - ✅ **Real-time Development**: Building collaborative features
 - ✅ **Performance Monitoring**: Measuring and optimizing systems
 - ✅ **Error Handling**: Robust error handling in real-time systems
 
-### System Design
+## System Design
+
 - ✅ **Scalability Patterns**: Designing for multiple users
 - ✅ **Security Considerations**: Secure real-time communications
 - ✅ **Monitoring & Observability**: System health and metrics
@@ -381,7 +388,7 @@ After using the demo, you will understand:
 
 ## 🔗 Next Steps
 
-### Continue Learning
+## Continue Learning
 
 1. **Read the Documentation**
    - [WebSocket API Reference](https://github.com/n-takatsu/mcp-rs/blob/main/docs/websocket-api.md)
@@ -398,7 +405,7 @@ After using the demo, you will understand:
    - Integrate with your existing systems
    - Share your experience with the community
 
-### Get Support
+## Get Support
 
 - 💬 [Join our Discord](https://discord.gg/mcp-rs)
 - 📧 [Email Support](mailto:support@mcp-rs.dev)

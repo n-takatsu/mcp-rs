@@ -6,35 +6,40 @@ mcp-rsプロジェクトのデータベース接続可用性を保つための�
 
 ## 主要機能
 
-### 1. **ヘルスチェック & 自動復旧**
+## 1. **ヘルスチェック & 自動復旧**
+
 - 定期的な接続健全性監視
 - 段階的復旧戦略
 - サーキットブレーカーパターン
 
-### 2. **接続プール管理**
+## 2. **接続プール管理**
+
 - 動的プールサイズ調整
 - 接続の年齢管理
 - デッドコネクション検出
 
-### 3. **リトライ戦略**
+## 3. **リトライ戦略**
+
 - 指数バックオフ
 - 固定間隔リトライ
 - カスタム間隔設定
 
-### 4. **負荷分散**
+## 4. **負荷分散**
+
 - ラウンドロビン
 - 最小接続数ベース
 - レスポンス時間ベース
 - 健全性ベース選択
 
-### 5. **読み書き分離**
+## 5. **読み書き分離**
+
 - マスター/スレーブ構成
 - レプリカ優先読み取り
 - 自動フェイルオーバー
 
 ## 使用例
 
-### 基本的な設定
+## 基本的な設定
 
 ```rust
 use mcp_rs::handlers::database::{
@@ -100,7 +105,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-### 高可用性構成の例
+## 高可用性構成の例
 
 ```rust
 use mcp_rs::handlers::database::{
@@ -187,7 +192,7 @@ async fn setup_high_availability_system() -> Result<IntegratedAvailabilitySystem
 }
 ```
 
-### 動的エンドポイント管理
+## 動的エンドポイント管理
 
 ```rust
 async fn manage_endpoints_dynamically(system: &IntegratedAvailabilitySystem) -> Result<(), DatabaseError> {
@@ -218,7 +223,7 @@ async fn manage_endpoints_dynamically(system: &IntegratedAvailabilitySystem) -> 
 }
 ```
 
-### 監視とアラート
+## 監視とアラート
 
 ```rust
 use tokio::time::{interval, Duration};
@@ -256,7 +261,7 @@ async fn monitor_system_health(system: Arc<IntegratedAvailabilitySystem>) {
 
 ## 設定オプション
 
-### 負荷分散戦略
+## 負荷分散戦略
 
 ```rust
 // ラウンドロビン
@@ -278,7 +283,7 @@ LoadBalancingStrategy::ResponseTime
 LoadBalancingStrategy::HealthBased
 ```
 
-### 読み取り設定
+## 読み取り設定
 
 ```rust
 // 常にマスターから読み取り
@@ -297,7 +302,7 @@ ReadPreference::PrimaryPreferred
 ReadPreference::Nearest
 ```
 
-### リトライ戦略
+## リトライ戦略
 
 ```rust
 // 固定間隔
@@ -324,29 +329,33 @@ RetryStrategy::LinearBackoff {
 
 ## ベストプラクティス
 
-### 1. **適切な戦略選択**
+## 1. **適切な戦略選択**
+
 - **レスポンス重視**: `ExecutionStrategy::fast()` + `LoadBalancingStrategy::ResponseTime`
 - **安定性重視**: `ExecutionStrategy::robust()` + `LoadBalancingStrategy::HealthBased`
 - **負荷分散重視**: `LoadBalancingStrategy::LeastConnections`
 
-### 2. **監視とアラート**
+## 2. **監視とアラート**
+
 - 定期的な統計確認
 - しきい値ベースのアラート
 - ログとメトリクス収集
 
-### 3. **フェイルオーバー戦略**
+## 3. **フェイルオーバー戦略**
+
 - 自動フェイルオーバーの設定
 - 手動フェイルオーバーの準備
 - フェイルバック戦略
 
-### 4. **パフォーマンス最適化**
+## 4. **パフォーマンス最適化**
+
 - 接続プールサイズの調整
 - タイムアウト値の最適化
 - リトライ回数の調整
 
 ## トラブルシューティング
 
-### よくある問題と対策
+## よくある問題と対策
 
 1. **接続エラーが頻発する**
    - タイムアウト値を増加

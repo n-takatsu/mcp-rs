@@ -8,12 +8,14 @@ permalink: /
 
 Welcome to the MCP-RS documentation! This site contains comprehensive guides, API references, and architecture documentation for the Rust implementation of the Model Context Protocol.
 
-### Quick Access
+## Quick Access
+
 - **[Getting Started](./docs/guides/)** - Implementation guides and tutorials
 - **[API Reference](./docs/api/)** - Complete API documentation
 - **[Architecture](./docs/architecture/)** - System design and technical architecture
 
-### Documentation Hub
+## Documentation Hub
+
 - **[Full Documentation](./docs/)** - Complete documentation index
 - **[GitHub Repository](https://github.com/n-takatsu/mcp-rs)** - Source code and issues
 
@@ -25,7 +27,8 @@ MCP-RS provides a **comprehensive, battle-tested** implementation of the MCP (Mo
 
 ## Key Features
 
-### 🚀 Core Capabilities
+## 🚀 Core Capabilities
+
 - **JSON-RPC 2.0 Server**: Full-featured JSON-RPC server implementation using `axum`
 - **Core Runtime Module**: Advanced application lifecycle and resource management
 - **Multi-Transport Support**: Stdio, HTTP, and WebSocket communication protocols
@@ -35,7 +38,7 @@ MCP-RS provides a **comprehensive, battle-tested** implementation of the MCP (Mo
 - **Async/Await**: Built on `tokio` for high-performance async operations
 - **Hot Configuration**: Dynamic configuration reloading capabilities
 
-### 🔒 Enterprise-Grade Security Features
+## 🔒 Enterprise-Grade Security Features
 
 **🛡️ Complete 6-Layer Security Architecture (100% Implemented)**
 
@@ -50,7 +53,7 @@ MCP-RS provides a **comprehensive, battle-tested** implementation of the MCP (Mo
 - **🔍 Zero-Trust Data Validation**: All inputs validated through multi-layer security checks
 - **📈 Real-time Security Monitoring**: Threat level analysis with attack detection and prevention
 
-### 🎯 WordPress MCP Tools (27 tools available)
+## 🎯 WordPress MCP Tools (27 tools available)
 
 **📝 Content Management:**
 - Complete post and page management
@@ -69,7 +72,7 @@ MCP-RS provides a **comprehensive, battle-tested** implementation of the MCP (Mo
 - Comments management
 - Content relationships
 
-### 🗄️ Database MCP Tools (Multi-Engine Support)
+## 🗄️ Database MCP Tools (Multi-Engine Support)
 
 **📊 Database Engines:**
 - **PostgreSQL**: Enterprise relational database with advanced SQL features
@@ -88,14 +91,16 @@ MCP-RS provides a **comprehensive, battle-tested** implementation of the MCP (Mo
 
 ## Current Status
 
-### ✅ Recently Completed (v0.2.0-alpha)
+## ✅ Recently Completed (v0.2.0-alpha)
+
 - **🏗️ Core Runtime Module**: Complete application lifecycle management with state tracking
 - **� Stdio Transport Support**: Standard input/output communication for process-based integration
 - **🔌 Transport Abstraction**: Pluggable transport layer with configurable framing methods
 - **🔒 Enterprise Security**: 6-layer security architecture (100% Complete)
 - **🧪 Quality Assurance**: 197+ test cases with 100% pass rate and zero Clippy warnings
 
-### Implementation Status
+## Implementation Status
+
 - **WordPress API Handler**: Complete with featured image and media upload support
 - **Security Implementation**: 100% complete (6/6 enterprise-grade security layers)
 - **MCP Protocol Foundation**: JSON-RPC + handler trait system

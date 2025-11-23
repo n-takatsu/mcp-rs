@@ -14,7 +14,7 @@
 
 ## 🏗️ アーキテクチャ設計
 
-### 1. ロールバック管理システム
+## 1. ロールバック管理システム
 
 ```rust
 pub struct RollbackManager {
@@ -31,7 +31,7 @@ pub struct RollbackManager {
 }
 ```
 
-### 2. デプロイメントスナップショット
+## 2. デプロイメントスナップショット
 
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -55,7 +55,7 @@ pub struct DeploymentSnapshot {
 }
 ```
 
-### 3. ロールバック設定
+## 3. ロールバック設定
 
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -77,7 +77,7 @@ pub struct RollbackConfig {
 }
 ```
 
-### 4. イベント系統
+## 4. イベント系統
 
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -118,25 +118,29 @@ pub enum RollbackEvent {
 
 ## 🚀 実装フェーズ
 
-### Phase 1: コア機能実装
+## Phase 1: コア機能実装
+
 - [ ] `RollbackManager` 基本構造
 - [ ] `DeploymentSnapshot` データ構造
 - [ ] スナップショット作成・保存機能
 - [ ] 基本的なロールバック実行
 
-### Phase 2: 自動ロールバック
+## Phase 2: 自動ロールバック
+
 - [ ] メトリクス監視システム
 - [ ] 異常検知アルゴリズム
 - [ ] 自動ロールバックトリガー
 - [ ] 段階的ロールバック実装
 
-### Phase 3: 高度な機能
+## Phase 3: 高度な機能
+
 - [ ] カスタムロールバック条件
 - [ ] ロールバック履歴管理
 - [ ] 詳細ロギング・監査
 - [ ] ダッシュボード統合
 
-### Phase 4: 運用機能
+## Phase 4: 運用機能
+
 - [ ] CLI コマンド
 - [ ] API エンドポイント
 - [ ] アラート・通知システム
@@ -144,7 +148,7 @@ pub enum RollbackEvent {
 
 ## 🔧 技術仕様
 
-### 自動ロールバック条件
+## 自動ロールバック条件
 
 ```rust
 #[derive(Debug, Clone)]
@@ -175,7 +179,7 @@ pub enum RollbackCondition {
 }
 ```
 
-### 段階的ロールバック
+## 段階的ロールバック
 
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -203,7 +207,7 @@ pub struct RollbackStage {
 
 ## 📊 メトリクス・監視
 
-### 1. ロールバック専用メトリクス
+## 1. ロールバック専用メトリクス
 
 ```rust
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -225,7 +229,7 @@ pub struct RollbackMetrics {
 }
 ```
 
-### 2. アラート機能
+## 2. アラート機能
 
 ```rust
 #[derive(Debug, Clone)]
@@ -248,36 +252,42 @@ pub struct RollbackAlert {
 
 ## 🧪 テスト戦略
 
-### 1. 単体テスト
+## 1. 単体テスト
+
 - [ ] スナップショット作成・復元
 - [ ] ロールバック条件評価
 - [ ] メトリクス計算
 - [ ] イベント生成
 
-### 2. 統合テスト
+## 2. 統合テスト
+
 - [ ] 自動ロールバックシナリオ
 - [ ] 手動ロールバックシナリオ
 - [ ] 段階的ロールバック
 - [ ] 失敗処理・復旧
 
-### 3. 負荷テスト
+## 3. 負荷テスト
+
 - [ ] 大量トラフィック下でのロールバック
 - [ ] 同時複数デプロイメント
 - [ ] 長時間運用テスト
 
 ## 📚 ドキュメント
 
-### 1. 運用ガイド
+## 1. 運用ガイド
+
 - ロールバック機能の設定方法
 - 手動ロールバックの実行手順
 - トラブルシューティング
 
-### 2. 開発者ガイド
+## 2. 開発者ガイド
+
 - API リファレンス
 - カスタム条件の実装方法
 - 拡張機能の開発
 
-### 3. アーキテクチャドキュメント
+## 3. アーキテクチャドキュメント
+
 - システム設計の詳細
 - データフローダイアグラム
 - セキュリティ考慮事項

@@ -1,0 +1,86 @@
+services:
+  # Main development container
+  mcp-rs-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: mcp-rs-dev
+    volumes:
+      # Mount source code
+      - ../:/workspace
+      # Persistent cargo cache
+      - cargo-cache:/usr/local/cargo
+    working_dir: /workspace
+    environment:
+      - RUST_BACKTRACE=1
+      - RUST_LOG=debug
+      - DATABASE_URL=postgresql://postgres:password@postgres:5432/mcp_rs_dev
+      - MYSQL_URL=mysql://root:password@mysql:3306/mcp_rs_dev
+      - REDIS_URL=redis://redis:6379
+      - MCP_SERVER_PORT=3000
+      - MCP_LOG_LEVEL=debug
+    ports:
+      - "3000:3000"   # MCP HTTP Server
+      - "8080:8080"   # Web UI
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - mcp-network
+    stdin_open: true
+    tty: true
+    command: /bin/zsh
+
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: mcp-rs-postgres
+    environment:
+      POSTGRES_DB: mcp_rs_dev
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./init-scripts/init-postgres.sql:/docker-entrypoint-initdb.d/init.sql # cSpell:ignore initdb
+    ports:
+      - "5432:5432"
+    networks:
+      - mcp-network
+    healthcheck: # cSpell:ignore healthcheck
+      test: ["CMD-SHELL", "pg_isready -U postgres"] # cSpell:ignore isready
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: mcp-rs-redis
+    command: redis-server --appendonly yes --requirepass password # cSpell:ignore appendonly requirepass
+    volumes:
+      - redis-data:/data
+    ports:
+      - "6379:6379"
+    networks:
+      - mcp-network
+    healthcheck: # cSpell:ignore healthcheck
+      test: ["CMD", "redis-cli", "-a", "password", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+
+
+volumes:
+  cargo-cache:
+    driver: local
+  postgres-data:
+    driver: local
+  redis-data:
+    driver: local
+
+networks:
+  mcp-network:
+    driver: bridge

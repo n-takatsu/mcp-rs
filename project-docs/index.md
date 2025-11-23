@@ -4,7 +4,8 @@ Welcome to the mcp-rs developer documentation. This directory contains comprehen
 
 ## � Documentation Overview
 
-### Core Documentation
+## Core Documentation
+
 - **[Architecture Guide](architecture.md)** - Complete system architecture, components, and design decisions
 - **[Claude Desktop Integration](CLAUDE_DESKTOP_INTEGRATION.md)** - Claude Desktop統合ガイド（STDIO通信とログ管理）
 - **[Security Guide](security-guide.md)** - Security implementation, protocols, and best practices

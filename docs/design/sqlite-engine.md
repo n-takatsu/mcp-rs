@@ -7,14 +7,16 @@ SQLiteは軽量なファイルベースのRDBMSで、サーバーレスアーキ
 
 ## SQLiteの特徴
 
-### 利点
+## 利点
+
 - **軽量**: サーバープロセス不要、単一ファイルで動作
 - **高速**: 読み取り処理が非常に高速
 - **移植性**: クロスプラットフォーム対応
 - **信頼性**: ACID準拠、堅牢なトランザクション
 - **設定不要**: インストールや設定が簡単
 
-### 制約
+## 制約
+
 - **同時書き込み**: 単一ライターのみ（複数リーダーは可能）
 - **ネットワーク**: 直接ネットワーク接続はサポートなし
 - **サイズ制限**: 大規模データには不適切（推奨上限: 数TB）
@@ -22,7 +24,7 @@ SQLiteは軽量なファイルベースのRDBMSで、サーバーレスアーキ
 
 ## アーキテクチャ設計
 
-### 1. 接続管理
+## 1. 接続管理
 
 ```rust
 pub struct SqliteEngine {
@@ -38,7 +40,7 @@ pub struct SqliteConnection {
 }
 ```
 
-### 2. 設定構造
+## 2. 設定構造
 
 ```rust
 // SQLite固有の設定
@@ -70,19 +72,22 @@ pub enum JournalMode {
 
 ## 実装戦略
 
-### Phase 1: 基本実装
+## Phase 1: 基本実装
+
 1. **基本エンジン**: SqliteEngine構造体
 2. **接続管理**: sqlx::SqlitePool使用
 3. **基本CRUD**: SELECT, INSERT, UPDATE, DELETE
 4. **設定検証**: ファイルパス、権限チェック
 
-### Phase 2: 高度な機能
+## Phase 2: 高度な機能
+
 1. **トランザクション**: BEGIN, COMMIT, ROLLBACK
 2. **プリペアドステートメント**: パラメータ化クエリ
 3. **スキーマ情報**: PRAGMA table_info等
 4. **パフォーマンス最適化**: WALモード、キャッシュ
 
-### Phase 3: 統合・テスト
+## Phase 3: 統合・テスト
+
 1. **MCP統合**: ツール実装
 2. **セキュリティ**: SQLインジェクション対策
 3. **テスト**: 単体・統合テスト
@@ -90,20 +95,29 @@ pub enum JournalMode {
 
 ## 技術的考慮事項
 
-### 依存関係
+## 依存関係
+
 ```toml
 [dependencies]
 sqlx = { version = "0.7", features = ["sqlite", "runtime-tokio-rustls", "chrono", "uuid"] }
 ```
 
-### 接続文字列形式
+## 接続文字列形式
+
 ```
 sqlite:path/to/database.db
-sqlite::memory:           # インメモリ
-sqlite:database.db?mode=ro # 読み取り専用
+sqlite::memory:           
+
+## インメモリ
+
+sqlite:database.db?mode=ro 
+
+## 読み取り専用
+
 ```
 
-### パフォーマンス最適化
+## パフォーマンス最適化
+
 - **WALモード**: 並行読み取り可能
 - **CONNECTION_LIMIT**: 適切なプールサイズ
 - **PRAGMA最適化**: cache_size, temp_store等
@@ -112,18 +126,37 @@ sqlite:database.db?mode=ro # 読み取り専用
 
 ```
 src/handlers/database/engines/
-├── sqlite.rs              # メインエンジン実装
+├── sqlite.rs              
+
+## メインエンジン実装
+
 ├── sqlite/
-│   ├── connection.rs       # 接続管理
-│   ├── transaction.rs      # トランザクション
-│   ├── prepared.rs         # プリペアドステートメント
-│   ├── config.rs          # SQLite固有設定
-│   └── utils.rs           # ユーティリティ
+│   ├── connection.rs       
+
+## 接続管理
+
+│   ├── transaction.rs      
+
+## トランザクション
+
+│   ├── prepared.rs         
+
+## プリペアドステートメント
+
+│   ├── config.rs          
+
+## SQLite固有設定
+
+│   └── utils.rs           
+
+## ユーティリティ
+
 ```
 
 ## 使用例
 
-### 基本設定
+## 基本設定
+
 ```rust
 let config = DatabaseConfig {
     database_type: DatabaseType::SQLite,
@@ -139,7 +172,8 @@ let config = DatabaseConfig {
 };
 ```
 
-### インメモリ使用
+## インメモリ使用
+
 ```rust
 let config = DatabaseConfig {
     database_type: DatabaseType::SQLite,
@@ -160,18 +194,21 @@ let config = DatabaseConfig {
 
 ## テスト戦略
 
-### 単体テスト
+## 単体テスト
+
 - エンジン初期化
 - 基本CRUD操作
 - トランザクション管理
 - エラーハンドリング
 
-### 統合テスト
+## 統合テスト
+
 - MCP プロトコル統合
 - 複数接続での動作
 - パフォーマンステスト
 
-### ベンチマーク
+## ベンチマーク
+
 - 読み取り性能
 - 書き込み性能
 - 同時接続数

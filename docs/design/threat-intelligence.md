@@ -13,34 +13,39 @@ WordPress blog service MCP システムに脅威インテリジェンス統合AP
 
 ## アーキテクチャ設計
 
-### 1. コア機能モジュール
+## 1. コア機能モジュール
 
-#### 1.1 Threat Intelligence Manager
+### 1.1 Threat Intelligence Manager
+
 - 脅威インテリジェンスデータの統合管理
 - 複数プロバイダーからのデータ収集・正規化
 - リアルタイム脅威評価エンジン
 
-#### 1.2 Provider Abstraction Layer
+### 1.2 Provider Abstraction Layer
+
 - VirusTotal API
 - AlienVault OTX
 - MISP (Malware Information Sharing Platform)
 - カスタムフィード対応
 
-#### 1.3 Threat Detection Engine
+### 1.3 Threat Detection Engine
+
 - IP/ドメイン/URL レピュテーションチェック
 - ファイルハッシュ分析
 - 異常行動パターン検出
 - 機械学習ベースの脅威予測
 
-#### 1.4 Response Automation
+### 1.4 Response Automation
+
 - 自動ブロック機能
 - アラート生成・通知
 - カナリアデプロイメントとの連携
 - ロールバック機能との統合
 
-### 2. データ構造
+## 2. データ構造
 
-#### 2.1 脅威インテリジェンス情報
+### 2.1 脅威インテリジェンス情報
+
 ```rust
 pub struct ThreatIntelligence {
     pub id: String,
@@ -56,7 +61,8 @@ pub struct ThreatIntelligence {
 }
 ```
 
-#### 2.2 脅威指標 (IOCs - Indicators of Compromise)
+### 2.2 脅威指標 (IOCs - Indicators of Compromise)
+
 ```rust
 pub struct ThreatIndicator {
     pub indicator_type: IndicatorType,
@@ -78,9 +84,10 @@ pub enum IndicatorType {
 }
 ```
 
-### 3. API インターフェース
+## 3. API インターフェース
 
-#### 3.1 脅威チェック API
+### 3.1 脅威チェック API
+
 ```rust
 // リアルタイム脅威チェック
 pub async fn check_threat(
@@ -95,7 +102,8 @@ pub async fn batch_check_threats(
 ) -> Result<Vec<ThreatAssessment>, ThreatError>;
 ```
 
-#### 3.2 プロバイダー管理 API
+### 3.2 プロバイダー管理 API
+
 ```rust
 // プロバイダー登録
 pub async fn register_provider(
@@ -111,29 +119,34 @@ pub async fn update_provider_config(
 ) -> Result<(), ThreatError>;
 ```
 
-### 4. 統合ポイント
+## 4. 統合ポイント
 
-#### 4.1 WordPress ハンドラー統合
+### 4.1 WordPress ハンドラー統合
+
 - リクエスト処理時の自動脅威チェック
 - アップロードファイルのスキャン
 - コメント・投稿内容の悪意あるコンテンツ検出
 
-#### 4.2 セキュリティレイヤー統合
+### 4.2 セキュリティレイヤー統合
+
 - 既存のSQL インジェクション保護との連携
 - XSS 保護との統合
 - Rate Limiter との協調動作
 
-#### 4.3 カナリアデプロイメント統合
+### 4.3 カナリアデプロイメント統合
+
 - 脅威検出時の自動カナリア停止
 - 安全性評価における脅威スコアの考慮
 
-#### 4.4 ロールバック機能統合
+### 4.4 ロールバック機能統合
+
 - 脅威検出時の自動ロールバックトリガー
 - セキュリティインシデント時の緊急復旧
 
-### 5. 設定・カスタマイズ
+## 5. 設定・カスタマイズ
 
-#### 5.1 脅威レベル設定
+### 5.1 脅威レベル設定
+
 ```toml
 [threat_intelligence]
 enabled = true
@@ -155,69 +168,78 @@ integration_with_canary = true
 integration_with_rollback = true
 ```
 
-### 6. セキュリティ・プライバシー考慮事項
+## 6. セキュリティ・プライバシー考慮事項
 
 - **API キー管理**: 暗号化されたキー保存
 - **データプライバシー**: 個人情報の適切な処理
 - **レート制限**: プロバイダーAPI の利用制限遵守
 - **フォールバック機能**: プロバイダー障害時の継続運用
 
-### 7. パフォーマンス最適化
+## 7. パフォーマンス最適化
 
 - **非同期処理**: すべての外部API呼び出しを非同期化
 - **インメモリキャッシュ**: 頻繁にアクセスされる脅威情報のキャッシュ
 - **バッチ処理**: 複数指標の効率的な一括処理
 - **段階的評価**: 軽量チェックから詳細分析への段階的実行
 
-### 8. モニタリング・ログ
+## 8. モニタリング・ログ
 
-#### 8.1 メトリクス
+### 8.1 メトリクス
+
 - 脅威検出数（日/週/月）
 - プロバイダーAPI レスポンス時間
 - 誤検出率・検出精度
 - 自動ブロック実行回数
 
-#### 8.2 アラート
+### 8.2 アラート
+
 - 高危険度脅威の検出
 - プロバイダーAPI の障害
 - 異常な脅威検出パターン
 - システム性能の劣化
 
-### 9. 実装フェーズ
+## 9. 実装フェーズ
 
-#### Phase 1: 基盤構築
+### Phase 1: 基盤構築
+
 - 基本的なデータ構造定義
 - プロバイダー抽象化レイヤー
 - 単一プロバイダー（VirusTotal）との統合
 
-#### Phase 2: 検出機能拡張
+### Phase 2: 検出機能拡張
+
 - 複数プロバイダー対応
 - 脅威評価エンジン実装
 - WordPress ハンドラー統合
 
-#### Phase 3: 自動応答機能
+### Phase 3: 自動応答機能
+
 - 自動ブロック機能
 - アラート・通知システム
 - カナリア・ロールバック統合
 
-#### Phase 4: 高度な機能
+### Phase 4: 高度な機能
+
 - 機械学習ベースの脅威予測
 - カスタム脅威フィード対応
 - 詳細なレポート機能
 
 ## テスト戦略
 
-### 単体テスト
+## 単体テスト
+
 - 各プロバイダーの統合テスト
 - 脅威評価ロジックのテスト
 - キャッシュ機能のテスト
 
-### 統合テスト
+## 統合テスト
+
 - WordPress ハンドラーとの統合テスト
 - セキュリティレイヤーとの連携テスト
 - カナリア・ロールバックとの統合テスト
 
-### パフォーマンステスト
+## パフォーマンステスト
+
 - 大量リクエスト時の性能テスト
 - プロバイダーAPI 障害時のフォールバックテスト
 - メモリ使用量とレスポンス時間の評価

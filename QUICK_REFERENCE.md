@@ -1,40 +1,50 @@
 # Quick Reference - mcp-rs Project
 
 ## 🚀 Essential Commands
+
 ```bash
-# Full validation suite
+
+## Full validation suite
+
 cargo build --all-features
 cargo test --all-features
 cargo clippy --all-targets --all-features -- -D warnings -A dead_code
 cargo audit --ignore RUSTSEC-2023-0071
 
-# MySQL-specific testing
+## MySQL-specific testing
+
 cargo test --features "database,mysql-backend"
 
-# Claude Desktop integration
+## Claude Desktop integration
+
 cargo run -- --config mcp-config-claude.toml
 
-# Web UI integration
+## Web UI integration
+
 cargo run -- --config mcp-config-http-transport.toml
 ```
 
 ## ⚠️ Claude Desktop Critical Notes
+
 - **STDIO Communication**: Use `mcp-config-claude.toml` only
 - **Log Level**: Set to `"error"` to prevent JSON/log mixing
 - **Console Output**: Disabled for clean STDIO communication
 - **Documentation**: See [Claude Desktop Integration Guide](./CLAUDE_DESKTOP_INTEGRATION.md)
 
 ## 🔐 Security Status
+
 - **RSA Vulnerability (RUSTSEC-2023-0071)**: ✅ RESOLVED
 - **MySQL Implementation**: `mysql_async v0.36.1` (secure)
 - **Audit Configuration**: Properly ignored in both local and CI
 
 ## 📊 Test Status
+
 - **Total Tests**: 358+
 - **Status**: All passing (1 occasionally flaky timeout test)
 - **Coverage**: Comprehensive unit, integration, and doc tests
 
 ## 🗄️ Database Support
+
 - **MySQL**: ✅ `mysql_async` (secure implementation)
 - **PostgreSQL**: ✅ `sqlx`
 - **SQLite**: ✅ `sqlx`
@@ -42,6 +52,7 @@ cargo run -- --config mcp-config-http-transport.toml
 - **Redis**: ✅ Native driver
 
 ## 🔧 Key Files
+
 - MySQL Engine: `src/handlers/database/engines/mysql.rs`
 - Dependencies: `Cargo.toml`
 - Security Config: `cargo-audit.toml`
@@ -49,11 +60,13 @@ cargo run -- --config mcp-config-http-transport.toml
 - Full Context: `docs/AI_AGENT_MEMO.md`
 
 ## ⚠️ Known Issues
+
 - Timeout test occasionally flaky (retryable)
 - PowerShell search performance issues with large files
 - CI environment requires explicit audit ignore flags
 
 ## 🎯 Current State
+
 - **Version**: v0.15.0
 - **Branch**: feature/realtime-editing-system
 - **Status**: Production-ready, security-audited

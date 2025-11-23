@@ -10,11 +10,12 @@ Complete API documentation for MCP-RS.
 
 ## Core Types
 
-### JSON-RPC Messages
+## JSON-RPC Messages
 
 All MCP-RS communication follows the JSON-RPC 2.0 specification.
 
-#### Request Format
+### Request Format
+
 ```json
 {
   "jsonrpc": "2.0",
@@ -24,7 +25,8 @@ All MCP-RS communication follows the JSON-RPC 2.0 specification.
 }
 ```
 
-#### Response Format
+### Response Format
+
 ```json
 {
   "jsonrpc": "2.0",
@@ -33,7 +35,8 @@ All MCP-RS communication follows the JSON-RPC 2.0 specification.
 }
 ```
 
-#### Error Format
+### Error Format
+
 ```json
 {
   "jsonrpc": "2.0",
@@ -48,9 +51,10 @@ All MCP-RS communication follows the JSON-RPC 2.0 specification.
 
 ## MCP Protocol Methods
 
-### Initialization
+## Initialization
 
-#### `initialize`
+### `initialize`
+
 Establishes connection and negotiates capabilities.
 
 **Request:**
@@ -103,9 +107,10 @@ Establishes connection and negotiates capabilities.
 }
 ```
 
-### Tools
+## Tools
 
-#### `tools/list`
+### `tools/list`
+
 Lists available tools.
 
 **Request:**
@@ -138,7 +143,8 @@ Lists available tools.
 }
 ```
 
-#### `tools/call`
+### `tools/call`
+
 Executes a tool.
 
 **Request:**
@@ -174,9 +180,10 @@ Executes a tool.
 }
 ```
 
-### Resources
+## Resources
 
-#### `resources/list`
+### `resources/list`
+
 Lists available resources.
 
 **Request:**
@@ -212,7 +219,8 @@ Lists available resources.
 }
 ```
 
-#### `resources/read`
+### `resources/read`
+
 Reads a resource.
 
 **Request:**
@@ -244,9 +252,10 @@ Reads a resource.
 }
 ```
 
-### Prompts
+## Prompts
 
-#### `prompts/list`
+### `prompts/list`
+
 Lists available prompts.
 
 **Request:**
@@ -281,7 +290,8 @@ Lists available prompts.
 }
 ```
 
-#### `prompts/get`
+### `prompts/get`
+
 Retrieves a prompt.
 
 **Request:**
@@ -339,27 +349,30 @@ MCP-RS uses standard JSON-RPC error codes plus custom MCP-specific codes:
 
 ## WordPress Handler API
 
-### Available Tools
+## Available Tools
 
-#### `get_posts`
+### `get_posts`
+
 Retrieves WordPress posts.
 
 **Parameters:** None (current implementation)
 
-#### `create_post`
+### `create_post`
+
 Creates a new WordPress post.
 
 **Parameters:**
 - `title` (string, required): Post title
 - `content` (string, required): Post content (HTML)
 
-#### `get_comments`
+### `get_comments`
+
 Retrieves WordPress comments.
 
 **Parameters:**
 - `post_id` (number, optional): Post ID to filter comments
 
-### Resources
+## Resources
 
 - `wordpress://posts` - All published posts
 - `wordpress://pages` - All published pages

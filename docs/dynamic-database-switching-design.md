@@ -6,14 +6,16 @@ mcp-rsに**リアルタイム動的データベース切り替え機能**を実�
 
 ## 🎯 設計目標
 
-### **主要目標**
+## **主要目標**
+
 - **🔄 シームレス切り替え**: トランザクション境界を尊重した無停止切り替え
 - **⚡ 高パフォーマンス**: 切り替え時の性能劣化最小化（<50ms）
 - **🛡️ データ整合性**: 切り替え中のデータ損失・破損防止
 - **📊 リアルタイム監視**: 切り替え状況の可視化とメトリクス
 - **🔒 セキュリティ維持**: 切り替え中もセキュリティレベル維持
 
-### **対応シナリオ**
+## **対応シナリオ**
+
 1. **負荷ベース切り替え**: CPU/メモリ使用率に基づく自動切り替え
 2. **性能ベース切り替え**: レスポンス時間劣化時の自動切り替え
 3. **障害時フェイルオーバー**: 主系障害時の自動復旧
@@ -22,9 +24,10 @@ mcp-rsに**リアルタイム動的データベース切り替え機能**を実�
 
 ## 🏗️ アーキテクチャ設計
 
-### **コア実装コンポーネント**
+## **コア実装コンポーネント**
 
-#### **1. Dynamic Engine Manager (DEM)**
+### 1. Dynamic Engine Manager (DEM)
+
 ```rust
 pub struct DynamicEngineManager {
     /// アクティブエンジンマネージャー
@@ -40,7 +43,8 @@ pub struct DynamicEngineManager {
 }
 ```
 
-#### **2. Switch Orchestrator**
+### 2. Switch Orchestrator
+
 ```rust
 pub struct SwitchOrchestrator {
     /// 切り替え戦略
@@ -54,7 +58,8 @@ pub struct SwitchOrchestrator {
 }
 ```
 
-#### **3. Active Engine Manager**
+### 3. Active Engine Manager
+
 ```rust
 pub struct ActiveEngineManager {
     /// 現在のプライマリエンジン
@@ -70,7 +75,8 @@ pub struct ActiveEngineManager {
 
 ## 🔄 切り替え戦略
 
-### **1. Zero-Downtime Switch Strategy**
+## **1. Zero-Downtime Switch Strategy**
+
 ```rust
 pub enum SwitchStrategy {
     /// グレースフル切り替え（推奨）
@@ -95,7 +101,8 @@ pub enum SwitchStrategy {
 }
 ```
 
-### **2. Switch Trigger Policies**
+## **2. Switch Trigger Policies**
+
 ```rust
 pub struct SwitchPolicy {
     pub name: String,
@@ -134,7 +141,8 @@ pub enum TriggerCondition {
 
 ## 📊 監視・メトリクス
 
-### **Real-time Monitoring**
+## **Real-time Monitoring**
+
 ```rust
 pub struct MonitoringSystem {
     /// エンジン監視
@@ -159,7 +167,8 @@ pub struct EngineMetrics {
 }
 ```
 
-### **切り替えメトリクス**
+## **切り替えメトリクス**
+
 ```rust
 pub struct SwitchMetrics {
     pub switch_duration_ms: u64,
@@ -173,7 +182,8 @@ pub struct SwitchMetrics {
 
 ## 🛡️ データ整合性保証
 
-### **Transaction Coordination**
+## **Transaction Coordination**
+
 ```rust
 pub struct TransactionCoordinator {
     /// アクティブトランザクション追跡
@@ -195,7 +205,8 @@ pub enum TransactionState {
 }
 ```
 
-### **Data Synchronization**
+## **Data Synchronization**
+
 ```rust
 pub struct DataSyncManager {
     /// レプリケーション状態
@@ -218,7 +229,8 @@ pub enum SyncStrategy {
 
 ## 🔌 MCP API インターフェース
 
-### **動的切り替えツール**
+## **動的切り替えツール**
+
 ```rust
 pub const DYNAMIC_SWITCH_TOOLS: &[&str] = &[
     "switch_database_engine",
@@ -232,7 +244,8 @@ pub const DYNAMIC_SWITCH_TOOLS: &[&str] = &[
 ];
 ```
 
-### **ツール定義例**
+## **ツール定義例**
+
 ```json
 {
   "name": "switch_database_engine",
@@ -265,25 +278,29 @@ pub const DYNAMIC_SWITCH_TOOLS: &[&str] = &[
 
 ## 🧪 実装フェーズ
 
-### **Phase 1: Core Infrastructure (1週間)**
+## **Phase 1: Core Infrastructure (1週間)**
+
 - `DynamicEngineManager` 基盤実装
 - `SwitchOrchestrator` 基本機能
 - `ActiveEngineManager` 状態管理
 - 基本的な切り替えロジック
 
-### **Phase 2: Advanced Features (1週間)**
+## **Phase 2: Advanced Features (1週間)**
+
 - トランザクション協調機能
 - データ同期メカニズム
 - 性能監視システム
 - 自動切り替えポリシー
 
-### **Phase 3: MCP Integration (3日間)**
+## **Phase 3: MCP Integration (3日間)**
+
 - MCP ツールインターフェース
 - リアルタイム監視ダッシュボード
 - アラート・通知システム
 - 管理用Web UI（オプション）
 
-### **Phase 4: Testing & Optimization (3日間)**
+## **Phase 4: Testing & Optimization (3日間)**
+
 - 包括的テストスイート
 - 性能最適化
 - 障害テスト
@@ -291,14 +308,16 @@ pub const DYNAMIC_SWITCH_TOOLS: &[&str] = &[
 
 ## 🎯 成功指標
 
-### **技術指標**
+## **技術指標**
+
 - **切り替え時間**: < 50ms (目標)
 - **ダウンタイム**: 0ms (必須)
 - **データ損失**: 0件 (必須)
 - **切り替え成功率**: > 99.9%
 - **性能劣化**: < 5% (切り替え中)
 
-### **運用指標**
+## **運用指標**
+
 - **MTTR (Mean Time To Recovery)**: < 30秒
 - **MTBF (Mean Time Between Failures)**: > 30日
 - **可用性**: 99.99%
@@ -306,21 +325,45 @@ pub const DYNAMIC_SWITCH_TOOLS: &[&str] = &[
 
 ## 🔧 技術スタック
 
-### **新規依存関係**
+## **新規依存関係**
+
 ```toml
 [dependencies]
-# 分散システム支援
-etcd-rs = "1.0"              # 分散設定管理
-consul = "0.3"               # サービス発見
 
-# 監視・メトリクス
-prometheus = "0.13"          # メトリクス収集
-grafana-client = "0.2"       # ダッシュボード
-jaeger = "0.2"               # 分散トレーシング
+## 分散システム支援
 
-# 高可用性
-raft = "0.7"                 # 分散合意
-gossip = "0.1"               # ノード間通信
+etcd-rs = "1.0"              
+
+## 分散設定管理
+
+consul = "0.3"               
+
+## サービス発見
+
+## 監視・メトリクス
+
+prometheus = "0.13"          
+
+## メトリクス収集
+
+grafana-client = "0.2"       
+
+## ダッシュボード
+
+jaeger = "0.2"               
+
+## 分散トレーシング
+
+## 高可用性
+
+raft = "0.7"                 
+
+## 分散合意
+
+gossip = "0.1"               
+
+## ノード間通信
+
 ```
 
 ## 🚀 実装開始

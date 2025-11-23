@@ -10,9 +10,10 @@ The Dynamic Database Switching feature represents a breakthrough in database arc
 
 ## Technical Architecture
 
-### Core Components
+## Core Components
 
-#### 1. **DynamicEngineManager**
+### 1. **DynamicEngineManager**
+
 - **Purpose**: Central orchestration of all database engines
 - **Capabilities**: Engine lifecycle management, health monitoring, switch coordination
 - **Implementation**: 400+ lines of production-ready Rust code
@@ -27,22 +28,25 @@ pub struct DynamicEngineManager {
 }
 ```
 
-#### 2. **SwitchOrchestrator** 
+### 2. **SwitchOrchestrator** 
+
 - **Purpose**: Executes zero-downtime switching procedures
 - **Capabilities**: Transaction coordination, rollback handling, safety validation
 - **Features**: Pre-switch validation, graceful degradation, automatic recovery
 
-#### 3. **ActiveEngineManager**
+### 3. **ActiveEngineManager**
+
 - **Purpose**: Tracks current active engines and their states
 - **Capabilities**: Primary/secondary engine management, load distribution
 - **Safety**: Thread-safe state management with atomic operations
 
-#### 4. **MonitoringSystem**
+### 4. **MonitoringSystem**
+
 - **Purpose**: Real-time health and performance monitoring
 - **Capabilities**: Metrics collection, alerting, predictive analysis
 - **Integration**: Prometheus, Grafana, custom webhooks
 
-### Engine State Management
+## Engine State Management
 
 ```mermaid
 stateDiagram-v2
@@ -60,7 +64,8 @@ stateDiagram-v2
 
 ## Switching Algorithms
 
-### 1. **Graceful Switching**
+## 1. **Graceful Switching**
+
 ```rust
 pub async fn graceful_switch(
     &self,
@@ -90,7 +95,8 @@ pub async fn graceful_switch(
 }
 ```
 
-### 2. **Emergency Failover**
+## 2. **Emergency Failover**
+
 ```rust
 pub async fn emergency_failover(
     &self,
@@ -111,12 +117,14 @@ pub async fn emergency_failover(
 
 ## Performance Optimizations
 
-### Connection Pool Management
+## Connection Pool Management
+
 - **Pre-warmed Connections**: Maintains ready connections to secondary engines
 - **Connection Multiplexing**: Efficient connection reuse across operations
 - **Circuit Breaker Pattern**: Prevents cascade failures during outages
 
-### Caching Strategy
+## Caching Strategy
+
 ```toml
 [database.dynamic_switching.cache]
 engine_metadata_ttl_seconds = 300
@@ -125,16 +133,18 @@ performance_metrics_ttl_seconds = 30
 connection_pool_stats_ttl_seconds = 10
 ```
 
-### Memory Management
+## Memory Management
+
 - **Bounded Queues**: Prevents memory leaks during high-throughput operations
 - **Async Cleanup**: Background cleanup of stale connections and metadata
 - **Memory Pools**: Reusable buffer allocation for performance
 
 ## MCP Tools Integration
 
-### Core Tools
+## Core Tools
 
-#### `switch_database_engine`
+### `switch_database_engine`
+
 **Purpose**: Manual engine switching with full control
 ```json
 {
@@ -149,7 +159,8 @@ connection_pool_stats_ttl_seconds = 10
 }
 ```
 
-#### `configure_switch_policy`
+### `configure_switch_policy`
+
 **Purpose**: Configure automatic switching policies
 ```json
 {
@@ -164,7 +175,8 @@ connection_pool_stats_ttl_seconds = 10
 }
 ```
 
-#### `get_engine_metrics`
+### `get_engine_metrics`
+
 **Purpose**: Real-time engine performance monitoring
 ```json
 {
@@ -177,9 +189,10 @@ connection_pool_stats_ttl_seconds = 10
 }
 ```
 
-### Advanced Tools
+## Advanced Tools
 
-#### `monitor_switch_events`
+### `monitor_switch_events`
+
 **Purpose**: Real-time switching event monitoring
 ```json
 {
@@ -192,7 +205,8 @@ connection_pool_stats_ttl_seconds = 10
 }
 ```
 
-#### `check_engine_health`
+### `check_engine_health`
+
 **Purpose**: Comprehensive engine health validation
 ```json
 {
@@ -207,7 +221,7 @@ connection_pool_stats_ttl_seconds = 10
 
 ## Production Deployment
 
-### Configuration Template
+## Configuration Template
 
 ```toml
 [database.dynamic_switching]
@@ -215,17 +229,20 @@ enabled = true
 primary_engine = "postgresql"
 secondary_engines = ["redis", "mongodb", "mysql"]
 
-# Health monitoring
+## Health monitoring
+
 health_check_interval_seconds = 30
 health_check_timeout_seconds = 5
 max_consecutive_failures = 3
 
-# Performance monitoring
+## Performance monitoring
+
 metrics_collection_enabled = true
 metrics_retention_hours = 24
 performance_threshold_ms = 1000
 
-# Switching policies
+## Switching policies
+
 [database.switching_policies.performance]
 enabled = true
 trigger_threshold_ms = 1000
@@ -238,7 +255,8 @@ max_connections_threshold = 100
 target_engine = "mongodb"
 scale_down_threshold = 20
 
-# Alerting
+## Alerting
+
 [database.alerts]
 webhook_url = "https://alerts.company.com/database"
 enable_pagerduty = true
@@ -246,11 +264,14 @@ enable_slack = true
 critical_failure_notification = true
 ```
 
-### Monitoring Setup
+## Monitoring Setup
 
-#### Prometheus Metrics
+### Prometheus Metrics
+
 ```yaml
-# prometheus.yml
+
+## prometheus.yml
+
 scrape_configs:
   - job_name: 'mcp-rs-dynamic-db'
     static_configs:
@@ -259,15 +280,17 @@ scrape_configs:
     metrics_path: '/metrics/database'
 ```
 
-#### Grafana Dashboard
+### Grafana Dashboard
+
 - **Engine Performance**: Response times, throughput, error rates
 - **Switching Events**: Timeline of switches with success/failure rates
 - **Health Status**: Real-time engine health across all instances
 - **Resource Utilization**: Connection pools, memory usage, CPU impact
 
-### Security Considerations
+## Security Considerations
 
-#### Access Control
+### Access Control
+
 ```toml
 [database.dynamic_switching.security]
 require_admin_approval = true
@@ -276,7 +299,8 @@ audit_all_operations = true
 encrypt_engine_credentials = true
 ```
 
-#### Audit Logging
+### Audit Logging
+
 - All switching operations logged with timestamps
 - Security events recorded for compliance
 - Performance metrics retained for analysis
@@ -284,35 +308,41 @@ encrypt_engine_credentials = true
 
 ## Use Cases & Benefits
 
-### 1. **High-Availability Systems**
+## 1. **High-Availability Systems**
+
 - **Scenario**: E-commerce platform during Black Friday
 - **Benefit**: Automatic failover to backup databases during peak traffic
 - **Result**: 99.99% uptime maintained during critical sales periods
 
-### 2. **Performance Optimization**
+## 2. **Performance Optimization**
+
 - **Scenario**: Analytics workload optimization
 - **Benefit**: Automatic switching to specialized engines for different query types
 - **Result**: 70% improvement in complex analytical query performance
 
-### 3. **Cost Management**
+## 3. **Cost Management**
+
 - **Scenario**: Development/staging environment cost reduction
 - **Benefit**: Automatic switching to cheaper engines during off-hours
 - **Result**: 40% reduction in cloud database costs
 
-### 4. **Compliance & Data Sovereignty**
+## 4. **Compliance & Data Sovereignty**
+
 - **Scenario**: GDPR compliance requirements
 - **Benefit**: Route EU user data to specific geographic database instances
 - **Result**: Full compliance with data residency requirements
 
 ## Testing & Validation
 
-### Test Coverage
+## Test Coverage
+
 - **Unit Tests**: 45 tests covering core switching logic
 - **Integration Tests**: 12 tests for multi-engine scenarios
 - **Load Tests**: Validated under 10,000 concurrent connections
 - **Chaos Engineering**: Simulated random engine failures
 
-### Performance Benchmarks
+## Performance Benchmarks
+
 - **Switch Time**: < 100ms for graceful switches
 - **Failover Time**: < 10ms for emergency failover
 - **Memory Overhead**: < 50MB for full feature set
@@ -320,12 +350,14 @@ encrypt_engine_credentials = true
 
 ## Roadmap & Future Enhancements
 
-### Phase 2 Features (Q2 2025)
+## Phase 2 Features (Q2 2025)
+
 - **Machine Learning Integration**: Predictive switching based on workload patterns
 - **Global Load Balancing**: Cross-region engine selection
 - **Advanced Analytics**: Deep performance analysis and optimization suggestions
 
-### Phase 3 Features (Q3 2025)
+## Phase 3 Features (Q3 2025)
+
 - **Multi-Cloud Support**: Seamless switching across cloud providers
 - **Blockchain Integration**: Immutable audit trails for compliance
 - **AI-Powered Optimization**: Autonomous performance tuning

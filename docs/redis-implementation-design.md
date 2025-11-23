@@ -6,14 +6,16 @@ mcp-rsプロジェクトにおけるRedisインメモリデータベースエン
 
 ## 設計目標
 
-### 主要目標
+## 主要目標
+
 1. **高性能**: インメモリ操作による低レイテンシー（<1ms）
 2. **Redis互換性**: Redis 7.x の主要機能サポート
 3. **セキュリティ統合**: 既存のMCPセキュリティシステムとの連携
 4. **スケーラビリティ**: クラスター構成と水平スケーリング対応
 5. **運用性**: 監視、メトリクス、デバッグ機能の提供
 
-### 技術要件
+## 技術要件
+
 - Redis Protocol (RESP3) サポート
 - 非同期 I/O による高性能実現
 - 接続プール管理
@@ -22,7 +24,7 @@ mcp-rsプロジェクトにおけるRedisインメモリデータベースエン
 
 ## アーキテクチャ
 
-### コンポーネント構成
+## コンポーネント構成
 
 ```
 RedisEngine
@@ -34,7 +36,7 @@ RedisEngine
 └── RedisCommandProcessor   // コマンド解析・実行
 ```
 
-### データ構造対応
+## データ構造対応
 
 | Redis型 | 対応状況 | 主要操作 |
 |---------|----------|----------|
@@ -49,9 +51,10 @@ RedisEngine
 
 ## 実装詳細
 
-### 1. 接続管理
+## 1. 接続管理
 
-#### 単一インスタンス接続
+### 単一インスタンス接続
+
 ```rust
 pub struct RedisConnectionConfig {
     pub host: String,
@@ -63,7 +66,8 @@ pub struct RedisConnectionConfig {
 }
 ```
 
-#### クラスター接続
+### クラスター接続
+
 ```rust
 pub struct RedisClusterConfig {
     pub nodes: Vec<RedisConnectionConfig>,
@@ -72,9 +76,10 @@ pub struct RedisClusterConfig {
 }
 ```
 
-### 2. データ型システム
+## 2. データ型システム
 
-#### 統一データ型
+### 統一データ型
+
 ```rust
 pub enum RedisValue {
     String(String),
@@ -88,27 +93,31 @@ pub enum RedisValue {
 }
 ```
 
-### 3. コマンド処理
+## 3. コマンド処理
 
-#### 基本操作
+### 基本操作
+
 - **GET/SET**: 文字列値の読み書き
 - **EXPIRE**: TTL設定
 - **DEL**: キー削除
 - **EXISTS**: キー存在確認
 
-#### リスト操作
+### リスト操作
+
 - **LPUSH/RPUSH**: リスト先頭/末尾への追加
 - **LPOP/RPOP**: リスト先頭/末尾からの取得
 - **LLEN**: リスト長取得
 
-#### ハッシュ操作
+### ハッシュ操作
+
 - **HSET/HGET**: ハッシュフィールド設定/取得
 - **HDEL**: ハッシュフィールド削除
 - **HKEYS**: ハッシュキー一覧
 
-### 4. パフォーマンス監視
+## 4. パフォーマンス監視
 
-#### メトリクス収集
+### メトリクス収集
+
 ```rust
 pub struct RedisMetrics {
     pub hit_ratio: f64,
@@ -121,7 +130,8 @@ pub struct RedisMetrics {
 }
 ```
 
-#### 監視項目
+### 監視項目
+
 - **ヒット率**: キャッシュ効率
 - **メモリ使用量**: リソース監視
 - **接続数**: 負荷監視
@@ -129,9 +139,10 @@ pub struct RedisMetrics {
 
 ## セキュリティ統合
 
-### 既存システムとの連携
+## 既存システムとの連携
 
-#### 1. 認証・認可
+### 1. 認証・認可
+
 ```rust
 // 既存のMFAシステムとの連携
 let mfa_result = multi_factor_auth.verify_access(&user_context).await?;
@@ -143,7 +154,8 @@ let rbac_result = role_based_access.check_permission(
 ).await?;
 ```
 
-#### 2. 異常検知
+### 2. 異常検知
+
 ```rust
 // 異常パターンの検出
 let anomaly_result = anomaly_detector.analyze_redis_pattern(
@@ -152,7 +164,8 @@ let anomaly_result = anomaly_detector.analyze_redis_pattern(
 ).await?;
 ```
 
-#### 3. 監査ログ
+### 3. 監査ログ
+
 ```rust
 // Redis操作の監査ログ
 audit_logger.log_redis_operation(AuditEvent {
@@ -164,7 +177,7 @@ audit_logger.log_redis_operation(AuditEvent {
 }).await?;
 ```
 
-### セキュリティ機能
+## セキュリティ機能
 
 | 機能 | 実装状況 | 説明 |
 |------|----------|------|
@@ -177,9 +190,10 @@ audit_logger.log_redis_operation(AuditEvent {
 
 ## 高可用性・スケーラビリティ
 
-### 1. レプリケーション
+## 1. レプリケーション
 
-#### マスター・スレーブ構成
+### マスター・スレーブ構成
+
 ```rust
 pub struct RedisReplicationConfig {
     pub master: RedisConnectionConfig,
@@ -195,17 +209,19 @@ pub enum ReadPreference {
 }
 ```
 
-### 2. クラスタリング
+## 2. クラスタリング
 
-#### Redis Cluster サポート
+### Redis Cluster サポート
+
 - **シャーディング**: 自動キー分散
 - **ノード発見**: クラスター構成自動検出
 - **フェイルオーバー**: 自動障害復旧
 - **スロット管理**: ハッシュスロット追跡
 
-### 3. 接続プール
+## 3. 接続プール
 
-#### プール管理
+### プール管理
+
 ```rust
 pub struct RedisPoolSettings {
     pub max_connections: u32,      // 最大接続数
@@ -217,15 +233,17 @@ pub struct RedisPoolSettings {
 
 ## 運用機能
 
-### 1. 監視・メトリクス
+## 1. 監視・メトリクス
 
-#### リアルタイム監視
+### リアルタイム監視
+
 - **応答時間**: P50, P95, P99レイテンシー
 - **スループット**: RPS (Requests Per Second)
 - **エラー率**: 接続・実行エラー率
 - **メモリ使用量**: 使用量・断片化率
 
-#### アラート設定
+### アラート設定
+
 ```rust
 pub struct RedisAlertConfig {
     pub memory_usage_threshold: f64,    // メモリ使用率閾値
@@ -235,15 +253,17 @@ pub struct RedisAlertConfig {
 }
 ```
 
-### 2. デバッグ・トラブルシューティング
+## 2. デバッグ・トラブルシューティング
 
-#### ログ出力
+### ログ出力
+
 - **接続ログ**: 接続・切断イベント
 - **コマンドログ**: 実行コマンド（設定可能）
 - **エラーログ**: 詳細エラー情報
 - **パフォーマンスログ**: 処理時間・メトリクス
 
-#### 診断機能
+### 診断機能
+
 ```rust
 pub struct RedisDiagnostics {
     pub connection_status: ConnectionStatus,
@@ -255,9 +275,10 @@ pub struct RedisDiagnostics {
 
 ## MCPプロトコル統合
 
-### 1. ツール登録
+## 1. ツール登録
 
-#### Redis操作ツール
+### Redis操作ツール
+
 ```json
 {
   "name": "redis_get",
@@ -273,9 +294,10 @@ pub struct RedisDiagnostics {
 }
 ```
 
-### 2. コマンド変換
+## 2. コマンド変換
 
-#### SQL風構文サポート
+### SQL風構文サポート
+
 ```sql
 -- MCPでの Redis操作例
 SELECT * FROM redis WHERE key = 'user:12345';
@@ -287,14 +309,16 @@ INSERT INTO redis (key, value) VALUES ('session:abc', '{"user": 123}');
 
 ## パフォーマンス最適化
 
-### 1. 接続管理最適化
+## 1. 接続管理最適化
 
-#### 接続プーリング
+### 接続プーリング
+
 - **プリウォーミング**: 事前接続確立
 - **アダプティブサイジング**: 負荷に応じたプールサイズ調整
 - **ヘルスチェック**: 不正接続の自動除去
 
-#### 非同期処理
+### 非同期処理
+
 ```rust
 // パイプライン処理で複数コマンド一括実行
 pub async fn pipeline(&self, commands: &[RedisCommand]) -> Result<Vec<RedisValue>, DatabaseError> {
@@ -302,16 +326,18 @@ pub async fn pipeline(&self, commands: &[RedisCommand]) -> Result<Vec<RedisValue
 }
 ```
 
-### 2. メモリ最適化
+## 2. メモリ最適化
 
-#### データ圧縮
+### データ圧縮
+
 - **文字列圧縮**: 大きな値の自動圧縮
 - **構造最適化**: 内部データ構造の最適化
 - **ガベージコレクション**: 不要データの自動削除
 
 ## 設定例
 
-### 基本設定
+## 基本設定
+
 ```toml
 [database.redis]
 host = "localhost"
@@ -333,7 +359,8 @@ enable_anomaly_detection = true
 command_whitelist = ["GET", "SET", "HGET", "HSET"]
 ```
 
-### クラスター設定
+## クラスター設定
+
 ```toml
 [database.redis.cluster]
 nodes = [
@@ -350,28 +377,32 @@ min_idle = 20
 
 ## 実装フェーズ
 
-### Phase 1: 基本実装 ✅
+## Phase 1: 基本実装 ✅
+
 - [x] Redis接続基盤
 - [x] 基本データ型（String, List, Hash, Set）
 - [x] 基本操作（GET, SET, LPUSH, RPOP, HSET, HGET）
 - [x] メトリクス収集基盤
 - [x] ヘルスチェック機能
 
-### Phase 2: 高度機能 🔄
+## Phase 2: 高度機能 🔄
+
 - [ ] ソート済みセット（Sorted Set）サポート
 - [ ] ストリーム（Stream）サポート
 - [ ] トランザクション（MULTI/EXEC）
 - [ ] パイプライン処理最適化
 - [ ] セキュリティ統合強化
 
-### Phase 3: エンタープライズ機能 📋
+## Phase 3: エンタープライズ機能 📋
+
 - [ ] クラスターサポート
 - [ ] レプリケーション管理
 - [ ] 高可用性機能
 - [ ] 詳細監視・アラート
 - [ ] パフォーマンス最適化
 
-### Phase 4: 運用強化 📋
+## Phase 4: 運用強化 📋
+
 - [ ] 自動スケーリング
 - [ ] 障害復旧自動化
 - [ ] 設定ホットリロード
@@ -380,22 +411,26 @@ min_idle = 20
 
 ## テスト戦略
 
-### 単体テスト
+## 単体テスト
+
 - 各データ型操作の正確性検証
 - エラーハンドリング
 - セキュリティ機能検証
 
-### 統合テスト
+## 統合テスト
+
 - 実際のRedisサーバーとの連携
 - MCPプロトコル統合テスト
 - セキュリティシステム統合
 
-### パフォーマンステスト
+## パフォーマンステスト
+
 - 負荷テスト（concurrent connections）
 - レイテンシー測定
 - メモリ使用量監視
 
-### 障害テスト
+## 障害テスト
+
 - ネットワーク分断テスト
 - サーバー障害シミュレーション
 - データ整合性検証

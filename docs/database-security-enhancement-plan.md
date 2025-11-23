@@ -2,7 +2,8 @@
 
 ## 🔍 現在の実装分析
 
-### 既存のセキュリティ機能
+## 既存のセキュリティ機能
+
 1. **SQLインジェクション検知** - パターンマッチング、危険関数検知、引用符バランス
 2. **クエリホワイトリスト** - 許可パターン、テーブル制限
 3. **監査ログ** - クエリ検証・実行ログ、JSON形式
@@ -11,9 +12,10 @@
 
 ## 🚀 セキュリティ強化提案
 
-### 1. 認証・認可の強化
+## 1. 認証・認可の強化
 
-#### 多要素認証 (MFA) システム
+### 多要素認証 (MFA) システム
+
 ```rust
 pub struct MultiFactorAuth {
     totp_verifier: TotpVerifier,
@@ -28,7 +30,8 @@ impl MultiFactorAuth {
 }
 ```
 
-#### RBAC (Role-Based Access Control)
+### RBAC (Role-Based Access Control)
+
 ```rust
 #[derive(Debug, Clone)]
 pub struct RoleBasedAccessControl {
@@ -53,9 +56,10 @@ pub struct Permission {
 }
 ```
 
-### 2. 高度な脅威検知
+## 2. 高度な脅威検知
 
-#### 機械学習ベースの異常検知
+### 機械学習ベースの異常検知
+
 ```rust
 pub struct AnomalyDetector {
     ml_model: TensorFlowModel,
@@ -78,7 +82,8 @@ pub struct AnomalyScore {
 }
 ```
 
-#### リアルタイム脅威インテリジェンス
+### リアルタイム脅威インテリジェンス
+
 ```rust
 pub struct ThreatIntelligenceEngine {
     threat_feeds: Vec<ThreatFeed>,
@@ -94,9 +99,10 @@ impl ThreatIntelligenceEngine {
 }
 ```
 
-### 3. データ保護とプライバシー
+## 3. データ保護とプライバシー
 
-#### カラムレベル暗号化
+### カラムレベル暗号化
+
 ```rust
 pub struct ColumnEncryption {
     encryption_keys: KeyManager,
@@ -111,7 +117,8 @@ impl ColumnEncryption {
 }
 ```
 
-#### データマスキング
+### データマスキング
+
 ```rust
 pub struct DataMaskingEngine {
     masking_rules: HashMap<String, MaskingRule>,
@@ -136,9 +143,10 @@ pub enum MaskingType {
 }
 ```
 
-### 4. 高度な監査とコンプライアンス
+## 4. 高度な監査とコンプライアンス
 
-#### GDPR/CCPA コンプライアンス
+### GDPR/CCPA コンプライアンス
+
 ```rust
 pub struct ComplianceEngine {
     gdpr_processor: GdprDataProcessor,
@@ -154,7 +162,8 @@ impl ComplianceEngine {
 }
 ```
 
-#### 高度な監査ログ分析
+### 高度な監査ログ分析
+
 ```rust
 pub struct AdvancedAuditAnalyzer {
     log_aggregator: LogAggregator,
@@ -170,9 +179,10 @@ impl AdvancedAuditAnalyzer {
 }
 ```
 
-### 5. ネットワークセキュリティ
+## 5. ネットワークセキュリティ
 
-#### Zero Trust ネットワークアクセス
+### Zero Trust ネットワークアクセス
+
 ```rust
 pub struct ZeroTrustController {
     device_verifier: DeviceVerifier,
@@ -188,7 +198,8 @@ impl ZeroTrustController {
 }
 ```
 
-#### TLS/mTLS 証明書管理
+### TLS/mTLS 証明書管理
+
 ```rust
 pub struct CertificateManager {
     ca_authority: CertificateAuthority,
@@ -204,9 +215,10 @@ impl CertificateManager {
 }
 ```
 
-### 6. インシデント対応
+## 6. インシデント対応
 
-#### 自動セキュリティ対応
+### 自動セキュリティ対応
+
 ```rust
 pub struct SecurityOrchestrator {
     incident_detector: IncidentDetector,
@@ -233,31 +245,36 @@ pub struct ResponsePlan {
 
 ## 🛠️ 実装ロードマップ
 
-### Phase 1: 基盤強化 (1-2ヶ月)
+## Phase 1: 基盤強化 (1-2ヶ月)
+
 - [ ] RBAC システムの実装
 - [ ] 多要素認証の統合
 - [ ] カラムレベル暗号化
 - [ ] データマスキングエンジン
 
-### Phase 2: 高度な脅威検知 (2-3ヶ月)
+## Phase 2: 高度な脅威検知 (2-3ヶ月)
+
 - [ ] 機械学習ベース異常検知
 - [ ] リアルタイム脅威インテリジェンス
 - [ ] 行動分析エンジン
 - [ ] 自動脅威対応
 
-### Phase 3: コンプライアンス (1-2ヶ月)
+## Phase 3: コンプライアンス (1-2ヶ月)
+
 - [ ] GDPR/CCPA対応
 - [ ] 高度な監査分析
 - [ ] データライフサイクル管理
 - [ ] コンプライアンス自動レポート
 
-### Phase 4: ネットワークセキュリティ (2-3ヶ月)
+## Phase 4: ネットワークセキュリティ (2-3ヶ月)
+
 - [ ] Zero Trust アーキテクチャ
 - [ ] mTLS証明書管理
 - [ ] マイクロセグメンテーション
 - [ ] ネットワーク行動分析
 
-### Phase 5: インシデント対応 (1-2ヶ月)
+## Phase 5: インシデント対応 (1-2ヶ月)
+
 - [ ] 自動インシデント検知
 - [ ] オーケストレーション エンジン
 - [ ] 自動復旧システム
@@ -265,24 +282,28 @@ pub struct ResponsePlan {
 
 ## 🔧 技術スタック提案
 
-### 機械学習・AI
+## 機械学習・AI
+
 - **TensorFlow Rust** - 異常検知モデル
 - **Candle** - 軽量ML推論エンジン
 - **SmartCore** - 統計分析・クラスタリング
 
-### 暗号化・セキュリティ
+## 暗号化・セキュリティ
+
 - **ring** - 暗号化プリミティブ
 - **rustls** - TLS実装
 - **webpki** - 証明書検証
 - **argon2** - パスワードハッシュ
 
-### 監査・ログ分析
+## 監査・ログ分析
+
 - **tracing** - 構造化ログ
 - **serde_json** - ログ分析
 - **elasticsearch** - ログ検索・分析
 - **prometheus** - メトリクス収集
 
-### ネットワーク・通信
+## ネットワーク・通信
+
 - **tokio** - 非同期ランタイム
 - **hyper** - HTTP/HTTPS
 - **quinn** - QUIC実装
@@ -290,13 +311,15 @@ pub struct ResponsePlan {
 
 ## 📊 セキュリティメトリクス
 
-### 検知率指標
+## 検知率指標
+
 - **真陽性率** (True Positive Rate): 実際の脅威を正しく検知
 - **偽陽性率** (False Positive Rate): 正常な活動を脅威として誤検知
 - **平均検知時間** (MTTD): Mean Time To Detection
 - **平均対応時間** (MTTR): Mean Time To Response
 
-### パフォーマンス指標
+## パフォーマンス指標
+
 - **セキュリティオーバーヘッド**: 認証・暗号化による遅延
 - **スループット影響**: セキュリティ検査によるクエリ処理速度への影響
 - **リソース使用率**: CPU/メモリ使用量
