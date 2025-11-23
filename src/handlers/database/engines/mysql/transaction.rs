@@ -33,14 +33,14 @@ impl MySqlTransactionManager {
 
         // Set isolation level
         let isolation_sql = format!("SET TRANSACTION ISOLATION LEVEL {}", isolation_level);
-        conn.query_drop(&isolation_sql)
-            .await
-            .map_err(|e| DatabaseError::QueryFailed(format!("Failed to set isolation level: {}", e)))?;
+        conn.query_drop(&isolation_sql).await.map_err(|e| {
+            DatabaseError::QueryFailed(format!("Failed to set isolation level: {}", e))
+        })?;
 
         // Start transaction
-        conn.query_drop("START TRANSACTION")
-            .await
-            .map_err(|e| DatabaseError::QueryFailed(format!("Failed to start transaction: {}", e)))?;
+        conn.query_drop("START TRANSACTION").await.map_err(|e| {
+            DatabaseError::QueryFailed(format!("Failed to start transaction: {}", e))
+        })?;
 
         Ok(MySqlTransaction {
             pool: Arc::clone(&self.pool),
@@ -74,9 +74,9 @@ impl MySqlTransaction {
             .await
             .map_err(|e| DatabaseError::ConnectionFailed(e.to_string()))?;
 
-        conn.query_drop("COMMIT")
-            .await
-            .map_err(|e| DatabaseError::QueryFailed(format!("Failed to commit transaction: {}", e)))?;
+        conn.query_drop("COMMIT").await.map_err(|e| {
+            DatabaseError::QueryFailed(format!("Failed to commit transaction: {}", e))
+        })?;
 
         self.is_active = false;
         Ok(())
@@ -96,11 +96,9 @@ impl MySqlTransaction {
             .await
             .map_err(|e| DatabaseError::ConnectionFailed(e.to_string()))?;
 
-        conn.query_drop("ROLLBACK")
-            .await
-            .map_err(|e| {
-                DatabaseError::QueryFailed(format!("Failed to rollback transaction: {}", e))
-            })?;
+        conn.query_drop("ROLLBACK").await.map_err(|e| {
+            DatabaseError::QueryFailed(format!("Failed to rollback transaction: {}", e))
+        })?;
 
         self.is_active = false;
         Ok(())
@@ -126,17 +124,18 @@ impl MySqlTransaction {
             .map_err(|e| DatabaseError::ConnectionFailed(e.to_string()))?;
 
         let savepoint_sql = format!("SAVEPOINT {}", savepoint_name);
-        conn.query_drop(&savepoint_sql)
-            .await
-            .map_err(|e| {
-                DatabaseError::QueryFailed(format!("Failed to create savepoint: {}", e))
-            })?;
+        conn.query_drop(&savepoint_sql).await.map_err(|e| {
+            DatabaseError::QueryFailed(format!("Failed to create savepoint: {}", e))
+        })?;
 
         Ok(savepoint_name)
     }
 
     /// Rollback to a specific savepoint
-    pub async fn rollback_to_savepoint(&mut self, savepoint_name: &str) -> Result<(), DatabaseError> {
+    pub async fn rollback_to_savepoint(
+        &mut self,
+        savepoint_name: &str,
+    ) -> Result<(), DatabaseError> {
         if !self.is_active {
             return Err(DatabaseError::ValidationError(
                 "Transaction is not active".to_string(),
@@ -150,11 +149,9 @@ impl MySqlTransaction {
             .map_err(|e| DatabaseError::ConnectionFailed(e.to_string()))?;
 
         let rollback_sql = format!("ROLLBACK TO SAVEPOINT {}", savepoint_name);
-        conn.query_drop(&rollback_sql)
-            .await
-            .map_err(|e| {
-                DatabaseError::QueryFailed(format!("Failed to rollback to savepoint: {}", e))
-            })?;
+        conn.query_drop(&rollback_sql).await.map_err(|e| {
+            DatabaseError::QueryFailed(format!("Failed to rollback to savepoint: {}", e))
+        })?;
 
         Ok(())
     }
@@ -174,11 +171,9 @@ impl MySqlTransaction {
             .map_err(|e| DatabaseError::ConnectionFailed(e.to_string()))?;
 
         let release_sql = format!("RELEASE SAVEPOINT {}", savepoint_name);
-        conn.query_drop(&release_sql)
-            .await
-            .map_err(|e| {
-                DatabaseError::QueryFailed(format!("Failed to release savepoint: {}", e))
-            })?;
+        conn.query_drop(&release_sql).await.map_err(|e| {
+            DatabaseError::QueryFailed(format!("Failed to release savepoint: {}", e))
+        })?;
 
         Ok(())
     }
@@ -200,7 +195,9 @@ impl Drop for MySqlTransaction {
         // In a real implementation, we would use async-aware cleanup
         if self.is_active {
             // Log warning: transaction not explicitly closed
-            eprintln!("Warning: Transaction was not explicitly closed, automatic rollback performed");
+            eprintln!(
+                "Warning: Transaction was not explicitly closed, automatic rollback performed"
+            );
         }
     }
 }

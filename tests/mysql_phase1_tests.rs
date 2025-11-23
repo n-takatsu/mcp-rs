@@ -3,8 +3,8 @@
 //! Comprehensive test suite for MySQL Phase 1 implementation
 //! Tests parameterized queries, prepared statements, and transaction management
 
-use mcp_rs::handlers::database::types::{IsolationLevel, Value};
 use chrono::Utc;
+use mcp_rs::handlers::database::types::{IsolationLevel, Value};
 
 // ==================== Parameterized Query Tests ====================
 
@@ -58,7 +58,7 @@ fn test_batch_parameter_conversion() {
     ];
 
     assert_eq!(params.len(), 5);
-    
+
     let int_count = params.iter().filter(|v| matches!(v, Value::Int(_))).count();
     assert_eq!(int_count, 1);
 }
@@ -141,7 +141,10 @@ fn test_isolation_level_display() {
     );
 
     // Test ReadCommitted
-    assert_eq!(format!("{}", IsolationLevel::ReadCommitted), "READ COMMITTED");
+    assert_eq!(
+        format!("{}", IsolationLevel::ReadCommitted),
+        "READ COMMITTED"
+    );
 
     // Test RepeatableRead
     assert_eq!(
@@ -225,7 +228,10 @@ fn test_error_handling_invalid_data() {
 
     for val in valid_values {
         // All values are valid
-        assert!(matches!(val, Value::Null | Value::Bool(_) | Value::Int(_) | Value::Float(_) | Value::String(_)));
+        assert!(matches!(
+            val,
+            Value::Null | Value::Bool(_) | Value::Int(_) | Value::Float(_) | Value::String(_)
+        ));
     }
 }
 
@@ -382,14 +388,12 @@ mod test_utilities {
     /// Helper to create test parameter sets
     pub fn create_test_params(count: usize) -> Vec<Value> {
         (0..count)
-            .map(|i| {
-                match i % 5 {
-                    0 => Value::Int(i as i64),
-                    1 => Value::String(format!("test_{}", i)),
-                    2 => Value::Bool(i % 2 == 0),
-                    3 => Value::Float(i as f64),
-                    _ => Value::Null,
-                }
+            .map(|i| match i % 5 {
+                0 => Value::Int(i as i64),
+                1 => Value::String(format!("test_{}", i)),
+                2 => Value::Bool(i % 2 == 0),
+                3 => Value::Float(i as f64),
+                _ => Value::Null,
             })
             .collect()
     }

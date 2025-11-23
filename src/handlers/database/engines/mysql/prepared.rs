@@ -42,12 +42,9 @@ impl MySqlPreparedStatement {
             .await
             .map_err(|e| DatabaseError::ConnectionFailed(e.to_string()))?;
 
-        let statement = conn
-            .prep(&sql)
-            .await
-            .map_err(|e| {
-                DatabaseError::QueryFailed(format!("Failed to prepare statement: {}", e))
-            })?;
+        let statement = conn.prep(&sql).await.map_err(|e| {
+            DatabaseError::QueryFailed(format!("Failed to prepare statement: {}", e))
+        })?;
 
         Ok(Self {
             statement: Arc::new(statement),
@@ -75,7 +72,9 @@ impl MySqlPreparedStatement {
         for row in rows {
             let mut values = Vec::new();
             for value in row.iter() {
-                values.push(MySqlParamConverter::convert_from_mysql_value(value.clone())?);
+                values.push(MySqlParamConverter::convert_from_mysql_value(
+                    value.clone(),
+                )?);
             }
             result_rows.push(values);
         }
@@ -153,9 +152,7 @@ impl PreparedStatement for MySqlPreparedStatement {
         let start_time = std::time::Instant::now();
         conn.exec_drop(self.statement.as_ref(), mysql_params)
             .await
-            .map_err(|e| {
-                DatabaseError::QueryFailed(format!("Failed to execute command: {}", e))
-            })?;
+            .map_err(|e| DatabaseError::QueryFailed(format!("Failed to execute command: {}", e)))?;
 
         let execution_time = start_time.elapsed().as_millis() as u64;
         let rows_affected = conn.affected_rows();

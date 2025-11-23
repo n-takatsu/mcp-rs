@@ -2,8 +2,8 @@
 //!
 //! End-to-end testing for parameterized queries, prepared statements, and transactions
 
-use mcp_rs::handlers::database::types::{IsolationLevel, Value};
 use chrono::Utc;
+use mcp_rs::handlers::database::types::{IsolationLevel, Value};
 
 // ==================== Prepared Statement Simulation Tests ====================
 
@@ -150,10 +150,7 @@ fn test_prepared_statement_query_result_conversion() {
     assert_eq!(rows.len(), 3);
 
     // Simulate conversion to internal format
-    let converted_count = rows
-        .iter()
-        .filter(|r| r.active)
-        .count();
+    let converted_count = rows.iter().filter(|r| r.active).count();
     assert_eq!(converted_count, 2);
 }
 
@@ -340,11 +337,7 @@ fn test_transaction_savepoint_release() {
     }
 
     let mut txn = Transaction {
-        savepoints: vec![
-            "sp_1".to_string(),
-            "sp_2".to_string(),
-            "sp_3".to_string(),
-        ],
+        savepoints: vec!["sp_1".to_string(), "sp_2".to_string(), "sp_3".to_string()],
     };
 
     // Release savepoint (remove from list)
@@ -379,10 +372,7 @@ fn test_multiple_transactions_isolation() {
 
     // Verify each transaction has isolation
     for snap in snapshots {
-        assert_eq!(
-            format!("{}", snap.isolation_level),
-            "REPEATABLE READ"
-        );
+        assert_eq!(format!("{}", snap.isolation_level), "REPEATABLE READ");
     }
 }
 
@@ -594,7 +584,10 @@ fn test_parameter_binary_data_preservation() {
 mod integration_test_helpers {
     use super::*;
 
-    pub fn create_mock_transaction(id: usize, isolation_level: IsolationLevel) -> (usize, IsolationLevel) {
+    pub fn create_mock_transaction(
+        id: usize,
+        isolation_level: IsolationLevel,
+    ) -> (usize, IsolationLevel) {
         (id, isolation_level)
     }
 

@@ -76,7 +76,7 @@ fn test_savepoint_stack_operations() {
     // Pop savepoint (simulate rollback)
     savepoint_stack.pop();
     assert_eq!(savepoint_stack.len(), 2);
-    
+
     // Push new savepoint
     savepoint_stack.push("sp_3");
     assert_eq!(savepoint_stack.len(), 3);
@@ -140,7 +140,10 @@ fn test_batch_operation_tracking() {
         },
     ];
 
-    let pending_count = operations.iter().filter(|op| op.status == "pending").count();
+    let pending_count = operations
+        .iter()
+        .filter(|op| op.status == "pending")
+        .count();
     assert_eq!(pending_count, 3);
 }
 
@@ -160,12 +163,7 @@ fn test_large_parameter_count_handling() {
 
 #[test]
 fn test_unicode_string_handling() {
-    let test_strings = vec![
-        "Hello 世界",
-        "مرحبا بالعالم",
-        "🚀🎉",
-        "Москва",
-    ];
+    let test_strings = vec!["Hello 世界", "مرحبا بالعالم", "🚀🎉", "Москва"];
 
     for s in test_strings {
         // All should be valid UTF-8
