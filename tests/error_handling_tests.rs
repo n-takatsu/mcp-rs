@@ -1,5 +1,7 @@
 //! Basic Error Handling Tests
 
+#![cfg(feature = "database")]
+
 use log::info;
 use mcp_rs::handlers::database::{
     engines::mysql::MySqlEngine,

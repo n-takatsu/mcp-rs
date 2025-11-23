@@ -3,6 +3,8 @@
 //! Comprehensive security testing for MySQL engine implementation
 //! Tests SQL injection prevention, parameterized queries, and security layer integration
 
+#![cfg(feature = "database")]
+
 use log::{info, warn};
 use mcp_rs::handlers::database::{
     // engine traits not directly used in these tests

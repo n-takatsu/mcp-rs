@@ -3,6 +3,8 @@
 //! Comprehensive performance comparison between MySQL, PostgreSQL, and SQLite
 //! Identifies relative strengths, weaknesses, and optimization opportunities
 
+#![cfg(feature = "database")]
+
 use mcp_rs::handlers::database::{
     engine::{DatabaseConnection, DatabaseEngine as DbEngine},
     engines::{

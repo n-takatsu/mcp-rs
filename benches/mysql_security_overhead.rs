@@ -3,6 +3,8 @@
 //! Measures the performance overhead introduced by security layers
 //! Compares performance with and without security features enabled
 
+#![cfg(feature = "database")]
+
 use mcp_rs::handlers::database::{
     engine::DatabaseEngine,
     engines::mysql::MySqlEngine,

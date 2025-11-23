@@ -2,6 +2,8 @@
 //!
 //! Basic attack pattern validation tests
 
+#![cfg(feature = "database")]
+
 use log::info;
 use mcp_rs::handlers::database::{
     security::DatabaseSecurity,

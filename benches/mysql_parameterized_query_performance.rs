@@ -3,6 +3,8 @@
 //! Comprehensive performance testing for parameterized queries under high load
 //! Tests prepared statement efficiency and parameter conversion performance
 
+#![cfg(feature = "database")]
+
 use mcp_rs::handlers::database::{
     engine::DatabaseEngine,
     engines::mysql::MySqlEngine,

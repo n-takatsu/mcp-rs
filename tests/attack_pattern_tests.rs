@@ -3,6 +3,8 @@
 //! Comprehensive test suite for validating MySQL security against
 //! all known SQL injection attack patterns and techniques
 
+#![cfg(feature = "database")]
+
 use log::{info, warn};
 use mcp_rs::handlers::database::{
     security::DatabaseSecurity,
