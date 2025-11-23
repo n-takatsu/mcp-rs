@@ -229,7 +229,6 @@ fn test_transaction_recovery_simulation() {
     // State transitions tested implicitly by matching final state
     let _state = RecoveryState::Normal;
     let _state = RecoveryState::ErrorOccurred;
-    let _state = RecoveryState::Recovering;
     let state = RecoveryState::Recovered;
 
     assert!(matches!(state, RecoveryState::Recovered));

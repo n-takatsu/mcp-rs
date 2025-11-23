@@ -210,19 +210,19 @@ impl PreparedStatement for PostgreSqlPreparedStatement {
         let mut query = sqlx::query(&self.sql);
 
         // Bind each parameter to the query
-        for param in &params {
+        for param in params {
             match param {
                 Value::Null => {
                     query = query.bind(None::<String>);
                 }
                 Value::Bool(b) => {
-                    query = query.bind(*b);
+                    query = query.bind(b);
                 }
                 Value::Int(i) => {
-                    query = query.bind(*i);
+                    query = query.bind(i);
                 }
                 Value::Float(f) => {
-                    query = query.bind(*f);
+                    query = query.bind(f);
                 }
                 Value::String(s) => {
                     query = query.bind(s.clone());
@@ -238,7 +238,7 @@ impl PreparedStatement for PostgreSqlPreparedStatement {
                     query = query.bind(json_str);
                 }
                 Value::DateTime(dt) => {
-                    query = query.bind(*dt);
+                    query = query.bind(dt);
                 }
             }
         }
