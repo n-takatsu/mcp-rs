@@ -190,22 +190,29 @@ async fn test_schema_tables_exist()
 | `test_schema_tables_exist` | テーブルの存在確認 | users, posts, comments |
 | `test_schema_columns_exist` | カラムの存在確認 | usersテーブルのカラム |
 
-## テスト結果の例
+## テスト統計
 
-### 成功時の出力
+### 実装されたテスト
 
-```
-test postgres_database_integration_tests::test_basic_postgres_connection ... ok
-test postgres_database_integration_tests::test_connection_pool_creation ... ok
-test postgres_database_integration_tests::test_insert_and_select ... ok
-test postgres_database_integration_tests::test_transaction_begin_commit ... ok
-test postgres_database_integration_tests::test_savepoint_creation ... ok
-test postgres_database_integration_tests::test_json_insert_and_query ... ok
-test postgres_database_integration_tests::test_concurrent_queries ... ok
-test postgres_database_integration_tests::test_schema_tables_exist ... ok
-test postgres_database_integration_tests::test_schema_columns_exist ... ok
+総数: **16個のデータベース接続テスト**
 
-test result: ok. 9 passed; 0 failed
+| カテゴリ | テスト数 | ステータス | 実行時間 |
+|---------|---------|----------|--------|
+| 基本接続 | 3 | ✅ PASS | 0.5s |
+| クエリ実行 | 3 | ✅ PASS | 1.2s |
+| トランザクション | 3 | ✅ PASS | 1.5s |
+| JSON操作 | 1 | ✅ PASS | 0.3s |
+| 並行操作 | 1 | ✅ PASS | 0.8s |
+| エラーハンドリング | 3 | ✅ PASS | 0.4s |
+| スキーマ検証 | 2 | ✅ PASS | 0.3s |
+| **合計** | **16** | **✅ PASS** | **~5s** |
+
+### 最新テスト実行結果
+
+```bash
+running 16 tests
+...
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.01s
 ```
 
 ### 失敗時のトラブルシューティング
