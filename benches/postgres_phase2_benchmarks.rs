@@ -9,8 +9,7 @@
 /// - JSON operations performance
 /// - Concurrent operations throughput
 /// - Index effectiveness
-
-use criterion::{black_box, criterion_group, criterion_main, Criterion, BenchmarkId, Throughput};
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use std::time::Duration;
 
 // Mock database structures for benchmarking
@@ -46,7 +45,11 @@ fn benchmark_pool_creation(c: &mut Criterion) {
             |b, &size| {
                 b.iter(|| {
                     // Simulates pool creation overhead
-                    black_box((0..size).map(|_| "connection".to_string()).collect::<Vec<_>>())
+                    black_box(
+                        (0..size)
+                            .map(|_| "connection".to_string())
+                            .collect::<Vec<_>>(),
+                    )
                 });
             },
         );
@@ -57,7 +60,7 @@ fn benchmark_pool_creation(c: &mut Criterion) {
 fn benchmark_connection_acquisition(c: &mut Criterion) {
     let mut group = c.benchmark_group("connection_acquisition");
     group.sample_size(100);
-    
+
     let config = BenchmarkConfig::default();
 
     group.bench_function("acquire_from_pool", |b| {
@@ -66,7 +69,7 @@ fn benchmark_connection_acquisition(c: &mut Criterion) {
             let mut pool = (0..config.connection_pool_size as usize)
                 .map(|i| i as u64)
                 .collect::<Vec<_>>();
-            
+
             black_box(pool.pop().unwrap_or(0))
         });
     });
@@ -169,9 +172,7 @@ fn benchmark_delete_query_performance(c: &mut Criterion) {
     group.bench_function("delete_with_condition", |b| {
         b.iter(|| {
             // Simulate DELETE with WHERE condition
-            let filtered: Vec<u64> = (1..=1000)
-                .filter(|i| i % 2 == 0)
-                .collect();
+            let filtered: Vec<u64> = (1..=1000).filter(|i| i % 2 == 0).collect();
             black_box(filtered.len())
         });
     });
@@ -314,9 +315,8 @@ fn benchmark_index_effectiveness(c: &mut Criterion) {
     group.bench_function("non_indexed_column_query", |b| {
         b.iter(|| {
             // Simulates query on non-indexed column
-            let data: Vec<(u64, String)> = (1..=10000)
-                .map(|i| (i, format!("data_{}", i)))
-                .collect();
+            let data: Vec<(u64, String)> =
+                (1..=10000).map(|i| (i, format!("data_{}", i))).collect();
             let target = "data_5000";
             let result = data.iter().find(|&(_, x)| x == target);
             black_box(result.is_some())
@@ -462,7 +462,7 @@ criterion_group!(
     config = Criterion::default()
         .sample_size(100)
         .measurement_time(Duration::from_secs(10));
-    targets = 
+    targets =
         benchmark_pool_creation,
         benchmark_connection_acquisition,
         benchmark_select_query_performance,

@@ -29,9 +29,7 @@ impl PostgreSqlTransactionManager {
             IsolationLevel::ReadUncommitted => "BEGIN ISOLATION LEVEL READ UNCOMMITTED".to_string(),
             IsolationLevel::ReadCommitted => "BEGIN ISOLATION LEVEL READ COMMITTED".to_string(),
             IsolationLevel::RepeatableRead => "BEGIN ISOLATION LEVEL REPEATABLE READ".to_string(),
-            IsolationLevel::Serializable => {
-                "BEGIN ISOLATION LEVEL SERIALIZABLE".to_string()
-            }
+            IsolationLevel::Serializable => "BEGIN ISOLATION LEVEL SERIALIZABLE".to_string(),
         };
 
         // Execute BEGIN command

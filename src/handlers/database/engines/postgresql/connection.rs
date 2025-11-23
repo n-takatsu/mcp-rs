@@ -49,12 +49,7 @@ impl PostgreSqlConfig {
         let timeout_secs = self.connection_timeout.as_secs();
         format!(
             "postgresql://{}:{}@{}:{}/{}?connect_timeout={}",
-            self.username,
-            self.password,
-            self.host,
-            self.port,
-            self.database,
-            timeout_secs
+            self.username, self.password, self.host, self.port, self.database, timeout_secs
         )
     }
 

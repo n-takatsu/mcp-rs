@@ -10,9 +10,8 @@
 ///
 /// Environment Variables:
 /// - TEST_POSTGRESQL_URL: Connection URL (default: postgresql://postgres:postgres@localhost:5432/testdb)
-
-use std::time::Duration;
 use sqlx::Row;
+use std::time::Duration;
 
 #[cfg(test)]
 mod postgres_database_integration_tests {
@@ -64,9 +63,7 @@ mod postgres_database_integration_tests {
         );
 
         let pool = pool.unwrap();
-        let result = sqlx::query("SELECT version()")
-            .fetch_one(&pool)
-            .await;
+        let result = sqlx::query("SELECT version()").fetch_one(&pool).await;
 
         assert!(result.is_ok(), "Failed to execute SELECT version()");
 
@@ -139,7 +136,7 @@ mod postgres_database_integration_tests {
         // Test table existence
         let result: Result<Option<(String,)>, _> = sqlx::query_as(
             "SELECT table_name FROM information_schema.tables 
-             WHERE table_schema = 'test_schema' AND table_name = 'users'"
+             WHERE table_schema = 'test_schema' AND table_name = 'users'",
         )
         .fetch_optional(&pool)
         .await;
@@ -173,7 +170,7 @@ mod postgres_database_integration_tests {
         // Insert test data
         let insert_result = sqlx::query(
             "INSERT INTO test_schema.users (name, email, age, active) 
-             VALUES ($1, $2, $3, $4)"
+             VALUES ($1, $2, $3, $4)",
         )
         .bind("Test User")
         .bind("test@integration.test")
@@ -191,7 +188,7 @@ mod postgres_database_integration_tests {
         // Query inserted data
         let query_result: Result<Option<(String, String, i32, bool)>, _> = sqlx::query_as(
             "SELECT name, email, age, active FROM test_schema.users 
-             WHERE email = 'test@integration.test'"
+             WHERE email = 'test@integration.test'",
         )
         .fetch_optional(&pool)
         .await;
@@ -229,7 +226,7 @@ mod postgres_database_integration_tests {
         let _test_id = 1i32;
 
         let result: Result<Option<(i32, String)>, _> = sqlx::query_as(
-            "SELECT id, email FROM test_schema.users WHERE id = $1 AND active = $2 LIMIT 1"
+            "SELECT id, email FROM test_schema.users WHERE id = $1 AND active = $2 LIMIT 1",
         )
         .bind(_test_id)
         .bind(true)
@@ -262,13 +259,15 @@ mod postgres_database_integration_tests {
         assert!(begin.is_ok());
 
         // Execute command
-        let insert = sqlx::query("INSERT INTO test_schema.users (name, email, age, active) VALUES ($1, $2, $3, $4)")
-            .bind("Transaction User")
-            .bind("txn@test.com")
-            .bind(25)
-            .bind(true)
-            .execute(&pool)
-            .await;
+        let insert = sqlx::query(
+            "INSERT INTO test_schema.users (name, email, age, active) VALUES ($1, $2, $3, $4)",
+        )
+        .bind("Transaction User")
+        .bind("txn@test.com")
+        .bind(25)
+        .bind(true)
+        .execute(&pool)
+        .await;
         assert!(insert.is_ok());
 
         // Commit
@@ -276,11 +275,10 @@ mod postgres_database_integration_tests {
         assert!(commit.is_ok());
 
         // Verify insert
-        let verify: Result<Option<String>, _> = sqlx::query_scalar(
-            "SELECT email FROM test_schema.users WHERE email = 'txn@test.com'"
-        )
-        .fetch_optional(&pool)
-        .await;
+        let verify: Result<Option<String>, _> =
+            sqlx::query_scalar("SELECT email FROM test_schema.users WHERE email = 'txn@test.com'")
+                .fetch_optional(&pool)
+                .await;
 
         if let Ok(Some(_)) = verify {
             // Clean up
@@ -311,13 +309,18 @@ mod postgres_database_integration_tests {
         let mut tx = tx.unwrap();
 
         // Execute insert
-        let insert = sqlx::query("INSERT INTO test_schema.users (name, email, age, active) VALUES ($1, $2, $3, $4)")
-            .bind("Rollback User")
-            .bind(format!("rollback-{:?}@test.com", std::time::SystemTime::now()))
-            .bind(35)
-            .bind(false)
-            .execute(&mut *tx)
-            .await;
+        let insert = sqlx::query(
+            "INSERT INTO test_schema.users (name, email, age, active) VALUES ($1, $2, $3, $4)",
+        )
+        .bind("Rollback User")
+        .bind(format!(
+            "rollback-{:?}@test.com",
+            std::time::SystemTime::now()
+        ))
+        .bind(35)
+        .bind(false)
+        .execute(&mut *tx)
+        .await;
         assert!(insert.is_ok());
 
         // Rollback
@@ -326,12 +329,11 @@ mod postgres_database_integration_tests {
 
         // Verify rollback (should not find the inserted row)
         let email = format!("rollback-{:?}@test.com", std::time::SystemTime::now());
-        let verify: Result<Option<String>, _> = sqlx::query_scalar(
-            "SELECT email FROM test_schema.users WHERE email = $1"
-        )
-        .bind(&email)
-        .fetch_optional(&pool)
-        .await;
+        let verify: Result<Option<String>, _> =
+            sqlx::query_scalar("SELECT email FROM test_schema.users WHERE email = $1")
+                .bind(&email)
+                .fetch_optional(&pool)
+                .await;
 
         assert!(verify.is_ok());
         assert!(verify.unwrap().is_none());
@@ -358,13 +360,15 @@ mod postgres_database_integration_tests {
         let mut tx = tx.unwrap();
 
         // Insert data
-        let insert = sqlx::query("INSERT INTO test_schema.users (name, email, age, active) VALUES ($1, $2, $3, $4)")
-            .bind("SP User2")
-            .bind("sp2@test.com")
-            .bind(28)
-            .bind(true)
-            .execute(&mut *tx)
-            .await;
+        let insert = sqlx::query(
+            "INSERT INTO test_schema.users (name, email, age, active) VALUES ($1, $2, $3, $4)",
+        )
+        .bind("SP User2")
+        .bind("sp2@test.com")
+        .bind(28)
+        .bind(true)
+        .execute(&mut *tx)
+        .await;
         assert!(insert.is_ok());
 
         // Rollback
@@ -372,11 +376,10 @@ mod postgres_database_integration_tests {
         assert!(rollback.is_ok());
 
         // Verify user was not inserted (rolled back)
-        let verify: Result<Option<String>, _> = sqlx::query_scalar(
-            "SELECT email FROM test_schema.users WHERE email = 'sp2@test.com'"
-        )
-        .fetch_optional(&pool)
-        .await;
+        let verify: Result<Option<String>, _> =
+            sqlx::query_scalar("SELECT email FROM test_schema.users WHERE email = 'sp2@test.com'")
+                .fetch_optional(&pool)
+                .await;
 
         assert!(verify.is_ok());
         assert!(verify.unwrap().is_none());
@@ -401,7 +404,7 @@ mod postgres_database_integration_tests {
         // Insert post with JSON metadata
         let insert = sqlx::query(
             "INSERT INTO test_schema.posts (user_id, title, content, published, metadata) 
-             VALUES ($1, $2, $3, $4, $5::jsonb)"
+             VALUES ($1, $2, $3, $4, $5::jsonb)",
         )
         .bind(1i32)
         .bind("Test Post")
@@ -419,7 +422,7 @@ mod postgres_database_integration_tests {
 
         // Query and extract JSON field
         let result: Result<Option<String>, _> = sqlx::query_scalar(
-            "SELECT metadata->>'tags' FROM test_schema.posts WHERE title = 'Test Post'"
+            "SELECT metadata->>'tags' FROM test_schema.posts WHERE title = 'Test Post'",
         )
         .fetch_optional(&pool)
         .await;
@@ -482,7 +485,9 @@ mod postgres_database_integration_tests {
         let pool = pool.unwrap();
 
         // Execute invalid query
-        let result = sqlx::query("SELECT * FROM nonexistent_table").fetch_all(&pool).await;
+        let result = sqlx::query("SELECT * FROM nonexistent_table")
+            .fetch_all(&pool)
+            .await;
 
         // Should fail
         assert!(result.is_err());
@@ -504,13 +509,15 @@ mod postgres_database_integration_tests {
 
         // Try to insert with mismatched types (should be caught by sqlx)
         // This tests the type safety of sqlx
-        let _result = sqlx::query("INSERT INTO test_schema.users (name, email, age, active) VALUES ($1, $2, $3, $4)")
-            .bind("Test")
-            .bind("test@test.com")
-            .bind("not_an_integer") // Should be i32
-            .bind(true)
-            .execute(&pool)
-            .await;
+        let _result = sqlx::query(
+            "INSERT INTO test_schema.users (name, email, age, active) VALUES ($1, $2, $3, $4)",
+        )
+        .bind("Test")
+        .bind("test@test.com")
+        .bind("not_an_integer") // Should be i32
+        .bind(true)
+        .execute(&pool)
+        .await;
 
         // Binding phase should handle this, or execution should fail
         // This test verifies error handling
@@ -554,7 +561,7 @@ mod postgres_database_integration_tests {
         for table in tables {
             let result: Result<Option<(String,)>, _> = sqlx::query_as(
                 "SELECT table_name FROM information_schema.tables 
-                 WHERE table_schema = 'test_schema' AND table_name = $1"
+                 WHERE table_schema = 'test_schema' AND table_name = $1",
             )
             .bind(table)
             .fetch_optional(&pool)
