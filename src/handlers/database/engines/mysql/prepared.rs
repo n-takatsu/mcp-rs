@@ -81,7 +81,9 @@ impl MySqlPreparedStatement {
             // Use len() and index since Row doesn't implement IntoIterator
             for idx in 0..row.len() {
                 if let Some(value) = row.as_ref(idx) {
-                    values.push(MySqlParamConverter::convert_from_mysql_value(value.clone())?);
+                    values.push(MySqlParamConverter::convert_from_mysql_value(
+                        value.clone(),
+                    )?);
                 } else {
                     values.push(Value::Null);
                 }
