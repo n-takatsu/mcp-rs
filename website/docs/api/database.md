@@ -36,6 +36,7 @@ pub enum Value {
     Json(serde_json::Value),                 // JSON objects/arrays
     DateTime(chrono::DateTime<Utc>),         // UTC timestamp
 }
+
 ```
 
 **Type Mapping Examples:**
@@ -68,6 +69,7 @@ pub enum DatabaseError {
     UnsupportedOperation(String),  // Operation not supported on engine
     ValidationError(String),       // Parameter validation failure
 }
+
 ```
 
 ### `QueryResult`
@@ -81,6 +83,7 @@ pub struct QueryResult {
     pub total_rows: Option<u64>,       // Total row count
     pub execution_time_ms: u64,        // Query execution time
 }
+
 ```
 
 ### `ExecuteResult`
@@ -93,6 +96,7 @@ pub struct ExecuteResult {
     pub last_insert_id: Option<i64>,  // Last inserted ID (MySQL)
     pub execution_time_ms: u64, // Execution time
 }
+
 ```
 
 ### `IsolationLevel`
@@ -106,6 +110,7 @@ pub enum IsolationLevel {
     ReadCommitted,     // Level 1: Prevents dirty reads
     ReadUncommitted,   // Level 0: Lowest isolation, fastest
 }
+
 ```
 
 ---
@@ -123,6 +128,7 @@ pub trait DatabaseEngine {
     fn validate_config(&self) -> Result<(), DatabaseError>;
     fn get_version(&self) -> impl Future<Output = Result<String, DatabaseError>>;
 }
+
 ```
 
 ### Methods
@@ -154,6 +160,7 @@ println!("Version: {}", version);
 // Check supported features
 let features = engine.supported_features();
 assert!(features.contains(&"Transactions".to_string()));
+
 ```
 
 ---
@@ -170,6 +177,7 @@ pub trait DatabaseConnection {
     async fn begin_transaction(&self) -> Result<Box<dyn Transaction>, DatabaseError>;
     async fn close(&self) -> Result<(), DatabaseError>;
 }
+
 ```
 
 ### Connection Methods
@@ -199,6 +207,7 @@ let stmt = conn.prepare("SELECT * FROM users WHERE id = ?").await?;
 let result = stmt.query(&[Value::Int(123)]).await?;
 
 conn.close().await?;
+
 ```
 
 ---
@@ -215,6 +224,7 @@ pub trait PreparedStatement {
     fn get_sql(&self) -> &str;
     async fn close(&self) -> Result<(), DatabaseError>;
 }
+
 ```
 
 ### Parameter Placeholder Syntax
@@ -233,6 +243,7 @@ let result = stmt.query(&[
     Value::Int(123),
     Value::String("active".to_string())
 ]).await?;
+
 ```
 
 #### PostgreSQL
@@ -249,6 +260,7 @@ let result = stmt.query(&[
     Value::Int(123),
     Value::String("active".to_string())
 ]).await?;
+
 ```
 
 ### Security
@@ -256,18 +268,22 @@ let result = stmt.query(&[
 ✅ **SQL Injection Prevention**: Parameterized queries separate SQL structure from data
 
 ❌ **Vulnerable (String concatenation):**
+
 ```rust
 // DO NOT DO THIS
 let user_input = "1' OR '1'='1";
 let sql = format!("SELECT * FROM users WHERE id = '{}'", user_input);
 conn.query(sql).await?; // Unsafe!
+
 ```
 
 ✅ **Secure (Parameterized query):**
+
 ```rust
 // DO THIS
 let stmt = conn.prepare("SELECT * FROM users WHERE id = ?").await?;
 let result = stmt.query(&[Value::String(user_input)]).await?; // Safe!
+
 ```
 
 ### Prepared Statement Usage Example
@@ -287,6 +303,7 @@ let result = stmt.execute(&[
 
 println!("Inserted {} rows", result.rows_affected);
 println!("Last ID: {:?}", result.last_insert_id);
+
 ```
 
 ---
@@ -304,6 +321,7 @@ pub trait Transaction {
     async fn rollback_to_savepoint(&self, name: &str) -> Result<(), DatabaseError>;
     async fn release_savepoint(&self, name: &str) -> Result<(), DatabaseError>;
 }
+
 ```
 
 ### ACID Properties
@@ -349,6 +367,7 @@ try {
     // Rollback on error
     txn.rollback().await?;
 }
+
 ```
 
 ### Nested Transactions (Savepoints)
@@ -373,6 +392,7 @@ match txn.execute("DELETE FROM users WHERE id = ?").await {
         txn.commit().await?;
     }
 }
+
 ```
 
 ---
@@ -404,6 +424,7 @@ for row in result.rows {
         println!("Name: {}", json["name"]);
     }
 }
+
 ```
 
 ### UUID Type Support
@@ -414,6 +435,7 @@ let uuid = Value::String("550e8400-e29b-41d4-a716-446655440000".to_string());
 
 let stmt = conn.prepare("INSERT INTO sessions (id, user_id) VALUES ($1, $2)").await?;
 stmt.execute(&[uuid, Value::Int(123)]).await?;
+
 ```
 
 ### Connection Pool Configuration
@@ -439,6 +461,7 @@ max_lifetime_secs = 1800
 # SSL/TLS (optional)
 ssl_enabled = true
 ssl_verify = true
+
 ```
 
 ---
@@ -455,6 +478,7 @@ match engine.connect().await {
         eprintln!("Cannot connect: {}", msg);
     }
 }
+
 ```
 
 ### Query Errors
@@ -467,6 +491,7 @@ match stmt.query(&params).await {
         // Example: "syntax error at or near \"SELCT\""
     }
 }
+
 ```
 
 ### Transaction Errors
@@ -479,6 +504,7 @@ match txn.commit().await {
         // Example: "Deadlock found when trying to get lock"
     }
 }
+
 ```
 
 ---
@@ -493,3 +519,4 @@ match txn.commit().await {
 ---
 
 See also: [PostgreSQL Integration Guide](../../guides/postgres-integration.md), [Performance Tuning](../../guides/performance-tuning.md)
+

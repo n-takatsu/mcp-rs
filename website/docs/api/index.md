@@ -69,6 +69,7 @@ pub enum Value {
     Json(serde_json::Value),                 // JSON objects/arrays
     DateTime(chrono::DateTime<Utc>),         // UTC timestamp
 }
+
 ```
 
 ### DatabaseError Enum
@@ -86,6 +87,7 @@ pub enum DatabaseError {
     UnsupportedOperation(String),
     ValidationError(String),
 }
+
 ```
 
 ### IsolationLevel Enum
@@ -97,6 +99,7 @@ pub enum IsolationLevel {
     ReadCommitted,      // Prevents dirty reads
     ReadUncommitted,    // Lowest isolation, fastest
 }
+
 ```
 
 ---
@@ -110,6 +113,7 @@ pub enum IsolationLevel {
 Establishes connection and negotiates capabilities.
 
 **Request:**
+
 ```json
 
 {{
@@ -128,9 +132,11 @@ Establishes connection and negotiates capabilities.
   },
   "id": 1
 }
+
 ```
 
 **Response:**
+
 ```json
 
 {{
@@ -150,6 +156,7 @@ Establishes connection and negotiates capabilities.
   },
   "id": 1
 }
+
 ```
 
 ---
@@ -161,6 +168,7 @@ Establishes connection and negotiates capabilities.
 Lists available tools.
 
 **Request:**
+
 ```json
 
 {{
@@ -168,9 +176,11 @@ Lists available tools.
   "method": "tools/list",
   "id": 2
 }
+
 ```
 
 **Response:**
+
 ```json
 
 {{
@@ -190,6 +200,7 @@ Lists available tools.
   },
   "id": 2
 }
+
 ```
 
 #### `tools/call`
@@ -197,6 +208,7 @@ Lists available tools.
 Executes a tool.
 
 **Request:**
+
 ```json
 
 {{
@@ -211,9 +223,11 @@ Executes a tool.
   },
   "id": 3
 }
+
 ```
 
 **Response:**
+
 ```json
 
 {{
@@ -229,6 +243,7 @@ Executes a tool.
   },
   "id": 3
 }
+
 ```
 
 ---
@@ -240,6 +255,7 @@ Executes a tool.
 Lists available resources.
 
 **Request:**
+
 ```json
 
 {{
@@ -247,9 +263,11 @@ Lists available resources.
   "method": "resources/list",
   "id": 4
 }
+
 ```
 
 **Response:**
+
 ```json
 
 {{
@@ -272,6 +290,7 @@ Lists available resources.
   },
   "id": 4
 }
+
 ```
 
 #### `resources/read`
@@ -279,6 +298,7 @@ Lists available resources.
 Reads a resource.
 
 **Request:**
+
 ```json
 
 {{
@@ -289,9 +309,11 @@ Reads a resource.
   },
   "id": 5
 }
+
 ```
 
 **Response:**
+
 ```json
 
 {{
@@ -307,6 +329,7 @@ Reads a resource.
   },
   "id": 5
 }
+
 ```
 
 ---
@@ -318,6 +341,7 @@ Reads a resource.
 Lists available prompts.
 
 **Request:**
+
 ```json
 
 {{
@@ -325,9 +349,11 @@ Lists available prompts.
   "method": "prompts/list",
   "id": 6
 }
+
 ```
 
 **Response:**
+
 ```json
 
 {{
@@ -349,6 +375,7 @@ Lists available prompts.
   },
   "id": 6
 }
+
 ```
 
 #### `prompts/get`
@@ -356,6 +383,7 @@ Lists available prompts.
 Retrieves a prompt.
 
 **Request:**
+
 ```json
 
 {{
@@ -367,9 +395,11 @@ Retrieves a prompt.
   },
   "id": 7
 }
+
 ```
 
 **Response:**
+
 ```json
 
 {{
@@ -388,6 +418,7 @@ Retrieves a prompt.
   },
   "id": 7
 }
+
 ```
 
 ---
@@ -485,6 +516,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     conn.close().await?;
     Ok(())
 }
+
 ```
 
 ---
@@ -493,5 +525,6 @@ For more details, see:
 - [📄 Database Engine API](./database.md) - Complete API reference
 - [📖 PostgreSQL Integration Guide](../guides/postgres-integration.md) - Setup and usage
 - [📖 Implementation Guides](../guides/) - All guides
+
 
 

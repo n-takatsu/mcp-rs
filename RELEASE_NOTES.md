@@ -227,10 +227,12 @@ Each 0.01 version must include:
 ### New Dependencies
 
 Add to your `Cargo.toml`:
+
 ```toml
 ratatui = "0.27"
 crossterm = "0.27"
 tui-input = "0.8"
+
 ```
 
 ### API Changes
@@ -257,4 +259,5 @@ For questions about specific versions or upgrade assistance:
 
 *Last Updated: 2025-11-05*  
 *Current Version: v0.15.0*
+
 
