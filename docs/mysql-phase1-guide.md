@@ -112,7 +112,7 @@ pub enum IsolationLevel {
 }
 ```
 
-### Usage Example
+### Transaction Example
 
 ```rust
 // Create transaction manager
@@ -143,24 +143,28 @@ All user-supplied values are bound as parameters, completely separated from SQL 
 **Tested Attack Vectors**:
 
 1. **Single Quote Injection**
+
    ```sql
    Input: 1'; DROP TABLE users; --
    Result: Treated as string data, not executed
    ```
 
 2. **UNION-Based Injection**
+
    ```sql
    Input: 1 UNION SELECT * FROM admin; --
    Result: Treated as string data, not executed
    ```
 
 3. **Boolean-Based Blind Injection**
+
    ```sql
    Input: 1 AND 1=1
    Result: Treated as string data, not executed
    ```
 
 4. **Time-Based Blind Injection**
+
    ```sql
    Input: 1; WAITFOR DELAY '00:00:05'--
    Result: Treated as string data, not executed
@@ -169,6 +173,7 @@ All user-supplied values are bound as parameters, completely separated from SQL 
 ### Type Safety
 
 All data conversions are type-safe:
+
 - NULL values properly handled
 - String literals preserved
 - Binary data maintained
@@ -182,6 +187,7 @@ All data conversions are type-safe:
 #### `tests/mysql_phase1_basic_tests.rs` (21 tests)
 
 Core functionality tests:
+
 - Parameter counting and validation
 - SQL query complexity handling
 - Isolation level support
@@ -193,6 +199,7 @@ Core functionality tests:
 #### `tests/mysql_phase1_integration_complete.rs` (24 tests)
 
 End-to-end integration tests:
+
 - Prepared statement lifecycle
 - Transaction workflows
 - Savepoint scenarios
@@ -219,7 +226,7 @@ cargo test --test mysql_phase1_basic_tests -- --nocapture
 
 ### Test Results
 
-```
+```text
 Total Tests:      45 ✅
 Passing:          45 ✅
 Failing:           0 ✅
@@ -240,7 +247,7 @@ Coverage:
 
 ### Parameter Conversion
 
-```
+```text
 Benchmark: 1000 SQL statements
 Time: ~164µs
 Per-statement: ~0.164µs
@@ -250,7 +257,7 @@ Status: ✅ Production-ready
 
 ### Batch Operations
 
-```
+```text
 Test: 10,000 operations
 Result: Successfully handled
 Memory: Linear scaling
@@ -260,7 +267,7 @@ Status: ✅ Scales well
 
 ### Savepoint Management
 
-```
+```text
 Test: 100+ savepoints
 Creation: Negligible overhead
 Rollback: O(1) with marker

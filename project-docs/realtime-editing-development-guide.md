@@ -41,7 +41,7 @@ cargo run --example axum_websocket_server
 ## Project Structure
 
 ```
-mcp-rs/
+
 ├── src/
 │   ├── session/                    
 
@@ -119,7 +119,7 @@ mcp-rs/
 ## Real-time Editing System
 
 ```
-┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
+
 │   Web Client    │    │  Axum WebSocket │    │ Session Manager │
 │                 │◄──►│     Server      │◄──►│                 │
 │  JavaScript     │    │                 │    │  CRUD Ops      │
@@ -135,6 +135,7 @@ mcp-rs/
                        │ Session Verify  │    │ Thread Safe     │
                        │ Event Logging   │    │ Concurrent      │
                        └─────────────────┘    └─────────────────┘
+
 ```
 
 ## Core Components
@@ -150,13 +151,15 @@ mcp-rs/
 ## Feature Development
 
 1. **Branch Creation**
+
    ```bash
-   git checkout -b feature/your-feature-name
+
    ```
 
 2. **Development Cycle**
+
    ```bash
-   
+
 
 ## Make changes
 
@@ -179,11 +182,13 @@ mcp-rs/
 
    cargo test session
    cargo test websocket
+
    ```
 
 3. **Quality Gates**
+
    ```bash
-   
+
 
 ## All tests must pass
 
@@ -206,6 +211,7 @@ mcp-rs/
 ## Security audit
 
    cargo audit
+
    ```
 
 ## Code Organization
@@ -213,8 +219,9 @@ mcp-rs/
 ### Session Management Module
 
 **Core Types** (`src/session/types.rs`):
+
 ```rust
-#[derive(Debug, Clone, Serialize, Deserialize)]
+
 pub struct Session {
     pub id: SessionId,
     pub state: SessionState,
@@ -231,11 +238,13 @@ pub enum SessionState {
     Expired,     // TTL exceeded
     Invalidated, // Manually invalidated
 }
+
 ```
 
 **Manager Layer** (`src/session/manager.rs`):
+
 ```rust
-impl SessionManager {
+
     // Core CRUD operations
     pub async fn create_session(&self, user_id: String) -> Result<Session, SessionError>;
     pub async fn get_session(&self, id: &SessionId) -> Result<Option<Session>, SessionError>;
@@ -245,11 +254,13 @@ impl SessionManager {
     // Advanced operations
     pub async fn list_sessions(&self, filter: &SessionFilter) -> Result<Vec<Session>, SessionError>;
 }
+
 ```
 
 **Storage Layer** (`src/session/storage.rs`):
+
 ```rust
-#[async_trait]
+
 pub trait SessionStorage: Send + Sync + std::fmt::Debug {
     async fn create(&self, session: Session) -> Result<Session, SessionError>;
     async fn get(&self, id: &SessionId) -> Result<Option<Session>, SessionError>;
@@ -257,13 +268,15 @@ pub trait SessionStorage: Send + Sync + std::fmt::Debug {
     async fn delete(&self, id: &SessionId) -> Result<bool, SessionError>;
     async fn list(&self, filter: &SessionFilter) -> Result<Vec<Session>, SessionError>;
 }
+
 ```
 
 ### WebSocket Integration
 
 **WebSocket Handler** (`src/session/websocket_handler.rs`):
+
 ```rust
-impl SessionWebSocketHandler {
+
     pub async fn handle_websocket_connection(
         &self,
         ws: WebSocketUpgrade,
@@ -277,17 +290,20 @@ impl SessionWebSocketHandler {
         session_id: Option<&SessionId>,
     ) -> Result<WebSocketMessageProtocol, SessionError>;
 }
+
 ```
 
 **Message Protocol**:
+
 ```rust
-#[derive(Debug, Clone, Serialize, Deserialize)]
+
 pub struct WebSocketMessageProtocol {
     pub id: String,
     pub message_type: String,
     pub payload: serde_json::Value,
     pub timestamp: DateTime<Utc>,
 }
+
 ```
 
 ## Testing Strategy
@@ -295,7 +311,7 @@ pub struct WebSocketMessageProtocol {
 ### Test Organization
 
 ```
-tests/
+
 ├── session_current_tests.rs        
 
 ## Core session functionality
@@ -317,8 +333,9 @@ tests/
 ### Test Categories
 
 **Unit Tests**: Test individual components
+
 ```rust
-#[tokio::test]
+
 async fn test_session_creation() {
     let manager = SessionManager::new();
     let session = manager.create_session("test_user".to_string()).await.unwrap();
@@ -326,11 +343,13 @@ async fn test_session_creation() {
     assert_eq!(session.user_id, "test_user");
     assert_eq!(session.state, SessionState::Pending);
 }
+
 ```
 
 **Integration Tests**: Test component interaction
+
 ```rust
-#[tokio::test]
+
 async fn test_websocket_session_flow() {
     // Create session
     let manager = SessionManager::new();
@@ -343,11 +362,13 @@ async fn test_websocket_session_flow() {
     // Test WebSocket connection (would use actual WebSocket client)
     // ...
 }
+
 ```
 
 **Performance Tests**: Validate performance characteristics
+
 ```rust
-#[tokio::test]
+
 async fn test_concurrent_session_operations() {
     let manager = Arc::new(SessionManager::new());
     let mut handles = vec![];
@@ -366,6 +387,7 @@ async fn test_concurrent_session_operations() {
         assert!(handle.await.unwrap().is_ok());
     }
 }
+
 ```
 
 ## Error Handling
@@ -373,7 +395,7 @@ async fn test_concurrent_session_operations() {
 ### Error Types
 
 ```rust
-#[derive(Debug, thiserror::Error)]
+
 pub enum SessionError {
     #[error("Session not found: {0}")]
     NotFound(String),
@@ -393,12 +415,13 @@ pub enum SessionError {
     #[error("Security violation: {0}")]
     SecurityViolation(String),
 }
+
 ```
 
 ### Error Handling Patterns
 
 ```rust
-// Graceful error handling with detailed logging
+
 match session_manager.get_session(&session_id).await {
     Ok(Some(session)) => {
         debug!("Session found: {}", session.id.as_str());
@@ -413,6 +436,7 @@ match session_manager.get_session(&session_id).await {
         return Err(e);
     }
 }
+
 ```
 
 ## Performance Guidelines
@@ -420,7 +444,7 @@ match session_manager.get_session(&session_id).await {
 ### Async/Await Best Practices
 
 ```rust
-// Good: Use async/await for I/O operations
+
 pub async fn create_session(&self, user_id: String) -> Result<Session, SessionError> {
     let session = Session::new(user_id);
     self.storage.create(session).await  // Async storage operation
@@ -431,12 +455,13 @@ pub async fn get_multiple_sessions(&self, ids: Vec<SessionId>) -> Vec<Option<Ses
     let futures: Vec<_> = ids.iter().map(|id| self.get_session(id)).collect();
     futures::future::join_all(futures).await
 }
+
 ```
 
 ### Memory Management
 
 ```rust
-// Use Arc for shared ownership
+
 let manager = Arc::new(SessionManager::new());
 
 // Use channels for communication between tasks
@@ -445,6 +470,7 @@ let (tx, rx) = tokio::sync::mpsc::channel(100);
 // Efficient string handling
 let session_id = SessionId::new();  // Uses UUID internally
 let user_id = user_id.into();       // Take ownership when possible
+
 ```
 
 ## Security Guidelines
@@ -452,7 +478,7 @@ let user_id = user_id.into();       // Take ownership when possible
 ### Input Validation
 
 ```rust
-pub async fn validate_input(&self, input: &str, context: &str) -> Result<bool, SessionError> {
+
     // Length validation
     if input.len() > 10000 {
         return Ok(false);
@@ -468,18 +494,20 @@ pub async fn validate_input(&self, input: &str, context: &str) -> Result<bool, S
     
     Ok(true)
 }
+
 ```
 
 ### Session Security
 
 ```rust
-// Always validate session state for WebSocket connections
+
 pub async fn validate_websocket_session(&self, session_id: &SessionId) -> Result<bool, SessionError> {
     match self.session_manager.get_session(session_id).await? {
         Some(session) => Ok(session.state == SessionState::Active),
         None => Ok(false),
     }
 }
+
 ```
 
 ## Configuration Management
@@ -511,6 +539,7 @@ verbose_errors = true
 [logging]
 level = "debug"
 enable_file_logging = false
+
 ```
 
 ### Production Configuration
@@ -544,6 +573,7 @@ require_tls = true
 [logging] 
 level = "info"
 enable_file_logging = true
+
 ```
 
 ## Deployment
@@ -551,7 +581,7 @@ enable_file_logging = true
 ### Docker Development
 
 ```dockerfile
-FROM rust:1.70
+
 
 WORKDIR /app
 COPY . .
@@ -561,12 +591,13 @@ RUN cargo build --release
 EXPOSE 3000
 
 CMD ["cargo", "run", "--release", "--example", "axum_websocket_server"]
+
 ```
 
 ### Docker Compose
 
 ```yaml
-version: '3.8'
+
 services:
   mcp-rs:
     build: .
@@ -578,12 +609,13 @@ services:
     volumes:
       - ./config:/app/config
     restart: unless-stopped
+
 ```
 
 ### Kubernetes Deployment
 
 ```yaml
-apiVersion: apps/v1
+
 kind: Deployment
 metadata:
   name: mcp-rs-realtime-editing
@@ -637,6 +669,7 @@ spec:
     port: 80
     targetPort: 3000
   type: LoadBalancer
+
 ```
 
 ## Monitoring and Observability
@@ -644,7 +677,7 @@ spec:
 ### Structured Logging
 
 ```rust
-use tracing::{info, warn, error, debug, instrument};
+
 
 #[instrument(skip(self))]
 pub async fn create_session(&self, user_id: String) -> Result<Session, SessionError> {
@@ -662,12 +695,13 @@ pub async fn create_session(&self, user_id: String) -> Result<Session, SessionEr
         }
     }
 }
+
 ```
 
 ### Metrics Collection
 
 ```rust
-pub struct SessionMetrics {
+
     pub total_sessions: u64,
     pub active_sessions: u64,
     pub expired_sessions: u64,
@@ -683,12 +717,13 @@ impl SessionManager {
         // ...
     }
 }
+
 ```
 
 ### Health Checks
 
 ```rust
-pub async fn health_check() -> Json<serde_json::Value> {
+
     Json(serde_json::json!({
         "status": "healthy",
         "service": "mcp-rs-realtime-editing",
@@ -696,6 +731,7 @@ pub async fn health_check() -> Json<serde_json::Value> {
         "version": env!("CARGO_PKG_VERSION")
     }))
 }
+
 ```
 
 ## Contributing Guidelines
@@ -719,11 +755,13 @@ pub async fn health_check() -> Json<serde_json::Value> {
 ### Commit Messages
 
 Use conventional commit format:
+
 ```
-feat: add real-time collaborative editing support
+
 fix: resolve session expiration edge case  
 docs: update WebSocket API documentation
 test: add comprehensive session lifecycle tests
+
 ```
 
 ## Troubleshooting
@@ -731,6 +769,7 @@ test: add comprehensive session lifecycle tests
 ### Common Issues
 
 **Compilation Errors**:
+
 ```bash
 
 ## Clean build artifacts
@@ -744,9 +783,11 @@ cargo update
 ## Check for conflicting versions
 
 cargo tree --duplicates
+
 ```
 
 **Test Failures**:
+
 ```bash
 
 ## Run specific failing test
@@ -760,9 +801,11 @@ RUST_LOG=debug cargo test
 ## Check for test isolation issues
 
 cargo test -- --test-threads=1
+
 ```
 
 **Runtime Issues**:
+
 ```bash
 
 ## Enable debug logging
@@ -776,6 +819,7 @@ netstat -tlnp | grep 3000
 ## Verify configuration
 
 cargo run -- --check-config
+
 ```
 
 ## Advanced Topics
@@ -783,7 +827,7 @@ cargo run -- --check-config
 ### Custom Storage Implementation
 
 ```rust
-use async_trait::async_trait;
+
 
 #[derive(Debug)]
 pub struct RedisSessionStorage {
@@ -807,12 +851,13 @@ impl SessionStorage for RedisSessionStorage {
     
     // Implement other trait methods...
 }
+
 ```
 
 ### WebSocket Message Extensions
 
 ```rust
-#[derive(Debug, Clone, Serialize, Deserialize)]
+
 pub enum WebSocketMessageType {
     Heartbeat,
     RealtimeEdit,
@@ -832,6 +877,7 @@ impl WebSocketHandler {
         // Track who's currently editing
     }
 }
+
 ```
 
 This development guide provides comprehensive coverage of working with the MCP-RS real-time editing system. For additional details, refer to the technical documentation in the `/docs` directory.

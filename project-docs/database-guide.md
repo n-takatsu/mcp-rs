@@ -33,7 +33,7 @@ All database operations are protected by the 6-layer security architecture:
 Configure multiple database engines in `mcp-config.toml`:
 
 ```toml
-[database]
+
 
 ## Primary PostgreSQL database
 
@@ -64,6 +64,7 @@ id = "docs_mongo"
 type = "mongodb"
 uri = "mongodb://localhost:27017"
 database = "documents"
+
 ```
 
 ## 2. Basic Database Operations
@@ -71,7 +72,7 @@ database = "documents"
 ### Execute Query (PostgreSQL)
 
 ```json
-{
+
   "tool": "execute_query",
   "arguments": {
     "sql": "SELECT * FROM users WHERE active = $1",
@@ -79,30 +80,33 @@ database = "documents"
     "engine": "primary_pg"
   }
 }
+
 ```
 
 ### Redis Operations
 
 ```json
-{
+
   "tool": "execute_query", 
   "arguments": {
     "sql": "GET user:12345",
     "engine": "cache_redis"
   }
 }
+
 ```
 
 ### MongoDB Document Operations
 
 ```json
-{
+
   "tool": "execute_query",
   "arguments": {
     "sql": "{\"operation\": \"find\", \"collection\": \"users\", \"filter\": {\"status\": \"active\"}}",
     "engine": "docs_mongo"
   }
 }
+
 ```
 
 ## 📡 Database API Reference
@@ -125,8 +129,9 @@ database = "documents"
 - Audit logging
 
 **Examples**:
+
 ```json
-// PostgreSQL with parameters
+
 {
   "tool": "execute_query",
   "arguments": {
@@ -153,6 +158,7 @@ database = "documents"
     "engine": "docs_mongo"
   }
 }
+
 ```
 
 ### `execute_command` - Execute Data Modification
@@ -172,8 +178,9 @@ database = "documents"
 - Row-level security checks
 
 **Examples**:
+
 ```json
-// PostgreSQL insert with transaction
+
 {
   "tool": "execute_command",
   "arguments": {
@@ -201,6 +208,7 @@ database = "documents"
     "engine": "docs_mongo"
   }
 }
+
 ```
 
 ### `begin_transaction` - Start Database Transaction
@@ -216,14 +224,16 @@ database = "documents"
   - `SERIALIZABLE`
 
 **Examples**:
+
 ```json
-{
+
   "tool": "begin_transaction",
   "arguments": {
     "engine": "primary_pg",
     "isolation_level": "REPEATABLE_READ"
   }
 }
+
 ```
 
 ### `get_schema` - Retrieve Database Schema
@@ -235,14 +245,16 @@ database = "documents"
 - `schema_name` (string, optional): Specific schema name
 
 **Examples**:
+
 ```json
-{
+
   "tool": "get_schema",
   "arguments": {
     "engine": "primary_pg",
     "schema_name": "public"
   }
 }
+
 ```
 
 ## Engine Management Tools
@@ -252,16 +264,19 @@ database = "documents"
 **Description**: List all configured database engines and their status
 
 **Examples**:
+
 ```json
-{
+
   "tool": "list_engines",
   "arguments": {}
 }
+
 ```
 
 **Response**:
+
 ```json
-{
+
   "engines": [
     {
       "id": "primary_pg",
@@ -281,6 +296,7 @@ database = "documents"
     }
   ]
 }
+
 ```
 
 ### `switch_engine` - Switch Active Database Engine
@@ -291,13 +307,15 @@ database = "documents"
 - `engine_id` (string, required): ID of engine to switch to
 
 **Examples**:
+
 ```json
-{
+
   "tool": "switch_engine",
   "arguments": {
     "engine_id": "cache_redis"
   }
 }
+
 ```
 
 ## 🔐 Security Configuration
@@ -305,7 +323,7 @@ database = "documents"
 ## Database-Specific Security Settings
 
 ```toml
-[database.security]
+
 
 ## Enable comprehensive security features
 
@@ -334,6 +352,7 @@ default_role = "database_user"
 [database.security.encryption]
 enable_column_encryption = true
 master_key_rotation_days = 90
+
 ```
 
 ## Security Integration Examples
@@ -341,7 +360,7 @@ master_key_rotation_days = 90
 ### Query with MFA Verification
 
 ```json
-{
+
   "tool": "execute_query",
   "arguments": {
     "sql": "SELECT * FROM sensitive_data WHERE user_id = $1",
@@ -353,12 +372,13 @@ master_key_rotation_days = 90
     }
   }
 }
+
 ```
 
 ### Role-Based Query Execution
 
 ```json
-{
+
   "tool": "execute_command",
   "arguments": {
     "sql": "UPDATE user_roles SET role = $1 WHERE user_id = $2", 
@@ -370,6 +390,7 @@ master_key_rotation_days = 90
     }
   }
 }
+
 ```
 
 ## 🚀 Advanced Usage
@@ -379,7 +400,7 @@ master_key_rotation_days = 90
 ### Cache-Aside Pattern with PostgreSQL + Redis
 
 ```json
-// 1. Check cache first
+
 {
   "tool": "execute_query",
   "arguments": {
@@ -406,12 +427,13 @@ master_key_rotation_days = 90
     "engine": "cache_redis"
   }
 }
+
 ```
 
 ### Document + Relational Hybrid
 
 ```json
-// Store structured data in PostgreSQL
+
 {
   "tool": "execute_command",
   "arguments": {
@@ -429,6 +451,7 @@ master_key_rotation_days = 90
     "engine": "docs_mongo"
   }
 }
+
 ```
 
 ## Performance Optimization
@@ -436,7 +459,7 @@ master_key_rotation_days = 90
 ### Connection Pooling Configuration
 
 ```toml
-[database.pool]
+
 max_connections = 50
 min_connections = 10
 connection_timeout = 30
@@ -460,7 +483,7 @@ max_connections = 20
 ### Query Performance Monitoring
 
 ```json
-{
+
   "tool": "execute_query",
   "arguments": {
     "sql": "SELECT * FROM large_table WHERE indexed_column = $1",
@@ -473,6 +496,7 @@ max_connections = 20
     }
   }
 }
+
 ```
 
 ## 🛠️ Troubleshooting
@@ -511,7 +535,7 @@ max_connections = 20
 Enable detailed logging for troubleshooting:
 
 ```toml
-[database.logging]
+
 level = "debug"
 include_query_plans = true
 log_parameter_values = false  
@@ -519,6 +543,7 @@ log_parameter_values = false
 ## Security: don't log sensitive data
 
 audit_all_operations = true
+
 ```
 
 ## 🔍 Monitoring and Metrics
@@ -526,12 +551,13 @@ audit_all_operations = true
 ## Health Check Monitoring
 
 ```json
-{
+
   "tool": "list_engines",
   "arguments": {
     "include_metrics": true
   }
 }
+
 ```
 
 **Response includes**:

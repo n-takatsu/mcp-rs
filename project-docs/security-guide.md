@@ -61,7 +61,7 @@ MCP-RS implements a **comprehensive 6-layer security architecture** to ensure en
 ## 1. Encryption Layer (AES-GCM-256 + PBKDF2)
 
 ```rust
-// Enterprise-level credential encryption
+
 let master_password = "super_secure_master_password_2024";
 let username = "wordpress_admin";
 let password = "sensitive_app_password_123";
@@ -75,12 +75,13 @@ let decrypted = encrypted.decrypt(master_password)?;
 assert_eq!(decrypted.username, username);
 assert_eq!(decrypted.password, password);
 println!("✅ Encryption round-trip verification completed");
+
 ```
 
 ## 2. Rate Limiting Layer (Token Bucket + DDoS Defense)
 
 ```rust
-// DDoS attack defense implementation
+
 let config = RateLimitConfig {
     requests_per_second: 5.0,
     burst_size: 10,
@@ -101,12 +102,13 @@ match rate_limiter.check_rate_limit(client_id).await {
     Err(_) => println!("✅ Rate limit exceeded correctly detected and blocked"),
     Ok(_) => panic!("Rate limiting not functioning properly"),
 }
+
 ```
 
 ## 3. SQL Injection Protection (11 Attack Patterns)
 
 ```rust
-// SQL attack pattern detection
+
 let mut protector = SqlInjectionProtector::new(SqlProtectionConfig::default())?;
 
 let attacks = vec![
@@ -122,12 +124,13 @@ for (attack_name, attack_query) in attacks {
     assert!(result.detected, "Attack not detected: {}", attack_name);
     println!("✅ {} attack detected and blocked", attack_name);
 }
+
 ```
 
 ## 4. XSS Attack Protection (14 Patterns + HTML Sanitization)
 
 ```rust
-// XSS attack detection and sanitization
+
 let mut protector = XssProtector::new(XssProtectionConfig::default())?;
 
 let attacks = vec![
@@ -150,12 +153,13 @@ let clean_html = protector.sanitize_html(dirty_html);
 assert!(clean_html.contains("<p>Safe</p>"));
 assert!(!clean_html.contains("<script>"));
 println!("✅ HTML sanitization successful");
+
 ```
 
 ## 5. Real-time Audit Logging
 
 ```rust
-// Comprehensive security event recording
+
 let logger = AuditLogger::with_defaults();
 
 // Security attack logging
@@ -191,6 +195,7 @@ let filter = AuditFilter {
 
 let filtered_logs = logger.search(filter).await;
 println!("✅ {} security events recorded", filtered_logs.len());
+
 ```
 
 ## 🔗 WordPress Integration Security
@@ -198,7 +203,7 @@ println!("✅ {} security events recorded", filtered_logs.len());
 ## Comprehensive Attack Defense System
 
 ```rust
-// Malicious bot multi-attack simulation
+
 let attacker_ip = "192.168.1.666";
 let malicious_payloads = vec![
     "'; DROP TABLE users; --",
@@ -235,6 +240,7 @@ for (i, payload) in malicious_payloads.iter().enumerate() {
         continue;
     }
 }
+
 ```
 
 ## 🔧 Production Security Configuration
@@ -242,7 +248,7 @@ for (i, payload) in malicious_payloads.iter().enumerate() {
 ## Enterprise-Grade Configuration
 
 ```rust
-let security_config = SecurityConfig {
+
     // Encryption settings (Enterprise-grade)
     encryption_enabled: true,
     algorithm: "AES-GCM-256".to_string(),
@@ -271,6 +277,7 @@ let security_config = SecurityConfig {
     csrf_protection: true,
     sql_injection_protection: true,
 };
+
 ```
 
 ## 📊 Security Evaluation Metrics
@@ -319,27 +326,30 @@ These implementation examples provide comprehensive defense against modern cyber
 ### Security Implementation Details
 
 ```rust
-// Safe expansion with max iterations and tracking
+
 pub fn expand_env_vars(input: &str) -> String {
     const MAX_ITERATIONS: usize = 100;
     let mut processed_vars = HashSet::new();
     // Implementation prevents infinite loops
 }
+
 ```
 
 ### Vulnerability Mitigation
 
 **Before (Vulnerable):**
+
 ```bash
-export SELF_REF='${SELF_REF}'
+
 
 ## Would cause infinite loop and system freeze
 
 ```
 
 **After (Secure):**
+
 ```bash
-export SELF_REF='${SELF_REF}'
+
 
 ## Safely handled with max iterations, returns controlled result
 
@@ -357,7 +367,7 @@ export SELF_REF='${SELF_REF}'
 ### Configuration Security
 
 ```toml
-[handlers.wordpress]
+
 
 ## Secure environment variable expansion
 
@@ -365,6 +375,7 @@ url = "${WORDPRESS_URL}"
 username = "${WORDPRESS_USERNAME}"
 password = "${WORDPRESS_PASSWORD}"
 timeout_seconds = 30
+
 ```
 
 ## 3. Health Check Security
@@ -402,6 +413,7 @@ cargo run --example comprehensive_test
 ## Authentication security diagnosis
 
 cargo run --example auth_diagnosis
+
 ```
 
 ### Test Coverage Areas
@@ -416,7 +428,7 @@ cargo run --example auth_diagnosis
 ## Security Test Results (2025-11-03)
 
 ```
-🛡️ Security Test Results:
+
 ✅ Infinite loop prevention: PASSED
 ✅ Missing variable handling: PASSED  
 ✅ Invalid format detection: PASSED
@@ -425,6 +437,7 @@ cargo run --example auth_diagnosis
 ✅ Permission validation: PASSED
 
 Overall Security Score: 95% ✅
+
 ```
 
 ## 🔐 Configuration Security
@@ -506,6 +519,7 @@ password = "${WP_PASS}"
 - Performance optimization
 
 **Verification**:
+
 ```bash
 
 ## Test the fix
@@ -521,9 +535,10 @@ cargo run --example safe_env_test
 ### Logging and Monitoring
 
 ```rust
-// Security-relevant events are logged
+
 warn!("環境変数展開で最大反復回数(100)に達しました。処理を停止します。");
 debug!("環境変数展開完了。反復回数: {}", iteration_count);
+
 ```
 
 ### Recommended Monitoring
@@ -596,6 +611,7 @@ WordPress application passwords can be invalidated by:
 - Sudden authentication failures after working properly
 
 **Diagnostic Commands:**
+
 ```bash
 
 ## Test authentication status
@@ -609,6 +625,7 @@ cargo run --example comprehensive_test
 ## Verify specific API access
 
 cargo run --example auth_diagnosis
+
 ```
 
 ### Resolution Procedures
@@ -626,8 +643,9 @@ cargo run --example auth_diagnosis
 **Solution**: Configure maintenance mode exclusions for WordPress REST API
 
 **Required Exclusions:**
+
 ```
-wp-json/*
+
 ```
 
 **Configuration Location**: LightStart plugin settings → 除外 (Exclusions)
@@ -656,6 +674,7 @@ cargo run --example settings_api_deep_diagnosis
 ## Authentication verification
 
 cargo run --example auth_diagnosis
+
 ```
 
 ### Alert Criteria
@@ -682,7 +701,7 @@ cargo run --example auth_diagnosis
 ## Layered Security Approach
 
 ```
-┌─────────────────────────────────────────────────────┐
+
 │ Application Layer Security                          │
 │ ├── Input validation and sanitization              │
 │ └── Secure error handling                          │
@@ -707,6 +726,7 @@ cargo run --example auth_diagnosis
 │ ├── Connection security                            │
 │ └── Network protection                             │
 └─────────────────────────────────────────────────────┘
+
 ```
 
 ## 📞 Security Contact

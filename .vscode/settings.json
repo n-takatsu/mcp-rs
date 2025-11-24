@@ -100,6 +100,64 @@
     "terminal.integrated.shell.windows": "powershell.exe",
     "terminal.integrated.defaultProfile.windows": "PowerShell",
     
+    // cSpell設定（外部クレート名をスペルチェック除外）
+    "cSpell.ignoreWords": [
+        "sqlx",
+        "async",
+        "tokio",
+        "serde",
+        "thiserror",
+        "anyhow",
+        "chrono",
+        "uuid",
+        "dtolnay",
+        "flamegraph",
+        "rustc",
+        "Pointee",
+        "reflexibility",
+        "monomorphization",
+        "IMPLS",
+        "impls",
+        "doctest",
+        "savepoint",
+        "savepoints",
+        "testdb",
+        "initdb",
+        "healthcheck",
+        "isready",
+        "PGUSER",
+        "PGPASSWORD",
+        "pgadmin",
+        "PGADMIN",
+        "dpage",
+        "psql",
+        "testuser",
+        "tulpn",
+        "cpus",
+        "BYTEA",
+        "usize",
+        "Clippy",
+        "clippy",
+        "deadpool",
+        "takat",
+        "nocapture",
+        "testpass",
+        "basebackup",
+        "conninfo",
+        "Brien"
+    ],
+    "cSpell.excludePaths": [
+        "target/**",
+        ".cargo/**",
+        ".rustup/**",
+        "node_modules/**"
+    ],
+    
+    // markdownlint設定
+    "markdownlint.config": {
+        "MD040": false
+    },
+    
     // その他の便利な設定
     "workbench.editor.enablePreview": false,
     "breadcrumbs.enabled": true,

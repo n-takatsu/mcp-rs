@@ -119,6 +119,7 @@ sqlx = { version = "0.7", features = ["mysql", "runtime-tokio-rustls", "chrono",
 ```
 
 **利点**:
+
 - 型安全なクエリ
 - コンパイル時検証
 - 統一されたAPI
@@ -133,6 +134,7 @@ tokio = { version = "1.0", features = ["full"] }
 ```
 
 **利点**:
+
 - MySQL特化設計
 - 高性能
 - 詳細な制御
@@ -140,10 +142,10 @@ tokio = { version = "1.0", features = ["full"] }
 
 ## 接続文字列形式
 
-```
+```bash
 mysql://username:password@host:port/database?option1=value1&option2=value2
 
-// SSL例
+# SSL例
 mysql://user:pass@localhost:3306/mydb?ssl-mode=required&ssl-ca=/path/to/ca.pem
 
 // 文字セット例
@@ -249,7 +251,7 @@ pub enum MySqlError {
 
 ## ファイル構造
 
-```
+```text
 src/handlers/database/engines/
 ├── mysql.rs              
 
