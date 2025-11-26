@@ -134,7 +134,7 @@ let doc = MongoDocument::new()
 
 ```text
 test_mongo_engine_creation ... ok
-test_mongo_health_check ... ok  
+test_mongo_health_check ... ok
 test_mongo_document_creation ... ok
 test_mongo_document_json_conversion ... ok
 test_mongo_connection ... ok

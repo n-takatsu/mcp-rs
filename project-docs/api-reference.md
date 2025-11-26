@@ -8,7 +8,7 @@ Complete API documentation for all available tools in the mcp-rs Model Context P
 
 All API calls are protected by the 6-layer security architecture:
 - ✅ AES-GCM-256 encryption for credentials
-- ✅ Token bucket rate limiting  
+- ✅ Token bucket rate limiting
 - ✅ SQL injection protection (11 patterns)
 - ✅ XSS attack protection (14 patterns)
 - ✅ Input validation and sanitization
@@ -24,7 +24,7 @@ Execute secure database queries with automatic validation and SQL injection prot
 
 **Parameters**:
 - `sql` (string, required): SQL query or database-specific command
-- `params` (array, optional): Query parameters for injection prevention  
+- `params` (array, optional): Query parameters for injection prevention
 - `engine` (string, optional): Target database engine ID
 
 ```json
@@ -50,7 +50,7 @@ Execute INSERT, UPDATE, DELETE commands with transaction support and audit loggi
 
 ```json
 {
-  "tool": "execute_command", 
+  "tool": "execute_command",
   "arguments": {
     "sql": "INSERT INTO users (name, email) VALUES ($1, $2)",
     "params": ["John Doe", "john@example.com"],
@@ -72,7 +72,7 @@ Start database transactions with configurable isolation levels.
 {
   "tool": "begin_transaction",
   "arguments": {
-    "engine": "primary_pg", 
+    "engine": "primary_pg",
     "isolation_level": "REPEATABLE_READ"
   }
 }
@@ -135,7 +135,7 @@ Switch the default database engine for subsequent operations.
 
 // Advanced post with SEO - Input validated
 {"tool": "create_advanced_post", "arguments": {
-  "title": "Title", "content": "Content", "post_type": "post", 
+  "title": "Title", "content": "Content", "post_type": "post",
   "status": "publish", "meta_description": "SEO description"
 }}
 
@@ -173,7 +173,7 @@ Switch the default database engine for subsequent operations.
 // Create category
 {"tool": "create_category", "arguments": {"name": "Category Name", "description": "Description"}}
 
-// Create tag  
+// Create tag
 {"tool": "create_tag", "arguments": {"name": "Tag Name", "description": "Description"}}
 
 // Post with taxonomy
@@ -231,7 +231,7 @@ Switch the default database engine for subsequent operations.
 ```json
 {
   "content": [{
-    "type": "text", 
+    "type": "text",
     "text": "Operation completed successfully"
   }],
   "isError": false
@@ -306,4 +306,3 @@ Switch the default database engine for subsequent operations.
 | Categories per post | Unlimited | Recommended: 2-5 |
 | Tags per post | Unlimited | Recommended: 5-10 |
 | API requests | Rate limited | Depends on WordPress hosting |
-

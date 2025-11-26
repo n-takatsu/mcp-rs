@@ -284,24 +284,24 @@ pub enum DatabaseError {
     // Connection errors
     ConnectionFailed(String),
     PoolError(String),
-    
+
     // Query errors
     QueryFailed(String),
     InvalidParameters(String),
     ParameterMismatch { expected: usize, got: usize },
-    
+
     // Transaction errors
     TransactionFailed(String),
     SavepointFailed(String),
-    
+
     // Type conversion errors
     TypeConversionFailed(String),
     InvalidValue(String),
-    
+
     // Security errors
     SqlInjectionAttempted(String),
     UnauthorizedAccess(String),
-    
+
     // Internal errors
     InternalError(String),
 }
@@ -316,7 +316,7 @@ New trait methods have default implementations:
 ```rust
 pub trait PreparedStatement {
     // Existing methods...
-    
+
     // New methods with defaults
     fn parameter_count(&self) -> usize { 0 }
     fn get_sql(&self) -> &str { "" }
@@ -397,7 +397,7 @@ Value::DateTime(now)     // MySQL DATETIME
 let query = format!("SELECT * FROM users WHERE id = {}", user_id);
 
 // ✅ Safe
-let stmt = MySqlPreparedStatement::new(pool, 
+let stmt = MySqlPreparedStatement::new(pool,
     "SELECT * FROM users WHERE id = ?".to_string()).await?;
 let result = stmt.query(&vec![Value::Int(user_id)]).await?;
 ```

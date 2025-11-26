@@ -107,7 +107,7 @@ The MCP-RS WebSocket API provides real-time collaborative editing capabilities t
 ```json
 
   "session_id": "uuid-string",
-  "user_id": "string", 
+  "user_id": "string",
   "state": "Active",
   "created_at": "2025-11-07T10:00:00Z",
   "expires_at": "2025-11-08T10:00:00Z"
@@ -231,7 +231,7 @@ All WebSocket messages follow this JSON structure:
     "operation": "insert",
     "change_delta": {
       "position": 125,
-      "insert": "new text"  
+      "insert": "new text"
     }
   },
   "session_info": {
@@ -266,7 +266,7 @@ All WebSocket messages follow this JSON structure:
 
 ```json
 
-  "id": "session-002", 
+  "id": "session-002",
   "type": "session_disconnected",
   "payload": {
     "session_id": "session-uuid",
@@ -322,18 +322,18 @@ All WebSocket messages follow this JSON structure:
   async connect() {
     const wsUrl = `ws://localhost:3000/ws?session_id=${this.sessionId}`;
     this.ws = new WebSocket(wsUrl);
-    
+
     this.ws.onopen = () => {
       this.isConnected = true;
       console.log('Connected to MCP-RS WebSocket');
       this.startHeartbeat();
     };
-    
+
     this.ws.onmessage = (event) => {
       const message = JSON.parse(event.data);
       this.handleMessage(message);
     };
-    
+
     this.ws.onclose = () => {
       this.isConnected = false;
       console.log('Disconnected from MCP-RS WebSocket');
@@ -342,7 +342,7 @@ All WebSocket messages follow this JSON structure:
 
   sendEdit(content, cursorPosition) {
     if (!this.isConnected) return;
-    
+
     const message = {
       id: crypto.randomUUID(),
       type: 'realtime_edit',
@@ -353,7 +353,7 @@ All WebSocket messages follow this JSON structure:
       },
       timestamp: new Date().toISOString()
     };
-    
+
     this.ws.send(JSON.stringify(message));
   }
 
@@ -412,9 +412,9 @@ impl MCPWebSocketClient {
     pub async fn connect(&self) -> Result<(), Box<dyn std::error::Error>> {
         let url = format!("ws://localhost:3000/ws?session_id={}", self.session_id);
         let (ws_stream, _) = connect_async(&url).await?;
-        
+
         let (mut write, mut read) = ws_stream.split();
-        
+
         // Handle messages
         tokio::spawn(async move {
             while let Some(msg) = read.next().await {
@@ -426,7 +426,7 @@ impl MCPWebSocketClient {
             }
             Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
         });
-        
+
         // Send heartbeat
         let heartbeat = json!({
             "id": Uuid::new_v4().to_string(),
@@ -434,9 +434,9 @@ impl MCPWebSocketClient {
             "payload": {},
             "timestamp": chrono::Utc::now().to_rfc3339()
         });
-        
+
         write.send(Message::Text(heartbeat.to_string())).await?;
-        
+
         Ok(())
     }
 }
@@ -453,7 +453,7 @@ impl MCPWebSocketClient {
 
 ## Input Validation
 
-- **Message size limits**: Maximum 10KB per WebSocket message  
+- **Message size limits**: Maximum 10KB per WebSocket message
 - **JSON validation**: All messages must be valid JSON
 - **XSS protection**: Content is sanitized for dangerous patterns
 - **Rate limiting**: Per-session message rate limiting
@@ -510,16 +510,16 @@ cargo run --example axum_websocket_server
 ```
 
 │   Static HTML   │  ← http://localhost:3000/
-│                 │  
+│                 │
 │  ┌─────────────┐│
 │  │  Editor 1   ││  ← User 1 WebSocket
 │  └─────────────┘│
-│  ┌─────────────┐│ 
+│  ┌─────────────┐│
 │  │  Editor 2   ││  ← User 2 WebSocket
 │  └─────────────┘│
 │                 │
 │  ┌─────────────┐│
-│  │ API Panel   ││  ← REST API calls  
+│  │ API Panel   ││  ← REST API calls
 │  └─────────────┘│
 └─────────────────┘
 
@@ -560,7 +560,7 @@ RUST_LOG=debug cargo run --example axum_websocket_server
 ## Monitoring
 
 - **Health Endpoint**: `GET /health`
-- **Session Metrics**: Built into session manager  
+- **Session Metrics**: Built into session manager
 - **WebSocket Stats**: Connection count and message throughput
 - **Error Logging**: Comprehensive error tracking with tracing
 

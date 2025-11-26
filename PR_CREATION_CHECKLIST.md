@@ -119,7 +119,7 @@ Type Safety:               ✅ Complete
 - **Compare Branch**: feature/mysql-phase1-security
 - **Title**: "feat: MySQL Phase 1 security enhancements"
 - **Description**: PR_DESCRIPTION_MYSQL_PHASE1.mdの内容を使用
-- **Labels**: 
+- **Labels**:
   - `enhancement`
   - `database`
   - `security`

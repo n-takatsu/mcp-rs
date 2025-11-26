@@ -68,7 +68,7 @@ The MCP-RS session management system provides enterprise-grade session lifecycle
 **Responsibilities:**
 
 - Session CRUD operations
-- State lifecycle management  
+- State lifecycle management
 - User session filtering
 - Storage layer abstraction
 
@@ -426,19 +426,19 @@ Total: ~85 bytes + user_id length
 pub enum SessionError {
     #[error("Session not found: {0}")]
     NotFound(String),
-    
+
     #[error("Invalid session state: {0}")]
     InvalidState(String),
-    
+
     #[error("Session expired: {0}")]
     Expired(String),
-    
+
     #[error("Storage error: {0}")]
     Storage(String),
-    
+
     #[error("Serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
-    
+
     #[error("Security violation: {0}")]
     SecurityViolation(String),
 }
@@ -492,7 +492,7 @@ fn session_create_idempotent(user_id: String) -> bool {
     // Sessions with same data should be functionally equivalent
 }
 
-#[quickcheck] 
+#[quickcheck]
 fn session_state_transitions_valid(initial_state: SessionState, action: Action) -> bool {
     // All state transitions should be valid
 }
@@ -506,7 +506,7 @@ fn session_state_transitions_valid(initial_state: SessionState, action: Action) 
 async fn test_concurrent_session_operations() {
     let manager = Arc::new(SessionManager::new());
     let mut handles = vec![];
-    
+
     // Spawn 100 concurrent session creation tasks
     for i in 0..100 {
         let manager_clone = manager.clone();
@@ -514,7 +514,7 @@ async fn test_concurrent_session_operations() {
             manager_clone.create_session(format!("user_{}", i)).await
         }));
     }
-    
+
     // All operations should succeed without conflicts
     for handle in handles {
         assert!(handle.await.unwrap().is_ok());
@@ -548,9 +548,9 @@ pub struct SessionMetrics {
 #[instrument(skip(self))]
 pub async fn create_session(&self, user_id: String) -> Result<Session, SessionError> {
     info!("Creating session for user: {}", user_id);
-    
+
     let result = self.storage.create(session).await;
-    
+
     match &result {
         Ok(session) => {
             info!("Session created successfully: {}", session.id.as_str());
@@ -559,7 +559,7 @@ pub async fn create_session(&self, user_id: String) -> Result<Session, SessionEr
             error!("Session creation failed: {}", e);
         }
     }
-    
+
     result
 }
 
@@ -571,7 +571,7 @@ pub async fn create_session(&self, user_id: String) -> Result<Session, SessionEr
 
     let sessions_count = self.get_session_count().await?;
     let memory_usage = self.get_memory_usage().await?;
-    
+
     Ok(HealthStatus {
         status: if sessions_count < 10000 { "healthy" } else { "degraded" },
         sessions_count,
@@ -673,7 +673,7 @@ spec:
 ## Performance Optimizations
 
 1. **Lock-Free Data Structures**: Reduce contention in high-load scenarios
-2. **Connection Pooling**: Reuse WebSocket connections where possible  
+2. **Connection Pooling**: Reuse WebSocket connections where possible
 3. **Compression**: Compress large WebSocket messages
 4. **Lazy Loading**: Load session data on-demand
 5. **Batch Operations**: Group multiple session operations

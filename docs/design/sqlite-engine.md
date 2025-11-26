@@ -106,11 +106,11 @@ sqlx = { version = "0.7", features = ["sqlite", "runtime-tokio-rustls", "chrono"
 
 ```bash
 sqlite:path/to/database.db
-sqlite::memory:           
+sqlite::memory:
 
 ## インメモリ
 
-sqlite:database.db?mode=ro 
+sqlite:database.db?mode=ro
 
 ## 読み取り専用
 
@@ -126,28 +126,28 @@ sqlite:database.db?mode=ro
 
 ```text
 src/handlers/database/engines/
-├── sqlite.rs              
+├── sqlite.rs
 
 ## メインエンジン実装
 
 ├── sqlite/
-│   ├── connection.rs       
+│   ├── connection.rs
 
 ## 接続管理
 
-│   ├── transaction.rs      
+│   ├── transaction.rs
 
 ## トランザクション
 
-│   ├── prepared.rs         
+│   ├── prepared.rs
 
 ## プリペアドステートメント
 
-│   ├── config.rs          
+│   ├── config.rs
 
 ## SQLite固有設定
 
-│   └── utils.rs           
+│   └── utils.rs
 
 ## ユーティリティ
 

@@ -1,7 +1,7 @@
 # AI Agent Memo - mcp-rs Project Context
 
-**Last Updated**: 2025年11月8日  
-**Project**: mcp-rs v0.15.0 - Real-time Collaborative Editing System  
+**Last Updated**: 2025年11月8日
+**Project**: mcp-rs v0.15.0 - Real-time Collaborative Editing System
 **Branch**: feature/realtime-editing-system
 
 ## 🎯 Project Overview
@@ -36,7 +36,7 @@
 
 1. **MySQL Implementation**: Switched to `mysql_async v0.36.1` (RSA-free)
 2. **Dependency Isolation**: `sqlx` only used for PostgreSQL/SQLite
-3. **Audit Configuration**: 
+3. **Audit Configuration**:
    - Local: `cargo-audit.toml` with ignore setting
    - CI: `--ignore RUSTSEC-2023-0071` flag in workflows
 
@@ -123,15 +123,15 @@ cargo test --all-features test_timeout_strategy
 
 - name: Run cargo audit
   run: cargo audit --ignore RUSTSEC-2023-0071
-  
+
 
 ## RUSTSEC-2023-0071: RSA脆弱性を無視
 
-  
+
 
 ## 理由: sqlx-mysql経由の未使用依存関係のため影響なし
 
-  
+
 
 ## mysql_asyncを使用してMySQL機能を安全に実装済み
 
@@ -259,14 +259,14 @@ Claude Desktop MCP統合を完了し、AI AgentがWordPressリソースに直接
 
 ```toml
 [server]
-stdio = true  
+stdio = true
 
 ## Claude Desktop mode
 
 log_level = "info"
 
 [handlers.wordpress]
-url = "https://example.com"  
+url = "https://example.com"
 
 ## Replace with your WordPress site URL
 
