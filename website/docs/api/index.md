@@ -504,7 +504,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let stmt = conn.prepare(
         "SELECT * FROM users WHERE age > $1"
     ).await?;
-    
+
     let result = stmt.query(&[
         Value::Int(18)
     ]).await?;
@@ -525,6 +525,3 @@ For more details, see:
 - [📄 Database Engine API](./database.md) - Complete API reference
 - [📖 PostgreSQL Integration Guide](../guides/postgres-integration.md) - Setup and usage
 - [📖 Implementation Guides](../guides/) - All guides
-
-
-

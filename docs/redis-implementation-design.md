@@ -162,7 +162,7 @@ let mfa_result = multi_factor_auth.verify_access(&user_context).await?;
 
 // RBACによる操作制御
 let rbac_result = role_based_access.check_permission(
-    &user_context, 
+    &user_context,
     &RedisOperation::Read("user:*")
 ).await?;
 ```

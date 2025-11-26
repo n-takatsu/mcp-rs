@@ -15,8 +15,8 @@ pub use types::{RedisCommand, RedisConfig, RedisValue};
 use crate::handlers::database::{
     engine::{DatabaseConnection, DatabaseEngine},
     types::{
-        DatabaseConfig, DatabaseError, DatabaseFeature, DatabaseSchema,
-        DatabaseType, ExecuteResult, HealthStatus, HealthStatusType, QueryResult, Value,
+        DatabaseConfig, DatabaseError, DatabaseFeature, DatabaseSchema, DatabaseType,
+        ExecuteResult, HealthStatus, HealthStatusType, QueryResult, Value,
     },
 };
 use async_trait::async_trait;
@@ -112,9 +112,7 @@ impl DatabaseEngine for RedisEngine {
                 connection_count: 1,
                 active_transactions: 0,
             })
-            .map_err(|_| {
-                DatabaseError::ConnectionFailed("Redis health check failed".to_string())
-            })
+            .map_err(|_| DatabaseError::ConnectionFailed("Redis health check failed".to_string()))
     }
 
     fn supported_features(&self) -> Vec<DatabaseFeature> {

@@ -82,11 +82,7 @@ impl DatabaseConnection for RedisConnection {
         ))
     }
 
-    async fn execute(
-        &self,
-        _sql: &str,
-        _params: &[Value],
-    ) -> Result<ExecuteResult, DatabaseError> {
+    async fn execute(&self, _sql: &str, _params: &[Value]) -> Result<ExecuteResult, DatabaseError> {
         // Redis is not SQL-based, return error for now
         Err(DatabaseError::UnsupportedOperation(
             "SQL execution not supported for Redis engine".to_string(),
@@ -125,8 +121,7 @@ impl DatabaseConnection for RedisConnection {
     async fn prepare(
         &self,
         _sql: &str,
-    ) -> Result<Box<dyn crate::handlers::database::engine::PreparedStatement>, DatabaseError>
-    {
+    ) -> Result<Box<dyn crate::handlers::database::engine::PreparedStatement>, DatabaseError> {
         // Redis doesn't use prepared statements
         Err(DatabaseError::UnsupportedOperation(
             "Prepared statements not supported for Redis".to_string(),

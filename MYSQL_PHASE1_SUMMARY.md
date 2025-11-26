@@ -54,7 +54,7 @@ src/handlers/database/engines/mysql/
 ```
 
     Finished `dev` profile [unoptimized + debuginfo] in 0.47s
-    
+
 Errors:   0 ✅
 Warnings: 0 ✅
 
@@ -264,7 +264,7 @@ fn get_sql(&self) -> &str { "" }               // default
   - 2,140 lines
   - 100% passing
 
-23ecd9a 
+23ecd9a
   feat: MySQL Phase 1 パラメータ化クエリ & トランザクション実装
   - Prepared statements
   - Transaction management
