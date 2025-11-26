@@ -40,13 +40,13 @@ MCP-RSにおけるデータベースハンドラーは、様々なデータベ�
 pub trait DatabaseEngine: Send + Sync {
     /// データベースタイプを返す
     fn engine_type(&self) -> DatabaseType;
-    
+
     /// 接続確立
     async fn connect(&self, config: &DatabaseConfig) -> Result<Box<dyn DatabaseConnection>, DatabaseError>;
-    
+
     /// 健全性チェック
     async fn health_check(&self) -> Result<HealthStatus, DatabaseError>;
-    
+
     /// サポートされる機能を返す
     fn supported_features(&self) -> Vec<DatabaseFeature>;
 }
@@ -55,16 +55,16 @@ pub trait DatabaseEngine: Send + Sync {
 pub trait DatabaseConnection: Send + Sync {
     /// クエリ実行（SELECT）
     async fn query(&self, sql: &str, params: &[Value]) -> Result<QueryResult, DatabaseError>;
-    
+
     /// コマンド実行（INSERT/UPDATE/DELETE）
     async fn execute(&self, sql: &str, params: &[Value]) -> Result<ExecuteResult, DatabaseError>;
-    
+
     /// トランザクション開始
     async fn begin_transaction(&self) -> Result<Box<dyn DatabaseTransaction>, DatabaseError>;
-    
+
     /// スキーマ情報取得
     async fn get_schema(&self) -> Result<DatabaseSchema, DatabaseError>;
-    
+
     /// 接続終了
     async fn close(&self) -> Result<(), DatabaseError>;
 }
@@ -73,13 +73,13 @@ pub trait DatabaseConnection: Send + Sync {
 pub trait DatabaseTransaction: Send + Sync {
     /// クエリ実行
     async fn query(&self, sql: &str, params: &[Value]) -> Result<QueryResult, DatabaseError>;
-    
+
     /// コマンド実行
     async fn execute(&self, sql: &str, params: &[Value]) -> Result<ExecuteResult, DatabaseError>;
-    
+
     /// コミット
     async fn commit(self: Box<Self>) -> Result<(), DatabaseError>;
-    
+
     /// ロールバック
     async fn rollback(self: Box<Self>) -> Result<(), DatabaseError>;
 }
@@ -105,16 +105,16 @@ impl DatabaseSecurity {
     pub async fn validate_query(&self, sql: &str, context: &QueryContext) -> Result<ValidationResult, SecurityError> {
         // 1. SQLインジェクション検知
         self.sql_injection_detector.scan(sql)?;
-        
+
         // 2. 許可リストチェック
         self.query_whitelist.validate(sql, context)?;
-        
+
         // 3. 脅威インテリジェンス照会
         self.threat_intelligence.analyze_query(sql).await?;
-        
+
         // 4. 監査ログ記録
         self.audit_logger.log_query_attempt(sql, context).await?;
-        
+
         Ok(ValidationResult::Approved)
     }
 }
@@ -168,12 +168,12 @@ impl DatabaseEngine for PostgreSqlEngine {
     fn engine_type(&self) -> DatabaseType {
         DatabaseType::PostgreSQL
     }
-    
+
     async fn connect(&self, config: &DatabaseConfig) -> Result<Box<dyn DatabaseConnection>, DatabaseError> {
         let conn = self.pool.get().await?;
         Ok(Box::new(PostgreSqlConnection::new(conn, self.security.clone())))
     }
-    
+
     fn supported_features(&self) -> Vec<DatabaseFeature> {
         vec![
             DatabaseFeature::Transactions,
@@ -203,24 +203,24 @@ impl DatabaseConnection for PostgreSqlConnection {
         // セキュリティチェック
         let context = QueryContext::new(QueryType::Select, &self.client);
         self.security.validate_query(sql, &context).await?;
-        
+
         // パラメータ変換
         let pg_params = self.convert_params(params)?;
-        
+
         // クエリ実行
         let rows = self.client.query(sql, &pg_params).await?;
-        
+
         // 結果変換
         Ok(self.convert_rows(rows)?)
     }
-    
+
     async fn execute(&self, sql: &str, params: &[Value]) -> Result<ExecuteResult, DatabaseError> {
         let context = QueryContext::new(QueryType::Modify, &self.client);
         self.security.validate_query(sql, &context).await?;
-        
+
         let pg_params = self.convert_params(params)?;
         let result = self.client.execute(sql, &pg_params).await?;
-        
+
         Ok(ExecuteResult {
             rows_affected: result,
             last_insert_id: None, // PostgreSQLではRETURNING句で取得
@@ -298,7 +298,7 @@ impl McpHandler for DatabaseHandler {
             },
         ])
     }
-    
+
     async fn call_tool(&self, params: ToolCallParams) -> Result<serde_json::Value, McpError> {
         match params.name.as_str() {
             "execute_query" => self.handle_execute_query(params.arguments).await,

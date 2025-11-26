@@ -253,36 +253,36 @@ pub enum MySqlError {
 
 ```text
 src/handlers/database/engines/
-├── mysql.rs              
+├── mysql.rs
 
 ## メインエンジン実装
 
 ├── mysql/
-│   ├── connection.rs      
+│   ├── connection.rs
 
 ## 接続管理
 
-│   ├── transaction.rs     
+│   ├── transaction.rs
 
 ## トランザクション
 
-│   ├── prepared.rs        
+│   ├── prepared.rs
 
 ## プリペアドステートメント
 
-│   ├── config.rs         
+│   ├── config.rs
 
 ## MySQL固有設定
 
-│   ├── error.rs          
+│   ├── error.rs
 
 ## エラー定義
 
-│   ├── pool.rs           
+│   ├── pool.rs
 
 ## 接続プール
 
-│   └── utils.rs          
+│   └── utils.rs
 
 ## ユーティリティ
 
@@ -312,7 +312,7 @@ impl MySqlEngine {
     fn detect_variant(&self) -> MySqlVariant {
         // SELECT VERSION() でバリアント検出
     }
-    
+
     fn adapt_features(&self, variant: MySqlVariant) {
         // バリアント固有の機能調整
     }

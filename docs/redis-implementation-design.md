@@ -44,7 +44,7 @@ RedisEngine
 | List | ✅ 実装 | LPUSH, RPUSH, LPOP, RPOP, LLEN |
 | Set | ✅ 実装 | SADD, SREM, SMEMBERS, SINTER |
 | Hash | ✅ 実装 | HSET, HGET, HDEL, HKEYS |
-| Sorted Set | 🔄 計画中 | ZADD, ZREM, ZRANGE, ZRANK |
+| Sorted Set | ✅ 実装 | ZADD, ZREM, ZRANGE, ZRANK, ZCARD, ZCOUNT, ZINCRBY |
 | Stream | 🔄 計画中 | XADD, XREAD, XGROUP |
 | Bitmap | 🔄 将来 | SETBIT, GETBIT, BITCOUNT |
 | HyperLogLog | 🔄 将来 | PFADD, PFCOUNT, PFMERGE |
@@ -114,6 +114,19 @@ pub enum RedisValue {
 - **HDEL**: ハッシュフィールド削除
 - **HKEYS**: ハッシュキー一覧
 
+### ソート済みセット（Sorted Set）操作
+
+- **ZADD**: メンバー追加（スコア付き）
+- **ZREM**: メンバー削除
+- **ZRANGE**: インデックス範囲取得
+- **ZRANGEBYSCORE**: スコア範囲取得
+- **ZRANK**: メンバーのランク取得
+- **ZSCORE**: メンバーのスコア取得
+- **ZCARD**: メンバー数取得
+- **ZCOUNT**: スコア範囲内のメンバー数カウント
+- **ZINCRBY**: スコア加算
+- **ZREVRANGE**: 逆順範囲取得
+
 ## 4. パフォーマンス監視
 
 ### メトリクス収集
@@ -149,19 +162,29 @@ let mfa_result = multi_factor_auth.verify_access(&user_context).await?;
 
 // RBACによる操作制御
 let rbac_result = role_based_access.check_permission(
-    &user_context, 
+    &user_context,
     &RedisOperation::Read("user:*")
 ).await?;
 ```
 
-### 2. 異常検知
+### 2. コマンド制限（ホワイトリスト/ブラックリスト）
 
 ```rust
-// 異常パターンの検出
-let anomaly_result = anomaly_detector.analyze_redis_pattern(
-    &command_pattern,
-    &access_frequency
-).await?;
+// コマンド実行前の検証
+pub struct CommandRestrictor {
+    whitelist: HashSet<String>,  // 許可コマンド一覧
+    blacklist: HashSet<String>,  // ブロックコマンド一覧
+    audit_log: Vec<CommandAuditEntry>,
+}
+
+// 使用例
+let mut restrictor = CommandRestrictor::new();
+restrictor.allow_command("ZADD".to_string());
+restrictor.block_command("FLUSHDB".to_string());
+
+if restrictor.is_allowed(&RedisCommand::ZAdd(...)) {
+    // 実行許可
+}
 ```
 
 ### 3. 監査ログ
@@ -170,11 +193,21 @@ let anomaly_result = anomaly_detector.analyze_redis_pattern(
 // Redis操作の監査ログ
 audit_logger.log_redis_operation(AuditEvent {
     user_id: user_context.user_id,
-    operation: "GET user:12345",
+    operation: "ZADD leaderboard 100 player1",
     timestamp: Utc::now(),
     source_ip: connection_info.client_ip,
     result: "SUCCESS",
 }).await?;
+```
+
+### 4. 異常検知
+
+```rust
+// 異常パターンの検出
+let anomaly_result = anomaly_detector.analyze_redis_pattern(
+    &command_pattern,
+    &access_frequency
+).await?;
 ```
 
 ## セキュリティ機能
@@ -185,7 +218,7 @@ audit_logger.log_redis_operation(AuditEvent {
 | ACL認証 | ✅ 対応 | Redis 6.0+ ACL |
 | パスワード認証 | ✅ 対応 | 従来のAUTH |
 | キー・パターンフィルタ | ✅ 対応 | アクセス制御 |
-| コマンド制限 | 🔄 計画中 | 危険コマンド制御 |
+| コマンド制限 | ✅ 対応 | 危険コマンド制御（ホワイトリスト/ブラックリスト） |
 | レート制限 | 🔄 計画中 | DoS防止 |
 
 ## 高可用性・スケーラビリティ
@@ -387,11 +420,13 @@ min_idle = 20
 
 ## Phase 2: 高度機能 🔄
 
-- [ ] ソート済みセット（Sorted Set）サポート
+- [x] ソート済みセット（Sorted Set）サポート - ZADD, ZREM, ZRANGE, ZRANK, ZCARD, ZCOUNT, ZINCRBY等
+- [x] コマンド制限機能 - ホワイトリスト/ブラックリスト方式
+- [x] 監査ログ統合 - 全コマンド実行の記録
+- [x] コマンド実行統計 - コマンド別の実行回数・成功・失敗の追跡
 - [ ] ストリーム（Stream）サポート
-- [ ] トランザクション（MULTI/EXEC）
+- [ ] トランザクション（MULTI/EXEC）最適化
 - [ ] パイプライン処理最適化
-- [ ] セキュリティ統合強化
 
 ## Phase 3: エンタープライズ機能 📋
 
