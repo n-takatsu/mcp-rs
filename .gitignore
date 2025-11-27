@@ -12,6 +12,7 @@ mcp-config.toml
 *.swp
 *.swo
 *~
+*.bak
 
 # OS files
 .DS_Store
