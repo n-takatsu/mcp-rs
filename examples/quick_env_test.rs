@@ -70,6 +70,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n🎯 環境変数を使った安全な設定例:");
     println!("```toml");
     println!("[handlers.wordpress]");
+    // Note: println!マクロ内では {{}} を使用して {{ を出力します
+    // 実際の設定ファイルでは ${VAR_NAME} という形式を使用します
     println!("url = \"${{WORDPRESS_URL}}\"");
     println!("username = \"${{WORDPRESS_USERNAME}}\"");
     println!("password = \"${{WORDPRESS_PASSWORD}}\"");

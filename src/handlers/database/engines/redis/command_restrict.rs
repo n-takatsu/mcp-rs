@@ -46,6 +46,19 @@ impl CommandRestrictor {
         }
     }
 
+    /// Create from Redis security settings
+    pub fn from_config(settings: &RedisSecuritySettings) -> Self {
+        let whitelist = settings.command_whitelist.iter().cloned().collect();
+        let blacklist = settings.command_blacklist.iter().cloned().collect();
+
+        CommandRestrictor {
+            whitelist,
+            blacklist,
+            audit_log: Vec::new(),
+            allow_unlisted: false,
+        }
+    }
+
     /// Create with custom settings
     pub fn with_settings(settings: RedisSecuritySettings) -> Self {
         let whitelist = settings.command_whitelist.into_iter().collect();
@@ -57,6 +70,18 @@ impl CommandRestrictor {
             audit_log: Vec::new(),
             allow_unlisted: false,
         }
+    }
+
+    /// Check if command is allowed (without logging)
+    pub fn check_command(&self, cmd: &RedisCommand) -> Result<(), DatabaseError> {
+        if !self.is_allowed(cmd) {
+            let cmd_name = self.command_name(cmd);
+            return Err(DatabaseError::SecurityViolation(format!(
+                "Command '{}' is not allowed",
+                cmd_name
+            )));
+        }
+        Ok(())
     }
 
     /// Check if command is allowed
@@ -153,6 +178,9 @@ impl CommandRestrictor {
             RedisCommand::ZScore(_, _) => "ZSCORE",
             RedisCommand::ZCard(_) => "ZCARD",
             RedisCommand::ZCount(_, _, _) => "ZCOUNT",
+            RedisCommand::ZIncrBy(_, _, _) => "ZINCRBY",
+            RedisCommand::ZRemRangeByRank(_, _, _) => "ZREMRANGEBYRANK",
+            RedisCommand::ZRemRangeByScore(_, _, _) => "ZREMRANGEBYSCORE",
 
             RedisCommand::Del(_) => "DEL",
             RedisCommand::Exists(_) => "EXISTS",

@@ -148,6 +148,9 @@ pub enum RedisCommand {
     ZScore(String, String),
     ZCard(String),
     ZCount(String, f64, f64),
+    ZIncrBy(String, f64, String),       // key, increment, member
+    ZRemRangeByRank(String, i32, i32),  // key, start, stop
+    ZRemRangeByScore(String, f64, f64), // key, min, max
 
     // Key operations
     Del(Vec<String>),
