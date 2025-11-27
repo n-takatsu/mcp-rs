@@ -303,7 +303,7 @@ mod postgres_database_integration_tests {
         let pool = pool.unwrap();
 
         // Use sqlx transaction API
-        let mut tx = pool.begin().await;
+        let tx = pool.begin().await;
         assert!(tx.is_ok());
 
         let mut tx = tx.unwrap();
@@ -354,7 +354,7 @@ mod postgres_database_integration_tests {
         let pool = pool.unwrap();
 
         // Use sqlx transaction API instead of raw SQL for transaction control
-        let mut tx = pool.begin().await;
+        let tx = pool.begin().await;
         assert!(tx.is_ok());
 
         let mut tx = tx.unwrap();
