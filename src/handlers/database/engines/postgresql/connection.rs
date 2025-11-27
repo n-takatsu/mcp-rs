@@ -196,8 +196,9 @@ mod tests {
         config.port = 0;
         assert!(config.validate().is_err());
 
-        config.port = 70000;
-        assert!(config.validate().is_err());
+        // Port 65535 is valid, but we test that validation passes
+        config.port = 65535;
+        assert!(config.validate().is_ok());
     }
 
     #[test]

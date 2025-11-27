@@ -167,36 +167,42 @@ impl IntegratedSecurityManager {
                 if trust_score.score < self.config.mfa.device_trust.trust_threshold {
                     return Ok(AuthorizationResult::mfa_required());
                 }
-
-                // TOTP 検証（簡略化 - 実際の実装では別途TOTPコードを取得）
-                // if let Some(totp_code) = &context.totp_code {
-                //     if !self.mfa.verify_totp(user_id, totp_code).await? {
-                //         return Ok(AuthorizationResult::access_denied("Invalid TOTP code"));
-                //     }
-                // }
             }
         }
 
         // RBAC チェック
         if self.config.rbac.enabled {
             if let Some(user_id) = &context.user_id {
-                let target_resource = "default_resource"; // 簡略化
+                // クエリタイプに基づいてアクションを決定
+                let action = self.determine_action_from_query(&context.query_type);
+
+                // リソース名を決定（実際のクエリから抽出するのが理想的）
+                let target_resource = self.extract_resource_from_context(context);
+
                 let access_decision = self
                     .rbac
-                    .check_access(
-                        user_id,
-                        target_resource,
-                        &ActionType::Read, // デフォルトはREAD、実際のクエリタイプに基づいて判定
-                        context,
-                    )
+                    .check_access(user_id, &target_resource, &action, context)
                     .await?;
 
                 match access_decision {
-                    AccessDecision::Allow => {}
+                    AccessDecision::Allow => {
+                        info!(
+                            "RBAC check passed for user {} on resource {}",
+                            user_id, target_resource
+                        );
+                    }
                     AccessDecision::Deny => {
+                        warn!(
+                            "RBAC check denied for user {} on resource {}",
+                            user_id, target_resource
+                        );
                         return Ok(AuthorizationResult::access_denied("RBAC policy denied"));
                     }
                     AccessDecision::Conditional(conditions) => {
+                        info!(
+                            "RBAC conditional access for user {}: {:?}",
+                            user_id, conditions
+                        );
                         return Ok(AuthorizationResult::conditional_access(conditions));
                     }
                 }
@@ -204,6 +210,93 @@ impl IntegratedSecurityManager {
         }
 
         Ok(AuthorizationResult::allowed())
+    }
+
+    /// クエリタイプからアクションを決定
+    fn determine_action_from_query(&self, query_type: &super::types::QueryType) -> ActionType {
+        use super::types::QueryType;
+
+        match query_type {
+            QueryType::Select => ActionType::Read,
+            QueryType::Insert | QueryType::Update => ActionType::Write,
+            QueryType::Delete => ActionType::Delete,
+            QueryType::Create | QueryType::Alter | QueryType::Drop | QueryType::Ddl => {
+                ActionType::Admin
+            }
+            QueryType::StoredProcedure => ActionType::Execute,
+            QueryType::Transaction | QueryType::Unknown | QueryType::Custom(_) => {
+                ActionType::Execute
+            }
+        }
+    }
+
+    /// コンテキストからリソース名を抽出（簡易実装）
+    fn extract_resource_from_context(&self, _context: &QueryContext) -> String {
+        // TODO: 実際のSQLパースからテーブル名を抽出
+        // 現在は簡易実装としてデフォルトリソースを返す
+        "default_resource".to_string()
+    }
+
+    /// RBACにユーザーロールを割り当て
+    pub async fn assign_user_role(&self, user_id: &str, role: &str) -> Result<(), SecurityError> {
+        self.rbac.assign_role(user_id, role).await
+    }
+
+    /// RBACからユーザーロールを削除
+    pub async fn revoke_user_role(&self, user_id: &str, role: &str) -> Result<(), SecurityError> {
+        self.rbac.revoke_role(user_id, role).await
+    }
+
+    /// RBAC設定を更新
+    pub async fn update_rbac_config(&self, config: super::security_config::RbacConfig) {
+        self.rbac.update_config(config).await;
+        info!("RBAC configuration updated");
+    }
+
+    /// カラムレベルアクセスをチェック
+    pub async fn check_column_access(
+        &self,
+        user_id: &str,
+        table_name: &str,
+        column_name: &str,
+        action: &ActionType,
+    ) -> Result<super::advanced_security::ColumnAccessResult, SecurityError> {
+        // ユーザーのロールを取得
+        let user_roles = self.get_user_roles(user_id).await;
+
+        self.rbac
+            .check_column_access(&user_roles, table_name, column_name, action)
+            .await
+    }
+
+    /// 行レベルセキュリティをチェック
+    pub async fn check_row_level_security(
+        &self,
+        user_id: &str,
+        table_name: &str,
+        row_data: &HashMap<String, String>,
+    ) -> Result<bool, SecurityError> {
+        // ユーザーのロールを取得
+        let user_roles = self.get_user_roles(user_id).await;
+
+        self.rbac
+            .check_row_level_security(user_id, &user_roles, table_name, row_data)
+            .await
+    }
+
+    /// ユーザーのロールを取得（内部ヘルパー）
+    async fn get_user_roles(&self, user_id: &str) -> std::collections::HashSet<String> {
+        // RBACの公開APIを使用してロールを取得
+        self.rbac.get_user_roles(user_id).await
+    }
+
+    /// データマスキングを適用
+    pub fn apply_data_masking(
+        &self,
+        data: &str,
+        masking_rule: &super::security_config::MaskingRule,
+    ) -> String {
+        self.rbac.apply_data_masking(data, masking_rule)
     }
 
     /// レート制限チェック
