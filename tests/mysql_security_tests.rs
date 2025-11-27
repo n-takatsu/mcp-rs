@@ -17,14 +17,14 @@ use mcp_rs::handlers::database::{
 };
 use std::sync::Arc;
 
-/// Initialize test logger for security testing
+// Initialize test logger for security testing
 fn init_test_logger() {
     let _ = env_logger::builder()
         .filter_level(log::LevelFilter::Debug)
         .try_init();
 }
 
-/// Create test MySQL configuration
+// Create test MySQL configuration
 fn create_test_config() -> DatabaseConfig {
     DatabaseConfig {
         database_type: DatabaseType::MySQL,
@@ -66,7 +66,7 @@ fn create_test_config() -> DatabaseConfig {
     }
 }
 
-/// Setup test environment with MySQL engine and security layer
+// Setup test environment with MySQL engine and security layer
 async fn setup_test_environment(
 ) -> Result<(MySqlEngine, Arc<DatabaseSecurity>), Box<dyn std::error::Error>> {
     init_test_logger();

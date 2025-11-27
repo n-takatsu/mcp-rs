@@ -386,7 +386,7 @@ fn test_extreme_numeric_values() {
 mod test_utilities {
     use super::*;
 
-    /// Helper to create test parameter sets
+    // Helper to create test parameter sets
     pub fn create_test_params(count: usize) -> Vec<Value> {
         (0..count)
             .map(|i| match i % 5 {
@@ -399,7 +399,7 @@ mod test_utilities {
             .collect()
     }
 
-    /// Helper to create SQL with placeholders
+    // Helper to create SQL with placeholders
     pub fn create_sql_with_placeholders(count: usize) -> String {
         let placeholders = vec!["?"; count].join(", ");
         format!("SELECT {} ", placeholders)

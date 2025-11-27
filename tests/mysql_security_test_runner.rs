@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::process::Command;
 use std::time::Instant;
 
-/// Test suite configuration
+// Test suite configuration
 #[derive(Debug, Clone)]
 pub struct TestSuiteConfig {
     pub include_integration_tests: bool,
@@ -31,7 +31,7 @@ impl Default for TestSuiteConfig {
     }
 }
 
-/// Test result summary
+// Test result summary
 #[derive(Debug, Clone)]
 pub struct TestResult {
     pub test_name: String,
@@ -49,14 +49,14 @@ pub enum TestStatus {
     Timeout,
 }
 
-/// Test suite runner
+// Test suite runner
 pub struct MySqlSecurityTestRunner {
     config: TestSuiteConfig,
     results: Vec<TestResult>,
 }
 
 impl MySqlSecurityTestRunner {
-    /// Create new test runner
+    // Create new test runner
     pub fn new(config: TestSuiteConfig) -> Self {
         Self {
             config,
@@ -64,7 +64,7 @@ impl MySqlSecurityTestRunner {
         }
     }
 
-    /// Run all MySQL security tests
+    // Run all MySQL security tests
     pub async fn run_all_tests(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         info!("🚀 Starting MySQL Security Test Suite");
         info!("Configuration: {:?}", self.config);
@@ -106,7 +106,7 @@ impl MySqlSecurityTestRunner {
         Ok(())
     }
 
-    /// Initialize test logger
+    // Initialize test logger
     fn init_test_logger(&self) {
         let _ = env_logger::builder()
             .filter_level(log::LevelFilter::Info)
@@ -114,7 +114,7 @@ impl MySqlSecurityTestRunner {
             .try_init();
     }
 
-    /// Run basic security tests
+    // Run basic security tests
     async fn run_basic_security_tests(&mut self) {
         info!("🧪 Running Basic Security Tests");
 
@@ -134,7 +134,7 @@ impl MySqlSecurityTestRunner {
         }
     }
 
-    /// Run attack pattern tests
+    // Run attack pattern tests
     async fn run_attack_pattern_tests(&mut self) {
         info!("🎯 Running Attack Pattern Tests");
 
@@ -153,7 +153,7 @@ impl MySqlSecurityTestRunner {
         }
     }
 
-    /// Run parameterized query tests
+    // Run parameterized query tests
     async fn run_parameterized_query_tests(&mut self) {
         info!("🔧 Running Parameterized Query Tests");
 
@@ -176,7 +176,7 @@ impl MySqlSecurityTestRunner {
         }
     }
 
-    /// Run security integration tests
+    // Run security integration tests
     async fn run_security_integration_tests(&mut self) {
         info!("🔗 Running Security Integration Tests");
 
@@ -199,7 +199,7 @@ impl MySqlSecurityTestRunner {
         }
     }
 
-    /// Run error handling tests
+    // Run error handling tests
     async fn run_error_handling_tests(&mut self) {
         info!("❌ Running Error Handling Tests");
 
@@ -218,7 +218,7 @@ impl MySqlSecurityTestRunner {
         }
     }
 
-    /// Run performance tests
+    // Run performance tests
     async fn run_performance_tests(&mut self) {
         info!("⚡ Running Performance Tests");
 
@@ -239,7 +239,7 @@ impl MySqlSecurityTestRunner {
         self.results.push(result);
     }
 
-    /// Run stress tests
+    // Run stress tests
     async fn run_stress_tests(&mut self) {
         info!("💪 Running Stress Tests");
 
@@ -258,7 +258,7 @@ impl MySqlSecurityTestRunner {
         self.results.push(result);
     }
 
-    /// Run a single test case
+    // Run a single test case
     async fn run_single_test(&mut self, test_file: &str, test_name: &str, category: &str) {
         info!("Running {}: {}", category, test_name);
 
@@ -348,7 +348,7 @@ impl MySqlSecurityTestRunner {
         self.results.push(test_result);
     }
 
-    /// Execute cargo test command
+    // Execute cargo test command
     async fn execute_cargo_test(
         &self,
         test_name: &str,
@@ -360,7 +360,7 @@ impl MySqlSecurityTestRunner {
         Ok(output)
     }
 
-    /// Generate detailed test report
+    // Generate detailed test report
     async fn generate_test_report(
         &self,
         total_duration: std::time::Duration,
@@ -452,7 +452,7 @@ impl MySqlSecurityTestRunner {
         Ok(())
     }
 
-    /// Print test summary to console
+    // Print test summary to console
     fn print_test_summary(&self, total_duration: std::time::Duration) {
         info!("📋 MySQL Security Test Suite Summary");
         info!("=====================================");
@@ -555,7 +555,7 @@ impl MySqlSecurityTestRunner {
     }
 }
 
-/// Main function to run all MySQL security tests
+// Main function to run all MySQL security tests
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Configure test suite

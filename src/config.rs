@@ -304,10 +304,10 @@ impl Default for McpConfig {
 
 impl McpConfig {
     /// 文字列内の環境変数を展開する
-    /// 
+    ///
     /// # 形式
     /// `${VAR_NAME}` の形式で環境変数を参照します。
-    /// 
+    ///
     /// # 例
     /// ```
     /// # use std::env;
@@ -316,7 +316,7 @@ impl McpConfig {
     /// let result = McpConfig::expand_env_vars("url = ${TEST_VAR}");
     /// assert_eq!(result, "url = value123");
     /// ```
-    /// 
+    ///
     /// # 注意
     /// - 環境変数が見つからない場合は `[ERROR:VAR_NAME]` に置換されます
     /// - 最大100回まで再帰的に展開します（無限ループ防止）

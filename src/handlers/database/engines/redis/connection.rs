@@ -514,7 +514,7 @@ impl DatabaseConnection for RedisConnection {
                 };
 
                 Ok(ExecuteResult {
-                    rows_affected: count as u64,
+                    rows_affected: count,
                     last_insert_id: None,
                     execution_time_ms: 0,
                 })
@@ -670,7 +670,7 @@ mod tests {
             security: Default::default(),
         };
 
-        let connection = RedisConnection::connect(config).await;
+        let connection = RedisConnection::connect(&config).await;
         assert!(connection.is_ok());
     }
 
@@ -692,13 +692,13 @@ mod tests {
             security: Default::default(),
         };
 
-        let result = RedisConnection::connect(config).await;
+        let result = RedisConnection::connect(&config).await;
         assert!(result.is_err());
 
         // Test invalid database
         config.host = "localhost".to_string();
         config.database = 20; // Invalid
-        let result = RedisConnection::connect(config).await;
+        let result = RedisConnection::connect(&config).await;
         assert!(result.is_err());
     }
 }

@@ -1,47 +1,58 @@
-//! 拡張セキュリティ設定とポリシー管理
+//! Advanced Security Configuration and Policy Management
+//!
+//! This module defines the configuration structures for all security components:
+//!
+//! - **Multi-Factor Authentication (MFA)**: TOTP, backup codes, device trust
+//! - **Role-Based Access Control (RBAC)**: Roles, permissions, hierarchy, conditions
+//! - **Anomaly Detection**: Behavioral analysis, threat intelligence
+//! - **Encryption**: AES-GCM-256, key derivation, column encryption
+//! - **Audit & Compliance**: Event logging, retention, compliance reporting
+//! - **Incident Response**: Automated threat mitigation, escalation policies
 
 use chrono::{DateTime, NaiveTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
-/// 拡張セキュリティ設定
+/// Advanced Security Configuration
+///
+/// Root configuration structure containing all security subsystem configurations.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AdvancedSecurityConfig {
-    /// 多要素認証設定
+    /// Multi-Factor Authentication configuration
     pub mfa: MfaConfig,
 
-    /// ロールベースアクセス制御
+    /// Role-Based Access Control configuration
     pub rbac: RbacConfig,
 
-    /// 異常検知設定
+    /// Anomaly Detection configuration
     pub anomaly_detection: AnomalyDetectionConfig,
 
-    /// 暗号化設定
+    /// Encryption configuration
     pub encryption: EncryptionConfig,
 
-    /// 監査とコンプライアンス
+    /// Audit and Compliance configuration
     pub audit: AuditConfig,
 
-    /// 自動インシデント対応
+    /// Automated Incident Response configuration
     pub incident_response: IncidentResponseConfig,
 }
 
-/// 多要素認証設定
+/// Multi-Factor Authentication Configuration
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct MfaConfig {
-    /// MFA必須フラグ
+    /// Whether MFA is required for authentication
     pub required: bool,
 
-    /// TOTP設定
+    /// Time-based One-Time Password (TOTP) settings
     pub totp: TotpConfig,
 
-    /// バックアップコード設定
+    /// Backup code settings for MFA recovery
     pub backup_codes: BackupCodeConfig,
 
-    /// デバイス信頼度設定
+    /// Device trust level configuration
     pub device_trust: DeviceTrustConfig,
 
-    /// MFA例外リスト
+    /// List of user IDs exempt from MFA requirement
     pub exceptions: HashSet<String>,
 }
 

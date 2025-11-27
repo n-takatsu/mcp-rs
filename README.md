@@ -55,8 +55,9 @@ Need WordPress security automation? 6-layer enterprise security architecture wit
 - **YouTube & Social Embeds**: Rich media integration with security validation
 - **User Management**: Role-based access control and user operations
 
-## **Enterprise Security (6-Layer Architecture)**
+## **Enterprise Security (7-Layer Architecture)**
 
+- **RBAC (Role-Based Access Control)**: Multi-level access control with role hierarchy, time-based restrictions, IP filtering, and data masking
 - **AES-GCM-256 Encryption**: Military-grade encryption with PBKDF2 key derivation
 - **SQL Injection Protection**: Real-time detection of 11 attack patterns
 - **XSS Prevention**: Advanced protection against 14 XSS attack vectors
@@ -215,9 +216,79 @@ level = "error"
 - [🚀 Quick Start Guide](./project-docs/quick-start.md)
 - [🔧 Configuration Reference](./project-docs/configuration.md)
 - [🔒 Security Guide](./project-docs/security.md)
+- [🛡️ RBAC (Role-Based Access Control)](./docs/RBAC.md)
 - [🏗️ Architecture Overview](./project-docs/architecture.md)
 - [📝 API Reference](./project-docs/api-reference.md)
 - [🔄 Claude Desktop Integration](./project-docs/CLAUDE_DESKTOP_INTEGRATION.md)
+
+## 🔐 RBAC Quick Start
+
+mcp-rs includes a comprehensive Role-Based Access Control (RBAC) system for fine-grained security.
+
+### Key Features
+
+- **Role Hierarchy**: Inheritance-based permission management
+- **Time-Based Access**: Business hours, emergency access, break periods
+- **IP Restrictions**: CIDR-based network access control
+- **Column-Level Security**: Read/write permissions per column
+- **Row-Level Security**: Ownership-based access control
+- **Data Masking**: Full, Partial, Hash, and Tokenize strategies
+
+### Basic Usage
+
+```rust
+use mcp_rs::handlers::database::integrated_security::*;
+
+// Assign role to user
+security_manager.assign_user_role("user123", "developer").await?;
+
+// Check access (automatically enforces all RBAC policies)
+let context = QueryContext::new();
+context.insert("user_id", "user123");
+context.insert("client_ip", "10.0.1.50");
+
+let decision = security_manager.check_authentication_and_authorization(
+    "user123",
+    "SELECT * FROM users",
+    &context
+).await?;
+
+// Apply data masking
+let masked_email = security_manager.apply_data_masking(
+    "user123",
+    "users",
+    "email",
+    "john.doe@example.com"
+).await?;
+// Result for 'support' role: "joh***************"
+// Result for 'admin' role: "john.doe@example.com"
+```
+
+### Configuration Example
+
+```toml
+[security.rbac]
+enabled = true
+default_role = "read_only"
+
+[security.rbac.roles.developer]
+description = "Developer with limited write access"
+permissions = { "dev_db.*" = ["Read", "Write"] }
+
+[security.rbac.time_based_access]
+enabled = true
+timezone = "UTC"
+
+[security.rbac.time_based_access.business_hours.Monday]
+start = "09:00:00"
+end = "17:00:00"
+
+[security.rbac.ip_restrictions]
+enabled = true
+allowed_ranges = ["10.0.0.0/8", "192.168.1.0/24"]
+```
+
+📖 **Full Documentation**: See [RBAC Guide](./docs/RBAC.md) for comprehensive configuration and usage examples.
 
 ## 🛠️ Development
 

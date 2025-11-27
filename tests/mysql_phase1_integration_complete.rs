@@ -1,6 +1,8 @@
 //! MySQL Phase 1 Integration Tests
 //! End-to-end testing for prepared statements and transactions
 
+#![allow(dead_code)]
+
 #[test]
 fn test_prepared_statement_lifecycle() {
     struct MockPreparedStatement {
