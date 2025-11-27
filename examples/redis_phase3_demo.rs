@@ -4,13 +4,26 @@
 use mcp_rs::handlers::database::engines::redis::{
     RedisCommand, RedisConfig, RedisConnection, RedisValue,
 };
+use mcp_rs::handlers::database::engines::redis::types::RedisSecuritySettings;
 use std::error::Error;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     println!("🚀 Redis Phase 3 実装デモ\n");
 
-    // Redis設定
+    // Redis設定（セキュリティ制限を緩和）
+    let mut security = RedisSecuritySettings::default();
+    security.command_whitelist = vec![
+        "GET".to_string(),
+        "SET".to_string(),
+        "LPUSH".to_string(),
+        "LRANGE".to_string(),
+        "ZADD".to_string(),
+        "ZRANGE".to_string(),
+        "DEL".to_string(),
+        "PING".to_string(),
+    ];
+
     let config = RedisConfig {
         host: "localhost".to_string(),
         port: 6379,
@@ -19,7 +32,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         timeout_seconds: 30,
         use_tls: false,
         pool_settings: Default::default(),
-        security: Default::default(),
+        security,
     };
 
     println!("📡 Redisサーバーへの接続を試みています...");
