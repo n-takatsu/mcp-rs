@@ -4,14 +4,14 @@
 
 use log::{info, warn};
 
-/// Initialize test logger for security testing
+// Initialize test logger for security testing
 fn init_test_logger() {
     let _ = env_logger::builder()
         .filter_level(log::LevelFilter::Debug)
         .try_init();
 }
 
-/// Test MySqlParamConverter basic functionality
+// Test MySqlParamConverter basic functionality
 #[tokio::test]
 async fn test_mysql_param_converter_basic() {
     init_test_logger();
@@ -23,7 +23,7 @@ async fn test_mysql_param_converter_basic() {
     info!("✅ MySqlParamConverter basic test completed");
 }
 
-/// Test parameter validation functionality
+// Test parameter validation functionality
 #[tokio::test]
 async fn test_parameter_validation_basic() {
     init_test_logger();
@@ -60,7 +60,7 @@ async fn test_parameter_validation_basic() {
     info!("✅ Parameter validation basic test completed");
 }
 
-/// Test security rule patterns
+// Test security rule patterns
 #[tokio::test]
 async fn test_security_patterns() {
     init_test_logger();
@@ -94,7 +94,7 @@ async fn test_security_patterns() {
     info!("✅ Security pattern test completed");
 }
 
-/// Test comprehensive security scenario
+// Test comprehensive security scenario
 #[tokio::test]
 async fn test_comprehensive_security_scenario() {
     init_test_logger();
@@ -128,7 +128,7 @@ async fn test_comprehensive_security_scenario() {
     info!("✅ Comprehensive security scenario test completed");
 }
 
-/// Run full security test suite
+// Run full security test suite
 #[tokio::test]
 async fn run_full_security_test_suite() {
     init_test_logger();

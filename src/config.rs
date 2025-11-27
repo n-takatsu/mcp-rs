@@ -303,7 +303,23 @@ impl Default for McpConfig {
 }
 
 impl McpConfig {
-    /// 文字列内の環境変数を展開する (${VAR_NAME} 形式)
+    /// 文字列内の環境変数を展開する
+    ///
+    /// # 形式
+    /// `${VAR_NAME}` の形式で環境変数を参照します。
+    ///
+    /// # 例
+    /// ```
+    /// # use std::env;
+    /// # use mcp_rs::config::McpConfig;
+    /// env::set_var("TEST_VAR", "value123");
+    /// let result = McpConfig::expand_env_vars("url = ${TEST_VAR}");
+    /// assert_eq!(result, "url = value123");
+    /// ```
+    ///
+    /// # 注意
+    /// - 環境変数が見つからない場合は `[ERROR:VAR_NAME]` に置換されます
+    /// - 最大100回まで再帰的に展開します（無限ループ防止）
     pub fn expand_env_vars(input: &str) -> String {
         let mut result = input.to_string();
         let mut processed_vars = std::collections::HashSet::new();
@@ -563,7 +579,7 @@ impl McpConfig {
 #    WORDPRESS_USERNAME=your_username
 #    WORDPRESS_PASSWORD=your_app_password
 #
-# 3. 設定ファイルでは ${{VAR_NAME}} 形式で参照:
+# 3. 設定ファイルでは環境変数参照 (ドル記号+波括弧形式):
 #    url = "${{WORDPRESS_URL}}"
 #    username = "${{WORDPRESS_USERNAME}}"
 #    password = "${{WORDPRESS_PASSWORD}}"
@@ -738,6 +754,66 @@ pub struct PluginConfig {
     pub hot_reload: bool,
     /// Maximum number of plugins to load
     pub max_plugins: Option<usize>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_expand_env_vars_basic() {
+        std::env::set_var("TEST_VAR", "test_value");
+        let result = McpConfig::expand_env_vars("${TEST_VAR}");
+        assert_eq!(result, "test_value");
+        std::env::remove_var("TEST_VAR");
+    }
+
+    #[test]
+    fn test_expand_env_vars_multiple() {
+        std::env::set_var("VAR1", "value1");
+        std::env::set_var("VAR2", "value2");
+        let result = McpConfig::expand_env_vars("${VAR1} and ${VAR2}");
+        assert_eq!(result, "value1 and value2");
+        std::env::remove_var("VAR1");
+        std::env::remove_var("VAR2");
+    }
+
+    #[test]
+    fn test_expand_env_vars_missing() {
+        let result = McpConfig::expand_env_vars("${NONEXISTENT_VAR}");
+        assert_eq!(result, "[ERROR:NONEXISTENT_VAR]");
+    }
+
+    #[test]
+    fn test_expand_env_vars_nested() {
+        std::env::set_var("OUTER", "prefix_${INNER}_suffix");
+        std::env::set_var("INNER", "middle");
+        let result = McpConfig::expand_env_vars("${OUTER}");
+        assert_eq!(result, "prefix_middle_suffix");
+        std::env::remove_var("OUTER");
+        std::env::remove_var("INNER");
+    }
+
+    #[test]
+    fn test_expand_env_vars_empty_input() {
+        let result = McpConfig::expand_env_vars("");
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn test_expand_env_vars_no_variables() {
+        let input = "plain text without variables";
+        let result = McpConfig::expand_env_vars(input);
+        assert_eq!(result, input);
+    }
+
+    #[test]
+    fn test_expand_env_vars_special_chars() {
+        std::env::set_var("SPECIAL", "test@example.com:8080/path?query=1");
+        let result = McpConfig::expand_env_vars("url=${SPECIAL}");
+        assert_eq!(result, "url=test@example.com:8080/path?query=1");
+        std::env::remove_var("SPECIAL");
+    }
 }
 
 impl Default for PluginConfig {
