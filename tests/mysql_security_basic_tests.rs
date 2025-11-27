@@ -138,4 +138,3 @@ async fn run_full_security_test_suite() {
     info!("🔒 All security mechanisms validated and working correctly");
     info!("📊 Test Coverage: SQL Injection Prevention, Parameter Validation, Pattern Detection");
 }
-

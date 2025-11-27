@@ -417,4 +417,3 @@ mod test_utilities {
         assert_eq!(sql.matches('?').count(), 5);
     }
 }
-

@@ -81,4 +81,3 @@ async fn test_basic_error_handling() {
     // This test passes if the engine can be created without panicking
     // No need for assertion as the test passes if we reach this point
 }
-

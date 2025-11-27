@@ -336,4 +336,3 @@ mod redis_integration {
         conn.execute_command(&del_cmd).await.unwrap();
     }
 }
-

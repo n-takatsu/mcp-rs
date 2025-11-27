@@ -362,5 +362,3 @@ mod postgres_integration_tests {
         assert!(true); // Placeholder
     }
 }
-
-

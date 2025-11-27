@@ -612,4 +612,3 @@ mod postgres_database_integration_tests {
         }
     }
 }
-

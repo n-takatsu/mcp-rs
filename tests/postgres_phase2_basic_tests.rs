@@ -334,5 +334,3 @@ mod postgres_basic_tests {
         max_connections: u32,
     }
 }
-
-

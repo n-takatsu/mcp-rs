@@ -509,4 +509,3 @@ async fn test_attack_pattern_coverage() {
 
     info!("✅ Attack pattern coverage test completed successfully");
 }
-
