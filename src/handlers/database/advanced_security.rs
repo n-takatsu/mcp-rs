@@ -1,4 +1,14 @@
-//! 簡素化された高度なセキュリティ機能
+//! Advanced Security Features
+//!
+//! This module provides comprehensive security features including:
+//! - Role-Based Access Control (RBAC) with hierarchy support
+//! - Multi-Factor Authentication (MFA)
+//! - Time-based access control with business hours
+//! - IP restrictions with CIDR notation
+//! - Column-level and row-level security
+//! - Data masking (Full, Partial, Hash, Tokenize)
+//! - Anomaly detection
+//! - Column encryption
 
 use super::security_config::{
     ConditionOperator, ConditionType, EmergencyAccessConfig, GeoBlockingConfig, IpPolicy,
@@ -1209,10 +1219,7 @@ mod tests {
             .await
             .unwrap();
 
-        match decision {
-            AccessDecision::Allow => assert!(true),
-            _ => panic!("Expected Allow decision"),
-        }
+        assert!(matches!(decision, AccessDecision::Allow), "Expected Allow decision");
 
         // DELETEアクションは拒否される
         let decision_deny = rbac
@@ -1220,10 +1227,7 @@ mod tests {
             .await
             .unwrap();
 
-        match decision_deny {
-            AccessDecision::Deny => assert!(true),
-            _ => panic!("Expected Deny decision"),
-        }
+        assert!(matches!(decision_deny, AccessDecision::Deny), "Expected Deny decision");
     }
 
     #[tokio::test]

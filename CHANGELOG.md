@@ -7,6 +7,90 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added - RBAC Implementation (Issue #74)
+
+- **Role-Based Access Control (RBAC)** (`src/handlers/database/advanced_security.rs`)
+  - `RoleBasedAccessControl` with role hierarchy and inheritance
+  - User role management (assign, revoke, get roles)
+  - Permission caching for optimized access checks
+  - Comprehensive access decision engine
+
+- **Advanced Access Controls**
+  - Condition evaluation engine with 6 condition types:
+    - TimeOfDay, DayOfWeek, IpAddress
+    - UserAttribute, DataSensitivity, QueryComplexity
+  - 9 comparison operators (Equals, NotEquals, Contains, GreaterThan, LessThan, Between, In, NotIn, Regex)
+  - Time-based access control:
+    - Business hours per weekday (Monday-Sunday)
+    - Emergency access configuration
+    - Break period restrictions
+    - Timezone support (defaults to "UTC")
+  - IP restrictions:
+    - CIDR notation support via `ipnet` crate
+    - Role-based IP ranges
+    - VPN requirement enforcement
+    - Geo-blocking configuration
+
+- **Resource-Level Security**
+  - Column-level permissions:
+    - Read/Write role assignments
+    - Data masking rules integration
+    - Encryption requirements
+  - Data masking (4 types):
+    - **Full**: Complete redaction to "***"
+    - **Partial**: Configurable reveal (first/last N characters)
+    - **Hash**: SHA-256 hashing via `sha2` crate
+    - **Tokenize**: Random token generation via `rand` crate
+  - Row-level security:
+    - Policy column enforcement (e.g., owner_id)
+    - User attribute matching
+    - Admin bypass capability
+
+- **IntegratedSecurityManager Integration** (`src/handlers/database/integrated_security.rs`)
+  - Enhanced `check_authentication_and_authorization` with RBAC
+  - Query type to action mapping (Select→Read, Insert/Update→Write, Delete→Delete, DDL→Admin)
+  - Public RBAC APIs:
+    - `assign_user_role`, `revoke_user_role`, `update_rbac_config`
+    - `check_column_access`, `check_row_level_security`
+    - `apply_data_masking`, `get_user_roles`
+
+- **Comprehensive Test Suite** (15 RBAC tests)
+  - Basic RBAC operations (role assignment, hierarchy)
+  - Condition evaluation (all 6 types + 9 operators)
+  - Time-based access control scenarios
+  - IP restriction validation with CIDR
+  - Column-level permission enforcement
+  - Data masking (all 4 types)
+  - Row-level security policies
+
+### Security
+
+- **7-Layer Security Architecture**: Now includes RBAC as the primary access control layer
+- **Data Masking**: 4 masking strategies for PII/PHI protection
+- **Fine-Grained Access Control**: Column and row-level security policies
+- **Time-Based Security**: Business hours and emergency access support
+- **Network Security**: IP-based access restrictions with CIDR
+
+### Dependencies
+
+- Added `ipnet = "2.10"` for CIDR notation IP range validation
+- Added `sha2 = "0.10"` for SHA-256 hashing in data masking
+- Added `rand = "0.8"` for cryptographically secure token generation
+
+### Quality Assurance
+
+- 15/15 RBAC tests passing (100%)
+- 133 library tests total (100% passing)
+- 44 compatibility tests (100% passing)
+- Zero Clippy warnings
+- Zero compiler errors
+
+### Documentation
+
+- Updated README.md: 6-Layer → 7-Layer Security Architecture
+- Enhanced module documentation with comprehensive feature lists
+- Added detailed API documentation for RBAC methods
+
 ### Added - MySQL Phase 1 Security Enhancement
 
 - **Parameterized Query Support** (`src/handlers/database/engines/mysql/prepared.rs`)

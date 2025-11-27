@@ -1,6 +1,26 @@
-//! 統合データベースセキュリティマネージャー
+//! Integrated Database Security Manager
 //!
-//! 全てのセキュリティ機能を統合し、一元的なセキュリティ管理を提供
+//! This module provides comprehensive, unified security management for database operations,
+//! coordinating all security layers:
+//!
+//! ## Security Components
+//!
+//! - **RBAC (Role-Based Access Control)**: Multi-level access control with role hierarchy,
+//!   time-based restrictions, IP filtering, and data masking
+//! - **Multi-Factor Authentication (MFA)**: Additional authentication layer for sensitive operations
+//! - **SQL Injection Detection**: Real-time detection of 11 attack patterns
+//! - **Rate Limiting**: Token bucket algorithm with DDoS protection
+//! - **Anomaly Detection**: Behavioral analysis and threat scoring
+//! - **Column Encryption**: AES-GCM-256 encryption for sensitive data
+//! - **Audit Logging**: Comprehensive security event tracking
+//!
+//! ## Features
+//!
+//! - Unified security policy enforcement
+//! - Real-time threat intelligence integration
+//! - Incident response management
+//! - Security event correlation
+//! - Compliance reporting
 
 use super::{
     advanced_security::{
@@ -18,7 +38,9 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
-/// 統合セキュリティマネージャー
+/// Integrated Security Manager
+///
+/// Coordinates all security components and provides unified security policy enforcement
 pub struct IntegratedSecurityManager {
     config: AdvancedSecurityConfig,
 
