@@ -1219,7 +1219,10 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(matches!(decision, AccessDecision::Allow), "Expected Allow decision");
+        assert!(
+            matches!(decision, AccessDecision::Allow),
+            "Expected Allow decision"
+        );
 
         // DELETEアクションは拒否される
         let decision_deny = rbac
@@ -1227,7 +1230,10 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(matches!(decision_deny, AccessDecision::Deny), "Expected Deny decision");
+        assert!(
+            matches!(decision_deny, AccessDecision::Deny),
+            "Expected Deny decision"
+        );
     }
 
     #[tokio::test]
