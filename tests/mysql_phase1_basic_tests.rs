@@ -290,3 +290,4 @@ fn test_multiple_result_set_handling() {
     }
     assert_eq!(results.len(), 1000);
 }
+

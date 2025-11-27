@@ -24,7 +24,7 @@ mod postgres_database_integration_tests {
         std::env::var("TEST_POSTGRESQL_URL").unwrap_or_else(|_| DEFAULT_DB_URL.to_string())
     }
 
-    /// Check if database is available
+    // Check if database is available
     async fn is_db_available() -> bool {
         if let Ok(url) = std::env::var("SKIP_DB_TESTS") {
             if url == "1" {
@@ -612,3 +612,4 @@ mod postgres_database_integration_tests {
         }
     }
 }
+

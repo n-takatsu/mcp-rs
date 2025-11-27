@@ -12,14 +12,14 @@ use mcp_rs::handlers::database::{
 };
 use std::sync::Arc;
 
-/// Initialize test logger
+// Initialize test logger
 fn init_logger() {
     let _ = env_logger::builder()
         .filter_level(log::LevelFilter::Debug)
         .try_init();
 }
 
-/// Create security configuration for attack pattern testing
+// Create security configuration for attack pattern testing
 fn create_security_config() -> SecurityConfig {
     SecurityConfig {
         enable_sql_injection_detection: true,
@@ -509,3 +509,4 @@ async fn test_attack_pattern_coverage() {
 
     info!("✅ Attack pattern coverage test completed successfully");
 }
+

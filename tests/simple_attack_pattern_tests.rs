@@ -10,14 +10,14 @@ use mcp_rs::handlers::database::{
     types::{QueryContext, QueryType, SecurityConfig},
 };
 
-/// Initialize test logger
+// Initialize test logger
 fn init_logger() {
     let _ = env_logger::builder()
         .filter_level(log::LevelFilter::Debug)
         .try_init();
 }
 
-/// Create basic security configuration
+// Create basic security configuration
 fn create_basic_security_config() -> SecurityConfig {
     SecurityConfig {
         enable_sql_injection_detection: true,
@@ -234,3 +234,4 @@ async fn test_comprehensive_attack_patterns() {
 
     info!("✅ Comprehensive attack pattern test completed");
 }
+
