@@ -56,6 +56,14 @@ impl RedisEngine {
         })
     }
 
+    /// Execute a Redis command directly
+    pub async fn execute_redis_command(
+        &self,
+        command: &RedisCommand,
+    ) -> Result<RedisValue, DatabaseError> {
+        self.connection.execute_command(command).await
+    }
+
     /// Check if command is allowed
     pub fn is_command_allowed(&self, cmd: &RedisCommand) -> bool {
         self.command_restrictor.is_allowed(cmd)
