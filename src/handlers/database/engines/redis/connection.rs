@@ -514,7 +514,7 @@ impl DatabaseConnection for RedisConnection {
                 };
 
                 Ok(ExecuteResult {
-                    rows_affected: count as u64,
+                    rows_affected: count,
                     last_insert_id: None,
                     execution_time_ms: 0,
                 })

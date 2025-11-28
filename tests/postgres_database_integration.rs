@@ -24,7 +24,7 @@ mod postgres_database_integration_tests {
         std::env::var("TEST_POSTGRESQL_URL").unwrap_or_else(|_| DEFAULT_DB_URL.to_string())
     }
 
-    /// Check if database is available
+    // Check if database is available
     async fn is_db_available() -> bool {
         if let Ok(url) = std::env::var("SKIP_DB_TESTS") {
             if url == "1" {
@@ -303,7 +303,7 @@ mod postgres_database_integration_tests {
         let pool = pool.unwrap();
 
         // Use sqlx transaction API
-        let mut tx = pool.begin().await;
+        let tx = pool.begin().await;
         assert!(tx.is_ok());
 
         let mut tx = tx.unwrap();
@@ -354,7 +354,7 @@ mod postgres_database_integration_tests {
         let pool = pool.unwrap();
 
         // Use sqlx transaction API instead of raw SQL for transaction control
-        let mut tx = pool.begin().await;
+        let tx = pool.begin().await;
         assert!(tx.is_ok());
 
         let mut tx = tx.unwrap();
