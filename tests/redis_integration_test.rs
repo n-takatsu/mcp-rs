@@ -3,10 +3,10 @@
 
 #[cfg(all(test, feature = "redis", feature = "database"))]
 mod redis_integration {
+    use mcp_rs::handlers::database::engines::redis::types::RedisSecuritySettings;
     use mcp_rs::handlers::database::engines::redis::{
         RedisCommand, RedisConfig, RedisConnection, RedisValue,
     };
-    use mcp_rs::handlers::database::engines::redis::types::RedisSecuritySettings;
 
     fn create_test_config() -> RedisConfig {
         let mut security = RedisSecuritySettings::default();
@@ -181,8 +181,14 @@ mod redis_integration {
         let hset_cmd = RedisCommand::HSet(
             key.to_string(),
             vec![
-                ("field1".to_string(), RedisValue::String("value1".to_string())),
-                ("field2".to_string(), RedisValue::String("value2".to_string())),
+                (
+                    "field1".to_string(),
+                    RedisValue::String("value1".to_string()),
+                ),
+                (
+                    "field2".to_string(),
+                    RedisValue::String("value2".to_string()),
+                ),
             ],
         );
         conn.execute_command(&hset_cmd).await.unwrap();
@@ -302,11 +308,7 @@ mod redis_integration {
     async fn test_security_restrictions() {
         // セキュリティ設定（ホワイトリスト）
         let mut security = RedisSecuritySettings::default();
-        security.command_whitelist = vec![
-            "GET".to_string(),
-            "SET".to_string(),
-            "DEL".to_string(),
-        ];
+        security.command_whitelist = vec!["GET".to_string(), "SET".to_string(), "DEL".to_string()];
 
         let config = RedisConfig {
             host: "localhost".to_string(),

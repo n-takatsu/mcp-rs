@@ -61,14 +61,12 @@ impl PostgreSqlPreparedStatement {
     fn validate_placeholders(sql: &str, expected_count: usize) -> Result<(), DatabaseError> {
         let mut max_placeholder = 0;
 
-        // Find all $N placeholders in the SQL string
-        for _ in sql.match_indices('$') {
-            let pos = sql.find('$').unwrap_or(0);
-            if pos + 1 < sql.len() {
-                if let Some(ch) = sql[pos + 1..].chars().next() {
-                    if let Some(num) = ch.to_digit(10) {
-                        max_placeholder = max_placeholder.max(num as usize);
-                    }
+        // Find all $N placeholders in the SQL string using regex
+        let re = regex::Regex::new(r"\$(\d+)").unwrap();
+        for cap in re.captures_iter(sql) {
+            if let Some(num_str) = cap.get(1) {
+                if let Ok(num) = num_str.as_str().parse::<usize>() {
+                    max_placeholder = max_placeholder.max(num);
                 }
             }
         }

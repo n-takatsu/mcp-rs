@@ -196,8 +196,9 @@ mod tests {
         config.port = 0;
         assert!(config.validate().is_err());
 
-        config.port = 70000;
-        assert!(config.validate().is_err());
+        // Port must be in range 1-65535 (u16 max)
+        // We can't test > 65535 as it doesn't fit in u16
+        // Test boundary: 0 should fail (tested above)
     }
 
     #[test]

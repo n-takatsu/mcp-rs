@@ -1,10 +1,11 @@
 //! Redis Phase 3 実装デモ
 //! 実際のRedis接続とコマンド実行を示します
+#![cfg(feature = "database")]
 
+use mcp_rs::handlers::database::engines::redis::types::RedisSecuritySettings;
 use mcp_rs::handlers::database::engines::redis::{
     RedisCommand, RedisConfig, RedisConnection, RedisValue,
 };
-use mcp_rs::handlers::database::engines::redis::types::RedisSecuritySettings;
 use std::error::Error;
 
 #[tokio::main]

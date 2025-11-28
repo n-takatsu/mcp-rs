@@ -653,6 +653,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    #[ignore] // Requires actual Redis server
     async fn test_redis_connection_creation() {
         let config = RedisConfig {
             host: "localhost".to_string(),
@@ -670,11 +671,12 @@ mod tests {
             security: Default::default(),
         };
 
-        let connection = RedisConnection::connect(config).await;
+        let connection = RedisConnection::connect(&config).await;
         assert!(connection.is_ok());
     }
 
     #[tokio::test]
+    #[ignore] // Requires actual Redis server
     async fn test_redis_connection_validation() {
         let mut config = RedisConfig {
             host: "".to_string(), // Invalid
@@ -692,13 +694,13 @@ mod tests {
             security: Default::default(),
         };
 
-        let result = RedisConnection::connect(config).await;
+        let result = RedisConnection::connect(&config).await;
         assert!(result.is_err());
 
         // Test invalid database
         config.host = "localhost".to_string();
         config.database = 20; // Invalid
-        let result = RedisConnection::connect(config).await;
+        let result = RedisConnection::connect(&config).await;
         assert!(result.is_err());
     }
 }
