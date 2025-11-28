@@ -653,6 +653,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    #[ignore] // Requires actual Redis server
     async fn test_redis_connection_creation() {
         let config = RedisConfig {
             host: "localhost".to_string(),
@@ -675,6 +676,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore] // Requires actual Redis server
     async fn test_redis_connection_validation() {
         let mut config = RedisConfig {
             host: "".to_string(), // Invalid
