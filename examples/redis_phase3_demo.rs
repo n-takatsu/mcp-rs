@@ -1,14 +1,15 @@
 //! Redis Phase 3 実装デモ
 //! 実際のRedis接続とコマンド実行を示します
-#![cfg(feature = "database")]
 
+#[cfg(all(feature = "redis-backend", feature = "database"))]
 use mcp_rs::handlers::database::engines::redis::types::RedisSecuritySettings;
+#[cfg(all(feature = "redis-backend", feature = "database"))]
 use mcp_rs::handlers::database::engines::redis::{
     RedisCommand, RedisConfig, RedisConnection, RedisValue,
 };
 use std::error::Error;
 
-#[cfg(all(feature = "redis", feature = "database"))]
+#[cfg(all(feature = "redis-backend", feature = "database"))]
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     println!("🚀 Redis Phase 3 実装デモ\n");
@@ -141,8 +142,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-#[cfg(not(all(feature = "redis", feature = "database")))]
+#[cfg(not(all(feature = "redis-backend", feature = "database")))]
 fn main() {
-    println!("このデモを実行するには、redisとdatabaseフィーチャーを有効にしてください。");
-    println!("cargo run --example redis_phase3_demo --features \"redis,database\"");
+    println!("このデモを実行するには、redis-backendとdatabaseフィーチャーを有効にしてください。");
+    println!("cargo run --example redis_phase3_demo --features \"redis-backend,database\"");
 }
