@@ -1,3 +1,5 @@
+#![allow(clippy::assertions_on_constants, clippy::empty_line_after_doc_comments)]
+
 /// PostgreSQL Phase 2 - Basic Tests
 /// Tests for PostgreSQL connection, parameters, and data types
 ///

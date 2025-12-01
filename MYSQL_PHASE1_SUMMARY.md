@@ -149,7 +149,7 @@ Guarantee: No SQL injection possible
 - Float (f64)
 - String (UTF-8)
 - DateTime (Chrono)
-- Binary (Vec<u8>)
+- Binary (`Vec<u8>`)
 
 **Conversion Guarantees**:
 

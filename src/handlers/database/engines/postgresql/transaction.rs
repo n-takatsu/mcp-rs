@@ -246,8 +246,8 @@ mod tests {
 
     #[test]
     #[ignore] // Uses unreachable!() - needs proper mock
+    #[allow(unreachable_code, clippy::diverging_sub_expression)]
     fn test_savepoint_state_tracking() {
-        #[allow(unreachable_code)]
         let mut _txn = PostgreSqlTransaction {
             pool: Arc::new(
                 /* mock pool would go here - using placeholder for compilation */
@@ -267,8 +267,8 @@ mod tests {
 
     #[test]
     #[ignore] // Uses unreachable!() - needs proper mock
+    #[allow(unreachable_code, clippy::diverging_sub_expression)]
     fn test_isolation_level_access() {
-        #[allow(unreachable_code)]
         let _txn = PostgreSqlTransaction {
             pool: Arc::new(unreachable!() as _),
             is_active: true,
@@ -281,6 +281,7 @@ mod tests {
 
     #[test]
     #[ignore] // Uses unreachable!() - needs proper mock
+    #[allow(unreachable_code, clippy::diverging_sub_expression)]
     fn test_transaction_active_check() {
         let _txn_active = PostgreSqlTransaction {
             pool: Arc::new(unreachable!() as _),

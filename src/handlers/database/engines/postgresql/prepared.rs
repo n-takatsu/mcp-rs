@@ -392,10 +392,11 @@ mod tests {
 
     #[test]
     fn test_value_to_sql_string_float() {
-        let val = Value::Float(3.14);
+        let val = Value::Float(std::f64::consts::PI);
         let result = PostgreSqlPreparedStatement::value_to_sql_string(&val);
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), "3.14");
+        let result_str = result.unwrap();
+        assert!(result_str.starts_with("3.14"));
     }
 
     #[test]

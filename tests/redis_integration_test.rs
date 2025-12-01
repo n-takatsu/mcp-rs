@@ -9,42 +9,44 @@ mod redis_integration {
     };
 
     fn create_test_config() -> RedisConfig {
-        let mut security = RedisSecuritySettings::default();
-        security.command_whitelist = vec![
-            "GET".to_string(),
-            "SET".to_string(),
-            "INCR".to_string(),
-            "DECR".to_string(),
-            "LPUSH".to_string(),
-            "RPUSH".to_string(),
-            "LPOP".to_string(),
-            "RPOP".to_string(),
-            "LLEN".to_string(),
-            "LRANGE".to_string(),
-            "SADD".to_string(),
-            "SREM".to_string(),
-            "SMEMBERS".to_string(),
-            "SCARD".to_string(),
-            "HSET".to_string(),
-            "HGET".to_string(),
-            "HDEL".to_string(),
-            "HKEYS".to_string(),
-            "HVALS".to_string(),
-            "HGETALL".to_string(),
-            "ZADD".to_string(),
-            "ZREM".to_string(),
-            "ZRANGE".to_string(),
-            "ZRANGEBYSCORE".to_string(),
-            "ZRANK".to_string(),
-            "ZSCORE".to_string(),
-            "ZCARD".to_string(),
-            "DEL".to_string(),
-            "EXISTS".to_string(),
-            "EXPIRE".to_string(),
-            "TTL".to_string(),
-            "KEYS".to_string(),
-            "PING".to_string(),
-        ];
+        let security = RedisSecuritySettings {
+            command_whitelist: vec![
+                "GET".to_string(),
+                "SET".to_string(),
+                "INCR".to_string(),
+                "DECR".to_string(),
+                "LPUSH".to_string(),
+                "RPUSH".to_string(),
+                "LPOP".to_string(),
+                "RPOP".to_string(),
+                "LLEN".to_string(),
+                "LRANGE".to_string(),
+                "SADD".to_string(),
+                "SREM".to_string(),
+                "SMEMBERS".to_string(),
+                "SCARD".to_string(),
+                "HSET".to_string(),
+                "HGET".to_string(),
+                "HDEL".to_string(),
+                "HKEYS".to_string(),
+                "HVALS".to_string(),
+                "HGETALL".to_string(),
+                "ZADD".to_string(),
+                "ZREM".to_string(),
+                "ZRANGE".to_string(),
+                "ZRANGEBYSCORE".to_string(),
+                "ZRANK".to_string(),
+                "ZSCORE".to_string(),
+                "ZCARD".to_string(),
+                "DEL".to_string(),
+                "EXISTS".to_string(),
+                "EXPIRE".to_string(),
+                "TTL".to_string(),
+                "KEYS".to_string(),
+                "PING".to_string(),
+            ],
+            ..Default::default()
+        };
 
         RedisConfig {
             host: "localhost".to_string(),
@@ -307,8 +309,10 @@ mod redis_integration {
     #[tokio::test]
     async fn test_security_restrictions() {
         // セキュリティ設定（ホワイトリスト）
-        let mut security = RedisSecuritySettings::default();
-        security.command_whitelist = vec!["GET".to_string(), "SET".to_string(), "DEL".to_string()];
+        let security = RedisSecuritySettings {
+            command_whitelist: vec!["GET".to_string(), "SET".to_string(), "DEL".to_string()],
+            ..Default::default()
+        };
 
         let config = RedisConfig {
             host: "localhost".to_string(),

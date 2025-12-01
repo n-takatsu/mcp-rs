@@ -7,25 +7,26 @@ use mcp_rs::handlers::database::engines::redis::types::RedisSecuritySettings;
 use mcp_rs::handlers::database::engines::redis::{
     RedisCommand, RedisConfig, RedisConnection, RedisValue,
 };
-use std::error::Error;
 
 #[cfg(all(feature = "redis-backend", feature = "database"))]
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("🚀 Redis Phase 3 実装デモ\n");
 
     // Redis設定（セキュリティ制限を緩和）
-    let mut security = RedisSecuritySettings::default();
-    security.command_whitelist = vec![
-        "GET".to_string(),
-        "SET".to_string(),
-        "LPUSH".to_string(),
-        "LRANGE".to_string(),
-        "ZADD".to_string(),
-        "ZRANGE".to_string(),
-        "DEL".to_string(),
-        "PING".to_string(),
-    ];
+    let security = RedisSecuritySettings {
+        command_whitelist: vec![
+            "GET".to_string(),
+            "SET".to_string(),
+            "LPUSH".to_string(),
+            "LRANGE".to_string(),
+            "ZADD".to_string(),
+            "ZRANGE".to_string(),
+            "DEL".to_string(),
+            "PING".to_string(),
+        ],
+        ..Default::default()
+    };
 
     let config = RedisConfig {
         host: "localhost".to_string(),
