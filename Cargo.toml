@@ -132,7 +132,7 @@ session-management = []
 security = []
 websocket = []
 mcp-protocol = []
-database = []
+database = ["mysql-backend"]
 
 # MFA (Multi-Factor Authentication)
 mfa = ["totp-rs", "qrcode"]

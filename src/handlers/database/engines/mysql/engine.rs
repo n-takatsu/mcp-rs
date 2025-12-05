@@ -54,12 +54,22 @@ impl DatabaseEngine for MySqlEngine {
 
     async fn connect(
         &self,
-        _config: &DatabaseConfig,
+        config: &DatabaseConfig,
     ) -> Result<Box<dyn DatabaseConnection>, DatabaseError> {
-        // Mock implementation for testing
-        Err(DatabaseError::UnsupportedOperation(
-            "Mock implementation - connect not supported".to_string(),
-        ))
+        use super::MySqlConnection;
+        
+        // Build connection string from config
+        let connection_string = format!(
+            "mysql://{}:{}@{}:{}/{}",
+            config.connection.username,
+            config.connection.password,
+            config.connection.host,
+            config.connection.port,
+            config.connection.database
+        );
+
+        let conn = MySqlConnection::new(&connection_string).await?;
+        Ok(Box::new(conn))
     }
 
     async fn health_check(&self) -> Result<HealthStatus, DatabaseError> {

@@ -7,6 +7,7 @@ pub mod mongodb;
 #[cfg(feature = "mysql-backend")]
 pub mod mysql; // mysql_asyncライブラリでセキュア復活
 pub mod postgresql;
+#[cfg(feature = "redis-backend")]
 pub mod redis;
 pub mod sqlite;
 
@@ -15,6 +16,7 @@ pub use mongodb::MongoEngine;
 #[cfg(feature = "mysql-backend")]
 pub use mysql::MySqlEngine; // mysql_asyncライブラリでセキュア復活
 pub use postgresql::PostgreSqlEngine;
+#[cfg(feature = "redis-backend")]
 pub use redis::RedisEngine;
 pub use sqlite::SqliteEngine;
 
