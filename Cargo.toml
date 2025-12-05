@@ -272,3 +272,12 @@ required-features = ["mfa"]
 [[example]]
 name = "mfa_backup_codes_demo"
 required-features = ["mfa"]
+
+# MFA tests require the mfa feature
+[[test]]
+name = "mfa_integration_tests"
+required-features = ["mfa"]
+
+[[test]]
+name = "mfa_performance_tests"
+required-features = ["mfa"]
