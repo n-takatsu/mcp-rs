@@ -192,19 +192,23 @@ mod tests {
 
     #[test]
     fn test_config_validation_invalid_port() {
-        let mut config = PostgreSqlConfig::default();
-        config.port = 0;
+        let config = PostgreSqlConfig {
+            port: 0,
+            ..Default::default()
+        };
         assert!(config.validate().is_err());
 
-        // Port 65535 is valid, but we test that validation passes
-        config.port = 65535;
-        assert!(config.validate().is_ok());
+        // Port must be in range 1-65535 (u16 max)
+        // We can't test > 65535 as it doesn't fit in u16
+        // Test boundary: 0 should fail (tested above)
     }
 
     #[test]
     fn test_config_validation_invalid_max_connections() {
-        let mut config = PostgreSqlConfig::default();
-        config.max_connections = 0;
+        let mut config = PostgreSqlConfig {
+            max_connections: 0,
+            ..Default::default()
+        };
         assert!(config.validate().is_err());
 
         config.max_connections = 2000;

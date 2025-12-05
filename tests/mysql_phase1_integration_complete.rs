@@ -62,10 +62,7 @@ fn test_transaction_begin_rollback() {
 
 #[test]
 fn test_transaction_with_savepoints() {
-    let mut savepoints = Vec::new();
-    savepoints.push("sp_1".to_string());
-    savepoints.push("sp_2".to_string());
-    savepoints.push("sp_3".to_string());
+    let savepoints = ["sp_1".to_string(), "sp_2".to_string(), "sp_3".to_string()];
 
     assert_eq!(savepoints.len(), 3);
 
@@ -101,7 +98,7 @@ fn test_prepared_statement_parameter_binding() {
         value: String,
     }
 
-    let bindings = vec![
+    let bindings = [
         ParameterBinding {
             position: 1,
             value: "42".to_string(),
@@ -216,7 +213,7 @@ fn test_prepared_statement_with_null_values() {
         Int(i64),
     }
 
-    let params = vec![
+    let params = [
         Value::Int(1),
         Value::Null,
         Value::String("test".to_string()),
@@ -360,7 +357,7 @@ fn test_parameter_type_preservation() {
     }
 
     let original_value = Value::Int(42);
-    let param_list = vec![original_value];
+    let param_list = [original_value];
 
     assert!(matches!(param_list[0], Value::Int(42)));
 }

@@ -35,7 +35,7 @@ fn test_value_type_conversion() {
     let int_val = Value::Int(42);
     assert!(matches!(int_val, Value::Int(42)));
 
-    let float_val = Value::Float(3.14159);
+    let float_val = Value::Float(std::f64::consts::PI);
     assert!(matches!(float_val, Value::Float(_)));
 
     let string_val = Value::String("test_string".to_string());
@@ -50,11 +50,11 @@ fn test_value_type_conversion() {
 
 #[test]
 fn test_batch_parameter_conversion() {
-    let params = vec![
+    let params = [
         Value::Int(1),
         Value::String("test".to_string()),
         Value::Bool(true),
-        Value::Float(2.718),
+        Value::Float(std::f64::consts::E),
         Value::Null,
     ];
 
@@ -66,7 +66,7 @@ fn test_batch_parameter_conversion() {
 
 #[test]
 fn test_parameter_type_validation() {
-    let valid_params = vec![
+    let valid_params = [
         Value::Int(1),
         Value::String("test".to_string()),
         Value::Bool(true),
@@ -93,7 +93,7 @@ fn test_parameter_position_extraction() {
 
 #[test]
 fn test_parameter_summary_generation() {
-    let params = vec![
+    let params = [
         Value::Int(1),
         Value::String("user_name".to_string()),
         Value::Bool(true),

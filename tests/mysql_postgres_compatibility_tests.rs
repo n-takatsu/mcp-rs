@@ -1,3 +1,5 @@
+#![allow(clippy::assertions_on_constants, clippy::empty_line_after_doc_comments)]
+
 /// MySQL ↔ PostgreSQL Compatibility Tests
 /// Tests to verify that MySQL Phase 1 and PostgreSQL Phase 2
 /// implementations are compatible at the interface level

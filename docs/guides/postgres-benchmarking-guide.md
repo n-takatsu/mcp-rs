@@ -121,7 +121,7 @@ cargo bench --bench postgres_phase2_benchmarks -- --verbose
 └─────────────────────────────────┘
 ```
 
-**期待値**: 
+**期待値**:
 
 - SELECT: < 1ms per 1000 rows
 - INSERT: < 100μs per row
@@ -457,7 +457,8 @@ jobs:
 
 ## 関連ドキュメント
 
-- `POSTGRES_DATABASE_TESTING_GUIDE.md` - 統合テスト実行ガイド
+- [ベンチマークガイド総合](./benchmarking-guide.md) - 全データベースエンジンのベンチマーク総合ガイド
+- [ベンチマークディレクトリ](../../benches/README.md) - ベンチマークファイル一覧
 - `docs/implementation/postgresql_phase2.md` - PostgreSQL Phase 2実装ガイド
 - `benches/postgres_phase2_benchmarks.rs` - ベンチマークソースコード
 
@@ -465,6 +466,7 @@ jobs:
 
 | 日付 | 変更内容 |
 |------|---------|
+| 2025-12-05 | ドキュメント整理 - docs/guidesに移動、相互参照追加 |
 | 2025-01-22 | 初版作成 - 15個のベンチマークカテゴリを追加 |
 
 ---

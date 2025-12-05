@@ -18,7 +18,7 @@
 
 - **Current Version**: v0.15.0
 - **Development Status**: Production-ready with comprehensive testing
-- **Repository**: https://github.com/n-takatsu/mcp-rs
+- **Repository**: <https://github.com/n-takatsu/mcp-rs>
 - **Branch**: feature/realtime-editing-system
 
 ## 🔐 Critical Security Context
@@ -139,20 +139,20 @@ cargo test --all-features test_timeout_strategy
 
 ## 📁 Key Files & Locations
 
-## Core Implementation
+### Core Implementation
 
 - `src/handlers/database/engines/mysql.rs` - MySQL engine implementation
 - `src/handlers/database/mod.rs` - Database handler registry
 - `examples/mysql_engine_test.rs` - MySQL functionality testing
 - `Cargo.toml` - Dependencies and feature flags
 
-## Configuration
+### Configuration Files
 
 - `cargo-audit.toml` - Security audit configuration
 - `mcp-config.toml` - MCP server configuration template
 - `.github/workflows/ci.yml` - CI pipeline with security audit
 
-## Documentation
+### Documentation
 
 - `docs/design/mysql-engine.md` - MySQL engine design document
 - `README.md` - Project overview and setup instructions

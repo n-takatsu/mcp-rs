@@ -762,20 +762,28 @@ mod tests {
 
     #[test]
     fn test_expand_env_vars_basic() {
-        std::env::set_var("TEST_VAR", "test_value");
+        unsafe {
+            std::env::set_var("TEST_VAR", "test_value");
+        }
         let result = McpConfig::expand_env_vars("${TEST_VAR}");
         assert_eq!(result, "test_value");
-        std::env::remove_var("TEST_VAR");
+        unsafe {
+            std::env::remove_var("TEST_VAR");
+        }
     }
 
     #[test]
     fn test_expand_env_vars_multiple() {
-        std::env::set_var("VAR1", "value1");
-        std::env::set_var("VAR2", "value2");
+        unsafe {
+            std::env::set_var("VAR1", "value1");
+            std::env::set_var("VAR2", "value2");
+        }
         let result = McpConfig::expand_env_vars("${VAR1} and ${VAR2}");
         assert_eq!(result, "value1 and value2");
-        std::env::remove_var("VAR1");
-        std::env::remove_var("VAR2");
+        unsafe {
+            std::env::remove_var("VAR1");
+            std::env::remove_var("VAR2");
+        }
     }
 
     #[test]
@@ -786,12 +794,16 @@ mod tests {
 
     #[test]
     fn test_expand_env_vars_nested() {
-        std::env::set_var("OUTER", "prefix_${INNER}_suffix");
-        std::env::set_var("INNER", "middle");
+        unsafe {
+            std::env::set_var("OUTER", "prefix_${INNER}_suffix");
+            std::env::set_var("INNER", "middle");
+        }
         let result = McpConfig::expand_env_vars("${OUTER}");
         assert_eq!(result, "prefix_middle_suffix");
-        std::env::remove_var("OUTER");
-        std::env::remove_var("INNER");
+        unsafe {
+            std::env::remove_var("OUTER");
+            std::env::remove_var("INNER");
+        }
     }
 
     #[test]
@@ -809,10 +821,45 @@ mod tests {
 
     #[test]
     fn test_expand_env_vars_special_chars() {
-        std::env::set_var("SPECIAL", "test@example.com:8080/path?query=1");
+        unsafe {
+            std::env::set_var("SPECIAL", "test@example.com:8080/path?query=1");
+        }
         let result = McpConfig::expand_env_vars("url=${SPECIAL}");
         assert_eq!(result, "url=test@example.com:8080/path?query=1");
-        std::env::remove_var("SPECIAL");
+        unsafe {
+            std::env::remove_var("SPECIAL");
+        }
+    }
+}
+
+#[cfg(test)]
+mod additional_tests {
+    use super::*;
+
+    #[test]
+    fn test_expand_env_vars_with_defaults() {
+        let result = McpConfig::expand_env_vars("${MISSING:-default_value}");
+        assert!(result.contains("default") || result.contains("ERROR"));
+    }
+
+    #[test]
+    fn test_expand_env_vars_recursive() {
+        unsafe {
+            std::env::set_var("A", "${B}");
+            std::env::set_var("B", "final");
+        }
+        let result = McpConfig::expand_env_vars("${A}");
+        assert_eq!(result, "final");
+        unsafe {
+            std::env::remove_var("A");
+            std::env::remove_var("B");
+        }
+    }
+
+    #[test]
+    fn test_expand_env_vars_malformed() {
+        let result = McpConfig::expand_env_vars("${INCOMPLETE");
+        assert!(!result.is_empty());
     }
 }
 

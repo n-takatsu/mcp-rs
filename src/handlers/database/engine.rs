@@ -188,35 +188,52 @@ impl DatabaseEngineBuilder {
                 Ok(Arc::new(engine))
             }
             #[cfg(feature = "mysql-backend")]
-            DatabaseType::MySQL | DatabaseType::MariaDB => {
-                // MySQL/MariaDB: mysql_asyncライブラリを使用（RSA脆弱性フリー）
+            DatabaseType::MySQL => {
+                // MySQL: mysql_asyncライブラリを使用（RSA脆弱性フリー）
                 let security = Arc::new(DatabaseSecurity::new(Default::default(), None));
                 let engine =
                     super::engines::mysql::MySqlEngine::new(config.clone(), security).await?;
                 Ok(Arc::new(engine))
             }
+            #[cfg(feature = "mysql-backend")]
+            DatabaseType::MariaDB => {
+                // MariaDB: MySQL互換なのでmysql_asyncライブラリを使用
+                let security = Arc::new(DatabaseSecurity::new(Default::default(), None));
+                let engine =
+                    super::engines::mariadb::MariaDbEngine::new(config.clone(), security).await?;
+                Ok(Arc::new(engine))
+            }
             #[cfg(not(feature = "mysql-backend"))]
             DatabaseType::MySQL | DatabaseType::MariaDB => {
                 Err(DatabaseError::UnsupportedOperation(
-                    "MySQL support not compiled. Enable mysql-backend feature.".to_string(),
+                    "MySQL/MariaDB support not compiled. Enable mysql-backend feature.".to_string(),
                 ))
             }
             DatabaseType::SQLite => {
-                // TODO: SQLite実装
-                Err(DatabaseError::UnsupportedOperation(
-                    "SQLite engine not yet implemented".to_string(),
-                ))
+                // SQLite実装
+                let engine = super::engines::sqlite::SqliteEngine::new(config.clone()).await?;
+                Ok(Arc::new(engine))
             }
+            #[cfg(feature = "mongodb-backend")]
             DatabaseType::MongoDB => {
                 // MongoDB実装
                 let engine = super::engines::mongodb::MongoEngine::new(config.clone()).await?;
                 Ok(Arc::new(engine))
             }
+            #[cfg(not(feature = "mongodb-backend"))]
+            DatabaseType::MongoDB => Err(DatabaseError::UnsupportedOperation(
+                "MongoDB support not compiled. Enable mongodb-backend feature.".to_string(),
+            )),
+            #[cfg(feature = "redis-backend")]
             DatabaseType::Redis => {
                 // Redis実装
                 let engine = super::engines::redis::RedisEngine::new(config.clone()).await?;
                 Ok(Arc::new(engine))
             }
+            #[cfg(not(feature = "redis-backend"))]
+            DatabaseType::Redis => Err(DatabaseError::UnsupportedOperation(
+                "Redis support not compiled. Enable redis-backend feature.".to_string(),
+            )),
             DatabaseType::ClickHouse => {
                 // TODO: ClickHouse実装
                 Err(DatabaseError::UnsupportedOperation(

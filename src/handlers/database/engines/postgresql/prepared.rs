@@ -61,14 +61,12 @@ impl PostgreSqlPreparedStatement {
     fn validate_placeholders(sql: &str, expected_count: usize) -> Result<(), DatabaseError> {
         let mut max_placeholder = 0;
 
-        // Find all $N placeholders in the SQL string
-        for _ in sql.match_indices('$') {
-            let pos = sql.find('$').unwrap_or(0);
-            if pos + 1 < sql.len() {
-                if let Some(ch) = sql[pos + 1..].chars().next() {
-                    if let Some(num) = ch.to_digit(10) {
-                        max_placeholder = max_placeholder.max(num as usize);
-                    }
+        // Find all $N placeholders in the SQL string using regex
+        let re = regex::Regex::new(r"\$(\d+)").unwrap();
+        for cap in re.captures_iter(sql) {
+            if let Some(num_str) = cap.get(1) {
+                if let Ok(num) = num_str.as_str().parse::<usize>() {
+                    max_placeholder = max_placeholder.max(num);
                 }
             }
         }
@@ -394,10 +392,11 @@ mod tests {
 
     #[test]
     fn test_value_to_sql_string_float() {
-        let val = Value::Float(3.14);
+        let val = Value::Float(std::f64::consts::PI);
         let result = PostgreSqlPreparedStatement::value_to_sql_string(&val);
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), "3.14");
+        let result_str = result.unwrap();
+        assert!(result_str.starts_with("3.14"));
     }
 
     #[test]

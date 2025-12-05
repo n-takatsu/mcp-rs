@@ -2,8 +2,8 @@
 //!
 //! End-to-end testing for parameterized queries, prepared statements, and transactions
 #![cfg(feature = "database")]
+#![allow(unused_assignments, unused_variables, dead_code)]
 
-use chrono::Utc;
 use mcp_rs::handlers::database::{engine::IsolationLevel, types::Value};
 
 // ==================== Prepared Statement Simulation Tests ====================
@@ -11,6 +11,7 @@ use mcp_rs::handlers::database::{engine::IsolationLevel, types::Value};
 #[test]
 fn test_prepared_statement_lifecycle() {
     // Simulate prepared statement creation
+    #[allow(dead_code)]
     struct MockPreparedStatement {
         sql: String,
         param_count: usize,
@@ -27,7 +28,7 @@ fn test_prepared_statement_lifecycle() {
     assert!(!stmt.is_closed);
 
     // Simulate binding parameters
-    let params = vec![Value::Int(1), Value::String("test".to_string())];
+    let params = [Value::Int(1), Value::String("test".to_string())];
     assert_eq!(params.len(), stmt.param_count);
 
     // Simulate execution
@@ -42,12 +43,13 @@ fn test_prepared_statement_lifecycle() {
 #[test]
 fn test_prepared_statement_parameter_binding() {
     #[derive(Debug)]
+    #[allow(dead_code)]
     struct ParameterBinding {
         position: usize,
         value: Value,
     }
 
-    let bindings = vec![
+    let bindings = [
         ParameterBinding {
             position: 1,
             value: Value::Int(42),
@@ -106,7 +108,7 @@ fn test_prepared_statement_execute_execution() {
 
 #[test]
 fn test_prepared_statement_with_null_values() {
-    let params = vec![
+    let params = [
         Value::Int(1),
         Value::Null,
         Value::String("test".to_string()),
@@ -130,7 +132,7 @@ fn test_prepared_statement_query_result_conversion() {
         active: bool,
     }
 
-    let rows = vec![
+    let rows = [
         MockRow {
             id: 1,
             name: "Alice".to_string(),
@@ -212,7 +214,7 @@ fn test_transaction_with_isolation_levels() {
     ] {
         let txn = ActiveTransaction {
             is_active: true,
-            isolation_level: level.clone(),
+            isolation_level: *level,
         };
 
         assert!(txn.is_active);
@@ -553,7 +555,7 @@ fn test_parameterized_query_preserves_data_integrity() {
 #[test]
 fn test_parameter_type_preservation() {
     let original_value = Value::Int(42);
-    let param_list = vec![original_value.clone()];
+    let param_list = [original_value.clone()];
 
     // Type should be preserved through conversion
     assert!(matches!(param_list[0], Value::Int(42)));
@@ -604,6 +606,6 @@ mod integration_test_helpers {
     }
 
     pub fn simulate_concurrent_writes(count: usize) -> Vec<usize> {
-        (0..count).map(|i| i).collect()
+        (0..count).collect()
     }
 }

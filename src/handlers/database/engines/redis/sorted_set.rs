@@ -46,7 +46,10 @@ impl SortedSetOperations {
         start: i32,
         stop: i32,
     ) -> Result<Vec<String>, DatabaseError> {
-        let members: Vec<_> = zset.iter().collect();
+        // Sort by score (value), not by key
+        let mut members: Vec<_> = zset.iter().collect();
+        members.sort_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal));
+
         let len = members.len() as i32;
 
         // Normalize indices
@@ -77,7 +80,10 @@ impl SortedSetOperations {
         start: i32,
         stop: i32,
     ) -> Result<Vec<(String, f64)>, DatabaseError> {
-        let members: Vec<_> = zset.iter().collect();
+        // Sort by score (value), not by key
+        let mut members: Vec<_> = zset.iter().collect();
+        members.sort_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal));
+
         let len = members.len() as i32;
 
         let start = if start < 0 {
@@ -116,7 +122,10 @@ impl SortedSetOperations {
 
     /// ZRANK - Get rank (index) of member
     pub fn zrank(zset: &BTreeMap<String, f64>, member: &str) -> Result<Option<u32>, DatabaseError> {
-        let members: Vec<_> = zset.iter().collect();
+        // Sort by score (value), not by key
+        let mut members: Vec<_> = zset.iter().collect();
+        members.sort_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal));
+
         Ok(members
             .iter()
             .position(|(k, _)| k.as_str() == member)

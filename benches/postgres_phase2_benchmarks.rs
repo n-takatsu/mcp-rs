@@ -16,7 +16,9 @@ use std::time::Duration;
 #[derive(Clone)]
 struct BenchmarkConfig {
     connection_pool_size: u32,
+    #[allow(dead_code)]
     query_iteration_count: usize,
+    #[allow(dead_code)]
     concurrent_thread_count: usize,
 }
 
@@ -214,7 +216,7 @@ fn benchmark_sql_injection_prevention_cost(c: &mut Criterion) {
         b.iter(|| {
             // Simulates safe parameterized query
             let user_input = "Robert'; DROP TABLE users; --";
-            let safe_query = format!("SELECT * FROM users WHERE name = $1");
+            let safe_query = "SELECT * FROM users WHERE name = $1".to_string();
             black_box((safe_query, user_input.to_string()))
         });
     });
@@ -241,7 +243,9 @@ fn benchmark_transaction_lifecycle(c: &mut Criterion) {
         b.iter(|| {
             // Simulates transaction BEGIN and COMMIT
             let mut tx_state = "inactive";
+            black_box(&tx_state);
             tx_state = "active";
+            black_box(&tx_state);
             // Simulate some work
             for _ in 0..10 {
                 black_box(0);
@@ -255,7 +259,9 @@ fn benchmark_transaction_lifecycle(c: &mut Criterion) {
         b.iter(|| {
             // Simulates transaction BEGIN and ROLLBACK
             let mut tx_state = "inactive";
+            black_box(&tx_state);
             tx_state = "active";
+            black_box(&tx_state);
             // Simulate some work
             for _ in 0..10 {
                 black_box(0);
@@ -343,7 +349,7 @@ fn benchmark_json_operations(c: &mut Criterion) {
     group.bench_function("json_extraction", |b| {
         b.iter(|| {
             // Simulates JSON field extraction
-            let json_data = vec![
+            let json_data = [
                 r#"{"id": 1, "name": "Alice"}"#,
                 r#"{"id": 2, "name": "Bob"}"#,
                 r#"{"id": 3, "name": "Charlie"}"#,

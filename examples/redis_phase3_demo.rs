@@ -1,32 +1,32 @@
 //! Redis Phase 3 実装デモ
 //! 実際のRedis接続とコマンド実行を示します
 
-#[cfg(all(feature = "redis", feature = "database"))]
+#[cfg(all(feature = "redis-backend", feature = "database"))]
 use mcp_rs::handlers::database::engines::redis::types::RedisSecuritySettings;
-#[cfg(all(feature = "redis", feature = "database"))]
+#[cfg(all(feature = "redis-backend", feature = "database"))]
 use mcp_rs::handlers::database::engines::redis::{
     RedisCommand, RedisConfig, RedisConnection, RedisValue,
 };
-#[cfg(all(feature = "redis", feature = "database"))]
-use std::error::Error;
 
-#[cfg(all(feature = "redis", feature = "database"))]
+#[cfg(all(feature = "redis-backend", feature = "database"))]
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("🚀 Redis Phase 3 実装デモ\n");
 
     // Redis設定（セキュリティ制限を緩和）
-    let mut security = RedisSecuritySettings::default();
-    security.command_whitelist = vec![
-        "GET".to_string(),
-        "SET".to_string(),
-        "LPUSH".to_string(),
-        "LRANGE".to_string(),
-        "ZADD".to_string(),
-        "ZRANGE".to_string(),
-        "DEL".to_string(),
-        "PING".to_string(),
-    ];
+    let security = RedisSecuritySettings {
+        command_whitelist: vec![
+            "GET".to_string(),
+            "SET".to_string(),
+            "LPUSH".to_string(),
+            "LRANGE".to_string(),
+            "ZADD".to_string(),
+            "ZRANGE".to_string(),
+            "DEL".to_string(),
+            "PING".to_string(),
+        ],
+        ..Default::default()
+    };
 
     let config = RedisConfig {
         host: "localhost".to_string(),
@@ -143,8 +143,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-#[cfg(not(all(feature = "redis", feature = "database")))]
+#[cfg(not(all(feature = "redis-backend", feature = "database")))]
 fn main() {
-    println!("このデモを実行するには、redisとdatabaseフィーチャーを有効にしてください。");
-    println!("cargo run --example redis_phase3_demo --features \"redis,database\"");
+    println!("このデモを実行するには、redis-backendとdatabaseフィーチャーを有効にしてください。");
+    println!("cargo run --example redis_phase3_demo --features \"redis-backend,database\"");
 }

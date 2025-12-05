@@ -124,7 +124,7 @@ fn test_batch_operation_tracking() {
         status: String,
     }
 
-    let operations = vec![
+    let operations = [
         Operation {
             id: 1,
             operation_type: "INSERT".to_string(),
@@ -175,7 +175,7 @@ fn test_unicode_string_handling() {
 
 #[test]
 fn test_binary_data_preservation() {
-    let binary_data = vec![0x00, 0xFF, 0xAB, 0xCD, 0xEF];
+    let binary_data = [0x00, 0xFF, 0xAB, 0xCD, 0xEF];
     assert_eq!(binary_data.len(), 5);
     assert_eq!(binary_data[0], 0x00);
     assert_eq!(binary_data[4], 0xEF);
@@ -261,7 +261,7 @@ fn test_performance_metric_collection() {
     let start = std::time::Instant::now();
 
     for _ in 0..operations {
-        let _ = format!("SELECT * FROM table WHERE id = ?");
+        let _ = "SELECT * FROM table WHERE id = ?".to_string();
     }
 
     let elapsed = start.elapsed();
@@ -276,8 +276,7 @@ fn test_empty_result_set_handling() {
 
 #[test]
 fn test_single_result_set_handling() {
-    let mut results = Vec::new();
-    results.push("row_1");
+    let results = ["row_1"];
     assert_eq!(results.len(), 1);
     assert_eq!(results[0], "row_1");
 }

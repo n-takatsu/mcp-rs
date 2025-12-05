@@ -30,6 +30,8 @@ sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "sqlit
 # MySQL support via secure alternative (RSA vulnerability-free)
 mysql_async = { version = "0.36", optional = true }
 redis = { version = "0.26", features = ["tokio-comp", "connection-manager"], optional = true }
+# MongoDB support
+mongodb = { version = "3.1", optional = true }
 
 # Date and time
 chrono = { version = "0.4", features = ["serde"] }
@@ -46,7 +48,7 @@ env_logger = "0.11"
 
 # Cryptography and security
 ring = "0.17.14"
-argon2 = "0.5"
+argon2 = { version = "0.5", features = ["std"] }
 jsonwebtoken = { version = "10.2", default-features = false, features = ["rust_crypto"] }
 base64 = "0.22.1"
 secrecy = { version = "0.10.3", features = ["serde"] }
@@ -54,6 +56,10 @@ zeroize = "1.8.2"
 aes-gcm = "0.10"
 pbkdf2 = "0.12"
 sha2 = "0.10"
+
+# MFA (Multi-Factor Authentication)
+totp-rs = { version = "5.6", features = ["gen_secret", "qr"], optional = true }
+qrcode = { version = "0.14", optional = true }
 
 # Network and IP handling
 ipnet = "2.11"
@@ -128,13 +134,18 @@ session-management = []
 security = []
 websocket = []
 mcp-protocol = []
-database = []
+database = ["mysql-backend", "postgresql-backend"]
+
+# MFA (Multi-Factor Authentication)
+mfa = ["totp-rs", "qrcode"]
+mfa-full = ["mfa"]
 
 # Storage backends
 redis-backend = ["redis"]
 mysql-backend = ["mysql_async"]
-postgresql = []
+postgresql-backend = []
 sqlite = []
+mongodb-backend = ["mongodb"]
 
 # TUI Dashboard (temporarily disabled)
 # tui = ["ratatui", "crossterm", "tui-input"]
@@ -157,7 +168,7 @@ full = [
     "mcp-protocol",
     "redis-backend",
     "mysql-backend",
-    "postgresql",
+    "postgresql-backend",
     "sqlite",
     "metrics",
     "testing"
@@ -243,3 +254,33 @@ lto = true
 [package.metadata.audit.ignore]
 "RUSTSEC-2023-0071" = "RSA crate from sqlx-mysql (unused) - MySQL support provided by secure mysql_async v0.36.1"
 "RUSTSEC-2024-0436" = "paste crate - unmaintained but required by ratatui (currently disabled)"
+
+# MFA examples require the mfa feature
+[[example]]
+name = "mfa_totp_demo"
+required-features = ["mfa"]
+
+[[example]]
+name = "mfa_sms_demo"
+required-features = ["mfa"]
+
+[[example]]
+name = "mfa_session_demo"
+required-features = ["mfa"]
+
+[[example]]
+name = "mfa_device_trust_demo"
+required-features = ["mfa"]
+
+[[example]]
+name = "mfa_backup_codes_demo"
+required-features = ["mfa"]
+
+# MFA tests require the mfa feature
+[[test]]
+name = "mfa_integration_tests"
+required-features = ["mfa"]
+
+[[test]]
+name = "mfa_performance_tests"
+required-features = ["mfa"]

@@ -5,13 +5,15 @@
 
 pub mod connection;
 pub mod json_support;
+pub mod pg_connection;
 pub mod prepared;
 pub mod transaction;
 
 pub use connection::{PostgreSqlConfig, PostgreSqlPool};
 pub use json_support::PostgreSqlJsonSupport;
+pub use pg_connection::PostgreSqlConnection;
 pub use prepared::PostgreSqlPreparedStatement;
-pub use transaction::{PostgreSqlTransaction, PostgreSqlTransactionManager};
+pub use transaction::PostgreSqlTransaction;
 
 use crate::handlers::database::{
     engine::{DatabaseConnection, DatabaseEngine},
@@ -39,6 +41,11 @@ impl PostgreSqlEngine {
         Ok(Self { config })
     }
 
+    /// Create a new PostgreSQL engine without security checks (for testing)
+    pub async fn new_without_security(config: DatabaseConfig) -> Result<Self, DatabaseError> {
+        Ok(Self { config })
+    }
+
     /// Get database config
     pub fn get_config(&self) -> &DatabaseConfig {
         &self.config
@@ -53,12 +60,20 @@ impl DatabaseEngine for PostgreSqlEngine {
 
     async fn connect(
         &self,
-        _config: &DatabaseConfig,
+        config: &DatabaseConfig,
     ) -> Result<Box<dyn DatabaseConnection>, DatabaseError> {
-        // Mock implementation for testing
-        Err(DatabaseError::UnsupportedOperation(
-            "Mock implementation - connect not supported".to_string(),
-        ))
+        // Build connection string from config
+        let connection_string = format!(
+            "postgresql://{}:{}@{}:{}/{}",
+            config.connection.username,
+            config.connection.password,
+            config.connection.host,
+            config.connection.port,
+            config.connection.database
+        );
+
+        let conn = PostgreSqlConnection::new(&connection_string).await?;
+        Ok(Box::new(conn))
     }
 
     async fn health_check(&self) -> Result<HealthStatus, DatabaseError> {

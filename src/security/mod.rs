@@ -1,10 +1,13 @@
 pub mod audit_log;
 pub mod encryption;
+#[cfg(feature = "mfa")]
+pub mod mfa;
 pub mod rate_limiter;
 pub mod secure_server;
 pub mod sql_injection_protection;
 pub mod tls_enforcement;
 pub mod validation;
+pub mod waf;
 pub mod xss_protection;
 
 pub use audit_log::{
@@ -12,6 +15,8 @@ pub use audit_log::{
     AuditStatistics,
 };
 pub use encryption::{EncryptedCredentials, EncryptionError, SecureCredentials};
+#[cfg(feature = "mfa")]
+pub use mfa::{MfaConfig, MfaError, TotpAlgorithm, TotpConfig, TotpSecret, TotpVerifier};
 pub use rate_limiter::RateLimiter;
 pub use secure_server::{SecureMcpServer, SecurityConfig, SecurityMetrics};
 pub use sql_injection_protection::{
@@ -20,6 +25,11 @@ pub use sql_injection_protection::{
 };
 pub use validation::{
     InputValidator, ValidationResult, ValidationRule, ValidationRuleType, ValidationStats,
+};
+pub use waf::{
+    CorsConfig, CorsHandler, CspConfig, CspGenerator, CspViolation, FileUploadConfig, HstsConfig,
+    RequestLimitsConfig, RequestValidator, SecurityHeaderManager, SecurityHeadersConfig, WafConfig,
+    WafError, WebApplicationFirewall,
 };
 pub use xss_protection::{
     XssAttackType, XssDetectionResult, XssProtectionConfig, XssProtector, XssStatistics,
