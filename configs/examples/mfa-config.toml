@@ -17,3 +17,33 @@ enabled = true
 count = 10            # Number of backup codes to generate
 length = 12           # Length of each code (characters)
 use_separators = true # Use separators (e.g., XXXX-XXXX-XXXX)
+
+[security.mfa.sms]
+enabled = true
+code_length = 6              # Length of verification code (digits)
+expiration_seconds = 300     # Code expiration time (5 minutes)
+max_attempts = 3             # Maximum verification attempts
+
+[security.mfa.sms.provider]
+type = "Mock"  # Options: Mock, Twilio, AwsSns, Custom
+
+# Example Twilio configuration
+# [security.mfa.sms.provider]
+# type = "Twilio"
+# account_sid = "your_account_sid"
+# auth_token = "your_auth_token"
+# from_number = "+1234567890"
+
+# Example AWS SNS configuration
+# [security.mfa.sms.provider]
+# type = "AwsSns"
+# region = "us-east-1"
+# access_key_id = "your_access_key"
+# secret_access_key = "your_secret_key"
+
+# Example Custom HTTP provider
+# [security.mfa.sms.provider]
+# type = "Custom"
+# endpoint = "https://api.example.com/sms/send"
+# api_key = "your_api_key"
+# method = "POST"

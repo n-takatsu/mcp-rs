@@ -10,6 +10,8 @@
 pub mod totp;
 #[cfg(feature = "mfa")]
 pub mod backup_codes;
+#[cfg(feature = "mfa")]
+pub mod sms;
 
 #[cfg(feature = "mfa")]
 use serde::{Deserialize, Serialize};
@@ -82,6 +84,8 @@ pub struct MfaConfig {
     pub totp: totp::TotpConfig,
     /// Backup codes configuration
     pub backup_codes: backup_codes::BackupCodeConfig,
+    /// SMS authentication configuration
+    pub sms: sms::SmsConfig,
 }
 
 #[cfg(feature = "mfa")]
@@ -93,6 +97,7 @@ impl Default for MfaConfig {
             required_roles: vec!["admin".to_string()],
             totp: totp::TotpConfig::default(),
             backup_codes: backup_codes::BackupCodeConfig::default(),
+            sms: sms::SmsConfig::default(),
         }
     }
 }
@@ -101,3 +106,5 @@ impl Default for MfaConfig {
 pub use totp::{TotpAlgorithm, TotpConfig, TotpSecret, TotpVerifier};
 #[cfg(feature = "mfa")]
 pub use backup_codes::{BackupCode, BackupCodeConfig, BackupCodeManager};
+#[cfg(feature = "mfa")]
+pub use sms::{SmsAuthenticator, SmsConfig, SmsProviderConfig};
