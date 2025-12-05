@@ -321,6 +321,7 @@ openssl x509 -req -days 365 -in localhost.csr -signkey localhost.key -out localh
 ### 2. 本番環境の設定
 
 ✅ **必須**:
+
 ```rust
 verify_server: true,         // 常にtrue
 accept_invalid_certs: false, // 常にfalse
@@ -329,6 +330,7 @@ accept_invalid_certs: false, // 常にfalse
 ### 3. テスト環境の設定
 
 ⚠️ **テスト専用**:
+
 ```rust
 verify_server: false,        // テストのみ許可
 accept_invalid_certs: true,  // テストのみ許可
@@ -355,6 +357,7 @@ chmod 644 /etc/ssl/certs/server.crt
 **原因**: 証明書ファイルが見つからない、または読み取り権限がない
 
 **解決策**:
+
 1. ファイルパスが正しいか確認
 2. ファイルのパーミッションを確認
 3. ファイルが存在するか確認
@@ -369,6 +372,7 @@ assert!(cert_path.exists(), "Certificate file not found");
 **原因**: 証明書がPEM形式でない、または破損している
 
 **解決策**:
+
 1. 証明書がPEM形式であることを確認
 2. ファイルが `-----BEGIN CERTIFICATE-----` で始まることを確認
 3. 証明書を再生成
@@ -378,6 +382,7 @@ assert!(cert_path.exists(), "Certificate file not found");
 **原因**: 証明書と秘密鍵が一致しない、またはクライアントが証明書を信頼しない
 
 **解決策**:
+
 1. 証明書と秘密鍵のペアを確認
 2. クライアント側のCA証明書を確認
 3. テスト環境では `accept_invalid_certs: true` を試す
@@ -387,6 +392,7 @@ assert!(cert_path.exists(), "Certificate file not found");
 **原因**: TLSハンドシェイクに時間がかかりすぎている
 
 **解決策**:
+
 ```rust
 timeout_seconds: Some(60),  // タイムアウトを延長
 ```

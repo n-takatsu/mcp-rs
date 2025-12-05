@@ -172,7 +172,10 @@ impl WebSocketTransport {
             TransportError::Internal(format!("Failed to bind WebSocket server: {}", e))
         })?;
 
-        info!("WebSocket server listening on: {} (TLS: {})", addr, self.config.use_tls);
+        info!(
+            "WebSocket server listening on: {} (TLS: {})",
+            addr, self.config.use_tls
+        );
 
         let server_connection = Arc::clone(&self.server_connection);
         let _incoming_tx = self.incoming_tx.clone();
@@ -230,18 +233,20 @@ impl WebSocketTransport {
         config: &WebSocketConfig,
     ) -> Result<WsStream, TransportError> {
         use native_tls::Identity;
-        use tokio_native_tls::TlsAcceptor;
         use std::fs;
+        use tokio_native_tls::TlsAcceptor;
 
         let tls_config = config.tls_config.as_ref().ok_or_else(|| {
-            TransportError::Configuration("TLS enabled but no TLS configuration provided".to_string())
+            TransportError::Configuration(
+                "TLS enabled but no TLS configuration provided".to_string(),
+            )
         })?;
 
         // Load certificate and private key
         let cert_path = tls_config.cert_path.as_ref().ok_or_else(|| {
             TransportError::Configuration("TLS certificate path not provided".to_string())
         })?;
-        
+
         let key_path = tls_config.key_path.as_ref().ok_or_else(|| {
             TransportError::Configuration("TLS private key path not provided".to_string())
         })?;
@@ -270,16 +275,15 @@ impl WebSocketTransport {
         let acceptor = TlsAcceptor::from(acceptor);
 
         // Accept TLS connection
-        let tls_stream = acceptor.accept(stream).await.map_err(|e| {
-            TransportError::Internal(format!("TLS accept failed: {}", e))
-        })?;
+        let tls_stream = acceptor
+            .accept(stream)
+            .await
+            .map_err(|e| TransportError::Internal(format!("TLS accept failed: {}", e)))?;
 
         // Perform WebSocket handshake
         let ws_stream = accept_async(MaybeTlsStream::NativeTls(tls_stream))
             .await
-            .map_err(|e| {
-                TransportError::Internal(format!("WebSocket handshake failed: {}", e))
-            })?;
+            .map_err(|e| TransportError::Internal(format!("WebSocket handshake failed: {}", e)))?;
 
         Ok(ws_stream)
     }
@@ -289,7 +293,10 @@ impl WebSocketTransport {
         *self.state.write().await = ConnectionState::Connecting;
 
         let url = &self.config.url;
-        debug!("Connecting to WebSocket server: {} (TLS: {})", url, self.config.use_tls);
+        debug!(
+            "Connecting to WebSocket server: {} (TLS: {})",
+            url, self.config.use_tls
+        );
 
         let timeout_duration = Duration::from_secs(self.config.timeout_seconds.unwrap_or(30));
 
@@ -303,7 +310,9 @@ impl WebSocketTransport {
                         timeout_duration
                     ))
                 })?
-                .map_err(|e| TransportError::Internal(format!("WebSocket TLS connect error: {}", e)))?
+                .map_err(|e| {
+                    TransportError::Internal(format!("WebSocket TLS connect error: {}", e))
+                })?
         } else {
             // Plain WebSocket connection
             let connect_future = connect_async(url);
@@ -327,13 +336,10 @@ impl WebSocketTransport {
     }
 
     /// Connect to TLS WebSocket server (client mode)
-    async fn connect_tls(
-        url: &str,
-        config: &WebSocketConfig,
-    ) -> Result<WsStream, TransportError> {
+    async fn connect_tls(url: &str, config: &WebSocketConfig) -> Result<WsStream, TransportError> {
         use native_tls::TlsConnector;
-        use tokio_native_tls::TlsConnector as TokioTlsConnector;
         use std::fs;
+        use tokio_native_tls::TlsConnector as TokioTlsConnector;
 
         let tls_config = config.tls_config.as_ref();
 
@@ -373,31 +379,30 @@ impl WebSocketTransport {
         let connector = TokioTlsConnector::from(connector);
 
         // Parse URL to extract host
-        let url_parsed = url::Url::parse(url).map_err(|e| {
-            TransportError::Configuration(format!("Invalid WebSocket URL: {}", e))
-        })?;
+        let url_parsed = url::Url::parse(url)
+            .map_err(|e| TransportError::Configuration(format!("Invalid WebSocket URL: {}", e)))?;
 
-        let host = url_parsed.host_str().ok_or_else(|| {
-            TransportError::Configuration("No host in WebSocket URL".to_string())
-        })?;
+        let host = url_parsed
+            .host_str()
+            .ok_or_else(|| TransportError::Configuration("No host in WebSocket URL".to_string()))?;
 
         // Connect via TLS
         let stream = TcpStream::connect(format!("{}:{}", host, url_parsed.port().unwrap_or(443)))
             .await
-            .map_err(|e| {
-                TransportError::Internal(format!("TCP connect failed: {}", e))
-            })?;
+            .map_err(|e| TransportError::Internal(format!("TCP connect failed: {}", e)))?;
 
-        let tls_stream = connector.connect(host, stream).await.map_err(|e| {
-            TransportError::Internal(format!("TLS connect failed: {}", e))
-        })?;
+        let tls_stream = connector
+            .connect(host, stream)
+            .await
+            .map_err(|e| TransportError::Internal(format!("TLS connect failed: {}", e)))?;
 
         // Perform WebSocket handshake
-        let (ws_stream, _response) = tokio_tungstenite::client_async(url, MaybeTlsStream::NativeTls(tls_stream))
-            .await
-            .map_err(|e| {
-                TransportError::Internal(format!("WebSocket handshake failed: {}", e))
-            })?;
+        let (ws_stream, _response) =
+            tokio_tungstenite::client_async(url, MaybeTlsStream::NativeTls(tls_stream))
+                .await
+                .map_err(|e| {
+                    TransportError::Internal(format!("WebSocket handshake failed: {}", e))
+                })?;
 
         Ok(ws_stream)
     }

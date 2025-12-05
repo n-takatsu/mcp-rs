@@ -6,8 +6,8 @@
 // - Self-signed certificate support for testing environments
 // - Secure WebSocket (WSS) message exchange
 
+use mcp_rs::transport::websocket::{TlsConfig, WebSocketConfig, WebSocketTransport};
 use mcp_rs::transport::Transport;
-use mcp_rs::transport::websocket::{WebSocketConfig, TlsConfig, WebSocketTransport};
 use std::path::PathBuf;
 use std::time::Duration;
 use tokio::time::timeout;
@@ -18,7 +18,7 @@ use tokio::time::timeout;
 #[allow(dead_code)]
 async fn create_test_certificates() -> Result<(PathBuf, PathBuf), Box<dyn std::error::Error>> {
     use std::fs;
-    
+
     // Create temporary directory for test certificates
     let temp_dir = std::env::temp_dir().join("mcp-rs-test-certs");
     fs::create_dir_all(&temp_dir)?;
@@ -29,7 +29,7 @@ async fn create_test_certificates() -> Result<(PathBuf, PathBuf), Box<dyn std::e
     // Simple self-signed certificate generation
     // Note: This is a placeholder - in real tests, use proper certificate generation
     // For now, we'll skip actual certificate generation and document the approach
-    
+
     Ok((cert_path, key_path))
 }
 
@@ -57,7 +57,7 @@ async fn test_websocket_config_with_tls() {
         cert_path: Some(PathBuf::from("/path/to/cert.pem")),
         key_path: Some(PathBuf::from("/path/to/key.pem")),
         ca_cert_path: None,
-        verify_server: false, // For testing with self-signed certs
+        verify_server: false,       // For testing with self-signed certs
         accept_invalid_certs: true, // For testing only
     };
 
@@ -77,7 +77,7 @@ async fn test_websocket_config_with_tls() {
     assert_eq!(ws_config.url, "wss://localhost:8443");
     assert!(ws_config.use_tls);
     assert!(ws_config.tls_config.is_some());
-    
+
     let tls = ws_config.tls_config.unwrap();
     assert!(tls.accept_invalid_certs); // Testing mode
     assert!(!tls.verify_server); // Testing mode
@@ -148,12 +148,12 @@ async fn test_tls_config_validation() {
 async fn test_websocket_tls_connection() {
     // This test requires actual certificate files and a running TLS server
     // Example usage pattern:
-    
+
     let tls_config = TlsConfig {
         cert_path: Some(PathBuf::from("./test-certs/server-cert.pem")),
         key_path: Some(PathBuf::from("./test-certs/server-key.pem")),
         ca_cert_path: None,
-        verify_server: false, // For self-signed certs
+        verify_server: false,       // For self-signed certs
         accept_invalid_certs: true, // For testing only
     };
 
@@ -171,10 +171,10 @@ async fn test_websocket_tls_connection() {
     };
 
     let mut transport = WebSocketTransport::new(ws_config).expect("Failed to create transport");
-    
+
     // Attempt to connect with timeout
     let connect_result = timeout(Duration::from_secs(5), transport.start()).await;
-    
+
     // This will fail without a running server, but demonstrates the API
     match connect_result {
         Ok(Ok(_)) => {
@@ -236,7 +236,7 @@ fn test_tls_configuration_example() {
         cert_path: Some(PathBuf::from("/etc/ssl/certs/server.crt")),
         key_path: Some(PathBuf::from("/etc/ssl/private/server.key")),
         ca_cert_path: Some(PathBuf::from("/etc/ssl/certs/ca-bundle.crt")),
-        verify_server: true, // Always verify in production
+        verify_server: true,         // Always verify in production
         accept_invalid_certs: false, // Never accept invalid certs in production
     };
 
@@ -244,17 +244,17 @@ fn test_tls_configuration_example() {
     let _development_config = TlsConfig {
         cert_path: Some(PathBuf::from("./dev-certs/localhost.crt")),
         key_path: Some(PathBuf::from("./dev-certs/localhost.key")),
-        ca_cert_path: None, // No CA for self-signed
-        verify_server: false, // Disable for self-signed in testing
+        ca_cert_path: None,         // No CA for self-signed
+        verify_server: false,       // Disable for self-signed in testing
         accept_invalid_certs: true, // Accept self-signed in testing only
     };
 
     // Example 3: Client configuration with CA verification
     let _client_config = TlsConfig {
         cert_path: None, // Client doesn't need cert
-        key_path: None, // Client doesn't need key
+        key_path: None,  // Client doesn't need key
         ca_cert_path: Some(PathBuf::from("/etc/ssl/certs/ca-bundle.crt")),
-        verify_server: true, // Always verify server
+        verify_server: true,         // Always verify server
         accept_invalid_certs: false, // Don't accept invalid server certs
     };
 }
