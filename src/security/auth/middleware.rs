@@ -95,8 +95,8 @@ impl<P: AuthenticationProvider> AuthMiddleware<P> {
                     Ok(())
                 } else {
                     Err(AuthError::Forbidden(format!(
-                        "Permission {} required",
-                        format!("{}:{}", permission.resource, permission.action)
+                        "Permission {}:{} required",
+                        permission.resource, permission.action
                     )))
                 }
             }
@@ -125,12 +125,12 @@ impl<P: AuthenticationProvider> AuthMiddleware<P> {
         match (&self.requirement, token_info) {
             // 認証オプション & トークンなし
             (AuthRequirement::Optional, None) => {
-                return Ok(next.run(request).await);
+                Ok(next.run(request).await)
             }
             
             // 認証必須 & トークンなし
             (AuthRequirement::Required | AuthRequirement::Role(_) | AuthRequirement::Permission(_) | AuthRequirement::AnyRole(_) | AuthRequirement::AnyPermission(_), None) => {
-                return Err(AuthError::Unauthorized("Authentication required".to_string()));
+                Err(AuthError::Unauthorized("Authentication required".to_string()))
             }
             
             // トークンあり

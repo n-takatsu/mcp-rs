@@ -317,8 +317,8 @@ mod tests {
         assert_eq!(config.cookie_name, "mcp_session");
     }
 
-    #[test]
-    fn test_create_and_verify_session() {
+    #[tokio::test]
+    async fn test_create_and_verify_session() {
         let config = SessionConfig::default();
         let session_auth = SessionAuth::new(config);
         let user = create_test_user();
@@ -330,8 +330,8 @@ mod tests {
         assert_eq!(verified.user.id, "test-id");
     }
 
-    #[test]
-    fn test_destroy_session() {
+    #[tokio::test]
+    async fn test_destroy_session() {
         let config = SessionConfig::default();
         let session_auth = SessionAuth::new(config);
         let user = create_test_user();
@@ -342,11 +342,13 @@ mod tests {
         assert!(session_auth.verify_session(&session.session_id).is_err());
     }
 
-    #[test]
-    fn test_session_expiration() {
-        let mut config = SessionConfig::default();
-        config.session_duration = 1; // 1秒
-        config.enable_renewal = false;
+    #[tokio::test]
+    async fn test_session_expiration() {
+        let config = SessionConfig {
+            session_duration: 1, // 1秒
+            enable_renewal: false,
+            ..SessionConfig::default()
+        };
         
         let session_auth = SessionAuth::new(config);
         let user = create_test_user();
@@ -357,14 +359,14 @@ mod tests {
         assert!(session_auth.verify_session(&session.session_id).is_ok());
         
         // 2秒待つ
-        std::thread::sleep(std::time::Duration::from_secs(2));
+        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
         
         // 期限切れ
         assert!(session_auth.verify_session(&session.session_id).is_err());
     }
 
-    #[test]
-    fn test_destroy_user_sessions() {
+    #[tokio::test]
+    async fn test_destroy_user_sessions() {
         let config = SessionConfig::default();
         let session_auth = SessionAuth::new(config);
         let user = create_test_user();
@@ -378,8 +380,8 @@ mod tests {
         assert_eq!(count, 3);
     }
 
-    #[test]
-    fn test_update_session() {
+    #[tokio::test]
+    async fn test_update_session() {
         let config = SessionConfig::default();
         let session_auth = SessionAuth::new(config);
         let user = create_test_user();
