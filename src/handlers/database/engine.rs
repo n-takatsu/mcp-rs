@@ -212,11 +212,16 @@ impl DatabaseEngineBuilder {
                 let engine = super::engines::mongodb::MongoEngine::new(config.clone()).await?;
                 Ok(Arc::new(engine))
             }
+            #[cfg(feature = "redis-backend")]
             DatabaseType::Redis => {
                 // Redis実装
                 let engine = super::engines::redis::RedisEngine::new(config.clone()).await?;
                 Ok(Arc::new(engine))
             }
+            #[cfg(not(feature = "redis-backend"))]
+            DatabaseType::Redis => Err(DatabaseError::UnsupportedOperation(
+                "Redis support not compiled. Enable redis-backend feature.".to_string(),
+            )),
             DatabaseType::ClickHouse => {
                 // TODO: ClickHouse実装
                 Err(DatabaseError::UnsupportedOperation(
