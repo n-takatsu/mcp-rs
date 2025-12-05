@@ -33,7 +33,7 @@ Want to contribute to a high-quality Rust codebase? Join our 205+ test, zero-war
 
 ### Security Teams 🔒
 
-Need WordPress security automation? 6-layer enterprise security architecture with SQL injection protection, XSS prevention, and comprehensive audit logging.
+Need WordPress security automation? 8-layer enterprise security architecture with WAF, SQL injection protection, XSS prevention, and comprehensive audit logging.
 
 ## 🚀 Key Features
 
@@ -55,8 +55,9 @@ Need WordPress security automation? 6-layer enterprise security architecture wit
 - **YouTube & Social Embeds**: Rich media integration with security validation
 - **User Management**: Role-based access control and user operations
 
-## **Enterprise Security (7-Layer Architecture)**
+## **Enterprise Security (8-Layer Architecture)**
 
+- **WAF (Web Application Firewall)**: CORS, CSP, request validation, and security headers
 - **RBAC (Role-Based Access Control)**: Multi-level access control with role hierarchy, time-based restrictions, IP filtering, and data masking
 - **AES-GCM-256 Encryption**: Military-grade encryption with PBKDF2 key derivation
 - **SQL Injection Protection**: Real-time detection of 11 attack patterns
@@ -87,7 +88,7 @@ Need WordPress security automation? 6-layer enterprise security architecture wit
 |--------|-------|
 | **Total Tests** | 205+ (100% passing) |
 | **Code Coverage** | Comprehensive |
-| **Security Tests** | 6-layer validation |
+| **Security Tests** | 8-layer validation |
 | **Performance** | Production optimized |
 | **Documentation** | Complete API docs |
 

@@ -5,6 +5,7 @@ pub mod secure_server;
 pub mod sql_injection_protection;
 pub mod tls_enforcement;
 pub mod validation;
+pub mod waf;
 pub mod xss_protection;
 
 pub use audit_log::{
@@ -20,6 +21,11 @@ pub use sql_injection_protection::{
 };
 pub use validation::{
     InputValidator, ValidationResult, ValidationRule, ValidationRuleType, ValidationStats,
+};
+pub use waf::{
+    CorsConfig, CorsHandler, CspConfig, CspGenerator, CspViolation, FileUploadConfig, HstsConfig,
+    RequestLimitsConfig, RequestValidator, SecurityHeaderManager, SecurityHeadersConfig, WafConfig,
+    WafError, WebApplicationFirewall,
 };
 pub use xss_protection::{
     XssAttackType, XssDetectionResult, XssProtectionConfig, XssProtector, XssStatistics,

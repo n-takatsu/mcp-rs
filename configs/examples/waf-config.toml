@@ -1,0 +1,67 @@
+# WAF (Web Application Firewall) Configuration Example
+
+[waf]
+enabled = true
+audit_logging = true
+
+[waf.cors]
+enabled = true
+allowed_origins = ["https://example.com", "https://app.example.com"]
+allowed_methods = ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+allowed_headers = ["Content-Type", "Authorization", "X-Request-ID"]
+exposed_headers = ["X-Request-ID"]
+allow_credentials = true
+max_age = 86400
+
+[waf.csp]
+enabled = true
+report_only = false
+report_uri = "/csp-violation-report"
+use_nonces = true
+
+[waf.csp.directives]
+default-src = ["'self'"]
+script-src = ["'self'", "https://cdn.example.com"]
+style-src = ["'self'", "https://cdn.example.com"]
+img-src = ["'self'", "https://cdn.example.com", "data:"]
+font-src = ["'self'", "https://fonts.googleapis.com"]
+connect-src = ["'self'", "https://api.example.com"]
+frame-ancestors = ["'none'"]
+
+[waf.request_limits]
+max_body_size = 10485760  # 10 MB
+max_url_length = 2048
+max_headers = 100
+max_header_length = 8192
+allowed_methods = ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"]
+allowed_content_types = [
+    "application/json",
+    "application/x-www-form-urlencoded",
+    "multipart/form-data",
+    "text/plain"
+]
+
+[waf.file_upload]
+enabled = true
+max_file_size = 5242880  # 5 MB
+allowed_mime_types = [
+    "image/jpeg",
+    "image/png",
+    "image/gif",
+    "application/pdf"
+]
+blocked_extensions = ["exe", "bat", "cmd", "sh", "dll", "so"]
+enable_virus_scan = false
+
+[waf.security_headers]
+x_content_type_options = true
+x_frame_options = "SAMEORIGIN"
+x_xss_protection = true
+referrer_policy = "strict-origin-when-cross-origin"
+permissions_policy = "geolocation=(), microphone=(), camera=()"
+
+[waf.security_headers.hsts]
+enabled = true
+max_age = 31536000  # 1 year
+include_subdomains = true
+preload = false
