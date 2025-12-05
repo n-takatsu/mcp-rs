@@ -457,16 +457,13 @@ impl DatabaseConnection for MongoConnection {
         command: &str,
         _params: &[Value],
     ) -> Result<ExecuteResult, DatabaseError> {
-        let command_obj: JsonValue = serde_json::from_str(command).map_err(|e| {
-            DatabaseError::InvalidQuery(format!("Invalid JSON command: {}", e))
-        })?;
+        let command_obj: JsonValue = serde_json::from_str(command)
+            .map_err(|e| DatabaseError::InvalidQuery(format!("Invalid JSON command: {}", e)))?;
 
         let operation = command_obj
             .get("operation")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| {
-                DatabaseError::InvalidQuery("Missing 'operation' field".to_string())
-            })?;
+            .ok_or_else(|| DatabaseError::InvalidQuery("Missing 'operation' field".to_string()))?;
 
         match operation {
             "insert" | "update" | "delete" => Ok(ExecuteResult {

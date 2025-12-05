@@ -213,11 +213,9 @@ impl DatabaseEngineBuilder {
                 Ok(Arc::new(engine))
             }
             #[cfg(not(feature = "mongodb-backend"))]
-            DatabaseType::MongoDB => {
-                Err(DatabaseError::UnsupportedOperation(
-                    "MongoDB support not compiled. Enable mongodb-backend feature.".to_string(),
-                ))
-            }
+            DatabaseType::MongoDB => Err(DatabaseError::UnsupportedOperation(
+                "MongoDB support not compiled. Enable mongodb-backend feature.".to_string(),
+            )),
             #[cfg(feature = "redis-backend")]
             DatabaseType::Redis => {
                 // Redis実装

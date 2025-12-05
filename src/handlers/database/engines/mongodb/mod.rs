@@ -11,7 +11,10 @@ pub mod transaction;
 
 pub use config::{MongoConfig, MongoConnectionOptions};
 pub use connection::MongoConnection;
-pub use document::{AggregationPipeline, AggregationStage, MongoDocument, MongoIndex, MongoIndexOptions, MongoResult, MongoStats};
+pub use document::{
+    AggregationPipeline, AggregationStage, MongoDocument, MongoIndex, MongoIndexOptions,
+    MongoResult, MongoStats,
+};
 pub use engine::MongoEngine;
 pub use transaction::MongoTransaction;
 
