@@ -2,6 +2,8 @@
 //!
 //! Comprehensive tests for PostgreSQL database operations
 
+#![cfg(feature = "database")]
+
 #[cfg(test)]
 mod tests {
     use mcp_rs::handlers::database::{
