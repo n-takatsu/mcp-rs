@@ -14,21 +14,15 @@ use super::MfaError;
 
 /// TOTP algorithm selection
 #[cfg(feature = "mfa")]
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub enum TotpAlgorithm {
     /// SHA-1 (legacy, less secure but widely supported)
     Sha1,
     /// SHA-256 (recommended)
+    #[default]
     Sha256,
     /// SHA-512 (most secure)
     Sha512,
-}
-
-#[cfg(feature = "mfa")]
-impl Default for TotpAlgorithm {
-    fn default() -> Self {
-        Self::Sha256
-    }
 }
 
 #[cfg(feature = "mfa")]
