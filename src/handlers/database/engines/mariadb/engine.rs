@@ -8,8 +8,8 @@ use crate::handlers::database::{
     engines::mysql::MySqlEngine,
     security::DatabaseSecurity,
     types::{
-        DatabaseConfig, DatabaseError, DatabaseFeature, DatabaseSchema, DatabaseType,
-        HealthStatus, QueryResult, TableInfo, Value,
+        DatabaseConfig, DatabaseError, DatabaseFeature, DatabaseSchema, DatabaseType, HealthStatus,
+        QueryResult, TableInfo, Value,
     },
 };
 use async_trait::async_trait;
@@ -127,9 +127,7 @@ mod tests {
     #[tokio::test]
     async fn test_mariadb_engine_creation() {
         let config = create_test_config();
-        let engine = MariaDbEngine::new_without_security(config)
-            .await
-            .unwrap();
+        let engine = MariaDbEngine::new_without_security(config).await.unwrap();
 
         assert_eq!(engine.engine_type(), DatabaseType::MariaDB);
     }
@@ -137,9 +135,7 @@ mod tests {
     #[tokio::test]
     async fn test_mariadb_supported_features() {
         let config = create_test_config();
-        let engine = MariaDbEngine::new_without_security(config)
-            .await
-            .unwrap();
+        let engine = MariaDbEngine::new_without_security(config).await.unwrap();
 
         let features = engine.supported_features();
         assert!(!features.is_empty());
