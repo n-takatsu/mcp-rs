@@ -65,7 +65,7 @@ impl PostgreSqlConnection {
     /// Extract value from PostgreSQL row at specific index
     fn extract_value(row: &PgRow, index: usize) -> Value {
         // Try different types in order
-        
+
         // Try boolean
         if let Ok(val) = row.try_get::<bool, _>(index) {
             return Value::Bool(val);
@@ -143,10 +143,7 @@ impl DatabaseConnection for PostgreSqlConnection {
             // Extract column information from first row
             for i in 0..first_row.len() {
                 columns.push(ColumnInfo {
-                    name: first_row
-                        .column(i)
-                        .name()
-                        .to_string(),
+                    name: first_row.column(i).name().to_string(),
                     data_type: "TEXT".to_string(), // Simplified
                     nullable: true,
                     max_length: None,
@@ -205,7 +202,7 @@ impl DatabaseConnection for PostgreSqlConnection {
         // Get all tables in the current database
         let rows = sqlx::query(
             "SELECT table_name FROM information_schema.tables 
-             WHERE table_schema = 'public' AND table_type = 'BASE TABLE'"
+             WHERE table_schema = 'public' AND table_type = 'BASE TABLE'",
         )
         .fetch_all(&self.pool)
         .await
@@ -233,7 +230,7 @@ impl DatabaseConnection for PostgreSqlConnection {
             "SELECT column_name, data_type, is_nullable, character_maximum_length
              FROM information_schema.columns
              WHERE table_name = $1 AND table_schema = 'public'
-             ORDER BY ordinal_position"
+             ORDER BY ordinal_position",
         )
         .bind(table_name)
         .fetch_all(&self.pool)
@@ -260,17 +257,14 @@ impl DatabaseConnection for PostgreSqlConnection {
             "SELECT a.attname
              FROM pg_index i
              JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
-             WHERE i.indrelid = $1::regclass AND i.indisprimary"
+             WHERE i.indrelid = $1::regclass AND i.indisprimary",
         )
         .bind(table_name)
         .fetch_all(&self.pool)
         .await
         .map_err(|e| DatabaseError::QueryFailed(e.to_string()))?;
 
-        let primary_keys: Vec<String> = pk_rows
-            .iter()
-            .map(|row| row.get::<String, _>(0))
-            .collect();
+        let primary_keys: Vec<String> = pk_rows.iter().map(|row| row.get::<String, _>(0)).collect();
 
         Ok(TableInfo {
             name: table_name.to_string(),

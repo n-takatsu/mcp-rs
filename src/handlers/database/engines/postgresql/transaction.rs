@@ -103,9 +103,9 @@ impl PostgreSqlTransaction {
 impl DatabaseTransaction for PostgreSqlTransaction {
     async fn query(&self, sql: &str, params: &[Value]) -> Result<QueryResult, DatabaseError> {
         let mut tx_guard = self.tx.lock().await;
-        let tx = tx_guard
-            .as_mut()
-            .ok_or_else(|| DatabaseError::TransactionFailed("Transaction already completed".to_string()))?;
+        let tx = tx_guard.as_mut().ok_or_else(|| {
+            DatabaseError::TransactionFailed("Transaction already completed".to_string())
+        })?;
 
         // Parameter substitution (simplified)
         let mut query_str = sql.to_string();
@@ -148,9 +148,9 @@ impl DatabaseTransaction for PostgreSqlTransaction {
 
     async fn execute(&self, sql: &str, params: &[Value]) -> Result<ExecuteResult, DatabaseError> {
         let mut tx_guard = self.tx.lock().await;
-        let tx = tx_guard
-            .as_mut()
-            .ok_or_else(|| DatabaseError::TransactionFailed("Transaction already completed".to_string()))?;
+        let tx = tx_guard.as_mut().ok_or_else(|| {
+            DatabaseError::TransactionFailed("Transaction already completed".to_string())
+        })?;
 
         // Parameter substitution
         let mut query_str = sql.to_string();
@@ -176,9 +176,9 @@ impl DatabaseTransaction for PostgreSqlTransaction {
 
     async fn commit(self: Box<Self>) -> Result<(), DatabaseError> {
         let mut tx_guard = self.tx.lock().await;
-        let tx = tx_guard
-            .take()
-            .ok_or_else(|| DatabaseError::TransactionFailed("Transaction already completed".to_string()))?;
+        let tx = tx_guard.take().ok_or_else(|| {
+            DatabaseError::TransactionFailed("Transaction already completed".to_string())
+        })?;
 
         tx.commit()
             .await
@@ -192,9 +192,9 @@ impl DatabaseTransaction for PostgreSqlTransaction {
 
     async fn rollback(self: Box<Self>) -> Result<(), DatabaseError> {
         let mut tx_guard = self.tx.lock().await;
-        let tx = tx_guard
-            .take()
-            .ok_or_else(|| DatabaseError::TransactionFailed("Transaction already completed".to_string()))?;
+        let tx = tx_guard.take().ok_or_else(|| {
+            DatabaseError::TransactionFailed("Transaction already completed".to_string())
+        })?;
 
         tx.rollback()
             .await
@@ -208,9 +208,9 @@ impl DatabaseTransaction for PostgreSqlTransaction {
 
     async fn savepoint(&self, name: &str) -> Result<(), DatabaseError> {
         let mut tx_guard = self.tx.lock().await;
-        let tx = tx_guard
-            .as_mut()
-            .ok_or_else(|| DatabaseError::TransactionFailed("Transaction already completed".to_string()))?;
+        let tx = tx_guard.as_mut().ok_or_else(|| {
+            DatabaseError::TransactionFailed("Transaction already completed".to_string())
+        })?;
 
         let sql = format!("SAVEPOINT {}", name);
         sqlx::query(&sql)
@@ -223,9 +223,9 @@ impl DatabaseTransaction for PostgreSqlTransaction {
 
     async fn rollback_to_savepoint(&self, name: &str) -> Result<(), DatabaseError> {
         let mut tx_guard = self.tx.lock().await;
-        let tx = tx_guard
-            .as_mut()
-            .ok_or_else(|| DatabaseError::TransactionFailed("Transaction already completed".to_string()))?;
+        let tx = tx_guard.as_mut().ok_or_else(|| {
+            DatabaseError::TransactionFailed("Transaction already completed".to_string())
+        })?;
 
         let sql = format!("ROLLBACK TO SAVEPOINT {}", name);
         sqlx::query(&sql)
@@ -238,9 +238,9 @@ impl DatabaseTransaction for PostgreSqlTransaction {
 
     async fn release_savepoint(&self, name: &str) -> Result<(), DatabaseError> {
         let mut tx_guard = self.tx.lock().await;
-        let tx = tx_guard
-            .as_mut()
-            .ok_or_else(|| DatabaseError::TransactionFailed("Transaction already completed".to_string()))?;
+        let tx = tx_guard.as_mut().ok_or_else(|| {
+            DatabaseError::TransactionFailed("Transaction already completed".to_string())
+        })?;
 
         let sql = format!("RELEASE SAVEPOINT {}", name);
         sqlx::query(&sql)

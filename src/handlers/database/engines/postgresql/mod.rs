@@ -42,9 +42,7 @@ impl PostgreSqlEngine {
     }
 
     /// Create a new PostgreSQL engine without security checks (for testing)
-    pub async fn new_without_security(
-        config: DatabaseConfig,
-    ) -> Result<Self, DatabaseError> {
+    pub async fn new_without_security(config: DatabaseConfig) -> Result<Self, DatabaseError> {
         Ok(Self { config })
     }
 

@@ -263,7 +263,9 @@ mod tests {
     #[ignore] // Requires running PostgreSQL server
     async fn test_postgresql_health_check() {
         let config = create_test_config();
-        let engine = PostgreSqlEngine::new_without_security(config).await.unwrap();
+        let engine = PostgreSqlEngine::new_without_security(config)
+            .await
+            .unwrap();
 
         let health = engine.health_check().await;
         assert!(health.is_ok());
@@ -277,7 +279,9 @@ mod tests {
     #[ignore] // Requires running PostgreSQL server
     async fn test_postgresql_supported_features() {
         let config = create_test_config();
-        let engine = PostgreSqlEngine::new_without_security(config).await.unwrap();
+        let engine = PostgreSqlEngine::new_without_security(config)
+            .await
+            .unwrap();
 
         use mcp_rs::handlers::database::types::DatabaseFeature;
         let features = engine.supported_features();
