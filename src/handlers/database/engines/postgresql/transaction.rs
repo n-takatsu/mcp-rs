@@ -275,6 +275,6 @@ mod tests {
     #[test]
     fn test_transaction_creation() {
         // Basic test to ensure compilation
-        assert!(true);
+        // This test simply verifies that the module compiles correctly
     }
 }

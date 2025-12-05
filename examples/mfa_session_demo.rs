@@ -199,15 +199,13 @@ async fn main() {
             } else {
                 println!("  Attempt {}: [FAIL] Should succeed", i);
             }
+        } else if result.is_err() {
+            println!(
+                "  Attempt {}: [OK] Correctly blocked (too many attempts)",
+                i
+            );
         } else {
-            if result.is_err() {
-                println!(
-                    "  Attempt {}: [OK] Correctly blocked (too many attempts)",
-                    i
-                );
-            } else {
-                println!("  Attempt {}: [FAIL] Should be blocked", i);
-            }
+            println!("  Attempt {}: [FAIL] Should be blocked", i);
         }
     }
     println!();

@@ -5,12 +5,13 @@
 pub mod command_restrict;
 pub mod connection;
 pub mod sorted_set;
+pub mod transaction;
 pub mod types;
 
 pub use command_restrict::CommandRestrictor;
 pub use connection::RedisConnection;
 pub use sorted_set::SortedSetOperations;
-pub use types::{RedisCommand, RedisConfig, RedisValue};
+pub use types::{RedisCommand, RedisConfig, RedisPoolSettings, RedisSecuritySettings, RedisValue};
 
 use crate::handlers::database::{
     engine::{DatabaseConnection, DatabaseEngine},
@@ -43,7 +44,14 @@ impl RedisEngine {
                 Some(config.connection.password.clone())
             },
             use_tls: config.connection.ssl_mode.is_some(),
-            ..Default::default()
+            timeout_seconds: config.connection.timeout_seconds,
+            pool_settings: RedisPoolSettings {
+                max_connections: config.pool.max_connections,
+                min_idle: config.pool.min_connections,
+                connection_timeout_ms: (config.pool.connection_timeout * 1000) as u64,
+                idle_timeout_seconds: config.pool.idle_timeout as u64,
+            },
+            security: RedisSecuritySettings::default(), // Use default whitelist
         };
 
         let connection = RedisConnection::connect(&redis_config).await?;
@@ -101,7 +109,14 @@ impl DatabaseEngine for RedisEngine {
                 Some(config.connection.password.clone())
             },
             use_tls: config.connection.ssl_mode.is_some(),
-            ..Default::default()
+            timeout_seconds: config.connection.timeout_seconds,
+            pool_settings: RedisPoolSettings {
+                max_connections: config.pool.max_connections,
+                min_idle: config.pool.min_connections,
+                connection_timeout_ms: (config.pool.connection_timeout * 1000) as u64,
+                idle_timeout_seconds: config.pool.idle_timeout as u64,
+            },
+            security: RedisSecuritySettings::default(), // Use default whitelist
         };
 
         let conn = RedisConnection::connect(&redis_config).await?;

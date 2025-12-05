@@ -434,7 +434,7 @@ impl DatabaseConnection for RedisConnection {
 
         if sql_lower.starts_with("select") {
             // Extract key from query
-            let parts: Vec<&str> = sql.split_whitespace().collect();
+            let parts: Vec<&str> = sql_lower.split_whitespace().collect();
             if parts.len() >= 4 && parts[2] == "from" {
                 let key = parts[3];
                 let command = RedisCommand::Get(key.to_string());
@@ -472,13 +472,13 @@ impl DatabaseConnection for RedisConnection {
 
         if sql_lower.starts_with("insert") || sql_lower.starts_with("update") {
             // Extract key and value from SQL
-            let parts: Vec<&str> = sql.split_whitespace().collect();
-            if parts.len() >= 4 && parts[1].to_lowercase() == "into" {
+            let parts: Vec<&str> = sql_lower.split_whitespace().collect();
+            if parts.len() >= 4 && parts[1] == "into" {
                 let key = parts[2];
                 let value = if params.is_empty() {
                     parts
                         .get(4)
-                        .map(|s| s.trim_matches(|c| c == '\'' || c == '"'))
+                        .map(|s| s.trim_matches(|c| c == '\'' || c == '"' || c == '(' || c == ')'))
                         .unwrap_or("")
                 } else if let Value::String(s) = &params[0] {
                     s.as_str()
@@ -502,8 +502,8 @@ impl DatabaseConnection for RedisConnection {
             }
         } else if sql_lower.starts_with("delete") {
             // DELETE FROM key -> DEL key
-            let parts: Vec<&str> = sql.split_whitespace().collect();
-            if parts.len() >= 3 && parts[1].to_lowercase() == "from" {
+            let parts: Vec<&str> = sql_lower.split_whitespace().collect();
+            if parts.len() >= 3 && parts[1] == "from" {
                 let key = parts[2];
                 let command = RedisCommand::Del(vec![key.to_string()]);
                 let result = self.execute_command(&command).await?;
@@ -534,10 +534,20 @@ impl DatabaseConnection for RedisConnection {
         &self,
     ) -> Result<Box<dyn crate::handlers::database::engine::DatabaseTransaction>, DatabaseError>
     {
-        // Redis MULTI/EXEC transactions
-        Err(DatabaseError::UnsupportedOperation(
-            "MULTI/EXEC transactions not yet implemented".to_string(),
-        ))
+        // Create a new connection for the transaction
+        let conn = self
+            .client
+            .get_multiplexed_tokio_connection()
+            .await
+            .map_err(|e| {
+                DatabaseError::TransactionFailed(format!(
+                    "Failed to create transaction connection: {}",
+                    e
+                ))
+            })?;
+
+        let tx = super::transaction::RedisTransaction::new(conn).await?;
+        Ok(Box::new(tx))
     }
 
     async fn get_schema(

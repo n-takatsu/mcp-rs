@@ -128,7 +128,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut used_count = 2; // Already used 2 codes
 
     while !manager.should_regenerate(&hashed_codes) && used_count < plaintext_codes.len() {
-        if let Ok(_) = manager.verify(&plaintext_codes[used_count], &mut hashed_codes) {
+        if manager
+            .verify(&plaintext_codes[used_count], &mut hashed_codes)
+            .is_ok()
+        {
             used_count += 1;
             let remaining = manager.remaining_count(&hashed_codes);
             println!("Used code {}. Remaining: {}", used_count, remaining);
