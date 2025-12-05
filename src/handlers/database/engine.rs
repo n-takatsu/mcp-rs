@@ -202,15 +202,21 @@ impl DatabaseEngineBuilder {
                 ))
             }
             DatabaseType::SQLite => {
-                // TODO: SQLite実装
-                Err(DatabaseError::UnsupportedOperation(
-                    "SQLite engine not yet implemented".to_string(),
-                ))
+                // SQLite実装
+                let engine = super::engines::sqlite::SqliteEngine::new(config.clone()).await?;
+                Ok(Arc::new(engine))
             }
+            #[cfg(feature = "mongodb-backend")]
             DatabaseType::MongoDB => {
                 // MongoDB実装
                 let engine = super::engines::mongodb::MongoEngine::new(config.clone()).await?;
                 Ok(Arc::new(engine))
+            }
+            #[cfg(not(feature = "mongodb-backend"))]
+            DatabaseType::MongoDB => {
+                Err(DatabaseError::UnsupportedOperation(
+                    "MongoDB support not compiled. Enable mongodb-backend feature.".to_string(),
+                ))
             }
             #[cfg(feature = "redis-backend")]
             DatabaseType::Redis => {

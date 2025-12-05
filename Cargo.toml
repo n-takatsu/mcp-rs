@@ -30,6 +30,8 @@ sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "sqlit
 # MySQL support via secure alternative (RSA vulnerability-free)
 mysql_async = { version = "0.36", optional = true }
 redis = { version = "0.26", features = ["tokio-comp", "connection-manager"], optional = true }
+# MongoDB support
+mongodb = { version = "3.1", optional = true }
 
 # Date and time
 chrono = { version = "0.4", features = ["serde"] }
@@ -143,6 +145,7 @@ redis-backend = ["redis"]
 mysql-backend = ["mysql_async"]
 postgresql-backend = []
 sqlite = []
+mongodb-backend = ["mongodb"]
 
 # TUI Dashboard (temporarily disabled)
 # tui = ["ratatui", "crossterm", "tui-input"]
