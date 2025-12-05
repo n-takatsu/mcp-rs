@@ -54,3 +54,11 @@ enabled = true                     # Enable/disable device trust
 max_devices_per_user = 5          # Maximum trusted devices per user
 token_validity_seconds = 2592000  # 30 days in seconds (0 = never expire)
 require_mfa_on_new_device = true  # Require MFA when accessing from new device
+
+# Session-Level MFA Configuration
+[security.mfa.session]
+enabled = true                          # Enable session-level MFA
+require_for_all_sessions = false        # Require MFA even for trusted devices
+challenge_expiration_seconds = 300      # MFA challenge expiration (5 minutes)
+max_attempts = 3                        # Maximum verification attempts per challenge
+session_validity_seconds = 0            # MFA session validity (0 = entire session)

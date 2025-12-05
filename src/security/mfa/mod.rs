@@ -14,6 +14,8 @@ pub mod backup_codes;
 pub mod sms;
 #[cfg(feature = "mfa")]
 pub mod device_trust;
+#[cfg(feature = "mfa")]
+pub mod session;
 
 #[cfg(feature = "mfa")]
 use serde::{Deserialize, Serialize};
@@ -90,6 +92,8 @@ pub struct MfaConfig {
     pub sms: sms::SmsConfig,
     /// Device trust configuration
     pub device_trust: device_trust::DeviceTrustConfig,
+    /// Session-level MFA configuration
+    pub session: session::SessionMfaConfig,
 }
 
 #[cfg(feature = "mfa")]
@@ -103,6 +107,7 @@ impl Default for MfaConfig {
             backup_codes: backup_codes::BackupCodeConfig::default(),
             sms: sms::SmsConfig::default(),
             device_trust: device_trust::DeviceTrustConfig::default(),
+            session: session::SessionMfaConfig::default(),
         }
     }
 }
@@ -115,3 +120,5 @@ pub use backup_codes::{BackupCode, BackupCodeConfig, BackupCodeManager};
 pub use sms::{SmsAuthenticator, SmsConfig, SmsProviderConfig};
 #[cfg(feature = "mfa")]
 pub use device_trust::{DeviceInfo, DeviceTrustConfig, DeviceTrustManager};
+#[cfg(feature = "mfa")]
+pub use session::{MfaChallenge, MfaMethod, SessionMfaConfig, SessionMfaManager, SessionMfaState};
