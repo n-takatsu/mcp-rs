@@ -1,79 +1,85 @@
-# WAF (Web Application Firewall) Implementation Design
+# WAF (Web Application Firewall) 実装設計書
 
-**Issue**: #76
-**Branch**: feature/waf-implementation
-**Priority**: High
-**Estimated Duration**: 12 days (2.5 weeks)
+**Issue**: #76  
+**ブランチ**: feature/waf-implementation  
+**優先度**: High  
+**推定期間**: 12日間（2.5週間）
 
-## 📋 Overview
+## 📋 概要
 
-Comprehensive WAF implementation to protect against application-layer attacks. Currently, only XSS/SQL injection detection exists; full WAF capabilities are missing.
+アプリケーション層攻撃から保護するための包括的なWAF実装。現在、XSS/SQLインジェクション検出のみが存在し、完全なWAF機能が不足しています。
 
-## 🎯 Implementation Scope
+## 🎯 実装スコープ
 
-### Phase 1: CORS Implementation (2 days)
-- Origin validation
-- Preflight request handling
-- Credential-enabled CORS
-- Configuration management
+### Phase 1: CORS実装（2日間）
 
-### Phase 2: CSP Implementation (2 days)
-- CSP header generation
-- Directive management
-- Nonce generation for inline scripts
-- Report URI configuration
+- オリジン検証
+- プリフライトリクエスト処理
+- 認証情報対応CORS
+- 設定管理
 
-### Phase 3: Request Validation (3 days)
-- Request body size limits
-- HTTP method restrictions
-- Content-Type validation
-- File upload validation
-  - MIME type checking
-  - File size limits
-  - Malware scanning integration hooks
+### Phase 2: CSP実装（2日間）
 
-### Phase 4: Security Headers (1 day)
+- CSPヘッダー生成
+- ディレクティブ管理
+- インラインスクリプト用Nonce生成
+- Report URI設定
+
+### Phase 3: リクエスト検証（3日間）
+
+- リクエストボディサイズ制限
+- HTTPメソッド制限
+- Content-Type検証
+- ファイルアップロード検証
+  - MIMEタイプチェック
+  - ファイルサイズ制限
+  - マルウェアスキャン統合フック
+
+### Phase 4: セキュリティヘッダー（1日間）
+
 - X-Content-Type-Options
 - X-Frame-Options
 - X-XSS-Protection
 - Strict-Transport-Security (HSTS)
 - Referrer-Policy
 
-### Phase 5: Enhanced Rate Limiting (2 days)
-- Per-endpoint rate limiting
-- IP-based rate limiting (extension)
-- User-based rate limiting
-- Dynamic rate adjustment
+### Phase 5: 拡張レート制限（2日間）
 
-### Phase 6: Integration & Testing (2 days)
-- Middleware integration
-- Comprehensive test suite
-- Performance validation
-- Documentation
+- エンドポイント単位のレート制限
+- IPベースのレート制限（拡張）
+- ユーザーベースのレート制限
+- 動的レート調整
 
-## 🏗️ Architecture
+### Phase 6: 統合・テスト（2日間）
 
-```
+- ミドルウェア統合
+- 包括的テストスイート
+- パフォーマンス検証
+- ドキュメント作成
+
+## 🏗️ アーキテクチャ
+
+```text
 src/security/
 ├── waf/
-│   ├── mod.rs              # WAF main module
-│   ├── cors.rs             # CORS functionality
+│   ├── mod.rs              # WAFメインモジュール
+│   ├── cors.rs             # CORS機能
 │   ├── csp.rs              # Content Security Policy
-│   ├── request_validator.rs # Request validation
-│   ├── security_headers.rs  # Security header management
-│   └── rate_limiter.rs     # Enhanced rate limiting
-├── mod.rs                  # Re-exports
-└── [existing modules]
+│   ├── request_validator.rs # リクエスト検証
+│   ├── security_headers.rs  # セキュリティヘッダー管理
+│   └── rate_limiter.rs     # 拡張レート制限
+├── mod.rs                  # 再エクスポート
+└── [既存モジュール]
 
 src/server/
 └── middleware/
     ├── mod.rs
-    └── waf_middleware.rs   # WAF middleware integration
+    └── waf_middleware.rs   # WAFミドルウェア統合
 ```
 
-## 📊 Data Structures
+## 📊 データ構造
 
-### WAF Configuration
+### WAF設定
 
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -147,35 +153,39 @@ pub struct HstsConfig {
 }
 ```
 
-## 🔒 Security Considerations
+## 🔒 セキュリティ考慮事項
 
 ### CORS
-- Strict origin validation
-- Wildcard restrictions
-- Credential handling
-- Cache control
+
+- 厳格なオリジン検証
+- ワイルドカード制限
+- 認証情報処理
+- キャッシュ制御
 
 ### CSP
-- Nonce rotation per request
-- Strict default policies
-- Report-only mode for testing
-- Violation reporting
 
-### Request Validation
-- Early rejection of oversized requests
-- Stream processing for large bodies
-- Async validation
-- DoS protection
+- リクエストごとのNonceローテーション
+- 厳格なデフォルトポリシー
+- テスト用レポートオンリーモード
+- 違反レポート
 
-### Rate Limiting
-- Distributed rate limiting support
-- Sliding window algorithm
-- Burst handling
-- IP whitelist/blacklist
+### リクエスト検証
 
-## 🎨 Implementation Details
+- 過大リクエストの早期拒否
+- 大容量ボディのストリーム処理
+- 非同期検証
+- DoS保護
 
-### CORS Handler
+### レート制限
+
+- 分散レート制限サポート
+- スライディングウィンドウアルゴリズム
+- バースト処理
+- IPホワイトリスト/ブラックリスト
+
+## 🎨 実装詳細
+
+### CORSハンドラー
 
 ```rust
 pub struct CorsHandler {
@@ -201,7 +211,7 @@ impl CorsHandler {
 }
 ```
 
-### CSP Generator
+### CSPジェネレーター
 
 ```rust
 pub struct CspGenerator {
@@ -210,20 +220,20 @@ pub struct CspGenerator {
 
 impl CspGenerator {
     pub fn generate_nonce(&self) -> String {
-        // Generate cryptographically secure nonce
+        // 暗号学的に安全なNonceを生成
     }
 
     pub fn build_header(&self, nonce: Option<&str>) -> String {
-        // Build CSP header string
+        // CSPヘッダー文字列を構築
     }
 
     pub fn parse_violation_report(&self, report: &str) -> CspViolation {
-        // Parse CSP violation reports
+        // CSP違反レポートを解析
     }
 }
 ```
 
-### Request Validator
+### リクエストバリデーター
 
 ```rust
 pub struct RequestValidator {
@@ -249,43 +259,47 @@ impl RequestValidator {
 }
 ```
 
-## 📈 Performance Targets
+## 📈 パフォーマンス目標
 
-- **CORS validation**: < 0.1ms per request
-- **CSP generation**: < 0.5ms per request
-- **Request validation**: < 1ms per request
-- **Overall WAF overhead**: < 5ms per request
-- **Memory overhead**: < 10MB per instance
+- **CORS検証**: < 0.1ms/リクエスト
+- **CSP生成**: < 0.5ms/リクエスト
+- **リクエスト検証**: < 1ms/リクエスト
+- **WAF全体のオーバーヘッド**: < 5ms/リクエスト
+- **メモリオーバーヘッド**: < 10MB/インスタンス
 
-## ✅ Testing Strategy
+## ✅ テスト戦略
 
-### Unit Tests
-- [ ] CORS origin validation
-- [ ] CSP header generation
-- [ ] Nonce generation uniqueness
-- [ ] Request size validation
-- [ ] File upload validation
-- [ ] Security header generation
+### 単体テスト
 
-### Integration Tests
-- [ ] Full request/response cycle
-- [ ] Preflight handling
-- [ ] Multi-origin scenarios
-- [ ] Large file uploads
-- [ ] Rate limiting integration
+- [ ] CORSオリジン検証
+- [ ] CSPヘッダー生成
+- [ ] Nonce生成の一意性
+- [ ] リクエストサイズ検証
+- [ ] ファイルアップロード検証
+- [ ] セキュリティヘッダー生成
 
-### Security Tests
-- [ ] CORS bypass attempts
-- [ ] CSP policy violations
-- [ ] Oversized request handling
-- [ ] Malicious file uploads
-- [ ] Header injection attempts
+### 統合テスト
 
-### Performance Tests
-- [ ] Benchmark CORS validation
-- [ ] Benchmark CSP generation
-- [ ] Benchmark request validation
-- [ ] Load testing with WAF enabled
+- [ ] 完全なリクエスト/レスポンスサイクル
+- [ ] プリフライト処理
+- [ ] マルチオリジンシナリオ
+- [ ] 大容量ファイルアップロード
+- [ ] レート制限統合
+
+### セキュリティテスト
+
+- [ ] CORSバイパス試行
+- [ ] CSPポリシー違反
+- [ ] 過大リクエスト処理
+- [ ] 悪意あるファイルアップロード
+- [ ] ヘッダーインジェクション試行
+
+### パフォーマンステスト
+
+- [ ] CORS検証ベンチマーク
+- [ ] CSP生成ベンチマーク
+- [ ] リクエスト検証ベンチマーク
+- [ ] WAF有効時の負荷テスト
 
 ## 📝 Configuration Example
 
@@ -336,19 +350,19 @@ include_subdomains = true
 preload = false
 ```
 
-## 🚀 Deployment Checklist
+## 🚀 デプロイチェックリスト
 
-- [ ] Configuration validated
-- [ ] CORS origins configured for production
-- [ ] CSP policies tested in report-only mode
-- [ ] Rate limits tuned for expected traffic
-- [ ] Monitoring alerts configured
-- [ ] Documentation updated
-- [ ] Security team review completed
+- [ ] 設定の検証完了
+- [ ] 本番環境用CORSオリジン設定
+- [ ] CSPポリシーをレポートオンリーモードでテスト
+- [ ] 予想トラフィックに応じたレート制限調整
+- [ ] 監視アラート設定
+- [ ] ドキュメント更新
+- [ ] セキュリティチームレビュー完了
 
-## 📚 References
+## 📚 参考資料
 
-- [OWASP WAF Best Practices](https://owasp.org/www-community/Web_Application_Firewall)
-- [MDN CORS Documentation](https://developer.mozilla.org/en-US/docs/Web/HTTP/CORS)
-- [CSP Level 3 Specification](https://www.w3.org/TR/CSP3/)
-- [OWASP Secure Headers Project](https://owasp.org/www-project-secure-headers/)
+- [OWASP WAF ベストプラクティス](https://owasp.org/www-community/Web_Application_Firewall)
+- [MDN CORS ドキュメント](https://developer.mozilla.org/en-US/docs/Web/HTTP/CORS)
+- [CSP Level 3 仕様](https://www.w3.org/TR/CSP3/)
+- [OWASP セキュアヘッダープロジェクト](https://owasp.org/www-project-secure-headers/)
