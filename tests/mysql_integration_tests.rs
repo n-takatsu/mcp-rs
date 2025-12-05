@@ -5,9 +5,12 @@
 #[cfg(test)]
 mod tests {
     use mcp_rs::handlers::database::{
-        engine::{DatabaseEngine},
+        engine::DatabaseEngine,
         engines::mysql::MySqlEngine,
-        types::{DatabaseConfig, DatabaseType, Value, ConnectionConfig, PoolConfig, SecurityConfig, FeatureConfig},
+        types::{
+            ConnectionConfig, DatabaseConfig, DatabaseType, FeatureConfig, PoolConfig,
+            SecurityConfig, Value,
+        },
     };
 
     /// Helper function to create test database config
@@ -16,7 +19,7 @@ mod tests {
             database_type: DatabaseType::MySQL,
             connection: ConnectionConfig {
                 host: "localhost".to_string(),
-                port: 3306,
+                port: 3307, // Using port 3307 to avoid conflict with PostgreSQL
                 database: "test_db".to_string(),
                 username: "root".to_string(),
                 password: "password".to_string(),
@@ -85,7 +88,9 @@ mod tests {
 
         // Parameterized query
         let params = vec![Value::Int(42), Value::String("test".to_string())];
-        let result = connection.query("SELECT ? AS num, ? AS text", &params).await;
+        let result = connection
+            .query("SELECT ? AS num, ? AS text", &params)
+            .await;
 
         assert!(result.is_ok());
         let query_result = result.unwrap();
@@ -151,7 +156,10 @@ mod tests {
             _ => panic!("Expected integer last_insert_id"),
         };
         let query_result = connection
-            .query("SELECT name FROM test_insert WHERE id = ?", &[Value::Int(last_id)])
+            .query(
+                "SELECT name FROM test_insert WHERE id = ?",
+                &[Value::Int(last_id)],
+            )
             .await;
 
         assert!(query_result.is_ok());

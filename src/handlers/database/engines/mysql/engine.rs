@@ -57,7 +57,7 @@ impl DatabaseEngine for MySqlEngine {
         config: &DatabaseConfig,
     ) -> Result<Box<dyn DatabaseConnection>, DatabaseError> {
         use super::MySqlConnection;
-        
+
         // Build connection string from config
         let connection_string = format!(
             "mysql://{}:{}@{}:{}/{}",

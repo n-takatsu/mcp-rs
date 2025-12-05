@@ -35,12 +35,10 @@ impl MySqlTransaction {
     fn convert_value(mysql_value: mysql_async::Value) -> Value {
         match mysql_value {
             mysql_async::Value::NULL => Value::Null,
-            mysql_async::Value::Bytes(bytes) => {
-                match String::from_utf8(bytes.clone()) {
-                    Ok(s) => Value::String(s),
-                    Err(_) => Value::Binary(bytes),
-                }
-            }
+            mysql_async::Value::Bytes(bytes) => match String::from_utf8(bytes.clone()) {
+                Ok(s) => Value::String(s),
+                Err(_) => Value::Binary(bytes),
+            },
             mysql_async::Value::Int(i) => Value::Int(i),
             mysql_async::Value::UInt(u) => Value::Int(u as i64),
             mysql_async::Value::Float(f) => Value::Float(f as f64),
@@ -57,11 +55,7 @@ impl MySqlTransaction {
                 let total_hours = days * 24 + hours as u32;
                 let time_str = format!(
                     "{}{}:{:02}:{:02}:{:06}",
-                    sign,
-                    total_hours,
-                    minutes,
-                    seconds,
-                    micros
+                    sign, total_hours, minutes, seconds, micros
                 );
                 Value::String(time_str)
             }
@@ -111,7 +105,9 @@ impl DatabaseTransaction for MySqlTransaction {
                 .map(|col| crate::handlers::database::types::ColumnInfo {
                     name: col.name_str().to_string(),
                     data_type: format!("{:?}", col.column_type()),
-                    nullable: !col.flags().contains(mysql_async::consts::ColumnFlags::NOT_NULL_FLAG),
+                    nullable: !col
+                        .flags()
+                        .contains(mysql_async::consts::ColumnFlags::NOT_NULL_FLAG),
                     max_length: None,
                 })
                 .collect()
@@ -130,14 +126,15 @@ impl DatabaseTransaction for MySqlTransaction {
 
         let total_rows = Some(rows.len() as u64);
 
-        Ok(QueryResult { columns, rows, total_rows, execution_time_ms: 0 })
+        Ok(QueryResult {
+            columns,
+            rows,
+            total_rows,
+            execution_time_ms: 0,
+        })
     }
 
-    async fn execute(
-        &self,
-        sql: &str,
-        params: &[Value],
-    ) -> Result<ExecuteResult, DatabaseError> {
+    async fn execute(&self, sql: &str, params: &[Value]) -> Result<ExecuteResult, DatabaseError> {
         let is_active = *self.is_active.lock().await;
         if !is_active {
             return Err(DatabaseError::ValidationError(
@@ -256,7 +253,10 @@ impl DatabaseTransaction for MySqlTransaction {
         Ok(())
     }
 
-    async fn set_isolation_level(&self, _level: crate::handlers::database::engine::IsolationLevel) -> Result<(), DatabaseError> {
+    async fn set_isolation_level(
+        &self,
+        _level: crate::handlers::database::engine::IsolationLevel,
+    ) -> Result<(), DatabaseError> {
         // Isolation level is set at transaction start, cannot be changed mid-transaction
         Err(DatabaseError::UnsupportedOperation(
             "Cannot change isolation level during active transaction".to_string(),
@@ -264,9 +264,9 @@ impl DatabaseTransaction for MySqlTransaction {
     }
 
     fn transaction_info(&self) -> crate::handlers::database::engine::TransactionInfo {
-        use chrono::Utc;
         use crate::handlers::database::engine::{IsolationLevel, TransactionInfo};
-        
+        use chrono::Utc;
+
         TransactionInfo {
             transaction_id: "mysql-tx".to_string(),
             isolation_level: IsolationLevel::RepeatableRead,
@@ -281,7 +281,9 @@ impl Drop for MySqlTransaction {
     fn drop(&mut self) {
         // Note: Cannot async check is_active in Drop
         // Logging warning only
-        eprintln!("Warning: MySqlTransaction dropped - ensure transaction was committed or rolled back");
+        eprintln!(
+            "Warning: MySqlTransaction dropped - ensure transaction was committed or rolled back"
+        );
     }
 }
 

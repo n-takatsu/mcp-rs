@@ -50,7 +50,10 @@ impl MySqlConnection {
     }
 
     /// Create connection from OptsBuilder
-    pub async fn from_opts(opts: OptsBuilder, database_name: String) -> Result<Self, DatabaseError> {
+    pub async fn from_opts(
+        opts: OptsBuilder,
+        database_name: String,
+    ) -> Result<Self, DatabaseError> {
         let pool = Pool::new(opts);
 
         let conn = pool.get_conn().await.map_err(|e| {
@@ -67,7 +70,7 @@ impl MySqlConnection {
     /// Get a connection from the pool
     async fn get_conn(&self) -> Result<Conn, DatabaseError> {
         let mut conn_guard = self.conn.lock().await;
-        
+
         if let Some(conn) = conn_guard.take() {
             Ok(conn)
         } else {
@@ -111,11 +114,7 @@ impl MySqlConnection {
                 let total_hours = days * 24 + hours as u32;
                 let time_str = format!(
                     "{}{}:{:02}:{:02}:{:06}",
-                    sign,
-                    total_hours,
-                    minutes,
-                    seconds,
-                    micros
+                    sign, total_hours, minutes, seconds, micros
                 );
                 Value::String(time_str)
             }
@@ -159,7 +158,9 @@ impl DatabaseConnection for MySqlConnection {
                 .map(|col| ColumnInfo {
                     name: col.name_str().to_string(),
                     data_type: format!("{:?}", col.column_type()),
-                    nullable: !col.flags().contains(mysql_async::consts::ColumnFlags::NOT_NULL_FLAG),
+                    nullable: !col
+                        .flags()
+                        .contains(mysql_async::consts::ColumnFlags::NOT_NULL_FLAG),
                     max_length: None,
                 })
                 .collect()
@@ -180,7 +181,12 @@ impl DatabaseConnection for MySqlConnection {
 
         self.return_conn(conn).await;
 
-        Ok(QueryResult { columns, rows, total_rows, execution_time_ms: 0 })
+        Ok(QueryResult {
+            columns,
+            rows,
+            total_rows,
+            execution_time_ms: 0,
+        })
     }
 
     async fn execute(&self, sql: &str, params: &[Value]) -> Result<ExecuteResult, DatabaseError> {
@@ -213,11 +219,9 @@ impl DatabaseConnection for MySqlConnection {
 
         let mut conn = self.get_conn().await?;
 
-        conn.query_drop("START TRANSACTION")
-            .await
-            .map_err(|e| {
-                DatabaseError::TransactionFailed(format!("Failed to start transaction: {}", e))
-            })?;
+        conn.query_drop("START TRANSACTION").await.map_err(|e| {
+            DatabaseError::TransactionFailed(format!("Failed to start transaction: {}", e))
+        })?;
 
         Ok(Box::new(MySqlTransaction::new(conn)))
     }
@@ -235,13 +239,13 @@ impl DatabaseConnection for MySqlConnection {
 
         for table_name in tables {
             let columns: Vec<mysql_async::Row> = conn
-                .exec(
-                    "SHOW COLUMNS FROM ??",
-                    (table_name.clone(),),
-                )
+                .exec("SHOW COLUMNS FROM ??", (table_name.clone(),))
                 .await
                 .map_err(|e| {
-                    DatabaseError::QueryFailed(format!("Failed to get columns for {}: {}", table_name, e))
+                    DatabaseError::QueryFailed(format!(
+                        "Failed to get columns for {}: {}",
+                        table_name, e
+                    ))
                 })?;
 
             let column_info: Vec<ColumnInfo> = columns
@@ -343,9 +347,9 @@ impl DatabaseConnection for MySqlConnection {
     async fn close(&self) -> Result<(), DatabaseError> {
         let mut conn_guard = self.conn.lock().await;
         if let Some(conn) = conn_guard.take() {
-            conn.disconnect()
-                .await
-                .map_err(|e| DatabaseError::ConnectionFailed(format!("Failed to close connection: {}", e)))?;
+            conn.disconnect().await.map_err(|e| {
+                DatabaseError::ConnectionFailed(format!("Failed to close connection: {}", e))
+            })?;
         }
         Ok(())
     }
