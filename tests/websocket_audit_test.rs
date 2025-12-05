@@ -106,7 +106,7 @@ async fn test_audit_logger_builder_pattern() {
     let audit_logger = Arc::new(AuditLogger::new(audit_config));
 
     // Build WebSocket transport with fluent API
-    let transport = WebSocketTransport::new(WebSocketConfig {
+    let _transport = WebSocketTransport::new(WebSocketConfig {
         url: "ws://localhost:8080".to_string(),
         server_mode: true,
         timeout_seconds: Some(60),
@@ -127,7 +127,7 @@ async fn test_audit_logger_builder_pattern() {
 #[tokio::test]
 async fn test_audit_logger_optional() {
     // Create WebSocket transport without audit logger
-    let transport = WebSocketTransport::new(WebSocketConfig {
+    let _transport = WebSocketTransport::new(WebSocketConfig {
         url: "ws://localhost:8080".to_string(),
         server_mode: false,
         timeout_seconds: Some(30),
@@ -158,9 +158,9 @@ fn test_audit_config_creation() {
     };
 
     assert_eq!(config.max_memory_entries, 1000);
-    assert_eq!(config.enable_file_output, true);
-    assert_eq!(config.json_format, true);
-    assert_eq!(config.rotation_enabled, true);
+    assert!(config.enable_file_output);
+    assert!(config.json_format);
+    assert!(config.rotation_enabled);
     assert_eq!(config.rotation_size, 100 * 1024 * 1024);
 }
 
@@ -178,8 +178,8 @@ fn test_tls_config_with_all_certificates() {
     assert!(tls_config.cert_path.is_some());
     assert!(tls_config.key_path.is_some());
     assert!(tls_config.ca_cert_path.is_some());
-    assert_eq!(tls_config.verify_server, true);
-    assert_eq!(tls_config.accept_invalid_certs, false);
+    assert!(tls_config.verify_server);
+    assert!(!tls_config.accept_invalid_certs);
 }
 
 #[test]
@@ -198,7 +198,7 @@ fn test_websocket_config_combinations() {
         tls_config: None,
     };
 
-    assert_eq!(plain_config.use_tls, false);
+    assert!(!plain_config.use_tls);
     assert!(plain_config.tls_config.is_none());
 
     // Test 2: TLS WebSocket
@@ -221,7 +221,7 @@ fn test_websocket_config_combinations() {
         }),
     };
 
-    assert_eq!(tls_ws_config.use_tls, true);
+    assert!(tls_ws_config.use_tls);
     assert!(tls_ws_config.tls_config.is_some());
 
     // Test 3: Server mode
@@ -238,6 +238,6 @@ fn test_websocket_config_combinations() {
         tls_config: None,
     };
 
-    assert_eq!(server_config.server_mode, true);
+    assert!(server_config.server_mode);
     assert_eq!(server_config.max_reconnect_attempts, 0); // 0 means infinite
 }

@@ -1,3 +1,4 @@
+---
 name: Production Deployment
 
 on:
@@ -151,9 +152,6 @@ jobs:
     needs: [build-docker-image, security-scan]
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main' || github.event.inputs.environment == 'staging'
-    environment:
-      name: staging
-      url: https://staging.mcp-rs.example.com
     steps:
       - uses: actions/checkout@v4
 
@@ -182,9 +180,6 @@ jobs:
     needs: [build-docker-image, security-scan, deploy-staging]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v') || github.event.inputs.environment == 'production'
-    environment:
-      name: production
-      url: https://mcp-rs.example.com
     steps:
       - uses: actions/checkout@v4
 
@@ -221,8 +216,6 @@ jobs:
     name: Rollback Deployment
     runs-on: ubuntu-latest
     if: failure()
-    environment:
-      name: production
     steps:
       - uses: actions/checkout@v4
 
