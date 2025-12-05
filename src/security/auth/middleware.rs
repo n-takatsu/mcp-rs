@@ -42,7 +42,7 @@ impl<P: AuthenticationProvider> AuthMiddleware<P> {
             requirement,
         }
     }
-    
+
     /// トークンを抽出
     fn extract_token(request: &Request) -> Option<(String, AuthMethod)> {
         // Authorizationヘッダーから抽出
@@ -62,7 +62,7 @@ impl<P: AuthenticationProvider> AuthMiddleware<P> {
                 }
             }
         }
-        
+
         // Cookieから抽出
         if let Some(cookie_header) = request.headers().get(header::COOKIE) {
             if let Ok(cookie_str) = cookie_header.to_str() {
@@ -74,10 +74,10 @@ impl<P: AuthenticationProvider> AuthMiddleware<P> {
                 }
             }
         }
-        
+
         None
     }
-    
+
     /// 認証要件を確認
     fn check_requirement(&self, user: &AuthUser) -> AuthResult<()> {
         match &self.requirement {
@@ -111,39 +111,46 @@ impl<P: AuthenticationProvider> AuthMiddleware<P> {
                 if user.is_admin() || permissions.iter().any(|p| user.has_permission(p)) {
                     Ok(())
                 } else {
-                    Err(AuthError::Forbidden("Required permission not found".to_string()))
+                    Err(AuthError::Forbidden(
+                        "Required permission not found".to_string(),
+                    ))
                 }
             }
         }
     }
-    
+
     /// ミドルウェアハンドラー
     pub async fn handle(&self, mut request: Request, next: Next) -> Result<Response, AuthError> {
         // トークンを抽出
         let token_info = Self::extract_token(&request);
-        
+
         match (&self.requirement, token_info) {
             // 認証オプション & トークンなし
-            (AuthRequirement::Optional, None) => {
-                Ok(next.run(request).await)
-            }
-            
+            (AuthRequirement::Optional, None) => Ok(next.run(request).await),
+
             // 認証必須 & トークンなし
-            (AuthRequirement::Required | AuthRequirement::Role(_) | AuthRequirement::Permission(_) | AuthRequirement::AnyRole(_) | AuthRequirement::AnyPermission(_), None) => {
-                Err(AuthError::Unauthorized("Authentication required".to_string()))
-            }
-            
+            (
+                AuthRequirement::Required
+                | AuthRequirement::Role(_)
+                | AuthRequirement::Permission(_)
+                | AuthRequirement::AnyRole(_)
+                | AuthRequirement::AnyPermission(_),
+                None,
+            ) => Err(AuthError::Unauthorized(
+                "Authentication required".to_string(),
+            )),
+
             // トークンあり
             (_, Some((token, method))) => {
                 // トークンを検証
                 let user = self.provider.verify_token(&token, method).await?;
-                
+
                 // 要件をチェック
                 self.check_requirement(&user)?;
-                
+
                 // ユーザー情報をリクエストに追加
                 request.extensions_mut().insert(user);
-                
+
                 Ok(next.run(request).await)
             }
         }
@@ -168,12 +175,12 @@ impl IntoResponse for AuthError {
             AuthError::ConfigError(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Configuration error"),
             AuthError::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Internal error"),
         };
-        
+
         let body = serde_json::json!({
             "error": message,
             "details": self.to_string(),
         });
-        
+
         (status, axum::Json(body)).into_response()
     }
 }
@@ -188,7 +195,7 @@ impl AuthUserExt for Request {
     fn auth_user(&self) -> Option<&AuthUser> {
         self.extensions().get::<AuthUser>()
     }
-    
+
     fn require_auth_user(&self) -> Result<&AuthUser, AuthError> {
         self.auth_user()
             .ok_or_else(|| AuthError::Unauthorized("Authentication required".to_string()))
@@ -223,43 +230,34 @@ mod tests {
             None,
             12,
         ));
-        
+
         // ユーザー登録と認証
         let user = provider
-            .register_user(
-                "testuser".to_string(),
-                "TestPass123!".to_string(),
-                None,
-            )
+            .register_user("testuser".to_string(), "TestPass123!".to_string(), None)
             .await
             .unwrap();
-        
+
         // トークン生成
         let jwt = JwtAuth::new(jwt_config);
         let token = jwt.generate_access_token(&user).unwrap();
-        
+
         // ミドルウェア作成
-        let middleware = AuthMiddleware::new(
-            Arc::clone(&provider),
-            AuthRequirement::Required,
-        );
-        
+        let middleware = AuthMiddleware::new(Arc::clone(&provider), AuthRequirement::Required);
+
         let app = Router::new()
             .route("/protected", get(protected_handler))
             .layer(middleware::from_fn(move |req, next| {
                 let mw = middleware.clone();
-                async move {
-                    mw.handle(req, next).await.map_err(|e| e.into_response())
-                }
+                async move { mw.handle(req, next).await.map_err(|e| e.into_response()) }
             }));
-        
+
         // リクエスト送信
         let request = Request::builder()
             .uri("/protected")
             .header("Authorization", format!("Bearer {}", token))
             .body(Body::empty())
             .unwrap();
-        
+
         let response = app.oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
     }
@@ -268,21 +266,19 @@ mod tests {
     async fn test_auth_middleware_without_token() {
         let provider = Arc::new(MultiAuthProvider::new(None, None, None, None, 12));
         let middleware = AuthMiddleware::new(provider, AuthRequirement::Required);
-        
+
         let app = Router::new()
             .route("/protected", get(protected_handler))
             .layer(middleware::from_fn(move |req, next| {
                 let mw = middleware.clone();
-                async move {
-                    mw.handle(req, next).await.map_err(|e| e.into_response())
-                }
+                async move { mw.handle(req, next).await.map_err(|e| e.into_response()) }
             }));
-        
+
         let request = Request::builder()
             .uri("/protected")
             .body(Body::empty())
             .unwrap();
-        
+
         let response = app.oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }

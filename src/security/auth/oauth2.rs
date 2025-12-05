@@ -10,41 +10,45 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub struct OAuth2Config {
     /// プロバイダー名
     pub provider: AuthProvider,
-    
+
     /// クライアントID
     pub client_id: String,
-    
+
     /// クライアントシークレット
     #[serde(skip_serializing)]
     pub client_secret: String,
-    
+
     /// 認可エンドポイント
     pub authorization_endpoint: String,
-    
+
     /// トークンエンドポイント
     pub token_endpoint: String,
-    
+
     /// ユーザー情報エンドポイント
     pub userinfo_endpoint: String,
-    
+
     /// リダイレクトURI
     pub redirect_uri: String,
-    
+
     /// スコープ
     #[serde(default = "default_scopes")]
     pub scopes: Vec<String>,
-    
+
     /// 状態検証の有効化
     #[serde(default = "default_true")]
     pub enable_state_validation: bool,
-    
+
     /// PKCE（Proof Key for Code Exchange）の使用
     #[serde(default = "default_true")]
     pub use_pkce: bool,
 }
 
 fn default_scopes() -> Vec<String> {
-    vec!["openid".to_string(), "profile".to_string(), "email".to_string()]
+    vec![
+        "openid".to_string(),
+        "profile".to_string(),
+        "email".to_string(),
+    ]
 }
 
 fn default_true() -> bool {
@@ -71,7 +75,7 @@ impl OAuth2Config {
             use_pkce: true,
         }
     }
-    
+
     /// GitHub OAuth2設定を作成
     pub fn github(client_id: String, client_secret: String, redirect_uri: String) -> Self {
         Self {
@@ -87,9 +91,14 @@ impl OAuth2Config {
             use_pkce: false, // GitHubはPKCEをサポートしていない
         }
     }
-    
+
     /// Microsoft OAuth2設定を作成
-    pub fn microsoft(client_id: String, client_secret: String, redirect_uri: String, tenant: String) -> Self {
+    pub fn microsoft(
+        client_id: String,
+        client_secret: String,
+        redirect_uri: String,
+        tenant: String,
+    ) -> Self {
         Self {
             provider: AuthProvider::Microsoft,
             client_id,
@@ -120,22 +129,22 @@ impl OAuth2Config {
 pub struct OAuth2Token {
     /// アクセストークン
     pub access_token: String,
-    
+
     /// トークンタイプ
     pub token_type: String,
-    
+
     /// 有効期限（秒）
     pub expires_in: Option<u64>,
-    
+
     /// リフレッシュトークン
     pub refresh_token: Option<String>,
-    
+
     /// スコープ
     pub scope: Option<String>,
-    
+
     /// IDトークン（OpenID Connect）
     pub id_token: Option<String>,
-    
+
     /// 発行時刻
     #[serde(default = "current_timestamp")]
     pub issued_at: u64,
@@ -167,16 +176,16 @@ impl OAuth2Token {
 pub enum OAuth2Error {
     #[error("Authorization failed: {0}")]
     AuthorizationFailed(String),
-    
+
     #[error("Token exchange failed: {0}")]
     TokenExchangeFailed(String),
-    
+
     #[error("User info fetch failed: {0}")]
     UserInfoFailed(String),
-    
+
     #[error("Invalid state")]
     InvalidState,
-    
+
     #[error("Provider not configured: {0:?}")]
     ProviderNotConfigured(AuthProvider),
 }
@@ -192,26 +201,26 @@ impl From<OAuth2Error> for AuthError {
 pub struct OAuth2UserInfo {
     /// ユーザーID（プロバイダー固有）
     pub id: String,
-    
+
     /// メールアドレス
     pub email: Option<String>,
-    
+
     /// 名前
     pub name: Option<String>,
-    
+
     /// ユーザー名
     pub username: Option<String>,
-    
+
     /// プロフィール画像URL
     pub picture: Option<String>,
-    
+
     /// メール確認済み
     #[serde(default)]
     pub email_verified: bool,
-    
+
     /// ロケール
     pub locale: Option<String>,
-    
+
     /// 追加属性
     #[serde(default)]
     pub extra: HashMap<String, serde_json::Value>,
@@ -232,7 +241,7 @@ impl OAuth2Provider {
             state_store: HashMap::new(),
         }
     }
-    
+
     /// 認可URLを生成
     pub fn generate_authorization_url(&mut self) -> AuthResult<String> {
         let state = if self.config.enable_state_validation {
@@ -242,27 +251,30 @@ impl OAuth2Provider {
         } else {
             None
         };
-        
+
         let mut params = vec![
             ("client_id", self.config.client_id.clone()),
             ("redirect_uri", self.config.redirect_uri.clone()),
             ("response_type", "code".to_string()),
             ("scope", self.config.scopes.join(" ")),
         ];
-        
+
         if let Some(state) = state {
             params.push(("state", state));
         }
-        
+
         let query_string = params
             .iter()
             .map(|(k, v)| format!("{}={}", k, urlencoding::encode(v)))
             .collect::<Vec<_>>()
             .join("&");
-        
-        Ok(format!("{}?{}", self.config.authorization_endpoint, query_string))
+
+        Ok(format!(
+            "{}?{}",
+            self.config.authorization_endpoint, query_string
+        ))
     }
-    
+
     /// 認可コードをトークンに交換
     pub async fn exchange_code(
         &self,
@@ -276,14 +288,14 @@ impl OAuth2Provider {
                 return Err(OAuth2Error::InvalidState.into());
             }
         }
-        
+
         let mut params = HashMap::new();
         params.insert("grant_type", "authorization_code");
         params.insert("code", &code);
         params.insert("client_id", &self.config.client_id);
         params.insert("client_secret", &self.config.client_secret);
         params.insert("redirect_uri", &self.config.redirect_uri);
-        
+
         let response = self
             .http_client
             .post(&self.config.token_endpoint)
@@ -291,21 +303,21 @@ impl OAuth2Provider {
             .send()
             .await
             .map_err(|e| OAuth2Error::TokenExchangeFailed(e.to_string()))?;
-        
+
         if !response.status().is_success() {
             let error_text = response.text().await.unwrap_or_default();
             return Err(OAuth2Error::TokenExchangeFailed(error_text).into());
         }
-        
+
         let mut token: OAuth2Token = response
             .json()
             .await
             .map_err(|e| OAuth2Error::TokenExchangeFailed(e.to_string()))?;
-        
+
         token.issued_at = current_timestamp();
         Ok(token)
     }
-    
+
     /// ユーザー情報を取得
     pub async fn get_user_info(&self, token: &OAuth2Token) -> AuthResult<OAuth2UserInfo> {
         let response = self
@@ -315,38 +327,38 @@ impl OAuth2Provider {
             .send()
             .await
             .map_err(|e| OAuth2Error::UserInfoFailed(e.to_string()))?;
-        
+
         if !response.status().is_success() {
             let error_text = response.text().await.unwrap_or_default();
             return Err(OAuth2Error::UserInfoFailed(error_text).into());
         }
-        
+
         let user_info: OAuth2UserInfo = response
             .json()
             .await
             .map_err(|e| OAuth2Error::UserInfoFailed(e.to_string()))?;
-        
+
         Ok(user_info)
     }
-    
+
     /// OAuth2ユーザー情報をAuthUserに変換
     pub fn user_info_to_auth_user(&self, user_info: OAuth2UserInfo) -> AuthUser {
         let mut user = AuthUser::new(
             user_info.id.clone(),
             user_info.username.clone().unwrap_or(user_info.id),
         );
-        
+
         user.email = user_info.email;
         user.provider = self.config.provider.clone();
         user.roles.insert(Role::User);
-        
+
         if let Some(name) = user_info.name {
             user.metadata.insert("name".to_string(), name);
         }
         if let Some(picture) = user_info.picture {
             user.metadata.insert("picture".to_string(), picture);
         }
-        
+
         user
     }
 }
@@ -362,7 +374,7 @@ mod tests {
             "client-secret".to_string(),
             "http://localhost/callback".to_string(),
         );
-        
+
         assert_eq!(config.provider, AuthProvider::Google);
         assert!(config.use_pkce);
         assert!(config.scopes.contains(&"openid".to_string()));
@@ -375,7 +387,7 @@ mod tests {
             "client-secret".to_string(),
             "http://localhost/callback".to_string(),
         );
-        
+
         assert_eq!(config.provider, AuthProvider::GitHub);
         assert!(!config.use_pkce);
     }
@@ -391,9 +403,9 @@ mod tests {
             id_token: None,
             issued_at: current_timestamp(),
         };
-        
+
         assert!(!token.is_expired());
-        
+
         // 過去の発行時刻に設定
         token.issued_at = current_timestamp() - 7200;
         assert!(token.is_expired());
@@ -406,10 +418,10 @@ mod tests {
             "test-secret".to_string(),
             "http://localhost/callback".to_string(),
         );
-        
+
         let mut provider = OAuth2Provider::new(config);
         let url = provider.generate_authorization_url().unwrap();
-        
+
         assert!(url.contains("client_id=test-client-id"));
         assert!(url.contains("redirect_uri="));
         assert!(url.contains("response_type=code"));

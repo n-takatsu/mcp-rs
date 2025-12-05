@@ -9,40 +9,40 @@ use thiserror::Error;
 pub enum AuthError {
     #[error("Invalid credentials")]
     InvalidCredentials,
-    
+
     #[error("Token expired")]
     TokenExpired,
-    
+
     #[error("Token invalid: {0}")]
     TokenInvalid(String),
-    
+
     #[error("Unauthorized: {0}")]
     Unauthorized(String),
-    
+
     #[error("Forbidden: {0}")]
     Forbidden(String),
-    
+
     #[error("User not found")]
     UserNotFound,
-    
+
     #[error("User already exists")]
     UserAlreadyExists,
-    
+
     #[error("Password too weak")]
     WeakPassword,
-    
+
     #[error("MFA required")]
     MfaRequired,
-    
+
     #[error("MFA invalid")]
     MfaInvalid,
-    
+
     #[error("Provider error: {0}")]
     ProviderError(String),
-    
+
     #[error("Configuration error: {0}")]
     ConfigError(String),
-    
+
     #[error("Internal error: {0}")]
     Internal(String),
 }
@@ -108,7 +108,7 @@ impl Role {
             Role::Custom(_) => 25,
         }
     }
-    
+
     /// 管理者権限を持つか
     pub fn is_admin(&self) -> bool {
         matches!(self, Role::Admin)
@@ -131,19 +131,19 @@ impl Permission {
             action: action.into(),
         }
     }
-    
+
     pub fn read(resource: impl Into<String>) -> Self {
         Self::new(resource, "read")
     }
-    
+
     pub fn write(resource: impl Into<String>) -> Self {
         Self::new(resource, "write")
     }
-    
+
     pub fn delete(resource: impl Into<String>) -> Self {
         Self::new(resource, "delete")
     }
-    
+
     pub fn admin(resource: impl Into<String>) -> Self {
         Self::new(resource, "admin")
     }
@@ -181,23 +181,23 @@ impl AuthUser {
             metadata: std::collections::HashMap::new(),
         }
     }
-    
+
     /// ロールを持つか確認
     pub fn has_role(&self, role: &Role) -> bool {
         self.roles.contains(role)
     }
-    
+
     /// パーミッションを持つか確認
     pub fn has_permission(&self, permission: &Permission) -> bool {
         self.permissions.contains(permission)
     }
-    
+
     /// リソースへのアクションが許可されているか
     pub fn can(&self, resource: &str, action: &str) -> bool {
         let permission = Permission::new(resource, action);
         self.has_permission(&permission) || self.has_role(&Role::Admin)
     }
-    
+
     /// 管理者か確認
     pub fn is_admin(&self) -> bool {
         self.roles.iter().any(|r| r.is_admin())
@@ -215,22 +215,16 @@ pub enum Credentials {
         password: String,
     },
     /// APIキー
-    ApiKey {
-        key: String,
-    },
+    ApiKey { key: String },
     /// OAuth2トークン
     OAuth2 {
         provider: AuthProvider,
         token: String,
     },
     /// JWTトークン
-    Jwt {
-        token: String,
-    },
+    Jwt { token: String },
     /// セッショントークン
-    Session {
-        session_id: String,
-    },
+    Session { session_id: String },
 }
 
 /// パスワードハッシャー
@@ -243,53 +237,53 @@ impl PasswordHasher {
     pub fn new(salt_rounds: u32) -> Self {
         Self { salt_rounds }
     }
-    
+
     /// パスワードをハッシュ化
     pub fn hash(&self, password: &str) -> AuthResult<String> {
         use argon2::{
             password_hash::{PasswordHasher as _, SaltString},
             Argon2,
         };
-        
+
         let salt = SaltString::generate(&mut rand::thread_rng());
         let argon2 = Argon2::default();
-        
+
         argon2
             .hash_password(password.as_bytes(), &salt)
             .map(|hash| hash.to_string())
             .map_err(|e| AuthError::Internal(format!("Password hashing failed: {}", e)))
     }
-    
+
     /// パスワードを検証
     pub fn verify(&self, password: &str, hash: &str) -> AuthResult<bool> {
         use argon2::{
             password_hash::{PasswordHash, PasswordVerifier},
             Argon2,
         };
-        
+
         let parsed_hash = PasswordHash::new(hash)
             .map_err(|e| AuthError::Internal(format!("Invalid password hash: {}", e)))?;
-        
+
         Ok(Argon2::default()
             .verify_password(password.as_bytes(), &parsed_hash)
             .is_ok())
     }
-    
+
     /// パスワード強度をチェック
     pub fn check_strength(password: &str) -> AuthResult<()> {
         if password.len() < 8 {
             return Err(AuthError::WeakPassword);
         }
-        
+
         let has_lowercase = password.chars().any(|c| c.is_lowercase());
         let has_uppercase = password.chars().any(|c| c.is_uppercase());
         let has_digit = password.chars().any(|c| c.is_numeric());
         let has_special = password.chars().any(|c| !c.is_alphanumeric());
-        
+
         if !(has_lowercase && has_uppercase && has_digit && has_special) {
             return Err(AuthError::WeakPassword);
         }
-        
+
         Ok(())
     }
 }
@@ -314,7 +308,7 @@ mod tests {
     fn test_auth_user_permissions() {
         let mut user = AuthUser::new("1".to_string(), "test".to_string());
         user.permissions.insert(Permission::read("posts"));
-        
+
         assert!(user.can("posts", "read"));
         assert!(!user.can("posts", "write"));
     }
@@ -323,7 +317,7 @@ mod tests {
     fn test_auth_user_admin() {
         let mut user = AuthUser::new("1".to_string(), "admin".to_string());
         user.roles.insert(Role::Admin);
-        
+
         assert!(user.is_admin());
         assert!(user.can("anything", "anything"));
     }
@@ -340,7 +334,7 @@ mod tests {
         let hasher = PasswordHasher::default();
         let password = "TestPassword123!";
         let hash = hasher.hash(password).unwrap();
-        
+
         assert!(hasher.verify(password, &hash).unwrap());
         assert!(!hasher.verify("WrongPassword", &hash).unwrap());
     }

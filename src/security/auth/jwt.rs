@@ -10,23 +10,23 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub struct JwtConfig {
     /// 秘密鍵
     pub secret: String,
-    
+
     /// アクセストークンの有効期限（秒）
     #[serde(default = "default_access_expiration")]
     pub access_token_expiration: u64,
-    
+
     /// リフレッシュトークンの有効期限（秒）
     #[serde(default = "default_refresh_expiration")]
     pub refresh_token_expiration: u64,
-    
+
     /// イシュアー
     #[serde(default = "default_issuer")]
     pub issuer: String,
-    
+
     /// オーディエンス
     #[serde(default)]
     pub audience: Option<String>,
-    
+
     /// アルゴリズム
     #[serde(default = "default_algorithm")]
     pub algorithm: String,
@@ -66,33 +66,33 @@ impl Default for JwtConfig {
 pub struct JwtClaims {
     /// サブジェクト（ユーザーID）
     pub sub: String,
-    
+
     /// ユーザー名
     pub username: String,
-    
+
     /// メールアドレス
     #[serde(skip_serializing_if = "Option::is_none")]
     pub email: Option<String>,
-    
+
     /// ロール
     pub roles: Vec<String>,
-    
+
     /// イシュアー
     pub iss: String,
-    
+
     /// オーディエンス
     #[serde(skip_serializing_if = "Option::is_none")]
     pub aud: Option<String>,
-    
+
     /// 発行時刻
     pub iat: u64,
-    
+
     /// 有効期限
     pub exp: u64,
-    
+
     /// トークンタイプ（access/refresh）
     pub token_type: String,
-    
+
     /// JTI（JWT ID）
     pub jti: String,
 }
@@ -109,7 +109,7 @@ impl JwtClaims {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs();
-        
+
         Self {
             sub: user.id.clone(),
             username: user.username.clone(),
@@ -123,7 +123,7 @@ impl JwtClaims {
             jti: uuid::Uuid::new_v4().to_string(),
         }
     }
-    
+
     pub fn is_expired(&self) -> bool {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -131,11 +131,11 @@ impl JwtClaims {
             .as_secs();
         self.exp < now
     }
-    
+
     pub fn is_access_token(&self) -> bool {
         self.token_type == "access"
     }
-    
+
     pub fn is_refresh_token(&self) -> bool {
         self.token_type == "refresh"
     }
@@ -146,13 +146,13 @@ impl JwtClaims {
 pub struct JwtTokenPair {
     /// アクセストークン
     pub access_token: String,
-    
+
     /// リフレッシュトークン
     pub refresh_token: String,
-    
+
     /// トークンタイプ
     pub token_type: String,
-    
+
     /// 有効期限（秒）
     pub expires_in: u64,
 }
@@ -162,13 +162,13 @@ pub struct JwtTokenPair {
 pub enum JwtError {
     #[error("Token generation failed: {0}")]
     GenerationFailed(String),
-    
+
     #[error("Token validation failed: {0}")]
     ValidationFailed(String),
-    
+
     #[error("Token expired")]
     Expired,
-    
+
     #[error("Invalid token")]
     Invalid,
 }
@@ -197,13 +197,13 @@ impl JwtAuth {
     pub fn new(config: JwtConfig) -> Self {
         let encoding_key = EncodingKey::from_secret(config.secret.as_bytes());
         let decoding_key = DecodingKey::from_secret(config.secret.as_bytes());
-        
+
         let mut validation = Validation::default();
         validation.set_issuer(&[&config.issuer]);
         if let Some(ref aud) = config.audience {
             validation.set_audience(&[aud]);
         }
-        
+
         Self {
             config,
             encoding_key,
@@ -211,12 +211,12 @@ impl JwtAuth {
             validation,
         }
     }
-    
+
     /// トークンペアを生成
     pub fn generate_token_pair(&self, user: &AuthUser) -> AuthResult<JwtTokenPair> {
         let access_token = self.generate_access_token(user)?;
         let refresh_token = self.generate_refresh_token(user)?;
-        
+
         Ok(JwtTokenPair {
             access_token,
             refresh_token,
@@ -224,7 +224,7 @@ impl JwtAuth {
             expires_in: self.config.access_token_expiration,
         })
     }
-    
+
     /// アクセストークンを生成
     pub fn generate_access_token(&self, user: &AuthUser) -> AuthResult<String> {
         let claims = JwtClaims::new(
@@ -234,11 +234,11 @@ impl JwtAuth {
             self.config.access_token_expiration,
             "access".to_string(),
         );
-        
+
         encode(&Header::default(), &claims, &self.encoding_key)
             .map_err(|e| JwtError::GenerationFailed(e.to_string()).into())
     }
-    
+
     /// リフレッシュトークンを生成
     pub fn generate_refresh_token(&self, user: &AuthUser) -> AuthResult<String> {
         let claims = JwtClaims::new(
@@ -248,52 +248,52 @@ impl JwtAuth {
             self.config.refresh_token_expiration,
             "refresh".to_string(),
         );
-        
+
         encode(&Header::default(), &claims, &self.encoding_key)
             .map_err(|e| JwtError::GenerationFailed(e.to_string()).into())
     }
-    
+
     /// トークンを検証
     pub fn verify_token(&self, token: &str) -> AuthResult<JwtClaims> {
         let token_data = decode::<JwtClaims>(token, &self.decoding_key, &self.validation)
             .map_err(|e| JwtError::ValidationFailed(e.to_string()))?;
-        
+
         let claims = token_data.claims;
-        
+
         if claims.is_expired() {
             return Err(JwtError::Expired.into());
         }
-        
+
         Ok(claims)
     }
-    
+
     /// アクセストークンを検証
     pub fn verify_access_token(&self, token: &str) -> AuthResult<JwtClaims> {
         let claims = self.verify_token(token)?;
-        
+
         if !claims.is_access_token() {
             return Err(JwtError::Invalid.into());
         }
-        
+
         Ok(claims)
     }
-    
+
     /// リフレッシュトークンを検証
     pub fn verify_refresh_token(&self, token: &str) -> AuthResult<JwtClaims> {
         let claims = self.verify_token(token)?;
-        
+
         if !claims.is_refresh_token() {
             return Err(JwtError::Invalid.into());
         }
-        
+
         Ok(claims)
     }
-    
+
     /// リフレッシュトークンから新しいトークンペアを生成
     pub fn refresh(&self, refresh_token: &str, user: &AuthUser) -> AuthResult<JwtTokenPair> {
         // リフレッシュトークンを検証
         self.verify_refresh_token(refresh_token)?;
-        
+
         // 新しいトークンペアを生成
         self.generate_token_pair(user)
     }
@@ -324,10 +324,10 @@ mod tests {
         let config = JwtConfig::default();
         let jwt_auth = JwtAuth::new(config);
         let user = create_test_user();
-        
+
         let token = jwt_auth.generate_access_token(&user).unwrap();
         let claims = jwt_auth.verify_access_token(&token).unwrap();
-        
+
         assert_eq!(claims.sub, user.id);
         assert_eq!(claims.username, user.username);
         assert!(!claims.is_expired());
@@ -338,9 +338,9 @@ mod tests {
         let config = JwtConfig::default();
         let jwt_auth = JwtAuth::new(config);
         let user = create_test_user();
-        
+
         let token_pair = jwt_auth.generate_token_pair(&user).unwrap();
-        
+
         assert!(!token_pair.access_token.is_empty());
         assert!(!token_pair.refresh_token.is_empty());
         assert_eq!(token_pair.token_type, "Bearer");
@@ -351,10 +351,10 @@ mod tests {
         let config = JwtConfig::default();
         let jwt_auth = JwtAuth::new(config);
         let user = create_test_user();
-        
+
         let token_pair = jwt_auth.generate_token_pair(&user).unwrap();
         let new_token_pair = jwt_auth.refresh(&token_pair.refresh_token, &user).unwrap();
-        
+
         assert_ne!(token_pair.access_token, new_token_pair.access_token);
     }
 
@@ -363,9 +363,9 @@ mod tests {
         let config = JwtConfig::default();
         let jwt_auth = JwtAuth::new(config);
         let user = create_test_user();
-        
+
         let refresh_token = jwt_auth.generate_refresh_token(&user).unwrap();
-        
+
         // リフレッシュトークンをアクセストークンとして検証（失敗するべき）
         assert!(jwt_auth.verify_access_token(&refresh_token).is_err());
     }

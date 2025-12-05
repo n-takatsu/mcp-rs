@@ -7,24 +7,24 @@
 // - セッション管理
 // - 認証ミドルウェア
 
-pub mod jwt;
-pub mod oauth2;
 pub mod api_key;
-pub mod session_auth;
+pub mod jwt;
 pub mod middleware;
-pub mod types;
+pub mod oauth2;
 pub mod provider;
+pub mod session_auth;
+pub mod types;
 
-pub use jwt::{JwtAuth, JwtClaims, JwtConfig, JwtError, JwtTokenPair};
-pub use oauth2::{OAuth2Config, OAuth2Error, OAuth2Provider, OAuth2Token};
 pub use api_key::{ApiKey, ApiKeyConfig, ApiKeyManager, ApiKeyPermission};
-pub use session_auth::{SessionAuth, SessionConfig, SessionToken};
+pub use jwt::{JwtAuth, JwtClaims, JwtConfig, JwtError, JwtTokenPair};
 pub use middleware::{AuthMiddleware, AuthRequirement};
-pub use types::{
-    AuthError, AuthMethod, AuthProvider, AuthResult, AuthUser, Credentials,
-    PasswordHasher, Role, Permission,
-};
+pub use oauth2::{OAuth2Config, OAuth2Error, OAuth2Provider, OAuth2Token};
 pub use provider::{AuthenticationProvider, MultiAuthProvider};
+pub use session_auth::{SessionAuth, SessionConfig, SessionToken};
+pub use types::{
+    AuthError, AuthMethod, AuthProvider, AuthResult, AuthUser, Credentials, PasswordHasher,
+    Permission, Role,
+};
 
 /// 認証システムのバージョン
 pub const AUTH_VERSION: &str = "1.0.0";
@@ -35,31 +35,31 @@ pub struct AuthConfig {
     /// JWT認証設定
     #[serde(default)]
     pub jwt: Option<JwtConfig>,
-    
+
     /// OAuth2認証設定
     #[serde(default)]
     pub oauth2: Option<Vec<OAuth2Config>>,
-    
+
     /// APIキー認証設定
     #[serde(default)]
     pub api_key: Option<ApiKeyConfig>,
-    
+
     /// セッション認証設定
     #[serde(default)]
     pub session: Option<SessionConfig>,
-    
+
     /// デフォルト認証方式
     #[serde(default = "default_auth_method")]
     pub default_method: AuthMethod,
-    
+
     /// 認証の有効期限（秒）
     #[serde(default = "default_token_expiration")]
     pub token_expiration: u64,
-    
+
     /// リフレッシュトークンの有効期限（秒）
     #[serde(default = "default_refresh_expiration")]
     pub refresh_expiration: u64,
-    
+
     /// パスワードのソルトラウンド
     #[serde(default = "default_salt_rounds")]
     pub password_salt_rounds: u32,

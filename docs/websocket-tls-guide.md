@@ -49,16 +49,16 @@ let ws_config = WebSocketConfig {
 pub struct TlsConfig {
     /// 証明書ファイルパス (PEM形式)
     pub cert_path: Option<PathBuf>,
-    
+
     /// 秘密鍵ファイルパス (PEM形式)
     pub key_path: Option<PathBuf>,
-    
+
     /// CA証明書パス (クライアント検証用)
     pub ca_cert_path: Option<PathBuf>,
-    
+
     /// サーバー証明書を検証するか (クライアントモード)
     pub verify_server: bool,
-    
+
     /// 無効な証明書を受け入れるか (テスト専用)
     pub accept_invalid_certs: bool,
 }
@@ -97,7 +97,6 @@ ca_cert_path: Some(PathBuf::from("/etc/ssl/certs/custom-ca.crt"))
 ```
 
 #### verify_server (クライアントモード)
-
 
 クライアントがサーバー証明書を検証するかどうか。
 
@@ -586,4 +585,3 @@ for entry in entries {
 1. [GitHub Issues](https://github.com/n-takatsu/mcp-rs/issues)
 2. ドキュメント: `docs/`
 3. サンプルコード: `examples/`
-

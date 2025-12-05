@@ -4,8 +4,6 @@ title: MCP-RS Documentation
 permalink: /
 ---
 
-# MCP-RS Documentation
-
 Welcome to the MCP-RS documentation! This site contains comprehensive guides, API references, and architecture documentation for the Rust implementation of the Model Context Protocol.
 
 ## Quick Access
