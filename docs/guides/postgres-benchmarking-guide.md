@@ -121,7 +121,7 @@ cargo bench --bench postgres_phase2_benchmarks -- --verbose
 └─────────────────────────────────┘
 ```
 
-**期待値**: 
+**期待値**:
 
 - SELECT: < 1ms per 1000 rows
 - INSERT: < 100μs per row
