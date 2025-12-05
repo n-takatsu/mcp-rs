@@ -3,6 +3,8 @@
 //! 各種データベースエンジンの実装を提供
 //! MySQL: mysql_asyncライブラリを使用してセキュアに復活
 
+#[cfg(feature = "mysql-backend")]
+pub mod mariadb; // MariaDB (MySQLベース)
 #[cfg(feature = "mongodb-backend")]
 pub mod mongodb;
 #[cfg(feature = "mysql-backend")]
@@ -13,6 +15,8 @@ pub mod redis;
 pub mod sqlite;
 
 // エンジンを直接アクセス可能にする
+#[cfg(feature = "mysql-backend")]
+pub use mariadb::MariaDbEngine;
 #[cfg(feature = "mongodb-backend")]
 pub use mongodb::MongoEngine;
 #[cfg(feature = "mysql-backend")]

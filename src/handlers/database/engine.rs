@@ -188,17 +188,25 @@ impl DatabaseEngineBuilder {
                 Ok(Arc::new(engine))
             }
             #[cfg(feature = "mysql-backend")]
-            DatabaseType::MySQL | DatabaseType::MariaDB => {
-                // MySQL/MariaDB: mysql_asyncライブラリを使用（RSA脆弱性フリー）
+            DatabaseType::MySQL => {
+                // MySQL: mysql_asyncライブラリを使用（RSA脆弱性フリー）
                 let security = Arc::new(DatabaseSecurity::new(Default::default(), None));
                 let engine =
                     super::engines::mysql::MySqlEngine::new(config.clone(), security).await?;
                 Ok(Arc::new(engine))
             }
+            #[cfg(feature = "mysql-backend")]
+            DatabaseType::MariaDB => {
+                // MariaDB: MySQL互換なのでmysql_asyncライブラリを使用
+                let security = Arc::new(DatabaseSecurity::new(Default::default(), None));
+                let engine =
+                    super::engines::mariadb::MariaDbEngine::new(config.clone(), security).await?;
+                Ok(Arc::new(engine))
+            }
             #[cfg(not(feature = "mysql-backend"))]
             DatabaseType::MySQL | DatabaseType::MariaDB => {
                 Err(DatabaseError::UnsupportedOperation(
-                    "MySQL support not compiled. Enable mysql-backend feature.".to_string(),
+                    "MySQL/MariaDB support not compiled. Enable mysql-backend feature.".to_string(),
                 ))
             }
             DatabaseType::SQLite => {
