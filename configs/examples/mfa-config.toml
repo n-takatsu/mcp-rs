@@ -1,0 +1,13 @@
+# MFA (Multi-Factor Authentication) Configuration Example
+
+[security.mfa]
+enabled = true
+required_for_all = false
+required_roles = ["admin", "developer"]
+
+[security.mfa.totp]
+enabled = true
+algorithm = "Sha256"  # Options: Sha1, Sha256, Sha512
+digits = 6            # 6 or 8 digits
+period = 30           # Time step in seconds
+time_window = 1       # Allow ±1 time step
