@@ -154,8 +154,12 @@ impl DatabaseTransaction for MySqlTransaction {
 
         Ok(ExecuteResult {
             rows_affected: affected_rows,
-            last_insert_id: if last_insert_id.is_some() && last_insert_id.unwrap() > 0 {
-                Some(Value::Int(last_insert_id.unwrap() as i64))
+            last_insert_id: if let Some(id) = last_insert_id {
+                if id > 0 {
+                    Some(Value::Int(id as i64))
+                } else {
+                    None
+                }
             } else {
                 None
             },
