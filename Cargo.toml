@@ -251,3 +251,24 @@ lto = true
 [package.metadata.audit.ignore]
 "RUSTSEC-2023-0071" = "RSA crate from sqlx-mysql (unused) - MySQL support provided by secure mysql_async v0.36.1"
 "RUSTSEC-2024-0436" = "paste crate - unmaintained but required by ratatui (currently disabled)"
+
+# MFA examples require the mfa feature
+[[example]]
+name = "mfa_totp_demo"
+required-features = ["mfa"]
+
+[[example]]
+name = "mfa_sms_demo"
+required-features = ["mfa"]
+
+[[example]]
+name = "mfa_session_demo"
+required-features = ["mfa"]
+
+[[example]]
+name = "mfa_device_trust_demo"
+required-features = ["mfa"]
+
+[[example]]
+name = "mfa_backup_codes_demo"
+required-features = ["mfa"]
