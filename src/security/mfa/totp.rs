@@ -90,7 +90,7 @@ impl TotpSecret {
     /// Generate a new random TOTP secret
     pub fn generate(config: &TotpConfig) -> Result<Self, MfaError> {
         let secret = Secret::generate_secret();
-        
+
         Ok(Self {
             secret: secret.to_encoded().to_string(),
             algorithm: config.algorithm,
@@ -100,10 +100,7 @@ impl TotpSecret {
     }
 
     /// Create from existing base32-encoded secret
-    pub fn from_encoded(
-        secret: String,
-        config: &TotpConfig,
-    ) -> Result<Self, MfaError> {
+    pub fn from_encoded(secret: String, config: &TotpConfig) -> Result<Self, MfaError> {
         // Basic validation - just check it's not empty
         if secret.is_empty() {
             return Err(MfaError::InvalidSecret);
@@ -126,28 +123,22 @@ impl TotpSecret {
     pub fn to_uri(&self, issuer: &str, account: &str) -> String {
         format!(
             "otpauth://totp/{}:{}?secret={}&issuer={}&algorithm={:?}&digits={}&period={}",
-            issuer,
-            account,
-            self.secret,
-            issuer,
-            self.algorithm,
-            self.digits,
-            self.period
+            issuer, account, self.secret, issuer, self.algorithm, self.digits, self.period
         )
     }
 
     /// Generate QR code as PNG bytes
     pub fn to_qr_code(&self, issuer: &str, account: &str) -> Result<Vec<u8>, MfaError> {
         let uri = self.to_uri(issuer, account);
-        
-        let code = QrCode::new(&uri)
-            .map_err(|e| MfaError::QrCodeError(e.to_string()))?;
-        
+
+        let code = QrCode::new(&uri).map_err(|e| MfaError::QrCodeError(e.to_string()))?;
+
         // Render as PNG with 200x200 minimum size
-        let image = code.render::<qrcode::render::svg::Color>()
+        let image = code
+            .render::<qrcode::render::svg::Color>()
             .min_dimensions(200, 200)
             .build();
-        
+
         // Convert SVG to bytes
         Ok(image.into_bytes())
     }
@@ -191,8 +182,7 @@ impl TotpVerifier {
         }
 
         // Parse code
-        let _code_num: u32 = code.parse()
-            .map_err(|_| MfaError::InvalidCode)?;
+        let _code_num: u32 = code.parse().map_err(|_| MfaError::InvalidCode)?;
 
         // Create TOTP instance
         let totp = TOTP::new(
@@ -200,14 +190,17 @@ impl TotpVerifier {
             secret.digits,
             1, // skew
             secret.period,
-            Secret::Encoded(secret.secret.clone()).to_bytes()
+            Secret::Encoded(secret.secret.clone())
+                .to_bytes()
                 .map_err(|_| MfaError::InvalidSecret)?,
-            None, // issuer
-            "".to_string(), // account_name  
-        ).map_err(|e| MfaError::TotpError(e.to_string()))?;
+            None,           // issuer
+            "".to_string(), // account_name
+        )
+        .map_err(|e| MfaError::TotpError(e.to_string()))?;
 
         // Verify code
-        let is_valid = totp.check_current(code)
+        let is_valid = totp
+            .check_current(code)
             .map_err(|e| MfaError::TotpError(e.to_string()))?;
 
         Ok(is_valid)
@@ -229,11 +222,13 @@ impl TotpVerifier {
             secret.digits,
             1,
             secret.period,
-            Secret::Encoded(secret.secret.clone()).to_bytes()
+            Secret::Encoded(secret.secret.clone())
+                .to_bytes()
                 .map_err(|_| MfaError::InvalidSecret)?,
             None,
             "".to_string(),
-        ).map_err(|e| MfaError::TotpError(e.to_string()))?;
+        )
+        .map_err(|e| MfaError::TotpError(e.to_string()))?;
 
         let is_valid = totp.check(code, timestamp);
 
@@ -247,11 +242,13 @@ impl TotpVerifier {
             secret.digits,
             1,
             secret.period,
-            Secret::Encoded(secret.secret.clone()).to_bytes()
+            Secret::Encoded(secret.secret.clone())
+                .to_bytes()
                 .map_err(|_| MfaError::InvalidSecret)?,
             None,
             "".to_string(),
-        ).map_err(|e| MfaError::TotpError(e.to_string()))?;
+        )
+        .map_err(|e| MfaError::TotpError(e.to_string()))?;
 
         totp.generate_current()
             .map_err(|e| MfaError::TotpError(e.to_string()))
@@ -363,10 +360,14 @@ mod tests {
         assert!(verifier.verify_with_timestamp(&secret, &code, now).unwrap());
 
         // Should work within time window (30 seconds before)
-        assert!(verifier.verify_with_timestamp(&secret, &code, now - 30).unwrap());
+        assert!(verifier
+            .verify_with_timestamp(&secret, &code, now - 30)
+            .unwrap());
 
         // Should fail outside time window
-        assert!(!verifier.verify_with_timestamp(&secret, &code, now - 90).unwrap());
+        assert!(!verifier
+            .verify_with_timestamp(&secret, &code, now - 90)
+            .unwrap());
     }
 
     #[test]
@@ -385,7 +386,11 @@ mod tests {
 
     #[test]
     fn test_totp_different_algorithms() {
-        for algorithm in [TotpAlgorithm::Sha1, TotpAlgorithm::Sha256, TotpAlgorithm::Sha512] {
+        for algorithm in [
+            TotpAlgorithm::Sha1,
+            TotpAlgorithm::Sha256,
+            TotpAlgorithm::Sha512,
+        ] {
             let config = TotpConfig {
                 algorithm,
                 ..Default::default()

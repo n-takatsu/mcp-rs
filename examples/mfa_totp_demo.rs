@@ -31,7 +31,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("--- Step 2: Generate QR Code ---");
     let qr_code = secret.to_qr_code("MCP-RS Demo", "user@example.com")?;
     println!("✓ QR code generated ({} bytes)", qr_code.len());
-    
+
     // Save QR code to file (optional)
     std::fs::write("totp_qr_code.png", &qr_code)?;
     println!("✓ QR code saved to: totp_qr_code.png");
@@ -71,7 +71,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Test different algorithms
     println!("--- Step 7: Test Different Algorithms ---");
-    for algorithm in [TotpAlgorithm::Sha1, TotpAlgorithm::Sha256, TotpAlgorithm::Sha512] {
+    for algorithm in [
+        TotpAlgorithm::Sha1,
+        TotpAlgorithm::Sha256,
+        TotpAlgorithm::Sha512,
+    ] {
         let algo_config = TotpConfig {
             algorithm,
             ..Default::default()
@@ -79,7 +83,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let algo_secret = TotpSecret::generate(&algo_config)?;
         let algo_verifier = TotpVerifier::new(algo_config);
         let algo_code = algo_verifier.generate_code(&algo_secret)?;
-        
+
         println!("  {:?}: code={}", algorithm, algo_code);
     }
     println!();
@@ -93,16 +97,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let eight_digit_secret = TotpSecret::generate(&eight_digit_config)?;
     let eight_digit_verifier = TotpVerifier::new(eight_digit_config);
     let eight_digit_code = eight_digit_verifier.generate_code(&eight_digit_secret)?;
-    
+
     println!("✓ 8-digit code: {}", eight_digit_code);
     assert_eq!(eight_digit_code.len(), 8);
     println!();
 
     // Demonstration of time window
     println!("--- Step 9: Time Window Demonstration ---");
-    println!("The time window allows codes from ±{} time steps", verifier.config().time_window);
-    println!("This means codes from {} seconds before/after are valid", 
-             verifier.config().time_window as u64 * verifier.config().period);
+    println!(
+        "The time window allows codes from ±{} time steps",
+        verifier.config().time_window
+    );
+    println!(
+        "This means codes from {} seconds before/after are valid",
+        verifier.config().time_window as u64 * verifier.config().period
+    );
     println!();
 
     println!("=== Demo Complete ===");

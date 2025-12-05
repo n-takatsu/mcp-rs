@@ -20,28 +20,28 @@ use std::fmt;
 pub enum MfaError {
     /// Invalid MFA code
     InvalidCode,
-    
+
     /// MFA code expired
     CodeExpired,
-    
+
     /// Too many verification attempts
     TooManyAttempts,
-    
+
     /// MFA not configured for user
     NotConfigured,
-    
+
     /// Invalid secret format
     InvalidSecret,
-    
+
     /// QR code generation failed
     QrCodeError(String),
-    
+
     /// TOTP error
     TotpError(String),
-    
+
     /// Cryptographic error
     CryptoError(String),
-    
+
     /// Configuration error
     ConfigError(String),
 }
