@@ -132,7 +132,7 @@ session-management = []
 security = []
 websocket = []
 mcp-protocol = []
-database = ["mysql-backend"]
+database = ["mysql-backend", "postgresql-backend"]
 
 # MFA (Multi-Factor Authentication)
 mfa = ["totp-rs", "qrcode"]
@@ -141,7 +141,7 @@ mfa-full = ["mfa"]
 # Storage backends
 redis-backend = ["redis"]
 mysql-backend = ["mysql_async"]
-postgresql = []
+postgresql-backend = []
 sqlite = []
 
 # TUI Dashboard (temporarily disabled)
@@ -165,7 +165,7 @@ full = [
     "mcp-protocol",
     "redis-backend",
     "mysql-backend",
-    "postgresql",
+    "postgresql-backend",
     "sqlite",
     "metrics",
     "testing"
