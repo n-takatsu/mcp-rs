@@ -2,7 +2,6 @@
 ///
 /// This test module verifies that the WebSocket TLS implementation
 /// properly integrates with the audit logging system.
-
 use mcp_rs::security::{AuditConfig, AuditLevel, AuditLogger};
 use mcp_rs::transport::websocket::{TlsConfig, WebSocketConfig, WebSocketTransport};
 use std::path::PathBuf;

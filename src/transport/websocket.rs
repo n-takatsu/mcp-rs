@@ -269,7 +269,7 @@ impl WebSocketTransport {
         // Log certificate loading attempt
         if let Some(logger) = audit_logger {
             use crate::security::{AuditCategory, AuditLevel, AuditLogEntry};
-            
+
             let entry = AuditLogEntry::new(
                 AuditLevel::Info,
                 AuditCategory::NetworkActivity,
@@ -277,7 +277,7 @@ impl WebSocketTransport {
             )
             .add_metadata("cert_path".to_string(), cert_path.display().to_string())
             .add_metadata("peer_addr".to_string(), peer_addr.to_string());
-            
+
             let _ = logger.log(entry).await;
         }
 
@@ -300,7 +300,7 @@ impl WebSocketTransport {
                     format!("Failed to create TLS identity: {}", e),
                 )
                 .with_request_info(peer_addr.to_string(), String::new());
-                
+
                 let logger_clone = Arc::clone(logger);
                 tokio::spawn(async move {
                     let _ = logger_clone.log(entry).await;
@@ -330,7 +330,7 @@ impl WebSocketTransport {
                         "TLS handshake successful for WebSocket connection".to_string(),
                     )
                     .with_request_info(peer_addr.to_string(), String::new());
-                    
+
                     let _ = logger.log(entry).await;
                 }
                 stream
@@ -346,10 +346,13 @@ impl WebSocketTransport {
                     )
                     .with_request_info(peer_addr.to_string(), String::new())
                     .add_metadata("error".to_string(), e.to_string());
-                    
+
                     let _ = logger.log(entry).await;
                 }
-                return Err(TransportError::Internal(format!("TLS accept failed: {}", e)));
+                return Err(TransportError::Internal(format!(
+                    "TLS accept failed: {}",
+                    e
+                )));
             }
         };
 
@@ -386,9 +389,7 @@ impl WebSocketTransport {
                     timeout_duration
                 ))
             })?
-            .map_err(|e| {
-                TransportError::Internal(format!("WebSocket TLS connect error: {}", e))
-            })?
+            .map_err(|e| TransportError::Internal(format!("WebSocket TLS connect error: {}", e)))?
         } else {
             // Plain WebSocket connection
             let connect_future = connect_async(url);
@@ -430,7 +431,7 @@ impl WebSocketTransport {
         if let Some(tls_cfg) = tls_config {
             if tls_cfg.accept_invalid_certs {
                 warn!("TLS certificate verification disabled - for testing only!");
-                
+
                 // Log security warning for accepting invalid certificates
                 if let Some(logger) = audit_logger {
                     use crate::security::{AuditCategory, AuditLevel, AuditLogEntry};
@@ -441,29 +442,30 @@ impl WebSocketTransport {
                     )
                     .add_metadata("url".to_string(), url.to_string())
                     .add_metadata("security_risk".to_string(), "high".to_string());
-                    
+
                     let _ = logger.log(entry).await;
                 }
-                
+
                 builder.danger_accept_invalid_certs(true);
             }
 
             if !tls_cfg.verify_server {
                 warn!("TLS server verification disabled");
-                
+
                 // Log security warning for disabled server verification
                 if let Some(logger) = audit_logger {
                     use crate::security::{AuditCategory, AuditLevel, AuditLogEntry};
                     let entry = AuditLogEntry::new(
                         AuditLevel::Warning,
                         AuditCategory::SecurityAttack,
-                        "WebSocket client configured to skip hostname verification - SECURITY RISK".to_string(),
+                        "WebSocket client configured to skip hostname verification - SECURITY RISK"
+                            .to_string(),
                     )
                     .add_metadata("url".to_string(), url.to_string());
-                    
+
                     let _ = logger.log(entry).await;
                 }
-                
+
                 builder.danger_accept_invalid_hostnames(true);
             }
 
@@ -477,10 +479,10 @@ impl WebSocketTransport {
                         "Loading custom CA certificate for WebSocket TLS".to_string(),
                     )
                     .add_metadata("ca_path".to_string(), ca_path.display().to_string());
-                    
+
                     let _ = logger.log(entry).await;
                 }
-                
+
                 let ca_cert = fs::read(ca_path).map_err(|e| {
                     TransportError::Configuration(format!("Failed to read CA certificate: {}", e))
                 })?;
@@ -524,7 +526,7 @@ impl WebSocketTransport {
                     )
                     .add_metadata("url".to_string(), url.to_string())
                     .add_metadata("host".to_string(), host.to_string());
-                    
+
                     let _ = logger.log(entry).await;
                 }
                 stream
@@ -540,10 +542,13 @@ impl WebSocketTransport {
                     )
                     .add_metadata("url".to_string(), url.to_string())
                     .add_metadata("error".to_string(), e.to_string());
-                    
+
                     let _ = logger.log(entry).await;
                 }
-                return Err(TransportError::Internal(format!("TLS connect failed: {}", e)));
+                return Err(TransportError::Internal(format!(
+                    "TLS connect failed: {}",
+                    e
+                )));
             }
         };
 
