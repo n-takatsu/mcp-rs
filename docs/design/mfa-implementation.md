@@ -1,25 +1,25 @@
-# MFA (Multi-Factor Authentication) Implementation Design
+# MFA (多要素認証) 実装設計書
 
-## Overview
+## 概要
 
-Comprehensive Multi-Factor Authentication system implementation for enterprise-grade security. This addresses Issues #75 and #84.
+エンタープライズグレードのセキュリティのための包括的な多要素認証システム実装。Issue #75と#84に対応します。
 
-## Priority
+## 優先度
 
-🔴 **Critical (P0)** - High Priority Security Enhancement
+🔴 **Critical (P0)** - 高優先度セキュリティ強化
 
-## Estimated Timeline
+## 推定タイムライン
 
-### Total: 2-3 weeks (12-15 working days)
+### 合計: 2-3週間（12-15営業日）
 
-- Phase 1: TOTP Implementation (3 days)
-- Phase 2: Backup Codes (2 days)
-- Phase 3: SMS Authentication (3 days)
-- Phase 4: Device Trust (3 days)
-- Phase 5: Session Integration (2 days)
-- Phase 6: Testing & Documentation (2-3 days)
+- Phase 1: TOTP実装（3日間）
+- Phase 2: バックアップコード（2日間）
+- Phase 3: SMS認証（3日間）
+- Phase 4: デバイス信頼（3日間）
+- Phase 5: セッション統合（2日間）
+- Phase 6: テスト・ドキュメント（2-3日間）
 
-## Architecture
+## アーキテクチャ
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -47,11 +47,11 @@ Comprehensive Multi-Factor Authentication system implementation for enterprise-g
 └─────────────────────────────────────────────────────────────┘
 ```
 
-## Phase 1: TOTP Implementation (3 days)
+## Phase 1: TOTP実装（3日間）
 
-### Components
+### コンポーネント
 
-#### 1.1 TOTP Secret Generation
+#### 1.1 TOTPシークレット生成
 
 ```rust
 pub struct TotpSecret {
@@ -68,11 +68,11 @@ impl TotpSecret {
 }
 ```
 
-#### 1.2 TOTP Verification
+#### 1.2 TOTP検証
 
 ```rust
 pub struct TotpVerifier {
-    time_window: u32, // Allow ±1 step (default)
+    time_window: u32, // ±1ステップ許可（デフォルト）
 }
 
 impl TotpVerifier {
@@ -81,13 +81,13 @@ impl TotpVerifier {
 }
 ```
 
-#### 1.3 QR Code Generation
+#### 1.3 QRコード生成
 
-- Use `qrcode` crate for QR code generation
-- Generate otpauth:// URI format
-- Support PNG/SVG output formats
+- `qrcode`クレートを使用してQRコード生成
+- otpauth:// URI形式を生成
+- PNG/SVG出力形式をサポート
 
-### Data Structures
+### データ構造
 
 ```rust
 pub enum TotpAlgorithm {
@@ -105,18 +105,18 @@ pub struct TotpConfig {
 }
 ```
 
-### Security Considerations
+### Phase 1 セキュリティ考慮事項
 
-- Use cryptographically secure random number generator for secrets
-- Implement constant-time comparison to prevent timing attacks
-- Store secrets encrypted (AES-GCM-256)
-- Rate limit verification attempts (5 attempts per 5 minutes)
+- シークレット生成には暗号学的に安全な乱数生成器を使用
+- タイミング攻撃を防ぐため定数時間比較を実装
+- シークレットは暗号化して保存（AES-GCM-256）
+- 検証試行回数の制限（5分間に5回まで）
 
-## Phase 2: Backup Codes (2 days)
+## Phase 2: バックアップコード(2日間)
 
-### Components
+### Phase 2 コンポーネント
 
-#### 2.1 Backup Code Generator
+#### 2.1 バックアップコード生成
 
 ```rust
 pub struct BackupCodeGenerator {
@@ -130,7 +130,7 @@ impl BackupCodeGenerator {
 }
 ```
 
-#### 2.2 Backup Code Manager
+#### 2.2 バックアップコードマネージャー
 
 ```rust
 pub struct BackupCodeManager {
@@ -138,7 +138,7 @@ pub struct BackupCodeManager {
 }
 
 pub struct HashedBackupCode {
-    hash: String,        // Argon2id hash
+    hash: String,        // Argon2idハッシュ
     used: bool,
     used_at: Option<DateTime<Utc>>,
 }
@@ -150,18 +150,18 @@ impl BackupCodeManager {
 }
 ```
 
-### Security Requirements
+### Phase 2 セキュリティ要件
 
-- Generate codes using cryptographically secure RNG
-- Hash codes with Argon2id before storage
-- Implement one-time use enforcement
-- Allow regeneration with audit logging
+- 暗号学的に安全なRNGを使用してコードを生成
+- 保存前にArgon2idでコードをハッシュ化
+- ワンタイム使用の強制を実装
+- 監査ログ付きで再生成を許可
 
-## Phase 3: SMS Authentication (3 days)
+## Phase 3: SMS認証(3日間)
 
-### Components
+### Phase 3 コンポーネント
 
-#### 3.1 SMS Provider Interface
+#### 3.1 SMSプロバイダーインターフェース
 
 ```rust
 pub trait SmsProvider: Send + Sync {
@@ -180,13 +180,13 @@ pub struct AwsSnsSmsProvider {
 }
 ```
 
-#### 3.2 SMS Verification
+#### 3.2 SMS検証
 
 ```rust
 pub struct SmsVerifier {
     provider: Box<dyn SmsProvider>,
-    code_expiry: Duration,      // 5 minutes
-    rate_limit: Duration,        // 1 minute between sends
+    code_expiry: Duration,      // 5分
+    rate_limit: Duration,        // 送信間隔1分
 }
 
 impl SmsVerifier {
@@ -195,10 +195,10 @@ impl SmsVerifier {
 }
 ```
 
-### Data Structures
+### Phase 3 データ構造
 
 ```rust
-pub struct SmsConfig {
+pub struct SmsSession {
     enabled: bool,
     provider: SmsProviderType,
     rate_limit_seconds: u32,
@@ -213,20 +213,20 @@ pub enum SmsProviderType {
 }
 ```
 
-### Security & Cost Considerations
+### Phase 3 セキュリティ・コスト考慮事項
 
-- Implement strict rate limiting (max 3 SMS per hour per user)
-- Track SMS costs and implement budget alerts
-- Validate phone numbers before sending
-- Use 6-digit numeric codes
-- Expire codes after 5 minutes
-- Log all SMS sending attempts
+- 厳格なレート制限を実装（ユーザーあたり1時間に最大3通のSMS）
+- SMSコストを追跡し、予算アラートを実装
+- 送信前に電話番号を検証
+- 6桁の数字コードを使用
+- 5分後にコードを期限切れにする
+- すべてのSMS送信試行をログに記録
 
-## Phase 4: Device Trust (3 days)
+## Phase 4: デバイス信頼(3日間)
 
-### Components
+### Phase 4 コンポーネント
 
-#### 4.1 Device Fingerprinting
+#### 4.1 デバイスフィンガープリント
 
 ```rust
 pub struct DeviceFingerprint {
@@ -244,7 +244,7 @@ impl DeviceFingerprint {
 }
 ```
 
-#### 4.2 Device Trust Manager
+#### 4.2 デバイス信頼マネージャー
 
 ```rust
 pub struct DeviceTrustManager {
@@ -267,7 +267,7 @@ impl DeviceTrustManager {
 }
 ```
 
-### Trust Scoring Algorithm
+### 信頼スコアリングアルゴリズム
 
 ```rust
 fn calculate_trust_score(device: &TrustedDevice) -> f32 {
@@ -279,22 +279,22 @@ fn calculate_trust_score(device: &TrustedDevice) -> f32 {
 }
 ```
 
-### Configuration
+### Phase 4 設定
 
 ```rust
 pub struct DeviceTrustConfig {
     enabled: bool,
-    trust_threshold: f32,      // 0.7 default
-    learning_period_days: u32, // 7 days
-    max_trusted_devices: u32,  // 5 devices
+    trust_threshold: f32,      // デフォルト0.7
+    learning_period_days: u32, // 7日間
+    max_trusted_devices: u32,  // 5デバイス
 }
 ```
 
-## Phase 5: Session Integration (2 days)
+## Phase 5: セッション統合(2日間)
 
-### Components
+### Phase 5 コンポーネント
 
-#### 5.1 MFA Session Extension
+#### 5.1 MFAセッション拡張
 
 ```rust
 pub struct MfaSession {
@@ -313,7 +313,7 @@ pub enum MfaMethod {
 }
 ```
 
-#### 5.2 Remember Device Feature
+#### 5.2 デバイス記憶機能
 
 ```rust
 pub struct RememberDeviceToken {
@@ -329,16 +329,16 @@ impl RememberDeviceToken {
 }
 ```
 
-### Integration Points
+### 統合ポイント
 
-- Extend existing session management
-- Add MFA verification flag to session
-- Implement "Trust this device for 30 days" functionality
-- Support MFA skip for trusted devices above threshold
+- 既存のセッション管理を拡張
+- セッションにMFA検証フラグを追加
+- 「このデバイスを30日間信頼する」機能を実装
+- 閾値を超える信頼されたデバイスのMFAスキップをサポート
 
-## Phase 6: Core MFA Coordinator
+## Phase 6: コアMFAコーディネーター
 
-### Main Coordinator
+### メインコーディネーター
 
 ```rust
 pub struct MultiFactorAuth {
@@ -370,7 +370,7 @@ impl MultiFactorAuth {
 }
 ```
 
-### Configuration
+### Phase 6 設定
 
 ```rust
 pub struct MfaConfig {
@@ -390,7 +390,7 @@ pub struct BackupCodeConfig {
 }
 ```
 
-## Error Handling
+## エラーハンドリング
 
 ```rust
 #[derive(Debug, thiserror::Error)]
@@ -421,9 +421,9 @@ pub enum MfaError {
 }
 ```
 
-## Dependencies
+## 依存関係
 
-### Cargo.toml additions
+### Cargo.toml追加項目
 
 ```toml
 [dependencies]
@@ -447,63 +447,63 @@ sms-twilio = ["twilio"]
 sms-aws = ["aws-sdk-sns"]
 ```
 
-## Testing Strategy
+## テスト戦略
 
-### Unit Tests
+### 単体テスト
 
-- TOTP generation and verification
-- Backup code generation and validation
-- Device fingerprinting accuracy
-- Trust score calculation
-- Rate limiting enforcement
+- TOTP生成と検証
+- バックアップコード生成と検証
+- デバイスフィンガープリント精度
+- 信頼スコア計算
+- レート制限の強制
 
-### Integration Tests
+### 統合テスト
 
-- Complete MFA flow (registration → verification)
-- SMS sending and verification (with mocks)
-- Session integration
-- Device trust learning
+- 完全なMFAフロー（登録→検証）
+- SMS送信と検証（モック使用）
+- セッション統合
+- デバイス信頼学習
 
-### Security Tests
+### セキュリティテスト
 
-- Timing attack resistance
-- Brute force protection
-- Code reuse prevention
-- Token expiration
+- タイミング攻撃耐性
+- ブルートフォース保護
+- コード再利用防止
+- トークン有効期限
 
-### Performance Tests
+### パフォーマンステスト
 
-- TOTP verification < 50ms
-- QR code generation < 100ms
-- Device fingerprint calculation < 10ms
+- TOTP検証 < 50ms
+- QRコード生成 < 100ms
+- デバイスフィンガープリント計算 < 10ms
 
-## Security Requirements
+## セキュリティ要件
 
-1. **Secret Storage**
-   - Encrypt all TOTP secrets with AES-GCM-256
-   - Use secure key derivation (PBKDF2 or Argon2)
-   - Rotate encryption keys periodically
+1. **シークレット保存**
+   - すべてのTOTPシークレットをAES-GCM-256で暗号化
+   - 安全な鍵導出を使用（PBKDF2またはArgon2）
+   - 暗号化キーを定期的にローテーション
 
-2. **Brute Force Protection**
-   - Rate limit: 5 attempts per 5 minutes per user
-   - Implement exponential backoff
-   - Lock account after 10 consecutive failures
+2. **ブルートフォース保護**
+   - レート制限: ユーザーあたり5分間に5回まで
+   - 指数バックオフを実装
+   - 10回連続失敗後にアカウントをロック
 
-3. **Timing Attack Prevention**
-   - Use constant-time comparison for codes
-   - Add random delays to verification
+3. **タイミング攻撃防止**
+   - コードの定数時間比較を使用
+   - 検証にランダム遅延を追加
 
-4. **Audit Logging**
-   - Log all MFA events (setup, verification, failures)
-   - Include device fingerprint in logs
-   - Track backup code usage
+4. **監査ログ**
+   - すべてのMFAイベントをログに記録（セットアップ、検証、失敗）
+   - ログにデバイスフィンガープリントを含める
+   - バックアップコード使用を追跡
 
-5. **OWASP Compliance**
-   - Follow OWASP Authentication Cheat Sheet
-   - Implement secure session management
-   - Use secure random number generation
+5. **OWASPコンプライアンス**
+   - OWASP認証チートシートに従う
+   - 安全なセッション管理を実装
+   - 安全な乱数生成を使用
 
-## Configuration Example
+## 設定例
 
 ```toml
 [security.mfa]
@@ -537,38 +537,38 @@ learning_period_days = 7
 max_trusted_devices = 5
 ```
 
-## API Examples
+## API使用例
 
-### Registration Flow
+### 登録フロー
 
 ```rust
-// Generate TOTP secret and QR code
+// TOTPシークレットとQRコードを生成
 let mfa = MultiFactorAuth::new(config);
 let (secret, qr_code) = mfa.generate_totp_secret("user@example.com")?;
 
-// Display QR code to user
+// ユーザーにQRコードを表示
 display_qr_code(&qr_code);
 
-// Generate backup codes
+// バックアップコードを生成
 let backup_codes = mfa.generate_backup_codes("user@example.com")?;
 display_backup_codes(&backup_codes);
 ```
 
-### Login Flow
+### ログインフロー
 
 ```rust
-// Check if MFA required
+// MFAが必要かチェック
 let fingerprint = DeviceFingerprint::from_request(&req);
 if mfa.should_require_mfa(user_id, &fingerprint) {
-    // Verify TOTP code
+    // TOTPコードを検証
     let is_valid = mfa.verify_totp(user_id, &user_input_code)?;
     
     if is_valid {
-        // Update session
+        // セッションを更新
         session.mfa_verified = true;
         session.verified_at = Some(Utc::now());
         
-        // Optionally trust device
+        // オプションでデバイスを信頼
         if remember_device {
             mfa.add_trusted_device(fingerprint);
         }
@@ -576,67 +576,67 @@ if mfa.should_require_mfa(user_id, &fingerprint) {
 }
 ```
 
-### Backup Code Recovery
+### バックアップコード回復
 
 ```rust
-// User lost TOTP device
+// ユーザーがTOTPデバイスを紛失
 let is_valid = mfa.verify_backup_code(user_id, &backup_code)?;
 
 if is_valid {
-    // Allow access and prompt for new TOTP setup
+    // アクセスを許可し、新しいTOTPセットアップを促す
     session.mfa_verified = true;
     prompt_totp_setup();
 }
 ```
 
-## Success Criteria
+## 成功基準
 
-- [x] TOTP verification success rate > 99.9%
-- [x] Verification processing time < 100ms
-- [x] SMS sending success rate > 95% (when enabled)
-- [x] Zero security vulnerabilities (OWASP standards)
-- [x] Test coverage > 85%
-- [x] Complete documentation
-- [x] Production-ready error handling
+- [x] TOTP検証成功率 > 99.9%
+- [x] 検証処理時間 < 100ms
+- [x] SMS送信成功率 > 95%（有効時）
+- [x] セキュリティ脆弱性ゼロ（OWASP基準）
+- [x] テストカバレッジ > 85%
+- [x] 完全なドキュメント
+- [x] 本番環境対応のエラーハンドリング
 
-## Documentation Deliverables
+## ドキュメント成果物
 
-1. **API Documentation**
-   - Complete rustdoc for all public APIs
-   - Usage examples for each component
+1. **APIドキュメント**
+   - すべてのパブリックAPI用の完全なrustdoc
+   - 各コンポーネントの使用例
 
-2. **User Guide**
-   - MFA setup instructions
-   - Backup code usage
-   - Device trust explanation
+2. **ユーザーガイド**
+   - MFAセットアップ手順
+   - バックアップコード使用方法
+   - デバイス信頼の説明
 
-3. **Admin Guide**
-   - Configuration options
-   - SMS provider setup
-   - Security best practices
+3. **管理者ガイド**
+   - 設定オプション
+   - SMSプロバイダーセットアップ
+   - セキュリティベストプラクティス
 
-4. **Troubleshooting Guide**
-   - Common issues and solutions
-   - Debug logging
-   - Performance tuning
+4. **トラブルシューティングガイド**
+   - 一般的な問題と解決策
+   - デバッグログ
+   - パフォーマンスチューニング
 
-## Migration Plan
+## 移行計画
 
-1. Add MFA as optional feature (disabled by default)
-2. Gradual rollout to specific user roles
-3. Monitor adoption and failure rates
-4. Enable globally after validation period
+1. オプション機能としてMFAを追加（デフォルトで無効）
+2. 特定のユーザーロールへ段階的にロールアウト
+3. 採用率と失敗率を監視
+4. 検証期間後に全体的に有効化
 
-## Future Enhancements
+## 将来の機能拡張
 
-- WebAuthn/FIDO2 support
-- Email-based verification
-- Push notification verification
-- Adaptive MFA based on risk scoring
-- Admin dashboard for MFA monitoring
+- WebAuthn/FIDO2サポート
+- メールベース検証
+- プッシュ通知検証
+- リスクスコアリングに基づく適応型MFA
+- MFA監視用管理者ダッシュボード
 
 ---
 
-**Related Issues**: #75, #84
-**Priority**: P0 (Critical)
-**Estimated Completion**: 2-3 weeks
+**関連Issue**: #75, #84  
+**優先度**: P0（Critical）  
+**完了予定**: 2-3週間
