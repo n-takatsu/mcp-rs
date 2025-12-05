@@ -421,11 +421,150 @@ let ws_config = WebSocketConfig {
 };
 ```
 
+## 監査ログ統合
+
+WebSocket TLSトランスポートは、セキュリティイベントの監査ログ機能と統合されています。
+
+### 監査ログの有効化
+
+```rust
+use mcp_rs::security::{AuditConfig, AuditLevel, AuditLogger};
+use mcp_rs::transport::websocket::{WebSocketConfig, WebSocketTransport};
+use std::sync::Arc;
+
+// 監査ログ設定
+let audit_config = AuditConfig {
+    max_memory_entries: 10000,
+    min_log_level: AuditLevel::Info,
+    enable_file_output: true,
+    log_file_path: Some("logs/websocket-audit.log".to_string()),
+    json_format: true,
+    rotation_enabled: true,
+    rotation_size: 100 * 1024 * 1024, // 100MB
+};
+
+// 監査ロガーを作成
+let audit_logger = Arc::new(AuditLogger::new(audit_config));
+
+// WebSocketトランスポートに監査ロガーを設定
+let transport = WebSocketTransport::new(ws_config)?
+    .with_audit_logger(audit_logger);
+```
+
+### 記録されるイベント
+
+監査ログには以下のセキュリティイベントが記録されます:
+
+#### TLSサーバーイベント
+
+- **証明書読み込み**: サーバー証明書と秘密鍵の読み込み
+- **TLSハンドシェイク成功**: クライアントとのTLS接続確立
+- **TLSハンドシェイク失敗**: 接続失敗や不正な証明書の検出
+- **証明書エラー**: 証明書の検証エラー
+
+#### TLSクライアントイベント
+
+- **カスタムCA証明書読み込み**: カスタムCA証明書の使用
+- **TLS接続成功**: サーバーへの安全な接続確立
+- **TLS接続失敗**: 接続エラーや証明書検証失敗
+- **セキュリティ警告**: 無効な証明書の受け入れやホスト名検証の無効化
+
+### ログエントリの例
+
+```json
+{
+  "id": "550e8400-e29b-41d4-a716-446655440000",
+  "timestamp": "2024-01-20T10:30:45Z",
+  "level": "Info",
+  "category": "NetworkActivity",
+  "message": "TLS handshake successful for WebSocket connection",
+  "ip_address": "192.168.1.100",
+  "metadata": {
+    "peer_addr": "192.168.1.100:54321"
+  }
+}
+```
+
+```json
+{
+  "id": "660e9511-f39c-52e5-b827-557766551111",
+  "timestamp": "2024-01-20T10:31:15Z",
+  "level": "Warning",
+  "category": "SecurityAttack",
+  "message": "WebSocket client configured to accept invalid TLS certificates - SECURITY RISK",
+  "metadata": {
+    "url": "wss://test.example.com:8443",
+    "security_risk": "high"
+  }
+}
+```
+
+### 監査ログのフィルタリング
+
+特定のイベントを検索・フィルタリングできます:
+
+```rust
+use mcp_rs::security::{AuditFilter, AuditLevel, AuditCategory};
+use chrono::Utc;
+
+// 過去24時間のセキュリティ攻撃を検索
+let filter = AuditFilter {
+    start_time: Some(Utc::now() - chrono::Duration::hours(24)),
+    end_time: Some(Utc::now()),
+    levels: Some(vec![AuditLevel::Warning, AuditLevel::Critical]),
+    categories: Some(vec![AuditCategory::SecurityAttack]),
+    ip_address: None,
+    user_id: None,
+    keyword: Some("TLS".to_string()),
+};
+
+let entries = audit_logger.search(&filter).await?;
+for entry in entries {
+    println!("{:?}", entry);
+}
+```
+
+### コンプライアンスとセキュリティ
+
+監査ログは以下のコンプライアンス要件をサポートします:
+
+- **GDPR**: データアクセスの記録と追跡
+- **SOC 2**: セキュリティイベントの監視
+- **ISO 27001**: インシデント管理と証跡
+- **PCI DSS**: ネットワークアクセスのログ記録
+
+### ベストプラクティス
+
+1. **本番環境では必ずファイル出力を有効化**
+
+   ```rust
+   enable_file_output: true,
+   log_file_path: Some("/var/log/mcp-rs/audit.log".to_string()),
+   ```
+
+2. **適切なログローテーション設定**
+
+   ```rust
+   rotation_enabled: true,
+   rotation_size: 100 * 1024 * 1024, // 100MB
+   ```
+
+3. **定期的なログレビュー**
+   - セキュリティ攻撃の検出
+   - 異常なアクセスパターンの確認
+   - 証明書エラーの監視
+
+4. **セキュリティ警告への対応**
+   - `accept_invalid_certs`使用時の警告を確認
+   - 本番環境では無効化
+   - テスト環境でのみ使用
+
 ## 関連ドキュメント
 
 - [WebSocket API リファレンス](../api/transport-websocket.md)
 - [セキュリティガイド](../security/tls-best-practices.md)
 - [デプロイメントガイド](../deployment/production-setup.md)
+- [監査ログシステム](../api/security-audit-log.md)
 
 ## サポート
 
@@ -434,3 +573,4 @@ let ws_config = WebSocketConfig {
 1. [GitHub Issues](https://github.com/n-takatsu/mcp-rs/issues)
 2. ドキュメント: `docs/`
 3. サンプルコード: `examples/`
+
