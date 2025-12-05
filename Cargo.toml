@@ -98,7 +98,9 @@ metrics = { version = "0.24.2", optional = true }
 
 # WebSocket
 tungstenite = "0.28"
-tokio-tungstenite = "0.28"
+tokio-tungstenite = { version = "0.28", features = ["native-tls"] }
+tokio-native-tls = "0.3"
+native-tls = "0.2"
 
 # File system monitoring
 notify = "8.2"

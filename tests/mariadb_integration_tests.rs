@@ -83,8 +83,7 @@ mod tests {
                 match health {
                     Ok(status) => {
                         println!("MariaDB health check: {:?}", status.status);
-                        // Response time might be 0 in test environment
-                        assert!(status.response_time_ms >= 0);
+                        // Response time is always non-negative (u64 type)
                     }
                     Err(e) => {
                         println!(
