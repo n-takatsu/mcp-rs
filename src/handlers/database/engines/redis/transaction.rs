@@ -1,5 +1,5 @@
 //! Redis transaction support using MULTI/EXEC
-//! 
+//!
 //! Redis transactions are atomic but do not support rollback.
 //! Commands are queued during MULTI and executed atomically with EXEC.
 
@@ -45,20 +45,24 @@ impl RedisTransaction {
         args: &[&str],
     ) -> Result<(), DatabaseError> {
         let mut pipeline = self.pipeline.lock().await;
-        
+
         let mut redis_cmd = redis::cmd(command);
         for arg in args {
             redis_cmd.arg(*arg);
         }
-        
+
         pipeline.add_command(redis_cmd);
         Ok(())
     }
 
     /// Parse simple SQL into Redis commands
-    fn parse_sql_to_redis(&self, sql: &str, params: &[Value]) -> Result<(String, Vec<String>), DatabaseError> {
+    fn parse_sql_to_redis(
+        &self,
+        sql: &str,
+        params: &[Value],
+    ) -> Result<(String, Vec<String>), DatabaseError> {
         let sql_lower = sql.trim().to_lowercase();
-        
+
         if sql_lower.starts_with("select") {
             // SELECT value FROM key -> GET key
             let parts: Vec<&str> = sql.split_whitespace().collect();
@@ -66,7 +70,9 @@ impl RedisTransaction {
                 let key = parts[3].to_string();
                 Ok(("GET".to_string(), vec![key]))
             } else {
-                Err(DatabaseError::QueryFailed("Invalid SELECT syntax".to_string()))
+                Err(DatabaseError::QueryFailed(
+                    "Invalid SELECT syntax".to_string(),
+                ))
             }
         } else if sql_lower.starts_with("insert") || sql_lower.starts_with("update") {
             // INSERT INTO key VALUES (value) -> SET key value
@@ -81,13 +87,16 @@ impl RedisTransaction {
                         _ => String::new(),
                     }
                 } else {
-                    parts.get(4)
+                    parts
+                        .get(4)
                         .map(|s| s.trim_matches(|c| c == '\'' || c == '"').to_string())
                         .unwrap_or_default()
                 };
                 Ok(("SET".to_string(), vec![key, value]))
             } else {
-                Err(DatabaseError::QueryFailed("Invalid INSERT/UPDATE syntax".to_string()))
+                Err(DatabaseError::QueryFailed(
+                    "Invalid INSERT/UPDATE syntax".to_string(),
+                ))
             }
         } else if sql_lower.starts_with("delete") {
             // DELETE FROM key -> DEL key
@@ -96,12 +105,15 @@ impl RedisTransaction {
                 let key = parts[2].to_string();
                 Ok(("DEL".to_string(), vec![key]))
             } else {
-                Err(DatabaseError::QueryFailed("Invalid DELETE syntax".to_string()))
+                Err(DatabaseError::QueryFailed(
+                    "Invalid DELETE syntax".to_string(),
+                ))
             }
         } else {
-            Err(DatabaseError::UnsupportedOperation(
-                format!("Unsupported SQL command in transaction: {}", sql)
-            ))
+            Err(DatabaseError::UnsupportedOperation(format!(
+                "Unsupported SQL command in transaction: {}",
+                sql
+            )))
         }
     }
 }
@@ -111,11 +123,11 @@ impl DatabaseTransaction for RedisTransaction {
     async fn query(&self, sql: &str, params: &[Value]) -> Result<QueryResult, DatabaseError> {
         // Parse SQL to Redis command
         let (cmd, args) = self.parse_sql_to_redis(sql, params)?;
-        
+
         // Add to pipeline
         let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
         self.execute_redis_command(&cmd, &args_refs).await?;
-        
+
         // Return placeholder result (actual result comes from EXEC)
         Ok(QueryResult {
             columns: vec![],
@@ -128,11 +140,11 @@ impl DatabaseTransaction for RedisTransaction {
     async fn execute(&self, sql: &str, params: &[Value]) -> Result<ExecuteResult, DatabaseError> {
         // Parse SQL to Redis command
         let (cmd, args) = self.parse_sql_to_redis(sql, params)?;
-        
+
         // Add to pipeline
         let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
         self.execute_redis_command(&cmd, &args_refs).await?;
-        
+
         // Return placeholder result (actual result comes from EXEC)
         Ok(ExecuteResult {
             rows_affected: 1,
@@ -148,13 +160,13 @@ impl DatabaseTransaction for RedisTransaction {
         })?;
 
         let pipeline = self.pipeline.lock().await;
-        
+
         // Execute pipeline with MULTI/EXEC
         let _: Vec<redis::Value> = pipeline
             .query_async(&mut conn)
             .await
             .map_err(|e| DatabaseError::TransactionFailed(format!("EXEC failed: {}", e)))?;
-        
+
         Ok(())
     }
 
@@ -165,33 +177,33 @@ impl DatabaseTransaction for RedisTransaction {
         let _conn = conn_guard.take().ok_or_else(|| {
             DatabaseError::TransactionFailed("Transaction already completed".to_string())
         })?;
-        
+
         // Pipeline is automatically discarded when dropped
         Ok(())
     }
 
     async fn savepoint(&self, _name: &str) -> Result<(), DatabaseError> {
         Err(DatabaseError::UnsupportedOperation(
-            "Redis does not support savepoints".to_string()
+            "Redis does not support savepoints".to_string(),
         ))
     }
 
     async fn rollback_to_savepoint(&self, _name: &str) -> Result<(), DatabaseError> {
         Err(DatabaseError::UnsupportedOperation(
-            "Redis does not support savepoints".to_string()
+            "Redis does not support savepoints".to_string(),
         ))
     }
 
     async fn release_savepoint(&self, _name: &str) -> Result<(), DatabaseError> {
         Err(DatabaseError::UnsupportedOperation(
-            "Redis does not support savepoints".to_string()
+            "Redis does not support savepoints".to_string(),
         ))
     }
 
     async fn set_isolation_level(&self, _level: IsolationLevel) -> Result<(), DatabaseError> {
         // Redis transactions are always atomic, cannot change isolation
         Err(DatabaseError::UnsupportedOperation(
-            "Redis transactions always use ATOMIC isolation".to_string()
+            "Redis transactions always use ATOMIC isolation".to_string(),
         ))
     }
 

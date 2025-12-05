@@ -11,7 +11,7 @@ pub mod types;
 pub use command_restrict::CommandRestrictor;
 pub use connection::RedisConnection;
 pub use sorted_set::SortedSetOperations;
-pub use types::{RedisCommand, RedisConfig, RedisValue, RedisPoolSettings, RedisSecuritySettings};
+pub use types::{RedisCommand, RedisConfig, RedisPoolSettings, RedisSecuritySettings, RedisValue};
 
 use crate::handlers::database::{
     engine::{DatabaseConnection, DatabaseEngine},

@@ -535,11 +535,15 @@ impl DatabaseConnection for RedisConnection {
     ) -> Result<Box<dyn crate::handlers::database::engine::DatabaseTransaction>, DatabaseError>
     {
         // Create a new connection for the transaction
-        let conn = self.client
+        let conn = self
+            .client
             .get_multiplexed_tokio_connection()
             .await
             .map_err(|e| {
-                DatabaseError::TransactionFailed(format!("Failed to create transaction connection: {}", e))
+                DatabaseError::TransactionFailed(format!(
+                    "Failed to create transaction connection: {}",
+                    e
+                ))
             })?;
 
         let tx = super::transaction::RedisTransaction::new(conn).await?;
