@@ -34,7 +34,11 @@ impl SqliteTransaction {
         let transaction_id = format!("sqlite_tx_{}", Utc::now().timestamp_millis());
 
         Ok(Self {
-            tx: Some(unsafe { std::mem::transmute(tx) }),
+            tx: Some(unsafe {
+                // SAFETY: We need to extend the lifetime of the transaction to 'static
+                // This is safe because we manage the lifetime through the struct
+                std::mem::transmute::<Transaction<'_, Sqlite>, Transaction<'static, Sqlite>>(tx)
+            }),
             pool,
             transaction_id,
             started_at: Utc::now(),
@@ -144,20 +148,22 @@ impl DatabaseTransaction for SqliteTransaction {
     async fn query(&self, sql: &str, params: &[Value]) -> Result<QueryResult, DatabaseError> {
         let start = std::time::Instant::now();
 
-        // Use the pool for queries since we can't mutably borrow tx
+        // We need mutable access to execute on the transaction
+        // Since we can't get &mut self, we use the pool as a workaround
+        // Note: This means queries are NOT isolated within the transaction
+        // TODO: Refactor to use proper transaction-isolated queries
+
         let mut query = sqlx::query(sql);
         for param in params {
             query = match param {
                 Value::Null => query.bind(None::<i64>),
                 Value::Bool(b) => query.bind(*b as i64),
-                // Removed duplicate pattern
                 Value::Int(i) => query.bind(*i),
                 Value::Float(f) => query.bind(*f),
                 Value::String(s) => query.bind(s),
                 Value::Binary(b) => query.bind(b),
                 Value::DateTime(dt) => query.bind(dt.to_rfc3339()),
                 Value::Json(j) => query.bind(j.to_string()),
-                // Uuid not supported
             };
         }
 

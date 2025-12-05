@@ -102,10 +102,8 @@ impl DatabaseEngine for SqliteEngine {
         let result = conn.query("SELECT sqlite_version()", &[]).await?;
 
         if let Some(row) = result.rows.first() {
-            if let Some(value) = row.first() {
-                if let crate::handlers::database::types::Value::String(s) = value {
-                    return Ok(s.clone());
-                }
+            if let Some(crate::handlers::database::types::Value::String(s)) = row.first() {
+                return Ok(s.clone());
             }
         }
 

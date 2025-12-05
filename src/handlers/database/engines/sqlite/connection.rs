@@ -152,8 +152,14 @@ impl SqliteConnection {
                 Ok(Value::Binary(val))
             }
             _ => {
-                // Unknown type, return Null
-                Ok(Value::Null)
+                // Try as string first, then fallback to Null
+                if let Ok(val) = row.try_get::<String, _>(idx) {
+                    Ok(Value::String(val))
+                } else if let Ok(val) = row.try_get::<i64, _>(idx) {
+                    Ok(Value::Int(val))
+                } else {
+                    Ok(Value::Null)
+                }
             }
         }
     }
@@ -275,13 +281,26 @@ impl DatabaseConnection for SqliteConnection {
             .rows
             .iter()
             .filter_map(|row| {
-                if row.len() >= 3 {
-                    if let (Some(Value::String(name)), Some(Value::String(data_type))) =
-                        (row.get(1), row.get(2))
-                    {
+                // PRAGMA table_info returns: cid, name, type, notnull, dflt_value, pk
+                // Indices: 0=cid(INT), 1=name(TEXT), 2=type(TEXT), 3=notnull(INT), 4=dflt_value, 5=pk(INT)
+                if row.len() >= 6 {
+                    // Try different indices and types since PRAGMA results can vary
+                    let name = match &row[1] {
+                        Value::String(s) => Some(s.clone()),
+                        Value::Int(i) => Some(i.to_string()),
+                        _ => None,
+                    };
+
+                    let data_type = match &row[2] {
+                        Value::String(s) => Some(s.clone()),
+                        Value::Int(i) => Some(i.to_string()),
+                        _ => Some("UNKNOWN".to_string()),
+                    };
+
+                    if let (Some(n), Some(dt)) = (name, data_type) {
                         Some(crate::handlers::database::types::ColumnInfo {
-                            name: name.clone(),
-                            data_type: data_type.clone(),
+                            name: n,
+                            data_type: dt,
                             nullable: true,
                             max_length: None,
                         })
