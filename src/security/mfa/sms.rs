@@ -225,7 +225,7 @@ impl SmsAuthenticator {
         match &self.config.provider {
             SmsProviderConfig::Mock => {
                 // Mock provider: just log to console
-                println!("📱 [SMS Mock] Sending to {}: Your verification code is {}", phone_number, code);
+                println!("[SMS Mock] Sending to {}: Your verification code is {}", phone_number, code);
                 Ok(())
             }
             SmsProviderConfig::Twilio { account_sid, auth_token, from_number } => {

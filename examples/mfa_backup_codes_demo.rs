@@ -11,7 +11,7 @@
 use mcp_rs::security::mfa::{BackupCodeConfig, BackupCodeManager};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("🔐 MFA Backup Codes Demo\n");
+    println!("[MFA Backup Codes Demo]\n");
 
     // Step 1: Configure backup codes
     println!("Step 1: Configure backup codes");
@@ -27,25 +27,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Step 2: Create manager
     println!("Step 2: Create backup code manager");
     let manager = BackupCodeManager::new(config.clone());
-    println!("✓ Manager created\n");
+    println!("[OK] Manager created\n");
 
     // Step 3: Generate backup codes
     println!("Step 3: Generate backup codes");
     let (plaintext_codes, mut hashed_codes) = manager.generate()?;
-    println!("✓ Generated {} backup codes\n", plaintext_codes.len());
+    println!("[OK] Generated {} backup codes\n", plaintext_codes.len());
 
     // Step 4: Display codes to user (only once!)
     println!("Step 4: Display codes to user");
-    println!("╔════════════════════════════════════════╗");
-    println!("║      BACKUP CODES - SAVE SECURELY      ║");
-    println!("╠════════════════════════════════════════╣");
-    println!("║  These codes can only be shown ONCE!   ║");
-    println!("║  Each code can only be used ONCE!      ║");
-    println!("╠════════════════════════════════════════╣");
+    println!("==========================================");
+    println!("      BACKUP CODES - SAVE SECURELY      ");
+    println!("==========================================");
+    println!("  These codes can only be shown ONCE!   ");
+    println!("  Each code can only be used ONCE!      ");
+    println!("==========================================");
     for (i, code) in plaintext_codes.iter().enumerate() {
-        println!("║  {}: {}  ║", i + 1, code);
+        println!("  {}: {}  ", i + 1, code);
     }
-    println!("╚════════════════════════════════════════╝\n");
+    println!("==========================================\n");
 
     // Step 5: Verify remaining count
     println!("Step 5: Check remaining codes");
@@ -60,12 +60,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match manager.verify(&test_code, &mut hashed_codes) {
         Ok(index) => {
-            println!("✓ Backup code verified successfully!");
+            println!("[OK] Backup code verified successfully!");
             println!("  Code index: {}", index);
             println!("  Code marked as used\n");
         }
         Err(e) => {
-            println!("✗ Verification failed: {:?}\n", e);
+            println!("[FAIL] Verification failed: {:?}\n", e);
         }
     }
 
@@ -81,10 +81,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("User enters: {}", test_code);
     match manager.verify(&test_code, &mut hashed_codes) {
         Ok(_) => {
-            println!("✗ ERROR: Used code verified again (should not happen!)\n");
+            println!("[FAIL] ERROR: Used code verified again (should not happen!)\n");
         }
         Err(e) => {
-            println!("✓ Correctly rejected: {:?}\n", e);
+            println!("[OK] Correctly rejected: {:?}\n", e);
         }
     }
 
@@ -99,11 +99,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match manager.verify(&code_without_sep, &mut hashed_codes) {
         Ok(index) => {
-            println!("✓ Code accepted (separators optional)");
+            println!("[OK] Code accepted (separators optional)");
             println!("  Code index: {}\n", index);
         }
         Err(e) => {
-            println!("✗ Verification failed: {:?}\n", e);
+            println!("[FAIL] Verification failed: {:?}\n", e);
         }
     }
 
@@ -119,13 +119,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    println!("\n⚠️  Warning: Only {} codes remaining!", manager.remaining_count(&hashed_codes));
+    println!("\n[WARNING] Only {} codes remaining!", manager.remaining_count(&hashed_codes));
     println!("    User should regenerate backup codes\n");
 
     // Step 11: Generate new backup codes
     println!("Step 11: Regenerate backup codes");
     let (new_plaintext, new_hashed) = manager.generate()?;
-    println!("✓ Generated {} new backup codes", new_plaintext.len());
+    println!("[OK] Generated {} new backup codes", new_plaintext.len());
     println!("Remaining: {}/{}\n", manager.remaining_count(&new_hashed), config.count);
 
     // Step 12: Test invalid code
@@ -136,10 +136,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut test_hashed = new_hashed.clone();
     match manager.verify(invalid_code, &mut test_hashed) {
         Ok(_) => {
-            println!("✗ ERROR: Invalid code verified (should not happen!)\n");
+            println!("[FAIL] ERROR: Invalid code verified (should not happen!)\n");
         }
         Err(e) => {
-            println!("✓ Correctly rejected: {:?}\n", e);
+            println!("[OK] Correctly rejected: {:?}\n", e);
         }
     }
 
@@ -153,27 +153,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     match disabled_manager.generate() {
         Ok(_) => {
-            println!("✗ ERROR: Disabled manager generated codes (should not happen!)\n");
+            println!("[FAIL] ERROR: Disabled manager generated codes (should not happen!)\n");
         }
         Err(e) => {
-            println!("✓ Correctly rejected: {:?}\n", e);
+            println!("[OK] Correctly rejected: {:?}\n", e);
         }
     }
 
     // Summary
-    println!("═══════════════════════════════════════════════════");
+    println!("===================================================");
     println!("                    SUMMARY                        ");
-    println!("═══════════════════════════════════════════════════");
-    println!("✓ Backup code generation: Working");
-    println!("✓ Code verification: Working");
-    println!("✓ One-time use enforcement: Working");
-    println!("✓ Code normalization: Working");
-    println!("✓ Usage tracking: Working");
-    println!("✓ Regeneration detection: Working");
-    println!("✓ Invalid code rejection: Working");
-    println!("✓ Disabled state handling: Working");
-    println!("═══════════════════════════════════════════════════");
-    println!("\n🎉 All backup code functionality working correctly!");
+    println!("===================================================");
+    println!("[OK] Backup code generation: Working");
+    println!("[OK] Code verification: Working");
+    println!("[OK] One-time use enforcement: Working");
+    println!("[OK] Code normalization: Working");
+    println!("[OK] Usage tracking: Working");
+    println!("[OK] Regeneration detection: Working");
+    println!("[OK] Invalid code rejection: Working");
+    println!("[OK] Disabled state handling: Working");
+    println!("===================================================");
+    println!("\n[SUCCESS] All backup code functionality working correctly!");
 
     Ok(())
 }

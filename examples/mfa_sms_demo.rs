@@ -12,7 +12,7 @@ use mcp_rs::security::mfa::{SmsAuthenticator, SmsConfig, SmsProviderConfig};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("📱 MFA SMS Authentication Demo\n");
+    println!("[MFA SMS Authentication Demo]\n");
 
     // Step 1: Configure SMS authentication
     println!("Step 1: Configure SMS authentication");
@@ -32,7 +32,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Step 2: Create authenticator
     println!("Step 2: Create SMS authenticator");
     let authenticator = SmsAuthenticator::new(config.clone());
-    println!("✓ Authenticator created\n");
+    println!("[OK] Authenticator created\n");
 
     // Step 3: Send verification code
     println!("Step 3: Send verification code to user");
@@ -40,7 +40,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Phone number: {}", phone_number);
     
     authenticator.send_code(phone_number).await?;
-    println!("✓ Verification code sent\n");
+    println!("[OK] Verification code sent\n");
 
     // Step 4: Simulate user receiving and entering code
     println!("Step 4: User receives SMS and enters code");
@@ -70,23 +70,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Attempt 1
     println!("  Attempt 1: Wrong code");
     let result = authenticator.verify_code(phone2, "000000").await?;
-    println!("    Result: {}", if result { "✓ Accepted" } else { "✗ Rejected" });
+    println!("    Result: {}", if result { "[OK] Accepted" } else { "[FAIL] Rejected" });
     
     // Attempt 2
     println!("  Attempt 2: Wrong code");
     let result = authenticator.verify_code(phone2, "111111").await?;
-    println!("    Result: {}", if result { "✓ Accepted" } else { "✗ Rejected" });
+    println!("    Result: {}", if result { "[OK] Accepted" } else { "[FAIL] Rejected" });
     
     // Attempt 3
     println!("  Attempt 3: Wrong code");
     let result = authenticator.verify_code(phone2, "222222").await?;
-    println!("    Result: {}", if result { "✓ Accepted" } else { "✗ Rejected" });
+    println!("    Result: {}", if result { "[OK] Accepted" } else { "[FAIL] Rejected" });
     
     // Attempt 4 (should fail with TooManyAttempts)
     println!("  Attempt 4: Wrong code");
     match authenticator.verify_code(phone2, "333333").await {
-        Ok(_) => println!("    ✗ ERROR: Still accepting attempts\n"),
-        Err(e) => println!("    ✓ Correctly blocked: {:?}\n", e),
+        Ok(_) => println!("    [FAIL] ERROR: Still accepting attempts\n"),
+        Err(e) => println!("    [OK] Correctly blocked: {:?}\n", e),
     }
 
     // Step 8: Test code expiration
@@ -105,8 +105,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     // Try to verify with any code (will fail because expired)
     match auth_short.verify_code(phone3, "123456").await {
-        Ok(_) => println!("✗ ERROR: Expired code accepted\n"),
-        Err(e) => println!("✓ Correctly rejected expired code: {:?}\n", e),
+        Ok(_) => println!("[FAIL] ERROR: Expired code accepted\n"),
+        Err(e) => println!("[OK] Correctly rejected expired code: {:?}\n", e),
     }
 
     // Step 9: Test cleanup
@@ -142,16 +142,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Valid phone numbers:");
     for phone in valid_phones {
         match authenticator.send_code(phone).await {
-            Ok(_) => println!("  ✓ {}", phone),
-            Err(e) => println!("  ✗ {}: {:?}", phone, e),
+            Ok(_) => println!("  [OK] {}", phone),
+            Err(e) => println!("  [FAIL] {}: {:?}", phone, e),
         }
     }
     
     println!("\nInvalid phone numbers:");
     for phone in invalid_phones {
         match authenticator.send_code(phone).await {
-            Ok(_) => println!("  ✗ {} (should have failed)", phone),
-            Err(_) => println!("  ✓ {} (correctly rejected)", phone),
+            Ok(_) => println!("  [FAIL] {} (should have failed)", phone),
+            Err(_) => println!("  [OK] {} (correctly rejected)", phone),
         }
     }
     println!();
@@ -184,33 +184,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let phone6 = "+9876543210";
     
     match auth_disabled.send_code(phone6).await {
-        Ok(_) => println!("  ✗ Send succeeded (should have failed)"),
-        Err(_) => println!("  ✓ Send correctly rejected when disabled"),
+        Ok(_) => println!("  [FAIL] Send succeeded (should have failed)"),
+        Err(_) => println!("  [OK] Send correctly rejected when disabled"),
     }
     
     // But verification should succeed (no MFA enforcement)
     match auth_disabled.verify_code(phone6, "123456").await {
-        Ok(true) => println!("  ✓ Verification bypassed when disabled\n"),
-        _ => println!("  ✗ Verification failed (should succeed)\n"),
+        Ok(true) => println!("  [OK] Verification bypassed when disabled\n"),
+        _ => println!("  [FAIL] Verification failed (should succeed)\n"),
     }
 
     // Summary
-    println!("═══════════════════════════════════════════════════");
+    println!("===================================================");
     println!("                    SUMMARY                        ");
-    println!("═══════════════════════════════════════════════════");
-    println!("✓ Code generation: Working");
-    println!("✓ Code sending: Working");
-    println!("✓ Code verification: Working");
-    println!("✓ One-time use enforcement: Working");
-    println!("✓ Attempt tracking: Working");
-    println!("✓ Max attempts blocking: Working");
-    println!("✓ Code expiration: Working");
-    println!("✓ Expired code cleanup: Working");
-    println!("✓ Phone validation: Working");
-    println!("✓ Variable code length: Working");
-    println!("✓ Disabled state handling: Working");
-    println!("═══════════════════════════════════════════════════");
-    println!("\n🎉 All SMS authentication functionality working correctly!");
+    println!("===================================================");
+    println!("[OK] Code generation: Working");
+    println!("[OK] Code sending: Working");
+    println!("[OK] Code verification: Working");
+    println!("[OK] One-time use enforcement: Working");
+    println!("[OK] Attempt tracking: Working");
+    println!("[OK] Max attempts blocking: Working");
+    println!("[OK] Code expiration: Working");
+    println!("[OK] Expired code cleanup: Working");
+    println!("[OK] Phone validation: Working");
+    println!("[OK] Variable code length: Working");
+    println!("[OK] Disabled state handling: Working");
+    println!("===================================================");
+    println!("\n[SUCCESS] All SMS authentication functionality working correctly!");
 
     Ok(())
 }
