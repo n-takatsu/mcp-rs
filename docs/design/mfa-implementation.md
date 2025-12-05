@@ -10,7 +10,7 @@ Comprehensive Multi-Factor Authentication system implementation for enterprise-g
 
 ## Estimated Timeline
 
-**Total: 2-3 weeks (12-15 working days)**
+### Total: 2-3 weeks (12-15 working days)
 
 - Phase 1: TOTP Implementation (3 days)
 - Phase 2: Backup Codes (2 days)
@@ -52,6 +52,7 @@ Comprehensive Multi-Factor Authentication system implementation for enterprise-g
 ### Components
 
 #### 1.1 TOTP Secret Generation
+
 ```rust
 pub struct TotpSecret {
     secret: Vec<u8>,          // 160-bit random secret
@@ -68,6 +69,7 @@ impl TotpSecret {
 ```
 
 #### 1.2 TOTP Verification
+
 ```rust
 pub struct TotpVerifier {
     time_window: u32, // Allow ±1 step (default)
@@ -80,6 +82,7 @@ impl TotpVerifier {
 ```
 
 #### 1.3 QR Code Generation
+
 - Use `qrcode` crate for QR code generation
 - Generate otpauth:// URI format
 - Support PNG/SVG output formats
@@ -114,6 +117,7 @@ pub struct TotpConfig {
 ### Components
 
 #### 2.1 Backup Code Generator
+
 ```rust
 pub struct BackupCodeGenerator {
     code_length: usize,  // 8 characters
@@ -127,6 +131,7 @@ impl BackupCodeGenerator {
 ```
 
 #### 2.2 Backup Code Manager
+
 ```rust
 pub struct BackupCodeManager {
     codes: Vec<HashedBackupCode>,
@@ -157,6 +162,7 @@ impl BackupCodeManager {
 ### Components
 
 #### 3.1 SMS Provider Interface
+
 ```rust
 pub trait SmsProvider: Send + Sync {
     async fn send_code(&self, phone: &str, code: &str) -> Result<(), MfaError>;
@@ -175,6 +181,7 @@ pub struct AwsSnsSmsProvider {
 ```
 
 #### 3.2 SMS Verification
+
 ```rust
 pub struct SmsVerifier {
     provider: Box<dyn SmsProvider>,
@@ -220,6 +227,7 @@ pub enum SmsProviderType {
 ### Components
 
 #### 4.1 Device Fingerprinting
+
 ```rust
 pub struct DeviceFingerprint {
     user_agent: String,
@@ -237,6 +245,7 @@ impl DeviceFingerprint {
 ```
 
 #### 4.2 Device Trust Manager
+
 ```rust
 pub struct DeviceTrustManager {
     trusted_devices: HashMap<String, TrustedDevice>,
@@ -286,6 +295,7 @@ pub struct DeviceTrustConfig {
 ### Components
 
 #### 5.1 MFA Session Extension
+
 ```rust
 pub struct MfaSession {
     session_id: String,
@@ -304,6 +314,7 @@ pub enum MfaMethod {
 ```
 
 #### 5.2 Remember Device Feature
+
 ```rust
 pub struct RememberDeviceToken {
     device_id: String,
@@ -439,6 +450,7 @@ sms-aws = ["aws-sdk-sns"]
 ## Testing Strategy
 
 ### Unit Tests
+
 - TOTP generation and verification
 - Backup code generation and validation
 - Device fingerprinting accuracy
@@ -446,18 +458,21 @@ sms-aws = ["aws-sdk-sns"]
 - Rate limiting enforcement
 
 ### Integration Tests
+
 - Complete MFA flow (registration → verification)
 - SMS sending and verification (with mocks)
 - Session integration
 - Device trust learning
 
 ### Security Tests
+
 - Timing attack resistance
 - Brute force protection
 - Code reuse prevention
 - Token expiration
 
 ### Performance Tests
+
 - TOTP verification < 50ms
 - QR code generation < 100ms
 - Device fingerprint calculation < 10ms
