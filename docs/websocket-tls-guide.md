@@ -67,30 +67,37 @@ pub struct TlsConfig {
 ### フィールド詳細
 
 #### cert_path (サーバーモード必須)
+
 サーバー証明書ファイルのパス。PEM形式である必要があります。
 
 **例:**
+
 ```rust
 cert_path: Some(PathBuf::from("/etc/ssl/certs/server.crt"))
 ```
 
 #### key_path (サーバーモード必須)
+
 秘密鍵ファイルのパス。PEM形式で、証明書と対応している必要があります。
 
 **例:**
+
 ```rust
 key_path: Some(PathBuf::from("/etc/ssl/private/server.key"))
 ```
 
 #### ca_cert_path (オプション)
+
 カスタムCA証明書のパス。クライアント証明書の検証や、特定のCAを信頼する場合に使用します。
 
 **例:**
+
 ```rust
 ca_cert_path: Some(PathBuf::from("/etc/ssl/certs/custom-ca.crt"))
 ```
 
 #### verify_server (クライアントモード)
+
 クライアントがサーバー証明書を検証するかどうか。
 
 - `true` (推奨): サーバー証明書を検証
@@ -99,6 +106,7 @@ ca_cert_path: Some(PathBuf::from("/etc/ssl/certs/custom-ca.crt"))
 **セキュリティ警告**: 本番環境では必ず `true` に設定してください。
 
 #### accept_invalid_certs (テスト専用)
+
 無効な証明書（自己署名、期限切れなど）を受け入れるかどうか。
 
 - `false` (推奨): 無効な証明書を拒否
@@ -275,6 +283,7 @@ openssl req -new -key localhost.key -out localhost.csr
 ```
 
 対話形式で以下の情報を入力します:
+
 - Country Name: JP
 - State: Tokyo
 - Locality: Tokyo
@@ -291,6 +300,7 @@ openssl x509 -req -days 365 -in localhost.csr -signkey localhost.key -out localh
 #### ステップ4: ファイルの確認
 
 生成されたファイル:
+
 - `localhost.key`: 秘密鍵 (厳重に管理)
 - `localhost.crt`: 証明書
 - `localhost.csr`: CSR (削除可能)
@@ -309,11 +319,13 @@ openssl x509 -req -days 365 -in localhost.csr -signkey localhost.key -out localh
 ### 1. 証明書の管理
 
 ✅ **推奨**:
+
 - 秘密鍵のパーミッションを600に設定
 - 証明書を定期的に更新 (最低でも年1回)
 - 証明書の有効期限を監視
 
 ❌ **避けるべき**:
+
 - 秘密鍵をバージョン管理にコミット
 - 同じ証明書を複数の環境で使用
 - 期限切れの証明書を使用

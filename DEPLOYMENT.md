@@ -178,7 +178,7 @@ kubectl scale deployment/mcp-rs --replicas=5 -n mcp-rs
 
 ## 🔄 ロールバック
 
-### Docker Compose
+### Docker Composeでのロールバック
 
 ```bash
 # 前のイメージに戻す
@@ -187,7 +187,7 @@ docker pull ghcr.io/n-takatsu/mcp-rs:previous-tag
 docker-compose up -d
 ```
 
-### Kubernetes
+### Kubernetesでのロールバック
 
 ```bash
 # 自動ロールバック
