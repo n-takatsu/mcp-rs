@@ -89,12 +89,28 @@ jobs:
       run: cargo build --lib --verbose --jobs 1
 
     - name: Run unit tests
-      # Only test library code, avoid examples and integration tests completely
+      # Test library code with MFA features enabled
       env:
         CARGO_PROFILE_TEST_LTO: false
       run: |
-        echo "Running library unit tests only..."
-        cargo test --lib --verbose --no-default-features --features "security,session-management,websocket" --jobs 1 || true
+        echo "Running library unit tests with MFA features..."
+        cargo test --lib --verbose --features "security,session-management,websocket,mfa" --jobs 1
+
+    - name: Run MFA integration tests
+      if: matrix.rust == 'stable'
+      env:
+        CARGO_PROFILE_TEST_LTO: false
+      run: |
+        echo "Running MFA integration tests..."
+        cargo test --test mfa_integration_tests --features mfa --verbose --jobs 1
+
+    - name: Run MFA performance tests
+      if: matrix.rust == 'stable'
+      env:
+        CARGO_PROFILE_TEST_LTO: false
+      run: |
+        echo "Running MFA performance tests..."
+        cargo test --test mfa_performance_tests --features mfa --verbose --jobs 1
 
     - name: Verify library compilation
       run: |

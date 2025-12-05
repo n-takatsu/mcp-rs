@@ -55,6 +55,15 @@ Need WordPress security automation? 8-layer enterprise security architecture wit
 - **YouTube & Social Embeds**: Rich media integration with security validation
 - **User Management**: Role-based access control and user operations
 
+## **Multi-Factor Authentication (MFA)**
+
+- **TOTP Authentication**: RFC 6238 compliant with QR code generation (SHA1/SHA256/SHA512)
+- **Backup Codes**: Secure recovery codes with Argon2id hashing
+- **SMS Authentication**: Multi-provider support (Mock, Twilio, AWS SNS, Custom)
+- **Device Trust**: Remember trusted devices with fingerprint-based identification
+- **Session Integration**: Session-level MFA verification with configurable validity
+- **Performance**: TOTP < 10μs, QR generation < 3ms, 55+ passing tests
+
 ## **Enterprise Security (8-Layer Architecture)**
 
 - **WAF (Web Application Firewall)**: CORS, CSP, request validation, and security headers
@@ -86,9 +95,9 @@ Need WordPress security automation? 8-layer enterprise security architecture wit
 
 | Metric | Value |
 |--------|-------|
-| **Total Tests** | 205+ (100% passing) |
+| **Total Tests** | 260+ (100% passing) |
 | **Code Coverage** | Comprehensive |
-| **Security Tests** | 8-layer validation |
+| **Security Tests** | 8-layer + MFA validation |
 | **Performance** | Production optimized |
 | **Documentation** | Complete API docs |
 
