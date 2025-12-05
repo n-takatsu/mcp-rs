@@ -2,6 +2,8 @@
 //!
 //! Comprehensive tests for MySQL database operations
 
+#![cfg(feature = "database")]
+
 #[cfg(test)]
 mod tests {
     use mcp_rs::handlers::database::{
