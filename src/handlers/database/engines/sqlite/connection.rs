@@ -356,21 +356,28 @@ impl DatabaseConnection for SqliteConnection {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::handlers::database::types::ConnectionConfig;
+    use crate::handlers::database::types::{
+        ConnectionConfig, DatabaseType, FeatureConfig, PoolConfig, SecurityConfig,
+    };
+    use std::collections::HashMap;
 
     fn create_test_config() -> DatabaseConfig {
         DatabaseConfig {
+            database_type: DatabaseType::SQLite,
             connection: ConnectionConfig {
                 host: ":memory:".to_string(),
                 port: 0,
+                database: "test".to_string(),
                 username: String::new(),
                 password: String::new(),
-                database: "test".to_string(),
                 ssl_mode: None,
-                connect_timeout: None,
-                pool_size: None,
+                timeout_seconds: 30,
+                retry_attempts: 3,
+                options: HashMap::new(),
             },
-            security: None,
+            pool: PoolConfig::default(),
+            security: SecurityConfig::default(),
+            features: FeatureConfig::default(),
         }
     }
 
@@ -431,7 +438,7 @@ mod tests {
             .unwrap();
 
         let schema = conn.get_schema().await.unwrap();
-        assert!(schema.tables.contains(&"users".to_string()));
+        assert!(schema.tables.iter().any(|t| &t.name == "users"));
     }
 
     #[tokio::test]

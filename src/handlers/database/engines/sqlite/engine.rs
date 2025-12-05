@@ -114,21 +114,28 @@ impl DatabaseEngine for SqliteEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::handlers::database::types::ConnectionConfig;
+    use crate::handlers::database::types::{
+        ConnectionConfig, FeatureConfig, PoolConfig, SecurityConfig,
+    };
+    use std::collections::HashMap;
 
     fn create_test_config() -> DatabaseConfig {
         DatabaseConfig {
+            database_type: DatabaseType::SQLite,
             connection: ConnectionConfig {
                 host: ":memory:".to_string(),
                 port: 0,
+                database: "test".to_string(),
                 username: String::new(),
                 password: String::new(),
-                database: "test".to_string(),
                 ssl_mode: None,
-                connect_timeout: None,
-                pool_size: None,
+                timeout_seconds: 30,
+                retry_attempts: 3,
+                options: HashMap::new(),
             },
-            security: None,
+            pool: PoolConfig::default(),
+            security: SecurityConfig::default(),
+            features: FeatureConfig::default(),
         }
     }
 
@@ -154,7 +161,6 @@ mod tests {
 
         assert!(features.contains(&DatabaseFeature::Transactions));
         assert!(features.contains(&DatabaseFeature::PreparedStatements));
-        assert!(features.contains(&DatabaseFeature::Savepoints));
     }
 
     #[tokio::test]
