@@ -6,8 +6,8 @@ use super::{config::MongoConfig, connection::MongoConnection, convert_mongodb_er
 use crate::handlers::database::{
     engine::{DatabaseConnection, DatabaseEngine},
     types::{
-        DatabaseConfig, DatabaseError, DatabaseFeature, DatabaseSchema, DatabaseType,
-        HealthStatus, HealthStatusType,
+        DatabaseConfig, DatabaseError, DatabaseFeature, DatabaseSchema, DatabaseType, HealthStatus,
+        HealthStatusType,
     },
 };
 use async_trait::async_trait;
@@ -78,13 +78,8 @@ impl DatabaseEngine for MongoEngine {
     async fn health_check(&self) -> Result<HealthStatus, DatabaseError> {
         let start = std::time::Instant::now();
 
-        // Try to create a connection and ping
-        let result = MongoConnection::new(self.mongo_config.clone())
-            .await
-            .and_then(|conn| {
-                // Ping is done during connection
-                Ok(conn)
-            });
+        // Try to create a connection and ping (ping is done during connection)
+        let result = MongoConnection::new(self.mongo_config.clone()).await;
 
         let response_time_ms = start.elapsed().as_millis() as u64;
 
