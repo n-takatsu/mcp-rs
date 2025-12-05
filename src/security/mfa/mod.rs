@@ -8,6 +8,8 @@
 
 #[cfg(feature = "mfa")]
 pub mod totp;
+#[cfg(feature = "mfa")]
+pub mod backup_codes;
 
 #[cfg(feature = "mfa")]
 use serde::{Deserialize, Serialize};
@@ -78,6 +80,8 @@ pub struct MfaConfig {
     pub required_roles: Vec<String>,
     /// TOTP configuration
     pub totp: totp::TotpConfig,
+    /// Backup codes configuration
+    pub backup_codes: backup_codes::BackupCodeConfig,
 }
 
 #[cfg(feature = "mfa")]
@@ -88,9 +92,12 @@ impl Default for MfaConfig {
             required_for_all: false,
             required_roles: vec!["admin".to_string()],
             totp: totp::TotpConfig::default(),
+            backup_codes: backup_codes::BackupCodeConfig::default(),
         }
     }
 }
 
 #[cfg(feature = "mfa")]
 pub use totp::{TotpAlgorithm, TotpConfig, TotpSecret, TotpVerifier};
+#[cfg(feature = "mfa")]
+pub use backup_codes::{BackupCode, BackupCodeConfig, BackupCodeManager};

@@ -46,7 +46,7 @@ env_logger = "0.11"
 
 # Cryptography and security
 ring = "0.17.14"
-argon2 = "0.5"
+argon2 = { version = "0.5", features = ["std"] }
 jsonwebtoken = { version = "10.2", default-features = false, features = ["rust_crypto"] }
 base64 = "0.22.1"
 secrecy = { version = "0.10.3", features = ["serde"] }

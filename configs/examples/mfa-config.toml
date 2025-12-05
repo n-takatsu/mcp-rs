@@ -11,3 +11,9 @@ algorithm = "Sha256"  # Options: Sha1, Sha256, Sha512
 digits = 6            # 6 or 8 digits
 period = 30           # Time step in seconds
 time_window = 1       # Allow ±1 time step
+
+[security.mfa.backup_codes]
+enabled = true
+count = 10            # Number of backup codes to generate
+length = 12           # Length of each code (characters)
+use_separators = true # Use separators (e.g., XXXX-XXXX-XXXX)
