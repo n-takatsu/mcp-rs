@@ -12,6 +12,8 @@ pub mod totp;
 pub mod backup_codes;
 #[cfg(feature = "mfa")]
 pub mod sms;
+#[cfg(feature = "mfa")]
+pub mod device_trust;
 
 #[cfg(feature = "mfa")]
 use serde::{Deserialize, Serialize};
@@ -86,6 +88,8 @@ pub struct MfaConfig {
     pub backup_codes: backup_codes::BackupCodeConfig,
     /// SMS authentication configuration
     pub sms: sms::SmsConfig,
+    /// Device trust configuration
+    pub device_trust: device_trust::DeviceTrustConfig,
 }
 
 #[cfg(feature = "mfa")]
@@ -98,6 +102,7 @@ impl Default for MfaConfig {
             totp: totp::TotpConfig::default(),
             backup_codes: backup_codes::BackupCodeConfig::default(),
             sms: sms::SmsConfig::default(),
+            device_trust: device_trust::DeviceTrustConfig::default(),
         }
     }
 }
@@ -108,3 +113,5 @@ pub use totp::{TotpAlgorithm, TotpConfig, TotpSecret, TotpVerifier};
 pub use backup_codes::{BackupCode, BackupCodeConfig, BackupCodeManager};
 #[cfg(feature = "mfa")]
 pub use sms::{SmsAuthenticator, SmsConfig, SmsProviderConfig};
+#[cfg(feature = "mfa")]
+pub use device_trust::{DeviceInfo, DeviceTrustConfig, DeviceTrustManager};

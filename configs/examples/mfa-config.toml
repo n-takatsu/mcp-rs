@@ -47,3 +47,10 @@ type = "Mock"  # Options: Mock, Twilio, AwsSns, Custom
 # endpoint = "https://api.example.com/sms/send"
 # api_key = "your_api_key"
 # method = "POST"
+
+# Device Trust Configuration
+[security.mfa.device_trust]
+enabled = true                     # Enable/disable device trust
+max_devices_per_user = 5          # Maximum trusted devices per user
+token_validity_seconds = 2592000  # 30 days in seconds (0 = never expire)
+require_mfa_on_new_device = true  # Require MFA when accessing from new device
