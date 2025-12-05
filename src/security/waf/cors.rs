@@ -89,8 +89,7 @@ impl CorsHandler {
 
         // Check for subdomain wildcards (e.g., "*.example.com")
         for allowed_origin in &self.config.allowed_origins {
-            if allowed_origin.starts_with("*.") {
-                let domain = &allowed_origin[2..];
+            if let Some(domain) = allowed_origin.strip_prefix("*.") {
                 // Extract hostname from origin (remove protocol)
                 let hostname = origin
                     .strip_prefix("https://")

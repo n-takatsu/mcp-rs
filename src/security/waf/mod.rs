@@ -150,8 +150,10 @@ mod tests {
 
     #[test]
     fn test_waf_disabled() {
-        let mut config = WafConfig::default();
-        config.enabled = false;
+        let config = WafConfig {
+            enabled: false,
+            ..Default::default()
+        };
         let waf = WebApplicationFirewall::new(config);
         assert!(!waf.is_enabled());
     }

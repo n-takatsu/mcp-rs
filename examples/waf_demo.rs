@@ -52,8 +52,10 @@ async fn demo_cors(cors_handler: &CorsHandler) -> Result<(), Box<dyn std::error:
     }
 
     // Test invalid origin (with custom config)
-    let mut custom_config = CorsConfig::default();
-    custom_config.allowed_origins = vec!["https://trusted.com".to_string()];
+    let custom_config = CorsConfig {
+        allowed_origins: vec!["https://trusted.com".to_string()],
+        ..Default::default()
+    };
     let custom_cors = CorsHandler::new(custom_config);
 
     let untrusted_origin = "https://malicious.com";
@@ -91,8 +93,10 @@ async fn demo_csp(csp_generator: &CspGenerator) -> Result<(), Box<dyn std::error
     println!("  {}: {}", csp_generator.header_name(), csp_header);
 
     // Generate nonce and CSP header with nonce
-    let mut config = CspConfig::default();
-    config.use_nonces = true;
+    let config = CspConfig {
+        use_nonces: true,
+        ..Default::default()
+    };
     let csp_with_nonce = CspGenerator::new(config);
 
     let nonce = csp_with_nonce.generate_nonce();
