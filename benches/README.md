@@ -7,10 +7,12 @@ mcp-rsプロジェクトのパフォーマンスベンチマークスイート
 ### データベースエンジン
 
 #### PostgreSQL
+
 - **`postgres_phase2_benchmarks.rs`** - PostgreSQL Phase 2 包括的パフォーマンス測定
   - 接続プール、クエリ実行、トランザクション、JSON操作、並行処理
 
-#### MySQL
+#### MySQL Engine
+
 - **`mysql_performance_benchmark.rs`** - MySQL基本パフォーマンス測定
 - **`mysql_concurrent_connection_performance.rs`** - 並行接続性能測定
 - **`mysql_parameterized_query_performance.rs`** - パラメータ化クエリ性能
@@ -18,6 +20,7 @@ mcp-rsプロジェクトのパフォーマンスベンチマークスイート
 - **`mysql_resource_usage_analysis.rs`** - リソース使用量分析
 
 #### データベース比較
+
 - **`database_engine_performance_comparison.rs`** - 全データベースエンジン横並び比較
   - PostgreSQL、MySQL、SQLite、Redis、MongoDB
 
@@ -61,6 +64,7 @@ cargo bench --bench postgres_phase2_benchmarks -- --sample-size 10
 **[docs/guides/benchmarking-guide.md](../docs/guides/benchmarking-guide.md)**
 
 内容：
+
 - 各ベンチマークの詳細説明
 - 実行方法とカスタマイズ
 - 結果の解釈方法
@@ -82,7 +86,7 @@ open target/criterion/report/index.html
 
 ## 🎯 パフォーマンス目標
 
-### PostgreSQL
+### PostgreSQL Target
 
 | 項目 | 目標 |
 |------|------|
@@ -91,7 +95,7 @@ open target/criterion/report/index.html
 | INSERT | < 100 µs/行 |
 | Transaction | < 100 µs |
 
-### MySQL
+### MySQL Target
 
 | 項目 | 目標 |
 |------|------|
@@ -103,7 +107,7 @@ open target/criterion/report/index.html
 
 ## 🔧 環境設定
 
-### 必要な環境変数（MySQL）
+### MySQL 環境変数
 
 ```bash
 export MYSQL_HOST=localhost
@@ -113,7 +117,7 @@ export MYSQL_PASSWORD=root
 export MYSQL_DATABASE=test
 ```
 
-### 必要な環境変数（PostgreSQL）
+### PostgreSQL 環境変数
 
 ```bash
 export POSTGRES_HOST=localhost
