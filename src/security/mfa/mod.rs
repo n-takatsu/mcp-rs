@@ -7,15 +7,15 @@
 //! - Session integration
 
 #[cfg(feature = "mfa")]
-pub mod totp;
-#[cfg(feature = "mfa")]
 pub mod backup_codes;
-#[cfg(feature = "mfa")]
-pub mod sms;
 #[cfg(feature = "mfa")]
 pub mod device_trust;
 #[cfg(feature = "mfa")]
 pub mod session;
+#[cfg(feature = "mfa")]
+pub mod sms;
+#[cfg(feature = "mfa")]
+pub mod totp;
 
 #[cfg(feature = "mfa")]
 use serde::{Deserialize, Serialize};
@@ -113,12 +113,12 @@ impl Default for MfaConfig {
 }
 
 #[cfg(feature = "mfa")]
-pub use totp::{TotpAlgorithm, TotpConfig, TotpSecret, TotpVerifier};
-#[cfg(feature = "mfa")]
 pub use backup_codes::{BackupCode, BackupCodeConfig, BackupCodeManager};
-#[cfg(feature = "mfa")]
-pub use sms::{SmsAuthenticator, SmsConfig, SmsProviderConfig};
 #[cfg(feature = "mfa")]
 pub use device_trust::{DeviceInfo, DeviceTrustConfig, DeviceTrustManager};
 #[cfg(feature = "mfa")]
 pub use session::{MfaChallenge, MfaMethod, SessionMfaConfig, SessionMfaManager, SessionMfaState};
+#[cfg(feature = "mfa")]
+pub use sms::{SmsAuthenticator, SmsConfig, SmsProviderConfig};
+#[cfg(feature = "mfa")]
+pub use totp::{TotpAlgorithm, TotpConfig, TotpSecret, TotpVerifier};

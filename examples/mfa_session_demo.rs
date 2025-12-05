@@ -29,14 +29,24 @@ async fn main() {
 
     // Setup: Create session MFA manager
     let session_config = SessionMfaConfig::default();
-    let session_manager = SessionMfaManager::new(session_config.clone(), Some(device_trust.clone()));
+    let session_manager =
+        SessionMfaManager::new(session_config.clone(), Some(device_trust.clone()));
 
     println!("Configuration:");
     println!("  - Session MFA Enabled: {}", session_config.enabled);
-    println!("  - Require For All Sessions: {}", session_config.require_for_all_sessions);
-    println!("  - Challenge Expiration: {} seconds", session_config.challenge_expiration_seconds);
+    println!(
+        "  - Require For All Sessions: {}",
+        session_config.require_for_all_sessions
+    );
+    println!(
+        "  - Challenge Expiration: {} seconds",
+        session_config.challenge_expiration_seconds
+    );
     println!("  - Max Attempts: {}", session_config.max_attempts);
-    println!("  - Session Validity: {} seconds (0 = entire session)", session_config.session_validity_seconds);
+    println!(
+        "  - Session Validity: {} seconds (0 = entire session)",
+        session_config.session_validity_seconds
+    );
     println!();
 
     // Test 1: Check MFA requirement for new session
@@ -62,11 +72,14 @@ async fn main() {
         .create_challenge(user_id, allowed_methods.clone())
         .await
         .unwrap();
-    
+
     println!("Challenge ID: {}", challenge.challenge_id);
     println!("User ID: {}", challenge.user_id);
     println!("Allowed Methods: {:?}", challenge.allowed_methods);
-    println!("Expires in: {} seconds", challenge.expires_at - challenge.created_at);
+    println!(
+        "Expires in: {} seconds",
+        challenge.expires_at - challenge.created_at
+    );
     println!("Max Attempts: {}", challenge.max_attempts);
     println!("[OK] Challenge created successfully\n");
 
@@ -81,7 +94,7 @@ async fn main() {
             None,
         )
         .await;
-    
+
     if result.is_ok() {
         println!("[OK] MFA verification successful");
     } else {
@@ -112,7 +125,7 @@ async fn main() {
     let user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0";
     let ip_address = "192.168.1.100";
     let device_fingerprint = DeviceTrustManager::generate_fingerprint(user_agent, ip_address, None);
-    
+
     println!("Trusting device...");
     device_trust
         .trust_device(
@@ -133,7 +146,7 @@ async fn main() {
     let is_required_trusted = session_manager
         .is_mfa_required(user_id, new_session_id, Some(&device_fingerprint))
         .await;
-    
+
     println!("New Session: {}", new_session_id);
     println!("Device: Trusted");
     println!("MFA Required: {}", is_required_trusted);
@@ -149,8 +162,11 @@ async fn main() {
         .mark_trusted_device(new_session_id, user_id, &device_fingerprint)
         .await
         .unwrap();
-    
-    let trusted_session = session_manager.get_session_state(new_session_id).await.unwrap();
+
+    let trusted_session = session_manager
+        .get_session_state(new_session_id)
+        .await
+        .unwrap();
     println!("Session State:");
     println!("  - MFA Verified: {}", trusted_session.mfa_verified);
     println!("  - Method: {:?}", trusted_session.method);
@@ -167,13 +183,16 @@ async fn main() {
         .create_challenge(user_id, vec![MfaMethod::Totp])
         .await
         .unwrap();
-    
-    println!("Testing failed attempts (max: {})...", fail_challenge.max_attempts);
+
+    println!(
+        "Testing failed attempts (max: {})...",
+        fail_challenge.max_attempts
+    );
     for i in 1..=fail_challenge.max_attempts {
         let result = session_manager
             .record_failed_attempt(&fail_challenge.challenge_id)
             .await;
-        
+
         if i < fail_challenge.max_attempts {
             if result.is_ok() {
                 println!("  Attempt {}: Recorded", i);
@@ -182,7 +201,10 @@ async fn main() {
             }
         } else {
             if result.is_err() {
-                println!("  Attempt {}: [OK] Correctly blocked (too many attempts)", i);
+                println!(
+                    "  Attempt {}: [OK] Correctly blocked (too many attempts)",
+                    i
+                );
             } else {
                 println!("  Attempt {}: [FAIL] Should be blocked", i);
             }
@@ -200,12 +222,15 @@ async fn main() {
         session_validity_seconds: 0,
     };
     let strict_manager = SessionMfaManager::new(strict_config.clone(), Some(device_trust.clone()));
-    
-    println!("Configuration: require_for_all_sessions = {}", strict_config.require_for_all_sessions);
+
+    println!(
+        "Configuration: require_for_all_sessions = {}",
+        strict_config.require_for_all_sessions
+    );
     let is_required_strict = strict_manager
         .is_mfa_required(user_id, "session_003", Some(&device_fingerprint))
         .await;
-    
+
     println!("Device: Trusted");
     println!("MFA Required: {}", is_required_strict);
     if is_required_strict {
@@ -224,16 +249,16 @@ async fn main() {
         session_validity_seconds: 0,
     };
     let expiry_manager = SessionMfaManager::new(expiry_config, None);
-    
+
     let expiry_challenge = expiry_manager
         .create_challenge(user_id, vec![MfaMethod::Totp])
         .await
         .unwrap();
-    
+
     println!("Challenge created with 2 second expiration");
     println!("Waiting 3 seconds...");
     tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
-    
+
     let result = expiry_manager
         .verify_session_mfa(
             "session_004",
@@ -243,7 +268,7 @@ async fn main() {
             None,
         )
         .await;
-    
+
     if result.is_err() {
         println!("[OK] Expired challenge correctly rejected\n");
     } else {
@@ -254,9 +279,9 @@ async fn main() {
     println!("--- Test 11: Cleanup Expired Challenges ---");
     let before_cleanup = expiry_manager.active_challenges_count().await;
     println!("Active challenges before cleanup: {}", before_cleanup);
-    
+
     expiry_manager.cleanup_expired_challenges().await;
-    
+
     let after_cleanup = expiry_manager.active_challenges_count().await;
     println!("Active challenges after cleanup: {}", after_cleanup);
     if after_cleanup < before_cleanup {
@@ -275,12 +300,12 @@ async fn main() {
         session_validity_seconds: 2, // 2 seconds
     };
     let validity_manager = SessionMfaManager::new(validity_config, None);
-    
+
     let validity_challenge = validity_manager
         .create_challenge(user_id, vec![MfaMethod::Totp])
         .await
         .unwrap();
-    
+
     validity_manager
         .verify_session_mfa(
             "session_005",
@@ -291,16 +316,16 @@ async fn main() {
         )
         .await
         .unwrap();
-    
+
     println!("Session verified with 2 second validity");
     let is_required_valid = validity_manager
         .is_mfa_required(user_id, "session_005", None)
         .await;
     println!("MFA Required (immediately): {}", is_required_valid);
-    
+
     println!("Waiting 3 seconds for validity to expire...");
     tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
-    
+
     let is_required_expired = validity_manager
         .is_mfa_required(user_id, "session_005", None)
         .await;
@@ -315,7 +340,7 @@ async fn main() {
     println!("--- Test 13: Clear Session ---");
     println!("Clearing session: {}", session_id);
     session_manager.clear_session(session_id).await;
-    
+
     let cleared_state = session_manager.get_session_state(session_id).await;
     if cleared_state.is_none() {
         println!("[OK] Session cleared successfully\n");
@@ -330,7 +355,7 @@ async fn main() {
     let active_sessions = session_manager.active_sessions_count().await;
     let active_challenges = session_manager.active_challenges_count().await;
     let trusted_devices = device_trust.total_trusted_devices().await;
-    
+
     println!("Active Sessions: {}", active_sessions);
     println!("Active Challenges: {}", active_challenges);
     println!("Trusted Devices: {}", trusted_devices);

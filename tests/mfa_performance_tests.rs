@@ -141,10 +141,7 @@ mod performance_tests {
         let duration = start.elapsed();
         let avg = duration.as_micros() / iterations;
 
-        println!(
-            "Average TOTP generation (100 iterations): {} μs",
-            avg
-        );
+        println!("Average TOTP generation (100 iterations): {} μs", avg);
         assert!(
             avg < 50000, // 50ms in microseconds
             "Average TOTP generation took {} μs, expected < 50000 μs",

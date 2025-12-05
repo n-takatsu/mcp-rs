@@ -21,8 +21,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         length: 12,
         use_separators: true,
     };
-    println!("Configuration: {} codes, {} characters each", config.count, config.length);
-    println!("Separators: {}\n", if config.use_separators { "enabled" } else { "disabled" });
+    println!(
+        "Configuration: {} codes, {} characters each",
+        config.count, config.length
+    );
+    println!(
+        "Separators: {}\n",
+        if config.use_separators {
+            "enabled"
+        } else {
+            "disabled"
+        }
+    );
 
     // Step 2: Create manager
     println!("Step 2: Create backup code manager");
@@ -51,7 +61,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Step 5: Check remaining codes");
     let remaining = manager.remaining_count(&hashed_codes);
     println!("Remaining codes: {}/{}", remaining, config.count);
-    println!("Should regenerate: {}\n", manager.should_regenerate(&hashed_codes));
+    println!(
+        "Should regenerate: {}\n",
+        manager.should_regenerate(&hashed_codes)
+    );
 
     // Step 6: Simulate user login with backup code
     println!("Step 6: Simulate user login with backup code");
@@ -74,7 +87,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let remaining = manager.remaining_count(&hashed_codes);
     println!("Remaining codes: {}/{}", remaining, config.count);
     println!("Code 1 used at: {:?}", hashed_codes[0].used_at);
-    println!("Should regenerate: {}\n", manager.should_regenerate(&hashed_codes));
+    println!(
+        "Should regenerate: {}\n",
+        manager.should_regenerate(&hashed_codes)
+    );
 
     // Step 8: Try to reuse the same code
     println!("Step 8: Try to reuse the same code");
@@ -92,7 +108,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Step 9: Test code normalization");
     let code_with_sep = &plaintext_codes[1];
     let code_without_sep = code_with_sep.replace('-', "");
-    
+
     println!("Original code: {}", code_with_sep);
     println!("Without separators: {}", code_without_sep);
     println!("User enters: {}", code_without_sep);
@@ -110,7 +126,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Step 10: Use codes until regeneration warning
     println!("Step 10: Use codes until regeneration warning");
     let mut used_count = 2; // Already used 2 codes
-    
+
     while !manager.should_regenerate(&hashed_codes) && used_count < plaintext_codes.len() {
         if let Ok(_) = manager.verify(&plaintext_codes[used_count], &mut hashed_codes) {
             used_count += 1;
@@ -119,20 +135,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    println!("\n[WARNING] Only {} codes remaining!", manager.remaining_count(&hashed_codes));
+    println!(
+        "\n[WARNING] Only {} codes remaining!",
+        manager.remaining_count(&hashed_codes)
+    );
     println!("    User should regenerate backup codes\n");
 
     // Step 11: Generate new backup codes
     println!("Step 11: Regenerate backup codes");
     let (new_plaintext, new_hashed) = manager.generate()?;
     println!("[OK] Generated {} new backup codes", new_plaintext.len());
-    println!("Remaining: {}/{}\n", manager.remaining_count(&new_hashed), config.count);
+    println!(
+        "Remaining: {}/{}\n",
+        manager.remaining_count(&new_hashed),
+        config.count
+    );
 
     // Step 12: Test invalid code
     println!("Step 12: Test invalid code");
     let invalid_code = "INVALID-CODE-1234";
     println!("User enters: {}", invalid_code);
-    
+
     let mut test_hashed = new_hashed.clone();
     match manager.verify(invalid_code, &mut test_hashed) {
         Ok(_) => {
@@ -150,7 +173,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ..config
     };
     let disabled_manager = BackupCodeManager::new(disabled_config);
-    
+
     match disabled_manager.generate() {
         Ok(_) => {
             println!("[FAIL] ERROR: Disabled manager generated codes (should not happen!)\n");

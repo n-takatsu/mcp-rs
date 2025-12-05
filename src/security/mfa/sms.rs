@@ -138,9 +138,7 @@ impl SmsAuthenticator {
         let mut codes = self.codes.write().await;
 
         // Get the stored code
-        let stored_code = codes
-            .get_mut(phone_number)
-            .ok_or(MfaError::InvalidCode)?;
+        let stored_code = codes.get_mut(phone_number).ok_or(MfaError::InvalidCode)?;
 
         // Check if already used
         if stored_code.used {
@@ -209,7 +207,11 @@ impl SmsAuthenticator {
             ));
         }
 
-        let digits: String = phone.chars().skip(1).filter(|c| c.is_ascii_digit()).collect();
+        let digits: String = phone
+            .chars()
+            .skip(1)
+            .filter(|c| c.is_ascii_digit())
+            .collect();
 
         if digits.len() < 7 || digits.len() > 15 {
             return Err(MfaError::ConfigError(
@@ -225,18 +227,33 @@ impl SmsAuthenticator {
         match &self.config.provider {
             SmsProviderConfig::Mock => {
                 // Mock provider: just log to console
-                println!("[SMS Mock] Sending to {}: Your verification code is {}", phone_number, code);
+                println!(
+                    "[SMS Mock] Sending to {}: Your verification code is {}",
+                    phone_number, code
+                );
                 Ok(())
             }
-            SmsProviderConfig::Twilio { account_sid, auth_token, from_number } => {
+            SmsProviderConfig::Twilio {
+                account_sid,
+                auth_token,
+                from_number,
+            } => {
                 self.send_via_twilio(phone_number, code, account_sid, auth_token, from_number)
                     .await
             }
-            SmsProviderConfig::AwsSns { region, access_key_id, secret_access_key } => {
+            SmsProviderConfig::AwsSns {
+                region,
+                access_key_id,
+                secret_access_key,
+            } => {
                 self.send_via_aws_sns(phone_number, code, region, access_key_id, secret_access_key)
                     .await
             }
-            SmsProviderConfig::Custom { endpoint, api_key, method } => {
+            SmsProviderConfig::Custom {
+                endpoint,
+                api_key,
+                method,
+            } => {
                 self.send_via_custom(phone_number, code, endpoint, api_key, method)
                     .await
             }
@@ -448,7 +465,7 @@ mod tests {
         let authenticator = SmsAuthenticator::new(config);
 
         let phone = "+1234567890";
-        
+
         // Send should fail when disabled
         let result = authenticator.send_code(phone).await;
         assert!(result.is_err());

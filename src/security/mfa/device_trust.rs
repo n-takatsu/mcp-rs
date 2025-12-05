@@ -87,7 +87,7 @@ impl DeviceTrustManager {
         }
 
         let devices = self.devices.read().await;
-        
+
         if let Some(user_devices) = devices.get(user_id) {
             if let Some(device) = user_devices.get(device_id) {
                 if !device.is_trusted {
@@ -100,7 +100,7 @@ impl DeviceTrustManager {
                         .duration_since(std::time::UNIX_EPOCH)
                         .unwrap_or_default()
                         .as_secs();
-                    
+
                     let age = now - device.trusted_at;
                     if age > self.config.token_validity_seconds {
                         return false; // Expired
@@ -133,7 +133,9 @@ impl DeviceTrustManager {
             .as_secs();
 
         let mut devices = self.devices.write().await;
-        let user_devices = devices.entry(user_id.to_string()).or_insert_with(HashMap::new);
+        let user_devices = devices
+            .entry(user_id.to_string())
+            .or_insert_with(HashMap::new);
 
         // Check max devices limit
         if user_devices.len() >= self.config.max_devices_per_user
@@ -160,14 +162,18 @@ impl DeviceTrustManager {
     }
 
     /// Update last used timestamp for a device
-    pub async fn update_device_activity(&self, user_id: &str, device_id: &str) -> Result<(), MfaError> {
+    pub async fn update_device_activity(
+        &self,
+        user_id: &str,
+        device_id: &str,
+    ) -> Result<(), MfaError> {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_err(|e| MfaError::ConfigError(e.to_string()))?
             .as_secs();
 
         let mut devices = self.devices.write().await;
-        
+
         if let Some(user_devices) = devices.get_mut(user_id) {
             if let Some(device) = user_devices.get_mut(device_id) {
                 device.last_used_at = now;
@@ -181,7 +187,7 @@ impl DeviceTrustManager {
     /// Revoke trust for a specific device
     pub async fn revoke_device(&self, user_id: &str, device_id: &str) -> Result<(), MfaError> {
         let mut devices = self.devices.write().await;
-        
+
         if let Some(user_devices) = devices.get_mut(user_id) {
             if let Some(device) = user_devices.get_mut(device_id) {
                 device.is_trusted = false;
@@ -195,7 +201,7 @@ impl DeviceTrustManager {
     /// Remove a device completely
     pub async fn remove_device(&self, user_id: &str, device_id: &str) -> Result<(), MfaError> {
         let mut devices = self.devices.write().await;
-        
+
         if let Some(user_devices) = devices.get_mut(user_id) {
             user_devices.remove(device_id);
             return Ok(());
@@ -207,7 +213,7 @@ impl DeviceTrustManager {
     /// Get all trusted devices for a user
     pub async fn get_user_devices(&self, user_id: &str) -> Vec<DeviceInfo> {
         let devices = self.devices.read().await;
-        
+
         if let Some(user_devices) = devices.get(user_id) {
             user_devices.values().cloned().collect()
         } else {
@@ -227,7 +233,7 @@ impl DeviceTrustManager {
             .as_secs();
 
         let mut devices = self.devices.write().await;
-        
+
         for user_devices in devices.values_mut() {
             user_devices.retain(|_, device| {
                 let age = now - device.trusted_at;
@@ -242,7 +248,10 @@ impl DeviceTrustManager {
     /// Get total count of trusted devices across all users
     pub async fn total_trusted_devices(&self) -> usize {
         let devices = self.devices.read().await;
-        devices.values().map(|user_devices| user_devices.len()).sum()
+        devices
+            .values()
+            .map(|user_devices| user_devices.len())
+            .sum()
     }
 
     /// Get configuration
@@ -257,21 +266,9 @@ mod tests {
 
     #[test]
     fn test_device_fingerprint_generation() {
-        let fp1 = DeviceTrustManager::generate_fingerprint(
-            "Mozilla/5.0",
-            "192.168.1.1",
-            None,
-        );
-        let fp2 = DeviceTrustManager::generate_fingerprint(
-            "Mozilla/5.0",
-            "192.168.1.1",
-            None,
-        );
-        let fp3 = DeviceTrustManager::generate_fingerprint(
-            "Mozilla/5.0",
-            "192.168.1.2",
-            None,
-        );
+        let fp1 = DeviceTrustManager::generate_fingerprint("Mozilla/5.0", "192.168.1.1", None);
+        let fp2 = DeviceTrustManager::generate_fingerprint("Mozilla/5.0", "192.168.1.1", None);
+        let fp3 = DeviceTrustManager::generate_fingerprint("Mozilla/5.0", "192.168.1.2", None);
 
         assert_eq!(fp1, fp2); // Same inputs = same fingerprint
         assert_ne!(fp1, fp3); // Different IP = different fingerprint
@@ -291,7 +288,13 @@ mod tests {
 
         // Trust the device
         manager
-            .trust_device(user_id, device_id, "Mozilla/5.0", "192.168.1.1", "My Laptop")
+            .trust_device(
+                user_id,
+                device_id,
+                "Mozilla/5.0",
+                "192.168.1.1",
+                "My Laptop",
+            )
             .await
             .unwrap();
 
@@ -312,7 +315,7 @@ mod tests {
             .trust_device(user_id, device_id, "Mozilla/5.0", "192.168.1.1", "Device")
             .await
             .unwrap();
-        
+
         assert!(manager.is_device_trusted(user_id, device_id).await);
 
         manager.revoke_device(user_id, device_id).await.unwrap();
@@ -381,7 +384,7 @@ mod tests {
             .trust_device(user_id, "device1", "UA1", "IP1", "Device 1")
             .await
             .unwrap();
-        
+
         manager
             .trust_device(user_id, "device2", "UA2", "IP2", "Device 2")
             .await
@@ -457,7 +460,10 @@ mod tests {
 
         tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
-        manager.update_device_activity(user_id, device_id).await.unwrap();
+        manager
+            .update_device_activity(user_id, device_id)
+            .await
+            .unwrap();
 
         let devices_after = manager.get_user_devices(user_id).await;
         let last_used_after = devices_after[0].last_used_at;

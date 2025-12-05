@@ -145,9 +145,7 @@ impl BackupCodeManager {
     /// Generate a single backup code
     fn generate_code(&self) -> String {
         let mut rng = thread_rng();
-        let chars: Vec<char> = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
-            .chars()
-            .collect();
+        let chars: Vec<char> = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789".chars().collect();
 
         let code: String = (0..self.config.length)
             .map(|_| chars[rng.gen_range(0..chars.len())])
@@ -279,12 +277,12 @@ mod tests {
 
         // Generate new codes for second test
         let (plaintext2, mut hashed2) = manager.generate().unwrap();
-        
+
         // Try to use code without separators on a different set
         let result2 = manager.verify(&plaintext2[0].replace('-', ""), &mut hashed2);
         // This should succeed because it's a valid code from hashed2
         assert!(result2.is_ok());
-        
+
         // Try to use an invalid code
         let result3 = manager.verify("INVALID-CODE", &mut hashed2);
         // This should fail

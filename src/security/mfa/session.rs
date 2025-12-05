@@ -133,13 +133,13 @@ impl SessionMfaManager {
                 if self.config.session_validity_seconds == 0 {
                     return false; // Valid for entire session
                 }
-                
+
                 if let Some(verified_at) = session.verified_at {
                     let now = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .unwrap()
                         .as_secs();
-                    
+
                     if now - verified_at < self.config.session_validity_seconds {
                         return false; // Still within validity period
                     }
@@ -385,9 +385,7 @@ mod tests {
         let config = SessionMfaConfig::default();
         let manager = SessionMfaManager::new(config, None);
 
-        let required = manager
-            .is_mfa_required("user123", "session123", None)
-            .await;
+        let required = manager.is_mfa_required("user123", "session123", None).await;
         assert!(required);
     }
 
@@ -412,9 +410,7 @@ mod tests {
             .await
             .unwrap();
 
-        let required = manager
-            .is_mfa_required("user123", "session123", None)
-            .await;
+        let required = manager.is_mfa_required("user123", "session123", None).await;
         assert!(!required);
     }
 
@@ -554,9 +550,7 @@ mod tests {
         }
 
         // Third attempt should fail with TooManyAttempts
-        let result = manager
-            .record_failed_attempt(&challenge.challenge_id)
-            .await;
+        let result = manager.record_failed_attempt(&challenge.challenge_id).await;
         assert!(matches!(result, Err(MfaError::TooManyAttempts)));
     }
 
@@ -679,18 +673,14 @@ mod tests {
             .unwrap();
 
         // Initially MFA not required
-        let required = manager
-            .is_mfa_required("user123", "session123", None)
-            .await;
+        let required = manager.is_mfa_required("user123", "session123", None).await;
         assert!(!required);
 
         // Wait for session validity to expire
         tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
 
         // MFA should be required again
-        let required = manager
-            .is_mfa_required("user123", "session123", None)
-            .await;
+        let required = manager.is_mfa_required("user123", "session123", None).await;
         assert!(required);
     }
 
@@ -702,9 +692,7 @@ mod tests {
         let manager = SessionMfaManager::new(config, None);
 
         // MFA should not be required when disabled
-        let required = manager
-            .is_mfa_required("user123", "session123", None)
-            .await;
+        let required = manager.is_mfa_required("user123", "session123", None).await;
         assert!(!required);
 
         // Creating challenge should fail
