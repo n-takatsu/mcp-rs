@@ -279,7 +279,7 @@ mod tests {
         assert!(uri.starts_with("otpauth://totp/"));
         assert!(uri.contains("TestIssuer"));
         assert!(uri.contains("user@example.com"));
-        assert!(uri.contains(&secret.encoded()));
+        assert!(uri.contains(secret.encoded()));
     }
 
     #[test]

@@ -416,8 +416,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_mfa_not_required_for_trusted_device() {
-        let mut config = SessionMfaConfig::default();
-        config.require_for_all_sessions = false;
+        let config = SessionMfaConfig {
+            require_for_all_sessions: false,
+            ..Default::default()
+        };
 
         let device_config = DeviceTrustConfig::default();
         let device_trust = Arc::new(DeviceTrustManager::new(device_config));
@@ -439,8 +441,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_mfa_required_for_all_sessions() {
-        let mut config = SessionMfaConfig::default();
-        config.require_for_all_sessions = true;
+        let config = SessionMfaConfig {
+            require_for_all_sessions: true,
+            ..Default::default()
+        };
 
         let device_config = DeviceTrustConfig::default();
         let device_trust = Arc::new(DeviceTrustManager::new(device_config));
@@ -602,8 +606,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_cleanup_expired_challenges() {
-        let mut config = SessionMfaConfig::default();
-        config.challenge_expiration_seconds = 1; // 1 second
+        let config = SessionMfaConfig {
+            challenge_expiration_seconds: 1, // 1 second
+            ..Default::default()
+        };
 
         let manager = SessionMfaManager::new(config, None);
 
@@ -624,8 +630,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_challenge_expiration() {
-        let mut config = SessionMfaConfig::default();
-        config.challenge_expiration_seconds = 1;
+        let config = SessionMfaConfig {
+            challenge_expiration_seconds: 1,
+            ..Default::default()
+        };
 
         let manager = SessionMfaManager::new(config, None);
 
@@ -651,8 +659,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_session_validity() {
-        let mut config = SessionMfaConfig::default();
-        config.session_validity_seconds = 1; // 1 second
+        let config = SessionMfaConfig {
+            session_validity_seconds: 1, // 1 second
+            ..Default::default()
+        };
 
         let manager = SessionMfaManager::new(config, None);
 
@@ -686,8 +696,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_disabled_session_mfa() {
-        let mut config = SessionMfaConfig::default();
-        config.enabled = false;
+        let config = SessionMfaConfig {
+            enabled: false,
+            ..Default::default()
+        };
 
         let manager = SessionMfaManager::new(config, None);
 
