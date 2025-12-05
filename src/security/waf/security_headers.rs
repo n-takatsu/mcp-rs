@@ -51,9 +51,7 @@ impl Default for SecurityHeadersConfig {
             x_frame_options: Some("SAMEORIGIN".to_string()),
             x_xss_protection: true,
             referrer_policy: Some("strict-origin-when-cross-origin".to_string()),
-            permissions_policy: Some(
-                "geolocation=(), microphone=(), camera=()".to_string(),
-            ),
+            permissions_policy: Some("geolocation=(), microphone=(), camera=()".to_string()),
         }
     }
 }
@@ -82,18 +80,12 @@ impl SecurityHeaderManager {
             if self.config.hsts.preload {
                 hsts_value.push_str("; preload");
             }
-            headers.push((
-                "Strict-Transport-Security".to_string(),
-                hsts_value,
-            ));
+            headers.push(("Strict-Transport-Security".to_string(), hsts_value));
         }
 
         // X-Content-Type-Options
         if self.config.x_content_type_options {
-            headers.push((
-                "X-Content-Type-Options".to_string(),
-                "nosniff".to_string(),
-            ));
+            headers.push(("X-Content-Type-Options".to_string(), "nosniff".to_string()));
         }
 
         // X-Frame-Options
@@ -103,10 +95,7 @@ impl SecurityHeaderManager {
 
         // X-XSS-Protection
         if self.config.x_xss_protection {
-            headers.push((
-                "X-XSS-Protection".to_string(),
-                "1; mode=block".to_string(),
-            ));
+            headers.push(("X-XSS-Protection".to_string(), "1; mode=block".to_string()));
         }
 
         // Referrer-Policy
@@ -193,9 +182,7 @@ mod tests {
         assert!(headers
             .iter()
             .any(|(k, _)| k == "Strict-Transport-Security"));
-        assert!(headers
-            .iter()
-            .any(|(k, _)| k == "X-Content-Type-Options"));
+        assert!(headers.iter().any(|(k, _)| k == "X-Content-Type-Options"));
         assert!(headers.iter().any(|(k, _)| k == "X-Frame-Options"));
     }
 
@@ -322,10 +309,7 @@ mod tests {
         let manager = SecurityHeaderManager::new(config);
 
         let header = manager.get_referrer_policy_header();
-        assert_eq!(
-            header,
-            Some("strict-origin-when-cross-origin".to_string())
-        );
+        assert_eq!(header, Some("strict-origin-when-cross-origin".to_string()));
     }
 
     #[test]

@@ -103,7 +103,11 @@ async fn demo_csp(csp_generator: &CspGenerator) -> Result<(), Box<dyn std::error
     let csp_header_with_nonce = csp_with_nonce.build_header(Some(&nonce));
     println!("\nCSP Header (with nonce):");
     println!("  Nonce: {}", nonce);
-    println!("  {}: {}", csp_with_nonce.header_name(), csp_header_with_nonce);
+    println!(
+        "  {}: {}",
+        csp_with_nonce.header_name(),
+        csp_header_with_nonce
+    );
 
     Ok(())
 }
@@ -136,12 +140,12 @@ async fn demo_request_validation(
     println!("\nURL length validation:");
     let short_url = "https://example.com/api/v1/users";
     let long_url = format!("https://example.com/{}", "x".repeat(3000));
-    
+
     match validator.validate_url_length(short_url) {
         Ok(_) => println!("  ✓ Short URL allowed"),
         Err(e) => println!("  ✗ Short URL rejected: {}", e),
     }
-    
+
     match validator.validate_url_length(&long_url) {
         Ok(_) => println!("  ✓ Long URL allowed"),
         Err(e) => println!("  ✗ Long URL correctly rejected: {}", e),
@@ -199,27 +203,27 @@ async fn demo_security_headers(
     }
 
     println!("\nIndividual header checks:");
-    
+
     if let Some(hsts) = header_manager.get_hsts_header() {
         println!("  HSTS: {}", hsts);
     }
-    
+
     if let Some(cto) = header_manager.get_x_content_type_options_header() {
         println!("  X-Content-Type-Options: {}", cto);
     }
-    
+
     if let Some(xfo) = header_manager.get_x_frame_options_header() {
         println!("  X-Frame-Options: {}", xfo);
     }
-    
+
     if let Some(xxp) = header_manager.get_x_xss_protection_header() {
         println!("  X-XSS-Protection: {}", xxp);
     }
-    
+
     if let Some(rp) = header_manager.get_referrer_policy_header() {
         println!("  Referrer-Policy: {}", rp);
     }
-    
+
     if let Some(pp) = header_manager.get_permissions_policy_header() {
         println!("  Permissions-Policy: {}", pp);
     }

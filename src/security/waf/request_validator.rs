@@ -234,7 +234,10 @@ impl RequestValidator {
 
         // Check MIME type
         if !self.upload_config.allowed_mime_types.is_empty()
-            && !self.upload_config.allowed_mime_types.contains(&mime_type.to_string())
+            && !self
+                .upload_config
+                .allowed_mime_types
+                .contains(&mime_type.to_string())
         {
             return Err(super::WafError::FileUploadRejected(format!(
                 "MIME type '{}' not allowed",

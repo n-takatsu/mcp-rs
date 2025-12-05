@@ -23,9 +23,9 @@ pub use validation::{
     InputValidator, ValidationResult, ValidationRule, ValidationRuleType, ValidationStats,
 };
 pub use waf::{
-    CorsConfig, CorsHandler, CspConfig, CspGenerator, CspViolation, FileUploadConfig,
-    HstsConfig, RequestLimitsConfig, RequestValidator, SecurityHeaderManager,
-    SecurityHeadersConfig, WafConfig, WafError, WebApplicationFirewall,
+    CorsConfig, CorsHandler, CspConfig, CspGenerator, CspViolation, FileUploadConfig, HstsConfig,
+    RequestLimitsConfig, RequestValidator, SecurityHeaderManager, SecurityHeadersConfig, WafConfig,
+    WafError, WebApplicationFirewall,
 };
 pub use xss_protection::{
     XssAttackType, XssDetectionResult, XssProtectionConfig, XssProtector, XssStatistics,

@@ -21,10 +21,7 @@ pub struct CspConfig {
 impl Default for CspConfig {
     fn default() -> Self {
         let mut directives = HashMap::new();
-        directives.insert(
-            "default-src".to_string(),
-            vec!["'self'".to_string()],
-        );
+        directives.insert("default-src".to_string(), vec!["'self'".to_string()]);
         directives.insert(
             "script-src".to_string(),
             vec!["'self'".to_string(), "'unsafe-inline'".to_string()],
@@ -58,9 +55,7 @@ impl CspGenerator {
     /// Generate a cryptographically secure nonce
     pub fn generate_nonce(&self) -> String {
         use rand::Rng;
-        let random_bytes: Vec<u8> = (0..16)
-            .map(|_| rand::thread_rng().gen::<u8>())
-            .collect();
+        let random_bytes: Vec<u8> = (0..16).map(|_| rand::thread_rng().gen::<u8>()).collect();
         base64::encode(&random_bytes)
     }
 
@@ -107,7 +102,10 @@ impl CspGenerator {
     }
 
     /// Parse CSP violation report
-    pub fn parse_violation_report(&self, report_json: &str) -> Result<CspViolation, serde_json::Error> {
+    pub fn parse_violation_report(
+        &self,
+        report_json: &str,
+    ) -> Result<CspViolation, serde_json::Error> {
         serde_json::from_str(report_json)
     }
 
@@ -181,17 +179,17 @@ mod tests {
     #[test]
     fn test_csp_custom_directives() {
         let mut directives = HashMap::new();
-        directives.insert(
-            "default-src".to_string(),
-            vec!["'self'".to_string()],
-        );
+        directives.insert("default-src".to_string(), vec!["'self'".to_string()]);
         directives.insert(
             "img-src".to_string(),
             vec!["'self'".to_string(), "https://cdn.example.com".to_string()],
         );
         directives.insert(
             "font-src".to_string(),
-            vec!["'self'".to_string(), "https://fonts.googleapis.com".to_string()],
+            vec![
+                "'self'".to_string(),
+                "https://fonts.googleapis.com".to_string(),
+            ],
         );
 
         let config = CspConfig {

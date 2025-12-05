@@ -34,10 +34,7 @@ impl Default for CorsConfig {
                 "DELETE".to_string(),
                 "OPTIONS".to_string(),
             ],
-            allowed_headers: vec![
-                "Content-Type".to_string(),
-                "Authorization".to_string(),
-            ],
+            allowed_headers: vec!["Content-Type".to_string(), "Authorization".to_string()],
             exposed_headers: vec![],
             allow_credentials: false,
             max_age: 86400, // 24 hours
@@ -95,7 +92,7 @@ impl CorsHandler {
                     .strip_prefix("https://")
                     .or_else(|| origin.strip_prefix("http://"))
                     .unwrap_or(origin);
-                
+
                 // Must have at least one subdomain (e.g., "app.example.com" matches "*.example.com", but "example.com" does not)
                 if hostname.ends_with(domain) && hostname.len() > domain.len() {
                     let prefix = &hostname[..hostname.len() - domain.len()];
@@ -147,10 +144,7 @@ impl CorsHandler {
 
         // Access-Control-Allow-Origin
         if self.allowed_origins_set.contains("*") && !self.config.allow_credentials {
-            headers.push((
-                "Access-Control-Allow-Origin".to_string(),
-                "*".to_string(),
-            ));
+            headers.push(("Access-Control-Allow-Origin".to_string(), "*".to_string()));
         } else {
             headers.push((
                 "Access-Control-Allow-Origin".to_string(),
@@ -231,9 +225,7 @@ mod tests {
         let handler = CorsHandler::new(config);
 
         assert!(handler.validate_origin("https://example.com").is_ok());
-        assert!(handler
-            .validate_origin("https://malicious.com")
-            .is_err());
+        assert!(handler.validate_origin("https://malicious.com").is_err());
     }
 
     #[test]
@@ -248,9 +240,7 @@ mod tests {
         assert!(handler.validate_origin("https://app.example.com").is_ok());
         assert!(handler.validate_origin("https://api.example.com").is_ok());
         assert!(handler.validate_origin("https://example.com").is_err());
-        assert!(handler
-            .validate_origin("https://malicious.com")
-            .is_err());
+        assert!(handler.validate_origin("https://malicious.com").is_err());
     }
 
     #[test]
