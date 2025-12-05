@@ -1,0 +1,22 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mcp-rs-config
+  namespace: mcp-rs
+data:
+  RUST_LOG: "info"
+  MCP_SERVER_PORT: "3000"
+  MCP_CONFIG_PATH: "/app/configs/production/main.toml"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: mcp-rs-secrets
+  namespace: mcp-rs
+type: Opaque
+stringData:
+  POSTGRES_PASSWORD: "changeme"
+  MYSQL_ROOT_PASSWORD: "changeme"
+  DATABASE_URL: "postgresql://postgres:changeme@postgres:5432/mcp_rs"
+  MYSQL_URL: "mysql://root:changeme@mysql:3306/mcp_rs"
+  REDIS_URL: "redis://redis:6379"
