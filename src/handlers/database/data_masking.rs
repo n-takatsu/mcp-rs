@@ -167,21 +167,19 @@ impl DataMaskingEngine {
 
                 if let Some(rule) = rules.first() {
                     // 最も優先度の高いルールを適用
-                    if let Some(value) = map.get(&key) {
-                        if let JsonValue::String(s) = value {
-                            let masked = self.mask_value(s, &rule.masking_type, context).await?;
-                            map.insert(key.clone(), JsonValue::String(masked));
+                    if let Some(JsonValue::String(s)) = map.get(&key) {
+                        let masked = self.mask_value(s, &rule.masking_type, context).await?;
+                        map.insert(key.clone(), JsonValue::String(masked));
 
-                            // 監査ログに記録
-                            self.log_masking(
-                                &key,
-                                &rule.masking_type,
-                                &rule.name,
-                                &context.roles,
-                                false,
-                            )
-                            .await;
-                        }
+                        // 監査ログに記録
+                        self.log_masking(
+                            &key,
+                            &rule.masking_type,
+                            &rule.name,
+                            &context.roles,
+                            false,
+                        )
+                        .await;
                     }
                 }
 
