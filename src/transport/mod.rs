@@ -134,6 +134,9 @@ pub enum TransportError {
 
     #[error("Buffer overflow: message too large")]
     BufferOverflow,
+
+    #[error("Unauthorized: {0}")]
+    Unauthorized(String),
 }
 
 impl From<crate::error::Error> for TransportError {
