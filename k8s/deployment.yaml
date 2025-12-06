@@ -1,0 +1,124 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mcp-rs
+  namespace: mcp-rs
+  labels:
+    app: mcp-rs
+    version: v1
+spec:
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: mcp-rs
+  template:
+    metadata:
+      labels:
+        app: mcp-rs
+        version: v1
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "3000"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: mcp-rs
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        fsGroup: 1001
+      containers:
+        - name: mcp-rs
+          image: ghcr.io/n-takatsu/mcp-rs:latest
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 3000
+              protocol: TCP
+            - name: websocket
+              containerPort: 8080
+              protocol: TCP
+            - name: websocket-tls
+              containerPort: 8443
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: mcp-rs-config
+            - secretRef:
+                name: mcp-rs-secrets
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "250m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          volumeMounts:
+            - name: config
+              mountPath: /app/configs
+              readOnly: true
+            - name: logs
+              mountPath: /var/log/mcp-rs
+            - name: certs
+              mountPath: /app/certs
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: mcp-rs-app-config
+        - name: logs
+          emptyDir: {}
+        - name: certs
+          secret:
+            secretName: mcp-rs-tls-certs
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mcp-rs
+  namespace: mcp-rs
+  labels:
+    app: mcp-rs
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http
+      protocol: TCP
+    - name: websocket
+      port: 8080
+      targetPort: websocket
+      protocol: TCP
+    - name: websocket-tls
+      port: 8443
+      targetPort: websocket-tls
+      protocol: TCP
+  selector:
+    app: mcp-rs
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: mcp-rs
+  namespace: mcp-rs

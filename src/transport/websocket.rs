@@ -3,12 +3,14 @@
 //! Provides WebSocket-based communication for MCP protocol with full
 //! bidirectional support, TLS/WSS, automatic reconnection, and heartbeat.
 
+use crate::security::AuditLogger;
 use crate::transport::{Transport, TransportError};
 use crate::types::{JsonRpcRequest, JsonRpcResponse};
 use async_trait::async_trait;
 use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::{TcpListener, TcpStream};
@@ -18,6 +20,33 @@ use tokio_tungstenite::{
     accept_async, connect_async, tungstenite::protocol::Message, MaybeTlsStream, WebSocketStream,
 };
 use tracing::{debug, error, info, warn};
+
+/// TLS configuration for WebSocket connections
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TlsConfig {
+    /// Path to certificate file (PEM format)
+    pub cert_path: Option<PathBuf>,
+    /// Path to private key file (PEM format)
+    pub key_path: Option<PathBuf>,
+    /// Path to CA certificate for client verification
+    pub ca_cert_path: Option<PathBuf>,
+    /// Whether to verify the server certificate (client mode)
+    pub verify_server: bool,
+    /// Accept invalid certificates (for testing only)
+    pub accept_invalid_certs: bool,
+}
+
+impl Default for TlsConfig {
+    fn default() -> Self {
+        Self {
+            cert_path: None,
+            key_path: None,
+            ca_cert_path: None,
+            verify_server: true,
+            accept_invalid_certs: false,
+        }
+    }
+}
 
 /// WebSocket transport configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -30,6 +59,8 @@ pub struct WebSocketConfig {
     pub timeout_seconds: Option<u64>,
     /// Enable TLS/WSS
     pub use_tls: bool,
+    /// TLS configuration (required if use_tls is true)
+    pub tls_config: Option<TlsConfig>,
     /// Heartbeat interval in seconds (0 to disable)
     pub heartbeat_interval: u64,
     /// Maximum reconnection attempts (0 for infinite)
@@ -49,6 +80,7 @@ impl Default for WebSocketConfig {
             server_mode: true,
             timeout_seconds: Some(30),
             use_tls: false,
+            tls_config: None,
             heartbeat_interval: 30,
             max_reconnect_attempts: 5,
             reconnect_delay: 5,
@@ -100,6 +132,8 @@ pub struct WebSocketTransport {
     bytes_sent: Arc<RwLock<u64>>,
     bytes_received: Arc<RwLock<u64>>,
     reconnect_count: Arc<RwLock<u32>>,
+    // Audit logger for security events
+    audit_logger: Option<Arc<AuditLogger>>,
 }
 
 impl WebSocketTransport {
@@ -123,7 +157,14 @@ impl WebSocketTransport {
             bytes_sent: Arc::new(RwLock::new(0)),
             bytes_received: Arc::new(RwLock::new(0)),
             reconnect_count: Arc::new(RwLock::new(0)),
+            audit_logger: None,
         })
+    }
+
+    /// Set audit logger for security event logging
+    pub fn with_audit_logger(mut self, audit_logger: Arc<AuditLogger>) -> Self {
+        self.audit_logger = Some(audit_logger);
+        self
     }
 
     /// Start WebSocket server
@@ -141,12 +182,16 @@ impl WebSocketTransport {
             TransportError::Internal(format!("Failed to bind WebSocket server: {}", e))
         })?;
 
-        info!("WebSocket server listening on: {}", addr);
+        info!(
+            "WebSocket server listening on: {} (TLS: {})",
+            addr, self.config.use_tls
+        );
 
         let server_connection = Arc::clone(&self.server_connection);
         let _incoming_tx = self.incoming_tx.clone();
         let state = Arc::clone(&self.state);
-        let _config = self.config.clone();
+        let config = self.config.clone();
+        let audit_logger = self.audit_logger.clone();
 
         // Accept first connection (simplified implementation)
         tokio::spawn(async move {
@@ -155,16 +200,34 @@ impl WebSocketTransport {
                     info!("WebSocket client connected from: {}", peer_addr);
                     *state.write().await = ConnectionState::Connecting;
 
-                    // Use accept_async_with_config or wrap stream properly
-                    match accept_async(MaybeTlsStream::Plain(stream)).await {
-                        Ok(ws_stream) => {
-                            info!("WebSocket handshake completed");
-                            *server_connection.write().await = Some(ws_stream);
-                            *state.write().await = ConnectionState::Connected;
+                    // Handle TLS if enabled
+                    if config.use_tls {
+                        // TLS server implementation
+                        match Self::accept_tls_connection(stream, peer_addr, &config, &audit_logger)
+                            .await
+                        {
+                            Ok(ws_stream) => {
+                                info!("WebSocket TLS handshake completed");
+                                *server_connection.write().await = Some(ws_stream);
+                                *state.write().await = ConnectionState::Connected;
+                            }
+                            Err(e) => {
+                                error!("WebSocket TLS handshake failed: {}", e);
+                                *state.write().await = ConnectionState::Disconnected;
+                            }
                         }
-                        Err(e) => {
-                            error!("WebSocket handshake failed: {}", e);
-                            *state.write().await = ConnectionState::Disconnected;
+                    } else {
+                        // Plain WebSocket
+                        match accept_async(MaybeTlsStream::Plain(stream)).await {
+                            Ok(ws_stream) => {
+                                info!("WebSocket handshake completed");
+                                *server_connection.write().await = Some(ws_stream);
+                                *state.write().await = ConnectionState::Connected;
+                            }
+                            Err(e) => {
+                                error!("WebSocket handshake failed: {}", e);
+                                *state.write().await = ConnectionState::Disconnected;
+                            }
                         }
                     }
                 }
@@ -177,32 +240,327 @@ impl WebSocketTransport {
         Ok(())
     }
 
+    /// Accept TLS connection (server mode)
+    async fn accept_tls_connection(
+        stream: TcpStream,
+        peer_addr: SocketAddr,
+        config: &WebSocketConfig,
+        audit_logger: &Option<Arc<AuditLogger>>,
+    ) -> Result<WsStream, TransportError> {
+        use native_tls::Identity;
+        use std::fs;
+        use tokio_native_tls::TlsAcceptor;
+
+        let tls_config = config.tls_config.as_ref().ok_or_else(|| {
+            TransportError::Configuration(
+                "TLS enabled but no TLS configuration provided".to_string(),
+            )
+        })?;
+
+        // Load certificate and private key
+        let cert_path = tls_config.cert_path.as_ref().ok_or_else(|| {
+            TransportError::Configuration("TLS certificate path not provided".to_string())
+        })?;
+
+        let key_path = tls_config.key_path.as_ref().ok_or_else(|| {
+            TransportError::Configuration("TLS private key path not provided".to_string())
+        })?;
+
+        // Log certificate loading attempt
+        if let Some(logger) = audit_logger {
+            use crate::security::{AuditCategory, AuditLevel, AuditLogEntry};
+
+            let entry = AuditLogEntry::new(
+                AuditLevel::Info,
+                AuditCategory::NetworkActivity,
+                "Loading TLS certificate for WebSocket server".to_string(),
+            )
+            .add_metadata("cert_path".to_string(), cert_path.display().to_string())
+            .add_metadata("peer_addr".to_string(), peer_addr.to_string());
+
+            let _ = logger.log(entry).await;
+        }
+
+        // Read certificate and key files
+        let cert = fs::read(cert_path).map_err(|e| {
+            TransportError::Configuration(format!("Failed to read certificate: {}", e))
+        })?;
+
+        let key = fs::read(key_path).map_err(|e| {
+            TransportError::Configuration(format!("Failed to read private key: {}", e))
+        })?;
+
+        // Create identity from certificate and key
+        let identity = Identity::from_pkcs8(&cert, &key).map_err(|e| {
+            if let Some(logger) = audit_logger {
+                use crate::security::{AuditCategory, AuditLevel, AuditLogEntry};
+                let entry = AuditLogEntry::new(
+                    AuditLevel::Error,
+                    AuditCategory::Error,
+                    format!("Failed to create TLS identity: {}", e),
+                )
+                .with_request_info(peer_addr.to_string(), String::new());
+
+                let logger_clone = Arc::clone(logger);
+                tokio::spawn(async move {
+                    let _ = logger_clone.log(entry).await;
+                });
+            }
+            TransportError::Configuration(format!("Failed to create identity: {}", e))
+        })?;
+
+        // Create TLS acceptor
+        let acceptor = native_tls::TlsAcceptor::builder(identity)
+            .build()
+            .map_err(|e| {
+                TransportError::Configuration(format!("Failed to build TLS acceptor: {}", e))
+            })?;
+
+        let acceptor = TlsAcceptor::from(acceptor);
+
+        // Accept TLS connection
+        let tls_stream = match acceptor.accept(stream).await {
+            Ok(stream) => {
+                // Log successful TLS handshake
+                if let Some(logger) = audit_logger {
+                    use crate::security::{AuditCategory, AuditLevel, AuditLogEntry};
+                    let entry = AuditLogEntry::new(
+                        AuditLevel::Info,
+                        AuditCategory::NetworkActivity,
+                        "TLS handshake successful for WebSocket connection".to_string(),
+                    )
+                    .with_request_info(peer_addr.to_string(), String::new());
+
+                    let _ = logger.log(entry).await;
+                }
+                stream
+            }
+            Err(e) => {
+                // Log failed TLS handshake as security attack
+                if let Some(logger) = audit_logger {
+                    use crate::security::{AuditCategory, AuditLevel, AuditLogEntry};
+                    let entry = AuditLogEntry::new(
+                        AuditLevel::Warning,
+                        AuditCategory::SecurityAttack,
+                        "TLS handshake failed - possible attack or misconfiguration".to_string(),
+                    )
+                    .with_request_info(peer_addr.to_string(), String::new())
+                    .add_metadata("error".to_string(), e.to_string());
+
+                    let _ = logger.log(entry).await;
+                }
+                return Err(TransportError::Internal(format!(
+                    "TLS accept failed: {}",
+                    e
+                )));
+            }
+        };
+
+        // Perform WebSocket handshake
+        let ws_stream = accept_async(MaybeTlsStream::NativeTls(tls_stream))
+            .await
+            .map_err(|e| TransportError::Internal(format!("WebSocket handshake failed: {}", e)))?;
+
+        Ok(ws_stream)
+    }
+
     /// Start WebSocket client
     async fn start_client(&self) -> Result<(), TransportError> {
         *self.state.write().await = ConnectionState::Connecting;
 
         let url = &self.config.url;
-        debug!("Connecting to WebSocket server: {}", url);
+        debug!(
+            "Connecting to WebSocket server: {} (TLS: {})",
+            url, self.config.use_tls
+        );
 
         let timeout_duration = Duration::from_secs(self.config.timeout_seconds.unwrap_or(30));
 
-        let connect_future = connect_async(url);
-        let ws_stream = timeout(timeout_duration, connect_future)
+        let ws_stream = if self.config.use_tls {
+            // TLS client connection
+            timeout(
+                timeout_duration,
+                Self::connect_tls(url, &self.config, &self.audit_logger),
+            )
             .await
             .map_err(|_| {
                 TransportError::Timeout(format!(
-                    "WebSocket connection timeout after {:?}",
+                    "WebSocket TLS connection timeout after {:?}",
                     timeout_duration
                 ))
             })?
-            .map_err(|e| TransportError::Internal(format!("WebSocket connect error: {}", e)))?
-            .0;
+            .map_err(|e| TransportError::Internal(format!("WebSocket TLS connect error: {}", e)))?
+        } else {
+            // Plain WebSocket connection
+            let connect_future = connect_async(url);
+            timeout(timeout_duration, connect_future)
+                .await
+                .map_err(|_| {
+                    TransportError::Timeout(format!(
+                        "WebSocket connection timeout after {:?}",
+                        timeout_duration
+                    ))
+                })?
+                .map_err(|e| TransportError::Internal(format!("WebSocket connect error: {}", e)))?
+                .0
+        };
 
         info!("WebSocket client connected to: {}", url);
         *self.client_connection.write().await = Some(ws_stream);
         *self.state.write().await = ConnectionState::Connected;
 
         Ok(())
+    }
+
+    /// Connect to TLS WebSocket server (client mode)
+    async fn connect_tls(
+        url: &str,
+        config: &WebSocketConfig,
+        audit_logger: &Option<Arc<AuditLogger>>,
+    ) -> Result<WsStream, TransportError> {
+        use native_tls::TlsConnector;
+        use std::fs;
+        use tokio_native_tls::TlsConnector as TokioTlsConnector;
+
+        let tls_config = config.tls_config.as_ref();
+
+        // Build TLS connector
+        let mut builder = TlsConnector::builder();
+
+        // Configure certificate verification
+        if let Some(tls_cfg) = tls_config {
+            if tls_cfg.accept_invalid_certs {
+                warn!("TLS certificate verification disabled - for testing only!");
+
+                // Log security warning for accepting invalid certificates
+                if let Some(logger) = audit_logger {
+                    use crate::security::{AuditCategory, AuditLevel, AuditLogEntry};
+                    let entry = AuditLogEntry::new(
+                        AuditLevel::Warning,
+                        AuditCategory::SecurityAttack,
+                        "WebSocket client configured to accept invalid TLS certificates - SECURITY RISK".to_string(),
+                    )
+                    .add_metadata("url".to_string(), url.to_string())
+                    .add_metadata("security_risk".to_string(), "high".to_string());
+
+                    let _ = logger.log(entry).await;
+                }
+
+                builder.danger_accept_invalid_certs(true);
+            }
+
+            if !tls_cfg.verify_server {
+                warn!("TLS server verification disabled");
+
+                // Log security warning for disabled server verification
+                if let Some(logger) = audit_logger {
+                    use crate::security::{AuditCategory, AuditLevel, AuditLogEntry};
+                    let entry = AuditLogEntry::new(
+                        AuditLevel::Warning,
+                        AuditCategory::SecurityAttack,
+                        "WebSocket client configured to skip hostname verification - SECURITY RISK"
+                            .to_string(),
+                    )
+                    .add_metadata("url".to_string(), url.to_string());
+
+                    let _ = logger.log(entry).await;
+                }
+
+                builder.danger_accept_invalid_hostnames(true);
+            }
+
+            // Add CA certificate if provided
+            if let Some(ca_path) = &tls_cfg.ca_cert_path {
+                if let Some(logger) = audit_logger {
+                    use crate::security::{AuditCategory, AuditLevel, AuditLogEntry};
+                    let entry = AuditLogEntry::new(
+                        AuditLevel::Info,
+                        AuditCategory::ConfigChange,
+                        "Loading custom CA certificate for WebSocket TLS".to_string(),
+                    )
+                    .add_metadata("ca_path".to_string(), ca_path.display().to_string());
+
+                    let _ = logger.log(entry).await;
+                }
+
+                let ca_cert = fs::read(ca_path).map_err(|e| {
+                    TransportError::Configuration(format!("Failed to read CA certificate: {}", e))
+                })?;
+
+                let ca_cert = native_tls::Certificate::from_pem(&ca_cert).map_err(|e| {
+                    TransportError::Configuration(format!("Failed to parse CA certificate: {}", e))
+                })?;
+
+                builder.add_root_certificate(ca_cert);
+            }
+        }
+
+        let connector = builder.build().map_err(|e| {
+            TransportError::Configuration(format!("Failed to build TLS connector: {}", e))
+        })?;
+
+        let connector = TokioTlsConnector::from(connector);
+
+        // Parse URL to extract host
+        let url_parsed = url::Url::parse(url)
+            .map_err(|e| TransportError::Configuration(format!("Invalid WebSocket URL: {}", e)))?;
+
+        let host = url_parsed
+            .host_str()
+            .ok_or_else(|| TransportError::Configuration("No host in WebSocket URL".to_string()))?;
+
+        // Connect via TLS
+        let stream = TcpStream::connect(format!("{}:{}", host, url_parsed.port().unwrap_or(443)))
+            .await
+            .map_err(|e| TransportError::Internal(format!("TCP connect failed: {}", e)))?;
+
+        let tls_stream = match connector.connect(host, stream).await {
+            Ok(stream) => {
+                // Log successful TLS connection
+                if let Some(logger) = audit_logger {
+                    use crate::security::{AuditCategory, AuditLevel, AuditLogEntry};
+                    let entry = AuditLogEntry::new(
+                        AuditLevel::Info,
+                        AuditCategory::NetworkActivity,
+                        "WebSocket TLS client connection established".to_string(),
+                    )
+                    .add_metadata("url".to_string(), url.to_string())
+                    .add_metadata("host".to_string(), host.to_string());
+
+                    let _ = logger.log(entry).await;
+                }
+                stream
+            }
+            Err(e) => {
+                // Log failed TLS connection
+                if let Some(logger) = audit_logger {
+                    use crate::security::{AuditCategory, AuditLevel, AuditLogEntry};
+                    let entry = AuditLogEntry::new(
+                        AuditLevel::Error,
+                        AuditCategory::Error,
+                        "WebSocket TLS client connection failed".to_string(),
+                    )
+                    .add_metadata("url".to_string(), url.to_string())
+                    .add_metadata("error".to_string(), e.to_string());
+
+                    let _ = logger.log(entry).await;
+                }
+                return Err(TransportError::Internal(format!(
+                    "TLS connect failed: {}",
+                    e
+                )));
+            }
+        };
+
+        // Perform WebSocket handshake
+        let (ws_stream, _response) =
+            tokio_tungstenite::client_async(url, MaybeTlsStream::NativeTls(tls_stream))
+                .await
+                .map_err(|e| {
+                    TransportError::Internal(format!("WebSocket handshake failed: {}", e))
+                })?;
+
+        Ok(ws_stream)
     }
 
     /// Start message processing loop
