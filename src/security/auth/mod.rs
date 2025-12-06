@@ -6,7 +6,9 @@
 // - API Key認証
 // - セッション管理
 // - 認証ミドルウェア
+// - REST API エンドポイント
 
+pub mod api;
 pub mod api_key;
 pub mod jwt;
 pub mod middleware;
@@ -16,6 +18,10 @@ pub mod repository;
 pub mod session_auth;
 pub mod types;
 
+pub use api::{
+    create_auth_router, AuthApiState, LoginRequest, LoginResponse, RefreshRequest,
+    RefreshResponse, RegisterRequest, RegisterResponse, UserInfo,
+};
 pub use api_key::{ApiKey, ApiKeyConfig, ApiKeyManager, ApiKeyPermission};
 pub use jwt::{JwtAuth, JwtClaims, JwtConfig, JwtError, JwtTokenPair};
 pub use middleware::{AuthMiddleware, AuthRequirement};
