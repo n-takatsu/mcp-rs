@@ -52,22 +52,17 @@ impl Default for TlsConfig {
 }
 
 /// Origin validation policy for WebSocket connections
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub enum OriginValidationPolicy {
     /// Allow any origin (insecure, development only)
     AllowAny,
     /// Reject all origins (most secure, same-origin only)
+    #[default]
     RejectAll,
     /// Allow specific origins (whitelist)
     AllowList(Vec<String>),
     /// Allow origins matching regex patterns
     AllowPattern(Vec<String>),
-}
-
-impl Default for OriginValidationPolicy {
-    fn default() -> Self {
-        Self::RejectAll
-    }
 }
 
 /// WebSocket transport configuration
