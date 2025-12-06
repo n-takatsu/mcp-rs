@@ -2543,6 +2543,7 @@ dependencies = [
  "tracing-subscriber",
  "tungstenite",
  "url",
+ "urlencoding",
  "uuid",
  "validator",
  "zeroize",

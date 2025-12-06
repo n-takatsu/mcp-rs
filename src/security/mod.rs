@@ -1,4 +1,5 @@
 pub mod audit_log;
+pub mod auth;
 pub mod encryption;
 #[cfg(feature = "mfa")]
 pub mod mfa;
@@ -13,6 +14,13 @@ pub mod xss_protection;
 pub use audit_log::{
     AuditCategory, AuditConfig, AuditFilter, AuditLevel, AuditLogEntry, AuditLogger,
     AuditStatistics,
+};
+pub use auth::{
+    ApiKey, ApiKeyConfig, ApiKeyManager, ApiKeyPermission, AuthConfig, AuthError, AuthMethod,
+    AuthMiddleware, AuthProvider, AuthRequirement, AuthResult, AuthUser, AuthenticationProvider,
+    Credentials, JwtAuth, JwtClaims, JwtConfig, JwtTokenPair, MultiAuthProvider, OAuth2Config,
+    OAuth2Provider, OAuth2Token, PasswordHasher, Permission, Role, SessionAuth, SessionConfig,
+    SessionToken,
 };
 pub use encryption::{EncryptedCredentials, EncryptionError, SecureCredentials};
 #[cfg(feature = "mfa")]

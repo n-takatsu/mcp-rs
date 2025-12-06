@@ -4,8 +4,6 @@ title: MCP-RS Documentation
 permalink: /
 ---
 
-# MCP-RS Documentation
-
 Welcome to the MCP-RS documentation! This site contains comprehensive guides, API references, and architecture documentation for the Rust implementation of the Model Context Protocol.
 
 ## Quick Access
@@ -27,7 +25,7 @@ MCP-RS provides a **comprehensive, battle-tested** implementation of the MCP (Mo
 
 ## Key Features
 
-## 🚀 Core Capabilities
+### 🚀 Core Capabilities
 
 - **JSON-RPC 2.0 Server**: Full-featured JSON-RPC server implementation using `axum`
 - **Core Runtime Module**: Advanced application lifecycle and resource management
@@ -40,7 +38,7 @@ MCP-RS provides a **comprehensive, battle-tested** implementation of the MCP (Mo
 
 ## 🔒 Enterprise-Grade Security Features
 
-**🛡️ Complete 6-Layer Security Architecture (100% Implemented)**
+### 🛡️ Complete 6-Layer Security Architecture (100% Implemented)
 
 - **🔐 AES-GCM-256 Encryption**: Military-grade encryption with PBKDF2 key derivation (100K iterations)
 - **⚡ Token Bucket Rate Limiting**: Advanced DDoS protection with configurable limits and burst handling
@@ -56,18 +54,21 @@ MCP-RS provides a **comprehensive, battle-tested** implementation of the MCP (Mo
 ## 🎯 WordPress MCP Tools (27 tools available)
 
 **📝 Content Management:**
+
 - Complete post and page management
 - Advanced post creation with SEO and scheduling
 - YouTube and social media embeds
 - Category and tag management
 
 **🖼️ Media Management:**
+
 - Upload media files (base64/multipart)
 - Featured image management
 - Media library operations
 - Accessibility support (alt text, captions)
 
 **🔗 Content Integration:**
+
 - Create posts with taxonomy
 - Comments management
 - Content relationships
@@ -75,6 +76,7 @@ MCP-RS provides a **comprehensive, battle-tested** implementation of the MCP (Mo
 ## 🗄️ Database MCP Tools (Multi-Engine Support)
 
 **📊 Database Engines:**
+
 - **PostgreSQL**: Enterprise relational database with advanced SQL features
 - **MySQL**: Popular web-scale database with full transaction support
 - **Redis**: High-performance in-memory store with cluster support
@@ -82,6 +84,7 @@ MCP-RS provides a **comprehensive, battle-tested** implementation of the MCP (Mo
 - **SQLite**: Lightweight embedded database for development
 
 **🔧 Database Operations:**
+
 - Execute queries with SQL injection protection
 - Transaction management with configurable isolation levels
 - Schema introspection and metadata retrieval
