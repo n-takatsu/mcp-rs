@@ -68,6 +68,7 @@ Need WordPress security automation? 8-layer enterprise security architecture wit
 
 - **WAF (Web Application Firewall)**: CORS, CSP, request validation, and security headers
 - **RBAC (Role-Based Access Control)**: Multi-level access control with role hierarchy, time-based restrictions, IP filtering, and data masking
+- **Data Masking Engine** ⭐ NEW: Advanced masking with 6 types (FullMask, PartialMask, HashMask, FormatPreserving, TokenMask, Custom), batch processing (182μs/5 records), result cache (39% speedup), and GDPR/CCPA compliance
 - **AES-GCM-256 Encryption**: Military-grade encryption with PBKDF2 key derivation
 - **SQL Injection Protection**: Real-time detection of 11 attack patterns
 - **XSS Prevention**: Advanced protection against 14 XSS attack vectors

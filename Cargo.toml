@@ -41,6 +41,7 @@ uuid = { version = "1.18", features = ["v4", "serde"] }
 
 # Random number generation (for benchmarks and testing)
 rand = "0.8"
+num_cpus = "1.16"
 
 # Testing dependencies
 log = "0.4"
@@ -257,6 +258,15 @@ lto = true
 [package.metadata.audit.ignore]
 "RUSTSEC-2023-0071" = "RSA crate from sqlx-mysql (unused) - MySQL support provided by secure mysql_async v0.36.1"
 "RUSTSEC-2024-0436" = "paste crate - unmaintained but required by ratatui (currently disabled)"
+
+# Data masking examples require the database feature
+[[example]]
+name = "data_masking_demo"
+required-features = ["database"]
+
+[[example]]
+name = "data_masking_advanced_demo"
+required-features = ["database"]
 
 # MFA examples require the mfa feature
 [[example]]
