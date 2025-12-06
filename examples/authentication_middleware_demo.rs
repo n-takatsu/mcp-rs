@@ -9,7 +9,7 @@
 use axum::{
     extract::{Json, Request},
     http::StatusCode,
-    middleware,
+    middleware::{self, Next},
     response::IntoResponse,
     routing::{get, post},
     Router,
@@ -137,13 +137,12 @@ async fn my_posts(request: Request) -> impl IntoResponse {
 async fn create_post(
     Json(req): Json<CreatePostRequest>,
 ) -> impl IntoResponse {
-    // Note: ミドルウェアで認証済み前提のため、ここではextensionsチェックをスキップ
-    // 実際のプロダクションではミドルウェアで保護されているルートに配置
+    // ミドルウェアで認証済み前提
     let post = Post {
         id: uuid::Uuid::new_v4().to_string(),
         title: req.title,
         content: req.content,
-        author_id: "authenticated_user".to_string(), // ミドルウェアで設定される想定
+        author_id: "authenticated_user".to_string(),
         published: false,
     };
 
@@ -250,7 +249,7 @@ fn create_app(auth_state: AuthApiState, provider: Arc<MultiAuthProvider>) -> Rou
         .route("/me", get(current_user_profile))
         .route("/my-posts", get(my_posts))
         .route("/posts", post(create_post))
-        .route_layer(middleware::from_fn(move |request: Request, next: axum::middleware::Next| {
+        .layer(middleware::from_fn(move |request: Request, next: Next| {
             let provider = protected_provider.clone();
             async move {
                 AuthMiddleware::new(provider, AuthRequirement::Required)
@@ -264,7 +263,7 @@ fn create_app(auth_state: AuthApiState, provider: Arc<MultiAuthProvider>) -> Rou
     let admin_routes = Router::new()
         .route("/posts", get(admin_all_posts))
         .route("/stats", get(admin_stats))
-        .route_layer(middleware::from_fn(move |request: Request, next: axum::middleware::Next| {
+        .layer(middleware::from_fn(move |request: Request, next: Next| {
             let provider = admin_provider.clone();
             async move {
                 AuthMiddleware::new(provider, AuthRequirement::Role(Role::Admin))
