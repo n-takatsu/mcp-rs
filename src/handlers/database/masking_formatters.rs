@@ -58,7 +58,7 @@ impl MaskingFormatter {
     /// 部分マスク
     fn partial_mask(&self, value: &str, prefix_visible: usize, suffix_visible: usize) -> String {
         let len = value.len();
-        
+
         if len <= prefix_visible + suffix_visible {
             return "*".repeat(len);
         }
@@ -66,7 +66,7 @@ impl MaskingFormatter {
         let prefix = &value[..prefix_visible];
         let suffix = &value[len - suffix_visible..];
         let mask_len = len - prefix_visible - suffix_visible;
-        
+
         format!("{}{}{}", prefix, "*".repeat(mask_len), suffix)
     }
 
@@ -97,10 +97,10 @@ impl MaskingFormatter {
     ) -> Result<String> {
         // フォーマットパターンを解析
         // 例: "###-##-####" -> "123-45-6789" -> "123-45-****"
-        
+
         let mut result = String::new();
         let mut value_chars = value.chars();
-        
+
         for pattern_char in format_pattern.chars() {
             if pattern_char == '#' {
                 // 数字をマスク
@@ -154,7 +154,8 @@ impl MaskingFormatter {
     /// トークンを元の値に戻す (監査/デバッグ用)
     pub async fn unmask_token(&self, token: &str) -> Option<String> {
         let token_map = self.token_map.read().await;
-        token_map.iter()
+        token_map
+            .iter()
             .find(|(_, t)| *t == token)
             .map(|(v, _)| v.clone())
     }
@@ -223,7 +224,10 @@ mod tests {
     #[tokio::test]
     async fn test_full_mask() {
         let formatter = MaskingFormatter::new();
-        let result = formatter.mask("secret123", &MaskingType::FullMask).await.unwrap();
+        let result = formatter
+            .mask("secret123", &MaskingType::FullMask)
+            .await
+            .unwrap();
         assert_eq!(result, "*********");
     }
 
@@ -288,7 +292,7 @@ mod tests {
             )
             .await
             .unwrap();
-        
+
         let result2 = formatter
             .mask(
                 "sensitive_data",

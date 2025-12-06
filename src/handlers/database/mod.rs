@@ -59,4 +59,3 @@ pub use masking_rules::{
     ColumnPattern, CustomMasker, DataType, HashAlgorithm, MaskingContext, MaskingPolicy,
     MaskingPurpose, MaskingRule, MaskingType, NetworkConstraints, TimeConstraints, TimeRange,
 };
-

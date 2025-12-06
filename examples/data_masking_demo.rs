@@ -3,8 +3,8 @@
 //! 5つのマスキングタイプを実演します。
 
 use mcp_rs::handlers::database::{
-    ColumnPattern, DataMaskingEngine, HashAlgorithm, MaskingContext, MaskingPolicy,
-    MaskingPurpose, MaskingRule, MaskingType,
+    ColumnPattern, DataMaskingEngine, HashAlgorithm, MaskingContext, MaskingPolicy, MaskingPurpose,
+    MaskingRule, MaskingType,
 };
 use serde_json::json;
 

@@ -51,7 +51,7 @@ pub enum MaskingType {
 pub trait CustomMasker: Send + Sync {
     /// カスタムマスキング名を取得
     fn name(&self) -> &str;
-    
+
     /// 値をマスキング
     async fn mask(&self, value: &str, context: &MaskingContext) -> anyhow::Result<String>;
 }
@@ -213,13 +213,13 @@ impl ColumnPattern {
     /// ワイルドカードマッチング (*をサポート)
     fn wildcard_match(pattern: &str, text: &str) -> bool {
         let pattern_parts: Vec<&str> = pattern.split('*').collect();
-        
+
         if pattern_parts.is_empty() {
             return false;
         }
 
         let mut text_pos = 0;
-        
+
         for (i, part) in pattern_parts.iter().enumerate() {
             if part.is_empty() {
                 continue;
@@ -263,7 +263,10 @@ impl MaskingPolicy {
 
         // パーミッションチェック
         if !self.permissions.is_empty() {
-            let has_permission = self.permissions.iter().any(|p| context.permissions.contains(p));
+            let has_permission = self
+                .permissions
+                .iter()
+                .any(|p| context.permissions.contains(p));
             if !has_permission {
                 return vec![];
             }
@@ -294,13 +297,13 @@ impl MaskingPolicy {
         timestamp: &chrono::DateTime<chrono::Utc>,
     ) -> bool {
         let weekday = timestamp.weekday().num_days_from_sunday() as u8;
-        
+
         if !constraints.allowed_weekdays.contains(&weekday) {
             return false;
         }
 
         let time_str = timestamp.format("%H:%M").to_string();
-        
+
         for range in &constraints.allowed_time_ranges {
             if time_str >= range.start && time_str <= range.end {
                 return true;
@@ -312,7 +315,11 @@ impl MaskingPolicy {
 
     fn check_network_constraints(constraints: &NetworkConstraints, ip: &str) -> bool {
         // 拒否IPチェック
-        if constraints.denied_ips.iter().any(|denied| ip.starts_with(denied)) {
+        if constraints
+            .denied_ips
+            .iter()
+            .any(|denied| ip.starts_with(denied))
+        {
             return false;
         }
 
@@ -321,7 +328,10 @@ impl MaskingPolicy {
             return true;
         }
 
-        constraints.allowed_ips.iter().any(|allowed| ip.starts_with(allowed))
+        constraints
+            .allowed_ips
+            .iter()
+            .any(|allowed| ip.starts_with(allowed))
     }
 }
 
@@ -333,7 +343,10 @@ mod tests {
     fn test_wildcard_match() {
         assert!(ColumnPattern::wildcard_match("*_email", "user_email"));
         assert!(ColumnPattern::wildcard_match("credit_*", "credit_card"));
-        assert!(ColumnPattern::wildcard_match("*password*", "user_password_hash"));
+        assert!(ColumnPattern::wildcard_match(
+            "*password*",
+            "user_password_hash"
+        ));
         assert!(!ColumnPattern::wildcard_match("*_email", "username"));
     }
 

@@ -88,11 +88,11 @@ impl DataMaskingEngine {
     pub async fn add_policy(&self, policy: MaskingPolicy) -> Result<()> {
         let mut policies = self.policies.write().await;
         policies.push(policy);
-        
+
         // キャッシュをクリア
         let mut cache = self.rule_cache.write().await;
         cache.clear();
-        
+
         Ok(())
     }
 
@@ -100,11 +100,11 @@ impl DataMaskingEngine {
     pub async fn load_policies(&self, policies: Vec<MaskingPolicy>) -> Result<()> {
         let mut policy_store = self.policies.write().await;
         *policy_store = policies;
-        
+
         // キャッシュをクリア
         let mut cache = self.rule_cache.write().await;
         cache.clear();
-        
+
         Ok(())
     }
 
@@ -205,7 +205,7 @@ impl DataMaskingEngine {
         // キャッシュが有効な場合はチェック
         if self.cache_enabled {
             let cache_key = self.compute_cache_key(value, masking_type);
-            
+
             // キャッシュから取得を試みる
             {
                 let cache = self.result_cache.read().await;
@@ -282,7 +282,7 @@ impl DataMaskingEngine {
 
         for policy in policies.iter() {
             let policy_rules = policy.select_rules(context);
-            
+
             for rule in policy_rules {
                 if rule.column_pattern.matches(column_name) {
                     applicable_rules.push(rule.clone());
@@ -325,7 +325,7 @@ impl DataMaskingEngine {
     /// 監査ログを取得
     pub async fn get_audit_log(&self, limit: Option<usize>) -> Vec<AuditEntry> {
         let audit_log = self.audit_log.read().await;
-        
+
         if let Some(limit) = limit {
             audit_log.iter().rev().take(limit).cloned().collect()
         } else {

@@ -3,8 +3,8 @@
 //! カスタムマスカー、バッチ処理、結果キャッシュを実演します。
 
 use mcp_rs::handlers::database::{
-    ColumnPattern, CustomMasker, DataMaskingEngine, MaskingContext, MaskingPolicy,
-    MaskingPurpose, MaskingRule, MaskingType,
+    ColumnPattern, CustomMasker, DataMaskingEngine, MaskingContext, MaskingPolicy, MaskingPurpose,
+    MaskingRule, MaskingType,
 };
 use serde_json::json;
 use std::sync::Arc;
