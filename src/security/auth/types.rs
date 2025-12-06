@@ -37,6 +37,9 @@ pub enum AuthError {
     #[error("MFA invalid")]
     MfaInvalid,
 
+    #[error("Session not found")]
+    SessionNotFound,
+
     #[error("Provider error: {0}")]
     ProviderError(String),
 

@@ -101,6 +101,9 @@ pub mod memory;
 #[cfg(feature = "postgresql-backend")]
 pub mod postgres;
 
+/// Redisセッションストア (高速セッション管理)
+#[cfg(feature = "redis-backend")]
+pub mod redis;
+
 // TODO: 将来的に実装予定
 // - MySQLユーザーリポジトリ
-// - Redisユーザーリポジトリ (キャッシュ層)

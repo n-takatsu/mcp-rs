@@ -171,6 +171,7 @@ impl IntoResponse for AuthError {
             AuthError::WeakPassword => (StatusCode::BAD_REQUEST, "Password too weak"),
             AuthError::MfaRequired => (StatusCode::UNAUTHORIZED, "MFA required"),
             AuthError::MfaInvalid => (StatusCode::UNAUTHORIZED, "Invalid MFA code"),
+            AuthError::SessionNotFound => (StatusCode::NOT_FOUND, "Session not found"),
             AuthError::ProviderError(_) => (StatusCode::BAD_GATEWAY, "Provider error"),
             AuthError::ConfigError(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Configuration error"),
             AuthError::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Internal error"),

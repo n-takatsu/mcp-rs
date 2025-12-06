@@ -26,6 +26,9 @@ pub use repository::{UserRepository, memory::InMemoryUserRepository};
 #[cfg(feature = "postgresql-backend")]
 pub use repository::postgres::PostgresUserRepository;
 
+#[cfg(feature = "redis-backend")]
+pub use repository::redis::{RedisSessionStore, SessionData};
+
 pub use session_auth::{SessionAuth, SessionConfig, SessionToken};
 pub use types::{
     AuthError, AuthMethod, AuthProvider, AuthResult, AuthUser, Credentials, PasswordHasher,
