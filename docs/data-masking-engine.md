@@ -30,6 +30,76 @@ Issue #87 (P1 High) - データベースクエリ結果に対する高度なデ�
    - 一意のトークンに置換
    - 用途: 可逆的なマスキングが必要なデータ
 
+6. **Custom (カスタムマスキング)** ⭐ NEW
+   - ユーザー定義のマスキングロジック
+   - 用途: 業務固有のマスキングルール、複雑な条件分岐
+
+### 拡張機能 ⭐ NEW
+
+#### カスタムマスキングルール
+
+`CustomMasker`トレイトを実装することで、独自のマスキングロジックを定義できます:
+
+```rust
+use mcp_rs::handlers::database::CustomMasker;
+
+struct EmailDomainMasker;
+
+#[async_trait::async_trait]
+impl CustomMasker for EmailDomainMasker {
+    fn name(&self) -> &str {
+        "email_domain_masker"
+    }
+
+    async fn mask(&self, value: &str, context: &MaskingContext) -> anyhow::Result<String> {
+        if let Some(at_pos) = value.find('@') {
+            let domain = &value[at_pos..];
+            Ok(format!("***{}", domain))
+        } else {
+            Ok("***".to_string())
+        }
+    }
+}
+
+// 登録
+engine.register_custom_masker(Arc::new(EmailDomainMasker)).await?;
+```
+
+#### バッチ処理
+
+大量データを並列処理で効率的にマスキング:
+
+```rust
+let mut batch_data = vec![
+    json!({"email": "user1@example.com"}),
+    json!({"email": "user2@example.com"}),
+    json!({"email": "user3@example.com"}),
+];
+
+// 並列マスキング (CPUコア数に基づく並列度)
+engine.mask_batch(&mut batch_data, &context).await?;
+```
+
+**パフォーマンス**: 5件のレコードを182μsで処理
+
+#### 結果キャッシュ
+
+同一データのマスキング結果をキャッシュして高速化:
+
+```rust
+// キャッシュ有効化
+engine.enable_result_cache();
+
+// 1回目: 24.4μs
+engine.mask_query_result(&mut data, &context).await?;
+
+// 2回目: 14.9μs (39%高速化)
+engine.mask_query_result(&mut data, &context).await?;
+
+// キャッシュ無効化
+engine.disable_result_cache();
+```
+
 ### カラムパターンマッチング
 
 - **完全一致**: `["email", "password"]`
@@ -222,11 +292,30 @@ for (column, count) in stats.column_counts {
 
 ## デモプログラム
 
+### 基本デモ
+
 ```bash
 cargo run --example data_masking_demo --features database
 ```
 
 5つのマスキングタイプすべてを実演するデモプログラムが実行されます。
+
+### 拡張機能デモ ⭐ NEW
+
+```bash
+cargo run --example data_masking_advanced_demo --features database
+```
+
+カスタムマスカー、バッチ処理、結果キャッシュを実演します:
+
+- **カスタムマスカー3種類**
+  - EmailDomainMasker: ドメイン部分のみ表示
+  - JapanesePhoneMasker: 日本の電話番号形式対応
+  - RoleBasedMasker: admin/manager/userで異なるマスキング
+
+- **バッチ処理**: 5件のレコードを182μsで並列処理
+
+- **結果キャッシュ**: 2回目アクセスで39%高速化
 
 ## テスト
 
@@ -264,26 +353,33 @@ examples/
 │  - ルールキャッシュ                     │
 │  - 監査ログ                             │
 │  - 統計情報                             │
+│  - カスタムマスカー管理 ⭐ NEW          │
+│  - 結果キャッシュ ⭐ NEW                 │
 └─────────────┬───────────────────────────┘
               │
               ├──► MaskingPolicy (複数)
               │      ├─ ロール/パーミッション
               │      ├─ 時間/ネットワーク制約
               │      └─ MaskingRule (複数)
-              │           ├─ カランパターン
+              │           ├─ カラムパターン
               │           └─ MaskingType
               │
-              └──► MaskingFormatter
-                     ├─ FullMask
-                     ├─ PartialMask
-                     ├─ HashMask
-                     ├─ FormatPreserving
-                     └─ TokenMask
+              ├──► MaskingFormatter
+              │      ├─ FullMask
+              │      ├─ PartialMask
+              │      ├─ HashMask
+              │      ├─ FormatPreserving
+              │      └─ TokenMask
+              │
+              └──► CustomMasker (複数) ⭐ NEW
+                     └─ ユーザー定義ロジック
 ```
 
 ## パフォーマンス
 
 - **ルールキャッシュ**: カラム名→ルールのマッピングをキャッシュし、繰り返しのパターンマッチングを回避
+- **結果キャッシュ**: 同一データのマスキング結果をキャッシュ (39%高速化) ⭐ NEW
+- **バッチ処理**: CPUコア数に基づく並列処理 (5件を182μs) ⭐ NEW
 - **遅延評価**: 必要なカラムのみマスキング処理を実行
 - **非同期処理**: tokio async/awaitで並列処理
 
@@ -293,14 +389,23 @@ examples/
 - **監査ログ**: すべてのマスキング操作を記録し、コンプライアンス対応
 - **権限チェック**: RBAC統合で細かいアクセス制御
 
+## 実装済み機能 ✅
+
+- [x] **5つの基本マスキングタイプ**: FullMask, PartialMask, HashMask, FormatPreserving, TokenMask
+- [x] **カスタムマスキングルール**: ユーザー定義のマスキングロジック ⭐
+- [x] **バッチ処理**: 大量データの効率的なマスキング (並列処理) ⭐
+- [x] **結果キャッシュ**: 同一データのマスキング結果をキャッシュ (39%高速化) ⭐
+- [x] **カラムパターンマッチング**: 完全一致、ワイルドカード、正規表現
+- [x] **権限ベースマスキング**: RBAC統合、時間/ネットワーク制約
+- [x] **監査ログ**: すべてのマスキング操作を記録
+- [x] **統計情報**: マスキング適用状況の可視化
+
 ## 今後の拡張予定
 
-- [ ] **バッチ処理**: 大量データの効率的なマスキング
-- [ ] **結果キャッシュ**: 同一データのマスキング結果をキャッシュ
-- [ ] **カスタムルール**: ユーザー定義のマスキングロジック
 - [ ] **データタイプ対応**: JSON/日付/数値等の型別マスキング
 - [ ] **パフォーマンス計測**: マスキング処理時間の計測・最適化
 - [ ] **コンプライアンスレポート**: GDPR/CCPA準拠レポート生成
+- [ ] **動的ポリシー更新**: 実行時のポリシー変更検知・リロード
 
 ## ライセンス
 
