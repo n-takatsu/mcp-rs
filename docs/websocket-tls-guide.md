@@ -571,6 +571,224 @@ for entry in entries {
    - 本番環境では無効化
    - テスト環境でのみ使用
 
+## Origin Validation (CSRF対策)
+
+WebSocketサーバーは、接続時にOrigin headerを検証することで、CSRF (Cross-Site Request Forgery) 攻撃を防止できます。
+
+### Origin Validation ポリシー
+
+```rust
+pub enum OriginValidationPolicy {
+    /// すべてのOriginを許可 (開発環境のみ)
+    AllowAny,
+
+    /// すべてのOriginを拒否 (デフォルト - 最もセキュア)
+    RejectAll,
+
+    /// 特定のOriginのみ許可 (ホワイトリスト)
+    AllowList(Vec<String>),
+
+    /// 正規表現パターンに一致するOriginを許可
+    AllowPattern(Vec<String>),
+}
+```
+
+### 設定例
+
+#### 1. 開発環境 (AllowAny)
+
+```rust
+let ws_config = WebSocketConfig {
+    url: "127.0.0.1:8080".to_string(),
+    server_mode: true,
+    origin_validation: OriginValidationPolicy::AllowAny,
+    require_origin_header: false, // Origin header なしでも接続許可
+    ..Default::default()
+};
+```
+
+**警告**: 本番環境では絶対に使用しないでください。
+
+#### 2. 本番環境 (AllowList - 推奨)
+
+```rust
+let ws_config = WebSocketConfig {
+    url: "0.0.0.0:8443".to_string(),
+    server_mode: true,
+    use_tls: true,
+    origin_validation: OriginValidationPolicy::AllowList(vec![
+        "https://app.example.com".to_string(),
+        "https://admin.example.com".to_string(),
+    ]),
+    require_origin_header: true, // Origin header 必須
+    ..Default::default()
+};
+```
+
+#### 3. 本番環境 (AllowPattern - 柔軟)
+
+```rust
+let ws_config = WebSocketConfig {
+    url: "0.0.0.0:8443".to_string(),
+    server_mode: true,
+    use_tls: true,
+    origin_validation: OriginValidationPolicy::AllowPattern(vec![
+        r"^https://.*\.example\.com$".to_string(), // すべての example.com サブドメイン
+        r"^https://example\.com$".to_string(),      // example.com 本体
+    ]),
+    require_origin_header: true,
+    ..Default::default()
+};
+```
+
+### セキュリティベストプラクティス
+
+1. **本番環境では AllowList または AllowPattern を使用**
+
+   ```rust
+   // ❌ 悪い例
+   origin_validation: OriginValidationPolicy::AllowAny
+
+   // ✅ 良い例
+   origin_validation: OriginValidationPolicy::AllowList(vec![
+       "https://app.example.com".to_string(),
+   ])
+   ```
+
+2. **必ず HTTPS を強制**
+
+   ```rust
+   // ❌ 悪い例 - HTTP を許可
+   OriginValidationPolicy::AllowList(vec![
+       "http://app.example.com".to_string(), // HTTP は安全でない
+   ])
+
+   // ✅ 良い例 - HTTPS のみ許可
+   OriginValidationPolicy::AllowList(vec![
+       "https://app.example.com".to_string(),
+   ])
+   ```
+
+3. **正規表現パターンは慎重に設計**
+
+   ```rust
+   // ❌ 悪い例 - 広すぎるパターン
+   OriginValidationPolicy::AllowPattern(vec![
+       r"^https://.*".to_string(), // すべての HTTPS サイトを許可 (危険!)
+   ])
+
+   // ✅ 良い例 - 特定ドメインのみ
+   OriginValidationPolicy::AllowPattern(vec![
+       r"^https://.*\.example\.com$".to_string(), // example.com のみ
+   ])
+   ```
+
+4. **require_origin_header を true に設定**
+
+   ```rust
+   require_origin_header: true, // Origin header がない接続を拒否
+   ```
+
+### Origin Validation と監査ログ
+
+Origin検証の失敗は自動的に監査ログに記録されます:
+
+```rust
+// 検証失敗時のログ例
+{
+    "level": "Warning",
+    "category": "SecurityAttack",
+    "message": "WebSocket connection rejected: Invalid Origin 'https://malicious.com'",
+    "metadata": {
+        "origin": "https://malicious.com",
+        "peer_address": "192.168.1.100:54321",
+        "policy": "AllowList([\"https://app.example.com\"])"
+    }
+}
+```
+
+### Origin Validation のトラブルシューティング
+
+#### 問題: 正規のクライアントが接続できない
+
+**原因**: Origin headerが許可リストにない
+
+**解決策**:
+
+1. クライアントの Origin を確認:
+
+   ```javascript
+   // ブラウザの開発者ツールで確認
+   console.log(window.location.origin);
+   ```
+
+2. 許可リストに追加:
+
+   ```rust
+   OriginValidationPolicy::AllowList(vec![
+       "https://app.example.com".to_string(),
+       "https://new-app.example.com".to_string(), // 追加
+   ])
+   ```
+
+#### 問題: ローカル開発で接続できない
+
+**原因**: localhost の Origin が許可されていない
+
+**解決策** (開発環境のみ):
+
+```rust
+// 開発環境専用設定
+#[cfg(debug_assertions)]
+let origin_policy = OriginValidationPolicy::AllowPattern(vec![
+    r"^https?://localhost:\d+$".to_string(),
+    r"^https?://127\.0\.0\.1:\d+$".to_string(),
+]);
+
+#[cfg(not(debug_assertions))]
+let origin_policy = OriginValidationPolicy::AllowList(vec![
+    "https://app.example.com".to_string(),
+]);
+```
+
+### 統合例: TLS + Origin Validation
+
+完全なセキュア設定:
+
+```rust
+use mcp_rs::transport::websocket::{WebSocketConfig, TlsConfig, OriginValidationPolicy};
+use std::path::PathBuf;
+
+let tls_config = TlsConfig {
+    cert_path: Some(PathBuf::from("/etc/ssl/certs/server.crt")),
+    key_path: Some(PathBuf::from("/etc/ssl/private/server.key")),
+    ca_cert_path: Some(PathBuf::from("/etc/ssl/certs/ca-bundle.crt")),
+    verify_server: true,
+    accept_invalid_certs: false,
+};
+
+let ws_config = WebSocketConfig {
+    url: "0.0.0.0:8443".to_string(),
+    server_mode: true,
+    use_tls: true,
+    tls_config: Some(tls_config),
+    origin_validation: OriginValidationPolicy::AllowList(vec![
+        "https://app.example.com".to_string(),
+        "https://admin.example.com".to_string(),
+    ]),
+    require_origin_header: true,
+    max_connections: 1000,
+    ..Default::default()
+};
+```
+
+この設定により、以下のセキュリティが実現されます:
+
+- ✅ TLS暗号化による通信保護
+- ✅ Origin Validation による CSRF 対策
+- ✅ 監査ログによる接続追跡
+- ✅ 本番環境推奨設定
+
 ## 関連ドキュメント
 
 - [WebSocket API リファレンス](../api/transport-websocket.md)
