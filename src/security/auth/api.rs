@@ -6,12 +6,12 @@
 //! - トークンリフレッシュ
 //! - ユーザー情報取得
 
-use crate::security::auth::{
-    AuthError, AuthResult, AuthUser, Credentials, JwtAuth, MultiAuthProvider,
-    Role, AuthenticationProvider,
-};
 #[cfg(feature = "redis-backend")]
 use crate::security::auth::RedisSessionStore;
+use crate::security::auth::{
+    AuthError, AuthResult, AuthUser, AuthenticationProvider, Credentials, JwtAuth,
+    MultiAuthProvider, Role,
+};
 use axum::{
     extract::{Json, Request, State},
     http::StatusCode,
@@ -203,15 +203,10 @@ async fn refresh_token(
     Json(req): Json<RefreshRequest>,
 ) -> Result<impl IntoResponse, AuthError> {
     // リフレッシュトークンを検証
-    let claims = state
-        .jwt_auth
-        .verify_refresh_token(&req.refresh_token)?;
+    let claims = state.jwt_auth.verify_refresh_token(&req.refresh_token)?;
 
     // ユーザー情報を取得
-    let user = state
-        .provider
-        .get_user_by_id(&claims.sub)
-        .await?;
+    let user = state.provider.get_user_by_id(&claims.sub).await?;
 
     // 新しいトークンペアを生成
     let token_pair = state.jwt_auth.generate_token_pair(&user)?;
@@ -229,9 +224,7 @@ async fn refresh_token(
 /// ログアウトエンドポイント
 ///
 /// POST /auth/logout
-async fn logout_user(
-    State(_state): State<AuthApiState>,
-) -> Result<impl IntoResponse, AuthError> {
+async fn logout_user(State(_state): State<AuthApiState>) -> Result<impl IntoResponse, AuthError> {
     // TODO: トークンのブラックリスト化（将来実装）
     // TODO: セッション削除（session_id取得方法を要検討）
 
@@ -246,12 +239,9 @@ async fn logout_user(
 ///
 /// GET /auth/me
 /// Authorization: Bearer <token>
-/// 
+///
 /// Note: 認証ミドルウェア経由でのみアクセス可能
-async fn get_current_user(
-    State(_state): State<AuthApiState>,
-    request: Request,
-) -> Response {
+async fn get_current_user(State(_state): State<AuthApiState>, request: Request) -> Response {
     // リクエストのextensionsからユーザーを取得
     if let Some(user) = request.extensions().get::<AuthUser>() {
         let user_info = UserInfo::from(user.clone());
@@ -268,9 +258,7 @@ async fn get_current_user(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::security::auth::{
-        InMemoryUserRepository, JwtConfig, UserRepository,
-    };
+    use crate::security::auth::{InMemoryUserRepository, JwtConfig, UserRepository};
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use tower::ServiceExt;

@@ -4,7 +4,9 @@
 //! sqlxを使用した非同期クエリ実行とコネクションプーリング。
 
 use super::UserRepository;
-use crate::security::auth::types::{AuthError, AuthResult, AuthUser, PasswordHasher, Permission, Role};
+use crate::security::auth::types::{
+    AuthError, AuthResult, AuthUser, PasswordHasher, Permission, Role,
+};
 use async_trait::async_trait;
 use sqlx::{postgres::PgPoolOptions, PgPool, Row};
 use std::sync::Arc;
@@ -79,13 +81,12 @@ impl UserRepository for PostgresUserRepository {
     ) -> Result<(), AuthError> {
         // メールアドレスの重複チェック
         if let Some(ref email) = user.email {
-            let exists: bool = sqlx::query_scalar(
-                "SELECT EXISTS(SELECT 1 FROM users WHERE email = $1)"
-            )
-            .bind(email)
-            .fetch_one(&self.pool)
-            .await
-            .map_err(|e| AuthError::Internal(format!("Email check failed: {}", e)))?;
+            let exists: bool =
+                sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM users WHERE email = $1)")
+                    .bind(email)
+                    .fetch_one(&self.pool)
+                    .await
+                    .map_err(|e| AuthError::Internal(format!("Email check failed: {}", e)))?;
 
             if exists {
                 return Err(AuthError::UserAlreadyExists(email.clone()));
@@ -137,10 +138,14 @@ impl UserRepository for PostgresUserRepository {
         if let Some(row) = row {
             let roles: std::collections::HashSet<Role> = serde_json::from_str(row.get("roles"))
                 .map_err(|e| AuthError::Internal(format!("Roles deserialization failed: {}", e)))?;
-            let permissions: std::collections::HashSet<Permission> = serde_json::from_str(row.get("permissions"))
-                .map_err(|e| AuthError::Internal(format!("Permissions deserialization failed: {}", e)))?;
-            let metadata: std::collections::HashMap<String, String> = serde_json::from_str(row.get("metadata"))
-                .map_err(|e| AuthError::Internal(format!("Metadata deserialization failed: {}", e)))?;
+            let permissions: std::collections::HashSet<Permission> =
+                serde_json::from_str(row.get("permissions")).map_err(|e| {
+                    AuthError::Internal(format!("Permissions deserialization failed: {}", e))
+                })?;
+            let metadata: std::collections::HashMap<String, String> =
+                serde_json::from_str(row.get("metadata")).map_err(|e| {
+                    AuthError::Internal(format!("Metadata deserialization failed: {}", e))
+                })?;
 
             let provider_str: String = row.get("provider");
             let provider = match provider_str.as_str() {
@@ -180,10 +185,14 @@ impl UserRepository for PostgresUserRepository {
         if let Some(row) = row {
             let roles: std::collections::HashSet<Role> = serde_json::from_str(row.get("roles"))
                 .map_err(|e| AuthError::Internal(format!("Roles deserialization failed: {}", e)))?;
-            let permissions: std::collections::HashSet<Permission> = serde_json::from_str(row.get("permissions"))
-                .map_err(|e| AuthError::Internal(format!("Permissions deserialization failed: {}", e)))?;
-            let metadata: std::collections::HashMap<String, String> = serde_json::from_str(row.get("metadata"))
-                .map_err(|e| AuthError::Internal(format!("Metadata deserialization failed: {}", e)))?;
+            let permissions: std::collections::HashSet<Permission> =
+                serde_json::from_str(row.get("permissions")).map_err(|e| {
+                    AuthError::Internal(format!("Permissions deserialization failed: {}", e))
+                })?;
+            let metadata: std::collections::HashMap<String, String> =
+                serde_json::from_str(row.get("metadata")).map_err(|e| {
+                    AuthError::Internal(format!("Metadata deserialization failed: {}", e))
+                })?;
 
             let provider_str: String = row.get("provider");
             let provider = match provider_str.as_str() {
@@ -278,12 +287,21 @@ impl UserRepository for PostgresUserRepository {
 
             if let Some(hash) = password_hash {
                 if self.password_hasher.verify(password, &hash)? {
-                    let roles: std::collections::HashSet<Role> = serde_json::from_str(row.get("roles"))
-                        .map_err(|e| AuthError::Internal(format!("Roles deserialization failed: {}", e)))?;
-                    let permissions: std::collections::HashSet<Permission> = serde_json::from_str(row.get("permissions"))
-                        .map_err(|e| AuthError::Internal(format!("Permissions deserialization failed: {}", e)))?;
-                    let metadata: std::collections::HashMap<String, String> = serde_json::from_str(row.get("metadata"))
-                        .map_err(|e| AuthError::Internal(format!("Metadata deserialization failed: {}", e)))?;
+                    let roles: std::collections::HashSet<Role> =
+                        serde_json::from_str(row.get("roles")).map_err(|e| {
+                            AuthError::Internal(format!("Roles deserialization failed: {}", e))
+                        })?;
+                    let permissions: std::collections::HashSet<Permission> =
+                        serde_json::from_str(row.get("permissions")).map_err(|e| {
+                            AuthError::Internal(format!(
+                                "Permissions deserialization failed: {}",
+                                e
+                            ))
+                        })?;
+                    let metadata: std::collections::HashMap<String, String> =
+                        serde_json::from_str(row.get("metadata")).map_err(|e| {
+                            AuthError::Internal(format!("Metadata deserialization failed: {}", e))
+                        })?;
 
                     let provider_str: String = row.get("provider");
                     let provider = match provider_str.as_str() {
@@ -311,11 +329,12 @@ impl UserRepository for PostgresUserRepository {
     }
 
     async fn get_password_hash(&self, user_id: &str) -> Result<Option<String>, AuthError> {
-        let hash: Option<String> = sqlx::query_scalar("SELECT password_hash FROM users WHERE id = $1")
-            .bind(user_id)
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(|e| AuthError::Internal(format!("Password hash lookup failed: {}", e)))?;
+        let hash: Option<String> =
+            sqlx::query_scalar("SELECT password_hash FROM users WHERE id = $1")
+                .bind(user_id)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|e| AuthError::Internal(format!("Password hash lookup failed: {}", e)))?;
 
         Ok(hash)
     }
@@ -325,14 +344,13 @@ impl UserRepository for PostgresUserRepository {
         user_id: &str,
         password_hash: String,
     ) -> Result<(), AuthError> {
-        let result = sqlx::query(
-            "UPDATE users SET password_hash = $2, updated_at = NOW() WHERE id = $1"
-        )
-        .bind(user_id)
-        .bind(&password_hash)
-        .execute(&self.pool)
-        .await
-        .map_err(|e| AuthError::Internal(format!("Password hash update failed: {}", e)))?;
+        let result =
+            sqlx::query("UPDATE users SET password_hash = $2, updated_at = NOW() WHERE id = $1")
+                .bind(user_id)
+                .bind(&password_hash)
+                .execute(&self.pool)
+                .await
+                .map_err(|e| AuthError::Internal(format!("Password hash update failed: {}", e)))?;
 
         if result.rows_affected() == 0 {
             return Err(AuthError::UserNotFound(user_id.to_string()));
@@ -359,7 +377,9 @@ mod tests {
             .await
             .expect("Failed to connect to test database");
 
-        repo.run_migrations().await.expect("Failed to run migrations");
+        repo.run_migrations()
+            .await
+            .expect("Failed to run migrations");
 
         // テーブルをクリア
         sqlx::query("DELETE FROM users")
@@ -384,12 +404,18 @@ mod tests {
         let user = create_test_user("user1", "testuser", "test@example.com");
         let password_hash = Some("hash123".to_string());
 
-        repo.create_user(&user, password_hash.clone()).await.unwrap();
+        repo.create_user(&user, password_hash.clone())
+            .await
+            .unwrap();
 
         let found = repo.find_by_id("user1").await.unwrap().unwrap();
         assert_eq!(found.email, Some("test@example.com".to_string()));
 
-        let found_by_email = repo.find_by_email("test@example.com").await.unwrap().unwrap();
+        let found_by_email = repo
+            .find_by_email("test@example.com")
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(found_by_email.id, "user1");
 
         let hash = repo.get_password_hash("user1").await.unwrap().unwrap();
@@ -447,10 +473,16 @@ mod tests {
 
         repo.create_user(&user, Some(password_hash)).await.unwrap();
 
-        let verified = repo.verify_password("test@example.com", password).await.unwrap();
+        let verified = repo
+            .verify_password("test@example.com", password)
+            .await
+            .unwrap();
         assert!(verified.is_some());
 
-        let wrong = repo.verify_password("test@example.com", "wrong").await.unwrap();
+        let wrong = repo
+            .verify_password("test@example.com", "wrong")
+            .await
+            .unwrap();
         assert!(wrong.is_none());
     }
 }

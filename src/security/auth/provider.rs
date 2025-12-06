@@ -54,7 +54,7 @@ pub struct MultiAuthProvider {
 
 impl MultiAuthProvider {
     /// 新しいMultiAuthProviderを作成
-    /// 
+    ///
     /// # Arguments
     /// * `jwt_config` - JWT設定 (Optional)
     /// * `oauth2_configs` - OAuth2設定リスト (Optional)
@@ -266,14 +266,8 @@ mod tests {
     #[tokio::test]
     async fn test_register_and_authenticate_user() {
         let repository: Arc<dyn UserRepository> = Arc::new(InMemoryUserRepository::new());
-        let provider = MultiAuthProvider::new(
-            Some(JwtConfig::default()),
-            None,
-            None,
-            None,
-            12,
-            repository,
-        );
+        let provider =
+            MultiAuthProvider::new(Some(JwtConfig::default()), None, None, None, 12, repository);
 
         // ユーザー登録
         let user = provider

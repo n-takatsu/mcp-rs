@@ -117,7 +117,10 @@ impl RedisSessionStore {
     }
 
     /// セッションを取得
-    pub async fn get_session(&mut self, session_id: &str) -> Result<Option<SessionData>, AuthError> {
+    pub async fn get_session(
+        &mut self,
+        session_id: &str,
+    ) -> Result<Option<SessionData>, AuthError> {
         let key = self.session_key(session_id);
 
         let session_json: Option<String> = self
@@ -127,8 +130,9 @@ impl RedisSessionStore {
             .map_err(|e| AuthError::Internal(format!("Session lookup failed: {}", e)))?;
 
         if let Some(json) = session_json {
-            let session_data: SessionData = serde_json::from_str(&json)
-                .map_err(|e| AuthError::Internal(format!("Session deserialization failed: {}", e)))?;
+            let session_data: SessionData = serde_json::from_str(&json).map_err(|e| {
+                AuthError::Internal(format!("Session deserialization failed: {}", e))
+            })?;
 
             Ok(Some(session_data))
         } else {
@@ -269,12 +273,17 @@ impl RedisSessionStore {
             let key = self.session_key(session_id);
 
             // TTLを保持したまま更新
-            let current_ttl = self.get_session_ttl(session_id).await?.unwrap_or(self.default_ttl as i64);
+            let current_ttl = self
+                .get_session_ttl(session_id)
+                .await?
+                .unwrap_or(self.default_ttl as i64);
 
             self.connection
                 .set_ex::<_, _, ()>(&key, session_json, current_ttl as u64)
                 .await
-                .map_err(|e| AuthError::Internal(format!("Session metadata update failed: {}", e)))?;
+                .map_err(|e| {
+                    AuthError::Internal(format!("Session metadata update failed: {}", e))
+                })?;
 
             Ok(())
         } else {
@@ -285,7 +294,7 @@ impl RedisSessionStore {
     /// 接続の健全性チェック
     pub async fn health_check(&mut self) -> Result<bool, AuthError> {
         let result: Result<String, _> = self.connection.get("__health_check__").await;
-        
+
         match result {
             Ok(_) | Err(_) => Ok(true), // 接続は生きている（キーが存在しなくてもOK）
         }
@@ -302,8 +311,8 @@ mod tests {
     // 例: REDIS_URL=redis://localhost:6379
 
     async fn setup_test_store() -> RedisSessionStore {
-        let redis_url = std::env::var("REDIS_URL")
-            .unwrap_or_else(|_| "redis://localhost:6379".to_string());
+        let redis_url =
+            std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".to_string());
 
         RedisSessionStore::new(&redis_url, 3600, "test:session:".to_string())
             .await
@@ -342,7 +351,10 @@ mod tests {
         let session_id = "session_ttl_test";
 
         // 10秒のTTLで作成
-        store.create_session(session_id, &user, Some(10)).await.unwrap();
+        store
+            .create_session(session_id, &user, Some(10))
+            .await
+            .unwrap();
 
         let ttl = store.get_session_ttl(session_id).await.unwrap().unwrap();
         assert!(ttl > 0 && ttl <= 10);
@@ -358,10 +370,13 @@ mod tests {
         let user = create_test_user("user1", "testuser");
         let session_id = "session_refresh_test";
 
-        store.create_session(session_id, &user, Some(10)).await.unwrap();
+        store
+            .create_session(session_id, &user, Some(10))
+            .await
+            .unwrap();
 
         let session_before = store.get_session(session_id).await.unwrap().unwrap();
-        
+
         // 少し待ってからリフレッシュ
         tokio::time::sleep(Duration::from_secs(1)).await;
         store.refresh_session(session_id, Some(20)).await.unwrap();
@@ -397,9 +412,18 @@ mod tests {
         let user = create_test_user("user1", "testuser");
 
         // 複数のセッションを作成
-        store.create_session("session_1", &user, None).await.unwrap();
-        store.create_session("session_2", &user, None).await.unwrap();
-        store.create_session("session_3", &user, None).await.unwrap();
+        store
+            .create_session("session_1", &user, None)
+            .await
+            .unwrap();
+        store
+            .create_session("session_2", &user, None)
+            .await
+            .unwrap();
+        store
+            .create_session("session_3", &user, None)
+            .await
+            .unwrap();
 
         let count = store.count_user_sessions("user1").await.unwrap();
         assert_eq!(count, 3);
@@ -424,7 +448,10 @@ mod tests {
         metadata.insert("ip_address".to_string(), "192.168.1.1".to_string());
         metadata.insert("user_agent".to_string(), "Mozilla/5.0".to_string());
 
-        store.update_session_metadata(session_id, metadata).await.unwrap();
+        store
+            .update_session_metadata(session_id, metadata)
+            .await
+            .unwrap();
 
         let session = store.get_session(session_id).await.unwrap().unwrap();
         assert_eq!(session.metadata.get("ip_address").unwrap(), "192.168.1.1");

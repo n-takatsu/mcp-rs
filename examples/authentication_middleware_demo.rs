@@ -15,9 +15,8 @@ use axum::{
     Router,
 };
 use mcp_rs::security::auth::{
-    create_auth_router, AuthApiState, AuthMiddleware, AuthRequirement,
-    InMemoryUserRepository, JwtAuth, JwtConfig, MultiAuthProvider, Role,
-    UserRepository,
+    create_auth_router, AuthApiState, AuthMiddleware, AuthRequirement, InMemoryUserRepository,
+    JwtAuth, JwtConfig, MultiAuthProvider, Role, UserRepository,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -46,22 +45,23 @@ struct CreatePostRequest {
 // ============================================================================
 
 async fn health_check() -> impl IntoResponse {
-    (StatusCode::OK, Json(serde_json::json!({
-        "status": "healthy",
-        "service": "mcp-rs-api"
-    })))
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "status": "healthy",
+            "service": "mcp-rs-api"
+        })),
+    )
 }
 
 async fn public_posts() -> impl IntoResponse {
-    let posts = vec![
-        Post {
-            id: "1".to_string(),
-            title: "公開投稿".to_string(),
-            content: "誰でも見られる内容".to_string(),
-            author_id: "system".to_string(),
-            published: true,
-        },
-    ];
+    let posts = vec![Post {
+        id: "1".to_string(),
+        title: "公開投稿".to_string(),
+        content: "誰でも見られる内容".to_string(),
+        author_id: "system".to_string(),
+        published: true,
+    }];
 
     (StatusCode::OK, Json(posts))
 }
@@ -72,7 +72,9 @@ async fn public_posts() -> impl IntoResponse {
 
 /// 認証されている場合はユーザー名を表示、されていない場合は"Guest"
 async fn welcome(request: Request) -> impl IntoResponse {
-    let user = request.extensions().get::<mcp_rs::security::auth::AuthUser>();
+    let user = request
+        .extensions()
+        .get::<mcp_rs::security::auth::AuthUser>();
     let username = user
         .as_ref()
         .map(|u| u.username.as_str())
@@ -93,7 +95,10 @@ async fn welcome(request: Request) -> impl IntoResponse {
 
 /// 現在のユーザー情報を取得（/auth/meと同等）
 async fn current_user_profile(request: Request) -> impl IntoResponse {
-    if let Some(user) = request.extensions().get::<mcp_rs::security::auth::AuthUser>() {
+    if let Some(user) = request
+        .extensions()
+        .get::<mcp_rs::security::auth::AuthUser>()
+    {
         (
             StatusCode::OK,
             Json(serde_json::json!({
@@ -116,16 +121,17 @@ async fn current_user_profile(request: Request) -> impl IntoResponse {
 
 /// ユーザーの投稿一覧を取得
 async fn my_posts(request: Request) -> impl IntoResponse {
-    if let Some(user) = request.extensions().get::<mcp_rs::security::auth::AuthUser>() {
-        let posts = vec![
-            Post {
-                id: "2".to_string(),
-                title: format!("{}の投稿", user.username),
-                content: "認証済みユーザーの投稿".to_string(),
-                author_id: user.id.clone(),
-                published: true,
-            },
-        ];
+    if let Some(user) = request
+        .extensions()
+        .get::<mcp_rs::security::auth::AuthUser>()
+    {
+        let posts = vec![Post {
+            id: "2".to_string(),
+            title: format!("{}の投稿", user.username),
+            content: "認証済みユーザーの投稿".to_string(),
+            author_id: user.id.clone(),
+            published: true,
+        }];
 
         (StatusCode::OK, Json(posts))
     } else {
@@ -134,9 +140,7 @@ async fn my_posts(request: Request) -> impl IntoResponse {
 }
 
 /// 新しい投稿を作成
-async fn create_post(
-    Json(req): Json<CreatePostRequest>,
-) -> impl IntoResponse {
+async fn create_post(Json(req): Json<CreatePostRequest>) -> impl IntoResponse {
     // ミドルウェアで認証済み前提
     let post = Post {
         id: uuid::Uuid::new_v4().to_string(),
@@ -155,16 +159,17 @@ async fn create_post(
 
 /// 全ユーザーの投稿を取得（管理者のみ）
 async fn admin_all_posts(request: Request) -> impl IntoResponse {
-    if let Some(user) = request.extensions().get::<mcp_rs::security::auth::AuthUser>() {
-        let posts = vec![
-            Post {
-                id: "999".to_string(),
-                title: "管理者専用データ".to_string(),
-                content: format!("閲覧者: {}", user.username),
-                author_id: "admin".to_string(),
-                published: true,
-            },
-        ];
+    if let Some(user) = request
+        .extensions()
+        .get::<mcp_rs::security::auth::AuthUser>()
+    {
+        let posts = vec![Post {
+            id: "999".to_string(),
+            title: "管理者専用データ".to_string(),
+            content: format!("閲覧者: {}", user.username),
+            author_id: "admin".to_string(),
+            published: true,
+        }];
 
         (StatusCode::OK, Json(posts))
     } else {
@@ -174,7 +179,10 @@ async fn admin_all_posts(request: Request) -> impl IntoResponse {
 
 /// システム統計を取得（管理者のみ）
 async fn admin_stats(request: Request) -> impl IntoResponse {
-    if let Some(user) = request.extensions().get::<mcp_rs::security::auth::AuthUser>() {
+    if let Some(user) = request
+        .extensions()
+        .get::<mcp_rs::security::auth::AuthUser>()
+    {
         (
             StatusCode::OK,
             Json(serde_json::json!({
@@ -321,12 +329,16 @@ async fn main() -> anyhow::Result<()> {
     println!("\n1. ユーザー登録:");
     println!(r#"curl -X POST http://{}/auth/register \"#, addr);
     println!(r#"  -H "Content-Type: application/json" \"#);
-    println!(r#"  -d '{{"username":"alice","password":"SecurePass123!","email":"alice@example.com"}}'"#);
+    println!(
+        r#"  -d '{{"username":"alice","password":"SecurePass123!","email":"alice@example.com"}}'"#
+    );
 
     println!("\n2. ログイン:");
     println!(r#"curl -X POST http://{}/auth/login \"#, addr);
     println!(r#"  -H "Content-Type: application/json" \"#);
-    println!(r#"  -d '{{"email":"alice@example.com","password":"SecurePass123!","remember_me":false}}'"#);
+    println!(
+        r#"  -d '{{"email":"alice@example.com","password":"SecurePass123!","remember_me":false}}'"#
+    );
 
     println!("\n3. 認証必須エンドポイントへアクセス:");
     println!(r#"TOKEN="<access_token from login response>""#);

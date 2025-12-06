@@ -274,7 +274,9 @@ mod tests {
     #[tokio::test]
     async fn test_auth_middleware_without_token() {
         let repository: Arc<dyn UserRepository> = Arc::new(InMemoryUserRepository::new());
-        let provider = Arc::new(MultiAuthProvider::new(None, None, None, None, 12, repository));
+        let provider = Arc::new(MultiAuthProvider::new(
+            None, None, None, None, 12, repository,
+        ));
         let middleware = AuthMiddleware::new(provider, AuthRequirement::Required);
 
         let app = Router::new()

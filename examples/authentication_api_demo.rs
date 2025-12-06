@@ -7,8 +7,8 @@
 //! - セッション管理
 
 use mcp_rs::security::auth::{
-    create_auth_router, AuthApiState, JwtAuth, JwtConfig, MultiAuthProvider,
-    InMemoryUserRepository, UserRepository,
+    create_auth_router, AuthApiState, InMemoryUserRepository, JwtAuth, JwtConfig,
+    MultiAuthProvider, UserRepository,
 };
 use std::sync::Arc;
 
@@ -29,7 +29,7 @@ async fn main() -> anyhow::Result<()> {
     // JWT設定
     let jwt_config = JwtConfig {
         secret: "demo-secret-key-change-in-production".to_string(),
-        access_token_expiration: 3600,  // 1時間
+        access_token_expiration: 3600,   // 1時間
         refresh_token_expiration: 86400, // 24時間
         issuer: "mcp-rs-demo".to_string(),
         audience: Some("mcp-rs-api".to_string()),
@@ -53,9 +53,9 @@ async fn main() -> anyhow::Result<()> {
     #[cfg(feature = "redis-backend")]
     let session_store = {
         use mcp_rs::security::auth::RedisSessionStore;
-        let redis_url = std::env::var("REDIS_URL")
-            .unwrap_or_else(|_| "redis://localhost:6379".to_string());
-        
+        let redis_url =
+            std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".to_string());
+
         match RedisSessionStore::new(&redis_url, 3600, "demo_session:".to_string()).await {
             Ok(store) => {
                 println!("✓ Redis セッションストア作成完了");
@@ -94,17 +94,21 @@ async fn main() -> anyhow::Result<()> {
     // サーバー起動
     let listener = tokio::net::TcpListener::bind("127.0.0.1:3001").await?;
     let addr = listener.local_addr()?;
-    
+
     println!("\n🚀 認証APIサーバー起動: http://{}", addr);
     println!("\n使用例:");
     println!("  # ユーザー登録");
     println!(r#"  curl -X POST http://{}/register \"#, addr);
     println!(r#"    -H "Content-Type: application/json" \"#);
-    println!(r#"    -d '{{"username":"demo","password":"SecurePass123!","email":"demo@example.com"}}'"#);
+    println!(
+        r#"    -d '{{"username":"demo","password":"SecurePass123!","email":"demo@example.com"}}'"#
+    );
     println!("\n  # ログイン");
     println!(r#"  curl -X POST http://{}/login \"#, addr);
     println!(r#"    -H "Content-Type: application/json" \"#);
-    println!(r#"    -d '{{"email":"demo@example.com","password":"SecurePass123!","remember_me":false}}'"#);
+    println!(
+        r#"    -d '{{"email":"demo@example.com","password":"SecurePass123!","remember_me":false}}'"#
+    );
     println!("\nCtrl+C で終了");
 
     axum::serve(listener, app).await?;
