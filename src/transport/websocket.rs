@@ -4,6 +4,7 @@
 //! bidirectional support, TLS/WSS, automatic reconnection, and heartbeat.
 
 use crate::security::AuditLogger;
+use crate::session::{SessionManager, SessionState};
 use crate::transport::{Transport, TransportError};
 use crate::types::{JsonRpcRequest, JsonRpcResponse};
 use async_trait::async_trait;
@@ -159,6 +160,10 @@ pub struct WebSocketConfig {
     pub require_authentication: bool,
     /// Authentication timeout in seconds (time limit for client to send valid token)
     pub auth_timeout_seconds: Option<u64>,
+    /// Enable session management (creates session on successful authentication)
+    pub enable_session_management: bool,
+    /// Session time-to-live in seconds (default: 3600 = 1 hour)
+    pub session_ttl_seconds: u64,
     /// Heartbeat interval in seconds (0 to disable)
     pub heartbeat_interval: u64,
     /// Maximum reconnection attempts (0 for infinite)
@@ -184,6 +189,8 @@ impl Default for WebSocketConfig {
             jwt_config: None,
             require_authentication: false,
             auth_timeout_seconds: Some(30),
+            enable_session_management: false,
+            session_ttl_seconds: 3600,
             heartbeat_interval: 30,
             max_reconnect_attempts: 5,
             reconnect_delay: 5,
@@ -237,6 +244,8 @@ pub struct WebSocketTransport {
     reconnect_count: Arc<RwLock<u32>>,
     // Audit logger for security events
     audit_logger: Option<Arc<AuditLogger>>,
+    // Session manager for authenticated connections
+    session_manager: Option<Arc<SessionManager>>,
 }
 
 impl WebSocketTransport {
@@ -244,6 +253,15 @@ impl WebSocketTransport {
     pub fn new(config: WebSocketConfig) -> Result<Self, TransportError> {
         let (outgoing_tx, outgoing_rx) = mpsc::unbounded_channel();
         let (incoming_tx, incoming_rx) = mpsc::unbounded_channel();
+
+        // Create session manager if session management is enabled
+        let session_manager = if config.enable_session_management {
+            Some(Arc::new(SessionManager::with_ttl(
+                (config.session_ttl_seconds / 3600) as i64,
+            )))
+        } else {
+            None
+        };
 
         Ok(Self {
             config,
@@ -261,6 +279,7 @@ impl WebSocketTransport {
             bytes_received: Arc::new(RwLock::new(0)),
             reconnect_count: Arc::new(RwLock::new(0)),
             audit_logger: None,
+            session_manager,
         })
     }
 
@@ -381,6 +400,96 @@ impl WebSocketTransport {
             JwtAlgorithm::RS512 => Algorithm::RS512,
             JwtAlgorithm::ES256 => Algorithm::ES256,
             JwtAlgorithm::ES384 => Algorithm::ES384,
+        }
+    }
+
+    /// Validate JWT token from Authorization header and optionally create session
+    async fn validate_jwt_token_and_create_session(
+        auth_header: Option<&str>,
+        jwt_config: &JwtConfig,
+        require_auth: bool,
+        audit_logger: &Option<Arc<AuditLogger>>,
+        session_manager: &Option<Arc<SessionManager>>,
+        peer_addr: &str,
+    ) -> Result<Option<(HashMap<String, Value>, Option<String>)>, TransportError> {
+        // Validate JWT token
+        let claims_opt = Self::validate_jwt_token(
+            auth_header,
+            jwt_config,
+            require_auth,
+            audit_logger,
+            peer_addr,
+        )?;
+
+        if let Some(claims) = claims_opt {
+            // Extract user information from claims
+            let user_id = claims
+                .get("sub")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+                .to_string();
+
+            let roles = claims
+                .get("roles")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect::<Vec<String>>()
+                })
+                .unwrap_or_default();
+
+            // Create session if session manager is available
+            let session_id = if let Some(manager) = session_manager {
+                match manager.create_session(user_id.clone()).await {
+                    Ok(mut session) => {
+                        // Store roles in metadata
+                        if !roles.is_empty() {
+                            session
+                                .metadata
+                                .insert("roles".to_string(), roles.join(","));
+                        }
+
+                        // Activate session
+                        if let Ok(Some(activated)) = manager.activate_session(&session.id).await {
+                            // Log session creation
+                            if let Some(logger) = audit_logger {
+                                use crate::security::{AuditCategory, AuditLevel, AuditLogEntry};
+                                let entry = AuditLogEntry::new(
+                                    AuditLevel::Info,
+                                    AuditCategory::NetworkActivity,
+                                    format!(
+                                        "Session created for user '{}' (session_id: {})",
+                                        user_id, activated.id
+                                    ),
+                                )
+                                .with_request_info(peer_addr.to_string(), String::new())
+                                .add_metadata("user_id".to_string(), user_id.clone())
+                                .add_metadata("session_id".to_string(), activated.id.to_string());
+
+                                let logger_clone = Arc::clone(logger);
+                                tokio::spawn(async move {
+                                    let _ = logger_clone.log(entry).await;
+                                });
+                            }
+
+                            Some(activated.id.to_string())
+                        } else {
+                            None
+                        }
+                    }
+                    Err(e) => {
+                        warn!("Failed to create session for user {}: {}", user_id, e);
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+
+            Ok(Some((claims, session_id)))
+        } else {
+            Ok(None)
         }
     }
 
@@ -617,6 +726,7 @@ impl WebSocketTransport {
         let state = Arc::clone(&self.state);
         let config = self.config.clone();
         let audit_logger = self.audit_logger.clone();
+        let session_manager = self.session_manager.clone();
 
         // Accept first connection (simplified implementation)
         tokio::spawn(async move {
@@ -627,17 +737,18 @@ impl WebSocketTransport {
 
                     // Handle TLS if enabled
                     if config.use_tls {
-                        // TLS server implementation with Origin validation
+                        // TLS server implementation with Origin validation and session management
                         match Self::accept_tls_connection_with_origin_validation(
                             stream,
                             peer_addr,
                             &config,
                             &audit_logger,
+                            &session_manager,
                         )
                         .await
                         {
                             Ok(ws_stream) => {
-                                info!("WebSocket TLS handshake completed with Origin validation");
+                                info!("WebSocket TLS handshake completed with Origin validation and JWT authentication");
                                 *server_connection.write().await = Some(ws_stream);
                                 *state.write().await = ConnectionState::Connected;
                             }
@@ -650,12 +761,20 @@ impl WebSocketTransport {
                         // Plain WebSocket with Origin validation and JWT authentication
                         let origin_policy = config.origin_validation.clone();
                         let require_origin = config.require_origin_header;
-                        let jwt_config = config.jwt_config.clone();
+                        let jwt_config_for_callback = config.jwt_config.clone();
+                        let jwt_config_for_session = config.jwt_config.clone();
                         let require_auth = config.require_authentication;
-                        let audit_logger_clone = audit_logger.clone();
+                        let audit_logger_for_callback = audit_logger.clone();
+                        let audit_logger_for_session = audit_logger.clone();
+                        let session_manager_clone = session_manager.clone();
                         let peer_addr_str = peer_addr.to_string();
+                        let peer_addr_str_for_callback = peer_addr_str.clone();
 
-                        let callback = |req: &Request, response: Response| {
+                        // Store auth header for session creation after handshake
+                        let auth_header_captured = Arc::new(RwLock::new(None::<String>));
+                        let auth_header_for_callback = auth_header_captured.clone();
+
+                        let callback = move |req: &Request, response: Response| {
                             // Extract Origin header
                             let origin = req.headers().get("Origin").and_then(|h| h.to_str().ok());
 
@@ -664,8 +783,8 @@ impl WebSocketTransport {
                                 origin,
                                 &origin_policy,
                                 require_origin,
-                                &audit_logger_clone,
-                                &peer_addr_str,
+                                &audit_logger_for_callback,
+                                &peer_addr_str_for_callback,
                             ) {
                                 warn!("Origin validation failed: {}", e);
                                 return Err(http::Response::builder()
@@ -675,18 +794,26 @@ impl WebSocketTransport {
                             }
 
                             // Validate JWT if configured
-                            if let Some(ref jwt_cfg) = jwt_config {
+                            if let Some(ref jwt_cfg) = jwt_config_for_callback {
                                 let auth_header = req
                                     .headers()
                                     .get("Authorization")
                                     .and_then(|h| h.to_str().ok());
 
+                                // Store auth header for session creation
+                                if let Some(header_val) = auth_header {
+                                    // Use blocking write since we're in sync context
+                                    if let Ok(mut captured) = auth_header_for_callback.try_write() {
+                                        *captured = Some(header_val.to_string());
+                                    }
+                                }
+
                                 if let Err(e) = Self::validate_jwt_token(
                                     auth_header,
                                     jwt_cfg,
                                     require_auth,
-                                    &audit_logger_clone,
-                                    &peer_addr_str,
+                                    &audit_logger_for_callback,
+                                    &peer_addr_str_for_callback,
                                 ) {
                                     warn!("JWT authentication failed: {}", e);
                                     return Err(http::Response::builder()
@@ -701,6 +828,44 @@ impl WebSocketTransport {
 
                         match accept_hdr_async(MaybeTlsStream::Plain(stream), callback).await {
                             Ok(ws_stream) => {
+                                // Create session after successful handshake
+                                if let (Some(ref jwt_cfg), Some(ref sess_mgr)) =
+                                    (&jwt_config_for_session, &session_manager_clone)
+                                {
+                                    let auth_header_value =
+                                        auth_header_captured.read().await.clone();
+                                    if let Some(auth_header) = auth_header_value.as_deref() {
+                                        match Self::validate_jwt_token_and_create_session(
+                                            Some(auth_header),
+                                            jwt_cfg,
+                                            require_auth,
+                                            &audit_logger_for_session,
+                                            &Some(Arc::clone(sess_mgr)),
+                                            &peer_addr_str,
+                                        )
+                                        .await
+                                        {
+                                            Ok(Some((_claims, Some(session_id)))) => {
+                                                info!(
+                                                    "Session created for WebSocket connection: {}",
+                                                    session_id
+                                                );
+                                                // TODO: Store session_id in connection context
+                                            }
+                                            Ok(_) => {
+                                                debug!("No session created (auth not required or session management disabled)");
+                                            }
+                                            Err(e) => {
+                                                warn!(
+                                                    "Failed to create session after handshake: {}",
+                                                    e
+                                                );
+                                                // Connection is already established, just log the error
+                                            }
+                                        }
+                                    }
+                                }
+
                                 info!("WebSocket handshake completed with Origin validation and JWT authentication");
                                 *server_connection.write().await = Some(ws_stream);
                                 *state.write().await = ConnectionState::Connected;
@@ -851,6 +1016,7 @@ impl WebSocketTransport {
         peer_addr: SocketAddr,
         config: &WebSocketConfig,
         audit_logger: &Option<Arc<AuditLogger>>,
+        session_manager: &Option<Arc<SessionManager>>,
     ) -> Result<WsStream, TransportError> {
         use native_tls::Identity;
         use std::fs;
@@ -963,12 +1129,20 @@ impl WebSocketTransport {
         // Perform WebSocket handshake with Origin validation and JWT authentication
         let origin_policy = config.origin_validation.clone();
         let require_origin = config.require_origin_header;
-        let jwt_config = config.jwt_config.clone();
+        let jwt_config_for_callback = config.jwt_config.clone();
+        let jwt_config_for_session = config.jwt_config.clone();
         let require_auth = config.require_authentication;
-        let audit_logger_clone = audit_logger.clone();
+        let audit_logger_for_callback = audit_logger.clone();
+        let audit_logger_for_session = audit_logger.clone();
+        let session_manager_clone = session_manager.clone();
         let peer_addr_str = peer_addr.to_string();
+        let peer_addr_str_for_callback = peer_addr_str.clone();
 
-        let callback = |req: &Request, response: Response| {
+        // Store auth header for session creation after handshake
+        let auth_header_captured = Arc::new(RwLock::new(None::<String>));
+        let auth_header_for_callback = auth_header_captured.clone();
+
+        let callback = move |req: &Request, response: Response| {
             // Extract Origin header
             let origin = req.headers().get("Origin").and_then(|h| h.to_str().ok());
 
@@ -977,8 +1151,8 @@ impl WebSocketTransport {
                 origin,
                 &origin_policy,
                 require_origin,
-                &audit_logger_clone,
-                &peer_addr_str,
+                &audit_logger_for_callback,
+                &peer_addr_str_for_callback,
             ) {
                 warn!("TLS WebSocket Origin validation failed: {}", e);
                 return Err(http::Response::builder()
@@ -988,18 +1162,25 @@ impl WebSocketTransport {
             }
 
             // Validate JWT if configured
-            if let Some(ref jwt_cfg) = jwt_config {
+            if let Some(ref jwt_cfg) = jwt_config_for_callback {
                 let auth_header = req
                     .headers()
                     .get("Authorization")
                     .and_then(|h| h.to_str().ok());
 
+                // Store auth header for session creation
+                if let Some(header_val) = auth_header {
+                    if let Ok(mut captured) = auth_header_for_callback.try_write() {
+                        *captured = Some(header_val.to_string());
+                    }
+                }
+
                 if let Err(e) = Self::validate_jwt_token(
                     auth_header,
                     jwt_cfg,
                     require_auth,
-                    &audit_logger_clone,
-                    &peer_addr_str,
+                    &audit_logger_for_callback,
+                    &peer_addr_str_for_callback,
                 ) {
                     warn!("TLS WebSocket JWT authentication failed: {}", e);
                     return Err(http::Response::builder()
@@ -1015,6 +1196,40 @@ impl WebSocketTransport {
         let ws_stream = accept_hdr_async(MaybeTlsStream::NativeTls(tls_stream), callback)
             .await
             .map_err(|e| TransportError::Internal(format!("WebSocket handshake failed: {}", e)))?;
+
+        // Create session after successful handshake
+        if let (Some(ref jwt_cfg), Some(ref sess_mgr)) =
+            (&jwt_config_for_session, &session_manager_clone)
+        {
+            let auth_header_value = auth_header_captured.read().await.clone();
+            if let Some(auth_header) = auth_header_value.as_deref() {
+                match Self::validate_jwt_token_and_create_session(
+                    Some(auth_header),
+                    jwt_cfg,
+                    require_auth,
+                    &audit_logger_for_session,
+                    &Some(Arc::clone(sess_mgr)),
+                    &peer_addr_str,
+                )
+                .await
+                {
+                    Ok(Some((_claims, Some(session_id)))) => {
+                        info!(
+                            "Session created for TLS WebSocket connection: {}",
+                            session_id
+                        );
+                        // TODO: Store session_id in connection context
+                    }
+                    Ok(_) => {
+                        debug!("No session created for TLS connection (auth not required or session management disabled)");
+                    }
+                    Err(e) => {
+                        warn!("Failed to create session after TLS handshake: {}", e);
+                        // Connection is already established, just log the error
+                    }
+                }
+            }
+        }
 
         Ok(ws_stream)
     }

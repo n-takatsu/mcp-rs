@@ -76,6 +76,7 @@ fn test_websocket_config_with_jwt_disabled() {
         reconnect_delay: 5,
         max_message_size: 16 * 1024 * 1024,
         max_connections: 100,
+        ..Default::default()
     };
 
     assert!(config.jwt_config.is_none());
@@ -104,7 +105,7 @@ fn test_websocket_config_with_jwt_enabled() {
         tls_config: None,
         origin_validation: mcp_rs::transport::websocket::OriginValidationPolicy::default(),
         require_origin_header: false,
-        jwt_config: Some(jwt_config.clone()),
+        jwt_config: Some(jwt_config),
         require_authentication: true,
         auth_timeout_seconds: Some(30),
         heartbeat_interval: 30,
@@ -112,6 +113,7 @@ fn test_websocket_config_with_jwt_enabled() {
         reconnect_delay: 5,
         max_message_size: 16 * 1024 * 1024,
         max_connections: 100,
+        ..Default::default()
     };
 
     assert!(config.jwt_config.is_some());
@@ -303,6 +305,7 @@ fn test_combined_security_features() {
         reconnect_delay: 5,
         max_message_size: 16 * 1024 * 1024,
         max_connections: 100,
+        ..Default::default()
     };
 
     // Verify all security features are enabled
