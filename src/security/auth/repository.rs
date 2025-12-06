@@ -97,14 +97,7 @@ pub trait UserRepository: Send + Sync {
 /// サーバー再起動時に全データが失われます。
 pub mod memory;
 
-/// PostgreSQLユーザーリポジトリ (本番環境推奨)
-#[cfg(feature = "postgres")]
-pub mod postgres;
-
-/// MySQLユーザーリポジトリ
-#[cfg(feature = "mysql")]
-pub mod mysql;
-
-/// Redisユーザーリポジトリ (キャッシュ層)
-#[cfg(feature = "redis")]
-pub mod redis;
+// TODO: 将来的に実装予定
+// - PostgreSQLユーザーリポジトリ (本番環境推奨)
+// - MySQLユーザーリポジトリ
+// - Redisユーザーリポジトリ (キャッシュ層)
