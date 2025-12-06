@@ -109,7 +109,7 @@ fn demo_allow_pattern_policy() {
 
     let patterns = vec![
         r"^https://.*\.example\.com$".to_string(), // All example.com subdomains
-        r"^https://example\.com$".to_string(),      // example.com itself
+        r"^https://example\.com$".to_string(),     // example.com itself
     ];
 
     let _config = WebSocketConfig {
@@ -138,9 +138,9 @@ fn demo_allow_pattern_policy() {
         ("https://api.example.com", true),
         ("https://admin.example.com", true),
         ("https://example.com", true),
-        ("http://app.example.com", false),    // Wrong protocol
+        ("http://app.example.com", false), // Wrong protocol
         ("https://example.com.malicious.com", false), // Wrong domain
-        ("https://malicious.com", false),     // Different domain
+        ("https://malicious.com", false),  // Different domain
     ];
 
     for (origin, should_match) in test_cases {
@@ -151,12 +151,21 @@ fn demo_allow_pattern_policy() {
         });
 
         let symbol = if matches == should_match {
-            if matches { "✅" } else { "❌" }
+            if matches {
+                "✅"
+            } else {
+                "❌"
+            }
         } else {
             "❗"
         };
 
-        println!("   {} {} → {}", symbol, origin, if matches { "Accepted" } else { "Rejected" });
+        println!(
+            "   {} {} → {}",
+            symbol,
+            origin,
+            if matches { "Accepted" } else { "Rejected" }
+        );
     }
     println!();
 }
@@ -217,9 +226,8 @@ fn demo_development_configuration() {
     ]);
 
     #[cfg(not(debug_assertions))]
-    let origin_policy = OriginValidationPolicy::AllowList(vec![
-        "https://app.example.com".to_string(),
-    ]);
+    let origin_policy =
+        OriginValidationPolicy::AllowList(vec!["https://app.example.com".to_string()]);
 
     let _config = WebSocketConfig {
         url: "127.0.0.1:8080".to_string(),
