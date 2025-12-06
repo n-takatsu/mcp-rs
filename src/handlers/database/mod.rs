@@ -24,6 +24,11 @@ pub mod security_config; // 拡張セキュリティ設定 // 統合セキュリ
 pub mod dynamic_engine; // 動的エンジン切り替え機能
 pub mod dynamic_tools; // 動的切り替えMCPツール
 
+// データマスキングモジュール
+pub mod data_masking; // データマスキングエンジン
+pub mod masking_formatters; // マスキングフォーマッタ
+pub mod masking_rules; // マスキングルール定義
+
 // エンジン実装
 pub mod engines;
 
@@ -46,3 +51,11 @@ pub use advanced_security::{
 };
 pub use integrated_security::{IntegratedSecurityManager, SecurityCheckResult};
 pub use security_config::AdvancedSecurityConfig;
+
+// データマスキングAPI
+pub use data_masking::{AuditEntry, DataMaskingEngine, MaskingStatistics};
+pub use masking_formatters::{MaskingFormatter, PredefinedFormatters};
+pub use masking_rules::{
+    ColumnPattern, DataType, HashAlgorithm, MaskingContext, MaskingPolicy, MaskingPurpose,
+    MaskingRule, MaskingType, NetworkConstraints, TimeConstraints, TimeRange,
+};
