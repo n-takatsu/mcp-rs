@@ -22,11 +22,11 @@ pub enum AuthError {
     #[error("Forbidden: {0}")]
     Forbidden(String),
 
-    #[error("User not found")]
-    UserNotFound,
+    #[error("User not found: {0}")]
+    UserNotFound(String),
 
-    #[error("User already exists")]
-    UserAlreadyExists,
+    #[error("User already exists: {0}")]
+    UserAlreadyExists(String),
 
     #[error("Password too weak")]
     WeakPassword,

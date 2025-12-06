@@ -166,8 +166,8 @@ impl IntoResponse for AuthError {
             AuthError::TokenInvalid(_) => (StatusCode::UNAUTHORIZED, "Invalid token"),
             AuthError::Unauthorized(_) => (StatusCode::UNAUTHORIZED, "Unauthorized"),
             AuthError::Forbidden(_) => (StatusCode::FORBIDDEN, "Forbidden"),
-            AuthError::UserNotFound => (StatusCode::NOT_FOUND, "User not found"),
-            AuthError::UserAlreadyExists => (StatusCode::CONFLICT, "User already exists"),
+            AuthError::UserNotFound(_) => (StatusCode::NOT_FOUND, "User not found"),
+            AuthError::UserAlreadyExists(_) => (StatusCode::CONFLICT, "User already exists"),
             AuthError::WeakPassword => (StatusCode::BAD_REQUEST, "Password too weak"),
             AuthError::MfaRequired => (StatusCode::UNAUTHORIZED, "MFA required"),
             AuthError::MfaInvalid => (StatusCode::UNAUTHORIZED, "Invalid MFA code"),
@@ -205,6 +205,8 @@ impl AuthUserExt for Request {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::security::auth::repository::memory::InMemoryUserRepository;
+    use crate::security::auth::repository::UserRepository;
     use crate::security::auth::{JwtAuth, JwtConfig, MultiAuthProvider};
     use axum::{
         body::Body,
@@ -223,17 +225,23 @@ mod tests {
     #[tokio::test]
     async fn test_auth_middleware_with_valid_token() {
         let jwt_config = JwtConfig::default();
+        let repository: Arc<dyn UserRepository> = Arc::new(InMemoryUserRepository::new());
         let provider = Arc::new(MultiAuthProvider::new(
             Some(jwt_config.clone()),
             None,
             None,
             None,
             12,
+            repository,
         ));
 
         // ユーザー登録と認証
         let user = provider
-            .register_user("testuser".to_string(), "TestPass123!".to_string(), None)
+            .register_user(
+                "testuser".to_string(),
+                "TestPass123!".to_string(),
+                "test@example.com".to_string(),
+            )
             .await
             .unwrap();
 
@@ -264,7 +272,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_auth_middleware_without_token() {
-        let provider = Arc::new(MultiAuthProvider::new(None, None, None, None, 12));
+        let repository: Arc<dyn UserRepository> = Arc::new(InMemoryUserRepository::new());
+        let provider = Arc::new(MultiAuthProvider::new(None, None, None, None, 12, repository));
         let middleware = AuthMiddleware::new(provider, AuthRequirement::Required);
 
         let app = Router::new()

@@ -3,6 +3,7 @@
 use super::api_key::{ApiKey, ApiKeyManager};
 use super::jwt::JwtAuth;
 use super::oauth2::OAuth2Provider;
+use super::repository::UserRepository;
 use super::session_auth::SessionAuth;
 use super::types::{
     AuthError, AuthMethod, AuthProvider as AuthProviderType, AuthResult, AuthUser, Credentials,
@@ -47,24 +48,27 @@ pub struct MultiAuthProvider {
     /// パスワードハッシャー
     password_hasher: PasswordHasher,
 
-    /// ユーザーストア（デモ用、実際はDBに保存）
-    users: Arc<RwLock<HashMap<String, StoredUser>>>,
-}
-
-/// 保存されたユーザー情報
-#[derive(Debug, Clone)]
-struct StoredUser {
-    user: AuthUser,
-    password_hash: Option<String>,
+    /// ユーザーリポジトリ
+    repository: Arc<dyn UserRepository>,
 }
 
 impl MultiAuthProvider {
+    /// 新しいMultiAuthProviderを作成
+    /// 
+    /// # Arguments
+    /// * `jwt_config` - JWT設定 (Optional)
+    /// * `oauth2_configs` - OAuth2設定リスト (Optional)
+    /// * `api_key_config` - APIキー設定 (Optional)
+    /// * `session_config` - セッション設定 (Optional)
+    /// * `password_salt_rounds` - パスワードハッシュのソルトラウンド数
+    /// * `repository` - ユーザーリポジトリ実装
     pub fn new(
         jwt_config: Option<JwtConfig>,
         oauth2_configs: Option<Vec<OAuth2Config>>,
         api_key_config: Option<ApiKeyConfig>,
         session_config: Option<SessionConfig>,
         password_salt_rounds: u32,
+        repository: Arc<dyn UserRepository>,
     ) -> Self {
         let jwt = jwt_config.map(|c| Arc::new(JwtAuth::new(c)));
 
@@ -85,7 +89,7 @@ impl MultiAuthProvider {
             api_key,
             session,
             password_hasher: PasswordHasher::new(password_salt_rounds),
-            users: Arc::new(RwLock::new(HashMap::new())),
+            repository,
         }
     }
 
@@ -94,7 +98,7 @@ impl MultiAuthProvider {
         &self,
         username: String,
         password: String,
-        email: Option<String>,
+        email: String,
     ) -> AuthResult<AuthUser> {
         // パスワード強度チェック
         PasswordHasher::check_strength(&password)?;
@@ -102,43 +106,32 @@ impl MultiAuthProvider {
         // パスワードをハッシュ化
         let password_hash = self.password_hasher.hash(&password)?;
 
-        let mut user = AuthUser::new(uuid::Uuid::new_v4().to_string(), username.clone());
-        user.email = email;
-        user.provider = AuthProviderType::Local;
+        let user = AuthUser::new(uuid::Uuid::new_v4().to_string(), username.clone());
+        let mut user_with_email = user;
+        user_with_email.email = Some(email);
 
-        let stored_user = StoredUser {
-            user: user.clone(),
-            password_hash: Some(password_hash),
-        };
+        // リポジトリに保存
+        self.repository
+            .create_user(&user_with_email, Some(password_hash))
+            .await?;
 
-        let mut users = self.users.write().await;
-
-        // ユーザー名の重複チェック
-        if users.values().any(|u| u.user.username == username) {
-            return Err(AuthError::UserAlreadyExists);
-        }
-
-        users.insert(user.id.clone(), stored_user);
-        Ok(user)
+        Ok(user_with_email)
     }
 
-    /// ユーザー名でユーザーを取得
-    pub async fn get_user_by_username(&self, username: &str) -> AuthResult<AuthUser> {
-        let users = self.users.read().await;
-        users
-            .values()
-            .find(|u| u.user.username == username)
-            .map(|u| u.user.clone())
-            .ok_or(AuthError::UserNotFound)
+    /// メールアドレスでユーザーを取得
+    pub async fn get_user_by_email(&self, email: &str) -> AuthResult<AuthUser> {
+        self.repository
+            .find_by_email(email)
+            .await?
+            .ok_or(AuthError::UserNotFound(email.to_string()))
     }
 
     /// ユーザーIDでユーザーを取得
     pub async fn get_user_by_id(&self, user_id: &str) -> AuthResult<AuthUser> {
-        let users = self.users.read().await;
-        users
-            .get(user_id)
-            .map(|u| u.user.clone())
-            .ok_or(AuthError::UserNotFound)
+        self.repository
+            .find_by_id(user_id)
+            .await?
+            .ok_or(AuthError::UserNotFound(user_id.to_string()))
     }
 }
 
@@ -147,22 +140,11 @@ impl AuthenticationProvider for MultiAuthProvider {
     async fn authenticate(&self, credentials: Credentials) -> AuthResult<AuthUser> {
         match credentials {
             Credentials::Password { username, password } => {
-                let users = self.users.read().await;
-                let stored_user = users
-                    .values()
-                    .find(|u| u.user.username == username)
-                    .ok_or(AuthError::InvalidCredentials)?;
-
-                let password_hash = stored_user
-                    .password_hash
-                    .as_ref()
-                    .ok_or(AuthError::InvalidCredentials)?;
-
-                if !self.password_hasher.verify(&password, password_hash)? {
-                    return Err(AuthError::InvalidCredentials);
-                }
-
-                Ok(stored_user.user.clone())
+                // リポジトリで認証（usernameをemailとして扱う）
+                self.repository
+                    .verify_password(&username, &password)
+                    .await?
+                    .ok_or(AuthError::InvalidCredentials)
             }
 
             Credentials::ApiKey { key } => {
@@ -278,27 +260,36 @@ impl AuthenticationProvider for MultiAuthProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::security::auth::repository::memory::InMemoryUserRepository;
     use crate::security::auth::types::Role;
 
     #[tokio::test]
     async fn test_register_and_authenticate_user() {
-        let provider = MultiAuthProvider::new(Some(JwtConfig::default()), None, None, None, 12);
+        let repository: Arc<dyn UserRepository> = Arc::new(InMemoryUserRepository::new());
+        let provider = MultiAuthProvider::new(
+            Some(JwtConfig::default()),
+            None,
+            None,
+            None,
+            12,
+            repository,
+        );
 
         // ユーザー登録
         let user = provider
             .register_user(
                 "testuser".to_string(),
                 "TestPass123!".to_string(),
-                Some("test@example.com".to_string()),
+                "test@example.com".to_string(),
             )
             .await
             .unwrap();
 
         assert_eq!(user.username, "testuser");
 
-        // 認証
+        // 認証（usernameにemailを渡す）
         let credentials = Credentials::Password {
-            username: "testuser".to_string(),
+            username: "test@example.com".to_string(),
             password: "TestPass123!".to_string(),
         };
 
@@ -308,10 +299,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_weak_password_rejection() {
-        let provider = MultiAuthProvider::new(None, None, None, None, 12);
+        let repository: Arc<dyn UserRepository> = Arc::new(InMemoryUserRepository::new());
+        let provider = MultiAuthProvider::new(None, None, None, None, 12, repository);
 
         let result = provider
-            .register_user("testuser".to_string(), "weak".to_string(), None)
+            .register_user(
+                "testuser".to_string(),
+                "weak".to_string(),
+                "test@example.com".to_string(),
+            )
             .await;
 
         assert!(matches!(result, Err(AuthError::WeakPassword)));

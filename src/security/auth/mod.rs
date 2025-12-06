@@ -12,6 +12,7 @@ pub mod jwt;
 pub mod middleware;
 pub mod oauth2;
 pub mod provider;
+pub mod repository;
 pub mod session_auth;
 pub mod types;
 
@@ -20,6 +21,7 @@ pub use jwt::{JwtAuth, JwtClaims, JwtConfig, JwtError, JwtTokenPair};
 pub use middleware::{AuthMiddleware, AuthRequirement};
 pub use oauth2::{OAuth2Config, OAuth2Error, OAuth2Provider, OAuth2Token};
 pub use provider::{AuthenticationProvider, MultiAuthProvider};
+pub use repository::{UserRepository, memory::InMemoryUserRepository};
 pub use session_auth::{SessionAuth, SessionConfig, SessionToken};
 pub use types::{
     AuthError, AuthMethod, AuthProvider, AuthResult, AuthUser, Credentials, PasswordHasher,
