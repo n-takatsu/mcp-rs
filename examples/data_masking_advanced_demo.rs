@@ -161,7 +161,7 @@ async fn main() -> anyhow::Result<()> {
     println!("📋 デモ1: カスタムマスカー");
     println!("─────────────────────────────");
 
-    let mut data = json!({
+    let data = json!({
         "id": 1001,
         "name": "山田太郎",
         "email": "yamada.taro@example.com",
