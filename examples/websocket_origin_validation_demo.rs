@@ -22,7 +22,7 @@ fn demo_allow_any_policy() {
     println!("   ⚠️  WARNING: Do not use in production!");
     println!();
 
-    let config = WebSocketConfig {
+    let _config = WebSocketConfig {
         url: "127.0.0.1:8080".to_string(),
         server_mode: true,
         origin_validation: OriginValidationPolicy::AllowAny,
@@ -46,7 +46,7 @@ fn demo_reject_all_policy() {
     println!("2. RejectAll Policy (Default - Most Secure)");
     println!();
 
-    let config = WebSocketConfig {
+    let _config = WebSocketConfig {
         url: "0.0.0.0:8443".to_string(),
         server_mode: true,
         use_tls: true,
@@ -77,7 +77,7 @@ fn demo_allow_list_policy() {
         "https://api.example.com".to_string(),
     ];
 
-    let config = WebSocketConfig {
+    let _config = WebSocketConfig {
         url: "0.0.0.0:8443".to_string(),
         server_mode: true,
         use_tls: true,
@@ -112,7 +112,7 @@ fn demo_allow_pattern_policy() {
         r"^https://example\.com$".to_string(),      // example.com itself
     ];
 
-    let config = WebSocketConfig {
+    let _config = WebSocketConfig {
         url: "0.0.0.0:8443".to_string(),
         server_mode: true,
         use_tls: true,
@@ -166,7 +166,7 @@ fn demo_production_configuration() {
     println!("5. Production Configuration Example");
     println!();
 
-    let config = WebSocketConfig {
+    let _config = WebSocketConfig {
         url: "0.0.0.0:8443".to_string(),
         server_mode: true,
         use_tls: true,
@@ -221,7 +221,7 @@ fn demo_development_configuration() {
         "https://app.example.com".to_string(),
     ]);
 
-    let config = WebSocketConfig {
+    let _config = WebSocketConfig {
         url: "127.0.0.1:8080".to_string(),
         server_mode: true,
         use_tls: false, // Development only
