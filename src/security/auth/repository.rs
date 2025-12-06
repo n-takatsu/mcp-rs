@@ -97,7 +97,10 @@ pub trait UserRepository: Send + Sync {
 /// サーバー再起動時に全データが失われます。
 pub mod memory;
 
+/// PostgreSQLユーザーリポジトリ (本番環境推奨)
+#[cfg(feature = "postgresql-backend")]
+pub mod postgres;
+
 // TODO: 将来的に実装予定
-// - PostgreSQLユーザーリポジトリ (本番環境推奨)
 // - MySQLユーザーリポジトリ
 // - Redisユーザーリポジトリ (キャッシュ層)

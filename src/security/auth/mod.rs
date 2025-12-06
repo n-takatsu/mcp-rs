@@ -22,6 +22,10 @@ pub use middleware::{AuthMiddleware, AuthRequirement};
 pub use oauth2::{OAuth2Config, OAuth2Error, OAuth2Provider, OAuth2Token};
 pub use provider::{AuthenticationProvider, MultiAuthProvider};
 pub use repository::{UserRepository, memory::InMemoryUserRepository};
+
+#[cfg(feature = "postgresql-backend")]
+pub use repository::postgres::PostgresUserRepository;
+
 pub use session_auth::{SessionAuth, SessionConfig, SessionToken};
 pub use types::{
     AuthError, AuthMethod, AuthProvider, AuthResult, AuthUser, Credentials, PasswordHasher,
