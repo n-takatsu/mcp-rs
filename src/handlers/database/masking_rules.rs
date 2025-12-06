@@ -39,6 +39,21 @@ pub enum MaskingType {
         /// トークンプレフィックス
         prefix: String,
     },
+    /// カスタムマスキング (ユーザー定義)
+    Custom {
+        /// カスタムマスキング名
+        name: String,
+    },
+}
+
+/// カスタムマスキングトレイト
+#[async_trait::async_trait]
+pub trait CustomMasker: Send + Sync {
+    /// カスタムマスキング名を取得
+    fn name(&self) -> &str;
+    
+    /// 値をマスキング
+    async fn mask(&self, value: &str, context: &MaskingContext) -> anyhow::Result<String>;
 }
 
 /// ハッシュアルゴリズム

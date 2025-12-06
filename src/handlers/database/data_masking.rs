@@ -4,7 +4,7 @@
 
 use crate::handlers::database::masking_formatters::MaskingFormatter;
 use crate::handlers::database::masking_rules::{
-    MaskingContext, MaskingPolicy, MaskingPurpose, MaskingRule, MaskingType,
+    CustomMasker, MaskingContext, MaskingPolicy, MaskingPurpose, MaskingRule, MaskingType,
 };
 use anyhow::{Context, Result};
 use serde_json::Value as JsonValue;
@@ -22,6 +22,12 @@ pub struct DataMaskingEngine {
     rule_cache: Arc<RwLock<HashMap<String, Vec<MaskingRule>>>>,
     /// 監査ログ
     audit_log: Arc<RwLock<Vec<AuditEntry>>>,
+    /// カスタムマスカー (名前 -> マスカー)
+    custom_maskers: Arc<RwLock<HashMap<String, Arc<dyn CustomMasker>>>>,
+    /// 結果キャッシュ (値のハッシュ -> マスク結果)
+    result_cache: Arc<RwLock<HashMap<u64, String>>>,
+    /// 結果キャッシュの有効/無効
+    cache_enabled: bool,
 }
 
 /// 監査ログエントリ
@@ -49,7 +55,33 @@ impl DataMaskingEngine {
             formatter: Arc::new(MaskingFormatter::new()),
             rule_cache: Arc::new(RwLock::new(HashMap::new())),
             audit_log: Arc::new(RwLock::new(Vec::new())),
+            custom_maskers: Arc::new(RwLock::new(HashMap::new())),
+            result_cache: Arc::new(RwLock::new(HashMap::new())),
+            cache_enabled: true,
         }
+    }
+
+    /// 結果キャッシュを有効化
+    pub fn enable_result_cache(&mut self) {
+        self.cache_enabled = true;
+    }
+
+    /// 結果キャッシュを無効化
+    pub fn disable_result_cache(&mut self) {
+        self.cache_enabled = false;
+    }
+
+    /// カスタムマスカーを登録
+    pub async fn register_custom_masker(&self, masker: Arc<dyn CustomMasker>) -> Result<()> {
+        let mut maskers = self.custom_maskers.write().await;
+        maskers.insert(masker.name().to_string(), masker);
+        Ok(())
+    }
+
+    /// カスタムマスカーを取得
+    async fn get_custom_masker(&self, name: &str) -> Option<Arc<dyn CustomMasker>> {
+        let maskers = self.custom_maskers.read().await;
+        maskers.get(name).cloned()
     }
 
     /// ポリシーを追加
@@ -98,6 +130,28 @@ impl DataMaskingEngine {
         })
     }
 
+    /// バッチ処理: 複数のクエリ結果を並列マスキング
+    pub async fn mask_batch(
+        &self,
+        data_batch: &mut [JsonValue],
+        context: &MaskingContext,
+    ) -> Result<()> {
+        use futures::stream::{self, StreamExt};
+
+        // 並列度を設定 (CPUコア数に基づく)
+        let concurrency = num_cpus::get().max(1);
+
+        stream::iter(data_batch.iter_mut())
+            .map(|data| async move { self.mask_query_result(data, context).await })
+            .buffer_unordered(concurrency)
+            .collect::<Vec<_>>()
+            .await
+            .into_iter()
+            .collect::<Result<Vec<_>>>()?;
+
+        Ok(())
+    }
+
     /// オブジェクトをマスキング
     fn mask_object<'a>(
         &'a self,
@@ -115,7 +169,7 @@ impl DataMaskingEngine {
                     // 最も優先度の高いルールを適用
                     if let Some(value) = map.get(&key) {
                         if let JsonValue::String(s) = value {
-                            let masked = self.formatter.mask(s, &rule.masking_type).await?;
+                            let masked = self.mask_value(s, &rule.masking_type, context).await?;
                             map.insert(key.clone(), JsonValue::String(masked));
 
                             // 監査ログに記録
@@ -139,6 +193,73 @@ impl DataMaskingEngine {
 
             Ok(())
         })
+    }
+
+    /// 値をマスキング (キャッシュ対応)
+    async fn mask_value(
+        &self,
+        value: &str,
+        masking_type: &MaskingType,
+        context: &MaskingContext,
+    ) -> Result<String> {
+        // キャッシュが有効な場合はチェック
+        if self.cache_enabled {
+            let cache_key = self.compute_cache_key(value, masking_type);
+            
+            // キャッシュから取得を試みる
+            {
+                let cache = self.result_cache.read().await;
+                if let Some(cached) = cache.get(&cache_key) {
+                    return Ok(cached.clone());
+                }
+            }
+
+            // キャッシュにない場合はマスキング実行
+            let masked = self.perform_masking(value, masking_type, context).await?;
+
+            // 結果をキャッシュに保存
+            {
+                let mut cache = self.result_cache.write().await;
+                cache.insert(cache_key, masked.clone());
+            }
+
+            Ok(masked)
+        } else {
+            // キャッシュ無効時は直接マスキング
+            self.perform_masking(value, masking_type, context).await
+        }
+    }
+
+    /// マスキング処理を実行
+    async fn perform_masking(
+        &self,
+        value: &str,
+        masking_type: &MaskingType,
+        context: &MaskingContext,
+    ) -> Result<String> {
+        match masking_type {
+            MaskingType::Custom { name } => {
+                // カスタムマスカーを使用
+                if let Some(masker) = self.get_custom_masker(name).await {
+                    masker.mask(value, context).await
+                } else {
+                    anyhow::bail!("Custom masker not found: {}", name);
+                }
+            }
+            _ => {
+                // 標準フォーマッタを使用
+                self.formatter.mask(value, masking_type).await
+            }
+        }
+    }
+
+    /// キャッシュキーを計算
+    fn compute_cache_key(&self, value: &str, masking_type: &MaskingType) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        value.hash(&mut hasher);
+        format!("{:?}", masking_type).hash(&mut hasher);
+        hasher.finish()
     }
 
     /// カラムに適用されるルールを取得

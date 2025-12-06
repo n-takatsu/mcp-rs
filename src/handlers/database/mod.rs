@@ -56,6 +56,7 @@ pub use security_config::AdvancedSecurityConfig;
 pub use data_masking::{AuditEntry, DataMaskingEngine, MaskingStatistics};
 pub use masking_formatters::{MaskingFormatter, PredefinedFormatters};
 pub use masking_rules::{
-    ColumnPattern, DataType, HashAlgorithm, MaskingContext, MaskingPolicy, MaskingPurpose,
-    MaskingRule, MaskingType, NetworkConstraints, TimeConstraints, TimeRange,
+    ColumnPattern, CustomMasker, DataType, HashAlgorithm, MaskingContext, MaskingPolicy,
+    MaskingPurpose, MaskingRule, MaskingType, NetworkConstraints, TimeConstraints, TimeRange,
 };
+

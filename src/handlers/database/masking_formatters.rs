@@ -43,6 +43,10 @@ impl MaskingFormatter {
                 mask_char,
             } => self.format_preserving_mask(value, format_pattern, *mask_char),
             MaskingType::TokenMask { prefix } => self.token_mask(value, prefix).await,
+            MaskingType::Custom { name } => {
+                // カスタムマスキングはDataMaskingEngineで処理されるため、ここでは使用しない
+                anyhow::bail!("Custom masking should be handled by DataMaskingEngine, not by MaskingFormatter: {}", name);
+            }
         }
     }
 

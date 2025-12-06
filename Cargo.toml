@@ -41,6 +41,7 @@ uuid = { version = "1.18", features = ["v4", "serde"] }
 
 # Random number generation (for benchmarks and testing)
 rand = "0.8"
+num_cpus = "1.16"
 
 # Testing dependencies
 log = "0.4"
