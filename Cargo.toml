@@ -259,6 +259,15 @@ lto = true
 "RUSTSEC-2023-0071" = "RSA crate from sqlx-mysql (unused) - MySQL support provided by secure mysql_async v0.36.1"
 "RUSTSEC-2024-0436" = "paste crate - unmaintained but required by ratatui (currently disabled)"
 
+# Data masking examples require the database feature
+[[example]]
+name = "data_masking_demo"
+required-features = ["database"]
+
+[[example]]
+name = "data_masking_advanced_demo"
+required-features = ["database"]
+
 # MFA examples require the mfa feature
 [[example]]
 name = "mfa_totp_demo"
