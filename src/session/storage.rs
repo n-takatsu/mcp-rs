@@ -1,6 +1,7 @@
 use crate::error::SessionError;
 use crate::session::types::{Session, SessionFilter, SessionId};
 use async_trait::async_trait;
+use std::any::Any;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -12,6 +13,9 @@ pub trait SessionStorage: Send + Sync + std::fmt::Debug {
     async fn update(&self, session: Session) -> Result<Session, SessionError>;
     async fn delete(&self, id: &SessionId) -> Result<bool, SessionError>;
     async fn list(&self, filter: &SessionFilter) -> Result<Vec<Session>, SessionError>;
+
+    /// Downcast to concrete type (for accessing specialized methods)
+    fn as_any(&self) -> &dyn Any;
 }
 
 #[derive(Debug)]
@@ -74,5 +78,9 @@ impl SessionStorage for MemorySessionStorage {
         }
 
         Ok(result)
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
     }
 }
