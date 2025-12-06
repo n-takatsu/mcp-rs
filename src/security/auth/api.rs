@@ -13,9 +13,9 @@ use crate::security::auth::{
 #[cfg(feature = "redis-backend")]
 use crate::security::auth::RedisSessionStore;
 use axum::{
-    extract::{Json, State},
+    extract::{Json, Request, State},
     http::StatusCode,
-    response::IntoResponse,
+    response::{IntoResponse, Response},
     routing::{get, post},
     Router,
 };
@@ -246,16 +246,23 @@ async fn logout_user(
 ///
 /// GET /auth/me
 /// Authorization: Bearer <token>
+/// 
+/// Note: 認証ミドルウェア経由でのみアクセス可能
 async fn get_current_user(
     State(_state): State<AuthApiState>,
-    // TODO: Authorizationヘッダーからトークンを抽出するextractorを実装
-) -> impl IntoResponse {
-    // 仮実装：認証ミドルウェアでユーザーが設定されている前提
-    let error = ErrorResponse {
-        error: "NotImplemented".to_string(),
-        message: "Use AuthMiddleware to extract user".to_string(),
-    };
-    (StatusCode::NOT_IMPLEMENTED, Json(error))
+    request: Request,
+) -> Response {
+    // リクエストのextensionsからユーザーを取得
+    if let Some(user) = request.extensions().get::<AuthUser>() {
+        let user_info = UserInfo::from(user.clone());
+        (StatusCode::OK, Json(user_info)).into_response()
+    } else {
+        let error = ErrorResponse {
+            error: "Unauthorized".to_string(),
+            message: "Authentication required. Use AuthMiddleware.".to_string(),
+        };
+        (StatusCode::UNAUTHORIZED, Json(error)).into_response()
+    }
 }
 
 #[cfg(test)]
