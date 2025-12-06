@@ -36,6 +36,9 @@ async fn test_websocket_with_audit_logger() {
         tls_config: None,
         origin_validation: mcp_rs::transport::websocket::OriginValidationPolicy::default(),
         require_origin_header: false,
+        jwt_config: None,
+        require_authentication: false,
+        auth_timeout_seconds: Some(30),
     };
 
     // Create WebSocket transport with audit logger
@@ -84,6 +87,9 @@ async fn test_websocket_tls_config_with_audit_logger() {
         tls_config: Some(tls_config),
         origin_validation: mcp_rs::transport::websocket::OriginValidationPolicy::default(),
         require_origin_header: false,
+        jwt_config: None,
+        require_authentication: false,
+        auth_timeout_seconds: Some(30),
     };
 
     // Create WebSocket transport with audit logger
@@ -123,6 +129,9 @@ async fn test_audit_logger_builder_pattern() {
         tls_config: None,
         origin_validation: mcp_rs::transport::websocket::OriginValidationPolicy::default(),
         require_origin_header: false,
+        jwt_config: None,
+        require_authentication: false,
+        auth_timeout_seconds: Some(30),
     })
     .expect("Failed to create transport")
     .with_audit_logger(audit_logger);
@@ -146,6 +155,9 @@ async fn test_audit_logger_optional() {
         tls_config: None,
         origin_validation: mcp_rs::transport::websocket::OriginValidationPolicy::default(),
         require_origin_header: false,
+        jwt_config: None,
+        require_authentication: false,
+        auth_timeout_seconds: Some(30),
     })
     .expect("Failed to create transport");
 
@@ -206,6 +218,9 @@ fn test_websocket_config_combinations() {
         tls_config: None,
         origin_validation: mcp_rs::transport::websocket::OriginValidationPolicy::default(),
         require_origin_header: false,
+        jwt_config: None,
+        require_authentication: false,
+        auth_timeout_seconds: Some(30),
     };
 
     assert!(!plain_config.use_tls);
@@ -231,6 +246,9 @@ fn test_websocket_config_combinations() {
         }),
         origin_validation: mcp_rs::transport::websocket::OriginValidationPolicy::default(),
         require_origin_header: false,
+        jwt_config: None,
+        require_authentication: false,
+        auth_timeout_seconds: Some(30),
     };
 
     assert!(tls_ws_config.use_tls);
@@ -250,6 +268,9 @@ fn test_websocket_config_combinations() {
         tls_config: None,
         origin_validation: mcp_rs::transport::websocket::OriginValidationPolicy::default(),
         require_origin_header: false,
+        jwt_config: None,
+        require_authentication: false,
+        auth_timeout_seconds: Some(30),
     };
 
     assert!(server_config.server_mode);
