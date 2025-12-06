@@ -17,7 +17,10 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, RwLock};
 use tokio::time::{interval, timeout};
 use tokio_tungstenite::{
-    accept_async, connect_async, tungstenite::protocol::Message, MaybeTlsStream, WebSocketStream,
+    accept_async, accept_hdr_async, connect_async, tungstenite::protocol::Message,
+    tungstenite::handshake::server::{Request, Response},
+    MaybeTlsStream, WebSocketStream,
+};
 };
 use tracing::{debug, error, info, warn};
 
@@ -48,6 +51,25 @@ impl Default for TlsConfig {
     }
 }
 
+/// Origin validation policy for WebSocket connections
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum OriginValidationPolicy {
+    /// Allow any origin (insecure, development only)
+    AllowAny,
+    /// Reject all origins (most secure, same-origin only)
+    RejectAll,
+    /// Allow specific origins (whitelist)
+    AllowList(Vec<String>),
+    /// Allow origins matching regex patterns
+    AllowPattern(Vec<String>),
+}
+
+impl Default for OriginValidationPolicy {
+    fn default() -> Self {
+        Self::RejectAll
+    }
+}
+
 /// WebSocket transport configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WebSocketConfig {
@@ -61,6 +83,10 @@ pub struct WebSocketConfig {
     pub use_tls: bool,
     /// TLS configuration (required if use_tls is true)
     pub tls_config: Option<TlsConfig>,
+    /// Origin validation policy (server mode only)
+    pub origin_validation: OriginValidationPolicy,
+    /// Strict Origin validation (reject if Origin header is missing)
+    pub require_origin_header: bool,
     /// Heartbeat interval in seconds (0 to disable)
     pub heartbeat_interval: u64,
     /// Maximum reconnection attempts (0 for infinite)
@@ -81,6 +107,8 @@ impl Default for WebSocketConfig {
             timeout_seconds: Some(30),
             use_tls: false,
             tls_config: None,
+            origin_validation: OriginValidationPolicy::default(),
+            require_origin_header: false,
             heartbeat_interval: 30,
             max_reconnect_attempts: 5,
             reconnect_delay: 5,
@@ -165,6 +193,102 @@ impl WebSocketTransport {
     pub fn with_audit_logger(mut self, audit_logger: Arc<AuditLogger>) -> Self {
         self.audit_logger = Some(audit_logger);
         self
+    }
+
+    /// Validate Origin header against configured policy
+    fn validate_origin(
+        origin: Option<&str>,
+        policy: &OriginValidationPolicy,
+        require_header: bool,
+        audit_logger: &Option<Arc<AuditLogger>>,
+        peer_addr: &str,
+    ) -> Result<(), TransportError> {
+        // Check if Origin header is required
+        if require_header && origin.is_none() {
+            if let Some(logger) = audit_logger {
+                use crate::security::{AuditCategory, AuditLevel, AuditLogEntry};
+                let entry = AuditLogEntry::new(
+                    AuditLevel::Warning,
+                    AuditCategory::SecurityAttack,
+                    "WebSocket connection rejected: Missing required Origin header".to_string(),
+                )
+                .with_request_info(peer_addr.to_string(), String::new());
+
+                let logger_clone = Arc::clone(logger);
+                tokio::spawn(async move {
+                    let _ = logger_clone.log(entry).await;
+                });
+            }
+            return Err(TransportError::Unauthorized(
+                "Origin header is required".to_string(),
+            ));
+        }
+
+        // If Origin header is not required and not present, allow
+        if origin.is_none() {
+            return Ok(());
+        }
+
+        let origin_value = origin.unwrap();
+
+        // Validate based on policy
+        let is_valid = match policy {
+            OriginValidationPolicy::AllowAny => true,
+            OriginValidationPolicy::RejectAll => false,
+            OriginValidationPolicy::AllowList(allowed) => {
+                allowed.iter().any(|o| o == origin_value)
+            }
+            OriginValidationPolicy::AllowPattern(patterns) => {
+                use regex::Regex;
+                patterns.iter().any(|pattern| {
+                    Regex::new(pattern)
+                        .map(|re| re.is_match(origin_value))
+                        .unwrap_or(false)
+                })
+            }
+        };
+
+        if !is_valid {
+            if let Some(logger) = audit_logger {
+                use crate::security::{AuditCategory, AuditLevel, AuditLogEntry};
+                let entry = AuditLogEntry::new(
+                    AuditLevel::Warning,
+                    AuditCategory::SecurityAttack,
+                    format!("WebSocket connection rejected: Invalid Origin '{}'", origin_value),
+                )
+                .with_request_info(peer_addr.to_string(), String::new())
+                .add_metadata("origin".to_string(), origin_value.to_string())
+                .add_metadata("policy".to_string(), format!("{:?}", policy));
+
+                let logger_clone = Arc::clone(logger);
+                tokio::spawn(async move {
+                    let _ = logger_clone.log(entry).await;
+                });
+            }
+            return Err(TransportError::Unauthorized(format!(
+                "Origin '{}' is not allowed",
+                origin_value
+            )));
+        }
+
+        // Log successful validation
+        if let Some(logger) = audit_logger {
+            use crate::security::{AuditCategory, AuditLevel, AuditLogEntry};
+            let entry = AuditLogEntry::new(
+                AuditLevel::Info,
+                AuditCategory::NetworkActivity,
+                format!("WebSocket connection accepted: Valid Origin '{}'", origin_value),
+            )
+            .with_request_info(peer_addr.to_string(), String::new())
+            .add_metadata("origin".to_string(), origin_value.to_string());
+
+            let logger_clone = Arc::clone(logger);
+            tokio::spawn(async move {
+                let _ = logger_clone.log(entry).await;
+            });
+        }
+
+        Ok(())
     }
 
     /// Start WebSocket server
