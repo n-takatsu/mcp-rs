@@ -1,4 +1,4 @@
-use mcp_rs::transport::websocket::{WebSocketConfig, OriginValidationPolicy};
+use mcp_rs::transport::websocket::{OriginValidationPolicy, WebSocketConfig};
 
 #[test]
 fn test_origin_validation_policies() {
@@ -24,12 +24,11 @@ fn test_origin_validation_policies() {
     }
 
     // Test AllowPattern policy
-    let allow_pattern = OriginValidationPolicy::AllowPattern(vec![
-        r"^https://.*\.example\.com$".to_string(),
-    ]);
+    let allow_pattern =
+        OriginValidationPolicy::AllowPattern(vec![r"^https://.*\.example\.com$".to_string()]);
     if let OriginValidationPolicy::AllowPattern(ref patterns) = allow_pattern {
         assert_eq!(patterns.len(), 1);
-        
+
         // Test pattern matching
         use regex::Regex;
         let re = Regex::new(&patterns[0]).unwrap();
@@ -66,7 +65,7 @@ fn test_websocket_config_origin_validation() {
     // Test AllowList configuration
     let allow_list_config = WebSocketConfig {
         origin_validation: OriginValidationPolicy::AllowList(vec![
-            "https://example.com".to_string(),
+            "https://example.com".to_string()
         ]),
         require_origin_header: true,
         ..Default::default()
@@ -89,31 +88,40 @@ fn test_origin_pattern_matching() {
     // Test common patterns
     let patterns = vec![
         // Subdomain pattern
-        (r"^https://.*\.example\.com$", vec![
-            ("https://app.example.com", true),
-            ("https://api.example.com", true),
-            ("https://example.com", false),
-            ("http://app.example.com", false),
-        ]),
+        (
+            r"^https://.*\.example\.com$",
+            vec![
+                ("https://app.example.com", true),
+                ("https://api.example.com", true),
+                ("https://example.com", false),
+                ("http://app.example.com", false),
+            ],
+        ),
         // Exact match
-        (r"^https://example\.com$", vec![
-            ("https://example.com", true),
-            ("https://app.example.com", false),
-            ("http://example.com", false),
-        ]),
+        (
+            r"^https://example\.com$",
+            vec![
+                ("https://example.com", true),
+                ("https://app.example.com", false),
+                ("http://example.com", false),
+            ],
+        ),
         // Localhost pattern
-        (r"^https?://localhost:\d+$", vec![
-            ("http://localhost:3000", true),
-            ("https://localhost:8080", true),
-            ("http://localhost", false),
-            ("https://example.com", false),
-        ]),
+        (
+            r"^https?://localhost:\d+$",
+            vec![
+                ("http://localhost:3000", true),
+                ("https://localhost:8080", true),
+                ("http://localhost", false),
+                ("https://example.com", false),
+            ],
+        ),
     ];
 
     for (pattern, cases) in patterns {
         use regex::Regex;
         let re = Regex::new(pattern).unwrap();
-        
+
         for (origin, expected) in cases {
             assert_eq!(
                 re.is_match(origin),
@@ -130,11 +138,11 @@ fn test_origin_pattern_matching() {
 #[test]
 fn test_origin_validation_security() {
     // Security-focused test cases
-    
+
     // 1. RejectAll policy (most secure default)
     let reject_all = OriginValidationPolicy::RejectAll;
     assert!(matches!(reject_all, OriginValidationPolicy::RejectAll));
-    
+
     // 2. AllowList policy (production recommended)
     let production_origins = vec![
         "https://app.example.com".to_string(),
@@ -148,7 +156,7 @@ fn test_origin_validation_security() {
             assert!(!origin.contains('*'));
         }
     }
-    
+
     // 3. AllowPattern policy (flexible but requires careful regex)
     let safe_patterns = vec![
         r"^https://.*\.example\.com$".to_string(), // Only HTTPS, only example.com subdomains
@@ -169,17 +177,17 @@ fn test_origin_validation_security() {
 #[test]
 fn test_require_origin_header_flag() {
     // Test require_origin_header flag behavior
-    
+
     // Secure configuration: require Origin header
     let secure_config = WebSocketConfig {
         origin_validation: OriginValidationPolicy::AllowList(vec![
-            "https://app.example.com".to_string(),
+            "https://app.example.com".to_string()
         ]),
         require_origin_header: true,
         ..Default::default()
     };
     assert!(secure_config.require_origin_header);
-    
+
     // Development configuration: optional Origin header
     let dev_config = WebSocketConfig {
         origin_validation: OriginValidationPolicy::AllowAny,

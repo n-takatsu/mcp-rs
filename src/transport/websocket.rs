@@ -17,8 +17,9 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, RwLock};
 use tokio::time::{interval, timeout};
 use tokio_tungstenite::{
-    accept_async, accept_hdr_async, connect_async, tungstenite::protocol::Message,
+    accept_async, accept_hdr_async, connect_async,
     tungstenite::handshake::server::{Request, Response},
+    tungstenite::protocol::Message,
     MaybeTlsStream, WebSocketStream,
 };
 use tracing::{debug, error, info, warn};
@@ -234,9 +235,7 @@ impl WebSocketTransport {
         let is_valid = match policy {
             OriginValidationPolicy::AllowAny => true,
             OriginValidationPolicy::RejectAll => false,
-            OriginValidationPolicy::AllowList(allowed) => {
-                allowed.iter().any(|o| o == origin_value)
-            }
+            OriginValidationPolicy::AllowList(allowed) => allowed.iter().any(|o| o == origin_value),
             OriginValidationPolicy::AllowPattern(patterns) => {
                 use regex::Regex;
                 patterns.iter().any(|pattern| {
@@ -253,7 +252,10 @@ impl WebSocketTransport {
                 let entry = AuditLogEntry::new(
                     AuditLevel::Warning,
                     AuditCategory::SecurityAttack,
-                    format!("WebSocket connection rejected: Invalid Origin '{}'", origin_value),
+                    format!(
+                        "WebSocket connection rejected: Invalid Origin '{}'",
+                        origin_value
+                    ),
                 )
                 .with_request_info(peer_addr.to_string(), String::new())
                 .add_metadata("origin".to_string(), origin_value.to_string())
@@ -276,7 +278,10 @@ impl WebSocketTransport {
             let entry = AuditLogEntry::new(
                 AuditLevel::Info,
                 AuditCategory::NetworkActivity,
-                format!("WebSocket connection accepted: Valid Origin '{}'", origin_value),
+                format!(
+                    "WebSocket connection accepted: Valid Origin '{}'",
+                    origin_value
+                ),
             )
             .with_request_info(peer_addr.to_string(), String::new())
             .add_metadata("origin".to_string(), origin_value.to_string());
@@ -327,8 +332,13 @@ impl WebSocketTransport {
                     if config.use_tls {
                         // TLS server implementation with Origin validation
                         match Self::accept_tls_connection_with_origin_validation(
-                            stream, peer_addr, &config, &audit_logger
-                        ).await {
+                            stream,
+                            peer_addr,
+                            &config,
+                            &audit_logger,
+                        )
+                        .await
+                        {
                             Ok(ws_stream) => {
                                 info!("WebSocket TLS handshake completed with Origin validation");
                                 *server_connection.write().await = Some(ws_stream);
@@ -348,8 +358,7 @@ impl WebSocketTransport {
 
                         let callback = |req: &Request, response: Response| {
                             // Extract Origin header
-                            let origin = req.headers().get("Origin")
-                                .and_then(|h| h.to_str().ok());
+                            let origin = req.headers().get("Origin").and_then(|h| h.to_str().ok());
 
                             // Validate Origin
                             if let Err(e) = Self::validate_origin(
@@ -638,8 +647,7 @@ impl WebSocketTransport {
 
         let callback = |req: &Request, response: Response| {
             // Extract Origin header
-            let origin = req.headers().get("Origin")
-                .and_then(|h| h.to_str().ok());
+            let origin = req.headers().get("Origin").and_then(|h| h.to_str().ok());
 
             // Validate Origin
             if let Err(e) = Self::validate_origin(
