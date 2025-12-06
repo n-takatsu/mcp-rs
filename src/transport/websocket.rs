@@ -8,7 +8,10 @@ use crate::transport::{Transport, TransportError};
 use crate::types::{JsonRpcRequest, JsonRpcResponse};
 use async_trait::async_trait;
 use futures::{SinkExt, StreamExt};
+use jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -51,6 +54,69 @@ impl Default for TlsConfig {
     }
 }
 
+/// JWT algorithm for token verification
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum JwtAlgorithm {
+    /// HMAC with SHA-256
+    HS256,
+    /// HMAC with SHA-384
+    HS384,
+    /// HMAC with SHA-512
+    HS512,
+    /// RSA with SHA-256
+    RS256,
+    /// RSA with SHA-384
+    RS384,
+    /// RSA with SHA-512
+    RS512,
+    /// ECDSA with SHA-256
+    ES256,
+    /// ECDSA with SHA-384
+    ES384,
+}
+
+impl Default for JwtAlgorithm {
+    fn default() -> Self {
+        Self::HS256
+    }
+}
+
+/// JWT authentication configuration for WebSocket connections
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JwtConfig {
+    /// JWT secret for HMAC algorithms or public key for RSA/ECDSA
+    pub secret: String,
+    /// JWT algorithm
+    pub algorithm: JwtAlgorithm,
+    /// Required claims that must be present in the token
+    pub required_claims: Vec<String>,
+    /// Allowed roles (if empty, any role is allowed)
+    pub allowed_roles: Vec<String>,
+    /// Token expiration validation enabled
+    pub validate_exp: bool,
+    /// Token not-before validation enabled
+    pub validate_nbf: bool,
+    /// Token issued-at validation enabled
+    pub validate_iat: bool,
+    /// Allowed clock skew in seconds for time-based validations
+    pub leeway_seconds: u64,
+}
+
+impl Default for JwtConfig {
+    fn default() -> Self {
+        Self {
+            secret: String::new(),
+            algorithm: JwtAlgorithm::default(),
+            required_claims: vec!["sub".to_string()],
+            allowed_roles: vec![],
+            validate_exp: true,
+            validate_nbf: true,
+            validate_iat: false,
+            leeway_seconds: 60,
+        }
+    }
+}
+
 /// Origin validation policy for WebSocket connections
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum OriginValidationPolicy {
@@ -87,6 +153,12 @@ pub struct WebSocketConfig {
     pub origin_validation: OriginValidationPolicy,
     /// Strict Origin validation (reject if Origin header is missing)
     pub require_origin_header: bool,
+    /// JWT authentication configuration (server mode only)
+    pub jwt_config: Option<JwtConfig>,
+    /// Require JWT authentication for all connections
+    pub require_authentication: bool,
+    /// Authentication timeout in seconds (time limit for client to send valid token)
+    pub auth_timeout_seconds: Option<u64>,
     /// Heartbeat interval in seconds (0 to disable)
     pub heartbeat_interval: u64,
     /// Maximum reconnection attempts (0 for infinite)
@@ -109,6 +181,9 @@ impl Default for WebSocketConfig {
             tls_config: None,
             origin_validation: OriginValidationPolicy::default(),
             require_origin_header: false,
+            jwt_config: None,
+            require_authentication: false,
+            auth_timeout_seconds: Some(30),
             heartbeat_interval: 30,
             max_reconnect_attempts: 5,
             reconnect_delay: 5,
@@ -295,6 +370,228 @@ impl WebSocketTransport {
         Ok(())
     }
 
+    /// Convert JwtAlgorithm to jsonwebtoken::Algorithm
+    fn jwt_algorithm_to_jsonwebtoken(alg: &JwtAlgorithm) -> Algorithm {
+        match alg {
+            JwtAlgorithm::HS256 => Algorithm::HS256,
+            JwtAlgorithm::HS384 => Algorithm::HS384,
+            JwtAlgorithm::HS512 => Algorithm::HS512,
+            JwtAlgorithm::RS256 => Algorithm::RS256,
+            JwtAlgorithm::RS384 => Algorithm::RS384,
+            JwtAlgorithm::RS512 => Algorithm::RS512,
+            JwtAlgorithm::ES256 => Algorithm::ES256,
+            JwtAlgorithm::ES384 => Algorithm::ES384,
+        }
+    }
+
+    /// Validate JWT token from Authorization header
+    fn validate_jwt_token(
+        auth_header: Option<&str>,
+        jwt_config: &JwtConfig,
+        require_auth: bool,
+        audit_logger: &Option<Arc<AuditLogger>>,
+        peer_addr: &str,
+    ) -> Result<Option<HashMap<String, Value>>, TransportError> {
+        // Check if authentication is required
+        if require_auth && auth_header.is_none() {
+            if let Some(logger) = audit_logger {
+                use crate::security::{AuditCategory, AuditLevel, AuditLogEntry};
+                let entry = AuditLogEntry::new(
+                    AuditLevel::Warning,
+                    AuditCategory::SecurityAttack,
+                    "WebSocket connection rejected: Missing required Authorization header"
+                        .to_string(),
+                )
+                .with_request_info(peer_addr.to_string(), String::new());
+
+                let logger_clone = Arc::clone(logger);
+                tokio::spawn(async move {
+                    let _ = logger_clone.log(entry).await;
+                });
+            }
+            return Err(TransportError::Unauthorized(
+                "Authorization header is required".to_string(),
+            ));
+        }
+
+        // If authentication is not required and no header, return None
+        if auth_header.is_none() {
+            return Ok(None);
+        }
+
+        let auth_value = auth_header.unwrap();
+
+        // Parse "Bearer {token}" format
+        let token = if auth_value.starts_with("Bearer ") {
+            auth_value.strip_prefix("Bearer ").unwrap()
+        } else {
+            if let Some(logger) = audit_logger {
+                use crate::security::{AuditCategory, AuditLevel, AuditLogEntry};
+                let entry = AuditLogEntry::new(
+                    AuditLevel::Warning,
+                    AuditCategory::SecurityAttack,
+                    "WebSocket connection rejected: Invalid Authorization header format"
+                        .to_string(),
+                )
+                .with_request_info(peer_addr.to_string(), String::new());
+
+                let logger_clone = Arc::clone(logger);
+                tokio::spawn(async move {
+                    let _ = logger_clone.log(entry).await;
+                });
+            }
+            return Err(TransportError::Unauthorized(
+                "Authorization header must use Bearer scheme".to_string(),
+            ));
+        };
+
+        // Set up JWT validation
+        let algorithm = Self::jwt_algorithm_to_jsonwebtoken(&jwt_config.algorithm);
+        let mut validation = Validation::new(algorithm);
+        validation.validate_exp = jwt_config.validate_exp;
+        validation.validate_nbf = jwt_config.validate_nbf;
+        validation.leeway = jwt_config.leeway_seconds;
+
+        // Decode and validate token
+        let decoding_key = match jwt_config.algorithm {
+            JwtAlgorithm::HS256 | JwtAlgorithm::HS384 | JwtAlgorithm::HS512 => {
+                DecodingKey::from_secret(jwt_config.secret.as_bytes())
+            }
+            JwtAlgorithm::RS256
+            | JwtAlgorithm::RS384
+            | JwtAlgorithm::RS512
+            | JwtAlgorithm::ES256
+            | JwtAlgorithm::ES384 => {
+                // For RSA/ECDSA, the secret should be base64-encoded DER
+                DecodingKey::from_base64_secret(&jwt_config.secret).map_err(|e| {
+                    TransportError::Unauthorized(format!("Invalid RSA/ECDSA key: {}", e))
+                })?
+            }
+        };
+
+        let token_data = decode::<HashMap<String, Value>>(token, &decoding_key, &validation)
+            .map_err(|e| {
+                if let Some(logger) = audit_logger {
+                    use crate::security::{AuditCategory, AuditLevel, AuditLogEntry};
+                    let entry = AuditLogEntry::new(
+                        AuditLevel::Warning,
+                        AuditCategory::SecurityAttack,
+                        format!(
+                            "WebSocket connection rejected: JWT validation failed: {}",
+                            e
+                        ),
+                    )
+                    .with_request_info(peer_addr.to_string(), String::new())
+                    .add_metadata("error".to_string(), e.to_string());
+
+                    let logger_clone = Arc::clone(logger);
+                    tokio::spawn(async move {
+                        let _ = logger_clone.log(entry).await;
+                    });
+                }
+                TransportError::Unauthorized(format!("Invalid JWT token: {}", e))
+            })?;
+
+        let claims = token_data.claims;
+
+        // Validate required claims
+        for claim in &jwt_config.required_claims {
+            if !claims.contains_key(claim) {
+                if let Some(logger) = audit_logger {
+                    use crate::security::{AuditCategory, AuditLevel, AuditLogEntry};
+                    let entry = AuditLogEntry::new(
+                        AuditLevel::Warning,
+                        AuditCategory::SecurityAttack,
+                        format!(
+                            "WebSocket connection rejected: Missing required claim '{}'",
+                            claim
+                        ),
+                    )
+                    .with_request_info(peer_addr.to_string(), String::new())
+                    .add_metadata("claim".to_string(), claim.clone());
+
+                    let logger_clone = Arc::clone(logger);
+                    tokio::spawn(async move {
+                        let _ = logger_clone.log(entry).await;
+                    });
+                }
+                return Err(TransportError::Unauthorized(format!(
+                    "Missing required claim: {}",
+                    claim
+                )));
+            }
+        }
+
+        // Validate roles if configured
+        if !jwt_config.allowed_roles.is_empty() {
+            let user_roles = claims
+                .get("roles")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect::<Vec<String>>()
+                })
+                .unwrap_or_default();
+
+            let has_allowed_role = user_roles
+                .iter()
+                .any(|role| jwt_config.allowed_roles.contains(role));
+
+            if !has_allowed_role {
+                if let Some(logger) = audit_logger {
+                    use crate::security::{AuditCategory, AuditLevel, AuditLogEntry};
+                    let entry = AuditLogEntry::new(
+                        AuditLevel::Warning,
+                        AuditCategory::SecurityAttack,
+                        "WebSocket connection rejected: User does not have required role"
+                            .to_string(),
+                    )
+                    .with_request_info(peer_addr.to_string(), String::new())
+                    .add_metadata("user_roles".to_string(), format!("{:?}", user_roles))
+                    .add_metadata(
+                        "allowed_roles".to_string(),
+                        format!("{:?}", jwt_config.allowed_roles),
+                    );
+
+                    let logger_clone = Arc::clone(logger);
+                    tokio::spawn(async move {
+                        let _ = logger_clone.log(entry).await;
+                    });
+                }
+                return Err(TransportError::Unauthorized(
+                    "User does not have required role".to_string(),
+                ));
+            }
+        }
+
+        // Log successful authentication
+        if let Some(logger) = audit_logger {
+            use crate::security::{AuditCategory, AuditLevel, AuditLogEntry};
+            let sub = claims
+                .get("sub")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            let entry = AuditLogEntry::new(
+                AuditLevel::Info,
+                AuditCategory::NetworkActivity,
+                format!(
+                    "WebSocket connection authenticated: User '{}' validated successfully",
+                    sub
+                ),
+            )
+            .with_request_info(peer_addr.to_string(), String::new())
+            .add_metadata("subject".to_string(), sub.to_string());
+
+            let logger_clone = Arc::clone(logger);
+            tokio::spawn(async move {
+                let _ = logger_clone.log(entry).await;
+            });
+        }
+
+        Ok(Some(claims))
+    }
+
     /// Start WebSocket server
     async fn start_server(&self) -> Result<(), TransportError> {
         let addr = self
@@ -350,9 +647,11 @@ impl WebSocketTransport {
                             }
                         }
                     } else {
-                        // Plain WebSocket with Origin validation
+                        // Plain WebSocket with Origin validation and JWT authentication
                         let origin_policy = config.origin_validation.clone();
                         let require_origin = config.require_origin_header;
+                        let jwt_config = config.jwt_config.clone();
+                        let require_auth = config.require_authentication;
                         let audit_logger_clone = audit_logger.clone();
                         let peer_addr_str = peer_addr.to_string();
 
@@ -375,12 +674,34 @@ impl WebSocketTransport {
                                     .unwrap());
                             }
 
+                            // Validate JWT if configured
+                            if let Some(ref jwt_cfg) = jwt_config {
+                                let auth_header = req
+                                    .headers()
+                                    .get("Authorization")
+                                    .and_then(|h| h.to_str().ok());
+
+                                if let Err(e) = Self::validate_jwt_token(
+                                    auth_header,
+                                    jwt_cfg,
+                                    require_auth,
+                                    &audit_logger_clone,
+                                    &peer_addr_str,
+                                ) {
+                                    warn!("JWT authentication failed: {}", e);
+                                    return Err(http::Response::builder()
+                                        .status(401)
+                                        .body(Some(format!("Unauthorized: {}", e)))
+                                        .unwrap());
+                                }
+                            }
+
                             Ok(response)
                         };
 
                         match accept_hdr_async(MaybeTlsStream::Plain(stream), callback).await {
                             Ok(ws_stream) => {
-                                info!("WebSocket handshake completed with Origin validation");
+                                info!("WebSocket handshake completed with Origin validation and JWT authentication");
                                 *server_connection.write().await = Some(ws_stream);
                                 *state.write().await = ConnectionState::Connected;
                             }
@@ -639,9 +960,11 @@ impl WebSocketTransport {
             }
         };
 
-        // Perform WebSocket handshake with Origin validation
+        // Perform WebSocket handshake with Origin validation and JWT authentication
         let origin_policy = config.origin_validation.clone();
         let require_origin = config.require_origin_header;
+        let jwt_config = config.jwt_config.clone();
+        let require_auth = config.require_authentication;
         let audit_logger_clone = audit_logger.clone();
         let peer_addr_str = peer_addr.to_string();
 
@@ -662,6 +985,28 @@ impl WebSocketTransport {
                     .status(403)
                     .body(Some(format!("Forbidden: {}", e)))
                     .unwrap());
+            }
+
+            // Validate JWT if configured
+            if let Some(ref jwt_cfg) = jwt_config {
+                let auth_header = req
+                    .headers()
+                    .get("Authorization")
+                    .and_then(|h| h.to_str().ok());
+
+                if let Err(e) = Self::validate_jwt_token(
+                    auth_header,
+                    jwt_cfg,
+                    require_auth,
+                    &audit_logger_clone,
+                    &peer_addr_str,
+                ) {
+                    warn!("TLS WebSocket JWT authentication failed: {}", e);
+                    return Err(http::Response::builder()
+                        .status(401)
+                        .body(Some(format!("Unauthorized: {}", e)))
+                        .unwrap());
+                }
             }
 
             Ok(response)
