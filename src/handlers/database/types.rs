@@ -508,6 +508,9 @@ pub enum SecurityError {
 
     #[error("Threat detected: {0}")]
     ThreatDetected(String),
+
+    #[error("Encryption error: {0}")]
+    EncryptionError(String),
 }
 
 /// 検証結果

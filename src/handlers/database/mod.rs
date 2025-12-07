@@ -29,6 +29,9 @@ pub mod data_masking; // データマスキングエンジン
 pub mod masking_formatters; // マスキングフォーマッタ
 pub mod masking_rules; // マスキングルール定義
 
+// カラムレベル暗号化モジュール
+pub mod column_encryption; // Column-level encryption with key management
+
 // エンジン実装
 pub mod engines;
 
@@ -46,11 +49,15 @@ pub use security::DatabaseSecurity;
 pub use types::{DatabaseConfig, DatabaseFeature, DatabaseType, ExecuteResult, QueryResult};
 
 // 高度なセキュリティAPI
-pub use advanced_security::{
-    AnomalyDetector, ColumnEncryption, MultiFactorAuth, RoleBasedAccessControl,
-};
+pub use advanced_security::{AnomalyDetector, MultiFactorAuth, RoleBasedAccessControl};
 pub use integrated_security::{IntegratedSecurityManager, SecurityCheckResult};
 pub use security_config::AdvancedSecurityConfig;
+
+// カラムレベル暗号化API
+pub use column_encryption::{
+    CacheStats, ColumnEncryptionConfig, ColumnEncryptionManager, EncryptionAlgorithm, KeyManager,
+    KeyManagerConfig, KeyMetadata, KeyProvider,
+};
 
 // データマスキングAPI
 pub use data_masking::{AuditEntry, DataMaskingEngine, MaskingStatistics};

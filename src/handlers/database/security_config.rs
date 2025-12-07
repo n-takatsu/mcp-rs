@@ -323,6 +323,9 @@ pub struct EncryptionConfig {
     /// 一般復号化許可フラグ
     pub allow_general_decryption: bool,
 
+    /// 暗号化対象カラムのリスト (table.column形式)
+    pub encrypted_columns: Option<Vec<String>>,
+
     /// カラムレベル暗号化
     pub column_encryption: ColumnEncryptionConfig,
 
