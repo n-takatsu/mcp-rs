@@ -590,8 +590,10 @@ mod tests {
     #[tokio::test]
     async fn test_max_subscriptions() {
         let manager = Arc::new(ThreatIntelligenceManager::new());
-        let mut config = ThreatFeedConfig::default();
-        config.max_subscriptions = 2;
+        let config = ThreatFeedConfig {
+            max_subscriptions: 2,
+            ..Default::default()
+        };
         let feed = ThreatFeed::new(manager, config);
 
         // 最大数までサブスクリプション作成

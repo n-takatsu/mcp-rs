@@ -223,6 +223,15 @@ struct QueuedMessage {
     retry_count: u32,
 }
 
+/// Connection metadata for rate limiting and tracking
+#[derive(Debug, Clone)]
+struct ConnectionMetadata {
+    /// Peer socket address
+    peer_addr: SocketAddr,
+    /// Peer IP address (for rate limiting)
+    peer_ip: String,
+}
+
 /// WebSocket transport implementation
 #[derive(Debug)]
 pub struct WebSocketTransport {
@@ -253,6 +262,8 @@ pub struct WebSocketTransport {
     rate_limiter: Option<Arc<RateLimiter>>,
     // Session to connection mapping (SessionId -> SocketAddr)
     session_connections: Arc<RwLock<HashMap<SessionId, SocketAddr>>>,
+    // Connection metadata for rate limiting (server mode only)
+    connection_metadata: Arc<RwLock<Option<ConnectionMetadata>>>,
 }
 
 impl WebSocketTransport {
@@ -304,6 +315,7 @@ impl WebSocketTransport {
             session_manager,
             rate_limiter,
             session_connections: Arc::new(RwLock::new(HashMap::new())),
+            connection_metadata: Arc::new(RwLock::new(None)),
         })
     }
 
@@ -844,6 +856,7 @@ impl WebSocketTransport {
         let session_manager = self.session_manager.clone();
         let session_connections = Arc::clone(&self.session_connections);
         let rate_limiter = self.rate_limiter.clone();
+        let connection_metadata = Arc::clone(&self.connection_metadata);
 
         // Accept first connection (simplified implementation)
         tokio::spawn(async move {
@@ -851,6 +864,13 @@ impl WebSocketTransport {
                 Ok((stream, peer_addr)) => {
                     info!("WebSocket client connected from: {}", peer_addr);
                     *state.write().await = ConnectionState::Connecting;
+
+                    // Store connection metadata for rate limiting
+                    let peer_ip = Self::extract_ip_from_socket_addr(&peer_addr);
+                    *connection_metadata.write().await = Some(ConnectionMetadata {
+                        peer_addr,
+                        peer_ip: peer_ip.to_string(),
+                    });
 
                     // Handle TLS if enabled
                     if config.use_tls {
@@ -899,6 +919,12 @@ impl WebSocketTransport {
                         let auth_header_captured = Arc::new(RwLock::new(None::<String>));
                         let auth_header_for_callback = auth_header_captured.clone();
 
+                        // Store session ID if present in headers/cookies
+                        let session_id_captured = Arc::new(RwLock::new(None::<String>));
+                        let session_id_for_callback = session_id_captured.clone();
+                        let session_manager_for_callback = session_manager.clone();
+                        let audit_logger_for_session_validation = audit_logger.clone();
+
                         let callback = move |req: &Request, response: Response| {
                             // Extract Origin header
                             let origin = req.headers().get("Origin").and_then(|h| h.to_str().ok());
@@ -918,7 +944,196 @@ impl WebSocketTransport {
                                     .unwrap());
                             }
 
-                            // Validate JWT if configured
+                            // Extract session ID from X-Session-ID header or Cookie
+                            let session_id = req
+                                .headers()
+                                .get("X-Session-ID")
+                                .and_then(|h| h.to_str().ok())
+                                .or_else(|| {
+                                    // Try to extract from Cookie header
+                                    req.headers()
+                                        .get("Cookie")
+                                        .and_then(|h| h.to_str().ok())
+                                        .and_then(|cookie_str| {
+                                            // Parse cookies to find session_id
+                                            cookie_str.split(';').find_map(|cookie| {
+                                                let parts: Vec<&str> =
+                                                    cookie.trim().splitn(2, '=').collect();
+                                                if parts.len() == 2 && parts[0] == "session_id" {
+                                                    Some(parts[1])
+                                                } else {
+                                                    None
+                                                }
+                                            })
+                                        })
+                                });
+
+                            // If session ID is present, validate it and skip JWT auth
+                            if let Some(sid) = session_id {
+                                // Store session ID for later use
+                                if let Ok(mut captured) = session_id_for_callback.try_write() {
+                                    *captured = Some(sid.to_string());
+                                }
+
+                                // Validate session if session manager is available
+                                if let Some(ref sess_mgr) = session_manager_for_callback {
+                                    // Use async runtime for session validation in sync callback
+                                    let session_result = tokio::task::block_in_place(|| {
+                                        let rt = tokio::runtime::Handle::current();
+                                        rt.block_on(
+                                            sess_mgr.get_session(&SessionId::from(sid.to_string())),
+                                        )
+                                    });
+
+                                    match session_result {
+                                        Ok(Some(session))
+                                            if session.state == SessionState::Active =>
+                                        {
+                                            // Session is valid, log and allow connection
+                                            if let Some(ref logger) =
+                                                audit_logger_for_session_validation
+                                            {
+                                                use crate::security::{
+                                                    AuditCategory, AuditLevel, AuditLogEntry,
+                                                };
+                                                let entry = AuditLogEntry::new(
+                                                    AuditLevel::Info,
+                                                    AuditCategory::NetworkActivity,
+                                                    format!("WebSocket connection authenticated with existing session: {}", sid),
+                                                )
+                                                .with_request_info(peer_addr_str_for_callback.clone(), String::new())
+                                                .add_metadata("session_id".to_string(), sid.to_string());
+
+                                                // Non-blocking log
+                                                let logger_clone = Arc::clone(logger);
+                                                let entry_clone = entry;
+                                                std::thread::spawn(move || {
+                                                    let rt =
+                                                        tokio::runtime::Runtime::new().unwrap();
+                                                    rt.block_on(async {
+                                                        let _ = logger_clone.log(entry_clone).await;
+                                                    });
+                                                });
+                                            }
+
+                                            // Session is valid, skip JWT validation
+                                            return Ok(response);
+                                        }
+                                        Ok(Some(session))
+                                            if session.state == SessionState::Expired =>
+                                        {
+                                            warn!("Session expired: {}", sid);
+                                            if let Some(ref logger) =
+                                                audit_logger_for_session_validation
+                                            {
+                                                use crate::security::{
+                                                    AuditCategory, AuditLevel, AuditLogEntry,
+                                                };
+                                                let entry = AuditLogEntry::new(
+                                                    AuditLevel::Warning,
+                                                    AuditCategory::SecurityAttack,
+                                                    format!("WebSocket connection rejected: Session expired: {}", sid),
+                                                )
+                                                .with_request_info(peer_addr_str_for_callback.clone(), String::new())
+                                                .add_metadata("session_id".to_string(), sid.to_string());
+
+                                                let logger_clone = Arc::clone(logger);
+                                                let entry_clone = entry;
+                                                std::thread::spawn(move || {
+                                                    let rt =
+                                                        tokio::runtime::Runtime::new().unwrap();
+                                                    rt.block_on(async {
+                                                        let _ = logger_clone.log(entry_clone).await;
+                                                    });
+                                                });
+                                            }
+                                            return Err(http::Response::builder()
+                                                .status(401)
+                                                .body(Some(
+                                                    "Unauthorized: Session expired".to_string(),
+                                                ))
+                                                .unwrap());
+                                        }
+                                        Ok(None) => {
+                                            let error_msg = "Session not found".to_string();
+                                            warn!("Invalid session: {}", error_msg);
+                                            if let Some(ref logger) =
+                                                audit_logger_for_session_validation
+                                            {
+                                                use crate::security::{
+                                                    AuditCategory, AuditLevel, AuditLogEntry,
+                                                };
+                                                let entry = AuditLogEntry::new(
+                                                    AuditLevel::Warning,
+                                                    AuditCategory::SecurityAttack,
+                                                    format!("WebSocket connection rejected: Invalid session: {}", error_msg),
+                                                )
+                                                .with_request_info(peer_addr_str_for_callback.clone(), String::new())
+                                                .add_metadata("session_id".to_string(), sid.to_string())
+                                                .add_metadata("error".to_string(), error_msg.clone());
+
+                                                let logger_clone = Arc::clone(logger);
+                                                let entry_clone = entry;
+                                                std::thread::spawn(move || {
+                                                    let rt =
+                                                        tokio::runtime::Runtime::new().unwrap();
+                                                    rt.block_on(async {
+                                                        let _ = logger_clone.log(entry_clone).await;
+                                                    });
+                                                });
+                                            }
+                                            return Err(http::Response::builder()
+                                                .status(401)
+                                                .body(Some(format!(
+                                                    "Unauthorized: Invalid session: {}",
+                                                    error_msg
+                                                )))
+                                                .unwrap());
+                                        }
+                                        Err(e) => {
+                                            let error_msg = e.to_string();
+                                            warn!("Invalid session: {}", error_msg);
+                                            if let Some(ref logger) =
+                                                audit_logger_for_session_validation
+                                            {
+                                                use crate::security::{
+                                                    AuditCategory, AuditLevel, AuditLogEntry,
+                                                };
+                                                let entry = AuditLogEntry::new(
+                                                    AuditLevel::Warning,
+                                                    AuditCategory::SecurityAttack,
+                                                    format!("WebSocket connection rejected: Invalid session: {}", error_msg),
+                                                )
+                                                .with_request_info(peer_addr_str_for_callback.clone(), String::new())
+                                                .add_metadata("session_id".to_string(), sid.to_string())
+                                                .add_metadata("error".to_string(), error_msg.clone());
+
+                                                let logger_clone = Arc::clone(logger);
+                                                let entry_clone = entry;
+                                                std::thread::spawn(move || {
+                                                    let rt =
+                                                        tokio::runtime::Runtime::new().unwrap();
+                                                    rt.block_on(async {
+                                                        let _ = logger_clone.log(entry_clone).await;
+                                                    });
+                                                });
+                                            }
+                                            return Err(http::Response::builder()
+                                                .status(401)
+                                                .body(Some(format!(
+                                                    "Unauthorized: Invalid session: {}",
+                                                    error_msg
+                                                )))
+                                                .unwrap());
+                                        }
+                                        _ => {
+                                            // Other states or unknown session, fall through to JWT auth
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Validate JWT if configured and session validation didn't pass
                             if let Some(ref jwt_cfg) = jwt_config_for_callback {
                                 let auth_header = req
                                     .headers()
@@ -951,51 +1166,126 @@ impl WebSocketTransport {
                             Ok(response)
                         };
 
-                        match accept_hdr_async(MaybeTlsStream::Plain(stream), callback).await {
-                            Ok(ws_stream) => {
-                                // Create session after successful handshake
-                                if let (Some(ref jwt_cfg), Some(ref sess_mgr)) =
-                                    (&jwt_config_for_session, &session_manager_clone)
+                        // Apply authentication timeout if required
+                        let handshake_result = if config.require_authentication {
+                            if let Some(timeout_seconds) = config.auth_timeout_seconds {
+                                let timeout_duration = Duration::from_secs(timeout_seconds);
+                                match timeout(
+                                    timeout_duration,
+                                    accept_hdr_async(MaybeTlsStream::Plain(stream), callback),
+                                )
+                                .await
                                 {
-                                    let auth_header_value =
-                                        auth_header_captured.read().await.clone();
-                                    if let Some(auth_header) = auth_header_value.as_deref() {
-                                        match Self::validate_jwt_token_and_create_session(
-                                            Some(auth_header),
-                                            jwt_cfg,
-                                            require_auth,
-                                            &audit_logger_for_session,
-                                            &Some(Arc::clone(sess_mgr)),
-                                            &rate_limiter_for_session,
-                                            &peer_addr_str,
-                                            &peer_ip_for_session,
-                                        )
-                                        .await
+                                    Ok(result) => result,
+                                    Err(_) => {
+                                        error!(
+                                            "WebSocket authentication timeout after {} seconds",
+                                            timeout_seconds
+                                        );
+
+                                        // Log authentication timeout
+                                        if let Some(ref logger) = audit_logger {
+                                            use crate::security::{
+                                                AuditCategory, AuditLevel, AuditLogEntry,
+                                            };
+                                            let entry = AuditLogEntry::new(
+                                                AuditLevel::Warning,
+                                                AuditCategory::SecurityAttack,
+                                                format!("WebSocket authentication timeout after {} seconds", timeout_seconds),
+                                            )
+                                            .with_request_info(peer_addr_str.clone(), String::new())
+                                            .add_metadata("timeout_seconds".to_string(), timeout_seconds.to_string());
+
+                                            let logger_clone = Arc::clone(logger);
+                                            tokio::spawn(async move {
+                                                let _ = logger_clone.log(entry).await;
+                                            });
+                                        }
+
+                                        *state.write().await = ConnectionState::Disconnected;
+                                        return;
+                                    }
+                                }
+                            } else {
+                                accept_hdr_async(MaybeTlsStream::Plain(stream), callback).await
+                            }
+                        } else {
+                            accept_hdr_async(MaybeTlsStream::Plain(stream), callback).await
+                        };
+
+                        match handshake_result {
+                            Ok(ws_stream) => {
+                                // Check if session ID was validated during handshake
+                                let existing_session_id = session_id_captured.read().await.clone();
+
+                                if let Some(ref sid) = existing_session_id {
+                                    // Existing session validated, store mapping
+                                    if let Some(ref sess_mgr) = session_manager_clone {
+                                        // Touch session to extend TTL
+                                        if let Err(e) = sess_mgr
+                                            .touch_session(&SessionId::from(sid.clone()))
+                                            .await
                                         {
-                                            Ok(Some((_claims, Some(session_id)))) => {
-                                                info!(
-                                                    "Session created for WebSocket connection: {}",
-                                                    session_id
-                                                );
-                                                // Store session_id -> peer_addr mapping
-                                                session_connections.write().await.insert(
-                                                    SessionId::from(session_id.clone()),
-                                                    peer_addr,
-                                                );
-                                                debug!(
-                                                    "Stored session mapping: {} -> {}",
-                                                    session_id, peer_addr
-                                                );
-                                            }
-                                            Ok(_) => {
-                                                debug!("No session created (auth not required or session management disabled)");
-                                            }
-                                            Err(e) => {
-                                                warn!(
-                                                    "Failed to create session after handshake: {}",
-                                                    e
-                                                );
-                                                // Connection is already established, just log the error
+                                            warn!("Failed to extend session TTL: {}", e);
+                                        } else {
+                                            debug!("Extended session TTL: {}", sid);
+                                        }
+
+                                        // Store session_id -> peer_addr mapping
+                                        session_connections
+                                            .write()
+                                            .await
+                                            .insert(SessionId::from(sid.clone()), peer_addr);
+                                        debug!(
+                                            "Stored existing session mapping: {} -> {}",
+                                            sid, peer_addr
+                                        );
+                                    }
+                                } else {
+                                    // Create session after successful handshake (JWT auth)
+                                    if let (Some(ref jwt_cfg), Some(ref sess_mgr)) =
+                                        (&jwt_config_for_session, &session_manager_clone)
+                                    {
+                                        let auth_header_value =
+                                            auth_header_captured.read().await.clone();
+                                        if let Some(auth_header) = auth_header_value.as_deref() {
+                                            match Self::validate_jwt_token_and_create_session(
+                                                Some(auth_header),
+                                                jwt_cfg,
+                                                require_auth,
+                                                &audit_logger_for_session,
+                                                &Some(Arc::clone(sess_mgr)),
+                                                &rate_limiter_for_session,
+                                                &peer_addr_str,
+                                                &peer_ip_for_session,
+                                            )
+                                            .await
+                                            {
+                                                Ok(Some((_claims, Some(session_id)))) => {
+                                                    info!(
+                                                        "Session created for WebSocket connection: {}",
+                                                        session_id
+                                                    );
+                                                    // Store session_id -> peer_addr mapping
+                                                    session_connections.write().await.insert(
+                                                        SessionId::from(session_id.clone()),
+                                                        peer_addr,
+                                                    );
+                                                    debug!(
+                                                        "Stored session mapping: {} -> {}",
+                                                        session_id, peer_addr
+                                                    );
+                                                }
+                                                Ok(_) => {
+                                                    debug!("No session created (auth not required or session management disabled)");
+                                                }
+                                                Err(e) => {
+                                                    warn!(
+                                                        "Failed to create session after handshake: {}",
+                                                        e
+                                                    );
+                                                    // Connection is already established, just log the error
+                                                }
                                             }
                                         }
                                     }
@@ -1601,8 +1891,11 @@ impl WebSocketTransport {
         let bytes_sent = Arc::clone(&self.bytes_sent);
         let bytes_received = Arc::clone(&self.bytes_received);
         let config = self.config.clone();
-        let _rate_limiter = self.rate_limiter.clone();
-        let _audit_logger = self.audit_logger.clone();
+        let rate_limiter = self.rate_limiter.clone();
+        let audit_logger = self.audit_logger.clone();
+        let connection_metadata = Arc::clone(&self.connection_metadata);
+        let session_manager = self.session_manager.clone();
+        let session_connections = Arc::clone(&self.session_connections);
 
         let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
         *self.shutdown_tx.write().await = Some(shutdown_tx);
@@ -1629,6 +1922,72 @@ impl WebSocketTransport {
                             Some(Ok(Message::Text(text))) => {
                                 debug!("Received text message: {} bytes", text.len());
                                 *bytes_received.write().await += text.len() as u64;
+
+                                // Check rate limit if enabled and in server mode
+                                if config.server_mode && config.enable_rate_limiting {
+                                    if let Some(ref limiter) = rate_limiter {
+                                        if let Some(ref metadata) = *connection_metadata.read().await {
+                                            match limiter.check_rate_limit(&metadata.peer_ip).await {
+                                                Ok(()) => {
+                                                    // Rate limit check passed
+                                                }
+                                                Err(_) => {
+                                                    warn!("Rate limit exceeded for IP: {}", metadata.peer_ip);
+
+                                                    // Log rate limit violation
+                                                    if let Some(ref logger) = audit_logger {
+                                                        use crate::security::{AuditCategory, AuditLevel, AuditLogEntry};
+                                                        let entry = AuditLogEntry::new(
+                                                            AuditLevel::Warning,
+                                                            AuditCategory::SecurityAttack,
+                                                            format!("WebSocket rate limit exceeded for IP: {}", metadata.peer_ip),
+                                                        )
+                                                        .with_request_info(metadata.peer_addr.to_string(), String::new())
+                                                        .add_metadata("peer_ip".to_string(), metadata.peer_ip.clone())
+                                                        .add_metadata("max_requests_per_minute".to_string(), config.max_requests_per_minute.to_string());
+
+                                                        let logger_clone = Arc::clone(logger);
+                                                        tokio::spawn(async move {
+                                                            let _ = logger_clone.log(entry).await;
+                                                        });
+                                                    }
+
+                                                    // Send rate limit error response
+                                                    let error_response = serde_json::json!({
+                                                        "jsonrpc": "2.0",
+                                                        "error": {
+                                                            "code": -32000,
+                                                            "message": "Rate limit exceeded"
+                                                        },
+                                                        "id": null
+                                                    });
+
+                                                    if let Ok(error_json) = serde_json::to_string(&error_response) {
+                                                        let _ = ws_stream.send(Message::Text(error_json.into())).await;
+                                                    }
+
+                                                    // Skip processing this message
+                                                    continue;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // Auto-extend session TTL on message if session management enabled
+                                if config.server_mode && config.enable_session_management {
+                                    if let (Some(ref sess_mgr), Some(ref metadata)) = (&session_manager, &*connection_metadata.read().await) {
+                                        // Find session ID by peer_addr
+                                        let sessions = session_connections.read().await;
+                                        if let Some((session_id, _)) = sessions.iter().find(|(_, &addr)| addr == metadata.peer_addr) {
+                                            if let Err(e) = sess_mgr.touch_session(session_id).await {
+                                                debug!("Failed to extend session TTL: {}", e);
+                                            } else {
+                                                debug!("Auto-extended session TTL: {}", session_id);
+                                            }
+                                        }
+                                    }
+                                }
 
                                 match serde_json::from_str::<JsonRpcRequest>(&text) {
                                     Ok(request) => {
@@ -1718,6 +2077,12 @@ impl WebSocketTransport {
                         break;
                     }
                 }
+            }
+
+            // Cleanup connection metadata on disconnect
+            if config.server_mode {
+                *connection_metadata.write().await = None;
+                debug!("Connection metadata cleared");
             }
 
             info!("WebSocket message loop terminated");
