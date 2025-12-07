@@ -824,46 +824,8 @@ impl AnomalyDetector {
     }
 }
 
-/// カラムレベル暗号化（簡素化版）
-pub struct ColumnEncryption {
-    config: EncryptionConfig,
-}
-
-impl ColumnEncryption {
-    pub fn new(config: EncryptionConfig) -> Self {
-        Self { config }
-    }
-
-    /// センシティブデータの暗号化
-    pub async fn encrypt_sensitive_data(
-        &self,
-        _table: &str,
-        _column: &str,
-        data: &str,
-        _user_context: &QueryContext,
-    ) -> Result<String, SecurityError> {
-        Ok(format!("ENC:{}", data)) // 簡素実装
-    }
-
-    /// 承認されたユーザーの復号化
-    pub async fn decrypt_for_authorized_user(
-        &self,
-        _table: &str,
-        _column: &str,
-        encrypted_data: &str,
-        _user_context: &QueryContext,
-    ) -> Result<String, SecurityError> {
-        if let Some(data) = encrypted_data.strip_prefix("ENC:") {
-            if self.config.allow_general_decryption {
-                Ok(data.to_string())
-            } else {
-                Ok("***ENCRYPTED***".to_string())
-            }
-        } else {
-            Ok(encrypted_data.to_string())
-        }
-    }
-}
+// Note: ColumnEncryption has been moved to column_encryption module
+// Use crate::handlers::database::column_encryption::ColumnEncryptionManager instead
 
 // 型定義
 
@@ -907,10 +869,7 @@ pub enum AnomalyType {
     PrivilegeEscalation,
 }
 
-#[derive(Debug, Clone)]
-pub struct EncryptionConfig {
-    pub allow_general_decryption: bool,
-}
+// Note: EncryptionConfig removed - use column_encryption::ColumnEncryptionConfig instead
 
 #[cfg(test)]
 mod tests {
