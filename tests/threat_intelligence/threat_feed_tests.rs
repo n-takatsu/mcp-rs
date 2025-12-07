@@ -7,7 +7,7 @@ use mcp_rs::threat_intelligence::feed::*;
 use mcp_rs::threat_intelligence::manager::ThreatIntelligenceManager;
 use mcp_rs::threat_intelligence::types::*;
 use std::sync::Arc;
-use tokio::time::{sleep, Duration};
+use tokio::time::Duration;
 
 /// 基本的なサブスクリプションテスト
 #[tokio::test]
@@ -421,12 +421,9 @@ async fn test_cleanup_inactive_subscriptions() {
         .await
         .expect("Failed to toggle subscription");
 
-    // 少し待機（last_updatedを古くするため）
-    sleep(Duration::from_millis(100)).await;
-
-    // クリーンアップ（0時間以上古いものを削除）
+    // クリーンアップ（max_age_hoursより新しいサブスクリプションでも非アクティブなら削除）
     let removed = feed
-        .cleanup_inactive_subscriptions(0)
+        .cleanup_inactive_subscriptions(100)
         .await
         .expect("Failed to cleanup");
 
