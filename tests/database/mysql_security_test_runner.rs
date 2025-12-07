@@ -3,6 +3,8 @@
 //! Comprehensive test execution and reporting for MySQL security implementation
 //! Runs all security tests and generates detailed analysis report
 
+#![allow(dead_code)] // This is a test utility module
+
 use log::{info, warn};
 use serde_json::json;
 use std::collections::HashMap;

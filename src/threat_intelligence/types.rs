@@ -137,6 +137,8 @@ pub struct ThreatMetadata {
     pub description: Option<String>,
     /// 関連する攻撃手法
     pub attack_techniques: Vec<String>,
+    /// MITRE ATT&CK テクニック
+    pub mitre_attack_techniques: Vec<MitreAttackTechnique>,
     /// 関連するCVE
     pub cve_references: Vec<String>,
     /// 関連するマルウェアファミリー
@@ -145,6 +147,63 @@ pub struct ThreatMetadata {
     pub geolocation: Option<GeolocationInfo>,
     /// カスタム属性
     pub custom_attributes: HashMap<String, String>,
+}
+
+/// MITRE ATT&CK テクニック情報
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MitreAttackTechnique {
+    /// テクニックID (例: T1566)
+    pub technique_id: String,
+    /// サブテクニックID (例: T1566.001)
+    pub sub_technique_id: Option<String>,
+    /// テクニック名
+    pub name: String,
+    /// 戦術 (Tactic)
+    pub tactics: Vec<String>,
+    /// プラットフォーム
+    pub platforms: Vec<String>,
+    /// データソース
+    pub data_sources: Vec<String>,
+    /// 説明
+    pub description: Option<String>,
+    /// 検出方法
+    pub detection: Option<String>,
+    /// 緩和策
+    pub mitigation: Vec<String>,
+}
+
+/// MITRE ATT&CK グループ情報
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MitreAttackGroup {
+    /// グループID (例: G0016)
+    pub group_id: String,
+    /// グループ名
+    pub name: String,
+    /// 別名
+    pub aliases: Vec<String>,
+    /// 説明
+    pub description: Option<String>,
+    /// 使用するテクニック
+    pub techniques: Vec<String>,
+    /// 使用するソフトウェア
+    pub software: Vec<String>,
+}
+
+/// MITRE ATT&CK ソフトウェア情報
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MitreAttackSoftware {
+    /// ソフトウェアID (例: S0363)
+    pub software_id: String,
+    /// ソフトウェア名
+    pub name: String,
+    /// タイプ (malware, tool)
+    pub software_type: String,
+    /// 説明
+    pub description: Option<String>,
+    /// 使用するテクニック
+    pub techniques: Vec<String>,
+    /// プラットフォーム
+    pub platforms: Vec<String>,
 }
 
 /// 地理的情報

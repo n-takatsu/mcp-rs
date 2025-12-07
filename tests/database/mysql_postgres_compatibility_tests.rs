@@ -12,7 +12,7 @@
 /// - Error handling consistency
 
 #[cfg(test)]
-mod mysql_postgres_compatibility_tests {
+mod tests {
     // ==================== Trait Interface Tests ====================
 
     #[test]

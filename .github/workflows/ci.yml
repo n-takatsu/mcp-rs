@@ -102,7 +102,7 @@ jobs:
         CARGO_PROFILE_TEST_LTO: false
       run: |
         echo "Running MFA integration tests..."
-        cargo test --test mfa_integration_tests --features mfa --verbose --jobs 1
+        cargo test security::mfa_integration_tests --features mfa --verbose --jobs 1
 
     - name: Run MFA performance tests
       if: matrix.rust == 'stable'
@@ -110,7 +110,7 @@ jobs:
         CARGO_PROFILE_TEST_LTO: false
       run: |
         echo "Running MFA performance tests..."
-        cargo test --test mfa_performance_tests --features mfa --verbose --jobs 1
+        cargo test performance::mfa_performance_tests --features mfa --verbose --jobs 1
 
     - name: Verify library compilation
       run: |
