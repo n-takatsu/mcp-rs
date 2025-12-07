@@ -317,8 +317,10 @@ mod tests {
     #[tokio::test]
     async fn test_concurrent_session_limit() -> Result<(), SessionError> {
         let session_manager = Arc::new(SessionManager::new());
-        let mut config = AccessControlConfig::default();
-        config.max_concurrent_sessions = 2;
+        let config = AccessControlConfig {
+            max_concurrent_sessions: 2,
+            ..Default::default()
+        };
         let ac = SessionAccessControl::new(session_manager.clone(), config);
 
         // 1つ目のセッション
