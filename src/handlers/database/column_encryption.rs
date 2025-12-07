@@ -24,18 +24,13 @@ use tracing::{debug, error, info, warn};
 use crate::handlers::database::types::{QueryContext, SecurityError};
 
 /// Encryption algorithm types
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub enum EncryptionAlgorithm {
     /// AES-256-GCM (default, FIPS 140-2 compliant)
+    #[default]
     Aes256Gcm,
     /// ChaCha20-Poly1305 (faster on systems without AES hardware acceleration)
     ChaCha20Poly1305,
-}
-
-impl Default for EncryptionAlgorithm {
-    fn default() -> Self {
-        Self::Aes256Gcm
-    }
 }
 
 /// Key provider types
