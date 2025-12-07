@@ -20,5 +20,8 @@ pub mod canary;
 // パフォーマンステスト
 pub mod performance;
 
+// 脅威インテリジェンステスト
+pub mod threat_intelligence;
+
 // テストデータとユーティリティ
 pub mod fixtures;

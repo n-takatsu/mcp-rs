@@ -61,7 +61,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// デモ1: ヘルスチェック
-async fn demo_health_check(provider: &dyn ThreatProvider) -> Result<(), Box<dyn std::error::Error>> {
+async fn demo_health_check(
+    provider: &dyn ThreatProvider,
+) -> Result<(), Box<dyn std::error::Error>> {
     println!("Demo 1: Health Check");
     println!("{}", "-".repeat(40));
 
@@ -84,7 +86,9 @@ async fn demo_health_check(provider: &dyn ThreatProvider) -> Result<(), Box<dyn 
 }
 
 /// デモ2: Phishing テクニック検索 (T1566)
-async fn demo_phishing_technique(provider: &dyn ThreatProvider) -> Result<(), Box<dyn std::error::Error>> {
+async fn demo_phishing_technique(
+    provider: &dyn ThreatProvider,
+) -> Result<(), Box<dyn std::error::Error>> {
     println!("Demo 2: Phishing Technique (T1566)");
     println!("{}", "-".repeat(40));
 
@@ -105,11 +109,11 @@ async fn demo_phishing_technique(provider: &dyn ThreatProvider) -> Result<(), Bo
                 println!("Type: {:?}", threat.threat_type);
                 println!("Severity: {:?}", threat.severity);
                 println!("Confidence: {:.2}", threat.confidence_score);
-                
+
                 if let Some(desc) = &threat.metadata.description {
                     println!("Description: {}", desc);
                 }
-                
+
                 if !threat.metadata.mitre_attack_techniques.is_empty() {
                     println!("\nMITRE ATT&CK Techniques:");
                     for technique in &threat.metadata.mitre_attack_techniques {
@@ -132,7 +136,9 @@ async fn demo_phishing_technique(provider: &dyn ThreatProvider) -> Result<(), Bo
 }
 
 /// デモ3: PowerShell テクニック検索 (T1059.001)
-async fn demo_powershell_technique(provider: &dyn ThreatProvider) -> Result<(), Box<dyn std::error::Error>> {
+async fn demo_powershell_technique(
+    provider: &dyn ThreatProvider,
+) -> Result<(), Box<dyn std::error::Error>> {
     println!("Demo 3: PowerShell Technique (T1059.001)");
     println!("{}", "-".repeat(40));
 
@@ -151,12 +157,12 @@ async fn demo_powershell_technique(provider: &dyn ThreatProvider) -> Result<(), 
             for threat in threats {
                 println!("\nTechnique: {:?}", threat.threat_type);
                 println!("Severity: {:?}", threat.severity);
-                
+
                 if !threat.metadata.mitre_attack_techniques.is_empty() {
                     let technique = &threat.metadata.mitre_attack_techniques[0];
                     println!("Name: {}", technique.name);
                     println!("Tactics: {}", technique.tactics.join(", "));
-                    
+
                     if let Some(ref detection) = technique.detection {
                         println!("Detection: {}", detection);
                     }
@@ -172,7 +178,9 @@ async fn demo_powershell_technique(provider: &dyn ThreatProvider) -> Result<(), 
 }
 
 /// デモ4: キーワード検索
-async fn demo_keyword_search(provider: &dyn ThreatProvider) -> Result<(), Box<dyn std::error::Error>> {
+async fn demo_keyword_search(
+    provider: &dyn ThreatProvider,
+) -> Result<(), Box<dyn std::error::Error>> {
     println!("Demo 4: Keyword Search");
     println!("{}", "-".repeat(40));
 
@@ -180,7 +188,7 @@ async fn demo_keyword_search(provider: &dyn ThreatProvider) -> Result<(), Box<dy
 
     for keyword in keywords {
         println!("\nSearching for: '{}'", keyword);
-        
+
         let indicator = ThreatIndicator {
             indicator_type: IndicatorType::FileHash,
             value: keyword.to_string(),
@@ -237,7 +245,7 @@ async fn demo_batch_check(provider: &dyn ThreatProvider) -> Result<(), Box<dyn s
     match provider.batch_check_indicators(&indicators).await {
         Ok(threats) => {
             println!("Total threats found: {}", threats.len());
-            
+
             for threat in threats {
                 if !threat.metadata.mitre_attack_techniques.is_empty() {
                     let technique = &threat.metadata.mitre_attack_techniques[0];
@@ -256,7 +264,9 @@ async fn demo_batch_check(provider: &dyn ThreatProvider) -> Result<(), Box<dyn s
 }
 
 /// デモ6: レート制限ステータス
-async fn demo_rate_limit_status(provider: &dyn ThreatProvider) -> Result<(), Box<dyn std::error::Error>> {
+async fn demo_rate_limit_status(
+    provider: &dyn ThreatProvider,
+) -> Result<(), Box<dyn std::error::Error>> {
     println!("Demo 6: Rate Limit Status");
     println!("{}", "-".repeat(40));
 

@@ -758,9 +758,9 @@ impl CVEProvider {
         cve_id: &str,
         response: serde_json::Value,
     ) -> Result<Vec<ThreatIntelligence>, ThreatError> {
-        let vulnerabilities = response["vulnerabilities"]
-            .as_array()
-            .ok_or_else(|| ThreatError::ParsingError("Missing vulnerabilities field".to_string()))?;
+        let vulnerabilities = response["vulnerabilities"].as_array().ok_or_else(|| {
+            ThreatError::ParsingError("Missing vulnerabilities field".to_string())
+        })?;
 
         if vulnerabilities.is_empty() {
             return Ok(vec![]);
@@ -770,7 +770,7 @@ impl CVEProvider {
 
         for vuln in vulnerabilities {
             let cve = &vuln["cve"];
-            
+
             // 基本情報
             let id = cve["id"].as_str().unwrap_or(cve_id).to_string();
             let published = cve["published"]
@@ -898,22 +898,25 @@ impl CVEProvider {
         &self,
         response: serde_json::Value,
     ) -> Result<Vec<ThreatIntelligence>, ThreatError> {
-        let vulnerabilities = response["vulnerabilities"]
-            .as_array()
-            .ok_or_else(|| ThreatError::ParsingError("Missing vulnerabilities field".to_string()))?;
+        let vulnerabilities = response["vulnerabilities"].as_array().ok_or_else(|| {
+            ThreatError::ParsingError("Missing vulnerabilities field".to_string())
+        })?;
 
         let mut all_threats = Vec::new();
 
         // 最大10件まで処理（検索結果が多すぎる場合）
         for vuln in vulnerabilities.iter().take(10) {
-            let cve_id = vuln["cve"]["id"]
-                .as_str()
-                .unwrap_or("UNKNOWN")
-                .to_string();
-            
-            if let Ok(threats) = self.parse_cve_response(&cve_id, serde_json::json!({
-                "vulnerabilities": [vuln]
-            })).await {
+            let cve_id = vuln["cve"]["id"].as_str().unwrap_or("UNKNOWN").to_string();
+
+            if let Ok(threats) = self
+                .parse_cve_response(
+                    &cve_id,
+                    serde_json::json!({
+                        "vulnerabilities": [vuln]
+                    }),
+                )
+                .await
+            {
                 all_threats.extend(threats);
             }
         }
@@ -924,7 +927,10 @@ impl CVEProvider {
     /// CVSSメトリクスから情報を抽出
     fn extract_cvss_info(metrics: &serde_json::Value) -> (SeverityLevel, f64, String) {
         // CVSS v3.1を優先、次にv3.0、最後にv2.0
-        if let Some(cvss31) = metrics["cvssMetricV31"].as_array().and_then(|arr| arr.first()) {
+        if let Some(cvss31) = metrics["cvssMetricV31"]
+            .as_array()
+            .and_then(|arr| arr.first())
+        {
             let score = cvss31["cvssData"]["baseScore"].as_f64().unwrap_or(0.0);
             let severity = cvss31["cvssData"]["baseSeverity"]
                 .as_str()
@@ -937,7 +943,10 @@ impl CVEProvider {
             return (severity, score, vector);
         }
 
-        if let Some(cvss30) = metrics["cvssMetricV30"].as_array().and_then(|arr| arr.first()) {
+        if let Some(cvss30) = metrics["cvssMetricV30"]
+            .as_array()
+            .and_then(|arr| arr.first())
+        {
             let score = cvss30["cvssData"]["baseScore"].as_f64().unwrap_or(0.0);
             let severity = cvss30["cvssData"]["baseSeverity"]
                 .as_str()
@@ -950,7 +959,10 @@ impl CVEProvider {
             return (severity, score, vector);
         }
 
-        if let Some(cvss2) = metrics["cvssMetricV2"].as_array().and_then(|arr| arr.first()) {
+        if let Some(cvss2) = metrics["cvssMetricV2"]
+            .as_array()
+            .and_then(|arr| arr.first())
+        {
             let score = cvss2["cvssData"]["baseScore"].as_f64().unwrap_or(0.0);
             let severity = Self::cvss_score_to_severity(score);
             let vector = cvss2["cvssData"]["vectorString"]
@@ -1132,7 +1144,10 @@ impl MitreAttackProvider {
     }
 
     /// テクニックIDでATT&CK情報を検索
-    async fn search_technique(&self, technique_id: &str) -> Result<Vec<ThreatIntelligence>, ThreatError> {
+    async fn search_technique(
+        &self,
+        technique_id: &str,
+    ) -> Result<Vec<ThreatIntelligence>, ThreatError> {
         // テクニックID形式の検証 (T1234 または T1234.001)
         if !Self::is_valid_technique_id(technique_id) {
             return Err(ThreatError::ConfigurationError(format!(
@@ -1147,7 +1162,9 @@ impl MitreAttackProvider {
             if let Some((cached_techniques, cached_at)) = cache.get(technique_id) {
                 let age = Utc::now() - *cached_at;
                 if age < chrono::Duration::days(7) {
-                    return self.build_threat_intelligence_from_techniques(cached_techniques.clone()).await;
+                    return self
+                        .build_threat_intelligence_from_techniques(cached_techniques.clone())
+                        .await;
                 }
             }
         }
@@ -1188,7 +1205,9 @@ impl MitreAttackProvider {
             .await
             .map_err(|e| ThreatError::ParsingError(e.to_string()))?;
 
-        let techniques = self.parse_technique_response(technique_id, json_response).await?;
+        let techniques = self
+            .parse_technique_response(technique_id, json_response)
+            .await?;
 
         // キャッシュ更新
         {
@@ -1196,14 +1215,19 @@ impl MitreAttackProvider {
             cache.insert(technique_id.to_string(), (techniques.clone(), Utc::now()));
         }
 
-        self.build_threat_intelligence_from_techniques(techniques).await
+        self.build_threat_intelligence_from_techniques(techniques)
+            .await
     }
 
     /// キーワードでテクニックを検索
-    async fn search_by_keyword(&self, keyword: &str) -> Result<Vec<ThreatIntelligence>, ThreatError> {
+    async fn search_by_keyword(
+        &self,
+        keyword: &str,
+    ) -> Result<Vec<ThreatIntelligence>, ThreatError> {
         // 簡略化: ローカルマッピングを使用
         let techniques = self.search_techniques_by_keyword(keyword).await?;
-        self.build_threat_intelligence_from_techniques(techniques).await
+        self.build_threat_intelligence_from_techniques(techniques)
+            .await
     }
 
     /// テクニック情報をパース
@@ -1282,7 +1306,10 @@ impl MitreAttackProvider {
     }
 
     /// キーワードでテクニックを検索（ローカルマッピング使用）
-    async fn search_techniques_by_keyword(&self, keyword: &str) -> Result<Vec<MitreAttackTechnique>, ThreatError> {
+    async fn search_techniques_by_keyword(
+        &self,
+        keyword: &str,
+    ) -> Result<Vec<MitreAttackTechnique>, ThreatError> {
         // 一般的な攻撃手法のマッピング
         let keyword_lower = keyword.to_lowercase();
         let technique_id = match keyword_lower.as_str() {
@@ -1304,7 +1331,7 @@ impl MitreAttackProvider {
 
         // テクニックIDで検索
         self.search_technique(technique_id).await?;
-        
+
         // キャッシュから取得
         let cache = self.techniques_cache.read().await;
         if let Some((techniques, _)) = cache.get(technique_id) {
@@ -1344,7 +1371,10 @@ impl MitreAttackProvider {
             custom_attributes.insert("technique_name".to_string(), technique.name.clone());
             custom_attributes.insert("tactics".to_string(), technique.tactics.join(", "));
             custom_attributes.insert("platforms".to_string(), technique.platforms.join(", "));
-            custom_attributes.insert("data_sources".to_string(), technique.data_sources.join(", "));
+            custom_attributes.insert(
+                "data_sources".to_string(),
+                technique.data_sources.join(", "),
+            );
 
             if let Some(ref detection) = technique.detection {
                 custom_attributes.insert("detection".to_string(), detection.clone());
@@ -1392,22 +1422,29 @@ impl MitreAttackProvider {
     fn determine_severity(tactics: &[String]) -> SeverityLevel {
         // 高リスクの戦術
         let high_risk_tactics = ["impact", "exfiltration", "lateral-movement"];
-        let medium_risk_tactics = ["privilege-escalation", "credential-access", "defense-evasion"];
-        
+        let medium_risk_tactics = [
+            "privilege-escalation",
+            "credential-access",
+            "defense-evasion",
+        ];
+
         for tactic in tactics {
             let tactic_lower = tactic.to_lowercase();
             if high_risk_tactics.iter().any(|&t| tactic_lower.contains(t)) {
                 return SeverityLevel::High;
             }
         }
-        
+
         for tactic in tactics {
             let tactic_lower = tactic.to_lowercase();
-            if medium_risk_tactics.iter().any(|&t| tactic_lower.contains(t)) {
+            if medium_risk_tactics
+                .iter()
+                .any(|&t| tactic_lower.contains(t))
+            {
                 return SeverityLevel::Medium;
             }
         }
-        
+
         SeverityLevel::Low
     }
 

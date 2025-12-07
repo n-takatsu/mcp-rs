@@ -78,7 +78,7 @@ mod cve_tests {
 
                 // 有効な形式なので、ネットワークエラーまたは成功が期待される
                 let result = provider.check_indicator(&indicator).await;
-                
+
                 // ConfigurationErrorは返されないはず
                 if let Err(ThreatError::ConfigurationError(msg)) = result {
                     if msg.contains("Invalid CVE ID format") {
@@ -144,8 +144,8 @@ mod cve_tests {
 
             // キーワード検索は成功するか、ネットワークエラーになるべき
             match result {
-                Ok(_) => {} // 成功
-                Err(ThreatError::NetworkError(_)) => {} // ネットワークエラーは許容
+                Ok(_) => {}                                  // 成功
+                Err(ThreatError::NetworkError(_)) => {}      // ネットワークエラーは許容
                 Err(ThreatError::RateLimitExceeded(_)) => {} // レート制限も許容
                 Err(e) => {
                     // ConfigurationError でキーワード検索を拒否してはいけない
@@ -201,7 +201,7 @@ mod cve_tests {
     fn test_cvss_score_to_severity() {
         // cvss_score_to_severity は private なので、間接的にテスト
         // 実際のCVEレスポンスをシミュレートする統合テストが必要
-        
+
         // このテストはドキュメント化のため
         // CVSS スコアと深刻度のマッピング:
         // >= 9.0: Critical
@@ -299,7 +299,7 @@ mod integration_tests {
         let threat = &threats[0];
         println!("CVE: {:?}", threat.metadata.cve_references);
         println!("Severity: {:?}", threat.severity);
-        
+
         // Log4Shellは Critical または High であるべき
         assert!(
             threat.severity == mcp_rs::threat_intelligence::types::SeverityLevel::Critical
@@ -338,7 +338,7 @@ mod integration_tests {
         };
 
         let result = provider.check_indicator(&indicator).await;
-        
+
         match result {
             Ok(threats) => {
                 println!("Found {} CVEs related to 'log4j'", threats.len());
@@ -389,9 +389,6 @@ mod integration_tests {
         println!("Cache size: {}", cache_size);
 
         // キャッシュの方が速いはず
-        assert!(
-            duration2 < duration1,
-            "Cached request should be faster"
-        );
+        assert!(duration2 < duration1, "Cached request should be faster");
     }
 }

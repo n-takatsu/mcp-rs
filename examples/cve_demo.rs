@@ -27,9 +27,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         enabled: true,
         api_key: String::new(), // APIキー不要
         base_url: "https://services.nvd.nist.gov/rest/json".to_string(),
-        timeout_seconds: 30, // NVDは応答が遅い場合があるため長めに設定
+        timeout_seconds: 30,       // NVDは応答が遅い場合があるため長めに設定
         rate_limit_per_minute: 10, // 5リクエスト/30秒 = 10リクエスト/分
-        reliability_factor: 0.98, // NVDは信頼性が高い
+        reliability_factor: 0.98,  // NVDは信頼性が高い
         provider_specific: HashMap::new(),
     };
 
@@ -124,10 +124,7 @@ async fn demo_log4shell_cve(provider: &CVEProvider) {
                 for (i, threat) in threats.iter().enumerate() {
                     println!("\n   CVE #{}", i + 1);
                     println!("   ├─ Severity: {:?}", threat.severity);
-                    println!(
-                        "   ├─ Confidence: {:.1}%",
-                        threat.confidence_score * 100.0
-                    );
+                    println!("   ├─ Confidence: {:.1}%", threat.confidence_score * 100.0);
                     println!("   ├─ Published: {}", threat.first_seen);
                     println!("   ├─ Last Modified: {}", threat.last_seen);
 
@@ -230,7 +227,11 @@ async fn demo_keyword_search(provider: &CVEProvider) {
                 println!(
                     "   {}. {} - Severity: {:?}",
                     i + 1,
-                    threat.metadata.cve_references.first().unwrap_or(&String::from("Unknown")),
+                    threat
+                        .metadata
+                        .cve_references
+                        .first()
+                        .unwrap_or(&String::from("Unknown")),
                     threat.severity
                 );
             }
@@ -281,12 +282,7 @@ async fn demo_batch_check(provider: &CVEProvider) {
             for cve_id in &cve_ids {
                 let cve_threats: Vec<_> = threats
                     .iter()
-                    .filter(|t| {
-                        t.metadata
-                            .cve_references
-                            .iter()
-                            .any(|cve| cve == cve_id)
-                    })
+                    .filter(|t| t.metadata.cve_references.iter().any(|cve| cve == cve_id))
                     .collect();
 
                 if cve_threats.is_empty() {
