@@ -98,6 +98,13 @@ pub struct VirusTotalProvider {
 impl VirusTotalProvider {
     /// 新しいVirusTotalプロバイダーを作成
     pub fn new(config: ProviderConfig) -> Result<Self, ThreatError> {
+        // APIキーの検証
+        if config.api_key.is_empty() {
+            return Err(ThreatError::ConfigurationError(
+                "VirusTotal API key is required".to_string(),
+            ));
+        }
+
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(
                 config.timeout_seconds as u64,
@@ -178,14 +185,166 @@ impl VirusTotalProvider {
         &self,
         response: reqwest::Response,
     ) -> Result<Vec<ThreatIntelligence>, ThreatError> {
-        let _json_response: serde_json::Value = response
+        let json_response: serde_json::Value = response
             .json()
             .await
             .map_err(|e| ThreatError::ParsingError(e.to_string()))?;
 
-        // VirusTotalのレスポンス構造に基づいてパース
-        // 実装は省略（実際のAPIレスポンス形式に依存）
-        Ok(vec![])
+        let data = json_response["data"]
+            .as_object()
+            .ok_or_else(|| ThreatError::ParsingError("Missing data field".to_string()))?;
+
+        let attributes = data["attributes"]
+            .as_object()
+            .ok_or_else(|| ThreatError::ParsingError("Missing attributes field".to_string()))?;
+
+        // 解析統計を取得
+        let last_analysis_stats =
+            attributes["last_analysis_stats"]
+                .as_object()
+                .ok_or_else(|| {
+                    ThreatError::ParsingError("Missing last_analysis_stats field".to_string())
+                })?;
+
+        let malicious = last_analysis_stats["malicious"].as_u64().unwrap_or(0);
+        let suspicious = last_analysis_stats["suspicious"].as_u64().unwrap_or(0);
+        let undetected = last_analysis_stats["undetected"].as_u64().unwrap_or(0);
+        let harmless = last_analysis_stats["harmless"].as_u64().unwrap_or(0);
+
+        // 検出率が低い場合は脅威なしと判断
+        let total_engines = malicious + suspicious + undetected + harmless;
+        if total_engines == 0 || malicious == 0 {
+            return Ok(vec![]);
+        }
+
+        // 信頼度スコアを計算（検出エンジン数に基づく）
+        let detection_ratio = malicious as f64 / total_engines as f64;
+        let confidence_score = detection_ratio * self.config.reliability_factor;
+
+        // 深刻度を検出率に基づいて判定
+        let severity = if detection_ratio >= 0.7 {
+            SeverityLevel::Critical
+        } else if detection_ratio >= 0.5 {
+            SeverityLevel::High
+        } else if detection_ratio >= 0.3 {
+            SeverityLevel::Medium
+        } else if detection_ratio >= 0.1 {
+            SeverityLevel::Low
+        } else {
+            SeverityLevel::Info
+        };
+
+        // 指標の値を取得
+        let indicator_value = data["id"].as_str().unwrap_or("unknown").to_string();
+
+        // 指標タイプを判定
+        let indicator_type = if indicator_value.contains("://") {
+            IndicatorType::Url
+        } else if indicator_value.contains('.') && !indicator_value.contains(':') {
+            IndicatorType::Domain
+        } else if indicator_value.parse::<std::net::IpAddr>().is_ok() {
+            IndicatorType::IpAddress
+        } else {
+            IndicatorType::FileHash
+        };
+
+        // 脅威タイプを判定
+        let threat_type = if let Some(categories) = attributes["categories"].as_object() {
+            if categories.values().any(|v| v.as_str() == Some("phishing")) {
+                ThreatType::Phishing
+            } else if categories.values().any(|v| v.as_str() == Some("malware")) {
+                ThreatType::Malware
+            } else {
+                ThreatType::MaliciousIp
+            }
+        } else {
+            ThreatType::MaliciousIp
+        };
+
+        // 脅威指標の作成
+        let indicator = ThreatIndicator {
+            indicator_type,
+            value: indicator_value.clone(),
+            pattern: None,
+            tags: vec![
+                format!("malicious:{}", malicious),
+                format!("suspicious:{}", suspicious),
+                format!("detection_ratio:{:.2}", detection_ratio),
+            ],
+            context: Some(format!(
+                "{}/{} engines detected as malicious",
+                malicious, total_engines
+            )),
+            first_seen: chrono::Utc::now(),
+        };
+
+        // メタデータの作成
+        let mut custom_attributes = HashMap::new();
+        custom_attributes.insert("malicious_count".to_string(), malicious.to_string());
+        custom_attributes.insert("suspicious_count".to_string(), suspicious.to_string());
+        custom_attributes.insert("undetected_count".to_string(), undetected.to_string());
+        custom_attributes.insert("harmless_count".to_string(), harmless.to_string());
+        custom_attributes.insert(
+            "detection_ratio".to_string(),
+            format!("{:.2}", detection_ratio),
+        );
+
+        // レピュテーションスコアがあれば追加
+        if let Some(reputation) = attributes["reputation"].as_i64() {
+            custom_attributes.insert("reputation".to_string(), reputation.to_string());
+        }
+
+        // カテゴリー情報があれば追加
+        if let Some(categories) = attributes["categories"].as_object() {
+            let category_list: Vec<String> = categories
+                .values()
+                .filter_map(|v| v.as_str())
+                .map(|s| s.to_string())
+                .collect();
+            if !category_list.is_empty() {
+                custom_attributes.insert("categories".to_string(), category_list.join(", "));
+            }
+        }
+
+        let metadata = ThreatMetadata {
+            description: Some(format!(
+                "{} detected by {}/{} VirusTotal engines ({:.1}% detection rate)",
+                indicator_value,
+                malicious,
+                total_engines,
+                detection_ratio * 100.0
+            )),
+            attack_techniques: Vec::new(),
+            mitre_attack_techniques: Vec::new(),
+            cve_references: Vec::new(),
+            malware_families: Vec::new(),
+            geolocation: None,
+            custom_attributes,
+        };
+
+        // 脅威ソースの作成
+        let source = ThreatSource {
+            provider: self.name().to_string(),
+            feed_name: "VirusTotal Analysis".to_string(),
+            reliability: self.config.reliability_factor,
+            last_updated: chrono::Utc::now(),
+        };
+
+        // 脅威インテリジェンスの作成
+        let threat = ThreatIntelligence {
+            id: uuid::Uuid::new_v4().to_string(),
+            threat_type,
+            severity,
+            indicators: vec![indicator],
+            source,
+            confidence_score,
+            first_seen: chrono::Utc::now(),
+            last_seen: chrono::Utc::now(),
+            expiration: Some(chrono::Utc::now() + chrono::Duration::days(7)),
+            metadata,
+        };
+
+        Ok(vec![threat])
     }
 }
 
