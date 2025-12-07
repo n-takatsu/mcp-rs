@@ -26,14 +26,14 @@ Write-Host "──────────────────────�
 if ($env:VIRUSTOTAL_API_KEY) {
     Write-Host "🔑 VIRUSTOTAL_API_KEY detected" -ForegroundColor Green
     Write-Host "   Running integration tests with real API..." -ForegroundColor Cyan
-    
+
     cargo test --test threat_intelligence virustotal_provider_tests -- --ignored --nocapture
-    
+
     if ($LASTEXITCODE -ne 0) {
         Write-Host "❌ Integration tests failed!" -ForegroundColor Red
         exit 1
     }
-    
+
     Write-Host "✅ Integration tests passed!" -ForegroundColor Green
 } else {
     Write-Host "⚠️  VIRUSTOTAL_API_KEY not set" -ForegroundColor Yellow
@@ -49,14 +49,14 @@ Write-Host "──────────────────────�
 
 if ($env:VIRUSTOTAL_API_KEY) {
     Write-Host "🚀 Starting VirusTotal demo..." -ForegroundColor Cyan
-    
+
     cargo run --example virustotal_demo
-    
+
     if ($LASTEXITCODE -ne 0) {
         Write-Host "❌ Demo failed!" -ForegroundColor Red
         exit 1
     }
-    
+
     Write-Host "✅ Demo completed successfully!" -ForegroundColor Green
 } else {
     Write-Host "⚠️  Skipping demo (API key not set)" -ForegroundColor Yellow

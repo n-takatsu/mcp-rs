@@ -80,7 +80,7 @@ match provider.check_indicator(&indicator).await {
                 println!("   Type: {:?}", threat.threat_type);
                 println!("   Severity: {:?}", threat.severity);
                 println!("   Confidence: {:.1}%", threat.confidence_score * 100.0);
-                
+
                 // 検出統計の確認
                 if let Some(malicious) = threat.metadata.custom_attributes.get("malicious_count") {
                     println!("   Malicious detections: {}", malicious);
@@ -292,7 +292,7 @@ use std::collections::HashMap;
 
 let mut provider_specific = HashMap::new();
 provider_specific.insert(
-    "max_age_days".to_string(), 
+    "max_age_days".to_string(),
     "7".to_string()
 );
 
@@ -514,7 +514,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 // 結果をキャッシュして重複チェックを避ける
-let cache: Arc<Mutex<HashMap<String, Vec<ThreatIntelligence>>>> = 
+let cache: Arc<Mutex<HashMap<String, Vec<ThreatIntelligence>>>> =
     Arc::new(Mutex::new(HashMap::new()));
 
 let key = indicator.value.clone();
