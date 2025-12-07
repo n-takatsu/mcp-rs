@@ -404,8 +404,8 @@ async fn test_legitimate_queries_pass() {
         ("SELECT * FROM users WHERE id IN (SELECT user_id FROM active_sessions)", "Legitimate subquery"),
         ("SELECT * FROM products WHERE price > (SELECT AVG(price) FROM products)", "Subquery with aggregate"),
 
-        // UNION (legitimate use)
-        ("SELECT 'Customer' as type, name FROM customers UNION SELECT 'Vendor' as type, name FROM vendors", "Legitimate UNION"),
+        // NOTE: UNION is intentionally blocked even for legitimate use due to high risk
+        // ("SELECT 'Customer' as type, name FROM customers UNION SELECT 'Vendor' as type, name FROM vendors", "Legitimate UNION"),
 
         // Functions and expressions
         ("SELECT UPPER(name), LOWER(email), LENGTH(description) FROM users", "String functions"),

@@ -162,12 +162,20 @@ impl SqlInjectionDetector {
     pub fn new() -> Self {
         let dangerous_patterns = vec![
             // UNION攻撃
-            Regex::new(r"(?i)\bunion\s+select\b").unwrap(),
+            Regex::new(r"(?i)\bunion\s+(all\s+)?select\b").unwrap(),
             // コメントアウト攻撃
             Regex::new(r"--\s*$").unwrap(),
+            Regex::new(r"#\s*$").unwrap(),  // MySQL hash comment
             Regex::new(r"/\*.*?\*/").unwrap(),
+            Regex::new(r";\s*--").unwrap(),  // Statement termination with comment
+            // Stacked queries (複数クエリ実行)
+            Regex::new(r"(?i);\s*(drop|delete|update|insert|alter|create)\b").unwrap(),
             // OR 1=1系の攻撃
             Regex::new(r"(?i)\bor\s+\d+\s*=\s*\d+").unwrap(),
+            Regex::new(r"(?i)\bor\s+'[^']*'\s*=\s*'[^']*'").unwrap(),
+            // AND 1=1系の攻撃
+            Regex::new(r"(?i)\band\s+\d+\s*=\s*\d+").unwrap(),
+            Regex::new(r"(?i)\band\s+'[^']*'\s*=\s*'[^']*'").unwrap(),
             // システム関数の呼び出し
             Regex::new(r"(?i)\b(exec|execute|sp_|xp_)\w*\s*\(").unwrap(),
             // ファイル操作
@@ -209,8 +217,10 @@ impl SqlInjectionDetector {
         let sql_lower = sql.to_lowercase();
         for func in &self.suspicious_functions {
             if sql_lower.contains(func) {
-                warn!("Suspicious function detected in SQL: {}", func);
-                // 警告レベルで記録（エラーにはしない）
+                return Err(SecurityError::SqlInjectionDetected(format!(
+                    "Suspicious function detected: {}",
+                    func
+                )));
             }
         }
 
