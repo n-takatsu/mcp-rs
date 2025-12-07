@@ -43,8 +43,14 @@ async fn test_session_jwt_full_workflow() {
         .await
         .unwrap();
 
-    assert_ne!(new_tokens.access_token, session_with_tokens.tokens.access_token);
-    assert_ne!(new_tokens.refresh_token, session_with_tokens.tokens.refresh_token);
+    assert_ne!(
+        new_tokens.access_token,
+        session_with_tokens.tokens.access_token
+    );
+    assert_ne!(
+        new_tokens.refresh_token,
+        session_with_tokens.tokens.refresh_token
+    );
 
     // Old refresh token should be revoked (rotation enabled)
     let old_refresh_claims = jwt_manager

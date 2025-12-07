@@ -15,9 +15,7 @@ use tracing::{info, Level};
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize tracing
-    tracing_subscriber::fmt()
-        .with_max_level(Level::INFO)
-        .init();
+    tracing_subscriber::fmt().with_max_level(Level::INFO).init();
 
     info!("=== Session JWT Integration Demo ===\n");
 
@@ -42,10 +40,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
 
     info!("✓ Session created: id={}", session_with_tokens.session.id);
-    info!("✓ Access Token: {}...", &session_with_tokens.tokens.access_token[..50]);
-    info!("✓ Refresh Token: {}...", &session_with_tokens.tokens.refresh_token[..50]);
+    info!(
+        "✓ Access Token: {}...",
+        &session_with_tokens.tokens.access_token[..50]
+    );
+    info!(
+        "✓ Refresh Token: {}...",
+        &session_with_tokens.tokens.refresh_token[..50]
+    );
     info!("✓ Token Type: {}", session_with_tokens.tokens.token_type);
-    info!("✓ Expires In: {} seconds\n", session_with_tokens.tokens.expires_in);
+    info!(
+        "✓ Expires In: {} seconds\n",
+        session_with_tokens.tokens.expires_in
+    );
 
     // === 2. Verify token and get session ===
     info!("2. Verifying access token and retrieving session...");
@@ -70,17 +77,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("✓ Tokens refreshed successfully");
     info!("✓ New Access Token: {}...", &new_tokens.access_token[..50]);
-    info!("✓ New Refresh Token: {}...", &new_tokens.refresh_token[..50]);
+    info!(
+        "✓ New Refresh Token: {}...",
+        &new_tokens.refresh_token[..50]
+    );
     info!("✓ Old refresh token has been revoked (rotation enabled)\n");
 
     // === 4. Check token revocation ===
     info!("4. Checking token revocation...");
-    
+
     // Get JTI from old refresh token
     let old_refresh_claims = jwt_manager
         .jwt_auth()
         .verify_token(&session_with_tokens.tokens.refresh_token)?;
-    
+
     let is_revoked = jwt_manager.is_token_revoked(&old_refresh_claims.jti).await;
     info!("✓ Old refresh token revoked: {}\n", is_revoked);
 
@@ -89,13 +99,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let new_access_claims = jwt_manager
         .jwt_auth()
         .verify_access_token(&new_tokens.access_token)?;
-    
+
     jwt_manager
-        .revoke_token(new_access_claims.jti.clone(), "Manual revocation test".to_string())
+        .revoke_token(
+            new_access_claims.jti.clone(),
+            "Manual revocation test".to_string(),
+        )
         .await?;
 
     info!("✓ Token revoked: jti={}", new_access_claims.jti);
-    
+
     // Try to use the revoked token
     let verify_result = jwt_manager
         .verify_token_and_get_session(&new_tokens.access_token)
@@ -108,7 +121,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // === 6. Create multiple sessions for the same user ===
     info!("6. Creating multiple sessions for the same user...");
-    
+
     for i in 1..=3 {
         jwt_manager
             .create_session_with_tokens(
@@ -136,7 +149,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("✓ Session-Token Integration");
     info!("✓ Multi-Session Management");
     info!("✓ Force Logout (All User Sessions)");
-    
+
     info!("\n=== Production Features ===");
     info!("• Redis-based Token Revocation (enable 'redis' feature)");
     info!("• Automatic TTL-based Token Cleanup");

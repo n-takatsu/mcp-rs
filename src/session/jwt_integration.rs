@@ -18,10 +18,10 @@ use tokio::sync::RwLock;
 pub struct SessionJwtConfig {
     /// JWT authentication configuration
     pub jwt_config: JwtConfig,
-    
+
     /// Enable token refresh
     pub enable_refresh: bool,
-    
+
     /// Token rotation on refresh
     pub rotate_on_refresh: bool,
 }
@@ -41,10 +41,10 @@ impl Default for SessionJwtConfig {
 pub struct RevokedToken {
     /// Token JTI (JWT ID)
     pub jti: String,
-    
+
     /// Revocation timestamp
     pub revoked_at: chrono::DateTime<chrono::Utc>,
-    
+
     /// Reason for revocation
     pub reason: String,
 }
@@ -53,13 +53,13 @@ pub struct RevokedToken {
 pub struct SessionJwtManager {
     /// Session manager
     session_manager: Arc<SessionManager>,
-    
+
     /// JWT authentication
     jwt_auth: Arc<JwtAuth>,
-    
+
     /// Configuration
     config: SessionJwtConfig,
-    
+
     /// Token revocation list (in-memory, should be Redis in production)
     revoked_tokens: Arc<RwLock<HashSet<String>>>,
 }
@@ -68,7 +68,7 @@ impl SessionJwtManager {
     /// Create a new SessionJwtManager
     pub fn new(session_manager: Arc<SessionManager>, config: SessionJwtConfig) -> Self {
         let jwt_auth = Arc::new(JwtAuth::new(config.jwt_config.clone()));
-        
+
         Self {
             session_manager,
             jwt_auth,
@@ -87,11 +87,15 @@ impl SessionJwtManager {
     ) -> Result<SessionWithTokens, SessionError> {
         // Create session
         let mut session = self.session_manager.create_session(user_id.clone()).await?;
-        
+
         // Store username in session metadata for later retrieval
-        session.metadata.insert("username".to_string(), username.clone());
+        session
+            .metadata
+            .insert("username".to_string(), username.clone());
         if let Some(ref email_val) = email {
-            session.metadata.insert("email".to_string(), email_val.clone());
+            session
+                .metadata
+                .insert("email".to_string(), email_val.clone());
         }
 
         // Create AuthUser for JWT generation
@@ -128,7 +132,9 @@ impl SessionJwtManager {
 
         // Check if token is revoked
         if self.is_token_revoked(&claims.jti).await {
-            return Err(SessionError::SecurityViolation("Token has been revoked".to_string()));
+            return Err(SessionError::SecurityViolation(
+                "Token has been revoked".to_string(),
+            ));
         }
 
         // Get session from storage
@@ -146,10 +152,7 @@ impl SessionJwtManager {
     }
 
     /// Refresh tokens using refresh token
-    pub async fn refresh_tokens(
-        &self,
-        refresh_token: &str,
-    ) -> Result<JwtTokenPair, SessionError> {
+    pub async fn refresh_tokens(&self, refresh_token: &str) -> Result<JwtTokenPair, SessionError> {
         if !self.config.enable_refresh {
             return Err(SessionError::SecurityViolation(
                 "Token refresh is disabled".to_string(),
@@ -160,7 +163,9 @@ impl SessionJwtManager {
         let claims = self
             .jwt_auth
             .verify_refresh_token(refresh_token)
-            .map_err(|e| SessionError::SecurityViolation(format!("Invalid refresh token: {}", e)))?;
+            .map_err(|e| {
+                SessionError::SecurityViolation(format!("Invalid refresh token: {}", e))
+            })?;
 
         // Check if token is revoked
         if self.is_token_revoked(&claims.jti).await {
@@ -223,13 +228,20 @@ impl SessionJwtManager {
     }
 
     /// Logout: revoke all tokens associated with a session
-    pub async fn logout(&self, session_id: &SessionId, access_jti: String, refresh_jti: String) -> Result<(), SessionError> {
+    pub async fn logout(
+        &self,
+        session_id: &SessionId,
+        access_jti: String,
+        refresh_jti: String,
+    ) -> Result<(), SessionError> {
         // Delete session
         self.session_manager.delete_session(session_id).await?;
 
         // Revoke both tokens
-        self.revoke_token(access_jti, "User logout".to_string()).await?;
-        self.revoke_token(refresh_jti, "User logout".to_string()).await?;
+        self.revoke_token(access_jti, "User logout".to_string())
+            .await?;
+        self.revoke_token(refresh_jti, "User logout".to_string())
+            .await?;
 
         Ok(())
     }
@@ -250,7 +262,11 @@ impl SessionJwtManager {
             self.session_manager.delete_session(&session.id).await?;
         }
 
-        tracing::info!("Force logout: user_id={}, sessions_deleted={}", user_id, count);
+        tracing::info!(
+            "Force logout: user_id={}, sessions_deleted={}",
+            user_id,
+            count
+        );
 
         Ok(count)
     }
@@ -411,7 +427,7 @@ mod tests {
         let jwt_manager = SessionJwtManager::new(session_manager, config);
 
         let jti = "test-jti".to_string();
-        
+
         // Initially not revoked
         assert!(!jwt_manager.is_token_revoked(&jti).await);
 

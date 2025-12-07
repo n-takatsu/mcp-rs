@@ -15,13 +15,13 @@ use redis::{AsyncCommands, Client};
 pub struct TokenRevocationEntry {
     /// Token JTI (JWT ID)
     pub jti: String,
-    
+
     /// Revocation timestamp
     pub revoked_at: i64,
-    
+
     /// Reason for revocation
     pub reason: String,
-    
+
     /// User ID associated with the token
     pub user_id: Option<String>,
 }
@@ -42,9 +42,8 @@ impl RedisTokenRevocationList {
         prefix: Option<String>,
         default_ttl: Option<Duration>,
     ) -> Result<Self, SessionError> {
-        let client = Client::open(redis_url).map_err(|e| {
-            SessionError::Internal(format!("Failed to connect to Redis: {}", e))
-        })?;
+        let client = Client::open(redis_url)
+            .map_err(|e| SessionError::Internal(format!("Failed to connect to Redis: {}", e)))?;
 
         // Test connection
         let mut conn = client
@@ -109,7 +108,7 @@ impl RedisTokenRevocationList {
             .map_err(|e| SessionError::Internal(format!("Redis connection failed: {}", e)))?;
 
         let key = format!("{}{}", self.prefix, jti);
-        
+
         let exists: bool = conn
             .exists(&key)
             .await
@@ -119,7 +118,10 @@ impl RedisTokenRevocationList {
     }
 
     /// Get revocation details
-    pub async fn get_revocation_info(&self, jti: &str) -> Result<Option<TokenRevocationEntry>, SessionError> {
+    pub async fn get_revocation_info(
+        &self,
+        jti: &str,
+    ) -> Result<Option<TokenRevocationEntry>, SessionError> {
         let mut conn = self
             .client
             .get_multiplexed_async_connection()
@@ -127,7 +129,7 @@ impl RedisTokenRevocationList {
             .map_err(|e| SessionError::Internal(format!("Redis connection failed: {}", e)))?;
 
         let key = format!("{}{}", self.prefix, jti);
-        
+
         let value: Option<String> = conn
             .get(&key)
             .await
@@ -189,7 +191,7 @@ impl InMemoryTokenRevocationList {
         user_id: Option<String>,
     ) -> Result<(), SessionError> {
         let mut tokens = self.tokens.write().await;
-        
+
         let entry = TokenRevocationEntry {
             jti: jti.clone(),
             revoked_at: chrono::Utc::now().timestamp(),
@@ -245,13 +247,17 @@ mod tests {
         let revocation_list = InMemoryTokenRevocationList::new();
 
         let jti = "test-jti-123".to_string();
-        
+
         // Initially not revoked
         assert!(!revocation_list.is_revoked(&jti).await);
 
         // Revoke token
         revocation_list
-            .revoke_token(jti.clone(), "Test reason".to_string(), Some("user123".to_string()))
+            .revoke_token(
+                jti.clone(),
+                "Test reason".to_string(),
+                Some("user123".to_string()),
+            )
             .await
             .unwrap();
 
