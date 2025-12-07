@@ -269,6 +269,11 @@ required-features = ["database"]
 name = "data_masking_advanced_demo"
 required-features = ["database"]
 
+# Column encryption example requires the database feature
+[[example]]
+name = "column_encryption_demo"
+required-features = ["database"]
+
 # MFA examples require the mfa feature
 [[example]]
 name = "mfa_totp_demo"

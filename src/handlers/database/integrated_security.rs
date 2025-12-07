@@ -24,9 +24,10 @@
 
 use super::{
     advanced_security::{
-        AccessDecision, ActionType, AnomalyDetector, AnomalyScore, ColumnEncryption,
-        MultiFactorAuth, RoleBasedAccessControl, TrustScore,
+        AccessDecision, ActionType, AnomalyDetector, AnomalyScore, MultiFactorAuth,
+        RoleBasedAccessControl, TrustScore,
     },
+    column_encryption::ColumnEncryptionManager,
     security::{AuditLogger, DatabaseSecurity, RateLimiter, SqlInjectionDetector},
     security_config::{AdvancedSecurityConfig, ResponseAction, SeverityLevel},
     types::{QueryContext, SecurityError, ValidationResult},
@@ -54,7 +55,7 @@ pub struct IntegratedSecurityManager {
     mfa: MultiFactorAuth,
     rbac: RoleBasedAccessControl,
     anomaly_detector: AnomalyDetector,
-    column_encryption: ColumnEncryption,
+    column_encryption: ColumnEncryptionManager,
 
     // セキュリティ状態管理
     security_events: Arc<RwLock<Vec<SecurityEvent>>>,
@@ -77,9 +78,15 @@ impl IntegratedSecurityManager {
             mfa: MultiFactorAuth::new(),
             rbac: RoleBasedAccessControl::new(),
             anomaly_detector: AnomalyDetector::new(),
-            column_encryption: ColumnEncryption::new(super::advanced_security::EncryptionConfig {
-                allow_general_decryption: config.encryption.allow_general_decryption,
-            }),
+            column_encryption: {
+                use super::column_encryption::ColumnEncryptionConfig;
+                let mut enc_config = ColumnEncryptionConfig::default();
+                // Configure encrypted columns from advanced security config
+                if let Some(ref encryption_cfg) = config.encryption.encrypted_columns {
+                    enc_config.encrypted_columns = encryption_cfg.clone();
+                }
+                ColumnEncryptionManager::new(enc_config)
+            },
 
             security_events: Arc::new(RwLock::new(Vec::new())),
             threat_intelligence: Arc::new(RwLock::new(ThreatIntelligence::new())),
