@@ -247,8 +247,10 @@ async fn test_batch_update() {
 #[tokio::test]
 async fn test_max_subscriptions_limit() {
     let manager = Arc::new(ThreatIntelligenceManager::new());
-    let mut config = ThreatFeedConfig::default();
-    config.max_subscriptions = 3;
+    let config = ThreatFeedConfig {
+        max_subscriptions: 3,
+        ..Default::default()
+    };
     let feed = ThreatFeed::new(manager, config);
 
     // 最大数までサブスクリプション作成
