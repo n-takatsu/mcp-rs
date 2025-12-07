@@ -33,7 +33,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
     println!("3. HTTPエンドポイントテスト");
     println!("   curl -X POST http://127.0.0.1:3000/message \\");
     println!("     -H 'Content-Type: application/json' \\");
-    println!("     -d '{{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{{}}}}'\n");
+    println!(
+        "     -d '{{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{{}}}}'\n"
+    );
 
     // 4. しばらく実行
     println!("4. HTTPサーバーを5秒間実行...");

@@ -267,7 +267,9 @@ impl ThreatFeed {
             id: Uuid::new_v4(),
             event_type: ThreatFeedEventType::NewThreat,
             timestamp: Utc::now(),
-            payload: ThreatFeedPayload::SingleThreat { threat: Box::new(threat) },
+            payload: ThreatFeedPayload::SingleThreat {
+                threat: Box::new(threat),
+            },
         };
 
         self.publish_event(event).await
@@ -279,7 +281,9 @@ impl ThreatFeed {
             id: Uuid::new_v4(),
             event_type: ThreatFeedEventType::NewThreat,
             timestamp: Utc::now(),
-            payload: ThreatFeedPayload::ThreatAssessment { assessment: Box::new(assessment) },
+            payload: ThreatFeedPayload::ThreatAssessment {
+                assessment: Box::new(assessment),
+            },
         };
 
         self.publish_event(event).await

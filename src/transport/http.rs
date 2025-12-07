@@ -77,7 +77,7 @@ impl HttpTransport {
     /// Create a new HTTP transport
     pub fn new(config: HttpConfig) -> Result<Self> {
         let (sender, receiver) = tokio::sync::mpsc::channel(1000);
-        
+
         let stats = HttpStats {
             started_at: Some(Instant::now()),
             ..Default::default()
@@ -99,7 +99,7 @@ impl HttpTransport {
             pending_responses: self.pending_responses.clone(),
             stats: self.stats.clone(),
         };
-        
+
         let app = Router::new()
             .route("/", post(handle_jsonrpc_request))
             .route("/mcp", post(handle_jsonrpc_request))
@@ -164,7 +164,10 @@ impl Transport for HttpTransport {
             if let Some(response_tx) = pending.remove(&id) {
                 // Send response through oneshot channel
                 if response_tx.send(message).is_err() {
-                    error!("Failed to send response - receiver dropped for ID: {:?}", id);
+                    error!(
+                        "Failed to send response - receiver dropped for ID: {:?}",
+                        id
+                    );
                 }
                 return Ok(());
             }
@@ -219,11 +222,12 @@ impl Transport for HttpTransport {
 
     fn connection_stats(&self) -> ConnectionStats {
         let stats = self.stats.blocking_read();
-        
-        let uptime = stats.started_at
+
+        let uptime = stats
+            .started_at
             .map(|start| start.elapsed())
             .unwrap_or(std::time::Duration::from_secs(0));
-        
+
         ConnectionStats {
             messages_sent: stats.total_responses,
             messages_received: stats.total_requests,
@@ -241,7 +245,7 @@ async fn handle_jsonrpc_request(
     Json(request): Json<Value>,
 ) -> std::result::Result<Json<Value>, StatusCode> {
     let start_time = Instant::now();
-    
+
     debug!("Received HTTP JSON-RPC request: {}", request);
 
     // Update statistics - request received
@@ -263,16 +267,12 @@ async fn handle_jsonrpc_request(
         StatusCode::BAD_REQUEST
     })?;
 
-    state
-        .request_sender
-        .send(request_str)
-        .await
-        .map_err(|_| {
-            // Update error stats
-            let mut stats = state.stats.blocking_write();
-            stats.total_errors += 1;
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+    state.request_sender.send(request_str).await.map_err(|_| {
+        // Update error stats
+        let mut stats = state.stats.blocking_write();
+        stats.total_errors += 1;
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
 
     // If request has ID, wait for actual response
     if let Some(id) = request_id {
@@ -286,47 +286,47 @@ async fn handle_jsonrpc_request(
         }
 
         // Wait for response with timeout
-        let result = match tokio::time::timeout(
-            tokio::time::Duration::from_secs(30),
-            response_rx
-        ).await {
-            Ok(Ok(response)) => {
-                // Update response stats
-                let elapsed = start_time.elapsed().as_millis() as u64;
-                {
-                    let mut stats = state.stats.write().await;
-                    stats.total_responses += 1;
-                    stats.total_response_time_ms += elapsed;
+        let result =
+            match tokio::time::timeout(tokio::time::Duration::from_secs(30), response_rx).await {
+                Ok(Ok(response)) => {
+                    // Update response stats
+                    let elapsed = start_time.elapsed().as_millis() as u64;
+                    {
+                        let mut stats = state.stats.write().await;
+                        stats.total_responses += 1;
+                        stats.total_response_time_ms += elapsed;
+                    }
+
+                    // Convert JsonRpcResponse to JSON Value
+                    let response_value = serde_json::to_value(&response)
+                        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+                    let response_size = serde_json::to_string(&response_value)
+                        .unwrap_or_default()
+                        .len() as u64;
+
+                    {
+                        let mut stats = state.stats.write().await;
+                        stats.total_bytes_sent += response_size;
+                    }
+
+                    Ok(Json(response_value))
                 }
-                
-                // Convert JsonRpcResponse to JSON Value
-                let response_value = serde_json::to_value(&response)
-                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-                let response_size = serde_json::to_string(&response_value).unwrap_or_default().len() as u64;
-                
-                {
+                Ok(Err(_)) => {
+                    // Channel closed without response
                     let mut stats = state.stats.write().await;
-                    stats.total_bytes_sent += response_size;
+                    stats.total_errors += 1;
+                    Err(StatusCode::INTERNAL_SERVER_ERROR)
                 }
-                
-                Ok(Json(response_value))
-            }
-            Ok(Err(_)) => {
-                // Channel closed without response
-                let mut stats = state.stats.write().await;
-                stats.total_errors += 1;
-                Err(StatusCode::INTERNAL_SERVER_ERROR)
-            }
-            Err(_) => {
-                // Timeout
-                let mut pending = state.pending_responses.write().await;
-                pending.remove(&id);
-                let mut stats = state.stats.write().await;
-                stats.total_errors += 1;
-                Err(StatusCode::REQUEST_TIMEOUT)
-            }
-        };
-        
+                Err(_) => {
+                    // Timeout
+                    let mut pending = state.pending_responses.write().await;
+                    pending.remove(&id);
+                    let mut stats = state.stats.write().await;
+                    stats.total_errors += 1;
+                    Err(StatusCode::REQUEST_TIMEOUT)
+                }
+            };
+
         result
     } else {
         // Notification (no ID) - return immediate acknowledgment
@@ -337,14 +337,14 @@ async fn handle_jsonrpc_request(
                 "message": "Notification received"
             }
         });
-        
+
         let response_size = serde_json::to_string(&response).unwrap_or_default().len() as u64;
         {
             let mut stats = state.stats.write().await;
             stats.total_responses += 1;
             stats.total_bytes_sent += response_size;
         }
-        
+
         Ok(Json(response))
     }
 }

@@ -2,10 +2,10 @@
 //!
 //! リアルタイム脅威フィードの統合テスト
 
+use chrono::Utc;
 use mcp_rs::threat_intelligence::feed::*;
 use mcp_rs::threat_intelligence::manager::ThreatIntelligenceManager;
 use mcp_rs::threat_intelligence::types::*;
-use chrono::Utc;
 use std::sync::Arc;
 use tokio::time::{sleep, Duration};
 
@@ -123,7 +123,10 @@ async fn test_event_publishing() {
 
     assert_eq!(event.event_type, ThreatFeedEventType::NewThreat);
 
-    if let ThreatFeedPayload::SingleThreat { threat: received_threat } = event.payload {
+    if let ThreatFeedPayload::SingleThreat {
+        threat: received_threat,
+    } = event.payload
+    {
         assert_eq!(received_threat.id, "test-threat-001");
         assert_eq!(received_threat.severity, SeverityLevel::Critical);
     } else {
@@ -223,7 +226,11 @@ async fn test_batch_update() {
 
     assert_eq!(event.event_type, ThreatFeedEventType::BatchUpdate);
 
-    if let ThreatFeedPayload::ThreatList { threats: received_threats, total_count } = event.payload {
+    if let ThreatFeedPayload::ThreatList {
+        threats: received_threats,
+        total_count,
+    } = event.payload
+    {
         assert_eq!(total_count, 5);
         assert_eq!(received_threats.len(), 5);
     } else {
@@ -255,7 +262,10 @@ async fn test_max_subscriptions_limit() {
 
     // 最大数を超える試み
     let result = feed
-        .subscribe("overflow-subscriber".to_string(), ThreatFeedFilters::default())
+        .subscribe(
+            "overflow-subscriber".to_string(),
+            ThreatFeedFilters::default(),
+        )
         .await;
 
     assert!(result.is_err());
@@ -288,7 +298,10 @@ async fn test_update_subscription_filters() {
 
     // 更新確認
     let subscription = feed.get_subscription(subscription_id).await.unwrap();
-    assert_eq!(subscription.filters.min_severity, Some(SeverityLevel::Critical));
+    assert_eq!(
+        subscription.filters.min_severity,
+        Some(SeverityLevel::Critical)
+    );
     assert_eq!(subscription.filters.min_confidence, Some(0.95));
 }
 
@@ -366,7 +379,10 @@ async fn test_publish_assessment() {
         .expect("Timeout waiting for event")
         .expect("Failed to receive event");
 
-    if let ThreatFeedPayload::ThreatAssessment { assessment: received_assessment } = event.payload {
+    if let ThreatFeedPayload::ThreatAssessment {
+        assessment: received_assessment,
+    } = event.payload
+    {
         assert_eq!(received_assessment.indicator.value, "198.51.100.50");
         assert_eq!(received_assessment.threat_level, SeverityLevel::High);
         assert!(received_assessment.is_threat);
@@ -384,13 +400,19 @@ async fn test_cleanup_inactive_subscriptions() {
 
     // アクティブなサブスクリプション作成
     let active_sub = feed
-        .subscribe("active-subscriber".to_string(), ThreatFeedFilters::default())
+        .subscribe(
+            "active-subscriber".to_string(),
+            ThreatFeedFilters::default(),
+        )
         .await
         .expect("Failed to subscribe");
 
     // 非アクティブなサブスクリプション作成
     let inactive_sub = feed
-        .subscribe("inactive-subscriber".to_string(), ThreatFeedFilters::default())
+        .subscribe(
+            "inactive-subscriber".to_string(),
+            ThreatFeedFilters::default(),
+        )
         .await
         .expect("Failed to subscribe");
 
@@ -403,7 +425,10 @@ async fn test_cleanup_inactive_subscriptions() {
     sleep(Duration::from_millis(100)).await;
 
     // クリーンアップ（0時間以上古いものを削除）
-    let removed = feed.cleanup_inactive_subscriptions(0).await.expect("Failed to cleanup");
+    let removed = feed
+        .cleanup_inactive_subscriptions(0)
+        .await
+        .expect("Failed to cleanup");
 
     // 非アクティブなサブスクリプションが削除されたことを確認
     assert_eq!(removed, 1);
