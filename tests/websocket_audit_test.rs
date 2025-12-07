@@ -34,6 +34,8 @@ async fn test_websocket_with_audit_logger() {
         max_connections: 100,
         use_tls: false,
         tls_config: None,
+        origin_validation: mcp_rs::transport::websocket::OriginValidationPolicy::default(),
+        require_origin_header: false,
     };
 
     // Create WebSocket transport with audit logger
@@ -80,6 +82,8 @@ async fn test_websocket_tls_config_with_audit_logger() {
         max_connections: 100,
         use_tls: true,
         tls_config: Some(tls_config),
+        origin_validation: mcp_rs::transport::websocket::OriginValidationPolicy::default(),
+        require_origin_header: false,
     };
 
     // Create WebSocket transport with audit logger
@@ -117,6 +121,8 @@ async fn test_audit_logger_builder_pattern() {
         max_connections: 200,
         use_tls: false,
         tls_config: None,
+        origin_validation: mcp_rs::transport::websocket::OriginValidationPolicy::default(),
+        require_origin_header: false,
     })
     .expect("Failed to create transport")
     .with_audit_logger(audit_logger);
@@ -138,6 +144,8 @@ async fn test_audit_logger_optional() {
         max_connections: 100,
         use_tls: false,
         tls_config: None,
+        origin_validation: mcp_rs::transport::websocket::OriginValidationPolicy::default(),
+        require_origin_header: false,
     })
     .expect("Failed to create transport");
 
@@ -196,6 +204,8 @@ fn test_websocket_config_combinations() {
         max_connections: 100,
         use_tls: false,
         tls_config: None,
+        origin_validation: mcp_rs::transport::websocket::OriginValidationPolicy::default(),
+        require_origin_header: false,
     };
 
     assert!(!plain_config.use_tls);
@@ -219,6 +229,8 @@ fn test_websocket_config_combinations() {
             verify_server: true,
             accept_invalid_certs: false,
         }),
+        origin_validation: mcp_rs::transport::websocket::OriginValidationPolicy::default(),
+        require_origin_header: false,
     };
 
     assert!(tls_ws_config.use_tls);
@@ -236,6 +248,8 @@ fn test_websocket_config_combinations() {
         max_connections: 500,
         use_tls: false,
         tls_config: None,
+        origin_validation: mcp_rs::transport::websocket::OriginValidationPolicy::default(),
+        require_origin_header: false,
     };
 
     assert!(server_config.server_mode);

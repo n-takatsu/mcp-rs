@@ -17,7 +17,10 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, RwLock};
 use tokio::time::{interval, timeout};
 use tokio_tungstenite::{
-    accept_async, connect_async, tungstenite::protocol::Message, MaybeTlsStream, WebSocketStream,
+    accept_async, accept_hdr_async, connect_async,
+    tungstenite::handshake::server::{Request, Response},
+    tungstenite::protocol::Message,
+    MaybeTlsStream, WebSocketStream,
 };
 use tracing::{debug, error, info, warn};
 
@@ -48,6 +51,20 @@ impl Default for TlsConfig {
     }
 }
 
+/// Origin validation policy for WebSocket connections
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub enum OriginValidationPolicy {
+    /// Allow any origin (insecure, development only)
+    AllowAny,
+    /// Reject all origins (most secure, same-origin only)
+    #[default]
+    RejectAll,
+    /// Allow specific origins (whitelist)
+    AllowList(Vec<String>),
+    /// Allow origins matching regex patterns
+    AllowPattern(Vec<String>),
+}
+
 /// WebSocket transport configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WebSocketConfig {
@@ -61,6 +78,10 @@ pub struct WebSocketConfig {
     pub use_tls: bool,
     /// TLS configuration (required if use_tls is true)
     pub tls_config: Option<TlsConfig>,
+    /// Origin validation policy (server mode only)
+    pub origin_validation: OriginValidationPolicy,
+    /// Strict Origin validation (reject if Origin header is missing)
+    pub require_origin_header: bool,
     /// Heartbeat interval in seconds (0 to disable)
     pub heartbeat_interval: u64,
     /// Maximum reconnection attempts (0 for infinite)
@@ -81,6 +102,8 @@ impl Default for WebSocketConfig {
             timeout_seconds: Some(30),
             use_tls: false,
             tls_config: None,
+            origin_validation: OriginValidationPolicy::default(),
+            require_origin_header: false,
             heartbeat_interval: 30,
             max_reconnect_attempts: 5,
             reconnect_delay: 5,
@@ -167,6 +190,106 @@ impl WebSocketTransport {
         self
     }
 
+    /// Validate Origin header against configured policy
+    fn validate_origin(
+        origin: Option<&str>,
+        policy: &OriginValidationPolicy,
+        require_header: bool,
+        audit_logger: &Option<Arc<AuditLogger>>,
+        peer_addr: &str,
+    ) -> Result<(), TransportError> {
+        // Check if Origin header is required
+        if require_header && origin.is_none() {
+            if let Some(logger) = audit_logger {
+                use crate::security::{AuditCategory, AuditLevel, AuditLogEntry};
+                let entry = AuditLogEntry::new(
+                    AuditLevel::Warning,
+                    AuditCategory::SecurityAttack,
+                    "WebSocket connection rejected: Missing required Origin header".to_string(),
+                )
+                .with_request_info(peer_addr.to_string(), String::new());
+
+                let logger_clone = Arc::clone(logger);
+                tokio::spawn(async move {
+                    let _ = logger_clone.log(entry).await;
+                });
+            }
+            return Err(TransportError::Unauthorized(
+                "Origin header is required".to_string(),
+            ));
+        }
+
+        // If Origin header is not required and not present, allow
+        if origin.is_none() {
+            return Ok(());
+        }
+
+        let origin_value = origin.unwrap();
+
+        // Validate based on policy
+        let is_valid = match policy {
+            OriginValidationPolicy::AllowAny => true,
+            OriginValidationPolicy::RejectAll => false,
+            OriginValidationPolicy::AllowList(allowed) => allowed.iter().any(|o| o == origin_value),
+            OriginValidationPolicy::AllowPattern(patterns) => {
+                use regex::Regex;
+                patterns.iter().any(|pattern| {
+                    Regex::new(pattern)
+                        .map(|re| re.is_match(origin_value))
+                        .unwrap_or(false)
+                })
+            }
+        };
+
+        if !is_valid {
+            if let Some(logger) = audit_logger {
+                use crate::security::{AuditCategory, AuditLevel, AuditLogEntry};
+                let entry = AuditLogEntry::new(
+                    AuditLevel::Warning,
+                    AuditCategory::SecurityAttack,
+                    format!(
+                        "WebSocket connection rejected: Invalid Origin '{}'",
+                        origin_value
+                    ),
+                )
+                .with_request_info(peer_addr.to_string(), String::new())
+                .add_metadata("origin".to_string(), origin_value.to_string())
+                .add_metadata("policy".to_string(), format!("{:?}", policy));
+
+                let logger_clone = Arc::clone(logger);
+                tokio::spawn(async move {
+                    let _ = logger_clone.log(entry).await;
+                });
+            }
+            return Err(TransportError::Unauthorized(format!(
+                "Origin '{}' is not allowed",
+                origin_value
+            )));
+        }
+
+        // Log successful validation
+        if let Some(logger) = audit_logger {
+            use crate::security::{AuditCategory, AuditLevel, AuditLogEntry};
+            let entry = AuditLogEntry::new(
+                AuditLevel::Info,
+                AuditCategory::NetworkActivity,
+                format!(
+                    "WebSocket connection accepted: Valid Origin '{}'",
+                    origin_value
+                ),
+            )
+            .with_request_info(peer_addr.to_string(), String::new())
+            .add_metadata("origin".to_string(), origin_value.to_string());
+
+            let logger_clone = Arc::clone(logger);
+            tokio::spawn(async move {
+                let _ = logger_clone.log(entry).await;
+            });
+        }
+
+        Ok(())
+    }
+
     /// Start WebSocket server
     async fn start_server(&self) -> Result<(), TransportError> {
         let addr = self
@@ -202,12 +325,17 @@ impl WebSocketTransport {
 
                     // Handle TLS if enabled
                     if config.use_tls {
-                        // TLS server implementation
-                        match Self::accept_tls_connection(stream, peer_addr, &config, &audit_logger)
-                            .await
+                        // TLS server implementation with Origin validation
+                        match Self::accept_tls_connection_with_origin_validation(
+                            stream,
+                            peer_addr,
+                            &config,
+                            &audit_logger,
+                        )
+                        .await
                         {
                             Ok(ws_stream) => {
-                                info!("WebSocket TLS handshake completed");
+                                info!("WebSocket TLS handshake completed with Origin validation");
                                 *server_connection.write().await = Some(ws_stream);
                                 *state.write().await = ConnectionState::Connected;
                             }
@@ -217,10 +345,37 @@ impl WebSocketTransport {
                             }
                         }
                     } else {
-                        // Plain WebSocket
-                        match accept_async(MaybeTlsStream::Plain(stream)).await {
+                        // Plain WebSocket with Origin validation
+                        let origin_policy = config.origin_validation.clone();
+                        let require_origin = config.require_origin_header;
+                        let audit_logger_clone = audit_logger.clone();
+                        let peer_addr_str = peer_addr.to_string();
+
+                        let callback = |req: &Request, response: Response| {
+                            // Extract Origin header
+                            let origin = req.headers().get("Origin").and_then(|h| h.to_str().ok());
+
+                            // Validate Origin
+                            if let Err(e) = Self::validate_origin(
+                                origin,
+                                &origin_policy,
+                                require_origin,
+                                &audit_logger_clone,
+                                &peer_addr_str,
+                            ) {
+                                warn!("Origin validation failed: {}", e);
+                                return Err(http::Response::builder()
+                                    .status(403)
+                                    .body(Some(format!("Forbidden: {}", e)))
+                                    .unwrap());
+                            }
+
+                            Ok(response)
+                        };
+
+                        match accept_hdr_async(MaybeTlsStream::Plain(stream), callback).await {
                             Ok(ws_stream) => {
-                                info!("WebSocket handshake completed");
+                                info!("WebSocket handshake completed with Origin validation");
                                 *server_connection.write().await = Some(ws_stream);
                                 *state.write().await = ConnectionState::Connected;
                             }
@@ -358,6 +513,156 @@ impl WebSocketTransport {
 
         // Perform WebSocket handshake
         let ws_stream = accept_async(MaybeTlsStream::NativeTls(tls_stream))
+            .await
+            .map_err(|e| TransportError::Internal(format!("WebSocket handshake failed: {}", e)))?;
+
+        Ok(ws_stream)
+    }
+
+    /// Accept TLS connection with Origin validation (server mode)
+    async fn accept_tls_connection_with_origin_validation(
+        stream: TcpStream,
+        peer_addr: SocketAddr,
+        config: &WebSocketConfig,
+        audit_logger: &Option<Arc<AuditLogger>>,
+    ) -> Result<WsStream, TransportError> {
+        use native_tls::Identity;
+        use std::fs;
+        use tokio_native_tls::TlsAcceptor;
+
+        let tls_config = config.tls_config.as_ref().ok_or_else(|| {
+            TransportError::Configuration(
+                "TLS enabled but no TLS configuration provided".to_string(),
+            )
+        })?;
+
+        // Load certificate and private key
+        let cert_path = tls_config.cert_path.as_ref().ok_or_else(|| {
+            TransportError::Configuration("TLS certificate path not provided".to_string())
+        })?;
+
+        let key_path = tls_config.key_path.as_ref().ok_or_else(|| {
+            TransportError::Configuration("TLS private key path not provided".to_string())
+        })?;
+
+        // Log certificate loading attempt
+        if let Some(logger) = audit_logger {
+            use crate::security::{AuditCategory, AuditLevel, AuditLogEntry};
+            let entry = AuditLogEntry::new(
+                AuditLevel::Info,
+                AuditCategory::NetworkActivity,
+                "Loading TLS certificate for WebSocket server".to_string(),
+            )
+            .add_metadata("cert_path".to_string(), cert_path.display().to_string())
+            .add_metadata("peer_addr".to_string(), peer_addr.to_string());
+
+            let _ = logger.log(entry).await;
+        }
+
+        // Read certificate and key files
+        let cert = fs::read(cert_path).map_err(|e| {
+            TransportError::Configuration(format!("Failed to read certificate: {}", e))
+        })?;
+
+        let key = fs::read(key_path).map_err(|e| {
+            TransportError::Configuration(format!("Failed to read private key: {}", e))
+        })?;
+
+        // Create identity from certificate and key
+        let identity = Identity::from_pkcs8(&cert, &key).map_err(|e| {
+            if let Some(logger) = audit_logger {
+                use crate::security::{AuditCategory, AuditLevel, AuditLogEntry};
+                let entry = AuditLogEntry::new(
+                    AuditLevel::Error,
+                    AuditCategory::Error,
+                    format!("Failed to create TLS identity: {}", e),
+                )
+                .with_request_info(peer_addr.to_string(), String::new());
+
+                let logger_clone = Arc::clone(logger);
+                tokio::spawn(async move {
+                    let _ = logger_clone.log(entry).await;
+                });
+            }
+            TransportError::Configuration(format!("Failed to create identity: {}", e))
+        })?;
+
+        // Create TLS acceptor
+        let acceptor = native_tls::TlsAcceptor::builder(identity)
+            .build()
+            .map_err(|e| {
+                TransportError::Configuration(format!("Failed to build TLS acceptor: {}", e))
+            })?;
+
+        let acceptor = TlsAcceptor::from(acceptor);
+
+        // Accept TLS connection
+        let tls_stream = match acceptor.accept(stream).await {
+            Ok(stream) => {
+                // Log successful TLS handshake
+                if let Some(logger) = audit_logger {
+                    use crate::security::{AuditCategory, AuditLevel, AuditLogEntry};
+                    let entry = AuditLogEntry::new(
+                        AuditLevel::Info,
+                        AuditCategory::NetworkActivity,
+                        "TLS handshake successful for WebSocket connection".to_string(),
+                    )
+                    .with_request_info(peer_addr.to_string(), String::new());
+
+                    let _ = logger.log(entry).await;
+                }
+                stream
+            }
+            Err(e) => {
+                // Log failed TLS handshake as security attack
+                if let Some(logger) = audit_logger {
+                    use crate::security::{AuditCategory, AuditLevel, AuditLogEntry};
+                    let entry = AuditLogEntry::new(
+                        AuditLevel::Warning,
+                        AuditCategory::SecurityAttack,
+                        "TLS handshake failed - possible attack or misconfiguration".to_string(),
+                    )
+                    .with_request_info(peer_addr.to_string(), String::new())
+                    .add_metadata("error".to_string(), e.to_string());
+
+                    let _ = logger.log(entry).await;
+                }
+                return Err(TransportError::Internal(format!(
+                    "TLS accept failed: {}",
+                    e
+                )));
+            }
+        };
+
+        // Perform WebSocket handshake with Origin validation
+        let origin_policy = config.origin_validation.clone();
+        let require_origin = config.require_origin_header;
+        let audit_logger_clone = audit_logger.clone();
+        let peer_addr_str = peer_addr.to_string();
+
+        let callback = |req: &Request, response: Response| {
+            // Extract Origin header
+            let origin = req.headers().get("Origin").and_then(|h| h.to_str().ok());
+
+            // Validate Origin
+            if let Err(e) = Self::validate_origin(
+                origin,
+                &origin_policy,
+                require_origin,
+                &audit_logger_clone,
+                &peer_addr_str,
+            ) {
+                warn!("TLS WebSocket Origin validation failed: {}", e);
+                return Err(http::Response::builder()
+                    .status(403)
+                    .body(Some(format!("Forbidden: {}", e)))
+                    .unwrap());
+            }
+
+            Ok(response)
+        };
+
+        let ws_stream = accept_hdr_async(MaybeTlsStream::NativeTls(tls_stream), callback)
             .await
             .map_err(|e| TransportError::Internal(format!("WebSocket handshake failed: {}", e)))?;
 

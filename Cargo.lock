@@ -2502,6 +2502,7 @@ dependencies = [
  "futures",
  "governor",
  "hickory-resolver 0.24.4",
+ "http",
  "hyper",
  "ipnet",
  "jsonwebtoken",
