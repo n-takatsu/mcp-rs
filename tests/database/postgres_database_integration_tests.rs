@@ -14,7 +14,7 @@ use sqlx::Row;
 use std::time::Duration;
 
 #[cfg(test)]
-mod postgres_database_integration_tests {
+mod tests {
     use super::*;
 
     // Test configuration

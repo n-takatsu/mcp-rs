@@ -1,5 +1,7 @@
 pub mod manager;
 pub mod middleware_basic;
+#[cfg(feature = "redis")]
+pub mod redis_storage;
 pub mod security_integration_basic;
 pub mod storage;
 pub mod types;
@@ -7,6 +9,8 @@ pub mod websocket_handler;
 
 pub use manager::*;
 pub use middleware_basic::*;
+#[cfg(feature = "redis")]
+pub use redis_storage::*;
 pub use security_integration_basic::*;
 pub use storage::*;
 pub use types::*;

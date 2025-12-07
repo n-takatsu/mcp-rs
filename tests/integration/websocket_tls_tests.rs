@@ -66,12 +66,18 @@ async fn test_websocket_config_with_tls() {
         server_mode: false,
         use_tls: true,
         tls_config: Some(tls_config),
+        origin_validation: mcp_rs::transport::websocket::OriginValidationPolicy::default(),
+        require_origin_header: false,
+        jwt_config: None,
+        require_authentication: false,
+        auth_timeout_seconds: Some(30),
         heartbeat_interval: 30,
         timeout_seconds: Some(30),
         max_message_size: 16 * 1024 * 1024, // 16MB
         max_reconnect_attempts: 5,
         reconnect_delay: 5,
         max_connections: 100,
+        ..Default::default()
     };
 
     assert_eq!(ws_config.url, "wss://localhost:8443");
@@ -91,12 +97,18 @@ async fn test_websocket_config_plain() {
         server_mode: false,
         use_tls: false,
         tls_config: None,
+        origin_validation: mcp_rs::transport::websocket::OriginValidationPolicy::default(),
+        require_origin_header: false,
+        jwt_config: None,
+        require_authentication: false,
+        auth_timeout_seconds: Some(30),
         heartbeat_interval: 30,
         timeout_seconds: Some(30),
         max_message_size: 16 * 1024 * 1024,
         max_reconnect_attempts: 5,
         reconnect_delay: 5,
         max_connections: 100,
+        ..Default::default()
     };
 
     assert_eq!(ws_config.url, "ws://localhost:8080");
@@ -162,12 +174,18 @@ async fn test_websocket_tls_connection() {
         server_mode: false,
         use_tls: true,
         tls_config: Some(tls_config),
+        origin_validation: mcp_rs::transport::websocket::OriginValidationPolicy::default(),
+        require_origin_header: false,
+        jwt_config: None,
+        require_authentication: false,
+        auth_timeout_seconds: Some(30),
         heartbeat_interval: 30,
         timeout_seconds: Some(30),
         max_message_size: 16 * 1024 * 1024,
         max_reconnect_attempts: 5,
         reconnect_delay: 5,
         max_connections: 100,
+        ..Default::default()
     };
 
     let mut transport = WebSocketTransport::new(ws_config).expect("Failed to create transport");

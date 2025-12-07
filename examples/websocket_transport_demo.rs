@@ -49,11 +49,17 @@ async fn run_server() -> Result<(), Box<dyn std::error::Error>> {
         timeout_seconds: Some(30),
         use_tls: false,
         tls_config: None,
+        origin_validation: mcp_rs::transport::websocket::OriginValidationPolicy::AllowAny,
+        require_origin_header: false,
+        jwt_config: None,
+        require_authentication: false,
+        auth_timeout_seconds: Some(30),
         heartbeat_interval: 10,
         max_reconnect_attempts: 5,
         reconnect_delay: 5,
         max_message_size: 16 * 1024 * 1024,
         max_connections: 100,
+        ..Default::default()
     };
 
     let mut transport = WebSocketTransport::new(config)?;
@@ -127,11 +133,17 @@ async fn run_client() -> Result<(), Box<dyn std::error::Error>> {
         timeout_seconds: Some(30),
         use_tls: false,
         tls_config: None,
+        origin_validation: mcp_rs::transport::websocket::OriginValidationPolicy::AllowAny,
+        require_origin_header: false,
+        jwt_config: None,
+        require_authentication: false,
+        auth_timeout_seconds: Some(30),
         heartbeat_interval: 10,
         max_reconnect_attempts: 5,
         reconnect_delay: 5,
         max_message_size: 16 * 1024 * 1024,
         max_connections: 100,
+        ..Default::default()
     };
 
     let mut transport = WebSocketTransport::new(config)?;

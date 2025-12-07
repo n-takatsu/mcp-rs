@@ -69,7 +69,7 @@ async fn main() -> anyhow::Result<()> {
     };
 
     #[cfg(not(feature = "redis-backend"))]
-    let session_store: Option<Arc<tokio::sync::RwLock<()>>> = None;
+    let _session_store: Option<Arc<tokio::sync::RwLock<()>>> = None;
 
     // API状態作成
     let state = AuthApiState {

@@ -2,7 +2,30 @@
 //!
 //! データベースエンジンとハンドラーのテスト
 
-// TODO: テストファイルのインポート修正が必要
-// pub mod engine_tests;
-// pub mod handler_tests;
 pub mod security_tests;
+
+// MySQL テスト
+mod mysql_integration_tests;
+mod mysql_phase1_basic_tests;
+mod mysql_phase1_integration_complete_tests;
+mod mysql_phase1_integration_tests;
+mod mysql_phase1_tests;
+mod mysql_postgres_compatibility_tests;
+mod mysql_security_basic_tests;
+mod mysql_security_test_runner;
+mod mysql_security_tests;
+
+// PostgreSQL テスト
+mod postgres_database_integration_tests;
+mod postgres_phase2_basic_tests;
+mod postgres_phase2_integration_tests;
+mod postgresql_integration_tests;
+
+// その他のデータベース
+mod mariadb_integration_tests;
+mod mongodb_integration_tests;
+mod sqlite_integration_tests;
+
+// Redis
+mod redis_integration_test;
+mod redis_integration_tests;

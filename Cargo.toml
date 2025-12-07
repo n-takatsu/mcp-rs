@@ -18,6 +18,7 @@ axum = { version = "0.8", features = ["ws"] }
 tower = "0.5.2"
 tower-http = { version = "0.6", features = ["cors", "trace"] }
 hyper = { version = "1.7", features = ["full"] }
+http = "1.0"
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
@@ -289,11 +290,12 @@ required-features = ["mfa"]
 name = "mfa_backup_codes_demo"
 required-features = ["mfa"]
 
-# MFA tests require the mfa feature
-[[test]]
-name = "mfa_integration_tests"
-required-features = ["mfa"]
+[[example]]
+name = "mitre_attack_demo"
 
-[[test]]
-name = "mfa_performance_tests"
-required-features = ["mfa"]
+# Threat intelligence examples
+[[example]]
+name = "abuseipdb_demo"
+
+[[example]]
+name = "cve_demo"
