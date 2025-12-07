@@ -46,6 +46,15 @@ Need WordPress security automation? 8-layer enterprise security architecture wit
 - **Production-Ready Error Handling**: Comprehensive error types with structured logging
 - **Async/Await**: Built on `tokio` for high-performance async operations
 
+## **WebSocket Security (Phase 3)** ⭐ NEW
+
+- **Message-Level Rate Limiting**: Per-IP enforcement with JSON-RPC error responses
+- **Session Validation**: Auto-extend sessions on each message, support X-Session-ID header and cookies
+- **Authentication Timeout**: Enforce authentication within configurable time limit (default: 30s)
+- **JWT Authentication**: 8 algorithms (HS256/384/512, RS256/384/512, ES256/384) with RBAC
+- **Origin Validation**: CSRF protection with whitelist/regex patterns
+- **Audit Logging**: Track rate limit violations, auth failures, and timeout events
+
 ## **WordPress Integration (27 Tools)**
 
 - **Posts & Pages Management**: Full CRUD operations with SEO integration
@@ -202,6 +211,55 @@ level = "error"
 ## Minimal logging for Claude Desktop
 
 ## level = "info"  # Detailed logging for development
+```
+
+### WebSocket Configuration with Security
+
+```toml
+[server]
+transport_type = "websocket"
+bind_addr = "127.0.0.1:8082"
+
+[security.websocket]
+# Authentication
+require_authentication = true
+auth_timeout_seconds = 30
+
+# JWT Configuration
+jwt_secret = "your-secret-key-minimum-32-bytes"
+jwt_algorithm = "HS256"  # HS256, HS384, HS512, RS256, RS384, RS512, ES256, ES384
+required_claims = ["sub"]
+allowed_roles = ["admin", "user"]
+
+# Session Management
+enable_session_management = true
+session_ttl_seconds = 3600  # 1 hour
+
+# Rate Limiting
+enable_rate_limiting = true
+max_requests_per_minute = 60
+
+# Origin Validation
+origin_validation = "AllowList"
+allowed_origins = ["https://your-app.com"]
+require_origin_header = true
+```
+
+📖 **For detailed WebSocket security features, see [WebSocket Security Guide](./docs/websocket-security.md)**
+
+### Examples
+
+- [JWT Authentication Demo](./examples/websocket_jwt_demo.rs)
+- [Session Management Demo](./examples/websocket_session_demo.rs)
+- [Rate Limiting Demo](./examples/websocket_rate_limit_demo.rs)
+
+Run examples:
+
+```bash
+cargo run --example websocket_jwt_demo
+cargo run --example websocket_session_demo
+cargo run --example websocket_rate_limit_demo
+```
 
 ## 🏗️ Architecture
 
@@ -324,7 +382,7 @@ cargo test
 cargo run -- --config configs/development/http-transport.toml
 ```
 
-## Examples
+## Code Examples
 
 The project includes comprehensive examples demonstrating various features:
 

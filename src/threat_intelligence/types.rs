@@ -304,6 +304,9 @@ pub enum ThreatError {
 
     #[error("Authentication error: {0}")]
     AuthenticationError(String),
+
+    #[error("Evaluation error: {0}")]
+    EvaluationError(String),
 }
 
 /// 脅威検出統計
