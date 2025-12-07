@@ -14,12 +14,29 @@ use tokio::sync::RwLock;
 use tracing::{debug, error, info, instrument, warn};
 
 /// セッションセキュリティミドルウェア
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SessionSecurityMiddleware {
+    /// セッションマネージャー
+    session_manager: Arc<SessionManager>,
     /// セキュリティイベント記録
     security_events: Arc<RwLock<Vec<SecurityEvent>>>,
+    /// セッション属性追跡（IP、User-Agent等）
+    session_attributes: Arc<RwLock<HashMap<SessionId, SessionAttributes>>>,
     /// 設定
     config: SecurityConfig,
+}
+
+/// セッション属性（異常検知用）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionAttributes {
+    /// IPアドレス
+    pub ip_address: Option<IpAddr>,
+    /// User-Agent
+    pub user_agent: Option<String>,
+    /// 最終更新時刻
+    pub last_updated: DateTime<Utc>,
+    /// リクエスト回数
+    pub request_count: u32,
 }
 
 /// セキュリティ設定
@@ -82,22 +99,171 @@ pub enum SecuritySeverity {
 
 impl SessionSecurityMiddleware {
     /// 新しいセキュリティミドルウェアを作成
-    pub fn new(config: SecurityConfig) -> Self {
+    pub fn new(session_manager: Arc<SessionManager>, config: SecurityConfig) -> Self {
         Self {
+            session_manager,
             security_events: Arc::new(RwLock::new(Vec::new())),
+            session_attributes: Arc::new(RwLock::new(HashMap::new())),
             config,
         }
     }
 
-    /// セッション検証
+    /// セッション検証（SessionManagerと統合）
     #[instrument(skip(self))]
-    pub async fn validate_session(&self, session_id: &SessionId) -> Result<bool, SessionError> {
+    pub async fn validate_session(
+        &self,
+        session_id: &SessionId,
+        ip_address: Option<IpAddr>,
+        user_agent: Option<String>,
+    ) -> Result<bool, SessionError> {
         debug!("セッション検証: session_id={}", session_id.as_str());
 
-        // 基本的なセッション検証（実装済みのSessionManagerを使用予定）
-        // TODO: SessionManagerとの統合
+        // 1. SessionManagerでセッション存在確認
+        let session = match self.session_manager.get_session(session_id).await? {
+            Some(s) => s,
+            None => {
+                warn!("セッションが存在しません: {}", session_id.as_str());
+                self.log_security_event(SecurityEvent {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    session_id: Some(session_id.clone()),
+                    event_type: SecurityEventType::UnauthorizedAccess,
+                    severity: SecuritySeverity::High,
+                    message: "セッションが存在しません".to_string(),
+                    timestamp: Utc::now(),
+                    ip_address,
+                })
+                .await?;
+                return Ok(false);
+            }
+        };
+
+        // 2. セッション有効性チェック（期限切れ確認）
+        if session.is_expired() {
+            warn!("セッションが期限切れです: {}", session_id.as_str());
+            self.log_security_event(SecurityEvent {
+                id: uuid::Uuid::new_v4().to_string(),
+                session_id: Some(session_id.clone()),
+                event_type: SecurityEventType::SessionAuth,
+                severity: SecuritySeverity::Medium,
+                message: "セッションが期限切れです".to_string(),
+                timestamp: Utc::now(),
+                ip_address,
+            })
+            .await?;
+            return Ok(false);
+        }
+
+        // 3. セッション状態確認
+        if session.state != SessionState::Active {
+            warn!(
+                "セッションがアクティブではありません: {} (state: {:?})",
+                session_id.as_str(),
+                session.state
+            );
+            return Ok(false);
+        }
+
+        // 4. 異常検知（IP/User-Agent変更検出）
+        if let Err(e) = self
+            .detect_session_anomaly(session_id, ip_address, user_agent.clone())
+            .await
+        {
+            error!("セッション異常検知エラー: {:?}", e);
+            self.log_security_event(SecurityEvent {
+                id: uuid::Uuid::new_v4().to_string(),
+                session_id: Some(session_id.clone()),
+                event_type: SecurityEventType::SessionHijacking,
+                severity: SecuritySeverity::Critical,
+                message: format!("セッション乗っ取りの疑い: {:?}", e),
+                timestamp: Utc::now(),
+                ip_address,
+            })
+            .await?;
+            return Ok(false);
+        }
+
+        // 5. セッション活性更新
+        self.session_manager.touch_session(session_id).await?;
+
+        // 6. セッション属性更新
+        self.update_session_attributes(session_id, ip_address, user_agent)
+            .await?;
 
         Ok(true)
+    }
+
+    /// セッション異常検知
+    #[instrument(skip(self))]
+    async fn detect_session_anomaly(
+        &self,
+        session_id: &SessionId,
+        ip_address: Option<IpAddr>,
+        user_agent: Option<String>,
+    ) -> Result<(), SessionError> {
+        let attributes = self.session_attributes.read().await;
+
+        if let Some(stored_attrs) = attributes.get(session_id) {
+            // IP変更検出
+            if let (Some(stored_ip), Some(current_ip)) = (&stored_attrs.ip_address, &ip_address) {
+                if stored_ip != current_ip {
+                    warn!(
+                        "IP変更検出: session={}, old={}, new={}",
+                        session_id.as_str(),
+                        stored_ip,
+                        current_ip
+                    );
+                    return Err(SessionError::SecurityViolation(format!(
+                        "IP変更検出: {} -> {}",
+                        stored_ip, current_ip
+                    )));
+                }
+            }
+
+            // User-Agent変更検出
+            if let (Some(stored_ua), Some(current_ua)) = (&stored_attrs.user_agent, &user_agent) {
+                if stored_ua != current_ua {
+                    warn!("User-Agent変更検出: session={}", session_id.as_str());
+                    return Err(SessionError::SecurityViolation(
+                        "User-Agent変更検出".to_string(),
+                    ));
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// セッション属性更新
+    #[instrument(skip(self))]
+    async fn update_session_attributes(
+        &self,
+        session_id: &SessionId,
+        ip_address: Option<IpAddr>,
+        user_agent: Option<String>,
+    ) -> Result<(), SessionError> {
+        let mut attributes = self.session_attributes.write().await;
+
+        let attrs = attributes
+            .entry(session_id.clone())
+            .or_insert_with(|| SessionAttributes {
+                ip_address,
+                user_agent: user_agent.clone(),
+                last_updated: Utc::now(),
+                request_count: 0,
+            });
+
+        attrs.last_updated = Utc::now();
+        attrs.request_count += 1;
+
+        // 初回アクセス時のIP/User-Agent記録
+        if attrs.ip_address.is_none() {
+            attrs.ip_address = ip_address;
+        }
+        if attrs.user_agent.is_none() {
+            attrs.user_agent = user_agent;
+        }
+
+        Ok(())
     }
 
     /// セキュリティイベント記録
@@ -175,15 +341,78 @@ mod tests {
 
     #[tokio::test]
     async fn test_security_middleware_creation() {
+        let session_manager = Arc::new(SessionManager::new());
         let config = SecurityConfig::default();
-        let middleware = SessionSecurityMiddleware::new(config);
+        let middleware = SessionSecurityMiddleware::new(session_manager, config);
 
         assert_eq!(middleware.config.max_violations, 5);
     }
 
     #[tokio::test]
+    async fn test_session_validation() -> Result<(), SessionError> {
+        let session_manager = Arc::new(SessionManager::new());
+        let config = SecurityConfig::default();
+        let middleware = SessionSecurityMiddleware::new(session_manager.clone(), config);
+
+        // セッション作成
+        let session = session_manager
+            .create_session("test_user".to_string())
+            .await?;
+        session_manager.activate_session(&session.id).await?;
+
+        // セッション検証（成功）
+        let ip = Some("127.0.0.1".parse().unwrap());
+        let user_agent = Some("Test Agent".to_string());
+        let result = middleware
+            .validate_session(&session.id, ip, user_agent.clone())
+            .await?;
+        assert!(result);
+
+        // 存在しないセッション検証（失敗）
+        let invalid_id = SessionId::new();
+        let result = middleware
+            .validate_session(&invalid_id, ip, user_agent)
+            .await?;
+        assert!(!result);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_session_anomaly_detection() -> Result<(), SessionError> {
+        let session_manager = Arc::new(SessionManager::new());
+        let config = SecurityConfig::default();
+        let middleware = SessionSecurityMiddleware::new(session_manager.clone(), config);
+
+        // セッション作成とアクティベート
+        let session = session_manager
+            .create_session("test_user".to_string())
+            .await?;
+        session_manager.activate_session(&session.id).await?;
+
+        let ip1 = Some("127.0.0.1".parse().unwrap());
+        let ip2 = Some("192.168.1.1".parse().unwrap());
+        let user_agent = Some("Test Agent".to_string());
+
+        // 初回アクセス
+        let result = middleware
+            .validate_session(&session.id, ip1, user_agent.clone())
+            .await?;
+        assert!(result);
+
+        // IP変更検出（異常）
+        let result = middleware
+            .validate_session(&session.id, ip2, user_agent)
+            .await?;
+        assert!(!result);
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn test_input_validation() -> Result<(), SessionError> {
-        let middleware = SessionSecurityMiddleware::new(SecurityConfig::default());
+        let session_manager = Arc::new(SessionManager::new());
+        let middleware = SessionSecurityMiddleware::new(session_manager, SecurityConfig::default());
 
         // 正常な入力
         let result = middleware.validate_input("Hello world", "test").await?;
@@ -194,6 +423,36 @@ mod tests {
             .validate_input("<script>alert('xss')</script>", "test")
             .await?;
         assert!(!result);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_security_violations() -> Result<(), SessionError> {
+        let session_manager = Arc::new(SessionManager::new());
+        let config = SecurityConfig::default();
+        let middleware = SessionSecurityMiddleware::new(session_manager.clone(), config);
+
+        let session = session_manager
+            .create_session("test_user".to_string())
+            .await?;
+
+        // セキュリティイベント記録
+        middleware
+            .log_security_event(SecurityEvent {
+                id: uuid::Uuid::new_v4().to_string(),
+                session_id: Some(session.id.clone()),
+                event_type: SecurityEventType::UnauthorizedAccess,
+                severity: SecuritySeverity::High,
+                message: "テスト違反".to_string(),
+                timestamp: Utc::now(),
+                ip_address: None,
+            })
+            .await?;
+
+        // 違反チェック
+        let violations = middleware.check_violations(&session.id).await?;
+        assert_eq!(violations, 1);
 
         Ok(())
     }

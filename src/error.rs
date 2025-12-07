@@ -182,6 +182,10 @@ pub enum SessionError {
     #[error("Serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
 
+    /// Security violation
+    #[error("Security violation: {0}")]
+    SecurityViolation(String),
+
     /// Internal error
     #[error("Internal error: {0}")]
     Internal(String),

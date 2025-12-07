@@ -1,3 +1,4 @@
+pub mod access_control;
 pub mod manager;
 pub mod middleware_basic;
 #[cfg(feature = "redis")]
@@ -7,6 +8,7 @@ pub mod storage;
 pub mod types;
 pub mod websocket_handler;
 
+pub use access_control::*;
 pub use manager::*;
 pub use middleware_basic::*;
 #[cfg(feature = "redis")]
