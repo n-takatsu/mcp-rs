@@ -424,10 +424,7 @@ impl WebSocketTransport {
     }
 
     /// Get session ID by peer address (if exists)
-    async fn get_session_by_peer(
-        &self,
-        peer_addr: &SocketAddr,
-    ) -> Option<SessionId> {
+    async fn get_session_by_peer(&self, peer_addr: &SocketAddr) -> Option<SessionId> {
         let sessions = self.session_connections.read().await;
         for (session_id, addr) in sessions.iter() {
             if addr == peer_addr {
@@ -445,9 +442,13 @@ impl WebSocketTransport {
         // Find session ID for this peer
         let session_id = {
             let sessions = self.session_connections.read().await;
-            sessions
-                .iter()
-                .find_map(|(sid, addr)| if addr == peer_addr { Some(sid.clone()) } else { None })
+            sessions.iter().find_map(|(sid, addr)| {
+                if addr == peer_addr {
+                    Some(sid.clone())
+                } else {
+                    None
+                }
+            })
         };
 
         if let Some(session_id) = session_id {
@@ -457,10 +458,7 @@ impl WebSocketTransport {
                     TransportError::Internal(format!("Failed to delete session: {}", e))
                 })?;
 
-                info!(
-                    "Session {} invalidated for peer {}",
-                    session_id, peer_addr
-                );
+                info!("Session {} invalidated for peer {}", session_id, peer_addr);
 
                 // Log to audit log
                 if let Some(ref logger) = self.audit_logger {
@@ -529,8 +527,8 @@ impl WebSocketTransport {
                     limiter
                         .record_auth_failure_ip(
                             *peer_ip,
-                            5,    // max_auth_failures
-                            Duration::from_secs(300),  // 5 minutes
+                            5,                        // max_auth_failures
+                            Duration::from_secs(300), // 5 minutes
                         )
                         .await;
                 }
@@ -899,7 +897,8 @@ impl WebSocketTransport {
                         let peer_ip = Self::extract_ip_from_socket_addr(&peer_addr);
                         let peer_ip_for_session = peer_ip;
                         let _max_auth_failures = config.max_auth_failures;
-                        let _auth_failure_block_duration_secs = config.auth_failure_block_duration_secs;
+                        let _auth_failure_block_duration_secs =
+                            config.auth_failure_block_duration_secs;
 
                         // Store auth header for session creation after handshake
                         let auth_header_captured = Arc::new(RwLock::new(None::<String>));
@@ -984,10 +983,10 @@ impl WebSocketTransport {
                                                     session_id
                                                 );
                                                 // Store session_id -> peer_addr mapping
-                                                session_connections
-                                                    .write()
-                                                    .await
-                                                    .insert(SessionId::from(session_id.clone()), peer_addr);
+                                                session_connections.write().await.insert(
+                                                    SessionId::from(session_id.clone()),
+                                                    peer_addr,
+                                                );
                                                 debug!(
                                                     "Stored session mapping: {} -> {}",
                                                     session_id, peer_addr
@@ -1800,7 +1799,10 @@ impl Transport for WebSocketTransport {
                     let entry = AuditLogEntry::new(
                         AuditLevel::Info,
                         AuditCategory::NetworkActivity,
-                        format!("Session invalidated on WebSocket disconnect: {}", session_id),
+                        format!(
+                            "Session invalidated on WebSocket disconnect: {}",
+                            session_id
+                        ),
                     )
                     .with_request_info(peer_addr.to_string(), String::new())
                     .add_metadata("session_id".to_string(), session_id.to_string());
