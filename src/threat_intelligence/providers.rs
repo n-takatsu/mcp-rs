@@ -5,8 +5,10 @@
 use crate::threat_intelligence::types::*;
 use async_trait::async_trait;
 use base64::Engine;
+use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 use std::sync::Arc;
+use tokio::sync::RwLock;
 
 /// 脅威インテリジェンスプロバイダーの共通インターフェース
 #[async_trait]
@@ -608,6 +610,458 @@ impl ThreatProvider for AbuseIPDBProvider {
     }
 }
 
+/// CVEキャッシュエントリ型
+type CveCache = HashMap<String, (Vec<ThreatIntelligence>, DateTime<Utc>)>;
+
+/// CVE (Common Vulnerabilities and Exposures) プロバイダー
+pub struct CVEProvider {
+    config: ProviderConfig,
+    client: reqwest::Client,
+    rate_limiter: Arc<tokio::sync::Mutex<RateLimiter>>,
+    cache: Arc<RwLock<CveCache>>,
+}
+
+impl CVEProvider {
+    /// 新しいCVEプロバイダーを作成
+    pub fn new(config: ProviderConfig) -> Result<Self, ThreatError> {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(
+                config.timeout_seconds as u64,
+            ))
+            .user_agent("mcp-rs-threat-intelligence/0.15.0")
+            .build()
+            .map_err(|e| ThreatError::ConfigurationError(e.to_string()))?;
+
+        let rate_limiter = RateLimiter::new(config.rate_limit_per_minute);
+
+        Ok(Self {
+            config,
+            client,
+            rate_limiter: Arc::new(tokio::sync::Mutex::new(rate_limiter)),
+            cache: Arc::new(RwLock::new(HashMap::new())),
+        })
+    }
+
+    /// CVE IDで脆弱性情報を検索
+    async fn check_cve_id(&self, cve_id: &str) -> Result<Vec<ThreatIntelligence>, ThreatError> {
+        // CVE ID形式の検証 (CVE-YYYY-NNNNN)
+        if !Self::is_valid_cve_id(cve_id) {
+            return Err(ThreatError::ConfigurationError(format!(
+                "Invalid CVE ID format: {}. Expected format: CVE-YYYY-NNNNN",
+                cve_id
+            )));
+        }
+
+        // キャッシュチェック（24時間有効）
+        {
+            let cache = self.cache.read().await;
+            if let Some((cached_threats, cached_at)) = cache.get(cve_id) {
+                let age = Utc::now() - *cached_at;
+                if age < chrono::Duration::hours(24) {
+                    return Ok(cached_threats.clone());
+                }
+            }
+        }
+
+        let url = format!(
+            "{}/rest/json/cves/2.0?cveId={}",
+            self.config.base_url, cve_id
+        );
+
+        // レート制限チェック
+        {
+            let limiter = self.rate_limiter.lock().await;
+            if !limiter.allow_request().await {
+                return Err(ThreatError::RateLimitExceeded(self.name().to_string()));
+            }
+        }
+
+        let response = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| ThreatError::NetworkError(e.to_string()))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(ThreatError::ProviderError(format!(
+                "NVD API error: {} - {}",
+                status, error_text
+            )));
+        }
+
+        let json_response: serde_json::Value = response
+            .json()
+            .await
+            .map_err(|e| ThreatError::ParsingError(e.to_string()))?;
+
+        let threats = self.parse_cve_response(cve_id, json_response).await?;
+
+        // キャッシュ更新
+        {
+            let mut cache = self.cache.write().await;
+            cache.insert(cve_id.to_string(), (threats.clone(), Utc::now()));
+        }
+
+        Ok(threats)
+    }
+
+    /// キーワードでCVEを検索
+    async fn search_cve_by_keyword(
+        &self,
+        keyword: &str,
+    ) -> Result<Vec<ThreatIntelligence>, ThreatError> {
+        let url = format!(
+            "{}/rest/json/cves/2.0?keywordSearch={}",
+            self.config.base_url,
+            urlencoding::encode(keyword)
+        );
+
+        // レート制限チェック
+        {
+            let limiter = self.rate_limiter.lock().await;
+            if !limiter.allow_request().await {
+                return Err(ThreatError::RateLimitExceeded(self.name().to_string()));
+            }
+        }
+
+        let response = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| ThreatError::NetworkError(e.to_string()))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(ThreatError::ProviderError(format!(
+                "NVD API error: {} - {}",
+                status, error_text
+            )));
+        }
+
+        let json_response: serde_json::Value = response
+            .json()
+            .await
+            .map_err(|e| ThreatError::ParsingError(e.to_string()))?;
+
+        self.parse_cve_search_response(json_response).await
+    }
+
+    /// CVEレスポンスをパース
+    async fn parse_cve_response(
+        &self,
+        cve_id: &str,
+        response: serde_json::Value,
+    ) -> Result<Vec<ThreatIntelligence>, ThreatError> {
+        let vulnerabilities = response["vulnerabilities"]
+            .as_array()
+            .ok_or_else(|| ThreatError::ParsingError("Missing vulnerabilities field".to_string()))?;
+
+        if vulnerabilities.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let mut threats = Vec::new();
+
+        for vuln in vulnerabilities {
+            let cve = &vuln["cve"];
+            
+            // 基本情報
+            let id = cve["id"].as_str().unwrap_or(cve_id).to_string();
+            let published = cve["published"]
+                .as_str()
+                .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+                .map(|dt| dt.with_timezone(&Utc))
+                .unwrap_or_else(Utc::now);
+            let last_modified = cve["lastModified"]
+                .as_str()
+                .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+                .map(|dt| dt.with_timezone(&Utc))
+                .unwrap_or_else(Utc::now);
+
+            // 説明
+            let descriptions = &cve["descriptions"];
+            let description = descriptions
+                .as_array()
+                .and_then(|arr| arr.first())
+                .and_then(|desc| desc["value"].as_str())
+                .unwrap_or("No description available")
+                .to_string();
+
+            // CVSS スコア
+            let metrics = &cve["metrics"];
+            let (severity, cvss_score, cvss_vector) = Self::extract_cvss_info(metrics);
+
+            // CPE (影響を受ける製品)
+            let mut affected_products = Vec::new();
+            if let Some(configurations) = cve["configurations"].as_array() {
+                for config in configurations {
+                    if let Some(nodes) = config["nodes"].as_array() {
+                        for node in nodes {
+                            if let Some(cpe_match) = node["cpeMatch"].as_array() {
+                                for cpe in cpe_match {
+                                    if let Some(criteria) = cpe["criteria"].as_str() {
+                                        affected_products.push(criteria.to_string());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 参照リンク
+            let mut references = Vec::new();
+            if let Some(refs) = cve["references"].as_array() {
+                for ref_item in refs {
+                    if let Some(url) = ref_item["url"].as_str() {
+                        references.push(url.to_string());
+                    }
+                }
+            }
+
+            // 脅威指標の作成
+            let indicator = ThreatIndicator {
+                indicator_type: IndicatorType::FileHash, // CVEは一般的な脆弱性として扱う
+                value: id.clone(),
+                pattern: None,
+                tags: vec![
+                    format!("cvss:{:.1}", cvss_score),
+                    format!("severity:{:?}", severity),
+                ],
+                context: Some(description.clone()),
+                first_seen: published,
+            };
+
+            // メタデータ
+            let mut custom_attributes = HashMap::new();
+            custom_attributes.insert("cvss_score".to_string(), format!("{:.1}", cvss_score));
+            custom_attributes.insert("cvss_vector".to_string(), cvss_vector.clone());
+            custom_attributes.insert(
+                "affected_products_count".to_string(),
+                affected_products.len().to_string(),
+            );
+            custom_attributes.insert("references_count".to_string(), references.len().to_string());
+
+            if !affected_products.is_empty() {
+                custom_attributes.insert(
+                    "sample_affected_product".to_string(),
+                    affected_products[0].clone(),
+                );
+            }
+
+            let metadata = ThreatMetadata {
+                description: Some(description),
+                attack_techniques: Vec::new(),
+                cve_references: vec![id.clone()],
+                malware_families: Vec::new(),
+                geolocation: None,
+                custom_attributes,
+            };
+
+            // 脅威ソース
+            let source = ThreatSource {
+                provider: self.name().to_string(),
+                feed_name: "NVD CVE Database".to_string(),
+                reliability: self.config.reliability_factor,
+                last_updated: last_modified,
+            };
+
+            // 脅威インテリジェンス
+            let threat = ThreatIntelligence {
+                id: uuid::Uuid::new_v4().to_string(),
+                threat_type: ThreatType::Exploit,
+                severity,
+                indicators: vec![indicator],
+                source,
+                confidence_score: self.config.reliability_factor,
+                first_seen: published,
+                last_seen: last_modified,
+                expiration: None, // CVEは期限切れにならない
+                metadata,
+            };
+
+            threats.push(threat);
+        }
+
+        Ok(threats)
+    }
+
+    /// CVE検索レスポンスをパース
+    async fn parse_cve_search_response(
+        &self,
+        response: serde_json::Value,
+    ) -> Result<Vec<ThreatIntelligence>, ThreatError> {
+        let vulnerabilities = response["vulnerabilities"]
+            .as_array()
+            .ok_or_else(|| ThreatError::ParsingError("Missing vulnerabilities field".to_string()))?;
+
+        let mut all_threats = Vec::new();
+
+        // 最大10件まで処理（検索結果が多すぎる場合）
+        for vuln in vulnerabilities.iter().take(10) {
+            let cve_id = vuln["cve"]["id"]
+                .as_str()
+                .unwrap_or("UNKNOWN")
+                .to_string();
+            
+            if let Ok(threats) = self.parse_cve_response(&cve_id, serde_json::json!({
+                "vulnerabilities": [vuln]
+            })).await {
+                all_threats.extend(threats);
+            }
+        }
+
+        Ok(all_threats)
+    }
+
+    /// CVSSメトリクスから情報を抽出
+    fn extract_cvss_info(metrics: &serde_json::Value) -> (SeverityLevel, f64, String) {
+        // CVSS v3.1を優先、次にv3.0、最後にv2.0
+        if let Some(cvss31) = metrics["cvssMetricV31"].as_array().and_then(|arr| arr.first()) {
+            let score = cvss31["cvssData"]["baseScore"].as_f64().unwrap_or(0.0);
+            let severity = cvss31["cvssData"]["baseSeverity"]
+                .as_str()
+                .and_then(SeverityLevel::from_string)
+                .unwrap_or(SeverityLevel::Medium);
+            let vector = cvss31["cvssData"]["vectorString"]
+                .as_str()
+                .unwrap_or("")
+                .to_string();
+            return (severity, score, vector);
+        }
+
+        if let Some(cvss30) = metrics["cvssMetricV30"].as_array().and_then(|arr| arr.first()) {
+            let score = cvss30["cvssData"]["baseScore"].as_f64().unwrap_or(0.0);
+            let severity = cvss30["cvssData"]["baseSeverity"]
+                .as_str()
+                .and_then(SeverityLevel::from_string)
+                .unwrap_or(SeverityLevel::Medium);
+            let vector = cvss30["cvssData"]["vectorString"]
+                .as_str()
+                .unwrap_or("")
+                .to_string();
+            return (severity, score, vector);
+        }
+
+        if let Some(cvss2) = metrics["cvssMetricV2"].as_array().and_then(|arr| arr.first()) {
+            let score = cvss2["cvssData"]["baseScore"].as_f64().unwrap_or(0.0);
+            let severity = Self::cvss_score_to_severity(score);
+            let vector = cvss2["cvssData"]["vectorString"]
+                .as_str()
+                .unwrap_or("")
+                .to_string();
+            return (severity, score, vector);
+        }
+
+        (SeverityLevel::Medium, 0.0, String::new())
+    }
+
+    /// CVSSスコアから深刻度を計算
+    fn cvss_score_to_severity(score: f64) -> SeverityLevel {
+        match score {
+            s if s >= 9.0 => SeverityLevel::Critical,
+            s if s >= 7.0 => SeverityLevel::High,
+            s if s >= 4.0 => SeverityLevel::Medium,
+            s if s > 0.0 => SeverityLevel::Low,
+            _ => SeverityLevel::Info,
+        }
+    }
+
+    /// CVE ID形式の検証
+    fn is_valid_cve_id(cve_id: &str) -> bool {
+        // CVE-YYYY-NNNNN 形式（YYYYは4桁、NNNNNは4桁以上）
+        let pattern = regex::Regex::new(r"^CVE-\d{4}-\d{4,}$").unwrap();
+        pattern.is_match(cve_id)
+    }
+
+    /// キャッシュサイズを取得
+    pub async fn cache_size(&self) -> usize {
+        self.cache.read().await.len()
+    }
+
+    /// キャッシュをクリア
+    pub async fn clear_cache(&self) {
+        self.cache.write().await.clear();
+    }
+}
+
+#[async_trait]
+impl ThreatProvider for CVEProvider {
+    fn name(&self) -> &str {
+        "CVE"
+    }
+
+    fn config(&self) -> &ProviderConfig {
+        &self.config
+    }
+
+    async fn check_indicator(
+        &self,
+        indicator: &ThreatIndicator,
+    ) -> Result<Vec<ThreatIntelligence>, ThreatError> {
+        match indicator.indicator_type {
+            IndicatorType::FileHash => {
+                // CVE ID として扱う
+                if Self::is_valid_cve_id(&indicator.value) {
+                    self.check_cve_id(&indicator.value).await
+                } else {
+                    // キーワード検索として扱う
+                    self.search_cve_by_keyword(&indicator.value).await
+                }
+            }
+            _ => {
+                // その他の指標タイプはキーワード検索
+                self.search_cve_by_keyword(&indicator.value).await
+            }
+        }
+    }
+
+    async fn health_check(&self) -> Result<ProviderHealth, ThreatError> {
+        let start_time = std::time::Instant::now();
+
+        // 既知のCVEでテスト（CVE-2021-44228 - Log4Shell）
+        let test_indicator = ThreatIndicator {
+            indicator_type: IndicatorType::FileHash,
+            value: "CVE-2021-44228".to_string(),
+            pattern: None,
+            tags: Vec::new(),
+            context: None,
+            first_seen: chrono::Utc::now(),
+        };
+
+        let result = self.check_indicator(&test_indicator).await;
+        let duration = start_time.elapsed();
+        let response_time_ms = duration.as_millis() as u64;
+
+        let (status, error_message) = match result {
+            Ok(_) => (HealthStatus::Healthy, None),
+            Err(ThreatError::RateLimitExceeded(_)) => (
+                HealthStatus::Warning,
+                Some("Rate limit reached".to_string()),
+            ),
+            Err(e) => (HealthStatus::Error, Some(e.to_string())),
+        };
+
+        Ok(ProviderHealth {
+            provider_name: self.name().to_string(),
+            status,
+            response_time_ms,
+            last_check: chrono::Utc::now(),
+            error_message,
+        })
+    }
+
+    async fn get_rate_limit_status(&self) -> Result<RateLimitStatus, ThreatError> {
+        let limiter = self.rate_limiter.lock().await;
+        Ok(limiter.get_status())
+    }
+}
+
 /// プロバイダーファクトリー
 pub struct ProviderFactory;
 
@@ -621,6 +1075,10 @@ impl ProviderFactory {
             }
             "AbuseIPDB" => {
                 let provider = AbuseIPDBProvider::new(config)?;
+                Ok(Box::new(provider))
+            }
+            "CVE" => {
+                let provider = CVEProvider::new(config)?;
                 Ok(Box::new(provider))
             }
             // 他のプロバイダーもここに追加

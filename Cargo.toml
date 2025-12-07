@@ -302,3 +302,6 @@ required-features = ["mfa"]
 # Threat intelligence examples
 [[example]]
 name = "abuseipdb_demo"
+
+[[example]]
+name = "cve_demo"
