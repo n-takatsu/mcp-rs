@@ -59,6 +59,7 @@ async fn run_server() -> Result<(), Box<dyn std::error::Error>> {
         reconnect_delay: 5,
         max_message_size: 16 * 1024 * 1024,
         max_connections: 100,
+        ..Default::default()
     };
 
     let mut transport = WebSocketTransport::new(config)?;
@@ -142,6 +143,7 @@ async fn run_client() -> Result<(), Box<dyn std::error::Error>> {
         reconnect_delay: 5,
         max_message_size: 16 * 1024 * 1024,
         max_connections: 100,
+        ..Default::default()
     };
 
     let mut transport = WebSocketTransport::new(config)?;

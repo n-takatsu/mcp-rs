@@ -3,12 +3,10 @@
 //! This test module verifies session management functionality
 //! including in-memory and Redis storage backends.
 
-use mcp_rs::error::SessionError;
 use mcp_rs::session::{
     MemorySessionStorage, Session, SessionFilter, SessionId, SessionManager, SessionState,
     SessionStorage,
 };
-use std::sync::Arc;
 
 #[tokio::test]
 async fn test_memory_session_creation() {
@@ -78,7 +76,7 @@ async fn test_memory_session_filtering() {
     let storage = MemorySessionStorage::new();
 
     // Create sessions for different users
-    for i in 1..=3 {
+    for _i in 1..=3 {
         let session = Session {
             id: SessionId::new(),
             user_id: "user_filter".to_string(),
@@ -229,11 +227,11 @@ async fn test_session_age_and_ttl() {
 
     // Age should be around 30 seconds
     let age = session.age_seconds();
-    assert!(age >= 29 && age <= 31);
+    assert!((29..=31).contains(&age));
 
     // TTL should be around 1 hour (3600 seconds)
     let ttl = session.ttl_seconds();
-    assert!(ttl >= 3590 && ttl <= 3610);
+    assert!((3590..=3610).contains(&ttl));
 }
 
 #[tokio::test]
@@ -254,7 +252,7 @@ async fn test_multiple_users_sessions() {
 
     // Create multiple sessions for multiple users
     for user_num in 1..=3 {
-        for session_num in 1..=2 {
+        for _session_num in 1..=2 {
             manager
                 .create_session(format!("user{}", user_num))
                 .await
