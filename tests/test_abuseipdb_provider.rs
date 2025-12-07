@@ -50,7 +50,7 @@ mod abuseipdb_tests {
         let config = create_test_config("");
         let result = AbuseIPDBProvider::new(config);
         assert!(result.is_err(), "Should fail with empty API key");
-        
+
         if let Err(ThreatError::ConfigurationError(msg)) = result {
             assert!(
                 msg.contains("API key is required"),
@@ -88,13 +88,13 @@ mod abuseipdb_tests {
             for invalid_ip in invalid_ips {
                 let indicator = create_test_indicator(invalid_ip);
                 let result = provider.check_indicator(&indicator).await;
-                
+
                 assert!(
                     result.is_err(),
                     "Should fail for invalid IP: {}",
                     invalid_ip
                 );
-                
+
                 if let Err(ThreatError::ConfigurationError(msg)) = result {
                     assert!(
                         msg.contains("Invalid IP address"),
@@ -118,7 +118,7 @@ mod abuseipdb_tests {
                 let indicator = create_test_indicator(valid_ip);
                 // IP形式の検証は通るが、APIキーが無効なのでネットワークエラーになる
                 let result = provider.check_indicator(&indicator).await;
-                
+
                 // 無効なAPIキーの場合、ネットワークエラーまたはプロバイダーエラーが期待される
                 if let Err(e) = result {
                     match e {
@@ -144,9 +144,9 @@ mod abuseipdb_tests {
 
             let ipv6 = "2001:4860:4860::8888";
             let indicator = create_test_indicator(ipv6);
-            
+
             let result = provider.check_indicator(&indicator).await;
-            
+
             // IPv6も有効な形式として受け入れられるべき
             if let Err(ThreatError::ConfigurationError(msg)) = result {
                 panic!("Should not reject valid IPv6 format: {}", msg);
@@ -171,9 +171,12 @@ mod abuseipdb_tests {
             };
 
             let result = provider.check_indicator(&domain_indicator).await;
-            
-            assert!(result.is_err(), "Should fail for unsupported indicator type");
-            
+
+            assert!(
+                result.is_err(),
+                "Should fail for unsupported indicator type"
+            );
+
             if let Err(ThreatError::ConfigurationError(msg)) = result {
                 assert!(
                     msg.contains("only supports IP address"),
@@ -201,9 +204,9 @@ mod abuseipdb_tests {
     fn test_factory_creation() {
         let config = create_test_config("test_key");
         let result = ProviderFactory::create_provider(config);
-        
+
         assert!(result.is_ok(), "Factory should create AbuseIPDB provider");
-        
+
         let provider = result.unwrap();
         assert_eq!(provider.name(), "AbuseIPDB");
     }
@@ -212,7 +215,7 @@ mod abuseipdb_tests {
     fn test_category_to_threat_type_mapping() {
         // カテゴリー番号から脅威タイプへのマッピングが正しいことを確認
         // これは内部実装の詳細なので、間接的にテスト
-        
+
         // カテゴリーの一部:
         // 3-11: Malware
         // 12-13: Phishing
@@ -220,7 +223,7 @@ mod abuseipdb_tests {
         // 15-17: C&C
         // 18-20: Botnet
         // 21: Exploit
-        
+
         // この実装は parse_abuseipdb_response 内で使用される
         // 直接テストするにはプロバイダーをモック化する必要がある
     }
@@ -233,7 +236,7 @@ mod abuseipdb_tests {
         // >= 0.4: Medium
         // >= 0.2: Low
         // else: Info
-        
+
         // この実装は parse_abuseipdb_response 内で使用される
         // 実際のAPIレスポンスをシミュレートする統合テストが必要
     }

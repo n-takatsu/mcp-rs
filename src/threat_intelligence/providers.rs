@@ -328,7 +328,7 @@ impl AbuseIPDBProvider {
         }
 
         let url = format!("{}/api/v2/check", self.config.base_url);
-        
+
         // レート制限チェック
         {
             let limiter = self.rate_limiter.lock().await;
@@ -374,10 +374,8 @@ impl AbuseIPDBProvider {
             .as_object()
             .ok_or_else(|| ThreatError::ParsingError("Missing data field".to_string()))?;
 
-        let abuse_confidence_score = data["abuseConfidenceScore"]
-            .as_u64()
-            .unwrap_or(0) as f64
-            / 100.0;
+        let abuse_confidence_score =
+            data["abuseConfidenceScore"].as_u64().unwrap_or(0) as f64 / 100.0;
 
         // スコアが低い場合は脅威なしと判断
         if abuse_confidence_score < 0.1 {
@@ -417,7 +415,7 @@ impl AbuseIPDBProvider {
         // 脅威タイプを判定
         let mut threat_types = Vec::new();
         let usage_type = data["usageType"].as_str().unwrap_or("");
-        
+
         if let Some(reports) = data["reports"].as_array() {
             for report in reports {
                 if let Some(categories) = report["categories"].as_array() {
@@ -588,9 +586,10 @@ impl ThreatProvider for AbuseIPDBProvider {
 
         let (status, error_message) = match result {
             Ok(_) => (HealthStatus::Healthy, None),
-            Err(ThreatError::RateLimitExceeded(_)) => {
-                (HealthStatus::Warning, Some("Rate limit reached".to_string()))
-            }
+            Err(ThreatError::RateLimitExceeded(_)) => (
+                HealthStatus::Warning,
+                Some("Rate limit reached".to_string()),
+            ),
             Err(e) => (HealthStatus::Error, Some(e.to_string())),
         };
 

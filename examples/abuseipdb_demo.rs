@@ -131,18 +131,12 @@ async fn demo_malicious_ip_check(provider: &AbuseIPDBProvider) {
                     println!("\n   Threat #{}", i + 1);
                     println!("   ├─ Type: {:?}", threat.threat_type);
                     println!("   ├─ Severity: {:?}", threat.severity);
-                    println!(
-                        "   ├─ Confidence: {:.1}%",
-                        threat.confidence_score * 100.0
-                    );
+                    println!("   ├─ Confidence: {:.1}%", threat.confidence_score * 100.0);
                     if let Some(desc) = &threat.metadata.description {
                         println!("   ├─ Description: {}", desc);
                     }
                     if let Some(geo) = &threat.metadata.geolocation {
-                        println!(
-                            "   ├─ Location: {}, {}",
-                            geo.country_name, geo.country_code
-                        );
+                        println!("   ├─ Location: {}, {}", geo.country_name, geo.country_code);
                     }
                     if let Some(reports) = threat.metadata.custom_attributes.get("total_reports") {
                         println!("   ├─ Total Reports: {}", reports);
@@ -234,21 +228,13 @@ async fn demo_batch_check(provider: &AbuseIPDBProvider) {
             for ip in &ips {
                 let ip_threats: Vec<_> = threats
                     .iter()
-                    .filter(|t| {
-                        t.indicators
-                            .iter()
-                            .any(|ind| ind.value == *ip)
-                    })
+                    .filter(|t| t.indicators.iter().any(|ind| ind.value == *ip))
                     .collect();
 
                 if ip_threats.is_empty() {
                     println!("   {} - ✅ Clean", ip);
                 } else {
-                    println!(
-                        "   {} - ⚠️  {} threat(s)",
-                        ip,
-                        ip_threats.len()
-                    );
+                    println!("   {} - ⚠️  {} threat(s)", ip, ip_threats.len());
                 }
             }
         }
