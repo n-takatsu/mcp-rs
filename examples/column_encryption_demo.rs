@@ -128,7 +128,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Example 4: Multiple values
     println!("=== Example 4: Batch Encryption ===");
-    let values = vec![
+    let values = [
         "alice@example.com",
         "bob@example.com",
         "charlie@example.com",
