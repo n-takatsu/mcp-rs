@@ -5,7 +5,7 @@
 
 use crate::security::AuditLogger;
 use crate::security::RateLimiter;
-use crate::session::{SessionManager, SessionState};
+use crate::session::{SessionId, SessionManager, SessionState};
 use crate::transport::{Transport, TransportError};
 use crate::types::{JsonRpcRequest, JsonRpcResponse};
 use async_trait::async_trait;
@@ -261,6 +261,8 @@ pub struct WebSocketTransport {
     session_manager: Option<Arc<SessionManager>>,
     // Rate limiter for request throttling and auth failure tracking
     rate_limiter: Option<Arc<RateLimiter>>,
+    // Session to connection mapping (SessionId -> SocketAddr)
+    session_connections: Arc<RwLock<HashMap<SessionId, SocketAddr>>>,
 }
 
 impl WebSocketTransport {
@@ -311,6 +313,7 @@ impl WebSocketTransport {
             audit_logger: None,
             session_manager,
             rate_limiter,
+            session_connections: Arc::new(RwLock::new(HashMap::new())),
         })
     }
 
@@ -415,6 +418,71 @@ impl WebSocketTransport {
             tokio::spawn(async move {
                 let _ = logger_clone.log(entry).await;
             });
+        }
+
+        Ok(())
+    }
+
+    /// Get session ID by peer address (if exists)
+    async fn get_session_by_peer(
+        &self,
+        peer_addr: &SocketAddr,
+    ) -> Option<SessionId> {
+        let sessions = self.session_connections.read().await;
+        for (session_id, addr) in sessions.iter() {
+            if addr == peer_addr {
+                return Some(session_id.clone());
+            }
+        }
+        None
+    }
+
+    /// Invalidate session for a specific peer address
+    async fn invalidate_session_for_peer(
+        &self,
+        peer_addr: &SocketAddr,
+    ) -> Result<(), TransportError> {
+        // Find session ID for this peer
+        let session_id = {
+            let sessions = self.session_connections.read().await;
+            sessions
+                .iter()
+                .find_map(|(sid, addr)| if addr == peer_addr { Some(sid.clone()) } else { None })
+        };
+
+        if let Some(session_id) = session_id {
+            // Delete from session manager
+            if let Some(ref session_mgr) = self.session_manager {
+                session_mgr.delete_session(&session_id).await.map_err(|e| {
+                    TransportError::Internal(format!("Failed to delete session: {}", e))
+                })?;
+
+                info!(
+                    "Session {} invalidated for peer {}",
+                    session_id, peer_addr
+                );
+
+                // Log to audit log
+                if let Some(ref logger) = self.audit_logger {
+                    use crate::security::{AuditCategory, AuditLevel, AuditLogEntry};
+                    let entry = AuditLogEntry::new(
+                        AuditLevel::Info,
+                        AuditCategory::NetworkActivity,
+                        format!("Session invalidated for peer disconnect: {}", session_id),
+                    )
+                    .with_request_info(peer_addr.to_string(), String::new())
+                    .add_metadata("session_id".to_string(), session_id.to_string());
+
+                    let logger_clone = Arc::clone(logger);
+                    tokio::spawn(async move {
+                        let _ = logger_clone.log(entry).await;
+                    });
+                }
+            }
+
+            // Remove from mapping
+            self.session_connections.write().await.remove(&session_id);
+            debug!("Removed session mapping: {} -> {}", session_id, peer_addr);
         }
 
         Ok(())
@@ -758,6 +826,7 @@ impl WebSocketTransport {
         let config = self.config.clone();
         let audit_logger = self.audit_logger.clone();
         let session_manager = self.session_manager.clone();
+        let session_connections = Arc::clone(&self.session_connections);
 
         // Accept first connection (simplified implementation)
         tokio::spawn(async move {
@@ -775,6 +844,7 @@ impl WebSocketTransport {
                             &config,
                             &audit_logger,
                             &session_manager,
+                            &session_connections,
                         )
                         .await
                         {
@@ -881,7 +951,15 @@ impl WebSocketTransport {
                                                     "Session created for WebSocket connection: {}",
                                                     session_id
                                                 );
-                                                // TODO: Store session_id in connection context
+                                                // Store session_id -> peer_addr mapping
+                                                session_connections
+                                                    .write()
+                                                    .await
+                                                    .insert(SessionId::from(session_id.clone()), peer_addr);
+                                                debug!(
+                                                    "Stored session mapping: {} -> {}",
+                                                    session_id, peer_addr
+                                                );
                                             }
                                             Ok(_) => {
                                                 debug!("No session created (auth not required or session management disabled)");
@@ -1048,6 +1126,7 @@ impl WebSocketTransport {
         config: &WebSocketConfig,
         audit_logger: &Option<Arc<AuditLogger>>,
         session_manager: &Option<Arc<SessionManager>>,
+        session_connections: &Arc<RwLock<HashMap<SessionId, SocketAddr>>>,
     ) -> Result<WsStream, TransportError> {
         use native_tls::Identity;
         use std::fs;
@@ -1249,7 +1328,15 @@ impl WebSocketTransport {
                             "Session created for TLS WebSocket connection: {}",
                             session_id
                         );
-                        // TODO: Store session_id in connection context
+                        // Store session_id -> peer_addr mapping
+                        session_connections
+                            .write()
+                            .await
+                            .insert(SessionId::from(session_id.clone()), peer_addr);
+                        debug!(
+                            "Stored TLS session mapping: {} -> {}",
+                            session_id, peer_addr
+                        );
                     }
                     Ok(_) => {
                         debug!("No session created for TLS connection (auth not required or session management disabled)");
@@ -1650,6 +1737,42 @@ impl Transport for WebSocketTransport {
 
         // Wait for graceful shutdown
         tokio::time::sleep(Duration::from_millis(500)).await;
+
+        // Clean up session mappings and invalidate sessions
+        if let Some(ref session_mgr) = self.session_manager {
+            let mut sessions = self.session_connections.write().await;
+            for (session_id, peer_addr) in sessions.iter() {
+                // Delete session from SessionManager
+                if let Err(e) = session_mgr.delete_session(session_id).await {
+                    warn!(
+                        "Failed to delete session {} for {}: {}",
+                        session_id, peer_addr, e
+                    );
+                } else {
+                    info!("Session {} invalidated on connection close", session_id);
+                }
+
+                // Log session cleanup to audit log
+                if let Some(ref logger) = self.audit_logger {
+                    use crate::security::{AuditCategory, AuditLevel, AuditLogEntry};
+                    let entry = AuditLogEntry::new(
+                        AuditLevel::Info,
+                        AuditCategory::NetworkActivity,
+                        format!("Session invalidated on WebSocket disconnect: {}", session_id),
+                    )
+                    .with_request_info(peer_addr.to_string(), String::new())
+                    .add_metadata("session_id".to_string(), session_id.to_string());
+
+                    let logger_clone = Arc::clone(logger);
+                    let entry_clone = entry;
+                    tokio::spawn(async move {
+                        let _ = logger_clone.log(entry_clone).await;
+                    });
+                }
+            }
+            sessions.clear();
+            debug!("All session mappings cleared");
+        }
 
         // Close connections
         *self.client_connection.write().await = None;
