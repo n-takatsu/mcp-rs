@@ -298,3 +298,7 @@ required-features = ["mfa"]
 [[test]]
 name = "mfa_performance_tests"
 required-features = ["mfa"]
+
+# Threat intelligence examples
+[[example]]
+name = "abuseipdb_demo"

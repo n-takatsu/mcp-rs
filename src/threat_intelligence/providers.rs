@@ -284,6 +284,331 @@ impl RateLimiter {
     }
 }
 
+/// AbuseIPDB プロバイダー
+pub struct AbuseIPDBProvider {
+    config: ProviderConfig,
+    client: reqwest::Client,
+    rate_limiter: Arc<tokio::sync::Mutex<RateLimiter>>,
+}
+
+impl AbuseIPDBProvider {
+    /// 新しいAbuseIPDBプロバイダーを作成
+    pub fn new(config: ProviderConfig) -> Result<Self, ThreatError> {
+        // APIキーの検証
+        if config.api_key.is_empty() {
+            return Err(ThreatError::ConfigurationError(
+                "AbuseIPDB API key is required".to_string(),
+            ));
+        }
+
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(
+                config.timeout_seconds as u64,
+            ))
+            .build()
+            .map_err(|e| ThreatError::ConfigurationError(e.to_string()))?;
+
+        let rate_limiter = RateLimiter::new(config.rate_limit_per_minute);
+
+        Ok(Self {
+            config,
+            client,
+            rate_limiter: Arc::new(tokio::sync::Mutex::new(rate_limiter)),
+        })
+    }
+
+    /// IPアドレスをチェック
+    async fn check_ip_address(&self, ip: &str) -> Result<Vec<ThreatIntelligence>, ThreatError> {
+        // IP形式の基本的な検証
+        if !Self::is_valid_ip(ip) {
+            return Err(ThreatError::ConfigurationError(format!(
+                "Invalid IP address format: {}",
+                ip
+            )));
+        }
+
+        let url = format!("{}/api/v2/check", self.config.base_url);
+        
+        // レート制限チェック
+        {
+            let limiter = self.rate_limiter.lock().await;
+            if !limiter.allow_request().await {
+                return Err(ThreatError::RateLimitExceeded(self.name().to_string()));
+            }
+        }
+
+        let response = self
+            .client
+            .get(&url)
+            .header("Key", &self.config.api_key)
+            .header("Accept", "application/json")
+            .query(&[("ipAddress", ip), ("maxAgeInDays", "90"), ("verbose", "")])
+            .send()
+            .await
+            .map_err(|e| ThreatError::NetworkError(e.to_string()))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(ThreatError::ProviderError(format!(
+                "AbuseIPDB API error: {} - {}",
+                status, error_text
+            )));
+        }
+
+        let json_response: serde_json::Value = response
+            .json()
+            .await
+            .map_err(|e| ThreatError::ParsingError(e.to_string()))?;
+
+        self.parse_abuseipdb_response(ip, json_response).await
+    }
+
+    /// AbuseIPDBレスポンスをパース
+    async fn parse_abuseipdb_response(
+        &self,
+        ip: &str,
+        response: serde_json::Value,
+    ) -> Result<Vec<ThreatIntelligence>, ThreatError> {
+        let data = response["data"]
+            .as_object()
+            .ok_or_else(|| ThreatError::ParsingError("Missing data field".to_string()))?;
+
+        let abuse_confidence_score = data["abuseConfidenceScore"]
+            .as_u64()
+            .unwrap_or(0) as f64
+            / 100.0;
+
+        // スコアが低い場合は脅威なしと判断
+        if abuse_confidence_score < 0.1 {
+            return Ok(vec![]);
+        }
+
+        let total_reports = data["totalReports"].as_u64().unwrap_or(0);
+        let country_code = data["countryCode"]
+            .as_str()
+            .unwrap_or("Unknown")
+            .to_string();
+        let country_name = data["countryName"]
+            .as_str()
+            .unwrap_or("Unknown")
+            .to_string();
+        let is_public = data["isPublic"].as_bool().unwrap_or(true);
+        let is_whitelisted = data["isWhitelisted"].as_bool().unwrap_or(false);
+
+        // ホワイトリスト登録されている場合は脅威なしと判断
+        if is_whitelisted {
+            return Ok(vec![]);
+        }
+
+        // 深刻度をスコアに基づいて決定
+        let severity = if abuse_confidence_score >= 0.8 {
+            SeverityLevel::Critical
+        } else if abuse_confidence_score >= 0.6 {
+            SeverityLevel::High
+        } else if abuse_confidence_score >= 0.4 {
+            SeverityLevel::Medium
+        } else if abuse_confidence_score >= 0.2 {
+            SeverityLevel::Low
+        } else {
+            SeverityLevel::Info
+        };
+
+        // 脅威タイプを判定
+        let mut threat_types = Vec::new();
+        let usage_type = data["usageType"].as_str().unwrap_or("");
+        
+        if let Some(reports) = data["reports"].as_array() {
+            for report in reports {
+                if let Some(categories) = report["categories"].as_array() {
+                    for category in categories {
+                        if let Some(cat_num) = category.as_u64() {
+                            threat_types.push(Self::category_to_threat_type(cat_num));
+                        }
+                    }
+                }
+            }
+        }
+
+        // デフォルトの脅威タイプ
+        let threat_type = if !threat_types.is_empty() {
+            threat_types[0].clone()
+        } else if usage_type.contains("Data Center") {
+            ThreatType::Other("Datacenter/Proxy".to_string())
+        } else {
+            ThreatType::MaliciousIp
+        };
+
+        // 脅威指標の作成
+        let indicator = ThreatIndicator {
+            indicator_type: IndicatorType::IpAddress,
+            value: ip.to_string(),
+            pattern: None,
+            tags: vec![
+                format!("abuse_score:{:.0}", abuse_confidence_score * 100.0),
+                format!("reports:{}", total_reports),
+                country_code.clone(),
+            ],
+            context: Some(format!(
+                "Public: {}, Reports: {}, Country: {}",
+                is_public, total_reports, country_name
+            )),
+            first_seen: chrono::Utc::now(),
+        };
+
+        // 地理情報の作成
+        let geolocation = if country_code != "Unknown" {
+            Some(GeolocationInfo {
+                country_code: country_code.clone(),
+                country_name: country_name.clone(),
+                region: None,
+                city: None,
+                latitude: None,
+                longitude: None,
+            })
+        } else {
+            None
+        };
+
+        // メタデータの作成
+        let mut custom_attributes = HashMap::new();
+        custom_attributes.insert("is_public".to_string(), is_public.to_string());
+        custom_attributes.insert("usage_type".to_string(), usage_type.to_string());
+        custom_attributes.insert("total_reports".to_string(), total_reports.to_string());
+        custom_attributes.insert(
+            "abuse_confidence_score".to_string(),
+            format!("{:.2}", abuse_confidence_score),
+        );
+
+        if let Some(isp) = data["isp"].as_str() {
+            custom_attributes.insert("isp".to_string(), isp.to_string());
+        }
+        if let Some(domain) = data["domain"].as_str() {
+            custom_attributes.insert("domain".to_string(), domain.to_string());
+        }
+
+        let metadata = ThreatMetadata {
+            description: Some(format!(
+                "IP {} reported {} times with {:.0}% abuse confidence score",
+                ip,
+                total_reports,
+                abuse_confidence_score * 100.0
+            )),
+            attack_techniques: Vec::new(),
+            cve_references: Vec::new(),
+            malware_families: Vec::new(),
+            geolocation,
+            custom_attributes,
+        };
+
+        // 脅威ソースの作成
+        let source = ThreatSource {
+            provider: self.name().to_string(),
+            feed_name: "AbuseIPDB Reports".to_string(),
+            reliability: self.config.reliability_factor,
+            last_updated: chrono::Utc::now(),
+        };
+
+        // 脅威インテリジェンスの作成
+        let threat = ThreatIntelligence {
+            id: uuid::Uuid::new_v4().to_string(),
+            threat_type,
+            severity,
+            indicators: vec![indicator],
+            source,
+            confidence_score: abuse_confidence_score * self.config.reliability_factor,
+            first_seen: chrono::Utc::now(),
+            last_seen: chrono::Utc::now(),
+            expiration: Some(chrono::Utc::now() + chrono::Duration::days(30)),
+            metadata,
+        };
+
+        Ok(vec![threat])
+    }
+
+    /// AbuseIPDBカテゴリー番号を脅威タイプに変換
+    fn category_to_threat_type(category: u64) -> ThreatType {
+        match category {
+            3..=11 => ThreatType::Malware,
+            12 | 13 => ThreatType::Phishing,
+            14 => ThreatType::Spam,
+            15..=17 => ThreatType::CommandAndControl,
+            18..=20 => ThreatType::Botnet,
+            21 => ThreatType::Exploit,
+            _ => ThreatType::MaliciousIp,
+        }
+    }
+
+    /// IP形式の検証
+    fn is_valid_ip(ip: &str) -> bool {
+        // 簡易的なIPv4/IPv6検証
+        ip.parse::<std::net::IpAddr>().is_ok()
+    }
+}
+
+#[async_trait]
+impl ThreatProvider for AbuseIPDBProvider {
+    fn name(&self) -> &str {
+        "AbuseIPDB"
+    }
+
+    fn config(&self) -> &ProviderConfig {
+        &self.config
+    }
+
+    async fn check_indicator(
+        &self,
+        indicator: &ThreatIndicator,
+    ) -> Result<Vec<ThreatIntelligence>, ThreatError> {
+        match indicator.indicator_type {
+            IndicatorType::IpAddress => self.check_ip_address(&indicator.value).await,
+            _ => Err(ThreatError::ConfigurationError(format!(
+                "AbuseIPDB only supports IP address lookups, got: {:?}",
+                indicator.indicator_type
+            ))),
+        }
+    }
+
+    async fn health_check(&self) -> Result<ProviderHealth, ThreatError> {
+        let start_time = std::time::Instant::now();
+
+        // 既知の安全なIPでテスト（8.8.8.8 - Google DNS）
+        let test_indicator = ThreatIndicator {
+            indicator_type: IndicatorType::IpAddress,
+            value: "8.8.8.8".to_string(),
+            pattern: None,
+            tags: Vec::new(),
+            context: None,
+            first_seen: chrono::Utc::now(),
+        };
+
+        let result = self.check_indicator(&test_indicator).await;
+        let duration = start_time.elapsed();
+        let response_time_ms = duration.as_millis() as u64;
+
+        let (status, error_message) = match result {
+            Ok(_) => (HealthStatus::Healthy, None),
+            Err(ThreatError::RateLimitExceeded(_)) => {
+                (HealthStatus::Warning, Some("Rate limit reached".to_string()))
+            }
+            Err(e) => (HealthStatus::Error, Some(e.to_string())),
+        };
+
+        Ok(ProviderHealth {
+            provider_name: self.name().to_string(),
+            status,
+            response_time_ms,
+            last_check: chrono::Utc::now(),
+            error_message,
+        })
+    }
+
+    async fn get_rate_limit_status(&self) -> Result<RateLimitStatus, ThreatError> {
+        let limiter = self.rate_limiter.lock().await;
+        Ok(limiter.get_status())
+    }
+}
+
 /// プロバイダーファクトリー
 pub struct ProviderFactory;
 
@@ -293,6 +618,10 @@ impl ProviderFactory {
         match config.name.as_str() {
             "VirusTotal" => {
                 let provider = VirusTotalProvider::new(config)?;
+                Ok(Box::new(provider))
+            }
+            "AbuseIPDB" => {
+                let provider = AbuseIPDBProvider::new(config)?;
                 Ok(Box::new(provider))
             }
             // 他のプロバイダーもここに追加
