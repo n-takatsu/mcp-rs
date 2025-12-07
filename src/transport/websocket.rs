@@ -57,9 +57,10 @@ impl Default for TlsConfig {
 }
 
 /// JWT algorithm for token verification
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub enum JwtAlgorithm {
     /// HMAC with SHA-256
+    #[default]
     HS256,
     /// HMAC with SHA-384
     HS384,
@@ -75,12 +76,6 @@ pub enum JwtAlgorithm {
     ES256,
     /// ECDSA with SHA-384
     ES384,
-}
-
-impl Default for JwtAlgorithm {
-    fn default() -> Self {
-        Self::HS256
-    }
 }
 
 /// JWT authentication configuration for WebSocket connections
