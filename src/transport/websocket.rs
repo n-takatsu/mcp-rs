@@ -423,6 +423,11 @@ impl WebSocketTransport {
         Ok(())
     }
 
+    /// Extract IP address from SocketAddr
+    fn extract_ip_from_socket_addr(addr: &SocketAddr) -> std::net::IpAddr {
+        addr.ip()
+    }
+
     /// Get session ID by peer address (if exists)
     async fn get_session_by_peer(
         &self,
@@ -503,24 +508,47 @@ impl WebSocketTransport {
     }
 
     /// Validate JWT token from Authorization header and optionally create session
+    #[allow(clippy::too_many_arguments)]
     async fn validate_jwt_token_and_create_session(
         auth_header: Option<&str>,
         jwt_config: &JwtConfig,
         require_auth: bool,
         audit_logger: &Option<Arc<AuditLogger>>,
         session_manager: &Option<Arc<SessionManager>>,
+        rate_limiter: &Option<Arc<RateLimiter>>,
         peer_addr: &str,
+        peer_ip: &std::net::IpAddr,
     ) -> Result<Option<(HashMap<String, Value>, Option<String>)>, TransportError> {
         // Validate JWT token
-        let claims_opt = Self::validate_jwt_token(
+        let claims_opt = match Self::validate_jwt_token(
             auth_header,
             jwt_config,
             require_auth,
             audit_logger,
             peer_addr,
-        )?;
+        ) {
+            Ok(opt) => opt,
+            Err(e) => {
+                // Record authentication failure on validation error
+                if let Some(limiter) = rate_limiter {
+                    limiter
+                        .record_auth_failure_ip(
+                            *peer_ip,
+                            5,    // max_auth_failures
+                            Duration::from_secs(300),  // 5 minutes
+                        )
+                        .await;
+                }
+                return Err(e);
+            }
+        };
 
         if let Some(claims) = claims_opt {
+            // Reset authentication failures on successful validation
+            if let Some(limiter) = rate_limiter {
+                limiter.reset_auth_failures_ip(*peer_ip).await;
+            }
+
             // Extract user information from claims
             let user_id = claims
                 .get("sub")
@@ -827,6 +855,7 @@ impl WebSocketTransport {
         let audit_logger = self.audit_logger.clone();
         let session_manager = self.session_manager.clone();
         let session_connections = Arc::clone(&self.session_connections);
+        let rate_limiter = self.rate_limiter.clone();
 
         // Accept first connection (simplified implementation)
         tokio::spawn(async move {
@@ -845,6 +874,7 @@ impl WebSocketTransport {
                             &audit_logger,
                             &session_manager,
                             &session_connections,
+                            &rate_limiter,
                         )
                         .await
                         {
@@ -868,8 +898,13 @@ impl WebSocketTransport {
                         let audit_logger_for_callback = audit_logger.clone();
                         let audit_logger_for_session = audit_logger.clone();
                         let session_manager_clone = session_manager.clone();
+                        let rate_limiter_for_session = rate_limiter.clone();
                         let peer_addr_str = peer_addr.to_string();
                         let peer_addr_str_for_callback = peer_addr_str.clone();
+                        let peer_ip = Self::extract_ip_from_socket_addr(&peer_addr);
+                        let peer_ip_for_session = peer_ip;
+                        let _max_auth_failures = config.max_auth_failures;
+                        let _auth_failure_block_duration_secs = config.auth_failure_block_duration_secs;
 
                         // Store auth header for session creation after handshake
                         let auth_header_captured = Arc::new(RwLock::new(None::<String>));
@@ -942,7 +977,9 @@ impl WebSocketTransport {
                                             require_auth,
                                             &audit_logger_for_session,
                                             &Some(Arc::clone(sess_mgr)),
+                                            &rate_limiter_for_session,
                                             &peer_addr_str,
+                                            &peer_ip_for_session,
                                         )
                                         .await
                                         {
@@ -1127,6 +1164,7 @@ impl WebSocketTransport {
         audit_logger: &Option<Arc<AuditLogger>>,
         session_manager: &Option<Arc<SessionManager>>,
         session_connections: &Arc<RwLock<HashMap<SessionId, SocketAddr>>>,
+        rate_limiter: &Option<Arc<RateLimiter>>,
     ) -> Result<WsStream, TransportError> {
         use native_tls::Identity;
         use std::fs;
@@ -1245,8 +1283,13 @@ impl WebSocketTransport {
         let audit_logger_for_callback = audit_logger.clone();
         let audit_logger_for_session = audit_logger.clone();
         let session_manager_clone = session_manager.clone();
+        let rate_limiter_for_session = rate_limiter.clone();
         let peer_addr_str = peer_addr.to_string();
         let peer_addr_str_for_callback = peer_addr_str.clone();
+        let peer_ip = Self::extract_ip_from_socket_addr(&peer_addr);
+        let peer_ip_for_session = peer_ip;
+        let _max_auth_failures = config.max_auth_failures;
+        let _auth_failure_block_duration_secs = config.auth_failure_block_duration_secs;
 
         // Store auth header for session creation after handshake
         let auth_header_captured = Arc::new(RwLock::new(None::<String>));
@@ -1319,7 +1362,9 @@ impl WebSocketTransport {
                     require_auth,
                     &audit_logger_for_session,
                     &Some(Arc::clone(sess_mgr)),
+                    &rate_limiter_for_session,
                     &peer_addr_str,
+                    &peer_ip_for_session,
                 )
                 .await
                 {
@@ -1567,6 +1612,8 @@ impl WebSocketTransport {
         let bytes_sent = Arc::clone(&self.bytes_sent);
         let bytes_received = Arc::clone(&self.bytes_received);
         let config = self.config.clone();
+        let _rate_limiter = self.rate_limiter.clone();
+        let _audit_logger = self.audit_logger.clone();
 
         let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
         *self.shutdown_tx.write().await = Some(shutdown_tx);
