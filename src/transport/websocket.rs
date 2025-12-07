@@ -4,6 +4,7 @@
 //! bidirectional support, TLS/WSS, automatic reconnection, and heartbeat.
 
 use crate::security::AuditLogger;
+use crate::security::RateLimiter;
 use crate::session::{SessionManager, SessionState};
 use crate::transport::{Transport, TransportError};
 use crate::types::{JsonRpcRequest, JsonRpcResponse};
@@ -164,6 +165,14 @@ pub struct WebSocketConfig {
     pub enable_session_management: bool,
     /// Session time-to-live in seconds (default: 3600 = 1 hour)
     pub session_ttl_seconds: u64,
+    /// Enable rate limiting
+    pub enable_rate_limiting: bool,
+    /// Maximum requests per IP per minute
+    pub max_requests_per_minute: u32,
+    /// Maximum authentication failures before blocking
+    pub max_auth_failures: u32,
+    /// Duration to block after max auth failures (seconds)
+    pub auth_failure_block_duration_secs: u64,
     /// Heartbeat interval in seconds (0 to disable)
     pub heartbeat_interval: u64,
     /// Maximum reconnection attempts (0 for infinite)
@@ -191,6 +200,10 @@ impl Default for WebSocketConfig {
             auth_timeout_seconds: Some(30),
             enable_session_management: false,
             session_ttl_seconds: 3600,
+            enable_rate_limiting: true,
+            max_requests_per_minute: 60,
+            max_auth_failures: 5,
+            auth_failure_block_duration_secs: 300, // 5 minutes
             heartbeat_interval: 30,
             max_reconnect_attempts: 5,
             reconnect_delay: 5,
@@ -246,6 +259,8 @@ pub struct WebSocketTransport {
     audit_logger: Option<Arc<AuditLogger>>,
     // Session manager for authenticated connections
     session_manager: Option<Arc<SessionManager>>,
+    // Rate limiter for request throttling and auth failure tracking
+    rate_limiter: Option<Arc<RateLimiter>>,
 }
 
 impl WebSocketTransport {
@@ -259,6 +274,21 @@ impl WebSocketTransport {
             Some(Arc::new(SessionManager::with_ttl(
                 (config.session_ttl_seconds / 3600) as i64,
             )))
+        } else {
+            None
+        };
+
+        // Create rate limiter if rate limiting is enabled
+        let rate_limiter = if config.enable_rate_limiting {
+            use crate::config::RateLimitConfig;
+            use std::time::Duration;
+
+            let rate_config = RateLimitConfig {
+                requests_per_second: (config.max_requests_per_minute as f64 / 60.0) as u32,
+                burst_size: config.max_requests_per_minute,
+                enabled: true,
+            };
+            Some(Arc::new(RateLimiter::new(rate_config)))
         } else {
             None
         };
@@ -280,6 +310,7 @@ impl WebSocketTransport {
             reconnect_count: Arc::new(RwLock::new(0)),
             audit_logger: None,
             session_manager,
+            rate_limiter,
         })
     }
 
