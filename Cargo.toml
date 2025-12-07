@@ -293,15 +293,6 @@ required-features = ["mfa"]
 [[example]]
 name = "mitre_attack_demo"
 
-# MFA tests require the mfa feature
-[[test]]
-name = "mfa_integration_tests"
-required-features = ["mfa"]
-
-[[test]]
-name = "mfa_performance_tests"
-required-features = ["mfa"]
-
 # Threat intelligence examples
 [[example]]
 name = "abuseipdb_demo"

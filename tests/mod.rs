@@ -23,5 +23,8 @@ pub mod performance;
 // 脅威インテリジェンステスト
 pub mod threat_intelligence;
 
+// セキュリティテスト
+pub mod security;
+
 // テストデータとユーティリティ
 pub mod fixtures;
