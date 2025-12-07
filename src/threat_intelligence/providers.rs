@@ -495,6 +495,7 @@ impl AbuseIPDBProvider {
                 abuse_confidence_score * 100.0
             )),
             attack_techniques: Vec::new(),
+            mitre_attack_techniques: Vec::new(),
             cve_references: Vec::new(),
             malware_families: Vec::new(),
             geolocation,
@@ -857,6 +858,7 @@ impl CVEProvider {
             let metadata = ThreatMetadata {
                 description: Some(description),
                 attack_techniques: Vec::new(),
+                mitre_attack_techniques: Vec::new(),
                 cve_references: vec![id.clone()],
                 malware_families: Vec::new(),
                 geolocation: None,
@@ -1081,12 +1083,421 @@ impl ProviderFactory {
                 let provider = CVEProvider::new(config)?;
                 Ok(Box::new(provider))
             }
+            "MITRE" | "MITRE-ATTACK" => {
+                let provider = MitreAttackProvider::new(config)?;
+                Ok(Box::new(provider))
+            }
             // 他のプロバイダーもここに追加
             _ => Err(ThreatError::ConfigurationError(format!(
                 "Unknown provider: {}",
                 config.name
             ))),
         }
+    }
+}
+
+/// MITRE ATT&CK キャッシュエントリ型
+type MitreCache = HashMap<String, (Vec<MitreAttackTechnique>, DateTime<Utc>)>;
+type MitreGroupCache = HashMap<String, (MitreAttackGroup, DateTime<Utc>)>;
+
+/// MITRE ATT&CK プロバイダー
+pub struct MitreAttackProvider {
+    config: ProviderConfig,
+    client: reqwest::Client,
+    rate_limiter: Arc<tokio::sync::Mutex<RateLimiter>>,
+    techniques_cache: Arc<RwLock<MitreCache>>,
+    groups_cache: Arc<RwLock<MitreGroupCache>>,
+}
+
+impl MitreAttackProvider {
+    /// 新しいMITRE ATT&CKプロバイダーを作成
+    pub fn new(config: ProviderConfig) -> Result<Self, ThreatError> {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(
+                config.timeout_seconds as u64,
+            ))
+            .user_agent("mcp-rs-threat-intelligence/0.15.0")
+            .build()
+            .map_err(|e| ThreatError::ConfigurationError(e.to_string()))?;
+
+        let rate_limiter = RateLimiter::new(config.rate_limit_per_minute);
+
+        Ok(Self {
+            config,
+            client,
+            rate_limiter: Arc::new(tokio::sync::Mutex::new(rate_limiter)),
+            techniques_cache: Arc::new(RwLock::new(HashMap::new())),
+            groups_cache: Arc::new(RwLock::new(HashMap::new())),
+        })
+    }
+
+    /// テクニックIDでATT&CK情報を検索
+    async fn search_technique(&self, technique_id: &str) -> Result<Vec<ThreatIntelligence>, ThreatError> {
+        // テクニックID形式の検証 (T1234 または T1234.001)
+        if !Self::is_valid_technique_id(technique_id) {
+            return Err(ThreatError::ConfigurationError(format!(
+                "Invalid MITRE ATT&CK technique ID format: {}. Expected format: TXXXX or TXXXX.XXX",
+                technique_id
+            )));
+        }
+
+        // キャッシュチェック（7日間有効）
+        {
+            let cache = self.techniques_cache.read().await;
+            if let Some((cached_techniques, cached_at)) = cache.get(technique_id) {
+                let age = Utc::now() - *cached_at;
+                if age < chrono::Duration::days(7) {
+                    return self.build_threat_intelligence_from_techniques(cached_techniques.clone()).await;
+                }
+            }
+        }
+
+        // MITRE ATT&CK STIX APIエンドポイント
+        let url = format!(
+            "{}/attack-pattern/attack-pattern--{}",
+            self.config.base_url,
+            self.technique_id_to_uuid(technique_id)
+        );
+
+        // レート制限チェック
+        {
+            let limiter = self.rate_limiter.lock().await;
+            if !limiter.allow_request().await {
+                return Err(ThreatError::RateLimitExceeded(self.name().to_string()));
+            }
+        }
+
+        let response = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| ThreatError::NetworkError(e.to_string()))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(ThreatError::ProviderError(format!(
+                "MITRE ATT&CK API error: {} - {}",
+                status, error_text
+            )));
+        }
+
+        let json_response: serde_json::Value = response
+            .json()
+            .await
+            .map_err(|e| ThreatError::ParsingError(e.to_string()))?;
+
+        let techniques = self.parse_technique_response(technique_id, json_response).await?;
+
+        // キャッシュ更新
+        {
+            let mut cache = self.techniques_cache.write().await;
+            cache.insert(technique_id.to_string(), (techniques.clone(), Utc::now()));
+        }
+
+        self.build_threat_intelligence_from_techniques(techniques).await
+    }
+
+    /// キーワードでテクニックを検索
+    async fn search_by_keyword(&self, keyword: &str) -> Result<Vec<ThreatIntelligence>, ThreatError> {
+        // 簡略化: ローカルマッピングを使用
+        let techniques = self.search_techniques_by_keyword(keyword).await?;
+        self.build_threat_intelligence_from_techniques(techniques).await
+    }
+
+    /// テクニック情報をパース
+    async fn parse_technique_response(
+        &self,
+        technique_id: &str,
+        response: serde_json::Value,
+    ) -> Result<Vec<MitreAttackTechnique>, ThreatError> {
+        let mut techniques = Vec::new();
+
+        // STIX 2.0/2.1 形式のレスポンスをパース
+        if let Some(objects) = response["objects"].as_array() {
+            for obj in objects {
+                if obj["type"].as_str() == Some("attack-pattern") {
+                    let name = obj["name"].as_str().unwrap_or("Unknown").to_string();
+                    let description = obj["description"].as_str().map(|s| s.to_string());
+
+                    // 戦術 (Tactics) の抽出
+                    let mut tactics = Vec::new();
+                    if let Some(kill_chain_phases) = obj["kill_chain_phases"].as_array() {
+                        for phase in kill_chain_phases {
+                            if let Some(phase_name) = phase["phase_name"].as_str() {
+                                tactics.push(phase_name.to_string());
+                            }
+                        }
+                    }
+
+                    // プラットフォームの抽出
+                    let mut platforms = Vec::new();
+                    if let Some(platform_array) = obj["x_mitre_platforms"].as_array() {
+                        for platform in platform_array {
+                            if let Some(p) = platform.as_str() {
+                                platforms.push(p.to_string());
+                            }
+                        }
+                    }
+
+                    // データソースの抽出
+                    let mut data_sources = Vec::new();
+                    if let Some(ds_array) = obj["x_mitre_data_sources"].as_array() {
+                        for ds in ds_array {
+                            if let Some(d) = ds.as_str() {
+                                data_sources.push(d.to_string());
+                            }
+                        }
+                    }
+
+                    // 検出方法
+                    let detection = obj["x_mitre_detection"].as_str().map(|s| s.to_string());
+
+                    // 緩和策（別のAPIコールが必要な場合があるため、ここでは空）
+                    let mitigation = Vec::new();
+
+                    let technique = MitreAttackTechnique {
+                        technique_id: technique_id.to_string(),
+                        sub_technique_id: if technique_id.contains('.') {
+                            Some(technique_id.to_string())
+                        } else {
+                            None
+                        },
+                        name,
+                        tactics,
+                        platforms,
+                        data_sources,
+                        description,
+                        detection,
+                        mitigation,
+                    };
+
+                    techniques.push(technique);
+                }
+            }
+        }
+
+        Ok(techniques)
+    }
+
+    /// キーワードでテクニックを検索（ローカルマッピング使用）
+    async fn search_techniques_by_keyword(&self, keyword: &str) -> Result<Vec<MitreAttackTechnique>, ThreatError> {
+        // 一般的な攻撃手法のマッピング
+        let keyword_lower = keyword.to_lowercase();
+        let technique_id = match keyword_lower.as_str() {
+            "phishing" | "spearphishing" => "T1566",
+            "credential dumping" | "credentials" => "T1003",
+            "powershell" => "T1059.001",
+            "command and control" | "c2" | "c&c" => "T1071",
+            "remote desktop" | "rdp" => "T1021.001",
+            "lateral movement" => "T1021",
+            "privilege escalation" => "T1068",
+            "persistence" => "T1547",
+            "defense evasion" => "T1562",
+            "exfiltration" => "T1041",
+            _ => {
+                // キーワードに一致しない場合は空の結果を返す
+                return Ok(Vec::new());
+            }
+        };
+
+        // テクニックIDで検索
+        self.search_technique(technique_id).await?;
+        
+        // キャッシュから取得
+        let cache = self.techniques_cache.read().await;
+        if let Some((techniques, _)) = cache.get(technique_id) {
+            Ok(techniques.clone())
+        } else {
+            Ok(Vec::new())
+        }
+    }
+
+    /// テクニック情報から脅威インテリジェンスを構築
+    async fn build_threat_intelligence_from_techniques(
+        &self,
+        techniques: Vec<MitreAttackTechnique>,
+    ) -> Result<Vec<ThreatIntelligence>, ThreatError> {
+        let mut threats = Vec::new();
+
+        for technique in techniques {
+            // 脅威指標の作成
+            let indicator = ThreatIndicator {
+                indicator_type: IndicatorType::FileHash, // ATT&CKは一般的な攻撃パターンとして扱う
+                value: technique.technique_id.clone(),
+                pattern: None,
+                tags: vec![
+                    format!("mitre:{}", technique.technique_id),
+                    format!("tactics:{}", technique.tactics.join(",")),
+                ],
+                context: technique.description.clone(),
+                first_seen: Utc::now(),
+            };
+
+            // 深刻度の決定（戦術に基づく）
+            let severity = Self::determine_severity(&technique.tactics);
+
+            // メタデータ
+            let mut custom_attributes = HashMap::new();
+            custom_attributes.insert("technique_id".to_string(), technique.technique_id.clone());
+            custom_attributes.insert("technique_name".to_string(), technique.name.clone());
+            custom_attributes.insert("tactics".to_string(), technique.tactics.join(", "));
+            custom_attributes.insert("platforms".to_string(), technique.platforms.join(", "));
+            custom_attributes.insert("data_sources".to_string(), technique.data_sources.join(", "));
+
+            if let Some(ref detection) = technique.detection {
+                custom_attributes.insert("detection".to_string(), detection.clone());
+            }
+
+            let metadata = ThreatMetadata {
+                description: technique.description.clone(),
+                attack_techniques: vec![technique.technique_id.clone()],
+                mitre_attack_techniques: vec![technique.clone()],
+                cve_references: Vec::new(),
+                malware_families: Vec::new(),
+                geolocation: None,
+                custom_attributes,
+            };
+
+            // 脅威ソース
+            let source = ThreatSource {
+                provider: self.name().to_string(),
+                feed_name: "MITRE ATT&CK Framework".to_string(),
+                reliability: self.config.reliability_factor,
+                last_updated: Utc::now(),
+            };
+
+            // 脅威インテリジェンス
+            let threat = ThreatIntelligence {
+                id: uuid::Uuid::new_v4().to_string(),
+                threat_type: ThreatType::Other(format!("ATT&CK: {}", technique.tactics.join(", "))),
+                severity,
+                indicators: vec![indicator],
+                source,
+                confidence_score: self.config.reliability_factor,
+                first_seen: Utc::now(),
+                last_seen: Utc::now(),
+                expiration: None, // ATT&CKテクニックは期限切れにならない
+                metadata,
+            };
+
+            threats.push(threat);
+        }
+
+        Ok(threats)
+    }
+
+    /// 戦術に基づいて深刻度を決定
+    fn determine_severity(tactics: &[String]) -> SeverityLevel {
+        // 高リスクの戦術
+        let high_risk_tactics = ["impact", "exfiltration", "lateral-movement"];
+        let medium_risk_tactics = ["privilege-escalation", "credential-access", "defense-evasion"];
+        
+        for tactic in tactics {
+            let tactic_lower = tactic.to_lowercase();
+            if high_risk_tactics.iter().any(|&t| tactic_lower.contains(t)) {
+                return SeverityLevel::High;
+            }
+        }
+        
+        for tactic in tactics {
+            let tactic_lower = tactic.to_lowercase();
+            if medium_risk_tactics.iter().any(|&t| tactic_lower.contains(t)) {
+                return SeverityLevel::Medium;
+            }
+        }
+        
+        SeverityLevel::Low
+    }
+
+    /// テクニックID形式の検証
+    fn is_valid_technique_id(technique_id: &str) -> bool {
+        // T1234 または T1234.001 形式
+        let pattern = regex::Regex::new(r"^T\d{4}(\.\d{3})?$").unwrap();
+        pattern.is_match(technique_id)
+    }
+
+    /// テクニックIDをUUIDに変換（STIX ID用）
+    fn technique_id_to_uuid(&self, _technique_id: &str) -> String {
+        // 実際の実装ではMITRE ATT&CKのSTIX IDマッピングを使用
+        // ここでは簡略化のためダミーUUIDを返す
+        uuid::Uuid::new_v4().to_string()
+    }
+
+    /// キャッシュサイズを取得
+    pub async fn techniques_cache_size(&self) -> usize {
+        self.techniques_cache.read().await.len()
+    }
+
+    /// キャッシュをクリア
+    pub async fn clear_cache(&self) {
+        self.techniques_cache.write().await.clear();
+        self.groups_cache.write().await.clear();
+    }
+}
+
+#[async_trait]
+impl ThreatProvider for MitreAttackProvider {
+    fn name(&self) -> &str {
+        "MITRE-ATTACK"
+    }
+
+    fn config(&self) -> &ProviderConfig {
+        &self.config
+    }
+
+    async fn check_indicator(
+        &self,
+        indicator: &ThreatIndicator,
+    ) -> Result<Vec<ThreatIntelligence>, ThreatError> {
+        // テクニックIDとして扱う
+        if Self::is_valid_technique_id(&indicator.value) {
+            self.search_technique(&indicator.value).await
+        } else {
+            // キーワード検索として扱う
+            self.search_by_keyword(&indicator.value).await
+        }
+    }
+
+    async fn health_check(&self) -> Result<ProviderHealth, ThreatError> {
+        let start_time = std::time::Instant::now();
+
+        // 既知のテクニックでテスト（T1566 - Phishing）
+        let test_indicator = ThreatIndicator {
+            indicator_type: IndicatorType::FileHash,
+            value: "T1566".to_string(),
+            pattern: None,
+            tags: Vec::new(),
+            context: None,
+            first_seen: chrono::Utc::now(),
+        };
+
+        let result = self.check_indicator(&test_indicator).await;
+        let duration = start_time.elapsed();
+        let response_time_ms = duration.as_millis() as u64;
+
+        let (status, error_message) = match result {
+            Ok(_) => (HealthStatus::Healthy, None),
+            Err(ThreatError::RateLimitExceeded(_)) => (
+                HealthStatus::Warning,
+                Some("Rate limit reached".to_string()),
+            ),
+            Err(e) => (HealthStatus::Error, Some(e.to_string())),
+        };
+
+        Ok(ProviderHealth {
+            provider_name: self.name().to_string(),
+            status,
+            response_time_ms,
+            last_check: chrono::Utc::now(),
+            error_message,
+        })
+    }
+
+    async fn get_rate_limit_status(&self) -> Result<RateLimitStatus, ThreatError> {
+        let limiter = self.rate_limiter.lock().await;
+        Ok(limiter.get_status())
     }
 }
 
