@@ -9,7 +9,9 @@
 
 use jsonwebtoken::{encode, EncodingKey, Header};
 use mcp_rs::security::AuditLogger;
-use mcp_rs::transport::websocket::{JwtAlgorithm, JwtConfig, OriginValidationPolicy, WebSocketConfig, WebSocketTransport};
+use mcp_rs::transport::websocket::{
+    JwtAlgorithm, JwtConfig, OriginValidationPolicy, WebSocketConfig, WebSocketTransport,
+};
 use mcp_rs::transport::Transport;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -26,18 +28,13 @@ struct Claims {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize tracing
-    tracing_subscriber::fmt()
-        .with_max_level(Level::INFO)
-        .init();
+    tracing_subscriber::fmt().with_max_level(Level::INFO).init();
 
     info!("=== WebSocket JWT Authentication Demo ===");
 
     // Generate a JWT token
     let secret = "my-secret-key-for-testing-only";
-    let exp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)?
-        .as_secs()
-        + 3600; // 1 hour
+    let exp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() + 3600; // 1 hour
 
     let claims = Claims {
         sub: "user123".to_string(),
@@ -52,7 +49,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
 
     info!("Generated JWT token: {}", token);
-    info!("Token claims: sub={}, role={}, exp={}", claims.sub, claims.role, claims.exp);
+    info!(
+        "Token claims: sub={}, role={}, exp={}",
+        claims.sub, claims.role, claims.exp
+    );
 
     // Configure WebSocket with JWT authentication
     let jwt_config = JwtConfig {
@@ -80,26 +80,43 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("WebSocket configuration:");
     info!("  URL: {}", ws_config.url);
-    info!("  Authentication required: {}", ws_config.require_authentication);
-    info!("  Auth timeout: {:?} seconds", ws_config.auth_timeout_seconds);
-    info!("  JWT algorithm: {:?}", ws_config.jwt_config.as_ref().map(|c| &c.algorithm));
-    info!("  Required claims: {:?}", ws_config.jwt_config.as_ref().map(|c| &c.required_claims));
-    info!("  Allowed roles: {:?}", ws_config.jwt_config.as_ref().map(|c| &c.allowed_roles));
+    info!(
+        "  Authentication required: {}",
+        ws_config.require_authentication
+    );
+    info!(
+        "  Auth timeout: {:?} seconds",
+        ws_config.auth_timeout_seconds
+    );
+    info!(
+        "  JWT algorithm: {:?}",
+        ws_config.jwt_config.as_ref().map(|c| &c.algorithm)
+    );
+    info!(
+        "  Required claims: {:?}",
+        ws_config.jwt_config.as_ref().map(|c| &c.required_claims)
+    );
+    info!(
+        "  Allowed roles: {:?}",
+        ws_config.jwt_config.as_ref().map(|c| &c.allowed_roles)
+    );
 
     // Create audit logger
     use mcp_rs::security::AuditConfig;
     let audit_logger = Arc::new(AuditLogger::new(AuditConfig::default()));
 
     // Create WebSocket transport
-    let mut transport = WebSocketTransport::new(ws_config)?
-        .with_audit_logger(audit_logger);
+    let mut transport = WebSocketTransport::new(ws_config)?.with_audit_logger(audit_logger);
 
     info!("\n=== Starting WebSocket Server ===");
     info!("Server is listening on ws://127.0.0.1:8082");
     info!("\nTo connect, use a WebSocket client with:");
     info!("  Authorization: Bearer {}", token);
     info!("\nExample using wscat:");
-    info!("  wscat -c ws://127.0.0.1:8082 -H \"Authorization: Bearer {}\"", token);
+    info!(
+        "  wscat -c ws://127.0.0.1:8082 -H \"Authorization: Bearer {}\"",
+        token
+    );
     info!("\n=== Authentication Features ===");
     info!("✓ JWT token validation");
     info!("✓ Algorithm verification (HS256)");

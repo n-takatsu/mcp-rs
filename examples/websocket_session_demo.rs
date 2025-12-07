@@ -9,7 +9,9 @@
 
 use mcp_rs::security::AuditLogger;
 use mcp_rs::session::SessionManager;
-use mcp_rs::transport::websocket::{JwtAlgorithm, JwtConfig, OriginValidationPolicy, WebSocketConfig, WebSocketTransport};
+use mcp_rs::transport::websocket::{
+    JwtAlgorithm, JwtConfig, OriginValidationPolicy, WebSocketConfig, WebSocketTransport,
+};
 use mcp_rs::transport::Transport;
 use std::sync::Arc;
 use tracing::{info, Level};
@@ -17,9 +19,7 @@ use tracing::{info, Level};
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize tracing
-    tracing_subscriber::fmt()
-        .with_max_level(Level::INFO)
-        .init();
+    tracing_subscriber::fmt().with_max_level(Level::INFO).init();
 
     info!("=== WebSocket Session Management Demo ===");
 
@@ -28,8 +28,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Create a test session
     let test_user = "testuser@example.com";
-    let session = session_manager.create_session(test_user.to_string()).await?;
-    
+    let session = session_manager
+        .create_session(test_user.to_string())
+        .await?;
+
     info!("Created test session:");
     info!("  Session ID: {}", session.id);
     info!("  User: {}", test_user);
@@ -62,7 +64,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("\nWebSocket configuration:");
     info!("  URL: {}", ws_config.url);
-    info!("  Session management: {}", ws_config.enable_session_management);
+    info!(
+        "  Session management: {}",
+        ws_config.enable_session_management
+    );
     info!("  Session TTL: {} seconds", ws_config.session_ttl_seconds);
     info!("  Auto-extend on message: enabled");
 
@@ -71,31 +76,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let audit_logger = Arc::new(AuditLogger::new(AuditConfig::default()));
 
     // Create WebSocket transport
-    let mut transport = WebSocketTransport::new(ws_config)?
-        .with_audit_logger(audit_logger);
+    let mut transport = WebSocketTransport::new(ws_config)?.with_audit_logger(audit_logger);
 
     info!("\n=== Starting WebSocket Server ===");
     info!("Server is listening on ws://127.0.0.1:8083");
     info!("\n=== Connection Methods ===");
     info!("\n1. Using existing session (X-Session-ID header):");
-    info!("   wscat -c ws://127.0.0.1:8083 -H \"X-Session-ID: {}\"", session.id);
+    info!(
+        "   wscat -c ws://127.0.0.1:8083 -H \"X-Session-ID: {}\"",
+        session.id
+    );
     info!("\n2. Using existing session (Cookie):");
-    info!("   wscat -c ws://127.0.0.1:8083 -H \"Cookie: session_id={}\"", session.id);
+    info!(
+        "   wscat -c ws://127.0.0.1:8083 -H \"Cookie: session_id={}\"",
+        session.id
+    );
     info!("\n3. Using JWT (creates new session):");
     info!("   wscat -c ws://127.0.0.1:8083 -H \"Authorization: Bearer <token>\"");
-    
+
     info!("\n=== Session Features ===");
     info!("✓ Session validation on connection");
     info!("✓ Automatic session creation on JWT auth");
     info!("✓ Session TTL auto-extension on each message");
     info!("✓ Expired session detection");
     info!("✓ Session-to-connection mapping");
-    
+
     info!("\n=== Session States ===");
     info!("1. Active → Connection allowed");
     info!("2. Expired → 401 Unauthorized");
     info!("3. NotFound → 401 Unauthorized (if X-Session-ID provided)");
-    
+
     info!("\n=== Session Lifecycle ===");
     info!("• JWT auth → Create session → Store session_id → Return to client");
     info!("• Client reconnects → Send X-Session-ID header → Session validated → Connected");
