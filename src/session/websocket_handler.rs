@@ -151,6 +151,8 @@ pub enum BroadcastMessageType {
     ChatMessage,
     /// コラボレーション制御
     CollaborationControl,
+    /// 脅威通知
+    ThreatNotification,
 }
 
 /// WebSocketメッセージプロトコル
@@ -441,6 +443,10 @@ impl SessionWebSocketHandler {
                     .await
             }
             "chat" => self.handle_chat_message(session_id, &protocol_msg).await,
+            "threat_subscription" => {
+                self.handle_threat_subscription_message(session_id, &protocol_msg)
+                    .await
+            }
             _ => {
                 warn!("未知のメッセージタイプ: {}", protocol_msg.r#type);
                 Ok(())
@@ -538,6 +544,33 @@ impl SessionWebSocketHandler {
             sender_session_id: session_id.clone(),
             target_session_id: None,
             message_type: BroadcastMessageType::ChatMessage,
+            payload: msg.payload.clone(),
+            timestamp: Utc::now(),
+        };
+
+        self.connection_manager
+            .broadcast_message(broadcast_msg)
+            .await?;
+        Ok(())
+    }
+
+    /// 脅威サブスクリプションメッセージ処理
+    async fn handle_threat_subscription_message(
+        &self,
+        session_id: &Option<SessionId>,
+        msg: &WebSocketMessageProtocol,
+    ) -> Result<(), SessionError> {
+        debug!(
+            "脅威サブスクリプションメッセージ: session_id={:?}",
+            session_id
+        );
+
+        // 脅威フィード通知として配信
+        let broadcast_msg = BroadcastMessage {
+            message_id: Uuid::new_v4(),
+            sender_session_id: session_id.clone(),
+            target_session_id: None,
+            message_type: BroadcastMessageType::ThreatNotification,
             payload: msg.payload.clone(),
             timestamp: Utc::now(),
         };

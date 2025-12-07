@@ -151,6 +151,23 @@ pub struct TypeStats {
     pub avg_confidence: f64,
 }
 
+/// 脅威スコア
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ThreatScore {
+    /// スコア（0-100）
+    pub score: u32,
+    /// 深刻度
+    pub severity: SeverityLevel,
+    /// 信頼度（0.0-1.0）
+    pub confidence: f64,
+    /// 脅威フラグ
+    pub is_threat: bool,
+    /// マッチした脅威数
+    pub matched_threats: usize,
+    /// 詳細な評価結果
+    pub assessment: ThreatAssessment,
+}
+
 /// 検出結果
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DetectionResult {
@@ -192,6 +209,96 @@ impl ThreatDetectionEngine {
             config: Arc::new(RwLock::new(DetectionConfig::default())),
             stats: Arc::new(RwLock::new(DetectionStats::default())),
         })
+    }
+
+    /// IP アドレスを評価（スコアリング）
+    pub async fn evaluate_ip(&self, ip: &str) -> Result<ThreatScore, ThreatError> {
+        let indicator = ThreatIndicator {
+            indicator_type: IndicatorType::IpAddress,
+            value: ip.to_string(),
+            pattern: None,
+            tags: vec![],
+            context: None,
+            first_seen: chrono::Utc::now(),
+        };
+
+        let assessment = self
+            .threat_manager
+            .check_threat(indicator)
+            .await
+            .map_err(|e| ThreatError::EvaluationError(format!("IP evaluation failed: {}", e)))?;
+
+        Ok(self.calculate_threat_score(assessment))
+    }
+
+    /// ドメインを評価（スコアリング）
+    pub async fn evaluate_domain(&self, domain: &str) -> Result<ThreatScore, ThreatError> {
+        let indicator = ThreatIndicator {
+            indicator_type: IndicatorType::Domain,
+            value: domain.to_string(),
+            pattern: None,
+            tags: vec![],
+            context: None,
+            first_seen: chrono::Utc::now(),
+        };
+
+        let assessment = self
+            .threat_manager
+            .check_threat(indicator)
+            .await
+            .map_err(|e| {
+                ThreatError::EvaluationError(format!("Domain evaluation failed: {}", e))
+            })?;
+
+        Ok(self.calculate_threat_score(assessment))
+    }
+
+    /// ファイルハッシュを評価（スコアリング）
+    pub async fn evaluate_file_hash(&self, hash: &str) -> Result<ThreatScore, ThreatError> {
+        let indicator = ThreatIndicator {
+            indicator_type: IndicatorType::FileHash,
+            value: hash.to_string(),
+            pattern: None,
+            tags: vec![],
+            context: None,
+            first_seen: chrono::Utc::now(),
+        };
+
+        let assessment = self
+            .threat_manager
+            .check_threat(indicator)
+            .await
+            .map_err(|e| {
+                ThreatError::EvaluationError(format!("File hash evaluation failed: {}", e))
+            })?;
+
+        Ok(self.calculate_threat_score(assessment))
+    }
+
+    /// 脅威スコアを計算
+    fn calculate_threat_score(&self, assessment: ThreatAssessment) -> ThreatScore {
+        // 信頼度スコアをベースに0-100のスコアを計算
+        let base_score = (assessment.confidence_score * 100.0) as u32;
+
+        // 深刻度に基づいて重み付け
+        let severity_multiplier = match assessment.threat_level {
+            SeverityLevel::Critical => 1.5,
+            SeverityLevel::High => 1.3,
+            SeverityLevel::Medium => 1.1,
+            SeverityLevel::Low => 0.9,
+            SeverityLevel::Info => 0.7,
+        };
+
+        let final_score = ((base_score as f64 * severity_multiplier).min(100.0)) as u32;
+
+        ThreatScore {
+            score: final_score,
+            severity: assessment.threat_level.clone(),
+            confidence: assessment.confidence_score,
+            is_threat: assessment.is_threat,
+            matched_threats: assessment.matched_threats.len(),
+            assessment,
+        }
     }
 
     /// テキストから脅威指標を検出・評価
