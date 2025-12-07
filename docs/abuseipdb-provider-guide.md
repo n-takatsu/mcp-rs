@@ -349,6 +349,13 @@ Error: ProviderError("AbuseIPDB API error: 401 - Invalid API key")
 - 環境変数が設定されているか確認
 - APIキーの有効期限を確認
 
+**テスト方法**:
+
+```bash
+# APIキーの動作確認
+cargo run --example abuseipdb_demo
+```
+
 #### 2. レート制限超過
 
 ```
@@ -360,6 +367,10 @@ Error: RateLimitExceeded("AbuseIPDB")
 - キャッシングを実装
 - 有料プランにアップグレード
 
+**詳細情報**:
+- 無料プラン: 60リクエスト/分、1,000リクエスト/日
+- レート制限はプロバイダー内部で自動管理
+
 #### 3. タイムアウト
 
 ```
@@ -368,8 +379,18 @@ Error: NetworkError("timeout")
 
 **解決策**:
 - `timeout_seconds` を増やす
+
+```rust
+config.timeout_seconds = 30; // デフォルトは10秒
+```
+
 - ネットワーク接続を確認
 - AbuseIPDBのステータスページを確認
+- プロキシ設定（必要な場合）:
+
+```powershell
+$env:HTTPS_PROXY="http://proxy.example.com:8080"
+```
 
 #### 4. 無効なIP形式
 
@@ -380,6 +401,37 @@ Error: ConfigurationError("Invalid IP address format: ...")
 **解決策**:
 - IP形式が正しいか確認（IPv4/IPv6）
 - 入力のバリデーションを実装
+
+有効な形式:
+- IPv4: `192.168.1.1`
+- IPv6: `2001:4860:4860::8888`
+
+## API統合テスト
+
+### 統合テストスクリプト
+
+実際のAbuseIPDB APIを使用したテストを実行:
+
+```powershell
+# APIキーを設定
+$env:ABUSEIPDB_API_KEY="your_api_key_here"
+
+# 統合テストスクリプトを実行
+.\scripts\test-abuseipdb.ps1
+```
+
+### 手動テスト
+
+```bash
+# 単体テストのみ
+cargo test --test threat_intelligence abuseipdb_provider_tests::abuseipdb_tests
+
+# 統合テスト（実APIキー必要）
+cargo test --test threat_intelligence abuseipdb_provider_tests::integration_tests --ignored --nocapture
+
+# デモアプリケーション
+cargo run --example abuseipdb_demo
+```
 
 ## パフォーマンス考慮事項
 
@@ -402,11 +454,47 @@ Error: ConfigurationError("Invalid IP address format: ...")
 3. **エラーログ**: 機密情報を含まない適切なロギング
 4. **タイムアウト設定**: DoS攻撃対策のための適切なタイムアウト
 
+## API統合テスト
+
+### 統合テストスクリプト
+
+実際のAbuseIPDB APIを使用したテストを実行するには、`scripts/test-abuseipdb.ps1`を使用します:
+
+```powershell
+# APIキーを設定
+$env:ABUSEIPDB_API_KEY="your_api_key_here"
+
+# 統合テストを実行
+.\scripts\test-abuseipdb.ps1
+```
+
+このスクリプトは以下を実行します:
+
+1. 単体テストの実行
+2. 実APIを使用した統合テストの実行
+3. デモアプリケーションの実行
+
+### 手動テスト
+
+```bash
+# 単体テストのみ
+cargo test --test threat_intelligence abuseipdb_provider_tests::abuseipdb_tests
+
+# 統合テスト（実APIキー必要）
+cargo test --test threat_intelligence abuseipdb_provider_tests::integration_tests --ignored --nocapture
+
+# デモアプリケーション
+cargo run --example abuseipdb_demo
+```
+
+```
+
 ## 関連リソース
 
 - [AbuseIPDB API Documentation](https://docs.abuseipdb.com/)
 - [AbuseIPDB カテゴリーリスト](https://www.abuseipdb.com/categories)
 - [Issue #77: 脅威インテリジェンス統合](https://github.com/n-takatsu/mcp-rs/issues/77)
+- [統合テストスクリプト](../scripts/test-abuseipdb.ps1)
 
 ## ライセンス
 
