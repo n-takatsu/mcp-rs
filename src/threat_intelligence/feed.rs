@@ -142,7 +142,7 @@ pub enum ThreatFeedPayload {
     /// 単一脅威
     SingleThreat {
         /// 脅威インテリジェンス
-        threat: ThreatIntelligence,
+        threat: Box<ThreatIntelligence>,
     },
     /// 脅威リスト
     ThreatList {
@@ -154,7 +154,7 @@ pub enum ThreatFeedPayload {
     /// 脅威評価
     ThreatAssessment {
         /// 評価結果
-        assessment: ThreatAssessment,
+        assessment: Box<ThreatAssessment>,
     },
     /// システムメッセージ
     SystemMessage {
@@ -267,7 +267,7 @@ impl ThreatFeed {
             id: Uuid::new_v4(),
             event_type: ThreatFeedEventType::NewThreat,
             timestamp: Utc::now(),
-            payload: ThreatFeedPayload::SingleThreat { threat },
+            payload: ThreatFeedPayload::SingleThreat { threat: Box::new(threat) },
         };
 
         self.publish_event(event).await
@@ -279,7 +279,7 @@ impl ThreatFeed {
             id: Uuid::new_v4(),
             event_type: ThreatFeedEventType::NewThreat,
             timestamp: Utc::now(),
-            payload: ThreatFeedPayload::ThreatAssessment { assessment },
+            payload: ThreatFeedPayload::ThreatAssessment { assessment: Box::new(assessment) },
         };
 
         self.publish_event(event).await

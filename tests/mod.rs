@@ -26,5 +26,8 @@ pub mod threat_intelligence;
 // セキュリティテスト
 pub mod security;
 
+// トランスポートテスト
+pub mod transport;
+
 // テストデータとユーティリティ
 pub mod fixtures;

@@ -2,16 +2,23 @@
 //!
 //! Provides runtime transport switching capabilities for STDIO/HTTP switching
 
-use crate::transport::{TransportConfig, TransportError, TransportType};
+use crate::transport::{http::HttpConfig, TransportConfig, TransportError, TransportType};
 use std::sync::{Arc, RwLock};
 use tokio::sync::watch;
 use tracing::{error, info, warn};
 
 /// Transport manager state
+#[derive(Clone, Copy)]
 enum TransportState {
     Stdio,
     Http(std::net::SocketAddr),
     Stopped,
+}
+
+/// HTTP server handle for graceful shutdown
+struct HttpServerHandle {
+    shutdown_tx: tokio::sync::oneshot::Sender<()>,
+    addr: std::net::SocketAddr,
 }
 
 /// Dynamic transport manager for runtime transport switching
@@ -25,6 +32,8 @@ pub struct DynamicTransportManager {
     change_receiver: watch::Receiver<TransportType>,
     /// Transport status
     is_running: Arc<RwLock<bool>>,
+    /// HTTP server handle for shutdown
+    http_server_handle: Arc<RwLock<Option<HttpServerHandle>>>,
 }
 
 impl DynamicTransportManager {
@@ -44,6 +53,7 @@ impl DynamicTransportManager {
             change_sender: sender,
             change_receiver: receiver,
             is_running: Arc::new(RwLock::new(false)),
+            http_server_handle: Arc::new(RwLock::new(None)),
         })
     }
 
@@ -125,7 +135,45 @@ impl DynamicTransportManager {
             }
             TransportState::Http(addr) => {
                 info!("🚀 Starting HTTP transport at {}", addr);
-                // TODO: Actually start HTTP server
+                
+                // Create HTTP config
+                let config = HttpConfig {
+                    bind_addr: addr,
+                    cors_enabled: true,
+                    max_request_size: 1024 * 1024,
+                    timeout_ms: 30000,
+                };
+                
+                // Start HTTP server with graceful shutdown support
+                let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+                
+                let server_addr = addr;
+                tokio::spawn(async move {
+                    use crate::transport::http::HttpTransport;
+                    
+                    match HttpTransport::new(config) {
+                        Ok(transport) => {
+                            if let Err(e) = transport.start_server().await {
+                                error!("Failed to start HTTP server: {}", e);
+                                return;
+                            }
+                            
+                            // Wait for shutdown signal
+                            let _ = shutdown_rx.await;
+                            info!("HTTP server shutdown signal received at {}", server_addr);
+                        }
+                        Err(e) => {
+                            error!("Failed to create HTTP transport: {}", e);
+                        }
+                    }
+                });
+                
+                // Store shutdown handle
+                *self.http_server_handle.write().unwrap() = Some(HttpServerHandle {
+                    shutdown_tx,
+                    addr,
+                });
+                
                 *self.is_running.write().unwrap() = true;
                 info!("✅ HTTP transport started successfully at {}", addr);
             }
@@ -139,14 +187,33 @@ impl DynamicTransportManager {
     /// Stop current transport gracefully
     async fn stop_current_transport(&self) -> Result<(), TransportError> {
         if *self.is_running.read().unwrap() {
-            let state = self.current_state.read().unwrap();
-            match *state {
+            // Get current state and handle - drop guard before await
+            let (state, server_handle) = {
+                let state = *self.current_state.read().unwrap();
+                let handle = self.http_server_handle.write().unwrap().take();
+                (state, handle)
+            };
+            
+            match state {
                 TransportState::Stdio => {
                     info!("⏹️ Stopping STDIO transport");
                 }
                 TransportState::Http(addr) => {
                     info!("⏹️ Stopping HTTP transport at {}", addr);
-                    // TODO: Actually stop HTTP server
+                    
+                    if let Some(server_handle) = server_handle {
+                        info!("🛑 Sending shutdown signal to HTTP server at {}", server_handle.addr);
+                        
+                        // Send shutdown signal (ignore error if receiver already dropped)
+                        let _ = server_handle.shutdown_tx.send(());
+                        
+                        // Give server time to gracefully shutdown
+                        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                        
+                        info!("✅ HTTP server shutdown completed at {}", addr);
+                    } else {
+                        warn!("⚠️ No HTTP server handle found for shutdown");
+                    }
                 }
                 TransportState::Stopped => {}
             }
