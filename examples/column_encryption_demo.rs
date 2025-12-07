@@ -2,12 +2,12 @@
 //!
 //! Demonstrates the use of column-level encryption with key management
 
+use chrono::Utc;
 use mcp_rs::handlers::database::column_encryption::{
     ColumnEncryptionConfig, ColumnEncryptionManager, EncryptionAlgorithm, KeyManagerConfig,
     KeyProvider,
 };
 use mcp_rs::handlers::database::types::{QueryContext, QueryType};
-use chrono::Utc;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -38,7 +38,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // Add encrypted columns
-    config.encrypted_columns.push("users.password_hash".to_string());
+    config
+        .encrypted_columns
+        .push("users.password_hash".to_string());
 
     println!("📋 Configuration:");
     println!("  Algorithm: {:?}", config.key_manager.default_algorithm);
@@ -70,9 +72,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Original email: {}", email);
 
     let encrypted_email = manager.encrypt("users", "email", email, &context).await?;
-    println!("Encrypted: {} ({}  bytes)", &encrypted_email[..50.min(encrypted_email.len())], encrypted_email.len());
+    println!(
+        "Encrypted: {} ({}  bytes)",
+        &encrypted_email[..50.min(encrypted_email.len())],
+        encrypted_email.len()
+    );
 
-    let decrypted_email = manager.decrypt("users", "email", &encrypted_email, &context).await?;
+    let decrypted_email = manager
+        .decrypt("users", "email", &encrypted_email, &context)
+        .await?;
     println!("Decrypted: {}", decrypted_email);
     assert_eq!(email, decrypted_email);
     println!("✅ Email encryption/decryption successful!\n");
@@ -83,9 +91,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Original SSN: {}", ssn);
 
     let encrypted_ssn = manager.encrypt("users", "ssn", ssn, &context).await?;
-    println!("Encrypted: {} (truncated)", &encrypted_ssn[..50.min(encrypted_ssn.len())]);
+    println!(
+        "Encrypted: {} (truncated)",
+        &encrypted_ssn[..50.min(encrypted_ssn.len())]
+    );
 
-    let decrypted_ssn = manager.decrypt("users", "ssn", &encrypted_ssn, &context).await?;
+    let decrypted_ssn = manager
+        .decrypt("users", "ssn", &encrypted_ssn, &context)
+        .await?;
     println!("Decrypted: {}", decrypted_ssn);
     assert_eq!(ssn, decrypted_ssn);
     println!("✅ SSN encryption/decryption successful!\n");
@@ -93,18 +106,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Example 3: Cache demonstration
     println!("=== Example 3: Cache Performance ===");
     let test_email = "test@example.com";
-    
+
     use std::time::Instant;
     let start = Instant::now();
-    let _ = manager.encrypt("users", "email", test_email, &context).await?;
+    let _ = manager
+        .encrypt("users", "email", test_email, &context)
+        .await?;
     let first_duration = start.elapsed();
     println!("First encryption: {:?}", first_duration);
 
     let start = Instant::now();
-    let _ = manager.encrypt("users", "email", test_email, &context).await?;
+    let _ = manager
+        .encrypt("users", "email", test_email, &context)
+        .await?;
     let cached_duration = start.elapsed();
     println!("Cached encryption: {:?}", cached_duration);
-    println!("Speedup: {:.2}x\n", first_duration.as_nanos() as f64 / cached_duration.as_nanos() as f64);
+    println!(
+        "Speedup: {:.2}x\n",
+        first_duration.as_nanos() as f64 / cached_duration.as_nanos() as f64
+    );
 
     // Example 4: Multiple values
     println!("=== Example 4: Batch Encryption ===");
@@ -116,26 +136,47 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     for (i, value) in values.iter().enumerate() {
         let encrypted = manager.encrypt("users", "email", value, &context).await?;
-        println!("{}. Encrypted {} -> {} bytes", i + 1, value, encrypted.len());
+        println!(
+            "{}. Encrypted {} -> {} bytes",
+            i + 1,
+            value,
+            encrypted.len()
+        );
     }
     println!();
 
     // Example 5: Key rotation
     println!("=== Example 5: Key Rotation ===");
     let original_data = "sensitive-data-before-rotation";
-    let encrypted_v1 = manager.encrypt("customers", "credit_card", original_data, &context).await?;
+    let encrypted_v1 = manager
+        .encrypt("customers", "credit_card", original_data, &context)
+        .await?;
     println!("Encrypted with key v1: {} bytes", encrypted_v1.len());
 
     // Rotate key
-    let new_key_id = manager.rotate_column_key("customers", "credit_card").await?;
+    let new_key_id = manager
+        .rotate_column_key("customers", "credit_card")
+        .await?;
     println!("Rotated to new key: {}", new_key_id);
 
     // Old data should still decrypt
-    let decrypted_old = manager.decrypt("customers", "credit_card", &encrypted_v1, &context).await?;
-    println!("Old data still decrypts: {}", decrypted_old == original_data);
+    let decrypted_old = manager
+        .decrypt("customers", "credit_card", &encrypted_v1, &context)
+        .await?;
+    println!(
+        "Old data still decrypts: {}",
+        decrypted_old == original_data
+    );
 
     // New data uses new key
-    let encrypted_v2 = manager.encrypt("customers", "credit_card", "new-data-after-rotation", &context).await?;
+    let encrypted_v2 = manager
+        .encrypt(
+            "customers",
+            "credit_card",
+            "new-data-after-rotation",
+            &context,
+        )
+        .await?;
     println!("Encrypted with key v2: {} bytes", encrypted_v2.len());
     println!("✅ Key rotation successful!\n");
 
@@ -152,10 +193,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let keys = manager.key_manager().list_keys().await;
     println!("Total keys: {}", keys.len());
     for key in keys.iter().take(5) {
-        println!("  - {} (v{}) - Active: {}", 
-            key.key_id, 
-            key.version, 
-            key.is_active
+        println!(
+            "  - {} (v{}) - Active: {}",
+            key.key_id, key.version, key.is_active
         );
     }
     println!();
@@ -165,8 +205,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut unauthorized_context = context.clone();
     unauthorized_context.user_id = None;
 
-    let encrypted_sensitive = manager.encrypt("users", "ssn", "111-22-3333", &context).await?;
-    let result = manager.decrypt("users", "ssn", &encrypted_sensitive, &unauthorized_context).await?;
+    let encrypted_sensitive = manager
+        .encrypt("users", "ssn", "111-22-3333", &context)
+        .await?;
+    let result = manager
+        .decrypt("users", "ssn", &encrypted_sensitive, &unauthorized_context)
+        .await?;
     println!("Unauthorized user sees: {}", result);
     assert_eq!(result, "***ENCRYPTED***");
     println!("✅ Permission check working!\n");

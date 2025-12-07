@@ -7,15 +7,18 @@
 //! - Permission-based decryption
 //! - Encryption caching for performance
 
+use chrono::{DateTime, Utc};
+use ring::aead::{
+    Aad, BoundKey, Nonce, NonceSequence, OpeningKey, SealingKey, UnboundKey, AES_256_GCM,
+    CHACHA20_POLY1305,
+};
+use ring::error::Unspecified;
+use ring::rand::{SecureRandom, SystemRandom};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
-use chrono::{DateTime, Utc};
-use ring::aead::{Aad, BoundKey, Nonce, NonceSequence, OpeningKey, SealingKey, UnboundKey, AES_256_GCM, CHACHA20_POLY1305};
-use ring::error::Unspecified;
-use ring::rand::{SecureRandom, SystemRandom};
 use tracing::{debug, error, info, warn};
 
 use crate::handlers::database::types::{QueryContext, SecurityError};
@@ -39,10 +42,7 @@ impl Default for EncryptionAlgorithm {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum KeyProvider {
     /// AWS KMS integration
-    AwsKms {
-        region: String,
-        key_id: String,
-    },
+    AwsKms { region: String, key_id: String },
     /// HashiCorp Vault integration
     Vault {
         address: String,
@@ -50,9 +50,7 @@ pub enum KeyProvider {
         key_name: String,
     },
     /// Local keystore (for development/testing)
-    Local {
-        key_path: String,
-    },
+    Local { key_path: String },
 }
 
 /// Encryption key metadata
@@ -74,7 +72,7 @@ pub struct KeyMetadata {
 
 /// Data Encryption Key (DEK) wrapper
 #[derive(Clone)]
-struct DataEncryptionKey {
+pub(crate) struct DataEncryptionKey {
     key_id: String,
     version: u32,
     key_bytes: Vec<u8>,
@@ -122,8 +120,8 @@ impl NonceSequence for NonceCounter {
     fn advance(&mut self) -> Result<Nonce, Unspecified> {
         let mut nonce_bytes = [0u8; 12];
         self.counter += 1;
-        nonce_bytes[0..16].copy_from_slice(&self.counter.to_le_bytes()[0..16]);
-        Nonce::try_assume_unique_for_key(&nonce_bytes[0..12])
+        nonce_bytes.copy_from_slice(&self.counter.to_le_bytes()[0..12]);
+        Nonce::try_assume_unique_for_key(&nonce_bytes)
     }
 }
 
@@ -182,13 +180,9 @@ impl KeyManager {
     }
 
     /// Generate a new Data Encryption Key (DEK)
-    pub async fn generate_dek(
-        &self,
-        table: &str,
-        column: &str,
-    ) -> Result<String, SecurityError> {
+    pub async fn generate_dek(&self, table: &str, column: &str) -> Result<String, SecurityError> {
         let key_name = format!("{}.{}", table, column);
-        
+
         // Generate random key bytes
         let mut key_bytes = vec![0u8; 32]; // 256 bits
         self.rng
@@ -197,10 +191,7 @@ impl KeyManager {
 
         let version = {
             let metadata = self.key_metadata.read().await;
-            metadata
-                .get(&key_name)
-                .map(|m| m.version + 1)
-                .unwrap_or(1)
+            metadata.get(&key_name).map(|m| m.version + 1).unwrap_or(1)
         };
 
         let key_id = format!("{}:v{}", key_name, version);
@@ -212,7 +203,10 @@ impl KeyManager {
         );
 
         // Store in active keys
-        self.active_keys.write().await.insert(key_name.clone(), dek.clone());
+        self.active_keys
+            .write()
+            .await
+            .insert(key_name.clone(), dek.clone());
 
         // Store metadata
         let metadata = KeyMetadata {
@@ -220,25 +214,28 @@ impl KeyManager {
             version,
             created_at: Utc::now(),
             expires_at: Some(
-                Utc::now() + chrono::Duration::seconds(self.config.rotation_interval_secs as i64)
+                Utc::now() + chrono::Duration::seconds(self.config.rotation_interval_secs as i64),
             ),
             algorithm: self.config.default_algorithm,
             is_active: true,
         };
-        self.key_metadata.write().await.insert(key_name.clone(), metadata);
+        self.key_metadata
+            .write()
+            .await
+            .insert(key_name.clone(), metadata);
 
         info!("Generated new DEK for {}: {}", key_name, key_id);
         Ok(key_id)
     }
 
     /// Get or create DEK for a column
-    pub async fn get_or_create_dek(
+    pub(crate) async fn get_or_create_dek(
         &self,
         table: &str,
         column: &str,
     ) -> Result<DataEncryptionKey, SecurityError> {
         let key_name = format!("{}.{}", table, column);
-        
+
         // Check if active key exists
         {
             let active_keys = self.active_keys.read().await;
@@ -260,51 +257,48 @@ impl KeyManager {
 
         // Generate new key if not exists or expired
         self.generate_dek(table, column).await?;
-        
+
         let active_keys = self.active_keys.read().await;
-        active_keys
-            .get(&key_name)
-            .cloned()
-            .ok_or_else(|| SecurityError::EncryptionError("Failed to retrieve generated key".into()))
+        active_keys.get(&key_name).cloned().ok_or_else(|| {
+            SecurityError::EncryptionError("Failed to retrieve generated key".into())
+        })
     }
 
     /// Get historical key for decryption
-    pub async fn get_historical_key(
+    pub(crate) async fn get_historical_key(
         &self,
         key_id: &str,
     ) -> Result<DataEncryptionKey, SecurityError> {
         let historical_keys = self.historical_keys.read().await;
-        historical_keys
-            .get(key_id)
-            .cloned()
-            .ok_or_else(|| SecurityError::EncryptionError(format!("Historical key not found: {}", key_id)))
+        historical_keys.get(key_id).cloned().ok_or_else(|| {
+            SecurityError::EncryptionError(format!("Historical key not found: {}", key_id))
+        })
     }
 
     /// Rotate key for a column
-    pub async fn rotate_key(
-        &self,
-        table: &str,
-        column: &str,
-    ) -> Result<String, SecurityError> {
+    pub async fn rotate_key(&self, table: &str, column: &str) -> Result<String, SecurityError> {
         let key_name = format!("{}.{}", table, column);
-        
+
         // Move current active key to historical
         if let Some(old_key) = self.active_keys.write().await.remove(&key_name) {
             let old_key_id = old_key.key_id.clone();
-            self.historical_keys.write().await.insert(old_key_id.clone(), old_key);
-            
+            self.historical_keys
+                .write()
+                .await
+                .insert(old_key_id.clone(), old_key);
+
             // Update metadata
             if let Some(meta) = self.key_metadata.write().await.get_mut(&key_name) {
                 meta.is_active = false;
             }
-            
+
             debug!("Moved key {} to historical storage", old_key_id);
         }
 
         // Generate new key
         let new_key_id = self.generate_dek(table, column).await?;
         info!("Rotated key for {}: {}", key_name, new_key_id);
-        
+
         Ok(new_key_id)
     }
 
@@ -317,21 +311,24 @@ impl KeyManager {
     pub async fn cleanup_old_keys(&self) -> Result<usize, SecurityError> {
         let mut count = 0;
         let mut historical = self.historical_keys.write().await;
-        
+
         if historical.len() > self.config.max_old_keys {
             // Sort by creation date and remove oldest
-            let mut keys: Vec<_> = historical.iter().map(|(k, v)| (k.clone(), v.created_at)).collect();
+            let mut keys: Vec<_> = historical
+                .iter()
+                .map(|(k, v)| (k.clone(), v.created_at))
+                .collect();
             keys.sort_by_key(|(_, created_at)| *created_at);
-            
+
             let to_remove = keys.len() - self.config.max_old_keys;
             for (key_id, _) in keys.iter().take(to_remove) {
                 historical.remove(key_id);
                 count += 1;
             }
-            
+
             info!("Cleaned up {} old encryption keys", count);
         }
-        
+
         Ok(count)
     }
 }
@@ -419,7 +416,7 @@ impl ColumnEncryptionManager {
     /// Create a new column encryption manager
     pub fn new(config: ColumnEncryptionConfig) -> Self {
         let key_manager = Arc::new(KeyManager::new(config.key_manager.clone()));
-        
+
         Self {
             config,
             key_manager,
@@ -505,7 +502,10 @@ impl ColumnEncryptionManager {
             },
         );
 
-        debug!("Encrypted data for {}.{} with key {}", table, column, dek.key_id);
+        debug!(
+            "Encrypted data for {}.{} with key {}",
+            table, column, dek.key_id
+        );
         Ok(encoded)
     }
 
@@ -518,7 +518,10 @@ impl ColumnEncryptionManager {
         context: &QueryContext,
     ) -> Result<String, SecurityError> {
         // Check permissions first
-        if !self.check_decrypt_permission(table, column, context).await? {
+        if !self
+            .check_decrypt_permission(table, column, context)
+            .await?
+        {
             return Ok("***ENCRYPTED***".to_string());
         }
 
@@ -541,21 +544,30 @@ impl ColumnEncryptionManager {
         // Get DEK (try active first, then historical)
         let dek = match self.key_manager.get_or_create_dek(table, column).await {
             Ok(key) if key.key_id == encrypted_data.key_id => key,
-            _ => self.key_manager.get_historical_key(&encrypted_data.key_id).await?,
+            _ => {
+                self.key_manager
+                    .get_historical_key(&encrypted_data.key_id)
+                    .await?
+            }
         };
 
         // Decrypt based on algorithm
         let plaintext_bytes = match encrypted_data.algorithm {
-            EncryptionAlgorithm::Aes256Gcm => {
-                self.decrypt_aes_gcm(&dek.key_bytes, &encrypted_data.nonce, &encrypted_data.ciphertext)?
-            }
-            EncryptionAlgorithm::ChaCha20Poly1305 => {
-                self.decrypt_chacha20(&dek.key_bytes, &encrypted_data.nonce, &encrypted_data.ciphertext)?
-            }
+            EncryptionAlgorithm::Aes256Gcm => self.decrypt_aes_gcm(
+                &dek.key_bytes,
+                &encrypted_data.nonce,
+                &encrypted_data.ciphertext,
+            )?,
+            EncryptionAlgorithm::ChaCha20Poly1305 => self.decrypt_chacha20(
+                &dek.key_bytes,
+                &encrypted_data.nonce,
+                &encrypted_data.ciphertext,
+            )?,
         };
 
-        let plaintext = String::from_utf8(plaintext_bytes)
-            .map_err(|e| SecurityError::EncryptionError(format!("Invalid UTF-8 in plaintext: {}", e)))?;
+        let plaintext = String::from_utf8(plaintext_bytes).map_err(|e| {
+            SecurityError::EncryptionError(format!("Invalid UTF-8 in plaintext: {}", e))
+        })?;
 
         // Update cache
         let mut cache = self.decryption_cache.write().await;
@@ -576,7 +588,10 @@ impl ColumnEncryptionManager {
             },
         );
 
-        debug!("Decrypted data for {}.{} with key {}", table, column, dek.key_id);
+        debug!(
+            "Decrypted data for {}.{} with key {}",
+            table, column, dek.key_id
+        );
         Ok(plaintext)
     }
 
@@ -589,17 +604,17 @@ impl ColumnEncryptionManager {
     ) -> Result<Vec<u8>, SecurityError> {
         let unbound_key = UnboundKey::new(&AES_256_GCM, key_bytes)
             .map_err(|_| SecurityError::EncryptionError("Invalid key".into()))?;
-        
+
         let nonce = Nonce::try_assume_unique_for_key(nonce_bytes)
             .map_err(|_| SecurityError::EncryptionError("Invalid nonce".into()))?;
-        
+
         let mut sealing_key = SealingKey::new(unbound_key, ConstantNonce::new(nonce));
-        
+
         let mut in_out = plaintext.to_vec();
         sealing_key
             .seal_in_place_append_tag(Aad::empty(), &mut in_out)
             .map_err(|_| SecurityError::EncryptionError("Encryption failed".into()))?;
-        
+
         Ok(in_out)
     }
 
@@ -612,17 +627,17 @@ impl ColumnEncryptionManager {
     ) -> Result<Vec<u8>, SecurityError> {
         let unbound_key = UnboundKey::new(&AES_256_GCM, key_bytes)
             .map_err(|_| SecurityError::EncryptionError("Invalid key".into()))?;
-        
+
         let nonce = Nonce::try_assume_unique_for_key(nonce_bytes)
             .map_err(|_| SecurityError::EncryptionError("Invalid nonce".into()))?;
-        
+
         let mut opening_key = OpeningKey::new(unbound_key, ConstantNonce::new(nonce));
-        
+
         let mut in_out = ciphertext.to_vec();
         let plaintext = opening_key
             .open_in_place(Aad::empty(), &mut in_out)
             .map_err(|_| SecurityError::EncryptionError("Decryption failed".into()))?;
-        
+
         Ok(plaintext.to_vec())
     }
 
@@ -635,17 +650,17 @@ impl ColumnEncryptionManager {
     ) -> Result<Vec<u8>, SecurityError> {
         let unbound_key = UnboundKey::new(&CHACHA20_POLY1305, key_bytes)
             .map_err(|_| SecurityError::EncryptionError("Invalid key".into()))?;
-        
+
         let nonce = Nonce::try_assume_unique_for_key(nonce_bytes)
             .map_err(|_| SecurityError::EncryptionError("Invalid nonce".into()))?;
-        
+
         let mut sealing_key = SealingKey::new(unbound_key, ConstantNonce::new(nonce));
-        
+
         let mut in_out = plaintext.to_vec();
         sealing_key
             .seal_in_place_append_tag(Aad::empty(), &mut in_out)
             .map_err(|_| SecurityError::EncryptionError("Encryption failed".into()))?;
-        
+
         Ok(in_out)
     }
 
@@ -658,17 +673,17 @@ impl ColumnEncryptionManager {
     ) -> Result<Vec<u8>, SecurityError> {
         let unbound_key = UnboundKey::new(&CHACHA20_POLY1305, key_bytes)
             .map_err(|_| SecurityError::EncryptionError("Invalid key".into()))?;
-        
+
         let nonce = Nonce::try_assume_unique_for_key(nonce_bytes)
             .map_err(|_| SecurityError::EncryptionError("Invalid nonce".into()))?;
-        
+
         let mut opening_key = OpeningKey::new(unbound_key, ConstantNonce::new(nonce));
-        
+
         let mut in_out = ciphertext.to_vec();
         let plaintext = opening_key
             .open_in_place(Aad::empty(), &mut in_out)
             .map_err(|_| SecurityError::EncryptionError("Decryption failed".into()))?;
-        
+
         Ok(plaintext.to_vec())
     }
 
@@ -720,7 +735,7 @@ impl ColumnEncryptionManager {
     pub async fn get_cache_stats(&self) -> CacheStats {
         let enc_size = self.encryption_cache.read().await.len();
         let dec_size = self.decryption_cache.read().await.len();
-        
+
         CacheStats {
             encryption_cache_size: enc_size,
             decryption_cache_size: dec_size,
@@ -785,17 +800,23 @@ mod tests {
     async fn test_encrypt_decrypt_aes() {
         let mut config = ColumnEncryptionConfig::default();
         config.encrypted_columns.push("users.ssn".to_string());
-        
+
         let manager = ColumnEncryptionManager::new(config);
         let context = create_test_context("admin");
 
         let plaintext = "123-45-6789";
-        let encrypted = manager.encrypt("users", "ssn", plaintext, &context).await.unwrap();
-        
+        let encrypted = manager
+            .encrypt("users", "ssn", plaintext, &context)
+            .await
+            .unwrap();
+
         assert_ne!(encrypted, plaintext);
         assert!(!encrypted.is_empty());
 
-        let decrypted = manager.decrypt("users", "ssn", &encrypted, &context).await.unwrap();
+        let decrypted = manager
+            .decrypt("users", "ssn", &encrypted, &context)
+            .await
+            .unwrap();
         assert_eq!(decrypted, plaintext);
     }
 
@@ -804,18 +825,24 @@ mod tests {
         let mut config = ColumnEncryptionConfig::default();
         config.encrypted_columns.push("users.email".to_string());
         config.cache_ttl_secs = 60;
-        
+
         let manager = ColumnEncryptionManager::new(config);
         let context = create_test_context("user1");
 
         let plaintext = "test@example.com";
-        
+
         // First encryption
-        let encrypted1 = manager.encrypt("users", "email", plaintext, &context).await.unwrap();
-        
+        let encrypted1 = manager
+            .encrypt("users", "email", plaintext, &context)
+            .await
+            .unwrap();
+
         // Second encryption (should use cache, same result)
-        let encrypted2 = manager.encrypt("users", "email", plaintext, &context).await.unwrap();
-        
+        let encrypted2 = manager
+            .encrypt("users", "email", plaintext, &context)
+            .await
+            .unwrap();
+
         assert_eq!(encrypted1, encrypted2);
     }
 
@@ -835,19 +862,25 @@ mod tests {
     async fn test_decrypt_with_old_key() {
         let mut config = ColumnEncryptionConfig::default();
         config.encrypted_columns.push("users.data".to_string());
-        
+
         let manager = ColumnEncryptionManager::new(config);
         let context = create_test_context("admin");
 
         // Encrypt with key v1
         let plaintext = "sensitive data";
-        let encrypted = manager.encrypt("users", "data", plaintext, &context).await.unwrap();
+        let encrypted = manager
+            .encrypt("users", "data", plaintext, &context)
+            .await
+            .unwrap();
 
         // Rotate key to v2
         manager.rotate_column_key("users", "data").await.unwrap();
 
         // Should still be able to decrypt data encrypted with v1
-        let decrypted = manager.decrypt("users", "data", &encrypted, &context).await.unwrap();
+        let decrypted = manager
+            .decrypt("users", "data", &encrypted, &context)
+            .await
+            .unwrap();
         assert_eq!(decrypted, plaintext);
     }
 
@@ -855,19 +888,28 @@ mod tests {
     async fn test_permission_check() {
         let mut config = ColumnEncryptionConfig::default();
         config.encrypted_columns.push("users.ssn".to_string());
-        
+
         let manager = ColumnEncryptionManager::new(config);
-        
+
         // User with ID can decrypt
         let context_auth = create_test_context("admin");
-        let encrypted = manager.encrypt("users", "ssn", "123-45-6789", &context_auth).await.unwrap();
-        let decrypted = manager.decrypt("users", "ssn", &encrypted, &context_auth).await.unwrap();
+        let encrypted = manager
+            .encrypt("users", "ssn", "123-45-6789", &context_auth)
+            .await
+            .unwrap();
+        let decrypted = manager
+            .decrypt("users", "ssn", &encrypted, &context_auth)
+            .await
+            .unwrap();
         assert_eq!(decrypted, "123-45-6789");
 
         // User without ID cannot decrypt
         let mut context_unauth = create_test_context("guest");
         context_unauth.user_id = None;
-        let result = manager.decrypt("users", "ssn", &encrypted, &context_unauth).await.unwrap();
+        let result = manager
+            .decrypt("users", "ssn", &encrypted, &context_unauth)
+            .await
+            .unwrap();
         assert_eq!(result, "***ENCRYPTED***");
     }
 
@@ -876,12 +918,18 @@ mod tests {
         let mut config = ColumnEncryptionConfig::default();
         config.encrypted_columns.push("test.field".to_string());
         config.max_cache_size = 100;
-        
+
         let manager = ColumnEncryptionManager::new(config);
         let context = create_test_context("user1");
 
-        manager.encrypt("test", "field", "value1", &context).await.unwrap();
-        manager.encrypt("test", "field", "value2", &context).await.unwrap();
+        manager
+            .encrypt("test", "field", "value1", &context)
+            .await
+            .unwrap();
+        manager
+            .encrypt("test", "field", "value2", &context)
+            .await
+            .unwrap();
 
         let stats = manager.get_cache_stats().await;
         assert_eq!(stats.encryption_cache_size, 2);
