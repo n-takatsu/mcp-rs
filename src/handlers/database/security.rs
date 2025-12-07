@@ -188,7 +188,8 @@ impl SqlInjectionDetector {
             // CHAR/ASCII based obfuscation
             Regex::new(r"(?i)\b(char|ascii)\s*\([^)]+\)\s*=\s*(char|ascii)\s*\(").unwrap(),
             // Comment-based obfuscation
-            Regex::new(r"(?i)(union|select|from|where)\s*/\*.*?\*/\s*(union|select|from|where)").unwrap(),
+            Regex::new(r"(?i)(union|select|from|where)\s*/\*.*?\*/\s*(union|select|from|where)")
+                .unwrap(),
             // システム関数の呼び出し
             Regex::new(r"(?i)\b(exec|execute|sp_|xp_)\w*\s*\(").unwrap(),
             // ファイル操作
