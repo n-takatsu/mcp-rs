@@ -378,7 +378,8 @@ impl ThreatFeed {
         let cutoff_time = Utc::now() - Duration::hours(max_age_hours);
 
         let initial_count = subscriptions.len();
-        subscriptions.retain(|_, sub| sub.active && sub.last_updated > cutoff_time);
+        // 非アクティブまたは古いサブスクリプションを削除
+        subscriptions.retain(|_, sub| sub.active || sub.last_updated > cutoff_time);
 
         let removed_count = initial_count - subscriptions.len();
 
