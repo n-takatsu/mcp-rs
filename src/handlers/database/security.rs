@@ -165,9 +165,9 @@ impl SqlInjectionDetector {
             Regex::new(r"(?i)\bunion\s+(all\s+)?select\b").unwrap(),
             // コメントアウト攻撃
             Regex::new(r"--\s*$").unwrap(),
-            Regex::new(r"#\s*$").unwrap(),  // MySQL hash comment
+            Regex::new(r"#\s*$").unwrap(), // MySQL hash comment
             Regex::new(r"/\*.*?\*/").unwrap(),
-            Regex::new(r";\s*--").unwrap(),  // Statement termination with comment
+            Regex::new(r";\s*--").unwrap(), // Statement termination with comment
             // Stacked queries (複数クエリ実行)
             Regex::new(r"(?i);\s*(drop|delete|update|insert|alter|create)\b").unwrap(),
             // OR 1=1系の攻撃
@@ -176,6 +176,19 @@ impl SqlInjectionDetector {
             // AND 1=1系の攻撃
             Regex::new(r"(?i)\band\s+\d+\s*=\s*\d+").unwrap(),
             Regex::new(r"(?i)\band\s+'[^']*'\s*=\s*'[^']*'").unwrap(),
+            // Information schema enumeration
+            Regex::new(r"(?i)\binformation_schema\b").unwrap(),
+            // Error-based injection functions
+            Regex::new(r"(?i)\b(extractvalue|updatexml)\s*\(").unwrap(),
+            Regex::new(r"(?i)\bgeometrycollection\s*\(").unwrap(),
+            // Time-based functions (WAITFOR)
+            Regex::new(r"(?i)\bwaitfor\s+delay\b").unwrap(),
+            // Hexadecimal injection
+            Regex::new(r"(?i)\b0x[0-9a-f]+\s*=\s*0x[0-9a-f]+").unwrap(),
+            // CHAR/ASCII based obfuscation
+            Regex::new(r"(?i)\b(char|ascii)\s*\([^)]+\)\s*=\s*(char|ascii)\s*\(").unwrap(),
+            // Comment-based obfuscation
+            Regex::new(r"(?i)(union|select|from|where)\s*/\*.*?\*/\s*(union|select|from|where)").unwrap(),
             // システム関数の呼び出し
             Regex::new(r"(?i)\b(exec|execute|sp_|xp_)\w*\s*\(").unwrap(),
             // ファイル操作
@@ -188,9 +201,8 @@ impl SqlInjectionDetector {
             "pg_sleep",
             "waitfor",
             "load_file",
-            "char",
-            "ascii",
-            "substring",
+            // Note: char, ascii, substring removed to avoid false positives
+            // They are caught by specific regex patterns instead
         ]
         .iter()
         .map(|s| s.to_string())
