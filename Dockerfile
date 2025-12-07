@@ -30,7 +30,7 @@ COPY tests ./tests
 COPY configs ./configs
 
 # Build release binary
-RUN cargo build --release --bin mcp-rs-server
+RUN cargo build --release --bin mcp-rs
 
 # Stage 2: Runtime
 FROM debian:bullseye-slim
@@ -54,13 +54,13 @@ RUN mkdir -p /app/configs /app/logs /var/log/mcp-rs && \
 WORKDIR /app
 
 # Copy binary from builder
-COPY --from=builder /app/target/release/mcp-rs-server /usr/local/bin/mcp-rs-server
+COPY --from=builder /app/target/release/mcp-rs /usr/local/bin/mcp-rs
 
 # Copy configuration files
 COPY --from=builder /app/configs /app/configs
 
 # Set permissions
-RUN chmod +x /usr/local/bin/mcp-rs-server && \
+RUN chmod +x /usr/local/bin/mcp-rs && \
     chown -R mcp:mcp /app
 
 # Switch to non-root user
@@ -79,4 +79,4 @@ ENV RUST_LOG=info \
     MCP_CONFIG_PATH=/app/configs/production/main.toml
 
 # Run the application
-CMD ["mcp-rs-server", "--config", "/app/configs/production/main.toml"]
+CMD ["mcp-rs", "--config", "/app/configs/production/main.toml"]
