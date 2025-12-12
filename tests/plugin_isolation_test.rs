@@ -1,7 +1,7 @@
 //! プラグイン隔離システム統合テスト
 
 use mcp_rs::plugin::{
-    IsolationConfig, IsolationEnvironment, IsolationLevel, Plugin, PluginManager, ResourceLimits,
+    IsolationConfig, IsolationLevel, Plugin, PluginManager, ResourceLimits,
 };
 use std::path::PathBuf;
 use std::time::Duration;
@@ -85,7 +85,7 @@ async fn test_plugin_isolation_levels() {
     let manager = PluginManager::new(None);
 
     // 異なる隔離レベルでプラグインを作成
-    let isolation_levels = vec![
+    let isolation_levels = [
         IsolationLevel::None,
         IsolationLevel::Process,
         IsolationLevel::Container,
@@ -193,7 +193,7 @@ async fn test_isolation_efficiency_score() {
         .with_filesystem_isolation(false)
         .with_process_isolation(false);
     let mid_score = config_mid.calculate_efficiency_score();
-    assert!(mid_score >= 0.4 && mid_score <= 0.6);
+    assert!((0.4..=0.6).contains(&mid_score));
 
     // 最大隔離（スコア: 1.0）
     let config_max = IsolationConfig::new(IsolationLevel::VM)
