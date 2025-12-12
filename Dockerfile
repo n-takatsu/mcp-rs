@@ -17,8 +17,6 @@ WORKDIR /app
 
 # Copy dependency manifests first for better caching
 COPY Cargo.toml Cargo.lock ./
-RUN mkdir .cargo 2>/dev/null || true
-COPY .cargo .cargo 2>/dev/null || true
 
 # Create dummy source to cache dependencies
 RUN mkdir src && \
