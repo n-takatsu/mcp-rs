@@ -7,16 +7,16 @@
 //! 3. インテリジェンス検証システム
 //! 4. 脅威レベル自動調整
 
+use chrono::Utc;
 use mcp_rs::error::Result;
 use mcp_rs::policy::dynamic_updater::{DynamicPolicyUpdater, UpdateConfig};
 use mcp_rs::policy::threat_intelligence::{
     ThreatFeedSource, ThreatIntelligence, ThreatIntelligenceManager, ThreatLevel, ThreatType,
 };
 use mcp_rs::policy_config::*;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
-use chrono::Utc;
-use std::collections::HashMap;
 
 /// テスト用のポリシーを作成
 fn create_test_policy() -> PolicyConfig {
@@ -148,10 +148,7 @@ async fn main() -> Result<()> {
         threat_type: ThreatType::DDoS,
         level: ThreatLevel::Critical,
         description: "Large-scale DDoS attack detected from multiple botnets".to_string(),
-        affected_ips: vec![
-            "192.168.1.0/24".to_string(),
-            "10.0.0.0/16".to_string(),
-        ],
+        affected_ips: vec!["192.168.1.0/24".to_string(), "10.0.0.0/16".to_string()],
         affected_domains: vec!["api.example.com".to_string()],
         recommended_actions: vec![
             "Enable rate limiting".to_string(),
@@ -227,11 +224,29 @@ async fn main() -> Result<()> {
 
     // 初期ポリシー状態を表示
     println!("📋 初期ポリシー設定:");
-    println!("  - レート制限: {} req/min", initial_policy.security.rate_limiting.requests_per_minute);
-    println!("  - バーストサイズ: {}", initial_policy.security.rate_limiting.burst_size);
-    println!("  - 暗号化アルゴリズム: {}", initial_policy.security.encryption.algorithm);
-    println!("  - SQL保護: {}", initial_policy.security.input_validation.sql_injection_protection);
-    println!("  - XSS保護: {}\n", initial_policy.security.input_validation.xss_protection);
+    println!(
+        "  - レート制限: {} req/min",
+        initial_policy.security.rate_limiting.requests_per_minute
+    );
+    println!(
+        "  - バーストサイズ: {}",
+        initial_policy.security.rate_limiting.burst_size
+    );
+    println!(
+        "  - 暗号化アルゴリズム: {}",
+        initial_policy.security.encryption.algorithm
+    );
+    println!(
+        "  - SQL保護: {}",
+        initial_policy
+            .security
+            .input_validation
+            .sql_injection_protection
+    );
+    println!(
+        "  - XSS保護: {}\n",
+        initial_policy.security.input_validation.xss_protection
+    );
 
     // 脅威情報を追加（自動でポリシー更新）
     println!("🚀 脅威情報を追加中...");
@@ -255,35 +270,87 @@ async fn main() -> Result<()> {
     let updated_policy = policy_updater.get_active_policy().await;
 
     println!("📋 更新後ポリシー設定:");
-    println!("  - レート制限: {} req/min ({}{})",
+    println!(
+        "  - レート制限: {} req/min ({}{})",
         updated_policy.security.rate_limiting.requests_per_minute,
-        if updated_policy.security.rate_limiting.requests_per_minute < initial_policy.security.rate_limiting.requests_per_minute { "↓" } else { "→" },
-        if updated_policy.security.rate_limiting.requests_per_minute < initial_policy.security.rate_limiting.requests_per_minute {
-            format!(" -{}%", ((1.0 - updated_policy.security.rate_limiting.requests_per_minute as f64 / initial_policy.security.rate_limiting.requests_per_minute as f64) * 100.0) as u32)
+        if updated_policy.security.rate_limiting.requests_per_minute
+            < initial_policy.security.rate_limiting.requests_per_minute
+        {
+            "↓"
+        } else {
+            "→"
+        },
+        if updated_policy.security.rate_limiting.requests_per_minute
+            < initial_policy.security.rate_limiting.requests_per_minute
+        {
+            format!(
+                " -{}%",
+                ((1.0
+                    - updated_policy.security.rate_limiting.requests_per_minute as f64
+                        / initial_policy.security.rate_limiting.requests_per_minute as f64)
+                    * 100.0) as u32
+            )
         } else {
             String::new()
         }
     );
-    println!("  - バーストサイズ: {} ({}{})",
+    println!(
+        "  - バーストサイズ: {} ({}{})",
         updated_policy.security.rate_limiting.burst_size,
-        if updated_policy.security.rate_limiting.burst_size < initial_policy.security.rate_limiting.burst_size { "↓" } else { "→" },
-        if updated_policy.security.rate_limiting.burst_size < initial_policy.security.rate_limiting.burst_size {
-            format!(" -{}", initial_policy.security.rate_limiting.burst_size - updated_policy.security.rate_limiting.burst_size)
+        if updated_policy.security.rate_limiting.burst_size
+            < initial_policy.security.rate_limiting.burst_size
+        {
+            "↓"
+        } else {
+            "→"
+        },
+        if updated_policy.security.rate_limiting.burst_size
+            < initial_policy.security.rate_limiting.burst_size
+        {
+            format!(
+                " -{}",
+                initial_policy.security.rate_limiting.burst_size
+                    - updated_policy.security.rate_limiting.burst_size
+            )
         } else {
             String::new()
         }
     );
-    println!("  - 暗号化アルゴリズム: {} ({})",
+    println!(
+        "  - 暗号化アルゴリズム: {} ({})",
         updated_policy.security.encryption.algorithm,
-        if updated_policy.security.encryption.algorithm != initial_policy.security.encryption.algorithm { "↑ 強化" } else { "→" }
+        if updated_policy.security.encryption.algorithm
+            != initial_policy.security.encryption.algorithm
+        {
+            "↑ 強化"
+        } else {
+            "→"
+        }
     );
-    println!("  - SQL保護: {} ({})",
-        updated_policy.security.input_validation.sql_injection_protection,
-        if updated_policy.security.input_validation.sql_injection_protection { "✓ 有効化" } else { "→" }
+    println!(
+        "  - SQL保護: {} ({})",
+        updated_policy
+            .security
+            .input_validation
+            .sql_injection_protection,
+        if updated_policy
+            .security
+            .input_validation
+            .sql_injection_protection
+        {
+            "✓ 有効化"
+        } else {
+            "→"
+        }
     );
-    println!("  - XSS保護: {} ({})\n",
+    println!(
+        "  - XSS保護: {} ({})\n",
         updated_policy.security.input_validation.xss_protection,
-        if updated_policy.security.input_validation.xss_protection { "✓ 有効化" } else { "→" }
+        if updated_policy.security.input_validation.xss_protection {
+            "✓ 有効化"
+        } else {
+            "→"
+        }
     );
 
     // 5. 脅威統計情報の表示
@@ -297,7 +364,14 @@ async fn main() -> Result<()> {
     println!("  - Warning: {}", stats.warning_count);
     println!("  - Info: {}", stats.info_count);
     println!("フィードソース数: {}", stats.sources_count);
-    println!("自動更新: {}\n", if stats.auto_update_enabled { "有効" } else { "無効" });
+    println!(
+        "自動更新: {}\n",
+        if stats.auto_update_enabled {
+            "有効"
+        } else {
+            "無効"
+        }
+    );
 
     // 6. レベル別脅威情報の取得
     println!("🔍 ステップ 6: レベル別脅威情報取得");

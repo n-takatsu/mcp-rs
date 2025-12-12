@@ -271,7 +271,9 @@ impl ThreatIntelligenceManager {
         let current_policy = self.policy_updater.get_active_policy().await;
 
         // 脅威情報に基づいてポリシーを調整
-        let updated_policy = self.adjust_policy_for_threat(&current_policy, intelligence).await?;
+        let updated_policy = self
+            .adjust_policy_for_threat(&current_policy, intelligence)
+            .await?;
 
         // ポリシーを更新
         self.policy_updater.update_policy(updated_policy).await?;
@@ -319,12 +321,18 @@ impl ThreatIntelligenceManager {
         match &intelligence.threat_type {
             ThreatType::DDoS | ThreatType::BruteForce => {
                 // レート制限を強化
-                updated_policy.security.rate_limiting.burst_size =
-                    updated_policy.security.rate_limiting.burst_size.saturating_sub(10);
+                updated_policy.security.rate_limiting.burst_size = updated_policy
+                    .security
+                    .rate_limiting
+                    .burst_size
+                    .saturating_sub(10);
             }
             ThreatType::SqlInjection => {
                 // 入力検証を強化
-                updated_policy.security.input_validation.sql_injection_protection = true;
+                updated_policy
+                    .security
+                    .input_validation
+                    .sql_injection_protection = true;
             }
             ThreatType::Xss => {
                 // XSS保護を強化
@@ -346,7 +354,10 @@ impl ThreatIntelligenceManager {
     /// # 引数
     ///
     /// * `source` - フィードソース
-    async fn fetch_from_source(&self, _source: &ThreatFeedSource) -> Result<Vec<ThreatIntelligence>> {
+    async fn fetch_from_source(
+        &self,
+        _source: &ThreatFeedSource,
+    ) -> Result<Vec<ThreatIntelligence>> {
         // TODO: 実際の外部API統合
         // 例: reqwest を使用してHTTPリクエスト
         Ok(Vec::new())
@@ -413,7 +424,7 @@ impl ThreatIntelligenceManager {
     /// 脅威統計情報を取得
     pub async fn get_threat_statistics(&self) -> ThreatStatistics {
         let cache = self.threat_cache.read().await;
-        
+
         let mut stats = ThreatStatistics::default();
         stats.total_threats = cache.len();
 
@@ -584,7 +595,10 @@ mod tests {
             expires_at: None,
         };
 
-        assert!(manager.add_threat_intelligence(low_confidence_threat).await.is_err());
+        assert!(manager
+            .add_threat_intelligence(low_confidence_threat)
+            .await
+            .is_err());
     }
 
     #[tokio::test]
@@ -656,7 +670,10 @@ mod tests {
             expires_at: Some(SystemTime::now() - Duration::from_secs(3600)),
         };
 
-        manager.add_threat_intelligence(expired_threat).await.unwrap();
+        manager
+            .add_threat_intelligence(expired_threat)
+            .await
+            .unwrap();
         let cleaned = manager.cleanup_expired_threats().await;
         assert_eq!(cleaned, 1);
         assert_eq!(manager.get_all_threats().await.len(), 0);
