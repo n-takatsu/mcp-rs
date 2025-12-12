@@ -14,13 +14,13 @@ pub mod handlers;
 pub mod logging;
 pub mod runtime_control;
 // pub mod http_server; // 削除: Transport統合により不要
+pub mod canary_deployment;
 pub mod mcp;
 pub mod mcp_server;
+pub mod plugin;
 pub mod server;
 pub mod session;
 pub mod threat_intelligence;
-// pub mod plugin_isolation; // 将来実装予定
-pub mod canary_deployment;
 // #[cfg(feature = "tui")]
 // pub mod dashboard;
 pub mod plugins;
