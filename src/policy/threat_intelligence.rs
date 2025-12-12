@@ -298,8 +298,7 @@ impl ThreatIntelligenceManager {
         match intelligence.level {
             ThreatLevel::Critical => {
                 // Critical: 厳格なポリシー適用
-                updated_policy.security.rate_limiting.requests_per_minute =
-                    updated_policy.security.rate_limiting.requests_per_minute / 2;
+                updated_policy.security.rate_limiting.requests_per_minute /= 2;
                 updated_policy.security.encryption.algorithm = "AES-256-GCM".to_string();
             }
             ThreatLevel::Alert => {
@@ -425,8 +424,10 @@ impl ThreatIntelligenceManager {
     pub async fn get_threat_statistics(&self) -> ThreatStatistics {
         let cache = self.threat_cache.read().await;
 
-        let mut stats = ThreatStatistics::default();
-        stats.total_threats = cache.len();
+        let mut stats = ThreatStatistics {
+            total_threats: cache.len(),
+            ..Default::default()
+        };
 
         for threat in cache.values() {
             match threat.level {
