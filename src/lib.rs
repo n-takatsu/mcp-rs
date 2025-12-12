@@ -24,6 +24,7 @@ pub mod canary_deployment;
 // #[cfg(feature = "tui")]
 // pub mod dashboard;
 pub mod plugins;
+pub mod policy;
 pub mod policy_application;
 pub mod policy_config;
 pub mod policy_validation;
