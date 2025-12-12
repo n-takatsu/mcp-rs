@@ -95,7 +95,10 @@ async fn test_end_to_end_policy_update_workflow() {
     // v2にロールバック
     rollback_mgr.rollback_to_point(&point_id).await.unwrap();
     let restored = rollback_mgr.get_active_policy().await;
-    assert_eq!(restored.version, "2.0.0", "ロールバックが正しく動作していない");
+    assert_eq!(
+        restored.version, "2.0.0",
+        "ロールバックが正しく動作していない"
+    );
 
     // 3. VersionManagerでバージョン履歴確認
     let version_mgr = VersionManager::new(initial_policy, 10);
@@ -181,10 +184,7 @@ async fn test_concurrent_policy_updates() {
 
     // 最終的なポリシーを確認（最後の更新が反映されているはず）
     let final_policy = updater.get_active_policy().await;
-    assert!(
-        final_policy.version.starts_with("1."),
-        "バージョンが不正"
-    );
+    assert!(final_policy.version.starts_with("1."), "バージョンが不正");
 }
 
 #[tokio::test]
@@ -311,7 +311,10 @@ async fn test_rollback_with_version_tagging() {
         .unwrap();
 
     // タグ付け
-    version_mgr.add_tag(&v2_id, "dev".to_string()).await.unwrap();
+    version_mgr
+        .add_tag(&v2_id, "dev".to_string())
+        .await
+        .unwrap();
     version_mgr.add_tag(&v3_id, "qa".to_string()).await.unwrap();
     version_mgr
         .add_tag(&v3_id, "stable".to_string())
@@ -408,7 +411,7 @@ async fn test_rollback_cleanup() {
 
     // 古いポイントのクリーンアップ（0日より古い = 全て古い）
     let _removed = rollback_mgr.cleanup_old_points(0).await.unwrap();
-    
+
     // 最新は常に保持されるので、1つは残る
     let remaining = rollback_mgr.count_rollback_points().await;
     assert_eq!(remaining, 1, "最新ポイントが保持されていない");

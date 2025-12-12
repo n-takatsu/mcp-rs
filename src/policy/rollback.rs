@@ -66,10 +66,7 @@ impl RollbackManager {
     /// * `max_rollback_points` - 最大保持するロールバックポイント数
     pub fn new(initial_policy: PolicyConfig, max_rollback_points: usize) -> Self {
         let mut points = VecDeque::new();
-        points.push_back(RollbackPoint::new(
-            initial_policy.clone(),
-            "初期ポリシー",
-        ));
+        points.push_back(RollbackPoint::new(initial_policy.clone(), "初期ポリシー"));
 
         Self {
             rollback_points: Arc::new(RwLock::new(points)),
@@ -116,12 +113,12 @@ impl RollbackManager {
         let points = self.rollback_points.read().await;
 
         // ロールバックポイントを検索
-        let point = points
-            .iter()
-            .find(|p| p.id == point_id)
-            .ok_or_else(|| {
-                McpError::NotFound(format!("ロールバックポイントが見つかりません: {}", point_id))
-            })?;
+        let point = points.iter().find(|p| p.id == point_id).ok_or_else(|| {
+            McpError::NotFound(format!(
+                "ロールバックポイントが見つかりません: {}",
+                point_id
+            ))
+        })?;
 
         // ポリシーを復元
         let mut active = self.active_policy.write().await;
@@ -138,9 +135,9 @@ impl RollbackManager {
 
         let points = self.rollback_points.read().await;
 
-        let point = points.back().ok_or_else(|| {
-            McpError::NotFound("ロールバックポイントが存在しません".to_string())
-        })?;
+        let point = points
+            .back()
+            .ok_or_else(|| McpError::NotFound("ロールバックポイントが存在しません".to_string()))?;
 
         // ポリシーを復元
         let mut active = self.active_policy.write().await;

@@ -185,7 +185,10 @@ fn bench_end_to_end_scenario(c: &mut Criterion) {
 
                 // 1. 更新
                 let updater = DynamicPolicyUpdater::new(initial.clone(), UpdateConfig::default());
-                updater.update_policy(create_test_policy("2.0.0")).await.unwrap();
+                updater
+                    .update_policy(create_test_policy("2.0.0"))
+                    .await
+                    .unwrap();
 
                 // 2. ロールバックポイント作成
                 let rollback_mgr = RollbackManager::new(create_test_policy("2.0.0"), 10);
@@ -200,14 +203,22 @@ fn bench_end_to_end_scenario(c: &mut Criterion) {
                 // 4. バージョン管理
                 let version_mgr = VersionManager::new(initial, 10);
                 version_mgr
-                    .create_version(create_test_policy("2.0.0"), "user".to_string(), "v2".to_string())
+                    .create_version(
+                        create_test_policy("2.0.0"),
+                        "user".to_string(),
+                        "v2".to_string(),
+                    )
                     .await
                     .unwrap();
 
                 // 5. diff計算
                 let v1_id = version_mgr.get_current_version().await.unwrap().id;
                 let v2_id = version_mgr
-                    .create_version(create_test_policy("3.0.0"), "user".to_string(), "v3".to_string())
+                    .create_version(
+                        create_test_policy("3.0.0"),
+                        "user".to_string(),
+                        "v3".to_string(),
+                    )
                     .await
                     .unwrap();
                 version_mgr.diff(&v1_id, &v2_id).await.unwrap();
@@ -219,7 +230,7 @@ fn bench_end_to_end_scenario(c: &mut Criterion) {
 /// 5秒以内の適用時間を直接測定
 fn measure_policy_application_time() {
     let rt = Runtime::new().unwrap();
-    
+
     println!("\n========================================");
     println!("ポリシー適用時間測定（目標: <5秒）");
     println!("========================================\n");
@@ -229,7 +240,10 @@ fn measure_policy_application_time() {
     rt.block_on(async {
         let initial = create_test_policy("1.0.0");
         let updater = DynamicPolicyUpdater::new(initial, UpdateConfig::default());
-        updater.update_policy(create_test_policy("2.0.0")).await.unwrap();
+        updater
+            .update_policy(create_test_policy("2.0.0"))
+            .await
+            .unwrap();
     });
     let elapsed = start.elapsed();
     println!("✓ 基本更新: {:.3}秒", elapsed.as_secs_f64());
@@ -243,23 +257,39 @@ fn measure_policy_application_time() {
         manager.reload(create_test_policy("2.0.0")).await.unwrap();
     });
     let elapsed = start.elapsed();
-    println!("✓ ホットリロード (Immediate): {:.3}秒", elapsed.as_secs_f64());
+    println!(
+        "✓ ホットリロード (Immediate): {:.3}秒",
+        elapsed.as_secs_f64()
+    );
     assert!(elapsed.as_secs() < 5, "ホットリロードが5秒を超えました！");
 
     // 3. エンドツーエンド
     let start = Instant::now();
     rt.block_on(async {
         let initial = create_test_policy("1.0.0");
-        
+
         let updater = DynamicPolicyUpdater::new(initial.clone(), UpdateConfig::default());
-        updater.update_policy(create_test_policy("2.0.0")).await.unwrap();
+        updater
+            .update_policy(create_test_policy("2.0.0"))
+            .await
+            .unwrap();
 
         let rollback_mgr = RollbackManager::new(create_test_policy("2.0.0"), 10);
-        rollback_mgr.create_rollback_point(create_test_policy("3.0.0"), "v3").await.unwrap();
+        rollback_mgr
+            .create_rollback_point(create_test_policy("3.0.0"), "v3")
+            .await
+            .unwrap();
         rollback_mgr.rollback_to_latest().await.unwrap();
 
         let version_mgr = VersionManager::new(initial, 10);
-        version_mgr.create_version(create_test_policy("2.0.0"), "user".to_string(), "v2".to_string()).await.unwrap();
+        version_mgr
+            .create_version(
+                create_test_policy("2.0.0"),
+                "user".to_string(),
+                "v2".to_string(),
+            )
+            .await
+            .unwrap();
     });
     let elapsed = start.elapsed();
     println!("✓ エンドツーエンド: {:.3}秒", elapsed.as_secs_f64());

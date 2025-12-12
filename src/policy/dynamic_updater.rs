@@ -270,7 +270,8 @@ impl DynamicPolicyUpdater {
                 // 自動ロールバック
                 if self.config.auto_rollback {
                     warn!("自動ロールバックを実行中...");
-                    if let Err(rollback_err) = self.apply_policy_atomically(old_policy.clone()).await
+                    if let Err(rollback_err) =
+                        self.apply_policy_atomically(old_policy.clone()).await
                     {
                         error!("ロールバック失敗: {}", rollback_err);
                         record.status = UpdateStatus::Failed;

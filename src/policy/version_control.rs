@@ -147,7 +147,9 @@ impl VersionManager {
             .iter()
             .find(|v| v.id == version_id)
             .cloned()
-            .ok_or_else(|| McpError::NotFound(format!("バージョンが見つかりません: {}", version_id)))
+            .ok_or_else(|| {
+                McpError::NotFound(format!("バージョンが見つかりません: {}", version_id))
+            })
     }
 
     /// 現在のバージョンを取得
@@ -172,10 +174,7 @@ impl VersionManager {
 
         let changes = self.compute_policy_diff(&old_version.policy, &new_version.policy);
 
-        let summary = format!(
-            "{}個のフィールドが変更されました",
-            changes.len()
-        );
+        let summary = format!("{}個のフィールドが変更されました", changes.len());
 
         Ok(VersionDiff { changes, summary })
     }
@@ -318,7 +317,9 @@ impl VersionManager {
         let version = versions
             .iter_mut()
             .find(|v| v.id == version_id)
-            .ok_or_else(|| McpError::NotFound(format!("バージョンが見つかりません: {}", version_id)))?;
+            .ok_or_else(|| {
+                McpError::NotFound(format!("バージョンが見つかりません: {}", version_id))
+            })?;
 
         if !version.tags.contains(&tag) {
             version.tags.push(tag.clone());
@@ -340,7 +341,10 @@ impl VersionManager {
     }
 
     /// バージョン履歴を取得（親子関係）
-    pub async fn get_version_history(&self, version_id: &str) -> Result<Vec<PolicyVersion>, McpError> {
+    pub async fn get_version_history(
+        &self,
+        version_id: &str,
+    ) -> Result<Vec<PolicyVersion>, McpError> {
         let versions = self.versions.read().await;
         let mut history = Vec::new();
 
@@ -461,11 +465,17 @@ mod tests {
             .await
             .unwrap();
 
-        let diff = manager.diff(&old_version_id, &new_version_id).await.unwrap();
+        let diff = manager
+            .diff(&old_version_id, &new_version_id)
+            .await
+            .unwrap();
 
         assert!(diff.changes.len() >= 2); // version + algorithm
         assert!(diff.changes.iter().any(|c| c.field_path == "version"));
-        assert!(diff.changes.iter().any(|c| c.field_path == "security.encryption.algorithm"));
+        assert!(diff
+            .changes
+            .iter()
+            .any(|c| c.field_path == "security.encryption.algorithm"));
     }
 
     #[tokio::test]
@@ -475,7 +485,10 @@ mod tests {
 
         let version_id = manager.get_current_version().await.unwrap().id;
 
-        manager.add_tag(&version_id, "stable".to_string()).await.unwrap();
+        manager
+            .add_tag(&version_id, "stable".to_string())
+            .await
+            .unwrap();
 
         let found = manager.find_by_tag("stable").await;
         assert_eq!(found.len(), 1);
@@ -487,12 +500,20 @@ mod tests {
         let manager = VersionManager::new(initial, 10);
 
         let _v2_id = manager
-            .create_version(create_test_policy("2.0.0"), "user1".to_string(), "v2".to_string())
+            .create_version(
+                create_test_policy("2.0.0"),
+                "user1".to_string(),
+                "v2".to_string(),
+            )
             .await
             .unwrap();
 
         let v3_id = manager
-            .create_version(create_test_policy("3.0.0"), "user1".to_string(), "v3".to_string())
+            .create_version(
+                create_test_policy("3.0.0"),
+                "user1".to_string(),
+                "v3".to_string(),
+            )
             .await
             .unwrap();
 

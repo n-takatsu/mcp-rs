@@ -77,9 +77,7 @@ impl HotReloadManager {
         {
             let mut reloading = self.reloading.write().await;
             if *reloading {
-                return Err(McpError::Operation(
-                    "既にリロードが実行中です".to_string(),
-                ));
+                return Err(McpError::Operation("既にリロードが実行中です".to_string()));
             }
             *reloading = true;
         }
