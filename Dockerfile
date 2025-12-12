@@ -13,6 +13,10 @@ RUN apt-get update && apt-get install -y \
     libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
+# Install nightly toolchain for edition2024 support
+RUN rustup toolchain install nightly && \
+    rustup default nightly
+
 WORKDIR /app
 
 # Copy all source files
