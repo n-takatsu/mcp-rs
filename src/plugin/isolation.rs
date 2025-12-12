@@ -106,10 +106,10 @@ impl IsolationConfig {
     /// 隔離設定を検証
     pub fn validate(&self) -> Result<()> {
         // Containerレベル以上の場合、すべての隔離が有効であることを推奨
-        if self.level == IsolationLevel::Container || self.level == IsolationLevel::VM {
-            if !self.network_isolation || !self.filesystem_isolation || !self.process_isolation {
-                eprintln!("Warning: Container/VM isolation should enable all isolation features");
-            }
+        if (self.level == IsolationLevel::Container || self.level == IsolationLevel::VM)
+            && (!self.network_isolation || !self.filesystem_isolation || !self.process_isolation)
+        {
+            eprintln!("Warning: Container/VM isolation should enable all isolation features");
         }
 
         Ok(())
