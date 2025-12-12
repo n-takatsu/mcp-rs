@@ -1,0 +1,91 @@
+# ========================================
+# Development Docker Compose Configuration
+# ========================================
+
+services:
+  # MCP Server (Development mode)
+  mcp-server-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: builder  # Use builder stage for development
+    image: mcp-rs:dev
+    container_name: mcp-server-dev
+    restart: unless-stopped
+    
+    # Ports
+    ports:
+      - "3000:3000"
+      - "3001:3001"
+    
+    # Environment variables
+    environment:
+      RUST_LOG: debug
+      RUST_BACKTRACE: 1
+      MCP_SERVER_PORT: 3000
+      MCP_TRANSPORT: http
+    
+    # Volumes (mount source for hot-reload)
+    volumes:
+      - .:/app:cached
+      - cargo-cache:/usr/local/cargo/registry
+      - target-cache:/app/target
+    
+    # Networks
+    networks:
+      - mcp-dev-network
+    
+    # Keep container running for development
+    command: ["cargo", "run", "--", "--transport", "http", "--port", "3000"]
+
+  # PostgreSQL (Development)
+  postgres-dev:
+    image: postgres:16-alpine
+    container_name: mcp-postgres-dev
+    restart: unless-stopped
+    
+    ports:
+      - "5432:5432"
+    
+    environment:
+      POSTGRES_DB: mcp_dev
+      POSTGRES_USER: dev_user
+      POSTGRES_PASSWORD: dev_password
+      PGDATA: /var/lib/postgresql/data/pgdata
+    
+    volumes:
+      - postgres-dev-data:/var/lib/postgresql/data
+    
+    networks:
+      - mcp-dev-network
+
+  # Redis (Development)
+  redis-dev:
+    image: redis:7-alpine
+    container_name: mcp-redis-dev
+    restart: unless-stopped
+    
+    ports:
+      - "6379:6379"
+    
+    command: redis-server --appendonly yes
+    
+    volumes:
+      - redis-dev-data:/data
+    
+    networks:
+      - mcp-dev-network
+
+networks:
+  mcp-dev-network:
+    driver: bridge
+
+volumes:
+  cargo-cache:
+    driver: local
+  target-cache:
+    driver: local
+  postgres-dev-data:
+    driver: local
+  redis-dev-data:
+    driver: local
