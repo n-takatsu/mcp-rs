@@ -48,10 +48,6 @@ WORKDIR /app
 # Copy binary from builder
 COPY --from=builder --chown=nonroot:nonroot /app/target/release/mcp-rs /app/mcp-rs
 
-# Copy configuration files
-COPY --chown=nonroot:nonroot configs /app/configs
-COPY --chown=nonroot:nonroot demo-policies /app/demo-policies
-
 # Non-root user (distroless defaults to nonroot uid 65532)
 USER nonroot:nonroot
 

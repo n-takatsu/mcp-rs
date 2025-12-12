@@ -42,11 +42,10 @@ services:
       MCP_SERVER_PORT: ${MCP_SERVER_PORT:-3000}
       MCP_TRANSPORT: ${MCP_TRANSPORT:-http}
 
-    # Volumes
-    volumes:
-      - ./configs:/app/configs:ro
-      - ./demo-policies:/app/demo-policies:ro
-      - mcp-logs:/tmp:rw
+    # Volumes (optional - uncomment if you have config files)
+    # volumes:
+    #   - ./configs:/app/configs:ro
+    #   - ./demo-policies:/app/demo-policies:ro
 
     # Networks
     networks:
