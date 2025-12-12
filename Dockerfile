@@ -15,26 +15,14 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
-# Copy dependency manifests first for better caching
+# Copy all source files
 COPY Cargo.toml Cargo.lock ./
-
-# Create dummy source and example directories to satisfy Cargo.toml
-RUN mkdir -p src examples benches tests && \
-    echo "fn main() {}" > src/main.rs && \
-    echo "pub fn lib() {}" > src/lib.rs && \
-    touch examples/.gitkeep
-
-# Build dependencies only (cached layer)
-RUN cargo build --release --bin mcp-rs && \
-    rm -rf src examples benches tests target/release/deps/mcp_rs* target/release/mcp-rs*
-
-# Copy actual source code
 COPY src ./src
 COPY benches ./benches
 COPY examples ./examples
 COPY tests ./tests
 
-# Build the actual application
+# Build the application
 RUN cargo build --release --bin mcp-rs
 
 # Strip debug symbols to reduce size
