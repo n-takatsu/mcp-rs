@@ -23,8 +23,8 @@ RUN mkdir src && \
     echo "fn main() {}" > src/main.rs && \
     echo "pub fn lib() {}" > src/lib.rs
 
-# Build dependencies only (cached layer)
-RUN cargo build --release && \
+# Build dependencies only (cached layer) - skip examples/benches
+RUN cargo build --release --bin mcp-rs && \
     rm -rf src target/release/deps/mcp_rs* target/release/mcp-rs*
 
 # Copy actual source code
