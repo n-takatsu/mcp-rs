@@ -1,0 +1,23 @@
+apiVersion: v2
+name: mcp-operator
+description: A Helm chart for MCP Kubernetes Operator
+type: application
+version: 0.2.0
+appVersion: "v0.2.0-beta"
+
+keywords:
+  - mcp
+  - model-context-protocol
+  - operator
+  - kubernetes
+
+maintainers:
+  - name: n-takatsu
+    url: https://github.com/n-takatsu
+
+sources:
+  - https://github.com/n-takatsu/mcp-rs
+
+home: https://github.com/n-takatsu/mcp-rs
+
+icon: https://raw.githubusercontent.com/n-takatsu/mcp-rs/main/docs/logo.png

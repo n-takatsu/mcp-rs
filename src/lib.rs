@@ -35,6 +35,10 @@ pub mod security;
 pub mod transport;
 pub mod types;
 
+// Kubernetes Operator module
+#[cfg(feature = "kubernetes-operator")]
+pub mod operator;
+
 pub use error::{Error, Result, SessionError};
 pub use mcp_server::McpServer;
 pub use protocol::McpProtocol;
