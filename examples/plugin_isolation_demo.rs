@@ -7,10 +7,7 @@
 //! 4. プラグインライフサイクル管理
 //! 5. 隔離効率スコアの計算
 
-use mcp_rs::plugin::{
-    IsolationConfig, IsolationEnvironment, IsolationLevel, Plugin, PluginManager, PluginState,
-    ResourceLimits, ResourceUsage,
-};
+use mcp_rs::plugin::{IsolationConfig, IsolationLevel, Plugin, PluginManager, ResourceLimits};
 use std::path::PathBuf;
 use std::time::Duration;
 
