@@ -1,8 +1,6 @@
 //! プラグイン隔離システム統合テスト
 
-use mcp_rs::plugin::{
-    IsolationConfig, IsolationLevel, Plugin, PluginManager, ResourceLimits,
-};
+use mcp_rs::plugin::{IsolationConfig, IsolationLevel, Plugin, PluginManager, ResourceLimits};
 use std::path::PathBuf;
 use std::time::Duration;
 
