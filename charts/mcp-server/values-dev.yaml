@@ -1,0 +1,77 @@
+# Development environment values
+# This overrides the default values.yaml for development deployments
+
+global:
+  environment: development
+
+# Reduced resources for development
+replicaCount: 1
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 512Mi
+  requests:
+    cpu: 100m
+    memory: 128Mi
+
+# Disable autoscaling in dev
+autoscaling:
+  enabled: false
+
+# Disable PDB in dev
+podDisruptionBudget:
+  enabled: false
+
+# Development configuration
+config:
+  logLevel: debug
+  logFormat: pretty
+  
+  securityPolicy:
+    enabled: false
+  
+  rateLimit:
+    enabled: false
+
+# Minimal persistence for dev
+persistence:
+  enabled: true
+  size: 1Gi
+
+# Disable monitoring in dev
+monitoring:
+  enabled: false
+
+# Simple ingress for local testing
+ingress:
+  enabled: true
+  className: "nginx"
+  hosts:
+    - host: mcp-server.local
+      paths:
+        - path: /
+          pathType: Prefix
+
+# Relaxed security for development
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: false
+  runAsNonRoot: true
+  runAsUser: 1000
+  capabilities:
+    drop:
+      - ALL
+
+# No node selector for dev
+nodeSelector: {}
+
+# Simple affinity
+affinity: {}
+
+# Development environment variables
+env:
+  - name: ENVIRONMENT
+    value: "development"
+  - name: DEBUG
+    value: "true"

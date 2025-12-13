@@ -1,0 +1,15 @@
+{{- if .Values.monitoring.prometheusRules.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "mcp-server.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "mcp-server.labels" . | nindent 4 }}
+spec:
+  groups:
+    - name: mcp-server.rules
+      interval: 30s
+      rules:
+        {{- toYaml .Values.monitoring.prometheusRules.rules | nindent 8 }}
+{{- end }}
