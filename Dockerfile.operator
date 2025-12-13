@@ -1,0 +1,48 @@
+# Stage 1: Builder
+FROM rust:1.83-slim-bookworm AS builder
+
+# Install dependencies
+RUN apt-get update && apt-get install -y \
+    pkg-config \
+    libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install nightly toolchain for edition2024 support
+RUN rustup toolchain install nightly && rustup default nightly
+
+WORKDIR /app
+
+# Copy manifests
+COPY Cargo.toml Cargo.lock ./
+
+# Copy source code
+COPY src ./src
+COPY benches ./benches
+COPY examples ./examples
+COPY tests ./tests
+
+# Build the operator binary (with kubernetes-operator feature)
+RUN cargo build --release --bin mcp-operator --features kubernetes-operator
+
+# Strip binary to reduce size
+RUN strip target/release/mcp-operator
+
+# Stage 2: Runtime
+FROM gcr.io/distroless/cc-debian12:nonroot
+
+WORKDIR /app
+
+# Copy the built operator binary
+COPY --from=builder --chown=nonroot:nonroot /app/target/release/mcp-operator /app/mcp-operator
+
+# Use non-root user
+USER nonroot:nonroot
+
+# Expose metrics and health ports
+EXPOSE 8080 8081
+
+# Set environment variables
+ENV RUST_LOG=info
+
+# Run the operator
+ENTRYPOINT ["/app/mcp-operator"]

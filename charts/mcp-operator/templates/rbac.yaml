@@ -1,0 +1,108 @@
+{{- if .Values.rbac.create -}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "mcp-operator.fullname" . }}-role
+  labels:
+    {{- include "mcp-operator.labels" . | nindent 4 }}
+rules:
+  # MCPServer CRD permissions
+  - apiGroups:
+      - mcp.n-takatsu.dev
+    resources:
+      - mcpservers
+      - mcpservers/status
+      - mcpservers/finalizers
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - update
+      - patch
+      - delete
+  # Plugin CRD permissions
+  - apiGroups:
+      - mcp.n-takatsu.dev
+    resources:
+      - plugins
+      - plugins/status
+      - plugins/finalizers
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - update
+      - patch
+      - delete
+  # SecurityPolicy CRD permissions
+  - apiGroups:
+      - mcp.n-takatsu.dev
+    resources:
+      - securitypolicies
+      - securitypolicies/status
+      - securitypolicies/finalizers
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - update
+      - patch
+      - delete
+  # Core Kubernetes resources
+  - apiGroups:
+      - ""
+    resources:
+      - pods
+      - services
+      - endpoints
+      - configmaps
+      - secrets
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - update
+      - patch
+      - delete
+  - apiGroups:
+      - apps
+    resources:
+      - deployments
+      - replicasets
+      - statefulsets
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - update
+      - patch
+      - delete
+  # Events
+  - apiGroups:
+      - ""
+    resources:
+      - events
+    verbs:
+      - create
+      - patch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "mcp-operator.fullname" . }}-rolebinding
+  labels:
+    {{- include "mcp-operator.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "mcp-operator.fullname" . }}-role
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "mcp-operator.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

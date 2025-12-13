@@ -46,6 +46,15 @@ Need WordPress security automation? 8-layer enterprise security architecture wit
 - **Production-Ready Error Handling**: Comprehensive error types with structured logging
 - **Async/Await**: Built on `tokio` for high-performance async operations
 
+## **Kubernetes Integration (Phase 2)** ⭐ NEW
+
+- **Kubernetes Operator**: Full-featured operator built with `kube-rs` for managing MCP servers
+- **Custom Resource Definitions (CRD)**: MCPServer, Plugin, and SecurityPolicy resources
+- **Helm Charts**: Easy installation and management with Helm 3.0+
+- **Declarative Management**: GitOps-ready resource definitions
+- **Automatic Scaling**: HPA support with CPU/memory metrics
+- **Multi-Tenancy**: Namespace isolation with RBAC
+
 ## **WebSocket Security (Phase 3)** ⭐ NEW
 
 - **Message-Level Rate Limiting**: Per-IP enforcement with JSON-RPC error responses
@@ -289,6 +298,8 @@ cargo run --example websocket_rate_limit_demo
 - [🏗️ Architecture Overview](./project-docs/architecture.md)
 - [📝 API Reference](./project-docs/api-reference.md)
 - [🔄 Claude Desktop Integration](./project-docs/CLAUDE_DESKTOP_INTEGRATION.md)
+- [🐳 Docker Guide](./docs/DOCKER_GUIDE.md) ⭐ NEW
+- [☸️ Kubernetes Operator Guide](./docs/KUBERNETES_GUIDE.md) ⭐ NEW
 
 ## 🔐 RBAC Quick Start
 

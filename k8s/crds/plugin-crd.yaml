@@ -1,0 +1,155 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: plugins.mcp.n-takatsu.dev
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.13.0
+spec:
+  group: mcp.n-takatsu.dev
+  names:
+    kind: Plugin
+    listKind: PluginList
+    plural: plugins
+    singular: plugin
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          description: Plugin is the Schema for the plugins API
+          properties:
+            apiVersion:
+              type: string
+            kind:
+              type: string
+            metadata:
+              type: object
+            spec:
+              type: object
+              description: PluginSpec defines the desired state of Plugin
+              required:
+                - name
+                - image
+              properties:
+                name:
+                  type: string
+                  description: Plugin name
+                image:
+                  type: string
+                  description: Container image for plugin
+                version:
+                  type: string
+                  description: Plugin version
+                  default: "latest"
+                isolation:
+                  type: object
+                  description: Isolation configuration
+                  properties:
+                    level:
+                      type: string
+                      enum:
+                        - None
+                        - Process
+                        - Container
+                        - VM
+                      default: Container
+                    networkIsolation:
+                      type: boolean
+                      default: true
+                    filesystemIsolation:
+                      type: boolean
+                      default: true
+                    processIsolation:
+                      type: boolean
+                      default: true
+                resources:
+                  type: object
+                  description: Resource limits for plugin
+                  properties:
+                    limits:
+                      type: object
+                      properties:
+                        cpu:
+                          type: string
+                          default: "500m"
+                        memory:
+                          type: string
+                          default: "256Mi"
+                    requests:
+                      type: object
+                      properties:
+                        cpu:
+                          type: string
+                          default: "50m"
+                        memory:
+                          type: string
+                          default: "64Mi"
+                config:
+                  type: object
+                  x-kubernetes-preserve-unknown-fields: true
+                  description: Plugin-specific configuration
+                dependencies:
+                  type: array
+                  description: Required plugins
+                  items:
+                    type: string
+            status:
+              type: object
+              description: PluginStatus defines the observed state of Plugin
+              properties:
+                phase:
+                  type: string
+                  enum:
+                    - Initializing
+                    - Starting
+                    - Running
+                    - Stopping
+                    - Stopped
+                    - Error
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    required:
+                      - type
+                      - status
+                    properties:
+                      type:
+                        type: string
+                      status:
+                        type: string
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+                      reason:
+                        type: string
+                      message:
+                        type: string
+                resourceUsage:
+                  type: object
+                  description: Current resource usage
+                  properties:
+                    cpuUsage:
+                      type: string
+                    memoryUsage:
+                      type: string
+                    diskIO:
+                      type: string
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Phase
+          type: string
+          jsonPath: .status.phase
+        - name: Version
+          type: string
+          jsonPath: .spec.version
+        - name: Isolation
+          type: string
+          jsonPath: .spec.isolation.level
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
