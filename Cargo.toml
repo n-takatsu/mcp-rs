@@ -331,3 +331,8 @@ name = "abuseipdb_demo"
 
 [[example]]
 name = "cve_demo"
+
+# ML anomaly detection example requires the ml-anomaly-detection feature
+[[example]]
+name = "ml_anomaly_demo"
+required-features = ["ml-anomaly-detection"]
