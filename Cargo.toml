@@ -100,6 +100,12 @@ smartcore = { version = "0.3", optional = true, default-features = false }
 ndarray = { version = "0.15", optional = true }
 statrs = { version = "0.17", optional = true }
 
+# LLM Integration
+async-openai = { version = "0.25", optional = true }
+tiktoken-rs = { version = "0.6", optional = true }
+eventsource-stream = { version = "0.2", optional = true }
+async-stream = { version = "0.3", optional = true }
+
 # Metrics and monitoring
 prometheus = { version = "0.14", optional = true }
 metrics = { version = "0.24.2", optional = true }
@@ -184,6 +190,9 @@ kubernetes-operator = ["kube", "k8s-openapi", "kube-runtime", "schemars"]
 
 # Machine Learning anomaly detection
 ml-anomaly-detection = ["smartcore", "ndarray", "statrs"]
+
+# LLM Integration
+llm-integration = ["async-openai", "tiktoken-rs", "eventsource-stream", "async-stream"]
 
 # Full feature set (MySQL restored via secure mysql_async)
 full = [
@@ -336,3 +345,7 @@ name = "cve_demo"
 [[example]]
 name = "ml_anomaly_demo"
 required-features = ["ml-anomaly-detection"]
+
+[[example]]
+name = "llm_integration_demo"
+required-features = ["llm-integration"]

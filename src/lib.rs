@@ -35,6 +35,10 @@ pub mod security;
 pub mod transport;
 pub mod types;
 
+// LLM Integration module
+#[cfg(feature = "llm-integration")]
+pub mod llm;
+
 // Kubernetes Operator module
 #[cfg(feature = "kubernetes-operator")]
 pub mod operator;
