@@ -43,6 +43,9 @@ pub mod llm;
 #[cfg(feature = "kubernetes-operator")]
 pub mod operator;
 
+// Monitoring module
+pub mod monitoring;
+
 pub use error::{Error, Result, SessionError};
 pub use mcp_server::McpServer;
 pub use protocol::McpProtocol;
