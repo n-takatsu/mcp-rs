@@ -16,7 +16,7 @@ pub enum AnomalyModel {
     /// 簡易Isolation Forest（実装予定）
     IsolationForest,
     /// アンサンブル（複数モデルの組み合わせ）
-    Ensemble(Vec<Box<AnomalyModel>>),
+    Ensemble(Vec<AnomalyModel>),
 }
 
 /// 統計ベースモデル
