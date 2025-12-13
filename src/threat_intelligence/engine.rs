@@ -347,6 +347,9 @@ impl ThreatDetectionEngine {
         self.update_detection_stats(&indicators, &assessments, duration_ms)
             .await;
 
+        // 実際に評価が完了した指標数をカウント
+        let indicators_assessed = assessments.len();
+
         Ok(DetectionResult {
             indicators: indicators.clone(),
             assessments,
@@ -355,7 +358,7 @@ impl ThreatDetectionEngine {
                 completed_at: end_time,
                 duration_ms,
                 indicators_extracted: indicators.len(),
-                indicators_assessed: indicators.len(), // TODO: 実際に評価された数を追跡
+                indicators_assessed,
                 threats_identified: threats_count,
                 errors,
                 warnings,
