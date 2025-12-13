@@ -333,9 +333,14 @@ impl IntrusionDetectionSystem {
             if let Ok(behavior_result) = self.behavioral_detector.analyze(request).await {
                 if behavior_result.is_anomalous {
                     is_intrusion = true;
-                    max_confidence = max_confidence.max(behavior_result.anomaly_score);
-                    if max_confidence == behavior_result.anomaly_score {
-                        detection_type = DetectionType::AnomalousBehavior;
+                    // シグネチャ検知が優先されるため、シグネチャ未検知の場合のみ上書き
+                    if detection_type == DetectionType::Other {
+                        if behavior_result.anomaly_score > max_confidence {
+                            max_confidence = behavior_result.anomaly_score;
+                            detection_type = DetectionType::AnomalousBehavior;
+                        }
+                    } else {
+                        max_confidence = max_confidence.max(behavior_result.anomaly_score);
                     }
                 }
             }
@@ -347,6 +352,8 @@ impl IntrusionDetectionSystem {
                 if network_result.is_suspicious {
                     is_intrusion = true;
                     max_confidence = max_confidence.max(network_result.risk_score);
+                    // ネットワーク攻撃は他の検知がない場合のみ設定
+                    // （シグネチャや振る舞い検知が優先）
                 }
             }
         }

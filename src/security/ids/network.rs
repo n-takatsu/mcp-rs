@@ -65,7 +65,7 @@ pub struct NetworkMonitorConfig {
 impl Default for NetworkMonitorConfig {
     fn default() -> Self {
         Self {
-            ddos_threshold_rps: 100,
+            ddos_threshold_rps: 50,
             port_scan_window_seconds: 60,
             port_scan_threshold: 20,
             rate_limit_window_seconds: 60,
@@ -314,7 +314,7 @@ impl NetworkMonitor {
             let excess_ratio = recent_count as f64 / self.config.ddos_threshold_rps as f64;
             Some((excess_ratio - 1.0).min(1.0))
         } else if recent_count > self.config.ddos_threshold_rps / 2 {
-            Some(0.5)
+            Some(0.6)
         } else {
             Some(0.0)
         }

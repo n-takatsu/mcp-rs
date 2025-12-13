@@ -124,8 +124,8 @@ async fn test_behavioral_detector_baseline_learning() {
         let _ = detector.analyze(&request).await;
     }
 
-    // ベースラインが作成されたか確認
-    let baseline = detector.get_baseline("192.168.1.100").await;
+    // ベースラインが作成されたか確認（identifierは"ip:192.168.1.100"形式）
+    let baseline = detector.get_baseline("ip:192.168.1.100").await;
     assert!(baseline.is_some(), "Baseline should be created");
 
     let baseline = baseline.unwrap();

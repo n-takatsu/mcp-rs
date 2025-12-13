@@ -105,7 +105,7 @@ impl SignatureDetector {
                 "SQL-002",
                 "Boolean-based Blind SQL Injection",
                 DetectionType::SqlInjection,
-                r"(?i)(and|or)\s+\d+\s*=\s*\d+",
+                r"(?i)('|\s+)(and|or)('|\s+)('.+'='.+|\d+\s*=\s*\d+)",
                 Severity::High,
                 "Boolean-based blind SQL injection",
                 vec![],

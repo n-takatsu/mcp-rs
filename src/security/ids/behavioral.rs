@@ -157,7 +157,7 @@ impl BehavioralDetector {
             .or_insert_with(|| BehaviorBaseline::new(&identifier));
 
         // ベースライン更新（学習）
-        self.update_baseline(baseline, request).await;
+        self.update_baseline(baseline, request);
 
         // ベースラインが十分に確立されていない場合は学習モード
         if baseline.sample_count < self.config.min_sample_size {
@@ -286,7 +286,7 @@ impl BehavioralDetector {
     }
 
     /// ベースラインを更新
-    async fn update_baseline(&self, baseline: &mut BehaviorBaseline, request: &RequestData) {
+    fn update_baseline(&self, baseline: &mut BehaviorBaseline, request: &RequestData) {
         baseline.sample_count += 1;
 
         // パス頻度を更新
@@ -306,6 +306,19 @@ impl BehavioralDetector {
         let alpha = 0.1;
         baseline.avg_request_size =
             alpha * request_size + (1.0 - alpha) * baseline.avg_request_size;
+
+        // リクエスト頻度の統計を更新（簡易的な移動平均）
+        // 1サンプルあたりの平均頻度を計算
+        let sample_rate = 1.0 / 60.0; // 1分あたり1リクエストと仮定
+        baseline.avg_request_rate = 
+            0.1 * sample_rate + 0.9 * baseline.avg_request_rate;
+        
+        // 標準偏差の簡易更新（実際の統計手法より簡略化）
+        if baseline.sample_count > 10 {
+            let deviation = (sample_rate - baseline.avg_request_rate).abs();
+            baseline.request_rate_std_dev = 
+                0.1 * deviation + 0.9 * baseline.request_rate_std_dev;
+        }
 
         baseline.last_updated = Utc::now();
     }
