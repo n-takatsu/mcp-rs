@@ -61,9 +61,6 @@ services:
       disable: true
     networks:
       - mcp-test-network
-    volumes:
-      - ./configs/test:/etc/mcp
-      - mcp-test-data:/var/lib/mcp
 
   # MCP Server under test (WebSocket mode)
   mcp-server-websocket:
@@ -90,9 +87,6 @@ services:
       disable: true
     networks:
       - mcp-test-network
-    volumes:
-      - ./configs/test:/etc/mcp
-      - mcp-test-data:/var/lib/mcp
 
   # Prometheus for metrics testing
   prometheus-test:
@@ -175,7 +169,6 @@ services:
 
 volumes:
   postgres-test-data:
-  mcp-test-data:
   prometheus-test-data:
   grafana-test-data:
 
