@@ -1,0 +1,77 @@
+{{- if .Values.backup.enabled }}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "mcp-server.fullname" . }}-backup
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "mcp-server.labels" . | nindent 4 }}
+    app.kubernetes.io/component: backup
+spec:
+  schedule: {{ .Values.backup.schedule | quote }}
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 1
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      template:
+        metadata:
+          labels:
+            {{- include "mcp-server.selectorLabels" . | nindent 12 }}
+            app.kubernetes.io/component: backup
+        spec:
+          serviceAccountName: {{ include "mcp-server.serviceAccountName" . }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          restartPolicy: OnFailure
+          containers:
+            - name: backup
+              image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+              imagePullPolicy: {{ .Values.image.pullPolicy }}
+              securityContext:
+                {{- toYaml .Values.containerSecurityContext | nindent 16 }}
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  set -e
+                  BACKUP_NAME="mcp-backup-$(date +%Y%m%d-%H%M%S).tar.gz"
+                  echo "Creating backup: $BACKUP_NAME"
+                  tar czf "/backup/$BACKUP_NAME" {{ .Values.persistence.mountPath }}
+                  echo "Backup completed: $BACKUP_NAME"
+                  # Cleanup old backups
+                  find /backup -name "mcp-backup-*.tar.gz" -type f -mtime +{{ .Values.backup.retention }} -delete
+                  echo "Old backups cleaned up (retention: {{ .Values.backup.retention }} days)"
+              volumeMounts:
+                - name: data
+                  mountPath: {{ .Values.persistence.mountPath }}
+                  readOnly: true
+                - name: backup
+                  mountPath: /backup
+          volumes:
+            - name: data
+              persistentVolumeClaim:
+                claimName: {{ include "mcp-server.fullname" . }}
+            - name: backup
+              persistentVolumeClaim:
+                claimName: {{ include "mcp-server.fullname" . }}-backup
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "mcp-server.fullname" . }}-backup
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "mcp-server.labels" . | nindent 4 }}
+    app.kubernetes.io/component: backup
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ .Values.backup.volumeSize }}
+  {{- if .Values.backup.storageClass }}
+  storageClassName: {{ .Values.backup.storageClass }}
+  {{- end }}
+{{- end }}

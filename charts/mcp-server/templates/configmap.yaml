@@ -1,0 +1,37 @@
+{{- if .Values.configMap.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "mcp-server.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "mcp-server.labels" . | nindent 4 }}
+data:
+  {{- with .Values.configMap.data }}
+  {{- toYaml . | nindent 2 }}
+  {{- end }}
+  # Default configuration
+  mcp-config.yaml: |
+    transport: {{ .Values.config.transport }}
+    port: {{ .Values.config.port }}
+    log:
+      level: {{ .Values.config.logLevel }}
+      format: {{ .Values.config.logFormat }}
+    {{- if .Values.config.securityPolicy.enabled }}
+    security:
+      enabled: true
+      policy_file: {{ .Values.config.securityPolicy.policyFile }}
+    {{- end }}
+    {{- if .Values.config.plugins.enabled }}
+    plugins:
+      enabled: true
+      directory: {{ .Values.config.plugins.directory }}
+      isolation_level: {{ .Values.config.plugins.isolationLevel }}
+    {{- end }}
+    {{- if .Values.config.rateLimit.enabled }}
+    rate_limit:
+      enabled: true
+      requests_per_second: {{ .Values.config.rateLimit.requestsPerSecond }}
+      burst_size: {{ .Values.config.rateLimit.burstSize }}
+    {{- end }}
+{{- end }}
