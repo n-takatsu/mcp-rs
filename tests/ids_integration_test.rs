@@ -445,9 +445,8 @@ async fn test_ids_statistics() {
         let _ = ids.analyze_request(&request).await;
     }
 
-    let stats = ids.get_stats().await;
-    // 統計情報が正常に取得できることを確認
-    assert!(stats.total_detections >= 0);
+    let _stats = ids.get_stats().await;
+    // 統計情報が正常に取得できることを確認（パニックしなければOK）
 }
 
 #[tokio::test]
