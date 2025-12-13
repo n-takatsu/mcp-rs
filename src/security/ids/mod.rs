@@ -44,6 +44,9 @@ pub mod behavioral;
 pub mod network;
 pub mod signature;
 
+#[cfg(feature = "ml-anomaly-detection")]
+pub mod ml;
+
 use crate::error::McpError;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
