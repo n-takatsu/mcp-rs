@@ -178,7 +178,7 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
         let history = dashboard.get_metrics_history(10).await;
-        assert!(history.len() > 0);
+        assert!(!history.is_empty());
     }
 
     #[tokio::test]
