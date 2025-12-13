@@ -14,16 +14,17 @@ pub mod handlers;
 pub mod logging;
 pub mod runtime_control;
 // pub mod http_server; // 削除: Transport統合により不要
+pub mod canary_deployment;
 pub mod mcp;
 pub mod mcp_server;
+pub mod plugin;
 pub mod server;
 pub mod session;
 pub mod threat_intelligence;
-// pub mod plugin_isolation; // 将来実装予定
-pub mod canary_deployment;
 // #[cfg(feature = "tui")]
 // pub mod dashboard;
 pub mod plugins;
+pub mod policy;
 pub mod policy_application;
 pub mod policy_config;
 pub mod policy_validation;
@@ -33,6 +34,10 @@ pub mod rollback;
 pub mod security;
 pub mod transport;
 pub mod types;
+
+// Kubernetes Operator module
+#[cfg(feature = "kubernetes-operator")]
+pub mod operator;
 
 pub use error::{Error, Result, SessionError};
 pub use mcp_server::McpServer;

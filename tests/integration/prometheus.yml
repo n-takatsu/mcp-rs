@@ -1,0 +1,24 @@
+# Prometheus configuration for integration tests
+
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: 'mcp-server-http'
+    static_configs:
+      - targets: ['mcp-server-http:9090']
+        labels:
+          instance: 'http'
+          environment: 'test'
+
+  - job_name: 'mcp-server-websocket'
+    static_configs:
+      - targets: ['mcp-server-websocket:9090']
+        labels:
+          instance: 'websocket'
+          environment: 'test'
+
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']

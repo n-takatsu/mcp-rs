@@ -102,6 +102,18 @@ pub enum Error {
     /// Traffic splitting error
     #[error("Traffic splitting error: {0}")]
     TrafficSplitting(String),
+
+    /// Validation error
+    #[error("Validation error: {0}")]
+    Validation(String),
+
+    /// Not found error
+    #[error("Not found: {0}")]
+    NotFound(String),
+
+    /// Operation error
+    #[error("Operation error: {0}")]
+    Operation(String),
 }
 
 impl Error {

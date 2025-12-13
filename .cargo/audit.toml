@@ -1,0 +1,23 @@
+# Cargo audit configuration for mcp-rs
+
+[advisories]
+# Ignore advisories for dependencies that:
+# 1. Have no fix available yet
+# 2. Are not directly exploitable in our use case
+# 3. Are in optional/development dependencies
+
+ignore = [
+    # RUSTSEC-2023-0071: RSA Marvin Attack
+    # - Affects: rsa 0.9.9 (via sqlx-mysql, jsonwebtoken)
+    # - Status: No fixed version available
+    # - Mitigation: jsonwebtoken uses rust-crypto backend (safe)
+    #               MySQL connection uses TLS (additional layer)
+    "RUSTSEC-2023-0071",
+    
+    # RUSTSEC-2025-0134: rustls-pemfile unmaintained
+    # - Affects: rustls-pemfile 2.2.0 (via kube-client)
+    # - Status: Unmaintained warning
+    # - Mitigation: Only used in optional Kubernetes feature
+    #               Not exposed in default configuration
+    "RUSTSEC-2025-0134",
+]

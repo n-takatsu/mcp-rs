@@ -1,92 +1,63 @@
-# Multi-stage build for MCP-RS production deployment
-# Stage 1: Build
-FROM rust:1.83-slim-bullseye AS builder
+# ========================================
+# Multi-stage Dockerfile for mcp-rs
+# Target: <50MB image size, <30s build time
+# Security: Non-root, minimal distroless base
+# ========================================
 
-# Install build dependencies with retry logic for network issues
-RUN apt-get update && \
-    for i in 1 2 3; do \
-        apt-get install -y \
-            pkg-config \
-            libssl-dev \
-            libpq-dev \
-            libmariadb-dev \
-            libsqlite3-dev \
-            ca-certificates \
-        && break || \
-        (echo "Retry $i/3 failed, waiting..." && sleep 5); \
-    done && \
-    rm -rf /var/lib/apt/lists/*
+# Stage 1: Builder - Rust compilation
+FROM rust:1.83-slim-bookworm AS builder
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y \
+    pkg-config \
+    libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
 
 # Install nightly toolchain for edition2024 support
 RUN rustup toolchain install nightly && \
     rustup default nightly
 
-# Create app directory
 WORKDIR /app
 
-# Copy manifests
+# Copy all source files
 COPY Cargo.toml Cargo.lock ./
-
-# Copy source code
 COPY src ./src
 COPY benches ./benches
 COPY examples ./examples
 COPY tests ./tests
-COPY configs ./configs
 
-# Build release binary
+# Build the application
 RUN cargo build --release --bin mcp-rs
 
-# Stage 2: Runtime
-FROM debian:bullseye-slim
+# Strip debug symbols to reduce size
+RUN strip target/release/mcp-rs
 
-# Install runtime dependencies with retry logic
-RUN apt-get update && \
-    for i in 1 2 3; do \
-        apt-get install -y \
-            ca-certificates \
-            libssl1.1 \
-            libpq5 \
-            libmariadb3 \
-            libsqlite3-0 \
-        && break || \
-        (echo "Retry $i/3 failed, waiting..." && sleep 5); \
-    done && \
-    rm -rf /var/lib/apt/lists/*
+# ========================================
+# Stage 2: Runtime - Minimal distroless image
+FROM gcr.io/distroless/cc-debian12:nonroot
 
-# Create non-root user
-RUN useradd -m -u 1001 -s /bin/bash mcp
-
-# Create necessary directories
-RUN mkdir -p /app/configs /app/logs /var/log/mcp-rs && \
-    chown -R mcp:mcp /app /var/log/mcp-rs
+# Metadata
+LABEL org.opencontainers.image.title="mcp-rs" \
+      org.opencontainers.image.description="Model Context Protocol Server (Rust)" \
+      org.opencontainers.image.version="0.15.0" \
+      org.opencontainers.image.vendor="n-takatsu" \
+      org.opencontainers.image.source="https://github.com/n-takatsu/mcp-rs"
 
 WORKDIR /app
 
 # Copy binary from builder
-COPY --from=builder /app/target/release/mcp-rs /usr/local/bin/mcp-rs
+COPY --from=builder --chown=nonroot:nonroot /app/target/release/mcp-rs /app/mcp-rs
 
-# Copy configuration files
-COPY --from=builder /app/configs /app/configs
+# Non-root user (distroless defaults to nonroot uid 65532)
+USER nonroot:nonroot
 
-# Set permissions
-RUN chmod +x /usr/local/bin/mcp-rs && \
-    chown -R mcp:mcp /app
-
-# Switch to non-root user
-USER mcp
-
-# Expose ports
-EXPOSE 3000 8080 8443
-
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-    CMD curl -f http://localhost:3000/health || exit 1
+# Expose default ports
+EXPOSE 3000 3001
 
 # Set environment variables
 ENV RUST_LOG=info \
-    MCP_SERVER_PORT=3000 \
-    MCP_CONFIG_PATH=/app/configs/production/main.toml
+    MCP_SERVER_PORT=3000
 
-# Run the application
-CMD ["mcp-rs", "--config", "/app/configs/production/main.toml"]
+# Default command: STDIO transport
+ENTRYPOINT ["/app/mcp-rs"]
+CMD ["--transport", "stdio"]

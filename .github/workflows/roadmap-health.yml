@@ -311,16 +311,16 @@ jobs:
           fi
 
           # 最終更新日の更新
-          sed -i "s|> \*\*最終更新\*\*:.*|> **最終更新**: $current_date|g" ROADMAP.md
+          sed -i "s#> \*\*最終更新\*\*:.*#> **最終更新**: $current_date#g" ROADMAP.md
 
           # GitHub Issues リンクを実際のIssue番号に更新
-          sed -i 's|https://github.com/n-takatsu/mcp-rs/issues/NEW|https://github.com/n-takatsu/mcp-rs/issues/17|g' ROADMAP.md
+          sed -i 's#https://github.com/n-takatsu/mcp-rs/issues/NEW#https://github.com/n-takatsu/mcp-rs/issues/17#g' ROADMAP.md
 
           # プラグイン隔離システムの進捗更新
-          sed -i "s|プラグイン隔離システム\*\* | 75%|プラグイン隔離システム** | ${plugin_isolation_progress}|g" ROADMAP.md
+          sed -i "s#\*\*プラグイン隔離システム\*\* | 75%#**プラグイン隔離システム** | ${plugin_isolation_progress}#g" ROADMAP.md
 
           # Docker統合の進捗更新
-          sed -i "s|Docker統合\*\* | 50%|Docker統合** | ${docker_progress}|g" ROADMAP.md
+          sed -i "s#\*\*Docker統合\*\* | 50%#**Docker統合** | ${docker_progress}#g" ROADMAP.md
 
           # 変更があれば自動コミット
           if [[ -n "$(git status --porcelain ROADMAP.md)" ]]; then

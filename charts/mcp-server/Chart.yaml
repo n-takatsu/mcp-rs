@@ -1,0 +1,33 @@
+apiVersion: v2
+name: mcp-server
+description: Production-ready Helm Chart for MCP-RS Server with HA and auto-scaling
+type: application
+version: 0.2.0
+appVersion: "0.15.0"
+
+keywords:
+  - mcp
+  - model-context-protocol
+  - llm
+  - ai
+  - plugin-system
+  - security
+
+home: https://github.com/n-takatsu/mcp-rs
+sources:
+  - https://github.com/n-takatsu/mcp-rs
+
+maintainers:
+  - name: n-takatsu
+    email: your-email@example.com
+
+icon: https://raw.githubusercontent.com/n-takatsu/mcp-rs/main/docs/logo.png
+
+# Dependencies for production setup
+dependencies: []
+
+annotations:
+  # Category for Artifact Hub
+  category: Infrastructure
+  # Supported Kubernetes versions
+  kubeVersion: ">=1.26.0-0"

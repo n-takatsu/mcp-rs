@@ -1,0 +1,96 @@
+---
+# Example MCPServer Custom Resource
+apiVersion: mcp.n-takatsu.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: example-mcpserver
+  namespace: default
+spec:
+  replicas: 2
+  image: "mcp-rs:latest"
+  transport: http
+  port: 3000
+  resources:
+    limits:
+      cpu: "1000m"
+      memory: "512Mi"
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+  securityPolicy: "default-policy"
+  plugins:
+    - wordpress-plugin
+    - mysql-plugin
+  env:
+    - name: RUST_LOG
+      value: "info"
+    - name: MCP_SERVER_PORT
+      value: "3000"
+---
+# Example Plugin Custom Resource
+apiVersion: mcp.n-takatsu.dev/v1alpha1
+kind: Plugin
+metadata:
+  name: wordpress-plugin
+  namespace: default
+spec:
+  name: wordpress
+  image: "mcp-rs-wordpress-plugin:latest"
+  version: "1.0.0"
+  isolation:
+    level: Container
+    networkIsolation: true
+    filesystemIsolation: true
+    processIsolation: true
+  resources:
+    limits:
+      cpu: "500m"
+      memory: "256Mi"
+    requests:
+      cpu: "50m"
+      memory: "64Mi"
+  config:
+    api_endpoint: "https://api.wordpress.org"
+    timeout: "30s"
+---
+# Example SecurityPolicy Custom Resource
+apiVersion: mcp.n-takatsu.dev/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: default-policy
+  namespace: default
+spec:
+  enabled: true
+  authentication:
+    required: true
+    methods:
+      - jwt
+      - oauth2
+    jwtSecret: "jwt-secret-name"
+  authorization:
+    mode: rbac
+    allowedRoles:
+      - admin
+      - developer
+      - user
+  rateLimiting:
+    enabled: true
+    requestsPerMinute: 100
+    burstSize: 200
+  networkPolicy:
+    allowedPorts:
+      - 3000
+      - 8080
+    allowedCIDRs:
+      - "10.0.0.0/8"
+      - "172.16.0.0/12"
+  encryption:
+    tlsEnabled: true
+    tlsVersion: "1.3"
+    certSecretName: "tls-cert-secret"
+  audit:
+    enabled: true
+    logLevel: info
+    retentionDays: 30
+  threatIntelligence:
+    enabled: false

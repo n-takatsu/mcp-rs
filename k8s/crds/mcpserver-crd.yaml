@@ -1,0 +1,171 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: mcpservers.mcp.n-takatsu.dev
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.13.0
+spec:
+  group: mcp.n-takatsu.dev
+  names:
+    kind: MCPServer
+    listKind: MCPServerList
+    plural: mcpservers
+    singular: mcpserver
+    shortNames:
+      - mcp
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          description: MCPServer is the Schema for the mcpservers API
+          properties:
+            apiVersion:
+              type: string
+              description: 'APIVersion defines the versioned schema of this representation of an object.'
+            kind:
+              type: string
+              description: 'Kind is a string value representing the REST resource this object represents.'
+            metadata:
+              type: object
+            spec:
+              type: object
+              description: MCPServerSpec defines the desired state of MCPServer
+              required:
+                - replicas
+                - transport
+              properties:
+                replicas:
+                  type: integer
+                  minimum: 1
+                  maximum: 10
+                  default: 1
+                  description: Number of desired pods
+                image:
+                  type: string
+                  default: "mcp-rs:latest"
+                  description: Container image name
+                transport:
+                  type: string
+                  enum:
+                    - http
+                    - stdio
+                    - websocket
+                  default: http
+                  description: MCP transport protocol
+                port:
+                  type: integer
+                  minimum: 1024
+                  maximum: 65535
+                  default: 3000
+                  description: Server port (http/websocket only)
+                resources:
+                  type: object
+                  description: Resource requirements
+                  properties:
+                    limits:
+                      type: object
+                      properties:
+                        cpu:
+                          type: string
+                          default: "1000m"
+                        memory:
+                          type: string
+                          default: "512Mi"
+                    requests:
+                      type: object
+                      properties:
+                        cpu:
+                          type: string
+                          default: "100m"
+                        memory:
+                          type: string
+                          default: "128Mi"
+                securityPolicy:
+                  type: string
+                  description: Reference to SecurityPolicy CR
+                plugins:
+                  type: array
+                  description: List of plugins to enable
+                  items:
+                    type: string
+                env:
+                  type: array
+                  description: Environment variables
+                  items:
+                    type: object
+                    required:
+                      - name
+                      - value
+                    properties:
+                      name:
+                        type: string
+                      value:
+                        type: string
+            status:
+              type: object
+              description: MCPServerStatus defines the observed state of MCPServer
+              properties:
+                phase:
+                  type: string
+                  enum:
+                    - Pending
+                    - Running
+                    - Failed
+                    - Terminating
+                  description: Current phase of the MCPServer
+                readyReplicas:
+                  type: integer
+                  description: Number of ready pods
+                conditions:
+                  type: array
+                  description: Current service state
+                  items:
+                    type: object
+                    required:
+                      - type
+                      - status
+                    properties:
+                      type:
+                        type: string
+                        enum:
+                          - Available
+                          - Progressing
+                          - Degraded
+                      status:
+                        type: string
+                        enum:
+                          - "True"
+                          - "False"
+                          - Unknown
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+                      reason:
+                        type: string
+                      message:
+                        type: string
+                observedGeneration:
+                  type: integer
+                  description: Last observed generation
+      subresources:
+        status: {}
+        scale:
+          specReplicasPath: .spec.replicas
+          statusReplicasPath: .status.readyReplicas
+      additionalPrinterColumns:
+        - name: Phase
+          type: string
+          jsonPath: .status.phase
+        - name: Replicas
+          type: integer
+          jsonPath: .spec.replicas
+        - name: Ready
+          type: integer
+          jsonPath: .status.readyReplicas
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp

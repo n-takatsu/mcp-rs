@@ -1,0 +1,136 @@
+# Canary deployment values
+# Use this for gradual rollout of new versions
+
+global:
+  environment: production
+
+# Small initial canary deployment
+replicaCount: 2
+
+# Same resources as production
+resources:
+  limits:
+    cpu: 2000m
+    memory: 4Gi
+  requests:
+    cpu: 500m
+    memory: 1Gi
+
+# Disable autoscaling for canary
+autoscaling:
+  enabled: false
+
+# Disable PDB for canary
+podDisruptionBudget:
+  enabled: false
+
+# Canary-specific labels
+podLabels:
+  app: mcp-server
+  version: canary
+  deployment-type: canary
+
+# Production configuration
+config:
+  logLevel: info
+  logFormat: json
+  
+  securityPolicy:
+    enabled: true
+  
+  plugins:
+    enabled: true
+    isolationLevel: container
+  
+  rateLimit:
+    enabled: true
+    requestsPerSecond: 2000
+    burstSize: 4000
+
+# Same persistence as production
+persistence:
+  enabled: true
+  size: 50Gi
+  storageClass: "fast-ssd"
+
+# Full monitoring for canary
+monitoring:
+  enabled: true
+  serviceMonitor:
+    enabled: true
+    interval: 10s
+    scrapeTimeout: 5s
+
+# Separate service for canary
+service:
+  type: ClusterIP
+  port: 3000
+  targetPort: 3000
+  annotations:
+    service.kubernetes.io/canary: "true"
+
+# Canary-specific ingress with traffic split
+ingress:
+  enabled: true
+  className: "nginx"
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    # Canary annotations for traffic splitting
+    nginx.ingress.kubernetes.io/canary: "true"
+    nginx.ingress.kubernetes.io/canary-weight: "10"
+  hosts:
+    - host: mcp-server.production.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: mcp-server-production-tls
+      hosts:
+        - mcp-server.production.example.com
+
+# Maximum security
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 1000
+  capabilities:
+    drop:
+      - ALL
+
+# Production node selection
+nodeSelector:
+  kubernetes.io/os: linux
+  workload: production
+
+# Canary environment variables
+env:
+  - name: ENVIRONMENT
+    value: "production"
+  - name: DEPLOYMENT_TYPE
+    value: "canary"
+  - name: CANARY_WEIGHT
+    value: "10"
+
+# Conservative deployment strategy for canary
+strategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxSurge: 1
+    maxUnavailable: 0
+
+# Lower priority than stable production
+priorityClassName: "high-priority"
+
+# Network policy enabled
+networkPolicy:
+  enabled: true

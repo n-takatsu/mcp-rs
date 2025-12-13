@@ -99,6 +99,12 @@ governor = "0.10.1"
 prometheus = { version = "0.14", optional = true }
 metrics = { version = "0.24.2", optional = true }
 
+# Kubernetes operator support
+kube = { version = "0.99", features = ["runtime", "derive"], optional = true }
+k8s-openapi = { version = "0.24", features = ["v1_31"], optional = true }
+kube-runtime = { version = "0.99", optional = true }
+schemars = { version = "0.8", optional = true }
+
 # WebSocket
 tungstenite = "0.28"
 tokio-tungstenite = { version = "0.28", features = ["native-tls"] }
@@ -123,8 +129,11 @@ mockall = { version = "0.13.1", optional = true }
 tokio-test = "0.4.4"
 tempfile = "3.23"
 
+# Integration test dependencies
+tokio-postgres = { version = "0.7", features = ["with-chrono-0_4", "with-uuid-1"] }
+
 # Benchmarking
-criterion = { version = "0.5", features = ["html_reports"] }
+criterion = { version = "0.5", features = ["html_reports", "async_tokio"] }
 
 # Optional heavy dependencies (commented out to reduce CI load)
 # proptest = "1.9"
@@ -165,6 +174,9 @@ integration-tests = []
 # Performance optimizations
 simd = []
 
+# Kubernetes operator
+kubernetes-operator = ["kube", "k8s-openapi", "kube-runtime", "schemars"]
+
 # Full feature set (MySQL restored via secure mysql_async)
 full = [
     "session-management",
@@ -178,6 +190,12 @@ full = [
     "metrics",
     "testing"
 ]
+
+# Kubernetes operator binary (only built with kubernetes-operator feature)
+[[bin]]
+name = "mcp-operator"
+path = "src/bin/mcp-operator.rs"
+required-features = ["kubernetes-operator"]
 
 # Examples temporarily disabled for CI stability
 # Enable locally with: cargo build --examples

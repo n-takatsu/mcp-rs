@@ -1,0 +1,124 @@
+# Staging environment values
+# This overrides the default values.yaml for staging deployments
+
+global:
+  environment: staging
+
+# Moderate HA for staging
+replicaCount: 2
+
+resources:
+  limits:
+    cpu: 1000m
+    memory: 2Gi
+  requests:
+    cpu: 250m
+    memory: 512Mi
+
+# Moderate autoscaling
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 5
+  targetCPUUtilizationPercentage: 75
+  targetMemoryUtilizationPercentage: 85
+
+# Enable PDB with single pod tolerance
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+# Staging configuration
+config:
+  logLevel: info
+  logFormat: json
+  
+  securityPolicy:
+    enabled: true
+  
+  plugins:
+    enabled: true
+    isolationLevel: process
+  
+  rateLimit:
+    enabled: true
+    requestsPerSecond: 500
+    burstSize: 1000
+
+# Moderate persistence
+persistence:
+  enabled: true
+  size: 5Gi
+  storageClass: "standard"
+
+# Enable monitoring
+monitoring:
+  enabled: true
+  serviceMonitor:
+    enabled: true
+    interval: 30s
+
+# Ingress with TLS
+ingress:
+  enabled: true
+  className: "nginx"
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-staging"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+  hosts:
+    - host: mcp-server-staging.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: mcp-server-staging-tls
+      hosts:
+        - mcp-server-staging.example.com
+
+# Production-like security
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 1000
+  capabilities:
+    drop:
+      - ALL
+
+# Node selection for staging workloads
+nodeSelector:
+  kubernetes.io/os: linux
+  workload: staging
+
+# Pod anti-affinity
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchExpressions:
+              - key: app
+                operator: In
+                values:
+                  - mcp-server
+          topologyKey: kubernetes.io/hostname
+
+# Staging environment variables
+env:
+  - name: ENVIRONMENT
+    value: "staging"
+  - name: ENABLE_DEBUG_ENDPOINTS
+    value: "true"
+
+# Network policy enabled
+networkPolicy:
+  enabled: true
