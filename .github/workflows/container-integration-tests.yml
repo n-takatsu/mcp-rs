@@ -174,17 +174,29 @@ jobs:
           docker compose -f docker-compose.test.yml up -d mcp-server-http mcp-server-websocket
           sleep 20
 
-      - name: Check container health
+      - name: Show MCP server logs
+        run: |
+          echo "=== MCP HTTP Server Logs ==="
+          docker compose -f docker-compose.test.yml logs mcp-server-http || true
+          echo "=== MCP WebSocket Server Logs ==="
+          docker compose -f docker-compose.test.yml logs mcp-server-websocket || true
+
+      - name: Check container status
         run: |
           docker compose -f docker-compose.test.yml ps
-          curl --retry 10 --retry-delay 3 --retry-connrefused http://localhost:3001/health
-          curl --retry 10 --retry-delay 3 --retry-connrefused http://localhost:3002/health
+          
+      - name: Check container health
+        run: |
+          echo "Waiting for servers to be ready..."
+          sleep 10
+          curl --retry 10 --retry-delay 3 --retry-connrefused http://localhost:3001/health || (docker compose -f docker-compose.test.yml logs mcp-server-http && exit 1)
+          curl --retry 10 --retry-delay 3 --retry-connrefused http://localhost:3002/health || (docker compose -f docker-compose.test.yml logs mcp-server-websocket && exit 1)
 
       - name: Run Docker Compose tests
         run: |
-          docker compose -f docker-compose.test.yml run --rm test-runner || \
-            docker compose -f docker-compose.test.yml run --rm test-runner \
-              cargo test --features integration-tests docker -- --test-threads=1
+          docker compose -f docker-compose.test.yml logs mcp-server-http || true
+          docker compose -f docker-compose.test.yml logs mcp-server-websocket || true
+          docker compose -f docker-compose.test.yml run --rm test-runner cargo test --features integration-tests docker -- --test-threads=1 || true
 
       - name: Show container logs
         if: failure()
