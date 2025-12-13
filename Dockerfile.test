@@ -1,0 +1,52 @@
+# Dockerfile for integration test runner
+FROM rust:1.75-slim-bookworm AS test-builder
+
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    pkg-config \
+    libssl-dev \
+    ca-certificates \
+    curl \
+    wget \
+    postgresql-client \
+    redis-tools \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy dependency files
+COPY Cargo.toml Cargo.lock ./
+
+# Copy source code
+COPY src ./src
+COPY tests ./tests
+COPY benches ./benches
+
+# Build tests
+RUN cargo test --no-run --release --features integration-tests
+
+# Final test runner stage
+FROM rust:1.75-slim-bookworm
+
+WORKDIR /app
+
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    curl \
+    wget \
+    postgresql-client \
+    redis-tools \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy test binaries and source
+COPY --from=test-builder /app/target /app/target
+COPY --from=test-builder /app/tests /app/tests
+COPY Cargo.toml Cargo.lock ./
+
+# Set environment
+ENV RUST_BACKTRACE=1
+ENV RUST_LOG=debug
+
+# Default command runs all integration tests
+CMD ["cargo", "test", "--release", "--features", "integration-tests", "--", "--test-threads=1"]
