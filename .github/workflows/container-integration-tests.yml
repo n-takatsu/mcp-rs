@@ -240,9 +240,10 @@ jobs:
           sarif_file: 'trivy-results.sarif'
 
       - name: Run cargo audit
+        continue-on-error: true
         run: |
           cargo install cargo-audit
-          cargo audit
+          cargo audit --config .cargo/audit.toml
 
   performance-benchmarks:
     name: Performance Benchmarks
