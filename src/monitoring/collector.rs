@@ -52,8 +52,6 @@ impl MetricsCollector {
         }
     }
 
-
-
     /// メトリクス収集を開始
     pub async fn start(&self) {
         if !self.config.enable_system_metrics {
