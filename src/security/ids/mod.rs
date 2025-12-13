@@ -13,10 +13,23 @@
 //! ## 使用例
 //!
 //! ```rust,no_run
-//! use mcp_rs::security::ids::{IntrusionDetectionSystem, IDSConfig};
+//! use mcp_rs::security::ids::{IntrusionDetectionSystem, IDSConfig, RequestData};
+//! use std::collections::HashMap;
+//! use chrono::Utc;
 //!
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! let ids = IntrusionDetectionSystem::new(IDSConfig::default()).await?;
+//!
+//! let request_data = RequestData {
+//!     request_id: "req-123".to_string(),
+//!     method: "GET".to_string(),
+//!     path: "/api/data".to_string(),
+//!     query_params: HashMap::new(),
+//!     headers: HashMap::new(),
+//!     body: None,
+//!     source_ip: Some("192.168.1.1".parse().unwrap()),
+//!     timestamp: Utc::now(),
+//! };
 //!
 //! let result = ids.analyze_request(&request_data).await?;
 //! if result.is_intrusion {
