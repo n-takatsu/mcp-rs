@@ -162,35 +162,35 @@ jobs:
 
       - name: Start test environment
         run: |
-          docker-compose -f docker-compose.test.yml up -d postgres-test redis-test
+          docker compose -f docker-compose.test.yml up -d postgres-test redis-test
           sleep 10
 
       - name: Build and start MCP servers
         run: |
-          docker-compose -f docker-compose.test.yml up -d mcp-server-http mcp-server-websocket
+          docker compose -f docker-compose.test.yml up -d mcp-server-http mcp-server-websocket
           sleep 20
 
       - name: Check container health
         run: |
-          docker-compose -f docker-compose.test.yml ps
+          docker compose -f docker-compose.test.yml ps
           curl --retry 10 --retry-delay 3 --retry-connrefused http://localhost:3001/health
           curl --retry 10 --retry-delay 3 --retry-connrefused http://localhost:3002/health
 
       - name: Run Docker Compose tests
         run: |
-          docker-compose -f docker-compose.test.yml run --rm test-runner || \
-            docker-compose -f docker-compose.test.yml run --rm test-runner \
+          docker compose -f docker-compose.test.yml run --rm test-runner || \
+            docker compose -f docker-compose.test.yml run --rm test-runner \
               cargo test --features integration-tests docker -- --test-threads=1
 
       - name: Show container logs
         if: failure()
         run: |
-          docker-compose -f docker-compose.test.yml logs
+          docker compose -f docker-compose.test.yml logs
 
       - name: Cleanup
         if: always()
         run: |
-          docker-compose -f docker-compose.test.yml down -v
+          docker compose -f docker-compose.test.yml down -v
 
       - name: Upload Docker logs
         if: failure()

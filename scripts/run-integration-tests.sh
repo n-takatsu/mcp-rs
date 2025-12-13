@@ -14,7 +14,7 @@ echo -e "${GREEN}=== MCP-RS Container Integration Tests ===${NC}"
 # Cleanup function
 cleanup() {
     echo -e "${YELLOW}Cleaning up test environment...${NC}"
-    docker-compose -f docker-compose.test.yml down -v
+    docker compose -f docker-compose.test.yml down -v
 }
 
 # Set trap to cleanup on exit
@@ -22,7 +22,7 @@ trap cleanup EXIT INT TERM
 
 # Start test environment
 echo -e "${YELLOW}Starting test environment...${NC}"
-docker-compose -f docker-compose.test.yml up -d postgres-test redis-test
+docker compose -f docker-compose.test.yml up -d postgres-test redis-test
 
 # Wait for services to be ready
 echo -e "${YELLOW}Waiting for services to be ready...${NC}"
@@ -30,11 +30,11 @@ sleep 10
 
 # Run database migrations if needed
 echo -e "${YELLOW}Running database setup...${NC}"
-docker-compose -f docker-compose.test.yml exec -T postgres-test psql -U testuser -d mcptest -c "SELECT 1;" || true
+docker compose -f docker-compose.test.yml exec -T postgres-test psql -U testuser -d mcptest -c "SELECT 1;" || true
 
 # Start MCP servers
 echo -e "${YELLOW}Starting MCP servers...${NC}"
-docker-compose -f docker-compose.test.yml up -d mcp-server-http mcp-server-websocket
+docker compose -f docker-compose.test.yml up -d mcp-server-http mcp-server-websocket
 
 # Wait for servers to be ready
 echo -e "${YELLOW}Waiting for MCP servers to be ready...${NC}"
@@ -49,7 +49,7 @@ for i in {1..30}; do
     fi
     if [ $i -eq 30 ]; then
         echo -e "${RED}HTTP server failed to start${NC}"
-        docker-compose -f docker-compose.test.yml logs mcp-server-http
+        docker compose -f docker-compose.test.yml logs mcp-server-http
         exit 1
     fi
     sleep 2
@@ -70,7 +70,7 @@ if [ $? -eq 0 ]; then
 else
     echo -e "${RED}✗ Integration tests failed${NC}"
     echo -e "${YELLOW}Showing server logs:${NC}"
-    docker-compose -f docker-compose.test.yml logs
+    docker compose -f docker-compose.test.yml logs
     exit 1
 fi
 
