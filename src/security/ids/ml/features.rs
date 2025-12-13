@@ -287,7 +287,11 @@ impl FeatureExtractor {
         let ratio = base64_chars as f64 / text.len() as f64;
 
         // 長さが4の倍数かチェック
-        let length_check = if text.len().is_multiple_of(4) { 0.3 } else { 0.0 };
+        let length_check = if text.len().is_multiple_of(4) {
+            0.3
+        } else {
+            0.0
+        };
 
         (ratio * 0.7 + length_check).min(1.0)
     }
