@@ -366,6 +366,14 @@ impl ThreatIntelligenceManager {
             threats.iter().map(|t| t.confidence_score).sum::<f64>() / threats.len() as f64
         };
 
+        // 使用されたプロバイダーを収集
+        let providers_used: Vec<String> = threats
+            .iter()
+            .map(|t| t.source.provider.clone())
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect();
+
         ThreatAssessment {
             indicator,
             is_threat,
@@ -375,7 +383,7 @@ impl ThreatIntelligenceManager {
             assessed_at: Utc::now(),
             assessment_duration_ms: duration_ms,
             context: ThreatAssessmentContext {
-                providers_used: vec![], // TODO: 実際に使用されたプロバイダーを記録
+                providers_used,
                 from_cache,
                 timing_breakdown: HashMap::new(),
                 warnings: vec![],
