@@ -194,7 +194,7 @@ async fn test_network_monitor_port_scan_detection() {
     let ip: IpAddr = "203.0.113.100".parse().unwrap();
 
     // 複数の異なるパスへのアクセス（ポートスキャン模擬）
-    let paths = vec![
+    let paths = [
         "/admin",
         "/wp-admin",
         "/phpmyadmin",
@@ -211,11 +211,9 @@ async fn test_network_monitor_port_scan_detection() {
         let request = create_test_request(&format!("portscan-{}", i), "GET", path, Some(ip));
         let result = monitor.check_traffic(&request).await.unwrap();
 
-        if i > 5 {
-            if result.is_suspicious {
-                assert!(result.risk_score > 0.5);
-                break;
-            }
+        if i > 5 && result.is_suspicious {
+            assert!(result.risk_score > 0.5);
+            break;
         }
     }
 }
@@ -449,7 +447,7 @@ async fn test_ids_statistics() {
 
     let stats = ids.get_stats().await;
     // 統計情報が正常に取得できることを確認
-    assert!(stats.total_detections == 0 || stats.total_detections > 0);
+    assert!(stats.total_detections >= 0);
 }
 
 #[tokio::test]
