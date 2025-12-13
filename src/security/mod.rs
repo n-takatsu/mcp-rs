@@ -1,6 +1,7 @@
 pub mod audit_log;
 pub mod auth;
 pub mod encryption;
+pub mod ids;
 #[cfg(feature = "mfa")]
 pub mod mfa;
 pub mod rate_limiter;
@@ -23,6 +24,13 @@ pub use auth::{
     SessionToken,
 };
 pub use encryption::{EncryptedCredentials, EncryptionError, SecureCredentials};
+pub use ids::{
+    alerts::{AggregatedAlert, Alert, AlertConfig, AlertLevel, AlertManager, NotificationChannel},
+    behavioral::BehavioralDetector,
+    network::NetworkMonitor,
+    signature::SignatureDetector,
+    DetectionResult, DetectionType, IntrusionDetectionSystem, RecommendedAction, Severity,
+};
 #[cfg(feature = "mfa")]
 pub use mfa::{MfaConfig, MfaError, TotpAlgorithm, TotpConfig, TotpSecret, TotpVerifier};
 pub use rate_limiter::RateLimiter;
