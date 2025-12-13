@@ -10,7 +10,6 @@ use mcp_rs::security::ids::{
 use std::collections::HashMap;
 use std::net::IpAddr;
 use tracing::{info, Level};
-use tracing_subscriber;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -188,7 +187,7 @@ async fn demo_network_monitoring() -> Result<(), Box<dyn std::error::Error>> {
 
     // ポートスキャンシミュレーション
     info!("\nSimulating port scan...");
-    let scan_paths = vec![
+    let scan_paths = [
         "/admin",
         "/wp-admin",
         "/phpmyadmin",

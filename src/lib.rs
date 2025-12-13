@@ -35,9 +35,19 @@ pub mod security;
 pub mod transport;
 pub mod types;
 
+// LLM Integration module
+#[cfg(feature = "llm-integration")]
+pub mod llm;
+
 // Kubernetes Operator module
 #[cfg(feature = "kubernetes-operator")]
 pub mod operator;
+
+// Monitoring module
+pub mod monitoring;
+
+// Zero Trust module
+pub mod zero_trust;
 
 pub use error::{Error, Result, SessionError};
 pub use mcp_server::McpServer;
