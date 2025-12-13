@@ -21,8 +21,3 @@ ignore = [
     #               Not exposed in default configuration
     "RUSTSEC-2025-0134",
 ]
-
-[output]
-# Show informational messages
-deny = []
-warn = ["unmaintained", "unsound", "yanked"]

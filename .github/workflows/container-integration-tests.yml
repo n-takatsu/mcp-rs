@@ -249,7 +249,7 @@ jobs:
         continue-on-error: true
         run: |
           cargo install cargo-audit
-          cargo audit --config .cargo/audit.toml
+          cargo audit
 
   performance-benchmarks:
     name: Performance Benchmarks
