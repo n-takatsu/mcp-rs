@@ -95,6 +95,11 @@ fancy-regex = "0.16.2"
 # Rate limiting
 governor = "0.10.1"
 
+# Machine Learning and Statistics
+smartcore = { version = "0.3", optional = true, default-features = false }
+ndarray = { version = "0.15", optional = true }
+statrs = { version = "0.17", optional = true }
+
 # Metrics and monitoring
 prometheus = { version = "0.14", optional = true }
 metrics = { version = "0.24.2", optional = true }
@@ -177,6 +182,9 @@ simd = []
 # Kubernetes operator
 kubernetes-operator = ["kube", "k8s-openapi", "kube-runtime", "schemars"]
 
+# Machine Learning anomaly detection
+ml-anomaly-detection = ["smartcore", "ndarray", "statrs"]
+
 # Full feature set (MySQL restored via secure mysql_async)
 full = [
     "session-management",
@@ -188,7 +196,8 @@ full = [
     "postgresql-backend",
     "sqlite",
     "metrics",
-    "testing"
+    "testing",
+    "ml-anomaly-detection"
 ]
 
 # Kubernetes operator binary (only built with kubernetes-operator feature)
@@ -322,3 +331,8 @@ name = "abuseipdb_demo"
 
 [[example]]
 name = "cve_demo"
+
+# ML anomaly detection example requires the ml-anomaly-detection feature
+[[example]]
+name = "ml_anomaly_demo"
+required-features = ["ml-anomaly-detection"]
