@@ -54,10 +54,8 @@ async fn test_alert_system() {
 
 #[tokio::test]
 async fn test_anomaly_detection() {
-    let mut detector = AnomalyDetector::new(
-        100,
-        AnomalyDetectionAlgorithm::ZScore { threshold: 3.0 },
-    );
+    let mut detector =
+        AnomalyDetector::new(100, AnomalyDetectionAlgorithm::ZScore { threshold: 3.0 });
 
     // 正常データを追加
     for i in 0..10 {

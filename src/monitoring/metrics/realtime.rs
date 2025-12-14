@@ -60,9 +60,7 @@ impl RealtimeMetrics {
         let buffer = self.buffer.read().await;
         buffer
             .iter()
-            .filter(|m| {
-                &m.metric_type == metric_type && m.timestamp >= start && m.timestamp <= end
-            })
+            .filter(|m| &m.metric_type == metric_type && m.timestamp >= start && m.timestamp <= end)
             .cloned()
             .collect()
     }

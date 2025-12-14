@@ -62,10 +62,8 @@ async fn main() {
     // 3. 異常検知器の初期化
     println!("3. 異常検知システムの初期化");
     use mcp_rs::analytics::{AnomalyDetectionAlgorithm, AnomalyDetector};
-    let mut detector = AnomalyDetector::new(
-        100,
-        AnomalyDetectionAlgorithm::ZScore { threshold: 3.0 },
-    );
+    let mut detector =
+        AnomalyDetector::new(100, AnomalyDetectionAlgorithm::ZScore { threshold: 3.0 });
 
     // 4. メトリクス収集とモニタリング
     println!("4. メトリクス収集とリアルタイム監視開始\n");

@@ -78,7 +78,9 @@ impl AnomalyDetector {
     /// 異常を検知
     pub fn detect(&self, value: f64) -> AnomalyScore {
         match &self.algorithm {
-            AnomalyDetectionAlgorithm::ZScore { threshold } => self.detect_zscore(value, *threshold),
+            AnomalyDetectionAlgorithm::ZScore { threshold } => {
+                self.detect_zscore(value, *threshold)
+            }
             AnomalyDetectionAlgorithm::Iqr { multiplier } => self.detect_iqr(value, *multiplier),
             AnomalyDetectionAlgorithm::MovingAverage { window, threshold } => {
                 self.detect_moving_average(value, *window, *threshold)
@@ -89,17 +91,12 @@ impl AnomalyDetector {
     /// Z-スコア法による異常検知
     fn detect_zscore(&self, value: f64, threshold: f64) -> AnomalyScore {
         if self.history.len() < 2 {
-            return AnomalyScore::new(
-                0.0,
-                false,
-                self.algorithm.clone(),
-                "Insufficient data",
-            );
+            return AnomalyScore::new(0.0, false, self.algorithm.clone(), "Insufficient data");
         }
 
         let mean = self.history.iter().sum::<f64>() / self.history.len() as f64;
-        let variance =
-            self.history.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / self.history.len() as f64;
+        let variance = self.history.iter().map(|v| (v - mean).powi(2)).sum::<f64>()
+            / self.history.len() as f64;
         let std_dev = variance.sqrt();
 
         if std_dev < f64::EPSILON {
@@ -154,7 +151,10 @@ impl AnomalyDetector {
             score,
             is_anomaly,
             self.algorithm.clone(),
-            format!("IQR: [{:.2}, {:.2}], value: {:.2}", lower_bound, upper_bound, value),
+            format!(
+                "IQR: [{:.2}, {:.2}], value: {:.2}",
+                lower_bound, upper_bound, value
+            ),
         )
     }
 
@@ -228,19 +228,15 @@ mod tests {
 
     #[test]
     fn test_anomaly_detector_creation() {
-        let detector = AnomalyDetector::new(
-            100,
-            AnomalyDetectionAlgorithm::ZScore { threshold: 3.0 },
-        );
+        let detector =
+            AnomalyDetector::new(100, AnomalyDetectionAlgorithm::ZScore { threshold: 3.0 });
         assert_eq!(detector.max_history, 100);
     }
 
     #[test]
     fn test_add_point() {
-        let mut detector = AnomalyDetector::new(
-            3,
-            AnomalyDetectionAlgorithm::ZScore { threshold: 3.0 },
-        );
+        let mut detector =
+            AnomalyDetector::new(3, AnomalyDetectionAlgorithm::ZScore { threshold: 3.0 });
         detector.add_point(10.0);
         detector.add_point(20.0);
         detector.add_point(30.0);
@@ -254,10 +250,8 @@ mod tests {
 
     #[test]
     fn test_detect_zscore_normal() {
-        let mut detector = AnomalyDetector::new(
-            100,
-            AnomalyDetectionAlgorithm::ZScore { threshold: 3.0 },
-        );
+        let mut detector =
+            AnomalyDetector::new(100, AnomalyDetectionAlgorithm::ZScore { threshold: 3.0 });
 
         // 正常データを追加
         for i in 0..10 {
@@ -270,10 +264,8 @@ mod tests {
 
     #[test]
     fn test_detect_zscore_anomaly() {
-        let mut detector = AnomalyDetector::new(
-            100,
-            AnomalyDetectionAlgorithm::ZScore { threshold: 3.0 },
-        );
+        let mut detector =
+            AnomalyDetector::new(100, AnomalyDetectionAlgorithm::ZScore { threshold: 3.0 });
 
         // 正常データを追加（分散を持たせる）
         for i in 0..10 {

@@ -5,5 +5,7 @@
 pub mod anomaly;
 pub mod prediction;
 
-pub use anomaly::{AnomalyDetectionAlgorithm, AnomalyDetector, AnomalyScore, RealtimeAnomalyDetector};
+pub use anomaly::{
+    AnomalyDetectionAlgorithm, AnomalyDetector, AnomalyScore, RealtimeAnomalyDetector,
+};
 pub use prediction::{PredictionResult, TimeSeriesPredictor, TrendDetector, TrendDirection};

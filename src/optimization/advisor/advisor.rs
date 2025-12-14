@@ -40,9 +40,10 @@ impl OptimizationAdvisor {
 
         for metric in metrics {
             let (bottleneck_type, threshold) = match metric.metric_type {
-                crate::monitoring::MetricType::Cpu => {
-                    (BottleneckType::Cpu, *self.thresholds.get(&BottleneckType::Cpu).unwrap())
-                }
+                crate::monitoring::MetricType::Cpu => (
+                    BottleneckType::Cpu,
+                    *self.thresholds.get(&BottleneckType::Cpu).unwrap(),
+                ),
                 crate::monitoring::MetricType::Memory => (
                     BottleneckType::Memory,
                     *self.thresholds.get(&BottleneckType::Memory).unwrap(),
@@ -60,7 +61,10 @@ impl OptimizationAdvisor {
                     bottleneck_type.clone(),
                     severity,
                     format!("{:?} usage is high: {:.2}%", bottleneck_type, metric.value),
-                    format!("System performance degradation due to {:?} bottleneck", bottleneck_type),
+                    format!(
+                        "System performance degradation due to {:?} bottleneck",
+                        bottleneck_type
+                    ),
                     metric.value,
                     threshold,
                 ));
@@ -71,7 +75,10 @@ impl OptimizationAdvisor {
     }
 
     /// 最適化提案を生成
-    pub fn generate_recommendations(&self, bottlenecks: &[Bottleneck]) -> Vec<OptimizationRecommendation> {
+    pub fn generate_recommendations(
+        &self,
+        bottlenecks: &[Bottleneck],
+    ) -> Vec<OptimizationRecommendation> {
         let mut recommendations = Vec::new();
 
         for bottleneck in bottlenecks {
@@ -86,7 +93,11 @@ impl OptimizationAdvisor {
         }
 
         // 優先度でソート
-        recommendations.sort_by(|a, b| b.priority.cmp(&a.priority).then(b.estimated_roi.partial_cmp(&a.estimated_roi).unwrap()));
+        recommendations.sort_by(|a, b| {
+            b.priority
+                .cmp(&a.priority)
+                .then(b.estimated_roi.partial_cmp(&a.estimated_roi).unwrap())
+        });
 
         recommendations
     }
