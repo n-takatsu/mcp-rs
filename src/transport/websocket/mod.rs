@@ -3,11 +3,13 @@
 //! WebSocketベースのリアルタイム双方向通信を提供
 
 pub mod connection;
+pub mod jsonrpc;
 pub mod pool;
 pub mod stream;
 pub mod types;
 
 pub use connection::{WebSocketConnection, WebSocketConnectionBuilder};
+pub use jsonrpc::{error_codes, JsonRpcMessage, JsonRpcNotification};
 pub use pool::ConnectionPool;
 pub use stream::StreamingTransport;
 pub use types::*;
@@ -80,7 +82,43 @@ impl WebSocketTransport {
             self.stream_config.clone(),
         ))
     }
-}
+    /// JSON-RPC通知を送信
+    pub async fn send_notification(&self, notification: JsonRpcNotification) -> Result<()> {
+        let active = self.active_connection.lock().await;
+        if let Some(conn) = active.as_ref() {
+            let jsonrpc_msg = JsonRpcMessage::Notification(notification);
+            let ws_msg = jsonrpc_msg.to_websocket()?;
+            conn.send(ws_msg).await?;
+            Ok(())
+        } else {
+            Err(Error::ConnectionError("Not connected".to_string()))
+        }
+    }
+
+    /// JSON-RPCメッセージを直接送信（汎用）
+    pub async fn send_jsonrpc(&self, message: JsonRpcMessage) -> Result<()> {
+        let active = self.active_connection.lock().await;
+        if let Some(conn) = active.as_ref() {
+            let ws_msg = message.to_websocket()?;
+            conn.send(ws_msg).await?;
+            Ok(())
+        } else {
+            Err(Error::ConnectionError("Not connected".to_string()))
+        }
+    }
+
+    /// JSON-RPCメッセージを受信（汎用）
+    pub async fn receive_jsonrpc(&self) -> Result<Option<JsonRpcMessage>> {
+        let active = self.active_connection.lock().await;
+        if let Some(conn) = active.as_ref() {
+            match conn.receive().await? {
+                Some(ws_msg) => Ok(Some(JsonRpcMessage::from_websocket(ws_msg)?)),
+                None => Ok(None),
+            }
+        } else {
+            Err(Error::ConnectionError("Not connected".to_string()))
+        }
+    }}
 
 /// Transport trait実装
 #[async_trait]
@@ -124,8 +162,10 @@ impl Transport for WebSocketTransport {
     ) -> std::result::Result<(), Self::Error> {
         let active = self.active_connection.lock().await;
         if let Some(conn) = active.as_ref() {
-            let json = serde_json::to_string(&message)?;
-            conn.send(WebSocketMessage::Text(json)).await?;
+            // JsonRpcMessage経由で変換
+            let jsonrpc_msg = JsonRpcMessage::Response(message);
+            let ws_msg = jsonrpc_msg.to_websocket()?;
+            conn.send(ws_msg).await?;
             Ok(())
         } else {
             Err(Error::ConnectionError("Not connected".to_string()))
@@ -138,12 +178,18 @@ impl Transport for WebSocketTransport {
         let active = self.active_connection.lock().await;
         if let Some(conn) = active.as_ref() {
             match conn.receive().await? {
-                Some(WebSocketMessage::Text(text)) => {
-                    let request: JsonRpcRequest = serde_json::from_str(&text)?;
-                    Ok(Some(request))
-                }
-                Some(WebSocketMessage::Close(_)) => Ok(None),
-                Some(_) => Ok(None), // バイナリやPing/Pongは無視
+                Some(ws_msg) => match JsonRpcMessage::from_websocket(ws_msg) {
+                    Ok(JsonRpcMessage::Request(request)) => Ok(Some(request)),
+                    Ok(JsonRpcMessage::Notification(_)) => {
+                        // 通知はリクエストとして扱わない
+                        Ok(None)
+                    }
+                    Ok(JsonRpcMessage::Response(_)) => {
+                        // レスポンスは無視（サーバー側）
+                        Ok(None)
+                    }
+                    Err(e) => Err(e),
+                },
                 None => Ok(None),
             }
         } else {

@@ -134,6 +134,10 @@ pub enum Error {
     #[allow(clippy::enum_variant_names)]
     ConnectionError(String),
 
+    /// Invalid message error
+    #[error("Invalid message: {0}")]
+    InvalidMessage(String),
+
     /// Timeout error
     #[error("Timeout")]
     Timeout,
