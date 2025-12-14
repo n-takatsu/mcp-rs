@@ -114,15 +114,15 @@ impl RotationScheduler {
         Ok(())
     }
 
-    /// 期限切れ間近の証明書を取得
-    pub async fn get_expiring_soon(&self, days: u32) -> Vec<ScheduledRotation> {
+    /// 期限切れ間近の証明書を取得（シリアル番号のリスト）
+    pub async fn get_expiring_soon(&self, days: u32) -> Vec<String> {
         let scheduled = self.scheduled.read().await;
         let threshold = Utc::now() + Duration::days(days as i64);
 
         scheduled
             .values()
             .filter(|rotation| rotation.expires_at <= threshold)
-            .cloned()
+            .map(|rotation| rotation.serial_number.clone())
             .collect()
     }
 
@@ -166,6 +166,17 @@ impl RotationScheduler {
             .values()
             .filter(|rotation| rotation.expires_at <= threshold)
             .count()
+    }
+}
+
+#[allow(clippy::derivable_impls)]
+impl Default for RotationScheduler {
+    fn default() -> Self {
+        Self {
+            config: RotationConfig::default(),
+            scheduled: Arc::new(RwLock::new(HashMap::new())),
+            history: Arc::new(RwLock::new(Vec::new())),
+        }
     }
 }
 

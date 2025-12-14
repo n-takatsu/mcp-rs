@@ -190,7 +190,15 @@ impl CertificateStore {
     }
 }
 
-
+#[allow(clippy::derivable_impls)]
+impl Default for CertificateStore {
+    fn default() -> Self {
+        Self {
+            config: StoreConfig::default(),
+            certificates: HashMap::new(),
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -257,7 +265,7 @@ mod tests {
         let cert3 = create_test_certificate("333", "later.example.com", 100);
         store.store_certificate(&cert3).await.unwrap();
 
-        let expiring = store.count_expiring_soon(10).await;
+        let expiring = store.count_expiring_soon(10);
         assert_eq!(expiring, 2);
     }
 
