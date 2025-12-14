@@ -35,6 +35,9 @@ pub mod security;
 pub mod transport;
 pub mod types;
 
+// AI Integration module
+pub mod ai;
+
 // LLM Integration module
 #[cfg(feature = "llm-integration")]
 pub mod llm;
