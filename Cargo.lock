@@ -2998,6 +2998,7 @@ dependencies = [
  "eventsource-stream",
  "fancy-regex 0.16.2",
  "futures",
+ "futures-util",
  "governor",
  "hickory-resolver 0.24.4",
  "http",
