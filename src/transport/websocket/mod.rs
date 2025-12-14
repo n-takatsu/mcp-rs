@@ -118,7 +118,8 @@ impl WebSocketTransport {
         } else {
             Err(Error::ConnectionError("Not connected".to_string()))
         }
-    }}
+    }
+}
 
 /// Transport trait実装
 #[async_trait]
@@ -279,7 +280,10 @@ mod tests {
 
         // Transport traitメソッドのテスト
         let info = transport.transport_info();
-        assert_eq!(info.description, "WebSocket Transport with connection pooling");
+        assert_eq!(
+            info.description,
+            "WebSocket Transport with connection pooling"
+        );
         assert!(info.capabilities.bidirectional);
         assert!(info.capabilities.multiplexing);
 

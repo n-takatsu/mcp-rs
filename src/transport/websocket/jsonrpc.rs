@@ -261,7 +261,8 @@ mod tests {
 
     #[test]
     fn test_parse_jsonrpc_error() {
-        let json = r#"{"jsonrpc":"2.0","error":{"code":-32601,"message":"Method not found"},"id":1}"#;
+        let json =
+            r#"{"jsonrpc":"2.0","error":{"code":-32601,"message":"Method not found"},"id":1}"#;
         let msg = JsonRpcMessage::from_json_str(json).unwrap();
 
         match msg {
