@@ -114,6 +114,15 @@ pub enum Error {
     /// Operation error
     #[error("Operation error: {0}")]
     Operation(String),
+
+    /// Already exists error
+    #[error("Already exists: {0}")]
+    AlreadyExists(String),
+
+    /// Parse error (generic)
+    #[error("Parse error: {0}")]
+    #[allow(clippy::enum_variant_names)]
+    ParseError(String),
 }
 
 impl Error {
