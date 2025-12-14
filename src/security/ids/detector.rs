@@ -34,27 +34,22 @@ pub struct IntrusionDetectionSystem {
 impl IntrusionDetectionSystem {
     /// 新規作成
     pub async fn new(config: IDSConfig) -> Result<Self, McpError> {
-        let signature_detector = Arc::new(
-            SignatureDetector::new()
-                .await
-                .map_err(|e| McpError::SecurityFailure(format!("Signature detector init failed: {}", e)))?,
-        );
+        let signature_detector = Arc::new(SignatureDetector::new().await.map_err(|e| {
+            McpError::SecurityFailure(format!("Signature detector init failed: {}", e))
+        })?);
 
-        let behavioral_detector = Arc::new(
-            BehavioralDetector::new()
-                .await
-                .map_err(|e| {
-                    McpError::SecurityFailure(format!("Behavioral detector init failed: {}", e))
-                })?,
-        );
+        let behavioral_detector = Arc::new(BehavioralDetector::new().await.map_err(|e| {
+            McpError::SecurityFailure(format!("Behavioral detector init failed: {}", e))
+        })?);
 
         let network_monitor = Arc::new(NetworkMonitor::new().await.map_err(|e| {
             McpError::SecurityFailure(format!("Network monitor init failed: {}", e))
         })?);
 
-        let alert_manager = Arc::new(AlertManager::new().await.map_err(|e| {
-            McpError::SecurityFailure(format!("Alert manager init failed: {}", e))
-        })?);
+        let alert_manager =
+            Arc::new(AlertManager::new().await.map_err(|e| {
+                McpError::SecurityFailure(format!("Alert manager init failed: {}", e))
+            })?);
 
         Ok(Self {
             config,
