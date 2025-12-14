@@ -152,7 +152,9 @@ impl LlmClient for OpenAiClient {
         // Note: ストリーミング実装はrequwestのstream featureが必要
         // 現時点ではプレースホルダー実装
         let stream = futures::stream::once(async {
-            Err(Error::NotImplemented("Streaming not yet implemented".to_string()))
+            Err(Error::NotImplemented(
+                "Streaming not yet implemented".to_string(),
+            ))
         });
 
         Ok(Box::new(Box::pin(stream)))

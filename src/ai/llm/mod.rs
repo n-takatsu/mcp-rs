@@ -12,20 +12,14 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum LlmProvider {
     /// OpenAI (GPT-4, GPT-3.5)
-    OpenAI {
-        model: String,
-        api_key: String,
-    },
+    OpenAI { model: String, api_key: String },
     /// ローカルLLM (llama.cpp)
     Local {
         model_path: String,
         context_size: usize,
     },
     /// Candle統合
-    Candle {
-        model_id: String,
-        device: String,
-    },
+    Candle { model_id: String, device: String },
 }
 
 /// LLM設定

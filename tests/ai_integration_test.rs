@@ -2,8 +2,8 @@
 //!
 //! OpenAI統合とLLMクライアントの統合テスト
 
-use mcp_rs::ai::llm::{ChatMessage, LlmClient, LlmConfig, LlmProvider};
 use mcp_rs::ai::llm::openai::OpenAiClient;
+use mcp_rs::ai::llm::{ChatMessage, LlmClient, LlmConfig, LlmProvider};
 
 #[test]
 fn test_openai_client_builder() {
@@ -85,7 +85,7 @@ fn test_chat_message_builders() {
 
 #[test]
 fn test_chat_conversation_flow() {
-    let messages = vec![
+    let messages = [
         ChatMessage::system("You are a math tutor"),
         ChatMessage::user("What is 2+2?"),
         ChatMessage::assistant("2+2 equals 4"),
@@ -159,8 +159,8 @@ fn test_llm_config_custom() {
 
 #[test]
 fn test_custom_base_url() {
-    let client = OpenAiClient::new("test-key", "gpt-4")
-        .with_base_url("https://custom-api.example.com/v1");
+    let client =
+        OpenAiClient::new("test-key", "gpt-4").with_base_url("https://custom-api.example.com/v1");
 
     // カスタムベースURLが設定されていることを確認
     // (内部実装の詳細を直接テストできないため、clientの作成が成功することを確認)
@@ -210,7 +210,10 @@ async fn test_openai_health_check_with_valid_key() {
     if let Ok(api_key) = std::env::var("OPENAI_API_KEY") {
         let client = OpenAiClient::new(api_key, "gpt-4");
         let result = client.health_check().await;
-        assert!(result.is_ok(), "Health check should succeed with valid API key");
+        assert!(
+            result.is_ok(),
+            "Health check should succeed with valid API key"
+        );
     }
 }
 
