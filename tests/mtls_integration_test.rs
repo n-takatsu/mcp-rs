@@ -265,8 +265,8 @@ async fn test_grace_period_management() {
     // ローテーション後、新しい証明書が存在することを確認
     let stats = manager.get_statistics().await;
     assert!(stats.total_certificates >= 1); // 少なくとも1つの証明書が存在
-    // 注: 実装により古い証明書の扱いが異なる可能性があるため、
-    // 総数が1以上であることのみを確認
+                                            // 注: 実装により古い証明書の扱いが異なる可能性があるため、
+                                            // 総数が1以上であることのみを確認
 }
 
 #[tokio::test]
