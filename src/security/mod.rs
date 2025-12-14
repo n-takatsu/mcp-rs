@@ -1,3 +1,4 @@
+pub mod audit;
 pub mod audit_log;
 pub mod auth;
 pub mod encryption;
@@ -12,6 +13,10 @@ pub mod validation;
 pub mod waf;
 pub mod xss_protection;
 
+pub use audit::{
+    Alert as AuditAlert, AlertSeverity, AlertStatus, AnalysisResult, AnalysisStatistics,
+    AuditAnalysisEngine, CorrelatedEvent, ExfiltrationEvent, PrivilegeEscalationEvent,
+};
 pub use audit_log::{
     AuditCategory, AuditConfig, AuditFilter, AuditLevel, AuditLogEntry, AuditLogger,
     AuditStatistics,
