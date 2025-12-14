@@ -195,8 +195,6 @@ pub struct RotationStatistics {
     pub expiring_soon_30days: usize,
 }
 
-
-
 #[cfg(test)]
 mod tests {
     use super::*;

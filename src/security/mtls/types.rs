@@ -351,8 +351,6 @@ pub enum RotationStatus {
     RolledBack,
 }
 
-
-
 impl Default for CaConfig {
     fn default() -> Self {
         Self {
