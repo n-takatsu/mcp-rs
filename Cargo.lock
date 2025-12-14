@@ -2978,7 +2978,7 @@ dependencies = [
 
 [[package]]
 name = "mcp-rs"
-version = "0.15.0"
+version = "0.15.1"
 dependencies = [
  "aes-gcm",
  "ammonia",
@@ -2998,6 +2998,7 @@ dependencies = [
  "eventsource-stream",
  "fancy-regex 0.16.2",
  "futures",
+ "futures-util",
  "governor",
  "hickory-resolver 0.24.4",
  "http",

@@ -49,6 +49,9 @@ pub mod monitoring;
 // Zero Trust module
 pub mod zero_trust;
 
+// Compliance module (GDPR/CCPA)
+pub mod compliance;
+
 pub use error::{Error, Result, SessionError};
 pub use mcp_server::McpServer;
 pub use protocol::McpProtocol;

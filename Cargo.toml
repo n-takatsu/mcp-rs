@@ -1,6 +1,6 @@
 ﻿[package]
 name = "mcp-rs"
-version = "0.15.0"
+version = "0.15.1"
 edition = "2021"
 authors = ["n-takatsu"]
 description = "Rust implementation of the Model Context Protocol (MCP) for AI-agent integration with Canary Deployment System"
@@ -121,6 +121,7 @@ tungstenite = "0.28"
 tokio-tungstenite = { version = "0.28", features = ["native-tls"] }
 tokio-native-tls = "0.3"
 native-tls = "0.2"
+futures-util = "0.3"
 
 # File system monitoring
 notify = "8.2"

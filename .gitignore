@@ -33,6 +33,11 @@ clippy-report.json
 /mcp-rs-v*/
 mcp-rs-v*-release/
 
+# Release artifacts (binaries, zips)
+*.zip
+*.exe
+/release-artifacts/
+
 # Report files (documentation should be in wiki or separate docs repo)
 *_REPORT.md
 *_TEST_REPORT.md
