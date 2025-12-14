@@ -2,12 +2,12 @@
 //!
 //! Factory for creating transport instances
 
+use super::config::TransportConfig;
 use super::error::TransportError;
 use super::http;
 use super::stdio;
 use super::transport_trait::Transport;
 use super::types::TransportType;
-use super::config::TransportConfig;
 
 /// Transport factory for creating transport instances
 pub struct TransportFactory;

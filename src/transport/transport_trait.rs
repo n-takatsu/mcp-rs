@@ -27,9 +27,8 @@ pub trait Transport: Send + Sync + fmt::Debug {
     ) -> std::result::Result<(), Self::Error>;
 
     /// Receive a JSON-RPC request message (non-blocking)
-    async fn receive_message(
-        &mut self,
-    ) -> std::result::Result<Option<JsonRpcRequest>, Self::Error>;
+    async fn receive_message(&mut self)
+        -> std::result::Result<Option<JsonRpcRequest>, Self::Error>;
 
     /// Check if the transport is currently connected/active
     fn is_connected(&self) -> bool;
