@@ -49,6 +49,12 @@ pub mod operator;
 // Monitoring module
 pub mod monitoring;
 
+// Analytics module
+pub mod analytics;
+
+// Optimization module
+pub mod optimization;
+
 // Zero Trust module
 pub mod zero_trust;
 

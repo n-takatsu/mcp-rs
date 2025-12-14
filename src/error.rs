@@ -123,6 +123,24 @@ pub enum Error {
     #[error("Parse error: {0}")]
     #[allow(clippy::enum_variant_names)]
     ParseError(String),
+
+    /// Stream error
+    #[error("Stream error: {0}")]
+    #[allow(clippy::enum_variant_names)]
+    StreamError(String),
+
+    /// Connection error
+    #[error("Connection error: {0}")]
+    #[allow(clippy::enum_variant_names)]
+    ConnectionError(String),
+
+    /// Invalid message error
+    #[error("Invalid message: {0}")]
+    InvalidMessage(String),
+
+    /// Timeout error
+    #[error("Timeout")]
+    Timeout,
 }
 
 impl Error {
