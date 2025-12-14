@@ -9,10 +9,12 @@ use tokio::sync::{Mutex, RwLock};
 use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};
 
 /// WebSocket接続
+#[derive(Debug)]
 pub struct WebSocketConnection {
     /// 接続ID
     id: String,
     /// WebSocketストリーム
+    #[allow(dead_code)]
     stream: Arc<Mutex<WebSocketStream<MaybeTlsStream<TcpStream>>>>,
     /// 接続状態
     state: Arc<RwLock<ConnectionState>>,

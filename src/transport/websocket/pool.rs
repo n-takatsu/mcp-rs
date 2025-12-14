@@ -10,6 +10,7 @@ use tokio::sync::{Mutex, Semaphore};
 use tokio::time::{interval, Duration};
 
 /// 接続プール
+#[derive(Debug)]
 pub struct ConnectionPool {
     /// プール設定
     config: PoolConfig,
