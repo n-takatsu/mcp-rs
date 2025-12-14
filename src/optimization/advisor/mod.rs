@@ -2,10 +2,10 @@
 //!
 //! パフォーマンス最適化アドバイザーシステム
 
-mod advisor;
 mod bottleneck;
+mod core;
 mod recommendation;
 
-pub use advisor::OptimizationAdvisor;
 pub use bottleneck::{Bottleneck, BottleneckType};
+pub use core::OptimizationAdvisor;
 pub use recommendation::OptimizationRecommendation;
