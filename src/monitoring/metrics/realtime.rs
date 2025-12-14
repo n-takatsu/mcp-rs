@@ -93,7 +93,7 @@ impl RealtimeMetrics {
 
         let min = *sorted_values.first()?;
         let max = *sorted_values.last()?;
-        let median = if count % 2 == 0 {
+        let median = if count.is_multiple_of(2) {
             (sorted_values[count / 2 - 1] + sorted_values[count / 2]) / 2.0
         } else {
             sorted_values[count / 2]
