@@ -217,7 +217,7 @@ impl BalancerManager {
             .values()
             .map(|state| state.endpoint.clone())
             .collect();
-        
+
         if all_endpoints.is_empty() {
             return None;
         }
@@ -229,9 +229,7 @@ impl BalancerManager {
 
         match self.config.strategy {
             BalancingStrategy::RoundRobin => self.select_round_robin(&healthy),
-            BalancingStrategy::LeastConnections => {
-                self.select_least_connections(&healthy).await
-            }
+            BalancingStrategy::LeastConnections => self.select_least_connections(&healthy).await,
             BalancingStrategy::WeightedRoundRobin => self.select_weighted_round_robin(&healthy),
             BalancingStrategy::Random => self.select_random(&healthy),
         }
@@ -243,10 +241,7 @@ impl BalancerManager {
             return None;
         }
 
-        let index = self
-            .round_robin_index
-            .fetch_add(1, Ordering::Relaxed)
-            % available.len();
+        let index = self.round_robin_index.fetch_add(1, Ordering::Relaxed) % available.len();
         Some(available[index].clone())
     }
 
@@ -357,9 +352,7 @@ impl BalancerManager {
 
         match self.config.strategy {
             BalancingStrategy::RoundRobin => self.select_round_robin(&healthy),
-            BalancingStrategy::LeastConnections => {
-                self.select_least_connections(&healthy).await
-            }
+            BalancingStrategy::LeastConnections => self.select_least_connections(&healthy).await,
             BalancingStrategy::WeightedRoundRobin => self.select_weighted_round_robin(&healthy),
             BalancingStrategy::Random => self.select_random(&healthy),
         }
@@ -441,9 +434,8 @@ impl LoadBalancer for BalancerManager {
 
     fn report_health(&mut self, endpoint: &Endpoint, is_healthy: bool) {
         tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async {
-                self.report_health_async(endpoint, is_healthy).await
-            })
+            tokio::runtime::Handle::current()
+                .block_on(async { self.report_health_async(endpoint, is_healthy).await })
         });
     }
 
@@ -455,17 +447,15 @@ impl LoadBalancer for BalancerManager {
 
     fn increment_connections(&mut self, endpoint_id: &EndpointId) {
         tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async {
-                self.increment_connections_async(endpoint_id).await
-            })
+            tokio::runtime::Handle::current()
+                .block_on(async { self.increment_connections_async(endpoint_id).await })
         });
     }
 
     fn decrement_connections(&mut self, endpoint_id: &EndpointId) {
         tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async {
-                self.decrement_connections_async(endpoint_id).await
-            })
+            tokio::runtime::Handle::current()
+                .block_on(async { self.decrement_connections_async(endpoint_id).await })
         });
     }
 }
@@ -539,8 +529,12 @@ mod tests {
         }
 
         // Simulate connections on ep1
-        balancer.increment_connections_async(&"ep1".to_string()).await;
-        balancer.increment_connections_async(&"ep1".to_string()).await;
+        balancer
+            .increment_connections_async(&"ep1".to_string())
+            .await;
+        balancer
+            .increment_connections_async(&"ep1".to_string())
+            .await;
 
         // Should select ep2 (fewer connections)
         let selected = balancer.select_endpoint_async(&endpoints).await;

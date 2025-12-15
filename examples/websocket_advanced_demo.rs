@@ -56,7 +56,9 @@ async fn demo_file_transfer() -> Result<()> {
 
     for i in 1..=10 {
         let bytes = (file_size * i) / 10;
-        manager.update_progress(&transfer_id, bytes, Duration::from_millis(100)).await;
+        manager
+            .update_progress(&transfer_id, bytes, Duration::from_millis(100))
+            .await;
 
         let progress = manager.get_progress(&transfer_id).await.unwrap();
         println!(
@@ -189,7 +191,10 @@ async fn demo_load_balancing() -> Result<()> {
     }
 
     let stats = balancer.get_statistics().await;
-    println!("Healthy endpoints: {}/{}", stats.healthy_endpoints, stats.total_endpoints);
+    println!(
+        "Healthy endpoints: {}/{}",
+        stats.healthy_endpoints, stats.total_endpoints
+    );
 
     println!();
 
@@ -222,8 +227,12 @@ async fn demo_failover() -> Result<()> {
     let backup1 = Endpoint::new("backup1".to_string(), "ws://backup1:8080".to_string());
     let backup2 = Endpoint::new("backup2".to_string(), "ws://backup2:8080".to_string());
 
-    manager.register_backup(primary.clone(), backup1.clone()).await?;
-    manager.register_backup(primary.clone(), backup2.clone()).await?;
+    manager
+        .register_backup(primary.clone(), backup1.clone())
+        .await?;
+    manager
+        .register_backup(primary.clone(), backup2.clone())
+        .await?;
 
     println!("\nRegistered endpoints:");
     println!("  Primary: {} ({})", primary.id, primary.url);
@@ -234,7 +243,9 @@ async fn demo_failover() -> Result<()> {
     let mut session = SessionState::new("demo_session".to_string());
     session.add_pending_message("message1".to_string());
     session.add_pending_message("message2".to_string());
-    session.metadata.insert("user_id".to_string(), "user123".to_string());
+    session
+        .metadata
+        .insert("user_id".to_string(), "user123".to_string());
 
     manager.save_session(session.clone()).await;
 
@@ -247,7 +258,10 @@ async fn demo_failover() -> Result<()> {
     println!("Triggering failover...");
 
     let new_endpoint = manager.trigger_failover(&primary).await?;
-    println!("✓ Failover completed to: {} ({})", new_endpoint.id, new_endpoint.url);
+    println!(
+        "✓ Failover completed to: {} ({})",
+        new_endpoint.id, new_endpoint.url
+    );
 
     // Restore session
     println!("\nRestoring session...");
@@ -301,8 +315,12 @@ async fn demo_integrated_scenario() -> Result<()> {
     let failover_config = FailoverConfig::default();
     let mut failover = FailoverManager::new(failover_config);
 
-    failover.register_backup(server1.clone(), server2.clone()).await?;
-    failover.register_backup(server1.clone(), server3.clone()).await?;
+    failover
+        .register_backup(server1.clone(), server2.clone())
+        .await?;
+    failover
+        .register_backup(server1.clone(), server3.clone())
+        .await?;
 
     println!("2. Failover configured for primary server");
 
@@ -313,7 +331,10 @@ async fn demo_integrated_scenario() -> Result<()> {
 
     // Select server for transfer
     let selected_server = balancer.select_endpoint().await?;
-    println!("\n✓ Selected server: {} ({})", selected_server.id, selected_server.url);
+    println!(
+        "\n✓ Selected server: {} ({})",
+        selected_server.id, selected_server.url
+    );
 
     balancer.increment_connections(&selected_server.id);
 
@@ -350,7 +371,9 @@ async fn demo_integrated_scenario() -> Result<()> {
     // Simulate transfer with failure
     for i in 1..=5 {
         let bytes = (file_size * i) / 10;
-        transfer_manager.update_progress(&transfer_id, bytes, Duration::from_millis(200)).await;
+        transfer_manager
+            .update_progress(&transfer_id, bytes, Duration::from_millis(200))
+            .await;
 
         let progress = transfer_manager.get_progress(&transfer_id).await.unwrap();
         println!(
@@ -365,7 +388,10 @@ async fn demo_integrated_scenario() -> Result<()> {
             println!("Triggering failover...");
 
             let backup_server = failover.trigger_failover(&selected_server).await?;
-            println!("✓ Failover to: {} ({})", backup_server.id, backup_server.url);
+            println!(
+                "✓ Failover to: {} ({})",
+                backup_server.id, backup_server.url
+            );
 
             balancer.decrement_connections(&selected_server.id);
             balancer.increment_connections(&backup_server.id);
@@ -379,7 +405,9 @@ async fn demo_integrated_scenario() -> Result<()> {
     // Complete remaining transfer
     for i in 6..=10 {
         let bytes = (file_size * i) / 10;
-        transfer_manager.update_progress(&transfer_id, bytes, Duration::from_millis(200)).await;
+        transfer_manager
+            .update_progress(&transfer_id, bytes, Duration::from_millis(200))
+            .await;
 
         let progress = transfer_manager.get_progress(&transfer_id).await.unwrap();
         println!(
@@ -400,13 +428,18 @@ async fn demo_integrated_scenario() -> Result<()> {
     // Show final statistics
     let balancer_stats = balancer.get_statistics().await;
     println!("\nFinal Statistics:");
-    println!("  Active Endpoints: {}/{}", balancer_stats.healthy_endpoints, balancer_stats.total_endpoints);
+    println!(
+        "  Active Endpoints: {}/{}",
+        balancer_stats.healthy_endpoints, balancer_stats.total_endpoints
+    );
     println!("  Total Requests: {}", balancer_stats.total_requests);
 
     for endpoint_stats in balancer_stats.endpoints {
         println!(
             "  {} - Connections: {}, Requests: {}",
-            endpoint_stats.endpoint_id, endpoint_stats.active_connections, endpoint_stats.total_requests
+            endpoint_stats.endpoint_id,
+            endpoint_stats.active_connections,
+            endpoint_stats.total_requests
         );
     }
 

@@ -93,11 +93,11 @@ impl TransferProgress {
     /// Updates progress with new transferred bytes
     pub fn update(&mut self, bytes: u64, elapsed: Duration) {
         self.transferred_bytes += bytes;
-        
+
         let elapsed_secs = elapsed.as_secs_f64();
         if elapsed_secs > 0.0 {
             self.speed = bytes as f64 / elapsed_secs;
-            
+
             let remaining_bytes = self.total_bytes.saturating_sub(self.transferred_bytes);
             if self.speed > 0.0 {
                 let eta_secs = remaining_bytes as f64 / self.speed;
@@ -166,7 +166,7 @@ impl FileChunk {
     fn calculate_checksum(data: &[u8]) -> String {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
-        
+
         let mut hasher = DefaultHasher::new();
         data.hash(&mut hasher);
         format!("{:x}", hasher.finish())
@@ -233,13 +233,7 @@ impl TransferManager {
     ) {
         let mut transfers = self.transfers.write().await;
         let progress = TransferProgress::new(transfer_id.clone(), total_bytes);
-        transfers.insert(
-            transfer_id,
-            ManagedTransfer {
-                progress,
-                options,
-            },
-        );
+        transfers.insert(transfer_id, ManagedTransfer { progress, options });
     }
 
     /// Updates transfer progress
@@ -307,9 +301,9 @@ impl FileTransferProtocol for TransferManager {
         let transfer_id = uuid::Uuid::new_v4().to_string();
 
         // Get file size
-        let metadata = tokio::fs::metadata(file).await.map_err(|e| {
-            Error::Internal(format!("Failed to read file metadata: {}", e))
-        })?;
+        let metadata = tokio::fs::metadata(file)
+            .await
+            .map_err(|e| Error::Internal(format!("Failed to read file metadata: {}", e)))?;
         let total_bytes = metadata.len();
 
         // Register transfer
@@ -343,8 +337,7 @@ impl FileTransferProtocol for TransferManager {
     }
 
     async fn pause(&self, transfer_id: &TransferId) -> Result<()> {
-        self.update_state(transfer_id, TransferState::Paused)
-            .await;
+        self.update_state(transfer_id, TransferState::Paused).await;
         Ok(())
     }
 
@@ -452,11 +445,7 @@ mod tests {
             .update_state(&transfer_id, TransferState::InProgress)
             .await;
         assert_eq!(
-            manager
-                .get_progress(&transfer_id)
-                .await
-                .unwrap()
-                .state,
+            manager.get_progress(&transfer_id).await.unwrap().state,
             TransferState::InProgress
         );
 
@@ -464,11 +453,7 @@ mod tests {
             .update_state(&transfer_id, TransferState::Paused)
             .await;
         assert_eq!(
-            manager
-                .get_progress(&transfer_id)
-                .await
-                .unwrap()
-                .state,
+            manager.get_progress(&transfer_id).await.unwrap().state,
             TransferState::Paused
         );
     }

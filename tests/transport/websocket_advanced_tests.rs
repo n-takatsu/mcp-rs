@@ -323,7 +323,10 @@ async fn test_integration_failover_with_session_restoration() {
     assert_eq!(new_endpoint.id, "backup");
 
     // Restore session
-    let restored = failover_manager.restore_session("session_456").await.unwrap();
+    let restored = failover_manager
+        .restore_session("session_456")
+        .await
+        .unwrap();
     assert_eq!(restored.pending_messages.len(), 1);
 }
 
@@ -336,10 +339,10 @@ async fn test_weighted_round_robin_distribution() {
 
     let mut manager = BalancerManager::new(config);
 
-    let endpoint1 = Endpoint::new("ep1".to_string(), "ws://localhost:8081".to_string())
-        .with_weight(1);
-    let endpoint2 = Endpoint::new("ep2".to_string(), "ws://localhost:8082".to_string())
-        .with_weight(3);
+    let endpoint1 =
+        Endpoint::new("ep1".to_string(), "ws://localhost:8081".to_string()).with_weight(1);
+    let endpoint2 =
+        Endpoint::new("ep2".to_string(), "ws://localhost:8082".to_string()).with_weight(3);
 
     manager.register_endpoint(endpoint1).await;
     manager.register_endpoint(endpoint2).await;

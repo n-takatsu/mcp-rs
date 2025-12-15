@@ -160,7 +160,7 @@ impl FailoverManager {
     fn calculate_retry_delay(&self, attempt: u32) -> Duration {
         let delay_secs = self.config.initial_retry_delay.as_secs_f64()
             * self.config.backoff_multiplier.powi(attempt as i32);
-        
+
         let capped_delay = delay_secs.min(self.config.max_retry_delay.as_secs_f64());
         Duration::from_secs_f64(capped_delay)
     }
@@ -187,7 +187,7 @@ impl FailoverManager {
     async fn record_failover_event(&self, event: FailoverEvent) {
         let mut history = self.history.write().await;
         history.push(event);
-        
+
         // Keep only last 1000 events
         if history.len() > 1000 {
             history.remove(0);
@@ -237,7 +237,7 @@ impl FailoverManager {
 impl Failover for FailoverManager {
     async fn register_backup(&mut self, primary: Endpoint, backup: Endpoint) -> Result<()> {
         let mut mappings = self.mappings.write().await;
-        
+
         mappings
             .entry(primary.id.clone())
             .or_insert_with(|| FailoverMapping {
@@ -261,10 +261,7 @@ impl Failover for FailoverManager {
 
         // Try to find backup endpoint
         let backup = self.select_next_backup(&endpoint.id).await.ok_or_else(|| {
-            Error::Internal(format!(
-                "No backup endpoint available for {}",
-                endpoint.id
-            ))
+            Error::Internal(format!("No backup endpoint available for {}", endpoint.id))
         })?;
 
         // Record failover event
@@ -419,7 +416,10 @@ mod tests {
         let primary = Endpoint::new("primary".to_string(), "ws://primary".to_string());
         let backup = Endpoint::new("backup".to_string(), "ws://backup".to_string());
 
-        manager.register_backup(primary.clone(), backup).await.unwrap();
+        manager
+            .register_backup(primary.clone(), backup)
+            .await
+            .unwrap();
         manager.trigger_failover(&primary).await.unwrap();
 
         let history = manager.get_failover_history(10);
