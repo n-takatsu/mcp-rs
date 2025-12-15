@@ -354,7 +354,7 @@ mod tests {
         assert_eq!(backups[0].id, "backup");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_failover_manager_trigger_failover() {
         let config = FailoverConfig::default();
         let mut manager = FailoverManager::new(config);
@@ -408,7 +408,7 @@ mod tests {
         assert_eq!(manager_mut.get_retry_count(&primary.id).await, 1);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_failover_history() {
         let config = FailoverConfig::default();
         let mut manager = FailoverManager::new(config);

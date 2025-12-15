@@ -488,7 +488,7 @@ mod tests {
             strategy: BalancingStrategy::RoundRobin,
             ..Default::default()
         };
-        let mut balancer = BalancerManager::new(config);
+        let balancer = BalancerManager::new(config);
 
         let endpoints = vec![
             Endpoint::new("ep1".to_string(), "ws://server1".to_string()),
@@ -497,7 +497,7 @@ mod tests {
         ];
 
         for ep in endpoints.clone() {
-            balancer.register_endpoint(ep);
+            balancer.register_endpoint(ep).await;
         }
 
         // Should cycle through endpoints
@@ -516,7 +516,7 @@ mod tests {
             strategy: BalancingStrategy::LeastConnections,
             ..Default::default()
         };
-        let mut balancer = BalancerManager::new(config);
+        let balancer = BalancerManager::new(config);
 
         let endpoints = vec![
             Endpoint::new("ep1".to_string(), "ws://server1".to_string()),
@@ -524,7 +524,7 @@ mod tests {
         ];
 
         for ep in endpoints.clone() {
-            balancer.register_endpoint(ep);
+            balancer.register_endpoint(ep).await;
         }
 
         // Simulate connections on ep1
@@ -543,10 +543,10 @@ mod tests {
     #[tokio::test]
     async fn test_balancer_health_reporting() {
         let config = BalancerConfig::default();
-        let mut balancer = BalancerManager::new(config);
+        let balancer = BalancerManager::new(config);
 
         let endpoint = Endpoint::new("ep1".to_string(), "ws://server1".to_string());
-        balancer.register_endpoint(endpoint.clone());
+        balancer.register_endpoint(endpoint.clone()).await;
 
         // Report unhealthy
         balancer.report_health(&endpoint.id, false).await;
@@ -561,7 +561,7 @@ mod tests {
             strategy: BalancingStrategy::WeightedRoundRobin,
             ..Default::default()
         };
-        let mut balancer = BalancerManager::new(config);
+        let balancer = BalancerManager::new(config);
 
         let endpoints = vec![
             Endpoint::new("ep1".to_string(), "ws://server1".to_string()).with_weight(3),
@@ -569,7 +569,7 @@ mod tests {
         ];
 
         for ep in endpoints.clone() {
-            balancer.register_endpoint(ep);
+            balancer.register_endpoint(ep).await;
         }
 
         // ep1 should be selected more often (75% of the time)
