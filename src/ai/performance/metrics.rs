@@ -276,7 +276,10 @@ mod tests {
     #[test]
     fn test_metric_value_conversion() {
         assert_eq!(MetricValue::Int(42).as_f64(), Some(42.0));
-        assert_eq!(MetricValue::Float(std::f64::consts::PI).as_f64(), Some(std::f64::consts::PI));
+        assert_eq!(
+            MetricValue::Float(std::f64::consts::PI).as_f64(),
+            Some(std::f64::consts::PI)
+        );
         assert_eq!(MetricValue::Bool(true).as_f64(), Some(1.0));
         assert_eq!(MetricValue::Bool(false).as_f64(), Some(0.0));
         assert_eq!(MetricValue::String("test".to_string()).as_f64(), None);
