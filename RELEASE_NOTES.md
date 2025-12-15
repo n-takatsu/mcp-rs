@@ -4,6 +4,66 @@
 
 Our project follows a detailed 0.01 increment versioning strategy to provide granular tracking of development progress and feature implementation.
 
+## 🚀 v0.17.0 - Code Architecture Refactoring
+
+**Release Date:** 2025-12-15
+**Focus:** mod.rsアンチパターン解消による保守性・可読性の向上
+
+### ✅ Major Refactoring (Issues #162-166)
+
+#### 🏗️ Module Structure Improvements
+
+**5つの主要モジュールを責務別に分割**:
+
+1. **Analytics Modules** (#162)
+   - `analytics/anomaly`: 302行 → 4ファイル (types, detector, realtime, mod)
+   - `analytics/prediction`: 259行 → 4ファイル (types, predictor, trend, mod)
+
+2. **Operator Module** (#163)
+   - `operator`: 312行 → 6ファイル (types, resources, mcpserver, plugin, security, mod)
+
+3. **Plugin Isolation Module** (#164)
+   - `plugin_isolation`: 560行 → 5ファイル (types, config, manager, health, mod)
+   - 最大のmod.rsファイルを分割
+
+4. **Security IDS Module** (#165)
+   - `security/ids`: 544行 → 4ファイル (types, config, detector, mod)
+
+5. **Transport Module** (#166)
+   - `transport`: 260行 → 6ファイル (types, transport_trait, error, config, factory, mod)
+
+#### 📊 統計
+
+- **削除**: 1,351行の巨大mod.rsファイル
+- **追加**: 1,453行の明確に分離されたモジュール
+- **新規ファイル**: 13個
+- **変更ファイル**: 20個
+
+#### ✨ メリット
+
+- **Single Responsibility**: 各ファイルが1つの責務を持つ
+- **Maintainability**: 型定義、設定、実装の明確な分離
+- **Testability**: テストがより独立し理解しやすく
+- **Navigation**: IDE内でのコードナビゲーション改善
+- **Modularity**: 再利用性と拡張性の向上
+
+#### 🧪 品質保証
+
+- **全377テスト合格** (100% pass rate)
+- **Clippy警告ゼロ**: 全モジュールでクリーン
+- **フォーマットチェック通過**: cargo fmt準拠
+- **Public API不変**: 破壊的変更なし
+
+#### 📦 関連PR
+
+- PR #168: Operator module refactoring
+- PR #169: Plugin isolation module refactoring
+- PR #170: Security IDS module refactoring
+- PR #171: Transport module refactoring
+- PR #172: Analytics modules refactoring (to develop)
+
+---
+
 ## 🚀 v0.16.0 - PostgreSQL Phase 2 完成
 
 **Release Date:** 2025-11-23
