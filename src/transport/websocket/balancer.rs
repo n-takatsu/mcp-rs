@@ -302,12 +302,10 @@ impl BalancerManager {
         }
 
         use std::collections::hash_map::RandomState;
-        use std::hash::{BuildHasher, Hash, Hasher};
+        use std::hash::BuildHasher;
 
         let random_state = RandomState::new();
-        let mut hasher = random_state.build_hasher();
-        std::time::SystemTime::now().hash(&mut hasher);
-        let index = (hasher.finish() as usize) % available.len();
+        let index = (random_state.hash_one(std::time::SystemTime::now()) as usize) % available.len();
 
         Some(available[index].clone())
     }
