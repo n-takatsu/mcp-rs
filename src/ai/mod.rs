@@ -4,5 +4,6 @@
 
 pub mod content;
 pub mod llm;
+pub mod nlp;
 
 pub use llm::{LlmClient, LlmConfig, LlmProvider, LlmResponse};
