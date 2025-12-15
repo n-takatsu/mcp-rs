@@ -305,7 +305,8 @@ impl BalancerManager {
         use std::hash::BuildHasher;
 
         let random_state = RandomState::new();
-        let index = (random_state.hash_one(std::time::SystemTime::now()) as usize) % available.len();
+        let index =
+            (random_state.hash_one(std::time::SystemTime::now()) as usize) % available.len();
 
         Some(available[index].clone())
     }
