@@ -9,6 +9,7 @@ use mcp_rs::security::ids::{
 };
 use std::collections::HashMap;
 use std::net::IpAddr;
+use std::time::Duration;
 use tracing::{info, Level};
 
 #[tokio::main]
@@ -51,14 +52,14 @@ async fn demo_ids_initialization() -> Result<(), Box<dyn std::error::Error>> {
 
     // カスタム設定でIDS初期化
     let config = IDSConfig {
-        signature_detection: true,
-        behavioral_detection: true,
-        network_monitoring: true,
-        alert_threshold: AlertLevel::Medium,
-        auto_response: false,
-        detection_timeout_ms: 5000,
-        max_concurrent_analysis: 100,
-        learning_mode: false,
+        enabled: true,
+        signature_based_enabled: true,
+        behavioral_based_enabled: true,
+        network_based_enabled: true,
+        min_confidence_threshold: 0.7,
+        alert_enabled: true,
+        auto_block_enabled: false,
+        session_timeout: Duration::from_secs(3600),
     };
 
     let ids = IntrusionDetectionSystem::new(config).await?;

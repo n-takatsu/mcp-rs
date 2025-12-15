@@ -2,6 +2,9 @@
 //!
 //! 構造化されたテストスイート - Phase 2 完了
 
+// AIテスト
+pub mod ai;
+
 // 単体テスト
 pub mod unit;
 

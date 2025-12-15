@@ -5,6 +5,7 @@ pub mod encryption;
 pub mod ids;
 #[cfg(feature = "mfa")]
 pub mod mfa;
+pub mod mtls;
 pub mod rate_limiter;
 pub mod secure_server;
 pub mod sql_injection_protection;
@@ -38,6 +39,13 @@ pub use ids::{
 };
 #[cfg(feature = "mfa")]
 pub use mfa::{MfaConfig, MfaError, TotpAlgorithm, TotpConfig, TotpSecret, TotpVerifier};
+pub use mtls::{
+    CaConfig, Certificate, CertificateAuthority, CertificateManager, CertificateManagerConfig,
+    CertificateRequest, CertificateStatistics, CertificateStatus, CertificateStore,
+    ExtendedKeyUsage, IssuedCertificate, KeyAlgorithm, KeyUsage, OcspConfig, OcspResponder,
+    OcspResponse, OcspStatus, RevocationReason, RotationConfig, RotationEvent, RotationScheduler,
+    RotationStatus, StoreConfig, Subject, VerificationResult,
+};
 pub use rate_limiter::RateLimiter;
 pub use secure_server::{SecureMcpServer, SecurityConfig, SecurityMetrics};
 pub use sql_injection_protection::{
