@@ -104,7 +104,9 @@ fn test_entity_extractor_type_filter() {
         .extract_type("昨日の投稿 123 を更新", EntityType::DateTime)
         .unwrap();
 
-    assert!(entities.iter().all(|e| e.entity_type == EntityType::DateTime));
+    assert!(entities
+        .iter()
+        .all(|e| e.entity_type == EntityType::DateTime));
 }
 
 #[tokio::test]

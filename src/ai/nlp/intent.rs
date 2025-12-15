@@ -311,7 +311,7 @@ impl IntentClassifier for DefaultIntentClassifier {
         _top_k: usize,
     ) -> Result<Vec<Intent>> {
         let primary = self.classify(parsed).await?;
-        
+
         // For now, just return the primary intent
         // In a real implementation, we would generate multiple alternatives
         Ok(vec![primary])

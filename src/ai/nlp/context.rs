@@ -105,7 +105,7 @@ impl ConversationContext {
 
         // Check recent turns for common references
         let reference_lower = reference.to_lowercase();
-        
+
         // Check for temporal references
         if reference_lower.contains("that") || reference_lower.contains("it") {
             // Look for the most recent post/page/user reference
@@ -200,7 +200,8 @@ impl DefaultContextManager {
 
 impl ContextManager for DefaultContextManager {
     fn add_turn(&mut self, query: &str, response: &str) {
-        self.context.add_turn(query.to_string(), response.to_string());
+        self.context
+            .add_turn(query.to_string(), response.to_string());
     }
 
     fn get_context(&self) -> &ConversationContext {
@@ -279,7 +280,7 @@ mod tests {
         let mut entities = HashMap::new();
         entities.insert("last_post".to_string(), "post-123".to_string());
         context.merge_entities(entities);
-        
+
         assert_eq!(
             context.resolve_entity("last_post"),
             Some("post-123".to_string())
@@ -290,13 +291,13 @@ mod tests {
     fn test_context_manager() {
         let mut manager = DefaultContextManager::new("session-123".to_string());
         manager.add_turn("Hello", "Hi");
-        
+
         assert_eq!(manager.get_context().turns.len(), 1);
-        
+
         let mut entities = HashMap::new();
         entities.insert("test".to_string(), "value".to_string());
         manager.merge_entities(entities);
-        
+
         assert_eq!(manager.resolve_entity("test"), Some("value".to_string()));
     }
 
@@ -305,7 +306,7 @@ mod tests {
         let mut manager = DefaultContextManager::new("session-123".to_string());
         manager.add_turn("Hello", "Hi");
         manager.clear();
-        
+
         assert_eq!(manager.get_context().turns.len(), 0);
     }
 }

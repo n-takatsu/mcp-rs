@@ -9,7 +9,7 @@ pub mod entity;
 pub mod intent;
 pub mod parser;
 
-pub use context::{ConversationContext, ConversationTurn, ContextManager, DefaultContextManager};
+pub use context::{ContextManager, ConversationContext, ConversationTurn, DefaultContextManager};
 pub use entity::{Entity, EntityExtractor, EntityType};
 pub use intent::{Action, Intent, IntentClassifier};
 pub use parser::{ParsedQuery, QueryParser, Token};

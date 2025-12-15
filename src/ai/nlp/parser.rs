@@ -241,15 +241,7 @@ impl DefaultQueryParser {
             "素晴らしい",
             "最高",
         ];
-        let negative_words = [
-            "bad",
-            "terrible",
-            "awful",
-            "poor",
-            "悪い",
-            "ひどい",
-            "最悪",
-        ];
+        let negative_words = ["bad", "terrible", "awful", "poor", "悪い", "ひどい", "最悪"];
 
         let mut positive_count = 0;
         let mut negative_count = 0;
@@ -282,9 +274,7 @@ impl DefaultQueryParser {
         // Check for Japanese characters
         let has_hiragana = text.chars().any(|c| ('\u{3040}'..='\u{309F}').contains(&c));
         let has_katakana = text.chars().any(|c| ('\u{30A0}'..='\u{30FF}').contains(&c));
-        let has_kanji = text
-            .chars()
-            .any(|c| ('\u{4E00}'..='\u{9FAF}').contains(&c));
+        let has_kanji = text.chars().any(|c| ('\u{4E00}'..='\u{9FAF}').contains(&c));
 
         if has_hiragana || has_katakana || has_kanji {
             Some("ja".to_string())
@@ -304,16 +294,7 @@ impl DefaultQueryParser {
 
         // Common verbs
         let verbs = [
-            "create",
-            "update",
-            "delete",
-            "get",
-            "list",
-            "search",
-            "作成",
-            "更新",
-            "削除",
-            "取得",
+            "create", "update", "delete", "get", "list", "search", "作成", "更新", "削除", "取得",
             "検索",
         ];
         if verbs.iter().any(|v| text_lower.contains(v)) {
@@ -386,13 +367,7 @@ impl QueryParser for DefaultQueryParser {
     fn normalize(&self, text: &str) -> String {
         text.trim()
             .chars()
-            .map(|c| {
-                if c.is_whitespace() {
-                    ' '
-                } else {
-                    c
-                }
-            })
+            .map(|c| if c.is_whitespace() { ' ' } else { c })
             .collect::<String>()
             .split_whitespace()
             .collect::<Vec<_>>()

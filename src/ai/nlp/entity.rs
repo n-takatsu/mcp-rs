@@ -348,7 +348,9 @@ mod tests {
         let extractor = DefaultEntityExtractor::new();
         let entities = extractor.extract("昨日の投稿を更新してください").unwrap();
         assert!(!entities.is_empty());
-        assert!(entities.iter().any(|e| e.entity_type == EntityType::DateTime));
+        assert!(entities
+            .iter()
+            .any(|e| e.entity_type == EntityType::DateTime));
     }
 
     #[test]
