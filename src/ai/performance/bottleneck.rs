@@ -358,7 +358,7 @@ impl BottleneckDetector for DefaultBottleneckDetector {
 
     fn prioritize(&self, bottlenecks: &[Bottleneck]) -> Vec<Bottleneck> {
         let mut sorted = bottlenecks.to_vec();
-        sorted.sort_by(|a, b| b.priority_score().cmp(&a.priority_score()));
+        sorted.sort_by_key(|b| std::cmp::Reverse(b.priority_score()));
         sorted
     }
 }

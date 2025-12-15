@@ -208,7 +208,7 @@ fn demo_multiple_bottlenecks() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let analyzer = DefaultPerformanceAnalyzer::new();
-    let result = analyzer.analyze(&metrics)?;
+    let _result = analyzer.analyze(&metrics)?;
     let anomalies = analyzer.detect_anomalies(&metrics);
 
     if !anomalies.is_empty() {

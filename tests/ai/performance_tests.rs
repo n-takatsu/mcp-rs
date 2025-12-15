@@ -2,12 +2,10 @@
 
 use mcp_rs::ai::performance::{
     analyzer::{AnalysisSeverity, DefaultPerformanceAnalyzer, PerformanceAnalyzer},
-    bottleneck::{
-        Bottleneck, BottleneckCategory, BottleneckDetector, DefaultBottleneckDetector, Severity,
-    },
+    bottleneck::{BottleneckCategory, BottleneckDetector, DefaultBottleneckDetector, Severity},
     metrics::{MetricsHistory, SystemMetrics},
-    optimizer::{DefaultOptimizationAdvisor, OptimizationAdvisor, OptimizationStrategy},
-    recommendation::{DefaultRecommendationEngine, ImpactLevel, RecommendationEngine},
+    optimizer::{DefaultOptimizationAdvisor, OptimizationAdvisor},
+    recommendation::{DefaultRecommendationEngine, RecommendationEngine},
 };
 
 #[test]
@@ -212,7 +210,7 @@ fn test_impact_estimate_calculation() {
         // Verify impact estimate is calculated
         let overall_score = rec.impact_estimate.overall_score();
         assert!(
-            overall_score >= 0.0 && overall_score <= 1.0,
+            (0.0..=1.0).contains(&overall_score),
             "Overall score should be between 0 and 1"
         );
 
