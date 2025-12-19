@@ -41,8 +41,7 @@ impl IsolatedPluginManager {
             isolation_engine::IsolationEngine::new(config.isolation_config.clone()).await?,
         );
 
-        let lifecycle_manager =
-            Arc::new(lifecycle_manager::LifecycleManager::new().await?);
+        let lifecycle_manager = Arc::new(lifecycle_manager::LifecycleManager::new().await?);
 
         let sandbox =
             Arc::new(sandbox::SecuritySandbox::new(config.security_policy.clone()).await?);
@@ -50,9 +49,8 @@ impl IsolatedPluginManager {
         let communication_broker =
             Arc::new(communication_broker::CommunicationBroker::new().await?);
 
-        let monitoring = Arc::new(
-            monitoring::MonitoringSystem::new(config.monitoring_config.clone()).await?,
-        );
+        let monitoring =
+            Arc::new(monitoring::MonitoringSystem::new(config.monitoring_config.clone()).await?);
 
         Ok(Self {
             plugins: Arc::new(RwLock::new(HashMap::new())),
@@ -189,7 +187,9 @@ impl IsolatedPluginManager {
         }
 
         // 通信ブローカーから登録解除
-        self.communication_broker.unregister_plugin(plugin_id).await?;
+        self.communication_broker
+            .unregister_plugin(plugin_id)
+            .await?;
 
         // プラグイン状態更新
         let mut plugin = plugin_arc.lock().await;
@@ -238,7 +238,9 @@ impl IsolatedPluginManager {
         );
 
         // 監視システムにアラート送信
-        self.monitoring.send_security_alert(plugin_id, &reason).await?;
+        self.monitoring
+            .send_security_alert(plugin_id, &reason)
+            .await?;
 
         Ok(())
     }

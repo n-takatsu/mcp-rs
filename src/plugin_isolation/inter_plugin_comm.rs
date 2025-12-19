@@ -40,7 +40,7 @@ pub struct CommunicationRule {
 }
 
 /// ルールステータス
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RuleStatus {
     /// 有効
     Active,
@@ -113,7 +113,7 @@ pub enum CommEventType {
 }
 
 /// 通信結果
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CommResult {
     /// 成功
     Success,
@@ -213,10 +213,7 @@ impl InterPluginCommunicationController {
         payload: Vec<u8>,
         priority: u32,
     ) -> Result<Uuid, McpError> {
-        debug!(
-            "Sending message from {:?} to {:?}",
-            from_plugin, to_plugin
-        );
+        debug!("Sending message from {:?} to {:?}", from_plugin, to_plugin);
 
         // レート制限チェック
         self.check_rate_limit(from_plugin).await?;
@@ -240,9 +237,7 @@ impl InterPluginCommunicationController {
 
         let mut queue = self.message_queue.lock().await;
         if queue.messages.len() >= queue.max_size {
-            return Err(McpError::PluginError(
-                "Message queue is full".to_string(),
-            ));
+            return Err(McpError::PluginError("Message queue is full".to_string()));
         }
 
         queue.messages.push(message);
@@ -266,7 +261,10 @@ impl InterPluginCommunicationController {
     }
 
     /// メッセージを受信
-    pub async fn receive_message(&self, plugin_id: Uuid) -> Result<Option<QueuedMessage>, McpError> {
+    pub async fn receive_message(
+        &self,
+        plugin_id: Uuid,
+    ) -> Result<Option<QueuedMessage>, McpError> {
         debug!("Receiving message for plugin: {:?}", plugin_id);
 
         let mut queue = self.message_queue.lock().await;
@@ -301,13 +299,13 @@ impl InterPluginCommunicationController {
     async fn check_rate_limit(&self, plugin_id: Uuid) -> Result<(), McpError> {
         let mut limiters = self.rate_limiters.write().await;
 
-        let limiter = limiters.entry(plugin_id).or_insert_with(|| {
-            PluginRateLimiter {
+        let limiter = limiters
+            .entry(plugin_id)
+            .or_insert_with(|| PluginRateLimiter {
                 max_rate: self.config.default_rate_limit,
                 window_seconds: 1,
                 recent_messages: Vec::new(),
-            }
-        });
+            });
 
         let now = chrono::Utc::now();
         let window_start = now - chrono::Duration::seconds(limiter.window_seconds as i64);
@@ -319,13 +317,8 @@ impl InterPluginCommunicationController {
 
         // レート制限チェック
         if limiter.recent_messages.len() >= limiter.max_rate as usize {
-            warn!(
-                "Rate limit exceeded for plugin: {:?}",
-                plugin_id
-            );
-            return Err(McpError::PluginError(
-                "Rate limit exceeded".to_string(),
-            ));
+            warn!("Rate limit exceeded for plugin: {:?}", plugin_id);
+            return Err(McpError::PluginError("Rate limit exceeded".to_string()));
         }
 
         // タイムスタンプを記録
@@ -353,7 +346,9 @@ impl InterPluginCommunicationController {
                 }
 
                 if !rule.allowed_message_types.is_empty()
-                    && !rule.allowed_message_types.contains(&message_type.to_string())
+                    && !rule
+                        .allowed_message_types
+                        .contains(&message_type.to_string())
                 {
                     return Err(McpError::PluginError(format!(
                         "Message type '{}' not allowed",
@@ -528,13 +523,7 @@ mod tests {
 
         // メッセージ送信
         let message_id = controller
-            .send_message(
-                from_plugin,
-                to_plugin,
-                "test".to_string(),
-                vec![1, 2, 3],
-                1,
-            )
+            .send_message(from_plugin, to_plugin, "test".to_string(), vec![1, 2, 3], 1)
             .await
             .unwrap();
 
@@ -573,36 +562,18 @@ mod tests {
 
         // 2つのメッセージは成功するはず
         controller
-            .send_message(
-                from_plugin,
-                to_plugin,
-                "test".to_string(),
-                vec![],
-                1,
-            )
+            .send_message(from_plugin, to_plugin, "test".to_string(), vec![], 1)
             .await
             .unwrap();
 
         controller
-            .send_message(
-                from_plugin,
-                to_plugin,
-                "test".to_string(),
-                vec![],
-                1,
-            )
+            .send_message(from_plugin, to_plugin, "test".to_string(), vec![], 1)
             .await
             .unwrap();
 
         // 3つ目はレート制限でエラーになるはず
         let result = controller
-            .send_message(
-                from_plugin,
-                to_plugin,
-                "test".to_string(),
-                vec![],
-                1,
-            )
+            .send_message(from_plugin, to_plugin, "test".to_string(), vec![], 1)
             .await;
 
         assert!(result.is_err());

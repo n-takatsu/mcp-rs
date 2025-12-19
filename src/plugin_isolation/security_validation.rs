@@ -1021,8 +1021,6 @@ pub struct DetectionPattern {
     pub confidence: u8,
 }
 
-/// 設定構造体群
-
 /// セキュリティ検証設定
 #[derive(Debug, Clone)]
 pub struct SecurityValidationConfig {
@@ -1356,7 +1354,7 @@ impl SecurityValidationSystem {
 
         // 静的解析結果の評価
         if let Some(static_analysis) = &result.static_analysis {
-            total_score = total_score.saturating_sub((100 - static_analysis.security_score as u32));
+            total_score = total_score.saturating_sub(100 - static_analysis.security_score as u32);
 
             for issue in &static_analysis.security_issues {
                 findings.push(SecurityFinding {

@@ -141,6 +141,18 @@ pub enum Error {
     /// Timeout error
     #[error("Timeout")]
     Timeout,
+
+    /// Plugin error variant
+    #[error("Plugin error: {0}")]
+    PluginError(String),
+
+    /// Isolation error variant
+    #[error("Isolation error: {0}")]
+    IsolationError(String),
+
+    /// Security error variant (for direct string messages)
+    #[error("Security error: {0}")]
+    SecurityError(String),
 }
 
 impl Error {

@@ -2,13 +2,13 @@
 //!
 //! 最小権限、セキュリティプロファイル、シークレット管理を提供します。
 
-use bollard::models::{HostConfig, DeviceRequest};
+use crate::docker_runtime::{DockerError, Result};
+use base64::{engine::general_purpose, Engine as _};
+use bollard::models::{DeviceRequest, HostConfig};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use base64::{Engine as _, engine::general_purpose};
-use crate::docker_runtime::{DockerError, Result};
 
 /// セキュリティレベル
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
@@ -28,32 +28,32 @@ pub enum SecurityLevel {
 pub struct SecurityProfile {
     /// セキュリティレベル
     pub level: SecurityLevel,
-    
+
     /// 読み取り専用ルートファイルシステム
     pub read_only_rootfs: bool,
-    
+
     /// 特権モード無効化
     pub privileged: bool,
-    
+
     /// ネットワークアクセス制限
     pub no_new_privileges: bool,
-    
+
     /// Capabilities（Linux）
     pub cap_add: Vec<String>,
     pub cap_drop: Vec<String>,
-    
+
     /// AppArmor プロファイル
     pub apparmor_profile: Option<String>,
-    
+
     /// Seccomp プロファイル
     pub seccomp_profile: Option<String>,
-    
+
     /// SELinux ラベル
     pub selinux_label: Option<String>,
-    
+
     /// ユーザー/グループID
     pub user: Option<String>,
-    
+
     /// 許可するデバイス
     pub devices: Vec<String>,
 }
@@ -105,7 +105,7 @@ impl SecurityProfile {
         host_config.cap_add = Some(self.cap_add.clone());
         host_config.cap_drop = Some(self.cap_drop.clone());
         host_config.security_opt = self.build_security_opts();
-        
+
         host_config
     }
 
@@ -148,13 +148,13 @@ impl Default for SecurityProfile {
 pub struct Secret {
     /// シークレット名
     pub name: String,
-    
+
     /// 暗号化された値
     pub encrypted_value: String,
-    
+
     /// 作成日時
     pub created_at: chrono::DateTime<chrono::Utc>,
-    
+
     /// 最終更新日時
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
@@ -163,7 +163,7 @@ pub struct Secret {
 pub struct SecretManager {
     /// シークレット保管（暗号化済み）
     secrets: Arc<RwLock<HashMap<String, Secret>>>,
-    
+
     /// 暗号化キー（実際にはより安全な管理が必要）
     encryption_key: Vec<u8>,
 }
@@ -180,7 +180,7 @@ impl SecretManager {
     /// シークレットを追加（暗号化して保存）
     pub async fn add_secret(&self, name: String, value: String) -> Result<()> {
         let encrypted = self.encrypt(&value)?;
-        
+
         let secret = Secret {
             name: name.clone(),
             encrypted_value: encrypted,
@@ -198,8 +198,9 @@ impl SecretManager {
     /// シークレットを取得（復号化して返す）
     pub async fn get_secret(&self, name: &str) -> Result<String> {
         let secrets = self.secrets.read().await;
-        
-        let secret = secrets.get(name)
+
+        let secret = secrets
+            .get(name)
             .ok_or_else(|| DockerError::ApiError(format!("Secret {} not found", name)))?;
 
         self.decrypt(&secret.encrypted_value)
@@ -208,8 +209,9 @@ impl SecretManager {
     /// シークレットを削除
     pub async fn remove_secret(&self, name: &str) -> Result<()> {
         let mut secrets = self.secrets.write().await;
-        
-        secrets.remove(name)
+
+        secrets
+            .remove(name)
             .ok_or_else(|| DockerError::ApiError(format!("Secret {} not found", name)))?;
 
         tracing::info!("Secret removed successfully");
@@ -247,16 +249,17 @@ impl SecretManager {
         // ランダムなnonceを生成
         let mut nonce_bytes = [0u8; 12];
         rand::thread_rng().fill_bytes(&mut nonce_bytes);
-        let nonce = Nonce::from_slice(&nonce_bytes);
+        let nonce = *Nonce::from_slice(&nonce_bytes);
 
         // 暗号化
-        let ciphertext = cipher.encrypt(nonce, plaintext.as_bytes())
+        let ciphertext = cipher
+            .encrypt(nonce, plaintext.as_bytes())
             .map_err(|e| DockerError::ApiError(format!("Encryption failed: {}", e)))?;
 
         // nonce + ciphertextをbase64エンコード
         let mut combined = nonce_bytes.to_vec();
         combined.extend_from_slice(&ciphertext);
-        
+
         Ok(general_purpose::STANDARD.encode(&combined))
     }
 
@@ -268,7 +271,8 @@ impl SecretManager {
         };
 
         // base64デコード
-        let combined = general_purpose::STANDARD.decode(encrypted)
+        let combined = general_purpose::STANDARD
+            .decode(encrypted)
             .map_err(|e| DockerError::ApiError(format!("Decoding error: {}", e)))?;
 
         if combined.len() < 12 {
@@ -277,7 +281,7 @@ impl SecretManager {
 
         // nonce と ciphertext を分離
         let (nonce_bytes, ciphertext) = combined.split_at(12);
-        let nonce = Nonce::from_slice(nonce_bytes);
+        let nonce = *Nonce::from_slice(nonce_bytes);
 
         // 復号化キーの準備
         let key = if self.encryption_key.len() == 32 {
@@ -293,7 +297,8 @@ impl SecretManager {
             .map_err(|e| DockerError::ApiError(format!("Decryption error: {}", e)))?;
 
         // 復号化
-        let plaintext = cipher.decrypt(nonce, ciphertext)
+        let plaintext = cipher
+            .decrypt(nonce, ciphertext)
             .map_err(|e| DockerError::ApiError(format!("Decryption failed: {}", e)))?;
 
         String::from_utf8(plaintext)
@@ -305,10 +310,10 @@ impl SecretManager {
 pub struct SecurityManager {
     /// デフォルトプロファイル
     default_profile: SecurityProfile,
-    
+
     /// カスタムプロファイル
     custom_profiles: Arc<RwLock<HashMap<String, SecurityProfile>>>,
-    
+
     /// シークレット管理
     secret_manager: SecretManager,
 }
@@ -355,14 +360,14 @@ impl SecurityManager {
         // 特権モードは禁止
         if profile.privileged {
             return Err(DockerError::SecurityViolation(
-                "Privileged mode is not allowed".to_string()
+                "Privileged mode is not allowed".to_string(),
             ));
         }
 
         // すべてのCapabilityを追加することは禁止
         if profile.cap_add.iter().any(|c| c.to_uppercase() == "ALL") {
             return Err(DockerError::SecurityViolation(
-                "Adding ALL capabilities is not allowed".to_string()
+                "Adding ALL capabilities is not allowed".to_string(),
             ));
         }
 
@@ -397,7 +402,8 @@ mod tests {
         let manager = SecretManager::new(key);
 
         // シークレット追加
-        manager.add_secret("test".to_string(), "secret_value".to_string())
+        manager
+            .add_secret("test".to_string(), "secret_value".to_string())
             .await
             .unwrap();
 
@@ -417,7 +423,7 @@ mod tests {
     #[tokio::test]
     async fn test_security_manager() {
         let key = b"test-encryption-key-32-bytes!!!".to_vec();
-        let mut manager = SecurityManager::new(key);
+        let manager = SecurityManager::new(key);
 
         // デフォルトプロファイル
         let default = manager.get_default_profile();

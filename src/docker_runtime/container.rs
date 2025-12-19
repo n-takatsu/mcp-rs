@@ -2,34 +2,34 @@
 //!
 //! プラグイン用のコンテナのライフサイクル管理（作成、開始、停止、削除）を提供します。
 
+use crate::docker_runtime::{DockerError, Result};
 use bollard::container::{
     Config, CreateContainerOptions, ListContainersOptions, RemoveContainerOptions,
     StartContainerOptions, StopContainerOptions, WaitContainerOptions,
 };
 use bollard::models::{ContainerInspectResponse, HostConfig, PortBinding};
 use bollard::Docker;
+use futures_util::stream::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use futures_util::stream::StreamExt;
-use crate::docker_runtime::{DockerError, Result};
 
 /// コンテナのリソース制限
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResourceLimits {
     /// メモリ制限（バイト単位）
     pub memory: Option<i64>,
-    
+
     /// メモリスワップ制限（バイト単位）
     pub memory_swap: Option<i64>,
-    
+
     /// CPU割り当て（0.0-1.0）
     pub cpu_quota: Option<i64>,
-    
+
     /// CPU期間（マイクロ秒）
     pub cpu_period: Option<i64>,
-    
+
     /// CPUシェア（相対重み）
     pub cpu_shares: Option<i64>,
 }
@@ -37,10 +37,10 @@ pub struct ResourceLimits {
 impl Default for ResourceLimits {
     fn default() -> Self {
         Self {
-            memory: Some(512 * 1024 * 1024), // 512MB
+            memory: Some(512 * 1024 * 1024),       // 512MB
             memory_swap: Some(1024 * 1024 * 1024), // 1GB
-            cpu_quota: Some(50000), // 50%
-            cpu_period: Some(100000), // 100ms
+            cpu_quota: Some(50000),                // 50%
+            cpu_period: Some(100000),              // 100ms
             cpu_shares: Some(1024),
         }
     }
@@ -51,34 +51,34 @@ impl Default for ResourceLimits {
 pub struct ContainerConfig {
     /// コンテナ名
     pub name: String,
-    
+
     /// 使用するイメージ
     pub image: String,
-    
+
     /// 環境変数
     pub env: HashMap<String, String>,
-    
+
     /// ポートマッピング（host_port -> container_port）
     pub ports: HashMap<u16, u16>,
-    
+
     /// ボリュームマウント（host_path -> container_path）
     pub volumes: HashMap<String, String>,
-    
+
     /// リソース制限
     pub resource_limits: ResourceLimits,
-    
+
     /// ネットワークモード
     pub network_mode: Option<String>,
-    
+
     /// 自動再起動ポリシー
     pub restart_policy: Option<String>,
-    
+
     /// 実行コマンド
     pub command: Option<Vec<String>>,
-    
+
     /// 作業ディレクトリ
     pub working_dir: Option<String>,
-    
+
     /// ユーザー（セキュリティ用）
     pub user: Option<String>,
 }
@@ -130,7 +130,8 @@ impl ContainerManager {
         tracing::info!("Creating container: {}", config.name);
 
         // 環境変数をVec<String>形式に変換
-        let env: Vec<String> = config.env
+        let env: Vec<String> = config
+            .env
             .iter()
             .map(|(k, v)| format!("{}={}", k, v))
             .collect();
@@ -138,11 +139,11 @@ impl ContainerManager {
         // ポートバインディングを設定
         let mut port_bindings = HashMap::new();
         let mut exposed_ports = HashMap::new();
-        
+
         for (host_port, container_port) in &config.ports {
             let container_port_str = format!("{}/tcp", container_port);
             exposed_ports.insert(container_port_str.clone(), HashMap::new());
-            
+
             port_bindings.insert(
                 container_port_str,
                 Some(vec![PortBinding {
@@ -153,7 +154,8 @@ impl ContainerManager {
         }
 
         // ボリュームバインドを設定
-        let binds: Vec<String> = config.volumes
+        let binds: Vec<String> = config
+            .volumes
             .iter()
             .map(|(host, container)| format!("{}:{}", host, container))
             .collect();
@@ -168,9 +170,9 @@ impl ContainerManager {
             cpu_period: config.resource_limits.cpu_period,
             cpu_shares: config.resource_limits.cpu_shares,
             network_mode: config.network_mode.clone(),
-            restart_policy: config.restart_policy.as_ref().map(|policy| {
+            restart_policy: config.restart_policy.as_ref().map(|_policy| {
                 bollard::models::RestartPolicy {
-                    name: Some(bollard::models::RestartPolicyNameEnum::UNLESSSTOPPED),
+                    name: Some(bollard::models::RestartPolicyNameEnum::UNLESS_STOPPED),
                     maximum_retry_count: None,
                 }
             }),
@@ -194,14 +196,21 @@ impl ContainerManager {
             platform: None,
         };
 
-        let response = docker.create_container(Some(options), container_config)
+        let response = docker
+            .create_container(Some(options), container_config)
             .await
-            .map_err(|e| DockerError::CreationFailed(format!(
-                "Failed to create container {}: {}",
-                config.name, e
-            )))?;
+            .map_err(|e| {
+                DockerError::CreationFailed(format!(
+                    "Failed to create container {}: {}",
+                    config.name, e
+                ))
+            })?;
 
-        tracing::info!("Successfully created container: {} (ID: {})", config.name, response.id);
+        tracing::info!(
+            "Successfully created container: {} (ID: {})",
+            config.name,
+            response.id
+        );
         Ok(response.id)
     }
 
@@ -211,12 +220,15 @@ impl ContainerManager {
 
         tracing::info!("Starting container: {}", container_id);
 
-        docker.start_container(container_id, None::<StartContainerOptions<String>>)
+        docker
+            .start_container(container_id, None::<StartContainerOptions<String>>)
             .await
-            .map_err(|e| DockerError::StartFailed(format!(
-                "Failed to start container {}: {}",
-                container_id, e
-            )))?;
+            .map_err(|e| {
+                DockerError::StartFailed(format!(
+                    "Failed to start container {}: {}",
+                    container_id, e
+                ))
+            })?;
 
         tracing::info!("Successfully started container: {}", container_id);
         Ok(())
@@ -232,12 +244,12 @@ impl ContainerManager {
             t: timeout.unwrap_or(10),
         };
 
-        docker.stop_container(container_id, Some(options))
+        docker
+            .stop_container(container_id, Some(options))
             .await
-            .map_err(|e| DockerError::StopFailed(format!(
-                "Failed to stop container {}: {}",
-                container_id, e
-            )))?;
+            .map_err(|e| {
+                DockerError::StopFailed(format!("Failed to stop container {}: {}", container_id, e))
+            })?;
 
         tracing::info!("Successfully stopped container: {}", container_id);
         Ok(())
@@ -246,11 +258,11 @@ impl ContainerManager {
     /// コンテナを再起動
     pub async fn restart_container(&self, container_id: &str) -> Result<()> {
         tracing::info!("Restarting container: {}", container_id);
-        
+
         self.stop_container(container_id, Some(5)).await?;
         tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
         self.start_container(container_id).await?;
-        
+
         Ok(())
     }
 
@@ -266,12 +278,15 @@ impl ContainerManager {
             ..Default::default()
         });
 
-        docker.remove_container(container_id, options)
+        docker
+            .remove_container(container_id, options)
             .await
-            .map_err(|e| DockerError::ApiError(format!(
-                "Failed to remove container {}: {}",
-                container_id, e
-            )))?;
+            .map_err(|e| {
+                DockerError::ApiError(format!(
+                    "Failed to remove container {}: {}",
+                    container_id, e
+                ))
+            })?;
 
         tracing::info!("Successfully removed container: {}", container_id);
         Ok(())
@@ -286,39 +301,47 @@ impl ContainerManager {
             ..Default::default()
         });
 
-        let containers = docker.list_containers(options)
+        let containers = docker
+            .list_containers(options)
             .await
             .map_err(|e| DockerError::ApiError(format!("Failed to list containers: {}", e)))?;
 
-        Ok(containers.into_iter().map(|c| ContainerInfo {
-            id: c.id.unwrap_or_default(),
-            name: c.names.and_then(|n| n.into_iter().next()).unwrap_or_default(),
-            image: c.image.unwrap_or_default(),
-            state: c.state.unwrap_or_default(),
-            status: c.status.unwrap_or_default(),
-            created: c.created.unwrap_or_default(),
-        }).collect())
+        Ok(containers
+            .into_iter()
+            .map(|c| ContainerInfo {
+                id: c.id.unwrap_or_default(),
+                name: c
+                    .names
+                    .and_then(|n| n.into_iter().next())
+                    .unwrap_or_default(),
+                image: c.image.unwrap_or_default(),
+                state: c.state.unwrap_or_default(),
+                status: c.status.unwrap_or_default(),
+                created: c.created.unwrap_or_default(),
+            })
+            .collect())
     }
 
     /// コンテナが実行中かチェック
     pub async fn is_running(&self, container_id: &str) -> Result<bool> {
         let info = self.inspect_container(container_id).await?;
-        
-        Ok(info.state
-            .and_then(|s| s.running)
-            .unwrap_or(false))
+
+        Ok(info.state.and_then(|s| s.running).unwrap_or(false))
     }
 
     /// コンテナ情報を取得
     pub async fn inspect_container(&self, container_id: &str) -> Result<ContainerInspectResponse> {
         let docker = self.docker.read().await;
 
-        docker.inspect_container(container_id, None)
+        docker
+            .inspect_container(container_id, None)
             .await
-            .map_err(|e| DockerError::ContainerNotFound(format!(
-                "Container {} not found: {}",
-                container_id, e
-            )))
+            .map_err(|e| {
+                DockerError::ContainerNotFound(format!(
+                    "Container {} not found: {}",
+                    container_id, e
+                ))
+            })
     }
 
     /// コンテナのログを取得
@@ -326,11 +349,13 @@ impl ContainerManager {
         let docker = self.docker.read().await;
 
         use bollard::container::LogsOptions;
-        
+
         let options = Some(LogsOptions::<String> {
             stdout: true,
             stderr: true,
-            tail: tail.map(|t| t.to_string()).unwrap_or_else(|| "100".to_string()),
+            tail: tail
+                .map(|t| t.to_string())
+                .unwrap_or_else(|| "100".to_string()),
             ..Default::default()
         });
 
@@ -361,13 +386,12 @@ impl ContainerManager {
         });
 
         let mut stream = docker.wait_container(container_id, options);
-        
+
         if let Some(result) = stream.next().await {
-            let response = result.map_err(|e| DockerError::ApiError(format!(
-                "Error waiting for container: {}",
-                e
-            )))?;
-            
+            let response = result.map_err(|e| {
+                DockerError::ApiError(format!("Error waiting for container: {}", e))
+            })?;
+
             Ok(response.status_code)
         } else {
             Err(DockerError::ApiError("No response from wait".to_string()))
@@ -397,7 +421,7 @@ mod tests {
     #[ignore] // Docker環境とイメージが必要
     async fn test_create_start_stop_remove_container() {
         let manager = setup().await;
-        
+
         let config = ContainerConfig {
             name: "test-container".to_string(),
             image: "alpine:latest".to_string(),
@@ -407,17 +431,20 @@ mod tests {
 
         // 作成
         let container_id = manager.create_container(&config).await.unwrap();
-        
+
         // 開始
         manager.start_container(&container_id).await.unwrap();
-        
+
         // 実行中確認
         let running = manager.is_running(&container_id).await.unwrap();
         assert!(running);
-        
+
         // 停止
-        manager.stop_container(&container_id, Some(5)).await.unwrap();
-        
+        manager
+            .stop_container(&container_id, Some(5))
+            .await
+            .unwrap();
+
         // 削除
         manager.remove_container(&container_id, true).await.unwrap();
     }

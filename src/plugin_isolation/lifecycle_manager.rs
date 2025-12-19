@@ -682,7 +682,7 @@ impl HealthChecker {
     async fn perform_health_check(
         plugin_id: Uuid,
         health_states: Arc<RwLock<HashMap<Uuid, HealthState>>>,
-        http_client: reqwest::Client,
+        _http_client: reqwest::Client,
     ) -> Result<(), McpError> {
         // TODO: 実際のヘルスチェックロジックを実装
         // 今はダミー実装

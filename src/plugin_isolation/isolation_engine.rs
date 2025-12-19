@@ -441,7 +441,7 @@ impl IsolationEngine {
     async fn apply_resource_limits(
         &self,
         container_id: &str,
-        plugin_id: Uuid,
+        _plugin_id: Uuid,
     ) -> Result<(), McpError> {
         debug!("Applying resource limits to container: {}", container_id);
 

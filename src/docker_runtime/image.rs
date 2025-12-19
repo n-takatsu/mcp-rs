@@ -2,27 +2,29 @@
 //!
 //! プラグイン用のDockerイメージの管理（pull, build, list, remove）を提供します。
 
-use bollard::image::{BuildImageOptions, CreateImageOptions, ListImagesOptions, RemoveImageOptions};
+use crate::docker_runtime::{DockerError, Result};
+use bollard::image::{
+    BuildImageOptions, CreateImageOptions, ListImagesOptions, RemoveImageOptions,
+};
 use bollard::Docker;
+use futures_util::stream::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use futures_util::stream::StreamExt;
-use crate::docker_runtime::{DockerError, Result};
 
 /// Dockerイメージの設定
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImageConfig {
     /// イメージ名（例: "rust:1.70-alpine"）
     pub name: String,
-    
+
     /// イメージタグ（デフォルト: "latest"）
     pub tag: String,
-    
+
     /// レジストリURL（オプション）
     pub registry: Option<String>,
-    
+
     /// 認証情報（オプション）
     pub auth: Option<ImageAuth>,
 }
@@ -58,7 +60,7 @@ impl ImageManager {
     /// イメージをpull（ダウンロード）
     pub async fn pull_image(&self, config: &ImageConfig) -> Result<()> {
         let docker = self.docker.read().await;
-        
+
         let image_name = if let Some(registry) = &config.registry {
             format!("{}/{}:{}", registry, config.name, config.tag)
         } else {
@@ -73,7 +75,7 @@ impl ImageManager {
         });
 
         let mut stream = docker.create_image(options, None, None);
-        
+
         while let Some(result) = stream.next().await {
             match result {
                 Ok(info) => {
@@ -121,11 +123,11 @@ impl ImageManager {
 
         // Dockerfileの内容を読み込む
         let dockerfile_content = tokio::fs::read(dockerfile_path).await?;
-        
+
         let mut stream = docker.build_image(options, None, Some(dockerfile_content.into()));
-        
+
         let mut image_id = String::new();
-        
+
         while let Some(result) = stream.next().await {
             match result {
                 Ok(info) => {
@@ -133,17 +135,12 @@ impl ImageManager {
                         tracing::debug!("Build output: {}", stream.trim());
                     }
                     if let Some(error) = info.error {
-                        return Err(DockerError::ApiError(format!(
-                            "Build failed: {}",
-                            error
-                        )));
+                        return Err(DockerError::ApiError(format!("Build failed: {}", error)));
                     }
                     // Extract image ID from aux field
                     if let Some(aux) = info.aux {
-                        if let Ok(id) = serde_json::from_value::<HashMap<String, String>>(aux) {
-                            if let Some(id) = id.get("ID") {
-                                image_id = id.clone();
-                            }
+                        if let Some(id_str) = aux.id {
+                            image_id = id_str;
                         }
                     }
                 }
@@ -163,22 +160,26 @@ impl ImageManager {
     /// すべてのイメージをリスト
     pub async fn list_images(&self) -> Result<Vec<ImageInfo>> {
         let docker = self.docker.read().await;
-        
+
         let options = Some(ListImagesOptions::<String> {
             all: false,
             ..Default::default()
         });
 
-        let images = docker.list_images(options)
+        let images = docker
+            .list_images(options)
             .await
             .map_err(|e| DockerError::ApiError(format!("Failed to list images: {}", e)))?;
 
-        Ok(images.into_iter().map(|img| ImageInfo {
-            id: img.id,
-            repo_tags: img.repo_tags,
-            size: img.size,
-            created: img.created,
-        }).collect())
+        Ok(images
+            .into_iter()
+            .map(|img| ImageInfo {
+                id: img.id,
+                repo_tags: img.repo_tags,
+                size: img.size,
+                created: img.created,
+            })
+            .collect())
     }
 
     /// イメージを削除
@@ -192,12 +193,12 @@ impl ImageManager {
             noprune: false,
         });
 
-        docker.remove_image(image_name, options, None)
+        docker
+            .remove_image(image_name, options, None)
             .await
-            .map_err(|e| DockerError::ApiError(format!(
-                "Failed to remove image {}: {}",
-                image_name, e
-            )))?;
+            .map_err(|e| {
+                DockerError::ApiError(format!("Failed to remove image {}: {}", image_name, e))
+            })?;
 
         tracing::info!("Successfully removed image: {}", image_name);
         Ok(())
@@ -206,22 +207,19 @@ impl ImageManager {
     /// イメージが存在するかチェック
     pub async fn image_exists(&self, image_name: &str) -> Result<bool> {
         let images = self.list_images().await?;
-        
-        Ok(images.iter().any(|img| {
-            img.repo_tags.iter().any(|tag| tag.contains(image_name))
-        }))
+
+        Ok(images
+            .iter()
+            .any(|img| img.repo_tags.iter().any(|tag| tag.contains(image_name))))
     }
 
     /// イメージ情報を取得
     pub async fn inspect_image(&self, image_name: &str) -> Result<bollard::models::ImageInspect> {
         let docker = self.docker.read().await;
-        
-        docker.inspect_image(image_name)
-            .await
-            .map_err(|e| DockerError::ImageNotFound(format!(
-                "Image {} not found: {}",
-                image_name, e
-            )))
+
+        docker.inspect_image(image_name).await.map_err(|e| {
+            DockerError::ImageNotFound(format!("Image {} not found: {}", image_name, e))
+        })
     }
 }
 

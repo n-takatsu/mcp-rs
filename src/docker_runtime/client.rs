@@ -2,10 +2,10 @@
 //!
 //! DockerデーモンとのHTTP通信を管理します。
 
+use crate::docker_runtime::{DockerError, Result};
 use bollard::Docker;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use crate::docker_runtime::{DockerError, Result};
 
 /// Docker APIクライアント
 pub struct DockerClient {
@@ -18,7 +18,7 @@ impl DockerClient {
     pub async fn new() -> Result<Self> {
         let docker = Docker::connect_with_socket_defaults()
             .map_err(|e| DockerError::ApiError(format!("Failed to connect to Docker: {}", e)))?;
-        
+
         Ok(Self {
             docker: Arc::new(RwLock::new(docker)),
         })
@@ -28,24 +28,27 @@ impl DockerClient {
     pub async fn new_with_http(url: &str) -> Result<Self> {
         let docker = Docker::connect_with_http(url, 120, bollard::API_DEFAULT_VERSION)
             .map_err(|e| DockerError::ApiError(format!("Failed to connect to Docker: {}", e)))?;
-        
+
         Ok(Self {
             docker: Arc::new(RwLock::new(docker)),
         })
     }
 
     /// Dockerデーモンのバージョン情報を取得
-    pub async fn version(&self) -> Result<bollard::models::Version> {
+    pub async fn version(&self) -> Result<String> {
         let docker = self.docker.read().await;
-        docker.version()
+        docker
+            .version()
             .await
+            .map(|v| v.version.unwrap_or_else(|| "unknown".to_string()))
             .map_err(|e| DockerError::ApiError(format!("Failed to get Docker version: {}", e)))
     }
 
     /// Dockerデーモンの情報を取得
     pub async fn info(&self) -> Result<bollard::models::SystemInfo> {
         let docker = self.docker.read().await;
-        docker.info()
+        docker
+            .info()
             .await
             .map_err(|e| DockerError::ApiError(format!("Failed to get Docker info: {}", e)))
     }

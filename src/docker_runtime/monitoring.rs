@@ -2,15 +2,15 @@
 //!
 //! コンテナのヘルスチェック、リソース使用率監視、ログ収集を提供します。
 
+use crate::docker_runtime::{DockerError, Result};
 use bollard::container::StatsOptions;
 use bollard::Docker;
+use chrono::{DateTime, Utc};
+use futures_util::stream::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use futures_util::stream::StreamExt;
-use chrono::{DateTime, Utc};
-use crate::docker_runtime::{DockerError, Result};
 
 /// コンテナのヘルス状態
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -30,34 +30,34 @@ pub enum HealthStatus {
 pub struct ContainerMetrics {
     /// コンテナID
     pub container_id: String,
-    
+
     /// コンテナ名
     pub container_name: String,
-    
+
     /// CPU使用率（0.0-100.0）
     pub cpu_usage_percent: f64,
-    
+
     /// メモリ使用量（バイト）
     pub memory_usage_bytes: u64,
-    
+
     /// メモリ制限（バイト）
     pub memory_limit_bytes: u64,
-    
+
     /// メモリ使用率（0.0-100.0）
     pub memory_usage_percent: f64,
-    
+
     /// ネットワーク受信バイト
     pub network_rx_bytes: u64,
-    
+
     /// ネットワーク送信バイト
     pub network_tx_bytes: u64,
-    
+
     /// ブロックI/O読み取りバイト
     pub block_io_read_bytes: u64,
-    
+
     /// ブロックI/O書き込みバイト
     pub block_io_write_bytes: u64,
-    
+
     /// 収集時刻
     pub timestamp: DateTime<Utc>,
 }
@@ -67,13 +67,13 @@ pub struct ContainerMetrics {
 pub struct HealthCheckConfig {
     /// チェック間隔（秒）
     pub interval_seconds: u64,
-    
+
     /// タイムアウト（秒）
     pub timeout_seconds: u64,
-    
+
     /// 再試行回数
     pub retries: u32,
-    
+
     /// ヘルスチェックコマンド
     pub command: Vec<String>,
 }
@@ -118,20 +118,19 @@ impl MonitoringManager {
         });
 
         let mut stream = docker.stats(container_id, options);
-        
+
         if let Some(result) = stream.next().await {
-            let stats = result.map_err(|e| DockerError::ApiError(format!(
-                "Failed to get container stats: {}",
-                e
-            )))?;
+            let stats = result.map_err(|e| {
+                DockerError::ApiError(format!("Failed to get container stats: {}", e))
+            })?;
 
             // CPU使用率計算
-            let cpu_delta = stats.cpu_stats.cpu_usage.total_usage as f64 
+            let cpu_delta = stats.cpu_stats.cpu_usage.total_usage as f64
                 - stats.precpu_stats.cpu_usage.total_usage as f64;
             let system_delta = stats.cpu_stats.system_cpu_usage.unwrap_or(0) as f64
                 - stats.precpu_stats.system_cpu_usage.unwrap_or(0) as f64;
             let num_cpus = stats.cpu_stats.online_cpus.unwrap_or(1) as f64;
-            
+
             let cpu_usage_percent = if system_delta > 0.0 {
                 (cpu_delta / system_delta) * num_cpus * 100.0
             } else {
@@ -204,19 +203,23 @@ impl MonitoringManager {
     pub async fn check_health(&self, container_id: &str) -> Result<HealthStatus> {
         let docker = self.docker.read().await;
 
-        let inspect = docker.inspect_container(container_id, None)
+        let inspect = docker
+            .inspect_container(container_id, None)
             .await
-            .map_err(|e| DockerError::ContainerNotFound(format!(
-                "Container {} not found: {}",
-                container_id, e
-            )))?;
+            .map_err(|e| {
+                DockerError::ContainerNotFound(format!(
+                    "Container {} not found: {}",
+                    container_id, e
+                ))
+            })?;
 
         let status = if let Some(state) = inspect.state {
             if let Some(health) = state.health {
-                match health.status.as_deref() {
-                    Some("healthy") => HealthStatus::Healthy,
-                    Some("unhealthy") => HealthStatus::Unhealthy,
-                    Some("starting") => HealthStatus::Starting,
+                use bollard::secret::HealthStatusEnum;
+                match health.status {
+                    Some(HealthStatusEnum::HEALTHY) => HealthStatus::Healthy,
+                    Some(HealthStatusEnum::UNHEALTHY) => HealthStatus::Unhealthy,
+                    Some(HealthStatusEnum::STARTING) => HealthStatus::Starting,
                     _ => HealthStatus::Unknown,
                 }
             } else if state.running.unwrap_or(false) {
@@ -238,9 +241,7 @@ impl MonitoringManager {
     /// メトリクス履歴を取得
     pub async fn get_metrics_history(&self, container_id: &str) -> Vec<ContainerMetrics> {
         let history = self.metrics_history.read().await;
-        history.get(container_id)
-            .cloned()
-            .unwrap_or_default()
+        history.get(container_id).cloned().unwrap_or_default()
     }
 
     /// すべてのコンテナのヘルス状態を取得
@@ -281,19 +282,14 @@ impl MonitoringManager {
     }
 
     /// 監視ループを開始
-    pub async fn start_monitoring(
-        &self,
-        container_ids: Vec<String>,
-        interval_seconds: u64,
-    ) {
+    pub async fn start_monitoring(&self, container_ids: Vec<String>, interval_seconds: u64) {
         let docker = Arc::clone(&self.docker);
         let metrics_history = Arc::clone(&self.metrics_history);
         let health_status = Arc::clone(&self.health_status);
 
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(
-                tokio::time::Duration::from_secs(interval_seconds)
-            );
+            let mut interval =
+                tokio::time::interval(tokio::time::Duration::from_secs(interval_seconds));
 
             loop {
                 interval.tick().await;
@@ -333,7 +329,7 @@ mod tests {
     #[tokio::test]
     #[ignore] // Docker環境と実行中のコンテナが必要
     async fn test_collect_metrics() {
-        let manager = setup().await;
+        let _manager = setup().await;
         // 実行中のコンテナIDを取得する必要があります
         // let metrics = manager.collect_metrics("container_id").await;
         // assert!(metrics.is_ok());

@@ -178,10 +178,7 @@ impl PluginErrorHandler {
         let mut recovery_strategies = HashMap::new();
 
         // デフォルト回復戦略を設定
-        recovery_strategies.insert(
-            ErrorCategory::OutOfMemory,
-            RecoveryStrategy::ResourceReset,
-        );
+        recovery_strategies.insert(ErrorCategory::OutOfMemory, RecoveryStrategy::ResourceReset);
         recovery_strategies.insert(
             ErrorCategory::CpuLimitExceeded,
             RecoveryStrategy::ResourceReset,
@@ -259,13 +256,16 @@ impl PluginErrorHandler {
         self.add_to_history(error.clone()).await?;
 
         // エラーカウンターを更新
-        self.update_error_counter(plugin_id, category.clone()).await?;
+        self.update_error_counter(plugin_id, category.clone())
+            .await?;
 
         // エラーコールバックを実行
         self.execute_callbacks(&error).await?;
 
         // 回復アクションを決定
-        let recovery_action = self.determine_recovery_action(plugin_id, &category, severity).await?;
+        let recovery_action = self
+            .determine_recovery_action(plugin_id, &category, severity)
+            .await?;
 
         info!(
             "Recovery action determined for plugin {:?}: {:?}",

@@ -25,12 +25,12 @@ pub use config::{
     AlertThresholds, IsolationConfig, MonitoringConfig, PluginManagerConfig, SecurityPolicy,
 };
 pub use error_handler::{
-    ErrorCategory, ErrorHandlingConfig, ErrorSeverity, ErrorStats, PluginError,
-    PluginErrorHandler, RecoveryAction,
+    ErrorCategory, ErrorHandlingConfig, ErrorSeverity, ErrorStats, PluginError, PluginErrorHandler,
+    RecoveryAction,
 };
 pub use health::PluginManagerHealth;
 pub use inter_plugin_comm::{
-    CommunicationEvent, CommunicationRule, CommEventType, CommResult, InterPluginCommConfig,
+    CommEventType, CommResult, CommunicationEvent, CommunicationRule, InterPluginCommConfig,
     InterPluginCommStats, InterPluginCommunicationController, QueuedMessage, RuleStatus,
 };
 pub use manager::IsolatedPluginManager;
