@@ -2,16 +2,30 @@
 //!
 //! WebSocketベースのリアルタイム双方向通信を提供
 
+pub mod balancer;
 pub mod connection;
+pub mod failover;
 pub mod jsonrpc;
 pub mod pool;
 pub mod stream;
+pub mod transfer;
 pub mod types;
 
+pub use balancer::{
+    BalancerConfig, BalancerManager, BalancerStats, BalancingStrategy, Endpoint, EndpointStats,
+    LoadBalancer,
+};
 pub use connection::{WebSocketConnection, WebSocketConnectionBuilder};
+pub use failover::{
+    Failover, FailoverConfig, FailoverEvent, FailoverManager, FailoverStatus, SessionState,
+};
 pub use jsonrpc::{error_codes, JsonRpcMessage, JsonRpcNotification};
 pub use pool::ConnectionPool;
 pub use stream::StreamingTransport;
+pub use transfer::{
+    CompressionType, FileChunk, FileTransferProtocol, TransferManager, TransferOptions,
+    TransferProgress, TransferState,
+};
 pub use types::*;
 
 use crate::error::{Error, Result};
