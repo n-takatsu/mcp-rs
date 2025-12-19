@@ -134,6 +134,9 @@ crossterm = "0.27"
 # Plugin system
 libloading = "0.9"
 
+# Docker integration
+bollard = { version = "0.18.1", optional = true }
+
 # Testing utilities
 mockall = { version = "0.13.1", optional = true }
 [dev-dependencies]
@@ -194,6 +197,9 @@ ml-anomaly-detection = ["smartcore", "ndarray", "statrs"]
 
 # LLM Integration
 llm-integration = ["async-openai", "tiktoken-rs", "eventsource-stream", "async-stream"]
+
+# Docker runtime integration
+docker-runtime = ["bollard"]
 
 # Full feature set (MySQL restored via secure mysql_async)
 full = [

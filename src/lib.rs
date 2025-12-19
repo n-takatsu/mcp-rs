@@ -61,6 +61,13 @@ pub mod zero_trust;
 // Compliance module (GDPR/CCPA)
 pub mod compliance;
 
+// Docker Runtime Integration module
+#[cfg(feature = "docker-runtime")]
+pub mod docker_runtime;
+
+// Plugin isolation module
+pub mod plugin_isolation;
+
 pub use error::{Error, Result, SessionError};
 pub use mcp_server::McpServer;
 pub use protocol::McpProtocol;
