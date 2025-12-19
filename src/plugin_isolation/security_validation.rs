@@ -85,16 +85,24 @@ pub enum ValidationType {
 /// セキュリティレベル
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum SecurityLevel {
+    /// 最小限（最も制限が少ない）
+    Minimal = 0,
+    /// 標準
+    Standard = 1,
     /// 安全
-    Safe = 1,
+    Safe = 2,
+    /// 厳格
+    Strict = 3,
     /// 低リスク
-    LowRisk = 2,
+    LowRisk = 4,
     /// 中リスク
-    MediumRisk = 3,
+    MediumRisk = 5,
     /// 高リスク
-    HighRisk = 4,
+    HighRisk = 6,
     /// 危険
-    Dangerous = 5,
+    Dangerous = 7,
+    /// 最大（最も制限が強い）
+    Maximum = 8,
 }
 
 /// 検証ステータス

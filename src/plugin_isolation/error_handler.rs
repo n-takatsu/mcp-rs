@@ -12,8 +12,10 @@ use uuid::Uuid;
 use crate::error::McpError;
 use crate::plugin_isolation::PluginState;
 
+/// エラーコールバック型（Debugトレイトなし）
+type ErrorCallback = Arc<dyn Fn(&PluginError) -> Result<(), McpError> + Send + Sync>;
+
 /// エラーハンドラー
-#[derive(Debug)]
 pub struct PluginErrorHandler {
     /// エラー履歴
     error_history: Arc<Mutex<Vec<PluginError>>>,
@@ -139,9 +141,6 @@ pub enum RecoveryStrategy {
     /// 何もしない
     None,
 }
-
-/// エラーコールバック
-type ErrorCallback = Arc<dyn Fn(&PluginError) -> Result<(), McpError> + Send + Sync>;
 
 /// エラーハンドリング設定
 #[derive(Debug, Clone)]

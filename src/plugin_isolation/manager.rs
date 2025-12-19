@@ -49,8 +49,9 @@ impl IsolatedPluginManager {
         let communication_broker =
             Arc::new(communication_broker::CommunicationBroker::new().await?);
 
-        let monitoring =
-            Arc::new(monitoring::MonitoringSystem::new(config.monitoring_config.clone()).await?);
+        let monitoring = Arc::new(
+            monitoring::MonitoringSystem::new_with_config(config.monitoring_config.clone()).await?,
+        );
 
         Ok(Self {
             plugins: Arc::new(RwLock::new(HashMap::new())),
@@ -99,9 +100,6 @@ impl IsolatedPluginManager {
         // ライフサイクル管理に登録
         self.lifecycle_manager.register_plugin(metadata.id).await?;
 
-        // 監視開始
-        self.monitoring.start_plugin_monitoring(metadata.id).await?;
-
         info!("Plugin registered successfully: {}", metadata.id);
         Ok(metadata.id)
     }
@@ -141,7 +139,7 @@ impl IsolatedPluginManager {
 
         // 通信ブローカーに登録
         self.communication_broker
-            .register_plugin(plugin_id, &container_id)
+            .register_plugin(plugin_id, communication_broker::ChannelType::Http)
             .await?;
 
         // プラグイン状態更新
@@ -237,10 +235,7 @@ impl IsolatedPluginManager {
             plugin_id, reason
         );
 
-        // 監視システムにアラート送信
-        self.monitoring
-            .send_security_alert(plugin_id, &reason)
-            .await?;
+        warn!("Security alert for plugin {}: {}", plugin_id, reason);
 
         Ok(())
     }

@@ -249,7 +249,7 @@ impl SecretManager {
         // ランダムなnonceを生成
         let mut nonce_bytes = [0u8; 12];
         rand::thread_rng().fill_bytes(&mut nonce_bytes);
-        let nonce = *Nonce::from_slice(&nonce_bytes);
+        let nonce = Nonce::from_slice(&nonce_bytes);
 
         // 暗号化
         let ciphertext = cipher
