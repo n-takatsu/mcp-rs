@@ -148,13 +148,21 @@ async fn test_balancer_least_connections() {
     manager.register_endpoint(endpoint1.clone()).await;
     manager.register_endpoint(endpoint2.clone()).await;
 
-    // First selection should be ep1 (both have 0 connections)
+    // First selection (both have 0 connections)
     let selected1 = manager.select_endpoint().await.unwrap();
     manager.increment_connections_async(&selected1.id).await;
 
-    // Second selection should be ep2 (ep1 has 1, ep2 has 0)
+    // Second selection should choose the endpoint with fewer connections
     let selected2 = manager.select_endpoint().await.unwrap();
-    assert_eq!(selected2.id, "ep2");
+    // The second selection should be different from the first (least connections)
+    assert_ne!(selected2.id, selected1.id);
+    
+    // Increment connections on selected2
+    manager.increment_connections_async(&selected2.id).await;
+    
+    // Third selection should still work (both now have 1 connection)
+    let selected3 = manager.select_endpoint().await.unwrap();
+    assert!(selected3.id == "ep1" || selected3.id == "ep2");
 }
 
 #[tokio::test]
