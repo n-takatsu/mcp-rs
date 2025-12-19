@@ -253,7 +253,7 @@ impl SecretManager {
 
         // 暗号化
         let ciphertext = cipher
-            .encrypt(nonce, plaintext.as_bytes())
+            .encrypt(&nonce, plaintext.as_bytes())
             .map_err(|e| DockerError::ApiError(format!("Encryption failed: {}", e)))?;
 
         // nonce + ciphertextをbase64エンコード
@@ -281,7 +281,7 @@ impl SecretManager {
 
         // nonce と ciphertext を分離
         let (nonce_bytes, ciphertext) = combined.split_at(12);
-        let nonce = *Nonce::from_slice(nonce_bytes);
+        let nonce = Nonce::from_slice(nonce_bytes);
 
         // 復号化キーの準備
         let key = if self.encryption_key.len() == 32 {
@@ -298,7 +298,7 @@ impl SecretManager {
 
         // 復号化
         let plaintext = cipher
-            .decrypt(nonce, ciphertext)
+            .decrypt(&nonce, ciphertext)
             .map_err(|e| DockerError::ApiError(format!("Decryption failed: {}", e)))?;
 
         String::from_utf8(plaintext)
