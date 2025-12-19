@@ -156,10 +156,10 @@ async fn test_balancer_least_connections() {
     let selected2 = manager.select_endpoint().await.unwrap();
     // The second selection should be different from the first (least connections)
     assert_ne!(selected2.id, selected1.id);
-    
+
     // Increment connections on selected2
     manager.increment_connections_async(&selected2.id).await;
-    
+
     // Third selection should still work (both now have 1 connection)
     let selected3 = manager.select_endpoint().await.unwrap();
     assert!(selected3.id == "ep1" || selected3.id == "ep2");
