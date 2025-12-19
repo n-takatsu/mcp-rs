@@ -249,7 +249,7 @@ impl SecretManager {
         // ランダムなnonceを生成
         let mut nonce_bytes = [0u8; 12];
         rand::thread_rng().fill_bytes(&mut nonce_bytes);
-        let nonce = Nonce::clone_from_slice(&nonce_bytes);
+        let nonce = Nonce::from_slice(&nonce_bytes);
 
         // 暗号化
         let ciphertext = cipher
@@ -281,7 +281,7 @@ impl SecretManager {
 
         // nonce と ciphertext を分離
         let (nonce_bytes, ciphertext) = combined.split_at(12);
-        let nonce = Nonce::clone_from_slice(nonce_bytes);
+        let nonce = Nonce::from_slice(nonce_bytes);
 
         // 復号化キーの準備
         let key = if self.encryption_key.len() == 32 {
