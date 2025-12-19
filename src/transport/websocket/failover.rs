@@ -414,7 +414,7 @@ mod tests {
             .unwrap();
         manager.trigger_failover(&primary).await.unwrap();
 
-        let history = manager.get_failover_history(10);
+        let history = manager.get_failover_history(10).await;
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].from_endpoint.id, "primary");
         assert_eq!(history[0].to_endpoint.id, "backup");

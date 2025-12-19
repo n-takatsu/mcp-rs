@@ -122,7 +122,7 @@ async fn test_balancer_round_robin_strategy() {
 
     // Round robin should cycle through all endpoints
     // Collect all IDs to verify they're different
-    let ids = vec![&selected1.id, &selected2.id, &selected3.id];
+    let ids = [&selected1.id, &selected2.id, &selected3.id];
     assert!(ids.contains(&&"ep1".to_string()));
     assert!(ids.contains(&&"ep2".to_string()));
     assert!(ids.contains(&&"ep3".to_string()));
