@@ -133,9 +133,9 @@ async fn demo_load_balancing() -> Result<()> {
     }
 
     println!("Simulating connection load:");
-    balancer.increment_connections(&"server1".to_string());
-    balancer.increment_connections(&"server1".to_string());
-    balancer.increment_connections(&"server2".to_string());
+    balancer.increment_connections_async(&"server1".to_string()).await;
+    balancer.increment_connections_async(&"server1".to_string()).await;
+    balancer.increment_connections_async(&"server2".to_string()).await;
 
     for i in 1..=4 {
         let selected = balancer
@@ -282,7 +282,7 @@ async fn demo_failover() -> Result<()> {
 
     // Show failover history
     println!("\nFailover History:");
-    let history = manager.get_failover_history(5);
+    let history = manager.get_failover_history(5).await;
     for (i, event) in history.iter().enumerate() {
         println!(
             "  {}. {} → {} (Status: {:?})",
@@ -348,7 +348,7 @@ async fn demo_integrated_scenario() -> Result<()> {
         selected_server.id, selected_server.url
     );
 
-    balancer.increment_connections(&selected_server.id);
+    balancer.increment_connections_async(&selected_server.id).await;
 
     // Create transfer
     let transfer_id = uuid::Uuid::new_v4().to_string();
@@ -405,8 +405,8 @@ async fn demo_integrated_scenario() -> Result<()> {
                 backup_server.id, backup_server.url
             );
 
-            balancer.decrement_connections(&selected_server.id);
-            balancer.increment_connections(&backup_server.id);
+            balancer.decrement_connections_async(&selected_server.id).await;
+            balancer.increment_connections_async(&backup_server.id).await;
 
             println!("Resuming transfer...");
         }

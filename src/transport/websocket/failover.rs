@@ -117,10 +117,10 @@ pub trait Failover: Send + Sync {
     async fn trigger_failover(&self, endpoint: &Endpoint) -> Result<Endpoint>;
 
     /// Checks if failover is active for an endpoint
-    fn is_failover_active(&self, endpoint: &Endpoint) -> bool;
+    async fn is_failover_active(&self, endpoint: &Endpoint) -> bool;
 
     /// Gets failover history
-    fn get_failover_history(&self, limit: usize) -> Vec<FailoverEvent>;
+    async fn get_failover_history(&self, limit: usize) -> Vec<FailoverEvent>;
 
     /// Restores session state after failover
     async fn restore_session(&self, session_id: &str) -> Result<SessionState>;
@@ -283,25 +283,17 @@ impl Failover for FailoverManager {
         Ok(backup)
     }
 
-    fn is_failover_active(&self, endpoint: &Endpoint) -> bool {
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async {
-                let active = self.active_failovers.read().await;
-                matches!(
-                    active.get(&endpoint.id),
-                    Some(FailoverStatus::InProgress) | Some(FailoverStatus::Completed)
-                )
-            })
-        })
+    async fn is_failover_active(&self, endpoint: &Endpoint) -> bool {
+        let active = self.active_failovers.read().await;
+        matches!(
+            active.get(&endpoint.id),
+            Some(FailoverStatus::InProgress) | Some(FailoverStatus::Completed)
+        )
     }
 
-    fn get_failover_history(&self, limit: usize) -> Vec<FailoverEvent> {
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async {
-                let history = self.history.read().await;
-                history.iter().rev().take(limit).cloned().collect()
-            })
-        })
+    async fn get_failover_history(&self, limit: usize) -> Vec<FailoverEvent> {
+        let history = self.history.read().await;
+        history.iter().rev().take(limit).cloned().collect()
     }
 
     async fn restore_session(&self, session_id: &str) -> Result<SessionState> {
@@ -370,7 +362,7 @@ mod tests {
         let failover_endpoint = manager.trigger_failover(&primary).await.unwrap();
         assert_eq!(failover_endpoint.id, "backup");
 
-        assert!(manager.is_failover_active(&primary));
+        assert!(manager.is_failover_active(&primary).await);
     }
 
     #[tokio::test]
