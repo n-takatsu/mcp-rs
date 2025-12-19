@@ -105,7 +105,7 @@ async fn test_balancer_round_robin_strategy() {
         session_affinity: false,
     };
 
-    let mut manager = BalancerManager::new(config);
+    let manager = BalancerManager::new(config);
 
     let endpoint1 = Endpoint::new("ep1".to_string(), "ws://localhost:8081".to_string());
     let endpoint2 = Endpoint::new("ep2".to_string(), "ws://localhost:8082".to_string());
@@ -135,13 +135,13 @@ async fn test_balancer_least_connections() {
         session_affinity: false,
     };
 
-    let mut manager = BalancerManager::new(config);
+    let manager = BalancerManager::new(config);
 
     let endpoint1 = Endpoint::new("ep1".to_string(), "ws://localhost:8081".to_string());
     let endpoint2 = Endpoint::new("ep2".to_string(), "ws://localhost:8082".to_string());
 
-    manager.register_endpoint(endpoint1.clone());
-    manager.register_endpoint(endpoint2.clone());
+    manager.register_endpoint(endpoint1.clone()).await;
+    manager.register_endpoint(endpoint2.clone()).await;
 
     // First selection should be ep1 (both have 0 connections)
     let selected1 = manager.select_endpoint().await.unwrap();
@@ -155,7 +155,7 @@ async fn test_balancer_least_connections() {
 #[tokio::test]
 async fn test_balancer_health_reporting() {
     let config = BalancerConfig::default();
-    let mut manager = BalancerManager::new(config);
+    let manager = BalancerManager::new(config);
 
     let endpoint = Endpoint::new("ep1".to_string(), "ws://localhost:8081".to_string());
     manager.register_endpoint(endpoint.clone()).await;
@@ -268,13 +268,13 @@ async fn test_integration_transfer_with_balancer() {
 
     // Create load balancer
     let config = BalancerConfig::default();
-    let mut balancer = BalancerManager::new(config);
+    let balancer = BalancerManager::new(config);
 
     let endpoint1 = Endpoint::new("ep1".to_string(), "ws://localhost:8081".to_string());
     let endpoint2 = Endpoint::new("ep2".to_string(), "ws://localhost:8082".to_string());
 
-    balancer.register_endpoint(endpoint1);
-    balancer.register_endpoint(endpoint2);
+    balancer.register_endpoint(endpoint1).await;
+    balancer.register_endpoint(endpoint2).await;
 
     // Select endpoint for transfer
     let selected = balancer.select_endpoint().await.unwrap();
@@ -337,7 +337,7 @@ async fn test_weighted_round_robin_distribution() {
         ..Default::default()
     };
 
-    let mut manager = BalancerManager::new(config);
+    let manager = BalancerManager::new(config);
 
     let endpoint1 =
         Endpoint::new("ep1".to_string(), "ws://localhost:8081".to_string()).with_weight(1);
