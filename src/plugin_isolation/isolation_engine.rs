@@ -539,9 +539,7 @@ impl IsolationEngine {
         let output = Command::new(&self.config.container_runtime)
             .args(["kill", container_id])
             .output()
-            .map_err(|e| {
-                McpError::Isolation(format!("Failed to force stop container: {}", e))
-            })?;
+            .map_err(|e| McpError::Isolation(format!("Failed to force stop container: {}", e)))?;
 
         if !output.status.success() {
             let error_msg = String::from_utf8_lossy(&output.stderr);

@@ -365,9 +365,7 @@ impl InterPluginCommunicationController {
             "No communication rule found for {:?} -> {:?}",
             from_plugin, to_plugin
         );
-        Err(McpError::Plugin(
-            "Communication not allowed".to_string(),
-        ))
+        Err(McpError::Plugin("Communication not allowed".to_string()))
     }
 
     /// 通信イベントを記録
