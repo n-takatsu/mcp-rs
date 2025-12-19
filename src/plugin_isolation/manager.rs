@@ -49,8 +49,10 @@ impl IsolatedPluginManager {
         let communication_broker =
             Arc::new(communication_broker::CommunicationBroker::new().await?);
 
+        // MonitoringConfigのデフォルト値を使用
         let monitoring = Arc::new(
-            monitoring::MonitoringSystem::new_with_config(config.monitoring_config.clone()).await?,
+            monitoring::MonitoringSystem::new_with_config(monitoring::MonitoringConfig::default())
+                .await?,
         );
 
         Ok(Self {

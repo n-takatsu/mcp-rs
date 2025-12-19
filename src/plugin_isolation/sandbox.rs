@@ -359,15 +359,27 @@ impl SecuritySandbox {
                 // 厳格な制限を適用
                 self.apply_strict_security_restrictions(metadata.id).await?;
             }
-            crate::plugin_isolation::SecurityLevel::Standard => {
+            crate::plugin_isolation::SecurityLevel::Standard
+            | crate::plugin_isolation::SecurityLevel::Safe => {
                 // 標準的な制限を適用
                 self.apply_standard_security_restrictions(metadata.id)
                     .await?;
             }
-            crate::plugin_isolation::SecurityLevel::Minimal => {
+            crate::plugin_isolation::SecurityLevel::Minimal
+            | crate::plugin_isolation::SecurityLevel::LowRisk => {
                 // 最小限の制限を適用
                 self.apply_minimal_security_restrictions(metadata.id)
                     .await?;
+            }
+            crate::plugin_isolation::SecurityLevel::MediumRisk => {
+                // 中リスク - 標準的な制限を適用
+                self.apply_standard_security_restrictions(metadata.id)
+                    .await?;
+            }
+            crate::plugin_isolation::SecurityLevel::HighRisk
+            | crate::plugin_isolation::SecurityLevel::Dangerous => {
+                // 高リスク・危険 - 厳格な制限を適用
+                self.apply_strict_security_restrictions(metadata.id).await?;
             }
         }
 
