@@ -73,7 +73,7 @@ impl IsolatedPluginManager {
         // プラグイン数制限チェック
         let plugins = self.plugins.read().await;
         if plugins.len() >= self.config.max_plugins as usize {
-            return Err(McpError::PluginError(
+            return Err(McpError::Plugin(
                 "Maximum number of plugins reached".to_string(),
             ));
         }
@@ -113,7 +113,7 @@ impl IsolatedPluginManager {
         let plugins = self.plugins.read().await;
         let plugin_arc = plugins
             .get(&plugin_id)
-            .ok_or_else(|| McpError::PluginError("Plugin not found".to_string()))?
+            .ok_or_else(|| McpError::Plugin("Plugin not found".to_string()))?
             .clone();
         drop(plugins);
 
@@ -121,7 +121,7 @@ impl IsolatedPluginManager {
 
         // 状態チェック
         if plugin.state != PluginState::Uninitialized && plugin.state != PluginState::Stopped {
-            return Err(McpError::PluginError(format!(
+            return Err(McpError::Plugin(format!(
                 "Plugin is not in a startable state: {:?}",
                 plugin.state
             )));
@@ -162,14 +162,14 @@ impl IsolatedPluginManager {
         let plugins = self.plugins.read().await;
         let plugin_arc = plugins
             .get(&plugin_id)
-            .ok_or_else(|| McpError::PluginError("Plugin not found".to_string()))?
+            .ok_or_else(|| McpError::Plugin("Plugin not found".to_string()))?
             .clone();
         drop(plugins);
 
         let mut plugin = plugin_arc.lock().await;
 
         if plugin.state != PluginState::Running && plugin.state != PluginState::Paused {
-            return Err(McpError::PluginError(format!(
+            return Err(McpError::Plugin(format!(
                 "Plugin is not in a stoppable state: {:?}",
                 plugin.state
             )));
@@ -209,7 +209,7 @@ impl IsolatedPluginManager {
         let plugins = self.plugins.read().await;
         let plugin_arc = plugins
             .get(&plugin_id)
-            .ok_or_else(|| McpError::PluginError("Plugin not found".to_string()))?
+            .ok_or_else(|| McpError::Plugin("Plugin not found".to_string()))?
             .clone();
         drop(plugins);
 
@@ -247,7 +247,7 @@ impl IsolatedPluginManager {
         let plugins = self.plugins.read().await;
         let plugin_arc = plugins
             .get(&plugin_id)
-            .ok_or_else(|| McpError::PluginError("Plugin not found".to_string()))?;
+            .ok_or_else(|| McpError::Plugin("Plugin not found".to_string()))?;
 
         let plugin = plugin_arc.lock().await;
         Ok(plugin.state)
@@ -258,7 +258,7 @@ impl IsolatedPluginManager {
         let plugins = self.plugins.read().await;
         let plugin_arc = plugins
             .get(&plugin_id)
-            .ok_or_else(|| McpError::PluginError("Plugin not found".to_string()))?;
+            .ok_or_else(|| McpError::Plugin("Plugin not found".to_string()))?;
 
         let plugin = plugin_arc.lock().await;
         Ok(plugin.metrics.clone())

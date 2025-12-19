@@ -88,10 +88,10 @@ pub struct NetworkRule {
 /// ネットワークプロトコル
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum NetworkProtocol {
-    TCP,
-    UDP,
-    HTTP,
-    HTTPS,
+    Tcp,
+    Udp,
+    Http,
+    Https,
     All,
 }
 
@@ -465,7 +465,7 @@ impl SecuritySandbox {
                 start: 443,
                 end: 443,
             }),
-            protocol: NetworkProtocol::HTTPS,
+            protocol: NetworkProtocol::Https,
             action: NetworkAction::Allow,
             priority: 100,
         }];
@@ -553,7 +553,7 @@ impl SecuritySandbox {
             "network.http" | "network.https" | "network.tcp" | "network.udp" => Ok(()),
             "file.read" | "file.write" | "file.execute" => Ok(()),
             "system.process" | "system.memory" => Ok(()),
-            _ => Err(McpError::SecurityError(format!(
+            _ => Err(McpError::SecurityFailure(format!(
                 "Unknown permission: {}",
                 permission
             ))),
@@ -619,7 +619,7 @@ impl SecuritySandbox {
         // 違反回数チェック
         if *count >= self.security_policy.max_security_violations {
             drop(tracker);
-            return Err(McpError::SecurityError(format!(
+            return Err(McpError::SecurityFailure(format!(
                 "Plugin {} exceeded maximum security violations ({})",
                 plugin_id, self.security_policy.max_security_violations
             )));
@@ -868,7 +868,7 @@ mod tests {
                 start: 80,
                 end: 443,
             }),
-            protocol: NetworkProtocol::HTTPS,
+            protocol: NetworkProtocol::Https,
             action: NetworkAction::Allow,
             priority: 100,
         };

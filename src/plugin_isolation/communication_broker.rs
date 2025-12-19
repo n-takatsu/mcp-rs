@@ -557,7 +557,7 @@ impl CommunicationBroker {
         // チャネル数制限チェック
         let channels = self.active_channels.read().await;
         if channels.len() >= self.config.max_concurrent_channels {
-            return Err(McpError::PluginError(format!(
+            return Err(McpError::Plugin(format!(
                 "Maximum number of channels reached: {}",
                 self.config.max_concurrent_channels
             )));
@@ -652,7 +652,7 @@ impl CommunicationBroker {
         // メッセージフィルタリング
         if !self.message_filters.filter_message(&message).await? {
             warn!("Message blocked by filter: {}", message.message_id);
-            return Err(McpError::SecurityError(
+            return Err(McpError::SecurityFailure(
                 "Message blocked by filter".to_string(),
             ));
         }
@@ -660,7 +660,7 @@ impl CommunicationBroker {
         // レート制限チェック
         if !self.check_rate_limit(message.source_plugin_id).await? {
             warn!("Message rate limited: {}", message.message_id);
-            return Err(McpError::PluginError("Rate limit exceeded".to_string()));
+            return Err(McpError::Plugin("Rate limit exceeded".to_string()));
         }
 
         // メッセージを暗号化

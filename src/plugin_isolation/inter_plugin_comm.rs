@@ -237,7 +237,7 @@ impl InterPluginCommunicationController {
 
         let mut queue = self.message_queue.lock().await;
         if queue.messages.len() >= queue.max_size {
-            return Err(McpError::PluginError("Message queue is full".to_string()));
+            return Err(McpError::Plugin("Message queue is full".to_string()));
         }
 
         queue.messages.push(message);
@@ -318,7 +318,7 @@ impl InterPluginCommunicationController {
         // レート制限チェック
         if limiter.recent_messages.len() >= limiter.max_rate as usize {
             warn!("Rate limit exceeded for plugin: {:?}", plugin_id);
-            return Err(McpError::PluginError("Rate limit exceeded".to_string()));
+            return Err(McpError::Plugin("Rate limit exceeded".to_string()));
         }
 
         // タイムスタンプを記録
@@ -340,7 +340,7 @@ impl InterPluginCommunicationController {
         for (rule, status) in rules.iter() {
             if rule.source_plugin == from_plugin && rule.target_plugin == to_plugin {
                 if *status != RuleStatus::Active {
-                    return Err(McpError::PluginError(
+                    return Err(McpError::Plugin(
                         "Communication rule is not active".to_string(),
                     ));
                 }
@@ -350,7 +350,7 @@ impl InterPluginCommunicationController {
                         .allowed_message_types
                         .contains(&message_type.to_string())
                 {
-                    return Err(McpError::PluginError(format!(
+                    return Err(McpError::Plugin(format!(
                         "Message type '{}' not allowed",
                         message_type
                     )));
@@ -365,7 +365,7 @@ impl InterPluginCommunicationController {
             "No communication rule found for {:?} -> {:?}",
             from_plugin, to_plugin
         );
-        Err(McpError::PluginError(
+        Err(McpError::Plugin(
             "Communication not allowed".to_string(),
         ))
     }

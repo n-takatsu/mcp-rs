@@ -97,7 +97,7 @@ pub enum ErrorSeverity {
 }
 
 /// エラーカウンター
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 struct ErrorCounter {
     /// 総エラー数
     total_errors: u64,
@@ -107,17 +107,6 @@ struct ErrorCounter {
     last_error_time: Option<chrono::DateTime<chrono::Utc>>,
     /// 連続エラー数
     consecutive_errors: u32,
-}
-
-impl Default for ErrorCounter {
-    fn default() -> Self {
-        Self {
-            total_errors: 0,
-            errors_by_category: HashMap::new(),
-            last_error_time: None,
-            consecutive_errors: 0,
-        }
-    }
 }
 
 /// 回復戦略
@@ -327,7 +316,7 @@ impl PluginErrorHandler {
             ErrorCategory::NetworkError => ErrorSeverity::Low,
             ErrorCategory::FileSystemError => {
                 // コンテキストに基づいて判定
-                if context.get("critical").map_or(false, |v| v == "true") {
+                if context.get("critical").is_some_and(|v| v == "true") {
                     ErrorSeverity::High
                 } else {
                     ErrorSeverity::Medium
@@ -451,8 +440,8 @@ impl PluginErrorHandler {
         let mut filtered: Vec<PluginError> = history
             .iter()
             .filter(|e| {
-                plugin_id.map_or(true, |id| e.plugin_id == id)
-                    && category.as_ref().map_or(true, |cat| &e.category == cat)
+                plugin_id.is_none_or(|id| e.plugin_id == id)
+                    && category.as_ref().is_none_or(|cat| &e.category == cat)
             })
             .cloned()
             .collect();
