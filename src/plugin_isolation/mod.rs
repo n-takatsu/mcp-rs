@@ -5,7 +5,9 @@
 
 pub mod communication_broker;
 mod config;
+pub mod error_handler;
 mod health;
+pub mod inter_plugin_comm;
 pub mod isolation_engine;
 pub mod lifecycle_manager;
 mod manager;
@@ -22,7 +24,15 @@ pub use communication_broker::{
 pub use config::{
     AlertThresholds, IsolationConfig, MonitoringConfig, PluginManagerConfig, SecurityPolicy,
 };
+pub use error_handler::{
+    ErrorCategory, ErrorHandlingConfig, ErrorSeverity, ErrorStats, PluginError,
+    PluginErrorHandler, RecoveryAction,
+};
 pub use health::PluginManagerHealth;
+pub use inter_plugin_comm::{
+    CommunicationEvent, CommunicationRule, CommEventType, CommResult, InterPluginCommConfig,
+    InterPluginCommStats, InterPluginCommunicationController, QueuedMessage, RuleStatus,
+};
 pub use manager::IsolatedPluginManager;
 pub use monitoring::{
     Alert, AlertSeverity, AlertStatus, DetailedMetrics, EventSeverity, LogEntry, LogLevel,
