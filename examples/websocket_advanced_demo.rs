@@ -93,7 +93,7 @@ async fn demo_load_balancing() -> Result<()> {
         session_affinity: false,
     };
 
-    let mut balancer = BalancerManager::new(config);
+    let balancer = BalancerManager::new(config);
 
     let endpoints = vec![
         Endpoint::new("server1".to_string(), "ws://server1:8080".to_string()),
@@ -102,7 +102,7 @@ async fn demo_load_balancing() -> Result<()> {
     ];
 
     for endpoint in endpoints.clone() {
-        balancer.register_endpoint(endpoint);
+        balancer.register_endpoint(endpoint).await;
     }
 
     println!("Registered endpoints:");
@@ -112,7 +112,7 @@ async fn demo_load_balancing() -> Result<()> {
 
     println!("\nSelecting endpoints (Round Robin):");
     for _ in 0..6 {
-        let selected = balancer.select_endpoint().await?;
+        let selected = balancer.select_endpoint().await.ok_or_else(|| mcp_rs::Error::Operation("No endpoint available".to_string()))?;
         println!("  Selected: {}", selected.id);
     }
 
@@ -123,19 +123,19 @@ async fn demo_load_balancing() -> Result<()> {
         ..Default::default()
     };
 
-    let mut balancer = BalancerManager::new(config);
+    let balancer = BalancerManager::new(config);
 
     for endpoint in endpoints.clone() {
-        balancer.register_endpoint(endpoint);
+        balancer.register_endpoint(endpoint).await;
     }
 
     println!("Simulating connection load:");
-    balancer.increment_connections("server1");
-    balancer.increment_connections("server1");
-    balancer.increment_connections("server2");
+    balancer.increment_connections(&"server1".to_string());
+    balancer.increment_connections(&"server1".to_string());
+    balancer.increment_connections(&"server2".to_string());
 
     for i in 1..=4 {
-        let selected = balancer.select_endpoint().await?;
+        let selected = balancer.select_endpoint().await.ok_or_else(|| mcp_rs::Error::Operation("No endpoint available".to_string()))?;
         println!("  Request {}: Selected {}", i, selected.id);
     }
 
@@ -146,7 +146,7 @@ async fn demo_load_balancing() -> Result<()> {
         ..Default::default()
     };
 
-    let mut balancer = BalancerManager::new(config);
+    let balancer = BalancerManager::new(config);
 
     let weighted_endpoints = vec![
         Endpoint::new("light".to_string(), "ws://light:8080".to_string()).with_weight(1),
@@ -155,7 +155,7 @@ async fn demo_load_balancing() -> Result<()> {
     ];
 
     for endpoint in weighted_endpoints {
-        balancer.register_endpoint(endpoint);
+        balancer.register_endpoint(endpoint).await;
     }
 
     println!("Endpoint weights:");
@@ -166,7 +166,7 @@ async fn demo_load_balancing() -> Result<()> {
     println!("\nDistribution over 14 requests:");
     let mut counts = std::collections::HashMap::new();
     for _ in 0..14 {
-        let selected = balancer.select_endpoint().await?;
+        let selected = balancer.select_endpoint().await.ok_or_else(|| mcp_rs::Error::Operation("No endpoint available".to_string()))?;
         *counts.entry(selected.id).or_insert(0) += 1;
     }
 
@@ -177,10 +177,10 @@ async fn demo_load_balancing() -> Result<()> {
     // Health checking
     println!("\n4. Health Checking:");
     let config = BalancerConfig::default();
-    let mut balancer = BalancerManager::new(config);
+    let balancer = BalancerManager::new(config);
 
     let endpoint = Endpoint::new("test_server".to_string(), "ws://test:8080".to_string());
-    balancer.register_endpoint(endpoint.clone());
+    balancer.register_endpoint(endpoint.clone()).await;
 
     println!("Initial health: healthy");
 
@@ -299,15 +299,15 @@ async fn demo_integrated_scenario() -> Result<()> {
         ..Default::default()
     };
 
-    let mut balancer = BalancerManager::new(balancer_config);
+    let balancer = BalancerManager::new(balancer_config);
 
     let server1 = Endpoint::new("server1".to_string(), "ws://server1:8080".to_string());
     let server2 = Endpoint::new("server2".to_string(), "ws://server2:8080".to_string());
     let server3 = Endpoint::new("server3".to_string(), "ws://server3:8080".to_string());
 
-    balancer.register_endpoint(server1.clone());
-    balancer.register_endpoint(server2.clone());
-    balancer.register_endpoint(server3.clone());
+    balancer.register_endpoint(server1.clone()).await;
+    balancer.register_endpoint(server2.clone()).await;
+    balancer.register_endpoint(server3.clone()).await;
 
     println!("1. Load Balancer initialized with 3 servers");
 
@@ -330,7 +330,7 @@ async fn demo_integrated_scenario() -> Result<()> {
     println!("3. Transfer Manager initialized");
 
     // Select server for transfer
-    let selected_server = balancer.select_endpoint().await?;
+    let selected_server = balancer.select_endpoint().await.ok_or_else(|| mcp_rs::Error::Operation("No endpoint available".to_string()))?;
     println!(
         "\n✓ Selected server: {} ({})",
         selected_server.id, selected_server.url
