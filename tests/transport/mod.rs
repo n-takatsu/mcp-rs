@@ -1,1 +1,2 @@
 mod dynamic_transport_tests;
+mod websocket_advanced_tests;
