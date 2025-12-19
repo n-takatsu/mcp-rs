@@ -112,7 +112,10 @@ async fn demo_load_balancing() -> Result<()> {
 
     println!("\nSelecting endpoints (Round Robin):");
     for _ in 0..6 {
-        let selected = balancer.select_endpoint().await.ok_or_else(|| mcp_rs::Error::Operation("No endpoint available".to_string()))?;
+        let selected = balancer
+            .select_endpoint()
+            .await
+            .ok_or_else(|| mcp_rs::Error::Operation("No endpoint available".to_string()))?;
         println!("  Selected: {}", selected.id);
     }
 
@@ -135,7 +138,10 @@ async fn demo_load_balancing() -> Result<()> {
     balancer.increment_connections(&"server2".to_string());
 
     for i in 1..=4 {
-        let selected = balancer.select_endpoint().await.ok_or_else(|| mcp_rs::Error::Operation("No endpoint available".to_string()))?;
+        let selected = balancer
+            .select_endpoint()
+            .await
+            .ok_or_else(|| mcp_rs::Error::Operation("No endpoint available".to_string()))?;
         println!("  Request {}: Selected {}", i, selected.id);
     }
 
@@ -166,7 +172,10 @@ async fn demo_load_balancing() -> Result<()> {
     println!("\nDistribution over 14 requests:");
     let mut counts = std::collections::HashMap::new();
     for _ in 0..14 {
-        let selected = balancer.select_endpoint().await.ok_or_else(|| mcp_rs::Error::Operation("No endpoint available".to_string()))?;
+        let selected = balancer
+            .select_endpoint()
+            .await
+            .ok_or_else(|| mcp_rs::Error::Operation("No endpoint available".to_string()))?;
         *counts.entry(selected.id).or_insert(0) += 1;
     }
 
@@ -330,7 +339,10 @@ async fn demo_integrated_scenario() -> Result<()> {
     println!("3. Transfer Manager initialized");
 
     // Select server for transfer
-    let selected_server = balancer.select_endpoint().await.ok_or_else(|| mcp_rs::Error::Operation("No endpoint available".to_string()))?;
+    let selected_server = balancer
+        .select_endpoint()
+        .await
+        .ok_or_else(|| mcp_rs::Error::Operation("No endpoint available".to_string()))?;
     println!(
         "\n✓ Selected server: {} ({})",
         selected_server.id, selected_server.url
