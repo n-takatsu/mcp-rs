@@ -126,7 +126,7 @@ async fn test_balancer_round_robin_strategy() {
     assert!(ids.contains(&&"ep1".to_string()));
     assert!(ids.contains(&&"ep2".to_string()));
     assert!(ids.contains(&&"ep3".to_string()));
-    
+
     // Fourth selection should wrap around to first
     assert_eq!(selected4.id, selected1.id);
 }
