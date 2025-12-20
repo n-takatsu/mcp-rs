@@ -737,7 +737,7 @@ impl IsolationEngine {
             use std::fs;
             // PID名前空間のパスを構築 (/proc/<pid>/ns/pid)
             let pid_ns_path = format!("/proc/{}/ns/pid", pid);
-            
+
             match fs::read_link(&pid_ns_path) {
                 Ok(ns_link) => {
                     let ns_id = ns_link.to_string_lossy().to_string();
