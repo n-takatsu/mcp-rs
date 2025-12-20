@@ -24,13 +24,18 @@ use axum::{
     Router,
 };
 use mcp_rs::transport::websocket::{
-    ConnectionPool, FailoverConfig, LoadBalanceStrategy, PoolConfig, RateLimitConfig,
+    ConnectionPool, PoolConfig, RateLimitConfig,
     RateLimitStrategy, RateLimiter, WebSocketMetrics,
 };
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::Mutex;
 use tracing::{error, info, warn};
+
+/// グローバル接続カウンター
+static CONN_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// アプリケーション状態
 #[derive(Clone)]
@@ -53,25 +58,14 @@ async fn main() {
     let pool_config = PoolConfig {
         min_connections: 2,
         max_connections: 10,
-        load_balance_strategy: LoadBalanceStrategy::LeastConnections,
-        enable_auto_scaling: true,
-        scale_up_threshold: 0.8,
-        scale_down_threshold: 0.2,
-        health_check_interval_ms: 5000,
-    };
-
-    // フェイルオーバー設定
-    let failover_config = FailoverConfig {
-        max_retries: 3,
-        retry_delay_ms: 100,
-        enable_circuit_breaker: true,
-        circuit_breaker_threshold: 5,
-        circuit_breaker_timeout_ms: 30000,
+        connection_timeout: Duration::from_secs(5),
+        idle_timeout: Duration::from_secs(60),
+        health_check_interval: Duration::from_secs(30),
     };
 
     // プール初期化
     let pool = Arc::new(
-        ConnectionPool::new_with_failover(pool_config, failover_config)
+        ConnectionPool::new(pool_config)
             .expect("Failed to create connection pool"),
     );
 
@@ -108,10 +102,8 @@ async fn main() {
     info!("🔌 WebSocket: ws://localhost:8082/ws");
     info!("📊 Pool Stats: http://localhost:8082/pool/stats");
 
-    axum::Server::bind(&addr)
-        .serve(app.into_make_service())
-        .await
-        .unwrap();
+    let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
+    axum::serve(listener, app).await.unwrap();
 }
 
 /// WebSocketアップグレードハンドラー
@@ -124,27 +116,24 @@ async fn websocket_handler(
 
 /// WebSocketメッセージハンドラー
 async fn handle_socket(mut socket: WebSocket, state: AppState) {
-    // 接続追加
-    match state.pool.add_connection().await {
-        Ok(conn_id) => {
-            state.metrics.increment_connections();
-            info!("✅ New connection added to pool: {}", conn_id);
+    state.metrics.increment_connections();
+    let conn_id = CONN_COUNTER.fetch_add(1, Ordering::SeqCst);
+    info!("✅ New connection: {}", conn_id);
 
-            // ウェルカムメッセージ
-            let welcome = format!(
-                "Welcome to Load Balanced Server! 🎉\nConnection ID: {}\nStrategy: {:?}",
-                conn_id,
-                state.pool.get_stats().await.unwrap().load_balance_strategy
-            );
+    // ウェルカムメッセージ
+    let welcome = format!(
+        "Welcome to Load Balanced Server! 🎉\nConnection ID: {}",
+        conn_id
+    );
 
-            if socket.send(Message::Text(welcome)).await.is_err() {
-                warn!("Failed to send welcome message");
-                let _ = state.pool.remove_connection(&conn_id).await;
-                return;
-            }
+    if socket.send(Message::Text(welcome.into())).await.is_err() {
+        warn!("Failed to send welcome message");
+        state.metrics.decrement_connections();
+        return;
+    }
 
-            // メッセージループ
-            while let Some(msg) = socket.recv().await {
+    // メッセージループ
+    while let Some(msg) = socket.recv().await {
                 match msg {
                     Ok(Message::Text(text)) => {
                         info!("📨 [{}] Received: {}", conn_id, text);
@@ -164,7 +153,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
                                     conn_id, *count, text
                                 );
 
-                                if socket.send(Message::Text(response)).await.is_err() {
+                                if socket.send(Message::Text(response.into())).await.is_err() {
                                     error!("[{}] Failed to send response", conn_id);
                                     break;
                                 }
@@ -182,7 +171,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
                                     "[{}] ⚠️  Rate limit exceeded. Please slow down.",
                                     conn_id
                                 );
-                                let _ = socket.send(Message::Text(msg)).await;
+                                let _ = socket.send(Message::Text(msg.into())).await;
                                 warn!("[{}] Rate limit exceeded", conn_id);
                             }
                             Err(e) => {
@@ -213,43 +202,26 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
                 }
             }
 
-            // 接続削除
-            if let Err(e) = state.pool.remove_connection(&conn_id).await {
-                error!("[{}] Failed to remove connection: {}", conn_id, e);
-            }
-
-            state.metrics.decrement_connections();
-            info!("[{}] Connection closed", conn_id);
-        }
-        Err(e) => {
-            error!("Failed to add connection to pool: {}", e);
-            state.metrics.increment_errors();
-            let _ = socket
-                .send(Message::Text(format!("Error: {}", e)))
-                .await;
-        }
-    }
+    state.metrics.decrement_connections();
+    info!("[{}] Connection closed", conn_id);
 }
 
 /// プール統計送信
 async fn send_pool_stats(socket: &mut WebSocket, state: &AppState) {
-    if let Ok(stats) = state.pool.get_stats().await {
-        let stats_msg = format!(
-            "📊 Pool Stats: Active={}/{}, Load={:.1}%, Strategy={:?}",
-            stats.active_connections,
-            stats.max_connections,
-            stats.load_percentage * 100.0,
-            stats.load_balance_strategy
-        );
+    let stats = state.pool.statistics();
+    let stats_msg = format!(
+        "📊 Pool Stats: Active={}, Total={}",
+        stats.active_connections,
+        stats.total_connections
+    );
 
-        let _ = socket.send(Message::Text(stats_msg)).await;
-    }
+    let _ = socket.send(Message::Text(stats_msg.into())).await;
 }
 
 /// ヘルスチェックエンドポイント
 async fn health_check(State(state): State<AppState>) -> impl IntoResponse {
     let snapshot = state.metrics.snapshot();
-    let pool_stats = state.pool.get_stats().await;
+    let pool_stats = state.pool.statistics();
     let message_count = *state.message_count.lock().await;
 
     let status = serde_json::json!({
@@ -260,12 +232,11 @@ async fn health_check(State(state): State<AppState>) -> impl IntoResponse {
             "messages_received": snapshot.messages_received_total,
             "errors": snapshot.errors_total,
         },
-        "pool": pool_stats.map(|s| serde_json::json!({
-            "active_connections": s.active_connections,
-            "max_connections": s.max_connections,
-            "load_percentage": s.load_percentage,
-            "strategy": format!("{:?}", s.load_balance_strategy),
-        })),
+        "pool": {
+            "active_connections": pool_stats.active_connections,
+            "total_connections": pool_stats.total_connections,
+            "idle_connections": pool_stats.idle_connections,
+        },
         "total_messages_processed": message_count,
     });
 
@@ -274,24 +245,16 @@ async fn health_check(State(state): State<AppState>) -> impl IntoResponse {
 
 /// プール統計エンドポイント
 async fn pool_stats_handler(State(state): State<AppState>) -> impl IntoResponse {
-    match state.pool.get_stats().await {
-        Ok(stats) => {
-            let response = serde_json::json!({
-                "active_connections": stats.active_connections,
-                "max_connections": stats.max_connections,
-                "min_connections": stats.min_connections,
-                "load_percentage": stats.load_percentage,
-                "load_balance_strategy": format!("{:?}", stats.load_balance_strategy),
-                "auto_scaling_enabled": stats.auto_scaling_enabled,
-            });
-            axum::Json(response).into_response()
-        }
-        Err(e) => (
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to get pool stats: {}", e),
-        )
-            .into_response(),
-    }
+    let stats = state.pool.statistics();
+    let response = serde_json::json!({
+        "active_connections": stats.active_connections,
+        "total_connections": stats.total_connections,
+        "idle_connections": stats.idle_connections,
+        "pending_requests": stats.pending_requests,
+        "total_requests": stats.total_requests,
+        "failed_requests": stats.failed_requests,
+    });
+    axum::Json(response).into_response()
 }
 
 /// Prometheusメトリクスエンドポイント

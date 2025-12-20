@@ -7,7 +7,6 @@ use mcp_rs::transport::websocket::{
     BalancingStrategy, CompressionConfig, CompressionManager, CompressionType, RateLimitConfig,
     RateLimitStrategy, RateLimiter, WebSocketMetrics,
 };
-use std::time::Duration;
 
 /// メトリクス収集のベンチマーク
 fn bench_metrics_collection(c: &mut Criterion) {
@@ -208,7 +207,7 @@ fn bench_compression_levels(c: &mut Criterion) {
 
 /// 負荷分散戦略のベンチマーク
 fn bench_load_balancing(c: &mut Criterion) {
-    use mcp_rs::transport::websocket::{BalancerManager, Endpoint};
+    use mcp_rs::transport::websocket::{BalancerConfig, BalancerManager, Endpoint};
 
     let mut group = c.benchmark_group("load_balancing");
 
@@ -219,27 +218,65 @@ fn bench_load_balancing(c: &mut Criterion) {
     ];
 
     group.bench_function("round_robin_select", |b| {
-        let manager = BalancerManager::new(endpoints.clone(), BalancingStrategy::RoundRobin);
+        let config = BalancerConfig {
+            strategy: BalancingStrategy::RoundRobin,
+            ..Default::default()
+        };
+        let manager = BalancerManager::new(config);
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        
+        rt.block_on(async {
+            for endpoint in &endpoints {
+                manager.register_endpoint(endpoint.clone()).await;
+            }
+        });
 
         b.iter(|| {
-            let _ = manager.select_endpoint();
+            rt.block_on(async {
+                let _ = manager.select_endpoint().await;
+            });
         });
     });
 
     group.bench_function("least_connections_select", |b| {
-        let manager =
-            BalancerManager::new(endpoints.clone(), BalancingStrategy::LeastConnections);
+        let config = BalancerConfig {
+            strategy: BalancingStrategy::LeastConnections,
+            ..Default::default()
+        };
+        let manager = BalancerManager::new(config);
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        
+        rt.block_on(async {
+            for endpoint in &endpoints {
+                manager.register_endpoint(endpoint.clone()).await;
+            }
+        });
 
         b.iter(|| {
-            let _ = manager.select_endpoint();
+            rt.block_on(async {
+                let _ = manager.select_endpoint().await;
+            });
         });
     });
 
     group.bench_function("random_select", |b| {
-        let manager = BalancerManager::new(endpoints.clone(), BalancingStrategy::Random);
+        let config = BalancerConfig {
+            strategy: BalancingStrategy::Random,
+            ..Default::default()
+        };
+        let manager = BalancerManager::new(config);
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        
+        rt.block_on(async {
+            for endpoint in &endpoints {
+                manager.register_endpoint(endpoint.clone()).await;
+            }
+        });
 
         b.iter(|| {
-            let _ = manager.select_endpoint();
+            rt.block_on(async {
+                let _ = manager.select_endpoint().await;
+            });
         });
     });
 

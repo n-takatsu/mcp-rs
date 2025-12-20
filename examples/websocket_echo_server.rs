@@ -78,10 +78,8 @@ async fn main() {
     info!("📈 Metrics: http://localhost:8080/metrics");
     info!("🔌 WebSocket: ws://localhost:8080/ws");
 
-    axum::Server::bind(&addr)
-        .serve(app.into_make_service())
-        .await
-        .unwrap();
+    let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
+    axum::serve(listener, app).await.unwrap();
 }
 
 /// WebSocketアップグレードハンドラー
@@ -105,7 +103,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
     // ウェルカムメッセージ
     if socket
         .send(Message::Text(
-            "Welcome to WebSocket Echo Server! 🎉".to_string(),
+            "Welcome to WebSocket Echo Server! 🎉".into(),
         ))
         .await
         .is_err()
@@ -127,7 +125,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
 
                         // エコーバック
                         let echo = format!("Echo: {}", text);
-                        if socket.send(Message::Text(echo)).await.is_err() {
+                        if socket.send(Message::Text(echo.into())).await.is_err() {
                             error!("Failed to send echo");
                             break;
                         }
@@ -137,7 +135,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
                     Ok(_) => {
                         // レート制限超過
                         let msg = "⚠️  Rate limit exceeded. Please slow down.";
-                        let _ = socket.send(Message::Text(msg.to_string())).await;
+                        let _ = socket.send(Message::Text(msg.into())).await;
                         warn!("Rate limit exceeded");
                     }
                     Err(e) => {

@@ -27,21 +27,18 @@ use axum::{
     Router,
 };
 use mcp_rs::transport::websocket::{
-    CompressionAlgorithm, CompressionConfig, CompressionManager, LlmStreamConfig, LlmStreamer,
     WebSocketMetrics,
 };
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::time::{sleep, Duration};
-use tracing::{error, info, warn};
+use tracing::{error, info};
 
 /// チャットリクエスト
 #[derive(Debug, Deserialize)]
 struct ChatRequest {
     message: String,
-    #[serde(default)]
-    stream: bool,
 }
 
 /// チャットレスポンス
@@ -59,8 +56,6 @@ struct ChatResponse {
 #[derive(Clone)]
 struct AppState {
     metrics: Arc<WebSocketMetrics>,
-    llm_streamer: Arc<LlmStreamer>,
-    compression: Arc<CompressionManager>,
 }
 
 #[tokio::main]
@@ -71,29 +66,9 @@ async fn main() {
     // メトリクス初期化
     let metrics = Arc::new(WebSocketMetrics::new().expect("Failed to create metrics"));
 
-    // LLMストリーマー初期化
-    let llm_config = LlmStreamConfig {
-        chunk_size: 20,
-        delay_ms: 50,
-        ..Default::default()
-    };
-    let llm_streamer = Arc::new(LlmStreamer::new(llm_config));
-
-    // 圧縮マネージャー初期化（Brotli使用）
-    let compression_config = CompressionConfig {
-        algorithm: CompressionAlgorithm::Brotli,
-        level: 4,
-        ..Default::default()
-    };
-    let compression = Arc::new(
-        CompressionManager::new(compression_config).expect("Failed to create compression manager"),
-    );
-
     // 状態初期化
     let state = AppState {
         metrics,
-        llm_streamer,
-        compression,
     };
 
     // ルーター構築
@@ -110,10 +85,8 @@ async fn main() {
     info!("📈 Metrics: http://localhost:8081/metrics");
     info!("💬 Chat: ws://localhost:8081/chat");
 
-    axum::Server::bind(&addr)
-        .serve(app.into_make_service())
-        .await
-        .unwrap();
+    let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
+    axum::serve(listener, app).await.unwrap();
 }
 
 /// WebSocketアップグレードハンドラー
@@ -135,7 +108,8 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
         done: Some(false),
         error: None,
     };
-    let _ = send_json(&mut socket, &welcome).await;
+    let welcome_json = serde_json::to_string(&welcome).unwrap();
+    let _ = socket.send(Message::Text(welcome_json.into())).await;
 
     // メッセージループ
     while let Some(msg) = socket.recv().await {
@@ -147,13 +121,8 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
                 // JSONパース
                 match serde_json::from_str::<ChatRequest>(&text) {
                     Ok(request) => {
-                        if request.stream {
-                            // ストリーミングレスポンス
-                            handle_streaming_chat(&mut socket, &state, &request.message).await;
-                        } else {
-                            // 通常レスポンス
-                            handle_chat(&mut socket, &state, &request.message).await;
-                        }
+                        // シミュレート応答（実際のLLM統合は別途実装）
+                        handle_chat(&mut socket, &state, &request.message).await;
                     }
                     Err(e) => {
                         error!("Failed to parse request: {}", e);
@@ -162,7 +131,8 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
                             done: Some(true),
                             error: Some(format!("Invalid JSON: {}", e)),
                         };
-                        let _ = send_json(&mut socket, &error_response).await;
+                        let error_json = serde_json::to_string(&error_response).unwrap();
+                        let _ = socket.send(Message::Text(error_json.into())).await;
                         state.metrics.increment_errors();
                     }
                 }
@@ -202,102 +172,12 @@ async fn handle_chat(socket: &mut WebSocket, state: &AppState, message: &str) {
         error: None,
     };
 
-    if send_json(socket, &response).await.is_ok() {
+    let json = serde_json::to_string(&response).unwrap();
+    if socket.send(Message::Text(json.into())).await.is_ok() {
         state.metrics.increment_messages_sent();
     } else {
         state.metrics.increment_errors();
     }
-}
-
-/// ストリーミングチャット処理
-async fn handle_streaming_chat(socket: &mut WebSocket, state: &AppState, message: &str) {
-    // シミュレートされたLLM応答
-    let full_response = format!(
-        "You asked: '{}'. Here's a streaming response: \
-         This demonstrates how the LLM Streamer works. \
-         It breaks down long responses into smaller chunks \
-         and sends them progressively to provide a better user experience. \
-         The streaming approach allows users to see the response as it's being generated.",
-        message
-    );
-
-    info!("🔄 Starting streaming response ({} chars)", full_response.len());
-
-    // ストリーミング開始
-    match state.llm_streamer.start_stream(&full_response).await {
-        Ok(stream_id) => {
-            let mut chunk_count = 0;
-
-            // チャンクを順次送信
-            loop {
-                match state.llm_streamer.next_chunk(&stream_id).await {
-                    Ok(Some(chunk)) => {
-                        chunk_count += 1;
-
-                        let response = ChatResponse {
-                            content: Some(chunk),
-                            done: Some(false),
-                            error: None,
-                        };
-
-                        if send_json(socket, &response).await.is_err() {
-                            error!("Failed to send chunk {}", chunk_count);
-                            state.metrics.increment_errors();
-                            break;
-                        }
-
-                        state.metrics.increment_messages_sent();
-                    }
-                    Ok(None) => {
-                        // ストリーミング完了
-                        info!("✅ Streaming complete ({} chunks)", chunk_count);
-
-                        let done_response = ChatResponse {
-                            content: None,
-                            done: Some(true),
-                            error: None,
-                        };
-
-                        let _ = send_json(socket, &done_response).await;
-                        state.metrics.increment_messages_sent();
-                        break;
-                    }
-                    Err(e) => {
-                        error!("Streaming error: {}", e);
-                        state.metrics.increment_errors();
-                        break;
-                    }
-                }
-            }
-
-            // ストリーム終了
-            let _ = state.llm_streamer.end_stream(&stream_id).await;
-        }
-        Err(e) => {
-            error!("Failed to start stream: {}", e);
-            let error_response = ChatResponse {
-                content: None,
-                done: Some(true),
-                error: Some(format!("Streaming error: {}", e)),
-            };
-            let _ = send_json(socket, &error_response).await;
-            state.metrics.increment_errors();
-        }
-    }
-}
-
-/// JSON応答送信（圧縮付き）
-async fn send_json<T: Serialize>(socket: &mut WebSocket, data: &T) -> Result<(), ()> {
-    let json = serde_json::to_string(data).map_err(|e| {
-        error!("Failed to serialize JSON: {}", e);
-    })?;
-
-    socket
-        .send(Message::Text(json))
-        .await
-        .map_err(|e| {
-            error!("Failed to send message: {}", e);
-        })
 }
 
 /// ヘルスチェックエンドポイント
