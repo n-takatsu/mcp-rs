@@ -231,6 +231,99 @@ impl FailoverManager {
             .map(|m| m.retry_count)
             .unwrap_or(0)
     }
+
+    /// Starts automatic health check and failover monitoring
+    pub fn start_health_check_monitor(
+        &self,
+        check_interval: Duration,
+    ) -> tokio::task::JoinHandle<()> {
+        let mappings = Arc::clone(&self.mappings);
+        let active_failovers = Arc::clone(&self.active_failovers);
+        let history = Arc::clone(&self.history);
+        let config = self.config.clone();
+
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(check_interval);
+
+            loop {
+                interval.tick().await;
+
+                let mappings_guard = mappings.read().await;
+                for (endpoint_id, mapping) in mappings_guard.iter() {
+                    // Check if failover is needed based on retry count
+                    if mapping.retry_count >= config.max_retries {
+                        tracing::warn!(
+                            "Endpoint {} exceeded max retries ({}), considering automatic failover",
+                            endpoint_id,
+                            config.max_retries
+                        );
+
+                        // Trigger automatic failover
+                        if !mapping.backups.is_empty() {
+                            let backup = &mapping.backups[mapping.active_backup_index];
+
+                            let event = FailoverEvent {
+                                timestamp: Instant::now(),
+                                from_endpoint: mapping.primary.clone(),
+                                to_endpoint: backup.clone(),
+                                status: FailoverStatus::InProgress,
+                                error_message: Some("Max retries exceeded".to_string()),
+                            };
+
+                            let mut history_guard = history.write().await;
+                            history_guard.push(event);
+
+                            let mut active_guard = active_failovers.write().await;
+                            active_guard.insert(endpoint_id.clone(), FailoverStatus::InProgress);
+                        }
+                    }
+                }
+            }
+        })
+    }
+
+    /// Performs health check on endpoint
+    pub async fn health_check_endpoint(&self, endpoint: &Endpoint) -> bool {
+        // シンプルなヘルスチェック実装
+        // 実際の実装では、WebSocket接続を試みるか、HTTP ヘルスチェックエンドポイントを呼び出す
+        tracing::debug!("Health check for endpoint: {}", endpoint.id);
+
+        // TODO: 実際のヘルスチェックロジックを実装
+        // ここではプレースホルダーとして常にtrueを返す
+        true
+    }
+
+    /// Attempts to reconnect with exponential backoff
+    pub async fn reconnect_with_backoff(
+        &self,
+        endpoint: &Endpoint,
+        max_attempts: u32,
+    ) -> Result<()> {
+        for attempt in 0..max_attempts {
+            let delay = self.calculate_retry_delay(attempt);
+            tracing::info!(
+                "Reconnection attempt {} for endpoint {} (waiting {:?})",
+                attempt + 1,
+                endpoint.id,
+                delay
+            );
+
+            tokio::time::sleep(delay).await;
+
+            // Try to connect
+            // TODO: Implement actual connection logic
+            if self.health_check_endpoint(endpoint).await {
+                tracing::info!("Successfully reconnected to endpoint {}", endpoint.id);
+                self.reset_retry_count(&endpoint.id).await;
+                return Ok(());
+            }
+        }
+
+        Err(Error::Connection(format!(
+            "Failed to reconnect to endpoint {} after {} attempts",
+            endpoint.id, max_attempts
+        )))
+    }
 }
 
 #[async_trait]

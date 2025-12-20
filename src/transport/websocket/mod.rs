@@ -25,7 +25,7 @@ pub use jsonrpc::{error_codes, JsonRpcMessage, JsonRpcNotification};
 pub use llm_bridge::{
     AnthropicBridge, LlmBridge, LlmBridgeFactory, LlmConfig, LlmProvider, OpenAiBridge, StreamChunk,
 };
-pub use pool::ConnectionPool;
+pub use pool::{ConnectionPool, PoolMetrics};
 pub use server::{
     ConnectionId, EchoHandler, MessageHandler, ServerConfig, ServerStatistics, WebSocketServer,
 };
