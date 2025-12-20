@@ -293,8 +293,7 @@ async fn websocket_handler(
         return axum::http::Response::builder()
             .status(503)
             .body("Service Unavailable".into())
-            .unwrap()
-            .into();
+            .unwrap();
     }
 
     ws.on_upgrade(move |socket| handle_socket(socket, state, addr))
