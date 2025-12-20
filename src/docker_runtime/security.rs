@@ -281,7 +281,10 @@ impl SecretManager {
 
         // nonce と ciphertext を分離
         let (nonce_bytes, ciphertext) = combined.split_at(12);
-        let nonce = Nonce::from(<[u8; 12]>::try_from(nonce_bytes).map_err(|_| DockerError::ApiError("Invalid nonce size".to_string()))?);
+        let nonce = Nonce::from(
+            <[u8; 12]>::try_from(nonce_bytes)
+                .map_err(|_| DockerError::ApiError("Invalid nonce size".to_string()))?,
+        );
 
         // 復号化キーの準備
         let key = if self.encryption_key.len() == 32 {
