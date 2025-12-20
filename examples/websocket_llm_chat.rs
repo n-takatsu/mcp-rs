@@ -26,9 +26,7 @@ use axum::{
     routing::get,
     Router,
 };
-use mcp_rs::transport::websocket::{
-    WebSocketMetrics,
-};
+use mcp_rs::transport::websocket::WebSocketMetrics;
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -67,9 +65,7 @@ async fn main() {
     let metrics = Arc::new(WebSocketMetrics::new().expect("Failed to create metrics"));
 
     // 状態初期化
-    let state = AppState {
-        metrics,
-    };
+    let state = AppState { metrics };
 
     // ルーター構築
     let app = Router::new()
@@ -198,11 +194,7 @@ async fn health_check(State(state): State<AppState>) -> impl IntoResponse {
 /// Prometheusメトリクスエンドポイント
 async fn metrics_handler(State(state): State<AppState>) -> impl IntoResponse {
     match state.metrics.export_text() {
-        Ok(text) => (
-            [(axum::http::header::CONTENT_TYPE, "text/plain")],
-            text,
-        )
-            .into_response(),
+        Ok(text) => ([(axum::http::header::CONTENT_TYPE, "text/plain")], text).into_response(),
         Err(e) => (
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
             format!("Failed to export metrics: {}", e),

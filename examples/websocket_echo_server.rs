@@ -102,9 +102,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
 
     // ウェルカムメッセージ
     if socket
-        .send(Message::Text(
-            "Welcome to WebSocket Echo Server! 🎉".into(),
-        ))
+        .send(Message::Text("Welcome to WebSocket Echo Server! 🎉".into()))
         .await
         .is_err()
     {
@@ -202,11 +200,7 @@ async fn health_check(State(state): State<AppState>) -> impl IntoResponse {
 /// Prometheusメトリクスエンドポイント
 async fn metrics_handler(State(state): State<AppState>) -> impl IntoResponse {
     match state.metrics.export_text() {
-        Ok(text) => (
-            [(axum::http::header::CONTENT_TYPE, "text/plain")],
-            text,
-        )
-            .into_response(),
+        Ok(text) => ([(axum::http::header::CONTENT_TYPE, "text/plain")], text).into_response(),
         Err(e) => (
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
             format!("Failed to export metrics: {}", e),

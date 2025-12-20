@@ -24,8 +24,7 @@ use axum::{
     Router,
 };
 use mcp_rs::transport::websocket::{
-    ConnectionPool, PoolConfig, RateLimitConfig,
-    RateLimitStrategy, RateLimiter, WebSocketMetrics,
+    ConnectionPool, PoolConfig, RateLimitConfig, RateLimitStrategy, RateLimiter, WebSocketMetrics,
 };
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -64,10 +63,8 @@ async fn main() {
     };
 
     // プール初期化
-    let pool = Arc::new(
-        ConnectionPool::new(pool_config)
-            .expect("Failed to create connection pool"),
-    );
+    let pool =
+        Arc::new(ConnectionPool::new(pool_config).expect("Failed to create connection pool"));
 
     // レート制限設定（1000 req/sec）
     let rate_config = RateLimitConfig {
@@ -134,73 +131,71 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
 
     // メッセージループ
     while let Some(msg) = socket.recv().await {
-                match msg {
-                    Ok(Message::Text(text)) => {
-                        info!("📨 [{}] Received: {}", conn_id, text);
+        match msg {
+            Ok(Message::Text(text)) => {
+                info!("📨 [{}] Received: {}", conn_id, text);
 
-                        // レート制限チェック
-                        match state.rate_limiter.check_global_rate_limit().await {
-                            Ok(allowed) if allowed => {
-                                state.metrics.increment_messages_received();
+                // レート制限チェック
+                match state.rate_limiter.check_global_rate_limit().await {
+                    Ok(allowed) if allowed => {
+                        state.metrics.increment_messages_received();
 
-                                // メッセージカウント更新
-                                let mut count = state.message_count.lock().await;
-                                *count += 1;
+                        // メッセージカウント更新
+                        let mut count = state.message_count.lock().await;
+                        *count += 1;
 
-                                // レスポンス作成
-                                let response = format!(
-                                    "[Connection {}] Message #{} processed: {}",
-                                    conn_id, *count, text
-                                );
+                        // レスポンス作成
+                        let response = format!(
+                            "[Connection {}] Message #{} processed: {}",
+                            conn_id, *count, text
+                        );
 
-                                if socket.send(Message::Text(response.into())).await.is_err() {
-                                    error!("[{}] Failed to send response", conn_id);
-                                    break;
-                                }
-
-                                state.metrics.increment_messages_sent();
-
-                                // プール統計を定期的に送信
-                                if *count % 10 == 0 {
-                                    send_pool_stats(&mut socket, &state).await;
-                                }
-                            }
-                            Ok(_) => {
-                                // レート制限超過
-                                let msg = format!(
-                                    "[{}] ⚠️  Rate limit exceeded. Please slow down.",
-                                    conn_id
-                                );
-                                let _ = socket.send(Message::Text(msg.into())).await;
-                                warn!("[{}] Rate limit exceeded", conn_id);
-                            }
-                            Err(e) => {
-                                error!("[{}] Rate limit check error: {}", conn_id, e);
-                                state.metrics.increment_errors();
-                            }
-                        }
-                    }
-                    Ok(Message::Binary(data)) => {
-                        info!("[{}] Received binary: {} bytes", conn_id, data.len());
-                        if socket.send(Message::Binary(data)).await.is_err() {
-                            error!("[{}] Failed to send binary", conn_id);
+                        if socket.send(Message::Text(response.into())).await.is_err() {
+                            error!("[{}] Failed to send response", conn_id);
                             break;
                         }
-                    }
-                    Ok(Message::Close(_)) => {
-                        info!("[{}] Client requested close", conn_id);
-                        break;
+
+                        state.metrics.increment_messages_sent();
+
+                        // プール統計を定期的に送信
+                        if *count % 10 == 0 {
+                            send_pool_stats(&mut socket, &state).await;
+                        }
                     }
                     Ok(_) => {
-                        // Ping/Pong（何もしない）
+                        // レート制限超過
+                        let msg =
+                            format!("[{}] ⚠️  Rate limit exceeded. Please slow down.", conn_id);
+                        let _ = socket.send(Message::Text(msg.into())).await;
+                        warn!("[{}] Rate limit exceeded", conn_id);
                     }
                     Err(e) => {
-                        error!("[{}] WebSocket error: {}", conn_id, e);
+                        error!("[{}] Rate limit check error: {}", conn_id, e);
                         state.metrics.increment_errors();
-                        break;
                     }
                 }
             }
+            Ok(Message::Binary(data)) => {
+                info!("[{}] Received binary: {} bytes", conn_id, data.len());
+                if socket.send(Message::Binary(data)).await.is_err() {
+                    error!("[{}] Failed to send binary", conn_id);
+                    break;
+                }
+            }
+            Ok(Message::Close(_)) => {
+                info!("[{}] Client requested close", conn_id);
+                break;
+            }
+            Ok(_) => {
+                // Ping/Pong（何もしない）
+            }
+            Err(e) => {
+                error!("[{}] WebSocket error: {}", conn_id, e);
+                state.metrics.increment_errors();
+                break;
+            }
+        }
+    }
 
     state.metrics.decrement_connections();
     info!("[{}] Connection closed", conn_id);
@@ -211,8 +206,7 @@ async fn send_pool_stats(socket: &mut WebSocket, state: &AppState) {
     let stats = state.pool.statistics();
     let stats_msg = format!(
         "📊 Pool Stats: Active={}, Total={}",
-        stats.active_connections,
-        stats.total_connections
+        stats.active_connections, stats.total_connections
     );
 
     let _ = socket.send(Message::Text(stats_msg.into())).await;
@@ -260,11 +254,7 @@ async fn pool_stats_handler(State(state): State<AppState>) -> impl IntoResponse 
 /// Prometheusメトリクスエンドポイント
 async fn metrics_handler(State(state): State<AppState>) -> impl IntoResponse {
     match state.metrics.export_text() {
-        Ok(text) => (
-            [(axum::http::header::CONTENT_TYPE, "text/plain")],
-            text,
-        )
-            .into_response(),
+        Ok(text) => ([(axum::http::header::CONTENT_TYPE, "text/plain")], text).into_response(),
         Err(e) => (
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
             format!("Failed to export metrics: {}", e),

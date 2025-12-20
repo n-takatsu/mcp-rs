@@ -224,7 +224,7 @@ fn bench_load_balancing(c: &mut Criterion) {
         };
         let manager = BalancerManager::new(config);
         let rt = tokio::runtime::Runtime::new().unwrap();
-        
+
         rt.block_on(async {
             for endpoint in &endpoints {
                 manager.register_endpoint(endpoint.clone()).await;
@@ -245,7 +245,7 @@ fn bench_load_balancing(c: &mut Criterion) {
         };
         let manager = BalancerManager::new(config);
         let rt = tokio::runtime::Runtime::new().unwrap();
-        
+
         rt.block_on(async {
             for endpoint in &endpoints {
                 manager.register_endpoint(endpoint.clone()).await;
@@ -266,7 +266,7 @@ fn bench_load_balancing(c: &mut Criterion) {
         };
         let manager = BalancerManager::new(config);
         let rt = tokio::runtime::Runtime::new().unwrap();
-        
+
         rt.block_on(async {
             for endpoint in &endpoints {
                 manager.register_endpoint(endpoint.clone()).await;

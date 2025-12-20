@@ -23,7 +23,10 @@ async fn test_connection_pool_basic() {
 
     let pool = result.unwrap();
     let stats = pool.statistics();
-    assert_eq!(stats.active_connections, 0, "Pool should start with zero active connections");
+    assert_eq!(
+        stats.active_connections, 0,
+        "Pool should start with zero active connections"
+    );
 }
 
 #[tokio::test]
@@ -214,7 +217,7 @@ async fn test_pool_auto_scaling() {
 
     // 統計を取得
     let stats = pool.statistics();
-    
+
     // 統計の基本的な検証
     assert!(stats.total_connections <= 100);
     assert_eq!(stats.pending_requests, 0);
