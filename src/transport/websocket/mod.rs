@@ -7,6 +7,7 @@ pub mod connection;
 pub mod failover;
 pub mod jsonrpc;
 pub mod pool;
+pub mod server;
 pub mod stream;
 pub mod transfer;
 pub mod types;
@@ -21,6 +22,9 @@ pub use failover::{
 };
 pub use jsonrpc::{error_codes, JsonRpcMessage, JsonRpcNotification};
 pub use pool::ConnectionPool;
+pub use server::{
+    ConnectionId, EchoHandler, MessageHandler, ServerConfig, ServerStatistics, WebSocketServer,
+};
 pub use stream::StreamingTransport;
 pub use transfer::{
     CompressionType, FileChunk, FileTransferProtocol, TransferManager, TransferOptions,

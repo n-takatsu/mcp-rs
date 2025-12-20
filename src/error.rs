@@ -141,6 +141,14 @@ pub enum Error {
     /// Timeout error
     #[error("Timeout")]
     Timeout,
+
+    /// Server error
+    #[error("Server error: {0}")]
+    Server(String),
+
+    /// Connection error
+    #[error("Connection error: {0}")]
+    Connection(String),
 }
 
 impl Error {
