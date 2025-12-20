@@ -680,21 +680,21 @@ impl SyscallMonitor {
     /// 監視を開始
     pub async fn start_monitoring(&self, plugin_id: Uuid) -> Result<(), McpError> {
         debug!("Starting syscall monitoring for plugin: {}", plugin_id);
-        
+
         // 許可/禁止されたシステムコールリストを取得
         let allowed = self.allowed_syscalls.read().await;
         let blocked = self.blocked_syscalls.read().await;
-        
+
         let allowed_list = allowed.get(&plugin_id).cloned().unwrap_or_default();
         let blocked_list = blocked.get(&plugin_id).cloned().unwrap_or_default();
-        
+
         info!(
             "Syscall monitoring started for plugin {} - {} allowed, {} blocked",
             plugin_id,
             allowed_list.len(),
             blocked_list.len()
         );
-        
+
         // 監視統計を初期化
         let mut audit_log = self.audit_log.lock().await;
         audit_log.push(SyscallAuditEntry {
@@ -706,11 +706,11 @@ impl SyscallMonitor {
             process_id: 0,
             thread_id: 0,
         });
-        
+
         // 実際の監視はeBPF/seccomp-bpfを使用する
         // 現在は基本的なログ記録のみ実装
         // TODO: 本番環境ではseccomp-bpfまたはeBPFベースの監視を統合
-        
+
         Ok(())
     }
 
@@ -758,25 +758,25 @@ impl NetworkAccessControl {
     /// 監視を開始
     pub async fn start_monitoring(&self, plugin_id: Uuid) -> Result<(), McpError> {
         debug!("Starting network monitoring for plugin: {}", plugin_id);
-        
+
         // 許可されたホストリストを取得
         let allowed_hosts = self.allowed_hosts.read().await;
         let host_list = allowed_hosts.get(&plugin_id).cloned().unwrap_or_default();
-        
+
         info!(
             "Network monitoring started for plugin {} - {} rules configured",
             plugin_id,
             host_list.len()
         );
-        
+
         // ネットワーク接続監視を初期化
         let mut connection_monitor = self.connection_monitor.lock().await;
         connection_monitor.insert(plugin_id, vec![]);
-        
+
         // 実際の監視はnetfilter/iptablesまたはeBPF/XDPを使用
         // 現在は基本的な統計記録のみ実装
         // TODO: 本番環境ではeBPF/XDPベースのパケットフィルタリングを統合
-        
+
         Ok(())
     }
 
@@ -829,21 +829,21 @@ impl FileAccessControl {
     /// 監視を開始
     pub async fn start_monitoring(&self, plugin_id: Uuid) -> Result<(), McpError> {
         debug!("Starting file access monitoring for plugin: {}", plugin_id);
-        
+
         // 許可されたパスを取得
         let read_paths = self.read_allowed_paths.read().await;
         let write_paths = self.write_allowed_paths.read().await;
         let exec_paths = self.exec_allowed_paths.read().await;
-        
+
         let read_count = read_paths.get(&plugin_id).map_or(0, |v| v.len());
         let write_count = write_paths.get(&plugin_id).map_or(0, |v| v.len());
         let exec_count = exec_paths.get(&plugin_id).map_or(0, |v| v.len());
-        
+
         info!(
             "File access monitoring started for plugin {} - R:{} W:{} X:{}",
             plugin_id, read_count, write_count, exec_count
         );
-        
+
         // ファイルアクセス統計を初期化
         let mut access_log = self.file_audit_log.lock().await;
         access_log.push(FileAuditEntry {
@@ -854,11 +854,11 @@ impl FileAccessControl {
             allowed: true,
             process_id: 0,
         });
-        
+
         // 実際の監視はinotify/fanotifyまたはeBPFを使用
         // 現在は基本的なログ記録のみ実装
         // TODO: 本番環境ではinotify/fanotifyまたはeBPFベースの監視を統合
-        
+
         Ok(())
     }
 

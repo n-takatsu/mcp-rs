@@ -1006,17 +1006,17 @@ impl MonitoringSystem {
     async fn collect_system_metrics() -> Result<SystemMetrics, McpError> {
         // システム情報を収集
         // 本番環境では sysinfo クレートまたは procfs を使用
-        
+
         #[cfg(target_os = "linux")]
         {
             Self::collect_linux_system_metrics().await
         }
-        
+
         #[cfg(target_os = "windows")]
         {
             Self::collect_windows_system_metrics().await
         }
-        
+
         #[cfg(not(any(target_os = "linux", target_os = "windows")))]
         {
             // その他のプラットフォームではデフォルト値を返す
@@ -1027,12 +1027,13 @@ impl MonitoringSystem {
     #[cfg(target_os = "linux")]
     async fn collect_linux_system_metrics() -> Result<SystemMetrics, McpError> {
         use std::fs;
-        
+
         // /proc/stat からCPU使用率を取得
         let cpu_usage = match fs::read_to_string("/proc/stat") {
             Ok(contents) => {
                 // 簡易的なCPU使用率計算
-                contents.lines()
+                contents
+                    .lines()
                     .next()
                     .and_then(|line| {
                         let parts: Vec<&str> = line.split_whitespace().collect();
@@ -1115,7 +1116,7 @@ impl MonitoringSystem {
     async fn collect_plugin_metrics(plugin_id: Uuid) -> Result<PluginMetrics, McpError> {
         // プラグイン固有のメトリクスを収集
         // 本番環境では IsolationEngine からリソース使用量を取得
-        
+
         Ok(PluginMetrics {
             plugin_id,
             plugin_name: format!("plugin-{}", plugin_id),
@@ -1270,19 +1271,19 @@ impl LogCollector {
 
     async fn shutdown(&self) -> Result<(), McpError> {
         info!("Shutting down log collector");
-        
+
         // ログエントリをフラッシュ
         let entries = self.log_entries.read().await;
         info!("Flushing {} log entries", entries.len());
-        
+
         // 本番環境ではファイルに書き込み
         // 現在はメモリ上のログをクリア
         drop(entries);
-        
+
         // ログエントリをクリア
         let mut entries = self.log_entries.write().await;
         entries.clear();
-        
+
         info!("Log collector shutdown completed");
         Ok(())
     }
@@ -1305,12 +1306,12 @@ impl AlertManager {
         metrics: &PluginMetrics,
     ) -> Result<(), McpError> {
         let rules = self.alert_rules.read().await;
-        
+
         for rule in rules.iter() {
             if !rule.enabled {
                 continue;
             }
-            
+
             let should_alert = match &rule.condition {
                 AlertCondition::MetricThreshold {
                     metric_name,
@@ -1325,7 +1326,7 @@ impl AlertManager {
                         "response_time" => metrics.avg_response_time_ms,
                         _ => 0.0,
                     };
-                    
+
                     match operator {
                         ComparisonOperator::GreaterThan => metric_value > *threshold,
                         ComparisonOperator::LessThan => metric_value < *threshold,
@@ -1338,13 +1339,13 @@ impl AlertManager {
                 }
                 _ => false, // その他の条件は未実装
             };
-            
+
             if should_alert {
                 warn!(
                     "Alert triggered for plugin {}: {} - {}",
                     plugin_id, rule.name, rule.description
                 );
-                
+
                 // アラートアクションを実行
                 for action in &rule.actions {
                     match action {
@@ -1383,7 +1384,7 @@ impl AlertManager {
                 }
             }
         }
-        
+
         Ok(())
     }
 
@@ -1417,26 +1418,26 @@ impl EventStore {
     async fn cleanup_old_events(&self) -> Result<(), McpError> {
         let mut events = self.events.write().await;
         let now = chrono::Utc::now();
-        
+
         // デフォルト7日より古いイベントを削除
         let retention_days = 7;
         let retention_duration = chrono::Duration::days(retention_days);
         let cutoff_time = now - retention_duration;
-        
+
         let initial_count = events.len();
-        
+
         // 古いイベントをフィルタリング
         events.retain(|event| event.timestamp > cutoff_time);
-        
+
         let removed_count = initial_count - events.len();
-        
+
         if removed_count > 0 {
             info!(
                 "Cleaned up {} old events (older than {} days)",
                 removed_count, retention_days
             );
         }
-        
+
         Ok(())
     }
 }

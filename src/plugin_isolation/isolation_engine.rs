@@ -659,15 +659,16 @@ impl IsolationEngine {
         })?;
 
         // コンテナIDからリソース使用量を取得
-        let (cpu_usage, memory_usage, disk_io, network_io) =
-            self.get_container_resource_usage(&container_info.container_id).await?;
+        let (cpu_usage, memory_usage, disk_io, network_io) = self
+            .get_container_resource_usage(&container_info.container_id)
+            .await?;
 
         // トラッカーを更新
         let mut tracker = self.resource_tracker.lock().await;
-        
+
         // ログ出力用にネットワーク使用量を先に計算
         let network_total = (network_io.tx_bytes + network_io.rx_bytes) / 1024;
-        
+
         tracker.cpu_usage.insert(plugin_id, cpu_usage as f64);
         tracker.memory_usage.insert(plugin_id, memory_usage);
         tracker.disk_usage.insert(plugin_id, disk_io);
@@ -675,7 +676,10 @@ impl IsolationEngine {
 
         debug!(
             "Resource usage updated - CPU: {}%, Memory: {} MB, Disk: {} MB, Network: {} KB",
-            cpu_usage, memory_usage / 1024 / 1024, disk_io / 1024 / 1024, network_total
+            cpu_usage,
+            memory_usage / 1024 / 1024,
+            disk_io / 1024 / 1024,
+            network_total
         );
 
         Ok(())
@@ -712,9 +716,7 @@ impl IsolationEngine {
         let output = Command::new(&self.config.container_runtime)
             .args(["inspect", "--format", "{{.State.Pid}}", container_id])
             .output()
-            .map_err(|e| {
-                McpError::Isolation(format!("Failed to get container PID: {}", e))
-            })?;
+            .map_err(|e| McpError::Isolation(format!("Failed to get container PID: {}", e)))?;
 
         if !output.status.success() {
             return Err(McpError::Isolation(format!(
@@ -723,28 +725,22 @@ impl IsolationEngine {
             )));
         }
 
-        let pid = String::from_utf8_lossy(&output.stdout)
-            .trim()
-            .to_string();
+        let pid = String::from_utf8_lossy(&output.stdout).trim().to_string();
 
         if pid == "0" || pid.is_empty() {
-            return Err(McpError::Isolation(
-                "Container is not running".to_string(),
-            ));
+            return Err(McpError::Isolation("Container is not running".to_string()));
         }
 
         // PID名前空間のパスを構築 (/proc/<pid>/ns/pid)
         let _pid_ns_path = format!("/proc/{}/ns/pid", pid);
-        
+
         // シンボリックリンクを読み取って名前空間IDを取得
         #[cfg(target_os = "linux")]
         {
             use std::fs;
             match fs::read_link(&pid_ns_path) {
                 Ok(ns_link) => {
-                    let ns_id = ns_link
-                        .to_string_lossy()
-                        .to_string();
+                    let ns_id = ns_link.to_string_lossy().to_string();
                     debug!("PID namespace: {}", ns_id);
                     Ok(ns_id)
                 }
@@ -780,9 +776,7 @@ impl IsolationEngine {
                 container_id,
             ])
             .output()
-            .map_err(|e| {
-                McpError::Isolation(format!("Failed to get container stats: {}", e))
-            })?;
+            .map_err(|e| McpError::Isolation(format!("Failed to get container stats: {}", e)))?;
 
         if !output.status.success() {
             return Err(McpError::Isolation(format!(
@@ -795,9 +789,7 @@ impl IsolationEngine {
         let parts: Vec<&str> = stats.trim().split(',').collect();
 
         if parts.len() < 4 {
-            return Err(McpError::Isolation(
-                "Invalid stats format".to_string(),
-            ));
+            return Err(McpError::Isolation("Invalid stats format".to_string()));
         }
 
         // CPU使用率をパース (例: "0.50%" -> 0)
@@ -855,15 +847,15 @@ impl IsolationEngine {
         Ok(NetworkUsage {
             tx_bytes,
             rx_bytes,
-            tx_packets: 0,  // Dockerからは取得不可
-            rx_packets: 0,  // Dockerからは取得不可
+            tx_packets: 0, // Dockerからは取得不可
+            rx_packets: 0, // Dockerからは取得不可
         })
     }
 
     /// サイズ文字列をバイト数にパース
     fn parse_size(size_str: &str) -> Result<u64, McpError> {
         let size_str = size_str.trim();
-        
+
         if size_str == "0B" || size_str == "0" {
             return Ok(0);
         }
@@ -871,7 +863,7 @@ impl IsolationEngine {
         // 数値部分と単位を分離
         let mut num_str = String::new();
         let mut unit_str = String::new();
-        
+
         for c in size_str.chars() {
             if c.is_numeric() || c == '.' {
                 num_str.push(c);
@@ -880,9 +872,9 @@ impl IsolationEngine {
             }
         }
 
-        let num: f64 = num_str.parse().map_err(|_| {
-            McpError::Isolation(format!("Invalid size number: {}", num_str))
-        })?;
+        let num: f64 = num_str
+            .parse()
+            .map_err(|_| McpError::Isolation(format!("Invalid size number: {}", num_str)))?;
 
         // 単位に応じて変換
         let multiplier = match unit_str.trim() {

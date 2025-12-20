@@ -686,21 +686,23 @@ impl HealthChecker {
     ) -> Result<(), McpError> {
         // 実際のヘルスチェックロジックを実装
         let health_endpoint = format!("http://localhost:8080/health/{}", plugin_id);
-        
+
         // HTTPヘルスチェックを試みる
         let is_healthy = match tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            http_client.get(&health_endpoint).send()
-        ).await {
+            http_client.get(&health_endpoint).send(),
+        )
+        .await
+        {
             Ok(Ok(response)) => {
                 // HTTP 200 OKを正常とみなす
                 response.status().is_success()
-            },
+            }
             Ok(Err(e)) => {
                 // HTTPエラー
                 tracing::warn!("Health check HTTP error for plugin {}: {}", plugin_id, e);
                 false
-            },
+            }
             Err(_) => {
                 // タイムアウト
                 tracing::warn!("Health check timeout for plugin {}", plugin_id);
@@ -717,13 +719,21 @@ impl HealthChecker {
                 state.consecutive_successes += 1;
                 state.consecutive_failures = 0;
                 state.last_success = Some(chrono::Utc::now());
-                tracing::debug!("Plugin {} is healthy (successes: {})", plugin_id, state.consecutive_successes);
+                tracing::debug!(
+                    "Plugin {} is healthy (successes: {})",
+                    plugin_id,
+                    state.consecutive_successes
+                );
             } else {
                 state.status = HealthStatus::Unhealthy;
                 state.consecutive_failures += 1;
                 state.consecutive_successes = 0;
                 state.last_failure = Some(chrono::Utc::now());
-                tracing::warn!("Plugin {} is unhealthy (failures: {})", plugin_id, state.consecutive_failures);
+                tracing::warn!(
+                    "Plugin {} is unhealthy (failures: {})",
+                    plugin_id,
+                    state.consecutive_failures
+                );
             }
         }
 
@@ -743,7 +753,7 @@ impl HealthChecker {
     /// ヘルスチェックを一時停止
     pub async fn pause_health_check(&self, plugin_id: Uuid) -> Result<(), McpError> {
         debug!("Pausing health check for plugin: {}", plugin_id);
-        
+
         let mut states = self.health_states.write().await;
         if let Some(state) = states.get_mut(&plugin_id) {
             // ステータスをUnknownに設定して一時停止を示す
@@ -751,7 +761,10 @@ impl HealthChecker {
             tracing::info!("Health check paused for plugin {}", plugin_id);
             Ok(())
         } else {
-            Err(McpError::Plugin(format!("Plugin {} health state not found", plugin_id)))
+            Err(McpError::Plugin(format!(
+                "Plugin {} health state not found",
+                plugin_id
+            )))
         }
     }
 
@@ -787,10 +800,10 @@ impl AutoRecoverySystem {
     /// 復旧を試行
     pub async fn attempt_recovery(&self, plugin_id: Uuid) -> Result<(), McpError> {
         info!("Attempting recovery for plugin: {}", plugin_id);
-        
+
         let mut states = self.recovery_states.write().await;
         let now = chrono::Utc::now();
-        
+
         let state = states.entry(plugin_id).or_insert(RecoveryState {
             attempt_count: 0,
             last_attempt: now,
@@ -818,30 +831,38 @@ impl AutoRecoverySystem {
                 // 実際の実装ではプラグインの再起動を呼び出す
                 // 今は成功をシミュレート
                 Ok(())
-            },
+            }
             RecoveryMethod::Recreate => {
                 tracing::info!("Attempting recreate recovery for plugin {}", plugin_id);
                 // プラグインを再作成
                 Ok(())
-            },
+            }
             RecoveryMethod::Rollback => {
                 tracing::info!("Attempting rollback recovery for plugin {}", plugin_id);
                 // 前のバージョンにロールバック
                 Ok(())
-            },
+            }
             RecoveryMethod::Manual => {
                 tracing::warn!("Manual recovery required for plugin {}", plugin_id);
                 Err(McpError::Plugin("Manual intervention required".to_string()))
-            },
+            }
         };
 
         // 復旧結果を記録
         if recovery_result.is_ok() {
-            tracing::info!("Recovery successful for plugin {} (attempt {})", plugin_id, state.attempt_count);
+            tracing::info!(
+                "Recovery successful for plugin {} (attempt {})",
+                plugin_id,
+                state.attempt_count
+            );
             // 成功時はカウンターをリセット
             state.attempt_count = 0;
         } else {
-            tracing::warn!("Recovery failed for plugin {} (attempt {})", plugin_id, state.attempt_count);
+            tracing::warn!(
+                "Recovery failed for plugin {} (attempt {})",
+                plugin_id,
+                state.attempt_count
+            );
             // 失敗が続く場合は復旧方法を変更
             if state.attempt_count >= 3 {
                 state.current_method = RecoveryMethod::Rollback;
@@ -888,18 +909,18 @@ mod tests {
         // モック版: マネージャーの作成と基本機能のみテスト
         let manager = LifecycleManager::new().await;
         assert!(manager.is_ok());
-        
+
         let _manager = manager.unwrap();
         let plugin_id = Uuid::new_v4();
 
         // プラグインIDの妥当性を確認
         assert_ne!(plugin_id, Uuid::nil());
-        
+
         // ヘルスチェック設定のデフォルト値を確認
         let config = HealthCheckConfig::default();
         assert_eq!(config.interval_secs, 30);
         assert_eq!(config.timeout_secs, 10);
-        
+
         // 注: 実際の登録はファイルシステム/ネットワーク操作のモックが必要なためスキップ
         // 統合テストで完全な登録フローをテストする
     }

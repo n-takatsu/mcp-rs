@@ -2,17 +2,15 @@
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use mcp_rs::plugin_isolation::{
-    lifecycle_manager::LifecycleManager,
-    IsolatedPluginManager, PluginManagerConfig,
-    monitoring::MonitoringSystem,
-    PluginMetadata, ResourceLimits, SecurityLevel,
+    lifecycle_manager::LifecycleManager, monitoring::MonitoringSystem, IsolatedPluginManager,
+    PluginManagerConfig, PluginMetadata, ResourceLimits, SecurityLevel,
 };
 use uuid::Uuid;
 
 /// ベンチマーク1: プラグインマネージャーの作成
 fn bench_plugin_manager_creation(c: &mut Criterion) {
     let rt = tokio::runtime::Runtime::new().unwrap();
-    
+
     c.bench_function("plugin_manager_creation", |b| {
         b.iter(|| {
             rt.block_on(async {
@@ -47,7 +45,7 @@ fn bench_metadata_creation(c: &mut Criterion) {
 /// ベンチマーク3: ライフサイクルマネージャーの初期化
 fn bench_lifecycle_manager_init(c: &mut Criterion) {
     let rt = tokio::runtime::Runtime::new().unwrap();
-    
+
     c.bench_function("lifecycle_manager_init", |b| {
         b.iter(|| {
             rt.block_on(async {
@@ -60,7 +58,7 @@ fn bench_lifecycle_manager_init(c: &mut Criterion) {
 /// ベンチマーク4: モニタリングシステムの初期化
 fn bench_monitoring_system_init(c: &mut Criterion) {
     let rt = tokio::runtime::Runtime::new().unwrap();
-    
+
     c.bench_function("monitoring_system_init", |b| {
         b.iter(|| {
             rt.block_on(async {
@@ -73,27 +71,21 @@ fn bench_monitoring_system_init(c: &mut Criterion) {
 /// ベンチマーク5: リソース制限のクローン
 fn bench_resource_limits_clone(c: &mut Criterion) {
     let limits = ResourceLimits::default();
-    
+
     c.bench_function("resource_limits_clone", |b| {
-        b.iter(|| {
-            black_box(limits.clone())
-        })
+        b.iter(|| black_box(limits.clone()))
     });
 }
 
 /// ベンチマーク6: UUID生成
 fn bench_uuid_generation(c: &mut Criterion) {
-    c.bench_function("uuid_generation", |b| {
-        b.iter(|| {
-            black_box(Uuid::new_v4())
-        })
-    });
+    c.bench_function("uuid_generation", |b| b.iter(|| black_box(Uuid::new_v4())));
 }
 
 /// ベンチマーク7: 複数メタデータの作成(スケーラビリティテスト)
 fn bench_multiple_metadata_creation(c: &mut Criterion) {
     let mut group = c.benchmark_group("metadata_scalability");
-    
+
     for count in [10, 50, 100, 500].iter() {
         group.bench_with_input(BenchmarkId::from_parameter(count), count, |b, &count| {
             b.iter(|| {
@@ -116,7 +108,7 @@ fn bench_multiple_metadata_creation(c: &mut Criterion) {
             })
         });
     }
-    
+
     group.finish();
 }
 

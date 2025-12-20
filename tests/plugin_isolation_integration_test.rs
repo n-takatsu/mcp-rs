@@ -2,9 +2,8 @@
 
 use mcp_rs::plugin_isolation::{
     lifecycle_manager::{HealthCheckConfig, LifecycleManager},
-    IsolatedPluginManager, PluginManagerConfig,
     monitoring::MonitoringSystem,
-    PluginMetadata, ResourceLimits, SecurityLevel,
+    IsolatedPluginManager, PluginManagerConfig, PluginMetadata, ResourceLimits, SecurityLevel,
 };
 use uuid::Uuid;
 
@@ -54,7 +53,7 @@ fn test_plugin_metadata_creation() {
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
     };
-    
+
     assert_eq!(metadata.name, "test-plugin");
 }
 
@@ -75,7 +74,7 @@ fn test_security_level_hierarchy() {
 #[test]
 fn test_multiple_plugin_metadata() {
     let mut plugins = Vec::new();
-    
+
     for i in 0..5 {
         let plugin = PluginMetadata {
             id: Uuid::new_v4(),
@@ -92,7 +91,7 @@ fn test_multiple_plugin_metadata() {
         };
         plugins.push(plugin);
     }
-    
+
     assert_eq!(plugins.len(), 5);
 }
 
@@ -107,7 +106,7 @@ fn test_custom_resource_limits() {
         max_connections: 50,
         max_execution_time_secs: 300,
     };
-    
+
     assert_eq!(limits.max_cpu_usage, 0.8);
 }
 
@@ -138,7 +137,7 @@ fn test_metadata_timestamps() {
         created_at: now,
         updated_at: now,
     };
-    
+
     assert_eq!(metadata.created_at, metadata.updated_at);
 }
 
@@ -158,7 +157,7 @@ fn test_dependency_tracking() {
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
     };
-    
+
     assert_eq!(plugin.dependencies.len(), 1);
 }
 

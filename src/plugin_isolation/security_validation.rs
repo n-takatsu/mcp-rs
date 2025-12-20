@@ -1543,11 +1543,11 @@ impl StaticAnalyzer {
                 let path = entry.path();
                 if path.extension().and_then(|s| s.to_str()) == Some("rs") {
                     analyzed_files += 1;
-                    
+
                     // ファイル内容を読み込み
                     if let Ok(content) = std::fs::read_to_string(&path) {
                         total_lines += content.lines().count();
-                        
+
                         // セキュリティパターン検査
                         if content.contains("unsafe") {
                             security_issues.push(SecurityIssue {
@@ -1569,7 +1569,7 @@ impl StaticAnalyzer {
                                 suggestion: "Use proper error handling with Result".to_string(),
                             });
                         }
-                        
+
                         // 依存関係の抽出 (Cargo.tomlから)
                         if path.file_name().and_then(|s| s.to_str()) == Some("Cargo.toml") {
                             // 簡易的な依存関係パース
@@ -1594,8 +1594,16 @@ impl StaticAnalyzer {
         }
 
         let issues_found = security_issues.len() + code_smells.len();
-        let code_quality_score = if issues_found == 0 { 95 } else { 80 - (issues_found as i32 * 5).min(30) };
-        let security_score = if security_issues.is_empty() { 95 } else { 85 - (security_issues.len() as i32 * 10).min(40) };
+        let code_quality_score = if issues_found == 0 {
+            95
+        } else {
+            80 - (issues_found as i32 * 5).min(30)
+        };
+        let security_score = if security_issues.is_empty() {
+            95
+        } else {
+            85 - (security_issues.len() as i32 * 10).min(40)
+        };
         let dependencies_count = dependencies.len();
         let code_smells_empty = code_smells.is_empty();
 
@@ -1647,7 +1655,7 @@ impl DynamicAnalyzer {
 
         // サンドボックス環境IDを生成
         let _sandbox_id = format!("sandbox_{}", metadata.name.replace(' ', "_"));
-        
+
         // 実行トレース記録の初期化
         let mut execution_trace_entries = Vec::new();
         execution_trace_entries.push(TraceEntry {
@@ -1662,7 +1670,10 @@ impl DynamicAnalyzer {
         // プラグインパスの検証
         if !plugin_path.exists() {
             let mut event_metadata = HashMap::new();
-            event_metadata.insert("path".to_string(), plugin_path.to_string_lossy().to_string());
+            event_metadata.insert(
+                "path".to_string(),
+                plugin_path.to_string_lossy().to_string(),
+            );
             security_events.push(SecurityEvent {
                 event_type: SecurityEventType::UnauthorizedAccessAttempt,
                 severity: IssueSeverity::High,
@@ -1672,7 +1683,10 @@ impl DynamicAnalyzer {
                 metadata: event_metadata,
             });
             let mut related_data = HashMap::new();
-            related_data.insert("path".to_string(), plugin_path.to_string_lossy().to_string());
+            related_data.insert(
+                "path".to_string(),
+                plugin_path.to_string_lossy().to_string(),
+            );
             anomalous_behaviors.push(AnomalousBehavior {
                 behavior_type: BehaviorType::UnauthorizedFileAccess,
                 description: "Invalid plugin path".to_string(),
@@ -1768,21 +1782,21 @@ impl DynamicAnalyzer {
     async fn shutdown(&self) -> Result<(), McpError> {
         // サンドボックス環境のクリーンアップ
         let sandbox_count = self.sandbox_environments.len();
-        
+
         if sandbox_count > 0 {
             tracing::info!("Cleaning up {} sandbox environment(s)", sandbox_count);
-            
+
             // 各サンドボックス環境のクリーンアップログを記録
             for (sandbox_id, _env) in self.sandbox_environments.iter() {
                 tracing::debug!("Shutting down sandbox: {}", sandbox_id);
                 // 実際の実装では、プロセス終了、一時ファイル削除、ネットワーク切断などを実行
             }
-            
+
             tracing::info!("Successfully cleaned up all sandbox environments");
         } else {
             tracing::debug!("No active sandbox environments to clean up");
         }
-        
+
         Ok(())
     }
 }
