@@ -731,13 +731,13 @@ impl IsolationEngine {
             return Err(McpError::Isolation("Container is not running".to_string()));
         }
 
-        // PID名前空間のパスを構築 (/proc/<pid>/ns/pid)
-        let _pid_ns_path = format!("/proc/{}/ns/pid", pid);
-
         // シンボリックリンクを読み取って名前空間IDを取得
         #[cfg(target_os = "linux")]
         {
             use std::fs;
+            // PID名前空間のパスを構築 (/proc/<pid>/ns/pid)
+            let pid_ns_path = format!("/proc/{}/ns/pid", pid);
+            
             match fs::read_link(&pid_ns_path) {
                 Ok(ns_link) => {
                     let ns_id = ns_link.to_string_lossy().to_string();
