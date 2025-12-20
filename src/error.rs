@@ -149,6 +149,10 @@ pub enum Error {
     /// Connection error
     #[error("Connection error: {0}")]
     Connection(String),
+
+    /// Configuration error
+    #[error("Configuration: {0}")]
+    Configuration(String),
 }
 
 impl Error {
