@@ -110,6 +110,11 @@ async-stream = { version = "0.3", optional = true }
 prometheus = { version = "0.14", optional = true }
 metrics = { version = "0.24.2", optional = true }
 
+# Compression
+flate2 = "1.0"
+brotli = "7.0"
+zstd = "0.13"
+
 # Kubernetes operator support
 kube = { version = "0.99", features = ["runtime", "derive"], optional = true }
 k8s-openapi = { version = "0.24", features = ["v1_31"], optional = true }
@@ -156,7 +161,7 @@ criterion = { version = "0.5", features = ["html_reports", "async_tokio"] }
 # rand = "0.8.5"
 
 [features]
-default = ["session-management", "security", "websocket"]
+default = ["session-management", "security", "websocket", "prometheus"]
 
 # Core features
 session-management = []
