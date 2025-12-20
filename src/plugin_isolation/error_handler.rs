@@ -556,8 +556,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_consecutive_errors_threshold() {
-        let mut config = ErrorHandlingConfig::default();
-        config.consecutive_error_threshold = 3;
+        let config = ErrorHandlingConfig {
+            consecutive_error_threshold: 3,
+            ..Default::default()
+        };
 
         let handler = PluginErrorHandler::new(config).await.unwrap();
         let plugin_id = Uuid::new_v4();

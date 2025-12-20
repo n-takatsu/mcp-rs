@@ -539,8 +539,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_rate_limiting() {
-        let mut config = InterPluginCommConfig::default();
-        config.default_rate_limit = 2; // 1秒に2メッセージまで
+        let config = InterPluginCommConfig {
+            default_rate_limit: 2, // 1秒に2メッセージまで
+            ..Default::default()
+        };
 
         let controller = InterPluginCommunicationController::new(config)
             .await

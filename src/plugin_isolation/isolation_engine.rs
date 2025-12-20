@@ -676,6 +676,17 @@ impl IsolationEngine {
     }
 }
 
+impl Default for IsolationConfig {
+    fn default() -> Self {
+        Self {
+            container_runtime: "docker".to_string(),
+            use_network_namespace: true,
+            filesystem_isolation: true,
+            process_isolation: true,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -719,16 +730,5 @@ mod tests {
         let limits = engine_config.get_default_resource_limits();
         assert!(limits.cpu_limit_millicores > 0);
         assert!(limits.memory_limit_bytes > 0);
-    }
-}
-
-impl Default for IsolationConfig {
-    fn default() -> Self {
-        Self {
-            container_runtime: "docker".to_string(),
-            use_network_namespace: true,
-            filesystem_isolation: true,
-            process_isolation: true,
-        }
     }
 }
