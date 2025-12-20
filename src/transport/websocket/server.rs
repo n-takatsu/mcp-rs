@@ -249,7 +249,7 @@ impl WebSocketServer {
 
         // 実装はクライアント送信機能が必要
         // 現在は接続情報のみ管理しているため、今後拡張
-        
+
         Ok(())
     }
 
@@ -260,10 +260,7 @@ impl WebSocketServer {
             debug!("Sending message to client: {}", conn_id);
             Ok(())
         } else {
-            Err(Error::Connection(format!(
-                "Client not found: {}",
-                conn_id
-            )))
+            Err(Error::Connection(format!("Client not found: {}", conn_id)))
         }
     }
 
