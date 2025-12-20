@@ -85,16 +85,24 @@ pub enum ValidationType {
 /// セキュリティレベル
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum SecurityLevel {
+    /// 最小限（最も制限が少ない）
+    Minimal = 0,
+    /// 標準
+    Standard = 1,
     /// 安全
-    Safe = 1,
+    Safe = 2,
+    /// 厳格
+    Strict = 3,
     /// 低リスク
-    LowRisk = 2,
+    LowRisk = 4,
     /// 中リスク
-    MediumRisk = 3,
+    MediumRisk = 5,
     /// 高リスク
-    HighRisk = 4,
+    HighRisk = 6,
     /// 危険
-    Dangerous = 5,
+    Dangerous = 7,
+    /// 最大（最も制限が強い）
+    Maximum = 8,
 }
 
 /// 検証ステータス
@@ -1021,8 +1029,6 @@ pub struct DetectionPattern {
     pub confidence: u8,
 }
 
-/// 設定構造体群
-
 /// セキュリティ検証設定
 #[derive(Debug, Clone)]
 pub struct SecurityValidationConfig {
@@ -1356,7 +1362,7 @@ impl SecurityValidationSystem {
 
         // 静的解析結果の評価
         if let Some(static_analysis) = &result.static_analysis {
-            total_score = total_score.saturating_sub((100 - static_analysis.security_score as u32));
+            total_score = total_score.saturating_sub(100 - static_analysis.security_score as u32);
 
             for issue in &static_analysis.security_issues {
                 findings.push(SecurityFinding {

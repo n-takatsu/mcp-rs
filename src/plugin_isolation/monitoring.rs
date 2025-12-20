@@ -69,7 +69,7 @@ pub struct PluginMetrics {
 }
 
 /// 詳細メトリクス
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct DetailedMetrics {
     /// プロセス統計
     pub process_stats: ProcessStats,
@@ -103,7 +103,7 @@ pub struct ProcessStats {
 }
 
 /// セキュリティ統計
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SecurityStats {
     /// 認証試行回数
     pub auth_attempts: u64,
@@ -124,7 +124,7 @@ pub struct SecurityStats {
 }
 
 /// パフォーマンス統計
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PerformanceStats {
     /// リクエスト処理統計
     pub request_stats: RequestStats,
@@ -1035,17 +1035,6 @@ impl Default for SystemMetrics {
     }
 }
 
-impl Default for DetailedMetrics {
-    fn default() -> Self {
-        Self {
-            process_stats: ProcessStats::default(),
-            security_stats: SecurityStats::default(),
-            performance_stats: PerformanceStats::default(),
-            custom_metrics: HashMap::new(),
-        }
-    }
-}
-
 impl Default for ProcessStats {
     fn default() -> Self {
         Self {
@@ -1057,32 +1046,6 @@ impl Default for ProcessStats {
             swap_usage_mb: 0.0,
             syscall_count: 0,
             last_gc_time: None,
-        }
-    }
-}
-
-impl Default for SecurityStats {
-    fn default() -> Self {
-        Self {
-            auth_attempts: 0,
-            auth_failures: 0,
-            permission_violations: 0,
-            suspicious_activities: 0,
-            file_access_attempts: 0,
-            network_connection_attempts: 0,
-            policy_violations: 0,
-            last_security_event: None,
-        }
-    }
-}
-
-impl Default for PerformanceStats {
-    fn default() -> Self {
-        Self {
-            request_stats: RequestStats::default(),
-            database_stats: DatabaseStats::default(),
-            cache_stats: CacheStats::default(),
-            io_stats: IoStats::default(),
         }
     }
 }

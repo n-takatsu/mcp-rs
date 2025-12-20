@@ -12,8 +12,10 @@ use uuid::Uuid;
 use crate::error::McpError;
 use crate::plugin_isolation::PluginState;
 
+/// エラーコールバック型（Debugトレイトなし）
+type ErrorCallback = Arc<dyn Fn(&PluginError) -> Result<(), McpError> + Send + Sync>;
+
 /// エラーハンドラー
-#[derive(Debug)]
 pub struct PluginErrorHandler {
     /// エラー履歴
     error_history: Arc<Mutex<Vec<PluginError>>>,
@@ -95,7 +97,7 @@ pub enum ErrorSeverity {
 }
 
 /// エラーカウンター
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 struct ErrorCounter {
     /// 総エラー数
     total_errors: u64,
@@ -105,17 +107,6 @@ struct ErrorCounter {
     last_error_time: Option<chrono::DateTime<chrono::Utc>>,
     /// 連続エラー数
     consecutive_errors: u32,
-}
-
-impl Default for ErrorCounter {
-    fn default() -> Self {
-        Self {
-            total_errors: 0,
-            errors_by_category: HashMap::new(),
-            last_error_time: None,
-            consecutive_errors: 0,
-        }
-    }
 }
 
 /// 回復戦略
@@ -139,9 +130,6 @@ pub enum RecoveryStrategy {
     /// 何もしない
     None,
 }
-
-/// エラーコールバック
-type ErrorCallback = Arc<dyn Fn(&PluginError) -> Result<(), McpError> + Send + Sync>;
 
 /// エラーハンドリング設定
 #[derive(Debug, Clone)]
@@ -178,10 +166,7 @@ impl PluginErrorHandler {
         let mut recovery_strategies = HashMap::new();
 
         // デフォルト回復戦略を設定
-        recovery_strategies.insert(
-            ErrorCategory::OutOfMemory,
-            RecoveryStrategy::ResourceReset,
-        );
+        recovery_strategies.insert(ErrorCategory::OutOfMemory, RecoveryStrategy::ResourceReset);
         recovery_strategies.insert(
             ErrorCategory::CpuLimitExceeded,
             RecoveryStrategy::ResourceReset,
@@ -259,13 +244,16 @@ impl PluginErrorHandler {
         self.add_to_history(error.clone()).await?;
 
         // エラーカウンターを更新
-        self.update_error_counter(plugin_id, category.clone()).await?;
+        self.update_error_counter(plugin_id, category.clone())
+            .await?;
 
         // エラーコールバックを実行
         self.execute_callbacks(&error).await?;
 
         // 回復アクションを決定
-        let recovery_action = self.determine_recovery_action(plugin_id, &category, severity).await?;
+        let recovery_action = self
+            .determine_recovery_action(plugin_id, &category, severity)
+            .await?;
 
         info!(
             "Recovery action determined for plugin {:?}: {:?}",
@@ -328,7 +316,7 @@ impl PluginErrorHandler {
             ErrorCategory::NetworkError => ErrorSeverity::Low,
             ErrorCategory::FileSystemError => {
                 // コンテキストに基づいて判定
-                if context.get("critical").map_or(false, |v| v == "true") {
+                if context.get("critical").is_some_and(|v| v == "true") {
                     ErrorSeverity::High
                 } else {
                     ErrorSeverity::Medium
@@ -452,8 +440,8 @@ impl PluginErrorHandler {
         let mut filtered: Vec<PluginError> = history
             .iter()
             .filter(|e| {
-                plugin_id.map_or(true, |id| e.plugin_id == id)
-                    && category.as_ref().map_or(true, |cat| &e.category == cat)
+                plugin_id.is_none_or(|id| e.plugin_id == id)
+                    && category.as_ref().is_none_or(|cat| &e.category == cat)
             })
             .cloned()
             .collect();
@@ -568,8 +556,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_consecutive_errors_threshold() {
-        let mut config = ErrorHandlingConfig::default();
-        config.consecutive_error_threshold = 3;
+        let config = ErrorHandlingConfig {
+            consecutive_error_threshold: 3,
+            ..Default::default()
+        };
 
         let handler = PluginErrorHandler::new(config).await.unwrap();
         let plugin_id = Uuid::new_v4();

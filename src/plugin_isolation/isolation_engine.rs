@@ -158,9 +158,9 @@ pub enum TrafficDirection {
 /// プロトコル
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Protocol {
-    TCP,
-    UDP,
-    ICMP,
+    Tcp,
+    Udp,
+    Icmp,
     All,
 }
 
@@ -231,14 +231,14 @@ impl IsolationEngine {
             .arg("--version")
             .output()
             .map_err(|e| {
-                McpError::IsolationError(format!(
+                McpError::Isolation(format!(
                     "Failed to verify container runtime {}: {}",
                     runtime, e
                 ))
             })?;
 
         if !output.status.success() {
-            return Err(McpError::IsolationError(format!(
+            return Err(McpError::Isolation(format!(
                 "Container runtime {} is not available",
                 runtime
             )));
@@ -308,15 +308,15 @@ impl IsolationEngine {
 
         // ip netns add コマンドを実行
         let output = Command::new("ip")
-            .args(&["netns", "add", &namespace_name])
+            .args(["netns", "add", &namespace_name])
             .output()
             .map_err(|e| {
-                McpError::IsolationError(format!("Failed to create network namespace: {}", e))
+                McpError::Isolation(format!("Failed to create network namespace: {}", e))
             })?;
 
         if !output.status.success() {
             let error_msg = String::from_utf8_lossy(&output.stderr);
-            return Err(McpError::IsolationError(format!(
+            return Err(McpError::Isolation(format!(
                 "Failed to create network namespace: {}",
                 error_msg
             )));
@@ -382,12 +382,12 @@ impl IsolationEngine {
         debug!("Creating container: {}", container_name);
 
         let mut cmd = Command::new(&self.config.container_runtime);
-        cmd.args(&["create", "--name", &container_name]);
+        cmd.args(["create", "--name", &container_name]);
 
         // ネットワーク隔離設定
         if let Some(ns) = &network_namespace {
-            cmd.args(&["--network", "none"]);
-            cmd.args(&["--net", &format!("ns:{}", ns)]);
+            cmd.args(["--network", "none"]);
+            cmd.args(["--net", &format!("ns:{}", ns)]);
         }
 
         // マウントポイント設定
@@ -397,13 +397,13 @@ impl IsolationEngine {
             } else {
                 format!("{}:{}", mount.host_path, mount.container_path)
             };
-            cmd.args(&["-v", &mount_arg]);
+            cmd.args(["-v", &mount_arg]);
         }
 
         // セキュリティオプション
-        cmd.args(&["--security-opt", "no-new-privileges"]);
-        cmd.args(&["--cap-drop", "ALL"]);
-        cmd.args(&["--read-only"]);
+        cmd.args(["--security-opt", "no-new-privileges"]);
+        cmd.args(["--cap-drop", "ALL"]);
+        cmd.args(["--read-only"]);
 
         // ベースイメージ
         cmd.arg("alpine:latest");
@@ -414,11 +414,11 @@ impl IsolationEngine {
 
         let output = cmd
             .output()
-            .map_err(|e| McpError::IsolationError(format!("Failed to create container: {}", e)))?;
+            .map_err(|e| McpError::Isolation(format!("Failed to create container: {}", e)))?;
 
         if !output.status.success() {
             let error_msg = String::from_utf8_lossy(&output.stderr);
-            return Err(McpError::IsolationError(format!(
+            return Err(McpError::Isolation(format!(
                 "Failed to create container: {}",
                 error_msg
             )));
@@ -428,7 +428,7 @@ impl IsolationEngine {
         let container_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
 
         if container_id.is_empty() {
-            return Err(McpError::IsolationError(
+            return Err(McpError::Isolation(
                 "Container creation returned empty ID".to_string(),
             ));
         }
@@ -441,7 +441,7 @@ impl IsolationEngine {
     async fn apply_resource_limits(
         &self,
         container_id: &str,
-        plugin_id: Uuid,
+        _plugin_id: Uuid,
     ) -> Result<(), McpError> {
         debug!("Applying resource limits to container: {}", container_id);
 
@@ -450,16 +450,16 @@ impl IsolationEngine {
         // CPU制限
         let cpu_limit = format!("{}m", limits.cpu_limit_millicores);
         Command::new(&self.config.container_runtime)
-            .args(&["update", "--cpus", &cpu_limit, container_id])
+            .args(["update", "--cpus", &cpu_limit, container_id])
             .output()
-            .map_err(|e| McpError::IsolationError(format!("Failed to set CPU limit: {}", e)))?;
+            .map_err(|e| McpError::Isolation(format!("Failed to set CPU limit: {}", e)))?;
 
         // メモリ制限
         let memory_limit = format!("{}b", limits.memory_limit_bytes);
         Command::new(&self.config.container_runtime)
-            .args(&["update", "--memory", &memory_limit, container_id])
+            .args(["update", "--memory", &memory_limit, container_id])
             .output()
-            .map_err(|e| McpError::IsolationError(format!("Failed to set memory limit: {}", e)))?;
+            .map_err(|e| McpError::Isolation(format!("Failed to set memory limit: {}", e)))?;
 
         info!("Resource limits applied to container: {}", container_id);
         Ok(())
@@ -470,13 +470,13 @@ impl IsolationEngine {
         debug!("Starting container: {}", container_id);
 
         let output = Command::new(&self.config.container_runtime)
-            .args(&["start", container_id])
+            .args(["start", container_id])
             .output()
-            .map_err(|e| McpError::IsolationError(format!("Failed to start container: {}", e)))?;
+            .map_err(|e| McpError::Isolation(format!("Failed to start container: {}", e)))?;
 
         if !output.status.success() {
             let error_msg = String::from_utf8_lossy(&output.stderr);
-            return Err(McpError::IsolationError(format!(
+            return Err(McpError::Isolation(format!(
                 "Failed to start container: {}",
                 error_msg
             )));
@@ -537,11 +537,9 @@ impl IsolationEngine {
 
         // コンテナを強制停止
         let output = Command::new(&self.config.container_runtime)
-            .args(&["kill", container_id])
+            .args(["kill", container_id])
             .output()
-            .map_err(|e| {
-                McpError::IsolationError(format!("Failed to force stop container: {}", e))
-            })?;
+            .map_err(|e| McpError::Isolation(format!("Failed to force stop container: {}", e)))?;
 
         if !output.status.success() {
             let error_msg = String::from_utf8_lossy(&output.stderr);
@@ -557,13 +555,13 @@ impl IsolationEngine {
         debug!("Stopping container: {}", container_id);
 
         let output = Command::new(&self.config.container_runtime)
-            .args(&["stop", container_id])
+            .args(["stop", container_id])
             .output()
-            .map_err(|e| McpError::IsolationError(format!("Failed to stop container: {}", e)))?;
+            .map_err(|e| McpError::Isolation(format!("Failed to stop container: {}", e)))?;
 
         if !output.status.success() {
             let error_msg = String::from_utf8_lossy(&output.stderr);
-            return Err(McpError::IsolationError(format!(
+            return Err(McpError::Isolation(format!(
                 "Failed to stop container: {}",
                 error_msg
             )));
@@ -577,13 +575,13 @@ impl IsolationEngine {
         debug!("Removing container: {}", container_id);
 
         let output = Command::new(&self.config.container_runtime)
-            .args(&["rm", container_id])
+            .args(["rm", container_id])
             .output()
-            .map_err(|e| McpError::IsolationError(format!("Failed to remove container: {}", e)))?;
+            .map_err(|e| McpError::Isolation(format!("Failed to remove container: {}", e)))?;
 
         if !output.status.success() {
             let error_msg = String::from_utf8_lossy(&output.stderr);
-            return Err(McpError::IsolationError(format!(
+            return Err(McpError::Isolation(format!(
                 "Failed to remove container: {}",
                 error_msg
             )));
@@ -599,10 +597,10 @@ impl IsolationEngine {
             debug!("Cleaning up network namespace: {}", namespace_name);
 
             let output = Command::new("ip")
-                .args(&["netns", "delete", &namespace_name])
+                .args(["netns", "delete", &namespace_name])
                 .output()
                 .map_err(|e| {
-                    McpError::IsolationError(format!("Failed to delete network namespace: {}", e))
+                    McpError::Isolation(format!("Failed to delete network namespace: {}", e))
                 })?;
 
             if !output.status.success() {
@@ -678,6 +676,17 @@ impl IsolationEngine {
     }
 }
 
+impl Default for IsolationConfig {
+    fn default() -> Self {
+        Self {
+            container_runtime: "docker".to_string(),
+            use_network_namespace: true,
+            filesystem_isolation: true,
+            process_isolation: true,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -721,16 +730,5 @@ mod tests {
         let limits = engine_config.get_default_resource_limits();
         assert!(limits.cpu_limit_millicores > 0);
         assert!(limits.memory_limit_bytes > 0);
-    }
-}
-
-impl Default for IsolationConfig {
-    fn default() -> Self {
-        Self {
-            container_runtime: "docker".to_string(),
-            use_network_namespace: true,
-            filesystem_isolation: true,
-            process_isolation: true,
-        }
     }
 }
