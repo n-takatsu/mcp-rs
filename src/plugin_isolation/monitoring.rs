@@ -1084,7 +1084,7 @@ impl MonitoringSystem {
             Ok(contents) => {
                 let parts: Vec<&str> = contents.split_whitespace().collect();
                 [
-                    parts.get(0).and_then(|s| s.parse().ok()).unwrap_or(0.0),
+                    parts.first().and_then(|s| s.parse().ok()).unwrap_or(0.0),
                     parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(0.0),
                     parts.get(2).and_then(|s| s.parse().ok()).unwrap_or(0.0),
                 ]
