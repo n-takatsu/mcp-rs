@@ -6,6 +6,7 @@ pub mod balancer;
 pub mod connection;
 pub mod failover;
 pub mod jsonrpc;
+pub mod llm_bridge;
 pub mod pool;
 pub mod server;
 pub mod stream;
@@ -21,6 +22,9 @@ pub use failover::{
     Failover, FailoverConfig, FailoverEvent, FailoverManager, FailoverStatus, SessionState,
 };
 pub use jsonrpc::{error_codes, JsonRpcMessage, JsonRpcNotification};
+pub use llm_bridge::{
+    AnthropicBridge, LlmBridge, LlmBridgeFactory, LlmConfig, LlmProvider, OpenAiBridge, StreamChunk,
+};
 pub use pool::ConnectionPool;
 pub use server::{
     ConnectionId, EchoHandler, MessageHandler, ServerConfig, ServerStatistics, WebSocketServer,
