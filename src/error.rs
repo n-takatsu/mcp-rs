@@ -153,6 +153,10 @@ pub enum Error {
     /// Configuration error
     #[error("Configuration: {0}")]
     Configuration(String),
+
+    /// Compression error
+    #[error("Compression error: {0}")]
+    Compression(String),
 }
 
 impl Error {
