@@ -82,7 +82,7 @@ anyhow = "1.0.100"
 async-trait = "0.1.89"
 
 # HTTP client
-reqwest = { version = "0.12.24", default-features = false, features = ["json", "rustls-tls", "multipart"] }
+reqwest = { version = "0.12.24", default-features = false, features = ["json", "rustls-tls", "multipart", "stream"] }
 
 # Validation
 validator = { version = "0.20", features = ["derive"] }
@@ -110,6 +110,11 @@ async-stream = { version = "0.3", optional = true }
 prometheus = { version = "0.14", optional = true }
 metrics = { version = "0.24.2", optional = true }
 
+# Compression
+flate2 = "1.0"
+brotli = "7.0"
+zstd = "0.13"
+
 # Kubernetes operator support
 kube = { version = "0.99", features = ["runtime", "derive"], optional = true }
 k8s-openapi = { version = "0.24", features = ["v1_31"], optional = true }
@@ -134,6 +139,9 @@ crossterm = "0.27"
 # Plugin system
 libloading = "0.9"
 
+# Docker integration
+bollard = { version = "0.18.1", optional = true }
+
 # Testing utilities
 mockall = { version = "0.13.1", optional = true }
 [dev-dependencies]
@@ -153,7 +161,7 @@ criterion = { version = "0.5", features = ["html_reports", "async_tokio"] }
 # rand = "0.8.5"
 
 [features]
-default = ["session-management", "security", "websocket"]
+default = ["session-management", "security", "websocket", "prometheus"]
 
 # Core features
 session-management = []
@@ -194,6 +202,9 @@ ml-anomaly-detection = ["smartcore", "ndarray", "statrs"]
 
 # LLM Integration
 llm-integration = ["async-openai", "tiktoken-rs", "eventsource-stream", "async-stream"]
+
+# Docker runtime integration
+docker-runtime = ["bollard"]
 
 # Full feature set (MySQL restored via secure mysql_async)
 full = [

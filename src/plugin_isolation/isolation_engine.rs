@@ -158,9 +158,9 @@ pub enum TrafficDirection {
 /// プロトコル
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Protocol {
-    TCP,
-    UDP,
-    ICMP,
+    Tcp,
+    Udp,
+    Icmp,
     All,
 }
 
@@ -231,14 +231,14 @@ impl IsolationEngine {
             .arg("--version")
             .output()
             .map_err(|e| {
-                McpError::IsolationError(format!(
+                McpError::Isolation(format!(
                     "Failed to verify container runtime {}: {}",
                     runtime, e
                 ))
             })?;
 
         if !output.status.success() {
-            return Err(McpError::IsolationError(format!(
+            return Err(McpError::Isolation(format!(
                 "Container runtime {} is not available",
                 runtime
             )));
@@ -277,6 +277,9 @@ impl IsolationEngine {
         // コンテナ起動
         self.start_container(&container_id).await?;
 
+        // PID名前空間を取得
+        let pid_namespace = self.get_container_pid_namespace(&container_id).await.ok();
+
         // コンテナ情報を記録
         let container_info = ContainerInfo {
             container_id: container_id.clone(),
@@ -284,7 +287,7 @@ impl IsolationEngine {
             created_at: chrono::Utc::now(),
             last_accessed: chrono::Utc::now(),
             network_namespace,
-            pid_namespace: None, // TODO: 実装
+            pid_namespace,
             mount_points,
             environment_vars: HashMap::new(),
             resource_limits: self.get_default_resource_limits(),
@@ -308,15 +311,15 @@ impl IsolationEngine {
 
         // ip netns add コマンドを実行
         let output = Command::new("ip")
-            .args(&["netns", "add", &namespace_name])
+            .args(["netns", "add", &namespace_name])
             .output()
             .map_err(|e| {
-                McpError::IsolationError(format!("Failed to create network namespace: {}", e))
+                McpError::Isolation(format!("Failed to create network namespace: {}", e))
             })?;
 
         if !output.status.success() {
             let error_msg = String::from_utf8_lossy(&output.stderr);
-            return Err(McpError::IsolationError(format!(
+            return Err(McpError::Isolation(format!(
                 "Failed to create network namespace: {}",
                 error_msg
             )));
@@ -382,12 +385,12 @@ impl IsolationEngine {
         debug!("Creating container: {}", container_name);
 
         let mut cmd = Command::new(&self.config.container_runtime);
-        cmd.args(&["create", "--name", &container_name]);
+        cmd.args(["create", "--name", &container_name]);
 
         // ネットワーク隔離設定
         if let Some(ns) = &network_namespace {
-            cmd.args(&["--network", "none"]);
-            cmd.args(&["--net", &format!("ns:{}", ns)]);
+            cmd.args(["--network", "none"]);
+            cmd.args(["--net", &format!("ns:{}", ns)]);
         }
 
         // マウントポイント設定
@@ -397,13 +400,13 @@ impl IsolationEngine {
             } else {
                 format!("{}:{}", mount.host_path, mount.container_path)
             };
-            cmd.args(&["-v", &mount_arg]);
+            cmd.args(["-v", &mount_arg]);
         }
 
         // セキュリティオプション
-        cmd.args(&["--security-opt", "no-new-privileges"]);
-        cmd.args(&["--cap-drop", "ALL"]);
-        cmd.args(&["--read-only"]);
+        cmd.args(["--security-opt", "no-new-privileges"]);
+        cmd.args(["--cap-drop", "ALL"]);
+        cmd.args(["--read-only"]);
 
         // ベースイメージ
         cmd.arg("alpine:latest");
@@ -414,11 +417,11 @@ impl IsolationEngine {
 
         let output = cmd
             .output()
-            .map_err(|e| McpError::IsolationError(format!("Failed to create container: {}", e)))?;
+            .map_err(|e| McpError::Isolation(format!("Failed to create container: {}", e)))?;
 
         if !output.status.success() {
             let error_msg = String::from_utf8_lossy(&output.stderr);
-            return Err(McpError::IsolationError(format!(
+            return Err(McpError::Isolation(format!(
                 "Failed to create container: {}",
                 error_msg
             )));
@@ -428,7 +431,7 @@ impl IsolationEngine {
         let container_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
 
         if container_id.is_empty() {
-            return Err(McpError::IsolationError(
+            return Err(McpError::Isolation(
                 "Container creation returned empty ID".to_string(),
             ));
         }
@@ -441,7 +444,7 @@ impl IsolationEngine {
     async fn apply_resource_limits(
         &self,
         container_id: &str,
-        plugin_id: Uuid,
+        _plugin_id: Uuid,
     ) -> Result<(), McpError> {
         debug!("Applying resource limits to container: {}", container_id);
 
@@ -450,16 +453,16 @@ impl IsolationEngine {
         // CPU制限
         let cpu_limit = format!("{}m", limits.cpu_limit_millicores);
         Command::new(&self.config.container_runtime)
-            .args(&["update", "--cpus", &cpu_limit, container_id])
+            .args(["update", "--cpus", &cpu_limit, container_id])
             .output()
-            .map_err(|e| McpError::IsolationError(format!("Failed to set CPU limit: {}", e)))?;
+            .map_err(|e| McpError::Isolation(format!("Failed to set CPU limit: {}", e)))?;
 
         // メモリ制限
         let memory_limit = format!("{}b", limits.memory_limit_bytes);
         Command::new(&self.config.container_runtime)
-            .args(&["update", "--memory", &memory_limit, container_id])
+            .args(["update", "--memory", &memory_limit, container_id])
             .output()
-            .map_err(|e| McpError::IsolationError(format!("Failed to set memory limit: {}", e)))?;
+            .map_err(|e| McpError::Isolation(format!("Failed to set memory limit: {}", e)))?;
 
         info!("Resource limits applied to container: {}", container_id);
         Ok(())
@@ -470,13 +473,13 @@ impl IsolationEngine {
         debug!("Starting container: {}", container_id);
 
         let output = Command::new(&self.config.container_runtime)
-            .args(&["start", container_id])
+            .args(["start", container_id])
             .output()
-            .map_err(|e| McpError::IsolationError(format!("Failed to start container: {}", e)))?;
+            .map_err(|e| McpError::Isolation(format!("Failed to start container: {}", e)))?;
 
         if !output.status.success() {
             let error_msg = String::from_utf8_lossy(&output.stderr);
-            return Err(McpError::IsolationError(format!(
+            return Err(McpError::Isolation(format!(
                 "Failed to start container: {}",
                 error_msg
             )));
@@ -537,11 +540,9 @@ impl IsolationEngine {
 
         // コンテナを強制停止
         let output = Command::new(&self.config.container_runtime)
-            .args(&["kill", container_id])
+            .args(["kill", container_id])
             .output()
-            .map_err(|e| {
-                McpError::IsolationError(format!("Failed to force stop container: {}", e))
-            })?;
+            .map_err(|e| McpError::Isolation(format!("Failed to force stop container: {}", e)))?;
 
         if !output.status.success() {
             let error_msg = String::from_utf8_lossy(&output.stderr);
@@ -557,13 +558,13 @@ impl IsolationEngine {
         debug!("Stopping container: {}", container_id);
 
         let output = Command::new(&self.config.container_runtime)
-            .args(&["stop", container_id])
+            .args(["stop", container_id])
             .output()
-            .map_err(|e| McpError::IsolationError(format!("Failed to stop container: {}", e)))?;
+            .map_err(|e| McpError::Isolation(format!("Failed to stop container: {}", e)))?;
 
         if !output.status.success() {
             let error_msg = String::from_utf8_lossy(&output.stderr);
-            return Err(McpError::IsolationError(format!(
+            return Err(McpError::Isolation(format!(
                 "Failed to stop container: {}",
                 error_msg
             )));
@@ -577,13 +578,13 @@ impl IsolationEngine {
         debug!("Removing container: {}", container_id);
 
         let output = Command::new(&self.config.container_runtime)
-            .args(&["rm", container_id])
+            .args(["rm", container_id])
             .output()
-            .map_err(|e| McpError::IsolationError(format!("Failed to remove container: {}", e)))?;
+            .map_err(|e| McpError::Isolation(format!("Failed to remove container: {}", e)))?;
 
         if !output.status.success() {
             let error_msg = String::from_utf8_lossy(&output.stderr);
-            return Err(McpError::IsolationError(format!(
+            return Err(McpError::Isolation(format!(
                 "Failed to remove container: {}",
                 error_msg
             )));
@@ -599,10 +600,10 @@ impl IsolationEngine {
             debug!("Cleaning up network namespace: {}", namespace_name);
 
             let output = Command::new("ip")
-                .args(&["netns", "delete", &namespace_name])
+                .args(["netns", "delete", &namespace_name])
                 .output()
                 .map_err(|e| {
-                    McpError::IsolationError(format!("Failed to delete network namespace: {}", e))
+                    McpError::Isolation(format!("Failed to delete network namespace: {}", e))
                 })?;
 
             if !output.status.success() {
@@ -649,8 +650,38 @@ impl IsolationEngine {
 
     /// リソース使用量を更新
     pub async fn update_resource_usage(&self, plugin_id: Uuid) -> Result<(), McpError> {
-        // TODO: 実際のリソース使用量を取得してtracker.を更新
         debug!("Updating resource usage for plugin: {}", plugin_id);
+
+        // コンテナ情報を取得
+        let containers = self.active_containers.read().await;
+        let container_info = containers.get(&plugin_id).ok_or_else(|| {
+            McpError::Isolation(format!("Container not found for plugin: {}", plugin_id))
+        })?;
+
+        // コンテナIDからリソース使用量を取得
+        let (cpu_usage, memory_usage, disk_io, network_io) = self
+            .get_container_resource_usage(&container_info.container_id)
+            .await?;
+
+        // トラッカーを更新
+        let mut tracker = self.resource_tracker.lock().await;
+
+        // ログ出力用にネットワーク使用量を先に計算
+        let network_total = (network_io.tx_bytes + network_io.rx_bytes) / 1024;
+
+        tracker.cpu_usage.insert(plugin_id, cpu_usage as f64);
+        tracker.memory_usage.insert(plugin_id, memory_usage);
+        tracker.disk_usage.insert(plugin_id, disk_io);
+        tracker.network_usage.insert(plugin_id, network_io);
+
+        debug!(
+            "Resource usage updated - CPU: {}%, Memory: {} MB, Disk: {} MB, Network: {} KB",
+            cpu_usage,
+            memory_usage / 1024 / 1024,
+            disk_io / 1024 / 1024,
+            network_total
+        );
+
         Ok(())
     }
 
@@ -675,6 +706,202 @@ impl IsolationEngine {
 
         info!("Isolation engine shutdown completed");
         Ok(())
+    }
+
+    /// コンテナのPID名前空間を取得
+    async fn get_container_pid_namespace(&self, container_id: &str) -> Result<String, McpError> {
+        debug!("Getting PID namespace for container: {}", container_id);
+
+        // Docker inspectコマンドでPID名前空間を取得
+        let output = Command::new(&self.config.container_runtime)
+            .args(["inspect", "--format", "{{.State.Pid}}", container_id])
+            .output()
+            .map_err(|e| McpError::Isolation(format!("Failed to get container PID: {}", e)))?;
+
+        if !output.status.success() {
+            return Err(McpError::Isolation(format!(
+                "Failed to inspect container: {}",
+                String::from_utf8_lossy(&output.stderr)
+            )));
+        }
+
+        let pid = String::from_utf8_lossy(&output.stdout).trim().to_string();
+
+        if pid == "0" || pid.is_empty() {
+            return Err(McpError::Isolation("Container is not running".to_string()));
+        }
+
+        // シンボリックリンクを読み取って名前空間IDを取得
+        #[cfg(target_os = "linux")]
+        {
+            use std::fs;
+            // PID名前空間のパスを構築 (/proc/<pid>/ns/pid)
+            let pid_ns_path = format!("/proc/{}/ns/pid", pid);
+
+            match fs::read_link(&pid_ns_path) {
+                Ok(ns_link) => {
+                    let ns_id = ns_link.to_string_lossy().to_string();
+                    debug!("PID namespace: {}", ns_id);
+                    Ok(ns_id)
+                }
+                Err(e) => {
+                    warn!("Failed to read PID namespace link: {}", e);
+                    // フォールバック: PID自体を返す
+                    Ok(format!("pid:{}", pid))
+                }
+            }
+        }
+
+        #[cfg(not(target_os = "linux"))]
+        {
+            // Linux以外のプラットフォームではPIDを返す
+            Ok(format!("pid:{}", pid))
+        }
+    }
+
+    /// コンテナのリソース使用量を取得
+    async fn get_container_resource_usage(
+        &self,
+        container_id: &str,
+    ) -> Result<(u64, u64, u64, NetworkUsage), McpError> {
+        debug!("Getting resource usage for container: {}", container_id);
+
+        // Docker statsコマンドでリソース使用量を取得
+        let output = Command::new(&self.config.container_runtime)
+            .args([
+                "stats",
+                "--no-stream",
+                "--format",
+                "{{.CPUPerc}},{{.MemUsage}},{{.BlockIO}},{{.NetIO}}",
+                container_id,
+            ])
+            .output()
+            .map_err(|e| McpError::Isolation(format!("Failed to get container stats: {}", e)))?;
+
+        if !output.status.success() {
+            return Err(McpError::Isolation(format!(
+                "Failed to get container stats: {}",
+                String::from_utf8_lossy(&output.stderr)
+            )));
+        }
+
+        let stats = String::from_utf8_lossy(&output.stdout);
+        let parts: Vec<&str> = stats.trim().split(',').collect();
+
+        if parts.len() < 4 {
+            return Err(McpError::Isolation("Invalid stats format".to_string()));
+        }
+
+        // CPU使用率をパース (例: "0.50%" -> 0)
+        let cpu_usage = parts[0]
+            .trim()
+            .trim_end_matches('%')
+            .parse::<f64>()
+            .unwrap_or(0.0) as u64;
+
+        // メモリ使用量をパース (例: "1.5MiB / 2GiB" -> 1572864)
+        let memory_usage = Self::parse_memory_usage(parts[1])?;
+
+        // ディスクI/Oをパース (例: "1.5MB / 0B" -> 1500000)
+        let disk_io = Self::parse_disk_io(parts[2])?;
+
+        // ネットワークI/Oをパース (例: "1.5kB / 2kB" -> NetworkUsage)
+        let network_usage = Self::parse_network_io(parts[3])?;
+
+        Ok((cpu_usage, memory_usage, disk_io, network_usage))
+    }
+
+    /// メモリ使用量文字列をパース
+    fn parse_memory_usage(usage_str: &str) -> Result<u64, McpError> {
+        // "1.5MiB / 2GiB" のような形式から使用量のみを抽出
+        let parts: Vec<&str> = usage_str.split('/').collect();
+        if parts.is_empty() {
+            return Ok(0);
+        }
+
+        Self::parse_size(parts[0].trim())
+    }
+
+    /// ディスクI/O文字列をパース
+    fn parse_disk_io(io_str: &str) -> Result<u64, McpError> {
+        // "1.5MB / 0B" のような形式から読み込み量を抽出
+        let parts: Vec<&str> = io_str.split('/').collect();
+        if parts.is_empty() {
+            return Ok(0);
+        }
+
+        Self::parse_size(parts[0].trim())
+    }
+
+    /// ネットワークI/O文字列をパース
+    fn parse_network_io(io_str: &str) -> Result<NetworkUsage, McpError> {
+        // "1.5kB / 2kB" のような形式をパース
+        let parts: Vec<&str> = io_str.split('/').collect();
+        if parts.len() < 2 {
+            return Ok(NetworkUsage::default());
+        }
+
+        let tx_bytes = Self::parse_size(parts[0].trim())?;
+        let rx_bytes = Self::parse_size(parts[1].trim())?;
+
+        Ok(NetworkUsage {
+            tx_bytes,
+            rx_bytes,
+            tx_packets: 0, // Dockerからは取得不可
+            rx_packets: 0, // Dockerからは取得不可
+        })
+    }
+
+    /// サイズ文字列をバイト数にパース
+    fn parse_size(size_str: &str) -> Result<u64, McpError> {
+        let size_str = size_str.trim();
+
+        if size_str == "0B" || size_str == "0" {
+            return Ok(0);
+        }
+
+        // 数値部分と単位を分離
+        let mut num_str = String::new();
+        let mut unit_str = String::new();
+
+        for c in size_str.chars() {
+            if c.is_numeric() || c == '.' {
+                num_str.push(c);
+            } else {
+                unit_str.push(c);
+            }
+        }
+
+        let num: f64 = num_str
+            .parse()
+            .map_err(|_| McpError::Isolation(format!("Invalid size number: {}", num_str)))?;
+
+        // 単位に応じて変換
+        let multiplier = match unit_str.trim() {
+            "B" => 1.0,
+            "kB" | "KB" => 1000.0,
+            "KiB" => 1024.0,
+            "MB" | "MiB" => 1024.0 * 1024.0,
+            "GB" | "GiB" => 1024.0 * 1024.0 * 1024.0,
+            "TB" | "TiB" => 1024.0 * 1024.0 * 1024.0 * 1024.0,
+            _ => {
+                warn!("Unknown size unit: {}", unit_str);
+                1.0
+            }
+        };
+
+        Ok((num * multiplier) as u64)
+    }
+}
+
+impl Default for IsolationConfig {
+    fn default() -> Self {
+        Self {
+            container_runtime: "docker".to_string(),
+            use_network_namespace: true,
+            filesystem_isolation: true,
+            process_isolation: true,
+        }
     }
 }
 
@@ -721,16 +948,5 @@ mod tests {
         let limits = engine_config.get_default_resource_limits();
         assert!(limits.cpu_limit_millicores > 0);
         assert!(limits.memory_limit_bytes > 0);
-    }
-}
-
-impl Default for IsolationConfig {
-    fn default() -> Self {
-        Self {
-            container_runtime: "docker".to_string(),
-            use_network_namespace: true,
-            filesystem_isolation: true,
-            process_isolation: true,
-        }
     }
 }

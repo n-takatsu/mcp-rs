@@ -4,10 +4,12 @@ use super::connection::WebSocketConnection;
 use super::types::*;
 pub use super::types::{HealthStatus, PoolConfig, PoolStatistics};
 use crate::error::{Error, Result};
+use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::sync::Arc;
 use tokio::sync::{Mutex, Semaphore};
 use tokio::time::{interval, Duration};
+use tracing::{debug, info, warn};
 
 /// 接続プール
 #[derive(Debug)]
@@ -22,6 +24,8 @@ pub struct ConnectionPool {
     statistics: Arc<Mutex<PoolStatistics>>,
     /// ベースURL
     base_url: String,
+    /// 自動スケーリング有効化
+    auto_scaling_enabled: Arc<Mutex<bool>>,
 }
 
 impl ConnectionPool {
@@ -43,6 +47,7 @@ impl ConnectionPool {
             semaphore: Arc::new(Semaphore::new(config.max_connections)),
             statistics: Arc::new(Mutex::new(statistics)),
             base_url: "ws://localhost:8080".to_string(), // デフォルト
+            auto_scaling_enabled: Arc::new(Mutex::new(true)),
         })
     }
 
@@ -189,6 +194,126 @@ impl ConnectionPool {
         *idle = healthy_connections;
         removed
     }
+
+    /// 自動スケーリングを有効化/無効化
+    pub async fn set_auto_scaling(&self, enabled: bool) {
+        let mut auto_scaling = self.auto_scaling_enabled.lock().await;
+        *auto_scaling = enabled;
+        info!(
+            "Auto-scaling {}",
+            if enabled { "enabled" } else { "disabled" }
+        );
+    }
+
+    /// 自動スケーリングタスクを開始
+    pub fn start_auto_scaling(&self) -> tokio::task::JoinHandle<()> {
+        let idle_connections = Arc::clone(&self.idle_connections);
+        let statistics = Arc::clone(&self.statistics);
+        let auto_scaling_enabled = Arc::clone(&self.auto_scaling_enabled);
+        let config = self.config.clone();
+        let base_url = self.base_url.clone();
+
+        tokio::spawn(async move {
+            let mut interval = interval(Duration::from_secs(10)); // 10秒ごとにチェック
+
+            loop {
+                interval.tick().await;
+
+                let enabled = *auto_scaling_enabled.lock().await;
+                if !enabled {
+                    continue;
+                }
+
+                let stats = statistics.lock().await.clone();
+                let idle_count = idle_connections.lock().await.len();
+
+                // スケールアップ: アクティブ接続が多く、アイドルが少ない場合
+                let total = stats.active_connections + idle_count;
+                let utilization = if total > 0 {
+                    stats.active_connections as f64 / total as f64
+                } else {
+                    0.0
+                };
+
+                if utilization > 0.8 && total < config.max_connections {
+                    // 80%以上の使用率でスケールアップ
+                    let scale_up_count = (config.max_connections.min(total + 5) - total).min(5);
+                    debug!(
+                        "Scaling up pool by {} connections (utilization: {:.1}%)",
+                        scale_up_count,
+                        utilization * 100.0
+                    );
+
+                    for _ in 0..scale_up_count {
+                        if let Ok(conn) = WebSocketConnection::connect(&base_url).await {
+                            idle_connections.lock().await.push_back(conn);
+                        }
+                    }
+                }
+
+                // スケールダウン: アイドル接続が多すぎる場合
+                if idle_count > config.min_connections && utilization < 0.3 {
+                    let scale_down_count = (idle_count - config.min_connections).min(5);
+                    debug!(
+                        "Scaling down pool by {} connections (utilization: {:.1}%)",
+                        scale_down_count,
+                        utilization * 100.0
+                    );
+
+                    let mut idle = idle_connections.lock().await;
+                    for _ in 0..scale_down_count {
+                        if let Some(conn) = idle.pop_back() {
+                            let _ = conn.close().await;
+                        }
+                    }
+                }
+            }
+        })
+    }
+
+    /// プールメトリクスを取得（詳細版）
+    pub async fn get_metrics(&self) -> PoolMetrics {
+        let stats = self.statistics.lock().await.clone();
+        let idle_count = self.idle_connections.lock().await.len();
+
+        PoolMetrics {
+            total_connections: stats.active_connections + idle_count,
+            active_connections: stats.active_connections,
+            idle_connections: idle_count,
+            pending_requests: stats.pending_requests,
+            total_requests: stats.total_requests,
+            failed_requests: stats.failed_requests,
+            avg_wait_time_ms: stats.avg_wait_time_ms,
+            utilization_rate: if stats.active_connections + idle_count > 0 {
+                stats.active_connections as f64 / (stats.active_connections + idle_count) as f64
+            } else {
+                0.0
+            },
+        }
+    }
+
+    /// アクティブな接続数を取得
+    pub async fn active_count(&self) -> usize {
+        self.statistics.lock().await.active_connections
+    }
+
+    /// アイドルな接続数を取得
+    pub async fn idle_count(&self) -> usize {
+        self.idle_connections.lock().await.len()
+    }
+}
+
+/// プールメトリクス
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PoolMetrics {
+    pub total_connections: usize,
+    pub active_connections: usize,
+    pub idle_connections: usize,
+    pub pending_requests: usize,
+    pub total_requests: u64,
+    pub failed_requests: u64,
+    pub avg_wait_time_ms: f64,
+    pub utilization_rate: f64,
 }
 
 #[cfg(test)]

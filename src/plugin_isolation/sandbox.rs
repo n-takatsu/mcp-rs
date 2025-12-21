@@ -88,10 +88,10 @@ pub struct NetworkRule {
 /// ネットワークプロトコル
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum NetworkProtocol {
-    TCP,
-    UDP,
-    HTTP,
-    HTTPS,
+    Tcp,
+    Udp,
+    Http,
+    Https,
     All,
 }
 
@@ -359,15 +359,27 @@ impl SecuritySandbox {
                 // 厳格な制限を適用
                 self.apply_strict_security_restrictions(metadata.id).await?;
             }
-            crate::plugin_isolation::SecurityLevel::Standard => {
+            crate::plugin_isolation::SecurityLevel::Standard
+            | crate::plugin_isolation::SecurityLevel::Safe => {
                 // 標準的な制限を適用
                 self.apply_standard_security_restrictions(metadata.id)
                     .await?;
             }
-            crate::plugin_isolation::SecurityLevel::Minimal => {
+            crate::plugin_isolation::SecurityLevel::Minimal
+            | crate::plugin_isolation::SecurityLevel::LowRisk => {
                 // 最小限の制限を適用
                 self.apply_minimal_security_restrictions(metadata.id)
                     .await?;
+            }
+            crate::plugin_isolation::SecurityLevel::MediumRisk => {
+                // 中リスク - 標準的な制限を適用
+                self.apply_standard_security_restrictions(metadata.id)
+                    .await?;
+            }
+            crate::plugin_isolation::SecurityLevel::HighRisk
+            | crate::plugin_isolation::SecurityLevel::Dangerous => {
+                // 高リスク・危険 - 厳格な制限を適用
+                self.apply_strict_security_restrictions(metadata.id).await?;
             }
         }
 
@@ -453,7 +465,7 @@ impl SecuritySandbox {
                 start: 443,
                 end: 443,
             }),
-            protocol: NetworkProtocol::HTTPS,
+            protocol: NetworkProtocol::Https,
             action: NetworkAction::Allow,
             priority: 100,
         }];
@@ -541,7 +553,7 @@ impl SecuritySandbox {
             "network.http" | "network.https" | "network.tcp" | "network.udp" => Ok(()),
             "file.read" | "file.write" | "file.execute" => Ok(()),
             "system.process" | "system.memory" => Ok(()),
-            _ => Err(McpError::SecurityError(format!(
+            _ => Err(McpError::SecurityFailure(format!(
                 "Unknown permission: {}",
                 permission
             ))),
@@ -607,7 +619,7 @@ impl SecuritySandbox {
         // 違反回数チェック
         if *count >= self.security_policy.max_security_violations {
             drop(tracker);
-            return Err(McpError::SecurityError(format!(
+            return Err(McpError::SecurityFailure(format!(
                 "Plugin {} exceeded maximum security violations ({})",
                 plugin_id, self.security_policy.max_security_violations
             )));
@@ -668,7 +680,37 @@ impl SyscallMonitor {
     /// 監視を開始
     pub async fn start_monitoring(&self, plugin_id: Uuid) -> Result<(), McpError> {
         debug!("Starting syscall monitoring for plugin: {}", plugin_id);
-        // TODO: 実際のシステムコール監視を実装
+
+        // 許可/禁止されたシステムコールリストを取得
+        let allowed = self.allowed_syscalls.read().await;
+        let blocked = self.blocked_syscalls.read().await;
+
+        let allowed_list = allowed.get(&plugin_id).cloned().unwrap_or_default();
+        let blocked_list = blocked.get(&plugin_id).cloned().unwrap_or_default();
+
+        info!(
+            "Syscall monitoring started for plugin {} - {} allowed, {} blocked",
+            plugin_id,
+            allowed_list.len(),
+            blocked_list.len()
+        );
+
+        // 監視統計を初期化
+        let mut audit_log = self.audit_log.lock().await;
+        audit_log.push(SyscallAuditEntry {
+            plugin_id,
+            syscall_name: "monitoring_started".to_string(),
+            arguments: vec![],
+            timestamp: chrono::Utc::now(),
+            allowed: true,
+            process_id: 0,
+            thread_id: 0,
+        });
+
+        // 実際の監視はeBPF/seccomp-bpfを使用する
+        // 現在は基本的なログ記録のみ実装
+        // TODO: 本番環境ではseccomp-bpfまたはeBPFベースの監視を統合
+
         Ok(())
     }
 
@@ -716,7 +758,25 @@ impl NetworkAccessControl {
     /// 監視を開始
     pub async fn start_monitoring(&self, plugin_id: Uuid) -> Result<(), McpError> {
         debug!("Starting network monitoring for plugin: {}", plugin_id);
-        // TODO: 実際のネットワーク監視を実装
+
+        // 許可されたホストリストを取得
+        let allowed_hosts = self.allowed_hosts.read().await;
+        let host_list = allowed_hosts.get(&plugin_id).cloned().unwrap_or_default();
+
+        info!(
+            "Network monitoring started for plugin {} - {} rules configured",
+            plugin_id,
+            host_list.len()
+        );
+
+        // ネットワーク接続監視を初期化
+        let mut connection_monitor = self.connection_monitor.lock().await;
+        connection_monitor.insert(plugin_id, vec![]);
+
+        // 実際の監視はnetfilter/iptablesまたはeBPF/XDPを使用
+        // 現在は基本的な統計記録のみ実装
+        // TODO: 本番環境ではeBPF/XDPベースのパケットフィルタリングを統合
+
         Ok(())
     }
 
@@ -769,7 +829,36 @@ impl FileAccessControl {
     /// 監視を開始
     pub async fn start_monitoring(&self, plugin_id: Uuid) -> Result<(), McpError> {
         debug!("Starting file access monitoring for plugin: {}", plugin_id);
-        // TODO: 実際のファイルアクセス監視を実装
+
+        // 許可されたパスを取得
+        let read_paths = self.read_allowed_paths.read().await;
+        let write_paths = self.write_allowed_paths.read().await;
+        let exec_paths = self.exec_allowed_paths.read().await;
+
+        let read_count = read_paths.get(&plugin_id).map_or(0, |v| v.len());
+        let write_count = write_paths.get(&plugin_id).map_or(0, |v| v.len());
+        let exec_count = exec_paths.get(&plugin_id).map_or(0, |v| v.len());
+
+        info!(
+            "File access monitoring started for plugin {} - R:{} W:{} X:{}",
+            plugin_id, read_count, write_count, exec_count
+        );
+
+        // ファイルアクセス統計を初期化
+        let mut access_log = self.file_audit_log.lock().await;
+        access_log.push(FileAuditEntry {
+            plugin_id,
+            file_path: "/monitoring/started".to_string(),
+            access_type: FileAccessType::Read,
+            timestamp: chrono::Utc::now(),
+            allowed: true,
+            process_id: 0,
+        });
+
+        // 実際の監視はinotify/fanotifyまたはeBPFを使用
+        // 現在は基本的なログ記録のみ実装
+        // TODO: 本番環境ではinotify/fanotifyまたはeBPFベースの監視を統合
+
         Ok(())
     }
 
@@ -856,7 +945,7 @@ mod tests {
                 start: 80,
                 end: 443,
             }),
-            protocol: NetworkProtocol::HTTPS,
+            protocol: NetworkProtocol::Https,
             action: NetworkAction::Allow,
             priority: 100,
         };

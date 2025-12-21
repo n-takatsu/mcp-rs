@@ -141,6 +141,22 @@ pub enum Error {
     /// Timeout error
     #[error("Timeout")]
     Timeout,
+
+    /// Server error
+    #[error("Server error: {0}")]
+    Server(String),
+
+    /// Connection error
+    #[error("Connection error: {0}")]
+    Connection(String),
+
+    /// Configuration error
+    #[error("Configuration: {0}")]
+    Configuration(String),
+
+    /// Compression error
+    #[error("Compression error: {0}")]
+    Compression(String),
 }
 
 impl Error {
