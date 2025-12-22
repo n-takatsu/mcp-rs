@@ -38,8 +38,9 @@ MCP-RS provides a **comprehensive, battle-tested** implementation of the MCP (Mo
 
 ## 🔒 Enterprise-Grade Security Features
 
-### 🛡️ Complete 6-Layer Security Architecture (100% Implemented)
+### 🛡️ Complete 7-Layer Security Architecture (100% Implemented)
 
+- **🔐 RBAC (Role-Based Access Control)**: Fine-grained access control with role hierarchy and inheritance
 - **🔐 AES-GCM-256 Encryption**: Military-grade encryption with PBKDF2 key derivation (100K iterations)
 - **⚡ Token Bucket Rate Limiting**: Advanced DDoS protection with configurable limits and burst handling
 - **🔒 TLS 1.2+ Enforcement**: Mandatory secure transport with certificate validation
@@ -48,8 +49,8 @@ MCP-RS provides a **comprehensive, battle-tested** implementation of the MCP (Mo
 - **🚫 XSS Attack Protection**: 14 attack pattern detection with HTML sanitization and CSP headers
 - **📊 Comprehensive Audit Logging**: All security events recorded with tamper-resistant logging
 - **🎯 Advanced Input Validation**: Real-time validation with custom rules and data sanitization
-- **🔍 Zero-Trust Data Validation**: All inputs validated through multi-layer security checks
-- **📈 Real-time Security Monitoring**: Threat level analysis with attack detection and prevention
+- **🔍 Data Masking**: 4 masking strategies (Full, Partial, Hash, Tokenize) for PII/PHI protection
+- **📈 Time-Based Access Control**: Business hours and emergency access support
 
 ## 🎯 WordPress MCP Tools (27 tools available)
 
@@ -94,13 +95,16 @@ MCP-RS provides a **comprehensive, battle-tested** implementation of the MCP (Mo
 
 ## Current Status
 
-## ✅ Recently Completed (v0.2.0-alpha)
+## ✅ Recently Completed (v0.16.0)
 
-- **🏗️ Core Runtime Module**: Complete application lifecycle management with state tracking
-- **� Stdio Transport Support**: Standard input/output communication for process-based integration
-- **🔌 Transport Abstraction**: Pluggable transport layer with configurable framing methods
-- **🔒 Enterprise Security**: 6-layer security architecture (100% Complete)
-- **🧪 Quality Assurance**: 197+ test cases with 100% pass rate and zero Clippy warnings
+- **🌐 WebSocket Transport Enhancements**: Server mode, LLM streaming, connection pooling, load balancing
+- **🔌 Plugin Isolation System**: Inter-plugin communication, advanced error handling, Docker runtime support
+- **🤖 LLM Streaming Integration**: OpenAI GPT-4 and Anthropic Claude 3.5 Sonnet with real-time responses
+- **📊 Metrics & Monitoring**: Real-time metrics collection, rate limiting (3 algorithms), message compression
+- **🐳 Docker Runtime Support**: Container-based plugin execution with security scanning
+- **🏗️ Code Architecture**: mod.rs refactoring for improved maintainability (5 major modules)
+- **🔒 Enterprise Security**: 7-layer security architecture with RBAC (100% Complete)
+- **🧪 Quality Assurance**: 567 test cases with 100% pass rate and zero Clippy warnings
 
 ## Implementation Status
 

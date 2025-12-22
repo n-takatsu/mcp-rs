@@ -4,7 +4,7 @@
 
 > **[English](README.md)** | **[日本語](README.ja.md)**
 
-[![Version](https://img.shields.io/badge/Version-v0.15.0-blue)](https://github.com/n-takatsu/mcp-rs/releases/tag/v0.15.0)
+[![Version](https://img.shields.io/badge/Version-v0.16.0-blue)](https://github.com/n-takatsu/mcp-rs/releases/tag/v0.16.0)
 ![Architecture](https://img.shields.io/badge/Architecture-Production--Ready-green)
 ![Implementation](https://img.shields.io/badge/WordPress_Tools-27_Available-green)
 ![License](https://img.shields.io/badge/License-MIT%2FApache--2.0-green)
@@ -113,7 +113,7 @@ Need WordPress security automation? 8-layer enterprise security architecture wit
 ## 📊 Quality Metrics
 
 | Metric | Value |
-|--------|-------|
+| ------ | ----- |
 | **Total Tests** | 260+ (100% passing) |
 | **Code Coverage** | Comprehensive |
 | **Security Tests** | 8-layer + MFA validation |

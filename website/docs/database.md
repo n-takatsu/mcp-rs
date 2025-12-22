@@ -335,6 +335,6 @@ master_key_rotation_days = 90
 
 ---
 
-**Version**: 0.15.0
+**Version**: 0.16.0
 **Status**: Production Ready
 **Last Updated**: November 7, 2024

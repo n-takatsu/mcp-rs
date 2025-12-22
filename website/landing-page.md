@@ -5,7 +5,7 @@
 <div align="center">
 
 ![MCP-RS Real-time Editing](https://img.shields.io/badge/MCP--RS-Real--time%20Editing-blue?style=for-the-badge&logo=rust)
-![Version](https://img.shields.io/badge/version-0.15.0-green?style=for-the-badge)
+![Version](https://img.shields.io/badge/version-0.16.0-green?style=for-the-badge)
 ![Production Ready](https://img.shields.io/badge/status-Production%20Ready-success?style=for-the-badge)
 ![Security Grade](https://img.shields.io/badge/security-A%2B-brightgreen?style=for-the-badge&logo=shield)
 
@@ -27,24 +27,28 @@ MCP-RS is a blazing-fast, secure, and scalable **real-time collaborative editing
 - Memory efficient: 0.46KB per user
 
 🔒 **Enterprise Security**
-- 6-layer defense-in-depth security architecture
+- 7-layer defense-in-depth security architecture with RBAC
 - Zero critical vulnerabilities
 - A+ security grade with comprehensive audit logs
+- Data masking for PII/PHI protection
 
 ⚡ **Real-time Everything**
 - Instant collaborative editing
-- Live WebSocket connections
+- Live WebSocket connections with server mode
 - Real-time user presence and notifications
+- LLM streaming (OpenAI GPT-4, Claude 3.5 Sonnet)
 
 🛠️ **Developer Friendly**
 - Simple REST API + WebSocket integration
 - Comprehensive documentation and examples
 - Production-ready with minimal configuration
+- Plugin system with Docker isolation
 
 🏢 **Enterprise Ready**
 - 100+ concurrent users supported
 - Comprehensive monitoring and observability
 - Docker and Kubernetes deployment ready
+- Load balancing with 3 algorithms
 
 ---
 
@@ -155,9 +159,10 @@ open http://localhost:8080/demo.html
 ## 🛡️ Security First
 
 - **Zero Critical Vulnerabilities**: Comprehensive security testing with 100% pass rate
-- **Multi-layer Protection**: 6-layer defense-in-depth security architecture
+- **Multi-layer Protection**: 7-layer defense-in-depth security architecture with RBAC
 - **Enterprise Grade**: A+ security rating with full audit compliance
 - **Rust Memory Safety**: Built-in protection against buffer overflows and memory leaks
+- **Data Masking**: 4 masking strategies for PII/PHI protection (Full, Partial, Hash, Tokenize)
 
 ## 🔥 Developer Experience
 
@@ -180,10 +185,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## 📊 Production Proven
 
-- **287 Tests**: Comprehensive test suite with 100% pass rate
+- **567 Tests**: Comprehensive test suite with 100% pass rate
 - **Zero Warnings**: Clean codebase with no compilation warnings
-- **Docker Ready**: Production-ready containerization
+- **Docker Ready**: Production-ready containerization with Docker Runtime support
 - **Kubernetes Support**: Enterprise deployment configurations
+- **Plugin Isolation**: Secure sandbox environment for third-party plugins
 
 ---
 
@@ -196,7 +202,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ## Add to your Cargo.toml
 
 [dependencies]
-mcp-rs = "0.15.0"
+mcp-rs = "0.16.0"
 tokio = { version = "1.0", features = ["full"] }
 ```
 
@@ -349,9 +355,12 @@ spec:
 
 ## 🔧 Technical Documentation
 
-- [**WebSocket API Reference**](./docs/websocket-api.md) - Complete API specification
+- [**WebSocket Guide**](https://github.com/n-takatsu/mcp-rs/blob/main/docs/websocket-guide.md) - Complete WebSocket implementation guide (v0.16.0)
+- [**WebSocket Performance**](https://github.com/n-takatsu/mcp-rs/blob/main/docs/websocket-performance.md) - Performance tuning and optimization
+- [**LLM Integration Guide**](https://github.com/n-takatsu/mcp-rs/blob/main/docs/llm-integration-guide.md) - OpenAI and Anthropic integration
+- [**Plugin Developer Guide**](https://github.com/n-takatsu/mcp-rs/blob/main/docs/plugin-developer-guide.md) - Building isolated plugins
+- [**Docker Runtime Guide**](https://github.com/n-takatsu/mcp-rs/blob/main/docs/docker-runtime-guide.md) - Container-based plugin execution
 - [**Session Management**](./docs/session-management-architecture.md) - Architecture and implementation
-- [**Development Guide**](https://github.com/n-takatsu/mcp-rs/blob/main/project-docs/realtime-editing-development-guide.md) - Comprehensive development documentation
 
 ## 🛡️ Security & Compliance
 
@@ -482,14 +491,17 @@ We welcome contributions! Here's how you can help:
 ## Q4 2024 ✅ (Completed)
 
 - ✅ **Core Real-time Editing**: Session management and WebSocket server
-- ✅ **Security Implementation**: 6-layer security architecture
+- ✅ **Security Implementation**: 7-layer security architecture with RBAC
 - ✅ **Performance Optimization**: Sub-millisecond latencies
 - ✅ **Production Readiness**: Docker, monitoring, and documentation
+- ✅ **WebSocket Enhancements**: Server mode, LLM streaming, connection pooling (v0.16.0)
+- ✅ **Plugin Isolation**: Docker runtime, inter-plugin communication (v0.16.0)
+- ✅ **LLM Integration**: OpenAI GPT-4 and Anthropic Claude 3.5 Sonnet (v0.16.0)
 
 ## Q1 2025 🚧 (In Progress)
 
 - 🔄 **Redis Backend**: Distributed session storage for horizontal scaling
-- 🔄 **Operational Transform**: Advanced conflict resolution algorithms
+- 🔄 **Advanced Plugin Features**: Enhanced isolation and security
 - 🔄 **Client Libraries**: JavaScript, Python, Go, and Rust client SDKs
 - 🔄 **Advanced Monitoring**: Enhanced observability and analytics
 

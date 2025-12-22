@@ -1,6 +1,6 @@
 ﻿[package]
 name = "mcp-rs"
-version = "0.15.1"
+version = "0.16.0"
 edition = "2021"
 authors = ["n-takatsu"]
 description = "Rust implementation of the Model Context Protocol (MCP) for AI-agent integration with Canary Deployment System"

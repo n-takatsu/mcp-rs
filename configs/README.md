@@ -1,8 +1,8 @@
-# MCP-RS Configuration Files v0.15.1
+# MCP-RS Configuration Files v0.16.0
 
 MCP-RSの設定ファイル管理ディレクトリです。用途別に整理された設定ファイルを提供します。
 
-## 🆕 v0.15.1 統合アップデート
+## 🆕 v0.16.0 統合アップデート
 
 - ルートレベルの分散設定ファイル（mcp-config*.toml）を `configs/` に統合
 - Transport統合アーキテクチャ対応

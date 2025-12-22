@@ -16,7 +16,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = load_config().await?;
     init_logging(&config).await?;
 
-    info!("🚀 MCP-RS v0.15.1 - Dynamic Transport Edition");
+    info!("🚀 MCP-RS v0.16.0 - Dynamic Transport Edition");
 
     // 動的設定管理の初期化
     let config_manager = Arc::new(DynamicConfigManager::new(config.clone(), get_config_path()));
