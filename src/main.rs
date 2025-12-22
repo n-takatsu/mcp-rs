@@ -35,7 +35,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let log_config = LogConfig::from_server_config(&config.server);
     init_logging(&log_config)?;
 
-    info!("🚀 MCP-RS v0.15.1 - Transport統合アーキテクチャ");
+    info!("🚀 MCP-RS v0.16.0 - Transport統合アーキテクチャ");
     info!("📂 ログファイル場所: {}", log_config.log_dir.display());
     info!("✅ 設定読み込み完了");
 

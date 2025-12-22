@@ -20,7 +20,7 @@ MCP-RS WebSocketの最適化とパフォーマンスチューニング
 ### パフォーマンス目標
 
 | 指標 | 目標値 | 備考 |
-|------|--------|------|
+| ---- | ------ | ---- |
 | 同時接続数 | 10,000+ | コネクションプール使用 |
 | メッセージスループット | 50,000 msg/sec | 小メッセージ（<1KB） |
 | P99レイテンシ | <10ms | ローカルネットワーク |
@@ -47,7 +47,7 @@ cargo bench --bench websocket_benchmarks -- metrics
 ```
 
 | 操作 | スループット | レイテンシ |
-|------|------------|-----------|
+| ---- | ---------- | --------- |
 | increment_connections | 9.2M ops/sec | 108 ns |
 | increment_messages | 8.7M ops/sec | 115 ns |
 | observe_latency | 6.1M ops/sec | 164 ns |
@@ -61,7 +61,7 @@ cargo bench --bench websocket_benchmarks -- rate_limiting
 ```
 
 | 戦略 | スループット | レイテンシ |
-|------|------------|-----------|
+| ---- | ---------- | --------- |
 | TokenBucket | 2.1M checks/sec | 476 ns |
 | LeakyBucket | 1.9M checks/sec | 526 ns |
 | SlidingWindow | 1.7M checks/sec | 588 ns |
@@ -79,7 +79,7 @@ cargo bench --bench websocket_benchmarks -- compression
 #### 圧縮速度
 
 | アルゴリズム | 圧縮速度 | 圧縮率 |
-|------------|---------|-------|
+| ---------- | ------- | ----- |
 | Gzip (level 1) | 89 MB/sec | 2.1x |
 | Gzip (level 6) | 42 MB/sec | 2.8x |
 | Gzip (level 9) | 18 MB/sec | 2.9x |

@@ -1,10 +1,10 @@
-# MCP-RS メイン設定ファイル v0.15.1
+# MCP-RS メイン設定ファイル v0.16.0
 # Production環境のデフォルト設定
 # Transport統合アーキテクチャ対応
 
 [server]
 name = "mcp-rs-server"
-version = "0.15.1"
+version = "0.16.0"
 # STDIOモード（Claude Desktop等との互換性）
 stdio = true
 log_level = "info"

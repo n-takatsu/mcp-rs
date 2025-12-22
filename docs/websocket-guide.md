@@ -254,6 +254,7 @@ streamer.end_stream(&stream_id).await.ok();
 ### レート制限戦略
 
 #### TokenBucket（推奨）
+
 ```rust
 RateLimitConfig {
     strategy: RateLimitStrategy::TokenBucket,
@@ -264,6 +265,7 @@ RateLimitConfig {
 ```
 
 #### LeakyBucket
+
 ```rust
 RateLimitConfig {
     strategy: RateLimitStrategy::LeakyBucket,
@@ -274,6 +276,7 @@ RateLimitConfig {
 ```
 
 #### SlidingWindow
+
 ```rust
 RateLimitConfig {
     strategy: RateLimitStrategy::SlidingWindow,
@@ -286,7 +289,7 @@ RateLimitConfig {
 ### 圧縮アルゴリズム
 
 | アルゴリズム | 圧縮率 | 速度 | 推奨用途 |
-|------------|-------|------|---------|
+| ---------- | ----- | ---- | ------- |
 | Gzip | 中 | 高 | 汎用（デフォルト） |
 | Deflate | 中 | 高 | 互換性重視 |
 | Brotli | 高 | 中 | テキストデータ |

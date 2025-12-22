@@ -200,7 +200,7 @@ function Invoke-IntegrationTests {
 }
 
 # メイン実行
-Write-Header -Text "MCP-RS Test Runner v0.15.1"
+Write-Header -Text "MCP-RS Test Runner v0.16.0"
 
 Write-Host "[INFO] Test Suite: $TestSuite" -ForegroundColor $Colors.Info
 Write-Host "[INFO] Transport: $Transport" -ForegroundColor $Colors.Info

@@ -30,7 +30,7 @@ docker ps
 
 ```toml
 [dependencies]
-mcp-rs = { version = "0.15.1", features = ["docker-runtime"] }
+mcp-rs = { version = "0.16.0", features = ["docker-runtime"] }
 ```
 
 ## 基本的な使い方

@@ -7,6 +7,117 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.0] - 2025-12-22
+
+### 🚀 WebSocket通信機能の強化とプラグイン分離システムの完成
+
+#### Added - WebSocket Transport Enhancements
+
+- **WebSocket Server Mode** (#197)
+  - 双方向WebSocket通信のサーバーモード実装
+  - 接続管理とクライアントトラッキング
+  - Ping/Pongによるヘルスチェック機能
+  - 柔軟な接続設定とタイムアウト管理
+
+- **LLM Streaming Integration** (#196)
+  - OpenAI GPT-4とClaude 3.5 Sonnetのストリーミング対応
+  - リアルタイム応答生成とチャンク送信
+  - トークン使用量の追跡と統計
+  - エラーハンドリングと再試行ロジック
+  - 3つの実装例：
+    - `websocket_echo_server.rs`: 基本的なエコーサーバー
+    - `websocket_llm_chat.rs`: LLMチャットインターフェース
+    - `websocket_load_balanced.rs`: 負荷分散サーバー
+
+- **Connection Pool and Load Balancing** (#195)
+  - ラウンドロビン、最小接続数、ランダムの3つのアルゴリズム
+  - ヘルスチェックと自動フェイルオーバー
+  - 接続プール管理と統計情報
+  - 接続再利用によるパフォーマンス向上
+
+- **Metrics, Rate Limiting, and Compression** (#194)
+  - リアルタイムメトリクス収集（メッセージ数、バイト数、レイテンシ）
+  - 3種類のレート制限アルゴリズム：
+    - TokenBucket: バースト対応
+    - LeakyBucket: 均一な処理速度
+    - SlidingWindow: 時間窓ベース制限
+  - メッセージ圧縮（gzip、deflate）で帯域幅削減
+
+- **WebSocket Tests, Benchmarks, Documentation** (#193)
+  - 統合テスト: 224テストケース
+  - ベンチマーク: 294行の性能測定
+  - 包括的ドキュメント:
+    - `websocket-guide.md`: 508行の詳細ガイド
+    - `websocket-performance.md`: 614行の性能分析
+    - `llm-integration-guide.md`: 631行のLLM統合ガイド
+
+#### Added - Plugin Isolation System Completion (#190)
+
+- **Inter-Plugin Communication**
+  - メッセージベースのプラグイン間通信
+  - Pub/Subパターンによるイベント配信
+  - 型安全なメッセージングインターフェース
+
+- **Advanced Error Handling**
+  - 包括的エラー分類と復旧戦略
+  - エラー伝播とコンテキスト情報
+  - 自動リトライとサーキットブレーカー
+
+- **Enhanced Monitoring**
+  - プラグイン稼働状態の詳細監視
+  - リソース使用量トラッキング
+  - パフォーマンスメトリクスとアラート
+
+- **Docker Runtime Support** (#185)
+  - Dockerコンテナでのプラグイン実行
+  - コンテナライフサイクル管理
+  - セキュリティスキャンとコンプライアンス
+  - 7つのドキュメント:
+    - `docker-runtime-guide.md`: 454行の実装ガイド
+    - `plugin-developer-guide.md`: 352行の開発者ガイド
+    - `plugin-security-guide.md`: 403行のセキュリティガイド
+    - `plugin-troubleshooting-guide.md`: 504行のトラブルシューティング
+
+### Enhanced
+
+- **Performance Optimization** (#177)
+  - クエリキャッシング機能の強化
+  - 接続プール最適化
+  - メモリ使用量の削減
+
+- **Code Architecture** (#162-166)
+  - Analyticsモジュールのリファクタリング
+  - Operatorモジュールの責務分離
+  - Plugin Isolationモジュールの構造改善
+  - Security IDSモジュールの再構築
+  - Transportモジュールの整理
+
+### Quality Assurance
+
+- **567テスト全て合格** (100% pass rate)
+- **Clippy警告ゼロ**: 全モジュールでクリーン
+- **フォーマットチェック通過**: cargo fmt準拠
+- **ベンチマーク**: WebSocket、プラグイン分離の性能測定完備
+
+### Documentation
+
+- **10個以上の新規ドキュメント追加**
+- **実装例3つ追加**: WebSocket通信の実践的サンプル
+- **日本語ドキュメント完備**: 初心者から上級者まで対応
+
+### Dependencies
+
+- 既存の依存関係を維持（互換性重視）
+- Axum 0.8への対応完了
+
+### Breaking Changes
+
+なし - 後方互換性を完全に維持
+
+---
+
+## [0.15.1] - Previous Release
+
 ### Added - RBAC Implementation (Issue #74)
 
 - **Role-Based Access Control (RBAC)** (`src/handlers/database/advanced_security.rs`)

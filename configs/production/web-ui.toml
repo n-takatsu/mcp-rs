@@ -1,11 +1,11 @@
-# MCP-RS Web UI Configuration v0.15.1
+# MCP-RS Web UI Configuration v0.16.0
 #
 # Web UI専用設定 - HTTPモードで動作
 # セキュリティのため、認証情報は環境変数を使用することを推奨します
 
 [server]
 name = "mcp-rs-webui"
-version = "0.15.1"
+version = "0.16.0"
 stdio = false
 log_level = "info"
 
