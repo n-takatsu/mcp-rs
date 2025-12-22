@@ -5,7 +5,7 @@
 <div align="center">
 
 ![MCP-RS Real-time Editing](https://img.shields.io/badge/MCP--RS-Real--time%20Editing-blue?style=for-the-badge&logo=rust)
-![Version](https://img.shields.io/badge/version-0.15.0-green?style=for-the-badge)
+![Version](https://img.shields.io/badge/version-0.16.0-green?style=for-the-badge)
 ![Production Ready](https://img.shields.io/badge/status-Production%20Ready-success?style=for-the-badge)
 ![Security Grade](https://img.shields.io/badge/security-A%2B-brightgreen?style=for-the-badge&logo=shield)
 
@@ -196,7 +196,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ## Add to your Cargo.toml
 
 [dependencies]
-mcp-rs = "0.15.0"
+mcp-rs = "0.16.0"
 tokio = { version = "1.0", features = ["full"] }
 ```
 
