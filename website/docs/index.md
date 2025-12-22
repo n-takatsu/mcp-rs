@@ -23,17 +23,27 @@ MCP-RS provides a **comprehensive, battle-tested** implementation of the MCP (Mo
 - **JSON-RPC 2.0 Server**: Full-featured JSON-RPC server implementation using `axum`
 - **Core Runtime Module**: Advanced application lifecycle and resource management
 - **Multi-Transport Support**: Stdio, HTTP, and WebSocket communication protocols
-- **Plugin Architecture**: Handler-based system with `McpHandler` trait for extensibility
+- **WebSocket Enhancements** (v0.16.0):
+  - Server mode with connection management and health checks
+  - LLM streaming (OpenAI GPT-4, Anthropic Claude 3.5 Sonnet)
+  - Connection pooling with 3 load balancing algorithms (RoundRobin, LeastConnections, Random)
+  - Real-time metrics, rate limiting (TokenBucket, LeakyBucket, SlidingWindow), and compression (gzip/deflate)
+- **Plugin Isolation System** (v0.16.0):
+  - Docker runtime support for container-based plugin execution
+  - Inter-plugin communication with Pub/Sub messaging
+  - Advanced error handling with circuit breakers and automatic retry
+  - Enhanced monitoring with resource tracking and performance metrics
 - **Type-Safe Configuration**: TOML-based configuration with environment variable override
 - **Production-Ready Error Handling**: Comprehensive error types with structured logging
 - **Async/Await**: Built on `tokio` for high-performance async operations
 
-## 🔒 Enterprise-Grade Security (100% Complete)
+## 🔒 Enterprise-Grade Security (100% Complete - 7 Layers)
 
+- **🔐 RBAC (Role-Based Access Control)**: Fine-grained access control with role hierarchy, column-level permissions, and data masking
 - **🔐 AES-GCM-256 Encryption**: Military-grade encryption with PBKDF2 key derivation (100K iterations)
 - **⚡ Token Bucket Rate Limiting**: Advanced DDoS protection with configurable limits
 - **🔒 TLS 1.2+ Enforcement**: Mandatory secure transport with certificate validation
-- **🛡️ SQL Injection Protection**: 11 attack pattern detection
+- **🛡️ SQL Injection Protection**: 11 attack pattern detection with parameterized queries
 - **🚫 XSS Attack Protection**: 14 attack pattern detection with HTML sanitization
 - **📊 Comprehensive Audit Logging**: All security events recorded with tamper-resistant logging
 
