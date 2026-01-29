@@ -47,6 +47,7 @@ fn create_test_policy(version: &str) -> PolicyConfig {
                 requests_per_minute: 6000,
                 burst_size: 10,
             },
+            blocked_ips: Vec::new(),
         },
         monitoring: MonitoringPolicyConfig {
             interval_seconds: 60,
