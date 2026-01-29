@@ -177,10 +177,7 @@ impl CveDbClient {
             .map_err(|e| McpError::ExternalApi(format!("CVE DB request failed: {}", e)))?;
 
         if !response.status().is_success() {
-            return Err(McpError::ExternalApi(format!(
-                "CVE not found: {}",
-                cve_id
-            )));
+            return Err(McpError::ExternalApi(format!("CVE not found: {}", cve_id)));
         }
 
         let data: serde_json::Value = response
@@ -321,9 +318,10 @@ impl MitreAttackClient {
         // 簡略化実装: 実際にはSTIXフォーマットのJSONをパース
         let url = format!("{}/enterprise-attack/enterprise-attack.json", self.base_url);
 
-        let response = self.client.get(&url).send().await.map_err(|e| {
-            McpError::ExternalApi(format!("MITRE ATT&CK request failed: {}", e))
-        })?;
+        let response =
+            self.client.get(&url).send().await.map_err(|e| {
+                McpError::ExternalApi(format!("MITRE ATT&CK request failed: {}", e))
+            })?;
 
         let data: serde_json::Value = response
             .json()
@@ -375,9 +373,10 @@ impl MitreAttackClient {
     pub async fn fetch_all_techniques(&self) -> Result<Vec<AttackPattern>> {
         let url = format!("{}/enterprise-attack/enterprise-attack.json", self.base_url);
 
-        let response = self.client.get(&url).send().await.map_err(|e| {
-            McpError::ExternalApi(format!("MITRE ATT&CK request failed: {}", e))
-        })?;
+        let response =
+            self.client.get(&url).send().await.map_err(|e| {
+                McpError::ExternalApi(format!("MITRE ATT&CK request failed: {}", e))
+            })?;
 
         let data: serde_json::Value = response
             .json()
