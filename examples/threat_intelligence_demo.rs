@@ -29,6 +29,7 @@ fn create_test_policy() -> PolicyConfig {
         updated_at: Utc::now(),
         security: SecurityPolicyConfig {
             enabled: true,
+            blocked_ips: Vec::new(),
             encryption: EncryptionConfig {
                 algorithm: "AES-128-GCM".to_string(),
                 key_size: 128,

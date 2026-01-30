@@ -11,6 +11,9 @@
 
 use crate::error::Result;
 use crate::policy::dynamic_updater::DynamicPolicyUpdater;
+use crate::policy::threat_providers::{
+    AbuseIpDbClient, AbuseIpDbReport, AttackPattern, CveDbClient, CveReport, MitreAttackClient,
+};
 use crate::policy_config::PolicyConfig;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -109,6 +112,12 @@ pub struct ThreatIntelligenceManager {
     auto_update_enabled: Arc<RwLock<bool>>,
     /// 最小信頼スコア閾値
     min_confidence_threshold: f64,
+    /// AbuseIPDBクライアント
+    abuseipdb_client: Option<Arc<AbuseIpDbClient>>,
+    /// CVE Databaseクライアント
+    cve_client: Option<Arc<CveDbClient>>,
+    /// MITRE ATT&CKクライアント
+    mitre_client: Option<Arc<MitreAttackClient>>,
 }
 
 impl ThreatIntelligenceManager {
@@ -128,7 +137,100 @@ impl ThreatIntelligenceManager {
             feed_sources: Arc::new(RwLock::new(Vec::new())),
             auto_update_enabled: Arc::new(RwLock::new(false)),
             min_confidence_threshold: min_confidence_threshold.unwrap_or(0.7),
+            abuseipdb_client: None,
+            cve_client: None,
+            mitre_client: None,
         }
+    }
+
+    /// AbuseIPDBクライアントを設定
+    pub fn with_abuseipdb(mut self, api_key: String) -> Self {
+        self.abuseipdb_client = Some(Arc::new(AbuseIpDbClient::new(api_key)));
+        self
+    }
+
+    /// CVE Databaseクライアントを設定
+    pub fn with_cve_db(mut self, nvd_api_key: Option<String>) -> Self {
+        self.cve_client = Some(Arc::new(CveDbClient::new(nvd_api_key)));
+        self
+    }
+
+    /// MITRE ATT&CKクライアントを設定
+    pub fn with_mitre_attack(mut self, framework_version: String) -> Self {
+        self.mitre_client = Some(Arc::new(MitreAttackClient::new(framework_version)));
+        self
+    }
+
+    /// AbuseIPDBからIPアドレスの脅威情報を取得
+    ///
+    /// # 引数
+    /// * `ip` - 調査対象のIPアドレス
+    /// * `max_age_days` - 最大何日前までのレポートを含めるか
+    pub async fn fetch_from_abuseipdb(
+        &self,
+        ip: &str,
+        max_age_days: u32,
+    ) -> Result<AbuseIpDbReport> {
+        let client = self.abuseipdb_client.as_ref().ok_or_else(|| {
+            crate::error::Error::Config("AbuseIPDB client not configured".to_string())
+        })?;
+
+        client.check_ip(ip, max_age_days).await
+    }
+
+    /// CVE Databaseから脆弱性情報を取得
+    ///
+    /// # 引数
+    /// * `cve_id` - CVE ID (例: "CVE-2024-1234")
+    pub async fn fetch_from_cve_db(&self, cve_id: &str) -> Result<CveReport> {
+        let client = self.cve_client.as_ref().ok_or_else(|| {
+            crate::error::Error::Config("CVE DB client not configured".to_string())
+        })?;
+
+        client.fetch_cve(cve_id).await
+    }
+
+    /// MITRE ATT&CKから攻撃テクニック情報を取得
+    ///
+    /// # 引数
+    /// * `technique_id` - テクニックID (例: "T1059.001")
+    pub async fn fetch_from_mitre(&self, technique_id: &str) -> Result<AttackPattern> {
+        let client = self.mitre_client.as_ref().ok_or_else(|| {
+            crate::error::Error::Config("MITRE ATT&CK client not configured".to_string())
+        })?;
+
+        client.fetch_technique(technique_id).await
+    }
+
+    /// AbuseIPDBから複数IPの脅威情報を一括取得
+    pub async fn fetch_bulk_from_abuseipdb(
+        &self,
+        ips: &[String],
+        max_age_days: u32,
+    ) -> Result<Vec<AbuseIpDbReport>> {
+        let client = self.abuseipdb_client.as_ref().ok_or_else(|| {
+            crate::error::Error::Config("AbuseIPDB client not configured".to_string())
+        })?;
+
+        client.check_bulk(ips, max_age_days).await
+    }
+
+    /// CVE Databaseから最新の脆弱性情報を取得
+    pub async fn fetch_recent_cves(&self, limit: usize) -> Result<Vec<CveReport>> {
+        let client = self.cve_client.as_ref().ok_or_else(|| {
+            crate::error::Error::Config("CVE DB client not configured".to_string())
+        })?;
+
+        client.fetch_recent_cves(limit).await
+    }
+
+    /// MITRE ATT&CKからすべての攻撃テクニックを取得
+    pub async fn fetch_all_attack_techniques(&self) -> Result<Vec<AttackPattern>> {
+        let client = self.mitre_client.as_ref().ok_or_else(|| {
+            crate::error::Error::Config("MITRE ATT&CK client not configured".to_string())
+        })?;
+
+        client.fetch_all_techniques().await
     }
 
     /// 脅威フィードソースを追加
@@ -482,6 +584,7 @@ mod tests {
             updated_at: Utc::now(),
             security: SecurityPolicyConfig {
                 enabled: true,
+                blocked_ips: Vec::new(),
                 encryption: EncryptionConfig {
                     algorithm: "AES-128-GCM".to_string(),
                     key_size: 128,

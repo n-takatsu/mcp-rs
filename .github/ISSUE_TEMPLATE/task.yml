@@ -1,0 +1,124 @@
+name: "📋 Task"
+description: "タスクやサブタスクの作成に使用します（Epic配下のタスクなど）"
+title: "[TASK] "
+labels: ["task"]
+assignees: []
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## タスク報告フォーム
+        
+        Epic配下のサブタスクや、個別のタスクを追跡するために使用します。
+
+  - type: input
+    id: task-title
+    attributes:
+      label: "タスク名"
+      description: "タスクの簡潔な名前を入力してください"
+      placeholder: "例: PostgreSQL接続プール実装"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: priority
+    attributes:
+      label: "優先度"
+      description: "タスクの優先度を選択してください"
+      options:
+        - "P0 (Critical)"
+        - "P1 (High)"
+        - "P2 (Medium)"
+        - "P3 (Low)"
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: "タスク概要"
+      description: "タスクの詳細な説明を記載してください"
+      placeholder: |
+        ## 概要
+        このタスクで達成すべき目標を記載してください。
+        
+        ## 実装内容
+        - [ ] サブタスク1
+        - [ ] サブタスク2
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance-criteria
+    attributes:
+      label: "完了条件"
+      description: "タスクが完了したと判断する基準"
+      placeholder: |
+        - [ ] 機能が正常に動作する
+        - [ ] テストが通過する
+        - [ ] ドキュメントが更新されている
+
+  - type: input
+    id: parent-epic
+    attributes:
+      label: "親Epic/Issue番号"
+      description: "関連するEpicやIssue番号（例: #211）"
+      placeholder: "#211"
+
+  - type: input
+    id: estimated-time
+    attributes:
+      label: "推定工数"
+      description: "完了までの推定時間（例: 2日、1週間）"
+      placeholder: "例: 3日"
+
+  - type: dropdown
+    id: milestone
+    attributes:
+      label: "マイルストーン"
+      description: "対象となるマイルストーン"
+      options:
+        - "v0.2.0-beta"
+        - "v0.3.0"
+        - "v1.0.0"
+        - "未定"
+
+  - type: textarea
+    id: dependencies
+    attributes:
+      label: "依存関係"
+      description: "このタスクが依存する他のIssueやタスク"
+      placeholder: |
+        - Depends on: #123
+        - Blocked by: #456
+
+  - type: textarea
+    id: technical-notes
+    attributes:
+      label: "技術メモ"
+      description: "実装に関する技術的な詳細やヒント"
+      placeholder: |
+        ## 実装ファイル
+        - src/handlers/database/postgres.rs
+        
+        ## 参考資料
+        - [PostgreSQL Connection Pooling](https://example.com)
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: "タスクチェックリスト"
+      description: "タスクの進捗を追跡するためのチェックリスト"
+      options:
+        - label: "実装完了"
+        - label: "テスト作成完了"
+        - label: "ドキュメント更新完了"
+        - label: "レビュー完了"
+        - label: "マージ完了"
+
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: "追加情報"
+      description: "その他、参考になる情報があれば記載してください"
