@@ -1,0 +1,94 @@
+# 脅威インテリジェンス統合設定
+#
+# Issue #211: 動的ポリシー更新システム - Phase 1
+# 外部APIから脅威情報を取得し、自動的にセキュリティポリシーを更新
+
+## AbuseIPDB設定
+[abuseipdb]
+enabled = true
+# 環境変数名 (実際のAPIキーは環境変数で管理)
+api_key_env = "ABUSEIPDB_API_KEY"
+# フェッチ間隔 (分)
+fetch_interval_minutes = 60
+# 信頼度閾値 (0-100)
+# この値以上のIPアドレスをブロック対象とする
+confidence_threshold = 75
+# 最大データ保持期間 (日)
+max_age_days = 90
+
+## CVE Database設定
+[cve_database]
+enabled = true
+# NVD API Key (オプション)
+api_key_env = "CVE_API_KEY"
+# フェッチ間隔 (分)
+fetch_interval_minutes = 120
+# 最小深刻度: "LOW" | "MEDIUM" | "HIGH" | "CRITICAL"
+severity_threshold = "MEDIUM"
+# 最小CVSSスコア (0.0-10.0)
+cvss_min_score = 5.0
+
+## MITRE ATT&CK Framework設定
+[mitre_attack]
+enabled = true
+# フレームワークバージョン
+framework_version = "v13"
+# フェッチ間隔 (時間)
+fetch_interval_hours = 168  # 週次
+# 自動更新
+auto_update = true
+# 信頼度閾値 (0.0-1.0)
+confidence_threshold = 0.8
+
+## 自動ポリシー生成設定
+[auto_policy_generator]
+enabled = true
+# 適用モード: "automatic" | "manual_review"
+# automatic: 高信頼度ルールを自動適用
+# manual_review: 生成されたルールを手動レビュー後に適用
+application_mode = "manual_review"
+# IPブロックリスト閾値 (0-100)
+# AbuseIPDBの信頼度がこの値以上のIPをブロック
+ip_blocklist_threshold = 80
+# パターン信頼度最小値 (0.0-1.0)
+# MITRE ATT&CKパターンの信頼度がこの値以上でルール生成
+pattern_confidence_min = 0.75
+# 高信頼度ルールを自動適用するか
+auto_apply_high_confidence = false
+
+## 通知設定
+[notifications]
+enabled = true
+# 重大な脅威検出時の通知
+critical_threat_alert = true
+# 通知チャンネル: "log", "webhook", "email"
+channels = ["log", "webhook"]
+webhook_url_env = "THREAT_INTEL_WEBHOOK_URL"
+
+## キャッシュ設定
+[cache]
+# Redisを使用する場合
+use_redis = false
+redis_url_env = "REDIS_URL"
+# メモリキャッシュ設定
+max_cache_size_mb = 100
+eviction_policy = "lru"  # lru, lfu, ttl
+
+## レート制限設定
+[rate_limiting]
+# 外部API呼び出しレート制限
+abuseipdb_requests_per_day = 1000
+cve_requests_per_minute = 5
+mitre_requests_per_hour = 100
+# リトライ設定
+max_retries = 3
+retry_delay_seconds = 5
+
+## ログ設定
+[logging]
+# 脅威インテリジェンスログレベル
+log_level = "info"  # trace, debug, info, warn, error
+# 詳細ログ出力
+detailed_logs = false
+# ログファイルパス
+log_file = "logs/threat-intelligence.log"

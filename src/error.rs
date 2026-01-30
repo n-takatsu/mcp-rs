@@ -59,6 +59,10 @@ pub enum Error {
     #[error("Configuration error: {0}")]
     Config(String),
 
+    /// External API error
+    #[error("External API error: {0}")]
+    ExternalApi(String),
+
     /// Invalid configuration error
     #[error("Invalid configuration: {0}")]
     InvalidConfiguration(String),
