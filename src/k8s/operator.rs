@@ -174,7 +174,7 @@ impl PluginOperator {
 
         // Check if plugin already exists by ID
         let plugin_states = pm.get_all_plugin_states().await;
-        let plugin_exists = plugin_states.keys().any(|id| {
+        let plugin_exists = plugin_states.keys().any(|_id| {
             // We need to match by plugin_id string, but we only have UUIDs
             // This is a simplified check - in production you'd want a better mapping
             false // TODO: Implement proper plugin lookup by string ID
