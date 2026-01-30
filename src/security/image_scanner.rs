@@ -59,15 +59,15 @@ impl ImageScanner {
                 debug!("Trivy found: {}", String::from_utf8_lossy(&output.stdout));
             }
             _ => {
-                return Err(McpError::SecurityError(
+                return Err(McpError::Security(crate::error::SecurityError::InvalidConfiguration(
                     "Trivy not found. Please install Trivy: https://aquasecurity.github.io/trivy/".to_string(),
-                ));
+                )));
             }
         }
 
         // Run Trivy scan
         let output = Command::new("trivy")
-            .args(&[
+            .args([
                 "image",
                 "--format",
                 "json",
@@ -77,16 +77,27 @@ impl ImageScanner {
                 image,
             ])
             .output()
-            .map_err(|e| McpError::SecurityError(format!("Failed to run Trivy: {}", e)))?;
+            .map_err(|e| {
+                McpError::Security(crate::error::SecurityError::ScanFailed(format!(
+                    "Failed to run Trivy: {}",
+                    e
+                )))
+            })?;
 
         if !output.status.success() {
             let error_msg = String::from_utf8_lossy(&output.stderr);
             error!(image = %image, error = %error_msg, "Trivy scan failed");
-            return Err(McpError::SecurityError(format!("Trivy scan failed: {}", error_msg)));
+            return Err(McpError::Security(crate::error::SecurityError::ScanFailed(
+                format!("Trivy scan failed: {}", error_msg),
+            )));
         }
 
-        let scan_result: TrivyScanResult = serde_json::from_slice(&output.stdout)
-            .map_err(|e| McpError::SecurityError(format!("Failed to parse Trivy output: {}", e)))?;
+        let scan_result: TrivyScanResult = serde_json::from_slice(&output.stdout).map_err(|e| {
+            McpError::Security(crate::error::SecurityError::ScanFailed(format!(
+                "Failed to parse Trivy output: {}",
+                e
+            )))
+        })?;
 
         // Convert Trivy results to our ScanReport format
         let vulnerabilities = self.convert_trivy_results(&scan_result);
@@ -190,16 +201,16 @@ impl ImageScanner {
 pub struct ScanReport {
     /// Image that was scanned
     pub image: String,
-    
+
     /// Scanner used
     pub scanner: String,
-    
+
     /// Timestamp of the scan
     pub scan_time: String,
-    
+
     /// List of vulnerabilities found
     pub vulnerabilities: Vec<Vulnerability>,
-    
+
     /// Summary of vulnerabilities by severity
     pub summary: ScanSummary,
 }
@@ -209,22 +220,22 @@ pub struct ScanReport {
 pub struct Vulnerability {
     /// Vulnerability ID (CVE, GHSA, etc.)
     pub id: String,
-    
+
     /// Name of the affected package
     pub package_name: String,
-    
+
     /// Installed version
     pub installed_version: String,
-    
+
     /// Fixed version (if available)
     pub fixed_version: Option<String>,
-    
+
     /// Severity level
     pub severity: String,
-    
+
     /// Description of the vulnerability
     pub description: String,
-    
+
     /// References for more information
     pub references: Vec<String>,
 }
@@ -234,16 +245,16 @@ pub struct Vulnerability {
 pub struct ScanSummary {
     /// Number of CRITICAL vulnerabilities
     pub critical: usize,
-    
+
     /// Number of HIGH vulnerabilities
     pub high: usize,
-    
+
     /// Number of MEDIUM vulnerabilities
     pub medium: usize,
-    
+
     /// Number of LOW vulnerabilities
     pub low: usize,
-    
+
     /// Total number of vulnerabilities
     pub total: usize,
 }
@@ -259,7 +270,7 @@ struct TrivyScanResult {
 struct TrivyResult {
     #[serde(rename = "Target")]
     target: String,
-    
+
     #[serde(rename = "Vulnerabilities")]
     vulnerabilities: Option<Vec<TrivyVulnerability>>,
 }
@@ -268,22 +279,22 @@ struct TrivyResult {
 struct TrivyVulnerability {
     #[serde(rename = "VulnerabilityID")]
     vulnerability_id: String,
-    
+
     #[serde(rename = "PkgName")]
     pkg_name: String,
-    
+
     #[serde(rename = "InstalledVersion")]
     installed_version: String,
-    
+
     #[serde(rename = "FixedVersion")]
     fixed_version: Option<String>,
-    
+
     #[serde(rename = "Severity")]
     severity: String,
-    
+
     #[serde(rename = "Description")]
     description: Option<String>,
-    
+
     #[serde(rename = "References")]
     references: Option<Vec<String>>,
 }
@@ -315,7 +326,7 @@ mod tests {
     #[tokio::test]
     async fn test_vulnerability_check() {
         let scanner = ImageScanner::new(ScannerType::Trivy);
-        
+
         let report = ScanReport {
             image: "test:latest".to_string(),
             scanner: "Trivy".to_string(),
@@ -332,7 +343,7 @@ mod tests {
 
         let result = scanner.check_vulnerabilities(&report).await.unwrap();
         assert!(result, "Clean image should pass");
-        
+
         let report_with_critical = ScanReport {
             summary: ScanSummary {
                 critical: 1,
@@ -344,7 +355,10 @@ mod tests {
             ..report
         };
 
-        let result = scanner.check_vulnerabilities(&report_with_critical).await.unwrap();
+        let result = scanner
+            .check_vulnerabilities(&report_with_critical)
+            .await
+            .unwrap();
         assert!(!result, "Image with critical vulnerability should fail");
     }
 }

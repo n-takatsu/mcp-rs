@@ -6,8 +6,10 @@ pub mod crd;
 pub mod operator;
 pub mod reconciler;
 
-pub use crd::{PluginDeployment, PluginDeploymentSpec, PluginPolicy, PluginPolicySpec, ResourceLimits};
-pub use operator::{PluginOperator, OperatorConfig};
+pub use crd::{
+    PluginDeployment, PluginDeploymentSpec, PluginPolicy, PluginPolicySpec, ResourceLimits,
+};
+pub use operator::{OperatorConfig, PluginOperator};
 pub use reconciler::PluginReconciler;
 
 use crate::error::McpError;

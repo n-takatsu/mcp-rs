@@ -13,31 +13,31 @@ use tokio::sync::RwLock;
 /// PluginMetrics collects and exposes metrics for MCP plugins
 pub struct PluginMetrics {
     registry: Registry,
-    
+
     // Plugin count metrics
     plugin_count: IntGauge,
     plugin_count_by_status: IntGaugeVec,
-    
+
     // Resource usage metrics
     plugin_cpu_usage: GaugeVec,
     plugin_memory_usage: GaugeVec,
     plugin_disk_io: GaugeVec,
     plugin_network_tx: GaugeVec,
     plugin_network_rx: GaugeVec,
-    
+
     // Container metrics
     container_restart_count: IntCounterVec,
     container_uptime_seconds: GaugeVec,
-    
+
     // Request metrics
     plugin_requests_total: IntCounterVec,
     plugin_request_duration: HistogramVec,
     plugin_request_errors: IntCounterVec,
-    
+
     // Security metrics
     security_violations: IntCounterVec,
     policy_violations: IntCounterVec,
-    
+
     // Performance metrics
     plugin_response_time: HistogramVec,
 }
@@ -59,13 +59,19 @@ impl PluginMetrics {
 
         // Resource usage metrics
         let plugin_cpu_usage = GaugeVec::new(
-            Opts::new("mcp_plugin_cpu_usage_percent", "Plugin CPU usage in percent"),
+            Opts::new(
+                "mcp_plugin_cpu_usage_percent",
+                "Plugin CPU usage in percent",
+            ),
             &["plugin_id"],
         )?;
         registry.register(Box::new(plugin_cpu_usage.clone()))?;
 
         let plugin_memory_usage = GaugeVec::new(
-            Opts::new("mcp_plugin_memory_usage_bytes", "Plugin memory usage in bytes"),
+            Opts::new(
+                "mcp_plugin_memory_usage_bytes",
+                "Plugin memory usage in bytes",
+            ),
             &["plugin_id"],
         )?;
         registry.register(Box::new(plugin_memory_usage.clone()))?;
@@ -77,33 +83,48 @@ impl PluginMetrics {
         registry.register(Box::new(plugin_disk_io.clone()))?;
 
         let plugin_network_tx = GaugeVec::new(
-            Opts::new("mcp_plugin_network_tx_bytes", "Plugin network transmitted bytes"),
+            Opts::new(
+                "mcp_plugin_network_tx_bytes",
+                "Plugin network transmitted bytes",
+            ),
             &["plugin_id"],
         )?;
         registry.register(Box::new(plugin_network_tx.clone()))?;
 
         let plugin_network_rx = GaugeVec::new(
-            Opts::new("mcp_plugin_network_rx_bytes", "Plugin network received bytes"),
+            Opts::new(
+                "mcp_plugin_network_rx_bytes",
+                "Plugin network received bytes",
+            ),
             &["plugin_id"],
         )?;
         registry.register(Box::new(plugin_network_rx.clone()))?;
 
         // Container metrics
         let container_restart_count = IntCounterVec::new(
-            Opts::new("mcp_container_restart_count", "Number of container restarts"),
+            Opts::new(
+                "mcp_container_restart_count",
+                "Number of container restarts",
+            ),
             &["plugin_id"],
         )?;
         registry.register(Box::new(container_restart_count.clone()))?;
 
         let container_uptime_seconds = GaugeVec::new(
-            Opts::new("mcp_container_uptime_seconds", "Container uptime in seconds"),
+            Opts::new(
+                "mcp_container_uptime_seconds",
+                "Container uptime in seconds",
+            ),
             &["plugin_id"],
         )?;
         registry.register(Box::new(container_uptime_seconds.clone()))?;
 
         // Request metrics
         let plugin_requests_total = IntCounterVec::new(
-            Opts::new("mcp_plugin_requests_total", "Total number of plugin requests"),
+            Opts::new(
+                "mcp_plugin_requests_total",
+                "Total number of plugin requests",
+            ),
             &["plugin_id", "method"],
         )?;
         registry.register(Box::new(plugin_requests_total.clone()))?;
@@ -118,7 +139,10 @@ impl PluginMetrics {
         registry.register(Box::new(plugin_request_duration.clone()))?;
 
         let plugin_request_errors = IntCounterVec::new(
-            Opts::new("mcp_plugin_request_errors", "Number of plugin request errors"),
+            Opts::new(
+                "mcp_plugin_request_errors",
+                "Number of plugin request errors",
+            ),
             &["plugin_id", "error_type"],
         )?;
         registry.register(Box::new(plugin_request_errors.clone()))?;
@@ -173,72 +197,100 @@ impl PluginMetrics {
 
     /// Update plugin count by status
     pub fn set_plugin_count_by_status(&self, status: &str, count: i64) {
-        self.plugin_count_by_status.with_label_values(&[status]).set(count);
+        self.plugin_count_by_status
+            .with_label_values(&[status])
+            .set(count);
     }
 
     /// Update plugin CPU usage
     pub fn set_plugin_cpu_usage(&self, plugin_id: &str, cpu_percent: f64) {
-        self.plugin_cpu_usage.with_label_values(&[plugin_id]).set(cpu_percent);
+        self.plugin_cpu_usage
+            .with_label_values(&[plugin_id])
+            .set(cpu_percent);
     }
 
     /// Update plugin memory usage
     pub fn set_plugin_memory_usage(&self, plugin_id: &str, memory_bytes: f64) {
-        self.plugin_memory_usage.with_label_values(&[plugin_id]).set(memory_bytes);
+        self.plugin_memory_usage
+            .with_label_values(&[plugin_id])
+            .set(memory_bytes);
     }
 
     /// Update plugin disk I/O
     pub fn set_plugin_disk_io(&self, plugin_id: &str, direction: &str, bytes: f64) {
-        self.plugin_disk_io.with_label_values(&[plugin_id, direction]).set(bytes);
+        self.plugin_disk_io
+            .with_label_values(&[plugin_id, direction])
+            .set(bytes);
     }
 
     /// Update plugin network TX
     pub fn set_plugin_network_tx(&self, plugin_id: &str, bytes: f64) {
-        self.plugin_network_tx.with_label_values(&[plugin_id]).set(bytes);
+        self.plugin_network_tx
+            .with_label_values(&[plugin_id])
+            .set(bytes);
     }
 
     /// Update plugin network RX
     pub fn set_plugin_network_rx(&self, plugin_id: &str, bytes: f64) {
-        self.plugin_network_rx.with_label_values(&[plugin_id]).set(bytes);
+        self.plugin_network_rx
+            .with_label_values(&[plugin_id])
+            .set(bytes);
     }
 
     /// Increment container restart count
     pub fn increment_container_restart(&self, plugin_id: &str) {
-        self.container_restart_count.with_label_values(&[plugin_id]).inc();
+        self.container_restart_count
+            .with_label_values(&[plugin_id])
+            .inc();
     }
 
     /// Update container uptime
     pub fn set_container_uptime(&self, plugin_id: &str, uptime_seconds: f64) {
-        self.container_uptime_seconds.with_label_values(&[plugin_id]).set(uptime_seconds);
+        self.container_uptime_seconds
+            .with_label_values(&[plugin_id])
+            .set(uptime_seconds);
     }
 
     /// Increment request count
     pub fn increment_request(&self, plugin_id: &str, method: &str) {
-        self.plugin_requests_total.with_label_values(&[plugin_id, method]).inc();
+        self.plugin_requests_total
+            .with_label_values(&[plugin_id, method])
+            .inc();
     }
 
     /// Observe request duration
     pub fn observe_request_duration(&self, plugin_id: &str, method: &str, duration_seconds: f64) {
-        self.plugin_request_duration.with_label_values(&[plugin_id, method]).observe(duration_seconds);
+        self.plugin_request_duration
+            .with_label_values(&[plugin_id, method])
+            .observe(duration_seconds);
     }
 
     /// Increment request error
     pub fn increment_request_error(&self, plugin_id: &str, error_type: &str) {
-        self.plugin_request_errors.with_label_values(&[plugin_id, error_type]).inc();
+        self.plugin_request_errors
+            .with_label_values(&[plugin_id, error_type])
+            .inc();
     }
 
     /// Increment security violation
     pub fn increment_security_violation(&self, plugin_id: &str, violation_type: &str) {
-        self.security_violations.with_label_values(&[plugin_id, violation_type]).inc();
+        self.security_violations
+            .with_label_values(&[plugin_id, violation_type])
+            .inc();
     }
 
     /// Increment policy violation
     pub fn increment_policy_violation(&self, plugin_id: &str, policy_name: &str) {
-        self.policy_violations.with_label_values(&[plugin_id, policy_name]).inc();
+        self.policy_violations
+            .with_label_values(&[plugin_id, policy_name])
+            .inc();
     }
 
     /// Observe response time
     pub fn observe_response_time(&self, plugin_id: &str, response_time_seconds: f64) {
-        self.plugin_response_time.with_label_values(&[plugin_id]).observe(response_time_seconds);
+        self.plugin_response_time
+            .with_label_values(&[plugin_id])
+            .observe(response_time_seconds);
     }
 
     /// Get the Prometheus registry
@@ -272,7 +324,7 @@ mod tests {
     fn test_plugin_count_metric() {
         let metrics = PluginMetrics::new().unwrap();
         metrics.set_plugin_count(5);
-        
+
         let gathered = metrics.gather();
         assert!(!gathered.is_empty());
     }
@@ -281,7 +333,7 @@ mod tests {
     fn test_cpu_usage_metric() {
         let metrics = PluginMetrics::new().unwrap();
         metrics.set_plugin_cpu_usage("test-plugin", 45.5);
-        
+
         let gathered = metrics.gather();
         assert!(!gathered.is_empty());
     }

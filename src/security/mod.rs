@@ -38,6 +38,7 @@ pub use ids::{
     signature::SignatureDetector,
     DetectionResult, DetectionType, IntrusionDetectionSystem, RecommendedAction, Severity,
 };
+pub use image_scanner::{ImageScanner, ScanReport, ScanSummary, ScannerType, Vulnerability};
 #[cfg(feature = "mfa")]
 pub use mfa::{MfaConfig, MfaError, TotpAlgorithm, TotpConfig, TotpSecret, TotpVerifier};
 pub use mtls::{
@@ -65,4 +66,3 @@ pub use xss_protection::{
     XssAttackType, XssDetectionResult, XssProtectionConfig, XssProtector, XssStatistics,
     XssThreatLevel,
 };
-pub use image_scanner::{ImageScanner, ScanReport, ScanSummary, ScannerType, Vulnerability};

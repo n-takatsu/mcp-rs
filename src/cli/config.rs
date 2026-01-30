@@ -8,13 +8,13 @@ use std::path::Path;
 pub struct CliConfig {
     /// MCP server endpoint
     pub server_endpoint: String,
-    
+
     /// API key for authentication
     pub api_key: Option<String>,
-    
+
     /// Default namespace
     pub default_namespace: String,
-    
+
     /// Timeout in seconds
     pub timeout_secs: u64,
 }
@@ -36,9 +36,10 @@ pub fn default_config() -> CliConfig {
 
 pub fn load_config(path: &Path) -> Result<CliConfig, Box<dyn Error>> {
     let content = std::fs::read_to_string(path)?;
-    
-    if path.extension().and_then(|s| s.to_str()) == Some("yaml") || 
-       path.extension().and_then(|s| s.to_str()) == Some("yml") {
+
+    if path.extension().and_then(|s| s.to_str()) == Some("yaml")
+        || path.extension().and_then(|s| s.to_str()) == Some("yml")
+    {
         let config: CliConfig = serde_yaml_ng::from_str(&content)?;
         Ok(config)
     } else {
@@ -48,13 +49,14 @@ pub fn load_config(path: &Path) -> Result<CliConfig, Box<dyn Error>> {
 }
 
 pub fn save_config(path: &Path, config: &CliConfig) -> Result<(), Box<dyn Error>> {
-    let content = if path.extension().and_then(|s| s.to_str()) == Some("yaml") ||
-                     path.extension().and_then(|s| s.to_str()) == Some("yml") {
+    let content = if path.extension().and_then(|s| s.to_str()) == Some("yaml")
+        || path.extension().and_then(|s| s.to_str()) == Some("yml")
+    {
         serde_yaml_ng::to_string(config)?
     } else {
         toml::to_string_pretty(config)?
     };
-    
+
     std::fs::write(path, content)?;
     Ok(())
 }

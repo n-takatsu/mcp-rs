@@ -1,16 +1,21 @@
 //! Security management commands
 
-use crate::config::CliConfig;
+use super::super::config::CliConfig;
+use super::super::main::SecurityAction;
 use std::error::Error;
 use std::path::PathBuf;
 
 pub async fn execute(
-    action: crate::SecurityAction,
-    config: &CliConfig,
-    format: &str,
+    action: SecurityAction,
+    _config: &CliConfig,
+    _format: &str,
 ) -> Result<(), Box<dyn Error>> {
     match action {
-        crate::SecurityAction::Scan { image, scanner, output } => {
+        SecurityAction::Scan {
+            image,
+            scanner,
+            output,
+        } => {
             println!("Scanning image: {} with scanner: {}", image, scanner);
             if let Some(output_file) = output {
                 println!("Output will be saved to: {:?}", output_file);
@@ -18,17 +23,21 @@ pub async fn execute(
             // TODO: Implement image scanning using ImageScanner from security module
             Ok(())
         }
-        crate::SecurityAction::ListPolicies => {
+        SecurityAction::ListPolicies => {
             println!("Listing security policies");
             // TODO: Implement policy listing
             Ok(())
         }
-        crate::SecurityAction::ApplyPolicy { policy_file } => {
+        SecurityAction::ApplyPolicy { policy_file } => {
             println!("Applying policy from: {:?}", policy_file);
             // TODO: Implement policy application
             Ok(())
         }
-        crate::SecurityAction::AuditLogs { plugin_id, severity, limit } => {
+        SecurityAction::AuditLogs {
+            plugin_id,
+            severity,
+            limit,
+        } => {
             println!("Showing audit logs (limit: {})", limit);
             if let Some(pid) = plugin_id {
                 println!("Filtering by plugin: {}", pid);
@@ -39,7 +48,10 @@ pub async fn execute(
             // TODO: Implement audit log retrieval
             Ok(())
         }
-        crate::SecurityAction::Report { report_type, output } => {
+        SecurityAction::Report {
+            report_type,
+            output,
+        } => {
             println!("Generating {} report", report_type);
             if let Some(output_file) = output {
                 println!("Output will be saved to: {:?}", output_file);

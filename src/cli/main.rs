@@ -6,10 +6,8 @@
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
-mod commands;
-mod config;
-
-use commands::{plugin, security, deployment};
+use super::commands::{self, deployment, plugin, security};
+use super::config;
 
 /// MCP CLI - Model Context Protocol Plugin Management Tool
 #[derive(Parser)]
@@ -53,7 +51,7 @@ enum Commands {
 }
 
 #[derive(Subcommand)]
-enum PluginAction {
+pub enum PluginAction {
     /// List all plugins
     List {
         /// Filter by status (running, stopped, all)
@@ -64,15 +62,15 @@ enum PluginAction {
     Deploy {
         /// Plugin ID
         plugin_id: String,
-        
+
         /// Container image
         #[arg(short, long)]
         image: String,
-        
+
         /// Configuration file
         #[arg(short, long)]
         config: Option<PathBuf>,
-        
+
         /// Number of replicas
         #[arg(short, long, default_value = "1")]
         replicas: i32,
@@ -81,11 +79,11 @@ enum PluginAction {
     Logs {
         /// Plugin ID
         plugin_id: String,
-        
+
         /// Follow log output
         #[arg(short, long)]
         follow: bool,
-        
+
         /// Number of lines to show
         #[arg(short, long)]
         tail: Option<usize>,
@@ -94,7 +92,7 @@ enum PluginAction {
     Scale {
         /// Plugin ID
         plugin_id: String,
-        
+
         /// Number of replicas
         #[arg(short, long)]
         replicas: i32,
@@ -113,7 +111,7 @@ enum PluginAction {
     Remove {
         /// Plugin ID
         plugin_id: String,
-        
+
         /// Force removal
         #[arg(short, long)]
         force: bool,
@@ -132,23 +130,23 @@ enum PluginAction {
     Exec {
         /// Plugin ID
         plugin_id: String,
-        
+
         /// Command to execute
         command: Vec<String>,
     },
 }
 
 #[derive(Subcommand)]
-enum SecurityAction {
+pub enum SecurityAction {
     /// Scan container image for vulnerabilities
     Scan {
         /// Container image to scan
         image: String,
-        
+
         /// Scanner to use (trivy, anchore, clair)
         #[arg(short, long, default_value = "trivy")]
         scanner: String,
-        
+
         /// Output file for scan results
         #[arg(short, long)]
         output: Option<PathBuf>,
@@ -165,11 +163,11 @@ enum SecurityAction {
         /// Plugin ID filter
         #[arg(short, long)]
         plugin_id: Option<String>,
-        
+
         /// Severity filter (info, warning, error, critical)
         #[arg(short, long)]
         severity: Option<String>,
-        
+
         /// Number of log entries
         #[arg(short, long, default_value = "100")]
         limit: usize,
@@ -179,7 +177,7 @@ enum SecurityAction {
         /// Report type (vulnerabilities, compliance, audit)
         #[arg(short, long, default_value = "vulnerabilities")]
         report_type: String,
-        
+
         /// Output file
         #[arg(short, long)]
         output: Option<PathBuf>,
@@ -187,7 +185,7 @@ enum SecurityAction {
 }
 
 #[derive(Subcommand)]
-enum DeploymentAction {
+pub enum DeploymentAction {
     /// Create a new deployment
     Create {
         /// Deployment manifest file
@@ -197,7 +195,7 @@ enum DeploymentAction {
     Update {
         /// Deployment name
         name: String,
-        
+
         /// Updated manifest file
         manifest: PathBuf,
     },
@@ -205,7 +203,7 @@ enum DeploymentAction {
     Delete {
         /// Deployment name
         name: String,
-        
+
         /// Force deletion
         #[arg(short, long)]
         force: bool,
@@ -225,7 +223,7 @@ enum DeploymentAction {
     Rollback {
         /// Deployment name
         name: String,
-        
+
         /// Revision number
         #[arg(short, long)]
         revision: Option<u32>,
