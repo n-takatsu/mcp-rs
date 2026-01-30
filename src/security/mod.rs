@@ -3,6 +3,7 @@ pub mod audit_log;
 pub mod auth;
 pub mod encryption;
 pub mod ids;
+pub mod image_scanner;
 #[cfg(feature = "mfa")]
 pub mod mfa;
 pub mod mtls;
@@ -64,3 +65,4 @@ pub use xss_protection::{
     XssAttackType, XssDetectionResult, XssProtectionConfig, XssProtector, XssStatistics,
     XssThreatLevel,
 };
+pub use image_scanner::{ImageScanner, ScanReport, ScanSummary, ScannerType, Vulnerability};

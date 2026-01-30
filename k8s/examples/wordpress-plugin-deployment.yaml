@@ -1,0 +1,35 @@
+apiVersion: mcp-rs.io/v1
+kind: PluginDeployment
+metadata:
+  name: wordpress-plugin
+  namespace: mcp-plugins
+spec:
+  pluginId: "wordpress-v1"
+  image: "ghcr.io/n-takatsu/mcp-rs/wordpress-plugin:latest"
+  replicas: 3
+  resourceLimits:
+    maxCpuPercent: 70.0
+    maxMemoryMb: 512
+    maxDiskIops: 5000
+    maxNetworkMbps: 100
+  env:
+    LOG_LEVEL: "info"
+    WORDPRESS_API_URL: "https://api.wordpress.org"
+  config:
+    enabled_features:
+      - "post_management"
+      - "media_upload"
+      - "comment_moderation"
+    cache_ttl_seconds: 300
+  autoScaling:
+    minReplicas: 2
+    maxReplicas: 10
+    targetCpuUtilizationPercentage: 75
+    targetMemoryUtilizationPercentage: 80
+  healthCheck:
+    path: "/health"
+    port: 8080
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3

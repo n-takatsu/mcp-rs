@@ -1,0 +1,295 @@
+{
+  "dashboard": {
+    "title": "MCP Plugin Monitoring",
+    "tags": ["mcp", "plugins", "monitoring"],
+    "timezone": "browser",
+    "schemaVersion": 30,
+    "version": 1,
+    "refresh": "10s",
+    "panels": [
+      {
+        "id": 1,
+        "title": "Active Plugins",
+        "type": "stat",
+        "targets": [
+          {
+            "expr": "mcp_plugin_count",
+            "refId": "A"
+          }
+        ],
+        "gridPos": {
+          "h": 4,
+          "w": 6,
+          "x": 0,
+          "y": 0
+        }
+      },
+      {
+        "id": 2,
+        "title": "Plugin Status Distribution",
+        "type": "piechart",
+        "targets": [
+          {
+            "expr": "mcp_plugin_count_by_status",
+            "refId": "A",
+            "legendFormat": "{{status}}"
+          }
+        ],
+        "gridPos": {
+          "h": 8,
+          "w": 6,
+          "x": 6,
+          "y": 0
+        }
+      },
+      {
+        "id": 3,
+        "title": "CPU Usage by Plugin",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "mcp_plugin_cpu_usage_percent",
+            "refId": "A",
+            "legendFormat": "{{plugin_id}}"
+          }
+        ],
+        "gridPos": {
+          "h": 8,
+          "w": 12,
+          "x": 12,
+          "y": 0
+        },
+        "yaxes": [
+          {
+            "format": "percent",
+            "label": "CPU Usage",
+            "show": true
+          }
+        ]
+      },
+      {
+        "id": 4,
+        "title": "Memory Usage by Plugin",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "mcp_plugin_memory_usage_bytes / 1024 / 1024",
+            "refId": "A",
+            "legendFormat": "{{plugin_id}}"
+          }
+        ],
+        "gridPos": {
+          "h": 8,
+          "w": 12,
+          "x": 0,
+          "y": 8
+        },
+        "yaxes": [
+          {
+            "format": "mbytes",
+            "label": "Memory Usage",
+            "show": true
+          }
+        ]
+      },
+      {
+        "id": 5,
+        "title": "Network Traffic",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "rate(mcp_plugin_network_tx_bytes[5m])",
+            "refId": "A",
+            "legendFormat": "TX: {{plugin_id}}"
+          },
+          {
+            "expr": "rate(mcp_plugin_network_rx_bytes[5m])",
+            "refId": "B",
+            "legendFormat": "RX: {{plugin_id}}"
+          }
+        ],
+        "gridPos": {
+          "h": 8,
+          "w": 12,
+          "x": 12,
+          "y": 8
+        },
+        "yaxes": [
+          {
+            "format": "Bps",
+            "label": "Network Traffic",
+            "show": true
+          }
+        ]
+      },
+      {
+        "id": 6,
+        "title": "Request Rate",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "rate(mcp_plugin_requests_total[5m])",
+            "refId": "A",
+            "legendFormat": "{{plugin_id}} - {{method}}"
+          }
+        ],
+        "gridPos": {
+          "h": 8,
+          "w": 12,
+          "x": 0,
+          "y": 16
+        },
+        "yaxes": [
+          {
+            "format": "reqps",
+            "label": "Requests/sec",
+            "show": true
+          }
+        ]
+      },
+      {
+        "id": 7,
+        "title": "Request Duration (P95)",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.95, rate(mcp_plugin_request_duration_seconds_bucket[5m]))",
+            "refId": "A",
+            "legendFormat": "{{plugin_id}} - {{method}}"
+          }
+        ],
+        "gridPos": {
+          "h": 8,
+          "w": 12,
+          "x": 12,
+          "y": 16
+        },
+        "yaxes": [
+          {
+            "format": "s",
+            "label": "Duration",
+            "show": true
+          }
+        ]
+      },
+      {
+        "id": 8,
+        "title": "Container Restarts",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "increase(mcp_container_restart_count[1h])",
+            "refId": "A",
+            "legendFormat": "{{plugin_id}}"
+          }
+        ],
+        "gridPos": {
+          "h": 6,
+          "w": 12,
+          "x": 0,
+          "y": 24
+        },
+        "alert": {
+          "name": "Container Restart Alert",
+          "conditions": [
+            {
+              "evaluator": {
+                "params": [3],
+                "type": "gt"
+              },
+              "operator": {
+                "type": "and"
+              },
+              "query": {
+                "params": ["A", "5m", "now"]
+              },
+              "reducer": {
+                "params": [],
+                "type": "avg"
+              },
+              "type": "query"
+            }
+          ],
+          "executionErrorState": "alerting",
+          "frequency": "1m",
+          "handler": 1,
+          "message": "Container is restarting frequently",
+          "noDataState": "no_data",
+          "notifications": []
+        }
+      },
+      {
+        "id": 9,
+        "title": "Security Violations",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "increase(mcp_security_violations[1h])",
+            "refId": "A",
+            "legendFormat": "{{plugin_id}} - {{violation_type}}"
+          }
+        ],
+        "gridPos": {
+          "h": 6,
+          "w": 12,
+          "x": 12,
+          "y": 24
+        },
+        "alert": {
+          "name": "Security Violation Alert",
+          "conditions": [
+            {
+              "evaluator": {
+                "params": [0],
+                "type": "gt"
+              },
+              "operator": {
+                "type": "and"
+              },
+              "query": {
+                "params": ["A", "5m", "now"]
+              },
+              "reducer": {
+                "params": [],
+                "type": "avg"
+              },
+              "type": "query"
+            }
+          ],
+          "executionErrorState": "alerting",
+          "frequency": "1m",
+          "handler": 1,
+          "message": "Security violation detected",
+          "noDataState": "no_data",
+          "notifications": []
+        }
+      },
+      {
+        "id": 10,
+        "title": "Error Rate",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "rate(mcp_plugin_request_errors[5m])",
+            "refId": "A",
+            "legendFormat": "{{plugin_id}} - {{error_type}}"
+          }
+        ],
+        "gridPos": {
+          "h": 6,
+          "w": 24,
+          "x": 0,
+          "y": 30
+        },
+        "yaxes": [
+          {
+            "format": "errps",
+            "label": "Errors/sec",
+            "show": true
+          }
+        ]
+      }
+    ]
+  },
+  "overwrite": true
+}

@@ -212,6 +212,14 @@ pub enum SecurityError {
     /// Session management error
     #[error("Session error: {0}")]
     Session(#[from] SessionError),
+
+    /// Kubernetes error
+    #[error("Kubernetes error: {0}")]
+    KubernetesError(String),
+
+    /// Validation error
+    #[error("Validation error: {0}")]
+    ValidationError(String),
 }
 
 /// Session-specific error types
