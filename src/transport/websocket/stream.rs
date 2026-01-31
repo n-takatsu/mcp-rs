@@ -2,7 +2,6 @@
 
 use super::connection::WebSocketConnection;
 use super::types::*;
-pub use super::types::{StreamConfig, StreamProgress};
 use crate::error::{Error, Result};
 use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncReadExt};

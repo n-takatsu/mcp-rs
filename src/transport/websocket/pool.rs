@@ -2,7 +2,6 @@
 
 use super::connection::WebSocketConnection;
 use super::types::*;
-pub use super::types::{HealthStatus, PoolConfig, PoolStatistics};
 use crate::error::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
