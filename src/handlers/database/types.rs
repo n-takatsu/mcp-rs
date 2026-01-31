@@ -492,6 +492,9 @@ pub enum DatabaseError {
     #[error("Aggregation pipeline error: {0}")]
     AggregationError(String),
 
+    #[error("Migration error: {0}")]
+    MigrationError(String),
+
     #[error("Unknown error: {0}")]
     Unknown(String),
 }

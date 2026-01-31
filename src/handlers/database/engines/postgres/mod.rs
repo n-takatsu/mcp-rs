@@ -11,12 +11,16 @@
 pub mod config;
 pub mod connection;
 pub mod error;
+pub mod jsonb;
+pub mod migration;
 pub mod pool;
 pub mod transaction;
 
 pub use config::{PostgresConfig, PostgresConfigBuilder};
 pub use connection::{PostgresConnection, PostgresPreparedStatement};
 pub use error::{PostgresError, Result};
+pub use jsonb::{JsonbHandler, JsonbQueryBuilder};
+pub use migration::{MigrationInfo, MigrationManager};
 pub use pool::{create_optimized_pool, OptimizedPoolConfig, PoolMetrics};
 pub use transaction::PostgresTransaction;
 
@@ -95,6 +99,16 @@ impl PostgresEngine {
     /// Get the database configuration
     pub fn config(&self) -> &PostgresConfig {
         &self.config
+    }
+
+    /// Get JSONB handler for this engine
+    pub fn jsonb_handler(&self) -> JsonbHandler {
+        JsonbHandler::new(self.pool.clone())
+    }
+
+    /// Get migration manager for this engine
+    pub fn migration_manager(&self, migrations_path: impl Into<String>) -> MigrationManager {
+        MigrationManager::new(self.pool.clone(), migrations_path)
     }
 
     /// Begin a new transaction
