@@ -9,11 +9,13 @@
 //! - Query performance analysis
 
 pub mod config;
+pub mod connection;
 pub mod error;
 pub mod pool;
 pub mod transaction;
 
 pub use config::{PostgresConfig, PostgresConfigBuilder};
+pub use connection::{PostgresConnection, PostgresPreparedStatement};
 pub use error::{PostgresError, Result};
 pub use pool::{create_optimized_pool, OptimizedPoolConfig, PoolMetrics};
 pub use transaction::PostgresTransaction;
@@ -131,11 +133,9 @@ impl DatabaseEngine for PostgresEngine {
         &self,
         _config: &DatabaseConfig,
     ) -> std::result::Result<Box<dyn DatabaseConnection>, DatabaseError> {
-        // This is already handled in PostgresEngine::new()
-        // Return a boxed connection wrapper if needed
-        Err(DatabaseError::ConfigurationError(
-            "Use PostgresEngine::new() instead".to_string(),
-        ))
+        // Return a connection using the existing pool
+        let connection = PostgresConnection::new(self.pool.clone());
+        Ok(Box::new(connection))
     }
 
     async fn health_check(&self) -> std::result::Result<HealthStatus, DatabaseError> {
