@@ -1,0 +1,139 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: pluginpolicies.mcp-rs.io
+spec:
+  group: mcp-rs.io
+  names:
+    kind: PluginPolicy
+    listKind: PluginPolicyList
+    plural: pluginpolicies
+    singular: pluginpolicy
+    shortNames:
+      - pp
+      - pluginpol
+  scope: Namespaced
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required:
+                - pluginSelector
+                - networkPolicy
+                - securityContext
+              properties:
+                pluginSelector:
+                  type: object
+                  properties:
+                    pluginId:
+                      type: string
+                      description: "Match by plugin ID (exact match)"
+                    matchLabels:
+                      type: object
+                      additionalProperties:
+                        type: string
+                      description: "Match by label selectors"
+                networkPolicy:
+                  type: object
+                  properties:
+                    allowedEgress:
+                      type: array
+                      items:
+                        type: string
+                      description: "List of allowed egress destinations"
+                    blockedDomains:
+                      type: array
+                      items:
+                        type: string
+                      description: "List of blocked domains"
+                    allowAllEgress:
+                      type: boolean
+                      default: false
+                      description: "Whether to allow all egress traffic"
+                securityContext:
+                  type: object
+                  properties:
+                    runAsNonRoot:
+                      type: boolean
+                      default: true
+                    readOnlyRootFilesystem:
+                      type: boolean
+                      default: true
+                    dropAllCapabilities:
+                      type: boolean
+                      default: true
+                    addCapabilities:
+                      type: array
+                      items:
+                        type: string
+                    selinuxOptions:
+                      type: object
+                      properties:
+                        level:
+                          type: string
+                        role:
+                          type: string
+                        type:
+                          type: string
+                        user:
+                          type: string
+                    seccompProfile:
+                      type: object
+                      required:
+                        - type
+                      properties:
+                        type:
+                          type: string
+                          enum:
+                            - RuntimeDefault
+                            - Localhost
+                            - Unconfined
+                        localhostProfile:
+                          type: string
+                allowedApis:
+                  type: array
+                  items:
+                    type: string
+                  description: "Allowed API endpoints"
+                rateLimit:
+                  type: object
+                  properties:
+                    requestsPerSecond:
+                      type: integer
+                      minimum: 1
+                    burst:
+                      type: integer
+                      minimum: 1
+            status:
+              type: object
+              properties:
+                active:
+                  type: boolean
+                affectedPlugins:
+                  type: integer
+                lastUpdateTime:
+                  type: string
+                  format: date-time
+                message:
+                  type: string
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Plugin ID
+          type: string
+          jsonPath: .spec.pluginSelector.pluginId
+        - name: Active
+          type: boolean
+          jsonPath: .status.active
+        - name: Affected Plugins
+          type: integer
+          jsonPath: .status.affectedPlugins
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp

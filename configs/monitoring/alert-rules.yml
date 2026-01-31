@@ -1,0 +1,171 @@
+groups:
+  - name: mcp_plugin_alerts
+    interval: 30s
+    rules:
+      # High CPU usage alert
+      - alert: PluginHighCPUUsage
+        expr: mcp_plugin_cpu_usage_percent > 80
+        for: 5m
+        labels:
+          severity: warning
+          component: plugin
+        annotations:
+          summary: "Plugin {{ $labels.plugin_id }} has high CPU usage"
+          description: "Plugin {{ $labels.plugin_id }} CPU usage is {{ $value }}%"
+
+      # Critical CPU usage alert
+      - alert: PluginCriticalCPUUsage
+        expr: mcp_plugin_cpu_usage_percent > 95
+        for: 2m
+        labels:
+          severity: critical
+          component: plugin
+        annotations:
+          summary: "Plugin {{ $labels.plugin_id }} has critical CPU usage"
+          description: "Plugin {{ $labels.plugin_id }} CPU usage is {{ $value }}%"
+
+      # High memory usage alert
+      - alert: PluginHighMemoryUsage
+        expr: mcp_plugin_memory_usage_bytes / 1024 / 1024 > 400
+        for: 5m
+        labels:
+          severity: warning
+          component: plugin
+        annotations:
+          summary: "Plugin {{ $labels.plugin_id }} has high memory usage"
+          description: "Plugin {{ $labels.plugin_id }} memory usage is {{ $value }}MB"
+
+      # Container restart alert
+      - alert: PluginContainerRestarting
+        expr: increase(mcp_container_restart_count[15m]) > 2
+        for: 1m
+        labels:
+          severity: warning
+          component: plugin
+        annotations:
+          summary: "Plugin {{ $labels.plugin_id }} is restarting frequently"
+          description: "Plugin {{ $labels.plugin_id }} has restarted {{ $value }} times in the last 15 minutes"
+
+      # High error rate alert
+      - alert: PluginHighErrorRate
+        expr: rate(mcp_plugin_request_errors[5m]) > 10
+        for: 5m
+        labels:
+          severity: warning
+          component: plugin
+        annotations:
+          summary: "Plugin {{ $labels.plugin_id }} has high error rate"
+          description: "Plugin {{ $labels.plugin_id }} error rate is {{ $value }} errors/sec"
+
+      # Security violation alert
+      - alert: PluginSecurityViolation
+        expr: increase(mcp_security_violations[5m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+          component: security
+        annotations:
+          summary: "Security violation detected in plugin {{ $labels.plugin_id }}"
+          description: "Plugin {{ $labels.plugin_id }} has {{ $value }} security violations of type {{ $labels.violation_type }}"
+
+      # Policy violation alert
+      - alert: PluginPolicyViolation
+        expr: increase(mcp_policy_violations[5m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+          component: security
+        annotations:
+          summary: "Policy violation in plugin {{ $labels.plugin_id }}"
+          description: "Plugin {{ $labels.plugin_id }} violated policy {{ $labels.policy_name }}"
+
+      # Slow response time alert
+      - alert: PluginSlowResponseTime
+        expr: histogram_quantile(0.95, rate(mcp_plugin_response_time_seconds_bucket[5m])) > 2
+        for: 5m
+        labels:
+          severity: warning
+          component: plugin
+        annotations:
+          summary: "Plugin {{ $labels.plugin_id }} has slow response time"
+          description: "Plugin {{ $labels.plugin_id }} P95 response time is {{ $value }}s"
+
+      # Plugin down alert
+      - alert: PluginDown
+        expr: up{job="mcp-plugins"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          component: plugin
+        annotations:
+          summary: "Plugin {{ $labels.plugin_id }} is down"
+          description: "Plugin {{ $labels.plugin_id }} has been down for more than 2 minutes"
+
+      # Network traffic spike alert
+      - alert: PluginNetworkTrafficSpike
+        expr: rate(mcp_plugin_network_tx_bytes[5m]) > 10000000  # 10 MB/s
+        for: 3m
+        labels:
+          severity: warning
+          component: plugin
+        annotations:
+          summary: "Plugin {{ $labels.plugin_id }} has unusual network traffic"
+          description: "Plugin {{ $labels.plugin_id }} network TX rate is {{ $value }} bytes/sec"
+
+      # Disk I/O spike alert
+      - alert: PluginDiskIOSpike
+        expr: rate(mcp_plugin_disk_io_bytes[5m]) > 50000000  # 50 MB/s
+        for: 3m
+        labels:
+          severity: warning
+          component: plugin
+        annotations:
+          summary: "Plugin {{ $labels.plugin_id }} has high disk I/O"
+          description: "Plugin {{ $labels.plugin_id }} disk I/O rate is {{ $value }} bytes/sec"
+
+  - name: mcp_system_alerts
+    interval: 30s
+    rules:
+      # Node down alert
+      - alert: NodeDown
+        expr: up{job="node-exporter"} == 0
+        for: 5m
+        labels:
+          severity: critical
+          component: infrastructure
+        annotations:
+          summary: "Node {{ $labels.instance }} is down"
+          description: "Node {{ $labels.instance }} has been down for more than 5 minutes"
+
+      # High node CPU usage
+      - alert: NodeHighCPUUsage
+        expr: 100 - (avg by (instance) (irate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 80
+        for: 10m
+        labels:
+          severity: warning
+          component: infrastructure
+        annotations:
+          summary: "Node {{ $labels.instance }} has high CPU usage"
+          description: "Node {{ $labels.instance }} CPU usage is {{ $value }}%"
+
+      # High node memory usage
+      - alert: NodeHighMemoryUsage
+        expr: (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 80
+        for: 10m
+        labels:
+          severity: warning
+          component: infrastructure
+        annotations:
+          summary: "Node {{ $labels.instance }} has high memory usage"
+          description: "Node {{ $labels.instance }} memory usage is {{ $value }}%"
+
+      # Low disk space
+      - alert: NodeLowDiskSpace
+        expr: (1 - (node_filesystem_avail_bytes{fstype!~"tmpfs|fuse.lxcfs"} / node_filesystem_size_bytes{fstype!~"tmpfs|fuse.lxcfs"})) * 100 > 85
+        for: 5m
+        labels:
+          severity: warning
+          component: infrastructure
+        annotations:
+          summary: "Node {{ $labels.instance }} has low disk space"
+          description: "Node {{ $labels.instance }} disk usage is {{ $value }}% on {{ $labels.mountpoint }}"

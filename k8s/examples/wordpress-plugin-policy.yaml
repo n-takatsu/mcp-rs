@@ -1,0 +1,36 @@
+apiVersion: mcp-rs.io/v1
+kind: PluginPolicy
+metadata:
+  name: wordpress-security-policy
+  namespace: mcp-plugins
+spec:
+  pluginSelector:
+    pluginId: "wordpress-v1"
+  networkPolicy:
+    allowedEgress:
+      - "api.wordpress.org"
+      - "s.w.org"
+      - "*.gravatar.com"
+    blockedDomains:
+      - "malicious.com"
+      - "phishing-site.net"
+    allowAllEgress: false
+  securityContext:
+    runAsNonRoot: true
+    readOnlyRootFilesystem: true
+    dropAllCapabilities: true
+    addCapabilities: []
+    selinuxOptions:
+      level: "s0:c123,c456"
+      role: "system_r"
+      type: "container_t"
+      user: "system_u"
+    seccompProfile:
+      type: "RuntimeDefault"
+  allowedApis:
+    - "/api/v1/posts"
+    - "/api/v1/media"
+    - "/api/v1/comments"
+  rateLimit:
+    requestsPerSecond: 100
+    burst: 200
