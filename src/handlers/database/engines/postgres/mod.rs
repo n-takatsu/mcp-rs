@@ -11,10 +11,12 @@
 pub mod config;
 pub mod error;
 pub mod pool;
+pub mod transaction;
 
 pub use config::{PostgresConfig, PostgresConfigBuilder};
 pub use error::{PostgresError, Result};
 pub use pool::{create_optimized_pool, OptimizedPoolConfig, PoolMetrics};
+pub use transaction::PostgresTransaction;
 
 use crate::handlers::database::{DatabaseEngine, DatabaseConnection};
 use crate::handlers::database::types::{DatabaseConfig, DatabaseFeature, DatabaseType, DatabaseError, ExecuteResult, QueryResult, Value, HealthStatus, HealthStatusType};
@@ -91,6 +93,31 @@ impl PostgresEngine {
     /// Get the database configuration
     pub fn config(&self) -> &PostgresConfig {
         &self.config
+    }
+
+    /// Begin a new transaction
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use mcp_rs::handlers::database::engines::postgres::PostgresEngine;
+    /// # async fn example(engine: &PostgresEngine) -> Result<(), Box<dyn std::error::Error>> {
+    /// let mut tx = engine.begin_transaction().await?;
+    /// // ... perform operations
+    /// tx.commit().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn begin_transaction(&self) -> std::result::Result<PostgresTransaction, DatabaseError> {
+        PostgresTransaction::begin(&self.pool).await
+    }
+
+    /// Begin a transaction with specific isolation level
+    pub async fn begin_transaction_with_isolation(
+        &self,
+        level: crate::handlers::database::engine::IsolationLevel,
+    ) -> std::result::Result<PostgresTransaction, DatabaseError> {
+        PostgresTransaction::begin_with_isolation(&self.pool, level).await
     }
 }
 
