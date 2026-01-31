@@ -7,9 +7,9 @@
 //! cargo run --example websocket_transport_foundation
 //! ```
 
-use mcp_rs::transport::websocket::{PoolConfig, StreamConfig, WebSocketTransport};
+use mcp_rs::transport::websocket::types::{PoolConfig, StreamConfig};
+use mcp_rs::transport::websocket::{WebSocketConfigBuilder, WebSocketTransport};
 use mcp_rs::transport::Transport;
-use mcp_rs::types::JsonRpcResponse;
 use std::time::Duration;
 
 #[tokio::main]
@@ -50,8 +50,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Step 3: WebSocketTransportの作成
     println!("Step 3: WebSocketTransportの作成");
-    let transport =
-        WebSocketTransport::new(pool_config, stream_config)?.with_url("ws://localhost:8080");
+    let config = WebSocketConfigBuilder::new()
+        .url("ws://localhost:8080")
+        .pool_config(pool_config)
+        .stream_config(stream_config)
+        .build();
+    let transport = WebSocketTransport::new(config)?;
     println!("  ✓ WebSocketTransportを作成しました");
     println!();
 
