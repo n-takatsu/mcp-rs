@@ -40,48 +40,72 @@ pub use transfer::{
     CompressionType, FileChunk, FileTransferProtocol, TransferManager, TransferOptions,
     TransferProgress, TransferState,
 };
-pub use types::*;
+pub use types::{PoolStatistics, WebSocketConfig, WebSocketConfigBuilder};
 
 use crate::error::{Error, Result};
 use crate::transport::{ConnectionStats, Transport, TransportInfo};
 use crate::types::{JsonRpcRequest, JsonRpcResponse};
 use async_trait::async_trait;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
 
 /// WebSocketトランスポートマネージャー
-#[derive(Debug)]
 pub struct WebSocketTransport {
+    /// 設定
+    config: WebSocketConfig,
     /// 接続プール
     pool: Arc<RwLock<ConnectionPool>>,
-    /// ストリーミング設定
-    stream_config: StreamConfig,
+    /// サーバーインスタンス（サーバーモード時）
+    server: Arc<Mutex<Option<WebSocketServer>>>,
     /// アクティブな接続
     active_connection: Arc<Mutex<Option<WebSocketConnection>>>,
-    /// 接続URL
-    url: String,
     /// 起動状態
     running: Arc<Mutex<bool>>,
 }
 
+impl std::fmt::Debug for WebSocketTransport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WebSocketTransport")
+            .field("config", &self.config)
+            .field("pool", &self.pool)
+            .field("running", &self.running)
+            .finish()
+    }
+}
+
 impl WebSocketTransport {
     /// 新しいWebSocketトランスポートを作成
-    pub fn new(pool_config: PoolConfig, stream_config: StreamConfig) -> Result<Self> {
-        let pool = ConnectionPool::new(pool_config)?;
+    pub fn new(config: WebSocketConfig) -> Result<Self> {
+        let pool = ConnectionPool::new(config.pool_config.clone())?;
 
         Ok(Self {
+            config,
             pool: Arc::new(RwLock::new(pool)),
-            stream_config,
+            server: Arc::new(Mutex::new(None)),
             active_connection: Arc::new(Mutex::new(None)),
-            url: "ws://localhost:8080".to_string(),
             running: Arc::new(Mutex::new(false)),
         })
     }
 
-    /// URLを設定
-    pub fn with_url(mut self, url: impl Into<String>) -> Self {
-        self.url = url.into();
-        self
+    /// ビルダーを作成
+    pub fn builder() -> WebSocketConfigBuilder {
+        WebSocketConfigBuilder::new()
+    }
+    
+    /// 設定から作成
+    pub fn from_config(config: WebSocketConfig) -> Result<Self> {
+        Self::new(config)
+    }
+
+    /// 設定を取得
+    pub fn config(&self) -> &WebSocketConfig {
+        &self.config
+    }
+    
+    /// サーバーモードかどうか
+    pub fn is_server_mode(&self) -> bool {
+        self.config.server_mode
     }
 
     /// 接続を取得
@@ -107,7 +131,7 @@ impl WebSocketTransport {
         let connection = self.get_connection().await?;
         Ok(StreamingTransport::new(
             connection,
-            self.stream_config.clone(),
+            self.config.stream_config.clone(),
         ))
     }
     /// JSON-RPC通知を送信
@@ -160,12 +184,38 @@ impl Transport for WebSocketTransport {
             return Ok(());
         }
 
-        // 接続を確立
-        let connection = WebSocketConnection::connect(&self.url).await?;
-        let mut active = self.active_connection.lock().await;
-        *active = Some(connection);
-        *running = true;
+        if self.config.server_mode {
+            // サーバーモード：WebSocketサーバーを起動
+            // URLからSocketAddrをパース (ws://host:port -> host:port)
+            let addr_str = self.config.url
+                .trim_start_matches("ws://")
+                .trim_start_matches("wss://");
+            let bind_addr: SocketAddr = addr_str.parse()
+                .map_err(|e| Error::ConnectionError(format!("Invalid bind address: {}", e)))?;
+            
+            let server_config = ServerConfig {
+                bind_addr,
+                max_connections: self.config.max_connections,
+                max_message_size: self.config.max_message_size,
+                ping_interval: std::time::Duration::from_secs(self.config.heartbeat_interval),
+                timeout: std::time::Duration::from_secs(
+                    self.config.timeout_seconds.unwrap_or(30),
+                ),
+            };
+            
+            let mut server = WebSocketServer::new(server_config);
+            server.start().await?;
+            
+            let mut srv = self.server.lock().await;
+            *srv = Some(server);
+        } else {
+            // クライアントモード：接続を確立
+            let connection = WebSocketConnection::connect(&self.config.url).await?;
+            let mut active = self.active_connection.lock().await;
+            *active = Some(connection);
+        }
 
+        *running = true;
         Ok(())
     }
 
@@ -175,13 +225,21 @@ impl Transport for WebSocketTransport {
             return Ok(());
         }
 
-        // アクティブな接続をクローズ
-        let mut active = self.active_connection.lock().await;
-        if let Some(conn) = active.take() {
-            conn.close().await?;
+        if self.config.server_mode {
+            // サーバーモード：サーバーを停止
+            let mut server = self.server.lock().await;
+            if let Some(mut srv) = server.take() {
+                srv.stop().await?;
+            }
+        } else {
+            // クライアントモード：アクティブな接続をクローズ
+            let mut active = self.active_connection.lock().await;
+            if let Some(conn) = active.take() {
+                conn.close().await?;
+            }
         }
-        *running = false;
 
+        *running = false;
         Ok(())
     }
 
@@ -235,14 +293,18 @@ impl Transport for WebSocketTransport {
     fn transport_info(&self) -> TransportInfo {
         TransportInfo {
             transport_type: crate::transport::TransportType::WebSocket {
-                url: self.url.clone(),
+                url: self.config.url.clone(),
             },
-            description: "WebSocket Transport with connection pooling".to_string(),
+            description: if self.config.server_mode {
+                format!("WebSocket Server with connection pooling (max: {})", self.config.max_connections)
+            } else {
+                "WebSocket Client with connection pooling".to_string()
+            },
             capabilities: crate::transport::TransportCapabilities {
                 bidirectional: true,
                 multiplexing: true,
-                compression: false,
-                max_message_size: None,
+                compression: self.config.stream_config.compression_enabled,
+                max_message_size: Some(self.config.max_message_size),
                 framing_methods: vec![crate::transport::FramingMethod::WebSocketFrame],
             },
         }
@@ -268,50 +330,35 @@ mod tests {
 
     #[tokio::test]
     async fn test_websocket_transport_creation() {
-        let pool_config = PoolConfig {
-            max_connections: 10,
-            min_connections: 2,
-            connection_timeout: std::time::Duration::from_secs(5),
-            idle_timeout: std::time::Duration::from_secs(300),
-            health_check_interval: std::time::Duration::from_secs(30),
-        };
-
-        let stream_config = StreamConfig {
-            chunk_size: 8192,
-            max_buffer_size: 1024 * 1024,
-            compression_enabled: true,
-        };
-
-        let transport = WebSocketTransport::new(pool_config, stream_config);
+        let config = WebSocketConfig::default();
+        let transport = WebSocketTransport::new(config);
         assert!(transport.is_ok());
     }
 
     #[tokio::test]
+    async fn test_transport_builder() {
+        let config = WebSocketConfigBuilder::new()
+            .url("ws://localhost:8080")
+            .server_mode(true)
+            .max_connections(100)
+            .timeout(30)
+            .build();
+        
+        let transport = WebSocketTransport::from_config(config).unwrap();
+        assert!(transport.is_server_mode());
+    }
+
+    #[tokio::test]
     async fn test_transport_trait_implementation() {
-        let pool_config = PoolConfig {
-            max_connections: 10,
-            min_connections: 2,
-            connection_timeout: std::time::Duration::from_secs(5),
-            idle_timeout: std::time::Duration::from_secs(300),
-            health_check_interval: std::time::Duration::from_secs(30),
-        };
+        let config = WebSocketConfigBuilder::new()
+            .url("ws://localhost:8080")
+            .build();
 
-        let stream_config = StreamConfig {
-            chunk_size: 8192,
-            max_buffer_size: 1024 * 1024,
-            compression_enabled: true,
-        };
-
-        let transport = WebSocketTransport::new(pool_config, stream_config)
-            .unwrap()
-            .with_url("ws://localhost:8080");
+        let transport = WebSocketTransport::new(config).unwrap();
 
         // Transport traitメソッドのテスト
         let info = transport.transport_info();
-        assert_eq!(
-            info.description,
-            "WebSocket Transport with connection pooling"
-        );
+        assert!(info.description.contains("WebSocket"));
         assert!(info.capabilities.bidirectional);
         assert!(info.capabilities.multiplexing);
 
