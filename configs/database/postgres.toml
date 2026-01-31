@@ -1,0 +1,166 @@
+# PostgreSQL Configuration
+# Database Integration Phase 2 - Optimized Settings
+
+[connection_pool]
+# Minimum number of connections to maintain in the pool
+min_connections = 5
+
+# Maximum number of connections allowed in the pool
+# Target: Achieve 90%+ pool efficiency
+max_connections = 100
+
+# Connection acquisition timeout in seconds
+connection_timeout_secs = 30
+
+# Idle connection timeout in seconds (10 minutes)
+# Connections idle longer than this will be closed
+idle_timeout_secs = 600
+
+# Maximum connection lifetime in seconds (30 minutes)
+# Connections older than this will be closed and recreated
+max_lifetime_secs = 1800
+
+# Test connections before using them from the pool
+test_on_acquire = true
+
+[database]
+# Database host (can be hostname or IP address)
+host = "localhost"
+
+# Database port
+port = 5432
+
+# Database name
+database = "mcp_rs"
+
+# Username for authentication
+username = "postgres"
+
+# Password for authentication (use environment variable in production)
+password = "${POSTGRES_PASSWORD}"
+
+# SSL/TLS mode: "disable", "prefer", or "require"
+ssl_mode = "prefer"
+
+# Application name shown in PostgreSQL logs
+application_name = "mcp-rs"
+
+[performance]
+# Prepared statement cache size per connection
+# Target: Reduce query parsing overhead
+statement_cache_capacity = 1000
+
+# Enable query result caching
+enable_query_cache = true
+
+# Query cache size in MB
+query_cache_size_mb = 128
+
+# Enable automatic EXPLAIN ANALYZE for slow queries
+auto_explain_slow_queries = true
+
+# Slow query threshold in milliseconds
+slow_query_threshold_ms = 1000
+
+# Enable connection pooling metrics
+enable_pool_metrics = true
+
+# Pool metrics update interval in seconds
+metrics_interval_secs = 60
+
+[jsonb]
+# Enable JSONB optimization
+enable_jsonb_optimization = true
+
+# Create GIN indexes automatically for JSONB columns
+auto_create_gin_indexes = true
+
+# JSONB path query optimization
+optimize_path_queries = true
+
+# Enable JSONB aggregation optimization
+enable_jsonb_aggregation = true
+
+[monitoring]
+# Enable pg_stat_statements for query performance monitoring
+enable_pg_stat_statements = true
+
+# Track all SQL statements
+track_all_statements = true
+
+# Maximum number of statements to track
+max_tracked_statements = 5000
+
+# Enable query plan visualization
+enable_query_plan_visualization = true
+
+# Log slow queries to file
+log_slow_queries = true
+
+# Slow query log file path
+slow_query_log_path = "logs/postgres_slow_queries.log"
+
+[notifications]
+# Enable LISTEN/NOTIFY support
+enable_listen_notify = true
+
+# Maximum number of notification channels
+max_notification_channels = 100
+
+# Notification buffer size
+notification_buffer_size = 1000
+
+[batch_processing]
+# Enable batch insert optimization
+enable_batch_insert = true
+
+# Default batch size for bulk operations
+default_batch_size = 1000
+
+# Enable COPY command for large data imports
+enable_copy_command = true
+
+# COPY command buffer size in KB
+copy_buffer_size_kb = 8192
+
+[features]
+# Enable Common Table Expressions (CTEs)
+enable_ctes = true
+
+# Enable recursive CTEs
+enable_recursive_ctes = true
+
+# Enable window functions
+enable_window_functions = true
+
+# Enable full-text search
+enable_full_text_search = true
+
+# Full-text search language (e.g., "english", "japanese")
+full_text_search_language = "english"
+
+# Enable PostgreSQL-specific data types (arrays, hstore, etc.)
+enable_postgres_types = true
+
+[security]
+# Maximum query execution time in seconds (prevents runaway queries)
+max_query_execution_secs = 300
+
+# Enable row-level security policies
+enable_row_level_security = false
+
+# Enable audit logging for all queries
+enable_audit_logging = false
+
+# Audit log file path
+audit_log_path = "logs/postgres_audit.log"
+
+[migration]
+# Enable automatic schema migrations
+enable_auto_migration = false
+
+# Migration scripts directory
+migration_scripts_dir = "migrations/postgres"
+
+# Migration lock timeout in seconds
+migration_lock_timeout_secs = 60

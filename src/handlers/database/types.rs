@@ -175,6 +175,11 @@ pub enum DatabaseFeature {
     Sharding,
     Acid,
     EventualConsistency,
+    // PostgreSQL特有の機能
+    JSONB,
+    CTEs,
+    WindowFunctions,
+    Notifications,
     // Redis特有の機能
     InMemoryStorage,
     KeyValueStore,

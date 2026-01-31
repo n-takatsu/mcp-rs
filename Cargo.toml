@@ -27,9 +27,11 @@ serde_yaml_ng = "0.10"
 toml = "0.9.8"
 
 # Database and storage (PostgreSQL and SQLite only - MySQL via mysql_async)
-sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "sqlite", "chrono", "uuid"], default-features = false }
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "sqlite", "chrono", "uuid", "json", "migrate"], default-features = false }
 # MySQL support via secure alternative (RSA vulnerability-free)
 mysql_async = { version = "0.36", optional = true }
+# PostgreSQL native driver for advanced features
+tokio-postgres = { version = "0.7", features = ["with-chrono-0_4", "with-uuid-1", "with-serde_json-1"], optional = true }
 redis = { version = "0.26", features = ["tokio-comp", "connection-manager"], optional = true }
 # MongoDB support
 mongodb = { version = "3.1", optional = true }
@@ -177,7 +179,7 @@ mfa-full = ["mfa"]
 # Storage backends
 redis-backend = ["redis"]
 mysql-backend = ["mysql_async"]
-postgresql-backend = []
+postgresql-backend = ["tokio-postgres"]
 sqlite = []
 mongodb-backend = ["mongodb"]
 
