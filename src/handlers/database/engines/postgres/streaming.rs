@@ -71,14 +71,14 @@ impl StreamHandler {
         page_size: u32,
     ) -> Result<PaginatedResult, DatabaseError> {
         let offset = (page - 1) * page_size;
-        
+
         // Get total count
         let count_sql = format!("SELECT COUNT(*) FROM ({}) t", sql);
         let count_row = sqlx::query(&count_sql)
             .fetch_one(&self.pool)
             .await
             .map_err(|e| DatabaseError::QueryFailed(format!("Count query failed: {}", e)))?;
-        
+
         let total: i64 = count_row.try_get(0).unwrap_or(0);
 
         // Get page data
@@ -114,7 +114,7 @@ impl StreamHandler {
         offset: usize,
     ) -> Result<Vec<StreamRow>, DatabaseError> {
         let batch_sql = format!("{} LIMIT {} OFFSET {}", sql, limit, offset);
-        
+
         let rows = sqlx::query(&batch_sql)
             .fetch_all(&self.pool)
             .await
@@ -194,7 +194,7 @@ impl StreamAggregator {
     pub fn add(&mut self, value: f64) {
         self.count += 1;
         self.sum += value;
-        
+
         self.min = Some(match self.min {
             Some(m) => m.min(value),
             None => value,

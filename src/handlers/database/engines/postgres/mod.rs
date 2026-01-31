@@ -30,13 +30,15 @@ pub use migration::{MigrationInfo, MigrationManager};
 pub use notify::{Notification, NotificationQueue, PubSubManager, SimpleListener};
 pub use pool::{create_optimized_pool, OptimizedPoolConfig, PoolMetrics};
 pub use streaming::{
-    AggregateStats, PaginatedResult, StreamAggregator, StreamHandler,
-    StreamOptions, StreamRow,
+    AggregateStats, PaginatedResult, StreamAggregator, StreamHandler, StreamOptions, StreamRow,
 };
 pub use transaction::PostgresTransaction;
 
-use crate::handlers::database::{DatabaseEngine, DatabaseConnection};
-use crate::handlers::database::types::{DatabaseConfig, DatabaseFeature, DatabaseType, DatabaseError, ExecuteResult, QueryResult, Value, HealthStatus, HealthStatusType};
+use crate::handlers::database::types::{
+    DatabaseConfig, DatabaseError, DatabaseFeature, DatabaseType, ExecuteResult, HealthStatus,
+    HealthStatusType, QueryResult, Value,
+};
+use crate::handlers::database::{DatabaseConnection, DatabaseEngine};
 use async_trait::async_trait;
 use chrono::Utc;
 use serde_json::Value as JsonValue;
@@ -155,7 +157,9 @@ impl PostgresEngine {
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn begin_transaction(&self) -> std::result::Result<PostgresTransaction, DatabaseError> {
+    pub async fn begin_transaction(
+        &self,
+    ) -> std::result::Result<PostgresTransaction, DatabaseError> {
         PostgresTransaction::begin(&self.pool).await
     }
 
@@ -185,11 +189,8 @@ impl DatabaseEngine for PostgresEngine {
 
     async fn health_check(&self) -> std::result::Result<HealthStatus, DatabaseError> {
         let start = std::time::Instant::now();
-        
-        match sqlx::query("SELECT 1")
-            .fetch_one(&self.pool)
-            .await
-        {
+
+        match sqlx::query("SELECT 1").fetch_one(&self.pool).await {
             Ok(_) => {
                 let response_time = start.elapsed().as_millis() as u64;
                 Ok(HealthStatus {
@@ -230,11 +231,15 @@ impl DatabaseEngine for PostgresEngine {
 
     fn validate_config(&self, config: &DatabaseConfig) -> std::result::Result<(), DatabaseError> {
         if config.connection.host.is_empty() {
-            return Err(DatabaseError::ConfigurationError("Host cannot be empty".to_string()));
+            return Err(DatabaseError::ConfigurationError(
+                "Host cannot be empty".to_string(),
+            ));
         }
 
         if config.connection.database.is_empty() {
-            return Err(DatabaseError::ConfigurationError("Database name cannot be empty".to_string()));
+            return Err(DatabaseError::ConfigurationError(
+                "Database name cannot be empty".to_string(),
+            ));
         }
 
         Ok(())
@@ -246,7 +251,9 @@ impl DatabaseEngine for PostgresEngine {
             .await
             .map_err(|e| DatabaseError::QueryFailed(e.to_string()))?;
 
-        let version: String = row.try_get(0).map_err(|e| DatabaseError::QueryFailed(e.to_string()))?;
+        let version: String = row
+            .try_get(0)
+            .map_err(|e| DatabaseError::QueryFailed(e.to_string()))?;
         Ok(version)
     }
 }
@@ -288,4 +295,3 @@ mod tests {
         // Test will be implemented with actual PostgreSQL connection
     }
 }
-

@@ -110,15 +110,21 @@ impl PostgresConfig {
     /// Validate configuration
     pub fn validate(&self) -> Result<()> {
         if self.host.is_empty() {
-            return Err(PostgresError::Configuration("Host cannot be empty".to_string()));
+            return Err(PostgresError::Configuration(
+                "Host cannot be empty".to_string(),
+            ));
         }
 
         if self.database.is_empty() {
-            return Err(PostgresError::Configuration("Database cannot be empty".to_string()));
+            return Err(PostgresError::Configuration(
+                "Database cannot be empty".to_string(),
+            ));
         }
 
         if self.username.is_empty() {
-            return Err(PostgresError::Configuration("Username cannot be empty".to_string()));
+            return Err(PostgresError::Configuration(
+                "Username cannot be empty".to_string(),
+            ));
         }
 
         if self.min_connections > self.max_connections {
@@ -246,10 +252,14 @@ impl PostgresConfigBuilder {
             password: self.password.unwrap_or(default.password),
             min_connections: self.min_connections.unwrap_or(default.min_connections),
             max_connections: self.max_connections.unwrap_or(default.max_connections),
-            connection_timeout_secs: self.connection_timeout_secs.unwrap_or(default.connection_timeout_secs),
+            connection_timeout_secs: self
+                .connection_timeout_secs
+                .unwrap_or(default.connection_timeout_secs),
             idle_timeout_secs: self.idle_timeout_secs.unwrap_or(default.idle_timeout_secs),
             max_lifetime_secs: self.max_lifetime_secs.unwrap_or(default.max_lifetime_secs),
-            statement_cache_capacity: self.statement_cache_capacity.unwrap_or(default.statement_cache_capacity),
+            statement_cache_capacity: self
+                .statement_cache_capacity
+                .unwrap_or(default.statement_cache_capacity),
             ssl_mode: self.ssl_mode.unwrap_or(default.ssl_mode),
             application_name: self.application_name.unwrap_or(default.application_name),
         };
@@ -321,9 +331,7 @@ mod tests {
 
     #[test]
     fn test_validation_empty_host() {
-        let result = PostgresConfig::builder()
-            .host("")
-            .build();
+        let result = PostgresConfig::builder().host("").build();
 
         assert!(result.is_err());
     }

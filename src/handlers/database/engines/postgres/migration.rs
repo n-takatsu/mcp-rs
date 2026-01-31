@@ -44,12 +44,13 @@ impl MigrationManager {
     pub async fn run_migrations(&self) -> Result<Vec<MigrationInfo>, DatabaseError> {
         let migrator = sqlx::migrate::Migrator::new(Path::new(&self.migrations_path))
             .await
-            .map_err(|e| DatabaseError::MigrationError(format!("Failed to load migrations: {}", e)))?;
+            .map_err(|e| {
+                DatabaseError::MigrationError(format!("Failed to load migrations: {}", e))
+            })?;
 
-        migrator
-            .run(&self.pool)
-            .await
-            .map_err(|e| DatabaseError::MigrationError(format!("Migration execution failed: {}", e)))?;
+        migrator.run(&self.pool).await.map_err(|e| {
+            DatabaseError::MigrationError(format!("Migration execution failed: {}", e))
+        })?;
 
         self.get_migration_history().await
     }
@@ -60,36 +61,43 @@ impl MigrationManager {
     pub async fn revert_last_migration(&self) -> Result<(), DatabaseError> {
         // Get the last applied migration
         let history = self.get_migration_history().await?;
-        
+
         if let Some(last) = history.last() {
             // Check if down migration exists
             let down_file = format!("{}/{}_down.sql", self.migrations_path, last.version);
             if !Path::new(&down_file).exists() {
-                return Err(DatabaseError::MigrationError(
-                    format!("No down migration found for version {}", last.version)
-                ));
+                return Err(DatabaseError::MigrationError(format!(
+                    "No down migration found for version {}",
+                    last.version
+                )));
             }
 
             // Read and execute down migration
-            let sql = tokio::fs::read_to_string(&down_file)
-                .await
-                .map_err(|e| DatabaseError::MigrationError(format!("Failed to read down migration: {}", e)))?;
+            let sql = tokio::fs::read_to_string(&down_file).await.map_err(|e| {
+                DatabaseError::MigrationError(format!("Failed to read down migration: {}", e))
+            })?;
 
-            sqlx::raw_sql(&sql)
-                .execute(&self.pool)
-                .await
-                .map_err(|e| DatabaseError::MigrationError(format!("Down migration failed: {}", e)))?;
+            sqlx::raw_sql(&sql).execute(&self.pool).await.map_err(|e| {
+                DatabaseError::MigrationError(format!("Down migration failed: {}", e))
+            })?;
 
             // Remove from migration history
             sqlx::query("DELETE FROM _sqlx_migrations WHERE version = $1")
                 .bind(last.version)
                 .execute(&self.pool)
                 .await
-                .map_err(|e| DatabaseError::MigrationError(format!("Failed to update migration history: {}", e)))?;
+                .map_err(|e| {
+                    DatabaseError::MigrationError(format!(
+                        "Failed to update migration history: {}",
+                        e
+                    ))
+                })?;
 
             Ok(())
         } else {
-            Err(DatabaseError::MigrationError("No migrations to revert".to_string()))
+            Err(DatabaseError::MigrationError(
+                "No migrations to revert".to_string(),
+            ))
         }
     }
 
@@ -100,11 +108,13 @@ impl MigrationManager {
             SELECT version, description, installed_on, execution_time, success, checksum
             FROM _sqlx_migrations
             ORDER BY version
-            "#
+            "#,
         )
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| DatabaseError::QueryFailed(format!("Failed to fetch migration history: {}", e)))?;
+        .map_err(|e| {
+            DatabaseError::QueryFailed(format!("Failed to fetch migration history: {}", e))
+        })?;
 
         let migrations: Vec<MigrationInfo> = rows
             .iter()
@@ -125,11 +135,13 @@ impl MigrationManager {
     pub async fn is_up_to_date(&self) -> Result<bool, DatabaseError> {
         let migrator = sqlx::migrate::Migrator::new(Path::new(&self.migrations_path))
             .await
-            .map_err(|e| DatabaseError::MigrationError(format!("Failed to load migrations: {}", e)))?;
+            .map_err(|e| {
+                DatabaseError::MigrationError(format!("Failed to load migrations: {}", e))
+            })?;
 
         // Get list of all migrations
         let all_migrations = migrator.migrations.len();
-        
+
         // Get applied migrations count
         let history = self.get_migration_history().await?;
         let applied_count = history.len();
@@ -141,7 +153,9 @@ impl MigrationManager {
     pub async fn pending_migrations_count(&self) -> Result<usize, DatabaseError> {
         let migrator = sqlx::migrate::Migrator::new(Path::new(&self.migrations_path))
             .await
-            .map_err(|e| DatabaseError::MigrationError(format!("Failed to load migrations: {}", e)))?;
+            .map_err(|e| {
+                DatabaseError::MigrationError(format!("Failed to load migrations: {}", e))
+            })?;
 
         let all_count = migrator.migrations.len();
         let history = self.get_migration_history().await?;
@@ -159,13 +173,10 @@ impl MigrationManager {
     }
 
     /// Create a new migration file template
-    pub async fn create_migration(
-        &self,
-        name: &str,
-    ) -> Result<(String, String), DatabaseError> {
+    pub async fn create_migration(&self, name: &str) -> Result<(String, String), DatabaseError> {
         let timestamp = Utc::now().timestamp();
         let version = timestamp;
-        
+
         let up_file = format!("{}/{}_{}.up.sql", self.migrations_path, version, name);
         let down_file = format!("{}/{}_{}.down.sql", self.migrations_path, version, name);
 
@@ -181,13 +192,15 @@ impl MigrationManager {
             Utc::now().to_rfc3339()
         );
 
-        tokio::fs::write(&up_file, up_template)
-            .await
-            .map_err(|e| DatabaseError::MigrationError(format!("Failed to create up migration: {}", e)))?;
+        tokio::fs::write(&up_file, up_template).await.map_err(|e| {
+            DatabaseError::MigrationError(format!("Failed to create up migration: {}", e))
+        })?;
 
         tokio::fs::write(&down_file, down_template)
             .await
-            .map_err(|e| DatabaseError::MigrationError(format!("Failed to create down migration: {}", e)))?;
+            .map_err(|e| {
+                DatabaseError::MigrationError(format!("Failed to create down migration: {}", e))
+            })?;
 
         Ok((up_file, down_file))
     }
@@ -195,9 +208,9 @@ impl MigrationManager {
     /// Create database if it doesn't exist
     pub async fn create_database(url: &str) -> Result<(), DatabaseError> {
         if !Postgres::database_exists(url).await.unwrap_or(false) {
-            Postgres::create_database(url)
-                .await
-                .map_err(|e| DatabaseError::ConnectionFailed(format!("Failed to create database: {}", e)))?;
+            Postgres::create_database(url).await.map_err(|e| {
+                DatabaseError::ConnectionFailed(format!("Failed to create database: {}", e))
+            })?;
         }
         Ok(())
     }
@@ -205,9 +218,9 @@ impl MigrationManager {
     /// Drop database (use with caution!)
     pub async fn drop_database(url: &str) -> Result<(), DatabaseError> {
         if Postgres::database_exists(url).await.unwrap_or(false) {
-            Postgres::drop_database(url)
-                .await
-                .map_err(|e| DatabaseError::ConnectionFailed(format!("Failed to drop database: {}", e)))?;
+            Postgres::drop_database(url).await.map_err(|e| {
+                DatabaseError::ConnectionFailed(format!("Failed to drop database: {}", e))
+            })?;
         }
         Ok(())
     }
@@ -216,7 +229,7 @@ impl MigrationManager {
     pub async fn reset_database(url: &str, migrations_path: &str) -> Result<(), DatabaseError> {
         // Drop database
         Self::drop_database(url).await?;
-        
+
         // Create database
         Self::create_database(url).await?;
 

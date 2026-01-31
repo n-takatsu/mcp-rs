@@ -29,7 +29,7 @@ impl CteBuilder {
     ///
     /// # Example
     /// ```ignore
-    /// builder.with_cte("regional_sales", 
+    /// builder.with_cte("regional_sales",
     ///     "SELECT region, SUM(amount) as total FROM orders GROUP BY region");
     /// ```
     pub fn with_cte(mut self, name: impl Into<String>, query: impl Into<String>) -> Self {
@@ -55,16 +55,29 @@ impl CteBuilder {
             return Err(DatabaseError::InvalidQuery("No CTEs defined".to_string()));
         }
 
-        let main_query = self.main_query.as_ref()
+        let main_query = self
+            .main_query
+            .as_ref()
             .ok_or_else(|| DatabaseError::InvalidQuery("No main query defined".to_string()))?;
 
-        let with_clause = if self.recursive { "WITH RECURSIVE" } else { "WITH" };
-        
-        let cte_parts: Vec<String> = self.ctes.iter()
+        let with_clause = if self.recursive {
+            "WITH RECURSIVE"
+        } else {
+            "WITH"
+        };
+
+        let cte_parts: Vec<String> = self
+            .ctes
+            .iter()
             .map(|(name, query)| format!("{} AS ({})", name, query))
             .collect();
 
-        Ok(format!("{} {} {}", with_clause, cte_parts.join(", "), main_query))
+        Ok(format!(
+            "{} {} {}",
+            with_clause,
+            cte_parts.join(", "),
+            main_query
+        ))
     }
 }
 
@@ -123,7 +136,7 @@ impl WindowBuilder {
         parts.push("OVER (".to_string());
 
         let mut over_parts = Vec::new();
-        
+
         if !self.partition_by.is_empty() {
             over_parts.push(format!("PARTITION BY {}", self.partition_by.join(", ")));
         }
@@ -157,7 +170,7 @@ impl AdvancedQueryHandler {
     /// Execute a CTE query
     pub async fn execute_cte(&self, builder: &CteBuilder) -> Result<QueryResult, DatabaseError> {
         let sql = builder.build()?;
-        
+
         let start = std::time::Instant::now();
         let rows = sqlx::query(&sql)
             .fetch_all(&self.pool)
@@ -176,7 +189,9 @@ impl AdvancedQueryHandler {
             });
         }
 
-        let columns = rows[0].columns().iter()
+        let columns = rows[0]
+            .columns()
+            .iter()
             .map(|col| crate::handlers::database::types::ColumnInfo {
                 name: col.name().to_string(),
                 data_type: col.type_info().name().to_string(),
@@ -185,9 +200,12 @@ impl AdvancedQueryHandler {
             })
             .collect();
 
-        let data_rows = rows.iter()
+        let data_rows = rows
+            .iter()
             .map(|row| {
-                row.columns().iter().enumerate()
+                row.columns()
+                    .iter()
+                    .enumerate()
                     .map(|(i, _)| {
                         // Simplified value extraction
                         crate::handlers::database::types::Value::Null
@@ -223,7 +241,7 @@ impl AdvancedQueryHandler {
         condition: Option<&str>,
     ) -> Result<QueryResult, DatabaseError> {
         let where_clause = condition.unwrap_or("");
-        
+
         let cte = CteBuilder::new()
             .recursive()
             .with_cte(
@@ -233,9 +251,17 @@ impl AdvancedQueryHandler {
                      UNION ALL \
                      SELECT t.{}, t.{}, h.level + 1 FROM {} t \
                      JOIN hierarchy h ON t.{} = h.{} {}",
-                    id_column, parent_column, table, parent_column,
-                    id_column, parent_column, table, parent_column, id_column, where_clause
-                )
+                    id_column,
+                    parent_column,
+                    table,
+                    parent_column,
+                    id_column,
+                    parent_column,
+                    table,
+                    parent_column,
+                    id_column,
+                    where_clause
+                ),
             )
             .main_query("SELECT * FROM hierarchy");
 
@@ -274,7 +300,9 @@ impl AdvancedQueryHandler {
             });
         }
 
-        let columns = rows[0].columns().iter()
+        let columns = rows[0]
+            .columns()
+            .iter()
             .map(|col| crate::handlers::database::types::ColumnInfo {
                 name: col.name().to_string(),
                 data_type: col.type_info().name().to_string(),
@@ -307,7 +335,13 @@ impl AdvancedQueryHandler {
             window = window.partition_by(partitions);
         }
 
-        self.execute_window(table, &[value_column, order_column], &window, "running_total").await
+        self.execute_window(
+            table,
+            &[value_column, order_column],
+            &window,
+            "running_total",
+        )
+        .await
     }
 
     /// Calculate rankings using window function
@@ -325,8 +359,8 @@ impl AdvancedQueryHandler {
             RankType::PercentRank => "PERCENT_RANK()",
         };
 
-        let mut window = WindowBuilder::new(rank_func.to_string())
-            .order_by(vec![order_column.to_string()]);
+        let mut window =
+            WindowBuilder::new(rank_func.to_string()).order_by(vec![order_column.to_string()]);
 
         if let Some(partitions) = partition_columns {
             window = window.partition_by(partitions);
@@ -381,14 +415,18 @@ impl AdvancedQueryHandler {
         step: Option<i64>,
     ) -> Result<Vec<i64>, DatabaseError> {
         let step_val = step.unwrap_or(1);
-        let sql = format!("SELECT * FROM generate_series({}, {}, {})", start, end, step_val);
+        let sql = format!(
+            "SELECT * FROM generate_series({}, {}, {})",
+            start, end, step_val
+        );
 
         let rows = sqlx::query(&sql)
             .fetch_all(&self.pool)
             .await
             .map_err(|e| DatabaseError::QueryFailed(format!("generate_series failed: {}", e)))?;
 
-        let values: Vec<i64> = rows.iter()
+        let values: Vec<i64> = rows
+            .iter()
             .filter_map(|row| row.try_get::<i64, _>(0).ok())
             .collect();
 
@@ -404,11 +442,14 @@ impl AdvancedQueryHandler {
         categories: &[&str],
     ) -> Result<QueryResult, DatabaseError> {
         // Simplified pivot using CASE WHEN
-        let case_statements: Vec<String> = categories.iter()
-            .map(|cat| format!(
-                "SUM(CASE WHEN {} = '{}' THEN {} ELSE 0 END) as {}",
-                category_column, cat, value_column, cat
-            ))
+        let case_statements: Vec<String> = categories
+            .iter()
+            .map(|cat| {
+                format!(
+                    "SUM(CASE WHEN {} = '{}' THEN {} ELSE 0 END) as {}",
+                    category_column, cat, value_column, cat
+                )
+            })
             .collect();
 
         let sql = format!(

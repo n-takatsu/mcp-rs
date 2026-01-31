@@ -5,8 +5,7 @@
 #[cfg(feature = "postgresql-backend")]
 mod postgres_tests {
     use mcp_rs::handlers::database::engines::postgres::{
-        PostgresConfig, PostgresEngine, create_optimized_pool,
-        config::SslMode,
+        config::SslMode, create_optimized_pool, PostgresConfig, PostgresEngine,
     };
 
     #[tokio::test]
@@ -84,7 +83,7 @@ mod postgres_tests {
             .unwrap();
 
         let conn_str = config.connection_string();
-        
+
         assert!(conn_str.contains("postgresql://myuser:mypass@localhost:5432/mydb"));
         assert!(conn_str.contains("sslmode=prefer"));
         assert!(conn_str.contains("application_name=test-app"));
@@ -110,15 +109,11 @@ mod postgres_tests {
         assert!(invalid_config.is_err());
 
         // 空のホスト名
-        let invalid_host = PostgresConfig::builder()
-            .host("")
-            .build();
+        let invalid_host = PostgresConfig::builder().host("").build();
         assert!(invalid_host.is_err());
 
         // max_connections = 0
-        let invalid_max = PostgresConfig::builder()
-            .max_connections(0)
-            .build();
+        let invalid_max = PostgresConfig::builder().max_connections(0).build();
         assert!(invalid_max.is_err());
     }
 }

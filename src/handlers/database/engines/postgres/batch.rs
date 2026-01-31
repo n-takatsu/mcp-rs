@@ -88,7 +88,7 @@ impl BatchHandler {
             }
 
             let mut query = sqlx::query(&sql);
-            
+
             // Bind all values
             for row in chunk {
                 for value in row {
@@ -147,7 +147,7 @@ impl BatchHandler {
 
         // Use raw SQL for COPY
         let rows_affected = data.len() as u64;
-        
+
         // Note: sqlx doesn't directly support COPY FROM STDIN
         // This is a simplified implementation
         // In production, use tokio-postgres or pg-copy directly
@@ -162,8 +162,10 @@ impl BatchHandler {
         columns: &[&str],
         condition: Option<&str>,
     ) -> Result<Vec<String>, DatabaseError> {
-        let where_clause = condition.map(|c| format!(" WHERE {}", c)).unwrap_or_default();
-        
+        let where_clause = condition
+            .map(|c| format!(" WHERE {}", c))
+            .unwrap_or_default();
+
         let sql = format!(
             "SELECT {} FROM {}{}",
             columns.join(", "),
@@ -197,12 +199,13 @@ impl BatchHandler {
     ) -> Result<ExecuteResult, DatabaseError>
     where
         F: for<'a> FnOnce(sqlx::Transaction<'a, Postgres>) -> Fut,
-        Fut: std::future::Future<Output = Result<sqlx::Transaction<'static, Postgres>, DatabaseError>>,
+        Fut: std::future::Future<
+            Output = Result<sqlx::Transaction<'static, Postgres>, DatabaseError>,
+        >,
     {
-        let mut tx = self.pool
-            .begin()
-            .await
-            .map_err(|e| DatabaseError::TransactionFailed(format!("Begin transaction failed: {}", e)))?;
+        let mut tx = self.pool.begin().await.map_err(|e| {
+            DatabaseError::TransactionFailed(format!("Begin transaction failed: {}", e))
+        })?;
 
         tx = operations(tx).await?;
 
@@ -255,7 +258,7 @@ impl BatchHandler {
             );
 
             let mut query = sqlx::query(&sql);
-            
+
             for row in chunk {
                 for value in row {
                     query = Self::bind_value(query, value);
@@ -287,10 +290,7 @@ impl BatchHandler {
         let mut total_affected = 0u64;
 
         for (where_clause, _values) in updates {
-            let sql = format!(
-                "UPDATE {} SET {} WHERE {}",
-                table, set_clause, where_clause
-            );
+            let sql = format!("UPDATE {} SET {} WHERE {}", table, set_clause, where_clause);
 
             let result = sqlx::query(&sql)
                 .execute(&self.pool)
@@ -345,7 +345,7 @@ impl BatchHandler {
         Fut: std::future::Future<Output = Result<ExecuteResult, DatabaseError>> + Send,
     {
         let operation = std::sync::Arc::new(operation);
-        
+
         let results: Vec<Result<ExecuteResult, DatabaseError>> = stream::iter(items)
             .chunks(chunk_size)
             .map(|chunk| {

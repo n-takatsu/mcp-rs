@@ -44,9 +44,9 @@ impl PostgresConnection {
 impl DatabaseConnection for PostgresConnection {
     async fn query(&self, sql: &str, params: &[Value]) -> Result<QueryResult, DatabaseError> {
         let start = std::time::Instant::now();
-        
+
         let mut query = sqlx::query(sql);
-        
+
         // Bind parameters
         for param in params {
             query = bind_value(query, param)?;
@@ -60,14 +60,16 @@ impl DatabaseConnection for PostgresConnection {
 
         // Convert to QueryResult
         let columns: Vec<ColumnInfo> = if let Some(first_row) = rows.first() {
-            first_row.columns().iter().map(|c| {
-                ColumnInfo {
+            first_row
+                .columns()
+                .iter()
+                .map(|c| ColumnInfo {
                     name: Column::name(c).to_string(),
                     data_type: Column::type_info(c).name().to_string(),
                     nullable: true,
                     max_length: None,
-                }
-            }).collect()
+                })
+                .collect()
         } else {
             Vec::new()
         };
@@ -112,9 +114,9 @@ impl DatabaseConnection for PostgresConnection {
 
     async fn execute(&self, sql: &str, params: &[Value]) -> Result<ExecuteResult, DatabaseError> {
         let start = std::time::Instant::now();
-        
+
         let mut query = sqlx::query(sql);
-        
+
         // Bind parameters
         for param in params {
             query = bind_value(query, param)?;
@@ -158,9 +160,10 @@ impl DatabaseConnection for PostgresConnection {
 
         let mut tables = Vec::new();
         for row in rows {
-            let table_name: String = row.try_get("table_name")
+            let table_name: String = row
+                .try_get("table_name")
                 .map_err(|e| DatabaseError::QueryFailed(e.to_string()))?;
-            
+
             let table_info = self.get_table_schema(&table_name).await?;
             tables.push(table_info);
         }
@@ -191,7 +194,9 @@ impl DatabaseConnection for PostgresConnection {
             .bind(table_name)
             .fetch_all(&self.pool)
             .await
-            .map_err(|e| DatabaseError::QueryFailed(format!("Failed to get table schema: {}", e)))?;
+            .map_err(|e| {
+                DatabaseError::QueryFailed(format!("Failed to get table schema: {}", e))
+            })?;
 
         let columns: Vec<ColumnInfo> = rows
             .iter()
@@ -328,7 +333,7 @@ impl PostgresPreparedStatement {
 impl PreparedStatement for PostgresPreparedStatement {
     async fn query(&self, params: &[Value]) -> Result<QueryResult, DatabaseError> {
         let start = std::time::Instant::now();
-        
+
         if params.len() != self.parameter_count {
             return Err(DatabaseError::InvalidQuery(format!(
                 "Expected {} parameters, got {}",
@@ -338,7 +343,7 @@ impl PreparedStatement for PostgresPreparedStatement {
         }
 
         let mut query = sqlx::query(&self.sql);
-        
+
         // Bind parameters
         for param in params {
             query = bind_value(query, param)?;
@@ -352,14 +357,16 @@ impl PreparedStatement for PostgresPreparedStatement {
 
         // Convert to QueryResult
         let columns: Vec<ColumnInfo> = if let Some(first_row) = rows.first() {
-            first_row.columns().iter().map(|c| {
-                ColumnInfo {
+            first_row
+                .columns()
+                .iter()
+                .map(|c| ColumnInfo {
                     name: Column::name(c).to_string(),
                     data_type: Column::type_info(c).name().to_string(),
                     nullable: true,
                     max_length: None,
-                }
-            }).collect()
+                })
+                .collect()
         } else {
             Vec::new()
         };
@@ -401,7 +408,7 @@ impl PreparedStatement for PostgresPreparedStatement {
 
     async fn execute(&self, params: &[Value]) -> Result<ExecuteResult, DatabaseError> {
         let start = std::time::Instant::now();
-        
+
         if params.len() != self.parameter_count {
             return Err(DatabaseError::InvalidQuery(format!(
                 "Expected {} parameters, got {}",
@@ -411,7 +418,7 @@ impl PreparedStatement for PostgresPreparedStatement {
         }
 
         let mut query = sqlx::query(&self.sql);
-        
+
         // Bind parameters
         for param in params {
             query = bind_value(query, param)?;

@@ -30,7 +30,7 @@ impl PubSubManager {
     /// Send notification to a channel
     pub async fn notify(&self, channel: &str, payload: &str) -> Result<(), DatabaseError> {
         let sql = format!("NOTIFY {}, '{}'", channel, payload);
-        
+
         sqlx::query(&sql)
             .execute(&self.pool)
             .await
@@ -40,10 +40,15 @@ impl PubSubManager {
     }
 
     /// Send JSON notification
-    pub async fn notify_json(&self, channel: &str, payload: &JsonValue) -> Result<(), DatabaseError> {
-        let payload_str = serde_json::to_string(payload)
-            .map_err(|e| DatabaseError::SerializationFailed(format!("JSON serialization failed: {}", e)))?;
-        
+    pub async fn notify_json(
+        &self,
+        channel: &str,
+        payload: &JsonValue,
+    ) -> Result<(), DatabaseError> {
+        let payload_str = serde_json::to_string(payload).map_err(|e| {
+            DatabaseError::SerializationFailed(format!("JSON serialization failed: {}", e))
+        })?;
+
         self.notify(channel, &payload_str).await
     }
 }

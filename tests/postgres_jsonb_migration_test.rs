@@ -17,7 +17,9 @@ mod postgres_jsonb_tests {
             .build()
             .expect("Failed to build config");
 
-        PostgresEngine::new(config).await.expect("Failed to create engine")
+        PostgresEngine::new(config)
+            .await
+            .expect("Failed to create engine")
     }
 
     #[tokio::test]
@@ -145,7 +147,9 @@ mod postgres_jsonb_tests {
         .expect("Failed to setup");
 
         // Query JSONB path
-        let result = handler.query_jsonb_path("test_query", "data", "user.name", None).await;
+        let result = handler
+            .query_jsonb_path("test_query", "data", "user.name", None)
+            .await;
 
         assert!(result.is_ok());
         let values = result.unwrap();
@@ -270,8 +274,8 @@ mod postgres_jsonb_tests {
     #[tokio::test]
     #[ignore] // Requires PostgreSQL server
     async fn test_jsonb_operators_contains() {
-        let builder = JsonbQueryBuilder::new("events", "metadata")
-            .contains(json!({"status": "active"}));
+        let builder =
+            JsonbQueryBuilder::new("events", "metadata").contains(json!({"status": "active"}));
 
         let where_clause = builder.build_where();
         assert!(where_clause.contains("@>"));
@@ -281,8 +285,8 @@ mod postgres_jsonb_tests {
     #[tokio::test]
     #[ignore] // Requires PostgreSQL server
     async fn test_jsonb_operators_has_any_key() {
-        let builder = JsonbQueryBuilder::new("events", "metadata")
-            .has_any_key(&["user_id", "session_id"]);
+        let builder =
+            JsonbQueryBuilder::new("events", "metadata").has_any_key(&["user_id", "session_id"]);
 
         let where_clause = builder.build_where();
         assert!(where_clause.contains("?|"));
@@ -292,8 +296,8 @@ mod postgres_jsonb_tests {
     #[tokio::test]
     #[ignore] // Requires PostgreSQL server
     async fn test_jsonb_operators_has_all_keys() {
-        let builder = JsonbQueryBuilder::new("events", "metadata")
-            .has_all_keys(&["timestamp", "event_type"]);
+        let builder =
+            JsonbQueryBuilder::new("events", "metadata").has_all_keys(&["timestamp", "event_type"]);
 
         let where_clause = builder.build_where();
         assert!(where_clause.contains("?&"));
@@ -301,7 +305,7 @@ mod postgres_jsonb_tests {
     }
 
     #[tokio::test]
-    #[ignore] // Requires PostgreSQL server  
+    #[ignore] // Requires PostgreSQL server
     async fn test_build_jsonb_object() {
         let engine = setup_test_engine().await;
         let handler = engine.jsonb_handler();

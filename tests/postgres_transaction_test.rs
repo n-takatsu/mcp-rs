@@ -21,7 +21,9 @@ mod postgres_transaction_tests {
             .build()
             .expect("Failed to build config");
 
-        let engine = PostgresEngine::new(config).await.expect("Failed to create engine");
+        let engine = PostgresEngine::new(config)
+            .await
+            .expect("Failed to create engine");
         let tx = engine.begin_transaction().await;
         assert!(tx.is_ok(), "Failed to begin transaction");
     }
@@ -38,8 +40,10 @@ mod postgres_transaction_tests {
             .build()
             .expect("Failed to build config");
 
-        let engine = PostgresEngine::new(config).await.expect("Failed to create engine");
-        
+        let engine = PostgresEngine::new(config)
+            .await
+            .expect("Failed to create engine");
+
         for level in &[
             IsolationLevel::ReadUncommitted,
             IsolationLevel::ReadCommitted,
@@ -47,8 +51,12 @@ mod postgres_transaction_tests {
             IsolationLevel::Serializable,
         ] {
             let tx = engine.begin_transaction_with_isolation(*level).await;
-            assert!(tx.is_ok(), "Failed to create transaction with isolation level: {:?}", level);
-            
+            assert!(
+                tx.is_ok(),
+                "Failed to create transaction with isolation level: {:?}",
+                level
+            );
+
             if let Ok(tx) = tx {
                 assert_eq!(tx.isolation_level(), Some(*level));
             }
@@ -67,8 +75,13 @@ mod postgres_transaction_tests {
             .build()
             .expect("Failed to build config");
 
-        let engine = PostgresEngine::new(config).await.expect("Failed to create engine");
-        let mut tx = engine.begin_transaction().await.expect("Failed to begin transaction");
+        let engine = PostgresEngine::new(config)
+            .await
+            .expect("Failed to create engine");
+        let mut tx = engine
+            .begin_transaction()
+            .await
+            .expect("Failed to begin transaction");
 
         // Create savepoint
         let result = tx.create_savepoint("sp1").await;
@@ -93,9 +106,15 @@ mod postgres_transaction_tests {
 
     #[test]
     fn test_isolation_level_string_representation() {
-        assert_eq!(IsolationLevel::ReadUncommitted.to_string(), "READ UNCOMMITTED");
+        assert_eq!(
+            IsolationLevel::ReadUncommitted.to_string(),
+            "READ UNCOMMITTED"
+        );
         assert_eq!(IsolationLevel::ReadCommitted.to_string(), "READ COMMITTED");
-        assert_eq!(IsolationLevel::RepeatableRead.to_string(), "REPEATABLE READ");
+        assert_eq!(
+            IsolationLevel::RepeatableRead.to_string(),
+            "REPEATABLE READ"
+        );
         assert_eq!(IsolationLevel::Serializable.to_string(), "SERIALIZABLE");
     }
 
@@ -111,14 +130,23 @@ mod postgres_transaction_tests {
             .build()
             .expect("Failed to build config");
 
-        let engine = PostgresEngine::new(config).await.expect("Failed to create engine");
-        let tx = engine.begin_transaction().await.expect("Failed to begin transaction");
+        let engine = PostgresEngine::new(config)
+            .await
+            .expect("Failed to create engine");
+        let tx = engine
+            .begin_transaction()
+            .await
+            .expect("Failed to begin transaction");
 
         // Wait a bit
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
         let duration = tx.duration_ms();
-        assert!(duration >= 100, "Transaction duration should be at least 100ms, got {}ms", duration);
+        assert!(
+            duration >= 100,
+            "Transaction duration should be at least 100ms, got {}ms",
+            duration
+        );
     }
 
     #[tokio::test]
@@ -133,8 +161,13 @@ mod postgres_transaction_tests {
             .build()
             .expect("Failed to build config");
 
-        let engine = PostgresEngine::new(config).await.expect("Failed to create engine");
-        let tx = engine.begin_transaction().await.expect("Failed to begin transaction");
+        let engine = PostgresEngine::new(config)
+            .await
+            .expect("Failed to create engine");
+        let tx = engine
+            .begin_transaction()
+            .await
+            .expect("Failed to begin transaction");
 
         assert!(tx.is_active().await, "Transaction should be active");
     }

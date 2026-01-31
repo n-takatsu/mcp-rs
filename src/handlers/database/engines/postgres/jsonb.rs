@@ -31,7 +31,8 @@ impl JsonbQueryBuilder {
 
     /// Add a path extraction condition: column->'key'
     pub fn extract_path(mut self, path: &str) -> Self {
-        self.conditions.push(format!("{}->>'{}'", self.column, path));
+        self.conditions
+            .push(format!("{}->>'{}'", self.column, path));
         self
     }
 
@@ -59,21 +60,25 @@ impl JsonbQueryBuilder {
 
     /// Check if JSONB contains any of the keys: column ?| array
     pub fn has_any_key(mut self, keys: &[&str]) -> Self {
-        let keys_str = keys.iter()
+        let keys_str = keys
+            .iter()
             .map(|k| format!("'{}'", k))
             .collect::<Vec<_>>()
             .join(",");
-        self.conditions.push(format!("{} ?| ARRAY[{}]", self.column, keys_str));
+        self.conditions
+            .push(format!("{} ?| ARRAY[{}]", self.column, keys_str));
         self
     }
 
     /// Check if JSONB contains all keys: column ?& array
     pub fn has_all_keys(mut self, keys: &[&str]) -> Self {
-        let keys_str = keys.iter()
+        let keys_str = keys
+            .iter()
             .map(|k| format!("'{}'", k))
             .collect::<Vec<_>>()
             .join(",");
-        self.conditions.push(format!("{} ?& ARRAY[{}]", self.column, keys_str));
+        self.conditions
+            .push(format!("{} ?& ARRAY[{}]", self.column, keys_str));
         self
     }
 
@@ -128,7 +133,7 @@ impl JsonbHandler {
         data: &JsonValue,
     ) -> Result<ExecuteResult, DatabaseError> {
         let sql = format!("INSERT INTO {} ({}) VALUES ($1)", table, column);
-        
+
         let result = sqlx::query(&sql)
             .bind(data)
             .execute(&self.pool)
@@ -157,7 +162,9 @@ impl JsonbHandler {
         value: &JsonValue,
         condition: Option<&str>,
     ) -> Result<ExecuteResult, DatabaseError> {
-        let where_clause = condition.map(|c| format!(" WHERE {}", c)).unwrap_or_default();
+        let where_clause = condition
+            .map(|c| format!(" WHERE {}", c))
+            .unwrap_or_default();
         let sql = format!(
             "UPDATE {} SET {} = jsonb_set({}, '{}', $1){}",
             table, column, column, path, where_clause
@@ -190,16 +197,17 @@ impl JsonbHandler {
         path: &str,
         condition: Option<&str>,
     ) -> Result<ExecuteResult, DatabaseError> {
-        let where_clause = condition.map(|c| format!(" WHERE {}", c)).unwrap_or_default();
+        let where_clause = condition
+            .map(|c| format!(" WHERE {}", c))
+            .unwrap_or_default();
         let sql = format!(
             "UPDATE {} SET {} = {} #- '{}'{}",
             table, column, column, path, where_clause
         );
 
-        let result = sqlx::query(&sql)
-            .execute(&self.pool)
-            .await
-            .map_err(|e| DatabaseError::QueryFailed(format!("JSONB path deletion failed: {}", e)))?;
+        let result = sqlx::query(&sql).execute(&self.pool).await.map_err(|e| {
+            DatabaseError::QueryFailed(format!("JSONB path deletion failed: {}", e))
+        })?;
 
         Ok(ExecuteResult {
             rows_affected: result.rows_affected(),
@@ -222,16 +230,24 @@ impl JsonbHandler {
         path: &str,
         condition: Option<&str>,
     ) -> Result<Vec<JsonValue>, DatabaseError> {
-        let path_expr = path.split('.').enumerate().fold(column.to_string(), |acc, (i, p)| {
-            if i == path.split('.').count() - 1 {
-                format!("{}->>'{}' ", acc, p)
-            } else {
-                format!("{}->'{}' ", acc, p)
-            }
-        });
+        let path_expr = path
+            .split('.')
+            .enumerate()
+            .fold(column.to_string(), |acc, (i, p)| {
+                if i == path.split('.').count() - 1 {
+                    format!("{}->>'{}' ", acc, p)
+                } else {
+                    format!("{}->'{}' ", acc, p)
+                }
+            });
 
-        let where_clause = condition.map(|c| format!(" WHERE {}", c)).unwrap_or_default();
-        let sql = format!("SELECT {} as value FROM {}{}", path_expr, table, where_clause);
+        let where_clause = condition
+            .map(|c| format!(" WHERE {}", c))
+            .unwrap_or_default();
+        let sql = format!(
+            "SELECT {} as value FROM {}{}",
+            path_expr, table, where_clause
+        );
 
         let rows = sqlx::query(&sql)
             .fetch_all(&self.pool)
@@ -262,17 +278,20 @@ impl JsonbHandler {
         column: &str,
         condition: Option<&str>,
     ) -> Result<JsonValue, DatabaseError> {
-        let where_clause = condition.map(|c| format!(" WHERE {}", c)).unwrap_or_default();
-        let sql = format!("SELECT jsonb_agg({}) as agg FROM {}{}", column, table, where_clause);
+        let where_clause = condition
+            .map(|c| format!(" WHERE {}", c))
+            .unwrap_or_default();
+        let sql = format!(
+            "SELECT jsonb_agg({}) as agg FROM {}{}",
+            column, table, where_clause
+        );
 
         let row = sqlx::query(&sql)
             .fetch_one(&self.pool)
             .await
             .map_err(|e| DatabaseError::QueryFailed(format!("JSONB aggregation failed: {}", e)))?;
 
-        let result: JsonValue = row
-            .try_get("agg")
-            .unwrap_or(JsonValue::Null);
+        let result: JsonValue = row.try_get("agg").unwrap_or(JsonValue::Null);
 
         Ok(result)
     }
@@ -295,7 +314,9 @@ impl JsonbHandler {
             .map(|(key, col)| format!("'{}', {}", key, col))
             .collect();
 
-        let where_clause = condition.map(|c| format!(" WHERE {}", c)).unwrap_or_default();
+        let where_clause = condition
+            .map(|c| format!(" WHERE {}", c))
+            .unwrap_or_default();
         let sql = format!(
             "SELECT jsonb_build_object({}) as obj FROM {}{}",
             field_pairs.join(", "),
@@ -368,10 +389,9 @@ impl JsonbHandler {
             idx_name, table, column, path_expr
         );
 
-        let result = sqlx::query(&sql)
-            .execute(&self.pool)
-            .await
-            .map_err(|e| DatabaseError::QueryFailed(format!("GIN path index creation failed: {}", e)))?;
+        let result = sqlx::query(&sql).execute(&self.pool).await.map_err(|e| {
+            DatabaseError::QueryFailed(format!("GIN path index creation failed: {}", e))
+        })?;
 
         Ok(ExecuteResult {
             rows_affected: result.rows_affected(),
@@ -452,8 +472,8 @@ mod tests {
 
     #[test]
     fn test_jsonb_query_builder_keys() {
-        let builder = JsonbQueryBuilder::new("events", "metadata")
-            .has_any_key(&["user_id", "session_id"]);
+        let builder =
+            JsonbQueryBuilder::new("events", "metadata").has_any_key(&["user_id", "session_id"]);
 
         let where_clause = builder.build_where();
         assert!(where_clause.contains("?|"));

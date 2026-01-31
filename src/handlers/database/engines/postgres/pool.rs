@@ -80,7 +80,7 @@ impl PoolMetrics {
     pub fn update_from_pool(&mut self, pool: &PgPool) {
         self.connections = pool.size();
         self.idle_connections = pool.num_idle() as u32;
-        
+
         // Calculate efficiency as ratio of active connections to total
         if self.connections > 0 {
             let active = self.connections.saturating_sub(self.idle_connections);
@@ -212,11 +212,11 @@ mod tests {
         let mut metrics = PoolMetrics::default();
         metrics.connections = 100;
         metrics.idle_connections = 10;
-        
+
         // Manually calculate efficiency
         let active = metrics.connections - metrics.idle_connections;
         metrics.efficiency = active as f64 / metrics.connections as f64;
-        
+
         assert_eq!(metrics.efficiency, 0.9);
         assert!(metrics.meets_target_efficiency());
     }
@@ -226,10 +226,10 @@ mod tests {
         let mut metrics = PoolMetrics::default();
         metrics.connections = 100;
         metrics.idle_connections = 50;
-        
+
         let active = metrics.connections - metrics.idle_connections;
         metrics.efficiency = active as f64 / metrics.connections as f64;
-        
+
         assert_eq!(metrics.efficiency, 0.5);
         assert!(!metrics.meets_target_efficiency());
     }

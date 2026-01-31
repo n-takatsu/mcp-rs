@@ -2,7 +2,7 @@
 //!
 //! Benchmarks for JSONB operations and comparisons
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion, BenchmarkId};
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use serde_json::json;
 
 #[cfg(feature = "postgresql-backend")]
@@ -22,7 +22,9 @@ mod jsonb_benchmarks {
             .build()
             .expect("Failed to build config");
 
-        PostgresEngine::new(config).await.expect("Failed to create engine")
+        PostgresEngine::new(config)
+            .await
+            .expect("Failed to create engine")
     }
 
     async fn setup_test_data(handler: &JsonbHandler) {
@@ -53,33 +55,36 @@ mod jsonb_benchmarks {
                 "active": i % 2 == 0
             });
 
-            handler.insert_jsonb("bench_jsonb", "data", &data)
+            handler
+                .insert_jsonb("bench_jsonb", "data", &data)
                 .await
                 .expect("Failed to insert data");
         }
 
         // Create GIN index
-        handler.create_gin_index("bench_jsonb", "data", Some("bench_data_gin"))
+        handler
+            .create_gin_index("bench_jsonb", "data", Some("bench_data_gin"))
             .await
             .expect("Failed to create index");
     }
 
     pub fn bench_jsonb_insert(c: &mut Criterion) {
         let rt = tokio::runtime::Runtime::new().unwrap();
-        
+
         c.bench_function("jsonb_insert", |b| {
             b.iter(|| {
                 rt.block_on(async {
                     let engine = setup_engine().await;
                     let handler = engine.jsonb_handler();
-                    
+
                     let data = json!({
                         "name": "Benchmark User",
                         "age": 30,
                         "tags": ["test", "benchmark"]
                     });
 
-                    handler.insert_jsonb("bench_jsonb", "data", &data)
+                    handler
+                        .insert_jsonb("bench_jsonb", "data", &data)
                         .await
                         .expect("Insert failed");
                 })
@@ -89,7 +94,7 @@ mod jsonb_benchmarks {
 
     pub fn bench_jsonb_query_with_gin(c: &mut Criterion) {
         let rt = tokio::runtime::Runtime::new().unwrap();
-        
+
         rt.block_on(async {
             let engine = setup_engine().await;
             let handler = engine.jsonb_handler();
@@ -101,8 +106,14 @@ mod jsonb_benchmarks {
                 rt.block_on(async {
                     let engine = setup_engine().await;
                     let handler = engine.jsonb_handler();
-                    
-                    handler.query_jsonb_path("bench_jsonb", "data", "city", Some("data->>'city' = 'Tokyo'"))
+
+                    handler
+                        .query_jsonb_path(
+                            "bench_jsonb",
+                            "data",
+                            "city",
+                            Some("data->>'city' = 'Tokyo'"),
+                        )
                         .await
                         .expect("Query failed");
                 })
@@ -118,15 +129,13 @@ mod jsonb_benchmarks {
                 rt.block_on(async {
                     let engine = setup_engine().await;
                     let pool = engine.pool();
-                    
-                    let result = sqlx::query(
-                        "SELECT COUNT(*) FROM bench_jsonb WHERE data @> $1"
-                    )
-                    .bind(json!({"active": true}))
-                    .fetch_one(pool)
-                    .await
-                    .expect("Query failed");
-                    
+
+                    let result = sqlx::query("SELECT COUNT(*) FROM bench_jsonb WHERE data @> $1")
+                        .bind(json!({"active": true}))
+                        .fetch_one(pool)
+                        .await
+                        .expect("Query failed");
+
                     black_box(result);
                 })
             });
@@ -141,16 +150,17 @@ mod jsonb_benchmarks {
                 rt.block_on(async {
                     let engine = setup_engine().await;
                     let handler = engine.jsonb_handler();
-                    
-                    handler.update_jsonb_field(
-                        "bench_jsonb",
-                        "data",
-                        "{age}",
-                        &json!(31),
-                        Some("id = 1")
-                    )
-                    .await
-                    .expect("Update failed");
+
+                    handler
+                        .update_jsonb_field(
+                            "bench_jsonb",
+                            "data",
+                            "{age}",
+                            &json!(31),
+                            Some("id = 1"),
+                        )
+                        .await
+                        .expect("Update failed");
                 })
             });
         });
@@ -164,14 +174,11 @@ mod jsonb_benchmarks {
                 rt.block_on(async {
                     let engine = setup_engine().await;
                     let handler = engine.jsonb_handler();
-                    
-                    handler.aggregate_jsonb(
-                        "bench_jsonb",
-                        "data",
-                        Some("data->>'city' = 'Tokyo'")
-                    )
-                    .await
-                    .expect("Aggregation failed");
+
+                    handler
+                        .aggregate_jsonb("bench_jsonb", "data", Some("data->>'city' = 'Tokyo'"))
+                        .await
+                        .expect("Aggregation failed");
                 })
             });
         });
@@ -184,7 +191,7 @@ mod jsonb_benchmarks {
                     .has_key("timestamp")
                     .contains(json!({"status": "active"}))
                     .has_any_key(&["user_id", "session_id"]);
-                
+
                 black_box(builder.build_select());
             });
         });
@@ -194,22 +201,22 @@ mod jsonb_benchmarks {
         let rt = tokio::runtime::Runtime::new().unwrap();
 
         let mut group = c.benchmark_group("jsonb_path_extraction");
-        
+
         for depth in [1, 2, 3, 4].iter() {
             group.bench_with_input(BenchmarkId::from_parameter(depth), depth, |b, &depth| {
                 b.iter(|| {
                     rt.block_on(async {
                         let engine = setup_engine().await;
                         let pool = engine.pool();
-                        
+
                         let path = (0..depth).map(|_| "->''").collect::<String>();
                         let sql = format!("SELECT data{} FROM bench_jsonb LIMIT 100", path);
-                        
+
                         let result = sqlx::query(&sql)
                             .fetch_all(pool)
                             .await
                             .expect("Query failed");
-                        
+
                         black_box(result);
                     })
                 });
