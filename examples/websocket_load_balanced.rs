@@ -23,8 +23,9 @@ use axum::{
     routing::get,
     Router,
 };
+use mcp_rs::transport::websocket::types::PoolConfig;
 use mcp_rs::transport::websocket::{
-    ConnectionPool, PoolConfig, RateLimitConfig, RateLimitStrategy, RateLimiter, WebSocketMetrics,
+    ConnectionPool, RateLimitConfig, RateLimitStrategy, RateLimiter, WebSocketMetrics,
 };
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
