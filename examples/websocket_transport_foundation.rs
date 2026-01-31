@@ -50,8 +50,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Step 3: WebSocketTransportの作成
     println!("Step 3: WebSocketTransportの作成");
-    let transport = WebSocketTransport::new(pool_config, stream_config)?
-        .with_url("ws://localhost:8080");
+    let transport =
+        WebSocketTransport::new(pool_config, stream_config)?.with_url("ws://localhost:8080");
     println!("  ✓ WebSocketTransportを作成しました");
     println!();
 
@@ -89,10 +89,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  - 待機リクエスト数: {}", pool_stats.pending_requests);
     println!("  - 総リクエスト数: {}", pool_stats.total_requests);
     println!("  - 失敗リクエスト数: {}", pool_stats.failed_requests);
-    println!(
-        "  - 平均待機時間: {:.2}ms",
-        pool_stats.avg_wait_time_ms
-    );
+    println!("  - 平均待機時間: {:.2}ms", pool_stats.avg_wait_time_ms);
     println!();
 
     // Note: 実際の接続開始は、WebSocketサーバーが起動している必要があります

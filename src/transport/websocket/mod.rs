@@ -92,7 +92,7 @@ impl WebSocketTransport {
     pub fn builder() -> WebSocketConfigBuilder {
         WebSocketConfigBuilder::new()
     }
-    
+
     /// 設定から作成
     pub fn from_config(config: WebSocketConfig) -> Result<Self> {
         Self::new(config)
@@ -102,7 +102,7 @@ impl WebSocketTransport {
     pub fn config(&self) -> &WebSocketConfig {
         &self.config
     }
-    
+
     /// サーバーモードかどうか
     pub fn is_server_mode(&self) -> bool {
         self.config.server_mode
@@ -187,25 +187,26 @@ impl Transport for WebSocketTransport {
         if self.config.server_mode {
             // サーバーモード：WebSocketサーバーを起動
             // URLからSocketAddrをパース (ws://host:port -> host:port)
-            let addr_str = self.config.url
+            let addr_str = self
+                .config
+                .url
                 .trim_start_matches("ws://")
                 .trim_start_matches("wss://");
-            let bind_addr: SocketAddr = addr_str.parse()
+            let bind_addr: SocketAddr = addr_str
+                .parse()
                 .map_err(|e| Error::ConnectionError(format!("Invalid bind address: {}", e)))?;
-            
+
             let server_config = ServerConfig {
                 bind_addr,
                 max_connections: self.config.max_connections,
                 max_message_size: self.config.max_message_size,
                 ping_interval: std::time::Duration::from_secs(self.config.heartbeat_interval),
-                timeout: std::time::Duration::from_secs(
-                    self.config.timeout_seconds.unwrap_or(30),
-                ),
+                timeout: std::time::Duration::from_secs(self.config.timeout_seconds.unwrap_or(30)),
             };
-            
+
             let mut server = WebSocketServer::new(server_config);
             server.start().await?;
-            
+
             let mut srv = self.server.lock().await;
             *srv = Some(server);
         } else {
@@ -296,7 +297,10 @@ impl Transport for WebSocketTransport {
                 url: self.config.url.clone(),
             },
             description: if self.config.server_mode {
-                format!("WebSocket Server with connection pooling (max: {})", self.config.max_connections)
+                format!(
+                    "WebSocket Server with connection pooling (max: {})",
+                    self.config.max_connections
+                )
             } else {
                 "WebSocket Client with connection pooling".to_string()
             },
@@ -343,7 +347,7 @@ mod tests {
             .max_connections(100)
             .timeout(30)
             .build();
-        
+
         let transport = WebSocketTransport::from_config(config).unwrap();
         assert!(transport.is_server_mode());
     }
