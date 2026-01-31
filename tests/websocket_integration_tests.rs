@@ -3,9 +3,10 @@
 //! WebSocket機能の統合テスト
 
 use mcp_rs::transport::websocket::{
-    CompressionConfig, CompressionManager, CompressionType, ConnectionPool, PoolConfig,
+    CompressionConfig, CompressionManager, CompressionType, ConnectionPool,
     RateLimitConfig, RateLimitStrategy, RateLimiter, WebSocketMetrics,
 };
+use mcp_rs::transport::websocket::types::PoolConfig;
 use std::time::Duration;
 
 #[tokio::test]
