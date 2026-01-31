@@ -8,20 +8,31 @@
 //! - Full-text search capabilities
 //! - Query performance analysis
 
+pub mod advanced;
+pub mod batch;
 pub mod config;
 pub mod connection;
 pub mod error;
 pub mod jsonb;
 pub mod migration;
+pub mod notify;
 pub mod pool;
+pub mod streaming;
 pub mod transaction;
 
+pub use advanced::{AdvancedQueryHandler, CteBuilder, RankType, WindowBuilder};
+pub use batch::{BatchHandler, BatchInsertOptions};
 pub use config::{PostgresConfig, PostgresConfigBuilder};
 pub use connection::{PostgresConnection, PostgresPreparedStatement};
 pub use error::{PostgresError, Result};
 pub use jsonb::{JsonbHandler, JsonbQueryBuilder};
 pub use migration::{MigrationInfo, MigrationManager};
+pub use notify::{Notification, NotificationQueue, PubSubManager, SimpleListener};
 pub use pool::{create_optimized_pool, OptimizedPoolConfig, PoolMetrics};
+pub use streaming::{
+    AggregateStats, PaginatedResult, StreamAggregator, StreamHandler,
+    StreamOptions, StreamRow,
+};
 pub use transaction::PostgresTransaction;
 
 use crate::handlers::database::{DatabaseEngine, DatabaseConnection};
@@ -109,6 +120,26 @@ impl PostgresEngine {
     /// Get migration manager for this engine
     pub fn migration_manager(&self, migrations_path: impl Into<String>) -> MigrationManager {
         MigrationManager::new(self.pool.clone(), migrations_path)
+    }
+
+    /// Get advanced query handler for CTEs, Window Functions, etc.
+    pub fn advanced_query_handler(&self) -> AdvancedQueryHandler {
+        AdvancedQueryHandler::new(self.pool.clone())
+    }
+
+    /// Get pub/sub manager for LISTEN/NOTIFY
+    pub fn pubsub_manager(&self) -> PubSubManager {
+        PubSubManager::new(self.pool.clone())
+    }
+
+    /// Get batch processing handler
+    pub fn batch_handler(&self) -> BatchHandler {
+        BatchHandler::new(self.pool.clone())
+    }
+
+    /// Get streaming handler for large result sets
+    pub fn stream_handler(&self) -> StreamHandler {
+        StreamHandler::new(self.pool.clone())
     }
 
     /// Begin a new transaction
