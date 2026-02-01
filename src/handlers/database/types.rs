@@ -176,7 +176,7 @@ pub enum DatabaseFeature {
     Acid,
     EventualConsistency,
     // PostgreSQL特有の機能
-    JSONB,
+    Jsonb,
     CTEs,
     WindowFunctions,
     Notifications,

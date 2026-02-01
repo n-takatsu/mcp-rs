@@ -221,7 +221,7 @@ impl DatabaseEngine for PostgresEngine {
         vec![
             DatabaseFeature::Transactions,
             DatabaseFeature::PreparedStatements,
-            DatabaseFeature::JSONB,
+            DatabaseFeature::Jsonb,
             DatabaseFeature::FullTextSearch,
             DatabaseFeature::CTEs,
             DatabaseFeature::WindowFunctions,

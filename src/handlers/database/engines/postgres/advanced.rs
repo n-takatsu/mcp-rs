@@ -205,8 +205,7 @@ impl AdvancedQueryHandler {
             .map(|row| {
                 row.columns()
                     .iter()
-                    .enumerate()
-                    .map(|(i, _)| {
+                    .map(|_| {
                         // Simplified value extraction
                         crate::handlers::database::types::Value::Null
                     })
