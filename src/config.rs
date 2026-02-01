@@ -711,6 +711,7 @@ impl McpConfig {
                 cors_enabled: http.enable_cors.unwrap_or(true),
                 max_request_size: 1048576,
                 timeout_ms: 30000,
+                network_policy: crate::security::NetworkPolicy::default(),
             }
         } else {
             crate::transport::http::HttpConfig::default()

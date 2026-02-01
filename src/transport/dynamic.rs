@@ -142,6 +142,7 @@ impl DynamicTransportManager {
                     cors_enabled: true,
                     max_request_size: 1024 * 1024,
                     timeout_ms: 30000,
+                    network_policy: crate::security::NetworkPolicy::default(),
                 };
 
                 // Start HTTP server with graceful shutdown support

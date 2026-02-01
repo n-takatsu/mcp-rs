@@ -7,6 +7,7 @@ pub mod image_scanner;
 #[cfg(feature = "mfa")]
 pub mod mfa;
 pub mod mtls;
+pub mod network_policy;
 pub mod rate_limiter;
 pub mod secure_server;
 pub mod sql_injection_protection;
@@ -48,6 +49,7 @@ pub use mtls::{
     OcspResponse, OcspStatus, RevocationReason, RotationConfig, RotationEvent, RotationScheduler,
     RotationStatus, StoreConfig, Subject, VerificationResult,
 };
+pub use network_policy::{NetworkPolicy, NetworkPolicyError};
 pub use rate_limiter::RateLimiter;
 pub use secure_server::{SecureMcpServer, SecurityConfig, SecurityMetrics};
 pub use sql_injection_protection::{

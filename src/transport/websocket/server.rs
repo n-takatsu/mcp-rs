@@ -2,7 +2,10 @@
 //!
 //! Axumベースのフル機能WebSocketサーバー
 
-use crate::error::{Error, Result};
+use crate::{
+    error::{Error, Result},
+    security::NetworkPolicy,
+};
 use axum::{
     extract::{
         ws::{Message, WebSocket},
@@ -42,6 +45,8 @@ pub struct ServerConfig {
     pub ping_interval: Duration,
     /// タイムアウト
     pub timeout: Duration,
+    /// ネットワークアクセスポリシー
+    pub network_policy: NetworkPolicy,
 }
 
 impl Default for ServerConfig {
@@ -52,6 +57,7 @@ impl Default for ServerConfig {
             max_message_size: 16 * 1024 * 1024, // 16MB
             ping_interval: Duration::from_secs(30),
             timeout: Duration::from_secs(60),
+            network_policy: NetworkPolicy::default(),
         }
     }
 }
@@ -200,7 +206,12 @@ impl WebSocketServer {
         }
 
         let bind_addr = self.state.config.bind_addr;
-
+        // Validate bind address
+        self.state
+            .config
+            .network_policy
+            .validate_bind_address(&bind_addr)
+            .map_err(|e| Error::Server(format!("Bind address validation failed: {}", e)))?;
         // Axumアプリを構築
         let app = Router::new()
             .route("/ws", get(websocket_handler))
@@ -286,6 +297,15 @@ async fn websocket_handler(
     State(state): State<ServerState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
 ) -> Response {
+    // Validate network policy
+    if let Err(e) = state.config.network_policy.validate_connection(&addr) {
+        warn!("Connection rejected from {}: {}", addr, e);
+        return axum::http::Response::builder()
+            .status(403)
+            .body("Forbidden".into())
+            .unwrap();
+    }
+
     // 接続数チェック
     if state.active_connections().await >= state.config.max_connections {
         warn!("Max connections reached, rejecting {}", addr);
