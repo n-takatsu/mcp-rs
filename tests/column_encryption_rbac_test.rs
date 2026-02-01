@@ -1,5 +1,7 @@
 //! Column Encryption RBAC Integration Tests
 
+#![cfg(feature = "database")]
+
 #[cfg(test)]
 mod tests {
     use mcp_rs::handlers::database::column_encryption_rbac::{
