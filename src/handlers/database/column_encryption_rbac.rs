@@ -157,7 +157,7 @@ impl ColumnEncryptionRbac {
         operation: EncryptionOperation,
     ) -> Result<bool> {
         // ワイルドカード一致または完全一致をチェック
-        let result = sqlx::query!(
+        let result = sqlx::query_as::<_, (Option<bool>, Option<bool>, Option<bool>)>(
             r#"
             SELECT can_encrypt, can_decrypt, can_rotate_key
             FROM column_encryption_permissions
@@ -168,20 +168,20 @@ impl ColumnEncryptionRbac {
                 CASE WHEN table_name = '*' THEN 1 ELSE 0 END,
                 CASE WHEN column_name = '*' THEN 1 ELSE 0 END
             LIMIT 1
-            "#,
-            role_name,
-            table,
-            column
+            "#
         )
+        .bind(role_name)
+        .bind(table)
+        .bind(column)
         .fetch_optional(&self.pool)
         .await
-        .map_err(|e| Error::Database(e.to_string()))?;
+        .map_err(|e| Error::Internal(format!("Database error: {}", e)))?;
 
-        if let Some(perm) = result {
+        if let Some((can_encrypt, can_decrypt, can_rotate_key)) = result {
             let has_permission = match operation {
-                EncryptionOperation::Encrypt => perm.can_encrypt.unwrap_or(false),
-                EncryptionOperation::Decrypt => perm.can_decrypt.unwrap_or(false),
-                EncryptionOperation::RotateKey => perm.can_rotate_key.unwrap_or(false),
+                EncryptionOperation::Encrypt => can_encrypt.unwrap_or(false),
+                EncryptionOperation::Decrypt => can_decrypt.unwrap_or(false),
+                EncryptionOperation::RotateKey => can_rotate_key.unwrap_or(false),
             };
             Ok(has_permission)
         } else {
@@ -191,24 +191,24 @@ impl ColumnEncryptionRbac {
 
     /// 監査ログを記録
     pub async fn audit_log(&self, log: &EncryptionAuditLog) -> Result<()> {
-        sqlx::query!(
+        sqlx::query(
             r#"
             INSERT INTO encryption_audit_log 
             (user_id, operation, table_name, column_name, success, error_message, request_ip, user_agent)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-            "#,
-            log.user_id,
-            log.operation.to_string(),
-            log.table_name,
-            log.column_name,
-            log.success,
-            log.error_message,
-            log.request_ip,
-            log.user_agent,
+            "#
         )
+        .bind(&log.user_id)
+        .bind(log.operation.to_string())
+        .bind(&log.table_name)
+        .bind(&log.column_name)
+        .bind(log.success)
+        .bind(&log.error_message)
+        .bind(&log.request_ip)
+        .bind(&log.user_agent)
         .execute(&self.pool)
         .await
-        .map_err(|e| Error::Database(e.to_string()))?;
+        .map_err(|e| Error::Internal(format!("Database error: {}", e)))?;
 
         if log.success {
             debug!(
@@ -239,7 +239,7 @@ impl ColumnEncryptionRbac {
         can_decrypt: bool,
         can_rotate_key: bool,
     ) -> Result<()> {
-        sqlx::query!(
+        sqlx::query(
             r#"
             INSERT INTO column_encryption_permissions 
             (role_name, table_name, column_name, can_encrypt, can_decrypt, can_rotate_key)
@@ -249,17 +249,17 @@ impl ColumnEncryptionRbac {
                 can_encrypt = EXCLUDED.can_encrypt,
                 can_decrypt = EXCLUDED.can_decrypt,
                 can_rotate_key = EXCLUDED.can_rotate_key
-            "#,
-            role_name,
-            table,
-            column,
-            can_encrypt,
-            can_decrypt,
-            can_rotate_key,
+            "#
         )
+        .bind(role_name)
+        .bind(table)
+        .bind(column)
+        .bind(can_encrypt)
+        .bind(can_decrypt)
+        .bind(can_rotate_key)
         .execute(&self.pool)
         .await
-        .map_err(|e| Error::Database(e.to_string()))?;
+        .map_err(|e| Error::Internal(format!("Database error: {}", e)))?;
 
         // キャッシュをクリア
         self.clear_cache().await;
@@ -279,15 +279,15 @@ impl ColumnEncryptionRbac {
         table: &str,
         column: &str,
     ) -> Result<()> {
-        sqlx::query!(
-            "DELETE FROM column_encryption_permissions WHERE role_name = $1 AND table_name = $2 AND column_name = $3",
-            role_name,
-            table,
-            column,
+        sqlx::query(
+            "DELETE FROM column_encryption_permissions WHERE role_name = $1 AND table_name = $2 AND column_name = $3"
         )
+        .bind(role_name)
+        .bind(table)
+        .bind(column)
         .execute(&self.pool)
         .await
-        .map_err(|e| Error::Database(e.to_string()))?;
+        .map_err(|e| Error::Internal(format!("Database error: {}", e)))?;
 
         // キャッシュをクリア
         self.clear_cache().await;
@@ -314,9 +314,11 @@ impl ColumnEncryptionRbac {
         table: Option<&str>,
         limit: i64,
     ) -> Result<Vec<EncryptionAuditLog>> {
-        let logs = match (user_id, table) {
+        type LogRow = (String, String, String, String, bool, Option<String>, Option<String>, Option<String>);
+        
+        let logs: Vec<LogRow> = match (user_id, table) {
             (Some(uid), Some(tbl)) => {
-                sqlx::query!(
+                sqlx::query_as(
                     r#"
                     SELECT user_id, operation, table_name, column_name, success, 
                            error_message, request_ip, user_agent
@@ -324,16 +326,16 @@ impl ColumnEncryptionRbac {
                     WHERE user_id = $1 AND table_name = $2
                     ORDER BY timestamp DESC
                     LIMIT $3
-                    "#,
-                    uid,
-                    tbl,
-                    limit
+                    "#
                 )
+                .bind(uid)
+                .bind(tbl)
+                .bind(limit)
                 .fetch_all(&self.pool)
                 .await
             }
             (Some(uid), None) => {
-                sqlx::query!(
+                sqlx::query_as(
                     r#"
                     SELECT user_id, operation, table_name, column_name, success, 
                            error_message, request_ip, user_agent
@@ -341,15 +343,15 @@ impl ColumnEncryptionRbac {
                     WHERE user_id = $1
                     ORDER BY timestamp DESC
                     LIMIT $2
-                    "#,
-                    uid,
-                    limit
+                    "#
                 )
+                .bind(uid)
+                .bind(limit)
                 .fetch_all(&self.pool)
                 .await
             }
             (None, Some(tbl)) => {
-                sqlx::query!(
+                sqlx::query_as(
                     r#"
                     SELECT user_id, operation, table_name, column_name, success, 
                            error_message, request_ip, user_agent
@@ -357,34 +359,34 @@ impl ColumnEncryptionRbac {
                     WHERE table_name = $1
                     ORDER BY timestamp DESC
                     LIMIT $2
-                    "#,
-                    tbl,
-                    limit
+                    "#
                 )
+                .bind(tbl)
+                .bind(limit)
                 .fetch_all(&self.pool)
                 .await
             }
             (None, None) => {
-                sqlx::query!(
+                sqlx::query_as(
                     r#"
                     SELECT user_id, operation, table_name, column_name, success, 
                            error_message, request_ip, user_agent
                     FROM encryption_audit_log
                     ORDER BY timestamp DESC
                     LIMIT $1
-                    "#,
-                    limit
+                    "#
                 )
+                .bind(limit)
                 .fetch_all(&self.pool)
                 .await
             }
         }
-        .map_err(|e| Error::Database(e.to_string()))?;
+        .map_err(|e| Error::Internal(format!("Database error: {}", e)))?;
 
         let result = logs
             .into_iter()
-            .map(|log| {
-                let operation = match log.operation.as_str() {
+            .map(|(user_id, operation, table_name, column_name, success, error_message, request_ip, user_agent)| {
+                let operation = match operation.as_str() {
                     "encrypt" => EncryptionOperation::Encrypt,
                     "decrypt" => EncryptionOperation::Decrypt,
                     "rotate_key" => EncryptionOperation::RotateKey,
@@ -392,14 +394,14 @@ impl ColumnEncryptionRbac {
                 };
 
                 EncryptionAuditLog {
-                    user_id: log.user_id,
+                    user_id,
                     operation,
-                    table_name: log.table_name,
-                    column_name: log.column_name,
-                    success: log.success,
-                    error_message: log.error_message,
-                    request_ip: log.request_ip.map(|ip| ip.to_string()),
-                    user_agent: log.user_agent,
+                    table_name,
+                    column_name,
+                    success,
+                    error_message,
+                    request_ip,
+                    user_agent,
                 }
             })
             .collect();

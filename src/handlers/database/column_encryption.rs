@@ -764,7 +764,7 @@ impl ColumnEncryptionManager {
                                 column_name: column.to_string(),
                                 success: false,
                                 error_message: Some("Permission denied".to_string()),
-                                request_ip: context.client_ip.clone(),
+                                request_ip: context.client_info.clone(),
                                 user_agent: None,
                             };
                             let _ = rbac.audit_log(&audit_log).await;
@@ -773,7 +773,7 @@ impl ColumnEncryptionManager {
                     }
                     Err(e) => {
                         error!("RBAC permission check failed: {}", e);
-                        return Err(SecurityError::PermissionDenied(format!(
+                        return Err(SecurityError::AccessDenied(format!(
                             "Failed to check permissions: {}",
                             e
                         )));
@@ -850,7 +850,7 @@ impl ColumnEncryptionManager {
                     column_name: column.to_string(),
                     success,
                     error_message: error,
-                    request_ip: context.client_ip.clone(),
+                    request_ip: context.client_info.clone(),
                     user_agent: None,
                 };
 
