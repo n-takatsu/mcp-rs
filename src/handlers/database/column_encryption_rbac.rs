@@ -168,7 +168,7 @@ impl ColumnEncryptionRbac {
                 CASE WHEN table_name = '*' THEN 1 ELSE 0 END,
                 CASE WHEN column_name = '*' THEN 1 ELSE 0 END
             LIMIT 1
-            "#
+            "#,
         )
         .bind(role_name)
         .bind(table)
@@ -249,7 +249,7 @@ impl ColumnEncryptionRbac {
                 can_encrypt = EXCLUDED.can_encrypt,
                 can_decrypt = EXCLUDED.can_decrypt,
                 can_rotate_key = EXCLUDED.can_rotate_key
-            "#
+            "#,
         )
         .bind(role_name)
         .bind(table)
@@ -314,8 +314,17 @@ impl ColumnEncryptionRbac {
         table: Option<&str>,
         limit: i64,
     ) -> Result<Vec<EncryptionAuditLog>> {
-        type LogRow = (String, String, String, String, bool, Option<String>, Option<String>, Option<String>);
-        
+        type LogRow = (
+            String,
+            String,
+            String,
+            String,
+            bool,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        );
+
         let logs: Vec<LogRow> = match (user_id, table) {
             (Some(uid), Some(tbl)) => {
                 sqlx::query_as(
@@ -326,7 +335,7 @@ impl ColumnEncryptionRbac {
                     WHERE user_id = $1 AND table_name = $2
                     ORDER BY timestamp DESC
                     LIMIT $3
-                    "#
+                    "#,
                 )
                 .bind(uid)
                 .bind(tbl)
@@ -343,7 +352,7 @@ impl ColumnEncryptionRbac {
                     WHERE user_id = $1
                     ORDER BY timestamp DESC
                     LIMIT $2
-                    "#
+                    "#,
                 )
                 .bind(uid)
                 .bind(limit)
@@ -359,7 +368,7 @@ impl ColumnEncryptionRbac {
                     WHERE table_name = $1
                     ORDER BY timestamp DESC
                     LIMIT $2
-                    "#
+                    "#,
                 )
                 .bind(tbl)
                 .bind(limit)
@@ -374,7 +383,7 @@ impl ColumnEncryptionRbac {
                     FROM encryption_audit_log
                     ORDER BY timestamp DESC
                     LIMIT $1
-                    "#
+                    "#,
                 )
                 .bind(limit)
                 .fetch_all(&self.pool)
@@ -385,15 +394,8 @@ impl ColumnEncryptionRbac {
 
         let result = logs
             .into_iter()
-            .map(|(user_id, operation, table_name, column_name, success, error_message, request_ip, user_agent)| {
-                let operation = match operation.as_str() {
-                    "encrypt" => EncryptionOperation::Encrypt,
-                    "decrypt" => EncryptionOperation::Decrypt,
-                    "rotate_key" => EncryptionOperation::RotateKey,
-                    _ => EncryptionOperation::Decrypt, // fallback
-                };
-
-                EncryptionAuditLog {
+            .map(
+                |(
                     user_id,
                     operation,
                     table_name,
@@ -402,8 +404,26 @@ impl ColumnEncryptionRbac {
                     error_message,
                     request_ip,
                     user_agent,
-                }
-            })
+                )| {
+                    let operation = match operation.as_str() {
+                        "encrypt" => EncryptionOperation::Encrypt,
+                        "decrypt" => EncryptionOperation::Decrypt,
+                        "rotate_key" => EncryptionOperation::RotateKey,
+                        _ => EncryptionOperation::Decrypt, // fallback
+                    };
+
+                    EncryptionAuditLog {
+                        user_id,
+                        operation,
+                        table_name,
+                        column_name,
+                        success,
+                        error_message,
+                        request_ip,
+                        user_agent,
+                    }
+                },
+            )
             .collect();
 
         Ok(result)
