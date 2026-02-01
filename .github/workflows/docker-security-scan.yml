@@ -1,0 +1,135 @@
+name: Docker Security Scan
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+      - 'feature/**'
+  pull_request:
+    branches:
+      - main
+      - develop
+  schedule:
+    # Run daily at 2 AM UTC
+    - cron: '0 2 * * *'
+
+jobs:
+  trivy-scan:
+    name: Trivy Container Image Scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: |
+          docker build -t mcp-rs:${{ github.sha }} .
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'mcp-rs:${{ github.sha }}'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'CRITICAL,HIGH'
+
+      - name: Upload Trivy results to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+      - name: Run Trivy for JSON report
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'mcp-rs:${{ github.sha }}'
+          format: 'json'
+          output: 'trivy-report.json'
+          severity: 'CRITICAL,HIGH,MEDIUM'
+
+      - name: Check vulnerability threshold
+        run: |
+          CRITICAL=$(jq '[.Results[].Vulnerabilities[]? | select(.Severity=="CRITICAL")] | length' trivy-report.json)
+          HIGH=$(jq '[.Results[].Vulnerabilities[]? | select(.Severity=="HIGH")] | length' trivy-report.json)
+          
+          echo "CRITICAL vulnerabilities: $CRITICAL"
+          echo "HIGH vulnerabilities: $HIGH"
+          
+          if [ "$CRITICAL" -gt 0 ]; then
+            echo "❌ CRITICAL vulnerabilities found!"
+            exit 1
+          fi
+          
+          if [ "$HIGH" -gt 5 ]; then
+            echo "⚠️  Too many HIGH vulnerabilities found!"
+            exit 1
+          fi
+          
+          echo "✅ Image passed security scan"
+
+      - name: Upload Trivy scan results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: trivy-scan-results
+          path: |
+            trivy-results.sarif
+            trivy-report.json
+
+  dependency-check:
+    name: Dependency Security Check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit
+
+      - name: Run cargo audit
+        run: cargo audit --json > audit-report.json || true
+
+      - name: Check audit results
+        run: |
+          VULNERABILITIES=$(jq '.vulnerabilities.count' audit-report.json)
+          echo "Total vulnerabilities: $VULNERABILITIES"
+          
+          if [ "$VULNERABILITIES" -gt 0 ]; then
+            echo "⚠️  Vulnerabilities found in dependencies"
+            jq '.vulnerabilities.list' audit-report.json
+          else
+            echo "✅ No vulnerabilities found in dependencies"
+          fi
+
+      - name: Upload audit results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cargo-audit-results
+          path: audit-report.json
+
+  notify:
+    name: Notify Security Issues
+    needs: [trivy-scan, dependency-check]
+    runs-on: ubuntu-latest
+    if: failure()
+
+    steps:
+      - name: Send notification
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+        run: |
+          if [ -n "$SLACK_WEBHOOK" ]; then
+            curl -X POST -H 'Content-type: application/json' \
+              --data "{\"text\":\"🚨 Security scan failed for ${{ github.repository }} on branch ${{ github.ref_name }}\"}" \
+              $SLACK_WEBHOOK
+          fi

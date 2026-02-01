@@ -1,0 +1,186 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: plugindeployments.mcp-rs.io
+spec:
+  group: mcp-rs.io
+  names:
+    kind: PluginDeployment
+    listKind: PluginDeploymentList
+    plural: plugindeployments
+    singular: plugindeployment
+    shortNames:
+      - pd
+      - plugindep
+  scope: Namespaced
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required:
+                - pluginId
+                - image
+                - resourceLimits
+              properties:
+                pluginId:
+                  type: string
+                  description: "Unique identifier for the plugin"
+                image:
+                  type: string
+                  description: "Container image to use for the plugin"
+                replicas:
+                  type: integer
+                  minimum: 0
+                  default: 1
+                  description: "Number of replicas to deploy"
+                resourceLimits:
+                  type: object
+                  required:
+                    - maxCpuPercent
+                    - maxMemoryMb
+                  properties:
+                    maxCpuPercent:
+                      type: number
+                      format: float
+                      minimum: 0
+                      maximum: 100
+                      description: "Maximum CPU percentage (0-100)"
+                    maxMemoryMb:
+                      type: integer
+                      minimum: 1
+                      description: "Maximum memory in megabytes"
+                    maxDiskIops:
+                      type: integer
+                      description: "Maximum disk I/O operations per second"
+                    maxNetworkMbps:
+                      type: integer
+                      description: "Network bandwidth limit in Mbps"
+                env:
+                  type: object
+                  additionalProperties:
+                    type: string
+                  description: "Environment variables to set in the plugin container"
+                config:
+                  x-kubernetes-preserve-unknown-fields: true
+                  description: "Plugin configuration as JSON"
+                autoScaling:
+                  type: object
+                  properties:
+                    minReplicas:
+                      type: integer
+                      minimum: 1
+                    maxReplicas:
+                      type: integer
+                      minimum: 1
+                    targetCpuUtilizationPercentage:
+                      type: integer
+                      minimum: 1
+                      maximum: 100
+                    targetMemoryUtilizationPercentage:
+                      type: integer
+                      minimum: 1
+                      maximum: 100
+                healthCheck:
+                  type: object
+                  required:
+                    - path
+                    - port
+                  properties:
+                    path:
+                      type: string
+                    port:
+                      type: integer
+                      minimum: 1
+                      maximum: 65535
+                    initialDelaySeconds:
+                      type: integer
+                      minimum: 0
+                      default: 30
+                    periodSeconds:
+                      type: integer
+                      minimum: 1
+                      default: 10
+                    timeoutSeconds:
+                      type: integer
+                      minimum: 1
+                      default: 5
+                    failureThreshold:
+                      type: integer
+                      minimum: 1
+                      default: 3
+            status:
+              type: object
+              properties:
+                phase:
+                  type: string
+                  enum:
+                    - Pending
+                    - Progressing
+                    - Running
+                    - Failed
+                    - Terminating
+                readyReplicas:
+                  type: integer
+                totalReplicas:
+                  type: integer
+                lastUpdateTime:
+                  type: string
+                  format: date-time
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    required:
+                      - type
+                      - status
+                      - lastTransitionTime
+                      - reason
+                      - message
+                    properties:
+                      type:
+                        type: string
+                      status:
+                        type: string
+                        enum:
+                          - "True"
+                          - "False"
+                          - "Unknown"
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+                      reason:
+                        type: string
+                      message:
+                        type: string
+                message:
+                  type: string
+      subresources:
+        status: {}
+        scale:
+          specReplicasPath: .spec.replicas
+          statusReplicasPath: .status.totalReplicas
+      additionalPrinterColumns:
+        - name: Plugin ID
+          type: string
+          jsonPath: .spec.pluginId
+        - name: Image
+          type: string
+          jsonPath: .spec.image
+        - name: Replicas
+          type: integer
+          jsonPath: .spec.replicas
+        - name: Ready
+          type: integer
+          jsonPath: .status.readyReplicas
+        - name: Phase
+          type: string
+          jsonPath: .status.phase
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp

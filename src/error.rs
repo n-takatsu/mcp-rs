@@ -59,6 +59,10 @@ pub enum Error {
     #[error("Configuration error: {0}")]
     Config(String),
 
+    /// External API error
+    #[error("External API error: {0}")]
+    ExternalApi(String),
+
     /// Invalid configuration error
     #[error("Invalid configuration: {0}")]
     InvalidConfiguration(String),
@@ -157,6 +161,14 @@ pub enum Error {
     /// Compression error
     #[error("Compression error: {0}")]
     Compression(String),
+
+    /// Session management error
+    #[error("Session error: {0}")]
+    Session(#[from] SessionError),
+
+    /// Kubernetes error
+    #[error("Kubernetes error: {0}")]
+    Kubernetes(String),
 }
 
 impl Error {
@@ -209,9 +221,13 @@ pub enum SecurityError {
     #[error("Configuration error: {0}")]
     Configuration(String),
 
-    /// Session management error
-    #[error("Session error: {0}")]
-    Session(#[from] SessionError),
+    /// Invalid configuration
+    #[error("Invalid configuration: {0}")]
+    InvalidConfiguration(String),
+
+    /// Security scan failed
+    #[error("Security scan failed: {0}")]
+    ScanFailed(String),
 }
 
 /// Session-specific error types

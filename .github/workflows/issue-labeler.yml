@@ -1,0 +1,201 @@
+name: "Issue Auto-Labeler"
+
+on:
+  issues:
+    types: [opened, edited]
+
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  auto-label:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Auto-label based on title and body
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const issue = context.payload.issue;
+            const title = issue.title.toLowerCase();
+            const body = (issue.body || '').toLowerCase();
+            const labels = [];
+
+            // Priority labels
+            if (title.includes('[p0]') || title.includes('critical')) {
+              labels.push('priority-p0-critical');
+            } else if (title.includes('[p1]') || title.includes('high')) {
+              labels.push('priority: high');
+            } else if (title.includes('[p2]') || title.includes('medium')) {
+              labels.push('priority: medium');
+            } else if (title.includes('[p3]') || title.includes('low')) {
+              labels.push('priority: low');
+            }
+
+            // Type labels
+            if (title.includes('[bug]') || title.includes('🐛')) {
+              labels.push('bug');
+            } else if (title.includes('[epic]') || title.includes('epic')) {
+              labels.push('epic');
+            } else if (title.includes('[task]') || title.includes('📋')) {
+              labels.push('task');
+            } else if (title.includes('[feature]') || title.includes('✨')) {
+              labels.push('enhancement');
+            } else if (title.includes('[doc]') || title.includes('📚')) {
+              labels.push('documentation');
+            }
+
+            // Component labels
+            if (title.includes('security') || title.includes('🚨') || title.includes('🔒')) {
+              labels.push('security');
+              labels.push('component: security');
+            }
+            if (title.includes('database') || title.includes('🗄️') || body.includes('postgresql') || body.includes('mysql')) {
+              labels.push('database');
+            }
+            if (title.includes('websocket') || title.includes('🔌') || body.includes('websocket')) {
+              labels.push('websocket');
+            }
+            if (title.includes('docker') || title.includes('kubernetes') || title.includes('🐳') || title.includes('k8s')) {
+              labels.push('infrastructure');
+              labels.push('kubernetes');
+            }
+            if (title.includes('policy') || body.includes('dynamic policy')) {
+              labels.push('policy');
+            }
+
+            // Status labels
+            if (body.includes('blocked') || body.includes('blocker')) {
+              labels.push('blocked');
+            }
+
+            // Special labels
+            if (title.includes('roadmap') || title.includes('health check')) {
+              labels.push('roadmap-health');
+              labels.push('weekly-report');
+            }
+
+            // Apply labels if any were determined
+            if (labels.length > 0) {
+              console.log(`Adding labels: ${labels.join(', ')}`);
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                labels: labels
+              });
+            } else {
+              console.log('No automatic labels determined');
+            }
+
+      - name: Auto-assign milestone based on labels
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const issue = context.payload.issue;
+            
+            // Skip if milestone already assigned
+            if (issue.milestone) {
+              console.log('Milestone already assigned, skipping');
+              return;
+            }
+
+            const labels = issue.labels.map(l => l.name);
+            let milestoneTitle = null;
+
+            // Determine milestone based on priority
+            if (labels.includes('priority-p0-critical')) {
+              milestoneTitle = 'v0.2.0-beta';
+            } else if (labels.includes('priority: high')) {
+              milestoneTitle = 'v0.2.0-beta';
+            } else if (labels.includes('priority: medium')) {
+              milestoneTitle = 'v0.3.0';
+            }
+
+            if (milestoneTitle) {
+              // Get milestone number
+              const milestones = await github.rest.issues.listMilestones({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                state: 'open'
+              });
+
+              const milestone = milestones.data.find(m => m.title === milestoneTitle);
+              
+              if (milestone) {
+                console.log(`Assigning milestone: ${milestoneTitle}`);
+                await github.rest.issues.update({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issue.number,
+                  milestone: milestone.number
+                });
+              } else {
+                console.log(`Milestone ${milestoneTitle} not found`);
+              }
+            }
+
+      - name: Auto-assign based on component
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const issue = context.payload.issue;
+            
+            // Skip if already assigned
+            if (issue.assignees && issue.assignees.length > 0) {
+              console.log('Issue already assigned, skipping');
+              return;
+            }
+
+            const labels = issue.labels.map(l => l.name);
+            
+            // Auto-assign critical or high priority issues to maintainer
+            if (labels.includes('priority-p0-critical') || labels.includes('priority: high')) {
+              console.log('Auto-assigning high-priority issue to n-takatsu');
+              await github.rest.issues.addAssignees({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                assignees: ['n-takatsu']
+              });
+            }
+
+      - name: Add comment for new issues
+        uses: actions/github-script@v7
+        if: github.event.action == 'opened'
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const issue = context.payload.issue;
+            const labels = issue.labels.map(l => l.name);
+            
+            // Only add comment for critical/high priority issues
+            if (labels.includes('priority-p0-critical') || labels.includes('priority: high')) {
+              const comment = [
+                '## ✅ Issue自動処理完了',
+                '',
+                'このIssueは自動的に以下の処理が実行されました:',
+                '',
+                '- 🏷️ ラベルが自動付与されました',
+                '- 🎯 優先度に基づいてMilestoneが設定されました',
+                '- 👤 担当者が自動割り当てされました',
+                '',
+                '詳細は [プロジェクト管理ガイド](../blob/develop/docs/project-management-guide.md)を参照してください。',
+                '',
+                '---',
+                '*This comment was automatically generated by the Issue Auto-Labeler workflow.*'
+              ].join('\\n');
+
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                body: comment
+              });
+            }

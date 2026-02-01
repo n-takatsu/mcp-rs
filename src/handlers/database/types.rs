@@ -175,6 +175,11 @@ pub enum DatabaseFeature {
     Sharding,
     Acid,
     EventualConsistency,
+    // PostgreSQL特有の機能
+    Jsonb,
+    CTEs,
+    WindowFunctions,
+    Notifications,
     // Redis特有の機能
     InMemoryStorage,
     KeyValueStore,
@@ -486,6 +491,9 @@ pub enum DatabaseError {
 
     #[error("Aggregation pipeline error: {0}")]
     AggregationError(String),
+
+    #[error("Migration error: {0}")]
+    MigrationError(String),
 
     #[error("Unknown error: {0}")]
     Unknown(String),

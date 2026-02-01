@@ -3,6 +3,7 @@ pub mod audit_log;
 pub mod auth;
 pub mod encryption;
 pub mod ids;
+pub mod image_scanner;
 #[cfg(feature = "mfa")]
 pub mod mfa;
 pub mod mtls;
@@ -37,6 +38,7 @@ pub use ids::{
     signature::SignatureDetector,
     DetectionResult, DetectionType, IntrusionDetectionSystem, RecommendedAction, Severity,
 };
+pub use image_scanner::{ImageScanner, ScanReport, ScanSummary, ScannerType, Vulnerability};
 #[cfg(feature = "mfa")]
 pub use mfa::{MfaConfig, MfaError, TotpAlgorithm, TotpConfig, TotpSecret, TotpVerifier};
 pub use mtls::{

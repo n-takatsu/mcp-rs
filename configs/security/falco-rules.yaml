@@ -1,0 +1,124 @@
+# Falco Rules for MCP Plugin Runtime Security
+# Detects suspicious behavior in MCP plugin containers
+
+- rule: Unauthorized Plugin Network Access
+  desc: Detect plugin accessing blocked domains or unauthorized IPs
+  condition: >
+    outbound 
+    and container.name contains "mcp-plugin"
+    and not fd.sip in (allowed_ips)
+  output: >
+    Unauthorized network access detected
+    (container=%container.name 
+    ip=%fd.sip 
+    port=%fd.sport 
+    process=%proc.name 
+    command=%proc.cmdline)
+  priority: WARNING
+  tags: [network, plugin, security]
+
+- rule: Plugin File System Modification
+  desc: Detect unauthorized file system modifications in plugin containers
+  condition: >
+    modify
+    and container.name contains "mcp-plugin"
+    and fd.name startswith "/app"
+    and not proc.name in (allowed_processes)
+  output: >
+    Unauthorized file modification in plugin container
+    (container=%container.name 
+    file=%fd.name 
+    process=%proc.name 
+    user=%user.name)
+  priority: HIGH
+  tags: [filesystem, plugin, security]
+
+- rule: Suspicious Plugin Process Execution
+  desc: Detect execution of suspicious processes in plugin containers
+  condition: >
+    spawned_process
+    and container.name contains "mcp-plugin"
+    and proc.name in (suspicious_binaries)
+  output: >
+    Suspicious process execution in plugin container
+    (container=%container.name 
+    process=%proc.name 
+    cmdline=%proc.cmdline 
+    user=%user.name)
+  priority: CRITICAL
+  tags: [process, plugin, security]
+
+- rule: Plugin Privilege Escalation Attempt
+  desc: Detect privilege escalation attempts in plugin containers
+  condition: >
+    spawned_process
+    and container.name contains "mcp-plugin"
+    and (proc.name in (priv_escalation_tools) or proc.cmdline contains "sudo")
+  output: >
+    Privilege escalation attempt detected
+    (container=%container.name 
+    process=%proc.name 
+    cmdline=%proc.cmdline 
+    user=%user.name)
+  priority: CRITICAL
+  tags: [privilege, plugin, security]
+
+- rule: Plugin Container Shell Access
+  desc: Detect interactive shell spawned in plugin container
+  condition: >
+    spawned_process
+    and container.name contains "mcp-plugin"
+    and proc.name in (shell_binaries)
+    and proc.tty != 0
+  output: >
+    Interactive shell spawned in plugin container
+    (container=%container.name 
+    shell=%proc.name 
+    user=%user.name 
+    tty=%proc.tty)
+  priority: WARNING
+  tags: [shell, plugin, security]
+
+- rule: Plugin Crypto Mining Activity
+  desc: Detect potential crypto mining in plugin containers
+  condition: >
+    spawned_process
+    and container.name contains "mcp-plugin"
+    and proc.name in (crypto_miners)
+  output: >
+    Potential crypto mining activity detected
+    (container=%container.name 
+    process=%proc.name 
+    cmdline=%proc.cmdline)
+  priority: CRITICAL
+  tags: [cryptomining, plugin, security]
+
+# Macro definitions
+- macro: allowed_ips
+  condition: >
+    (fd.sip="10.0.0.0/8" or
+     fd.sip="172.16.0.0/12" or
+     fd.sip="192.168.0.0/16")
+
+- macro: allowed_processes
+  condition: >
+    proc.name in (node, python, java, ruby)
+
+- macro: suspicious_binaries
+  condition: >
+    proc.name in (nc, ncat, netcat, socat, wget, curl, telnet, ssh, scp)
+
+- macro: priv_escalation_tools
+  condition: >
+    proc.name in (sudo, su, pkexec, doas)
+
+- macro: shell_binaries
+  condition: >
+    proc.name in (bash, sh, zsh, csh, ksh, dash)
+
+- macro: crypto_miners
+  condition: >
+    proc.name in (xmrig, ethminer, cpuminer, minerd)
+
+- list: plugin_exceptions
+  items: []

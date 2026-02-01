@@ -1,0 +1,58 @@
+# SELinux Policy Module for MCP Plugin Containers
+
+# Define the MCP plugin container type
+type mcp_plugin_t;
+type mcp_plugin_exec_t;
+
+# Allow the container to run
+init_daemon_domain(mcp_plugin_t, mcp_plugin_exec_t)
+
+# File contexts
+/usr/bin/mcp-plugin  --  gen_context(system_u:object_r:mcp_plugin_exec_t,s0)
+/data/mcp-plugins(/.*)?  gen_context(system_u:object_r:mcp_plugin_data_t,s0)
+
+# Network permissions
+allow mcp_plugin_t self:tcp_socket { create_stream_socket_perms };
+allow mcp_plugin_t self:udp_socket { create_socket_perms };
+
+# Restrict raw socket access
+dontaudit mcp_plugin_t self:rawip_socket *;
+
+# File system permissions
+type mcp_plugin_data_t;
+files_type(mcp_plugin_data_t)
+
+# Allow read access to application files
+allow mcp_plugin_t mcp_plugin_exec_t:file { read execute };
+
+# Allow read-write access to plugin data directory
+allow mcp_plugin_t mcp_plugin_data_t:dir { create read write add_name remove_name search };
+allow mcp_plugin_t mcp_plugin_data_t:file { create read write unlink open append getattr };
+
+# Allow read-only access to system libraries
+libs_use_ld_so(mcp_plugin_t)
+libs_use_shared_libs(mcp_plugin_t)
+
+# Deny access to sensitive system files
+dontaudit mcp_plugin_t shadow_t:file *;
+dontaudit mcp_plugin_t passwd_file_t:file write;
+dontaudit mcp_plugin_t admin_home_t:dir *;
+dontaudit mcp_plugin_t user_home_t:dir *;
+
+# Process capabilities
+# Allow only minimal capabilities
+allow mcp_plugin_t self:capability { setuid setgid net_bind_service };
+
+# Deny dangerous capabilities
+dontaudit mcp_plugin_t self:capability { sys_admin sys_module sys_rawio sys_ptrace sys_boot sys_time mac_admin mac_override };
+
+# Logging
+logging_send_syslog_msg(mcp_plugin_t)
+
+# Temporary files
+files_tmp_filetrans(mcp_plugin_t, mcp_plugin_tmp_t, { file dir })
+allow mcp_plugin_t mcp_plugin_tmp_t:file { create read write unlink open append };
+allow mcp_plugin_t mcp_plugin_tmp_t:dir { create read write add_name remove_name search };
+
+type mcp_plugin_tmp_t;
+files_tmp_file(mcp_plugin_tmp_t)

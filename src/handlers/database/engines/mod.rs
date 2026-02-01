@@ -9,6 +9,8 @@ pub mod mariadb; // MariaDB (MySQLベース)
 pub mod mongodb;
 #[cfg(feature = "mysql-backend")]
 pub mod mysql; // mysql_asyncライブラリでセキュア復活
+#[cfg(feature = "postgresql-backend")]
+pub mod postgres; // Optimized PostgreSQL with advanced features
 pub mod postgresql;
 #[cfg(feature = "redis-backend")]
 pub mod redis;
@@ -21,6 +23,8 @@ pub use mariadb::MariaDbEngine;
 pub use mongodb::MongoEngine;
 #[cfg(feature = "mysql-backend")]
 pub use mysql::MySqlEngine; // mysql_asyncライブラリでセキュア復活
+#[cfg(feature = "postgresql-backend")]
+pub use postgres::PostgresEngine; // Optimized PostgreSQL engine
 pub use postgresql::PostgreSqlEngine;
 #[cfg(feature = "redis-backend")]
 pub use redis::RedisEngine;

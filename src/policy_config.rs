@@ -45,6 +45,9 @@ pub struct SecurityPolicyConfig {
     pub input_validation: InputValidationConfig,
     /// レート制限設定
     pub rate_limiting: RateLimitingConfig,
+    /// ブロックするIPアドレスリスト
+    #[serde(default)]
+    pub blocked_ips: Vec<String>,
 }
 
 /// 暗号化設定
@@ -237,6 +240,7 @@ impl Default for SecurityPolicyConfig {
             tls: TlsConfig::default(),
             input_validation: InputValidationConfig::default(),
             rate_limiting: RateLimitingConfig::default(),
+            blocked_ips: Vec::new(),
         }
     }
 }

@@ -182,10 +182,13 @@ async fn test_pool_config_validation() {
 
 #[tokio::test]
 async fn test_websocket_transport_creation() {
-    let pool_config = PoolConfig::default();
-    let stream_config = StreamConfig::default();
+    let config = WebSocketConfigBuilder::new()
+        .url("ws://localhost:8080")
+        .pool_config(PoolConfig::default())
+        .stream_config(StreamConfig::default())
+        .build();
 
-    let result = WebSocketTransport::new(pool_config, stream_config);
+    let result = WebSocketTransport::new(config);
     assert!(result.is_ok());
 }
 
