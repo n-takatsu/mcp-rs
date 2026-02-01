@@ -4,6 +4,7 @@
 
 use crate::{
     error::{Error, Result},
+    security::NetworkPolicy,
     transport::{
         ConnectionStats, Transport, TransportCapabilities, TransportError, TransportInfo,
         TransportType,
@@ -11,7 +12,13 @@ use crate::{
     types::{JsonRpcRequest, JsonRpcResponse},
 };
 use async_trait::async_trait;
-use axum::{extract::State, http::StatusCode, response::Json, routing::post, Router};
+use axum::{
+    extract::{ConnectInfo, State},
+    http::StatusCode,
+    response::Json,
+    routing::post,
+    Router,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{collections::HashMap, net::SocketAddr, sync::Arc, time::Instant};
@@ -30,6 +37,9 @@ pub struct HttpConfig {
     pub max_request_size: usize,
     /// Request timeout in milliseconds
     pub timeout_ms: u64,
+    /// Network access policy
+    #[serde(default)]
+    pub network_policy: NetworkPolicy,
 }
 
 impl Default for HttpConfig {
@@ -39,6 +49,7 @@ impl Default for HttpConfig {
             cors_enabled: true,
             max_request_size: 1024 * 1024, // 1MB
             timeout_ms: 30000,             // 30 seconds
+            network_policy: NetworkPolicy::default(),
         }
     }
 }
@@ -61,6 +72,7 @@ struct HttpTransportState {
     request_sender: tokio::sync::mpsc::Sender<String>,
     pending_responses: Arc<RwLock<HashMap<Value, tokio::sync::oneshot::Sender<JsonRpcResponse>>>>,
     stats: Arc<RwLock<HttpStats>>,
+    network_policy: NetworkPolicy,
 }
 
 /// HTTP Transport implementation
@@ -94,10 +106,17 @@ impl HttpTransport {
 
     /// Start the HTTP server
     pub async fn start_server(&self) -> Result<()> {
+        // Validate bind address
+        self.config
+            .network_policy
+            .validate_bind_address(&self.config.bind_addr)
+            .map_err(|e| Error::TransportError(TransportError::Configuration(e.to_string())))?;
+
         let state = HttpTransportState {
             request_sender: self.sender.clone(),
             pending_responses: self.pending_responses.clone(),
             stats: self.stats.clone(),
+            network_policy: self.config.network_policy.clone(),
         };
 
         let app = Router::new()
@@ -241,12 +260,22 @@ impl Transport for HttpTransport {
 
 /// Handle incoming JSON-RPC HTTP requests
 async fn handle_jsonrpc_request(
+    ConnectInfo(remote_addr): ConnectInfo<SocketAddr>,
     State(state): State<HttpTransportState>,
     Json(request): Json<Value>,
 ) -> std::result::Result<Json<Value>, StatusCode> {
+    // Validate connection
+    if let Err(e) = state.network_policy.validate_connection(&remote_addr) {
+        error!("Connection rejected from {}: {}", remote_addr, e);
+        return Err(StatusCode::FORBIDDEN);
+    }
+
     let start_time = Instant::now();
 
-    debug!("Received HTTP JSON-RPC request: {}", request);
+    debug!(
+        "Received HTTP JSON-RPC request from {}: {}",
+        remote_addr, request
+    );
 
     // Update statistics - request received
     {

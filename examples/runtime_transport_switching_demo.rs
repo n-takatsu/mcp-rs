@@ -162,6 +162,7 @@ fn convert_to_transport_config(
                 cors_enabled: h.enable_cors.unwrap_or(true),
                 max_request_size: 1048576, // デフォルト値
                 timeout_ms: 30000,         // デフォルト値
+                network_policy: mcp_rs::security::NetworkPolicy::default(),
             }
         })
         .unwrap_or_default();

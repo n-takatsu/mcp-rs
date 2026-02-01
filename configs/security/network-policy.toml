@@ -1,0 +1,38 @@
+# Network Policy Configuration Example
+#
+# このファイルは、MCPサーバーのネットワークアクセスポリシーの設定例です。
+# セキュリティを強化するため、デフォルトでは localhost からの接続のみを許可します。
+
+[network_policy]
+# 外部からの接続を拒否するかどうか
+# true: localhost (127.0.0.1, ::1) からの接続のみ許可
+# false: すべてのIPアドレスからの接続を許可（ip_whitelistが空の場合）
+reject_external_connections = true
+
+# 外部IPアドレスでバインドする際に警告を表示するかどうか
+# true: 0.0.0.0 や実際のIPアドレスでバインドする際に警告を表示
+# false: 警告を表示しない
+warn_on_external_bind = true
+
+# 許可するIPアドレスのホワイトリスト（オプション）
+# reject_external_connections = false の場合にのみ有効
+# 空の配列の場合、すべてのIPアドレスを許可
+# 注意: 現在はIPアドレスの完全一致のみサポート（CIDR表記は将来サポート予定）
+ip_whitelist = []
+
+# 使用例:
+
+# 例1: localhost のみ許可（デフォルト、最も安全）
+# reject_external_connections = true
+# warn_on_external_bind = true
+# ip_whitelist = []
+
+# 例2: 特定のIPアドレスのみ許可
+# reject_external_connections = false
+# warn_on_external_bind = true
+# ip_whitelist = ["192.168.1.100", "10.0.0.50"]
+
+# 例3: すべてのIPアドレスを許可（本番環境では非推奨）
+# reject_external_connections = false
+# warn_on_external_bind = false
+# ip_whitelist = []
