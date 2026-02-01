@@ -272,7 +272,10 @@ async fn handle_jsonrpc_request(
 
     let start_time = Instant::now();
 
-    debug!("Received HTTP JSON-RPC request from {}: {}", remote_addr, request);
+    debug!(
+        "Received HTTP JSON-RPC request from {}: {}",
+        remote_addr, request
+    );
 
     // Update statistics - request received
     {

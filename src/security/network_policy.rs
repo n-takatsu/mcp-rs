@@ -85,8 +85,8 @@ impl NetworkPolicy {
     pub fn validate_bind_address(&self, bind_addr: &SocketAddr) -> Result<(), NetworkPolicyError> {
         if self.warn_on_external_bind {
             let ip = bind_addr.ip();
-            if !ip.is_loopback()
-                && !(ip.is_unspecified()) // 0.0.0.0 や ::
+            if !ip.is_loopback() && !(ip.is_unspecified())
+            // 0.0.0.0 や ::
             {
                 warn!(
                     "⚠️  Server is binding to external address: {}. This may expose the server to network access.",
