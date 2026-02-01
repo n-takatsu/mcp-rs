@@ -31,6 +31,7 @@ pub mod masking_rules; // マスキングルール定義
 
 // カラムレベル暗号化モジュール
 pub mod column_encryption; // Column-level encryption with key management
+pub mod column_encryption_rbac; // RBAC integration for column encryption
 
 // エンジン実装
 pub mod engines;
@@ -57,6 +58,9 @@ pub use security_config::AdvancedSecurityConfig;
 pub use column_encryption::{
     CacheStats, ColumnEncryptionConfig, ColumnEncryptionManager, EncryptionAlgorithm, KeyManager,
     KeyManagerConfig, KeyMetadata, KeyProvider,
+};
+pub use column_encryption_rbac::{
+    ColumnEncryptionPermission, ColumnEncryptionRbac, EncryptionAuditLog, EncryptionOperation,
 };
 
 // データマスキングAPI

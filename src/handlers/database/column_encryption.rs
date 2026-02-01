@@ -21,7 +21,11 @@ use std::time::Duration;
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
+use crate::handlers::database::column_encryption_rbac::{
+    ColumnEncryptionRbac, EncryptionAuditLog, EncryptionOperation,
+};
 use crate::handlers::database::types::{QueryContext, SecurityError};
+use crate::security::auth::types::AuthUser;
 
 /// Encryption algorithm types
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
@@ -405,6 +409,8 @@ pub struct ColumnEncryptionManager {
     /// Decryption cache (encrypted -> plaintext)
     decryption_cache: Arc<RwLock<HashMap<String, CacheEntry>>>,
     rng: SystemRandom,
+    /// RBAC integration for column encryption (optional)
+    rbac: Option<Arc<ColumnEncryptionRbac>>,
 }
 
 impl ColumnEncryptionManager {
@@ -418,7 +424,15 @@ impl ColumnEncryptionManager {
             encryption_cache: Arc::new(RwLock::new(HashMap::new())),
             decryption_cache: Arc::new(RwLock::new(HashMap::new())),
             rng: SystemRandom::new(),
+            rbac: None,
         }
+    }
+
+    /// Create a new column encryption manager with RBAC integration
+    pub fn with_rbac(config: ColumnEncryptionConfig, rbac: Arc<ColumnEncryptionRbac>) -> Self {
+        let mut manager = Self::new(config);
+        manager.rbac = Some(rbac);
+        manager
     }
 
     /// Check if a column requires encryption
@@ -433,7 +447,7 @@ impl ColumnEncryptionManager {
         table: &str,
         column: &str,
         plaintext: &str,
-        _context: &QueryContext,
+        context: &QueryContext,
     ) -> Result<String, SecurityError> {
         // Check cache first
         let cache_key = format!("{}:{}:{}", table, column, plaintext);
@@ -501,6 +515,18 @@ impl ColumnEncryptionManager {
             "Encrypted data for {}.{} with key {}",
             table, column, dek.key_id
         );
+
+        // Log successful encryption
+        self.log_audit(
+            EncryptionOperation::Encrypt,
+            table,
+            column,
+            context,
+            true,
+            None,
+        )
+        .await;
+
         Ok(encoded)
     }
 
@@ -513,10 +539,21 @@ impl ColumnEncryptionManager {
         context: &QueryContext,
     ) -> Result<String, SecurityError> {
         // Check permissions first
-        if !self
+        let has_permission = self
             .check_decrypt_permission(table, column, context)
-            .await?
-        {
+            .await?;
+
+        if !has_permission {
+            // Log permission denied
+            self.log_audit(
+                EncryptionOperation::Decrypt,
+                table,
+                column,
+                context,
+                false,
+                Some("Permission denied".to_string()),
+            )
+            .await;
             return Ok("***ENCRYPTED***".to_string());
         }
 
@@ -587,6 +624,18 @@ impl ColumnEncryptionManager {
             "Decrypted data for {}.{} with key {}",
             table, column, dek.key_id
         );
+
+        // Log successful decryption
+        self.log_audit(
+            EncryptionOperation::Decrypt,
+            table,
+            column,
+            context,
+            true,
+            None,
+        )
+        .await;
+
         Ok(plaintext)
     }
 
@@ -685,13 +734,56 @@ impl ColumnEncryptionManager {
     /// Check if user has permission to decrypt a column
     async fn check_decrypt_permission(
         &self,
-        _table: &str,
-        _column: &str,
-        _context: &QueryContext,
+        table: &str,
+        column: &str,
+        context: &QueryContext,
     ) -> Result<bool, SecurityError> {
-        // TODO: Integrate with RBAC system
-        // For now, allow decryption for authenticated users
-        Ok(_context.user_id.is_some())
+        // If RBAC is configured, use it for permission checks
+        if let Some(rbac) = &self.rbac {
+            if let Some(user_id) = &context.user_id {
+                // Create a minimal AuthUser for permission check
+                // In production, this should come from the auth system
+                let user = AuthUser::new(user_id.clone(), user_id.clone());
+
+                match rbac
+                    .check_permission(&user, table, column, EncryptionOperation::Decrypt)
+                    .await
+                {
+                    Ok(has_permission) => {
+                        if !has_permission {
+                            warn!(
+                                "User {} denied decrypt permission for {}.{}",
+                                user_id, table, column
+                            );
+
+                            // Log audit failure
+                            let audit_log = EncryptionAuditLog {
+                                user_id: user_id.clone(),
+                                operation: EncryptionOperation::Decrypt,
+                                table_name: table.to_string(),
+                                column_name: column.to_string(),
+                                success: false,
+                                error_message: Some("Permission denied".to_string()),
+                                request_ip: context.client_ip.clone(),
+                                user_agent: None,
+                            };
+                            let _ = rbac.audit_log(&audit_log).await;
+                        }
+                        return Ok(has_permission);
+                    }
+                    Err(e) => {
+                        error!("RBAC permission check failed: {}", e);
+                        return Err(SecurityError::PermissionDenied(format!(
+                            "Failed to check permissions: {}",
+                            e
+                        )));
+                    }
+                }
+            }
+        }
+
+        // Fallback: allow decryption for authenticated users if RBAC is not configured
+        Ok(context.user_id.is_some())
     }
 
     /// Rotate key for a specific column
@@ -736,6 +828,36 @@ impl ColumnEncryptionManager {
             decryption_cache_size: dec_size,
             max_cache_size: self.config.max_cache_size,
             cache_ttl_secs: self.config.cache_ttl_secs,
+        }
+    }
+
+    /// Log encryption operation to audit log
+    async fn log_audit(
+        &self,
+        operation: EncryptionOperation,
+        table: &str,
+        column: &str,
+        context: &QueryContext,
+        success: bool,
+        error: Option<String>,
+    ) {
+        if let Some(rbac) = &self.rbac {
+            if let Some(user_id) = &context.user_id {
+                let audit_log = EncryptionAuditLog {
+                    user_id: user_id.clone(),
+                    operation,
+                    table_name: table.to_string(),
+                    column_name: column.to_string(),
+                    success,
+                    error_message: error,
+                    request_ip: context.client_ip.clone(),
+                    user_agent: None,
+                };
+
+                if let Err(e) = rbac.audit_log(&audit_log).await {
+                    error!("Failed to write audit log: {}", e);
+                }
+            }
         }
     }
 }
