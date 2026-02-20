@@ -1,3 +1,4 @@
+pub mod anti_replay;
 pub mod audit;
 pub mod audit_log;
 pub mod auth;
@@ -16,6 +17,10 @@ pub mod validation;
 pub mod waf;
 pub mod xss_protection;
 
+pub use anti_replay::{
+    AntiReplayConfig, AntiReplayMiddleware, DeviceFingerprint, DeviceFingerprintManager,
+    NonceManager, ReplayError, SecurityHeaders, TimestampValidator,
+};
 pub use audit::{
     Alert as AuditAlert, AlertSeverity, AlertStatus, AnalysisResult, AnalysisStatistics,
     AuditAnalysisEngine, CorrelatedEvent, ExfiltrationEvent, PrivilegeEscalationEvent,
