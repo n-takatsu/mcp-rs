@@ -309,9 +309,7 @@ impl CertificateAuthority {
         // CRL Header
         let mut crl = String::from("-----BEGIN X509 CRL-----\n");
         crl.push_str("Version: 2 (Phase 1 - Simplified)\n");
-        crl.push_str(&format!(
-            "Issuer: CN=mcp-rs CA, O=mcp-rs, OU=Certificate Authority, C=JP\n"
-        ));
+        crl.push_str("Issuer: CN=mcp-rs CA, O=mcp-rs, OU=Certificate Authority, C=JP\n");
         crl.push_str(&format!("This Update: {}\n", Utc::now().to_rfc3339()));
         crl.push_str(&format!(
             "Next Update: {}\n",
