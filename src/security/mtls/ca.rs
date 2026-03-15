@@ -57,9 +57,7 @@ impl CertificateAuthority {
         // CA証明書ファイルを読み込み
         let ca_cert_pem = tokio::fs::read_to_string(&self.config.root_cert_path)
             .await
-            .map_err(|e| {
-                Error::InvalidInput(format!("Failed to load CA certificate: {}", e))
-            })?;
+            .map_err(|e| Error::InvalidInput(format!("Failed to load CA certificate: {}", e)))?;
 
         let ca_key_pem = tokio::fs::read_to_string(&self.config.root_key_path)
             .await
@@ -105,14 +103,14 @@ impl CertificateAuthority {
 
         // ディレクトリ作成 (Phase 1: ファイル保存前に親ディレクトリを作成)
         if let Some(parent) = std::path::Path::new(&self.config.root_cert_path).parent() {
-            tokio::fs::create_dir_all(parent)
-                .await
-                .map_err(|e| Error::InvalidInput(format!("Failed to create cert directory: {}", e)))?;
+            tokio::fs::create_dir_all(parent).await.map_err(|e| {
+                Error::InvalidInput(format!("Failed to create cert directory: {}", e))
+            })?;
         }
         if let Some(parent) = std::path::Path::new(&self.config.root_key_path).parent() {
-            tokio::fs::create_dir_all(parent)
-                .await
-                .map_err(|e| Error::InvalidInput(format!("Failed to create key directory: {}", e)))?;
+            tokio::fs::create_dir_all(parent).await.map_err(|e| {
+                Error::InvalidInput(format!("Failed to create key directory: {}", e))
+            })?;
         }
 
         // ファイルに保存
@@ -421,7 +419,7 @@ mod tests {
     #[tokio::test]
     async fn test_sign_certificate() {
         let ca = CertificateAuthority::default();
-        
+
         // まずCA証明書を生成
         ca.generate_self_signed_ca().await.unwrap();
 
@@ -445,7 +443,7 @@ mod tests {
     #[tokio::test]
     async fn test_revoke_certificate() {
         let ca = CertificateAuthority::default();
-        
+
         // CA証明書を生成
         ca.generate_self_signed_ca().await.unwrap();
 
