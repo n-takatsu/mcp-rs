@@ -38,6 +38,7 @@ mongodb = { version = "3.1", optional = true }
 
 # Date and time
 chrono = { version = "0.4", features = ["serde"] }
+time = { version = "0.3", features = ["macros", "serde"] }
 
 # UUID generation
 uuid = { version = "1.18", features = ["v4", "serde"] }
@@ -60,6 +61,15 @@ zeroize = "1.8.2"
 aes-gcm = "0.10"
 pbkdf2 = "0.12"
 sha2 = "0.10"
+
+# mTLS and Certificate Management
+rcgen = { version = "0.13", features = ["pem", "x509-parser"] }
+rustls = { version = "0.23", features = ["std"] }
+rustls-webpki = { version = "0.102", features = ["std"] }
+rustls-pemfile = "2.2"
+tokio-rustls = "0.26"
+x509-parser = "0.16"
+pem = "3.0"
 
 # MFA (Multi-Factor Authentication)
 totp-rs = { version = "5.6", features = ["gen_secret", "qr"], optional = true }
