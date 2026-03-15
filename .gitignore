@@ -5,6 +5,9 @@
 # Configuration files with sensitive information
 mcp-config.toml
 
+# Test-generated certificates and keys (contains sensitive data)
+/certs/
+
 # IDE files (但し.vscode/はプロジェクト設定として含める)
 # MCP設定はアクセストークンが含まれる可能性があるため除外
 .vscode/mcp.json
