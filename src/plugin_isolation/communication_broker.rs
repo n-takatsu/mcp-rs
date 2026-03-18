@@ -550,7 +550,10 @@ impl CommunicationBroker {
         let auth_manager = Arc::new(AuthenticationManager::new(config.auth_config.clone()).await?);
         let message_queue = Arc::new(MessageQueue::new(config.queue_config.clone()).await?);
         let kex_config = KeyExchangeConfig {
-            key_lifetime_hours: config.encryption_config.key_rotation.rotation_interval_hours,
+            key_lifetime_hours: config
+                .encryption_config
+                .key_rotation
+                .rotation_interval_hours,
             grace_period_hours: config.encryption_config.key_rotation.overlap_hours,
             message_ttl_secs: 300,
         };
@@ -672,7 +675,9 @@ impl CommunicationBroker {
         self.auth_manager.revoke_plugin_tokens(plugin_id).await?;
 
         // E2E 鍵交換プロトコルからプラグインを削除
-        self.key_exchange_protocol.unregister_plugin(plugin_id).await;
+        self.key_exchange_protocol
+            .unregister_plugin(plugin_id)
+            .await;
 
         info!("Communication channel unregistered: {}", plugin_id);
         Ok(())
@@ -861,16 +866,21 @@ impl EncryptionManager {
         let mut iv = vec![0u8; 12];
         let mut signing_key = vec![0u8; 32];
 
-        rng.fill(&mut key)
-            .map_err(|e| McpError::SecurityFailure(format!("Failed to generate channel key: {e}")))?;
-        rng.fill(&mut iv)
-            .map_err(|e| McpError::SecurityFailure(format!("Failed to generate channel nonce: {e}")))?;
-        rng.fill(&mut signing_key)
-            .map_err(|e| McpError::SecurityFailure(format!("Failed to generate signing key: {e}")))?;
+        rng.fill(&mut key).map_err(|e| {
+            McpError::SecurityFailure(format!("Failed to generate channel key: {e}"))
+        })?;
+        rng.fill(&mut iv).map_err(|e| {
+            McpError::SecurityFailure(format!("Failed to generate channel nonce: {e}"))
+        })?;
+        rng.fill(&mut signing_key).map_err(|e| {
+            McpError::SecurityFailure(format!("Failed to generate signing key: {e}"))
+        })?;
 
         let now = chrono::Utc::now();
         let expires_at = now
-            + chrono::Duration::hours(self.key_manager.rotation_config.rotation_interval_hours as i64);
+            + chrono::Duration::hours(
+                self.key_manager.rotation_config.rotation_interval_hours as i64,
+            );
         let mut active_keys = self.key_manager.active_keys.write().await;
         active_keys.insert(
             plugin_id,
@@ -907,12 +917,18 @@ impl EncryptionManager {
         let mut nonce_bytes = [0u8; 12];
         let nonce_input = digest::digest(
             &digest::SHA256,
-            format!("{}:{}", message.message_id, message.timestamp.timestamp_nanos_opt().unwrap_or_default()).as_bytes(),
+            format!(
+                "{}:{}",
+                message.message_id,
+                message.timestamp.timestamp_nanos_opt().unwrap_or_default()
+            )
+            .as_bytes(),
         );
         nonce_bytes.copy_from_slice(&nonce_input.as_ref()[..12]);
 
-        let cipher = ChaCha20Poly1305::new_from_slice(&key_material.primary_key)
-            .map_err(|e| McpError::SecurityFailure(format!("Invalid encryption key length: {e}")))?;
+        let cipher = ChaCha20Poly1305::new_from_slice(&key_material.primary_key).map_err(|e| {
+            McpError::SecurityFailure(format!("Invalid encryption key length: {e}"))
+        })?;
 
         let ciphertext = cipher
             .encrypt(&Nonce::from(nonce_bytes), message.payload.as_ref())
@@ -961,7 +977,9 @@ impl EncryptionManager {
             &message.payload,
             signature,
         )
-        .map_err(|_| McpError::SecurityFailure("Encrypted message signature verification failed".to_string()))?;
+        .map_err(|_| {
+            McpError::SecurityFailure("Encrypted message signature verification failed".to_string())
+        })?;
 
         let nonce_b64 = message.metadata.get("nonce").ok_or_else(|| {
             McpError::SecurityFailure("Encrypted message missing nonce metadata".to_string())
@@ -975,12 +993,12 @@ impl EncryptionManager {
             ));
         }
 
-        let cipher = ChaCha20Poly1305::new_from_slice(&key_material.primary_key)
-            .map_err(|e| McpError::SecurityFailure(format!("Invalid decryption key length: {e}")))?;
-        let nonce_array: [u8; 12] = nonce_raw
-            .as_slice()
-            .try_into()
-            .map_err(|_| McpError::SecurityFailure("Invalid nonce length for ChaCha20-Poly1305".to_string()))?;
+        let cipher = ChaCha20Poly1305::new_from_slice(&key_material.primary_key).map_err(|e| {
+            McpError::SecurityFailure(format!("Invalid decryption key length: {e}"))
+        })?;
+        let nonce_array: [u8; 12] = nonce_raw.as_slice().try_into().map_err(|_| {
+            McpError::SecurityFailure("Invalid nonce length for ChaCha20-Poly1305".to_string())
+        })?;
         let plaintext = cipher
             .decrypt(&Nonce::from(nonce_array), message.payload.as_ref())
             .map_err(|e| McpError::SecurityFailure(format!("Message decryption failed: {e}")))?;
@@ -1008,7 +1026,8 @@ impl AuthenticationManager {
         plugin_id: Uuid,
     ) -> Result<AuthenticationInfo, McpError> {
         let now = chrono::Utc::now();
-        let expires_at = now + chrono::Duration::seconds(self.auth_config.token_lifetime_secs as i64);
+        let expires_at =
+            now + chrono::Duration::seconds(self.auth_config.token_lifetime_secs as i64);
         let token = Self::generate_secure_token(plugin_id)?;
 
         let (ecdh_public_key, signing_public_key) = Self::generate_plugin_key_material()?;
@@ -1080,8 +1099,9 @@ impl AuthenticationManager {
     fn generate_secure_token(plugin_id: Uuid) -> Result<String, McpError> {
         let rng = SystemRandom::new();
         let mut random = [0u8; 32];
-        rng.fill(&mut random)
-            .map_err(|e| McpError::SecurityFailure(format!("Failed to generate token entropy: {e}")))?;
+        rng.fill(&mut random).map_err(|e| {
+            McpError::SecurityFailure(format!("Failed to generate token entropy: {e}"))
+        })?;
 
         let nonce = URL_SAFE_NO_PAD.encode(random);
         Ok(format!("p_{}_{}", plugin_id.simple(), nonce))
@@ -1204,7 +1224,10 @@ mod tests {
             encrypted.payload, original_payload,
             "暗号文は平文と異なるべき"
         );
-        assert!(encrypted.signature.is_some(), "HMAC署名が付与されているべき");
+        assert!(
+            encrypted.signature.is_some(),
+            "HMAC署名が付与されているべき"
+        );
         assert!(
             encrypted.metadata.contains_key("nonce"),
             "nonceメタデータが存在するべき"

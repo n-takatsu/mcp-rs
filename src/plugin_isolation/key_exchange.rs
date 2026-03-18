@@ -230,25 +230,21 @@ impl PluginCryptoContext {
     /// 2. `expires_at` 期限チェック（リプレイ攻撃対策）
     /// 3. プライマリ鍵で ChaCha20-Poly1305 復号
     /// 4. 失敗時: グレースピリオド内であればセカンダリ鍵（旧鍵）で再試行
-    pub fn decrypt(
-        &self,
-        peer_id: Uuid,
-        payload: &EncryptedPayload,
-    ) -> Result<Vec<u8>, McpError> {
+    pub fn decrypt(&self, peer_id: Uuid, payload: &EncryptedPayload) -> Result<Vec<u8>, McpError> {
         let session = self.get_valid_session(peer_id)?;
 
         // 1. Ed25519 署名検証（改ざん検知 — 復号前に必ず実施）
         let verifying_key = VerifyingKey::from_bytes(&session.peer_verifying_key)
             .map_err(|e| McpError::SecurityFailure(format!("Invalid peer verifying key: {e}")))?;
-        let sig_bytes: [u8; 64] = payload
-            .signature
-            .as_slice()
-            .try_into()
-            .map_err(|_| McpError::SecurityFailure("Invalid Ed25519 signature length".to_string()))?;
-        let sig = Signature::from_bytes(&sig_bytes);
-        verifying_key.verify(&payload.ciphertext, &sig).map_err(|_| {
-            McpError::SecurityFailure("Ed25519 signature verification failed".to_string())
+        let sig_bytes: [u8; 64] = payload.signature.as_slice().try_into().map_err(|_| {
+            McpError::SecurityFailure("Invalid Ed25519 signature length".to_string())
         })?;
+        let sig = Signature::from_bytes(&sig_bytes);
+        verifying_key
+            .verify(&payload.ciphertext, &sig)
+            .map_err(|_| {
+                McpError::SecurityFailure("Ed25519 signature verification failed".to_string())
+            })?;
 
         // 2. タイムスタンプ期限チェック（リプレイ攻撃対策）
         let now_ts = Utc::now().timestamp();
@@ -565,10 +561,7 @@ impl KeyExchangeProtocol {
 
                 for (a, b) in pairs {
                     if let Err(e) = protocol.rotate_session(a, b).await {
-                        warn!(
-                            "Auto key rotation failed for pair ({}, {}): {}",
-                            a, b, e
-                        );
+                        warn!("Auto key rotation failed for pair ({}, {}): {}", a, b, e);
                     }
                 }
             }
@@ -700,7 +693,10 @@ mod tests {
         let result = protocol
             .decrypt_from_peer(plugin_b, plugin_a, &payload)
             .await;
-        assert!(result.is_err(), "改ざんされたペイロードは復号に失敗するべき");
+        assert!(
+            result.is_err(),
+            "改ざんされたペイロードは復号に失敗するべき"
+        );
         let err = format!("{:?}", result.unwrap_err());
         assert!(
             err.contains("signature verification failed") || err.contains("SecurityFailure"),
@@ -772,8 +768,7 @@ mod tests {
 
         // ECDH 公開鍵が更新されていること（PFS の確認）
         assert_ne!(
-            old_payload.sender_ecdh_public_key,
-            new_payload.sender_ecdh_public_key,
+            old_payload.sender_ecdh_public_key, new_payload.sender_ecdh_public_key,
             "セッションローテーション後は ECDH 公開鍵が更新されるべき"
         );
     }
@@ -903,7 +898,10 @@ mod tests {
         let handle = KeyExchangeProtocol::start_auto_rotation(Arc::clone(&protocol));
 
         // タイマーが発火していない（24 時間待ち）のでタスクは実行中のはず
-        assert!(!handle.is_finished(), "自動ローテーションタスクは実行中のはず");
+        assert!(
+            !handle.is_finished(),
+            "自動ローテーションタスクは実行中のはず"
+        );
 
         // 正常に停止できることを確認
         handle.abort();
@@ -947,7 +945,10 @@ mod tests {
         let handle = KeyExchangeProtocol::start_auto_rotation(Arc::clone(&protocol));
 
         // タスクが起動直後は sleep 中なのでまだ終了していない
-        assert!(!handle.is_finished(), "自動ローテーションタスクは実行中のはず");
+        assert!(
+            !handle.is_finished(),
+            "自動ローテーションタスクは実行中のはず"
+        );
 
         // 仮想時間を 1 時間 + α だけ進めてタイマーを発火させる
         tokio::time::advance(tokio::time::Duration::from_secs(3601)).await;

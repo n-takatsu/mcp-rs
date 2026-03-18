@@ -22,7 +22,6 @@ pub use communication_broker::{
     CommunicationBroker, CommunicationChannel, EncryptionAlgorithm, FilterAction, FilterType,
     MessageFilter, MessageType, RateLimitConfig,
 };
-pub use key_exchange::{EncryptedPayload, KeyExchangeConfig, KeyExchangeProtocol, PluginCryptoContext};
 pub use config::{
     AlertThresholds, IsolationConfig, MonitoringConfig, PluginManagerConfig, SecurityPolicy,
 };
@@ -34,6 +33,9 @@ pub use health::PluginManagerHealth;
 pub use inter_plugin_comm::{
     CommEventType, CommResult, CommunicationEvent, CommunicationRule, InterPluginCommConfig,
     InterPluginCommStats, InterPluginCommunicationController, QueuedMessage, RuleStatus,
+};
+pub use key_exchange::{
+    EncryptedPayload, KeyExchangeConfig, KeyExchangeProtocol, PluginCryptoContext,
 };
 pub use manager::IsolatedPluginManager;
 pub use monitoring::{
