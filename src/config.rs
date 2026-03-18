@@ -121,6 +121,15 @@ pub struct HttpTransportConfig {
     pub addr: Option<String>,
     pub port: Option<u16>,
     pub enable_cors: Option<bool>,
+    pub enforce_https: Option<bool>,
+    pub min_tls_version: Option<String>,
+    pub hsts_enabled: Option<bool>,
+    pub hsts_max_age_seconds: Option<u64>,
+    pub hsts_include_subdomains: Option<bool>,
+    pub hsts_preload: Option<bool>,
+    pub certificate_pinning_enabled: Option<bool>,
+    pub pinned_certificates_sha256: Option<Vec<String>>,
+    pub certificate_pin_header: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -530,6 +539,15 @@ impl McpConfig {
                     addr: Some("127.0.0.1".to_string()),
                     port: Some(8080),
                     enable_cors: Some(true),
+                    enforce_https: Some(true),
+                    min_tls_version: Some("1.3".to_string()),
+                    hsts_enabled: Some(true),
+                    hsts_max_age_seconds: Some(31536000),
+                    hsts_include_subdomains: Some(true),
+                    hsts_preload: Some(false),
+                    certificate_pinning_enabled: Some(false),
+                    pinned_certificates_sha256: Some(vec![]),
+                    certificate_pin_header: Some("x-tls-cert-sha256".to_string()),
                 }),
             },
             handlers: HandlersConfig {
@@ -712,6 +730,21 @@ impl McpConfig {
                 max_request_size: 1048576,
                 timeout_ms: 30000,
                 network_policy: crate::security::NetworkPolicy::default(),
+                enforce_https: http.enforce_https.unwrap_or(false),
+                min_tls_version: http.min_tls_version.clone().or(Some("1.3".to_string())),
+                hsts_enabled: http.hsts_enabled.unwrap_or(true),
+                hsts_max_age_seconds: http.hsts_max_age_seconds.unwrap_or(31536000),
+                hsts_include_subdomains: http.hsts_include_subdomains.unwrap_or(true),
+                hsts_preload: http.hsts_preload.unwrap_or(false),
+                certificate_pinning_enabled: http.certificate_pinning_enabled.unwrap_or(false),
+                pinned_certificates_sha256: http
+                    .pinned_certificates_sha256
+                    .clone()
+                    .unwrap_or_default(),
+                certificate_pin_header: http
+                    .certificate_pin_header
+                    .clone()
+                    .unwrap_or_else(|| "x-tls-cert-sha256".to_string()),
             }
         } else {
             crate::transport::http::HttpConfig::default()
