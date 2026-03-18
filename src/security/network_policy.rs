@@ -151,9 +151,11 @@ mod tests {
 
     #[test]
     fn test_whitelist_specific_ip() {
-        let mut policy = NetworkPolicy::default();
-        policy.reject_external_connections = false;
-        policy.ip_whitelist = vec!["192.168.1.100".to_string()];
+        let policy = NetworkPolicy {
+            reject_external_connections: false,
+            ip_whitelist: vec!["192.168.1.100".to_string()],
+            ..NetworkPolicy::default()
+        };
 
         let allowed: SocketAddr = "192.168.1.100:8080".parse().unwrap();
         let denied: SocketAddr = "192.168.1.101:8080".parse().unwrap();

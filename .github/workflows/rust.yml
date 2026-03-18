@@ -1,9 +1,8 @@
 name: Rust
 
-# PRのみで実行し、pushでは実行しない（ci.ymlと重複回避）
+# ci.yml と重複するため、必要時の手動実行のみ許可
 on:
-  pull_request:
-    branches: [ "main", "develop" ]  # developブランチへのPRも含める
+  workflow_dispatch:
 
 # 同じコミットに対する重複実行を取り消し  
 concurrency:
@@ -15,9 +14,7 @@ env:
 
 jobs:
   build:
-
     runs-on: ubuntu-latest
-
     steps:
     - uses: actions/checkout@v4
     - name: Build

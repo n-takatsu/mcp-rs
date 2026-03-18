@@ -209,9 +209,11 @@ mod tests {
 
     #[test]
     fn test_pool_metrics_efficiency() {
-        let mut metrics = PoolMetrics::default();
-        metrics.connections = 100;
-        metrics.idle_connections = 10;
+        let mut metrics = PoolMetrics {
+            connections: 100,
+            idle_connections: 10,
+            ..PoolMetrics::default()
+        };
 
         // Manually calculate efficiency
         let active = metrics.connections - metrics.idle_connections;
@@ -223,9 +225,11 @@ mod tests {
 
     #[test]
     fn test_pool_metrics_low_efficiency() {
-        let mut metrics = PoolMetrics::default();
-        metrics.connections = 100;
-        metrics.idle_connections = 50;
+        let mut metrics = PoolMetrics {
+            connections: 100,
+            idle_connections: 50,
+            ..PoolMetrics::default()
+        };
 
         let active = metrics.connections - metrics.idle_connections;
         metrics.efficiency = active as f64 / metrics.connections as f64;

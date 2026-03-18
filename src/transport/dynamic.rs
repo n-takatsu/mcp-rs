@@ -143,6 +143,18 @@ impl DynamicTransportManager {
                     max_request_size: 1024 * 1024,
                     timeout_ms: 30000,
                     network_policy: crate::security::NetworkPolicy::default(),
+                    tls_enabled: false,
+                    tls_cert_path: None,
+                    tls_key_path: None,
+                    enforce_https: false,
+                    min_tls_version: Some("1.3".to_string()),
+                    hsts_enabled: true,
+                    hsts_max_age_seconds: 31536000,
+                    hsts_include_subdomains: true,
+                    hsts_preload: false,
+                    certificate_pinning_enabled: false,
+                    pinned_certificates_sha256: Vec::new(),
+                    certificate_pin_header: "x-tls-cert-sha256".to_string(),
                 };
 
                 // Start HTTP server with graceful shutdown support

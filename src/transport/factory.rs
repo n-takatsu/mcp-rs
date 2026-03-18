@@ -23,10 +23,8 @@ impl TransportFactory {
                 Ok(Box::new(stdio_transport))
             }
             TransportType::Http { addr } => {
-                let http_config = http::HttpConfig {
-                    bind_addr: *addr,
-                    ..Default::default()
-                };
+                let mut http_config = config.http.clone();
+                http_config.bind_addr = *addr;
                 let http_transport = http::HttpTransport::new(http_config)
                     .map_err(|e| TransportError::Internal(e.to_string()))?;
                 Ok(Box::new(http_transport))

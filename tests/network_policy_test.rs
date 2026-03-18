@@ -47,9 +47,11 @@ fn test_default_policy_rejects_internet_ip() {
 
 #[test]
 fn test_whitelist_allows_specific_ip() {
-    let mut policy = NetworkPolicy::default();
-    policy.reject_external_connections = false;
-    policy.ip_whitelist = vec!["192.168.1.100".to_string()];
+    let policy = NetworkPolicy {
+        reject_external_connections: false,
+        ip_whitelist: vec!["192.168.1.100".to_string()],
+        ..NetworkPolicy::default()
+    };
 
     let allowed: SocketAddr = "192.168.1.100:8080".parse().unwrap();
     assert!(policy.validate_connection(&allowed).is_ok());
@@ -57,9 +59,11 @@ fn test_whitelist_allows_specific_ip() {
 
 #[test]
 fn test_whitelist_rejects_non_whitelisted_ip() {
-    let mut policy = NetworkPolicy::default();
-    policy.reject_external_connections = false;
-    policy.ip_whitelist = vec!["192.168.1.100".to_string()];
+    let policy = NetworkPolicy {
+        reject_external_connections: false,
+        ip_whitelist: vec!["192.168.1.100".to_string()],
+        ..NetworkPolicy::default()
+    };
 
     let denied: SocketAddr = "192.168.1.101:8080".parse().unwrap();
 
@@ -73,9 +77,11 @@ fn test_whitelist_rejects_non_whitelisted_ip() {
 
 #[test]
 fn test_empty_whitelist_with_external_allowed() {
-    let mut policy = NetworkPolicy::default();
-    policy.reject_external_connections = false;
-    policy.ip_whitelist = vec![];
+    let policy = NetworkPolicy {
+        reject_external_connections: false,
+        ip_whitelist: vec![],
+        ..NetworkPolicy::default()
+    };
 
     // Any IP should be allowed when whitelist is empty and external connections are allowed
     let any_ip: SocketAddr = "8.8.8.8:53".parse().unwrap();
@@ -84,9 +90,11 @@ fn test_empty_whitelist_with_external_allowed() {
 
 #[test]
 fn test_localhost_always_whitelisted() {
-    let mut policy = NetworkPolicy::default();
-    policy.reject_external_connections = false;
-    policy.ip_whitelist = vec!["192.168.1.100".to_string()];
+    let policy = NetworkPolicy {
+        reject_external_connections: false,
+        ip_whitelist: vec!["192.168.1.100".to_string()],
+        ..NetworkPolicy::default()
+    };
 
     // Localhost should always be allowed, even if not explicitly in whitelist
     let localhost_v4: SocketAddr = "127.0.0.1:8080".parse().unwrap();
@@ -116,13 +124,15 @@ fn test_bind_address_validation_external() {
 
 #[test]
 fn test_multiple_whitelisted_ips() {
-    let mut policy = NetworkPolicy::default();
-    policy.reject_external_connections = false;
-    policy.ip_whitelist = vec![
-        "192.168.1.100".to_string(),
-        "192.168.1.101".to_string(),
-        "10.0.0.50".to_string(),
-    ];
+    let policy = NetworkPolicy {
+        reject_external_connections: false,
+        ip_whitelist: vec![
+            "192.168.1.100".to_string(),
+            "192.168.1.101".to_string(),
+            "10.0.0.50".to_string(),
+        ],
+        ..NetworkPolicy::default()
+    };
 
     let ip1: SocketAddr = "192.168.1.100:8080".parse().unwrap();
     let ip2: SocketAddr = "192.168.1.101:8080".parse().unwrap();
