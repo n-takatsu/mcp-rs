@@ -9,6 +9,7 @@ pub mod error_handler;
 mod health;
 pub mod inter_plugin_comm;
 pub mod isolation_engine;
+pub mod key_exchange;
 pub mod lifecycle_manager;
 mod manager;
 pub mod monitoring;
@@ -21,6 +22,7 @@ pub use communication_broker::{
     CommunicationBroker, CommunicationChannel, EncryptionAlgorithm, FilterAction, FilterType,
     MessageFilter, MessageType, RateLimitConfig,
 };
+pub use key_exchange::{EncryptedPayload, KeyExchangeConfig, KeyExchangeProtocol, PluginCryptoContext};
 pub use config::{
     AlertThresholds, IsolationConfig, MonitoringConfig, PluginManagerConfig, SecurityPolicy,
 };
