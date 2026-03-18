@@ -163,6 +163,9 @@ fn convert_to_transport_config(
                 max_request_size: 1048576, // デフォルト値
                 timeout_ms: 30000,         // デフォルト値
                 network_policy: mcp_rs::security::NetworkPolicy::default(),
+                tls_enabled: h.tls_enabled.unwrap_or(false),
+                tls_cert_path: h.tls_cert_path.clone(),
+                tls_key_path: h.tls_key_path.clone(),
                 enforce_https: h.enforce_https.unwrap_or(false),
                 min_tls_version: h.min_tls_version.clone().or(Some("1.3".to_string())),
                 hsts_enabled: h.hsts_enabled.unwrap_or(true),

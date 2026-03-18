@@ -19,15 +19,30 @@ use axum::{
     routing::post,
     Router,
 };
+use hyper_util::{
+    rt::{TokioExecutor, TokioIo},
+    server::conn::auto::Builder as HyperConnectionBuilder,
+    service::TowerToHyperService,
+};
+use rustls::{
+    pki_types::{CertificateDer, PrivateKeyDer},
+    version::TLS13,
+    ServerConfig as RustlsServerConfig,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::{
     collections::{HashMap, HashSet},
+    fs::File,
+    io::BufReader,
     net::SocketAddr,
     sync::Arc,
     time::Instant,
 };
 use tokio::{net::TcpListener, sync::RwLock};
+use tokio_rustls::TlsAcceptor;
+use tower::Service;
 use tower_http::cors::CorsLayer;
 use tracing::{debug, error, info, warn};
 
@@ -45,6 +60,13 @@ pub struct HttpConfig {
     /// Network access policy
     #[serde(default)]
     pub network_policy: NetworkPolicy,
+    /// Enable direct TLS termination in the application
+    #[serde(default)]
+    pub tls_enabled: bool,
+    /// PEM-encoded certificate chain for HTTPS listener
+    pub tls_cert_path: Option<String>,
+    /// PEM-encoded private key for HTTPS listener
+    pub tls_key_path: Option<String>,
     /// Enforce HTTPS-only access via proxy-forwarded protocol headers
     #[serde(default)]
     pub enforce_https: bool,
@@ -79,6 +101,9 @@ impl Default for HttpConfig {
             max_request_size: 1024 * 1024, // 1MB
             timeout_ms: 30000,             // 30 seconds
             network_policy: NetworkPolicy::default(),
+            tls_enabled: false,
+            tls_cert_path: None,
+            tls_key_path: None,
             enforce_https: false,
             min_tls_version: Some("1.3".to_string()),
             hsts_enabled: true,
@@ -182,8 +207,9 @@ impl HttpTransport {
             } else {
                 None
             },
-            certificate_pinning_enabled: self.config.certificate_pinning_enabled,
-            pinned_certificates_sha256: Arc::new(pinned_certificates_sha256),
+            certificate_pinning_enabled: self.config.certificate_pinning_enabled
+                && !self.config.tls_enabled,
+            pinned_certificates_sha256: Arc::new(pinned_certificates_sha256.clone()),
             certificate_pin_header: self.config.certificate_pin_header.clone(),
         };
 
@@ -198,7 +224,12 @@ impl HttpTransport {
             .with_state(state);
 
         info!(
-            "Starting HTTP transport server on {}",
+            "Starting {} transport server on {}",
+            if self.config.tls_enabled {
+                "HTTPS"
+            } else {
+                "HTTP"
+            },
             self.config.bind_addr
         );
 
@@ -206,14 +237,152 @@ impl HttpTransport {
             .await
             .map_err(|e| Error::Internal(format!("Failed to bind HTTP server: {}", e)))?;
 
-        tokio::spawn(async move {
-            if let Err(e) = axum::serve(listener, app).await {
-                error!("HTTP server error: {}", e);
-            }
-        });
+        if self.config.tls_enabled {
+            let tls_acceptor = build_tls_acceptor(&self.config, &pinned_certificates_sha256)?;
+            tokio::spawn(async move {
+                serve_tls(listener, app, tls_acceptor).await;
+            });
+        } else {
+            tokio::spawn(async move {
+                if let Err(e) = axum::serve(listener, app).await {
+                    error!("HTTP server error: {}", e);
+                }
+            });
+        }
 
         Ok(())
     }
+}
+
+async fn serve_tls(listener: TcpListener, app: Router, tls_acceptor: TlsAcceptor) {
+    let mut make_service = app.into_make_service_with_connect_info::<SocketAddr>();
+
+    loop {
+        let (tcp_stream, remote_addr) = match listener.accept().await {
+            Ok(connection) => connection,
+            Err(e) => {
+                error!("HTTPS accept error: {}", e);
+                continue;
+            }
+        };
+
+        let tls_acceptor = tls_acceptor.clone();
+        let tower_service = match make_service.call(remote_addr).await {
+            Ok(service) => service,
+            Err(e) => {
+                error!("Failed to create HTTPS service for {}: {}", remote_addr, e);
+                continue;
+            }
+        };
+
+        tokio::spawn(async move {
+            let tls_stream = match tls_acceptor.accept(tcp_stream).await {
+                Ok(stream) => stream,
+                Err(e) => {
+                    warn!("TLS handshake failed for {}: {}", remote_addr, e);
+                    return;
+                }
+            };
+
+            let io = TokioIo::new(tls_stream);
+            let builder = HyperConnectionBuilder::new(TokioExecutor::new());
+            let hyper_service = TowerToHyperService::new(tower_service);
+
+            if let Err(e) = builder
+                .serve_connection_with_upgrades(io, hyper_service)
+                .await
+            {
+                error!("HTTPS connection error for {}: {}", remote_addr, e);
+            }
+        });
+    }
+}
+
+fn build_tls_acceptor(
+    config: &HttpConfig,
+    pinned_certificates_sha256: &HashSet<String>,
+) -> Result<TlsAcceptor> {
+    let certificates = load_tls_certificates(config)?;
+    let private_key = load_tls_private_key(config)?;
+
+    validate_direct_certificate_pinning(config, pinned_certificates_sha256, &certificates)?;
+
+    let mut server_config = RustlsServerConfig::builder_with_protocol_versions(&[&TLS13])
+        .with_no_client_auth()
+        .with_single_cert(certificates, private_key)
+        .map_err(|e| Error::Internal(format!("Invalid TLS certificate configuration: {}", e)))?;
+    server_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+
+    Ok(TlsAcceptor::from(Arc::new(server_config)))
+}
+
+fn load_tls_certificates(config: &HttpConfig) -> Result<Vec<CertificateDer<'static>>> {
+    let cert_path = config.tls_cert_path.as_deref().ok_or_else(|| {
+        Error::Internal("tls_cert_path is required when tls_enabled=true".to_string())
+    })?;
+
+    let cert_file = File::open(cert_path).map_err(|e| {
+        Error::Internal(format!(
+            "Failed to open TLS certificate {}: {}",
+            cert_path, e
+        ))
+    })?;
+    let mut cert_reader = BufReader::new(cert_file);
+    let certificates = rustls_pemfile::certs(&mut cert_reader)
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|e| Error::Internal(format!("Failed to parse TLS certificates: {}", e)))?;
+
+    if certificates.is_empty() {
+        return Err(Error::Internal(
+            "TLS certificate chain is empty".to_string(),
+        ));
+    }
+
+    Ok(certificates)
+}
+
+fn load_tls_private_key(config: &HttpConfig) -> Result<PrivateKeyDer<'static>> {
+    let key_path = config.tls_key_path.as_deref().ok_or_else(|| {
+        Error::Internal("tls_key_path is required when tls_enabled=true".to_string())
+    })?;
+
+    let key_file = File::open(key_path).map_err(|e| {
+        Error::Internal(format!(
+            "Failed to open TLS private key {}: {}",
+            key_path, e
+        ))
+    })?;
+    let mut key_reader = BufReader::new(key_file);
+    let private_key = rustls_pemfile::private_key(&mut key_reader)
+        .map_err(|e| Error::Internal(format!("Failed to parse TLS private key: {}", e)))?
+        .ok_or_else(|| Error::Internal("TLS private key not found in key file".to_string()))?;
+
+    Ok(private_key)
+}
+
+fn validate_direct_certificate_pinning(
+    config: &HttpConfig,
+    pinned_certificates_sha256: &HashSet<String>,
+    certificates: &[CertificateDer<'static>],
+) -> Result<()> {
+    if !config.tls_enabled || !config.certificate_pinning_enabled {
+        return Ok(());
+    }
+
+    let leaf_certificate = certificates
+        .first()
+        .ok_or_else(|| Error::Internal("TLS certificate chain is empty".to_string()))?;
+    let leaf_fingerprint = certificate_fingerprint_sha256(leaf_certificate);
+
+    if !pinned_certificates_sha256.contains(leaf_fingerprint.as_str()) {
+        return Err(Error::TransportError(TransportError::Configuration(
+            "Configured pinned_certificates_sha256 does not match the loaded TLS certificate"
+                .to_string(),
+        )));
+    }
+
+    info!("Direct TLS certificate pin validation succeeded");
+    Ok(())
 }
 
 #[async_trait]
@@ -513,6 +682,15 @@ fn build_hsts_header_value(
 }
 
 fn validate_tls_security_settings(config: &HttpConfig) -> std::result::Result<(), String> {
+    if config.tls_enabled {
+        if config.tls_cert_path.as_deref().is_none() {
+            return Err("tls_cert_path is required when tls_enabled=true".to_string());
+        }
+        if config.tls_key_path.as_deref().is_none() {
+            return Err("tls_key_path is required when tls_enabled=true".to_string());
+        }
+    }
+
     if let Some(min_tls_version) = config.min_tls_version.as_deref() {
         if !is_tls_version_at_least(min_tls_version, "1.3") {
             return Err(format!(
@@ -626,6 +804,11 @@ fn normalize_fingerprint(fingerprint: &str) -> Option<String> {
     }
 }
 
+fn certificate_fingerprint_sha256(certificate: &CertificateDer<'_>) -> String {
+    let digest = Sha256::digest(certificate.as_ref());
+    digest.iter().map(|byte| format!("{:02x}", byte)).collect()
+}
+
 fn header_value<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
     headers
         .get(name)
@@ -657,6 +840,7 @@ mod tests {
         assert!(config.cors_enabled);
         assert_eq!(config.max_request_size, 1024 * 1024);
         assert_eq!(config.timeout_ms, 30000);
+        assert!(!config.tls_enabled);
         assert!(config.hsts_enabled);
         assert_eq!(config.min_tls_version.as_deref(), Some("1.3"));
         assert!(!config.certificate_pinning_enabled);
@@ -712,6 +896,15 @@ mod tests {
     fn test_tls_validation_rejects_low_version() {
         let config = HttpConfig {
             min_tls_version: Some("1.2".to_string()),
+            ..HttpConfig::default()
+        };
+        assert!(validate_tls_security_settings(&config).is_err());
+    }
+
+    #[test]
+    fn test_tls_validation_requires_cert_and_key_paths() {
+        let config = HttpConfig {
+            tls_enabled: true,
             ..HttpConfig::default()
         };
         assert!(validate_tls_security_settings(&config).is_err());
