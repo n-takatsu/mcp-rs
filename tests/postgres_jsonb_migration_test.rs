@@ -3,7 +3,7 @@
 #[cfg(feature = "postgresql-backend")]
 mod postgres_jsonb_tests {
     use mcp_rs::handlers::database::engines::postgres::{
-        JsonbHandler, JsonbQueryBuilder, MigrationManager, PostgresConfig, PostgresEngine,
+        JsonbQueryBuilder, PostgresConfig, PostgresEngine,
     };
     use serde_json::json;
 

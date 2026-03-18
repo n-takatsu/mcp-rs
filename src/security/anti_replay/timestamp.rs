@@ -181,7 +181,7 @@ mod tests {
 
         // Range should be approximately 70 seconds (30 + 5 drift on each side)
         let range_secs = (latest - earliest).num_seconds();
-        assert!(range_secs >= 70 && range_secs <= 72);
+        assert!((70..=72).contains(&range_secs));
     }
 
     #[test]

@@ -25,6 +25,7 @@ use hyper_util::{
     service::TowerToHyperService,
 };
 use rustls::{
+    crypto::ring::default_provider,
     pki_types::{CertificateDer, PrivateKeyDer},
     version::TLS13,
     ServerConfig as RustlsServerConfig,
@@ -136,6 +137,7 @@ struct HttpTransportState {
     pending_responses: Arc<RwLock<HashMap<Value, tokio::sync::oneshot::Sender<JsonRpcResponse>>>>,
     stats: Arc<RwLock<HttpStats>>,
     network_policy: NetworkPolicy,
+    tls_terminated_locally: bool,
     enforce_https: bool,
     min_tls_version: Option<String>,
     hsts_header_value: Option<String>,
@@ -196,6 +198,7 @@ impl HttpTransport {
             pending_responses: self.pending_responses.clone(),
             stats: self.stats.clone(),
             network_policy: self.config.network_policy.clone(),
+            tls_terminated_locally: self.config.tls_enabled,
             enforce_https: self.config.enforce_https,
             min_tls_version: self.config.min_tls_version.clone(),
             hsts_header_value: if self.config.hsts_enabled {
@@ -302,6 +305,8 @@ fn build_tls_acceptor(
     config: &HttpConfig,
     pinned_certificates_sha256: &HashSet<String>,
 ) -> Result<TlsAcceptor> {
+    let _ = default_provider().install_default();
+
     let certificates = load_tls_certificates(config)?;
     let private_key = load_tls_private_key(config)?;
 
@@ -508,7 +513,7 @@ async fn handle_jsonrpc_request(
         return Err(StatusCode::FORBIDDEN);
     }
 
-    if state.enforce_https && !is_forwarded_https(&headers) {
+    if state.enforce_https && !state.tls_terminated_locally && !is_forwarded_https(&headers) {
         warn!(
             "Rejected non-HTTPS request from {} due to enforce_https policy",
             remote_addr
@@ -517,9 +522,11 @@ async fn handle_jsonrpc_request(
     }
 
     if let Some(min_tls_version) = state.min_tls_version.as_deref() {
-        if let Err(reason) =
-            validate_forwarded_tls_version(&headers, min_tls_version, state.enforce_https)
-        {
+        if let Err(reason) = validate_forwarded_tls_version(
+            &headers,
+            min_tls_version,
+            state.enforce_https && !state.tls_terminated_locally,
+        ) {
             warn!(
                 "Rejected request from {} due to TLS metadata validation failure: {}",
                 remote_addr, reason
@@ -832,6 +839,9 @@ fn header_contains_token(headers: &HeaderMap, name: &str, token: &str) -> bool {
 mod tests {
     use super::*;
     use axum::http::HeaderMap;
+    use rcgen::generate_simple_self_signed;
+    use tempfile::tempdir;
+    use tokio::time::{sleep, Duration};
 
     #[test]
     fn test_http_config_default() {
@@ -908,6 +918,61 @@ mod tests {
             ..HttpConfig::default()
         };
         assert!(validate_tls_security_settings(&config).is_err());
+    }
+
+    #[tokio::test]
+    async fn test_https_server_start_and_request_roundtrip() {
+        let cert = generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
+        let cert_pem = cert.cert.pem();
+        let key_pem = cert.key_pair.serialize_pem();
+        let cert_fingerprint = certificate_fingerprint_sha256(cert.cert.der());
+
+        let temp_dir = tempdir().unwrap();
+        let cert_path = temp_dir.path().join("server.crt");
+        let key_path = temp_dir.path().join("server.key");
+        std::fs::write(&cert_path, cert_pem).unwrap();
+        std::fs::write(&key_path, key_pem).unwrap();
+
+        let bind_addr = {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = listener.local_addr().unwrap();
+            drop(listener);
+            addr
+        };
+
+        let config = HttpConfig {
+            bind_addr,
+            tls_enabled: true,
+            tls_cert_path: Some(cert_path.to_string_lossy().to_string()),
+            tls_key_path: Some(key_path.to_string_lossy().to_string()),
+            enforce_https: true,
+            certificate_pinning_enabled: true,
+            pinned_certificates_sha256: vec![cert_fingerprint],
+            ..HttpConfig::default()
+        };
+
+        let transport = HttpTransport::new(config).unwrap();
+        transport.start_server().await.unwrap();
+
+        sleep(Duration::from_millis(200)).await;
+
+        let client = reqwest::Client::builder()
+            .danger_accept_invalid_certs(true)
+            .build()
+            .unwrap();
+        let response = client
+            .post(format!("https://localhost:{}/mcp", bind_addr.port()))
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "tools/list",
+                "params": {}
+            }))
+            .send()
+            .await
+            .unwrap();
+
+        assert!(response.status().is_success());
+        assert!(response.headers().contains_key("strict-transport-security"));
     }
 
     #[test]
