@@ -187,6 +187,8 @@ impl HttpTransport {
 
     /// Start the HTTP server
     pub async fn start_server(&self) -> Result<()> {
+        *self.bound_addr.write().await = None;
+
         // Validate bind address
         self.config
             .network_policy
@@ -252,19 +254,24 @@ impl HttpTransport {
         let local_addr = listener
             .local_addr()
             .map_err(|e| Error::Internal(format!("Failed to get bound HTTP address: {}", e)))?;
-        *self.bound_addr.write().await = Some(local_addr);
 
         if self.config.tls_enabled {
             let tls_acceptor = build_tls_acceptor(&self.config, &pinned_certificates_sha256)?;
+            *self.bound_addr.write().await = Some(local_addr);
             tokio::spawn(async move {
                 serve_tls(listener, app, tls_acceptor).await;
             });
         } else {
+            *self.bound_addr.write().await = Some(local_addr);
             tokio::spawn(async move {
                 if let Err(e) = axum::serve(listener, app).await {
                     error!("HTTP server error: {}", e);
                 }
             });
+        }
+
+        if self.config.bind_addr.port() == 0 {
+            info!("HTTP server bound to dynamic address {}", local_addr);
         }
 
         Ok(())
@@ -928,42 +935,65 @@ mod tests {
         generate_simple_self_signed, BasicConstraints, Certificate, CertificateParams,
         ExtendedKeyUsagePurpose, IsCa, KeyPair, KeyUsagePurpose,
     };
+    use std::error::Error as StdError;
     use std::net::SocketAddr;
     use tempfile::tempdir;
-    use tokio::net::TcpStream;
     use tokio::time::{sleep, Duration, Instant};
 
-    async fn wait_for_server_ready(bind_addr: SocketAddr) {
+    async fn wait_for_https_server_ready(
+        bind_addr: SocketAddr,
+        root_ca: reqwest::Certificate,
+        client_identity_pem: Option<&[u8]>,
+    ) {
         let deadline = Instant::now() + Duration::from_secs(5);
+        let url = format!("https://localhost:{}/", bind_addr.port());
 
         loop {
-            match TcpStream::connect(bind_addr).await {
-                Ok(stream) => {
-                    drop(stream);
+            let mut builder = reqwest::Client::builder()
+                .add_root_certificate(root_ca.clone())
+                .resolve("localhost", bind_addr)
+                .connect_timeout(Duration::from_millis(300))
+                .timeout(Duration::from_millis(500));
+
+            if let Some(identity_pem) = client_identity_pem {
+                let identity = reqwest::Identity::from_pem(identity_pem)
+                    .expect("valid client identity PEM for readiness probe");
+                builder = builder.identity(identity);
+            }
+
+            let client = builder
+                .build()
+                .expect("failed to build readiness probe HTTP client");
+
+            match client.get(&url).send().await {
+                Ok(_) => {
                     return;
                 }
-                Err(err)
-                    if matches!(
-                        err.kind(),
-                        std::io::ErrorKind::ConnectionRefused
-                            | std::io::ErrorKind::AddrNotAvailable
-                            | std::io::ErrorKind::TimedOut
-                    ) => {}
+                Err(err) if is_connectivity_probe_error(&err) => {}
                 Err(err) => {
-                    panic!("failed to probe listener readiness for {bind_addr}: {err}");
+                    panic!("failed to probe HTTPS readiness for {bind_addr}: {err:?}");
                 }
             }
 
             if Instant::now() >= deadline {
-                panic!("server did not start listening on {bind_addr} within timeout");
+                panic!("HTTPS server did not become ready on {bind_addr} within timeout");
             }
 
             sleep(Duration::from_millis(50)).await;
         }
     }
 
+    fn is_connectivity_probe_error(error: &reqwest::Error) -> bool {
+        error.is_timeout()
+            || reqwest_error_has_io_kind(error, std::io::ErrorKind::ConnectionRefused)
+            || reqwest_error_has_io_kind(error, std::io::ErrorKind::AddrNotAvailable)
+            || reqwest_error_has_io_kind(error, std::io::ErrorKind::TimedOut)
+            || reqwest_error_has_io_kind(error, std::io::ErrorKind::ConnectionReset)
+            || reqwest_error_has_io_kind(error, std::io::ErrorKind::ConnectionAborted)
+    }
+
     fn reqwest_error_has_io_kind(error: &reqwest::Error, kind: std::io::ErrorKind) -> bool {
-        let mut source = std::error::Error::source(error);
+        let mut source = StdError::source(error);
         while let Some(err) = source {
             if let Some(io_error) = err.downcast_ref::<std::io::Error>() {
                 if io_error.kind() == kind {
@@ -1148,7 +1178,8 @@ mod tests {
         let transport = HttpTransport::new(config).unwrap();
         transport.start_server().await.unwrap();
         let server_addr = transport.bound_addr().await.unwrap();
-        wait_for_server_ready(server_addr).await;
+        let root_ca = reqwest::Certificate::from_pem(cert.cert.pem().as_bytes()).unwrap();
+        wait_for_https_server_ready(server_addr, root_ca, None).await;
 
         let client = reqwest::Client::builder()
             .danger_accept_invalid_certs(true)
@@ -1203,9 +1234,25 @@ mod tests {
         let transport = HttpTransport::new(config).unwrap();
         transport.start_server().await.unwrap();
         let server_addr = transport.bound_addr().await.unwrap();
-        wait_for_server_ready(server_addr).await;
-
+        let (probe_client_cert, probe_client_key) = generate_signed_cert(
+            "mcp-probe-client",
+            &ca_cert,
+            &ca_key,
+            ExtendedKeyUsagePurpose::ClientAuth,
+        );
+        let probe_identity_pem = format!(
+            "{}\n{}",
+            probe_client_cert.pem(),
+            probe_client_key.serialize_pem()
+        );
         let root_ca = reqwest::Certificate::from_pem(ca_cert.pem().as_bytes()).unwrap();
+        wait_for_https_server_ready(
+            server_addr,
+            root_ca.clone(),
+            Some(probe_identity_pem.as_bytes()),
+        )
+        .await;
+
         let client = reqwest::Client::builder()
             .add_root_certificate(root_ca)
             .resolve("localhost", server_addr)
@@ -1266,10 +1313,15 @@ mod tests {
         let transport = HttpTransport::new(config).unwrap();
         transport.start_server().await.unwrap();
         let server_addr = transport.bound_addr().await.unwrap();
-        wait_for_server_ready(server_addr).await;
-
         let root_ca = reqwest::Certificate::from_pem(ca_cert.pem().as_bytes()).unwrap();
         let client_identity_pem = format!("{}\n{}", client_cert.pem(), client_key.serialize_pem());
+        wait_for_https_server_ready(
+            server_addr,
+            root_ca.clone(),
+            Some(client_identity_pem.as_bytes()),
+        )
+        .await;
+
         let client_identity = reqwest::Identity::from_pem(client_identity_pem.as_bytes()).unwrap();
 
         let client = reqwest::Client::builder()
@@ -1334,9 +1386,25 @@ mod tests {
         let transport = HttpTransport::new(config).unwrap();
         transport.start_server().await.unwrap();
         let server_addr = transport.bound_addr().await.unwrap();
-        wait_for_server_ready(server_addr).await;
-
+        let (probe_client_cert, probe_client_key) = generate_signed_cert(
+            "mcp-probe-client",
+            &trusted_ca_cert,
+            &trusted_ca_key,
+            ExtendedKeyUsagePurpose::ClientAuth,
+        );
+        let probe_identity_pem = format!(
+            "{}\n{}",
+            probe_client_cert.pem(),
+            probe_client_key.serialize_pem()
+        );
         let root_ca = reqwest::Certificate::from_pem(trusted_ca_cert.pem().as_bytes()).unwrap();
+        wait_for_https_server_ready(
+            server_addr,
+            root_ca.clone(),
+            Some(probe_identity_pem.as_bytes()),
+        )
+        .await;
+
         let client_identity_pem = format!("{}\n{}", client_cert.pem(), client_key.serialize_pem());
         let client_identity = reqwest::Identity::from_pem(client_identity_pem.as_bytes()).unwrap();
 
