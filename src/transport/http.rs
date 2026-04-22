@@ -938,6 +938,28 @@ mod tests {
         }
     }
 
+    fn assert_mtls_rejection_error(error: &reqwest::Error, context: &str) {
+        let details = format!("{error:?}").to_ascii_lowercase();
+        assert!(
+            error.is_request() || error.is_connect(),
+            "unexpected error kind while {context}: {error:?}"
+        );
+        assert!(
+            details.contains("certificate")
+                || details.contains("tls")
+                || details.contains("handshake")
+                || details.contains("alert")
+                || details.contains("connection aborted")
+                || details.contains("connectionaborted")
+                || details.contains("os { code: 10053"),
+            "error does not look like mTLS rejection while {context}: {error:?}"
+        );
+        assert!(
+            !details.contains("connection refused") && !details.contains("timed out"),
+            "error may indicate connectivity issue instead of mTLS rejection while {context}: {error:?}"
+        );
+    }
+
     fn generate_ca_cert() -> (Certificate, KeyPair) {
         let mut params = CertificateParams::new(Vec::new()).unwrap();
         params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
@@ -1162,6 +1184,7 @@ mod tests {
         let root_ca = reqwest::Certificate::from_pem(ca_cert.pem().as_bytes()).unwrap();
         let client = reqwest::Client::builder()
             .add_root_certificate(root_ca)
+            .resolve("localhost", bind_addr)
             .build()
             .unwrap();
 
@@ -1176,10 +1199,7 @@ mod tests {
             .await;
 
         let error = response.expect_err("request without client certificate should fail");
-        assert!(
-            error.is_request() || error.is_connect(),
-            "unexpected error when mTLS client certificate is missing: {error:?}"
-        );
+        assert_mtls_rejection_error(&error, "client certificate is missing");
     }
 
     #[tokio::test]
@@ -1235,6 +1255,7 @@ mod tests {
         let client = reqwest::Client::builder()
             .add_root_certificate(root_ca)
             .identity(client_identity)
+            .resolve("localhost", bind_addr)
             .build()
             .unwrap();
 
@@ -1306,6 +1327,7 @@ mod tests {
         let client = reqwest::Client::builder()
             .add_root_certificate(root_ca)
             .identity(client_identity)
+            .resolve("localhost", bind_addr)
             .build()
             .unwrap();
 
@@ -1321,10 +1343,7 @@ mod tests {
 
         let error =
             response.expect_err("request with client certificate signed by wrong CA should fail");
-        assert!(
-            error.is_request() || error.is_connect(),
-            "unexpected error when mTLS client certificate chain is invalid: {error:?}"
-        );
+        assert_mtls_rejection_error(&error, "client certificate chain is invalid");
     }
 
     #[test]
