@@ -203,14 +203,16 @@ password = "your-application-password"
 
 ## WordPress Application Password
 
-[server]
+[transport]
 transport_type = "stdio"
 
 ## For Claude Desktop
 
 ## transport_type = "http"  # For Web UI
 
-## bind_addr = "127.0.0.1:8080"
+[transport.http]
+## addr = "127.0.0.1"
+## port = 8080
 
 ## HTTP mode only
 

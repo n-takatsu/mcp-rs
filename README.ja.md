@@ -165,14 +165,16 @@ password = "your-application-password"
 
 ## WordPress アプリケーションパスワード
 
-[server]
+[transport]
 transport_type = "stdio"  
 
 ## Claude Desktop 用
 
 ## transport_type = "http"  # Web UI 用
 
-## bind_addr = "127.0.0.1:8080"  
+[transport.http]
+## addr = "127.0.0.1"
+## port = 8080
 
 ## HTTP モードのみ
 
