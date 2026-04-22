@@ -1134,7 +1134,17 @@ mod tests {
 
         let transport = HttpTransport::new(config).unwrap();
         transport.start_server().await.unwrap();
-        sleep(Duration::from_millis(200)).await;
+
+        let mut ready = false;
+        for _ in 0..10 {
+            if std::net::TcpStream::connect(bind_addr).is_ok() {
+                ready = true;
+                break;
+            }
+            sleep(Duration::from_millis(50)).await;
+        }
+
+        assert!(ready, "server did not start listening in time");
 
         let root_ca = reqwest::Certificate::from_pem(ca_cert.pem().as_bytes()).unwrap();
         let client = reqwest::Client::builder()
@@ -1152,7 +1162,11 @@ mod tests {
             .send()
             .await;
 
-        assert!(response.is_err());
+        let error = response.expect_err("request without client certificate should fail");
+        assert!(
+            error.is_request() || error.is_connect(),
+            "unexpected error when mTLS client certificate is missing: {error:?}"
+        );
     }
 
     #[tokio::test]

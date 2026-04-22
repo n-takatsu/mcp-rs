@@ -162,15 +162,5 @@
     "workbench.editor.enablePreview": false,
     "breadcrumbs.enabled": true,
     "problems.decorations.enabled": true,
-    "telemetry.telemetryLevel": "off",
-    "chat.tools.terminal.autoApprove": {
-        "/^cargo audit --ignore RUSTSEC-2023-0071$/": {
-            "approve": true,
-            "matchCommandLine": true
-        },
-        "/^cargo update -p rustls-webpki -p aws-lc-sys -p aws-lc-rs -p rustls$/": {
-            "approve": true,
-            "matchCommandLine": true
-        }
-    }
+    "telemetry.telemetryLevel": "off"
 }

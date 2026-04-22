@@ -227,11 +227,12 @@ level = "error"
 When using HTTP transport with TLS and client certificate authentication (mTLS), set:
 
 ```toml
-[server]
+[transport]
 transport_type = "http"
-bind_addr = "127.0.0.1:8080"
 
 [transport.http]
+addr = "127.0.0.1"
+port = 8080
 tls_enabled = true
 tls_cert_path = "./certs/server.crt"
 tls_key_path = "./certs/server.key"
