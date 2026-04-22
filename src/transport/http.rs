@@ -911,8 +911,26 @@ mod tests {
         generate_simple_self_signed, BasicConstraints, Certificate, CertificateParams,
         ExtendedKeyUsagePurpose, IsCa, KeyPair, KeyUsagePurpose,
     };
+    use std::net::SocketAddr;
     use tempfile::tempdir;
-    use tokio::time::{sleep, Duration};
+    use tokio::net::TcpStream;
+    use tokio::time::{sleep, Duration, Instant};
+
+    async fn wait_for_server_ready(bind_addr: SocketAddr) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+
+        loop {
+            if TcpStream::connect(bind_addr).await.is_ok() {
+                return;
+            }
+
+            if Instant::now() >= deadline {
+                panic!("server did not start listening on {bind_addr} within timeout");
+            }
+
+            sleep(Duration::from_millis(50)).await;
+        }
+    }
 
     fn generate_ca_cert() -> (Certificate, KeyPair) {
         let mut params = CertificateParams::new(Vec::new()).unwrap();
@@ -1074,8 +1092,7 @@ mod tests {
 
         let transport = HttpTransport::new(config).unwrap();
         transport.start_server().await.unwrap();
-
-        sleep(Duration::from_millis(200)).await;
+        wait_for_server_ready(bind_addr).await;
 
         let client = reqwest::Client::builder()
             .danger_accept_invalid_certs(true)
@@ -1134,17 +1151,7 @@ mod tests {
 
         let transport = HttpTransport::new(config).unwrap();
         transport.start_server().await.unwrap();
-
-        let mut ready = false;
-        for _ in 0..10 {
-            if std::net::TcpStream::connect(bind_addr).is_ok() {
-                ready = true;
-                break;
-            }
-            sleep(Duration::from_millis(50)).await;
-        }
-
-        assert!(ready, "server did not start listening in time");
+        wait_for_server_ready(bind_addr).await;
 
         let root_ca = reqwest::Certificate::from_pem(ca_cert.pem().as_bytes()).unwrap();
         let client = reqwest::Client::builder()
@@ -1213,7 +1220,7 @@ mod tests {
 
         let transport = HttpTransport::new(config).unwrap();
         transport.start_server().await.unwrap();
-        sleep(Duration::from_millis(200)).await;
+        wait_for_server_ready(bind_addr).await;
 
         let root_ca = reqwest::Certificate::from_pem(ca_cert.pem().as_bytes()).unwrap();
         let client_identity_pem = format!("{}\n{}", client_cert.pem(), client_key.serialize_pem());
@@ -1284,17 +1291,7 @@ mod tests {
 
         let transport = HttpTransport::new(config).unwrap();
         transport.start_server().await.unwrap();
-
-        let mut ready = false;
-        for _ in 0..10 {
-            if std::net::TcpStream::connect(bind_addr).is_ok() {
-                ready = true;
-                break;
-            }
-            sleep(Duration::from_millis(50)).await;
-        }
-
-        assert!(ready, "server did not start listening in time");
+        wait_for_server_ready(bind_addr).await;
 
         let root_ca = reqwest::Certificate::from_pem(trusted_ca_cert.pem().as_bytes()).unwrap();
         let client_identity_pem = format!("{}\n{}", client_cert.pem(), client_key.serialize_pem());
