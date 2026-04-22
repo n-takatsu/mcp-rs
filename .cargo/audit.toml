@@ -20,4 +20,36 @@ ignore = [
     # - Mitigation: Only used in optional Kubernetes feature
     #               Not exposed in default configuration
     "RUSTSEC-2025-0134",
+
+    # RUSTSEC-2025-0012: backoff unmaintained
+    # - Affects: backoff 0.4.0 (via async-openai)
+    # - Status: Unmaintained warning
+    # - Mitigation: async-openai is optional (llm-integration feature)
+    #               Track upstream replacement before enabling by default
+    "RUSTSEC-2025-0012",
+
+    # RUSTSEC-2024-0384: instant unmaintained
+    # - Affects: instant 0.1.13 (transitive via backoff)
+    # - Status: Unmaintained warning
+    # - Mitigation: Only present through optional llm-integration dependency chain
+    "RUSTSEC-2024-0384",
+
+    # RUSTSEC-2024-0436: paste unmaintained
+    # - Affects: paste 1.0.15 (via statrs -> nalgebra -> simba)
+    # - Status: Unmaintained warning
+    # - Mitigation: Only used by optional ml-anomaly-detection feature
+    "RUSTSEC-2024-0436",
+
+    # RUSTSEC-2026-0002: lru IterMut unsoundness
+    # - Affects: lru 0.14.0 (via mysql_async)
+    # - Status: Unsound warning
+    # - Mitigation: mysql backend is optional; avoid IterMut usage patterns until patched
+    "RUSTSEC-2026-0002",
+
+    # RUSTSEC-2026-0097: rand unsound with custom logger + rand::rng()
+    # - Affects: rand 0.8/0.9 in transitive dependencies
+    # - Status: Unsound warning
+    # - Mitigation: No direct use of rand::rng() + custom logger pattern in this project
+    #               Revisit once patched rand releases are available
+    "RUSTSEC-2026-0097",
 ]
