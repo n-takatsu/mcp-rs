@@ -277,7 +277,8 @@ impl HttpTransport {
         Ok(())
     }
 
-    pub async fn bound_addr(&self) -> Option<SocketAddr> {
+    #[cfg(test)]
+    pub(crate) async fn bound_addr(&self) -> Option<SocketAddr> {
         *self.bound_addr.read().await
     }
 }
@@ -1183,6 +1184,7 @@ mod tests {
 
         let client = reqwest::Client::builder()
             .danger_accept_invalid_certs(true)
+            .resolve("localhost", server_addr)
             .build()
             .unwrap();
         let response = client
