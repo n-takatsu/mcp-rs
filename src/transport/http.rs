@@ -27,8 +27,9 @@ use hyper_util::{
 use rustls::{
     crypto::ring::default_provider,
     pki_types::{CertificateDer, PrivateKeyDer},
+    server::WebPkiClientVerifier,
     version::TLS13,
-    ServerConfig as RustlsServerConfig,
+    RootCertStore, ServerConfig as RustlsServerConfig,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -68,6 +69,11 @@ pub struct HttpConfig {
     pub tls_cert_path: Option<String>,
     /// PEM-encoded private key for HTTPS listener
     pub tls_key_path: Option<String>,
+    /// Require mTLS client certificate authentication
+    #[serde(default)]
+    pub mtls_enabled: bool,
+    /// PEM-encoded CA certificate(s) used for mTLS client certificate validation
+    pub mtls_ca_cert_path: Option<String>,
     /// Enforce HTTPS-only access via proxy-forwarded protocol headers
     #[serde(default)]
     pub enforce_https: bool,
@@ -105,6 +111,8 @@ impl Default for HttpConfig {
             tls_enabled: false,
             tls_cert_path: None,
             tls_key_path: None,
+            mtls_enabled: false,
+            mtls_ca_cert_path: None,
             enforce_https: false,
             min_tls_version: Some("1.3".to_string()),
             hsts_enabled: true,
@@ -312,10 +320,24 @@ fn build_tls_acceptor(
 
     validate_direct_certificate_pinning(config, pinned_certificates_sha256, &certificates)?;
 
-    let mut server_config = RustlsServerConfig::builder_with_protocol_versions(&[&TLS13])
-        .with_no_client_auth()
-        .with_single_cert(certificates, private_key)
-        .map_err(|e| Error::Internal(format!("Invalid TLS certificate configuration: {}", e)))?;
+    let mut server_config = if config.mtls_enabled {
+        let client_roots = load_mtls_client_root_store(config)?;
+        let client_verifier = WebPkiClientVerifier::builder(Arc::new(client_roots))
+            .build()
+            .map_err(|e| {
+                Error::Internal(format!("Invalid mTLS client verifier configuration: {}", e))
+            })?;
+
+        RustlsServerConfig::builder_with_protocol_versions(&[&TLS13])
+            .with_client_cert_verifier(client_verifier)
+            .with_single_cert(certificates, private_key)
+            .map_err(|e| Error::Internal(format!("Invalid TLS certificate configuration: {}", e)))?
+    } else {
+        RustlsServerConfig::builder_with_protocol_versions(&[&TLS13])
+            .with_no_client_auth()
+            .with_single_cert(certificates, private_key)
+            .map_err(|e| Error::Internal(format!("Invalid TLS certificate configuration: {}", e)))?
+    };
     server_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
 
     Ok(TlsAcceptor::from(Arc::new(server_config)))
@@ -363,6 +385,45 @@ fn load_tls_private_key(config: &HttpConfig) -> Result<PrivateKeyDer<'static>> {
         .ok_or_else(|| Error::Internal("TLS private key not found in key file".to_string()))?;
 
     Ok(private_key)
+}
+
+fn load_mtls_client_root_store(config: &HttpConfig) -> Result<RootCertStore> {
+    let ca_path = config.mtls_ca_cert_path.as_deref().ok_or_else(|| {
+        Error::Internal("mtls_ca_cert_path is required when mtls_enabled=true".to_string())
+    })?;
+
+    let ca_file = File::open(ca_path).map_err(|e| {
+        Error::Internal(format!(
+            "Failed to open mTLS CA certificate {}: {}",
+            ca_path, e
+        ))
+    })?;
+    let mut ca_reader = BufReader::new(ca_file);
+    let ca_certs = rustls_pemfile::certs(&mut ca_reader)
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|e| Error::Internal(format!("Failed to parse mTLS CA certificate(s): {}", e)))?;
+
+    if ca_certs.is_empty() {
+        return Err(Error::Internal(
+            "mTLS CA certificate chain is empty".to_string(),
+        ));
+    }
+
+    let mut root_store = RootCertStore::empty();
+    let (added, ignored) = root_store.add_parsable_certificates(ca_certs);
+    if added == 0 {
+        return Err(Error::Internal(
+            "No valid CA certificate found for mTLS client authentication".to_string(),
+        ));
+    }
+    if ignored > 0 {
+        warn!(
+            "Ignored {} unparsable mTLS CA certificate(s) while loading {}",
+            ignored, ca_path
+        );
+    }
+
+    Ok(root_store)
 }
 
 fn validate_direct_certificate_pinning(
@@ -689,12 +750,19 @@ fn build_hsts_header_value(
 }
 
 fn validate_tls_security_settings(config: &HttpConfig) -> std::result::Result<(), String> {
+    if config.mtls_enabled && !config.tls_enabled {
+        return Err("mtls_enabled requires tls_enabled=true".to_string());
+    }
+
     if config.tls_enabled {
         if config.tls_cert_path.as_deref().is_none() {
             return Err("tls_cert_path is required when tls_enabled=true".to_string());
         }
         if config.tls_key_path.as_deref().is_none() {
             return Err("tls_key_path is required when tls_enabled=true".to_string());
+        }
+        if config.mtls_enabled && config.mtls_ca_cert_path.as_deref().is_none() {
+            return Err("mtls_ca_cert_path is required when mtls_enabled=true".to_string());
         }
     }
 
@@ -839,9 +907,39 @@ fn header_contains_token(headers: &HeaderMap, name: &str, token: &str) -> bool {
 mod tests {
     use super::*;
     use axum::http::HeaderMap;
-    use rcgen::generate_simple_self_signed;
+    use rcgen::{
+        generate_simple_self_signed, BasicConstraints, Certificate, CertificateParams,
+        ExtendedKeyUsagePurpose, IsCa, KeyPair, KeyUsagePurpose,
+    };
     use tempfile::tempdir;
     use tokio::time::{sleep, Duration};
+
+    fn generate_ca_cert() -> (Certificate, KeyPair) {
+        let mut params = CertificateParams::new(Vec::new()).unwrap();
+        params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        params.key_usages = vec![
+            KeyUsagePurpose::DigitalSignature,
+            KeyUsagePurpose::KeyCertSign,
+            KeyUsagePurpose::CrlSign,
+        ];
+        let ca_key = KeyPair::generate().unwrap();
+        let ca_cert = params.self_signed(&ca_key).unwrap();
+        (ca_cert, ca_key)
+    }
+
+    fn generate_signed_cert(
+        dns_name: &str,
+        ca_cert: &Certificate,
+        ca_key: &KeyPair,
+        eku: ExtendedKeyUsagePurpose,
+    ) -> (Certificate, KeyPair) {
+        let mut params = CertificateParams::new(vec![dns_name.to_string()]).unwrap();
+        params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
+        params.extended_key_usages = vec![eku];
+        let key = KeyPair::generate().unwrap();
+        let cert = params.signed_by(&key, ca_cert, ca_key).unwrap();
+        (cert, key)
+    }
 
     #[test]
     fn test_http_config_default() {
@@ -851,6 +949,7 @@ mod tests {
         assert_eq!(config.max_request_size, 1024 * 1024);
         assert_eq!(config.timeout_ms, 30000);
         assert!(!config.tls_enabled);
+        assert!(!config.mtls_enabled);
         assert!(config.hsts_enabled);
         assert_eq!(config.min_tls_version.as_deref(), Some("1.3"));
         assert!(!config.certificate_pinning_enabled);
@@ -920,6 +1019,28 @@ mod tests {
         assert!(validate_tls_security_settings(&config).is_err());
     }
 
+    #[test]
+    fn test_tls_validation_rejects_mtls_without_tls() {
+        let config = HttpConfig {
+            mtls_enabled: true,
+            ..HttpConfig::default()
+        };
+        assert!(validate_tls_security_settings(&config).is_err());
+    }
+
+    #[test]
+    fn test_tls_validation_requires_mtls_ca_path() {
+        let config = HttpConfig {
+            tls_enabled: true,
+            tls_cert_path: Some("./certs/server.crt".to_string()),
+            tls_key_path: Some("./certs/server.key".to_string()),
+            mtls_enabled: true,
+            mtls_ca_cert_path: None,
+            ..HttpConfig::default()
+        };
+        assert!(validate_tls_security_settings(&config).is_err());
+    }
+
     #[tokio::test]
     async fn test_https_server_start_and_request_roundtrip() {
         let cert = generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
@@ -973,6 +1094,135 @@ mod tests {
 
         assert!(response.status().is_success());
         assert!(response.headers().contains_key("strict-transport-security"));
+    }
+
+    #[tokio::test]
+    async fn test_https_server_rejects_client_without_mtls_certificate() {
+        let (ca_cert, ca_key) = generate_ca_cert();
+        let (server_cert, server_key) = generate_signed_cert(
+            "localhost",
+            &ca_cert,
+            &ca_key,
+            ExtendedKeyUsagePurpose::ServerAuth,
+        );
+
+        let temp_dir = tempdir().unwrap();
+        let ca_path = temp_dir.path().join("ca.crt");
+        let cert_path = temp_dir.path().join("server.crt");
+        let key_path = temp_dir.path().join("server.key");
+        std::fs::write(&ca_path, ca_cert.pem()).unwrap();
+        std::fs::write(&cert_path, server_cert.pem()).unwrap();
+        std::fs::write(&key_path, server_key.serialize_pem()).unwrap();
+
+        let bind_addr = {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = listener.local_addr().unwrap();
+            drop(listener);
+            addr
+        };
+
+        let config = HttpConfig {
+            bind_addr,
+            tls_enabled: true,
+            tls_cert_path: Some(cert_path.to_string_lossy().to_string()),
+            tls_key_path: Some(key_path.to_string_lossy().to_string()),
+            mtls_enabled: true,
+            mtls_ca_cert_path: Some(ca_path.to_string_lossy().to_string()),
+            enforce_https: true,
+            ..HttpConfig::default()
+        };
+
+        let transport = HttpTransport::new(config).unwrap();
+        transport.start_server().await.unwrap();
+        sleep(Duration::from_millis(200)).await;
+
+        let root_ca = reqwest::Certificate::from_pem(ca_cert.pem().as_bytes()).unwrap();
+        let client = reqwest::Client::builder()
+            .add_root_certificate(root_ca)
+            .build()
+            .unwrap();
+
+        let response = client
+            .post(format!("https://localhost:{}/mcp", bind_addr.port()))
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "tools/list",
+                "params": {}
+            }))
+            .send()
+            .await;
+
+        assert!(response.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_https_server_accepts_client_with_valid_mtls_certificate() {
+        let (ca_cert, ca_key) = generate_ca_cert();
+        let (server_cert, server_key) = generate_signed_cert(
+            "localhost",
+            &ca_cert,
+            &ca_key,
+            ExtendedKeyUsagePurpose::ServerAuth,
+        );
+        let (client_cert, client_key) = generate_signed_cert(
+            "mcp-client",
+            &ca_cert,
+            &ca_key,
+            ExtendedKeyUsagePurpose::ClientAuth,
+        );
+
+        let temp_dir = tempdir().unwrap();
+        let ca_path = temp_dir.path().join("ca.crt");
+        let cert_path = temp_dir.path().join("server.crt");
+        let key_path = temp_dir.path().join("server.key");
+        std::fs::write(&ca_path, ca_cert.pem()).unwrap();
+        std::fs::write(&cert_path, server_cert.pem()).unwrap();
+        std::fs::write(&key_path, server_key.serialize_pem()).unwrap();
+
+        let bind_addr = {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = listener.local_addr().unwrap();
+            drop(listener);
+            addr
+        };
+
+        let config = HttpConfig {
+            bind_addr,
+            tls_enabled: true,
+            tls_cert_path: Some(cert_path.to_string_lossy().to_string()),
+            tls_key_path: Some(key_path.to_string_lossy().to_string()),
+            mtls_enabled: true,
+            mtls_ca_cert_path: Some(ca_path.to_string_lossy().to_string()),
+            enforce_https: true,
+            ..HttpConfig::default()
+        };
+
+        let transport = HttpTransport::new(config).unwrap();
+        transport.start_server().await.unwrap();
+        sleep(Duration::from_millis(200)).await;
+
+        let root_ca = reqwest::Certificate::from_pem(ca_cert.pem().as_bytes()).unwrap();
+        let client_identity_pem = format!("{}\n{}", client_cert.pem(), client_key.serialize_pem());
+        let client_identity = reqwest::Identity::from_pem(client_identity_pem.as_bytes()).unwrap();
+
+        let client = reqwest::Client::builder()
+            .add_root_certificate(root_ca)
+            .identity(client_identity)
+            .build()
+            .unwrap();
+
+        let response = client
+            .post(format!("https://localhost:{}/mcp", bind_addr.port()))
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "tools/list",
+                "params": {}
+            }))
+            .send()
+            .await
+            .unwrap();
+
+        assert!(response.status().is_success());
     }
 
     #[test]

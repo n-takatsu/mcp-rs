@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- HTTP transport mTLS configuration support
+  - `mtls_enabled` and `mtls_ca_cert_path` added to configuration mapping
+  - TLS validation now enforces mTLS prerequisites (`tls_enabled=true` and CA path)
+- mTLS integration tests for direct HTTPS transport
+  - Rejects clients without certificate when mTLS is enabled
+  - Accepts clients with a valid CA-signed certificate
+
 ## [0.16.0] - 2025-12-22
 
 ### 🚀 WebSocket通信機能の強化とプラグイン分離システムの完成

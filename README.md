@@ -222,6 +222,32 @@ level = "error"
 ## level = "info"  # Detailed logging for development
 ```
 
+### HTTP TLS/mTLS Configuration (Optional)
+
+When using HTTP transport with TLS and client certificate authentication (mTLS), set:
+
+```toml
+[server]
+transport_type = "http"
+bind_addr = "127.0.0.1:8080"
+
+[transport.http]
+tls_enabled = true
+tls_cert_path = "./certs/server.crt"
+tls_key_path = "./certs/server.key"
+mtls_enabled = true
+mtls_ca_cert_path = "./certs/ca.crt"
+enforce_https = true
+min_tls_version = "1.3"
+hsts_enabled = true
+```
+
+Notes:
+
+- `mtls_enabled = true` requires `tls_enabled = true`
+- `mtls_enabled = true` requires `mtls_ca_cert_path`
+- Clients without a valid certificate signed by the configured CA are rejected at TLS handshake
+
 ### WebSocket Configuration with Security
 
 ```toml

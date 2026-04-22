@@ -183,6 +183,32 @@ level = "error"
 
 ## level = "info"  # 開発用の詳細ログ
 
+### HTTP TLS/mTLS 設定（任意）
+
+HTTP トランスポートで TLS とクライアント証明書認証（mTLS）を使う場合は、次のように設定します。
+
+```toml
+[server]
+transport_type = "http"
+bind_addr = "127.0.0.1:8080"
+
+[transport.http]
+tls_enabled = true
+tls_cert_path = "./certs/server.crt"
+tls_key_path = "./certs/server.key"
+mtls_enabled = true
+mtls_ca_cert_path = "./certs/ca.crt"
+enforce_https = true
+min_tls_version = "1.3"
+hsts_enabled = true
+```
+
+注意:
+
+- `mtls_enabled = true` の場合、`tls_enabled = true` が必須です
+- `mtls_enabled = true` の場合、`mtls_ca_cert_path` が必須です
+- 設定した CA で検証できないクライアント証明書、または証明書未提示のクライアントは TLS ハンドシェイクで拒否されます
+
 ## 🏗️ アーキテクチャ
 
 ```text
