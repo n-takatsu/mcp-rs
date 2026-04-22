@@ -913,15 +913,21 @@ mod tests {
     };
     use std::net::SocketAddr;
     use tempfile::tempdir;
-    use tokio::net::TcpStream;
+    use tokio::net::TcpListener;
     use tokio::time::{sleep, Duration, Instant};
 
     async fn wait_for_server_ready(bind_addr: SocketAddr) {
         let deadline = Instant::now() + Duration::from_secs(5);
 
         loop {
-            if TcpStream::connect(bind_addr).await.is_ok() {
-                return;
+            match TcpListener::bind(bind_addr).await {
+                Err(err) if err.kind() == std::io::ErrorKind::AddrInUse => return,
+                Ok(listener) => {
+                    drop(listener);
+                }
+                Err(err) => {
+                    panic!("failed to probe listener readiness for {bind_addr}: {err}");
+                }
             }
 
             if Instant::now() >= deadline {
