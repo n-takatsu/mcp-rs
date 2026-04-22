@@ -137,9 +137,9 @@ impl OptimizationReport {
 
     /// Sorts suggestions by priority
     pub fn sort_by_priority(&mut self) {
-        self.suggestions.sort_by(|a, b| b.priority.cmp(&a.priority));
-        self.quick_wins.sort_by(|a, b| b.priority.cmp(&a.priority));
-        self.long_term.sort_by(|a, b| b.priority.cmp(&a.priority));
+        self.suggestions.sort_by_key(|b| std::cmp::Reverse(b.priority));
+        self.quick_wins.sort_by_key(|b| std::cmp::Reverse(b.priority));
+        self.long_term.sort_by_key(|b| std::cmp::Reverse(b.priority));
     }
 }
 
