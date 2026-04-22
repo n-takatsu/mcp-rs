@@ -40,16 +40,4 @@ ignore = [
     # - Mitigation: Only used by optional ml-anomaly-detection feature
     "RUSTSEC-2024-0436",
 
-    # RUSTSEC-2026-0002: lru IterMut unsoundness
-    # - Affects: lru 0.14.0 (via mysql_async)
-    # - Status: Unsound warning
-    # - Mitigation: mysql backend is optional; avoid IterMut usage patterns until patched
-    "RUSTSEC-2026-0002",
-
-    # RUSTSEC-2026-0097: rand unsound with custom logger + rand::rng()
-    # - Affects: rand 0.8/0.9 in transitive dependencies
-    # - Status: Unsound warning
-    # - Mitigation: No direct use of rand::rng() + custom logger pattern in this project
-    #               Revisit once patched rand releases are available
-    "RUSTSEC-2026-0097",
 ]

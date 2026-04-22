@@ -389,32 +389,39 @@ fn load_tls_private_key(config: &HttpConfig) -> Result<PrivateKeyDer<'static>> {
 
 fn load_mtls_client_root_store(config: &HttpConfig) -> Result<RootCertStore> {
     let ca_path = config.mtls_ca_cert_path.as_deref().ok_or_else(|| {
-        Error::Internal("mtls_ca_cert_path is required when mtls_enabled=true".to_string())
+        Error::TransportError(TransportError::Configuration(
+            "mtls_ca_cert_path is required when mtls_enabled=true".to_string(),
+        ))
     })?;
 
     let ca_file = File::open(ca_path).map_err(|e| {
-        Error::Internal(format!(
+        Error::TransportError(TransportError::Configuration(format!(
             "Failed to open mTLS CA certificate {}: {}",
             ca_path, e
-        ))
+        )))
     })?;
     let mut ca_reader = BufReader::new(ca_file);
     let ca_certs = rustls_pemfile::certs(&mut ca_reader)
         .collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(|e| Error::Internal(format!("Failed to parse mTLS CA certificate(s): {}", e)))?;
+        .map_err(|e| {
+            Error::TransportError(TransportError::Configuration(format!(
+                "Failed to parse mTLS CA certificate(s): {}",
+                e
+            )))
+        })?;
 
     if ca_certs.is_empty() {
-        return Err(Error::Internal(
+        return Err(Error::TransportError(TransportError::Configuration(
             "mTLS CA certificate chain is empty".to_string(),
-        ));
+        )));
     }
 
     let mut root_store = RootCertStore::empty();
     let (added, ignored) = root_store.add_parsable_certificates(ca_certs);
     if added == 0 {
-        return Err(Error::Internal(
+        return Err(Error::TransportError(TransportError::Configuration(
             "No valid CA certificate found for mTLS client authentication".to_string(),
-        ));
+        )));
     }
     if ignored > 0 {
         warn!(
