@@ -1239,6 +1239,91 @@ mod tests {
         assert!(response.status().is_success());
     }
 
+    #[tokio::test]
+    async fn test_https_server_rejects_client_with_invalid_mtls_certificate_chain() {
+        let (trusted_ca_cert, trusted_ca_key) = generate_ca_cert();
+        let (untrusted_ca_cert, untrusted_ca_key) = generate_ca_cert();
+        let (server_cert, server_key) = generate_signed_cert(
+            "localhost",
+            &trusted_ca_cert,
+            &trusted_ca_key,
+            ExtendedKeyUsagePurpose::ServerAuth,
+        );
+        let (client_cert, client_key) = generate_signed_cert(
+            "mcp-client",
+            &untrusted_ca_cert,
+            &untrusted_ca_key,
+            ExtendedKeyUsagePurpose::ClientAuth,
+        );
+
+        let temp_dir = tempdir().unwrap();
+        let ca_path = temp_dir.path().join("ca.crt");
+        let cert_path = temp_dir.path().join("server.crt");
+        let key_path = temp_dir.path().join("server.key");
+        std::fs::write(&ca_path, trusted_ca_cert.pem()).unwrap();
+        std::fs::write(&cert_path, server_cert.pem()).unwrap();
+        std::fs::write(&key_path, server_key.serialize_pem()).unwrap();
+
+        let bind_addr = {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = listener.local_addr().unwrap();
+            drop(listener);
+            addr
+        };
+
+        let config = HttpConfig {
+            bind_addr,
+            tls_enabled: true,
+            tls_cert_path: Some(cert_path.to_string_lossy().to_string()),
+            tls_key_path: Some(key_path.to_string_lossy().to_string()),
+            mtls_enabled: true,
+            mtls_ca_cert_path: Some(ca_path.to_string_lossy().to_string()),
+            enforce_https: true,
+            ..HttpConfig::default()
+        };
+
+        let transport = HttpTransport::new(config).unwrap();
+        transport.start_server().await.unwrap();
+
+        let mut ready = false;
+        for _ in 0..10 {
+            if std::net::TcpStream::connect(bind_addr).is_ok() {
+                ready = true;
+                break;
+            }
+            sleep(Duration::from_millis(50)).await;
+        }
+
+        assert!(ready, "server did not start listening in time");
+
+        let root_ca = reqwest::Certificate::from_pem(trusted_ca_cert.pem().as_bytes()).unwrap();
+        let client_identity_pem = format!("{}\n{}", client_cert.pem(), client_key.serialize_pem());
+        let client_identity = reqwest::Identity::from_pem(client_identity_pem.as_bytes()).unwrap();
+
+        let client = reqwest::Client::builder()
+            .add_root_certificate(root_ca)
+            .identity(client_identity)
+            .build()
+            .unwrap();
+
+        let response = client
+            .post(format!("https://localhost:{}/mcp", bind_addr.port()))
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "tools/list",
+                "params": {}
+            }))
+            .send()
+            .await;
+
+        let error =
+            response.expect_err("request with client certificate signed by wrong CA should fail");
+        assert!(
+            error.is_request() || error.is_connect(),
+            "unexpected error when mTLS client certificate chain is invalid: {error:?}"
+        );
+    }
+
     #[test]
     fn test_tls_validation_rejects_invalid_pin_config() {
         let config = HttpConfig {
