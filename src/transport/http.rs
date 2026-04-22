@@ -363,24 +363,31 @@ fn build_tls_acceptor(
 
 fn load_tls_certificates(config: &HttpConfig) -> Result<Vec<CertificateDer<'static>>> {
     let cert_path = config.tls_cert_path.as_deref().ok_or_else(|| {
-        Error::Internal("tls_cert_path is required when tls_enabled=true".to_string())
+        Error::TransportError(TransportError::Configuration(
+            "tls_cert_path is required when tls_enabled=true".to_string(),
+        ))
     })?;
 
     let cert_file = File::open(cert_path).map_err(|e| {
-        Error::Internal(format!(
+        Error::TransportError(TransportError::Configuration(format!(
             "Failed to open TLS certificate {}: {}",
             cert_path, e
-        ))
+        )))
     })?;
     let mut cert_reader = BufReader::new(cert_file);
     let certificates = rustls_pemfile::certs(&mut cert_reader)
         .collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(|e| Error::Internal(format!("Failed to parse TLS certificates: {}", e)))?;
+        .map_err(|e| {
+            Error::TransportError(TransportError::Configuration(format!(
+                "Failed to parse TLS certificates: {}",
+                e
+            )))
+        })?;
 
     if certificates.is_empty() {
-        return Err(Error::Internal(
+        return Err(Error::TransportError(TransportError::Configuration(
             "TLS certificate chain is empty".to_string(),
-        ));
+        )));
     }
 
     Ok(certificates)
@@ -388,19 +395,30 @@ fn load_tls_certificates(config: &HttpConfig) -> Result<Vec<CertificateDer<'stat
 
 fn load_tls_private_key(config: &HttpConfig) -> Result<PrivateKeyDer<'static>> {
     let key_path = config.tls_key_path.as_deref().ok_or_else(|| {
-        Error::Internal("tls_key_path is required when tls_enabled=true".to_string())
+        Error::TransportError(TransportError::Configuration(
+            "tls_key_path is required when tls_enabled=true".to_string(),
+        ))
     })?;
 
     let key_file = File::open(key_path).map_err(|e| {
-        Error::Internal(format!(
+        Error::TransportError(TransportError::Configuration(format!(
             "Failed to open TLS private key {}: {}",
             key_path, e
-        ))
+        )))
     })?;
     let mut key_reader = BufReader::new(key_file);
     let private_key = rustls_pemfile::private_key(&mut key_reader)
-        .map_err(|e| Error::Internal(format!("Failed to parse TLS private key: {}", e)))?
-        .ok_or_else(|| Error::Internal("TLS private key not found in key file".to_string()))?;
+        .map_err(|e| {
+            Error::TransportError(TransportError::Configuration(format!(
+                "Failed to parse TLS private key: {}",
+                e
+            )))
+        })?
+        .ok_or_else(|| {
+            Error::TransportError(TransportError::Configuration(
+                "TLS private key not found in key file".to_string(),
+            ))
+        })?;
 
     Ok(private_key)
 }
@@ -1180,10 +1198,10 @@ mod tests {
         transport.start_server().await.unwrap();
         let server_addr = transport.bound_addr().await.unwrap();
         let root_ca = reqwest::Certificate::from_pem(cert.cert.pem().as_bytes()).unwrap();
-        wait_for_https_server_ready(server_addr, root_ca, None).await;
+        wait_for_https_server_ready(server_addr, root_ca.clone(), None).await;
 
         let client = reqwest::Client::builder()
-            .danger_accept_invalid_certs(true)
+            .add_root_certificate(root_ca)
             .resolve("localhost", server_addr)
             .build()
             .unwrap();

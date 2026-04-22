@@ -254,9 +254,8 @@ Notes:
 ### WebSocket Configuration with Security
 
 ```toml
-[server]
+[transport]
 transport_type = "websocket"
-bind_addr = "127.0.0.1:8082"
 
 [security.websocket]
 # Authentication
