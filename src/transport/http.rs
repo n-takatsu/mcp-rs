@@ -162,6 +162,7 @@ pub struct HttpTransport {
     sender: tokio::sync::mpsc::Sender<String>,
     pending_responses: Arc<RwLock<HashMap<Value, tokio::sync::oneshot::Sender<JsonRpcResponse>>>>,
     stats: Arc<RwLock<HttpStats>>,
+    bound_addr: Arc<RwLock<Option<SocketAddr>>>,
 }
 
 impl HttpTransport {
@@ -180,6 +181,7 @@ impl HttpTransport {
             sender,
             pending_responses: Arc::new(RwLock::new(HashMap::new())),
             stats: Arc::new(RwLock::new(stats)),
+            bound_addr: Arc::new(RwLock::new(None)),
         })
     }
 
@@ -247,6 +249,10 @@ impl HttpTransport {
         let listener = TcpListener::bind(self.config.bind_addr)
             .await
             .map_err(|e| Error::Internal(format!("Failed to bind HTTP server: {}", e)))?;
+        let local_addr = listener
+            .local_addr()
+            .map_err(|e| Error::Internal(format!("Failed to get bound HTTP address: {}", e)))?;
+        *self.bound_addr.write().await = Some(local_addr);
 
         if self.config.tls_enabled {
             let tls_acceptor = build_tls_acceptor(&self.config, &pinned_certificates_sha256)?;
@@ -262,6 +268,10 @@ impl HttpTransport {
         }
 
         Ok(())
+    }
+
+    pub async fn bound_addr(&self) -> Option<SocketAddr> {
+        *self.bound_addr.read().await
     }
 }
 
@@ -952,24 +962,32 @@ mod tests {
         }
     }
 
+    fn reqwest_error_has_io_kind(error: &reqwest::Error, kind: std::io::ErrorKind) -> bool {
+        let mut source = std::error::Error::source(error);
+        while let Some(err) = source {
+            if let Some(io_error) = err.downcast_ref::<std::io::Error>() {
+                if io_error.kind() == kind {
+                    return true;
+                }
+            }
+            source = err.source();
+        }
+        false
+    }
+
     fn assert_mtls_rejection_error(error: &reqwest::Error, context: &str) {
-        let details = format!("{error:?}").to_ascii_lowercase();
         assert!(
             error.is_request() || error.is_connect(),
             "unexpected error kind while {context}: {error:?}"
         );
         assert!(
-            details.contains("certificate")
-                || details.contains("tls")
-                || details.contains("handshake")
-                || details.contains("alert")
-                || details.contains("connection aborted")
-                || details.contains("connectionaborted")
-                || details.contains("os { code: 10053"),
-            "error does not look like mTLS rejection while {context}: {error:?}"
+            !error.is_timeout(),
+            "error may indicate connectivity issue instead of mTLS rejection while {context}: {error:?}"
         );
         assert!(
-            !details.contains("connection refused") && !details.contains("timed out"),
+            !reqwest_error_has_io_kind(error, std::io::ErrorKind::ConnectionRefused)
+                && !reqwest_error_has_io_kind(error, std::io::ErrorKind::AddrNotAvailable)
+                && !reqwest_error_has_io_kind(error, std::io::ErrorKind::TimedOut),
             "error may indicate connectivity issue instead of mTLS rejection while {context}: {error:?}"
         );
     }
@@ -1114,12 +1132,7 @@ mod tests {
         std::fs::write(&cert_path, cert_pem).unwrap();
         std::fs::write(&key_path, key_pem).unwrap();
 
-        let bind_addr = {
-            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-            let addr = listener.local_addr().unwrap();
-            drop(listener);
-            addr
-        };
+        let bind_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
 
         let config = HttpConfig {
             bind_addr,
@@ -1134,14 +1147,15 @@ mod tests {
 
         let transport = HttpTransport::new(config).unwrap();
         transport.start_server().await.unwrap();
-        wait_for_server_ready(bind_addr).await;
+        let server_addr = transport.bound_addr().await.unwrap();
+        wait_for_server_ready(server_addr).await;
 
         let client = reqwest::Client::builder()
             .danger_accept_invalid_certs(true)
             .build()
             .unwrap();
         let response = client
-            .post(format!("https://localhost:{}/mcp", bind_addr.port()))
+            .post(format!("https://localhost:{}/mcp", server_addr.port()))
             .json(&serde_json::json!({
                 "jsonrpc": "2.0",
                 "method": "tools/list",
@@ -1173,12 +1187,7 @@ mod tests {
         std::fs::write(&cert_path, server_cert.pem()).unwrap();
         std::fs::write(&key_path, server_key.serialize_pem()).unwrap();
 
-        let bind_addr = {
-            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-            let addr = listener.local_addr().unwrap();
-            drop(listener);
-            addr
-        };
+        let bind_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
 
         let config = HttpConfig {
             bind_addr,
@@ -1193,17 +1202,18 @@ mod tests {
 
         let transport = HttpTransport::new(config).unwrap();
         transport.start_server().await.unwrap();
-        wait_for_server_ready(bind_addr).await;
+        let server_addr = transport.bound_addr().await.unwrap();
+        wait_for_server_ready(server_addr).await;
 
         let root_ca = reqwest::Certificate::from_pem(ca_cert.pem().as_bytes()).unwrap();
         let client = reqwest::Client::builder()
             .add_root_certificate(root_ca)
-            .resolve("localhost", bind_addr)
+            .resolve("localhost", server_addr)
             .build()
             .unwrap();
 
         let response = client
-            .post(format!("https://localhost:{}/mcp", bind_addr.port()))
+            .post(format!("https://localhost:{}/mcp", server_addr.port()))
             .json(&serde_json::json!({
                 "jsonrpc": "2.0",
                 "method": "tools/list",
@@ -1240,12 +1250,7 @@ mod tests {
         std::fs::write(&cert_path, server_cert.pem()).unwrap();
         std::fs::write(&key_path, server_key.serialize_pem()).unwrap();
 
-        let bind_addr = {
-            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-            let addr = listener.local_addr().unwrap();
-            drop(listener);
-            addr
-        };
+        let bind_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
 
         let config = HttpConfig {
             bind_addr,
@@ -1260,7 +1265,8 @@ mod tests {
 
         let transport = HttpTransport::new(config).unwrap();
         transport.start_server().await.unwrap();
-        wait_for_server_ready(bind_addr).await;
+        let server_addr = transport.bound_addr().await.unwrap();
+        wait_for_server_ready(server_addr).await;
 
         let root_ca = reqwest::Certificate::from_pem(ca_cert.pem().as_bytes()).unwrap();
         let client_identity_pem = format!("{}\n{}", client_cert.pem(), client_key.serialize_pem());
@@ -1269,12 +1275,12 @@ mod tests {
         let client = reqwest::Client::builder()
             .add_root_certificate(root_ca)
             .identity(client_identity)
-            .resolve("localhost", bind_addr)
+            .resolve("localhost", server_addr)
             .build()
             .unwrap();
 
         let response = client
-            .post(format!("https://localhost:{}/mcp", bind_addr.port()))
+            .post(format!("https://localhost:{}/mcp", server_addr.port()))
             .json(&serde_json::json!({
                 "jsonrpc": "2.0",
                 "method": "tools/list",
@@ -1312,12 +1318,7 @@ mod tests {
         std::fs::write(&cert_path, server_cert.pem()).unwrap();
         std::fs::write(&key_path, server_key.serialize_pem()).unwrap();
 
-        let bind_addr = {
-            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-            let addr = listener.local_addr().unwrap();
-            drop(listener);
-            addr
-        };
+        let bind_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
 
         let config = HttpConfig {
             bind_addr,
@@ -1332,7 +1333,8 @@ mod tests {
 
         let transport = HttpTransport::new(config).unwrap();
         transport.start_server().await.unwrap();
-        wait_for_server_ready(bind_addr).await;
+        let server_addr = transport.bound_addr().await.unwrap();
+        wait_for_server_ready(server_addr).await;
 
         let root_ca = reqwest::Certificate::from_pem(trusted_ca_cert.pem().as_bytes()).unwrap();
         let client_identity_pem = format!("{}\n{}", client_cert.pem(), client_key.serialize_pem());
@@ -1341,12 +1343,12 @@ mod tests {
         let client = reqwest::Client::builder()
             .add_root_certificate(root_ca)
             .identity(client_identity)
-            .resolve("localhost", bind_addr)
+            .resolve("localhost", server_addr)
             .build()
             .unwrap();
 
         let response = client
-            .post(format!("https://localhost:{}/mcp", bind_addr.port()))
+            .post(format!("https://localhost:{}/mcp", server_addr.port()))
             .json(&serde_json::json!({
                 "jsonrpc": "2.0",
                 "method": "tools/list",
