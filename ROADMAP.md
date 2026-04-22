@@ -37,7 +37,7 @@ mcp-rsは、エンタープライズグレードのWordPress Model Context Proto
 
 | 機能 | 進捗 | 予定リリース |
 |------|------|-------------|
-| **WebSocket Transport** | 50% | v0.3.0 |
+| **WebSocket Transport** | 47% | v0.3.0 |
 
 ### ✅ v0.2.0-beta 完了済み機能
 
