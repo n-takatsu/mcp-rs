@@ -343,18 +343,31 @@ fn build_tls_acceptor(
         let client_verifier = WebPkiClientVerifier::builder(Arc::new(client_roots))
             .build()
             .map_err(|e| {
-                Error::Internal(format!("Invalid mTLS client verifier configuration: {}", e))
+                Error::TransportError(TransportError::Configuration(format!(
+                    "Invalid mTLS client verifier configuration: {}",
+                    e
+                )))
             })?;
 
         RustlsServerConfig::builder_with_protocol_versions(&[&TLS13])
             .with_client_cert_verifier(client_verifier)
             .with_single_cert(certificates, private_key)
-            .map_err(|e| Error::Internal(format!("Invalid TLS certificate configuration: {}", e)))?
+            .map_err(|e| {
+                Error::TransportError(TransportError::Configuration(format!(
+                    "Invalid TLS certificate configuration: {}",
+                    e
+                )))
+            })?
     } else {
         RustlsServerConfig::builder_with_protocol_versions(&[&TLS13])
             .with_no_client_auth()
             .with_single_cert(certificates, private_key)
-            .map_err(|e| Error::Internal(format!("Invalid TLS certificate configuration: {}", e)))?
+            .map_err(|e| {
+                Error::TransportError(TransportError::Configuration(format!(
+                    "Invalid TLS certificate configuration: {}",
+                    e
+                )))
+            })?
     };
     server_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
 
@@ -570,10 +583,15 @@ impl Transport for HttpTransport {
     }
 
     fn transport_info(&self) -> TransportInfo {
+        let addr = self
+            .bound_addr
+            .try_read()
+            .ok()
+            .and_then(|guard| *guard)
+            .unwrap_or(self.config.bind_addr);
+
         TransportInfo {
-            transport_type: TransportType::Http {
-                addr: self.config.bind_addr,
-            },
+            transport_type: TransportType::Http { addr },
             description: "HTTP JSON-RPC transport for MCP communication".to_string(),
             capabilities: TransportCapabilities {
                 bidirectional: true,
