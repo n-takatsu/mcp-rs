@@ -196,21 +196,24 @@ cp mcp-config.toml.example mcp-config.toml
 Create `mcp-config.toml`:
 
 ```toml
-[wordpress]
-base_url = "https://your-wordpress-site.com"
+[handlers.wordpress]
+url = "https://your-wordpress-site.com"
 username = "your-username"
 password = "your-application-password"
+enabled = true
 
 ## WordPress Application Password
 
+[server]
+stdio = true
+
+## For Claude Desktop (HTTP mode)
+
+## stdio = false
 [transport]
 transport_type = "stdio"
 
-## For Claude Desktop
-
-## transport_type = "http"  # For Web UI
-
-[transport.http]
+## [transport.http]
 ## addr = "127.0.0.1"
 ## port = 8080
 

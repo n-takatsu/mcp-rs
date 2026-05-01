@@ -158,21 +158,24 @@ cp mcp-config.toml.example mcp-config.toml
 `mcp-config.toml` を作成:
 
 ```toml
-[wordpress]
-base_url = "https://your-wordpress-site.com"
+[handlers.wordpress]
+url = "https://your-wordpress-site.com"
 username = "your-username"
-password = "your-application-password"  
+password = "your-application-password"
+enabled = true
 
 ## WordPress アプリケーションパスワード
 
+[server]
+stdio = true
+
+## Claude Desktop 用（HTTP モード）
+
+## stdio = false
 [transport]
-transport_type = "stdio"  
+transport_type = "stdio"
 
-## Claude Desktop 用
-
-## transport_type = "http"  # Web UI 用
-
-[transport.http]
+## [transport.http]
 ## addr = "127.0.0.1"
 ## port = 8080
 
