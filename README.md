@@ -254,36 +254,14 @@ Notes:
 - `mtls_enabled = true` requires `mtls_ca_cert_path`
 - Clients without a valid certificate signed by the configured CA are rejected at TLS handshake
 
-### WebSocket Configuration with Security
+### WebSocket Configuration
 
 ```toml
 [transport]
 transport_type = "websocket"
-
-[security.websocket]
-# Authentication
-require_authentication = true
-auth_timeout_seconds = 30
-
-# JWT Configuration
-jwt_secret = "your-secret-key-minimum-32-bytes"
-jwt_algorithm = "HS256"  # HS256, HS384, HS512, RS256, RS384, RS512, ES256, ES384
-required_claims = ["sub"]
-allowed_roles = ["admin", "user"]
-
-# Session Management
-enable_session_management = true
-session_ttl_seconds = 3600  # 1 hour
-
-# Rate Limiting
-enable_rate_limiting = true
-max_requests_per_minute = 60
-
-# Origin Validation
-origin_validation = "AllowList"
-allowed_origins = ["https://your-app.com"]
-require_origin_header = true
 ```
+
+> **Note**: WebSocket security options (JWT authentication, session management, rate limiting, origin validation) are configured programmatically via the WebSocket handler API. They are not part of the `mcp-config.toml` schema.
 
 📖 **For detailed WebSocket security features, see [WebSocket Security Guide](./docs/websocket-security.md)**
 
