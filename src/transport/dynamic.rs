@@ -146,6 +146,8 @@ impl DynamicTransportManager {
                     tls_enabled: false,
                     tls_cert_path: None,
                     tls_key_path: None,
+                    mtls_enabled: false,
+                    mtls_ca_cert_path: None,
                     enforce_https: false,
                     min_tls_version: Some("1.3".to_string()),
                     hsts_enabled: true,

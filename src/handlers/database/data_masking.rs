@@ -289,7 +289,7 @@ impl DataMaskingEngine {
         }
 
         // 優先度でソート (高い順)
-        applicable_rules.sort_by(|a, b| b.priority.cmp(&a.priority));
+        applicable_rules.sort_by_key(|b| std::cmp::Reverse(b.priority));
 
         // キャッシュに保存
         let mut cache = self.rule_cache.write().await;

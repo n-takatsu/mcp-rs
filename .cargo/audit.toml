@@ -20,4 +20,24 @@ ignore = [
     # - Mitigation: Only used in optional Kubernetes feature
     #               Not exposed in default configuration
     "RUSTSEC-2025-0134",
+
+    # RUSTSEC-2025-0012: backoff unmaintained
+    # - Affects: backoff 0.4.0 (via async-openai)
+    # - Status: Unmaintained warning
+    # - Mitigation: async-openai is optional (llm-integration feature)
+    #               Track upstream replacement before enabling by default
+    "RUSTSEC-2025-0012",
+
+    # RUSTSEC-2024-0384: instant unmaintained
+    # - Affects: instant 0.1.13 (transitive via backoff)
+    # - Status: Unmaintained warning
+    # - Mitigation: Only present through optional llm-integration dependency chain
+    "RUSTSEC-2024-0384",
+
+    # RUSTSEC-2024-0436: paste unmaintained
+    # - Affects: paste 1.0.15 (via statrs -> nalgebra -> simba)
+    # - Status: Unmaintained warning
+    # - Mitigation: Only used by optional ml-anomaly-detection feature
+    "RUSTSEC-2024-0436",
+
 ]

@@ -69,7 +69,7 @@ x25519-dalek = { version = "2.0", features = ["static_secrets"] }
 # mTLS and Certificate Management
 rcgen = { version = "0.13", features = ["pem", "x509-parser"] }
 rustls = { version = "0.23", features = ["std"] }
-rustls-webpki = { version = "0.102", features = ["std"] }
+rustls-webpki = { version = "0.103.12", features = ["std"] }
 rustls-pemfile = "2.2"
 tokio-rustls = "0.26"
 x509-parser = "0.16"
