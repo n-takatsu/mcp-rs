@@ -250,10 +250,18 @@ impl HttpTransport {
 
         let listener = TcpListener::bind(self.config.bind_addr)
             .await
-            .map_err(|e| Error::Internal(format!("Failed to bind HTTP server: {}", e)))?;
-        let local_addr = listener
-            .local_addr()
-            .map_err(|e| Error::Internal(format!("Failed to get bound HTTP address: {}", e)))?;
+            .map_err(|e| {
+                Error::TransportError(TransportError::Configuration(format!(
+                    "Failed to bind HTTP server: {}",
+                    e
+                )))
+            })?;
+        let local_addr = listener.local_addr().map_err(|e| {
+            Error::TransportError(TransportError::Configuration(format!(
+                "Failed to get bound HTTP address: {}",
+                e
+            )))
+        })?;
 
         if self.config.tls_enabled {
             let tls_acceptor = build_tls_acceptor(&self.config, &pinned_certificates_sha256)?;
