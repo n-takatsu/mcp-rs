@@ -591,7 +591,12 @@ impl Transport for HttpTransport {
     }
 
     fn transport_info(&self) -> TransportInfo {
-        let addr = (*self.bound_addr.blocking_read()).unwrap_or(self.config.bind_addr);
+        let addr = self
+            .bound_addr
+            .try_read()
+            .ok()
+            .and_then(|addr| *addr)
+            .unwrap_or(self.config.bind_addr);
 
         TransportInfo {
             transport_type: TransportType::Http { addr },
