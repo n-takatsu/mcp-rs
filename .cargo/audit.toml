@@ -40,4 +40,18 @@ ignore = [
     # - Mitigation: Only used by optional ml-anomaly-detection feature
     "RUSTSEC-2024-0436",
 
+    # RUSTSEC-2026-0118: hickory-proto NSEC3 closest-encloser proof validation unbounded loop
+    # - Affects: hickory-proto (all versions including 0.26.1)
+    # - Status: No fixed upgrade is available
+    # - Mitigation: mcp-rs uses hickory-resolver for DNS resolution only (no DNSSEC validation)
+    #               NSEC3 processing path is not invoked in typical stub resolver usage
+    "RUSTSEC-2026-0118",
+
+    # RUSTSEC-2026-0119: hickory-proto CPU exhaustion due to O(n²) name compression
+    # - Affects: hickory-proto 0.25.2 via mongodb 3.6.0 (transitive dependency)
+    # - Status: Fixed in >= 0.26.1; direct dependency updated, but mongodb pins 0.25.2 internally
+    # - Mitigation: mongodb is optional (mongodb-backend feature); message encoding path
+    #               is not exposed externally; track mongodb release with updated hickory
+    "RUSTSEC-2026-0119",
+
 ]
