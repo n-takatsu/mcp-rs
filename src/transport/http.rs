@@ -279,7 +279,15 @@ impl HttpTransport {
         }
 
         if self.config.bind_addr.port() == 0 {
-            info!("HTTP server bound to dynamic address {}", local_addr);
+            let protocol = if self.config.tls_enabled {
+                "HTTPS"
+            } else {
+                "HTTP"
+            };
+            info!(
+                "{} server bound to dynamic address {}",
+                protocol, local_addr
+            );
         }
 
         Ok(())

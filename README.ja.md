@@ -169,7 +169,7 @@ enabled = true
 [server]
 stdio = true
 
-## Claude Desktop 用（HTTP モード）
+## Claude Desktop 用（HTTP モードに切り替える場合）
 
 ## stdio = false
 [transport]
