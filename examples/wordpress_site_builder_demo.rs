@@ -70,9 +70,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!();
 
     // 環境変数から認証情報を取得
-    let wp_url = env::var("WORDPRESS_URL").unwrap_or_else(|_| {
-        "https://your-site.example.com/wp-json".to_string()
-    });
+    let wp_url = env::var("WORDPRESS_URL")
+        .unwrap_or_else(|_| "https://your-site.example.com/wp-json".to_string());
     let wp_username = env::var("WORDPRESS_USERNAME").unwrap_or_default();
     let wp_password = env::var("WORDPRESS_PASSWORD").unwrap_or_default();
 

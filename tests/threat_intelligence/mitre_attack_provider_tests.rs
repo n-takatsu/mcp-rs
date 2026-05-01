@@ -209,8 +209,7 @@ mod integration_tests {
         let result = provider.check_indicator(&indicator).await;
 
         // APIが利用できない場合はスキップ
-        if result.is_ok() {
-            let threats = result.unwrap();
+        if let Ok(threats) = result {
             assert!(!threats.is_empty());
 
             let threat = &threats[0];
@@ -226,8 +225,7 @@ mod integration_tests {
 
         let result = provider.health_check().await;
 
-        if result.is_ok() {
-            let health = result.unwrap();
+        if let Ok(health) = result {
             assert_eq!(health.provider_name, "MITRE-ATTACK");
         }
     }
@@ -249,8 +247,7 @@ mod integration_tests {
 
         let result = provider.check_indicator(&indicator).await;
 
-        if result.is_ok() {
-            let threats = result.unwrap();
+        if let Ok(threats) = result {
             // キーワード検索の結果は空の場合もある
             println!("Found {} threats for keyword 'phishing'", threats.len());
         }
@@ -283,8 +280,7 @@ mod integration_tests {
 
         let result = provider.batch_check_indicators(&indicators).await;
 
-        if result.is_ok() {
-            let threats = result.unwrap();
+        if let Ok(threats) = result {
             println!("Batch check found {} threats", threats.len());
         }
     }
