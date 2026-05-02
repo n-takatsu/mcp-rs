@@ -72,8 +72,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!();
 
     // 環境変数から認証情報を取得
-    let wp_url =
+    let wp_url_raw =
         env::var("WORDPRESS_URL").unwrap_or_else(|_| "https://your-site.example.com".to_string());
+    // /wp-json の二重付与を防ぐため、末尾スラッシュと /wp-json を正規化する
+    let wp_url = wp_url_raw
+        .trim_end_matches('/')
+        .strip_suffix("/wp-json")
+        .unwrap_or(wp_url_raw.trim_end_matches('/'))
+        .to_string();
     let wp_username = env::var("WORDPRESS_USERNAME").unwrap_or_default();
     let wp_password = env::var("WORDPRESS_PASSWORD").unwrap_or_default();
 
@@ -89,7 +95,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("👤 ユーザー: {}", wp_username);
     println!();
 
-    let handler = WordPressHandler::new(WordPressConfig {
+    let handler = WordPressHandler::try_new(WordPressConfig {
         url: wp_url,
         username: wp_username,
         password: wp_password,
@@ -97,7 +103,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         timeout_seconds: Some(30),
         rate_limit: None,
         encrypted_credentials: None,
-    });
+    })
+    .map_err(|e| format!("WordPress ハンドラーの初期化に失敗しました: {}", e))?;
 
     // ── Step 1: ヘルスチェック ──────────────────────────────────────────────
     print!("[1/6] 🔍 WordPress 接続確認... ");
@@ -147,8 +154,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     println!("   ⚠️  「{}」スキップ（IDが取得できませんでした）", name);
                 }
             }
-            Err(e) => {
-                println!("   ⚠️  「{}」スキップ（既存の可能性）: {}", name, e);
+            Err(_) => {
+                // 既存のカテゴリの場合、一覧から名前でIDを解決する
+                if let Ok(existing) = handler.get_categories().await {
+                    if let Some(cat) = existing.iter().find(|c| c.name == *name) {
+                        if let Some(id) = cat.id {
+                            println!("   ♻️  「{}」既存を利用 (ID: {})", name, id);
+                            category_ids.push((name.to_string(), id));
+                        }
+                    }
+                }
             }
         }
         sleep(Duration::from_millis(200)).await;
@@ -167,8 +182,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     println!("   ⚠️  「{}」スキップ（IDが取得できませんでした）", name);
                 }
             }
-            Err(e) => {
-                println!("   ⚠️  「{}」スキップ: {}", name, e);
+            Err(_) => {
+                // 既存のタグの場合、一覧から名前でIDを解決する
+                if let Ok(existing) = handler.get_tags().await {
+                    if let Some(tag) = existing.iter().find(|t| t.name == *name) {
+                        if let Some(id) = tag.id {
+                            println!("   ♻️  「{}」既存を利用 (ID: {})", name, id);
+                            tag_ids.push((name.to_string(), id));
+                        }
+                    }
+                }
             }
         }
         sleep(Duration::from_millis(200)).await;
