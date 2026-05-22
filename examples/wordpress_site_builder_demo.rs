@@ -29,6 +29,7 @@ use mcp_rs::{
     config::WordPressConfig,
     handlers::wordpress::{PostCreateParams, SettingsUpdateParams, WordPressHandler},
 };
+use std::collections::HashSet;
 use std::env;
 use tokio::time::{sleep, Duration};
 
@@ -95,6 +96,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("👤 ユーザー: {}", wp_username);
     println!();
 
+    let mut warning_count = 0usize;
+
     let handler = WordPressHandler::try_new(WordPressConfig {
         url: wp_url,
         username: wp_username,
@@ -121,6 +124,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         for err in &health.error_details {
             eprintln!("     {}", err);
         }
+        eprintln!("❌ ヘルスチェックで問題が検出されたため、Step 2 以降を中止します。");
+        return Ok(());
     }
 
     // ── Step 2: サイト設定 ──────────────────────────────────────────────────
@@ -144,26 +149,41 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ── Step 3: カテゴリ作成 ────────────────────────────────────────────────
     println!("[3/6] 🏷️  カテゴリを作成中...");
     let mut category_ids: Vec<(String, u64)> = Vec::new();
+    let existing_categories = handler.get_categories().await?;
     for (name, desc) in CATEGORIES {
+        if let Some(existing) = existing_categories.iter().find(|c| c.name == *name) {
+            if let Some(id) = existing.id {
+                println!("   ♻️  「{}」既存を利用 (ID: {})", name, id);
+                category_ids.push((name.to_string(), id));
+                sleep(Duration::from_millis(200)).await;
+                continue;
+            }
+            return Err(std::io::Error::other(format!(
+                "カテゴリ「{}」の既存IDが取得できませんでした",
+                name
+            ))
+            .into());
+        }
+
         match handler.create_category(name, Some(desc), None).await {
             Ok(cat) => {
                 if let Some(id) = cat.id {
                     println!("   ✅ 「{}」(ID: {})", name, id);
                     category_ids.push((name.to_string(), id));
                 } else {
-                    println!("   ⚠️  「{}」スキップ（IDが取得できませんでした）", name);
+                    return Err(std::io::Error::other(format!(
+                        "カテゴリ「{}」の作成後にIDが取得できませんでした",
+                        name
+                    ))
+                    .into());
                 }
             }
-            Err(_) => {
-                // 既存のカテゴリの場合、一覧から名前でIDを解決する
-                if let Ok(existing) = handler.get_categories().await {
-                    if let Some(cat) = existing.iter().find(|c| c.name == *name) {
-                        if let Some(id) = cat.id {
-                            println!("   ♻️  「{}」既存を利用 (ID: {})", name, id);
-                            category_ids.push((name.to_string(), id));
-                        }
-                    }
-                }
+            Err(e) => {
+                return Err(std::io::Error::other(format!(
+                    "カテゴリ「{}」の作成に失敗しました: {}",
+                    name, e
+                ))
+                .into());
             }
         }
         sleep(Duration::from_millis(200)).await;
@@ -172,26 +192,41 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ── Step 4: タグ作成 ────────────────────────────────────────────────────
     println!("[4/6] 🔖 タグを作成中...");
     let mut tag_ids: Vec<(String, u64)> = Vec::new();
+    let existing_tags = handler.get_tags().await?;
     for (name, desc) in TAGS {
+        if let Some(existing) = existing_tags.iter().find(|t| t.name == *name) {
+            if let Some(id) = existing.id {
+                println!("   ♻️  「{}」既存を利用 (ID: {})", name, id);
+                tag_ids.push((name.to_string(), id));
+                sleep(Duration::from_millis(200)).await;
+                continue;
+            }
+            return Err(std::io::Error::other(format!(
+                "タグ「{}」の既存IDが取得できませんでした",
+                name
+            ))
+            .into());
+        }
+
         match handler.create_tag(name, Some(desc)).await {
             Ok(tag) => {
                 if let Some(id) = tag.id {
                     println!("   ✅ 「{}」(ID: {})", name, id);
                     tag_ids.push((name.to_string(), id));
                 } else {
-                    println!("   ⚠️  「{}」スキップ（IDが取得できませんでした）", name);
+                    return Err(std::io::Error::other(format!(
+                        "タグ「{}」の作成後にIDが取得できませんでした",
+                        name
+                    ))
+                    .into());
                 }
             }
-            Err(_) => {
-                // 既存のタグの場合、一覧から名前でIDを解決する
-                if let Ok(existing) = handler.get_tags().await {
-                    if let Some(tag) = existing.iter().find(|t| t.name == *name) {
-                        if let Some(id) = tag.id {
-                            println!("   ♻️  「{}」既存を利用 (ID: {})", name, id);
-                            tag_ids.push((name.to_string(), id));
-                        }
-                    }
-                }
+            Err(e) => {
+                return Err(std::io::Error::other(format!(
+                    "タグ「{}」の作成に失敗しました: {}",
+                    name, e
+                ))
+                .into());
             }
         }
         sleep(Duration::from_millis(200)).await;
@@ -199,7 +234,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ── Step 5: 固定ページ作成 ──────────────────────────────────────────────
     println!("[5/6] 📄 固定ページを作成中...");
+    let (existing_posts, existing_pages) = handler.get_all_content().await?;
+    let mut existing_page_titles: HashSet<String> = existing_pages
+        .iter()
+        .map(|p| normalize_title(&p.title.rendered))
+        .collect();
+    let mut existing_post_titles: HashSet<String> = existing_posts
+        .iter()
+        .map(|p| normalize_title(&p.title.rendered))
+        .collect();
+
     for (title, content) in sample_pages() {
+        if existing_page_titles.contains(&normalize_title(&title)) {
+            println!("   ♻️  「{}」既存を利用", title);
+            sleep(Duration::from_millis(200)).await;
+            continue;
+        }
+
         match handler
             .create_advanced_post(PostCreateParams {
                 title: title.clone(),
@@ -214,8 +265,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             })
             .await
         {
-            Ok(page) => println!("   ✅ 「{}」(ID: {})", title, page.id.unwrap_or(0)),
-            Err(e) => println!("   ⚠️  「{}」スキップ: {}", title, e),
+            Ok(page) => {
+                println!("   ✅ 「{}」(ID: {})", title, page.id.unwrap_or(0));
+                existing_page_titles.insert(normalize_title(&title));
+            }
+            Err(e) => {
+                warning_count += 1;
+                println!("   ⚠️  「{}」作成失敗: {}", title, e);
+            }
         }
         sleep(Duration::from_millis(400)).await;
     }
@@ -233,6 +290,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         |name: &str| -> Option<u64> { tag_ids.iter().find(|(n, _)| n == name).map(|(_, id)| *id) };
 
     for (title, content, cats, tags) in sample_posts(&find_cat, &find_tag) {
+        if existing_post_titles.contains(&normalize_title(&title)) {
+            println!("   ♻️  「{}」既存を利用", title);
+            sleep(Duration::from_millis(200)).await;
+            continue;
+        }
+
+        if cats.is_empty() || tags.is_empty() {
+            return Err(std::io::Error::other(format!(
+                "投稿「{}」に必要なカテゴリまたはタグのIDが解決できませんでした",
+                title
+            ))
+            .into());
+        }
+
+        let categories = if cats.is_empty() { None } else { Some(cats) };
+        let tags = if tags.is_empty() { None } else { Some(tags) };
         match handler
             .create_advanced_post(PostCreateParams {
                 title: title.clone(),
@@ -240,25 +313,46 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 post_type: "post".to_string(),
                 status: "publish".to_string(),
                 date: None,
-                categories: Some(cats),
-                tags: Some(tags),
+                categories,
+                tags,
                 featured_media_id: None,
                 meta: None,
             })
             .await
         {
-            Ok(post) => println!("   ✅ 「{}」(ID: {})", title, post.id.unwrap_or(0)),
-            Err(e) => println!("   ⚠️  「{}」スキップ: {}", title, e),
+            Ok(post) => {
+                println!("   ✅ 「{}」(ID: {})", title, post.id.unwrap_or(0));
+                existing_post_titles.insert(normalize_title(&title));
+            }
+            Err(e) => {
+                warning_count += 1;
+                println!("   ⚠️  「{}」作成失敗: {}", title, e);
+            }
         }
         sleep(Duration::from_millis(400)).await;
     }
 
     println!();
-    println!("╔══════════════════════════════════════════════════════╗");
-    println!("║  🎉 サイト初期構築完了！                              ║");
-    println!("╚══════════════════════════════════════════════════════╝");
+    if warning_count == 0 {
+        println!("╔══════════════════════════════════════════════════════╗");
+        println!("║  🎉 サイト初期構築完了！                              ║");
+        println!("╚══════════════════════════════════════════════════════╝");
+    } else {
+        println!("╔══════════════════════════════════════════════════════╗");
+        println!("║  ⚠️  一部の処理で失敗が発生しました                    ║");
+        println!("╚══════════════════════════════════════════════════════╝");
+        return Err(std::io::Error::other(format!(
+            "{} 件の処理失敗が発生しました。ログを確認してください。",
+            warning_count
+        ))
+        .into());
+    }
 
     Ok(())
+}
+
+fn normalize_title(title: &str) -> String {
+    title.trim().to_lowercase()
 }
 
 /// サンプルの固定ページ: (タイトル, 本文HTML)
