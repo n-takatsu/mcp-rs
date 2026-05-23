@@ -31,6 +31,7 @@ use mcp_rs::{
 };
 use std::collections::HashSet;
 use std::env;
+use std::io::{self, Write};
 use tokio::time::{sleep, Duration};
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -107,10 +108,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         rate_limit: None,
         encrypted_credentials: None,
     })
-    .map_err(|e| format!("WordPress ハンドラーの初期化に失敗しました: {}", e))?;
+    .map_err(|e| io::Error::other(format!("WordPress ハンドラーの初期化に失敗しました: {}", e)))?;
 
     // ── Step 1: ヘルスチェック ──────────────────────────────────────────────
     print!("[1/6] 🔍 WordPress 接続確認... ");
+    io::stdout().flush()?;
     let health = handler.health_check().await;
     if health.error_details.is_empty() {
         let site_name = health
@@ -130,6 +132,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ── Step 2: サイト設定 ──────────────────────────────────────────────────
     print!("[2/6] ⚙️  サイト基本設定を更新中... ");
+    io::stdout().flush()?;
     handler
         .update_settings(SettingsUpdateParams {
             title: Some(SITE_TITLE.to_string()),
@@ -266,8 +269,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .await
         {
             Ok(page) => {
-                println!("   ✅ 「{}」(ID: {})", title, page.id.unwrap_or(0));
-                existing_page_titles.insert(normalize_title(&title));
+                if let Some(page_id) = page.id {
+                    println!("   ✅ 「{}」(ID: {})", title, page_id);
+                    existing_page_titles.insert(normalize_title(&title));
+                } else {
+                    warning_count += 1;
+                    println!("   ⚠️  「{}」作成成功だがIDが取得できませんでした", title);
+                }
             }
             Err(e) => {
                 warning_count += 1;
@@ -321,8 +329,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .await
         {
             Ok(post) => {
-                println!("   ✅ 「{}」(ID: {})", title, post.id.unwrap_or(0));
-                existing_post_titles.insert(normalize_title(&title));
+                if let Some(post_id) = post.id {
+                    println!("   ✅ 「{}」(ID: {})", title, post_id);
+                    existing_post_titles.insert(normalize_title(&title));
+                } else {
+                    warning_count += 1;
+                    println!("   ⚠️  「{}」作成成功だがIDが取得できませんでした", title);
+                }
             }
             Err(e) => {
                 warning_count += 1;
