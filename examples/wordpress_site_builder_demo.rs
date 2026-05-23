@@ -27,8 +27,11 @@
 
 use mcp_rs::{
     config::WordPressConfig,
-    handlers::wordpress::{PostCreateParams, SettingsUpdateParams, WordPressHandler},
+    handlers::wordpress::{
+        PostCreateParams, SettingsUpdateParams, WordPressCategory, WordPressHandler, WordPressTag,
+    },
 };
+use reqwest::{Client, StatusCode};
 use std::collections::HashSet;
 use std::env;
 use std::io::{self, Write};
@@ -100,9 +103,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut warning_count = 0usize;
 
     let handler = WordPressHandler::try_new(WordPressConfig {
-        url: wp_url,
-        username: wp_username,
-        password: wp_password,
+        url: wp_url.clone(),
+        username: wp_username.clone(),
+        password: wp_password.clone(),
         enabled: Some(true),
         timeout_seconds: Some(30),
         rate_limit: None,
@@ -152,7 +155,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ── Step 3: カテゴリ作成 ────────────────────────────────────────────────
     println!("[3/6] 🏷️  カテゴリを作成中...");
     let mut category_ids: Vec<(String, u64)> = Vec::new();
-    let existing_categories = handler.get_categories().await?;
+    let existing_categories = fetch_all_categories(&wp_url, &wp_username, &wp_password).await?;
     for (name, desc) in CATEGORIES {
         if let Some(existing) = existing_categories.iter().find(|c| c.name == *name) {
             if let Some(id) = existing.id {
@@ -195,7 +198,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ── Step 4: タグ作成 ────────────────────────────────────────────────────
     println!("[4/6] 🔖 タグを作成中...");
     let mut tag_ids: Vec<(String, u64)> = Vec::new();
-    let existing_tags = handler.get_tags().await?;
+    let existing_tags = fetch_all_tags(&wp_url, &wp_username, &wp_password).await?;
     for (name, desc) in TAGS {
         if let Some(existing) = existing_tags.iter().find(|t| t.name == *name) {
             if let Some(id) = existing.id {
@@ -366,6 +369,90 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 fn normalize_title(title: &str) -> String {
     title.trim().to_lowercase()
+}
+
+async fn fetch_all_categories(
+    base_url: &str,
+    username: &str,
+    password: &str,
+) -> Result<Vec<WordPressCategory>, Box<dyn std::error::Error>> {
+    let client = Client::new();
+    let mut all_categories: Vec<WordPressCategory> = Vec::new();
+    let mut page: u32 = 1;
+
+    loop {
+        let url = format!("{}/wp-json/wp/v2/categories", base_url);
+        let response = client
+            .get(&url)
+            .basic_auth(username, Some(password))
+            .query(&[("per_page", "100"), ("page", &page.to_string())])
+            .send()
+            .await?;
+
+        if response.status() == StatusCode::BAD_REQUEST && page > 1 {
+            break;
+        }
+
+        if !response.status().is_success() {
+            return Err(io::Error::other(format!(
+                "カテゴリ一覧の取得に失敗しました (status: {})",
+                response.status()
+            ))
+            .into());
+        }
+
+        let page_items: Vec<WordPressCategory> = response.json().await?;
+        if page_items.is_empty() {
+            break;
+        }
+
+        all_categories.extend(page_items);
+        page += 1;
+    }
+
+    Ok(all_categories)
+}
+
+async fn fetch_all_tags(
+    base_url: &str,
+    username: &str,
+    password: &str,
+) -> Result<Vec<WordPressTag>, Box<dyn std::error::Error>> {
+    let client = Client::new();
+    let mut all_tags: Vec<WordPressTag> = Vec::new();
+    let mut page: u32 = 1;
+
+    loop {
+        let url = format!("{}/wp-json/wp/v2/tags", base_url);
+        let response = client
+            .get(&url)
+            .basic_auth(username, Some(password))
+            .query(&[("per_page", "100"), ("page", &page.to_string())])
+            .send()
+            .await?;
+
+        if response.status() == StatusCode::BAD_REQUEST && page > 1 {
+            break;
+        }
+
+        if !response.status().is_success() {
+            return Err(io::Error::other(format!(
+                "タグ一覧の取得に失敗しました (status: {})",
+                response.status()
+            ))
+            .into());
+        }
+
+        let page_items: Vec<WordPressTag> = response.json().await?;
+        if page_items.is_empty() {
+            break;
+        }
+
+        all_tags.extend(page_items);
+        page += 1;
+    }
+
+    Ok(all_tags)
 }
 
 /// サンプルの固定ページ: (タイトル, 本文HTML)
