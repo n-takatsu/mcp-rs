@@ -254,7 +254,7 @@ fn test_complex_parameterized_query_validation() {
     let param_count = complex_sql.matches('?').count();
     assert_eq!(param_count, 7);
 
-    let params = vec![
+    let params = [
         Value::Int(123),
         Value::Bool(true),
         Value::DateTime(Utc::now()),

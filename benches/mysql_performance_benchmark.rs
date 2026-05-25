@@ -212,7 +212,7 @@ impl MySqlPerformanceBenchmark {
             metrics.total_queries += 1;
 
             // Progress indicator
-            if metrics.total_queries % 100 == 0 {
+            if metrics.total_queries.is_multiple_of(100) {
                 println!("  Completed {} queries", metrics.total_queries);
             }
         }
@@ -239,29 +239,33 @@ impl MySqlPerformanceBenchmark {
         let mut query_times = Vec::new();
 
         // Test different parameter types and complexities
-        let test_queries = vec![
+        let simple1 = [Value::from_i64(42)];
+        let simple2 = [Value::String("test_string".to_string())];
+        let simple3 = [Value::from_bool(true)];
+        let simple4 = [Value::Float(std::f64::consts::PI)];
+        let multi = [
+            Value::from_i64(1),
+            Value::String("multi".to_string()),
+            Value::from_bool(false),
+            Value::Float(std::f64::consts::E),
+        ];
+        let complex = [
+            Value::from_i64(100),
+            Value::String("complex_test".to_string()),
+            Value::from_bool(true),
+            Value::Float(95.5),
+            Value::from_bool(true),
+        ];
+        let test_queries: &[(&str, &[Value])] = &[
             // Simple parameterized queries
-            ("SELECT ? as int_param", vec![Value::from_i64(42)]),
-            ("SELECT ? as string_param", vec![Value::String("test_string".to_string())]),
-            ("SELECT ? as bool_param", vec![Value::from_bool(true)]),
-            ("SELECT ? as float_param", vec![Value::Float(std::f64::consts::PI)]),
-
+            ("SELECT ? as int_param", &simple1),
+            ("SELECT ? as string_param", &simple2),
+            ("SELECT ? as bool_param", &simple3),
+            ("SELECT ? as float_param", &simple4),
             // Multiple parameters
-            ("SELECT ?, ?, ?, ? as multi_params", vec![
-                Value::from_i64(1),
-                Value::String("multi".to_string()),
-                Value::from_bool(false),
-                Value::Float(std::f64::consts::E)
-            ]),
-
+            ("SELECT ?, ?, ?, ? as multi_params", &multi),
             // Complex queries with parameters
-            ("SELECT * FROM (SELECT ? as id, ? as name, ? as active, ? as score) as sub WHERE sub.active = ?", vec![
-                Value::from_i64(100),
-                Value::String("complex_test".to_string()),
-                Value::from_bool(true),
-                Value::Float(95.5),
-                Value::from_bool(true)
-            ]),
+            ("SELECT * FROM (SELECT ? as id, ? as name, ? as active, ? as score) as sub WHERE sub.active = ?", &complex),
         ];
 
         let benchmark_start = Instant::now();

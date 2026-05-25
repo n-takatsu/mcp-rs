@@ -155,7 +155,7 @@ fn test_builder_pattern_chaining() {
 
 #[test]
 fn test_multiple_chat_roles() {
-    let messages = vec![
+    let messages = [
         ChatMessage::system("System prompt"),
         ChatMessage::user("User message 1"),
         ChatMessage::assistant("Assistant response 1"),
