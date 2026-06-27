@@ -510,14 +510,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         if let Some(existing_id) = existing_post_id {
             update_post_content(
-                &wp_url,
-                &wp_username,
-                &wp_password,
-                existing_id,
-                &title,
-                &content,
-                &cats,
-                &tags,
+                PostUpdateBuilder::new(&wp_url, existing_id)
+                    .credentials(&wp_username, &wp_password)
+                    .title(&title)
+                    .content(&content)
+                    .categories(&cats)
+                    .tags(&tags),
             )
             .await?;
             println!("   🔄 「{}」既存投稿を更新 (ID: {})", title, existing_id);
@@ -560,14 +558,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(post) => {
                 if let Some(post_id) = post.id {
                     if let Err(e) = update_post_content(
-                        &wp_url,
-                        &wp_username,
-                        &wp_password,
-                        post_id,
-                        &title,
-                        &content,
-                        &cats,
-                        &tags,
+                        PostUpdateBuilder::new(&wp_url, post_id)
+                            .credentials(&wp_username, &wp_password)
+                            .title(&title)
+                            .content(&content)
+                            .categories(&cats)
+                            .tags(&tags),
                     )
                     .await
                     {
@@ -921,32 +917,78 @@ async fn update_page_content(
     Ok(())
 }
 
-async fn update_post_content(
-    base_url: &str,
-    username: &str,
-    password: &str,
+struct PostUpdateBuilder {
+    base_url: String,
     post_id: u64,
-    title: &str,
-    content: &str,
-    categories: &[u64],
-    tags: &[u64],
-) -> Result<(), Box<dyn std::error::Error>> {
-    let client = Client::new();
-    let url = format!("{}/wp-json/wp/v2/posts/{}", base_url, post_id);
-    let mut body = serde_json::Map::new();
-    body.insert("title".to_string(), json!(title));
-    body.insert("content".to_string(), json!(content));
-    body.insert("status".to_string(), json!("publish"));
-    body.insert("categories".to_string(), json!(categories));
-    body.insert("tags".to_string(), json!(tags));
+    username: String,
+    password: String,
+    title: String,
+    content: String,
+    categories: Vec<u64>,
+    tags: Vec<u64>,
+}
 
-    if let Some(slug) = post_slug_for_title(title) {
+impl PostUpdateBuilder {
+    fn new(base_url: &str, post_id: u64) -> Self {
+        Self {
+            base_url: base_url.to_string(),
+            post_id,
+            username: String::new(),
+            password: String::new(),
+            title: String::new(),
+            content: String::new(),
+            categories: Vec::new(),
+            tags: Vec::new(),
+        }
+    }
+
+    fn credentials(mut self, username: &str, password: &str) -> Self {
+        self.username = username.to_string();
+        self.password = password.to_string();
+        self
+    }
+
+    fn title(mut self, title: &str) -> Self {
+        self.title = title.to_string();
+        self
+    }
+
+    fn content(mut self, content: &str) -> Self {
+        self.content = content.to_string();
+        self
+    }
+
+    fn categories(mut self, categories: &[u64]) -> Self {
+        self.categories = categories.to_vec();
+        self
+    }
+
+    fn tags(mut self, tags: &[u64]) -> Self {
+        self.tags = tags.to_vec();
+        self
+    }
+}
+
+async fn update_post_content(builder: PostUpdateBuilder) -> Result<(), Box<dyn std::error::Error>> {
+    let client = Client::new();
+    let url = format!(
+        "{}/wp-json/wp/v2/posts/{}",
+        builder.base_url, builder.post_id
+    );
+    let mut body = serde_json::Map::new();
+    body.insert("title".to_string(), json!(builder.title));
+    body.insert("content".to_string(), json!(builder.content));
+    body.insert("status".to_string(), json!("publish"));
+    body.insert("categories".to_string(), json!(builder.categories));
+    body.insert("tags".to_string(), json!(builder.tags));
+
+    if let Some(slug) = post_slug_for_title(&builder.title) {
         body.insert("slug".to_string(), json!(slug));
     }
 
     let resp = client
         .post(url)
-        .basic_auth(username, Some(password))
+        .basic_auth(&builder.username, Some(&builder.password))
         .json(&Value::Object(body))
         .send()
         .await?;
@@ -954,7 +996,7 @@ async fn update_post_content(
     if !resp.status().is_success() {
         return Err(io::Error::other(format!(
             "投稿更新に失敗しました (ID: {}, status: {})",
-            post_id,
+            builder.post_id,
             resp.status()
         ))
         .into());
