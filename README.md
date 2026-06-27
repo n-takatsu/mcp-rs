@@ -73,6 +73,10 @@ Need WordPress security automation? 8-layer enterprise security architecture wit
 - **YouTube & Social Embeds**: Rich media integration with security validation
 - **User Management**: Role-based access control and user operations
 
+### Live Demo Site
+
+The `examples/wordpress_site_builder_demo.rs` example builds and updates the public WordPress demo site at [redring.jp](https://redring.jp/). It is a real-world showcase of how mcp-rs can bootstrap a site, organize content, and keep the structure aligned with the demo article on [トップページ構成案を反映しました](https://redring.jp/homepage-structure-update/).
+
 ## **Multi-Factor Authentication (MFA)**
 
 - **TOTP Authentication**: RFC 6238 compliant with QR code generation (SHA1/SHA256/SHA512)

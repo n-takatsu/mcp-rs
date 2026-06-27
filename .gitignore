@@ -31,6 +31,7 @@ clippy-report.json
 .env
 .env.local
 .env.production
+.env.wordpress.local
 
 # Release directories (should use GitHub Releases instead)
 /mcp-rs-v*/
