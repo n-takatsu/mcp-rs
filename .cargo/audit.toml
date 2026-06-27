@@ -54,4 +54,17 @@ ignore = [
     #               is not exposed externally; track mongodb release with updated hickory
     "RUSTSEC-2026-0119",
 
+    # RUSTSEC-2026-0173: proc-macro-error2 is unmaintained
+    # - Affects: proc-macro-error2 2.0.1 (via validator, mysql_async transitive)
+    # - Status: Unmaintained but no critical functionality loss
+    # - Mitigation: validator and mysql_async are stable; proc-macro-error2 only used for derive macro code gen
+    "RUSTSEC-2026-0173",
+
+    # RUSTSEC-2026-0097: Rand is unsound with a custom logger using `rand::rng()`
+    # - Affects: rand 0.8.5, 0.9.2 (transitive via redis, tokio-retry, sqlx, smartcore, tungstenite, etc.)
+    # - Status: Design flaw; requires custom logger + rand::rng() to trigger (not default usage)
+    # - Mitigation: mcp-rs does not use rand::rng() with custom logger; default usage is safe
+    #               Upgrading rand across entire ecosystem is infeasible due to multiple major consumers
+    "RUSTSEC-2026-0097",
+
 ]
