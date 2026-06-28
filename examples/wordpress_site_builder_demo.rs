@@ -58,9 +58,9 @@ const POSTS_PAGE_TITLE: &str = "投稿一覧";
 const ABOUT_US_TITLE: &str = "About Us";
 const CONTRIBUTORS_TITLE: &str = "Contributors募集";
 const PRIVACY_POLICY_TITLE: &str = "プライバシーポリシー";
-const AD_DISCLOSURE_TITLE: &str = "広告表示について";
-const PRIMARY_MENU_NAME: &str = "Primary Navigation";
-const FOOTER_MENU_NAME: &str = "Footer Navigation";
+const AD_DISCLOSURE_TITLE: &str = "広告掲載について";
+const PRIMARY_MENU_NAME: &str = "header";
+const FOOTER_MENU_NAME: &str = "footer";
 const WORDPRESS_LOCAL_ENV_FILE: &str = ".env.wordpress.local";
 
 const CATEGORIES: &[(&str, &str)] = &[
@@ -461,7 +461,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             page_title: PRIVACY_POLICY_TITLE.to_string(),
         },
         MenuItemSpec {
-            title: "広告表示について".to_string(),
+            title: "広告掲載について".to_string(),
             page_title: AD_DISCLOSURE_TITLE.to_string(),
         },
         MenuItemSpec {
@@ -1036,6 +1036,43 @@ async fn ensure_primary_menu(
     let client = Client::new();
     let menus_url = format!("{}/wp-json/wp/v2/menus", base_url);
 
+    // Reuse existing menu already assigned to candidate locations first.
+    // This prevents creating duplicate header/footer menus when theme settings already exist.
+    let location_bound_menu_id = {
+        let list_loc_resp = client
+            .get(format!("{}/wp-json/wp/v2/menu-locations", base_url))
+            .basic_auth(username, Some(password))
+            .send()
+            .await?;
+
+        if list_loc_resp.status() == StatusCode::NOT_FOUND {
+            None
+        } else if !list_loc_resp.status().is_success() {
+            return Err(io::Error::other(format!(
+                "メニューロケーション取得に失敗しました (status: {})",
+                list_loc_resp.status()
+            ))
+            .into());
+        } else {
+            let locations: Value = list_loc_resp.json().await?;
+            let mut found: Option<u64> = None;
+
+            for location in location_candidates {
+                if let Some(menu_id) = locations
+                    .get(*location)
+                    .and_then(|v| v.get("menu"))
+                    .and_then(|v| v.as_u64())
+                    .filter(|id| *id > 0)
+                {
+                    found = Some(menu_id);
+                    break;
+                }
+            }
+
+            found
+        }
+    };
+
     let list_resp = client
         .get(&menus_url)
         .basic_auth(username, Some(password))
@@ -1067,6 +1104,8 @@ async fn ensure_primary_menu(
             .get("id")
             .and_then(|v| v.as_u64())
             .ok_or_else(|| io::Error::other("既存メニューのIDが取得できません"))?
+    } else if let Some(menu_id) = location_bound_menu_id {
+        menu_id
     } else {
         created_new_menu = true;
 
@@ -1328,19 +1367,16 @@ body.page-id-86 main {
     float: none !important;
     box-sizing: border-box !important;
 }
-@media (min-width: 981px) {
-    body.page-id-86 #headbox {height: auto !important;}
-    body.page-id-86 #s-navi.pcnone {display: block !important; width: 100% !important; margin: 8px auto 16px; max-width: 1120px;}
-    body.page-id-86 #s-navi .acordion_tree,
-    body.page-id-86 #s-navi .acordion_tree_content {height: auto !important; display: block !important;}
-    body.page-id-86 #s-navi .acordion_tree {position: static !important; left: auto !important; right: auto !important; top: auto !important; width: 100% !important; max-width: 1120px; margin: 0 auto !important;}
-    body.page-id-86 #s-navi .acordion_tree_content {width: 100% !important;}
-    body.page-id-86 #menu-primary-navigation {width: 100% !important;}
-    body.page-id-86 #s-navi .term,
-    body.page-id-86 #s-navi .st-fa {display: none !important;}
-    body.page-id-86 #s-navi ul.menu {display: flex; flex-wrap: wrap; gap: 8px 14px; justify-content: center; list-style: none; padding: 0; margin: 0;}
-    body.page-id-86 #s-navi ul.menu > li {margin: 0;}
-    body.page-id-86 #s-navi ul.menu a {display: block; padding: 8px 10px; border-radius: 8px; text-decoration: none;}
+body.page-id-86 #st-menubox .menu > li,
+body.page-id-86 #st-menubox .menu > li > a {
+    visibility: visible !important;
+    opacity: 1 !important;
+}
+body.page-id-86 #headbox h1,
+body.page-id-86 #headbox .sitename,
+body.page-id-86 #headbox .description {
+    visibility: visible !important;
+    opacity: 1 !important;
 }
 .rr-cad-wrap {background: radial-gradient(circle at 15% -10%, #1f2a36 0%, #121820 55%, #0b1016 100%); padding: 48px 20px; border-radius: 18px; width: 100%; overflow-x: clip; box-sizing: border-box;}
 .rr-cad-wrap, .rr-cad-wrap *, .rr-cad-wrap *::before, .rr-cad-wrap *::after {box-sizing: border-box;}
@@ -1603,7 +1639,7 @@ body.page-id-86 main {
         (
             AD_DISCLOSURE_TITLE.to_string(),
             r#"<!-- wp:heading {"level":2} -->
-<h2>広告表示について</h2>
+<h2>広告掲載について</h2>
 <!-- /wp:heading -->
 
 <!-- wp:paragraph -->
