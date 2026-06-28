@@ -57,8 +57,10 @@ const SITE_GUIDE_TITLE: &str = "サイトガイド";
 const POSTS_PAGE_TITLE: &str = "投稿一覧";
 const ABOUT_US_TITLE: &str = "About Us";
 const CONTRIBUTORS_TITLE: &str = "Contributors募集";
-const PRIMARY_MENU_NAME: &str = "Primary Navigation";
-const FOOTER_MENU_NAME: &str = "Footer Navigation";
+const PRIVACY_POLICY_TITLE: &str = "プライバシーポリシー";
+const AD_DISCLOSURE_TITLE: &str = "広告掲載について";
+const PRIMARY_MENU_NAME: &str = "header";
+const FOOTER_MENU_NAME: &str = "footer";
 const WORDPRESS_LOCAL_ENV_FILE: &str = ".env.wordpress.local";
 
 const CATEGORIES: &[(&str, &str)] = &[
@@ -421,8 +423,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         &wp_password,
         &page_id_by_title,
         PRIMARY_MENU_NAME,
-        &["primary-menu", "primary-menu-side"],
+        &[
+            "primary-menu",
+            "primary-menu-side",
+            "smartphone-menu",
+            "sidepage-menu",
+        ],
         &menu_items,
+        false,
     )
     .await
     {
@@ -445,20 +453,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             page_title: ABOUT_US_TITLE.to_string(),
         },
         MenuItemSpec {
-            title: "サービス".to_string(),
-            page_title: "サービス".to_string(),
-        },
-        MenuItemSpec {
             title: "Contributors募集".to_string(),
             page_title: CONTRIBUTORS_TITLE.to_string(),
         },
         MenuItemSpec {
-            title: "お問い合わせ".to_string(),
-            page_title: "お問い合わせ".to_string(),
+            title: "プライバシーポリシー".to_string(),
+            page_title: PRIVACY_POLICY_TITLE.to_string(),
         },
         MenuItemSpec {
-            title: "投稿一覧".to_string(),
-            page_title: POSTS_PAGE_TITLE.to_string(),
+            title: "広告掲載について".to_string(),
+            page_title: AD_DISCLOSURE_TITLE.to_string(),
+        },
+        MenuItemSpec {
+            title: "お問い合わせ".to_string(),
+            page_title: "お問い合わせ".to_string(),
         },
     ];
 
@@ -470,6 +478,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         FOOTER_MENU_NAME,
         &["secondary-menu", "smartphone-footermenu"],
         &footer_items,
+        true,
     )
     .await
     {
@@ -1022,9 +1031,47 @@ async fn ensure_primary_menu(
     menu_name: &str,
     location_candidates: &[&str],
     menu_items: &[MenuItemSpec],
+    prune_unknown_items: bool,
 ) -> Result<bool, Box<dyn std::error::Error>> {
     let client = Client::new();
     let menus_url = format!("{}/wp-json/wp/v2/menus", base_url);
+
+    // Reuse existing menu already assigned to candidate locations first.
+    // This prevents creating duplicate header/footer menus when theme settings already exist.
+    let location_bound_menu_id = {
+        let list_loc_resp = client
+            .get(format!("{}/wp-json/wp/v2/menu-locations", base_url))
+            .basic_auth(username, Some(password))
+            .send()
+            .await?;
+
+        if list_loc_resp.status() == StatusCode::NOT_FOUND {
+            None
+        } else if !list_loc_resp.status().is_success() {
+            return Err(io::Error::other(format!(
+                "メニューロケーション取得に失敗しました (status: {})",
+                list_loc_resp.status()
+            ))
+            .into());
+        } else {
+            let locations: Value = list_loc_resp.json().await?;
+            let mut found: Option<u64> = None;
+
+            for location in location_candidates {
+                if let Some(menu_id) = locations
+                    .get(*location)
+                    .and_then(|v| v.get("menu"))
+                    .and_then(|v| v.as_u64())
+                    .filter(|id| *id > 0)
+                {
+                    found = Some(menu_id);
+                    break;
+                }
+            }
+
+            found
+        }
+    };
 
     let list_resp = client
         .get(&menus_url)
@@ -1046,6 +1093,7 @@ async fn ensure_primary_menu(
     }
 
     let menus: Vec<Value> = list_resp.json().await?;
+    let mut created_new_menu = false;
     let menu_id = if let Some(existing) = menus.iter().find(|m| {
         m.get("name")
             .and_then(|v| v.as_str())
@@ -1056,7 +1104,11 @@ async fn ensure_primary_menu(
             .get("id")
             .and_then(|v| v.as_u64())
             .ok_or_else(|| io::Error::other("既存メニューのIDが取得できません"))?
+    } else if let Some(menu_id) = location_bound_menu_id {
+        menu_id
     } else {
+        created_new_menu = true;
+
         let create_resp = client
             .post(&menus_url)
             .basic_auth(username, Some(password))
@@ -1082,27 +1134,6 @@ async fn ensure_primary_menu(
             .ok_or_else(|| io::Error::other("作成したメニューのIDが取得できません"))?
     };
 
-    let assign_resp = client
-        .post(format!("{}/wp-json/wp/v2/menus/{}", base_url, menu_id))
-        .basic_auth(username, Some(password))
-        .json(&json!({ "locations": location_candidates }))
-        .send()
-        .await?;
-
-    let assigned_any_location = assign_resp.status().is_success();
-
-    if !assigned_any_location {
-        let list_loc_resp = client
-            .get(format!("{}/wp-json/wp/v2/menu-locations", base_url))
-            .basic_auth(username, Some(password))
-            .send()
-            .await?;
-
-        if !list_loc_resp.status().is_success() {
-            return Ok(false);
-        }
-    }
-
     let menu_items_url = format!("{}/wp-json/wp/v2/menu-items", base_url);
     let existing_items_resp = client
         .get(&menu_items_url)
@@ -1124,28 +1155,135 @@ async fn ensure_primary_menu(
     }
 
     let existing_items: Vec<Value> = existing_items_resp.json().await?;
-    let existing_titles: HashSet<String> = existing_items
+    let desired_titles: HashSet<String> = menu_items
         .iter()
-        .filter_map(|item| item.get("title"))
-        .filter_map(|title| {
-            if title.is_object() {
-                title.get("rendered").and_then(|v| v.as_str())
-            } else {
-                title.as_str()
-            }
-        })
-        .map(normalize_title)
+        .map(|item| normalize_title(&item.title))
         .collect();
 
-    for (idx, spec) in menu_items.iter().enumerate() {
-        if existing_titles.contains(&normalize_title(&spec.title)) {
-            continue;
-        }
+    if prune_unknown_items {
+        for item in &existing_items {
+            let item_id = item.get("id").and_then(|v| v.as_u64());
+            let normalized_title = item
+                .get("title")
+                .and_then(|title| {
+                    if title.is_object() {
+                        title.get("rendered").and_then(|v| v.as_str())
+                    } else {
+                        title.as_str()
+                    }
+                })
+                .map(normalize_title);
 
+            let Some(item_id) = item_id else {
+                continue;
+            };
+
+            let Some(normalized_title) = normalized_title else {
+                continue;
+            };
+
+            if desired_titles.contains(&normalized_title) {
+                continue;
+            }
+
+            let delete_resp = client
+                .delete(format!("{}/wp-json/wp/v2/menu-items/{}", base_url, item_id))
+                .basic_auth(username, Some(password))
+                .query(&[("force", "true")])
+                .send()
+                .await?;
+
+            if delete_resp.status() == StatusCode::NOT_FOUND {
+                continue;
+            }
+
+            if !delete_resp.status().is_success() {
+                return Err(io::Error::other(format!(
+                    "メニュー項目削除に失敗しました (ID: {}, status: {})",
+                    item_id,
+                    delete_resp.status()
+                ))
+                .into());
+            }
+        }
+    }
+
+    let mut ensured_item_count: usize = 0;
+
+    for (idx, spec) in menu_items.iter().enumerate() {
         let page_key = normalize_title(&spec.page_title);
         let Some(page_id) = page_id_by_title.get(&page_key).copied() else {
             continue;
         };
+
+        let normalized_spec_title = normalize_title(&spec.title);
+        let existing_item = existing_items.iter().find(|item| {
+            item.get("title")
+                .and_then(|title| {
+                    if title.is_object() {
+                        title.get("rendered").and_then(|v| v.as_str())
+                    } else {
+                        title.as_str()
+                    }
+                })
+                .map(normalize_title)
+                .as_deref()
+                == Some(&normalized_spec_title)
+        });
+
+        if let Some(existing_item) = existing_item {
+            let existing_item_id = existing_item.get("id").and_then(|v| v.as_u64());
+            let existing_object_id = existing_item.get("object_id").and_then(|v| v.as_u64());
+            let existing_menu_order = existing_item.get("menu_order").and_then(|v| v.as_u64());
+            let desired_menu_order = (idx as u64) + 1;
+
+            if existing_object_id == Some(page_id)
+                && existing_menu_order == Some(desired_menu_order)
+            {
+                ensured_item_count += 1;
+                continue;
+            }
+
+            let Some(existing_item_id) = existing_item_id else {
+                continue;
+            };
+
+            let update_item_resp = client
+                .post(format!(
+                    "{}/wp-json/wp/v2/menu-items/{}",
+                    base_url, existing_item_id
+                ))
+                .basic_auth(username, Some(password))
+                .json(&json!({
+                    "menus": menu_id,
+                    "title": spec.title,
+                    "object": "page",
+                    "object_id": page_id,
+                    "type": "post_type",
+                    "status": "publish",
+                    "menu_order": desired_menu_order
+                }))
+                .send()
+                .await?;
+
+            if update_item_resp.status() == StatusCode::NOT_FOUND {
+                return Ok(false);
+            }
+
+            if !update_item_resp.status().is_success() {
+                return Err(io::Error::other(format!(
+                    "メニュー項目「{}」の更新に失敗しました (ID: {}, status: {})",
+                    spec.title,
+                    existing_item_id,
+                    update_item_resp.status()
+                ))
+                .into());
+            }
+
+            ensured_item_count += 1;
+
+            continue;
+        }
 
         let create_item_resp = client
             .post(&menu_items_url)
@@ -1174,6 +1312,37 @@ async fn ensure_primary_menu(
             ))
             .into());
         }
+
+        ensured_item_count += 1;
+    }
+
+    if created_new_menu && !menu_items.is_empty() && ensured_item_count == 0 {
+        return Err(io::Error::other(format!(
+            "メニュー「{}」は作成されましたが有効な項目を1件も解決できなかったため、location割り当てを中止しました",
+            menu_name
+        ))
+        .into());
+    }
+
+    let assign_resp = client
+        .post(format!("{}/wp-json/wp/v2/menus/{}", base_url, menu_id))
+        .basic_auth(username, Some(password))
+        .json(&json!({ "locations": location_candidates }))
+        .send()
+        .await?;
+
+    let assigned_any_location = assign_resp.status().is_success();
+
+    if !assigned_any_location {
+        let list_loc_resp = client
+            .get(format!("{}/wp-json/wp/v2/menu-locations", base_url))
+            .basic_auth(username, Some(password))
+            .send()
+            .await?;
+
+        if !list_loc_resp.status().is_success() {
+            return Ok(false);
+        }
     }
 
     Ok(true)
@@ -1186,18 +1355,32 @@ fn sample_pages() -> Vec<(String, String)> {
             r#"<!-- wp:html -->
 <style>
 body.page-id-86 #side {display: none !important;}
+body.page-id-86 {overflow-x: clip !important;}
 body.page-id-86 #content,
 body.page-id-86 #contentInner,
 body.page-id-86 #wrapper,
 body.page-id-86 main {
-    width: 100% !important;
-    max-width: 1280px !important;
+    width: min(100%, 1120px) !important;
+    max-width: 1120px !important;
     margin-left: auto !important;
     margin-right: auto !important;
     float: none !important;
+    box-sizing: border-box !important;
 }
-.rr-cad-wrap {background: radial-gradient(circle at 15% -10%, #1f2a36 0%, #121820 55%, #0b1016 100%); padding: 48px 20px; border-radius: 18px;}
-.rr-grid {max-width: 1180px; margin: 0 auto; display: grid; gap: 18px;}
+body.page-id-86 #st-menubox .menu > li,
+body.page-id-86 #st-menubox .menu > li > a {
+    visibility: visible !important;
+    opacity: 1 !important;
+}
+body.page-id-86 #headbox h1,
+body.page-id-86 #headbox .sitename,
+body.page-id-86 #headbox .description {
+    visibility: visible !important;
+    opacity: 1 !important;
+}
+.rr-cad-wrap {background: radial-gradient(circle at 15% -10%, #1f2a36 0%, #121820 55%, #0b1016 100%); padding: 48px 20px; border-radius: 18px; width: 100%; overflow-x: clip; box-sizing: border-box;}
+.rr-cad-wrap, .rr-cad-wrap *, .rr-cad-wrap *::before, .rr-cad-wrap *::after {box-sizing: border-box;}
+.rr-grid {width: 100%; max-width: 1080px; margin: 0 auto; display: grid; gap: 18px;}
 .rr-layout {position: relative; overflow: hidden; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; align-items: start; max-width: 1040px; margin: 0 auto; padding: 18px; border: 1px solid rgba(151, 179, 209, 0.24); border-radius: 20px; background: linear-gradient(180deg, rgba(18, 24, 32, 0.9) 0%, rgba(23, 31, 41, 0.96) 100%), radial-gradient(circle at 12% 14%, rgba(86, 129, 180, 0.18) 0, rgba(86, 129, 180, 0.18) 12%, transparent 13%), radial-gradient(circle at 88% 10%, rgba(118, 91, 163, 0.14) 0, rgba(118, 91, 163, 0.14) 9%, transparent 10%), repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.03) 0 1px, transparent 1px 22px); box-shadow: 0 18px 42px rgba(0, 0, 0, 0.26);}
 .rr-layout::before {content: ""; position: absolute; inset: auto -8% 10% auto; width: 180px; height: 180px; border: 1px solid rgba(130, 169, 210, 0.24); border-radius: 50%; transform: rotate(18deg); pointer-events: none;}
 .rr-layout::after {content: ""; position: absolute; inset: 12px 12px auto auto; width: 120px; height: 120px; background: linear-gradient(135deg, rgba(80, 123, 173, 0.26), rgba(80, 123, 173, 0.04)); clip-path: polygon(50% 0%, 100% 38%, 82% 100%, 18% 100%, 0% 38%); opacity: 0.8; pointer-events: none;}
@@ -1399,14 +1582,92 @@ body.page-id-86 main {
         (
             "お問い合わせ".to_string(),
             r#"<!-- wp:paragraph -->
-<p>案件相談やお見積り、協業のご相談はフォームからお問い合わせください。</p>
-<!-- /wp:paragraph -->"#
+    <p>案件相談やお見積り、協業のご相談は、以下のフォームからお問い合わせください。</p>
+    <!-- /wp:paragraph -->
+
+    <!-- wp:paragraph -->
+    <p>※技術的なご相談は内容により回答できない場合があります。あらかじめご了承ください。</p>
+    <!-- /wp:paragraph -->
+
+    <!-- wp:shortcode -->
+    [contact-form-7 id="23" title="コンタクトフォーム"]
+    <!-- /wp:shortcode -->"#
                 .to_string(),
         ),
         (
             POSTS_PAGE_TITLE.to_string(),
             r#"<!-- wp:paragraph -->
     <p>このページでは、redring.jp のすべての投稿・ブログ記事が時系列で一覧表示されます。最新情報から過去の記事まで、カテゴリやタグから検索・フィルタリングも可能です。</p>
+<!-- /wp:paragraph -->"#
+                .to_string(),
+        ),
+        (
+            PRIVACY_POLICY_TITLE.to_string(),
+            r#"<!-- wp:heading {"level":2} -->
+<h2>プライバシーポリシー</h2>
+<!-- /wp:heading -->
+
+<!-- wp:paragraph -->
+<p>本サイト（redring.jp）は、ユーザーのプライバシー保護を重視しています。以下に個人情報の取得・利用・管理方針を記載しています。</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:heading {"level":3} -->
+<h3>個人情報の取得と利用</h3>
+<!-- /wp:heading -->
+
+<!-- wp:paragraph -->
+<p>本サイトでは、お問い合わせフォームを通じて個人情報（名前、メールアドレス等）を取得する場合があります。これらの情報は、お問い合わせへの回答および関連するサービスの提供にのみ使用されます。</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:heading {"level":3} -->
+<h3>アクセスログとクッキー</h3>
+<!-- /wp:heading -->
+
+<!-- wp:paragraph -->
+<p>本サイトのアクセスログ（IPアドレス、ブラウザ情報等）は、サイト分析および改善目的で自動的に記録されます。クッキーは訪問者の利便性向上のためにのみ使用されます。</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:heading {"level":3} -->
+<h3>第三者への開示</h3>
+<!-- /wp:heading -->
+
+<!-- wp:paragraph -->
+<p>本サイトが取得した個人情報を、法律で定められた場合を除き、事前の同意なく第三者に開示することはありません。</p>
+<!-- /wp:paragraph -->"#
+                .to_string(),
+        ),
+        (
+            AD_DISCLOSURE_TITLE.to_string(),
+            r#"<!-- wp:heading {"level":2} -->
+<h2>広告掲載について</h2>
+<!-- /wp:heading -->
+
+<!-- wp:paragraph -->
+<p>本サイトは Google Adsense や他の広告配信ネットワークの広告を掲載している場合があります。</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:heading {"level":3} -->
+<h3>自動広告配信</h3>
+<!-- /wp:heading -->
+
+<!-- wp:paragraph -->
+<p>Google Adsense 等の自動広告配信サービスを使用しています。これらのサービスは訪問者のブラウザ情報やページ内容に基づいて、最適な広告を自動選択・表示します。</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:heading {"level":3} -->
+<h3>プライバシーと広告配信</h3>
+<!-- /wp:heading -->
+
+<!-- wp:paragraph -->
+<p>広告配信事業者は訪問者の関心に基づいて広告を表示する場合がありますが、訪問者は各広告配信サービスのプライバシー設定でこれをコントロールできます。</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:heading {"level":3} -->
+<h3>お問い合わせ</h3>
+<!-- /wp:heading -->
+
+<!-- wp:paragraph -->
+<p>広告表示やプライバシーについてご質問や懸念がある場合は、<a href=\"/お問い合わせ/\">お問い合わせページ</a>からお気軽にご連絡ください。</p>
 <!-- /wp:paragraph -->"#
                 .to_string(),
         ),

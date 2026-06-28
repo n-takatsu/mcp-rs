@@ -75,7 +75,7 @@ Need WordPress security automation? 8-layer enterprise security architecture wit
 
 ### Live Demo Site
 
-The `examples/wordpress_site_builder_demo.rs` example builds and updates the public WordPress demo site at [redring.jp](https://redring.jp/). It is a real-world showcase of how mcp-rs can bootstrap a site, organize content, and keep the structure aligned with the demo article on [トップページ構成案を反映しました](https://redring.jp/homepage-structure-update/).
+The `examples/wordpress_site_builder_demo.rs` example builds and updates the public WordPress demo site at [redring.jp](https://redring.jp/). It is a real-world showcase of how mcp-rs can bootstrap a site and organize content in production.
 
 ## **Multi-Factor Authentication (MFA)**
 

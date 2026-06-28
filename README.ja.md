@@ -57,7 +57,7 @@ WordPress セキュリティ自動化が必要ですか？SQL インジェクシ
 
 ### ライブデモサイト
 
-`examples/wordpress_site_builder_demo.rs` の例は、公開 WordPress デモサイト [redring.jp](https://redring.jp/) を構築・更新します。mcp-rs がサイトを立ち上げ、コンテンツを整理し、[トップページ構成案を反映しました](https://redring.jp/homepage-structure-update/) のような実運用記事とつながることを示す実例です。
+`examples/wordpress_site_builder_demo.rs` の例は、公開 WordPress デモサイト [redring.jp](https://redring.jp/) を構築・更新します。mcp-rs がサイトを立ち上げ、コンテンツを整理して実運用する流れを示す実例です。
 
 ## **エンタープライズセキュリティ（6 層アーキテクチャ）**
 
