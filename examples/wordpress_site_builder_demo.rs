@@ -1378,6 +1378,47 @@ body.page-id-86 #headbox .description {
     visibility: visible !important;
     opacity: 1 !important;
 }
+body.page-id-86 {
+    background: #0b1016 !important;
+    color: #dbe7f6 !important;
+}
+body.page-id-86 #content,
+body.page-id-86 #contentInner,
+body.page-id-86 #wrapper,
+body.page-id-86 main,
+body.page-id-86 article,
+body.page-id-86 .entry-content,
+body.page-id-86 .site-content,
+body.page-id-86 .st-content {
+    background: #0b1016 !important;
+    color: #dbe7f6 !important;
+}
+body.page-id-86 #headbox,
+body.page-id-86 #headbox a,
+body.page-id-86 #st-menubox a,
+body.page-id-86 #footermenubox a,
+body.page-id-86 footer a {
+    color: #d6e3f3 !important;
+}
+body.page-id-86 #st-menubox .menu > li > a,
+body.page-id-86 #footermenubox .menu > li > a {
+    color: #d6e3f3 !important;
+}
+body.page-id-86 #st-menubox .menu > li.current-menu-item > a,
+body.page-id-86 #st-menubox .menu > li.current_page_item > a,
+body.page-id-86 #footermenubox .menu > li.current-menu-item > a,
+body.page-id-86 #footermenubox .menu > li.current_page_item > a {
+    color: #ffffff !important;
+}
+body.page-id-86 #headbox h1,
+body.page-id-86 #headbox .sitename,
+body.page-id-86 #headbox .description,
+body.page-id-86 #st-menubox,
+body.page-id-86 #st-menubox .menu,
+body.page-id-86 #footermenubox,
+body.page-id-86 #footermenubox .menu {
+    color: #dbe7f6 !important;
+}
 .rr-cad-wrap {background: radial-gradient(circle at 15% -10%, #1f2a36 0%, #121820 55%, #0b1016 100%); padding: 48px 20px; border-radius: 18px; width: 100%; overflow-x: clip; box-sizing: border-box;}
 .rr-cad-wrap, .rr-cad-wrap *, .rr-cad-wrap *::before, .rr-cad-wrap *::after {box-sizing: border-box;}
 .rr-grid {width: 100%; max-width: 1080px; margin: 0 auto; display: grid; gap: 18px;}
@@ -1402,6 +1443,16 @@ body.page-id-86 #headbox .description {
 .rr-section h2 {margin: 0 0 10px; font-size: 22px; color: #dbe7f6;}
 .rr-section ul {margin: 6px 0 0; padding-left: 20px; color: #c3d2e3; line-height: 1.6;}
 .rr-section p {margin: 0; color: #c3d2e3;}
+.rr-section li,
+.rr-section h3,
+.rr-section h4,
+.rr-section h5,
+.rr-section h6 {
+    color: #cfe0f1 !important;
+}
+.rr-section a {
+    color: #9bc4ff !important;
+}
 .rr-links {display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; margin-top: 14px;}
 .rr-link {display: block; background: rgba(31, 43, 57, 0.7); border: 1px solid rgba(166, 191, 217, 0.38); border-radius: 10px; padding: 10px 12px; color: #e6f0fa; text-decoration: none; font-weight: 700;}
 .rr-link:hover {background: rgba(43, 58, 77, 0.9);}
@@ -1463,7 +1514,7 @@ body.page-id-86 #headbox .description {
 
         <section class="rr-section">
             <h2>RedRing思想</h2>
-            <p style="color: #20374f; line-height: 1.8;">Geometry Must Be Explicit. Architecture Must Be Modular.（幾何は明示的に、アーキテクチャはモジュール性を）という設計思想のもと、3DCAD・幾何処理・システム設計の知見を公開しています。</p>
+            <p style="color: #dbe7f6; line-height: 1.8;">Geometry Must Be Explicit. Architecture Must Be Modular.（幾何は明示的に、アーキテクチャはモジュール性を）という設計思想のもと、3DCAD・幾何処理・システム設計の知見を公開しています。</p>
             <div style="margin-top: 14px;">
                 <a class="rr-link" href="/category/redring%E6%80%9D%E6%83%B3/" style="display: inline-block;">📐 RedRing思想カテゴリへ</a>
             </div>
