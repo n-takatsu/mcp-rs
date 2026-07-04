@@ -47,6 +47,8 @@ MCP-RSの設定ファイル管理ディレクトリです。用途別に整理�
 - **`multi-handler.toml`** - 複数ハンドラー設定例
 - **`log-policy-demo.toml`** - ログポリシー設定デモ
 - **`module-separated.toml`** - モジュール分離ログ例
+- **`wordpress-404-design.html`** - WordPress 404ページ本文用のHTMLサンプル
+- **`wordpress-404-design.css`** - WordPress 404ページ装飾用のCSSサンプル
 
 ## 📝 Templates (`templates/`)
 
