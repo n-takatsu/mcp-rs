@@ -48,11 +48,11 @@ use tokio::time::{sleep, Duration};
 // サイト固有の設定
 // -----------------------------------------------------------------------------
 
-const SITE_TITLE: &str = "redring.jp";
+const SITE_TITLE: &str = "RedRing";
 const SITE_DESCRIPTION: &str = "3DCAD・幾何処理・設計自動化を軸に発信する RedRing の公式サイト";
 const SITE_TIMEZONE: &str = "Asia/Tokyo";
 const SITE_LANGUAGE: &str = "ja";
-const FRONT_PAGE_TITLE: &str = "ホーム";
+const FRONT_PAGE_TITLE: &str = "RedRing | 3DCAD・幾何処理・設計自動化";
 const SITE_GUIDE_TITLE: &str = "サイトガイド";
 const POSTS_PAGE_TITLE: &str = "投稿一覧";
 const ABOUT_US_TITLE: &str = "About Us";
@@ -1477,7 +1477,7 @@ body.page-id-86 #footermenubox .menu {
       <div class="rr-hero-main">
         <p class="rr-kicker">RedRing CAD-Inspired Experience</p>
         <h1 class="rr-title">CAD設計を、正確に、速く、再利用しやすく。</h1>
-                <p class="rr-sub">RedRing は、CAD作業の手戻りを減らし、設計を再利用しやすくすることを目指しています。実務で使える改善を積み重ね、継続的に品質と運用性を高めます。</p>
+            <p class="rr-sub">RedRing公式サイトでは、CAD作業の手戻りを減らし、設計を再利用しやすくすることを目指しています。実務で使える改善を積み重ね、継続的に品質と運用性を高めます。</p>
         <div class="rr-actions">
                     <a class="rr-btn rr-btn-primary" href="/service/">🛠️ 提供サービスを見る</a>
                     <a class="rr-btn rr-btn-ghost" href="/category/redring%E6%80%9D%E6%83%B3/">📐 設計思想を見る</a>
