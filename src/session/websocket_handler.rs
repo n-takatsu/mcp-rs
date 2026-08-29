@@ -688,10 +688,7 @@ impl SessionWebSocketHandler {
     }
 
     /// 拒否レスポンス作成
-    async fn create_rejection_response(
-        &self,
-        reason: &str,
-    ) -> Result<Response, Box<Response>> {
+    async fn create_rejection_response(&self, reason: &str) -> Result<Response, Box<Response>> {
         Err(Box::new(
             axum::response::Response::builder()
                 .status(axum::http::StatusCode::UNAUTHORIZED)
