@@ -43,8 +43,9 @@ root_path = "."
 read_only = false
 
 # WordPress（開発用：テスト設定）
-[wordpress]
+[handlers.wordpress]
+enabled = true
 url = "https://dev-wordpress-site.com"
 username = "dev-user"
 password = "dev-password"
-verify_ssl = false                     # 開発環境では無効化可能
+timeout_seconds = 30
