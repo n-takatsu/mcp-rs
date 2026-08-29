@@ -260,7 +260,7 @@ impl DeviceFingerprintManager {
         let threshold = Utc::now() - chrono::Duration::days(self.device_inactive_days);
         let mut total_removed = 0;
 
-        for (_user_id, user_devices) in devices.iter_mut() {
+        for user_devices in devices.values_mut() {
             let before = user_devices.len();
             user_devices.retain(|d| d.last_seen_at > threshold);
             total_removed += before - user_devices.len();

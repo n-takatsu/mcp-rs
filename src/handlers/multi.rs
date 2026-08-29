@@ -100,7 +100,7 @@ impl MultiHandlerManager {
         let active = self.active_handler.read().await;
 
         let mut result = Vec::new();
-        for (id, _handler) in handlers.iter() {
+        for id in handlers.keys() {
             if let Some(config) = configs.get(id) {
                 result.push(HandlerInfo {
                     id: id.clone(),

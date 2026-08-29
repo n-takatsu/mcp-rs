@@ -65,10 +65,11 @@ transport_type = "stdio"
 ## STDIO Transport必須
 
 [handlers.wordpress]
-url = "https://your-site.com"
-username = "your-username"
+enabled = true
+url = "${WORDPRESS_URL}"
+username = "${WORDPRESS_USERNAME}"
 password = "${WORDPRESS_PASSWORD}"
-timeout = 30000
+timeout_seconds = 30
 
 ```
 
@@ -82,7 +83,12 @@ timeout = 30000
   "mcpServers": {
     "mcp-rs": {
       "command": "C:\\path\\to\\mcp-rs.exe",
-      "args": ["--config", "C:\\path\\to\\configs\\production\\claude-desktop.toml"]
+      "args": ["--config", "C:\\path\\to\\configs\\production\\claude-desktop.toml"],
+      "env": {
+        "WORDPRESS_URL": "https://your-wordpress-site.com",
+        "WORDPRESS_USERNAME": "your_username",
+        "WORDPRESS_PASSWORD": "your_application_password"
+      }
     }
   }
 }
@@ -97,7 +103,12 @@ timeout = 30000
   "mcpServers": {
     "mcp-rs": {
       "command": "/path/to/mcp-rs",
-      "args": ["--config", "/path/to/configs/production/claude-desktop.toml"]
+      "args": ["--config", "/path/to/configs/production/claude-desktop.toml"],
+      "env": {
+        "WORDPRESS_URL": "https://your-wordpress-site.com",
+        "WORDPRESS_USERNAME": "your_username",
+        "WORDPRESS_PASSWORD": "your_application_password"
+      }
     }
   }
 }
@@ -112,12 +123,22 @@ timeout = 30000
   "mcpServers": {
     "mcp-rs": {
       "command": "/path/to/mcp-rs",
-      "args": ["--config", "/path/to/configs/production/claude-desktop.toml"]
+      "args": ["--config", "/path/to/configs/production/claude-desktop.toml"],
+      "env": {
+        "WORDPRESS_URL": "https://your-wordpress-site.com",
+        "WORDPRESS_USERNAME": "your_username",
+        "WORDPRESS_PASSWORD": "your_application_password"
+      }
     }
   }
 }
 
 ```
+
+> ⚠️ **重要**: Claude Desktopが起動する子プロセスは、OSのユーザー環境変数を自動的に継承するとは限りません。
+> 設定ファイル側で `${WORDPRESS_URL}` のようにプレースホルダを使っていても、上記のように
+> `mcpServers.<name>.env` に明示的にWordPress認証情報を書かないと、変数展開に失敗して
+> サーバーが起動直後に終了し「Server disconnected」エラーになります。
 
 ## 📊 ログ管理のベストプラクティス
 
@@ -201,36 +222,31 @@ separation = "separated"
 
 ## WordPressハンドラーが動作しない
 
-1. **環境変数の確認**:
+1. **`claude_desktop_config.json` の `env` を確認**:
+   `mcpServers.<name>.env` に `WORDPRESS_URL` / `WORDPRESS_USERNAME` / `WORDPRESS_PASSWORD`
+   が明示的に設定されているか確認してください（上記「🔧 Claude Desktop設定ファイル」参照）。
+   OSの環境変数を設定しただけでは、Claude Desktopの子プロセスに渡らない場合があります。
+
+2. **環境変数の確認**:
 
    ```bash
+   # Windows (PowerShell)
+   echo $env:WORDPRESS_URL
 
-
-## Linux/macOS
-
-   echo %WORDPRESS_PASSWORD% 
-
-## Windows
-
+   # Linux/macOS
+   echo $WORDPRESS_URL
    ```
 
-2. **設定ファイルの検証**:
+3. **設定ファイルの検証**:
+   `[handlers.wordpress]` テーブル配下に `url` / `username` / `password` が存在し、
+   `WordPressConfig` 構造体（`src/config.rs`）が認識するフィールド名
+   （`enabled` / `timeout_seconds` / `rate_limit`）のみを使用しているか確認してください。
+
+4. **ログファイルの確認**:
 
    ```bash
-
-   ```
-
-3. **ログファイルの確認**:
-
-   ```bash
-
-
-## WordPress関連ログ
-
-   tail -f logs/mcp-core.log   
-
-## サーバーコアログ
-
+   # WordPress関連ログ（モジュール分離設定時）
+   tail -f logs/wordpress.log
    ```
 
 ## 📝 設定テンプレート
@@ -246,8 +262,9 @@ log_level = "error"
 transport_type = "stdio"
 
 [handlers.wordpress]
-url = "https://your-wordpress-site.com"
-username = "your-username"
+enabled = true
+url = "${WORDPRESS_URL}"
+username = "${WORDPRESS_USERNAME}"
 password = "${WORDPRESS_PASSWORD}"
 
 ```
@@ -273,13 +290,16 @@ separation = "separated"
 transport_type = "stdio"
 
 [handlers.wordpress]
-url = "https://your-wordpress-site.com"
-username = "your-username"
-password = "${WORDPRESS_PASSWORD}"
-timeout = 30000
-cache_ttl = 300
-max_retries = 3
 enabled = true
+url = "${WORDPRESS_URL}"
+username = "${WORDPRESS_USERNAME}"
+password = "${WORDPRESS_PASSWORD}"
+timeout_seconds = 30
+
+[handlers.wordpress.rate_limit]
+enabled = true
+requests_per_second = 10
+burst_size = 20
 
 ```
 
