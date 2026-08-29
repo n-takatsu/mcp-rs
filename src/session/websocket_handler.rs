@@ -206,7 +206,7 @@ impl SessionWebSocketHandler {
         ws: WebSocketUpgrade,
         headers: HeaderMap,
         client_addr: Option<SocketAddr>,
-    ) -> Result<Response, axum::response::Response> {
+    ) -> Result<Response, Box<Response>> {
         debug!("WebSocket接続要求を処理中");
 
         // セッション情報を抽出
@@ -585,7 +585,7 @@ impl SessionWebSocketHandler {
     async fn extract_session_from_headers(
         &self,
         headers: &HeaderMap,
-    ) -> Result<Option<SessionId>, axum::response::Response> {
+    ) -> Result<Option<SessionId>, Box<Response>> {
         debug!("ヘッダーからセッション抽出開始");
         debug!(
             "利用可能なヘッダー: {:?}",
@@ -691,15 +691,17 @@ impl SessionWebSocketHandler {
     async fn create_rejection_response(
         &self,
         reason: &str,
-    ) -> Result<Response, axum::response::Response> {
-        Err(axum::response::Response::builder()
-            .status(axum::http::StatusCode::UNAUTHORIZED)
-            .header("Content-Type", "application/json")
-            .body(axum::body::Body::from(
-                json!({ "error": reason }).to_string(),
-            ))
-            .unwrap()
-            .into_response())
+    ) -> Result<Response, Box<Response>> {
+        Err(Box::new(
+            axum::response::Response::builder()
+                .status(axum::http::StatusCode::UNAUTHORIZED)
+                .header("Content-Type", "application/json")
+                .body(axum::body::Body::from(
+                    json!({ "error": reason }).to_string(),
+                ))
+                .unwrap()
+                .into_response(),
+        ))
     }
 }
 
