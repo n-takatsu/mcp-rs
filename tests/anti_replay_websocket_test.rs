@@ -1,5 +1,5 @@
 //! Integration tests for anti-replay protection wired into the WebSocket
-//! transport (Issue #259). Exercises the real `WebSocketServer` handshake
+//! transport. Exercises the real `WebSocketServer` handshake
 //! and per-message paths end-to-end via `tokio-tungstenite`, rather than the
 //! anti_replay module in isolation (see `tests/anti_replay_test.rs`).
 
