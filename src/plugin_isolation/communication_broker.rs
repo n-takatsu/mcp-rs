@@ -1480,14 +1480,10 @@ mod tests {
         assert_eq!(dec2.payload, b"message two");
     }
 
-    // --- Issue #259: receive_message anti-replay integration ---
-    //
     // These messages are self-addressed (destination_plugin_id == source)
     // so a single registered channel can act as both sender and receiver,
-    // exercising the real send_message -> receive_message path fixed in
-    // Issue #291 (send_message previously only enqueued onto
-    // self.message_queue, which was never drained into any
-    // CommunicationChannel.sender).
+    // exercising the anti-replay check via the real send_message ->
+    // receive_message delivery path.
 
     fn make_broker_message(plugin_id: Uuid, message_id: Uuid) -> BrokerMessage {
         BrokerMessage {
@@ -1608,8 +1604,6 @@ mod tests {
             "with anti-replay disabled, a repeated message_id should still be delivered"
         );
     }
-
-    // --- Issue #291: send_message -> receive_message delivery ---
 
     #[tokio::test]
     async fn test_send_message_to_unknown_destination_returns_error() {
