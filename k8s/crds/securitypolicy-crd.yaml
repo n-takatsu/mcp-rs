@@ -90,20 +90,33 @@ spec:
                       default: 200
                 networkPolicy:
                   type: object
-                  description: Network security policy
+                  description: >-
+                    Network security policy. Reconciled by the operator into
+                    a real networking.k8s.io/v1 NetworkPolicy resource
+                    (Egress-only; applies to all Pods in the namespace).
+                    Field names are camelCase conversions of the Rust struct
+                    field names (serde's plain word-capitalization does not
+                    special-case acronyms like IP/CIDR).
                   properties:
                     allowedPorts:
                       type: array
                       items:
                         type: integer
-                    blockedIPs:
+                      description: TCP ports allowed for egress. Omit to allow all ports.
+                    blockedIps:
                       type: array
                       items:
                         type: string
-                    allowedCIDRs:
+                      description: >-
+                        IP addresses (or CIDR ranges) excluded from allowed
+                        egress traffic.
+                    allowedCidrs:
                       type: array
                       items:
                         type: string
+                      description: >-
+                        CIDR ranges allowed for egress. Omit to allow all
+                        destinations (0.0.0.0/0) except blockedIps.
                 encryption:
                   type: object
                   description: Encryption settings

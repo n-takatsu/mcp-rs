@@ -6,8 +6,8 @@ mod security;
 mod types;
 
 pub use crd::{
-    MCPServer, MCPServerSpec, MCPServerStatus, Plugin, PluginSpec, PluginStatus, SecurityPolicy,
-    SecurityPolicySpec, SecurityPolicyStatus,
+    MCPServer, MCPServerSpec, MCPServerStatus, NetworkPolicyConfig, Plugin, PluginSpec,
+    PluginStatus, SecurityPolicy, SecurityPolicySpec, SecurityPolicyStatus,
 };
 pub use mcpserver::{reconcile_mcpserver, run_mcpserver_controller};
 pub use plugin::reconcile_plugin;

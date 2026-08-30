@@ -382,3 +382,32 @@ pub struct SecurityPolicyStatus {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub conditions: Option<Vec<Condition>>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `#[serde(rename_all = "camelCase")]` does plain word-capitalization,
+    /// it does not special-case acronyms like "IP"/"CIDR". This locks in
+    /// the actual JSON field names so `k8s/crds/securitypolicy-crd.yaml`
+    /// (maintained by hand, not derived from this struct) can be checked
+    /// against them — a prior mismatch (`blockedIPs`/`allowedCIDRs` in the
+    /// YAML vs. the real `blockedIps`/`allowedCidrs` serde output) meant
+    /// values submitted per the shipped CRD schema silently failed to
+    /// deserialize into these fields.
+    #[test]
+    fn network_policy_config_uses_plain_camel_case_field_names() {
+        let config = NetworkPolicyConfig {
+            allowed_ports: Some(vec![80]),
+            blocked_ips: Some(vec!["1.2.3.4".to_string()]),
+            allowed_cidrs: Some(vec!["10.0.0.0/8".to_string()]),
+        };
+
+        let json = serde_json::to_value(&config).unwrap();
+        assert!(json.get("allowedPorts").is_some());
+        assert!(json.get("blockedIps").is_some());
+        assert!(json.get("allowedCidrs").is_some());
+        assert!(json.get("blockedIPs").is_none());
+        assert!(json.get("allowedCIDRs").is_none());
+    }
+}
