@@ -4,13 +4,16 @@
 
 use crate::{
     error::{Error, Result},
-    security::NetworkPolicy,
+    security::{
+        AntiReplayConfig, AntiReplayMiddleware, AuditLogger, NetworkPolicy, SecurityHeaders,
+    },
 };
 use axum::{
     extract::{
         ws::{Message, WebSocket},
         ConnectInfo, State, WebSocketUpgrade,
     },
+    http::HeaderMap,
     response::Response,
     routing::get,
     Router,
@@ -47,6 +50,9 @@ pub struct ServerConfig {
     pub timeout: Duration,
     /// ネットワークアクセスポリシー
     pub network_policy: NetworkPolicy,
+    /// nonce/timestampによるリプレイ攻撃対策を有効化するか。
+    /// 既存クライアントはこれらのフィールドを送らないため、デフォルトはfalse。
+    pub anti_replay_enabled: bool,
 }
 
 impl Default for ServerConfig {
@@ -58,6 +64,7 @@ impl Default for ServerConfig {
             ping_interval: Duration::from_secs(30),
             timeout: Duration::from_secs(60),
             network_policy: NetworkPolicy::default(),
+            anti_replay_enabled: false,
         }
     }
 }
@@ -151,15 +158,29 @@ pub struct ServerState {
     config: Arc<ServerConfig>,
     /// 総接続数カウンター
     total_connections: Arc<AtomicU64>,
+    /// リプレイ攻撃対策ミドルウェア（有効時のみ）
+    anti_replay: Option<Arc<AntiReplayMiddleware>>,
+    /// 監査ログ
+    audit_logger: Arc<AuditLogger>,
 }
 
 impl ServerState {
     pub fn new(config: ServerConfig, handler: Arc<dyn MessageHandler>) -> Self {
+        let anti_replay = if config.anti_replay_enabled {
+            Some(Arc::new(AntiReplayMiddleware::new(
+                AntiReplayConfig::default(),
+            )))
+        } else {
+            None
+        };
+
         Self {
             connections: Arc::new(Mutex::new(HashMap::new())),
             handler,
             config: Arc::new(config),
             total_connections: Arc::new(AtomicU64::new(0)),
+            anti_replay,
+            audit_logger: Arc::new(AuditLogger::with_defaults()),
         }
     }
 
@@ -180,6 +201,8 @@ pub struct WebSocketServer {
     state: ServerState,
     /// 実行中フラグ
     running: Arc<RwLock<bool>>,
+    /// 実際にバインドされたアドレス（`bind_addr`のポートが0の場合に利用）
+    bound_addr: Arc<RwLock<Option<SocketAddr>>>,
 }
 
 impl WebSocketServer {
@@ -195,7 +218,13 @@ impl WebSocketServer {
         Self {
             state,
             running: Arc::new(RwLock::new(false)),
+            bound_addr: Arc::new(RwLock::new(None)),
         }
+    }
+
+    /// 実際にバインドされたアドレスを返す（`start()`完了後に利用可能）
+    pub async fn bound_addr(&self) -> Option<SocketAddr> {
+        *self.bound_addr.read().await
     }
 
     /// サーバーを起動
@@ -223,6 +252,10 @@ impl WebSocketServer {
         let listener = tokio::net::TcpListener::bind(bind_addr)
             .await
             .map_err(|e| Error::Server(format!("Failed to bind: {}", e)))?;
+        let local_addr = listener
+            .local_addr()
+            .map_err(|e| Error::Server(format!("Failed to get bound address: {}", e)))?;
+        *self.bound_addr.write().await = Some(local_addr);
 
         *running = true;
 
@@ -296,6 +329,7 @@ async fn websocket_handler(
     ws: WebSocketUpgrade,
     State(state): State<ServerState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
 ) -> Response {
     // Validate network policy
     if let Err(e) = state.config.network_policy.validate_connection(&addr) {
@@ -314,6 +348,50 @@ async fn websocket_handler(
             .status(503)
             .body("Service Unavailable".into())
             .unwrap();
+    }
+
+    // ハンドシェイク時のリプレイ攻撃対策（有効時のみ）
+    if let Some(anti_replay) = &state.anti_replay {
+        let user_agent = headers
+            .get("user-agent")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string);
+        let security_headers = SecurityHeaders {
+            nonce: headers
+                .get("x-nonce")
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string),
+            timestamp: headers
+                .get("x-timestamp")
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string),
+            device_id: headers
+                .get("x-device-id")
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string),
+            user_agent: user_agent.clone(),
+            ip_address: Some(addr.ip()),
+        };
+
+        if let Err(e) = anti_replay.validate_headers(&security_headers, None).await {
+            warn!(
+                "Anti-replay validation rejected WebSocket handshake from {}: {}",
+                addr, e
+            );
+            let _ = state
+                .audit_logger
+                .log_security_attack(
+                    "replay_or_spoofing_ws_handshake",
+                    &e.to_string(),
+                    Some(addr.ip().to_string()),
+                    user_agent,
+                )
+                .await;
+            return axum::http::Response::builder()
+                .status(409)
+                .body("Conflict".into())
+                .unwrap();
+        }
     }
 
     ws.on_upgrade(move |socket| handle_socket(socket, state, addr))
@@ -344,6 +422,48 @@ async fn handle_socket(socket: WebSocket, state: ServerState, addr: SocketAddr) 
                 if let Some(conn) = state.connections.lock().await.get_mut(&conn_id) {
                     conn.last_activity = Instant::now();
                     conn.messages_received += 1;
+                }
+
+                // メッセージ単位のリプレイ攻撃対策（有効時のみ）
+                // WSフレームにはHTTPヘッダーが無いため、nonce/timestampは
+                // JSON-RPCペイロード側のトップレベルフィールドとして扱う。
+                if let Some(anti_replay) = &state.anti_replay {
+                    if let Message::Text(text) = &msg {
+                        if let Ok(value) = serde_json::from_str::<serde_json::Value>(text) {
+                            let security_headers = SecurityHeaders {
+                                nonce: value
+                                    .get("nonce")
+                                    .and_then(|v| v.as_str())
+                                    .map(str::to_string),
+                                timestamp: value
+                                    .get("timestamp")
+                                    .and_then(|v| v.as_str())
+                                    .map(str::to_string),
+                                device_id: None,
+                                user_agent: None,
+                                ip_address: Some(addr.ip()),
+                            };
+
+                            if let Err(e) =
+                                anti_replay.validate_headers(&security_headers, None).await
+                            {
+                                warn!(
+                                    "Anti-replay validation rejected WS message from {} ({}): {}",
+                                    addr, conn_id, e
+                                );
+                                let _ = state
+                                    .audit_logger
+                                    .log_security_attack(
+                                        "replay_or_spoofing_ws_message",
+                                        &e.to_string(),
+                                        Some(addr.ip().to_string()),
+                                        None,
+                                    )
+                                    .await;
+                                continue;
+                            }
+                        }
+                    }
                 }
 
                 // ハンドラでメッセージを処理

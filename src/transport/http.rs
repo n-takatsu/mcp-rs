@@ -4,7 +4,10 @@
 
 use crate::{
     error::{Error, Result},
-    security::NetworkPolicy,
+    security::{
+        AntiReplayConfig, AntiReplayMiddleware, AuditLogger, NetworkPolicy, ReplayError,
+        SecurityHeaders,
+    },
     transport::{
         ConnectionStats, Transport, TransportCapabilities, TransportError, TransportInfo,
         TransportType,
@@ -98,6 +101,12 @@ pub struct HttpConfig {
     pub pinned_certificates_sha256: Vec<String>,
     /// Header name containing the forwarded certificate SHA-256 fingerprint
     pub certificate_pin_header: String,
+    /// Enforce nonce/timestamp replay protection on incoming requests
+    /// (requires clients to send `X-Nonce`/`X-Timestamp` headers).
+    /// Defaults to `false` since existing HTTP clients do not send these
+    /// headers yet — enable explicitly once client-side support is in place.
+    #[serde(default)]
+    pub anti_replay_enabled: bool,
 }
 
 impl Default for HttpConfig {
@@ -122,6 +131,7 @@ impl Default for HttpConfig {
             certificate_pinning_enabled: false,
             pinned_certificates_sha256: Vec::new(),
             certificate_pin_header: "x-tls-cert-sha256".to_string(),
+            anti_replay_enabled: false,
         }
     }
 }
@@ -152,6 +162,8 @@ struct HttpTransportState {
     certificate_pinning_enabled: bool,
     pinned_certificates_sha256: Arc<HashSet<String>>,
     certificate_pin_header: String,
+    anti_replay: Option<Arc<AntiReplayMiddleware>>,
+    audit_logger: Arc<AuditLogger>,
 }
 
 /// HTTP Transport implementation
@@ -226,6 +238,14 @@ impl HttpTransport {
                 && !self.config.tls_enabled,
             pinned_certificates_sha256: Arc::new(pinned_certificates_sha256.clone()),
             certificate_pin_header: self.config.certificate_pin_header.clone(),
+            anti_replay: if self.config.anti_replay_enabled {
+                Some(Arc::new(AntiReplayMiddleware::new(
+                    AntiReplayConfig::default(),
+                )))
+            } else {
+                None
+            },
+            audit_logger: Arc::new(AuditLogger::with_defaults()),
         };
 
         let app = Router::new()
@@ -272,7 +292,12 @@ impl HttpTransport {
         } else {
             *self.bound_addr.write().await = Some(local_addr);
             tokio::spawn(async move {
-                if let Err(e) = axum::serve(listener, app).await {
+                if let Err(e) = axum::serve(
+                    listener,
+                    app.into_make_service_with_connect_info::<SocketAddr>(),
+                )
+                .await
+                {
                     error!("HTTP server error: {}", e);
                 }
             });
@@ -293,8 +318,9 @@ impl HttpTransport {
         Ok(())
     }
 
-    #[cfg(test)]
-    pub(crate) async fn bound_addr(&self) -> Option<SocketAddr> {
+    /// Returns the actual bound address once `start_server()` has completed,
+    /// useful when `bind_addr` uses an OS-assigned ephemeral port (`:0`).
+    pub async fn bound_addr(&self) -> Option<SocketAddr> {
         *self.bound_addr.read().await
     }
 }
@@ -700,6 +726,47 @@ async fn handle_jsonrpc_request(
                 remote_addr
             );
             return Err(StatusCode::FORBIDDEN);
+        }
+    }
+
+    if let Some(anti_replay) = &state.anti_replay {
+        let user_agent = header_value(&headers, "user-agent").map(str::to_string);
+        let security_headers = SecurityHeaders {
+            nonce: header_value(&headers, "x-nonce").map(str::to_string),
+            timestamp: header_value(&headers, "x-timestamp").map(str::to_string),
+            device_id: header_value(&headers, "x-device-id").map(str::to_string),
+            user_agent: user_agent.clone(),
+            ip_address: Some(remote_addr.ip()),
+        };
+
+        if let Err(e) = anti_replay.validate_headers(&security_headers, None).await {
+            warn!(
+                "Anti-replay validation rejected request from {}: {}",
+                remote_addr, e
+            );
+            let _ = state
+                .audit_logger
+                .log_security_attack(
+                    "replay_or_spoofing",
+                    &e.to_string(),
+                    Some(remote_addr.ip().to_string()),
+                    user_agent,
+                )
+                .await;
+
+            return Err(match e {
+                ReplayError::MissingNonce | ReplayError::MissingTimestamp => {
+                    StatusCode::BAD_REQUEST
+                }
+                ReplayError::NonceAlreadyUsed => StatusCode::CONFLICT,
+                ReplayError::TimestampOutOfWindow
+                | ReplayError::FutureTimestamp
+                | ReplayError::ExpiredTimestamp => StatusCode::REQUEST_TIMEOUT,
+                ReplayError::UnknownDevice | ReplayError::DeviceMismatch(_) => {
+                    StatusCode::FORBIDDEN
+                }
+                _ => StatusCode::BAD_REQUEST,
+            });
         }
     }
 

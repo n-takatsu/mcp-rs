@@ -217,6 +217,11 @@ pub struct WebSocketConfig {
     /// ストリーム設定
     #[serde(default)]
     pub stream_config: StreamConfig,
+
+    /// nonce/timestampによるリプレイ攻撃対策を有効化するか（サーバーモード）。
+    /// 既存クライアントはこれらのフィールドを送らないため、デフォルトはfalse。
+    #[serde(default)]
+    pub anti_replay_enabled: bool,
 }
 
 fn default_timeout() -> Option<u64> {
@@ -257,6 +262,7 @@ impl Default for WebSocketConfig {
             max_connections: default_max_connections(),
             pool_config: PoolConfig::default(),
             stream_config: StreamConfig::default(),
+            anti_replay_enabled: false,
         }
     }
 }
@@ -369,6 +375,7 @@ impl WebSocketConfigBuilder {
             max_connections: self.max_connections.unwrap_or(default.max_connections),
             pool_config: self.pool_config.unwrap_or(default.pool_config),
             stream_config: self.stream_config.unwrap_or(default.stream_config),
+            anti_replay_enabled: default.anti_replay_enabled,
         }
     }
 }

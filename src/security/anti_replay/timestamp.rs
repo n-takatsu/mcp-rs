@@ -9,6 +9,7 @@ use std::time::Duration;
 use tracing::{debug, warn};
 
 /// Timestamp Validator
+#[derive(Debug)]
 pub struct TimestampValidator {
     /// Acceptable time window (±seconds)
     time_window: Duration,

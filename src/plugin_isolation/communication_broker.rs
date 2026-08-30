@@ -22,6 +22,7 @@ use x25519_dalek::{PublicKey, StaticSecret};
 use crate::error::McpError;
 use crate::plugin_isolation::key_exchange::{KeyExchangeConfig, KeyExchangeProtocol};
 use crate::plugin_isolation::PluginState;
+use crate::security::{AntiReplayConfig, AuditLogger, NonceManager, TimestampValidator};
 
 /// 通信ブローカー
 #[derive(Debug)]
@@ -43,6 +44,12 @@ pub struct CommunicationBroker {
     /// プラグイン同士が直接 ECDH 鍵交換を行い [`EncryptedPayload`] で
     /// エンドツーエンド暗号化通信するための専用コンポーネント。
     pub key_exchange_protocol: Arc<KeyExchangeProtocol>,
+    /// リプレイ攻撃対策: nonce管理（message_idの再利用検知）
+    nonce_manager: Arc<NonceManager>,
+    /// リプレイ攻撃対策: タイムスタンプ検証
+    timestamp_validator: Arc<TimestampValidator>,
+    /// 監査ログ
+    audit_logger: Arc<AuditLogger>,
     /// 設定
     config: BrokerConfig,
 }
@@ -471,6 +478,9 @@ pub struct BrokerConfig {
     pub queue_config: QueueConfig,
     /// タイムアウト設定
     pub timeout_config: TimeoutConfig,
+    /// message_id/timestampによるリプレイ攻撃対策を有効化するか。
+    /// プラグイン間通信は内部信頼境界のためデフォルトで有効。
+    pub anti_replay_enabled: bool,
 }
 
 /// 暗号化設定
@@ -531,6 +541,7 @@ impl Default for BrokerConfig {
                 request_timeout_secs: 60,
                 idle_timeout_secs: 300,
             },
+            anti_replay_enabled: true,
         }
     }
 }
@@ -562,6 +573,15 @@ impl CommunicationBroker {
             KeyExchangeProtocol::start_auto_rotation(Arc::clone(&key_exchange_protocol));
         }
 
+        let anti_replay_config = AntiReplayConfig::default();
+        let nonce_manager = Arc::new(NonceManager::new(
+            anti_replay_config.nonce_ttl_secs,
+            anti_replay_config.max_nonce_cache,
+        ));
+        let timestamp_validator = Arc::new(TimestampValidator::new(
+            anti_replay_config.time_window_secs,
+        ));
+
         Ok(Self {
             active_channels: Arc::new(RwLock::new(HashMap::new())),
             message_filters,
@@ -570,6 +590,9 @@ impl CommunicationBroker {
             auth_manager,
             message_queue,
             key_exchange_protocol,
+            nonce_manager,
+            timestamp_validator,
+            audit_logger: Arc::new(AuditLogger::with_defaults()),
             config,
         })
     }
@@ -739,6 +762,10 @@ impl CommunicationBroker {
         if let Some(channel) = channels.get(&channel_id) {
             let mut receiver = channel.receiver.lock().await;
             if let Ok(message) = receiver.try_recv() {
+                if self.config.anti_replay_enabled {
+                    self.check_replay(&message).await?;
+                }
+
                 // メッセージを復号化
                 let decrypted_message = self.encryption_manager.decrypt_message(&message).await?;
                 return Ok(Some(decrypted_message));
@@ -746,6 +773,75 @@ impl CommunicationBroker {
         }
 
         Ok(None)
+    }
+
+    /// メッセージのリプレイ攻撃対策チェック（TTL超過・message_id再利用の検知）
+    ///
+    /// `message_id` は各 `BrokerMessage` に必ず付与される一意な `Uuid` のため、
+    /// これを anti-replay の nonce としてそのまま利用する（`encrypt_message` が
+    /// メタデータに書き込む AEAD 暗号用の "nonce" とは別概念のため流用しない）。
+    async fn check_replay(&self, message: &BrokerMessage) -> Result<(), McpError> {
+        if let Some(expires_at) = message.expires_at {
+            if chrono::Utc::now() > expires_at {
+                let _ = self
+                    .audit_logger
+                    .log_security_attack(
+                        "plugin_message_expired",
+                        &format!(
+                            "message {} from plugin {} expired at {}",
+                            message.message_id, message.source_plugin_id, expires_at
+                        ),
+                        None,
+                        None,
+                    )
+                    .await;
+                return Err(McpError::SecurityFailure(format!(
+                    "Message {} expired at {}",
+                    message.message_id, expires_at
+                )));
+            }
+        }
+
+        if let Err(e) = self.timestamp_validator.check_window(message.timestamp) {
+            let _ = self
+                .audit_logger
+                .log_security_attack(
+                    "plugin_message_timestamp_rejected",
+                    &format!("message {}: {}", message.message_id, e),
+                    None,
+                    None,
+                )
+                .await;
+            return Err(McpError::SecurityFailure(format!(
+                "Timestamp rejected for message {}: {}",
+                message.message_id, e
+            )));
+        }
+
+        if let Err(e) = self
+            .nonce_manager
+            .validate_and_consume(
+                &message.message_id.to_string(),
+                Some(message.source_plugin_id.to_string()),
+            )
+            .await
+        {
+            let _ = self
+                .audit_logger
+                .log_security_attack(
+                    "plugin_message_replay_detected",
+                    &format!("message {}: {}", message.message_id, e),
+                    None,
+                    None,
+                )
+                .await;
+            return Err(McpError::SecurityFailure(format!(
+                "Replay detected for message {}: {}",
+                message.message_id, e
+            )));
+        }
+
+        Ok(())
     }
 
     /// レート制限をチェック
@@ -1355,5 +1451,126 @@ mod tests {
         let dec2 = manager.decrypt_message(&enc2).await.unwrap();
         assert_eq!(dec1.payload, b"message one");
         assert_eq!(dec2.payload, b"message two");
+    }
+
+    // --- Issue #259: receive_message anti-replay integration ---
+    //
+    // `send_message` currently enqueues onto `self.message_queue`, which is
+    // never drained into a `CommunicationChannel.sender` (that wiring is a
+    // pre-existing gap unrelated to this issue - `receive_message` has no
+    // real caller anywhere in the codebase today). These tests therefore
+    // inject messages directly onto the registered channel's sender to
+    // exercise `receive_message`'s anti-replay check for real, at the exact
+    // point it runs in production, without depending on that separate gap.
+
+    fn make_broker_message(source: Uuid, message_id: Uuid) -> BrokerMessage {
+        BrokerMessage {
+            message_id,
+            source_plugin_id: source,
+            destination_plugin_id: None,
+            message_type: MessageType::Request,
+            payload: b"hello".to_vec(),
+            encrypted: false,
+            signature: None,
+            timestamp: chrono::Utc::now(),
+            expires_at: None,
+            metadata: HashMap::new(),
+        }
+    }
+
+    async fn inject_message(broker: &CommunicationBroker, plugin_id: Uuid, message: BrokerMessage) {
+        let channels = broker.active_channels.read().await;
+        let channel = channels
+            .values()
+            .find(|c| c.plugin_id == plugin_id)
+            .expect("channel should be registered");
+        channel.sender.send(message).expect("channel should accept the message");
+    }
+
+    #[tokio::test]
+    async fn test_receive_message_delivers_injected_message() {
+        let broker = CommunicationBroker::new_with_config(BrokerConfig::default())
+            .await
+            .unwrap();
+        let plugin_id = Uuid::new_v4();
+        broker
+            .register_plugin(plugin_id, ChannelType::Http)
+            .await
+            .unwrap();
+
+        inject_message(&broker, plugin_id, make_broker_message(plugin_id, Uuid::new_v4())).await;
+
+        let received = broker.receive_message(plugin_id).await.unwrap();
+        assert!(received.is_some(), "expected the injected message to be delivered");
+    }
+
+    #[tokio::test]
+    async fn test_receive_message_rejects_replayed_message_id() {
+        let broker = CommunicationBroker::new_with_config(BrokerConfig::default())
+            .await
+            .unwrap();
+        let plugin_id = Uuid::new_v4();
+        broker
+            .register_plugin(plugin_id, ChannelType::Http)
+            .await
+            .unwrap();
+        let message_id = Uuid::new_v4();
+
+        inject_message(&broker, plugin_id, make_broker_message(plugin_id, message_id)).await;
+        let first = broker.receive_message(plugin_id).await.unwrap();
+        assert!(first.is_some(), "first delivery should succeed");
+
+        inject_message(&broker, plugin_id, make_broker_message(plugin_id, message_id)).await;
+        let replay = broker.receive_message(plugin_id).await;
+        assert!(
+            replay.is_err(),
+            "replaying the same message_id should be rejected"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_receive_message_rejects_expired_message() {
+        let broker = CommunicationBroker::new_with_config(BrokerConfig::default())
+            .await
+            .unwrap();
+        let plugin_id = Uuid::new_v4();
+        broker
+            .register_plugin(plugin_id, ChannelType::Http)
+            .await
+            .unwrap();
+
+        let mut message = make_broker_message(plugin_id, Uuid::new_v4());
+        message.expires_at = Some(chrono::Utc::now() - chrono::Duration::seconds(10));
+        inject_message(&broker, plugin_id, message).await;
+
+        let result = broker.receive_message(plugin_id).await;
+        assert!(
+            result.is_err(),
+            "a message past its expires_at should be rejected"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_receive_message_anti_replay_disabled_allows_replay() {
+        let config = BrokerConfig {
+            anti_replay_enabled: false,
+            ..BrokerConfig::default()
+        };
+        let broker = CommunicationBroker::new_with_config(config).await.unwrap();
+        let plugin_id = Uuid::new_v4();
+        broker
+            .register_plugin(plugin_id, ChannelType::Http)
+            .await
+            .unwrap();
+        let message_id = Uuid::new_v4();
+
+        inject_message(&broker, plugin_id, make_broker_message(plugin_id, message_id)).await;
+        assert!(broker.receive_message(plugin_id).await.unwrap().is_some());
+
+        inject_message(&broker, plugin_id, make_broker_message(plugin_id, message_id)).await;
+        assert!(
+            broker.receive_message(plugin_id).await.unwrap().is_some(),
+            "with anti-replay disabled, a repeated message_id should still be delivered"
+        );
     }
 }
