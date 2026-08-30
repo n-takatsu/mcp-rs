@@ -23,6 +23,10 @@ pretty_print = false
 addr = "127.0.0.1"
 port = 8080
 enable_cors = true
+# ネットワークポリシー（外部公開の制限）。詳細は configs/security/network-policy.toml を参照
+network_policy_reject_external_connections = true
+network_policy_warn_on_external_bind = true
+network_policy_ip_whitelist = []
 
 [handlers.wordpress]
 url = "${WORDPRESS_URL}"
@@ -77,6 +81,14 @@ max_plugins = 50
 # username = WordPress ユーザー名
 # password = Application Password (WordPress管理画面で生成)
 # enabled = このハンドラーを有効にするか
+#
+# [transport.http] のネットワークポリシー設定:
+# network_policy_reject_external_connections = true にすると、loopback
+#   (127.0.0.1/::1) 以外へのバインドと、loopback以外からの接続の両方を拒否する
+#   (デフォルト: true、最も安全)。Docker/Kubernetes等で外部公開する場合は false に
+#   設定し、可能であれば network_policy_ip_whitelist で許可範囲を絞ること。
+# network_policy_warn_on_external_bind = 外部バインドを許可した際に警告ログを出すか
+# network_policy_ip_whitelist = 許可するIPアドレス/CIDR範囲 (例: ["192.168.1.0/24"])
 #
 # 🔑 Application Password の生成方法:
 # 1. WordPress管理画面 > ユーザー > プロフィール

@@ -138,6 +138,15 @@ pub struct HttpTransportConfig {
     /// Enforce nonce/timestamp replay protection (requires clients to send
     /// `X-Nonce`/`X-Timestamp` headers). Defaults to `false`.
     pub anti_replay_enabled: Option<bool>,
+    /// Reject binding/connections from non-loopback addresses. Defaults to
+    /// `true` (see `configs/security/network-policy.toml`).
+    pub network_policy_reject_external_connections: Option<bool>,
+    /// Log a warning when binding to a non-loopback address that is still
+    /// permitted. Defaults to `true`.
+    pub network_policy_warn_on_external_bind: Option<bool>,
+    /// IP addresses or CIDR ranges (e.g. `"192.168.1.0/24"`) exempted from
+    /// `reject_external_connections`. Defaults to empty.
+    pub network_policy_ip_whitelist: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -562,6 +571,9 @@ impl McpConfig {
                     pinned_certificates_sha256: Some(vec![]),
                     certificate_pin_header: Some("x-tls-cert-sha256".to_string()),
                     anti_replay_enabled: Some(false),
+                    network_policy_reject_external_connections: Some(true),
+                    network_policy_warn_on_external_bind: Some(true),
+                    network_policy_ip_whitelist: Some(vec![]),
                 }),
             },
             handlers: HandlersConfig {
@@ -743,7 +755,15 @@ impl McpConfig {
                 cors_enabled: http.enable_cors.unwrap_or(true),
                 max_request_size: 1048576,
                 timeout_ms: 30000,
-                network_policy: crate::security::NetworkPolicy::default(),
+                network_policy: crate::security::NetworkPolicy {
+                    reject_external_connections: http
+                        .network_policy_reject_external_connections
+                        .unwrap_or(true),
+                    warn_on_external_bind: http
+                        .network_policy_warn_on_external_bind
+                        .unwrap_or(true),
+                    ip_whitelist: http.network_policy_ip_whitelist.clone().unwrap_or_default(),
+                },
                 tls_enabled: http.tls_enabled.unwrap_or(false),
                 tls_cert_path: http.tls_cert_path.clone(),
                 tls_key_path: http.tls_key_path.clone(),

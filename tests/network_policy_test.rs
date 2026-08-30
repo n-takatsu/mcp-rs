@@ -109,7 +109,7 @@ fn test_bind_address_validation_localhost() {
     let policy = NetworkPolicy::default();
     let localhost: SocketAddr = "127.0.0.1:8080".parse().unwrap();
 
-    // Should not error, just potentially warn
+    // Loopback binds are always allowed regardless of policy.
     assert!(policy.validate_bind_address(&localhost).is_ok());
 }
 
@@ -118,8 +118,97 @@ fn test_bind_address_validation_external() {
     let policy = NetworkPolicy::default();
     let external: SocketAddr = "0.0.0.0:8080".parse().unwrap();
 
-    // Should not error, just warn
+    // Under the default (secure) policy, binding to a non-loopback address
+    // must be rejected outright, not just logged as a warning.
+    let result = policy.validate_bind_address(&external);
+    assert!(result.is_err());
+    assert!(matches!(
+        result.unwrap_err(),
+        NetworkPolicyError::ExternalAccessDenied(_)
+    ));
+}
+
+#[test]
+fn test_bind_address_rejects_unspecified_v6() {
+    let policy = NetworkPolicy::default();
+    let external: SocketAddr = "[::]:8080".parse().unwrap();
+
+    assert!(policy.validate_bind_address(&external).is_err());
+}
+
+#[test]
+fn test_bind_address_rejects_concrete_external_ip() {
+    let policy = NetworkPolicy::default();
+    let external: SocketAddr = "192.168.1.50:8080".parse().unwrap();
+
+    assert!(policy.validate_bind_address(&external).is_err());
+}
+
+#[test]
+fn test_bind_address_allows_when_reject_external_disabled() {
+    let policy = NetworkPolicy {
+        reject_external_connections: false,
+        ..NetworkPolicy::default()
+    };
+    let external: SocketAddr = "0.0.0.0:8080".parse().unwrap();
+
     assert!(policy.validate_bind_address(&external).is_ok());
+}
+
+#[test]
+fn test_bind_address_allows_loopback_v6_regardless_of_flags() {
+    let policy = NetworkPolicy {
+        reject_external_connections: true,
+        warn_on_external_bind: false,
+        ..NetworkPolicy::default()
+    };
+    let localhost: SocketAddr = "[::1]:8080".parse().unwrap();
+
+    assert!(policy.validate_bind_address(&localhost).is_ok());
+}
+
+#[test]
+fn test_bind_address_warn_flag_does_not_gate_enforcement() {
+    // Regression test for the original bug: enforcement must be driven by
+    // reject_external_connections, not warn_on_external_bind. Disabling the
+    // warning must not disable the actual rejection.
+    let policy = NetworkPolicy {
+        reject_external_connections: true,
+        warn_on_external_bind: false,
+        ..NetworkPolicy::default()
+    };
+    let external: SocketAddr = "0.0.0.0:8080".parse().unwrap();
+
+    assert!(policy.validate_bind_address(&external).is_err());
+}
+
+#[test]
+fn test_whitelist_cidr_range_matches() {
+    let policy = NetworkPolicy {
+        reject_external_connections: false,
+        ip_whitelist: vec!["192.168.1.0/24".to_string()],
+        ..NetworkPolicy::default()
+    };
+
+    let inside: SocketAddr = "192.168.1.42:8080".parse().unwrap();
+    assert!(policy.validate_connection(&inside).is_ok());
+}
+
+#[test]
+fn test_whitelist_cidr_range_excludes_outside_range() {
+    let policy = NetworkPolicy {
+        reject_external_connections: false,
+        ip_whitelist: vec!["192.168.1.0/24".to_string()],
+        ..NetworkPolicy::default()
+    };
+
+    let outside: SocketAddr = "192.168.2.42:8080".parse().unwrap();
+    let result = policy.validate_connection(&outside);
+    assert!(result.is_err());
+    assert!(matches!(
+        result.unwrap_err(),
+        NetworkPolicyError::IpNotWhitelisted(_)
+    ));
 }
 
 #[test]
