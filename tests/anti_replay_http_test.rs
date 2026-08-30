@@ -1,5 +1,5 @@
-//! Integration tests for anti-replay protection wired into the HTTP transport
-//! (Issue #259). Exercises the real `HttpTransport`/`handle_jsonrpc_request`
+//! Integration tests for anti-replay protection wired into the HTTP transport.
+//! Exercises the real `HttpTransport`/`handle_jsonrpc_request`
 //! path end-to-end via `reqwest`, rather than the anti_replay module in
 //! isolation (see `tests/anti_replay_test.rs` for that).
 

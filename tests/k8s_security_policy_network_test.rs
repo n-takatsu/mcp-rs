@@ -1,7 +1,7 @@
 //! Integration test proving the operator actually reconciles
 //! `SecurityPolicy.spec.networkPolicy` into a real
 //! `networking.k8s.io/v1 NetworkPolicy` object, and removes it again when
-//! the `SecurityPolicy` is deleted (Issue #299).
+//! the `SecurityPolicy` is deleted.
 //!
 //! Requires a real Kubernetes cluster reachable via the default kubeconfig
 //! (e.g. `kind create cluster`), with `k8s/crds/securitypolicy-crd.yaml`

@@ -1,7 +1,7 @@
 //! Verifies that the `networking.k8s.io/v1 NetworkPolicy` objects created by
-//! `reconcile_security_policy` (see `tests/k8s_security_policy_network_test.rs`,
-//! Issue #299) are actually enforced at the traffic level, not just accepted
-//! by the Kubernetes API (Issue #304).
+//! `reconcile_security_policy` (see `tests/k8s_security_policy_network_test.rs`)
+//! are actually enforced at the traffic level, not just accepted by the
+//! Kubernetes API.
 //!
 //! `kind`'s default CNI (kindnet) accepts `NetworkPolicy` objects but does not
 //! enforce them, so this test requires a cluster with an enforcing CNI, e.g.:
@@ -197,7 +197,8 @@ async fn network_policy_blocked_ips_actually_blocks_and_restores_traffic() {
     // 3. Create a SecurityPolicy blocking the server's IP specifically
     //    (default-allow-all except this one IP) and reconcile it into a real
     //    NetworkPolicy (two calls: kube::runtime::finalizer only adds the
-    //    finalizer on the first call, see Issue #299).
+    //    finalizer on the first call, and doesn't invoke the apply/cleanup
+    //    closure until the following reconcile of the now-updated object).
     let mut policy = SecurityPolicy::new(
         policy_name,
         security_policy_spec(NetworkPolicyConfig {

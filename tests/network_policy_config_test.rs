@@ -1,7 +1,7 @@
 //! Proves that `[transport.http]` network-policy keys in a TOML config file
 //! actually flow through `McpConfig::to_transport_config()` into the real
-//! `HttpConfig.network_policy` used at runtime (Issue #256) — closing the
-//! "configured values match observed behavior" gap, since previously
+//! `HttpConfig.network_policy` used at runtime — closing the "configured
+//! values match observed behavior" gap, since previously
 //! `to_transport_config()` hardcoded `NetworkPolicy::default()` regardless
 //! of what was in any TOML file.
 

@@ -1,6 +1,6 @@
 //! Integration tests proving `NetworkPolicy` bind enforcement actually
 //! prevents `HttpTransport`/`WebSocketServer` from starting on a
-//! non-loopback address (Issue #256), rather than just logging a warning.
+//! non-loopback address, rather than just logging a warning.
 
 use mcp_rs::security::NetworkPolicy;
 use mcp_rs::transport::http::{HttpConfig, HttpTransport};

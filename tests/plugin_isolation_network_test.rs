@@ -1,7 +1,7 @@
 //! Integration tests proving `IsolationEngine` actually cuts off external
 //! network access for a plugin container when `use_network_namespace` is
 //! enabled, rather than the previous behavior where the underlying Docker
-//! command was silently broken and never worked at all (Issue #298).
+//! command was silently broken and never worked at all.
 //!
 //! These tests drive a real Docker daemon. Since `windows-latest` GitHub
 //! Actions runners default to a Windows-containers daemon (no Linux
