@@ -81,24 +81,38 @@ impl NetworkPolicy {
         Ok(())
     }
 
-    /// バインドアドレスを検証する（警告のみ）
+    /// バインドアドレスを検証する
+    ///
+    /// `reject_external_connections` が有効な場合、loopback以外（`0.0.0.0`や
+    /// `::`を含む）へのバインドを拒否する。`ip_whitelist`はリモートクライアント
+    /// IPの許可リストであり、バインドの安全性とは別概念のためここでは参照しない。
     pub fn validate_bind_address(&self, bind_addr: &SocketAddr) -> Result<(), NetworkPolicyError> {
-        if self.warn_on_external_bind {
-            let ip = bind_addr.ip();
-            if !ip.is_loopback() && !(ip.is_unspecified())
-            // 0.0.0.0 や ::
-            {
-                warn!(
-                    "⚠️  Server is binding to external address: {}. This may expose the server to network access.",
-                    bind_addr
-                );
-            } else if ip.is_unspecified() {
+        let ip = bind_addr.ip();
+        let is_external = !ip.is_loopback();
+
+        if self.reject_external_connections && is_external {
+            return Err(NetworkPolicyError::ExternalAccessDenied(format!(
+                "Refusing to bind to non-loopback address {} while reject_external_connections is enabled \
+                 (only 127.0.0.1/::1 binds are permitted; set reject_external_connections = false to allow \
+                 binding to external or unspecified interfaces)",
+                bind_addr
+            )));
+        }
+
+        if self.warn_on_external_bind && is_external {
+            if ip.is_unspecified() {
                 warn!(
                     "⚠️  Server is binding to all interfaces ({}). This will accept connections from any network.",
                     bind_addr
                 );
+            } else {
+                warn!(
+                    "⚠️  Server is binding to external address: {}. This may expose the server to network access.",
+                    bind_addr
+                );
             }
         }
+
         Ok(())
     }
 
@@ -109,11 +123,15 @@ impl NetworkPolicy {
             return true;
         }
 
-        // ホワイトリストをチェック
+        // ホワイトリストをチェック（完全一致およびCIDR表記の両方をサポート）
         for allowed in &self.ip_whitelist {
-            // 簡易的な実装: 完全一致のみ
-            // TODO: CIDR表記のサポート
-            if let Ok(allowed_ip) = allowed.parse::<IpAddr>() {
+            if allowed.contains('/') {
+                if let Ok(network) = allowed.parse::<ipnet::IpNet>() {
+                    if network.contains(ip) {
+                        return true;
+                    }
+                }
+            } else if let Ok(allowed_ip) = allowed.parse::<IpAddr>() {
                 if ip == &allowed_ip {
                     return true;
                 }

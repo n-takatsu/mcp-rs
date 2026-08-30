@@ -1,23 +1,37 @@
 # Network Policy Configuration Example
 #
-# このファイルは、MCPサーバーのネットワークアクセスポリシーの設定例です。
-# セキュリティを強化するため、デフォルトでは localhost からの接続のみを許可します。
+# このファイルは、MCPサーバーのネットワークアクセスポリシーの意味を説明する
+# リファレンスです。実際の設定は、メイン設定ファイル（例:
+# configs/templates/advanced.toml）の [transport.http] テーブル配下に
+# 以下のキー名（network_policy_ プレフィックス付き）で記述してください。
+# このファイル自体は読み込まれません（[network_policy] という独立テーブルを
+# 解釈するコードは存在しません）。
+#
+#   [transport.http]
+#   network_policy_reject_external_connections = true
+#   network_policy_warn_on_external_bind = true
+#   network_policy_ip_whitelist = []
+#
+# 以下は各キーの意味の説明です（実際のロード元は上記の通り [transport.http]）。
 
 [network_policy]
-# 外部からの接続を拒否するかどうか
-# true: localhost (127.0.0.1, ::1) からの接続のみ許可
-# false: すべてのIPアドレスからの接続を許可（ip_whitelistが空の場合）
+# 外部との通信を拒否するかどうか（接続とバインドの両方に適用）
+# true: (1) localhost (127.0.0.1, ::1) からの接続のみ許可
+#       (2) loopback以外（0.0.0.0 や実IPアドレスを含む）へのバインドを拒否し、
+#           サーバー起動自体が失敗する
+# false: すべてのIPアドレスからの接続・バインドを許可（ip_whitelistが空の場合）
+# 注意: バインド側の判定では ip_whitelist は参照しない
+#      （リモート接続元の許可リストであり、バインド先の安全性とは別概念のため）
 reject_external_connections = true
 
-# 外部IPアドレスでバインドする際に警告を表示するかどうか
-# true: 0.0.0.0 や実際のIPアドレスでバインドする際に警告を表示
-# false: 警告を表示しない
+# reject_external_connections = false でバインドが許可されている状態で、
+# loopback以外へバインドした際に警告ログを出すかどうか（起動は妨げない）
 warn_on_external_bind = true
 
 # 許可するIPアドレスのホワイトリスト（オプション）
 # reject_external_connections = false の場合にのみ有効
 # 空の配列の場合、すべてのIPアドレスを許可
-# 注意: 現在はIPアドレスの完全一致のみサポート（CIDR表記は将来サポート予定）
+# IPアドレスの完全一致とCIDR表記の両方をサポート（例: "192.168.1.0/24"）
 ip_whitelist = []
 
 # 使用例:
@@ -31,6 +45,11 @@ ip_whitelist = []
 # reject_external_connections = false
 # warn_on_external_bind = true
 # ip_whitelist = ["192.168.1.100", "10.0.0.50"]
+
+# 例2b: CIDR範囲で許可（例: Dockerブリッジネットワークのサブネットのみ許可）
+# reject_external_connections = false
+# warn_on_external_bind = true
+# ip_whitelist = ["172.16.0.0/12"]
 
 # 例3: すべてのIPアドレスを許可（本番環境では非推奨）
 # reject_external_connections = false
