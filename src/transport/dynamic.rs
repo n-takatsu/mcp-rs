@@ -157,6 +157,7 @@ impl DynamicTransportManager {
                     certificate_pinning_enabled: false,
                     pinned_certificates_sha256: Vec::new(),
                     certificate_pin_header: "x-tls-cert-sha256".to_string(),
+                    anti_replay_enabled: false,
                 };
 
                 // Start HTTP server with graceful shutdown support

@@ -15,6 +15,7 @@ use tokio::time::interval;
 use tracing::{debug, info, warn};
 
 /// Nonce Manager
+#[derive(Debug)]
 pub struct NonceManager {
     /// In-memory nonce store (nonce -> entry)
     store: Arc<RwLock<HashMap<String, NonceEntry>>>,

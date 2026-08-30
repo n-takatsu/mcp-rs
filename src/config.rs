@@ -135,6 +135,9 @@ pub struct HttpTransportConfig {
     pub certificate_pinning_enabled: Option<bool>,
     pub pinned_certificates_sha256: Option<Vec<String>>,
     pub certificate_pin_header: Option<String>,
+    /// Enforce nonce/timestamp replay protection (requires clients to send
+    /// `X-Nonce`/`X-Timestamp` headers). Defaults to `false`.
+    pub anti_replay_enabled: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -558,6 +561,7 @@ impl McpConfig {
                     certificate_pinning_enabled: Some(false),
                     pinned_certificates_sha256: Some(vec![]),
                     certificate_pin_header: Some("x-tls-cert-sha256".to_string()),
+                    anti_replay_enabled: Some(false),
                 }),
             },
             handlers: HandlersConfig {
@@ -760,6 +764,7 @@ impl McpConfig {
                     .certificate_pin_header
                     .clone()
                     .unwrap_or_else(|| "x-tls-cert-sha256".to_string()),
+                anti_replay_enabled: http.anti_replay_enabled.unwrap_or(false),
             }
         } else {
             crate::transport::http::HttpConfig::default()

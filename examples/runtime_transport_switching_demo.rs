@@ -183,6 +183,7 @@ fn convert_to_transport_config(
                     .certificate_pin_header
                     .clone()
                     .unwrap_or_else(|| "x-tls-cert-sha256".to_string()),
+                anti_replay_enabled: h.anti_replay_enabled.unwrap_or(false),
             }
         })
         .unwrap_or_default();

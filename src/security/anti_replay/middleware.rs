@@ -99,7 +99,20 @@ impl AntiReplayMiddleware {
         user_id: Option<&str>,
     ) -> Result<DeviceFingerprint, ReplayError> {
         let headers = Self::extract_security_headers(request);
+        self.validate_headers(&headers, user_id).await
+    }
 
+    /// Validate already-extracted security headers against replay attacks.
+    ///
+    /// This is the transport-agnostic core used by `validate_request` (Axum)
+    /// as well as by non-HTTP call sites (WebSocket per-message checks,
+    /// plugin broker messages) that have no `axum::extract::Request` to
+    /// extract headers from.
+    pub async fn validate_headers(
+        &self,
+        headers: &SecurityHeaders,
+        user_id: Option<&str>,
+    ) -> Result<DeviceFingerprint, ReplayError> {
         // 1. Validate Nonce (if enabled)
         if self.config.enable_nonce {
             let nonce = headers.nonce.as_ref().ok_or(ReplayError::MissingNonce)?;
