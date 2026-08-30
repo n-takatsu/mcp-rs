@@ -11,13 +11,15 @@ use chrono::Utc;
 use sqlx::sqlite::{SqlitePool, SqliteRow};
 use sqlx::{Column, Row, Sqlite, Transaction, TypeInfo};
 use std::sync::Arc;
+use tokio::sync::Mutex;
 
 /// SQLite Transaction
 ///
-/// Manages SQLite transactions with ACID guarantees
+/// Manages SQLite transactions with ACID guarantees. All queries run
+/// against the held `tx` (not the pool) so that they are actually
+/// isolated within the transaction and rollback/savepoints take effect.
 pub struct SqliteTransaction {
-    tx: Option<Transaction<'static, Sqlite>>,
-    pool: Arc<SqlitePool>,
+    tx: Arc<Mutex<Option<Transaction<'static, Sqlite>>>>,
     transaction_id: String,
     started_at: chrono::DateTime<Utc>,
 }
@@ -25,6 +27,8 @@ pub struct SqliteTransaction {
 impl SqliteTransaction {
     /// Create a new transaction
     pub async fn new(pool: Arc<SqlitePool>) -> Result<Self, DatabaseError> {
+        // `Pool::begin()` returns a `Transaction` that owns its connection
+        // (not borrowed from `pool`), so it is already `'static` here.
         let tx = pool
             .begin()
             .await
@@ -34,12 +38,7 @@ impl SqliteTransaction {
         let transaction_id = format!("sqlite_tx_{}", Utc::now().timestamp_millis());
 
         Ok(Self {
-            tx: Some(unsafe {
-                // SAFETY: We need to extend the lifetime of the transaction to 'static
-                // This is safe because we manage the lifetime through the struct
-                std::mem::transmute::<Transaction<'_, Sqlite>, Transaction<'static, Sqlite>>(tx)
-            }),
-            pool,
+            tx: Arc::new(Mutex::new(Some(tx))),
             transaction_id,
             started_at: Utc::now(),
         })
@@ -148,10 +147,10 @@ impl DatabaseTransaction for SqliteTransaction {
     async fn query(&self, sql: &str, params: &[Value]) -> Result<QueryResult, DatabaseError> {
         let start = std::time::Instant::now();
 
-        // We need mutable access to execute on the transaction
-        // Since we can't get &mut self, we use the pool as a workaround
-        // Note: This means queries are NOT isolated within the transaction
-        // TODO: Refactor to use proper transaction-isolated queries
+        let mut tx_guard = self.tx.lock().await;
+        let tx = tx_guard.as_mut().ok_or_else(|| {
+            DatabaseError::TransactionFailed("Transaction is not active".to_string())
+        })?;
 
         let mut query = sqlx::query(sql);
         for param in params {
@@ -168,7 +167,7 @@ impl DatabaseTransaction for SqliteTransaction {
         }
 
         let rows = query
-            .fetch_all(&*self.pool)
+            .fetch_all(&mut **tx)
             .await
             .map_err(|e| DatabaseError::QueryFailed(e.to_string()))?;
 
@@ -179,24 +178,27 @@ impl DatabaseTransaction for SqliteTransaction {
     async fn execute(&self, sql: &str, params: &[Value]) -> Result<ExecuteResult, DatabaseError> {
         let start = std::time::Instant::now();
 
+        let mut tx_guard = self.tx.lock().await;
+        let tx = tx_guard.as_mut().ok_or_else(|| {
+            DatabaseError::TransactionFailed("Transaction is not active".to_string())
+        })?;
+
         let mut query = sqlx::query(sql);
         for param in params {
             query = match param {
                 Value::Null => query.bind(None::<i64>),
                 Value::Bool(b) => query.bind(*b as i64),
-                // Removed duplicate pattern
                 Value::Int(i) => query.bind(*i),
                 Value::Float(f) => query.bind(*f),
                 Value::String(s) => query.bind(s),
                 Value::Binary(b) => query.bind(b),
                 Value::DateTime(dt) => query.bind(dt.to_rfc3339()),
                 Value::Json(j) => query.bind(j.to_string()),
-                // Uuid not supported
             };
         }
 
         let result = query
-            .execute(&*self.pool)
+            .execute(&mut **tx)
             .await
             .map_err(|e| DatabaseError::QueryFailed(e.to_string()))?;
 
@@ -209,8 +211,9 @@ impl DatabaseTransaction for SqliteTransaction {
         })
     }
 
-    async fn commit(mut self: Box<Self>) -> Result<(), DatabaseError> {
-        if let Some(tx) = self.tx.take() {
+    async fn commit(self: Box<Self>) -> Result<(), DatabaseError> {
+        let mut tx_guard = self.tx.lock().await;
+        if let Some(tx) = tx_guard.take() {
             tx.commit()
                 .await
                 .map_err(|e| DatabaseError::TransactionFailed(e.to_string()))?;
@@ -218,8 +221,9 @@ impl DatabaseTransaction for SqliteTransaction {
         Ok(())
     }
 
-    async fn rollback(mut self: Box<Self>) -> Result<(), DatabaseError> {
-        if let Some(tx) = self.tx.take() {
+    async fn rollback(self: Box<Self>) -> Result<(), DatabaseError> {
+        let mut tx_guard = self.tx.lock().await;
+        if let Some(tx) = tx_guard.take() {
             tx.rollback()
                 .await
                 .map_err(|e| DatabaseError::TransactionFailed(e.to_string()))?;
@@ -228,45 +232,56 @@ impl DatabaseTransaction for SqliteTransaction {
     }
 
     async fn savepoint(&self, name: &str) -> Result<(), DatabaseError> {
-        let sql = format!("SAVEPOINT {}", name);
-        sqlx::query(&sql)
-            .execute(&*self.pool)
+        let mut tx_guard = self.tx.lock().await;
+        let tx = tx_guard.as_mut().ok_or_else(|| {
+            DatabaseError::TransactionFailed("Transaction is not active".to_string())
+        })?;
+
+        sqlx::query(&format!("SAVEPOINT {}", name))
+            .execute(&mut **tx)
             .await
             .map_err(|e| DatabaseError::TransactionFailed(e.to_string()))?;
         Ok(())
     }
 
     async fn rollback_to_savepoint(&self, name: &str) -> Result<(), DatabaseError> {
-        let sql = format!("ROLLBACK TO SAVEPOINT {}", name);
-        sqlx::query(&sql)
-            .execute(&*self.pool)
+        let mut tx_guard = self.tx.lock().await;
+        let tx = tx_guard.as_mut().ok_or_else(|| {
+            DatabaseError::TransactionFailed("Transaction is not active".to_string())
+        })?;
+
+        sqlx::query(&format!("ROLLBACK TO SAVEPOINT {}", name))
+            .execute(&mut **tx)
             .await
             .map_err(|e| DatabaseError::TransactionFailed(e.to_string()))?;
         Ok(())
     }
 
     async fn release_savepoint(&self, name: &str) -> Result<(), DatabaseError> {
-        let sql = format!("RELEASE SAVEPOINT {}", name);
-        sqlx::query(&sql)
-            .execute(&*self.pool)
+        let mut tx_guard = self.tx.lock().await;
+        let tx = tx_guard.as_mut().ok_or_else(|| {
+            DatabaseError::TransactionFailed("Transaction is not active".to_string())
+        })?;
+
+        sqlx::query(&format!("RELEASE SAVEPOINT {}", name))
+            .execute(&mut **tx)
             .await
             .map_err(|e| DatabaseError::TransactionFailed(e.to_string()))?;
         Ok(())
     }
 
     async fn set_isolation_level(&self, level: IsolationLevel) -> Result<(), DatabaseError> {
-        // SQLite has limited isolation level support
-        // It uses serializable by default
-        match level {
-            IsolationLevel::ReadUncommitted => {
-                sqlx::query("PRAGMA read_uncommitted = 1")
-                    .execute(&*self.pool)
-                    .await
-                    .map_err(|e| DatabaseError::TransactionFailed(e.to_string()))?;
-            }
-            _ => {
-                // Serializable is default, no action needed
-            }
+        // SQLite has limited isolation level support; it is serializable by default.
+        if matches!(level, IsolationLevel::ReadUncommitted) {
+            let mut tx_guard = self.tx.lock().await;
+            let tx = tx_guard.as_mut().ok_or_else(|| {
+                DatabaseError::TransactionFailed("Transaction is not active".to_string())
+            })?;
+
+            sqlx::query("PRAGMA read_uncommitted = 1")
+                .execute(&mut **tx)
+                .await
+                .map_err(|e| DatabaseError::TransactionFailed(e.to_string()))?;
         }
         Ok(())
     }
@@ -334,7 +349,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore] // TODO: Fix test - Rollback count assertion fails (Issue #294)
     async fn test_transaction_rollback() {
         let pool = create_test_pool().await;
 
@@ -363,7 +377,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore] // TODO: Fix test - Savepoint count assertion fails (Issue #294)
     async fn test_savepoint() {
         let pool = create_test_pool().await;
 
