@@ -27,7 +27,11 @@ async fn start_test_server() -> (WebSocketServer, SocketAddr) {
     (server, addr)
 }
 
-fn client_request(addr: SocketAddr, nonce: &str, timestamp: &str) -> tokio_tungstenite::tungstenite::handshake::client::Request {
+fn client_request(
+    addr: SocketAddr,
+    nonce: &str,
+    timestamp: &str,
+) -> tokio_tungstenite::tungstenite::handshake::client::Request {
     let mut request = format!("ws://{}/ws", addr).into_client_request().unwrap();
     request
         .headers_mut()
@@ -47,7 +51,11 @@ async fn valid_handshake_nonce_and_timestamp_connects() {
     let request = client_request(addr, &nonce, &timestamp);
 
     let result = tokio_tungstenite::connect_async(request).await;
-    assert!(result.is_ok(), "expected handshake to succeed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "expected handshake to succeed: {:?}",
+        result.err()
+    );
 }
 
 #[tokio::test]
@@ -100,7 +108,10 @@ async fn reused_message_nonce_is_dropped_silently() {
     .to_string();
 
     // First send should be echoed back by the default EchoHandler.
-    write.send(WsMessage::Text(payload.clone().into())).await.unwrap();
+    write
+        .send(WsMessage::Text(payload.clone().into()))
+        .await
+        .unwrap();
     let first_reply = tokio::time::timeout(Duration::from_secs(2), read.next())
         .await
         .expect("expected a reply to the first message")
@@ -109,7 +120,10 @@ async fn reused_message_nonce_is_dropped_silently() {
     assert_eq!(first_reply.into_text().unwrap(), payload);
 
     // Replaying the identical nonce should be silently dropped (no echo).
-    write.send(WsMessage::Text(payload.clone().into())).await.unwrap();
+    write
+        .send(WsMessage::Text(payload.clone().into()))
+        .await
+        .unwrap();
     let second_reply = tokio::time::timeout(Duration::from_millis(500), read.next()).await;
     assert!(
         second_reply.is_err(),

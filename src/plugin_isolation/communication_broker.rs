@@ -578,9 +578,8 @@ impl CommunicationBroker {
             anti_replay_config.nonce_ttl_secs,
             anti_replay_config.max_nonce_cache,
         ));
-        let timestamp_validator = Arc::new(TimestampValidator::new(
-            anti_replay_config.time_window_secs,
-        ));
+        let timestamp_validator =
+            Arc::new(TimestampValidator::new(anti_replay_config.time_window_secs));
 
         Ok(Self {
             active_channels: Arc::new(RwLock::new(HashMap::new())),
@@ -1484,7 +1483,10 @@ mod tests {
             .values()
             .find(|c| c.plugin_id == plugin_id)
             .expect("channel should be registered");
-        channel.sender.send(message).expect("channel should accept the message");
+        channel
+            .sender
+            .send(message)
+            .expect("channel should accept the message");
     }
 
     #[tokio::test]
@@ -1498,10 +1500,18 @@ mod tests {
             .await
             .unwrap();
 
-        inject_message(&broker, plugin_id, make_broker_message(plugin_id, Uuid::new_v4())).await;
+        inject_message(
+            &broker,
+            plugin_id,
+            make_broker_message(plugin_id, Uuid::new_v4()),
+        )
+        .await;
 
         let received = broker.receive_message(plugin_id).await.unwrap();
-        assert!(received.is_some(), "expected the injected message to be delivered");
+        assert!(
+            received.is_some(),
+            "expected the injected message to be delivered"
+        );
     }
 
     #[tokio::test]
@@ -1516,11 +1526,21 @@ mod tests {
             .unwrap();
         let message_id = Uuid::new_v4();
 
-        inject_message(&broker, plugin_id, make_broker_message(plugin_id, message_id)).await;
+        inject_message(
+            &broker,
+            plugin_id,
+            make_broker_message(plugin_id, message_id),
+        )
+        .await;
         let first = broker.receive_message(plugin_id).await.unwrap();
         assert!(first.is_some(), "first delivery should succeed");
 
-        inject_message(&broker, plugin_id, make_broker_message(plugin_id, message_id)).await;
+        inject_message(
+            &broker,
+            plugin_id,
+            make_broker_message(plugin_id, message_id),
+        )
+        .await;
         let replay = broker.receive_message(plugin_id).await;
         assert!(
             replay.is_err(),
@@ -1564,10 +1584,20 @@ mod tests {
             .unwrap();
         let message_id = Uuid::new_v4();
 
-        inject_message(&broker, plugin_id, make_broker_message(plugin_id, message_id)).await;
+        inject_message(
+            &broker,
+            plugin_id,
+            make_broker_message(plugin_id, message_id),
+        )
+        .await;
         assert!(broker.receive_message(plugin_id).await.unwrap().is_some());
 
-        inject_message(&broker, plugin_id, make_broker_message(plugin_id, message_id)).await;
+        inject_message(
+            &broker,
+            plugin_id,
+            make_broker_message(plugin_id, message_id),
+        )
+        .await;
         assert!(
             broker.receive_message(plugin_id).await.unwrap().is_some(),
             "with anti-replay disabled, a repeated message_id should still be delivered"
