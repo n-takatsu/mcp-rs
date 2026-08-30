@@ -729,12 +729,40 @@ impl CommunicationBroker {
         // メッセージを暗号化
         let encrypted_message = self.encryption_manager.encrypt_message(&message).await?;
 
-        // メッセージをキューに追加
-        self.message_queue
-            .enqueue_message(encrypted_message)
-            .await?;
+        // メッセージを配送
+        match encrypted_message.destination_plugin_id {
+            Some(destination) => {
+                // 宛先プラグインのチャネルに直接配送する。
+                // (以前は message_queue.enqueue_message() に渡すだけで、
+                // receive_message() が読む CommunicationChannel.receiver とは
+                // 一切接続されておらず、メッセージが黙って破棄されていた。)
+                let channels = self.active_channels.read().await;
+                let channel = channels
+                    .values()
+                    .find(|c| c.plugin_id == destination)
+                    .ok_or_else(|| {
+                        McpError::Plugin(format!(
+                            "No channel registered for destination plugin {}",
+                            destination
+                        ))
+                    })?;
+                channel.sender.send(encrypted_message).map_err(|_| {
+                    McpError::Plugin(format!(
+                        "Failed to deliver message to plugin {}: channel closed",
+                        destination
+                    ))
+                })?;
+            }
+            None => {
+                // セキュアコア宛メッセージのルーティングは未実装
+                // (受け皿となるコア用チャネルがコードベースに存在しないため)。
+                self.message_queue
+                    .enqueue_message(encrypted_message)
+                    .await?;
+            }
+        }
 
-        debug!("Message queued for delivery: {}", message.message_id);
+        debug!("Message delivery handled: {}", message.message_id);
         Ok(())
     }
 
@@ -1452,21 +1480,16 @@ mod tests {
         assert_eq!(dec2.payload, b"message two");
     }
 
-    // --- Issue #259: receive_message anti-replay integration ---
-    //
-    // `send_message` currently enqueues onto `self.message_queue`, which is
-    // never drained into a `CommunicationChannel.sender` (that wiring is a
-    // pre-existing gap unrelated to this issue - `receive_message` has no
-    // real caller anywhere in the codebase today). These tests therefore
-    // inject messages directly onto the registered channel's sender to
-    // exercise `receive_message`'s anti-replay check for real, at the exact
-    // point it runs in production, without depending on that separate gap.
+    // These messages are self-addressed (destination_plugin_id == source)
+    // so a single registered channel can act as both sender and receiver,
+    // exercising the anti-replay check via the real send_message ->
+    // receive_message delivery path.
 
-    fn make_broker_message(source: Uuid, message_id: Uuid) -> BrokerMessage {
+    fn make_broker_message(plugin_id: Uuid, message_id: Uuid) -> BrokerMessage {
         BrokerMessage {
             message_id,
-            source_plugin_id: source,
-            destination_plugin_id: None,
+            source_plugin_id: plugin_id,
+            destination_plugin_id: Some(plugin_id),
             message_type: MessageType::Request,
             payload: b"hello".to_vec(),
             encrypted: false,
@@ -1477,20 +1500,8 @@ mod tests {
         }
     }
 
-    async fn inject_message(broker: &CommunicationBroker, plugin_id: Uuid, message: BrokerMessage) {
-        let channels = broker.active_channels.read().await;
-        let channel = channels
-            .values()
-            .find(|c| c.plugin_id == plugin_id)
-            .expect("channel should be registered");
-        channel
-            .sender
-            .send(message)
-            .expect("channel should accept the message");
-    }
-
     #[tokio::test]
-    async fn test_receive_message_delivers_injected_message() {
+    async fn test_send_then_receive_message_delivers_it() {
         let broker = CommunicationBroker::new_with_config(BrokerConfig::default())
             .await
             .unwrap();
@@ -1500,17 +1511,15 @@ mod tests {
             .await
             .unwrap();
 
-        inject_message(
-            &broker,
-            plugin_id,
-            make_broker_message(plugin_id, Uuid::new_v4()),
-        )
-        .await;
+        broker
+            .send_message(make_broker_message(plugin_id, Uuid::new_v4()))
+            .await
+            .unwrap();
 
         let received = broker.receive_message(plugin_id).await.unwrap();
         assert!(
             received.is_some(),
-            "expected the injected message to be delivered"
+            "expected the sent message to be delivered"
         );
     }
 
@@ -1526,21 +1535,17 @@ mod tests {
             .unwrap();
         let message_id = Uuid::new_v4();
 
-        inject_message(
-            &broker,
-            plugin_id,
-            make_broker_message(plugin_id, message_id),
-        )
-        .await;
+        broker
+            .send_message(make_broker_message(plugin_id, message_id))
+            .await
+            .unwrap();
         let first = broker.receive_message(plugin_id).await.unwrap();
         assert!(first.is_some(), "first delivery should succeed");
 
-        inject_message(
-            &broker,
-            plugin_id,
-            make_broker_message(plugin_id, message_id),
-        )
-        .await;
+        broker
+            .send_message(make_broker_message(plugin_id, message_id))
+            .await
+            .unwrap();
         let replay = broker.receive_message(plugin_id).await;
         assert!(
             replay.is_err(),
@@ -1561,7 +1566,7 @@ mod tests {
 
         let mut message = make_broker_message(plugin_id, Uuid::new_v4());
         message.expires_at = Some(chrono::Utc::now() - chrono::Duration::seconds(10));
-        inject_message(&broker, plugin_id, message).await;
+        broker.send_message(message).await.unwrap();
 
         let result = broker.receive_message(plugin_id).await;
         assert!(
@@ -1584,23 +1589,91 @@ mod tests {
             .unwrap();
         let message_id = Uuid::new_v4();
 
-        inject_message(
-            &broker,
-            plugin_id,
-            make_broker_message(plugin_id, message_id),
-        )
-        .await;
+        broker
+            .send_message(make_broker_message(plugin_id, message_id))
+            .await
+            .unwrap();
         assert!(broker.receive_message(plugin_id).await.unwrap().is_some());
 
-        inject_message(
-            &broker,
-            plugin_id,
-            make_broker_message(plugin_id, message_id),
-        )
-        .await;
+        broker
+            .send_message(make_broker_message(plugin_id, message_id))
+            .await
+            .unwrap();
         assert!(
             broker.receive_message(plugin_id).await.unwrap().is_some(),
             "with anti-replay disabled, a repeated message_id should still be delivered"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_send_message_to_unknown_destination_returns_error() {
+        let broker = CommunicationBroker::new_with_config(BrokerConfig::default())
+            .await
+            .unwrap();
+        let source = Uuid::new_v4();
+        broker
+            .register_plugin(source, ChannelType::Http)
+            .await
+            .unwrap();
+
+        let unknown_destination = Uuid::new_v4();
+        let message = BrokerMessage {
+            message_id: Uuid::new_v4(),
+            source_plugin_id: source,
+            destination_plugin_id: Some(unknown_destination),
+            message_type: MessageType::Request,
+            payload: b"hello".to_vec(),
+            encrypted: false,
+            signature: None,
+            timestamp: chrono::Utc::now(),
+            expires_at: None,
+            metadata: HashMap::new(),
+        };
+
+        let result = broker.send_message(message).await;
+        assert!(
+            result.is_err(),
+            "sending to an unregistered destination plugin should fail loudly, not silently drop"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_send_message_delivers_to_a_different_plugin() {
+        let broker = CommunicationBroker::new_with_config(BrokerConfig::default())
+            .await
+            .unwrap();
+        let source = Uuid::new_v4();
+        let destination = Uuid::new_v4();
+        broker
+            .register_plugin(source, ChannelType::Http)
+            .await
+            .unwrap();
+        broker
+            .register_plugin(destination, ChannelType::Http)
+            .await
+            .unwrap();
+
+        let message = BrokerMessage {
+            message_id: Uuid::new_v4(),
+            source_plugin_id: source,
+            destination_plugin_id: Some(destination),
+            message_type: MessageType::Request,
+            payload: b"hello".to_vec(),
+            encrypted: false,
+            signature: None,
+            timestamp: chrono::Utc::now(),
+            expires_at: None,
+            metadata: HashMap::new(),
+        };
+        broker.send_message(message).await.unwrap();
+
+        assert!(
+            broker.receive_message(destination).await.unwrap().is_some(),
+            "message should be delivered to the destination plugin's channel"
+        );
+        assert!(
+            broker.receive_message(source).await.unwrap().is_none(),
+            "message should not appear on the sender's own channel"
         );
     }
 }
