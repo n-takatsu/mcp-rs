@@ -832,6 +832,11 @@ impl ColumnEncryptionManager {
     }
 
     /// Log encryption operation to audit log
+    ///
+    /// Always emits a structured tracing event, since without an RBAC store
+    /// attached there is nowhere else to record denied or failed operations -
+    /// previously this whole function was a silent no-op unless RBAC was
+    /// configured, so unauthorized decrypt attempts left no trace at all.
     async fn log_audit(
         &self,
         operation: EncryptionOperation,
@@ -841,6 +846,23 @@ impl ColumnEncryptionManager {
         success: bool,
         error: Option<String>,
     ) {
+        let user_id = context.user_id.as_deref().unwrap_or("<unauthenticated>");
+        if success {
+            debug!(
+                "Encryption audit: user {} performed {:?} on {}.{}",
+                user_id, operation, table, column
+            );
+        } else {
+            warn!(
+                "Encryption audit: user {} failed {:?} on {}.{}: {}",
+                user_id,
+                operation,
+                table,
+                column,
+                error.as_deref().unwrap_or("unknown error")
+            );
+        }
+
         if let Some(rbac) = &self.rbac {
             if let Some(user_id) = &context.user_id {
                 let audit_log = EncryptionAuditLog {

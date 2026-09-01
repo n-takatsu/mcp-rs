@@ -1,5 +1,4 @@
 -- Column Encryption RBAC Integration
--- Migration for Issue #223
 
 -- カラム暗号化権限テーブル
 CREATE TABLE IF NOT EXISTS column_encryption_permissions (
@@ -16,6 +15,8 @@ CREATE TABLE IF NOT EXISTS column_encryption_permissions (
 );
 
 -- 暗号化操作監査ログテーブル
+-- request_ip は VARCHAR で保持する（アプリケーション側は sqlx の ipnetwork 拡張を
+-- 有効化しておらず、素の文字列としてバインドするため INET 型は使えない）。
 CREATE TABLE IF NOT EXISTS encryption_audit_log (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id VARCHAR(255) NOT NULL,
@@ -25,16 +26,17 @@ CREATE TABLE IF NOT EXISTS encryption_audit_log (
     success BOOLEAN NOT NULL,
     error_message TEXT,
     timestamp TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    request_ip INET,
-    user_agent TEXT,
-    INDEX idx_encryption_audit_user (user_id, timestamp DESC),
-    INDEX idx_encryption_audit_table (table_name, column_name, timestamp DESC),
-    INDEX idx_encryption_audit_operation (operation, timestamp DESC)
+    request_ip VARCHAR(45),
+    user_agent TEXT
 );
+
+CREATE INDEX IF NOT EXISTS idx_encryption_audit_user ON encryption_audit_log (user_id, timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_encryption_audit_table ON encryption_audit_log (table_name, column_name, timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_encryption_audit_operation ON encryption_audit_log (operation, timestamp DESC);
 
 -- デフォルト権限（Admin）
 INSERT INTO column_encryption_permissions (role_name, table_name, column_name, can_encrypt, can_decrypt, can_rotate_key)
-VALUES 
+VALUES
     ('Admin', '*', '*', true, true, true)
 ON CONFLICT (role_name, table_name, column_name) DO NOTHING;
 

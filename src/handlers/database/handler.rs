@@ -35,6 +35,11 @@ pub struct DatabaseHandler {
     /// データベース設定
     configs: Arc<RwLock<HashMap<String, DatabaseConfig>>>,
     /// セキュリティレイヤー
+    ///
+    /// 構築はされるが、現状 `handle_execute_query` などクエリ実行パスの
+    /// どこからも参照されていない（実行結果に対する権限チェックやカラム
+    /// 暗号化・マスキングは一切行われない）。実際のクエリ実行パスへの
+    /// 組み込みは別途設計が必要な未実施の作業である。
     security: Arc<DatabaseSecurity>,
     /// 脅威インテリジェンス
     threat_intelligence: Option<Arc<ThreatDetectionEngine>>,
