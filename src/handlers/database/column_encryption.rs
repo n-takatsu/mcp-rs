@@ -764,8 +764,8 @@ impl ColumnEncryptionManager {
                                 column_name: column.to_string(),
                                 success: false,
                                 error_message: Some("Permission denied".to_string()),
-                                request_ip: context.client_info.clone(),
-                                user_agent: None,
+                                request_ip: context.source_ip.clone(),
+                                user_agent: context.client_info.clone(),
                             };
                             let _ = rbac.audit_log(&audit_log).await;
                         }
@@ -875,8 +875,8 @@ impl ColumnEncryptionManager {
                     column_name: column.to_string(),
                     success,
                     error_message: error,
-                    request_ip: context.client_info.clone(),
-                    user_agent: None,
+                    request_ip: context.source_ip.clone(),
+                    user_agent: context.client_info.clone(),
                 };
 
                 if let Err(e) = rbac.audit_log(&audit_log).await {

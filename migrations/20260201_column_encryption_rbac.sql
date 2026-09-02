@@ -1,5 +1,11 @@
 -- Column Encryption RBAC Integration
 
+-- gen_random_uuid() is a core SQL function on PostgreSQL 13+, but on older
+-- versions it is only available via the pgcrypto extension. Enable it
+-- explicitly so this migration doesn't depend on the target database
+-- already having it enabled.
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
 -- カラム暗号化権限テーブル
 CREATE TABLE IF NOT EXISTS column_encryption_permissions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
