@@ -849,17 +849,20 @@ impl ColumnEncryptionManager {
         let user_id = context.user_id.as_deref().unwrap_or("<unauthenticated>");
         if success {
             debug!(
-                "Encryption audit: user {} performed {:?} on {}.{}",
-                user_id, operation, table, column
+                user_id,
+                operation = %operation,
+                table,
+                column,
+                "encryption audit"
             );
         } else {
             warn!(
-                "Encryption audit: user {} failed {:?} on {}.{}: {}",
                 user_id,
-                operation,
+                operation = %operation,
                 table,
                 column,
-                error.as_deref().unwrap_or("unknown error")
+                error = error.as_deref().unwrap_or("unknown error"),
+                "encryption audit"
             );
         }
 
