@@ -1,10 +1,11 @@
 -- Column Encryption RBAC Integration
 
--- gen_random_uuid() is a core SQL function on PostgreSQL 13+, but on older
--- versions it is only available via the pgcrypto extension. Enable it
--- explicitly so this migration doesn't depend on the target database
--- already having it enabled.
-CREATE EXTENSION IF NOT EXISTS pgcrypto;
+-- gen_random_uuid() below is a core SQL function on PostgreSQL 13+ and needs
+-- no extension. Every environment this project actually targets (see
+-- docker-compose*.yml and .github/workflows/container-integration-tests.yml)
+-- runs PostgreSQL 16, so this migration doesn't enable pgcrypto - doing so
+-- unconditionally would add an extension dependency some managed database
+-- services restrict, for a version floor this project doesn't support.
 
 -- カラム暗号化権限テーブル
 CREATE TABLE IF NOT EXISTS column_encryption_permissions (
