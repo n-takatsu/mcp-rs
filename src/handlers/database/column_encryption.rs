@@ -750,25 +750,9 @@ impl ColumnEncryptionManager {
                     .await
                 {
                     Ok(has_permission) => {
-                        if !has_permission {
-                            warn!(
-                                "User {} denied decrypt permission for {}.{}",
-                                user_id, table, column
-                            );
-
-                            // Log audit failure
-                            let audit_log = EncryptionAuditLog {
-                                user_id: user_id.clone(),
-                                operation: EncryptionOperation::Decrypt,
-                                table_name: table.to_string(),
-                                column_name: column.to_string(),
-                                success: false,
-                                error_message: Some("Permission denied".to_string()),
-                                request_ip: context.client_info.clone(),
-                                user_agent: None,
-                            };
-                            let _ = rbac.audit_log(&audit_log).await;
-                        }
+                        // Denial is audited by the caller (decrypt() -> log_audit()),
+                        // the sole caller of this method - logging it here too would
+                        // write a duplicate audit row and emit a duplicate warning.
                         return Ok(has_permission);
                     }
                     Err(e) => {
@@ -832,6 +816,11 @@ impl ColumnEncryptionManager {
     }
 
     /// Log encryption operation to audit log
+    ///
+    /// Always emits a structured tracing event, since without an RBAC store
+    /// attached there is nowhere else to record denied or failed operations -
+    /// previously this whole function was a silent no-op unless RBAC was
+    /// configured, so unauthorized decrypt attempts left no trace at all.
     async fn log_audit(
         &self,
         operation: EncryptionOperation,
@@ -841,6 +830,26 @@ impl ColumnEncryptionManager {
         success: bool,
         error: Option<String>,
     ) {
+        let user_id = context.user_id.as_deref().unwrap_or("<unauthenticated>");
+        if success {
+            debug!(
+                user_id,
+                operation = %operation,
+                table,
+                column,
+                "encryption audit"
+            );
+        } else {
+            warn!(
+                user_id,
+                operation = %operation,
+                table,
+                column,
+                error = error.as_deref().unwrap_or("unknown error"),
+                "encryption audit"
+            );
+        }
+
         if let Some(rbac) = &self.rbac {
             if let Some(user_id) = &context.user_id {
                 let audit_log = EncryptionAuditLog {
@@ -850,8 +859,8 @@ impl ColumnEncryptionManager {
                     column_name: column.to_string(),
                     success,
                     error_message: error,
-                    request_ip: context.client_info.clone(),
-                    user_agent: None,
+                    request_ip: context.source_ip.clone(),
+                    user_agent: context.client_info.clone(),
                 };
 
                 if let Err(e) = rbac.audit_log(&audit_log).await {

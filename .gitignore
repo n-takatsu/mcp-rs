@@ -23,6 +23,9 @@ Thumbs.db
 
 # Log files
 *.log
+# src/logging.rs writes daily-rotated files here as mcp-rs.log.<date>,
+# which *.log alone doesn't match
+/logs/
 
 # CI/CD generated files
 clippy-report.json
