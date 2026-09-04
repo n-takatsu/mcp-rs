@@ -750,25 +750,9 @@ impl ColumnEncryptionManager {
                     .await
                 {
                     Ok(has_permission) => {
-                        if !has_permission {
-                            warn!(
-                                "User {} denied decrypt permission for {}.{}",
-                                user_id, table, column
-                            );
-
-                            // Log audit failure
-                            let audit_log = EncryptionAuditLog {
-                                user_id: user_id.clone(),
-                                operation: EncryptionOperation::Decrypt,
-                                table_name: table.to_string(),
-                                column_name: column.to_string(),
-                                success: false,
-                                error_message: Some("Permission denied".to_string()),
-                                request_ip: context.source_ip.clone(),
-                                user_agent: context.client_info.clone(),
-                            };
-                            let _ = rbac.audit_log(&audit_log).await;
-                        }
+                        // Denial is audited by the caller (decrypt() -> log_audit()),
+                        // the sole caller of this method - logging it here too would
+                        // write a duplicate audit row and emit a duplicate warning.
                         return Ok(has_permission);
                     }
                     Err(e) => {
