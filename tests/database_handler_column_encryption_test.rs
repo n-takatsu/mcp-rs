@@ -407,3 +407,80 @@ async fn execute_query_with_unsupported_statement_shape_is_refused() {
 
     cleanup(&pool, table).await;
 }
+
+#[tokio::test]
+#[ignore]
+async fn execute_query_rejects_multi_statement_sql_before_it_ever_runs() {
+    let database_url = std::env::var("TEST_DATABASE_URL").unwrap_or_default();
+    let Some(pool) = try_connect().await else {
+        return;
+    };
+
+    let table = "encryption_it_multi_statement";
+    cleanup(&pool, table).await;
+    sqlx::query(&format!(
+        "CREATE TABLE {table} (id SERIAL PRIMARY KEY, value TEXT)"
+    ))
+    .execute(&pool)
+    .await
+    .expect("failed to create test table");
+
+    let rbac = Arc::new(ColumnEncryptionRbac::new(pool.clone()));
+    rbac.grant_permission("Admin", table, "value", true, true, false)
+        .await
+        .expect("failed to grant admin permission");
+
+    let mut config = ColumnEncryptionConfig::default();
+    config.encrypted_columns.push(format!("{table}.value"));
+    let manager = Arc::new(ColumnEncryptionManager::with_rbac(config, rbac));
+
+    let handler = DatabaseHandler::new(None)
+        .await
+        .expect("failed to create handler")
+        .with_column_encryption(manager);
+    handler
+        .add_database(
+            "pg".to_string(),
+            DatabaseConfig {
+                database_type: DatabaseType::PostgreSQL,
+                connection: connection_config_from_url(&database_url),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("failed to add database");
+
+    let mut admin = AuthUser::new("admin-user".to_string(), "admin-user".to_string());
+    admin.roles.insert(Role::Admin);
+
+    // A stacked, multi-statement payload: if the provenance check ran only
+    // *after* execution (as it did before this fix), the DROP TABLE here
+    // would already have run against the real database by the time the
+    // "unsupported statement shape" error was raised. It must be rejected
+    // before the SQL ever reaches the connection at all.
+    let result = handler
+        .execute_query_as(
+            json!({ "sql": format!("SELECT value FROM {table}; DROP TABLE {table};") }),
+            &admin,
+        )
+        .await;
+
+    assert!(
+        result.is_err(),
+        "expected the multi-statement query to be refused, got: {result:?}"
+    );
+
+    let table_still_exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = $1)",
+    )
+    .bind(table)
+    .fetch_one(&pool)
+    .await
+    .expect("failed to check table existence");
+    assert!(
+        table_still_exists,
+        "the DROP TABLE statement must never have executed"
+    );
+
+    cleanup(&pool, table).await;
+}

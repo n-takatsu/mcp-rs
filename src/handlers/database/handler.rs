@@ -214,6 +214,24 @@ impl DatabaseHandler {
             configs.get(active_id.as_ref().unwrap()).unwrap().clone()
         };
 
+        // 暗号化列が設定されている場合、クエリを実行する前にSQLの形が
+        // 安全に解析できるか確認する。実行後にチェックすると、CTE/UNION/
+        // 複数ステートメントのような未対応の形が拒否される前に、その
+        // クエリ（および仕込まれた副作用を持つ別ステートメント）が
+        // 既にデータベースに対して実行されてしまっているため、
+        // ここで事前に確認する必要がある。
+        let provenance = match &self.column_encryption {
+            Some(manager) if manager.has_encrypted_columns() => {
+                Some(resolve_column_provenance(&sql).map_err(|e| {
+                    McpError::InvalidRequest(format!(
+                        "cannot safely determine which table this query's columns came from, \
+                         and column encryption is configured for this database: {e}"
+                    ))
+                })?)
+            }
+            _ => None,
+        };
+
         let connection = pool
             .get_connection(&config)
             .await
@@ -226,9 +244,12 @@ impl DatabaseHandler {
             .await
             .map_err(|e| McpError::InvalidRequest(e.to_string()))?;
 
-        if let Some(manager) = self.column_encryption.clone() {
-            self.enforce_column_encryption(&manager, &sql, &mut result, auth_user)
-                .await?;
+        if let Some(resolution) = provenance {
+            let manager = self
+                .column_encryption
+                .clone()
+                .expect("provenance is only Some when self.column_encryption was Some above");
+            Self::apply_column_encryption(&manager, resolution, &mut result, auth_user).await?;
         }
 
         // 結果をJSON形式で返す
@@ -247,21 +268,17 @@ impl DatabaseHandler {
         }))
     }
 
-    /// `result`の各列がどのテーブル由来かを`sql`のテキストから解決し、
+    /// 事前に解決済みの列由来（`resolution`）を使って、`result`内の
     /// 暗号化対象と設定された列を復号（許可時）またはマスク（拒否時・
-    /// 由来不明時）に置き換える。暗号化列が1つも設定されていない場合は
-    /// 何もしない（オプトイン機能で、既存の呼び出し元には影響しない）。
-    async fn enforce_column_encryption(
-        &self,
+    /// 由来不明時）に置き換える。SQLの解析自体は`execute_query_core`側で
+    /// クエリ実行前に完了しているため、ここでは失敗しない
+    /// （`decrypt()`呼び出し自体の失敗を除く）。
+    async fn apply_column_encryption(
         manager: &Arc<ColumnEncryptionManager>,
-        sql: &str,
+        resolution: ProjectionResolution,
         result: &mut QueryResult,
         auth_user: Option<&AuthUser>,
     ) -> Result<(), McpError> {
-        if !manager.has_encrypted_columns() {
-            return Ok(());
-        }
-
         let context = QueryContext {
             query_type: QueryType::Select,
             user_id: auth_user.map(|u| u.id.clone()),
@@ -270,13 +287,6 @@ impl DatabaseHandler {
             source_ip: None,
             client_info: None,
         };
-
-        let resolution = resolve_column_provenance(sql).map_err(|e| {
-            McpError::InvalidRequest(format!(
-                "cannot safely determine which table this query's columns came from, \
-                 and column encryption is configured for this database: {e}"
-            ))
-        })?;
 
         match resolution {
             ProjectionResolution::WildcardTable(table) => {
