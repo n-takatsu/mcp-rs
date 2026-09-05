@@ -441,6 +441,13 @@ impl ColumnEncryptionManager {
         self.config.encrypted_columns.contains(&column_name)
     }
 
+    /// Whether any column is configured for encryption at all - callers can
+    /// use this to skip per-row enforcement entirely when the feature isn't
+    /// in use.
+    pub fn has_encrypted_columns(&self) -> bool {
+        !self.config.encrypted_columns.is_empty()
+    }
+
     /// Encrypt data for a column
     pub async fn encrypt(
         &self,
@@ -537,10 +544,11 @@ impl ColumnEncryptionManager {
         column: &str,
         encrypted: &str,
         context: &QueryContext,
+        auth_user: Option<&AuthUser>,
     ) -> Result<String, SecurityError> {
         // Check permissions first
         let has_permission = self
-            .check_decrypt_permission(table, column, context)
+            .check_decrypt_permission(table, column, auth_user)
             .await?;
 
         if !has_permission {
@@ -732,42 +740,46 @@ impl ColumnEncryptionManager {
     }
 
     /// Check if user has permission to decrypt a column
+    ///
+    /// `auth_user` must be the caller's real, verified identity (with its
+    /// actual roles) - previously this fabricated an empty-roles `AuthUser`
+    /// from just a user ID string, which meant the RBAC check below could
+    /// never actually grant anything through a real role, silently
+    /// defeating per-role permissions.
     async fn check_decrypt_permission(
         &self,
         table: &str,
         column: &str,
-        context: &QueryContext,
+        auth_user: Option<&AuthUser>,
     ) -> Result<bool, SecurityError> {
-        // If RBAC is configured, use it for permission checks
+        // If RBAC is configured, it is the source of truth for this user's
+        // real roles.
         if let Some(rbac) = &self.rbac {
-            if let Some(user_id) = &context.user_id {
-                // Create a minimal AuthUser for permission check
-                // In production, this should come from the auth system
-                let user = AuthUser::new(user_id.clone(), user_id.clone());
+            let Some(user) = auth_user else {
+                return Ok(false);
+            };
 
-                match rbac
-                    .check_permission(&user, table, column, EncryptionOperation::Decrypt)
-                    .await
-                {
-                    Ok(has_permission) => {
-                        // Denial is audited by the caller (decrypt() -> log_audit()),
-                        // the sole caller of this method - logging it here too would
-                        // write a duplicate audit row and emit a duplicate warning.
-                        return Ok(has_permission);
-                    }
-                    Err(e) => {
-                        error!("RBAC permission check failed: {}", e);
-                        return Err(SecurityError::AccessDenied(format!(
-                            "Failed to check permissions: {}",
-                            e
-                        )));
-                    }
+            return match rbac
+                .check_permission(user, table, column, EncryptionOperation::Decrypt)
+                .await
+            {
+                // Denial is audited by the caller (decrypt() -> log_audit()),
+                // the sole caller of this method - logging it here too would
+                // write a duplicate audit row and emit a duplicate warning.
+                Ok(has_permission) => Ok(has_permission),
+                Err(e) => {
+                    error!("RBAC permission check failed: {}", e);
+                    Err(SecurityError::AccessDenied(format!(
+                        "Failed to check permissions: {}",
+                        e
+                    )))
                 }
-            }
+            };
         }
 
-        // Fallback: allow decryption for authenticated users if RBAC is not configured
-        Ok(context.user_id.is_some())
+        // Fallback: allow decryption for any verified identity if no RBAC
+        // store is configured (there is no per-role policy to enforce).
+        Ok(auth_user.is_some())
     }
 
     /// Rotate key for a specific column
@@ -939,8 +951,9 @@ mod tests {
         assert_ne!(encrypted, plaintext);
         assert!(!encrypted.is_empty());
 
+        let user = AuthUser::new("admin".to_string(), "admin".to_string());
         let decrypted = manager
-            .decrypt("users", "ssn", &encrypted, &context)
+            .decrypt("users", "ssn", &encrypted, &context, Some(&user))
             .await
             .unwrap();
         assert_eq!(decrypted, plaintext);
@@ -1003,8 +1016,9 @@ mod tests {
         manager.rotate_column_key("users", "data").await.unwrap();
 
         // Should still be able to decrypt data encrypted with v1
+        let user = AuthUser::new("admin".to_string(), "admin".to_string());
         let decrypted = manager
-            .decrypt("users", "data", &encrypted, &context)
+            .decrypt("users", "data", &encrypted, &context, Some(&user))
             .await
             .unwrap();
         assert_eq!(decrypted, plaintext);
@@ -1017,23 +1031,23 @@ mod tests {
 
         let manager = ColumnEncryptionManager::new(config);
 
-        // User with ID can decrypt
+        // A verified identity can decrypt when no RBAC store is configured
         let context_auth = create_test_context("admin");
+        let user = AuthUser::new("admin".to_string(), "admin".to_string());
         let encrypted = manager
             .encrypt("users", "ssn", "123-45-6789", &context_auth)
             .await
             .unwrap();
         let decrypted = manager
-            .decrypt("users", "ssn", &encrypted, &context_auth)
+            .decrypt("users", "ssn", &encrypted, &context_auth, Some(&user))
             .await
             .unwrap();
         assert_eq!(decrypted, "123-45-6789");
 
-        // User without ID cannot decrypt
-        let mut context_unauth = create_test_context("guest");
-        context_unauth.user_id = None;
+        // No identity provided cannot decrypt
+        let context_unauth = create_test_context("guest");
         let result = manager
-            .decrypt("users", "ssn", &encrypted, &context_unauth)
+            .decrypt("users", "ssn", &encrypted, &context_unauth, None)
             .await
             .unwrap();
         assert_eq!(result, "***ENCRYPTED***");

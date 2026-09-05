@@ -3,6 +3,8 @@
 //! データベース操作のためのMCPハンドラー実装
 
 use crate::handlers::database::{
+    column_encryption::ColumnEncryptionManager,
+    column_provenance::{resolve_column_provenance, ColumnProvenance, ProjectionResolution},
     engine::{DatabaseEngine, DatabaseEngineBuilder, EngineRegistry},
     pool::{ConnectionPool, PoolManager},
     safety::{SafetyError, SafetyManager}, // 安全機構を追加
@@ -15,6 +17,7 @@ use crate::handlers::database::{
 use crate::mcp::{
     InitializeParams, McpError, McpHandler, Resource, ResourceReadParams, Tool, ToolCallParams,
 };
+use crate::security::auth::types::AuthUser;
 // use crate::threat_intelligence::ThreatDetectionEngine;
 use crate::handlers::database::security::ThreatDetectionEngine;
 use async_trait::async_trait;
@@ -23,6 +26,15 @@ use serde_json::{json, Value as JsonValue};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+
+/// Placeholder returned in place of an encrypted column's raw value when the
+/// caller isn't authorized to see it decrypted.
+const ENCRYPTED_PLACEHOLDER: &str = "***ENCRYPTED***";
+
+/// Placeholder returned when a result column's source table/column can't be
+/// confidently determined, so it can't be checked against the encrypted-
+/// column configuration at all - see `column_provenance`.
+const UNKNOWN_PROVENANCE_PLACEHOLDER: &str = "***UNKNOWN_PROVENANCE***";
 
 /// データベースMCPハンドラー
 pub struct DatabaseHandler {
@@ -45,6 +57,9 @@ pub struct DatabaseHandler {
     threat_intelligence: Option<Arc<ThreatDetectionEngine>>,
     /// 安全機構マネージャー
     safety_manager: Arc<SafetyManager>,
+    /// カラムレベル暗号化マネージャー（未設定ならこのハンドラでは暗号化列の
+    /// 強制を一切行わない - 既存の呼び出し元には影響しないオプトイン機能）
+    column_encryption: Option<Arc<ColumnEncryptionManager>>,
 }
 
 impl DatabaseHandler {
@@ -65,7 +80,14 @@ impl DatabaseHandler {
             security,
             threat_intelligence,
             safety_manager: Arc::new(SafetyManager::new()),
+            column_encryption: None,
         })
+    }
+
+    /// カラムレベル暗号化＋RBACを有効化する（ビルダースタイル）
+    pub fn with_column_encryption(mut self, manager: Arc<ColumnEncryptionManager>) -> Self {
+        self.column_encryption = Some(manager);
+        self
     }
 
     /// データベースエンジンを追加
@@ -139,8 +161,34 @@ impl DatabaseHandler {
             .ok_or_else(|| DatabaseError::PoolError(format!("Pool not found: {}", engine_id)))
     }
 
-    /// クエリ実行処理
+    /// クエリ実行処理（`McpHandler::call_tool`経由 - 呼び出し元の識別子は
+    /// 得られないため、暗号化列は常にfail-closedで扱われる）
     async fn handle_execute_query(&self, args: JsonValue) -> Result<JsonValue, McpError> {
+        self.execute_query_core(&args, None).await
+    }
+
+    /// 検証済みの呼び出し元識別子付きで`execute_query`を実行する。
+    ///
+    /// このコードベースのどのMCPトランスポートも、認証済みの呼び出し元を
+    /// `McpHandler::call_tool`まで届けていない（トランスポート層の認証配線は
+    /// 別問題として本Issueのスコープ外としている）。本メソッドは、何らかの
+    /// 方法で既に検証済みの`AuthUser`を持っている呼び出し元
+    /// （テスト、または将来的にトレイトオブジェクトではなく具体的な
+    /// `DatabaseHandler`を保持する形で認証済みの呼び出し元が実装された場合）
+    /// のためのものである。
+    pub async fn execute_query_as(
+        &self,
+        args: JsonValue,
+        auth_user: &AuthUser,
+    ) -> Result<JsonValue, McpError> {
+        self.execute_query_core(&args, Some(auth_user)).await
+    }
+
+    async fn execute_query_core(
+        &self,
+        args: &JsonValue,
+        auth_user: Option<&AuthUser>,
+    ) -> Result<JsonValue, McpError> {
         let sql: String = args
             .get("sql")
             .and_then(|v| v.as_str())
@@ -171,11 +219,16 @@ impl DatabaseHandler {
             .map_err(|e| McpError::InvalidRequest(e.to_string()))?;
 
         // クエリ実行
-        let result = connection
+        let mut result = connection
             .inner()
             .query(&sql, &params)
             .await
             .map_err(|e| McpError::InvalidRequest(e.to_string()))?;
+
+        if let Some(manager) = self.column_encryption.clone() {
+            self.enforce_column_encryption(&manager, &sql, &mut result, auth_user)
+                .await?;
+        }
 
         // 結果をJSON形式で返す
         Ok(json!({
@@ -191,6 +244,110 @@ impl DatabaseHandler {
             "total_rows": result.total_rows,
             "execution_time_ms": result.execution_time_ms
         }))
+    }
+
+    /// `result`の各列がどのテーブル由来かを`sql`のテキストから解決し、
+    /// 暗号化対象と設定された列を復号（許可時）またはマスク（拒否時・
+    /// 由来不明時）に置き換える。暗号化列が1つも設定されていない場合は
+    /// 何もしない（オプトイン機能で、既存の呼び出し元には影響しない）。
+    async fn enforce_column_encryption(
+        &self,
+        manager: &Arc<ColumnEncryptionManager>,
+        sql: &str,
+        result: &mut QueryResult,
+        auth_user: Option<&AuthUser>,
+    ) -> Result<(), McpError> {
+        if !manager.has_encrypted_columns() {
+            return Ok(());
+        }
+
+        let context = QueryContext {
+            query_type: QueryType::Select,
+            user_id: auth_user.map(|u| u.id.clone()),
+            session_id: uuid::Uuid::new_v4().to_string(),
+            timestamp: chrono::Utc::now(),
+            source_ip: None,
+            client_info: None,
+        };
+
+        let resolution = resolve_column_provenance(sql).map_err(|e| {
+            McpError::InvalidRequest(format!(
+                "cannot safely determine which table this query's columns came from, \
+                 and column encryption is configured for this database: {e}"
+            ))
+        })?;
+
+        match resolution {
+            ProjectionResolution::WildcardTable(table) => {
+                let column_names: Vec<String> =
+                    result.columns.iter().map(|c| c.name.clone()).collect();
+                for row in result.rows.iter_mut() {
+                    for (idx, value) in row.iter_mut().enumerate() {
+                        let Some(column) = column_names.get(idx) else {
+                            continue;
+                        };
+                        if manager.is_encrypted_column(&table, column) {
+                            Self::mask_or_decrypt(
+                                manager, &table, column, value, &context, auth_user,
+                            )
+                            .await?;
+                        }
+                    }
+                }
+            }
+            ProjectionResolution::PerColumn(provenances) => {
+                for row in result.rows.iter_mut() {
+                    for (idx, value) in row.iter_mut().enumerate() {
+                        match provenances.get(idx) {
+                            Some(ColumnProvenance::Resolved { table, column }) => {
+                                if manager.is_encrypted_column(table, column) {
+                                    Self::mask_or_decrypt(
+                                        manager, table, column, value, &context, auth_user,
+                                    )
+                                    .await?;
+                                }
+                            }
+                            Some(ColumnProvenance::Unknown) => {
+                                *value = Value::String(UNKNOWN_PROVENANCE_PLACEHOLDER.to_string());
+                            }
+                            None => {}
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// 暗号化列1つ分の値を、権限があれば復号済みの値に、なければ
+    /// マスク済みプレースホルダーに置き換える。
+    async fn mask_or_decrypt(
+        manager: &Arc<ColumnEncryptionManager>,
+        table: &str,
+        column: &str,
+        value: &mut Value,
+        context: &QueryContext,
+        auth_user: Option<&AuthUser>,
+    ) -> Result<(), McpError> {
+        match value {
+            Value::Null => Ok(()),
+            Value::String(raw) => {
+                let decrypted = manager
+                    .decrypt(table, column, raw, context, auth_user)
+                    .await
+                    .map_err(|e| McpError::InvalidRequest(format!("decryption failed: {e}")))?;
+                *value = Value::String(decrypted);
+                Ok(())
+            }
+            _ => {
+                // An encrypted column should only ever contain the base64
+                // ciphertext string produced by `encrypt()` - anything else
+                // is unexpected, so mask it rather than assume it's safe.
+                *value = Value::String(ENCRYPTED_PLACEHOLDER.to_string());
+                Ok(())
+            }
+        }
     }
 
     /// コマンド実行処理
