@@ -48,10 +48,11 @@ pub struct DatabaseHandler {
     configs: Arc<RwLock<HashMap<String, DatabaseConfig>>>,
     /// セキュリティレイヤー
     ///
-    /// 構築はされるが、現状 `handle_execute_query` などクエリ実行パスの
-    /// どこからも参照されていない（実行結果に対する権限チェックやカラム
-    /// 暗号化・マスキングは一切行われない）。実際のクエリ実行パスへの
-    /// 組み込みは別途設計が必要な未実施の作業である。
+    /// 構築はされるが、現状`handle_execute_query`などクエリ実行パスの
+    /// どこからも参照されていない。カラムレベル暗号化・マスキングは
+    /// `DatabaseSecurity`とは別の`column_encryption`フィールド経由で
+    /// クエリ実行パスに組み込まれている（`enforce_column_encryption`
+    /// 参照）。`DatabaseSecurity`自体の適用は未実施のまま。
     security: Arc<DatabaseSecurity>,
     /// 脅威インテリジェンス
     threat_intelligence: Option<Arc<ThreatDetectionEngine>>,

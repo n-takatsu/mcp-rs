@@ -28,8 +28,10 @@ pub enum ColumnProvenance {
     Resolved { table: String, column: String },
     /// Could not be attributed to a single table/column (ambiguous
     /// unqualified reference in a multi-table query, a computed expression,
-    /// etc). Safe to pass through as-is, but must not be treated as "known
-    /// not encrypted" - the caller doesn't know what it is.
+    /// etc). This is not a "safe to expose" result - the caller has no way
+    /// to know whether this came from an encrypted column, so it must be
+    /// treated the same as a proven-encrypted one (masked) rather than
+    /// passed through.
     Unknown,
 }
 
