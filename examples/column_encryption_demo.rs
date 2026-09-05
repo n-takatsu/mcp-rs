@@ -8,6 +8,7 @@ use mcp_rs::handlers::database::column_encryption::{
     KeyProvider,
 };
 use mcp_rs::handlers::database::types::{QueryContext, QueryType};
+use mcp_rs::security::auth::types::AuthUser;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -66,6 +67,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  Session ID: {}", context.session_id);
     println!("  Source IP: {}\n", context.source_ip.as_ref().unwrap());
 
+    // No RBAC store is attached to `manager` in this demo, so decrypt() only
+    // requires a verified identity to be present - it doesn't check roles.
+    let admin_user = AuthUser::new(
+        "admin@example.com".to_string(),
+        "admin@example.com".to_string(),
+    );
+
     // Example 1: Encrypt and decrypt email
     println!("=== Example 1: Email Encryption ===");
     let email = "john.doe@example.com";
@@ -79,7 +87,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     let decrypted_email = manager
-        .decrypt("users", "email", &encrypted_email, &context)
+        .decrypt(
+            "users",
+            "email",
+            &encrypted_email,
+            &context,
+            Some(&admin_user),
+        )
         .await?;
     println!("Decrypted: {}", decrypted_email);
     assert_eq!(email, decrypted_email);
@@ -97,7 +111,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     let decrypted_ssn = manager
-        .decrypt("users", "ssn", &encrypted_ssn, &context)
+        .decrypt("users", "ssn", &encrypted_ssn, &context, Some(&admin_user))
         .await?;
     println!("Decrypted: {}", decrypted_ssn);
     assert_eq!(ssn, decrypted_ssn);
@@ -161,7 +175,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Old data should still decrypt
     let decrypted_old = manager
-        .decrypt("customers", "credit_card", &encrypted_v1, &context)
+        .decrypt(
+            "customers",
+            "credit_card",
+            &encrypted_v1,
+            &context,
+            Some(&admin_user),
+        )
         .await?;
     println!(
         "Old data still decrypts: {}",
@@ -209,7 +229,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .encrypt("users", "ssn", "111-22-3333", &context)
         .await?;
     let result = manager
-        .decrypt("users", "ssn", &encrypted_sensitive, &unauthorized_context)
+        .decrypt(
+            "users",
+            "ssn",
+            &encrypted_sensitive,
+            &unauthorized_context,
+            None,
+        )
         .await?;
     println!("Unauthorized user sees: {}", result);
     assert_eq!(result, "***ENCRYPTED***");
