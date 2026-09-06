@@ -61,6 +61,26 @@ pub enum ProjectionResolution {
     WildcardTable(String),
 }
 
+/// Validates that `sql` is exactly one read-only query statement - a plain
+/// `SELECT` or any SELECT-family construct (`UNION`, a CTE, etc) - rejecting
+/// multiple statements or any non-query statement (`INSERT`/`UPDATE`/
+/// `DELETE`/DDL/etc). This is intentionally looser than
+/// [`resolve_column_provenance`], which additionally requires the query to
+/// be provenance-resolvable for column-encryption purposes; this function
+/// exists to enforce the `execute_query` tool's own "SELECT statements
+/// only" contract unconditionally, independent of whether column
+/// encryption is configured at all.
+pub fn validate_single_query_statement(sql: &str) -> Result<(), ProvenanceError> {
+    let statements = Parser::parse_sql(&PostgreSqlDialect {}, sql)
+        .map_err(|e| unsupported(format!("SQL parse error: {e}")))?;
+
+    match statements.as_slice() {
+        [Statement::Query(_)] => Ok(()),
+        [_] => Err(unsupported("execute_query only supports SELECT statements")),
+        _ => Err(unsupported("expected exactly one SQL statement")),
+    }
+}
+
 /// Parses `sql` as a single `SELECT` statement and resolves its projected
 /// columns' table origins.
 pub fn resolve_column_provenance(sql: &str) -> Result<ProjectionResolution, ProvenanceError> {
@@ -363,5 +383,36 @@ mod tests {
     #[test]
     fn unparseable_sql_is_an_error() {
         assert!(resolve("this is not valid SQL at all ###").is_err());
+    }
+
+    #[test]
+    fn validate_single_query_statement_accepts_plain_select() {
+        assert!(validate_single_query_statement("SELECT email FROM users").is_ok());
+    }
+
+    #[test]
+    fn validate_single_query_statement_accepts_cte_and_union() {
+        // Looser than resolve_column_provenance: these are legitimate
+        // read-only SELECT-family constructs that only column-encryption
+        // provenance resolution can't reason about, not statements that
+        // violate execute_query's "SELECT only" contract.
+        assert!(
+            validate_single_query_statement("WITH t AS (SELECT 1 AS x) SELECT x FROM t").is_ok()
+        );
+        assert!(validate_single_query_statement("SELECT a FROM t1 UNION SELECT b FROM t2").is_ok());
+    }
+
+    #[test]
+    fn validate_single_query_statement_rejects_non_select() {
+        assert!(
+            validate_single_query_statement("INSERT INTO users (email) VALUES ('a@b.com')")
+                .is_err()
+        );
+        assert!(validate_single_query_statement("DROP TABLE users").is_err());
+    }
+
+    #[test]
+    fn validate_single_query_statement_rejects_multiple_statements() {
+        assert!(validate_single_query_statement("SELECT 1; DROP TABLE users;").is_err());
     }
 }

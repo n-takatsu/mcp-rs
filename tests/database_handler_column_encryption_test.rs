@@ -484,3 +484,161 @@ async fn execute_query_rejects_multi_statement_sql_before_it_ever_runs() {
 
     cleanup(&pool, table).await;
 }
+
+#[tokio::test]
+#[ignore]
+async fn execute_query_denial_writes_exactly_one_audit_row_for_many_result_rows() {
+    let database_url = std::env::var("TEST_DATABASE_URL").unwrap_or_default();
+    let Some(pool) = try_connect().await else {
+        return;
+    };
+
+    let table = "encryption_it_audit_batching";
+    cleanup(&pool, table).await;
+    sqlx::query(&format!(
+        "CREATE TABLE {table} (id SERIAL PRIMARY KEY, value TEXT)"
+    ))
+    .execute(&pool)
+    .await
+    .expect("failed to create test table");
+
+    let rbac = Arc::new(ColumnEncryptionRbac::new(pool.clone()));
+    // Deliberately grant nothing to the "User" role.
+
+    let mut config = ColumnEncryptionConfig::default();
+    config.encrypted_columns.push(format!("{table}.value"));
+    let manager = Arc::new(ColumnEncryptionManager::with_rbac(config, rbac.clone()));
+
+    let context = mcp_rs::handlers::database::types::QueryContext::new(
+        mcp_rs::handlers::database::types::QueryType::Insert,
+    );
+    for i in 0..5 {
+        let ciphertext = manager
+            .encrypt(table, "value", &format!("secret-{i}"), &context)
+            .await
+            .expect("encrypt should succeed");
+        sqlx::query(&format!("INSERT INTO {table} (value) VALUES ($1)"))
+            .bind(&ciphertext)
+            .execute(&pool)
+            .await
+            .expect("failed to insert encrypted row");
+    }
+
+    let handler = DatabaseHandler::new(None)
+        .await
+        .expect("failed to create handler")
+        .with_column_encryption(manager);
+    handler
+        .add_database(
+            "pg".to_string(),
+            DatabaseConfig {
+                database_type: DatabaseType::PostgreSQL,
+                connection: connection_config_from_url(&database_url),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("failed to add database");
+
+    let mut limited = AuthUser::new(
+        "batching-test-user".to_string(),
+        "batching-test-user".to_string(),
+    );
+    limited.roles.insert(Role::User);
+
+    let response = handler
+        .execute_query_as(
+            json!({ "sql": format!("SELECT value FROM {table}") }),
+            &limited,
+        )
+        .await
+        .expect("query should succeed (masked, not an error)");
+
+    let rows = rows_of(&response);
+    assert_eq!(rows.len(), 5);
+    for row in rows {
+        assert_eq!(row[0].as_str(), Some("***ENCRYPTED***"));
+    }
+
+    // The permission check and denial are the same fact for all 5 rows of
+    // this one column - decrypt_batch() must check and audit it once, not
+    // once per row.
+    let logs = rbac
+        .get_audit_logs(Some("batching-test-user"), None, 100)
+        .await
+        .expect("failed to read audit logs");
+    let denied_count = logs.iter().filter(|l| !l.success).count();
+    assert_eq!(
+        denied_count, 1,
+        "expected exactly one denied-decrypt audit row for a 5-row result, got {denied_count}"
+    );
+
+    cleanup(&pool, table).await;
+}
+
+#[tokio::test]
+#[ignore]
+async fn execute_query_rejects_non_select_even_without_column_encryption_configured() {
+    let database_url = std::env::var("TEST_DATABASE_URL").unwrap_or_default();
+    let Some(pool) = try_connect().await else {
+        return;
+    };
+
+    let table = "encryption_it_no_encryption_configured";
+    cleanup(&pool, table).await;
+    sqlx::query(&format!(
+        "CREATE TABLE {table} (id SERIAL PRIMARY KEY, value TEXT)"
+    ))
+    .execute(&pool)
+    .await
+    .expect("failed to create test table");
+
+    // No .with_column_encryption(...) at all - execute_query's own "SELECT
+    // statements only" contract must still be enforced.
+    let handler = DatabaseHandler::new(None)
+        .await
+        .expect("failed to create handler");
+    handler
+        .add_database(
+            "pg".to_string(),
+            DatabaseConfig {
+                database_type: DatabaseType::PostgreSQL,
+                connection: connection_config_from_url(&database_url),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("failed to add database");
+
+    let stacked = handler
+        .call_tool(tool_call(&format!(
+            "SELECT id FROM {table}; DROP TABLE {table};"
+        )))
+        .await;
+    assert!(
+        stacked.is_err(),
+        "expected a stacked multi-statement payload to be refused, got: {stacked:?}"
+    );
+
+    let non_select = handler
+        .call_tool(tool_call(&format!("DELETE FROM {table}")))
+        .await;
+    assert!(
+        non_select.is_err(),
+        "expected a non-SELECT statement to be refused, got: {non_select:?}"
+    );
+
+    let table_still_exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = $1)",
+    )
+    .bind(table)
+    .fetch_one(&pool)
+    .await
+    .expect("failed to check table existence");
+    assert!(
+        table_still_exists,
+        "the DROP TABLE statement must never have executed"
+    );
+
+    cleanup(&pool, table).await;
+}

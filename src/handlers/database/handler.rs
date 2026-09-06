@@ -4,7 +4,10 @@
 
 use crate::handlers::database::{
     column_encryption::ColumnEncryptionManager,
-    column_provenance::{resolve_column_provenance, ColumnProvenance, ProjectionResolution},
+    column_provenance::{
+        resolve_column_provenance, validate_single_query_statement, ColumnProvenance,
+        ProjectionResolution,
+    },
     engine::{DatabaseEngine, DatabaseEngineBuilder, EngineRegistry},
     pool::{ConnectionPool, PoolManager},
     safety::{SafetyError, SafetyManager}, // 安全機構を追加
@@ -202,6 +205,17 @@ impl DatabaseHandler {
             Vec::new()
         };
 
+        // execute_queryは「SELECT文のみ」を契約として公開しているツールで
+        // あり（list_toolsのdescription参照）、暗号化設定の有無に関わらず
+        // この契約自体を常に強制する。列暗号化が設定されている場合のみ
+        // 有効になる、より厳密な由来解決チェックとは別に、ここで無条件に
+        // 検証する。
+        validate_single_query_statement(&sql).map_err(|e| {
+            McpError::InvalidRequest(format!(
+                "execute_query only supports SELECT statements: {e}"
+            ))
+        })?;
+
         // 接続プールから接続を取得
         let pool = self
             .get_active_pool()
@@ -288,77 +302,93 @@ impl DatabaseHandler {
             client_info: None,
         };
 
-        match resolution {
-            ProjectionResolution::WildcardTable(table) => {
-                let column_names: Vec<String> =
-                    result.columns.iter().map(|c| c.name.clone()).collect();
-                for row in result.rows.iter_mut() {
-                    for (idx, value) in row.iter_mut().enumerate() {
-                        let Some(column) = column_names.get(idx) else {
-                            continue;
-                        };
-                        if manager.is_encrypted_column(&table, column) {
-                            Self::mask_or_decrypt(
-                                manager, &table, column, value, &context, auth_user,
-                            )
-                            .await?;
-                        }
-                    }
-                }
-            }
+        // Normalize both resolution shapes into one per-column-index list,
+        // so the rest of this function has a single code path.
+        let column_provenances: Vec<Option<ColumnProvenance>> = match resolution {
+            ProjectionResolution::WildcardTable(table) => result
+                .columns
+                .iter()
+                .map(|c| {
+                    Some(ColumnProvenance::Resolved {
+                        table: table.clone(),
+                        column: c.name.clone(),
+                    })
+                })
+                .collect(),
             ProjectionResolution::PerColumn(provenances) => {
-                for row in result.rows.iter_mut() {
-                    for (idx, value) in row.iter_mut().enumerate() {
-                        match provenances.get(idx) {
-                            Some(ColumnProvenance::Resolved { table, column }) => {
-                                if manager.is_encrypted_column(table, column) {
-                                    Self::mask_or_decrypt(
-                                        manager, table, column, value, &context, auth_user,
-                                    )
-                                    .await?;
-                                }
-                            }
-                            Some(ColumnProvenance::Unknown) => {
-                                *value = Value::String(UNKNOWN_PROVENANCE_PLACEHOLDER.to_string());
-                            }
-                            None => {}
+                provenances.into_iter().map(Some).collect()
+            }
+        };
+
+        for (idx, provenance) in column_provenances.iter().enumerate() {
+            match provenance {
+                Some(ColumnProvenance::Resolved { table, column })
+                    if manager.is_encrypted_column(table, column) =>
+                {
+                    Self::apply_encrypted_column(
+                        manager, table, column, idx, result, &context, auth_user,
+                    )
+                    .await?;
+                }
+                Some(ColumnProvenance::Unknown) => {
+                    for row in result.rows.iter_mut() {
+                        if let Some(value) = row.get_mut(idx) {
+                            *value = Value::String(UNKNOWN_PROVENANCE_PLACEHOLDER.to_string());
                         }
                     }
                 }
+                _ => {}
             }
         }
 
         Ok(())
     }
 
-    /// 暗号化列1つ分の値を、権限があれば復号済みの値に、なければ
-    /// マスク済みプレースホルダーに置き換える。
-    async fn mask_or_decrypt(
+    /// Decrypts or masks one encrypted column's worth of values across
+    /// every row of `result` at once, via [`ColumnEncryptionManager::decrypt_batch`]
+    /// so the permission check (and, on denial, the audit log entry) happens
+    /// once per query for this column rather than once per row.
+    async fn apply_encrypted_column(
         manager: &Arc<ColumnEncryptionManager>,
         table: &str,
         column: &str,
-        value: &mut Value,
+        idx: usize,
+        result: &mut QueryResult,
         context: &QueryContext,
         auth_user: Option<&AuthUser>,
     ) -> Result<(), McpError> {
-        match value {
-            Value::Null => Ok(()),
-            Value::String(raw) => {
-                let decrypted = manager
-                    .decrypt(table, column, raw, context, auth_user)
-                    .await
-                    .map_err(|e| McpError::InvalidRequest(format!("decryption failed: {e}")))?;
-                *value = Value::String(decrypted);
-                Ok(())
-            }
-            _ => {
-                // An encrypted column should only ever contain the base64
-                // ciphertext string produced by `encrypt()` - anything else
-                // is unexpected, so mask it rather than assume it's safe.
-                *value = Value::String(ENCRYPTED_PLACEHOLDER.to_string());
-                Ok(())
+        let mut row_indices = Vec::new();
+        let mut ciphertexts = Vec::new();
+        for (row_idx, row) in result.rows.iter().enumerate() {
+            if let Some(Value::String(s)) = row.get(idx) {
+                row_indices.push(row_idx);
+                ciphertexts.push(s.as_str());
             }
         }
+
+        if !ciphertexts.is_empty() {
+            let decrypted = manager
+                .decrypt_batch(table, column, &ciphertexts, context, auth_user)
+                .await
+                .map_err(|e| McpError::InvalidRequest(format!("decryption failed: {e}")))?;
+
+            for (row_idx, value) in row_indices.into_iter().zip(decrypted) {
+                result.rows[row_idx][idx] = Value::String(value);
+            }
+        }
+
+        // An encrypted column should only ever contain NULL or the base64
+        // ciphertext string produced by `encrypt()` - anything else is
+        // unexpected, so mask it defensively rather than assume it's safe.
+        for row in result.rows.iter_mut() {
+            if let Some(value) = row.get_mut(idx) {
+                if !matches!(value, Value::Null | Value::String(_)) {
+                    *value = Value::String(ENCRYPTED_PLACEHOLDER.to_string());
+                }
+            }
+        }
+
+        Ok(())
     }
 
     /// コマンド実行処理

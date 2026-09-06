@@ -565,6 +565,67 @@ impl ColumnEncryptionManager {
             return Ok("***ENCRYPTED***".to_string());
         }
 
+        self.decrypt_authorized(table, column, encrypted, context)
+            .await
+    }
+
+    /// Decrypts every value in `ciphertexts` for the same `(table, column)`
+    /// in one call. The permission check (and, on denial, the audit log
+    /// entry) happens exactly once for the whole batch, not once per value -
+    /// unlike calling [`Self::decrypt`] in a loop, which would write one
+    /// denied-permission audit row (and warning) per row of a query result,
+    /// even though the permission outcome for a given column can't differ
+    /// row to row.
+    pub async fn decrypt_batch(
+        &self,
+        table: &str,
+        column: &str,
+        ciphertexts: &[&str],
+        context: &QueryContext,
+        auth_user: Option<&AuthUser>,
+    ) -> Result<Vec<String>, SecurityError> {
+        let has_permission = self
+            .check_decrypt_permission(table, column, auth_user)
+            .await?;
+
+        if !has_permission {
+            self.log_audit(
+                EncryptionOperation::Decrypt,
+                table,
+                column,
+                context,
+                false,
+                Some(format!(
+                    "Permission denied ({} value(s))",
+                    ciphertexts.len()
+                )),
+            )
+            .await;
+            return Ok(ciphertexts
+                .iter()
+                .map(|_| "***ENCRYPTED***".to_string())
+                .collect());
+        }
+
+        let mut results = Vec::with_capacity(ciphertexts.len());
+        for ciphertext in ciphertexts {
+            results.push(
+                self.decrypt_authorized(table, column, ciphertext, context)
+                    .await?,
+            );
+        }
+        Ok(results)
+    }
+
+    /// The actual cache/key-management/decryption work, run once permission
+    /// has already been confirmed by the caller.
+    async fn decrypt_authorized(
+        &self,
+        table: &str,
+        column: &str,
+        encrypted: &str,
+        context: &QueryContext,
+    ) -> Result<String, SecurityError> {
         // Check cache
         let cache_key = format!("{}:{}:{}", table, column, encrypted);
         {
