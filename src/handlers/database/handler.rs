@@ -5,7 +5,7 @@
 use crate::handlers::database::{
     column_encryption::ColumnEncryptionManager,
     column_provenance::{
-        resolve_column_provenance, validate_single_query_statement, ColumnProvenance,
+        dialect_for, resolve_column_provenance, validate_single_query_statement, ColumnProvenance,
         ProjectionResolution,
     },
     engine::{DatabaseEngine, DatabaseEngineBuilder, EngineRegistry},
@@ -205,12 +205,21 @@ impl DatabaseHandler {
             Vec::new()
         };
 
+        let config = {
+            let configs = self.configs.read().await;
+            let active_id = self.active_engine.read().await;
+            configs.get(active_id.as_ref().unwrap()).unwrap().clone()
+        };
+        let dialect = dialect_for(config.database_type.clone());
+
         // execute_queryは「SELECT文のみ」を契約として公開しているツールで
         // あり（list_toolsのdescription参照）、暗号化設定の有無に関わらず
         // この契約自体を常に強制する。列暗号化が設定されている場合のみ
         // 有効になる、より厳密な由来解決チェックとは別に、ここで無条件に
-        // 検証する。
-        validate_single_query_statement(&sql).map_err(|e| {
+        // 検証する。SQLの方言はアクティブなエンジンの`DatabaseType`に
+        // 合わせる - Postgres方言で固定すると、MySQL/SQLiteなど他エンジン
+        // 向けの正当な構文を誤って拒否しかねない。
+        validate_single_query_statement(&sql, dialect.as_ref()).map_err(|e| {
             McpError::InvalidRequest(format!(
                 "execute_query only supports SELECT statements: {e}"
             ))
@@ -222,12 +231,6 @@ impl DatabaseHandler {
             .await
             .map_err(|e| McpError::InvalidRequest(e.to_string()))?;
 
-        let config = {
-            let configs = self.configs.read().await;
-            let active_id = self.active_engine.read().await;
-            configs.get(active_id.as_ref().unwrap()).unwrap().clone()
-        };
-
         // 暗号化列が設定されている場合、クエリを実行する前にSQLの形が
         // 安全に解析できるか確認する。実行後にチェックすると、CTE/UNION/
         // 複数ステートメントのような未対応の形が拒否される前に、その
@@ -235,14 +238,14 @@ impl DatabaseHandler {
         // 既にデータベースに対して実行されてしまっているため、
         // ここで事前に確認する必要がある。
         let provenance = match &self.column_encryption {
-            Some(manager) if manager.has_encrypted_columns() => {
-                Some(resolve_column_provenance(&sql).map_err(|e| {
+            Some(manager) if manager.has_encrypted_columns() => Some(
+                resolve_column_provenance(&sql, dialect.as_ref()).map_err(|e| {
                     McpError::InvalidRequest(format!(
                         "cannot safely determine which table this query's columns came from, \
-                         and column encryption is configured for this database: {e}"
+                             and column encryption is configured for this database: {e}"
                     ))
-                })?)
-            }
+                })?,
+            ),
             _ => None,
         };
 

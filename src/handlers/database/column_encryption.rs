@@ -607,24 +607,61 @@ impl ColumnEncryptionManager {
                 .collect());
         }
 
+        // Batch the success audit too: N successful decrypts for the same
+        // (table, column) in one query is one fact ("this user decrypted N
+        // values from this column just now"), not N independent events -
+        // auditing it N times would scale the same denied-audit problem
+        // this method exists to avoid straight onto the success path.
         let mut results = Vec::with_capacity(ciphertexts.len());
         for ciphertext in ciphertexts {
-            results.push(
-                self.decrypt_authorized(table, column, ciphertext, context)
-                    .await?,
-            );
+            results.push(self.decrypt_value(table, column, ciphertext).await?);
         }
+
+        self.log_audit(
+            EncryptionOperation::Decrypt,
+            table,
+            column,
+            context,
+            true,
+            Some(format!("{} value(s) decrypted", ciphertexts.len())),
+        )
+        .await;
+
         Ok(results)
     }
 
-    /// The actual cache/key-management/decryption work, run once permission
-    /// has already been confirmed by the caller.
+    /// [`Self::decrypt_value`] plus a single-value audit log entry, run once
+    /// permission has already been confirmed by the caller.
     async fn decrypt_authorized(
         &self,
         table: &str,
         column: &str,
         encrypted: &str,
         context: &QueryContext,
+    ) -> Result<String, SecurityError> {
+        let plaintext = self.decrypt_value(table, column, encrypted).await?;
+
+        self.log_audit(
+            EncryptionOperation::Decrypt,
+            table,
+            column,
+            context,
+            true,
+            None,
+        )
+        .await;
+
+        Ok(plaintext)
+    }
+
+    /// The actual cache/key-management/decryption work, with no audit
+    /// logging of its own - callers decide how to audit (once per value, or
+    /// once for a whole batch).
+    async fn decrypt_value(
+        &self,
+        table: &str,
+        column: &str,
+        encrypted: &str,
     ) -> Result<String, SecurityError> {
         // Check cache
         let cache_key = format!("{}:{}:{}", table, column, encrypted);
@@ -693,17 +730,6 @@ impl ColumnEncryptionManager {
             "Decrypted data for {}.{} with key {}",
             table, column, dek.key_id
         );
-
-        // Log successful decryption
-        self.log_audit(
-            EncryptionOperation::Decrypt,
-            table,
-            column,
-            context,
-            true,
-            None,
-        )
-        .await;
 
         Ok(plaintext)
     }

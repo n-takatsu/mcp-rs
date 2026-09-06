@@ -12,14 +12,34 @@
 //! must treat both cases as "cannot prove this is safe" and fail closed,
 //! since this is a security boundary, not a best-effort hint.
 
+use super::types::DatabaseType;
 use sqlparser::ast::{
     Expr, ObjectName, ObjectNamePart, Query, Select, SelectItem, SelectItemQualifiedWildcardKind,
     SetExpr, Statement, TableFactor,
 };
-use sqlparser::dialect::PostgreSqlDialect;
+use sqlparser::dialect::{
+    ClickHouseDialect, Dialect, GenericDialect, MySqlDialect, PostgreSqlDialect, SQLiteDialect,
+};
 use sqlparser::parser::Parser;
 use std::collections::HashMap;
 use std::fmt;
+
+/// Picks the `sqlparser` dialect matching a `DatabaseType`, so SQL-shape
+/// validation actually understands the syntax of the engine it's guarding.
+/// Parsing every engine's SQL as if it were PostgreSQL would misparse (or
+/// wrongly reject) valid MySQL/SQLite/etc syntax.
+pub fn dialect_for(database_type: DatabaseType) -> Box<dyn Dialect + Send> {
+    match database_type {
+        DatabaseType::PostgreSQL => Box::new(PostgreSqlDialect {}),
+        DatabaseType::MySQL | DatabaseType::MariaDB => Box::new(MySqlDialect {}),
+        DatabaseType::SQLite => Box::new(SQLiteDialect {}),
+        DatabaseType::ClickHouse => Box::new(ClickHouseDialect {}),
+        // MongoDB/Redis aren't SQL engines at all; execute_query's SQL-shape
+        // validation doesn't meaningfully apply, but a generic dialect is a
+        // safe fallback rather than assuming Postgres syntax.
+        DatabaseType::MongoDB | DatabaseType::Redis => Box::new(GenericDialect {}),
+    }
+}
 
 /// Where a single projected column came from.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -70,8 +90,11 @@ pub enum ProjectionResolution {
 /// exists to enforce the `execute_query` tool's own "SELECT statements
 /// only" contract unconditionally, independent of whether column
 /// encryption is configured at all.
-pub fn validate_single_query_statement(sql: &str) -> Result<(), ProvenanceError> {
-    let statements = Parser::parse_sql(&PostgreSqlDialect {}, sql)
+pub fn validate_single_query_statement(
+    sql: &str,
+    dialect: &dyn Dialect,
+) -> Result<(), ProvenanceError> {
+    let statements = Parser::parse_sql(dialect, sql)
         .map_err(|e| unsupported(format!("SQL parse error: {e}")))?;
 
     match statements.as_slice() {
@@ -83,8 +106,11 @@ pub fn validate_single_query_statement(sql: &str) -> Result<(), ProvenanceError>
 
 /// Parses `sql` as a single `SELECT` statement and resolves its projected
 /// columns' table origins.
-pub fn resolve_column_provenance(sql: &str) -> Result<ProjectionResolution, ProvenanceError> {
-    let statements = Parser::parse_sql(&PostgreSqlDialect {}, sql)
+pub fn resolve_column_provenance(
+    sql: &str,
+    dialect: &dyn Dialect,
+) -> Result<ProjectionResolution, ProvenanceError> {
+    let statements = Parser::parse_sql(dialect, sql)
         .map_err(|e| unsupported(format!("SQL parse error: {e}")))?;
 
     let [statement] = statements.as_slice() else {
@@ -250,7 +276,7 @@ mod tests {
     use super::*;
 
     fn resolve(sql: &str) -> Result<ProjectionResolution, ProvenanceError> {
-        resolve_column_provenance(sql)
+        resolve_column_provenance(sql, &PostgreSqlDialect {})
     }
 
     fn resolved(table: &str, column: &str) -> ColumnProvenance {
@@ -385,9 +411,13 @@ mod tests {
         assert!(resolve("this is not valid SQL at all ###").is_err());
     }
 
+    fn validate(sql: &str) -> Result<(), ProvenanceError> {
+        validate_single_query_statement(sql, &PostgreSqlDialect {})
+    }
+
     #[test]
     fn validate_single_query_statement_accepts_plain_select() {
-        assert!(validate_single_query_statement("SELECT email FROM users").is_ok());
+        assert!(validate("SELECT email FROM users").is_ok());
     }
 
     #[test]
@@ -396,23 +426,37 @@ mod tests {
         // read-only SELECT-family constructs that only column-encryption
         // provenance resolution can't reason about, not statements that
         // violate execute_query's "SELECT only" contract.
-        assert!(
-            validate_single_query_statement("WITH t AS (SELECT 1 AS x) SELECT x FROM t").is_ok()
-        );
-        assert!(validate_single_query_statement("SELECT a FROM t1 UNION SELECT b FROM t2").is_ok());
+        assert!(validate("WITH t AS (SELECT 1 AS x) SELECT x FROM t").is_ok());
+        assert!(validate("SELECT a FROM t1 UNION SELECT b FROM t2").is_ok());
     }
 
     #[test]
     fn validate_single_query_statement_rejects_non_select() {
-        assert!(
-            validate_single_query_statement("INSERT INTO users (email) VALUES ('a@b.com')")
-                .is_err()
-        );
-        assert!(validate_single_query_statement("DROP TABLE users").is_err());
+        assert!(validate("INSERT INTO users (email) VALUES ('a@b.com')").is_err());
+        assert!(validate("DROP TABLE users").is_err());
     }
 
     #[test]
     fn validate_single_query_statement_rejects_multiple_statements() {
-        assert!(validate_single_query_statement("SELECT 1; DROP TABLE users;").is_err());
+        assert!(validate("SELECT 1; DROP TABLE users;").is_err());
+    }
+
+    #[test]
+    fn dialect_for_maps_each_database_type() {
+        // Just confirm each variant maps to a dialect that can parse basic
+        // SQL without panicking - the specific dialect choice per engine is
+        // documented on `dialect_for` itself.
+        for db_type in [
+            DatabaseType::PostgreSQL,
+            DatabaseType::MySQL,
+            DatabaseType::MariaDB,
+            DatabaseType::SQLite,
+            DatabaseType::ClickHouse,
+            DatabaseType::MongoDB,
+            DatabaseType::Redis,
+        ] {
+            let dialect = dialect_for(db_type);
+            assert!(validate_single_query_statement("SELECT 1", dialect.as_ref()).is_ok());
+        }
     }
 }
