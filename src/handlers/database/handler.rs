@@ -54,8 +54,9 @@ pub struct DatabaseHandler {
     /// 構築はされるが、現状`handle_execute_query`などクエリ実行パスの
     /// どこからも参照されていない。カラムレベル暗号化・マスキングは
     /// `DatabaseSecurity`とは別の`column_encryption`フィールド経由で
-    /// クエリ実行パスに組み込まれている（`enforce_column_encryption`
-    /// 参照）。`DatabaseSecurity`自体の適用は未実施のまま。
+    /// クエリ実行パスに組み込まれている（`execute_query_core`での
+    /// 事前検証と`apply_column_encryption`参照）。`DatabaseSecurity`
+    /// 自体の適用は未実施のまま。
     security: Arc<DatabaseSecurity>,
     /// 脅威インテリジェンス
     threat_intelligence: Option<Arc<ThreatDetectionEngine>>,
