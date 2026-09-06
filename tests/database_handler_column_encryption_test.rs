@@ -736,3 +736,26 @@ async fn execute_query_rejects_non_select_even_without_column_encryption_configu
 
     cleanup(&pool, table).await;
 }
+
+/// No `TEST_DATABASE_URL`/real Postgres needed for this one: it's exercising
+/// the "no active engine registered yet" precondition, which by definition
+/// never gets as far as a real connection.
+#[tokio::test]
+async fn execute_query_with_no_active_engine_returns_an_error_not_a_panic() {
+    let handler = DatabaseHandler::new(None)
+        .await
+        .expect("failed to create handler");
+    // Deliberately never call add_database().
+
+    let mut admin = AuthUser::new("admin-user".to_string(), "admin-user".to_string());
+    admin.roles.insert(Role::Admin);
+
+    let result = handler
+        .execute_query_as(json!({ "sql": "SELECT 1" }), &admin)
+        .await;
+
+    assert!(
+        result.is_err(),
+        "expected a controlled error, got: {result:?}"
+    );
+}

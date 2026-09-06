@@ -208,7 +208,12 @@ impl DatabaseHandler {
         let config = {
             let configs = self.configs.read().await;
             let active_id = self.active_engine.read().await;
-            configs.get(active_id.as_ref().unwrap()).unwrap().clone()
+            let active_id = active_id
+                .as_ref()
+                .ok_or_else(|| McpError::InvalidRequest("No active database engine".to_string()))?;
+            configs.get(active_id).cloned().ok_or_else(|| {
+                McpError::InvalidRequest(format!("Configuration not found for engine: {active_id}"))
+            })?
         };
         let dialect = dialect_for(config.database_type.clone());
 
