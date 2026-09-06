@@ -205,13 +205,18 @@ impl DatabaseHandler {
             Vec::new()
         };
 
+        // active_engineを先に読んでロックを解放してからconfigsを読む -
+        // 両方のロックを同時に保持する時間を最小化し、将来ロック取得順が
+        // 変わった場合のデッドロック要因を避ける。
+        let active_id = {
+            let active_id = self.active_engine.read().await;
+            active_id
+                .clone()
+                .ok_or_else(|| McpError::InvalidRequest("No active database engine".to_string()))?
+        };
         let config = {
             let configs = self.configs.read().await;
-            let active_id = self.active_engine.read().await;
-            let active_id = active_id
-                .as_ref()
-                .ok_or_else(|| McpError::InvalidRequest("No active database engine".to_string()))?;
-            configs.get(active_id).cloned().ok_or_else(|| {
+            configs.get(&active_id).cloned().ok_or_else(|| {
                 McpError::InvalidRequest(format!("Configuration not found for engine: {active_id}"))
             })?
         };
@@ -224,11 +229,8 @@ impl DatabaseHandler {
         // 検証する。SQLの方言はアクティブなエンジンの`DatabaseType`に
         // 合わせる - Postgres方言で固定すると、MySQL/SQLiteなど他エンジン
         // 向けの正当な構文を誤って拒否しかねない。
-        validate_single_query_statement(&sql, dialect.as_ref()).map_err(|e| {
-            McpError::InvalidRequest(format!(
-                "execute_query only supports SELECT statements: {e}"
-            ))
-        })?;
+        validate_single_query_statement(&sql, dialect.as_ref())
+            .map_err(|e| McpError::InvalidRequest(e.to_string()))?;
 
         // 接続プールから接続を取得
         let pool = self
