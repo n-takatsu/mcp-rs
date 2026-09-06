@@ -875,9 +875,9 @@ impl ColumnEncryptionManager {
                 .check_permission(user, table, column, EncryptionOperation::Decrypt)
                 .await
             {
-                // Denial is audited by the caller (decrypt() -> log_audit()),
-                // the sole caller of this method - logging it here too would
-                // write a duplicate audit row and emit a duplicate warning.
+                // Denial is audited by the caller (decrypt() / decrypt_batch()
+                // -> log_audit()) - logging it here too would write a
+                // duplicate audit row and emit a duplicate warning.
                 Ok(has_permission) => Ok(has_permission),
                 Err(e) => {
                     error!("RBAC permission check failed: {}", e);

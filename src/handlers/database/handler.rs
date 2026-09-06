@@ -233,11 +233,16 @@ impl DatabaseHandler {
         validate_single_query_statement(&sql, dialect.as_ref())
             .map_err(|e| McpError::InvalidRequest(e.to_string()))?;
 
-        // 接続プールから接続を取得
+        // 接続プールから接続を取得。上で読んだ`active_id`をそのまま使う
+        // (`get_active_pool()`は使わない) - `get_active_pool()`は
+        // `active_engine`を独自に読み直すため、その間に`switch_engine()`が
+        // 割り込むと、上のdialect/configとは別のエンジンのプールを取得して
+        // しまい、検証と実行が異なるエンジンに対して行われかねない。
         let pool = self
-            .get_active_pool()
+            .pool_manager
+            .get_pool(&active_id)
             .await
-            .map_err(|e| McpError::InvalidRequest(e.to_string()))?;
+            .ok_or_else(|| McpError::InvalidRequest(format!("Pool not found: {active_id}")))?;
 
         // 暗号化列が設定されている場合、クエリを実行する前にSQLの形が
         // 安全に解析できるか確認する。実行後にチェックすると、CTE/UNION/
