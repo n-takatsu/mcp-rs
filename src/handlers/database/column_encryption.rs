@@ -612,18 +612,43 @@ impl ColumnEncryptionManager {
         // values from this column just now"), not N independent events -
         // auditing it N times would scale the same denied-audit problem
         // this method exists to avoid straight onto the success path.
+        //
+        // A single malformed ciphertext (corrupt data, a bad key, anything
+        // that isn't the base64 `EncryptedData` this column is supposed to
+        // hold) must not fail the whole batch: the caller is decrypting one
+        // column across every row of a query result, and one bad row's
+        // content shouldn't hide every other row's legitimate values. Mask
+        // just that value and keep going.
         let mut results = Vec::with_capacity(ciphertexts.len());
+        let mut failures = 0usize;
         for ciphertext in ciphertexts {
-            results.push(self.decrypt_value(table, column, ciphertext).await?);
+            match self.decrypt_value(table, column, ciphertext).await {
+                Ok(plaintext) => results.push(plaintext),
+                Err(e) => {
+                    warn!(
+                        "Failed to decrypt value for {table}.{column}, masking this value instead of failing the query: {e}"
+                    );
+                    failures += 1;
+                    results.push("***DECRYPTION_FAILED***".to_string());
+                }
+            }
         }
 
+        let message = if failures > 0 {
+            format!(
+                "{} value(s) decrypted, {failures} failed to decrypt",
+                ciphertexts.len() - failures
+            )
+        } else {
+            format!("{} value(s) decrypted", ciphertexts.len())
+        };
         self.log_audit(
             EncryptionOperation::Decrypt,
             table,
             column,
             context,
-            true,
-            Some(format!("{} value(s) decrypted", ciphertexts.len())),
+            failures == 0,
+            Some(message),
         )
         .await;
 

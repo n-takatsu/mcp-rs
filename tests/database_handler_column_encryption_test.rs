@@ -737,6 +737,90 @@ async fn execute_query_rejects_non_select_even_without_column_encryption_configu
     cleanup(&pool, table).await;
 }
 
+#[tokio::test]
+#[ignore]
+async fn execute_query_masks_malformed_ciphertext_instead_of_failing_the_whole_query() {
+    let database_url = std::env::var("TEST_DATABASE_URL").unwrap_or_default();
+    let Some(pool) = try_connect().await else {
+        return;
+    };
+
+    let table = "encryption_it_malformed_ciphertext";
+    cleanup(&pool, table).await;
+    sqlx::query(&format!(
+        "CREATE TABLE {table} (id SERIAL PRIMARY KEY, value TEXT)"
+    ))
+    .execute(&pool)
+    .await
+    .expect("failed to create test table");
+
+    let rbac = Arc::new(ColumnEncryptionRbac::new(pool.clone()));
+    rbac.grant_permission("Admin", table, "value", true, true, false)
+        .await
+        .expect("failed to grant admin permission");
+
+    let mut config = ColumnEncryptionConfig::default();
+    config.encrypted_columns.push(format!("{table}.value"));
+    let manager = Arc::new(ColumnEncryptionManager::with_rbac(config, rbac));
+
+    let context = mcp_rs::handlers::database::types::QueryContext::new(
+        mcp_rs::handlers::database::types::QueryType::Insert,
+    );
+    let good_ciphertext = manager
+        .encrypt(table, "value", "top secret plaintext", &context)
+        .await
+        .expect("encrypt should succeed");
+    sqlx::query(&format!("INSERT INTO {table} (value) VALUES ($1)"))
+        .bind(&good_ciphertext)
+        .execute(&pool)
+        .await
+        .expect("failed to insert well-formed encrypted row");
+    // Not valid base64 / not an EncryptedData payload at all - simulates
+    // corrupt data, a manual edit, or a bug elsewhere that wrote something
+    // other than real ciphertext into this encrypted column.
+    sqlx::query(&format!("INSERT INTO {table} (value) VALUES ($1)"))
+        .bind("not valid ciphertext at all")
+        .execute(&pool)
+        .await
+        .expect("failed to insert malformed row");
+
+    let handler = DatabaseHandler::new(None)
+        .await
+        .expect("failed to create handler")
+        .with_column_encryption(manager);
+    handler
+        .add_database(
+            "pg".to_string(),
+            DatabaseConfig {
+                database_type: DatabaseType::PostgreSQL,
+                connection: connection_config_from_url(&database_url),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("failed to add database");
+
+    let mut admin = AuthUser::new("admin-user".to_string(), "admin-user".to_string());
+    admin.roles.insert(Role::Admin);
+
+    // One malformed value must not fail the whole query: the good row still
+    // decrypts, and only the malformed row gets masked.
+    let response = handler
+        .execute_query_as(
+            json!({ "sql": format!("SELECT value FROM {table} ORDER BY id") }),
+            &admin,
+        )
+        .await
+        .expect("query should succeed despite one malformed ciphertext value");
+
+    let rows = rows_of(&response);
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0][0].as_str(), Some("top secret plaintext"));
+    assert_eq!(rows[1][0].as_str(), Some("***DECRYPTION_FAILED***"));
+
+    cleanup(&pool, table).await;
+}
+
 /// No `TEST_DATABASE_URL`/real Postgres needed for this one: it's exercising
 /// the "no active engine registered yet" precondition, which by definition
 /// never gets as far as a real connection.
