@@ -206,19 +206,26 @@ impl DatabaseHandler {
             Vec::new()
         };
 
-        // active_engineを先に読んでロックを解放してからconfigsを読む -
-        // 両方のロックを同時に保持する時間を最小化し、将来ロック取得順が
-        // 変わった場合のデッドロック要因を避ける。
-        let active_id = {
-            let active_id = self.active_engine.read().await;
-            active_id
-                .clone()
-                .ok_or_else(|| McpError::InvalidRequest("No active database engine".to_string()))?
+        // ツールのinput schemaが公開している`engine`引数を尊重する - 指定が
+        // あればそのエンジンID、なければactive_engineを使う。dialect/config/
+        // poolのすべてをこの同じ`engine_id`から解決することで、明示指定時も
+        // 未指定時も三者が食い違わないようにする。active_engineを読む場合は
+        // ロックを先に解放してからconfigsを読み、両方のロックを同時に保持
+        // する時間を最小化する（将来ロック取得順が変わった場合のデッドロック
+        // 要因を避けるため）。
+        let engine_id = match args.get("engine").and_then(|v| v.as_str()) {
+            Some(id) => id.to_string(),
+            None => {
+                let active_id = self.active_engine.read().await;
+                active_id.clone().ok_or_else(|| {
+                    McpError::InvalidRequest("No active database engine".to_string())
+                })?
+            }
         };
         let config = {
             let configs = self.configs.read().await;
-            configs.get(&active_id).cloned().ok_or_else(|| {
-                McpError::InvalidRequest(format!("Configuration not found for engine: {active_id}"))
+            configs.get(&engine_id).cloned().ok_or_else(|| {
+                McpError::InvalidRequest(format!("Configuration not found for engine: {engine_id}"))
             })?
         };
         let dialect = dialect_for(config.database_type.clone());
@@ -233,16 +240,18 @@ impl DatabaseHandler {
         validate_single_query_statement(&sql, dialect.as_ref())
             .map_err(|e| McpError::InvalidRequest(e.to_string()))?;
 
-        // 接続プールから接続を取得。上で読んだ`active_id`をそのまま使う
+        // 接続プールから接続を取得。上で解決した`engine_id`をそのまま使う
         // (`get_active_pool()`は使わない) - `get_active_pool()`は
-        // `active_engine`を独自に読み直すため、その間に`switch_engine()`が
-        // 割り込むと、上のdialect/configとは別のエンジンのプールを取得して
-        // しまい、検証と実行が異なるエンジンに対して行われかねない。
+        // `active_engine`を独自に読み直すため、`engine`引数で明示指定された
+        // 場合にそれと食い違ったり、指定が無い場合でもその間に
+        // `switch_engine()`が割り込むと、上のdialect/configとは別のエンジン
+        // のプールを取得してしまい、検証と実行が異なるエンジンに対して
+        // 行われかねない。
         let pool = self
             .pool_manager
-            .get_pool(&active_id)
+            .get_pool(&engine_id)
             .await
-            .ok_or_else(|| McpError::InvalidRequest(format!("Pool not found: {active_id}")))?;
+            .ok_or_else(|| McpError::InvalidRequest(format!("Pool not found: {engine_id}")))?;
 
         // 暗号化列が設定されている場合、クエリを実行する前にSQLの形が
         // 安全に解析できるか確認する。実行後にチェックすると、CTE/UNION/

@@ -837,6 +837,73 @@ async fn execute_query_masks_malformed_ciphertext_instead_of_failing_the_whole_q
     cleanup(&pool, table).await;
 }
 
+#[tokio::test]
+#[ignore]
+async fn execute_query_honors_explicit_engine_argument_over_the_active_one() {
+    let database_url = std::env::var("TEST_DATABASE_URL").unwrap_or_default();
+    let Some(_pool) = try_connect().await else {
+        return;
+    };
+
+    let handler = DatabaseHandler::new(None)
+        .await
+        .expect("failed to create handler");
+    // The first engine added becomes active automatically.
+    handler
+        .add_database(
+            "real".to_string(),
+            DatabaseConfig {
+                database_type: DatabaseType::PostgreSQL,
+                connection: connection_config_from_url(&database_url),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("failed to add the real database");
+    // Registered but never made active - unreachable, so any query actually
+    // dispatched to it (rather than silently falling back to "real") fails.
+    handler
+        .add_database(
+            "unreachable".to_string(),
+            DatabaseConfig {
+                database_type: DatabaseType::PostgreSQL,
+                connection: ConnectionConfig {
+                    host: "localhost".to_string(),
+                    port: 1,
+                    ..connection_config_from_url(&database_url)
+                },
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("failed to add the unreachable database");
+
+    let mut admin = AuthUser::new("admin-user".to_string(), "admin-user".to_string());
+    admin.roles.insert(Role::Admin);
+
+    // No `engine` argument - uses the active one ("real") and succeeds.
+    handler
+        .execute_query_as(json!({ "sql": "SELECT 1" }), &admin)
+        .await
+        .expect("query against the active engine should succeed");
+
+    // `execute_query`'s own input schema documents an `engine` argument that
+    // selects a specific engine instead of the active one - it must actually
+    // be honored, not silently ignored in favor of whichever engine happens
+    // to be active. Explicitly targeting "unreachable" must reach that
+    // engine (and fail), not quietly fall back to "real".
+    let result = handler
+        .execute_query_as(
+            json!({ "sql": "SELECT 1", "engine": "unreachable" }),
+            &admin,
+        )
+        .await;
+    assert!(
+        result.is_err(),
+        "expected the query to be dispatched to the unreachable engine and fail, got: {result:?}"
+    );
+}
+
 /// No `TEST_DATABASE_URL`/real Postgres needed for this one: it's exercising
 /// the "no active engine registered yet" precondition, which by definition
 /// never gets as far as a real connection.
