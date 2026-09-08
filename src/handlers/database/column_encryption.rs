@@ -526,9 +526,9 @@ impl ColumnEncryptionManager {
         // Log successful encryption
         self.log_audit(
             EncryptionOperation::Encrypt,
-            table,
-            column,
+            (table, column),
             context,
+            context.user_id.as_deref(),
             true,
             None,
         )
@@ -555,9 +555,9 @@ impl ColumnEncryptionManager {
             // Log permission denied
             self.log_audit(
                 EncryptionOperation::Decrypt,
-                table,
-                column,
+                (table, column),
                 context,
+                auth_user.map(|u| u.id.as_str()),
                 false,
                 Some("Permission denied".to_string()),
             )
@@ -565,7 +565,7 @@ impl ColumnEncryptionManager {
             return Ok("***ENCRYPTED***".to_string());
         }
 
-        self.decrypt_authorized(table, column, encrypted, context)
+        self.decrypt_authorized(table, column, encrypted, context, auth_user)
             .await
     }
 
@@ -591,9 +591,9 @@ impl ColumnEncryptionManager {
         if !has_permission {
             self.log_audit(
                 EncryptionOperation::Decrypt,
-                table,
-                column,
+                (table, column),
                 context,
+                auth_user.map(|u| u.id.as_str()),
                 false,
                 Some(format!(
                     "Permission denied ({} value(s))",
@@ -644,9 +644,9 @@ impl ColumnEncryptionManager {
         };
         self.log_audit(
             EncryptionOperation::Decrypt,
-            table,
-            column,
+            (table, column),
             context,
+            auth_user.map(|u| u.id.as_str()),
             failures == 0,
             Some(message),
         )
@@ -663,14 +663,15 @@ impl ColumnEncryptionManager {
         column: &str,
         encrypted: &str,
         context: &QueryContext,
+        auth_user: Option<&AuthUser>,
     ) -> Result<String, SecurityError> {
         let plaintext = self.decrypt_value(table, column, encrypted).await?;
 
         self.log_audit(
             EncryptionOperation::Decrypt,
-            table,
-            column,
+            (table, column),
             context,
+            auth_user.map(|u| u.id.as_str()),
             true,
             None,
         )
@@ -948,16 +949,17 @@ impl ColumnEncryptionManager {
     async fn log_audit(
         &self,
         operation: EncryptionOperation,
-        table: &str,
-        column: &str,
+        target: (&str, &str),
         context: &QueryContext,
+        user_id: Option<&str>,
         success: bool,
         error: Option<String>,
     ) {
-        let user_id = context.user_id.as_deref().unwrap_or("<unauthenticated>");
+        let (table, column) = target;
+        let user_id_display = user_id.unwrap_or("<unauthenticated>");
         if success {
             debug!(
-                user_id,
+                user_id = user_id_display,
                 operation = %operation,
                 table,
                 column,
@@ -965,7 +967,7 @@ impl ColumnEncryptionManager {
             );
         } else {
             warn!(
-                user_id,
+                user_id = user_id_display,
                 operation = %operation,
                 table,
                 column,
@@ -975,9 +977,9 @@ impl ColumnEncryptionManager {
         }
 
         if let Some(rbac) = &self.rbac {
-            if let Some(user_id) = &context.user_id {
+            if let Some(user_id) = user_id {
                 let audit_log = EncryptionAuditLog {
-                    user_id: user_id.clone(),
+                    user_id: user_id.to_string(),
                     operation,
                     table_name: table.to_string(),
                     column_name: column.to_string(),
