@@ -98,9 +98,32 @@ pub fn validate_single_query_statement(
         .map_err(|e| unsupported(format!("SQL parse error: {e}")))?;
 
     match statements.as_slice() {
-        [Statement::Query(_)] => Ok(()),
+        [Statement::Query(query)] if is_select_family(&query.body) => Ok(()),
         [_] => Err(unsupported("execute_query only supports SELECT statements")),
         _ => Err(unsupported("expected exactly one SQL statement")),
+    }
+}
+
+/// `sqlparser` represents `VALUES (...)`, `INSERT`/`UPDATE`/`DELETE`/`MERGE`
+/// (when used as a query body, e.g. inside a CTE) and the `TABLE` shorthand
+/// as a `Statement::Query` too, alongside genuine `SELECT`s and the set
+/// operations (`UNION`/`EXCEPT`/`INTERSECT`) and parenthesized subqueries
+/// built from them. `Statement::Query(_)` alone can't tell these apart, so
+/// this walks the actual body to confirm it's SELECT-family before
+/// `validate_single_query_statement` accepts it.
+fn is_select_family(body: &SetExpr) -> bool {
+    match body {
+        SetExpr::Select(_) => true,
+        SetExpr::Query(query) => is_select_family(&query.body),
+        SetExpr::SetOperation { left, right, .. } => {
+            is_select_family(left) && is_select_family(right)
+        }
+        SetExpr::Values(_)
+        | SetExpr::Insert(_)
+        | SetExpr::Update(_)
+        | SetExpr::Delete(_)
+        | SetExpr::Merge(_)
+        | SetExpr::Table(_) => false,
     }
 }
 
@@ -434,6 +457,16 @@ mod tests {
     fn validate_single_query_statement_rejects_non_select() {
         assert!(validate("INSERT INTO users (email) VALUES ('a@b.com')").is_err());
         assert!(validate("DROP TABLE users").is_err());
+    }
+
+    #[test]
+    fn validate_single_query_statement_rejects_values_and_table() {
+        // `VALUES (...)` and `TABLE t` parse as `Statement::Query` too (the
+        // same statement variant a real SELECT does), but neither is a
+        // SELECT - execute_query's "SELECT statements only" contract must
+        // still reject them.
+        assert!(validate("VALUES (1)").is_err());
+        assert!(validate("TABLE users").is_err());
     }
 
     #[test]
