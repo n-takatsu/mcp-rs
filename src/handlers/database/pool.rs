@@ -306,8 +306,13 @@ impl ConnectionPool {
             // プールの容量をチェック
             if connections.len() < self.config.max_connections as usize {
                 connections.push_back(connection);
+            } else {
+                // 容量オーバーの場合は接続を即座に破棄する。`connection`は
+                // この関数の引数であり、ここで明示的にdropしなければ
+                // 関数末尾（下のactive_count更新・update_pool_info().await
+                // をまたいだ後）まで生存し続けてしまう。
+                drop(connection);
             }
-            // 容量オーバーの場合は接続を破棄
         }
 
         // アクティブ接続数を減少
