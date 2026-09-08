@@ -290,10 +290,21 @@ async fn execute_query_join_with_ambiguous_encrypted_column_is_masked() {
         .execute(&pool)
         .await
         .expect("failed to insert into left table");
+    // A NULL row alongside the ciphertext one: NULL carries no ciphertext to
+    // hide, so it must survive Unknown-provenance masking unchanged, the
+    // same way it already survives the encrypted-column decrypt path.
+    sqlx::query(&format!("INSERT INTO {left_table} (value) VALUES (NULL)"))
+        .execute(&pool)
+        .await
+        .expect("failed to insert null row into left table");
     sqlx::query(&format!("INSERT INTO {right_table} (left_id) VALUES (1)"))
         .execute(&pool)
         .await
         .expect("failed to insert into right table");
+    sqlx::query(&format!("INSERT INTO {right_table} (left_id) VALUES (2)"))
+        .execute(&pool)
+        .await
+        .expect("failed to insert second row into right table");
 
     let handler = DatabaseHandler::new(None)
         .await
@@ -324,7 +335,7 @@ async fn execute_query_join_with_ambiguous_encrypted_column_is_masked() {
         .execute_query_as(
             json!({
                 "sql": format!(
-                    "SELECT value FROM {left_table} l JOIN {right_table} r ON l.id = r.left_id"
+                    "SELECT value FROM {left_table} l JOIN {right_table} r ON l.id = r.left_id ORDER BY l.id"
                 )
             }),
             &admin,
@@ -333,8 +344,13 @@ async fn execute_query_join_with_ambiguous_encrypted_column_is_masked() {
         .expect("query should succeed (masked, not an error)");
 
     let rows = rows_of(&response);
-    assert_eq!(rows.len(), 1);
+    assert_eq!(rows.len(), 2);
     assert_eq!(rows[0][0].as_str(), Some("***UNKNOWN_PROVENANCE***"));
+    assert!(
+        rows[1][0].is_null(),
+        "NULL should survive Unknown-provenance masking, got: {:?}",
+        rows[1][0]
+    );
 
     cleanup(&pool, left_table).await;
     cleanup(&pool, right_table).await;

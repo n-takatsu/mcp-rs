@@ -347,9 +347,14 @@ impl DatabaseHandler {
                     .await?;
                 }
                 Some(ColumnProvenance::Unknown) => {
+                    // NULL carries no ciphertext to hide - preserve it, same
+                    // as the encrypted-column path below does, instead of
+                    // changing result semantics for consumers expecting null.
                     for row in result.rows.iter_mut() {
                         if let Some(value) = row.get_mut(idx) {
-                            *value = Value::String(UNKNOWN_PROVENANCE_PLACEHOLDER.to_string());
+                            if !matches!(value, Value::Null) {
+                                *value = Value::String(UNKNOWN_PROVENANCE_PLACEHOLDER.to_string());
+                            }
                         }
                     }
                 }
