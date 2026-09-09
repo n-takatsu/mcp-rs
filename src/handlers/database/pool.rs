@@ -300,20 +300,24 @@ impl ConnectionPool {
         // 取得するため、ここで保持したままだと同一タスクが同じRwLockに対して
         // write→readを取得しようとしてデッドロックする
         // （tokio::sync::RwLockは再入不可）。
-        {
+        //
+        // 容量オーバーの場合、接続はロックの中では破棄せず`discarded`として
+        // 退避するだけにする - `Drop`実装が重い処理やロック取得を伴う場合、
+        // 書き込みロックを保持したままdropするとプール全体を不必要に
+        // ブロックしたり、ロック順序問題の温床になりかねないため。
+        let discarded = {
             let mut connections = self.connections.write().await;
 
             // プールの容量をチェック
             if connections.len() < self.config.max_connections as usize {
                 connections.push_back(connection);
+                None
             } else {
-                // 容量オーバーの場合は接続を即座に破棄する。`connection`は
-                // この関数の引数であり、ここで明示的にdropしなければ
-                // 関数末尾（下のactive_count更新・update_pool_info().await
-                // をまたいだ後）まで生存し続けてしまう。
-                drop(connection);
+                Some(connection)
             }
-        }
+        };
+        // ロック解放後、かつ次のawaitより前に即座に破棄する。
+        drop(discarded);
 
         // アクティブ接続数を減少
         {
