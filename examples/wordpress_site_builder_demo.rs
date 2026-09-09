@@ -417,10 +417,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
     ];
 
+    let wp_auth = WpSiteAuth {
+        base_url: &wp_url,
+        username: &wp_username,
+        password: &wp_password,
+    };
+
     match ensure_primary_menu(
-        &wp_url,
-        &wp_username,
-        &wp_password,
+        &wp_auth,
         &page_id_by_title,
         PRIMARY_MENU_NAME,
         &[
@@ -471,9 +475,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ];
 
     match ensure_primary_menu(
-        &wp_url,
-        &wp_username,
-        &wp_password,
+        &wp_auth,
         &page_id_by_title,
         FOOTER_MENU_NAME,
         &["secondary-menu", "smartphone-footermenu"],
@@ -1023,10 +1025,15 @@ async fn direct_rest_api_probe(base_url: &str) -> bool {
     }
 }
 
+/// WordPress REST API接続情報。`ensure_primary_menu`の引数を減らすためのグループ化。
+struct WpSiteAuth<'a> {
+    base_url: &'a str,
+    username: &'a str,
+    password: &'a str,
+}
+
 async fn ensure_primary_menu(
-    base_url: &str,
-    username: &str,
-    password: &str,
+    auth: &WpSiteAuth<'_>,
     page_id_by_title: &HashMap<String, u64>,
     menu_name: &str,
     location_candidates: &[&str],
@@ -1034,14 +1041,14 @@ async fn ensure_primary_menu(
     prune_unknown_items: bool,
 ) -> Result<bool, Box<dyn std::error::Error>> {
     let client = Client::new();
-    let menus_url = format!("{}/wp-json/wp/v2/menus", base_url);
+    let menus_url = format!("{}/wp-json/wp/v2/menus", auth.base_url);
 
     // Reuse existing menu already assigned to candidate locations first.
     // This prevents creating duplicate header/footer menus when theme settings already exist.
     let location_bound_menu_id = {
         let list_loc_resp = client
-            .get(format!("{}/wp-json/wp/v2/menu-locations", base_url))
-            .basic_auth(username, Some(password))
+            .get(format!("{}/wp-json/wp/v2/menu-locations", auth.base_url))
+            .basic_auth(auth.username, Some(auth.password))
             .send()
             .await?;
 
@@ -1075,7 +1082,7 @@ async fn ensure_primary_menu(
 
     let list_resp = client
         .get(&menus_url)
-        .basic_auth(username, Some(password))
+        .basic_auth(auth.username, Some(auth.password))
         .query(&[("per_page", "100")])
         .send()
         .await?;
@@ -1111,7 +1118,7 @@ async fn ensure_primary_menu(
 
         let create_resp = client
             .post(&menus_url)
-            .basic_auth(username, Some(password))
+            .basic_auth(auth.username, Some(auth.password))
             .json(&json!({"name": menu_name}))
             .send()
             .await?;
@@ -1134,10 +1141,10 @@ async fn ensure_primary_menu(
             .ok_or_else(|| io::Error::other("作成したメニューのIDが取得できません"))?
     };
 
-    let menu_items_url = format!("{}/wp-json/wp/v2/menu-items", base_url);
+    let menu_items_url = format!("{}/wp-json/wp/v2/menu-items", auth.base_url);
     let existing_items_resp = client
         .get(&menu_items_url)
-        .basic_auth(username, Some(password))
+        .basic_auth(auth.username, Some(auth.password))
         .query(&[("menus", menu_id.to_string())])
         .send()
         .await?;
@@ -1187,8 +1194,11 @@ async fn ensure_primary_menu(
             }
 
             let delete_resp = client
-                .delete(format!("{}/wp-json/wp/v2/menu-items/{}", base_url, item_id))
-                .basic_auth(username, Some(password))
+                .delete(format!(
+                    "{}/wp-json/wp/v2/menu-items/{}",
+                    auth.base_url, item_id
+                ))
+                .basic_auth(auth.username, Some(auth.password))
                 .query(&[("force", "true")])
                 .send()
                 .await?;
@@ -1251,9 +1261,9 @@ async fn ensure_primary_menu(
             let update_item_resp = client
                 .post(format!(
                     "{}/wp-json/wp/v2/menu-items/{}",
-                    base_url, existing_item_id
+                    auth.base_url, existing_item_id
                 ))
-                .basic_auth(username, Some(password))
+                .basic_auth(auth.username, Some(auth.password))
                 .json(&json!({
                     "menus": menu_id,
                     "title": spec.title,
@@ -1287,7 +1297,7 @@ async fn ensure_primary_menu(
 
         let create_item_resp = client
             .post(&menu_items_url)
-            .basic_auth(username, Some(password))
+            .basic_auth(auth.username, Some(auth.password))
             .json(&json!({
                 "menus": menu_id,
                 "title": spec.title,
@@ -1325,8 +1335,8 @@ async fn ensure_primary_menu(
     }
 
     let assign_resp = client
-        .post(format!("{}/wp-json/wp/v2/menus/{}", base_url, menu_id))
-        .basic_auth(username, Some(password))
+        .post(format!("{}/wp-json/wp/v2/menus/{}", auth.base_url, menu_id))
+        .basic_auth(auth.username, Some(auth.password))
         .json(&json!({ "locations": location_candidates }))
         .send()
         .await?;
@@ -1335,8 +1345,8 @@ async fn ensure_primary_menu(
 
     if !assigned_any_location {
         let list_loc_resp = client
-            .get(format!("{}/wp-json/wp/v2/menu-locations", base_url))
-            .basic_auth(username, Some(password))
+            .get(format!("{}/wp-json/wp/v2/menu-locations", auth.base_url))
+            .basic_auth(auth.username, Some(auth.password))
             .send()
             .await?;
 
