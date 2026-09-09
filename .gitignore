@@ -12,6 +12,13 @@ mcp-config.toml
 # MCP設定はアクセストークンが含まれる可能性があるため除外
 .vscode/mcp.json
 .idea/
+
+# Claude Code: settings.json はセッションごとに承認したコマンドの許可リストが
+# 自動追記される個人利用向けファイルであり、チーム共有設定ではないため除外する。
+# settings.local.json・scheduled_tasks.lock も同様に個人用/実行時ファイル。
+.claude/settings.json
+.claude/settings.local.json
+.claude/scheduled_tasks.lock
 *.swp
 *.swo
 *~

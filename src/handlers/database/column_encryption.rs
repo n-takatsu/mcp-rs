@@ -441,6 +441,13 @@ impl ColumnEncryptionManager {
         self.config.encrypted_columns.contains(&column_name)
     }
 
+    /// Whether any column is configured for encryption at all - callers can
+    /// use this to skip per-row enforcement entirely when the feature isn't
+    /// in use.
+    pub fn has_encrypted_columns(&self) -> bool {
+        !self.config.encrypted_columns.is_empty()
+    }
+
     /// Encrypt data for a column
     pub async fn encrypt(
         &self,
@@ -519,9 +526,9 @@ impl ColumnEncryptionManager {
         // Log successful encryption
         self.log_audit(
             EncryptionOperation::Encrypt,
-            table,
-            column,
+            (table, column),
             context,
+            context.user_id.as_deref(),
             true,
             None,
         )
@@ -537,19 +544,20 @@ impl ColumnEncryptionManager {
         column: &str,
         encrypted: &str,
         context: &QueryContext,
+        auth_user: Option<&AuthUser>,
     ) -> Result<String, SecurityError> {
         // Check permissions first
         let has_permission = self
-            .check_decrypt_permission(table, column, context)
+            .check_decrypt_permission(table, column, auth_user)
             .await?;
 
         if !has_permission {
             // Log permission denied
             self.log_audit(
                 EncryptionOperation::Decrypt,
-                table,
-                column,
+                (table, column),
                 context,
+                auth_user.map(|u| u.id.as_str()),
                 false,
                 Some("Permission denied".to_string()),
             )
@@ -557,6 +565,130 @@ impl ColumnEncryptionManager {
             return Ok("***ENCRYPTED***".to_string());
         }
 
+        self.decrypt_authorized(table, column, encrypted, context, auth_user)
+            .await
+    }
+
+    /// Decrypts every value in `ciphertexts` for the same `(table, column)`
+    /// in one call. The permission check (and, on denial, the audit log
+    /// entry) happens exactly once for the whole batch, not once per value -
+    /// unlike calling [`Self::decrypt`] in a loop, which would write one
+    /// denied-permission audit row (and warning) per row of a query result,
+    /// even though the permission outcome for a given column can't differ
+    /// row to row.
+    pub async fn decrypt_batch(
+        &self,
+        table: &str,
+        column: &str,
+        ciphertexts: &[&str],
+        context: &QueryContext,
+        auth_user: Option<&AuthUser>,
+    ) -> Result<Vec<String>, SecurityError> {
+        let has_permission = self
+            .check_decrypt_permission(table, column, auth_user)
+            .await?;
+
+        if !has_permission {
+            self.log_audit(
+                EncryptionOperation::Decrypt,
+                (table, column),
+                context,
+                auth_user.map(|u| u.id.as_str()),
+                false,
+                Some(format!(
+                    "Permission denied ({} value(s))",
+                    ciphertexts.len()
+                )),
+            )
+            .await;
+            return Ok(ciphertexts
+                .iter()
+                .map(|_| "***ENCRYPTED***".to_string())
+                .collect());
+        }
+
+        // Batch the success audit too: N successful decrypts for the same
+        // (table, column) in one query is one fact ("this user decrypted N
+        // values from this column just now"), not N independent events -
+        // auditing it N times would scale the same denied-audit problem
+        // this method exists to avoid straight onto the success path.
+        //
+        // A single malformed ciphertext (corrupt data, a bad key, anything
+        // that isn't the base64 `EncryptedData` this column is supposed to
+        // hold) must not fail the whole batch: the caller is decrypting one
+        // column across every row of a query result, and one bad row's
+        // content shouldn't hide every other row's legitimate values. Mask
+        // just that value and keep going.
+        let mut results = Vec::with_capacity(ciphertexts.len());
+        let mut failures = 0usize;
+        for ciphertext in ciphertexts {
+            match self.decrypt_value(table, column, ciphertext).await {
+                Ok(plaintext) => results.push(plaintext),
+                Err(e) => {
+                    warn!(
+                        "Failed to decrypt value for {table}.{column}, masking this value instead of failing the query: {e}"
+                    );
+                    failures += 1;
+                    results.push("***DECRYPTION_FAILED***".to_string());
+                }
+            }
+        }
+
+        let message = if failures > 0 {
+            format!(
+                "{} value(s) decrypted, {failures} failed to decrypt",
+                ciphertexts.len() - failures
+            )
+        } else {
+            format!("{} value(s) decrypted", ciphertexts.len())
+        };
+        self.log_audit(
+            EncryptionOperation::Decrypt,
+            (table, column),
+            context,
+            auth_user.map(|u| u.id.as_str()),
+            failures == 0,
+            Some(message),
+        )
+        .await;
+
+        Ok(results)
+    }
+
+    /// [`Self::decrypt_value`] plus a single-value audit log entry, run once
+    /// permission has already been confirmed by the caller.
+    async fn decrypt_authorized(
+        &self,
+        table: &str,
+        column: &str,
+        encrypted: &str,
+        context: &QueryContext,
+        auth_user: Option<&AuthUser>,
+    ) -> Result<String, SecurityError> {
+        let plaintext = self.decrypt_value(table, column, encrypted).await?;
+
+        self.log_audit(
+            EncryptionOperation::Decrypt,
+            (table, column),
+            context,
+            auth_user.map(|u| u.id.as_str()),
+            true,
+            None,
+        )
+        .await;
+
+        Ok(plaintext)
+    }
+
+    /// The actual cache/key-management/decryption work, with no audit
+    /// logging of its own - callers decide how to audit (once per value, or
+    /// once for a whole batch).
+    async fn decrypt_value(
+        &self,
+        table: &str,
+        column: &str,
+        encrypted: &str,
+    ) -> Result<String, SecurityError> {
         // Check cache
         let cache_key = format!("{}:{}:{}", table, column, encrypted);
         {
@@ -624,17 +756,6 @@ impl ColumnEncryptionManager {
             "Decrypted data for {}.{} with key {}",
             table, column, dek.key_id
         );
-
-        // Log successful decryption
-        self.log_audit(
-            EncryptionOperation::Decrypt,
-            table,
-            column,
-            context,
-            true,
-            None,
-        )
-        .await;
 
         Ok(plaintext)
     }
@@ -732,42 +853,46 @@ impl ColumnEncryptionManager {
     }
 
     /// Check if user has permission to decrypt a column
+    ///
+    /// `auth_user` must be the caller's real, verified identity (with its
+    /// actual roles) - previously this fabricated an empty-roles `AuthUser`
+    /// from just a user ID string, which meant the RBAC check below could
+    /// never actually grant anything through a real role, silently
+    /// defeating per-role permissions.
     async fn check_decrypt_permission(
         &self,
         table: &str,
         column: &str,
-        context: &QueryContext,
+        auth_user: Option<&AuthUser>,
     ) -> Result<bool, SecurityError> {
-        // If RBAC is configured, use it for permission checks
+        // If RBAC is configured, it is the source of truth for this user's
+        // real roles.
         if let Some(rbac) = &self.rbac {
-            if let Some(user_id) = &context.user_id {
-                // Create a minimal AuthUser for permission check
-                // In production, this should come from the auth system
-                let user = AuthUser::new(user_id.clone(), user_id.clone());
+            let Some(user) = auth_user else {
+                return Ok(false);
+            };
 
-                match rbac
-                    .check_permission(&user, table, column, EncryptionOperation::Decrypt)
-                    .await
-                {
-                    Ok(has_permission) => {
-                        // Denial is audited by the caller (decrypt() -> log_audit()),
-                        // the sole caller of this method - logging it here too would
-                        // write a duplicate audit row and emit a duplicate warning.
-                        return Ok(has_permission);
-                    }
-                    Err(e) => {
-                        error!("RBAC permission check failed: {}", e);
-                        return Err(SecurityError::AccessDenied(format!(
-                            "Failed to check permissions: {}",
-                            e
-                        )));
-                    }
+            return match rbac
+                .check_permission(user, table, column, EncryptionOperation::Decrypt)
+                .await
+            {
+                // Denial is audited by the caller (decrypt() / decrypt_batch()
+                // -> log_audit()) - logging it here too would write a
+                // duplicate audit row and emit a duplicate warning.
+                Ok(has_permission) => Ok(has_permission),
+                Err(e) => {
+                    error!("RBAC permission check failed: {}", e);
+                    Err(SecurityError::AccessDenied(format!(
+                        "Failed to check permissions: {}",
+                        e
+                    )))
                 }
-            }
+            };
         }
 
-        // Fallback: allow decryption for authenticated users if RBAC is not configured
-        Ok(context.user_id.is_some())
+        // Fallback: allow decryption for any verified identity if no RBAC
+        // store is configured (there is no per-role policy to enforce).
+        Ok(auth_user.is_some())
     }
 
     /// Rotate key for a specific column
@@ -824,16 +949,17 @@ impl ColumnEncryptionManager {
     async fn log_audit(
         &self,
         operation: EncryptionOperation,
-        table: &str,
-        column: &str,
+        target: (&str, &str),
         context: &QueryContext,
+        user_id: Option<&str>,
         success: bool,
         error: Option<String>,
     ) {
-        let user_id = context.user_id.as_deref().unwrap_or("<unauthenticated>");
+        let (table, column) = target;
+        let user_id_display = user_id.unwrap_or("<unauthenticated>");
         if success {
             debug!(
-                user_id,
+                user_id = user_id_display,
                 operation = %operation,
                 table,
                 column,
@@ -841,7 +967,7 @@ impl ColumnEncryptionManager {
             );
         } else {
             warn!(
-                user_id,
+                user_id = user_id_display,
                 operation = %operation,
                 table,
                 column,
@@ -851,9 +977,9 @@ impl ColumnEncryptionManager {
         }
 
         if let Some(rbac) = &self.rbac {
-            if let Some(user_id) = &context.user_id {
+            if let Some(user_id) = user_id {
                 let audit_log = EncryptionAuditLog {
-                    user_id: user_id.clone(),
+                    user_id: user_id.to_string(),
                     operation,
                     table_name: table.to_string(),
                     column_name: column.to_string(),
@@ -939,8 +1065,9 @@ mod tests {
         assert_ne!(encrypted, plaintext);
         assert!(!encrypted.is_empty());
 
+        let user = AuthUser::new("admin".to_string(), "admin".to_string());
         let decrypted = manager
-            .decrypt("users", "ssn", &encrypted, &context)
+            .decrypt("users", "ssn", &encrypted, &context, Some(&user))
             .await
             .unwrap();
         assert_eq!(decrypted, plaintext);
@@ -1003,8 +1130,9 @@ mod tests {
         manager.rotate_column_key("users", "data").await.unwrap();
 
         // Should still be able to decrypt data encrypted with v1
+        let user = AuthUser::new("admin".to_string(), "admin".to_string());
         let decrypted = manager
-            .decrypt("users", "data", &encrypted, &context)
+            .decrypt("users", "data", &encrypted, &context, Some(&user))
             .await
             .unwrap();
         assert_eq!(decrypted, plaintext);
@@ -1017,23 +1145,23 @@ mod tests {
 
         let manager = ColumnEncryptionManager::new(config);
 
-        // User with ID can decrypt
+        // A verified identity can decrypt when no RBAC store is configured
         let context_auth = create_test_context("admin");
+        let user = AuthUser::new("admin".to_string(), "admin".to_string());
         let encrypted = manager
             .encrypt("users", "ssn", "123-45-6789", &context_auth)
             .await
             .unwrap();
         let decrypted = manager
-            .decrypt("users", "ssn", &encrypted, &context_auth)
+            .decrypt("users", "ssn", &encrypted, &context_auth, Some(&user))
             .await
             .unwrap();
         assert_eq!(decrypted, "123-45-6789");
 
-        // User without ID cannot decrypt
-        let mut context_unauth = create_test_context("guest");
-        context_unauth.user_id = None;
+        // No identity provided cannot decrypt
+        let context_unauth = create_test_context("guest");
         let result = manager
-            .decrypt("users", "ssn", &encrypted, &context_unauth)
+            .decrypt("users", "ssn", &encrypted, &context_unauth, None)
             .await
             .unwrap();
         assert_eq!(result, "***ENCRYPTED***");

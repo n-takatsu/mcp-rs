@@ -2,6 +2,7 @@
 //!
 //! 様々なデータベースエンジンに対する統一的なMCPインターフェースを提供
 
+pub mod column_provenance;
 pub mod engine;
 pub mod handler;
 pub mod pool;

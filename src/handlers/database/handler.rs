@@ -3,6 +3,11 @@
 //! データベース操作のためのMCPハンドラー実装
 
 use crate::handlers::database::{
+    column_encryption::ColumnEncryptionManager,
+    column_provenance::{
+        dialect_for, resolve_column_provenance, validate_single_query_statement, ColumnProvenance,
+        ProjectionResolution,
+    },
     engine::{DatabaseEngine, DatabaseEngineBuilder, EngineRegistry},
     pool::{ConnectionPool, PoolManager},
     safety::{SafetyError, SafetyManager}, // 安全機構を追加
@@ -15,6 +20,7 @@ use crate::handlers::database::{
 use crate::mcp::{
     InitializeParams, McpError, McpHandler, Resource, ResourceReadParams, Tool, ToolCallParams,
 };
+use crate::security::auth::types::AuthUser;
 // use crate::threat_intelligence::ThreatDetectionEngine;
 use crate::handlers::database::security::ThreatDetectionEngine;
 use async_trait::async_trait;
@@ -23,6 +29,15 @@ use serde_json::{json, Value as JsonValue};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+
+/// Placeholder returned in place of an encrypted column's raw value when the
+/// caller isn't authorized to see it decrypted.
+const ENCRYPTED_PLACEHOLDER: &str = "***ENCRYPTED***";
+
+/// Placeholder returned when a result column's source table/column can't be
+/// confidently determined, so it can't be checked against the encrypted-
+/// column configuration at all - see `column_provenance`.
+const UNKNOWN_PROVENANCE_PLACEHOLDER: &str = "***UNKNOWN_PROVENANCE***";
 
 /// データベースMCPハンドラー
 pub struct DatabaseHandler {
@@ -36,15 +51,20 @@ pub struct DatabaseHandler {
     configs: Arc<RwLock<HashMap<String, DatabaseConfig>>>,
     /// セキュリティレイヤー
     ///
-    /// 構築はされるが、現状 `handle_execute_query` などクエリ実行パスの
-    /// どこからも参照されていない（実行結果に対する権限チェックやカラム
-    /// 暗号化・マスキングは一切行われない）。実際のクエリ実行パスへの
-    /// 組み込みは別途設計が必要な未実施の作業である。
+    /// 構築はされるが、現状`handle_execute_query`などクエリ実行パスの
+    /// どこからも参照されていない。カラムレベル暗号化・マスキングは
+    /// `DatabaseSecurity`とは別の`column_encryption`フィールド経由で
+    /// クエリ実行パスに組み込まれている（`execute_query_core`での
+    /// 事前検証と`apply_column_encryption`参照）。`DatabaseSecurity`
+    /// 自体の適用は未実施のまま。
     security: Arc<DatabaseSecurity>,
     /// 脅威インテリジェンス
     threat_intelligence: Option<Arc<ThreatDetectionEngine>>,
     /// 安全機構マネージャー
     safety_manager: Arc<SafetyManager>,
+    /// カラムレベル暗号化マネージャー（未設定ならこのハンドラでは暗号化列の
+    /// 強制を一切行わない - 既存の呼び出し元には影響しないオプトイン機能）
+    column_encryption: Option<Arc<ColumnEncryptionManager>>,
 }
 
 impl DatabaseHandler {
@@ -65,7 +85,14 @@ impl DatabaseHandler {
             security,
             threat_intelligence,
             safety_manager: Arc::new(SafetyManager::new()),
+            column_encryption: None,
         })
+    }
+
+    /// カラムレベル暗号化＋RBACを有効化する（ビルダースタイル）
+    pub fn with_column_encryption(mut self, manager: Arc<ColumnEncryptionManager>) -> Self {
+        self.column_encryption = Some(manager);
+        self
     }
 
     /// データベースエンジンを追加
@@ -139,8 +166,34 @@ impl DatabaseHandler {
             .ok_or_else(|| DatabaseError::PoolError(format!("Pool not found: {}", engine_id)))
     }
 
-    /// クエリ実行処理
+    /// クエリ実行処理（`McpHandler::call_tool`経由 - 呼び出し元の識別子は
+    /// 得られないため、暗号化列は常にfail-closedで扱われる）
     async fn handle_execute_query(&self, args: JsonValue) -> Result<JsonValue, McpError> {
+        self.execute_query_core(&args, None).await
+    }
+
+    /// 検証済みの呼び出し元識別子付きで`execute_query`を実行する。
+    ///
+    /// このコードベースのどのMCPトランスポートも、認証済みの呼び出し元を
+    /// `McpHandler::call_tool`まで届けていない（トランスポート層の認証配線は
+    /// 別問題として本Issueのスコープ外としている）。本メソッドは、何らかの
+    /// 方法で既に検証済みの`AuthUser`を持っている呼び出し元
+    /// （テスト、または将来的にトレイトオブジェクトではなく具体的な
+    /// `DatabaseHandler`を保持する形で認証済みの呼び出し元が実装された場合）
+    /// のためのものである。
+    pub async fn execute_query_as(
+        &self,
+        args: JsonValue,
+        auth_user: &AuthUser,
+    ) -> Result<JsonValue, McpError> {
+        self.execute_query_core(&args, Some(auth_user)).await
+    }
+
+    async fn execute_query_core(
+        &self,
+        args: &JsonValue,
+        auth_user: Option<&AuthUser>,
+    ) -> Result<JsonValue, McpError> {
         let sql: String = args
             .get("sql")
             .and_then(|v| v.as_str())
@@ -153,16 +206,78 @@ impl DatabaseHandler {
             Vec::new()
         };
 
-        // 接続プールから接続を取得
-        let pool = self
-            .get_active_pool()
-            .await
-            .map_err(|e| McpError::InvalidRequest(e.to_string()))?;
-
+        // ツールのinput schemaが公開している`engine`引数を尊重する - 指定が
+        // あればそのエンジンID、なければactive_engineを使う。dialect/config/
+        // poolのすべてをこの同じ`engine_id`から解決することで、明示指定時も
+        // 未指定時も三者が食い違わないようにする。active_engineを読む場合は
+        // ロックを先に解放してからconfigsを読み、両方のロックを同時に保持
+        // する時間を最小化する（将来ロック取得順が変わった場合のデッドロック
+        // 要因を避けるため）。
+        let engine_id = match args.get("engine") {
+            None | Some(JsonValue::Null) => {
+                let active_id = self.active_engine.read().await;
+                active_id.clone().ok_or_else(|| {
+                    McpError::InvalidRequest("No active database engine".to_string())
+                })?
+            }
+            Some(JsonValue::String(id)) => id.clone(),
+            // A present-but-non-string `engine` (a number, object, etc) must
+            // be rejected outright, not silently treated as "not specified"
+            // - that would dispatch the query to whichever engine happens
+            // to be active instead of the one the caller actually asked for.
+            Some(_) => {
+                return Err(McpError::InvalidRequest(
+                    "'engine' parameter must be a string".to_string(),
+                ))
+            }
+        };
         let config = {
             let configs = self.configs.read().await;
-            let active_id = self.active_engine.read().await;
-            configs.get(active_id.as_ref().unwrap()).unwrap().clone()
+            configs.get(&engine_id).cloned().ok_or_else(|| {
+                McpError::InvalidRequest(format!("Configuration not found for engine: {engine_id}"))
+            })?
+        };
+        let dialect = dialect_for(config.database_type.clone());
+
+        // execute_queryは「SELECT文のみ」を契約として公開しているツールで
+        // あり（list_toolsのdescription参照）、暗号化設定の有無に関わらず
+        // この契約自体を常に強制する。列暗号化が設定されている場合のみ
+        // 有効になる、より厳密な由来解決チェックとは別に、ここで無条件に
+        // 検証する。SQLの方言はアクティブなエンジンの`DatabaseType`に
+        // 合わせる - Postgres方言で固定すると、MySQL/SQLiteなど他エンジン
+        // 向けの正当な構文を誤って拒否しかねない。
+        validate_single_query_statement(&sql, dialect.as_ref())
+            .map_err(|e| McpError::InvalidRequest(e.to_string()))?;
+
+        // 接続プールから接続を取得。上で解決した`engine_id`をそのまま使う
+        // (`get_active_pool()`は使わない) - `get_active_pool()`は
+        // `active_engine`を独自に読み直すため、`engine`引数で明示指定された
+        // 場合にそれと食い違ったり、指定が無い場合でもその間に
+        // `switch_engine()`が割り込むと、上のdialect/configとは別のエンジン
+        // のプールを取得してしまい、検証と実行が異なるエンジンに対して
+        // 行われかねない。
+        let pool = self
+            .pool_manager
+            .get_pool(&engine_id)
+            .await
+            .ok_or_else(|| McpError::InvalidRequest(format!("Pool not found: {engine_id}")))?;
+
+        // 暗号化列が設定されている場合、クエリを実行する前にSQLの形が
+        // 安全に解析できるか確認する。実行後にチェックすると、CTE/UNION/
+        // 複数ステートメントのような未対応の形が拒否される前に、その
+        // クエリ（および仕込まれた副作用を持つ別ステートメント）が
+        // 既にデータベースに対して実行されてしまっているため、
+        // ここで事前に確認する必要がある。
+        let provenance = match &self.column_encryption {
+            Some(manager) if manager.has_encrypted_columns() => Some(
+                resolve_column_provenance(&sql, dialect.as_ref()).map_err(|e| {
+                    McpError::InvalidRequest(format!(
+                        "cannot safely determine which table this query's columns came from, \
+                             and column encryption is configured for this database: {e}"
+                    ))
+                })?,
+            ),
+            _ => None,
         };
 
         let connection = pool
@@ -171,11 +286,19 @@ impl DatabaseHandler {
             .map_err(|e| McpError::InvalidRequest(e.to_string()))?;
 
         // クエリ実行
-        let result = connection
+        let mut result = connection
             .inner()
             .query(&sql, &params)
             .await
             .map_err(|e| McpError::InvalidRequest(e.to_string()))?;
+
+        if let Some(resolution) = provenance {
+            let manager = self
+                .column_encryption
+                .clone()
+                .expect("provenance is only Some when self.column_encryption was Some above");
+            Self::apply_column_encryption(&manager, resolution, &mut result, auth_user).await?;
+        }
 
         // 結果をJSON形式で返す
         Ok(json!({
@@ -191,6 +314,120 @@ impl DatabaseHandler {
             "total_rows": result.total_rows,
             "execution_time_ms": result.execution_time_ms
         }))
+    }
+
+    /// 事前に解決済みの列由来（`resolution`）を使って、`result`内の
+    /// 暗号化対象と設定された列を復号（許可時）またはマスク（拒否時・
+    /// 由来不明時）に置き換える。SQLの解析自体は`execute_query_core`側で
+    /// クエリ実行前に完了しているため、ここでは失敗しない
+    /// （`decrypt()`呼び出し自体の失敗を除く）。
+    async fn apply_column_encryption(
+        manager: &Arc<ColumnEncryptionManager>,
+        resolution: ProjectionResolution,
+        result: &mut QueryResult,
+        auth_user: Option<&AuthUser>,
+    ) -> Result<(), McpError> {
+        let context = QueryContext {
+            query_type: QueryType::Select,
+            user_id: auth_user.map(|u| u.id.clone()),
+            session_id: uuid::Uuid::new_v4().to_string(),
+            timestamp: chrono::Utc::now(),
+            source_ip: None,
+            client_info: None,
+        };
+
+        // Normalize both resolution shapes into one per-column-index list,
+        // so the rest of this function has a single code path.
+        let column_provenances: Vec<Option<ColumnProvenance>> = match resolution {
+            ProjectionResolution::WildcardTable(table) => result
+                .columns
+                .iter()
+                .map(|c| {
+                    Some(ColumnProvenance::Resolved {
+                        table: table.clone(),
+                        column: c.name.clone(),
+                    })
+                })
+                .collect(),
+            ProjectionResolution::PerColumn(provenances) => {
+                provenances.into_iter().map(Some).collect()
+            }
+        };
+
+        for (idx, provenance) in column_provenances.iter().enumerate() {
+            match provenance {
+                Some(ColumnProvenance::Resolved { table, column })
+                    if manager.is_encrypted_column(table, column) =>
+                {
+                    Self::apply_encrypted_column(
+                        manager, table, column, idx, result, &context, auth_user,
+                    )
+                    .await?;
+                }
+                Some(ColumnProvenance::Unknown) => {
+                    // NULL carries no ciphertext to hide - preserve it, same
+                    // as the encrypted-column path below does, instead of
+                    // changing result semantics for consumers expecting null.
+                    for row in result.rows.iter_mut() {
+                        if let Some(value) = row.get_mut(idx) {
+                            if !matches!(value, Value::Null) {
+                                *value = Value::String(UNKNOWN_PROVENANCE_PLACEHOLDER.to_string());
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Decrypts or masks one encrypted column's worth of values across
+    /// every row of `result` at once, via [`ColumnEncryptionManager::decrypt_batch`]
+    /// so the permission check (and, on denial, the audit log entry) happens
+    /// once per query for this column rather than once per row.
+    async fn apply_encrypted_column(
+        manager: &Arc<ColumnEncryptionManager>,
+        table: &str,
+        column: &str,
+        idx: usize,
+        result: &mut QueryResult,
+        context: &QueryContext,
+        auth_user: Option<&AuthUser>,
+    ) -> Result<(), McpError> {
+        let mut row_indices = Vec::new();
+        let mut ciphertexts = Vec::new();
+        for (row_idx, row) in result.rows.iter().enumerate() {
+            if let Some(Value::String(s)) = row.get(idx) {
+                row_indices.push(row_idx);
+                ciphertexts.push(s.as_str());
+            }
+        }
+
+        if !ciphertexts.is_empty() {
+            let decrypted = manager
+                .decrypt_batch(table, column, &ciphertexts, context, auth_user)
+                .await
+                .map_err(|e| McpError::InvalidRequest(format!("decryption failed: {e}")))?;
+
+            for (row_idx, value) in row_indices.into_iter().zip(decrypted) {
+                result.rows[row_idx][idx] = Value::String(value);
+            }
+        }
+
+        // An encrypted column should only ever contain NULL or the base64
+        // ciphertext string produced by `encrypt()` - anything else is
+        // unexpected, so mask it defensively rather than assume it's safe.
+        for row in result.rows.iter_mut() {
+            if let Some(value) = row.get_mut(idx) {
+                if !matches!(value, Value::Null | Value::String(_)) {
+                    *value = Value::String(ENCRYPTED_PLACEHOLDER.to_string());
+                }
+            }
+        }
+
+        Ok(())
     }
 
     /// コマンド実行処理
