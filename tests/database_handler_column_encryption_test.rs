@@ -904,6 +904,32 @@ async fn execute_query_honors_explicit_engine_argument_over_the_active_one() {
     );
 }
 
+/// No `TEST_DATABASE_URL`/real Postgres needed for this one either: a
+/// non-string `engine` must be rejected before any engine/pool lookup at
+/// all, so there's nothing here that needs a registered database.
+#[tokio::test]
+async fn execute_query_rejects_non_string_engine_argument() {
+    let handler = DatabaseHandler::new(None)
+        .await
+        .expect("failed to create handler");
+    // Deliberately never call add_database().
+
+    let mut admin = AuthUser::new("admin-user".to_string(), "admin-user".to_string());
+    admin.roles.insert(Role::Admin);
+
+    // A present-but-non-string `engine` (a JSON number here) must be
+    // rejected outright, not silently treated as "not specified" and
+    // dispatched to whichever engine happens to be active.
+    let result = handler
+        .execute_query_as(json!({ "sql": "SELECT 1", "engine": 123 }), &admin)
+        .await;
+
+    assert!(
+        result.is_err(),
+        "expected a non-string 'engine' argument to be rejected, got: {result:?}"
+    );
+}
+
 /// No `TEST_DATABASE_URL`/real Postgres needed for this one: it's exercising
 /// the "no active engine registered yet" precondition, which by definition
 /// never gets as far as a real connection.

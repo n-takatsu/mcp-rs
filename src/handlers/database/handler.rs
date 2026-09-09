@@ -213,13 +213,22 @@ impl DatabaseHandler {
         // ロックを先に解放してからconfigsを読み、両方のロックを同時に保持
         // する時間を最小化する（将来ロック取得順が変わった場合のデッドロック
         // 要因を避けるため）。
-        let engine_id = match args.get("engine").and_then(|v| v.as_str()) {
-            Some(id) => id.to_string(),
-            None => {
+        let engine_id = match args.get("engine") {
+            None | Some(JsonValue::Null) => {
                 let active_id = self.active_engine.read().await;
                 active_id.clone().ok_or_else(|| {
                     McpError::InvalidRequest("No active database engine".to_string())
                 })?
+            }
+            Some(JsonValue::String(id)) => id.clone(),
+            // A present-but-non-string `engine` (a number, object, etc) must
+            // be rejected outright, not silently treated as "not specified"
+            // - that would dispatch the query to whichever engine happens
+            // to be active instead of the one the caller actually asked for.
+            Some(_) => {
+                return Err(McpError::InvalidRequest(
+                    "'engine' parameter must be a string".to_string(),
+                ))
             }
         };
         let config = {
