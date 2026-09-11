@@ -12,8 +12,26 @@ use mcp_rs::transport::Transport;
 use mcp_rs::types::JsonRpcResponse;
 use std::net::SocketAddr;
 use std::time::Duration;
+use tokio::time::Instant;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
+
+/// Polls `addr` until a plain TCP connection succeeds (or panics after a
+/// timeout), instead of a fixed sleep, so tests only proceed once the
+/// spawned `axum::serve` task is actually accepting connections - a fixed
+/// delay can be flaky under load or on slow CI.
+async fn wait_for_server_ready(addr: SocketAddr) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if tokio::net::TcpStream::connect(addr).await.is_ok() {
+            return;
+        }
+        if Instant::now() >= deadline {
+            panic!("server did not become ready on {addr} within timeout");
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
 
 async fn start_test_transport() -> (HttpTransport, SocketAddr) {
     let config = HttpConfig {
@@ -26,8 +44,7 @@ async fn start_test_transport() -> (HttpTransport, SocketAddr) {
     transport.start_server().await.unwrap();
     let addr = transport.bound_addr().await.unwrap();
 
-    // give the spawned serve task a moment to start accepting
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    wait_for_server_ready(addr).await;
 
     (transport, addr)
 }

@@ -190,7 +190,12 @@ struct HttpTransportState {
     anti_replay: Option<Arc<AntiReplayMiddleware>>,
     audit_logger: Arc<AuditLogger>,
     websocket_upgrade_enabled: bool,
-    websocket_max_connections: usize,
+    // Reserves capacity atomically at upgrade time (before the handshake
+    // completes and the connection is actually inserted into
+    // `websocket_connections`), unlike checking that map's length directly,
+    // which leaves a TOCTOU window where concurrent upgrades can all pass
+    // the check before any of them registers a connection.
+    websocket_semaphore: Arc<tokio::sync::Semaphore>,
     websocket_connections: Arc<tokio::sync::Mutex<HashMap<ConnectionId, WebSocketConnectionInfo>>>,
     websocket_total_connections: Arc<AtomicU64>,
     websocket_handler: Arc<dyn MessageHandler>,
@@ -284,7 +289,9 @@ impl HttpTransport {
             },
             audit_logger: Arc::new(AuditLogger::with_defaults()),
             websocket_upgrade_enabled: self.config.enable_websocket_upgrade,
-            websocket_max_connections: self.config.websocket_max_connections,
+            websocket_semaphore: Arc::new(tokio::sync::Semaphore::new(
+                self.config.websocket_max_connections,
+            )),
             websocket_connections: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             websocket_total_connections: Arc::new(AtomicU64::new(0)),
             websocket_handler: Arc::new(JsonRpcWsHandler {
@@ -1038,14 +1045,13 @@ async fn handle_ws_upgrade(
         return status.into_response();
     }
 
-    let active_connections = state.websocket_connections.lock().await.len();
-    if active_connections >= state.websocket_max_connections {
+    let Ok(permit) = Arc::clone(&state.websocket_semaphore).try_acquire_owned() else {
         warn!(
             "Max WebSocket connections reached, rejecting {}",
             remote_addr
         );
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
-    }
+    };
 
     if let Err(status) = check_anti_replay_handshake(
         state.anti_replay.as_ref(),
@@ -1058,13 +1064,29 @@ async fn handle_ws_upgrade(
         return status.into_response();
     }
 
-    ws.on_upgrade(move |socket| handle_ws_socket(socket, state, remote_addr))
+    // /ws shares the same security posture as / and /mcp, HSTS included -
+    // capture it before `state` moves into the upgrade closure below, since
+    // `ws.on_upgrade()`'s returned response is what actually carries
+    // response headers back to the client (the 101 Switching Protocols
+    // response), not something response_headers() gets applied to elsewhere.
+    let hsts_headers = response_headers(&state);
+    let mut response =
+        ws.on_upgrade(move |socket| handle_ws_socket(socket, state, remote_addr, permit));
+    response.headers_mut().extend(hsts_headers);
+    response
 }
 
 /// Runs the per-connection message loop for a `/ws` client, adapted from
 /// `websocket::server::handle_socket` to use `HttpTransportState` instead of
-/// a standalone `ServerState`.
-async fn handle_ws_socket(socket: WebSocket, state: HttpTransportState, addr: SocketAddr) {
+/// a standalone `ServerState`. Holds `_permit` for the connection's
+/// lifetime, releasing the reserved capacity slot back to
+/// `websocket_semaphore` when the connection ends.
+async fn handle_ws_socket(
+    socket: WebSocket,
+    state: HttpTransportState,
+    addr: SocketAddr,
+    _permit: tokio::sync::OwnedSemaphorePermit,
+) {
     let conn_id = Uuid::new_v4();
 
     let conn_info = WebSocketConnectionInfo::new(conn_id, addr);
@@ -1210,20 +1232,34 @@ impl MessageHandler for JsonRpcWsHandler {
 
         let request_id = request.get("id").cloned();
 
-        self.request_sender
-            .send(text.to_string())
-            .await
-            .map_err(|e| Error::Internal(format!("Failed to forward WebSocket request: {e}")))?;
-
         let Some(id) = request_id else {
-            // Notification (no `id`) - no response frame expected.
+            // Notification (no `id`) - no response frame expected, so there
+            // is no pending entry to race against.
+            self.request_sender
+                .send(text.to_string())
+                .await
+                .map_err(|e| {
+                    Error::Internal(format!("Failed to forward WebSocket request: {e}"))
+                })?;
             return Ok(None);
         };
 
+        // Register the pending response *before* forwarding the request -
+        // otherwise a core that processes and replies fast enough could call
+        // send_message() before this entry exists, missing the pending map
+        // and falling back to the general notification channel instead of
+        // reaching this waiter at all.
         let (response_tx, response_rx) = tokio::sync::oneshot::channel();
         {
             let mut pending = self.pending_responses.write().await;
             pending.insert(id.clone(), response_tx);
+        }
+
+        if let Err(e) = self.request_sender.send(text.to_string()).await {
+            self.pending_responses.write().await.remove(&id);
+            return Err(Error::Internal(format!(
+                "Failed to forward WebSocket request: {e}"
+            )));
         }
 
         // Matches handle_jsonrpc_request's timeout; a slow/failed request
@@ -1448,6 +1484,23 @@ mod tests {
     use std::net::SocketAddr;
     use tempfile::tempdir;
     use tokio::time::{sleep, Duration, Instant};
+
+    /// Polls `addr` until a plain TCP connection succeeds (or panics after a
+    /// timeout), instead of a fixed sleep, so tests only proceed once the
+    /// spawned `axum::serve` task is actually accepting - avoids flakiness
+    /// under load or slow CI where a fixed delay might not be enough.
+    async fn wait_for_plain_server_ready(addr: SocketAddr) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if tokio::net::TcpStream::connect(addr).await.is_ok() {
+                return;
+            }
+            if Instant::now() >= deadline {
+                panic!("server did not become ready on {addr} within timeout");
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+    }
 
     async fn wait_for_https_server_ready(
         bind_addr: SocketAddr,
@@ -1984,7 +2037,7 @@ mod tests {
         let transport = HttpTransport::new(config).unwrap();
         transport.start_server().await.unwrap();
         let server_addr = transport.bound_addr().await.unwrap();
-        sleep(Duration::from_millis(100)).await;
+        wait_for_plain_server_ready(server_addr).await;
 
         let url = format!("ws://localhost:{}/ws", server_addr.port());
         match tokio_tungstenite::connect_async(&url).await {
@@ -2006,7 +2059,7 @@ mod tests {
         let transport = HttpTransport::new(config).unwrap();
         transport.start_server().await.unwrap();
         let server_addr = transport.bound_addr().await.unwrap();
-        sleep(Duration::from_millis(100)).await;
+        wait_for_plain_server_ready(server_addr).await;
 
         let url = format!("ws://localhost:{}/ws", server_addr.port());
         match tokio_tungstenite::connect_async(&url).await {
@@ -2034,7 +2087,7 @@ mod tests {
         let transport = HttpTransport::new(config).unwrap();
         transport.start_server().await.unwrap();
         let server_addr = transport.bound_addr().await.unwrap();
-        sleep(Duration::from_millis(100)).await;
+        wait_for_plain_server_ready(server_addr).await;
 
         let mut request = format!("ws://localhost:{}/ws", server_addr.port())
             .into_client_request()
@@ -2062,13 +2115,17 @@ mod tests {
         let transport = HttpTransport::new(config).unwrap();
         transport.start_server().await.unwrap();
         let server_addr = transport.bound_addr().await.unwrap();
-        sleep(Duration::from_millis(100)).await;
+        wait_for_plain_server_ready(server_addr).await;
 
         let url = format!("ws://localhost:{}/ws", server_addr.port());
+        // The semaphore permit backing websocket_max_connections is acquired
+        // synchronously inside handle_ws_upgrade before the upgrade response
+        // is even returned, so by the time connect_async() resolves here the
+        // capacity is already reserved - no extra delay needed before the
+        // second attempt.
         let (first_stream, _) = tokio_tungstenite::connect_async(&url)
             .await
             .expect("first connection should succeed");
-        sleep(Duration::from_millis(50)).await;
 
         match tokio_tungstenite::connect_async(&url).await {
             Err(WsError::Http(response)) => {
@@ -2080,6 +2137,55 @@ mod tests {
         }
 
         drop(first_stream);
+    }
+
+    #[tokio::test]
+    async fn test_ws_max_connections_enforced_under_concurrent_upgrades() {
+        // A len()-based guard checked before the handshake completes (and
+        // the connection is actually inserted into websocket_connections)
+        // leaves a TOCTOU window where many concurrent upgrades can all pass
+        // the check before any of them registers - a fixed, sequential
+        // "first, then second" test can't exercise that window. Firing many
+        // upgrades at once does.
+        let config = HttpConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            enable_websocket_upgrade: true,
+            websocket_max_connections: 1,
+            ..HttpConfig::default()
+        };
+        let transport = HttpTransport::new(config).unwrap();
+        transport.start_server().await.unwrap();
+        let server_addr = transport.bound_addr().await.unwrap();
+        wait_for_plain_server_ready(server_addr).await;
+
+        let url = format!("ws://localhost:{}/ws", server_addr.port());
+        let attempts = 10;
+        let handles: Vec<_> = (0..attempts)
+            .map(|_| {
+                let url = url.clone();
+                tokio::spawn(async move { tokio_tungstenite::connect_async(&url).await })
+            })
+            .collect();
+
+        let mut successes = Vec::new();
+        let mut rejections = 0;
+        for handle in handles {
+            match handle.await.unwrap() {
+                Ok(stream) => successes.push(stream),
+                Err(WsError::Http(response)) => {
+                    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+                    rejections += 1;
+                }
+                other => panic!("unexpected connect_async result: {other:?}"),
+            }
+        }
+
+        assert_eq!(
+            successes.len(),
+            1,
+            "expected exactly one connection to be accepted under {attempts} concurrent upgrade attempts"
+        );
+        assert_eq!(rejections, attempts - 1);
     }
 
     #[tokio::test]
@@ -2135,7 +2241,7 @@ mod tests {
             .with_no_client_auth();
 
         let url = format!("wss://localhost:{}/ws", server_addr.port());
-        let (mut ws_stream, _response) = tokio_tungstenite::connect_async_tls_with_config(
+        let (mut ws_stream, upgrade_response) = tokio_tungstenite::connect_async_tls_with_config(
             &url,
             None,
             false,
@@ -2143,6 +2249,16 @@ mod tests {
         )
         .await
         .expect("wss:// handshake should succeed");
+
+        // /ws shares HttpTransportState's response_headers() (HSTS) with the
+        // rest of the transport - it must appear on the 101 Switching
+        // Protocols response itself, not just on ordinary JSON-RPC replies.
+        assert!(
+            upgrade_response
+                .headers()
+                .contains_key("strict-transport-security"),
+            "expected the /ws upgrade response to carry the Strict-Transport-Security header"
+        );
 
         let request_json = serde_json::json!({
             "jsonrpc": "2.0",
