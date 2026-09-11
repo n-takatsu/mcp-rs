@@ -233,13 +233,13 @@ kubectl get secret mcp-rs-tls-certs -n mcp-rs -o yaml
 
 ## 📚 詳細ドキュメント
 
-完全なデプロイメントガイドは[deployment-guide.md](../docs/deployment-guide.md)を参照してください。
+完全なデプロイメントガイドは[deployment-guide.md](docs/deployment-guide.md)を参照してください。
 
 ## 🔗 関連リンク
 
 - [WebSocket Transport Guide](docs/websocket-transport.md)
-- [Security Documentation](../docs/security/)
-- [API Documentation](../docs/api/)
+- [Documentation Index](docs/README.md)
+- [API Documentation](docs/api/)
 - [GitHub Repository](https://github.com/n-takatsu/mcp-rs)
 
 ## 📞 サポート

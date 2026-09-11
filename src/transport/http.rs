@@ -2014,11 +2014,16 @@ mod tests {
     fn test_check_network_policy_rejects_non_loopback_when_configured() {
         // check_network_policy is the exact function shared by both
         // handle_jsonrpc_request (/mcp) and handle_ws_upgrade (/ws) - a live
-        // end-to-end test can't exercise the rejection path against a real
-        // NetworkPolicy, because NetworkPolicy::validate_connection always
-        // allows loopback clients regardless of configuration (a real test
-        // process can only connect from loopback), so this proves the shared
-        // function's own rejection behavior directly instead.
+        // end-to-end test can't exercise its rejection path, because
+        // NetworkPolicy::is_ip_whitelisted (security/network_policy.rs)
+        // returns true for any loopback address before it even looks at
+        // ip_whitelist, and the reject_external_connections check is
+        // likewise gated on `!ip.is_loopback()`. So neither check
+        // validate_connection performs can ever fail for a loopback address
+        // regardless of configuration, and a real test process can only
+        // originate connections from loopback - this proves the shared
+        // function's own rejection behavior directly instead, with a
+        // fabricated non-loopback SocketAddr.
         let policy = NetworkPolicy::default();
         let non_loopback: SocketAddr = "203.0.113.1:12345".parse().unwrap();
         assert!(check_network_policy(&policy, non_loopback).is_err());
