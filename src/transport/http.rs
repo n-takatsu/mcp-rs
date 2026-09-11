@@ -9,6 +9,7 @@ use crate::{
         SecurityHeaders,
     },
     transport::{
+        websocket::server::{ConnectionId, MessageHandler, WebSocketConnectionInfo},
         ConnectionStats, Transport, TransportCapabilities, TransportError, TransportInfo,
         TransportType,
     },
@@ -16,12 +17,16 @@ use crate::{
 };
 use async_trait::async_trait;
 use axum::{
-    extract::{ConnectInfo, State},
+    extract::{
+        ws::{Message, WebSocket},
+        ConnectInfo, State, WebSocketUpgrade,
+    },
     http::{HeaderMap, HeaderValue, StatusCode},
-    response::{IntoResponse, Json},
-    routing::post,
+    response::{IntoResponse, Json, Response},
+    routing::{get, post},
     Router,
 };
+use futures::{SinkExt, StreamExt};
 use hyper_util::{
     rt::{TokioExecutor, TokioIo},
     server::conn::auto::Builder as HyperConnectionBuilder,
@@ -42,7 +47,10 @@ use std::{
     fs::File,
     io::BufReader,
     net::SocketAddr,
-    sync::Arc,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
     time::Instant,
 };
 use tokio::{net::TcpListener, sync::RwLock};
@@ -50,6 +58,7 @@ use tokio_rustls::TlsAcceptor;
 use tower::Service;
 use tower_http::cors::CorsLayer;
 use tracing::{debug, error, info, warn};
+use uuid::Uuid;
 
 /// HTTP Transport configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -107,6 +116,20 @@ pub struct HttpConfig {
     /// headers yet — enable explicitly once client-side support is in place.
     #[serde(default)]
     pub anti_replay_enabled: bool,
+    /// Mount a `/ws` WebSocket upgrade endpoint on this same listener, so it
+    /// shares this transport's TLS termination, `enforce_https`, HSTS, and
+    /// certificate pinning instead of running as a separate, unencrypted
+    /// listener. Defaults to `false` (no new attack surface unless opted in).
+    #[serde(default)]
+    pub enable_websocket_upgrade: bool,
+    /// Maximum concurrent `/ws` connections before new upgrades are rejected
+    /// with 503. Only meaningful when `enable_websocket_upgrade` is `true`.
+    #[serde(default = "default_websocket_max_connections")]
+    pub websocket_max_connections: usize,
+}
+
+fn default_websocket_max_connections() -> usize {
+    1000
 }
 
 impl Default for HttpConfig {
@@ -132,6 +155,8 @@ impl Default for HttpConfig {
             pinned_certificates_sha256: Vec::new(),
             certificate_pin_header: "x-tls-cert-sha256".to_string(),
             anti_replay_enabled: false,
+            enable_websocket_upgrade: false,
+            websocket_max_connections: default_websocket_max_connections(),
         }
     }
 }
@@ -164,6 +189,11 @@ struct HttpTransportState {
     certificate_pin_header: String,
     anti_replay: Option<Arc<AntiReplayMiddleware>>,
     audit_logger: Arc<AuditLogger>,
+    websocket_upgrade_enabled: bool,
+    websocket_max_connections: usize,
+    websocket_connections: Arc<tokio::sync::Mutex<HashMap<ConnectionId, WebSocketConnectionInfo>>>,
+    websocket_total_connections: Arc<AtomicU64>,
+    websocket_handler: Arc<dyn MessageHandler>,
 }
 
 /// HTTP Transport implementation
@@ -210,6 +240,13 @@ impl HttpTransport {
         validate_tls_security_settings(&self.config)
             .map_err(|e| Error::TransportError(TransportError::Configuration(e)))?;
 
+        if self.config.enable_websocket_upgrade && self.config.websocket_max_connections == 0 {
+            return Err(Error::TransportError(TransportError::Configuration(
+                "websocket_max_connections must be greater than 0 when enable_websocket_upgrade is enabled"
+                    .to_string(),
+            )));
+        }
+
         let pinned_certificates_sha256: HashSet<String> = self
             .config
             .pinned_certificates_sha256
@@ -246,11 +283,21 @@ impl HttpTransport {
                 None
             },
             audit_logger: Arc::new(AuditLogger::with_defaults()),
+            websocket_upgrade_enabled: self.config.enable_websocket_upgrade,
+            websocket_max_connections: self.config.websocket_max_connections,
+            websocket_connections: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            websocket_total_connections: Arc::new(AtomicU64::new(0)),
+            websocket_handler: Arc::new(JsonRpcWsHandler {
+                request_sender: self.sender.clone(),
+                pending_responses: self.pending_responses.clone(),
+                stats: self.stats.clone(),
+            }),
         };
 
         let app = Router::new()
             .route("/", post(handle_jsonrpc_request))
             .route("/mcp", post(handle_jsonrpc_request))
+            .route("/ws", get(handle_ws_upgrade))
             .layer(if self.config.cors_enabled {
                 CorsLayer::permissive()
             } else {
@@ -671,104 +718,34 @@ async fn handle_jsonrpc_request(
     headers: HeaderMap,
     Json(request): Json<Value>,
 ) -> std::result::Result<impl IntoResponse, StatusCode> {
-    // Validate connection
-    if let Err(e) = state.network_policy.validate_connection(&remote_addr) {
-        error!("Connection rejected from {}: {}", remote_addr, e);
-        return Err(StatusCode::FORBIDDEN);
-    }
-
-    if state.enforce_https && !state.tls_terminated_locally && !is_forwarded_https(&headers) {
-        warn!(
-            "Rejected non-HTTPS request from {} due to enforce_https policy",
-            remote_addr
-        );
-        return Err(StatusCode::UPGRADE_REQUIRED);
-    }
-
-    if let Some(min_tls_version) = state.min_tls_version.as_deref() {
-        if let Err(reason) = validate_forwarded_tls_version(
-            &headers,
-            min_tls_version,
-            state.enforce_https && !state.tls_terminated_locally,
-        ) {
-            warn!(
-                "Rejected request from {} due to TLS metadata validation failure: {}",
-                remote_addr, reason
-            );
-            return Err(StatusCode::FORBIDDEN);
-        }
-    }
-
-    if state.certificate_pinning_enabled {
-        let Some(actual_fingerprint_raw) = header_value(&headers, &state.certificate_pin_header)
-        else {
-            warn!(
-                "Rejected request from {} due to missing certificate pin header {}",
-                remote_addr, state.certificate_pin_header
-            );
-            return Err(StatusCode::FORBIDDEN);
-        };
-
-        let Some(actual_fingerprint) = normalize_fingerprint(actual_fingerprint_raw) else {
-            warn!(
-                "Rejected request from {} due to invalid certificate fingerprint format",
-                remote_addr
-            );
-            return Err(StatusCode::FORBIDDEN);
-        };
-
-        if !state
-            .pinned_certificates_sha256
-            .contains(actual_fingerprint.as_str())
-        {
-            warn!(
-                "Rejected request from {} due to certificate pin mismatch",
-                remote_addr
-            );
-            return Err(StatusCode::FORBIDDEN);
-        }
-    }
-
-    if let Some(anti_replay) = &state.anti_replay {
-        let user_agent = header_value(&headers, "user-agent").map(str::to_string);
-        let security_headers = SecurityHeaders {
-            nonce: header_value(&headers, "x-nonce").map(str::to_string),
-            timestamp: header_value(&headers, "x-timestamp").map(str::to_string),
-            device_id: header_value(&headers, "x-device-id").map(str::to_string),
-            user_agent: user_agent.clone(),
-            ip_address: Some(remote_addr.ip()),
-        };
-
-        if let Err(e) = anti_replay.validate_headers(&security_headers, None).await {
-            warn!(
-                "Anti-replay validation rejected request from {}: {}",
-                remote_addr, e
-            );
-            let _ = state
-                .audit_logger
-                .log_security_attack(
-                    "replay_or_spoofing",
-                    &e.to_string(),
-                    Some(remote_addr.ip().to_string()),
-                    user_agent,
-                )
-                .await;
-
-            return Err(match e {
-                ReplayError::MissingNonce | ReplayError::MissingTimestamp => {
-                    StatusCode::BAD_REQUEST
-                }
-                ReplayError::NonceAlreadyUsed => StatusCode::CONFLICT,
-                ReplayError::TimestampOutOfWindow
-                | ReplayError::FutureTimestamp
-                | ReplayError::ExpiredTimestamp => StatusCode::REQUEST_TIMEOUT,
-                ReplayError::UnknownDevice | ReplayError::DeviceMismatch(_) => {
-                    StatusCode::FORBIDDEN
-                }
-                _ => StatusCode::BAD_REQUEST,
-            });
-        }
-    }
+    check_network_policy(&state.network_policy, remote_addr)?;
+    check_https_enforcement(
+        state.enforce_https,
+        state.tls_terminated_locally,
+        &headers,
+        remote_addr,
+    )?;
+    check_min_tls_version(
+        state.min_tls_version.as_deref(),
+        state.enforce_https,
+        state.tls_terminated_locally,
+        &headers,
+        remote_addr,
+    )?;
+    check_certificate_pin(
+        state.certificate_pinning_enabled,
+        &state.certificate_pin_header,
+        &state.pinned_certificates_sha256,
+        &headers,
+        remote_addr,
+    )?;
+    check_anti_replay_handshake(
+        state.anti_replay.as_ref(),
+        &state.audit_logger,
+        &headers,
+        remote_addr,
+    )
+    .await?;
 
     let start_time = Instant::now();
 
@@ -875,6 +852,418 @@ async fn handle_jsonrpc_request(
         }
 
         Ok((response_headers(&state), Json(response)))
+    }
+}
+
+/// Security checks shared between `/`, `/mcp` (`handle_jsonrpc_request`) and
+/// `/ws` (`handle_ws_upgrade`), extracted so both entry points enforce
+/// exactly the same policy from the same `HttpConfig` - sharing the router
+/// alone does not apply these checks to a new route, since they were
+/// previously hand-rolled inline in `handle_jsonrpc_request` only.
+fn check_network_policy(
+    network_policy: &NetworkPolicy,
+    remote_addr: SocketAddr,
+) -> std::result::Result<(), StatusCode> {
+    if let Err(e) = network_policy.validate_connection(&remote_addr) {
+        error!("Connection rejected from {}: {}", remote_addr, e);
+        return Err(StatusCode::FORBIDDEN);
+    }
+    Ok(())
+}
+
+fn check_https_enforcement(
+    enforce_https: bool,
+    tls_terminated_locally: bool,
+    headers: &HeaderMap,
+    remote_addr: SocketAddr,
+) -> std::result::Result<(), StatusCode> {
+    if enforce_https && !tls_terminated_locally && !is_forwarded_https(headers) {
+        warn!(
+            "Rejected non-HTTPS request from {} due to enforce_https policy",
+            remote_addr
+        );
+        return Err(StatusCode::UPGRADE_REQUIRED);
+    }
+    Ok(())
+}
+
+fn check_min_tls_version(
+    min_tls_version: Option<&str>,
+    enforce_https: bool,
+    tls_terminated_locally: bool,
+    headers: &HeaderMap,
+    remote_addr: SocketAddr,
+) -> std::result::Result<(), StatusCode> {
+    if let Some(min_tls_version) = min_tls_version {
+        if let Err(reason) = validate_forwarded_tls_version(
+            headers,
+            min_tls_version,
+            enforce_https && !tls_terminated_locally,
+        ) {
+            warn!(
+                "Rejected request from {} due to TLS metadata validation failure: {}",
+                remote_addr, reason
+            );
+            return Err(StatusCode::FORBIDDEN);
+        }
+    }
+    Ok(())
+}
+
+fn check_certificate_pin(
+    certificate_pinning_enabled: bool,
+    certificate_pin_header: &str,
+    pinned_certificates_sha256: &HashSet<String>,
+    headers: &HeaderMap,
+    remote_addr: SocketAddr,
+) -> std::result::Result<(), StatusCode> {
+    if !certificate_pinning_enabled {
+        return Ok(());
+    }
+
+    let Some(actual_fingerprint_raw) = header_value(headers, certificate_pin_header) else {
+        warn!(
+            "Rejected request from {} due to missing certificate pin header {}",
+            remote_addr, certificate_pin_header
+        );
+        return Err(StatusCode::FORBIDDEN);
+    };
+
+    let Some(actual_fingerprint) = normalize_fingerprint(actual_fingerprint_raw) else {
+        warn!(
+            "Rejected request from {} due to invalid certificate fingerprint format",
+            remote_addr
+        );
+        return Err(StatusCode::FORBIDDEN);
+    };
+
+    if !pinned_certificates_sha256.contains(actual_fingerprint.as_str()) {
+        warn!(
+            "Rejected request from {} due to certificate pin mismatch",
+            remote_addr
+        );
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    Ok(())
+}
+
+async fn check_anti_replay_handshake(
+    anti_replay: Option<&Arc<AntiReplayMiddleware>>,
+    audit_logger: &AuditLogger,
+    headers: &HeaderMap,
+    remote_addr: SocketAddr,
+) -> std::result::Result<(), StatusCode> {
+    let Some(anti_replay) = anti_replay else {
+        return Ok(());
+    };
+
+    let user_agent = header_value(headers, "user-agent").map(str::to_string);
+    let security_headers = SecurityHeaders {
+        nonce: header_value(headers, "x-nonce").map(str::to_string),
+        timestamp: header_value(headers, "x-timestamp").map(str::to_string),
+        device_id: header_value(headers, "x-device-id").map(str::to_string),
+        user_agent: user_agent.clone(),
+        ip_address: Some(remote_addr.ip()),
+    };
+
+    if let Err(e) = anti_replay.validate_headers(&security_headers, None).await {
+        warn!(
+            "Anti-replay validation rejected request from {}: {}",
+            remote_addr, e
+        );
+        let _ = audit_logger
+            .log_security_attack(
+                "replay_or_spoofing",
+                &e.to_string(),
+                Some(remote_addr.ip().to_string()),
+                user_agent,
+            )
+            .await;
+
+        return Err(match e {
+            ReplayError::MissingNonce | ReplayError::MissingTimestamp => StatusCode::BAD_REQUEST,
+            ReplayError::NonceAlreadyUsed => StatusCode::CONFLICT,
+            ReplayError::TimestampOutOfWindow
+            | ReplayError::FutureTimestamp
+            | ReplayError::ExpiredTimestamp => StatusCode::REQUEST_TIMEOUT,
+            ReplayError::UnknownDevice | ReplayError::DeviceMismatch(_) => StatusCode::FORBIDDEN,
+            _ => StatusCode::BAD_REQUEST,
+        });
+    }
+
+    Ok(())
+}
+
+/// Handles a `/ws` upgrade request, applying the exact same
+/// network-policy/TLS-enforcement/certificate-pinning/anti-replay checks as
+/// `handle_jsonrpc_request` before handing off to the WebSocket message loop.
+async fn handle_ws_upgrade(
+    ws: WebSocketUpgrade,
+    ConnectInfo(remote_addr): ConnectInfo<SocketAddr>,
+    State(state): State<HttpTransportState>,
+    headers: HeaderMap,
+) -> Response {
+    if !state.websocket_upgrade_enabled {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+
+    if let Err(status) = check_network_policy(&state.network_policy, remote_addr) {
+        return status.into_response();
+    }
+    if let Err(status) = check_https_enforcement(
+        state.enforce_https,
+        state.tls_terminated_locally,
+        &headers,
+        remote_addr,
+    ) {
+        return status.into_response();
+    }
+    if let Err(status) = check_min_tls_version(
+        state.min_tls_version.as_deref(),
+        state.enforce_https,
+        state.tls_terminated_locally,
+        &headers,
+        remote_addr,
+    ) {
+        return status.into_response();
+    }
+    if let Err(status) = check_certificate_pin(
+        state.certificate_pinning_enabled,
+        &state.certificate_pin_header,
+        &state.pinned_certificates_sha256,
+        &headers,
+        remote_addr,
+    ) {
+        return status.into_response();
+    }
+
+    let active_connections = state.websocket_connections.lock().await.len();
+    if active_connections >= state.websocket_max_connections {
+        warn!(
+            "Max WebSocket connections reached, rejecting {}",
+            remote_addr
+        );
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    }
+
+    if let Err(status) = check_anti_replay_handshake(
+        state.anti_replay.as_ref(),
+        &state.audit_logger,
+        &headers,
+        remote_addr,
+    )
+    .await
+    {
+        return status.into_response();
+    }
+
+    ws.on_upgrade(move |socket| handle_ws_socket(socket, state, remote_addr))
+}
+
+/// Runs the per-connection message loop for a `/ws` client, adapted from
+/// `websocket::server::handle_socket` to use `HttpTransportState` instead of
+/// a standalone `ServerState`.
+async fn handle_ws_socket(socket: WebSocket, state: HttpTransportState, addr: SocketAddr) {
+    let conn_id = Uuid::new_v4();
+
+    let conn_info = WebSocketConnectionInfo::new(conn_id, addr);
+    state
+        .websocket_connections
+        .lock()
+        .await
+        .insert(conn_id, conn_info);
+    state
+        .websocket_total_connections
+        .fetch_add(1, Ordering::SeqCst);
+
+    if let Err(e) = state.websocket_handler.on_connect(conn_id, addr).await {
+        error!("WebSocket handler on_connect failed: {}", e);
+    }
+
+    let (sender, mut receiver) = socket.split();
+    let sender = Arc::new(tokio::sync::Mutex::new(sender));
+
+    while let Some(msg_result) = receiver.next().await {
+        match msg_result {
+            Ok(msg) => {
+                if let Some(conn) = state.websocket_connections.lock().await.get_mut(&conn_id) {
+                    conn.last_activity = Instant::now();
+                    conn.messages_received += 1;
+                }
+
+                // Message-level anti-replay: WS frames carry no HTTP headers,
+                // so nonce/timestamp are read from the JSON-RPC payload's own
+                // top-level fields instead, matching the standalone
+                // WebSocketServer's existing convention.
+                if let Some(anti_replay) = &state.anti_replay {
+                    if let Message::Text(text) = &msg {
+                        if let Ok(value) = serde_json::from_str::<Value>(text) {
+                            let security_headers = SecurityHeaders {
+                                nonce: value
+                                    .get("nonce")
+                                    .and_then(|v| v.as_str())
+                                    .map(str::to_string),
+                                timestamp: value
+                                    .get("timestamp")
+                                    .and_then(|v| v.as_str())
+                                    .map(str::to_string),
+                                device_id: None,
+                                user_agent: None,
+                                ip_address: Some(addr.ip()),
+                            };
+
+                            if let Err(e) =
+                                anti_replay.validate_headers(&security_headers, None).await
+                            {
+                                warn!(
+                                    "Anti-replay validation rejected WS message from {} ({}): {}",
+                                    addr, conn_id, e
+                                );
+                                let _ = state
+                                    .audit_logger
+                                    .log_security_attack(
+                                        "replay_or_spoofing_ws_message",
+                                        &e.to_string(),
+                                        Some(addr.ip().to_string()),
+                                        None,
+                                    )
+                                    .await;
+                                continue;
+                            }
+                        }
+                    }
+                }
+
+                match state.websocket_handler.handle_message(conn_id, msg).await {
+                    Ok(Some(response)) => {
+                        let mut s = sender.lock().await;
+                        if let Err(e) = s.send(response).await {
+                            error!("Failed to send WebSocket response: {}", e);
+                            break;
+                        }
+
+                        if let Some(conn) =
+                            state.websocket_connections.lock().await.get_mut(&conn_id)
+                        {
+                            conn.messages_sent += 1;
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        error!("WebSocket handler error: {}", e);
+                        break;
+                    }
+                }
+            }
+            Err(e) => {
+                error!("WebSocket error: {}", e);
+                break;
+            }
+        }
+    }
+
+    state.websocket_connections.lock().await.remove(&conn_id);
+
+    if let Err(e) = state.websocket_handler.on_disconnect(conn_id).await {
+        error!("WebSocket handler on_disconnect failed: {}", e);
+    }
+
+    debug!("WebSocket connection {} closed", conn_id);
+}
+
+/// Bridges `/ws` text frames into the same JSON-RPC request/response
+/// correlation machinery `handle_jsonrpc_request` uses (`request_sender` /
+/// `pending_responses`), so `/ws` speaks MCP JSON-RPC rather than echoing
+/// frames back.
+struct JsonRpcWsHandler {
+    request_sender: tokio::sync::mpsc::Sender<String>,
+    pending_responses: Arc<RwLock<HashMap<Value, tokio::sync::oneshot::Sender<JsonRpcResponse>>>>,
+    stats: Arc<RwLock<HttpStats>>,
+}
+
+#[async_trait]
+impl MessageHandler for JsonRpcWsHandler {
+    async fn handle_message(
+        &self,
+        _conn_id: ConnectionId,
+        message: Message,
+    ) -> Result<Option<Message>> {
+        let text = match message {
+            Message::Text(text) => text,
+            _ => return Ok(None),
+        };
+
+        let request: Value = match serde_json::from_str(&text) {
+            Ok(v) => v,
+            Err(e) => {
+                warn!("Failed to parse WebSocket JSON-RPC request: {}", e);
+                return Ok(None);
+            }
+        };
+
+        {
+            let mut stats = self.stats.write().await;
+            stats.total_requests += 1;
+            stats.total_bytes_received += text.len() as u64;
+        }
+
+        let request_id = request.get("id").cloned();
+
+        self.request_sender
+            .send(text.to_string())
+            .await
+            .map_err(|e| Error::Internal(format!("Failed to forward WebSocket request: {e}")))?;
+
+        let Some(id) = request_id else {
+            // Notification (no `id`) - no response frame expected.
+            return Ok(None);
+        };
+
+        let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+        {
+            let mut pending = self.pending_responses.write().await;
+            pending.insert(id.clone(), response_tx);
+        }
+
+        // Matches handle_jsonrpc_request's timeout; a slow/failed request
+        // drops just this one response frame rather than closing the socket.
+        match tokio::time::timeout(std::time::Duration::from_secs(30), response_rx).await {
+            Ok(Ok(response)) => {
+                let response_json = serde_json::to_string(&response).map_err(|e| {
+                    Error::Internal(format!("Failed to serialize WebSocket response: {e}"))
+                })?;
+                {
+                    let mut stats = self.stats.write().await;
+                    stats.total_responses += 1;
+                    stats.total_bytes_sent += response_json.len() as u64;
+                }
+                Ok(Some(Message::Text(response_json.into())))
+            }
+            Ok(Err(_)) => {
+                let mut stats = self.stats.write().await;
+                stats.total_errors += 1;
+                warn!("WebSocket response channel closed for request id {:?}", id);
+                Ok(None)
+            }
+            Err(_) => {
+                self.pending_responses.write().await.remove(&id);
+                let mut stats = self.stats.write().await;
+                stats.total_errors += 1;
+                warn!("WebSocket request timed out for id {:?}", id);
+                Ok(None)
+            }
+        }
+    }
+
+    async fn on_connect(&self, conn_id: ConnectionId, addr: SocketAddr) -> Result<()> {
+        info!("WebSocket client connected: {} from {}", conn_id, addr);
+        Ok(())
+    }
+
+    async fn on_disconnect(&self, conn_id: ConnectionId) -> Result<()> {
+        info!("WebSocket client disconnected: {}", conn_id);
+        Ok(())
     }
 }
 
@@ -1560,5 +1949,226 @@ mod tests {
             ..HttpConfig::default()
         };
         assert!(validate_tls_security_settings(&config).is_err());
+    }
+
+    // --- /ws-on-HttpTransport tests (Issue #261) ---
+
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    use tokio_tungstenite::tungstenite::Error as WsError;
+    use tokio_tungstenite::Connector;
+
+    #[test]
+    fn test_check_network_policy_rejects_non_loopback_when_configured() {
+        // check_network_policy is the exact function shared by both
+        // handle_jsonrpc_request (/mcp) and handle_ws_upgrade (/ws) - a live
+        // end-to-end test can't exercise the rejection path against a real
+        // NetworkPolicy, because NetworkPolicy::validate_connection always
+        // allows loopback clients regardless of configuration (a real test
+        // process can only connect from loopback), so this proves the shared
+        // function's own rejection behavior directly instead.
+        let policy = NetworkPolicy::default();
+        let non_loopback: SocketAddr = "203.0.113.1:12345".parse().unwrap();
+        assert!(check_network_policy(&policy, non_loopback).is_err());
+
+        let loopback: SocketAddr = "127.0.0.1:12345".parse().unwrap();
+        assert!(check_network_policy(&policy, loopback).is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_ws_upgrade_returns_404_when_disabled() {
+        // enable_websocket_upgrade defaults to false.
+        let config = HttpConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            ..HttpConfig::default()
+        };
+        let transport = HttpTransport::new(config).unwrap();
+        transport.start_server().await.unwrap();
+        let server_addr = transport.bound_addr().await.unwrap();
+        sleep(Duration::from_millis(100)).await;
+
+        let url = format!("ws://localhost:{}/ws", server_addr.port());
+        match tokio_tungstenite::connect_async(&url).await {
+            Err(WsError::Http(response)) => {
+                assert_eq!(response.status(), StatusCode::NOT_FOUND);
+            }
+            other => panic!("expected the /ws upgrade to be rejected with 404, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_ws_enforce_https_rejects_plain_ws_without_forwarded_header() {
+        let config = HttpConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            enable_websocket_upgrade: true,
+            enforce_https: true,
+            ..HttpConfig::default()
+        };
+        let transport = HttpTransport::new(config).unwrap();
+        transport.start_server().await.unwrap();
+        let server_addr = transport.bound_addr().await.unwrap();
+        sleep(Duration::from_millis(100)).await;
+
+        let url = format!("ws://localhost:{}/ws", server_addr.port());
+        match tokio_tungstenite::connect_async(&url).await {
+            Err(WsError::Http(response)) => {
+                assert_eq!(response.status(), StatusCode::UPGRADE_REQUIRED);
+            }
+            other => panic!(
+                "expected the plain ws:// upgrade to be rejected under enforce_https, got: {other:?}"
+            ),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_ws_enforce_https_accepts_with_forwarded_proto_header() {
+        let config = HttpConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            enable_websocket_upgrade: true,
+            enforce_https: true,
+            // Isolate the enforce_https/is_forwarded_https check this test
+            // targets from the separate min_tls_version forwarded-header
+            // check, which also applies once enforce_https is set.
+            min_tls_version: None,
+            ..HttpConfig::default()
+        };
+        let transport = HttpTransport::new(config).unwrap();
+        transport.start_server().await.unwrap();
+        let server_addr = transport.bound_addr().await.unwrap();
+        sleep(Duration::from_millis(100)).await;
+
+        let mut request = format!("ws://localhost:{}/ws", server_addr.port())
+            .into_client_request()
+            .unwrap();
+        request
+            .headers_mut()
+            .insert("x-forwarded-proto", "https".parse().unwrap());
+
+        let result = tokio_tungstenite::connect_async(request).await;
+        assert!(
+            result.is_ok(),
+            "expected the upgrade to succeed with X-Forwarded-Proto: https, got: {:?}",
+            result.err()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_ws_max_connections_rejects_second_connection() {
+        let config = HttpConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            enable_websocket_upgrade: true,
+            websocket_max_connections: 1,
+            ..HttpConfig::default()
+        };
+        let transport = HttpTransport::new(config).unwrap();
+        transport.start_server().await.unwrap();
+        let server_addr = transport.bound_addr().await.unwrap();
+        sleep(Duration::from_millis(100)).await;
+
+        let url = format!("ws://localhost:{}/ws", server_addr.port());
+        let (first_stream, _) = tokio_tungstenite::connect_async(&url)
+            .await
+            .expect("first connection should succeed");
+        sleep(Duration::from_millis(50)).await;
+
+        match tokio_tungstenite::connect_async(&url).await {
+            Err(WsError::Http(response)) => {
+                assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+            }
+            other => {
+                panic!("expected the second connection to be rejected with 503, got: {other:?}")
+            }
+        }
+
+        drop(first_stream);
+    }
+
+    #[tokio::test]
+    async fn test_wss_handshake_and_json_rpc_roundtrip_over_tls() {
+        let cert = generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
+        let cert_pem = cert.cert.pem();
+        let key_pem = cert.key_pair.serialize_pem();
+
+        let temp_dir = tempdir().unwrap();
+        let cert_path = temp_dir.path().join("server.crt");
+        let key_path = temp_dir.path().join("server.key");
+        std::fs::write(&cert_path, cert_pem).unwrap();
+        std::fs::write(&key_path, key_pem).unwrap();
+
+        let config = HttpConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            tls_enabled: true,
+            tls_cert_path: Some(cert_path.to_string_lossy().to_string()),
+            tls_key_path: Some(key_path.to_string_lossy().to_string()),
+            enforce_https: true,
+            enable_websocket_upgrade: true,
+            ..HttpConfig::default()
+        };
+
+        let mut transport = HttpTransport::new(config).unwrap();
+        transport.start_server().await.unwrap();
+        let server_addr = transport.bound_addr().await.unwrap();
+
+        let root_ca = reqwest::Certificate::from_pem(cert.cert.pem().as_bytes()).unwrap();
+        wait_for_https_server_ready(server_addr, root_ca, None).await;
+
+        // Simulate the MCP core: drain requests off the transport and reply
+        // with a canned response correlated by the same request id, exactly
+        // like a real handler loop would via receive_message()/send_message().
+        tokio::spawn(async move {
+            while let Ok(Some(request)) = transport.receive_message().await {
+                let response = JsonRpcResponse {
+                    jsonrpc: "2.0".to_string(),
+                    result: Some(serde_json::json!({"ok": true})),
+                    error: None,
+                    id: request.id,
+                };
+                if transport.send_message(response).await.is_err() {
+                    break;
+                }
+            }
+        });
+
+        let mut root_store = rustls::RootCertStore::empty();
+        root_store.add(cert.cert.der().clone()).unwrap();
+        let client_config = rustls::ClientConfig::builder()
+            .with_root_certificates(root_store)
+            .with_no_client_auth();
+
+        let url = format!("wss://localhost:{}/ws", server_addr.port());
+        let (mut ws_stream, _response) = tokio_tungstenite::connect_async_tls_with_config(
+            &url,
+            None,
+            false,
+            Some(Connector::Rustls(Arc::new(client_config))),
+        )
+        .await
+        .expect("wss:// handshake should succeed");
+
+        let request_json = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "tools/list",
+            "params": {},
+            "id": 1
+        });
+        ws_stream
+            .send(tokio_tungstenite::tungstenite::Message::Text(
+                request_json.to_string().into(),
+            ))
+            .await
+            .unwrap();
+
+        let response_msg = tokio::time::timeout(Duration::from_secs(5), ws_stream.next())
+            .await
+            .expect("timed out waiting for a WebSocket response")
+            .expect("stream ended without a response")
+            .expect("WebSocket error while awaiting response");
+
+        let response_text = match response_msg {
+            tokio_tungstenite::tungstenite::Message::Text(text) => text,
+            other => panic!("expected a text frame in response, got: {other:?}"),
+        };
+        let response_value: Value = serde_json::from_str(&response_text).unwrap();
+        assert_eq!(response_value["id"], serde_json::json!(1));
+        assert_eq!(response_value["result"]["ok"], serde_json::json!(true));
     }
 }

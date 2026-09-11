@@ -195,7 +195,15 @@ impl ServerState {
     }
 }
 
-/// WebSocketサーバー
+/// WebSocketサーバー。
+///
+/// 独立した平文TCPリスナーとして動作し、TLS終端を一切持たない
+/// テスト・開発専用のサーバー。本番でTLS/WSSを強制したい場合は
+/// `crate::transport::http::HttpConfig::enable_websocket_upgrade`で
+/// HTTPトランスポートに`/ws`をマウントし、そちらのTLS/`enforce_https`/
+/// HSTS/証明書ピンニングを共有すること
+/// （`TransportFactory::create_transport`は`TransportType::WebSocket`を
+/// 常に拒否し、このサーバーへの本番経路は存在しない）。
 pub struct WebSocketServer {
     /// サーバー状態
     state: ServerState,

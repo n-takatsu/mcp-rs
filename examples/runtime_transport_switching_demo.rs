@@ -184,6 +184,8 @@ fn convert_to_transport_config(
                     .clone()
                     .unwrap_or_else(|| "x-tls-cert-sha256".to_string()),
                 anti_replay_enabled: h.anti_replay_enabled.unwrap_or(false),
+                enable_websocket_upgrade: h.enable_websocket_upgrade.unwrap_or(false),
+                websocket_max_connections: h.websocket_max_connections.unwrap_or(1000),
             }
         })
         .unwrap_or_default();

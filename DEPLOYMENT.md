@@ -237,7 +237,7 @@ kubectl get secret mcp-rs-tls-certs -n mcp-rs -o yaml
 
 ## 🔗 関連リンク
 
-- [WebSocket TLS Guide](../docs/websocket-tls-guide.md)
+- [WebSocket Transport Guide](docs/websocket-transport.md)
 - [Security Documentation](../docs/security/)
 - [API Documentation](../docs/api/)
 - [GitHub Repository](https://github.com/n-takatsu/mcp-rs)

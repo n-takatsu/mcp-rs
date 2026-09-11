@@ -186,7 +186,14 @@ pub struct WebSocketConfig {
     #[serde(default = "default_timeout")]
     pub timeout_seconds: Option<u64>,
 
-    /// TLS有効化
+    /// TLS有効化。
+    ///
+    /// この値は`WebSocketServer`（サーバーモード）からは一切参照されない -
+    /// `WebSocketServer`は独立した平文TCPリスナーとして動作するテスト専用
+    /// サーバーで、TLS終端を持たない。本番でTLS/WSSを強制したい場合は
+    /// `crate::transport::http::HttpConfig::enable_websocket_upgrade`を使い、
+    /// HTTPトランスポートの既存のTLS/`enforce_https`/HSTS/証明書ピンニングを
+    /// 共有する`/ws`エンドポイントを使うこと。
     #[serde(default)]
     pub enable_tls: bool,
 
