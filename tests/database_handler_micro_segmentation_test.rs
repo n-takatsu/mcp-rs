@@ -274,6 +274,88 @@ async fn join_with_one_denied_table_denies_the_whole_query() {
 
 #[tokio::test]
 #[ignore]
+async fn table_reachable_only_via_subquery_is_still_denied() {
+    // Regression test for a real bypass: an earlier version of
+    // resolve_query_tables only walked the top-level FROM/JOIN clause, so a
+    // table referenced solely through a scalar subquery in the projection
+    // list was never checked at all - a caller with no access to `secret`
+    // could read from it anyway, as long as `users` (the top-level FROM
+    // table) had a policy granting access.
+    let database_url = std::env::var("TEST_DATABASE_URL").unwrap_or_default();
+    let Some(pool) = try_connect().await else {
+        return;
+    };
+
+    let outer_table = "microseg_it_subquery_outer";
+    let secret_table = "microseg_it_subquery_secret";
+    cleanup(&pool, outer_table).await;
+    cleanup(&pool, secret_table).await;
+    sqlx::query(&format!(
+        "CREATE TABLE {outer_table} (id SERIAL PRIMARY KEY, value TEXT)"
+    ))
+    .execute(&pool)
+    .await
+    .expect("failed to create outer table");
+    sqlx::query(&format!(
+        "CREATE TABLE {secret_table} (id SERIAL PRIMARY KEY, outer_id INT, ssn TEXT)"
+    ))
+    .execute(&pool)
+    .await
+    .expect("failed to create secret table");
+    sqlx::query(&format!("INSERT INTO {outer_table} (value) VALUES ('x')"))
+        .execute(&pool)
+        .await
+        .expect("failed to insert into outer table");
+    sqlx::query(&format!(
+        "INSERT INTO {secret_table} (outer_id, ssn) VALUES (1, '000-00-0000')"
+    ))
+    .execute(&pool)
+    .await
+    .expect("failed to insert into secret table");
+
+    // Only the outer, top-level FROM table has a matching policy - the
+    // table reached via the scalar subquery has none, so it must fail
+    // closed even though the caller is fully privileged for the outer table.
+    let mut engine = MicroSegmentation::new();
+    engine.add_global_policy(
+        AccessPolicy::new(
+            "allow-outer-only",
+            format!("database:{ENGINE_ID}:{outer_table}"),
+            0,
+        )
+        .with_action("read")
+        .with_role("analyst"),
+    );
+
+    let handler = handler_with_database(&database_url)
+        .await
+        .with_micro_segmentation(Arc::new(engine));
+
+    let mut analyst = AuthUser::new("analyst-user".to_string(), "analyst-user".to_string());
+    analyst.roles.insert(Role::Custom("analyst".to_string()));
+
+    let result = handler
+        .execute_query_as(
+            json!({
+                "sql": format!(
+                    "SELECT id, (SELECT ssn FROM {secret_table} WHERE {secret_table}.outer_id = {outer_table}.id) AS ssn FROM {outer_table}"
+                )
+            }),
+            &analyst,
+        )
+        .await;
+
+    assert!(
+        result.is_err(),
+        "expected the query to be denied because the subquery's table lacks a matching policy, got: {result:?}"
+    );
+
+    cleanup(&pool, outer_table).await;
+    cleanup(&pool, secret_table).await;
+}
+
+#[tokio::test]
+#[ignore]
 async fn no_identity_call_tool_path_is_denied_for_any_positive_trust_requirement() {
     let database_url = std::env::var("TEST_DATABASE_URL").unwrap_or_default();
     let Some(pool) = try_connect().await else {
