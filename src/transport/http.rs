@@ -780,22 +780,24 @@ async fn handle_jsonrpc_request(
         StatusCode::BAD_REQUEST
     })?;
 
-    state.request_sender.send(request_str).await.map_err(|_| {
-        // Update error stats
-        let mut stats = state.stats.blocking_write();
-        stats.total_errors += 1;
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
-
     // If request has ID, wait for actual response
     if let Some(id) = request_id {
-        // Create oneshot channel for response
+        // Register the pending response *before* forwarding the request -
+        // otherwise a core that processes and replies fast enough could call
+        // send_message() before this entry exists, missing the pending map
+        // and falling back to the general notification channel instead of
+        // ever reaching this waiter (the same race JsonRpcWsHandler had).
         let (response_tx, response_rx) = tokio::sync::oneshot::channel();
-
-        // Register pending response
         {
             let mut pending = state.pending_responses.write().await;
             pending.insert(id.clone(), response_tx);
+        }
+
+        if state.request_sender.send(request_str).await.is_err() {
+            state.pending_responses.write().await.remove(&id);
+            let mut stats = state.stats.write().await;
+            stats.total_errors += 1;
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
         }
 
         // Wait for response with timeout
@@ -842,7 +844,15 @@ async fn handle_jsonrpc_request(
 
         result
     } else {
-        // Notification (no ID) - return immediate acknowledgment
+        // Notification (no ID) - no pending entry to race against, so
+        // forwarding it here (rather than before the branch) is safe.
+        state.request_sender.send(request_str).await.map_err(|_| {
+            let mut stats = state.stats.blocking_write();
+            stats.total_errors += 1;
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+        // Return immediate acknowledgment
         let response = serde_json::json!({
             "jsonrpc": "2.0",
             "result": {
