@@ -18,6 +18,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
+#[cfg(feature = "hsm")]
+use tokio::sync::OnceCell;
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
@@ -26,6 +28,10 @@ use crate::handlers::database::column_encryption_rbac::{
 };
 use crate::handlers::database::types::{QueryContext, SecurityError};
 use crate::security::auth::types::AuthUser;
+#[cfg(feature = "hsm")]
+use crate::security::hsm::{HsmProvider, Pkcs11Config};
+#[cfg(feature = "hsm")]
+use cryptoki::object::ObjectHandle;
 
 /// Encryption algorithm types
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
@@ -50,6 +56,18 @@ pub enum KeyProvider {
     },
     /// Local keystore (for development/testing)
     Local { key_path: String },
+    /// PKCS#11 HSM integration (SoftHSM2, or a real/cloud HSM's PKCS#11
+    /// module). Unlike `AwsKms`/`Vault` above, this variant is actually
+    /// wired up: keys are generated inside the token with
+    /// `CKA_EXTRACTABLE = false` and never exist as raw bytes in this
+    /// process's memory. Only [`EncryptionAlgorithm::Aes256Gcm`] is
+    /// supported with this provider.
+    #[cfg(feature = "hsm")]
+    Pkcs11 {
+        library_path: String,
+        slot_id: Option<u64>,
+        pin: String,
+    },
 }
 
 /// Encryption key metadata
@@ -69,12 +87,23 @@ pub struct KeyMetadata {
     pub is_active: bool,
 }
 
+/// Where a [`DataEncryptionKey`]'s actual key material lives.
+#[derive(Clone)]
+pub(crate) enum KeyBacking {
+    /// Raw key bytes held in this process's memory.
+    Software(Vec<u8>),
+    /// A non-extractable key generated inside a PKCS#11 token; only an
+    /// opaque handle is held here, never the raw key bytes.
+    #[cfg(feature = "hsm")]
+    Hsm(ObjectHandle),
+}
+
 /// Data Encryption Key (DEK) wrapper
 #[derive(Clone)]
 pub(crate) struct DataEncryptionKey {
     key_id: String,
     version: u32,
-    key_bytes: Vec<u8>,
+    backing: KeyBacking,
     algorithm: EncryptionAlgorithm,
     created_at: DateTime<Utc>,
 }
@@ -83,13 +112,13 @@ impl DataEncryptionKey {
     fn new(
         key_id: String,
         version: u32,
-        key_bytes: Vec<u8>,
+        backing: KeyBacking,
         algorithm: EncryptionAlgorithm,
     ) -> Self {
         Self {
             key_id,
             version,
-            key_bytes,
+            backing,
             algorithm,
             created_at: Utc::now(),
         }
@@ -98,9 +127,16 @@ impl DataEncryptionKey {
 
 impl Drop for DataEncryptionKey {
     fn drop(&mut self) {
-        // Zeroize key material on drop for security
-        use zeroize::Zeroize;
-        self.key_bytes.zeroize();
+        // Zeroize key material on drop for security. An HSM-backed key has
+        // no local secret material to zero - the handle is just an opaque
+        // id, never the key itself. (Without the "hsm" feature, `KeyBacking`
+        // only ever has the `Software` variant, making this pattern
+        // irrefutable - that's fine, it still needs to run.)
+        #[cfg_attr(not(feature = "hsm"), allow(irrefutable_let_patterns))]
+        if let KeyBacking::Software(key_bytes) = &mut self.backing {
+            use zeroize::Zeroize;
+            key_bytes.zeroize();
+        }
     }
 }
 
@@ -164,6 +200,12 @@ pub struct KeyManager {
     key_metadata: Arc<RwLock<HashMap<String, KeyMetadata>>>,
     /// Random number generator
     rng: SystemRandom,
+    /// Lazily-connected HSM session, used only when `config.provider` is
+    /// [`KeyProvider::Pkcs11`]. Connecting requires I/O (loading the PKCS#11
+    /// library, opening a session, logging in), so it happens on first use
+    /// rather than in [`Self::new`], which stays infallible.
+    #[cfg(feature = "hsm")]
+    hsm_provider: OnceCell<Arc<HsmProvider>>,
 }
 
 impl KeyManager {
@@ -175,29 +217,119 @@ impl KeyManager {
             historical_keys: Arc::new(RwLock::new(HashMap::new())),
             key_metadata: Arc::new(RwLock::new(HashMap::new())),
             rng: SystemRandom::new(),
+            #[cfg(feature = "hsm")]
+            hsm_provider: OnceCell::new(),
         }
+    }
+
+    /// Connect to (or reuse the existing connection to) the configured
+    /// PKCS#11 token. Only called when `config.provider` is `Pkcs11`.
+    #[cfg(feature = "hsm")]
+    async fn hsm_provider(
+        &self,
+        library_path: &str,
+        slot_id: Option<u64>,
+        pin: &str,
+    ) -> Result<&Arc<HsmProvider>, SecurityError> {
+        self.hsm_provider
+            .get_or_try_init(|| async {
+                let config = Pkcs11Config {
+                    library_path: library_path.to_string(),
+                    slot_id,
+                    pin: secrecy::SecretString::from(pin.to_string()),
+                };
+                HsmProvider::connect(&config).map(Arc::new).map_err(|e| {
+                    SecurityError::EncryptionError(format!("HSM connection failed: {e}"))
+                })
+            })
+            .await
+    }
+
+    /// Encrypt via the already-connected HSM session. Only ever called for
+    /// a DEK whose backing is [`KeyBacking::Hsm`], which can only exist
+    /// after [`Self::generate_dek`] already established the connection -
+    /// `get()` returning `None` here would mean that invariant was broken.
+    #[cfg(feature = "hsm")]
+    pub(crate) async fn hsm_encrypt(
+        &self,
+        handle: ObjectHandle,
+        nonce: &mut [u8],
+        plaintext: &[u8],
+    ) -> Result<Vec<u8>, SecurityError> {
+        let provider = self
+            .hsm_provider
+            .get()
+            .ok_or_else(|| SecurityError::EncryptionError("HSM provider not connected".into()))?;
+        provider
+            .encrypt_gcm(handle, nonce, plaintext)
+            .await
+            .map_err(|e| SecurityError::EncryptionError(format!("HSM encryption failed: {e}")))
+    }
+
+    /// Decrypt via the already-connected HSM session. See
+    /// [`Self::hsm_encrypt`] for why `get()` is expected to always succeed.
+    #[cfg(feature = "hsm")]
+    pub(crate) async fn hsm_decrypt(
+        &self,
+        handle: ObjectHandle,
+        nonce: &mut [u8],
+        ciphertext: &[u8],
+    ) -> Result<Vec<u8>, SecurityError> {
+        let provider = self
+            .hsm_provider
+            .get()
+            .ok_or_else(|| SecurityError::EncryptionError("HSM provider not connected".into()))?;
+        provider
+            .decrypt_gcm(handle, nonce, ciphertext)
+            .await
+            .map_err(|e| SecurityError::EncryptionError(format!("HSM decryption failed: {e}")))
     }
 
     /// Generate a new Data Encryption Key (DEK)
     pub async fn generate_dek(&self, table: &str, column: &str) -> Result<String, SecurityError> {
         let key_name = format!("{}.{}", table, column);
 
-        // Generate random key bytes
-        let mut key_bytes = vec![0u8; 32]; // 256 bits
-        self.rng
-            .fill(&mut key_bytes)
-            .map_err(|_| SecurityError::EncryptionError("Failed to generate random key".into()))?;
-
         let version = {
             let metadata = self.key_metadata.read().await;
             metadata.get(&key_name).map(|m| m.version + 1).unwrap_or(1)
         };
-
         let key_id = format!("{}:v{}", key_name, version);
+
+        let backing = match &self.config.provider {
+            #[cfg(feature = "hsm")]
+            KeyProvider::Pkcs11 {
+                library_path,
+                slot_id,
+                pin,
+            } => {
+                if self.config.default_algorithm != EncryptionAlgorithm::Aes256Gcm {
+                    return Err(SecurityError::EncryptionError(
+                        "the PKCS#11 HSM provider only supports the Aes256Gcm algorithm".into(),
+                    ));
+                }
+                let provider = self.hsm_provider(library_path, *slot_id, pin).await?;
+                let handle = provider
+                    .get_or_generate_aes_key(&key_id)
+                    .await
+                    .map_err(|e| {
+                        SecurityError::EncryptionError(format!("HSM key generation failed: {e}"))
+                    })?;
+                KeyBacking::Hsm(handle)
+            }
+            _ => {
+                // Generate random key bytes
+                let mut key_bytes = vec![0u8; 32]; // 256 bits
+                self.rng.fill(&mut key_bytes).map_err(|_| {
+                    SecurityError::EncryptionError("Failed to generate random key".into())
+                })?;
+                KeyBacking::Software(key_bytes)
+            }
+        };
+
         let dek = DataEncryptionKey::new(
             key_id.clone(),
             version,
-            key_bytes,
+            backing,
             self.config.default_algorithm,
         );
 
@@ -478,14 +610,24 @@ impl ColumnEncryptionManager {
             .fill(&mut nonce_bytes)
             .map_err(|_| SecurityError::EncryptionError("Failed to generate nonce".into()))?;
 
-        // Encrypt based on algorithm
-        let ciphertext = match dek.algorithm {
-            EncryptionAlgorithm::Aes256Gcm => {
-                self.encrypt_aes_gcm(&dek.key_bytes, &nonce_bytes, plaintext.as_bytes())?
+        // Encrypt based on where the key lives and, for software keys, the
+        // configured algorithm. HSM-backed keys are always Aes256Gcm - see
+        // the check in KeyManager::generate_dek.
+        let ciphertext = match &dek.backing {
+            #[cfg(feature = "hsm")]
+            KeyBacking::Hsm(handle) => {
+                self.key_manager
+                    .hsm_encrypt(*handle, &mut nonce_bytes, plaintext.as_bytes())
+                    .await?
             }
-            EncryptionAlgorithm::ChaCha20Poly1305 => {
-                self.encrypt_chacha20(&dek.key_bytes, &nonce_bytes, plaintext.as_bytes())?
-            }
+            KeyBacking::Software(key_bytes) => match dek.algorithm {
+                EncryptionAlgorithm::Aes256Gcm => {
+                    self.encrypt_aes_gcm(key_bytes, &nonce_bytes, plaintext.as_bytes())?
+                }
+                EncryptionAlgorithm::ChaCha20Poly1305 => {
+                    self.encrypt_chacha20(key_bytes, &nonce_bytes, plaintext.as_bytes())?
+                }
+            },
         };
 
         let encrypted_data = EncryptedData {
@@ -715,18 +857,26 @@ impl ColumnEncryptionManager {
             }
         };
 
-        // Decrypt based on algorithm
-        let plaintext_bytes = match encrypted_data.algorithm {
-            EncryptionAlgorithm::Aes256Gcm => self.decrypt_aes_gcm(
-                &dek.key_bytes,
-                &encrypted_data.nonce,
-                &encrypted_data.ciphertext,
-            )?,
-            EncryptionAlgorithm::ChaCha20Poly1305 => self.decrypt_chacha20(
-                &dek.key_bytes,
-                &encrypted_data.nonce,
-                &encrypted_data.ciphertext,
-            )?,
+        // Decrypt based on where the key lives and, for software keys, the
+        // algorithm it was encrypted with. Only the HSM path needs `&mut`
+        // access to the nonce.
+        #[cfg_attr(not(feature = "hsm"), allow(unused_mut))]
+        let mut nonce = encrypted_data.nonce.clone();
+        let plaintext_bytes = match &dek.backing {
+            #[cfg(feature = "hsm")]
+            KeyBacking::Hsm(handle) => {
+                self.key_manager
+                    .hsm_decrypt(*handle, &mut nonce, &encrypted_data.ciphertext)
+                    .await?
+            }
+            KeyBacking::Software(key_bytes) => match encrypted_data.algorithm {
+                EncryptionAlgorithm::Aes256Gcm => {
+                    self.decrypt_aes_gcm(key_bytes, &nonce, &encrypted_data.ciphertext)?
+                }
+                EncryptionAlgorithm::ChaCha20Poly1305 => {
+                    self.decrypt_chacha20(key_bytes, &nonce, &encrypted_data.ciphertext)?
+                }
+            },
         };
 
         let plaintext = String::from_utf8(plaintext_bytes).map_err(|e| {
@@ -1109,6 +1259,61 @@ mod tests {
 
         assert_ne!(key_id1, key_id2);
         assert!(key_id2.ends_with(":v2"));
+    }
+
+    /// The Pkcs11 provider only supports Aes256Gcm (PKCS#11 has no standard
+    /// ChaCha20-Poly1305 mechanism). This must be rejected before ever
+    /// trying to connect to a token, so this test needs no real PKCS#11
+    /// library to be meaningful.
+    #[cfg(feature = "hsm")]
+    #[tokio::test]
+    async fn generate_dek_rejects_chacha20_with_pkcs11_provider() {
+        let config = KeyManagerConfig {
+            provider: KeyProvider::Pkcs11 {
+                library_path: "/nonexistent/libsofthsm2.so".to_string(),
+                slot_id: None,
+                pin: "1234".to_string(),
+            },
+            default_algorithm: EncryptionAlgorithm::ChaCha20Poly1305,
+            ..KeyManagerConfig::default()
+        };
+        let key_manager = KeyManager::new(config);
+
+        let err = key_manager
+            .generate_dek("users", "email")
+            .await
+            .unwrap_err();
+        assert!(
+            format!("{err}").contains("Aes256Gcm"),
+            "expected an Aes256Gcm-only error, got: {err}"
+        );
+    }
+
+    /// A Pkcs11 provider pointed at a library that doesn't exist must
+    /// surface a clear connection error instead of panicking, and must not
+    /// require a real HSM/SoftHSM2 to exercise this failure path.
+    #[cfg(feature = "hsm")]
+    #[tokio::test]
+    async fn generate_dek_surfaces_connection_error_for_missing_pkcs11_library() {
+        let config = KeyManagerConfig {
+            provider: KeyProvider::Pkcs11 {
+                library_path: "/nonexistent/libsofthsm2.so".to_string(),
+                slot_id: None,
+                pin: "1234".to_string(),
+            },
+            default_algorithm: EncryptionAlgorithm::Aes256Gcm,
+            ..KeyManagerConfig::default()
+        };
+        let key_manager = KeyManager::new(config);
+
+        let err = key_manager
+            .generate_dek("users", "email")
+            .await
+            .unwrap_err();
+        assert!(
+            format!("{err}").contains("HSM connection failed"),
+            "expected an HSM connection error, got: {err}"
+        );
     }
 
     #[tokio::test]
