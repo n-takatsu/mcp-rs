@@ -98,7 +98,10 @@ pub struct LogModuleConfig {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct TransportConfig {
-    /// Transport type: "stdio", "http", "websocket"
+    /// Transport type: "stdio" or "http". WebSocket is not a separate
+    /// transport type - set `transport_type = "http"` and
+    /// `transport.http.enable_websocket_upgrade = true` to expose `/ws` on
+    /// the HTTP(S) listener instead.
     pub transport_type: Option<String>,
     /// Stdio transport configuration
     pub stdio: Option<StdioTransportConfig>,
@@ -147,6 +150,13 @@ pub struct HttpTransportConfig {
     /// IP addresses or CIDR ranges (e.g. `"192.168.1.0/24"`) exempted from
     /// `reject_external_connections`. Defaults to empty.
     pub network_policy_ip_whitelist: Option<Vec<String>>,
+    /// Mount a `/ws` WebSocket upgrade endpoint on this HTTP listener,
+    /// sharing its TLS/HSTS/certificate-pinning settings. Defaults to
+    /// `false`.
+    pub enable_websocket_upgrade: Option<bool>,
+    /// Maximum concurrent `/ws` connections before new upgrades are
+    /// rejected. Defaults to `1000`.
+    pub websocket_max_connections: Option<usize>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -574,6 +584,8 @@ impl McpConfig {
                     network_policy_reject_external_connections: Some(true),
                     network_policy_warn_on_external_bind: Some(true),
                     network_policy_ip_whitelist: Some(vec![]),
+                    enable_websocket_upgrade: Some(false),
+                    websocket_max_connections: Some(1000),
                 }),
             },
             handlers: HandlersConfig {
@@ -785,6 +797,8 @@ impl McpConfig {
                     .clone()
                     .unwrap_or_else(|| "x-tls-cert-sha256".to_string()),
                 anti_replay_enabled: http.anti_replay_enabled.unwrap_or(false),
+                enable_websocket_upgrade: http.enable_websocket_upgrade.unwrap_or(false),
+                websocket_max_connections: http.websocket_max_connections.unwrap_or(1000),
             }
         } else {
             crate::transport::http::HttpConfig::default()
