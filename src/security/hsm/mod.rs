@@ -15,7 +15,7 @@ use cryptoki::context::{CInitializeArgs, CInitializeFlags, Pkcs11};
 use cryptoki::error::Error as Pkcs11Error;
 use cryptoki::mechanism::aead::GcmParams;
 use cryptoki::mechanism::Mechanism;
-use cryptoki::object::{Attribute, KeyType, ObjectClass, ObjectHandle};
+use cryptoki::object::{Attribute, AttributeType, KeyType, ObjectClass, ObjectHandle};
 use cryptoki::session::{Session, UserType};
 use cryptoki::slot::Slot;
 use cryptoki::types::{AuthPin, Ulong};
@@ -104,8 +104,11 @@ impl HsmProvider {
 
     /// Return the handle of the AES key labeled `label` if one already
     /// exists in the token, so a key survives across process restarts
-    /// instead of being silently regenerated.
-    async fn find_aes_key(&self, label: &str) -> Result<Option<ObjectHandle>, HsmError> {
+    /// instead of being silently regenerated. Never generates a key: a
+    /// caller resolving a specific historical `key_id` needs to know
+    /// whether that exact key still exists, not get a fresh, unrelated one
+    /// back in its place.
+    pub async fn find_key(&self, label: &str) -> Result<Option<ObjectHandle>, HsmError> {
         let session = self.session.lock().await;
         let template = [
             Attribute::Class(ObjectClass::SECRET_KEY),
@@ -123,6 +126,54 @@ impl HsmProvider {
         }
     }
 
+    /// Find the highest `:v{N}` version currently present in the token for
+    /// keys labeled `{key_name_prefix}:v{N}`, along with that version's
+    /// handle.
+    ///
+    /// The in-memory version counter `KeyManager` otherwise relies on does
+    /// not survive a process restart, but the token's key objects do -
+    /// callers use this to recover the true current version instead of
+    /// assuming a cold cache means "no key has ever been created", which
+    /// would silently regenerate/reuse an old, already-rotated-past version
+    /// after every restart.
+    pub async fn find_highest_version(
+        &self,
+        key_name_prefix: &str,
+    ) -> Result<Option<(u32, ObjectHandle)>, HsmError> {
+        let session = self.session.lock().await;
+        let template = [
+            Attribute::Class(ObjectClass::SECRET_KEY),
+            Attribute::KeyType(KeyType::AES),
+        ];
+        let handles = session.find_objects(&template)?;
+        let want_prefix = format!("{key_name_prefix}:v");
+
+        let mut best: Option<(u32, ObjectHandle)> = None;
+        for handle in handles {
+            let attrs = session.get_attributes(handle, &[AttributeType::Label])?;
+            let Some(Attribute::Label(label_bytes)) = attrs.into_iter().next() else {
+                continue;
+            };
+            let Ok(label) = String::from_utf8(label_bytes) else {
+                continue;
+            };
+            let Some(version_str) = label.strip_prefix(&want_prefix) else {
+                continue;
+            };
+            let Ok(version) = version_str.parse::<u32>() else {
+                continue;
+            };
+            let is_better = match best {
+                Some((best_version, _)) => version > best_version,
+                None => true,
+            };
+            if is_better {
+                best = Some((version, handle));
+            }
+        }
+        Ok(best)
+    }
+
     /// Return the existing AES key handle for `label`, generating a new
     /// non-extractable 256-bit AES key inside the token if none exists yet.
     ///
@@ -131,7 +182,7 @@ impl HsmProvider {
     /// created with `CKA_EXTRACTABLE = false` / `CKA_SENSITIVE = true`: the
     /// raw key material never leaves the token.
     pub async fn get_or_generate_aes_key(&self, label: &str) -> Result<ObjectHandle, HsmError> {
-        if let Some(handle) = self.find_aes_key(label).await? {
+        if let Some(handle) = self.find_key(label).await? {
             return Ok(handle);
         }
 
