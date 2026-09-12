@@ -163,7 +163,64 @@ fn resolve_query(query: &Query) -> Result<ProjectionResolution, ProvenanceError>
     resolve_select(select)
 }
 
-fn resolve_select(select: &Select) -> Result<ProjectionResolution, ProvenanceError> {
+/// Parses `sql` as a single `SELECT` statement and returns the distinct
+/// table names referenced in its `FROM`/`JOIN` clauses, without resolving
+/// individual projected columns. Useful for callers (e.g. table-level access
+/// control) that only need to know which tables a query touches, not which
+/// table each result column came from. Subject to the same restrictions as
+/// [`resolve_column_provenance`] for the same reason: a query shape this
+/// module can't confidently reason about must not be treated as "safe."
+pub fn resolve_query_tables(
+    sql: &str,
+    dialect: &dyn Dialect,
+) -> Result<Vec<String>, ProvenanceError> {
+    let statements = Parser::parse_sql(dialect, sql)
+        .map_err(|e| unsupported(format!("SQL parse error: {e}")))?;
+
+    let [statement] = statements.as_slice() else {
+        return Err(unsupported("expected exactly one SQL statement"));
+    };
+
+    let Statement::Query(query) = statement else {
+        return Err(unsupported("expected a SELECT statement"));
+    };
+
+    if query.with.is_some() {
+        return Err(unsupported(
+            "common table expressions (WITH) are not supported",
+        ));
+    }
+
+    let SetExpr::Select(select) = query.body.as_ref() else {
+        return Err(unsupported(
+            "expected a plain SELECT (no UNION/EXCEPT/INTERSECT)",
+        ));
+    };
+
+    let (_, all_tables) = collect_all_tables(select)?;
+
+    // Deduplicate (preserving first-seen order) - a self-join references the
+    // same table twice, but callers evaluating table-level access only need
+    // each distinct table once. resolve_select's own ambiguity logic below
+    // relies on seeing duplicates in the raw list, so this dedup happens
+    // only on this function's own return value, not inside collect_all_tables.
+    let mut seen = std::collections::HashSet::new();
+    let mut distinct_tables = Vec::with_capacity(all_tables.len());
+    for table in all_tables {
+        if seen.insert(table.clone()) {
+            distinct_tables.push(table);
+        }
+    }
+
+    Ok(distinct_tables)
+}
+
+/// Walks a `SELECT`'s `FROM`/`JOIN` clauses, building both the alias-to-
+/// real-table-name map and the raw (possibly duplicate, e.g. from a
+/// self-join) list of tables referenced, in FROM/JOIN order.
+fn collect_all_tables(
+    select: &Select,
+) -> Result<(HashMap<String, String>, Vec<String>), ProvenanceError> {
     let mut alias_to_table: HashMap<String, String> = HashMap::new();
     let mut all_tables: Vec<String> = Vec::new();
 
@@ -177,6 +234,12 @@ fn resolve_select(select: &Select) -> Result<ProjectionResolution, ProvenanceErr
             collect_table(&join.relation, &mut alias_to_table, &mut all_tables)?;
         }
     }
+
+    Ok((alias_to_table, all_tables))
+}
+
+fn resolve_select(select: &Select) -> Result<ProjectionResolution, ProvenanceError> {
+    let (alias_to_table, all_tables) = collect_all_tables(select)?;
 
     // A lone wildcard is the only projection shape whose column count isn't
     // known from the SQL text alone, so it's handled before the general,
@@ -472,6 +535,70 @@ mod tests {
     #[test]
     fn validate_single_query_statement_rejects_multiple_statements() {
         assert!(validate("SELECT 1; DROP TABLE users;").is_err());
+    }
+
+    fn tables(sql: &str) -> Result<Vec<String>, ProvenanceError> {
+        resolve_query_tables(sql, &PostgreSqlDialect {})
+    }
+
+    #[test]
+    fn resolve_query_tables_single_table() {
+        assert_eq!(
+            tables("SELECT email FROM users").unwrap(),
+            vec!["users".to_string()]
+        );
+    }
+
+    #[test]
+    fn resolve_query_tables_join_returns_all_distinct_tables() {
+        assert_eq!(
+            tables("SELECT u.email, o.total FROM users u JOIN orders o ON u.id = o.user_id")
+                .unwrap(),
+            vec!["users".to_string(), "orders".to_string()]
+        );
+    }
+
+    #[test]
+    fn resolve_query_tables_self_join_deduplicates() {
+        assert_eq!(
+            tables("SELECT a.email FROM users a JOIN users b ON a.manager_id = b.id").unwrap(),
+            vec!["users".to_string()]
+        );
+    }
+
+    #[test]
+    fn resolve_query_tables_wildcard_still_resolves_tables() {
+        // resolve_query_tables only needs FROM/JOIN tables, not projection
+        // shape, so a bare `SELECT *` (which resolve_column_provenance
+        // treats specially) works the same as any other projection here.
+        assert_eq!(
+            tables("SELECT * FROM users").unwrap(),
+            vec!["users".to_string()]
+        );
+    }
+
+    #[test]
+    fn resolve_query_tables_rejects_cte_and_union() {
+        assert!(tables("WITH t AS (SELECT 1 AS x) SELECT x FROM t").is_err());
+        assert!(tables("SELECT a FROM t1 UNION SELECT b FROM t2").is_err());
+    }
+
+    #[test]
+    fn resolve_query_tables_rejects_subquery_in_from() {
+        assert!(tables("SELECT x FROM (SELECT 1 AS x) t").is_err());
+    }
+
+    #[test]
+    fn resolve_query_tables_rejects_multiple_statements() {
+        assert!(tables("SELECT 1; DROP TABLE users;").is_err());
+    }
+
+    #[test]
+    fn resolve_query_tables_schema_qualified_table_uses_last_part() {
+        assert_eq!(
+            tables("SELECT email FROM public.users").unwrap(),
+            vec!["users".to_string()]
+        );
     }
 
     #[test]

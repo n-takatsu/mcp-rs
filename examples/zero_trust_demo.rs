@@ -130,7 +130,7 @@ fn demo_micro_segmentation() {
     let request = AccessRequest::new(
         "dev-001",
         "device-001",
-        IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100)),
+        Some(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100))),
         "/api/data/users",
         "read",
     );
@@ -242,7 +242,7 @@ fn demo_complete_flow() {
     let request = AccessRequest::new(
         user_id,
         device_id,
-        network_info.source_ip,
+        Some(network_info.source_ip),
         "/api/public/info",
         "read",
     );

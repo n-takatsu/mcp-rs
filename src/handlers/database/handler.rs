@@ -5,8 +5,8 @@
 use crate::handlers::database::{
     column_encryption::ColumnEncryptionManager,
     column_provenance::{
-        dialect_for, resolve_column_provenance, validate_single_query_statement, ColumnProvenance,
-        ProjectionResolution,
+        dialect_for, resolve_column_provenance, resolve_query_tables,
+        validate_single_query_statement, ColumnProvenance, ProjectionResolution,
     },
     engine::{DatabaseEngine, DatabaseEngineBuilder, EngineRegistry},
     pool::{ConnectionPool, PoolManager},
@@ -20,15 +20,17 @@ use crate::handlers::database::{
 use crate::mcp::{
     InitializeParams, McpError, McpHandler, Resource, ResourceReadParams, Tool, ToolCallParams,
 };
-use crate::security::auth::types::AuthUser;
+use crate::security::auth::types::{AuthUser, Role};
 // use crate::threat_intelligence::ThreatDetectionEngine;
 use crate::handlers::database::security::ThreatDetectionEngine;
+use crate::zero_trust::{micro_segmentation::MicroSegmentation, AccessRequest, TrustScore};
 use async_trait::async_trait;
 use base64::prelude::*;
 use serde_json::{json, Value as JsonValue};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use tracing::warn;
 
 /// Placeholder returned in place of an encrypted column's raw value when the
 /// caller isn't authorized to see it decrypted.
@@ -38,6 +40,19 @@ const ENCRYPTED_PLACEHOLDER: &str = "***ENCRYPTED***";
 /// confidently determined, so it can't be checked against the encrypted-
 /// column configuration at all - see `column_provenance`.
 const UNKNOWN_PROVENANCE_PLACEHOLDER: &str = "***UNKNOWN_PROVENANCE***";
+
+/// Canonical string form of a `Role`, matching the lowercase role-name
+/// convention `MicroSegmentation::setup_default_policies()` uses (`"user"`,
+/// `"admin"`, etc). `Role` itself has no `Display` impl since its variants
+/// aren't otherwise rendered as user-facing text elsewhere in the codebase.
+fn role_name(role: &Role) -> String {
+    match role {
+        Role::Admin => "admin".to_string(),
+        Role::User => "user".to_string(),
+        Role::Guest => "guest".to_string(),
+        Role::Custom(name) => name.clone(),
+    }
+}
 
 /// データベースMCPハンドラー
 pub struct DatabaseHandler {
@@ -65,6 +80,12 @@ pub struct DatabaseHandler {
     /// カラムレベル暗号化マネージャー（未設定ならこのハンドラでは暗号化列の
     /// 強制を一切行わない - 既存の呼び出し元には影響しないオプトイン機能）
     column_encryption: Option<Arc<ColumnEncryptionManager>>,
+    /// マイクロセグメンテーションエンジン（未設定ならこのハンドラでは
+    /// テーブル単位のアクセス制御を一切行わない - 既存の呼び出し元には
+    /// 影響しないオプトイン機能）。`src/zero_trust/micro_segmentation.rs`
+    /// は元々コードベースのどこからも参照されていなかった実装済みロジック
+    /// で、Issue #226でこの経路に配線した。
+    micro_segmentation: Option<Arc<MicroSegmentation>>,
 }
 
 impl DatabaseHandler {
@@ -86,12 +107,20 @@ impl DatabaseHandler {
             threat_intelligence,
             safety_manager: Arc::new(SafetyManager::new()),
             column_encryption: None,
+            micro_segmentation: None,
         })
     }
 
     /// カラムレベル暗号化＋RBACを有効化する（ビルダースタイル）
     pub fn with_column_encryption(mut self, manager: Arc<ColumnEncryptionManager>) -> Self {
         self.column_encryption = Some(manager);
+        self
+    }
+
+    /// マイクロセグメンテーション（テーブル単位のアクセス制御）を
+    /// 有効化する（ビルダースタイル）
+    pub fn with_micro_segmentation(mut self, engine: Arc<MicroSegmentation>) -> Self {
+        self.micro_segmentation = Some(engine);
         self
     }
 
@@ -248,6 +277,54 @@ impl DatabaseHandler {
         // 向けの正当な構文を誤って拒否しかねない。
         validate_single_query_statement(&sql, dialect.as_ref())
             .map_err(|e| McpError::InvalidRequest(e.to_string()))?;
+
+        // マイクロセグメンテーションが設定されている場合、クエリが触れる
+        // すべてのテーブルについて事前にアクセスを検証する。列暗号化と同様、
+        // クエリ実行前に検証する - 実行後にチェックすると、未対応のSQL形が
+        // 拒否される前にクエリ（および副作用を持つ別ステートメント）が
+        // 既にデータベースに対して実行されてしまう。1つでも拒否された
+        // テーブルがあればクエリ全体を拒否する（列レベルの部分マスクとは
+        // 異なり、テーブルへのアクセス可否は分割できないため）。
+        if let Some(engine) = &self.micro_segmentation {
+            let tables = resolve_query_tables(&sql, dialect.as_ref()).map_err(|e| {
+                McpError::InvalidRequest(format!(
+                    "cannot safely determine which tables this query touches, \
+                     and micro-segmentation is configured for this database: {e}"
+                ))
+            })?;
+
+            let user_roles: HashSet<String> = auth_user
+                .map(|u| u.roles.iter().map(role_name).collect())
+                .unwrap_or_default();
+            // device_verifier/network_analyzerが未配線のため、trust_scoreは
+            // 「識別子ありか」だけを表す暫定値。これらのエンジンが実配線
+            // された将来、device/network/behaviorの実測値に置き換えられる
+            // 前提の、正直な簡略化。
+            let trust_score: TrustScore = if auth_user.is_some() { 100 } else { 0 };
+
+            for table in &tables {
+                let resource = format!("database:{engine_id}:{table}");
+                let request = AccessRequest::new(
+                    auth_user.map(|u| u.id.clone()).unwrap_or_default(),
+                    "unknown", // device_id: device_verifier未配線のため不明値
+                    None,      // source_ip: トランスポート層のIPをDB層は知らない
+                    resource,
+                    "read", // execute_queryはSELECTのみ（既存契約）
+                );
+                let result = engine.evaluate_access(&request, &user_roles, trust_score);
+                if !result.success {
+                    warn!(
+                        "Micro-segmentation denied access to table '{}' for user {:?}: {}",
+                        table,
+                        auth_user.map(|u| &u.id),
+                        result.reason
+                    );
+                    return Err(McpError::InvalidRequest(format!(
+                        "access denied by micro-segmentation policy for table '{table}'"
+                    )));
+                }
+            }
+        }
 
         // 接続プールから接続を取得。上で解決した`engine_id`をそのまま使う
         // (`get_active_pool()`は使わない) - `get_active_pool()`は
