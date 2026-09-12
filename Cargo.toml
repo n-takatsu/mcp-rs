@@ -29,8 +29,11 @@ toml = "0.9.8"
 
 # Database and storage (PostgreSQL and SQLite only - MySQL via mysql_async)
 sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "sqlite", "chrono", "uuid", "json", "migrate"], default-features = false }
-# SQL parsing for resolving result columns back to their source table/column
-sqlparser = { version = "0.62", optional = true }
+# SQL parsing for resolving result columns back to their source table/column.
+# "visitor" enables recursive AST walking so table references nested inside
+# subqueries (WHERE/SELECT-list/HAVING, not just top-level FROM/JOIN) can be
+# found reliably instead of missed by a hand-rolled, easy-to-miss-a-case walk.
+sqlparser = { version = "0.62", optional = true, features = ["visitor"] }
 # MySQL support via secure alternative (RSA vulnerability-free)
 mysql_async = { version = "0.36", optional = true }
 # PostgreSQL native driver for advanced features

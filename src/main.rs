@@ -18,6 +18,7 @@ mod session;
 mod setup;
 mod transport;
 mod types;
+mod zero_trust;
 
 use mcp_rs::config::McpConfig;
 use mcp_rs::core::{Runtime, RuntimeConfig};

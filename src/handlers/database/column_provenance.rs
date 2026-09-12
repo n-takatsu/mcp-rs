@@ -163,7 +163,111 @@ fn resolve_query(query: &Query) -> Result<ProjectionResolution, ProvenanceError>
     resolve_select(select)
 }
 
-fn resolve_select(select: &Select) -> Result<ProjectionResolution, ProvenanceError> {
+/// Parses `sql` as a single `SELECT` statement and returns the distinct
+/// table names referenced *anywhere* in it - not just the top-level
+/// `FROM`/`JOIN` clauses, but also any table reached only through a nested
+/// subquery (a scalar subquery in the projection list, an `EXISTS`/`IN`
+/// subquery in `WHERE`/`HAVING`, a derived table in `FROM`, etc). Useful for
+/// callers (e.g. table-level access control) that only need to know which
+/// tables a query touches, not which table each result column came from.
+///
+/// Walking only `select.from` (as an earlier version of this function did)
+/// would miss a table referenced solely through such a subquery - e.g.
+/// `SELECT id, (SELECT ssn FROM secret WHERE secret.uid = users.id) FROM
+/// users` touches `secret` too, and a caller checking access per table must
+/// see it or a policy gating `secret` could be silently bypassed. This uses
+/// `sqlparser`'s recursive AST visitor (`visit_relations`) instead of a
+/// hand-rolled walk, so every table reference is found regardless of how
+/// deeply it's nested, rather than relying on this function correctly
+/// enumerating every AST position a subquery could appear in.
+///
+/// Table names are returned exactly as qualified in the SQL (e.g.
+/// `"public.users"` stays qualified, a bare `"users"` stays bare) rather
+/// than collapsed to the bare table name the way [`resolve_column_provenance`]
+/// does for its own (different) purpose - collapsing `schema_a.users` and
+/// `schema_b.users` to the same `"users"` string here would let an access
+/// policy intended for one schema's table also silently grant access to a
+/// same-named table in a different, unintended schema. Callers configuring
+/// policies must therefore match however their queries actually qualify
+/// table names; an unqualified and a qualified reference to the same
+/// physical table are treated as different resources (a query attributed to
+/// the "wrong" form fails closed via "no matching policy", never open).
+///
+/// Subject to the same CTE/set-operation/multiple-statement restrictions as
+/// [`resolve_column_provenance`] for the same reason: a query shape this
+/// module can't confidently reason about must not be treated as "safe."
+pub fn resolve_query_tables(
+    sql: &str,
+    dialect: &dyn Dialect,
+) -> Result<Vec<String>, ProvenanceError> {
+    let statements = Parser::parse_sql(dialect, sql)
+        .map_err(|e| unsupported(format!("SQL parse error: {e}")))?;
+
+    let [statement] = statements.as_slice() else {
+        return Err(unsupported("expected exactly one SQL statement"));
+    };
+
+    let Statement::Query(query) = statement else {
+        return Err(unsupported("expected a SELECT statement"));
+    };
+
+    if query.with.is_some() {
+        return Err(unsupported(
+            "common table expressions (WITH) are not supported",
+        ));
+    }
+
+    let SetExpr::Select(select) = query.body.as_ref() else {
+        return Err(unsupported(
+            "expected a plain SELECT (no UNION/EXCEPT/INTERSECT)",
+        ));
+    };
+
+    let mut tables = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let outcome = sqlparser::ast::visit_relations(select, |name| {
+        match object_name_to_qualified_string(name) {
+            Ok(table) => {
+                if seen.insert(table.clone()) {
+                    tables.push(table);
+                }
+                std::ops::ControlFlow::Continue(())
+            }
+            Err(e) => std::ops::ControlFlow::Break(e),
+        }
+    });
+    if let std::ops::ControlFlow::Break(e) = outcome {
+        return Err(e);
+    }
+
+    Ok(tables)
+}
+
+/// Fully schema-qualified table name (all parts joined with `.`), preserving
+/// exactly what appeared in the SQL - see [`resolve_query_tables`]'s doc
+/// comment for why this must not collapse to the bare table name the way
+/// [`object_name_to_string`] deliberately does for column-provenance's
+/// different purpose.
+fn object_name_to_qualified_string(name: &ObjectName) -> Result<String, ProvenanceError> {
+    let mut parts = Vec::with_capacity(name.0.len());
+    for part in &name.0 {
+        match part {
+            ObjectNamePart::Identifier(ident) => parts.push(ident.value.clone()),
+            _ => return Err(unsupported("unsupported table name form")),
+        }
+    }
+    if parts.is_empty() {
+        return Err(unsupported("unsupported table name form"));
+    }
+    Ok(parts.join("."))
+}
+
+/// Walks a `SELECT`'s `FROM`/`JOIN` clauses, building both the alias-to-
+/// real-table-name map and the raw (possibly duplicate, e.g. from a
+/// self-join) list of tables referenced, in FROM/JOIN order.
+fn collect_all_tables(
+    select: &Select,
+) -> Result<(HashMap<String, String>, Vec<String>), ProvenanceError> {
     let mut alias_to_table: HashMap<String, String> = HashMap::new();
     let mut all_tables: Vec<String> = Vec::new();
 
@@ -177,6 +281,12 @@ fn resolve_select(select: &Select) -> Result<ProjectionResolution, ProvenanceErr
             collect_table(&join.relation, &mut alias_to_table, &mut all_tables)?;
         }
     }
+
+    Ok((alias_to_table, all_tables))
+}
+
+fn resolve_select(select: &Select) -> Result<ProjectionResolution, ProvenanceError> {
+    let (alias_to_table, all_tables) = collect_all_tables(select)?;
 
     // A lone wildcard is the only projection shape whose column count isn't
     // known from the SQL text alone, so it's handled before the general,
@@ -472,6 +582,120 @@ mod tests {
     #[test]
     fn validate_single_query_statement_rejects_multiple_statements() {
         assert!(validate("SELECT 1; DROP TABLE users;").is_err());
+    }
+
+    fn tables(sql: &str) -> Result<Vec<String>, ProvenanceError> {
+        resolve_query_tables(sql, &PostgreSqlDialect {})
+    }
+
+    #[test]
+    fn resolve_query_tables_single_table() {
+        assert_eq!(
+            tables("SELECT email FROM users").unwrap(),
+            vec!["users".to_string()]
+        );
+    }
+
+    #[test]
+    fn resolve_query_tables_join_returns_all_distinct_tables() {
+        assert_eq!(
+            tables("SELECT u.email, o.total FROM users u JOIN orders o ON u.id = o.user_id")
+                .unwrap(),
+            vec!["users".to_string(), "orders".to_string()]
+        );
+    }
+
+    #[test]
+    fn resolve_query_tables_self_join_deduplicates() {
+        assert_eq!(
+            tables("SELECT a.email FROM users a JOIN users b ON a.manager_id = b.id").unwrap(),
+            vec!["users".to_string()]
+        );
+    }
+
+    #[test]
+    fn resolve_query_tables_wildcard_still_resolves_tables() {
+        // resolve_query_tables only needs FROM/JOIN tables, not projection
+        // shape, so a bare `SELECT *` (which resolve_column_provenance
+        // treats specially) works the same as any other projection here.
+        assert_eq!(
+            tables("SELECT * FROM users").unwrap(),
+            vec!["users".to_string()]
+        );
+    }
+
+    #[test]
+    fn resolve_query_tables_rejects_cte_and_union() {
+        assert!(tables("WITH t AS (SELECT 1 AS x) SELECT x FROM t").is_err());
+        assert!(tables("SELECT a FROM t1 UNION SELECT b FROM t2").is_err());
+    }
+
+    #[test]
+    fn resolve_query_tables_rejects_multiple_statements() {
+        assert!(tables("SELECT 1; DROP TABLE users;").is_err());
+    }
+
+    #[test]
+    fn resolve_query_tables_preserves_schema_qualification() {
+        // Unlike resolve_column_provenance's object_name_to_string (which
+        // deliberately keeps only the last part for its own purpose),
+        // resolve_query_tables must not collapse "public.users" and
+        // "other_schema.users" to the same "users" string - doing so would
+        // let a policy meant for one schema's table also grant access to a
+        // same-named table in a different, unintended schema.
+        assert_eq!(
+            tables("SELECT email FROM public.users").unwrap(),
+            vec!["public.users".to_string()]
+        );
+    }
+
+    fn sorted_tables(sql: &str) -> Vec<String> {
+        let mut result = tables(sql).unwrap();
+        result.sort();
+        result
+    }
+
+    #[test]
+    fn resolve_query_tables_finds_table_referenced_via_subquery_in_from() {
+        // A derived table in FROM is walked into (not rejected outright)
+        // now, so the real table behind it is still found.
+        assert_eq!(
+            sorted_tables("SELECT x FROM (SELECT id AS x FROM secret_table) t"),
+            vec!["secret_table".to_string()]
+        );
+    }
+
+    #[test]
+    fn resolve_query_tables_finds_table_referenced_via_scalar_subquery_in_projection() {
+        // A previous version of this function only walked the top-level
+        // FROM/JOIN clause and would have returned just ["users"] here,
+        // silently missing "secret" - a caller checking per-table access
+        // would never know this query also reads from "secret", letting a
+        // policy gating it be bypassed entirely.
+        assert_eq!(
+            sorted_tables(
+                "SELECT id, (SELECT ssn FROM secret WHERE secret.uid = users.id) AS ssn FROM users"
+            ),
+            vec!["secret".to_string(), "users".to_string()]
+        );
+    }
+
+    #[test]
+    fn resolve_query_tables_finds_table_referenced_via_where_exists_subquery() {
+        assert_eq!(
+            sorted_tables(
+                "SELECT id FROM users WHERE EXISTS (SELECT 1 FROM secret WHERE secret.uid = users.id)"
+            ),
+            vec!["secret".to_string(), "users".to_string()]
+        );
+    }
+
+    #[test]
+    fn resolve_query_tables_finds_table_referenced_via_in_subquery() {
+        assert_eq!(
+            sorted_tables("SELECT id FROM users WHERE id IN (SELECT uid FROM banned)"),
+            vec!["banned".to_string(), "users".to_string()]
+        );
     }
 
     #[test]
