@@ -237,3 +237,57 @@ async fn rotated_key_resolves_and_does_not_regress_after_reconnect() {
          ({key_id_v2}), not silently regress to an older version"
     );
 }
+
+/// PKCS#11's `C_Initialize` is meant to be called once per process and
+/// shared - a real deployment could easily have more than one
+/// HSM-backed `KeyManager` alive at once (e.g. one per database engine),
+/// all pointed at the same PKCS#11 module. Unlike every other test in this
+/// file, these two managers stay alive *simultaneously* rather than one
+/// being dropped before the next connects, so this exercises the second
+/// `HsmProvider::connect()` hitting `CKR_CRYPTOKI_ALREADY_INITIALIZED` and
+/// confirms it's treated as success rather than a hard error.
+#[tokio::test]
+#[ignore]
+async fn multiple_concurrent_hsm_providers_share_one_initialized_module() {
+    let context = test_context("admin");
+    let user = AuthUser::new("admin".to_string(), "admin".to_string());
+
+    let manager_one = manager_for("hsm_it.concurrent_a");
+    let manager_two = manager_for("hsm_it.concurrent_b");
+
+    let encrypted_one = manager_one
+        .encrypt("hsm_it", "concurrent_a", "value-from-manager-one", &context)
+        .await
+        .expect("first manager's HsmProvider::connect() should succeed");
+    let encrypted_two = manager_two
+        .encrypt("hsm_it", "concurrent_b", "value-from-manager-two", &context)
+        .await
+        .expect(
+            "second manager's HsmProvider::connect() must not fail just because the first \
+             manager already initialized the same underlying PKCS#11 module",
+        );
+
+    let decrypted_one = manager_one
+        .decrypt(
+            "hsm_it",
+            "concurrent_a",
+            &encrypted_one,
+            &context,
+            Some(&user),
+        )
+        .await
+        .expect("first manager should still work while the second is alive");
+    let decrypted_two = manager_two
+        .decrypt(
+            "hsm_it",
+            "concurrent_b",
+            &encrypted_two,
+            &context,
+            Some(&user),
+        )
+        .await
+        .expect("second manager should work");
+
+    assert_eq!(decrypted_one, "value-from-manager-one");
+    assert_eq!(decrypted_two, "value-from-manager-two");
+}

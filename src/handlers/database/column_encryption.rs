@@ -76,6 +76,59 @@ pub enum KeyProvider {
     },
 }
 
+/// Manual `PartialEq` (the field types on `Pkcs11.pin` no longer support a
+/// derive - `secrecy::SecretString` deliberately doesn't implement
+/// `PartialEq`, to discourage casually comparing secrets). For every other
+/// variant this compares exactly like the derive would have. For `Pkcs11`,
+/// it compares everything except the PIN: two provider configs pointing at
+/// the same library/slot are equal regardless of PIN, matching how the rest
+/// of this type already treats the PIN as not participating in identity.
+impl PartialEq for KeyProvider {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (
+                Self::AwsKms {
+                    region: r1,
+                    key_id: k1,
+                },
+                Self::AwsKms {
+                    region: r2,
+                    key_id: k2,
+                },
+            ) => r1 == r2 && k1 == k2,
+            (
+                Self::Vault {
+                    address: a1,
+                    mount_path: m1,
+                    key_name: k1,
+                },
+                Self::Vault {
+                    address: a2,
+                    mount_path: m2,
+                    key_name: k2,
+                },
+            ) => a1 == a2 && m1 == m2 && k1 == k2,
+            (Self::Local { key_path: p1 }, Self::Local { key_path: p2 }) => p1 == p2,
+            #[cfg(feature = "hsm")]
+            (
+                Self::Pkcs11 {
+                    library_path: l1,
+                    slot_id: s1,
+                    pin: _,
+                },
+                Self::Pkcs11 {
+                    library_path: l2,
+                    slot_id: s2,
+                    pin: _,
+                },
+            ) => l1 == l2 && s1 == s2,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for KeyProvider {}
+
 #[cfg(feature = "hsm")]
 fn redact_pin<S: serde::Serializer>(
     _pin: &secrecy::SecretString,
@@ -1539,6 +1592,60 @@ mod tests {
             secrecy::ExposeSecret::expose_secret(&roundtripped_pin),
             "super-secret-pin"
         );
+    }
+
+    /// `KeyProvider` keeps its (previously derived) `PartialEq`/`Eq` -
+    /// restored as a manual impl since `SecretString` doesn't support
+    /// deriving it. Two `Pkcs11` configs pointing at the same library/slot
+    /// are equal regardless of PIN.
+    #[test]
+    fn key_provider_equality_matches_non_secret_fields() {
+        assert_eq!(
+            KeyProvider::Local {
+                key_path: "keys".to_string(),
+            },
+            KeyProvider::Local {
+                key_path: "keys".to_string(),
+            }
+        );
+        assert_ne!(
+            KeyProvider::Local {
+                key_path: "keys".to_string(),
+            },
+            KeyProvider::Local {
+                key_path: "other".to_string(),
+            }
+        );
+
+        #[cfg(feature = "hsm")]
+        {
+            let a = KeyProvider::Pkcs11 {
+                library_path: "/usr/lib/softhsm/libsofthsm2.so".to_string(),
+                slot_id: Some(0),
+                pin: secrecy::SecretString::from("pin-a".to_string()),
+            };
+            let b = KeyProvider::Pkcs11 {
+                library_path: "/usr/lib/softhsm/libsofthsm2.so".to_string(),
+                slot_id: Some(0),
+                pin: secrecy::SecretString::from("pin-b".to_string()),
+            };
+            assert_eq!(a, b, "PIN must not affect equality");
+
+            let different_slot = KeyProvider::Pkcs11 {
+                library_path: "/usr/lib/softhsm/libsofthsm2.so".to_string(),
+                slot_id: Some(1),
+                pin: secrecy::SecretString::from("pin-a".to_string()),
+            };
+            assert_ne!(a, different_slot);
+
+            assert_ne!(
+                a,
+                KeyProvider::Local {
+                    key_path: "keys".to_string()
+                },
+                "different variants must never be equal"
+            );
+        }
     }
 
     #[tokio::test]

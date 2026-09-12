@@ -12,7 +12,7 @@
 //! for higher throughput is intentionally out of scope here.
 
 use cryptoki::context::{CInitializeArgs, CInitializeFlags, Pkcs11};
-use cryptoki::error::Error as Pkcs11Error;
+use cryptoki::error::{Error as Pkcs11Error, RvError};
 use cryptoki::mechanism::aead::GcmParams;
 use cryptoki::mechanism::Mechanism;
 use cryptoki::object::{Attribute, AttributeType, KeyType, ObjectClass, ObjectHandle};
@@ -77,14 +77,38 @@ impl HsmProvider {
     /// configured (or first available) slot, and log in.
     pub fn connect(config: &Pkcs11Config) -> Result<Self, HsmError> {
         let pkcs11 = Pkcs11::new(Path::new(&config.library_path))?;
-        pkcs11.initialize(CInitializeArgs::new(CInitializeFlags::OS_LOCKING_OK))?;
+        match pkcs11.initialize(CInitializeArgs::new(CInitializeFlags::OS_LOCKING_OK)) {
+            Ok(()) => {}
+            // A PKCS#11 module is initialized once per process and can be
+            // shared - the OS reference-counts the underlying shared
+            // library across `dlopen` calls, so a second `HsmProvider`
+            // pointed at the same library (e.g. a different KeyManager, or
+            // a reconnect) hits this once the first has already
+            // initialized it. That's expected, not a failure: proceed to
+            // open our own session on the shared, already-initialized
+            // module instead of erroring out.
+            Err(Pkcs11Error::Pkcs11(RvError::CryptokiAlreadyInitialized, _)) => {}
+            Err(e) => return Err(e.into()),
+        }
 
         let slot = Self::select_slot(&pkcs11, config.slot_id)?;
         let session = pkcs11.open_rw_session(slot)?;
-        session.login(
+        match session.login(
             UserType::User,
             Some(&AuthPin::new(config.pin.expose_secret().to_string().into())),
-        )?;
+        ) {
+            Ok(()) => {}
+            // Several PKCS#11 implementations (SoftHSM2 included) track
+            // login state per token/application rather than per session,
+            // so a second `HsmProvider`'s session on a token another
+            // session already logged into gets this instead of succeeding
+            // again - it's already in the state we asked for, not an
+            // error. `UserAnotherAlreadyLoggedIn` (a *different* user type,
+            // e.g. SO, already logged in) is a genuine conflict and still
+            // propagates.
+            Err(Pkcs11Error::Pkcs11(RvError::UserAlreadyLoggedIn, _)) => {}
+            Err(e) => return Err(e.into()),
+        }
 
         Ok(Self {
             session: Mutex::new(session),
