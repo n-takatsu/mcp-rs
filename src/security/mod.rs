@@ -3,6 +3,8 @@ pub mod audit;
 pub mod audit_log;
 pub mod auth;
 pub mod encryption;
+#[cfg(feature = "hsm")]
+pub mod hsm;
 pub mod ids;
 pub mod image_scanner;
 #[cfg(feature = "mfa")]
