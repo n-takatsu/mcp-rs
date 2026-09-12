@@ -174,7 +174,16 @@ impl HsmProvider {
 
         let mut best: Option<(u32, ObjectHandle)> = None;
         for handle in handles {
-            let attrs = session.get_attributes(handle, &[AttributeType::Label])?;
+            // A shared token can hold AES keys unrelated to this
+            // application, and reading attributes off one of those can
+            // fail (a restrictive access policy, a vendor-specific object
+            // that doesn't expose a label the way we expect, etc). Skip
+            // that object rather than aborting the whole scan - one
+            // foreign, unreadable object must never block adopting or
+            // rotating the keys we actually manage.
+            let Ok(attrs) = session.get_attributes(handle, &[AttributeType::Label]) else {
+                continue;
+            };
             let Some(Attribute::Label(label_bytes)) = attrs.into_iter().next() else {
                 continue;
             };

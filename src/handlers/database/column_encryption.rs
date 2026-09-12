@@ -173,6 +173,26 @@ pub(crate) enum KeyBacking {
     Hsm(ObjectHandle),
 }
 
+/// The algorithm a [`DataEncryptionKey`] with the given `backing` actually
+/// encrypts/decrypts with. For `Software` this is whatever the caller
+/// configured, but an `Hsm`-backed key always goes through
+/// [`HsmProvider::encrypt_gcm`]/`decrypt_gcm` regardless of `configured` -
+/// deriving it here instead of trusting `configured` directly means a
+/// stale or misconfigured `default_algorithm` (e.g. changed to
+/// `ChaCha20Poly1305` after keys were already created under the Pkcs11
+/// provider) can never make a `DataEncryptionKey`'s recorded algorithm
+/// disagree with the cipher that will actually run.
+fn effective_algorithm(
+    backing: &KeyBacking,
+    configured: EncryptionAlgorithm,
+) -> EncryptionAlgorithm {
+    match backing {
+        KeyBacking::Software(_) => configured,
+        #[cfg(feature = "hsm")]
+        KeyBacking::Hsm(_) => EncryptionAlgorithm::Aes256Gcm,
+    }
+}
+
 /// Data Encryption Key (DEK) wrapper
 #[derive(Clone)]
 pub(crate) struct DataEncryptionKey {
@@ -437,12 +457,8 @@ impl KeyManager {
             }
         };
 
-        let dek = DataEncryptionKey::new(
-            key_id.clone(),
-            version,
-            backing,
-            self.config.default_algorithm,
-        );
+        let algorithm = effective_algorithm(&backing, self.config.default_algorithm);
+        let dek = DataEncryptionKey::new(key_id.clone(), version, backing, algorithm);
 
         // Store in active keys
         self.active_keys
@@ -458,7 +474,7 @@ impl KeyManager {
             expires_at: Some(
                 Utc::now() + chrono::Duration::seconds(self.config.rotation_interval_secs as i64),
             ),
-            algorithm: self.config.default_algorithm,
+            algorithm,
             is_active: true,
         };
         self.key_metadata
@@ -546,6 +562,11 @@ impl KeyManager {
         else {
             return Ok(None);
         };
+        if self.config.default_algorithm != EncryptionAlgorithm::Aes256Gcm {
+            return Err(SecurityError::EncryptionError(
+                "the PKCS#11 HSM provider only supports the Aes256Gcm algorithm".into(),
+            ));
+        }
         let key_name = format!("{}.{}", table, column);
         let provider = self.hsm_provider(library_path, *slot_id, pin).await?;
         let Some((version, handle)) =
@@ -560,12 +581,9 @@ impl KeyManager {
         };
 
         let key_id = format!("{}:v{}", key_name, version);
-        let dek = DataEncryptionKey::new(
-            key_id.clone(),
-            version,
-            KeyBacking::Hsm(handle),
-            self.config.default_algorithm,
-        );
+        let backing = KeyBacking::Hsm(handle);
+        let algorithm = effective_algorithm(&backing, self.config.default_algorithm);
+        let dek = DataEncryptionKey::new(key_id.clone(), version, backing, algorithm);
 
         self.active_keys
             .write()
@@ -584,7 +602,7 @@ impl KeyManager {
                     Utc::now()
                         + chrono::Duration::seconds(self.config.rotation_interval_secs as i64),
                 ),
-                algorithm: self.config.default_algorithm,
+                algorithm,
                 is_active: true,
             },
         );
@@ -622,12 +640,14 @@ impl KeyManager {
                 SecurityError::EncryptionError(format!("HSM key lookup failed: {e}"))
             })? {
                 let version = parse_version_suffix(key_id).unwrap_or(0);
-                let dek = DataEncryptionKey::new(
-                    key_id.to_string(),
-                    version,
-                    KeyBacking::Hsm(handle),
-                    self.config.default_algorithm,
-                );
+                let backing = KeyBacking::Hsm(handle);
+                // Decryption of an existing HSM-backed key always uses
+                // Aes256Gcm regardless of the currently configured
+                // `default_algorithm` (see `effective_algorithm`) - a
+                // config change since this key was created must not stop
+                // already-encrypted data from decrypting correctly.
+                let algorithm = effective_algorithm(&backing, self.config.default_algorithm);
+                let dek = DataEncryptionKey::new(key_id.to_string(), version, backing, algorithm);
                 self.historical_keys
                     .write()
                     .await
@@ -1519,6 +1539,38 @@ mod tests {
             .generate_dek("users", "email")
             .await
             .unwrap_err();
+        assert!(
+            format!("{err}").contains("Aes256Gcm"),
+            "expected an Aes256Gcm-only error, got: {err}"
+        );
+    }
+
+    /// The same Aes256Gcm-only restriction must also be enforced on the
+    /// cold-cache "adopt an existing HSM key" path
+    /// (`get_or_create_dek` -> `adopt_existing_hsm_dek`), not just on
+    /// `generate_dek` - otherwise a misconfigured `default_algorithm`
+    /// could let an adopted key's recorded algorithm silently disagree
+    /// with the AES-GCM cipher that actually runs. The check happens
+    /// before ever connecting to a token, so this needs no real PKCS#11
+    /// library either.
+    #[cfg(feature = "hsm")]
+    #[tokio::test]
+    async fn get_or_create_dek_rejects_chacha20_with_pkcs11_provider_on_cold_cache() {
+        let config = KeyManagerConfig {
+            provider: KeyProvider::Pkcs11 {
+                library_path: "/nonexistent/libsofthsm2.so".to_string(),
+                slot_id: None,
+                pin: secrecy::SecretString::from("1234".to_string()),
+            },
+            default_algorithm: EncryptionAlgorithm::ChaCha20Poly1305,
+            ..KeyManagerConfig::default()
+        };
+        let key_manager = KeyManager::new(config);
+
+        let err = match key_manager.get_or_create_dek("users", "email").await {
+            Ok(_) => panic!("expected an error, got a DEK"),
+            Err(e) => e,
+        };
         assert!(
             format!("{err}").contains("Aes256Gcm"),
             "expected an Aes256Gcm-only error, got: {err}"
