@@ -47,15 +47,31 @@ impl IpBlocklist {
     /// 指定したIPが現在ブロック中か判定する。
     ///
     /// 期限切れの一時ブロックエントリはここで遅延削除される（別途
-    /// クリーンアップタスクを持たない、シンプルな設計）。
+    /// クリーンアップタスクを持たない、シンプルな設計）。この呼び出しは
+    /// `check_ids()`のホットパスなので、ブロックされていない大多数の
+    /// リクエストが書き込みロックを取って全リクエストを直列化させて
+    /// しまわないよう、まず読み取りロックだけで判定し、期限切れエントリの
+    /// 削除が必要な場合のみ書き込みロックを取り直す。
     pub async fn is_blocked(&self, ip: IpAddr) -> bool {
         let now = Utc::now();
+        {
+            let entries = self.entries.read().await;
+            match entries.get(&ip) {
+                Some(entry) if !entry.is_expired(now) => return true,
+                Some(_) => {} // 期限切れ - 下で書き込みロックを取って削除する
+                None => return false,
+            }
+        }
+
         let mut entries = self.entries.write().await;
         match entries.get(&ip) {
             Some(entry) if entry.is_expired(now) => {
                 entries.remove(&ip);
                 false
             }
+            // 読み取りロックを解放してから書き込みロックを取るまでの間に
+            // 他のタスクが再ブロックした可能性がある - その場合は最新の
+            // 状態を信頼する。
             Some(_) => true,
             None => false,
         }

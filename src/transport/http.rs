@@ -1092,13 +1092,29 @@ async fn check_ids(
         return Ok(());
     };
 
+    // A serialization failure here must not silently turn into "analyze an
+    // empty body" - that would make the IDS reach a security decision on
+    // different data than was actually received, risking a false negative
+    // on the very request that failed to serialize. Treat it the same as
+    // an IDS analysis failure: fail open with a warning, same as below.
+    let body_bytes = match serde_json::to_vec(body) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            warn!(
+                "Failed to serialize request body for IDS analysis, allowing request: {}",
+                e
+            );
+            return Ok(());
+        }
+    };
+
     let request_data = RequestData {
         request_id: Uuid::new_v4().to_string(),
         method: "POST".to_string(),
         path: path.to_string(),
         query_params: HashMap::new(),
         headers: header_map_to_string_map(headers),
-        body: Some(serde_json::to_vec(body).unwrap_or_default()),
+        body: Some(body_bytes),
         source_ip: Some(ip),
         timestamp: chrono::Utc::now(),
     };
