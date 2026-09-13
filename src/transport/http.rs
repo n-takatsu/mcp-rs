@@ -299,13 +299,21 @@ impl HttpTransport {
             },
             ids: if self.config.ids_enabled {
                 Some(Arc::new(
-                    IntrusionDetectionSystem::new(IDSConfig::default())
-                        .await
-                        .map_err(|e| {
-                            Error::TransportError(TransportError::Configuration(format!(
-                                "IDS initialization failed: {e}"
-                            )))
-                        })?,
+                    IntrusionDetectionSystem::new(IDSConfig {
+                        // ids_enabled opting into this wiring at all means
+                        // the caller wants real IPS enforcement, not just
+                        // detection/alerting - IDSConfig::default() leaves
+                        // auto_block_enabled false, which would otherwise
+                        // silently make check_ids never block anything.
+                        auto_block_enabled: true,
+                        ..IDSConfig::default()
+                    })
+                    .await
+                    .map_err(|e| {
+                        Error::TransportError(TransportError::Configuration(format!(
+                            "IDS initialization failed: {e}"
+                        )))
+                    })?,
                 ))
             } else {
                 None
@@ -745,6 +753,7 @@ impl Transport for HttpTransport {
 async fn handle_jsonrpc_request(
     ConnectInfo(remote_addr): ConnectInfo<SocketAddr>,
     State(state): State<HttpTransportState>,
+    uri: axum::http::Uri,
     headers: HeaderMap,
     Json(request): Json<Value>,
 ) -> std::result::Result<impl IntoResponse, StatusCode> {
@@ -776,7 +785,14 @@ async fn handle_jsonrpc_request(
         remote_addr,
     )
     .await?;
-    check_ids(state.ids.as_ref(), remote_addr, &headers, Some(&request)).await?;
+    check_ids(
+        state.ids.as_ref(),
+        remote_addr,
+        uri.path(),
+        &headers,
+        Some(&request),
+    )
+    .await?;
 
     let start_time = Instant::now();
 
@@ -1058,6 +1074,7 @@ fn header_map_to_string_map(headers: &HeaderMap) -> HashMap<String, String> {
 async fn check_ids(
     ids: Option<&Arc<IntrusionDetectionSystem>>,
     remote_addr: SocketAddr,
+    path: &str,
     headers: &HeaderMap,
     body: Option<&Value>,
 ) -> std::result::Result<(), StatusCode> {
@@ -1078,7 +1095,7 @@ async fn check_ids(
     let request_data = RequestData {
         request_id: Uuid::new_v4().to_string(),
         method: "POST".to_string(),
-        path: "/mcp".to_string(),
+        path: path.to_string(),
         query_params: HashMap::new(),
         headers: header_map_to_string_map(headers),
         body: Some(serde_json::to_vec(body).unwrap_or_default()),
@@ -1120,6 +1137,7 @@ async fn handle_ws_upgrade(
     ws: WebSocketUpgrade,
     ConnectInfo(remote_addr): ConnectInfo<SocketAddr>,
     State(state): State<HttpTransportState>,
+    uri: axum::http::Uri,
     headers: HeaderMap,
 ) -> Response {
     if !state.websocket_upgrade_enabled {
@@ -1177,7 +1195,9 @@ async fn handle_ws_upgrade(
     // No JSON-RPC body exists yet at upgrade time, so only the blocklist
     // fast-path check applies here - full request analysis happens once
     // messages start flowing over `/mcp` instead.
-    if let Err(status) = check_ids(state.ids.as_ref(), remote_addr, &headers, None).await {
+    if let Err(status) =
+        check_ids(state.ids.as_ref(), remote_addr, uri.path(), &headers, None).await
+    {
         return status.into_response();
     }
 
@@ -2147,6 +2167,45 @@ mod tests {
 
         let loopback: SocketAddr = "127.0.0.1:12345".parse().unwrap();
         assert!(check_network_policy(&policy, loopback).is_ok());
+    }
+
+    #[tokio::test]
+    async fn check_ids_analyzes_the_actual_request_path_not_a_hardcoded_one() {
+        // Regression test: check_ids used to always build RequestData with
+        // a hardcoded path of "/mcp", so a path-only attack (nothing in the
+        // body) could never be detected regardless of the real request
+        // path. "/files/../../../etc/passwd" is a known-detected pattern
+        // (see SignatureDetector's path traversal patterns; also exercised
+        // directly against SignatureDetector in
+        // tests/ids_integration_test.rs's
+        // test_signature_detector_path_traversal) that lives only in the
+        // path, not in the (benign) body below.
+        let ids = Arc::new(
+            IntrusionDetectionSystem::new(IDSConfig {
+                auto_block_enabled: true,
+                ..IDSConfig::default()
+            })
+            .await
+            .unwrap(),
+        );
+        let remote_addr: SocketAddr = "203.0.113.5:12345".parse().unwrap();
+        let headers = HeaderMap::new();
+        let benign_body = serde_json::json!({"jsonrpc": "2.0", "method": "tools/list"});
+
+        let result = check_ids(
+            Some(&ids),
+            remote_addr,
+            "/files/../../../etc/passwd",
+            &headers,
+            Some(&benign_body),
+        )
+        .await;
+
+        assert_eq!(
+            result,
+            Err(StatusCode::FORBIDDEN),
+            "a path-traversal path must be analyzed and rejected, not silently replaced with a hardcoded path"
+        );
     }
 
     #[tokio::test]

@@ -206,6 +206,10 @@ impl IntrusionDetectionSystem {
     /// リクエストを分析し、侵入と判定された場合は推奨アクションに応じて
     /// IPのブロックとアラート送信まで行う。HTTPトランスポート層など、
     /// 検知だけでなく実際に防御まで行いたい呼び出し元はこちらを使う。
+    ///
+    /// 実際にIPをブロックするかどうかは`IDSConfig::auto_block_enabled`
+    /// （デフォルト`false`）に従う。無効な場合でも検知・アラート送信は
+    /// 従来通り行われる - 変わるのは自動ブロックの有無だけ。
     pub async fn analyze_and_enforce(
         &self,
         request: &RequestData,
@@ -213,23 +217,25 @@ impl IntrusionDetectionSystem {
         let result = self.analyze_request(request).await?;
 
         if result.is_intrusion {
-            if let Some(ip) = request.source_ip {
-                match result.recommended_action {
-                    RecommendedAction::Block | RecommendedAction::BlocklistIp => {
-                        self.blocklist
-                            .block_temporarily(
-                                ip,
-                                Duration::from_secs(30 * 60),
-                                result.attack_details.description.clone(),
-                            )
-                            .await;
+            if self.config.auto_block_enabled {
+                if let Some(ip) = request.source_ip {
+                    match result.recommended_action {
+                        RecommendedAction::Block | RecommendedAction::BlocklistIp => {
+                            self.blocklist
+                                .block_temporarily(
+                                    ip,
+                                    Duration::from_secs(30 * 60),
+                                    result.attack_details.description.clone(),
+                                )
+                                .await;
+                        }
+                        RecommendedAction::EmergencyResponse => {
+                            self.blocklist
+                                .block_permanently(ip, result.attack_details.description.clone())
+                                .await;
+                        }
+                        _ => {}
                     }
-                    RecommendedAction::EmergencyResponse => {
-                        self.blocklist
-                            .block_permanently(ip, result.attack_details.description.clone())
-                            .await;
-                    }
-                    _ => {}
                 }
             }
 
@@ -352,10 +358,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn analyze_and_enforce_blocks_the_source_ip_on_detected_attack() {
-        let ids = IntrusionDetectionSystem::new(IDSConfig::default())
-            .await
-            .unwrap();
+    async fn analyze_and_enforce_blocks_the_source_ip_when_auto_block_is_enabled() {
+        let ids = IntrusionDetectionSystem::new(IDSConfig {
+            auto_block_enabled: true,
+            ..IDSConfig::default()
+        })
+        .await
+        .unwrap();
         let request = sql_injection_request("203.0.113.10");
 
         let result = ids.analyze_and_enforce(&request).await.unwrap();
@@ -374,6 +383,22 @@ mod tests {
         );
 
         assert!(ids.is_blocked(request.source_ip.unwrap()).await);
+    }
+
+    /// `IDSConfig::default()` leaves `auto_block_enabled` at `false` -
+    /// detection and alerting must still happen, but the source IP must
+    /// not actually be blocked, since the caller didn't opt into
+    /// enforcement.
+    #[tokio::test]
+    async fn analyze_and_enforce_does_not_block_when_auto_block_is_disabled() {
+        let ids = IntrusionDetectionSystem::new(IDSConfig::default())
+            .await
+            .unwrap();
+        let request = sql_injection_request("203.0.113.11");
+
+        let result = ids.analyze_and_enforce(&request).await.unwrap();
+        assert!(result.is_intrusion);
+        assert!(!ids.is_blocked(request.source_ip.unwrap()).await);
     }
 
     #[tokio::test]
