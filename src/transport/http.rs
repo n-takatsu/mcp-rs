@@ -1064,13 +1064,8 @@ fn header_map_to_string_map(headers: &HeaderMap) -> HashMap<String, String> {
         .collect()
 }
 
-/// Runs the intrusion detection/prevention system against an incoming
-/// request. Already-blocked source IPs are rejected before any of the more
-/// expensive signature/behavioral/network analysis runs. `body` is the
-/// parsed JSON-RPC payload when one is available (`handle_jsonrpc_request`)
-/// or `None` when it isn't yet (`handle_ws_upgrade`, where only the
-/// blocklist check applies since there's no request body to analyze at
-/// upgrade time).
+/// Decodes a URL query string (e.g. `"a=1&b=2"`, without the leading `?`)
+/// into a flat map. `None` (no query string at all) yields an empty map.
 fn parse_query_params(query: Option<&str>) -> HashMap<String, String> {
     let Some(query) = query else {
         return HashMap::new();
@@ -1080,6 +1075,13 @@ fn parse_query_params(query: Option<&str>) -> HashMap<String, String> {
         .collect()
 }
 
+/// Runs the intrusion detection/prevention system against an incoming
+/// request. Already-blocked source IPs are rejected before any of the more
+/// expensive signature/behavioral/network analysis runs. `body` is the
+/// parsed JSON-RPC payload when one is available (`handle_jsonrpc_request`)
+/// or `None` when it isn't yet (`handle_ws_upgrade`, where only the
+/// blocklist check applies since there's no request body to analyze at
+/// upgrade time).
 async fn check_ids(
     ids: Option<&Arc<IntrusionDetectionSystem>>,
     remote_addr: SocketAddr,

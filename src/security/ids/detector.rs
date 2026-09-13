@@ -7,8 +7,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
-use log::{debug, warn};
 use tokio::sync::RwLock;
+use tracing::{debug, warn};
 
 use crate::error::McpError;
 
