@@ -2,7 +2,9 @@
 //!
 //! 侵入検知システムのメイン実装
 
+use std::net::IpAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use chrono::Utc;
 use log::{debug, warn};
@@ -12,6 +14,7 @@ use crate::error::McpError;
 
 use super::alerts::{Alert, AlertLevel, AlertManager};
 use super::behavioral::BehavioralDetector;
+use super::blocklist::IpBlocklist;
 use super::config::{IDSConfig, IDSStats};
 use super::network::NetworkMonitor;
 use super::signature::SignatureDetector;
@@ -28,6 +31,8 @@ pub struct IntrusionDetectionSystem {
     network_monitor: Arc<NetworkMonitor>,
     alert_manager: Arc<AlertManager>,
     threat_engine: Option<Arc<dyn std::any::Any + Send + Sync>>,
+    /// 検知結果に基づくIP自動ブロック（IPS）。
+    blocklist: Arc<IpBlocklist>,
     stats: Arc<RwLock<IDSStats>>,
 }
 
@@ -58,6 +63,7 @@ impl IntrusionDetectionSystem {
             network_monitor,
             alert_manager,
             threat_engine: None,
+            blocklist: Arc::new(IpBlocklist::new()),
             stats: Arc::new(RwLock::new(IDSStats::default())),
         })
     }
@@ -192,6 +198,52 @@ impl IntrusionDetectionSystem {
         Ok(())
     }
 
+    /// 指定したIPが現在ブロック中か判定する（IPS）。
+    pub async fn is_blocked(&self, ip: IpAddr) -> bool {
+        self.blocklist.is_blocked(ip).await
+    }
+
+    /// リクエストを分析し、侵入と判定された場合は推奨アクションに応じて
+    /// IPのブロックとアラート送信まで行う。HTTPトランスポート層など、
+    /// 検知だけでなく実際に防御まで行いたい呼び出し元はこちらを使う。
+    pub async fn analyze_and_enforce(
+        &self,
+        request: &RequestData,
+    ) -> Result<DetectionResult, McpError> {
+        let result = self.analyze_request(request).await?;
+
+        if result.is_intrusion {
+            if let Some(ip) = request.source_ip {
+                match result.recommended_action {
+                    RecommendedAction::Block | RecommendedAction::BlocklistIp => {
+                        self.blocklist
+                            .block_temporarily(
+                                ip,
+                                Duration::from_secs(30 * 60),
+                                result.attack_details.description.clone(),
+                            )
+                            .await;
+                    }
+                    RecommendedAction::EmergencyResponse => {
+                        self.blocklist
+                            .block_permanently(ip, result.attack_details.description.clone())
+                            .await;
+                    }
+                    _ => {}
+                }
+            }
+
+            // アラート送信の失敗でリクエストの分析結果自体は無効にしない -
+            // 他の個別検知器の失敗を無視して処理を続ける上のロジックと
+            // 同じ方針。
+            if let Err(e) = self.generate_alert(result.clone()).await {
+                warn!("Failed to send IDS alert: {}", e);
+            }
+        }
+
+        Ok(result)
+    }
+
     /// 統計情報を取得
     pub async fn get_stats(&self) -> IDSStats {
         self.stats.read().await.clone()
@@ -281,5 +333,67 @@ mod tests {
         assert!(result.is_intrusion);
         assert_eq!(result.confidence, 0.95);
         assert_eq!(result.detection_type, DetectionType::SqlInjection);
+    }
+
+    fn sql_injection_request(source_ip: &str) -> RequestData {
+        let mut query_params = std::collections::HashMap::new();
+        query_params.insert("id".to_string(), "1 UNION SELECT FROM users".to_string());
+
+        RequestData {
+            request_id: "test-enforce-001".to_string(),
+            method: "GET".to_string(),
+            path: "/api/users".to_string(),
+            query_params,
+            headers: std::collections::HashMap::new(),
+            body: None,
+            source_ip: Some(source_ip.parse().unwrap()),
+            timestamp: Utc::now(),
+        }
+    }
+
+    #[tokio::test]
+    async fn analyze_and_enforce_blocks_the_source_ip_on_detected_attack() {
+        let ids = IntrusionDetectionSystem::new(IDSConfig::default())
+            .await
+            .unwrap();
+        let request = sql_injection_request("203.0.113.10");
+
+        let result = ids.analyze_and_enforce(&request).await.unwrap();
+        assert!(result.is_intrusion);
+        assert!(
+            matches!(
+                result.recommended_action,
+                RecommendedAction::Block
+                    | RecommendedAction::BlocklistIp
+                    | RecommendedAction::EmergencyResponse
+            ),
+            "expected a blocking action, got {:?} (confidence={}, severity={:?})",
+            result.recommended_action,
+            result.confidence,
+            result.attack_details.severity
+        );
+
+        assert!(ids.is_blocked(request.source_ip.unwrap()).await);
+    }
+
+    #[tokio::test]
+    async fn analyze_and_enforce_does_not_block_a_benign_request() {
+        let ids = IntrusionDetectionSystem::new(IDSConfig::default())
+            .await
+            .unwrap();
+        let request = RequestData {
+            request_id: "test-enforce-002".to_string(),
+            method: "GET".to_string(),
+            path: "/api/users".to_string(),
+            query_params: std::collections::HashMap::new(),
+            headers: std::collections::HashMap::new(),
+            body: None,
+            source_ip: Some("203.0.113.20".parse().unwrap()),
+            timestamp: Utc::now(),
+        };
+
+        let result = ids.analyze_and_enforce(&request).await.unwrap();
+        assert!(!result.is_intrusion);
+        assert!(!ids.is_blocked(request.source_ip.unwrap()).await);
     }
 }

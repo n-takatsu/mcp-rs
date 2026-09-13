@@ -5,8 +5,8 @@
 use crate::{
     error::{Error, Result},
     security::{
-        AntiReplayConfig, AntiReplayMiddleware, AuditLogger, NetworkPolicy, ReplayError,
-        SecurityHeaders,
+        AntiReplayConfig, AntiReplayMiddleware, AuditLogger, IDSConfig, IntrusionDetectionSystem,
+        NetworkPolicy, RecommendedAction, ReplayError, RequestData, SecurityHeaders,
     },
     transport::{
         websocket::server::{ConnectionId, MessageHandler, WebSocketConnectionInfo},
@@ -116,6 +116,14 @@ pub struct HttpConfig {
     /// headers yet — enable explicitly once client-side support is in place.
     #[serde(default)]
     pub anti_replay_enabled: bool,
+    /// Run incoming requests through the intrusion detection/prevention
+    /// system (signature-based, behavioral, and network-pattern detection),
+    /// automatically blocking a source IP for a period - or permanently,
+    /// for the most severe detections - once it triggers one. Defaults to
+    /// `false`: detection has a per-request cost and false positives would
+    /// reject legitimate traffic, so this stays opt-in.
+    #[serde(default)]
+    pub ids_enabled: bool,
     /// Mount a `/ws` WebSocket upgrade endpoint on this same listener, so it
     /// shares this transport's TLS termination, `enforce_https`, HSTS, and
     /// certificate pinning instead of running as a separate, unencrypted
@@ -155,6 +163,7 @@ impl Default for HttpConfig {
             pinned_certificates_sha256: Vec::new(),
             certificate_pin_header: "x-tls-cert-sha256".to_string(),
             anti_replay_enabled: false,
+            ids_enabled: false,
             enable_websocket_upgrade: false,
             websocket_max_connections: default_websocket_max_connections(),
         }
@@ -188,6 +197,7 @@ struct HttpTransportState {
     pinned_certificates_sha256: Arc<HashSet<String>>,
     certificate_pin_header: String,
     anti_replay: Option<Arc<AntiReplayMiddleware>>,
+    ids: Option<Arc<IntrusionDetectionSystem>>,
     audit_logger: Arc<AuditLogger>,
     websocket_upgrade_enabled: bool,
     // Reserves capacity atomically at upgrade time (before the handshake
@@ -284,6 +294,19 @@ impl HttpTransport {
                 Some(Arc::new(AntiReplayMiddleware::new(
                     AntiReplayConfig::default(),
                 )))
+            } else {
+                None
+            },
+            ids: if self.config.ids_enabled {
+                Some(Arc::new(
+                    IntrusionDetectionSystem::new(IDSConfig::default())
+                        .await
+                        .map_err(|e| {
+                            Error::TransportError(TransportError::Configuration(format!(
+                                "IDS initialization failed: {e}"
+                            )))
+                        })?,
+                ))
             } else {
                 None
             },
@@ -753,6 +776,7 @@ async fn handle_jsonrpc_request(
         remote_addr,
     )
     .await?;
+    check_ids(state.ids.as_ref(), remote_addr, &headers, Some(&request)).await?;
 
     let start_time = Instant::now();
 
@@ -1012,6 +1036,83 @@ async fn check_anti_replay_handshake(
     Ok(())
 }
 
+fn header_map_to_string_map(headers: &HeaderMap) -> HashMap<String, String> {
+    headers
+        .iter()
+        .filter_map(|(name, value)| {
+            value
+                .to_str()
+                .ok()
+                .map(|value| (name.as_str().to_string(), value.to_string()))
+        })
+        .collect()
+}
+
+/// Runs the intrusion detection/prevention system against an incoming
+/// request. Already-blocked source IPs are rejected before any of the more
+/// expensive signature/behavioral/network analysis runs. `body` is the
+/// parsed JSON-RPC payload when one is available (`handle_jsonrpc_request`)
+/// or `None` when it isn't yet (`handle_ws_upgrade`, where only the
+/// blocklist check applies since there's no request body to analyze at
+/// upgrade time).
+async fn check_ids(
+    ids: Option<&Arc<IntrusionDetectionSystem>>,
+    remote_addr: SocketAddr,
+    headers: &HeaderMap,
+    body: Option<&Value>,
+) -> std::result::Result<(), StatusCode> {
+    let Some(ids) = ids else {
+        return Ok(());
+    };
+    let ip = remote_addr.ip();
+
+    if ids.is_blocked(ip).await {
+        warn!("Rejected request from blocked IP {}", ip);
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    let Some(body) = body else {
+        return Ok(());
+    };
+
+    let request_data = RequestData {
+        request_id: Uuid::new_v4().to_string(),
+        method: "POST".to_string(),
+        path: "/mcp".to_string(),
+        query_params: HashMap::new(),
+        headers: header_map_to_string_map(headers),
+        body: Some(serde_json::to_vec(body).unwrap_or_default()),
+        source_ip: Some(ip),
+        timestamp: chrono::Utc::now(),
+    };
+
+    match ids.analyze_and_enforce(&request_data).await {
+        Ok(result)
+            if matches!(
+                result.recommended_action,
+                RecommendedAction::Block
+                    | RecommendedAction::BlocklistIp
+                    | RecommendedAction::EmergencyResponse
+            ) =>
+        {
+            warn!(
+                "Blocking request from {} due to detected {:?}",
+                ip, result.detection_type
+            );
+            Err(StatusCode::FORBIDDEN)
+        }
+        Ok(_) => Ok(()),
+        Err(e) => {
+            // A bug or transient failure in IDS analysis must not take the
+            // whole service down - fail open, the same way analyze_request
+            // already tolerates one sub-detector failing without failing
+            // the others (see IntrusionDetectionSystem::analyze_request).
+            warn!("IDS analysis failed, allowing request: {}", e);
+            Ok(())
+        }
+    }
+}
+
 /// Handles a `/ws` upgrade request, applying the exact same
 /// network-policy/TLS-enforcement/certificate-pinning/anti-replay checks as
 /// `handle_jsonrpc_request` before handing off to the WebSocket message loop.
@@ -1071,6 +1172,12 @@ async fn handle_ws_upgrade(
     )
     .await
     {
+        return status.into_response();
+    }
+    // No JSON-RPC body exists yet at upgrade time, so only the blocklist
+    // fast-path check applies here - full request analysis happens once
+    // messages start flowing over `/mcp` instead.
+    if let Err(status) = check_ids(state.ids.as_ref(), remote_addr, &headers, None).await {
         return status.into_response();
     }
 
@@ -2301,5 +2408,109 @@ mod tests {
         let response_value: Value = serde_json::from_str(&response_text).unwrap();
         assert_eq!(response_value["id"], serde_json::json!(1));
         assert_eq!(response_value["result"]["ok"], serde_json::json!(true));
+    }
+
+    /// A notification (no `id`) so a request that gets past `check_ids`
+    /// gets the immediate "accepted" acknowledgment `handle_jsonrpc_request`
+    /// sends for notifications, rather than waiting on the pending-response
+    /// channel these tests have no consumer draining.
+    fn sql_injection_jsonrpc_request() -> Value {
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "tools/call",
+            "params": {
+                "name": "query",
+                "arguments": {
+                    "filter": "1 UNION SELECT FROM users"
+                }
+            }
+        })
+    }
+
+    #[tokio::test]
+    async fn test_ids_blocks_request_with_sql_injection_payload() {
+        let config = HttpConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            ids_enabled: true,
+            ..HttpConfig::default()
+        };
+        let transport = HttpTransport::new(config).unwrap();
+        transport.start_server().await.unwrap();
+        let server_addr = transport.bound_addr().await.unwrap();
+        wait_for_plain_server_ready(server_addr).await;
+
+        let client = reqwest::Client::new();
+        let response = client
+            .post(format!("http://127.0.0.1:{}/mcp", server_addr.port()))
+            .json(&sql_injection_jsonrpc_request())
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn test_ids_blocklist_persists_for_later_benign_requests_from_same_ip() {
+        let config = HttpConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            ids_enabled: true,
+            ..HttpConfig::default()
+        };
+        let transport = HttpTransport::new(config).unwrap();
+        transport.start_server().await.unwrap();
+        let server_addr = transport.bound_addr().await.unwrap();
+        wait_for_plain_server_ready(server_addr).await;
+
+        let client = reqwest::Client::new();
+        let url = format!("http://127.0.0.1:{}/mcp", server_addr.port());
+
+        let first_response = client
+            .post(&url)
+            .json(&sql_injection_jsonrpc_request())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(first_response.status(), StatusCode::FORBIDDEN);
+
+        // A second, entirely benign request from the same source IP must
+        // still be rejected - the source IP itself is now blocklisted,
+        // independent of this specific request's content.
+        let second_response = client
+            .post(&url)
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "tools/list",
+                "params": {}
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(second_response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn test_ids_disabled_by_default_does_not_affect_normal_requests() {
+        // ids_enabled defaults to false - this must behave exactly as it
+        // did before IDS wiring existed, even for a payload that would
+        // otherwise be flagged.
+        let config = HttpConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            ..HttpConfig::default()
+        };
+        let transport = HttpTransport::new(config).unwrap();
+        transport.start_server().await.unwrap();
+        let server_addr = transport.bound_addr().await.unwrap();
+        wait_for_plain_server_ready(server_addr).await;
+
+        let client = reqwest::Client::new();
+        let response = client
+            .post(format!("http://127.0.0.1:{}/mcp", server_addr.port()))
+            .json(&sql_injection_jsonrpc_request())
+            .send()
+            .await
+            .unwrap();
+
+        assert!(response.status().is_success());
     }
 }

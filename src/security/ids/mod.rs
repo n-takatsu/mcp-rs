@@ -41,6 +41,7 @@
 
 pub mod alerts;
 pub mod behavioral;
+pub mod blocklist;
 pub mod config;
 pub mod detector;
 pub mod network;
@@ -50,6 +51,7 @@ pub mod types;
 #[cfg(feature = "ml-anomaly-detection")]
 pub mod ml;
 
+pub use blocklist::IpBlocklist;
 pub use config::{IDSConfig, IDSStats};
 pub use detector::IntrusionDetectionSystem;
 pub use types::{
