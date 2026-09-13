@@ -788,7 +788,7 @@ async fn handle_jsonrpc_request(
     check_ids(
         state.ids.as_ref(),
         remote_addr,
-        uri.path(),
+        &uri,
         &headers,
         Some(&request),
     )
@@ -1071,10 +1071,19 @@ fn header_map_to_string_map(headers: &HeaderMap) -> HashMap<String, String> {
 /// or `None` when it isn't yet (`handle_ws_upgrade`, where only the
 /// blocklist check applies since there's no request body to analyze at
 /// upgrade time).
+fn parse_query_params(query: Option<&str>) -> HashMap<String, String> {
+    let Some(query) = query else {
+        return HashMap::new();
+    };
+    url::form_urlencoded::parse(query.as_bytes())
+        .into_owned()
+        .collect()
+}
+
 async fn check_ids(
     ids: Option<&Arc<IntrusionDetectionSystem>>,
     remote_addr: SocketAddr,
-    path: &str,
+    uri: &axum::http::Uri,
     headers: &HeaderMap,
     body: Option<&Value>,
 ) -> std::result::Result<(), StatusCode> {
@@ -1111,8 +1120,8 @@ async fn check_ids(
     let request_data = RequestData {
         request_id: Uuid::new_v4().to_string(),
         method: "POST".to_string(),
-        path: path.to_string(),
-        query_params: HashMap::new(),
+        path: uri.path().to_string(),
+        query_params: parse_query_params(uri.query()),
         headers: header_map_to_string_map(headers),
         body: Some(body_bytes),
         source_ip: Some(ip),
@@ -1211,9 +1220,7 @@ async fn handle_ws_upgrade(
     // No JSON-RPC body exists yet at upgrade time, so only the blocklist
     // fast-path check applies here - full request analysis happens once
     // messages start flowing over `/mcp` instead.
-    if let Err(status) =
-        check_ids(state.ids.as_ref(), remote_addr, uri.path(), &headers, None).await
-    {
+    if let Err(status) = check_ids(state.ids.as_ref(), remote_addr, &uri, &headers, None).await {
         return status.into_response();
     }
 
@@ -2208,19 +2215,45 @@ mod tests {
         let headers = HeaderMap::new();
         let benign_body = serde_json::json!({"jsonrpc": "2.0", "method": "tools/list"});
 
-        let result = check_ids(
-            Some(&ids),
-            remote_addr,
-            "/files/../../../etc/passwd",
-            &headers,
-            Some(&benign_body),
-        )
-        .await;
+        let uri: axum::http::Uri = "/files/../../../etc/passwd".parse().unwrap();
+        let result = check_ids(Some(&ids), remote_addr, &uri, &headers, Some(&benign_body)).await;
 
         assert_eq!(
             result,
             Err(StatusCode::FORBIDDEN),
             "a path-traversal path must be analyzed and rejected, not silently replaced with a hardcoded path"
+        );
+    }
+
+    #[tokio::test]
+    async fn check_ids_analyzes_the_actual_query_string_not_an_empty_one() {
+        // Regression test: check_ids used to always build RequestData with
+        // an empty query_params map, so a query-string-only attack (nothing
+        // in the path or body) could never be detected -
+        // SignatureDetector::extract_check_strings() specifically scans
+        // request.query_params (see also
+        // tests/ids_integration_test.rs's
+        // test_signature_detector_command_injection, which detects this
+        // same pattern via query_params directly).
+        let ids = Arc::new(
+            IntrusionDetectionSystem::new(IDSConfig {
+                auto_block_enabled: true,
+                ..IDSConfig::default()
+            })
+            .await
+            .unwrap(),
+        );
+        let remote_addr: SocketAddr = "203.0.113.6:12345".parse().unwrap();
+        let headers = HeaderMap::new();
+        let benign_body = serde_json::json!({"jsonrpc": "2.0", "method": "tools/list"});
+
+        let uri: axum::http::Uri = "/mcp?cmd=ls%3B%20rm%20-rf%20%2F".parse().unwrap();
+        let result = check_ids(Some(&ids), remote_addr, &uri, &headers, Some(&benign_body)).await;
+
+        assert_eq!(
+            result,
+            Err(StatusCode::FORBIDDEN),
+            "a query-string-only attack must be analyzed and rejected, not silently dropped"
         );
     }
 
