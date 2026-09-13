@@ -165,6 +165,10 @@ bollard = { version = "0.18.1", optional = true }
 
 # Testing utilities
 mockall = { version = "0.13.1", optional = true }
+
+# HSM integration via PKCS#11 (dynamically loads the provider's shared
+# library at runtime, e.g. SoftHSM2 or a real HSM's vendor-supplied module)
+cryptoki = { version = "0.12", optional = true }
 [dev-dependencies]
 # Testing framework
 tokio-test = "0.4.4"
@@ -212,6 +216,10 @@ mongodb-backend = ["mongodb"]
 
 # Monitoring and metrics
 metrics = ["prometheus", "dep:metrics"]
+
+# Hardware Security Module integration via PKCS#11 (e.g. SoftHSM2 or a
+# vendor-supplied PKCS#11 module for a real HSM/cloud HSM)
+hsm = ["dep:cryptoki"]
 
 # Development and testing
 testing = ["mockall"]

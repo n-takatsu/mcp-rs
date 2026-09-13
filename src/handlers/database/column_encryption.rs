@@ -18,6 +18,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
+#[cfg(feature = "hsm")]
+use tokio::sync::OnceCell;
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
@@ -26,6 +28,10 @@ use crate::handlers::database::column_encryption_rbac::{
 };
 use crate::handlers::database::types::{QueryContext, SecurityError};
 use crate::security::auth::types::AuthUser;
+#[cfg(feature = "hsm")]
+use crate::security::hsm::{HsmProvider, Pkcs11Config};
+#[cfg(feature = "hsm")]
+use cryptoki::object::ObjectHandle;
 
 /// Encryption algorithm types
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
@@ -38,7 +44,7 @@ pub enum EncryptionAlgorithm {
 }
 
 /// Key provider types
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum KeyProvider {
     /// AWS KMS integration
     AwsKms { region: String, key_id: String },
@@ -50,6 +56,93 @@ pub enum KeyProvider {
     },
     /// Local keystore (for development/testing)
     Local { key_path: String },
+    /// PKCS#11 HSM integration (SoftHSM2, or a real/cloud HSM's PKCS#11
+    /// module). Unlike `AwsKms`/`Vault` above, this variant is actually
+    /// wired up: keys are generated inside the token with
+    /// `CKA_EXTRACTABLE = false` and never exist as raw bytes in this
+    /// process's memory. Only [`EncryptionAlgorithm::Aes256Gcm`] is
+    /// supported with this provider.
+    #[cfg(feature = "hsm")]
+    Pkcs11 {
+        library_path: String,
+        slot_id: Option<u64>,
+        /// The token's user PIN. Held as a `SecretString` (redacted by its
+        /// own `Debug` impl) and serialized as a fixed placeholder rather
+        /// than the real value, so it can't leak via `{:?}` logging or by
+        /// accidentally serializing this config (e.g. into telemetry or a
+        /// diagnostics dump).
+        #[serde(serialize_with = "redact_pin", deserialize_with = "deserialize_pin")]
+        pin: secrecy::SecretString,
+    },
+}
+
+/// Manual `PartialEq` (the field types on `Pkcs11.pin` no longer support a
+/// derive - `secrecy::SecretString` deliberately doesn't implement
+/// `PartialEq`, to discourage casually comparing secrets). For every other
+/// variant this compares exactly like the derive would have. For `Pkcs11`,
+/// it compares everything except the PIN: two provider configs pointing at
+/// the same library/slot are equal regardless of PIN, matching how the rest
+/// of this type already treats the PIN as not participating in identity.
+impl PartialEq for KeyProvider {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (
+                Self::AwsKms {
+                    region: r1,
+                    key_id: k1,
+                },
+                Self::AwsKms {
+                    region: r2,
+                    key_id: k2,
+                },
+            ) => r1 == r2 && k1 == k2,
+            (
+                Self::Vault {
+                    address: a1,
+                    mount_path: m1,
+                    key_name: k1,
+                },
+                Self::Vault {
+                    address: a2,
+                    mount_path: m2,
+                    key_name: k2,
+                },
+            ) => a1 == a2 && m1 == m2 && k1 == k2,
+            (Self::Local { key_path: p1 }, Self::Local { key_path: p2 }) => p1 == p2,
+            #[cfg(feature = "hsm")]
+            (
+                Self::Pkcs11 {
+                    library_path: l1,
+                    slot_id: s1,
+                    pin: _,
+                },
+                Self::Pkcs11 {
+                    library_path: l2,
+                    slot_id: s2,
+                    pin: _,
+                },
+            ) => l1 == l2 && s1 == s2,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for KeyProvider {}
+
+#[cfg(feature = "hsm")]
+fn redact_pin<S: serde::Serializer>(
+    _pin: &secrecy::SecretString,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.serialize_str("***REDACTED***")
+}
+
+#[cfg(feature = "hsm")]
+fn deserialize_pin<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<secrecy::SecretString, D::Error> {
+    let pin = String::deserialize(deserializer)?;
+    Ok(secrecy::SecretString::from(pin))
 }
 
 /// Encryption key metadata
@@ -69,12 +162,43 @@ pub struct KeyMetadata {
     pub is_active: bool,
 }
 
+/// Where a [`DataEncryptionKey`]'s actual key material lives.
+#[derive(Clone)]
+pub(crate) enum KeyBacking {
+    /// Raw key bytes held in this process's memory.
+    Software(Vec<u8>),
+    /// A non-extractable key generated inside a PKCS#11 token; only an
+    /// opaque handle is held here, never the raw key bytes.
+    #[cfg(feature = "hsm")]
+    Hsm(ObjectHandle),
+}
+
+/// The algorithm a [`DataEncryptionKey`] with the given `backing` actually
+/// encrypts/decrypts with. For `Software` this is whatever the caller
+/// configured, but an `Hsm`-backed key always goes through
+/// [`HsmProvider::encrypt_gcm`]/`decrypt_gcm` regardless of `configured` -
+/// deriving it here instead of trusting `configured` directly means a
+/// stale or misconfigured `default_algorithm` (e.g. changed to
+/// `ChaCha20Poly1305` after keys were already created under the Pkcs11
+/// provider) can never make a `DataEncryptionKey`'s recorded algorithm
+/// disagree with the cipher that will actually run.
+fn effective_algorithm(
+    backing: &KeyBacking,
+    configured: EncryptionAlgorithm,
+) -> EncryptionAlgorithm {
+    match backing {
+        KeyBacking::Software(_) => configured,
+        #[cfg(feature = "hsm")]
+        KeyBacking::Hsm(_) => EncryptionAlgorithm::Aes256Gcm,
+    }
+}
+
 /// Data Encryption Key (DEK) wrapper
 #[derive(Clone)]
 pub(crate) struct DataEncryptionKey {
     key_id: String,
     version: u32,
-    key_bytes: Vec<u8>,
+    backing: KeyBacking,
     algorithm: EncryptionAlgorithm,
     created_at: DateTime<Utc>,
 }
@@ -83,13 +207,13 @@ impl DataEncryptionKey {
     fn new(
         key_id: String,
         version: u32,
-        key_bytes: Vec<u8>,
+        backing: KeyBacking,
         algorithm: EncryptionAlgorithm,
     ) -> Self {
         Self {
             key_id,
             version,
-            key_bytes,
+            backing,
             algorithm,
             created_at: Utc::now(),
         }
@@ -98,9 +222,16 @@ impl DataEncryptionKey {
 
 impl Drop for DataEncryptionKey {
     fn drop(&mut self) {
-        // Zeroize key material on drop for security
-        use zeroize::Zeroize;
-        self.key_bytes.zeroize();
+        // Zeroize key material on drop for security. An HSM-backed key has
+        // no local secret material to zero - the handle is just an opaque
+        // id, never the key itself. (Without the "hsm" feature, `KeyBacking`
+        // only ever has the `Software` variant, making this pattern
+        // irrefutable - that's fine, it still needs to run.)
+        #[cfg_attr(not(feature = "hsm"), allow(irrefutable_let_patterns))]
+        if let KeyBacking::Software(key_bytes) = &mut self.backing {
+            use zeroize::Zeroize;
+            key_bytes.zeroize();
+        }
     }
 }
 
@@ -153,6 +284,16 @@ impl Default for KeyManagerConfig {
     }
 }
 
+/// Parse the trailing `:v{N}` version number off a `key_id` such as
+/// `"users.ssn:v2"`. Used only to reconstruct a [`DataEncryptionKey`]'s
+/// `version` field when recovering an HSM-backed key by its label alone -
+/// the version number embedded there is cosmetic (used for logging/ordering)
+/// and never re-derived to decide the *next* version to mint.
+#[cfg(feature = "hsm")]
+fn parse_version_suffix(key_id: &str) -> Option<u32> {
+    key_id.rsplit_once(":v")?.1.parse().ok()
+}
+
 /// Key manager for encryption key lifecycle
 pub struct KeyManager {
     config: KeyManagerConfig,
@@ -164,6 +305,12 @@ pub struct KeyManager {
     key_metadata: Arc<RwLock<HashMap<String, KeyMetadata>>>,
     /// Random number generator
     rng: SystemRandom,
+    /// Lazily-connected HSM session, used only when `config.provider` is
+    /// [`KeyProvider::Pkcs11`]. Connecting requires I/O (loading the PKCS#11
+    /// library, opening a session, logging in), so it happens on first use
+    /// rather than in [`Self::new`], which stays infallible.
+    #[cfg(feature = "hsm")]
+    hsm_provider: OnceCell<Arc<HsmProvider>>,
 }
 
 impl KeyManager {
@@ -175,31 +322,143 @@ impl KeyManager {
             historical_keys: Arc::new(RwLock::new(HashMap::new())),
             key_metadata: Arc::new(RwLock::new(HashMap::new())),
             rng: SystemRandom::new(),
+            #[cfg(feature = "hsm")]
+            hsm_provider: OnceCell::new(),
         }
+    }
+
+    /// Connect to (or reuse the existing connection to) the configured
+    /// PKCS#11 token. Only called when `config.provider` is `Pkcs11`.
+    #[cfg(feature = "hsm")]
+    async fn hsm_provider(
+        &self,
+        library_path: &str,
+        slot_id: Option<u64>,
+        pin: &secrecy::SecretString,
+    ) -> Result<&Arc<HsmProvider>, SecurityError> {
+        self.hsm_provider
+            .get_or_try_init(|| async {
+                let config = Pkcs11Config {
+                    library_path: library_path.to_string(),
+                    slot_id,
+                    pin: pin.clone(),
+                };
+                HsmProvider::connect(&config).map(Arc::new).map_err(|e| {
+                    SecurityError::EncryptionError(format!("HSM connection failed: {e}"))
+                })
+            })
+            .await
+    }
+
+    /// Encrypt via the already-connected HSM session. Only ever called for
+    /// a DEK whose backing is [`KeyBacking::Hsm`], which can only exist
+    /// after [`Self::generate_dek`] already established the connection -
+    /// `get()` returning `None` here would mean that invariant was broken.
+    #[cfg(feature = "hsm")]
+    pub(crate) async fn hsm_encrypt(
+        &self,
+        handle: ObjectHandle,
+        nonce: &mut [u8],
+        plaintext: &[u8],
+    ) -> Result<Vec<u8>, SecurityError> {
+        let provider = self
+            .hsm_provider
+            .get()
+            .ok_or_else(|| SecurityError::EncryptionError("HSM provider not connected".into()))?;
+        provider
+            .encrypt_gcm(handle, nonce, plaintext)
+            .await
+            .map_err(|e| SecurityError::EncryptionError(format!("HSM encryption failed: {e}")))
+    }
+
+    /// Decrypt via the already-connected HSM session. See
+    /// [`Self::hsm_encrypt`] for why `get()` is expected to always succeed.
+    #[cfg(feature = "hsm")]
+    pub(crate) async fn hsm_decrypt(
+        &self,
+        handle: ObjectHandle,
+        nonce: &mut [u8],
+        ciphertext: &[u8],
+    ) -> Result<Vec<u8>, SecurityError> {
+        let provider = self
+            .hsm_provider
+            .get()
+            .ok_or_else(|| SecurityError::EncryptionError("HSM provider not connected".into()))?;
+        provider
+            .decrypt_gcm(handle, nonce, ciphertext)
+            .await
+            .map_err(|e| SecurityError::EncryptionError(format!("HSM decryption failed: {e}")))
     }
 
     /// Generate a new Data Encryption Key (DEK)
     pub async fn generate_dek(&self, table: &str, column: &str) -> Result<String, SecurityError> {
         let key_name = format!("{}.{}", table, column);
 
-        // Generate random key bytes
-        let mut key_bytes = vec![0u8; 32]; // 256 bits
-        self.rng
-            .fill(&mut key_bytes)
-            .map_err(|_| SecurityError::EncryptionError("Failed to generate random key".into()))?;
+        let (backing, version, key_id) = match &self.config.provider {
+            #[cfg(feature = "hsm")]
+            KeyProvider::Pkcs11 {
+                library_path,
+                slot_id,
+                pin,
+            } => {
+                if self.config.default_algorithm != EncryptionAlgorithm::Aes256Gcm {
+                    return Err(SecurityError::EncryptionError(
+                        "the PKCS#11 HSM provider only supports the Aes256Gcm algorithm".into(),
+                    ));
+                }
+                let provider = self.hsm_provider(library_path, *slot_id, pin).await?;
 
-        let version = {
-            let metadata = self.key_metadata.read().await;
-            metadata.get(&key_name).map(|m| m.version + 1).unwrap_or(1)
+                // The in-memory version counter below does not survive a
+                // process restart, but the token's key objects do - consult
+                // both and take the higher one so a restart (with an empty
+                // `key_metadata`) can never make this pick a version that
+                // collides with, or shadows, one that was already rotated
+                // past.
+                let in_memory_version = {
+                    let metadata = self.key_metadata.read().await;
+                    metadata.get(&key_name).map(|m| m.version)
+                };
+                let hsm_highest_version = provider
+                    .find_highest_version(&key_name)
+                    .await
+                    .map_err(|e| {
+                        SecurityError::EncryptionError(format!("HSM version lookup failed: {e}"))
+                    })?
+                    .map(|(v, _)| v);
+                let version = in_memory_version
+                    .into_iter()
+                    .chain(hsm_highest_version)
+                    .max()
+                    .map(|v| v + 1)
+                    .unwrap_or(1);
+                let key_id = format!("{}:v{}", key_name, version);
+
+                let handle = provider
+                    .get_or_generate_aes_key(&key_id)
+                    .await
+                    .map_err(|e| {
+                        SecurityError::EncryptionError(format!("HSM key generation failed: {e}"))
+                    })?;
+                (KeyBacking::Hsm(handle), version, key_id)
+            }
+            _ => {
+                let version = {
+                    let metadata = self.key_metadata.read().await;
+                    metadata.get(&key_name).map(|m| m.version + 1).unwrap_or(1)
+                };
+                let key_id = format!("{}:v{}", key_name, version);
+
+                // Generate random key bytes
+                let mut key_bytes = vec![0u8; 32]; // 256 bits
+                self.rng.fill(&mut key_bytes).map_err(|_| {
+                    SecurityError::EncryptionError("Failed to generate random key".into())
+                })?;
+                (KeyBacking::Software(key_bytes), version, key_id)
+            }
         };
 
-        let key_id = format!("{}:v{}", key_name, version);
-        let dek = DataEncryptionKey::new(
-            key_id.clone(),
-            version,
-            key_bytes,
-            self.config.default_algorithm,
-        );
+        let algorithm = effective_algorithm(&backing, self.config.default_algorithm);
+        let dek = DataEncryptionKey::new(key_id.clone(), version, backing, algorithm);
 
         // Store in active keys
         self.active_keys
@@ -215,7 +474,7 @@ impl KeyManager {
             expires_at: Some(
                 Utc::now() + chrono::Duration::seconds(self.config.rotation_interval_secs as i64),
             ),
-            algorithm: self.config.default_algorithm,
+            algorithm,
             is_active: true,
         };
         self.key_metadata
@@ -234,11 +493,13 @@ impl KeyManager {
         column: &str,
     ) -> Result<DataEncryptionKey, SecurityError> {
         let key_name = format!("{}.{}", table, column);
+        let mut cold_cache = true;
 
         // Check if active key exists
         {
             let active_keys = self.active_keys.read().await;
             if let Some(dek) = active_keys.get(&key_name) {
+                cold_cache = false;
                 // Check if key needs rotation
                 let metadata = self.key_metadata.read().await;
                 if let Some(meta) = metadata.get(&key_name) {
@@ -254,6 +515,23 @@ impl KeyManager {
             }
         }
 
+        // A cold cache (nothing in `active_keys` for this column at all)
+        // means either this is the very first access ever, or the process
+        // just restarted and lost its in-memory bookkeeping. For the HSM
+        // provider those two cases are distinguishable: the token's key
+        // objects survive a restart, so check there first and adopt the
+        // existing key rather than unconditionally minting a new version -
+        // otherwise every restart would silently rotate the key even
+        // though nobody asked for that.
+        #[cfg(feature = "hsm")]
+        if cold_cache {
+            if let Some(dek) = self.adopt_existing_hsm_dek(table, column).await? {
+                return Ok(dek);
+            }
+        }
+        #[cfg(not(feature = "hsm"))]
+        let _ = cold_cache;
+
         // Generate new key if not exists or expired
         self.generate_dek(table, column).await?;
 
@@ -263,15 +541,125 @@ impl KeyManager {
         })
     }
 
+    /// If the configured provider is [`KeyProvider::Pkcs11`] and a key for
+    /// `table.column` already exists in the token (at whatever version is
+    /// highest), adopt it as the active key without minting a new version,
+    /// and return it. Returns `Ok(None)` for every other provider, and for
+    /// the Pkcs11 provider when no key has ever been created for this
+    /// column yet (the caller should then fall through to
+    /// [`Self::generate_dek`] for a true first-time creation).
+    #[cfg(feature = "hsm")]
+    async fn adopt_existing_hsm_dek(
+        &self,
+        table: &str,
+        column: &str,
+    ) -> Result<Option<DataEncryptionKey>, SecurityError> {
+        let KeyProvider::Pkcs11 {
+            library_path,
+            slot_id,
+            pin,
+        } = &self.config.provider
+        else {
+            return Ok(None);
+        };
+        if self.config.default_algorithm != EncryptionAlgorithm::Aes256Gcm {
+            return Err(SecurityError::EncryptionError(
+                "the PKCS#11 HSM provider only supports the Aes256Gcm algorithm".into(),
+            ));
+        }
+        let key_name = format!("{}.{}", table, column);
+        let provider = self.hsm_provider(library_path, *slot_id, pin).await?;
+        let Some((version, handle)) =
+            provider
+                .find_highest_version(&key_name)
+                .await
+                .map_err(|e| {
+                    SecurityError::EncryptionError(format!("HSM version lookup failed: {e}"))
+                })?
+        else {
+            return Ok(None);
+        };
+
+        let key_id = format!("{}:v{}", key_name, version);
+        let backing = KeyBacking::Hsm(handle);
+        let algorithm = effective_algorithm(&backing, self.config.default_algorithm);
+        let dek = DataEncryptionKey::new(key_id.clone(), version, backing, algorithm);
+
+        self.active_keys
+            .write()
+            .await
+            .insert(key_name.clone(), dek.clone());
+        self.key_metadata.write().await.insert(
+            key_name.clone(),
+            KeyMetadata {
+                key_id,
+                version,
+                // The key's true creation time isn't recoverable from the
+                // token alone; this only affects when the adopted key's
+                // *next* expiry-driven rotation is due, not its identity.
+                created_at: Utc::now(),
+                expires_at: Some(
+                    Utc::now()
+                        + chrono::Duration::seconds(self.config.rotation_interval_secs as i64),
+                ),
+                algorithm,
+                is_active: true,
+            },
+        );
+
+        info!(
+            "Adopted existing HSM-backed DEK for {}: v{}",
+            key_name, version
+        );
+        Ok(Some(dek))
+    }
+
     /// Get historical key for decryption
     pub(crate) async fn get_historical_key(
         &self,
         key_id: &str,
     ) -> Result<DataEncryptionKey, SecurityError> {
-        let historical_keys = self.historical_keys.read().await;
-        historical_keys.get(key_id).cloned().ok_or_else(|| {
-            SecurityError::EncryptionError(format!("Historical key not found: {}", key_id))
-        })
+        if let Some(dek) = self.historical_keys.read().await.get(key_id).cloned() {
+            return Ok(dek);
+        }
+
+        // Not in the in-memory map - for the HSM provider this doesn't
+        // necessarily mean the key is gone: `historical_keys` is wiped on
+        // every process restart, but a rotated-out key's token object is
+        // still sitting in the HSM under this exact `key_id` as its label.
+        // Look it up directly instead of failing.
+        #[cfg(feature = "hsm")]
+        if let KeyProvider::Pkcs11 {
+            library_path,
+            slot_id,
+            pin,
+        } = &self.config.provider
+        {
+            let provider = self.hsm_provider(library_path, *slot_id, pin).await?;
+            if let Some(handle) = provider.find_key(key_id).await.map_err(|e| {
+                SecurityError::EncryptionError(format!("HSM key lookup failed: {e}"))
+            })? {
+                let version = parse_version_suffix(key_id).unwrap_or(0);
+                let backing = KeyBacking::Hsm(handle);
+                // Decryption of an existing HSM-backed key always uses
+                // Aes256Gcm regardless of the currently configured
+                // `default_algorithm` (see `effective_algorithm`) - a
+                // config change since this key was created must not stop
+                // already-encrypted data from decrypting correctly.
+                let algorithm = effective_algorithm(&backing, self.config.default_algorithm);
+                let dek = DataEncryptionKey::new(key_id.to_string(), version, backing, algorithm);
+                self.historical_keys
+                    .write()
+                    .await
+                    .insert(key_id.to_string(), dek.clone());
+                return Ok(dek);
+            }
+        }
+
+        Err(SecurityError::EncryptionError(format!(
+            "Historical key not found: {}",
+            key_id
+        )))
     }
 
     /// Rotate key for a column
@@ -478,14 +866,24 @@ impl ColumnEncryptionManager {
             .fill(&mut nonce_bytes)
             .map_err(|_| SecurityError::EncryptionError("Failed to generate nonce".into()))?;
 
-        // Encrypt based on algorithm
-        let ciphertext = match dek.algorithm {
-            EncryptionAlgorithm::Aes256Gcm => {
-                self.encrypt_aes_gcm(&dek.key_bytes, &nonce_bytes, plaintext.as_bytes())?
+        // Encrypt based on where the key lives and, for software keys, the
+        // configured algorithm. HSM-backed keys are always Aes256Gcm - see
+        // the check in KeyManager::generate_dek.
+        let ciphertext = match &dek.backing {
+            #[cfg(feature = "hsm")]
+            KeyBacking::Hsm(handle) => {
+                self.key_manager
+                    .hsm_encrypt(*handle, &mut nonce_bytes, plaintext.as_bytes())
+                    .await?
             }
-            EncryptionAlgorithm::ChaCha20Poly1305 => {
-                self.encrypt_chacha20(&dek.key_bytes, &nonce_bytes, plaintext.as_bytes())?
-            }
+            KeyBacking::Software(key_bytes) => match dek.algorithm {
+                EncryptionAlgorithm::Aes256Gcm => {
+                    self.encrypt_aes_gcm(key_bytes, &nonce_bytes, plaintext.as_bytes())?
+                }
+                EncryptionAlgorithm::ChaCha20Poly1305 => {
+                    self.encrypt_chacha20(key_bytes, &nonce_bytes, plaintext.as_bytes())?
+                }
+            },
         };
 
         let encrypted_data = EncryptedData {
@@ -715,18 +1113,26 @@ impl ColumnEncryptionManager {
             }
         };
 
-        // Decrypt based on algorithm
-        let plaintext_bytes = match encrypted_data.algorithm {
-            EncryptionAlgorithm::Aes256Gcm => self.decrypt_aes_gcm(
-                &dek.key_bytes,
-                &encrypted_data.nonce,
-                &encrypted_data.ciphertext,
-            )?,
-            EncryptionAlgorithm::ChaCha20Poly1305 => self.decrypt_chacha20(
-                &dek.key_bytes,
-                &encrypted_data.nonce,
-                &encrypted_data.ciphertext,
-            )?,
+        // Decrypt based on where the key lives and, for software keys, the
+        // algorithm it was encrypted with. Only the HSM path needs `&mut`
+        // access to the nonce.
+        #[cfg_attr(not(feature = "hsm"), allow(unused_mut))]
+        let mut nonce = encrypted_data.nonce.clone();
+        let plaintext_bytes = match &dek.backing {
+            #[cfg(feature = "hsm")]
+            KeyBacking::Hsm(handle) => {
+                self.key_manager
+                    .hsm_decrypt(*handle, &mut nonce, &encrypted_data.ciphertext)
+                    .await?
+            }
+            KeyBacking::Software(key_bytes) => match encrypted_data.algorithm {
+                EncryptionAlgorithm::Aes256Gcm => {
+                    self.decrypt_aes_gcm(key_bytes, &nonce, &encrypted_data.ciphertext)?
+                }
+                EncryptionAlgorithm::ChaCha20Poly1305 => {
+                    self.decrypt_chacha20(key_bytes, &nonce, &encrypted_data.ciphertext)?
+                }
+            },
         };
 
         let plaintext = String::from_utf8(plaintext_bytes).map_err(|e| {
@@ -1109,6 +1515,189 @@ mod tests {
 
         assert_ne!(key_id1, key_id2);
         assert!(key_id2.ends_with(":v2"));
+    }
+
+    /// The Pkcs11 provider only supports Aes256Gcm (PKCS#11 has no standard
+    /// ChaCha20-Poly1305 mechanism). This must be rejected before ever
+    /// trying to connect to a token, so this test needs no real PKCS#11
+    /// library to be meaningful.
+    #[cfg(feature = "hsm")]
+    #[tokio::test]
+    async fn generate_dek_rejects_chacha20_with_pkcs11_provider() {
+        let config = KeyManagerConfig {
+            provider: KeyProvider::Pkcs11 {
+                library_path: "/nonexistent/libsofthsm2.so".to_string(),
+                slot_id: None,
+                pin: secrecy::SecretString::from("1234".to_string()),
+            },
+            default_algorithm: EncryptionAlgorithm::ChaCha20Poly1305,
+            ..KeyManagerConfig::default()
+        };
+        let key_manager = KeyManager::new(config);
+
+        let err = key_manager
+            .generate_dek("users", "email")
+            .await
+            .unwrap_err();
+        assert!(
+            format!("{err}").contains("Aes256Gcm"),
+            "expected an Aes256Gcm-only error, got: {err}"
+        );
+    }
+
+    /// The same Aes256Gcm-only restriction must also be enforced on the
+    /// cold-cache "adopt an existing HSM key" path
+    /// (`get_or_create_dek` -> `adopt_existing_hsm_dek`), not just on
+    /// `generate_dek` - otherwise a misconfigured `default_algorithm`
+    /// could let an adopted key's recorded algorithm silently disagree
+    /// with the AES-GCM cipher that actually runs. The check happens
+    /// before ever connecting to a token, so this needs no real PKCS#11
+    /// library either.
+    #[cfg(feature = "hsm")]
+    #[tokio::test]
+    async fn get_or_create_dek_rejects_chacha20_with_pkcs11_provider_on_cold_cache() {
+        let config = KeyManagerConfig {
+            provider: KeyProvider::Pkcs11 {
+                library_path: "/nonexistent/libsofthsm2.so".to_string(),
+                slot_id: None,
+                pin: secrecy::SecretString::from("1234".to_string()),
+            },
+            default_algorithm: EncryptionAlgorithm::ChaCha20Poly1305,
+            ..KeyManagerConfig::default()
+        };
+        let key_manager = KeyManager::new(config);
+
+        let err = match key_manager.get_or_create_dek("users", "email").await {
+            Ok(_) => panic!("expected an error, got a DEK"),
+            Err(e) => e,
+        };
+        assert!(
+            format!("{err}").contains("Aes256Gcm"),
+            "expected an Aes256Gcm-only error, got: {err}"
+        );
+    }
+
+    /// A Pkcs11 provider pointed at a library that doesn't exist must
+    /// surface a clear connection error instead of panicking, and must not
+    /// require a real HSM/SoftHSM2 to exercise this failure path.
+    #[cfg(feature = "hsm")]
+    #[tokio::test]
+    async fn generate_dek_surfaces_connection_error_for_missing_pkcs11_library() {
+        let config = KeyManagerConfig {
+            provider: KeyProvider::Pkcs11 {
+                library_path: "/nonexistent/libsofthsm2.so".to_string(),
+                slot_id: None,
+                pin: secrecy::SecretString::from("1234".to_string()),
+            },
+            default_algorithm: EncryptionAlgorithm::Aes256Gcm,
+            ..KeyManagerConfig::default()
+        };
+        let key_manager = KeyManager::new(config);
+
+        let err = key_manager
+            .generate_dek("users", "email")
+            .await
+            .unwrap_err();
+        assert!(
+            format!("{err}").contains("HSM connection failed"),
+            "expected an HSM connection error, got: {err}"
+        );
+    }
+
+    /// The PIN must never show up verbatim in `{:?}` output or in
+    /// serialized config - both are places it could end up in logs,
+    /// telemetry, or a diagnostics dump.
+    #[cfg(feature = "hsm")]
+    #[test]
+    fn pkcs11_provider_pin_is_redacted_in_debug_and_serialize() {
+        let provider = KeyProvider::Pkcs11 {
+            library_path: "/usr/lib/softhsm/libsofthsm2.so".to_string(),
+            slot_id: None,
+            pin: secrecy::SecretString::from("super-secret-pin".to_string()),
+        };
+
+        let debug_output = format!("{provider:?}");
+        assert!(
+            !debug_output.contains("super-secret-pin"),
+            "Debug output must not contain the raw PIN: {debug_output}"
+        );
+
+        let json = serde_json::to_string(&provider).expect("KeyProvider should serialize");
+        assert!(
+            !json.contains("super-secret-pin"),
+            "serialized config must not contain the raw PIN: {json}"
+        );
+
+        // Deserializing still recovers the real PIN - only serialization
+        // (the "write this out somewhere") is redacted.
+        let KeyProvider::Pkcs11 {
+            pin: roundtripped_pin,
+            ..
+        } = serde_json::from_str::<KeyProvider>(
+            r#"{"Pkcs11":{"library_path":"lib.so","slot_id":null,"pin":"super-secret-pin"}}"#,
+        )
+        .expect("KeyProvider should deserialize")
+        else {
+            panic!("expected a Pkcs11 provider");
+        };
+        assert_eq!(
+            secrecy::ExposeSecret::expose_secret(&roundtripped_pin),
+            "super-secret-pin"
+        );
+    }
+
+    /// `KeyProvider` keeps its (previously derived) `PartialEq`/`Eq` -
+    /// restored as a manual impl since `SecretString` doesn't support
+    /// deriving it. Two `Pkcs11` configs pointing at the same library/slot
+    /// are equal regardless of PIN.
+    #[test]
+    fn key_provider_equality_matches_non_secret_fields() {
+        assert_eq!(
+            KeyProvider::Local {
+                key_path: "keys".to_string(),
+            },
+            KeyProvider::Local {
+                key_path: "keys".to_string(),
+            }
+        );
+        assert_ne!(
+            KeyProvider::Local {
+                key_path: "keys".to_string(),
+            },
+            KeyProvider::Local {
+                key_path: "other".to_string(),
+            }
+        );
+
+        #[cfg(feature = "hsm")]
+        {
+            let a = KeyProvider::Pkcs11 {
+                library_path: "/usr/lib/softhsm/libsofthsm2.so".to_string(),
+                slot_id: Some(0),
+                pin: secrecy::SecretString::from("pin-a".to_string()),
+            };
+            let b = KeyProvider::Pkcs11 {
+                library_path: "/usr/lib/softhsm/libsofthsm2.so".to_string(),
+                slot_id: Some(0),
+                pin: secrecy::SecretString::from("pin-b".to_string()),
+            };
+            assert_eq!(a, b, "PIN must not affect equality");
+
+            let different_slot = KeyProvider::Pkcs11 {
+                library_path: "/usr/lib/softhsm/libsofthsm2.so".to_string(),
+                slot_id: Some(1),
+                pin: secrecy::SecretString::from("pin-a".to_string()),
+            };
+            assert_ne!(a, different_slot);
+
+            assert_ne!(
+                a,
+                KeyProvider::Local {
+                    key_path: "keys".to_string()
+                },
+                "different variants must never be equal"
+            );
+        }
     }
 
     #[tokio::test]
