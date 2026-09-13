@@ -18,8 +18,8 @@ use cryptoki::mechanism::Mechanism;
 use cryptoki::object::{Attribute, AttributeType, KeyType, ObjectClass, ObjectHandle};
 use cryptoki::session::{Session, UserType};
 use cryptoki::slot::Slot;
-use cryptoki::types::{AuthPin, Ulong};
-use secrecy::{ExposeSecret, SecretString};
+use cryptoki::types::Ulong;
+use secrecy::SecretString;
 use std::path::Path;
 use thiserror::Error;
 use tokio::sync::Mutex;
@@ -93,10 +93,10 @@ impl HsmProvider {
 
         let slot = Self::select_slot(&pkcs11, config.slot_id)?;
         let session = pkcs11.open_rw_session(slot)?;
-        match session.login(
-            UserType::User,
-            Some(&AuthPin::new(config.pin.expose_secret().to_string().into())),
-        ) {
+        // `AuthPin` is just `secrecy::SecretString` under the name PKCS#11
+        // logins use, so `config.pin` can be passed straight through -
+        // no need to expose it into a plain, non-zeroizing `String` first.
+        match session.login(UserType::User, Some(&config.pin)) {
             Ok(()) => {}
             // Several PKCS#11 implementations (SoftHSM2 included) track
             // login state per token/application rather than per session,

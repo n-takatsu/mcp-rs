@@ -77,9 +77,13 @@ async fn hsm_backed_encrypt_decrypt_round_trip() {
     assert_eq!(decrypted, plaintext);
 }
 
-/// Two independently-generated HSM-backed keys for different columns must
-/// not be able to decrypt each other's ciphertext - proves each column
-/// really does get its own token-resident key, not a single shared one.
+/// Two different columns must get their own, distinct token-resident key
+/// rather than sharing one. Checking that the two ciphertexts differ isn't
+/// enough to prove that on its own - AES-GCM's random nonce makes
+/// ciphertexts differ almost every time even under the *same* key - so this
+/// instead compares the `key_id` each ciphertext's envelope actually
+/// embeds, which is exactly what determines which HSM key handle a later
+/// decrypt would resolve to.
 #[tokio::test]
 #[ignore]
 async fn hsm_backed_keys_are_isolated_per_column() {
@@ -99,9 +103,19 @@ async fn hsm_backed_keys_are_isolated_per_column() {
         .await
         .expect("encryption of a second column should succeed");
 
+    let key_id = embedded_key_id(&encrypted);
+    let other_key_id = embedded_key_id(&other_ciphertext);
     assert_ne!(
-        encrypted, other_ciphertext,
-        "two different columns must not produce identical ciphertext for the same plaintext"
+        key_id, other_key_id,
+        "two different columns must not resolve to the same HSM key"
+    );
+    assert!(
+        key_id.starts_with("hsm_it.email:v"),
+        "unexpected key_id for the email column: {key_id}"
+    );
+    assert!(
+        other_key_id.starts_with("hsm_it.phone:v"),
+        "unexpected key_id for the phone column: {other_key_id}"
     );
 }
 
