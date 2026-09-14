@@ -44,7 +44,8 @@ pub use ids::{
     behavioral::BehavioralDetector,
     network::NetworkMonitor,
     signature::SignatureDetector,
-    DetectionResult, DetectionType, IntrusionDetectionSystem, RecommendedAction, Severity,
+    DetectionResult, DetectionType, IDSConfig, IntrusionDetectionSystem, RecommendedAction,
+    RequestData, Severity,
 };
 pub use image_scanner::{ImageScanner, ScanReport, ScanSummary, ScannerType, Vulnerability};
 #[cfg(feature = "mfa")]

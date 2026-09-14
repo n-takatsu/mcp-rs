@@ -2,16 +2,19 @@
 //!
 //! 侵入検知システムのメイン実装
 
+use std::net::IpAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use chrono::Utc;
-use log::{debug, warn};
 use tokio::sync::RwLock;
+use tracing::{debug, warn};
 
 use crate::error::McpError;
 
 use super::alerts::{Alert, AlertLevel, AlertManager};
 use super::behavioral::BehavioralDetector;
+use super::blocklist::IpBlocklist;
 use super::config::{IDSConfig, IDSStats};
 use super::network::NetworkMonitor;
 use super::signature::SignatureDetector;
@@ -19,6 +22,33 @@ use super::types::{
     AttackDetails, DetectionResult, DetectionType, RecommendedAction, RequestData, Severity,
     SourceInfo,
 };
+
+/// `analyze_and_enforce()`が実際にIPSブロックリストへどう反映するか。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Enforcement {
+    /// ブロックリストへの反映なし。
+    None,
+    /// 一時的にブロック。
+    Temporary,
+    /// 永続的にブロック。
+    Permanent,
+}
+
+/// `RecommendedAction`は`Block`（このリクエスト単体を拒否する、より低い
+/// 確信度のアクション）と`BlocklistIp`（IPをブロックリストに追加する、
+/// より高い確信度のアクション）を明確に区別している。`Block`まで
+/// ブロックリストに追加してしまうと、確信度が中程度の検知が長時間の
+/// IP禁止に格上げされ、誤検知の影響が拡大してしまう - `Block`自体は
+/// `check_ids()`側で当該リクエスト自体は拒否されるため、ここでは
+/// ブロックリストへの追加のみを`BlocklistIp`/`EmergencyResponse`に
+/// 限定する。
+fn enforcement_for(action: RecommendedAction) -> Enforcement {
+    match action {
+        RecommendedAction::BlocklistIp => Enforcement::Temporary,
+        RecommendedAction::EmergencyResponse => Enforcement::Permanent,
+        _ => Enforcement::None,
+    }
+}
 
 /// 侵入検知システム
 pub struct IntrusionDetectionSystem {
@@ -28,6 +58,8 @@ pub struct IntrusionDetectionSystem {
     network_monitor: Arc<NetworkMonitor>,
     alert_manager: Arc<AlertManager>,
     threat_engine: Option<Arc<dyn std::any::Any + Send + Sync>>,
+    /// 検知結果に基づくIP自動ブロック（IPS）。
+    blocklist: Arc<IpBlocklist>,
     stats: Arc<RwLock<IDSStats>>,
 }
 
@@ -58,6 +90,7 @@ impl IntrusionDetectionSystem {
             network_monitor,
             alert_manager,
             threat_engine: None,
+            blocklist: Arc::new(IpBlocklist::new()),
             stats: Arc::new(RwLock::new(IDSStats::default())),
         })
     }
@@ -192,6 +225,58 @@ impl IntrusionDetectionSystem {
         Ok(())
     }
 
+    /// 指定したIPが現在ブロック中か判定する（IPS）。
+    pub async fn is_blocked(&self, ip: IpAddr) -> bool {
+        self.blocklist.is_blocked(ip).await
+    }
+
+    /// リクエストを分析し、侵入と判定された場合は推奨アクションに応じて
+    /// IPのブロックとアラート送信まで行う。HTTPトランスポート層など、
+    /// 検知だけでなく実際に防御まで行いたい呼び出し元はこちらを使う。
+    ///
+    /// 実際にIPをブロックするかどうかは`IDSConfig::auto_block_enabled`
+    /// （デフォルト`false`）に従う。無効な場合でも検知・アラート送信は
+    /// 従来通り行われる - 変わるのは自動ブロックの有無だけ。
+    pub async fn analyze_and_enforce(
+        &self,
+        request: &RequestData,
+    ) -> Result<DetectionResult, McpError> {
+        let result = self.analyze_request(request).await?;
+
+        if result.is_intrusion {
+            if self.config.auto_block_enabled {
+                if let Some(ip) = request.source_ip {
+                    match enforcement_for(result.recommended_action) {
+                        Enforcement::Temporary => {
+                            self.blocklist
+                                .block_temporarily(
+                                    ip,
+                                    Duration::from_secs(30 * 60),
+                                    result.attack_details.description.clone(),
+                                )
+                                .await;
+                        }
+                        Enforcement::Permanent => {
+                            self.blocklist
+                                .block_permanently(ip, result.attack_details.description.clone())
+                                .await;
+                        }
+                        Enforcement::None => {}
+                    }
+                }
+            }
+
+            // アラート送信の失敗でリクエストの分析結果自体は無効にしない -
+            // 他の個別検知器の失敗を無視して処理を続ける上のロジックと
+            // 同じ方針。
+            if let Err(e) = self.generate_alert(result.clone()).await {
+                warn!("Failed to send IDS alert: {}", e);
+            }
+        }
+
+        Ok(result)
+    }
+
     /// 統計情報を取得
     pub async fn get_stats(&self) -> IDSStats {
         self.stats.read().await.clone()
@@ -281,5 +366,118 @@ mod tests {
         assert!(result.is_intrusion);
         assert_eq!(result.confidence, 0.95);
         assert_eq!(result.detection_type, DetectionType::SqlInjection);
+    }
+
+    fn sql_injection_request(source_ip: &str) -> RequestData {
+        let mut query_params = std::collections::HashMap::new();
+        query_params.insert("id".to_string(), "1 UNION SELECT FROM users".to_string());
+
+        RequestData {
+            request_id: "test-enforce-001".to_string(),
+            method: "GET".to_string(),
+            path: "/api/users".to_string(),
+            query_params,
+            headers: std::collections::HashMap::new(),
+            body: None,
+            source_ip: Some(source_ip.parse().unwrap()),
+            timestamp: Utc::now(),
+        }
+    }
+
+    #[tokio::test]
+    async fn analyze_and_enforce_blocks_the_source_ip_when_auto_block_is_enabled() {
+        let ids = IntrusionDetectionSystem::new(IDSConfig {
+            auto_block_enabled: true,
+            ..IDSConfig::default()
+        })
+        .await
+        .unwrap();
+        let request = sql_injection_request("203.0.113.10");
+
+        let result = ids.analyze_and_enforce(&request).await.unwrap();
+        assert!(result.is_intrusion);
+        assert!(
+            matches!(
+                result.recommended_action,
+                RecommendedAction::Block
+                    | RecommendedAction::BlocklistIp
+                    | RecommendedAction::EmergencyResponse
+            ),
+            "expected a blocking action, got {:?} (confidence={}, severity={:?})",
+            result.recommended_action,
+            result.confidence,
+            result.attack_details.severity
+        );
+
+        assert!(ids.is_blocked(request.source_ip.unwrap()).await);
+    }
+
+    /// `IDSConfig::default()` leaves `auto_block_enabled` at `false` -
+    /// detection and alerting must still happen, but the source IP must
+    /// not actually be blocked, since the caller didn't opt into
+    /// enforcement.
+    #[tokio::test]
+    async fn analyze_and_enforce_does_not_block_when_auto_block_is_disabled() {
+        let ids = IntrusionDetectionSystem::new(IDSConfig::default())
+            .await
+            .unwrap();
+        let request = sql_injection_request("203.0.113.11");
+
+        let result = ids.analyze_and_enforce(&request).await.unwrap();
+        assert!(result.is_intrusion);
+        assert!(!ids.is_blocked(request.source_ip.unwrap()).await);
+    }
+
+    #[tokio::test]
+    async fn analyze_and_enforce_does_not_block_a_benign_request() {
+        let ids = IntrusionDetectionSystem::new(IDSConfig::default())
+            .await
+            .unwrap();
+        let request = RequestData {
+            request_id: "test-enforce-002".to_string(),
+            method: "GET".to_string(),
+            path: "/api/users".to_string(),
+            query_params: std::collections::HashMap::new(),
+            headers: std::collections::HashMap::new(),
+            body: None,
+            source_ip: Some("203.0.113.20".parse().unwrap()),
+            timestamp: Utc::now(),
+        };
+
+        let result = ids.analyze_and_enforce(&request).await.unwrap();
+        assert!(!result.is_intrusion);
+        assert!(!ids.is_blocked(request.source_ip.unwrap()).await);
+    }
+
+    /// `Block` and `BlocklistIp` are deliberately distinct actions - `Block`
+    /// is a lower-confidence tier meant to reject only the current request
+    /// (which `check_ids()` in the HTTP transport already does based on
+    /// `recommended_action` alone, independent of blocklisting), while
+    /// `BlocklistIp` is the higher-confidence tier meant to actually ban
+    /// the source IP for a period. Conflating them would escalate
+    /// moderate-confidence detections into IP bans, and this is tested
+    /// directly against `enforcement_for()` rather than through full
+    /// analysis, since crafting a payload that lands in the exact
+    /// Block confidence band is incidental to what this is verifying.
+    #[test]
+    fn enforcement_for_only_blocklists_blocklist_ip_and_emergency_response() {
+        assert_eq!(
+            enforcement_for(RecommendedAction::Monitor),
+            Enforcement::None
+        );
+        assert_eq!(enforcement_for(RecommendedAction::Warn), Enforcement::None);
+        assert_eq!(enforcement_for(RecommendedAction::Block), Enforcement::None);
+        assert_eq!(
+            enforcement_for(RecommendedAction::InvalidateSession),
+            Enforcement::None
+        );
+        assert_eq!(
+            enforcement_for(RecommendedAction::BlocklistIp),
+            Enforcement::Temporary
+        );
+        assert_eq!(
+            enforcement_for(RecommendedAction::EmergencyResponse),
+            Enforcement::Permanent
+        );
     }
 }
