@@ -23,6 +23,33 @@ use super::types::{
     SourceInfo,
 };
 
+/// `analyze_and_enforce()`が実際にIPSブロックリストへどう反映するか。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Enforcement {
+    /// ブロックリストへの反映なし。
+    None,
+    /// 一時的にブロック。
+    Temporary,
+    /// 永続的にブロック。
+    Permanent,
+}
+
+/// `RecommendedAction`は`Block`（このリクエスト単体を拒否する、より低い
+/// 確信度のアクション）と`BlocklistIp`（IPをブロックリストに追加する、
+/// より高い確信度のアクション）を明確に区別している。`Block`まで
+/// ブロックリストに追加してしまうと、確信度が中程度の検知が長時間の
+/// IP禁止に格上げされ、誤検知の影響が拡大してしまう - `Block`自体は
+/// `check_ids()`側で当該リクエスト自体は拒否されるため、ここでは
+/// ブロックリストへの追加のみを`BlocklistIp`/`EmergencyResponse`に
+/// 限定する。
+fn enforcement_for(action: RecommendedAction) -> Enforcement {
+    match action {
+        RecommendedAction::BlocklistIp => Enforcement::Temporary,
+        RecommendedAction::EmergencyResponse => Enforcement::Permanent,
+        _ => Enforcement::None,
+    }
+}
+
 /// 侵入検知システム
 pub struct IntrusionDetectionSystem {
     config: IDSConfig,
@@ -219,8 +246,8 @@ impl IntrusionDetectionSystem {
         if result.is_intrusion {
             if self.config.auto_block_enabled {
                 if let Some(ip) = request.source_ip {
-                    match result.recommended_action {
-                        RecommendedAction::Block | RecommendedAction::BlocklistIp => {
+                    match enforcement_for(result.recommended_action) {
+                        Enforcement::Temporary => {
                             self.blocklist
                                 .block_temporarily(
                                     ip,
@@ -229,12 +256,12 @@ impl IntrusionDetectionSystem {
                                 )
                                 .await;
                         }
-                        RecommendedAction::EmergencyResponse => {
+                        Enforcement::Permanent => {
                             self.blocklist
                                 .block_permanently(ip, result.attack_details.description.clone())
                                 .await;
                         }
-                        _ => {}
+                        Enforcement::None => {}
                     }
                 }
             }
@@ -420,5 +447,37 @@ mod tests {
         let result = ids.analyze_and_enforce(&request).await.unwrap();
         assert!(!result.is_intrusion);
         assert!(!ids.is_blocked(request.source_ip.unwrap()).await);
+    }
+
+    /// `Block` and `BlocklistIp` are deliberately distinct actions - `Block`
+    /// is a lower-confidence tier meant to reject only the current request
+    /// (which `check_ids()` in the HTTP transport already does based on
+    /// `recommended_action` alone, independent of blocklisting), while
+    /// `BlocklistIp` is the higher-confidence tier meant to actually ban
+    /// the source IP for a period. Conflating them would escalate
+    /// moderate-confidence detections into IP bans, and this is tested
+    /// directly against `enforcement_for()` rather than through full
+    /// analysis, since crafting a payload that lands in the exact
+    /// Block confidence band is incidental to what this is verifying.
+    #[test]
+    fn enforcement_for_only_blocklists_blocklist_ip_and_emergency_response() {
+        assert_eq!(
+            enforcement_for(RecommendedAction::Monitor),
+            Enforcement::None
+        );
+        assert_eq!(enforcement_for(RecommendedAction::Warn), Enforcement::None);
+        assert_eq!(enforcement_for(RecommendedAction::Block), Enforcement::None);
+        assert_eq!(
+            enforcement_for(RecommendedAction::InvalidateSession),
+            Enforcement::None
+        );
+        assert_eq!(
+            enforcement_for(RecommendedAction::BlocklistIp),
+            Enforcement::Temporary
+        );
+        assert_eq!(
+            enforcement_for(RecommendedAction::EmergencyResponse),
+            Enforcement::Permanent
+        );
     }
 }

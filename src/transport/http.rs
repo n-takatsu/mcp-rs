@@ -1052,16 +1052,37 @@ async fn check_anti_replay_handshake(
     Ok(())
 }
 
+/// `http::HeaderMap` always stores header names lowercased regardless of the
+/// casing a client actually sent, but the IDS's own detectors (`detector.rs`,
+/// `network.rs`, `behavioral.rs`) look several of them up by their
+/// conventional title-cased names (`"User-Agent"`, `"X-User-ID"`,
+/// `"X-Session-ID"`, `"Referer"`) via an exact-match `HashMap::get`. Map a
+/// lowercase name to that expected form so those lookups actually see real
+/// request headers instead of always missing.
+fn canonical_ids_header_name(lowercase_name: &str) -> Option<&'static str> {
+    match lowercase_name {
+        "user-agent" => Some("User-Agent"),
+        "x-user-id" => Some("X-User-ID"),
+        "x-session-id" => Some("X-Session-ID"),
+        "referer" => Some("Referer"),
+        _ => None,
+    }
+}
+
 fn header_map_to_string_map(headers: &HeaderMap) -> HashMap<String, String> {
-    headers
-        .iter()
-        .filter_map(|(name, value)| {
-            value
-                .to_str()
-                .ok()
-                .map(|value| (name.as_str().to_string(), value.to_string()))
-        })
-        .collect()
+    let mut map = HashMap::with_capacity(headers.len());
+    for (name, value) in headers.iter() {
+        // A non-UTF-8 header value is still real header content an
+        // attacker could use to evade detection - dropping it entirely
+        // (as `to_str().ok()` would) is a bigger risk than lossily
+        // decoding it, which still lets pattern matching see most of it.
+        let value = String::from_utf8_lossy(value.as_bytes()).into_owned();
+        if let Some(canonical) = canonical_ids_header_name(name.as_str()) {
+            map.insert(canonical.to_string(), value.clone());
+        }
+        map.insert(name.as_str().to_string(), value);
+    }
+    map
 }
 
 /// Decodes a URL query string (e.g. `"a=1&b=2"`, without the leading `?`)
@@ -2257,6 +2278,38 @@ mod tests {
             Err(StatusCode::FORBIDDEN),
             "a query-string-only attack must be analyzed and rejected, not silently dropped"
         );
+    }
+
+    #[test]
+    fn header_map_to_string_map_exposes_canonical_names_and_keeps_non_utf8_values() {
+        let mut headers = HeaderMap::new();
+        // http::HeaderMap always stores this as "user-agent" regardless of
+        // how it's inserted - detector.rs/network.rs look it up as the
+        // exact string "User-Agent", so both forms must be present.
+        headers.insert("User-Agent", "sqlmap/1.0".parse().unwrap());
+        // A non-UTF-8 value (0xFF is not valid UTF-8 on its own) must not
+        // be silently dropped - lossily decoding still keeps most of an
+        // attacker-controlled value available to pattern matching.
+        headers.insert(
+            "x-weird",
+            axum::http::HeaderValue::from_bytes(b"bad\xffvalue").unwrap(),
+        );
+
+        let map = header_map_to_string_map(&headers);
+
+        assert_eq!(
+            map.get("user-agent").map(String::as_str),
+            Some("sqlmap/1.0")
+        );
+        assert_eq!(
+            map.get("User-Agent").map(String::as_str),
+            Some("sqlmap/1.0")
+        );
+        assert!(
+            map.contains_key("x-weird"),
+            "a non-UTF-8 header value must not be dropped entirely"
+        );
+        assert!(map["x-weird"].contains("bad") && map["x-weird"].contains("value"));
     }
 
     #[tokio::test]
