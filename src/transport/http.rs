@@ -1069,18 +1069,22 @@ async fn check_anti_replay_handshake(
 }
 
 /// `http::HeaderMap` always stores header names lowercased regardless of the
-/// casing a client actually sent, but the IDS's own detectors (`detector.rs`,
-/// `network.rs`, `behavioral.rs`) look several of them up by their
-/// conventional title-cased names (`"User-Agent"`, `"X-User-ID"`,
-/// `"X-Session-ID"`, `"Referer"`) via an exact-match `HashMap::get`. Map a
-/// lowercase name to that expected form so those lookups actually see real
-/// request headers instead of always missing.
+/// casing a client actually sent, but the IDS's own code (`detector.rs`,
+/// `network.rs`, `behavioral.rs`, `ml/features.rs`) looks several of them up
+/// by their conventional title-cased names (`"User-Agent"`, `"X-User-ID"`,
+/// `"X-Session-ID"`, `"Referer"`, `"Cookie"`) via an exact-match
+/// `HashMap::get`/`contains_key`. Map a lowercase name to that expected form
+/// so those lookups actually see real request headers instead of always
+/// missing. Keep this in sync with every such exact-match lookup under
+/// `src/security/ids/` (searched recursively - some live in submodules like
+/// `ml/`), not just the top-level files.
 fn canonical_ids_header_name(lowercase_name: &str) -> Option<&'static str> {
     match lowercase_name {
         "user-agent" => Some("User-Agent"),
         "x-user-id" => Some("X-User-ID"),
         "x-session-id" => Some("X-Session-ID"),
         "referer" => Some("Referer"),
+        "cookie" => Some("Cookie"),
         _ => None,
     }
 }
@@ -2380,6 +2384,32 @@ mod tests {
             "a non-UTF-8 header value must not be dropped entirely"
         );
         assert!(map["x-weird"].contains("bad") && map["x-weird"].contains("value"));
+    }
+
+    #[test]
+    fn header_map_to_string_map_exposes_cookie_in_title_case() {
+        // src/security/ids/ml/features.rs checks
+        // request.headers.contains_key("Cookie") - an exact-match lookup
+        // that was missing from canonical_ids_header_name's list even
+        // though http::HeaderMap always stores this as lowercase "cookie".
+        // (The ml feature extractor isn't currently called from
+        // IntrusionDetectionSystem::analyze_request at all - see the "ml
+        // implementation" scope note in this PR's description - so this is
+        // a forward-looking correctness fix for header_map_to_string_map
+        // itself, not a live detection gap today.)
+        let mut headers = HeaderMap::new();
+        headers.insert("Cookie", "session=abc123".parse().unwrap());
+
+        let map = header_map_to_string_map(&headers);
+
+        assert_eq!(
+            map.get("cookie").map(String::as_str),
+            Some("session=abc123")
+        );
+        assert_eq!(
+            map.get("Cookie").map(String::as_str),
+            Some("session=abc123")
+        );
     }
 
     #[test]
