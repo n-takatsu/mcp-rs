@@ -46,7 +46,7 @@ use std::{
     collections::{HashMap, HashSet},
     fs::File,
     io::BufReader,
-    net::SocketAddr,
+    net::{IpAddr, SocketAddr},
     sync::{
         atomic::{AtomicU64, Ordering},
         Arc,
@@ -124,6 +124,18 @@ pub struct HttpConfig {
     /// reject legitimate traffic, so this stays opt-in.
     #[serde(default)]
     pub ids_enabled: bool,
+    /// When IDS/IPS is enabled, take the client IP for detection and
+    /// blocking from the `X-Forwarded-For`/`X-Real-IP` headers instead of
+    /// the raw TCP peer address. Only enable this when this transport sits
+    /// directly behind a trusted reverse proxy that sets these headers
+    /// itself - otherwise any client can forge them, either evading IP
+    /// blocking entirely or getting an arbitrary victim IP blocklisted.
+    /// Defaults to `false` (use the raw peer address), since without a
+    /// known trusted proxy in front, that peer address behind a
+    /// proxy/load balancer would otherwise be blocklisted instead of the
+    /// actual attacker, blocking every client behind it.
+    #[serde(default)]
+    pub ids_trust_forwarded_for: bool,
     /// Mount a `/ws` WebSocket upgrade endpoint on this same listener, so it
     /// shares this transport's TLS termination, `enforce_https`, HSTS, and
     /// certificate pinning instead of running as a separate, unencrypted
@@ -164,6 +176,7 @@ impl Default for HttpConfig {
             certificate_pin_header: "x-tls-cert-sha256".to_string(),
             anti_replay_enabled: false,
             ids_enabled: false,
+            ids_trust_forwarded_for: false,
             enable_websocket_upgrade: false,
             websocket_max_connections: default_websocket_max_connections(),
         }
@@ -198,6 +211,7 @@ struct HttpTransportState {
     certificate_pin_header: String,
     anti_replay: Option<Arc<AntiReplayMiddleware>>,
     ids: Option<Arc<IntrusionDetectionSystem>>,
+    ids_trust_forwarded_for: bool,
     audit_logger: Arc<AuditLogger>,
     websocket_upgrade_enabled: bool,
     // Reserves capacity atomically at upgrade time (before the handshake
@@ -318,6 +332,7 @@ impl HttpTransport {
             } else {
                 None
             },
+            ids_trust_forwarded_for: self.config.ids_trust_forwarded_for,
             audit_logger: Arc::new(AuditLogger::with_defaults()),
             websocket_upgrade_enabled: self.config.enable_websocket_upgrade,
             websocket_semaphore: Arc::new(tokio::sync::Semaphore::new(
@@ -788,6 +803,7 @@ async fn handle_jsonrpc_request(
     check_ids(
         state.ids.as_ref(),
         remote_addr,
+        state.ids_trust_forwarded_for,
         &uri,
         &headers,
         Some(&request),
@@ -1096,6 +1112,34 @@ fn parse_query_params(query: Option<&str>) -> HashMap<String, String> {
         .collect()
 }
 
+/// The IP to run IDS detection/blocking against. `remote_addr` is the raw
+/// TCP peer address, which behind a reverse proxy/load balancer is the
+/// proxy's own IP, not the actual client's - blocking on it would ban every
+/// client behind that proxy over one bad request. Only consult
+/// `X-Forwarded-For`/`X-Real-IP` when `trust_forwarded` is set (meaning the
+/// operator has confirmed this transport sits directly behind a trusted
+/// proxy that sets these itself); otherwise, or if neither header parses to
+/// a valid IP, fall back to the raw peer address.
+fn client_ip_for_ids(
+    remote_addr: SocketAddr,
+    headers: &HeaderMap,
+    trust_forwarded: bool,
+) -> IpAddr {
+    if trust_forwarded {
+        let forwarded_ip = header_value(headers, "x-forwarded-for")
+            .and_then(|value| value.split(',').next())
+            .map(str::trim)
+            .and_then(|ip| ip.parse::<IpAddr>().ok())
+            .or_else(|| {
+                header_value(headers, "x-real-ip").and_then(|value| value.trim().parse().ok())
+            });
+        if let Some(ip) = forwarded_ip {
+            return ip;
+        }
+    }
+    remote_addr.ip()
+}
+
 /// Runs the intrusion detection/prevention system against an incoming
 /// request. Already-blocked source IPs are rejected before any of the more
 /// expensive signature/behavioral/network analysis runs. `body` is the
@@ -1106,6 +1150,7 @@ fn parse_query_params(query: Option<&str>) -> HashMap<String, String> {
 async fn check_ids(
     ids: Option<&Arc<IntrusionDetectionSystem>>,
     remote_addr: SocketAddr,
+    trust_forwarded_for: bool,
     uri: &axum::http::Uri,
     headers: &HeaderMap,
     body: Option<&Value>,
@@ -1113,7 +1158,7 @@ async fn check_ids(
     let Some(ids) = ids else {
         return Ok(());
     };
-    let ip = remote_addr.ip();
+    let ip = client_ip_for_ids(remote_addr, headers, trust_forwarded_for);
 
     if ids.is_blocked(ip).await {
         warn!("Rejected request from blocked IP {}", ip);
@@ -1243,7 +1288,16 @@ async fn handle_ws_upgrade(
     // No JSON-RPC body exists yet at upgrade time, so only the blocklist
     // fast-path check applies here - full request analysis happens once
     // messages start flowing over `/mcp` instead.
-    if let Err(status) = check_ids(state.ids.as_ref(), remote_addr, &uri, &headers, None).await {
+    if let Err(status) = check_ids(
+        state.ids.as_ref(),
+        remote_addr,
+        state.ids_trust_forwarded_for,
+        &uri,
+        &headers,
+        None,
+    )
+    .await
+    {
         return status.into_response();
     }
 
@@ -2239,7 +2293,15 @@ mod tests {
         let benign_body = serde_json::json!({"jsonrpc": "2.0", "method": "tools/list"});
 
         let uri: axum::http::Uri = "/files/../../../etc/passwd".parse().unwrap();
-        let result = check_ids(Some(&ids), remote_addr, &uri, &headers, Some(&benign_body)).await;
+        let result = check_ids(
+            Some(&ids),
+            remote_addr,
+            false,
+            &uri,
+            &headers,
+            Some(&benign_body),
+        )
+        .await;
 
         assert_eq!(
             result,
@@ -2271,7 +2333,15 @@ mod tests {
         let benign_body = serde_json::json!({"jsonrpc": "2.0", "method": "tools/list"});
 
         let uri: axum::http::Uri = "/mcp?cmd=ls%3B%20rm%20-rf%20%2F".parse().unwrap();
-        let result = check_ids(Some(&ids), remote_addr, &uri, &headers, Some(&benign_body)).await;
+        let result = check_ids(
+            Some(&ids),
+            remote_addr,
+            false,
+            &uri,
+            &headers,
+            Some(&benign_body),
+        )
+        .await;
 
         assert_eq!(
             result,
@@ -2310,6 +2380,49 @@ mod tests {
             "a non-UTF-8 header value must not be dropped entirely"
         );
         assert!(map["x-weird"].contains("bad") && map["x-weird"].contains("value"));
+    }
+
+    #[test]
+    fn client_ip_for_ids_uses_the_peer_address_when_forwarding_is_not_trusted() {
+        // Default posture: a proxy in front of us could set X-Forwarded-For
+        // to anything, so without an explicit trust decision it must be
+        // ignored and the real TCP peer used - otherwise any client can
+        // evade IP blocking, or get an arbitrary victim IP blocklisted, by
+        // just setting this header themselves.
+        let remote_addr: SocketAddr = "203.0.113.9:12345".parse().unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-for", "198.51.100.1".parse().unwrap());
+
+        let ip = client_ip_for_ids(remote_addr, &headers, false);
+
+        assert_eq!(ip, remote_addr.ip());
+    }
+
+    #[test]
+    fn client_ip_for_ids_uses_the_forwarded_header_when_trusted() {
+        let remote_addr: SocketAddr = "203.0.113.9:12345".parse().unwrap();
+        let mut headers = HeaderMap::new();
+        // The first entry is the original client in a single-trusted-proxy
+        // deployment (the only topology this opt-in is meant for).
+        headers.insert(
+            "x-forwarded-for",
+            "198.51.100.1, 203.0.113.9".parse().unwrap(),
+        );
+
+        let ip = client_ip_for_ids(remote_addr, &headers, true);
+
+        assert_eq!(ip, "198.51.100.1".parse::<IpAddr>().unwrap());
+    }
+
+    #[test]
+    fn client_ip_for_ids_falls_back_to_the_peer_address_when_trusted_but_header_is_unparseable() {
+        let remote_addr: SocketAddr = "203.0.113.9:12345".parse().unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-for", "not-an-ip".parse().unwrap());
+
+        let ip = client_ip_for_ids(remote_addr, &headers, true);
+
+        assert_eq!(ip, remote_addr.ip());
     }
 
     #[tokio::test]
@@ -2650,6 +2763,55 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(second_response.status(), StatusCode::FORBIDDEN);
+    }
+
+    /// Regression test for blocking the wrong IP behind a trusted reverse
+    /// proxy: with `ids_trust_forwarded_for: true`, a request that spoofs
+    /// `X-Forwarded-For` as a client IP different from the real TCP peer
+    /// (loopback, since that's all a test process can originate from) must
+    /// get *that* forwarded IP blocklisted, not the peer - a later, benign
+    /// request from the same real peer with no forwarded header must still
+    /// go through, since the peer itself was never the one at fault.
+    #[tokio::test]
+    async fn test_ids_blocklists_the_trusted_forwarded_ip_not_the_proxy_peer() {
+        let config = HttpConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            ids_enabled: true,
+            ids_trust_forwarded_for: true,
+            ..HttpConfig::default()
+        };
+        let transport = HttpTransport::new(config).unwrap();
+        transport.start_server().await.unwrap();
+        let server_addr = transport.bound_addr().await.unwrap();
+        wait_for_plain_server_ready(server_addr).await;
+
+        let client = reqwest::Client::new();
+        let url = format!("http://127.0.0.1:{}/mcp", server_addr.port());
+
+        let attack_response = client
+            .post(&url)
+            .header("x-forwarded-for", "198.51.100.55")
+            .json(&sql_injection_jsonrpc_request())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(attack_response.status(), StatusCode::FORBIDDEN);
+
+        // Same real peer (127.0.0.1, the only address a test client can
+        // connect from), no forwarded header this time, benign payload:
+        // must not be blocked, because the peer address itself was never
+        // blocklisted - only the spoofed-but-trusted forwarded IP was.
+        let later_response = client
+            .post(&url)
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "tools/list",
+                "params": {}
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert!(later_response.status().is_success());
     }
 
     #[tokio::test]

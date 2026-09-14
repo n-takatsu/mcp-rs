@@ -145,6 +145,11 @@ pub struct HttpTransportConfig {
     /// system and automatically block a source IP that triggers it.
     /// Defaults to `false`.
     pub ids_enabled: Option<bool>,
+    /// When IDS/IPS is enabled, trust `X-Forwarded-For`/`X-Real-IP` for the
+    /// client IP instead of the raw TCP peer address. Only safe when this
+    /// transport sits directly behind a trusted reverse proxy. Defaults to
+    /// `false`.
+    pub ids_trust_forwarded_for: Option<bool>,
     /// Reject binding/connections from non-loopback addresses. Defaults to
     /// `true` (see `configs/security/network-policy.toml`).
     pub network_policy_reject_external_connections: Option<bool>,
@@ -586,6 +591,7 @@ impl McpConfig {
                     certificate_pin_header: Some("x-tls-cert-sha256".to_string()),
                     anti_replay_enabled: Some(false),
                     ids_enabled: Some(false),
+                    ids_trust_forwarded_for: Some(false),
                     network_policy_reject_external_connections: Some(true),
                     network_policy_warn_on_external_bind: Some(true),
                     network_policy_ip_whitelist: Some(vec![]),
@@ -803,6 +809,7 @@ impl McpConfig {
                     .unwrap_or_else(|| "x-tls-cert-sha256".to_string()),
                 anti_replay_enabled: http.anti_replay_enabled.unwrap_or(false),
                 ids_enabled: http.ids_enabled.unwrap_or(false),
+                ids_trust_forwarded_for: http.ids_trust_forwarded_for.unwrap_or(false),
                 enable_websocket_upgrade: http.enable_websocket_upgrade.unwrap_or(false),
                 websocket_max_connections: http.websocket_max_connections.unwrap_or(1000),
             }

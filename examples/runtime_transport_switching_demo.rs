@@ -185,6 +185,7 @@ fn convert_to_transport_config(
                     .unwrap_or_else(|| "x-tls-cert-sha256".to_string()),
                 anti_replay_enabled: h.anti_replay_enabled.unwrap_or(false),
                 ids_enabled: h.ids_enabled.unwrap_or(false),
+                ids_trust_forwarded_for: h.ids_trust_forwarded_for.unwrap_or(false),
                 enable_websocket_upgrade: h.enable_websocket_upgrade.unwrap_or(false),
                 websocket_max_connections: h.websocket_max_connections.unwrap_or(1000),
             }
