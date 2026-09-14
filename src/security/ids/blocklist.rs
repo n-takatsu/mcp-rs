@@ -28,6 +28,21 @@ impl BlockEntry {
     }
 }
 
+/// Removes every expired entry from the map.
+///
+/// `is_blocked()` only ever removes the one IP it was asked about, so an IP
+/// that gets blocked once and is never checked again (a common shape for
+/// one-off scanner/attacker traffic) would otherwise sit in the map forever
+/// after its block expires, growing unbounded over the life of the process.
+/// Called from `block_temporarily`/`block_permanently`, which already hold
+/// the write lock for their own insert, so this piggybacks on that lock
+/// rather than taking a second one - new blocks are exactly the events that
+/// would otherwise keep growing the map, so sweeping on every one of them
+/// keeps the total bounded by blocking activity instead of elapsed time.
+fn sweep_expired(entries: &mut HashMap<IpAddr, BlockEntry>, now: DateTime<Utc>) {
+    entries.retain(|_, entry| !entry.is_expired(now));
+}
+
 /// IPアドレスのブロックリスト
 ///
 /// エントリはメモリ上のみで保持される（プロセス再起動でリセットされる）。
@@ -88,7 +103,8 @@ impl IpBlocklist {
         let expires_at =
             now + Duration::from_std(duration).unwrap_or_else(|_| Duration::seconds(30 * 60));
         info!("Blocking IP {ip} until {expires_at}: {reason}");
-        self.entries.write().await.insert(
+        let mut entries = self.entries.write().await;
+        entries.insert(
             ip,
             BlockEntry {
                 reason,
@@ -96,12 +112,14 @@ impl IpBlocklist {
                 expires_at: Some(expires_at),
             },
         );
+        sweep_expired(&mut entries, now);
     }
 
     /// IPを永続的にブロックする。
     pub async fn block_permanently(&self, ip: IpAddr, reason: String) {
         info!("Permanently blocking IP {ip}: {reason}");
-        self.entries.write().await.insert(
+        let mut entries = self.entries.write().await;
+        entries.insert(
             ip,
             BlockEntry {
                 reason,
@@ -109,6 +127,18 @@ impl IpBlocklist {
                 expires_at: None,
             },
         );
+        sweep_expired(&mut entries, Utc::now());
+    }
+
+    /// ブロックリストに現在保持しているエントリ数（期限切れも含む）。
+    /// メモリ使用量の監視・テスト用。
+    pub async fn len(&self) -> usize {
+        self.entries.read().await.len()
+    }
+
+    /// `len() == 0`か。
+    pub async fn is_empty(&self) -> bool {
+        self.entries.read().await.is_empty()
     }
 
     /// ブロックを解除する（誤検知時の運用対応、およびテスト用）。
@@ -196,5 +226,54 @@ mod tests {
             .await;
         blocklist.unblock(test_ip()).await;
         assert!(!blocklist.is_blocked(test_ip()).await);
+    }
+
+    /// Regression test: an IP blocked once and never checked again (a
+    /// one-off attacker that doesn't come back) must not sit in the map
+    /// forever after it expires - the next unrelated block event must
+    /// sweep it out, not just query the IP it was actually asked about.
+    #[tokio::test]
+    async fn expired_one_off_entries_are_swept_by_a_later_unrelated_block() {
+        let blocklist = IpBlocklist::new();
+        let one_off_ip = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 50));
+
+        blocklist
+            .block_temporarily(
+                one_off_ip,
+                std::time::Duration::from_millis(20),
+                "test".to_string(),
+            )
+            .await;
+        assert_eq!(
+            blocklist.len().await,
+            1,
+            "the entry exists right after insertion, before it has expired"
+        );
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert_eq!(
+            blocklist.len().await,
+            1,
+            "expiry alone doesn't remove an entry - nothing has checked or re-blocked it yet"
+        );
+
+        // A second, unrelated IP gets blocked - this must sweep the
+        // already-expired first entry out, without anyone ever calling
+        // is_blocked(one_off_ip) again.
+        let other_ip = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 51));
+        blocklist
+            .block_temporarily(
+                other_ip,
+                std::time::Duration::from_secs(3600),
+                "test".to_string(),
+            )
+            .await;
+
+        assert_eq!(
+            blocklist.len().await,
+            1,
+            "the expired one-off entry must be swept, leaving only the still-active block"
+        );
+        assert!(blocklist.is_blocked(other_ip).await);
     }
 }

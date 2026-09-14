@@ -1089,6 +1089,22 @@ fn canonical_ids_header_name(lowercase_name: &str) -> Option<&'static str> {
     }
 }
 
+/// Appends `value` under `key`, joining onto any value already there
+/// instead of overwriting it - `HeaderMap::iter()` yields one entry per
+/// occurrence of a repeated header, and a repeated query parameter key
+/// behaves the same way, so a naive `insert` would silently keep only the
+/// last one and let attacker-controlled content in an earlier occurrence
+/// (or an earlier one hiding a later one, depending on iteration order)
+/// go unanalyzed.
+fn append_multivalue(map: &mut HashMap<String, String>, key: String, value: String) {
+    map.entry(key)
+        .and_modify(|existing| {
+            existing.push_str(", ");
+            existing.push_str(&value);
+        })
+        .or_insert(value);
+}
+
 fn header_map_to_string_map(headers: &HeaderMap) -> HashMap<String, String> {
     let mut map = HashMap::with_capacity(headers.len());
     for (name, value) in headers.iter() {
@@ -1098,9 +1114,9 @@ fn header_map_to_string_map(headers: &HeaderMap) -> HashMap<String, String> {
         // decoding it, which still lets pattern matching see most of it.
         let value = String::from_utf8_lossy(value.as_bytes()).into_owned();
         if let Some(canonical) = canonical_ids_header_name(name.as_str()) {
-            map.insert(canonical.to_string(), value.clone());
+            append_multivalue(&mut map, canonical.to_string(), value.clone());
         }
-        map.insert(name.as_str().to_string(), value);
+        append_multivalue(&mut map, name.as_str().to_string(), value);
     }
     map
 }
@@ -1111,9 +1127,13 @@ fn parse_query_params(query: Option<&str>) -> HashMap<String, String> {
     let Some(query) = query else {
         return HashMap::new();
     };
-    url::form_urlencoded::parse(query.as_bytes())
-        .into_owned()
-        .collect()
+    let mut map = HashMap::new();
+    // A repeated key (e.g. "a=malicious&a=benign") must not silently keep
+    // only one of the values - see append_multivalue.
+    for (key, value) in url::form_urlencoded::parse(query.as_bytes()) {
+        append_multivalue(&mut map, key.into_owned(), value.into_owned());
+    }
+    map
 }
 
 /// The IP to run IDS detection/blocking against. `remote_addr` is the raw
@@ -2410,6 +2430,36 @@ mod tests {
             map.get("Cookie").map(String::as_str),
             Some("session=abc123")
         );
+    }
+
+    #[test]
+    fn header_map_to_string_map_keeps_all_values_of_a_repeated_header() {
+        // http::HeaderMap can store multiple values under one name (a
+        // client can send the same header more than once); a naive
+        // insert-per-occurrence would keep only the last one and let
+        // attacker-controlled content in an earlier occurrence go
+        // unanalyzed.
+        let mut headers = HeaderMap::new();
+        headers.append("x-custom", "first".parse().unwrap());
+        headers.append("x-custom", "second".parse().unwrap());
+
+        let map = header_map_to_string_map(&headers);
+
+        let value = &map["x-custom"];
+        assert!(value.contains("first"), "got: {value}");
+        assert!(value.contains("second"), "got: {value}");
+    }
+
+    #[test]
+    fn parse_query_params_keeps_all_values_of_a_repeated_key() {
+        // "a=malicious&a=benign" must not silently collapse to whichever
+        // value HashMap::collect() happens to keep - both must be visible
+        // to detection.
+        let map = parse_query_params(Some("a=malicious&a=benign"));
+
+        let value = &map["a"];
+        assert!(value.contains("malicious"), "got: {value}");
+        assert!(value.contains("benign"), "got: {value}");
     }
 
     #[test]
