@@ -1310,8 +1310,12 @@ async fn handle_ws_upgrade(
         return status.into_response();
     }
     // No JSON-RPC body exists yet at upgrade time, so only the blocklist
-    // fast-path check applies here - full request analysis happens once
-    // messages start flowing over `/mcp` instead.
+    // fast-path check applies here. Unlike the HTTP JSON-RPC path (`/` and
+    // `/mcp`), messages sent over an established `/ws` connection are not
+    // currently run through full IDS analysis at all - there is no
+    // per-message check_ids() call in the WebSocket message loop. That's a
+    // real coverage gap versus HTTP, not something this upgrade-time check
+    // makes up for.
     if let Err(status) = check_ids(
         state.ids.as_ref(),
         remote_addr,

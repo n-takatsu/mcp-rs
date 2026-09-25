@@ -218,9 +218,10 @@ impl IntrusionDetectionSystem {
             .await
             .map_err(|e| McpError::SecurityFailure(format!("Failed to send alert: {}", e)))?;
 
-        // アラート統計更新
+        // アラート統計更新（実際のIPブロック件数は`analyze_and_enforce()`
+        // 側の`total_blocks`で数える - この関数はアラート送信のみを行う）。
         let mut stats = self.stats.write().await;
-        stats.total_blocks += 1;
+        stats.total_alerts += 1;
 
         Ok(())
     }
@@ -246,7 +247,8 @@ impl IntrusionDetectionSystem {
         if result.is_intrusion {
             if self.config.auto_block_enabled {
                 if let Some(ip) = request.source_ip {
-                    match enforcement_for(result.recommended_action) {
+                    let enforcement = enforcement_for(result.recommended_action);
+                    match enforcement {
                         Enforcement::Temporary => {
                             self.blocklist
                                 .block_temporarily(
@@ -262,6 +264,9 @@ impl IntrusionDetectionSystem {
                                 .await;
                         }
                         Enforcement::None => {}
+                    }
+                    if enforcement != Enforcement::None {
+                        self.stats.write().await.total_blocks += 1;
                     }
                 }
             }
@@ -426,6 +431,51 @@ mod tests {
         let result = ids.analyze_and_enforce(&request).await.unwrap();
         assert!(result.is_intrusion);
         assert!(!ids.is_blocked(request.source_ip.unwrap()).await);
+    }
+
+    /// Regression test: `generate_alert()` was incrementing `total_blocks`
+    /// (an alert being sent, not an IP actually being blocked) and never
+    /// touched `total_alerts` at all, so the stats meant the opposite of
+    /// what their names say. With auto-blocking disabled, an intrusion
+    /// still generates an alert but performs no enforcement, so exactly
+    /// `total_alerts` should move.
+    #[tokio::test]
+    async fn generate_alert_increments_total_alerts_not_total_blocks() {
+        let ids = IntrusionDetectionSystem::new(IDSConfig::default())
+            .await
+            .unwrap();
+        let request = sql_injection_request("203.0.113.12");
+
+        let before = ids.get_stats().await;
+        let result = ids.analyze_and_enforce(&request).await.unwrap();
+        assert!(result.is_intrusion);
+        let after = ids.get_stats().await;
+
+        assert_eq!(after.total_alerts, before.total_alerts + 1);
+        assert_eq!(after.total_blocks, before.total_blocks);
+    }
+
+    /// With auto-blocking enabled and a detection that actually triggers
+    /// enforcement, `total_blocks` must move - this is the count
+    /// `generate_alert()` was incorrectly the only thing touching before.
+    #[tokio::test]
+    async fn analyze_and_enforce_increments_total_blocks_when_it_actually_blocks() {
+        let ids = IntrusionDetectionSystem::new(IDSConfig {
+            auto_block_enabled: true,
+            ..IDSConfig::default()
+        })
+        .await
+        .unwrap();
+        let request = sql_injection_request("203.0.113.13");
+
+        let before = ids.get_stats().await;
+        let result = ids.analyze_and_enforce(&request).await.unwrap();
+        assert!(result.is_intrusion);
+        assert!(ids.is_blocked(request.source_ip.unwrap()).await);
+        let after = ids.get_stats().await;
+
+        assert_eq!(after.total_blocks, before.total_blocks + 1);
+        assert_eq!(after.total_alerts, before.total_alerts + 1);
     }
 
     #[tokio::test]
