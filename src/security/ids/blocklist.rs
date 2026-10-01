@@ -130,8 +130,12 @@ impl IpBlocklist {
         sweep_expired(&mut entries, Utc::now());
     }
 
-    /// ブロックリストに現在保持しているエントリ数（期限切れも含む）。
-    /// メモリ使用量の監視・テスト用。
+    /// ブロックリストに現在保持しているエントリ数。
+    /// `is_blocked()`の遅延削除や`block_temporarily`/`block_permanently`内の
+    /// `sweep_expired()`により期限切れエントリは随時削除されるため、
+    /// この値は「期限切れを含む」ことを保証するものではなく、直近の
+    /// スイープ以降に期限切れとなったエントリがまだ残っている可能性がある、
+    /// という程度の意味。メモリ使用量の監視・テスト用。
     pub async fn len(&self) -> usize {
         self.entries.read().await.len()
     }
