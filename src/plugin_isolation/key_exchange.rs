@@ -39,6 +39,10 @@ use std::sync::Arc;
 use chacha20poly1305::{aead::Aead, ChaCha20Poly1305, KeyInit, Nonce};
 use chrono::{DateTime, Utc};
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use ml_kem::{
+    kem::{Decapsulate, Encapsulate, Kem},
+    MlKem768,
+};
 use ring::{
     hkdf,
     rand::{SecureRandom, SystemRandom},
@@ -62,6 +66,30 @@ impl hkdf::KeyType for HkdfKey32 {
     fn len(&self) -> usize {
         32
     }
+}
+
+/// X25519共有秘密とML-KEM共有秘密を連結してHKDF-SHA256に通し、
+/// 32バイトの対称鍵を導出する（ハイブリッドKEMコンバイナー）。
+///
+/// どちらか一方の入力材料だけが変わっても出力鍵は変わる
+/// （`key_exchange::tests::hybrid_key_derivation_depends_on_both_components`
+/// で検証）。
+fn derive_hybrid_session_key(
+    x25519_shared: &[u8],
+    kyber_shared: &[u8],
+) -> Result<[u8; 32], McpError> {
+    let mut input_key_material = Vec::with_capacity(x25519_shared.len() + kyber_shared.len());
+    input_key_material.extend_from_slice(x25519_shared);
+    input_key_material.extend_from_slice(kyber_shared);
+
+    let salt = hkdf::Salt::new(hkdf::HKDF_SHA256, &[]);
+    let prk = salt.extract(&input_key_material);
+    let mut derived_key = [0u8; 32];
+    prk.expand(&[b"plugin-e2e-encryption-v2-hybrid"], HkdfKey32)
+        .map_err(|_| McpError::SecurityFailure("HKDF expand failed".to_string()))?
+        .fill(&mut derived_key)
+        .map_err(|_| McpError::SecurityFailure("HKDF fill failed".to_string()))?;
+    Ok(derived_key)
 }
 
 // ---------------------------------------------------------------------------
@@ -377,17 +405,34 @@ impl KeyExchangeProtocol {
             .retain(|(a, b)| *a != plugin_id && *b != plugin_id);
     }
 
-    /// X25519 ECDH 鍵交換を実行してセッション鍵を確立（または更新）する
+    /// X25519 ECDH + ML-KEM-768 のハイブリッド鍵交換を実行してセッション鍵を
+    /// 確立（または更新）する
     ///
     /// 既存セッションがある場合、旧鍵を `secondary_key` として
     /// `config.grace_period_hours` の間保持します（グレースピリオド）。
     ///
-    /// ## DH 数学的保証
+    /// ## ハイブリッドKEMの数学的保証
     ///
     /// ```text
-    /// shared = a_secret · b_public = b_secret · a_public  (X25519)
-    /// HKDF-SHA256(shared, "plugin-e2e-encryption-v1") → 32-byte symmetric key
+    /// x25519_shared = a_secret · b_public = b_secret · a_public  (X25519 ECDH)
+    /// (ct, kyber_shared) = encapsulate(ek_b)                     (ML-KEM-768, plugin_a側)
+    /// kyber_shared       = decapsulate(dk_b, ct)                 (ML-KEM-768, plugin_b側)
+    ///
+    /// HKDF-SHA256(x25519_shared || kyber_shared, "plugin-e2e-encryption-v2-hybrid")
+    ///     → 32-byte symmetric key
     /// ```
+    ///
+    /// X25519（古典的ECDH）とML-KEM-768（NIST FIPS 203、量子耐性）の両方の
+    /// 共有秘密を連結してから鍵導出するため、どちらか一方が将来破られても
+    /// もう一方が安全であれば導出鍵全体の安全性は保たれる
+    /// （標準的なハイブリッドKEMコンバイナーの設計）。
+    ///
+    /// このメソッドは実際のネットワーク越しプロトコルではなく、信頼された
+    /// オーケストレーターが両プラグイン分の鍵材料を一度に計算する設計のため、
+    /// ML-KEM側も「plugin_bが鍵ペアを生成し、plugin_aがそれに対して
+    /// カプセル化し、plugin_bがデカプセル化する」という一連の流れを
+    /// この関数内だけで完結させている（実際に暗号文をネットワーク越しに
+    /// 送る必要はない）。
     pub async fn initiate_key_exchange(
         &self,
         plugin_a: Uuid,
@@ -437,16 +482,23 @@ impl KeyExchangeProtocol {
         let public_b = X25519PublicKey::from(&secret_b);
 
         // DH: secret_a · public_b = secret_b · public_a  (同一の共有秘密)
-        let shared_secret = secret_a.diffie_hellman(&public_b);
+        let x25519_shared = secret_a.diffie_hellman(&public_b);
 
-        // HKDF-SHA256 で 32 バイト対称鍵を導出
-        let salt = hkdf::Salt::new(hkdf::HKDF_SHA256, &[]);
-        let prk = salt.extract(shared_secret.as_bytes());
-        let mut derived_key = [0u8; 32];
-        prk.expand(&[b"plugin-e2e-encryption-v1"], HkdfKey32)
-            .map_err(|_| McpError::SecurityFailure("HKDF expand failed".to_string()))?
-            .fill(&mut derived_key)
-            .map_err(|_| McpError::SecurityFailure("HKDF fill failed".to_string()))?;
+        // ML-KEM-768 (FIPS 203, 量子耐性): plugin_b が鍵ペアを生成し、
+        // plugin_a がカプセル化、plugin_b がデカプセル化して同一の共有秘密を得る
+        let (dk_b, ek_b) = MlKem768::generate_keypair();
+        let (_kyber_ciphertext, kyber_shared_a) = ek_b.encapsulate();
+        let kyber_shared_b = dk_b.decapsulate(&_kyber_ciphertext);
+
+        // 両者の共有秘密を連結して HKDF-SHA256 に通す
+        // (plugin_a 側・plugin_b 側どちらも同じ入力材料になる:
+        //  x25519_shared は両者で共通、kyber_shared_a == kyber_shared_b)
+        let derived_key =
+            derive_hybrid_session_key(x25519_shared.as_bytes(), kyber_shared_a.as_slice())?;
+        debug_assert_eq!(
+            kyber_shared_a, kyber_shared_b,
+            "ML-KEM encapsulate/decapsulate must agree on the same shared secret"
+        );
 
         let now = Utc::now();
         let session_expires_at =
@@ -592,6 +644,53 @@ mod tests {
             grace_period_hours: 1,
             message_ttl_secs: 300,
         }
+    }
+
+    /// ハイブリッド鍵導出が実際にX25519成分・ML-KEM成分の両方に依存する
+    /// ことを確認する。どちらか一方だけが「見せかけ」で結果に影響しない
+    /// 実装になっていないかを直接検証する。
+    #[test]
+    fn hybrid_key_derivation_depends_on_both_components() {
+        let x25519_a = [1u8; 32];
+        let x25519_b = [2u8; 32];
+        let kyber_a = [3u8; 32];
+        let kyber_b = [4u8; 32];
+
+        let baseline = derive_hybrid_session_key(&x25519_a, &kyber_a).unwrap();
+
+        // X25519成分だけを変えると導出鍵が変わるべき
+        let changed_x25519 = derive_hybrid_session_key(&x25519_b, &kyber_a).unwrap();
+        assert_ne!(
+            baseline, changed_x25519,
+            "changing only the X25519 component must change the derived key"
+        );
+
+        // ML-KEM成分だけを変えても導出鍵が変わるべき
+        let changed_kyber = derive_hybrid_session_key(&x25519_a, &kyber_b).unwrap();
+        assert_ne!(
+            baseline, changed_kyber,
+            "changing only the ML-KEM component must change the derived key"
+        );
+
+        // 同じ入力なら同じ鍵が導出される（決定的）
+        let repeat = derive_hybrid_session_key(&x25519_a, &kyber_a).unwrap();
+        assert_eq!(baseline, repeat);
+    }
+
+    /// ML-KEM-768の鍵・暗号文・共有秘密が仕様通りのバイト長であることの
+    /// 健全性チェック（FIPS 203 Table 2: ek=1184, ciphertext=1088, ss=32）。
+    #[test]
+    fn ml_kem_768_sizes_match_fips_203() {
+        use ml_kem::kem::KeyExport;
+
+        let (dk, ek) = MlKem768::generate_keypair();
+        let (ciphertext, shared_a) = ek.encapsulate();
+        let shared_b = dk.decapsulate(&ciphertext);
+
+        assert_eq!(ek.to_bytes().as_slice().len(), 1184);
+        assert_eq!(ciphertext.as_slice().len(), 1088);
+        assert_eq!(shared_a.as_slice().len(), 32);
+        assert_eq!(shared_a, shared_b, "encapsulate/decapsulate must agree");
     }
 
     /// プラグイン登録 → 鍵交換 → 暗号化 → 復号 の E2E ラウンドトリップ
