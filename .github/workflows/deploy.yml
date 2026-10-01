@@ -49,6 +49,9 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Run clippy
+        # double_must_use is allowed because async_trait's macro expansion attaches an
+        # unannotated #[must_use] to methods that already return a #[must_use] Result,
+        # which newer clippy versions flag as a false positive.
         run: cargo clippy --all-features -- -D warnings -A dead_code -A clippy::double_must_use
 
       - name: Run tests
