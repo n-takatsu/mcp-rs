@@ -454,6 +454,35 @@ impl AuditLogger {
         Ok(())
     }
 
+    /// このユーザーの過去の監査ログエントリを削除せず redact する。
+    /// GDPR Art.17(3)(b)/(e)（法的義務・権利の防御）により、セキュリティ
+    /// 監査証跡は構造を保持したまま残す必要があるため、エントリ自体は
+    /// 削除せず、PIIやオンライン識別子を含みうるフィールド（メッセージ
+    /// 本文・IP・UA・セッションID・メタデータ）のみを消去する。
+    ///
+    /// `user_id`自体は意図的に残す（どのアカウントに対する処理だったかを
+    /// 後から監査・調査できるようにするため）。そのためこれは完全な
+    /// 匿名化（anonymization）ではなく、残す識別子を`user_id`に限定した
+    /// redactionである点に注意。
+    pub async fn redact_user(&self, user_id: &str) -> usize {
+        let mut entries = self.entries.write().await;
+        let mut count = 0;
+        for entry in entries.iter_mut() {
+            if entry.user_id.as_deref() == Some(user_id) {
+                entry.message = "[REDACTED: GDPR/CCPA erasure request]".to_string();
+                entry.ip_address = None;
+                entry.user_agent = None;
+                entry.session_id = None;
+                entry.metadata.clear();
+                entry
+                    .metadata
+                    .insert("gdpr_redacted".to_string(), "true".to_string());
+                count += 1;
+            }
+        }
+        count
+    }
+
     /// フィルター条件にマッチするかチェック
     fn matches_filter(&self, entry: &AuditLogEntry, filter: &AuditFilter) -> bool {
         // 時間範囲チェック
@@ -553,6 +582,58 @@ mod tests {
         let stats = logger.get_statistics().await;
         assert_eq!(stats.total_entries, 1);
         assert_eq!(stats.entries_by_level.get(&AuditLevel::Info), Some(&1));
+    }
+
+    #[tokio::test]
+    async fn test_redact_user() {
+        let logger = AuditLogger::with_defaults();
+
+        let entry1 = AuditLogEntry::new(
+            AuditLevel::Info,
+            AuditCategory::Authentication,
+            "User logged in".to_string(),
+        )
+        .with_user("user-1".to_string())
+        .with_session("session-abc".to_string())
+        .with_request_info("192.168.1.1".to_string(), "Mozilla/5.0".to_string())
+        .add_metadata("key".to_string(), "value".to_string());
+
+        let entry2 = AuditLogEntry::new(
+            AuditLevel::Info,
+            AuditCategory::Authentication,
+            "User logged out".to_string(),
+        )
+        .with_user("user-1".to_string());
+
+        let entry3 = AuditLogEntry::new(
+            AuditLevel::Info,
+            AuditCategory::Authentication,
+            "Other user logged in".to_string(),
+        )
+        .with_user("user-2".to_string());
+
+        logger.log(entry1).await.unwrap();
+        logger.log(entry2).await.unwrap();
+        logger.log(entry3).await.unwrap();
+
+        let redacted_count = logger.redact_user("user-1").await;
+        assert_eq!(redacted_count, 2);
+
+        let all_entries = logger.get_all_entries().await;
+        for entry in &all_entries {
+            if entry.user_id.as_deref() == Some("user-1") {
+                assert!(entry.message.contains("REDACTED"));
+                assert!(entry.ip_address.is_none());
+                assert!(entry.user_agent.is_none());
+                assert!(entry.session_id.is_none());
+                assert_eq!(
+                    entry.metadata.get("gdpr_redacted").map(String::as_str),
+                    Some("true")
+                );
+            } else {
+                assert_eq!(entry.message, "Other user logged in");
+            }
+        }
     }
 
     #[tokio::test]

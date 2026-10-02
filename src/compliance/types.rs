@@ -28,7 +28,11 @@ pub enum RequestType {
 pub struct DataSubjectRequest {
     /// リクエストID
     pub id: String,
-    /// データ主体の識別子（メールアドレス等）
+    /// データ主体の識別子。`security::auth`の`AuthUser.id`・
+    /// `ApiKey.user_id`・`SessionToken.user.id`・
+    /// `security::audit_log::AuditLogEntry.user_id`と同じ正規ユーザーID
+    /// を指定する（メールアドレスではない）。メールからIDへの解決は
+    /// 呼び出し側の責務。
     pub subject_id: String,
     /// リクエストの種類
     pub request_type: RequestType,
