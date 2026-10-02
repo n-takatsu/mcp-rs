@@ -487,8 +487,8 @@ impl KeyExchangeProtocol {
         // ML-KEM-768 (FIPS 203, 量子耐性): plugin_b が鍵ペアを生成し、
         // plugin_a がカプセル化、plugin_b がデカプセル化して同一の共有秘密を得る
         let (dk_b, ek_b) = MlKem768::generate_keypair();
-        let (_kyber_ciphertext, kyber_shared_a) = ek_b.encapsulate();
-        let kyber_shared_b = dk_b.decapsulate(&_kyber_ciphertext);
+        let (kyber_ciphertext, kyber_shared_a) = ek_b.encapsulate();
+        let kyber_shared_b = dk_b.decapsulate(&kyber_ciphertext);
 
         // 両者の共有秘密を連結して HKDF-SHA256 に通す
         // (plugin_a 側・plugin_b 側どちらも同じ入力材料になる:
