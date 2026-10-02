@@ -4,6 +4,70 @@
 
 Our project follows a detailed 0.01 increment versioning strategy to provide granular tracking of development progress and feature implementation.
 
+## 🔐 v0.17.0 - エンタープライズセキュリティ強化完成 (Epic #219)
+
+**Release Date:** 2026-10-03
+**Focus:** mTLS・ゼロトラスト・HSM・IDS/IPS・量子耐性暗号・GDPR/CCPA対応まで、
+多層防御のセキュリティ強化計画（Security Enhancement Phase 3）が全フェーズ完了
+
+### ✅ Phase 3.1: Critical Security
+
+1. **mTLS（相互TLS認証）** (#221, #254)
+   - HTTPトランスポートへの完全実装
+   - クライアント証明書なしのリクエストを拒否
+   - 有効なCA署名証明書を受理
+2. **ネットワークポリシーとローカル実行制限** (#220, #256)
+   - bind時点でのローカル限定ポリシー適用
+3. **なりすまし防止・リプレイ攻撃対策** (#222, #259)
+   - HTTP / WebSocket / プラグインブローカーへの統合
+4. **TLS/SSL強制とHSTS** (#224, #261)
+   - HTTPトランスポートおよびWebSocket(WSS)の両方に強制適用
+
+### ✅ Phase 3.2: High Priority Security
+
+1. **カラムレベル暗号化 + RBAC統合** (#223, #260, #308)
+   - `DatabaseHandler`のクエリパスへの実配線
+   - 関連するビルディングブロックのバグ修正
+2. **プラグイン間E2E暗号化の鍵交換フロー** (#225)
+   - X25519 ECDH + HKDF-SHA256
+   - Perfect Forward Secrecy・自動鍵ローテーション・グレースピリオド対応
+3. **堅牢化修正**
+   - `CommunicationBroker`のメッセージ配送不具合
+   - Redisの`DEL`コマンドを既定でブロック
+   - SQLiteトランザクション分離の修正
+   - KubernetesのNetworkPolicyを実CNI下で検証・調整
+   - プラグインネットワーク隔離の修正
+
+### ✅ Phase 3.3: Advanced Security
+
+1. **ゼロトラスト・マイクロセグメンテーション** (#226)
+   - DBクエリ実行パスへの実配線
+2. **HSM統合（PKCS#11）** (#227)
+   - カラム暗号化への追加
+3. **IDS/IPS** (#228)
+   - 既存IDSをHTTPトランスポート層へ実配線
+   - IPSブロックを実装
+
+### ✅ Phase 3.4: Future Security（スコープ縮小の上で実装）
+
+1. **量子耐性暗号（ML-KEM-768ハイブリッド鍵交換）** (#230)
+   - プラグイン間E2E暗号化にX25519とのハイブリッドKEMコンバイナーとして追加
+   - NIST FIPS 203準拠、RustCryptoファミリーの`ml-kem`クレートを採用
+2. **GDPR/CCPAコンプライアンス自動化** (#229)
+   - mcp-rs自身が保持するアカウントデータ（APIキー・セッション・監査ログ）に
+     対する削除権・アクセス権として実装
+   - 外部バックエンドDBのデータはスコープ外（データ所有側の責務）
+
+### ✅ その他の統合・改善
+
+- 脅威インテリジェンス統合 (#211)
+- Dockerランタイム統合の完成 (#212)
+- WebSocket Transport基盤の実装 (#213)
+- PostgreSQL最適化 Phase 2 (#214)
+- パフォーマンス最適化提案エンジン (#177)
+- Analyticsモジュールのリファクタリング
+- `cargo clippy --all-targets`警告の解消、WordPress関連の各種修正
+
 ## 🚀 v0.16.0 - WebSocket通信強化とプラグイン分離完成
 
 **Release Date:** 2025-12-22  

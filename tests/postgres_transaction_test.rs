@@ -6,7 +6,7 @@
 mod postgres_transaction_tests {
     use mcp_rs::handlers::database::{
         engine::IsolationLevel,
-        engines::postgres::{PostgresConfig, PostgresEngine, PostgresTransaction},
+        engines::postgres::{PostgresConfig, PostgresEngine},
     };
 
     #[tokio::test]

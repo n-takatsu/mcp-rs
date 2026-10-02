@@ -254,8 +254,7 @@ mod tests {
         // テスト完了後、監視タスクを強制終了
         watcher_task.abort();
 
-        if result.is_ok() {
-            let event = result.unwrap().unwrap();
+        if let Ok(Ok(event)) = result {
             assert!(event.file_path.contains("test_policy.toml"));
             assert!(matches!(
                 event.change_type,

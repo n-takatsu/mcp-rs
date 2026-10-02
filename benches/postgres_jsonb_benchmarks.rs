@@ -29,7 +29,7 @@ mod jsonb_benchmarks {
 
     async fn setup_test_data(handler: &JsonbHandler) {
         // Create test table
-        let pool = handler.pool.clone();
+        let pool = handler.pool().clone();
         sqlx::query(
             r#"
             CREATE TABLE IF NOT EXISTS bench_jsonb (

@@ -127,8 +127,9 @@ pub struct AccessRequest {
     pub user_id: String,
     /// デバイスID
     pub device_id: String,
-    /// 送信元IPアドレス
-    pub source_ip: IpAddr,
+    /// 送信元IPアドレス（呼び出し元がIPを把握していない場合は`None` -
+    /// 例えばDBハンドラ層はトランスポート層のIPを知らない）
+    pub source_ip: Option<IpAddr>,
     /// リクエストされたリソース
     pub resource: String,
     /// リクエストされたアクション
@@ -144,7 +145,7 @@ impl AccessRequest {
     pub fn new(
         user_id: impl Into<String>,
         device_id: impl Into<String>,
-        source_ip: IpAddr,
+        source_ip: Option<IpAddr>,
         resource: impl Into<String>,
         action: impl Into<String>,
     ) -> Self {
@@ -198,7 +199,7 @@ mod tests {
         let request = AccessRequest::new(
             "user123",
             "device456",
-            IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)),
+            Some(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1))),
             "/api/data",
             "read",
         );

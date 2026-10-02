@@ -290,6 +290,15 @@ impl ApiKeyManager {
             .collect()
     }
 
+    /// user_idが所有する全APIキーを完全に削除する（無効化ではなく削除）。
+    /// キー自体のメタデータ（名前・権限・user_id）も削除権の対象個人データ
+    /// のため、enabled=falseでは不十分。
+    pub fn revoke_all_for_user(&mut self, user_id: &str) -> usize {
+        let before = self.keys.len();
+        self.keys.retain(|_, k| k.user_id != user_id);
+        before - self.keys.len()
+    }
+
     /// APIキーにパーミッションを追加
     pub fn add_permission(&mut self, key: &str, permission: ApiKeyPermission) -> AuthResult<()> {
         let key_hash = self.hash_key(key)?;
@@ -390,6 +399,28 @@ mod tests {
 
         manager.revoke_key(&key).unwrap();
         assert!(manager.verify_key(&key).is_err());
+    }
+
+    #[test]
+    fn test_revoke_all_for_user() {
+        let config = ApiKeyConfig::default();
+        let mut manager = ApiKeyManager::new(config);
+
+        manager
+            .generate_key("key-1".to_string(), "user-1".to_string(), None)
+            .unwrap();
+        manager
+            .generate_key("key-2".to_string(), "user-1".to_string(), None)
+            .unwrap();
+        manager
+            .generate_key("key-3".to_string(), "user-2".to_string(), None)
+            .unwrap();
+
+        let revoked = manager.revoke_all_for_user("user-1");
+
+        assert_eq!(revoked, 2);
+        assert!(manager.list_user_keys("user-1").is_empty());
+        assert_eq!(manager.list_user_keys("user-2").len(), 1);
     }
 
     #[test]

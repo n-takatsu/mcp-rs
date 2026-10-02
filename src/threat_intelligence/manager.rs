@@ -412,7 +412,7 @@ impl ThreatIntelligenceManager {
 
     /// キャッシュキーを生成
     fn generate_cache_key(&self, indicator: &ThreatIndicator) -> String {
-        format!("{}:{}", indicator.indicator_type as u8, &indicator.value)
+        format!("{}:{}", indicator.indicator_type as u8, indicator.value)
     }
 
     /// 統計を更新

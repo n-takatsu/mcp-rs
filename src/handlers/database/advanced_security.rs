@@ -274,7 +274,7 @@ impl RoleBasedAccessControl {
 
         // アクセスルールを優先度順にソート
         let mut rules = policy.access_rules.clone();
-        rules.sort_by(|a, b| b.priority.cmp(&a.priority));
+        rules.sort_by_key(|b| std::cmp::Reverse(b.priority));
 
         for rule in &rules {
             // ロールが一致するか確認

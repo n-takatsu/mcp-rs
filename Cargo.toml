@@ -1,6 +1,6 @@
-﻿[package]
+[package]
 name = "mcp-rs"
-version = "0.16.0"
+version = "0.17.0"
 edition = "2021"
 authors = ["n-takatsu"]
 description = "Rust implementation of the Model Context Protocol (MCP) for AI-agent integration with Canary Deployment System"
@@ -18,6 +18,7 @@ axum = { version = "0.8", features = ["ws"] }
 tower = "0.5.2"
 tower-http = { version = "0.6", features = ["cors", "trace"] }
 hyper = { version = "1.7", features = ["full"] }
+hyper-util = { version = "0.1", features = ["server", "service", "http1", "http2", "tokio"] }
 http = "1.0"
 
 # Serialization
@@ -28,16 +29,22 @@ toml = "0.9.8"
 
 # Database and storage (PostgreSQL and SQLite only - MySQL via mysql_async)
 sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "sqlite", "chrono", "uuid", "json", "migrate"], default-features = false }
+# SQL parsing for resolving result columns back to their source table/column.
+# "visitor" enables recursive AST walking so table references nested inside
+# subqueries (WHERE/SELECT-list/HAVING, not just top-level FROM/JOIN) can be
+# found reliably instead of missed by a hand-rolled, easy-to-miss-a-case walk.
+sqlparser = { version = "0.62", optional = true, features = ["visitor"] }
 # MySQL support via secure alternative (RSA vulnerability-free)
 mysql_async = { version = "0.36", optional = true }
 # PostgreSQL native driver for advanced features
 tokio-postgres = { version = "0.7", features = ["with-chrono-0_4", "with-uuid-1", "with-serde_json-1"], optional = true }
 redis = { version = "0.26", features = ["tokio-comp", "connection-manager"], optional = true }
 # MongoDB support
-mongodb = { version = "3.1", optional = true }
+mongodb = { version = "3.6", optional = true }
 
 # Date and time
 chrono = { version = "0.4", features = ["serde"] }
+time = { version = "0.3", features = ["macros", "serde"] }
 
 # UUID generation
 uuid = { version = "1.18", features = ["v4", "serde"] }
@@ -58,8 +65,22 @@ base64 = "0.22.1"
 secrecy = { version = "0.10.3", features = ["serde"] }
 zeroize = "1.8.2"
 aes-gcm = "0.10"
+chacha20poly1305 = "0.10"
 pbkdf2 = "0.12"
 sha2 = "0.10"
+ed25519-dalek = "2.1"
+x25519-dalek = { version = "2.0", features = ["static_secrets"] }
+# ML-KEM (FIPS 203, formerly Kyber) for hybrid post-quantum key exchange
+ml-kem = { version = "0.3.2", features = ["getrandom"] }
+
+# mTLS and Certificate Management
+rcgen = { version = "0.13", features = ["pem", "x509-parser"] }
+rustls = { version = "0.23", features = ["std"] }
+rustls-webpki = { version = "0.103.12", features = ["std"] }
+rustls-pemfile = "2.2"
+tokio-rustls = "0.26"
+x509-parser = "0.16"
+pem = "3.0"
 
 # MFA (Multi-Factor Authentication)
 totp-rs = { version = "5.6", features = ["gen_secret", "qr"], optional = true }
@@ -67,7 +88,7 @@ qrcode = { version = "0.14", optional = true }
 
 # Network and IP handling
 ipnet = "2.11"
-hickory-resolver = { version = "0.24.4", optional = true }
+hickory-resolver = { version = "0.26.1", optional = true }
 
 # Logging and tracing
 tracing = "0.1.41"
@@ -91,7 +112,7 @@ validator = { version = "0.20", features = ["derive"] }
 regex = "1.12"
 url = "2.5.7"
 urlencoding = "2.1"
-ammonia = "4.1.2"
+ammonia = "4.1.3"
 fancy-regex = "0.16.2"
 
 # Rate limiting
@@ -146,10 +167,19 @@ bollard = { version = "0.18.1", optional = true }
 
 # Testing utilities
 mockall = { version = "0.13.1", optional = true }
+
+# HSM integration via PKCS#11 (dynamically loads the provider's shared
+# library at runtime, e.g. SoftHSM2 or a real HSM's vendor-supplied module)
+cryptoki = { version = "0.12", optional = true }
 [dev-dependencies]
 # Testing framework
 tokio-test = "0.4.4"
 tempfile = "3.23"
+# Adds rustls-based wss:// client support (unioned with the "native-tls"
+# feature already enabled for production use in [dependencies]) so tests can
+# connect over TLS to a self-signed cert built with rustls, the same TLS
+# stack the server side (src/transport/http.rs) already uses.
+tokio-tungstenite = { version = "0.28", features = ["rustls-tls-webpki-roots"] }
 
 # Integration test dependencies
 tokio-postgres = { version = "0.7", features = ["with-chrono-0_4", "with-uuid-1"] }
@@ -170,7 +200,7 @@ session-management = []
 security = []
 websocket = []
 mcp-protocol = []
-database = ["mysql-backend", "postgresql-backend"]
+database = ["mysql-backend", "postgresql-backend", "dep:sqlparser"]
 
 # MFA (Multi-Factor Authentication)
 mfa = ["totp-rs", "qrcode"]
@@ -188,6 +218,10 @@ mongodb-backend = ["mongodb"]
 
 # Monitoring and metrics
 metrics = ["prometheus", "dep:metrics"]
+
+# Hardware Security Module integration via PKCS#11 (e.g. SoftHSM2 or a
+# vendor-supplied PKCS#11 module for a real HSM/cloud HSM)
+hsm = ["dep:cryptoki"]
 
 # Development and testing
 testing = ["mockall"]

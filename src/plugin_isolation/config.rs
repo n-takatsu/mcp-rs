@@ -62,7 +62,11 @@ pub struct AlertThresholds {
 pub struct IsolationConfig {
     /// コンテナランタイム
     pub container_runtime: String,
-    /// ネットワーク名前空間の使用
+    /// true にすると、プラグインコンテナを Docker の `--network none` で
+    /// 起動し、外部ネットワークへの通信を完全に遮断する
+    /// （Docker自身が内部的に独立したネットワーク名前空間を用意するため、
+    /// `ip netns` 等の追加設定は不要）。false の場合は通常のブリッジ
+    /// ネットワークで起動され、外部への通信が可能になる。
     pub use_network_namespace: bool,
     /// ファイルシステム隔離
     pub filesystem_isolation: bool,

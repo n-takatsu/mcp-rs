@@ -20,4 +20,51 @@ ignore = [
     # - Mitigation: Only used in optional Kubernetes feature
     #               Not exposed in default configuration
     "RUSTSEC-2025-0134",
+
+    # RUSTSEC-2025-0012: backoff unmaintained
+    # - Affects: backoff 0.4.0 (via async-openai)
+    # - Status: Unmaintained warning
+    # - Mitigation: async-openai is optional (llm-integration feature)
+    #               Track upstream replacement before enabling by default
+    "RUSTSEC-2025-0012",
+
+    # RUSTSEC-2024-0384: instant unmaintained
+    # - Affects: instant 0.1.13 (transitive via backoff)
+    # - Status: Unmaintained warning
+    # - Mitigation: Only present through optional llm-integration dependency chain
+    "RUSTSEC-2024-0384",
+
+    # RUSTSEC-2024-0436: paste unmaintained
+    # - Affects: paste 1.0.15 (via statrs -> nalgebra -> simba)
+    # - Status: Unmaintained warning
+    # - Mitigation: Only used by optional ml-anomaly-detection feature
+    "RUSTSEC-2024-0436",
+
+    # RUSTSEC-2026-0118: hickory-proto NSEC3 closest-encloser proof validation unbounded loop
+    # - Affects: hickory-proto (all versions including 0.26.1)
+    # - Status: No fixed upgrade is available
+    # - Mitigation: mcp-rs uses hickory-resolver for DNS resolution only (no DNSSEC validation)
+    #               NSEC3 processing path is not invoked in typical stub resolver usage
+    "RUSTSEC-2026-0118",
+
+    # RUSTSEC-2026-0119: hickory-proto CPU exhaustion due to O(n²) name compression
+    # - Affects: hickory-proto 0.25.2 via mongodb 3.6.0 (transitive dependency)
+    # - Status: Fixed in >= 0.26.1; direct dependency updated, but mongodb pins 0.25.2 internally
+    # - Mitigation: mongodb is optional (mongodb-backend feature); message encoding path
+    #               is not exposed externally; track mongodb release with updated hickory
+    "RUSTSEC-2026-0119",
+
+    # RUSTSEC-2026-0173: proc-macro-error2 is unmaintained
+    # - Affects: proc-macro-error2 2.0.1 (via validator, mysql_async transitive)
+    # - Status: Unmaintained but no critical functionality loss
+    # - Mitigation: validator and mysql_async are stable; proc-macro-error2 only used for derive macro code gen
+    "RUSTSEC-2026-0173",
+
+    # RUSTSEC-2026-0097: Rand is unsound with a custom logger using `rand::rng()`
+    # - Affects: rand 0.8.5, 0.9.2 (transitive via redis, tokio-retry, sqlx, smartcore, tungstenite, etc.)
+    # - Status: Design flaw; requires custom logger + rand::rng() to trigger (not default usage)
+    # - Mitigation: mcp-rs does not use rand::rng() with custom logger; default usage is safe
+    #               Upgrading rand across entire ecosystem is infeasible due to multiple major consumers
+    "RUSTSEC-2026-0097",
+
 ]

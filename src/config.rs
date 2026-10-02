@@ -98,7 +98,10 @@ pub struct LogModuleConfig {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct TransportConfig {
-    /// Transport type: "stdio", "http", "websocket"
+    /// Transport type: "stdio" or "http". WebSocket is not a separate
+    /// transport type - set `transport_type = "http"` and
+    /// `transport.http.enable_websocket_upgrade = true` to expose `/ws` on
+    /// the HTTP(S) listener instead.
     pub transport_type: Option<String>,
     /// Stdio transport configuration
     pub stdio: Option<StdioTransportConfig>,
@@ -121,6 +124,48 @@ pub struct HttpTransportConfig {
     pub addr: Option<String>,
     pub port: Option<u16>,
     pub enable_cors: Option<bool>,
+    pub tls_enabled: Option<bool>,
+    pub tls_cert_path: Option<String>,
+    pub tls_key_path: Option<String>,
+    pub mtls_enabled: Option<bool>,
+    pub mtls_ca_cert_path: Option<String>,
+    pub enforce_https: Option<bool>,
+    pub min_tls_version: Option<String>,
+    pub hsts_enabled: Option<bool>,
+    pub hsts_max_age_seconds: Option<u64>,
+    pub hsts_include_subdomains: Option<bool>,
+    pub hsts_preload: Option<bool>,
+    pub certificate_pinning_enabled: Option<bool>,
+    pub pinned_certificates_sha256: Option<Vec<String>>,
+    pub certificate_pin_header: Option<String>,
+    /// Enforce nonce/timestamp replay protection (requires clients to send
+    /// `X-Nonce`/`X-Timestamp` headers). Defaults to `false`.
+    pub anti_replay_enabled: Option<bool>,
+    /// Run incoming requests through the intrusion detection/prevention
+    /// system and automatically block a source IP that triggers it.
+    /// Defaults to `false`.
+    pub ids_enabled: Option<bool>,
+    /// When IDS/IPS is enabled, trust `X-Forwarded-For`/`X-Real-IP` for the
+    /// client IP instead of the raw TCP peer address. Only safe when this
+    /// transport sits directly behind a trusted reverse proxy. Defaults to
+    /// `false`.
+    pub ids_trust_forwarded_for: Option<bool>,
+    /// Reject binding/connections from non-loopback addresses. Defaults to
+    /// `true` (see `configs/security/network-policy.toml`).
+    pub network_policy_reject_external_connections: Option<bool>,
+    /// Log a warning when binding to a non-loopback address that is still
+    /// permitted. Defaults to `true`.
+    pub network_policy_warn_on_external_bind: Option<bool>,
+    /// IP addresses or CIDR ranges (e.g. `"192.168.1.0/24"`) exempted from
+    /// `reject_external_connections`. Defaults to empty.
+    pub network_policy_ip_whitelist: Option<Vec<String>>,
+    /// Mount a `/ws` WebSocket upgrade endpoint on this HTTP listener,
+    /// sharing its TLS/HSTS/certificate-pinning settings. Defaults to
+    /// `false`.
+    pub enable_websocket_upgrade: Option<bool>,
+    /// Maximum concurrent `/ws` connections before new upgrades are
+    /// rejected. Defaults to `1000`.
+    pub websocket_max_connections: Option<usize>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -530,6 +575,28 @@ impl McpConfig {
                     addr: Some("127.0.0.1".to_string()),
                     port: Some(8080),
                     enable_cors: Some(true),
+                    tls_enabled: Some(false),
+                    tls_cert_path: Some("./certs/server.crt".to_string()),
+                    tls_key_path: Some("./certs/server.key".to_string()),
+                    mtls_enabled: Some(false),
+                    mtls_ca_cert_path: Some("./certs/ca.crt".to_string()),
+                    enforce_https: Some(true),
+                    min_tls_version: Some("1.3".to_string()),
+                    hsts_enabled: Some(true),
+                    hsts_max_age_seconds: Some(31536000),
+                    hsts_include_subdomains: Some(true),
+                    hsts_preload: Some(false),
+                    certificate_pinning_enabled: Some(false),
+                    pinned_certificates_sha256: Some(vec![]),
+                    certificate_pin_header: Some("x-tls-cert-sha256".to_string()),
+                    anti_replay_enabled: Some(false),
+                    ids_enabled: Some(false),
+                    ids_trust_forwarded_for: Some(false),
+                    network_policy_reject_external_connections: Some(true),
+                    network_policy_warn_on_external_bind: Some(true),
+                    network_policy_ip_whitelist: Some(vec![]),
+                    enable_websocket_upgrade: Some(false),
+                    websocket_max_connections: Some(1000),
                 }),
             },
             handlers: HandlersConfig {
@@ -711,6 +778,40 @@ impl McpConfig {
                 cors_enabled: http.enable_cors.unwrap_or(true),
                 max_request_size: 1048576,
                 timeout_ms: 30000,
+                network_policy: crate::security::NetworkPolicy {
+                    reject_external_connections: http
+                        .network_policy_reject_external_connections
+                        .unwrap_or(true),
+                    warn_on_external_bind: http
+                        .network_policy_warn_on_external_bind
+                        .unwrap_or(true),
+                    ip_whitelist: http.network_policy_ip_whitelist.clone().unwrap_or_default(),
+                },
+                tls_enabled: http.tls_enabled.unwrap_or(false),
+                tls_cert_path: http.tls_cert_path.clone(),
+                tls_key_path: http.tls_key_path.clone(),
+                mtls_enabled: http.mtls_enabled.unwrap_or(false),
+                mtls_ca_cert_path: http.mtls_ca_cert_path.clone(),
+                enforce_https: http.enforce_https.unwrap_or(false),
+                min_tls_version: http.min_tls_version.clone().or(Some("1.3".to_string())),
+                hsts_enabled: http.hsts_enabled.unwrap_or(true),
+                hsts_max_age_seconds: http.hsts_max_age_seconds.unwrap_or(31536000),
+                hsts_include_subdomains: http.hsts_include_subdomains.unwrap_or(true),
+                hsts_preload: http.hsts_preload.unwrap_or(false),
+                certificate_pinning_enabled: http.certificate_pinning_enabled.unwrap_or(false),
+                pinned_certificates_sha256: http
+                    .pinned_certificates_sha256
+                    .clone()
+                    .unwrap_or_default(),
+                certificate_pin_header: http
+                    .certificate_pin_header
+                    .clone()
+                    .unwrap_or_else(|| "x-tls-cert-sha256".to_string()),
+                anti_replay_enabled: http.anti_replay_enabled.unwrap_or(false),
+                ids_enabled: http.ids_enabled.unwrap_or(false),
+                ids_trust_forwarded_for: http.ids_trust_forwarded_for.unwrap_or(false),
+                enable_websocket_upgrade: http.enable_websocket_upgrade.unwrap_or(false),
+                websocket_max_connections: http.websocket_max_connections.unwrap_or(1000),
             }
         } else {
             crate::transport::http::HttpConfig::default()

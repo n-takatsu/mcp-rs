@@ -38,7 +38,7 @@ fn test_full_zero_trust_flow() {
     let request = AccessRequest::new(
         "user1",
         "device1",
-        IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100)),
+        Some(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100))),
         "/api/public/info",
         "read",
     );
@@ -134,7 +134,7 @@ fn test_micro_segmentation_policies() {
     let request = AccessRequest::new(
         "tester1",
         "device1",
-        IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)),
+        Some(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1))),
         "/api/test/data",
         "read",
     );
@@ -149,7 +149,7 @@ fn test_micro_segmentation_policies() {
     let write_request = AccessRequest::new(
         "tester1",
         "device1",
-        IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)),
+        Some(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1))),
         "/api/test/data",
         "write",
     );
@@ -229,7 +229,7 @@ fn test_resource_segmentation() {
     let request = AccessRequest::new(
         "dbadmin1",
         "device1",
-        IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)),
+        Some(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1))),
         "/db/users",
         "read",
     );
@@ -295,7 +295,7 @@ fn test_low_trust_score_access_denial() {
     let request = AccessRequest::new(
         "user1",
         "device1",
-        IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)),
+        Some(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1))),
         "/api/admin/settings",
         "write",
     );

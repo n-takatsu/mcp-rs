@@ -202,6 +202,8 @@ impl Transport for WebSocketTransport {
                 max_message_size: self.config.max_message_size,
                 ping_interval: std::time::Duration::from_secs(self.config.heartbeat_interval),
                 timeout: std::time::Duration::from_secs(self.config.timeout_seconds.unwrap_or(30)),
+                network_policy: crate::security::NetworkPolicy::default(),
+                anti_replay_enabled: self.config.anti_replay_enabled,
             };
 
             let mut server = WebSocketServer::new(server_config);

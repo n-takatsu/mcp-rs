@@ -242,7 +242,7 @@ impl ThreatIntelligenceManager {
         let mut sources = self.feed_sources.write().await;
         sources.push(source);
         // 優先度順にソート
-        sources.sort_by(|a, b| b.priority.cmp(&a.priority));
+        sources.sort_by_key(|b| std::cmp::Reverse(b.priority));
     }
 
     /// 脅威フィードソースを削除

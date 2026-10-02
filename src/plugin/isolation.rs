@@ -343,6 +343,9 @@ impl IsolationEnvironment {
     }
 
     /// ネットワークポリシーを適用
+    ///
+    /// 未実装のスタブ（呼び出し元も存在しない）。実際のネットワーク遮断は
+    /// `plugin_isolation::isolation_engine::IsolationEngine` を参照。
     pub async fn apply_network_policy(&self, _policy: &NetworkPolicy) -> Result<()> {
         // TODO: iptablesまたはDocker network設定を変更
         println!("Applying network policy to plugin {}", self.plugin_id);
@@ -358,6 +361,13 @@ impl IsolationEnvironment {
 }
 
 /// ネットワークポリシー
+///
+/// 注意: この構造体および `apply_network_policy` は設定値を保持するのみで、
+/// 実際のネットワーク遮断は行わない（呼び出し元も存在しない）。
+/// 実際にプラグインコンテナのネットワークを遮断する仕組みは
+/// `plugin_isolation::isolation_engine::IsolationEngine`
+/// （`IsolationConfig.use_network_namespace` が Docker の `--network none`
+/// を駆動する）であり、両者は現状連携していない別実装。
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct NetworkPolicy {
     /// 外部ネットワークアクセス許可

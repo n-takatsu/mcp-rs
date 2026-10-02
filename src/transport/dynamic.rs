@@ -136,12 +136,13 @@ impl DynamicTransportManager {
             TransportState::Http(addr) => {
                 info!("🚀 Starting HTTP transport at {}", addr);
 
-                // Create HTTP config
+                // Create HTTP config - every field but bind_addr matches
+                // HttpConfig::default() exactly, so defer to it via
+                // struct-update syntax rather than duplicating each default
+                // value here, where it could silently drift out of sync.
                 let config = HttpConfig {
                     bind_addr: addr,
-                    cors_enabled: true,
-                    max_request_size: 1024 * 1024,
-                    timeout_ms: 30000,
+                    ..HttpConfig::default()
                 };
 
                 // Start HTTP server with graceful shutdown support

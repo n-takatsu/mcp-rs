@@ -242,7 +242,9 @@ impl InterPluginCommunicationController {
 
         queue.messages.push(message);
         // 優先度でソート（高い優先度が先）
-        queue.messages.sort_by(|a, b| b.priority.cmp(&a.priority));
+        queue
+            .messages
+            .sort_by_key(|b| std::cmp::Reverse(b.priority));
 
         // 通信イベントを記録
         self.record_communication_event(CommunicationEvent {

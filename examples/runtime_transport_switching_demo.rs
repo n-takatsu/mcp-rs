@@ -162,6 +162,32 @@ fn convert_to_transport_config(
                 cors_enabled: h.enable_cors.unwrap_or(true),
                 max_request_size: 1048576, // デフォルト値
                 timeout_ms: 30000,         // デフォルト値
+                network_policy: mcp_rs::security::NetworkPolicy::default(),
+                tls_enabled: h.tls_enabled.unwrap_or(false),
+                tls_cert_path: h.tls_cert_path.clone(),
+                tls_key_path: h.tls_key_path.clone(),
+                mtls_enabled: h.mtls_enabled.unwrap_or(false),
+                mtls_ca_cert_path: h.mtls_ca_cert_path.clone(),
+                enforce_https: h.enforce_https.unwrap_or(false),
+                min_tls_version: h.min_tls_version.clone().or(Some("1.3".to_string())),
+                hsts_enabled: h.hsts_enabled.unwrap_or(true),
+                hsts_max_age_seconds: h.hsts_max_age_seconds.unwrap_or(31536000),
+                hsts_include_subdomains: h.hsts_include_subdomains.unwrap_or(true),
+                hsts_preload: h.hsts_preload.unwrap_or(false),
+                certificate_pinning_enabled: h.certificate_pinning_enabled.unwrap_or(false),
+                pinned_certificates_sha256: h
+                    .pinned_certificates_sha256
+                    .clone()
+                    .unwrap_or_default(),
+                certificate_pin_header: h
+                    .certificate_pin_header
+                    .clone()
+                    .unwrap_or_else(|| "x-tls-cert-sha256".to_string()),
+                anti_replay_enabled: h.anti_replay_enabled.unwrap_or(false),
+                ids_enabled: h.ids_enabled.unwrap_or(false),
+                ids_trust_forwarded_for: h.ids_trust_forwarded_for.unwrap_or(false),
+                enable_websocket_upgrade: h.enable_websocket_upgrade.unwrap_or(false),
+                websocket_max_connections: h.websocket_max_connections.unwrap_or(1000),
             }
         })
         .unwrap_or_default();

@@ -42,7 +42,6 @@ impl Default for RedisSecuritySettings {
             command_whitelist: vec![
                 "GET".to_string(),
                 "SET".to_string(),
-                "DEL".to_string(),
                 "EXISTS".to_string(),
                 "LPUSH".to_string(),
                 "RPUSH".to_string(),
@@ -74,6 +73,7 @@ impl Default for RedisSecuritySettings {
                 "FLUSHALL".to_string(),
                 "SHUTDOWN".to_string(),
                 "CONFIG".to_string(),
+                "DEL".to_string(),
             ],
         }
     }

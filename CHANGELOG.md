@@ -7,6 +7,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-10-03
+
+### 🔐 Security Enhancement Phase 3 (Epic #219) — 完了
+
+mTLS・ゼロトラスト・HSM・IDS/IPS・量子耐性暗号・GDPR/CCPA対応までを含む、
+多層防御のセキュリティ強化計画が全フェーズ完了しました。
+
+#### Phase 3.1: Critical Security
+
+- **mTLS（相互TLS認証）** (#221, #254): HTTP transportへの完全実装
+  - `mtls_enabled`・`mtls_ca_cert_path`の設定マッピング追加
+  - クライアント証明書なしのリクエストを拒否、有効なCA署名証明書を受理
+- **ネットワークポリシーとローカル実行制限** (#220, #256): bind時点でのローカル限定ポリシー適用
+- **なりすまし防止・リプレイ攻撃対策** (#222, #259): HTTP/WebSocket/プラグインブローカーへの統合
+- **TLS/SSL強制とHSTS** (#224, #261): HTTPトランスポートおよびWebSocket(WSS)の両方に強制適用
+
+#### Phase 3.2: High Priority Security
+
+- **カラムレベル暗号化 + RBAC統合** (#223, #260, #308): `DatabaseHandler`のクエリパスへの実配線、関連バグ修正
+- **プラグイン間E2E暗号化の鍵交換フロー** (#225): X25519 ECDH + HKDF-SHA256、PFS・自動ローテーション・グレースピリオド対応
+- その他の堅牢化修正: `CommunicationBroker`のメッセージ配送不具合、Redis `DEL`コマンドの既定ブロック、SQLiteトランザクション分離の修正、KubernetesのNetworkPolicy実CNI適用確認・調整、プラグインネットワーク隔離の修正
+
+#### Phase 3.3: Advanced Security
+
+- **ゼロトラスト・マイクロセグメンテーション** (#226): DBクエリ実行パスへの実配線
+- **HSM統合**（PKCS#11） (#227): カラム暗号化への追加
+- **IDS/IPS** (#228): 既存IDSをHTTPトランスポート層へ実配線し、IPSブロックを実装
+
+#### Phase 3.4: Future Security（スコープ縮小の上で実装）
+
+- **量子耐性暗号（ML-KEM-768ハイブリッド鍵交換）** (#230): プラグイン間E2E暗号化にX25519との
+  ハイブリッドKEMコンバイナーとして追加
+- **GDPR/CCPAコンプライアンス自動化** (#229): mcp-rs自身が保持するアカウントデータ
+  （APIキー・セッション・監査ログ）に対する削除権・アクセス権として実装
+  （外部バックエンドDBのデータは対象外）
+
+### Added — その他
+
+- 脅威インテリジェンス統合 (#211)
+- Dockerランタイム統合の完成 (#212)
+- WebSocket Transport基盤の実装 (#213)
+- PostgreSQL最適化 Phase 2 (#214)
+- パフォーマンス最適化提案エンジン (#177)
+- Analytics モジュールのリファクタリング（anomaly/prediction分割）
+
+### Fixed
+
+- `cargo clippy --all-targets`の警告解消 (#264)
+- 新しいstable clippyが`#[async_trait]`生成コードを誤検知する
+  `clippy::double_must_use`への対応
+- WordPress関連: 設定読み込み不具合、一時的な404アセットの削除、メニュー/README修正、
+  モバイルホームページのスタイル調整
+- テストコメント中の古いIssue #115参照の整理
+
 ## [0.16.0] - 2025-12-22
 
 ### 🚀 WebSocket通信機能の強化とプラグイン分離システムの完成

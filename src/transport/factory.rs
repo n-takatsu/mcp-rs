@@ -23,16 +23,15 @@ impl TransportFactory {
                 Ok(Box::new(stdio_transport))
             }
             TransportType::Http { addr } => {
-                let http_config = http::HttpConfig {
-                    bind_addr: *addr,
-                    ..Default::default()
-                };
+                let mut http_config = config.http.clone();
+                http_config.bind_addr = *addr;
                 let http_transport = http::HttpTransport::new(http_config)
                     .map_err(|e| TransportError::Internal(e.to_string()))?;
                 Ok(Box::new(http_transport))
             }
             TransportType::WebSocket { .. } => Err(TransportError::NotSupported(
-                "WebSocket transport not yet implemented".to_string(),
+                "WebSocket is not a standalone transport in this pipeline; set transport_type = \"http\" and transport.http.enable_websocket_upgrade = true to expose /ws on the HTTP(S) listener instead"
+                    .to_string(),
             )),
         }
     }

@@ -119,10 +119,15 @@ pub struct NetworkUsage {
 }
 
 /// ネットワーク隔離管理
+///
+/// 実際のネットワーク遮断は `IsolationEngine::create_container` が渡す
+/// Docker の `--network none` フラグのみで行われる（コンテナ作成時に
+/// Docker自身が独立したネットワーク名前空間を内部的に用意するため）。
+/// `firewall_rules` は特定ホスト/ポート単位の許可リストのためのフィールド
+/// だが、現時点ではどこからも読み書きされていない
+/// （Follow-up issue: ホスト/ポート単位の許可リスト実装）。
 #[derive(Debug)]
 pub struct NetworkIsolation {
-    /// ネットワーク名前空間管理
-    namespaces: Arc<RwLock<HashMap<Uuid, String>>>,
     /// ファイアウォールルール
     firewall_rules: Arc<RwLock<HashMap<Uuid, Vec<FirewallRule>>>>,
 }
@@ -201,7 +206,6 @@ impl IsolationEngine {
         info!("Initializing isolation engine");
 
         let network_isolation = Arc::new(NetworkIsolation {
-            namespaces: Arc::new(RwLock::new(HashMap::new())),
             firewall_rules: Arc::new(RwLock::new(HashMap::new())),
         });
 
@@ -252,13 +256,6 @@ impl IsolationEngine {
     pub async fn start_plugin(&self, plugin_id: Uuid) -> Result<String, McpError> {
         info!("Starting plugin in isolated environment: {}", plugin_id);
 
-        // ネットワーク名前空間作成
-        let network_namespace = if self.config.use_network_namespace {
-            Some(self.create_network_namespace(plugin_id).await?)
-        } else {
-            None
-        };
-
         // ファイルシステム隔離設定
         let mount_points = if self.config.filesystem_isolation {
             self.setup_filesystem_isolation(plugin_id).await?
@@ -266,10 +263,17 @@ impl IsolationEngine {
             vec![]
         };
 
-        // コンテナ作成
+        // コンテナ作成（ネットワーク隔離は Docker の --network none に一任する。
+        // 詳細は create_container のコメントを参照）
         let container_id = self
-            .create_container(plugin_id, network_namespace.clone(), &mount_points)
+            .create_container(plugin_id, self.config.use_network_namespace, &mount_points)
             .await?;
+
+        let network_namespace = if self.config.use_network_namespace {
+            Some("none".to_string())
+        } else {
+            None
+        };
 
         // リソース制限適用
         self.apply_resource_limits(&container_id, plugin_id).await?;
@@ -301,36 +305,6 @@ impl IsolationEngine {
             plugin_id, container_id
         );
         Ok(container_id)
-    }
-
-    /// ネットワーク名前空間を作成
-    async fn create_network_namespace(&self, plugin_id: Uuid) -> Result<String, McpError> {
-        let namespace_name = format!("plugin-{}", plugin_id);
-
-        debug!("Creating network namespace: {}", namespace_name);
-
-        // ip netns add コマンドを実行
-        let output = Command::new("ip")
-            .args(["netns", "add", &namespace_name])
-            .output()
-            .map_err(|e| {
-                McpError::Isolation(format!("Failed to create network namespace: {}", e))
-            })?;
-
-        if !output.status.success() {
-            let error_msg = String::from_utf8_lossy(&output.stderr);
-            return Err(McpError::Isolation(format!(
-                "Failed to create network namespace: {}",
-                error_msg
-            )));
-        }
-
-        // ネットワーク名前空間を記録
-        let mut namespaces = self.network_isolation.namespaces.write().await;
-        namespaces.insert(plugin_id, namespace_name.clone());
-
-        info!("Network namespace created: {}", namespace_name);
-        Ok(namespace_name)
     }
 
     /// ファイルシステム隔離を設定
@@ -374,10 +348,19 @@ impl IsolationEngine {
     }
 
     /// コンテナを作成
+    ///
+    /// ネットワーク隔離は Docker の `--network none` のみで実現する。
+    /// 以前は `ip netns add` で作成した名前空間に `--net ns:<name>` で
+    /// 参加させようとしていたが、`--network`/`--net` は同一フラグの別名
+    /// であり両方を同時指定すると Docker がエラーになる
+    /// （`--net ns:<name>` はDockerの正式な値でもなくPodman固有の記法）。
+    /// `--network none` 単体でコンテナは外部ネットワークから完全に遮断
+    /// される（Docker自身が内部的に独立したネットワーク名前空間を作成
+    /// するため、`ip netns` による事前準備は不要）ことを実機検証済み。
     async fn create_container(
         &self,
         plugin_id: Uuid,
-        network_namespace: Option<String>,
+        isolate_network: bool,
         mount_points: &[MountPoint],
     ) -> Result<String, McpError> {
         let container_name = format!("plugin-{}", plugin_id);
@@ -388,9 +371,8 @@ impl IsolationEngine {
         cmd.args(["create", "--name", &container_name]);
 
         // ネットワーク隔離設定
-        if let Some(ns) = &network_namespace {
+        if isolate_network {
             cmd.args(["--network", "none"]);
-            cmd.args(["--net", &format!("ns:{}", ns)]);
         }
 
         // マウントポイント設定
@@ -502,11 +484,6 @@ impl IsolationEngine {
         // コンテナを削除
         self.remove_container(container_id).await?;
 
-        // ネットワーク名前空間を削除
-        if self.config.use_network_namespace {
-            self.cleanup_network_namespace(plugin_id).await?;
-        }
-
         // ファイルシステム隔離をクリーンアップ
         if self.config.filesystem_isolation {
             self.cleanup_filesystem_isolation(plugin_id).await?;
@@ -588,28 +565,6 @@ impl IsolationEngine {
                 "Failed to remove container: {}",
                 error_msg
             )));
-        }
-
-        Ok(())
-    }
-
-    /// ネットワーク名前空間をクリーンアップ
-    async fn cleanup_network_namespace(&self, plugin_id: Uuid) -> Result<(), McpError> {
-        let mut namespaces = self.network_isolation.namespaces.write().await;
-        if let Some(namespace_name) = namespaces.remove(&plugin_id) {
-            debug!("Cleaning up network namespace: {}", namespace_name);
-
-            let output = Command::new("ip")
-                .args(["netns", "delete", &namespace_name])
-                .output()
-                .map_err(|e| {
-                    McpError::Isolation(format!("Failed to delete network namespace: {}", e))
-                })?;
-
-            if !output.status.success() {
-                let error_msg = String::from_utf8_lossy(&output.stderr);
-                warn!("Failed to delete network namespace: {}", error_msg);
-            }
         }
 
         Ok(())
@@ -935,7 +890,6 @@ mod tests {
             active_containers: Arc::new(RwLock::new(HashMap::new())),
             resource_tracker: Arc::new(Mutex::new(ResourceTracker::default())),
             network_isolation: Arc::new(NetworkIsolation {
-                namespaces: Arc::new(RwLock::new(HashMap::new())),
                 firewall_rules: Arc::new(RwLock::new(HashMap::new())),
             }),
             filesystem_isolation: Arc::new(FilesystemIsolation {

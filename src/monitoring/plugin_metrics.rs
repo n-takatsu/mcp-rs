@@ -317,7 +317,7 @@ mod tests {
     #[test]
     fn test_metrics_creation() {
         let metrics = PluginMetrics::new().unwrap();
-        assert!(metrics.gather().len() > 0);
+        assert!(!metrics.gather().is_empty());
     }
 
     #[test]

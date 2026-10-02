@@ -295,13 +295,29 @@ impl ConnectionPool {
 
     /// 接続をプールに返却
     pub async fn return_connection(&self, connection: Box<dyn super::engine::DatabaseConnection>) {
-        let mut connections = self.connections.write().await;
+        // このブロックを抜けたところで書き込みロックを明示的に解放する。
+        // `update_pool_info()`は内部で`self.connections`の読み取りロックを
+        // 取得するため、ここで保持したままだと同一タスクが同じRwLockに対して
+        // write→readを取得しようとしてデッドロックする
+        // （tokio::sync::RwLockは再入不可）。
+        //
+        // 容量オーバーの場合、接続はロックの中では破棄せず`discarded`として
+        // 退避するだけにする - `Drop`実装が重い処理やロック取得を伴う場合、
+        // 書き込みロックを保持したままdropするとプール全体を不必要に
+        // ブロックしたり、ロック順序問題の温床になりかねないため。
+        let discarded = {
+            let mut connections = self.connections.write().await;
 
-        // プールの容量をチェック
-        if connections.len() < self.config.max_connections as usize {
-            connections.push_back(connection);
-        }
-        // 容量オーバーの場合は接続を破棄
+            // プールの容量をチェック
+            if connections.len() < self.config.max_connections as usize {
+                connections.push_back(connection);
+                None
+            } else {
+                Some(connection)
+            }
+        };
+        // ロック解放後、かつ次のawaitより前に即座に破棄する。
+        drop(discarded);
 
         // アクティブ接続数を減少
         {

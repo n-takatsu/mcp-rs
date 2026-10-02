@@ -5,10 +5,20 @@
 # Configuration files with sensitive information
 mcp-config.toml
 
+# Test-generated certificates and keys (contains sensitive data)
+/certs/
+
 # IDE files (但し.vscode/はプロジェクト設定として含める)
 # MCP設定はアクセストークンが含まれる可能性があるため除外
 .vscode/mcp.json
 .idea/
+
+# Claude Code: settings.json はセッションごとに承認したコマンドの許可リストが
+# 自動追記される個人利用向けファイルであり、チーム共有設定ではないため除外する。
+# settings.local.json・scheduled_tasks.lock も同様に個人用/実行時ファイル。
+.claude/settings.json
+.claude/settings.local.json
+.claude/scheduled_tasks.lock
 *.swp
 *.swo
 *~
@@ -20,6 +30,9 @@ Thumbs.db
 
 # Log files
 *.log
+# src/logging.rs writes daily-rotated files here as mcp-rs.log.<date>,
+# which *.log alone doesn't match
+/logs/
 
 # CI/CD generated files
 clippy-report.json
@@ -28,6 +41,7 @@ clippy-report.json
 .env
 .env.local
 .env.production
+.env.wordpress.local
 
 # Release directories (should use GitHub Releases instead)
 /mcp-rs-v*/

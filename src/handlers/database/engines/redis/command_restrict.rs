@@ -305,10 +305,8 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // TODO: Fix test - DEL command is not in default blacklist (Issue #115)
     fn test_command_blocked() {
         let restrictor = CommandRestrictor::new();
-        // FLUSHDB is in default blacklist
         assert!(!restrictor.is_allowed(&RedisCommand::Del(vec!["*".to_string()])));
     }
 

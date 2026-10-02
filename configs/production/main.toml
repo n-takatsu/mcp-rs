@@ -41,8 +41,9 @@ root_path = "."
 read_only = true
 
 # WordPress (オプション - 本番環境では環境変数推奨)
-# [wordpress]
-# url = "https://your-wordpress-site.com"
-# username = "your-username"  
-# password = "your-app-password"
-# verify_ssl = true
+# [handlers.wordpress]
+# enabled = true
+# url = "${WORDPRESS_URL}"
+# username = "${WORDPRESS_USERNAME}"
+# password = "${WORDPRESS_PASSWORD}"
+# timeout_seconds = 30

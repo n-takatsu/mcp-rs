@@ -1,12 +1,16 @@
+pub mod anti_replay;
 pub mod audit;
 pub mod audit_log;
 pub mod auth;
 pub mod encryption;
+#[cfg(feature = "hsm")]
+pub mod hsm;
 pub mod ids;
 pub mod image_scanner;
 #[cfg(feature = "mfa")]
 pub mod mfa;
 pub mod mtls;
+pub mod network_policy;
 pub mod rate_limiter;
 pub mod secure_server;
 pub mod sql_injection_protection;
@@ -15,6 +19,10 @@ pub mod validation;
 pub mod waf;
 pub mod xss_protection;
 
+pub use anti_replay::{
+    AntiReplayConfig, AntiReplayMiddleware, DeviceFingerprint, DeviceFingerprintManager,
+    NonceManager, ReplayError, SecurityHeaders, TimestampValidator,
+};
 pub use audit::{
     Alert as AuditAlert, AlertSeverity, AlertStatus, AnalysisResult, AnalysisStatistics,
     AuditAnalysisEngine, CorrelatedEvent, ExfiltrationEvent, PrivilegeEscalationEvent,
@@ -36,7 +44,8 @@ pub use ids::{
     behavioral::BehavioralDetector,
     network::NetworkMonitor,
     signature::SignatureDetector,
-    DetectionResult, DetectionType, IntrusionDetectionSystem, RecommendedAction, Severity,
+    DetectionResult, DetectionType, IDSConfig, IntrusionDetectionSystem, RecommendedAction,
+    RequestData, Severity,
 };
 pub use image_scanner::{ImageScanner, ScanReport, ScanSummary, ScannerType, Vulnerability};
 #[cfg(feature = "mfa")]
@@ -48,6 +57,7 @@ pub use mtls::{
     OcspResponse, OcspStatus, RevocationReason, RotationConfig, RotationEvent, RotationScheduler,
     RotationStatus, StoreConfig, Subject, VerificationResult,
 };
+pub use network_policy::{NetworkPolicy, NetworkPolicyError};
 pub use rate_limiter::RateLimiter;
 pub use secure_server::{SecureMcpServer, SecurityConfig, SecurityMetrics};
 pub use sql_injection_protection::{

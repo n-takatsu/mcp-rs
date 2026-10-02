@@ -39,11 +39,12 @@ root_path = "."
 read_only = false
 
 # WordPress設定（環境変数使用推奨）
-[wordpress]
-url = "https://your-wordpress-site.com"
+[handlers.wordpress]
+enabled = true
+url = "${WORDPRESS_URL}"
 username = "${WORDPRESS_USERNAME}"
 password = "${WORDPRESS_PASSWORD}"
-verify_ssl = true
+timeout_seconds = 30
 
 [handlers.wordpress.rate_limit]
 enabled = true

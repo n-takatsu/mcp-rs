@@ -39,33 +39,21 @@ root_path = "."
 read_only = true
 
 # WordPress設定（オプション）
-[wordpress]
+# 注意: src/config.rs の WordPressConfig 構造体は
+#   [handlers.wordpress] テーブル配下の url / username / password (必須),
+#   enabled / timeout_seconds / rate_limit のみを認識します。
+#   （cache / retry / max_posts などのキーは現バージョンでは未実装のため無視されます）
+[handlers.wordpress]
 enabled = true
-url = "https://your-wordpress-site.com"
-username = "your_username"
-password = "your_app_password"                          # WordPress Application Password
-timeout_ms = 30000
-max_posts = 100
-default_post_status = "publish"
-allowed_post_types = ["post", "page"]
-allowed_post_statuses = ["publish", "draft", "private"]
+url = "${WORDPRESS_URL}"
+username = "${WORDPRESS_USERNAME}"
+password = "${WORDPRESS_PASSWORD}"                      # WordPress Application Password（環境変数推奨）
+timeout_seconds = 30
 
-[handlers.wordpress.cache]
+[handlers.wordpress.rate_limit]
 enabled = true
-ttl_seconds = 300
-max_entries = 1000
-
-[handlers.wordpress.rate_limiting]
-enabled = true
-requests_per_minute = 60
-burst_size = 10
-
-[handlers.wordpress.retry]
-enabled = true
-max_attempts = 3
-initial_delay_ms = 1000
-max_delay_ms = 5000
-backoff_multiplier = 2.0
+requests_per_second = 10
+burst_size = 20
 
 # セキュリティ設定
 [security]

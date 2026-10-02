@@ -24,7 +24,6 @@ Complete implementation of WebSocket transport for mcp-rs with full bidirectiona
 
 ### 🔄 To Be Implemented (Phase 2)
 
-- **TLS/WSS Support**: Secure WebSocket connections
 - **Origin Validation**: Cross-origin request security
 - **Authentication Integration**: Token-based authentication
 - **Rate Limiting Integration**: Per-connection rate limiting
@@ -41,7 +40,7 @@ let config = WebSocketConfig {
     url: "ws://127.0.0.1:8082".to_string(),
     server_mode: true,              // true for server, false for client
     timeout_seconds: Some(30),      // Connection timeout
-    use_tls: false,                 // Enable TLS/WSS (TODO)
+    enable_tls: false,              // Not enforced by WebSocketServer - see "TLS/WSS Support" below
     heartbeat_interval: 30,         // Heartbeat interval (0 to disable)
     max_reconnect_attempts: 5,      // Max reconnection attempts (TODO)
     reconnect_delay: 5,             // Reconnection delay in seconds (TODO)
@@ -49,6 +48,49 @@ let config = WebSocketConfig {
     max_connections: 100,           // Max concurrent connections (server mode)
 };
 ```
+
+## TLS/WSS Support
+
+`WebSocketServer` (the type constructed above) is a standalone, test/dev-only
+server: it binds its own plain TCP listener and never terminates TLS, so its
+`WebSocketConfig.enable_tls` field has no effect regardless of its value -
+there is also no production path to it at all, since
+`TransportFactory::create_transport` always refuses `TransportType::WebSocket`.
+
+For a real, TLS-enforcing `/ws` endpoint, mount it on `HttpTransport` instead:
+
+```rust
+use mcp_rs::transport::http::HttpConfig;
+
+let config = HttpConfig {
+    enable_websocket_upgrade: true,   // mounts /ws on this listener
+    websocket_max_connections: 1000,  // 503s new upgrades past this limit
+    // TLS/HSTS/certificate pinning are the *same* fields /mcp already uses -
+    // there is no separate WebSocket-specific security config surface.
+    tls_enabled: true,
+    tls_cert_path: Some("./certs/server.crt".to_string()),
+    tls_key_path: Some("./certs/server.key".to_string()),
+    enforce_https: true,
+    ..HttpConfig::default()
+};
+```
+
+`/ws` shares `HttpTransport`'s entire TLS/security stack with `/` and `/mcp`:
+TLS termination (`tls_enabled` + `tls_cert_path`/`tls_key_path`, TLS 1.3 via
+rustls), `enforce_https` (rejects plain `ws://` the same way it rejects plain
+HTTP, including the reverse-proxy `X-Forwarded-Proto` case), HSTS headers,
+certificate pinning, `network_policy`, and `anti_replay_enabled`. There is no
+separate `enable_wss`/`ws_tls_*` configuration - by design, one security
+posture governs the whole listener. See `HttpConfig` in
+`src/transport/http.rs` for the authoritative field list, and
+`transport.http.enable_websocket_upgrade`/`websocket_max_connections` in
+`config.rs`'s `HttpTransportConfig` for the TOML-facing equivalents.
+
+`/ws` on `HttpTransport` speaks MCP JSON-RPC (via the same request/response
+correlation `/mcp` uses), not the raw echo/pluggable `MessageHandler` protocol
+the standalone `WebSocketServer` demonstrates below - that server remains
+useful for exercising the WebSocket protocol layer itself (framing, ping/
+pong, custom handlers) in tests, but is not the production MCP endpoint.
 
 ## Usage Example
 
@@ -160,7 +202,9 @@ cargo clippy --all-features -- -D warnings
 
 ### Phase 2: Security (Next)
 
-- [ ] TLS/WSS support
+- [x] TLS/WSS support (via `HttpConfig::enable_websocket_upgrade` - see
+      "TLS/WSS Support" above; not implemented for the standalone
+      `WebSocketServer`)
 - [ ] Origin validation
 - [ ] Authentication integration
 - [ ] Rate limiting

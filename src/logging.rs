@@ -427,7 +427,7 @@ fn cleanup_old_logs_by_count(log_dir: &Path, max_count: u32) -> Result<()> {
     }
 
     // 更新日時でソート（新しい順）
-    log_files.sort_by(|a, b| b.1.cmp(&a.1));
+    log_files.sort_by_key(|b| std::cmp::Reverse(b.1));
 
     let mut removed_count = 0;
 
@@ -477,7 +477,7 @@ fn cleanup_old_logs_by_size(log_dir: &Path, max_bytes: u64) -> Result<()> {
     }
 
     // 更新日時でソート（新しい順）
-    log_files.sort_by(|a, b| b.1.cmp(&a.1));
+    log_files.sort_by_key(|b| std::cmp::Reverse(b.1));
 
     let mut current_size = 0u64;
     let mut removed_count = 0;

@@ -1787,7 +1787,7 @@ impl DynamicAnalyzer {
             tracing::info!("Cleaning up {} sandbox environment(s)", sandbox_count);
 
             // 各サンドボックス環境のクリーンアップログを記録
-            for (sandbox_id, _env) in self.sandbox_environments.iter() {
+            for sandbox_id in self.sandbox_environments.keys() {
                 tracing::debug!("Shutting down sandbox: {}", sandbox_id);
                 // 実際の実装では、プロセス終了、一時ファイル削除、ネットワーク切断などを実行
             }

@@ -11,8 +11,18 @@ use tokio::time::{Duration, Instant};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use chacha20poly1305::aead::Aead;
+use chacha20poly1305::{ChaCha20Poly1305, KeyInit, Nonce};
+use ed25519_dalek::SigningKey;
+use ring::rand::{SecureRandom, SystemRandom};
+use ring::{digest, hmac};
+use x25519_dalek::{PublicKey, StaticSecret};
+
 use crate::error::McpError;
+use crate::plugin_isolation::key_exchange::{KeyExchangeConfig, KeyExchangeProtocol};
 use crate::plugin_isolation::PluginState;
+use crate::security::{AntiReplayConfig, AuditLogger, NonceManager, TimestampValidator};
 
 /// 通信ブローカー
 #[derive(Debug)]
@@ -23,12 +33,23 @@ pub struct CommunicationBroker {
     message_filters: Arc<MessageFilterEngine>,
     /// レート制限管理
     rate_limiters: Arc<RwLock<HashMap<Uuid, RateLimiter>>>,
-    /// 暗号化マネージャー
+    /// 暗号化マネージャー（BrokerMessage トランスポート層暗号化）
     encryption_manager: Arc<EncryptionManager>,
     /// 認証マネージャー
     auth_manager: Arc<AuthenticationManager>,
     /// メッセージキュー
     message_queue: Arc<MessageQueue>,
+    /// プラグイン間 E2E 鍵交換プロトコル
+    ///
+    /// プラグイン同士が直接 ECDH 鍵交換を行い [`EncryptedPayload`] で
+    /// エンドツーエンド暗号化通信するための専用コンポーネント。
+    pub key_exchange_protocol: Arc<KeyExchangeProtocol>,
+    /// リプレイ攻撃対策: nonce管理（message_idの再利用検知）
+    nonce_manager: Arc<NonceManager>,
+    /// リプレイ攻撃対策: タイムスタンプ検証
+    timestamp_validator: Arc<TimestampValidator>,
+    /// 監査ログ
+    audit_logger: Arc<AuditLogger>,
     /// 設定
     config: BrokerConfig,
 }
@@ -104,6 +125,10 @@ pub struct AuthenticationInfo {
     pub certificate: Option<Vec<u8>>,
     /// 公開鍵
     pub public_key: Vec<u8>,
+    /// 署名検証用公開鍵
+    pub signing_public_key: Vec<u8>,
+    /// 鍵識別子
+    pub key_id: String,
     /// 有効期限
     pub expires_at: chrono::DateTime<chrono::Utc>,
     /// 権限
@@ -453,6 +478,9 @@ pub struct BrokerConfig {
     pub queue_config: QueueConfig,
     /// タイムアウト設定
     pub timeout_config: TimeoutConfig,
+    /// message_id/timestampによるリプレイ攻撃対策を有効化するか。
+    /// プラグイン間通信は内部信頼境界のためデフォルトで有効。
+    pub anti_replay_enabled: bool,
 }
 
 /// 暗号化設定
@@ -513,6 +541,7 @@ impl Default for BrokerConfig {
                 request_timeout_secs: 60,
                 idle_timeout_secs: 300,
             },
+            anti_replay_enabled: true,
         }
     }
 }
@@ -531,6 +560,26 @@ impl CommunicationBroker {
         let encryption_manager = Arc::new(EncryptionManager::new(&config.encryption_config).await?);
         let auth_manager = Arc::new(AuthenticationManager::new(config.auth_config.clone()).await?);
         let message_queue = Arc::new(MessageQueue::new(config.queue_config.clone()).await?);
+        let kex_config = KeyExchangeConfig {
+            key_lifetime_hours: config
+                .encryption_config
+                .key_rotation
+                .rotation_interval_hours,
+            grace_period_hours: config.encryption_config.key_rotation.overlap_hours,
+            message_ttl_secs: 300,
+        };
+        let key_exchange_protocol = Arc::new(KeyExchangeProtocol::new_with_config(kex_config));
+        if config.encryption_config.key_rotation.auto_rotation_enabled {
+            KeyExchangeProtocol::start_auto_rotation(Arc::clone(&key_exchange_protocol));
+        }
+
+        let anti_replay_config = AntiReplayConfig::default();
+        let nonce_manager = Arc::new(NonceManager::new(
+            anti_replay_config.nonce_ttl_secs,
+            anti_replay_config.max_nonce_cache,
+        ));
+        let timestamp_validator =
+            Arc::new(TimestampValidator::new(anti_replay_config.time_window_secs));
 
         Ok(Self {
             active_channels: Arc::new(RwLock::new(HashMap::new())),
@@ -539,6 +588,10 @@ impl CommunicationBroker {
             encryption_manager,
             auth_manager,
             message_queue,
+            key_exchange_protocol,
+            nonce_manager,
+            timestamp_validator,
+            audit_logger: Arc::new(AuditLogger::with_defaults()),
             config,
         })
     }
@@ -568,6 +621,11 @@ impl CommunicationBroker {
         let auth_info = self
             .auth_manager
             .generate_authentication_info(plugin_id)
+            .await?;
+
+        // E2E 鍵交換プロトコルにプラグインを登録
+        self.key_exchange_protocol
+            .register_plugin(plugin_id)
             .await?;
 
         // 暗号化設定を生成
@@ -638,6 +696,11 @@ impl CommunicationBroker {
         // 認証情報を削除
         self.auth_manager.revoke_plugin_tokens(plugin_id).await?;
 
+        // E2E 鍵交換プロトコルからプラグインを削除
+        self.key_exchange_protocol
+            .unregister_plugin(plugin_id)
+            .await;
+
         info!("Communication channel unregistered: {}", plugin_id);
         Ok(())
     }
@@ -666,12 +729,40 @@ impl CommunicationBroker {
         // メッセージを暗号化
         let encrypted_message = self.encryption_manager.encrypt_message(&message).await?;
 
-        // メッセージをキューに追加
-        self.message_queue
-            .enqueue_message(encrypted_message)
-            .await?;
+        // メッセージを配送
+        match encrypted_message.destination_plugin_id {
+            Some(destination) => {
+                // 宛先プラグインのチャネルに直接配送する。
+                // (以前は message_queue.enqueue_message() に渡すだけで、
+                // receive_message() が読む CommunicationChannel.receiver とは
+                // 一切接続されておらず、メッセージが黙って破棄されていた。)
+                let channels = self.active_channels.read().await;
+                let channel = channels
+                    .values()
+                    .find(|c| c.plugin_id == destination)
+                    .ok_or_else(|| {
+                        McpError::Plugin(format!(
+                            "No channel registered for destination plugin {}",
+                            destination
+                        ))
+                    })?;
+                channel.sender.send(encrypted_message).map_err(|_| {
+                    McpError::Plugin(format!(
+                        "Failed to deliver message to plugin {}: channel closed",
+                        destination
+                    ))
+                })?;
+            }
+            None => {
+                // セキュアコア宛メッセージのルーティングは未実装
+                // (受け皿となるコア用チャネルがコードベースに存在しないため)。
+                self.message_queue
+                    .enqueue_message(encrypted_message)
+                    .await?;
+            }
+        }
 
-        debug!("Message queued for delivery: {}", message.message_id);
+        debug!("Message delivery handled: {}", message.message_id);
         Ok(())
     }
 
@@ -698,6 +789,10 @@ impl CommunicationBroker {
         if let Some(channel) = channels.get(&channel_id) {
             let mut receiver = channel.receiver.lock().await;
             if let Ok(message) = receiver.try_recv() {
+                if self.config.anti_replay_enabled {
+                    self.check_replay(&message).await?;
+                }
+
                 // メッセージを復号化
                 let decrypted_message = self.encryption_manager.decrypt_message(&message).await?;
                 return Ok(Some(decrypted_message));
@@ -705,6 +800,75 @@ impl CommunicationBroker {
         }
 
         Ok(None)
+    }
+
+    /// メッセージのリプレイ攻撃対策チェック（TTL超過・message_id再利用の検知）
+    ///
+    /// `message_id` は各 `BrokerMessage` に必ず付与される一意な `Uuid` のため、
+    /// これを anti-replay の nonce としてそのまま利用する（`encrypt_message` が
+    /// メタデータに書き込む AEAD 暗号用の "nonce" とは別概念のため流用しない）。
+    async fn check_replay(&self, message: &BrokerMessage) -> Result<(), McpError> {
+        if let Some(expires_at) = message.expires_at {
+            if chrono::Utc::now() > expires_at {
+                let _ = self
+                    .audit_logger
+                    .log_security_attack(
+                        "plugin_message_expired",
+                        &format!(
+                            "message {} from plugin {} expired at {}",
+                            message.message_id, message.source_plugin_id, expires_at
+                        ),
+                        None,
+                        None,
+                    )
+                    .await;
+                return Err(McpError::SecurityFailure(format!(
+                    "Message {} expired at {}",
+                    message.message_id, expires_at
+                )));
+            }
+        }
+
+        if let Err(e) = self.timestamp_validator.check_window(message.timestamp) {
+            let _ = self
+                .audit_logger
+                .log_security_attack(
+                    "plugin_message_timestamp_rejected",
+                    &format!("message {}: {}", message.message_id, e),
+                    None,
+                    None,
+                )
+                .await;
+            return Err(McpError::SecurityFailure(format!(
+                "Timestamp rejected for message {}: {}",
+                message.message_id, e
+            )));
+        }
+
+        if let Err(e) = self
+            .nonce_manager
+            .validate_and_consume(
+                &message.message_id.to_string(),
+                Some(message.source_plugin_id.to_string()),
+            )
+            .await
+        {
+            let _ = self
+                .audit_logger
+                .log_security_attack(
+                    "plugin_message_replay_detected",
+                    &format!("message {}: {}", message.message_id, e),
+                    None,
+                    None,
+                )
+                .await;
+            return Err(McpError::SecurityFailure(format!(
+                "Replay detected for message {}: {}",
+                message.message_id, e
+            )));
+        }
+
+        Ok(())
     }
 
     /// レート制限をチェック
@@ -806,16 +970,11 @@ impl RateLimiter {
 }
 
 impl EncryptionManager {
-    async fn new(_config: &EncryptionConfig) -> Result<Self, McpError> {
-        // TODO: 実装
+    async fn new(config: &EncryptionConfig) -> Result<Self, McpError> {
         Ok(Self {
             key_manager: Arc::new(KeyManager {
                 active_keys: Arc::new(RwLock::new(HashMap::new())),
-                rotation_config: KeyRotationConfig {
-                    rotation_interval_hours: 24,
-                    auto_rotation_enabled: true,
-                    overlap_hours: 1,
-                },
+                rotation_config: config.key_rotation.clone(),
             }),
             encryption_engines: HashMap::new(),
         })
@@ -823,25 +982,154 @@ impl EncryptionManager {
 
     async fn generate_channel_encryption(
         &self,
-        _plugin_id: Uuid,
+        plugin_id: Uuid,
     ) -> Result<ChannelEncryption, McpError> {
-        // TODO: 実装
+        let rng = SystemRandom::new();
+        let mut key = vec![0u8; 32];
+        let mut iv = vec![0u8; 12];
+        let mut signing_key = vec![0u8; 32];
+
+        rng.fill(&mut key).map_err(|e| {
+            McpError::SecurityFailure(format!("Failed to generate channel key: {e}"))
+        })?;
+        rng.fill(&mut iv).map_err(|e| {
+            McpError::SecurityFailure(format!("Failed to generate channel nonce: {e}"))
+        })?;
+        rng.fill(&mut signing_key).map_err(|e| {
+            McpError::SecurityFailure(format!("Failed to generate signing key: {e}"))
+        })?;
+
+        let now = chrono::Utc::now();
+        let expires_at = now
+            + chrono::Duration::hours(
+                self.key_manager.rotation_config.rotation_interval_hours as i64,
+            );
+        let mut active_keys = self.key_manager.active_keys.write().await;
+        active_keys.insert(
+            plugin_id,
+            EncryptionKeys {
+                primary_key: key.clone(),
+                secondary_key: None,
+                signing_key: signing_key.clone(),
+                created_at: now,
+                expires_at,
+            },
+        );
+
         Ok(ChannelEncryption {
-            algorithm: EncryptionAlgorithm::AesGcm256,
-            key: vec![0; 32],
-            iv: vec![0; 12],
-            signing_key: vec![0; 32],
+            algorithm: EncryptionAlgorithm::ChaCha20Poly1305,
+            key,
+            iv,
+            signing_key,
         })
     }
 
     async fn encrypt_message(&self, message: &BrokerMessage) -> Result<BrokerMessage, McpError> {
-        // TODO: 実装
-        Ok(message.clone())
+        if message.encrypted {
+            return Ok(message.clone());
+        }
+
+        let keys = self.key_manager.active_keys.read().await;
+        let key_material = keys.get(&message.source_plugin_id).ok_or_else(|| {
+            McpError::SecurityFailure(format!(
+                "No encryption key for source plugin {}",
+                message.source_plugin_id
+            ))
+        })?;
+
+        let mut nonce_bytes = [0u8; 12];
+        let nonce_input = digest::digest(
+            &digest::SHA256,
+            format!(
+                "{}:{}",
+                message.message_id,
+                message.timestamp.timestamp_nanos_opt().unwrap_or_default()
+            )
+            .as_bytes(),
+        );
+        nonce_bytes.copy_from_slice(&nonce_input.as_ref()[..12]);
+
+        let cipher = ChaCha20Poly1305::new_from_slice(&key_material.primary_key).map_err(|e| {
+            McpError::SecurityFailure(format!("Invalid encryption key length: {e}"))
+        })?;
+
+        let ciphertext = cipher
+            .encrypt(&Nonce::from(nonce_bytes), message.payload.as_ref())
+            .map_err(|e| McpError::SecurityFailure(format!("Message encryption failed: {e}")))?;
+
+        let signature = hmac::sign(
+            &hmac::Key::new(hmac::HMAC_SHA256, &key_material.signing_key),
+            &ciphertext,
+        )
+        .as_ref()
+        .to_vec();
+
+        let mut encrypted = message.clone();
+        encrypted.payload = ciphertext;
+        encrypted.encrypted = true;
+        encrypted.signature = Some(signature);
+        encrypted
+            .metadata
+            .insert("nonce".to_string(), URL_SAFE_NO_PAD.encode(nonce_bytes));
+        encrypted.metadata.insert(
+            "algorithm".to_string(),
+            "chacha20poly1305+hmac-sha256".to_string(),
+        );
+
+        Ok(encrypted)
     }
 
     async fn decrypt_message(&self, message: &BrokerMessage) -> Result<BrokerMessage, McpError> {
-        // TODO: 実装
-        Ok(message.clone())
+        if !message.encrypted {
+            return Ok(message.clone());
+        }
+
+        let keys = self.key_manager.active_keys.read().await;
+        let key_material = keys.get(&message.source_plugin_id).ok_or_else(|| {
+            McpError::SecurityFailure(format!(
+                "No decryption key for source plugin {}",
+                message.source_plugin_id
+            ))
+        })?;
+
+        let signature = message.signature.as_ref().ok_or_else(|| {
+            McpError::SecurityFailure("Encrypted message missing signature".to_string())
+        })?;
+        hmac::verify(
+            &hmac::Key::new(hmac::HMAC_SHA256, &key_material.signing_key),
+            &message.payload,
+            signature,
+        )
+        .map_err(|_| {
+            McpError::SecurityFailure("Encrypted message signature verification failed".to_string())
+        })?;
+
+        let nonce_b64 = message.metadata.get("nonce").ok_or_else(|| {
+            McpError::SecurityFailure("Encrypted message missing nonce metadata".to_string())
+        })?;
+        let nonce_raw = URL_SAFE_NO_PAD
+            .decode(nonce_b64)
+            .map_err(|e| McpError::SecurityFailure(format!("Invalid nonce encoding: {e}")))?;
+        if nonce_raw.len() != 12 {
+            return Err(McpError::SecurityFailure(
+                "Invalid nonce length for ChaCha20-Poly1305".to_string(),
+            ));
+        }
+
+        let cipher = ChaCha20Poly1305::new_from_slice(&key_material.primary_key).map_err(|e| {
+            McpError::SecurityFailure(format!("Invalid decryption key length: {e}"))
+        })?;
+        let nonce_array: [u8; 12] = nonce_raw.as_slice().try_into().map_err(|_| {
+            McpError::SecurityFailure("Invalid nonce length for ChaCha20-Poly1305".to_string())
+        })?;
+        let plaintext = cipher
+            .decrypt(&Nonce::from(nonce_array), message.payload.as_ref())
+            .map_err(|e| McpError::SecurityFailure(format!("Message decryption failed: {e}")))?;
+
+        let mut decrypted = message.clone();
+        decrypted.payload = plaintext;
+        decrypted.encrypted = false;
+        Ok(decrypted)
     }
 }
 
@@ -860,24 +1148,105 @@ impl AuthenticationManager {
         &self,
         plugin_id: Uuid,
     ) -> Result<AuthenticationInfo, McpError> {
-        // TODO: 実装
+        let now = chrono::Utc::now();
+        let expires_at =
+            now + chrono::Duration::seconds(self.auth_config.token_lifetime_secs as i64);
+        let token = Self::generate_secure_token(plugin_id)?;
+
+        let (ecdh_public_key, signing_public_key) = Self::generate_plugin_key_material()?;
+        let key_id = format!("key_{}_{}", plugin_id, now.timestamp());
+
+        // Keep a lightweight certificate entry so peer verification metadata can be referenced.
+        {
+            let mut certs = self.certificate_store.certificates.write().await;
+            certs.insert(
+                key_id.clone(),
+                CertificateInfo {
+                    certificate: Vec::new(),
+                    public_key: signing_public_key.clone(),
+                    issuer: format!("plugin-auth-manager:{}", plugin_id),
+                    expires_at,
+                    revoked: false,
+                },
+            );
+        }
+
+        let token_info = TokenInfo {
+            token: token.clone(),
+            plugin_id,
+            issued_at: now,
+            expires_at,
+            permissions: vec![
+                "plugin:communicate".to_string(),
+                "plugin:e2e-encryption".to_string(),
+            ],
+            refreshable: self.auth_config.token_refresh_enabled,
+        };
+
+        {
+            let mut tokens = self.active_tokens.write().await;
+            tokens.insert(token.clone(), token_info);
+        }
+
         Ok(AuthenticationInfo {
-            token: format!("token_{}", plugin_id),
+            token,
             certificate: None,
-            public_key: vec![0; 32],
-            expires_at: chrono::Utc::now() + chrono::Duration::hours(1),
-            permissions: vec!["read".to_string(), "write".to_string()],
+            public_key: ecdh_public_key,
+            signing_public_key,
+            key_id,
+            expires_at,
+            permissions: vec![
+                "plugin:communicate".to_string(),
+                "plugin:e2e-encryption".to_string(),
+            ],
         })
     }
 
-    async fn revoke_plugin_tokens(&self, _plugin_id: Uuid) -> Result<(), McpError> {
-        // TODO: 実装
+    async fn revoke_plugin_tokens(&self, plugin_id: Uuid) -> Result<(), McpError> {
+        let mut tokens = self.active_tokens.write().await;
+        tokens.retain(|_, info| info.plugin_id != plugin_id);
+
+        let mut certs = self.certificate_store.certificates.write().await;
+        let plugin_marker = plugin_id.to_string();
+        certs.retain(|_, cert| !cert.issuer.contains(&plugin_marker));
+
         Ok(())
     }
 
     async fn shutdown(&self) -> Result<(), McpError> {
-        // TODO: 実装
+        self.active_tokens.write().await.clear();
+        self.certificate_store.certificates.write().await.clear();
         Ok(())
+    }
+
+    fn generate_secure_token(plugin_id: Uuid) -> Result<String, McpError> {
+        let rng = SystemRandom::new();
+        let mut random = [0u8; 32];
+        rng.fill(&mut random).map_err(|e| {
+            McpError::SecurityFailure(format!("Failed to generate token entropy: {e}"))
+        })?;
+
+        let nonce = URL_SAFE_NO_PAD.encode(random);
+        Ok(format!("p_{}_{}", plugin_id.simple(), nonce))
+    }
+
+    fn generate_plugin_key_material() -> Result<(Vec<u8>, Vec<u8>), McpError> {
+        let rng = SystemRandom::new();
+
+        let mut ecdh_secret_bytes = [0u8; 32];
+        rng.fill(&mut ecdh_secret_bytes)
+            .map_err(|e| McpError::SecurityFailure(format!("Failed to generate ECDH key: {e}")))?;
+        let ecdh_secret = StaticSecret::from(ecdh_secret_bytes);
+        let ecdh_public = PublicKey::from(&ecdh_secret).to_bytes().to_vec();
+
+        let mut signing_secret_bytes = [0u8; 32];
+        rng.fill(&mut signing_secret_bytes).map_err(|e| {
+            McpError::SecurityFailure(format!("Failed to generate signing key material: {e}"))
+        })?;
+        let signing_key = SigningKey::from_bytes(&signing_secret_bytes);
+        let signing_public = signing_key.verifying_key().to_bytes().to_vec();
+
+        Ok((ecdh_public, signing_public))
     }
 }
 
@@ -932,5 +1301,379 @@ mod tests {
 
         let limiter = RateLimiter::new(config);
         assert!(limiter.config.enabled);
+    }
+
+    /// E2E暗号化ラウンドトリップテスト:
+    /// ChaCha20-Poly1305 で暗号化したメッセージを復号し、
+    /// ペイロードが元のデータと一致することを確認する。
+    #[tokio::test]
+    async fn test_e2e_encryption_roundtrip() {
+        let config = EncryptionConfig {
+            default_algorithm: EncryptionAlgorithm::ChaCha20Poly1305,
+            key_rotation: KeyRotationConfig {
+                rotation_interval_hours: 24,
+                auto_rotation_enabled: false,
+                overlap_hours: 0,
+            },
+            encryption_required: true,
+        };
+        let manager = EncryptionManager::new(&config).await.unwrap();
+        let plugin_id = Uuid::new_v4();
+
+        // チャネル鍵を生成 (KeyManager に登録される)
+        manager
+            .generate_channel_encryption(plugin_id)
+            .await
+            .unwrap();
+
+        let original_payload = b"Hello, secure world!".to_vec();
+        let message = BrokerMessage {
+            message_id: Uuid::new_v4(),
+            source_plugin_id: plugin_id,
+            destination_plugin_id: None,
+            message_type: MessageType::Request,
+            payload: original_payload.clone(),
+            encrypted: false,
+            signature: None,
+            timestamp: chrono::Utc::now(),
+            expires_at: None,
+            metadata: HashMap::new(),
+        };
+
+        // 暗号化
+        let encrypted = manager.encrypt_message(&message).await.unwrap();
+        assert!(encrypted.encrypted, "メッセージは暗号化されているべき");
+        assert_ne!(
+            encrypted.payload, original_payload,
+            "暗号文は平文と異なるべき"
+        );
+        assert!(
+            encrypted.signature.is_some(),
+            "HMAC署名が付与されているべき"
+        );
+        assert!(
+            encrypted.metadata.contains_key("nonce"),
+            "nonceメタデータが存在するべき"
+        );
+        assert_eq!(
+            encrypted.metadata.get("algorithm").map(String::as_str),
+            Some("chacha20poly1305+hmac-sha256"),
+            "アルゴリズムメタデータが正しく設定されているべき"
+        );
+
+        // 復号
+        let decrypted = manager.decrypt_message(&encrypted).await.unwrap();
+        assert!(!decrypted.encrypted, "復号後は encrypted=false になるべき");
+        assert_eq!(
+            decrypted.payload, original_payload,
+            "復号したペイロードが元のデータと一致するべき"
+        );
+    }
+
+    /// 改ざん検出テスト:
+    /// 暗号文のバイトを反転させた場合、HMAC署名検証が失敗し
+    /// `decrypt_message` がエラーを返すことを確認する。
+    #[tokio::test]
+    async fn test_tampered_ciphertext_detection() {
+        let config = EncryptionConfig {
+            default_algorithm: EncryptionAlgorithm::ChaCha20Poly1305,
+            key_rotation: KeyRotationConfig {
+                rotation_interval_hours: 24,
+                auto_rotation_enabled: false,
+                overlap_hours: 0,
+            },
+            encryption_required: true,
+        };
+        let manager = EncryptionManager::new(&config).await.unwrap();
+        let plugin_id = Uuid::new_v4();
+
+        manager
+            .generate_channel_encryption(plugin_id)
+            .await
+            .unwrap();
+
+        let message = BrokerMessage {
+            message_id: Uuid::new_v4(),
+            source_plugin_id: plugin_id,
+            destination_plugin_id: None,
+            message_type: MessageType::Request,
+            payload: b"sensitive data".to_vec(),
+            encrypted: false,
+            signature: None,
+            timestamp: chrono::Utc::now(),
+            expires_at: None,
+            metadata: HashMap::new(),
+        };
+
+        let mut encrypted = manager.encrypt_message(&message).await.unwrap();
+
+        // 暗号文の先頭バイトを反転して改ざんを模倣
+        if let Some(byte) = encrypted.payload.first_mut() {
+            *byte ^= 0xFF;
+        }
+
+        // HMAC 署名検証が失敗し復号エラーになるはず
+        let result = manager.decrypt_message(&encrypted).await;
+        assert!(result.is_err(), "改ざんされた暗号文は復号に失敗するべき");
+        let err_str = format!("{:?}", result.unwrap_err());
+        assert!(
+            err_str.contains("signature verification failed")
+                || err_str.contains("SecurityFailure"),
+            "エラーは署名検証失敗を示すべき: {err_str}"
+        );
+    }
+
+    /// nonceユニーク性テスト (リプレイ攻撃対策):
+    /// 同じプラグインから送られた異なる2つのメッセージは、
+    /// それぞれ一意のnonceを持つことを確認する。
+    /// (ChaCha20-Poly1305 は同一鍵+同一nonceの再利用が禁止されているため)
+    #[tokio::test]
+    async fn test_nonce_uniqueness_prevents_replay() {
+        let config = EncryptionConfig {
+            default_algorithm: EncryptionAlgorithm::ChaCha20Poly1305,
+            key_rotation: KeyRotationConfig {
+                rotation_interval_hours: 24,
+                auto_rotation_enabled: false,
+                overlap_hours: 0,
+            },
+            encryption_required: true,
+        };
+        let manager = EncryptionManager::new(&config).await.unwrap();
+        let plugin_id = Uuid::new_v4();
+
+        manager
+            .generate_channel_encryption(plugin_id)
+            .await
+            .unwrap();
+
+        let make_message = |payload: &'static [u8]| BrokerMessage {
+            message_id: Uuid::new_v4(),
+            source_plugin_id: plugin_id,
+            destination_plugin_id: None,
+            message_type: MessageType::Request,
+            payload: payload.to_vec(),
+            encrypted: false,
+            signature: None,
+            timestamp: chrono::Utc::now(),
+            expires_at: None,
+            metadata: HashMap::new(),
+        };
+
+        let msg1 = make_message(b"message one");
+        let msg2 = make_message(b"message two");
+
+        let enc1 = manager.encrypt_message(&msg1).await.unwrap();
+        let enc2 = manager.encrypt_message(&msg2).await.unwrap();
+
+        let nonce1 = enc1.metadata.get("nonce").expect("nonce1 が存在するべき");
+        let nonce2 = enc2.metadata.get("nonce").expect("nonce2 が存在するべき");
+
+        assert_ne!(
+            nonce1, nonce2,
+            "異なるメッセージIDから生成されたnonceは一意であるべき（リプレイ攻撃対策）"
+        );
+
+        // 両メッセージを正常に復号できることも確認
+        let dec1 = manager.decrypt_message(&enc1).await.unwrap();
+        let dec2 = manager.decrypt_message(&enc2).await.unwrap();
+        assert_eq!(dec1.payload, b"message one");
+        assert_eq!(dec2.payload, b"message two");
+    }
+
+    // These messages are self-addressed (destination_plugin_id == source)
+    // so a single registered channel can act as both sender and receiver,
+    // exercising the anti-replay check via the real send_message ->
+    // receive_message delivery path.
+
+    fn make_broker_message(plugin_id: Uuid, message_id: Uuid) -> BrokerMessage {
+        BrokerMessage {
+            message_id,
+            source_plugin_id: plugin_id,
+            destination_plugin_id: Some(plugin_id),
+            message_type: MessageType::Request,
+            payload: b"hello".to_vec(),
+            encrypted: false,
+            signature: None,
+            timestamp: chrono::Utc::now(),
+            expires_at: None,
+            metadata: HashMap::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_send_then_receive_message_delivers_it() {
+        let broker = CommunicationBroker::new_with_config(BrokerConfig::default())
+            .await
+            .unwrap();
+        let plugin_id = Uuid::new_v4();
+        broker
+            .register_plugin(plugin_id, ChannelType::Http)
+            .await
+            .unwrap();
+
+        broker
+            .send_message(make_broker_message(plugin_id, Uuid::new_v4()))
+            .await
+            .unwrap();
+
+        let received = broker.receive_message(plugin_id).await.unwrap();
+        assert!(
+            received.is_some(),
+            "expected the sent message to be delivered"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_receive_message_rejects_replayed_message_id() {
+        let broker = CommunicationBroker::new_with_config(BrokerConfig::default())
+            .await
+            .unwrap();
+        let plugin_id = Uuid::new_v4();
+        broker
+            .register_plugin(plugin_id, ChannelType::Http)
+            .await
+            .unwrap();
+        let message_id = Uuid::new_v4();
+
+        broker
+            .send_message(make_broker_message(plugin_id, message_id))
+            .await
+            .unwrap();
+        let first = broker.receive_message(plugin_id).await.unwrap();
+        assert!(first.is_some(), "first delivery should succeed");
+
+        broker
+            .send_message(make_broker_message(plugin_id, message_id))
+            .await
+            .unwrap();
+        let replay = broker.receive_message(plugin_id).await;
+        assert!(
+            replay.is_err(),
+            "replaying the same message_id should be rejected"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_receive_message_rejects_expired_message() {
+        let broker = CommunicationBroker::new_with_config(BrokerConfig::default())
+            .await
+            .unwrap();
+        let plugin_id = Uuid::new_v4();
+        broker
+            .register_plugin(plugin_id, ChannelType::Http)
+            .await
+            .unwrap();
+
+        let mut message = make_broker_message(plugin_id, Uuid::new_v4());
+        message.expires_at = Some(chrono::Utc::now() - chrono::Duration::seconds(10));
+        broker.send_message(message).await.unwrap();
+
+        let result = broker.receive_message(plugin_id).await;
+        assert!(
+            result.is_err(),
+            "a message past its expires_at should be rejected"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_receive_message_anti_replay_disabled_allows_replay() {
+        let config = BrokerConfig {
+            anti_replay_enabled: false,
+            ..BrokerConfig::default()
+        };
+        let broker = CommunicationBroker::new_with_config(config).await.unwrap();
+        let plugin_id = Uuid::new_v4();
+        broker
+            .register_plugin(plugin_id, ChannelType::Http)
+            .await
+            .unwrap();
+        let message_id = Uuid::new_v4();
+
+        broker
+            .send_message(make_broker_message(plugin_id, message_id))
+            .await
+            .unwrap();
+        assert!(broker.receive_message(plugin_id).await.unwrap().is_some());
+
+        broker
+            .send_message(make_broker_message(plugin_id, message_id))
+            .await
+            .unwrap();
+        assert!(
+            broker.receive_message(plugin_id).await.unwrap().is_some(),
+            "with anti-replay disabled, a repeated message_id should still be delivered"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_send_message_to_unknown_destination_returns_error() {
+        let broker = CommunicationBroker::new_with_config(BrokerConfig::default())
+            .await
+            .unwrap();
+        let source = Uuid::new_v4();
+        broker
+            .register_plugin(source, ChannelType::Http)
+            .await
+            .unwrap();
+
+        let unknown_destination = Uuid::new_v4();
+        let message = BrokerMessage {
+            message_id: Uuid::new_v4(),
+            source_plugin_id: source,
+            destination_plugin_id: Some(unknown_destination),
+            message_type: MessageType::Request,
+            payload: b"hello".to_vec(),
+            encrypted: false,
+            signature: None,
+            timestamp: chrono::Utc::now(),
+            expires_at: None,
+            metadata: HashMap::new(),
+        };
+
+        let result = broker.send_message(message).await;
+        assert!(
+            result.is_err(),
+            "sending to an unregistered destination plugin should fail loudly, not silently drop"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_send_message_delivers_to_a_different_plugin() {
+        let broker = CommunicationBroker::new_with_config(BrokerConfig::default())
+            .await
+            .unwrap();
+        let source = Uuid::new_v4();
+        let destination = Uuid::new_v4();
+        broker
+            .register_plugin(source, ChannelType::Http)
+            .await
+            .unwrap();
+        broker
+            .register_plugin(destination, ChannelType::Http)
+            .await
+            .unwrap();
+
+        let message = BrokerMessage {
+            message_id: Uuid::new_v4(),
+            source_plugin_id: source,
+            destination_plugin_id: Some(destination),
+            message_type: MessageType::Request,
+            payload: b"hello".to_vec(),
+            encrypted: false,
+            signature: None,
+            timestamp: chrono::Utc::now(),
+            expires_at: None,
+            metadata: HashMap::new(),
+        };
+        broker.send_message(message).await.unwrap();
+
+        assert!(
+            broker.receive_message(destination).await.unwrap().is_some(),
+            "message should be delivered to the destination plugin's channel"
+        );
+        assert!(
+            broker.receive_message(source).await.unwrap().is_none(),
+            "message should not appear on the sender's own channel"
+        );
     }
 }

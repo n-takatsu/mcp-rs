@@ -27,6 +27,74 @@ MCP-RS implements a **comprehensive 6-layer security architecture** to ensure en
 - **HTTPS-Only Communication**: HTTP connections completely rejected
 - **Man-in-the-Middle Protection**: Certificate pinning support
 
+## 🌐 Network Policy & Local Execution Restriction
+
+`security::NetworkPolicy`（`src/security/network_policy.rs`）は、HTTP/WebSocket
+transportの両方に組み込まれ、サーバーがどのアドレスにバインドできるか、
+どこからの接続を受け付けるかを制御します。
+
+### 何が変わったか
+
+以前は `reject_external_connections`（デフォルト `true`）が接続の受け付け
+のみを制御し、バインドアドレス自体は警告ログを出すだけで実際には制限
+されていませんでした。つまりデフォルト設定のサーバーが `0.0.0.0` に
+サイレントにバインドされたまま、接続だけが後から拒否される状態が
+起こり得ました。現在は同じフラグがバインドも制御し、loopback
+（`127.0.0.1`/`::1`）以外へのバインドは**サーバー起動自体が失敗**します。
+
+### 設定方法
+
+`configs/templates/advanced.toml` の `[transport.http]` テーブルに以下の
+キーを追加してください（詳細な意味は `configs/security/network-policy.toml`
+を参照。ただしそのファイル自体は読み込まれない説明用リファレンスです）。
+
+```toml
+[transport.http]
+network_policy_reject_external_connections = true   # デフォルト: true
+network_policy_warn_on_external_bind = true          # デフォルト: true
+network_policy_ip_whitelist = []                     # IPまたはCIDR範囲
+```
+
+`ip_whitelist` はIPアドレス完全一致と `192.168.1.0/24` のようなCIDR
+表記の両方をサポートします。バインドアドレスの安全性判定には
+`ip_whitelist` を使用しません（リモート接続元の許可リストとは別概念のため）。
+
+### Docker/コンテナ利用時の注意
+
+このリポジトリの `docker-compose.yml` はHTTP/WebSocket用にポート
+3000/3001を公開していますが、Dockerの `-p host:container` によるポート
+公開は、コンテナ内のプロセスが `0.0.0.0` にバインドしていることが前提
+です。デフォルト設定（`reject_external_connections = true`）のままHTTP
+transportを使うと、コンテナ内では公開ポートが機能せず、**この修正に
+よりサーバーは起動時に明示的に失敗します**（サイレントに無効化される
+のではなく、エラーで停止する形になります）。
+
+外部公開を意図する場合は、`network_policy_reject_external_connections = false`
+を設定し、可能であれば `network_policy_ip_whitelist` でDockerブリッジ
+ネットワークのサブネット（例: `172.16.0.0/12`）などに範囲を絞ってくださ
+い。ローカル開発を超える用途では、リバースプロキシやファイアウォール
+による追加の境界も併用することを推奨します。
+
+### Kubernetes利用時の注意
+
+KubernetesのPodは、Service/Ingressによるルーティングのために通常
+`0.0.0.0` にバインドする設計が前提です。Docker同様
+`network_policy_reject_external_connections = false` の設定が必要になり
+ます。ただし、mcp-rs自体はKubernetesネイティブの `NetworkPolicy`
+リソース（`networking.k8s.io/v1`）を自動生成・reconcileする機能を
+まだ持っていません（`src/k8s/crd.rs`/`src/operator/crd.rs` にはスキーマ
+のみ存在し、reconcilerからは未使用）。クラスターレベルの通信制限は、
+現時点では運用者自身が定義する `NetworkPolicy` リソースで行う必要が
+あります。
+
+### 既知の制約: WebSocketは設定ファイル未対応
+
+WebSocket transportもHTTPと同じ `NetworkPolicy`（バインド・接続の両方）
+を強制しますが、`McpConfig`/TOMLファイル経由での設定はまだできません
+（`TransportConfig` に `websocket` フィールド自体が存在しないため）。
+WebSocketサーバーは常に `NetworkPolicy::default()` を使用します。
+プログラムから直接構成する場合を除き、現状は変更できません。
+
 ## Layer 4: Input Validation & Sanitization
 
 - **SQL Injection Protection**: 11 attack pattern detection (Union/Boolean/Time-based)
