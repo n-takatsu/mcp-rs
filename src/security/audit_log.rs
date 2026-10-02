@@ -454,11 +454,16 @@ impl AuditLogger {
         Ok(())
     }
 
-    /// このユーザーの過去の監査ログエントリを削除せず匿名化する。
+    /// このユーザーの過去の監査ログエントリを削除せず redact する。
     /// GDPR Art.17(3)(b)/(e)（法的義務・権利の防御）により、セキュリティ
     /// 監査証跡は構造を保持したまま残す必要があるため、エントリ自体は
-    /// 削除せず、PIIを含みうるフィールド（メッセージ本文・IP・UA・
-    /// メタデータ）のみを匿名化する。
+    /// 削除せず、PIIやオンライン識別子を含みうるフィールド（メッセージ
+    /// 本文・IP・UA・セッションID・メタデータ）のみを消去する。
+    ///
+    /// `user_id`自体は意図的に残す（どのアカウントに対する処理だったかを
+    /// 後から監査・調査できるようにするため）。そのためこれは完全な
+    /// 匿名化（anonymization）ではなく、残す識別子を`user_id`に限定した
+    /// redactionである点に注意。
     pub async fn redact_user(&self, user_id: &str) -> usize {
         let mut entries = self.entries.write().await;
         let mut count = 0;
@@ -467,6 +472,7 @@ impl AuditLogger {
                 entry.message = "[REDACTED: GDPR/CCPA erasure request]".to_string();
                 entry.ip_address = None;
                 entry.user_agent = None;
+                entry.session_id = None;
                 entry.metadata.clear();
                 entry
                     .metadata
@@ -588,6 +594,7 @@ mod tests {
             "User logged in".to_string(),
         )
         .with_user("user-1".to_string())
+        .with_session("session-abc".to_string())
         .with_request_info("192.168.1.1".to_string(), "Mozilla/5.0".to_string())
         .add_metadata("key".to_string(), "value".to_string());
 
@@ -618,6 +625,7 @@ mod tests {
                 assert!(entry.message.contains("REDACTED"));
                 assert!(entry.ip_address.is_none());
                 assert!(entry.user_agent.is_none());
+                assert!(entry.session_id.is_none());
                 assert_eq!(
                     entry.metadata.get("gdpr_redacted").map(String::as_str),
                     Some("true")

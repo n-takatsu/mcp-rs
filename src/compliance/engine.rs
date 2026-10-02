@@ -34,7 +34,11 @@ pub struct ComplianceEngine {
 }
 
 impl ComplianceEngine {
-    /// 新しいコンプライアンスエンジンを作成（デフォルトのin-memoryストアを使用）
+    /// 新しいコンプライアンスエンジンを作成（デフォルトのin-memoryストアを使用）。
+    ///
+    /// 内部で`SessionAuth::new()`を呼ぶため、呼び出し時にアクティブな
+    /// Tokioランタイムが必要（`SessionAuth::new()`がクリーンアップタスクを
+    /// `tokio::spawn`するため。ランタイム外から呼ぶとパニックする）。
     pub fn new() -> Self {
         Self::with_stores(
             Arc::new(RwLock::new(ApiKeyManager::new(ApiKeyConfig::default()))),
@@ -133,8 +137,9 @@ impl ComplianceEngine {
 
     /// 削除リクエストを処理。mcp-rs自身が保持するこのアカウントの
     /// セッション・APIキー・アカウント記録を実際に削除し、監査ログの
-    /// 該当エントリを匿名化する。mcp-rsが代理アクセスする外部バックエンド
-    /// のデータは対象外（そのデータを所有する側の責務）。
+    /// 該当エントリをredactする（`user_id`は監査・調査目的で意図的に
+    /// 残すため、完全な匿名化ではない点に注意）。mcp-rsが代理アクセスする
+    /// 外部バックエンドのデータは対象外（そのデータを所有する側の責務）。
     async fn process_erasure_request(
         &self,
         request_id: &str,
@@ -368,7 +373,7 @@ impl ComplianceEngine {
              Account record found and deleted: {}\n\
              Sessions destroyed: {}\n\
              API keys revoked: {}\n\
-             Audit log entries anonymized: {}\n\
+             Audit log entries redacted (account id retained for audit purposes): {}\n\
              Compliance: GDPR, CCPA\n",
             subject_id,
             chrono::Utc::now().to_rfc3339(),
@@ -557,6 +562,7 @@ impl ComplianceEngine {
 }
 
 impl Default for ComplianceEngine {
+    /// `ComplianceEngine::new()`と同じく、アクティブなTokioランタイムが必要。
     fn default() -> Self {
         Self::new()
     }
