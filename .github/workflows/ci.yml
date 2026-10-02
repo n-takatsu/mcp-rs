@@ -64,8 +64,11 @@ jobs:
 
     - name: Run clippy
       if: matrix.rust == 'stable'
-      # Limit clippy to the library target to avoid compiling examples on the runner
-      run: cargo clippy --lib --all-features -- -D warnings -A dead_code
+      # Limit clippy to the library target to avoid compiling examples on the runner.
+      # double_must_use is allowed because async_trait's macro expansion attaches an
+      # unannotated #[must_use] to methods that already return a #[must_use] Result,
+      # which newer clippy versions flag as a false positive.
+      run: cargo clippy --lib --all-features -- -D warnings -A dead_code -A clippy::double_must_use
 
     # PR用の詳細なClippyレポート
     - name: Generate clippy report for PR
@@ -73,7 +76,7 @@ jobs:
       shell: bash
       run: |
         # Run clippy only for the library to avoid building examples in PR analysis
-        cargo clippy --lib --all-features --message-format=json -- -D warnings -A dead_code > clippy-report.json || true
+        cargo clippy --lib --all-features --message-format=json -- -D warnings -A dead_code -A clippy::double_must_use > clippy-report.json || true
         echo "### 📋 Clippy Analysis Results" >> $GITHUB_STEP_SUMMARY
         if [ -s clippy-report.json ]; then
           echo "✅ All Clippy checks passed!" >> $GITHUB_STEP_SUMMARY
