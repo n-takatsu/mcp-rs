@@ -68,7 +68,9 @@ jobs:
     needs: pre-deployment-checks
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      # write is required so the SBOM step below can attach sbom.spdx.json
+      # to the matching GitHub Release (upload-release-assets: true)
+      contents: write
       packages: write
     outputs:
       image-tag: ${{ steps.meta.outputs.tags }}
