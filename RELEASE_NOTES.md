@@ -4,6 +4,18 @@
 
 Our project follows a detailed 0.01 increment versioning strategy to provide granular tracking of development progress and feature implementation.
 
+## 🛠️ v0.17.1 - デプロイCI修正
+
+**Release Date:** 2026-10-03
+**Focus:** v0.17.0タグpush時にDockerイメージの公開が失敗していた問題の修正
+
+### ✅ 修正内容
+
+- `deploy.yml`の`docker/metadata-action`が、タグpush時に`{{branch}}`が
+  空文字列になることで不正なDockerタグ（`ghcr.io/n-takatsu/mcp-rs:-<sha>`）
+  を生成し、Dockerイメージのビルド・公開が失敗していた問題を修正
+- 該当するSHAタグパターンをブランチrefの場合のみ有効化
+
 ## 🔐 v0.17.0 - エンタープライズセキュリティ強化完成 (Epic #219)
 
 **Release Date:** 2026-10-03

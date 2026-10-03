@@ -4,7 +4,7 @@
 
 > **[English](README.md)** | **[日本語](README.ja.md)**
 
-[![Version](https://img.shields.io/badge/Version-v0.17.0-blue)](https://github.com/n-takatsu/mcp-rs/releases/tag/v0.17.0)
+[![Version](https://img.shields.io/badge/Version-v0.17.1-blue)](https://github.com/n-takatsu/mcp-rs/releases/tag/v0.17.1)
 ![Architecture](https://img.shields.io/badge/Architecture-Production--Ready-green)
 ![Implementation](https://img.shields.io/badge/WordPress_Tools-27_Available-green)
 ![License](https://img.shields.io/badge/License-MIT%2FApache--2.0-green)

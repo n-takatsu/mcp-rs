@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.1] - 2026-10-03
+
+### Fixed
+
+- `deploy.yml`の`docker/metadata-action`が、タグpush（`v0.17.0`）時に
+  `{{branch}}`が空文字列になることで不正なDockerタグ
+  （`ghcr.io/n-takatsu/mcp-rs:-<sha>`）を生成し、Dockerイメージの
+  ビルド・公開が失敗していた問題を修正。該当するタグパターンを
+  ブランチrefの場合のみ有効化するよう変更。
+
 ## [0.17.0] - 2026-10-03
 
 ### 🔐 Security Enhancement Phase 3 (Epic #219) — 完了
