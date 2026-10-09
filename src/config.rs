@@ -102,6 +102,8 @@ pub struct TransportConfig {
     /// transport type - set `transport_type = "http"` and
     /// `transport.http.enable_websocket_upgrade = true` to expose `/ws` on
     /// the HTTP(S) listener instead.
+    /// TOMLでは `type = "stdio"` 表記も受け付ける（configs/production/*.toml 等で使用）。
+    #[serde(alias = "type")]
     pub transport_type: Option<String>,
     /// Stdio transport configuration
     pub stdio: Option<StdioTransportConfig>,
@@ -905,6 +907,19 @@ mod tests {
             std::env::remove_var("OUTER");
             std::env::remove_var("INNER");
         }
+    }
+
+    #[test]
+    fn test_transport_type_accepts_type_alias() {
+        // configs/production/claude-desktop.toml (and main.toml/web-ui.toml/
+        // development/http-transport.toml) write `type = "stdio"` instead of
+        // `transport_type = "stdio"`; the alias must resolve both forms.
+        let via_alias: TransportConfig = toml::from_str(r#"type = "stdio""#).unwrap();
+        assert_eq!(via_alias.transport_type.as_deref(), Some("stdio"));
+
+        let via_field_name: TransportConfig =
+            toml::from_str(r#"transport_type = "stdio""#).unwrap();
+        assert_eq!(via_field_name.transport_type.as_deref(), Some("stdio"));
     }
 
     #[test]
