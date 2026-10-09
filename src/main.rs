@@ -40,6 +40,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("📂 ログファイル場所: {}", log_config.log_dir.display());
     info!("✅ 設定読み込み完了");
 
+    // STDIOモード（Claude Desktop等のMCPクライアント）:
+    // Runtime は受信ループ(run)が未接続のため、行区切りJSONを処理する McpServer::run_stdio を使う
+    if config.transport.transport_type.as_deref() == Some("stdio") {
+        return run_stdio_server(&config).await;
+    }
+
     // Runtime初期化
     let runtime_config = RuntimeConfig {
         mcp_config: config.clone(),
@@ -121,6 +127,23 @@ async fn load_config_from_file(path: &str) -> Result<McpConfig, Box<dyn std::err
 
     info!("✅ カスタム設定読み込み: {}", path);
     Ok(config)
+}
+
+/// STDIOモードでMCPサーバーを実行（initialize / tools/list / tools/call 等に応答）
+async fn run_stdio_server(config: &McpConfig) -> Result<(), Box<dyn std::error::Error>> {
+    let mut server = mcp_rs::mcp::McpServer::new();
+
+    if let Some(wp_config) = &config.handlers.wordpress {
+        if wp_config.enabled.unwrap_or(false) {
+            let wp_handler = WordPressHandler::try_new(wp_config.clone())
+                .map_err(|e| format!("WordPress handler creation failed: {}", e))?;
+            server.add_handler("wordpress".to_string(), Arc::new(wp_handler));
+            info!("✅ WordPressハンドラー登録完了: {}", wp_config.url);
+        }
+    }
+
+    info!("🔌 STDIOモードで待機中");
+    server.run_stdio().await
 }
 
 /// ハンドラー登録

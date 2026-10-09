@@ -4,6 +4,26 @@
 
 Our project follows a detailed 0.01 increment versioning strategy to provide granular tracking of development progress and feature implementation.
 
+## 🛠️ v0.17.2 - Claude Desktop起動不具合修正
+
+**Release Date:** 2026-10-09
+**Focus:** Claude Desktop（STDIO transport）から起動してもMCPサーバーが
+リクエストを処理しなかった問題の修正
+
+### ✅ 修正内容
+
+- `Runtime::initialize()`がtransportを起動するだけで、実際にそれを
+  読み続ける`Runtime::run()`を一度も呼んでいなかったため、通常起動
+  パスではどのtransportでもリクエストが一切処理されていなかった。
+  STDIO設定時は独立して動作する`McpServer::run_stdio()`
+  （改行区切りJSON-RPCの読み取り・ディスパッチループ）へ
+  ルーティングするよう変更
+- `configs/production/claude-desktop.toml`等が`type = "stdio"`と
+  書いているが`TransportConfig.transport_type`フィールドと一致せず
+  黙って`None`にデシリアライズされ、上記の新しい分岐が発火しなかった
+  問題を`#[serde(alias = "type")]`追加で修正
+- 回帰テスト`test_transport_type_accepts_type_alias`を追加
+
 ## 🛠️ v0.17.1 - デプロイCI修正
 
 **Release Date:** 2026-10-03
