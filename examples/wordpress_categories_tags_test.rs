@@ -46,6 +46,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "MCP Test Category",
             Some("Category created by MCP-RS"),
             None,
+            None,
         )
         .await
     {
@@ -63,6 +64,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         category_id,
                         Some("MCP Updated Category"),
                         Some("Updated description"),
+                        None,
+                        None,
                     )
                     .await
                 {
@@ -99,7 +102,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create a test tag
     println!("\n🏷️ Creating test tag...");
     match handler
-        .create_tag("mcp-test", Some("Tag created by MCP-RS"))
+        .create_tag("mcp-test", Some("Tag created by MCP-RS"), None)
         .await
     {
         Ok(tag) => {
@@ -109,7 +112,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if let Some(tag_id) = tag.id {
                 println!("✏️ Updating tag...");
                 match handler
-                    .update_tag(tag_id, Some("mcp-updated"), Some("Updated tag description"))
+                    .update_tag(
+                        tag_id,
+                        Some("mcp-updated"),
+                        Some("Updated tag description"),
+                        None,
+                    )
                     .await
                 {
                     Ok(updated_tag) => {

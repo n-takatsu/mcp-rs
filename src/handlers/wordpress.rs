@@ -69,6 +69,17 @@ fn display_opt_id(id: Option<u64>) -> String {
         .unwrap_or_else(|| "N/A".to_string())
 }
 
+/// アップロードされたメディアのタイトル用に、ファイル名から拡張子を
+/// 除いた部分（stem）を返す。拡張子の区切り`.`はASCII文字のため、
+/// 多バイト文字を含むファイル名でも文字境界をまたがずに安全に分割できる。
+/// `.`を含まない場合はファイル名全体をそのまま返す。
+fn filename_stem(filename: &str) -> &str {
+    filename
+        .rsplit_once('.')
+        .map(|(stem, _)| stem)
+        .unwrap_or(filename)
+}
+
 /// WordPress REST APIのエラーレスポンス本文から`code`/`message`
 /// （例: `rest_post_invalid_id` / "Invalid post ID."）を拾い、診断に
 /// 使える文字列にまとめる。期待した形式でない場合はステータスと
@@ -134,6 +145,24 @@ fn summarize_posts(posts: &[WordPressPost]) -> Vec<serde_json::Value> {
                 "link": post.link,
                 "slug": post.slug.as_deref().map(decode_slug_for_display),
                 "excerpt": excerpt,
+            })
+        })
+        .collect()
+}
+
+/// メディア一覧を、各項目の要点（id・title・mime_type・source_url・
+/// alt_text・date）のみを含む簡潔なJSON配列にまとめる。
+fn summarize_media(media_items: &[WordPressMedia]) -> Vec<serde_json::Value> {
+    media_items
+        .iter()
+        .map(|media| {
+            serde_json::json!({
+                "id": media.id,
+                "title": media.title.as_ref().map(|t| t.rendered.as_str()),
+                "mime_type": media.mime_type,
+                "source_url": media.source_url,
+                "alt_text": media.alt_text,
+                "date": media.date,
             })
         })
         .collect()
@@ -522,13 +551,88 @@ impl WordPressHandler {
         unreachable!()
     }
 
+    /// `execute_request_with_retry`と同じリトライ処理だが、リクエストを
+    /// `try_clone()`で複製するのではなく、`build_request`を呼ぶたびに
+    /// 作り直す。`multipart::Form`を使うリクエストは`try_clone()`が
+    /// 常に`None`を返すため（内部でストリームを保持しており複製不可）、
+    /// こちらを使う必要がある。
+    async fn execute_request_with_retry_rebuilding<T>(
+        &self,
+        build_request: impl Fn() -> reqwest::RequestBuilder,
+    ) -> Result<T, McpError>
+    where
+        T: for<'de> serde::Deserialize<'de>,
+    {
+        const MAX_RETRIES: u32 = 3;
+        const RETRY_DELAY: Duration = Duration::from_millis(1000);
+
+        for attempt in 1..=MAX_RETRIES {
+            let request = build_request();
+
+            match request.send().await {
+                Ok(response) => {
+                    let status = response.status();
+
+                    if status.is_success() {
+                        let text = response.text().await.map_err(McpError::Http)?;
+
+                        match serde_json::from_str::<T>(&text) {
+                            Ok(data) => return Ok(data),
+                            Err(e) => {
+                                warn!("JSON parse error on attempt {}: {}", attempt, e);
+                                if attempt == MAX_RETRIES {
+                                    return Err(McpError::ExternalApi(format!(
+                                        "JSON parse error: {}",
+                                        e
+                                    )));
+                                }
+                            }
+                        }
+                    } else if status.as_u16() >= 500 || status.as_u16() == 429 {
+                        warn!("HTTP error {} on attempt {}, retrying...", status, attempt);
+                        if attempt == MAX_RETRIES {
+                            let body = response.text().await.unwrap_or_default();
+                            return Err(McpError::ExternalApi(format!(
+                                "{} (after {} attempts)",
+                                format_wp_error(status, &body),
+                                MAX_RETRIES
+                            )));
+                        }
+                    } else {
+                        let body = response.text().await.unwrap_or_default();
+                        return Err(McpError::ExternalApi(format_wp_error(status, &body)));
+                    }
+                }
+                Err(e) => {
+                    if e.is_timeout() {
+                        warn!("Request timeout on attempt {}: {}", attempt, e);
+                    } else if e.is_connect() {
+                        warn!("Connection error on attempt {}: {}", attempt, e);
+                    } else {
+                        warn!("Request error on attempt {}: {}", attempt, e);
+                    }
+
+                    if attempt == MAX_RETRIES {
+                        return Err(McpError::Http(e));
+                    }
+                }
+            }
+
+            if attempt < MAX_RETRIES {
+                tokio::time::sleep(RETRY_DELAY * attempt).await;
+            }
+        }
+
+        unreachable!()
+    }
+
     /// `execute_request_with_retry`と同じリトライ処理に加え、
     /// WordPress REST APIのページネーションヘッダー（`X-WP-TotalPages`）
     /// を読み取って返す。一覧系エンドポイントの全件取得に使う。
     async fn execute_request_with_retry_capturing_total_pages<T>(
         &self,
         request_builder: reqwest::RequestBuilder,
-    ) -> Result<(T, u32), McpError>
+    ) -> Result<(T, u32, u64), McpError>
     where
         T: for<'de> serde::Deserialize<'de>,
     {
@@ -551,11 +655,17 @@ impl WordPressHandler {
                             .and_then(|v| v.to_str().ok())
                             .and_then(|s| s.parse::<u32>().ok())
                             .unwrap_or(1);
+                        let total_items = response
+                            .headers()
+                            .get("x-wp-total")
+                            .and_then(|v| v.to_str().ok())
+                            .and_then(|s| s.parse::<u64>().ok())
+                            .unwrap_or(0);
 
                         let text = response.text().await.map_err(McpError::Http)?;
 
                         match serde_json::from_str::<T>(&text) {
-                            Ok(data) => return Ok((data, total_pages)),
+                            Ok(data) => return Ok((data, total_pages, total_items)),
                             Err(e) => {
                                 warn!("JSON parse error on attempt {}: {}", attempt, e);
                                 if attempt == MAX_RETRIES {
@@ -600,17 +710,22 @@ impl WordPressHandler {
     /// 一覧系エンドポイントを`per_page=100`かつ`X-WP-TotalPages`に基づく
     /// 全ページ取得で呼び出す。`url_for_page`は`page`番号を受け取り、
     /// `per_page=100&page=N`を含む完全なURLを返すクロージャ。
+    ///
+    /// 戻り値の`u64`はWordPressが`X-WP-Total`ヘッダーで報告する総件数。
+    /// `items.len()`と一致するはずで、食い違う場合はページネーション
+    /// 自体に問題がある可能性を示す（呼び出し側で打ち切りの有無を
+    /// 判別する材料として使える）。
     async fn fetch_all_pages<T>(
         &self,
         url_for_page: impl Fn(u32) -> String,
-    ) -> Result<Vec<T>, McpError>
+    ) -> Result<(Vec<T>, u64), McpError>
     where
         T: for<'de> serde::Deserialize<'de>,
     {
         let mut all_items: Vec<T> = Vec::new();
         let mut page: u32 = 1;
 
-        loop {
+        let total_items: u64 = loop {
             let url = url_for_page(page);
             let mut request = self.client.get(&url);
 
@@ -618,19 +733,27 @@ impl WordPressHandler {
                 request = request.basic_auth(username, Some(password));
             }
 
-            let (items, total_pages): (Vec<T>, u32) = self
+            let (items, total_pages, reported_total): (Vec<T>, u32, u64) = self
                 .execute_request_with_retry_capturing_total_pages(request)
                 .await?;
 
             all_items.extend(items);
 
             if page >= total_pages.max(1) {
-                break;
+                break reported_total;
             }
             page += 1;
+        };
+
+        if total_items != all_items.len() as u64 {
+            warn!(
+                "fetch_all_pages: X-WP-Total ({}) does not match fetched item count ({}); pagination may be incomplete",
+                total_items,
+                all_items.len()
+            );
         }
 
-        Ok(all_items)
+        Ok((all_items, total_items))
     }
 
     async fn get_posts(&self) -> Result<Vec<WordPressPost>, McpError> {
@@ -638,13 +761,15 @@ impl WordPressHandler {
             "Fetching WordPress posts from: {}/wp-json/wp/v2/posts",
             self.base_url
         );
-        self.fetch_all_pages(|page| {
-            format!(
-                "{}/wp-json/wp/v2/posts?per_page=100&page={}",
-                self.base_url, page
-            )
-        })
-        .await
+        let (items, _total) = self
+            .fetch_all_pages(|page| {
+                format!(
+                    "{}/wp-json/wp/v2/posts?per_page=100&page={}",
+                    self.base_url, page
+                )
+            })
+            .await?;
+        Ok(items)
     }
 
     /// Get all WordPress pages
@@ -653,13 +778,15 @@ impl WordPressHandler {
             "Fetching WordPress pages from: {}/wp-json/wp/v2/pages",
             self.base_url
         );
-        self.fetch_all_pages(|page| {
-            format!(
-                "{}/wp-json/wp/v2/pages?per_page=100&page={}",
-                self.base_url, page
-            )
-        })
-        .await
+        let (items, _total) = self
+            .fetch_all_pages(|page| {
+                format!(
+                    "{}/wp-json/wp/v2/pages?per_page=100&page={}",
+                    self.base_url, page
+                )
+            })
+            .await?;
+        Ok(items)
     }
 
     /// Get both posts and pages
@@ -784,32 +911,31 @@ impl WordPressHandler {
     }
 
     async fn get_comments(&self, post_id: Option<u64>) -> Result<Vec<WordPressComment>, McpError> {
-        let mut url = format!("{}/wp-json/wp/v2/comments", self.base_url);
-
-        if let Some(post_id) = post_id {
-            url = format!("{}?post={}", url, post_id);
-        }
-
-        let mut request = self.client.get(&url);
-
-        if let (Some(username), Some(password)) = (&self.username, &self.password) {
-            request = request.basic_auth(username, Some(password));
-        }
-
-        let response = request.send().await?;
-
-        if !response.status().is_success() {
-            return Err(McpError::ExternalApi(format!(
-                "WordPress API error: {}",
-                response.status()
-            )));
-        }
-
-        let comments: Vec<WordPressComment> = response.json().await?;
-        Ok(comments)
+        let (items, _total) = self
+            .fetch_all_pages(|page| {
+                let mut url = format!(
+                    "{}/wp-json/wp/v2/comments?per_page=100&page={}",
+                    self.base_url, page
+                );
+                if let Some(post_id) = post_id {
+                    url = format!("{}&post={}", url, post_id);
+                }
+                url
+            })
+            .await?;
+        Ok(items)
     }
 
     /// Upload media file to WordPress
+    ///
+    /// `multipart/form-data`（フィールド名`file`）で送信する。WordPressは
+    /// この経路（`$_FILES`）ではUTF-8のファイル名をそのまま受け付けるため、
+    /// 日本語等のファイル名もサニタイズせず渡してよい（以前の生バイナリ+
+    /// `Content-Disposition`方式では、WordPress互換にするため非ASCII文字を
+    /// `_`に置き換えていたが、その結果タイトルが空になり`unnamed-file`に
+    /// なってしまっていた）。あわせて`title`フィールドにファイル名から
+    /// 拡張子を除いた部分を渡し、メディアのタイトルが`unnamed-file`に
+    /// ならないようにする。
     pub async fn upload_media(
         &self,
         file_data: &[u8],
@@ -817,37 +943,53 @@ impl WordPressHandler {
         mime_type: &str,
     ) -> Result<WordPressMedia, McpError> {
         let url = format!("{}/wp-json/wp/v2/media", self.base_url);
+        let title = filename_stem(filename).to_string();
 
-        let form = reqwest::multipart::Form::new().part(
-            "file",
-            reqwest::multipart::Part::bytes(file_data.to_vec())
-                .file_name(filename.to_string())
-                .mime_str(mime_type)
-                .map_err(|e| McpError::Other(format!("Failed to set MIME type: {}", e)))?,
-        );
-
-        let mut request = self.client.post(&url).multipart(form);
-
-        if let (Some(username), Some(password)) = (&self.username, &self.password) {
-            request = request.basic_auth(username, Some(password));
+        // mime_typeの妥当性はリクエストの内容に関わらず一定なので、
+        // リトライのたびに検証するのではなくここで一度だけ検証する。
+        if let Err(e) = reqwest::multipart::Part::bytes(Vec::new()).mime_str(mime_type) {
+            return Err(McpError::Other(format!(
+                "Invalid mime_type '{}': {}",
+                mime_type, e
+            )));
         }
 
         info!("Uploading media file: {} ({})", filename, mime_type);
-        self.execute_request_with_retry(request).await
+
+        self.execute_request_with_retry_rebuilding(|| {
+            let part = reqwest::multipart::Part::bytes(file_data.to_vec())
+                .file_name(filename.to_string())
+                .mime_str(mime_type)
+                .expect("mime_type already validated above");
+            let form = reqwest::multipart::Form::new()
+                .part("file", part)
+                .text("title", title.clone());
+
+            let mut request = self.client.post(&url).multipart(form);
+            if let (Some(username), Some(password)) = (&self.username, &self.password) {
+                request = request.basic_auth(username, Some(password));
+            }
+            request
+        })
+        .await
     }
 
     /// Get all media files
-    pub async fn get_media(&self) -> Result<Vec<WordPressMedia>, McpError> {
-        let url = format!("{}/wp-json/wp/v2/media", self.base_url);
-
-        let mut request = self.client.get(&url);
-
-        if let (Some(username), Some(password)) = (&self.username, &self.password) {
-            request = request.basic_auth(username, Some(password));
-        }
-
-        info!("Fetching WordPress media from: {}", url);
-        self.execute_request_with_retry(request).await
+    /// 戻り値の`u64`はWordPressが`X-WP-Total`で報告する総件数
+    /// （`items.len()`と一致するはず — 一致すれば全件取得できている
+    /// ことの確認材料になる）。
+    pub async fn get_media(&self) -> Result<(Vec<WordPressMedia>, u64), McpError> {
+        info!(
+            "Fetching WordPress media from: {}/wp-json/wp/v2/media",
+            self.base_url
+        );
+        self.fetch_all_pages(|page| {
+            format!(
+                "{}/wp-json/wp/v2/media?per_page=100&page={}",
+                self.base_url, page
+            )
+        })
+        .await
     }
 
     /// Get a single media file by ID
@@ -1370,13 +1512,15 @@ impl WordPressHandler {
     /// Get all categories
     pub async fn get_categories(&self) -> Result<Vec<WordPressCategory>, McpError> {
         info!("Fetching WordPress categories");
-        self.fetch_all_pages(|page| {
-            format!(
-                "{}/wp-json/wp/v2/categories?per_page=100&page={}",
-                self.base_url, page
-            )
-        })
-        .await
+        let (items, _total) = self
+            .fetch_all_pages(|page| {
+                format!(
+                    "{}/wp-json/wp/v2/categories?per_page=100&page={}",
+                    self.base_url, page
+                )
+            })
+            .await?;
+        Ok(items)
     }
 
     /// Create a new category
@@ -1385,6 +1529,7 @@ impl WordPressHandler {
         name: &str,
         description: Option<&str>,
         parent: Option<u64>,
+        slug: Option<&str>,
     ) -> Result<WordPressCategory, McpError> {
         let url = format!("{}/wp-json/wp/v2/categories", self.base_url);
 
@@ -1397,6 +1542,10 @@ impl WordPressHandler {
         if let Some(parent_id) = parent {
             category_data["parent"] =
                 serde_json::Value::Number(serde_json::Number::from(parent_id));
+        }
+
+        if let Some(slug) = slug {
+            category_data["slug"] = serde_json::Value::String(slug.to_string());
         }
 
         let mut request = self.client.post(&url).json(&category_data);
@@ -1415,6 +1564,8 @@ impl WordPressHandler {
         category_id: u64,
         name: Option<&str>,
         description: Option<&str>,
+        parent: Option<u64>,
+        slug: Option<&str>,
     ) -> Result<WordPressCategory, McpError> {
         let url = format!("{}/wp-json/wp/v2/categories/{}", self.base_url, category_id);
 
@@ -1431,6 +1582,20 @@ impl WordPressHandler {
             update_data.insert(
                 "description".to_string(),
                 serde_json::Value::String(desc.to_string()),
+            );
+        }
+
+        if let Some(parent_id) = parent {
+            update_data.insert(
+                "parent".to_string(),
+                serde_json::Value::Number(serde_json::Number::from(parent_id)),
+            );
+        }
+
+        if let Some(slug) = slug {
+            update_data.insert(
+                "slug".to_string(),
+                serde_json::Value::String(slug.to_string()),
             );
         }
 
@@ -1469,13 +1634,15 @@ impl WordPressHandler {
     /// Get all tags
     pub async fn get_tags(&self) -> Result<Vec<WordPressTag>, McpError> {
         info!("Fetching WordPress tags");
-        self.fetch_all_pages(|page| {
-            format!(
-                "{}/wp-json/wp/v2/tags?per_page=100&page={}",
-                self.base_url, page
-            )
-        })
-        .await
+        let (items, _total) = self
+            .fetch_all_pages(|page| {
+                format!(
+                    "{}/wp-json/wp/v2/tags?per_page=100&page={}",
+                    self.base_url, page
+                )
+            })
+            .await?;
+        Ok(items)
     }
 
     /// Create a new tag
@@ -1483,6 +1650,7 @@ impl WordPressHandler {
         &self,
         name: &str,
         description: Option<&str>,
+        slug: Option<&str>,
     ) -> Result<WordPressTag, McpError> {
         let url = format!("{}/wp-json/wp/v2/tags", self.base_url);
 
@@ -1490,6 +1658,10 @@ impl WordPressHandler {
 
         if let Some(desc) = description {
             tag_data["description"] = serde_json::Value::String(desc.to_string());
+        }
+
+        if let Some(slug) = slug {
+            tag_data["slug"] = serde_json::Value::String(slug.to_string());
         }
 
         let mut request = self.client.post(&url).json(&tag_data);
@@ -1508,6 +1680,7 @@ impl WordPressHandler {
         tag_id: u64,
         name: Option<&str>,
         description: Option<&str>,
+        slug: Option<&str>,
     ) -> Result<WordPressTag, McpError> {
         let url = format!("{}/wp-json/wp/v2/tags/{}", self.base_url, tag_id);
 
@@ -1524,6 +1697,13 @@ impl WordPressHandler {
             update_data.insert(
                 "description".to_string(),
                 serde_json::Value::String(desc.to_string()),
+            );
+        }
+
+        if let Some(slug) = slug {
+            update_data.insert(
+                "slug".to_string(),
+                serde_json::Value::String(slug.to_string()),
             );
         }
 
@@ -2196,6 +2376,10 @@ impl McpHandler for WordPressHandler {
                         "parent": {
                             "type": "number",
                             "description": "Parent category ID (optional)"
+                        },
+                        "slug": {
+                            "type": "string",
+                            "description": "Custom slug (optional, e.g. an ASCII slug for non-ASCII names)"
                         }
                     },
                     "required": ["name"]
@@ -2218,6 +2402,14 @@ impl McpHandler for WordPressHandler {
                         "description": {
                             "type": "string",
                             "description": "New category description (optional)"
+                        },
+                        "parent": {
+                            "type": "number",
+                            "description": "New parent category ID (optional; use 0 to clear)"
+                        },
+                        "slug": {
+                            "type": "string",
+                            "description": "New slug (optional; WordPress does not auto-update the slug when the name changes)"
                         }
                     },
                     "required": ["category_id"]
@@ -2263,6 +2455,10 @@ impl McpHandler for WordPressHandler {
                         "description": {
                             "type": "string",
                             "description": "Tag description (optional)"
+                        },
+                        "slug": {
+                            "type": "string",
+                            "description": "Custom slug (optional, e.g. an ASCII slug for non-ASCII names)"
                         }
                     },
                     "required": ["name"]
@@ -2285,6 +2481,10 @@ impl McpHandler for WordPressHandler {
                         "description": {
                             "type": "string",
                             "description": "New tag description (optional)"
+                        },
+                        "slug": {
+                            "type": "string",
+                            "description": "New slug (optional; WordPress does not auto-update the slug when the name changes)"
                         }
                     },
                     "required": ["tag_id"]
@@ -2893,7 +3093,11 @@ impl McpHandler for WordPressHandler {
                 Ok(serde_json::json!({
                     "content": [{
                         "type": "text",
-                        "text": format!("Found {} comments", comments.len())
+                        "text": format!("Found {} comments:\n{}",
+                            comments.len(),
+                            serde_json::to_string_pretty(&comments)
+                                .unwrap_or_else(|_| "Failed to serialize comments".to_string())
+                        )
                     }],
                     "isError": false
                 }))
@@ -2923,17 +3127,27 @@ impl McpHandler for WordPressHandler {
                 Ok(serde_json::json!({
                     "content": [{
                         "type": "text",
-                        "text": format!("Uploaded media with ID: {}", display_opt_id(media.id))
+                        "text": format!(
+                            "Uploaded media ID {}: {}",
+                            display_opt_id(media.id),
+                            media.source_url.as_deref().unwrap_or("(no URL)")
+                        )
                     }],
                     "isError": false
                 }))
             }
             "get_media" => {
-                let media_list = self.get_media().await?;
+                let (media_list, total_from_header) = self.get_media().await?;
+                let summary = summarize_media(&media_list);
                 Ok(serde_json::json!({
                     "content": [{
                         "type": "text",
-                        "text": format!("Found {} media files", media_list.len())
+                        "text": format!("Found {} media files (X-WP-Total: {}):\n{}",
+                            media_list.len(),
+                            total_from_header,
+                            serde_json::to_string_pretty(&summary)
+                                .unwrap_or_else(|_| "Failed to serialize media".to_string())
+                        )
                     }],
                     "isError": false
                 }))
@@ -3101,8 +3315,11 @@ impl McpHandler for WordPressHandler {
                     .ok_or_else(|| McpError::InvalidParams("Missing name".to_string()))?;
                 let description = args.get("description").and_then(|v| v.as_str());
                 let parent = args.get("parent").and_then(|v| v.as_u64());
+                let slug = args.get("slug").and_then(|v| v.as_str());
 
-                let category = self.create_category(name, description, parent).await?;
+                let category = self
+                    .create_category(name, description, parent, slug)
+                    .await?;
                 Ok(serde_json::json!({
                     "content": [{
                         "type": "text",
@@ -3119,8 +3336,12 @@ impl McpHandler for WordPressHandler {
                     .ok_or_else(|| McpError::InvalidParams("Missing category_id".to_string()))?;
                 let name = args.get("name").and_then(|v| v.as_str());
                 let description = args.get("description").and_then(|v| v.as_str());
+                let parent = args.get("parent").and_then(|v| v.as_u64());
+                let slug = args.get("slug").and_then(|v| v.as_str());
 
-                let category = self.update_category(category_id, name, description).await?;
+                let category = self
+                    .update_category(category_id, name, description, parent, slug)
+                    .await?;
                 Ok(serde_json::json!({
                     "content": [{
                         "type": "text",
@@ -3170,8 +3391,9 @@ impl McpHandler for WordPressHandler {
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| McpError::InvalidParams("Missing name".to_string()))?;
                 let description = args.get("description").and_then(|v| v.as_str());
+                let slug = args.get("slug").and_then(|v| v.as_str());
 
-                let tag = self.create_tag(name, description).await?;
+                let tag = self.create_tag(name, description, slug).await?;
                 Ok(serde_json::json!({
                     "content": [{
                         "type": "text",
@@ -3188,8 +3410,9 @@ impl McpHandler for WordPressHandler {
                     .ok_or_else(|| McpError::InvalidParams("Missing tag_id".to_string()))?;
                 let name = args.get("name").and_then(|v| v.as_str());
                 let description = args.get("description").and_then(|v| v.as_str());
+                let slug = args.get("slug").and_then(|v| v.as_str());
 
-                let tag = self.update_tag(tag_id, name, description).await?;
+                let tag = self.update_tag(tag_id, name, description, slug).await?;
                 Ok(serde_json::json!({
                     "content": [{
                         "type": "text",
@@ -3885,5 +4108,79 @@ mod tests {
         let formatted = format_wp_error(reqwest::StatusCode::NOT_FOUND, "<html>404</html>");
         assert!(formatted.contains("404"));
         assert!(formatted.contains("<html>404</html>"));
+    }
+
+    #[test]
+    fn test_filename_stem_strips_extension_preserving_non_ascii() {
+        // upload_mediaのタイトルに使うstemは日本語を含め元の文字を
+        // 保持したまま拡張子だけを取り除く（以前の実装はファイル名全体を
+        // ASCIIサニタイズしており、日本語ファイル名は`unnamed-file`扱いに
+        // なってしまっていた）。
+        assert_eq!(filename_stem("テスト画像.png"), "テスト画像");
+        assert_eq!(filename_stem("photo.png"), "photo");
+
+        // 拡張子がない場合はそのまま返す
+        assert_eq!(filename_stem("no_extension"), "no_extension");
+    }
+
+    #[test]
+    fn test_summarize_media_includes_expected_fields() {
+        let media = vec![WordPressMedia {
+            id: Some(42),
+            date: Some("2026-01-01".to_string()),
+            date_gmt: None,
+            guid: None,
+            modified: None,
+            modified_gmt: None,
+            slug: None,
+            status: "inherit".to_string(),
+            media_type: None,
+            link: None,
+            title: Some(WordPressContent {
+                rendered: "Test Image".to_string(),
+                protected: false,
+            }),
+            author: None,
+            comment_status: None,
+            ping_status: None,
+            template: None,
+            description: None,
+            caption: None,
+            alt_text: Some("A test image".to_string()),
+            mime_type: Some("image/png".to_string()),
+            media_details: None,
+            post: None,
+            source_url: Some("https://example.com/test.png".to_string()),
+        }];
+
+        let summary = summarize_media(&media);
+        assert_eq!(summary.len(), 1);
+        assert_eq!(summary[0]["id"], 42);
+        assert_eq!(summary[0]["title"], "Test Image");
+        assert_eq!(summary[0]["mime_type"], "image/png");
+        assert_eq!(summary[0]["source_url"], "https://example.com/test.png");
+        assert_eq!(summary[0]["alt_text"], "A test image");
+    }
+
+    /// upload_mediaが日本語ファイル名でも`multipart::Part`/`Form`の構築に
+    /// 失敗しない（パニックしない）ことを確認する回帰テスト。以前の
+    /// 生バイナリ+`Content-Disposition`方式は`try_clone()`できないという
+    /// 別の不具合を踏んでいたが、今回の不具合（日本語ファイル名が
+    /// `unnamed-file`になる）はASCIIへのサニタイズが原因だったため、
+    /// `multipart::Form`に切り替えた現在の実装ではサニタイズ自体を行わず
+    /// 元のファイル名をそのまま`file_name()`に渡せることを確認する。
+    #[test]
+    fn test_upload_media_builds_multipart_form_with_non_ascii_filename() {
+        let file_data: Vec<u8> = vec![0x89, 0x50, 0x4E, 0x47]; // PNGマジックナンバー
+        let filename = "テスト画像.png";
+        let mime_type = "image/png";
+
+        let part = reqwest::multipart::Part::bytes(file_data)
+            .file_name(filename.to_string())
+            .mime_str(mime_type)
+            .expect("valid mime_type must build a Part");
+        let _form = reqwest::multipart::Form::new()
+            .part("file", part)
+            .text("title", filename_stem(filename).to_string());
     }
 }

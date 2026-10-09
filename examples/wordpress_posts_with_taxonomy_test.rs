@@ -55,7 +55,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n📝 Creating test category and tag...");
 
     let test_category = match handler
-        .create_category("MCP Test Category", Some("Test category for MCP"), None)
+        .create_category(
+            "MCP Test Category",
+            Some("Test category for MCP"),
+            None,
+            None,
+        )
         .await
     {
         Ok(category) => {
@@ -72,7 +77,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let test_tag = match handler
-        .create_tag("mcp-test", Some("Test tag for MCP"))
+        .create_tag("mcp-test", Some("Test tag for MCP"), None)
         .await
     {
         Ok(tag) => {
