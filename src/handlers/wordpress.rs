@@ -13,6 +13,132 @@ use crate::mcp::{
 };
 use crate::security::{RateLimiter, SecureCredentials};
 
+/// 文字数単位で文字列を切り詰める（文字境界を跨がない）。
+/// 切り詰めた場合のみ末尾に"…"を付ける。
+fn truncate_chars_with_ellipsis(s: &str, max_chars: usize) -> String {
+    match s.char_indices().nth(max_chars) {
+        Some((idx, _)) => format!("{}…", &s[..idx]),
+        None => s.to_string(),
+    }
+}
+
+/// 表示用にslugをパーセントデコードする。デコードに失敗した場合は
+/// 元の値をそのまま返す（APIに渡す生のslugは別途保持される）。
+fn decode_slug_for_display(slug: &str) -> String {
+    urlencoding::decode(slug)
+        .map(|decoded| decoded.into_owned())
+        .unwrap_or_else(|_| slug.to_string())
+}
+
+/// JSON配列（カテゴリ/タグ一覧など）内の各要素の"slug"キーを表示用に
+/// パーセントデコードする。配列でない場合はそのまま返す。
+fn decode_slugs_for_display(mut value: serde_json::Value) -> serde_json::Value {
+    if let Some(arr) = value.as_array_mut() {
+        for item in arr.iter_mut() {
+            if let Some(slug) = item.get("slug").and_then(|v| v.as_str()) {
+                let decoded = decode_slug_for_display(slug);
+                item["slug"] = serde_json::Value::String(decoded);
+            }
+        }
+    }
+    value
+}
+
+/// WordPressのHTML（投稿本文・抜粋など）をプレーンテキストに変換する。
+/// タグを除去し、HTMLエンティティ（`&#8230;`等）はパース過程で実際の
+/// 文字にデコードされる。AIへ渡す用途ではHTML構文自体がトークンの
+/// 無駄になるため、切り詰めの前に必ずこれを通す。
+fn html_to_plain_text(html: &str) -> String {
+    let stripped = ammonia::Builder::new()
+        .tags(std::collections::HashSet::new())
+        .clean(html)
+        .to_string();
+
+    // ブロック要素除去後に残りがちな3行以上の連続空行を1行にまとめる
+    let collapsed = Regex::new(r"\n{3,}")
+        .expect("static regex is valid")
+        .replace_all(&stripped, "\n\n");
+
+    collapsed.trim().to_string()
+}
+
+/// `Option<u64>`のIDを表示用文字列に変換する（Rustの`{:?}`による
+/// `Some(123)`のような生の表記を避ける）。
+fn display_opt_id(id: Option<u64>) -> String {
+    id.map(|v| v.to_string())
+        .unwrap_or_else(|| "N/A".to_string())
+}
+
+/// WordPress REST APIのエラーレスポンス本文から`code`/`message`
+/// （例: `rest_post_invalid_id` / "Invalid post ID."）を拾い、診断に
+/// 使える文字列にまとめる。期待した形式でない場合はステータスと
+/// 本文の先頭部分をそのまま含める。
+fn format_wp_error(status: reqwest::StatusCode, body: &str) -> String {
+    if let Ok(json) = serde_json::from_str::<serde_json::Value>(body) {
+        if let (Some(code), Some(message)) = (
+            json.get("code").and_then(|v| v.as_str()),
+            json.get("message").and_then(|v| v.as_str()),
+        ) {
+            return format!("WordPress API error {}: {} ({})", status, message, code);
+        }
+    }
+    format!(
+        "WordPress API error {}: {}",
+        status,
+        truncate_chars_with_ellipsis(body, 200)
+    )
+}
+
+/// post_type（"post" | "page"）からREST APIのエンドポイントセグメントを
+/// 決定する。"post"・未知の値はすべて"posts"として扱う。
+fn endpoint_for_post_type(post_type: &str) -> &'static str {
+    match post_type {
+        "page" => "pages",
+        _ => "posts",
+    }
+}
+
+/// カテゴリ/タグのIDリストを、id→name対応表を使って名前のリストに
+/// 解決する。対応表に無いIDは数値文字列のままフォールバックする
+/// （カテゴリ/タグ一覧の取得に失敗した場合など）。
+fn resolve_term_names(ids: &[u64], id_to_name: &HashMap<u64, String>) -> Vec<String> {
+    ids.iter()
+        .map(|id| {
+            id_to_name
+                .get(id)
+                .cloned()
+                .unwrap_or_else(|| id.to_string())
+        })
+        .collect()
+}
+
+/// 投稿/固定ページの一覧を、各項目の要点（id・title・status・date・
+/// link・slug・抜粋）のみを含む簡潔なJSON配列にまとめる。
+/// 本文全体を含めないのは出力サイズを抑えるため；抜粋は文字境界を
+/// 跨がないよう安全に切り詰める。
+fn summarize_posts(posts: &[WordPressPost]) -> Vec<serde_json::Value> {
+    posts
+        .iter()
+        .map(|post| {
+            let excerpt = post
+                .excerpt
+                .as_ref()
+                .map(|e| truncate_chars_with_ellipsis(&html_to_plain_text(&e.rendered), 200))
+                .unwrap_or_default();
+
+            serde_json::json!({
+                "id": post.id,
+                "title": post.title.rendered,
+                "status": post.status,
+                "date": post.date,
+                "link": post.link,
+                "slug": post.slug.as_deref().map(decode_slug_for_display),
+                "excerpt": excerpt,
+            })
+        })
+        .collect()
+}
+
 #[derive(Debug, Clone)]
 pub struct WordPressHandler {
     client: Client,
@@ -357,17 +483,19 @@ impl WordPressHandler {
                         // サーバーエラーまたはレート制限の場合はリトライ
                         warn!("HTTP error {} on attempt {}, retrying...", status, attempt);
                         if attempt == MAX_RETRIES {
+                            let body = response.text().await.unwrap_or_default();
                             return Err(McpError::ExternalApi(format!(
-                                "WordPress API error after {} attempts: {}",
-                                MAX_RETRIES, status
+                                "{} (after {} attempts)",
+                                format_wp_error(status, &body),
+                                MAX_RETRIES
                             )));
                         }
                     } else {
-                        // クライアントエラー（4xx）はリトライしない
-                        return Err(McpError::ExternalApi(format!(
-                            "WordPress API client error: {}",
-                            status
-                        )));
+                        // クライアントエラー（4xx）はリトライしない。
+                        // 本文のcode/messageを診断用に含める
+                        // （例: rest_post_invalid_id）。
+                        let body = response.text().await.unwrap_or_default();
+                        return Err(McpError::ExternalApi(format_wp_error(status, &body)));
                     }
                 }
                 Err(e) => {
@@ -394,28 +522,144 @@ impl WordPressHandler {
         unreachable!()
     }
 
+    /// `execute_request_with_retry`と同じリトライ処理に加え、
+    /// WordPress REST APIのページネーションヘッダー（`X-WP-TotalPages`）
+    /// を読み取って返す。一覧系エンドポイントの全件取得に使う。
+    async fn execute_request_with_retry_capturing_total_pages<T>(
+        &self,
+        request_builder: reqwest::RequestBuilder,
+    ) -> Result<(T, u32), McpError>
+    where
+        T: for<'de> serde::Deserialize<'de>,
+    {
+        const MAX_RETRIES: u32 = 3;
+        const RETRY_DELAY: Duration = Duration::from_millis(1000);
+
+        for attempt in 1..=MAX_RETRIES {
+            let request = request_builder
+                .try_clone()
+                .ok_or_else(|| McpError::Other("Failed to clone request".to_string()))?;
+
+            match request.send().await {
+                Ok(response) => {
+                    let status = response.status();
+
+                    if status.is_success() {
+                        let total_pages = response
+                            .headers()
+                            .get("x-wp-totalpages")
+                            .and_then(|v| v.to_str().ok())
+                            .and_then(|s| s.parse::<u32>().ok())
+                            .unwrap_or(1);
+
+                        let text = response.text().await.map_err(McpError::Http)?;
+
+                        match serde_json::from_str::<T>(&text) {
+                            Ok(data) => return Ok((data, total_pages)),
+                            Err(e) => {
+                                warn!("JSON parse error on attempt {}: {}", attempt, e);
+                                if attempt == MAX_RETRIES {
+                                    return Err(McpError::ExternalApi(format!(
+                                        "JSON parse error: {}",
+                                        e
+                                    )));
+                                }
+                            }
+                        }
+                    } else if status.as_u16() >= 500 || status.as_u16() == 429 {
+                        warn!("HTTP error {} on attempt {}, retrying...", status, attempt);
+                        if attempt == MAX_RETRIES {
+                            let body = response.text().await.unwrap_or_default();
+                            return Err(McpError::ExternalApi(format!(
+                                "{} (after {} attempts)",
+                                format_wp_error(status, &body),
+                                MAX_RETRIES
+                            )));
+                        }
+                    } else {
+                        let body = response.text().await.unwrap_or_default();
+                        return Err(McpError::ExternalApi(format_wp_error(status, &body)));
+                    }
+                }
+                Err(e) => {
+                    if attempt == MAX_RETRIES {
+                        return Err(McpError::Http(e));
+                    }
+                    warn!("Request error on attempt {}: {}", attempt, e);
+                }
+            }
+
+            if attempt < MAX_RETRIES {
+                tokio::time::sleep(RETRY_DELAY * attempt).await;
+            }
+        }
+
+        unreachable!()
+    }
+
+    /// 一覧系エンドポイントを`per_page=100`かつ`X-WP-TotalPages`に基づく
+    /// 全ページ取得で呼び出す。`url_for_page`は`page`番号を受け取り、
+    /// `per_page=100&page=N`を含む完全なURLを返すクロージャ。
+    async fn fetch_all_pages<T>(
+        &self,
+        url_for_page: impl Fn(u32) -> String,
+    ) -> Result<Vec<T>, McpError>
+    where
+        T: for<'de> serde::Deserialize<'de>,
+    {
+        let mut all_items: Vec<T> = Vec::new();
+        let mut page: u32 = 1;
+
+        loop {
+            let url = url_for_page(page);
+            let mut request = self.client.get(&url);
+
+            if let (Some(username), Some(password)) = (&self.username, &self.password) {
+                request = request.basic_auth(username, Some(password));
+            }
+
+            let (items, total_pages): (Vec<T>, u32) = self
+                .execute_request_with_retry_capturing_total_pages(request)
+                .await?;
+
+            all_items.extend(items);
+
+            if page >= total_pages.max(1) {
+                break;
+            }
+            page += 1;
+        }
+
+        Ok(all_items)
+    }
+
     async fn get_posts(&self) -> Result<Vec<WordPressPost>, McpError> {
-        let url = format!("{}/wp-json/wp/v2/posts", self.base_url);
-
-        let request = self.client.get(&url);
-        let request = self.add_authentication(request);
-
-        info!("Fetching WordPress posts from: {}", url);
-        self.execute_request_with_retry(request).await
+        info!(
+            "Fetching WordPress posts from: {}/wp-json/wp/v2/posts",
+            self.base_url
+        );
+        self.fetch_all_pages(|page| {
+            format!(
+                "{}/wp-json/wp/v2/posts?per_page=100&page={}",
+                self.base_url, page
+            )
+        })
+        .await
     }
 
     /// Get all WordPress pages
     async fn get_pages(&self) -> Result<Vec<WordPressPost>, McpError> {
-        let url = format!("{}/wp-json/wp/v2/pages", self.base_url);
-
-        let mut request = self.client.get(&url);
-
-        if let (Some(username), Some(password)) = (&self.username, &self.password) {
-            request = request.basic_auth(username, Some(password));
-        }
-
-        info!("Fetching WordPress pages from: {}", url);
-        self.execute_request_with_retry(request).await
+        info!(
+            "Fetching WordPress pages from: {}/wp-json/wp/v2/pages",
+            self.base_url
+        );
+        self.fetch_all_pages(|page| {
+            format!(
+                "{}/wp-json/wp/v2/pages?per_page=100&page={}",
+                self.base_url, page
+            )
+        })
+        .await
     }
 
     /// Get both posts and pages
@@ -431,8 +675,9 @@ impl WordPressHandler {
     }
 
     /// Get a single WordPress post by ID
-    pub async fn get_post(&self, post_id: u64) -> Result<WordPressPost, McpError> {
-        let url = format!("{}/wp-json/wp/v2/posts/{}", self.base_url, post_id);
+    pub async fn get_post(&self, post_id: u64, post_type: &str) -> Result<WordPressPost, McpError> {
+        let endpoint = endpoint_for_post_type(post_type);
+        let url = format!("{}/wp-json/wp/v2/{}/{}", self.base_url, endpoint, post_id);
 
         let mut request = self.client.get(&url);
 
@@ -440,7 +685,7 @@ impl WordPressHandler {
             request = request.basic_auth(username, Some(password));
         }
 
-        info!("Fetching WordPress post: {}", post_id);
+        info!("Fetching WordPress {}: {}", post_type, post_id);
         self.execute_request_with_retry(request).await
     }
 
@@ -449,12 +694,14 @@ impl WordPressHandler {
         &self,
         title: String,
         content: String,
+        status: Option<String>,
     ) -> Result<WordPressPost, McpError> {
         let params = PostCreateParams {
             title,
             content,
             post_type: "post".to_string(),
-            status: "publish".to_string(),
+            // 意図しない公開を避けるため、未指定時はdraftを既定値とする
+            status: status.unwrap_or_else(|| "draft".to_string()),
             ..Default::default()
         };
         self.create_advanced_post(params).await
@@ -466,10 +713,7 @@ impl WordPressHandler {
         params: PostCreateParams,
     ) -> Result<WordPressPost, McpError> {
         // 投稿タイプに応じてエンドポイントを決定
-        let endpoint = match params.post_type.as_str() {
-            "page" => "pages",
-            _ => "posts",
-        };
+        let endpoint = endpoint_for_post_type(&params.post_type);
         let url = format!("{}/wp-json/wp/v2/{}", self.base_url, endpoint);
 
         let mut post_data = serde_json::json!({
@@ -959,6 +1203,7 @@ impl WordPressHandler {
         &self,
         title: String,
         content: String,
+        status: Option<String>,
         categories: Option<Vec<u64>>,
         tags: Option<Vec<u64>>,
         featured_media_id: Option<u64>,
@@ -967,7 +1212,8 @@ impl WordPressHandler {
             title,
             content,
             post_type: "post".to_string(),
-            status: "publish".to_string(),
+            // 意図しない公開を避けるため、未指定時はdraftを既定値とする
+            status: status.unwrap_or_else(|| "draft".to_string()),
             date: None,
             categories,
             tags,
@@ -981,11 +1227,13 @@ impl WordPressHandler {
     pub async fn update_post_categories_tags(
         &self,
         post_id: u64,
+        post_type: &str,
         categories: Option<Vec<u64>>,
         tags: Option<Vec<u64>>,
     ) -> Result<WordPressPost, McpError> {
         self.update_post(
             post_id,
+            post_type,
             PostUpdateParams {
                 categories,
                 tags,
@@ -995,15 +1243,17 @@ impl WordPressHandler {
         .await
     }
 
-    /// Update an existing WordPress post
+    /// Update an existing WordPress post or page
     pub async fn update_post(
         &self,
         post_id: u64,
+        post_type: &str,
         params: PostUpdateParams,
     ) -> Result<WordPressPost, McpError> {
-        let url = format!("{}/wp-json/wp/v2/posts/{}", self.base_url, post_id);
+        let endpoint = endpoint_for_post_type(post_type);
+        let url = format!("{}/wp-json/wp/v2/{}/{}", self.base_url, endpoint, post_id);
 
-        info!("Updating WordPress post: {}", post_id);
+        info!("Updating WordPress {}: {}", post_type, post_id);
 
         let mut update_data = serde_json::Map::new();
 
@@ -1070,13 +1320,15 @@ impl WordPressHandler {
         self.execute_request_with_retry(request).await
     }
 
-    /// Delete a WordPress post
+    /// Delete a WordPress post or page
     pub async fn delete_post(
         &self,
         post_id: u64,
+        post_type: &str,
         force: bool,
     ) -> Result<serde_json::Value, McpError> {
-        let url = format!("{}/wp-json/wp/v2/posts/{}", self.base_url, post_id);
+        let endpoint = endpoint_for_post_type(post_type);
+        let url = format!("{}/wp-json/wp/v2/{}/{}", self.base_url, endpoint, post_id);
 
         let mut request = self.client.delete(&url);
 
@@ -1088,7 +1340,10 @@ impl WordPressHandler {
             request = request.basic_auth(username, Some(password));
         }
 
-        info!("Deleting WordPress post: {} (force: {})", post_id, force);
+        info!(
+            "Deleting WordPress {}: {} (force: {})",
+            post_type, post_id, force
+        );
         self.execute_request_with_retry(request).await
     }
 
@@ -1114,16 +1369,14 @@ impl WordPressHandler {
 
     /// Get all categories
     pub async fn get_categories(&self) -> Result<Vec<WordPressCategory>, McpError> {
-        let url = format!("{}/wp-json/wp/v2/categories", self.base_url);
-
-        let mut request = self.client.get(&url);
-
-        if let (Some(username), Some(password)) = (&self.username, &self.password) {
-            request = request.basic_auth(username, Some(password));
-        }
-
         info!("Fetching WordPress categories");
-        self.execute_request_with_retry(request).await
+        self.fetch_all_pages(|page| {
+            format!(
+                "{}/wp-json/wp/v2/categories?per_page=100&page={}",
+                self.base_url, page
+            )
+        })
+        .await
     }
 
     /// Create a new category
@@ -1215,16 +1468,14 @@ impl WordPressHandler {
 
     /// Get all tags
     pub async fn get_tags(&self) -> Result<Vec<WordPressTag>, McpError> {
-        let url = format!("{}/wp-json/wp/v2/tags", self.base_url);
-
-        let mut request = self.client.get(&url);
-
-        if let (Some(username), Some(password)) = (&self.username, &self.password) {
-            request = request.basic_auth(username, Some(password));
-        }
-
         info!("Fetching WordPress tags");
-        self.execute_request_with_retry(request).await
+        self.fetch_all_pages(|page| {
+            format!(
+                "{}/wp-json/wp/v2/tags?per_page=100&page={}",
+                self.base_url, page
+            )
+        })
+        .await
     }
 
     /// Create a new tag
@@ -1339,12 +1590,13 @@ impl WordPressHandler {
         }
 
         // 2. Check REST API availability
+        // 注意: ここで早期returnしない。後続のチェックは独立しており、
+        // このチェックの成否に関わらず実行すべき（互いの偽陰性の連鎖を防ぐ）。
         if let Err(e) = self.check_rest_api().await {
             health
                 .error_details
                 .push(format!("REST API check failed: {}", e));
             warn!("❌ REST API availability: FAILED - {}", e);
-            return health;
         } else {
             health.rest_api_available = true;
             info!("✅ REST API availability: OK");
@@ -1356,7 +1608,6 @@ impl WordPressHandler {
                 .error_details
                 .push(format!("Authentication failed: {}", e));
             warn!("❌ Authentication: FAILED - {}", e);
-            return health;
         } else {
             health.authentication_valid = true;
             info!("✅ Authentication: OK");
@@ -1462,8 +1713,14 @@ impl WordPressHandler {
     }
 
     /// Check if WordPress REST API is available
+    ///
+    /// ルートのAPIディスカバリーインデックス（`/wp-json/`）を見る。
+    /// `/wp-json/wp/v2`はwp/v2名前空間自身のルート一覧
+    /// （`{"namespace": "wp/v2", "routes": {...}}`）を返すだけで
+    /// `"namespaces"`配列を持たないため、そちらを見ると常に
+    /// 偽陰性になる。
     async fn check_rest_api(&self) -> Result<(), McpError> {
-        let url = format!("{}/wp-json/wp/v2", self.base_url);
+        let url = format!("{}/wp-json/", self.base_url);
 
         let response = self
             .client
@@ -1664,13 +1921,19 @@ impl McpHandler for WordPressHandler {
             },
             Tool {
                 name: "get_post".to_string(),
-                description: "Retrieve a single WordPress post by ID".to_string(),
+                description: "Retrieve a single WordPress post or page by ID".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
                         "post_id": {
                             "type": "number",
-                            "description": "Post ID to retrieve"
+                            "description": "Post or page ID to retrieve"
+                        },
+                        "post_type": {
+                            "type": "string",
+                            "enum": ["post", "page"],
+                            "description": "Content type to retrieve. Defaults to 'post'.",
+                            "default": "post"
                         }
                     },
                     "required": ["post_id"]
@@ -1678,7 +1941,7 @@ impl McpHandler for WordPressHandler {
             },
             Tool {
                 name: "create_post".to_string(),
-                description: "Create a new WordPress post (basic)".to_string(),
+                description: "Create a new WordPress post (basic). Defaults to draft status so nothing is published unintentionally.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -1689,6 +1952,12 @@ impl McpHandler for WordPressHandler {
                         "content": {
                             "type": "string",
                             "description": "The post content"
+                        },
+                        "status": {
+                            "type": "string",
+                            "enum": ["publish", "draft", "private"],
+                            "description": "Post status. Defaults to 'draft' to avoid accidental publication.",
+                            "default": "draft"
                         }
                     },
                     "required": ["title", "content"]
@@ -2041,7 +2310,7 @@ impl McpHandler for WordPressHandler {
             },
             Tool {
                 name: "create_post_with_categories_tags".to_string(),
-                description: "Create a new WordPress post with categories and tags".to_string(),
+                description: "Create a new WordPress post with categories and tags. Defaults to draft status so nothing is published unintentionally.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -2052,6 +2321,12 @@ impl McpHandler for WordPressHandler {
                         "content": {
                             "type": "string",
                             "description": "The post content"
+                        },
+                        "status": {
+                            "type": "string",
+                            "enum": ["publish", "draft", "private"],
+                            "description": "Post status. Defaults to 'draft' to avoid accidental publication.",
+                            "default": "draft"
                         },
                         "categories": {
                             "type": "array",
@@ -2073,14 +2348,20 @@ impl McpHandler for WordPressHandler {
             },
             Tool {
                 name: "update_post_categories_tags".to_string(),
-                description: "Update categories and tags for an existing WordPress post"
+                description: "Update categories and tags for an existing WordPress post or page"
                     .to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
                         "post_id": {
                             "type": "number",
-                            "description": "Post ID to update"
+                            "description": "Post or page ID to update"
+                        },
+                        "post_type": {
+                            "type": "string",
+                            "enum": ["post", "page"],
+                            "description": "Content type being updated. Defaults to 'post'.",
+                            "default": "post"
                         },
                         "categories": {
                             "type": "array",
@@ -2098,13 +2379,19 @@ impl McpHandler for WordPressHandler {
             },
             Tool {
                 name: "update_post".to_string(),
-                description: "Update an existing WordPress post".to_string(),
+                description: "Update an existing WordPress post or page".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
                         "post_id": {
                             "type": "number",
-                            "description": "Post ID to update"
+                            "description": "Post or page ID to update"
+                        },
+                        "post_type": {
+                            "type": "string",
+                            "enum": ["post", "page"],
+                            "description": "Content type being updated. Defaults to 'post'.",
+                            "default": "post"
                         },
                         "title": {
                             "type": "string",
@@ -2138,13 +2425,19 @@ impl McpHandler for WordPressHandler {
             },
             Tool {
                 name: "delete_post".to_string(),
-                description: "Delete a WordPress post".to_string(),
+                description: "Delete a WordPress post or page".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
                         "post_id": {
                             "type": "number",
-                            "description": "Post ID to delete"
+                            "description": "Post or page ID to delete"
+                        },
+                        "post_type": {
+                            "type": "string",
+                            "enum": ["post", "page"],
+                            "description": "Content type being deleted. Defaults to 'post'.",
+                            "default": "post"
                         },
                         "force": {
                             "type": "boolean",
@@ -2376,30 +2669,48 @@ impl McpHandler for WordPressHandler {
             }
             "get_posts" => {
                 let posts = self.get_posts().await?;
+                let summary = summarize_posts(&posts);
                 Ok(serde_json::json!({
                     "content": [{
                         "type": "text",
-                        "text": format!("Found {} posts", posts.len())
+                        "text": format!("Found {} posts:\n{}",
+                            posts.len(),
+                            serde_json::to_string_pretty(&summary)
+                                .unwrap_or_else(|_| "Failed to serialize posts".to_string())
+                        )
                     }],
                     "isError": false
                 }))
             }
             "get_pages" => {
                 let pages = self.get_pages().await?;
+                let summary = summarize_posts(&pages);
                 Ok(serde_json::json!({
                     "content": [{
                         "type": "text",
-                        "text": format!("Found {} pages", pages.len())
+                        "text": format!("Found {} pages:\n{}",
+                            pages.len(),
+                            serde_json::to_string_pretty(&summary)
+                                .unwrap_or_else(|_| "Failed to serialize pages".to_string())
+                        )
                     }],
                     "isError": false
                 }))
             }
             "get_all_content" => {
                 let (posts, pages) = self.get_all_content().await?;
+                let posts_summary = summarize_posts(&posts);
+                let pages_summary = summarize_posts(&pages);
                 Ok(serde_json::json!({
                     "content": [{
                         "type": "text",
-                        "text": format!("Found {} posts and {} pages", posts.len(), pages.len())
+                        "text": format!("Found {} posts and {} pages:\nPosts:\n{}\nPages:\n{}",
+                            posts.len(), pages.len(),
+                            serde_json::to_string_pretty(&posts_summary)
+                                .unwrap_or_else(|_| "Failed to serialize posts".to_string()),
+                            serde_json::to_string_pretty(&pages_summary)
+                                .unwrap_or_else(|_| "Failed to serialize pages".to_string())
+                        )
                     }],
                     "isError": false
                 }))
@@ -2410,22 +2721,64 @@ impl McpHandler for WordPressHandler {
                     .get("post_id")
                     .and_then(|v| v.as_u64())
                     .ok_or_else(|| McpError::InvalidParams("Missing post_id".to_string()))?;
+                let post_type = args
+                    .get("post_type")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("post");
 
-                let post = self.get_post(post_id).await?;
+                let post = self.get_post(post_id, post_type).await?;
+
+                // カテゴリ/タグIDを名前に解決する。一覧取得に失敗しても
+                // get_post自体は失敗させず、数値IDのまま表示する。
+                let categories_names = match self.get_categories().await {
+                    Ok(categories) => {
+                        let id_to_name: HashMap<u64, String> = categories
+                            .into_iter()
+                            .filter_map(|c| c.id.map(|id| (id, c.name)))
+                            .collect();
+                        post.categories
+                            .as_deref()
+                            .map(|ids| resolve_term_names(ids, &id_to_name))
+                            .unwrap_or_default()
+                    }
+                    Err(e) => {
+                        warn!("Failed to resolve category names for get_post: {}", e);
+                        post.categories
+                            .as_deref()
+                            .map(|ids| ids.iter().map(|id| id.to_string()).collect())
+                            .unwrap_or_default()
+                    }
+                };
+                let tags_names = match self.get_tags().await {
+                    Ok(tags) => {
+                        let id_to_name: HashMap<u64, String> = tags
+                            .into_iter()
+                            .filter_map(|t| t.id.map(|id| (id, t.name)))
+                            .collect();
+                        post.tags
+                            .as_deref()
+                            .map(|ids| resolve_term_names(ids, &id_to_name))
+                            .unwrap_or_default()
+                    }
+                    Err(e) => {
+                        warn!("Failed to resolve tag names for get_post: {}", e);
+                        post.tags
+                            .as_deref()
+                            .map(|ids| ids.iter().map(|id| id.to_string()).collect())
+                            .unwrap_or_default()
+                    }
+                };
+
                 Ok(serde_json::json!({
                     "content": [{
                         "type": "text",
-                        "text": format!("Post Details:\nID: {:?}\nTitle: {}\nStatus: {}\nCategories: {:?}\nTags: {:?}\nContent: {}...",
-                            post.id,
+                        "text": format!("Post Details:\nID: {}\nTitle: {}\nStatus: {}\nCategories: {}\nTags: {}\nContent: {}",
+                            post.id.map(|id| id.to_string()).unwrap_or_else(|| "N/A".to_string()),
                             post.title.rendered,
                             post.status,
-                            post.categories,
-                            post.tags,
-                            if post.content.rendered.len() > 100 {
-                                format!("{}...", &post.content.rendered[..100])
-                            } else {
-                                post.content.rendered.clone()
-                            }
+                            categories_names.join(", "),
+                            tags_names.join(", "),
+                            truncate_chars_with_ellipsis(&html_to_plain_text(&post.content.rendered), 100)
                         )
                     }],
                     "isError": false
@@ -2441,14 +2794,20 @@ impl McpHandler for WordPressHandler {
                     .get("content")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| McpError::InvalidParams("Missing content".to_string()))?;
+                let status = args
+                    .get("status")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
 
                 let post = self
-                    .create_post(title.to_string(), content.to_string())
+                    .create_post(title.to_string(), content.to_string(), status)
                     .await?;
                 Ok(serde_json::json!({
                     "content": [{
                         "type": "text",
-                        "text": format!("Created post with ID: {:?}", post.id)
+                        "text": format!("Created post with ID: {} (Status: {})",
+                            post.id.map(|id| id.to_string()).unwrap_or_else(|| "N/A".to_string()),
+                            post.status)
                     }],
                     "isError": false
                 }))
@@ -2517,9 +2876,9 @@ impl McpHandler for WordPressHandler {
                     "content": [{
                         "type": "text",
                         "text": format!(
-                            "Created {} with ID: {:?} (Status: {})",
+                            "Created {} with ID: {} (Status: {})",
                             if post_type == "page" { "page" } else { "post" },
-                            post.id,
+                            display_opt_id(post.id),
                             status
                         )
                     }],
@@ -2564,7 +2923,7 @@ impl McpHandler for WordPressHandler {
                 Ok(serde_json::json!({
                     "content": [{
                         "type": "text",
-                        "text": format!("Uploaded media with ID: {:?}", media.id)
+                        "text": format!("Uploaded media with ID: {}", display_opt_id(media.id))
                     }],
                     "isError": false
                 }))
@@ -2591,8 +2950,8 @@ impl McpHandler for WordPressHandler {
                     "content": [{
                         "type": "text",
                         "text": format!(
-                            "Media ID: {:?}, Title: {}, Alt: {}, URL: {}",
-                            media.id,
+                            "Media ID: {}, Title: {}, Alt: {}, URL: {}",
+                            display_opt_id(media.id),
                             media.title.as_ref().map(|t| t.rendered.as_str()).unwrap_or("No title"),
                             media.alt_text.as_deref().unwrap_or("No alt text"),
                             media.source_url.as_deref().unwrap_or("No URL")
@@ -2638,7 +2997,7 @@ impl McpHandler for WordPressHandler {
                 Ok(serde_json::json!({
                     "content": [{
                         "type": "text",
-                        "text": format!("Updated media ID: {:?}", media.id)
+                        "text": format!("Updated media ID: {}", display_opt_id(media.id))
                     }],
                     "isError": false
                 }))
@@ -2657,8 +3016,8 @@ impl McpHandler for WordPressHandler {
                     "content": [{
                         "type": "text",
                         "text": format!(
-                            "Deleted media ID: {:?} (Force: {})",
-                            media.id,
+                            "Deleted media ID: {} (Force: {})",
+                            display_opt_id(media.id),
                             force.unwrap_or(false)
                         )
                     }],
@@ -2692,7 +3051,7 @@ impl McpHandler for WordPressHandler {
                 Ok(serde_json::json!({
                     "content": [{
                         "type": "text",
-                        "text": format!("Created post with featured image. Post ID: {:?}", post.id)
+                        "text": format!("Created post with featured image. Post ID: {}", display_opt_id(post.id))
                     }],
                     "isError": false
                 }))
@@ -2712,19 +3071,22 @@ impl McpHandler for WordPressHandler {
                 Ok(serde_json::json!({
                     "content": [{
                         "type": "text",
-                        "text": format!("Set featured image {} for post {}. Updated post ID: {:?}", media_id, post_id, post.id)
+                        "text": format!("Set featured image {} for post {}. Updated post ID: {}", media_id, post_id, display_opt_id(post.id))
                     }],
                     "isError": false
                 }))
             }
             "get_categories" => {
                 let categories = self.get_categories().await?;
+                let categories_json = decode_slugs_for_display(
+                    serde_json::to_value(&categories).unwrap_or(serde_json::Value::Null),
+                );
                 Ok(serde_json::json!({
                     "content": [{
                         "type": "text",
                         "text": format!("Found {} categories:\n{}",
                             categories.len(),
-                            serde_json::to_string_pretty(&categories)
+                            serde_json::to_string_pretty(&categories_json)
                                 .unwrap_or_else(|_| "Failed to serialize categories".to_string())
                         )
                     }],
@@ -2744,7 +3106,7 @@ impl McpHandler for WordPressHandler {
                 Ok(serde_json::json!({
                     "content": [{
                         "type": "text",
-                        "text": format!("Created category '{}' with ID: {:?}", name, category.id)
+                        "text": format!("Created category '{}' with ID: {}", name, display_opt_id(category.id))
                     }],
                     "isError": false
                 }))
@@ -2786,12 +3148,15 @@ impl McpHandler for WordPressHandler {
             }
             "get_tags" => {
                 let tags = self.get_tags().await?;
+                let tags_json = decode_slugs_for_display(
+                    serde_json::to_value(&tags).unwrap_or(serde_json::Value::Null),
+                );
                 Ok(serde_json::json!({
                     "content": [{
                         "type": "text",
                         "text": format!("Found {} tags:\n{}",
                             tags.len(),
-                            serde_json::to_string_pretty(&tags)
+                            serde_json::to_string_pretty(&tags_json)
                                 .unwrap_or_else(|_| "Failed to serialize tags".to_string())
                         )
                     }],
@@ -2810,7 +3175,7 @@ impl McpHandler for WordPressHandler {
                 Ok(serde_json::json!({
                     "content": [{
                         "type": "text",
-                        "text": format!("Created tag '{}' with ID: {:?}", name, tag.id)
+                        "text": format!("Created tag '{}' with ID: {}", name, display_opt_id(tag.id))
                     }],
                     "isError": false
                 }))
@@ -2861,12 +3226,17 @@ impl McpHandler for WordPressHandler {
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| McpError::InvalidParams("Missing content".to_string()))?;
 
-                let categories = args
+                let status = args
+                    .get("status")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+
+                let categories: Option<Vec<u64>> = args
                     .get("categories")
                     .and_then(|v| v.as_array())
                     .map(|arr| arr.iter().filter_map(|v| v.as_u64()).collect());
 
-                let tags = args
+                let tags: Option<Vec<u64>> = args
                     .get("tags")
                     .and_then(|v| v.as_array())
                     .map(|arr| arr.iter().filter_map(|v| v.as_u64()).collect());
@@ -2877,6 +3247,7 @@ impl McpHandler for WordPressHandler {
                     .create_post_with_categories_tags(
                         title.to_string(),
                         content.to_string(),
+                        status,
                         categories,
                         tags,
                         featured_media_id,
@@ -2886,8 +3257,12 @@ impl McpHandler for WordPressHandler {
                 Ok(serde_json::json!({
                     "content": [{
                         "type": "text",
-                        "text": format!("Created post '{}' with ID: {:?}, categories: {:?}, tags: {:?}",
-                            title, post.id, post.categories, post.tags)
+                        "text": format!("Created post '{}' with ID: {} (Status: {}), categories: {}, tags: {}",
+                            title,
+                            post.id.map(|id| id.to_string()).unwrap_or_else(|| "N/A".to_string()),
+                            post.status,
+                            post.categories.as_deref().map(|ids| ids.iter().map(|id| id.to_string()).collect::<Vec<_>>().join(", ")).unwrap_or_else(|| "-".to_string()),
+                            post.tags.as_deref().map(|ids| ids.iter().map(|id| id.to_string()).collect::<Vec<_>>().join(", ")).unwrap_or_else(|| "-".to_string()))
                     }],
                     "isError": false
                 }))
@@ -2898,26 +3273,33 @@ impl McpHandler for WordPressHandler {
                     .get("post_id")
                     .and_then(|v| v.as_u64())
                     .ok_or_else(|| McpError::InvalidParams("Missing post_id".to_string()))?;
+                let post_type = args
+                    .get("post_type")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("post");
 
-                let categories = args
+                let categories: Option<Vec<u64>> = args
                     .get("categories")
                     .and_then(|v| v.as_array())
                     .map(|arr| arr.iter().filter_map(|v| v.as_u64()).collect());
 
-                let tags = args
+                let tags: Option<Vec<u64>> = args
                     .get("tags")
                     .and_then(|v| v.as_array())
                     .map(|arr| arr.iter().filter_map(|v| v.as_u64()).collect());
 
                 let post = self
-                    .update_post_categories_tags(post_id, categories, tags)
+                    .update_post_categories_tags(post_id, post_type, categories, tags)
                     .await?;
 
                 Ok(serde_json::json!({
                     "content": [{
                         "type": "text",
-                        "text": format!("Updated post ID {} with categories: {:?}, tags: {:?}",
-                            post_id, post.categories, post.tags)
+                        "text": format!("Updated {} ID {} with categories: {}, tags: {}",
+                            post_type,
+                            post_id,
+                            post.categories.as_deref().map(|ids| ids.iter().map(|id| id.to_string()).collect::<Vec<_>>().join(", ")).unwrap_or_else(|| "-".to_string()),
+                            post.tags.as_deref().map(|ids| ids.iter().map(|id| id.to_string()).collect::<Vec<_>>().join(", ")).unwrap_or_else(|| "-".to_string()))
                     }],
                     "isError": false
                 }))
@@ -2928,6 +3310,10 @@ impl McpHandler for WordPressHandler {
                     .get("post_id")
                     .and_then(|v| v.as_u64())
                     .ok_or_else(|| McpError::InvalidParams("Missing post_id".to_string()))?;
+                let post_type = args
+                    .get("post_type")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("post");
 
                 let title = args
                     .get("title")
@@ -2957,6 +3343,7 @@ impl McpHandler for WordPressHandler {
                 let post = self
                     .update_post(
                         post_id,
+                        post_type,
                         PostUpdateParams {
                             title,
                             content,
@@ -2972,8 +3359,8 @@ impl McpHandler for WordPressHandler {
                 Ok(serde_json::json!({
                     "content": [{
                         "type": "text",
-                        "text": format!("Updated post ID {} - Title: '{}', Status: {}",
-                            post_id, post.title.rendered, post.status)
+                        "text": format!("Updated {} ID {} - Title: '{}', Status: {}",
+                            post_type, post_id, post.title.rendered, post.status)
                     }],
                     "isError": false
                 }))
@@ -2984,14 +3371,19 @@ impl McpHandler for WordPressHandler {
                     .get("post_id")
                     .and_then(|v| v.as_u64())
                     .ok_or_else(|| McpError::InvalidParams("Missing post_id".to_string()))?;
+                let post_type = args
+                    .get("post_type")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("post");
                 let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
 
-                self.delete_post(post_id, force).await?;
+                self.delete_post(post_id, post_type, force).await?;
 
                 Ok(serde_json::json!({
                     "content": [{
                         "type": "text",
-                        "text": format!("Deleted post ID {} ({})",
+                        "text": format!("Deleted {} ID {} ({})",
+                            post_type,
                             post_id,
                             if force { "permanently" } else { "moved to trash" }
                         )
@@ -3068,9 +3460,9 @@ impl McpHandler for WordPressHandler {
                     "content": [{
                         "type": "text",
                         "text": format!(
-                            "Created {} with embedded content - ID: {:?}, Title: {}, Status: {}",
+                            "Created {} with embedded content - ID: {}, Title: {}, Status: {}",
                             if post.post_type.as_ref().unwrap_or(&"post".to_string()) == "page" { "page" } else { "post" },
-                            post.id,
+                            display_opt_id(post.id),
                             post.title.rendered,
                             post.status
                         )
@@ -3326,5 +3718,172 @@ mod tests {
             let result = WordPressHandler::try_new(config);
             assert!(result.is_err(), "URL {} should be rejected", url);
         }
+    }
+
+    #[test]
+    fn test_truncate_chars_with_ellipsis_handles_multibyte_boundaries() {
+        // "モ"は3バイトのUTF-8文字。バイト単位で&s[..100]のように切ると
+        // 文字境界を跨いでpanicする実例（src\handlers\wordpress.rs:2425で
+        // 実際に発生したバグ）。文字数単位で切ることで回避する。
+        let japanese = "あ".repeat(50) + "モデルコンテキストプロトコル" + &"い".repeat(50);
+        // パニックしないことそのものがテスト対象（文字境界を跨ぐ位置で切る）
+        let truncated = truncate_chars_with_ellipsis(&japanese, 55);
+        assert!(truncated.ends_with('…'));
+        assert_eq!(truncated.chars().count(), 56); // 55文字 + "…"
+
+        // 絵文字（複数バイト、サロゲートペア相当）を含む文字列
+        let emoji_str = "Hello🎉World🌟Test";
+        let truncated_emoji = truncate_chars_with_ellipsis(emoji_str, 7);
+        assert!(truncated_emoji.ends_with('…'));
+
+        // ちょうど境界（max_charsと文字数が一致）の場合は切り詰めない
+        let exact = "12345";
+        assert_eq!(truncate_chars_with_ellipsis(exact, 5), "12345");
+
+        // max_charsより短い文字列はそのまま
+        let short = "short";
+        assert_eq!(truncate_chars_with_ellipsis(short, 100), "short");
+    }
+
+    #[test]
+    fn test_decode_slug_for_display_decodes_percent_encoded_japanese() {
+        // "ウェブ" のパーセントエンコード
+        let encoded = "%e3%82%a6%e3%82%a7%e3%83%96";
+        let decoded = decode_slug_for_display(encoded);
+        assert_eq!(decoded, "ウェブ");
+    }
+
+    #[test]
+    fn test_decode_slug_for_display_passes_through_plain_slug() {
+        assert_eq!(decode_slug_for_display("hello-world"), "hello-world");
+    }
+
+    #[test]
+    fn test_decode_slugs_for_display_on_array() {
+        let value = serde_json::json!([
+            {"slug": "%e3%82%a6%e3%82%a7%e3%83%96", "name": "a"},
+            {"slug": "plain-slug", "name": "b"}
+        ]);
+        let decoded = decode_slugs_for_display(value);
+        assert_eq!(decoded[0]["slug"], "ウェブ");
+        assert_eq!(decoded[1]["slug"], "plain-slug");
+    }
+
+    #[test]
+    fn test_summarize_posts_includes_expected_fields_and_safe_excerpt() {
+        let long_excerpt = "あ".repeat(300);
+        let posts = vec![WordPressPost {
+            id: Some(328),
+            date: Some("2026-01-01".to_string()),
+            date_gmt: None,
+            guid: None,
+            modified: None,
+            modified_gmt: None,
+            slug: Some("%e3%83%86%e3%82%b9%e3%83%88".to_string()), // "テスト"
+            status: "publish".to_string(),
+            post_type: None,
+            link: Some("https://example.com/test".to_string()),
+            title: WordPressContent {
+                rendered: "Test Post".to_string(),
+                protected: false,
+            },
+            content: WordPressContent {
+                rendered: "full content".to_string(),
+                protected: false,
+            },
+            excerpt: Some(WordPressContent {
+                rendered: long_excerpt,
+                protected: false,
+            }),
+            author: None,
+            featured_media: None,
+            categories: None,
+            tags: None,
+        }];
+
+        let summary = summarize_posts(&posts);
+        assert_eq!(summary.len(), 1);
+        let item = &summary[0];
+        assert_eq!(item["id"], 328);
+        assert_eq!(item["title"], "Test Post");
+        assert_eq!(item["status"], "publish");
+        assert_eq!(item["link"], "https://example.com/test");
+        assert_eq!(item["slug"], "テスト");
+        assert!(item["excerpt"].as_str().unwrap().ends_with('…'));
+    }
+
+    #[test]
+    fn test_html_to_plain_text_strips_tags_and_decodes_entities() {
+        let html = "<p>Hello&#8230; <strong>World</strong></p>";
+        let plain = html_to_plain_text(html);
+        assert!(!plain.contains('<'));
+        assert!(!plain.contains('>'));
+        assert!(!plain.contains("&#8230;"));
+        assert!(plain.contains('…'));
+        assert!(plain.contains("Hello"));
+        assert!(plain.contains("World"));
+    }
+
+    #[test]
+    fn test_html_to_plain_text_handles_plain_text_unchanged() {
+        let plain_input = "Just plain text, no HTML here";
+        assert_eq!(html_to_plain_text(plain_input), plain_input);
+    }
+
+    #[test]
+    fn test_html_to_plain_text_collapses_runs_of_blank_lines() {
+        // 空の<p>タグが連続すると、タグ除去後に複数行の空行が残ることがある
+        let html = "<p>はじめに</p><p></p><p></p><p></p><p></p><p>本文</p>";
+        let plain = html_to_plain_text(html);
+        assert!(!plain.contains("\n\n\n"));
+        assert!(plain.contains("はじめに"));
+        assert!(plain.contains("本文"));
+    }
+
+    #[test]
+    fn test_resolve_term_names_maps_known_ids_and_falls_back_for_unknown() {
+        let mut id_to_name = HashMap::new();
+        id_to_name.insert(7, "🧬 Trait設計".to_string());
+        id_to_name.insert(6, "kernel-design".to_string());
+
+        let resolved = resolve_term_names(&[7, 6, 999], &id_to_name);
+        assert_eq!(
+            resolved,
+            vec![
+                "🧬 Trait設計".to_string(),
+                "kernel-design".to_string(),
+                "999".to_string(), // 未知のIDは数値文字列にフォールバック
+            ]
+        );
+    }
+
+    #[test]
+    fn test_display_opt_id_formats_without_debug_artifacts() {
+        assert_eq!(display_opt_id(Some(328)), "328");
+        assert_eq!(display_opt_id(None), "N/A");
+    }
+
+    #[test]
+    fn test_endpoint_for_post_type_routes_pages_and_posts() {
+        assert_eq!(endpoint_for_post_type("page"), "pages");
+        assert_eq!(endpoint_for_post_type("post"), "posts");
+        // 未知の値は投稿として扱う（既定の振る舞い）
+        assert_eq!(endpoint_for_post_type("anything-else"), "posts");
+    }
+
+    #[test]
+    fn test_format_wp_error_extracts_code_and_message() {
+        let body =
+            r#"{"code":"rest_post_invalid_id","message":"Invalid post ID.","data":{"status":404}}"#;
+        let formatted = format_wp_error(reqwest::StatusCode::NOT_FOUND, body);
+        assert!(formatted.contains("rest_post_invalid_id"));
+        assert!(formatted.contains("Invalid post ID."));
+    }
+
+    #[test]
+    fn test_format_wp_error_falls_back_for_non_json_body() {
+        let formatted = format_wp_error(reqwest::StatusCode::NOT_FOUND, "<html>404</html>");
+        assert!(formatted.contains("404"));
+        assert!(formatted.contains("<html>404</html>"));
     }
 }
