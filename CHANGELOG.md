@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.2] - 2026-10-09
+
+### Fixed
+
+- Claude Desktop（STDIO transport）から起動してもMCPサーバーがリクエストを
+  処理しないバグを修正。原因は2つ:
+  1. `Runtime::initialize()`がtransportを起動するだけで、実際にそれを
+     読み続ける`Runtime::run()`を一度も呼んでいなかった。STDIO設定時は
+     独立して動作する`McpServer::run_stdio()`（改行区切りJSON-RPCの
+     読み取り・ディスパッチループ）へルーティングするよう変更。
+  2. `configs/production/claude-desktop.toml`等が`type = "stdio"`と
+     書いているが、`TransportConfig.transport_type`フィールドと一致せず
+     黙って`None`にデシリアライズされ、上記の新しい分岐が発火しなかった。
+     `#[serde(alias = "type")]`を追加し両方の表記を受け付けるよう修正。
+- 回帰テスト`test_transport_type_accepts_type_alias`を追加。
+
 ## [0.17.1] - 2026-10-03
 
 ### Fixed
