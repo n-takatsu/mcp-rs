@@ -55,7 +55,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n📝 Creating test category and tag...");
 
     let test_category = match handler
-        .create_category("MCP Test Category", Some("Test category for MCP"), None)
+        .create_category(
+            "MCP Test Category",
+            Some("Test category for MCP"),
+            None,
+            None,
+        )
         .await
     {
         Ok(category) => {
@@ -72,7 +77,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let test_tag = match handler
-        .create_tag("mcp-test", Some("Test tag for MCP"))
+        .create_tag("mcp-test", Some("Test tag for MCP"), None)
         .await
     {
         Ok(tag) => {
@@ -94,6 +99,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     match handler.create_post_with_categories_tags(
         "Test Post with Categories and Tags".to_string(),
         "<p>This is a test post created with MCP-RS, featuring both categories and tags!</p><p>Categories help organize content hierarchically, while tags provide flexible labeling.</p>".to_string(),
+        None, // status: defaults to draft
         Some(category_ids.clone()),
         Some(tag_ids.clone()),
         None // No featured image for this test
@@ -121,6 +127,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 match handler.update_post_categories_tags(
                     post_id,
+                    "post",
                     Some(updated_categories),
                     Some(updated_tags)
                 ).await {
