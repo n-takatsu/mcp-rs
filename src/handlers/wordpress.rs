@@ -270,6 +270,9 @@ pub struct WordPressHealthCheck {
     pub media_upload_possible: bool,
     pub error_details: Vec<String>,
     pub site_info: Option<WordPressSiteInfo>,
+    /// mcp-rs自身のログ出力先の状態（WordPressサイトとは無関係だが、
+    /// 接続トラブル時の切り分けに有用なため含める）
+    pub log_destination: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1749,6 +1752,11 @@ impl WordPressHandler {
             media_upload_possible: false,
             error_details: Vec::new(),
             site_info: None,
+            log_destination: crate::logging::current_log_destination()
+                .map(|d| d.detailed_status())
+                .unwrap_or_else(|| {
+                    "not available (file logging disabled or not initialized)".to_string()
+                }),
         };
 
         info!("Starting WordPress health check for: {}", self.base_url);
@@ -2805,6 +2813,8 @@ impl McpHandler for WordPressHandler {
                     "{} WordPress Health Check: {}\n\n",
                     status_emoji, status_text
                 );
+
+                report.push_str(&format!("📄 Log file: {}\n\n", health.log_destination));
 
                 if let Some(site_info) = &health.site_info {
                     report.push_str(&format!(
