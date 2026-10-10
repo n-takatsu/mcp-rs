@@ -9,6 +9,7 @@ mod config;
 mod core;
 mod error;
 mod handlers;
+mod logging;
 mod mcp;
 mod protocol;
 // mod runtime_control;  // Use from lib.rs to avoid duplication
@@ -33,11 +34,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = load_config().await?;
 
     // ログシステム初期化
+    // `_log_guard`はプロセス終了まで保持する必要がある（dropすると
+    // バックグラウンドの書き込みスレッドが終了し、以後のログが
+    // 実際にはファイルへ届かなくなる）。`let _ = ...`で捨てないこと。
     let log_config = LogConfig::from_server_config(&config.server);
-    init_logging(&log_config)?;
+    let _log_guard = init_logging(&log_config)?;
 
-    info!("🚀 MCP-RS v0.16.0 - Transport統合アーキテクチャ");
-    info!("📂 ログファイル場所: {}", log_config.log_dir.display());
+    info!(
+        "🚀 MCP-RS v{} - Transport統合アーキテクチャ",
+        env!("CARGO_PKG_VERSION")
+    );
+    // 実際のログ出力先（フォールバック解決後）はinit_logging内部で
+    // 既に1箇所だけ表示済み（"📂 ログ出力先: ..."）。ここで
+    // log_config.log_dir（未解決の設定値）を別に表示すると、
+    // フォールバックが発生した場合に2つの異なるパスが出て矛盾する。
     info!("✅ 設定読み込み完了");
 
     // STDIOモード（Claude Desktop等のMCPクライアント）:
