@@ -1,6 +1,6 @@
 [package]
 name = "mcp-rs"
-version = "0.17.2"
+version = "0.17.3"
 edition = "2021"
 authors = ["n-takatsu"]
 description = "Rust implementation of the Model Context Protocol (MCP) for AI-agent integration with Canary Deployment System"
@@ -92,7 +92,7 @@ hickory-resolver = { version = "0.26.1", optional = true }
 
 # Logging and tracing
 tracing = "0.1.41"
-tracing-subscriber = { version = "0.3.20", features = ["env-filter", "json"] }
+tracing-subscriber = { version = "0.3.20", features = ["env-filter", "json", "chrono"] }
 tracing-appender = "0.2.3"
 
 # Configuration

@@ -199,7 +199,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .into());
         }
 
-        match handler.create_category(name, Some(desc), None).await {
+        match handler.create_category(name, Some(desc), None, None).await {
             Ok(cat) => {
                 if let Some(id) = cat.id {
                     println!("   ✅ 「{}」(ID: {})", name, id);
@@ -241,7 +241,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .into());
         }
 
-        match handler.create_tag(name, Some(desc)).await {
+        match handler.create_tag(name, Some(desc), None).await {
             Ok(tag) => {
                 if let Some(id) = tag.id {
                     println!("   ✅ 「{}」(ID: {})", name, id);

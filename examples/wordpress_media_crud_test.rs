@@ -24,7 +24,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 1. メディア一覧の取得
     println!("📋 Getting all media files...");
     match handler.get_media().await {
-        Ok(media_list) => {
+        Ok((media_list, _total)) => {
             println!("✅ Found {} media files", media_list.len());
 
             // 最初の数件を表示
@@ -203,7 +203,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 8. メディア統計情報
     println!("\n📊 Media Statistics:");
     match handler.get_media().await {
-        Ok(final_media_list) => {
+        Ok((final_media_list, _total)) => {
             let mut stats = HashMap::new();
             for media in &final_media_list {
                 if let Some(mime_type) = &media.mime_type {

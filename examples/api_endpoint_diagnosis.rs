@@ -49,7 +49,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // 3. wp/v2/media
         println!("\n3. メディアAPI (/wp/v2/media)");
         match handler.get_media().await {
-            Ok(media) => {
+            Ok((media, _total)) => {
                 println!("   ✅ アクセス成功 ({}件)", media.len());
             }
             Err(e) => {

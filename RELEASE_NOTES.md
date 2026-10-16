@@ -4,6 +4,63 @@
 
 Our project follows a detailed 0.01 increment versioning strategy to provide granular tracking of development progress and feature implementation.
 
+## 🛠️ v0.17.3 - WordPress実機バグ修正・ログ出力堅牢性向上
+
+**Release Date:** 2026-10-13
+**Focus:** Claude Desktop経由での実機（redring.jp、WordPress + AFFINGER）に
+対する継続的な実機テストで見つかったWordPressハンドラーのバグ修正と、
+ログ出力まわりの堅牢性向上
+
+### ✅ WordPressハンドラー修正
+
+- 一覧系（`get_posts`/`get_pages`/`get_categories`/`get_tags`/
+  `get_comments`/`get_media`）がWordPressの既定`per_page=10`で頭打ちに
+  なっていた問題を修正し、全ページ取得するように変更（`get_media`は
+  `X-WP-Total`も併せて表示）
+- WordPressのエラーレスポンス本文（`code`/`message`）を診断に活用する
+  よう修正（以前はHTTPステータスのみで原因不明だった）
+- `get_post`/`update_post`/`delete_post`が`/wp/v2/posts/{id}`しか
+  叩いておらず、固定ページの読み取り・更新・削除ができなかった問題を
+  `post_type`パラメーター追加で修正
+- `create_post`系の既定ステータスを`publish`から`draft`に変更し、
+  意図しない公開を防止
+- 日本語slugの表示がパーセントエンコードされたままだった問題を修正
+- 投稿本文のHTMLタグをプレーンテキスト化してから表示するよう変更
+- `create_category`/`update_category`に`slug`/`parent`、
+  `create_tag`/`update_tag`に`slug`パラメーターを追加
+- `upload_media`を`multipart/form-data`方式に変更。生バイナリ+
+  `Content-Disposition`方式では非ASCIIファイル名（日本語等）が
+  `_`に置換され`unnamed-file`扱いになっていた問題を解消
+- `tools/call`の失敗（WordPress APIエラー等）がJSON-RPCレベルの
+  エラーとして返っていたのを、MCP仕様に沿った
+  `CallToolResult{isError: true, content}`形式に修正
+
+### ✅ ログ出力の堅牢性向上
+
+- ログディレクトリが存在するが書き込み不可な場合（例:
+  `C:\Program Files\...`配下に非昇格プロセスから書き込む場合）に
+  `rolling::daily()`等の内部`.expect()`でサーバー全体がパニックして
+  起動できなくなっていた問題を修正。フォールブルな`Builder::build()`
+  に切り替え、失敗時はコンソール出力のみへ縮退するよう変更
+- ログ出力先を、設定/既定のディレクトリ→`%USERPROFILE%\.mcp-rs\logs`
+  （Windows）→`./logs`→システムテンプディレクトリの順に、実際の
+  書き込み＋readback確認込みで解決するフォールバックチェーンを追加
+  （`%LOCALAPPDATA%`はMSIXパッケージのClaude Desktopからの子プロセスで
+  パス仮想化されうるため避けた）
+- `non_blocking()`の書き込みガードが即座にdropされ、起動直後に
+  バックグラウンドの書き込みスレッドが終了し、以後のログがほぼ
+  すべて実際にはファイルへ届かなくなっていた重大な既存バグを修正
+- 起動時に解決したログ出力先（フォールバック理由含む）を常にstderrへ
+  告知し、`wordpress_health_check`にもファイルサイズ・最終書き込み
+  時刻込みで表示するよう変更
+- ファイル出力にANSIエスケープコードが混入していた問題を修正
+- 複数のmcp-rsプロセスが同一ログファイルへ同時に書き込む場合に備え、
+  各行に`[pid N]`を付与するカスタムフォーマッターを追加
+- タイムスタンプをUTCからミリ秒精度・タイムゾーン付きのローカル時刻
+  表記に統一
+- `main.rs`のバージョン表記ハードコードを`env!("CARGO_PKG_VERSION")`
+  に統一
+
 ## 🛠️ v0.17.2 - Claude Desktop起動不具合修正
 
 **Release Date:** 2026-10-09

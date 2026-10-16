@@ -59,7 +59,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // 3. メディア取得テスト
         println!("\n3. メディア取得テスト...");
         match handler.get_media().await {
-            Ok(media) => {
+            Ok((media, _total)) => {
                 println!("   ✅ メディア取得成功 ({}件)", media.len());
                 for item in media.iter().take(3) {
                     if let Some(title) = &item.title {

@@ -29,7 +29,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n📝 Creating a test post...");
     let created_post = match handler.create_post(
         "CRUD Test Post".to_string(),
-        "<p>This is a test post for CRUD operations with MCP-RS.</p><p>We will test create, read, update, and delete operations.</p>".to_string()
+        "<p>This is a test post for CRUD operations with MCP-RS.</p><p>We will test create, read, update, and delete operations.</p>".to_string(),
+        None // status: defaults to draft
     ).await {
         Ok(post) => {
             info!("✅ Created post: {} (ID: {:?})", post.title.rendered, post.id);
@@ -45,7 +46,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Read the created post
     println!("\n📖 Reading the created post...");
-    match handler.get_post(post_id).await {
+    match handler.get_post(post_id, "post").await {
         Ok(post) => {
             info!("✅ Retrieved post: {}", post.title.rendered);
             println!("   Title: {}", post.title.rendered);
@@ -69,7 +70,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ..Default::default()
     };
 
-    match handler.update_post(post_id, update_params).await {
+    match handler.update_post(post_id, "post", update_params).await {
         Ok(updated_post) => {
             println!("✅ Post updated successfully:");
             println!("   - ID: {}", updated_post.id.unwrap_or(0));
@@ -88,7 +89,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Read the updated post to verify changes
     println!("\n🔍 Verifying the update...");
-    match handler.get_post(post_id).await {
+    match handler.get_post(post_id, "post").await {
         Ok(post) => {
             info!("✅ Verified updated post");
             println!("   Current Title: {}", post.title.rendered);
@@ -133,7 +134,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ..Default::default()
         };
 
-        match handler.update_post(post_id, update_params).await {
+        match handler.update_post(post_id, "post", update_params).await {
             Ok(updated_post) => {
                 info!("✅ Updated post with taxonomy");
                 println!("   Categories: {:?}", updated_post.categories);
@@ -153,7 +154,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Delete the post (move to trash)
     println!("\n🗑️ Deleting the test post...");
-    match handler.delete_post(post_id, false).await {
+    match handler.delete_post(post_id, "post", false).await {
         Ok(_) => {
             info!("✅ Moved post to trash");
             println!("   Post ID {} has been moved to trash", post_id);
@@ -165,7 +166,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Try to read the deleted post (should fail or show trashed status)
     println!("\n🔍 Verifying deletion...");
-    match handler.get_post(post_id).await {
+    match handler.get_post(post_id, "post").await {
         Ok(post) => {
             println!("   Post still exists with status: {}", post.status);
             if post.status == "trash" {
