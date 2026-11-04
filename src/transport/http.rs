@@ -5,8 +5,9 @@
 use crate::{
     error::{Error, Result},
     security::{
-        AntiReplayConfig, AntiReplayMiddleware, AuditLogger, IDSConfig, IntrusionDetectionSystem,
-        NetworkPolicy, RecommendedAction, ReplayError, RequestData, SecurityHeaders,
+        AntiReplayConfig, AntiReplayMiddleware, ApiKeyConfig, ApiKeyManager, AuditLogger,
+        IDSConfig, IntrusionDetectionSystem, NetworkPolicy, RecommendedAction, ReplayError,
+        RequestData, SecurityHeaders,
     },
     transport::{
         websocket::server::{ConnectionId, MessageHandler, WebSocketConnectionInfo},
@@ -146,10 +147,37 @@ pub struct HttpConfig {
     /// with 503. Only meaningful when `enable_websocket_upgrade` is `true`.
     #[serde(default = "default_websocket_max_connections")]
     pub websocket_max_connections: usize,
+    /// Require a valid API key (`Authorization: Bearer <key>` or
+    /// `X-Api-Key` header) on every HTTP/WebSocket request. STDIO
+    /// transport is unaffected (local pipe, implicit trust model) - this
+    /// only gates the HTTP/WS listener, which can be exposed on a real
+    /// network interface. Defaults to `false` for backward compatibility,
+    /// but strongly recommended whenever `bind_addr` is not loopback-only.
+    #[serde(default)]
+    pub auth_enabled: bool,
+    /// Valid API keys when `auth_enabled = true`. Each `key` is hashed
+    /// in-memory at startup and never logged or echoed back.
+    #[serde(default)]
+    pub api_keys: Vec<ApiKeyEntry>,
 }
 
 fn default_websocket_max_connections() -> usize {
     1000
+}
+
+/// A single API key accepted by this transport when `auth_enabled = true`.
+/// Distinct from `security::auth::ApiKey` (the runtime representation,
+/// which includes hash/usage/permission bookkeeping) - this is just the
+/// minimal config-facing shape.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApiKeyEntry {
+    /// The raw key value clients must present. Hashed on import; never
+    /// stored or logged in plaintext after startup.
+    pub key: String,
+    /// Human-readable label for this key (e.g. for audit/log messages).
+    pub name: String,
+    /// Identifier for whoever this key was issued to.
+    pub user_id: String,
 }
 
 impl Default for HttpConfig {
@@ -179,6 +207,8 @@ impl Default for HttpConfig {
             ids_trust_forwarded_for: false,
             enable_websocket_upgrade: false,
             websocket_max_connections: default_websocket_max_connections(),
+            auth_enabled: false,
+            api_keys: Vec::new(),
         }
     }
 }
@@ -212,6 +242,7 @@ struct HttpTransportState {
     anti_replay: Option<Arc<AntiReplayMiddleware>>,
     ids: Option<Arc<IntrusionDetectionSystem>>,
     ids_trust_forwarded_for: bool,
+    api_key_manager: Option<Arc<RwLock<ApiKeyManager>>>,
     audit_logger: Arc<AuditLogger>,
     websocket_upgrade_enabled: bool,
     // Reserves capacity atomically at upgrade time (before the handshake
@@ -276,6 +307,61 @@ impl HttpTransport {
             )));
         }
 
+        if self.config.auth_enabled && self.config.api_keys.is_empty() {
+            return Err(Error::TransportError(TransportError::Configuration(
+                "auth_enabled requires at least one entry in api_keys".to_string(),
+            )));
+        }
+
+        if self.config.auth_enabled {
+            // An empty `key` would hash to the same value for every entry
+            // configured this way, so a single blank entry (e.g. from a
+            // template/env-substitution bug) would let any client
+            // authenticate with an empty X-Api-Key, regardless of how many
+            // real keys are also configured - reject that outright rather
+            // than importing it.
+            if self
+                .config
+                .api_keys
+                .iter()
+                .any(|entry| entry.key.is_empty())
+            {
+                return Err(Error::TransportError(TransportError::Configuration(
+                    "api_keys entries must not have an empty key".to_string(),
+                )));
+            }
+
+            // Two entries sharing a `key` would otherwise import silently
+            // (the later one overwriting the earlier one in the manager's
+            // hash-keyed storage), misattributing that key's usage to
+            // whichever entry happened to be imported last.
+            let mut seen_keys = HashSet::new();
+            for entry in &self.config.api_keys {
+                if !seen_keys.insert(&entry.key) {
+                    return Err(Error::TransportError(TransportError::Configuration(
+                        format!("api_keys contains a duplicate key (entry '{}')", entry.name),
+                    )));
+                }
+            }
+        }
+
+        let api_key_manager = if self.config.auth_enabled {
+            let mut manager = ApiKeyManager::new(ApiKeyConfig::default());
+            for entry in &self.config.api_keys {
+                manager
+                    .import_key(&entry.key, entry.name.clone(), entry.user_id.clone(), None)
+                    .map_err(|e| {
+                        Error::TransportError(TransportError::Configuration(format!(
+                            "Failed to import configured API key '{}': {}",
+                            entry.name, e
+                        )))
+                    })?;
+            }
+            Some(Arc::new(RwLock::new(manager)))
+        } else {
+            None
+        };
+
         let pinned_certificates_sha256: HashSet<String> = self
             .config
             .pinned_certificates_sha256
@@ -333,6 +419,7 @@ impl HttpTransport {
                 None
             },
             ids_trust_forwarded_for: self.config.ids_trust_forwarded_for,
+            api_key_manager,
             audit_logger: Arc::new(AuditLogger::with_defaults()),
             websocket_upgrade_enabled: self.config.enable_websocket_upgrade,
             websocket_semaphore: Arc::new(tokio::sync::Semaphore::new(
@@ -773,6 +860,7 @@ async fn handle_jsonrpc_request(
     Json(request): Json<Value>,
 ) -> std::result::Result<impl IntoResponse, StatusCode> {
     check_network_policy(&state.network_policy, remote_addr)?;
+    check_auth(state.api_key_manager.as_ref(), &headers, remote_addr).await?;
     check_https_enforcement(
         state.enforce_https,
         state.tls_terminated_locally,
@@ -942,6 +1030,61 @@ fn check_network_policy(
         return Err(StatusCode::FORBIDDEN);
     }
     Ok(())
+}
+
+/// Requires a valid, non-revoked, non-expired API key when API-key
+/// authentication is configured (`api_key_manager.is_some()`, i.e.
+/// `HttpConfig::auth_enabled = true`). Looks for the key in the
+/// `Authorization: Bearer <key>` header, falling back to `X-Api-Key`.
+/// Does nothing when auth is disabled, preserving existing behavior for
+/// deployments that haven't opted in.
+///
+/// Uses `ApiKeyManager` directly rather than the richer `MultiAuthProvider`/
+/// `AuthMiddleware` (`security::auth`) - those require a matching
+/// `UserRepository` entry per key and pull in JWT/OAuth2/session scaffolding
+/// unneeded for "reject requests without a valid key". `verify_key` takes a
+/// write lock to record usage stats, serializing concurrent auth checks on
+/// one lock; this is the same `Arc<RwLock<ApiKeyManager>>` shape
+/// `MultiAuthProvider` itself already uses, not a new bottleneck introduced
+/// here, and is an accepted tradeoff for this issue's minimal scope.
+async fn check_auth(
+    api_key_manager: Option<&Arc<RwLock<ApiKeyManager>>>,
+    headers: &HeaderMap,
+    remote_addr: SocketAddr,
+) -> std::result::Result<(), StatusCode> {
+    let Some(manager) = api_key_manager else {
+        return Ok(());
+    };
+
+    let Some(token) = extract_api_key(headers) else {
+        warn!(
+            "Rejected request from {} due to missing API key",
+            remote_addr
+        );
+        return Err(StatusCode::UNAUTHORIZED);
+    };
+
+    if manager.write().await.verify_key(&token).is_err() {
+        warn!(
+            "Rejected request from {} due to invalid, revoked, or expired API key",
+            remote_addr
+        );
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+
+    Ok(())
+}
+
+/// Extracts the client-supplied API key from `Authorization: Bearer <key>`,
+/// falling back to `X-Api-Key` for clients that can't set an Authorization
+/// header.
+fn extract_api_key(headers: &HeaderMap) -> Option<String> {
+    if let Some(auth) = header_value(headers, "authorization") {
+        if let Some(token) = auth.strip_prefix("Bearer ") {
+            return Some(token.to_string());
+        }
+    }
+    header_value(headers, "x-api-key").map(|v| v.to_string())
 }
 
 fn check_https_enforcement(
@@ -1262,6 +1405,9 @@ async fn handle_ws_upgrade(
     }
 
     if let Err(status) = check_network_policy(&state.network_policy, remote_addr) {
+        return status.into_response();
+    }
+    if let Err(status) = check_auth(state.api_key_manager.as_ref(), &headers, remote_addr).await {
         return status.into_response();
     }
     if let Err(status) = check_https_enforcement(
@@ -2921,5 +3067,286 @@ mod tests {
             .unwrap();
 
         assert!(response.status().is_success());
+    }
+
+    fn notification_jsonrpc_request() -> Value {
+        // No `id` field, so handle_jsonrpc_request takes the notification
+        // path and returns an immediate "accepted" acknowledgment instead
+        // of waiting on the internal channel for a response that nothing
+        // in these tests ever produces (see http.rs's notification branch).
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "tools/list",
+            "params": {}
+        })
+    }
+
+    #[tokio::test]
+    async fn test_jsonrpc_rejects_request_without_api_key_when_auth_enabled() {
+        let config = HttpConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            auth_enabled: true,
+            api_keys: vec![ApiKeyEntry {
+                key: "test-key-12345".to_string(),
+                name: "test".to_string(),
+                user_id: "user-1".to_string(),
+            }],
+            ..HttpConfig::default()
+        };
+        let transport = HttpTransport::new(config).unwrap();
+        transport.start_server().await.unwrap();
+        let server_addr = transport.bound_addr().await.unwrap();
+        wait_for_plain_server_ready(server_addr).await;
+
+        let client = reqwest::Client::new();
+        let response = client
+            .post(format!("http://127.0.0.1:{}/mcp", server_addr.port()))
+            .json(&notification_jsonrpc_request())
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_jsonrpc_rejects_invalid_api_key() {
+        let config = HttpConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            auth_enabled: true,
+            api_keys: vec![ApiKeyEntry {
+                key: "correct-key".to_string(),
+                name: "test".to_string(),
+                user_id: "user-1".to_string(),
+            }],
+            ..HttpConfig::default()
+        };
+        let transport = HttpTransport::new(config).unwrap();
+        transport.start_server().await.unwrap();
+        let server_addr = transport.bound_addr().await.unwrap();
+        wait_for_plain_server_ready(server_addr).await;
+
+        let client = reqwest::Client::new();
+        let response = client
+            .post(format!("http://127.0.0.1:{}/mcp", server_addr.port()))
+            .header("Authorization", "Bearer wrong-key")
+            .json(&notification_jsonrpc_request())
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_jsonrpc_accepts_valid_api_key() {
+        let config = HttpConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            auth_enabled: true,
+            api_keys: vec![ApiKeyEntry {
+                key: "correct-key".to_string(),
+                name: "test".to_string(),
+                user_id: "user-1".to_string(),
+            }],
+            ..HttpConfig::default()
+        };
+        let transport = HttpTransport::new(config).unwrap();
+        transport.start_server().await.unwrap();
+        let server_addr = transport.bound_addr().await.unwrap();
+        wait_for_plain_server_ready(server_addr).await;
+
+        let client = reqwest::Client::new();
+        let response = client
+            .post(format!("http://127.0.0.1:{}/mcp", server_addr.port()))
+            .header("Authorization", "Bearer correct-key")
+            .json(&notification_jsonrpc_request())
+            .send()
+            .await
+            .unwrap();
+
+        assert!(response.status().is_success());
+    }
+
+    #[tokio::test]
+    async fn test_jsonrpc_accepts_valid_api_key_via_x_api_key_header() {
+        let config = HttpConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            auth_enabled: true,
+            api_keys: vec![ApiKeyEntry {
+                key: "correct-key".to_string(),
+                name: "test".to_string(),
+                user_id: "user-1".to_string(),
+            }],
+            ..HttpConfig::default()
+        };
+        let transport = HttpTransport::new(config).unwrap();
+        transport.start_server().await.unwrap();
+        let server_addr = transport.bound_addr().await.unwrap();
+        wait_for_plain_server_ready(server_addr).await;
+
+        let client = reqwest::Client::new();
+        let response = client
+            .post(format!("http://127.0.0.1:{}/mcp", server_addr.port()))
+            .header("X-Api-Key", "correct-key")
+            .json(&notification_jsonrpc_request())
+            .send()
+            .await
+            .unwrap();
+
+        assert!(response.status().is_success());
+    }
+
+    #[tokio::test]
+    async fn test_jsonrpc_allows_request_without_credentials_when_auth_disabled() {
+        // auth_enabled defaults to false - must behave exactly as before
+        // this feature existed.
+        let config = HttpConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            ..HttpConfig::default()
+        };
+        let transport = HttpTransport::new(config).unwrap();
+        transport.start_server().await.unwrap();
+        let server_addr = transport.bound_addr().await.unwrap();
+        wait_for_plain_server_ready(server_addr).await;
+
+        let client = reqwest::Client::new();
+        let response = client
+            .post(format!("http://127.0.0.1:{}/mcp", server_addr.port()))
+            .json(&notification_jsonrpc_request())
+            .send()
+            .await
+            .unwrap();
+
+        assert!(response.status().is_success());
+    }
+
+    #[tokio::test]
+    async fn test_ws_upgrade_rejects_without_api_key_when_auth_enabled() {
+        let config = HttpConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            enable_websocket_upgrade: true,
+            auth_enabled: true,
+            api_keys: vec![ApiKeyEntry {
+                key: "correct-key".to_string(),
+                name: "test".to_string(),
+                user_id: "user-1".to_string(),
+            }],
+            ..HttpConfig::default()
+        };
+        let transport = HttpTransport::new(config).unwrap();
+        transport.start_server().await.unwrap();
+        let server_addr = transport.bound_addr().await.unwrap();
+        wait_for_plain_server_ready(server_addr).await;
+
+        let url = format!("ws://localhost:{}/ws", server_addr.port());
+        match tokio_tungstenite::connect_async(&url).await {
+            Err(WsError::Http(response)) => {
+                assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+            }
+            other => panic!(
+                "expected the /ws upgrade to be rejected with 401 without an API key, got: {other:?}"
+            ),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_ws_upgrade_accepts_valid_api_key() {
+        let config = HttpConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            enable_websocket_upgrade: true,
+            auth_enabled: true,
+            api_keys: vec![ApiKeyEntry {
+                key: "correct-key".to_string(),
+                name: "test".to_string(),
+                user_id: "user-1".to_string(),
+            }],
+            ..HttpConfig::default()
+        };
+        let transport = HttpTransport::new(config).unwrap();
+        transport.start_server().await.unwrap();
+        let server_addr = transport.bound_addr().await.unwrap();
+        wait_for_plain_server_ready(server_addr).await;
+
+        let mut request = format!("ws://localhost:{}/ws", server_addr.port())
+            .into_client_request()
+            .unwrap();
+        request
+            .headers_mut()
+            .insert("Authorization", "Bearer correct-key".parse().unwrap());
+
+        let result = tokio_tungstenite::connect_async(request).await;
+        assert!(
+            result.is_ok(),
+            "expected the upgrade to succeed with a valid API key, got: {:?}",
+            result.err()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_start_server_rejects_auth_enabled_without_api_keys() {
+        let config = HttpConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            auth_enabled: true,
+            api_keys: Vec::new(),
+            ..HttpConfig::default()
+        };
+        let transport = HttpTransport::new(config).unwrap();
+
+        let result = transport.start_server().await;
+        assert!(
+            result.is_err(),
+            "expected start_server() to reject auth_enabled=true with no configured api_keys"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_start_server_rejects_empty_api_key_entry() {
+        let config = HttpConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            auth_enabled: true,
+            api_keys: vec![ApiKeyEntry {
+                key: String::new(),
+                name: "blank".to_string(),
+                user_id: "user-1".to_string(),
+            }],
+            ..HttpConfig::default()
+        };
+        let transport = HttpTransport::new(config).unwrap();
+
+        let result = transport.start_server().await;
+        assert!(
+            result.is_err(),
+            "expected start_server() to reject an api_keys entry with an empty key \
+             (would otherwise let any client authenticate with an empty X-Api-Key)"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_start_server_rejects_duplicate_api_keys() {
+        let config = HttpConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            auth_enabled: true,
+            api_keys: vec![
+                ApiKeyEntry {
+                    key: "shared-key".to_string(),
+                    name: "first".to_string(),
+                    user_id: "user-1".to_string(),
+                },
+                ApiKeyEntry {
+                    key: "shared-key".to_string(),
+                    name: "second".to_string(),
+                    user_id: "user-2".to_string(),
+                },
+            ],
+            ..HttpConfig::default()
+        };
+        let transport = HttpTransport::new(config).unwrap();
+
+        let result = transport.start_server().await;
+        assert!(
+            result.is_err(),
+            "expected start_server() to reject duplicate api_keys entries instead of \
+             silently keeping only the last one"
+        );
     }
 }

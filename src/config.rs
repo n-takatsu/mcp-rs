@@ -168,6 +168,34 @@ pub struct HttpTransportConfig {
     /// Maximum concurrent `/ws` connections before new upgrades are
     /// rejected. Defaults to `1000`.
     pub websocket_max_connections: Option<usize>,
+    /// Require a valid API key on every HTTP/WebSocket request. STDIO
+    /// transport is unaffected. Defaults to `false`, but strongly
+    /// recommended whenever `addr` is not loopback-only.
+    pub auth_enabled: Option<bool>,
+    /// Valid API keys when `auth_enabled = true`.
+    pub api_keys: Option<Vec<ApiKeyEntryConfig>>,
+}
+
+/// TOML-facing shape for a single API key entry under
+/// `transport.http.api_keys`. Mirrors `transport::http::ApiKeyEntry`.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ApiKeyEntryConfig {
+    /// The raw key value clients must present.
+    pub key: String,
+    /// Human-readable label for this key.
+    pub name: String,
+    /// Identifier for whoever this key was issued to.
+    pub user_id: String,
+}
+
+impl From<ApiKeyEntryConfig> for crate::transport::http::ApiKeyEntry {
+    fn from(entry: ApiKeyEntryConfig) -> Self {
+        Self {
+            key: entry.key,
+            name: entry.name,
+            user_id: entry.user_id,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -599,6 +627,8 @@ impl McpConfig {
                     network_policy_ip_whitelist: Some(vec![]),
                     enable_websocket_upgrade: Some(false),
                     websocket_max_connections: Some(1000),
+                    auth_enabled: Some(false),
+                    api_keys: Some(vec![]),
                 }),
             },
             handlers: HandlersConfig {
@@ -814,6 +844,14 @@ impl McpConfig {
                 ids_trust_forwarded_for: http.ids_trust_forwarded_for.unwrap_or(false),
                 enable_websocket_upgrade: http.enable_websocket_upgrade.unwrap_or(false),
                 websocket_max_connections: http.websocket_max_connections.unwrap_or(1000),
+                auth_enabled: http.auth_enabled.unwrap_or(false),
+                api_keys: http
+                    .api_keys
+                    .clone()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(crate::transport::http::ApiKeyEntry::from)
+                    .collect(),
             }
         } else {
             crate::transport::http::HttpConfig::default()
