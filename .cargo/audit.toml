@@ -67,4 +67,13 @@ ignore = [
     #               Upgrading rand across entire ecosystem is infeasible due to multiple major consumers
     "RUSTSEC-2026-0097",
 
+    # RUSTSEC-2026-0387: crypto-bigint timing variability in constant-time ops
+    # - Affects: crypto-bigint 0.5.5 (via elliptic-curve -> p256/p384 -> jsonwebtoken)
+    # - Status: Fix requires crypto-bigint >=0.7.6, only available via jsonwebtoken
+    #           11.x (breaking major version bump from our pinned 10.2)
+    # - Mitigation: Evaluate jsonwebtoken 11.x migration separately; timing
+    #               side-channel requires an attacker able to measure
+    #               microarchitectural timing of our JWT signing/verification
+    "RUSTSEC-2026-0387",
+
 ]
