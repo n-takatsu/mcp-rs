@@ -168,6 +168,12 @@ fn summarize_media(media_items: &[WordPressMedia]) -> Vec<serde_json::Value> {
         .collect()
 }
 
+/// `call_tool`の全ツール呼び出し共通のレート制限キー。
+/// `WordPressHandler`は1インスタンスにつき1つのWordPressサイトに
+/// 対応するため、クライアント単位ではなくハンドラ（サイト接続）単位で
+/// 制限する。
+const RATE_LIMIT_CLIENT_ID: &str = "wordpress-tool-calls";
+
 #[derive(Debug, Clone)]
 pub struct WordPressHandler {
     client: Client,
@@ -177,7 +183,6 @@ pub struct WordPressHandler {
     /// 後方互換性のための平文認証情報
     username: Option<String>,
     password: Option<String>,
-    #[allow(dead_code)]
     rate_limiter: Arc<RateLimiter>,
 }
 
@@ -443,32 +448,6 @@ impl WordPressHandler {
             request = request.basic_auth(username, Some(password));
         }
         request
-    }
-
-    /// レート制限チェック付きでリクエストを実行
-    #[allow(dead_code)]
-    async fn execute_request_with_rate_limit<T>(
-        &self,
-        request_builder: reqwest::RequestBuilder,
-        client_id: &str,
-    ) -> Result<T, McpError>
-    where
-        T: for<'de> serde::Deserialize<'de>,
-    {
-        // レート制限チェック
-        if let Err(rate_limit_error) = self.rate_limiter.check_rate_limit(client_id).await {
-            warn!(
-                "Rate limit exceeded for client {}: {}",
-                client_id, rate_limit_error
-            );
-            return Err(McpError::Other(format!(
-                "Rate limit exceeded: {}",
-                rate_limit_error
-            )));
-        }
-
-        // 通常のリクエスト実行
-        self.execute_request_with_retry(request_builder).await
     }
 
     /// リトライ機能付きでHTTPリクエストを実行
@@ -2793,6 +2772,15 @@ impl McpHandler for WordPressHandler {
     }
 
     async fn call_tool(&self, params: ToolCallParams) -> Result<serde_json::Value, McpError> {
+        if let Err(e) = self
+            .rate_limiter
+            .check_rate_limit(RATE_LIMIT_CLIENT_ID)
+            .await
+        {
+            warn!("WordPress tool call rate limited: {}", e);
+            return Err(McpError::Other(format!("Rate limit exceeded: {}", e)));
+        }
+
         match params.name.as_str() {
             "wordpress_health_check" => {
                 info!("Performing WordPress health check...");
@@ -3951,6 +3939,87 @@ mod tests {
             let result = WordPressHandler::try_new(config);
             assert!(result.is_err(), "URL {} should be rejected", url);
         }
+    }
+
+    fn rate_limited_handler(rate_limit: RateLimitConfig) -> WordPressHandler {
+        let config = WordPressConfig {
+            // どのツールもこのホストへは実際には到達しない
+            // （バーストが0の場合、ネットワークI/Oより先にレート制限で
+            // 拒否されるため、到達可能である必要がない）。
+            url: "https://example.invalid".to_string(),
+            username: "test".to_string(),
+            password: "test".to_string(),
+            enabled: Some(true),
+            timeout_seconds: Some(30),
+            rate_limit: Some(rate_limit),
+            encrypted_credentials: None,
+        };
+        WordPressHandler::try_new(config).unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_call_tool_rejects_when_rate_limit_exhausted() {
+        // burst_size: 0はトークンバケットが常に空であることを意味し、
+        // 最初のcheck_rate_limit呼び出しが（ネットワークI/Oより前に）
+        // 即座に失敗する。
+        let handler = rate_limited_handler(RateLimitConfig {
+            requests_per_second: 1,
+            burst_size: 0,
+            enabled: true,
+        });
+
+        let result = handler
+            .call_tool(ToolCallParams {
+                name: "get_posts".to_string(),
+                arguments: None,
+            })
+            .await;
+
+        assert!(
+            matches!(result, Err(McpError::Other(ref msg)) if msg.contains("Rate limit exceeded")),
+            "expected a rate-limit error, got: {:?}",
+            result
+        );
+    }
+
+    #[tokio::test]
+    async fn test_call_tool_rate_limit_runs_before_tool_dispatch() {
+        // レート制限チェックはツール名のmatchより前に実行されるため、
+        // 存在しないツール名でもToolNotFoundではなくレート制限エラーに
+        // なる。
+        let handler = rate_limited_handler(RateLimitConfig {
+            requests_per_second: 1,
+            burst_size: 0,
+            enabled: true,
+        });
+
+        let result = handler
+            .call_tool(ToolCallParams {
+                name: "nonexistent_tool".to_string(),
+                arguments: None,
+            })
+            .await;
+
+        assert!(
+            matches!(result, Err(McpError::Other(ref msg)) if msg.contains("Rate limit exceeded"))
+        );
+    }
+
+    #[tokio::test]
+    async fn test_call_tool_passes_rate_limit_when_within_burst() {
+        // バースト許容量内であればレート制限チェック自体は通過し、
+        // 実際のツールディスパッチ（この場合は未知のツール名なので
+        // ToolNotFound）まで到達することを確認する。
+        let handler = rate_limited_handler(RateLimitConfig::default());
+
+        let result = handler
+            .call_tool(ToolCallParams {
+                name: "nonexistent_tool".to_string(),
+                arguments: None,
+            })
+            .await;
+
+        assert!(matches!(result, Err(McpError::ToolNotFound(_))));
     }
 
     #[test]
