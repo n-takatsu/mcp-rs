@@ -51,8 +51,19 @@ use tracing::{debug, info, warn};
 pub mod dynamic;
 pub use dynamic::{ConfigSwitcher, DynamicConfigManager};
 
+/// `WORDPRESS_MASTER_PASSWORD`環境変数を読み書きするテストを直列化する
+/// ためのロック。`cargo test`は同一プロセス内で全テストを並列実行する
+/// ため、環境変数はプロセス全体で共有される。このロックを取らずに複数
+/// のテストが同じ環境変数を同時にset/removeすると、無関係なテストが
+/// 「環境変数が見つからない」という形で不安定に失敗する
+/// （`src/config.rs`・`src/config/dynamic.rs`両方のテストで使用）。
+#[cfg(test)]
+pub(crate) static WORDPRESS_MASTER_PASSWORD_ENV_LOCK: std::sync::Mutex<()> =
+    std::sync::Mutex::new(());
+
 // 前方宣言用の型エイリアス
 use std::collections::HashMap;
+use std::fmt;
 use std::path::PathBuf;
 
 // セキュリティ機能用のimport
@@ -235,17 +246,40 @@ impl Default for PluginsConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 pub struct WordPressConfig {
     pub url: String,
+    /// `encrypted_credentials`のみを指定する設定も許容するため、省略可能
+    /// （省略時は空文字列。`resolve_encrypted_credentials`が復号結果で
+    /// 上書きする想定）
+    #[serde(default)]
     pub username: String,
-    pub password: String, // Application Password (平文 - 後方互換性のため)
+    /// Application Password (平文 - 後方互換性のため)。`username`と同様に
+    /// `encrypted_credentials`のみの設定を許容するため省略可能
+    #[serde(default)]
+    pub password: String,
     pub enabled: Option<bool>,
     pub timeout_seconds: Option<u64>,
     /// レート制限設定
     pub rate_limit: Option<RateLimitConfig>,
     /// 暗号化された認証情報（オプション）
     pub encrypted_credentials: Option<EncryptedCredentials>,
+}
+
+// Debugトレイトでパスワードを露出しないようにカスタム実装
+// （SecureCredentials::fmt::Debugと同じ方針）
+impl fmt::Debug for WordPressConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("WordPressConfig")
+            .field("url", &self.url)
+            .field("username", &self.username)
+            .field("password", &"[REDACTED]")
+            .field("enabled", &self.enabled)
+            .field("timeout_seconds", &self.timeout_seconds)
+            .field("rate_limit", &self.rate_limit)
+            .field("encrypted_credentials", &self.encrypted_credentials)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -330,6 +364,51 @@ impl WordPressConfig {
     #[allow(dead_code)]
     pub fn is_encrypted(&self) -> bool {
         self.encrypted_credentials.is_some()
+    }
+
+    /// `encrypted_credentials`が設定されていれば復号し、平文の
+    /// `username`/`password`フィールドを復号結果で上書きする。設定読み込み
+    /// 時に一度呼ぶことで、以降は`WordPressHandler::try_new`等の既存の
+    /// 平文経路がそのまま動く。
+    ///
+    /// `encrypted_credentials`もplaintextの`username`/`password`も
+    /// どちらも無い場合はエラーを返す。`username`/`password`は
+    /// `encrypted_credentials`のみの設定を許容するために
+    /// `#[serde(default)]`（省略時は空文字列）にしているため、
+    /// この関数を呼ばないと「認証情報が一切無い」設定が検証なしで
+    /// 空パスワードのまま起動してしまう。
+    ///
+    /// マスターパスワードは`WORDPRESS_MASTER_PASSWORD`環境変数からのみ
+    /// 取得する。暗号化データを設定ファイルに置けても、復号鍵まで同じ
+    /// ファイルに書いたら暗号化の意味がないため、設定ファイル経由では
+    /// 受け付けない。
+    pub fn resolve_encrypted_credentials(&mut self) -> Result<(), EncryptionError> {
+        let Some(encrypted) = self.encrypted_credentials.clone() else {
+            // enabled=falseの場合は実際にWordPressHandlerを起動しないため
+            // （main.rs/dynamic.rsの`wp_config.enabled.unwrap_or(false)`
+            // チェック参照）、認証情報が空でも検証エラーにしない。プレース
+            // ホルダーとして空のusername/passwordのままセクションだけ
+            // 残しておく既存の使い方を壊さないようにするため
+            if self.enabled.unwrap_or(false)
+                && (self.username.is_empty() || self.password.is_empty())
+            {
+                return Err(EncryptionError::InvalidInput(
+                    "WordPress認証情報が設定されていません。username/passwordまたはencrypted_credentialsのいずれかを指定してください".to_string(),
+                ));
+            }
+            return Ok(());
+        };
+
+        let master_password = std::env::var("WORDPRESS_MASTER_PASSWORD").map_err(|_| {
+            EncryptionError::InvalidInput(
+                "encrypted_credentialsが設定されていますが、WORDPRESS_MASTER_PASSWORD環境変数が見つかりません".to_string(),
+            )
+        })?;
+
+        let secure_creds = SecureCredentials::from_encrypted(&encrypted, &master_password)?;
+        self.username = secure_creds.username.clone();
+        self.password = secure_creds.get_password().expose_secret().to_string();
+        Ok(())
     }
 }
 
@@ -552,6 +631,13 @@ impl McpConfig {
                     wp_config.password = password;
                 }
             }
+        }
+
+        // encrypted_credentialsの解決は上記の平文環境変数上書きより後に
+        // 行う。そうしないと、暗号化認証情報へ移行した後も環境に残った
+        // 古いWORDPRESS_PASSWORD等が、復号済みの値を無言で上書きしてしまう
+        if let Some(ref mut wp_config) = final_config.handlers.wordpress {
+            wp_config.resolve_encrypted_credentials()?;
         }
 
         // サーバー設定の環境変数上書き
@@ -1014,6 +1100,164 @@ mod additional_tests {
     fn test_expand_env_vars_malformed() {
         let result = McpConfig::expand_env_vars("${INCOMPLETE");
         assert!(!result.is_empty());
+    }
+
+    #[test]
+    fn test_wordpress_config_accepts_encrypted_credentials_without_plaintext() {
+        // encrypted_credentialsのみを指定した設定もデシリアライズできる
+        // こと（username/passwordは#[serde(default)]により省略可）
+        let toml_str = r#"
+            url = "https://example.com"
+
+            [encrypted_credentials]
+            username = "wp-user"
+            encrypted_password = "ZGVhZGJlZWY="
+            nonce = "AAAAAAAAAAAAAAAA"
+            salt = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        "#;
+        let config: WordPressConfig =
+            toml::from_str(toml_str).expect("should deserialize without username/password");
+        assert_eq!(config.username, "");
+        assert_eq!(config.password, "");
+        assert!(config.encrypted_credentials.is_some());
+    }
+
+    #[test]
+    fn test_wordpress_config_debug_redacts_password() {
+        let config = WordPressConfig {
+            url: "https://example.com".to_string(),
+            username: "wp-user".to_string(),
+            password: "super-secret-plaintext".to_string(),
+            enabled: Some(true),
+            timeout_seconds: Some(30),
+            rate_limit: Some(RateLimitConfig::default()),
+            encrypted_credentials: None,
+        };
+
+        let debug_output = format!("{:?}", config);
+        assert!(!debug_output.contains("super-secret-plaintext"));
+        assert!(debug_output.contains("[REDACTED]"));
+        // パスワード以外のフィールドは引き続き見えること
+        assert!(debug_output.contains("wp-user"));
+    }
+
+    #[test]
+    fn test_resolve_encrypted_credentials_decrypts_and_requires_master_password_env_var() {
+        let _env_guard = WORDPRESS_MASTER_PASSWORD_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        let plaintext =
+            SecureCredentials::new("wp-user".to_string(), "wp-app-password".to_string());
+        let encrypted = plaintext.encrypt("correct-master-password").unwrap();
+
+        let mut config = WordPressConfig {
+            url: "https://example.com".to_string(),
+            username: String::new(),
+            password: String::new(),
+            enabled: Some(true),
+            timeout_seconds: Some(30),
+            rate_limit: Some(RateLimitConfig::default()),
+            encrypted_credentials: Some(encrypted),
+        };
+
+        // マスターパスワード環境変数が無い場合はエラーになり、
+        // username/passwordは変更されない
+        unsafe {
+            std::env::remove_var("WORDPRESS_MASTER_PASSWORD");
+        }
+        assert!(config.resolve_encrypted_credentials().is_err());
+        assert_eq!(config.username, "");
+        assert_eq!(config.password, "");
+
+        // マスターパスワードがあれば復号されてusername/passwordが
+        // 上書きされる
+        unsafe {
+            std::env::set_var("WORDPRESS_MASTER_PASSWORD", "correct-master-password");
+        }
+        config
+            .resolve_encrypted_credentials()
+            .expect("should decrypt successfully");
+        assert_eq!(config.username, "wp-user");
+        assert_eq!(config.password, "wp-app-password");
+
+        unsafe {
+            std::env::remove_var("WORDPRESS_MASTER_PASSWORD");
+        }
+    }
+
+    #[test]
+    fn test_resolve_encrypted_credentials_is_noop_without_encrypted_credentials() {
+        let mut config = WordPressConfig {
+            url: "https://example.com".to_string(),
+            username: "plain-user".to_string(),
+            password: "plain-password".to_string(),
+            enabled: Some(true),
+            timeout_seconds: Some(30),
+            rate_limit: Some(RateLimitConfig::default()),
+            encrypted_credentials: None,
+        };
+
+        config.resolve_encrypted_credentials().unwrap();
+        assert_eq!(config.username, "plain-user");
+        assert_eq!(config.password, "plain-password");
+    }
+
+    #[test]
+    fn test_resolve_encrypted_credentials_errors_when_no_credentials_configured() {
+        // username/passwordを#[serde(default)]にしたことで
+        // 両方省略した設定ファイルもデシリアライズ自体は成功するように
+        // なったが、encrypted_credentialsも無ければ認証情報が一切無い
+        // ということなので、空パスワードで無言で起動するのではなく
+        // ここで検証エラーにする必要がある。
+        let mut config = WordPressConfig {
+            url: "https://example.com".to_string(),
+            username: String::new(),
+            password: String::new(),
+            enabled: Some(true),
+            timeout_seconds: Some(30),
+            rate_limit: Some(RateLimitConfig::default()),
+            encrypted_credentials: None,
+        };
+
+        assert!(config.resolve_encrypted_credentials().is_err());
+    }
+
+    #[test]
+    fn test_resolve_encrypted_credentials_allows_empty_when_disabled() {
+        // enabled=falseの場合は実際にWordPressHandlerが起動しないため、
+        // プレースホルダーとして認証情報を空のままセクションだけ残して
+        // おく既存の使い方（配布用テンプレート等）を壊さないこと。
+        let mut config = WordPressConfig {
+            url: "https://example.com".to_string(),
+            username: String::new(),
+            password: String::new(),
+            enabled: Some(false),
+            timeout_seconds: Some(30),
+            rate_limit: Some(RateLimitConfig::default()),
+            encrypted_credentials: None,
+        };
+
+        config.resolve_encrypted_credentials().unwrap();
+        assert_eq!(config.username, "");
+        assert_eq!(config.password, "");
+    }
+
+    #[test]
+    fn test_resolve_encrypted_credentials_allows_empty_when_enabled_is_unset() {
+        // enabledを省略した設定（Noneはunwrap_or(false)で未有効扱い）も
+        // 同様に認証情報の空チェックをスキップすること。
+        let mut config = WordPressConfig {
+            url: "https://example.com".to_string(),
+            username: String::new(),
+            password: String::new(),
+            enabled: None,
+            timeout_seconds: Some(30),
+            rate_limit: Some(RateLimitConfig::default()),
+            encrypted_credentials: None,
+        };
+
+        config.resolve_encrypted_credentials().unwrap();
     }
 }
 

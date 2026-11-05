@@ -133,6 +133,7 @@ async fn load_config_from_file(path: &str) -> Result<McpConfig, Box<dyn std::err
     // WordPressConfig の環境変数展開を適用（McpConfig::load() と同様の処理）
     if let Some(ref mut wp_config) = config.handlers.wordpress {
         McpConfig::expand_wordpress_config(wp_config);
+        wp_config.resolve_encrypted_credentials()?;
     }
 
     info!("✅ カスタム設定読み込み: {}", path);

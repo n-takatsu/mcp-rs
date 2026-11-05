@@ -211,7 +211,7 @@ fn extract_target_id(arguments: &Option<HashMap<String, serde_json::Value>>) -> 
     })
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct WordPressHandler {
     client: Client,
     base_url: String,
@@ -222,6 +222,22 @@ pub struct WordPressHandler {
     password: Option<String>,
     rate_limiter: Arc<RateLimiter>,
     audit_logger: Arc<AuditLogger>,
+}
+
+// Debugトレイトでパスワードを露出しないようにカスタム実装
+// （SecureCredentialsのDebug実装と同じ方針）
+impl std::fmt::Debug for WordPressHandler {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WordPressHandler")
+            .field("client", &self.client)
+            .field("base_url", &self.base_url)
+            .field("secure_credentials", &self.secure_credentials)
+            .field("username", &self.username)
+            .field("password", &self.password.as_ref().map(|_| "[REDACTED]"))
+            .field("rate_limiter", &self.rate_limiter)
+            .field("audit_logger", &self.audit_logger)
+            .finish()
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -4013,6 +4029,26 @@ mod tests {
 
         let result = WordPressHandler::try_new(secure_config);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_handler_debug_redacts_password() {
+        let config = WordPressConfig {
+            url: "https://secure.example.com".to_string(),
+            username: "wp-user".to_string(),
+            password: "super-secret-plaintext".to_string(),
+            enabled: Some(true),
+            timeout_seconds: Some(30),
+            rate_limit: Some(RateLimitConfig::default()),
+            encrypted_credentials: None,
+        };
+        let handler = WordPressHandler::try_new(config).unwrap();
+
+        let debug_output = format!("{:?}", handler);
+        assert!(!debug_output.contains("super-secret-plaintext"));
+        assert!(debug_output.contains("[REDACTED]"));
+        // パスワード以外のフィールドは引き続き見えること
+        assert!(debug_output.contains("wp-user"));
     }
 
     #[test]
