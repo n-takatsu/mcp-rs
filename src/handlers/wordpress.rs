@@ -82,6 +82,13 @@ fn filename_stem(filename: &str) -> &str {
         .unwrap_or(filename)
 }
 
+/// `filename_stem`と同じ規則（最後の`.`で分割）で拡張子を返す。
+/// `std::path::Path::extension`はOSによって区切り文字の扱いが異なるため
+/// 使わない。`.`を含まない場合は`None`。
+fn filename_extension(filename: &str) -> Option<&str> {
+    filename.rsplit_once('.').map(|(_, ext)| ext)
+}
+
 /// WordPress REST APIのエラーレスポンス本文から`code`/`message`
 /// （例: `rest_post_invalid_id` / "Invalid post ID."）を拾い、診断に
 /// 使える文字列にまとめる。期待した形式でない場合はステータスと
@@ -186,6 +193,206 @@ fn is_mutating_tool(name: &str) -> bool {
     MUTATING_TOOL_PREFIXES
         .iter()
         .any(|prefix| name.starts_with(prefix))
+}
+
+/// `upload_media`で許可する最大ファイルサイズ（10 MiB）の絶対上限。
+/// 実効上限は通常これより小さく、トランスポートのメッセージサイズ上限
+/// （STDIOの`max_message_size`・HTTPの`max_request_size`、既定1 MiB）に
+/// base64の膨張分を加味した値になる。運用者がトランスポート側の上限を
+/// 引き上げた場合でも、WordPressへのアップロードはこの値で頭打ちになる。
+const MAX_UPLOAD_SIZE_BYTES: usize = 10 * 1024 * 1024;
+
+/// `MAX_UPLOAD_SIZE_BYTES`をbase64エンコードした場合の最大長。JSON-RPC
+/// メッセージ自体の読み込み・パースは既にトランスポート層で済んでいる
+/// ため、ここで防げるのはデコード時の追加のメモリ確保のみ（メッセージ
+/// 全体のサイズ制御はトランスポートの責務）。
+const MAX_UPLOAD_BASE64_LEN: usize = MAX_UPLOAD_SIZE_BYTES.div_ceil(3) * 4;
+
+/// PDFヘッダ（`%PDF-`）の探索範囲。PDF仕様上、ヘッダは先頭ちょうどで
+/// なくとも先頭1024バイト以内にあればよく、BOMや空白を前置きする
+/// ツールも存在するため。ただし前置きとして許すのはBOMと空白のみ
+/// （`<html>...%PDF-`のようなHTML前置きのポリグロットは拒否する）。
+const PDF_HEADER_SEARCH_WINDOW: usize = 1024;
+
+/// 検証エラーメッセージに含めるユーザー入力（mime_type・filename）の
+/// 最大文字数。巨大な文字列がそのままエラー応答やログに反射されるのを
+/// 防ぐ。
+const MAX_ECHOED_INPUT_CHARS: usize = 100;
+
+/// `upload_media`で受け付けるファイル名の最大文字数（一般的なファイル
+/// システムのファイル名上限に合わせる）。
+const MAX_UPLOAD_FILENAME_CHARS: usize = 255;
+
+/// ファイル名として受け付けない文字かどうか。パス区切り、制御文字
+/// （改行によるログ偽装等）、双方向テキスト制御文字（U+202E等で
+/// `invoice\u{202E}gpj.exe`を`invoice exe.jpg`のように見せかける拡張子
+/// 偽装）を拒否する。
+fn is_forbidden_filename_char(c: char) -> bool {
+    c == '/'
+        || c == '\\'
+        || c.is_control()
+        || matches!(c, '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
+}
+
+/// エラーメッセージやツールスキーマで示す、許可MIMEタイプの一覧。
+fn allowed_upload_mime_list() -> String {
+    ALLOWED_UPLOADS
+        .iter()
+        .map(|(m, _)| *m)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// PDFのヘッダが（BOM・空白の前置きを許容しつつ）先頭1024バイト以内に
+/// あるかを判定する。
+fn has_pdf_header(data: &[u8]) -> bool {
+    let window = &data[..data.len().min(PDF_HEADER_SEARCH_WINDOW)];
+    let without_bom = window.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(window);
+    let start = without_bom
+        .iter()
+        .position(|b| !b.is_ascii_whitespace())
+        .unwrap_or(without_bom.len());
+    without_bom[start..].starts_with(b"%PDF-")
+}
+
+/// `upload_media`で許可するMIMEタイプと、それぞれに対応する許可拡張子。
+/// WordPressは保存形式をMIMEではなく拡張子で判定する
+/// （`wp_check_filetype_and_ext`）ため、拡張子も併せて検証しないと
+/// 「`image/png`と宣言しつつ`x.html`として保存させる」ことができてしまう。
+///
+/// SVGは`<script>`を埋め込めるXMLベースの形式であり、WordPress自身も
+/// 既定で無効化しているため含めない。`text/plain`等マジックナンバーを
+/// 持たない自由形式も、内容を検証できない（任意のバイト列を素通し
+/// させてしまう）ため含めない。同様に、ZIPベースのOffice文書（docx等）は
+/// 「ZIPであること」までしか判定できず、QuickTime（mov）は先頭のatom
+/// 順序が一定しないため含めない。全エントリが`file_signature_matches`で
+/// 検証可能な形式であることを前提としている。
+const ALLOWED_UPLOADS: &[(&str, &[&str])] = &[
+    ("image/jpeg", &["jpg", "jpeg", "jpe"]),
+    ("image/png", &["png"]),
+    ("image/gif", &["gif"]),
+    ("image/webp", &["webp"]),
+    ("application/pdf", &["pdf"]),
+    ("video/mp4", &["mp4", "m4v"]),
+    ("video/webm", &["webm"]),
+    ("video/ogg", &["ogv"]),
+    ("audio/mpeg", &["mp3"]),
+    ("audio/mp4", &["m4a"]),
+    ("audio/wav", &["wav"]),
+    ("audio/ogg", &["ogg", "oga"]),
+];
+
+/// ISO Base Media File Format（MP4/M4A等）は先頭4バイトがボックス長、
+/// 続く4バイトが`ftyp`ボックスの識別子になる。
+fn is_iso_bmff(data: &[u8]) -> bool {
+    data.len() >= 8 && &data[4..8] == b"ftyp"
+}
+
+/// MIMEタイプを比較用に正規化する。RFC 2045によりMIMEタイプは大文字
+/// 小文字を区別しないため小文字化し、`; charset=...`等のパラメータを
+/// 除去する。ブラウザやツールが報告する非標準の別名は正規の名前に寄せる。
+fn normalize_mime_type(mime_type: &str) -> String {
+    let base = mime_type
+        .split_once(';')
+        .map_or(mime_type, |(base, _)| base)
+        .trim()
+        .to_ascii_lowercase();
+    match base.as_str() {
+        "image/jpg" | "image/pjpeg" => "image/jpeg".to_string(),
+        "image/x-png" => "image/png".to_string(),
+        "audio/mp3" => "audio/mpeg".to_string(),
+        "audio/x-m4a" => "audio/mp4".to_string(),
+        "audio/x-wav" | "audio/wave" | "audio/vnd.wave" => "audio/wav".to_string(),
+        _ => base,
+    }
+}
+
+/// ファイル先頭バイト（マジックナンバー）が宣言されたMIMEタイプと
+/// 一致するか検証する。先頭数バイトのみを見るヒューリスティックであり、
+/// 正しいヘッダの後ろに別形式の内容を連結したポリグロットファイルまでは
+/// 検出できない。目的はあくまで明白なMIME偽装（実行ファイルやHTMLを
+/// 画像と称する等）を弾くことにある。シグネチャ未定義の形式は拒否する
+/// （fail-closed）。
+fn file_signature_matches(mime_type: &str, data: &[u8]) -> bool {
+    match mime_type {
+        "image/jpeg" => data.starts_with(&[0xFF, 0xD8, 0xFF]),
+        "image/png" => data.starts_with(&[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]),
+        "image/gif" => data.starts_with(b"GIF87a") || data.starts_with(b"GIF89a"),
+        "image/webp" => data.len() >= 12 && &data[0..4] == b"RIFF" && &data[8..12] == b"WEBP",
+        "application/pdf" => has_pdf_header(data),
+        "video/mp4" | "audio/mp4" => is_iso_bmff(data),
+        "video/webm" => data.starts_with(&[0x1A, 0x45, 0xDF, 0xA3]),
+        "video/ogg" | "audio/ogg" => data.starts_with(b"OggS"),
+        // ID3タグ付き、またはMPEGフレーム同期ワード（先頭11ビットが1）
+        "audio/mpeg" => {
+            data.starts_with(b"ID3")
+                || (data.len() >= 2 && data[0] == 0xFF && data[1] & 0xE0 == 0xE0)
+        }
+        "audio/wav" => data.len() >= 12 && &data[0..4] == b"RIFF" && &data[8..12] == b"WAVE",
+        _ => false,
+    }
+}
+
+/// `upload_media`の入力を検証し、WordPressへ送る正規化済みMIMEタイプを
+/// 返す。サイズ上限・MIME許可リスト・拡張子とMIMEの整合・マジック
+/// ナンバーの順に検証する。
+fn validate_upload(
+    file_data: &[u8],
+    filename: &str,
+    mime_type: &str,
+) -> Result<&'static str, McpError> {
+    if file_data.len() > MAX_UPLOAD_SIZE_BYTES {
+        return Err(McpError::InvalidParams(format!(
+            "File too large: {} bytes (max {} bytes)",
+            file_data.len(),
+            MAX_UPLOAD_SIZE_BYTES
+        )));
+    }
+
+    let normalized = normalize_mime_type(mime_type);
+    let Some(&(canonical, allowed_extensions)) =
+        ALLOWED_UPLOADS.iter().find(|(m, _)| *m == normalized)
+    else {
+        return Err(McpError::InvalidParams(format!(
+            "mime_type '{}' is not allowed. Allowed types: {}",
+            truncate_chars_with_ellipsis(mime_type, MAX_ECHOED_INPUT_CHARS),
+            allowed_upload_mime_list()
+        )));
+    };
+
+    if filename.chars().count() > MAX_UPLOAD_FILENAME_CHARS {
+        return Err(McpError::InvalidParams(format!(
+            "filename too long (max {} characters)",
+            MAX_UPLOAD_FILENAME_CHARS
+        )));
+    }
+
+    // WordPress側のサニタイズに頼らずここで拒否する
+    if filename.chars().any(is_forbidden_filename_char) {
+        return Err(McpError::InvalidParams(format!(
+            "filename {:?} must not contain path separators or control characters",
+            truncate_chars_with_ellipsis(filename, MAX_ECHOED_INPUT_CHARS)
+        )));
+    }
+
+    let extension = filename_extension(filename).map(|ext| ext.to_ascii_lowercase());
+    if !extension.is_some_and(|e| allowed_extensions.contains(&e.as_str())) {
+        return Err(McpError::InvalidParams(format!(
+            "filename '{}' extension does not match mime_type '{}' (allowed: {})",
+            truncate_chars_with_ellipsis(filename, MAX_ECHOED_INPUT_CHARS),
+            canonical,
+            allowed_extensions.join(", ")
+        )));
+    }
+
+    if !file_signature_matches(canonical, file_data) {
+        return Err(McpError::InvalidParams(format!(
+            "File content does not match declared mime_type '{}'",
+            canonical
+        )));
+    }
+
+    Ok(canonical)
 }
 
 /// 引数からベストエフォートで対象リソースのIDを抽出する（監査ログの
@@ -1018,25 +1225,22 @@ impl WordPressHandler {
         filename: &str,
         mime_type: &str,
     ) -> Result<WordPressMedia, McpError> {
+        let mime_type = validate_upload(file_data, filename, mime_type)?;
+
         let url = format!("{}/wp-json/wp/v2/media", self.base_url);
         let title = filename_stem(filename).to_string();
 
-        // mime_typeの妥当性はリクエストの内容に関わらず一定なので、
-        // リトライのたびに検証するのではなくここで一度だけ検証する。
-        if let Err(e) = reqwest::multipart::Part::bytes(Vec::new()).mime_str(mime_type) {
-            return Err(McpError::Other(format!(
-                "Invalid mime_type '{}': {}",
-                mime_type, e
-            )));
-        }
-
-        info!("Uploading media file: {} ({})", filename, mime_type);
+        info!(
+            "Uploading media file: {} ({})",
+            truncate_chars_with_ellipsis(filename, MAX_ECHOED_INPUT_CHARS),
+            mime_type
+        );
 
         self.execute_request_with_retry_rebuilding(|| {
             let part = reqwest::multipart::Part::bytes(file_data.to_vec())
                 .file_name(filename.to_string())
                 .mime_str(mime_type)
-                .expect("mime_type already validated above");
+                .expect("ALLOWED_UPLOADS contains only valid MIME types");
             let form = reqwest::multipart::Form::new()
                 .part("file", part)
                 .text("title", title.clone());
@@ -2120,771 +2324,13 @@ impl WordPressHandler {
     }
 }
 
-#[async_trait]
-impl McpHandler for WordPressHandler {
-    async fn initialize(&self, _params: InitializeParams) -> Result<serde_json::Value, McpError> {
-        info!("WordPress MCP Handler initialized");
-        Ok(serde_json::json!({
-            "protocolVersion": "2024-11-05",
-            "capabilities": {
-                "tools": {
-                    "listChanged": false
-                },
-                "resources": {
-                    "subscribe": false,
-                    "listChanged": false
-                }
-            },
-            "serverInfo": {
-                "name": "mcp-rs-wordpress",
-                "version": "0.1.0"
-            }
-        }))
-    }
-
-    async fn list_tools(&self) -> Result<Vec<Tool>, McpError> {
-        Ok(vec![
-            Tool {
-                name: "wordpress_health_check".to_string(),
-                description: "Perform comprehensive WordPress environment health check".to_string(),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "properties": {},
-                    "required": []
-                }),
-            },
-            Tool {
-                name: "get_posts".to_string(),
-                description: "Retrieve WordPress posts".to_string(),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "properties": {},
-                    "required": []
-                }),
-            },
-            Tool {
-                name: "get_pages".to_string(),
-                description: "Retrieve WordPress pages".to_string(),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "properties": {},
-                    "required": []
-                }),
-            },
-            Tool {
-                name: "get_all_content".to_string(),
-                description: "Retrieve both WordPress posts and pages".to_string(),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "properties": {},
-                    "required": []
-                }),
-            },
-            Tool {
-                name: "get_post".to_string(),
-                description: "Retrieve a single WordPress post or page by ID".to_string(),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "post_id": {
-                            "type": "number",
-                            "description": "Post or page ID to retrieve"
-                        },
-                        "post_type": {
-                            "type": "string",
-                            "enum": ["post", "page"],
-                            "description": "Content type to retrieve. Defaults to 'post'.",
-                            "default": "post"
-                        }
-                    },
-                    "required": ["post_id"]
-                }),
-            },
-            Tool {
-                name: "create_post".to_string(),
-                description: "Create a new WordPress post (basic). Defaults to draft status so nothing is published unintentionally.".to_string(),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "title": {
-                            "type": "string",
-                            "description": "The post title"
-                        },
-                        "content": {
-                            "type": "string",
-                            "description": "The post content"
-                        },
-                        "status": {
-                            "type": "string",
-                            "enum": ["publish", "draft", "private"],
-                            "description": "Post status. Defaults to 'draft' to avoid accidental publication.",
-                            "default": "draft"
-                        }
-                    },
-                    "required": ["title", "content"]
-                }),
-            },
-            Tool {
-                name: "create_advanced_post".to_string(),
-                description: "Create a new WordPress post or page with advanced options"
-                    .to_string(),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "title": {
-                            "type": "string",
-                            "description": "The post/page title"
-                        },
-                        "content": {
-                            "type": "string",
-                            "description": "The post/page content"
-                        },
-                        "post_type": {
-                            "type": "string",
-                            "description": "Post type: 'post' (投稿) or 'page' (固定ページ)",
-                            "enum": ["post", "page"],
-                            "default": "post"
-                        },
-                        "status": {
-                            "type": "string",
-                            "description": "Post status: 'publish' (公開), 'draft' (下書き), 'private' (非公開), 'future' (予約投稿)",
-                            "enum": ["publish", "draft", "private", "future"],
-                            "default": "publish"
-                        },
-                        "date": {
-                            "type": "string",
-                            "description": "Publication date (ISO8601 format, required for 'future' status)"
-                        },
-                        "categories": {
-                            "type": "array",
-                            "items": {"type": "number"},
-                            "description": "Category IDs (posts only)"
-                        },
-                        "tags": {
-                            "type": "array",
-                            "items": {"type": "number"},
-                            "description": "Tag IDs (posts only)"
-                        },
-                        "featured_media_id": {
-                            "type": "number",
-                            "description": "Featured image media ID"
-                        },
-                        "meta": {
-                            "type": "object",
-                            "description": "Meta fields for SEO (e.g., _yoast_wpseo_metadesc, _yoast_wpseo_meta-robots-noindex, _yoast_wpseo_meta-robots-nofollow)",
-                            "additionalProperties": {"type": "string"}
-                        }
-                    },
-                    "required": ["title", "content"]
-                }),
-            },
-            Tool {
-                name: "get_comments".to_string(),
-                description: "Retrieve WordPress comments".to_string(),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "post_id": {
-                            "type": "number",
-                            "description": "Optional post ID to filter comments"
-                        }
-                    },
-                    "required": []
-                }),
-            },
-            Tool {
-                name: "upload_media".to_string(),
-                description: "Upload media file to WordPress".to_string(),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "file_data": {
-                            "type": "string",
-                            "description": "Base64 encoded file data"
-                        },
-                        "filename": {
-                            "type": "string",
-                            "description": "Original filename"
-                        },
-                        "mime_type": {
-                            "type": "string",
-                            "description": "MIME type of the file (e.g., 'image/jpeg')"
-                        }
-                    },
-                    "required": ["file_data", "filename", "mime_type"]
-                }),
-            },
-            Tool {
-                name: "get_media".to_string(),
-                description: "Retrieve WordPress media files".to_string(),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "properties": {},
-                    "required": []
-                }),
-            },
-            Tool {
-                name: "get_media_item".to_string(),
-                description: "Retrieve a single WordPress media item by ID".to_string(),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "media_id": {
-                            "type": "number",
-                            "description": "Media ID to retrieve"
-                        }
-                    },
-                    "required": ["media_id"]
-                }),
-            },
-            Tool {
-                name: "update_media".to_string(),
-                description:
-                    "Update WordPress media metadata (title, alt text, caption, description)"
-                        .to_string(),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "media_id": {
-                            "type": "number",
-                            "description": "Media ID to update"
-                        },
-                        "title": {
-                            "type": "string",
-                            "description": "Media title"
-                        },
-                        "alt_text": {
-                            "type": "string",
-                            "description": "Alternative text for accessibility"
-                        },
-                        "caption": {
-                            "type": "string",
-                            "description": "Media caption"
-                        },
-                        "description": {
-                            "type": "string",
-                            "description": "Media description"
-                        },
-                        "post": {
-                            "type": "number",
-                            "description": "Post ID to attach media to"
-                        }
-                    },
-                    "required": ["media_id"]
-                }),
-            },
-            Tool {
-                name: "delete_media".to_string(),
-                description: "Delete WordPress media file".to_string(),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "media_id": {
-                            "type": "number",
-                            "description": "Media ID to delete"
-                        },
-                        "force": {
-                            "type": "boolean",
-                            "description": "Force delete (bypass trash)"
-                        }
-                    },
-                    "required": ["media_id"]
-                }),
-            },
-            Tool {
-                name: "create_post_with_featured_image".to_string(),
-                description: "Create a new WordPress post with featured image".to_string(),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "title": {
-                            "type": "string",
-                            "description": "The post title"
-                        },
-                        "content": {
-                            "type": "string",
-                            "description": "The post content"
-                        },
-                        "featured_media_id": {
-                            "type": "number",
-                            "description": "Media ID for featured image"
-                        }
-                    },
-                    "required": ["title", "content", "featured_media_id"]
-                }),
-            },
-            Tool {
-                name: "set_featured_image".to_string(),
-                description: "Set featured image for existing post".to_string(),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "post_id": {
-                            "type": "number",
-                            "description": "Post ID to update"
-                        },
-                        "media_id": {
-                            "type": "number",
-                            "description": "Media ID for featured image"
-                        }
-                    },
-                    "required": ["post_id", "media_id"]
-                }),
-            },
-            Tool {
-                name: "get_categories".to_string(),
-                description: "Retrieve WordPress categories".to_string(),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "properties": {},
-                    "required": []
-                }),
-            },
-            Tool {
-                name: "create_category".to_string(),
-                description: "Create a new WordPress category".to_string(),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "name": {
-                            "type": "string",
-                            "description": "Category name"
-                        },
-                        "description": {
-                            "type": "string",
-                            "description": "Category description (optional)"
-                        },
-                        "parent": {
-                            "type": "number",
-                            "description": "Parent category ID (optional)"
-                        },
-                        "slug": {
-                            "type": "string",
-                            "description": "Custom slug (optional, e.g. an ASCII slug for non-ASCII names)"
-                        }
-                    },
-                    "required": ["name"]
-                }),
-            },
-            Tool {
-                name: "update_category".to_string(),
-                description: "Update an existing WordPress category".to_string(),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "category_id": {
-                            "type": "number",
-                            "description": "Category ID to update"
-                        },
-                        "name": {
-                            "type": "string",
-                            "description": "New category name (optional)"
-                        },
-                        "description": {
-                            "type": "string",
-                            "description": "New category description (optional)"
-                        },
-                        "parent": {
-                            "type": "number",
-                            "description": "New parent category ID (optional; use 0 to clear)"
-                        },
-                        "slug": {
-                            "type": "string",
-                            "description": "New slug (optional; WordPress does not auto-update the slug when the name changes)"
-                        }
-                    },
-                    "required": ["category_id"]
-                }),
-            },
-            Tool {
-                name: "delete_category".to_string(),
-                description: "Delete a WordPress category".to_string(),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "category_id": {
-                            "type": "number",
-                            "description": "Category ID to delete"
-                        },
-                        "force": {
-                            "type": "boolean",
-                            "description": "Force delete (bypass trash)"
-                        }
-                    },
-                    "required": ["category_id"]
-                }),
-            },
-            Tool {
-                name: "get_tags".to_string(),
-                description: "Retrieve WordPress tags".to_string(),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "properties": {},
-                    "required": []
-                }),
-            },
-            Tool {
-                name: "create_tag".to_string(),
-                description: "Create a new WordPress tag".to_string(),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "name": {
-                            "type": "string",
-                            "description": "Tag name"
-                        },
-                        "description": {
-                            "type": "string",
-                            "description": "Tag description (optional)"
-                        },
-                        "slug": {
-                            "type": "string",
-                            "description": "Custom slug (optional, e.g. an ASCII slug for non-ASCII names)"
-                        }
-                    },
-                    "required": ["name"]
-                }),
-            },
-            Tool {
-                name: "update_tag".to_string(),
-                description: "Update an existing WordPress tag".to_string(),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "tag_id": {
-                            "type": "number",
-                            "description": "Tag ID to update"
-                        },
-                        "name": {
-                            "type": "string",
-                            "description": "New tag name (optional)"
-                        },
-                        "description": {
-                            "type": "string",
-                            "description": "New tag description (optional)"
-                        },
-                        "slug": {
-                            "type": "string",
-                            "description": "New slug (optional; WordPress does not auto-update the slug when the name changes)"
-                        }
-                    },
-                    "required": ["tag_id"]
-                }),
-            },
-            Tool {
-                name: "delete_tag".to_string(),
-                description: "Delete a WordPress tag".to_string(),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "tag_id": {
-                            "type": "number",
-                            "description": "Tag ID to delete"
-                        },
-                        "force": {
-                            "type": "boolean",
-                            "description": "Force delete (bypass trash)"
-                        }
-                    },
-                    "required": ["tag_id"]
-                }),
-            },
-            Tool {
-                name: "create_post_with_categories_tags".to_string(),
-                description: "Create a new WordPress post with categories and tags. Defaults to draft status so nothing is published unintentionally.".to_string(),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "title": {
-                            "type": "string",
-                            "description": "The post title"
-                        },
-                        "content": {
-                            "type": "string",
-                            "description": "The post content"
-                        },
-                        "status": {
-                            "type": "string",
-                            "enum": ["publish", "draft", "private"],
-                            "description": "Post status. Defaults to 'draft' to avoid accidental publication.",
-                            "default": "draft"
-                        },
-                        "categories": {
-                            "type": "array",
-                            "items": {"type": "number"},
-                            "description": "Array of category IDs (optional)"
-                        },
-                        "tags": {
-                            "type": "array",
-                            "items": {"type": "number"},
-                            "description": "Array of tag IDs (optional)"
-                        },
-                        "featured_media_id": {
-                            "type": "number",
-                            "description": "Featured image media ID (optional)"
-                        }
-                    },
-                    "required": ["title", "content"]
-                }),
-            },
-            Tool {
-                name: "update_post_categories_tags".to_string(),
-                description: "Update categories and tags for an existing WordPress post or page"
-                    .to_string(),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "post_id": {
-                            "type": "number",
-                            "description": "Post or page ID to update"
-                        },
-                        "post_type": {
-                            "type": "string",
-                            "enum": ["post", "page"],
-                            "description": "Content type being updated. Defaults to 'post'.",
-                            "default": "post"
-                        },
-                        "categories": {
-                            "type": "array",
-                            "items": {"type": "number"},
-                            "description": "Array of category IDs (optional)"
-                        },
-                        "tags": {
-                            "type": "array",
-                            "items": {"type": "number"},
-                            "description": "Array of tag IDs (optional)"
-                        }
-                    },
-                    "required": ["post_id"]
-                }),
-            },
-            Tool {
-                name: "update_post".to_string(),
-                description: "Update an existing WordPress post or page".to_string(),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "post_id": {
-                            "type": "number",
-                            "description": "Post or page ID to update"
-                        },
-                        "post_type": {
-                            "type": "string",
-                            "enum": ["post", "page"],
-                            "description": "Content type being updated. Defaults to 'post'.",
-                            "default": "post"
-                        },
-                        "title": {
-                            "type": "string",
-                            "description": "New post title (optional)"
-                        },
-                        "content": {
-                            "type": "string",
-                            "description": "New post content (optional)"
-                        },
-                        "status": {
-                            "type": "string",
-                            "description": "Post status: publish, draft, private (optional)"
-                        },
-                        "categories": {
-                            "type": "array",
-                            "items": {"type": "number"},
-                            "description": "Array of category IDs (optional)"
-                        },
-                        "tags": {
-                            "type": "array",
-                            "items": {"type": "number"},
-                            "description": "Array of tag IDs (optional)"
-                        },
-                        "featured_media_id": {
-                            "type": "number",
-                            "description": "Featured image media ID (optional)"
-                        }
-                    },
-                    "required": ["post_id"]
-                }),
-            },
-            Tool {
-                name: "delete_post".to_string(),
-                description: "Delete a WordPress post or page".to_string(),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "post_id": {
-                            "type": "number",
-                            "description": "Post or page ID to delete"
-                        },
-                        "post_type": {
-                            "type": "string",
-                            "enum": ["post", "page"],
-                            "description": "Content type being deleted. Defaults to 'post'.",
-                            "default": "post"
-                        },
-                        "force": {
-                            "type": "boolean",
-                            "description": "Force delete (bypass trash, permanently delete)"
-                        }
-                    },
-                    "required": ["post_id"]
-                }),
-            },
-            Tool {
-                name: "create_post_with_embeds".to_string(),
-                description:
-                    "Create WordPress post with embedded YouTube videos and social media content"
-                        .to_string(),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "title": {
-                            "type": "string",
-                            "description": "Post title"
-                        },
-                        "content": {
-                            "type": "string",
-                            "description": "Base post content (embeds will be added)"
-                        },
-                        "youtube_urls": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "YouTube video URLs to embed"
-                        },
-                        "social_urls": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "Social media URLs to embed (Twitter, Instagram, Facebook, TikTok)"
-                        },
-                        "post_type": {
-                            "type": "string",
-                            "description": "Post type (post or page)",
-                            "enum": ["post", "page"]
-                        },
-                        "status": {
-                            "type": "string",
-                            "description": "Post status",
-                            "enum": ["publish", "draft", "private", "future"]
-                        },
-                        "categories": {
-                            "type": "array",
-                            "items": {"type": "number"},
-                            "description": "Category IDs (posts only)"
-                        },
-                        "tags": {
-                            "type": "array",
-                            "items": {"type": "number"},
-                            "description": "Tag IDs (posts only)"
-                        }
-                    },
-                    "required": ["title", "content"]
-                }),
-            },
-            Tool {
-                name: "get_settings".to_string(),
-                description: "Get WordPress site settings".to_string(),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "properties": {},
-                    "required": []
-                }),
-            },
-            Tool {
-                name: "update_settings".to_string(),
-                description: "Update WordPress site settings".to_string(),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "title": {
-                            "type": "string",
-                            "description": "Site title"
-                        },
-                        "description": {
-                            "type": "string",
-                            "description": "Site tagline/description"
-                        },
-                        "timezone": {
-                            "type": "string",
-                            "description": "Site timezone (e.g., 'Asia/Tokyo')"
-                        },
-                        "show_on_front": {
-                            "type": "string",
-                            "description": "What to show on front page",
-                            "enum": ["posts", "page"]
-                        },
-                        "page_on_front": {
-                            "type": "number",
-                            "description": "Static front page ID (when show_on_front is 'page')"
-                        },
-                        "page_for_posts": {
-                            "type": "number",
-                            "description": "Posts page ID (when show_on_front is 'page')"
-                        },
-                        "posts_per_page": {
-                            "type": "number",
-                            "description": "Number of posts per page"
-                        },
-                        "default_category": {
-                            "type": "number",
-                            "description": "Default category for new posts"
-                        },
-                        "language": {
-                            "type": "string",
-                            "description": "Site language code (e.g., 'ja', 'en_US')"
-                        }
-                    },
-                    "required": []
-                }),
-            },
-            Tool {
-                name: "set_front_page".to_string(),
-                description: "Set a static page as the front page".to_string(),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "page_id": {
-                            "type": "number",
-                            "description": "Page ID to set as front page"
-                        }
-                    },
-                    "required": ["page_id"]
-                }),
-            },
-            Tool {
-                name: "set_front_page_to_posts".to_string(),
-                description: "Set front page to show latest posts".to_string(),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "posts_page_id": {
-                            "type": "number",
-                            "description": "Optional page ID to use for blog posts"
-                        }
-                    },
-                    "required": []
-                }),
-            },
-        ])
-    }
-
-    async fn call_tool(&self, params: ToolCallParams) -> Result<serde_json::Value, McpError> {
-        let tool_name = params.name.clone();
-        let mutating = is_mutating_tool(&tool_name);
-        let target_id = extract_target_id(&params.arguments);
-
-        if let Err(e) = self
-            .rate_limiter
-            .check_rate_limit(RATE_LIMIT_CLIENT_ID)
-            .await
-        {
-            warn!("WordPress tool call rate limited: {}", e);
-            let result = Err(McpError::Other(format!("Rate limit exceeded: {}", e)));
-            if mutating {
-                self.audit_tool_call(&tool_name, target_id.as_deref(), &result)
-                    .await;
-            }
-            return result;
-        }
-
-        let result = match params.name.as_str() {
+impl WordPressHandler {
+    /// ツール名に応じて各ツールを実行する。`call_tool`はこの結果を成功・
+    /// 失敗を問わず監査ログに記録するため、各アーム内の`?`や`return`に
+    /// よる早期リターンも監査を素通りしない（別メソッドに分けることで
+    /// 構造的に保証する）。
+    async fn dispatch_tool(&self, params: ToolCallParams) -> Result<serde_json::Value, McpError> {
+        match params.name.as_str() {
             "wordpress_health_check" => {
                 info!("Performing WordPress health check...");
                 let health = self.health_check().await;
@@ -3217,6 +2663,14 @@ impl McpHandler for WordPressHandler {
                     .get("mime_type")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| McpError::InvalidParams("Missing mime_type".to_string()))?;
+
+                if file_data_b64.len() > MAX_UPLOAD_BASE64_LEN {
+                    return Err(McpError::InvalidParams(format!(
+                        "file_data too large: {} base64 chars (max {} bytes decoded)",
+                        file_data_b64.len(),
+                        MAX_UPLOAD_SIZE_BYTES
+                    )));
+                }
 
                 // Decode base64 file data
                 use base64::{engine::general_purpose, Engine as _};
@@ -3900,7 +3354,781 @@ impl McpHandler for WordPressHandler {
                 }))
             }
             _ => Err(McpError::ToolNotFound(params.name)),
-        };
+        }
+    }
+}
+
+#[async_trait]
+impl McpHandler for WordPressHandler {
+    async fn initialize(&self, _params: InitializeParams) -> Result<serde_json::Value, McpError> {
+        info!("WordPress MCP Handler initialized");
+        Ok(serde_json::json!({
+            "protocolVersion": "2024-11-05",
+            "capabilities": {
+                "tools": {
+                    "listChanged": false
+                },
+                "resources": {
+                    "subscribe": false,
+                    "listChanged": false
+                }
+            },
+            "serverInfo": {
+                "name": "mcp-rs-wordpress",
+                "version": "0.1.0"
+            }
+        }))
+    }
+
+    async fn list_tools(&self) -> Result<Vec<Tool>, McpError> {
+        Ok(vec![
+            Tool {
+                name: "wordpress_health_check".to_string(),
+                description: "Perform comprehensive WordPress environment health check".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }),
+            },
+            Tool {
+                name: "get_posts".to_string(),
+                description: "Retrieve WordPress posts".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }),
+            },
+            Tool {
+                name: "get_pages".to_string(),
+                description: "Retrieve WordPress pages".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }),
+            },
+            Tool {
+                name: "get_all_content".to_string(),
+                description: "Retrieve both WordPress posts and pages".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }),
+            },
+            Tool {
+                name: "get_post".to_string(),
+                description: "Retrieve a single WordPress post or page by ID".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "post_id": {
+                            "type": "number",
+                            "description": "Post or page ID to retrieve"
+                        },
+                        "post_type": {
+                            "type": "string",
+                            "enum": ["post", "page"],
+                            "description": "Content type to retrieve. Defaults to 'post'.",
+                            "default": "post"
+                        }
+                    },
+                    "required": ["post_id"]
+                }),
+            },
+            Tool {
+                name: "create_post".to_string(),
+                description: "Create a new WordPress post (basic). Defaults to draft status so nothing is published unintentionally.".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "title": {
+                            "type": "string",
+                            "description": "The post title"
+                        },
+                        "content": {
+                            "type": "string",
+                            "description": "The post content"
+                        },
+                        "status": {
+                            "type": "string",
+                            "enum": ["publish", "draft", "private"],
+                            "description": "Post status. Defaults to 'draft' to avoid accidental publication.",
+                            "default": "draft"
+                        }
+                    },
+                    "required": ["title", "content"]
+                }),
+            },
+            Tool {
+                name: "create_advanced_post".to_string(),
+                description: "Create a new WordPress post or page with advanced options"
+                    .to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "title": {
+                            "type": "string",
+                            "description": "The post/page title"
+                        },
+                        "content": {
+                            "type": "string",
+                            "description": "The post/page content"
+                        },
+                        "post_type": {
+                            "type": "string",
+                            "description": "Post type: 'post' (投稿) or 'page' (固定ページ)",
+                            "enum": ["post", "page"],
+                            "default": "post"
+                        },
+                        "status": {
+                            "type": "string",
+                            "description": "Post status: 'publish' (公開), 'draft' (下書き), 'private' (非公開), 'future' (予約投稿)",
+                            "enum": ["publish", "draft", "private", "future"],
+                            "default": "publish"
+                        },
+                        "date": {
+                            "type": "string",
+                            "description": "Publication date (ISO8601 format, required for 'future' status)"
+                        },
+                        "categories": {
+                            "type": "array",
+                            "items": {"type": "number"},
+                            "description": "Category IDs (posts only)"
+                        },
+                        "tags": {
+                            "type": "array",
+                            "items": {"type": "number"},
+                            "description": "Tag IDs (posts only)"
+                        },
+                        "featured_media_id": {
+                            "type": "number",
+                            "description": "Featured image media ID"
+                        },
+                        "meta": {
+                            "type": "object",
+                            "description": "Meta fields for SEO (e.g., _yoast_wpseo_metadesc, _yoast_wpseo_meta-robots-noindex, _yoast_wpseo_meta-robots-nofollow)",
+                            "additionalProperties": {"type": "string"}
+                        }
+                    },
+                    "required": ["title", "content"]
+                }),
+            },
+            Tool {
+                name: "get_comments".to_string(),
+                description: "Retrieve WordPress comments".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "post_id": {
+                            "type": "number",
+                            "description": "Optional post ID to filter comments"
+                        }
+                    },
+                    "required": []
+                }),
+            },
+            Tool {
+                name: "upload_media".to_string(),
+                description: format!(
+                    "Upload media file to WordPress. The filename extension and file content must match mime_type. Size is capped at {} MiB, but the transport's message size limit (including base64 overhead) usually applies first",
+                    MAX_UPLOAD_SIZE_BYTES / (1024 * 1024)
+                ),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "file_data": {
+                            "type": "string",
+                            "description": "Base64 encoded file data"
+                        },
+                        "filename": {
+                            "type": "string",
+                            "description": "Original filename; its extension must match mime_type (e.g., 'photo.jpg' for image/jpeg)"
+                        },
+                        "mime_type": {
+                            "type": "string",
+                            "description": format!(
+                                "MIME type of the file. Allowed: {}",
+                                allowed_upload_mime_list()
+                            )
+                        }
+                    },
+                    "required": ["file_data", "filename", "mime_type"]
+                }),
+            },
+            Tool {
+                name: "get_media".to_string(),
+                description: "Retrieve WordPress media files".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }),
+            },
+            Tool {
+                name: "get_media_item".to_string(),
+                description: "Retrieve a single WordPress media item by ID".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "media_id": {
+                            "type": "number",
+                            "description": "Media ID to retrieve"
+                        }
+                    },
+                    "required": ["media_id"]
+                }),
+            },
+            Tool {
+                name: "update_media".to_string(),
+                description:
+                    "Update WordPress media metadata (title, alt text, caption, description)"
+                        .to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "media_id": {
+                            "type": "number",
+                            "description": "Media ID to update"
+                        },
+                        "title": {
+                            "type": "string",
+                            "description": "Media title"
+                        },
+                        "alt_text": {
+                            "type": "string",
+                            "description": "Alternative text for accessibility"
+                        },
+                        "caption": {
+                            "type": "string",
+                            "description": "Media caption"
+                        },
+                        "description": {
+                            "type": "string",
+                            "description": "Media description"
+                        },
+                        "post": {
+                            "type": "number",
+                            "description": "Post ID to attach media to"
+                        }
+                    },
+                    "required": ["media_id"]
+                }),
+            },
+            Tool {
+                name: "delete_media".to_string(),
+                description: "Delete WordPress media file".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "media_id": {
+                            "type": "number",
+                            "description": "Media ID to delete"
+                        },
+                        "force": {
+                            "type": "boolean",
+                            "description": "Force delete (bypass trash)"
+                        }
+                    },
+                    "required": ["media_id"]
+                }),
+            },
+            Tool {
+                name: "create_post_with_featured_image".to_string(),
+                description: "Create a new WordPress post with featured image".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "title": {
+                            "type": "string",
+                            "description": "The post title"
+                        },
+                        "content": {
+                            "type": "string",
+                            "description": "The post content"
+                        },
+                        "featured_media_id": {
+                            "type": "number",
+                            "description": "Media ID for featured image"
+                        }
+                    },
+                    "required": ["title", "content", "featured_media_id"]
+                }),
+            },
+            Tool {
+                name: "set_featured_image".to_string(),
+                description: "Set featured image for existing post".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "post_id": {
+                            "type": "number",
+                            "description": "Post ID to update"
+                        },
+                        "media_id": {
+                            "type": "number",
+                            "description": "Media ID for featured image"
+                        }
+                    },
+                    "required": ["post_id", "media_id"]
+                }),
+            },
+            Tool {
+                name: "get_categories".to_string(),
+                description: "Retrieve WordPress categories".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }),
+            },
+            Tool {
+                name: "create_category".to_string(),
+                description: "Create a new WordPress category".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "description": "Category name"
+                        },
+                        "description": {
+                            "type": "string",
+                            "description": "Category description (optional)"
+                        },
+                        "parent": {
+                            "type": "number",
+                            "description": "Parent category ID (optional)"
+                        },
+                        "slug": {
+                            "type": "string",
+                            "description": "Custom slug (optional, e.g. an ASCII slug for non-ASCII names)"
+                        }
+                    },
+                    "required": ["name"]
+                }),
+            },
+            Tool {
+                name: "update_category".to_string(),
+                description: "Update an existing WordPress category".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "category_id": {
+                            "type": "number",
+                            "description": "Category ID to update"
+                        },
+                        "name": {
+                            "type": "string",
+                            "description": "New category name (optional)"
+                        },
+                        "description": {
+                            "type": "string",
+                            "description": "New category description (optional)"
+                        },
+                        "parent": {
+                            "type": "number",
+                            "description": "New parent category ID (optional; use 0 to clear)"
+                        },
+                        "slug": {
+                            "type": "string",
+                            "description": "New slug (optional; WordPress does not auto-update the slug when the name changes)"
+                        }
+                    },
+                    "required": ["category_id"]
+                }),
+            },
+            Tool {
+                name: "delete_category".to_string(),
+                description: "Delete a WordPress category".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "category_id": {
+                            "type": "number",
+                            "description": "Category ID to delete"
+                        },
+                        "force": {
+                            "type": "boolean",
+                            "description": "Force delete (bypass trash)"
+                        }
+                    },
+                    "required": ["category_id"]
+                }),
+            },
+            Tool {
+                name: "get_tags".to_string(),
+                description: "Retrieve WordPress tags".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }),
+            },
+            Tool {
+                name: "create_tag".to_string(),
+                description: "Create a new WordPress tag".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "description": "Tag name"
+                        },
+                        "description": {
+                            "type": "string",
+                            "description": "Tag description (optional)"
+                        },
+                        "slug": {
+                            "type": "string",
+                            "description": "Custom slug (optional, e.g. an ASCII slug for non-ASCII names)"
+                        }
+                    },
+                    "required": ["name"]
+                }),
+            },
+            Tool {
+                name: "update_tag".to_string(),
+                description: "Update an existing WordPress tag".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "tag_id": {
+                            "type": "number",
+                            "description": "Tag ID to update"
+                        },
+                        "name": {
+                            "type": "string",
+                            "description": "New tag name (optional)"
+                        },
+                        "description": {
+                            "type": "string",
+                            "description": "New tag description (optional)"
+                        },
+                        "slug": {
+                            "type": "string",
+                            "description": "New slug (optional; WordPress does not auto-update the slug when the name changes)"
+                        }
+                    },
+                    "required": ["tag_id"]
+                }),
+            },
+            Tool {
+                name: "delete_tag".to_string(),
+                description: "Delete a WordPress tag".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "tag_id": {
+                            "type": "number",
+                            "description": "Tag ID to delete"
+                        },
+                        "force": {
+                            "type": "boolean",
+                            "description": "Force delete (bypass trash)"
+                        }
+                    },
+                    "required": ["tag_id"]
+                }),
+            },
+            Tool {
+                name: "create_post_with_categories_tags".to_string(),
+                description: "Create a new WordPress post with categories and tags. Defaults to draft status so nothing is published unintentionally.".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "title": {
+                            "type": "string",
+                            "description": "The post title"
+                        },
+                        "content": {
+                            "type": "string",
+                            "description": "The post content"
+                        },
+                        "status": {
+                            "type": "string",
+                            "enum": ["publish", "draft", "private"],
+                            "description": "Post status. Defaults to 'draft' to avoid accidental publication.",
+                            "default": "draft"
+                        },
+                        "categories": {
+                            "type": "array",
+                            "items": {"type": "number"},
+                            "description": "Array of category IDs (optional)"
+                        },
+                        "tags": {
+                            "type": "array",
+                            "items": {"type": "number"},
+                            "description": "Array of tag IDs (optional)"
+                        },
+                        "featured_media_id": {
+                            "type": "number",
+                            "description": "Featured image media ID (optional)"
+                        }
+                    },
+                    "required": ["title", "content"]
+                }),
+            },
+            Tool {
+                name: "update_post_categories_tags".to_string(),
+                description: "Update categories and tags for an existing WordPress post or page"
+                    .to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "post_id": {
+                            "type": "number",
+                            "description": "Post or page ID to update"
+                        },
+                        "post_type": {
+                            "type": "string",
+                            "enum": ["post", "page"],
+                            "description": "Content type being updated. Defaults to 'post'.",
+                            "default": "post"
+                        },
+                        "categories": {
+                            "type": "array",
+                            "items": {"type": "number"},
+                            "description": "Array of category IDs (optional)"
+                        },
+                        "tags": {
+                            "type": "array",
+                            "items": {"type": "number"},
+                            "description": "Array of tag IDs (optional)"
+                        }
+                    },
+                    "required": ["post_id"]
+                }),
+            },
+            Tool {
+                name: "update_post".to_string(),
+                description: "Update an existing WordPress post or page".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "post_id": {
+                            "type": "number",
+                            "description": "Post or page ID to update"
+                        },
+                        "post_type": {
+                            "type": "string",
+                            "enum": ["post", "page"],
+                            "description": "Content type being updated. Defaults to 'post'.",
+                            "default": "post"
+                        },
+                        "title": {
+                            "type": "string",
+                            "description": "New post title (optional)"
+                        },
+                        "content": {
+                            "type": "string",
+                            "description": "New post content (optional)"
+                        },
+                        "status": {
+                            "type": "string",
+                            "description": "Post status: publish, draft, private (optional)"
+                        },
+                        "categories": {
+                            "type": "array",
+                            "items": {"type": "number"},
+                            "description": "Array of category IDs (optional)"
+                        },
+                        "tags": {
+                            "type": "array",
+                            "items": {"type": "number"},
+                            "description": "Array of tag IDs (optional)"
+                        },
+                        "featured_media_id": {
+                            "type": "number",
+                            "description": "Featured image media ID (optional)"
+                        }
+                    },
+                    "required": ["post_id"]
+                }),
+            },
+            Tool {
+                name: "delete_post".to_string(),
+                description: "Delete a WordPress post or page".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "post_id": {
+                            "type": "number",
+                            "description": "Post or page ID to delete"
+                        },
+                        "post_type": {
+                            "type": "string",
+                            "enum": ["post", "page"],
+                            "description": "Content type being deleted. Defaults to 'post'.",
+                            "default": "post"
+                        },
+                        "force": {
+                            "type": "boolean",
+                            "description": "Force delete (bypass trash, permanently delete)"
+                        }
+                    },
+                    "required": ["post_id"]
+                }),
+            },
+            Tool {
+                name: "create_post_with_embeds".to_string(),
+                description:
+                    "Create WordPress post with embedded YouTube videos and social media content"
+                        .to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "title": {
+                            "type": "string",
+                            "description": "Post title"
+                        },
+                        "content": {
+                            "type": "string",
+                            "description": "Base post content (embeds will be added)"
+                        },
+                        "youtube_urls": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "YouTube video URLs to embed"
+                        },
+                        "social_urls": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Social media URLs to embed (Twitter, Instagram, Facebook, TikTok)"
+                        },
+                        "post_type": {
+                            "type": "string",
+                            "description": "Post type (post or page)",
+                            "enum": ["post", "page"]
+                        },
+                        "status": {
+                            "type": "string",
+                            "description": "Post status",
+                            "enum": ["publish", "draft", "private", "future"]
+                        },
+                        "categories": {
+                            "type": "array",
+                            "items": {"type": "number"},
+                            "description": "Category IDs (posts only)"
+                        },
+                        "tags": {
+                            "type": "array",
+                            "items": {"type": "number"},
+                            "description": "Tag IDs (posts only)"
+                        }
+                    },
+                    "required": ["title", "content"]
+                }),
+            },
+            Tool {
+                name: "get_settings".to_string(),
+                description: "Get WordPress site settings".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }),
+            },
+            Tool {
+                name: "update_settings".to_string(),
+                description: "Update WordPress site settings".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "title": {
+                            "type": "string",
+                            "description": "Site title"
+                        },
+                        "description": {
+                            "type": "string",
+                            "description": "Site tagline/description"
+                        },
+                        "timezone": {
+                            "type": "string",
+                            "description": "Site timezone (e.g., 'Asia/Tokyo')"
+                        },
+                        "show_on_front": {
+                            "type": "string",
+                            "description": "What to show on front page",
+                            "enum": ["posts", "page"]
+                        },
+                        "page_on_front": {
+                            "type": "number",
+                            "description": "Static front page ID (when show_on_front is 'page')"
+                        },
+                        "page_for_posts": {
+                            "type": "number",
+                            "description": "Posts page ID (when show_on_front is 'page')"
+                        },
+                        "posts_per_page": {
+                            "type": "number",
+                            "description": "Number of posts per page"
+                        },
+                        "default_category": {
+                            "type": "number",
+                            "description": "Default category for new posts"
+                        },
+                        "language": {
+                            "type": "string",
+                            "description": "Site language code (e.g., 'ja', 'en_US')"
+                        }
+                    },
+                    "required": []
+                }),
+            },
+            Tool {
+                name: "set_front_page".to_string(),
+                description: "Set a static page as the front page".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "page_id": {
+                            "type": "number",
+                            "description": "Page ID to set as front page"
+                        }
+                    },
+                    "required": ["page_id"]
+                }),
+            },
+            Tool {
+                name: "set_front_page_to_posts".to_string(),
+                description: "Set front page to show latest posts".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "posts_page_id": {
+                            "type": "number",
+                            "description": "Optional page ID to use for blog posts"
+                        }
+                    },
+                    "required": []
+                }),
+            },
+        ])
+    }
+
+    async fn call_tool(&self, params: ToolCallParams) -> Result<serde_json::Value, McpError> {
+        let tool_name = params.name.clone();
+        let mutating = is_mutating_tool(&tool_name);
+        let target_id = extract_target_id(&params.arguments);
+
+        if let Err(e) = self
+            .rate_limiter
+            .check_rate_limit(RATE_LIMIT_CLIENT_ID)
+            .await
+        {
+            warn!("WordPress tool call rate limited: {}", e);
+            let result = Err(McpError::Other(format!("Rate limit exceeded: {}", e)));
+            if mutating {
+                self.audit_tool_call(&tool_name, target_id.as_deref(), &result)
+                    .await;
+            }
+            return result;
+        }
+
+        let result = self.dispatch_tool(params).await;
 
         if mutating {
             self.audit_tool_call(&tool_name, target_id.as_deref(), &result)
@@ -4531,5 +4759,280 @@ mod tests {
         let _form = reqwest::multipart::Form::new()
             .part("file", part)
             .text("title", filename_stem(filename).to_string());
+    }
+
+    const PNG_BYTES: &[u8] = &[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00];
+
+    fn assert_invalid_params(result: Result<&'static str, McpError>, expected: &str) {
+        assert!(
+            matches!(result, Err(McpError::InvalidParams(ref msg)) if msg.contains(expected)),
+            "expected InvalidParams containing '{}', got: {:?}",
+            expected,
+            result
+        );
+    }
+
+    #[test]
+    fn test_file_signature_matches() {
+        assert!(file_signature_matches("image/png", PNG_BYTES));
+        assert!(file_signature_matches(
+            "image/jpeg",
+            &[0xFF, 0xD8, 0xFF, 0xE0]
+        ));
+        assert!(file_signature_matches("image/gif", b"GIF89a\x00\x00"));
+        assert!(file_signature_matches(
+            "image/webp",
+            b"RIFF\x00\x00\x00\x00WEBP"
+        ));
+        assert!(file_signature_matches("application/pdf", b"%PDF-1.4\n"));
+
+        // 動画・音声
+        assert!(file_signature_matches(
+            "video/mp4",
+            b"\x00\x00\x00\x20ftypisom"
+        ));
+        assert!(file_signature_matches(
+            "audio/mp4",
+            b"\x00\x00\x00\x20ftypM4A "
+        ));
+        assert!(file_signature_matches(
+            "video/webm",
+            &[0x1A, 0x45, 0xDF, 0xA3, 0x00]
+        ));
+        assert!(file_signature_matches("video/ogg", b"OggS\x00"));
+        assert!(file_signature_matches("audio/ogg", b"OggS\x00"));
+        assert!(file_signature_matches("audio/mpeg", b"ID3\x04\x00"));
+        assert!(file_signature_matches("audio/mpeg", &[0xFF, 0xFB, 0x90]));
+        assert!(file_signature_matches(
+            "audio/wav",
+            b"RIFF\x00\x00\x00\x00WAVE"
+        ));
+        assert!(!file_signature_matches("video/mp4", b"<html></html>"));
+        assert!(!file_signature_matches("audio/mpeg", b"MZ\x90\x00"));
+        // WebP（RIFF/WEBP）をWAVと偽ることはできない
+        assert!(!file_signature_matches(
+            "audio/wav",
+            b"RIFF\x00\x00\x00\x00WEBP"
+        ));
+
+        // PDFヘッダは先頭1024バイト以内にあればよい
+        assert!(file_signature_matches(
+            "application/pdf",
+            b"\xEF\xBB\xBF\n%PDF-1.7\n"
+        ));
+
+        assert!(!file_signature_matches("image/png", b"not a png"));
+        assert!(!file_signature_matches("application/pdf", b"<html></html>"));
+        let mut late_pdf_header = vec![b' '; PDF_HEADER_SEARCH_WINDOW];
+        late_pdf_header.extend_from_slice(b"%PDF-1.7");
+        assert!(!file_signature_matches("application/pdf", &late_pdf_header));
+        // BOM・空白以外の前置き（HTML等）を持つポリグロットは拒否する
+        assert!(!file_signature_matches(
+            "application/pdf",
+            b"<html><script>alert(1)</script><!-- %PDF-1.7 -->"
+        ));
+        // シグネチャ未定義の形式はfail-closedで拒否する
+        assert!(!file_signature_matches("text/plain", b"hello"));
+    }
+
+    #[test]
+    fn test_validate_upload_accepts_legitimate_files() {
+        assert_eq!(
+            validate_upload(PNG_BYTES, "テスト画像.png", "image/png").unwrap(),
+            "image/png"
+        );
+        assert_eq!(
+            validate_upload(b"%PDF-1.7", "doc.pdf", "application/pdf").unwrap(),
+            "application/pdf"
+        );
+        assert_eq!(
+            validate_upload(b"\x00\x00\x00\x20ftypisom", "clip.mp4", "video/mp4").unwrap(),
+            "video/mp4"
+        );
+        // 内容がMP4でも、拡張子が音声用(.m4a)ならvideo/mp4としては拒否
+        assert_invalid_params(
+            validate_upload(b"\x00\x00\x00\x20ftypisom", "clip.m4a", "video/mp4"),
+            "extension",
+        );
+    }
+
+    #[test]
+    fn test_validate_upload_normalizes_mime_type_and_extension_case() {
+        let jpeg = [0xFF, 0xD8, 0xFF, 0xE0];
+        // 大文字小文字・パラメータ・image/jpg別名はいずれもimage/jpegに正規化
+        assert_eq!(
+            validate_upload(&jpeg, "a.JPG", "IMAGE/JPEG").unwrap(),
+            "image/jpeg"
+        );
+        assert_eq!(
+            validate_upload(&jpeg, "a.jpeg", "image/jpeg; charset=binary").unwrap(),
+            "image/jpeg"
+        );
+        assert_eq!(
+            validate_upload(&jpeg, "a.jpg", "image/jpg").unwrap(),
+            "image/jpeg"
+        );
+        assert_eq!(
+            validate_upload(&jpeg, "a.jpe", "image/pjpeg").unwrap(),
+            "image/jpeg"
+        );
+        assert_eq!(
+            validate_upload(PNG_BYTES, "a.png", "image/x-png").unwrap(),
+            "image/png"
+        );
+        assert_eq!(
+            validate_upload(b"ID3\x04\x00", "a.mp3", "audio/mp3").unwrap(),
+            "audio/mpeg"
+        );
+        assert_eq!(
+            validate_upload(b"RIFF\x00\x00\x00\x00WAVE", "a.WAV", "audio/x-wav").unwrap(),
+            "audio/wav"
+        );
+    }
+
+    #[test]
+    fn test_validate_upload_rejects_oversized_file() {
+        let oversized = vec![0u8; MAX_UPLOAD_SIZE_BYTES + 1];
+        assert_invalid_params(
+            validate_upload(&oversized, "big.png", "image/png"),
+            "too large",
+        );
+    }
+
+    #[test]
+    fn test_validate_upload_rejects_disallowed_mime_types() {
+        assert_invalid_params(
+            validate_upload(b"#!/bin/sh", "x.sh", "application/x-sh"),
+            "not allowed",
+        );
+        assert_invalid_params(
+            validate_upload(b"<svg><script/></svg>", "x.svg", "image/svg+xml"),
+            "not allowed",
+        );
+        // マジックナンバーで内容を検証できないため許可しない
+        assert_invalid_params(
+            validate_upload(b"hello", "x.txt", "text/plain"),
+            "not allowed",
+        );
+    }
+
+    #[test]
+    fn test_validate_upload_rejects_extension_mismatch() {
+        // 内容とMIMEは正しくても、WordPressは拡張子で保存形式を決めるため
+        // .htmlとして保存させられると格納型XSSになりうる
+        assert_invalid_params(
+            validate_upload(PNG_BYTES, "x.html", "image/png"),
+            "extension",
+        );
+        assert_invalid_params(
+            validate_upload(PNG_BYTES, "no_extension", "image/png"),
+            "extension",
+        );
+    }
+
+    #[test]
+    fn test_validate_upload_rejects_path_separators_and_control_chars() {
+        for filename in [
+            "a.png\\evil.html",
+            "evil.html/.png",
+            "../x.png",
+            "x\n.png",
+            "invoice\u{202E}gpj.exe.png",
+        ] {
+            assert_invalid_params(
+                validate_upload(PNG_BYTES, filename, "image/png"),
+                "path separators or control characters",
+            );
+        }
+    }
+
+    #[test]
+    fn test_validate_upload_rejects_overlong_filename() {
+        let filename = format!("{}.png", "a".repeat(MAX_UPLOAD_FILENAME_CHARS));
+        assert_invalid_params(
+            validate_upload(PNG_BYTES, &filename, "image/png"),
+            "too long",
+        );
+    }
+
+    #[test]
+    fn test_validate_upload_truncates_echoed_input() {
+        let huge_mime = "x".repeat(10_000);
+        let err = validate_upload(PNG_BYTES, "a.png", &huge_mime).unwrap_err();
+        assert!(err.to_string().len() < 1_000, "error echoed the full input");
+    }
+
+    #[test]
+    fn test_validate_upload_rejects_mime_type_spoofing() {
+        assert_invalid_params(
+            validate_upload(b"this is not actually a png", "fake.png", "image/png"),
+            "does not match",
+        );
+    }
+
+    #[tokio::test]
+    async fn test_upload_media_runs_validation_before_network() {
+        // upload_media自体が検証を通すこと（到達不能なダミーURLに対して
+        // ネットワークI/Oが発生する前に拒否されること）を確認する
+        let handler = rate_limited_handler(RateLimitConfig::default());
+
+        let result = handler
+            .upload_media(b"#!/bin/sh", "x.sh", "application/x-sh")
+            .await;
+
+        assert!(matches!(result, Err(McpError::InvalidParams(_))));
+    }
+
+    #[tokio::test]
+    async fn test_call_tool_audits_upload_rejected_by_validation() {
+        // アーム内の`?`で返る検証エラー（MIME偽装の試み等）も監査ログに
+        // 残ること
+        let handler = rate_limited_handler(RateLimitConfig::default());
+        use base64::{engine::general_purpose, Engine as _};
+        let mut args = HashMap::new();
+        args.insert(
+            "file_data".to_string(),
+            serde_json::json!(general_purpose::STANDARD.encode(b"<script>x</script>")),
+        );
+        args.insert("filename".to_string(), serde_json::json!("x.html"));
+        args.insert("mime_type".to_string(), serde_json::json!("image/png"));
+
+        let result = handler
+            .call_tool(ToolCallParams {
+                name: "upload_media".to_string(),
+                arguments: Some(args),
+            })
+            .await;
+        assert!(matches!(result, Err(McpError::InvalidParams(_))));
+
+        let entries = handler.audit_logger.get_all_entries().await;
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].action, Some("upload_media".to_string()));
+        assert_eq!(entries[0].result, Some("FAILURE".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_call_tool_rejects_oversized_base64_before_decoding() {
+        let handler = rate_limited_handler(RateLimitConfig::default());
+        let mut args = HashMap::new();
+        args.insert(
+            "file_data".to_string(),
+            serde_json::json!("A".repeat(MAX_UPLOAD_BASE64_LEN + 4)),
+        );
+        args.insert("filename".to_string(), serde_json::json!("big.png"));
+        args.insert("mime_type".to_string(), serde_json::json!("image/png"));
+
+        let result = handler
+            .call_tool(ToolCallParams {
+                name: "upload_media".to_string(),
+                arguments: Some(args),
+            })
+            .await;
+
+        assert!(
+            matches!(result, Err(McpError::InvalidParams(ref msg)) if msg.contains("too large")),
+            "got: {:?}",
+            result
+        );
     }
 }
