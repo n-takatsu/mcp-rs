@@ -11,7 +11,9 @@ use crate::config::WordPressConfig;
 use crate::mcp::{
     InitializeParams, McpError, McpHandler, Resource, ResourceReadParams, Tool, ToolCallParams,
 };
-use crate::security::{RateLimiter, SecureCredentials};
+use crate::security::{
+    AuditCategory, AuditLevel, AuditLogEntry, AuditLogger, RateLimiter, SecureCredentials,
+};
 
 /// 文字数単位で文字列を切り詰める（文字境界を跨がない）。
 /// 切り詰めた場合のみ末尾に"…"を付ける。
@@ -174,6 +176,41 @@ fn summarize_media(media_items: &[WordPressMedia]) -> Vec<serde_json::Value> {
 /// 制限する。
 const RATE_LIMIT_CLIENT_ID: &str = "wordpress-tool-calls";
 
+/// 変更系ツールのツール名接頭辞。本ファイルのツール命名規則
+/// （`create_*`/`update_*`/`delete_*`/`upload_*`/`set_*`）に合わせており、
+/// 新規ツール追加時も個別対応なしに自動的に監査ログ対象へ含まれる。
+const MUTATING_TOOL_PREFIXES: &[&str] = &["create_", "update_", "delete_", "upload_", "set_"];
+
+/// ツール名が変更系（WordPress側の状態を変更する）かどうかを判定する。
+fn is_mutating_tool(name: &str) -> bool {
+    MUTATING_TOOL_PREFIXES
+        .iter()
+        .any(|prefix| name.starts_with(prefix))
+}
+
+/// 引数からベストエフォートで対象リソースのIDを抽出する（監査ログの
+/// 補助情報用）。ツールごとに異なるキー名（`post_id`・`media_id`等）を
+/// 優先順位付きで試す。見つからない場合は`None`（例: 新規作成系ツールは
+/// 呼び出し時点では対象IDを持たない）。
+fn extract_target_id(arguments: &Option<HashMap<String, serde_json::Value>>) -> Option<String> {
+    const ID_KEYS: &[&str] = &[
+        "id",
+        "post_id",
+        "media_id",
+        "category_id",
+        "tag_id",
+        "page_id",
+        "posts_page_id",
+    ];
+    let args = arguments.as_ref()?;
+    ID_KEYS.iter().find_map(|key| {
+        args.get(*key).map(|v| match v {
+            serde_json::Value::String(s) => s.clone(),
+            other => other.to_string(),
+        })
+    })
+}
+
 #[derive(Debug, Clone)]
 pub struct WordPressHandler {
     client: Client,
@@ -184,6 +221,7 @@ pub struct WordPressHandler {
     username: Option<String>,
     password: Option<String>,
     rate_limiter: Arc<RateLimiter>,
+    audit_logger: Arc<AuditLogger>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -424,6 +462,9 @@ impl WordPressHandler {
         let rate_limit_config = config.rate_limit.clone().unwrap_or_default();
         let rate_limiter = Arc::new(RateLimiter::new(rate_limit_config));
 
+        // 監査ログ（RateLimiterと同様、サイト接続単位でハンドラが保持する）
+        let audit_logger = Arc::new(AuditLogger::with_defaults());
+
         // セキュア認証情報の作成
         let secure_credentials = Some(config.create_secure_credentials());
 
@@ -434,7 +475,44 @@ impl WordPressHandler {
             username: Some(config.username),
             password: Some(config.password),
             rate_limiter,
+            audit_logger,
         })
+    }
+
+    /// 変更系ツール呼び出しの結果を監査ログに記録する。成功/失敗どちらも
+    /// 記録する（インシデント調査では失敗した変更の試みも重要なため）。
+    async fn audit_tool_call(
+        &self,
+        tool_name: &str,
+        target_id: Option<&str>,
+        result: &Result<serde_json::Value, McpError>,
+    ) {
+        let success = result.is_ok();
+        let level = if success {
+            AuditLevel::Info
+        } else {
+            AuditLevel::Error
+        };
+        let message = format!(
+            "WordPress tool call: {} - {}",
+            tool_name,
+            if success { "SUCCESS" } else { "FAILURE" }
+        );
+
+        let mut entry = AuditLogEntry::new(level, AuditCategory::DataAccess, message)
+            .with_action(self.base_url.clone(), tool_name.to_string())
+            .with_result(if success { "SUCCESS" } else { "FAILURE" }.to_string());
+
+        if let Some(target_id) = target_id {
+            entry = entry.add_metadata("target_id".to_string(), target_id.to_string());
+        }
+        if let Err(e) = result {
+            entry = entry.add_metadata("error".to_string(), e.to_string());
+        }
+
+        if let Err(e) = self.audit_logger.log(entry).await {
+            warn!("Failed to write audit log entry for {}: {}", tool_name, e);
+        }
     }
 
     /// 認証情報をリクエストに追加するヘルパーメソッド
@@ -2772,16 +2850,25 @@ impl McpHandler for WordPressHandler {
     }
 
     async fn call_tool(&self, params: ToolCallParams) -> Result<serde_json::Value, McpError> {
+        let tool_name = params.name.clone();
+        let mutating = is_mutating_tool(&tool_name);
+        let target_id = extract_target_id(&params.arguments);
+
         if let Err(e) = self
             .rate_limiter
             .check_rate_limit(RATE_LIMIT_CLIENT_ID)
             .await
         {
             warn!("WordPress tool call rate limited: {}", e);
-            return Err(McpError::Other(format!("Rate limit exceeded: {}", e)));
+            let result = Err(McpError::Other(format!("Rate limit exceeded: {}", e)));
+            if mutating {
+                self.audit_tool_call(&tool_name, target_id.as_deref(), &result)
+                    .await;
+            }
+            return result;
         }
 
-        match params.name.as_str() {
+        let result = match params.name.as_str() {
             "wordpress_health_check" => {
                 info!("Performing WordPress health check...");
                 let health = self.health_check().await;
@@ -3797,7 +3884,14 @@ impl McpHandler for WordPressHandler {
                 }))
             }
             _ => Err(McpError::ToolNotFound(params.name)),
+        };
+
+        if mutating {
+            self.audit_tool_call(&tool_name, target_id.as_deref(), &result)
+                .await;
         }
+
+        result
     }
 
     async fn list_resources(&self) -> Result<Vec<Resource>, McpError> {
@@ -3983,6 +4077,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_call_tool_audits_mutating_tool_rejected_by_rate_limit() {
+        // レート制限で拒否された変更系ツール呼び出しも、WordPress側の
+        // エラーによる失敗と同様に監査ログに残す必要がある（インシデント
+        // 調査では「誰がdelete_postを乱打して制限にかかったか」も重要な
+        // 情報のため）。
+        let handler = rate_limited_handler(RateLimitConfig {
+            requests_per_second: 1,
+            burst_size: 0,
+            enabled: true,
+        });
+
+        let result = handler
+            .call_tool(ToolCallParams {
+                name: "delete_post".to_string(),
+                arguments: None,
+            })
+            .await;
+        assert!(
+            matches!(result, Err(McpError::Other(ref msg)) if msg.contains("Rate limit exceeded"))
+        );
+
+        let entries = handler.audit_logger.get_all_entries().await;
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].level, AuditLevel::Error);
+        assert_eq!(entries[0].result, Some("FAILURE".to_string()));
+        assert_eq!(entries[0].action, Some("delete_post".to_string()));
+        assert!(entries[0]
+            .metadata
+            .get("error")
+            .is_some_and(|e| e.contains("Rate limit exceeded")));
+    }
+
+    #[tokio::test]
     async fn test_call_tool_rate_limit_runs_before_tool_dispatch() {
         // レート制限チェックはツール名のmatchより前に実行されるため、
         // 存在しないツール名でもToolNotFoundではなくレート制限エラーに
@@ -4020,6 +4147,113 @@ mod tests {
             .await;
 
         assert!(matches!(result, Err(McpError::ToolNotFound(_))));
+    }
+
+    #[test]
+    fn test_is_mutating_tool_detects_known_prefixes() {
+        for name in [
+            "create_post",
+            "create_advanced_post",
+            "update_post",
+            "delete_post",
+            "upload_media",
+            "update_media",
+            "delete_media",
+            "set_featured_image",
+            "set_front_page",
+        ] {
+            assert!(is_mutating_tool(name), "{} should be mutating", name);
+        }
+
+        for name in [
+            "wordpress_health_check",
+            "get_posts",
+            "get_pages",
+            "get_all_content",
+            "get_comments",
+            "get_settings",
+        ] {
+            assert!(!is_mutating_tool(name), "{} should not be mutating", name);
+        }
+    }
+
+    #[test]
+    fn test_extract_target_id_finds_known_keys_in_priority_order() {
+        let mut args = HashMap::new();
+        args.insert("post_id".to_string(), serde_json::json!(42));
+        assert_eq!(
+            extract_target_id(&Some(args.clone())),
+            Some("42".to_string())
+        );
+
+        // "id"があれば他のキーより優先される
+        args.insert("id".to_string(), serde_json::json!("abc"));
+        assert_eq!(extract_target_id(&Some(args)), Some("abc".to_string()));
+
+        let mut media_args = HashMap::new();
+        media_args.insert("media_id".to_string(), serde_json::json!(7));
+        assert_eq!(extract_target_id(&Some(media_args)), Some("7".to_string()));
+
+        // set_front_page/set_front_page_to_postsが使うキー
+        let mut page_args = HashMap::new();
+        page_args.insert("page_id".to_string(), serde_json::json!(99));
+        assert_eq!(extract_target_id(&Some(page_args)), Some("99".to_string()));
+
+        let mut posts_page_args = HashMap::new();
+        posts_page_args.insert("posts_page_id".to_string(), serde_json::json!(5));
+        assert_eq!(
+            extract_target_id(&Some(posts_page_args)),
+            Some("5".to_string())
+        );
+
+        assert_eq!(extract_target_id(&None), None);
+        assert_eq!(extract_target_id(&Some(HashMap::new())), None);
+    }
+
+    #[tokio::test]
+    async fn test_call_tool_audits_mutating_tool_including_on_failure() {
+        // "delete_"接頭辞を持つツール名はmutatingと判定されるため、
+        // 存在しないツール名でcatch-allのToolNotFoundになる場合でも
+        // （ネットワークI/Oなしで）監査ログに失敗エントリが記録される
+        // ことを確認する。
+        let handler = rate_limited_handler(RateLimitConfig::default());
+        let mut args = HashMap::new();
+        args.insert("post_id".to_string(), serde_json::json!(7));
+
+        let result = handler
+            .call_tool(ToolCallParams {
+                name: "delete_fake_thing_for_test".to_string(),
+                arguments: Some(args),
+            })
+            .await;
+        assert!(matches!(result, Err(McpError::ToolNotFound(_))));
+
+        let entries = handler.audit_logger.get_all_entries().await;
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].level, AuditLevel::Error);
+        assert_eq!(entries[0].result, Some("FAILURE".to_string()));
+        assert_eq!(
+            entries[0].action,
+            Some("delete_fake_thing_for_test".to_string())
+        );
+        assert_eq!(entries[0].metadata.get("target_id"), Some(&"7".to_string()));
+        assert!(entries[0].metadata.contains_key("error"));
+    }
+
+    #[tokio::test]
+    async fn test_call_tool_does_not_audit_read_only_tool() {
+        let handler = rate_limited_handler(RateLimitConfig::default());
+
+        let result = handler
+            .call_tool(ToolCallParams {
+                name: "get_fake_thing_for_test".to_string(),
+                arguments: None,
+            })
+            .await;
+        assert!(matches!(result, Err(McpError::ToolNotFound(_))));
+
+        let entries = handler.audit_logger.get_all_entries().await;
+        assert!(entries.is_empty());
     }
 
     #[test]
