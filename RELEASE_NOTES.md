@@ -4,6 +4,65 @@
 
 Our project follows a detailed 0.01 increment versioning strategy to provide granular tracking of development progress and feature implementation.
 
+## 🔒 v0.18.0 - セキュリティ強化
+
+**Release Date:** 2026-11-06
+**Focus:** セキュリティ観点での不足点の洗い出し（Epic #341ほか）で見つかった、
+実装済みだが実際のリクエストパスに配線されていなかったセキュリティ機能の
+配線と、依存関係の脆弱性対応
+
+### ⚠️ 挙動の変更
+
+- `upload_media`は許可リストにある形式（画像・PDF・動画・音声）のみを
+  受け付けるようになった。SVG・テキスト・Office文書（docx等）・movは
+  拒否される。また拡張子がMIMEタイプと一致し、内容がその形式のマジック
+  ナンバーを持つ必要がある
+- WordPressを有効（`enabled = true`）にしているのに認証情報が無い設定は、
+  起動時にエラーになる
+
+### ✅ 認証・アクセス制御
+
+- HTTP/WebSocket transportにAPIキー認証を追加（#342）。それまでは
+  リスナーに到達できる任意のクライアントが、認証なしで`delete_post`等の
+  変更系ツールを呼び出せた。`auth_enabled = true`で有効化し、
+  `Authorization: Bearer <key>`または`X-Api-Key`でキーを送る。失効・
+  期限切れのキーも拒否する。既定は無効で、STDIOは対象外
+- WordPressツール呼び出しにレート制限を適用（#343）。`RateLimiter`は
+  保持されていたが一度も参照されていなかった
+
+### ✅ 監査ログ
+
+- WordPressの変更系ツール（`create_*`/`update_*`/`delete_*`/
+  `upload_*`/`set_*`）の呼び出しを、成功・失敗を問わず監査ログに記録
+  （#344）。入力検証やレート制限で拒否された呼び出しも記録する
+- 監査ログのファイル出力が追記ではなく毎回上書きになっており、最新の
+  1件しか残っていなかった既存の不具合を修正
+
+### ✅ 認証情報の保護
+
+- 設定ファイルの`encrypted_credentials`を実際に復号して使うよう配線
+  （#338）。復号鍵（マスターパスワード）は`WORDPRESS_MASTER_PASSWORD`
+  環境変数からのみ読み込む。3つの設定読み込みパス（起動時・
+  `--config`指定時・動的リロード）すべてに対応
+- `WordPressConfig`/`WordPressHandler`のDebug出力でパスワードを伏せる
+
+### ✅ メディアアップロードの検証
+
+- `upload_media`にMIME許可リスト・拡張子とMIMEの一致・マジックナンバー
+  による内容検証・ファイル名の検証・サイズ上限（10 MiB）を追加（#339）。
+  WordPressは保存形式を拡張子で決めるため、拡張子を検証しないと画像と
+  称してHTMLを保存させる格納型XSSが成立していた
+
+### ✅ 依存関係の脆弱性
+
+- v0.17.3に含まれていた既知の脆弱性10件のうち9件を依存関係の更新で
+  解消（TLSの証明書検証に関わるrustls-webpki・webpki-rootsを含む）。
+  修正版のないRUSTSEC-2026-0387（crypto-bigint）は、jsonwebtoken 11.x
+  への破壊的な移行が必要なため理由を付けて無視
+- `cargo audit`の日次定期実行を追加（#340）。それまでの定期実行は結果を
+  握りつぶしており、脆弱性を含むブランチでも成功扱いになっていた。
+  develop/mainを監査し、検知時はIssueを自動作成する
+
 ## 🛠️ v0.17.3 - WordPress実機バグ修正・ログ出力堅牢性向上
 
 **Release Date:** 2026-10-13

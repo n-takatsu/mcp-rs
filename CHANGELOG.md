@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-11-06
+
+### Added
+
+- HTTP/WebSocket transportのAPIキー認証（`transport.http.auth_enabled`・
+  `api_keys`）。`Authorization: Bearer`または`X-Api-Key`で送られたキーを
+  検証し、無効・失効・期限切れのキーは401で拒否する。既定は無効（#342）
+- WordPressツール呼び出しへのレート制限（サイト接続単位、既定10件/秒・
+  バースト20件）（#343）
+- WordPressの変更系ツール呼び出しの監査ログ記録。入力検証やレート制限で
+  拒否された呼び出しも記録する（#344）
+- WordPress認証情報の暗号化保存（`encrypted_credentials`、復号鍵は
+  `WORDPRESS_MASTER_PASSWORD`環境変数）（#338）
+- `cargo audit`の日次定期実行。develop/mainを監査し、検知時はIssueを
+  自動作成する（#340）
+
+### Changed
+
+- `upload_media`の入力検証を追加: MIME許可リスト（画像・PDF・動画・
+  音声）、拡張子とMIMEの一致、マジックナンバーによる内容検証、
+  ファイル名の検証、サイズ上限（10 MiB）。SVG・テキスト・Office文書・
+  movは受け付けなくなった（#339）
+- WordPressを有効にしているのに認証情報（`username`/`password`または
+  `encrypted_credentials`）が無い設定は起動時にエラーにするよう変更
+- `WordPressConfig`/`WordPressHandler`のDebug出力でパスワードを伏せる
+  よう変更
+
+### Fixed
+
+- 監査ログファイルが追記ではなく毎回上書きされ、最新の1件しか残って
+  いなかった問題
+
+### Security
+
+- v0.17.3の依存関係に含まれていた既知の脆弱性10件のうち9件を更新で
+  解消（ammonia、rustls-webpki、webpki-roots、zstd系ほか）。修正版の
+  ないRUSTSEC-2026-0387（crypto-bigint、jsonwebtoken 11.xへの移行が
+  必要）は`.cargo/audit.toml`で理由を付けて無視
+
 ## [0.17.3] - 2026-10-13
 
 ### Fixed
