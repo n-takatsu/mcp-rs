@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::config::WordPressConfig;
 use crate::mcp::{
@@ -106,6 +106,87 @@ fn format_wp_error(status: reqwest::StatusCode, body: &str) -> String {
         "WordPress API error {}: {}",
         status,
         truncate_chars_with_ellipsis(body, 200)
+    )
+}
+
+/// `context=edit`での取得が拒否された（401/403）エラーかどうか。編集権限が
+/// 無い場合WordPressは`rest_forbidden_context`を返すが、セキュリティ
+/// プラグインやWAFが別のコードやHTMLの応答で拒否することもあるため、
+/// コードではなくステータスで判定する（パスワード誤りでも1回余分に
+/// 取得し直すが、表示用コンテキストでも同じく失敗するだけで実害はない）。
+/// `execute_request_with_retry`はWordPressの4xx応答を`format_wp_error`で
+/// 整形した`ExternalApi`として返すため、その先頭のステータスで判定する。
+fn is_edit_context_denied(error: &McpError) -> bool {
+    matches!(
+        error,
+        McpError::ExternalApi(msg)
+            if msg.starts_with("WordPress API error 401")
+                || msg.starts_with("WordPress API error 403")
+    )
+}
+
+/// `get_post`が本文をどの形で返すか。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PostContentFormat {
+    /// 編集用の原文（取得できなければ表示用HTMLに切り替える）
+    Raw,
+    /// WordPressが整形した表示用HTML
+    Rendered,
+    /// 表示用HTMLからタグを除いたプレーンテキスト
+    Text,
+}
+
+impl PostContentFormat {
+    /// ツール引数の`format`を解釈する。省略・`null`は既定の`raw`とし、
+    /// 文字列以外の値や未知の文字列はエラーにする。
+    fn parse(value: Option<&serde_json::Value>) -> Result<Self, McpError> {
+        match value {
+            None | Some(serde_json::Value::Null) => Ok(Self::Raw),
+            Some(serde_json::Value::String(s)) if s == "raw" => Ok(Self::Raw),
+            Some(serde_json::Value::String(s)) if s == "rendered" => Ok(Self::Rendered),
+            Some(serde_json::Value::String(s)) if s == "text" => Ok(Self::Text),
+            Some(other) => Err(McpError::InvalidParams(format!(
+                "Invalid format {}: expected 'raw', 'rendered' or 'text'",
+                truncate_chars_with_ellipsis(&other.to_string(), 100)
+            ))),
+        }
+    }
+}
+
+/// タイトルや本文を指定の形で、切り詰めずに返す。原文を要求したが取得
+/// できなかった場合は表示用HTMLを返す（その判定は`post_format_label`）。
+fn post_content_for_display(content: &WordPressContent, format: PostContentFormat) -> String {
+    match format {
+        PostContentFormat::Raw => content
+            .raw
+            .clone()
+            .unwrap_or_else(|| content.rendered.clone()),
+        PostContentFormat::Rendered => content.rendered.clone(),
+        PostContentFormat::Text => html_to_plain_text(&content.rendered),
+    }
+}
+
+/// `get_post`の出力で、タイトル・本文を実際にどの形で返したかを示す
+/// ラベル。原文を要求したが取得できなかった場合はその旨を含める
+/// （タイトルと本文は同じ応答から取るため、どちらかだけが原文になる
+/// ことはない）。
+fn post_format_label(post: &WordPressPost, format: PostContentFormat) -> &'static str {
+    match format {
+        PostContentFormat::Raw if post.content.raw.is_some() => "raw",
+        PostContentFormat::Raw => {
+            "rendered HTML (raw source unavailable: it requires credentials with edit permission)"
+        }
+        PostContentFormat::Rendered => "rendered HTML",
+        PostContentFormat::Text => "plain text",
+    }
+}
+
+/// 閲覧パスワード付きの投稿を表示用コンテキストで取得すると、WordPressは
+/// 本文を空にして返す。空の本文を見たエージェントが投稿を上書きして
+/// しまわないよう、その場合に添える注意書き。
+fn protected_content_note(post: &WordPressPost) -> Option<&'static str> {
+    (post.content.protected && post.content.raw.is_none()).then_some(
+        "This post is password-protected, so its content is hidden. Do not treat the content as empty or overwrite it.",
     )
 }
 
@@ -477,6 +558,11 @@ pub struct WordPressGuid {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct WordPressContent {
     pub rendered: String,
+    /// 編集用の原文（Gutenbergのブロック区切り等を含む）。WordPressは
+    /// `context=edit`で取得した場合にのみ返す。`None`のときはシリアライズ
+    /// しない（このフィールドを持たなかった頃と送信内容を変えないため）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw: Option<String>,
     #[serde(default)]
     pub protected: bool,
 }
@@ -772,12 +858,10 @@ impl WordPressHandler {
                     let status = response.status();
 
                     if status.is_success() {
-                        // レスポンステキストを取得してデバッグ
+                        // 本文はログに出さない。context=editの応答には投稿の
+                        // 閲覧パスワードや未公開の下書き等が含まれうるため
                         let text = response.text().await.map_err(McpError::Http)?;
-                        warn!(
-                            "Response body (first 500 chars): {}",
-                            text.chars().take(500).collect::<String>()
-                        );
+                        debug!("Response body: {} bytes", text.len());
 
                         match serde_json::from_str::<T>(&text) {
                             Ok(data) => return Ok(data),
@@ -1084,18 +1168,52 @@ impl WordPressHandler {
         Ok((posts, pages))
     }
 
-    /// Get a single WordPress post by ID
-    pub async fn get_post(&self, post_id: u64, post_type: &str) -> Result<WordPressPost, McpError> {
+    /// 投稿・固定ページを1件取得する。
+    ///
+    /// `include_raw`が真なら、編集用の原文（`raw`）を含めるため
+    /// `context=edit`で取得し、拒否された場合のみ表示用コンテキストで
+    /// 取り直す（その場合`raw`は`None`になる）。認証情報が無い場合は
+    /// `context=edit`が必ず拒否されるため、最初から表示用コンテキストで
+    /// 取得する。
+    pub async fn get_post(
+        &self,
+        post_id: u64,
+        post_type: &str,
+        include_raw: bool,
+    ) -> Result<WordPressPost, McpError> {
         let endpoint = endpoint_for_post_type(post_type);
         let url = format!("{}/wp-json/wp/v2/{}/{}", self.base_url, endpoint, post_id);
 
-        let mut request = self.client.get(&url);
+        info!("Fetching WordPress {}: {}", post_type, post_id);
+        let has_credentials = self.username.is_some() && self.password.is_some();
+        if !include_raw || !has_credentials {
+            return self.fetch_post(&url, None).await;
+        }
 
+        match self.fetch_post(&url, Some("edit")).await {
+            Err(edit_error) if is_edit_context_denied(&edit_error) => {
+                warn!(
+                    "Fetching {} {} with context=edit was denied, falling back to the view context: {}",
+                    post_type, post_id, edit_error
+                );
+                self.fetch_post(&url, None).await
+            }
+            result => result,
+        }
+    }
+
+    async fn fetch_post(
+        &self,
+        url: &str,
+        context: Option<&str>,
+    ) -> Result<WordPressPost, McpError> {
+        let mut request = self.client.get(url);
+        if let Some(context) = context {
+            request = request.query(&[("context", context)]);
+        }
         if let (Some(username), Some(password)) = (&self.username, &self.password) {
             request = request.basic_auth(username, Some(password));
         }
-
-        info!("Fetching WordPress {}: {}", post_type, post_id);
         self.execute_request_with_retry(request).await
     }
 
@@ -1597,10 +1715,12 @@ impl WordPressHandler {
             link: None,
             title: WordPressContent {
                 rendered: title,
+                raw: None,
                 protected: false,
             },
             content: WordPressContent {
                 rendered: content,
+                raw: None,
                 protected: false,
             },
             excerpt: None,
@@ -2472,8 +2592,11 @@ impl WordPressHandler {
                     .get("post_type")
                     .and_then(|v| v.as_str())
                     .unwrap_or("post");
+                let format = PostContentFormat::parse(args.get("format"))?;
 
-                let post = self.get_post(post_id, post_type).await?;
+                let post = self
+                    .get_post(post_id, post_type, format == PostContentFormat::Raw)
+                    .await?;
 
                 // カテゴリ/タグIDを名前に解決する。一覧取得に失敗しても
                 // get_post自体は失敗させず、数値IDのまま表示する。
@@ -2516,16 +2639,26 @@ impl WordPressHandler {
                     }
                 };
 
+                // タイトルも本文と同じ形で返す（rawならHTMLエンティティ化
+                // されていない原文）
+                let title = post_content_for_display(&post.title, format);
+                let content_body = post_content_for_display(&post.content, format);
+                let note = protected_content_note(&post)
+                    .map(|note| format!("Note: {}\n", note))
+                    .unwrap_or_default();
+
                 Ok(serde_json::json!({
                     "content": [{
                         "type": "text",
-                        "text": format!("Post Details:\nID: {}\nTitle: {}\nStatus: {}\nCategories: {}\nTags: {}\nContent: {}",
+                        "text": format!("Post Details:\nID: {}\nFormat: {}\nTitle: {}\nStatus: {}\nCategories: {}\nTags: {}\n{}Content:\n{}",
                             post.id.map(|id| id.to_string()).unwrap_or_else(|| "N/A".to_string()),
-                            post.title.rendered,
+                            post_format_label(&post, format),
+                            title,
                             post.status,
                             categories_names.join(", "),
                             tags_names.join(", "),
-                            truncate_chars_with_ellipsis(&html_to_plain_text(&post.content.rendered), 100)
+                            note,
+                            content_body
                         )
                     }],
                     "isError": false
@@ -3420,7 +3553,7 @@ impl McpHandler for WordPressHandler {
             },
             Tool {
                 name: "get_post".to_string(),
-                description: "Retrieve a single WordPress post or page by ID".to_string(),
+                description: "Retrieve a single WordPress post or page by ID, including its full content. By default the content is the editable source (with Gutenberg block markup), which can be passed back to update_post unchanged.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -3433,6 +3566,12 @@ impl McpHandler for WordPressHandler {
                             "enum": ["post", "page"],
                             "description": "Content type to retrieve. Defaults to 'post'.",
                             "default": "post"
+                        },
+                        "format": {
+                            "type": "string",
+                            "enum": ["raw", "rendered", "text"],
+                            "description": "How to return the content. 'raw': editable source (requires edit permission; falls back to rendered HTML otherwise). 'rendered': HTML as displayed on the site. 'text': plain text with tags removed. Defaults to 'raw'.",
+                            "default": "raw"
                         }
                     },
                     "required": ["post_id"]
@@ -4585,14 +4724,17 @@ mod tests {
             link: Some("https://example.com/test".to_string()),
             title: WordPressContent {
                 rendered: "Test Post".to_string(),
+                raw: None,
                 protected: false,
             },
             content: WordPressContent {
                 rendered: "full content".to_string(),
+                raw: None,
                 protected: false,
             },
             excerpt: Some(WordPressContent {
                 rendered: long_excerpt,
+                raw: None,
                 protected: false,
             }),
             author: None,
@@ -4715,6 +4857,7 @@ mod tests {
             link: None,
             title: Some(WordPressContent {
                 rendered: "Test Image".to_string(),
+                raw: None,
                 protected: false,
             }),
             author: None,
@@ -5034,5 +5177,216 @@ mod tests {
             "got: {:?}",
             result
         );
+    }
+
+    #[test]
+    fn test_is_edit_context_denied_matches_format_wp_error_output() {
+        // 編集権限の不足（rest_forbidden_context）に加え、WAF等が別のコードや
+        // HTMLで拒否した場合も、表示用コンテキストで取り直す
+        for (status, body) in [
+            (
+                reqwest::StatusCode::UNAUTHORIZED,
+                r#"{"code":"rest_forbidden_context","message":"Sorry, you are not allowed to edit this post."}"#,
+            ),
+            (
+                reqwest::StatusCode::FORBIDDEN,
+                r#"{"code":"rest_forbidden_context","message":"Sorry, you are not allowed to edit this post."}"#,
+            ),
+            (
+                reqwest::StatusCode::FORBIDDEN,
+                "<html><body>Blocked by security plugin</body></html>",
+            ),
+        ] {
+            assert!(is_edit_context_denied(&McpError::ExternalApi(
+                format_wp_error(status, body)
+            )));
+        }
+
+        // 存在しない投稿やサーバーエラー、接続エラーでは取り直さない
+        assert!(!is_edit_context_denied(&McpError::ExternalApi(
+            format_wp_error(
+                reqwest::StatusCode::NOT_FOUND,
+                r#"{"code":"rest_post_invalid_id","message":"Invalid post ID."}"#,
+            )
+        )));
+        assert!(!is_edit_context_denied(&McpError::ExternalApi(format!(
+            "{} (after 3 attempts)",
+            format_wp_error(reqwest::StatusCode::INTERNAL_SERVER_ERROR, "")
+        ))));
+        assert!(!is_edit_context_denied(&McpError::Other(
+            "WordPress API error 401".to_string()
+        )));
+    }
+
+    #[test]
+    fn test_post_content_format_parse() {
+        use serde_json::json;
+        assert_eq!(
+            PostContentFormat::parse(None).unwrap(),
+            PostContentFormat::Raw
+        );
+        assert_eq!(
+            PostContentFormat::parse(Some(&json!(null))).unwrap(),
+            PostContentFormat::Raw
+        );
+        assert_eq!(
+            PostContentFormat::parse(Some(&json!("rendered"))).unwrap(),
+            PostContentFormat::Rendered
+        );
+        assert_eq!(
+            PostContentFormat::parse(Some(&json!("text"))).unwrap(),
+            PostContentFormat::Text
+        );
+        // 未知の文字列も、文字列以外の値も、既定値で黙って続けずにエラーにする
+        for invalid in [json!("full"), json!(1), json!(true)] {
+            assert!(matches!(
+                PostContentFormat::parse(Some(&invalid)),
+                Err(McpError::InvalidParams(_))
+            ));
+        }
+    }
+    #[test]
+    fn test_post_content_for_display_returns_full_content() {
+        let paragraph = "日本語の本文です。".repeat(50);
+        let raw = format!(
+            "<!-- wp:paragraph -->\n<p>{}</p>\n<!-- /wp:paragraph -->",
+            paragraph
+        );
+        let content = WordPressContent {
+            rendered: format!("<p>{}</p>\n", paragraph),
+            raw: Some(raw.clone()),
+            protected: false,
+        };
+
+        // 原文はブロック区切りを含めてそのまま、切り詰めずに返す
+        assert_eq!(
+            post_content_for_display(&content, PostContentFormat::Raw),
+            raw
+        );
+        assert_eq!(
+            post_content_for_display(&content, PostContentFormat::Rendered),
+            content.rendered
+        );
+
+        // プレーンテキストも100文字で切り詰めない
+        let text = post_content_for_display(&content, PostContentFormat::Text);
+        assert_eq!(text.trim(), paragraph);
+        assert!(text.chars().count() > 100);
+    }
+
+    fn post_with_content(content: WordPressContent) -> WordPressPost {
+        WordPressPost {
+            id: Some(1),
+            date: None,
+            date_gmt: None,
+            guid: None,
+            modified: None,
+            modified_gmt: None,
+            slug: None,
+            status: "publish".to_string(),
+            post_type: Some("post".to_string()),
+            link: None,
+            title: WordPressContent {
+                rendered: "Don&#8217;t".to_string(),
+                raw: content.raw.as_ref().map(|_| "Don't".to_string()),
+                protected: false,
+            },
+            content,
+            excerpt: None,
+            author: None,
+            featured_media: None,
+            categories: None,
+            tags: None,
+        }
+    }
+
+    #[test]
+    fn test_post_format_label_reports_raw_fallback() {
+        let with_raw = post_with_content(WordPressContent {
+            rendered: "<p>x</p>".to_string(),
+            raw: Some("x".to_string()),
+            protected: false,
+        });
+        assert_eq!(post_format_label(&with_raw, PostContentFormat::Raw), "raw");
+        assert_eq!(
+            post_content_for_display(&with_raw.title, PostContentFormat::Raw),
+            "Don't"
+        );
+
+        // 原文を要求したが取れなかった場合、タイトル・本文とも表示用HTMLに
+        // なり、ラベルでその旨を示す
+        let without_raw = post_with_content(WordPressContent {
+            rendered: "<p>x</p>".to_string(),
+            raw: None,
+            protected: false,
+        });
+        assert!(post_format_label(&without_raw, PostContentFormat::Raw)
+            .contains("raw source unavailable"));
+        assert_eq!(
+            post_content_for_display(&without_raw.title, PostContentFormat::Raw),
+            "Don&#8217;t"
+        );
+        assert_eq!(
+            post_format_label(&without_raw, PostContentFormat::Rendered),
+            "rendered HTML"
+        );
+    }
+
+    #[test]
+    fn test_protected_content_note() {
+        // 閲覧パスワード付きで、表示用コンテキストのため本文が空のとき
+        let hidden = post_with_content(WordPressContent {
+            rendered: String::new(),
+            raw: None,
+            protected: true,
+        });
+        assert!(protected_content_note(&hidden).is_some());
+
+        // 編集用コンテキストで原文が取れていれば注意書きは不要
+        let editable = post_with_content(WordPressContent {
+            rendered: String::new(),
+            raw: Some("secret body".to_string()),
+            protected: true,
+        });
+        assert!(protected_content_note(&editable).is_none());
+
+        let public = post_with_content(WordPressContent {
+            rendered: "<p>x</p>".to_string(),
+            raw: None,
+            protected: false,
+        });
+        assert!(protected_content_note(&public).is_none());
+    }
+
+    #[test]
+    fn test_wordpress_content_raw_is_optional_and_not_serialized_when_absent() {
+        // context=viewの応答（rawなし）とcontext=editの応答（rawあり）の両方を読める
+        let view: WordPressContent =
+            serde_json::from_str(r#"{"rendered":"<p>x</p>","protected":false}"#).unwrap();
+        assert_eq!(view.raw, None);
+        let edit: WordPressContent =
+            serde_json::from_str(r#"{"rendered":"<p>x</p>","raw":"x","protected":false}"#).unwrap();
+        assert_eq!(edit.raw.as_deref(), Some("x"));
+
+        // rawがNoneのときは送信内容に含めない（既存の送信内容を変えない）
+        let serialized = serde_json::to_value(&view).unwrap();
+        assert!(serialized.get("raw").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_get_post_rejects_invalid_format_before_network() {
+        let handler = rate_limited_handler(RateLimitConfig::default());
+        let mut args = HashMap::new();
+        args.insert("post_id".to_string(), serde_json::json!(1));
+        args.insert("format".to_string(), serde_json::json!("full"));
+
+        let result = handler
+            .call_tool(ToolCallParams {
+                name: "get_post".to_string(),
+                arguments: Some(args),
+            })
+            .await;
+
+        assert!(matches!(result, Err(McpError::InvalidParams(_))));
     }
 }
