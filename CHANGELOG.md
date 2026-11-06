@@ -37,6 +37,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `create_post_with_featured_image`が常にHTTP 400（`empty_content`）で
   失敗し、投稿を作成できなかった問題（#367）。タイトル・本文を、
   WordPressが書き込み時に読まない`{"rendered": ...}`の形で送っていた
+- ビルド時の将来非互換警告（`proc-macro-error2`）を解消（#369）。
+  使われていなかった`validator`の依存を削除し、`mysql-common-derive`を
+  0.32.2に更新した
 
 ## [0.18.0] - 2026-11-06
 

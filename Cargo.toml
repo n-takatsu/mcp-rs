@@ -108,7 +108,6 @@ async-trait = "0.1.89"
 reqwest = { version = "0.12.24", default-features = false, features = ["json", "rustls-tls", "multipart", "stream"] }
 
 # Validation
-validator = { version = "0.20", features = ["derive"] }
 regex = "1.12"
 url = "2.5.7"
 urlencoding = "2.1"
