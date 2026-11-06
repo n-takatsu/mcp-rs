@@ -152,6 +152,24 @@ cargo run -- --config configs/development/http-transport.toml
 
 > 📖 See [Claude Desktop Integration Guide](./project-docs/CLAUDE_DESKTOP_INTEGRATION.md) for detailed configuration.
 
+### Claude Code
+
+Claude Code also talks to mcp-rs over STDIO and uses the same configuration file. Build mcp-rs, then register it with absolute paths. Everything after `--` is the mcp-rs command line.
+
+```bash
+cargo build --release
+
+claude mcp add mcp-rs --scope user \
+  -e WORDPRESS_URL=https://your-wordpress-site.com \
+  -e WORDPRESS_USERNAME=your_username \
+  -e WORDPRESS_PASSWORD="your application password" \
+  -- /path/to/mcp-rs/target/release/mcp-rs --config /path/to/mcp-rs/configs/production/claude-desktop.toml
+```
+
+Check the connection with `claude mcp list`, or `/mcp` inside Claude Code. Values passed with `-e` are stored in Claude Code's settings, so do not use `--scope project` (which writes them to the shared `.mcp.json`) with real credentials.
+
+> 📖 See [Claude Code Integration Guide](./project-docs/CLAUDE_CODE_INTEGRATION.md) (Japanese) for `.mcp.json`, encrypted credentials, and troubleshooting.
+
 ### Option 1: Interactive Setup (Recommended)
 
 ```bash
@@ -312,6 +330,7 @@ cargo run --example websocket_rate_limit_demo
 - [🏗️ Architecture Overview](./project-docs/architecture.md)
 - [📝 API Reference](./project-docs/api-reference.md)
 - [🔄 Claude Desktop Integration](./project-docs/CLAUDE_DESKTOP_INTEGRATION.md)
+- [🔄 Claude Code Integration](./project-docs/CLAUDE_CODE_INTEGRATION.md)
 - [🐳 Docker Guide](./docs/DOCKER_GUIDE.md) ⭐ NEW
 - [☸️ Kubernetes Operator Guide](./docs/KUBERNETES_GUIDE.md) ⭐ NEW
 

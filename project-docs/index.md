@@ -8,6 +8,7 @@ Welcome to the mcp-rs developer documentation. This directory contains comprehen
 
 - **[Architecture Guide](architecture.md)** - Complete system architecture, components, and design decisions
 - **[Claude Desktop Integration](CLAUDE_DESKTOP_INTEGRATION.md)** - Claude Desktop統合ガイド（STDIO通信とログ管理）
+- **[Claude Code Integration](CLAUDE_CODE_INTEGRATION.md)** - Claude Code統合ガイド（claude mcp add・.mcp.jsonでの登録）
 - **[Security Guide](security-guide.md)** - Security implementation, protocols, and best practices
 - **[Database Guide](database-guide.md)** - Multi-engine database system with security integration
 - **[WordPress Guide](wordpress-guide.md)** - WordPress integration, API endpoints, and workflows
