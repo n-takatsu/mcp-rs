@@ -45,6 +45,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   に`-32601`のエラー応答を返していた問題（#360）。JSON-RPC 2.0に従い、
   通知には応答しないようにした。`tools/call`等のリクエスト用のmethodが
   `id`なしで届いた場合も、実行せずに警告ログのみ記録する
+- `--config`を省略して起動したときの設定読み込み（`McpConfig::load()`）の
+  問題を修正（#375）
+  - 設定ファイルを読み込んだことを標準出力に書き出しており、STDIOモードの
+    通信（JSON-RPC）を壊すおそれがあった。標準エラー出力に変更
+  - `~/.config/mcp-rs/config.toml`の`~`がホームフォルダに展開されず、
+    この場所の設定ファイルが読み込まれなかった
+  - `[transport] type = "stdio"`と書いた設定ファイル（`configs/`の設定例と
+    同じ書き方）が、`duplicate field transport_type`で読み込めなかった
 - ビルド時の将来非互換警告（`proc-macro-error2`）を解消（#369）。
   使われていなかった`validator`の依存を削除し、`mysql-common-derive`を
   0.32.2に更新した
