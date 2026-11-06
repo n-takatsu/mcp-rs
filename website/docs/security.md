@@ -12,7 +12,7 @@ permalink: /docs/security/
 
 MCP-RS implements comprehensive security measures designed for production environments. Our security-first approach ensures safe operation with AI agents while maintaining high performance.
 
-## 🛡️ Enterprise-Grade 5-Layer Security Architecture (86% Complete)
+## 🛡️ Enterprise-Grade 5-Layer Security Architecture (93% Complete)
 
 ## ✅ Layer 1: Cryptographic Security
 
@@ -30,8 +30,8 @@ MCP-RS implements comprehensive security measures designed for production enviro
 
 ## ✅ Layer 3: Access Control & Rate Limiting
 
-- **Token Bucket Rate Limiting**: Advanced rate limiting with burst handling
-- **Client Isolation**: Independent rate limits per client IP
+- **API Key Authentication**: Optional API key check on every HTTP/WebSocket request (`Authorization: Bearer <key>` or `X-Api-Key`). Revoked or expired keys are rejected. STDIO is unaffected (local pipe)
+- **Token Bucket Rate Limiting**: WordPress tool calls are rate limited per WordPress site connection, with burst handling
 - **Configurable Thresholds**: Customizable rate limiting parameters
 - **Graceful Degradation**: Smooth handling of rate limit violations
 
@@ -45,6 +45,7 @@ MCP-RS implements comprehensive security measures designed for production enviro
   - Stacked query prevention
 - **Advanced Input Validation**: Custom rule engine with real-time validation
 - **HTML Sanitization**: Safe HTML processing with whitelist filtering
+- **Media Upload Validation**: `upload_media` checks the MIME type against an allowlist, requires the filename extension to match it, verifies the file content by its magic number, and enforces a size limit (see [WordPress Integration](../wordpress/#supported-file-types))
 
 ## ✅ Layer 5: Application Security
 
@@ -52,11 +53,11 @@ MCP-RS implements comprehensive security measures designed for production enviro
 - **Result-Based Error Handling**: Comprehensive error management system
 - **Memory Safety**: Rust's ownership system prevents buffer overflows
 - **Thread Safety**: Async-safe operations with proper synchronization
+- **Audit Logging**: Every WordPress tool call that changes the site (`create_*`, `update_*`, `delete_*`, `upload_*`, `set_*`) is recorded with its result, including calls rejected by rate limiting or input validation. Entries are appended to `audit.log` as JSON lines
 
 ## 🔄 In Development
 
 - **XSS Attack Prevention**: DOM-based XSS protection and CSP implementation
-- **Audit Logging System**: Security event recording and compliance reporting
 
 ## 🧪 Security Testing
 
@@ -72,7 +73,7 @@ Our comprehensive security test suite covers:
 - ✅ Zero-panic operations
 - ✅ WordPress authentication security
 
-## Security Implementation Status (86% Complete)
+## Security Implementation Status (93% Complete)
 
 ```
 🛡️ Enterprise Security Implementation:
@@ -81,8 +82,8 @@ Our comprehensive security test suite covers:
 ✅ Access Control: COMPLETE
 ✅ Input Validation: COMPLETE
 ✅ Application Security: COMPLETE
+✅ Audit Logging: COMPLETE
 🔄 XSS Prevention: IN PROGRESS
-🔄 Audit Logging: PLANNED
 
 Security Architecture: 5-Layer Defense ✅
 Production Ready: TRUE ✅
@@ -102,9 +103,53 @@ username = "${WORDPRESS_USERNAME}"
 password = "${WORDPRESS_PASSWORD}"
 ```
 
+## Encrypted WordPress Credentials
+
+Instead of a plaintext `password`, the config file can hold the Application Password encrypted with AES-GCM-256. The master password used to decrypt it is read only from the `WORDPRESS_MASTER_PASSWORD` environment variable, never from the config file. Startup fails if `encrypted_credentials` is set and the variable is missing.
+
+```toml
+[handlers.wordpress]
+url = "https://your-wordpress-site.com"
+enabled = true
+
+[handlers.wordpress.encrypted_credentials]
+username = "your_username"
+encrypted_password = "..."
+nonce = "..."
+salt = "..."
+```
+
+Generate the `encrypted_credentials` values with the library API:
+
+```rust
+use mcp_rs::security::SecureCredentials;
+
+let encrypted = SecureCredentials::new("your_username".into(), "your_application_password".into())
+    .encrypt("your_master_password")?;
+println!("{}", toml::to_string(&encrypted)?);
+```
+
+## HTTP/WebSocket API Key Authentication
+
+When the HTTP transport listens on anything other than loopback, enable API key authentication. Each key is hashed in memory at startup and never logged. Startup fails if `auth_enabled = true` and no keys are configured, or if a key is empty or duplicated.
+
+```toml
+[transport.http]
+auth_enabled = true
+
+[[transport.http.api_keys]]
+key = "replace-with-a-long-random-key"
+name = "claude-desktop"
+user_id = "user-1"
+```
+
+Clients send the key as `Authorization: Bearer <key>` or `X-Api-Key: <key>`. Requests without a valid key get HTTP 401. Note that `${VAR}` expansion applies only to the WordPress `url`/`username`/`password` fields, so `key` must be written as the literal value.
+
 ## Best Practices
 
 - Use WordPress Application Passwords (never plain passwords)
+- Prefer `encrypted_credentials` over a plaintext `password` in config files
+- Enable API key authentication whenever the HTTP transport is reachable from the network
 - Implement proper environment variable naming conventions
 - Regular password rotation and access review
 - HTTPS-only connections for all WordPress API calls
@@ -170,6 +215,6 @@ For security-related issues:
 ---
 
 **Security Version**: v0.1.0-alpha (Enterprise Grade)
-**Implementation Status**: 86% Complete (12/14 features)
+**Implementation Status**: 93% Complete (13/14 features)
 **Last Updated**: 2025-01-28
 **Next Review**: 2025-02-28
