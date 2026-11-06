@@ -1,15 +1,29 @@
 name: Docker Security Scan
 
+# 文章だけの変更ではDockerイメージの中身が変わらないため実行しない。
+# イメージに取り込むのはCargo.toml・Cargo.lock・src・benches・examples・
+# testsのみで、文書類は.dockerignoreでも除外している。日次のスケジュール
+# 実行はこの設定の影響を受けない。
 on:
   push:
     branches:
       - main
       - develop
       - 'feature/**'
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'project-docs/**'
+      - 'website/**'
   pull_request:
     branches:
       - main
       - develop
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'project-docs/**'
+      - 'website/**'
   schedule:
     # Run daily at 2 AM UTC
     - cron: '0 2 * * *'
