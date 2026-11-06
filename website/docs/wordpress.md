@@ -72,13 +72,23 @@ MCP-RS provides comprehensive WordPress integration through the WordPress REST A
 Add WordPress configuration to your `mcp-config.toml`:
 
 ```toml
-
+[handlers.wordpress]
 url = "https://your-wordpress-site.com"
 username = "your_username"
 password = "your_application_password"
+enabled = true
 timeout_seconds = 30
 
+# Optional: tool calls are rate limited per WordPress site (defaults shown)
+[handlers.wordpress.rate_limit]
+requests_per_second = 10
+burst_size = 20
+enabled = true
 ```
+
+To keep the Application Password out of the config file in plaintext, use `encrypted_credentials` instead of `password`. See [Encrypted WordPress Credentials](../security/#encrypted-wordpress-credentials).
+
+When `enabled = true`, either `username`/`password` or `encrypted_credentials` must be set, otherwise startup fails.
 
 ## Setting up Application Passwords
 
@@ -103,7 +113,7 @@ Create a new WordPress post (basic version).
 **Example Usage:**
 
 ```json
-
+{
   "tool": "create_post",
   "arguments": {
     "title": "My New Blog Post",
@@ -131,7 +141,7 @@ Create a new WordPress post or page with advanced options.
 **Example Usage:**
 
 ```json
-
+{
   "tool": "create_advanced_post",
   "arguments": {
     "title": "SEO-Optimized Post",
@@ -167,7 +177,7 @@ Update an existing WordPress post.
 **Example Usage:**
 
 ```json
-
+{
   "tool": "update_post",
   "arguments": {
     "post_id": 123,
@@ -218,13 +228,15 @@ Upload a media file to WordPress media library.
 
 **Parameters:**
 - `file_data` (string): Base64-encoded file data
-- `filename` (string): Original filename with extension
-- `mime_type` (string): MIME type (e.g., "image/jpeg")
+- `filename` (string): Original filename. Its extension must match `mime_type` (e.g., `photo.jpg` for `image/jpeg`)
+- `mime_type` (string): MIME type. Must be one of the [supported file types](#supported-file-types)
+
+The upload is rejected before anything is sent to WordPress if the MIME type is not supported, the extension does not match the MIME type, the file content does not match the MIME type, the filename contains path separators or control characters, or the file is too large.
 
 **Example Usage:**
 
 ```json
-
+{
   "tool": "upload_media",
   "arguments": {
     "file_data": "iVBORw0KGgoAAAANSUhEUgAA...",
@@ -263,7 +275,7 @@ Update WordPress media metadata (title, alt text, caption, description).
 **Example Usage:**
 
 ```json
-
+{
   "tool": "update_media",
   "arguments": {
     "media_id": 123,
@@ -314,7 +326,7 @@ Retrieve a single WordPress post by ID.
 **Example Usage:**
 
 ```json
-
+{
   "tool": "get_post",
   "arguments": {
     "post_id": 123
@@ -339,7 +351,7 @@ Update an existing WordPress post with comprehensive options.
 **Example Usage:**
 
 ```json
-
+{
   "tool": "update_post",
   "arguments": {
     "post_id": 123,
@@ -364,7 +376,7 @@ Delete a WordPress post.
 **Example Usage:**
 
 ```json
-
+{
   "tool": "delete_post",
   "arguments": {
     "post_id": 123,
@@ -386,7 +398,7 @@ Retrieve WordPress comments.
 **Example Usage:**
 
 ```json
-
+{
   "tool": "get_comments",
   "arguments": {
     "post_id": 123
@@ -415,7 +427,7 @@ Create a new WordPress category.
 **Example Usage:**
 
 ```json
-
+{
   "tool": "create_category",
   "arguments": {
     "name": "Technology",
@@ -438,7 +450,7 @@ Update an existing WordPress category.
 **Example Usage:**
 
 ```json
-
+{
   "tool": "update_category",
   "arguments": {
     "category_id": 10,
@@ -460,7 +472,7 @@ Delete a WordPress category.
 **Example Usage:**
 
 ```json
-
+{
   "tool": "delete_category",
   "arguments": {
     "category_id": 10,
@@ -489,7 +501,7 @@ Create a new WordPress tag.
 **Example Usage:**
 
 ```json
-
+{
   "tool": "create_tag",
   "arguments": {
     "name": "rust",
@@ -511,7 +523,7 @@ Update an existing WordPress tag.
 **Example Usage:**
 
 ```json
-
+{
   "tool": "update_tag",
   "arguments": {
     "tag_id": 15,
@@ -533,7 +545,7 @@ Delete a WordPress tag.
 **Example Usage:**
 
 ```json
-
+{
   "tool": "delete_tag",
   "arguments": {
     "tag_id": 15,
@@ -557,7 +569,7 @@ Create a new WordPress post with categories and tags.
 **Example Usage:**
 
 ```json
-
+{
   "tool": "create_post_with_categories_tags",
   "arguments": {
     "title": "Complete Guide to Rust",
@@ -582,7 +594,7 @@ Update categories and tags for an existing WordPress post.
 **Example Usage:**
 
 ```json
-
+{
   "tool": "update_post_categories_tags",
   "arguments": {
     "post_id": 123,
@@ -750,27 +762,33 @@ All errors include detailed messages for debugging and user feedback.
 
 ## Supported File Types
 
-## Images
+`upload_media` accepts only the following types. Each file's content is checked against its type's magic number.
 
-- JPEG (.jpg, .jpeg)
-- PNG (.png)
-- GIF (.gif)
-- WebP (.webp)
-- SVG (.svg)
+| Type | MIME type | Extensions |
+|------|-----------|------------|
+| JPEG | `image/jpeg` | .jpg, .jpeg, .jpe |
+| PNG | `image/png` | .png |
+| GIF | `image/gif` | .gif |
+| WebP | `image/webp` | .webp |
+| PDF | `application/pdf` | .pdf |
+| MP4 video | `video/mp4` | .mp4, .m4v |
+| WebM video | `video/webm` | .webm |
+| Ogg video | `video/ogg` | .ogv |
+| MP3 audio | `audio/mpeg` | .mp3 |
+| MP4 audio | `audio/mp4` | .m4a |
+| WAV audio | `audio/wav` | .wav |
+| Ogg audio | `audio/ogg` | .ogg, .oga |
 
-## Documents
+MIME types are case-insensitive, parameters such as `; charset=...` are ignored, and common aliases (`image/jpg`, `image/pjpeg`, `image/x-png`, `audio/mp3`, `audio/x-m4a`, `audio/x-wav`) are accepted.
 
-- PDF (.pdf)
-- Microsoft Word (.doc, .docx)
-- Text files (.txt)
+The following are intentionally not supported:
 
-## Media
+- **SVG**: can embed scripts. WordPress also disables it by default
+- **Plain text**: has no magic number, so its content cannot be checked
+- **Office documents (.doc, .docx, etc.)**: the content can only be identified as a ZIP archive
+- **QuickTime (.mov)**: the order of its leading data is not fixed, so it cannot be identified reliably
 
-- MP3 (.mp3)
-- MP4 (.mp4)
-- WAV (.wav)
-
-File size limits depend on your WordPress configuration (`upload_max_filesize` and `post_max_size`).
+**Size limits**: files larger than 10 MiB are rejected. In practice, the transport's message size limit (1 MiB by default for STDIO and HTTP, including the roughly 33% base64 overhead) applies first. WordPress's own limits (`upload_max_filesize` and `post_max_size`) also apply.
 
 ## Performance Optimization
 
@@ -823,7 +841,7 @@ Perform comprehensive environment validation.
 **Usage Example:**
 
 ```json
-
+{
   "tool": "wordpress_health_check",
   "arguments": {}
 }
@@ -874,7 +892,7 @@ The health check performs five critical validation stages:
 The health check returns a comprehensive report with the following information:
 
 ```json
-
+{
   "status": "healthy",
   "site_info": {
     "url": "https://your-site.com",
