@@ -15,7 +15,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("   Username: {}", wp_config.username);
         println!(
             "   Password: {}*** (長さ: {}文字)",
-            &wp_config.password.chars().take(8).collect::<String>(),
+            wp_config.password.chars().take(8).collect::<String>(),
             wp_config.password.len()
         );
 

@@ -1265,8 +1265,10 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let writable = temp_dir.path().join("logs");
 
-        let (appender, destination) =
-            resolve_log_destination_from_candidates(&[writable.clone()], &LogRotation::Never);
+        let (appender, destination) = resolve_log_destination_from_candidates(
+            std::slice::from_ref(&writable),
+            &LogRotation::Never,
+        );
 
         assert!(appender.is_some());
         assert!(destination.fallback_reason.is_none());

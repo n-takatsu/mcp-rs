@@ -4,8 +4,16 @@
 //! in Rust, enabling secure and efficient communication between AI systems and external
 //! resources like WordPress sites, databases, and APIs.
 
-#![allow(dead_code)] // Allow unused code for future extensibility
-#![allow(unused_imports)] // Allow unused imports during development
+// Allow unused code for future extensibility
+#![allow(dead_code)]
+// Allow unused imports during development
+#![allow(unused_imports)]
+// async_traitのマクロ展開が、既に#[must_use]なResultを返すメソッドに
+// メッセージ無しの#[must_use]を付けるため、新しいclippyが誤検出する。
+// CIでは-A clippy::double_must_useで無効化しているが、エディタ
+// （rust-analyzer）にも同じ扱いをさせるためクレート単位で許可する。
+// src/main.rsも同じモジュールを読み込むため、同じ許可を付けている。
+#![allow(clippy::double_must_use)]
 
 pub mod config;
 pub mod core;
