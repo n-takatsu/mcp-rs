@@ -45,6 +45,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   に`-32601`のエラー応答を返していた問題（#360）。JSON-RPC 2.0に従い、
   通知には応答しないようにした。`tools/call`等のリクエスト用のmethodが
   `id`なしで届いた場合も、実行せずに警告ログのみ記録する
+- HTTP transportが、JSON-RPCの通知（`id`なし）に
+  `{"jsonrpc":"2.0","result":{"status":"accepted",...}}`の本文を返していた
+  問題（#374）。MCPのHTTP transportに従い、本文なしの`202 Accepted`を
+  返すようにした。また、通知の転送に失敗したときなどに、非同期の
+  ハンドラー内で`blocking_write()`を呼んでpanicしうる箇所を修正
 - `--config`を省略して起動したときの設定読み込み（`McpConfig::load()`）の
   問題を修正（#375）
   - 設定ファイルを読み込んだことを標準出力に書き出しており、STDIOモードの
