@@ -28,7 +28,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("      Username: {}", wp_config.username);
         println!(
             "      Password: {}***",
-            &wp_config.password.chars().take(8).collect::<String>()
+            wp_config.password.chars().take(8).collect::<String>()
         );
 
         // 環境変数が正しく設定されているかチェック
@@ -37,7 +37,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             match env::var(var) {
                 Ok(value) => {
                     let display_value = if var.contains("PASS") {
-                        format!("{}***", &value.chars().take(8).collect::<String>())
+                        format!("{}***", value.chars().take(8).collect::<String>())
                     } else {
                         value
                     };

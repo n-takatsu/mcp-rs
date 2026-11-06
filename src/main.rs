@@ -4,6 +4,10 @@
 
 #![allow(dead_code)]
 #![allow(unused_imports)]
+// src/lib.rsと同じ理由（async_traitのマクロ展開によるclippyの誤検出）。
+// このバイナリは下記のモジュールを独自に読み込むため、lib.rs側の許可は
+// 効かない。
+#![allow(clippy::double_must_use)]
 
 mod config;
 mod core;
