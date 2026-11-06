@@ -114,6 +114,24 @@ cargo run -- --config configs/development/http-transport.toml
 
 > 📖 詳細な設定については [Claude Desktop 統合ガイド](./project-docs/CLAUDE_DESKTOP_INTEGRATION.md) をご覧ください。
 
+### Claude Code
+
+Claude Code も STDIO で mcp-rs と通信し、同じ設定ファイルを使います。mcp-rs をビルドしてから、絶対パスで登録します。`--` より後ろが mcp-rs の起動コマンドです。
+
+```bash
+cargo build --release
+
+claude mcp add mcp-rs --scope user \
+  -e WORDPRESS_URL=https://your-wordpress-site.com \
+  -e WORDPRESS_USERNAME=your_username \
+  -e WORDPRESS_PASSWORD="your application password" \
+  -- /path/to/mcp-rs/target/release/mcp-rs --config /path/to/mcp-rs/configs/production/claude-desktop.toml
+```
+
+接続は `claude mcp list`、または Claude Code 内の `/mcp` で確認できます。`-e` で渡した値は Claude Code の設定に保存されるため、実際の認証情報で `--scope project`（共有される `.mcp.json` に書き込まれる）を使わないでください。
+
+> 📖 `.mcp.json` での登録、認証情報の暗号化、トラブルシューティングは [Claude Code 統合ガイド](./project-docs/CLAUDE_CODE_INTEGRATION.md) をご覧ください。
+
 ### オプション 1: 対話式設定（推奨）
 
 ```bash
@@ -247,6 +265,7 @@ hsts_enabled = true
 - [🏗️ アーキテクチャ概要](./project-docs/architecture.md)
 - [📝 API リファレンス](./project-docs/api-reference.md)
 - [🔄 Claude Desktop 統合](./project-docs/CLAUDE_DESKTOP_INTEGRATION.md)
+- [🔄 Claude Code 統合](./project-docs/CLAUDE_CODE_INTEGRATION.md)
 
 ## 🛠️ 開発
 
