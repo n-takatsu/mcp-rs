@@ -456,6 +456,44 @@ impl Default for McpConfig {
     }
 }
 
+/// 先頭の`~/`をホームフォルダに置き換える（#375）。`~`で始まらない
+/// パスはそのまま返す。ホームフォルダが分からない場合は`None`。
+fn expand_home_dir(path: &str, home: Option<&str>) -> Option<String> {
+    match path.strip_prefix("~/") {
+        Some(rest) => home.filter(|h| !h.is_empty()).map(|h| {
+            // 要素ごとにjoinし、WindowsでもOSの区切り文字にそろえる
+            rest.split('/')
+                .fold(PathBuf::from(h), |p, part| p.join(part))
+                .to_string_lossy()
+                .into_owned()
+        }),
+        None => Some(path.to_string()),
+    }
+}
+
+/// 設定ファイルの`[transport] type = ...`を`transport_type`に書き換える（#375）。
+///
+/// `TransportConfig::transport_type`は`#[serde(alias = "type")]`で`type`も
+/// 受け付けるが、`McpConfig::load()`は既定値（`transport_type`）と設定
+/// ファイルを`config`クレートで重ねるため、ファイルが`type`で書かれて
+/// いると両方のキーが残り、`duplicate field`で読み込みに失敗していた。
+/// キー名をそろえておけば、ファイルの値が既定値を上書きする。
+fn normalize_transport_type_alias(content: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let mut table: toml::Table = content.parse()?;
+    if let Some(toml::Value::Table(transport)) = table.get_mut("transport") {
+        if let Some(value) = transport.remove("type") {
+            if transport.contains_key("transport_type") {
+                return Err(
+                    "[transport] に type と transport_type が両方指定されています。どちらか一方にしてください"
+                        .into(),
+                );
+            }
+            transport.insert("transport_type".to_string(), value);
+        }
+    }
+    Ok(toml::to_string(&table)?)
+}
+
 impl McpConfig {
     /// 文字列内の環境変数を展開する
     ///
@@ -574,11 +612,25 @@ impl McpConfig {
             "~/.config/mcp-rs/config.toml",
         ];
 
+        let home = std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .ok();
+
         let mut config_file_found = false;
         for path in &config_paths {
-            if std::path::Path::new(path).exists() {
-                println!("📁 設定ファイルを読み込み: {}", path);
-                settings = settings.add_source(config::File::with_name(path));
+            // `~`はPathが展開しないため、自前でホームフォルダに置き換える。
+            // ホームフォルダが分からない場合、その候補は飛ばす
+            let Some(path) = expand_home_dir(path, home.as_deref()) else {
+                continue;
+            };
+            if std::path::Path::new(&path).exists() {
+                // 標準出力はSTDIOモードでJSON-RPCの通信専用のため、
+                // 標準エラー出力に書く（ログはこの時点で未初期化）
+                eprintln!("[mcp-rs] config file: {}", path);
+                let content = std::fs::read_to_string(&path)?;
+                let content = normalize_transport_type_alias(&content)?;
+                settings =
+                    settings.add_source(config::File::from_str(&content, config::FileFormat::Toml));
                 config_file_found = true;
                 break;
             }
@@ -793,8 +845,9 @@ impl McpConfig {
         );
 
         std::fs::write("mcp-config.toml.example", sample_content)?;
-        println!("📝 サンプル設定ファイルを生成しました: mcp-config.toml.example");
-        println!("💡 このファイルを mcp-config.toml にコピーして編集してください");
+        // load()と同じく、標準出力（STDIOモードの通信路）には書かない
+        eprintln!("📝 サンプル設定ファイルを生成しました: mcp-config.toml.example");
+        eprintln!("💡 このファイルを mcp-config.toml にコピーして編集してください");
 
         Ok(())
     }
@@ -986,6 +1039,49 @@ pub struct PluginConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_expand_home_dir() {
+        let expected = std::path::Path::new("/home/alice")
+            .join(".config")
+            .join("mcp-rs")
+            .join("config.toml")
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(
+            expand_home_dir("~/.config/mcp-rs/config.toml", Some("/home/alice")),
+            Some(expected)
+        );
+        // ホームフォルダが分からなければ、その候補は使わない
+        assert_eq!(expand_home_dir("~/.config/x.toml", None), None);
+        assert_eq!(expand_home_dir("~/.config/x.toml", Some("")), None);
+        // `~`で始まらないパスはそのまま
+        assert_eq!(
+            expand_home_dir("mcp-config.toml", None),
+            Some("mcp-config.toml".to_string())
+        );
+    }
+
+    #[test]
+    fn test_normalize_transport_type_alias() {
+        let normalized = normalize_transport_type_alias("[transport]\ntype = \"stdio\"\n").unwrap();
+        let table: toml::Table = normalized.parse().unwrap();
+        let transport = table["transport"].as_table().unwrap();
+        assert_eq!(transport["transport_type"].as_str(), Some("stdio"));
+        assert!(!transport.contains_key("type"));
+
+        // transport_typeで書かれていればそのまま
+        let normalized =
+            normalize_transport_type_alias("[transport]\ntransport_type = \"http\"\n").unwrap();
+        let table: toml::Table = normalized.parse().unwrap();
+        assert_eq!(table["transport"]["transport_type"].as_str(), Some("http"));
+
+        // 両方あれば曖昧なのでエラー
+        assert!(normalize_transport_type_alias(
+            "[transport]\ntype = \"stdio\"\ntransport_type = \"http\"\n"
+        )
+        .is_err());
+    }
 
     #[test]
     fn test_expand_env_vars_basic() {
