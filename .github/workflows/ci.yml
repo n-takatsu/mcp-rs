@@ -1,10 +1,24 @@
 name: CI
 
+# 文章だけの変更ではRustのビルド・テストに影響しないため実行しない
+# （RustのコードがMarkdown等をinclude_str!で取り込んでいないことは確認済み。
+# 取り込む場合はここから外すこと）。コードと文章の両方を変更した場合は
+# 通常どおり実行される。
 on:
   push:
     branches: [ main, develop ]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'project-docs/**'
+      - 'website/**'
   pull_request:
     branches: [ main, develop ]  # developブランチへのPRも含める
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'project-docs/**'
+      - 'website/**'
 
 # 同じコミットに対する重複実行を取り消し
 concurrency:
