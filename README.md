@@ -6,12 +6,12 @@
 
 [![Version](https://img.shields.io/badge/Version-v0.18.0-blue)](https://github.com/n-takatsu/mcp-rs/releases/tag/v0.18.0)
 ![Architecture](https://img.shields.io/badge/Architecture-Production--Ready-green)
-![Implementation](https://img.shields.io/badge/WordPress_Tools-27_Available-green)
+![Implementation](https://img.shields.io/badge/WordPress_Tools-32_Available-green)
 ![License](https://img.shields.io/badge/License-MIT%2FApache--2.0-green)
 
 ## Overview
 
-`mcp-rs` provides a **comprehensive, battle-tested** implementation of the MCP (Model Context Protocol) in Rust with **complete WordPress integration**. Built with a layered architecture, it enables AI agents to perform sophisticated content management through a standardized JSON-RPC interface. The framework features 27 WordPress tools, enterprise-grade security, strong type safety, and is optimized for production use with GitHub Copilot and other AI coding assistants.
+`mcp-rs` provides a **comprehensive, battle-tested** implementation of the MCP (Model Context Protocol) in Rust with **complete WordPress integration**. Built with a layered architecture, it enables AI agents to perform sophisticated content management through a standardized JSON-RPC interface. The framework features 32 WordPress tools, enterprise-grade security, strong type safety, and is optimized for production use with GitHub Copilot and other AI coding assistants.
 
 ## 🎯 Who Is This For?
 
@@ -25,7 +25,7 @@ Managing large-scale WordPress deployments? Get enterprise-grade security, autom
 
 ### DevOps Engineers ⚙️
 
-Automating WordPress operations? 27 battle-tested tools with comprehensive health checks, monitoring, and production-ready error handling.
+Automating WordPress operations? 32 battle-tested tools with comprehensive health checks, monitoring, and production-ready error handling.
 
 ### Rust Enthusiasts 🦀
 
@@ -64,14 +64,15 @@ Need WordPress security automation? 8-layer enterprise security architecture wit
 - **Origin Validation**: CSRF protection with whitelist/regex patterns
 - **Audit Logging**: Track rate limit violations, auth failures, and timeout events
 
-## **WordPress Integration (27 Tools)**
+## **WordPress Integration (32 Tools)**
 
-- **Posts & Pages Management**: Full CRUD operations with SEO integration
-- **Advanced Media Management**: Upload, resize, organize with base64 support
-- **Categories & Tags Management**: Hierarchical support with bulk operations
-- **Comment System**: Complete comment management and retrieval
+- **Posts & Pages Management**: Create, read (full editable source), update, and delete posts and pages, with SEO metadata and scheduling
+- **Media Management**: Upload with base64 (type, extension, and content validation), list, update metadata, delete, and set featured images
+- **Categories & Tags Management**: Create, update, and delete, with hierarchical categories
+- **Comments**: Retrieve comments
 - **YouTube & Social Embeds**: Rich media integration with security validation
-- **User Management**: Role-based access control and user operations
+- **Site Settings**: Read and update site settings and the front page configuration
+- **Health Check**: Verify connectivity, authentication, permissions, and media upload capability
 
 ### Live Demo Site
 
