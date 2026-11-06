@@ -131,7 +131,7 @@ Create a new WordPress post or page with advanced options.
 - `title` (string): Post/page title
 - `content` (string): Post/page content
 - `post_type` (string): "post" (投稿) or "page" (固定ページ) [default: "post"]
-- `status` (string): "publish" (公開), "draft" (下書き), "private" (非公開), "future" (予約投稿) [default: "publish"]
+- `status` (string, optional): "publish" (公開), "draft" (下書き), "pending" (レビュー待ち), "private" (非公開), "future" (予約投稿、`date`が必須) [default: "draft"]
 - `date` (string, optional): Publication date (ISO8601 format, required for "future" status)
 - `categories` (array, optional): Category IDs (posts only)
 - `tags` (array, optional): Tag IDs (posts only)
@@ -170,7 +170,7 @@ Create a post or page with embedded YouTube videos and social media content appe
 - `youtube_urls` (array of strings, optional): YouTube video URLs to embed
 - `social_urls` (array of strings, optional): Social media URLs to embed (Twitter, Instagram, Facebook, TikTok)
 - `post_type` (string, optional): `post` or `page`
-- `status` (string, optional): `publish`, `draft`, `private`, or `future`. Defaults to `publish`
+- `status` (string, optional): `publish`, `draft`, `pending`, or `private`. Defaults to `draft`. `future` (scheduled) is not available because this tool has no date parameter
 - `categories` (array of numbers, optional): Category IDs (posts only)
 - `tags` (array of numbers, optional): Tag IDs (posts only)
 
@@ -336,6 +336,7 @@ Create a post with a featured image in one operation.
 - `title` (string): Post title
 - `content` (string): Post content
 - `featured_media_id` (number): Media ID from uploaded image
+- `status` (string, optional): `publish`, `draft`, `pending`, or `private`. Defaults to `draft`. `future` (scheduled) is not available because this tool has no date parameter
 
 ### `set_featured_image`
 
@@ -379,7 +380,7 @@ Update an existing WordPress post with comprehensive options.
 - `post_id` (number): ID of post to update
 - `title` (string, optional): New post title
 - `content` (string, optional): New post content
-- `status` (string, optional): Post status (publish, draft, private)
+- `status` (string, optional): `publish`, `draft`, `pending`, or `private`. Defaults to `draft`
 - `categories` (array, optional): Array of category IDs
 - `tags` (array, optional): Array of tag IDs
 - `featured_media_id` (number, optional): Featured image media ID

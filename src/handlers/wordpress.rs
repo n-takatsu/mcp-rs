@@ -499,6 +499,97 @@ fn extract_target_id(arguments: &Option<HashMap<String, serde_json::Value>>) -> 
     })
 }
 
+/// 作成する投稿の`status`を検証する。投稿作成系のツールはすべて
+/// `create_advanced_post`を経由するため、そこで1度だけ呼ぶ（ツールごとに
+/// 検証すると、ツールによって検証の有無がずれる）。
+///
+/// `future`（予約投稿）を日付なしで送ると、WordPressは即座に公開して
+/// しまうため、日付が無い（空文字を含む）場合は拒否する。過去の日付の
+/// 判定はサイトのタイムゾーンに依存するため行わない。
+///
+/// それ以外の値は許可リストで絞らずWordPressに任せる。プラグインが独自の
+/// ステータス（PublishPressの`pitch`等）を追加していることがあり、不正な
+/// 値はWordPressのエラー内容（`format_wp_error`）としてそのまま返るため。
+fn validate_post_status(status: &str, date: Option<&str>) -> Result<(), McpError> {
+    let has_date = date.is_some_and(|d| !d.trim().is_empty());
+    if status == "future" && !has_date {
+        return Err(McpError::InvalidParams(
+            "status 'future' (scheduled) requires a publish date; without it WordPress publishes the post immediately. Only create_advanced_post accepts 'date' (ISO8601); with other tools, use 'draft' instead".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// 投稿作成系ツールの`status`引数。未指定時は、意図しない公開を避けるため
+/// `draft`とする（`create_post`・`create_post_with_categories_tags`と同じ
+/// 方針）。値の検証は`validate_post_status`で行う。
+fn post_status_or_draft(args: &HashMap<String, serde_json::Value>) -> Result<String, McpError> {
+    match args.get("status") {
+        None | Some(serde_json::Value::Null) => Ok("draft".to_string()),
+        Some(serde_json::Value::String(s)) => Ok(s.clone()),
+        Some(other) => Err(McpError::InvalidParams(format!(
+            "Invalid status {}: expected a string",
+            truncate_chars_with_ellipsis(&other.to_string(), 100)
+        ))),
+    }
+}
+
+/// 投稿・固定ページ作成時の送信内容。WordPressは書き込み時にタイトル・
+/// 本文を文字列（または`raw`）としてしか読まないため、読み取り用の
+/// `WordPressPost`（`rendered`を持つ）をそのまま送ってはいけない。
+/// 投稿作成系のツールはすべてこの関数を経由する。
+fn advanced_post_body(params: PostCreateParams) -> serde_json::Value {
+    let mut post_data = serde_json::json!({
+        "title": params.title,
+        "content": params.content,
+        "type": params.post_type,
+        "status": params.status
+    });
+
+    // 予約投稿の場合は日時を設定
+    if let Some(publish_date) = params.date {
+        post_data["date"] = serde_json::Value::String(publish_date);
+    }
+
+    // カテゴリーを設定（投稿のみ）
+    if params.post_type == "post" {
+        if let Some(cats) = params.categories {
+            post_data["categories"] = serde_json::Value::Array(
+                cats.iter()
+                    .map(|&id| serde_json::Value::Number(id.into()))
+                    .collect(),
+            );
+        }
+
+        // タグを設定（投稿のみ）
+        if let Some(tag_ids) = params.tags {
+            post_data["tags"] = serde_json::Value::Array(
+                tag_ids
+                    .iter()
+                    .map(|&id| serde_json::Value::Number(id.into()))
+                    .collect(),
+            );
+        }
+    }
+
+    // アイキャッチ画像を設定
+    if let Some(media_id) = params.featured_media_id {
+        post_data["featured_media"] = serde_json::Value::Number(media_id.into());
+    }
+
+    // メタデータを設定（SEO等）
+    if let Some(metadata) = params.meta {
+        post_data["meta"] = serde_json::Value::Object(
+            metadata
+                .into_iter()
+                .map(|(k, v)| (k, serde_json::Value::String(v)))
+                .collect(),
+        );
+    }
+
+    post_data
+}
+
 #[derive(Clone)]
 pub struct WordPressHandler {
     client: Client,
@@ -728,7 +819,8 @@ impl Default for PostCreateParams {
             title: String::new(),
             content: String::new(),
             post_type: "post".to_string(),
-            status: "publish".to_string(),
+            // 意図しない公開を避けるため、既定は下書き
+            status: "draft".to_string(),
             date: None,
             categories: None,
             tags: None,
@@ -1240,57 +1332,12 @@ impl WordPressHandler {
         &self,
         params: PostCreateParams,
     ) -> Result<WordPressPost, McpError> {
+        validate_post_status(&params.status, params.date.as_deref())?;
+
         // 投稿タイプに応じてエンドポイントを決定
         let endpoint = endpoint_for_post_type(&params.post_type);
         let url = format!("{}/wp-json/wp/v2/{}", self.base_url, endpoint);
-
-        let mut post_data = serde_json::json!({
-            "title": params.title,
-            "content": params.content,
-            "type": params.post_type,
-            "status": params.status
-        });
-
-        // 予約投稿の場合は日時を設定
-        if let Some(publish_date) = params.date {
-            post_data["date"] = serde_json::Value::String(publish_date);
-        }
-
-        // カテゴリーを設定（投稿のみ）
-        if params.post_type == "post" {
-            if let Some(cats) = params.categories {
-                post_data["categories"] = serde_json::Value::Array(
-                    cats.iter()
-                        .map(|&id| serde_json::Value::Number(id.into()))
-                        .collect(),
-                );
-            }
-
-            // タグを設定（投稿のみ）
-            if let Some(tag_ids) = params.tags {
-                post_data["tags"] = serde_json::Value::Array(
-                    tag_ids
-                        .iter()
-                        .map(|&id| serde_json::Value::Number(id.into()))
-                        .collect(),
-                );
-            }
-        }
-
-        // アイキャッチ画像を設定
-        if let Some(media_id) = params.featured_media_id {
-            post_data["featured_media"] = serde_json::Value::Number(media_id.into());
-        }
-
-        // メタデータを設定（SEO等）
-        if let Some(metadata) = params.meta {
-            post_data["meta"] = serde_json::Value::Object(
-                metadata
-                    .into_iter()
-                    .map(|(k, v)| (k, serde_json::Value::String(v)))
-                    .collect(),
-            );
-        }
+        let post_data = advanced_post_body(params);
 
         let mut request = self.client.post(&url);
 
@@ -1300,11 +1347,12 @@ impl WordPressHandler {
 
         let response = request.json(&post_data).send().await?;
 
-        if !response.status().is_success() {
-            return Err(McpError::ExternalApi(format!(
-                "WordPress API error: {}",
-                response.status()
-            )));
+        let status = response.status();
+        if !status.is_success() {
+            // WordPressのエラーコード（empty_content等）を含めないと、
+            // 失敗の原因が分からない
+            let body = response.text().await.unwrap_or_default();
+            return Err(McpError::ExternalApi(format_wp_error(status, &body)));
         }
 
         let created_post: WordPressPost = response.json().await?;
@@ -1682,11 +1730,10 @@ impl WordPressHandler {
             post_params.content = full_content;
             self.create_advanced_post(post_params).await
         } else {
+            // post_type・statusはPostCreateParamsの既定（post・draft）
             let post_params = PostCreateParams {
                 title: title.to_string(),
                 content: full_content,
-                post_type: "post".to_string(),
-                status: "publish".to_string(),
                 ..Default::default()
             };
             self.create_advanced_post(post_params).await
@@ -1694,50 +1741,31 @@ impl WordPressHandler {
     }
 
     /// Create post with featured image
+    ///
+    /// 送信内容を独自に組み立てず、ほかの投稿作成系ツールと同じ
+    /// `create_advanced_post`（`advanced_post_body`）を経由する。以前は
+    /// 読み取り用の`WordPressPost`をそのまま送っており、タイトル・本文が
+    /// WordPressに読まれず常にHTTP 400になっていた。
+    ///
+    /// 以前は`execute_request_with_retry`で5xx・429を再送していたが、
+    /// `create_advanced_post`は再送しない。投稿の作成（POST）を再送すると、
+    /// 1回目が実は成功していた場合に投稿が重複しうるため、意図的にそろえている。
     async fn create_post_with_featured_image(
         &self,
         title: String,
         content: String,
         featured_media_id: u64,
+        status: String,
     ) -> Result<WordPressPost, McpError> {
-        let url = format!("{}/wp-json/wp/v2/posts", self.base_url);
-
-        let post = WordPressPost {
-            id: None,
-            date: None,
-            date_gmt: None,
-            guid: None,
-            modified: None,
-            modified_gmt: None,
-            slug: None,
-            status: "publish".to_string(),
-            post_type: Some("post".to_string()),
-            link: None,
-            title: WordPressContent {
-                rendered: title,
-                raw: None,
-                protected: false,
-            },
-            content: WordPressContent {
-                rendered: content,
-                raw: None,
-                protected: false,
-            },
-            excerpt: None,
-            author: None,
-            featured_media: Some(featured_media_id),
-            categories: None,
-            tags: None,
-        };
-
-        let mut request = self.client.post(&url).json(&post);
-
-        if let (Some(username), Some(password)) = (&self.username, &self.password) {
-            request = request.basic_auth(username, Some(password));
-        }
-
         info!("Creating post with featured image: {}", featured_media_id);
-        self.execute_request_with_retry(request).await
+        self.create_advanced_post(PostCreateParams {
+            title,
+            content,
+            status,
+            featured_media_id: Some(featured_media_id),
+            ..Default::default()
+        })
+        .await
     }
 
     /// Create post with categories and tags
@@ -2674,10 +2702,7 @@ impl WordPressHandler {
                     .get("content")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| McpError::InvalidParams("Missing content".to_string()))?;
-                let status = args
-                    .get("status")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string());
+                let status = Some(post_status_or_draft(&args)?);
 
                 let post = self
                     .create_post(title.to_string(), content.to_string(), status)
@@ -2709,11 +2734,7 @@ impl WordPressHandler {
                     .unwrap_or("post")
                     .to_string();
 
-                let status = args
-                    .get("status")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("publish")
-                    .to_string();
+                let status = post_status_or_draft(&args)?;
 
                 let date = args
                     .get("date")
@@ -2743,7 +2764,7 @@ impl WordPressHandler {
                         title: title.to_string(),
                         content: content.to_string(),
                         post_type: post_type.clone(),
-                        status: status.clone(),
+                        status,
                         date,
                         categories,
                         tags,
@@ -2752,6 +2773,8 @@ impl WordPressHandler {
                     })
                     .await?;
 
+                // 要求した値ではなく、WordPressが実際に設定したステータスを
+                // 示す（権限不足でpendingに落とされる場合等がある）
                 Ok(serde_json::json!({
                     "content": [{
                         "type": "text",
@@ -2759,7 +2782,7 @@ impl WordPressHandler {
                             "Created {} with ID: {} (Status: {})",
                             if post_type == "page" { "page" } else { "post" },
                             display_opt_id(post.id),
-                            status
+                            post.status
                         )
                     }],
                     "isError": false
@@ -2942,18 +2965,20 @@ impl WordPressHandler {
                     .ok_or_else(|| {
                         McpError::InvalidParams("Missing featured_media_id".to_string())
                     })?;
+                let status = post_status_or_draft(&args)?;
 
                 let post = self
                     .create_post_with_featured_image(
                         title.to_string(),
                         content.to_string(),
                         featured_media_id,
+                        status,
                     )
                     .await?;
                 Ok(serde_json::json!({
                     "content": [{
                         "type": "text",
-                        "text": format!("Created post with featured image. Post ID: {}", display_opt_id(post.id))
+                        "text": format!("Created post with featured image. Post ID: {}, Status: {}", display_opt_id(post.id), post.status)
                     }],
                     "isError": false
                 }))
@@ -3137,10 +3162,7 @@ impl WordPressHandler {
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| McpError::InvalidParams("Missing content".to_string()))?;
 
-                let status = args
-                    .get("status")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string());
+                let status = Some(post_status_or_draft(&args)?);
 
                 let categories: Option<Vec<u64>> = args
                     .get("categories")
@@ -3331,11 +3353,7 @@ impl WordPressHandler {
                     .unwrap_or("post")
                     .to_string();
 
-                let status = args
-                    .get("status")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("publish")
-                    .to_string();
+                let status = post_status_or_draft(&args)?;
 
                 let categories = args
                     .get("categories")
@@ -3593,7 +3611,7 @@ impl McpHandler for WordPressHandler {
                         },
                         "status": {
                             "type": "string",
-                            "enum": ["publish", "draft", "private"],
+                            "enum": ["publish", "draft", "pending", "private"],
                             "description": "Post status. Defaults to 'draft' to avoid accidental publication.",
                             "default": "draft"
                         }
@@ -3624,9 +3642,9 @@ impl McpHandler for WordPressHandler {
                         },
                         "status": {
                             "type": "string",
-                            "description": "Post status: 'publish' (公開), 'draft' (下書き), 'private' (非公開), 'future' (予約投稿)",
-                            "enum": ["publish", "draft", "private", "future"],
-                            "default": "publish"
+                            "description": "Post status: 'publish' (公開), 'draft' (下書き), 'pending' (レビュー待ち), 'private' (非公開), 'future' (予約投稿、'date'が必須). Defaults to 'draft' so nothing is published unintentionally.",
+                            "enum": ["publish", "draft", "pending", "private", "future"],
+                            "default": "draft"
                         },
                         "date": {
                             "type": "string",
@@ -3791,6 +3809,12 @@ impl McpHandler for WordPressHandler {
                         "featured_media_id": {
                             "type": "number",
                             "description": "Media ID for featured image"
+                        },
+                        "status": {
+                            "type": "string",
+                            "description": "Post status. Defaults to 'draft' so nothing is published unintentionally. 'future' is not available because this tool has no date parameter.",
+                            "enum": ["publish", "draft", "pending", "private"],
+                            "default": "draft"
                         }
                     },
                     "required": ["title", "content", "featured_media_id"]
@@ -3988,7 +4012,7 @@ impl McpHandler for WordPressHandler {
                         },
                         "status": {
                             "type": "string",
-                            "enum": ["publish", "draft", "private"],
+                            "enum": ["publish", "draft", "pending", "private"],
                             "description": "Post status. Defaults to 'draft' to avoid accidental publication.",
                             "default": "draft"
                         },
@@ -4144,8 +4168,9 @@ impl McpHandler for WordPressHandler {
                         },
                         "status": {
                             "type": "string",
-                            "description": "Post status",
-                            "enum": ["publish", "draft", "private", "future"]
+                            "description": "Post status. Defaults to 'draft' so nothing is published unintentionally. 'future' is not available because this tool has no date parameter.",
+                            "enum": ["publish", "draft", "pending", "private"],
+                            "default": "draft"
                         },
                         "categories": {
                             "type": "array",
@@ -5388,5 +5413,125 @@ mod tests {
             .await;
 
         assert!(matches!(result, Err(McpError::InvalidParams(_))));
+    }
+
+    #[test]
+    fn test_advanced_post_body_sends_title_and_content_as_strings() {
+        // create_post_with_featured_imageは以前、読み取り用のWordPressPostを
+        // そのまま送っており、タイトル・本文が{"rendered": ...}になっていた。
+        // WordPressは書き込み時にこれを読まず、HTTP 400（empty_content）に
+        // なっていた。現在はこの関数を経由する
+        let body = advanced_post_body(PostCreateParams {
+            title: "Hello".to_string(),
+            content: "<p>Body</p>".to_string(),
+            featured_media_id: Some(42),
+            ..Default::default()
+        });
+
+        assert_eq!(body["title"], serde_json::json!("Hello"));
+        assert_eq!(body["content"], serde_json::json!("<p>Body</p>"));
+        assert_eq!(body["featured_media"], serde_json::json!(42));
+        assert_eq!(body["status"], serde_json::json!("draft"));
+    }
+
+    #[test]
+    fn test_post_status_or_draft() {
+        use serde_json::json;
+        let mut args = HashMap::new();
+        assert_eq!(post_status_or_draft(&args).unwrap(), "draft");
+
+        args.insert("status".to_string(), json!(null));
+        assert_eq!(post_status_or_draft(&args).unwrap(), "draft");
+
+        args.insert("status".to_string(), json!("publish"));
+        assert_eq!(post_status_or_draft(&args).unwrap(), "publish");
+
+        // 文字列以外は、既定値で黙って続けずに入力エラーにする
+        args.insert("status".to_string(), json!(1));
+        assert!(matches!(
+            post_status_or_draft(&args),
+            Err(McpError::InvalidParams(_))
+        ));
+    }
+
+    #[test]
+    fn test_validate_post_status() {
+        // 標準のステータスに加え、プラグインが追加する独自のステータスも
+        // 拒否しない（不正な値はWordPressのエラーとして返る）
+        for status in ["publish", "draft", "pending", "private", "pitch"] {
+            assert!(validate_post_status(status, None).is_ok(), "{}", status);
+        }
+        // 予約投稿は日付があれば受け付ける
+        assert!(validate_post_status("future", Some("2030-01-01T09:00:00")).is_ok());
+
+        // 日付なし（空文字を含む）のfutureは、WordPressが即座に公開して
+        // しまうため拒否する。日付を指定できるツールも案内する
+        for date in [None, Some(""), Some("  ")] {
+            assert!(
+                matches!(
+                    validate_post_status("future", date),
+                    Err(McpError::InvalidParams(ref msg)) if msg.contains("create_advanced_post")
+                ),
+                "date: {:?}",
+                date
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_create_advanced_post_validates_status_before_network() {
+        // 投稿作成系のツールはすべてcreate_advanced_postを経由するため、
+        // そこでの検証がすべてのツールに効く（到達不能なホストへの
+        // ネットワークI/Oより前に拒否されること）
+        let handler = rate_limited_handler(RateLimitConfig::default());
+        let result = handler
+            .create_advanced_post(PostCreateParams {
+                title: "t".to_string(),
+                content: "c".to_string(),
+                status: "future".to_string(),
+                ..Default::default()
+            })
+            .await;
+        assert!(matches!(result, Err(McpError::InvalidParams(_))));
+
+        let mut args = HashMap::new();
+        args.insert("title".to_string(), serde_json::json!("t"));
+        args.insert("content".to_string(), serde_json::json!("c"));
+        args.insert("featured_media_id".to_string(), serde_json::json!(1));
+        args.insert("status".to_string(), serde_json::json!("future"));
+        let result = handler
+            .call_tool(ToolCallParams {
+                name: "create_post_with_featured_image".to_string(),
+                arguments: Some(args),
+            })
+            .await;
+        assert!(matches!(result, Err(McpError::InvalidParams(_))));
+    }
+
+    #[test]
+    fn test_post_create_params_default_status_is_draft() {
+        assert_eq!(PostCreateParams::default().status, "draft");
+    }
+
+    #[tokio::test]
+    async fn test_post_creation_tools_document_draft_default() {
+        // ツール定義上の既定値も、実装の既定（draft）とそろっていること
+        let tools = rate_limited_handler(RateLimitConfig::default())
+            .list_tools()
+            .await
+            .unwrap();
+        for name in [
+            "create_advanced_post",
+            "create_post_with_embeds",
+            "create_post_with_featured_image",
+        ] {
+            let tool = tools.iter().find(|t| t.name == name).unwrap();
+            assert_eq!(
+                tool.input_schema["properties"]["status"]["default"],
+                serde_json::json!("draft"),
+                "{} should default to draft",
+                name
+            );
+        }
     }
 }
