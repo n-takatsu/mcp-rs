@@ -160,6 +160,34 @@ Create a new WordPress post or page with advanced options.
 
 ```
 
+### `create_post_with_embeds`
+
+Create a post or page with embedded YouTube videos and social media content appended to the base content.
+
+**Parameters:**
+- `title` (string): Post title
+- `content` (string): Base post content (embeds are added after it)
+- `youtube_urls` (array of strings, optional): YouTube video URLs to embed
+- `social_urls` (array of strings, optional): Social media URLs to embed (Twitter, Instagram, Facebook, TikTok)
+- `post_type` (string, optional): `post` or `page`
+- `status` (string, optional): `publish`, `draft`, `private`, or `future`. Defaults to `publish`
+- `categories` (array of numbers, optional): Category IDs (posts only)
+- `tags` (array of numbers, optional): Tag IDs (posts only)
+
+**Example Usage:**
+
+```json
+{
+  "tool": "create_post_with_embeds",
+  "arguments": {
+    "title": "Rust Conference Highlights",
+    "content": "<p>Here are the talks we enjoyed most.</p>",
+    "youtube_urls": ["https://www.youtube.com/watch?v=dQw4w9WgXcQ"],
+    "status": "draft"
+  }
+}
+```
+
 ### `update_post`
 
 Update an existing WordPress post.
@@ -213,12 +241,17 @@ Retrieve both WordPress posts and pages.
 
 ### `get_post`
 
-Retrieve a single WordPress post by ID.
+Retrieve a single WordPress post or page by ID, with its full content (not truncated).
 
 **Parameters:**
-- `post_id` (number): ID of the post to retrieve
+- `post_id` (number): ID of the post or page to retrieve
+- `post_type` (string, optional): `post` (default) or `page`
+- `format` (string, optional): How to return the title and content
+  - `raw` (default): The editable source, including Gutenberg block markup. It can be passed back to `update_post` unchanged. Requires credentials with edit permission. Without it, the rendered HTML is returned instead, and the `Format:` line says so
+  - `rendered`: The HTML as displayed on the site
+  - `text`: Plain text with tags removed
 
-## Media Management
+For a password-protected post read without edit permission, WordPress hides the content, and the output includes a note not to treat the content as empty.
 
 ## Media Management
 
@@ -318,10 +351,12 @@ Set featured image for an existing post.
 
 ## `get_post`
 
-Retrieve a single WordPress post by ID.
+Retrieve a single WordPress post or page by ID, with its full content. See [`get_post`](#get_post) above for the `post_type` and `format` parameters.
 
 **Parameters:**
-- `post_id` (number): ID of the post to retrieve
+- `post_id` (number): ID of the post or page to retrieve
+- `post_type` (string, optional): `post` (default) or `page`
+- `format` (string, optional): `raw` (default), `rendered`, or `text`
 
 **Example Usage:**
 
@@ -329,7 +364,8 @@ Retrieve a single WordPress post by ID.
 {
   "tool": "get_post",
   "arguments": {
-    "post_id": 123
+    "post_id": 123,
+    "format": "raw"
   }
 }
 
@@ -604,6 +640,55 @@ Update categories and tags for an existing WordPress post.
 }
 
 ```
+
+## Site Settings
+
+## `get_settings`
+
+Retrieve the WordPress site settings (title, tagline, timezone, front page configuration, posts per page, default category, language, and so on).
+
+**Parameters:** None
+
+## `update_settings`
+
+Update WordPress site settings. Only the specified fields are changed.
+
+**Parameters (all optional):**
+- `title` (string): Site title
+- `description` (string): Site tagline
+- `timezone` (string): Site timezone (e.g., `Asia/Tokyo`)
+- `show_on_front` (string): `posts` or `page`
+- `page_on_front` (number): Static front page ID (when `show_on_front` is `page`)
+- `page_for_posts` (number): Posts page ID (when `show_on_front` is `page`)
+- `posts_per_page` (number): Number of posts per page
+- `default_category` (number): Default category for new posts
+- `language` (string): Site language code (e.g., `ja`, `en_US`)
+
+**Example Usage:**
+
+```json
+{
+  "tool": "update_settings",
+  "arguments": {
+    "description": "Notes on Rust and AI agents",
+    "timezone": "Asia/Tokyo"
+  }
+}
+```
+
+## `set_front_page`
+
+Set a static page as the front page.
+
+**Parameters:**
+- `page_id` (number): ID of the page to show on the front page
+
+## `set_front_page_to_posts`
+
+Set the front page to show the latest posts.
+
+**Parameters:**
+- `posts_page_id` (number, optional): ID of a page to use for the blog posts
 
 ## Workflow Examples
 

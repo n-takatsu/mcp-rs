@@ -6,12 +6,12 @@
 
 [![Version](https://img.shields.io/badge/Version-v0.18.0-blue)](https://github.com/n-takatsu/mcp-rs/releases/tag/v0.18.0)
 ![Architecture](https://img.shields.io/badge/Architecture-Production--Ready-green)
-![Implementation](https://img.shields.io/badge/WordPress_Tools-27_Available-green)
+![Implementation](https://img.shields.io/badge/WordPress_Tools-32_Available-green)
 ![License](https://img.shields.io/badge/License-MIT%2FApache--2.0-green)
 
 ## 概要
 
-`mcp-rs` は、**包括的で実戦テスト済み**の MCP（Model Context Protocol）の Rust 実装で、**完全な WordPress 統合**を提供します。レイヤード・アーキテクチャで構築され、AI エージェントが標準化された JSON-RPC インターフェースを通じて高度なコンテンツ管理を実行できるようにします。このフレームワークは 27 の WordPress ツール、エンタープライズレベルのセキュリティ、強力な型安全性を備え、GitHub Copilot や他の AI コーディングアシスタントでの本番利用に最適化されています。
+`mcp-rs` は、**包括的で実戦テスト済み**の MCP（Model Context Protocol）の Rust 実装で、**完全な WordPress 統合**を提供します。レイヤード・アーキテクチャで構築され、AI エージェントが標準化された JSON-RPC インターフェースを通じて高度なコンテンツ管理を実行できるようにします。このフレームワークは 32 の WordPress ツール、エンタープライズレベルのセキュリティ、強力な型安全性を備え、GitHub Copilot や他の AI コーディングアシスタントでの本番利用に最適化されています。
 
 ## 🎯 対象ユーザー
 
@@ -25,7 +25,7 @@ Claude Desktop アプリ、GPT 統合、カスタム AI エージェントを構
 
 ## **DevOps エンジニア** ⚙️
 
-WordPress 運用を自動化していますか？包括的なヘルスチェック、監視、本番対応のエラーハンドリングを備えた 27 の実戦テスト済みツールを利用できます。
+WordPress 運用を自動化していますか？包括的なヘルスチェック、監視、本番対応のエラーハンドリングを備えた 32 の実戦テスト済みツールを利用できます。
 
 ## **Rust 愛好者** 🦀
 
@@ -46,14 +46,15 @@ WordPress セキュリティ自動化が必要ですか？SQL インジェクシ
 - **本番対応エラーハンドリング**: 構造化ログを備えた包括的なエラータイプ
 - **Async/Await**: 高性能非同期操作のための `tokio` ベース
 
-## **WordPress 統合（27 ツール）**
+## **WordPress 統合（32 ツール）**
 
-- **投稿・固定ページ管理**: SEO 統合を含む完全な CRUD 操作
-- **高度なメディア管理**: base64 サポート付きのアップロード、リサイズ、整理
-- **カテゴリ・タグ管理**: 一括操作を伴う階層サポート
-- **コメントシステム**: 完全なコメント管理と取得
+- **投稿・固定ページ管理**: 作成・取得（編集用の原文を全文）・更新・削除。SEO メタデータと予約投稿に対応
+- **メディア管理**: base64 でのアップロード（形式・拡張子・内容を検証）、一覧、メタデータ更新、削除、アイキャッチ画像の設定
+- **カテゴリ・タグ管理**: 作成・更新・削除。カテゴリの階層に対応
+- **コメント**: コメントの取得
 - **YouTube・ソーシャル埋め込み**: セキュリティ検証付きリッチメディア統合
-- **ユーザー管理**: ロールベースアクセス制御とユーザー操作
+- **サイト設定**: サイト設定とフロントページ設定の取得・更新
+- **ヘルスチェック**: 接続・認証・権限・メディアアップロード可否の確認
 
 ### ライブデモサイト
 

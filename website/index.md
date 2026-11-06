@@ -52,18 +52,18 @@ MCP-RS provides a **comprehensive, battle-tested** implementation of the MCP (Mo
 - **🔍 Data Masking**: 4 masking strategies (Full, Partial, Hash, Tokenize) for PII/PHI protection
 - **📈 Time-Based Access Control**: Business hours and emergency access support
 
-## 🎯 WordPress MCP Tools (27 tools available)
+## 🎯 WordPress MCP Tools (32 tools available)
 
 **📝 Content Management:**
 
-- Complete post and page management
+- Create, read (full editable source), update, and delete posts and pages
 - Advanced post creation with SEO and scheduling
 - YouTube and social media embeds
 - Category and tag management
 
 **🖼️ Media Management:**
 
-- Upload media files (base64/multipart)
+- Upload media files (base64, with type, extension, and content validation)
 - Featured image management
 - Media library operations
 - Accessibility support (alt text, captions)
@@ -71,8 +71,15 @@ MCP-RS provides a **comprehensive, battle-tested** implementation of the MCP (Mo
 **🔗 Content Integration:**
 
 - Create posts with taxonomy
-- Comments management
-- Content relationships
+- Comment retrieval
+
+**⚙️ Site Management:**
+
+- Read and update site settings
+- Front page configuration
+- Health check of connectivity, authentication, and permissions
+
+See [WordPress Integration](docs/wordpress/) for the full list of tools.
 
 ## 🗄️ Database MCP Tools (Multi-Engine Support)
 
