@@ -313,7 +313,10 @@ required-features = ["kubernetes-operator"]
 
 [profile.dev]
 opt-level = 0
-debug = true
+# Line numbers only: panic backtraces keep file/line, but full debuginfo
+# made every example/test .pdb ~400MB (target/debug grew to ~70GB, #371).
+# For debugger variable inspection, set CARGO_PROFILE_DEV_DEBUG=true locally.
+debug = "line-tables-only"
 overflow-checks = true
 incremental = true
 
