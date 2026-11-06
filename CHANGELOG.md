@@ -31,6 +31,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `create_post_with_featured_image`は、5xx・429で再送しなくなった。投稿の
   作成を再送すると、1回目が実は成功していた場合に投稿が重複しうるため、
   ほかの投稿作成系ツールにそろえた
+- 開発用ビルド（`dev`プロファイル）のデバッグ情報を行番号のみ
+  （`line-tables-only`）に変更（#371）。exampleの`.pdb`が1個あたり
+  約400MBになり、`target`が約70GBまで肥大化していたため。デバッガで
+  変数を見る場合は`CARGO_PROFILE_DEV_DEBUG=true`を設定する
 
 ### Fixed
 
