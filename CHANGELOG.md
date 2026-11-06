@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `mcp-rs encrypt-wordpress-credentials`サブコマンド（#355）。設定ファイルに
+  貼り付ける`[handlers.wordpress.encrypted_credentials]`のセクションを生成
+  する。これまでは生成にRustのコードを書く必要があった
+  - ユーザー名・Application Password・マスターパスワード（確認のため2回、
+    12文字以上）を端末から入力する。パスワードは入力中も表示しない
+  - 端末でない場合（標準入力のリダイレクト等）は、標準入力の3行から読む
+  - パスワードをコマンドライン引数では受け付けない（シェル履歴や
+    プロセス一覧に残るため）
+  - 出力前に、生成した値を復号して入力と一致することを確認する
+
 ### Changed
 
 - **挙動の変更**: `create_advanced_post`・`create_post_with_embeds`は、

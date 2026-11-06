@@ -2,6 +2,7 @@ pub mod anti_replay;
 pub mod audit;
 pub mod audit_log;
 pub mod auth;
+pub mod credential_tool;
 pub mod encryption;
 #[cfg(feature = "hsm")]
 pub mod hsm;
