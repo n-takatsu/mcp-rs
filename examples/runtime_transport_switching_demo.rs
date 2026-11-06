@@ -188,6 +188,14 @@ fn convert_to_transport_config(
                 ids_trust_forwarded_for: h.ids_trust_forwarded_for.unwrap_or(false),
                 enable_websocket_upgrade: h.enable_websocket_upgrade.unwrap_or(false),
                 websocket_max_connections: h.websocket_max_connections.unwrap_or(1000),
+                auth_enabled: h.auth_enabled.unwrap_or(false),
+                api_keys: h
+                    .api_keys
+                    .clone()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(mcp_rs::transport::http::ApiKeyEntry::from)
+                    .collect(),
             }
         })
         .unwrap_or_default();

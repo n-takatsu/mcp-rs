@@ -211,4 +211,4 @@ at your option.
 ---
 
 **Last Updated**: November 3, 2025
-**Version**: v0.1.0 (Development)
+**Version**: v0.18.0

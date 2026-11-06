@@ -162,6 +162,9 @@ impl DynamicConfigManager {
         // Apply environment variable expansion for WordPress config
         if let Some(ref mut wp_config) = loaded_config.handlers.wordpress {
             McpConfig::expand_wordpress_config(wp_config);
+            wp_config
+                .resolve_encrypted_credentials()
+                .map_err(|e| crate::error::Error::Internal(e.to_string()))?;
         }
 
         Ok(loaded_config)
@@ -438,5 +441,63 @@ impl ConfigSwitcher {
         }
 
         println!();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::security::SecureCredentials;
+    use std::io::Write;
+
+    #[tokio::test]
+    async fn test_load_config_from_file_resolves_encrypted_credentials() {
+        // ホットリロード/設定ファイル切り替え経路も、McpConfig::load()と
+        // main.rsのload_config_from_file()と同様にencrypted_credentials
+        // を復号してusername/passwordへ反映する必要がある。
+        let _env_guard = crate::config::WORDPRESS_MASTER_PASSWORD_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        let plaintext =
+            SecureCredentials::new("wp-user".to_string(), "wp-app-password".to_string());
+        let encrypted = plaintext.encrypt("correct-master-password").unwrap();
+
+        let toml_content = format!(
+            r#"
+[handlers.wordpress]
+url = "https://example.com"
+
+[handlers.wordpress.encrypted_credentials]
+username = "{}"
+encrypted_password = "{}"
+nonce = "{}"
+salt = "{}"
+"#,
+            encrypted.username, encrypted.encrypted_password, encrypted.nonce, encrypted.salt
+        );
+
+        let mut file = tempfile::Builder::new().suffix(".toml").tempfile().unwrap();
+        file.write_all(toml_content.as_bytes()).unwrap();
+        let path = file.path().to_str().unwrap().to_string();
+
+        unsafe {
+            std::env::set_var("WORDPRESS_MASTER_PASSWORD", "correct-master-password");
+        }
+
+        let manager = DynamicConfigManager::new(McpConfig::default(), None);
+        let loaded = manager.load_config_from_file(&path).await;
+
+        unsafe {
+            std::env::remove_var("WORDPRESS_MASTER_PASSWORD");
+        }
+
+        let loaded = loaded.expect("config file should load successfully");
+        let wp_config = loaded
+            .handlers
+            .wordpress
+            .expect("wordpress config should be present");
+        assert_eq!(wp_config.username, "wp-user");
+        assert_eq!(wp_config.password, "wp-app-password");
     }
 }

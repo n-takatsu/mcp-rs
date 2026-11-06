@@ -95,7 +95,18 @@ MCP-RS provides a **comprehensive, battle-tested** implementation of the MCP (Mo
 
 ## Current Status
 
-## ✅ Recently Completed (v0.16.0)
+## ✅ Recently Completed (v0.18.0)
+
+- **🔑 API Key Authentication**: Optional API key check on every HTTP/WebSocket request
+- **🚦 Rate Limiting**: WordPress tool calls are rate limited per site
+- **📝 Audit Logging**: Every WordPress tool call that changes the site is recorded, including rejected ones
+- **🔐 Encrypted Credentials**: WordPress Application Passwords can be stored encrypted in the config file
+- **🖼️ Media Upload Validation**: MIME allowlist, extension and content checks, and size limits for `upload_media`
+- **🛡️ Dependency Audits**: Known vulnerabilities fixed, and `cargo audit` now runs daily
+
+See the [Security documentation](docs/security/) for details.
+
+## ✅ v0.16.0
 
 - **🌐 WebSocket Transport Enhancements**: Server mode, LLM streaming, connection pooling, load balancing
 - **🔌 Plugin Isolation System**: Inter-plugin communication, advanced error handling, Docker runtime support

@@ -252,6 +252,22 @@ impl ApiKeyManager {
         Ok((full_key, api_key))
     }
 
+    /// 既存のキー文字列を取り込む。`generate_key`はランダムな新規キーを
+    /// 生成するが、設定ファイル等で運用者が既に配布済みのキー文字列を
+    /// そのまま登録したい場合に使う。
+    pub fn import_key(
+        &mut self,
+        key: &str,
+        name: String,
+        user_id: String,
+        expires_at: Option<u64>,
+    ) -> AuthResult<ApiKey> {
+        let key_hash = self.hash_key(key)?;
+        let api_key = ApiKey::new(key_hash.clone(), name, user_id, expires_at);
+        self.keys.insert(key_hash, api_key.clone());
+        Ok(api_key)
+    }
+
     /// APIキーを検証
     pub fn verify_key(&mut self, key: &str) -> AuthResult<&mut ApiKey> {
         let key_hash = self.hash_key(key)?;
@@ -372,6 +388,30 @@ mod tests {
         assert_eq!(api_key.name, "test-key");
         assert_eq!(api_key.user_id, "user-1");
         assert!(api_key.is_valid());
+    }
+
+    #[test]
+    fn test_import_key_is_verifiable_and_revocable() {
+        let config = ApiKeyConfig::default();
+        let mut manager = ApiKeyManager::new(config);
+
+        let raw_key = "mcp_preexisting-operator-provisioned-key";
+        manager
+            .import_key(
+                raw_key,
+                "imported-key".to_string(),
+                "user-1".to_string(),
+                None,
+            )
+            .unwrap();
+
+        let verified = manager.verify_key(raw_key).unwrap();
+        assert_eq!(verified.name, "imported-key");
+        assert_eq!(verified.user_id, "user-1");
+        assert_eq!(verified.usage_count, 1);
+
+        manager.revoke_key(raw_key).unwrap();
+        assert!(manager.verify_key(raw_key).is_err());
     }
 
     #[test]

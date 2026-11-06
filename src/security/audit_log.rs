@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
+use tokio::io::AsyncWriteExt;
 use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
 
@@ -554,7 +555,17 @@ impl AuditLogger {
                 )
             };
 
-            tokio::fs::write(file_path, format!("{}\n", content))
+            // tokio::fs::writeは毎回ファイル全体を上書きするため、ここでは
+            // 追記モードで開く。そうしないと2件目以降のログ記録で直前の
+            // エントリしかディスクに残らず、プロセス再起動後やログ出荷時に
+            // 監査証跡がほぼ消えてしまう。
+            let mut file = tokio::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(file_path)
+                .await
+                .map_err(|e| SecurityError::Configuration(format!("File open failed: {}", e)))?;
+            file.write_all(format!("{}\n", content).as_bytes())
                 .await
                 .map_err(|e| SecurityError::Configuration(format!("File write failed: {}", e)))?;
         }
@@ -718,5 +729,50 @@ mod tests {
         let entries = logger.get_all_entries().await;
         assert_eq!(entries.len(), 2); // 制限により2つのみ保持
         assert!(entries[0].message.contains("Entry 1")); // 最初のエントリは削除される
+    }
+
+    #[tokio::test]
+    async fn test_file_output_appends_across_multiple_log_calls() {
+        // write_to_fileが`tokio::fs::write`（毎回全体を上書き）を使って
+        // いた場合、2件目のlog()呼び出しで1件目がディスクから消える。
+        // 追記されていることを確認する。
+        let path = format!("test_audit_append_{}.log", Uuid::new_v4());
+        let config = AuditConfig {
+            log_file_path: Some(path.clone()),
+            ..Default::default()
+        };
+        let logger = AuditLogger::new(config);
+
+        logger
+            .log(AuditLogEntry::new(
+                AuditLevel::Info,
+                AuditCategory::Authentication,
+                "first".to_string(),
+            ))
+            .await
+            .expect("Logging failed");
+        logger
+            .log(AuditLogEntry::new(
+                AuditLevel::Info,
+                AuditCategory::Authentication,
+                "second".to_string(),
+            ))
+            .await
+            .expect("Logging failed");
+
+        let contents = tokio::fs::read_to_string(&path)
+            .await
+            .expect("Failed to read audit log file");
+        let line_count = contents.lines().count();
+
+        tokio::fs::remove_file(&path)
+            .await
+            .expect("Failed to clean up test audit log file");
+
+        assert_eq!(
+            line_count, 2,
+            "expected both entries to persist, got: {}",
+            contents
+        );
     }
 }
