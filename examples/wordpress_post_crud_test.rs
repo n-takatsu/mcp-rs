@@ -46,7 +46,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Read the created post
     println!("\n📖 Reading the created post...");
-    match handler.get_post(post_id, "post").await {
+    match handler.get_post(post_id, "post", false).await {
         Ok(post) => {
             info!("✅ Retrieved post: {}", post.title.rendered);
             println!("   Title: {}", post.title.rendered);
@@ -89,7 +89,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Read the updated post to verify changes
     println!("\n🔍 Verifying the update...");
-    match handler.get_post(post_id, "post").await {
+    match handler.get_post(post_id, "post", false).await {
         Ok(post) => {
             info!("✅ Verified updated post");
             println!("   Current Title: {}", post.title.rendered);
@@ -166,7 +166,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Try to read the deleted post (should fail or show trashed status)
     println!("\n🔍 Verifying deletion...");
-    match handler.get_post(post_id, "post").await {
+    match handler.get_post(post_id, "post", false).await {
         Ok(post) => {
             println!("   Post still exists with status: {}", post.status);
             if post.status == "trash" {

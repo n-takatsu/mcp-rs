@@ -1,10 +1,24 @@
 name: CI
 
+# 文章だけの変更ではRustのビルド・テストに影響しないため実行しない
+# （RustのコードがMarkdown等をinclude_str!で取り込んでいないことは確認済み。
+# 取り込む場合はここから外すこと）。コードと文章の両方を変更した場合は
+# 通常どおり実行される。
 on:
   push:
     branches: [ main, develop ]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'project-docs/**'
+      - 'website/**'
   pull_request:
     branches: [ main, develop ]  # developブランチへのPRも含める
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'project-docs/**'
+      - 'website/**'
 
 # 同じコミットに対する重複実行を取り消し
 concurrency:
@@ -40,30 +54,24 @@ jobs:
         toolchain: ${{ matrix.rust }}
         components: rustfmt, clippy
 
-    - name: Cache cargo registry
-      uses: actions/cache@v4
+    # Cargo.lockが変わっても（リリースのバージョン更新や依存関係の更新）
+    # 直前のキャッシュから部分的に復元できる。PRではキャッシュを保存せず、
+    # develop/mainへのpushで保存したものを使う。PRごとに保存すると
+    # Actionsのキャッシュ容量（10GB）を圧迫し、develop/mainのキャッシュが
+    # 追い出されてしまうため。
+    - name: Cache Rust build
+      uses: Swatinem/rust-cache@v2
       with:
-        path: ~/.cargo/registry
-        key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+        save-if: ${{ github.event_name == 'push' }}
 
-    - name: Cache cargo index
-      uses: actions/cache@v4
-      with:
-        path: ~/.cargo/git
-        key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
-
-    - name: Cache cargo build
-      uses: actions/cache@v4
-      with:
-        path: target
-        key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
-
+    # fmtとclippyはOSにほぼ依存しないためUbuntuでのみ実行する。Windowsでの
+    # 型チェックは後段の「Check all features」で行う。
     - name: Check formatting
-      if: matrix.rust == 'stable'
+      if: runner.os == 'Linux' && matrix.rust == 'stable'
       run: cargo fmt --all -- --check
 
     - name: Run clippy
-      if: matrix.rust == 'stable'
+      if: runner.os == 'Linux' && matrix.rust == 'stable'
       # Limit clippy to the library target to avoid compiling examples on the runner.
       # double_must_use is allowed because async_trait's macro expansion attaches an
       # unannotated #[must_use] to methods that already return a #[must_use] Result,
@@ -72,7 +80,7 @@ jobs:
 
     # PR用の詳細なClippyレポート
     - name: Generate clippy report for PR
-      if: matrix.rust == 'stable' && github.event_name == 'pull_request'
+      if: runner.os == 'Linux' && matrix.rust == 'stable' && github.event_name == 'pull_request'
       shell: bash
       run: |
         # Run clippy only for the library to avoid building examples in PR analysis
@@ -84,42 +92,36 @@ jobs:
           echo "❌ Clippy issues found. Please review the logs above." >> $GITHUB_STEP_SUMMARY
         fi
 
-    - name: Build
-      # Build only the library to avoid compiling examples on the runner (saves disk/memory)
-      env:
-        CARGO_PROFILE_DEV_LTO: false
-        CARGO_PROFILE_TEST_LTO: false
-      run: cargo build --lib --verbose --jobs 1
+    # Ubuntuではclippy（--all-features）が同じ型チェックを兼ねるため、
+    # Windowsでのみ実行する。Windows固有のコード（cfg(windows)）も含め、
+    # 全機能の組み合わせがWindowsでコンパイルできることを確認する。
+    - name: Check all features
+      if: runner.os == 'Windows'
+      run: cargo check --lib --all-features --jobs 1
 
+    # 以降のステップは同じ機能フラグ（既定＋mfa）にそろえ、機能フラグの
+    # 違いによる依存クレートの再コンパイルを避ける
     - name: Run unit tests
-      # Test library code with MFA features enabled
       env:
         CARGO_PROFILE_TEST_LTO: false
-      run: |
-        echo "Running library unit tests with MFA features..."
-        cargo test --lib --verbose --features "security,session-management,websocket,mfa" --jobs 1
+      run: cargo test --lib --verbose --features mfa --jobs 1
 
-    - name: Run MFA integration tests
+    # MFAのテストはtests/mod.rs（テストターゲット`mod`）にある。対象を
+    # 指定しないと、絞り込みに一致しない全テストターゲットとexampleまで
+    # コンパイルしてしまう
+    - name: Run MFA integration and performance tests
       if: matrix.rust == 'stable'
       env:
         CARGO_PROFILE_TEST_LTO: false
-      run: |
-        echo "Running MFA integration tests..."
-        cargo test security::mfa_integration_tests --features mfa --verbose --jobs 1
+      run: cargo test --test mod --verbose --features mfa --jobs 1 -- security::mfa_integration_tests performance::mfa_performance_tests
 
-    - name: Run MFA performance tests
-      if: matrix.rust == 'stable'
+    # 全テストターゲットとexampleがコンパイルできることの確認（実行はしない）。
+    # 以前はMFAテストのステップで副次的に行われていたため、Ubuntuで明示的に残す
+    - name: Check that all tests and examples compile
+      if: runner.os == 'Linux' && matrix.rust == 'stable'
       env:
         CARGO_PROFILE_TEST_LTO: false
-      run: |
-        echo "Running MFA performance tests..."
-        cargo test performance::mfa_performance_tests --features mfa --verbose --jobs 1
-
-    - name: Verify library compilation
-      run: |
-        echo "Verifying core library functionality..."
-        cargo check --lib --all-features
-        echo "Library verification completed"
+      run: cargo test --features mfa --no-run --jobs 1
 
     # PowerShellテスト（Windows環境のみ）- 簡素化版
     - name: Run PowerShell integration tests
@@ -128,10 +130,9 @@ jobs:
       run: |
         Write-Host "Setting up PowerShell test environment..."
 
-        # サーバーをビルド（ライブラリのみ）
-        cargo build --lib --release --verbose
-
-        # テスト設定ファイルの確認
+        # テスト設定ファイルの確認（以前はこの前にリリースビルドを行って
+        # いたが、ビルド成果物は使っておらず、全体の再コンパイルになるだけ
+        # だったため削除した）
         $configFound = $false
         $configPath = ""
 
