@@ -41,6 +41,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `create_post_with_featured_image`が常にHTTP 400（`empty_content`）で
   失敗し、投稿を作成できなかった問題（#367）。タイトル・本文を、
   WordPressが書き込み時に読まない`{"rendered": ...}`の形で送っていた
+- STDIOサーバーが、JSON-RPCの通知（`id`なし。`notifications/initialized`等）
+  に`-32601`のエラー応答を返していた問題（#360）。JSON-RPC 2.0に従い、
+  通知には応答しないようにした。`tools/call`等のリクエスト用のmethodが
+  `id`なしで届いた場合も、実行せずに警告ログのみ記録する
 - ビルド時の将来非互換警告（`proc-macro-error2`）を解消（#369）。
   使われていなかった`validator`の依存を削除し、`mysql-common-derive`を
   0.32.2に更新した
