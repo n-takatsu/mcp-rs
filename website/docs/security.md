@@ -119,15 +119,23 @@ nonce = "..."
 salt = "..."
 ```
 
-Generate the `encrypted_credentials` values with the library API:
+Generate the `encrypted_credentials` section with the `encrypt-wordpress-credentials` subcommand (available after v0.18.0; build from source until the next release):
 
-```rust
-use mcp_rs::security::SecureCredentials;
-
-let encrypted = SecureCredentials::new("your_username".into(), "your_application_password".into())
-    .encrypt("your_master_password")?;
-println!("{}", toml::to_string(&encrypted)?);
+```bash
+mcp-rs encrypt-wordpress-credentials
 ```
+
+It asks for the WordPress username, the Application Password, and a master password (twice, at least 12 characters). Passwords are not shown while typing. It then prints the `[handlers.wordpress.encrypted_credentials]` section to standard output. Paste it into the config file after `[handlers.wordpress]`, remove any plaintext `password`, and start mcp-rs with the same master password in `WORDPRESS_MASTER_PASSWORD`.
+
+- Secrets are never accepted as command-line arguments, so they do not end up in shell history or process listings
+- Before printing, the command decrypts the generated values again to confirm they round-trip
+- Without a terminal (for example in CI), it reads the username, Application Password, and master password as three lines from standard input instead, with no confirmation:
+
+  ```bash
+  mcp-rs encrypt-wordpress-credentials < secrets.txt > encrypted.toml
+  ```
+
+  Delete `secrets.txt` afterwards.
 
 ## HTTP/WebSocket API Key Authentication
 

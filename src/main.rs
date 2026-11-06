@@ -34,6 +34,19 @@ use tracing::{error, info};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // サブコマンドは設定ファイルを読み込む前に処理する（設定ファイルが
+    // まだ無い状態でencrypted_credentialsを作るためのコマンドなので）
+    let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some(mcp_rs::security::credential_tool::SUBCOMMAND) {
+        // Box<dyn Error>をmainから返すとDebug表記（"..."付き）で出るため、
+        // ここでDisplay表記で出して終了コード1にする
+        if let Err(e) = mcp_rs::security::credential_tool::run(&args[2..]) {
+            eprintln!("Error: {e}");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+
     // 設定読み込み（ログ設定のため最初に実行）
     let config = load_config().await?;
 
