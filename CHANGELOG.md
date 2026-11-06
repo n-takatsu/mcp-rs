@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **挙動の変更**: `create_advanced_post`・`create_post_with_embeds`は、
+  `status`を指定しない場合に公開ではなく下書きになるよう変更（#367）。
+  意図しない公開を避けるため、v0.17.3で`create_post`系を`draft`既定にした
+  方針にそろえた。公開するには`status: "publish"`を指定する
+- **挙動の変更（ライブラリ）**: 公開型`PostCreateParams`の`Default`の
+  `status`を`publish`から`draft`に変更。`..Default::default()`で組み立てて
+  `create_advanced_post`を呼ぶコードは、下書きを作成するようになる
+- `create_post_with_featured_image`に`status`引数を追加（既定は`draft`）
+- 投稿作成で`status: "future"`（予約投稿）を日付なしで指定すると、
+  WordPressが即座に公開してしまうため、全ツールが経由する
+  `create_advanced_post`で拒否するよう変更（`date`を指定できるのは
+  `create_advanced_post`のみ）。それ以外の値は、プラグインが追加する
+  独自のステータスもあるため絞らずWordPressに任せる
+- 投稿作成系ツールで、`status`に文字列以外の値を渡した場合に、既定値で
+  黙って続けずに入力エラーにするよう変更
+- 投稿作成系ツールの成功メッセージに、要求した値ではなくWordPressが実際に
+  設定したステータスを表示するよう変更
+- `create_advanced_post`の失敗時に、WordPressのエラーコード・メッセージを
+  含めるよう変更（以前はHTTPステータスのみ）
+- `create_post_with_featured_image`は、5xx・429で再送しなくなった。投稿の
+  作成を再送すると、1回目が実は成功していた場合に投稿が重複しうるため、
+  ほかの投稿作成系ツールにそろえた
+
+### Fixed
+
+- `create_post_with_featured_image`が常にHTTP 400（`empty_content`）で
+  失敗し、投稿を作成できなかった問題（#367）。タイトル・本文を、
+  WordPressが書き込み時に読まない`{"rendered": ...}`の形で送っていた
+
 ## [0.18.0] - 2026-11-06
 
 ### Added
