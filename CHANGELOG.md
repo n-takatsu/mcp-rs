@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- 本体から使われなくなった`core`モジュール（`Runtime`・`HandlerRegistry`・
+  `PluginInfo`・`ExecutionContext`）を削除（#409）。#400の修正（#406）以降、
+  リクエストの処理は`McpServer`（`RequestDispatcher`）が受け持っている。
+  `Runtime`は受信ループが起動されず、`tools/call`の処理も無かった
+  - **ライブラリの変更**: 公開モジュール`mcp_rs::core`を削除した
+  - `core`だけを試していたテスト（`tests/unit/runtime_tests.rs`・
+    `handler_tests.rs`）と、「Core Runtime Module」を完成した機能として
+    案内していたドキュメントの記述も削除・修正した
+
 ## [0.18.4] - 2026-11-08
 
 ### Fixed

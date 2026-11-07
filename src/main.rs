@@ -10,7 +10,6 @@
 #![allow(clippy::double_must_use)]
 
 mod config;
-mod core;
 mod error;
 mod handlers;
 mod logging;
@@ -66,7 +65,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // どちらのモードも、ハンドラー（WordPress・プラグイン）を登録した
     // McpServerでリクエストを処理する。HTTPモードは以前core::Runtime経由
-    // だったが、受信ループが動いておらずリクエストを処理できなかった（#400）
+    // だったが、受信ループが動いておらずリクエストを処理できなかった
+    // （#400。core::Runtimeは#409で削除）
     let transport_config = config.to_transport_config();
     match transport_config.transport_type {
         mcp_rs::transport::TransportType::Http { addr } => {
