@@ -1870,6 +1870,11 @@ for line in sys.stdin:
         );
 
         let result = probe(&isolated, "k8snone").await;
+        eprintln!("probe (network = none): {}", result);
+        eprintln!(
+            "probe (network = allow): {}",
+            probe(&allowed, "k8sallow").await
+        );
         assert_eq!(result["token"], json!("secret-value"));
         let env: Vec<&str> = result["env"]
             .as_array()
