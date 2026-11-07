@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.3] - 2026-11-08
+
 ### Added
 
 - プラグイン（#394、段階1）。設定の`[[plugins]]`で指定したコマンドを、
