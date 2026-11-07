@@ -143,7 +143,8 @@ async fn load_config_from_file(path: &str) -> Result<McpConfig, Box<dyn std::err
     }
 
     let content = tokio::fs::read_to_string(path).await?;
-    let mut config: McpConfig = toml::from_str(&content)?;
+    let mut config: McpConfig =
+        toml::from_str(&content).map_err(|e| mcp_rs::config::with_config_hint(e, &content))?;
 
     // WordPressConfig の環境変数展開を適用（McpConfig::load() と同様の処理）
     if let Some(ref mut wp_config) = config.handlers.wordpress {
