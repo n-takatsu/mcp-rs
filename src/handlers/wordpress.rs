@@ -684,6 +684,38 @@ fn post_status_or_draft(args: &HashMap<String, serde_json::Value>) -> Result<Str
     }
 }
 
+/// ツール引数の`slug`を取り出す。省略時は`None`（WordPressに送らない）。
+/// 空文字列はWordPressにとって「自動生成に戻す」意味になり、意図せず
+/// 既存のスラッグを消しうるため受け付けない。
+fn optional_slug_arg(
+    args: &HashMap<String, serde_json::Value>,
+) -> Result<Option<String>, McpError> {
+    match args.get("slug") {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(serde_json::Value::String(slug)) => {
+            let slug = slug.trim();
+            if slug.is_empty() {
+                Err(McpError::InvalidParams(
+                    "slug must not be empty. Omit it to let WordPress generate one".to_string(),
+                ))
+            } else {
+                Ok(Some(slug.to_string()))
+            }
+        }
+        Some(_) => Err(McpError::InvalidParams("slug must be a string".to_string())),
+    }
+}
+
+/// 投稿・固定ページのスラッグの表示用の文字列。日本語のスラッグは
+/// パーセントエンコードされて返るためデコードする。WordPressは、
+/// スラッグを指定していない下書きにはスラッグを付けない（公開時に作る）。
+fn post_slug_label(post: &WordPressPost) -> String {
+    match post.slug.as_deref() {
+        Some(slug) if !slug.is_empty() => decode_slug_for_display(slug),
+        _ => "none (WordPress generates one when the post is published)".to_string(),
+    }
+}
+
 /// 投稿・固定ページ作成時の送信内容。WordPressは書き込み時にタイトル・
 /// 本文を文字列（または`raw`）としてしか読まないため、読み取り用の
 /// `WordPressPost`（`rendered`を持つ）をそのまま送ってはいけない。
@@ -725,6 +757,11 @@ fn advanced_post_body(params: PostCreateParams) -> serde_json::Value {
     // アイキャッチ画像を設定
     if let Some(media_id) = params.featured_media_id {
         post_data["featured_media"] = serde_json::Value::Number(media_id.into());
+    }
+
+    // スラッグを設定（未指定ならWordPressがタイトルから作る）
+    if let Some(slug) = params.slug {
+        post_data["slug"] = serde_json::Value::String(slug);
     }
 
     // メタデータを設定（SEO等）
@@ -967,6 +1004,8 @@ pub struct PostCreateParams {
     pub tags: Option<Vec<u64>>,
     pub featured_media_id: Option<u64>,
     pub meta: Option<HashMap<String, String>>, // SEOメタデータ等
+    /// URLのスラッグ。`None`のときは送らず、WordPressがタイトルから作る
+    pub slug: Option<String>,
 }
 
 /// WordPress post update parameters
@@ -979,6 +1018,8 @@ pub struct PostUpdateParams {
     pub tags: Option<Vec<u64>>,
     pub featured_media_id: Option<u64>,
     pub meta: Option<HashMap<String, String>>,
+    /// URLのスラッグ。WordPressはタイトルを変えてもスラッグを変えない
+    pub slug: Option<String>,
 }
 
 impl Default for PostCreateParams {
@@ -994,6 +1035,7 @@ impl Default for PostCreateParams {
             tags: None,
             featured_media_id: None,
             meta: None,
+            slug: None,
         }
     }
 }
@@ -1860,6 +1902,7 @@ impl WordPressHandler {
         content: String,
         featured_media_id: u64,
         status: String,
+        slug: Option<String>,
     ) -> Result<WordPressPost, McpError> {
         info!("Creating post with featured image: {}", featured_media_id);
         self.create_advanced_post(PostCreateParams {
@@ -1867,6 +1910,7 @@ impl WordPressHandler {
             content,
             status,
             featured_media_id: Some(featured_media_id),
+            slug,
             ..Default::default()
         })
         .await
@@ -1893,6 +1937,7 @@ impl WordPressHandler {
             tags,
             featured_media_id,
             meta: None,
+            slug: None,
         })
         .await
     }
@@ -1941,6 +1986,10 @@ impl WordPressHandler {
 
         if let Some(status) = params.status {
             update_data.insert("status".to_string(), serde_json::Value::String(status));
+        }
+
+        if let Some(slug) = params.slug {
+            update_data.insert("slug".to_string(), serde_json::Value::String(slug));
         }
 
         if let Some(cats) = params.categories {
@@ -2800,11 +2849,12 @@ impl WordPressHandler {
                 Ok(serde_json::json!({
                     "content": [{
                         "type": "text",
-                        "text": format!("Post Details:\nID: {}\nFormat: {}\nTitle: {}\nStatus: {}\nCategories: {}\nTags: {}\nFeatured Media: {}\n{}Content:\n{}",
+                        "text": format!("Post Details:\nID: {}\nFormat: {}\nTitle: {}\nStatus: {}\nSlug: {}\nCategories: {}\nTags: {}\nFeatured Media: {}\n{}Content:\n{}",
                             post.id.map(|id| id.to_string()).unwrap_or_else(|| "N/A".to_string()),
                             post_format_label(&post, format),
                             title,
                             post.status,
+                            post_slug_label(&post),
                             categories_names.join(", "),
                             tags_names.join(", "),
                             featured_media,
@@ -2825,17 +2875,25 @@ impl WordPressHandler {
                     .get("content")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| McpError::InvalidParams("Missing content".to_string()))?;
-                let status = Some(post_status_or_draft(&args)?);
+                let status = post_status_or_draft(&args)?;
+                let slug = optional_slug_arg(&args)?;
 
                 let post = self
-                    .create_post(title.to_string(), content.to_string(), status)
+                    .create_advanced_post(PostCreateParams {
+                        title: title.to_string(),
+                        content: content.to_string(),
+                        status,
+                        slug,
+                        ..Default::default()
+                    })
                     .await?;
                 Ok(serde_json::json!({
                     "content": [{
                         "type": "text",
-                        "text": format!("Created post with ID: {} (Status: {})",
+                        "text": format!("Created post with ID: {} (Status: {}, Slug: {})",
                             post.id.map(|id| id.to_string()).unwrap_or_else(|| "N/A".to_string()),
-                            post.status)
+                            post.status,
+                            post_slug_label(&post))
                     }],
                     "isError": false
                 }))
@@ -2882,6 +2940,8 @@ impl WordPressHandler {
                         .collect::<HashMap<String, String>>()
                 });
 
+                let slug = optional_slug_arg(&args)?;
+
                 let post = self
                     .create_advanced_post(PostCreateParams {
                         title: title.to_string(),
@@ -2893,6 +2953,7 @@ impl WordPressHandler {
                         tags,
                         featured_media_id,
                         meta,
+                        slug,
                     })
                     .await?;
 
@@ -2902,10 +2963,11 @@ impl WordPressHandler {
                     "content": [{
                         "type": "text",
                         "text": format!(
-                            "Created {} with ID: {} (Status: {})",
+                            "Created {} with ID: {} (Status: {}, Slug: {})",
                             if post_type == "page" { "page" } else { "post" },
                             display_opt_id(post.id),
-                            post.status
+                            post.status,
+                            post_slug_label(&post)
                         )
                     }],
                     "isError": false
@@ -3130,6 +3192,7 @@ impl WordPressHandler {
                         McpError::InvalidParams("Missing featured_media_id".to_string())
                     })?;
                 let status = post_status_or_draft(&args)?;
+                let slug = optional_slug_arg(&args)?;
 
                 let post = self
                     .create_post_with_featured_image(
@@ -3137,12 +3200,13 @@ impl WordPressHandler {
                         content.to_string(),
                         featured_media_id,
                         status,
+                        slug,
                     )
                     .await?;
                 Ok(serde_json::json!({
                     "content": [{
                         "type": "text",
-                        "text": format!("Created post with featured image. Post ID: {}, Status: {}", display_opt_id(post.id), post.status)
+                        "text": format!("Created post with featured image. Post ID: {}, Status: {}, Slug: {}", display_opt_id(post.id), post.status, post_slug_label(&post))
                     }],
                     "isError": false
                 }))
@@ -3326,7 +3390,7 @@ impl WordPressHandler {
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| McpError::InvalidParams("Missing content".to_string()))?;
 
-                let status = Some(post_status_or_draft(&args)?);
+                let status = post_status_or_draft(&args)?;
 
                 let categories: Option<Vec<u64>> = args
                     .get("categories")
@@ -3339,25 +3403,29 @@ impl WordPressHandler {
                     .map(|arr| arr.iter().filter_map(|v| v.as_u64()).collect());
 
                 let featured_media_id = args.get("featured_media_id").and_then(|v| v.as_u64());
+                let slug = optional_slug_arg(&args)?;
 
                 let post = self
-                    .create_post_with_categories_tags(
-                        title.to_string(),
-                        content.to_string(),
+                    .create_advanced_post(PostCreateParams {
+                        title: title.to_string(),
+                        content: content.to_string(),
                         status,
                         categories,
                         tags,
                         featured_media_id,
-                    )
+                        slug,
+                        ..Default::default()
+                    })
                     .await?;
 
                 Ok(serde_json::json!({
                     "content": [{
                         "type": "text",
-                        "text": format!("Created post '{}' with ID: {} (Status: {}), categories: {}, tags: {}",
+                        "text": format!("Created post '{}' with ID: {} (Status: {}, Slug: {}), categories: {}, tags: {}",
                             title,
                             post.id.map(|id| id.to_string()).unwrap_or_else(|| "N/A".to_string()),
                             post.status,
+                            post_slug_label(&post),
                             post.categories.as_deref().map(|ids| ids.iter().map(|id| id.to_string()).collect::<Vec<_>>().join(", ")).unwrap_or_else(|| "-".to_string()),
                             post.tags.as_deref().map(|ids| ids.iter().map(|id| id.to_string()).collect::<Vec<_>>().join(", ")).unwrap_or_else(|| "-".to_string()))
                     }],
@@ -3436,6 +3504,7 @@ impl WordPressHandler {
                     .map(|arr| arr.iter().filter_map(|v| v.as_u64()).collect());
 
                 let featured_media_id = args.get("featured_media_id").and_then(|v| v.as_u64());
+                let slug = optional_slug_arg(&args)?;
 
                 let post = self
                     .update_post(
@@ -3449,6 +3518,7 @@ impl WordPressHandler {
                             tags,
                             featured_media_id,
                             meta: None,
+                            slug,
                         },
                     )
                     .await?;
@@ -3456,8 +3526,8 @@ impl WordPressHandler {
                 Ok(serde_json::json!({
                     "content": [{
                         "type": "text",
-                        "text": format!("Updated {} ID {} - Title: '{}', Status: {}",
-                            post_type, post_id, post.title.rendered, post.status)
+                        "text": format!("Updated {} ID {} - Title: '{}', Status: {}, Slug: {}",
+                            post_type, post_id, post.title.rendered, post.status, post_slug_label(&post))
                     }],
                     "isError": false
                 }))
@@ -3529,6 +3599,8 @@ impl WordPressHandler {
                     .and_then(|v| v.as_array())
                     .map(|arr| arr.iter().filter_map(|v| v.as_u64()).collect::<Vec<u64>>());
 
+                let slug = optional_slug_arg(&args)?;
+
                 let params = PostCreateParams {
                     title: title.to_string(),
                     content: content.to_string(),
@@ -3536,6 +3608,7 @@ impl WordPressHandler {
                     status,
                     categories,
                     tags,
+                    slug,
                     ..Default::default()
                 };
 
@@ -3553,11 +3626,12 @@ impl WordPressHandler {
                     "content": [{
                         "type": "text",
                         "text": format!(
-                            "Created {} with embedded content - ID: {}, Title: {}, Status: {}",
+                            "Created {} with embedded content - ID: {}, Title: {}, Status: {}, Slug: {}",
                             if post.post_type.as_ref().unwrap_or(&"post".to_string()) == "page" { "page" } else { "post" },
                             display_opt_id(post.id),
                             post.title.rendered,
-                            post.status
+                            post.status,
+                            post_slug_label(&post)
                         )
                     }],
                     "isError": false
@@ -3778,6 +3852,10 @@ impl McpHandler for WordPressHandler {
                             "enum": ["publish", "draft", "pending", "private"],
                             "description": "Post status. Defaults to 'draft' to avoid accidental publication.",
                             "default": "draft"
+                        },
+                        "slug": {
+                            "type": "string",
+                            "description": "URL slug (optional). If omitted, WordPress generates one from the title (a Japanese title gives a Japanese slug). Use it to set an ASCII slug, e.g. 'my-first-post'. WordPress may change it (for example, appending '-2' if the slug is already used); the result shows the actual slug"
                         }
                     },
                     "required": ["title", "content"]
@@ -3832,6 +3910,10 @@ impl McpHandler for WordPressHandler {
                             "type": "object",
                             "description": "Meta fields for SEO (e.g., _yoast_wpseo_metadesc, _yoast_wpseo_meta-robots-noindex, _yoast_wpseo_meta-robots-nofollow)",
                             "additionalProperties": {"type": "string"}
+                        },
+                        "slug": {
+                            "type": "string",
+                            "description": "URL slug (optional). If omitted, WordPress generates one from the title (a Japanese title gives a Japanese slug). Use it to set an ASCII slug, e.g. 'my-first-post'. WordPress may change it (for example, appending '-2' if the slug is already used); the result shows the actual slug"
                         }
                     },
                     "required": ["title", "content"]
@@ -3983,6 +4065,10 @@ impl McpHandler for WordPressHandler {
                             "description": "Post status. Defaults to 'draft' so nothing is published unintentionally. 'future' is not available because this tool has no date parameter.",
                             "enum": ["publish", "draft", "pending", "private"],
                             "default": "draft"
+                        },
+                        "slug": {
+                            "type": "string",
+                            "description": "URL slug (optional). If omitted, WordPress generates one from the title (a Japanese title gives a Japanese slug). Use it to set an ASCII slug, e.g. 'my-first-post'. WordPress may change it (for example, appending '-2' if the slug is already used); the result shows the actual slug"
                         }
                     },
                     "required": ["title", "content", "featured_media_id"]
@@ -4197,6 +4283,10 @@ impl McpHandler for WordPressHandler {
                         "featured_media_id": {
                             "type": "number",
                             "description": "Featured image media ID (optional)"
+                        },
+                        "slug": {
+                            "type": "string",
+                            "description": "URL slug (optional). If omitted, WordPress generates one from the title (a Japanese title gives a Japanese slug). Use it to set an ASCII slug, e.g. 'my-first-post'. WordPress may change it (for example, appending '-2' if the slug is already used); the result shows the actual slug"
                         }
                     },
                     "required": ["title", "content"]
@@ -4274,6 +4364,10 @@ impl McpHandler for WordPressHandler {
                         "featured_media_id": {
                             "type": "number",
                             "description": "Featured image media ID (optional)"
+                        },
+                        "slug": {
+                            "type": "string",
+                            "description": "New URL slug (optional, e.g. an ASCII slug for a post with a Japanese title). WordPress does not update the slug when the title changes. Changing the slug of a published post changes its URL"
                         }
                     },
                     "required": ["post_id"]
@@ -4349,6 +4443,10 @@ impl McpHandler for WordPressHandler {
                             "type": "array",
                             "items": {"type": "number"},
                             "description": "Tag IDs (posts only)"
+                        },
+                        "slug": {
+                            "type": "string",
+                            "description": "URL slug (optional). If omitted, WordPress generates one from the title (a Japanese title gives a Japanese slug). Use it to set an ASCII slug, e.g. 'my-first-post'. WordPress may change it (for example, appending '-2' if the slug is already used); the result shows the actual slug"
                         }
                     },
                     "required": ["title", "content"]
@@ -6184,6 +6282,246 @@ mod tests {
         assert_eq!(body["content"], serde_json::json!("<p>Body</p>"));
         assert_eq!(body["featured_media"], serde_json::json!(42));
         assert_eq!(body["status"], serde_json::json!("draft"));
+    }
+
+    #[test]
+    fn test_advanced_post_body_sends_slug_only_when_given() {
+        let body = advanced_post_body(PostCreateParams {
+            title: "こんにちは".to_string(),
+            slug: Some("hello".to_string()),
+            ..Default::default()
+        });
+        assert_eq!(body["slug"], serde_json::json!("hello"));
+
+        // 省略時は送らない（WordPressにタイトルから作らせる）
+        let body = advanced_post_body(PostCreateParams::default());
+        assert!(body.get("slug").is_none());
+    }
+
+    #[test]
+    fn test_optional_slug_arg() {
+        use serde_json::json;
+        let mut args = HashMap::new();
+        assert_eq!(optional_slug_arg(&args).unwrap(), None);
+
+        args.insert("slug".to_string(), json!(null));
+        assert_eq!(optional_slug_arg(&args).unwrap(), None);
+
+        args.insert("slug".to_string(), json!("  my-first-post "));
+        assert_eq!(
+            optional_slug_arg(&args).unwrap().as_deref(),
+            Some("my-first-post")
+        );
+
+        // 空文字列はWordPressでは「自動生成に戻す」意味になるため拒否する
+        args.insert("slug".to_string(), json!("   "));
+        assert!(matches!(
+            optional_slug_arg(&args),
+            Err(McpError::InvalidParams(_))
+        ));
+
+        args.insert("slug".to_string(), json!(123));
+        assert!(matches!(
+            optional_slug_arg(&args),
+            Err(McpError::InvalidParams(_))
+        ));
+    }
+
+    #[test]
+    fn test_post_slug_label() {
+        let post_with_slug = |slug: Option<&str>| -> WordPressPost {
+            serde_json::from_value(serde_json::json!({
+                "id": 1,
+                "slug": slug,
+                "status": "draft",
+                "title": {"rendered": ""},
+                "content": {"rendered": ""}
+            }))
+            .unwrap()
+        };
+
+        assert_eq!(post_slug_label(&post_with_slug(Some("hello"))), "hello");
+        // 日本語のスラッグはパーセントエンコードされて返るのでデコードする
+        assert_eq!(
+            post_slug_label(&post_with_slug(Some("%e3%83%86%e3%82%b9%e3%83%88"))),
+            "テスト"
+        );
+        // スラッグ未指定の下書きは空文字列で返る
+        assert!(post_slug_label(&post_with_slug(Some(""))).starts_with("none"));
+        assert!(post_slug_label(&post_with_slug(None)).starts_with("none"));
+    }
+
+    /// 受けたリクエストの本文を記録し、決まった応答を返すHTTPサーバー
+    async fn spawn_body_capturing_server(
+        body: String,
+    ) -> (String, Arc<tokio::sync::Mutex<Vec<String>>>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let captured = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let server_captured = captured.clone();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    return;
+                };
+                let body = body.clone();
+                let captured = server_captured.clone();
+                tokio::spawn(async move {
+                    let mut buf = Vec::new();
+                    let mut chunk = [0u8; 4096];
+                    let header_end = loop {
+                        if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                            break pos + 4;
+                        }
+                        match socket.read(&mut chunk).await {
+                            Ok(0) | Err(_) => return,
+                            Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                        }
+                    };
+                    let headers = String::from_utf8_lossy(&buf[..header_end]).to_lowercase();
+                    let content_length = headers
+                        .lines()
+                        .find_map(|l| l.strip_prefix("content-length:"))
+                        .and_then(|v| v.trim().parse::<usize>().ok())
+                        .unwrap_or(0);
+                    while buf.len() < header_end + content_length {
+                        match socket.read(&mut chunk).await {
+                            Ok(0) | Err(_) => return,
+                            Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                        }
+                    }
+                    captured.lock().await.push(
+                        String::from_utf8_lossy(&buf[header_end..header_end + content_length])
+                            .to_string(),
+                    );
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    let _ = socket.write_all(response.as_bytes()).await;
+                    let _ = socket.shutdown().await;
+                });
+            }
+        });
+        (format!("http://{}", addr), captured)
+    }
+
+    fn post_response_json(slug: &str) -> String {
+        serde_json::json!({
+            "id": 7,
+            "slug": slug,
+            "status": "draft",
+            "type": "post",
+            "title": {"rendered": "テスト"},
+            "content": {"rendered": "<p>本文</p>"}
+        })
+        .to_string()
+    }
+
+    fn tool_text(result: &serde_json::Value) -> &str {
+        result["content"][0]["text"].as_str().unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_update_post_tool_sends_slug_and_shows_actual_slug() {
+        let (base_url, captured) =
+            spawn_body_capturing_server(post_response_json("my-first-post")).await;
+        let handler = handler_for_local_server(base_url);
+
+        let args: HashMap<String, serde_json::Value> = [
+            ("post_id".to_string(), serde_json::json!(7)),
+            ("slug".to_string(), serde_json::json!("my-first-post")),
+        ]
+        .into_iter()
+        .collect();
+        let result = handler
+            .call_tool(ToolCallParams {
+                name: "update_post".to_string(),
+                arguments: Some(args),
+            })
+            .await
+            .unwrap();
+
+        let bodies = captured.lock().await;
+        assert_eq!(bodies.len(), 1);
+        let sent: serde_json::Value = serde_json::from_str(&bodies[0]).unwrap();
+        // スラッグだけを送り、タイトル・本文等は送らない
+        assert_eq!(sent, serde_json::json!({"slug": "my-first-post"}));
+        assert!(tool_text(&result).contains("Slug: my-first-post"));
+    }
+
+    #[tokio::test]
+    async fn test_create_post_tools_send_slug() {
+        for (tool, extra) in [
+            ("create_post", None),
+            ("create_advanced_post", None),
+            (
+                "create_post_with_featured_image",
+                Some(("featured_media_id", 5)),
+            ),
+            ("create_post_with_categories_tags", None),
+            ("create_post_with_embeds", None),
+        ] {
+            // WordPressが重複を避けて変えた、実際のスラッグを表示すること
+            let (base_url, captured) =
+                spawn_body_capturing_server(post_response_json("hello-2")).await;
+            let handler = handler_for_local_server(base_url);
+
+            let mut args: HashMap<String, serde_json::Value> = [
+                ("title".to_string(), serde_json::json!("こんにちは")),
+                ("content".to_string(), serde_json::json!("本文")),
+                ("slug".to_string(), serde_json::json!("hello")),
+            ]
+            .into_iter()
+            .collect();
+            if let Some((key, value)) = extra {
+                args.insert(key.to_string(), serde_json::json!(value));
+            }
+
+            let result = handler
+                .call_tool(ToolCallParams {
+                    name: tool.to_string(),
+                    arguments: Some(args),
+                })
+                .await
+                .unwrap_or_else(|e| panic!("{} failed: {:?}", tool, e));
+
+            let bodies = captured.lock().await;
+            assert_eq!(bodies.len(), 1, "{}", tool);
+            let sent: serde_json::Value = serde_json::from_str(&bodies[0]).unwrap();
+            assert_eq!(sent["slug"], serde_json::json!("hello"), "{}", tool);
+            assert!(
+                tool_text(&result).contains("Slug: hello-2"),
+                "{}: {}",
+                tool,
+                tool_text(&result)
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_post_tools_declare_slug_argument() {
+        let handler = handler_for_local_server("http://127.0.0.1:1".to_string());
+        let tools = handler.list_tools().await.unwrap();
+        for name in [
+            "create_post",
+            "create_advanced_post",
+            "create_post_with_featured_image",
+            "create_post_with_categories_tags",
+            "create_post_with_embeds",
+            "update_post",
+        ] {
+            let tool = tools.iter().find(|t| t.name == name).unwrap();
+            assert_eq!(
+                tool.input_schema["properties"]["slug"]["type"],
+                serde_json::json!("string"),
+                "{}",
+                name
+            );
+        }
     }
 
     #[test]

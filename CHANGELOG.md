@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- 投稿・固定ページを作成・更新するツールに`slug`引数を追加（#398）。
+  日本語のタイトルの記事に、英語のスラッグを付けられる。これまでは
+  WordPressがタイトルから日本語のスラッグを作り、管理画面で1件ずつ
+  変更する必要があった
+  - 対象: `create_post`・`create_advanced_post`・
+    `create_post_with_featured_image`・`create_post_with_categories_tags`・
+    `create_post_with_embeds`・`update_post`
+  - 省略時はこれまでどおりWordPressがタイトルから作る。空文字列は
+    受け付けない
+  - 結果には、WordPressが実際に設定したスラッグを表示する（重複時の
+    `-2`等）。`get_post`の表示にもスラッグを追加した
+  - **ライブラリの変更**: `PostCreateParams`・`PostUpdateParams`に
+    `slug`フィールドを追加した。構造体を`..Default::default()`なしで
+    組み立てている場合は、`slug: None`の追加が必要
+
 ## [0.18.2] - 2026-11-07
 
 ### Removed

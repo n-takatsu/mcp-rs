@@ -116,6 +116,7 @@ Create a new WordPress post (basic version).
 **Parameters:**
 - `title` (string): Post title
 - `content` (string): Post content (HTML supported)
+- `slug` (string, optional): URL slug, for example an English slug for a post with a Japanese title. If omitted, WordPress generates one from the title. See [Slugs](#slugs)
 
 **Example Usage:**
 
@@ -144,6 +145,7 @@ Create a new WordPress post or page with advanced options.
 - `tags` (array, optional): Tag IDs (posts only)
 - `featured_media_id` (number, optional): Featured image media ID
 - `meta` (object, optional): Meta fields for SEO (e.g., Yoast SEO fields)
+- `slug` (string, optional): URL slug, for example an English slug for a post with a Japanese title. If omitted, WordPress generates one from the title. See [Slugs](#slugs)
 
 **Example Usage:**
 
@@ -180,6 +182,7 @@ Create a post or page with embedded YouTube videos and social media content appe
 - `status` (string, optional): `publish`, `draft`, `pending`, or `private`. Defaults to `draft`. `future` (scheduled) is not available because this tool has no date parameter
 - `categories` (array of numbers, optional): Category IDs (posts only)
 - `tags` (array of numbers, optional): Tag IDs (posts only)
+- `slug` (string, optional): URL slug, for example an English slug for a post with a Japanese title. If omitted, WordPress generates one from the title. See [Slugs](#slugs)
 
 **Example Usage:**
 
@@ -208,6 +211,7 @@ Update an existing WordPress post.
 - `tags` (array, optional): New tag IDs
 - `featured_media_id` (number, optional): New featured image ID
 - `meta` (object, optional): New meta fields
+- `slug` (string, optional): New URL slug. WordPress does not change the slug when the title changes. See [Slugs](#slugs)
 
 **Example Usage:**
 
@@ -231,6 +235,40 @@ Delete a WordPress post.
 **Parameters:**
 - `post_id` (number): ID of the post to delete
 - `force` (boolean, optional): Permanently delete (true) or move to trash (false) [default: false]
+
+### Slugs
+
+The post creation tools and `update_post` accept an optional `slug`. Without it, WordPress generates the slug from the title, so a Japanese title gives a Japanese slug (percent-encoded in the URL). To use an English slug, pass it when creating the post:
+
+```json
+{
+  "tool": "create_post",
+  "arguments": {
+    "title": "はじめての投稿",
+    "content": "<p>本文</p>",
+    "slug": "my-first-post"
+  }
+}
+```
+
+Or change the slug of an existing post or page. Only the slug is changed:
+
+```json
+{
+  "tool": "update_post",
+  "arguments": {
+    "post_id": 123,
+    "slug": "my-first-post"
+  }
+}
+```
+
+Notes:
+
+- WordPress may change the slug you pass. It removes characters that cannot be used in a URL, and appends `-2` and so on if another post already uses the slug. The tool result shows the actual slug, for example `Slug: my-first-post-2`
+- For a draft, WordPress keeps the slug as given and makes it unique when the post is published
+- Changing the slug of a published post changes its URL. Whether the old URL redirects depends on WordPress and your plugins; mcp-rs does not set up redirects
+- An empty `slug` is rejected. Omit `slug` to leave it unchanged
 
 ## Content Retrieval
 
@@ -259,6 +297,8 @@ Retrieve a single WordPress post or page by ID, with its full content (not trunc
   - `text`: Plain text with tags removed
 
 For a password-protected post read without edit permission, WordPress hides the content, and the output includes a note not to treat the content as empty.
+
+The output has a `Slug:` line with the post's URL slug (a Japanese slug is shown decoded). A draft created without a slug shows `none`, because WordPress generates the slug when the post is published.
 
 The output also has a `Featured Media:` line with the featured image's media ID and URL, for example `Featured Media: 123 (https://example.com/wp-content/uploads/photo.png)`. It shows `none` when no featured image is set. If the media item cannot be fetched, only the ID is shown.
 
@@ -366,6 +406,7 @@ Create a post with a featured image in one operation.
 - `content` (string): Post content
 - `featured_media_id` (number): Media ID from uploaded image
 - `status` (string, optional): `publish`, `draft`, `pending`, or `private`. Defaults to `draft`. `future` (scheduled) is not available because this tool has no date parameter
+- `slug` (string, optional): URL slug, for example an English slug for a post with a Japanese title. If omitted, WordPress generates one from the title. See [Slugs](#slugs)
 
 ### `set_featured_image`
 
@@ -413,6 +454,7 @@ Update an existing WordPress post with comprehensive options.
 - `categories` (array, optional): Array of category IDs
 - `tags` (array, optional): Array of tag IDs
 - `featured_media_id` (number, optional): Featured image media ID
+- `slug` (string, optional): New URL slug. WordPress does not change the slug when the title changes. See [Slugs](#slugs)
 
 **Example Usage:**
 
@@ -631,6 +673,7 @@ Create a new WordPress post with categories and tags.
 - `categories` (array, optional): Array of category IDs
 - `tags` (array, optional): Array of tag IDs
 - `featured_media_id` (number, optional): Featured image media ID
+- `slug` (string, optional): URL slug, for example an English slug for a post with a Japanese title. If omitted, WordPress generates one from the title. See [Slugs](#slugs)
 
 **Example Usage:**
 
