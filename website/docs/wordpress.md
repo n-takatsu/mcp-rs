@@ -44,7 +44,7 @@ MCP-RS provides comprehensive WordPress integration through the WordPress REST A
 - **File Upload**: Upload images, documents, and media files
 - **Featured Images**: Set and manage post featured images
 - **Multiple Formats**: Support for JPEG, PNG, GIF, PDF, and more
-- **Base64 Processing**: Handle base64-encoded file data
+- **Base64 or Local Files**: Upload base64-encoded data, or a local file from an allowed folder (`upload_allowed_dirs`)
 
 ## 🔐 Security
 
@@ -89,6 +89,13 @@ enabled = true
 To keep the Application Password out of the config file in plaintext, use `encrypted_credentials` instead of `password`. See [Encrypted WordPress Credentials](../security/#encrypted-wordpress-credentials).
 
 When `enabled = true`, either `username`/`password` or `encrypted_credentials` must be set, otherwise startup fails.
+
+To let `upload_media` read local files with `file_path`, list the folders it may read from. It is disabled when the list is empty (the default). Startup fails if a listed folder does not exist.
+
+```toml
+[handlers.wordpress]
+upload_allowed_dirs = ["C:/Users/me/Pictures/blog"]
+```
 
 ## Setting up Application Passwords
 
@@ -261,12 +268,19 @@ The output also has a `Featured Media:` line with the featured image's media ID 
 
 Upload a media file to WordPress media library.
 
-**Parameters:**
+**Parameters:** Pass either `file_data` or `file_path`, not both.
 - `file_data` (string): Base64-encoded file data
-- `filename` (string): Original filename. Its extension must match `mime_type` (e.g., `photo.jpg` for `image/jpeg`)
-- `mime_type` (string): MIME type. Must be one of the [supported file types](#supported-file-types)
+- `file_path` (string): Absolute path of a file on the machine running mcp-rs. Disabled unless [`upload_allowed_dirs`](#configuration) is set
+- `filename` (string): Original filename. Its extension must match `mime_type` (e.g., `photo.jpg` for `image/jpeg`). Required with `file_data`. With `file_path`, defaults to the file's name
+- `mime_type` (string): MIME type. Must be one of the [supported file types](#supported-file-types). Required with `file_data`. With `file_path`, defaults to the type for the file's extension
 
-The upload is rejected before anything is sent to WordPress if the MIME type is not supported, the extension does not match the MIME type, the file content does not match the MIME type, the filename contains path separators or control characters, or the file is too large.
+The upload is rejected before anything is sent to WordPress if the MIME type is not supported, the extension does not match the MIME type, the file content does not match the MIME type, the filename contains path separators or control characters, or the file is too large. These checks apply to `file_path` too, so files other than the supported types (such as `.env`) cannot be sent even from an allowed folder.
+
+**`file_path` restrictions:**
+- The path must be absolute
+- The file must be inside one of the `upload_allowed_dirs` folders. The check uses the resolved path, so `..` and symbolic links (or junctions on Windows) cannot point outside them
+- A path outside the allowed folders and a file that does not exist give the same error, so the error does not reveal which files exist elsewhere
+- With STDIO (Claude Code, Claude Desktop), mcp-rs runs on the same machine as the client, so it reads the client's local files. Over HTTP/WebSocket, the client may be on another machine, and the files are read from the server. mcp-rs logs a warning at startup in that case
 
 **Example Usage:**
 
@@ -280,6 +294,17 @@ The upload is rejected before anything is sent to WordPress if the MIME type is 
   }
 }
 
+```
+
+With `file_path` (`filename` and `mime_type` are taken from the file):
+
+```json
+{
+  "tool": "upload_media",
+  "arguments": {
+    "file_path": "C:/Users/me/Pictures/blog/hero-image.png"
+  }
+}
 ```
 
 ### `get_media`
@@ -876,7 +901,7 @@ The following are intentionally not supported:
 - **Office documents (.doc, .docx, etc.)**: the content can only be identified as a ZIP archive
 - **QuickTime (.mov)**: the order of its leading data is not fixed, so it cannot be identified reliably
 
-**Size limits**: files larger than 10 MiB are rejected. In practice, the transport's message size limit (1 MiB by default for STDIO and HTTP, including the roughly 33% base64 overhead) applies first. WordPress's own limits (`upload_max_filesize` and `post_max_size`) also apply.
+**Size limits**: files larger than 10 MiB are rejected. With `file_data`, the transport's message size limit (1 MiB by default for STDIO and HTTP, including the roughly 33% base64 overhead) usually applies first. `file_path` is not affected by that limit. WordPress's own limits (`upload_max_filesize` and `post_max_size`) also apply.
 
 ## Performance Optimization
 

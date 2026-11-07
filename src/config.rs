@@ -264,6 +264,12 @@ pub struct WordPressConfig {
     pub rate_limit: Option<RateLimitConfig>,
     /// 暗号化された認証情報（オプション）
     pub encrypted_credentials: Option<EncryptedCredentials>,
+    /// `upload_media`の`file_path`で読み込みを許可するフォルダ。空（既定）
+    /// なら`file_path`は使えない。mcp-rsが動いているマシン上のファイルを
+    /// 読んでWordPressへ送る機能のため、明示的に許可したフォルダの中だけに
+    /// 限定する（起動時に存在しないフォルダが指定されていればエラー）。
+    #[serde(default)]
+    pub upload_allowed_dirs: Vec<String>,
 }
 
 // Debugトレイトでパスワードを露出しないようにカスタム実装
@@ -278,6 +284,7 @@ impl fmt::Debug for WordPressConfig {
             .field("timeout_seconds", &self.timeout_seconds)
             .field("rate_limit", &self.rate_limit)
             .field("encrypted_credentials", &self.encrypted_credentials)
+            .field("upload_allowed_dirs", &self.upload_allowed_dirs)
             .finish()
     }
 }
@@ -330,6 +337,7 @@ impl WordPressConfig {
             timeout_seconds,
             rate_limit,
             encrypted_credentials: Some(encrypted_credentials),
+            upload_allowed_dirs: Vec::new(),
         })
     }
 
@@ -673,6 +681,7 @@ impl McpConfig {
                     timeout_seconds: Some(30),
                     rate_limit: Some(RateLimitConfig::default()),
                     encrypted_credentials: None, // 環境変数では平文使用
+                    upload_allowed_dirs: Vec::new(),
                 });
             } else if let Some(ref mut wp_config) = final_config.handlers.wordpress {
                 wp_config.url = wp_url;
@@ -778,6 +787,7 @@ impl McpConfig {
                     timeout_seconds: Some(30),
                     rate_limit: Some(RateLimitConfig::default()),
                     encrypted_credentials: None, // デフォルトでは平文
+                    upload_allowed_dirs: Vec::new(),
                 }),
             },
             plugins: Some(PluginsConfig {
@@ -1228,6 +1238,7 @@ mod additional_tests {
             timeout_seconds: Some(30),
             rate_limit: Some(RateLimitConfig::default()),
             encrypted_credentials: None,
+            upload_allowed_dirs: Vec::new(),
         };
 
         let debug_output = format!("{:?}", config);
@@ -1255,6 +1266,7 @@ mod additional_tests {
             timeout_seconds: Some(30),
             rate_limit: Some(RateLimitConfig::default()),
             encrypted_credentials: Some(encrypted),
+            upload_allowed_dirs: Vec::new(),
         };
 
         // マスターパスワード環境変数が無い場合はエラーになり、
@@ -1292,6 +1304,7 @@ mod additional_tests {
             timeout_seconds: Some(30),
             rate_limit: Some(RateLimitConfig::default()),
             encrypted_credentials: None,
+            upload_allowed_dirs: Vec::new(),
         };
 
         config.resolve_encrypted_credentials().unwrap();
@@ -1314,6 +1327,7 @@ mod additional_tests {
             timeout_seconds: Some(30),
             rate_limit: Some(RateLimitConfig::default()),
             encrypted_credentials: None,
+            upload_allowed_dirs: Vec::new(),
         };
 
         assert!(config.resolve_encrypted_credentials().is_err());
@@ -1332,6 +1346,7 @@ mod additional_tests {
             timeout_seconds: Some(30),
             rate_limit: Some(RateLimitConfig::default()),
             encrypted_credentials: None,
+            upload_allowed_dirs: Vec::new(),
         };
 
         config.resolve_encrypted_credentials().unwrap();
@@ -1351,6 +1366,7 @@ mod additional_tests {
             timeout_seconds: Some(30),
             rate_limit: Some(RateLimitConfig::default()),
             encrypted_credentials: None,
+            upload_allowed_dirs: Vec::new(),
         };
 
         config.resolve_encrypted_credentials().unwrap();

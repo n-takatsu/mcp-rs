@@ -365,6 +365,7 @@ impl ConfigSwitcher {
                 timeout_seconds: Some(30),
                 rate_limit: Some(crate::config::RateLimitConfig::default()),
                 encrypted_credentials: None,
+                upload_allowed_dirs: Vec::new(),
             });
         }
 

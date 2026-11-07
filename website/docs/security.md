@@ -46,6 +46,7 @@ MCP-RS implements comprehensive security measures designed for production enviro
 - **Advanced Input Validation**: Custom rule engine with real-time validation
 - **HTML Sanitization**: Safe HTML processing with whitelist filtering
 - **Media Upload Validation**: `upload_media` checks the MIME type against an allowlist, requires the filename extension to match it, verifies the file content by its magic number, and enforces a size limit (see [WordPress Integration](../wordpress/#supported-file-types))
+- **Local File Upload Restrictions**: `upload_media` reads local files (`file_path`) only from folders listed in `upload_allowed_dirs`, and is disabled by default. Paths are resolved before the check, so `..` and symbolic links cannot escape those folders
 
 ## ✅ Layer 5: Application Security
 

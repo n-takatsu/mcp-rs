@@ -14,6 +14,7 @@ mod security_tests {
             timeout_seconds: Some(30),
             rate_limit: Some(RateLimitConfig::default()),
             encrypted_credentials: None,
+            upload_allowed_dirs: Vec::new(),
         };
 
         let result = WordPressHandler::try_new(insecure_config);
@@ -34,6 +35,7 @@ mod security_tests {
             timeout_seconds: Some(30),
             rate_limit: Some(RateLimitConfig::default()),
             encrypted_credentials: None,
+            upload_allowed_dirs: Vec::new(),
         };
 
         let result = WordPressHandler::try_new(secure_config);
@@ -51,6 +53,7 @@ mod security_tests {
             timeout_seconds: Some(30),
             rate_limit: Some(RateLimitConfig::default()),
             encrypted_credentials: None,
+            upload_allowed_dirs: Vec::new(),
         };
 
         // この場合は失敗する（小文字のhttps://のみを受け入れる）
@@ -79,6 +82,7 @@ mod security_tests {
                 timeout_seconds: Some(30),
                 rate_limit: Some(RateLimitConfig::default()),
                 encrypted_credentials: None,
+                upload_allowed_dirs: Vec::new(),
             };
 
             let result = WordPressHandler::try_new(config);
@@ -96,6 +100,7 @@ mod security_tests {
             timeout_seconds: Some(30),
             rate_limit: Some(RateLimitConfig::default()),
             encrypted_credentials: None,
+            upload_allowed_dirs: Vec::new(),
         };
 
         let result = WordPressHandler::try_new(config);
