@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::mcp::{
     InitializeParams, JsonRpcRequest, JsonRpcResponse, McpError, Resource, ResourceReadParams,
@@ -108,7 +108,9 @@ impl McpServer {
             }
 
             let response = match Self::process_request(&line, &handlers).await {
-                Ok(resp) => resp,
+                Ok(Some(resp)) => resp,
+                // 通知（idなし）には応答しない（JSON-RPC 2.0）
+                Ok(None) => continue,
                 Err(e) => {
                     warn!("Error processing request: {}", e);
                     continue;
@@ -123,11 +125,19 @@ impl McpServer {
         Ok(())
     }
 
+    /// 1行分のJSON-RPCメッセージを処理する。通知（`id`なし）の場合は
+    /// `Ok(None)`を返し、呼び出し元は何も書き出さない。JSON-RPC 2.0では
+    /// サーバーは通知に応答してはならない（#360）。
     async fn process_request(
         line: &str,
         handlers: &HashMap<String, Arc<dyn McpHandler>>,
-    ) -> Result<JsonRpcResponse, McpError> {
+    ) -> Result<Option<JsonRpcResponse>, McpError> {
         let request: JsonRpcRequest = serde_json::from_str(line.trim())?;
+
+        if request.id.is_none() {
+            Self::handle_notification(&request.method);
+            return Ok(None);
+        }
 
         // 注意: ここで `?` を使って早期returnしてはいけない。そうすると
         // request.id を失い、クライアントには何の応答も返らないまま接続が
@@ -211,19 +221,36 @@ impl McpServer {
             _ => Err(McpError::InvalidMethod(request.method.clone())),
         };
 
-        match result {
-            Ok(result) => Ok(JsonRpcResponse {
+        Ok(Some(match result {
+            Ok(result) => JsonRpcResponse {
                 jsonrpc: "2.0".to_string(),
                 result: Some(result),
                 error: None,
                 id: request.id,
-            }),
-            Err(e) => Ok(JsonRpcResponse {
+            },
+            Err(e) => JsonRpcResponse {
                 jsonrpc: "2.0".to_string(),
                 result: None,
                 error: Some(e.into()),
                 id: request.id,
-            }),
+            },
+        }))
+    }
+
+    /// 通知を受け取る。現状、サーバー側で対応が必要な通知はないため
+    /// 記録のみ行う。
+    ///
+    /// `tools/call`等のリクエスト用のmethodが`id`なしで届いた場合も実行
+    /// しない。MCPではリクエストに`id`が必須で、結果を返せないまま
+    /// 投稿の削除等の副作用だけが起きるのを避けるため。
+    fn handle_notification(method: &str) {
+        if method.starts_with("notifications/") {
+            debug!("Received notification: {}", method);
+        } else {
+            warn!(
+                "Ignored '{}' without an id: MCP requests require an id, and notifications get no response",
+                method
+            );
         }
     }
 
@@ -246,7 +273,9 @@ impl McpServer {
             }
 
             let response = match Self::process_request(&line, &self.handlers).await {
-                Ok(resp) => resp,
+                Ok(Some(resp)) => resp,
+                // 通知（idなし）には応答しない（JSON-RPC 2.0）
+                Ok(None) => continue,
                 Err(e) => {
                     error!("Error processing request: {}", e);
                     continue;
@@ -363,7 +392,8 @@ mod tests {
 
         let response = McpServer::process_request(&line, &handlers_with_mock())
             .await
-            .unwrap();
+            .unwrap()
+            .expect("a request with an id must get a response");
 
         assert!(response.error.is_none(), "expected success, got error");
         assert_eq!(response.id, Some(serde_json::json!(1)));
@@ -384,7 +414,8 @@ mod tests {
 
         let response = McpServer::process_request(&line, &handlers_with_mock())
             .await
-            .unwrap();
+            .unwrap()
+            .expect("a request with an id must get a response");
 
         assert!(response.error.is_some());
         assert_eq!(response.id, Some(serde_json::json!(42)));
@@ -402,7 +433,8 @@ mod tests {
 
         let response = McpServer::process_request(&line, &handlers_with_mock())
             .await
-            .unwrap();
+            .unwrap()
+            .expect("a request with an id must get a response");
 
         assert!(response.error.is_some());
         assert_eq!(response.id, Some(serde_json::json!(7)));
@@ -426,7 +458,8 @@ mod tests {
 
         let response = McpServer::process_request(&line, &handlers_with_failing_tool())
             .await
-            .unwrap();
+            .unwrap()
+            .expect("a request with an id must get a response");
 
         // JSON-RPCレベルでは成功（errorフィールドが無い）
         assert!(
@@ -440,5 +473,72 @@ mod tests {
         let text = result["content"][0]["text"].as_str().unwrap();
         assert!(text.contains("rest_post_invalid_id"));
         assert!(text.contains("404"));
+    }
+
+    #[tokio::test]
+    async fn test_notifications_get_no_response() {
+        // #360: クライアントが初期化後に送るnotifications/initialized等に、
+        // 以前は-32601のエラー応答（"id":null）を返していた。
+        for method in [
+            "notifications/initialized",
+            "notifications/cancelled",
+            "notifications/progress",
+            "notifications/unknown-future-notification",
+        ] {
+            let line = serde_json::json!({ "jsonrpc": "2.0", "method": method }).to_string();
+            let response = McpServer::process_request(&line, &handlers_with_mock())
+                .await
+                .unwrap();
+            assert!(response.is_none(), "{method} must not get a response");
+        }
+    }
+
+    /// `tools/call`等のmethodが`id`なしで届いても、ツールを実行せず、
+    /// 応答も返さない。
+    struct PanickingToolMockHandler;
+
+    #[async_trait]
+    impl McpHandler for PanickingToolMockHandler {
+        async fn initialize(
+            &self,
+            _params: InitializeParams,
+        ) -> Result<serde_json::Value, McpError> {
+            panic!("initialize must not run for a notification")
+        }
+
+        async fn list_tools(&self) -> Result<Vec<Tool>, McpError> {
+            panic!("list_tools must not run for a notification")
+        }
+
+        async fn call_tool(&self, _params: ToolCallParams) -> Result<serde_json::Value, McpError> {
+            panic!("call_tool must not run for a notification")
+        }
+
+        async fn list_resources(&self) -> Result<Vec<Resource>, McpError> {
+            panic!("list_resources must not run for a notification")
+        }
+
+        async fn read_resource(
+            &self,
+            _params: ResourceReadParams,
+        ) -> Result<serde_json::Value, McpError> {
+            panic!("read_resource must not run for a notification")
+        }
+    }
+
+    #[tokio::test]
+    async fn test_request_method_without_id_is_not_executed() {
+        let mut handlers: HashMap<String, Arc<dyn McpHandler>> = HashMap::new();
+        handlers.insert("mock".to_string(), Arc::new(PanickingToolMockHandler));
+
+        let line = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "tools/call",
+            "params": { "name": "delete_post", "arguments": { "post_id": 1 } }
+        })
+        .to_string();
+
+        let response = McpServer::process_request(&line, &handlers).await.unwrap();
+        assert!(response.is_none());
     }
 }

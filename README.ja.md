@@ -4,14 +4,14 @@
 
 > **[日本語](README.ja.md)** | **[English](README.md)**
 
-[![Version](https://img.shields.io/badge/Version-v0.18.0-blue)](https://github.com/n-takatsu/mcp-rs/releases/tag/v0.18.0)
+[![Version](https://img.shields.io/badge/Version-v0.18.1-blue)](https://github.com/n-takatsu/mcp-rs/releases/tag/v0.18.1)
 ![Architecture](https://img.shields.io/badge/Architecture-Production--Ready-green)
-![Implementation](https://img.shields.io/badge/WordPress_Tools-27_Available-green)
+![Implementation](https://img.shields.io/badge/WordPress_Tools-32_Available-green)
 ![License](https://img.shields.io/badge/License-MIT%2FApache--2.0-green)
 
 ## 概要
 
-`mcp-rs` は、**包括的で実戦テスト済み**の MCP（Model Context Protocol）の Rust 実装で、**完全な WordPress 統合**を提供します。レイヤード・アーキテクチャで構築され、AI エージェントが標準化された JSON-RPC インターフェースを通じて高度なコンテンツ管理を実行できるようにします。このフレームワークは 27 の WordPress ツール、エンタープライズレベルのセキュリティ、強力な型安全性を備え、GitHub Copilot や他の AI コーディングアシスタントでの本番利用に最適化されています。
+`mcp-rs` は、**包括的で実戦テスト済み**の MCP（Model Context Protocol）の Rust 実装で、**完全な WordPress 統合**を提供します。レイヤード・アーキテクチャで構築され、AI エージェントが標準化された JSON-RPC インターフェースを通じて高度なコンテンツ管理を実行できるようにします。このフレームワークは 32 の WordPress ツール、エンタープライズレベルのセキュリティ、強力な型安全性を備え、GitHub Copilot や他の AI コーディングアシスタントでの本番利用に最適化されています。
 
 ## 🎯 対象ユーザー
 
@@ -25,7 +25,7 @@ Claude Desktop アプリ、GPT 統合、カスタム AI エージェントを構
 
 ## **DevOps エンジニア** ⚙️
 
-WordPress 運用を自動化していますか？包括的なヘルスチェック、監視、本番対応のエラーハンドリングを備えた 27 の実戦テスト済みツールを利用できます。
+WordPress 運用を自動化していますか？包括的なヘルスチェック、監視、本番対応のエラーハンドリングを備えた 32 の実戦テスト済みツールを利用できます。
 
 ## **Rust 愛好者** 🦀
 
@@ -46,14 +46,15 @@ WordPress セキュリティ自動化が必要ですか？SQL インジェクシ
 - **本番対応エラーハンドリング**: 構造化ログを備えた包括的なエラータイプ
 - **Async/Await**: 高性能非同期操作のための `tokio` ベース
 
-## **WordPress 統合（27 ツール）**
+## **WordPress 統合（32 ツール）**
 
-- **投稿・固定ページ管理**: SEO 統合を含む完全な CRUD 操作
-- **高度なメディア管理**: base64 サポート付きのアップロード、リサイズ、整理
-- **カテゴリ・タグ管理**: 一括操作を伴う階層サポート
-- **コメントシステム**: 完全なコメント管理と取得
+- **投稿・固定ページ管理**: 作成・取得（編集用の原文を全文）・更新・削除。SEO メタデータと予約投稿に対応
+- **メディア管理**: base64 でのアップロード（形式・拡張子・内容を検証）、一覧、メタデータ更新、削除、アイキャッチ画像の設定
+- **カテゴリ・タグ管理**: 作成・更新・削除。カテゴリの階層に対応
+- **コメント**: コメントの取得
 - **YouTube・ソーシャル埋め込み**: セキュリティ検証付きリッチメディア統合
-- **ユーザー管理**: ロールベースアクセス制御とユーザー操作
+- **サイト設定**: サイト設定とフロントページ設定の取得・更新
+- **ヘルスチェック**: 接続・認証・権限・メディアアップロード可否の確認
 
 ### ライブデモサイト
 
@@ -113,84 +114,62 @@ cargo run -- --config configs/development/http-transport.toml
 
 > 📖 詳細な設定については [Claude Desktop 統合ガイド](./project-docs/CLAUDE_DESKTOP_INTEGRATION.md) をご覧ください。
 
-### オプション 1: 対話式設定（推奨）
+### Claude Code
+
+Claude Code も STDIO で mcp-rs と通信し、同じ設定ファイルを使います。mcp-rs をビルドしてから、絶対パスで登録します。`--` より後ろが mcp-rs の起動コマンドです。
 
 ```bash
-
-## リポジトリをクローン
-
-git clone https://github.com/n-takatsu/mcp-rs.git
-cd mcp-rs
-
-## リリース版をビルド
-
 cargo build --release
 
-## 対話式設定セットアップを実行
-
-./target/release/mcp-rs --setup-config
+claude mcp add mcp-rs --scope user \
+  -e WORDPRESS_URL=https://your-wordpress-site.com \
+  -e WORDPRESS_USERNAME=your_username \
+  -e WORDPRESS_PASSWORD="your application password" \
+  -- /path/to/mcp-rs/target/release/mcp-rs --config /path/to/mcp-rs/configs/production/claude-desktop.toml
 ```
 
-対話式設定の特徴:
+接続は `claude mcp list`、または Claude Code 内の `/mcp` で確認できます。`-e` で渡した値は Claude Code の設定に保存されるため、実際の認証情報で `--scope project`（共有される `.mcp.json` に書き込まれる）を使わないでください。
 
-- 📝 ユーザーフレンドリーな質問形式
-- 🔍 リアルタイム接続テスト
-- ⚡ 自動設定ファイル生成
-- 🛡️ セキュリティ設定の推奨
+> 📖 `.mcp.json` での登録、認証情報の暗号化、トラブルシューティングは [Claude Code 統合ガイド](./project-docs/CLAUDE_CODE_INTEGRATION.md) をご覧ください。
 
-### オプション 2: 手動設定
+### セットアップ
 
 ```bash
-
-## サンプル設定ファイルを生成
-
-./target/release/mcp-rs --generate-config
-
-## 設定を編集
-
-cp mcp-config.toml.example mcp-config.toml
-
-## mcp-config.toml を WordPress の詳細で編集
-
-## カスタム設定で実行
-
-./target/release/mcp-rs --config mcp-config.toml
+git clone https://github.com/n-takatsu/mcp-rs.git
+cd mcp-rs
+cargo build --release
 ```
+
+ビルドしたら、設定ファイルを指定して起動します。すぐに使える設定ファイルが`configs/production/`にあります。
+
+- `claude-desktop.toml`: STDIO用（Claude Desktop・Claude Code）。WordPressの接続情報は、環境変数`WORDPRESS_URL`・`WORDPRESS_USERNAME`・`WORDPRESS_PASSWORD`から読み込みます
+- `web-ui.toml`: HTTP用（Webクライアント）
+
+```bash
+./target/release/mcp-rs --config configs/production/claude-desktop.toml
+```
+
+設定ファイルを自分で書く場合は、次の最小構成から始めてください。
 
 ## 基本設定
 
 `mcp-config.toml` を作成:
 
 ```toml
-[handlers.wordpress]
-url = "https://your-wordpress-site.com"
-username = "your-username"
-password = "your-application-password"
-enabled = true
-
-## WordPress アプリケーションパスワード
+[transport]
+type = "stdio"          # HTTPモードは "http"（[transport.http] を参照）
 
 [server]
-stdio = true
+log_level = "warn"      # STDIOモードでは、ログは標準出力ではなくファイルに出力されます
 
-## Claude Desktop 用（HTTP モードに切り替える場合）
+[handlers.wordpress]
+enabled = true
+url = "https://your-wordpress-site.com"
+username = "your-username"
+password = "your-application-password"   # WordPress アプリケーションパスワード
+```
 
-## stdio = false
-[transport]
-transport_type = "stdio"
-
-## [transport.http]
-## addr = "127.0.0.1"
-## port = 8080
-
-## HTTP モードのみ
-
-[logging]
-level = "error"  
-
-## Claude Desktop 用の最小ログ
-
-## level = "info"  # 開発用の詳細ログ
+`./target/release/mcp-rs --config mcp-config.toml`で起動します。パスワードを設定ファイルに書かない場合は、`${WORDPRESS_PASSWORD}`（環境変数）か[認証情報の暗号化](https://n-takatsu.github.io/mcp-rs/docs/security/#encrypted-wordpress-credentials)を使ってください。
 
 ### HTTP TLS/mTLS 設定（任意）
 
@@ -246,6 +225,7 @@ hsts_enabled = true
 - [🏗️ アーキテクチャ概要](./project-docs/architecture.md)
 - [📝 API リファレンス](./project-docs/api-reference.md)
 - [🔄 Claude Desktop 統合](./project-docs/CLAUDE_DESKTOP_INTEGRATION.md)
+- [🔄 Claude Code 統合](./project-docs/CLAUDE_CODE_INTEGRATION.md)
 
 ## 🛠️ 開発
 

@@ -4,6 +4,10 @@
 
 #![allow(dead_code)]
 #![allow(unused_imports)]
+// src/lib.rsと同じ理由（async_traitのマクロ展開によるclippyの誤検出）。
+// このバイナリは下記のモジュールを独自に読み込むため、lib.rs側の許可は
+// 効かない。
+#![allow(clippy::double_must_use)]
 
 mod config;
 mod core;
@@ -30,6 +34,19 @@ use tracing::{error, info};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // サブコマンドは設定ファイルを読み込む前に処理する（設定ファイルが
+    // まだ無い状態でencrypted_credentialsを作るためのコマンドなので）
+    let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some(mcp_rs::security::credential_tool::SUBCOMMAND) {
+        // Box<dyn Error>をmainから返すとDebug表記（"..."付き）で出るため、
+        // ここでDisplay表記で出して終了コード1にする
+        if let Err(e) = mcp_rs::security::credential_tool::run(&args[2..]) {
+            eprintln!("Error: {e}");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+
     // 設定読み込み（ログ設定のため最初に実行）
     let config = load_config().await?;
 
@@ -169,6 +186,15 @@ async fn register_handlers(
         if wp_config.enabled.unwrap_or(false) {
             let wp_handler = WordPressHandler::try_new(wp_config.clone())
                 .map_err(|e| format!("WordPress handler creation failed: {}", e))?;
+
+            // STDIOと違い、HTTP/WebSocketのクライアントは別のマシンにいる
+            // ことがある。その場合、file_pathで読まれるのはクライアントの
+            // 手元ではなく、このサーバー上のファイルになる
+            if !wp_config.upload_allowed_dirs.is_empty() {
+                tracing::warn!(
+                    "upload_allowed_dirs is set: clients connected over HTTP/WebSocket can upload files from these folders on this server via upload_media file_path"
+                );
+            }
 
             let mut registry_lock = registry.write().await;
             registry_lock

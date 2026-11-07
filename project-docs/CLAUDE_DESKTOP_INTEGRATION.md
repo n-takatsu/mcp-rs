@@ -306,6 +306,7 @@ burst_size = 20
 ## 🔗 関連ドキュメント
 
 - [アーキテクチャガイド](./architecture.md)
+- [Claude Code統合ガイド](./CLAUDE_CODE_INTEGRATION.md)
 - [WordPress統合ガイド](./wordpress-guide.md)
 - [セキュリティガイド](./security-guide.md)
 - [API リファレンス](./api-reference.md)

@@ -4,14 +4,14 @@
 
 > **[English](README.md)** | **[日本語](README.ja.md)**
 
-[![Version](https://img.shields.io/badge/Version-v0.18.0-blue)](https://github.com/n-takatsu/mcp-rs/releases/tag/v0.18.0)
+[![Version](https://img.shields.io/badge/Version-v0.18.1-blue)](https://github.com/n-takatsu/mcp-rs/releases/tag/v0.18.1)
 ![Architecture](https://img.shields.io/badge/Architecture-Production--Ready-green)
-![Implementation](https://img.shields.io/badge/WordPress_Tools-27_Available-green)
+![Implementation](https://img.shields.io/badge/WordPress_Tools-32_Available-green)
 ![License](https://img.shields.io/badge/License-MIT%2FApache--2.0-green)
 
 ## Overview
 
-`mcp-rs` provides a **comprehensive, battle-tested** implementation of the MCP (Model Context Protocol) in Rust with **complete WordPress integration**. Built with a layered architecture, it enables AI agents to perform sophisticated content management through a standardized JSON-RPC interface. The framework features 27 WordPress tools, enterprise-grade security, strong type safety, and is optimized for production use with GitHub Copilot and other AI coding assistants.
+`mcp-rs` provides a **comprehensive, battle-tested** implementation of the MCP (Model Context Protocol) in Rust with **complete WordPress integration**. Built with a layered architecture, it enables AI agents to perform sophisticated content management through a standardized JSON-RPC interface. The framework features 32 WordPress tools, enterprise-grade security, strong type safety, and is optimized for production use with GitHub Copilot and other AI coding assistants.
 
 ## 🎯 Who Is This For?
 
@@ -25,7 +25,7 @@ Managing large-scale WordPress deployments? Get enterprise-grade security, autom
 
 ### DevOps Engineers ⚙️
 
-Automating WordPress operations? 27 battle-tested tools with comprehensive health checks, monitoring, and production-ready error handling.
+Automating WordPress operations? 32 battle-tested tools with comprehensive health checks, monitoring, and production-ready error handling.
 
 ### Rust Enthusiasts 🦀
 
@@ -64,14 +64,15 @@ Need WordPress security automation? 8-layer enterprise security architecture wit
 - **Origin Validation**: CSRF protection with whitelist/regex patterns
 - **Audit Logging**: Track rate limit violations, auth failures, and timeout events
 
-## **WordPress Integration (27 Tools)**
+## **WordPress Integration (32 Tools)**
 
-- **Posts & Pages Management**: Full CRUD operations with SEO integration
-- **Advanced Media Management**: Upload, resize, organize with base64 support
-- **Categories & Tags Management**: Hierarchical support with bulk operations
-- **Comment System**: Complete comment management and retrieval
+- **Posts & Pages Management**: Create, read (full editable source), update, and delete posts and pages, with SEO metadata and scheduling
+- **Media Management**: Upload with base64 (type, extension, and content validation), list, update metadata, delete, and set featured images
+- **Categories & Tags Management**: Create, update, and delete, with hierarchical categories
+- **Comments**: Retrieve comments
 - **YouTube & Social Embeds**: Rich media integration with security validation
-- **User Management**: Role-based access control and user operations
+- **Site Settings**: Read and update site settings and the front page configuration
+- **Health Check**: Verify connectivity, authentication, permissions, and media upload capability
 
 ### Live Demo Site
 
@@ -151,85 +152,62 @@ cargo run -- --config configs/development/http-transport.toml
 
 > 📖 See [Claude Desktop Integration Guide](./project-docs/CLAUDE_DESKTOP_INTEGRATION.md) for detailed configuration.
 
-### Option 1: Interactive Setup (Recommended)
+### Claude Code
+
+Claude Code also talks to mcp-rs over STDIO and uses the same configuration file. Build mcp-rs, then register it with absolute paths. Everything after `--` is the mcp-rs command line.
 
 ```bash
-
-## Clone repository
-
-git clone https://github.com/n-takatsu/mcp-rs.git
-cd mcp-rs
-
-## Build release version
-
 cargo build --release
 
-## Run interactive configuration setup
-
-./target/release/mcp-rs --setup-config
+claude mcp add mcp-rs --scope user \
+  -e WORDPRESS_URL=https://your-wordpress-site.com \
+  -e WORDPRESS_USERNAME=your_username \
+  -e WORDPRESS_PASSWORD="your application password" \
+  -- /path/to/mcp-rs/target/release/mcp-rs --config /path/to/mcp-rs/configs/production/claude-desktop.toml
 ```
 
-Interactive setup features:
+Check the connection with `claude mcp list`, or `/mcp` inside Claude Code. Values passed with `-e` are stored in Claude Code's settings, so do not use `--scope project` (which writes them to the shared `.mcp.json`) with real credentials.
 
-- 📝 User-friendly question format
-- 🔍 Real-time connection testing
-- ⚡ Automatic configuration file generation
-- 🛡️ Security setting recommendations
+> 📖 See [Claude Code Integration Guide](./project-docs/CLAUDE_CODE_INTEGRATION.md) (Japanese) for `.mcp.json`, encrypted credentials, and troubleshooting.
 
-### Option 2: Manual Configuration
+### Setup
 
 ```bash
-
-## Generate sample configuration file
-
-./target/release/mcp-rs --generate-config
-
-## Edit configuration
-
-cp mcp-config.toml.example mcp-config.toml
-
-## Edit mcp-config.toml with your WordPress details
-
-## Run with custom config
-
-./target/release/mcp-rs --config mcp-config.toml
+git clone https://github.com/n-takatsu/mcp-rs.git
+cd mcp-rs
+cargo build --release
 ```
+
+Then start mcp-rs with a config file. Ready-made config files are in `configs/production/`:
+
+- `claude-desktop.toml`: STDIO, for Claude Desktop and Claude Code. WordPress credentials are read from the `WORDPRESS_URL`, `WORDPRESS_USERNAME`, and `WORDPRESS_PASSWORD` environment variables
+- `web-ui.toml`: HTTP, for web clients
+
+```bash
+./target/release/mcp-rs --config configs/production/claude-desktop.toml
+```
+
+To write your own config file instead, start from the minimal example below.
 
 ## Basic Configuration
 
 Create `mcp-config.toml`:
 
 ```toml
-[handlers.wordpress]
-url = "https://your-wordpress-site.com"
-username = "your-username"
-password = "your-application-password"
-enabled = true
-
-## WordPress Application Password
+[transport]
+type = "stdio"          # "http" for HTTP mode (see [transport.http])
 
 [server]
-stdio = true
+log_level = "warn"      # Logs go to a file, never to standard output in STDIO mode
 
-## For Claude Desktop (HTTP mode)
-
-## stdio = false
-[transport]
-transport_type = "stdio"
-
-## [transport.http]
-## addr = "127.0.0.1"
-## port = 8080
-
-## HTTP mode only
-
-[logging]
-level = "error"
-
-## Minimal logging for Claude Desktop
-
-## level = "info"  # Detailed logging for development
+[handlers.wordpress]
+enabled = true
+url = "https://your-wordpress-site.com"
+username = "your-username"
+password = "your-application-password"   # WordPress Application Password
 ```
+
+Then run `./target/release/mcp-rs --config mcp-config.toml`. To keep the password out of the file, use `${WORDPRESS_PASSWORD}` or [encrypted credentials](https://n-takatsu.github.io/mcp-rs/docs/security/#encrypted-wordpress-credentials).
 
 ### HTTP TLS/mTLS Configuration (Optional)
 
@@ -311,6 +289,7 @@ cargo run --example websocket_rate_limit_demo
 - [🏗️ Architecture Overview](./project-docs/architecture.md)
 - [📝 API Reference](./project-docs/api-reference.md)
 - [🔄 Claude Desktop Integration](./project-docs/CLAUDE_DESKTOP_INTEGRATION.md)
+- [🔄 Claude Code Integration](./project-docs/CLAUDE_CODE_INTEGRATION.md)
 - [🐳 Docker Guide](./docs/DOCKER_GUIDE.md) ⭐ NEW
 - [☸️ Kubernetes Operator Guide](./docs/KUBERNETES_GUIDE.md) ⭐ NEW
 

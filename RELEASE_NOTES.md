@@ -4,6 +4,56 @@
 
 Our project follows a detailed 0.01 increment versioning strategy to provide granular tracking of development progress and feature implementation.
 
+## 🛠️ v0.18.1 - WordPressツールの改善・MCPプロトコル準拠の修正
+
+**Release Date:** 2026-11-07
+**Focus:** Claude Code・Claude デスクトップアプリから実機（redring.jp）で
+使って見つかったWordPressツールの不具合修正と使い勝手の改善、MCPの
+通知の扱いの修正
+
+### ⚠️ 挙動の変更
+
+- `create_advanced_post`・`create_post_with_embeds`は、`status`を指定
+  しない場合に下書きを作成するようになった（#367）。公開するには
+  `status: "publish"`を指定する。ライブラリの`PostCreateParams`の
+  `Default`も`draft`になった
+- `get_post`は本文を全文返し、既定では編集用の原文（Gutenbergのブロック
+  区切りを含む）を返すようになった（#356）。以前の表示に近い形が必要な
+  場合は`format: "text"`を指定する
+
+### ✅ WordPressツール
+
+- `upload_media`に`file_path`引数を追加（#380）。手元のファイルを
+  指定してアップロードでき、AIがbase64を書き出す必要がなくなった。
+  既定では無効で、`upload_allowed_dirs`で許可したフォルダの中だけを読む
+- `get_post`にアイキャッチ画像（メディアIDとURL）を表示（#378）
+- `delete_media`を`force: true`で呼ぶと、削除に成功しているのに404の
+  エラーを返していた問題を修正（#383）。成功の応答を解析できないときに
+  同じリクエストを再送していた。再送そのものもやめ、501は再送しない
+- `create_post_with_featured_image`が常に失敗していた問題を修正（#367）
+
+### ✅ 設定・認証情報
+
+- `mcp-rs encrypt-wordpress-credentials`サブコマンドを追加（#355）。
+  `encrypted_credentials`のセクションを生成する。パスワードは入力中も
+  表示せず、コマンドライン引数でも受け付けない
+- `--config`を省略して起動したときの設定読み込みの問題を修正（#375）。
+  標準出力への出力でSTDIOの通信を壊すおそれ、`~`が展開されない、
+  `[transport] type`が読み込めない、の3点
+
+### ✅ MCPプロトコル
+
+- STDIOサーバーが、JSON-RPCの通知にエラー応答を返していた問題を修正
+  （#360）
+- HTTP transportが、通知に本文付きの応答を返していた問題を修正（#374）。
+  本文なしの`202 Accepted`を返す
+
+### ✅ ビルド
+
+- 開発用ビルドのデバッグ情報を行番号のみにし、`target`の肥大化（約70GB）
+  を解消（#371）
+- 将来非互換警告（`proc-macro-error2`）を解消（#369）
+
 ## 🔒 v0.18.0 - セキュリティ強化
 
 **Release Date:** 2026-11-06

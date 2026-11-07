@@ -1,6 +1,6 @@
 [package]
 name = "mcp-rs"
-version = "0.18.0"
+version = "0.18.1"
 edition = "2021"
 authors = ["n-takatsu"]
 description = "Rust implementation of the Model Context Protocol (MCP) for AI-agent integration with Canary Deployment System"
@@ -108,7 +108,6 @@ async-trait = "0.1.89"
 reqwest = { version = "0.12.24", default-features = false, features = ["json", "rustls-tls", "multipart", "stream"] }
 
 # Validation
-validator = { version = "0.20", features = ["derive"] }
 regex = "1.12"
 url = "2.5.7"
 urlencoding = "2.1"
@@ -314,7 +313,10 @@ required-features = ["kubernetes-operator"]
 
 [profile.dev]
 opt-level = 0
-debug = true
+# Line numbers only: panic backtraces keep file/line, but full debuginfo
+# made every example/test .pdb ~400MB (target/debug grew to ~70GB, #371).
+# For debugger variable inspection, set CARGO_PROFILE_DEV_DEBUG=true locally.
+debug = "line-tables-only"
 overflow-checks = true
 incremental = true
 

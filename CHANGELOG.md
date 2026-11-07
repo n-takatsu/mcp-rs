@@ -7,6 +7,119 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.1] - 2026-11-07
+
+### Added
+
+- `get_post`に`format`引数を追加（#356）。`raw`（既定。Gutenbergのブロック
+  区切り等を含む編集用の原文で、そのまま`update_post`に渡せる）・
+  `rendered`（表示用のHTML）・`text`（タグを除いたテキスト）を選べる。
+  `raw`は編集権限が必要で、権限が無い場合は表示用のHTMLを返し、その旨を
+  出力に示す
+- `mcp-rs encrypt-wordpress-credentials`サブコマンド（#355）。設定ファイルに
+  貼り付ける`[handlers.wordpress.encrypted_credentials]`のセクションを生成
+  する。これまでは生成にRustのコードを書く必要があった
+  - ユーザー名・Application Password・マスターパスワード（確認のため2回、
+    12文字以上）を端末から入力する。パスワードは入力中も表示しない
+  - 端末でない場合（標準入力のリダイレクト等）は、標準入力の3行から読む
+  - パスワードをコマンドライン引数では受け付けない（シェル履歴や
+    プロセス一覧に残るため）
+  - 出力前に、生成した値を復号して入力と一致することを確認する
+- `upload_media`に`file_path`引数を追加（#380）。base64の文字列の代わりに、
+  mcp-rsが動いているマシン上のファイルを指定してアップロードできる。AIが
+  base64を書き出す必要がなく、トランスポートのメッセージサイズ上限にも
+  当たらない
+  - 既定では無効。`[handlers.wordpress]`の`upload_allowed_dirs`で許可した
+    フォルダの中のファイルだけを読む（存在しないフォルダを指定すると起動
+    エラー）
+  - パスは絶対パスのみ。`..`やシンボリックリンクを解決した後のパスで判定
+    するため、許可フォルダの外には出られない
+  - 中身は`file_data`と同じ検証（サイズ・MIMEタイプ・拡張子・マジック
+    ナンバー）を通す。`filename`・`mime_type`は省略するとファイル名と
+    拡張子から決める
+  - HTTP/WebSocketで使う場合は、クライアントではなくサーバー上のファイルを
+    読むことになるため、起動時に警告を出す
+- `get_post`の出力に、アイキャッチ画像の行（`Featured Media:`）を追加（#378）。
+  メディアIDと画像のURLを表示し、未設定なら`none`と表示する。これまでは
+  アイキャッチ画像を設定したかをmcp-rsのツールだけでは確認できなかった。
+  画像のURLが取得できなくても`get_post`は失敗させず、IDだけを表示する
+
+### Changed
+
+- **挙動の変更**: `create_advanced_post`・`create_post_with_embeds`は、
+  `status`を指定しない場合に公開ではなく下書きになるよう変更（#367）。
+  意図しない公開を避けるため、v0.17.3で`create_post`系を`draft`既定にした
+  方針にそろえた。公開するには`status: "publish"`を指定する
+- **挙動の変更（ライブラリ）**: 公開型`PostCreateParams`の`Default`の
+  `status`を`publish`から`draft`に変更。`..Default::default()`で組み立てて
+  `create_advanced_post`を呼ぶコードは、下書きを作成するようになる
+- `create_post_with_featured_image`に`status`引数を追加（既定は`draft`）
+- 投稿作成で`status: "future"`（予約投稿）を日付なしで指定すると、
+  WordPressが即座に公開してしまうため、全ツールが経由する
+  `create_advanced_post`で拒否するよう変更（`date`を指定できるのは
+  `create_advanced_post`のみ）。それ以外の値は、プラグインが追加する
+  独自のステータスもあるため絞らずWordPressに任せる
+- 投稿作成系ツールで、`status`に文字列以外の値を渡した場合に、既定値で
+  黙って続けずに入力エラーにするよう変更
+- 投稿作成系ツールの成功メッセージに、要求した値ではなくWordPressが実際に
+  設定したステータスを表示するよう変更
+- `create_advanced_post`の失敗時に、WordPressのエラーコード・メッセージを
+  含めるよう変更（以前はHTTPステータスのみ）
+- `create_post_with_featured_image`は、5xx・429で再送しなくなった。投稿の
+  作成を再送すると、1回目が実は成功していた場合に投稿が重複しうるため、
+  ほかの投稿作成系ツールにそろえた
+- 開発用ビルド（`dev`プロファイル）のデバッグ情報を行番号のみ
+  （`line-tables-only`）に変更（#371）。exampleの`.pdb`が1個あたり
+  約400MBになり、`target`が約70GBまで肥大化していたため。デバッガで
+  変数を見る場合は`CARGO_PROFILE_DEV_DEBUG=true`を設定する
+
+### Fixed
+
+- `get_post`が本文をプレーンテキスト化したうえで100文字に切り詰めており、
+  本文全体を確認できなかった問題（#356）。全文を返すようにした。閲覧
+  パスワード付きの投稿で本文が空になる場合は、空として扱わないよう
+  注意書きを添える
+- WordPressへのリクエストが成功したときに、応答本文の先頭500文字を警告
+  ログに出していたのを、バイト数のみのdebugログに変更（#356）。編集用の
+  応答には、投稿の閲覧パスワードや未公開の下書きが含まれるため
+- `delete_media`を`force: true`で呼ぶと、削除に成功しているのに
+  `404 rest_post_invalid_id`のエラーを返していた不具合を修正（#383）。
+  完全削除の応答（`{"deleted": true, "previous": {...}}`）を解析できず、
+  同じ削除リクエストを再送していたため
+- WordPressへのリクエストで、成功（2xx）の応答を解析できなかった場合に、
+  同じリクエストを最大3回まで再送していたのを、再送せずエラーを返すよう
+  修正（#383）。リクエストは処理済みのため、再送すると作成の重複や
+  誤ったエラーにつながる
+- `501 Not Implemented`を再送しないよう修正（#383）。再送しても結果が
+  変わらないため（例: メディアのゴミ箱移動に未対応のサイトで`force`なしの
+  `delete_media`を呼んだ場合）
+- `upload_media`で0バイトのファイルを指定したとき、`File is empty`の
+  エラーを返すよう修正（#383）。これまでは中身とMIMEタイプの不一致として
+  拒否していた
+- `create_post_with_featured_image`が常にHTTP 400（`empty_content`）で
+  失敗し、投稿を作成できなかった問題（#367）。タイトル・本文を、
+  WordPressが書き込み時に読まない`{"rendered": ...}`の形で送っていた
+- STDIOサーバーが、JSON-RPCの通知（`id`なし。`notifications/initialized`等）
+  に`-32601`のエラー応答を返していた問題（#360）。JSON-RPC 2.0に従い、
+  通知には応答しないようにした。`tools/call`等のリクエスト用のmethodが
+  `id`なしで届いた場合も、実行せずに警告ログのみ記録する
+- HTTP transportが、JSON-RPCの通知（`id`なし）に
+  `{"jsonrpc":"2.0","result":{"status":"accepted",...}}`の本文を返していた
+  問題（#374）。MCPのHTTP transportに従い、本文なしの`202 Accepted`を
+  返すようにした。また、通知の転送に失敗したときなどに、非同期の
+  ハンドラー内で`blocking_write()`を呼んでpanicしうる箇所を修正
+- `--config`を省略して起動したときの設定読み込み（`McpConfig::load()`）の
+  問題を修正（#375）
+  - 設定ファイルを読み込んだことを標準出力に書き出しており、STDIOモードの
+    通信（JSON-RPC）を壊すおそれがあった。標準エラー出力に変更
+  - `~/.config/mcp-rs/config.toml`の`~`がホームフォルダに展開されず、
+    この場所の設定ファイルが読み込まれなかった
+  - `[transport] type = "stdio"`と書いた設定ファイル（`configs/`の設定例と
+    同じ書き方）が、`duplicate field transport_type`で読み込めなかった
+- ビルド時の将来非互換警告（`proc-macro-error2`）を解消（#369）。
+  使われていなかった`validator`の依存を削除し、`mysql-common-derive`を
+  0.32.2に更新した
+
 ## [0.18.0] - 2026-11-06
 
 ### Added

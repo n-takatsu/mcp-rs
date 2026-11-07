@@ -365,6 +365,7 @@ impl ConfigSwitcher {
                 timeout_seconds: Some(30),
                 rate_limit: Some(crate::config::RateLimitConfig::default()),
                 encrypted_credentials: None,
+                upload_allowed_dirs: Vec::new(),
             });
         }
 
@@ -451,6 +452,11 @@ mod tests {
     use std::io::Write;
 
     #[tokio::test]
+    // WORDPRESS_MASTER_PASSWORD環境変数を使う他のテスト（同期テストを含む）と
+    // 直列化するため、std::sync::Mutexのガードを意図的にawaitをまたいで
+    // 保持する。このテストのランタイム内に同じロックを取る他のタスクは
+    // 無いため、デッドロックは起きない。
+    #[allow(clippy::await_holding_lock)]
     async fn test_load_config_from_file_resolves_encrypted_credentials() {
         // ホットリロード/設定ファイル切り替え経路も、McpConfig::load()と
         // main.rsのload_config_from_file()と同様にencrypted_credentials

@@ -3,9 +3,10 @@ use regex::Regex;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::config::WordPressConfig;
 use crate::mcp::{
@@ -89,6 +90,33 @@ fn filename_extension(filename: &str) -> Option<&str> {
     filename.rsplit_once('.').map(|(_, ext)| ext)
 }
 
+/// 再送するHTTPステータスか。一時的な失敗（5xx・429）は再送するが、
+/// 501 Not Implementedは再送しても結果が変わらないため除く（例: メディアの
+/// ゴミ箱移動に対応していないサイトでの`rest_trash_not_supported`）。
+fn is_retryable_status(status: reqwest::StatusCode) -> bool {
+    status == reqwest::StatusCode::TOO_MANY_REQUESTS
+        || (status.is_server_error() && status != reqwest::StatusCode::NOT_IMPLEMENTED)
+}
+
+/// 成功（2xx）応答の本文を解析する。失敗しても再送しない：WordPressは
+/// 既にリクエストを処理済みであり、再送すると作成の重複や、削除済みの
+/// 対象への2回目の削除（404）を招くため。
+fn parse_success_body<T>(text: &str) -> Result<T, McpError>
+where
+    T: for<'de> serde::Deserialize<'de>,
+{
+    serde_json::from_str::<T>(text).map_err(|e| {
+        warn!(
+            "JSON parse error on a successful response (not retried): {}",
+            e
+        );
+        McpError::ExternalApi(format!(
+            "WordPress processed the request, but its response could not be parsed: {}",
+            e
+        ))
+    })
+}
+
 /// WordPress REST APIのエラーレスポンス本文から`code`/`message`
 /// （例: `rest_post_invalid_id` / "Invalid post ID."）を拾い、診断に
 /// 使える文字列にまとめる。期待した形式でない場合はステータスと
@@ -106,6 +134,87 @@ fn format_wp_error(status: reqwest::StatusCode, body: &str) -> String {
         "WordPress API error {}: {}",
         status,
         truncate_chars_with_ellipsis(body, 200)
+    )
+}
+
+/// `context=edit`での取得が拒否された（401/403）エラーかどうか。編集権限が
+/// 無い場合WordPressは`rest_forbidden_context`を返すが、セキュリティ
+/// プラグインやWAFが別のコードやHTMLの応答で拒否することもあるため、
+/// コードではなくステータスで判定する（パスワード誤りでも1回余分に
+/// 取得し直すが、表示用コンテキストでも同じく失敗するだけで実害はない）。
+/// `execute_request_with_retry`はWordPressの4xx応答を`format_wp_error`で
+/// 整形した`ExternalApi`として返すため、その先頭のステータスで判定する。
+fn is_edit_context_denied(error: &McpError) -> bool {
+    matches!(
+        error,
+        McpError::ExternalApi(msg)
+            if msg.starts_with("WordPress API error 401")
+                || msg.starts_with("WordPress API error 403")
+    )
+}
+
+/// `get_post`が本文をどの形で返すか。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PostContentFormat {
+    /// 編集用の原文（取得できなければ表示用HTMLに切り替える）
+    Raw,
+    /// WordPressが整形した表示用HTML
+    Rendered,
+    /// 表示用HTMLからタグを除いたプレーンテキスト
+    Text,
+}
+
+impl PostContentFormat {
+    /// ツール引数の`format`を解釈する。省略・`null`は既定の`raw`とし、
+    /// 文字列以外の値や未知の文字列はエラーにする。
+    fn parse(value: Option<&serde_json::Value>) -> Result<Self, McpError> {
+        match value {
+            None | Some(serde_json::Value::Null) => Ok(Self::Raw),
+            Some(serde_json::Value::String(s)) if s == "raw" => Ok(Self::Raw),
+            Some(serde_json::Value::String(s)) if s == "rendered" => Ok(Self::Rendered),
+            Some(serde_json::Value::String(s)) if s == "text" => Ok(Self::Text),
+            Some(other) => Err(McpError::InvalidParams(format!(
+                "Invalid format {}: expected 'raw', 'rendered' or 'text'",
+                truncate_chars_with_ellipsis(&other.to_string(), 100)
+            ))),
+        }
+    }
+}
+
+/// タイトルや本文を指定の形で、切り詰めずに返す。原文を要求したが取得
+/// できなかった場合は表示用HTMLを返す（その判定は`post_format_label`）。
+fn post_content_for_display(content: &WordPressContent, format: PostContentFormat) -> String {
+    match format {
+        PostContentFormat::Raw => content
+            .raw
+            .clone()
+            .unwrap_or_else(|| content.rendered.clone()),
+        PostContentFormat::Rendered => content.rendered.clone(),
+        PostContentFormat::Text => html_to_plain_text(&content.rendered),
+    }
+}
+
+/// `get_post`の出力で、タイトル・本文を実際にどの形で返したかを示す
+/// ラベル。原文を要求したが取得できなかった場合はその旨を含める
+/// （タイトルと本文は同じ応答から取るため、どちらかだけが原文になる
+/// ことはない）。
+fn post_format_label(post: &WordPressPost, format: PostContentFormat) -> &'static str {
+    match format {
+        PostContentFormat::Raw if post.content.raw.is_some() => "raw",
+        PostContentFormat::Raw => {
+            "rendered HTML (raw source unavailable: it requires credentials with edit permission)"
+        }
+        PostContentFormat::Rendered => "rendered HTML",
+        PostContentFormat::Text => "plain text",
+    }
+}
+
+/// 閲覧パスワード付きの投稿を表示用コンテキストで取得すると、WordPressは
+/// 本文を空にして返す。空の本文を見たエージェントが投稿を上書きして
+/// しまわないよう、その場合に添える注意書き。
+fn protected_content_note(post: &WordPressPost) -> Option<&'static str> {
+    (post.content.protected && post.content.raw.is_none()).then_some(
+        "This post is password-protected, so its content is hidden. Do not treat the content as empty or overwrite it.",
     )
 }
 
@@ -130,6 +239,18 @@ fn resolve_term_names(ids: &[u64], id_to_name: &HashMap<u64, String>) -> Vec<Str
                 .unwrap_or_else(|| id.to_string())
         })
         .collect()
+}
+
+/// 投稿のアイキャッチ画像（`featured_media`）を`get_post`の表示用に
+/// まとめる。WordPressは未設定を`0`で返すため、`0`と欠落はどちらも
+/// 未設定として扱う。画像のURLが取れなかった場合（メディアの取得に
+/// 失敗した等）はIDだけを表示する。
+fn featured_media_label(media_id: Option<u64>, source_url: Option<&str>) -> String {
+    match (media_id, source_url) {
+        (None | Some(0), _) => "none".to_string(),
+        (Some(id), Some(url)) if !url.is_empty() => format!("{} ({})", id, url),
+        (Some(id), _) => id.to_string(),
+    }
 }
 
 /// 投稿/固定ページの一覧を、各項目の要点（id・title・status・date・
@@ -341,6 +462,11 @@ fn validate_upload(
     filename: &str,
     mime_type: &str,
 ) -> Result<&'static str, McpError> {
+    // 中身の検証（マジックナンバー）より前に判定し、原因が分かるエラーにする
+    if file_data.is_empty() {
+        return Err(McpError::InvalidParams("File is empty".to_string()));
+    }
+
     if file_data.len() > MAX_UPLOAD_SIZE_BYTES {
         return Err(McpError::InvalidParams(format!(
             "File too large: {} bytes (max {} bytes)",
@@ -395,6 +521,94 @@ fn validate_upload(
     Ok(canonical)
 }
 
+/// 設定の`upload_allowed_dirs`を正規化する。存在しないフォルダや
+/// フォルダでないパスが指定されていれば起動時にエラーにする（設定の
+/// 書き間違いで`file_path`が黙って使えなくなるのを避けるため）。
+fn canonicalize_upload_dirs(dirs: &[String]) -> Result<Vec<PathBuf>, String> {
+    dirs.iter()
+        .map(|dir| {
+            std::fs::canonicalize(dir)
+                .ok()
+                .filter(|path| path.is_dir())
+                .ok_or_else(|| {
+                    format!(
+                        "upload_allowed_dirs entry '{}' is not an existing directory",
+                        dir
+                    )
+                })
+        })
+        .collect()
+}
+
+/// `upload_media`の`file_path`を、許可フォルダ内の実在するファイルの
+/// 正規化済みパスに解決する。
+///
+/// 判定は正規化（`..`・シンボリックリンクの解決）後のパスで行うため、
+/// `..`やリンクで許可フォルダの外に出ることはできない。許可フォルダの外を
+/// 指す場合と、ファイルが存在しない場合は同じエラーにする（許可フォルダ
+/// 外のファイルの有無が分からないように）。
+fn resolve_upload_path(file_path: &str, allowed_dirs: &[PathBuf]) -> Result<PathBuf, McpError> {
+    if allowed_dirs.is_empty() {
+        return Err(McpError::InvalidParams(
+            "file_path is disabled. Set upload_allowed_dirs in [handlers.wordpress] to enable it, or use file_data".to_string(),
+        ));
+    }
+
+    let path = Path::new(file_path);
+    // 相対パスはmcp-rsの作業ディレクトリ（起動のされ方で変わる）基準に
+    // なり、意図しない場所を指しうるため受け付けない
+    if !path.is_absolute() {
+        return Err(McpError::InvalidParams(
+            "file_path must be an absolute path".to_string(),
+        ));
+    }
+
+    std::fs::canonicalize(path)
+        .ok()
+        .filter(|canonical| {
+            canonical.is_file() && allowed_dirs.iter().any(|dir| canonical.starts_with(dir))
+        })
+        .ok_or_else(|| {
+            McpError::InvalidParams(
+                "file_path must be an existing file inside one of upload_allowed_dirs".to_string(),
+            )
+        })
+}
+
+/// ファイル名の拡張子から、`upload_media`で許可するMIMEタイプを決める
+/// （`file_path`で`mime_type`が省略された場合用）。中身の検証は
+/// `validate_upload`で別途行う。
+fn mime_type_for_filename(filename: &str) -> Option<&'static str> {
+    let extension = filename_extension(filename)?.to_ascii_lowercase();
+    ALLOWED_UPLOADS
+        .iter()
+        .find(|(_, extensions)| extensions.contains(&extension.as_str()))
+        .map(|(mime_type, _)| *mime_type)
+}
+
+/// アップロードするファイルを読み込む。上限を超える分は読まない
+/// （確認後にファイルが大きくなった場合も含め、メモリに載せる量を
+/// 上限+1バイトに抑える）。
+async fn read_upload_file(path: &Path) -> Result<Vec<u8>, McpError> {
+    use tokio::io::AsyncReadExt as _;
+
+    let file = tokio::fs::File::open(path)
+        .await
+        .map_err(|e| McpError::InvalidParams(format!("Failed to read file_path: {}", e)))?;
+    let mut data = Vec::new();
+    file.take(MAX_UPLOAD_SIZE_BYTES as u64 + 1)
+        .read_to_end(&mut data)
+        .await
+        .map_err(|e| McpError::InvalidParams(format!("Failed to read file_path: {}", e)))?;
+    if data.len() > MAX_UPLOAD_SIZE_BYTES {
+        return Err(McpError::InvalidParams(format!(
+            "File too large (max {} bytes)",
+            MAX_UPLOAD_SIZE_BYTES
+        )));
+    }
+    Ok(data)
+}
+
 /// 引数からベストエフォートで対象リソースのIDを抽出する（監査ログの
 /// 補助情報用）。ツールごとに異なるキー名（`post_id`・`media_id`等）を
 /// 優先順位付きで試す。見つからない場合は`None`（例: 新規作成系ツールは
@@ -418,6 +632,111 @@ fn extract_target_id(arguments: &Option<HashMap<String, serde_json::Value>>) -> 
     })
 }
 
+/// 作成する投稿の`status`を検証する。投稿作成系のツールはすべて
+/// `create_advanced_post`を経由するため、そこで1度だけ呼ぶ（ツールごとに
+/// 検証すると、ツールによって検証の有無がずれる）。
+///
+/// `future`（予約投稿）を日付なしで送ると、WordPressは即座に公開して
+/// しまうため、日付が無い（空文字を含む）場合は拒否する。過去の日付の
+/// 判定はサイトのタイムゾーンに依存するため行わない。
+///
+/// それ以外の値は許可リストで絞らずWordPressに任せる。プラグインが独自の
+/// ステータス（PublishPressの`pitch`等）を追加していることがあり、不正な
+/// 値はWordPressのエラー内容（`format_wp_error`）としてそのまま返るため。
+fn validate_post_status(status: &str, date: Option<&str>) -> Result<(), McpError> {
+    let has_date = date.is_some_and(|d| !d.trim().is_empty());
+    if status == "future" && !has_date {
+        return Err(McpError::InvalidParams(
+            "status 'future' (scheduled) requires a publish date; without it WordPress publishes the post immediately. Only create_advanced_post accepts 'date' (ISO8601); with other tools, use 'draft' instead".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// 投稿作成系ツールの`status`引数。未指定時は、意図しない公開を避けるため
+/// `draft`とする（`create_post`・`create_post_with_categories_tags`と同じ
+/// 方針）。値の検証は`validate_post_status`で行う。
+fn post_status_or_draft(args: &HashMap<String, serde_json::Value>) -> Result<String, McpError> {
+    match args.get("status") {
+        None | Some(serde_json::Value::Null) => Ok("draft".to_string()),
+        Some(serde_json::Value::String(s)) => Ok(s.clone()),
+        Some(other) => Err(McpError::InvalidParams(format!(
+            "Invalid status {}: expected a string",
+            truncate_chars_with_ellipsis(&other.to_string(), 100)
+        ))),
+    }
+}
+
+/// 投稿・固定ページ作成時の送信内容。WordPressは書き込み時にタイトル・
+/// 本文を文字列（または`raw`）としてしか読まないため、読み取り用の
+/// `WordPressPost`（`rendered`を持つ）をそのまま送ってはいけない。
+/// 投稿作成系のツールはすべてこの関数を経由する。
+fn advanced_post_body(params: PostCreateParams) -> serde_json::Value {
+    let mut post_data = serde_json::json!({
+        "title": params.title,
+        "content": params.content,
+        "type": params.post_type,
+        "status": params.status
+    });
+
+    // 予約投稿の場合は日時を設定
+    if let Some(publish_date) = params.date {
+        post_data["date"] = serde_json::Value::String(publish_date);
+    }
+
+    // カテゴリーを設定（投稿のみ）
+    if params.post_type == "post" {
+        if let Some(cats) = params.categories {
+            post_data["categories"] = serde_json::Value::Array(
+                cats.iter()
+                    .map(|&id| serde_json::Value::Number(id.into()))
+                    .collect(),
+            );
+        }
+
+        // タグを設定（投稿のみ）
+        if let Some(tag_ids) = params.tags {
+            post_data["tags"] = serde_json::Value::Array(
+                tag_ids
+                    .iter()
+                    .map(|&id| serde_json::Value::Number(id.into()))
+                    .collect(),
+            );
+        }
+    }
+
+    // アイキャッチ画像を設定
+    if let Some(media_id) = params.featured_media_id {
+        post_data["featured_media"] = serde_json::Value::Number(media_id.into());
+    }
+
+    // メタデータを設定（SEO等）
+    if let Some(metadata) = params.meta {
+        post_data["meta"] = serde_json::Value::Object(
+            metadata
+                .into_iter()
+                .map(|(k, v)| (k, serde_json::Value::String(v)))
+                .collect(),
+        );
+    }
+
+    post_data
+}
+
+/// `DELETE /wp/v2/media/{id}`の応答。`force=true`（完全削除）では
+/// `{"deleted": true, "previous": {...}}`の形で削除前のメディアが返り、
+/// ゴミ箱への移動（対応しているサイトのみ）ではメディアそのものが返る。
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum DeleteMediaResponse {
+    Deleted {
+        #[allow(dead_code)]
+        deleted: bool,
+        previous: WordPressMedia,
+    },
+    Trashed(WordPressMedia),
+}
+
 #[derive(Clone)]
 pub struct WordPressHandler {
     client: Client,
@@ -429,6 +748,9 @@ pub struct WordPressHandler {
     password: Option<String>,
     rate_limiter: Arc<RateLimiter>,
     audit_logger: Arc<AuditLogger>,
+    /// `upload_media`の`file_path`で読み込みを許可するフォルダ（起動時に
+    /// 正規化済み）。空なら`file_path`は使えない。
+    upload_allowed_dirs: Arc<Vec<PathBuf>>,
 }
 
 // Debugトレイトでパスワードを露出しないようにカスタム実装
@@ -443,6 +765,7 @@ impl std::fmt::Debug for WordPressHandler {
             .field("password", &self.password.as_ref().map(|_| "[REDACTED]"))
             .field("rate_limiter", &self.rate_limiter)
             .field("audit_logger", &self.audit_logger)
+            .field("upload_allowed_dirs", &self.upload_allowed_dirs)
             .finish()
     }
 }
@@ -477,6 +800,11 @@ pub struct WordPressGuid {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct WordPressContent {
     pub rendered: String,
+    /// 編集用の原文（Gutenbergのブロック区切り等を含む）。WordPressは
+    /// `context=edit`で取得した場合にのみ返す。`None`のときはシリアライズ
+    /// しない（このフィールドを持たなかった頃と送信内容を変えないため）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw: Option<String>,
     #[serde(default)]
     pub protected: bool,
 }
@@ -642,7 +970,8 @@ impl Default for PostCreateParams {
             title: String::new(),
             content: String::new(),
             post_type: "post".to_string(),
-            status: "publish".to_string(),
+            // 意図しない公開を避けるため、既定は下書き
+            status: "draft".to_string(),
             date: None,
             categories: None,
             tags: None,
@@ -691,6 +1020,14 @@ impl WordPressHandler {
         // セキュア認証情報の作成
         let secure_credentials = Some(config.create_secure_credentials());
 
+        let upload_allowed_dirs = canonicalize_upload_dirs(&config.upload_allowed_dirs)?;
+        if !upload_allowed_dirs.is_empty() {
+            info!(
+                "upload_media file_path is enabled for: {:?}",
+                upload_allowed_dirs
+            );
+        }
+
         Ok(Self {
             client,
             base_url: config.url.clone(),
@@ -699,6 +1036,7 @@ impl WordPressHandler {
             password: Some(config.password),
             rate_limiter,
             audit_logger,
+            upload_allowed_dirs: Arc::new(upload_allowed_dirs),
         })
     }
 
@@ -772,26 +1110,12 @@ impl WordPressHandler {
                     let status = response.status();
 
                     if status.is_success() {
-                        // レスポンステキストを取得してデバッグ
+                        // 本文はログに出さない。context=editの応答には投稿の
+                        // 閲覧パスワードや未公開の下書き等が含まれうるため
                         let text = response.text().await.map_err(McpError::Http)?;
-                        warn!(
-                            "Response body (first 500 chars): {}",
-                            text.chars().take(500).collect::<String>()
-                        );
-
-                        match serde_json::from_str::<T>(&text) {
-                            Ok(data) => return Ok(data),
-                            Err(e) => {
-                                warn!("JSON parse error on attempt {}: {}", attempt, e);
-                                if attempt == MAX_RETRIES {
-                                    return Err(McpError::ExternalApi(format!(
-                                        "JSON parse error: {}",
-                                        e
-                                    )));
-                                }
-                            }
-                        }
-                    } else if status.as_u16() >= 500 || status.as_u16() == 429 {
+                        debug!("Response body: {} bytes", text.len());
+                        return parse_success_body(&text);
+                    } else if is_retryable_status(status) {
                         // サーバーエラーまたはレート制限の場合はリトライ
                         warn!("HTTP error {} on attempt {}, retrying...", status, attempt);
                         if attempt == MAX_RETRIES {
@@ -858,20 +1182,8 @@ impl WordPressHandler {
 
                     if status.is_success() {
                         let text = response.text().await.map_err(McpError::Http)?;
-
-                        match serde_json::from_str::<T>(&text) {
-                            Ok(data) => return Ok(data),
-                            Err(e) => {
-                                warn!("JSON parse error on attempt {}: {}", attempt, e);
-                                if attempt == MAX_RETRIES {
-                                    return Err(McpError::ExternalApi(format!(
-                                        "JSON parse error: {}",
-                                        e
-                                    )));
-                                }
-                            }
-                        }
-                    } else if status.as_u16() >= 500 || status.as_u16() == 429 {
+                        return parse_success_body(&text);
+                    } else if is_retryable_status(status) {
                         warn!("HTTP error {} on attempt {}, retrying...", status, attempt);
                         if attempt == MAX_RETRIES {
                             let body = response.text().await.unwrap_or_default();
@@ -946,20 +1258,9 @@ impl WordPressHandler {
                             .unwrap_or(0);
 
                         let text = response.text().await.map_err(McpError::Http)?;
-
-                        match serde_json::from_str::<T>(&text) {
-                            Ok(data) => return Ok((data, total_pages, total_items)),
-                            Err(e) => {
-                                warn!("JSON parse error on attempt {}: {}", attempt, e);
-                                if attempt == MAX_RETRIES {
-                                    return Err(McpError::ExternalApi(format!(
-                                        "JSON parse error: {}",
-                                        e
-                                    )));
-                                }
-                            }
-                        }
-                    } else if status.as_u16() >= 500 || status.as_u16() == 429 {
+                        let data = parse_success_body(&text)?;
+                        return Ok((data, total_pages, total_items));
+                    } else if is_retryable_status(status) {
                         warn!("HTTP error {} on attempt {}, retrying...", status, attempt);
                         if attempt == MAX_RETRIES {
                             let body = response.text().await.unwrap_or_default();
@@ -1084,18 +1385,52 @@ impl WordPressHandler {
         Ok((posts, pages))
     }
 
-    /// Get a single WordPress post by ID
-    pub async fn get_post(&self, post_id: u64, post_type: &str) -> Result<WordPressPost, McpError> {
+    /// 投稿・固定ページを1件取得する。
+    ///
+    /// `include_raw`が真なら、編集用の原文（`raw`）を含めるため
+    /// `context=edit`で取得し、拒否された場合のみ表示用コンテキストで
+    /// 取り直す（その場合`raw`は`None`になる）。認証情報が無い場合は
+    /// `context=edit`が必ず拒否されるため、最初から表示用コンテキストで
+    /// 取得する。
+    pub async fn get_post(
+        &self,
+        post_id: u64,
+        post_type: &str,
+        include_raw: bool,
+    ) -> Result<WordPressPost, McpError> {
         let endpoint = endpoint_for_post_type(post_type);
         let url = format!("{}/wp-json/wp/v2/{}/{}", self.base_url, endpoint, post_id);
 
-        let mut request = self.client.get(&url);
+        info!("Fetching WordPress {}: {}", post_type, post_id);
+        let has_credentials = self.username.is_some() && self.password.is_some();
+        if !include_raw || !has_credentials {
+            return self.fetch_post(&url, None).await;
+        }
 
+        match self.fetch_post(&url, Some("edit")).await {
+            Err(edit_error) if is_edit_context_denied(&edit_error) => {
+                warn!(
+                    "Fetching {} {} with context=edit was denied, falling back to the view context: {}",
+                    post_type, post_id, edit_error
+                );
+                self.fetch_post(&url, None).await
+            }
+            result => result,
+        }
+    }
+
+    async fn fetch_post(
+        &self,
+        url: &str,
+        context: Option<&str>,
+    ) -> Result<WordPressPost, McpError> {
+        let mut request = self.client.get(url);
+        if let Some(context) = context {
+            request = request.query(&[("context", context)]);
+        }
         if let (Some(username), Some(password)) = (&self.username, &self.password) {
             request = request.basic_auth(username, Some(password));
         }
-
-        info!("Fetching WordPress {}: {}", post_type, post_id);
         self.execute_request_with_retry(request).await
     }
 
@@ -1122,57 +1457,12 @@ impl WordPressHandler {
         &self,
         params: PostCreateParams,
     ) -> Result<WordPressPost, McpError> {
+        validate_post_status(&params.status, params.date.as_deref())?;
+
         // 投稿タイプに応じてエンドポイントを決定
         let endpoint = endpoint_for_post_type(&params.post_type);
         let url = format!("{}/wp-json/wp/v2/{}", self.base_url, endpoint);
-
-        let mut post_data = serde_json::json!({
-            "title": params.title,
-            "content": params.content,
-            "type": params.post_type,
-            "status": params.status
-        });
-
-        // 予約投稿の場合は日時を設定
-        if let Some(publish_date) = params.date {
-            post_data["date"] = serde_json::Value::String(publish_date);
-        }
-
-        // カテゴリーを設定（投稿のみ）
-        if params.post_type == "post" {
-            if let Some(cats) = params.categories {
-                post_data["categories"] = serde_json::Value::Array(
-                    cats.iter()
-                        .map(|&id| serde_json::Value::Number(id.into()))
-                        .collect(),
-                );
-            }
-
-            // タグを設定（投稿のみ）
-            if let Some(tag_ids) = params.tags {
-                post_data["tags"] = serde_json::Value::Array(
-                    tag_ids
-                        .iter()
-                        .map(|&id| serde_json::Value::Number(id.into()))
-                        .collect(),
-                );
-            }
-        }
-
-        // アイキャッチ画像を設定
-        if let Some(media_id) = params.featured_media_id {
-            post_data["featured_media"] = serde_json::Value::Number(media_id.into());
-        }
-
-        // メタデータを設定（SEO等）
-        if let Some(metadata) = params.meta {
-            post_data["meta"] = serde_json::Value::Object(
-                metadata
-                    .into_iter()
-                    .map(|(k, v)| (k, serde_json::Value::String(v)))
-                    .collect(),
-            );
-        }
+        let post_data = advanced_post_body(params);
 
         let mut request = self.client.post(&url);
 
@@ -1182,11 +1472,12 @@ impl WordPressHandler {
 
         let response = request.json(&post_data).send().await?;
 
-        if !response.status().is_success() {
-            return Err(McpError::ExternalApi(format!(
-                "WordPress API error: {}",
-                response.status()
-            )));
+        let status = response.status();
+        if !status.is_success() {
+            // WordPressのエラーコード（empty_content等）を含めないと、
+            // 失敗の原因が分からない
+            let body = response.text().await.unwrap_or_default();
+            return Err(McpError::ExternalApi(format_wp_error(status, &body)));
         }
 
         let created_post: WordPressPost = response.json().await?;
@@ -1359,7 +1650,11 @@ impl WordPressHandler {
             "Deleting WordPress media: {} (force: {})",
             media_id, force_delete
         );
-        self.execute_request_with_retry(request).await
+        let response: DeleteMediaResponse = self.execute_request_with_retry(request).await?;
+        Ok(match response {
+            DeleteMediaResponse::Deleted { previous, .. } => previous,
+            DeleteMediaResponse::Trashed(media) => media,
+        })
     }
 
     /// Get WordPress site settings
@@ -1564,11 +1859,10 @@ impl WordPressHandler {
             post_params.content = full_content;
             self.create_advanced_post(post_params).await
         } else {
+            // post_type・statusはPostCreateParamsの既定（post・draft）
             let post_params = PostCreateParams {
                 title: title.to_string(),
                 content: full_content,
-                post_type: "post".to_string(),
-                status: "publish".to_string(),
                 ..Default::default()
             };
             self.create_advanced_post(post_params).await
@@ -1576,48 +1870,31 @@ impl WordPressHandler {
     }
 
     /// Create post with featured image
+    ///
+    /// 送信内容を独自に組み立てず、ほかの投稿作成系ツールと同じ
+    /// `create_advanced_post`（`advanced_post_body`）を経由する。以前は
+    /// 読み取り用の`WordPressPost`をそのまま送っており、タイトル・本文が
+    /// WordPressに読まれず常にHTTP 400になっていた。
+    ///
+    /// 以前は`execute_request_with_retry`で5xx・429を再送していたが、
+    /// `create_advanced_post`は再送しない。投稿の作成（POST）を再送すると、
+    /// 1回目が実は成功していた場合に投稿が重複しうるため、意図的にそろえている。
     async fn create_post_with_featured_image(
         &self,
         title: String,
         content: String,
         featured_media_id: u64,
+        status: String,
     ) -> Result<WordPressPost, McpError> {
-        let url = format!("{}/wp-json/wp/v2/posts", self.base_url);
-
-        let post = WordPressPost {
-            id: None,
-            date: None,
-            date_gmt: None,
-            guid: None,
-            modified: None,
-            modified_gmt: None,
-            slug: None,
-            status: "publish".to_string(),
-            post_type: Some("post".to_string()),
-            link: None,
-            title: WordPressContent {
-                rendered: title,
-                protected: false,
-            },
-            content: WordPressContent {
-                rendered: content,
-                protected: false,
-            },
-            excerpt: None,
-            author: None,
-            featured_media: Some(featured_media_id),
-            categories: None,
-            tags: None,
-        };
-
-        let mut request = self.client.post(&url).json(&post);
-
-        if let (Some(username), Some(password)) = (&self.username, &self.password) {
-            request = request.basic_auth(username, Some(password));
-        }
-
         info!("Creating post with featured image: {}", featured_media_id);
-        self.execute_request_with_retry(request).await
+        self.create_advanced_post(PostCreateParams {
+            title,
+            content,
+            status,
+            featured_media_id: Some(featured_media_id),
+            ..Default::default()
+        })
+        .await
     }
 
     /// Create post with categories and tags
@@ -2472,8 +2749,11 @@ impl WordPressHandler {
                     .get("post_type")
                     .and_then(|v| v.as_str())
                     .unwrap_or("post");
+                let format = PostContentFormat::parse(args.get("format"))?;
 
-                let post = self.get_post(post_id, post_type).await?;
+                let post = self
+                    .get_post(post_id, post_type, format == PostContentFormat::Raw)
+                    .await?;
 
                 // カテゴリ/タグIDを名前に解決する。一覧取得に失敗しても
                 // get_post自体は失敗させず、数値IDのまま表示する。
@@ -2516,16 +2796,45 @@ impl WordPressHandler {
                     }
                 };
 
+                // アイキャッチ画像のURLを取得する。カテゴリ/タグ名と同じく、
+                // 取得に失敗してもget_post自体は失敗させず、IDだけ表示する。
+                let featured_media = match post.featured_media {
+                    Some(media_id) if media_id > 0 => match self.get_media_item(media_id).await {
+                        Ok(media) => {
+                            featured_media_label(Some(media_id), media.source_url.as_deref())
+                        }
+                        Err(e) => {
+                            warn!(
+                                "Failed to resolve featured media {} for get_post: {}",
+                                media_id, e
+                            );
+                            featured_media_label(Some(media_id), None)
+                        }
+                    },
+                    other => featured_media_label(other, None),
+                };
+
+                // タイトルも本文と同じ形で返す（rawならHTMLエンティティ化
+                // されていない原文）
+                let title = post_content_for_display(&post.title, format);
+                let content_body = post_content_for_display(&post.content, format);
+                let note = protected_content_note(&post)
+                    .map(|note| format!("Note: {}\n", note))
+                    .unwrap_or_default();
+
                 Ok(serde_json::json!({
                     "content": [{
                         "type": "text",
-                        "text": format!("Post Details:\nID: {}\nTitle: {}\nStatus: {}\nCategories: {}\nTags: {}\nContent: {}",
+                        "text": format!("Post Details:\nID: {}\nFormat: {}\nTitle: {}\nStatus: {}\nCategories: {}\nTags: {}\nFeatured Media: {}\n{}Content:\n{}",
                             post.id.map(|id| id.to_string()).unwrap_or_else(|| "N/A".to_string()),
-                            post.title.rendered,
+                            post_format_label(&post, format),
+                            title,
                             post.status,
                             categories_names.join(", "),
                             tags_names.join(", "),
-                            truncate_chars_with_ellipsis(&html_to_plain_text(&post.content.rendered), 100)
+                            featured_media,
+                            note,
+                            content_body
                         )
                     }],
                     "isError": false
@@ -2541,10 +2850,7 @@ impl WordPressHandler {
                     .get("content")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| McpError::InvalidParams("Missing content".to_string()))?;
-                let status = args
-                    .get("status")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string());
+                let status = Some(post_status_or_draft(&args)?);
 
                 let post = self
                     .create_post(title.to_string(), content.to_string(), status)
@@ -2576,11 +2882,7 @@ impl WordPressHandler {
                     .unwrap_or("post")
                     .to_string();
 
-                let status = args
-                    .get("status")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("publish")
-                    .to_string();
+                let status = post_status_or_draft(&args)?;
 
                 let date = args
                     .get("date")
@@ -2610,7 +2912,7 @@ impl WordPressHandler {
                         title: title.to_string(),
                         content: content.to_string(),
                         post_type: post_type.clone(),
-                        status: status.clone(),
+                        status,
                         date,
                         categories,
                         tags,
@@ -2619,6 +2921,8 @@ impl WordPressHandler {
                     })
                     .await?;
 
+                // 要求した値ではなく、WordPressが実際に設定したステータスを
+                // 示す（権限不足でpendingに落とされる場合等がある）
                 Ok(serde_json::json!({
                     "content": [{
                         "type": "text",
@@ -2626,7 +2930,7 @@ impl WordPressHandler {
                             "Created {} with ID: {} (Status: {})",
                             if post_type == "page" { "page" } else { "post" },
                             display_opt_id(post.id),
-                            status
+                            post.status
                         )
                     }],
                     "isError": false
@@ -2651,34 +2955,75 @@ impl WordPressHandler {
             }
             "upload_media" => {
                 let args = params.arguments.unwrap_or_default();
-                let file_data_b64 = args
-                    .get("file_data")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| McpError::InvalidParams("Missing file_data".to_string()))?;
-                let filename = args
-                    .get("filename")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| McpError::InvalidParams("Missing filename".to_string()))?;
-                let mime_type = args
-                    .get("mime_type")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| McpError::InvalidParams("Missing mime_type".to_string()))?;
+                let arg_str = |key: &str| args.get(key).and_then(|v| v.as_str());
 
-                if file_data_b64.len() > MAX_UPLOAD_BASE64_LEN {
-                    return Err(McpError::InvalidParams(format!(
-                        "file_data too large: {} base64 chars (max {} bytes decoded)",
-                        file_data_b64.len(),
-                        MAX_UPLOAD_SIZE_BYTES
-                    )));
-                }
+                let (file_data, filename, mime_type) = match (
+                    arg_str("file_data"),
+                    arg_str("file_path"),
+                ) {
+                    (Some(_), Some(_)) => {
+                        return Err(McpError::InvalidParams(
+                            "Specify either file_data or file_path, not both".to_string(),
+                        ));
+                    }
+                    (None, None) => {
+                        return Err(McpError::InvalidParams(
+                            "Missing file_data or file_path".to_string(),
+                        ));
+                    }
+                    (Some(file_data_b64), None) => {
+                        let filename = arg_str("filename").ok_or_else(|| {
+                            McpError::InvalidParams("Missing filename".to_string())
+                        })?;
+                        let mime_type = arg_str("mime_type").ok_or_else(|| {
+                            McpError::InvalidParams("Missing mime_type".to_string())
+                        })?;
 
-                // Decode base64 file data
-                use base64::{engine::general_purpose, Engine as _};
-                let file_data = general_purpose::STANDARD
-                    .decode(file_data_b64)
-                    .map_err(|e| McpError::InvalidParams(format!("Invalid base64 data: {}", e)))?;
+                        if file_data_b64.len() > MAX_UPLOAD_BASE64_LEN {
+                            return Err(McpError::InvalidParams(format!(
+                                "file_data too large: {} base64 chars (max {} bytes decoded)",
+                                file_data_b64.len(),
+                                MAX_UPLOAD_SIZE_BYTES
+                            )));
+                        }
 
-                let media = self.upload_media(&file_data, filename, mime_type).await?;
+                        use base64::{engine::general_purpose, Engine as _};
+                        let file_data =
+                            general_purpose::STANDARD
+                                .decode(file_data_b64)
+                                .map_err(|e| {
+                                    McpError::InvalidParams(format!("Invalid base64 data: {}", e))
+                                })?;
+                        (file_data, filename.to_string(), mime_type.to_string())
+                    }
+                    (None, Some(file_path)) => {
+                        let path = resolve_upload_path(file_path, &self.upload_allowed_dirs)?;
+                        let file_data = read_upload_file(&path).await?;
+                        // 省略時はファイル名・拡張子から決める。中身は
+                        // いずれの場合もvalidate_uploadで検証する
+                        let filename = match arg_str("filename") {
+                            Some(name) => name.to_string(),
+                            None => path
+                                .file_name()
+                                .map(|name| name.to_string_lossy().into_owned())
+                                .unwrap_or_default(),
+                        };
+                        let mime_type = match arg_str("mime_type") {
+                                Some(mime_type) => mime_type.to_string(),
+                                None => mime_type_for_filename(&filename)
+                                    .ok_or_else(|| {
+                                        McpError::InvalidParams(format!(
+                                            "Cannot determine mime_type from the file extension. Allowed types: {}",
+                                            allowed_upload_mime_list()
+                                        ))
+                                    })?
+                                    .to_string(),
+                            };
+                        (file_data, filename, mime_type)
+                    }
+                };
+
+                let media = self.upload_media(&file_data, &filename, &mime_type).await?;
                 Ok(serde_json::json!({
                     "content": [{
                         "type": "text",
@@ -2809,18 +3154,20 @@ impl WordPressHandler {
                     .ok_or_else(|| {
                         McpError::InvalidParams("Missing featured_media_id".to_string())
                     })?;
+                let status = post_status_or_draft(&args)?;
 
                 let post = self
                     .create_post_with_featured_image(
                         title.to_string(),
                         content.to_string(),
                         featured_media_id,
+                        status,
                     )
                     .await?;
                 Ok(serde_json::json!({
                     "content": [{
                         "type": "text",
-                        "text": format!("Created post with featured image. Post ID: {}", display_opt_id(post.id))
+                        "text": format!("Created post with featured image. Post ID: {}, Status: {}", display_opt_id(post.id), post.status)
                     }],
                     "isError": false
                 }))
@@ -3004,10 +3351,7 @@ impl WordPressHandler {
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| McpError::InvalidParams("Missing content".to_string()))?;
 
-                let status = args
-                    .get("status")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string());
+                let status = Some(post_status_or_draft(&args)?);
 
                 let categories: Option<Vec<u64>> = args
                     .get("categories")
@@ -3198,11 +3542,7 @@ impl WordPressHandler {
                     .unwrap_or("post")
                     .to_string();
 
-                let status = args
-                    .get("status")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("publish")
-                    .to_string();
+                let status = post_status_or_draft(&args)?;
 
                 let categories = args
                     .get("categories")
@@ -3420,7 +3760,7 @@ impl McpHandler for WordPressHandler {
             },
             Tool {
                 name: "get_post".to_string(),
-                description: "Retrieve a single WordPress post or page by ID".to_string(),
+                description: "Retrieve a single WordPress post or page by ID, including its full content. By default the content is the editable source (with Gutenberg block markup), which can be passed back to update_post unchanged.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -3433,6 +3773,12 @@ impl McpHandler for WordPressHandler {
                             "enum": ["post", "page"],
                             "description": "Content type to retrieve. Defaults to 'post'.",
                             "default": "post"
+                        },
+                        "format": {
+                            "type": "string",
+                            "enum": ["raw", "rendered", "text"],
+                            "description": "How to return the content. 'raw': editable source (requires edit permission; falls back to rendered HTML otherwise). 'rendered': HTML as displayed on the site. 'text': plain text with tags removed. Defaults to 'raw'.",
+                            "default": "raw"
                         }
                     },
                     "required": ["post_id"]
@@ -3454,7 +3800,7 @@ impl McpHandler for WordPressHandler {
                         },
                         "status": {
                             "type": "string",
-                            "enum": ["publish", "draft", "private"],
+                            "enum": ["publish", "draft", "pending", "private"],
                             "description": "Post status. Defaults to 'draft' to avoid accidental publication.",
                             "default": "draft"
                         }
@@ -3485,9 +3831,9 @@ impl McpHandler for WordPressHandler {
                         },
                         "status": {
                             "type": "string",
-                            "description": "Post status: 'publish' (公開), 'draft' (下書き), 'private' (非公開), 'future' (予約投稿)",
-                            "enum": ["publish", "draft", "private", "future"],
-                            "default": "publish"
+                            "description": "Post status: 'publish' (公開), 'draft' (下書き), 'pending' (レビュー待ち), 'private' (非公開), 'future' (予約投稿、'date'が必須). Defaults to 'draft' so nothing is published unintentionally.",
+                            "enum": ["publish", "draft", "pending", "private", "future"],
+                            "default": "draft"
                         },
                         "date": {
                             "type": "string",
@@ -3533,7 +3879,7 @@ impl McpHandler for WordPressHandler {
             Tool {
                 name: "upload_media".to_string(),
                 description: format!(
-                    "Upload media file to WordPress. The filename extension and file content must match mime_type. Size is capped at {} MiB, but the transport's message size limit (including base64 overhead) usually applies first",
+                    "Upload media file to WordPress. Pass either file_data (base64) or file_path. The filename extension and file content must match mime_type. Size is capped at {} MiB; with file_data, the transport's message size limit (including base64 overhead) usually applies first",
                     MAX_UPLOAD_SIZE_BYTES / (1024 * 1024)
                 ),
                 input_schema: serde_json::json!({
@@ -3541,21 +3887,25 @@ impl McpHandler for WordPressHandler {
                     "properties": {
                         "file_data": {
                             "type": "string",
-                            "description": "Base64 encoded file data"
+                            "description": "Base64 encoded file data. Requires filename and mime_type. Use file_path instead for files on this machine when it is enabled"
+                        },
+                        "file_path": {
+                            "type": "string",
+                            "description": "Absolute path of a file to upload, read by the mcp-rs server. Only files inside the folders listed in the server's upload_allowed_dirs setting can be read (disabled by default). filename and mime_type default to the file's name and extension"
                         },
                         "filename": {
                             "type": "string",
-                            "description": "Original filename; its extension must match mime_type (e.g., 'photo.jpg' for image/jpeg)"
+                            "description": "Original filename; its extension must match mime_type (e.g., 'photo.jpg' for image/jpeg). Required with file_data"
                         },
                         "mime_type": {
                             "type": "string",
                             "description": format!(
-                                "MIME type of the file. Allowed: {}",
+                                "MIME type of the file. Required with file_data. Allowed: {}",
                                 allowed_upload_mime_list()
                             )
                         }
                     },
-                    "required": ["file_data", "filename", "mime_type"]
+                    "required": []
                 }),
             },
             Tool {
@@ -3619,7 +3969,7 @@ impl McpHandler for WordPressHandler {
             },
             Tool {
                 name: "delete_media".to_string(),
-                description: "Delete WordPress media file".to_string(),
+                description: "Delete WordPress media file. WordPress does not support moving media to the trash by default, so force: true is usually required".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -3629,7 +3979,7 @@ impl McpHandler for WordPressHandler {
                         },
                         "force": {
                             "type": "boolean",
-                            "description": "Force delete (bypass trash)"
+                            "description": "Permanently delete (bypass trash). Usually required for media, since WordPress does not support trashing media by default"
                         }
                     },
                     "required": ["media_id"]
@@ -3652,6 +4002,12 @@ impl McpHandler for WordPressHandler {
                         "featured_media_id": {
                             "type": "number",
                             "description": "Media ID for featured image"
+                        },
+                        "status": {
+                            "type": "string",
+                            "description": "Post status. Defaults to 'draft' so nothing is published unintentionally. 'future' is not available because this tool has no date parameter.",
+                            "enum": ["publish", "draft", "pending", "private"],
+                            "default": "draft"
                         }
                     },
                     "required": ["title", "content", "featured_media_id"]
@@ -3849,7 +4205,7 @@ impl McpHandler for WordPressHandler {
                         },
                         "status": {
                             "type": "string",
-                            "enum": ["publish", "draft", "private"],
+                            "enum": ["publish", "draft", "pending", "private"],
                             "description": "Post status. Defaults to 'draft' to avoid accidental publication.",
                             "default": "draft"
                         },
@@ -4005,8 +4361,9 @@ impl McpHandler for WordPressHandler {
                         },
                         "status": {
                             "type": "string",
-                            "description": "Post status",
-                            "enum": ["publish", "draft", "private", "future"]
+                            "description": "Post status. Defaults to 'draft' so nothing is published unintentionally. 'future' is not available because this tool has no date parameter.",
+                            "enum": ["publish", "draft", "pending", "private"],
+                            "default": "draft"
                         },
                         "categories": {
                             "type": "array",
@@ -4233,6 +4590,7 @@ mod tests {
             timeout_seconds: Some(30),
             rate_limit: Some(RateLimitConfig::default()),
             encrypted_credentials: None,
+            upload_allowed_dirs: Vec::new(),
         };
 
         let result = WordPressHandler::try_new(insecure_config);
@@ -4253,6 +4611,7 @@ mod tests {
             timeout_seconds: Some(30),
             rate_limit: Some(RateLimitConfig::default()),
             encrypted_credentials: None,
+            upload_allowed_dirs: Vec::new(),
         };
 
         let result = WordPressHandler::try_new(secure_config);
@@ -4269,6 +4628,7 @@ mod tests {
             timeout_seconds: Some(30),
             rate_limit: Some(RateLimitConfig::default()),
             encrypted_credentials: None,
+            upload_allowed_dirs: Vec::new(),
         };
         let handler = WordPressHandler::try_new(config).unwrap();
 
@@ -4292,6 +4652,7 @@ mod tests {
                 timeout_seconds: Some(30),
                 rate_limit: Some(RateLimitConfig::default()),
                 encrypted_credentials: None,
+                upload_allowed_dirs: Vec::new(),
             };
 
             let result = WordPressHandler::try_new(config);
@@ -4311,6 +4672,7 @@ mod tests {
             timeout_seconds: Some(30),
             rate_limit: Some(rate_limit),
             encrypted_credentials: None,
+            upload_allowed_dirs: Vec::new(),
         };
         WordPressHandler::try_new(config).unwrap()
     }
@@ -4585,14 +4947,17 @@ mod tests {
             link: Some("https://example.com/test".to_string()),
             title: WordPressContent {
                 rendered: "Test Post".to_string(),
+                raw: None,
                 protected: false,
             },
             content: WordPressContent {
                 rendered: "full content".to_string(),
+                raw: None,
                 protected: false,
             },
             excerpt: Some(WordPressContent {
                 rendered: long_excerpt,
+                raw: None,
                 protected: false,
             }),
             author: None,
@@ -4715,6 +5080,7 @@ mod tests {
             link: None,
             title: Some(WordPressContent {
                 rendered: "Test Image".to_string(),
+                raw: None,
                 protected: false,
             }),
             author: None,
@@ -5011,6 +5377,421 @@ mod tests {
         assert_eq!(entries[0].result, Some("FAILURE".to_string()));
     }
 
+    const PNG_HEADER: &[u8] = &[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+
+    fn handler_with_upload_dirs(dirs: &[&Path]) -> WordPressHandler {
+        let config = WordPressConfig {
+            // 検証で拒否されるケースのみを試すため、到達可能である必要はない
+            url: "https://example.invalid".to_string(),
+            username: "test".to_string(),
+            password: "test".to_string(),
+            enabled: Some(true),
+            timeout_seconds: Some(30),
+            rate_limit: Some(RateLimitConfig::default()),
+            encrypted_credentials: None,
+            upload_allowed_dirs: dirs
+                .iter()
+                .map(|d| d.to_string_lossy().into_owned())
+                .collect(),
+        };
+        WordPressHandler::try_new(config).unwrap()
+    }
+
+    async fn call_upload(
+        handler: &WordPressHandler,
+        args: &[(&str, serde_json::Value)],
+    ) -> Result<serde_json::Value, McpError> {
+        let args: HashMap<String, serde_json::Value> = args
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.clone()))
+            .collect();
+        handler
+            .call_tool(ToolCallParams {
+                name: "upload_media".to_string(),
+                arguments: Some(args),
+            })
+            .await
+    }
+
+    fn invalid_params_message(result: Result<serde_json::Value, McpError>) -> String {
+        match result {
+            Err(McpError::InvalidParams(msg)) => msg,
+            other => panic!("expected InvalidParams, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_canonicalize_upload_dirs() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a.png");
+        std::fs::write(&file, PNG_HEADER).unwrap();
+
+        let dirs = canonicalize_upload_dirs(&[dir.path().to_string_lossy().into_owned()]).unwrap();
+        assert_eq!(dirs, vec![std::fs::canonicalize(dir.path()).unwrap()]);
+
+        assert!(canonicalize_upload_dirs(&[]).unwrap().is_empty());
+        // 存在しないフォルダ・ファイルは起動時にエラー
+        let missing = dir.path().join("missing").to_string_lossy().into_owned();
+        assert!(canonicalize_upload_dirs(&[missing]).is_err());
+        assert!(canonicalize_upload_dirs(&[file.to_string_lossy().into_owned()]).is_err());
+    }
+
+    #[test]
+    fn test_resolve_upload_path() {
+        let root = tempfile::tempdir().unwrap();
+        let allowed = root.path().join("allowed");
+        let outside = root.path().join("outside");
+        std::fs::create_dir(&allowed).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        std::fs::write(allowed.join("a.png"), PNG_HEADER).unwrap();
+        std::fs::write(outside.join("secret.png"), PNG_HEADER).unwrap();
+        let allowed_dirs =
+            canonicalize_upload_dirs(&[allowed.to_string_lossy().into_owned()]).unwrap();
+        let resolve = |p: &Path| resolve_upload_path(&p.to_string_lossy(), &allowed_dirs);
+
+        // 許可フォルダ内のファイル
+        assert_eq!(
+            resolve(&allowed.join("a.png")).unwrap(),
+            std::fs::canonicalize(allowed.join("a.png")).unwrap()
+        );
+
+        // 許可フォルダ外・..での脱出・存在しないファイル・フォルダ自体は、
+        // いずれも同じエラー（外のファイルの有無が分からないように）
+        let not_allowed = "file_path must be an existing file inside one of upload_allowed_dirs";
+        for path in [
+            outside.join("secret.png"),
+            allowed.join("..").join("outside").join("secret.png"),
+            allowed.join("missing.png"),
+            allowed.clone(),
+        ] {
+            let msg = invalid_params_message(resolve(&path).map(|_| serde_json::Value::Null));
+            assert_eq!(msg, not_allowed, "path: {}", path.display());
+        }
+
+        // 相対パスは受け付けない
+        let msg = invalid_params_message(
+            resolve_upload_path("a.png", &allowed_dirs).map(|_| serde_json::Value::Null),
+        );
+        assert!(msg.contains("absolute"), "got: {}", msg);
+
+        // 許可フォルダ未設定なら無効
+        let msg = invalid_params_message(
+            resolve_upload_path(&allowed.join("a.png").to_string_lossy(), &[])
+                .map(|_| serde_json::Value::Null),
+        );
+        assert!(msg.contains("upload_allowed_dirs"), "got: {}", msg);
+    }
+
+    #[test]
+    fn test_resolve_upload_path_rejects_symlink_escaping_allowed_dir() {
+        let root = tempfile::tempdir().unwrap();
+        let allowed = root.path().join("allowed");
+        let outside = root.path().join("outside");
+        std::fs::create_dir(&allowed).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        std::fs::write(outside.join("secret.png"), PNG_HEADER).unwrap();
+        let link = allowed.join("link.png");
+
+        #[cfg(unix)]
+        let created = std::os::unix::fs::symlink(outside.join("secret.png"), &link).is_ok();
+        // Windowsではシンボリックリンクの作成に権限（開発者モード等）が
+        // 必要なため、作れない環境ではこのテストを実質スキップする
+        #[cfg(windows)]
+        let created = std::os::windows::fs::symlink_file(outside.join("secret.png"), &link).is_ok();
+        if !created {
+            eprintln!("skipping: cannot create a symlink in this environment");
+            return;
+        }
+
+        let allowed_dirs =
+            canonicalize_upload_dirs(&[allowed.to_string_lossy().into_owned()]).unwrap();
+        assert!(resolve_upload_path(&link.to_string_lossy(), &allowed_dirs).is_err());
+    }
+
+    /// Windowsのジャンクション（ディレクトリへのリンク）は権限なしで
+    /// 作れるため、Windowsでもリンクによる脱出を確実に検証できる
+    #[cfg(windows)]
+    #[test]
+    fn test_resolve_upload_path_rejects_junction_escaping_allowed_dir() {
+        let root = tempfile::tempdir().unwrap();
+        let allowed = root.path().join("allowed");
+        let outside = root.path().join("outside");
+        std::fs::create_dir(&allowed).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        std::fs::write(outside.join("secret.png"), PNG_HEADER).unwrap();
+        let junction = allowed.join("junction");
+
+        let status = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&junction)
+            .arg(&outside)
+            .stdout(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success(), "mklink /J failed");
+
+        let allowed_dirs =
+            canonicalize_upload_dirs(&[allowed.to_string_lossy().into_owned()]).unwrap();
+        let msg = invalid_params_message(
+            resolve_upload_path(
+                &junction.join("secret.png").to_string_lossy(),
+                &allowed_dirs,
+            )
+            .map(|_| serde_json::Value::Null),
+        );
+        assert_eq!(
+            msg,
+            "file_path must be an existing file inside one of upload_allowed_dirs"
+        );
+    }
+
+    #[test]
+    fn test_mime_type_for_filename() {
+        assert_eq!(mime_type_for_filename("a.png"), Some("image/png"));
+        assert_eq!(mime_type_for_filename("a.JPG"), Some("image/jpeg"));
+        assert_eq!(mime_type_for_filename("a.pdf"), Some("application/pdf"));
+        assert_eq!(mime_type_for_filename("a.svg"), None);
+        assert_eq!(mime_type_for_filename(".env"), None);
+        assert_eq!(mime_type_for_filename("noext"), None);
+    }
+
+    #[tokio::test]
+    async fn test_read_upload_file_rejects_oversized_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("big.png");
+        std::fs::write(&path, vec![0u8; MAX_UPLOAD_SIZE_BYTES + 1]).unwrap();
+        let msg = invalid_params_message(
+            read_upload_file(&path)
+                .await
+                .map(|_| serde_json::Value::Null),
+        );
+        assert!(msg.contains("too large"), "got: {}", msg);
+
+        std::fs::write(&path, PNG_HEADER).unwrap();
+        assert_eq!(read_upload_file(&path).await.unwrap(), PNG_HEADER);
+    }
+
+    #[tokio::test]
+    async fn test_upload_media_file_path_argument_validation() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake_png = dir.path().join("fake.png");
+        std::fs::write(&fake_png, b"this is not a png").unwrap();
+        let handler = handler_with_upload_dirs(&[dir.path()]);
+        let fake_png_arg = serde_json::json!(fake_png.to_string_lossy());
+
+        // 拡張子だけ.pngのテキストは、中身の検証で拒否される
+        let msg = invalid_params_message(
+            call_upload(&handler, &[("file_path", fake_png_arg.clone())]).await,
+        );
+        assert!(
+            msg.contains("does not match declared mime_type"),
+            "got: {}",
+            msg
+        );
+
+        // file_dataとfile_pathの同時指定・どちらも無し
+        let msg = invalid_params_message(
+            call_upload(
+                &handler,
+                &[
+                    ("file_path", fake_png_arg),
+                    ("file_data", serde_json::json!("AAAA")),
+                ],
+            )
+            .await,
+        );
+        assert!(msg.contains("not both"), "got: {}", msg);
+        let msg = invalid_params_message(call_upload(&handler, &[]).await);
+        assert!(
+            msg.contains("Missing file_data or file_path"),
+            "got: {}",
+            msg
+        );
+
+        // 拡張子からMIMEタイプを決められないファイル
+        let env_file = dir.path().join("x.env");
+        std::fs::write(&env_file, b"SECRET=1").unwrap();
+        let msg = invalid_params_message(
+            call_upload(
+                &handler,
+                &[("file_path", serde_json::json!(env_file.to_string_lossy()))],
+            )
+            .await,
+        );
+        assert!(msg.contains("Cannot determine mime_type"), "got: {}", msg);
+
+        // upload_allowed_dirs未設定のハンドラーではfile_path自体が無効
+        let disabled = handler_with_upload_dirs(&[]);
+        let msg = invalid_params_message(
+            call_upload(
+                &disabled,
+                &[("file_path", serde_json::json!(fake_png.to_string_lossy()))],
+            )
+            .await,
+        );
+        assert!(msg.contains("file_path is disabled"), "got: {}", msg);
+    }
+
+    /// 決まった応答を返し、受けたリクエスト数を数えるだけのHTTPサーバー。
+    /// 再送の有無をネットワーク越しに確かめるために使う。
+    async fn spawn_fixed_response_server(
+        status_line: &'static str,
+        body: String,
+    ) -> (String, Arc<std::sync::atomic::AtomicUsize>) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let count = Arc::new(AtomicUsize::new(0));
+        let server_count = count.clone();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    return;
+                };
+                server_count.fetch_add(1, Ordering::SeqCst);
+                let body = body.clone();
+                tokio::spawn(async move {
+                    // ヘッダーの終わりまで読む（本文は読み捨てる）
+                    let mut buf = Vec::new();
+                    let mut chunk = [0u8; 4096];
+                    while !buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                        match socket.read(&mut chunk).await {
+                            Ok(0) | Err(_) => return,
+                            Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                        }
+                    }
+                    let response = format!(
+                        "HTTP/1.1 {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        status_line,
+                        body.len(),
+                        body
+                    );
+                    let _ = socket.write_all(response.as_bytes()).await;
+                    let _ = socket.shutdown().await;
+                });
+            }
+        });
+        (format!("http://{}", addr), count)
+    }
+
+    /// テスト用のローカルHTTPサーバーに向けたハンドラー（`try_new`は
+    /// HTTPSを強制するため、フィールドを直接組み立てる）
+    fn handler_for_local_server(base_url: String) -> WordPressHandler {
+        WordPressHandler {
+            client: Client::new(),
+            base_url,
+            secure_credentials: None,
+            username: None,
+            password: None,
+            rate_limiter: Arc::new(RateLimiter::new(RateLimitConfig::default())),
+            audit_logger: Arc::new(AuditLogger::with_defaults()),
+            upload_allowed_dirs: Arc::new(Vec::new()),
+        }
+    }
+
+    fn sample_media_json(id: u64) -> serde_json::Value {
+        serde_json::json!({
+            "id": id,
+            "status": "inherit",
+            "source_url": "https://example.com/wp-content/uploads/a.png"
+        })
+    }
+
+    #[tokio::test]
+    async fn test_delete_media_force_parses_deleted_previous_response() {
+        // force=trueの応答は{deleted, previous}の形。解析でき、再送しないこと
+        let body = serde_json::json!({"deleted": true, "previous": sample_media_json(383)});
+        let (base_url, count) = spawn_fixed_response_server("200 OK", body.to_string()).await;
+        let handler = handler_for_local_server(base_url);
+
+        let media = handler.delete_media(383, Some(true)).await.unwrap();
+        assert_eq!(media.id, Some(383));
+        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn test_delete_media_trash_response_still_parses() {
+        // ゴミ箱移動に対応したサイトでは、メディアそのものが返る
+        let body = sample_media_json(7);
+        let (base_url, _) = spawn_fixed_response_server("200 OK", body.to_string()).await;
+        let handler = handler_for_local_server(base_url);
+
+        let media = handler.delete_media(7, None).await.unwrap();
+        assert_eq!(media.id, Some(7));
+    }
+
+    #[tokio::test]
+    async fn test_unparseable_success_response_is_not_resent() {
+        let (base_url, count) =
+            spawn_fixed_response_server("200 OK", r#"{"unexpected":true}"#.to_string()).await;
+        let handler = handler_for_local_server(base_url);
+
+        let result = handler.delete_media(1, Some(true)).await;
+        assert!(
+            matches!(result, Err(McpError::ExternalApi(ref msg)) if msg.contains("processed the request")),
+            "got: {:?}",
+            result
+        );
+        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn test_unparseable_success_response_is_not_resent_for_upload() {
+        // upload_media（execute_request_with_retry_rebuilding）も同じ
+        let (base_url, count) =
+            spawn_fixed_response_server("201 Created", r#"{"unexpected":true}"#.to_string()).await;
+        let handler = handler_for_local_server(base_url);
+
+        let result = handler.upload_media(PNG_HEADER, "a.png", "image/png").await;
+        assert!(
+            matches!(result, Err(McpError::ExternalApi(_))),
+            "got: {:?}",
+            result
+        );
+        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn test_not_implemented_is_not_retried() {
+        // メディアのゴミ箱移動に未対応のサイトは501を返す。再送しても同じ
+        let body = r#"{"code":"rest_trash_not_supported","message":"The post does not support trashing. Set 'force=true' to delete."}"#;
+        let (base_url, count) =
+            spawn_fixed_response_server("501 Not Implemented", body.to_string()).await;
+        let handler = handler_for_local_server(base_url);
+
+        let result = handler.delete_media(1, None).await;
+        assert!(
+            matches!(result, Err(McpError::ExternalApi(ref msg)) if msg.contains("rest_trash_not_supported")),
+            "got: {:?}",
+            result
+        );
+        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn test_is_retryable_status() {
+        use reqwest::StatusCode;
+        assert!(is_retryable_status(StatusCode::INTERNAL_SERVER_ERROR));
+        assert!(is_retryable_status(StatusCode::BAD_GATEWAY));
+        assert!(is_retryable_status(StatusCode::SERVICE_UNAVAILABLE));
+        assert!(is_retryable_status(StatusCode::TOO_MANY_REQUESTS));
+        assert!(!is_retryable_status(StatusCode::NOT_IMPLEMENTED));
+        assert!(!is_retryable_status(StatusCode::NOT_FOUND));
+        assert!(!is_retryable_status(StatusCode::OK));
+    }
+
+    #[test]
+    fn test_validate_upload_rejects_empty_file() {
+        let result = validate_upload(&[], "a.png", "image/png");
+        assert!(
+            matches!(result, Err(McpError::InvalidParams(ref msg)) if msg == "File is empty"),
+            "got: {:?}",
+            result
+        );
+    }
+
     #[tokio::test]
     async fn test_call_tool_rejects_oversized_base64_before_decoding() {
         let handler = rate_limited_handler(RateLimitConfig::default());
@@ -5034,5 +5815,355 @@ mod tests {
             "got: {:?}",
             result
         );
+    }
+
+    #[test]
+    fn test_is_edit_context_denied_matches_format_wp_error_output() {
+        // 編集権限の不足（rest_forbidden_context）に加え、WAF等が別のコードや
+        // HTMLで拒否した場合も、表示用コンテキストで取り直す
+        for (status, body) in [
+            (
+                reqwest::StatusCode::UNAUTHORIZED,
+                r#"{"code":"rest_forbidden_context","message":"Sorry, you are not allowed to edit this post."}"#,
+            ),
+            (
+                reqwest::StatusCode::FORBIDDEN,
+                r#"{"code":"rest_forbidden_context","message":"Sorry, you are not allowed to edit this post."}"#,
+            ),
+            (
+                reqwest::StatusCode::FORBIDDEN,
+                "<html><body>Blocked by security plugin</body></html>",
+            ),
+        ] {
+            assert!(is_edit_context_denied(&McpError::ExternalApi(
+                format_wp_error(status, body)
+            )));
+        }
+
+        // 存在しない投稿やサーバーエラー、接続エラーでは取り直さない
+        assert!(!is_edit_context_denied(&McpError::ExternalApi(
+            format_wp_error(
+                reqwest::StatusCode::NOT_FOUND,
+                r#"{"code":"rest_post_invalid_id","message":"Invalid post ID."}"#,
+            )
+        )));
+        assert!(!is_edit_context_denied(&McpError::ExternalApi(format!(
+            "{} (after 3 attempts)",
+            format_wp_error(reqwest::StatusCode::INTERNAL_SERVER_ERROR, "")
+        ))));
+        assert!(!is_edit_context_denied(&McpError::Other(
+            "WordPress API error 401".to_string()
+        )));
+    }
+
+    #[test]
+    fn test_post_content_format_parse() {
+        use serde_json::json;
+        assert_eq!(
+            PostContentFormat::parse(None).unwrap(),
+            PostContentFormat::Raw
+        );
+        assert_eq!(
+            PostContentFormat::parse(Some(&json!(null))).unwrap(),
+            PostContentFormat::Raw
+        );
+        assert_eq!(
+            PostContentFormat::parse(Some(&json!("rendered"))).unwrap(),
+            PostContentFormat::Rendered
+        );
+        assert_eq!(
+            PostContentFormat::parse(Some(&json!("text"))).unwrap(),
+            PostContentFormat::Text
+        );
+        // 未知の文字列も、文字列以外の値も、既定値で黙って続けずにエラーにする
+        for invalid in [json!("full"), json!(1), json!(true)] {
+            assert!(matches!(
+                PostContentFormat::parse(Some(&invalid)),
+                Err(McpError::InvalidParams(_))
+            ));
+        }
+    }
+    #[test]
+    fn test_post_content_for_display_returns_full_content() {
+        let paragraph = "日本語の本文です。".repeat(50);
+        let raw = format!(
+            "<!-- wp:paragraph -->\n<p>{}</p>\n<!-- /wp:paragraph -->",
+            paragraph
+        );
+        let content = WordPressContent {
+            rendered: format!("<p>{}</p>\n", paragraph),
+            raw: Some(raw.clone()),
+            protected: false,
+        };
+
+        // 原文はブロック区切りを含めてそのまま、切り詰めずに返す
+        assert_eq!(
+            post_content_for_display(&content, PostContentFormat::Raw),
+            raw
+        );
+        assert_eq!(
+            post_content_for_display(&content, PostContentFormat::Rendered),
+            content.rendered
+        );
+
+        // プレーンテキストも100文字で切り詰めない
+        let text = post_content_for_display(&content, PostContentFormat::Text);
+        assert_eq!(text.trim(), paragraph);
+        assert!(text.chars().count() > 100);
+    }
+
+    fn post_with_content(content: WordPressContent) -> WordPressPost {
+        WordPressPost {
+            id: Some(1),
+            date: None,
+            date_gmt: None,
+            guid: None,
+            modified: None,
+            modified_gmt: None,
+            slug: None,
+            status: "publish".to_string(),
+            post_type: Some("post".to_string()),
+            link: None,
+            title: WordPressContent {
+                rendered: "Don&#8217;t".to_string(),
+                raw: content.raw.as_ref().map(|_| "Don't".to_string()),
+                protected: false,
+            },
+            content,
+            excerpt: None,
+            author: None,
+            featured_media: None,
+            categories: None,
+            tags: None,
+        }
+    }
+
+    #[test]
+    fn test_featured_media_label() {
+        // WordPressは未設定を0で返す。欠落も未設定として扱う
+        assert_eq!(featured_media_label(Some(0), None), "none");
+        assert_eq!(featured_media_label(None, None), "none");
+        assert_eq!(
+            featured_media_label(Some(0), Some("https://example.com/a.png")),
+            "none"
+        );
+        // URLが取れた場合はIDとURL
+        assert_eq!(
+            featured_media_label(Some(123), Some("https://example.com/a.png")),
+            "123 (https://example.com/a.png)"
+        );
+        // URLが取れなかった（メディア取得失敗・空文字）場合はIDのみ
+        assert_eq!(featured_media_label(Some(123), None), "123");
+        assert_eq!(featured_media_label(Some(123), Some("")), "123");
+    }
+
+    #[test]
+    fn test_post_format_label_reports_raw_fallback() {
+        let with_raw = post_with_content(WordPressContent {
+            rendered: "<p>x</p>".to_string(),
+            raw: Some("x".to_string()),
+            protected: false,
+        });
+        assert_eq!(post_format_label(&with_raw, PostContentFormat::Raw), "raw");
+        assert_eq!(
+            post_content_for_display(&with_raw.title, PostContentFormat::Raw),
+            "Don't"
+        );
+
+        // 原文を要求したが取れなかった場合、タイトル・本文とも表示用HTMLに
+        // なり、ラベルでその旨を示す
+        let without_raw = post_with_content(WordPressContent {
+            rendered: "<p>x</p>".to_string(),
+            raw: None,
+            protected: false,
+        });
+        assert!(post_format_label(&without_raw, PostContentFormat::Raw)
+            .contains("raw source unavailable"));
+        assert_eq!(
+            post_content_for_display(&without_raw.title, PostContentFormat::Raw),
+            "Don&#8217;t"
+        );
+        assert_eq!(
+            post_format_label(&without_raw, PostContentFormat::Rendered),
+            "rendered HTML"
+        );
+    }
+
+    #[test]
+    fn test_protected_content_note() {
+        // 閲覧パスワード付きで、表示用コンテキストのため本文が空のとき
+        let hidden = post_with_content(WordPressContent {
+            rendered: String::new(),
+            raw: None,
+            protected: true,
+        });
+        assert!(protected_content_note(&hidden).is_some());
+
+        // 編集用コンテキストで原文が取れていれば注意書きは不要
+        let editable = post_with_content(WordPressContent {
+            rendered: String::new(),
+            raw: Some("secret body".to_string()),
+            protected: true,
+        });
+        assert!(protected_content_note(&editable).is_none());
+
+        let public = post_with_content(WordPressContent {
+            rendered: "<p>x</p>".to_string(),
+            raw: None,
+            protected: false,
+        });
+        assert!(protected_content_note(&public).is_none());
+    }
+
+    #[test]
+    fn test_wordpress_content_raw_is_optional_and_not_serialized_when_absent() {
+        // context=viewの応答（rawなし）とcontext=editの応答（rawあり）の両方を読める
+        let view: WordPressContent =
+            serde_json::from_str(r#"{"rendered":"<p>x</p>","protected":false}"#).unwrap();
+        assert_eq!(view.raw, None);
+        let edit: WordPressContent =
+            serde_json::from_str(r#"{"rendered":"<p>x</p>","raw":"x","protected":false}"#).unwrap();
+        assert_eq!(edit.raw.as_deref(), Some("x"));
+
+        // rawがNoneのときは送信内容に含めない（既存の送信内容を変えない）
+        let serialized = serde_json::to_value(&view).unwrap();
+        assert!(serialized.get("raw").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_get_post_rejects_invalid_format_before_network() {
+        let handler = rate_limited_handler(RateLimitConfig::default());
+        let mut args = HashMap::new();
+        args.insert("post_id".to_string(), serde_json::json!(1));
+        args.insert("format".to_string(), serde_json::json!("full"));
+
+        let result = handler
+            .call_tool(ToolCallParams {
+                name: "get_post".to_string(),
+                arguments: Some(args),
+            })
+            .await;
+
+        assert!(matches!(result, Err(McpError::InvalidParams(_))));
+    }
+
+    #[test]
+    fn test_advanced_post_body_sends_title_and_content_as_strings() {
+        // create_post_with_featured_imageは以前、読み取り用のWordPressPostを
+        // そのまま送っており、タイトル・本文が{"rendered": ...}になっていた。
+        // WordPressは書き込み時にこれを読まず、HTTP 400（empty_content）に
+        // なっていた。現在はこの関数を経由する
+        let body = advanced_post_body(PostCreateParams {
+            title: "Hello".to_string(),
+            content: "<p>Body</p>".to_string(),
+            featured_media_id: Some(42),
+            ..Default::default()
+        });
+
+        assert_eq!(body["title"], serde_json::json!("Hello"));
+        assert_eq!(body["content"], serde_json::json!("<p>Body</p>"));
+        assert_eq!(body["featured_media"], serde_json::json!(42));
+        assert_eq!(body["status"], serde_json::json!("draft"));
+    }
+
+    #[test]
+    fn test_post_status_or_draft() {
+        use serde_json::json;
+        let mut args = HashMap::new();
+        assert_eq!(post_status_or_draft(&args).unwrap(), "draft");
+
+        args.insert("status".to_string(), json!(null));
+        assert_eq!(post_status_or_draft(&args).unwrap(), "draft");
+
+        args.insert("status".to_string(), json!("publish"));
+        assert_eq!(post_status_or_draft(&args).unwrap(), "publish");
+
+        // 文字列以外は、既定値で黙って続けずに入力エラーにする
+        args.insert("status".to_string(), json!(1));
+        assert!(matches!(
+            post_status_or_draft(&args),
+            Err(McpError::InvalidParams(_))
+        ));
+    }
+
+    #[test]
+    fn test_validate_post_status() {
+        // 標準のステータスに加え、プラグインが追加する独自のステータスも
+        // 拒否しない（不正な値はWordPressのエラーとして返る）
+        for status in ["publish", "draft", "pending", "private", "pitch"] {
+            assert!(validate_post_status(status, None).is_ok(), "{}", status);
+        }
+        // 予約投稿は日付があれば受け付ける
+        assert!(validate_post_status("future", Some("2030-01-01T09:00:00")).is_ok());
+
+        // 日付なし（空文字を含む）のfutureは、WordPressが即座に公開して
+        // しまうため拒否する。日付を指定できるツールも案内する
+        for date in [None, Some(""), Some("  ")] {
+            assert!(
+                matches!(
+                    validate_post_status("future", date),
+                    Err(McpError::InvalidParams(ref msg)) if msg.contains("create_advanced_post")
+                ),
+                "date: {:?}",
+                date
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_create_advanced_post_validates_status_before_network() {
+        // 投稿作成系のツールはすべてcreate_advanced_postを経由するため、
+        // そこでの検証がすべてのツールに効く（到達不能なホストへの
+        // ネットワークI/Oより前に拒否されること）
+        let handler = rate_limited_handler(RateLimitConfig::default());
+        let result = handler
+            .create_advanced_post(PostCreateParams {
+                title: "t".to_string(),
+                content: "c".to_string(),
+                status: "future".to_string(),
+                ..Default::default()
+            })
+            .await;
+        assert!(matches!(result, Err(McpError::InvalidParams(_))));
+
+        let mut args = HashMap::new();
+        args.insert("title".to_string(), serde_json::json!("t"));
+        args.insert("content".to_string(), serde_json::json!("c"));
+        args.insert("featured_media_id".to_string(), serde_json::json!(1));
+        args.insert("status".to_string(), serde_json::json!("future"));
+        let result = handler
+            .call_tool(ToolCallParams {
+                name: "create_post_with_featured_image".to_string(),
+                arguments: Some(args),
+            })
+            .await;
+        assert!(matches!(result, Err(McpError::InvalidParams(_))));
+    }
+
+    #[test]
+    fn test_post_create_params_default_status_is_draft() {
+        assert_eq!(PostCreateParams::default().status, "draft");
+    }
+
+    #[tokio::test]
+    async fn test_post_creation_tools_document_draft_default() {
+        // ツール定義上の既定値も、実装の既定（draft）とそろっていること
+        let tools = rate_limited_handler(RateLimitConfig::default())
+            .list_tools()
+            .await
+            .unwrap();
+        for name in [
+            "create_advanced_post",
+            "create_post_with_embeds",
+            "create_post_with_featured_image",
+        ] {
+            let tool = tools.iter().find(|t| t.name == name).unwrap();
+            assert_eq!(
+                tool.input_schema["properties"]["status"]["default"],
+                serde_json::json!("draft"),
+                "{} should default to draft",
+                name
+            );
+        }
     }
 }

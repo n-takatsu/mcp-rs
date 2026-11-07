@@ -44,7 +44,7 @@ MCP-RS provides comprehensive WordPress integration through the WordPress REST A
 - **File Upload**: Upload images, documents, and media files
 - **Featured Images**: Set and manage post featured images
 - **Multiple Formats**: Support for JPEG, PNG, GIF, PDF, and more
-- **Base64 Processing**: Handle base64-encoded file data
+- **Base64 or Local Files**: Upload base64-encoded data, or a local file from an allowed folder (`upload_allowed_dirs`)
 
 ## 🔐 Security
 
@@ -90,6 +90,13 @@ To keep the Application Password out of the config file in plaintext, use `encry
 
 When `enabled = true`, either `username`/`password` or `encrypted_credentials` must be set, otherwise startup fails.
 
+To let `upload_media` read local files with `file_path`, list the folders it may read from. It is disabled when the list is empty (the default). Startup fails if a listed folder does not exist.
+
+```toml
+[handlers.wordpress]
+upload_allowed_dirs = ["C:/Users/me/Pictures/blog"]
+```
+
 ## Setting up Application Passwords
 
 1. Go to **WordPress Admin** → **Users** → **Profile**
@@ -131,7 +138,7 @@ Create a new WordPress post or page with advanced options.
 - `title` (string): Post/page title
 - `content` (string): Post/page content
 - `post_type` (string): "post" (投稿) or "page" (固定ページ) [default: "post"]
-- `status` (string): "publish" (公開), "draft" (下書き), "private" (非公開), "future" (予約投稿) [default: "publish"]
+- `status` (string, optional): "publish" (公開), "draft" (下書き), "pending" (レビュー待ち), "private" (非公開), "future" (予約投稿、`date`が必須) [default: "draft"]
 - `date` (string, optional): Publication date (ISO8601 format, required for "future" status)
 - `categories` (array, optional): Category IDs (posts only)
 - `tags` (array, optional): Tag IDs (posts only)
@@ -158,6 +165,34 @@ Create a new WordPress post or page with advanced options.
   }
 }
 
+```
+
+### `create_post_with_embeds`
+
+Create a post or page with embedded YouTube videos and social media content appended to the base content.
+
+**Parameters:**
+- `title` (string): Post title
+- `content` (string): Base post content (embeds are added after it)
+- `youtube_urls` (array of strings, optional): YouTube video URLs to embed
+- `social_urls` (array of strings, optional): Social media URLs to embed (Twitter, Instagram, Facebook, TikTok)
+- `post_type` (string, optional): `post` or `page`
+- `status` (string, optional): `publish`, `draft`, `pending`, or `private`. Defaults to `draft`. `future` (scheduled) is not available because this tool has no date parameter
+- `categories` (array of numbers, optional): Category IDs (posts only)
+- `tags` (array of numbers, optional): Tag IDs (posts only)
+
+**Example Usage:**
+
+```json
+{
+  "tool": "create_post_with_embeds",
+  "arguments": {
+    "title": "Rust Conference Highlights",
+    "content": "<p>Here are the talks we enjoyed most.</p>",
+    "youtube_urls": ["https://www.youtube.com/watch?v=dQw4w9WgXcQ"],
+    "status": "draft"
+  }
+}
 ```
 
 ### `update_post`
@@ -213,12 +248,19 @@ Retrieve both WordPress posts and pages.
 
 ### `get_post`
 
-Retrieve a single WordPress post by ID.
+Retrieve a single WordPress post or page by ID, with its full content (not truncated).
 
 **Parameters:**
-- `post_id` (number): ID of the post to retrieve
+- `post_id` (number): ID of the post or page to retrieve
+- `post_type` (string, optional): `post` (default) or `page`
+- `format` (string, optional): How to return the title and content
+  - `raw` (default): The editable source, including Gutenberg block markup. It can be passed back to `update_post` unchanged. Requires credentials with edit permission. Without it, the rendered HTML is returned instead, and the `Format:` line says so
+  - `rendered`: The HTML as displayed on the site
+  - `text`: Plain text with tags removed
 
-## Media Management
+For a password-protected post read without edit permission, WordPress hides the content, and the output includes a note not to treat the content as empty.
+
+The output also has a `Featured Media:` line with the featured image's media ID and URL, for example `Featured Media: 123 (https://example.com/wp-content/uploads/photo.png)`. It shows `none` when no featured image is set. If the media item cannot be fetched, only the ID is shown.
 
 ## Media Management
 
@@ -226,12 +268,19 @@ Retrieve a single WordPress post by ID.
 
 Upload a media file to WordPress media library.
 
-**Parameters:**
+**Parameters:** Pass either `file_data` or `file_path`, not both.
 - `file_data` (string): Base64-encoded file data
-- `filename` (string): Original filename. Its extension must match `mime_type` (e.g., `photo.jpg` for `image/jpeg`)
-- `mime_type` (string): MIME type. Must be one of the [supported file types](#supported-file-types)
+- `file_path` (string): Absolute path of a file on the machine running mcp-rs. Disabled unless [`upload_allowed_dirs`](#configuration) is set
+- `filename` (string): Original filename. Its extension must match `mime_type` (e.g., `photo.jpg` for `image/jpeg`). Required with `file_data`. With `file_path`, defaults to the file's name
+- `mime_type` (string): MIME type. Must be one of the [supported file types](#supported-file-types). Required with `file_data`. With `file_path`, defaults to the type for the file's extension
 
-The upload is rejected before anything is sent to WordPress if the MIME type is not supported, the extension does not match the MIME type, the file content does not match the MIME type, the filename contains path separators or control characters, or the file is too large.
+The upload is rejected before anything is sent to WordPress if the MIME type is not supported, the extension does not match the MIME type, the file content does not match the MIME type, the filename contains path separators or control characters, or the file is too large. These checks apply to `file_path` too, so files other than the supported types (such as `.env`) cannot be sent even from an allowed folder.
+
+**`file_path` restrictions:**
+- The path must be absolute
+- The file must be inside one of the `upload_allowed_dirs` folders. The check uses the resolved path, so `..` and symbolic links (or junctions on Windows) cannot point outside them
+- A path outside the allowed folders and a file that does not exist give the same error, so the error does not reveal which files exist elsewhere
+- With STDIO (Claude Code, Claude Desktop), mcp-rs runs on the same machine as the client, so it reads the client's local files. Over HTTP/WebSocket, the client may be on another machine, and the files are read from the server. mcp-rs logs a warning at startup in that case
 
 **Example Usage:**
 
@@ -245,6 +294,17 @@ The upload is rejected before anything is sent to WordPress if the MIME type is 
   }
 }
 
+```
+
+With `file_path` (`filename` and `mime_type` are taken from the file):
+
+```json
+{
+  "tool": "upload_media",
+  "arguments": {
+    "file_path": "C:/Users/me/Pictures/blog/hero-image.png"
+  }
+}
 ```
 
 ### `get_media`
@@ -293,7 +353,9 @@ Delete WordPress media file.
 
 **Parameters:**
 - `media_id` (number): Media ID to delete
-- `force` (boolean, optional): Force delete (bypass trash) [default: false]
+- `force` (boolean, optional): Permanently delete (bypass trash) [default: false]
+
+WordPress does not support moving media to the trash unless the site enables it (`MEDIA_TRASH`), so `force: true` is usually required. Without it, WordPress returns `rest_trash_not_supported`.
 
 ### `create_post_with_featured_image`
 
@@ -303,6 +365,7 @@ Create a post with a featured image in one operation.
 - `title` (string): Post title
 - `content` (string): Post content
 - `featured_media_id` (number): Media ID from uploaded image
+- `status` (string, optional): `publish`, `draft`, `pending`, or `private`. Defaults to `draft`. `future` (scheduled) is not available because this tool has no date parameter
 
 ### `set_featured_image`
 
@@ -318,10 +381,12 @@ Set featured image for an existing post.
 
 ## `get_post`
 
-Retrieve a single WordPress post by ID.
+Retrieve a single WordPress post or page by ID, with its full content. See [`get_post`](#get_post) above for the `post_type` and `format` parameters.
 
 **Parameters:**
-- `post_id` (number): ID of the post to retrieve
+- `post_id` (number): ID of the post or page to retrieve
+- `post_type` (string, optional): `post` (default) or `page`
+- `format` (string, optional): `raw` (default), `rendered`, or `text`
 
 **Example Usage:**
 
@@ -329,7 +394,8 @@ Retrieve a single WordPress post by ID.
 {
   "tool": "get_post",
   "arguments": {
-    "post_id": 123
+    "post_id": 123,
+    "format": "raw"
   }
 }
 
@@ -343,7 +409,7 @@ Update an existing WordPress post with comprehensive options.
 - `post_id` (number): ID of post to update
 - `title` (string, optional): New post title
 - `content` (string, optional): New post content
-- `status` (string, optional): Post status (publish, draft, private)
+- `status` (string, optional): `publish`, `draft`, `pending`, or `private`. Defaults to `draft`
 - `categories` (array, optional): Array of category IDs
 - `tags` (array, optional): Array of tag IDs
 - `featured_media_id` (number, optional): Featured image media ID
@@ -605,6 +671,55 @@ Update categories and tags for an existing WordPress post.
 
 ```
 
+## Site Settings
+
+## `get_settings`
+
+Retrieve the WordPress site settings (title, tagline, timezone, front page configuration, posts per page, default category, language, and so on).
+
+**Parameters:** None
+
+## `update_settings`
+
+Update WordPress site settings. Only the specified fields are changed.
+
+**Parameters (all optional):**
+- `title` (string): Site title
+- `description` (string): Site tagline
+- `timezone` (string): Site timezone (e.g., `Asia/Tokyo`)
+- `show_on_front` (string): `posts` or `page`
+- `page_on_front` (number): Static front page ID (when `show_on_front` is `page`)
+- `page_for_posts` (number): Posts page ID (when `show_on_front` is `page`)
+- `posts_per_page` (number): Number of posts per page
+- `default_category` (number): Default category for new posts
+- `language` (string): Site language code (e.g., `ja`, `en_US`)
+
+**Example Usage:**
+
+```json
+{
+  "tool": "update_settings",
+  "arguments": {
+    "description": "Notes on Rust and AI agents",
+    "timezone": "Asia/Tokyo"
+  }
+}
+```
+
+## `set_front_page`
+
+Set a static page as the front page.
+
+**Parameters:**
+- `page_id` (number): ID of the page to show on the front page
+
+## `set_front_page_to_posts`
+
+Set the front page to show the latest posts.
+
+**Parameters:**
+- `posts_page_id` (number, optional): ID of a page to use for the blog posts
+
 ## Workflow Examples
 
 ## Basic Blog Post
@@ -788,7 +903,7 @@ The following are intentionally not supported:
 - **Office documents (.doc, .docx, etc.)**: the content can only be identified as a ZIP archive
 - **QuickTime (.mov)**: the order of its leading data is not fixed, so it cannot be identified reliably
 
-**Size limits**: files larger than 10 MiB are rejected. In practice, the transport's message size limit (1 MiB by default for STDIO and HTTP, including the roughly 33% base64 overhead) applies first. WordPress's own limits (`upload_max_filesize` and `post_max_size`) also apply.
+**Size limits**: files larger than 10 MiB are rejected. With `file_data`, the transport's message size limit (1 MiB by default for STDIO and HTTP, including the roughly 33% base64 overhead) usually applies first. `file_path` is not affected by that limit. WordPress's own limits (`upload_max_filesize` and `post_max_size`) also apply.
 
 ## Performance Optimization
 

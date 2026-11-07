@@ -858,7 +858,7 @@ async fn handle_jsonrpc_request(
     uri: axum::http::Uri,
     headers: HeaderMap,
     Json(request): Json<Value>,
-) -> std::result::Result<impl IntoResponse, StatusCode> {
+) -> std::result::Result<Response, StatusCode> {
     check_network_policy(&state.network_policy, remote_addr)?;
     check_auth(state.api_key_manager.as_ref(), &headers, remote_addr).await?;
     check_https_enforcement(
@@ -917,12 +917,15 @@ async fn handle_jsonrpc_request(
     let request_id = request.get("id").cloned();
 
     // Convert request to string and send through channel
-    let request_str = serde_json::to_string(&request).map_err(|_| {
-        // Update error stats
-        let mut stats = state.stats.blocking_write();
-        stats.total_errors += 1;
-        StatusCode::BAD_REQUEST
-    })?;
+    // `blocking_write()` must not be used here: this is an async handler on
+    // a tokio worker, where tokio's blocking lock methods panic (#374).
+    let request_str = match serde_json::to_string(&request) {
+        Ok(request_str) => request_str,
+        Err(_) => {
+            state.stats.write().await.total_errors += 1;
+            return Err(StatusCode::BAD_REQUEST);
+        }
+    };
 
     // If request has ID, wait for actual response
     if let Some(id) = request_id {
@@ -968,7 +971,7 @@ async fn handle_jsonrpc_request(
                         stats.total_bytes_sent += response_size;
                     }
 
-                    Ok((response_headers(&state), Json(response_value)))
+                    Ok((response_headers(&state), Json(response_value)).into_response())
                 }
                 Ok(Err(_)) => {
                     // Channel closed without response
@@ -990,29 +993,21 @@ async fn handle_jsonrpc_request(
     } else {
         // Notification (no ID) - no pending entry to race against, so
         // forwarding it here (rather than before the branch) is safe.
-        state.request_sender.send(request_str).await.map_err(|_| {
-            let mut stats = state.stats.blocking_write();
-            stats.total_errors += 1;
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
-
-        // Return immediate acknowledgment
-        let response = serde_json::json!({
-            "jsonrpc": "2.0",
-            "result": {
-                "status": "accepted",
-                "message": "Notification received"
-            }
-        });
-
-        let response_size = serde_json::to_string(&response).unwrap_or_default().len() as u64;
-        {
-            let mut stats = state.stats.write().await;
-            stats.total_responses += 1;
-            stats.total_bytes_sent += response_size;
+        // (Previously `blocking_write()` in this map_err closure, which
+        // panics on a tokio worker whenever the send fails - #374.)
+        if state.request_sender.send(request_str).await.is_err() {
+            state.stats.write().await.total_errors += 1;
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
         }
 
-        Ok((response_headers(&state), Json(response)))
+        // JSON-RPC 2.0: the server MUST NOT reply to a notification. MCP's
+        // HTTP transport acknowledges an accepted notification with
+        // `202 Accepted` and no body (#374) - previously this returned a
+        // `{"jsonrpc":"2.0","result":{"status":"accepted",...}}` body with no
+        // `id`, which is not a valid JSON-RPC response either.
+        state.stats.write().await.total_responses += 1;
+
+        Ok((StatusCode::ACCEPTED, response_headers(&state)).into_response())
     }
 }
 
@@ -2917,9 +2912,9 @@ mod tests {
     }
 
     /// A notification (no `id`) so a request that gets past `check_ids`
-    /// gets the immediate "accepted" acknowledgment `handle_jsonrpc_request`
-    /// sends for notifications, rather than waiting on the pending-response
-    /// channel these tests have no consumer draining.
+    /// gets the immediate `202 Accepted` `handle_jsonrpc_request` sends for
+    /// notifications, rather than waiting on the pending-response channel
+    /// these tests have no consumer draining.
     fn sql_injection_jsonrpc_request() -> Value {
         serde_json::json!({
             "jsonrpc": "2.0",
@@ -3071,14 +3066,43 @@ mod tests {
 
     fn notification_jsonrpc_request() -> Value {
         // No `id` field, so handle_jsonrpc_request takes the notification
-        // path and returns an immediate "accepted" acknowledgment instead
-        // of waiting on the internal channel for a response that nothing
-        // in these tests ever produces (see http.rs's notification branch).
+        // path and returns an immediate `202 Accepted` instead of waiting on
+        // the internal channel for a response that nothing in these tests
+        // ever produces (see http.rs's notification branch).
         serde_json::json!({
             "jsonrpc": "2.0",
             "method": "tools/list",
             "params": {}
         })
+    }
+
+    /// #374: JSON-RPC 2.0 forbids replying to a notification, and MCP's HTTP
+    /// transport acknowledges one with `202 Accepted` and no body. This used
+    /// to be `200` with a `{"jsonrpc":"2.0","result":{"status":"accepted"}}`
+    /// body that had no `id`.
+    #[tokio::test]
+    async fn test_notification_gets_202_accepted_with_empty_body() {
+        let config = HttpConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            ..HttpConfig::default()
+        };
+        let transport = HttpTransport::new(config).unwrap();
+        transport.start_server().await.unwrap();
+        let server_addr = transport.bound_addr().await.unwrap();
+        wait_for_plain_server_ready(server_addr).await;
+
+        let response = reqwest::Client::new()
+            .post(format!("http://127.0.0.1:{}/mcp", server_addr.port()))
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "notifications/initialized"
+            }))
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        assert!(response.text().await.unwrap().is_empty());
     }
 
     #[tokio::test]

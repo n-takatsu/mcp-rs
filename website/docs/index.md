@@ -56,12 +56,13 @@ MCP-RS provides a **comprehensive, battle-tested** implementation of the MCP (Mo
 - **Performance Monitoring**: Real-time health checks and query optimization
 - **Multi-Engine Workflows**: Cache-aside patterns and hybrid data architectures
 
-## 🎯 WordPress Integration (27 Tools)
+## 🎯 WordPress Integration (32 Tools)
 
 - **📝 Content Management**: Complete post and page management with SEO support
 - **🖼️ Media Management**: Upload, manage, and set featured images
 - **🏷️ Taxonomy Management**: Categories and tags with hierarchical support
 - **🎬 Rich Content**: YouTube embeds and social media integration
+- **⚙️ Site Management**: Site settings and front page configuration
 
 ## Quick Navigation
 
@@ -211,4 +212,4 @@ at your option.
 ---
 
 **Last Updated**: November 3, 2025
-**Version**: v0.18.0
+**Version**: v0.18.1

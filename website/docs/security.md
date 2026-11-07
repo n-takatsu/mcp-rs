@@ -46,6 +46,7 @@ MCP-RS implements comprehensive security measures designed for production enviro
 - **Advanced Input Validation**: Custom rule engine with real-time validation
 - **HTML Sanitization**: Safe HTML processing with whitelist filtering
 - **Media Upload Validation**: `upload_media` checks the MIME type against an allowlist, requires the filename extension to match it, verifies the file content by its magic number, and enforces a size limit (see [WordPress Integration](../wordpress/#supported-file-types))
+- **Local File Upload Restrictions**: `upload_media` reads local files (`file_path`) only from folders listed in `upload_allowed_dirs`, and is disabled by default. Paths are resolved before the check, so `..` and symbolic links cannot escape those folders
 
 ## ✅ Layer 5: Application Security
 
@@ -119,15 +120,23 @@ nonce = "..."
 salt = "..."
 ```
 
-Generate the `encrypted_credentials` values with the library API:
+Generate the `encrypted_credentials` section with the `encrypt-wordpress-credentials` subcommand (v0.18.1 and later):
 
-```rust
-use mcp_rs::security::SecureCredentials;
-
-let encrypted = SecureCredentials::new("your_username".into(), "your_application_password".into())
-    .encrypt("your_master_password")?;
-println!("{}", toml::to_string(&encrypted)?);
+```bash
+mcp-rs encrypt-wordpress-credentials
 ```
+
+It asks for the WordPress username, the Application Password, and a master password (twice, at least 12 characters). Passwords are not shown while typing. It then prints the `[handlers.wordpress.encrypted_credentials]` section to standard output. Paste it into the config file after `[handlers.wordpress]`, remove any plaintext `password`, and start mcp-rs with the same master password in `WORDPRESS_MASTER_PASSWORD`.
+
+- Secrets are never accepted as command-line arguments, so they do not end up in shell history or process listings
+- Before printing, the command decrypts the generated values again to confirm they round-trip
+- Without a terminal (for example in CI), it reads the username, Application Password, and master password as three lines from standard input instead, with no confirmation:
+
+  ```bash
+  mcp-rs encrypt-wordpress-credentials < secrets.txt > encrypted.toml
+  ```
+
+  Delete `secrets.txt` afterwards.
 
 ## HTTP/WebSocket API Key Authentication
 
