@@ -12,7 +12,7 @@ A plugin is a separate MCP server that mcp-rs starts as a child process. mcp-rs 
 
 > **Trusted plugins only.** In this first stage, a plugin runs as an ordinary process with your user's permissions. mcp-rs does not restrict which files or network addresses it can reach. Only add plugins you trust. Running plugins in a container is planned ([#392](https://github.com/n-takatsu/mcp-rs/issues/392)).
 
-Plugins currently work in STDIO mode only (for example, Claude Desktop and Claude Code). In HTTP mode, `[[plugins]]` is ignored with a warning until [#400](https://github.com/n-takatsu/mcp-rs/issues/400) is fixed.
+Plugins work in both STDIO mode (for example, Claude Desktop and Claude Code) and HTTP mode (since the version after v0.18.3; in v0.18.3, `[[plugins]]` was ignored in HTTP mode). In HTTP mode, everyone who can reach the HTTP listener can call the plugin's tools, so turn on API key authentication when the listener is not limited to your own machine.
 
 ## Before you add a plugin
 

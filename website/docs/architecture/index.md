@@ -46,7 +46,7 @@ MCP-RS follows a layered architecture pattern designed for extensibility, mainta
 - **Handlers**: `handlers/` module - Concrete feature implementations
   - ✅ WordPress Handler - Complete REST API integration
   - 🔄 Future handlers planned (GitHub, File System, Database)
-- **Plugin System**: plugins run as separate MCP server processes, and mcp-rs relays their tools (`plugin_proxy`, STDIO mode). See [Plugins](../plugins/)
+- **Plugin System**: plugins run as separate MCP server processes, and mcp-rs relays their tools (`plugin_proxy`). See [Plugins](../plugins/)
 
 ## 4. Core Layer (Planned)
 

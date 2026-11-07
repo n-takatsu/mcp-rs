@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- HTTPモードで、MCPのリクエストが処理されず、すべて30秒後に`408`に
+  なっていた問題を修正（#400）。受け付けたリクエストを流す先の受信
+  ループ（`core::Runtime::run`）が起動しておらず、`tools/call`の処理も
+  無かった
+  - HTTPモードも、STDIOと同じ処理（`McpServer`）でリクエストに応答する。
+    `/mcp`（と`/`）へのPOSTと、`enable_websocket_upgrade`が有効なら`/ws`の
+    WebSocketで使える。APIキー認証等の受け付け時のチェックは、これまで
+    どおりかかる
+  - 同じ`id`を使う複数のクライアント（多くのクライアントは`id`を1から
+    振る）の応答が入れ替わらないよう、リクエストごとに直接処理する
+  - プラグイン（#394）もHTTPモードで使えるようになった。HTTPの待ち受けに
+    届く人は誰でもプラグインのツールを呼べるため、自分のマシン以外から
+    届く場合はAPIキー認証を有効にする
+  - **ライブラリの変更**: `HttpTransport::with_request_handler`と
+    `JsonRpcRequestHandler`トレイト、`McpServer::dispatcher`
+    （`RequestDispatcher`）を追加した。`mcp-rs`本体は`core::Runtime`を
+    使わなくなった
+  - `[transport] type`が`stdio`・`http`以外（未指定を含む）の場合は、
+    STDIOモードで動く（以前は処理しないまま待ち続けていた）
+
 ## [0.18.3] - 2026-11-08
 
 ### Added

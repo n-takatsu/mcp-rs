@@ -189,7 +189,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 - **Zero Warnings**: Clean codebase with no compilation warnings
 - **Docker Ready**: Production-ready containerization
 - **Kubernetes Support**: Enterprise deployment configurations
-- **Plugins**: Add tools from other MCP servers, run as separate processes (STDIO mode)
+- **Plugins**: Add tools from other MCP servers, run as separate processes
 
 ---
 
