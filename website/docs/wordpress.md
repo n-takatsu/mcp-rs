@@ -253,6 +253,8 @@ Retrieve a single WordPress post or page by ID, with its full content (not trunc
 
 For a password-protected post read without edit permission, WordPress hides the content, and the output includes a note not to treat the content as empty.
 
+The output also has a `Featured Media:` line with the featured image's media ID and URL, for example `Featured Media: 123 (https://example.com/wp-content/uploads/photo.png)`. It shows `none` when no featured image is set. If the media item cannot be fetched, only the ID is shown.
+
 ## Media Management
 
 ### `upload_media`
