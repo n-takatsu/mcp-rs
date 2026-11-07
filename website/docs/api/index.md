@@ -148,7 +148,7 @@ Establishes connection and negotiates capabilities.
     },
     "serverInfo": {
       "name": "mcp-rs",
-      "version": "0.18.1"
+      "version": "0.18.2"
     }
   },
   "id": 1
@@ -447,7 +447,7 @@ Retrieves WordPress comments.
 
 ## Version Information
 
-- **Current Version**: v0.18.1
+- **Current Version**: v0.18.2
 - **Phase 1**: MySQL (Complete)
 - **Phase 2**: PostgreSQL (Complete)
 - **Last Updated**: 2025-11-23

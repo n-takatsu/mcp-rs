@@ -7,6 +7,68 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.2] - 2026-11-07
+
+### Removed
+
+- 本体に接続されていなかったプラグイン実装をすべて削除（#393）。いずれも
+  プラグインのコードを実際には実行していなかった（調査結果は#392）。
+  プラグイン機構は、各プラグインを独立したMCPサーバーとして別プロセスで
+  動かし、mcp-rsが中継する方式で作り直す（#392・#394）
+  - **ライブラリの変更**: 公開モジュール`mcp_rs::plugin`・`mcp_rs::plugins`・
+    `mcp_rs::plugin_isolation`・`mcp_rs::docker_runtime`（`docker-runtime`
+    機能）と、オペレーターのPlugin（`reconcile_plugin`・`Plugin`等のCRD型）
+    を削除した。`docker-runtime`機能と、依存関係の`libloading`・`bollard`も
+    削除した
+  - **設定の変更**: 設定ファイルの`[plugins]`（`PluginsConfig`）を削除した。
+    本体はこれまでもこの設定を読んでいなかった。設定ファイルに残っていても
+    無視される
+  - Kubernetesの`plugins.mcp.n-takatsu.dev`のCRD（`k8s/crds/plugin-crd.yaml`）、
+    RBACのPluginの権限、Pluginのexampleを削除した
+  - 関連するexample・テスト・ベンチマーク・ドキュメント（`docs/plugin-*.md`・
+    `docs/docker-runtime-guide.md`）を削除し、プラグインの隔離を既存の
+    機能として案内していた箇所を「計画中」に直した
+- 何にも接続されていなかったKubernetes連携モジュール`src/k8s/`を削除
+  （#305）。`PluginDeployment`・`PluginPolicy`のCRDと、2つの独立した
+  reconciler（`PluginOperator`・`PluginReconciler`）はどちらもTODOだけの
+  スタブで、オペレーター（`mcp-operator`）からも呼ばれていなかった。
+  オペレーターが扱うのは`src/operator/`の`MCPServer`等で、変更はない
+  - **ライブラリの変更**: `kube`機能有効時の公開モジュール`mcp_rs::k8s`を
+    削除した
+  - 対応するCRD（`k8s/crds/plugin-deployment.yaml`・
+    `plugin-policy.yaml`）とexample、これらを使える機能として説明していた
+    `docs/kubernetes-operation-guide.md`も削除した（存在しないHelm
+    リポジトリ・ディレクトリを案内しており、どこからもリンクされて
+    いなかった。Kubernetesの案内は`docs/KUBERNETES_GUIDE.md`）
+- 使われていなかった対話式のセットアップ機能（`src/setup/`）と、実行時の
+  対話式コントローラー（`src/runtime_control.rs`、`config::ConfigSwitcher`）
+  を削除（#386）。v0.16.0以降、`--setup-config`・`--generate-config`・
+  `--demo-setup`・`--switch-config`は処理されておらず、指定しても無視されて
+  いた。いずれもApplication Passwordを入力中に表示する作りで、
+  `src/setup/`は平文のまま設定ファイルに保存していた
+  - 設定ファイルは`configs/production/`のものを使う。設定ファイルに
+    パスワードを置く場合は`mcp-rs encrypt-wordpress-credentials`で暗号化
+    できる
+  - **ライブラリの変更**: 公開モジュール`mcp_rs::runtime_control`と、公開型
+    `mcp_rs::config::ConfigSwitcher`を削除した
+  - 関連するexample（`interactive_setup_test`・
+    `runtime_transport_switching_demo`）と、機能を説明していた
+    `docs/RUNTIME_TRANSPORT_SWITCHING.md`も削除した
+
+### Fixed
+
+- example`wordpress_blog_service_demo`が、Application Passwordの先頭4文字を
+  画面に表示していた問題（#386）
+
+- WordPressへのリクエストがタイムアウトや5xxで失敗したとき、作成（POST）・
+  削除（DELETE）のリクエストを再送しないよう修正（#388）。1回目が
+  WordPressで処理済みだった場合に、`upload_media`でメディアが重複したり、
+  `delete_*`で削除できているのに404のエラーになったりしていた
+  - GET・PUTはこれまでどおり再送する。接続できなかった場合と429は、
+    リクエストが処理されていないため、メソッドを問わず再送する
+  - 再送しなかった場合は、処理済みの可能性があり、結果を確認してから
+    再実行するよう、エラーメッセージで示す
+
 ## [0.18.1] - 2026-11-07
 
 ### Added

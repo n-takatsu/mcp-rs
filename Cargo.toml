@@ -1,6 +1,6 @@
 [package]
 name = "mcp-rs"
-version = "0.18.1"
+version = "0.18.2"
 edition = "2021"
 authors = ["n-takatsu"]
 description = "Rust implementation of the Model Context Protocol (MCP) for AI-agent integration with Canary Deployment System"
@@ -158,12 +158,6 @@ crossterm = "0.27"
 # ratatui = { version = "0.29", optional = true, default-features = false }
 # tui-input = { version = "0.8", optional = true }
 
-# Plugin system
-libloading = "0.9"
-
-# Docker integration
-bollard = { version = "0.18.1", optional = true }
-
 # Testing utilities
 mockall = { version = "0.13.1", optional = true }
 
@@ -237,9 +231,6 @@ ml-anomaly-detection = ["smartcore", "ndarray", "statrs"]
 
 # LLM Integration
 llm-integration = ["async-openai", "tiktoken-rs", "eventsource-stream", "async-stream"]
-
-# Docker runtime integration
-docker-runtime = ["bollard"]
 
 # Full feature set (MySQL restored via secure mysql_async)
 full = [

@@ -4,6 +4,42 @@
 
 Our project follows a detailed 0.01 increment versioning strategy to provide granular tracking of development progress and feature implementation.
 
+## 🧹 v0.18.2 - WordPressへの再送の修正・未使用コードの削除
+
+**Release Date:** 2026-11-07
+**Focus:** タイムアウト・5xxのときに作成・削除のリクエストを再送していた
+問題の修正と、本体に接続されていなかったコードの削除
+
+### ✅ WordPressツール
+
+- WordPressへのリクエストがタイムアウトや5xxで失敗したとき、作成（POST）・
+  削除（DELETE）のリクエストを再送しないよう修正（#388）。1回目が処理済み
+  だった場合に、`upload_media`でメディアが重複したり、`delete_*`で削除
+  できているのに404のエラーになったりしていた。GET・PUTはこれまでどおり
+  再送し、接続できなかった場合と429はメソッドを問わず再送する
+
+### ⚠️ 削除したもの
+
+本体に接続されておらず、動いていなかったコードを削除した。mcp-rsを
+MCPサーバーとして使う場合の動作は変わらない。ライブラリとして使っている
+場合は、以下の公開モジュールが無くなる
+
+- 対話式のセットアップ（`--setup-config`等）と実行時の対話式コントローラー
+  （#386）。`mcp_rs::runtime_control`・`config::ConfigSwitcher`を削除。
+  設定ファイルは`configs/production/`のものを使う
+- Kubernetes連携モジュール`src/k8s/`（`mcp_rs::k8s`）と、対応するCRD
+  （#305）。オペレーター（`mcp-operator`）の`MCPServer`等は変更なし
+- プラグイン実装（`mcp_rs::plugin`・`plugins`・`plugin_isolation`・
+  `docker_runtime`、`docker-runtime`機能、オペレーターのPlugin）と、
+  設定の`[plugins]`（#393）。`[plugins]`が設定ファイルに残っていても
+  無視される。プラグイン機構は、各プラグインを独立したMCPサーバーとして
+  別プロセスで動かす方式で作り直す（#392・#394）
+
+### ✅ その他
+
+- example`wordpress_blog_service_demo`が、Application Passwordの先頭
+  4文字を表示していた問題を修正（#386）
+
 ## 🛠️ v0.18.1 - WordPressツールの改善・MCPプロトコル準拠の修正
 
 **Release Date:** 2026-11-07

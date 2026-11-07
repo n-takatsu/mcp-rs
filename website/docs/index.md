@@ -28,11 +28,7 @@ MCP-RS provides a **comprehensive, battle-tested** implementation of the MCP (Mo
   - LLM streaming (OpenAI GPT-4, Anthropic Claude 3.5 Sonnet)
   - Connection pooling with 3 load balancing algorithms (RoundRobin, LeastConnections, Random)
   - Real-time metrics, rate limiting (TokenBucket, LeakyBucket, SlidingWindow), and compression (gzip/deflate)
-- **Plugin Isolation System** (v0.16.0):
-  - Docker runtime support for container-based plugin execution
-  - Inter-plugin communication with Pub/Sub messaging
-  - Advanced error handling with circuit breakers and automatic retry
-  - Enhanced monitoring with resource tracking and performance metrics
+- **Plugins (planned)**: Third-party plugins running as separate MCP server processes are being redesigned ([#392](https://github.com/n-takatsu/mcp-rs/issues/392))
 - **Type-Safe Configuration**: TOML-based configuration with environment variable override
 - **Production-Ready Error Handling**: Comprehensive error types with structured logging
 - **Async/Await**: Built on `tokio` for high-performance async operations
@@ -148,7 +144,6 @@ MCP-RS provides a **comprehensive, battle-tested** implementation of the MCP (Mo
 
 - Core application modules
 - Transport abstraction layer
-- Plugin system for dynamic loading
 - Performance monitoring and metrics
 
 ## 📋 Planned Features
@@ -172,8 +167,7 @@ MCP-RS provides a **comprehensive, battle-tested** implementation of the MCP (Mo
 │ └── JSON-RPC Interface                 │
 ├─────────────────────────────────────────┤
 │ Service Layer                           │
-│ ├── handlers/ (Feature Implementations)│
-│ └── plugins/ (Dynamic Plugin System)   │
+│ └── handlers/ (Feature Implementations)│
 ├─────────────────────────────────────────┤
 │ Core Layer                              │
 │ ├── Runtime Management                 │
@@ -212,4 +206,4 @@ at your option.
 ---
 
 **Last Updated**: November 3, 2025
-**Version**: v0.18.1
+**Version**: v0.18.2

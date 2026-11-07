@@ -2,7 +2,7 @@
 
 ## 概要
 
-MCP Kubernetes Operator は、Kubernetes クラスタ上で MCP サーバーを管理するためのオペレーターです。Custom Resource Definitions (CRD) を使用して、MCPServer、Plugin、SecurityPolicy リソースを宣言的に管理します。
+MCP Kubernetes Operator は、Kubernetes クラスタ上で MCP サーバーを管理するためのオペレーターです。Custom Resource Definitions (CRD) を使用して、MCPServer、SecurityPolicy リソースを宣言的に管理します。
 
 ## 目次
 
@@ -78,7 +78,7 @@ spec:
       cpu: "100m"
       memory: "128Mi"
   securityPolicy: "default-policy"  # SecurityPolicy への参照
-  plugins:                 # 有効化するプラグイン
+  plugins:                 # 有効化するプラグイン（現在は未使用。#392で再設計中）
     - wordpress-plugin
     - mysql-plugin
   env:                     # 環境変数
@@ -96,36 +96,6 @@ status:
     - type: Available
       status: "True"
       lastTransitionTime: "2024-01-01T00:00:00Z"
-```
-
-### Plugin
-
-Plugin リソースは、プラグインの設定と隔離レベルを定義します。
-
-```yaml
-apiVersion: mcp.n-takatsu.dev/v1alpha1
-kind: Plugin
-metadata:
-  name: wordpress-plugin
-  namespace: default
-spec:
-  name: wordpress
-  image: "mcp-rs-wordpress-plugin:latest"
-  version: "1.0.0"
-  isolation:
-    level: Container         # None/Process/Container/VM
-    networkIsolation: true
-    filesystemIsolation: true
-    processIsolation: true
-  resources:
-    limits:
-      cpu: "500m"
-      memory: "256Mi"
-  config:
-    api_endpoint: "https://api.wordpress.org"
-    timeout: "30s"
-  dependencies:
-    - base-plugin
 ```
 
 ### SecurityPolicy
@@ -185,29 +155,6 @@ EOF
 # ステータスを確認
 kubectl get mcpserver my-mcp-server
 kubectl describe mcpserver my-mcp-server
-```
-
-### プラグインの追加
-
-```bash
-# Plugin リソースを作成
-kubectl apply -f - <<EOF
-apiVersion: mcp.n-takatsu.dev/v1alpha1
-kind: Plugin
-metadata:
-  name: wordpress-plugin
-spec:
-  name: wordpress
-  image: "mcp-rs-wordpress-plugin:latest"
-  version: "1.0.0"
-  isolation:
-    level: Container
-EOF
-
-# MCPServer にプラグインを追加
-kubectl patch mcpserver my-mcp-server --type='json' -p='[
-  {"op": "add", "path": "/spec/plugins/-", "value": "wordpress-plugin"}
-]'
 ```
 
 ### セキュリティポリシーの適用

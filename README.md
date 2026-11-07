@@ -4,7 +4,7 @@
 
 > **[English](README.md)** | **[日本語](README.ja.md)**
 
-[![Version](https://img.shields.io/badge/Version-v0.18.1-blue)](https://github.com/n-takatsu/mcp-rs/releases/tag/v0.18.1)
+[![Version](https://img.shields.io/badge/Version-v0.18.2-blue)](https://github.com/n-takatsu/mcp-rs/releases/tag/v0.18.2)
 ![Architecture](https://img.shields.io/badge/Architecture-Production--Ready-green)
 ![Implementation](https://img.shields.io/badge/WordPress_Tools-32_Available-green)
 ![License](https://img.shields.io/badge/License-MIT%2FApache--2.0-green)
@@ -49,7 +49,7 @@ Need WordPress security automation? 8-layer enterprise security architecture wit
 ## **Kubernetes Integration (Phase 2)** ⭐ NEW
 
 - **Kubernetes Operator**: Full-featured operator built with `kube-rs` for managing MCP servers
-- **Custom Resource Definitions (CRD)**: MCPServer, Plugin, and SecurityPolicy resources
+- **Custom Resource Definitions (CRD)**: MCPServer and SecurityPolicy resources
 - **Helm Charts**: Easy installation and management with Helm 3.0+
 - **Declarative Management**: GitOps-ready resource definitions
 - **Automatic Scaling**: HPA support with CPU/memory metrics

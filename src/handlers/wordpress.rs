@@ -98,6 +98,23 @@ fn is_retryable_status(status: reqwest::StatusCode) -> bool {
         || (status.is_server_error() && status != reqwest::StatusCode::NOT_IMPLEMENTED)
 }
 
+/// タイムアウトや5xxのとき、再送しても結果が変わらないメソッドか。
+/// POSTは作成が重複し、DELETEは1回目が処理済みなら2回目が404になる
+/// ため含めない（#388）。
+fn is_safe_to_resend(method: &reqwest::Method) -> bool {
+    matches!(
+        *method,
+        reqwest::Method::GET
+            | reqwest::Method::HEAD
+            | reqwest::Method::OPTIONS
+            | reqwest::Method::PUT
+    )
+}
+
+/// POST・DELETEを再送しなかったときに、エラーメッセージに添える注意。
+/// MCPクライアントが結果を確かめずに同じ呼び出しを繰り返さないように。
+const NOT_RESENT_NOTE: &str = ". Not retried automatically: WordPress may have already processed this request. Check whether it took effect before trying again";
+
 /// 成功（2xx）応答の本文を解析する。失敗しても再送しない：WordPressは
 /// 既にリクエストを処理済みであり、再送すると作成の重複や、削除済みの
 /// 対象への2回目の削除（404）を招くため。
@@ -1089,7 +1106,95 @@ impl WordPressHandler {
         request
     }
 
-    /// リトライ機能付きでHTTPリクエストを実行
+    /// リクエストを送り、成功（2xx）の応答を返す。一時的な失敗は最大
+    /// `MAX_RETRIES`回まで再送するが、再送するかどうかは失敗の種類と
+    /// HTTPメソッドで決める（#388）。
+    ///
+    /// - 接続できなかった・429: リクエストはWordPressで処理されていない
+    ///   ため、メソッドを問わず再送する
+    /// - タイムアウト・送信後のエラー・5xx: WordPressで処理済みの可能性が
+    ///   ある。GET・PUT等の繰り返しても結果が変わらないメソッドだけ再送し、
+    ///   POST（作成の重複）・DELETE（2回目が404）は再送しない
+    ///
+    /// `build_request`は試行ごとに呼ばれる。`multipart::Form`を使う
+    /// リクエストは`try_clone()`で複製できない（内部でストリームを保持して
+    /// いる）ため、作り直せる形で受け取る。
+    async fn send_with_retry(
+        &self,
+        build_request: impl Fn() -> Result<reqwest::RequestBuilder, McpError>,
+    ) -> Result<reqwest::Response, McpError> {
+        const MAX_RETRIES: u32 = 3;
+        const RETRY_DELAY: Duration = Duration::from_millis(1000);
+
+        for attempt in 1..=MAX_RETRIES {
+            let request = build_request()?.build().map_err(McpError::Http)?;
+            let method = request.method().clone();
+            let resend_safe = is_safe_to_resend(&method);
+            let is_last = attempt == MAX_RETRIES;
+
+            match self.client.execute(request).await {
+                Ok(response) => {
+                    let status = response.status();
+                    if status.is_success() {
+                        return Ok(response);
+                    }
+
+                    let transient = is_retryable_status(status);
+                    let retry = status == reqwest::StatusCode::TOO_MANY_REQUESTS
+                        || (transient && resend_safe);
+                    if retry && !is_last {
+                        warn!(
+                            "HTTP error {} on attempt {} ({}), retrying...",
+                            status, attempt, method
+                        );
+                    } else {
+                        // 本文のcode/messageを診断用に含める
+                        // （例: rest_post_invalid_id）
+                        let body = response.text().await.unwrap_or_default();
+                        let mut message = format_wp_error(status, &body);
+                        if attempt > 1 {
+                            message.push_str(&format!(" (after {} attempts)", attempt));
+                        }
+                        if transient && !retry {
+                            message.push_str(NOT_RESENT_NOTE);
+                        }
+                        return Err(McpError::ExternalApi(message));
+                    }
+                }
+                Err(e) => {
+                    // 接続できなかった場合はリクエストが届いていない
+                    let retry = e.is_connect() || resend_safe;
+                    if e.is_timeout() {
+                        warn!("Request timeout on attempt {} ({}): {}", attempt, method, e);
+                    } else if e.is_connect() {
+                        warn!(
+                            "Connection error on attempt {} ({}): {}",
+                            attempt, method, e
+                        );
+                    } else {
+                        warn!("Request error on attempt {} ({}): {}", attempt, method, e);
+                    }
+
+                    if !retry {
+                        return Err(McpError::ExternalApi(format!(
+                            "Request failed: {}{}",
+                            e, NOT_RESENT_NOTE
+                        )));
+                    }
+                    if is_last {
+                        return Err(McpError::Http(e));
+                    }
+                }
+            }
+
+            // リトライ前に少し待機
+            tokio::time::sleep(RETRY_DELAY * attempt).await;
+        }
+
+        unreachable!()
+    }
+
+    /// リトライ機能付きでHTTPリクエストを実行し、応答をJSONとして解析する
     async fn execute_request_with_retry<T>(
         &self,
         request_builder: reqwest::RequestBuilder,
@@ -1097,72 +1202,24 @@ impl WordPressHandler {
     where
         T: for<'de> serde::Deserialize<'de>,
     {
-        const MAX_RETRIES: u32 = 3;
-        const RETRY_DELAY: Duration = Duration::from_millis(1000);
-
-        for attempt in 1..=MAX_RETRIES {
-            let request = request_builder
-                .try_clone()
-                .ok_or_else(|| McpError::Other("Failed to clone request".to_string()))?;
-
-            match request.send().await {
-                Ok(response) => {
-                    let status = response.status();
-
-                    if status.is_success() {
-                        // 本文はログに出さない。context=editの応答には投稿の
-                        // 閲覧パスワードや未公開の下書き等が含まれうるため
-                        let text = response.text().await.map_err(McpError::Http)?;
-                        debug!("Response body: {} bytes", text.len());
-                        return parse_success_body(&text);
-                    } else if is_retryable_status(status) {
-                        // サーバーエラーまたはレート制限の場合はリトライ
-                        warn!("HTTP error {} on attempt {}, retrying...", status, attempt);
-                        if attempt == MAX_RETRIES {
-                            let body = response.text().await.unwrap_or_default();
-                            return Err(McpError::ExternalApi(format!(
-                                "{} (after {} attempts)",
-                                format_wp_error(status, &body),
-                                MAX_RETRIES
-                            )));
-                        }
-                    } else {
-                        // クライアントエラー（4xx）はリトライしない。
-                        // 本文のcode/messageを診断用に含める
-                        // （例: rest_post_invalid_id）。
-                        let body = response.text().await.unwrap_or_default();
-                        return Err(McpError::ExternalApi(format_wp_error(status, &body)));
-                    }
-                }
-                Err(e) => {
-                    if e.is_timeout() {
-                        warn!("Request timeout on attempt {}: {}", attempt, e);
-                    } else if e.is_connect() {
-                        warn!("Connection error on attempt {}: {}", attempt, e);
-                    } else {
-                        warn!("Request error on attempt {}: {}", attempt, e);
-                    }
-
-                    if attempt == MAX_RETRIES {
-                        return Err(McpError::Http(e));
-                    }
-                }
-            }
-
-            // リトライ前に少し待機
-            if attempt < MAX_RETRIES {
-                tokio::time::sleep(RETRY_DELAY * attempt).await;
-            }
-        }
-
-        unreachable!()
+        let response = self
+            .send_with_retry(|| {
+                request_builder
+                    .try_clone()
+                    .ok_or_else(|| McpError::Other("Failed to clone request".to_string()))
+            })
+            .await?;
+        // 本文はログに出さない。context=editの応答には投稿の
+        // 閲覧パスワードや未公開の下書き等が含まれうるため
+        let text = response.text().await.map_err(McpError::Http)?;
+        debug!("Response body: {} bytes", text.len());
+        parse_success_body(&text)
     }
 
-    /// `execute_request_with_retry`と同じリトライ処理だが、リクエストを
-    /// `try_clone()`で複製するのではなく、`build_request`を呼ぶたびに
-    /// 作り直す。`multipart::Form`を使うリクエストは`try_clone()`が
-    /// 常に`None`を返すため（内部でストリームを保持しており複製不可）、
-    /// こちらを使う必要がある。
+    /// `execute_request_with_retry`と同じだが、リクエストを`try_clone()`で
+    /// 複製するのではなく、`build_request`を呼ぶたびに作り直す。
+    /// `multipart::Form`を使うリクエストは`try_clone()`が常に`None`を
+    /// 返すため（内部でストリームを保持しており複製不可）、こちらを使う。
     async fn execute_request_with_retry_rebuilding<T>(
         &self,
         build_request: impl Fn() -> reqwest::RequestBuilder,
@@ -1170,55 +1227,9 @@ impl WordPressHandler {
     where
         T: for<'de> serde::Deserialize<'de>,
     {
-        const MAX_RETRIES: u32 = 3;
-        const RETRY_DELAY: Duration = Duration::from_millis(1000);
-
-        for attempt in 1..=MAX_RETRIES {
-            let request = build_request();
-
-            match request.send().await {
-                Ok(response) => {
-                    let status = response.status();
-
-                    if status.is_success() {
-                        let text = response.text().await.map_err(McpError::Http)?;
-                        return parse_success_body(&text);
-                    } else if is_retryable_status(status) {
-                        warn!("HTTP error {} on attempt {}, retrying...", status, attempt);
-                        if attempt == MAX_RETRIES {
-                            let body = response.text().await.unwrap_or_default();
-                            return Err(McpError::ExternalApi(format!(
-                                "{} (after {} attempts)",
-                                format_wp_error(status, &body),
-                                MAX_RETRIES
-                            )));
-                        }
-                    } else {
-                        let body = response.text().await.unwrap_or_default();
-                        return Err(McpError::ExternalApi(format_wp_error(status, &body)));
-                    }
-                }
-                Err(e) => {
-                    if e.is_timeout() {
-                        warn!("Request timeout on attempt {}: {}", attempt, e);
-                    } else if e.is_connect() {
-                        warn!("Connection error on attempt {}: {}", attempt, e);
-                    } else {
-                        warn!("Request error on attempt {}: {}", attempt, e);
-                    }
-
-                    if attempt == MAX_RETRIES {
-                        return Err(McpError::Http(e));
-                    }
-                }
-            }
-
-            if attempt < MAX_RETRIES {
-                tokio::time::sleep(RETRY_DELAY * attempt).await;
-            }
-        }
-
-        unreachable!()
+        let response = self.send_with_retry(|| Ok(build_request())).await?;
+        let text = response.text().await.map_err(McpError::Http)?;
+        parse_success_body(&text)
     }
 
     /// `execute_request_with_retry`と同じリトライ処理に加え、
@@ -1231,64 +1242,28 @@ impl WordPressHandler {
     where
         T: for<'de> serde::Deserialize<'de>,
     {
-        const MAX_RETRIES: u32 = 3;
-        const RETRY_DELAY: Duration = Duration::from_millis(1000);
-
-        for attempt in 1..=MAX_RETRIES {
-            let request = request_builder
-                .try_clone()
-                .ok_or_else(|| McpError::Other("Failed to clone request".to_string()))?;
-
-            match request.send().await {
-                Ok(response) => {
-                    let status = response.status();
-
-                    if status.is_success() {
-                        let total_pages = response
-                            .headers()
-                            .get("x-wp-totalpages")
-                            .and_then(|v| v.to_str().ok())
-                            .and_then(|s| s.parse::<u32>().ok())
-                            .unwrap_or(1);
-                        let total_items = response
-                            .headers()
-                            .get("x-wp-total")
-                            .and_then(|v| v.to_str().ok())
-                            .and_then(|s| s.parse::<u64>().ok())
-                            .unwrap_or(0);
-
-                        let text = response.text().await.map_err(McpError::Http)?;
-                        let data = parse_success_body(&text)?;
-                        return Ok((data, total_pages, total_items));
-                    } else if is_retryable_status(status) {
-                        warn!("HTTP error {} on attempt {}, retrying...", status, attempt);
-                        if attempt == MAX_RETRIES {
-                            let body = response.text().await.unwrap_or_default();
-                            return Err(McpError::ExternalApi(format!(
-                                "{} (after {} attempts)",
-                                format_wp_error(status, &body),
-                                MAX_RETRIES
-                            )));
-                        }
-                    } else {
-                        let body = response.text().await.unwrap_or_default();
-                        return Err(McpError::ExternalApi(format_wp_error(status, &body)));
-                    }
-                }
-                Err(e) => {
-                    if attempt == MAX_RETRIES {
-                        return Err(McpError::Http(e));
-                    }
-                    warn!("Request error on attempt {}: {}", attempt, e);
-                }
-            }
-
-            if attempt < MAX_RETRIES {
-                tokio::time::sleep(RETRY_DELAY * attempt).await;
-            }
-        }
-
-        unreachable!()
+        let response = self
+            .send_with_retry(|| {
+                request_builder
+                    .try_clone()
+                    .ok_or_else(|| McpError::Other("Failed to clone request".to_string()))
+            })
+            .await?;
+        let total_pages = response
+            .headers()
+            .get("x-wp-totalpages")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.parse::<u32>().ok())
+            .unwrap_or(1);
+        let total_items = response
+            .headers()
+            .get("x-wp-total")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(0);
+        let text = response.text().await.map_err(McpError::Http)?;
+        let data = parse_success_body(&text)?;
+        Ok((data, total_pages, total_items))
     }
 
     /// 一覧系エンドポイントを`per_page=100`かつ`X-WP-TotalPages`に基づく
@@ -5689,6 +5664,151 @@ mod tests {
             audit_logger: Arc::new(AuditLogger::with_defaults()),
             upload_allowed_dirs: Arc::new(Vec::new()),
         }
+    }
+
+    /// 接続を受け付けるだけで応答を返さないサーバー（タイムアウトの再現用）
+    async fn spawn_silent_server() -> (String, Arc<std::sync::atomic::AtomicUsize>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let server_count = count.clone();
+        tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((socket, _)) = listener.accept().await {
+                server_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                held.push(socket);
+            }
+        });
+        (format!("http://{}", addr), count)
+    }
+
+    fn handler_with_timeout(base_url: String, timeout: Duration) -> WordPressHandler {
+        WordPressHandler {
+            client: Client::builder().timeout(timeout).build().unwrap(),
+            ..handler_for_local_server(base_url)
+        }
+    }
+
+    fn request_count(count: &std::sync::atomic::AtomicUsize) -> usize {
+        count.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    #[test]
+    fn test_is_safe_to_resend() {
+        use reqwest::Method;
+        assert!(is_safe_to_resend(&Method::GET));
+        assert!(is_safe_to_resend(&Method::PUT));
+        assert!(!is_safe_to_resend(&Method::POST));
+        assert!(!is_safe_to_resend(&Method::DELETE));
+        assert!(!is_safe_to_resend(&Method::PATCH));
+    }
+
+    #[tokio::test]
+    async fn test_post_is_not_resent_on_server_error() {
+        // 5xxでもアップロード（POST）は処理済みの可能性があるため再送しない
+        let (base_url, count) =
+            spawn_fixed_response_server("500 Internal Server Error", "{}".to_string()).await;
+        let handler = handler_for_local_server(base_url);
+
+        let result = handler.upload_media(PNG_HEADER, "a.png", "image/png").await;
+        assert!(
+            matches!(result, Err(McpError::ExternalApi(ref msg)) if msg.contains("Not retried automatically")),
+            "got: {:?}",
+            result
+        );
+        assert_eq!(request_count(&count), 1);
+    }
+
+    #[tokio::test]
+    async fn test_delete_is_not_resent_on_server_error() {
+        let (base_url, count) =
+            spawn_fixed_response_server("503 Service Unavailable", "{}".to_string()).await;
+        let handler = handler_for_local_server(base_url);
+
+        let result = handler.delete_media(1, Some(true)).await;
+        assert!(
+            matches!(result, Err(McpError::ExternalApi(ref msg)) if msg.contains("Not retried automatically")),
+            "got: {:?}",
+            result
+        );
+        assert_eq!(request_count(&count), 1);
+    }
+
+    #[tokio::test]
+    async fn test_get_is_resent_on_server_error() {
+        // GETはこれまでどおり再送する（待機の合計は約3秒）
+        let (base_url, count) =
+            spawn_fixed_response_server("500 Internal Server Error", "{}".to_string()).await;
+        let handler = handler_for_local_server(base_url);
+
+        let result = handler.get_media_item(1).await;
+        assert!(
+            matches!(result, Err(McpError::ExternalApi(ref msg)) if msg.contains("after 3 attempts") && !msg.contains("Not retried")),
+            "got: {:?}",
+            result
+        );
+        assert_eq!(request_count(&count), 3);
+    }
+
+    #[tokio::test]
+    async fn test_post_is_resent_on_too_many_requests() {
+        // 429は処理前に拒否されているため、POSTでも再送する
+        let (base_url, count) =
+            spawn_fixed_response_server("429 Too Many Requests", "{}".to_string()).await;
+        let handler = handler_for_local_server(base_url);
+
+        let result = handler.upload_media(PNG_HEADER, "a.png", "image/png").await;
+        assert!(
+            matches!(result, Err(McpError::ExternalApi(_))),
+            "got: {:?}",
+            result
+        );
+        assert_eq!(request_count(&count), 3);
+    }
+
+    #[tokio::test]
+    async fn test_post_is_not_resent_on_timeout() {
+        let (base_url, count) = spawn_silent_server().await;
+        let handler = handler_with_timeout(base_url, Duration::from_millis(200));
+
+        let result = handler.upload_media(PNG_HEADER, "a.png", "image/png").await;
+        assert!(
+            matches!(result, Err(McpError::ExternalApi(ref msg)) if msg.contains("Not retried automatically")),
+            "got: {:?}",
+            result
+        );
+        assert_eq!(request_count(&count), 1);
+    }
+
+    #[tokio::test]
+    async fn test_get_is_resent_on_timeout() {
+        let (base_url, count) = spawn_silent_server().await;
+        let handler = handler_with_timeout(base_url, Duration::from_millis(200));
+
+        let result = handler.get_media_item(1).await;
+        assert!(
+            matches!(result, Err(McpError::Http(_))),
+            "got: {:?}",
+            result
+        );
+        assert_eq!(request_count(&count), 3);
+    }
+
+    #[tokio::test]
+    async fn test_post_is_resent_when_connection_fails() {
+        // 接続できなかった場合はリクエストが届いていないため、POSTでも
+        // 再送する（最後は接続エラーとして返る）
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+        let handler = handler_for_local_server(format!("http://{}", addr));
+
+        let result = handler.upload_media(PNG_HEADER, "a.png", "image/png").await;
+        assert!(
+            matches!(result, Err(McpError::Http(ref e)) if e.is_connect()),
+            "got: {:?}",
+            result
+        );
     }
 
     fn sample_media_json(id: u64) -> serde_json::Value {

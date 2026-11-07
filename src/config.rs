@@ -1,7 +1,7 @@
 //! Configuration Management for MCP-RS
 //!
 //! This module provides configuration structures and utilities for managing
-//! MCP (Model Context Protocol) server settings, including plugin configuration
+//! MCP (Model Context Protocol) server settings
 //! and dynamic configuration management.
 //!
 //! # Examples
@@ -16,40 +16,12 @@
 //! println!("Server bind address: {:?}", config.server.bind_addr);
 //! println!("Log level: {:?}", config.server.log_level);
 //! ```
-//!
-//! ## Plugin Configuration
-//!
-//! ```rust
-//! use mcp_rs::config::{McpConfig, PluginsConfig};
-//! use std::collections::HashMap;
-//!
-//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
-//! let mut config = McpConfig::default();
-//!
-//! // Configure plugin settings
-//! if let Some(ref mut plugins) = config.plugins {
-//!     plugins.auto_load = Some(true);
-//!     plugins.hot_reload = Some(false);
-//!     plugins.search_paths = Some(vec![
-//!         "./my_plugins".to_string(),
-//!         "/opt/custom_plugins".to_string(),
-//!     ]);
-//! }
-//!
-//! // Convert to plugin config for use with plugin system
-//! if let Some(plugin_config) = config.to_plugin_config() {
-//!     println!("Plugin search paths: {:?}", plugin_config.search_paths);
-//!     println!("Auto-load enabled: {}", plugin_config.auto_load);
-//! }
-//! # Ok(())
-//! # }
-//! ```
 
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 
 pub mod dynamic;
-pub use dynamic::{ConfigSwitcher, DynamicConfigManager};
+pub use dynamic::DynamicConfigManager;
 
 /// `WORDPRESS_MASTER_PASSWORD`環境変数を読み書きするテストを直列化する
 /// ためのロック。`cargo test`は同一プロセス内で全テストを並列実行する
@@ -75,7 +47,6 @@ pub struct McpConfig {
     pub server: ServerConfig,
     pub transport: TransportConfig,
     pub handlers: HandlersConfig,
-    pub plugins: Option<PluginsConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -215,35 +186,6 @@ pub struct HandlersConfig {
     // 将来の拡張用
     // pub github: Option<GitHubConfig>,
     // pub custom: Option<HashMap<String, serde_json::Value>>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct PluginsConfig {
-    /// Plugin search directories
-    pub search_paths: Option<Vec<String>>,
-    /// Auto-load plugins on startup
-    pub auto_load: Option<bool>,
-    /// Plugin-specific configurations
-    pub plugins: Option<std::collections::HashMap<String, serde_json::Value>>,
-    /// Enable hot reloading of plugins
-    pub hot_reload: Option<bool>,
-    /// Maximum number of plugins to load
-    pub max_plugins: Option<usize>,
-}
-
-impl Default for PluginsConfig {
-    fn default() -> Self {
-        Self {
-            search_paths: Some(vec![
-                "./plugins".to_string(),
-                "/usr/local/lib/mcp-rs/plugins".to_string(),
-            ]),
-            auto_load: Some(true),
-            plugins: Some(std::collections::HashMap::new()),
-            hot_reload: Some(false),
-            max_plugins: Some(50),
-        }
-    }
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -450,16 +392,6 @@ impl Default for McpConfig {
                 http: None,
             },
             handlers: HandlersConfig { wordpress: None },
-            plugins: Some(PluginsConfig {
-                search_paths: Some(vec![
-                    "./plugins".to_string(),
-                    "/usr/local/lib/mcp-rs/plugins".to_string(),
-                ]),
-                auto_load: Some(true),
-                plugins: Some(std::collections::HashMap::new()),
-                hot_reload: Some(false),
-                max_plugins: Some(50),
-            }),
         }
     }
 }
@@ -790,16 +722,6 @@ impl McpConfig {
                     upload_allowed_dirs: Vec::new(),
                 }),
             },
-            plugins: Some(PluginsConfig {
-                search_paths: Some(vec![
-                    "./plugins".to_string(),
-                    "/usr/local/lib/mcp-rs/plugins".to_string(),
-                ]),
-                auto_load: Some(true),
-                plugins: Some(std::collections::HashMap::new()),
-                hot_reload: Some(false),
-                max_plugins: Some(50),
-            }),
         };
 
         let toml_content = toml::to_string_pretty(&sample_config)?;
@@ -1012,38 +934,6 @@ impl McpConfig {
             http: http_config,
         }
     }
-
-    /// Convert to plugin configuration
-    #[allow(dead_code)]
-    pub fn to_plugin_config(&self) -> Option<PluginConfig> {
-        self.plugins.as_ref().map(|plugins| PluginConfig {
-            search_paths: plugins
-                .search_paths
-                .as_ref()
-                .map(|paths| paths.iter().map(PathBuf::from).collect())
-                .unwrap_or_default(),
-            auto_load: plugins.auto_load.unwrap_or(true),
-            plugins: plugins.plugins.clone().unwrap_or_default(),
-            hot_reload: plugins.hot_reload.unwrap_or(false),
-            max_plugins: plugins.max_plugins,
-        })
-    }
-}
-
-/// Plugin configuration structure
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-pub struct PluginConfig {
-    /// Plugin search directories
-    pub search_paths: Vec<PathBuf>,
-    /// Auto-load plugins on startup
-    pub auto_load: bool,
-    /// Plugin-specific configurations
-    pub plugins: HashMap<String, serde_json::Value>,
-    /// Enable hot reloading of plugins
-    pub hot_reload: bool,
-    /// Maximum number of plugins to load
-    pub max_plugins: Option<usize>,
 }
 
 #[cfg(test)]
@@ -1370,20 +1260,5 @@ mod additional_tests {
         };
 
         config.resolve_encrypted_credentials().unwrap();
-    }
-}
-
-impl Default for PluginConfig {
-    fn default() -> Self {
-        Self {
-            search_paths: vec![
-                PathBuf::from("./plugins"),
-                PathBuf::from("/usr/local/lib/mcp-rs/plugins"),
-            ],
-            auto_load: true,
-            plugins: HashMap::new(),
-            hot_reload: false,
-            max_plugins: Some(50),
-        }
     }
 }

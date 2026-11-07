@@ -102,7 +102,12 @@ See [WordPress Integration](docs/wordpress/) for the full list of tools.
 
 ## Current Status
 
-## ✅ Recently Completed (v0.18.1)
+## ✅ Recently Completed (v0.18.2)
+
+- **🔁 Safer Retries**: Create and delete requests to WordPress are no longer resent after a timeout or 5xx error, so media is not uploaded twice
+- **🧹 Cleanup**: Removed unused modules that were never connected to the server (interactive setup, `src/k8s`, and the earlier plugin implementations)
+
+## ✅ v0.18.1
 
 - **🖼️ Upload Local Files**: `upload_media` can read a file from folders allowed in `upload_allowed_dirs`, instead of base64 data
 - **📌 Featured Image in `get_post`**: Shows the featured image's media ID and URL
@@ -125,10 +130,9 @@ See the [Security documentation](docs/security/) for details.
 ## ✅ v0.16.0
 
 - **🌐 WebSocket Transport Enhancements**: Server mode, LLM streaming, connection pooling, load balancing
-- **🔌 Plugin Isolation System**: Inter-plugin communication, advanced error handling, Docker runtime support
+- **🔌 Plugin Isolation System**: Inter-plugin communication, advanced error handling, Docker runtime support (removed later because it was never connected to the server; plugins are being redesigned in [#392](https://github.com/n-takatsu/mcp-rs/issues/392))
 - **🤖 LLM Streaming Integration**: OpenAI GPT-4 and Anthropic Claude 3.5 Sonnet with real-time responses
 - **📊 Metrics & Monitoring**: Real-time metrics collection, rate limiting (3 algorithms), message compression
-- **🐳 Docker Runtime Support**: Container-based plugin execution with security scanning
 - **🏗️ Code Architecture**: mod.rs refactoring for improved maintainability (5 major modules)
 - **🔒 Enterprise Security**: 7-layer security architecture with RBAC (100% Complete)
 - **🧪 Quality Assurance**: 567 test cases with 100% pass rate and zero Clippy warnings

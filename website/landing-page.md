@@ -5,7 +5,7 @@
 <div align="center">
 
 ![MCP-RS Real-time Editing](https://img.shields.io/badge/MCP--RS-Real--time%20Editing-blue?style=for-the-badge&logo=rust)
-![Version](https://img.shields.io/badge/version-0.18.1-green?style=for-the-badge)
+![Version](https://img.shields.io/badge/version-0.18.2-green?style=for-the-badge)
 ![Production Ready](https://img.shields.io/badge/status-Production%20Ready-success?style=for-the-badge)
 ![Security Grade](https://img.shields.io/badge/security-A%2B-brightgreen?style=for-the-badge&logo=shield)
 
@@ -187,9 +187,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 - **567 Tests**: Comprehensive test suite with 100% pass rate
 - **Zero Warnings**: Clean codebase with no compilation warnings
-- **Docker Ready**: Production-ready containerization with Docker Runtime support
+- **Docker Ready**: Production-ready containerization
 - **Kubernetes Support**: Enterprise deployment configurations
-- **Plugin Isolation**: Secure sandbox environment for third-party plugins
+- **Plugins (planned)**: Third-party plugins running as separate MCP server processes are being redesigned ([#392](https://github.com/n-takatsu/mcp-rs/issues/392))
 
 ---
 
@@ -202,7 +202,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ## Add to your Cargo.toml
 
 [dependencies]
-mcp-rs = "0.18.1"
+mcp-rs = "0.18.2"
 tokio = { version = "1.0", features = ["full"] }
 ```
 
@@ -495,7 +495,6 @@ We welcome contributions! Here's how you can help:
 - ✅ **Performance Optimization**: Sub-millisecond latencies
 - ✅ **Production Readiness**: Docker, monitoring, and documentation
 - ✅ **WebSocket Enhancements**: Server mode, LLM streaming, connection pooling (v0.16.0)
-- ✅ **Plugin Isolation**: Docker runtime, inter-plugin communication (v0.16.0)
 - ✅ **LLM Integration**: OpenAI GPT-4 and Anthropic Claude 3.5 Sonnet (v0.16.0)
 
 ## Q1 2025 🚧 (In Progress)

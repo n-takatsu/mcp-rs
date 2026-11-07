@@ -20,18 +20,15 @@ pub mod core;
 pub mod error;
 pub mod handlers;
 pub mod logging;
-pub mod runtime_control;
 // pub mod http_server; // 削除: Transport統合により不要
 pub mod canary_deployment;
 pub mod mcp;
 pub mod mcp_server;
-pub mod plugin;
 pub mod server;
 pub mod session;
 pub mod threat_intelligence;
 // #[cfg(feature = "tui")]
 // pub mod dashboard;
-pub mod plugins;
 pub mod policy;
 pub mod policy_application;
 pub mod policy_config;
@@ -54,10 +51,6 @@ pub mod llm;
 #[cfg(feature = "kubernetes-operator")]
 pub mod operator;
 
-// Kubernetes integration module
-#[cfg(feature = "kube")]
-pub mod k8s;
-
 // CLI module
 pub mod cli;
 
@@ -75,13 +68,6 @@ pub mod zero_trust;
 
 // Compliance module (GDPR/CCPA)
 pub mod compliance;
-
-// Docker Runtime Integration module
-#[cfg(feature = "docker-runtime")]
-pub mod docker_runtime;
-
-// Plugin isolation module
-pub mod plugin_isolation;
 
 pub use error::{Error, Result, SessionError};
 pub use mcp_server::McpServer;
