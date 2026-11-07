@@ -225,9 +225,45 @@ struct HttpStats {
     started_at: Option<Instant>,
 }
 
+/// HTTP/WebSocketで受け付けたJSON-RPCメッセージを、その場で処理する
+/// ハンドラー（#400）。
+///
+/// 設定すると、受け付けたメッセージを内部のチャンネル（`receive_message` /
+/// `send_message`）に流さず、リクエストごとに直接このハンドラーで処理する。
+/// チャンネル経由では応答を`id`で待ち合わせるため、同じ`id`を使う複数の
+/// クライアント（多くのクライアントは`id`を1から振る）の応答が入れ替わり
+/// うる。直接処理すれば、各HTTPリクエストにその応答がそのまま返る。
+#[async_trait]
+pub trait JsonRpcRequestHandler: Send + Sync {
+    /// 1件のJSON-RPCメッセージ（JSON文字列）を処理し、応答（JSON-RPCの
+    /// 応答オブジェクト）を返す。通知（`id`なし）は`Ok(None)`。JSON-RPCの
+    /// メッセージとして不正な場合は`Err`。
+    async fn handle_jsonrpc(&self, message: &str) -> std::result::Result<Option<Value>, String>;
+}
+
+/// `JsonRpcRequestHandler`で1件を処理する時間の上限。ツール側（WordPress・
+/// プラグイン）にもそれぞれタイムアウトがあるため、それより長くとる。
+const REQUEST_HANDLER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// `HttpTransport`が`#[derive(Debug)]`のままでいられるよう、ハンドラーを
+/// 包む（`dyn JsonRpcRequestHandler`はDebugを実装しない）。
+#[derive(Clone, Default)]
+struct RequestHandlerSlot(Option<Arc<dyn JsonRpcRequestHandler>>);
+
+impl std::fmt::Debug for RequestHandlerSlot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(if self.0.is_some() {
+            "RequestHandler(set)"
+        } else {
+            "RequestHandler(unset)"
+        })
+    }
+}
+
 /// Shared state for HTTP transport
 #[derive(Clone)]
 struct HttpTransportState {
+    request_handler: Option<Arc<dyn JsonRpcRequestHandler>>,
     request_sender: tokio::sync::mpsc::Sender<String>,
     pending_responses: Arc<RwLock<HashMap<Value, tokio::sync::oneshot::Sender<JsonRpcResponse>>>>,
     stats: Arc<RwLock<HttpStats>>,
@@ -265,9 +301,17 @@ pub struct HttpTransport {
     pending_responses: Arc<RwLock<HashMap<Value, tokio::sync::oneshot::Sender<JsonRpcResponse>>>>,
     stats: Arc<RwLock<HttpStats>>,
     bound_addr: Arc<RwLock<Option<SocketAddr>>>,
+    request_handler: RequestHandlerSlot,
 }
 
 impl HttpTransport {
+    /// 受け付けたJSON-RPCメッセージを直接処理するハンドラーを設定する
+    /// （#400）。`start_server()`の前に呼ぶ。
+    pub fn with_request_handler(mut self, handler: Arc<dyn JsonRpcRequestHandler>) -> Self {
+        self.request_handler = RequestHandlerSlot(Some(handler));
+        self
+    }
+
     /// Create a new HTTP transport
     pub fn new(config: HttpConfig) -> Result<Self> {
         let (sender, receiver) = tokio::sync::mpsc::channel(1000);
@@ -284,6 +328,7 @@ impl HttpTransport {
             pending_responses: Arc::new(RwLock::new(HashMap::new())),
             stats: Arc::new(RwLock::new(stats)),
             bound_addr: Arc::new(RwLock::new(None)),
+            request_handler: RequestHandlerSlot::default(),
         })
     }
 
@@ -427,7 +472,9 @@ impl HttpTransport {
             )),
             websocket_connections: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             websocket_total_connections: Arc::new(AtomicU64::new(0)),
+            request_handler: self.request_handler.0.clone(),
             websocket_handler: Arc::new(JsonRpcWsHandler {
+                request_handler: self.request_handler.0.clone(),
                 request_sender: self.sender.clone(),
                 pending_responses: self.pending_responses.clone(),
                 stats: self.stats.clone(),
@@ -926,6 +973,11 @@ async fn handle_jsonrpc_request(
             return Err(StatusCode::BAD_REQUEST);
         }
     };
+
+    if let Some(handler) = state.request_handler.clone() {
+        return respond_with_request_handler(&state, handler.as_ref(), &request_str, start_time)
+            .await;
+    }
 
     // If request has ID, wait for actual response
     if let Some(id) = request_id {
@@ -1600,11 +1652,51 @@ async fn handle_ws_socket(
     debug!("WebSocket connection {} closed", conn_id);
 }
 
+/// `JsonRpcRequestHandler`でリクエストを処理し、HTTPの応答にする（#400）。
+/// 応答があれば200でJSON-RPCの応答を、通知なら202（本文なし、#374）を返す。
+async fn respond_with_request_handler(
+    state: &HttpTransportState,
+    handler: &dyn JsonRpcRequestHandler,
+    request_str: &str,
+    start_time: Instant,
+) -> std::result::Result<Response, StatusCode> {
+    match tokio::time::timeout(REQUEST_HANDLER_TIMEOUT, handler.handle_jsonrpc(request_str)).await {
+        Ok(Ok(Some(response_value))) => {
+            {
+                let mut stats = state.stats.write().await;
+                stats.total_responses += 1;
+                stats.total_response_time_ms += start_time.elapsed().as_millis() as u64;
+                stats.total_bytes_sent += response_value.to_string().len() as u64;
+            }
+            Ok((response_headers(state), Json(response_value)).into_response())
+        }
+        Ok(Ok(None)) => {
+            state.stats.write().await.total_responses += 1;
+            Ok((StatusCode::ACCEPTED, response_headers(state)).into_response())
+        }
+        Ok(Err(e)) => {
+            warn!("Rejected an invalid JSON-RPC message: {}", e);
+            state.stats.write().await.total_errors += 1;
+            Err(StatusCode::BAD_REQUEST)
+        }
+        Err(_) => {
+            warn!(
+                "JSON-RPC request did not finish within {} seconds",
+                REQUEST_HANDLER_TIMEOUT.as_secs()
+            );
+            state.stats.write().await.total_errors += 1;
+            Err(StatusCode::REQUEST_TIMEOUT)
+        }
+    }
+}
+
 /// Bridges `/ws` text frames into the same JSON-RPC request/response
 /// correlation machinery `handle_jsonrpc_request` uses (`request_sender` /
 /// `pending_responses`), so `/ws` speaks MCP JSON-RPC rather than echoing
 /// frames back.
 struct JsonRpcWsHandler {
+    /// 設定されていれば、フレームをチャンネルに流さず直接処理する（#400）
+    request_handler: Option<Arc<dyn JsonRpcRequestHandler>>,
     request_sender: tokio::sync::mpsc::Sender<String>,
     pending_responses: Arc<RwLock<HashMap<Value, tokio::sync::oneshot::Sender<JsonRpcResponse>>>>,
     stats: Arc<RwLock<HttpStats>>,
@@ -1634,6 +1726,38 @@ impl MessageHandler for JsonRpcWsHandler {
             let mut stats = self.stats.write().await;
             stats.total_requests += 1;
             stats.total_bytes_received += text.len() as u64;
+        }
+
+        if let Some(handler) = &self.request_handler {
+            let response =
+                match tokio::time::timeout(REQUEST_HANDLER_TIMEOUT, handler.handle_jsonrpc(&text))
+                    .await
+                {
+                    Ok(Ok(response)) => response,
+                    Ok(Err(e)) => {
+                        warn!("Rejected an invalid WebSocket JSON-RPC message: {}", e);
+                        self.stats.write().await.total_errors += 1;
+                        return Ok(None);
+                    }
+                    Err(_) => {
+                        warn!(
+                            "WebSocket JSON-RPC request did not finish within {} seconds",
+                            REQUEST_HANDLER_TIMEOUT.as_secs()
+                        );
+                        self.stats.write().await.total_errors += 1;
+                        return Ok(None);
+                    }
+                };
+            let Some(response) = response else {
+                return Ok(None); // 通知には応答しない
+            };
+            let response_json = response.to_string();
+            {
+                let mut stats = self.stats.write().await;
+                stats.total_responses += 1;
+                stats.total_bytes_sent += response_json.len() as u64;
+            }
+            return Ok(Some(Message::Text(response_json.into())));
         }
 
         let request_id = request.get("id").cloned();
@@ -3371,6 +3495,198 @@ mod tests {
             result.is_err(),
             "expected start_server() to reject duplicate api_keys entries instead of \
              silently keeping only the last one"
+        );
+    }
+
+    /// `with_request_handler`のテスト用。`params.sleep_ms`だけ待ってから、
+    /// 受けた`id`・`method`・`params.tag`をそのまま結果に入れて返す。
+    struct EchoRequestHandler;
+
+    #[async_trait]
+    impl JsonRpcRequestHandler for EchoRequestHandler {
+        async fn handle_jsonrpc(
+            &self,
+            message: &str,
+        ) -> std::result::Result<Option<Value>, String> {
+            let request: Value = serde_json::from_str(message).map_err(|e| e.to_string())?;
+            let method = request
+                .get("method")
+                .and_then(Value::as_str)
+                .ok_or("missing method")?
+                .to_string();
+            let Some(id) = request.get("id").cloned() else {
+                return Ok(None);
+            };
+            if let Some(ms) = request["params"]["sleep_ms"].as_u64() {
+                sleep(Duration::from_millis(ms)).await;
+            }
+            Ok(Some(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": { "method": method, "tag": request["params"]["tag"] }
+            })))
+        }
+    }
+
+    async fn start_with_echo_handler(config: HttpConfig) -> SocketAddr {
+        let transport = HttpTransport::new(config)
+            .unwrap()
+            .with_request_handler(Arc::new(EchoRequestHandler));
+        transport.start_server().await.unwrap();
+        let server_addr = transport.bound_addr().await.unwrap();
+        wait_for_plain_server_ready(server_addr).await;
+        server_addr
+    }
+
+    #[tokio::test]
+    async fn test_request_handler_answers_requests_and_accepts_notifications() {
+        let server_addr = start_with_echo_handler(HttpConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            ..HttpConfig::default()
+        })
+        .await;
+        let url = format!("http://127.0.0.1:{}/mcp", server_addr.port());
+        let client = reqwest::Client::new();
+
+        let response = client
+            .post(&url)
+            .json(&serde_json::json!({"jsonrpc": "2.0", "id": 7, "method": "tools/list"}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: Value = response.json().await.unwrap();
+        assert_eq!(body["id"], serde_json::json!(7));
+        assert_eq!(body["result"]["method"], serde_json::json!("tools/list"));
+
+        // 通知には本文なしの202（#374）
+        let response = client
+            .post(&url)
+            .json(&notification_jsonrpc_request())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        assert!(response.text().await.unwrap().is_empty());
+
+        // JSON-RPCのメッセージとして不正なものは400
+        let response = client
+            .post(&url)
+            .json(&serde_json::json!({"jsonrpc": "2.0", "id": 1}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    /// 多くのクライアントは`id`を1から振る。チャンネル経由の待ち合わせは
+    /// `id`で応答を探すため、同時に来た同じ`id`の応答が入れ替わりえた。
+    /// 直接処理なら、各リクエストに自分の応答が返る（#400）。
+    #[tokio::test]
+    async fn test_request_handler_keeps_concurrent_requests_with_same_id_apart() {
+        let server_addr = start_with_echo_handler(HttpConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            ..HttpConfig::default()
+        })
+        .await;
+        let url = format!("http://127.0.0.1:{}/mcp", server_addr.port());
+        let client = reqwest::Client::new();
+
+        let send = |tag: &'static str, sleep_ms: u64| {
+            let client = client.clone();
+            let url = url.clone();
+            async move {
+                let body: Value = client
+                    .post(&url)
+                    .json(&serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "tools/call",
+                        "params": { "tag": tag, "sleep_ms": sleep_ms }
+                    }))
+                    .send()
+                    .await
+                    .unwrap()
+                    .json()
+                    .await
+                    .unwrap();
+                body["result"]["tag"].as_str().unwrap().to_string()
+            }
+        };
+        // 先に送ったAの方が遅く終わる
+        let (a, b) = tokio::join!(send("A", 300), send("B", 0));
+        assert_eq!(a, "A");
+        assert_eq!(b, "B");
+    }
+
+    #[tokio::test]
+    async fn test_request_handler_still_requires_api_key() {
+        let server_addr = start_with_echo_handler(HttpConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            auth_enabled: true,
+            api_keys: vec![ApiKeyEntry {
+                key: "correct-key".to_string(),
+                name: "test".to_string(),
+                user_id: "user-1".to_string(),
+            }],
+            ..HttpConfig::default()
+        })
+        .await;
+        let url = format!("http://127.0.0.1:{}/mcp", server_addr.port());
+        let client = reqwest::Client::new();
+        let request = serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"});
+
+        let response = client.post(&url).json(&request).send().await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+        let response = client
+            .post(&url)
+            .header("Authorization", "Bearer correct-key")
+            .json(&request)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_request_handler_answers_websocket_frames() {
+        let server_addr = start_with_echo_handler(HttpConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            enable_websocket_upgrade: true,
+            ..HttpConfig::default()
+        })
+        .await;
+        let url = format!("ws://localhost:{}/ws", server_addr.port());
+        let (mut ws_stream, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+
+        // 通知には応答しないので、続くリクエストの応答が最初に届く
+        for frame in [
+            serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+            serde_json::json!({"jsonrpc": "2.0", "id": 3, "method": "tools/list"}),
+        ] {
+            ws_stream
+                .send(tokio_tungstenite::tungstenite::Message::Text(
+                    frame.to_string().into(),
+                ))
+                .await
+                .unwrap();
+        }
+
+        let response_msg = tokio::time::timeout(Duration::from_secs(5), ws_stream.next())
+            .await
+            .expect("timed out waiting for a WebSocket response")
+            .expect("stream ended without a response")
+            .expect("WebSocket error while awaiting response");
+        let response_text = match response_msg {
+            tokio_tungstenite::tungstenite::Message::Text(text) => text,
+            other => panic!("expected a text frame in response, got: {other:?}"),
+        };
+        let response_value: Value = serde_json::from_str(&response_text).unwrap();
+        assert_eq!(response_value["id"], serde_json::json!(3));
+        assert_eq!(
+            response_value["result"]["method"],
+            serde_json::json!("tools/list")
         );
     }
 }
