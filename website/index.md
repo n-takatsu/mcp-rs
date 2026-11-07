@@ -102,7 +102,13 @@ See [WordPress Integration](docs/wordpress/) for the full list of tools.
 
 ## Current Status
 
-## ✅ Recently Completed (v0.18.2)
+## ✅ Recently Completed (v0.18.3)
+
+- **🔌 Plugins**: Add tools from other MCP servers, run as separate processes. mcp-rs relays them as `<plugin>__<tool>` with rate limiting, audit logging, and timeouts (STDIO mode). See [Plugins](docs/plugins/)
+- **🔗 Post Slugs**: Set the URL slug when creating or updating a post or page, for example an English slug for a Japanese title
+- **🧩 Multiple Handlers in STDIO Mode**: Tools from all handlers are listed and each call goes to the handler that provides the tool
+
+## ✅ v0.18.2
 
 - **🔁 Safer Retries**: Create and delete requests to WordPress are no longer resent after a timeout or 5xx error, so media is not uploaded twice
 - **🧹 Cleanup**: Removed unused modules that were never connected to the server (interactive setup, `src/k8s`, and the earlier plugin implementations)

@@ -3401,7 +3401,7 @@ dependencies = [
 
 [[package]]
 name = "mcp-rs"
-version = "0.18.2"
+version = "0.18.3"
 dependencies = [
  "aes-gcm",
  "ammonia",
