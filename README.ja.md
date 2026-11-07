@@ -4,7 +4,7 @@
 
 > **[日本語](README.ja.md)** | **[English](README.md)**
 
-[![Version](https://img.shields.io/badge/Version-v0.18.0-blue)](https://github.com/n-takatsu/mcp-rs/releases/tag/v0.18.0)
+[![Version](https://img.shields.io/badge/Version-v0.18.1-blue)](https://github.com/n-takatsu/mcp-rs/releases/tag/v0.18.1)
 ![Architecture](https://img.shields.io/badge/Architecture-Production--Ready-green)
 ![Implementation](https://img.shields.io/badge/WordPress_Tools-32_Available-green)
 ![License](https://img.shields.io/badge/License-MIT%2FApache--2.0-green)
@@ -132,84 +132,44 @@ claude mcp add mcp-rs --scope user \
 
 > 📖 `.mcp.json` での登録、認証情報の暗号化、トラブルシューティングは [Claude Code 統合ガイド](./project-docs/CLAUDE_CODE_INTEGRATION.md) をご覧ください。
 
-### オプション 1: 対話式設定（推奨）
+### セットアップ
 
 ```bash
-
-## リポジトリをクローン
-
 git clone https://github.com/n-takatsu/mcp-rs.git
 cd mcp-rs
-
-## リリース版をビルド
-
 cargo build --release
-
-## 対話式設定セットアップを実行
-
-./target/release/mcp-rs --setup-config
 ```
 
-対話式設定の特徴:
+ビルドしたら、設定ファイルを指定して起動します。すぐに使える設定ファイルが`configs/production/`にあります。
 
-- 📝 ユーザーフレンドリーな質問形式
-- 🔍 リアルタイム接続テスト
-- ⚡ 自動設定ファイル生成
-- 🛡️ セキュリティ設定の推奨
-
-### オプション 2: 手動設定
+- `claude-desktop.toml`: STDIO用（Claude Desktop・Claude Code）。WordPressの接続情報は、環境変数`WORDPRESS_URL`・`WORDPRESS_USERNAME`・`WORDPRESS_PASSWORD`から読み込みます
+- `web-ui.toml`: HTTP用（Webクライアント）
 
 ```bash
-
-## サンプル設定ファイルを生成
-
-./target/release/mcp-rs --generate-config
-
-## 設定を編集
-
-cp mcp-config.toml.example mcp-config.toml
-
-## mcp-config.toml を WordPress の詳細で編集
-
-## カスタム設定で実行
-
-./target/release/mcp-rs --config mcp-config.toml
+./target/release/mcp-rs --config configs/production/claude-desktop.toml
 ```
+
+設定ファイルを自分で書く場合は、次の最小構成から始めてください。
 
 ## 基本設定
 
 `mcp-config.toml` を作成:
 
 ```toml
-[handlers.wordpress]
-url = "https://your-wordpress-site.com"
-username = "your-username"
-password = "your-application-password"
-enabled = true
-
-## WordPress アプリケーションパスワード
+[transport]
+type = "stdio"          # HTTPモードは "http"（[transport.http] を参照）
 
 [server]
-stdio = true
+log_level = "warn"      # STDIOモードでは、ログは標準出力ではなくファイルに出力されます
 
-## Claude Desktop 用（HTTP モードに切り替える場合）
+[handlers.wordpress]
+enabled = true
+url = "https://your-wordpress-site.com"
+username = "your-username"
+password = "your-application-password"   # WordPress アプリケーションパスワード
+```
 
-## stdio = false
-[transport]
-transport_type = "stdio"
-
-## [transport.http]
-## addr = "127.0.0.1"
-## port = 8080
-
-## HTTP モードのみ
-
-[logging]
-level = "error"  
-
-## Claude Desktop 用の最小ログ
-
-## level = "info"  # 開発用の詳細ログ
+`./target/release/mcp-rs --config mcp-config.toml`で起動します。パスワードを設定ファイルに書かない場合は、`${WORDPRESS_PASSWORD}`（環境変数）か[認証情報の暗号化](https://n-takatsu.github.io/mcp-rs/docs/security/#encrypted-wordpress-credentials)を使ってください。
 
 ### HTTP TLS/mTLS 設定（任意）
 

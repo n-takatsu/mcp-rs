@@ -108,7 +108,7 @@ claude mcp add mcp-rs --scope user \
   -- /path/to/mcp-rs/target/release/mcp-rs --config /path/to/your-config.toml
 ```
 
-暗号化した値は、`mcp-rs encrypt-wordpress-credentials`で作れます。ユーザー名・Application Password・マスターパスワードを入力すると、設定ファイルに貼り付ける`[handlers.wordpress.encrypted_credentials]`のセクションが出力されます（パスワードは入力中も表示されません）。詳しくは[Security](https://n-takatsu.github.io/mcp-rs/docs/security/#encrypted-wordpress-credentials)を参照してください。
+暗号化した値は、`mcp-rs encrypt-wordpress-credentials`（v0.18.1以降）で作れます。ユーザー名・Application Password・マスターパスワードを入力すると、設定ファイルに貼り付ける`[handlers.wordpress.encrypted_credentials]`のセクションが出力されます（パスワードは入力中も表示されません）。詳しくは[Security](https://n-takatsu.github.io/mcp-rs/docs/security/#encrypted-wordpress-credentials)を参照してください。
 
 ## 接続の確認
 

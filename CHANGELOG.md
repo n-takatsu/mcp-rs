@@ -7,8 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.1] - 2026-11-07
+
 ### Added
 
+- `get_post`に`format`引数を追加（#356）。`raw`（既定。Gutenbergのブロック
+  区切り等を含む編集用の原文で、そのまま`update_post`に渡せる）・
+  `rendered`（表示用のHTML）・`text`（タグを除いたテキスト）を選べる。
+  `raw`は編集権限が必要で、権限が無い場合は表示用のHTMLを返し、その旨を
+  出力に示す
 - `mcp-rs encrypt-wordpress-credentials`サブコマンド（#355）。設定ファイルに
   貼り付ける`[handlers.wordpress.encrypted_credentials]`のセクションを生成
   する。これまでは生成にRustのコードを書く必要があった
@@ -68,6 +75,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `get_post`が本文をプレーンテキスト化したうえで100文字に切り詰めており、
+  本文全体を確認できなかった問題（#356）。全文を返すようにした。閲覧
+  パスワード付きの投稿で本文が空になる場合は、空として扱わないよう
+  注意書きを添える
+- WordPressへのリクエストが成功したときに、応答本文の先頭500文字を警告
+  ログに出していたのを、バイト数のみのdebugログに変更（#356）。編集用の
+  応答には、投稿の閲覧パスワードや未公開の下書きが含まれるため
 - `delete_media`を`force: true`で呼ぶと、削除に成功しているのに
   `404 rest_post_invalid_id`のエラーを返していた不具合を修正（#383）。
   完全削除の応答（`{"deleted": true, "previous": {...}}`）を解析できず、

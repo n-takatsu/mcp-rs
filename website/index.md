@@ -102,7 +102,16 @@ See [WordPress Integration](docs/wordpress/) for the full list of tools.
 
 ## Current Status
 
-## ✅ Recently Completed (v0.18.0)
+## ✅ Recently Completed (v0.18.1)
+
+- **🖼️ Upload Local Files**: `upload_media` can read a file from folders allowed in `upload_allowed_dirs`, instead of base64 data
+- **📌 Featured Image in `get_post`**: Shows the featured image's media ID and URL
+- **📄 Full Post Content in `get_post`**: Returns the whole content, including the editable source with Gutenberg block markup
+- **🔐 Credential Encryption Command**: `mcp-rs encrypt-wordpress-credentials` generates the `encrypted_credentials` section
+- **🔌 MCP Protocol Fixes**: STDIO and HTTP no longer answer JSON-RPC notifications
+- **🗑️ Media Deletion Fix**: `delete_media` with `force: true` no longer reports an error after deleting
+
+## ✅ v0.18.0
 
 - **🔑 API Key Authentication**: Optional API key check on every HTTP/WebSocket request
 - **🚦 Rate Limiting**: WordPress tool calls are rate limited per site
