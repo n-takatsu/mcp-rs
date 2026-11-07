@@ -358,8 +358,7 @@ spec:
 - [**WebSocket Guide**](https://github.com/n-takatsu/mcp-rs/blob/main/docs/websocket-guide.md) - Complete WebSocket implementation guide (v0.16.0)
 - [**WebSocket Performance**](https://github.com/n-takatsu/mcp-rs/blob/main/docs/websocket-performance.md) - Performance tuning and optimization
 - [**LLM Integration Guide**](https://github.com/n-takatsu/mcp-rs/blob/main/docs/llm-integration-guide.md) - OpenAI and Anthropic integration
-- [**Plugin Developer Guide**](https://github.com/n-takatsu/mcp-rs/blob/main/docs/plugin-developer-guide.md) - Building isolated plugins
-- [**Docker Runtime Guide**](https://github.com/n-takatsu/mcp-rs/blob/main/docs/docker-runtime-guide.md) - Container-based plugin execution
+- [**Plugins**](./docs/plugins.md) - Running MCP servers as plugins, as child processes or in Docker containers
 - [**Session Management**](./docs/session-management-architecture.md) - Architecture and implementation
 
 ## 🛡️ Security & Compliance

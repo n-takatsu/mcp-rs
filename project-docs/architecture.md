@@ -174,7 +174,7 @@ The traditional plugin architecture presents significant security vulnerabilitie
 
 Built-in features are implemented as handlers using the `McpHandler` trait (for example, `WordPressHandler`).
 
-Third-party plugins run as separate MCP server processes ([#392](https://github.com/n-takatsu/mcp-rs/issues/392)). `src/plugin_proxy.rs` starts each plugin listed in `[[plugins]]` as a child process, connects to it as an MCP client, and registers a `PluginHandler` that relays its tools as `<plugin>__<tool>` while applying rate limiting, audit logging, timeouts, and response size limits (stage 1, [#394](https://github.com/n-takatsu/mcp-rs/issues/394)). The earlier plugin modules (`plugin`, `plugins`, `plugin_isolation`, `docker_runtime`) were never connected to the server and have been removed.
+Third-party plugins run as separate MCP server processes ([#392](https://github.com/n-takatsu/mcp-rs/issues/392)). `src/plugin_proxy.rs` starts each plugin listed in `[[plugins]]` as a child process, connects to it as an MCP client, and registers a `PluginHandler` that relays its tools as `<plugin>__<tool>` while applying rate limiting, audit logging, timeouts, and response size limits (stage 1, [#394](https://github.com/n-takatsu/mcp-rs/issues/394)). A plugin with `[plugins.container]` is started with `docker run -i` instead, with no network, no capabilities, a read-only root filesystem, and only the configured mounts by default (stage 2, [#411](https://github.com/n-takatsu/mcp-rs/issues/411)). The earlier plugin modules (`plugin`, `plugins`, `plugin_isolation`, `docker_runtime`) were never connected to the server and have been removed.
 
 ## Security Integration Architecture
 

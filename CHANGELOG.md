@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- プラグインをDockerコンテナの中で起動できるようにした（#411、#392の段階2）。
+  `[[plugins]]`に`[plugins.container]`（`image`等）を書くと、`docker run -i`で
+  起動し、標準入出力で中継する。既定で、ネットワークなし（`--network=none`）・
+  全ケーパビリティ削除・ルートファイルシステム読み取り専用（`/tmp`のみ
+  書き込み可）・メモリ512MB・プロセス数256の上限付き。ホストのフォルダは
+  `mounts`で指定したものだけを、既定で読み取り専用でマウントする
+  - イメージは起動時に取得しない（`--pull=never`）。事前に`docker pull`する
+  - `env`の値はコマンドラインに載せず、dockerコマンドの環境変数経由で渡す
+  - 停止時・終了時にコンテナを`docker rm -f`で消す
+  - コンテナで起動する場合、`command`は省略できる（イメージのCMDを使う）
+
 ### Removed
 
 - 本体から使われなくなった`core`モジュール（`Runtime`・`HandlerRegistry`・
