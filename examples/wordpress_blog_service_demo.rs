@@ -73,10 +73,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("📊 設定情報:");
     println!("   サイトURL: {}", wp_url);
     println!("   ユーザー名: {}", wp_username);
-    println!(
-        "   パスワード: {}...",
-        &wp_password[0..std::cmp::min(4, wp_password.len())]
-    );
+    // パスワードは一部でも表示しない
+    println!("   パスワード: 設定済み");
     println!();
 
     // WordPress接続テスト（概念的なデモ）
