@@ -51,6 +51,34 @@ pub struct ResourcesCapability {
     pub list_changed: Option<bool>,
 }
 
+/// 登録済みのハンドラーでJSON-RPCメッセージを処理する。`McpServer`の
+/// STDIOと同じ処理を、HTTP/WebSocket（`HttpTransport`）からも使うため
+/// （#400）。複製しても同じハンドラーを共有する。
+#[derive(Clone)]
+pub struct RequestDispatcher {
+    handlers: Arc<Handlers>,
+}
+
+impl RequestDispatcher {
+    /// 1件のJSON-RPCメッセージを処理する。通知には`Ok(None)`。
+    pub async fn handle_message(&self, message: &str) -> Result<Option<JsonRpcResponse>, McpError> {
+        McpServer::process_request(message, &self.handlers).await
+    }
+}
+
+#[async_trait]
+impl crate::transport::http::JsonRpcRequestHandler for RequestDispatcher {
+    async fn handle_jsonrpc(&self, message: &str) -> Result<Option<serde_json::Value>, String> {
+        match self.handle_message(message).await {
+            Ok(Some(response)) => serde_json::to_value(&response)
+                .map(Some)
+                .map_err(|e| e.to_string()),
+            Ok(None) => Ok(None),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+}
+
 impl Default for McpServer {
     fn default() -> Self {
         Self::new()
@@ -70,6 +98,14 @@ impl McpServer {
                     list_changed: Some(false),
                 }),
             },
+        }
+    }
+
+    /// 登録済みのハンドラーで処理する`RequestDispatcher`を作る。以後に
+    /// `add_handler`したハンドラーは含まれない。
+    pub fn dispatcher(&self) -> RequestDispatcher {
+        RequestDispatcher {
+            handlers: Arc::new(self.handlers.clone()),
         }
     }
 
@@ -873,5 +909,49 @@ mod tests {
         );
         let names: Vec<&str> = server.handlers.iter().map(|(n, _)| n.as_str()).collect();
         assert_eq!(names, vec!["a", "b"]);
+    }
+
+    #[tokio::test]
+    async fn test_dispatcher_serves_registered_handlers_over_the_transport_trait() {
+        use crate::transport::http::JsonRpcRequestHandler;
+
+        let mut server = McpServer::new();
+        for (name, handler) in two_handlers() {
+            server.add_handler(name, handler);
+        }
+        let dispatcher = server.dispatcher();
+
+        let response = dispatcher
+            .handle_jsonrpc(
+                &serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": 5,
+                    "method": "tools/call",
+                    "params": { "name": "plugin__echo", "arguments": {} }
+                })
+                .to_string(),
+            )
+            .await
+            .unwrap()
+            .expect("a request with an id must get a response");
+        assert_eq!(response["id"], serde_json::json!(5));
+        assert_eq!(
+            response["result"]["content"][0]["text"],
+            serde_json::json!("second:plugin__echo")
+        );
+
+        // 通知には応答しない
+        let notification = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "notifications/initialized"
+        });
+        assert!(dispatcher
+            .handle_jsonrpc(&notification.to_string())
+            .await
+            .unwrap()
+            .is_none());
+
+        // JSON-RPCとして読めないものはエラー
+        assert!(dispatcher.handle_jsonrpc("not json").await.is_err());
     }
 }

@@ -24,7 +24,6 @@ mod types;
 mod zero_trust;
 
 use mcp_rs::config::McpConfig;
-use mcp_rs::core::{Runtime, RuntimeConfig};
 use mcp_rs::handlers::WordPressHandler;
 use mcp_rs::logging::{init_logging, LogConfig};
 use std::sync::Arc;
@@ -65,60 +64,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // フォールバックが発生した場合に2つの異なるパスが出て矛盾する。
     info!("✅ 設定読み込み完了");
 
-    // STDIOモード（Claude Desktop等のMCPクライアント）:
-    // Runtime は受信ループ(run)が未接続のため、行区切りJSONを処理する McpServer::run_stdio を使う
-    if config.transport.transport_type.as_deref() == Some("stdio") {
-        return run_stdio_server(&config).await;
-    }
-
-    // Runtime初期化
-    let runtime_config = RuntimeConfig {
-        mcp_config: config.clone(),
-        enable_metrics: true,
-        default_timeout_seconds: 30,
-        max_concurrent_requests: 100,
-    };
-
-    let runtime = Runtime::new(runtime_config);
-
-    // ハンドラー登録
-    register_handlers(&runtime, &config).await?;
-
-    // Runtime開始
-    info!("🔄 Transport統合ランタイム初期化中...");
-    runtime.initialize().await.map_err(|e| {
-        error!("Runtime初期化失敗: {}", e);
-        Box::new(e) as Box<dyn std::error::Error>
-    })?;
-
-    info!("✅ MCP-RSサーバー起動完了");
-    info!("💡 Ctrl+C で終了");
-
-    // メインループ
-    let runtime_arc = Arc::new(runtime);
-    let main_task = tokio::spawn({
-        let runtime = runtime_arc.clone();
-        async move {
-            while runtime.is_ready().await {
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-            }
+    // どちらのモードも、ハンドラー（WordPress・プラグイン）を登録した
+    // McpServerでリクエストを処理する。HTTPモードは以前core::Runtime経由
+    // だったが、受信ループが動いておらずリクエストを処理できなかった（#400）
+    let transport_config = config.to_transport_config();
+    match transport_config.transport_type {
+        mcp_rs::transport::TransportType::Http { addr } => {
+            let mut http_config = transport_config.http.clone();
+            http_config.bind_addr = addr;
+            run_http_server(&config, http_config).await
         }
-    });
-
-    // 終了シグナル待機
-    tokio::select! {
-        _ = main_task => info!("🔄 メインタスク終了"),
-        _ = tokio::signal::ctrl_c() => info!("🔄 終了シグナル受信"),
+        _ => {
+            if let Some(other) = config
+                .transport
+                .transport_type
+                .as_deref()
+                .filter(|t| *t != "stdio")
+            {
+                tracing::warn!(
+                    "Unknown transport type '{}': running in STDIO mode. Use \"stdio\" or \"http\"",
+                    other
+                );
+            }
+            run_stdio_server(&config).await
+        }
     }
-
-    // Graceful shutdown
-    runtime_arc
-        .shutdown()
-        .await
-        .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
-
-    info!("👋 MCP-RS終了");
-    Ok(())
 }
 
 /// 設定ファイル読み込み（引数処理含む）
@@ -156,14 +126,27 @@ async fn load_config_from_file(path: &str) -> Result<McpConfig, Box<dyn std::err
     Ok(config)
 }
 
-/// STDIOモードでMCPサーバーを実行（initialize / tools/list / tools/call 等に応答）
-async fn run_stdio_server(config: &McpConfig) -> Result<(), Box<dyn std::error::Error>> {
+/// 設定に従ってハンドラー（WordPress・プラグイン）を登録したMCPサーバーを作る
+async fn build_server(
+    config: &McpConfig,
+    http_mode: bool,
+) -> Result<mcp_rs::mcp::McpServer, Box<dyn std::error::Error>> {
     let mut server = mcp_rs::mcp::McpServer::new();
 
     if let Some(wp_config) = &config.handlers.wordpress {
         if wp_config.enabled.unwrap_or(false) {
             let wp_handler = WordPressHandler::try_new(wp_config.clone())
                 .map_err(|e| format!("WordPress handler creation failed: {}", e))?;
+
+            // STDIOと違い、HTTP/WebSocketのクライアントは別のマシンにいる
+            // ことがある。その場合、file_pathで読まれるのはクライアントの
+            // 手元ではなく、このサーバー上のファイルになる
+            if http_mode && !wp_config.upload_allowed_dirs.is_empty() {
+                tracing::warn!(
+                    "upload_allowed_dirs is set: clients connected over HTTP/WebSocket can upload files from these folders on this server via upload_media file_path"
+                );
+            }
+
             server.add_handler("wordpress".to_string(), Arc::new(wp_handler));
             info!("✅ WordPressハンドラー登録完了: {}", wp_config.url);
         }
@@ -174,59 +157,36 @@ async fn run_stdio_server(config: &McpConfig) -> Result<(), Box<dyn std::error::
         server.add_handler(format!("plugin:{}", name), handler);
     }
 
+    Ok(server)
+}
+
+/// STDIOモードでMCPサーバーを実行（initialize / tools/list / tools/call 等に応答）
+async fn run_stdio_server(config: &McpConfig) -> Result<(), Box<dyn std::error::Error>> {
+    let server = build_server(config, false).await?;
     info!("🔌 STDIOモードで待機中");
     server.run_stdio().await
 }
 
-/// ハンドラー登録
-async fn register_handlers(
-    runtime: &Runtime,
+/// HTTPモードでMCPサーバーを実行する。`/mcp`（と`/`）へのPOST、および
+/// `enable_websocket_upgrade`が有効なら`/ws`のWebSocketで、STDIOと同じ
+/// 処理（McpServer）に応答させる（#400）。Ctrl+Cで終了する。
+async fn run_http_server(
     config: &McpConfig,
+    http_config: mcp_rs::transport::HttpConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let registry = runtime.handler_registry();
+    let server = build_server(config, true).await?;
 
-    // プラグイン（#394）はSTDIOモードのみ対応。HTTPモードはリクエストの
-    // 処理自体が未接続のため（#400）、起動しない
-    if !config.plugins.is_empty() {
-        tracing::warn!(
-            "[[plugins]] is ignored in HTTP mode: plugins are supported only in STDIO mode for now (#400)"
-        );
+    let transport = mcp_rs::transport::HttpTransport::new(http_config)?
+        .with_request_handler(Arc::new(server.dispatcher()));
+    transport.start_server().await?;
+    if let Some(addr) = transport.bound_addr().await {
+        info!("🌐 HTTPモードで待機中: http://{}/mcp", addr);
     }
+    info!("💡 Ctrl+C で終了");
 
-    // WordPressハンドラー
-    if let Some(wp_config) = &config.handlers.wordpress {
-        if wp_config.enabled.unwrap_or(false) {
-            let wp_handler = WordPressHandler::try_new(wp_config.clone())
-                .map_err(|e| format!("WordPress handler creation failed: {}", e))?;
-
-            // STDIOと違い、HTTP/WebSocketのクライアントは別のマシンにいる
-            // ことがある。その場合、file_pathで読まれるのはクライアントの
-            // 手元ではなく、このサーバー上のファイルになる
-            if !wp_config.upload_allowed_dirs.is_empty() {
-                tracing::warn!(
-                    "upload_allowed_dirs is set: clients connected over HTTP/WebSocket can upload files from these folders on this server via upload_media file_path"
-                );
-            }
-
-            let mut registry_lock = registry.write().await;
-            registry_lock
-                .register_handler(
-                    "wordpress".to_string(),
-                    Arc::new(wp_handler),
-                    mcp_rs::core::PluginInfo {
-                        name: "WordPress Handler".to_string(),
-                        version: "0.1.0".to_string(),
-                        description: "WordPress REST API integration".to_string(),
-                        author: Some("MCP-RS".to_string()),
-                        config: None,
-                        enabled: true,
-                    },
-                )
-                .map_err(|e| format!("Failed to register WordPress handler: {}", e))?;
-
-            info!("✅ WordPressハンドラー登録完了: {}", wp_config.url);
-        }
-    }
-
+    tokio::signal::ctrl_c().await?;
+    info!("👋 MCP-RS終了");
+    // serverを破棄すると、プラグインの子プロセスも終了する
+    drop(server);
     Ok(())
 }

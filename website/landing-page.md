@@ -5,7 +5,7 @@
 <div align="center">
 
 ![MCP-RS Real-time Editing](https://img.shields.io/badge/MCP--RS-Real--time%20Editing-blue?style=for-the-badge&logo=rust)
-![Version](https://img.shields.io/badge/version-0.18.3-green?style=for-the-badge)
+![Version](https://img.shields.io/badge/version-0.18.4-green?style=for-the-badge)
 ![Production Ready](https://img.shields.io/badge/status-Production%20Ready-success?style=for-the-badge)
 ![Security Grade](https://img.shields.io/badge/security-A%2B-brightgreen?style=for-the-badge&logo=shield)
 
@@ -189,7 +189,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 - **Zero Warnings**: Clean codebase with no compilation warnings
 - **Docker Ready**: Production-ready containerization
 - **Kubernetes Support**: Enterprise deployment configurations
-- **Plugins**: Add tools from other MCP servers, run as separate processes (STDIO mode)
+- **Plugins**: Add tools from other MCP servers, run as separate processes
 
 ---
 
@@ -202,7 +202,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ## Add to your Cargo.toml
 
 [dependencies]
-mcp-rs = "0.18.3"
+mcp-rs = "0.18.4"
 tokio = { version = "1.0", features = ["full"] }
 ```
 
