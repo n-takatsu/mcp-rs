@@ -27,32 +27,6 @@ spec:
     - name: MCP_SERVER_PORT
       value: "3000"
 ---
-# Example Plugin Custom Resource
-apiVersion: mcp.n-takatsu.dev/v1alpha1
-kind: Plugin
-metadata:
-  name: wordpress-plugin
-  namespace: default
-spec:
-  name: wordpress
-  image: "mcp-rs-wordpress-plugin:latest"
-  version: "1.0.0"
-  isolation:
-    level: Container
-    networkIsolation: true
-    filesystemIsolation: true
-    processIsolation: true
-  resources:
-    limits:
-      cpu: "500m"
-      memory: "256Mi"
-    requests:
-      cpu: "50m"
-      memory: "64Mi"
-  config:
-    api_endpoint: "https://api.wordpress.org"
-    timeout: "30s"
----
 # Example SecurityPolicy Custom Resource
 apiVersion: mcp.n-takatsu.dev/v1alpha1
 kind: SecurityPolicy

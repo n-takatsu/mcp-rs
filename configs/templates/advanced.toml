@@ -40,17 +40,6 @@ requests_per_second = 10
 burst_size = 20
 enabled = true
 
-[plugins]
-search_paths = [
-    "./plugins",
-    "/usr/local/lib/mcp-rs/plugins",
-]
-auto_load = true
-hot_reload = false
-max_plugins = 50
-
-[plugins.plugins]
-
 
 # 🔒 セキュリティ設定説明:
 # 

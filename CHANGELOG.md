@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- 本体に接続されていなかったプラグイン実装をすべて削除（#393）。いずれも
+  プラグインのコードを実際には実行していなかった（調査結果は#392）。
+  プラグイン機構は、各プラグインを独立したMCPサーバーとして別プロセスで
+  動かし、mcp-rsが中継する方式で作り直す（#392・#394）
+  - **ライブラリの変更**: 公開モジュール`mcp_rs::plugin`・`mcp_rs::plugins`・
+    `mcp_rs::plugin_isolation`・`mcp_rs::docker_runtime`（`docker-runtime`
+    機能）と、オペレーターのPlugin（`reconcile_plugin`・`Plugin`等のCRD型）
+    を削除した。`docker-runtime`機能と、依存関係の`libloading`・`bollard`も
+    削除した
+  - **設定の変更**: 設定ファイルの`[plugins]`（`PluginsConfig`）を削除した。
+    本体はこれまでもこの設定を読んでいなかった。設定ファイルに残っていても
+    無視される
+  - Kubernetesの`plugins.mcp.n-takatsu.dev`のCRD（`k8s/crds/plugin-crd.yaml`）、
+    RBACのPluginの権限、Pluginのexampleを削除した
+  - 関連するexample・テスト・ベンチマーク・ドキュメント（`docs/plugin-*.md`・
+    `docs/docker-runtime-guide.md`）を削除し、プラグインの隔離を既存の
+    機能として案内していた箇所を「計画中」に直した
 - 何にも接続されていなかったKubernetes連携モジュール`src/k8s/`を削除
   （#305）。`PluginDeployment`・`PluginPolicy`のCRDと、2つの独立した
   reconciler（`PluginOperator`・`PluginReconciler`）はどちらもTODOだけの

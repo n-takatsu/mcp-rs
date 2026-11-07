@@ -49,7 +49,7 @@ Need WordPress security automation? 8-layer enterprise security architecture wit
 ## **Kubernetes Integration (Phase 2)** ⭐ NEW
 
 - **Kubernetes Operator**: Full-featured operator built with `kube-rs` for managing MCP servers
-- **Custom Resource Definitions (CRD)**: MCPServer, Plugin, and SecurityPolicy resources
+- **Custom Resource Definitions (CRD)**: MCPServer and SecurityPolicy resources
 - **Helm Charts**: Easy installation and management with Helm 3.0+
 - **Declarative Management**: GitOps-ready resource definitions
 - **Automatic Scaling**: HPA support with CPU/memory metrics

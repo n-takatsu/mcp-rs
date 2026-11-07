@@ -46,7 +46,7 @@ MCP-RS follows a layered architecture pattern designed for extensibility, mainta
 - **Handlers**: `handlers/` module - Concrete feature implementations
   - ✅ WordPress Handler - Complete REST API integration
   - 🔄 Future handlers planned (GitHub, File System, Database)
-- **Plugin System**: `plugins/` module - Dynamic plugin loading (planned)
+- **Plugin System** (planned): plugins run as separate MCP server processes ([#392](https://github.com/n-takatsu/mcp-rs/issues/392))
 
 ## 4. Core Layer (Planned)
 
@@ -107,12 +107,10 @@ MCP-RS follows a layered architecture pattern designed for extensibility, mainta
 - Connection management
 - Security headers and CORS
 
-### Plugin Architecture
+### Plugin Architecture (planned)
 
-- Dynamic plugin loading interface
-- Plugin lifecycle management
-- Configuration integration
-- Inter-plugin communication
+- Third-party plugins run as separate MCP server processes, and mcp-rs relays their tools ([#392](https://github.com/n-takatsu/mcp-rs/issues/392))
+- Rate limiting, audit logging, and input validation are applied by mcp-rs, not by the plugin
 
 ## 📋 Planned Components
 
@@ -141,7 +139,6 @@ MCP-RS follows a layered architecture pattern designed for extensibility, mainta
 ## 1. Plugin-Oriented Architecture
 
 - Unified interface through `McpHandler` trait
-- Dynamic plugin loading and unloading
 - Configuration-driven feature enablement
 - Isolated execution contexts
 
@@ -199,9 +196,9 @@ MCP-RS follows a layered architecture pattern designed for extensibility, mainta
 
 ## ADR-002: Plugin System Design
 
-- **Decision**: Trait-based plugin interface with dynamic loading
-- **Rationale**: Flexibility for diverse integration requirements
-- **Impact**: Enables ecosystem growth and customization
+- **Decision**: Run each plugin as a separate MCP server process, and relay its tools through an `McpHandler` in mcp-rs ([#392](https://github.com/n-takatsu/mcp-rs/issues/392)). This replaces the earlier plan of loading native plugin libraries in-process
+- **Rationale**: Third-party plugins must not be able to affect the core server or read its credentials. Native libraries run inside the server process with no isolation, and Rust has no stable ABI
+- **Impact**: Plugins can be written in any language as MCP servers. Isolation can be strengthened in stages (child process, container, Kubernetes)
 
 ## ADR-003: Async Runtime Choice
 

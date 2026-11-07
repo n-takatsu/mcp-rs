@@ -24,13 +24,11 @@ pub mod logging;
 pub mod canary_deployment;
 pub mod mcp;
 pub mod mcp_server;
-pub mod plugin;
 pub mod server;
 pub mod session;
 pub mod threat_intelligence;
 // #[cfg(feature = "tui")]
 // pub mod dashboard;
-pub mod plugins;
 pub mod policy;
 pub mod policy_application;
 pub mod policy_config;
@@ -70,13 +68,6 @@ pub mod zero_trust;
 
 // Compliance module (GDPR/CCPA)
 pub mod compliance;
-
-// Docker Runtime Integration module
-#[cfg(feature = "docker-runtime")]
-pub mod docker_runtime;
-
-// Plugin isolation module
-pub mod plugin_isolation;
 
 pub use error::{Error, Result, SessionError};
 pub use mcp_server::McpServer;

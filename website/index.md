@@ -125,10 +125,9 @@ See the [Security documentation](docs/security/) for details.
 ## ✅ v0.16.0
 
 - **🌐 WebSocket Transport Enhancements**: Server mode, LLM streaming, connection pooling, load balancing
-- **🔌 Plugin Isolation System**: Inter-plugin communication, advanced error handling, Docker runtime support
+- **🔌 Plugin Isolation System**: Inter-plugin communication, advanced error handling, Docker runtime support (removed later because it was never connected to the server; plugins are being redesigned in [#392](https://github.com/n-takatsu/mcp-rs/issues/392))
 - **🤖 LLM Streaming Integration**: OpenAI GPT-4 and Anthropic Claude 3.5 Sonnet with real-time responses
 - **📊 Metrics & Monitoring**: Real-time metrics collection, rate limiting (3 algorithms), message compression
-- **🐳 Docker Runtime Support**: Container-based plugin execution with security scanning
 - **🏗️ Code Architecture**: mod.rs refactoring for improved maintainability (5 major modules)
 - **🔒 Enterprise Security**: 7-layer security architecture with RBAC (100% Complete)
 - **🧪 Quality Assurance**: 567 test cases with 100% pass rate and zero Clippy warnings
