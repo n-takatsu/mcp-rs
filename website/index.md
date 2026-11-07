@@ -102,7 +102,12 @@ See [WordPress Integration](docs/wordpress/) for the full list of tools.
 
 ## Current Status
 
-## ✅ Recently Completed (v0.18.3)
+## ✅ Recently Completed (v0.18.4)
+
+- **🌐 HTTP Mode Works**: Requests over HTTP (`/mcp`) and WebSocket (`/ws`) are now answered, with the same tools as STDIO mode, including plugins. Previously every request timed out
+- **🔀 Concurrent Clients**: Each HTTP request gets its own response, even when several clients use the same JSON-RPC `id`
+
+## ✅ v0.18.3
 
 - **🔌 Plugins**: Add tools from other MCP servers, run as separate processes. mcp-rs relays them as `<plugin>__<tool>` with rate limiting, audit logging, and timeouts (STDIO mode). See [Plugins](docs/plugins/)
 - **🔗 Post Slugs**: Set the URL slug when creating or updating a post or page, for example an English slug for a Japanese title

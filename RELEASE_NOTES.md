@@ -4,6 +4,30 @@
 
 Our project follows a detailed 0.01 increment versioning strategy to provide granular tracking of development progress and feature implementation.
 
+## 🌐 v0.18.4 - HTTPモードの修正
+
+**Release Date:** 2026-11-08
+**Focus:** HTTPモードで、MCPのリクエストが処理されていなかった問題の修正
+
+### ✅ HTTPモード（#400）
+
+- HTTPモード（`[transport] type = "http"`）で、MCPのリクエストが処理されず、
+  すべて30秒後に`408`になっていた問題を修正。`/mcp`（と`/`）へのPOSTと、
+  `enable_websocket_upgrade`が有効なら`/ws`のWebSocketで、STDIOモードと
+  同じツール（WordPress・プラグイン）が使える
+- 同じ`id`を使う複数のクライアントの応答が入れ替わらないよう、リクエスト
+  ごとに直接処理する
+- APIキー認証等の受け付け時のチェックは、これまでどおりかかる
+
+### ⚠️ 挙動の変更
+
+- プラグイン（`[[plugins]]`）が、HTTPモードでも起動するようになった
+  （v0.18.3ではHTTPモードでは無視していた）。HTTPの待ち受けに届く人は
+  誰でもプラグインのツールを呼べるため、自分のマシン以外から届く場合は
+  APIキー認証を有効にする
+- `[transport] type`が`stdio`・`http`以外（未指定を含む）の場合は、
+  STDIOモードで動く（以前は処理しないまま待ち続けていた）
+
 ## 🔌 v0.18.3 - プラグイン（段階1）・投稿のスラッグ指定
 
 **Release Date:** 2026-11-08

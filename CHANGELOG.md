@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.4] - 2026-11-08
+
 ### Fixed
 
 - HTTPモードで、MCPのリクエストが処理されず、すべて30秒後に`408`に
