@@ -18,6 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - パスワードをコマンドライン引数では受け付けない（シェル履歴や
     プロセス一覧に残るため）
   - 出力前に、生成した値を復号して入力と一致することを確認する
+- `get_post`の出力に、アイキャッチ画像の行（`Featured Media:`）を追加（#378）。
+  メディアIDと画像のURLを表示し、未設定なら`none`と表示する。これまでは
+  アイキャッチ画像を設定したかをmcp-rsのツールだけでは確認できなかった。
+  画像のURLが取得できなくても`get_post`は失敗させず、IDだけを表示する
 
 ### Changed
 

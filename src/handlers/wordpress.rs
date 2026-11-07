@@ -213,6 +213,18 @@ fn resolve_term_names(ids: &[u64], id_to_name: &HashMap<u64, String>) -> Vec<Str
         .collect()
 }
 
+/// 投稿のアイキャッチ画像（`featured_media`）を`get_post`の表示用に
+/// まとめる。WordPressは未設定を`0`で返すため、`0`と欠落はどちらも
+/// 未設定として扱う。画像のURLが取れなかった場合（メディアの取得に
+/// 失敗した等）はIDだけを表示する。
+fn featured_media_label(media_id: Option<u64>, source_url: Option<&str>) -> String {
+    match (media_id, source_url) {
+        (None | Some(0), _) => "none".to_string(),
+        (Some(id), Some(url)) if !url.is_empty() => format!("{} ({})", id, url),
+        (Some(id), _) => id.to_string(),
+    }
+}
+
 /// 投稿/固定ページの一覧を、各項目の要点（id・title・status・date・
 /// link・slug・抜粋）のみを含む簡潔なJSON配列にまとめる。
 /// 本文全体を含めないのは出力サイズを抑えるため；抜粋は文字境界を
@@ -2667,6 +2679,24 @@ impl WordPressHandler {
                     }
                 };
 
+                // アイキャッチ画像のURLを取得する。カテゴリ/タグ名と同じく、
+                // 取得に失敗してもget_post自体は失敗させず、IDだけ表示する。
+                let featured_media = match post.featured_media {
+                    Some(media_id) if media_id > 0 => match self.get_media_item(media_id).await {
+                        Ok(media) => {
+                            featured_media_label(Some(media_id), media.source_url.as_deref())
+                        }
+                        Err(e) => {
+                            warn!(
+                                "Failed to resolve featured media {} for get_post: {}",
+                                media_id, e
+                            );
+                            featured_media_label(Some(media_id), None)
+                        }
+                    },
+                    other => featured_media_label(other, None),
+                };
+
                 // タイトルも本文と同じ形で返す（rawならHTMLエンティティ化
                 // されていない原文）
                 let title = post_content_for_display(&post.title, format);
@@ -2678,13 +2708,14 @@ impl WordPressHandler {
                 Ok(serde_json::json!({
                     "content": [{
                         "type": "text",
-                        "text": format!("Post Details:\nID: {}\nFormat: {}\nTitle: {}\nStatus: {}\nCategories: {}\nTags: {}\n{}Content:\n{}",
+                        "text": format!("Post Details:\nID: {}\nFormat: {}\nTitle: {}\nStatus: {}\nCategories: {}\nTags: {}\nFeatured Media: {}\n{}Content:\n{}",
                             post.id.map(|id| id.to_string()).unwrap_or_else(|| "N/A".to_string()),
                             post_format_label(&post, format),
                             title,
                             post.status,
                             categories_names.join(", "),
                             tags_names.join(", "),
+                            featured_media,
                             note,
                             content_body
                         )
@@ -5323,6 +5354,25 @@ mod tests {
             categories: None,
             tags: None,
         }
+    }
+
+    #[test]
+    fn test_featured_media_label() {
+        // WordPressは未設定を0で返す。欠落も未設定として扱う
+        assert_eq!(featured_media_label(Some(0), None), "none");
+        assert_eq!(featured_media_label(None, None), "none");
+        assert_eq!(
+            featured_media_label(Some(0), Some("https://example.com/a.png")),
+            "none"
+        );
+        // URLが取れた場合はIDとURL
+        assert_eq!(
+            featured_media_label(Some(123), Some("https://example.com/a.png")),
+            "123 (https://example.com/a.png)"
+        );
+        // URLが取れなかった（メディア取得失敗・空文字）場合はIDのみ
+        assert_eq!(featured_media_label(Some(123), None), "123");
+        assert_eq!(featured_media_label(Some(123), Some("")), "123");
     }
 
     #[test]
