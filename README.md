@@ -170,85 +170,44 @@ Check the connection with `claude mcp list`, or `/mcp` inside Claude Code. Value
 
 > 📖 See [Claude Code Integration Guide](./project-docs/CLAUDE_CODE_INTEGRATION.md) (Japanese) for `.mcp.json`, encrypted credentials, and troubleshooting.
 
-### Option 1: Interactive Setup (Recommended)
+### Setup
 
 ```bash
-
-## Clone repository
-
 git clone https://github.com/n-takatsu/mcp-rs.git
 cd mcp-rs
-
-## Build release version
-
 cargo build --release
-
-## Run interactive configuration setup
-
-./target/release/mcp-rs --setup-config
 ```
 
-Interactive setup features:
+Then start mcp-rs with a config file. Ready-made config files are in `configs/production/`:
 
-- 📝 User-friendly question format
-- 🔍 Real-time connection testing
-- ⚡ Automatic configuration file generation
-- 🛡️ Security setting recommendations
-
-### Option 2: Manual Configuration
+- `claude-desktop.toml`: STDIO, for Claude Desktop and Claude Code. WordPress credentials are read from the `WORDPRESS_URL`, `WORDPRESS_USERNAME`, and `WORDPRESS_PASSWORD` environment variables
+- `web-ui.toml`: HTTP, for web clients
 
 ```bash
-
-## Generate sample configuration file
-
-./target/release/mcp-rs --generate-config
-
-## Edit configuration
-
-cp mcp-config.toml.example mcp-config.toml
-
-## Edit mcp-config.toml with your WordPress details
-
-## Run with custom config
-
-./target/release/mcp-rs --config mcp-config.toml
+./target/release/mcp-rs --config configs/production/claude-desktop.toml
 ```
+
+To write your own config file instead, start from the minimal example below.
 
 ## Basic Configuration
 
 Create `mcp-config.toml`:
 
 ```toml
-[handlers.wordpress]
-url = "https://your-wordpress-site.com"
-username = "your-username"
-password = "your-application-password"
-enabled = true
-
-## WordPress Application Password
+[transport]
+type = "stdio"          # "http" for HTTP mode (see [transport.http])
 
 [server]
-stdio = true
+log_level = "warn"      # Logs go to a file, never to standard output in STDIO mode
 
-## For Claude Desktop (HTTP mode)
-
-## stdio = false
-[transport]
-transport_type = "stdio"
-
-## [transport.http]
-## addr = "127.0.0.1"
-## port = 8080
-
-## HTTP mode only
-
-[logging]
-level = "error"
-
-## Minimal logging for Claude Desktop
-
-## level = "info"  # Detailed logging for development
+[handlers.wordpress]
+enabled = true
+url = "https://your-wordpress-site.com"
+username = "your-username"
+password = "your-application-password"   # WordPress Application Password
 ```
+
+Then run `./target/release/mcp-rs --config mcp-config.toml`. To keep the password out of the file, use `${WORDPRESS_PASSWORD}` or [encrypted credentials](https://n-takatsu.github.io/mcp-rs/docs/security/#encrypted-wordpress-credentials).
 
 ### HTTP TLS/mTLS Configuration (Optional)
 
