@@ -68,6 +68,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `delete_media`を`force: true`で呼ぶと、削除に成功しているのに
+  `404 rest_post_invalid_id`のエラーを返していた不具合を修正（#383）。
+  完全削除の応答（`{"deleted": true, "previous": {...}}`）を解析できず、
+  同じ削除リクエストを再送していたため
+- WordPressへのリクエストで、成功（2xx）の応答を解析できなかった場合に、
+  同じリクエストを最大3回まで再送していたのを、再送せずエラーを返すよう
+  修正（#383）。リクエストは処理済みのため、再送すると作成の重複や
+  誤ったエラーにつながる
+- `501 Not Implemented`を再送しないよう修正（#383）。再送しても結果が
+  変わらないため（例: メディアのゴミ箱移動に未対応のサイトで`force`なしの
+  `delete_media`を呼んだ場合）
+- `upload_media`で0バイトのファイルを指定したとき、`File is empty`の
+  エラーを返すよう修正（#383）。これまでは中身とMIMEタイプの不一致として
+  拒否していた
 - `create_post_with_featured_image`が常にHTTP 400（`empty_content`）で
   失敗し、投稿を作成できなかった問題（#367）。タイトル・本文を、
   WordPressが書き込み時に読まない`{"rendered": ...}`の形で送っていた

@@ -90,6 +90,33 @@ fn filename_extension(filename: &str) -> Option<&str> {
     filename.rsplit_once('.').map(|(_, ext)| ext)
 }
 
+/// 再送するHTTPステータスか。一時的な失敗（5xx・429）は再送するが、
+/// 501 Not Implementedは再送しても結果が変わらないため除く（例: メディアの
+/// ゴミ箱移動に対応していないサイトでの`rest_trash_not_supported`）。
+fn is_retryable_status(status: reqwest::StatusCode) -> bool {
+    status == reqwest::StatusCode::TOO_MANY_REQUESTS
+        || (status.is_server_error() && status != reqwest::StatusCode::NOT_IMPLEMENTED)
+}
+
+/// 成功（2xx）応答の本文を解析する。失敗しても再送しない：WordPressは
+/// 既にリクエストを処理済みであり、再送すると作成の重複や、削除済みの
+/// 対象への2回目の削除（404）を招くため。
+fn parse_success_body<T>(text: &str) -> Result<T, McpError>
+where
+    T: for<'de> serde::Deserialize<'de>,
+{
+    serde_json::from_str::<T>(text).map_err(|e| {
+        warn!(
+            "JSON parse error on a successful response (not retried): {}",
+            e
+        );
+        McpError::ExternalApi(format!(
+            "WordPress processed the request, but its response could not be parsed: {}",
+            e
+        ))
+    })
+}
+
 /// WordPress REST APIのエラーレスポンス本文から`code`/`message`
 /// （例: `rest_post_invalid_id` / "Invalid post ID."）を拾い、診断に
 /// 使える文字列にまとめる。期待した形式でない場合はステータスと
@@ -435,6 +462,11 @@ fn validate_upload(
     filename: &str,
     mime_type: &str,
 ) -> Result<&'static str, McpError> {
+    // 中身の検証（マジックナンバー）より前に判定し、原因が分かるエラーにする
+    if file_data.is_empty() {
+        return Err(McpError::InvalidParams("File is empty".to_string()));
+    }
+
     if file_data.len() > MAX_UPLOAD_SIZE_BYTES {
         return Err(McpError::InvalidParams(format!(
             "File too large: {} bytes (max {} bytes)",
@@ -689,6 +721,20 @@ fn advanced_post_body(params: PostCreateParams) -> serde_json::Value {
     }
 
     post_data
+}
+
+/// `DELETE /wp/v2/media/{id}`の応答。`force=true`（完全削除）では
+/// `{"deleted": true, "previous": {...}}`の形で削除前のメディアが返り、
+/// ゴミ箱への移動（対応しているサイトのみ）ではメディアそのものが返る。
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum DeleteMediaResponse {
+    Deleted {
+        #[allow(dead_code)]
+        deleted: bool,
+        previous: WordPressMedia,
+    },
+    Trashed(WordPressMedia),
 }
 
 #[derive(Clone)]
@@ -1068,20 +1114,8 @@ impl WordPressHandler {
                         // 閲覧パスワードや未公開の下書き等が含まれうるため
                         let text = response.text().await.map_err(McpError::Http)?;
                         debug!("Response body: {} bytes", text.len());
-
-                        match serde_json::from_str::<T>(&text) {
-                            Ok(data) => return Ok(data),
-                            Err(e) => {
-                                warn!("JSON parse error on attempt {}: {}", attempt, e);
-                                if attempt == MAX_RETRIES {
-                                    return Err(McpError::ExternalApi(format!(
-                                        "JSON parse error: {}",
-                                        e
-                                    )));
-                                }
-                            }
-                        }
-                    } else if status.as_u16() >= 500 || status.as_u16() == 429 {
+                        return parse_success_body(&text);
+                    } else if is_retryable_status(status) {
                         // サーバーエラーまたはレート制限の場合はリトライ
                         warn!("HTTP error {} on attempt {}, retrying...", status, attempt);
                         if attempt == MAX_RETRIES {
@@ -1148,20 +1182,8 @@ impl WordPressHandler {
 
                     if status.is_success() {
                         let text = response.text().await.map_err(McpError::Http)?;
-
-                        match serde_json::from_str::<T>(&text) {
-                            Ok(data) => return Ok(data),
-                            Err(e) => {
-                                warn!("JSON parse error on attempt {}: {}", attempt, e);
-                                if attempt == MAX_RETRIES {
-                                    return Err(McpError::ExternalApi(format!(
-                                        "JSON parse error: {}",
-                                        e
-                                    )));
-                                }
-                            }
-                        }
-                    } else if status.as_u16() >= 500 || status.as_u16() == 429 {
+                        return parse_success_body(&text);
+                    } else if is_retryable_status(status) {
                         warn!("HTTP error {} on attempt {}, retrying...", status, attempt);
                         if attempt == MAX_RETRIES {
                             let body = response.text().await.unwrap_or_default();
@@ -1236,20 +1258,9 @@ impl WordPressHandler {
                             .unwrap_or(0);
 
                         let text = response.text().await.map_err(McpError::Http)?;
-
-                        match serde_json::from_str::<T>(&text) {
-                            Ok(data) => return Ok((data, total_pages, total_items)),
-                            Err(e) => {
-                                warn!("JSON parse error on attempt {}: {}", attempt, e);
-                                if attempt == MAX_RETRIES {
-                                    return Err(McpError::ExternalApi(format!(
-                                        "JSON parse error: {}",
-                                        e
-                                    )));
-                                }
-                            }
-                        }
-                    } else if status.as_u16() >= 500 || status.as_u16() == 429 {
+                        let data = parse_success_body(&text)?;
+                        return Ok((data, total_pages, total_items));
+                    } else if is_retryable_status(status) {
                         warn!("HTTP error {} on attempt {}, retrying...", status, attempt);
                         if attempt == MAX_RETRIES {
                             let body = response.text().await.unwrap_or_default();
@@ -1639,7 +1650,11 @@ impl WordPressHandler {
             "Deleting WordPress media: {} (force: {})",
             media_id, force_delete
         );
-        self.execute_request_with_retry(request).await
+        let response: DeleteMediaResponse = self.execute_request_with_retry(request).await?;
+        Ok(match response {
+            DeleteMediaResponse::Deleted { previous, .. } => previous,
+            DeleteMediaResponse::Trashed(media) => media,
+        })
     }
 
     /// Get WordPress site settings
@@ -3954,7 +3969,7 @@ impl McpHandler for WordPressHandler {
             },
             Tool {
                 name: "delete_media".to_string(),
-                description: "Delete WordPress media file".to_string(),
+                description: "Delete WordPress media file. WordPress does not support moving media to the trash by default, so force: true is usually required".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -3964,7 +3979,7 @@ impl McpHandler for WordPressHandler {
                         },
                         "force": {
                             "type": "boolean",
-                            "description": "Force delete (bypass trash)"
+                            "description": "Permanently delete (bypass trash). Usually required for media, since WordPress does not support trashing media by default"
                         }
                     },
                     "required": ["media_id"]
@@ -5615,6 +5630,166 @@ mod tests {
             .await,
         );
         assert!(msg.contains("file_path is disabled"), "got: {}", msg);
+    }
+
+    /// 決まった応答を返し、受けたリクエスト数を数えるだけのHTTPサーバー。
+    /// 再送の有無をネットワーク越しに確かめるために使う。
+    async fn spawn_fixed_response_server(
+        status_line: &'static str,
+        body: String,
+    ) -> (String, Arc<std::sync::atomic::AtomicUsize>) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let count = Arc::new(AtomicUsize::new(0));
+        let server_count = count.clone();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    return;
+                };
+                server_count.fetch_add(1, Ordering::SeqCst);
+                let body = body.clone();
+                tokio::spawn(async move {
+                    // ヘッダーの終わりまで読む（本文は読み捨てる）
+                    let mut buf = Vec::new();
+                    let mut chunk = [0u8; 4096];
+                    while !buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                        match socket.read(&mut chunk).await {
+                            Ok(0) | Err(_) => return,
+                            Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                        }
+                    }
+                    let response = format!(
+                        "HTTP/1.1 {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        status_line,
+                        body.len(),
+                        body
+                    );
+                    let _ = socket.write_all(response.as_bytes()).await;
+                    let _ = socket.shutdown().await;
+                });
+            }
+        });
+        (format!("http://{}", addr), count)
+    }
+
+    /// テスト用のローカルHTTPサーバーに向けたハンドラー（`try_new`は
+    /// HTTPSを強制するため、フィールドを直接組み立てる）
+    fn handler_for_local_server(base_url: String) -> WordPressHandler {
+        WordPressHandler {
+            client: Client::new(),
+            base_url,
+            secure_credentials: None,
+            username: None,
+            password: None,
+            rate_limiter: Arc::new(RateLimiter::new(RateLimitConfig::default())),
+            audit_logger: Arc::new(AuditLogger::with_defaults()),
+            upload_allowed_dirs: Arc::new(Vec::new()),
+        }
+    }
+
+    fn sample_media_json(id: u64) -> serde_json::Value {
+        serde_json::json!({
+            "id": id,
+            "status": "inherit",
+            "source_url": "https://example.com/wp-content/uploads/a.png"
+        })
+    }
+
+    #[tokio::test]
+    async fn test_delete_media_force_parses_deleted_previous_response() {
+        // force=trueの応答は{deleted, previous}の形。解析でき、再送しないこと
+        let body = serde_json::json!({"deleted": true, "previous": sample_media_json(383)});
+        let (base_url, count) = spawn_fixed_response_server("200 OK", body.to_string()).await;
+        let handler = handler_for_local_server(base_url);
+
+        let media = handler.delete_media(383, Some(true)).await.unwrap();
+        assert_eq!(media.id, Some(383));
+        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn test_delete_media_trash_response_still_parses() {
+        // ゴミ箱移動に対応したサイトでは、メディアそのものが返る
+        let body = sample_media_json(7);
+        let (base_url, _) = spawn_fixed_response_server("200 OK", body.to_string()).await;
+        let handler = handler_for_local_server(base_url);
+
+        let media = handler.delete_media(7, None).await.unwrap();
+        assert_eq!(media.id, Some(7));
+    }
+
+    #[tokio::test]
+    async fn test_unparseable_success_response_is_not_resent() {
+        let (base_url, count) =
+            spawn_fixed_response_server("200 OK", r#"{"unexpected":true}"#.to_string()).await;
+        let handler = handler_for_local_server(base_url);
+
+        let result = handler.delete_media(1, Some(true)).await;
+        assert!(
+            matches!(result, Err(McpError::ExternalApi(ref msg)) if msg.contains("processed the request")),
+            "got: {:?}",
+            result
+        );
+        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn test_unparseable_success_response_is_not_resent_for_upload() {
+        // upload_media（execute_request_with_retry_rebuilding）も同じ
+        let (base_url, count) =
+            spawn_fixed_response_server("201 Created", r#"{"unexpected":true}"#.to_string()).await;
+        let handler = handler_for_local_server(base_url);
+
+        let result = handler.upload_media(PNG_HEADER, "a.png", "image/png").await;
+        assert!(
+            matches!(result, Err(McpError::ExternalApi(_))),
+            "got: {:?}",
+            result
+        );
+        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn test_not_implemented_is_not_retried() {
+        // メディアのゴミ箱移動に未対応のサイトは501を返す。再送しても同じ
+        let body = r#"{"code":"rest_trash_not_supported","message":"The post does not support trashing. Set 'force=true' to delete."}"#;
+        let (base_url, count) =
+            spawn_fixed_response_server("501 Not Implemented", body.to_string()).await;
+        let handler = handler_for_local_server(base_url);
+
+        let result = handler.delete_media(1, None).await;
+        assert!(
+            matches!(result, Err(McpError::ExternalApi(ref msg)) if msg.contains("rest_trash_not_supported")),
+            "got: {:?}",
+            result
+        );
+        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn test_is_retryable_status() {
+        use reqwest::StatusCode;
+        assert!(is_retryable_status(StatusCode::INTERNAL_SERVER_ERROR));
+        assert!(is_retryable_status(StatusCode::BAD_GATEWAY));
+        assert!(is_retryable_status(StatusCode::SERVICE_UNAVAILABLE));
+        assert!(is_retryable_status(StatusCode::TOO_MANY_REQUESTS));
+        assert!(!is_retryable_status(StatusCode::NOT_IMPLEMENTED));
+        assert!(!is_retryable_status(StatusCode::NOT_FOUND));
+        assert!(!is_retryable_status(StatusCode::OK));
+    }
+
+    #[test]
+    fn test_validate_upload_rejects_empty_file() {
+        let result = validate_upload(&[], "a.png", "image/png");
+        assert!(
+            matches!(result, Err(McpError::InvalidParams(ref msg)) if msg == "File is empty"),
+            "got: {:?}",
+            result
+        );
     }
 
     #[tokio::test]
