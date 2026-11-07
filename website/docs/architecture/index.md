@@ -48,13 +48,11 @@ MCP-RS follows a layered architecture pattern designed for extensibility, mainta
   - 🔄 Future handlers planned (GitHub, File System, Database)
 - **Plugin System**: plugins run as separate MCP server processes, and mcp-rs relays their tools (`plugin_proxy`). See [Plugins](../plugins/)
 
-## 4. Core Layer (Planned)
+## 4. Request Dispatch
 
-- **Runtime Management**: Async runtime configuration and resource management
-- **Registry**: Handler and plugin registration and discovery
-- **Context**: Request context and state management
-- **Event System**: Inter-component communication and notifications
-- **Metrics**: Performance monitoring and observability
+- `McpServer` (`src/mcp/server.rs`) holds the registered handlers (WordPress and plugins) in registration order. It merges their tool lists and routes each `tools/call` by tool name
+- STDIO mode reads requests from standard input. HTTP mode passes each HTTP or WebSocket request to the same logic through `RequestDispatcher`
+- The earlier `core` module (`Runtime`, `HandlerRegistry`) was never connected to request handling and has been removed ([#409](https://github.com/n-takatsu/mcp-rs/issues/409))
 
 ## 5. Infrastructure Layer
 
@@ -114,13 +112,6 @@ MCP-RS follows a layered architecture pattern designed for extensibility, mainta
 - Stage 1 runs plugins as child processes without the server's environment variables. Container isolation (stage 2) and Kubernetes (stage 3) are planned ([#392](https://github.com/n-takatsu/mcp-rs/issues/392))
 
 ## 📋 Planned Components
-
-### Core Runtime System
-
-- Async task management
-- Resource pooling
-- Performance monitoring
-- Health checks and diagnostics
 
 ### Additional Transports
 

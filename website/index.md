@@ -28,7 +28,7 @@ MCP-RS provides a **comprehensive, battle-tested** implementation of the MCP (Mo
 ### 🚀 Core Capabilities
 
 - **JSON-RPC 2.0 Server**: Full-featured JSON-RPC server implementation using `axum`
-- **Core Runtime Module**: Advanced application lifecycle and resource management
+- **Request Dispatch**: `McpServer` lists tools from every handler and routes each call to the handler that provides it, in both STDIO and HTTP modes
 - **Multi-Transport Support**: Stdio, HTTP, and WebSocket communication protocols
 - **Plugin Architecture**: Handler-based system with `McpHandler` trait for extensibility
 - **Type-Safe Configuration**: TOML-based configuration with environment variable override

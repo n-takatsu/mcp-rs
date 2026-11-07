@@ -116,13 +116,12 @@ The traditional plugin architecture presents significant security vulnerabilitie
 - **Dependencies**: MCP protocol types, Security modules
 - **Pattern**: Security-first plugin architecture with `McpHandler` trait
 
-## 4. Core Layer (`src/core/`) + TLS/Encryption Layer
+## 4. Request Dispatch + TLS/Encryption Layer
 
-- **Responsibility**: Runtime management, execution context, cryptographic operations
-- **Components**: 
-  - `runtime.rs`: Secure application lifecycle and state management
-  - `registry.rs`: Verified handler and plugin registration system
-  - `context.rs`: Encrypted request-scoped execution context
+- **Responsibility**: Routing requests to handlers, cryptographic operations
+- **Components**:
+  - `mcp/server.rs`: `McpServer` merges the tools of all registered handlers and routes each call by tool name. `RequestDispatcher` gives HTTP/WebSocket the same logic as STDIO
+  - The earlier `src/core/` (`Runtime`, `HandlerRegistry`, `ExecutionContext`) was never connected to request handling and has been removed ([#409](https://github.com/n-takatsu/mcp-rs/issues/409))
   - `encryption.rs`: AES-GCM-256 encryption with PBKDF2 key derivation
 - **Security Features**:
   - TLS 1.2+ enforcement with strong cipher suites
@@ -508,7 +507,7 @@ info!(
 ## Phase 2: Transport Expansion (v0.2.0-alpha) ✅
 
 - ✅ Stdio transport implementation
-- ✅ Core Runtime Module
+- ✅ Core Runtime Module (later removed because it was never connected to request handling, #409)
 - ✅ Transport abstraction layer
 - ✅ Enhanced configuration management
 - 🔄 Plugin dynamic loading (in progress)
