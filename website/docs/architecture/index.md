@@ -46,7 +46,7 @@ MCP-RS follows a layered architecture pattern designed for extensibility, mainta
 - **Handlers**: `handlers/` module - Concrete feature implementations
   - ✅ WordPress Handler - Complete REST API integration
   - 🔄 Future handlers planned (GitHub, File System, Database)
-- **Plugin System** (planned): plugins run as separate MCP server processes ([#392](https://github.com/n-takatsu/mcp-rs/issues/392))
+- **Plugin System**: plugins run as separate MCP server processes, and mcp-rs relays their tools (`plugin_proxy`, STDIO mode). See [Plugins](../plugins/)
 
 ## 4. Core Layer (Planned)
 
@@ -107,10 +107,11 @@ MCP-RS follows a layered architecture pattern designed for extensibility, mainta
 - Connection management
 - Security headers and CORS
 
-### Plugin Architecture (planned)
+### Plugin Architecture
 
-- Third-party plugins run as separate MCP server processes, and mcp-rs relays their tools ([#392](https://github.com/n-takatsu/mcp-rs/issues/392))
-- Rate limiting, audit logging, and input validation are applied by mcp-rs, not by the plugin
+- Third-party plugins run as separate MCP server processes, and mcp-rs relays their tools as `<plugin>__<tool>` (`src/plugin_proxy.rs`, [#394](https://github.com/n-takatsu/mcp-rs/issues/394))
+- Rate limiting, audit logging, timeouts, and response size limits are applied by mcp-rs, not by the plugin
+- Stage 1 runs plugins as child processes without the server's environment variables. Container isolation (stage 2) and Kubernetes (stage 3) are planned ([#392](https://github.com/n-takatsu/mcp-rs/issues/392))
 
 ## 📋 Planned Components
 

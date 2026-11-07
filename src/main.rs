@@ -168,6 +168,11 @@ async fn run_stdio_server(config: &McpConfig) -> Result<(), Box<dyn std::error::
         }
     }
 
+    // プラグイン（#394）。起動できなかったプラグインは警告を出して飛ばす
+    for (name, handler) in mcp_rs::plugin_proxy::start_plugins(&config.plugins).await {
+        server.add_handler(format!("plugin:{}", name), handler);
+    }
+
     info!("🔌 STDIOモードで待機中");
     server.run_stdio().await
 }
@@ -178,6 +183,14 @@ async fn register_handlers(
     config: &McpConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let registry = runtime.handler_registry();
+
+    // プラグイン（#394）はSTDIOモードのみ対応。HTTPモードはリクエストの
+    // 処理自体が未接続のため（#400）、起動しない
+    if !config.plugins.is_empty() {
+        tracing::warn!(
+            "[[plugins]] is ignored in HTTP mode: plugins are supported only in STDIO mode for now (#400)"
+        );
+    }
 
     // WordPressハンドラー
     if let Some(wp_config) = &config.handlers.wordpress {

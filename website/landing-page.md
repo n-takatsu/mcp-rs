@@ -189,7 +189,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 - **Zero Warnings**: Clean codebase with no compilation warnings
 - **Docker Ready**: Production-ready containerization
 - **Kubernetes Support**: Enterprise deployment configurations
-- **Plugins (planned)**: Third-party plugins running as separate MCP server processes are being redesigned ([#392](https://github.com/n-takatsu/mcp-rs/issues/392))
+- **Plugins**: Add tools from other MCP servers, run as separate processes (STDIO mode)
 
 ---
 

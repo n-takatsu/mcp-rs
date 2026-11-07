@@ -47,6 +47,89 @@ pub struct McpConfig {
     pub server: ServerConfig,
     pub transport: TransportConfig,
     pub handlers: HandlersConfig,
+    /// プラグイン（#394）。`[[plugins]]`で1つずつ指定する。既定ではなし。
+    /// v0.18.1以前の`[plugins]`（テーブル）は読み込まずに無視する
+    #[serde(
+        default,
+        deserialize_with = "deserialize_plugins",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub plugins: Vec<PluginConfig>,
+}
+
+/// プラグイン1つ分の設定（#394）。プラグインは、別プロセスで動くMCP
+/// サーバー（標準入出力で通信する）として起動する。
+#[derive(Clone, Deserialize, Serialize)]
+pub struct PluginConfig {
+    /// プラグイン名。ツール名の前に`<name>__`として付ける。英小文字・
+    /// 数字・`_`・`-`のみ
+    pub name: String,
+    /// 起動するコマンド（実行ファイルのパス）
+    pub command: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    /// プラグインに渡す環境変数。本体の環境変数は引き継がず、ここに
+    /// 書いたものだけを渡す。値の`${VAR}`は本体の環境変数で展開する
+    #[serde(default)]
+    pub env: HashMap<String, String>,
+    /// 子プロセスの作業フォルダ。省略時は本体と同じ
+    pub working_dir: Option<String>,
+    /// `false`で起動しない。省略時は`true`
+    pub enabled: Option<bool>,
+    /// 起動（`initialize`・`tools/list`）とツール呼び出しの待ち時間の上限
+    /// （秒）。省略時は30秒
+    pub call_timeout_seconds: Option<u64>,
+    /// プラグインから受け取る1メッセージの大きさの上限（バイト）。
+    /// 省略時は1MB
+    pub max_response_bytes: Option<usize>,
+    /// ツール呼び出しのレート制限。省略時は既定値（WordPressと同じ）
+    pub rate_limit: Option<RateLimitConfig>,
+}
+
+impl fmt::Debug for PluginConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // envにはAPIキー等が入りうるため、値は出さずに名前だけ示す
+        let mut env_keys: Vec<&String> = self.env.keys().collect();
+        env_keys.sort();
+        f.debug_struct("PluginConfig")
+            .field("name", &self.name)
+            .field("command", &self.command)
+            .field("args", &self.args)
+            .field("env_keys", &env_keys)
+            .field("working_dir", &self.working_dir)
+            .field("enabled", &self.enabled)
+            .field("call_timeout_seconds", &self.call_timeout_seconds)
+            .field("max_response_bytes", &self.max_response_bytes)
+            .field("rate_limit", &self.rate_limit)
+            .finish()
+    }
+}
+
+/// `plugins`を読み込む。`[[plugins]]`（配列）だけを受け付ける。
+///
+/// v0.18.1以前の`[plugins]`（テーブル、`PluginsConfig`）は本体が一度も
+/// 使っておらず、v0.18.2で「残っていても無視される」とした。その約束を
+/// 守るため、テーブルは警告を出して読み飛ばす。
+fn deserialize_plugins<'de, D>(deserializer: D) -> Result<Vec<PluginConfig>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    match value {
+        serde_json::Value::Null => Ok(Vec::new()),
+        serde_json::Value::Array(_) => serde_json::from_value(value)
+            .map_err(|e| serde::de::Error::custom(format!("invalid [[plugins]] entry: {}", e))),
+        serde_json::Value::Object(_) => {
+            // ログはまだ初期化されていないことがあるため、標準エラー出力に書く
+            eprintln!(
+                "[mcp-rs] warning: the [plugins] table from v0.18.1 and earlier is ignored. To add a plugin, use [[plugins]] entries"
+            );
+            Ok(Vec::new())
+        }
+        _ => Err(serde::de::Error::custom(
+            "plugins must be [[plugins]] entries",
+        )),
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -392,6 +475,7 @@ impl Default for McpConfig {
                 http: None,
             },
             handlers: HandlersConfig { wordpress: None },
+            plugins: Vec::new(),
         }
     }
 }
@@ -722,6 +806,7 @@ impl McpConfig {
                     upload_allowed_dirs: Vec::new(),
                 }),
             },
+            plugins: Vec::new(),
         };
 
         let toml_content = toml::to_string_pretty(&sample_config)?;
@@ -939,6 +1024,123 @@ impl McpConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const PLUGINS_TOML: &str = r#"
+[transport]
+type = "stdio"
+
+[server]
+log_level = "warn"
+
+[handlers]
+
+[[plugins]]
+name = "example"
+command = "C:/tools/example-mcp.exe"
+args = ["--stdio"]
+env = { EXAMPLE_API_KEY = "${EXAMPLE_API_KEY}", Mixed_Case = "x" }
+
+[[plugins]]
+name = "second"
+command = "second-mcp"
+enabled = false
+call_timeout_seconds = 5
+"#;
+
+    fn assert_example_plugins(config: &McpConfig) {
+        assert_eq!(config.plugins.len(), 2);
+        let first = &config.plugins[0];
+        assert_eq!(first.name, "example");
+        assert_eq!(first.args, vec!["--stdio"]);
+        // 環境変数名の大文字・小文字を保つ
+        assert_eq!(
+            first.env.get("EXAMPLE_API_KEY").map(String::as_str),
+            Some("${EXAMPLE_API_KEY}")
+        );
+        assert_eq!(first.env.get("Mixed_Case").map(String::as_str), Some("x"));
+        assert_eq!(config.plugins[1].enabled, Some(false));
+        assert_eq!(config.plugins[1].call_timeout_seconds, Some(5));
+    }
+
+    #[test]
+    fn test_plugins_are_read_from_toml() {
+        let config: McpConfig = toml::from_str(PLUGINS_TOML).unwrap();
+        assert_example_plugins(&config);
+    }
+
+    /// `McpConfig::load()`は既定値と設定ファイルを`config`クレートで
+    /// 重ねる。その経路でも`[[plugins]]`と、`env`のキーの大文字・小文字が
+    /// 保たれること
+    #[test]
+    fn test_plugins_are_read_through_config_crate() {
+        let content = normalize_transport_type_alias(PLUGINS_TOML).unwrap();
+        let config: McpConfig = config::Config::builder()
+            .add_source(config::Config::try_from(&McpConfig::default()).unwrap())
+            .add_source(config::File::from_str(&content, config::FileFormat::Toml))
+            .build()
+            .unwrap()
+            .try_deserialize()
+            .unwrap();
+        assert_example_plugins(&config);
+    }
+
+    #[test]
+    fn test_no_plugins_by_default() {
+        let config: McpConfig = toml::from_str("[transport]\n[server]\n[handlers]\n").unwrap();
+        assert!(config.plugins.is_empty());
+        assert!(McpConfig::default().plugins.is_empty());
+    }
+
+    /// v0.18.2で「残っていても無視される」とした、v0.18.1以前の`[plugins]`
+    /// （テーブル）は、エラーにせず読み飛ばす
+    #[test]
+    fn test_legacy_plugins_table_is_ignored() {
+        let legacy = r#"
+[transport]
+[server]
+[handlers]
+
+[plugins]
+enabled = true
+plugin_dirs = ["./plugins"]
+auto_load = true
+
+[plugins.isolation]
+enabled = true
+"#;
+        let config: McpConfig = toml::from_str(legacy).unwrap();
+        assert!(config.plugins.is_empty());
+
+        let content = normalize_transport_type_alias(legacy).unwrap();
+        let config: McpConfig = config::Config::builder()
+            .add_source(config::Config::try_from(&McpConfig::default()).unwrap())
+            .add_source(config::File::from_str(&content, config::FileFormat::Toml))
+            .build()
+            .unwrap()
+            .try_deserialize()
+            .unwrap();
+        assert!(config.plugins.is_empty());
+    }
+
+    #[test]
+    fn test_invalid_plugin_entry_is_an_error() {
+        let missing_command = "[transport]\n[server]\n[handlers]\n[[plugins]]\nname = \"x\"\n";
+        let error = toml::from_str::<McpConfig>(missing_command)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("command"), "{}", error);
+    }
+
+    #[test]
+    fn test_plugin_config_debug_hides_env_values() {
+        let config: McpConfig = toml::from_str(
+            "[transport]\n[server]\n[handlers]\n[[plugins]]\nname = \"x\"\ncommand = \"c\"\nenv = { API_KEY = \"super-secret-value\" }\n",
+        )
+        .unwrap();
+        let debug = format!("{:?}", config.plugins[0]);
+        assert!(debug.contains("API_KEY"));
+        assert!(!debug.contains("super-secret-value"));
+    }
 
     #[test]
     fn test_expand_home_dir() {
