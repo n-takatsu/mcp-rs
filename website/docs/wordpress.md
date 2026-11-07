@@ -50,7 +50,7 @@ MCP-RS provides comprehensive WordPress integration through the WordPress REST A
 
 - **Application Passwords**: Secure authentication with WordPress
 - **Timeout Handling**: Configurable request timeouts
-- **Retry Logic**: Automatic retry with exponential backoff
+- **Retry Logic**: Automatic retry for transient failures (up to 3 attempts). Create and delete requests are not resent after a timeout or server error, since WordPress may already have processed them
 - **Error Handling**: Comprehensive error reporting
 
 ## 🏷️ Category & Tag Management
@@ -909,7 +909,7 @@ The following are intentionally not supported:
 
 - **Connection Pooling**: Reuses HTTP connections for better performance
 - **Timeout Configuration**: Configurable request timeouts
-- **Retry Logic**: Automatic retry with exponential backoff
+- **Retry Logic**: Automatic retry for transient failures (up to 3 attempts). Create and delete requests are not resent after a timeout or server error, since WordPress may already have processed them
 - **Efficient Uploads**: Streaming multipart uploads for large files
 
 ## Troubleshooting

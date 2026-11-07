@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- WordPressへのリクエストがタイムアウトや5xxで失敗したとき、作成（POST）・
+  削除（DELETE）のリクエストを再送しないよう修正（#388）。1回目が
+  WordPressで処理済みだった場合に、`upload_media`でメディアが重複したり、
+  `delete_*`で削除できているのに404のエラーになったりしていた
+  - GET・PUTはこれまでどおり再送する。接続できなかった場合と429は、
+    リクエストが処理されていないため、メソッドを問わず再送する
+  - 再送しなかった場合は、処理済みの可能性があり、結果を確認してから
+    再実行するよう、エラーメッセージで示す
+
 ## [0.18.1] - 2026-11-07
 
 ### Added
