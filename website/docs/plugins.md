@@ -8,9 +8,9 @@ permalink: /docs/plugins/
 
 **[Home](../) > [Documentation](./) > Plugins**
 
-A plugin is a separate MCP server that mcp-rs starts as a child process, or inside a Docker container. mcp-rs connects to it as an MCP client and offers its tools alongside the built-in ones. Plugins can be written in any language, as long as they speak MCP over standard input/output.
+A plugin is a separate MCP server that mcp-rs starts as a child process, inside a Docker container, or as a Kubernetes Job. mcp-rs connects to it as an MCP client and offers its tools alongside the built-in ones. Plugins can be written in any language, as long as they speak MCP over standard input/output.
 
-> **Isolation.** A plugin started as a child process runs with your user's permissions. mcp-rs does not restrict which files or network addresses it can reach, so use child processes only for plugins you trust. To limit what a plugin can reach, [run it in a container](#running-a-plugin-in-a-container) (versions after v0.18.4).
+> **Isolation.** A plugin started as a child process runs with your user's permissions. mcp-rs does not restrict which files or network addresses it can reach, so use child processes only for plugins you trust. To limit what a plugin can reach, [run it in a container](#running-a-plugin-in-a-container) or [on Kubernetes](#running-a-plugin-on-kubernetes) (versions after v0.18.4).
 
 Plugins work in both STDIO mode (for example, Claude Desktop and Claude Code) and HTTP mode (v0.18.4 and later; in v0.18.3, `[[plugins]]` was ignored in HTTP mode). In HTTP mode, everyone who can reach the HTTP listener can call the plugin's tools, so turn on API key authentication when the listener is not limited to your own machine.
 
@@ -87,6 +87,91 @@ When mcp-rs stops the plugin (or exits), it also runs `docker rm -f` on the cont
 
 If the plugin cannot start (for example, Docker is not running or the image has not been pulled), the warning says so, and Docker's own message is in the log lines that start with `[plugin <name>]`.
 
+## Running a plugin on Kubernetes
+
+Add a `[plugins.kubernetes]` section after the `[[plugins]]` entry. mcp-rs then uses `kubectl` to start the plugin as a Kubernetes Job, and connects to it with `kubectl attach -i`. This works both when mcp-rs runs on your own computer and when mcp-rs itself runs in the cluster (in HTTP mode, with a ServiceAccount). `kubectl` must be installed where mcp-rs runs.
+
+```toml
+[[plugins]]
+name = "search"
+command = "python"
+args = ["-m", "my_mcp_server"]
+env = { API_KEY = "${SEARCH_API_KEY}" }
+
+[plugins.kubernetes]
+image = "registry.example.com/my-mcp-server:1.0"
+
+# Optional:
+# namespace = "mcp-plugins"          # default: the current namespace of your kubeconfig
+# context = "my-cluster"             # default: the current context of your kubeconfig
+# network = "none"                   # default. "allow" lets the plugin use the network
+# memory = "512Mi"                   # default
+# cpu = "500m"                       # default
+# run_as_user = 65532                # default. 0 (root) is not allowed
+# read_only = true                   # default: the root filesystem is read-only
+# image_pull_policy = "IfNotPresent" # Always, IfNotPresent or Never
+# start_timeout_seconds = 120        # default. Waiting for the pod (including the image pull) and for the plugin to start
+# kubectl_command = "kubectl"
+```
+
+- `command` and `args`: The same as in a container. They replace the image's command (`CMD`); the image's `ENTRYPOINT` is kept. Leave both out to use the image's own command
+- `env`: The values are stored in a Secret that belongs to the Job, and deleted with it. They are sent to `kubectl` on its standard input, never on its command line. Names may contain only letters, digits, `-`, `.` and `_`
+- `kubectl` runs with mcp-rs's own environment variables (for `KUBECONFIG` and the credential plugins of your cluster). They do not reach the plugin
+- `[plugins.container]` and `[plugins.kubernetes]` cannot be used together. Host folders cannot be mounted
+
+What mcp-rs creates:
+
+| Resource | Details |
+|---|---|
+| NetworkPolicy `mcp-rs-plugin-deny-all` | Created once per namespace when `network = "none"`. Blocks all traffic to and from pods labeled `mcp-rs.network=none` |
+| Job `mcp-rs-<plugin name>-<random>` | `backoffLimit: 0` (never restarted), deleted by Kubernetes 60 seconds after it finishes |
+| Secret (same name as the Job) | Only when `env` is set. Owned by the Job |
+
+The plugin's pod runs with:
+
+| Setting | Effect |
+|---|---|
+| `runAsNonRoot`, `runAsUser`/`runAsGroup: 65532` | Not root, even if the image's user is root |
+| `capabilities.drop: [ALL]`, `allowPrivilegeEscalation: false`, `seccompProfile: RuntimeDefault` | No Linux capabilities, no way to gain them, and the runtime's system call filter |
+| `readOnlyRootFilesystem`, `/tmp` as a 64 Mi in-memory `emptyDir` | Only `/tmp` is writable |
+| `resources.limits` | Memory 512Mi and CPU 500m |
+| `automountServiceAccountToken: false`, `enableServiceLinks: false` | No access token for the Kubernetes API, and no environment variables describing the cluster's services (Kubernetes still sets the API server's address, such as `KUBERNETES_SERVICE_HOST`) |
+| Label `mcp-rs.network=none` | Covered by the NetworkPolicy above (unless `network = "allow"`) |
+
+When mcp-rs stops the plugin (or exits), it runs `kubectl delete` on the Job and the Secret. If mcp-rs is killed, the plugin's standard input closes, the plugin exits, and Kubernetes deletes the Job 60 seconds later.
+
+> **NetworkPolicy needs a network plugin that enforces it.** Most clusters do (for example, Calico and Cilium; also kind's default network). On a cluster whose network plugin ignores NetworkPolicy, `network = "none"` has no effect. Check with your cluster administrator.
+>
+> Even where it is enforced, traffic between a pod and the node it runs on may still be allowed: Kubernetes leaves this to the network plugin. For example, on a single-node kind cluster, the plugin can still open a connection to the API server, which runs on the same node. The plugin has no service account token, so the API server treats it as an anonymous user.
+
+The user or ServiceAccount that `kubectl` runs as needs these permissions in the namespace:
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: mcp-rs-plugins
+  namespace: mcp-plugins
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "delete"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create", "patch", "delete"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["get", "create", "patch"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/attach"]
+    verbs: ["create"]
+```
+
+If the plugin cannot start (for example, the image cannot be pulled, or the pod does not start within `start_timeout_seconds`), the warning says why, and `kubectl`'s own message is in the log lines that start with `[plugin <name>]`.
+
 ## How tools appear
 
 Each tool is offered as `<plugin name>__<tool name>`, and its description starts with `[plugin: <name>]`. For example, the plugin `example` with a tool `search` becomes `example__search`. If a plugin tool has the same name as a built-in tool or another plugin's tool, the one registered first is used and a warning is logged. Built-in handlers are registered before plugins.
@@ -97,7 +182,7 @@ Tool results are passed on with `content` and `isError`. mcp-rs uses MCP protoco
 
 ## What mcp-rs enforces
 
-- **Isolation (container only)**: See [Running a plugin in a container](#running-a-plugin-in-a-container)
+- **Isolation (container and Kubernetes only)**: See [Running a plugin in a container](#running-a-plugin-in-a-container) and [Running a plugin on Kubernetes](#running-a-plugin-on-kubernetes)
 - **Environment**: mcp-rs does not pass its own environment variables to the plugin. WordPress credentials and `WORDPRESS_MASTER_PASSWORD` stay in mcp-rs. Only the variables in `env` are passed (on Windows, `SystemRoot` too, because some programs cannot start without it)
 - **Rate limiting**: Tool calls to each plugin are rate limited, with the same defaults as WordPress
 - **Audit log**: Every plugin tool call is recorded, whether it succeeds or fails

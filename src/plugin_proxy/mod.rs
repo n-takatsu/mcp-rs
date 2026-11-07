@@ -1871,10 +1871,6 @@ for line in sys.stdin:
 
         let result = probe(&isolated, "k8snone").await;
         eprintln!("probe (network = none): {}", result);
-        eprintln!(
-            "probe (network = allow): {}",
-            probe(&allowed, "k8sallow").await
-        );
         assert_eq!(result["token"], json!("secret-value"));
         let env: Vec<&str> = result["env"]
             .as_array()
@@ -1887,8 +1883,9 @@ for line in sys.stdin:
                 assert!(!env.contains(&host_key.as_str()), "{} leaked", host_key);
             }
         }
-        // NetworkPolicyで、クラスタ内（APIサーバー）にも外にも出られない
-        assert_eq!(result["network_api"], json!("blocked"));
+        // NetworkPolicyで、外に出られない。Podが動くノード自体への通信
+        // （kindでは同じノードのAPIサーバー）を止めるかはネットワーク
+        // プラグイン次第のため、ここでは確かめない
         assert_eq!(result["network"], json!("blocked"));
         assert_eq!(result["write_root"], json!("blocked"));
         assert_eq!(result["write_tmp"], json!("ok"));
@@ -1898,7 +1895,8 @@ for line in sys.stdin:
 
         // network = "allow"なら通信できる（拒否がNetworkPolicyによることの確認）
         let result = probe(&allowed, "k8sallow").await;
-        assert_eq!(result["network_api"], json!("ok"));
+        eprintln!("probe (network = allow): {}", result);
+        assert_eq!(result["network"], json!("ok"));
 
         // 止めると、JobとSecretも残らない
         assert!(!kubernetes_resources_with_label("k8snone").is_empty());

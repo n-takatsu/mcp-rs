@@ -109,7 +109,7 @@ MCP-RS follows a layered architecture pattern designed for extensibility, mainta
 
 - Third-party plugins run as separate MCP server processes, and mcp-rs relays their tools as `<plugin>__<tool>` (`src/plugin_proxy.rs`, [#394](https://github.com/n-takatsu/mcp-rs/issues/394))
 - Rate limiting, audit logging, timeouts, and response size limits are applied by mcp-rs, not by the plugin
-- Stage 1 runs plugins as child processes without the server's environment variables. Stage 2 runs a plugin in a Docker container (`docker run -i`) with no network, no capabilities and a read-only root filesystem by default ([#411](https://github.com/n-takatsu/mcp-rs/issues/411)). Kubernetes (stage 3) is planned ([#392](https://github.com/n-takatsu/mcp-rs/issues/392))
+- Stage 1 runs plugins as child processes without the server's environment variables. Stage 2 runs a plugin in a Docker container (`docker run -i`) with no network, no capabilities and a read-only root filesystem by default ([#411](https://github.com/n-takatsu/mcp-rs/issues/411)). Stage 3 runs a plugin as a Kubernetes Job through `kubectl`, with a non-root, read-only pod and a deny-all NetworkPolicy by default ([#413](https://github.com/n-takatsu/mcp-rs/issues/413))
 
 ## 📋 Planned Components
 
