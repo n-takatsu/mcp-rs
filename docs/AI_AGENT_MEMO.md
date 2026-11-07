@@ -12,7 +12,6 @@
 - **Model Context Protocol (MCP) Server** implementation
 - **Multi-database Support**: MySQL, PostgreSQL, SQLite, MongoDB, Redis
 - **Security-first Architecture** with comprehensive input validation
-- **Plugin System** with hot-reload capabilities
 
 ## Version & Status
 

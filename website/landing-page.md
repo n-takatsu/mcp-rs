@@ -187,9 +187,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 - **567 Tests**: Comprehensive test suite with 100% pass rate
 - **Zero Warnings**: Clean codebase with no compilation warnings
-- **Docker Ready**: Production-ready containerization with Docker Runtime support
+- **Docker Ready**: Production-ready containerization
 - **Kubernetes Support**: Enterprise deployment configurations
-- **Plugin Isolation**: Secure sandbox environment for third-party plugins
+- **Plugins (planned)**: Third-party plugins running as separate MCP server processes are being redesigned ([#392](https://github.com/n-takatsu/mcp-rs/issues/392))
 
 ---
 
@@ -495,7 +495,6 @@ We welcome contributions! Here's how you can help:
 - ✅ **Performance Optimization**: Sub-millisecond latencies
 - ✅ **Production Readiness**: Docker, monitoring, and documentation
 - ✅ **WebSocket Enhancements**: Server mode, LLM streaming, connection pooling (v0.16.0)
-- ✅ **Plugin Isolation**: Docker runtime, inter-plugin communication (v0.16.0)
 - ✅ **LLM Integration**: OpenAI GPT-4 and Anthropic Claude 3.5 Sonnet (v0.16.0)
 
 ## Q1 2025 🚧 (In Progress)
