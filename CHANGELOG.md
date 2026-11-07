@@ -24,6 +24,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `slug`フィールドを追加した。構造体を`..Default::default()`なしで
     組み立てている場合は、`slug: None`の追加が必要
 
+### Changed
+
+- STDIOモードで、登録したすべてのハンドラーのツール・リソースを扱うように
+  した（#394）。これまでは最初の1つのハンドラーにしか渡しておらず、
+  プラグイン（#394）を追加するとどちらかのツールしか見えなくなるため
+  - `tools/list`・`resources/list`は全ハンドラーの分を登録順にまとめる。
+    同じ名前のツールは先に登録したものを使う。`tools/call`はツール名、
+    `resources/read`はURIで呼び出し先を決める
+  - `initialize`の応答の`serverInfo`を、WordPressハンドラーの
+    `mcp-rs-wordpress` 0.1.0から、`mcp-rs`と本体のバージョンに変更した。
+    ハンドラーが1つもない場合も、エラーにせず応答する
+  - 存在しないツール名は、WordPressハンドラーに渡さず`Tool not found`の
+    エラー（`isError: true`）を返す
+
 ## [0.18.2] - 2026-11-07
 
 ### Removed
