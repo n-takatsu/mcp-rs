@@ -28,7 +28,7 @@ MCP-RS provides a **comprehensive, battle-tested** implementation of the MCP (Mo
   - LLM streaming (OpenAI GPT-4, Anthropic Claude 3.5 Sonnet)
   - Connection pooling with 3 load balancing algorithms (RoundRobin, LeastConnections, Random)
   - Real-time metrics, rate limiting (TokenBucket, LeakyBucket, SlidingWindow), and compression (gzip/deflate)
-- **Plugins (planned)**: Third-party plugins running as separate MCP server processes are being redesigned ([#392](https://github.com/n-takatsu/mcp-rs/issues/392))
+- **Plugins**: Add tools from other MCP servers, run as separate processes. mcp-rs relays their tools with rate limiting and audit logging (STDIO mode). See [Plugins]({{ site.baseurl }}/docs/plugins/)
 - **Type-Safe Configuration**: TOML-based configuration with environment variable override
 - **Production-Ready Error Handling**: Comprehensive error types with structured logging
 - **Async/Await**: Built on `tokio` for high-performance async operations
@@ -70,6 +70,7 @@ MCP-RS provides a **comprehensive, battle-tested** implementation of the MCP (Mo
 - **[Database Guide]({{ site.baseurl }}/docs/database/)** - Multi-engine database integration
 - **[Guides]({{ site.baseurl }}/docs/guides/)** - Implementation guides and tutorials
 - **[WordPress Integration]({{ site.baseurl }}/docs/wordpress/)** - WordPress REST API integration
+- **[Plugins]({{ site.baseurl }}/docs/plugins/)** - Add tools from other MCP servers
 
 ## 🚀 Getting Started
 
@@ -206,4 +207,4 @@ at your option.
 ---
 
 **Last Updated**: November 3, 2025
-**Version**: v0.18.2
+**Version**: v0.18.3

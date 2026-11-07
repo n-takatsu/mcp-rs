@@ -7,6 +7,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.3] - 2026-11-08
+
+### Added
+
+- プラグイン（#394、段階1）。設定の`[[plugins]]`で指定したコマンドを、
+  別プロセスのMCPサーバーとして起動し、そのツールを
+  `<プラグイン名>__<ツール名>`として中継する。STDIOモードのみ
+  （HTTPモードは#400の修正後）
+  - プラグインには本体の環境変数を渡さず、`env`で指定したものだけを渡す
+    （WordPressの認証情報等は渡らない）
+  - 本体側で、レート制限・監査ログ（すべての呼び出し）・タイムアウト
+    （既定30秒）・応答サイズの上限（既定1MB）をかける
+  - プラグインの標準エラー出力は本体のログに記録する。起動できない
+    プラグインは警告を出して飛ばし、異常終了・無応答のプラグインの
+    ツールはエラーを返す（自動再起動はしない）
+  - ファイルシステム・ネットワークは隔離しない。信頼できるプラグインにのみ
+    使う（コンテナでの隔離は今後、#392）
+  - v0.18.1以前の`[plugins]`（テーブル）は、これまでどおり無視する。
+    ただし`[[plugins]]`と同じファイルに書くとTOMLとして読めないため、
+    プラグインを追加するときは古い`[plugins]`を削除する。両方あって
+    読み込みに失敗した場合は、エラーにその旨を添える
+  - ツールの結果は`content`・`isError`・`_meta`だけを返す。新しい仕様の
+    `structuredContent`は除く（mcp-rsは`outputSchema`を中継しないため、
+    クライアントが`content`の代わりにJSONを表示していた）
+  - ドキュメント: `website/docs/plugins.md`
+
+- 投稿・固定ページを作成・更新するツールに`slug`引数を追加（#398）。
+  日本語のタイトルの記事に、英語のスラッグを付けられる。これまでは
+  WordPressがタイトルから日本語のスラッグを作り、管理画面で1件ずつ
+  変更する必要があった
+  - 対象: `create_post`・`create_advanced_post`・
+    `create_post_with_featured_image`・`create_post_with_categories_tags`・
+    `create_post_with_embeds`・`update_post`
+  - 省略時はこれまでどおりWordPressがタイトルから作る。空文字列は
+    受け付けない
+  - 結果には、WordPressが実際に設定したスラッグを表示する（重複時の
+    `-2`等）。`get_post`の表示にもスラッグを追加した
+  - **ライブラリの変更**: `PostCreateParams`・`PostUpdateParams`に
+    `slug`フィールドを追加した。構造体を`..Default::default()`なしで
+    組み立てている場合は、`slug: None`の追加が必要
+
+### Changed
+
+- STDIOモードで、登録したすべてのハンドラーのツール・リソースを扱うように
+  した（#394）。これまでは最初の1つのハンドラーにしか渡しておらず、
+  プラグイン（#394）を追加するとどちらかのツールしか見えなくなるため
+  - `tools/list`・`resources/list`は全ハンドラーの分を登録順にまとめる。
+    同じ名前のツールは先に登録したものを使う。`tools/call`はツール名、
+    `resources/read`はURIで呼び出し先を決める
+  - `initialize`の応答の`serverInfo`を、WordPressハンドラーの
+    `mcp-rs-wordpress` 0.1.0から、`mcp-rs`と本体のバージョンに変更した。
+    ハンドラーが1つもない場合も、エラーにせず応答する
+  - 存在しないツール名は、WordPressハンドラーに渡さず`Tool not found`の
+    エラー（`isError: true`）を返す
+
 ## [0.18.2] - 2026-11-07
 
 ### Removed

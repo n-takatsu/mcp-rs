@@ -324,6 +324,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 tags: None,
                 featured_media_id: None,
                 meta: None,
+                slug: None,
             })
             .await
         {
@@ -564,6 +565,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 tags: tags_payload,
                 featured_media_id: None,
                 meta: None,
+                slug: None,
             })
             .await
         {

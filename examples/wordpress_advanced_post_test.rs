@@ -35,6 +35,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             tags: None,
             featured_media_id: None,
             meta: None,
+            slug: None,
         })
         .await?;
     println!("✅ Draft post created with ID: {:?}", draft_post.id);
@@ -78,6 +79,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             tags: None,
             featured_media_id: None,
             meta: Some(seo_meta),
+            slug: None,
         })
         .await?;
     println!("✅ SEO post created with ID: {:?}", seo_post.id);
@@ -95,6 +97,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             tags: None,       // ページにはタグなし
             featured_media_id: None,
             meta: None,
+            slug: None,
         })
         .await?;
     println!("✅ Private page created with ID: {:?}", private_page.id);
@@ -113,6 +116,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             tags: None,
             featured_media_id: None,
             meta: None,
+            slug: None,
         })
         .await?;
     println!("✅ Scheduled post created with ID: {:?}", scheduled_post.id);

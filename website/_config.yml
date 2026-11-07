@@ -39,6 +39,7 @@ header_pages:
   - docs/security.md
   - docs/database.md
   - docs/wordpress.md
+  - docs/plugins.md
 
 # サイト設定
 show_excerpts: true
