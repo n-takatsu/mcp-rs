@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- 何にも接続されていなかったKubernetes連携モジュール`src/k8s/`を削除
+  （#305）。`PluginDeployment`・`PluginPolicy`のCRDと、2つの独立した
+  reconciler（`PluginOperator`・`PluginReconciler`）はどちらもTODOだけの
+  スタブで、オペレーター（`mcp-operator`）からも呼ばれていなかった。
+  オペレーターが扱うのは`src/operator/`の`MCPServer`等で、変更はない
+  - **ライブラリの変更**: `kube`機能有効時の公開モジュール`mcp_rs::k8s`を
+    削除した
+  - 対応するCRD（`k8s/crds/plugin-deployment.yaml`・
+    `plugin-policy.yaml`）とexample、これらを使える機能として説明していた
+    `docs/kubernetes-operation-guide.md`も削除した（存在しないHelm
+    リポジトリ・ディレクトリを案内しており、どこからもリンクされて
+    いなかった。Kubernetesの案内は`docs/KUBERNETES_GUIDE.md`）
 - 使われていなかった対話式のセットアップ機能（`src/setup/`）と、実行時の
   対話式コントローラー（`src/runtime_control.rs`、`config::ConfigSwitcher`）
   を削除（#386）。v0.16.0以降、`--setup-config`・`--generate-config`・

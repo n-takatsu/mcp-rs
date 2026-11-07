@@ -53,10 +53,6 @@ pub mod llm;
 #[cfg(feature = "kubernetes-operator")]
 pub mod operator;
 
-// Kubernetes integration module
-#[cfg(feature = "kube")]
-pub mod k8s;
-
 // CLI module
 pub mod cli;
 
