@@ -82,6 +82,9 @@ pub struct PluginConfig {
     /// 指定すると、プラグインをDockerコンテナの中で起動する（#411）。
     /// 省略時は子プロセスとして起動する
     pub container: Option<PluginContainerConfig>,
+    /// 指定すると、プラグインをKubernetesのJobとして起動する（#413）。
+    /// `container`とは同時に指定できない
+    pub kubernetes: Option<PluginKubernetesConfig>,
     /// `false`で起動しない。省略時は`true`
     pub enabled: Option<bool>,
     /// 起動（`initialize`・`tools/list`）とツール呼び出しの待ち時間の上限
@@ -106,6 +109,7 @@ impl fmt::Debug for PluginConfig {
             .field("env_keys", &env_keys)
             .field("working_dir", &self.working_dir)
             .field("container", &self.container)
+            .field("kubernetes", &self.kubernetes)
             .field("enabled", &self.enabled)
             .field("call_timeout_seconds", &self.call_timeout_seconds)
             .field("max_response_bytes", &self.max_response_bytes)
@@ -143,6 +147,38 @@ pub struct PluginContainerConfig {
     pub docker_command: Option<String>,
 }
 
+/// プラグインをKubernetesのJobとして起動する設定（#413、
+/// `[plugins.kubernetes]`）。`kubectl`で作成・接続する。既定で、root
+/// 以外のユーザー・全ケーパビリティ削除・ルートファイルシステム読み取り
+/// 専用・通信を拒否するNetworkPolicyの対象・リソースの上限付きで起動する。
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct PluginKubernetesConfig {
+    /// イメージ
+    pub image: String,
+    /// 名前空間。省略時はkubeconfigの現在の名前空間
+    pub namespace: Option<String>,
+    /// kubeconfigのコンテキスト。省略時は現在のコンテキスト
+    pub context: Option<String>,
+    /// `none`（既定、通信を拒否するNetworkPolicyの対象にする）か`allow`
+    pub network: Option<String>,
+    /// メモリの上限（例: `"512Mi"`）。省略時は`512Mi`
+    pub memory: Option<String>,
+    /// CPUの上限（例: `"500m"`）。省略時は`500m`
+    pub cpu: Option<String>,
+    /// 実行するユーザー（とグループ）のID。省略時は65532。0（root）は不可
+    pub run_as_user: Option<u32>,
+    /// `false`で、ルートファイルシステムに書き込めるようにする。省略時は
+    /// `true`（読み取り専用。`/tmp`だけ書き込める）
+    pub read_only: Option<bool>,
+    /// `Always`・`IfNotPresent`・`Never`。省略時はKubernetesの既定
+    pub image_pull_policy: Option<String>,
+    /// Podの起動（イメージの取得を含む）と`initialize`・`tools/list`を
+    /// 待つ時間（秒）。省略時は120秒
+    pub start_timeout_seconds: Option<u64>,
+    /// 使うコマンド。省略時は`kubectl`
+    pub kubectl_command: Option<String>,
+}
+
 /// コンテナにマウントするホストのフォルダ
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PluginMountConfig {
@@ -169,12 +205,14 @@ pub fn legacy_plugins_conflict_hint(content: &str) -> Option<&'static str> {
         })
         .collect();
     let has_new = headers.iter().any(|h| h == "[[plugins]]");
-    // `[plugins.container]`は、直前の`[[plugins]]`のコンテナ設定（#411）
+    // `[plugins.container]`・`[plugins.kubernetes]`は、直前の`[[plugins]]`の
+    // 設定（#411・#413）
     let has_legacy = headers.iter().any(|h| {
         h == "[plugins]"
             || (h.starts_with("[plugins.")
                 && h.ends_with(']')
-                && !h.starts_with("[plugins.container"))
+                && !h.starts_with("[plugins.container")
+                && !h.starts_with("[plugins.kubernetes"))
     });
     (has_new && has_legacy).then_some(
         "The config file has both the old [plugins] section (v0.18.1 and earlier, never used by mcp-rs) and [[plugins]] entries. Delete the old [plugins] section, including [plugins.*] subsections",
@@ -1241,6 +1279,10 @@ command = "node"
             "[[plugins]]\nname = \"a\"\n[plugins.container]\nimage = \"i\"\n"
         )
         .is_none());
+        assert!(legacy_plugins_conflict_hint(
+            "[[plugins]]\nname = \"a\"\n[plugins.kubernetes]\nimage = \"i\"\n"
+        )
+        .is_none());
     }
 
     #[test]
@@ -1273,10 +1315,24 @@ mounts = [
 [[plugins]]
 name = "local"
 command = "local-mcp"
+
+[[plugins]]
+name = "k8s"
+command = "python"
+
+[plugins.kubernetes]
+image = "example/server:1.0"
+namespace = "mcp-plugins"
+start_timeout_seconds = 300
 "#;
 
     fn assert_container_plugins(config: &McpConfig) {
-        assert_eq!(config.plugins.len(), 2);
+        assert_eq!(config.plugins.len(), 3);
+        let k8s = config.plugins[2].kubernetes.as_ref().unwrap();
+        assert_eq!(k8s.image, "example/server:1.0");
+        assert_eq!(k8s.namespace.as_deref(), Some("mcp-plugins"));
+        assert_eq!(k8s.start_timeout_seconds, Some(300));
+        assert!(config.plugins[2].container.is_none());
         let fs = &config.plugins[0];
         // コンテナではcommandを省略できる（イメージのENTRYPOINTを使う）
         assert_eq!(fs.command, "");

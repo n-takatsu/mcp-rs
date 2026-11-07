@@ -22,6 +22,9 @@
 //! ルートファイルシステム読み取り専用・メモリとプロセス数の上限付きで、
 //! マウントは設定したものだけ（既定で読み取り専用）。通信は子プロセスと
 //! 同じく標準入出力で、dockerコマンドが中継する。
+//!
+//! 設定に`kubernetes`を書くと、KubernetesのJobとして起動し、
+//! `kubectl attach -i`で中継する（段階3、#413。`kubernetes.rs`）。
 
 use std::collections::{HashMap, HashSet};
 use std::process::Stdio;
@@ -36,6 +39,8 @@ use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
 use crate::config::{McpConfig, PluginConfig, PluginContainerConfig};
+
+mod kubernetes;
 use crate::mcp::{
     InitializeParams, McpError, McpHandler, Resource, ResourceReadParams, Tool, ToolCallParams,
 };
@@ -123,7 +128,7 @@ fn validate_option_value(field: &str, value: &str) -> Result<(), String> {
         || value.chars().any(|c| c.is_whitespace() || c.is_control())
     {
         return Err(format!(
-            "container.{} '{}' is not valid (it must not be empty, start with '-' or contain spaces)",
+            "{} '{}' is not valid (it must not be empty, start with '-' or contain spaces)",
             field, value
         ));
     }
@@ -171,12 +176,12 @@ fn container_launch(
     if program.is_empty() {
         return Err("container.docker_command is empty".to_string());
     }
-    validate_option_value("image", container.image.trim())?;
+    validate_option_value("container.image", container.image.trim())?;
     let network = container
         .network
         .as_deref()
         .unwrap_or(DEFAULT_CONTAINER_NETWORK);
-    validate_option_value("network", network)?;
+    validate_option_value("container.network", network)?;
     if !network
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
@@ -196,7 +201,7 @@ fn container_launch(
         .memory
         .as_deref()
         .unwrap_or(DEFAULT_CONTAINER_MEMORY);
-    validate_option_value("memory", memory)?;
+    validate_option_value("container.memory", memory)?;
 
     let container_name = format!("mcp-rs-{}-{}", config.name, instance);
     let mut args: Vec<String> = vec![
@@ -221,11 +226,11 @@ fn container_launch(
         container.pids_limit.unwrap_or(DEFAULT_CONTAINER_PIDS_LIMIT)
     ));
     if let Some(cpus) = &container.cpus {
-        validate_option_value("cpus", cpus)?;
+        validate_option_value("container.cpus", cpus)?;
         args.push(format!("--cpus={}", cpus));
     }
     if let Some(user) = &container.user {
-        validate_option_value("user", user)?;
+        validate_option_value("container.user", user)?;
         args.push(format!("--user={}", user));
     }
     if let Some(dir) = &config.working_dir {
@@ -288,23 +293,23 @@ fn container_launch(
     })
 }
 
-/// コンテナを消すための情報。dockerコマンドを止めても、コンテナが
-/// 残ることがないように、終了時に`docker rm -f`する。
-struct ContainerCleanup {
+/// プラグインを止めたときに、コンテナ・Jobを消すコマンド。dockerや
+/// kubectlのプロセスを止めても、コンテナ・Jobが残ることがないように、
+/// 終了時に実行する（`docker rm -f`・`kubectl delete job`）。
+struct Cleanup {
     program: String,
-    container_name: String,
-    docker_env: Vec<(String, String)>,
+    args: Vec<String>,
+    env: Vec<(String, String)>,
 }
 
-impl ContainerCleanup {
-    /// `docker rm -f`を実行する（終了を待たない）。既に`--rm`で消えて
-    /// いれば何もしない。
-    fn remove(self) {
+impl Cleanup {
+    /// コマンドを実行する（終了を待たない）。既に消えていれば何もしない。
+    fn run(self) {
         let mut command = std::process::Command::new(&self.program);
         command
-            .args(["rm", "-f", &self.container_name])
+            .args(&self.args)
             .env_clear()
-            .envs(self.docker_env)
+            .envs(self.env)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
@@ -407,8 +412,8 @@ struct Connection {
     next_id: u64,
     /// 終了・通信できなくなった理由
     stopped: Option<String>,
-    /// コンテナで起動した場合に、終了時に消すコンテナ
-    container: Option<ContainerCleanup>,
+    /// コンテナ・Kubernetesで起動した場合に、終了時に実行する後片付け
+    cleanup: Option<Cleanup>,
 }
 
 impl Drop for Connection {
@@ -418,11 +423,11 @@ impl Drop for Connection {
 }
 
 impl Connection {
-    /// プロセスを止め、コンテナで起動していればコンテナも消す。
+    /// プロセスを止め、コンテナ・Jobで起動していればそれも消す。
     fn kill(&mut self) {
         let _ = self.child.start_kill();
-        if let Some(container) = self.container.take() {
-            container.remove();
+        if let Some(cleanup) = self.cleanup.take() {
+            cleanup.run();
         }
     }
 
@@ -677,19 +682,31 @@ impl PluginHandler {
     /// まで行う。
     pub async fn start(config: &PluginConfig) -> Result<Self, String> {
         validate_plugin_name(&config.name)?;
-        if config.container.is_none() && config.command.trim().is_empty() {
+        if config.container.is_some() && config.kubernetes.is_some() {
+            return Err("container and kubernetes cannot both be set".to_string());
+        }
+        if config.container.is_none()
+            && config.kubernetes.is_none()
+            && config.command.trim().is_empty()
+        {
             return Err("command is empty".to_string());
         }
         let result = Self::start_inner(config).await;
-        if result.is_err() && config.container.is_some() {
-            return result.map_err(|e| {
+        result.map_err(|e| {
+            if config.container.is_some() {
                 format!(
                     "{} (docker's own message, if any, is in the log lines starting with \"[plugin {}]\". The image must be pulled beforehand with `docker pull`)",
                     e, config.name
                 )
-            });
-        }
-        result
+            } else if config.kubernetes.is_some() {
+                format!(
+                    "{} (kubectl's own message, if any, is in the log lines starting with \"[plugin {}]\")",
+                    e, config.name
+                )
+            } else {
+                e
+            }
+        })
     }
 
     async fn start_inner(config: &PluginConfig) -> Result<Self, String> {
@@ -703,9 +720,16 @@ impl PluginHandler {
             .unwrap_or(DEFAULT_MAX_RESPONSE_BYTES);
 
         let env = plugin_env(config);
-        let mut container_cleanup = None;
-        let mut command = match &config.container {
-            None => {
+        let mut cleanup = None;
+        let mut start_timeout = call_timeout;
+        let mut command = match (&config.container, &config.kubernetes) {
+            (None, Some(kubernetes)) => {
+                let prepared = kubernetes::prepare(config, kubernetes, &env).await?;
+                start_timeout = prepared.start_timeout;
+                cleanup = Some(prepared.cleanup);
+                prepared.command
+            }
+            (None, None) => {
                 let mut command = Command::new(&config.command);
                 command.args(&config.args).env_clear();
                 for key in INHERITED_ENV_VARS {
@@ -719,7 +743,7 @@ impl PluginHandler {
                 }
                 command
             }
-            Some(container) => {
+            (Some(container), _) => {
                 let env_keys: Vec<&str> = env.iter().map(|(k, _)| k.as_str()).collect();
                 let instance = uuid::Uuid::new_v4().simple().to_string();
                 let launch = container_launch(config, container, &env_keys, &instance[..12])?;
@@ -741,10 +765,10 @@ impl PluginHandler {
                     .envs(docker_env.clone())
                     // `--env=NAME`の値は、dockerコマンドの環境変数から渡る
                     .envs(env);
-                container_cleanup = Some(ContainerCleanup {
+                cleanup = Some(Cleanup {
                     program: launch.program,
-                    container_name: launch.container_name,
-                    docker_env,
+                    args: vec!["rm".into(), "-f".into(), launch.container_name],
+                    env: docker_env,
                 });
                 command
             }
@@ -765,12 +789,22 @@ impl PluginHandler {
             .get_program()
             .to_string_lossy()
             .into_owned();
-        let mut child = command
-            .spawn()
-            .map_err(|e| format!("could not start '{}': {}", program, e))?;
+        let mut child = match command.spawn() {
+            Ok(child) => child,
+            Err(e) => {
+                // Kubernetesでは、Job等を作った後に失敗しうる
+                if let Some(cleanup) = cleanup {
+                    cleanup.run();
+                }
+                return Err(format!("could not start '{}': {}", program, e));
+            }
+        };
         let (Some(stdin), Some(stdout), Some(stderr)) =
             (child.stdin.take(), child.stdout.take(), child.stderr.take())
         else {
+            if let Some(cleanup) = cleanup {
+                cleanup.run();
+            }
             return Err("could not open the plugin's standard input/output".to_string());
         };
         spawn_stderr_logger(config.name.clone(), stderr);
@@ -784,26 +818,26 @@ impl PluginHandler {
             discarding: false,
             next_id: 1,
             stopped: None,
-            // 起動に失敗して`connection`を破棄するときも、コンテナを消す
-            container: container_cleanup,
+            // 起動に失敗して`connection`を破棄するときも、コンテナ・Jobを消す
+            cleanup,
         };
 
         let raw_tools = match tokio::time::timeout(
-            call_timeout,
+            start_timeout,
             Self::handshake(&mut connection, max_response_bytes),
         )
         .await
         {
             Ok(Ok(tools)) => tools,
             Ok(Err(e)) => {
-                let _ = connection.child.start_kill();
+                connection.kill();
                 return Err(e.to_string());
             }
             Err(_) => {
-                let _ = connection.child.start_kill();
+                connection.kill();
                 return Err(format!(
                     "the plugin did not finish starting within {} seconds",
-                    call_timeout.as_secs()
+                    start_timeout.as_secs()
                 ));
             }
         };
@@ -1000,7 +1034,7 @@ impl McpHandler for PluginHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::PluginMountConfig;
+    use crate::config::{PluginKubernetesConfig, PluginMountConfig};
 
     const TEST_PLUGIN_ENV: &str = "MCP_RS_TEST_PLUGIN";
 
@@ -1150,6 +1184,7 @@ mod tests {
             env,
             working_dir: None,
             container: None,
+            kubernetes: None,
             enabled: None,
             call_timeout_seconds: Some(10),
             max_response_bytes: Some(4096),
@@ -1594,6 +1629,21 @@ def write(path):
     with open(path, "w") as f:
         f.write("x")
 
+def read(path):
+    try:
+        with open(path) as f:
+            return f.read()
+    except Exception:
+        return None
+
+def connect_api():
+    # Kubernetes内では、APIサーバー（クラスタ内の通信先）に接続してみる
+    host = os.environ.get("KUBERNETES_SERVICE_HOST")
+    if not host:
+        return "n/a"
+    port = int(os.environ.get("KUBERNETES_SERVICE_PORT", "443"))
+    return attempt(lambda: socket.create_connection((host, port), timeout=3).close())
+
 for line in sys.stdin:
     message = json.loads(line)
     if "id" not in message:
@@ -1612,9 +1662,12 @@ for line in sys.stdin:
             "network": attempt(lambda: socket.create_connection(("1.1.1.1", 53), timeout=3).close()),
             "write_root": attempt(lambda: write("/probe")),
             "write_tmp": attempt(lambda: write("/tmp/probe")),
-            "read_mount": open("/data/hello.txt").read(),
+            "network_api": connect_api(),
+            "read_mount": read("/data/hello.txt"),
             "write_mount": attempt(lambda: write("/data/probe")),
             "cap_eff": cap_eff,
+            "uid": os.getuid(),
+            "sa_token": os.path.exists("/var/run/secrets/kubernetes.io/serviceaccount/token"),
         }
         reply(message["id"], {"content": [{"type": "text", "text": json.dumps(probe)}]})
     else:
@@ -1713,5 +1766,149 @@ for line in sys.stdin:
         }
         assert!(remaining.is_empty(), "containers left: {}", remaining);
         let _ = std::fs::remove_dir_all(&data_dir);
+    }
+
+    fn kubernetes_plugin_config(name: &str, kubernetes: PluginKubernetesConfig) -> PluginConfig {
+        PluginConfig {
+            command: String::new(),
+            args: Vec::new(),
+            env: HashMap::new(),
+            kubernetes: Some(kubernetes),
+            ..test_plugin_config(name)
+        }
+    }
+
+    fn kubernetes_config(image: &str) -> PluginKubernetesConfig {
+        PluginKubernetesConfig {
+            image: image.to_string(),
+            namespace: None,
+            context: None,
+            network: None,
+            memory: None,
+            cpu: None,
+            run_as_user: None,
+            read_only: None,
+            image_pull_policy: None,
+            start_timeout_seconds: None,
+            kubectl_command: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_kubernetes_plugin_without_kubectl_fails_to_start_with_hint() {
+        let mut kubernetes = kubernetes_config("example/image");
+        kubernetes.kubectl_command = Some("mcp-rs-surely-missing-kubectl-command".to_string());
+        let error = PluginHandler::start(&kubernetes_plugin_config("nokubectl", kubernetes))
+            .await
+            .err()
+            .unwrap();
+        assert!(error.contains("could not start"), "{}", error);
+        assert!(error.contains("kubectl's own message"), "{}", error);
+    }
+
+    #[tokio::test]
+    async fn test_plugin_with_both_container_and_kubernetes_is_rejected() {
+        let mut config = kubernetes_plugin_config("both", kubernetes_config("example/image"));
+        config.container = Some(container_config("example/image"));
+        let error = PluginHandler::start(&config).await.err().unwrap();
+        assert!(error.contains("cannot both be set"), "{}", error);
+    }
+
+    /// 実際のKubernetesでの隔離の確認。kubectlで使えるクラスタ（CIでは
+    /// kind）が必要なため、`MCP_RS_K8S_TESTS=1`のときだけ実行する。
+    fn kubernetes_tests_enabled() -> bool {
+        std::env::var("MCP_RS_K8S_TESTS").ok().as_deref() == Some("1")
+    }
+
+    fn kubernetes_resources_with_label(plugin: &str) -> String {
+        let output = std::process::Command::new("kubectl")
+            .args([
+                "get",
+                "jobs,secrets",
+                "-o",
+                "name",
+                &format!("--selector={}={}", CONTAINER_LABEL, plugin),
+            ])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
+
+    async fn start_kubernetes_probe(name: &str, network: Option<&str>) -> PluginHandler {
+        let mut kubernetes = kubernetes_config(DOCKER_TEST_IMAGE);
+        kubernetes.network = network.map(str::to_string);
+        kubernetes.image_pull_policy = Some("IfNotPresent".to_string());
+        let mut config = kubernetes_plugin_config(name, kubernetes);
+        config.command = "python".to_string();
+        config.args = vec![
+            "-u".to_string(),
+            "-c".to_string(),
+            DOCKER_TEST_SERVER.to_string(),
+        ];
+        config
+            .env
+            .insert("PLUGIN_TOKEN".to_string(), "secret-value".to_string());
+        config.call_timeout_seconds = Some(30);
+        PluginHandler::start(&config).await.unwrap()
+    }
+
+    async fn probe(handler: &PluginHandler, name: &str) -> Value {
+        let result = call(handler, &format!("{}__probe", name), json!({}))
+            .await
+            .unwrap();
+        serde_json::from_str(text(&result)).unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_kubernetes_plugin_is_isolated() {
+        if !kubernetes_tests_enabled() {
+            return;
+        }
+        let (isolated, allowed) = tokio::join!(
+            start_kubernetes_probe("k8snone", None),
+            start_kubernetes_probe("k8sallow", Some("allow"))
+        );
+
+        let result = probe(&isolated, "k8snone").await;
+        assert_eq!(result["token"], json!("secret-value"));
+        let env: Vec<&str> = result["env"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        for (host_key, _) in std::env::vars() {
+            if host_key.starts_with("CARGO") || host_key.starts_with("MCP_RS") {
+                assert!(!env.contains(&host_key.as_str()), "{} leaked", host_key);
+            }
+        }
+        // NetworkPolicyで、クラスタ内（APIサーバー）にも外にも出られない
+        assert_eq!(result["network_api"], json!("blocked"));
+        assert_eq!(result["network"], json!("blocked"));
+        assert_eq!(result["write_root"], json!("blocked"));
+        assert_eq!(result["write_tmp"], json!("ok"));
+        assert_eq!(result["cap_eff"], json!("0000000000000000"));
+        assert_eq!(result["uid"], json!(65532));
+        assert_eq!(result["sa_token"], json!(false));
+
+        // network = "allow"なら通信できる（拒否がNetworkPolicyによることの確認）
+        let result = probe(&allowed, "k8sallow").await;
+        assert_eq!(result["network_api"], json!("ok"));
+
+        // 止めると、JobとSecretも残らない
+        assert!(!kubernetes_resources_with_label("k8snone").is_empty());
+        drop(isolated);
+        drop(allowed);
+        for plugin in ["k8snone", "k8sallow"] {
+            let mut remaining = String::new();
+            for _ in 0..60 {
+                remaining = kubernetes_resources_with_label(plugin);
+                if remaining.is_empty() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+            assert!(remaining.is_empty(), "left for {}: {}", plugin, remaining);
+        }
     }
 }

@@ -9,7 +9,7 @@ on:
       - 'Dockerfile.test'
       - 'tests/integration/**'
       - 'src/transport/**'
-      - 'src/plugin_proxy.rs'
+      - 'src/plugin_proxy/**'
       - 'src/security/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
@@ -21,7 +21,7 @@ on:
       - 'Dockerfile.test'
       - 'tests/integration/**'
       - 'src/transport/**'
-      - 'src/plugin_proxy.rs'
+      - 'src/plugin_proxy/**'
       - 'src/security/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
@@ -148,6 +148,37 @@ jobs:
           path: |
             target/debug/deps/*.log
             target/release/deps/*.log
+
+  # プラグインをKubernetesのJobとして起動したときの隔離（#413）を、
+  # kindのクラスタで確かめる
+  plugin-kubernetes-test:
+    name: Plugin Kubernetes Isolation Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: Create kind cluster
+        uses: helm/kind-action@v1
+        with:
+          cluster_name: mcp-rs-plugins
+
+      - name: Load test image into the cluster
+        run: |
+          docker pull python:3.12-alpine
+          kind load docker-image python:3.12-alpine --name mcp-rs-plugins
+
+      - name: Run plugin Kubernetes isolation test
+        env:
+          MCP_RS_K8S_TESTS: "1"
+        run: cargo test --lib plugin_proxy::tests::test_kubernetes_plugin_is_isolated -- --nocapture
 
   docker-compose-tests:
     name: Docker Compose Tests
