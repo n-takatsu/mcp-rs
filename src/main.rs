@@ -187,6 +187,15 @@ async fn register_handlers(
             let wp_handler = WordPressHandler::try_new(wp_config.clone())
                 .map_err(|e| format!("WordPress handler creation failed: {}", e))?;
 
+            // STDIOと違い、HTTP/WebSocketのクライアントは別のマシンにいる
+            // ことがある。その場合、file_pathで読まれるのはクライアントの
+            // 手元ではなく、このサーバー上のファイルになる
+            if !wp_config.upload_allowed_dirs.is_empty() {
+                tracing::warn!(
+                    "upload_allowed_dirs is set: clients connected over HTTP/WebSocket can upload files from these folders on this server via upload_media file_path"
+                );
+            }
+
             let mut registry_lock = registry.write().await;
             registry_lock
                 .register_handler(

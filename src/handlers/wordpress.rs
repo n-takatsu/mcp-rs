@@ -3,6 +3,7 @@ use regex::Regex;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::{debug, info, warn};
@@ -488,6 +489,94 @@ fn validate_upload(
     Ok(canonical)
 }
 
+/// 設定の`upload_allowed_dirs`を正規化する。存在しないフォルダや
+/// フォルダでないパスが指定されていれば起動時にエラーにする（設定の
+/// 書き間違いで`file_path`が黙って使えなくなるのを避けるため）。
+fn canonicalize_upload_dirs(dirs: &[String]) -> Result<Vec<PathBuf>, String> {
+    dirs.iter()
+        .map(|dir| {
+            std::fs::canonicalize(dir)
+                .ok()
+                .filter(|path| path.is_dir())
+                .ok_or_else(|| {
+                    format!(
+                        "upload_allowed_dirs entry '{}' is not an existing directory",
+                        dir
+                    )
+                })
+        })
+        .collect()
+}
+
+/// `upload_media`の`file_path`を、許可フォルダ内の実在するファイルの
+/// 正規化済みパスに解決する。
+///
+/// 判定は正規化（`..`・シンボリックリンクの解決）後のパスで行うため、
+/// `..`やリンクで許可フォルダの外に出ることはできない。許可フォルダの外を
+/// 指す場合と、ファイルが存在しない場合は同じエラーにする（許可フォルダ
+/// 外のファイルの有無が分からないように）。
+fn resolve_upload_path(file_path: &str, allowed_dirs: &[PathBuf]) -> Result<PathBuf, McpError> {
+    if allowed_dirs.is_empty() {
+        return Err(McpError::InvalidParams(
+            "file_path is disabled. Set upload_allowed_dirs in [handlers.wordpress] to enable it, or use file_data".to_string(),
+        ));
+    }
+
+    let path = Path::new(file_path);
+    // 相対パスはmcp-rsの作業ディレクトリ（起動のされ方で変わる）基準に
+    // なり、意図しない場所を指しうるため受け付けない
+    if !path.is_absolute() {
+        return Err(McpError::InvalidParams(
+            "file_path must be an absolute path".to_string(),
+        ));
+    }
+
+    std::fs::canonicalize(path)
+        .ok()
+        .filter(|canonical| {
+            canonical.is_file() && allowed_dirs.iter().any(|dir| canonical.starts_with(dir))
+        })
+        .ok_or_else(|| {
+            McpError::InvalidParams(
+                "file_path must be an existing file inside one of upload_allowed_dirs".to_string(),
+            )
+        })
+}
+
+/// ファイル名の拡張子から、`upload_media`で許可するMIMEタイプを決める
+/// （`file_path`で`mime_type`が省略された場合用）。中身の検証は
+/// `validate_upload`で別途行う。
+fn mime_type_for_filename(filename: &str) -> Option<&'static str> {
+    let extension = filename_extension(filename)?.to_ascii_lowercase();
+    ALLOWED_UPLOADS
+        .iter()
+        .find(|(_, extensions)| extensions.contains(&extension.as_str()))
+        .map(|(mime_type, _)| *mime_type)
+}
+
+/// アップロードするファイルを読み込む。上限を超える分は読まない
+/// （確認後にファイルが大きくなった場合も含め、メモリに載せる量を
+/// 上限+1バイトに抑える）。
+async fn read_upload_file(path: &Path) -> Result<Vec<u8>, McpError> {
+    use tokio::io::AsyncReadExt as _;
+
+    let file = tokio::fs::File::open(path)
+        .await
+        .map_err(|e| McpError::InvalidParams(format!("Failed to read file_path: {}", e)))?;
+    let mut data = Vec::new();
+    file.take(MAX_UPLOAD_SIZE_BYTES as u64 + 1)
+        .read_to_end(&mut data)
+        .await
+        .map_err(|e| McpError::InvalidParams(format!("Failed to read file_path: {}", e)))?;
+    if data.len() > MAX_UPLOAD_SIZE_BYTES {
+        return Err(McpError::InvalidParams(format!(
+            "File too large (max {} bytes)",
+            MAX_UPLOAD_SIZE_BYTES
+        )));
+    }
+    Ok(data)
+}
+
 /// 引数からベストエフォートで対象リソースのIDを抽出する（監査ログの
 /// 補助情報用）。ツールごとに異なるキー名（`post_id`・`media_id`等）を
 /// 優先順位付きで試す。見つからない場合は`None`（例: 新規作成系ツールは
@@ -613,6 +702,9 @@ pub struct WordPressHandler {
     password: Option<String>,
     rate_limiter: Arc<RateLimiter>,
     audit_logger: Arc<AuditLogger>,
+    /// `upload_media`の`file_path`で読み込みを許可するフォルダ（起動時に
+    /// 正規化済み）。空なら`file_path`は使えない。
+    upload_allowed_dirs: Arc<Vec<PathBuf>>,
 }
 
 // Debugトレイトでパスワードを露出しないようにカスタム実装
@@ -627,6 +719,7 @@ impl std::fmt::Debug for WordPressHandler {
             .field("password", &self.password.as_ref().map(|_| "[REDACTED]"))
             .field("rate_limiter", &self.rate_limiter)
             .field("audit_logger", &self.audit_logger)
+            .field("upload_allowed_dirs", &self.upload_allowed_dirs)
             .finish()
     }
 }
@@ -881,6 +974,14 @@ impl WordPressHandler {
         // セキュア認証情報の作成
         let secure_credentials = Some(config.create_secure_credentials());
 
+        let upload_allowed_dirs = canonicalize_upload_dirs(&config.upload_allowed_dirs)?;
+        if !upload_allowed_dirs.is_empty() {
+            info!(
+                "upload_media file_path is enabled for: {:?}",
+                upload_allowed_dirs
+            );
+        }
+
         Ok(Self {
             client,
             base_url: config.url.clone(),
@@ -889,6 +990,7 @@ impl WordPressHandler {
             password: Some(config.password),
             rate_limiter,
             audit_logger,
+            upload_allowed_dirs: Arc::new(upload_allowed_dirs),
         })
     }
 
@@ -2838,34 +2940,75 @@ impl WordPressHandler {
             }
             "upload_media" => {
                 let args = params.arguments.unwrap_or_default();
-                let file_data_b64 = args
-                    .get("file_data")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| McpError::InvalidParams("Missing file_data".to_string()))?;
-                let filename = args
-                    .get("filename")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| McpError::InvalidParams("Missing filename".to_string()))?;
-                let mime_type = args
-                    .get("mime_type")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| McpError::InvalidParams("Missing mime_type".to_string()))?;
+                let arg_str = |key: &str| args.get(key).and_then(|v| v.as_str());
 
-                if file_data_b64.len() > MAX_UPLOAD_BASE64_LEN {
-                    return Err(McpError::InvalidParams(format!(
-                        "file_data too large: {} base64 chars (max {} bytes decoded)",
-                        file_data_b64.len(),
-                        MAX_UPLOAD_SIZE_BYTES
-                    )));
-                }
+                let (file_data, filename, mime_type) = match (
+                    arg_str("file_data"),
+                    arg_str("file_path"),
+                ) {
+                    (Some(_), Some(_)) => {
+                        return Err(McpError::InvalidParams(
+                            "Specify either file_data or file_path, not both".to_string(),
+                        ));
+                    }
+                    (None, None) => {
+                        return Err(McpError::InvalidParams(
+                            "Missing file_data or file_path".to_string(),
+                        ));
+                    }
+                    (Some(file_data_b64), None) => {
+                        let filename = arg_str("filename").ok_or_else(|| {
+                            McpError::InvalidParams("Missing filename".to_string())
+                        })?;
+                        let mime_type = arg_str("mime_type").ok_or_else(|| {
+                            McpError::InvalidParams("Missing mime_type".to_string())
+                        })?;
 
-                // Decode base64 file data
-                use base64::{engine::general_purpose, Engine as _};
-                let file_data = general_purpose::STANDARD
-                    .decode(file_data_b64)
-                    .map_err(|e| McpError::InvalidParams(format!("Invalid base64 data: {}", e)))?;
+                        if file_data_b64.len() > MAX_UPLOAD_BASE64_LEN {
+                            return Err(McpError::InvalidParams(format!(
+                                "file_data too large: {} base64 chars (max {} bytes decoded)",
+                                file_data_b64.len(),
+                                MAX_UPLOAD_SIZE_BYTES
+                            )));
+                        }
 
-                let media = self.upload_media(&file_data, filename, mime_type).await?;
+                        use base64::{engine::general_purpose, Engine as _};
+                        let file_data =
+                            general_purpose::STANDARD
+                                .decode(file_data_b64)
+                                .map_err(|e| {
+                                    McpError::InvalidParams(format!("Invalid base64 data: {}", e))
+                                })?;
+                        (file_data, filename.to_string(), mime_type.to_string())
+                    }
+                    (None, Some(file_path)) => {
+                        let path = resolve_upload_path(file_path, &self.upload_allowed_dirs)?;
+                        let file_data = read_upload_file(&path).await?;
+                        // 省略時はファイル名・拡張子から決める。中身は
+                        // いずれの場合もvalidate_uploadで検証する
+                        let filename = match arg_str("filename") {
+                            Some(name) => name.to_string(),
+                            None => path
+                                .file_name()
+                                .map(|name| name.to_string_lossy().into_owned())
+                                .unwrap_or_default(),
+                        };
+                        let mime_type = match arg_str("mime_type") {
+                                Some(mime_type) => mime_type.to_string(),
+                                None => mime_type_for_filename(&filename)
+                                    .ok_or_else(|| {
+                                        McpError::InvalidParams(format!(
+                                            "Cannot determine mime_type from the file extension. Allowed types: {}",
+                                            allowed_upload_mime_list()
+                                        ))
+                                    })?
+                                    .to_string(),
+                            };
+                        (file_data, filename, mime_type)
+                    }
+                };
+
+                let media = self.upload_media(&file_data, &filename, &mime_type).await?;
                 Ok(serde_json::json!({
                     "content": [{
                         "type": "text",
@@ -3721,7 +3864,7 @@ impl McpHandler for WordPressHandler {
             Tool {
                 name: "upload_media".to_string(),
                 description: format!(
-                    "Upload media file to WordPress. The filename extension and file content must match mime_type. Size is capped at {} MiB, but the transport's message size limit (including base64 overhead) usually applies first",
+                    "Upload media file to WordPress. Pass either file_data (base64) or file_path. The filename extension and file content must match mime_type. Size is capped at {} MiB; with file_data, the transport's message size limit (including base64 overhead) usually applies first",
                     MAX_UPLOAD_SIZE_BYTES / (1024 * 1024)
                 ),
                 input_schema: serde_json::json!({
@@ -3729,21 +3872,25 @@ impl McpHandler for WordPressHandler {
                     "properties": {
                         "file_data": {
                             "type": "string",
-                            "description": "Base64 encoded file data"
+                            "description": "Base64 encoded file data. Requires filename and mime_type. Use file_path instead for files on this machine when it is enabled"
+                        },
+                        "file_path": {
+                            "type": "string",
+                            "description": "Absolute path of a file to upload, read by the mcp-rs server. Only files inside the folders listed in the server's upload_allowed_dirs setting can be read (disabled by default). filename and mime_type default to the file's name and extension"
                         },
                         "filename": {
                             "type": "string",
-                            "description": "Original filename; its extension must match mime_type (e.g., 'photo.jpg' for image/jpeg)"
+                            "description": "Original filename; its extension must match mime_type (e.g., 'photo.jpg' for image/jpeg). Required with file_data"
                         },
                         "mime_type": {
                             "type": "string",
                             "description": format!(
-                                "MIME type of the file. Allowed: {}",
+                                "MIME type of the file. Required with file_data. Allowed: {}",
                                 allowed_upload_mime_list()
                             )
                         }
                     },
-                    "required": ["file_data", "filename", "mime_type"]
+                    "required": []
                 }),
             },
             Tool {
@@ -4428,6 +4575,7 @@ mod tests {
             timeout_seconds: Some(30),
             rate_limit: Some(RateLimitConfig::default()),
             encrypted_credentials: None,
+            upload_allowed_dirs: Vec::new(),
         };
 
         let result = WordPressHandler::try_new(insecure_config);
@@ -4448,6 +4596,7 @@ mod tests {
             timeout_seconds: Some(30),
             rate_limit: Some(RateLimitConfig::default()),
             encrypted_credentials: None,
+            upload_allowed_dirs: Vec::new(),
         };
 
         let result = WordPressHandler::try_new(secure_config);
@@ -4464,6 +4613,7 @@ mod tests {
             timeout_seconds: Some(30),
             rate_limit: Some(RateLimitConfig::default()),
             encrypted_credentials: None,
+            upload_allowed_dirs: Vec::new(),
         };
         let handler = WordPressHandler::try_new(config).unwrap();
 
@@ -4487,6 +4637,7 @@ mod tests {
                 timeout_seconds: Some(30),
                 rate_limit: Some(RateLimitConfig::default()),
                 encrypted_credentials: None,
+                upload_allowed_dirs: Vec::new(),
             };
 
             let result = WordPressHandler::try_new(config);
@@ -4506,6 +4657,7 @@ mod tests {
             timeout_seconds: Some(30),
             rate_limit: Some(rate_limit),
             encrypted_credentials: None,
+            upload_allowed_dirs: Vec::new(),
         };
         WordPressHandler::try_new(config).unwrap()
     }
@@ -5208,6 +5360,261 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].action, Some("upload_media".to_string()));
         assert_eq!(entries[0].result, Some("FAILURE".to_string()));
+    }
+
+    const PNG_HEADER: &[u8] = &[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+
+    fn handler_with_upload_dirs(dirs: &[&Path]) -> WordPressHandler {
+        let config = WordPressConfig {
+            // 検証で拒否されるケースのみを試すため、到達可能である必要はない
+            url: "https://example.invalid".to_string(),
+            username: "test".to_string(),
+            password: "test".to_string(),
+            enabled: Some(true),
+            timeout_seconds: Some(30),
+            rate_limit: Some(RateLimitConfig::default()),
+            encrypted_credentials: None,
+            upload_allowed_dirs: dirs
+                .iter()
+                .map(|d| d.to_string_lossy().into_owned())
+                .collect(),
+        };
+        WordPressHandler::try_new(config).unwrap()
+    }
+
+    async fn call_upload(
+        handler: &WordPressHandler,
+        args: &[(&str, serde_json::Value)],
+    ) -> Result<serde_json::Value, McpError> {
+        let args: HashMap<String, serde_json::Value> = args
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.clone()))
+            .collect();
+        handler
+            .call_tool(ToolCallParams {
+                name: "upload_media".to_string(),
+                arguments: Some(args),
+            })
+            .await
+    }
+
+    fn invalid_params_message(result: Result<serde_json::Value, McpError>) -> String {
+        match result {
+            Err(McpError::InvalidParams(msg)) => msg,
+            other => panic!("expected InvalidParams, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_canonicalize_upload_dirs() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a.png");
+        std::fs::write(&file, PNG_HEADER).unwrap();
+
+        let dirs = canonicalize_upload_dirs(&[dir.path().to_string_lossy().into_owned()]).unwrap();
+        assert_eq!(dirs, vec![std::fs::canonicalize(dir.path()).unwrap()]);
+
+        assert!(canonicalize_upload_dirs(&[]).unwrap().is_empty());
+        // 存在しないフォルダ・ファイルは起動時にエラー
+        let missing = dir.path().join("missing").to_string_lossy().into_owned();
+        assert!(canonicalize_upload_dirs(&[missing]).is_err());
+        assert!(canonicalize_upload_dirs(&[file.to_string_lossy().into_owned()]).is_err());
+    }
+
+    #[test]
+    fn test_resolve_upload_path() {
+        let root = tempfile::tempdir().unwrap();
+        let allowed = root.path().join("allowed");
+        let outside = root.path().join("outside");
+        std::fs::create_dir(&allowed).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        std::fs::write(allowed.join("a.png"), PNG_HEADER).unwrap();
+        std::fs::write(outside.join("secret.png"), PNG_HEADER).unwrap();
+        let allowed_dirs =
+            canonicalize_upload_dirs(&[allowed.to_string_lossy().into_owned()]).unwrap();
+        let resolve = |p: &Path| resolve_upload_path(&p.to_string_lossy(), &allowed_dirs);
+
+        // 許可フォルダ内のファイル
+        assert_eq!(
+            resolve(&allowed.join("a.png")).unwrap(),
+            std::fs::canonicalize(allowed.join("a.png")).unwrap()
+        );
+
+        // 許可フォルダ外・..での脱出・存在しないファイル・フォルダ自体は、
+        // いずれも同じエラー（外のファイルの有無が分からないように）
+        let not_allowed = "file_path must be an existing file inside one of upload_allowed_dirs";
+        for path in [
+            outside.join("secret.png"),
+            allowed.join("..").join("outside").join("secret.png"),
+            allowed.join("missing.png"),
+            allowed.clone(),
+        ] {
+            let msg = invalid_params_message(resolve(&path).map(|_| serde_json::Value::Null));
+            assert_eq!(msg, not_allowed, "path: {}", path.display());
+        }
+
+        // 相対パスは受け付けない
+        let msg = invalid_params_message(
+            resolve_upload_path("a.png", &allowed_dirs).map(|_| serde_json::Value::Null),
+        );
+        assert!(msg.contains("absolute"), "got: {}", msg);
+
+        // 許可フォルダ未設定なら無効
+        let msg = invalid_params_message(
+            resolve_upload_path(&allowed.join("a.png").to_string_lossy(), &[])
+                .map(|_| serde_json::Value::Null),
+        );
+        assert!(msg.contains("upload_allowed_dirs"), "got: {}", msg);
+    }
+
+    #[test]
+    fn test_resolve_upload_path_rejects_symlink_escaping_allowed_dir() {
+        let root = tempfile::tempdir().unwrap();
+        let allowed = root.path().join("allowed");
+        let outside = root.path().join("outside");
+        std::fs::create_dir(&allowed).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        std::fs::write(outside.join("secret.png"), PNG_HEADER).unwrap();
+        let link = allowed.join("link.png");
+
+        #[cfg(unix)]
+        let created = std::os::unix::fs::symlink(outside.join("secret.png"), &link).is_ok();
+        // Windowsではシンボリックリンクの作成に権限（開発者モード等）が
+        // 必要なため、作れない環境ではこのテストを実質スキップする
+        #[cfg(windows)]
+        let created = std::os::windows::fs::symlink_file(outside.join("secret.png"), &link).is_ok();
+        if !created {
+            eprintln!("skipping: cannot create a symlink in this environment");
+            return;
+        }
+
+        let allowed_dirs =
+            canonicalize_upload_dirs(&[allowed.to_string_lossy().into_owned()]).unwrap();
+        assert!(resolve_upload_path(&link.to_string_lossy(), &allowed_dirs).is_err());
+    }
+
+    /// Windowsのジャンクション（ディレクトリへのリンク）は権限なしで
+    /// 作れるため、Windowsでもリンクによる脱出を確実に検証できる
+    #[cfg(windows)]
+    #[test]
+    fn test_resolve_upload_path_rejects_junction_escaping_allowed_dir() {
+        let root = tempfile::tempdir().unwrap();
+        let allowed = root.path().join("allowed");
+        let outside = root.path().join("outside");
+        std::fs::create_dir(&allowed).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        std::fs::write(outside.join("secret.png"), PNG_HEADER).unwrap();
+        let junction = allowed.join("junction");
+
+        let status = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&junction)
+            .arg(&outside)
+            .stdout(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success(), "mklink /J failed");
+
+        let allowed_dirs =
+            canonicalize_upload_dirs(&[allowed.to_string_lossy().into_owned()]).unwrap();
+        let msg = invalid_params_message(
+            resolve_upload_path(
+                &junction.join("secret.png").to_string_lossy(),
+                &allowed_dirs,
+            )
+            .map(|_| serde_json::Value::Null),
+        );
+        assert_eq!(
+            msg,
+            "file_path must be an existing file inside one of upload_allowed_dirs"
+        );
+    }
+
+    #[test]
+    fn test_mime_type_for_filename() {
+        assert_eq!(mime_type_for_filename("a.png"), Some("image/png"));
+        assert_eq!(mime_type_for_filename("a.JPG"), Some("image/jpeg"));
+        assert_eq!(mime_type_for_filename("a.pdf"), Some("application/pdf"));
+        assert_eq!(mime_type_for_filename("a.svg"), None);
+        assert_eq!(mime_type_for_filename(".env"), None);
+        assert_eq!(mime_type_for_filename("noext"), None);
+    }
+
+    #[tokio::test]
+    async fn test_read_upload_file_rejects_oversized_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("big.png");
+        std::fs::write(&path, vec![0u8; MAX_UPLOAD_SIZE_BYTES + 1]).unwrap();
+        let msg = invalid_params_message(
+            read_upload_file(&path)
+                .await
+                .map(|_| serde_json::Value::Null),
+        );
+        assert!(msg.contains("too large"), "got: {}", msg);
+
+        std::fs::write(&path, PNG_HEADER).unwrap();
+        assert_eq!(read_upload_file(&path).await.unwrap(), PNG_HEADER);
+    }
+
+    #[tokio::test]
+    async fn test_upload_media_file_path_argument_validation() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake_png = dir.path().join("fake.png");
+        std::fs::write(&fake_png, b"this is not a png").unwrap();
+        let handler = handler_with_upload_dirs(&[dir.path()]);
+        let fake_png_arg = serde_json::json!(fake_png.to_string_lossy());
+
+        // 拡張子だけ.pngのテキストは、中身の検証で拒否される
+        let msg = invalid_params_message(
+            call_upload(&handler, &[("file_path", fake_png_arg.clone())]).await,
+        );
+        assert!(
+            msg.contains("does not match declared mime_type"),
+            "got: {}",
+            msg
+        );
+
+        // file_dataとfile_pathの同時指定・どちらも無し
+        let msg = invalid_params_message(
+            call_upload(
+                &handler,
+                &[
+                    ("file_path", fake_png_arg),
+                    ("file_data", serde_json::json!("AAAA")),
+                ],
+            )
+            .await,
+        );
+        assert!(msg.contains("not both"), "got: {}", msg);
+        let msg = invalid_params_message(call_upload(&handler, &[]).await);
+        assert!(
+            msg.contains("Missing file_data or file_path"),
+            "got: {}",
+            msg
+        );
+
+        // 拡張子からMIMEタイプを決められないファイル
+        let env_file = dir.path().join("x.env");
+        std::fs::write(&env_file, b"SECRET=1").unwrap();
+        let msg = invalid_params_message(
+            call_upload(
+                &handler,
+                &[("file_path", serde_json::json!(env_file.to_string_lossy()))],
+            )
+            .await,
+        );
+        assert!(msg.contains("Cannot determine mime_type"), "got: {}", msg);
+
+        // upload_allowed_dirs未設定のハンドラーではfile_path自体が無効
+        let disabled = handler_with_upload_dirs(&[]);
+        let msg = invalid_params_message(
+            call_upload(
+                &disabled,
+                &[("file_path", serde_json::json!(fake_png.to_string_lossy()))],
+            )
+            .await,
+        );
+        assert!(msg.contains("file_path is disabled"), "got: {}", msg);
     }
 
     #[tokio::test]

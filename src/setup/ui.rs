@@ -94,6 +94,7 @@ impl ConfigSetupUI {
                     timeout_seconds: Some(30),
                     rate_limit: Some(RateLimitConfig::default()),
                     encrypted_credentials: None,
+                    upload_allowed_dirs: Vec::new(),
                 }),
             },
             ..Default::default()

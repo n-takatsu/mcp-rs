@@ -17,6 +17,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         timeout_seconds: Some(30),
         rate_limit: None,
         encrypted_credentials: None, // 平文認証情報を使用
+        upload_allowed_dirs: Vec::new(),
     };
 
     info!("Configuration created");

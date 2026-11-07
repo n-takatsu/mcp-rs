@@ -103,6 +103,7 @@ async fn test_nonexistent_host_http() {
         timeout_seconds: Some(5), // 短いタイムアウト
         rate_limit: None,
         encrypted_credentials: None, // 平文認証情報を使用
+        upload_allowed_dirs: Vec::new(),
     };
 
     let handler = WordPressHandler::new(fake_config);
@@ -151,6 +152,7 @@ async fn test_invalid_url_http() {
         timeout_seconds: Some(3),
         rate_limit: None,
         encrypted_credentials: None, // 平文認証情報を使用
+        upload_allowed_dirs: Vec::new(),
     };
 
     let handler = WordPressHandler::new(fake_config);
