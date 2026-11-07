@@ -102,7 +102,12 @@ See [WordPress Integration](docs/wordpress/) for the full list of tools.
 
 ## Current Status
 
-## ✅ Recently Completed (v0.18.1)
+## ✅ Recently Completed (v0.18.2)
+
+- **🔁 Safer Retries**: Create and delete requests to WordPress are no longer resent after a timeout or 5xx error, so media is not uploaded twice
+- **🧹 Cleanup**: Removed unused modules that were never connected to the server (interactive setup, `src/k8s`, and the earlier plugin implementations)
+
+## ✅ v0.18.1
 
 - **🖼️ Upload Local Files**: `upload_media` can read a file from folders allowed in `upload_allowed_dirs`, instead of base64 data
 - **📌 Featured Image in `get_post`**: Shows the featured image's media ID and URL
