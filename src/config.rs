@@ -49,7 +49,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 
 pub mod dynamic;
-pub use dynamic::{ConfigSwitcher, DynamicConfigManager};
+pub use dynamic::DynamicConfigManager;
 
 /// `WORDPRESS_MASTER_PASSWORD`環境変数を読み書きするテストを直列化する
 /// ためのロック。`cargo test`は同一プロセス内で全テストを並列実行する

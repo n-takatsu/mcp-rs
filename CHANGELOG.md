@@ -7,7 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- 使われていなかった対話式のセットアップ機能（`src/setup/`）と、実行時の
+  対話式コントローラー（`src/runtime_control.rs`、`config::ConfigSwitcher`）
+  を削除（#386）。v0.16.0以降、`--setup-config`・`--generate-config`・
+  `--demo-setup`・`--switch-config`は処理されておらず、指定しても無視されて
+  いた。いずれもApplication Passwordを入力中に表示する作りで、
+  `src/setup/`は平文のまま設定ファイルに保存していた
+  - 設定ファイルは`configs/production/`のものを使う。設定ファイルに
+    パスワードを置く場合は`mcp-rs encrypt-wordpress-credentials`で暗号化
+    できる
+  - **ライブラリの変更**: 公開モジュール`mcp_rs::runtime_control`と、公開型
+    `mcp_rs::config::ConfigSwitcher`を削除した
+  - 関連するexample（`interactive_setup_test`・
+    `runtime_transport_switching_demo`）と、機能を説明していた
+    `docs/RUNTIME_TRANSPORT_SWITCHING.md`も削除した
+
 ### Fixed
+
+- example`wordpress_blog_service_demo`が、Application Passwordの先頭4文字を
+  画面に表示していた問題（#386）
 
 - WordPressへのリクエストがタイムアウトや5xxで失敗したとき、作成（POST）・
   削除（DELETE）のリクエストを再送しないよう修正（#388）。1回目が
