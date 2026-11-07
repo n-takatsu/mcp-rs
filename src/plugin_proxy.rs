@@ -318,6 +318,33 @@ fn truncate(text: &str, max_chars: usize) -> String {
     }
 }
 
+/// プラグインのツールの結果（CallToolResult）から、mcp-rsがクライアントと
+/// 話している仕様（2024-11-05）で定義された項目だけを残す。
+///
+/// 新しい仕様（2025-06-18）のプラグインは、`outputSchema`を宣言したツールで
+/// `structuredContent`も返す。mcp-rsはツール定義の`outputSchema`を中継
+/// しないため、`structuredContent`だけが届くと、クライアントが`content`の
+/// テキストの代わりにそれ（`{"content": "..."}`等）を表示してしまう。
+/// 同じ内容は`content`にもあるため、除いても情報は失われない。
+fn call_tool_result_for_client(plugin: &str, result: Value) -> Result<Value, McpError> {
+    const KEPT_FIELDS: &[&str] = &["content", "isError", "_meta"];
+
+    let Value::Object(mut fields) = result else {
+        return Err(McpError::ExternalApi(format!(
+            "plugin '{}' returned an invalid tool result",
+            plugin
+        )));
+    };
+    fields.retain(|key, _| KEPT_FIELDS.contains(&key.as_str()));
+    if !fields.get("content").is_some_and(Value::is_array) {
+        return Err(McpError::ExternalApi(format!(
+            "plugin '{}' returned a tool result without content",
+            plugin
+        )));
+    }
+    Ok(Value::Object(fields))
+}
+
 /// プラグインの標準エラー出力を、1行ずつ本体のログに記録する。
 fn spawn_stderr_logger(plugin: String, stderr: tokio::process::ChildStderr) {
     tokio::spawn(async move {
@@ -585,14 +612,7 @@ impl PluginHandler {
             )))
         })?;
 
-        // CallToolResult（content等を持つオブジェクト）をそのまま返す
-        if !result.is_object() {
-            return Err(McpError::ExternalApi(format!(
-                "plugin '{}' returned an invalid tool result",
-                self.name
-            )));
-        }
-        Ok(result)
+        call_tool_result_for_client(&self.name, result)
     }
 
     #[cfg(test)]
@@ -710,7 +730,17 @@ mod tests {
                 "tools/call" => {
                     let args = &request["params"]["arguments"];
                     match request["params"]["name"].as_str().unwrap_or("") {
-                        "echo" => text_result(args["text"].as_str().unwrap_or("").to_string()),
+                        "echo" => {
+                            // 新しい仕様のサーバーと同じく、structuredContentも返す
+                            let text = args["text"].as_str().unwrap_or("").to_string();
+                            json!({
+                                "content": [{ "type": "text", "text": text }],
+                                "structuredContent": { "content": text },
+                                "isError": false,
+                                "_meta": { "note": "kept" },
+                                "somethingElse": 1
+                            })
+                        }
                         "env" => {
                             let mut keys: Vec<String> = std::env::vars().map(|(k, _)| k).collect();
                             keys.sort();
@@ -809,6 +839,30 @@ mod tests {
     }
 
     #[test]
+    fn test_call_tool_result_for_client() {
+        let filtered = call_tool_result_for_client(
+            "p",
+            json!({
+                "content": [{ "type": "text", "text": "[FILE] test.txt" }],
+                "structuredContent": { "content": "[FILE] test.txt" }
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            filtered,
+            json!({ "content": [{ "type": "text", "text": "[FILE] test.txt" }] })
+        );
+
+        for invalid in [
+            json!("text"),
+            json!({}),
+            json!({ "content": "not an array" }),
+        ] {
+            assert!(call_tool_result_for_client("p", invalid).is_err());
+        }
+    }
+
+    #[test]
     fn test_validate_plugin_name() {
         for ok in ["example", "my-plugin", "tool_1", "a"] {
             assert!(validate_plugin_name(ok).is_ok(), "{}", ok);
@@ -859,6 +913,10 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(text(&result), "hello");
+        // 2024-11-05のCallToolResultの項目だけを返す（structuredContent等は除く）
+        let mut keys: Vec<&String> = result.as_object().unwrap().keys().collect();
+        keys.sort();
+        assert_eq!(keys, vec!["_meta", "content", "isError"]);
 
         // プラグインのエラー応答は、ツールのエラーとして返す
         let error = call(&handler, "demo__fail", json!({})).await.unwrap_err();

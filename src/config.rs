@@ -105,6 +105,37 @@ impl fmt::Debug for PluginConfig {
     }
 }
 
+/// 設定ファイルに、v0.18.1以前の`[plugins]`（テーブル）と`[[plugins]]`が
+/// 両方ある場合のヒント。両方あるとTOMLとして読めず（同じキーを2通りに
+/// 定義することになる）、serdeの段階で読み飛ばすこともできないため、
+/// 読み込みエラーのメッセージに添える。
+pub fn legacy_plugins_conflict_hint(content: &str) -> Option<&'static str> {
+    let headers: Vec<String> = content
+        .lines()
+        .map(|line| {
+            line.split('#')
+                .next()
+                .unwrap_or("")
+                .replace([' ', '\t'], "")
+        })
+        .collect();
+    let has_new = headers.iter().any(|h| h == "[[plugins]]");
+    let has_legacy = headers
+        .iter()
+        .any(|h| h == "[plugins]" || (h.starts_with("[plugins.") && h.ends_with(']')));
+    (has_new && has_legacy).then_some(
+        "The config file has both the old [plugins] section (v0.18.1 and earlier, never used by mcp-rs) and [[plugins]] entries. Delete the old [plugins] section, including [plugins.*] subsections",
+    )
+}
+
+/// 読み込みエラーに、上記のヒントを添える
+pub fn with_config_hint(error: impl fmt::Display, content: &str) -> String {
+    match legacy_plugins_conflict_hint(content) {
+        Some(hint) => format!("{}\n{}", error, hint),
+        None => error.to_string(),
+    }
+}
+
 /// `plugins`を読み込む。`[[plugins]]`（配列）だけを受け付ける。
 ///
 /// v0.18.1以前の`[plugins]`（テーブル、`PluginsConfig`）は本体が一度も
@@ -652,7 +683,8 @@ impl McpConfig {
                 // 標準エラー出力に書く（ログはこの時点で未初期化）
                 eprintln!("[mcp-rs] config file: {}", path);
                 let content = std::fs::read_to_string(&path)?;
-                let content = normalize_transport_type_alias(&content)?;
+                let content = normalize_transport_type_alias(&content)
+                    .map_err(|e| with_config_hint(e, &content))?;
                 settings =
                     settings.add_source(config::File::from_str(&content, config::FileFormat::Toml));
                 config_file_found = true;
@@ -1120,6 +1152,37 @@ enabled = true
             .try_deserialize()
             .unwrap();
         assert!(config.plugins.is_empty());
+    }
+
+    #[test]
+    fn test_legacy_plugins_conflict_gets_a_hint() {
+        let conflict = r#"
+[handlers]
+
+[plugins]
+search_paths = ["./plugins"]
+
+[plugins.plugins]
+
+[[plugins]]
+name = "fs"
+command = "node"
+"#;
+        // TOMLとして読めないこと（serdeでは救えない）を前提として確かめる
+        let error = toml::from_str::<McpConfig>(conflict).unwrap_err();
+        let message = with_config_hint(&error, conflict);
+        assert!(
+            message.contains("Delete the old [plugins] section"),
+            "{}",
+            message
+        );
+        assert!(normalize_transport_type_alias(conflict).is_err());
+
+        // 片方だけなら、ヒントは付けない
+        assert!(legacy_plugins_conflict_hint("[plugins]\nauto_load = true\n").is_none());
+        assert!(legacy_plugins_conflict_hint("[[plugins]]\nname = \"a\"\n").is_none());
+        // コメントアウトした見出しは数えない
+        assert!(legacy_plugins_conflict_hint("# [plugins]\n[[plugins]]\n").is_none());
     }
 
     #[test]

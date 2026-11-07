@@ -22,7 +22,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     ツールはエラーを返す（自動再起動はしない）
   - ファイルシステム・ネットワークは隔離しない。信頼できるプラグインにのみ
     使う（コンテナでの隔離は今後、#392）
-  - v0.18.1以前の`[plugins]`（テーブル）は、これまでどおり無視する
+  - v0.18.1以前の`[plugins]`（テーブル）は、これまでどおり無視する。
+    ただし`[[plugins]]`と同じファイルに書くとTOMLとして読めないため、
+    プラグインを追加するときは古い`[plugins]`を削除する。両方あって
+    読み込みに失敗した場合は、エラーにその旨を添える
+  - ツールの結果は`content`・`isError`・`_meta`だけを返す。新しい仕様の
+    `structuredContent`は除く（mcp-rsは`outputSchema`を中継しないため、
+    クライアントが`content`の代わりにJSONを表示していた）
   - ドキュメント: `website/docs/plugins.md`
 
 - 投稿・固定ページを作成・更新するツールに`slug`引数を追加（#398）。
