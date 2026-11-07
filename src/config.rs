@@ -64,16 +64,24 @@ pub struct PluginConfig {
     /// プラグイン名。ツール名の前に`<name>__`として付ける。英小文字・
     /// 数字・`_`・`-`のみ
     pub name: String,
-    /// 起動するコマンド（実行ファイルのパス）
+    /// 起動するコマンド（実行ファイルのパス）。`container`を指定した
+    /// 場合は、コンテナの中で実行するコマンド（省略時はイメージのCMD）
+    #[serde(default)]
     pub command: String,
+    /// `command`に渡す引数。`container`を指定して`command`を省略した
+    /// 場合は、イメージのENTRYPOINTに渡る
     #[serde(default)]
     pub args: Vec<String>,
     /// プラグインに渡す環境変数。本体の環境変数は引き継がず、ここに
     /// 書いたものだけを渡す。値の`${VAR}`は本体の環境変数で展開する
     #[serde(default)]
     pub env: HashMap<String, String>,
-    /// 子プロセスの作業フォルダ。省略時は本体と同じ
+    /// 子プロセスの作業フォルダ。省略時は本体と同じ。`container`を
+    /// 指定した場合は、コンテナ内の作業フォルダ
     pub working_dir: Option<String>,
+    /// 指定すると、プラグインをDockerコンテナの中で起動する（#411）。
+    /// 省略時は子プロセスとして起動する
+    pub container: Option<PluginContainerConfig>,
     /// `false`で起動しない。省略時は`true`
     pub enabled: Option<bool>,
     /// 起動（`initialize`・`tools/list`）とツール呼び出しの待ち時間の上限
@@ -97,12 +105,53 @@ impl fmt::Debug for PluginConfig {
             .field("args", &self.args)
             .field("env_keys", &env_keys)
             .field("working_dir", &self.working_dir)
+            .field("container", &self.container)
             .field("enabled", &self.enabled)
             .field("call_timeout_seconds", &self.call_timeout_seconds)
             .field("max_response_bytes", &self.max_response_bytes)
             .field("rate_limit", &self.rate_limit)
             .finish()
     }
+}
+
+/// プラグインをDockerコンテナで起動する設定（#411、`[plugins.container]`）。
+/// 既定で、ネットワークなし・全ケーパビリティ削除・ルートファイル
+/// システム読み取り専用・メモリとプロセス数の上限付きで起動する。
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct PluginContainerConfig {
+    /// イメージ。起動時には取得しない（`--pull=never`）ため、事前に
+    /// `docker pull`しておく
+    pub image: String,
+    /// コンテナのネットワーク。省略時は`none`（外部と通信できない）
+    pub network: Option<String>,
+    /// コンテナに見せるホストのフォルダ。ここに書いたものだけをマウントする
+    #[serde(default)]
+    pub mounts: Vec<PluginMountConfig>,
+    /// メモリの上限（例: `"512m"`）。省略時は`512m`
+    pub memory: Option<String>,
+    /// CPUの上限（例: `"1.0"`）。省略時は上限なし
+    pub cpus: Option<String>,
+    /// プロセス数の上限。省略時は256
+    pub pids_limit: Option<u32>,
+    /// `false`で、コンテナのルートファイルシステムに書き込めるように
+    /// する。省略時は`true`（読み取り専用。`/tmp`だけ書き込める）
+    pub read_only: Option<bool>,
+    /// コンテナ内で実行するユーザー（例: `"1000:1000"`）。省略時は
+    /// イメージの既定
+    pub user: Option<String>,
+    /// 使うコマンド。省略時は`docker`（`podman`等も指定できる）
+    pub docker_command: Option<String>,
+}
+
+/// コンテナにマウントするホストのフォルダ
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct PluginMountConfig {
+    /// ホストのフォルダ（絶対パス）
+    pub source: String,
+    /// コンテナ内のパス（`/`で始まる）
+    pub target: String,
+    /// `false`で書き込めるようにする。省略時は`true`（読み取り専用）
+    pub read_only: Option<bool>,
 }
 
 /// 設定ファイルに、v0.18.1以前の`[plugins]`（テーブル）と`[[plugins]]`が
@@ -120,9 +169,13 @@ pub fn legacy_plugins_conflict_hint(content: &str) -> Option<&'static str> {
         })
         .collect();
     let has_new = headers.iter().any(|h| h == "[[plugins]]");
-    let has_legacy = headers
-        .iter()
-        .any(|h| h == "[plugins]" || (h.starts_with("[plugins.") && h.ends_with(']')));
+    // `[plugins.container]`は、直前の`[[plugins]]`のコンテナ設定（#411）
+    let has_legacy = headers.iter().any(|h| {
+        h == "[plugins]"
+            || (h.starts_with("[plugins.")
+                && h.ends_with(']')
+                && !h.starts_with("[plugins.container"))
+    });
     (has_new && has_legacy).then_some(
         "The config file has both the old [plugins] section (v0.18.1 and earlier, never used by mcp-rs) and [[plugins]] entries. Delete the old [plugins] section, including [plugins.*] subsections",
     )
@@ -1183,15 +1236,75 @@ command = "node"
         assert!(legacy_plugins_conflict_hint("[[plugins]]\nname = \"a\"\n").is_none());
         // コメントアウトした見出しは数えない
         assert!(legacy_plugins_conflict_hint("# [plugins]\n[[plugins]]\n").is_none());
+        // `[plugins.container]`は`[[plugins]]`のコンテナ設定（#411）
+        assert!(legacy_plugins_conflict_hint(
+            "[[plugins]]\nname = \"a\"\n[plugins.container]\nimage = \"i\"\n"
+        )
+        .is_none());
     }
 
     #[test]
     fn test_invalid_plugin_entry_is_an_error() {
-        let missing_command = "[transport]\n[server]\n[handlers]\n[[plugins]]\nname = \"x\"\n";
-        let error = toml::from_str::<McpConfig>(missing_command)
+        let missing_name = "[transport]\n[server]\n[handlers]\n[[plugins]]\ncommand = \"x\"\n";
+        let error = toml::from_str::<McpConfig>(missing_name)
             .unwrap_err()
             .to_string();
-        assert!(error.contains("command"), "{}", error);
+        assert!(error.contains("name"), "{}", error);
+    }
+
+    const CONTAINER_PLUGIN_TOML: &str = r#"
+[transport]
+[server]
+[handlers]
+
+[[plugins]]
+name = "fs"
+args = ["/projects"]
+env = { API_KEY = "${FS_API_KEY}" }
+
+[plugins.container]
+image = "mcp/filesystem"
+memory = "256m"
+mounts = [
+  { source = "C:/Users/me/Documents", target = "/projects" },
+  { source = "C:/Users/me/out", target = "/out", read_only = false },
+]
+
+[[plugins]]
+name = "local"
+command = "local-mcp"
+"#;
+
+    fn assert_container_plugins(config: &McpConfig) {
+        assert_eq!(config.plugins.len(), 2);
+        let fs = &config.plugins[0];
+        // コンテナではcommandを省略できる（イメージのENTRYPOINTを使う）
+        assert_eq!(fs.command, "");
+        let container = fs.container.as_ref().unwrap();
+        assert_eq!(container.image, "mcp/filesystem");
+        assert_eq!(container.memory.as_deref(), Some("256m"));
+        assert_eq!(container.network, None);
+        assert_eq!(container.mounts.len(), 2);
+        assert_eq!(container.mounts[0].target, "/projects");
+        assert_eq!(container.mounts[0].read_only, None);
+        assert_eq!(container.mounts[1].read_only, Some(false));
+        assert!(config.plugins[1].container.is_none());
+    }
+
+    #[test]
+    fn test_container_plugins_are_read_from_toml() {
+        let config: McpConfig = toml::from_str(CONTAINER_PLUGIN_TOML).unwrap();
+        assert_container_plugins(&config);
+
+        let content = normalize_transport_type_alias(CONTAINER_PLUGIN_TOML).unwrap();
+        let config: McpConfig = config::Config::builder()
+            .add_source(config::Config::try_from(&McpConfig::default()).unwrap())
+            .add_source(config::File::from_str(&content, config::FileFormat::Toml))
+            .build()
+            .unwrap()
+            .try_deserialize()
+            .unwrap();
+        assert_container_plugins(&config);
     }
 
     #[test]

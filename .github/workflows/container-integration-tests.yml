@@ -9,6 +9,7 @@ on:
       - 'Dockerfile.test'
       - 'tests/integration/**'
       - 'src/transport/**'
+      - 'src/plugin_proxy.rs'
       - 'src/security/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
@@ -20,6 +21,7 @@ on:
       - 'Dockerfile.test'
       - 'tests/integration/**'
       - 'src/transport/**'
+      - 'src/plugin_proxy.rs'
       - 'src/security/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
@@ -104,6 +106,12 @@ jobs:
 
       - name: Run unit tests
         run: cargo test --lib --features integration-tests
+
+      # プラグインのコンテナ隔離（#411）を、実際のDockerで確かめる
+      - name: Run plugin container isolation test (Docker)
+        env:
+          MCP_RS_DOCKER_TESTS: "1"
+        run: cargo test --lib --features integration-tests plugin_proxy::tests::test_container_plugin_is_isolated_in_docker -- --nocapture
 
       - name: Verify integration test compilation
         run: |

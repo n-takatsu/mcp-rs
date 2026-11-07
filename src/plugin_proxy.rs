@@ -14,8 +14,14 @@
 //! - プラグインが異常終了・無応答でも本体は落ちず、そのプラグインの
 //!   ツールがエラーを返す（自動再起動はしない）
 //!
-//! 段階1は、ファイルシステム・ネットワークを隔離しない。信頼できる
-//! プラグインにのみ使う（コンテナによる隔離は段階2、#392）。
+//! 子プロセスとして起動した場合（段階1）は、ファイルシステム・
+//! ネットワークを隔離しない。信頼できるプラグインにのみ使う。
+//!
+//! 設定に`container`を書くと、`docker run -i`でコンテナの中で起動する
+//! （段階2、#411）。既定で、ネットワークなし・全ケーパビリティ削除・
+//! ルートファイルシステム読み取り専用・メモリとプロセス数の上限付きで、
+//! マウントは設定したものだけ（既定で読み取り専用）。通信は子プロセスと
+//! 同じく標準入出力で、dockerコマンドが中継する。
 
 use std::collections::{HashMap, HashSet};
 use std::process::Stdio;
@@ -29,7 +35,7 @@ use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
-use crate::config::{McpConfig, PluginConfig};
+use crate::config::{McpConfig, PluginConfig, PluginContainerConfig};
 use crate::mcp::{
     InitializeParams, McpError, McpHandler, Resource, ResourceReadParams, Tool, ToolCallParams,
 };
@@ -54,6 +60,272 @@ const RATE_LIMIT_CLIENT_ID: &str = "plugin-tool-calls";
 const INHERITED_ENV_VARS: &[&str] = &["SystemRoot"];
 #[cfg(not(windows))]
 const INHERITED_ENV_VARS: &[&str] = &[];
+
+/// コンテナで起動する場合に、dockerコマンド自体に渡す本体の環境変数
+/// （dockerの設定ファイルの場所・接続先等）。コンテナには渡らない。
+/// このほか`DOCKER_`で始まるものも渡す。
+const DOCKER_CLI_ENV_VARS: &[&str] = &[
+    "PATH",
+    "HOME",
+    "USERPROFILE",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "ProgramData",
+    "ProgramFiles",
+    "SystemRoot",
+    "TEMP",
+    "TMP",
+    "XDG_RUNTIME_DIR",
+    "XDG_CONFIG_HOME",
+    "CONTAINER_HOST",
+    "CONTAINER_CONNECTION",
+];
+const DEFAULT_CONTAINER_NETWORK: &str = "none";
+const DEFAULT_CONTAINER_MEMORY: &str = "512m";
+const DEFAULT_CONTAINER_PIDS_LIMIT: u32 = 256;
+const DEFAULT_DOCKER_COMMAND: &str = "docker";
+/// 読み取り専用のルートファイルシステムで、書き込める作業領域
+const CONTAINER_TMPFS: &str = "/tmp:rw,noexec,nosuid,size=64m";
+/// コンテナに付けるラベル（値はプラグイン名）
+const CONTAINER_LABEL: &str = "mcp-rs.plugin";
+
+fn is_docker_cli_env_var(key: &str) -> bool {
+    DOCKER_CLI_ENV_VARS
+        .iter()
+        .any(|k| k.eq_ignore_ascii_case(key))
+        || key.to_ascii_uppercase().starts_with("DOCKER_")
+}
+
+/// プラグインに渡す環境変数（設定の`env`の`${VAR}`を展開したもの）。
+/// 参照先が見つからない値は渡さない（APIキーの代わりに"[ERROR:...]"
+/// という文字列を渡さないため）。名前順。
+fn plugin_env(config: &PluginConfig) -> Vec<(String, String)> {
+    let mut env = Vec::new();
+    for (key, value) in &config.env {
+        let expanded = McpConfig::expand_env_vars(value);
+        if expanded.contains("[ERROR:") {
+            warn!(
+                "Plugin '{}': environment variable '{}' is not passed because a variable it refers to is not set",
+                config.name, key
+            );
+            continue;
+        }
+        env.push((key.clone(), expanded));
+    }
+    env.sort();
+    env
+}
+
+/// コマンドラインのオプションの値として使う文字列を検証する。
+fn validate_option_value(field: &str, value: &str) -> Result<(), String> {
+    if value.is_empty()
+        || value.starts_with('-')
+        || value.chars().any(|c| c.is_whitespace() || c.is_control())
+    {
+        return Err(format!(
+            "container.{} '{}' is not valid (it must not be empty, start with '-' or contain spaces)",
+            field, value
+        ));
+    }
+    Ok(())
+}
+
+/// `--mount`の値はカンマ区切りのため、パスにカンマ・引用符は使えない。
+fn validate_mount_path(field: &str, path: &str) -> Result<(), String> {
+    if path.is_empty()
+        || path
+            .chars()
+            .any(|c| matches!(c, ',' | '"' | '\'') || c.is_control())
+    {
+        return Err(format!(
+            "container mount {} '{}' must not be empty or contain commas or quotes",
+            field, path
+        ));
+    }
+    Ok(())
+}
+
+/// コンテナで起動するための、dockerコマンドの引数
+#[derive(Debug)]
+struct ContainerLaunch {
+    program: String,
+    args: Vec<String>,
+    container_name: String,
+}
+
+/// `docker run`の引数を組み立てる。`env_keys`は、値をdockerコマンドの
+/// 環境変数で渡す変数名（コマンドラインには名前だけを載せ、値は他の
+/// ユーザーからプロセス一覧で見えないようにする）。
+fn container_launch(
+    config: &PluginConfig,
+    container: &PluginContainerConfig,
+    env_keys: &[&str],
+    instance: &str,
+) -> Result<ContainerLaunch, String> {
+    let program = container
+        .docker_command
+        .as_deref()
+        .unwrap_or(DEFAULT_DOCKER_COMMAND)
+        .trim()
+        .to_string();
+    if program.is_empty() {
+        return Err("container.docker_command is empty".to_string());
+    }
+    validate_option_value("image", container.image.trim())?;
+    let network = container
+        .network
+        .as_deref()
+        .unwrap_or(DEFAULT_CONTAINER_NETWORK);
+    validate_option_value("network", network)?;
+    if !network
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
+    {
+        return Err(format!(
+            "container.network '{}' may only contain letters, digits, '_', '.' and '-'",
+            network
+        ));
+    }
+    if network == "host" {
+        warn!(
+            "Plugin '{}' uses the host network: it can reach every service on this machine and the network",
+            config.name
+        );
+    }
+    let memory = container
+        .memory
+        .as_deref()
+        .unwrap_or(DEFAULT_CONTAINER_MEMORY);
+    validate_option_value("memory", memory)?;
+
+    let container_name = format!("mcp-rs-{}-{}", config.name, instance);
+    let mut args: Vec<String> = vec![
+        "run".into(),
+        "-i".into(),
+        "--rm".into(),
+        "--init".into(),
+        "--pull=never".into(),
+        format!("--name={}", container_name),
+        format!("--label={}={}", CONTAINER_LABEL, config.name),
+        format!("--network={}", network),
+        "--cap-drop=ALL".into(),
+        "--security-opt=no-new-privileges".into(),
+    ];
+    if container.read_only.unwrap_or(true) {
+        args.push("--read-only".into());
+        args.push(format!("--tmpfs={}", CONTAINER_TMPFS));
+    }
+    args.push(format!("--memory={}", memory));
+    args.push(format!(
+        "--pids-limit={}",
+        container.pids_limit.unwrap_or(DEFAULT_CONTAINER_PIDS_LIMIT)
+    ));
+    if let Some(cpus) = &container.cpus {
+        validate_option_value("cpus", cpus)?;
+        args.push(format!("--cpus={}", cpus));
+    }
+    if let Some(user) = &container.user {
+        validate_option_value("user", user)?;
+        args.push(format!("--user={}", user));
+    }
+    if let Some(dir) = &config.working_dir {
+        if !dir.starts_with('/') {
+            return Err(format!(
+                "working_dir '{}' must be a path in the container (starting with '/')",
+                dir
+            ));
+        }
+        args.push(format!("--workdir={}", dir));
+    }
+    for key in env_keys {
+        if key.is_empty() || key.contains('=') || key.chars().any(char::is_whitespace) {
+            return Err(format!("environment variable name '{}' is not valid", key));
+        }
+        if is_docker_cli_env_var(key) {
+            return Err(format!(
+                "environment variable '{}' cannot be passed to a container plugin (mcp-rs passes it to the docker command itself)",
+                key
+            ));
+        }
+        args.push(format!("--env={}", key));
+    }
+    for mount in &container.mounts {
+        validate_mount_path("source", &mount.source)?;
+        validate_mount_path("target", &mount.target)?;
+        if !std::path::Path::new(&mount.source).is_absolute() {
+            return Err(format!(
+                "container mount source '{}' must be an absolute path",
+                mount.source
+            ));
+        }
+        if !std::path::Path::new(&mount.source).exists() {
+            return Err(format!(
+                "container mount source '{}' does not exist",
+                mount.source
+            ));
+        }
+        if !mount.target.starts_with('/') || mount.target == "/" {
+            return Err(format!(
+                "container mount target '{}' must be a path in the container (starting with '/', not '/' itself)",
+                mount.target
+            ));
+        }
+        let mut value = format!("type=bind,source={},target={}", mount.source, mount.target);
+        if mount.read_only.unwrap_or(true) {
+            value.push_str(",readonly");
+        }
+        args.push(format!("--mount={}", value));
+    }
+    args.push(container.image.trim().to_string());
+    if !config.command.trim().is_empty() {
+        args.push(config.command.clone());
+    }
+    args.extend(config.args.iter().cloned());
+    Ok(ContainerLaunch {
+        program,
+        args,
+        container_name,
+    })
+}
+
+/// コンテナを消すための情報。dockerコマンドを止めても、コンテナが
+/// 残ることがないように、終了時に`docker rm -f`する。
+struct ContainerCleanup {
+    program: String,
+    container_name: String,
+    docker_env: Vec<(String, String)>,
+}
+
+impl ContainerCleanup {
+    /// `docker rm -f`を実行する（終了を待たない）。既に`--rm`で消えて
+    /// いれば何もしない。
+    fn remove(self) {
+        let mut command = std::process::Command::new(&self.program);
+        command
+            .args(["rm", "-f", &self.container_name])
+            .env_clear()
+            .envs(self.docker_env)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x0800_0000);
+        }
+        // 終了を待って回収するため、別スレッドで実行する
+        std::thread::spawn(move || {
+            let _ = command.status();
+        });
+    }
+}
+
+/// dockerコマンド自体に渡す、本体の環境変数
+fn docker_cli_env() -> Vec<(String, String)> {
+    std::env::vars()
+        .filter(|(key, _)| is_docker_cli_env_var(key))
+        .collect()
+}
 
 /// プラグイン名を検証する。ツール名の前に付けるため、英小文字・数字・
 /// `_`・`-`のみ。区切りと紛らわしい`__`は使えない。
@@ -135,9 +407,25 @@ struct Connection {
     next_id: u64,
     /// 終了・通信できなくなった理由
     stopped: Option<String>,
+    /// コンテナで起動した場合に、終了時に消すコンテナ
+    container: Option<ContainerCleanup>,
+}
+
+impl Drop for Connection {
+    fn drop(&mut self) {
+        self.kill();
+    }
 }
 
 impl Connection {
+    /// プロセスを止め、コンテナで起動していればコンテナも消す。
+    fn kill(&mut self) {
+        let _ = self.child.start_kill();
+        if let Some(container) = self.container.take() {
+            container.remove();
+        }
+    }
+
     fn not_running_error(&self, reason: &str) -> McpError {
         McpError::ExternalApi(format!(
             "plugin '{}' is not running ({}). Restart mcp-rs to start it again",
@@ -147,7 +435,7 @@ impl Connection {
 
     fn stop(&mut self, reason: String) {
         warn!("Plugin '{}' stopped: {}", self.plugin, reason);
-        let _ = self.child.start_kill();
+        self.kill();
         self.stopped = Some(reason);
     }
 
@@ -385,12 +673,26 @@ pub struct PluginHandler {
 }
 
 impl PluginHandler {
-    /// 子プロセスを起動し、`initialize`・`tools/list`まで行う。
+    /// 子プロセス（またはコンテナ）を起動し、`initialize`・`tools/list`
+    /// まで行う。
     pub async fn start(config: &PluginConfig) -> Result<Self, String> {
         validate_plugin_name(&config.name)?;
-        if config.command.trim().is_empty() {
+        if config.container.is_none() && config.command.trim().is_empty() {
             return Err("command is empty".to_string());
         }
+        let result = Self::start_inner(config).await;
+        if result.is_err() && config.container.is_some() {
+            return result.map_err(|e| {
+                format!(
+                    "{} (docker's own message, if any, is in the log lines starting with \"[plugin {}]\". The image must be pulled beforehand with `docker pull`)",
+                    e, config.name
+                )
+            });
+        }
+        result
+    }
+
+    async fn start_inner(config: &PluginConfig) -> Result<Self, String> {
         let call_timeout = Duration::from_secs(
             config
                 .call_timeout_seconds
@@ -400,29 +702,53 @@ impl PluginHandler {
             .max_response_bytes
             .unwrap_or(DEFAULT_MAX_RESPONSE_BYTES);
 
-        let mut command = Command::new(&config.command);
-        command.args(&config.args).env_clear();
-        for key in INHERITED_ENV_VARS {
-            if let Ok(value) = std::env::var(key) {
-                command.env(key, value);
+        let env = plugin_env(config);
+        let mut container_cleanup = None;
+        let mut command = match &config.container {
+            None => {
+                let mut command = Command::new(&config.command);
+                command.args(&config.args).env_clear();
+                for key in INHERITED_ENV_VARS {
+                    if let Ok(value) = std::env::var(key) {
+                        command.env(key, value);
+                    }
+                }
+                command.envs(env);
+                if let Some(dir) = &config.working_dir {
+                    command.current_dir(dir);
+                }
+                command
             }
-        }
-        for (key, value) in &config.env {
-            let expanded = McpConfig::expand_env_vars(value);
-            if expanded.contains("[ERROR:") {
-                // 見つからない変数を含む値は渡さない（APIキーの代わりに
-                // "[ERROR:...]"という文字列を渡さないため）
-                warn!(
-                    "Plugin '{}': environment variable '{}' is not passed because a variable it refers to is not set",
-                    config.name, key
+            Some(container) => {
+                let env_keys: Vec<&str> = env.iter().map(|(k, _)| k.as_str()).collect();
+                let instance = uuid::Uuid::new_v4().simple().to_string();
+                let launch = container_launch(config, container, &env_keys, &instance[..12])?;
+                info!(
+                    "Plugin '{}' runs in container '{}' (image '{}', network '{}')",
+                    config.name,
+                    launch.container_name,
+                    container.image.trim(),
+                    container
+                        .network
+                        .as_deref()
+                        .unwrap_or(DEFAULT_CONTAINER_NETWORK)
                 );
-                continue;
+                let docker_env = docker_cli_env();
+                let mut command = Command::new(&launch.program);
+                command
+                    .args(&launch.args)
+                    .env_clear()
+                    .envs(docker_env.clone())
+                    // `--env=NAME`の値は、dockerコマンドの環境変数から渡る
+                    .envs(env);
+                container_cleanup = Some(ContainerCleanup {
+                    program: launch.program,
+                    container_name: launch.container_name,
+                    docker_env,
+                });
+                command
             }
-            command.env(key, expanded);
-        }
-        if let Some(dir) = &config.working_dir {
-            command.current_dir(dir);
-        }
+        };
         command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -434,9 +760,14 @@ impl PluginHandler {
             command.creation_flags(0x0800_0000);
         }
 
+        let program = command
+            .as_std()
+            .get_program()
+            .to_string_lossy()
+            .into_owned();
         let mut child = command
             .spawn()
-            .map_err(|e| format!("could not start '{}': {}", config.command, e))?;
+            .map_err(|e| format!("could not start '{}': {}", program, e))?;
         let (Some(stdin), Some(stdout), Some(stderr)) =
             (child.stdin.take(), child.stdout.take(), child.stderr.take())
         else {
@@ -453,6 +784,8 @@ impl PluginHandler {
             discarding: false,
             next_id: 1,
             stopped: None,
+            // 起動に失敗して`connection`を破棄するときも、コンテナを消す
+            container: container_cleanup,
         };
 
         let raw_tools = match tokio::time::timeout(
@@ -667,6 +1000,7 @@ impl McpHandler for PluginHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::PluginMountConfig;
 
     const TEST_PLUGIN_ENV: &str = "MCP_RS_TEST_PLUGIN";
 
@@ -815,6 +1149,7 @@ mod tests {
             ],
             env,
             working_dir: None,
+            container: None,
             enabled: None,
             call_timeout_seconds: Some(10),
             max_response_bytes: Some(4096),
@@ -1043,5 +1378,340 @@ mod tests {
         config.call_timeout_seconds = Some(5);
         let error = PluginHandler::start(&config).await.err().unwrap();
         assert!(error.contains("exited"), "{}", error);
+    }
+
+    fn container_config(image: &str) -> PluginContainerConfig {
+        PluginContainerConfig {
+            image: image.to_string(),
+            network: None,
+            mounts: Vec::new(),
+            memory: None,
+            cpus: None,
+            pids_limit: None,
+            read_only: None,
+            user: None,
+            docker_command: None,
+        }
+    }
+
+    fn container_plugin_config(name: &str, container: PluginContainerConfig) -> PluginConfig {
+        PluginConfig {
+            command: String::new(),
+            args: Vec::new(),
+            env: HashMap::new(),
+            container: Some(container),
+            ..test_plugin_config(name)
+        }
+    }
+
+    fn mount_source() -> String {
+        std::env::temp_dir().to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn test_container_launch_isolates_by_default() {
+        let mut container = container_config("example/fs:1.0");
+        container.mounts = vec![
+            PluginMountConfig {
+                source: mount_source(),
+                target: "/data".to_string(),
+                read_only: None,
+            },
+            PluginMountConfig {
+                source: mount_source(),
+                target: "/out".to_string(),
+                read_only: Some(false),
+            },
+        ];
+        let mut config = container_plugin_config("fs", container.clone());
+        config.args = vec!["/data".to_string()];
+        let launch = container_launch(&config, &container, &["API_KEY", "MODE"], "abc123").unwrap();
+
+        assert_eq!(launch.program, "docker");
+        assert_eq!(launch.container_name, "mcp-rs-fs-abc123");
+        let source = mount_source();
+        let expected: Vec<String> = [
+            "run",
+            "-i",
+            "--rm",
+            "--init",
+            "--pull=never",
+            "--name=mcp-rs-fs-abc123",
+            "--label=mcp-rs.plugin=fs",
+            "--network=none",
+            "--cap-drop=ALL",
+            "--security-opt=no-new-privileges",
+            "--read-only",
+            "--tmpfs=/tmp:rw,noexec,nosuid,size=64m",
+            "--memory=512m",
+            "--pids-limit=256",
+            // 値はコマンドラインに載せない
+            "--env=API_KEY",
+            "--env=MODE",
+            &format!("--mount=type=bind,source={},target=/data,readonly", source),
+            &format!("--mount=type=bind,source={},target=/out", source),
+            "example/fs:1.0",
+            // commandを省略すると、argsはイメージのENTRYPOINTに渡る
+            "/data",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        assert_eq!(launch.args, expected);
+    }
+
+    #[test]
+    fn test_container_launch_applies_options() {
+        let mut container = container_config("python:3.12-alpine");
+        container.network = Some("bridge".to_string());
+        container.memory = Some("1g".to_string());
+        container.cpus = Some("0.5".to_string());
+        container.pids_limit = Some(64);
+        container.read_only = Some(false);
+        container.user = Some("1000:1000".to_string());
+        container.docker_command = Some("podman".to_string());
+        let mut config = container_plugin_config("py", container.clone());
+        config.command = "python".to_string();
+        config.args = vec!["-c".to_string(), "print(1)".to_string()];
+        config.working_dir = Some("/work".to_string());
+        let launch = container_launch(&config, &container, &[], "x").unwrap();
+
+        assert_eq!(launch.program, "podman");
+        for expected in [
+            "--network=bridge",
+            "--memory=1g",
+            "--cpus=0.5",
+            "--pids-limit=64",
+            "--user=1000:1000",
+            "--workdir=/work",
+        ] {
+            assert!(launch.args.iter().any(|a| a == expected), "{}", expected);
+        }
+        assert!(!launch.args.iter().any(|a| a == "--read-only"));
+        assert_eq!(
+            launch.args[launch.args.len() - 4..],
+            ["python:3.12-alpine", "python", "-c", "print(1)"]
+        );
+    }
+
+    #[test]
+    fn test_container_launch_rejects_invalid_settings() {
+        let check = |modify: &dyn Fn(&mut PluginConfig, &mut PluginContainerConfig),
+                     env_keys: &[&str],
+                     expected: &str| {
+            let mut container = container_config("example/image");
+            let mut config = container_plugin_config("bad", container.clone());
+            modify(&mut config, &mut container);
+            let error = container_launch(&config, &container, env_keys, "x").unwrap_err();
+            assert!(error.contains(expected), "{}: {}", expected, error);
+        };
+        check(&|_, c| c.image = String::new(), &[], "image");
+        check(&|_, c| c.image = "--privileged".to_string(), &[], "image");
+        check(&|_, c| c.image = "a b".to_string(), &[], "image");
+        check(
+            &|_, c| c.network = Some("container:other".to_string()),
+            &[],
+            "network",
+        );
+        check(&|_, c| c.memory = Some("-1".to_string()), &[], "memory");
+        check(
+            &|_, c| c.docker_command = Some(" ".to_string()),
+            &[],
+            "docker_command",
+        );
+        check(
+            &|cfg, _| cfg.working_dir = Some("relative".to_string()),
+            &[],
+            "working_dir",
+        );
+        // dockerコマンド自体の環境変数と区別できない名前
+        check(&|_, _| {}, &["PATH"], "PATH");
+        check(&|_, _| {}, &["DOCKER_HOST"], "DOCKER_HOST");
+        check(&|_, _| {}, &["A=B"], "not valid");
+        let mount = |source: String, target: &str| PluginMountConfig {
+            source,
+            target: target.to_string(),
+            read_only: None,
+        };
+        check(
+            &|_, c| c.mounts = vec![mount("relative/dir".to_string(), "/data")],
+            &[],
+            "absolute",
+        );
+        check(
+            &|_, c| c.mounts = vec![mount(format!("{},readonly=false", mount_source()), "/data")],
+            &[],
+            "commas",
+        );
+        check(
+            &|_, c| c.mounts = vec![mount(mount_source(), "data")],
+            &[],
+            "target",
+        );
+        check(
+            &|_, c| c.mounts = vec![mount(mount_source(), "/")],
+            &[],
+            "target",
+        );
+        let missing = std::env::temp_dir().join("mcp-rs-surely-missing-mount-source");
+        check(
+            &|_, c| c.mounts = vec![mount(missing.to_string_lossy().into_owned(), "/data")],
+            &[],
+            "does not exist",
+        );
+    }
+
+    #[tokio::test]
+    async fn test_container_plugin_without_docker_fails_to_start_with_hint() {
+        let mut container = container_config("example/image");
+        container.docker_command = Some("mcp-rs-surely-missing-docker-command".to_string());
+        let error = PluginHandler::start(&container_plugin_config("nodocker", container))
+            .await
+            .err()
+            .unwrap();
+        assert!(error.contains("could not start"), "{}", error);
+        assert!(error.contains("docker pull"), "{}", error);
+    }
+
+    /// 実際のDockerでの隔離の確認。Docker（Linuxコンテナ）が必要なため、
+    /// `MCP_RS_DOCKER_TESTS=1`のときだけ実行する（CIのLinuxで実行する）。
+    const DOCKER_TEST_IMAGE: &str = "python:3.12-alpine";
+    const DOCKER_TEST_SERVER: &str = r#"
+import json, os, socket, sys
+
+def reply(i, result):
+    sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": i, "result": result}) + "\n")
+    sys.stdout.flush()
+
+def attempt(action):
+    try:
+        action()
+        return "ok"
+    except Exception:
+        return "blocked"
+
+def write(path):
+    with open(path, "w") as f:
+        f.write("x")
+
+for line in sys.stdin:
+    message = json.loads(line)
+    if "id" not in message:
+        continue
+    method = message.get("method")
+    if method == "initialize":
+        reply(message["id"], {"protocolVersion": "2024-11-05", "capabilities": {"tools": {}},
+                              "serverInfo": {"name": "docker-test", "version": "1"}})
+    elif method == "tools/list":
+        reply(message["id"], {"tools": [{"name": "probe", "inputSchema": {"type": "object"}}]})
+    elif method == "tools/call":
+        cap_eff = [l.split()[1] for l in open("/proc/self/status") if l.startswith("CapEff")][0]
+        probe = {
+            "env": sorted(os.environ),
+            "token": os.environ.get("PLUGIN_TOKEN"),
+            "network": attempt(lambda: socket.create_connection(("1.1.1.1", 53), timeout=3).close()),
+            "write_root": attempt(lambda: write("/probe")),
+            "write_tmp": attempt(lambda: write("/tmp/probe")),
+            "read_mount": open("/data/hello.txt").read(),
+            "write_mount": attempt(lambda: write("/data/probe")),
+            "cap_eff": cap_eff,
+        }
+        reply(message["id"], {"content": [{"type": "text", "text": json.dumps(probe)}]})
+    else:
+        reply(message["id"], {})
+"#;
+
+    fn docker_tests_enabled() -> bool {
+        std::env::var("MCP_RS_DOCKER_TESTS").ok().as_deref() == Some("1")
+    }
+
+    fn docker_containers_with_label(plugin: &str) -> String {
+        let output = std::process::Command::new("docker")
+            .args([
+                "ps",
+                "-a",
+                "-q",
+                "--filter",
+                &format!("label={}={}", CONTAINER_LABEL, plugin),
+            ])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
+
+    #[tokio::test]
+    async fn test_container_plugin_is_isolated_in_docker() {
+        if !docker_tests_enabled() {
+            return;
+        }
+        let pulled = std::process::Command::new("docker")
+            .args(["pull", "-q", DOCKER_TEST_IMAGE])
+            .status()
+            .unwrap();
+        assert!(pulled.success());
+
+        let data_dir = std::env::temp_dir().join(format!(
+            "mcp-rs-docker-test-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&data_dir).unwrap();
+        std::fs::write(data_dir.join("hello.txt"), "hello from host").unwrap();
+
+        let mut container = container_config(DOCKER_TEST_IMAGE);
+        container.mounts = vec![PluginMountConfig {
+            source: data_dir.to_string_lossy().into_owned(),
+            target: "/data".to_string(),
+            read_only: None,
+        }];
+        let mut config = container_plugin_config("dockertest", container);
+        config.command = "python".to_string();
+        config.args = vec![
+            "-u".to_string(),
+            "-c".to_string(),
+            DOCKER_TEST_SERVER.to_string(),
+        ];
+        config
+            .env
+            .insert("PLUGIN_TOKEN".to_string(), "secret-value".to_string());
+        config.call_timeout_seconds = Some(60);
+        let handler = PluginHandler::start(&config).await.unwrap();
+
+        let result = call(&handler, "dockertest__probe", json!({}))
+            .await
+            .unwrap();
+        let probe: Value = serde_json::from_str(text(&result)).unwrap();
+        assert_eq!(probe["token"], json!("secret-value"));
+        // 本体（テストの実行環境）の環境変数は渡らない
+        let env: Vec<&str> = probe["env"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        for (host_key, _) in std::env::vars() {
+            if host_key.starts_with("CARGO") || host_key.starts_with("MCP_RS") {
+                assert!(!env.contains(&host_key.as_str()), "{} leaked", host_key);
+            }
+        }
+        assert_eq!(probe["network"], json!("blocked"));
+        assert_eq!(probe["write_root"], json!("blocked"));
+        assert_eq!(probe["write_tmp"], json!("ok"));
+        assert_eq!(probe["read_mount"], json!("hello from host"));
+        assert_eq!(probe["write_mount"], json!("blocked"));
+        assert_eq!(probe["cap_eff"], json!("0000000000000000"));
+
+        // 止めると、コンテナも残らない
+        assert!(!docker_containers_with_label("dockertest").is_empty());
+        drop(handler);
+        let mut remaining = String::new();
+        for _ in 0..50 {
+            remaining = docker_containers_with_label("dockertest");
+            if remaining.is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        assert!(remaining.is_empty(), "containers left: {}", remaining);
+        let _ = std::fs::remove_dir_all(&data_dir);
     }
 }

@@ -8,9 +8,9 @@ permalink: /docs/plugins/
 
 **[Home](../) > [Documentation](./) > Plugins**
 
-A plugin is a separate MCP server that mcp-rs starts as a child process. mcp-rs connects to it as an MCP client and offers its tools alongside the built-in ones. Plugins can be written in any language, as long as they speak MCP over standard input/output.
+A plugin is a separate MCP server that mcp-rs starts as a child process, or inside a Docker container. mcp-rs connects to it as an MCP client and offers its tools alongside the built-in ones. Plugins can be written in any language, as long as they speak MCP over standard input/output.
 
-> **Trusted plugins only.** In this first stage, a plugin runs as an ordinary process with your user's permissions. mcp-rs does not restrict which files or network addresses it can reach. Only add plugins you trust. Running plugins in a container is planned ([#392](https://github.com/n-takatsu/mcp-rs/issues/392)).
+> **Isolation.** A plugin started as a child process runs with your user's permissions. mcp-rs does not restrict which files or network addresses it can reach, so use child processes only for plugins you trust. To limit what a plugin can reach, [run it in a container](#running-a-plugin-in-a-container) (versions after v0.18.4).
 
 Plugins work in both STDIO mode (for example, Claude Desktop and Claude Code) and HTTP mode (v0.18.4 and later; in v0.18.3, `[[plugins]]` was ignored in HTTP mode). In HTTP mode, everyone who can reach the HTTP listener can call the plugin's tools, so turn on API key authentication when the listener is not limited to your own machine.
 
@@ -42,6 +42,51 @@ env = { EXAMPLE_API_KEY = "${EXAMPLE_API_KEY}" }
 - `command`: The executable to start. For a script, give the interpreter as `command` and the script in `args` (for example, `command = "node"`, `args = ["server.js"]`)
 - `env`: The only environment variables the plugin receives. `${VAR}` is replaced with mcp-rs's own environment variable. If `VAR` is not set, that entry is not passed at all
 
+## Running a plugin in a container
+
+Add a `[plugins.container]` section after the `[[plugins]]` entry. mcp-rs then starts the plugin with `docker run -i` and talks to it over standard input/output, the same way as a child process.
+
+```toml
+[[plugins]]
+name = "fs"
+args = ["/projects"]                   # passed to the image's ENTRYPOINT
+
+[plugins.container]
+image = "mcp/filesystem"
+mounts = [
+  { source = "C:/Users/me/Documents", target = "/projects" },   # read-only by default
+]
+
+# Optional:
+# network = "none"          # default. Use "bridge" only for plugins that must reach the network
+# memory = "512m"           # default
+# pids_limit = 256          # default
+# cpus = "1.0"              # default: no limit
+# read_only = true          # default: the container's root filesystem is read-only
+# user = "1000:1000"        # default: the image's user
+# docker_command = "docker" # for example, "podman"
+```
+
+- `image`: mcp-rs does not download images (`--pull=never`), so that the first start does not run into `call_timeout_seconds` and the image does not change without notice. Run `docker pull <image>` before starting mcp-rs, and again when you want to update it
+- `command` and `args`: In container mode, `command` is the program to run inside the container. Leave it out to use the image's own command; `args` are then passed to the image's `ENTRYPOINT`
+- `working_dir`: The folder inside the container (must start with `/`)
+- `env`: Passed into the container, the same as for a child process. The values are not put on the `docker` command line, so other users cannot see them in the process list. Names such as `PATH`, `HOME` and `DOCKER_*` cannot be used, because mcp-rs passes those to the `docker` command itself
+- `mounts`: The only host folders the plugin can see. `source` must be an absolute path that exists; `target` is the path inside the container. Mounts are read-only unless you set `read_only = false`
+
+By default, mcp-rs starts the container with:
+
+| Option | Effect |
+|---|---|
+| `--network=none` | No network access, unless you set `network` |
+| `--cap-drop=ALL`, `--security-opt=no-new-privileges` | No Linux capabilities, and no way to gain them |
+| `--read-only`, `--tmpfs=/tmp:rw,noexec,nosuid,size=64m` | Only `/tmp` (64 MB, in memory) is writable |
+| `--memory=512m`, `--pids-limit=256` | Limits on memory and number of processes |
+| `--rm`, `--init` | The container is removed when the plugin stops |
+
+When mcp-rs stops the plugin (or exits), it also runs `docker rm -f` on the container. Containers are named `mcp-rs-<plugin name>-<random>` and labeled `mcp-rs.plugin=<plugin name>`, so you can list them with `docker ps --filter label=mcp-rs.plugin`.
+
+If the plugin cannot start (for example, Docker is not running or the image has not been pulled), the warning says so, and Docker's own message is in the log lines that start with `[plugin <name>]`.
+
 ## How tools appear
 
 Each tool is offered as `<plugin name>__<tool name>`, and its description starts with `[plugin: <name>]`. For example, the plugin `example` with a tool `search` becomes `example__search`. If a plugin tool has the same name as a built-in tool or another plugin's tool, the one registered first is used and a warning is logged. Built-in handlers are registered before plugins.
@@ -52,6 +97,7 @@ Tool results are passed on with `content` and `isError`. mcp-rs uses MCP protoco
 
 ## What mcp-rs enforces
 
+- **Isolation (container only)**: See [Running a plugin in a container](#running-a-plugin-in-a-container)
 - **Environment**: mcp-rs does not pass its own environment variables to the plugin. WordPress credentials and `WORDPRESS_MASTER_PASSWORD` stay in mcp-rs. Only the variables in `env` are passed (on Windows, `SystemRoot` too, because some programs cannot start without it)
 - **Rate limiting**: Tool calls to each plugin are rate limited, with the same defaults as WordPress
 - **Audit log**: Every plugin tool call is recorded, whether it succeeds or fails
@@ -67,5 +113,5 @@ Tool results are passed on with `content` and `isError`. mcp-rs uses MCP protoco
 
 ## Notes
 
-- Claude Desktop may start mcp-rs twice. Each mcp-rs starts its own plugin processes, so you may see two of each plugin process. Each mcp-rs stops its plugins when it exits
+- Claude Desktop may start mcp-rs twice. Each mcp-rs starts its own plugin processes (or containers), so you may see two of each. Each mcp-rs stops its plugins when it exits
 - For a plugin that runs on Node.js, set `command` to `node.exe` (or `node`) and put the server's script in `args`. `npx` does not work as `command` without `PATH` and other variables, which mcp-rs does not pass
