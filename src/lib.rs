@@ -29,6 +29,7 @@ pub mod session;
 pub mod threat_intelligence;
 // #[cfg(feature = "tui")]
 // pub mod dashboard;
+pub mod plugin_proxy;
 pub mod policy;
 pub mod policy_application;
 pub mod policy_config;
