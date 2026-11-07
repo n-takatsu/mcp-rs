@@ -120,7 +120,7 @@ nonce = "..."
 salt = "..."
 ```
 
-Generate the `encrypted_credentials` section with the `encrypt-wordpress-credentials` subcommand (available after v0.18.0; build from source until the next release):
+Generate the `encrypted_credentials` section with the `encrypt-wordpress-credentials` subcommand (v0.18.1 and later):
 
 ```bash
 mcp-rs encrypt-wordpress-credentials
