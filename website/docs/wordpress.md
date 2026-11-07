@@ -353,7 +353,9 @@ Delete WordPress media file.
 
 **Parameters:**
 - `media_id` (number): Media ID to delete
-- `force` (boolean, optional): Force delete (bypass trash) [default: false]
+- `force` (boolean, optional): Permanently delete (bypass trash) [default: false]
+
+WordPress does not support moving media to the trash unless the site enables it (`MEDIA_TRASH`), so `force: true` is usually required. Without it, WordPress returns `rest_trash_not_supported`.
 
 ### `create_post_with_featured_image`
 
