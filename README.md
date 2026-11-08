@@ -4,7 +4,7 @@
 
 > **[English](README.md)** | **[日本語](README.ja.md)**
 
-[![Version](https://img.shields.io/badge/Version-v0.19.0-blue)](https://github.com/n-takatsu/mcp-rs/releases/tag/v0.19.0)
+[![Version](https://img.shields.io/badge/Version-v0.19.1-blue)](https://github.com/n-takatsu/mcp-rs/releases/tag/v0.19.1)
 ![Architecture](https://img.shields.io/badge/Architecture-Production--Ready-green)
 ![Implementation](https://img.shields.io/badge/WordPress_Tools-32_Available-green)
 ![License](https://img.shields.io/badge/License-MIT%2FApache--2.0-green)
@@ -176,6 +176,8 @@ Then start mcp-rs with a config file. Ready-made config files are in `configs/pr
 ```bash
 ./target/release/mcp-rs --config configs/production/claude-desktop.toml
 ```
+
+`mcp-rs --version` prints the installed version, and `mcp-rs --help` lists the options (v0.19.1 and later). Unknown options are ignored with a warning in the log; a future version will refuse to start with them.
 
 To write your own config file instead, start from the minimal example below.
 

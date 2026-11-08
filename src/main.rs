@@ -43,8 +43,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
+    // --version・--help（#431）。サーバーは起動せず、設定・ログにも触れない
+    let run_args = match mcp_rs::cli_args::parse_args(&args) {
+        mcp_rs::cli_args::Command::Version => {
+            println!("{}", mcp_rs::cli_args::version_text());
+            return Ok(());
+        }
+        mcp_rs::cli_args::Command::Help => {
+            print!("{}", mcp_rs::cli_args::help_text());
+            return Ok(());
+        }
+        mcp_rs::cli_args::Command::Run(run_args) => run_args,
+    };
+
     // 設定読み込み（ログ設定のため最初に実行）
-    let config = load_config().await?;
+    let config = load_config(run_args.config.as_deref()).await?;
 
     // ログシステム初期化
     // `_log_guard`はプロセス終了まで保持する必要がある（dropすると
@@ -62,6 +75,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // log_config.log_dir（未解決の設定値）を別に表示すると、
     // フォールバックが発生した場合に2つの異なるパスが出て矛盾する。
     info!("✅ 設定読み込み完了");
+
+    // 知らない引数は、今は警告だけ出して無視する（#431。打ち間違いで別の
+    // 設定のまま起動したことに気づけるように）。将来のバージョンでエラーにする
+    if run_args.missing_config_value {
+        tracing::warn!(
+            "--config was given without a path, so it was ignored and the default config file was used. Run mcp-rs --help for usage"
+        );
+    }
+    if !run_args.unknown.is_empty() {
+        tracing::warn!(
+            "Ignored unknown argument(s): {}. A future version will refuse to start with unknown arguments. Run mcp-rs --help for usage",
+            run_args.unknown.join(" ")
+        );
+    }
 
     // どちらのモードも、ハンドラー（WordPress・プラグイン）を登録した
     // McpServerでリクエストを処理する。HTTPモードは以前core::Runtime経由
@@ -91,19 +118,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
-/// 設定ファイル読み込み（引数処理含む）
-async fn load_config() -> Result<McpConfig, Box<dyn std::error::Error>> {
-    let args: Vec<String> = std::env::args().collect();
-
-    // --config引数処理
-    if let Some(config_index) = args.iter().position(|arg| arg == "--config") {
-        if let Some(path) = args.get(config_index + 1) {
-            return load_config_from_file(path).await;
-        }
+/// 設定ファイル読み込み。`--config`の指定があればそのファイル、無ければ
+/// 既定の場所から探す
+async fn load_config(config_path: Option<&str>) -> Result<McpConfig, Box<dyn std::error::Error>> {
+    match config_path {
+        Some(path) => load_config_from_file(path).await,
+        None => McpConfig::load(),
     }
-
-    // デフォルト設定読み込み
-    McpConfig::load()
 }
 
 /// 指定パスから設定読み込み
