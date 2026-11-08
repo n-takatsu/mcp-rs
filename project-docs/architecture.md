@@ -149,15 +149,13 @@ The traditional plugin architecture presents significant security vulnerabilitie
 ## 6. MCP Protocol Layer (`src/mcp/`) + Audit Layer
 
 - **Responsibility**: MCP protocol compliance, comprehensive security auditing
-- **Components**: Protocol types, audit logging, compliance reporting
+- **Components**: Protocol types, audit logging
 - **Security Features**:
   - Comprehensive audit trail (IP, timestamp, user agent)
   - Real-time security event logging
-  - Compliance reporting (GDPR, SOC 2, ISO 27001)
   - Tamper-resistant log integrity
   - Security metrics collection
 - **Standards**: MCP JSON-RPC 2.0 + Enterprise Security Extensions
-- **Compliance**: GDPR, SOC 2 Type II, ISO 27001, PCI DSS ready
 
 ## 7. Infrastructure Layer (`src/config.rs`, `src/error.rs`) + Security Configuration
 
