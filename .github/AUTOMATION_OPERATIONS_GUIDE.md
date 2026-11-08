@@ -18,9 +18,10 @@ ROADMAP.md (戦略) ↔→ GitHub Milestones (計画) ↔→ GitHub Issues (実�
 
 ## 🔄 自動化ワークフロー
 
-1. **`roadmap-sync.yml`**: ROADMAP-Issue 同期とProject統合
-2. **`issue-automation.yml`**: Issue管理・ラベル・Epic連携自動化
-3. **`roadmap-health.yml`**: 週次健全性チェックと進捗レポート
+1. **`issue-automation.yml`**: Issue管理・ラベル・Epic連携自動化
+2. **`roadmap-health.yml`**: 週次健全性チェックと進捗レポート（開いているマイルストーンを報告する。ROADMAP.mdは書き換えない）
+
+ROADMAP.mdは手で更新する（PR経由）。以前の`roadmap-sync.yml`（ROADMAP.mdの進捗を書き換えてdevelopに直接コミットしていた）は削除した。完了したマイルストーンはクローズする。
 
 ---
 
@@ -299,7 +300,6 @@ gh auth refresh -s project,read:project,write:discussion
 
 ## 📋 設定ファイル
 
-- [`.github/workflows/roadmap-sync.yml`](.github/workflows/roadmap-sync.yml)
 - [`.github/workflows/issue-automation.yml`](.github/workflows/issue-automation.yml)
 - [`.github/workflows/roadmap-health.yml`](.github/workflows/roadmap-health.yml)
 - [`.github/GITHUB_PROJECTS_SETUP.md`](.github/GITHUB_PROJECTS_SETUP.md)
