@@ -6,8 +6,9 @@ use tokio::net::{TcpListener, TcpStream};
 use tracing::{debug, error, info, warn};
 
 use crate::mcp::{
+    call_tool_result_for_version, negotiate_protocol_version, tools_list_for_version,
     InitializeParams, JsonRpcRequest, JsonRpcResponse, McpError, Resource, ResourceReadParams,
-    Tool, ToolCallParams,
+    Tool, ToolCallParams, DEFAULT_PROTOCOL_VERSION,
 };
 
 #[async_trait]
@@ -51,18 +52,54 @@ pub struct ResourcesCapability {
     pub list_changed: Option<bool>,
 }
 
+/// クライアントとの接続1つ分の状態。`initialize`で決まったプロトコルの版を
+/// 持つ（#417）。`initialize`の前は`DEFAULT_PROTOCOL_VERSION`。
+#[derive(Debug)]
+pub struct Session {
+    protocol_version: std::sync::Mutex<&'static str>,
+}
+
+impl Default for Session {
+    fn default() -> Self {
+        Self {
+            protocol_version: std::sync::Mutex::new(DEFAULT_PROTOCOL_VERSION),
+        }
+    }
+}
+
+impl Session {
+    /// この接続で使うプロトコルの版
+    pub fn protocol_version(&self) -> &'static str {
+        *self
+            .protocol_version
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn set_protocol_version(&self, version: &'static str) {
+        *self
+            .protocol_version
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = version;
+    }
+}
+
 /// 登録済みのハンドラーでJSON-RPCメッセージを処理する。`McpServer`の
 /// STDIOと同じ処理を、HTTP/WebSocket（`HttpTransport`）からも使うため
 /// （#400）。複製しても同じハンドラーを共有する。
+///
+/// HTTP/WebSocketでは、どのクライアントからのリクエストかを区別しないため、
+/// プロトコルの版は複製元も含めて1つを共有する（最後の`initialize`で決まる）。
 #[derive(Clone)]
 pub struct RequestDispatcher {
     handlers: Arc<Handlers>,
+    session: Arc<Session>,
 }
 
 impl RequestDispatcher {
     /// 1件のJSON-RPCメッセージを処理する。通知には`Ok(None)`。
     pub async fn handle_message(&self, message: &str) -> Result<Option<JsonRpcResponse>, McpError> {
-        McpServer::process_request(message, &self.handlers).await
+        McpServer::process_request(message, &self.handlers, &self.session).await
     }
 }
 
@@ -106,6 +143,7 @@ impl McpServer {
     pub fn dispatcher(&self) -> RequestDispatcher {
         RequestDispatcher {
             handlers: Arc::new(self.handlers.clone()),
+            session: Arc::new(Session::default()),
         }
     }
 
@@ -144,6 +182,7 @@ impl McpServer {
         let (reader, mut writer) = stream.split();
         let mut reader = BufReader::new(reader);
         let mut line = String::new();
+        let session = Session::default();
 
         loop {
             line.clear();
@@ -153,7 +192,7 @@ impl McpServer {
                 break; // Connection closed
             }
 
-            let response = match Self::process_request(&line, &handlers).await {
+            let response = match Self::process_request(&line, &handlers, &session).await {
                 Ok(Some(resp)) => resp,
                 // 通知（idなし）には応答しない（JSON-RPC 2.0）
                 Ok(None) => continue,
@@ -177,6 +216,7 @@ impl McpServer {
     async fn process_request(
         line: &str,
         handlers: &[(String, Arc<dyn McpHandler>)],
+        session: &Session,
     ) -> Result<Option<JsonRpcResponse>, McpError> {
         let request: JsonRpcRequest = serde_json::from_str(line.trim())?;
 
@@ -194,13 +234,26 @@ impl McpServer {
                 match serde_json::from_value::<InitializeParams>(
                     request.params.clone().unwrap_or_default(),
                 ) {
-                    Ok(params) => Ok(Self::initialize_all(handlers, params).await),
+                    Ok(params) => {
+                        let version = negotiate_protocol_version(&params.protocol_version);
+                        if version != params.protocol_version {
+                            info!(
+                                "Client requested MCP protocol version '{}', which is not supported; answering with '{}'",
+                                params.protocol_version, version
+                            );
+                        }
+                        session.set_protocol_version(version);
+                        Ok(Self::initialize_all(handlers, params, version).await)
+                    }
                     Err(e) => Err(McpError::InvalidParams(e.to_string())),
                 }
             }
             "tools/list" => {
                 let tools = Self::list_all_tools(handlers).await;
-                Ok(serde_json::json!({ "tools": tools }))
+                Ok(tools_list_for_version(
+                    session.protocol_version(),
+                    serde_json::json!({ "tools": tools }),
+                ))
             }
             "tools/call" => {
                 match serde_json::from_value::<ToolCallParams>(
@@ -216,7 +269,10 @@ impl McpServer {
                     // 一方、tools/call自体のparams形式が不正な場合は
                     // プロトコルレベルの問題なのでJSON-RPCエラーのまま。
                     Ok(params) => match Self::call_tool_routed(handlers, params).await {
-                        Ok(value) => Ok(value),
+                        Ok(value) => Ok(call_tool_result_for_version(
+                            session.protocol_version(),
+                            value,
+                        )),
                         Err(e) => Ok(serde_json::json!({
                             "content": [{
                                 "type": "text",
@@ -266,6 +322,7 @@ impl McpServer {
     async fn initialize_all(
         handlers: &[(String, Arc<dyn McpHandler>)],
         params: InitializeParams,
+        protocol_version: &str,
     ) -> serde_json::Value {
         for (name, handler) in handlers {
             if let Err(e) = handler.initialize(params.clone()).await {
@@ -273,7 +330,7 @@ impl McpServer {
             }
         }
         serde_json::json!({
-            "protocolVersion": "2024-11-05",
+            "protocolVersion": protocol_version,
             "capabilities": {
                 "tools": { "listChanged": false },
                 "resources": { "subscribe": false, "listChanged": false }
@@ -383,6 +440,7 @@ impl McpServer {
         let mut stdout = stdout();
         let mut reader = BufReader::new(stdin);
         let mut line = String::new();
+        let session = Session::default();
 
         loop {
             line.clear();
@@ -392,7 +450,7 @@ impl McpServer {
                 break; // EOF
             }
 
-            let response = match Self::process_request(&line, &self.handlers).await {
+            let response = match Self::process_request(&line, &self.handlers, &session).await {
                 Ok(Some(resp)) => resp,
                 // 通知（idなし）には応答しない（JSON-RPC 2.0）
                 Ok(None) => continue,
@@ -508,10 +566,11 @@ mod tests {
         })
         .to_string();
 
-        let response = McpServer::process_request(&line, &handlers_with_mock())
-            .await
-            .unwrap()
-            .expect("a request with an id must get a response");
+        let response =
+            McpServer::process_request(&line, &handlers_with_mock(), &Session::default())
+                .await
+                .unwrap()
+                .expect("a request with an id must get a response");
 
         assert!(response.error.is_none(), "expected success, got error");
         assert_eq!(response.id, Some(serde_json::json!(1)));
@@ -530,10 +589,11 @@ mod tests {
         })
         .to_string();
 
-        let response = McpServer::process_request(&line, &handlers_with_mock())
-            .await
-            .unwrap()
-            .expect("a request with an id must get a response");
+        let response =
+            McpServer::process_request(&line, &handlers_with_mock(), &Session::default())
+                .await
+                .unwrap()
+                .expect("a request with an id must get a response");
 
         assert!(response.error.is_some());
         assert_eq!(response.id, Some(serde_json::json!(42)));
@@ -549,10 +609,11 @@ mod tests {
         })
         .to_string();
 
-        let response = McpServer::process_request(&line, &handlers_with_mock())
-            .await
-            .unwrap()
-            .expect("a request with an id must get a response");
+        let response =
+            McpServer::process_request(&line, &handlers_with_mock(), &Session::default())
+                .await
+                .unwrap()
+                .expect("a request with an id must get a response");
 
         assert!(response.error.is_some());
         assert_eq!(response.id, Some(serde_json::json!(7)));
@@ -574,10 +635,11 @@ mod tests {
         })
         .to_string();
 
-        let response = McpServer::process_request(&line, &handlers_with_failing_tool())
-            .await
-            .unwrap()
-            .expect("a request with an id must get a response");
+        let response =
+            McpServer::process_request(&line, &handlers_with_failing_tool(), &Session::default())
+                .await
+                .unwrap()
+                .expect("a request with an id must get a response");
 
         // JSON-RPCレベルでは成功（errorフィールドが無い）
         assert!(
@@ -604,9 +666,10 @@ mod tests {
             "notifications/unknown-future-notification",
         ] {
             let line = serde_json::json!({ "jsonrpc": "2.0", "method": method }).to_string();
-            let response = McpServer::process_request(&line, &handlers_with_mock())
-                .await
-                .unwrap();
+            let response =
+                McpServer::process_request(&line, &handlers_with_mock(), &Session::default())
+                    .await
+                    .unwrap();
             assert!(response.is_none(), "{method} must not get a response");
         }
     }
@@ -655,7 +718,9 @@ mod tests {
         })
         .to_string();
 
-        let response = McpServer::process_request(&line, &handlers).await.unwrap();
+        let response = McpServer::process_request(&line, &handlers, &Session::default())
+            .await
+            .unwrap();
         assert!(response.is_none());
     }
 
@@ -664,6 +729,7 @@ mod tests {
             name: name.to_string(),
             description: String::new(),
             input_schema: serde_json::json!({"type": "object"}),
+            ..Default::default()
         }
     }
 
@@ -782,7 +848,7 @@ mod tests {
             "params": params
         })
         .to_string();
-        McpServer::process_request(&line, handlers)
+        McpServer::process_request(&line, handlers, &Session::default())
             .await
             .unwrap()
             .expect("a request with an id must get a response")
@@ -892,6 +958,125 @@ mod tests {
         // ハンドラーが無くても、ツール一覧は空で応答する
         let response = request(&Vec::new(), "tools/list", serde_json::json!({})).await;
         assert_eq!(response.result.unwrap()["tools"], serde_json::json!([]));
+    }
+
+    /// 新しい版の項目（outputSchema・annotations・structuredContent）を
+    /// 返すモック
+    struct StructuredHandler;
+
+    #[async_trait]
+    impl McpHandler for StructuredHandler {
+        async fn initialize(
+            &self,
+            _params: InitializeParams,
+        ) -> Result<serde_json::Value, McpError> {
+            Ok(serde_json::json!({}))
+        }
+
+        async fn list_tools(&self) -> Result<Vec<Tool>, McpError> {
+            Ok(vec![Tool {
+                output_schema: Some(serde_json::json!({ "type": "object" })),
+                annotations: Some(crate::mcp::ToolAnnotations {
+                    read_only_hint: Some(true),
+                    ..Default::default()
+                }),
+                ..tool("structured")
+            }])
+        }
+
+        async fn call_tool(&self, _params: ToolCallParams) -> Result<serde_json::Value, McpError> {
+            Ok(serde_json::json!({
+                "content": [{ "type": "text", "text": "{\"n\":1}" }],
+                "structuredContent": { "n": 1 },
+                "isError": false
+            }))
+        }
+
+        async fn list_resources(&self) -> Result<Vec<Resource>, McpError> {
+            Ok(vec![])
+        }
+
+        async fn read_resource(
+            &self,
+            _params: ResourceReadParams,
+        ) -> Result<serde_json::Value, McpError> {
+            Ok(serde_json::json!({}))
+        }
+    }
+
+    /// 同じ接続（`Session`）で、`initialize`→`tools/list`→`tools/call`を送る。
+    /// 戻り値は（initializeの結果の版、ツール定義、ツールの結果）。
+    async fn exchange_with_version(
+        requested: &str,
+    ) -> (serde_json::Value, serde_json::Value, serde_json::Value) {
+        let handlers: Handlers = vec![("s".to_string(), Arc::new(StructuredHandler))];
+        let session = Session::default();
+        let send = |method: &str, params: serde_json::Value| {
+            serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params })
+                .to_string()
+        };
+        let mut results = Vec::new();
+        for line in [
+            send(
+                "initialize",
+                serde_json::json!({
+                    "protocolVersion": requested,
+                    "capabilities": {},
+                    "clientInfo": { "name": "c", "version": "1" }
+                }),
+            ),
+            send("tools/list", serde_json::json!({})),
+            send(
+                "tools/call",
+                serde_json::json!({ "name": "structured", "arguments": {} }),
+            ),
+        ] {
+            let response = McpServer::process_request(&line, &handlers, &session)
+                .await
+                .unwrap()
+                .unwrap();
+            results.push(response.result.unwrap());
+        }
+        (
+            results[0]["protocolVersion"].clone(),
+            results[1]["tools"][0].clone(),
+            results[2].clone(),
+        )
+    }
+
+    #[tokio::test]
+    async fn test_protocol_version_is_negotiated_per_session() {
+        // 新しい版: 新しい項目をそのまま渡す
+        let (version, tool, result) = exchange_with_version("2025-06-18").await;
+        assert_eq!(version, serde_json::json!("2025-06-18"));
+        assert_eq!(
+            tool["outputSchema"],
+            serde_json::json!({ "type": "object" })
+        );
+        assert_eq!(tool["annotations"]["readOnlyHint"], serde_json::json!(true));
+        assert_eq!(result["structuredContent"], serde_json::json!({ "n": 1 }));
+
+        // 古い版: その版に無い項目を除く
+        let (version, tool, result) = exchange_with_version("2024-11-05").await;
+        assert_eq!(version, serde_json::json!("2024-11-05"));
+        assert!(tool.get("outputSchema").is_none());
+        assert!(tool.get("annotations").is_none());
+        assert!(result.get("structuredContent").is_none());
+        assert_eq!(result["content"][0]["text"], serde_json::json!("{\"n\":1}"));
+
+        // 対応していない版: 対応する最新の版で答える
+        let (version, tool, _) = exchange_with_version("2025-03-26").await;
+        assert_eq!(version, serde_json::json!("2025-06-18"));
+        assert!(tool.get("outputSchema").is_some());
+    }
+
+    #[tokio::test]
+    async fn test_responses_before_initialize_use_the_oldest_version() {
+        let handlers: Handlers = vec![("s".to_string(), Arc::new(StructuredHandler))];
+        let response = request(&handlers, "tools/list", serde_json::json!({})).await;
+        assert!(response.result.unwrap()["tools"][0]
+            .get("outputSchema")
+            .is_none());
     }
 
     #[test]

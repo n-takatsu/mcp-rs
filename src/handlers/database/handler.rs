@@ -728,9 +728,9 @@ impl DatabaseHandler {
 
 #[async_trait]
 impl McpHandler for DatabaseHandler {
-    async fn initialize(&self, _params: InitializeParams) -> Result<JsonValue, McpError> {
+    async fn initialize(&self, params: InitializeParams) -> Result<JsonValue, McpError> {
         Ok(json!({
-            "protocolVersion": "2024-11-05",
+            "protocolVersion": crate::mcp::negotiate_protocol_version(&params.protocol_version),
             "capabilities": {
                 "tools": {}
             },
@@ -772,6 +772,7 @@ impl McpHandler for DatabaseHandler {
                     },
                     "required": ["sql"]
                 }),
+                ..Default::default()
             },
             Tool {
                 name: "execute_command".to_string(),
@@ -802,6 +803,7 @@ impl McpHandler for DatabaseHandler {
                     },
                     "required": ["sql"]
                 }),
+                ..Default::default()
             },
             Tool {
                 name: "get_schema".to_string(),
@@ -819,6 +821,7 @@ impl McpHandler for DatabaseHandler {
                         }
                     }
                 }),
+                ..Default::default()
             },
             Tool {
                 name: "begin_transaction".to_string(),
@@ -837,6 +840,7 @@ impl McpHandler for DatabaseHandler {
                         }
                     }
                 }),
+                ..Default::default()
             },
             Tool {
                 name: "list_engines".to_string(),
@@ -845,6 +849,7 @@ impl McpHandler for DatabaseHandler {
                     "type": "object",
                     "properties": {}
                 }),
+                ..Default::default()
             },
             Tool {
                 name: "switch_engine".to_string(),
@@ -859,6 +864,7 @@ impl McpHandler for DatabaseHandler {
                     },
                     "required": ["engine_id"]
                 }),
+                ..Default::default()
             },
         ])
     }

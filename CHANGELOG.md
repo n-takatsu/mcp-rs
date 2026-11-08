@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- MCPのプロトコル版`2025-06-18`に対応した（#417）
+  - 版の交渉: クライアントが要求した版（`2025-06-18`・`2024-11-05`）で答える。
+    それ以外は`2025-06-18`で答える。以前は常に`2024-11-05`で答えていた
+  - ツール定義の`title`・`outputSchema`・`annotations`と、ツールの結果の
+    `structuredContent`を中継する（`2025-06-18`で話すクライアントにだけ。
+    `2024-11-05`では除き、リソースリンク・音声のコンテンツはテキストに
+    置き換える）。プラグインには`2025-06-18`を要求する
+  - WordPressのツールにannotations（読み取り専用・破壊的・冪等）を付けた。
+    クライアントが、実行前に確認するか等を決めるのに使う
+  - **ライブラリの変更**: `mcp::Tool`に`title`・`output_schema`・
+    `annotations`を追加し、`Default`を実装した（構造体リテラルには
+    `..Default::default()`が要る）。`mcp::version`（版の交渉・項目の
+    取捨）と`mcp::Session`を追加
+
 - 監査ログの書き込み先を、設定の`[audit]`で指定できるようにした（#416）。
   省略時は、設定ファイルと同じフォルダの`audit.log`に書く
   - `file_path`（相対パスは設定ファイルのフォルダが基準）・`enabled`・
