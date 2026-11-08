@@ -31,6 +31,7 @@ MCP-RS implements comprehensive security measures designed for production enviro
 ## ✅ Layer 3: Access Control & Rate Limiting
 
 - **API Key Authentication**: Optional API key check on every HTTP/WebSocket request (`Authorization: Bearer <key>` or `X-Api-Key`). Revoked or expired keys are rejected. STDIO is unaffected (local pipe)
+- **OAuth 2.1 Authorization**: Optional check of access tokens issued by an external authorization server, for HTTP/WebSocket (see [OAuth 2.1 Authorization](#httpwebsocket-oauth-21-authorization))
 - **Token Bucket Rate Limiting**: WordPress tool calls are rate limited per WordPress site connection, with burst handling
 - **Configurable Thresholds**: Customizable rate limiting parameters
 - **Graceful Degradation**: Smooth handling of rate limit violations
@@ -154,6 +155,29 @@ user_id = "user-1"
 
 Clients send the key as `Authorization: Bearer <key>` or `X-Api-Key: <key>`. Requests without a valid key get HTTP 401. Note that `${VAR}` expansion applies only to the WordPress `url`/`username`/`password` fields, so `key` must be written as the literal value.
 
+## HTTP/WebSocket OAuth 2.1 Authorization
+
+In HTTP mode, mcp-rs can accept OAuth 2.1 access tokens, as described in the MCP specification (version 2025-06-18, "Authorization"). mcp-rs is the resource server: users sign in at an external authorization server (for example Keycloak, Okta, or Microsoft Entra ID), which handles SSO, LDAP/Active Directory, and MFA. mcp-rs checks the access tokens that server issues.
+
+```toml
+[transport.http.oauth]
+issuer = "https://auth.example.com/realms/mcp"   # the authorization server (iss)
+resource = "https://mcp.example.com/mcp"         # the URL clients use to reach mcp-rs
+# audiences = ["https://mcp.example.com/mcp"]    # accepted aud values. Default: resource
+# jwks_uri = "https://auth.example.com/realms/mcp/protocol/openid-connect/certs"  # default: found from the server's metadata
+# required_scopes = ["mcp:tools"]                # tokens without all of these get 403
+# leeway_seconds = 60                            # allowed clock skew for exp/nbf
+```
+
+- Tokens must be JWTs sent as `Authorization: Bearer <token>`. mcp-rs checks the signature with the authorization server's public keys (JWKS), the issuer (`iss`), the expiry (`exp`, and `nbf` if present), and the audience (`aud`). A token issued for another service (another `aud`) is rejected. Signatures with a shared secret (HS256 etc.) and unsigned tokens are rejected. Opaque (non-JWT) tokens and token introspection are not supported
+- Configure the authorization server to put `resource` (or one of `audiences`) in the token's `aud`. In Keycloak, add an "Audience" mapper to the client
+- mcp-rs finds the JWKS from the authorization server's metadata (`/.well-known/oauth-authorization-server` or `/.well-known/openid-configuration`), unless `jwks_uri` is set. The keys are loaded at startup and reloaded every hour, and when a token uses an unknown key ID (at most once every 30 seconds)
+- `issuer` and `jwks_uri` must use https. http is allowed only for `localhost` and loopback addresses, for testing
+- mcp-rs serves the Protected Resource Metadata (RFC 9728) without authentication at `/.well-known/oauth-protected-resource` plus the path of `resource` (for the example above, `/.well-known/oauth-protected-resource/mcp`), and also at `/.well-known/oauth-protected-resource`. It tells clients which authorization server to use
+- Requests without a valid token get HTTP 401 with `WWW-Authenticate: Bearer resource_metadata="..."` (and `error="invalid_token"` when a token was sent). Tokens without `required_scopes` get HTTP 403 with `error="insufficient_scope"`
+- API keys can be used together with OAuth: when `auth_enabled = true` too, a request is accepted with either a valid API key or a valid access token
+- Mapping scopes to individual tools is not supported yet (#52)
+
 ## Audit Log
 
 Tool calls (WordPress and plugins) are appended to an audit log file as JSON lines, one entry per line. By default, the file is `audit.log` in the same folder as the config file (the file passed with `--config`), so the location does not depend on the folder mcp-rs is started from. The mcp-rs log shows the path at startup (`📝 監査ログ: <path>`).
@@ -173,7 +197,7 @@ Tool calls (WordPress and plugins) are appended to an audit log file as JSON lin
 
 - Use WordPress Application Passwords (never plain passwords)
 - Prefer `encrypted_credentials` over a plaintext `password` in config files
-- Enable API key authentication whenever the HTTP transport is reachable from the network
+- Enable API key authentication or OAuth 2.1 authorization whenever the HTTP transport is reachable from the network
 - Implement proper environment variable naming conventions
 - Regular password rotation and access review
 - HTTPS-only connections for all WordPress API calls

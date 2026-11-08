@@ -12,6 +12,7 @@ pub mod dynamic;
 pub mod error;
 pub mod factory;
 pub mod http;
+pub mod oauth;
 pub mod stdio;
 pub mod transport_trait;
 pub mod types;
