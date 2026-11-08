@@ -10,6 +10,7 @@ use crate::{
         RequestData, SecurityHeaders,
     },
     transport::{
+        oauth::{www_authenticate, OAuthConfig, OAuthValidator, TokenError},
         websocket::server::{ConnectionId, MessageHandler, WebSocketConnectionInfo},
         ConnectionStats, Transport, TransportCapabilities, TransportError, TransportInfo,
         TransportType,
@@ -159,6 +160,14 @@ pub struct HttpConfig {
     /// in-memory at startup and never logged or echoed back.
     #[serde(default)]
     pub api_keys: Vec<ApiKeyEntry>,
+    /// Accept OAuth 2.1 access tokens (JWT) issued by an external
+    /// authorization server, as described in the MCP specification
+    /// (2025-06-18, "Authorization"), #420. When set, every HTTP/WebSocket
+    /// request needs either a valid access token or (when `auth_enabled`)
+    /// a valid API key. Also serves the Protected Resource Metadata
+    /// (RFC 9728). `None` (the default) disables it.
+    #[serde(default)]
+    pub oauth: Option<OAuthConfig>,
 }
 
 fn default_websocket_max_connections() -> usize {
@@ -209,6 +218,7 @@ impl Default for HttpConfig {
             websocket_max_connections: default_websocket_max_connections(),
             auth_enabled: false,
             api_keys: Vec::new(),
+            oauth: None,
         }
     }
 }
@@ -279,6 +289,7 @@ struct HttpTransportState {
     ids: Option<Arc<IntrusionDetectionSystem>>,
     ids_trust_forwarded_for: bool,
     api_key_manager: Option<Arc<RwLock<ApiKeyManager>>>,
+    oauth: Option<Arc<OAuthValidator>>,
     audit_logger: Arc<AuditLogger>,
     websocket_upgrade_enabled: bool,
     // Reserves capacity atomically at upgrade time (before the handshake
@@ -410,6 +421,23 @@ impl HttpTransport {
             None
         };
 
+        let oauth = match &self.config.oauth {
+            Some(config) => {
+                let validator = Arc::new(
+                    OAuthValidator::new(config.clone())
+                        .map_err(|e| Error::TransportError(TransportError::Configuration(e)))?,
+                );
+                info!(
+                    "🔐 OAuth: accepting access tokens from {} for {}",
+                    config.issuer, config.resource
+                );
+                let prefetch = validator.clone();
+                tokio::spawn(async move { prefetch.prefetch().await });
+                Some(validator)
+            }
+            None => None,
+        };
+
         let pinned_certificates_sha256: HashSet<String> = self
             .config
             .pinned_certificates_sha256
@@ -468,6 +496,7 @@ impl HttpTransport {
             },
             ids_trust_forwarded_for: self.config.ids_trust_forwarded_for,
             api_key_manager,
+            oauth: oauth.clone(),
             audit_logger: Arc::new(AuditLogger::with_defaults()),
             websocket_upgrade_enabled: self.config.enable_websocket_upgrade,
             websocket_semaphore: Arc::new(tokio::sync::Semaphore::new(
@@ -484,10 +513,23 @@ impl HttpTransport {
             }),
         };
 
-        let app = Router::new()
+        let mut app = Router::new()
             .route("/", post(handle_jsonrpc_request))
             .route("/mcp", post(handle_jsonrpc_request))
-            .route("/ws", get(handle_ws_upgrade))
+            .route("/ws", get(handle_ws_upgrade));
+        if let Some(validator) = &oauth {
+            // RFC 9728: resourceにパスがあればその後ろ。ルートにも置く
+            // （パスを付けずに探すクライアントのため）
+            let path = validator.config().resource_metadata_path();
+            app = app.route(&path, get(handle_protected_resource_metadata));
+            if path != crate::transport::oauth::PROTECTED_RESOURCE_METADATA_PATH {
+                app = app.route(
+                    crate::transport::oauth::PROTECTED_RESOURCE_METADATA_PATH,
+                    get(handle_protected_resource_metadata),
+                );
+            }
+        }
+        let app = app
             .layer(if self.config.cors_enabled {
                 CorsLayer::permissive()
             } else {
@@ -923,7 +965,9 @@ async fn handle_jsonrpc_request(
     Json(request): Json<Value>,
 ) -> std::result::Result<Response, StatusCode> {
     check_network_policy(&state.network_policy, remote_addr)?;
-    check_auth(state.api_key_manager.as_ref(), &headers, remote_addr).await?;
+    if let Err(response) = check_auth(&state, &headers, remote_addr).await {
+        return Ok(*response);
+    }
     check_https_enforcement(
         state.enforce_https,
         state.tls_terminated_locally,
@@ -1095,59 +1139,132 @@ fn check_network_policy(
     Ok(())
 }
 
-/// Requires a valid, non-revoked, non-expired API key when API-key
-/// authentication is configured (`api_key_manager.is_some()`, i.e.
-/// `HttpConfig::auth_enabled = true`). Looks for the key in the
-/// `Authorization: Bearer <key>` header, falling back to `X-Api-Key`.
-/// Does nothing when auth is disabled, preserving existing behavior for
-/// deployments that haven't opted in.
+/// Requires credentials when authentication is configured: a valid,
+/// non-revoked, non-expired API key (`HttpConfig::auth_enabled`) and/or a
+/// valid OAuth 2.1 access token (`HttpConfig::oauth`, #420). When both are
+/// configured, either is accepted. Does nothing when neither is configured,
+/// preserving existing behavior for deployments that haven't opted in.
+///
+/// API keys are read from `Authorization: Bearer <key>`, falling back to
+/// `X-Api-Key`. Access tokens are read from `Authorization: Bearer` only
+/// (RFC 6750; MCP forbids tokens in the query string). With OAuth, failures
+/// carry a `WWW-Authenticate` header pointing at the Protected Resource
+/// Metadata (RFC 9728), so that MCP clients can find the authorization
+/// server.
 ///
 /// Uses `ApiKeyManager` directly rather than the richer `MultiAuthProvider`/
 /// `AuthMiddleware` (`security::auth`) - those require a matching
-/// `UserRepository` entry per key and pull in JWT/OAuth2/session scaffolding
-/// unneeded for "reject requests without a valid key". `verify_key` takes a
-/// write lock to record usage stats, serializing concurrent auth checks on
-/// one lock; this is the same `Arc<RwLock<ApiKeyManager>>` shape
-/// `MultiAuthProvider` itself already uses, not a new bottleneck introduced
-/// here, and is an accepted tradeoff for this issue's minimal scope.
+/// `UserRepository` entry per key. `verify_key` takes a write lock to record
+/// usage stats, serializing concurrent API key checks on one lock; an
+/// accepted tradeoff for this minimal scope.
 async fn check_auth(
-    api_key_manager: Option<&Arc<RwLock<ApiKeyManager>>>,
+    state: &HttpTransportState,
     headers: &HeaderMap,
     remote_addr: SocketAddr,
-) -> std::result::Result<(), StatusCode> {
-    let Some(manager) = api_key_manager else {
+) -> std::result::Result<(), Box<Response>> {
+    if state.api_key_manager.is_none() && state.oauth.is_none() {
         return Ok(());
-    };
-
-    let Some(token) = extract_api_key(headers) else {
-        warn!(
-            "Rejected request from {} due to missing API key",
-            remote_addr
-        );
-        return Err(StatusCode::UNAUTHORIZED);
-    };
-
-    if manager.write().await.verify_key(&token).is_err() {
-        warn!(
-            "Rejected request from {} due to invalid, revoked, or expired API key",
-            remote_addr
-        );
-        return Err(StatusCode::UNAUTHORIZED);
     }
 
-    Ok(())
+    if let Some(manager) = &state.api_key_manager {
+        if let Some(key) = extract_api_key(headers) {
+            if manager.write().await.verify_key(&key).is_ok() {
+                return Ok(());
+            }
+        }
+    }
+
+    let Some(oauth) = &state.oauth else {
+        if extract_api_key(headers).is_none() {
+            warn!(
+                "Rejected request from {} due to missing API key",
+                remote_addr
+            );
+        } else {
+            warn!(
+                "Rejected request from {} due to invalid, revoked, or expired API key",
+                remote_addr
+            );
+        }
+        return Err(Box::new(StatusCode::UNAUTHORIZED.into_response()));
+    };
+
+    let Some(token) = extract_bearer_token(headers) else {
+        warn!(
+            "Rejected request from {} due to missing access token",
+            remote_addr
+        );
+        return Err(Box::new(oauth_error_response(oauth.config(), None)));
+    };
+    match oauth.validate(&token).await {
+        Ok(info) => {
+            debug!(
+                "Accepted access token from {} (sub: {:?}, client: {:?})",
+                remote_addr, info.subject, info.client_id
+            );
+            Ok(())
+        }
+        Err(error) => {
+            match &error {
+                TokenError::Invalid(reason) => warn!(
+                    "Rejected request from {} due to an invalid access token: {}",
+                    remote_addr, reason
+                ),
+                TokenError::InsufficientScope => warn!(
+                    "Rejected request from {}: the access token lacks the required scopes",
+                    remote_addr
+                ),
+            }
+            Err(Box::new(oauth_error_response(oauth.config(), Some(&error))))
+        }
+    }
+}
+
+/// 401（トークンが無い・無効）か403（スコープが足りない）を、
+/// `WWW-Authenticate`付きで返す
+fn oauth_error_response(config: &OAuthConfig, error: Option<&TokenError>) -> Response {
+    let status = match error {
+        Some(TokenError::InsufficientScope) => StatusCode::FORBIDDEN,
+        _ => StatusCode::UNAUTHORIZED,
+    };
+    let mut response = status.into_response();
+    if let Ok(value) = HeaderValue::from_str(&www_authenticate(config, error)) {
+        response
+            .headers_mut()
+            .insert(axum::http::header::WWW_AUTHENTICATE, value);
+    }
+    response
+}
+
+/// `Authorization: Bearer <token>`のトークン
+fn extract_bearer_token(headers: &HeaderMap) -> Option<String> {
+    let auth = header_value(headers, "authorization")?;
+    let (scheme, token) = auth.split_once(' ')?;
+    let token = token.trim();
+    (scheme.eq_ignore_ascii_case("bearer") && !token.is_empty()).then(|| token.to_string())
+}
+
+/// Protected Resource Metadata（RFC 9728）。認証なしで返す（クライアントが
+/// 認可サーバーを見つけるため）。ネットワークポリシーは適用する
+async fn handle_protected_resource_metadata(
+    ConnectInfo(remote_addr): ConnectInfo<SocketAddr>,
+    State(state): State<HttpTransportState>,
+) -> Response {
+    if let Err(status) = check_network_policy(&state.network_policy, remote_addr) {
+        return status.into_response();
+    }
+    match &state.oauth {
+        Some(oauth) => Json(oauth.config().resource_metadata()).into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
 }
 
 /// Extracts the client-supplied API key from `Authorization: Bearer <key>`,
 /// falling back to `X-Api-Key` for clients that can't set an Authorization
 /// header.
 fn extract_api_key(headers: &HeaderMap) -> Option<String> {
-    if let Some(auth) = header_value(headers, "authorization") {
-        if let Some(token) = auth.strip_prefix("Bearer ") {
-            return Some(token.to_string());
-        }
-    }
-    header_value(headers, "x-api-key").map(|v| v.to_string())
+    extract_bearer_token(headers)
+        .or_else(|| header_value(headers, "x-api-key").map(|v| v.to_string()))
 }
 
 fn check_https_enforcement(
@@ -1470,8 +1587,8 @@ async fn handle_ws_upgrade(
     if let Err(status) = check_network_policy(&state.network_policy, remote_addr) {
         return status.into_response();
     }
-    if let Err(status) = check_auth(state.api_key_manager.as_ref(), &headers, remote_addr).await {
-        return status.into_response();
+    if let Err(response) = check_auth(&state, &headers, remote_addr).await {
+        return *response;
     }
     if let Err(status) = check_https_enforcement(
         state.enforce_https,
@@ -3382,6 +3499,366 @@ mod tests {
             .unwrap();
 
         assert!(response.status().is_success());
+    }
+
+    /// OAuth（#420）を有効にしてサーバーを起動する。戻り値は（ポート、
+    /// テスト用の認可サーバー）
+    async fn start_oauth_server(
+        configure: impl FnOnce(&mut HttpConfig),
+    ) -> (u16, crate::transport::oauth::test_support::TestAuthServer) {
+        let auth = crate::transport::oauth::test_support::TestAuthServer::start().await;
+        let mut config = HttpConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            enable_websocket_upgrade: true,
+            oauth: Some(auth.config(OAUTH_RESOURCE)),
+            ..HttpConfig::default()
+        };
+        configure(&mut config);
+        let transport = HttpTransport::new(config).unwrap();
+        transport.start_server().await.unwrap();
+        let server_addr = transport.bound_addr().await.unwrap();
+        wait_for_plain_server_ready(server_addr).await;
+        // サーバーを止めないように、テストの間は残す
+        std::mem::forget(transport);
+        (server_addr.port(), auth)
+    }
+
+    const OAUTH_RESOURCE: &str = "https://mcp.example.com/mcp";
+    const OAUTH_METADATA_URL: &str =
+        "https://mcp.example.com/.well-known/oauth-protected-resource/mcp";
+
+    async fn post_mcp(port: u16, authorization: Option<String>) -> reqwest::Response {
+        let mut request = reqwest::Client::new()
+            .post(format!("http://127.0.0.1:{}/mcp", port))
+            .json(&notification_jsonrpc_request());
+        if let Some(authorization) = authorization {
+            request = request.header("Authorization", authorization);
+        }
+        request.send().await.unwrap()
+    }
+
+    fn www_authenticate_of(response: &reqwest::Response) -> String {
+        response
+            .headers()
+            .get("www-authenticate")
+            .expect("WWW-Authenticate header")
+            .to_str()
+            .unwrap()
+            .to_string()
+    }
+
+    #[tokio::test]
+    async fn test_oauth_rejects_missing_and_invalid_tokens_with_www_authenticate() {
+        let (port, auth) = start_oauth_server(|_| {}).await;
+
+        let response = post_mcp(port, None).await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            www_authenticate_of(&response),
+            format!("Bearer resource_metadata=\"{}\"", OAUTH_METADATA_URL)
+        );
+
+        // 別のサービス向けのトークン（対象が違う）
+        let other = auth.token("https://other.example.com", serde_json::json!({}));
+        let response = post_mcp(port, Some(format!("Bearer {}", other))).await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let header = www_authenticate_of(&response);
+        assert!(header.contains("error=\"invalid_token\""), "{}", header);
+        assert!(header.contains(OAUTH_METADATA_URL), "{}", header);
+
+        let response = post_mcp(port, Some("Bearer garbage".to_string())).await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_oauth_accepts_valid_token() {
+        let (port, auth) = start_oauth_server(|_| {}).await;
+        let token = auth.token(OAUTH_RESOURCE, serde_json::json!({}));
+        let response = post_mcp(port, Some(format!("Bearer {}", token))).await;
+        assert!(response.status().is_success(), "{}", response.status());
+    }
+
+    #[tokio::test]
+    async fn test_oauth_insufficient_scope_returns_403() {
+        let (port, auth) = start_oauth_server(|config| {
+            config.oauth.as_mut().unwrap().required_scopes = vec!["mcp:tools".to_string()];
+        })
+        .await;
+        let token = auth.token(OAUTH_RESOURCE, serde_json::json!({ "scope": "openid" }));
+        let response = post_mcp(port, Some(format!("Bearer {}", token))).await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let header = www_authenticate_of(&response);
+        assert!(
+            header.contains("error=\"insufficient_scope\""),
+            "{}",
+            header
+        );
+        assert!(header.contains("scope=\"mcp:tools\""), "{}", header);
+
+        let token = auth.token(OAUTH_RESOURCE, serde_json::json!({ "scope": "mcp:tools" }));
+        let response = post_mcp(port, Some(format!("Bearer {}", token))).await;
+        assert!(response.status().is_success());
+    }
+
+    #[tokio::test]
+    async fn test_oauth_protected_resource_metadata_is_served_without_auth() {
+        let (port, auth) = start_oauth_server(|_| {}).await;
+        for path in [
+            "/.well-known/oauth-protected-resource/mcp",
+            "/.well-known/oauth-protected-resource",
+        ] {
+            let response = reqwest::get(format!("http://127.0.0.1:{}{}", port, path))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{}", path);
+            let metadata: Value = response.json().await.unwrap();
+            assert_eq!(metadata["resource"], serde_json::json!(OAUTH_RESOURCE));
+            assert_eq!(
+                metadata["authorization_servers"],
+                serde_json::json!([auth.issuer])
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_protected_resource_metadata_is_not_served_without_oauth() {
+        let config = HttpConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            ..HttpConfig::default()
+        };
+        let transport = HttpTransport::new(config).unwrap();
+        transport.start_server().await.unwrap();
+        let server_addr = transport.bound_addr().await.unwrap();
+        wait_for_plain_server_ready(server_addr).await;
+        let response = reqwest::get(format!(
+            "http://127.0.0.1:{}/.well-known/oauth-protected-resource",
+            server_addr.port()
+        ))
+        .await
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_oauth_and_api_keys_can_be_used_together() {
+        let (port, auth) = start_oauth_server(|config| {
+            config.auth_enabled = true;
+            config.api_keys = vec![ApiKeyEntry {
+                key: "correct-key".to_string(),
+                name: "test".to_string(),
+                user_id: "user-1".to_string(),
+            }];
+        })
+        .await;
+        let response = post_mcp(port, Some("Bearer correct-key".to_string())).await;
+        assert!(response.status().is_success());
+        let token = auth.token(OAUTH_RESOURCE, serde_json::json!({}));
+        let response = post_mcp(port, Some(format!("Bearer {}", token))).await;
+        assert!(response.status().is_success());
+        let response = post_mcp(port, Some("Bearer wrong-key".to_string())).await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert!(www_authenticate_of(&response).contains("invalid_token"));
+    }
+
+    #[tokio::test]
+    async fn test_oauth_ws_upgrade_requires_token() {
+        let (port, auth) = start_oauth_server(|_| {}).await;
+        let url = format!("ws://localhost:{}/ws", port);
+        match tokio_tungstenite::connect_async(&url).await {
+            Err(WsError::Http(response)) => {
+                assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+            }
+            other => panic!("expected 401 without a token, got: {other:?}"),
+        }
+
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+        let mut request = url.into_client_request().unwrap();
+        let token = auth.token(OAUTH_RESOURCE, serde_json::json!({}));
+        request.headers_mut().insert(
+            "Authorization",
+            format!("Bearer {}", token).parse().unwrap(),
+        );
+        assert!(tokio_tungstenite::connect_async(request).await.is_ok());
+    }
+
+    /// 実際の認可サーバー（Keycloak）が発行したトークンで確かめる（#420）。
+    /// `MCP_RS_KEYCLOAK_TESTS=1`のときだけ動く（CIの「OAuth Keycloak Test」）。
+    /// Keycloakは`MCP_RS_KEYCLOAK_URL`（既定`http://localhost:8080`）で、
+    /// 管理者admin/adminで起動しておく
+    #[tokio::test]
+    async fn test_keycloak_access_tokens() {
+        if std::env::var("MCP_RS_KEYCLOAK_TESTS").ok().as_deref() != Some("1") {
+            return;
+        }
+        let base = std::env::var("MCP_RS_KEYCLOAK_URL")
+            .unwrap_or_else(|_| "http://localhost:8080".to_string());
+        let client = reqwest::Client::new();
+        let token_of = |realm: &str, form: Vec<(&str, &str)>| {
+            let client = client.clone();
+            let url = format!("{}/realms/{}/protocol/openid-connect/token", base, realm);
+            let form: Vec<(String, String)> = form
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect();
+            async move {
+                let response = client.post(url).form(&form).send().await.unwrap();
+                let status = response.status();
+                let body: Value = response.json().await.unwrap();
+                assert!(status.is_success(), "token request failed: {}", body);
+                body["access_token"].as_str().unwrap().to_string()
+            }
+        };
+
+        // 準備: realm「mcp」と、2つのクライアント（mcp-rs向けの対象（aud）を
+        // 入れるものと、入れないもの）
+        let admin = token_of(
+            "master",
+            vec![
+                ("grant_type", "password"),
+                ("client_id", "admin-cli"),
+                ("username", "admin"),
+                ("password", "admin"),
+            ],
+        )
+        .await;
+        let admin_post = |path: &str, body: Value| {
+            let request = client
+                .post(format!("{}/admin/realms{}", base, path))
+                .bearer_auth(&admin)
+                .json(&body);
+            async move {
+                let response = request.send().await.unwrap();
+                let status = response.status();
+                assert!(
+                    status.is_success() || status == StatusCode::CONFLICT,
+                    "admin request failed: {} {}",
+                    status,
+                    response.text().await.unwrap_or_default()
+                );
+            }
+        };
+        admin_post("", serde_json::json!({ "realm": "mcp", "enabled": true })).await;
+        let new_client = |client_id: &str, secret: &str, audience: Option<&str>| {
+            let mut body = serde_json::json!({
+                "clientId": client_id,
+                "enabled": true,
+                "publicClient": false,
+                "serviceAccountsEnabled": true,
+                "standardFlowEnabled": false,
+                "directAccessGrantsEnabled": false,
+                "secret": secret,
+            });
+            if let Some(audience) = audience {
+                body["protocolMappers"] = serde_json::json!([{
+                    "name": "mcp-rs-audience",
+                    "protocol": "openid-connect",
+                    "protocolMapper": "oidc-audience-mapper",
+                    "config": {
+                        "included.custom.audience": audience,
+                        "access.token.claim": "true",
+                        "id.token.claim": "false"
+                    }
+                }]);
+            }
+            body
+        };
+        admin_post(
+            "/mcp/clients",
+            new_client("mcp-client", "mcp-secret", Some(OAUTH_RESOURCE)),
+        )
+        .await;
+        admin_post(
+            "/mcp/clients",
+            new_client("other-client", "other-secret", None),
+        )
+        .await;
+
+        let credentials = |id: &'static str, secret: &'static str| {
+            vec![
+                ("grant_type", "client_credentials"),
+                ("client_id", id),
+                ("client_secret", secret),
+            ]
+        };
+        let token = token_of("mcp", credentials("mcp-client", "mcp-secret")).await;
+        let other = token_of("mcp", credentials("other-client", "other-secret")).await;
+
+        // 発行者だけを設定し、JWKSはメタデータから探す
+        let issuer = format!("{}/realms/mcp", base);
+        let config = HttpConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            oauth: Some(OAuthConfig {
+                issuer: issuer.clone(),
+                resource: OAUTH_RESOURCE.to_string(),
+                audiences: Vec::new(),
+                jwks_uri: None,
+                required_scopes: vec!["profile".to_string()],
+                leeway_seconds: 60,
+            }),
+            ..HttpConfig::default()
+        };
+        let transport = HttpTransport::new(config).unwrap();
+        transport.start_server().await.unwrap();
+        let server_addr = transport.bound_addr().await.unwrap();
+        wait_for_plain_server_ready(server_addr).await;
+        let port = server_addr.port();
+
+        let response = post_mcp(port, Some(format!("Bearer {}", token))).await;
+        assert!(
+            response.status().is_success(),
+            "Keycloak token was rejected: {}",
+            response.status()
+        );
+
+        // 対象（aud）がmcp-rsでないトークン
+        let response = post_mcp(port, Some(format!("Bearer {}", other))).await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert!(www_authenticate_of(&response).contains("invalid_token"));
+
+        // 署名を改ざんしたトークン
+        // （署名の途中の1文字を変える。末尾は、使われないビットのことがある）
+        let mut tampered = token.clone().into_bytes();
+        let i = tampered.len() - 10;
+        tampered[i] = if tampered[i] == b'A' { b'B' } else { b'A' };
+        let tampered = String::from_utf8(tampered).unwrap();
+        let response = post_mcp(port, Some(format!("Bearer {}", tampered))).await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+        let response = post_mcp(port, None).await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert!(www_authenticate_of(&response).contains("resource_metadata="));
+
+        let metadata: Value = reqwest::get(format!(
+            "http://127.0.0.1:{}/.well-known/oauth-protected-resource/mcp",
+            port
+        ))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+        assert_eq!(
+            metadata["authorization_servers"],
+            serde_json::json!([issuer])
+        );
+    }
+
+    #[tokio::test]
+    async fn test_start_server_rejects_invalid_oauth_config() {
+        let config = HttpConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            oauth: Some(OAuthConfig {
+                issuer: "http://auth.example.com".to_string(),
+                resource: OAUTH_RESOURCE.to_string(),
+                audiences: Vec::new(),
+                jwks_uri: None,
+                required_scopes: Vec::new(),
+                leeway_seconds: 60,
+            }),
+            ..HttpConfig::default()
+        };
+        let transport = HttpTransport::new(config).unwrap();
+        assert!(transport.start_server().await.is_err());
     }
 
     #[tokio::test]

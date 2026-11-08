@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- HTTPモードで、OAuth 2.1のアクセストークン（JWT）を受け付けるようにした
+  （#420、`[transport.http.oauth]`）。MCPの仕様（2025-06-18の
+  「Authorization」）のリソースサーバーとして動き、ログインは外部の認可
+  サーバー（Keycloak・Okta・Microsoft Entra ID等）が受け持つ
+  - 署名（認可サーバーのJWKS）・発行者・有効期限・対象（`aud`）を確かめる。
+    共有鍵（HS256等）・署名なしのトークンは受け付けない
+  - Protected Resource Metadata（RFC 9728）を公開し、401・403に
+    `WWW-Authenticate`を付ける
+  - `required_scopes`で必要なスコープを指定できる
+  - APIキー（`auth_enabled`）と併用できる
+
 - MCPのプロトコル版`2025-06-18`に対応した（#417）
   - 版の交渉: クライアントが要求した版（`2025-06-18`・`2024-11-05`）で答える。
     それ以外は`2025-06-18`で答える。以前は常に`2024-11-05`で答えていた

@@ -383,6 +383,9 @@ pub struct HttpTransportConfig {
     pub auth_enabled: Option<bool>,
     /// Valid API keys when `auth_enabled = true`.
     pub api_keys: Option<Vec<ApiKeyEntryConfig>>,
+    /// OAuth 2.1 access tokens (`[transport.http.oauth]`, #420)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oauth: Option<crate::transport::oauth::OAuthConfig>,
 }
 
 /// TOML-facing shape for a single API key entry under
@@ -983,6 +986,7 @@ impl McpConfig {
                     websocket_max_connections: Some(1000),
                     auth_enabled: Some(false),
                     api_keys: Some(vec![]),
+                    oauth: None,
                 }),
             },
             handlers: HandlersConfig {
@@ -1201,6 +1205,7 @@ impl McpConfig {
                     .into_iter()
                     .map(crate::transport::http::ApiKeyEntry::from)
                     .collect(),
+                oauth: http.oauth.clone(),
             }
         } else {
             crate::transport::http::HttpConfig::default()

@@ -180,6 +180,44 @@ jobs:
           MCP_RS_K8S_TESTS: "1"
         run: cargo test --lib plugin_proxy::tests::test_kubernetes_plugin_is_isolated -- --nocapture
 
+  # HTTPモードのOAuth 2.1（#420）を、Keycloakが発行したトークンで確かめる
+  oauth-keycloak-test:
+    name: OAuth Keycloak Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: Start Keycloak
+        run: |
+          docker run -d --name keycloak -p 8080:8080             -e KC_BOOTSTRAP_ADMIN_USERNAME=admin             -e KC_BOOTSTRAP_ADMIN_PASSWORD=admin             quay.io/keycloak/keycloak:26.4 start-dev
+          for i in $(seq 1 90); do
+            if curl -sf http://localhost:8080/realms/master/.well-known/openid-configuration > /dev/null; then
+              echo "Keycloak is ready"
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs keycloak
+          exit 1
+
+      - name: Run OAuth Keycloak test
+        env:
+          MCP_RS_KEYCLOAK_TESTS: "1"
+          MCP_RS_KEYCLOAK_URL: http://localhost:8080
+        run: cargo test --lib transport::http::tests::test_keycloak_access_tokens -- --nocapture
+
+      - name: Show Keycloak logs
+        if: failure()
+        run: docker logs keycloak
+
   docker-compose-tests:
     name: Docker Compose Tests
     runs-on: ubuntu-latest
