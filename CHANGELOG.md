@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.1] - 2026-11-08
+
 ### Added
 
 - `mcp-rs --version`（`-V`）でバージョンを、`--help`（`-h`）で使い方を表示する
