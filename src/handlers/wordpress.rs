@@ -1049,6 +1049,14 @@ impl WordPressHandler {
     }
 
     /// 安全なコンストラクタ - エラーハンドリング付き
+    /// ツール呼び出しを記録する監査ログを差し替える。本体は、プラグイン等と
+    /// 同じ監査ログ（設定の`[audit]`で書き込み先を決めたもの）を渡す（#416）。
+    /// 既定はメモリにだけ残す監査ログ。
+    pub fn with_audit_logger(mut self, audit_logger: Arc<AuditLogger>) -> Self {
+        self.audit_logger = audit_logger;
+        self
+    }
+
     pub fn try_new(config: WordPressConfig) -> Result<Self, String> {
         // URL検証 - HTTPS強制
         if !config.url.starts_with("https://") {

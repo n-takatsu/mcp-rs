@@ -361,8 +361,12 @@ pub fn validate_plugin_name(name: &str) -> Result<(), String> {
 
 /// 設定されたプラグインを起動する。起動できなかったプラグインは警告を
 /// 出して飛ばし、本体の起動は続ける（そのプラグインのツールが使えない
-/// だけにする）。
-pub async fn start_plugins(configs: &[PluginConfig]) -> Vec<(String, Arc<PluginHandler>)> {
+/// だけにする）。ツール呼び出しは`audit_logger`に記録する（本体の他の
+/// ハンドラーと同じものを渡す、#416）。
+pub async fn start_plugins(
+    configs: &[PluginConfig],
+    audit_logger: Arc<AuditLogger>,
+) -> Vec<(String, Arc<PluginHandler>)> {
     let mut started = Vec::new();
     let mut seen = HashSet::new();
     for config in configs {
@@ -377,7 +381,7 @@ pub async fn start_plugins(configs: &[PluginConfig]) -> Vec<(String, Arc<PluginH
             );
             continue;
         }
-        match PluginHandler::start(config).await {
+        match PluginHandler::start_with_audit_logger(config, audit_logger.clone()).await {
             Ok(handler) => {
                 info!(
                     "Plugin '{}' started with {} tools",
@@ -674,13 +678,22 @@ pub struct PluginHandler {
     call_timeout: Duration,
     max_response_bytes: usize,
     rate_limiter: RateLimiter,
-    audit_logger: AuditLogger,
+    audit_logger: Arc<AuditLogger>,
 }
 
 impl PluginHandler {
     /// 子プロセス（またはコンテナ）を起動し、`initialize`・`tools/list`
-    /// まで行う。
+    /// まで行う。監査ログはメモリにだけ残す（ファイルに書くには
+    /// `start_with_audit_logger`）。
     pub async fn start(config: &PluginConfig) -> Result<Self, String> {
+        Self::start_with_audit_logger(config, Arc::new(AuditLogger::with_defaults())).await
+    }
+
+    /// `start`と同じ。ツール呼び出しを`audit_logger`に記録する。
+    pub async fn start_with_audit_logger(
+        config: &PluginConfig,
+        audit_logger: Arc<AuditLogger>,
+    ) -> Result<Self, String> {
         validate_plugin_name(&config.name)?;
         if config.container.is_some() && config.kubernetes.is_some() {
             return Err("container and kubernetes cannot both be set".to_string());
@@ -691,7 +704,7 @@ impl PluginHandler {
         {
             return Err("command is empty".to_string());
         }
-        let result = Self::start_inner(config).await;
+        let result = Self::start_inner(config, audit_logger).await;
         result.map_err(|e| {
             if config.container.is_some() {
                 format!(
@@ -709,7 +722,10 @@ impl PluginHandler {
         })
     }
 
-    async fn start_inner(config: &PluginConfig) -> Result<Self, String> {
+    async fn start_inner(
+        config: &PluginConfig,
+        audit_logger: Arc<AuditLogger>,
+    ) -> Result<Self, String> {
         let call_timeout = Duration::from_secs(
             config
                 .call_timeout_seconds
@@ -883,7 +899,7 @@ impl PluginHandler {
             call_timeout,
             max_response_bytes,
             rate_limiter: RateLimiter::new(config.rate_limit.clone().unwrap_or_default()),
-            audit_logger: AuditLogger::with_defaults(),
+            audit_logger,
         })
     }
 
@@ -1399,7 +1415,11 @@ mod tests {
         let good = test_plugin_config("good");
         let duplicate = test_plugin_config("good");
 
-        let started = start_plugins(&[missing, bad_name, disabled, good, duplicate]).await;
+        let started = start_plugins(
+            &[missing, bad_name, disabled, good, duplicate],
+            Arc::new(AuditLogger::with_defaults()),
+        )
+        .await;
         let names: Vec<&str> = started.iter().map(|(n, _)| n.as_str()).collect();
         assert_eq!(names, vec!["good"]);
     }
