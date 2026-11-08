@@ -171,6 +171,11 @@ impl McpServer {
         self.audit_logger = Some(audit_logger);
     }
 
+    /// `set_audit_logger`で設定した監査ログ
+    pub fn audit_logger(&self) -> Option<Arc<crate::security::AuditLogger>> {
+        self.audit_logger.clone()
+    }
+
     /// 登録済みのハンドラーで処理する`RequestDispatcher`を作る。以後に
     /// `add_handler`したハンドラーは含まれない。
     pub fn dispatcher(&self) -> RequestDispatcher {
@@ -328,7 +333,12 @@ impl McpServer {
                             "isError": true
                         }))
                     }
-                    Ok(params) => match Self::call_tool_routed(handlers, params).await {
+                    Ok(params) => match crate::mcp::with_caller(
+                        caller.clone(),
+                        Self::call_tool_routed(handlers, params),
+                    )
+                    .await
+                    {
                         Ok(value) => Ok(call_tool_result_for_version(
                             session.protocol_version(),
                             value,
@@ -442,6 +452,10 @@ impl McpServer {
         .with_result("DENIED".to_string())
         .add_metadata("caller".to_string(), caller.display_name().to_string());
         entry.user_id = Some(caller.display_name().to_string());
+        entry.ip_address = caller.ip_address.clone();
+        if let Some(subject) = &caller.subject {
+            entry = entry.add_metadata("subject".to_string(), subject.clone());
+        }
         if let Err(e) = audit_logger.log(entry).await {
             warn!("Failed to write audit log entry for {}: {}", name, e);
         }

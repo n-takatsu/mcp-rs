@@ -127,7 +127,47 @@ pub struct Caller {
     /// 監査ログ・ログに出す名前（APIキーの名前、トークンの主体等）。
     /// ローカル（STDIO）・認証なしは`None`
     pub name: Option<String>,
+    /// 呼び出し元の利用者（APIキーの`user_id`、トークンの`sub`、#55）
+    pub subject: Option<String>,
+    /// 呼び出し元のIPアドレス（HTTPモード、#55）
+    pub ip_address: Option<String>,
     pub access: ToolAccess,
+}
+
+tokio::task_local! {
+    /// 処理中のツール呼び出しの呼び出し元（#55）。ハンドラーが監査ログに
+    /// 書くために、`McpServer`が設定する
+    static CURRENT_CALLER: Caller;
+}
+
+/// `caller`を呼び出し元として、`future`を実行する（#55）
+pub async fn with_caller<F: std::future::Future>(caller: Caller, future: F) -> F::Output {
+    CURRENT_CALLER.scope(caller, future).await
+}
+
+/// 処理中のツール呼び出しの呼び出し元。`with_caller`の外では`None`
+pub fn current_caller() -> Option<Caller> {
+    CURRENT_CALLER.try_with(Caller::clone).ok()
+}
+
+/// ツール呼び出しの監査ログの項目に、呼び出し元と所要時間を加える（#55）。
+/// 呼び出し元が分からない（`with_caller`の外）場合は`local`とする
+pub fn audit_tool_call_context(
+    mut entry: crate::security::AuditLogEntry,
+    started: std::time::Instant,
+) -> crate::security::AuditLogEntry {
+    let caller = current_caller().unwrap_or_default();
+    entry.user_id = Some(caller.display_name().to_string());
+    if caller.ip_address.is_some() {
+        entry.ip_address = caller.ip_address.clone();
+    }
+    if let Some(subject) = &caller.subject {
+        entry = entry.add_metadata("subject".to_string(), subject.clone());
+    }
+    entry.add_metadata(
+        "duration_ms".to_string(),
+        started.elapsed().as_millis().to_string(),
+    )
 }
 
 impl Caller {
@@ -139,8 +179,22 @@ impl Caller {
     pub fn new(name: impl Into<String>, access: ToolAccess) -> Self {
         Self {
             name: Some(name.into()),
+            subject: None,
+            ip_address: None,
             access,
         }
+    }
+
+    /// 呼び出し元のIPアドレスを付ける
+    pub fn with_ip_address(mut self, ip_address: Option<String>) -> Self {
+        self.ip_address = ip_address;
+        self
+    }
+
+    /// 呼び出し元の利用者（APIキーの`user_id`、トークンの`sub`）を付ける
+    pub fn with_subject(mut self, subject: Option<String>) -> Self {
+        self.subject = subject;
+        self
     }
 
     /// ログ・監査ログに出す名前

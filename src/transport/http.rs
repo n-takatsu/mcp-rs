@@ -334,11 +334,20 @@ pub struct HttpTransport {
     /// （ロックを持ったまま`.await`しない）（#265）
     bound_addr: Arc<std::sync::RwLock<Option<SocketAddr>>>,
     request_handler: RequestHandlerSlot,
+    /// 認証の失敗等を記録する監査ログ（#55）。既定はメモリにだけ残すもの
+    audit_logger: Arc<AuditLogger>,
 }
 
 impl HttpTransport {
     /// 受け付けたJSON-RPCメッセージを直接処理するハンドラーを設定する
     /// （#400）。`start_server()`の前に呼ぶ。
+    /// 認証の失敗・リプレイ攻撃の検出等を記録する監査ログを設定する（#55）。
+    /// 本体は、ツール呼び出しと同じ監査ログ（設定の`[audit]`）を渡す
+    pub fn with_audit_logger(mut self, audit_logger: Arc<AuditLogger>) -> Self {
+        self.audit_logger = audit_logger;
+        self
+    }
+
     pub fn with_request_handler(mut self, handler: Arc<dyn JsonRpcRequestHandler>) -> Self {
         self.request_handler = RequestHandlerSlot(Some(handler));
         self
@@ -361,6 +370,7 @@ impl HttpTransport {
             stats: Arc::new(RwLock::new(stats)),
             bound_addr: Arc::new(std::sync::RwLock::new(None)),
             request_handler: RequestHandlerSlot::default(),
+            audit_logger: Arc::new(AuditLogger::with_defaults()),
         })
     }
 
@@ -443,7 +453,8 @@ impl HttpTransport {
                     })?;
                 api_key_callers.insert(
                     api_key.id,
-                    crate::mcp::Caller::new(format!("api_key:{}", entry.name), access),
+                    crate::mcp::Caller::new(format!("api_key:{}", entry.name), access)
+                        .with_subject(Some(entry.user_id.clone())),
                 );
             }
             Some(Arc::new(RwLock::new(manager)))
@@ -546,7 +557,7 @@ impl HttpTransport {
             api_key_callers: Arc::new(api_key_callers),
             oauth: oauth.clone(),
             ws_callers: ws_callers.clone(),
-            audit_logger: Arc::new(AuditLogger::with_defaults()),
+            audit_logger: self.audit_logger.clone(),
             websocket_upgrade_enabled: self.config.enable_websocket_upgrade,
             websocket_semaphore: Arc::new(tokio::sync::Semaphore::new(
                 self.config.websocket_max_connections,
@@ -1016,7 +1027,7 @@ async fn handle_jsonrpc_request(
 ) -> std::result::Result<Response, StatusCode> {
     check_network_policy(&state.network_policy, remote_addr)?;
     let caller = match check_auth(&state, &headers, remote_addr).await {
-        Ok(caller) => caller,
+        Ok(caller) => caller.with_ip_address(Some(remote_addr.ip().to_string())),
         Err(response) => return Ok(*response),
     };
     check_https_enforcement(
@@ -1232,26 +1243,24 @@ async fn check_auth(
                     .api_key_callers
                     .get(&api_key.id)
                     .cloned()
-                    .unwrap_or_else(|| crate::mcp::Caller {
-                        name: Some(format!("api_key:{}", api_key.name)),
-                        access: crate::mcp::ToolAccess::any_of(Vec::new()),
+                    .unwrap_or_else(|| {
+                        crate::mcp::Caller::new(
+                            format!("api_key:{}", api_key.name),
+                            crate::mcp::ToolAccess::any_of(Vec::new()),
+                        )
                     }));
             }
         }
     }
 
     let Some(oauth) = &state.oauth else {
-        if extract_api_key(headers).is_none() {
-            warn!(
-                "Rejected request from {} due to missing API key",
-                remote_addr
-            );
+        let reason = if extract_api_key(headers).is_none() {
+            "missing API key"
         } else {
-            warn!(
-                "Rejected request from {} due to invalid, revoked, or expired API key",
-                remote_addr
-            );
-        }
+            "invalid, revoked, or expired API key"
+        };
+        warn!("Rejected request from {} due to {}", remote_addr, reason);
+        audit_auth_failure(state, remote_addr, reason).await;
         return Err(Box::new(StatusCode::UNAUTHORIZED.into_response()));
     };
 
@@ -1260,6 +1269,7 @@ async fn check_auth(
             "Rejected request from {} due to missing access token",
             remote_addr
         );
+        audit_auth_failure(state, remote_addr, "missing access token").await;
         return Err(Box::new(oauth_error_response(oauth.config(), None)));
     };
     match oauth.validate(&token).await {
@@ -1272,17 +1282,46 @@ async fn check_auth(
         }
         Err(error) => {
             match &error {
-                TokenError::Invalid(reason) => warn!(
-                    "Rejected request from {} due to an invalid access token: {}",
-                    remote_addr, reason
-                ),
-                TokenError::InsufficientScope => warn!(
-                    "Rejected request from {}: the access token lacks the required scopes",
-                    remote_addr
-                ),
+                TokenError::Invalid(reason) => {
+                    warn!(
+                        "Rejected request from {} due to an invalid access token: {}",
+                        remote_addr, reason
+                    );
+                    audit_auth_failure(
+                        state,
+                        remote_addr,
+                        &format!("invalid access token: {}", reason),
+                    )
+                    .await;
+                }
+                TokenError::InsufficientScope => {
+                    warn!(
+                        "Rejected request from {}: the access token lacks the required scopes",
+                        remote_addr
+                    );
+                    audit_auth_failure(state, remote_addr, "insufficient scope").await;
+                }
             }
             Err(Box::new(oauth_error_response(oauth.config(), Some(&error))))
         }
+    }
+}
+
+/// 認証の失敗を監査ログに記録する（#55）。提示された認証情報（キー・
+/// トークン）そのものは記録しない
+async fn audit_auth_failure(state: &HttpTransportState, remote_addr: SocketAddr, reason: &str) {
+    let mut entry = crate::security::AuditLogEntry::new(
+        crate::security::AuditLevel::Warning,
+        crate::security::AuditCategory::Authentication,
+        format!("Authentication failed: {}", reason),
+    )
+    .with_result("DENIED".to_string());
+    entry.ip_address = Some(remote_addr.ip().to_string());
+    if let Err(e) = state.audit_logger.log(entry).await {
+        warn!(
+            "Failed to write audit log entry for an authentication failure: {}",
+            e
+        );
     }
 }
 
@@ -1654,7 +1693,7 @@ async fn handle_ws_upgrade(
         return status.into_response();
     }
     let caller = match check_auth(&state, &headers, remote_addr).await {
-        Ok(caller) => caller,
+        Ok(caller) => caller.with_ip_address(Some(remote_addr.ip().to_string())),
         Err(response) => return *response,
     };
     if let Err(status) = check_https_enforcement(
@@ -1946,9 +1985,11 @@ impl MessageHandler for JsonRpcWsHandler {
                 .await
                 .get(&conn_id)
                 .cloned()
-                .unwrap_or_else(|| crate::mcp::Caller {
-                    name: Some("unknown-websocket-connection".to_string()),
-                    access: crate::mcp::ToolAccess::any_of(Vec::new()),
+                .unwrap_or_else(|| {
+                    crate::mcp::Caller::new(
+                        "unknown-websocket-connection",
+                        crate::mcp::ToolAccess::any_of(Vec::new()),
+                    )
                 });
             let response = match tokio::time::timeout(
                 REQUEST_HANDLER_TIMEOUT,
@@ -4172,6 +4213,61 @@ mod tests {
             name: name.to_string(),
             user_id: "user-1".to_string(),
             tools: tools.map(|t| t.iter().map(|s| s.to_string()).collect()),
+        }
+    }
+
+    /// 認証の失敗を、設定した監査ログに記録する。提示されたキーそのものは
+    /// 記録しない（#55）
+    #[tokio::test]
+    async fn test_authentication_failures_are_audited() {
+        let audit_logger = Arc::new(AuditLogger::with_defaults());
+        let transport = HttpTransport::new(HttpConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            auth_enabled: true,
+            api_keys: vec![api_key("correct-key", "reader", None)],
+            ..HttpConfig::default()
+        })
+        .unwrap()
+        .with_audit_logger(audit_logger.clone())
+        .with_request_handler(Arc::new(EchoRequestHandler));
+        transport.start_server().await.unwrap();
+        let server_addr = transport.bound_addr().await.unwrap();
+        wait_for_plain_server_ready(server_addr).await;
+
+        let url = format!("http://127.0.0.1:{}/mcp", server_addr.port());
+        let client = reqwest::Client::new();
+        for authorization in [None, Some("Bearer secret-wrong-key")] {
+            let mut request = client.post(&url).json(&notification_jsonrpc_request());
+            if let Some(authorization) = authorization {
+                request = request.header("Authorization", authorization);
+            }
+            assert_eq!(
+                request.send().await.unwrap().status(),
+                StatusCode::UNAUTHORIZED
+            );
+        }
+        // 成功した認証は記録しない（ツール呼び出しの記録に呼び出し元が残る）
+        let response = client
+            .post(&url)
+            .header("Authorization", "Bearer correct-key")
+            .json(&notification_jsonrpc_request())
+            .send()
+            .await
+            .unwrap();
+        assert!(response.status().is_success());
+
+        let entries = audit_logger.get_all_entries().await;
+        assert_eq!(entries.len(), 2, "{:?}", entries);
+        assert_eq!(entries[0].message, "Authentication failed: missing API key");
+        assert_eq!(
+            entries[1].message,
+            "Authentication failed: invalid, revoked, or expired API key"
+        );
+        for entry in &entries {
+            assert_eq!(entry.ip_address.as_deref(), Some("127.0.0.1"));
+            assert_eq!(entry.result.as_deref(), Some("DENIED"));
+            let text = serde_json::to_string(entry).unwrap();
+            assert!(!text.contains("secret-wrong-key"), "{}", text);
         }
     }
 

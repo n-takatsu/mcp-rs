@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- 監査ログに、呼び出し元と結果を記録するようにした（#55）
+  - ツール呼び出しの記録に、呼び出し元（`user_id`: `api_key:<name>`・
+    `oauth:<client>`・STDIOは`local`）、利用者（`subject`: APIキーの
+    `user_id`・トークンの`sub`）、IPアドレス、所要時間（`duration_ms`）を
+    加えた
+  - WordPressの読み取りのツールも記録する（以前は変更するツールだけ）
+  - HTTPモードの認証の失敗（キー・トークンが無い・無効・スコープ不足）を
+    記録する。キー・トークン・ツールの引数は記録しない
+  - **ライブラリの変更**: `mcp::Caller`に`subject`・`ip_address`を追加。
+    `HttpTransport::with_audit_logger`、`McpServer::audit_logger`、
+    `mcp::with_caller`・`mcp::current_caller`・`mcp::audit_tool_call_context`
+    を追加
+
 - HTTPモードで、APIキー・アクセストークンごとに使えるツールを制限できるように
   した（#52）
   - APIキーの`tools`、OAuthの`scope_tools`（スコープ → ツール）で指定する。
@@ -82,6 +95,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - 必要な権限（Roleの例）は、website/docs/plugins.mdに記載
 
 ### Fixed
+
+- 監査ログのファイルへの書き込みを、終わるまで待つようにした（#55で発見）。
+  #416で入れた書き込みは、書き込みが終わる前にファイルを閉じることがあり、
+  次の書き込みやローテーションと順番が入れ替わるおそれがあった
 
 - 監査ログが、mcp-rsの作業フォルダの`audit.log`（相対パス）に書かれていた
   問題を修正（#416）。Claude Desktop等から起動した場合、作業フォルダは

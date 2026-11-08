@@ -625,6 +625,12 @@ impl AuditLogger {
             file.write_all(line.as_bytes())
                 .await
                 .map_err(|e| SecurityError::Configuration(format!("File write failed: {}", e)))?;
+            // tokioのFileは、書き込みを裏で続けたまま閉じることがある。ロックを
+            // 手放す前に書き終える（次の書き込み・ローテーションと順番が
+            // 入れ替わらないように）
+            file.flush()
+                .await
+                .map_err(|e| SecurityError::Configuration(format!("File write failed: {}", e)))?;
         }
         Ok(())
     }

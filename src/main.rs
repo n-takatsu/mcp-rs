@@ -201,8 +201,12 @@ async fn run_http_server(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let server = build_server(config, true).await?;
 
-    let transport = mcp_rs::transport::HttpTransport::new(http_config)?
-        .with_request_handler(Arc::new(server.dispatcher()));
+    // 認証の失敗も、ツール呼び出しと同じ監査ログに記録する（#55）
+    let mut transport = mcp_rs::transport::HttpTransport::new(http_config)?;
+    if let Some(audit_logger) = server.audit_logger() {
+        transport = transport.with_audit_logger(audit_logger);
+    }
+    let transport = transport.with_request_handler(Arc::new(server.dispatcher()));
     transport.start_server().await?;
     if let Some(addr) = transport.bound_addr().await {
         info!("🌐 HTTPモードで待機中: http://{}/mcp", addr);
