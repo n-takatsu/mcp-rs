@@ -177,7 +177,7 @@ Then start mcp-rs with a config file. Ready-made config files are in `configs/pr
 ./target/release/mcp-rs --config configs/production/claude-desktop.toml
 ```
 
-`mcp-rs --version` prints the installed version, and `mcp-rs --help` lists the options (v0.19.1 and later). Unknown options are ignored with a warning in the log; a future version will refuse to start with them.
+`mcp-rs --version` prints the installed version, and `mcp-rs --help` lists the options (v0.19.1 and later). mcp-rs does not start when it gets an unknown option or `--config` without a path (v0.19.2 and later; v0.19.1 only logged a warning), so check the `args` of the mcp-rs entry in your MCP client's settings if it stops starting.
 
 From an MCP client (for example, ask Claude), call the `mcp_rs_status` tool to see the version, the config file in use, where the log and audit log are written, and the state of each plugin (v0.19.2 and later).
 

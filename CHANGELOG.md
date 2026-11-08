@@ -24,6 +24,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `plugin_proxy::start_plugins_reporting_failures`を追加。`tools/list`の
     先頭に`mcp_rs_status`が入る
 
+### Changed
+
+- 知らない引数と、パスの無い`--config`があると、起動しないようにした（#437）。
+  どの引数がおかしいかと使い方を標準エラー出力に出し、終了コード2で終わる。
+  v0.19.1では、ログに警告を出して無視していた。打ち間違い（`--confg`等）に
+  気づかず、既定の場所の設定ファイルで起動してしまうのを防ぐ
+  - **ライブラリの変更**: `cli_args::RunArgs`から`unknown`・
+    `missing_config_value`を外し、`cli_args::Command::Invalid`を追加した
+
 ## [0.19.1] - 2026-11-08
 
 ### Added
