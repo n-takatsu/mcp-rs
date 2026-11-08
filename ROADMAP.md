@@ -1,7 +1,7 @@
 # 🗺️ mcp-rs プロジェクト ロードマップ
 
-> **最終更新**: 2026年11月02日
-> **バージョン**: v1.2
+> **最終更新**: 2026年11月08日
+> **バージョン**: v1.3
 > **ステータス**: アクティブ開発中
 
 ## 🎯 プロジェクト概要
@@ -17,21 +17,9 @@ mcp-rsは、エンタープライズグレードのWordPress Model Context Proto
 
 ---
 
-## 📊 現在のステータス
+## 📜 これまでの変更
 
-完了済み機能の詳細な履歴は [CHANGELOG.md](CHANGELOG.md) / [RELEASE_NOTES.md](RELEASE_NOTES.md) を参照してください。ここでは主要マイルストーンの完了状況のみ要約します。
-
-## ✅ 完了済みマイルストーン
-
-| マイルストーン | ステータス | 詳細 |
-|--------------|-----------|------|
-| WordPress統合・セキュリティ基盤 | ✅ 完了 | 31ツール・6層セキュリティアーキテクチャ |
-| コードアーキテクチャ刷新 | ✅ 完了 | mod.rsリファクタリング（#162-166） |
-| プラグインシステム・隔離 | ✅ 完了 | Docker隔離・動的ポリシー更新（v0.2.0-beta、Issue #190/#185） |
-| WebSocket Transport | ✅ 完了 | |
-| AI統合・高度な監視分析 | ✅ 完了 | LLM統合・自然言語クエリ・メトリクス/分析 |
-| データベース統合 | ✅ 完了 | MySQL/PostgreSQL/Redis/SQLite マルチバックエンド対応（#214等） |
-| エンタープライズセキュリティ強化（Epic #219） | ✅ 完了 | mTLS・ゼロトラスト・HSM・IDS/IPS・量子耐性暗号・GDPR/CCPA対応（v0.17.0） |
+完了した機能・リリースの履歴は、[CHANGELOG.md](CHANGELOG.md)・[RELEASE_NOTES.md](RELEASE_NOTES.md)・[GitHub Releases](https://github.com/n-takatsu/mcp-rs/releases)を参照してください。このロードマップには、これからの計画だけを載せます。
 
 ---
 
@@ -70,7 +58,7 @@ mcp-rsは、エンタープライズグレードのWordPress Model Context Proto
 
 ## 🎯 優先機能ランキング
 
-v1.0.0（Epic #41、本番環境完全対応）に向けた残課題。それ以前の優先項目（動的ポリシー更新・Docker統合・プラグイン隔離・WebSocket・AI統合API・監視システム）は上記の通り完了済み。
+v1.0.0（Epic #41、本番環境完全対応）に向けた残課題。
 
 ## 🔥 P1 (High)
 
@@ -91,9 +79,6 @@ v1.0.0（Epic #41、本番環境完全対応）に向けた残課題。それ以
 
 ## 📋 GitHub Issues
 
-- [Advanced Security Epic #17](https://github.com/n-takatsu/mcp-rs/issues/17)（✅ Closed） - プラグイン隔離・動的ポリシー更新
-- [Docker/Kubernetes統合 Epic #39](https://github.com/n-takatsu/mcp-rs/issues/39)（✅ Closed） - コンテナ化・オーケストレーション
-- [WebSocket/AI統合 Epic #40](https://github.com/n-takatsu/mcp-rs/issues/40)（✅ Closed） - リアルタイム通信・LLM統合
 - [エンタープライズ機能 Epic #41](https://github.com/n-takatsu/mcp-rs/issues/41)（Open） - 認証・マルチテナント（v1.0.0）
 
 ## 📚 ドキュメント
