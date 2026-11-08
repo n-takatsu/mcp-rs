@@ -971,7 +971,12 @@ impl PluginHandler {
         Ok(tools)
     }
 
-    async fn audit_tool_call(&self, tool_name: &str, result: &Result<Value, McpError>) {
+    async fn audit_tool_call(
+        &self,
+        tool_name: &str,
+        result: &Result<Value, McpError>,
+        started: std::time::Instant,
+    ) {
         let success = result.is_ok();
         let status = if success { "SUCCESS" } else { "FAILURE" };
         let mut entry = AuditLogEntry::new(
@@ -988,6 +993,8 @@ impl PluginHandler {
         if let Err(e) = result {
             entry = entry.add_metadata("error".to_string(), e.to_string());
         }
+        // 呼び出し元と所要時間（#55）
+        let entry = crate::mcp::audit_tool_call_context(entry, started);
         if let Err(e) = self.audit_logger.log(entry).await {
             warn!("Failed to write audit log entry for {}: {}", tool_name, e);
         }
@@ -1039,6 +1046,7 @@ impl McpHandler for PluginHandler {
     }
 
     async fn call_tool(&self, params: ToolCallParams) -> Result<Value, McpError> {
+        let started = std::time::Instant::now();
         let Some(original) = self.original_names.get(&params.name) else {
             return Err(McpError::ToolNotFound(params.name));
         };
@@ -1055,7 +1063,7 @@ impl McpHandler for PluginHandler {
             Ok(_) => self.forward_tool_call(original, params.arguments).await,
         };
         // プラグインのツールは何をするか本体には分からないため、すべて記録する
-        self.audit_tool_call(&params.name, &result).await;
+        self.audit_tool_call(&params.name, &result, started).await;
         result
     }
 

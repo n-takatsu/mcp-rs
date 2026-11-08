@@ -1139,13 +1139,16 @@ impl WordPressHandler {
         })
     }
 
-    /// 変更系ツール呼び出しの結果を監査ログに記録する。成功/失敗どちらも
-    /// 記録する（インシデント調査では失敗した変更の試みも重要なため）。
+    /// ツール呼び出しの結果を監査ログに記録する。成功/失敗どちらも記録する
+    /// （インシデント調査では失敗した変更の試みも重要なため）。読み取りの
+    /// ツールも記録する（#55。誰が何を読んだかも分かるように）。呼び出し元と
+    /// 所要時間も記録する。引数（投稿の本文等）は記録しない。
     async fn audit_tool_call(
         &self,
         tool_name: &str,
         target_id: Option<&str>,
         result: &Result<serde_json::Value, McpError>,
+        started: std::time::Instant,
     ) {
         let success = result.is_ok();
         let level = if success {
@@ -1169,6 +1172,7 @@ impl WordPressHandler {
         if let Err(e) = result {
             entry = entry.add_metadata("error".to_string(), e.to_string());
         }
+        let entry = crate::mcp::audit_tool_call_context(entry, started);
 
         if let Err(e) = self.audit_logger.log(entry).await {
             warn!("Failed to write audit log entry for {}: {}", tool_name, e);
@@ -4619,8 +4623,8 @@ impl McpHandler for WordPressHandler {
     }
 
     async fn call_tool(&self, params: ToolCallParams) -> Result<serde_json::Value, McpError> {
+        let started = std::time::Instant::now();
         let tool_name = params.name.clone();
-        let mutating = is_mutating_tool(&tool_name);
         let target_id = extract_target_id(&params.arguments);
 
         if let Err(e) = self
@@ -4630,20 +4634,14 @@ impl McpHandler for WordPressHandler {
         {
             warn!("WordPress tool call rate limited: {}", e);
             let result = Err(McpError::Other(format!("Rate limit exceeded: {}", e)));
-            if mutating {
-                self.audit_tool_call(&tool_name, target_id.as_deref(), &result)
-                    .await;
-            }
+            self.audit_tool_call(&tool_name, target_id.as_deref(), &result, started)
+                .await;
             return result;
         }
 
         let result = self.dispatch_tool(params).await;
-
-        if mutating {
-            self.audit_tool_call(&tool_name, target_id.as_deref(), &result)
-                .await;
-        }
-
+        self.audit_tool_call(&tool_name, target_id.as_deref(), &result, started)
+            .await;
         result
     }
 
@@ -5060,20 +5058,41 @@ mod tests {
         assert!(entries[0].metadata.contains_key("error"));
     }
 
+    /// 読み取りのツールも、呼び出し元・所要時間と一緒に記録する（#55）
     #[tokio::test]
-    async fn test_call_tool_does_not_audit_read_only_tool() {
+    async fn test_call_tool_audits_read_tools_with_caller() {
         let handler = rate_limited_handler(RateLimitConfig::default());
-
-        let result = handler
-            .call_tool(ToolCallParams {
+        let call = || {
+            handler.call_tool(ToolCallParams {
                 name: "get_fake_thing_for_test".to_string(),
                 arguments: None,
             })
-            .await;
+        };
+
+        let caller = crate::mcp::Caller::new("api_key:reader", crate::mcp::ToolAccess::All)
+            .with_subject(Some("user-1".to_string()))
+            .with_ip_address(Some("192.0.2.1".to_string()));
+        let result = crate::mcp::with_caller(caller, call()).await;
         assert!(matches!(result, Err(McpError::ToolNotFound(_))));
+        // 呼び出し元が分からない（STDIO等）場合は`local`
+        let _ = call().await;
 
         let entries = handler.audit_logger.get_all_entries().await;
-        assert!(entries.is_empty());
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].user_id.as_deref(), Some("api_key:reader"));
+        assert_eq!(
+            entries[0].metadata.get("subject").map(String::as_str),
+            Some("user-1")
+        );
+        assert!(entries[0].metadata.contains_key("duration_ms"));
+        assert_eq!(entries[0].ip_address.as_deref(), Some("192.0.2.1"));
+        assert_eq!(entries[0].result.as_deref(), Some("FAILURE"));
+        assert_eq!(
+            entries[0].action.as_deref(),
+            Some("get_fake_thing_for_test")
+        );
+        assert_eq!(entries[1].user_id.as_deref(), Some("local"));
+        assert!(!entries[1].metadata.contains_key("subject"));
     }
 
     #[test]

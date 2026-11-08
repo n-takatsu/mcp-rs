@@ -212,7 +212,7 @@ resource = "https://mcp.example.com/mcp"         # the URL clients use to reach 
 
 ## Audit Log
 
-Tool calls (WordPress and plugins) are appended to an audit log file as JSON lines, one entry per line. By default, the file is `audit.log` in the same folder as the config file (the file passed with `--config`), so the location does not depend on the folder mcp-rs is started from. The mcp-rs log shows the path at startup (`📝 監査ログ: <path>`).
+Tool calls (WordPress and plugins) and, in HTTP mode, refused requests are appended to an audit log file as JSON lines, one entry per line (see [What is recorded](#what-is-recorded)). By default, the file is `audit.log` in the same folder as the config file (the file passed with `--config`), so the location does not depend on the folder mcp-rs is started from. The mcp-rs log shows the path at startup (`📝 監査ログ: <path>`).
 
 ```toml
 [audit]
@@ -224,6 +224,25 @@ Tool calls (WordPress and plugins) are appended to an audit log file as JSON lin
 
 - If the file cannot be written (for example, the folder is read-only), mcp-rs logs a warning at startup and keeps entries in memory only. Missing folders are created
 - Up to version 0.18.4, the file was `audit.log` in the folder mcp-rs was started from. When started from an MCP client such as Claude Desktop, that folder depends on the client, and the file may not have been written at all
+
+### What is recorded
+
+| Event | `category` | `result` | Recorded by |
+|-------|------------|----------|-------------|
+| Every tool call (WordPress and plugins), whether it succeeds or fails | `DataAccess` | `SUCCESS` or `FAILURE` | STDIO and HTTP |
+| A tool call refused because the API key or token may not use that tool ([Limiting Tools](#limiting-tools-per-api-key-or-token)) | `Authorization` | `DENIED` | HTTP |
+| A request refused because the API key or access token is missing or invalid, or lacks the required scopes | `Authentication` | `DENIED` | HTTP |
+
+Each entry has these fields:
+
+- `timestamp` (UTC) and `level` (`Info`, `Warning`, or `Error`)
+- `user_id`: who called. In HTTP mode, `api_key:<name>` for an API key, or `oauth:<client>` for an access token (the token's `azp` or `client_id`, or its `sub`). In STDIO mode, and in HTTP mode without authentication, `local`. Authentication failures have no `user_id`
+- `ip_address`: the client's IP address (HTTP mode)
+- `action`: the tool name. `resource`: the WordPress site URL, or `plugin:<name>`
+- `result`, and `message` (for example, `Plugin tool call: fs__read_text_file - SUCCESS`)
+- `metadata`: `subject` (the API key's `user_id`, or the token's `sub`), `duration_ms` (how long the tool call took), `error` (why it failed), and `target_id` (the ID of the post, page, media, category, or tag, for WordPress tools that take one)
+
+API keys, access tokens, and tool arguments (such as post content or file contents) are not recorded, because they can contain secrets. Up to version 0.18.4, only WordPress tools that change something were recorded, without the caller.
 
 ## Best Practices
 

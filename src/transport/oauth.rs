@@ -273,6 +273,7 @@ impl OAuthValidator {
             )
         };
         crate::mcp::Caller::new(format!("oauth:{}", name), access)
+            .with_subject(info.subject.clone())
     }
 
     /// 起動時に、公開鍵を取得しておく。失敗しても、最初のリクエストで
