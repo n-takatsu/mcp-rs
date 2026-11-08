@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.2] - 2026-11-09
+
 ### Added
 
 - mcp-rs自身の状態を返す、読み取り専用のツール`mcp_rs_status`を追加した
