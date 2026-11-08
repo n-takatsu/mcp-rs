@@ -19,6 +19,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `env`の値はコマンドラインに載せず、dockerコマンドの環境変数経由で渡す
   - 停止時・終了時にコンテナを`docker rm -f`で消す
   - コンテナで起動する場合、`command`は省略できる（イメージのCMDを使う）
+- プラグインをKubernetesのJobとして起動できるようにした（#413、#392の段階3）。
+  `[[plugins]]`に`[plugins.kubernetes]`（`image`等）を書くと、`kubectl`でJobを
+  作り、`kubectl attach -i`で中継する。Podは既定で、root以外（UID 65532）・
+  全ケーパビリティ削除・seccomp RuntimeDefault・ルートファイルシステム読み取り
+  専用（`/tmp`のみ書き込み可）・メモリ512Mi・CPU 500m・ServiceAccountの
+  トークンなしで、通信をすべて拒否するNetworkPolicyの対象にする
+  - `env`の値は、Jobを所有者とするSecretに入れる（コマンドラインに載せない）
+  - Jobは再起動せず（`backoffLimit: 0`）、終了の60秒後に消える。停止時・
+    終了時は`kubectl delete`でJobとSecretを消す
+  - 必要な権限（Roleの例）は、website/docs/plugins.mdに記載
 
 ### Removed
 
