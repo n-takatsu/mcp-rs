@@ -15,6 +15,7 @@
 // src/main.rsも同じモジュールを読み込むため、同じ許可を付けている。
 #![allow(clippy::double_must_use)]
 
+pub mod cli_args;
 pub mod config;
 pub mod error;
 pub mod handlers;

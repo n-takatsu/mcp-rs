@@ -177,6 +177,8 @@ Then start mcp-rs with a config file. Ready-made config files are in `configs/pr
 ./target/release/mcp-rs --config configs/production/claude-desktop.toml
 ```
 
+`mcp-rs --version` prints the installed version, and `mcp-rs --help` lists the options (v0.19.1 and later). Unknown options are ignored with a warning in the log; a future version will refuse to start with them.
+
 To write your own config file instead, start from the minimal example below.
 
 ## Basic Configuration

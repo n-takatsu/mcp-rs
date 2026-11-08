@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `mcp-rs --version`（`-V`）でバージョンを、`--help`（`-h`）で使い方を表示する
+  ようにした（#431）。サーバーは起動せず、設定ファイル・ログにも触れない。
+  以前は`--version`を無視してサーバーとして起動し、入力を待ち続けていた
+  - `--config=<path>`の書き方も受け付ける
+  - 知らない引数と、パスの無い`--config`は、ログに警告を出して無視する
+    （これまでどおり起動する）。将来のバージョンでは、知らない引数があると
+    起動しないようにする
+
 ## [0.19.0] - 2026-11-08
 
 ### Added

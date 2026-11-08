@@ -149,6 +149,8 @@ cargo build --release
 ./target/release/mcp-rs --config configs/production/claude-desktop.toml
 ```
 
+`mcp-rs --version`でインストールされているバージョンを、`mcp-rs --help`で使えるオプションを表示します（v0.19.1以降）。知らないオプションは、ログに警告を出して無視します（将来のバージョンでは起動しないようにする予定です）。
+
 設定ファイルを自分で書く場合は、次の最小構成から始めてください。
 
 ## 基本設定
