@@ -179,6 +179,8 @@ Then start mcp-rs with a config file. Ready-made config files are in `configs/pr
 
 `mcp-rs --version` prints the installed version, and `mcp-rs --help` lists the options (v0.19.1 and later). Unknown options are ignored with a warning in the log; a future version will refuse to start with them.
 
+From an MCP client (for example, ask Claude), call the `mcp_rs_status` tool to see the version, the config file in use, where the log and audit log are written, and the state of each plugin (v0.19.2 and later).
+
 To write your own config file instead, start from the minimal example below.
 
 ## Basic Configuration
