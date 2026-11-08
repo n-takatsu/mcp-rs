@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- 監査ログの書き込み先を、設定の`[audit]`で指定できるようにした（#416）。
+  省略時は、設定ファイルと同じフォルダの`audit.log`に書く
+  - `file_path`（相対パスは設定ファイルのフォルダが基準）・`enabled`・
+    `max_file_size_mb`（既定100MB、0でローテーションしない）・`max_files`
+    （既定5）
+  - サイズでのローテーション（`audit.log.1`〜）を実装した。以前は設定項目
+    だけがあり、ファイルは増え続けていた
+  - 起動時のログに書き込み先を出す。書き込めない場合は警告を出し、メモリに
+    だけ残す
+  - WordPressとプラグインで、同じ監査ログを使う（以前はハンドラーごとに
+    別々の記録器が同じファイルに追記していた）
+
 - プラグインをDockerコンテナの中で起動できるようにした（#411、#392の段階2）。
   `[[plugins]]`に`[plugins.container]`（`image`等）を書くと、`docker run -i`で
   起動し、標準入出力で中継する。既定で、ネットワークなし（`--network=none`）・
@@ -31,6 +43,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - 必要な権限（Roleの例）は、website/docs/plugins.mdに記載
 
 ### Fixed
+
+- 監査ログが、mcp-rsの作業フォルダの`audit.log`（相対パス）に書かれていた
+  問題を修正（#416）。Claude Desktop等から起動した場合、作業フォルダは
+  クライアントによって決まり、書き込めない場所ではエラーを標準エラー出力に
+  出すだけで記録されなかった
+  - **ライブラリの変更**: `AuditConfig::default()`（`AuditLogger::with_defaults()`）は
+    ファイルに書かなくなった（メモリのみ）。`AuditConfig`に`max_files`を追加。
+    `plugin_proxy::start_plugins`は監査ログ（`Arc<AuditLogger>`）を受け取る。
+    `PluginHandler::start_with_audit_logger`・
+    `WordPressHandler::with_audit_logger`・`McpConfig::audit_config`を追加
 
 - `HttpTransport::transport_info()`が、ロックの競合時に実際に待ち受けた
   アドレスの代わりに設定のアドレス（ポート0のことがある）を返しえた問題を

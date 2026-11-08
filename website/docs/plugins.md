@@ -185,7 +185,7 @@ Tool results are passed on with `content` and `isError`. mcp-rs uses MCP protoco
 - **Isolation (container and Kubernetes only)**: See [Running a plugin in a container](#running-a-plugin-in-a-container) and [Running a plugin on Kubernetes](#running-a-plugin-on-kubernetes)
 - **Environment**: mcp-rs does not pass its own environment variables to the plugin. WordPress credentials and `WORDPRESS_MASTER_PASSWORD` stay in mcp-rs. Only the variables in `env` are passed (on Windows, `SystemRoot` too, because some programs cannot start without it)
 - **Rate limiting**: Tool calls to each plugin are rate limited, with the same defaults as WordPress
-- **Audit log**: Every plugin tool call is recorded, whether it succeeds or fails
+- **Audit log**: Every plugin tool call is recorded, whether it succeeds or fails, in the same audit log file as WordPress tool calls (see [Audit Log](../security/#audit-log))
 - **Timeout**: If the plugin does not answer within `call_timeout_seconds`, the call fails. A late answer is discarded
 - **Response size**: A message larger than `max_response_bytes` is discarded and the call fails
 - **Output separation**: The plugin's standard error is written to the mcp-rs log. Anything on its standard output that is not JSON-RPC is logged and ignored, so it never reaches your MCP client

@@ -115,6 +115,8 @@ async fn load_config_from_file(path: &str) -> Result<McpConfig, Box<dyn std::err
     let content = tokio::fs::read_to_string(path).await?;
     let mut config: McpConfig =
         toml::from_str(&content).map_err(|e| mcp_rs::config::with_config_hint(e, &content))?;
+    // 監査ログの既定の書き込み先（設定ファイルと同じフォルダ）に使う（#416）
+    config.config_file = std::path::absolute(path).ok();
 
     // WordPressConfig の環境変数展開を適用（McpConfig::load() と同様の処理）
     if let Some(ref mut wp_config) = config.handlers.wordpress {
@@ -133,10 +135,29 @@ async fn build_server(
 ) -> Result<mcp_rs::mcp::McpServer, Box<dyn std::error::Error>> {
     let mut server = mcp_rs::mcp::McpServer::new();
 
+    // 監査ログ（#416）。WordPressとプラグインで同じものを使う
+    let audit_logger = Arc::new(mcp_rs::security::AuditLogger::new(config.audit_config()));
+    match audit_logger.file_path() {
+        Some(path) => match audit_logger.check_file_output().await {
+            Ok(()) => info!("📝 監査ログ: {}", path),
+            Err(e) => tracing::warn!(
+                "Audit log file cannot be written ({}). Tool calls are kept in memory only. Set [audit] file_path to a writable location",
+                e
+            ),
+        },
+        None if config.audit.as_ref().and_then(|a| a.enabled) == Some(false) => {
+            info!("📝 監査ログ: ファイルには書かない（[audit] enabled = false）")
+        }
+        None => tracing::warn!(
+            "Audit log is kept in memory only: no config file was loaded. Set [audit] file_path to an absolute path to write it to a file"
+        ),
+    }
+
     if let Some(wp_config) = &config.handlers.wordpress {
         if wp_config.enabled.unwrap_or(false) {
             let wp_handler = WordPressHandler::try_new(wp_config.clone())
-                .map_err(|e| format!("WordPress handler creation failed: {}", e))?;
+                .map_err(|e| format!("WordPress handler creation failed: {}", e))?
+                .with_audit_logger(audit_logger.clone());
 
             // STDIOと違い、HTTP/WebSocketのクライアントは別のマシンにいる
             // ことがある。その場合、file_pathで読まれるのはクライアントの
@@ -153,7 +174,9 @@ async fn build_server(
     }
 
     // プラグイン（#394）。起動できなかったプラグインは警告を出して飛ばす
-    for (name, handler) in mcp_rs::plugin_proxy::start_plugins(&config.plugins).await {
+    for (name, handler) in
+        mcp_rs::plugin_proxy::start_plugins(&config.plugins, audit_logger.clone()).await
+    {
         server.add_handler(format!("plugin:{}", name), handler);
     }
 

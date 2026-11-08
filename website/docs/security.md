@@ -54,7 +54,7 @@ MCP-RS implements comprehensive security measures designed for production enviro
 - **Result-Based Error Handling**: Comprehensive error management system
 - **Memory Safety**: Rust's ownership system prevents buffer overflows
 - **Thread Safety**: Async-safe operations with proper synchronization
-- **Audit Logging**: Every WordPress tool call that changes the site (`create_*`, `update_*`, `delete_*`, `upload_*`, `set_*`) is recorded with its result, including calls rejected by rate limiting or input validation. Entries are appended to `audit.log` as JSON lines
+- **Audit Logging**: Every WordPress tool call that changes the site (`create_*`, `update_*`, `delete_*`, `upload_*`, `set_*`) is recorded with its result, including calls rejected by rate limiting or input validation. Plugin tool calls are recorded too. Entries are appended as JSON lines to the file set in [`[audit]`](#audit-log)
 
 ## 🔄 In Development
 
@@ -153,6 +153,21 @@ user_id = "user-1"
 ```
 
 Clients send the key as `Authorization: Bearer <key>` or `X-Api-Key: <key>`. Requests without a valid key get HTTP 401. Note that `${VAR}` expansion applies only to the WordPress `url`/`username`/`password` fields, so `key` must be written as the literal value.
+
+## Audit Log
+
+Tool calls (WordPress and plugins) are appended to an audit log file as JSON lines, one entry per line. By default, the file is `audit.log` in the same folder as the config file (the file passed with `--config`), so the location does not depend on the folder mcp-rs is started from. The mcp-rs log shows the path at startup (`📝 監査ログ: <path>`).
+
+```toml
+[audit]
+# enabled = true              # false: keep entries in memory only (no file)
+# file_path = "audit.log"     # relative paths are resolved from the config file's folder
+# max_file_size_mb = 100      # rotate to audit.log.1, audit.log.2, ... before this size. 0: never rotate
+# max_files = 5               # number of rotated files to keep
+```
+
+- If the file cannot be written (for example, the folder is read-only), mcp-rs logs a warning at startup and keeps entries in memory only. Missing folders are created
+- Up to version 0.18.4, the file was `audit.log` in the folder mcp-rs was started from. When started from an MCP client such as Claude Desktop, that folder depends on the client, and the file may not have been written at all
 
 ## Best Practices
 

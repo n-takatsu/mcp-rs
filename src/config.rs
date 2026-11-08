@@ -55,6 +55,28 @@ pub struct McpConfig {
         skip_serializing_if = "Vec::is_empty"
     )]
     pub plugins: Vec<PluginConfig>,
+    /// 監査ログ（#416）。省略時は、設定ファイルと同じフォルダの`audit.log`に書く
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audit: Option<AuditLogSettings>,
+    /// 読み込んだ設定ファイルのパス（絶対パス）。監査ログの既定の書き込み先や、
+    /// 相対パスの基準に使う。設定ファイルには書かない
+    #[serde(skip)]
+    pub config_file: Option<PathBuf>,
+}
+
+/// 監査ログの設定（`[audit]`、#416）
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct AuditLogSettings {
+    /// `false`でファイルに書かない（メモリにだけ残す）。省略時は`true`
+    pub enabled: Option<bool>,
+    /// 書き込み先。相対パスは設定ファイルのフォルダを基準にする。省略時は
+    /// 設定ファイルと同じフォルダの`audit.log`
+    pub file_path: Option<String>,
+    /// この大きさ（MB）を超える前に、`audit.log.1`等へローテーションする。
+    /// 省略時は100MB。0でローテーションしない
+    pub max_file_size_mb: Option<u64>,
+    /// ローテーションで残す古いファイルの数。省略時は5
+    pub max_files: Option<u32>,
 }
 
 /// プラグイン1つ分の設定（#394）。プラグインは、別プロセスで動くMCP
@@ -598,6 +620,8 @@ impl Default for McpConfig {
             },
             handlers: HandlersConfig { wordpress: None },
             plugins: Vec::new(),
+            audit: None,
+            config_file: None,
         }
     }
 }
@@ -742,6 +766,47 @@ impl McpConfig {
         config.password = Self::expand_env_vars(&config.password);
     }
 
+    /// `[audit]`から、監査ログの設定を作る（#416）。書き込み先が決まらない
+    /// （設定ファイルを使っておらず、`file_path`も絶対パスでない）場合は、
+    /// ファイルに書かない設定になる。
+    pub fn audit_config(&self) -> crate::security::AuditConfig {
+        let settings = self.audit.clone().unwrap_or_default();
+        let mut audit = crate::security::AuditConfig::default();
+        if settings.enabled == Some(false) {
+            return audit;
+        }
+        let base = self
+            .config_file
+            .as_deref()
+            .and_then(std::path::Path::parent)
+            .map(std::path::Path::to_path_buf);
+        let path = match settings.file_path.as_deref().map(str::trim) {
+            Some(file) if !file.is_empty() => {
+                let file = PathBuf::from(file);
+                if file.is_absolute() {
+                    Some(file)
+                } else {
+                    base.map(|base| base.join(file))
+                }
+            }
+            _ => base.map(|base| base.join("audit.log")),
+        };
+        let Some(path) = path else {
+            return audit;
+        };
+        audit.enable_file_output = true;
+        audit.log_file_path = Some(path.to_string_lossy().into_owned());
+        match settings.max_file_size_mb {
+            Some(0) => audit.rotation_enabled = false,
+            Some(mb) => audit.rotation_size = mb.saturating_mul(1024 * 1024),
+            None => {}
+        }
+        if let Some(max_files) = settings.max_files {
+            audit.max_files = max_files;
+        }
+        audit
+    }
+
     /// 設定ファイルから読み込み、環境変数で上書き
     pub fn load() -> Result<Self, Box<dyn std::error::Error>> {
         let mut settings = config::Config::builder();
@@ -763,6 +828,7 @@ impl McpConfig {
             .ok();
 
         let mut config_file_found = false;
+        let mut loaded_config_file = None;
         for path in &config_paths {
             // `~`はPathが展開しないため、自前でホームフォルダに置き換える。
             // ホームフォルダが分からない場合、その候補は飛ばす
@@ -779,6 +845,7 @@ impl McpConfig {
                 settings =
                     settings.add_source(config::File::from_str(&content, config::FileFormat::Toml));
                 config_file_found = true;
+                loaded_config_file = std::path::absolute(&path).ok();
                 break;
             }
         }
@@ -849,6 +916,7 @@ impl McpConfig {
             final_config.server.stdio = Some(true);
         }
 
+        final_config.config_file = loaded_config_file;
         Ok(final_config)
     }
 
@@ -930,6 +998,8 @@ impl McpConfig {
                 }),
             },
             plugins: Vec::new(),
+            audit: None,
+            config_file: None,
         };
 
         let toml_content = toml::to_string_pretty(&sample_config)?;
@@ -1372,6 +1442,97 @@ start_timeout_seconds = 300
         let debug = format!("{:?}", config.plugins[0]);
         assert!(debug.contains("API_KEY"));
         assert!(!debug.contains("super-secret-value"));
+    }
+
+    fn config_with_audit(config_file: Option<&str>, audit: Option<AuditLogSettings>) -> McpConfig {
+        McpConfig {
+            audit,
+            config_file: config_file.map(PathBuf::from),
+            ..McpConfig::default()
+        }
+    }
+
+    #[test]
+    fn test_audit_config_defaults_to_config_folder() {
+        let base = std::env::temp_dir().join("mcp-rs-config");
+        let config_file = base.join("mcp-config.toml");
+        let config = config_with_audit(Some(config_file.to_str().unwrap()), None);
+        let audit = config.audit_config();
+        assert!(audit.enable_file_output);
+        assert_eq!(
+            audit.log_file_path.as_deref(),
+            Some(base.join("audit.log").to_str().unwrap())
+        );
+        assert!(audit.rotation_enabled);
+        assert_eq!(audit.rotation_size, 100 * 1024 * 1024);
+        assert_eq!(audit.max_files, 5);
+    }
+
+    #[test]
+    fn test_audit_config_resolves_settings() {
+        let base = std::env::temp_dir().join("mcp-rs-config");
+        let config_file = base.join("mcp-config.toml");
+        let config_file = config_file.to_str().unwrap();
+
+        // 相対パスは設定ファイルのフォルダを基準にする
+        let audit = config_with_audit(
+            Some(config_file),
+            Some(AuditLogSettings {
+                file_path: Some("logs/audit.jsonl".to_string()),
+                max_file_size_mb: Some(10),
+                max_files: Some(2),
+                ..Default::default()
+            }),
+        )
+        .audit_config();
+        assert_eq!(
+            audit.log_file_path.as_deref(),
+            Some(base.join("logs/audit.jsonl").to_str().unwrap())
+        );
+        assert_eq!(audit.rotation_size, 10 * 1024 * 1024);
+        assert_eq!(audit.max_files, 2);
+
+        // 絶対パスはそのまま。設定ファイルが無くても使える
+        let absolute = base.join("abs.log");
+        let audit = config_with_audit(
+            None,
+            Some(AuditLogSettings {
+                file_path: Some(absolute.to_str().unwrap().to_string()),
+                max_file_size_mb: Some(0),
+                ..Default::default()
+            }),
+        )
+        .audit_config();
+        assert_eq!(audit.log_file_path.as_deref(), absolute.to_str());
+        assert!(!audit.rotation_enabled);
+
+        // enabled = falseならファイルに書かない
+        let audit = config_with_audit(
+            Some(config_file),
+            Some(AuditLogSettings {
+                enabled: Some(false),
+                ..Default::default()
+            }),
+        )
+        .audit_config();
+        assert!(!audit.enable_file_output);
+
+        // 設定ファイルが無く、絶対パスの指定も無ければ、書き込み先が決まらない
+        let audit = config_with_audit(None, None).audit_config();
+        assert!(!audit.enable_file_output);
+        assert_eq!(audit.log_file_path, None);
+    }
+
+    #[test]
+    fn test_audit_section_is_read_from_toml() {
+        let config: McpConfig = toml::from_str(
+            "[transport]\n[server]\n[handlers]\n[audit]\nfile_path = \"C:/logs/mcp-audit.log\"\nmax_files = 3\n",
+        )
+        .unwrap();
+        let audit = config.audit.unwrap();
+        assert_eq!(audit.file_path.as_deref(), Some("C:/logs/mcp-audit.log"));
+        assert_eq!(audit.max_files, Some(3));
+        assert_eq!(audit.enabled, None);
     }
 
     #[test]
