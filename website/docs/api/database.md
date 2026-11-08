@@ -511,7 +511,7 @@ match txn.commit().await {
 
 ## Version Information
 
-- **Current Version**: v0.18.4
+- **Current Version**: v0.19.0
 - **Phase 1**: MySQL (Complete)
 - **Phase 2**: PostgreSQL (Complete)
 - **Updated**: 2025-11-23

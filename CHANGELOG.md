@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-11-08
+
 ### Added
 
 - 監査ログに、呼び出し元と結果を記録するようにした（#55）

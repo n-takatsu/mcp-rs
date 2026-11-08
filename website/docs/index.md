@@ -202,4 +202,4 @@ at your option.
 ---
 
 **Last Updated**: November 3, 2025
-**Version**: v0.18.4
+**Version**: v0.19.0
