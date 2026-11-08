@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- HTTPモードで、APIキー・アクセストークンごとに使えるツールを制限できるように
+  した（#52）
+  - APIキーの`tools`、OAuthの`scope_tools`（スコープ → ツール）で指定する。
+    ツール名、`*`を使うパターン（`fs__*`等）、`@read_only`（annotationsで
+    読み取り専用のツール）が使える。省略時は、これまでどおりすべて使える
+  - 使えないツールは`tools/list`に出さず、`tools/call`はツールのエラーにする。
+    拒否した呼び出しは監査ログに記録する
+  - **ライブラリの変更**: `transport::http::JsonRpcRequestHandler::handle_jsonrpc`
+    に、呼び出し元（`mcp::Caller`）の引数を追加した。`ApiKeyEntry`に`tools`、
+    `OAuthConfig`に`scope_tools`を追加。ツールを制限する設定で、
+    `with_request_handler`を使わずに`start_server`するとエラーになる。
+    `mcp::Caller`・`mcp::ToolAccess`、`RequestDispatcher::handle_message_as`、
+    `McpServer::set_audit_logger`を追加
+
 - HTTPモードで、OAuth 2.1のアクセストークン（JWT）を受け付けるようにした
   （#420、`[transport.http.oauth]`）。MCPの仕様（2025-06-18の
   「Authorization」）のリソースサーバーとして動き、ログインは外部の認可

@@ -187,6 +187,12 @@ pub struct ApiKeyEntry {
     pub name: String,
     /// Identifier for whoever this key was issued to.
     pub user_id: String,
+    /// Tools this key may use (#52): tool names, patterns with `*` (e.g.
+    /// `fs__*`), or `@read_only` (tools whose annotations say they are
+    /// read-only). `None` (the default) allows every tool. Other tools are
+    /// hidden from `tools/list`, and calls to them are refused.
+    #[serde(default)]
+    pub tools: Option<Vec<String>>,
 }
 
 impl Default for HttpConfig {
@@ -248,7 +254,15 @@ pub trait JsonRpcRequestHandler: Send + Sync {
     /// 1件のJSON-RPCメッセージ（JSON文字列）を処理し、応答（JSON-RPCの
     /// 応答オブジェクト）を返す。通知（`id`なし）は`Ok(None)`。JSON-RPCの
     /// メッセージとして不正な場合は`Err`。
-    async fn handle_jsonrpc(&self, message: &str) -> std::result::Result<Option<Value>, String>;
+    ///
+    /// `caller`は、認証で分かった呼び出し元と、その呼び出し元が使えるツール
+    /// （#52）。ハンドラーは、使えないツールを一覧に出さず、呼び出しも
+    /// 拒否する。
+    async fn handle_jsonrpc(
+        &self,
+        message: &str,
+        caller: &crate::mcp::Caller,
+    ) -> std::result::Result<Option<Value>, String>;
 }
 
 /// `JsonRpcRequestHandler`で1件を処理する時間の上限。ツール側（WordPress・
@@ -289,7 +303,11 @@ struct HttpTransportState {
     ids: Option<Arc<IntrusionDetectionSystem>>,
     ids_trust_forwarded_for: bool,
     api_key_manager: Option<Arc<RwLock<ApiKeyManager>>>,
+    /// APIキー（`ApiKey::id`）→ 名前と使えるツール（#52）
+    api_key_callers: Arc<HashMap<String, crate::mcp::Caller>>,
     oauth: Option<Arc<OAuthValidator>>,
+    /// `/ws`の接続 → 呼び出し元（接続時の認証で決まる、#52）
+    ws_callers: Arc<tokio::sync::Mutex<HashMap<ConnectionId, crate::mcp::Caller>>>,
     audit_logger: Arc<AuditLogger>,
     websocket_upgrade_enabled: bool,
     // Reserves capacity atomically at upgrade time (before the handshake
@@ -404,10 +422,18 @@ impl HttpTransport {
             }
         }
 
+        let mut api_key_callers = HashMap::new();
         let api_key_manager = if self.config.auth_enabled {
             let mut manager = ApiKeyManager::new(ApiKeyConfig::default());
             for entry in &self.config.api_keys {
-                manager
+                let access = crate::mcp::ToolAccess::from_patterns(entry.tools.as_deref())
+                    .map_err(|e| {
+                        Error::TransportError(TransportError::Configuration(format!(
+                            "API key '{}' has invalid tools: {}",
+                            entry.name, e
+                        )))
+                    })?;
+                let api_key = manager
                     .import_key(&entry.key, entry.name.clone(), entry.user_id.clone(), None)
                     .map_err(|e| {
                         Error::TransportError(TransportError::Configuration(format!(
@@ -415,11 +441,31 @@ impl HttpTransport {
                             entry.name, e
                         )))
                     })?;
+                api_key_callers.insert(
+                    api_key.id,
+                    crate::mcp::Caller::new(format!("api_key:{}", entry.name), access),
+                );
             }
             Some(Arc::new(RwLock::new(manager)))
         } else {
             None
         };
+
+        // ツールの制限（#52）は、リクエストを直接処理する場合
+        // （with_request_handler）だけ効く。チャンネル経由では、どの
+        // 呼び出し元のメッセージかを渡せないため、起動しない
+        let restricts_tools = (self.config.auth_enabled
+            && self.config.api_keys.iter().any(|e| e.tools.is_some()))
+            || self
+                .config
+                .oauth
+                .as_ref()
+                .is_some_and(|o| !o.scope_tools.is_empty());
+        if restricts_tools && self.request_handler.0.is_none() {
+            return Err(Error::TransportError(TransportError::Configuration(
+                "tool restrictions (api_keys tools / oauth scope_tools) require a request handler (HttpTransport::with_request_handler)".to_string(),
+            )));
+        }
 
         let oauth = match &self.config.oauth {
             Some(config) => {
@@ -445,6 +491,7 @@ impl HttpTransport {
             .filter_map(|fingerprint| normalize_fingerprint(fingerprint))
             .collect();
 
+        let ws_callers = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
         let state = HttpTransportState {
             request_sender: self.sender.clone(),
             pending_responses: self.pending_responses.clone(),
@@ -496,7 +543,9 @@ impl HttpTransport {
             },
             ids_trust_forwarded_for: self.config.ids_trust_forwarded_for,
             api_key_manager,
+            api_key_callers: Arc::new(api_key_callers),
             oauth: oauth.clone(),
+            ws_callers: ws_callers.clone(),
             audit_logger: Arc::new(AuditLogger::with_defaults()),
             websocket_upgrade_enabled: self.config.enable_websocket_upgrade,
             websocket_semaphore: Arc::new(tokio::sync::Semaphore::new(
@@ -507,6 +556,7 @@ impl HttpTransport {
             request_handler: self.request_handler.0.clone(),
             websocket_handler: Arc::new(JsonRpcWsHandler {
                 request_handler: self.request_handler.0.clone(),
+                callers: ws_callers,
                 request_sender: self.sender.clone(),
                 pending_responses: self.pending_responses.clone(),
                 stats: self.stats.clone(),
@@ -965,9 +1015,10 @@ async fn handle_jsonrpc_request(
     Json(request): Json<Value>,
 ) -> std::result::Result<Response, StatusCode> {
     check_network_policy(&state.network_policy, remote_addr)?;
-    if let Err(response) = check_auth(&state, &headers, remote_addr).await {
-        return Ok(*response);
-    }
+    let caller = match check_auth(&state, &headers, remote_addr).await {
+        Ok(caller) => caller,
+        Err(response) => return Ok(*response),
+    };
     check_https_enforcement(
         state.enforce_https,
         state.tls_terminated_locally,
@@ -1035,8 +1086,14 @@ async fn handle_jsonrpc_request(
     };
 
     if let Some(handler) = state.request_handler.clone() {
-        return respond_with_request_handler(&state, handler.as_ref(), &request_str, start_time)
-            .await;
+        return respond_with_request_handler(
+            &state,
+            handler.as_ref(),
+            &request_str,
+            &caller,
+            start_time,
+        )
+        .await;
     }
 
     // If request has ID, wait for actual response
@@ -1161,15 +1218,24 @@ async fn check_auth(
     state: &HttpTransportState,
     headers: &HeaderMap,
     remote_addr: SocketAddr,
-) -> std::result::Result<(), Box<Response>> {
+) -> std::result::Result<crate::mcp::Caller, Box<Response>> {
     if state.api_key_manager.is_none() && state.oauth.is_none() {
-        return Ok(());
+        return Ok(crate::mcp::Caller::unrestricted());
     }
 
     if let Some(manager) = &state.api_key_manager {
         if let Some(key) = extract_api_key(headers) {
-            if manager.write().await.verify_key(&key).is_ok() {
-                return Ok(());
+            if let Ok(api_key) = manager.write().await.verify_key(&key) {
+                // 見つからないことは無い（同じ時に登録している）が、念のため
+                // どのツールも使えない呼び出し元にする
+                return Ok(state
+                    .api_key_callers
+                    .get(&api_key.id)
+                    .cloned()
+                    .unwrap_or_else(|| crate::mcp::Caller {
+                        name: Some(format!("api_key:{}", api_key.name)),
+                        access: crate::mcp::ToolAccess::any_of(Vec::new()),
+                    }));
             }
         }
     }
@@ -1202,7 +1268,7 @@ async fn check_auth(
                 "Accepted access token from {} (sub: {:?}, client: {:?})",
                 remote_addr, info.subject, info.client_id
             );
-            Ok(())
+            Ok(oauth.caller_for(&info))
         }
         Err(error) => {
             match &error {
@@ -1587,9 +1653,10 @@ async fn handle_ws_upgrade(
     if let Err(status) = check_network_policy(&state.network_policy, remote_addr) {
         return status.into_response();
     }
-    if let Err(response) = check_auth(&state, &headers, remote_addr).await {
-        return *response;
-    }
+    let caller = match check_auth(&state, &headers, remote_addr).await {
+        Ok(caller) => caller,
+        Err(response) => return *response,
+    };
     if let Err(status) = check_https_enforcement(
         state.enforce_https,
         state.tls_terminated_locally,
@@ -1662,7 +1729,7 @@ async fn handle_ws_upgrade(
     // response), not something response_headers() gets applied to elsewhere.
     let hsts_headers = response_headers(&state);
     let mut response =
-        ws.on_upgrade(move |socket| handle_ws_socket(socket, state, remote_addr, permit));
+        ws.on_upgrade(move |socket| handle_ws_socket(socket, state, remote_addr, caller, permit));
     response.headers_mut().extend(hsts_headers);
     response
 }
@@ -1676,9 +1743,11 @@ async fn handle_ws_socket(
     socket: WebSocket,
     state: HttpTransportState,
     addr: SocketAddr,
+    caller: crate::mcp::Caller,
     _permit: tokio::sync::OwnedSemaphorePermit,
 ) {
     let conn_id = Uuid::new_v4();
+    state.ws_callers.lock().await.insert(conn_id, caller);
 
     let conn_info = WebSocketConnectionInfo::new(conn_id, addr);
     state
@@ -1777,6 +1846,7 @@ async fn handle_ws_socket(
     }
 
     state.websocket_connections.lock().await.remove(&conn_id);
+    state.ws_callers.lock().await.remove(&conn_id);
 
     if let Err(e) = state.websocket_handler.on_disconnect(conn_id).await {
         error!("WebSocket handler on_disconnect failed: {}", e);
@@ -1791,9 +1861,15 @@ async fn respond_with_request_handler(
     state: &HttpTransportState,
     handler: &dyn JsonRpcRequestHandler,
     request_str: &str,
+    caller: &crate::mcp::Caller,
     start_time: Instant,
 ) -> std::result::Result<Response, StatusCode> {
-    match tokio::time::timeout(REQUEST_HANDLER_TIMEOUT, handler.handle_jsonrpc(request_str)).await {
+    match tokio::time::timeout(
+        REQUEST_HANDLER_TIMEOUT,
+        handler.handle_jsonrpc(request_str, caller),
+    )
+    .await
+    {
         Ok(Ok(Some(response_value))) => {
             {
                 let mut stats = state.stats.write().await;
@@ -1830,6 +1906,8 @@ async fn respond_with_request_handler(
 struct JsonRpcWsHandler {
     /// 設定されていれば、フレームをチャンネルに流さず直接処理する（#400）
     request_handler: Option<Arc<dyn JsonRpcRequestHandler>>,
+    /// 接続 → 呼び出し元（#52）。見つからない接続は、どのツールも使えない
+    callers: Arc<tokio::sync::Mutex<HashMap<ConnectionId, crate::mcp::Caller>>>,
     request_sender: tokio::sync::mpsc::Sender<String>,
     pending_responses: Arc<RwLock<HashMap<Value, tokio::sync::oneshot::Sender<JsonRpcResponse>>>>,
     stats: Arc<RwLock<HttpStats>>,
@@ -1839,7 +1917,7 @@ struct JsonRpcWsHandler {
 impl MessageHandler for JsonRpcWsHandler {
     async fn handle_message(
         &self,
-        _conn_id: ConnectionId,
+        conn_id: ConnectionId,
         message: Message,
     ) -> Result<Option<Message>> {
         let text = match message {
@@ -1862,25 +1940,37 @@ impl MessageHandler for JsonRpcWsHandler {
         }
 
         if let Some(handler) = &self.request_handler {
-            let response =
-                match tokio::time::timeout(REQUEST_HANDLER_TIMEOUT, handler.handle_jsonrpc(&text))
-                    .await
-                {
-                    Ok(Ok(response)) => response,
-                    Ok(Err(e)) => {
-                        warn!("Rejected an invalid WebSocket JSON-RPC message: {}", e);
-                        self.stats.write().await.total_errors += 1;
-                        return Ok(None);
-                    }
-                    Err(_) => {
-                        warn!(
-                            "WebSocket JSON-RPC request did not finish within {} seconds",
-                            REQUEST_HANDLER_TIMEOUT.as_secs()
-                        );
-                        self.stats.write().await.total_errors += 1;
-                        return Ok(None);
-                    }
-                };
+            let caller = self
+                .callers
+                .lock()
+                .await
+                .get(&conn_id)
+                .cloned()
+                .unwrap_or_else(|| crate::mcp::Caller {
+                    name: Some("unknown-websocket-connection".to_string()),
+                    access: crate::mcp::ToolAccess::any_of(Vec::new()),
+                });
+            let response = match tokio::time::timeout(
+                REQUEST_HANDLER_TIMEOUT,
+                handler.handle_jsonrpc(&text, &caller),
+            )
+            .await
+            {
+                Ok(Ok(response)) => response,
+                Ok(Err(e)) => {
+                    warn!("Rejected an invalid WebSocket JSON-RPC message: {}", e);
+                    self.stats.write().await.total_errors += 1;
+                    return Ok(None);
+                }
+                Err(_) => {
+                    warn!(
+                        "WebSocket JSON-RPC request did not finish within {} seconds",
+                        REQUEST_HANDLER_TIMEOUT.as_secs()
+                    );
+                    self.stats.write().await.total_errors += 1;
+                    return Ok(None);
+                }
+            };
             let Some(response) = response else {
                 return Ok(None); // 通知には応答しない
             };
@@ -3371,6 +3461,7 @@ mod tests {
                 key: "test-key-12345".to_string(),
                 name: "test".to_string(),
                 user_id: "user-1".to_string(),
+                tools: None,
             }],
             ..HttpConfig::default()
         };
@@ -3399,6 +3490,7 @@ mod tests {
                 key: "correct-key".to_string(),
                 name: "test".to_string(),
                 user_id: "user-1".to_string(),
+                tools: None,
             }],
             ..HttpConfig::default()
         };
@@ -3428,6 +3520,7 @@ mod tests {
                 key: "correct-key".to_string(),
                 name: "test".to_string(),
                 user_id: "user-1".to_string(),
+                tools: None,
             }],
             ..HttpConfig::default()
         };
@@ -3457,6 +3550,7 @@ mod tests {
                 key: "correct-key".to_string(),
                 name: "test".to_string(),
                 user_id: "user-1".to_string(),
+                tools: None,
             }],
             ..HttpConfig::default()
         };
@@ -3647,6 +3741,7 @@ mod tests {
                 key: "correct-key".to_string(),
                 name: "test".to_string(),
                 user_id: "user-1".to_string(),
+                tools: None,
             }];
         })
         .await;
@@ -3794,6 +3889,7 @@ mod tests {
                 jwks_uri: None,
                 required_scopes: vec!["profile".to_string()],
                 leeway_seconds: 60,
+                scope_tools: Default::default(),
             }),
             ..HttpConfig::default()
         };
@@ -3854,6 +3950,7 @@ mod tests {
                 jwks_uri: None,
                 required_scopes: Vec::new(),
                 leeway_seconds: 60,
+                scope_tools: Default::default(),
             }),
             ..HttpConfig::default()
         };
@@ -3871,6 +3968,7 @@ mod tests {
                 key: "correct-key".to_string(),
                 name: "test".to_string(),
                 user_id: "user-1".to_string(),
+                tools: None,
             }],
             ..HttpConfig::default()
         };
@@ -3900,6 +3998,7 @@ mod tests {
                 key: "correct-key".to_string(),
                 name: "test".to_string(),
                 user_id: "user-1".to_string(),
+                tools: None,
             }],
             ..HttpConfig::default()
         };
@@ -3949,6 +4048,7 @@ mod tests {
                 key: String::new(),
                 name: "blank".to_string(),
                 user_id: "user-1".to_string(),
+                tools: None,
             }],
             ..HttpConfig::default()
         };
@@ -3972,11 +4072,13 @@ mod tests {
                     key: "shared-key".to_string(),
                     name: "first".to_string(),
                     user_id: "user-1".to_string(),
+                    tools: None,
                 },
                 ApiKeyEntry {
                     key: "shared-key".to_string(),
                     name: "second".to_string(),
                     user_id: "user-2".to_string(),
+                    tools: None,
                 },
             ],
             ..HttpConfig::default()
@@ -3992,7 +4094,9 @@ mod tests {
     }
 
     /// `with_request_handler`のテスト用。`params.sleep_ms`だけ待ってから、
-    /// 受けた`id`・`method`・`params.tag`をそのまま結果に入れて返す。
+    /// 受けた`id`・`method`・`params.tag`をそのまま結果に入れて返す。呼び出し
+    /// 元（#52）の名前と、読み取り専用のツール（`get_post`）・そうでない
+    /// ツール（`delete_post`）を使えるかも返す。
     struct EchoRequestHandler;
 
     #[async_trait]
@@ -4000,6 +4104,7 @@ mod tests {
         async fn handle_jsonrpc(
             &self,
             message: &str,
+            caller: &crate::mcp::Caller,
         ) -> std::result::Result<Option<Value>, String> {
             let request: Value = serde_json::from_str(message).map_err(|e| e.to_string())?;
             let method = request
@@ -4016,9 +4121,187 @@ mod tests {
             Ok(Some(serde_json::json!({
                 "jsonrpc": "2.0",
                 "id": id,
-                "result": { "method": method, "tag": request["params"]["tag"] }
+                "result": {
+                    "method": method,
+                    "tag": request["params"]["tag"],
+                    "caller": caller.name,
+                    "can_get": caller.access.allows(&annotated_tool("get_post", true)),
+                    "can_delete": caller.access.allows(&annotated_tool("delete_post", false)),
+                }
             })))
         }
+    }
+
+    fn annotated_tool(name: &str, read_only: bool) -> crate::mcp::Tool {
+        crate::mcp::Tool {
+            name: name.to_string(),
+            annotations: Some(crate::mcp::ToolAnnotations {
+                read_only_hint: Some(read_only),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    /// 呼び出し元（#52）を確かめる。`authorization`で`tools/list`を送り、
+    /// （名前、読み取り専用を使えるか、変更するツールを使えるか）を返す
+    async fn caller_seen_by_handler(
+        server_addr: SocketAddr,
+        authorization: &str,
+    ) -> (Value, bool, bool) {
+        let response = reqwest::Client::new()
+            .post(format!("http://127.0.0.1:{}/mcp", server_addr.port()))
+            .header("Authorization", authorization)
+            .json(&serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }))
+            .send()
+            .await
+            .unwrap();
+        assert!(response.status().is_success(), "{}", response.status());
+        let body: Value = response.json().await.unwrap();
+        let result = &body["result"];
+        (
+            result["caller"].clone(),
+            result["can_get"].as_bool().unwrap(),
+            result["can_delete"].as_bool().unwrap(),
+        )
+    }
+
+    fn api_key(key: &str, name: &str, tools: Option<&[&str]>) -> ApiKeyEntry {
+        ApiKeyEntry {
+            key: key.to_string(),
+            name: name.to_string(),
+            user_id: "user-1".to_string(),
+            tools: tools.map(|t| t.iter().map(|s| s.to_string()).collect()),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_api_key_tools_are_passed_to_the_request_handler() {
+        let server_addr = start_with_echo_handler(HttpConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            auth_enabled: true,
+            api_keys: vec![
+                api_key("reader-key", "reader", Some(&["@read_only"])),
+                api_key("deleter-key", "deleter", Some(&["delete_*"])),
+                api_key("admin-key", "admin", None),
+            ],
+            ..HttpConfig::default()
+        })
+        .await;
+        assert_eq!(
+            caller_seen_by_handler(server_addr, "Bearer reader-key").await,
+            (serde_json::json!("api_key:reader"), true, false)
+        );
+        assert_eq!(
+            caller_seen_by_handler(server_addr, "Bearer deleter-key").await,
+            (serde_json::json!("api_key:deleter"), false, true)
+        );
+        assert_eq!(
+            caller_seen_by_handler(server_addr, "Bearer admin-key").await,
+            (serde_json::json!("api_key:admin"), true, true)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_oauth_scope_tools_are_passed_to_the_request_handler() {
+        let auth = crate::transport::oauth::test_support::TestAuthServer::start().await;
+        let mut oauth = auth.config(OAUTH_RESOURCE);
+        oauth.scope_tools = [
+            ("mcp:read".to_string(), vec!["@read_only".to_string()]),
+            ("mcp:write".to_string(), vec!["*".to_string()]),
+        ]
+        .into_iter()
+        .collect();
+        let server_addr = start_with_echo_handler(HttpConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            oauth: Some(oauth),
+            ..HttpConfig::default()
+        })
+        .await;
+        let token = |scope: &str| {
+            format!(
+                "Bearer {}",
+                auth.token(OAUTH_RESOURCE, serde_json::json!({ "scope": scope }))
+            )
+        };
+        assert_eq!(
+            caller_seen_by_handler(server_addr, &token("openid mcp:read")).await,
+            (serde_json::json!("oauth:test-client"), true, false)
+        );
+        assert_eq!(
+            caller_seen_by_handler(server_addr, &token("mcp:read mcp:write")).await,
+            (serde_json::json!("oauth:test-client"), true, true)
+        );
+        // 対応するスコープが無いトークンは、どのツールも使えない
+        assert_eq!(
+            caller_seen_by_handler(server_addr, &token("openid")).await,
+            (serde_json::json!("oauth:test-client"), false, false)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_websocket_connection_keeps_its_caller() {
+        let server_addr = start_with_echo_handler(HttpConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            enable_websocket_upgrade: true,
+            auth_enabled: true,
+            api_keys: vec![api_key("reader-key", "reader", Some(&["@read_only"]))],
+            ..HttpConfig::default()
+        })
+        .await;
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+        let mut request = format!("ws://localhost:{}/ws", server_addr.port())
+            .into_client_request()
+            .unwrap();
+        request
+            .headers_mut()
+            .insert("Authorization", "Bearer reader-key".parse().unwrap());
+        let (mut ws_stream, _) = tokio_tungstenite::connect_async(request).await.unwrap();
+        ws_stream
+            .send(tokio_tungstenite::tungstenite::Message::Text(
+                serde_json::json!({"jsonrpc": "2.0", "id": 3, "method": "tools/list"})
+                    .to_string()
+                    .into(),
+            ))
+            .await
+            .unwrap();
+        let message = tokio::time::timeout(Duration::from_secs(5), ws_stream.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let tokio_tungstenite::tungstenite::Message::Text(text) = message else {
+            panic!("expected a text frame");
+        };
+        let value: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(
+            value["result"]["caller"],
+            serde_json::json!("api_key:reader")
+        );
+        assert_eq!(value["result"]["can_get"], serde_json::json!(true));
+        assert_eq!(value["result"]["can_delete"], serde_json::json!(false));
+    }
+
+    #[tokio::test]
+    async fn test_tool_restrictions_require_a_request_handler_and_valid_patterns() {
+        // チャンネル経由（ハンドラー無し）では制限できないので、起動しない
+        let config = HttpConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            auth_enabled: true,
+            api_keys: vec![api_key("reader-key", "reader", Some(&["@read_only"]))],
+            ..HttpConfig::default()
+        };
+        let transport = HttpTransport::new(config.clone()).unwrap();
+        assert!(transport.start_server().await.is_err());
+
+        // 知らないプリセット
+        let transport = HttpTransport::new(HttpConfig {
+            api_keys: vec![api_key("reader-key", "reader", Some(&["@admin"]))],
+            ..config
+        })
+        .unwrap()
+        .with_request_handler(Arc::new(EchoRequestHandler));
+        assert!(transport.start_server().await.is_err());
     }
 
     async fn start_with_echo_handler(config: HttpConfig) -> SocketAddr {
@@ -4144,6 +4427,7 @@ mod tests {
                 key: "correct-key".to_string(),
                 name: "test".to_string(),
                 user_id: "user-1".to_string(),
+                tools: None,
             }],
             ..HttpConfig::default()
         })
