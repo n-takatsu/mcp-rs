@@ -42,7 +42,8 @@ use crate::config::{McpConfig, PluginConfig, PluginContainerConfig};
 
 mod kubernetes;
 use crate::mcp::{
-    InitializeParams, McpError, McpHandler, Resource, ResourceReadParams, Tool, ToolCallParams,
+    InitializeParams, McpError, McpHandler, Resource, ResourceReadParams, Tool, ToolAnnotations,
+    ToolCallParams, LATEST_PROTOCOL_VERSION,
 };
 use crate::security::{AuditCategory, AuditLevel, AuditLogEntry, AuditLogger, RateLimiter};
 
@@ -54,7 +55,11 @@ const DEFAULT_MAX_RESPONSE_BYTES: usize = 1024 * 1024;
 const MAX_PLUGIN_NAME_LEN: usize = 64;
 /// `tools/list`のページ数の上限（応答し続けるプラグインで止まらないように）
 const MAX_TOOL_LIST_PAGES: usize = 100;
-const PROTOCOL_VERSION: &str = "2024-11-05";
+/// プラグインへの`initialize`で要求する版（#417）。プラグインが古い版で
+/// 答えた場合も、そのまま使う（mcp-rsは古い版の項目も読める）
+const PROTOCOL_VERSION: &str = LATEST_PROTOCOL_VERSION;
+/// プラグインが答えてよい版。これ以外は警告を出す（使い続ける）
+const KNOWN_PLUGIN_PROTOCOL_VERSIONS: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05"];
 /// 標準エラー出力の1行としてログに記録する長さの上限
 const MAX_STDERR_LINE_BYTES: u64 = 8192;
 const RATE_LIMIT_CLIENT_ID: &str = "plugin-tool-calls";
@@ -615,16 +620,11 @@ fn truncate(text: &str, max_chars: usize) -> String {
     }
 }
 
-/// プラグインのツールの結果（CallToolResult）から、mcp-rsがクライアントと
-/// 話している仕様（2024-11-05）で定義された項目だけを残す。
-///
-/// 新しい仕様（2025-06-18）のプラグインは、`outputSchema`を宣言したツールで
-/// `structuredContent`も返す。mcp-rsはツール定義の`outputSchema`を中継
-/// しないため、`structuredContent`だけが届くと、クライアントが`content`の
-/// テキストの代わりにそれ（`{"content": "..."}`等）を表示してしまう。
-/// 同じ内容は`content`にもあるため、除いても情報は失われない。
+/// プラグインのツールの結果（CallToolResult）から、仕様（2025-06-18）で
+/// 定義された項目だけを残す。クライアントと話している版に合わせて、さらに
+/// 項目を除くのは`McpServer`（`call_tool_result_for_version`、#417）。
 fn call_tool_result_for_client(plugin: &str, result: Value) -> Result<Value, McpError> {
-    const KEPT_FIELDS: &[&str] = &["content", "isError", "_meta"];
+    const KEPT_FIELDS: &[&str] = &["content", "structuredContent", "isError", "_meta"];
 
     let Value::Object(mut fields) = result else {
         return Err(McpError::ExternalApi(format!(
@@ -887,6 +887,13 @@ impl PluginHandler {
                     .get("inputSchema")
                     .cloned()
                     .unwrap_or_else(|| json!({ "type": "object" })),
+                // 新しい版の項目（#417）。クライアントと話している版に
+                // 無い項目は、`McpServer`が除く
+                title: raw.get("title").and_then(Value::as_str).map(str::to_string),
+                output_schema: raw.get("outputSchema").filter(|v| v.is_object()).cloned(),
+                annotations: raw
+                    .get("annotations")
+                    .and_then(|v| serde_json::from_value::<ToolAnnotations>(v.clone()).ok()),
             });
             original_names.insert(name, original.to_string());
         }
@@ -907,7 +914,7 @@ impl PluginHandler {
         connection: &mut Connection,
         max_bytes: usize,
     ) -> Result<Vec<Value>, McpError> {
-        connection
+        let initialized = connection
             .request(
                 "initialize",
                 json!({
@@ -921,6 +928,21 @@ impl PluginHandler {
                 max_bytes,
             )
             .await?;
+        let version = initialized
+            .get("protocolVersion")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        if KNOWN_PLUGIN_PROTOCOL_VERSIONS.contains(&version) {
+            debug!(
+                "Plugin '{}' uses MCP protocol version {}",
+                connection.plugin, version
+            );
+        } else {
+            warn!(
+                "Plugin '{}' answered with MCP protocol version '{}', which mcp-rs does not know. Continuing anyway",
+                connection.plugin, version
+            );
+        }
         connection.notify("notifications/initialized").await?;
 
         let mut tools = Vec::new();
@@ -1095,11 +1117,18 @@ mod tests {
                 }),
                 "tools/list" => {
                     let tool = |name: &str| {
-                        json!({
+                        let mut tool = json!({
                             "name": name,
                             "description": format!("{} tool", name),
                             "inputSchema": { "type": "object" }
-                        })
+                        });
+                        if name == "echo" {
+                            // 新しい版（2025-06-18）の項目
+                            tool["title"] = json!("Echo");
+                            tool["outputSchema"] = json!({ "type": "object" });
+                            tool["annotations"] = json!({ "readOnlyHint": true });
+                        }
+                        tool
                     };
                     // ページ分けを確かめるため、2ページに分ける
                     if request["params"]["cursor"] == json!("page2") {
@@ -1234,9 +1263,13 @@ mod tests {
             }),
         )
         .unwrap();
+        // structuredContentは残す（クライアントの版に合わせて除くのはMcpServer）
         assert_eq!(
             filtered,
-            json!({ "content": [{ "type": "text", "text": "[FILE] test.txt" }] })
+            json!({
+                "content": [{ "type": "text", "text": "[FILE] test.txt" }],
+                "structuredContent": { "content": "[FILE] test.txt" }
+            })
         );
 
         for invalid in [
@@ -1294,15 +1327,26 @@ mod tests {
         );
         let tools = handler.list_tools().await.unwrap();
         assert_eq!(tools[0].description, "[plugin: demo] echo tool");
+        // 新しい版の項目も中継する（#417）
+        assert_eq!(tools[0].title.as_deref(), Some("Echo"));
+        assert_eq!(tools[0].output_schema, Some(json!({ "type": "object" })));
+        assert_eq!(
+            tools[0].annotations.as_ref().and_then(|a| a.read_only_hint),
+            Some(true)
+        );
+        assert!(tools[1].annotations.is_none());
 
         let result = call(&handler, "demo__echo", json!({ "text": "hello" }))
             .await
             .unwrap();
         assert_eq!(text(&result), "hello");
-        // 2024-11-05のCallToolResultの項目だけを返す（structuredContent等は除く）
+        // CallToolResultの項目だけを返す（仕様に無い項目は除く）
         let mut keys: Vec<&String> = result.as_object().unwrap().keys().collect();
         keys.sort();
-        assert_eq!(keys, vec!["_meta", "content", "isError"]);
+        assert_eq!(
+            keys,
+            vec!["_meta", "content", "isError", "structuredContent"]
+        );
 
         // プラグインのエラー応答は、ツールのエラーとして返す
         let error = call(&handler, "demo__fail", json!({})).await.unwrap_err();
