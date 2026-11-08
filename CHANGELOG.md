@@ -30,6 +30,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     終了時は`kubectl delete`でJobとSecretを消す
   - 必要な権限（Roleの例）は、website/docs/plugins.mdに記載
 
+### Fixed
+
+- `HttpTransport::transport_info()`が、ロックの競合時に実際に待ち受けた
+  アドレスの代わりに設定のアドレス（ポート0のことがある）を返しえた問題を
+  修正（#265）。待ち受けたアドレスを`std::sync::RwLock`で持ち、同期の
+  メソッドからも待たずに読めるようにした
+
 ### Removed
 
 - 本体から使われなくなった`core`モジュール（`Runtime`・`HandlerRegistry`・
