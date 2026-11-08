@@ -4,7 +4,7 @@
 
 > **[日本語](README.ja.md)** | **[English](README.md)**
 
-[![Version](https://img.shields.io/badge/Version-v0.19.1-blue)](https://github.com/n-takatsu/mcp-rs/releases/tag/v0.19.1)
+[![Version](https://img.shields.io/badge/Version-v0.19.2-blue)](https://github.com/n-takatsu/mcp-rs/releases/tag/v0.19.2)
 ![Architecture](https://img.shields.io/badge/Architecture-Production--Ready-green)
 ![Implementation](https://img.shields.io/badge/WordPress_Tools-32_Available-green)
 ![License](https://img.shields.io/badge/License-MIT%2FApache--2.0-green)
@@ -149,7 +149,9 @@ cargo build --release
 ./target/release/mcp-rs --config configs/production/claude-desktop.toml
 ```
 
-`mcp-rs --version`でインストールされているバージョンを、`mcp-rs --help`で使えるオプションを表示します（v0.19.1以降）。知らないオプションは、ログに警告を出して無視します（将来のバージョンでは起動しないようにする予定です）。
+`mcp-rs --version`でインストールされているバージョンを、`mcp-rs --help`で使えるオプションを表示します（v0.19.1以降）。知らないオプションや、パスの無い`--config`があると起動しません（v0.19.2以降。v0.19.1はログに警告を出すだけでした）。起動しなくなった場合は、MCPのクライアントの設定にあるmcp-rsの`args`を確かめてください。
+
+MCPのクライアントから（たとえばClaudeに頼んで）`mcp_rs_status`ツールを呼ぶと、バージョン、使っている設定ファイル、ログと監査ログの書き込み先、各プラグインの状態を確かめられます（v0.19.2以降）。
 
 設定ファイルを自分で書く場合は、次の最小構成から始めてください。
 

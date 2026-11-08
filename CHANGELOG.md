@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.2] - 2026-11-09
+
+### Added
+
+- mcp-rs自身の状態を返す、読み取り専用のツール`mcp_rs_status`を追加した
+  （#434）。WordPress・プラグインの有無にかかわらず、常に使える。AI
+  （Claude Desktop・Claude Code等）が、ツールを呼ぶだけでバージョン・動作
+  モード・プロトコル版・設定ファイル・ログと監査ログの書き込み先・各
+  ハンドラーとプラグインの状態（起動できなかった理由を含む）を確かめられる
+  - パスワード・キー・トークン・環境変数の値は含めない。HTTPモードで認証して
+    いない呼び出し元には、バージョンだけを返す
+  - 呼び出しは監査ログに記録する。HTTPモードでは`tools`（#52）で制限できる
+  - `wordpress_health_check`の出力にも、バージョンの行を加えた
+  - **ライブラリの変更**: `McpHandler`に`status`（既定の実装あり）、
+    `McpServer::set_status_info`・`mcp::StatusInfo`・
+    `mcp::process_started_at`、
+    `plugin_proxy::start_plugins_reporting_failures`を追加。`tools/list`の
+    先頭に`mcp_rs_status`が入る
+
+### Changed
+
+- 知らない引数と、パスの無い`--config`があると、起動しないようにした（#437）。
+  どの引数がおかしいかと使い方を標準エラー出力に出し、終了コード2で終わる。
+  v0.19.1では、ログに警告を出して無視していた。打ち間違い（`--confg`等）に
+  気づかず、既定の場所の設定ファイルで起動してしまうのを防ぐ
+  - **ライブラリの変更**: `cli_args::RunArgs`から`unknown`・
+    `missing_config_value`を外し、`cli_args::Command::Invalid`を追加した
+
 ## [0.19.1] - 2026-11-08
 
 ### Added

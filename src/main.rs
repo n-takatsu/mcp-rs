@@ -30,6 +30,8 @@ use tracing::{error, info};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // mcp_rs_statusの起動からの時間の起点（#434）
+    mcp_rs::mcp::process_started_at();
     // サブコマンドは設定ファイルを読み込む前に処理する（設定ファイルが
     // まだ無い状態でencrypted_credentialsを作るためのコマンドなので）
     let args: Vec<String> = std::env::args().collect();
@@ -54,6 +56,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             return Ok(());
         }
         mcp_rs::cli_args::Command::Run(run_args) => run_args,
+        // 知らない引数等（#437）。打ち間違いに気づかず別の設定で起動しない
+        // よう、起動せずに終わる
+        mcp_rs::cli_args::Command::Invalid(problem) => {
+            eprintln!("error: {}\n", problem);
+            eprint!("{}", mcp_rs::cli_args::help_text());
+            std::process::exit(2);
+        }
     };
 
     // 設定読み込み（ログ設定のため最初に実行）
@@ -75,20 +84,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // log_config.log_dir（未解決の設定値）を別に表示すると、
     // フォールバックが発生した場合に2つの異なるパスが出て矛盾する。
     info!("✅ 設定読み込み完了");
-
-    // 知らない引数は、今は警告だけ出して無視する（#431。打ち間違いで別の
-    // 設定のまま起動したことに気づけるように）。将来のバージョンでエラーにする
-    if run_args.missing_config_value {
-        tracing::warn!(
-            "--config was given without a path, so it was ignored and the default config file was used. Run mcp-rs --help for usage"
-        );
-    }
-    if !run_args.unknown.is_empty() {
-        tracing::warn!(
-            "Ignored unknown argument(s): {}. A future version will refuse to start with unknown arguments. Run mcp-rs --help for usage",
-            run_args.unknown.join(" ")
-        );
-    }
 
     // どちらのモードも、ハンドラー（WordPress・プラグイン）を登録した
     // McpServerでリクエストを処理する。HTTPモードは以前core::Runtime経由
@@ -197,11 +192,22 @@ async fn build_server(
     }
 
     // プラグイン（#394）。起動できなかったプラグインは警告を出して飛ばす
-    for (name, handler) in
-        mcp_rs::plugin_proxy::start_plugins(&config.plugins, audit_logger.clone()).await
-    {
+    let (plugins, plugin_failures) = mcp_rs::plugin_proxy::start_plugins_reporting_failures(
+        &config.plugins,
+        audit_logger.clone(),
+    )
+    .await;
+    for (name, handler) in plugins {
         server.add_handler(format!("plugin:{}", name), handler);
     }
+
+    // mcp_rs_statusツール（#434）に出す情報
+    server.set_status_info(mcp_rs::mcp::StatusInfo {
+        mode: if http_mode { "http" } else { "stdio" }.to_string(),
+        config_file: config.config_file.clone(),
+        started_at: mcp_rs::mcp::process_started_at(),
+        plugin_failures,
+    });
 
     Ok(server)
 }

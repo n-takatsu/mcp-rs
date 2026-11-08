@@ -4,6 +4,33 @@
 
 Our project follows a detailed 0.01 increment versioning strategy to provide granular tracking of development progress and feature implementation.
 
+## 🩺 v0.19.2 - 状態を確かめるツール
+
+**Release Date:** 2026-11-09
+**Focus:** AI（Claude Desktop・Claude Code等）から、mcp-rsの状態を確かめられるようにする
+
+### ✅ `mcp_rs_status`ツール（#434）
+
+- mcp-rs自身の状態を返す、読み取り専用のツール。WordPress・プラグインの
+  有無にかかわらず、常に使える（ツールの一覧の先頭）
+- バージョン・動作モード・プロトコル版・設定ファイル・ログと監査ログの
+  書き込み先（ログが切り替わった場合はその理由）・各ハンドラーとプラグインの
+  状態（起動できなかった理由を含む）を返す。フォルダの許可が無くても、
+  ツールを呼ぶだけで確かめられる
+- パスワード・キー・トークン・環境変数の値は含めない。HTTPモードで認証して
+  いない呼び出し元には、バージョンだけを返す。呼び出しは監査ログに記録する
+- `wordpress_health_check`の出力にも、バージョンの行を加えた
+
+### ⚠️ 挙動の変更
+
+- 知らない引数と、パスの無い`--config`があると、起動しない（#437）。理由と
+  使い方を標準エラー出力に出し、終了コード2で終わる。v0.19.1では、ログに
+  警告を出して無視していた。Claude Desktop等の設定（`args`）に
+  `--config <path>`以外を書いている場合は、起動しなくなるので確かめる
+- ツールの一覧（`tools/list`）の先頭に`mcp_rs_status`が加わる。HTTPモードで
+  APIキー・トークンごとにツールを制限している場合（`tools`・`scope_tools`）、
+  `@read_only`か`mcp_rs_status`を指定すると使える
+
 ## 🏷️ v0.19.1 - バージョンの表示
 
 **Release Date:** 2026-11-08

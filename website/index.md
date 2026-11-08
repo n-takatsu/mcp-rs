@@ -102,7 +102,12 @@ See [WordPress Integration](docs/wordpress/) for the full list of tools.
 
 ## Current Status
 
-## ✅ Recently Completed (v0.19.1)
+## ✅ Recently Completed (v0.19.2)
+
+- **🩺 Status Tool**: Ask your AI client to call `mcp_rs_status` to see the version, the config file in use, where the log and audit log are written, and the state of each plugin. See [API](docs/api/#mcp_rs_status)
+- **🛑 Unknown Options**: mcp-rs no longer starts with an unknown option or `--config` without a path, so a typo does not silently use another config file
+
+## ✅ v0.19.1
 
 - **🏷️ Version and Help**: `mcp-rs --version` prints the installed version, and `mcp-rs --help` lists the options
 

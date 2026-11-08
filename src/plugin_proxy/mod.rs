@@ -372,7 +372,19 @@ pub async fn start_plugins(
     configs: &[PluginConfig],
     audit_logger: Arc<AuditLogger>,
 ) -> Vec<(String, Arc<PluginHandler>)> {
+    start_plugins_reporting_failures(configs, audit_logger)
+        .await
+        .0
+}
+
+/// `start_plugins`と同じ。起動できなかったプラグイン（名前、理由）も返す
+/// （`mcp_rs_status`に出すため、#434）。
+pub async fn start_plugins_reporting_failures(
+    configs: &[PluginConfig],
+    audit_logger: Arc<AuditLogger>,
+) -> (Vec<(String, Arc<PluginHandler>)>, Vec<(String, String)>) {
     let mut started = Vec::new();
+    let mut failed = Vec::new();
     let mut seen = HashSet::new();
     for config in configs {
         if !config.enabled.unwrap_or(true) {
@@ -384,6 +396,10 @@ pub async fn start_plugins(
                 "Plugin '{}' is not started: another plugin has the same name",
                 config.name
             );
+            failed.push((
+                config.name.clone(),
+                "another plugin has the same name".to_string(),
+            ));
             continue;
         }
         match PluginHandler::start_with_audit_logger(config, audit_logger.clone()).await {
@@ -395,10 +411,13 @@ pub async fn start_plugins(
                 );
                 started.push((config.name.clone(), Arc::new(handler)));
             }
-            Err(e) => warn!("Plugin '{}' is not available: {}", config.name, e),
+            Err(e) => {
+                warn!("Plugin '{}' is not available: {}", config.name, e);
+                failed.push((config.name.clone(), e));
+            }
         }
     }
-    started
+    (started, failed)
 }
 
 enum ReadLine {
@@ -679,6 +698,8 @@ pub struct PluginHandler {
     max_response_bytes: usize,
     rate_limiter: RateLimiter,
     audit_logger: Arc<AuditLogger>,
+    /// 起動の仕方（`process`・`container`・`kubernetes`、#434の状態表示用）
+    runtime: &'static str,
 }
 
 impl PluginHandler {
@@ -907,6 +928,13 @@ impl PluginHandler {
             max_response_bytes,
             rate_limiter: RateLimiter::new(config.rate_limit.clone().unwrap_or_default()),
             audit_logger,
+            runtime: if config.container.is_some() {
+                "container"
+            } else if config.kubernetes.is_some() {
+                "kubernetes"
+            } else {
+                "process"
+            },
         })
     }
 
@@ -1065,6 +1093,27 @@ impl McpHandler for PluginHandler {
         // プラグインのツールは何をするか本体には分からないため、すべて記録する
         self.audit_tool_call(&params.name, &result, started).await;
         result
+    }
+
+    async fn status(&self) -> Option<String> {
+        // 呼び出しの最中は接続がロックされている。待たずに「動作中」とする
+        let state = match self.connection.try_lock() {
+            Ok(mut connection) => match &connection.stopped {
+                Some(reason) => format!("stopped ({})", reason),
+                None => match connection.child.try_wait() {
+                    Ok(Some(exit)) => format!("exited ({})", exit),
+                    _ => "running".to_string(),
+                },
+            },
+            Err(_) => "running (a call is in progress)".to_string(),
+        };
+        Some(format!(
+            "plugin '{}' ({}): {}, {} tools",
+            self.name,
+            self.runtime,
+            state,
+            self.tools.len()
+        ))
     }
 
     async fn list_resources(&self) -> Result<Vec<Resource>, McpError> {
