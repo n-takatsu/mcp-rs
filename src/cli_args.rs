@@ -12,6 +12,9 @@ pub enum Command {
     Help,
     /// サーバーとして起動する
     Run(RunArgs),
+    /// 引数の誤り（知らない引数・パスの無い`--config`、#437）。理由を表示
+    /// して、起動せずに終わる
+    Invalid(String),
 }
 
 /// サーバーとして起動するときの引数
@@ -19,17 +22,15 @@ pub enum Command {
 pub struct RunArgs {
     /// `--config <path>`（`--config=<path>`も可）
     pub config: Option<String>,
-    /// 知らない引数。今は警告だけ出して無視する（将来のバージョンでエラーに
-    /// する予定）
-    pub unknown: Vec<String>,
-    /// `--config`の後ろにパスが無い
-    pub missing_config_value: bool,
 }
 
 /// 引数（先頭はプログラム名）を解釈する。`--version`・`--help`は、他の
-/// 引数より優先する（最初に現れたもの）
+/// 引数より優先する（最初に現れたもの）。知らない引数・パスの無い
+/// `--config`は`Invalid`にする（打ち間違いに気づかず、別の設定で起動する
+/// のを防ぐ、#437）
 pub fn parse_args(args: &[String]) -> Command {
     let mut run = RunArgs::default();
+    let mut problems = Vec::new();
     let mut rest = args.iter().skip(1);
     while let Some(arg) = rest.next() {
         match arg.as_str() {
@@ -37,16 +38,20 @@ pub fn parse_args(args: &[String]) -> Command {
             "--help" | "-h" => return Command::Help,
             "--config" => match rest.next() {
                 Some(path) => run.config = Some(path.clone()),
-                None => run.missing_config_value = true,
+                None => problems.push("--config needs a path".to_string()),
             },
             _ => match arg.strip_prefix("--config=") {
-                Some("") => run.missing_config_value = true,
+                Some("") => problems.push("--config needs a path".to_string()),
                 Some(path) => run.config = Some(path.to_string()),
-                None => run.unknown.push(arg.clone()),
+                None => problems.push(format!("unknown argument '{}'", arg)),
             },
         }
     }
-    Command::Run(run)
+    if problems.is_empty() {
+        Command::Run(run)
+    } else {
+        Command::Invalid(problems.join(", "))
+    }
 }
 
 /// `--version`の表示
@@ -116,30 +121,37 @@ mod tests {
             parse(&["--config", "C:/x/mcp-config.toml"]),
             Command::Run(RunArgs {
                 config: Some("C:/x/mcp-config.toml".to_string()),
-                ..Default::default()
             })
         );
         assert_eq!(
             parse(&["--config=a.toml"]),
             Command::Run(RunArgs {
                 config: Some("a.toml".to_string()),
-                ..Default::default()
             })
         );
+    }
+
+    #[test]
+    fn test_invalid_args() {
         assert_eq!(
             parse(&["--confg", "a.toml"]),
-            Command::Run(RunArgs {
-                unknown: vec!["--confg".to_string(), "a.toml".to_string()],
-                ..Default::default()
-            })
+            Command::Invalid("unknown argument '--confg', unknown argument 'a.toml'".to_string())
         );
         assert_eq!(
             parse(&["--config"]),
-            Command::Run(RunArgs {
-                missing_config_value: true,
-                ..Default::default()
-            })
+            Command::Invalid("--config needs a path".to_string())
         );
+        assert_eq!(
+            parse(&["--config="]),
+            Command::Invalid("--config needs a path".to_string())
+        );
+        assert_eq!(
+            parse(&["--config", "a.toml", "--verbose"]),
+            Command::Invalid("unknown argument '--verbose'".to_string())
+        );
+        // --version・--helpは、誤りがあっても優先する
+        assert_eq!(parse(&["--verbose", "--version"]), Command::Version);
+        assert_eq!(parse(&["--confg", "--help"]), Command::Help);
     }
 
     #[test]
