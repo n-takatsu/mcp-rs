@@ -39,6 +39,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- 本体から使われていなかった認証コードを削除（#421、#419の決定）。
+  HTTPモードのAPIキー認証（`security::auth::api_key`、#342）は残す
+  - **ライブラリの変更**: 次の公開モジュール・型を削除した
+    - `security::auth`の`jwt`・`oauth2`・`session_auth`・`provider`
+      （`MultiAuthProvider`）・`middleware`（`AuthMiddleware`）・`api`
+      （`create_auth_router`）・`repository`（memory・PostgreSQL・Redis）と
+      `AuthConfig`
+    - `security::mfa`（TOTP・SMS・バックアップコード・デバイス信頼）と、
+      機能（features）の`mfa`・`mfa-full`
+    - `compliance`（GDPR/CCPAのエンジン。上記の認証の上に作られていた）
+    - `session::jwt_integration`（`SessionJwtManager`等）
+  - 依存から`jsonwebtoken`・`totp-rs`・`qrcode`を外した
+  - 関連するexample・テストと、READMEのMFA・JWTの記述、MFAの設計書
+    （`docs/design/mfa-implementation.md`）も削除した
+  - HTTPモードのOAuth 2.1による認可は#420で扱う
+
 - 本体から使われなくなった`core`モジュール（`Runtime`・`HandlerRegistry`・
   `PluginInfo`・`ExecutionContext`）を削除（#409）。#400の修正（#406）以降、
   リクエストの処理は`McpServer`（`RequestDispatcher`）が受け持っている。
