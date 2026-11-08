@@ -21,6 +21,13 @@ pub trait McpHandler: Send + Sync {
         &self,
         params: ResourceReadParams,
     ) -> Result<serde_json::Value, McpError>;
+
+    /// `mcp_rs_status`（#434）に出す、このハンドラーの状態の1行（例:
+    /// WordPressのサイトURL、プラグインが動いているか）。パスワード・キー等の
+    /// 秘密は含めない。既定は無し（名前だけを出す）
+    async fn status(&self) -> Option<String> {
+        None
+    }
 }
 
 /// 登録されたハンドラーの一覧（登録順）。ツール名の重複時に、どちらが
@@ -31,6 +38,8 @@ pub struct McpServer {
     handlers: Handlers,
     /// 呼び出しを拒否したツールを記録する（#52）
     audit_logger: Option<Arc<crate::security::AuditLogger>>,
+    /// `mcp_rs_status`に出す情報（#434）
+    status: Arc<crate::mcp::StatusInfo>,
     capabilities: ServerCapabilities,
 }
 
@@ -97,6 +106,7 @@ pub struct RequestDispatcher {
     handlers: Arc<Handlers>,
     session: Arc<Session>,
     audit_logger: Option<Arc<crate::security::AuditLogger>>,
+    status: Arc<crate::mcp::StatusInfo>,
 }
 
 impl RequestDispatcher {
@@ -120,6 +130,7 @@ impl RequestDispatcher {
             &self.session,
             caller,
             self.audit_logger.as_deref(),
+            &self.status,
         )
         .await
     }
@@ -153,6 +164,7 @@ impl McpServer {
         Self {
             handlers: Vec::new(),
             audit_logger: None,
+            status: Arc::new(crate::mcp::StatusInfo::default()),
             capabilities: ServerCapabilities {
                 tools: Some(ToolsCapability {
                     list_changed: Some(false),
@@ -171,6 +183,12 @@ impl McpServer {
         self.audit_logger = Some(audit_logger);
     }
 
+    /// `mcp_rs_status`（#434）に出す情報（動作モード・設定ファイル・起動
+    /// できなかったプラグイン等）。`dispatcher`より前に設定する。
+    pub fn set_status_info(&mut self, status: crate::mcp::StatusInfo) {
+        self.status = Arc::new(status);
+    }
+
     /// `set_audit_logger`で設定した監査ログ
     pub fn audit_logger(&self) -> Option<Arc<crate::security::AuditLogger>> {
         self.audit_logger.clone()
@@ -183,6 +201,7 @@ impl McpServer {
             handlers: Arc::new(self.handlers.clone()),
             session: Arc::new(Session::default()),
             audit_logger: self.audit_logger.clone(),
+            status: self.status.clone(),
         }
     }
 
@@ -257,7 +276,15 @@ impl McpServer {
         handlers: &[(String, Arc<dyn McpHandler>)],
         session: &Session,
     ) -> Result<Option<JsonRpcResponse>, McpError> {
-        Self::process_request_as(line, handlers, session, &Caller::unrestricted(), None).await
+        Self::process_request_as(
+            line,
+            handlers,
+            session,
+            &Caller::unrestricted(),
+            None,
+            &crate::mcp::StatusInfo::default(),
+        )
+        .await
     }
 
     /// `process_request`と同じ。`caller`が使えないツールは、`tools/list`に
@@ -268,6 +295,7 @@ impl McpServer {
         session: &Session,
         caller: &Caller,
         audit_logger: Option<&crate::security::AuditLogger>,
+        status: &crate::mcp::StatusInfo,
     ) -> Result<Option<JsonRpcResponse>, McpError> {
         let request: JsonRpcRequest = serde_json::from_str(line.trim())?;
 
@@ -333,6 +361,10 @@ impl McpServer {
                             "isError": true
                         }))
                     }
+                    Ok(params) if params.name == crate::mcp::STATUS_TOOL_NAME => Ok(
+                        Self::call_status_tool(handlers, session, caller, audit_logger, status)
+                            .await,
+                    ),
                     Ok(params) => match crate::mcp::with_caller(
                         caller.clone(),
                         Self::call_tool_routed(handlers, params),
@@ -461,11 +493,49 @@ impl McpServer {
         }
     }
 
+    /// `mcp_rs_status`（#434）に答える。呼び出しは監査ログに記録する
+    async fn call_status_tool(
+        handlers: &[(String, Arc<dyn McpHandler>)],
+        session: &Session,
+        caller: &Caller,
+        audit_logger: Option<&crate::security::AuditLogger>,
+        status: &crate::mcp::StatusInfo,
+    ) -> serde_json::Value {
+        let started = std::time::Instant::now();
+        let text = crate::mcp::render_status(
+            status,
+            session.protocol_version(),
+            caller,
+            audit_logger,
+            handlers,
+        )
+        .await;
+        if let Some(audit_logger) = audit_logger {
+            let name = crate::mcp::STATUS_TOOL_NAME;
+            let entry = crate::security::AuditLogEntry::new(
+                crate::security::AuditLevel::Info,
+                crate::security::AuditCategory::DataAccess,
+                format!("Tool call: {} - SUCCESS", name),
+            )
+            .with_action("mcp-rs".to_string(), name.to_string())
+            .with_result("SUCCESS".to_string());
+            let entry = crate::mcp::with_caller(caller.clone(), async {
+                crate::mcp::audit_tool_call_context(entry, started)
+            })
+            .await;
+            if let Err(e) = audit_logger.log(entry).await {
+                warn!("Failed to write audit log entry for {}: {}", name, e);
+            }
+        }
+        serde_json::json!({ "content": [{ "type": "text", "text": text }] })
+    }
+
     /// 全ハンドラーのツールを登録順にまとめる。同じ名前のツールは、先に
     /// 登録したハンドラーのものだけを残す（呼び出しもそちらに振り分ける）。
     /// 一覧を取得できないハンドラーは警告を出して飛ばす。
+    /// 先頭は、本体の`mcp_rs_status`（#434）。
     async fn list_all_tools(handlers: &[(String, Arc<dyn McpHandler>)]) -> Vec<Tool> {
-        let mut tools: Vec<Tool> = Vec::new();
+        let mut tools: Vec<Tool> = vec![crate::mcp::status_tool()];
         for (name, handler) in handlers {
             match handler.list_tools().await {
                 Ok(handler_tools) => {
@@ -569,7 +639,16 @@ impl McpServer {
                 break; // EOF
             }
 
-            let response = match Self::process_request(&line, &self.handlers, &session).await {
+            let response = match Self::process_request_as(
+                &line,
+                &self.handlers,
+                &session,
+                &Caller::unrestricted(),
+                self.audit_logger.as_deref(),
+                &self.status,
+            )
+            .await
+            {
                 Ok(Some(resp)) => resp,
                 // 通知（idなし）には応答しない（JSON-RPC 2.0）
                 Ok(None) => continue,
@@ -984,7 +1063,11 @@ mod tests {
             .collect();
         // 一覧を取得できないハンドラーは飛ばし、重複した名前は先の
         // ハンドラーのものだけを残す
-        assert_eq!(names, vec!["get_post", "shared", "plugin__echo"]);
+        // 先頭は本体のmcp_rs_status（#434）
+        assert_eq!(
+            names,
+            vec!["mcp_rs_status", "get_post", "shared", "plugin__echo"]
+        );
     }
 
     #[tokio::test]
@@ -1074,9 +1157,11 @@ mod tests {
             );
         }
 
-        // ハンドラーが無くても、ツール一覧は空で応答する
+        // ハンドラーが無くても、ツール一覧に応答する（本体のmcp_rs_statusだけ）
         let response = request(&Vec::new(), "tools/list", serde_json::json!({})).await;
-        assert_eq!(response.result.unwrap()["tools"], serde_json::json!([]));
+        let tools = response.result.unwrap()["tools"].clone();
+        assert_eq!(tools.as_array().unwrap().len(), 1);
+        assert_eq!(tools[0]["name"], serde_json::json!("mcp_rs_status"));
     }
 
     /// 新しい版の項目（outputSchema・annotations・structuredContent）を
@@ -1158,7 +1243,13 @@ mod tests {
         }
         (
             results[0]["protocolVersion"].clone(),
-            results[1]["tools"][0].clone(),
+            results[1]["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|t| t["name"] == "structured")
+                .unwrap()
+                .clone(),
             results[2].clone(),
         )
     }
@@ -1193,9 +1284,17 @@ mod tests {
     async fn test_responses_before_initialize_use_the_oldest_version() {
         let handlers: Handlers = vec![("s".to_string(), Arc::new(StructuredHandler))];
         let response = request(&handlers, "tools/list", serde_json::json!({})).await;
-        assert!(response.result.unwrap()["tools"][0]
-            .get("outputSchema")
-            .is_none());
+        let tools = response.result.unwrap()["tools"].clone();
+        let structured = tools
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == "structured")
+            .unwrap()
+            .clone();
+        assert!(structured.get("outputSchema").is_none());
+        // mcp_rs_statusのtitle・annotations（新しい版の項目）も出さない
+        assert!(tools[0].get("annotations").is_none());
     }
 
     /// `get_post`（読み取り専用）と`delete_post`（読み取り専用でない）を持つ
@@ -1273,7 +1372,8 @@ mod tests {
             .iter()
             .map(|t| t["name"].as_str().unwrap().to_string())
             .collect();
-        assert_eq!(names, vec!["get_post"]);
+        // mcp_rs_statusも読み取り専用なので見える
+        assert_eq!(names, vec!["mcp_rs_status", "get_post"]);
 
         let call = |name: &str| {
             send(
@@ -1340,8 +1440,110 @@ mod tests {
             .unwrap();
         assert_eq!(
             response.result.unwrap()["tools"].as_array().unwrap().len(),
-            2
+            3
         );
+    }
+
+    /// `mcp_rs_status`（#434）: ハンドラーの状態・起動できなかったプラグインを
+    /// 出し、呼び出しは監査ログに残る。権限（#52）で拒否できる
+    #[tokio::test]
+    async fn test_status_tool() {
+        struct WithStatus;
+        #[async_trait]
+        impl McpHandler for WithStatus {
+            async fn initialize(
+                &self,
+                _params: InitializeParams,
+            ) -> Result<serde_json::Value, McpError> {
+                Ok(serde_json::json!({}))
+            }
+            async fn list_tools(&self) -> Result<Vec<Tool>, McpError> {
+                Ok(vec![tool("delete_post")])
+            }
+            async fn call_tool(
+                &self,
+                _params: ToolCallParams,
+            ) -> Result<serde_json::Value, McpError> {
+                Ok(serde_json::json!({}))
+            }
+            async fn list_resources(&self) -> Result<Vec<Resource>, McpError> {
+                Ok(vec![])
+            }
+            async fn read_resource(
+                &self,
+                _params: ResourceReadParams,
+            ) -> Result<serde_json::Value, McpError> {
+                Ok(serde_json::json!({}))
+            }
+            async fn status(&self) -> Option<String> {
+                Some("WordPress site https://example.com".to_string())
+            }
+        }
+
+        let audit_logger = Arc::new(crate::security::AuditLogger::with_defaults());
+        let mut server = McpServer::new();
+        server.set_audit_logger(audit_logger.clone());
+        server.add_handler("wordpress".to_string(), Arc::new(WithStatus));
+        server.add_handler("broken".to_string(), Arc::new(BrokenHandler));
+        server.set_status_info(crate::mcp::StatusInfo {
+            mode: "stdio".to_string(),
+            config_file: Some(std::path::PathBuf::from("C:/cfg/mcp-config.toml")),
+            started_at: std::time::Instant::now(),
+            plugin_failures: vec![("fs".to_string(), "npx was not found".to_string())],
+        });
+        let dispatcher = server.dispatcher();
+        let call = serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": { "name": "mcp_rs_status", "arguments": {} }
+        })
+        .to_string();
+
+        let result = dispatcher
+            .handle_message(&call)
+            .await
+            .unwrap()
+            .unwrap()
+            .result
+            .unwrap();
+        let text = result["content"][0]["text"].as_str().unwrap();
+        assert!(
+            text.starts_with(&format!("mcp-rs {}", env!("CARGO_PKG_VERSION"))),
+            "{}",
+            text
+        );
+        for expected in [
+            "Mode: stdio",
+            "Protocol version: 2024-11-05",
+            "Config file: C:/cfg/mcp-config.toml",
+            "- wordpress: WordPress site https://example.com",
+            "- broken",
+            "- fs: npx was not found",
+        ] {
+            assert!(
+                text.contains(expected),
+                "missing {:?} in:\n{}",
+                expected,
+                text
+            );
+        }
+        let entries = audit_logger.get_all_entries().await;
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].action.as_deref(), Some("mcp_rs_status"));
+        assert_eq!(entries[0].user_id.as_deref(), Some("local"));
+
+        // 権限で外せる
+        let caller = Caller::new(
+            "api_key:limited",
+            crate::mcp::ToolAccess::from_patterns(Some(&["delete_post".to_string()])).unwrap(),
+        );
+        let denied = dispatcher
+            .handle_message_as(&call, &caller)
+            .await
+            .unwrap()
+            .unwrap()
+            .result
+            .unwrap();
+        assert_eq!(denied["isError"], serde_json::json!(true));
     }
 
     #[test]

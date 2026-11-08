@@ -2696,6 +2696,12 @@ impl WordPressHandler {
                     status_emoji, status_text
                 );
 
+                // mcp-rs自身のバージョン（#434。詳しい状態はmcp_rs_status）
+                report.push_str(&format!(
+                    "🏷️ mcp-rs {} (call {} for details)\n",
+                    env!("CARGO_PKG_VERSION"),
+                    crate::mcp::STATUS_TOOL_NAME
+                ));
                 report.push_str(&format!("📄 Log file: {}\n\n", health.log_destination));
 
                 if let Some(site_info) = &health.site_info {
@@ -4643,6 +4649,10 @@ impl McpHandler for WordPressHandler {
         self.audit_tool_call(&tool_name, target_id.as_deref(), &result, started)
             .await;
         result
+    }
+
+    async fn status(&self) -> Option<String> {
+        Some(format!("WordPress site {}", self.base_url))
     }
 
     async fn list_resources(&self) -> Result<Vec<Resource>, McpError> {

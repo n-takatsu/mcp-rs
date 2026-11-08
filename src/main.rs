@@ -30,6 +30,8 @@ use tracing::{error, info};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // mcp_rs_statusの起動からの時間の起点（#434）
+    mcp_rs::mcp::process_started_at();
     // サブコマンドは設定ファイルを読み込む前に処理する（設定ファイルが
     // まだ無い状態でencrypted_credentialsを作るためのコマンドなので）
     let args: Vec<String> = std::env::args().collect();
@@ -197,11 +199,22 @@ async fn build_server(
     }
 
     // プラグイン（#394）。起動できなかったプラグインは警告を出して飛ばす
-    for (name, handler) in
-        mcp_rs::plugin_proxy::start_plugins(&config.plugins, audit_logger.clone()).await
-    {
+    let (plugins, plugin_failures) = mcp_rs::plugin_proxy::start_plugins_reporting_failures(
+        &config.plugins,
+        audit_logger.clone(),
+    )
+    .await;
+    for (name, handler) in plugins {
         server.add_handler(format!("plugin:{}", name), handler);
     }
+
+    // mcp_rs_statusツール（#434）に出す情報
+    server.set_status_info(mcp_rs::mcp::StatusInfo {
+        mode: if http_mode { "http" } else { "stdio" }.to_string(),
+        config_file: config.config_file.clone(),
+        started_at: mcp_rs::mcp::process_started_at(),
+        plugin_failures,
+    });
 
     Ok(server)
 }

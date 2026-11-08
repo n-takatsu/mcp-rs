@@ -216,6 +216,31 @@ Lists available tools.
 - `update_*`, `set_*`, and `delete_*`: `readOnlyHint: false`, `destructiveHint: true`, `idempotentHint: true` (they change or delete existing items)
 - All WordPress tools: `openWorldHint: false` (they work only with the configured WordPress site)
 
+#### `mcp_rs_status`
+
+mcp-rs always provides the read-only tool `mcp_rs_status` (first in `tools/list`), with or without WordPress and plugins. It returns text such as:
+
+```text
+mcp-rs 0.19.2
+Mode: stdio
+Protocol version: 2025-06-18
+OS: windows (x86_64)
+Process ID: 12345
+Uptime: 1h 2m 3s
+Config file: C:\Users\me\AppData\Roaming\Claude\mcp-rs\mcp-config.toml
+Log: C:\Users\me\.mcp-rs\logs\mcp-rs.log.2026-11-09 (exists, 38.2 KB, last write ...) (fallback: ...)
+Audit log: C:\Users\me\AppData\Roaming\Claude\mcp-rs\audit.log
+Handlers:
+- wordpress: WordPress site https://example.com
+- plugin:fs: plugin 'fs' (process): running, 16 tools
+Plugins that failed to start:
+- broken: could not start '...': ...
+```
+
+- Passwords, API keys, tokens, and environment variable values are not included
+- In HTTP mode, a caller who is not authenticated (no `auth_enabled` and no `[transport.http.oauth]`) gets the version only, so that file paths are not shown to everyone on the network. Authenticated callers also see `Caller: api_key:<name>` (or `oauth:<client>`)
+- It is read-only (`@read_only` allows it when [limiting tools](../security/#limiting-tools-per-api-key-or-token)), and calls are recorded in the audit log
+
 #### `tools/call`
 
 Executes a tool.
