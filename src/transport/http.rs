@@ -300,7 +300,10 @@ pub struct HttpTransport {
     sender: tokio::sync::mpsc::Sender<String>,
     pending_responses: Arc<RwLock<HashMap<Value, tokio::sync::oneshot::Sender<JsonRpcResponse>>>>,
     stats: Arc<RwLock<HttpStats>>,
-    bound_addr: Arc<RwLock<Option<SocketAddr>>>,
+    /// `start_server()`で実際に待ち受けたアドレス。同期の`transport_info()`
+    /// からも待たずに読めるよう、async版ではなく`std::sync::RwLock`を使う
+    /// （ロックを持ったまま`.await`しない）（#265）
+    bound_addr: Arc<std::sync::RwLock<Option<SocketAddr>>>,
     request_handler: RequestHandlerSlot,
 }
 
@@ -327,14 +330,14 @@ impl HttpTransport {
             sender,
             pending_responses: Arc::new(RwLock::new(HashMap::new())),
             stats: Arc::new(RwLock::new(stats)),
-            bound_addr: Arc::new(RwLock::new(None)),
+            bound_addr: Arc::new(std::sync::RwLock::new(None)),
             request_handler: RequestHandlerSlot::default(),
         })
     }
 
     /// Start the HTTP server
     pub async fn start_server(&self) -> Result<()> {
-        *self.bound_addr.write().await = None;
+        self.set_bound_addr(None);
 
         // Validate bind address
         self.config
@@ -519,12 +522,12 @@ impl HttpTransport {
 
         if self.config.tls_enabled {
             let tls_acceptor = build_tls_acceptor(&self.config, &pinned_certificates_sha256)?;
-            *self.bound_addr.write().await = Some(local_addr);
+            self.set_bound_addr(Some(local_addr));
             tokio::spawn(async move {
                 serve_tls(listener, app, tls_acceptor).await;
             });
         } else {
-            *self.bound_addr.write().await = Some(local_addr);
+            self.set_bound_addr(Some(local_addr));
             tokio::spawn(async move {
                 if let Err(e) = axum::serve(
                     listener,
@@ -555,7 +558,23 @@ impl HttpTransport {
     /// Returns the actual bound address once `start_server()` has completed,
     /// useful when `bind_addr` uses an OS-assigned ephemeral port (`:0`).
     pub async fn bound_addr(&self) -> Option<SocketAddr> {
-        *self.bound_addr.read().await
+        self.current_bound_addr()
+    }
+
+    fn current_bound_addr(&self) -> Option<SocketAddr> {
+        // 値はOption<SocketAddr>だけで、書き込み中にパニックしても壊れた
+        // 状態にはならないため、ポイズンは無視する
+        *self
+            .bound_addr
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn set_bound_addr(&self, addr: Option<SocketAddr>) {
+        *self
+            .bound_addr
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = addr;
     }
 }
 
@@ -859,12 +878,9 @@ impl Transport for HttpTransport {
     }
 
     fn transport_info(&self) -> TransportInfo {
-        let addr = self
-            .bound_addr
-            .try_read()
-            .ok()
-            .and_then(|addr| *addr)
-            .unwrap_or(self.config.bind_addr);
+        // 起動前は設定のアドレス（ポート0のこともある）、起動後は実際に
+        // 待ち受けたアドレス。ロックの競合で設定の値に戻ることはない（#265）
+        let addr = self.current_bound_addr().unwrap_or(self.config.bind_addr);
 
         TransportInfo {
             transport_type: TransportType::Http { addr },
@@ -3617,6 +3633,29 @@ mod tests {
         let (a, b) = tokio::join!(send("A", 300), send("B", 0));
         assert_eq!(a, "A");
         assert_eq!(b, "B");
+    }
+
+    /// `transport_info()`は同期のメソッドだが、asyncの中から呼んでも、
+    /// 起動後は実際に待ち受けたアドレスを返す（#265）
+    #[tokio::test]
+    async fn test_transport_info_reports_bound_address() {
+        let transport = HttpTransport::new(HttpConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            ..HttpConfig::default()
+        })
+        .unwrap();
+        let addr_of = |transport: &HttpTransport| match transport.transport_info().transport_type {
+            TransportType::Http { addr } => addr,
+            other => panic!("unexpected transport type: {other:?}"),
+        };
+
+        // 起動前は設定のアドレス
+        assert_eq!(addr_of(&transport).port(), 0);
+
+        transport.start_server().await.unwrap();
+        let bound = transport.bound_addr().await.unwrap();
+        assert_ne!(bound.port(), 0);
+        assert_eq!(addr_of(&transport), bound);
     }
 
     #[tokio::test]
