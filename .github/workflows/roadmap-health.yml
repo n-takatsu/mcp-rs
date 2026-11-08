@@ -22,8 +22,7 @@ jobs:
 
     permissions:
       issues: write
-      discussions: write
-      contents: write
+      contents: read
 
     steps:
       - name: 🛒 Checkout
@@ -58,7 +57,15 @@ jobs:
           echo "## 🎯 Milestone Progress Analysis" >> health_report.md
           echo "" >> health_report.md
 
-          for milestone in "v0.2.0-beta" "v0.3.0" "v1.0.0"; do
+          # 開いているマイルストーンだけを報告する（完了した版はクローズする）
+          milestones=$(gh api "repos/${{ github.repository }}/milestones?state=open&per_page=100" --jq '.[].title')
+          if [[ -z "$milestones" ]]; then
+            echo "No open milestones." >> health_report.md
+            echo "" >> health_report.md
+          fi
+
+          while IFS= read -r milestone; do
+            [[ -z "$milestone" ]] && continue
             echo "### 📦 $milestone" >> health_report.md
             echo "" >> health_report.md
 
@@ -105,7 +112,7 @@ jobs:
             echo "" >> health_report.md
 
             # マイルストーン期日チェック
-            milestone_due=$(gh api repos/${{ github.repository }}/milestones --jq ".[] | select(.title == \"$milestone\") | .due_on")
+            milestone_due=$(gh api "repos/${{ github.repository }}/milestones?state=open&per_page=100" --jq ".[] | select(.title == \"$milestone\") | .due_on")
             if [[ ! -z "$milestone_due" && "$milestone_due" != "null" ]]; then
               due_date=$(date -d "$milestone_due" '+%Y-%m-%d')
               current_date=$(date '+%Y-%m-%d')
@@ -119,7 +126,7 @@ jobs:
             fi
 
             echo "" >> health_report.md
-          done
+          done <<< "$milestones"
 
           # 🚨 Health Alerts & Recommendations
           echo "## 🚨 Health Alerts & Recommendations" >> health_report.md
@@ -146,23 +153,6 @@ jobs:
             echo "" >> health_report.md
           fi
 
-          # v0.2.0-beta リリース健全性
-          beta_due="2026-01-31"
-          beta_current_progress=$(gh issue list --milestone "v0.2.0-beta" --state all --json number | jq length)
-          beta_completed=$(gh issue list --milestone "v0.2.0-beta" --state closed --json number | jq length)
-
-          if [[ $beta_current_progress -gt 0 ]]; then
-            beta_completion_rate=$((beta_completed * 100 / beta_current_progress))
-
-            if [[ $beta_completion_rate -lt 50 ]]; then
-              echo "### ⚠️ v0.2.0-beta Release Risk" >> health_report.md
-              echo "- **Current Progress**: ${beta_completion_rate}%" >> health_report.md
-              echo "- **Risk Level**: HIGH - Consider scope adjustment or timeline extension" >> health_report.md
-              echo "- **Recommendation**: Focus on P0/P1 features only" >> health_report.md
-              echo "" >> health_report.md
-            fi
-          fi
-
           # 🎯 Action Items
           echo "## 🎯 Recommended Action Items" >> health_report.md
           echo "" >> health_report.md
@@ -170,7 +160,7 @@ jobs:
           echo "### This Week Priority" >> health_report.md
           echo "- [ ] Review and address all P0 Critical issues" >> health_report.md
           echo "- [ ] Update Epic Issues with current Sub-Issue progress" >> health_report.md
-          echo "- [ ] Validate v0.2.0-beta milestone timeline" >> health_report.md
+          echo "- [ ] Validate open milestone timelines (close milestones that are complete)" >> health_report.md
           echo "- [ ] Close completed Sub-Issues and update Epic status" >> health_report.md
           echo "" >> health_report.md
 
@@ -252,89 +242,3 @@ jobs:
               Archive: This weekly health check has been completed and archived."
             fi
           done
-
-      - name: 🔄 Update ROADMAP Progress Indicators
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          # ROADMAP.md の進捗インジケーター更新
-
-          # 各マイルストーンの進捗計算
-          beta_total=$(gh issue list --milestone "v0.2.0-beta" --state all --json number | jq length)
-          beta_closed=$(gh issue list --milestone "v0.2.0-beta" --state closed --json number | jq length)
-
-          v3_total=$(gh issue list --milestone "v0.3.0" --state all --json number | jq length)
-          v3_closed=$(gh issue list --milestone "v0.3.0" --state closed --json number | jq length)
-
-          v1_total=$(gh issue list --milestone "v1.0.0" --state all --json number | jq length)
-          v1_closed=$(gh issue list --milestone "v1.0.0" --state closed --json number | jq length)
-
-          # 進捗パーセンテージ計算
-          if [[ $beta_total -gt 0 ]]; then
-            beta_progress=$((beta_closed * 100 / beta_total))
-          else
-            beta_progress=0
-          fi
-
-          if [[ $v3_total -gt 0 ]]; then
-            v3_progress=$((v3_closed * 100 / v3_total))
-          else
-            v3_progress=0
-          fi
-
-          if [[ $v1_total -gt 0 ]]; then
-            v1_progress=$((v1_closed * 100 / v1_total))
-          else
-            v1_progress=0
-          fi
-
-          echo "Calculated Progress:"
-          echo "- v0.2.0-beta: ${beta_progress}% ($beta_closed/$beta_total)"
-          echo "- v0.3.0: ${v3_progress}% ($v3_closed/$v3_total)"
-          echo "- v1.0.0: ${v1_progress}% ($v1_closed/$v1_total)"
-
-          # 進捗バッジの更新（GitHub Issues リンクも更新）
-          current_date=$(date '+%Y年%m月%d日')
-
-          # 最終更新日の更新
-          sed -i "s#> \*\*最終更新\*\*:.*#> **最終更新**: $current_date#g" ROADMAP.md
-
-          # GitHub Issues リンクを実際のIssue番号に更新
-          sed -i 's#https://github.com/n-takatsu/mcp-rs/issues/NEW#https://github.com/n-takatsu/mcp-rs/issues/17#g' ROADMAP.md
-
-          # 旧フォーマット互換: v0.2 の進捗行が残っている場合のみ更新
-          # 現行 ROADMAP では v0.2 は完了済みテーブルへ移行済みのため、通常は未実行。
-          if grep -q "\*\*プラグイン隔離システム\*\* | 75%" ROADMAP.md; then
-            if [[ $beta_progress -gt 75 ]]; then
-              plugin_isolation_progress="85%"
-            else
-              plugin_isolation_progress="75%"
-            fi
-            sed -i "s#\*\*プラグイン隔離システム\*\* | 75%#**プラグイン隔離システム** | ${plugin_isolation_progress}#g" ROADMAP.md
-          fi
-
-          if grep -q "\*\*Docker統合\*\* | 50%" ROADMAP.md; then
-            if [[ $beta_progress -gt 30 ]]; then
-              docker_progress="60%"
-            else
-              docker_progress="50%"
-            fi
-            sed -i "s#\*\*Docker統合\*\* | 50%#**Docker統合** | ${docker_progress}#g" ROADMAP.md
-          fi
-
-          # 変更があれば自動コミット
-          if [[ -n "$(git status --porcelain ROADMAP.md)" ]]; then
-            git config --local user.email "action@github.com"
-            git config --local user.name "GitHub Action - Health Check"
-            git add ROADMAP.md
-            git commit -m "📊 Weekly ROADMAP progress update - $current_date
-
-            Auto-updated progress indicators:
-            - v0.2.0-beta: ${beta_progress}%
-            - v0.3.0: ${v3_progress}%
-            - v1.0.0: ${v1_progress}%
-
-            Generated by: roadmap-health.yml"
-
-            git push
-          fi

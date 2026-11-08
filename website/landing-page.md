@@ -5,7 +5,7 @@
 <div align="center">
 
 ![MCP-RS Real-time Editing](https://img.shields.io/badge/MCP--RS-Real--time%20Editing-blue?style=for-the-badge&logo=rust)
-![Version](https://img.shields.io/badge/version-0.18.4-green?style=for-the-badge)
+![Version](https://img.shields.io/badge/version-0.19.0-green?style=for-the-badge)
 ![Production Ready](https://img.shields.io/badge/status-Production%20Ready-success?style=for-the-badge)
 ![Security Grade](https://img.shields.io/badge/security-A%2B-brightgreen?style=for-the-badge&logo=shield)
 
@@ -202,7 +202,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ## Add to your Cargo.toml
 
 [dependencies]
-mcp-rs = "0.18.4"
+mcp-rs = "0.19.0"
 tokio = { version = "1.0", features = ["full"] }
 ```
 
@@ -358,8 +358,7 @@ spec:
 - [**WebSocket Guide**](https://github.com/n-takatsu/mcp-rs/blob/main/docs/websocket-guide.md) - Complete WebSocket implementation guide (v0.16.0)
 - [**WebSocket Performance**](https://github.com/n-takatsu/mcp-rs/blob/main/docs/websocket-performance.md) - Performance tuning and optimization
 - [**LLM Integration Guide**](https://github.com/n-takatsu/mcp-rs/blob/main/docs/llm-integration-guide.md) - OpenAI and Anthropic integration
-- [**Plugin Developer Guide**](https://github.com/n-takatsu/mcp-rs/blob/main/docs/plugin-developer-guide.md) - Building isolated plugins
-- [**Docker Runtime Guide**](https://github.com/n-takatsu/mcp-rs/blob/main/docs/docker-runtime-guide.md) - Container-based plugin execution
+- [**Plugins**](./docs/plugins.md) - Running MCP servers as plugins, as child processes or in Docker containers
 - [**Session Management**](./docs/session-management-architecture.md) - Architecture and implementation
 
 ## 🛡️ Security & Compliance

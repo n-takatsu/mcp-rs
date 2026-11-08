@@ -110,7 +110,19 @@ pub enum IsolationLevel {
 
 #### `initialize`
 
-Establishes connection and negotiates capabilities.
+Establishes connection and negotiates the protocol version and capabilities.
+
+mcp-rs supports MCP protocol versions `2025-06-18` and `2024-11-05`. If the client asks for one of them, mcp-rs answers with that version. Otherwise, it answers with `2025-06-18` (the client may then disconnect if it does not support that version). Up to version 0.18.4, mcp-rs always answered with `2024-11-05`.
+
+The version decides which fields mcp-rs sends:
+
+| Field | `2025-06-18` | `2024-11-05` |
+|-------|--------------|--------------|
+| Tool `title`, `outputSchema`, `annotations` (`tools/list`) | Sent | Removed |
+| `structuredContent` (`tools/call`) | Sent | Removed (the same information is in `content`) |
+| Resource links and audio in `content` (`tools/call`) | Sent | Replaced with text |
+
+Before `initialize`, mcp-rs uses `2024-11-05`. In STDIO mode, the version applies to the connection. In HTTP mode, mcp-rs does not tell clients apart, so the version from the most recent `initialize` applies to every client. The `MCP-Protocol-Version` header (Streamable HTTP) is not supported yet.
 
 **Request:**
 
@@ -119,7 +131,7 @@ Establishes connection and negotiates capabilities.
   "jsonrpc": "2.0",
   "method": "initialize",
   "params": {
-    "protocolVersion": "2024-11-05",
+    "protocolVersion": "2025-06-18",
     "capabilities": {
       "roots": { "listChanged": true },
       "sampling": {}
@@ -139,16 +151,14 @@ Establishes connection and negotiates capabilities.
 {
   "jsonrpc": "2.0",
   "result": {
-    "protocolVersion": "2024-11-05",
+    "protocolVersion": "2025-06-18",
     "capabilities": {
-      "logging": {},
-      "tools": { "listChanged": true },
-      "resources": { "subscribe": true, "listChanged": true },
-      "prompts": { "listChanged": true }
+      "tools": { "listChanged": false },
+      "resources": { "subscribe": false, "listChanged": false }
     },
     "serverInfo": {
       "name": "mcp-rs",
-      "version": "0.18.4"
+      "version": "0.19.0"
     }
   },
   "id": 1
@@ -187,6 +197,10 @@ Lists available tools.
           "type": "object",
           "properties": {},
           "required": []
+        },
+        "annotations": {
+          "readOnlyHint": true,
+          "openWorldHint": false
         }
       }
     ]
@@ -194,6 +208,13 @@ Lists available tools.
   "id": 2
 }
 ```
+
+`annotations` are hints for the client, such as whether to ask before running the tool (version `2025-06-18` only). The WordPress tools have them:
+
+- `get_*` and `wordpress_health_check`: `readOnlyHint: true`
+- `create_*` and `upload_media`: `readOnlyHint: false`, `destructiveHint: false`, `idempotentHint: false` (they add new items, and each call adds another one)
+- `update_*`, `set_*`, and `delete_*`: `readOnlyHint: false`, `destructiveHint: true`, `idempotentHint: true` (they change or delete existing items)
+- All WordPress tools: `openWorldHint: false` (they work only with the configured WordPress site)
 
 #### `tools/call`
 
@@ -447,7 +468,7 @@ Retrieves WordPress comments.
 
 ## Version Information
 
-- **Current Version**: v0.18.4
+- **Current Version**: v0.19.0
 - **Phase 1**: MySQL (Complete)
 - **Phase 2**: PostgreSQL (Complete)
 - **Last Updated**: 2025-11-23

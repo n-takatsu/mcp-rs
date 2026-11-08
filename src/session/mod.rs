@@ -1,5 +1,4 @@
 pub mod access_control;
-pub mod jwt_integration;
 pub mod manager;
 pub mod middleware_basic;
 #[cfg(feature = "redis")]
@@ -11,7 +10,6 @@ pub mod types;
 pub mod websocket_handler;
 
 pub use access_control::*;
-pub use jwt_integration::*;
 pub use manager::*;
 pub use middleware_basic::*;
 #[cfg(feature = "redis")]

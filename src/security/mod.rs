@@ -8,8 +8,6 @@ pub mod encryption;
 pub mod hsm;
 pub mod ids;
 pub mod image_scanner;
-#[cfg(feature = "mfa")]
-pub mod mfa;
 pub mod mtls;
 pub mod network_policy;
 pub mod rate_limiter;
@@ -33,11 +31,8 @@ pub use audit_log::{
     AuditStatistics,
 };
 pub use auth::{
-    ApiKey, ApiKeyConfig, ApiKeyManager, ApiKeyPermission, AuthConfig, AuthError, AuthMethod,
-    AuthMiddleware, AuthProvider, AuthRequirement, AuthResult, AuthUser, AuthenticationProvider,
-    Credentials, JwtAuth, JwtClaims, JwtConfig, JwtTokenPair, MultiAuthProvider, OAuth2Config,
-    OAuth2Provider, OAuth2Token, PasswordHasher, Permission, Role, SessionAuth, SessionConfig,
-    SessionToken,
+    ApiKey, ApiKeyConfig, ApiKeyManager, ApiKeyPermission, AuthError, AuthMethod, AuthProvider,
+    AuthResult, AuthUser, Credentials, PasswordHasher, Permission, Role,
 };
 pub use encryption::{EncryptedCredentials, EncryptionError, SecureCredentials};
 pub use ids::{
@@ -49,8 +44,6 @@ pub use ids::{
     RequestData, Severity,
 };
 pub use image_scanner::{ImageScanner, ScanReport, ScanSummary, ScannerType, Vulnerability};
-#[cfg(feature = "mfa")]
-pub use mfa::{MfaConfig, MfaError, TotpAlgorithm, TotpConfig, TotpSecret, TotpVerifier};
 pub use mtls::{
     CaConfig, Certificate, CertificateAuthority, CertificateManager, CertificateManagerConfig,
     CertificateRequest, CertificateStatistics, CertificateStatus, CertificateStore,

@@ -9,6 +9,7 @@ on:
       - 'Dockerfile.test'
       - 'tests/integration/**'
       - 'src/transport/**'
+      - 'src/plugin_proxy/**'
       - 'src/security/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
@@ -20,6 +21,7 @@ on:
       - 'Dockerfile.test'
       - 'tests/integration/**'
       - 'src/transport/**'
+      - 'src/plugin_proxy/**'
       - 'src/security/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
@@ -105,6 +107,12 @@ jobs:
       - name: Run unit tests
         run: cargo test --lib --features integration-tests
 
+      # プラグインのコンテナ隔離（#411）を、実際のDockerで確かめる
+      - name: Run plugin container isolation test (Docker)
+        env:
+          MCP_RS_DOCKER_TESTS: "1"
+        run: cargo test --lib --features integration-tests plugin_proxy::tests::test_container_plugin_is_isolated_in_docker -- --nocapture
+
       - name: Verify integration test compilation
         run: |
           echo "Verifying integration tests compile successfully..."
@@ -140,6 +148,75 @@ jobs:
           path: |
             target/debug/deps/*.log
             target/release/deps/*.log
+
+  # プラグインをKubernetesのJobとして起動したときの隔離（#413）を、
+  # kindのクラスタで確かめる
+  plugin-kubernetes-test:
+    name: Plugin Kubernetes Isolation Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: Create kind cluster
+        uses: helm/kind-action@v1
+        with:
+          cluster_name: mcp-rs-plugins
+
+      - name: Load test image into the cluster
+        run: |
+          docker pull python:3.12-alpine
+          kind load docker-image python:3.12-alpine --name mcp-rs-plugins
+
+      - name: Run plugin Kubernetes isolation test
+        env:
+          MCP_RS_K8S_TESTS: "1"
+        run: cargo test --lib plugin_proxy::tests::test_kubernetes_plugin_is_isolated -- --nocapture
+
+  # HTTPモードのOAuth 2.1（#420）を、Keycloakが発行したトークンで確かめる
+  oauth-keycloak-test:
+    name: OAuth Keycloak Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: Start Keycloak
+        run: |
+          docker run -d --name keycloak -p 8080:8080             -e KC_BOOTSTRAP_ADMIN_USERNAME=admin             -e KC_BOOTSTRAP_ADMIN_PASSWORD=admin             quay.io/keycloak/keycloak:26.4 start-dev
+          for i in $(seq 1 90); do
+            if curl -sf http://localhost:8080/realms/master/.well-known/openid-configuration > /dev/null; then
+              echo "Keycloak is ready"
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs keycloak
+          exit 1
+
+      - name: Run OAuth Keycloak test
+        env:
+          MCP_RS_KEYCLOAK_TESTS: "1"
+          MCP_RS_KEYCLOAK_URL: http://localhost:8080
+        run: cargo test --lib transport::http::tests::test_keycloak_access_tokens -- --nocapture
+
+      - name: Show Keycloak logs
+        if: failure()
+        run: docker logs keycloak
 
   docker-compose-tests:
     name: Docker Compose Tests

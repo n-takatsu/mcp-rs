@@ -201,16 +201,18 @@ pub struct AuditConfig {
     pub max_memory_entries: usize,
     /// ログレベルフィルター（これ以下のレベルは記録しない）
     pub min_log_level: AuditLevel,
-    /// ファイル出力を有効にするか
+    /// ファイル出力を有効にするか（`log_file_path`も必要）
     pub enable_file_output: bool,
     /// ログファイルパス
     pub log_file_path: Option<String>,
     /// JSON形式で出力するか
     pub json_format: bool,
-    /// ログローテーション設定
+    /// サイズでローテーションするか
     pub rotation_enabled: bool,
-    /// ローテーションサイズ（バイト）
+    /// この大きさ（バイト）を超える前に、ファイルをローテーションする
     pub rotation_size: u64,
+    /// ローテーションで残す古いファイルの数（`audit.log.1`〜）
+    pub max_files: u32,
 }
 
 impl Default for AuditConfig {
@@ -218,11 +220,16 @@ impl Default for AuditConfig {
         Self {
             max_memory_entries: 10000,
             min_log_level: AuditLevel::Info,
-            enable_file_output: true,
-            log_file_path: Some("audit.log".to_string()),
+            // 既定ではファイルに書かない（メモリのみ）。以前は作業フォルダの
+            // `audit.log`に書いていたが、作業フォルダは起動のしかたで変わり、
+            // 書き込めない場所では記録されなかった。本体は設定の`[audit]`から
+            // 書き込み先を決める（#416）
+            enable_file_output: false,
+            log_file_path: None,
             json_format: true,
             rotation_enabled: true,
             rotation_size: 100 * 1024 * 1024, // 100MB
+            max_files: 5,
         }
     }
 }
@@ -236,6 +243,8 @@ pub struct AuditLogger {
     entries: Arc<RwLock<Vec<AuditLogEntry>>>,
     /// 統計情報
     statistics: Arc<Mutex<AuditStatistics>>,
+    /// ファイルへの書き込み（とローテーション）を1件ずつにする
+    file_lock: Arc<Mutex<()>>,
 }
 
 impl AuditLogger {
@@ -252,7 +261,39 @@ impl AuditLogger {
                 first_entry_time: None,
                 last_entry_time: None,
             })),
+            file_lock: Arc::new(Mutex::new(())),
         }
+    }
+
+    /// ファイルに書く設定なら、その書き込み先。
+    pub fn file_path(&self) -> Option<&str> {
+        if self.config.enable_file_output {
+            self.config.log_file_path.as_deref()
+        } else {
+            None
+        }
+    }
+
+    /// ファイルに書く設定なら、書き込めるかを確かめる（起動時に、書き
+    /// 込めない場合を知らせるため）。フォルダが無ければ作る。
+    pub async fn check_file_output(&self) -> Result<(), String> {
+        let Some(path) = self.file_path() else {
+            return Ok(());
+        };
+        if let Some(parent) = std::path::Path::new(path).parent() {
+            if !parent.as_os_str().is_empty() {
+                tokio::fs::create_dir_all(parent)
+                    .await
+                    .map_err(|e| format!("could not create {}: {}", parent.display(), e))?;
+            }
+        }
+        tokio::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .await
+            .map(|_| ())
+            .map_err(|e| format!("could not open {}: {}", path, e))
     }
 
     /// デフォルト設定で監査ログシステムを作成
@@ -306,7 +347,7 @@ impl AuditLogger {
         }
 
         // ファイル出力（設定されている場合）
-        if self.config.enable_file_output {
+        if self.file_path().is_some() {
             if let Err(e) = self.write_to_file(&entry).await {
                 eprintln!("Failed to write audit log to file: {}", e);
             }
@@ -539,7 +580,7 @@ impl AuditLogger {
 
     /// ファイルに書き込み
     async fn write_to_file(&self, entry: &AuditLogEntry) -> Result<(), SecurityError> {
-        if let Some(ref file_path) = self.config.log_file_path {
+        if let Some(file_path) = self.file_path() {
             let content = if self.config.json_format {
                 serde_json::to_string(entry).map_err(|e| {
                     SecurityError::Configuration(format!("JSON serialization failed: {}", e))
@@ -555,6 +596,22 @@ impl AuditLogger {
                 )
             };
 
+            let line = format!("{}\n", content);
+            let _guard = self.file_lock.lock().await;
+            if self.config.rotation_enabled {
+                let current = tokio::fs::metadata(file_path)
+                    .await
+                    .map(|m| m.len())
+                    .unwrap_or(0);
+                if current > 0 && current + line.len() as u64 > self.config.rotation_size {
+                    rotate_files(file_path, self.config.max_files)
+                        .await
+                        .map_err(|e| {
+                            SecurityError::Configuration(format!("Log rotation failed: {}", e))
+                        })?;
+                }
+            }
+
             // tokio::fs::writeは毎回ファイル全体を上書きするため、ここでは
             // 追記モードで開く。そうしないと2件目以降のログ記録で直前の
             // エントリしかディスクに残らず、プロセス再起動後やログ出荷時に
@@ -565,12 +622,34 @@ impl AuditLogger {
                 .open(file_path)
                 .await
                 .map_err(|e| SecurityError::Configuration(format!("File open failed: {}", e)))?;
-            file.write_all(format!("{}\n", content).as_bytes())
+            file.write_all(line.as_bytes())
+                .await
+                .map_err(|e| SecurityError::Configuration(format!("File write failed: {}", e)))?;
+            // tokioのFileは、書き込みを裏で続けたまま閉じることがある。ロックを
+            // 手放す前に書き終える（次の書き込み・ローテーションと順番が
+            // 入れ替わらないように）
+            file.flush()
                 .await
                 .map_err(|e| SecurityError::Configuration(format!("File write failed: {}", e)))?;
         }
         Ok(())
     }
+}
+
+/// `path`を`path.1`に、`path.1`を`path.2`に…と送り、`path.<max_files>`を
+/// 超える古いものを消す。`max_files`が0なら、`path`を消すだけ。
+async fn rotate_files(path: &str, max_files: u32) -> std::io::Result<()> {
+    let numbered = |n: u32| format!("{}.{}", path, n);
+    if max_files == 0 {
+        return tokio::fs::remove_file(path).await;
+    }
+    let _ = tokio::fs::remove_file(numbered(max_files)).await;
+    for n in (1..max_files).rev() {
+        if tokio::fs::metadata(numbered(n)).await.is_ok() {
+            tokio::fs::rename(numbered(n), numbered(n + 1)).await?;
+        }
+    }
+    tokio::fs::rename(path, numbered(1)).await
 }
 
 #[cfg(test)]
@@ -738,6 +817,7 @@ mod tests {
         // 追記されていることを確認する。
         let path = format!("test_audit_append_{}.log", Uuid::new_v4());
         let config = AuditConfig {
+            enable_file_output: true,
             log_file_path: Some(path.clone()),
             ..Default::default()
         };
@@ -774,5 +854,54 @@ mod tests {
             "expected both entries to persist, got: {}",
             contents
         );
+    }
+
+    #[tokio::test]
+    async fn test_default_config_does_not_write_files() {
+        // 既定ではファイルに書かない（作業フォルダに`audit.log`を作らない、#416）
+        let logger = AuditLogger::with_defaults();
+        assert_eq!(logger.file_path(), None);
+        assert!(logger.check_file_output().await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_file_output_rotates_by_size() {
+        let dir = std::env::temp_dir().join(format!("mcp-rs-audit-{}", Uuid::new_v4()));
+        let path = dir.join("nested").join("audit.log");
+        let path_str = path.to_string_lossy().into_owned();
+        let logger = AuditLogger::new(AuditConfig {
+            enable_file_output: true,
+            log_file_path: Some(path_str.clone()),
+            rotation_size: 400,
+            max_files: 2,
+            ..Default::default()
+        });
+        // フォルダが無ければ作る
+        logger.check_file_output().await.unwrap();
+        assert!(path.exists());
+
+        for i in 0..20 {
+            logger
+                .log(AuditLogEntry::new(
+                    AuditLevel::Info,
+                    AuditCategory::DataAccess,
+                    format!("entry {}", i),
+                ))
+                .await
+                .unwrap();
+        }
+
+        let size = |p: &std::path::Path| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
+        assert!(size(&path) <= 400, "current file is {} bytes", size(&path));
+        let first = dir.join("nested").join("audit.log.1");
+        let second = dir.join("nested").join("audit.log.2");
+        assert!(first.exists() && second.exists());
+        // max_files（2）を超える古いファイルは残さない
+        assert!(!dir.join("nested").join("audit.log.3").exists());
+        // 最新のエントリは今のファイルにある
+        let current = std::fs::read_to_string(&path).unwrap();
+        assert!(current.contains("entry 19"), "{}", current);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

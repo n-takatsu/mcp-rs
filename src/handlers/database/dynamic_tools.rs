@@ -62,6 +62,7 @@ impl DynamicDatabaseTools {
                     },
                     "required": ["target_engine"]
                 }),
+                ..Default::default()
             },
             Tool {
                 name: "list_available_engines".to_string(),
@@ -72,6 +73,7 @@ impl DynamicDatabaseTools {
                     "properties": {},
                     "additionalProperties": false
                 }),
+                ..Default::default()
             },
             Tool {
                 name: "get_engine_metrics".to_string(),
@@ -87,6 +89,7 @@ impl DynamicDatabaseTools {
                     },
                     "required": ["engine_id"]
                 }),
+                ..Default::default()
             },
             Tool {
                 name: "configure_switch_policy".to_string(),
@@ -140,6 +143,7 @@ impl DynamicDatabaseTools {
                     },
                     "required": ["policy_name", "trigger_type", "target_engine"]
                 }),
+                ..Default::default()
             },
             Tool {
                 name: "trigger_manual_switch".to_string(),
@@ -159,6 +163,7 @@ impl DynamicDatabaseTools {
                     },
                     "required": ["target_engine", "reason"]
                 }),
+                ..Default::default()
             },
             Tool {
                 name: "get_switch_history".to_string(),
@@ -175,6 +180,7 @@ impl DynamicDatabaseTools {
                         }
                     }
                 }),
+                ..Default::default()
             },
             Tool {
                 name: "cancel_pending_switch".to_string(),
@@ -189,6 +195,7 @@ impl DynamicDatabaseTools {
                     },
                     "required": ["switch_id"]
                 }),
+                ..Default::default()
             },
             Tool {
                 name: "validate_switch_readiness".to_string(),
@@ -204,6 +211,7 @@ impl DynamicDatabaseTools {
                     },
                     "required": ["target_engine"]
                 }),
+                ..Default::default()
             },
             Tool {
                 name: "get_current_active_engine".to_string(),
@@ -214,6 +222,7 @@ impl DynamicDatabaseTools {
                     "properties": {},
                     "additionalProperties": false
                 }),
+                ..Default::default()
             },
         ]
     }

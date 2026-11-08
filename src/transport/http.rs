@@ -10,6 +10,7 @@ use crate::{
         RequestData, SecurityHeaders,
     },
     transport::{
+        oauth::{www_authenticate, OAuthConfig, OAuthValidator, TokenError},
         websocket::server::{ConnectionId, MessageHandler, WebSocketConnectionInfo},
         ConnectionStats, Transport, TransportCapabilities, TransportError, TransportInfo,
         TransportType,
@@ -159,6 +160,14 @@ pub struct HttpConfig {
     /// in-memory at startup and never logged or echoed back.
     #[serde(default)]
     pub api_keys: Vec<ApiKeyEntry>,
+    /// Accept OAuth 2.1 access tokens (JWT) issued by an external
+    /// authorization server, as described in the MCP specification
+    /// (2025-06-18, "Authorization"), #420. When set, every HTTP/WebSocket
+    /// request needs either a valid access token or (when `auth_enabled`)
+    /// a valid API key. Also serves the Protected Resource Metadata
+    /// (RFC 9728). `None` (the default) disables it.
+    #[serde(default)]
+    pub oauth: Option<OAuthConfig>,
 }
 
 fn default_websocket_max_connections() -> usize {
@@ -178,6 +187,12 @@ pub struct ApiKeyEntry {
     pub name: String,
     /// Identifier for whoever this key was issued to.
     pub user_id: String,
+    /// Tools this key may use (#52): tool names, patterns with `*` (e.g.
+    /// `fs__*`), or `@read_only` (tools whose annotations say they are
+    /// read-only). `None` (the default) allows every tool. Other tools are
+    /// hidden from `tools/list`, and calls to them are refused.
+    #[serde(default)]
+    pub tools: Option<Vec<String>>,
 }
 
 impl Default for HttpConfig {
@@ -209,6 +224,7 @@ impl Default for HttpConfig {
             websocket_max_connections: default_websocket_max_connections(),
             auth_enabled: false,
             api_keys: Vec::new(),
+            oauth: None,
         }
     }
 }
@@ -238,7 +254,15 @@ pub trait JsonRpcRequestHandler: Send + Sync {
     /// 1件のJSON-RPCメッセージ（JSON文字列）を処理し、応答（JSON-RPCの
     /// 応答オブジェクト）を返す。通知（`id`なし）は`Ok(None)`。JSON-RPCの
     /// メッセージとして不正な場合は`Err`。
-    async fn handle_jsonrpc(&self, message: &str) -> std::result::Result<Option<Value>, String>;
+    ///
+    /// `caller`は、認証で分かった呼び出し元と、その呼び出し元が使えるツール
+    /// （#52）。ハンドラーは、使えないツールを一覧に出さず、呼び出しも
+    /// 拒否する。
+    async fn handle_jsonrpc(
+        &self,
+        message: &str,
+        caller: &crate::mcp::Caller,
+    ) -> std::result::Result<Option<Value>, String>;
 }
 
 /// `JsonRpcRequestHandler`で1件を処理する時間の上限。ツール側（WordPress・
@@ -279,6 +303,11 @@ struct HttpTransportState {
     ids: Option<Arc<IntrusionDetectionSystem>>,
     ids_trust_forwarded_for: bool,
     api_key_manager: Option<Arc<RwLock<ApiKeyManager>>>,
+    /// APIキー（`ApiKey::id`）→ 名前と使えるツール（#52）
+    api_key_callers: Arc<HashMap<String, crate::mcp::Caller>>,
+    oauth: Option<Arc<OAuthValidator>>,
+    /// `/ws`の接続 → 呼び出し元（接続時の認証で決まる、#52）
+    ws_callers: Arc<tokio::sync::Mutex<HashMap<ConnectionId, crate::mcp::Caller>>>,
     audit_logger: Arc<AuditLogger>,
     websocket_upgrade_enabled: bool,
     // Reserves capacity atomically at upgrade time (before the handshake
@@ -300,13 +329,25 @@ pub struct HttpTransport {
     sender: tokio::sync::mpsc::Sender<String>,
     pending_responses: Arc<RwLock<HashMap<Value, tokio::sync::oneshot::Sender<JsonRpcResponse>>>>,
     stats: Arc<RwLock<HttpStats>>,
-    bound_addr: Arc<RwLock<Option<SocketAddr>>>,
+    /// `start_server()`で実際に待ち受けたアドレス。同期の`transport_info()`
+    /// からも待たずに読めるよう、async版ではなく`std::sync::RwLock`を使う
+    /// （ロックを持ったまま`.await`しない）（#265）
+    bound_addr: Arc<std::sync::RwLock<Option<SocketAddr>>>,
     request_handler: RequestHandlerSlot,
+    /// 認証の失敗等を記録する監査ログ（#55）。既定はメモリにだけ残すもの
+    audit_logger: Arc<AuditLogger>,
 }
 
 impl HttpTransport {
     /// 受け付けたJSON-RPCメッセージを直接処理するハンドラーを設定する
     /// （#400）。`start_server()`の前に呼ぶ。
+    /// 認証の失敗・リプレイ攻撃の検出等を記録する監査ログを設定する（#55）。
+    /// 本体は、ツール呼び出しと同じ監査ログ（設定の`[audit]`）を渡す
+    pub fn with_audit_logger(mut self, audit_logger: Arc<AuditLogger>) -> Self {
+        self.audit_logger = audit_logger;
+        self
+    }
+
     pub fn with_request_handler(mut self, handler: Arc<dyn JsonRpcRequestHandler>) -> Self {
         self.request_handler = RequestHandlerSlot(Some(handler));
         self
@@ -327,14 +368,15 @@ impl HttpTransport {
             sender,
             pending_responses: Arc::new(RwLock::new(HashMap::new())),
             stats: Arc::new(RwLock::new(stats)),
-            bound_addr: Arc::new(RwLock::new(None)),
+            bound_addr: Arc::new(std::sync::RwLock::new(None)),
             request_handler: RequestHandlerSlot::default(),
+            audit_logger: Arc::new(AuditLogger::with_defaults()),
         })
     }
 
     /// Start the HTTP server
     pub async fn start_server(&self) -> Result<()> {
-        *self.bound_addr.write().await = None;
+        self.set_bound_addr(None);
 
         // Validate bind address
         self.config
@@ -390,10 +432,18 @@ impl HttpTransport {
             }
         }
 
+        let mut api_key_callers = HashMap::new();
         let api_key_manager = if self.config.auth_enabled {
             let mut manager = ApiKeyManager::new(ApiKeyConfig::default());
             for entry in &self.config.api_keys {
-                manager
+                let access = crate::mcp::ToolAccess::from_patterns(entry.tools.as_deref())
+                    .map_err(|e| {
+                        Error::TransportError(TransportError::Configuration(format!(
+                            "API key '{}' has invalid tools: {}",
+                            entry.name, e
+                        )))
+                    })?;
+                let api_key = manager
                     .import_key(&entry.key, entry.name.clone(), entry.user_id.clone(), None)
                     .map_err(|e| {
                         Error::TransportError(TransportError::Configuration(format!(
@@ -401,10 +451,48 @@ impl HttpTransport {
                             entry.name, e
                         )))
                     })?;
+                api_key_callers.insert(
+                    api_key.id,
+                    crate::mcp::Caller::new(format!("api_key:{}", entry.name), access)
+                        .with_subject(Some(entry.user_id.clone())),
+                );
             }
             Some(Arc::new(RwLock::new(manager)))
         } else {
             None
+        };
+
+        // ツールの制限（#52）は、リクエストを直接処理する場合
+        // （with_request_handler）だけ効く。チャンネル経由では、どの
+        // 呼び出し元のメッセージかを渡せないため、起動しない
+        let restricts_tools = (self.config.auth_enabled
+            && self.config.api_keys.iter().any(|e| e.tools.is_some()))
+            || self
+                .config
+                .oauth
+                .as_ref()
+                .is_some_and(|o| !o.scope_tools.is_empty());
+        if restricts_tools && self.request_handler.0.is_none() {
+            return Err(Error::TransportError(TransportError::Configuration(
+                "tool restrictions (api_keys tools / oauth scope_tools) require a request handler (HttpTransport::with_request_handler)".to_string(),
+            )));
+        }
+
+        let oauth = match &self.config.oauth {
+            Some(config) => {
+                let validator = Arc::new(
+                    OAuthValidator::new(config.clone())
+                        .map_err(|e| Error::TransportError(TransportError::Configuration(e)))?,
+                );
+                info!(
+                    "🔐 OAuth: accepting access tokens from {} for {}",
+                    config.issuer, config.resource
+                );
+                let prefetch = validator.clone();
+                tokio::spawn(async move { prefetch.prefetch().await });
+                Some(validator)
+            }
+            None => None,
         };
 
         let pinned_certificates_sha256: HashSet<String> = self
@@ -414,6 +502,7 @@ impl HttpTransport {
             .filter_map(|fingerprint| normalize_fingerprint(fingerprint))
             .collect();
 
+        let ws_callers = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
         let state = HttpTransportState {
             request_sender: self.sender.clone(),
             pending_responses: self.pending_responses.clone(),
@@ -465,7 +554,10 @@ impl HttpTransport {
             },
             ids_trust_forwarded_for: self.config.ids_trust_forwarded_for,
             api_key_manager,
-            audit_logger: Arc::new(AuditLogger::with_defaults()),
+            api_key_callers: Arc::new(api_key_callers),
+            oauth: oauth.clone(),
+            ws_callers: ws_callers.clone(),
+            audit_logger: self.audit_logger.clone(),
             websocket_upgrade_enabled: self.config.enable_websocket_upgrade,
             websocket_semaphore: Arc::new(tokio::sync::Semaphore::new(
                 self.config.websocket_max_connections,
@@ -475,16 +567,30 @@ impl HttpTransport {
             request_handler: self.request_handler.0.clone(),
             websocket_handler: Arc::new(JsonRpcWsHandler {
                 request_handler: self.request_handler.0.clone(),
+                callers: ws_callers,
                 request_sender: self.sender.clone(),
                 pending_responses: self.pending_responses.clone(),
                 stats: self.stats.clone(),
             }),
         };
 
-        let app = Router::new()
+        let mut app = Router::new()
             .route("/", post(handle_jsonrpc_request))
             .route("/mcp", post(handle_jsonrpc_request))
-            .route("/ws", get(handle_ws_upgrade))
+            .route("/ws", get(handle_ws_upgrade));
+        if let Some(validator) = &oauth {
+            // RFC 9728: resourceにパスがあればその後ろ。ルートにも置く
+            // （パスを付けずに探すクライアントのため）
+            let path = validator.config().resource_metadata_path();
+            app = app.route(&path, get(handle_protected_resource_metadata));
+            if path != crate::transport::oauth::PROTECTED_RESOURCE_METADATA_PATH {
+                app = app.route(
+                    crate::transport::oauth::PROTECTED_RESOURCE_METADATA_PATH,
+                    get(handle_protected_resource_metadata),
+                );
+            }
+        }
+        let app = app
             .layer(if self.config.cors_enabled {
                 CorsLayer::permissive()
             } else {
@@ -519,12 +625,12 @@ impl HttpTransport {
 
         if self.config.tls_enabled {
             let tls_acceptor = build_tls_acceptor(&self.config, &pinned_certificates_sha256)?;
-            *self.bound_addr.write().await = Some(local_addr);
+            self.set_bound_addr(Some(local_addr));
             tokio::spawn(async move {
                 serve_tls(listener, app, tls_acceptor).await;
             });
         } else {
-            *self.bound_addr.write().await = Some(local_addr);
+            self.set_bound_addr(Some(local_addr));
             tokio::spawn(async move {
                 if let Err(e) = axum::serve(
                     listener,
@@ -555,7 +661,23 @@ impl HttpTransport {
     /// Returns the actual bound address once `start_server()` has completed,
     /// useful when `bind_addr` uses an OS-assigned ephemeral port (`:0`).
     pub async fn bound_addr(&self) -> Option<SocketAddr> {
-        *self.bound_addr.read().await
+        self.current_bound_addr()
+    }
+
+    fn current_bound_addr(&self) -> Option<SocketAddr> {
+        // 値はOption<SocketAddr>だけで、書き込み中にパニックしても壊れた
+        // 状態にはならないため、ポイズンは無視する
+        *self
+            .bound_addr
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn set_bound_addr(&self, addr: Option<SocketAddr>) {
+        *self
+            .bound_addr
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = addr;
     }
 }
 
@@ -859,12 +981,9 @@ impl Transport for HttpTransport {
     }
 
     fn transport_info(&self) -> TransportInfo {
-        let addr = self
-            .bound_addr
-            .try_read()
-            .ok()
-            .and_then(|addr| *addr)
-            .unwrap_or(self.config.bind_addr);
+        // 起動前は設定のアドレス（ポート0のこともある）、起動後は実際に
+        // 待ち受けたアドレス。ロックの競合で設定の値に戻ることはない（#265）
+        let addr = self.current_bound_addr().unwrap_or(self.config.bind_addr);
 
         TransportInfo {
             transport_type: TransportType::Http { addr },
@@ -907,7 +1026,10 @@ async fn handle_jsonrpc_request(
     Json(request): Json<Value>,
 ) -> std::result::Result<Response, StatusCode> {
     check_network_policy(&state.network_policy, remote_addr)?;
-    check_auth(state.api_key_manager.as_ref(), &headers, remote_addr).await?;
+    let caller = match check_auth(&state, &headers, remote_addr).await {
+        Ok(caller) => caller.with_ip_address(Some(remote_addr.ip().to_string())),
+        Err(response) => return Ok(*response),
+    };
     check_https_enforcement(
         state.enforce_https,
         state.tls_terminated_locally,
@@ -975,8 +1097,14 @@ async fn handle_jsonrpc_request(
     };
 
     if let Some(handler) = state.request_handler.clone() {
-        return respond_with_request_handler(&state, handler.as_ref(), &request_str, start_time)
-            .await;
+        return respond_with_request_handler(
+            &state,
+            handler.as_ref(),
+            &request_str,
+            &caller,
+            start_time,
+        )
+        .await;
     }
 
     // If request has ID, wait for actual response
@@ -1079,59 +1207,169 @@ fn check_network_policy(
     Ok(())
 }
 
-/// Requires a valid, non-revoked, non-expired API key when API-key
-/// authentication is configured (`api_key_manager.is_some()`, i.e.
-/// `HttpConfig::auth_enabled = true`). Looks for the key in the
-/// `Authorization: Bearer <key>` header, falling back to `X-Api-Key`.
-/// Does nothing when auth is disabled, preserving existing behavior for
-/// deployments that haven't opted in.
+/// Requires credentials when authentication is configured: a valid,
+/// non-revoked, non-expired API key (`HttpConfig::auth_enabled`) and/or a
+/// valid OAuth 2.1 access token (`HttpConfig::oauth`, #420). When both are
+/// configured, either is accepted. Does nothing when neither is configured,
+/// preserving existing behavior for deployments that haven't opted in.
+///
+/// API keys are read from `Authorization: Bearer <key>`, falling back to
+/// `X-Api-Key`. Access tokens are read from `Authorization: Bearer` only
+/// (RFC 6750; MCP forbids tokens in the query string). With OAuth, failures
+/// carry a `WWW-Authenticate` header pointing at the Protected Resource
+/// Metadata (RFC 9728), so that MCP clients can find the authorization
+/// server.
 ///
 /// Uses `ApiKeyManager` directly rather than the richer `MultiAuthProvider`/
 /// `AuthMiddleware` (`security::auth`) - those require a matching
-/// `UserRepository` entry per key and pull in JWT/OAuth2/session scaffolding
-/// unneeded for "reject requests without a valid key". `verify_key` takes a
-/// write lock to record usage stats, serializing concurrent auth checks on
-/// one lock; this is the same `Arc<RwLock<ApiKeyManager>>` shape
-/// `MultiAuthProvider` itself already uses, not a new bottleneck introduced
-/// here, and is an accepted tradeoff for this issue's minimal scope.
+/// `UserRepository` entry per key. `verify_key` takes a write lock to record
+/// usage stats, serializing concurrent API key checks on one lock; an
+/// accepted tradeoff for this minimal scope.
 async fn check_auth(
-    api_key_manager: Option<&Arc<RwLock<ApiKeyManager>>>,
+    state: &HttpTransportState,
     headers: &HeaderMap,
     remote_addr: SocketAddr,
-) -> std::result::Result<(), StatusCode> {
-    let Some(manager) = api_key_manager else {
-        return Ok(());
-    };
-
-    let Some(token) = extract_api_key(headers) else {
-        warn!(
-            "Rejected request from {} due to missing API key",
-            remote_addr
-        );
-        return Err(StatusCode::UNAUTHORIZED);
-    };
-
-    if manager.write().await.verify_key(&token).is_err() {
-        warn!(
-            "Rejected request from {} due to invalid, revoked, or expired API key",
-            remote_addr
-        );
-        return Err(StatusCode::UNAUTHORIZED);
+) -> std::result::Result<crate::mcp::Caller, Box<Response>> {
+    if state.api_key_manager.is_none() && state.oauth.is_none() {
+        return Ok(crate::mcp::Caller::unrestricted());
     }
 
-    Ok(())
+    if let Some(manager) = &state.api_key_manager {
+        if let Some(key) = extract_api_key(headers) {
+            if let Ok(api_key) = manager.write().await.verify_key(&key) {
+                // 見つからないことは無い（同じ時に登録している）が、念のため
+                // どのツールも使えない呼び出し元にする
+                return Ok(state
+                    .api_key_callers
+                    .get(&api_key.id)
+                    .cloned()
+                    .unwrap_or_else(|| {
+                        crate::mcp::Caller::new(
+                            format!("api_key:{}", api_key.name),
+                            crate::mcp::ToolAccess::any_of(Vec::new()),
+                        )
+                    }));
+            }
+        }
+    }
+
+    let Some(oauth) = &state.oauth else {
+        let reason = if extract_api_key(headers).is_none() {
+            "missing API key"
+        } else {
+            "invalid, revoked, or expired API key"
+        };
+        warn!("Rejected request from {} due to {}", remote_addr, reason);
+        audit_auth_failure(state, remote_addr, reason).await;
+        return Err(Box::new(StatusCode::UNAUTHORIZED.into_response()));
+    };
+
+    let Some(token) = extract_bearer_token(headers) else {
+        warn!(
+            "Rejected request from {} due to missing access token",
+            remote_addr
+        );
+        audit_auth_failure(state, remote_addr, "missing access token").await;
+        return Err(Box::new(oauth_error_response(oauth.config(), None)));
+    };
+    match oauth.validate(&token).await {
+        Ok(info) => {
+            debug!(
+                "Accepted access token from {} (sub: {:?}, client: {:?})",
+                remote_addr, info.subject, info.client_id
+            );
+            Ok(oauth.caller_for(&info))
+        }
+        Err(error) => {
+            match &error {
+                TokenError::Invalid(reason) => {
+                    warn!(
+                        "Rejected request from {} due to an invalid access token: {}",
+                        remote_addr, reason
+                    );
+                    audit_auth_failure(
+                        state,
+                        remote_addr,
+                        &format!("invalid access token: {}", reason),
+                    )
+                    .await;
+                }
+                TokenError::InsufficientScope => {
+                    warn!(
+                        "Rejected request from {}: the access token lacks the required scopes",
+                        remote_addr
+                    );
+                    audit_auth_failure(state, remote_addr, "insufficient scope").await;
+                }
+            }
+            Err(Box::new(oauth_error_response(oauth.config(), Some(&error))))
+        }
+    }
+}
+
+/// 認証の失敗を監査ログに記録する（#55）。提示された認証情報（キー・
+/// トークン）そのものは記録しない
+async fn audit_auth_failure(state: &HttpTransportState, remote_addr: SocketAddr, reason: &str) {
+    let mut entry = crate::security::AuditLogEntry::new(
+        crate::security::AuditLevel::Warning,
+        crate::security::AuditCategory::Authentication,
+        format!("Authentication failed: {}", reason),
+    )
+    .with_result("DENIED".to_string());
+    entry.ip_address = Some(remote_addr.ip().to_string());
+    if let Err(e) = state.audit_logger.log(entry).await {
+        warn!(
+            "Failed to write audit log entry for an authentication failure: {}",
+            e
+        );
+    }
+}
+
+/// 401（トークンが無い・無効）か403（スコープが足りない）を、
+/// `WWW-Authenticate`付きで返す
+fn oauth_error_response(config: &OAuthConfig, error: Option<&TokenError>) -> Response {
+    let status = match error {
+        Some(TokenError::InsufficientScope) => StatusCode::FORBIDDEN,
+        _ => StatusCode::UNAUTHORIZED,
+    };
+    let mut response = status.into_response();
+    if let Ok(value) = HeaderValue::from_str(&www_authenticate(config, error)) {
+        response
+            .headers_mut()
+            .insert(axum::http::header::WWW_AUTHENTICATE, value);
+    }
+    response
+}
+
+/// `Authorization: Bearer <token>`のトークン
+fn extract_bearer_token(headers: &HeaderMap) -> Option<String> {
+    let auth = header_value(headers, "authorization")?;
+    let (scheme, token) = auth.split_once(' ')?;
+    let token = token.trim();
+    (scheme.eq_ignore_ascii_case("bearer") && !token.is_empty()).then(|| token.to_string())
+}
+
+/// Protected Resource Metadata（RFC 9728）。認証なしで返す（クライアントが
+/// 認可サーバーを見つけるため）。ネットワークポリシーは適用する
+async fn handle_protected_resource_metadata(
+    ConnectInfo(remote_addr): ConnectInfo<SocketAddr>,
+    State(state): State<HttpTransportState>,
+) -> Response {
+    if let Err(status) = check_network_policy(&state.network_policy, remote_addr) {
+        return status.into_response();
+    }
+    match &state.oauth {
+        Some(oauth) => Json(oauth.config().resource_metadata()).into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
 }
 
 /// Extracts the client-supplied API key from `Authorization: Bearer <key>`,
 /// falling back to `X-Api-Key` for clients that can't set an Authorization
 /// header.
 fn extract_api_key(headers: &HeaderMap) -> Option<String> {
-    if let Some(auth) = header_value(headers, "authorization") {
-        if let Some(token) = auth.strip_prefix("Bearer ") {
-            return Some(token.to_string());
-        }
-    }
-    header_value(headers, "x-api-key").map(|v| v.to_string())
+    extract_bearer_token(headers)
+        .or_else(|| header_value(headers, "x-api-key").map(|v| v.to_string()))
 }
 
 fn check_https_enforcement(
@@ -1454,9 +1692,10 @@ async fn handle_ws_upgrade(
     if let Err(status) = check_network_policy(&state.network_policy, remote_addr) {
         return status.into_response();
     }
-    if let Err(status) = check_auth(state.api_key_manager.as_ref(), &headers, remote_addr).await {
-        return status.into_response();
-    }
+    let caller = match check_auth(&state, &headers, remote_addr).await {
+        Ok(caller) => caller.with_ip_address(Some(remote_addr.ip().to_string())),
+        Err(response) => return *response,
+    };
     if let Err(status) = check_https_enforcement(
         state.enforce_https,
         state.tls_terminated_locally,
@@ -1529,7 +1768,7 @@ async fn handle_ws_upgrade(
     // response), not something response_headers() gets applied to elsewhere.
     let hsts_headers = response_headers(&state);
     let mut response =
-        ws.on_upgrade(move |socket| handle_ws_socket(socket, state, remote_addr, permit));
+        ws.on_upgrade(move |socket| handle_ws_socket(socket, state, remote_addr, caller, permit));
     response.headers_mut().extend(hsts_headers);
     response
 }
@@ -1543,9 +1782,11 @@ async fn handle_ws_socket(
     socket: WebSocket,
     state: HttpTransportState,
     addr: SocketAddr,
+    caller: crate::mcp::Caller,
     _permit: tokio::sync::OwnedSemaphorePermit,
 ) {
     let conn_id = Uuid::new_v4();
+    state.ws_callers.lock().await.insert(conn_id, caller);
 
     let conn_info = WebSocketConnectionInfo::new(conn_id, addr);
     state
@@ -1644,6 +1885,7 @@ async fn handle_ws_socket(
     }
 
     state.websocket_connections.lock().await.remove(&conn_id);
+    state.ws_callers.lock().await.remove(&conn_id);
 
     if let Err(e) = state.websocket_handler.on_disconnect(conn_id).await {
         error!("WebSocket handler on_disconnect failed: {}", e);
@@ -1658,9 +1900,15 @@ async fn respond_with_request_handler(
     state: &HttpTransportState,
     handler: &dyn JsonRpcRequestHandler,
     request_str: &str,
+    caller: &crate::mcp::Caller,
     start_time: Instant,
 ) -> std::result::Result<Response, StatusCode> {
-    match tokio::time::timeout(REQUEST_HANDLER_TIMEOUT, handler.handle_jsonrpc(request_str)).await {
+    match tokio::time::timeout(
+        REQUEST_HANDLER_TIMEOUT,
+        handler.handle_jsonrpc(request_str, caller),
+    )
+    .await
+    {
         Ok(Ok(Some(response_value))) => {
             {
                 let mut stats = state.stats.write().await;
@@ -1697,6 +1945,8 @@ async fn respond_with_request_handler(
 struct JsonRpcWsHandler {
     /// 設定されていれば、フレームをチャンネルに流さず直接処理する（#400）
     request_handler: Option<Arc<dyn JsonRpcRequestHandler>>,
+    /// 接続 → 呼び出し元（#52）。見つからない接続は、どのツールも使えない
+    callers: Arc<tokio::sync::Mutex<HashMap<ConnectionId, crate::mcp::Caller>>>,
     request_sender: tokio::sync::mpsc::Sender<String>,
     pending_responses: Arc<RwLock<HashMap<Value, tokio::sync::oneshot::Sender<JsonRpcResponse>>>>,
     stats: Arc<RwLock<HttpStats>>,
@@ -1706,7 +1956,7 @@ struct JsonRpcWsHandler {
 impl MessageHandler for JsonRpcWsHandler {
     async fn handle_message(
         &self,
-        _conn_id: ConnectionId,
+        conn_id: ConnectionId,
         message: Message,
     ) -> Result<Option<Message>> {
         let text = match message {
@@ -1729,25 +1979,39 @@ impl MessageHandler for JsonRpcWsHandler {
         }
 
         if let Some(handler) = &self.request_handler {
-            let response =
-                match tokio::time::timeout(REQUEST_HANDLER_TIMEOUT, handler.handle_jsonrpc(&text))
-                    .await
-                {
-                    Ok(Ok(response)) => response,
-                    Ok(Err(e)) => {
-                        warn!("Rejected an invalid WebSocket JSON-RPC message: {}", e);
-                        self.stats.write().await.total_errors += 1;
-                        return Ok(None);
-                    }
-                    Err(_) => {
-                        warn!(
-                            "WebSocket JSON-RPC request did not finish within {} seconds",
-                            REQUEST_HANDLER_TIMEOUT.as_secs()
-                        );
-                        self.stats.write().await.total_errors += 1;
-                        return Ok(None);
-                    }
-                };
+            let caller = self
+                .callers
+                .lock()
+                .await
+                .get(&conn_id)
+                .cloned()
+                .unwrap_or_else(|| {
+                    crate::mcp::Caller::new(
+                        "unknown-websocket-connection",
+                        crate::mcp::ToolAccess::any_of(Vec::new()),
+                    )
+                });
+            let response = match tokio::time::timeout(
+                REQUEST_HANDLER_TIMEOUT,
+                handler.handle_jsonrpc(&text, &caller),
+            )
+            .await
+            {
+                Ok(Ok(response)) => response,
+                Ok(Err(e)) => {
+                    warn!("Rejected an invalid WebSocket JSON-RPC message: {}", e);
+                    self.stats.write().await.total_errors += 1;
+                    return Ok(None);
+                }
+                Err(_) => {
+                    warn!(
+                        "WebSocket JSON-RPC request did not finish within {} seconds",
+                        REQUEST_HANDLER_TIMEOUT.as_secs()
+                    );
+                    self.stats.write().await.total_errors += 1;
+                    return Ok(None);
+                }
+            };
             let Some(response) = response else {
                 return Ok(None); // 通知には応答しない
             };
@@ -3238,6 +3502,7 @@ mod tests {
                 key: "test-key-12345".to_string(),
                 name: "test".to_string(),
                 user_id: "user-1".to_string(),
+                tools: None,
             }],
             ..HttpConfig::default()
         };
@@ -3266,6 +3531,7 @@ mod tests {
                 key: "correct-key".to_string(),
                 name: "test".to_string(),
                 user_id: "user-1".to_string(),
+                tools: None,
             }],
             ..HttpConfig::default()
         };
@@ -3295,6 +3561,7 @@ mod tests {
                 key: "correct-key".to_string(),
                 name: "test".to_string(),
                 user_id: "user-1".to_string(),
+                tools: None,
             }],
             ..HttpConfig::default()
         };
@@ -3324,6 +3591,7 @@ mod tests {
                 key: "correct-key".to_string(),
                 name: "test".to_string(),
                 user_id: "user-1".to_string(),
+                tools: None,
             }],
             ..HttpConfig::default()
         };
@@ -3368,6 +3636,369 @@ mod tests {
         assert!(response.status().is_success());
     }
 
+    /// OAuth（#420）を有効にしてサーバーを起動する。戻り値は（ポート、
+    /// テスト用の認可サーバー）
+    async fn start_oauth_server(
+        configure: impl FnOnce(&mut HttpConfig),
+    ) -> (u16, crate::transport::oauth::test_support::TestAuthServer) {
+        let auth = crate::transport::oauth::test_support::TestAuthServer::start().await;
+        let mut config = HttpConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            enable_websocket_upgrade: true,
+            oauth: Some(auth.config(OAUTH_RESOURCE)),
+            ..HttpConfig::default()
+        };
+        configure(&mut config);
+        let transport = HttpTransport::new(config).unwrap();
+        transport.start_server().await.unwrap();
+        let server_addr = transport.bound_addr().await.unwrap();
+        wait_for_plain_server_ready(server_addr).await;
+        // サーバーを止めないように、テストの間は残す
+        std::mem::forget(transport);
+        (server_addr.port(), auth)
+    }
+
+    const OAUTH_RESOURCE: &str = "https://mcp.example.com/mcp";
+    const OAUTH_METADATA_URL: &str =
+        "https://mcp.example.com/.well-known/oauth-protected-resource/mcp";
+
+    async fn post_mcp(port: u16, authorization: Option<String>) -> reqwest::Response {
+        let mut request = reqwest::Client::new()
+            .post(format!("http://127.0.0.1:{}/mcp", port))
+            .json(&notification_jsonrpc_request());
+        if let Some(authorization) = authorization {
+            request = request.header("Authorization", authorization);
+        }
+        request.send().await.unwrap()
+    }
+
+    fn www_authenticate_of(response: &reqwest::Response) -> String {
+        response
+            .headers()
+            .get("www-authenticate")
+            .expect("WWW-Authenticate header")
+            .to_str()
+            .unwrap()
+            .to_string()
+    }
+
+    #[tokio::test]
+    async fn test_oauth_rejects_missing_and_invalid_tokens_with_www_authenticate() {
+        let (port, auth) = start_oauth_server(|_| {}).await;
+
+        let response = post_mcp(port, None).await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            www_authenticate_of(&response),
+            format!("Bearer resource_metadata=\"{}\"", OAUTH_METADATA_URL)
+        );
+
+        // 別のサービス向けのトークン（対象が違う）
+        let other = auth.token("https://other.example.com", serde_json::json!({}));
+        let response = post_mcp(port, Some(format!("Bearer {}", other))).await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let header = www_authenticate_of(&response);
+        assert!(header.contains("error=\"invalid_token\""), "{}", header);
+        assert!(header.contains(OAUTH_METADATA_URL), "{}", header);
+
+        let response = post_mcp(port, Some("Bearer garbage".to_string())).await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_oauth_accepts_valid_token() {
+        let (port, auth) = start_oauth_server(|_| {}).await;
+        let token = auth.token(OAUTH_RESOURCE, serde_json::json!({}));
+        let response = post_mcp(port, Some(format!("Bearer {}", token))).await;
+        assert!(response.status().is_success(), "{}", response.status());
+    }
+
+    #[tokio::test]
+    async fn test_oauth_insufficient_scope_returns_403() {
+        let (port, auth) = start_oauth_server(|config| {
+            config.oauth.as_mut().unwrap().required_scopes = vec!["mcp:tools".to_string()];
+        })
+        .await;
+        let token = auth.token(OAUTH_RESOURCE, serde_json::json!({ "scope": "openid" }));
+        let response = post_mcp(port, Some(format!("Bearer {}", token))).await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let header = www_authenticate_of(&response);
+        assert!(
+            header.contains("error=\"insufficient_scope\""),
+            "{}",
+            header
+        );
+        assert!(header.contains("scope=\"mcp:tools\""), "{}", header);
+
+        let token = auth.token(OAUTH_RESOURCE, serde_json::json!({ "scope": "mcp:tools" }));
+        let response = post_mcp(port, Some(format!("Bearer {}", token))).await;
+        assert!(response.status().is_success());
+    }
+
+    #[tokio::test]
+    async fn test_oauth_protected_resource_metadata_is_served_without_auth() {
+        let (port, auth) = start_oauth_server(|_| {}).await;
+        for path in [
+            "/.well-known/oauth-protected-resource/mcp",
+            "/.well-known/oauth-protected-resource",
+        ] {
+            let response = reqwest::get(format!("http://127.0.0.1:{}{}", port, path))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{}", path);
+            let metadata: Value = response.json().await.unwrap();
+            assert_eq!(metadata["resource"], serde_json::json!(OAUTH_RESOURCE));
+            assert_eq!(
+                metadata["authorization_servers"],
+                serde_json::json!([auth.issuer])
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_protected_resource_metadata_is_not_served_without_oauth() {
+        let config = HttpConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            ..HttpConfig::default()
+        };
+        let transport = HttpTransport::new(config).unwrap();
+        transport.start_server().await.unwrap();
+        let server_addr = transport.bound_addr().await.unwrap();
+        wait_for_plain_server_ready(server_addr).await;
+        let response = reqwest::get(format!(
+            "http://127.0.0.1:{}/.well-known/oauth-protected-resource",
+            server_addr.port()
+        ))
+        .await
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_oauth_and_api_keys_can_be_used_together() {
+        let (port, auth) = start_oauth_server(|config| {
+            config.auth_enabled = true;
+            config.api_keys = vec![ApiKeyEntry {
+                key: "correct-key".to_string(),
+                name: "test".to_string(),
+                user_id: "user-1".to_string(),
+                tools: None,
+            }];
+        })
+        .await;
+        let response = post_mcp(port, Some("Bearer correct-key".to_string())).await;
+        assert!(response.status().is_success());
+        let token = auth.token(OAUTH_RESOURCE, serde_json::json!({}));
+        let response = post_mcp(port, Some(format!("Bearer {}", token))).await;
+        assert!(response.status().is_success());
+        let response = post_mcp(port, Some("Bearer wrong-key".to_string())).await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert!(www_authenticate_of(&response).contains("invalid_token"));
+    }
+
+    #[tokio::test]
+    async fn test_oauth_ws_upgrade_requires_token() {
+        let (port, auth) = start_oauth_server(|_| {}).await;
+        let url = format!("ws://localhost:{}/ws", port);
+        match tokio_tungstenite::connect_async(&url).await {
+            Err(WsError::Http(response)) => {
+                assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+            }
+            other => panic!("expected 401 without a token, got: {other:?}"),
+        }
+
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+        let mut request = url.into_client_request().unwrap();
+        let token = auth.token(OAUTH_RESOURCE, serde_json::json!({}));
+        request.headers_mut().insert(
+            "Authorization",
+            format!("Bearer {}", token).parse().unwrap(),
+        );
+        assert!(tokio_tungstenite::connect_async(request).await.is_ok());
+    }
+
+    /// 実際の認可サーバー（Keycloak）が発行したトークンで確かめる（#420）。
+    /// `MCP_RS_KEYCLOAK_TESTS=1`のときだけ動く（CIの「OAuth Keycloak Test」）。
+    /// Keycloakは`MCP_RS_KEYCLOAK_URL`（既定`http://localhost:8080`）で、
+    /// 管理者admin/adminで起動しておく
+    #[tokio::test]
+    async fn test_keycloak_access_tokens() {
+        if std::env::var("MCP_RS_KEYCLOAK_TESTS").ok().as_deref() != Some("1") {
+            return;
+        }
+        let base = std::env::var("MCP_RS_KEYCLOAK_URL")
+            .unwrap_or_else(|_| "http://localhost:8080".to_string());
+        let client = reqwest::Client::new();
+        let token_of = |realm: &str, form: Vec<(&str, &str)>| {
+            let client = client.clone();
+            let url = format!("{}/realms/{}/protocol/openid-connect/token", base, realm);
+            let form: Vec<(String, String)> = form
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect();
+            async move {
+                let response = client.post(url).form(&form).send().await.unwrap();
+                let status = response.status();
+                let body: Value = response.json().await.unwrap();
+                assert!(status.is_success(), "token request failed: {}", body);
+                body["access_token"].as_str().unwrap().to_string()
+            }
+        };
+
+        // 準備: realm「mcp」と、2つのクライアント（mcp-rs向けの対象（aud）を
+        // 入れるものと、入れないもの）
+        let admin = token_of(
+            "master",
+            vec![
+                ("grant_type", "password"),
+                ("client_id", "admin-cli"),
+                ("username", "admin"),
+                ("password", "admin"),
+            ],
+        )
+        .await;
+        let admin_post = |path: &str, body: Value| {
+            let request = client
+                .post(format!("{}/admin/realms{}", base, path))
+                .bearer_auth(&admin)
+                .json(&body);
+            async move {
+                let response = request.send().await.unwrap();
+                let status = response.status();
+                assert!(
+                    status.is_success() || status == StatusCode::CONFLICT,
+                    "admin request failed: {} {}",
+                    status,
+                    response.text().await.unwrap_or_default()
+                );
+            }
+        };
+        admin_post("", serde_json::json!({ "realm": "mcp", "enabled": true })).await;
+        let new_client = |client_id: &str, secret: &str, audience: Option<&str>| {
+            let mut body = serde_json::json!({
+                "clientId": client_id,
+                "enabled": true,
+                "publicClient": false,
+                "serviceAccountsEnabled": true,
+                "standardFlowEnabled": false,
+                "directAccessGrantsEnabled": false,
+                "secret": secret,
+            });
+            if let Some(audience) = audience {
+                body["protocolMappers"] = serde_json::json!([{
+                    "name": "mcp-rs-audience",
+                    "protocol": "openid-connect",
+                    "protocolMapper": "oidc-audience-mapper",
+                    "config": {
+                        "included.custom.audience": audience,
+                        "access.token.claim": "true",
+                        "id.token.claim": "false"
+                    }
+                }]);
+            }
+            body
+        };
+        admin_post(
+            "/mcp/clients",
+            new_client("mcp-client", "mcp-secret", Some(OAUTH_RESOURCE)),
+        )
+        .await;
+        admin_post(
+            "/mcp/clients",
+            new_client("other-client", "other-secret", None),
+        )
+        .await;
+
+        let credentials = |id: &'static str, secret: &'static str| {
+            vec![
+                ("grant_type", "client_credentials"),
+                ("client_id", id),
+                ("client_secret", secret),
+            ]
+        };
+        let token = token_of("mcp", credentials("mcp-client", "mcp-secret")).await;
+        let other = token_of("mcp", credentials("other-client", "other-secret")).await;
+
+        // 発行者だけを設定し、JWKSはメタデータから探す
+        let issuer = format!("{}/realms/mcp", base);
+        let config = HttpConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            oauth: Some(OAuthConfig {
+                issuer: issuer.clone(),
+                resource: OAUTH_RESOURCE.to_string(),
+                audiences: Vec::new(),
+                jwks_uri: None,
+                required_scopes: vec!["profile".to_string()],
+                leeway_seconds: 60,
+                scope_tools: Default::default(),
+            }),
+            ..HttpConfig::default()
+        };
+        let transport = HttpTransport::new(config).unwrap();
+        transport.start_server().await.unwrap();
+        let server_addr = transport.bound_addr().await.unwrap();
+        wait_for_plain_server_ready(server_addr).await;
+        let port = server_addr.port();
+
+        let response = post_mcp(port, Some(format!("Bearer {}", token))).await;
+        assert!(
+            response.status().is_success(),
+            "Keycloak token was rejected: {}",
+            response.status()
+        );
+
+        // 対象（aud）がmcp-rsでないトークン
+        let response = post_mcp(port, Some(format!("Bearer {}", other))).await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert!(www_authenticate_of(&response).contains("invalid_token"));
+
+        // 署名を改ざんしたトークン
+        // （署名の途中の1文字を変える。末尾は、使われないビットのことがある）
+        let mut tampered = token.clone().into_bytes();
+        let i = tampered.len() - 10;
+        tampered[i] = if tampered[i] == b'A' { b'B' } else { b'A' };
+        let tampered = String::from_utf8(tampered).unwrap();
+        let response = post_mcp(port, Some(format!("Bearer {}", tampered))).await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+        let response = post_mcp(port, None).await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert!(www_authenticate_of(&response).contains("resource_metadata="));
+
+        let metadata: Value = reqwest::get(format!(
+            "http://127.0.0.1:{}/.well-known/oauth-protected-resource/mcp",
+            port
+        ))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+        assert_eq!(
+            metadata["authorization_servers"],
+            serde_json::json!([issuer])
+        );
+    }
+
+    #[tokio::test]
+    async fn test_start_server_rejects_invalid_oauth_config() {
+        let config = HttpConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            oauth: Some(OAuthConfig {
+                issuer: "http://auth.example.com".to_string(),
+                resource: OAUTH_RESOURCE.to_string(),
+                audiences: Vec::new(),
+                jwks_uri: None,
+                required_scopes: Vec::new(),
+                leeway_seconds: 60,
+                scope_tools: Default::default(),
+            }),
+            ..HttpConfig::default()
+        };
+        let transport = HttpTransport::new(config).unwrap();
+        assert!(transport.start_server().await.is_err());
+    }
+
     #[tokio::test]
     async fn test_ws_upgrade_rejects_without_api_key_when_auth_enabled() {
         let config = HttpConfig {
@@ -3378,6 +4009,7 @@ mod tests {
                 key: "correct-key".to_string(),
                 name: "test".to_string(),
                 user_id: "user-1".to_string(),
+                tools: None,
             }],
             ..HttpConfig::default()
         };
@@ -3407,6 +4039,7 @@ mod tests {
                 key: "correct-key".to_string(),
                 name: "test".to_string(),
                 user_id: "user-1".to_string(),
+                tools: None,
             }],
             ..HttpConfig::default()
         };
@@ -3456,6 +4089,7 @@ mod tests {
                 key: String::new(),
                 name: "blank".to_string(),
                 user_id: "user-1".to_string(),
+                tools: None,
             }],
             ..HttpConfig::default()
         };
@@ -3479,11 +4113,13 @@ mod tests {
                     key: "shared-key".to_string(),
                     name: "first".to_string(),
                     user_id: "user-1".to_string(),
+                    tools: None,
                 },
                 ApiKeyEntry {
                     key: "shared-key".to_string(),
                     name: "second".to_string(),
                     user_id: "user-2".to_string(),
+                    tools: None,
                 },
             ],
             ..HttpConfig::default()
@@ -3499,7 +4135,9 @@ mod tests {
     }
 
     /// `with_request_handler`のテスト用。`params.sleep_ms`だけ待ってから、
-    /// 受けた`id`・`method`・`params.tag`をそのまま結果に入れて返す。
+    /// 受けた`id`・`method`・`params.tag`をそのまま結果に入れて返す。呼び出し
+    /// 元（#52）の名前と、読み取り専用のツール（`get_post`）・そうでない
+    /// ツール（`delete_post`）を使えるかも返す。
     struct EchoRequestHandler;
 
     #[async_trait]
@@ -3507,6 +4145,7 @@ mod tests {
         async fn handle_jsonrpc(
             &self,
             message: &str,
+            caller: &crate::mcp::Caller,
         ) -> std::result::Result<Option<Value>, String> {
             let request: Value = serde_json::from_str(message).map_err(|e| e.to_string())?;
             let method = request
@@ -3523,9 +4162,242 @@ mod tests {
             Ok(Some(serde_json::json!({
                 "jsonrpc": "2.0",
                 "id": id,
-                "result": { "method": method, "tag": request["params"]["tag"] }
+                "result": {
+                    "method": method,
+                    "tag": request["params"]["tag"],
+                    "caller": caller.name,
+                    "can_get": caller.access.allows(&annotated_tool("get_post", true)),
+                    "can_delete": caller.access.allows(&annotated_tool("delete_post", false)),
+                }
             })))
         }
+    }
+
+    fn annotated_tool(name: &str, read_only: bool) -> crate::mcp::Tool {
+        crate::mcp::Tool {
+            name: name.to_string(),
+            annotations: Some(crate::mcp::ToolAnnotations {
+                read_only_hint: Some(read_only),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    /// 呼び出し元（#52）を確かめる。`authorization`で`tools/list`を送り、
+    /// （名前、読み取り専用を使えるか、変更するツールを使えるか）を返す
+    async fn caller_seen_by_handler(
+        server_addr: SocketAddr,
+        authorization: &str,
+    ) -> (Value, bool, bool) {
+        let response = reqwest::Client::new()
+            .post(format!("http://127.0.0.1:{}/mcp", server_addr.port()))
+            .header("Authorization", authorization)
+            .json(&serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }))
+            .send()
+            .await
+            .unwrap();
+        assert!(response.status().is_success(), "{}", response.status());
+        let body: Value = response.json().await.unwrap();
+        let result = &body["result"];
+        (
+            result["caller"].clone(),
+            result["can_get"].as_bool().unwrap(),
+            result["can_delete"].as_bool().unwrap(),
+        )
+    }
+
+    fn api_key(key: &str, name: &str, tools: Option<&[&str]>) -> ApiKeyEntry {
+        ApiKeyEntry {
+            key: key.to_string(),
+            name: name.to_string(),
+            user_id: "user-1".to_string(),
+            tools: tools.map(|t| t.iter().map(|s| s.to_string()).collect()),
+        }
+    }
+
+    /// 認証の失敗を、設定した監査ログに記録する。提示されたキーそのものは
+    /// 記録しない（#55）
+    #[tokio::test]
+    async fn test_authentication_failures_are_audited() {
+        let audit_logger = Arc::new(AuditLogger::with_defaults());
+        let transport = HttpTransport::new(HttpConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            auth_enabled: true,
+            api_keys: vec![api_key("correct-key", "reader", None)],
+            ..HttpConfig::default()
+        })
+        .unwrap()
+        .with_audit_logger(audit_logger.clone())
+        .with_request_handler(Arc::new(EchoRequestHandler));
+        transport.start_server().await.unwrap();
+        let server_addr = transport.bound_addr().await.unwrap();
+        wait_for_plain_server_ready(server_addr).await;
+
+        let url = format!("http://127.0.0.1:{}/mcp", server_addr.port());
+        let client = reqwest::Client::new();
+        for authorization in [None, Some("Bearer secret-wrong-key")] {
+            let mut request = client.post(&url).json(&notification_jsonrpc_request());
+            if let Some(authorization) = authorization {
+                request = request.header("Authorization", authorization);
+            }
+            assert_eq!(
+                request.send().await.unwrap().status(),
+                StatusCode::UNAUTHORIZED
+            );
+        }
+        // 成功した認証は記録しない（ツール呼び出しの記録に呼び出し元が残る）
+        let response = client
+            .post(&url)
+            .header("Authorization", "Bearer correct-key")
+            .json(&notification_jsonrpc_request())
+            .send()
+            .await
+            .unwrap();
+        assert!(response.status().is_success());
+
+        let entries = audit_logger.get_all_entries().await;
+        assert_eq!(entries.len(), 2, "{:?}", entries);
+        assert_eq!(entries[0].message, "Authentication failed: missing API key");
+        assert_eq!(
+            entries[1].message,
+            "Authentication failed: invalid, revoked, or expired API key"
+        );
+        for entry in &entries {
+            assert_eq!(entry.ip_address.as_deref(), Some("127.0.0.1"));
+            assert_eq!(entry.result.as_deref(), Some("DENIED"));
+            let text = serde_json::to_string(entry).unwrap();
+            assert!(!text.contains("secret-wrong-key"), "{}", text);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_api_key_tools_are_passed_to_the_request_handler() {
+        let server_addr = start_with_echo_handler(HttpConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            auth_enabled: true,
+            api_keys: vec![
+                api_key("reader-key", "reader", Some(&["@read_only"])),
+                api_key("deleter-key", "deleter", Some(&["delete_*"])),
+                api_key("admin-key", "admin", None),
+            ],
+            ..HttpConfig::default()
+        })
+        .await;
+        assert_eq!(
+            caller_seen_by_handler(server_addr, "Bearer reader-key").await,
+            (serde_json::json!("api_key:reader"), true, false)
+        );
+        assert_eq!(
+            caller_seen_by_handler(server_addr, "Bearer deleter-key").await,
+            (serde_json::json!("api_key:deleter"), false, true)
+        );
+        assert_eq!(
+            caller_seen_by_handler(server_addr, "Bearer admin-key").await,
+            (serde_json::json!("api_key:admin"), true, true)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_oauth_scope_tools_are_passed_to_the_request_handler() {
+        let auth = crate::transport::oauth::test_support::TestAuthServer::start().await;
+        let mut oauth = auth.config(OAUTH_RESOURCE);
+        oauth.scope_tools = [
+            ("mcp:read".to_string(), vec!["@read_only".to_string()]),
+            ("mcp:write".to_string(), vec!["*".to_string()]),
+        ]
+        .into_iter()
+        .collect();
+        let server_addr = start_with_echo_handler(HttpConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            oauth: Some(oauth),
+            ..HttpConfig::default()
+        })
+        .await;
+        let token = |scope: &str| {
+            format!(
+                "Bearer {}",
+                auth.token(OAUTH_RESOURCE, serde_json::json!({ "scope": scope }))
+            )
+        };
+        assert_eq!(
+            caller_seen_by_handler(server_addr, &token("openid mcp:read")).await,
+            (serde_json::json!("oauth:test-client"), true, false)
+        );
+        assert_eq!(
+            caller_seen_by_handler(server_addr, &token("mcp:read mcp:write")).await,
+            (serde_json::json!("oauth:test-client"), true, true)
+        );
+        // 対応するスコープが無いトークンは、どのツールも使えない
+        assert_eq!(
+            caller_seen_by_handler(server_addr, &token("openid")).await,
+            (serde_json::json!("oauth:test-client"), false, false)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_websocket_connection_keeps_its_caller() {
+        let server_addr = start_with_echo_handler(HttpConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            enable_websocket_upgrade: true,
+            auth_enabled: true,
+            api_keys: vec![api_key("reader-key", "reader", Some(&["@read_only"]))],
+            ..HttpConfig::default()
+        })
+        .await;
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+        let mut request = format!("ws://localhost:{}/ws", server_addr.port())
+            .into_client_request()
+            .unwrap();
+        request
+            .headers_mut()
+            .insert("Authorization", "Bearer reader-key".parse().unwrap());
+        let (mut ws_stream, _) = tokio_tungstenite::connect_async(request).await.unwrap();
+        ws_stream
+            .send(tokio_tungstenite::tungstenite::Message::Text(
+                serde_json::json!({"jsonrpc": "2.0", "id": 3, "method": "tools/list"})
+                    .to_string()
+                    .into(),
+            ))
+            .await
+            .unwrap();
+        let message = tokio::time::timeout(Duration::from_secs(5), ws_stream.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let tokio_tungstenite::tungstenite::Message::Text(text) = message else {
+            panic!("expected a text frame");
+        };
+        let value: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(
+            value["result"]["caller"],
+            serde_json::json!("api_key:reader")
+        );
+        assert_eq!(value["result"]["can_get"], serde_json::json!(true));
+        assert_eq!(value["result"]["can_delete"], serde_json::json!(false));
+    }
+
+    #[tokio::test]
+    async fn test_tool_restrictions_require_a_request_handler_and_valid_patterns() {
+        // チャンネル経由（ハンドラー無し）では制限できないので、起動しない
+        let config = HttpConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            auth_enabled: true,
+            api_keys: vec![api_key("reader-key", "reader", Some(&["@read_only"]))],
+            ..HttpConfig::default()
+        };
+        let transport = HttpTransport::new(config.clone()).unwrap();
+        assert!(transport.start_server().await.is_err());
+
+        // 知らないプリセット
+        let transport = HttpTransport::new(HttpConfig {
+            api_keys: vec![api_key("reader-key", "reader", Some(&["@admin"]))],
+            ..config
+        })
+        .unwrap()
+        .with_request_handler(Arc::new(EchoRequestHandler));
+        assert!(transport.start_server().await.is_err());
     }
 
     async fn start_with_echo_handler(config: HttpConfig) -> SocketAddr {
@@ -3619,6 +4491,29 @@ mod tests {
         assert_eq!(b, "B");
     }
 
+    /// `transport_info()`は同期のメソッドだが、asyncの中から呼んでも、
+    /// 起動後は実際に待ち受けたアドレスを返す（#265）
+    #[tokio::test]
+    async fn test_transport_info_reports_bound_address() {
+        let transport = HttpTransport::new(HttpConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            ..HttpConfig::default()
+        })
+        .unwrap();
+        let addr_of = |transport: &HttpTransport| match transport.transport_info().transport_type {
+            TransportType::Http { addr } => addr,
+            other => panic!("unexpected transport type: {other:?}"),
+        };
+
+        // 起動前は設定のアドレス
+        assert_eq!(addr_of(&transport).port(), 0);
+
+        transport.start_server().await.unwrap();
+        let bound = transport.bound_addr().await.unwrap();
+        assert_ne!(bound.port(), 0);
+        assert_eq!(addr_of(&transport), bound);
+    }
+
     #[tokio::test]
     async fn test_request_handler_still_requires_api_key() {
         let server_addr = start_with_echo_handler(HttpConfig {
@@ -3628,6 +4523,7 @@ mod tests {
                 key: "correct-key".to_string(),
                 name: "test".to_string(),
                 user_id: "user-1".to_string(),
+                tools: None,
             }],
             ..HttpConfig::default()
         })

@@ -4,7 +4,7 @@
 
 > **[English](README.md)** | **[日本語](README.ja.md)**
 
-[![Version](https://img.shields.io/badge/Version-v0.18.4-blue)](https://github.com/n-takatsu/mcp-rs/releases/tag/v0.18.4)
+[![Version](https://img.shields.io/badge/Version-v0.19.0-blue)](https://github.com/n-takatsu/mcp-rs/releases/tag/v0.19.0)
 ![Architecture](https://img.shields.io/badge/Architecture-Production--Ready-green)
 ![Implementation](https://img.shields.io/badge/WordPress_Tools-32_Available-green)
 ![License](https://img.shields.io/badge/License-MIT%2FApache--2.0-green)
@@ -60,7 +60,6 @@ Need WordPress security automation? 8-layer enterprise security architecture wit
 - **Message-Level Rate Limiting**: Per-IP enforcement with JSON-RPC error responses
 - **Session Validation**: Auto-extend sessions on each message, support X-Session-ID header and cookies
 - **Authentication Timeout**: Enforce authentication within configurable time limit (default: 30s)
-- **JWT Authentication**: 8 algorithms (HS256/384/512, RS256/384/512, ES256/384) with RBAC
 - **Origin Validation**: CSRF protection with whitelist/regex patterns
 - **Audit Logging**: Track rate limit violations, auth failures, and timeout events
 
@@ -77,15 +76,6 @@ Need WordPress security automation? 8-layer enterprise security architecture wit
 ### Live Demo Site
 
 The `examples/wordpress_site_builder_demo.rs` example builds and updates the public WordPress demo site at [redring.jp](https://redring.jp/). It is a real-world showcase of how mcp-rs can bootstrap a site and organize content in production.
-
-## **Multi-Factor Authentication (MFA)**
-
-- **TOTP Authentication**: RFC 6238 compliant with QR code generation (SHA1/SHA256/SHA512)
-- **Backup Codes**: Secure recovery codes with Argon2id hashing
-- **SMS Authentication**: Multi-provider support (Mock, Twilio, AWS SNS, Custom)
-- **Device Trust**: Remember trusted devices with fingerprint-based identification
-- **Session Integration**: Session-level MFA verification with configurable validity
-- **Performance**: TOTP < 10μs, QR generation < 3ms, 55+ passing tests
 
 ## **Enterprise Security (8-Layer Architecture)**
 
@@ -121,7 +111,7 @@ The `examples/wordpress_site_builder_demo.rs` example builds and updates the pub
 | ------ | ----- |
 | **Total Tests** | 260+ (100% passing) |
 | **Code Coverage** | Comprehensive |
-| **Security Tests** | 8-layer + MFA validation |
+| **Security Tests** | 8-layer validation |
 | **Performance** | Production optimized |
 | **Documentation** | Complete API docs |
 
@@ -243,13 +233,12 @@ Notes:
 transport_type = "websocket"
 ```
 
-> **Note**: WebSocket security options (JWT authentication, session management, rate limiting, origin validation) are configured programmatically via the WebSocket handler API. They are not part of the `mcp-config.toml` schema.
+> **Note**: WebSocket security options (session management, rate limiting, origin validation) are configured programmatically via the WebSocket handler API. They are not part of the `mcp-config.toml` schema.
 
 📖 **For detailed WebSocket security features, see [WebSocket Security Guide](./docs/websocket-security.md)**
 
 ### Examples
 
-- [JWT Authentication Demo](./examples/websocket_jwt_demo.rs)
 - [Session Management Demo](./examples/websocket_session_demo.rs)
 - [Rate Limiting Demo](./examples/websocket_rate_limit_demo.rs)
 

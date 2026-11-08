@@ -31,6 +31,7 @@ MCP-RS implements comprehensive security measures designed for production enviro
 ## ✅ Layer 3: Access Control & Rate Limiting
 
 - **API Key Authentication**: Optional API key check on every HTTP/WebSocket request (`Authorization: Bearer <key>` or `X-Api-Key`). Revoked or expired keys are rejected. STDIO is unaffected (local pipe)
+- **OAuth 2.1 Authorization**: Optional check of access tokens issued by an external authorization server, for HTTP/WebSocket (see [OAuth 2.1 Authorization](#httpwebsocket-oauth-21-authorization))
 - **Token Bucket Rate Limiting**: WordPress tool calls are rate limited per WordPress site connection, with burst handling
 - **Configurable Thresholds**: Customizable rate limiting parameters
 - **Graceful Degradation**: Smooth handling of rate limit violations
@@ -54,7 +55,7 @@ MCP-RS implements comprehensive security measures designed for production enviro
 - **Result-Based Error Handling**: Comprehensive error management system
 - **Memory Safety**: Rust's ownership system prevents buffer overflows
 - **Thread Safety**: Async-safe operations with proper synchronization
-- **Audit Logging**: Every WordPress tool call that changes the site (`create_*`, `update_*`, `delete_*`, `upload_*`, `set_*`) is recorded with its result, including calls rejected by rate limiting or input validation. Entries are appended to `audit.log` as JSON lines
+- **Audit Logging**: Every WordPress tool call that changes the site (`create_*`, `update_*`, `delete_*`, `upload_*`, `set_*`) is recorded with its result, including calls rejected by rate limiting or input validation. Plugin tool calls are recorded too. Entries are appended as JSON lines to the file set in [`[audit]`](#audit-log)
 
 ## 🔄 In Development
 
@@ -154,11 +155,100 @@ user_id = "user-1"
 
 Clients send the key as `Authorization: Bearer <key>` or `X-Api-Key: <key>`. Requests without a valid key get HTTP 401. Note that `${VAR}` expansion applies only to the WordPress `url`/`username`/`password` fields, so `key` must be written as the literal value.
 
+## Limiting Tools per API Key or Token
+
+In HTTP mode, each API key (and each OAuth scope) can be limited to some of the tools. Other tools are not shown in `tools/list`, and calls to them fail with a tool error ("Tool '...' is not allowed for this API key or access token"). Refused calls are recorded in the [audit log](#audit-log) (category `Authorization`, result `DENIED`, with the key name such as `api_key:reader` or the token's client such as `oauth:my-client`).
+
+```toml
+[[transport.http.api_keys]]
+key = "replace-with-a-long-random-key"
+name = "reader"
+user_id = "user-1"
+tools = ["@read_only"]            # omit to allow every tool
+
+[[transport.http.api_keys]]
+key = "replace-with-another-key"
+name = "files"
+user_id = "user-2"
+tools = ["fs__*", "get_posts"]
+```
+
+Each item in `tools` is one of:
+
+- A tool name, such as `get_posts`
+- A pattern with `*`, which matches any text. For example, `fs__*` matches every tool of the plugin `fs`, and `delete_*` matches every tool whose name starts with `delete_`
+- `@read_only`: tools marked as read-only (`readOnlyHint: true` in their annotations). The WordPress tools that only read (`get_*` and `wordpress_health_check`) are read-only. Plugin tools are read-only when the plugin says so in its own tool definitions, so check a plugin's tools before relying on this for it. Tools without annotations are not read-only
+
+A request is allowed a tool when any item matches it. `tools = []` allows no tools. Unknown presets (such as `@admin`) and empty items stop mcp-rs from starting. STDIO mode is not limited (it is a local pipe used by one person).
+
+## HTTP/WebSocket OAuth 2.1 Authorization
+
+In HTTP mode, mcp-rs can accept OAuth 2.1 access tokens, as described in the MCP specification (version 2025-06-18, "Authorization"). mcp-rs is the resource server: users sign in at an external authorization server (for example Keycloak, Okta, or Microsoft Entra ID), which handles SSO, LDAP/Active Directory, and MFA. mcp-rs checks the access tokens that server issues.
+
+```toml
+[transport.http.oauth]
+issuer = "https://auth.example.com/realms/mcp"   # the authorization server (iss)
+resource = "https://mcp.example.com/mcp"         # the URL clients use to reach mcp-rs
+# audiences = ["https://mcp.example.com/mcp"]    # accepted aud values. Default: resource
+# jwks_uri = "https://auth.example.com/realms/mcp/protocol/openid-connect/certs"  # default: found from the server's metadata
+# required_scopes = ["mcp:tools"]                # tokens without all of these get 403
+# leeway_seconds = 60                            # allowed clock skew for exp/nbf
+```
+
+- Tokens must be JWTs sent as `Authorization: Bearer <token>`. mcp-rs checks the signature with the authorization server's public keys (JWKS), the issuer (`iss`), the expiry (`exp`, and `nbf` if present), and the audience (`aud`). A token issued for another service (another `aud`) is rejected. Signatures with a shared secret (HS256 etc.) and unsigned tokens are rejected. Opaque (non-JWT) tokens and token introspection are not supported
+- Configure the authorization server to put `resource` (or one of `audiences`) in the token's `aud`. In Keycloak, add an "Audience" mapper to the client
+- mcp-rs finds the JWKS from the authorization server's metadata (`/.well-known/oauth-authorization-server` or `/.well-known/openid-configuration`), unless `jwks_uri` is set. The keys are loaded at startup and reloaded every hour, and when a token uses an unknown key ID (at most once every 30 seconds)
+- `issuer` and `jwks_uri` must use https. http is allowed only for `localhost` and loopback addresses, for testing
+- mcp-rs serves the Protected Resource Metadata (RFC 9728) without authentication at `/.well-known/oauth-protected-resource` plus the path of `resource` (for the example above, `/.well-known/oauth-protected-resource/mcp`), and also at `/.well-known/oauth-protected-resource`. It tells clients which authorization server to use
+- Requests without a valid token get HTTP 401 with `WWW-Authenticate: Bearer resource_metadata="..."` (and `error="invalid_token"` when a token was sent). Tokens without `required_scopes` get HTTP 403 with `error="insufficient_scope"`
+- API keys can be used together with OAuth: when `auth_enabled = true` too, a request is accepted with either a valid API key or a valid access token
+- To limit tools by scope, map scopes to tools with `scope_tools`. The items are written as in [`tools`](#limiting-tools-per-api-key-or-token). A token can use the tools of all its scopes that are listed. When `scope_tools` is set, a token with none of the listed scopes can use no tools. When it is not set (the default), every valid token can use every tool
+
+```toml
+[transport.http.oauth.scope_tools]
+"mcp:read" = ["@read_only"]
+"mcp:write" = ["*"]
+```
+
+## Audit Log
+
+Tool calls (WordPress and plugins) and, in HTTP mode, refused requests are appended to an audit log file as JSON lines, one entry per line (see [What is recorded](#what-is-recorded)). By default, the file is `audit.log` in the same folder as the config file (the file passed with `--config`), so the location does not depend on the folder mcp-rs is started from. The mcp-rs log shows the path at startup (`📝 監査ログ: <path>`).
+
+```toml
+[audit]
+# enabled = true              # false: keep entries in memory only (no file)
+# file_path = "audit.log"     # relative paths are resolved from the config file's folder
+# max_file_size_mb = 100      # rotate to audit.log.1, audit.log.2, ... before this size. 0: never rotate
+# max_files = 5               # number of rotated files to keep
+```
+
+- If the file cannot be written (for example, the folder is read-only), mcp-rs logs a warning at startup and keeps entries in memory only. Missing folders are created
+- Up to version 0.18.4, the file was `audit.log` in the folder mcp-rs was started from. When started from an MCP client such as Claude Desktop, that folder depends on the client, and the file may not have been written at all
+
+### What is recorded
+
+| Event | `category` | `result` | Recorded by |
+|-------|------------|----------|-------------|
+| Every tool call (WordPress and plugins), whether it succeeds or fails | `DataAccess` | `SUCCESS` or `FAILURE` | STDIO and HTTP |
+| A tool call refused because the API key or token may not use that tool ([Limiting Tools](#limiting-tools-per-api-key-or-token)) | `Authorization` | `DENIED` | HTTP |
+| A request refused because the API key or access token is missing or invalid, or lacks the required scopes | `Authentication` | `DENIED` | HTTP |
+
+Each entry has these fields:
+
+- `timestamp` (UTC) and `level` (`Info`, `Warning`, or `Error`)
+- `user_id`: who called. In HTTP mode, `api_key:<name>` for an API key, or `oauth:<client>` for an access token (the token's `azp` or `client_id`, or its `sub`). In STDIO mode, and in HTTP mode without authentication, `local`. Authentication failures have no `user_id`
+- `ip_address`: the client's IP address (HTTP mode)
+- `action`: the tool name. `resource`: the WordPress site URL, or `plugin:<name>`
+- `result`, and `message` (for example, `Plugin tool call: fs__read_text_file - SUCCESS`)
+- `metadata`: `subject` (the API key's `user_id`, or the token's `sub`), `duration_ms` (how long the tool call took), `error` (why it failed), and `target_id` (the ID of the post, page, media, category, or tag, for WordPress tools that take one)
+
+API keys, access tokens, and tool arguments (such as post content or file contents) are not recorded, because they can contain secrets. Up to version 0.18.4, only WordPress tools that change something were recorded, without the caller.
+
 ## Best Practices
 
 - Use WordPress Application Passwords (never plain passwords)
 - Prefer `encrypted_credentials` over a plaintext `password` in config files
-- Enable API key authentication whenever the HTTP transport is reachable from the network
+- Enable API key authentication or OAuth 2.1 authorization whenever the HTTP transport is reachable from the network
 - Implement proper environment variable naming conventions
 - Regular password rotation and access review
 - HTTPS-only connections for all WordPress API calls

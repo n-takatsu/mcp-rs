@@ -28,7 +28,7 @@ MCP-RS provides a **comprehensive, battle-tested** implementation of the MCP (Mo
 ### 🚀 Core Capabilities
 
 - **JSON-RPC 2.0 Server**: Full-featured JSON-RPC server implementation using `axum`
-- **Core Runtime Module**: Advanced application lifecycle and resource management
+- **Request Dispatch**: `McpServer` lists tools from every handler and routes each call to the handler that provides it, in both STDIO and HTTP modes
 - **Multi-Transport Support**: Stdio, HTTP, and WebSocket communication protocols
 - **Plugin Architecture**: Handler-based system with `McpHandler` trait for extensibility
 - **Type-Safe Configuration**: TOML-based configuration with environment variable override
@@ -102,7 +102,15 @@ See [WordPress Integration](docs/wordpress/) for the full list of tools.
 
 ## Current Status
 
-## ✅ Recently Completed (v0.18.4)
+## ✅ Recently Completed (v0.19.0)
+
+- **🔐 OAuth 2.1 for HTTP Mode**: Accept access tokens from an external authorization server such as Keycloak, Okta, or Microsoft Entra ID, as described in the MCP specification. See [Security](docs/security/#httpwebsocket-oauth-21-authorization)
+- **🧰 Tools per API Key or Token**: Limit which tools each API key or OAuth scope may use, for example read-only tools only. See [Security](docs/security/#limiting-tools-per-api-key-or-token)
+- **📝 Audit Log**: Choose where the audit log is written (by default, next to the config file), with rotation. Every tool call is recorded with the caller, result, and duration. See [Security](docs/security/#audit-log)
+- **🆕 MCP Protocol 2025-06-18**: Tool annotations (read-only, destructive), `outputSchema`, and `structuredContent` are passed on to clients that use the new version
+- **📦 Plugins in Containers and Kubernetes**: Run a plugin in a Docker container or as a Kubernetes Job, with no network access by default. See [Plugins](docs/plugins/)
+
+## ✅ v0.18.4
 
 - **🌐 HTTP Mode Works**: Requests over HTTP (`/mcp`) and WebSocket (`/ws`) are now answered, with the same tools as STDIO mode, including plugins. Previously every request timed out
 - **🔀 Concurrent Clients**: Each HTTP request gets its own response, even when several clients use the same JSON-RPC `id`

@@ -16,7 +16,6 @@
 #![allow(clippy::double_must_use)]
 
 pub mod config;
-pub mod core;
 pub mod error;
 pub mod handlers;
 pub mod logging;
@@ -66,9 +65,6 @@ pub mod optimization;
 
 // Zero Trust module
 pub mod zero_trust;
-
-// Compliance module (GDPR/CCPA)
-pub mod compliance;
 
 pub use error::{Error, Result, SessionError};
 pub use mcp_server::McpServer;

@@ -10,7 +10,8 @@ use tracing::{debug, info, warn};
 
 use crate::config::WordPressConfig;
 use crate::mcp::{
-    InitializeParams, McpError, McpHandler, Resource, ResourceReadParams, Tool, ToolCallParams,
+    InitializeParams, McpError, McpHandler, Resource, ResourceReadParams, Tool, ToolAnnotations,
+    ToolCallParams,
 };
 use crate::security::{
     AuditCategory, AuditLevel, AuditLogEntry, AuditLogger, RateLimiter, SecureCredentials,
@@ -320,6 +321,37 @@ fn summarize_media(media_items: &[WordPressMedia]) -> Vec<serde_json::Value> {
 /// 対応するため、クライアント単位ではなくハンドラ（サイト接続）単位で
 /// 制限する。
 const RATE_LIMIT_CLIENT_ID: &str = "wordpress-tool-calls";
+
+/// ツールの性質のヒント（annotations、#417）を、ツール名の命名規則
+/// （`is_mutating_tool`と同じ）から決める。クライアントは、これを見て実行前に
+/// 確認するか等を決める。
+/// - 変更しないツール（`get_*`等）: 読み取り専用
+/// - `create_*`・`upload_*`: 新しく作る。既存のものは変えないが、繰り返すと
+///   その分作られる
+/// - `update_*`・`set_*`・`delete_*`: 既存のものを上書き・削除する。同じ引数で
+///   繰り返しても、追加の影響は無い
+///
+/// どのツールも、設定したWordPressサイトとだけやり取りする（開かれた世界では
+/// ない）。
+fn wordpress_tool_annotations(name: &str) -> ToolAnnotations {
+    let base = ToolAnnotations {
+        open_world_hint: Some(false),
+        ..Default::default()
+    };
+    if !is_mutating_tool(name) {
+        return ToolAnnotations {
+            read_only_hint: Some(true),
+            ..base
+        };
+    }
+    let creates = name.starts_with("create_") || name.starts_with("upload_");
+    ToolAnnotations {
+        read_only_hint: Some(false),
+        destructive_hint: Some(!creates),
+        idempotent_hint: Some(!creates),
+        ..base
+    }
+}
 
 /// 変更系ツールのツール名接頭辞。本ファイルのツール命名規則
 /// （`create_*`/`update_*`/`delete_*`/`upload_*`/`set_*`）に合わせており、
@@ -1049,6 +1081,14 @@ impl WordPressHandler {
     }
 
     /// 安全なコンストラクタ - エラーハンドリング付き
+    /// ツール呼び出しを記録する監査ログを差し替える。本体は、プラグイン等と
+    /// 同じ監査ログ（設定の`[audit]`で書き込み先を決めたもの）を渡す（#416）。
+    /// 既定はメモリにだけ残す監査ログ。
+    pub fn with_audit_logger(mut self, audit_logger: Arc<AuditLogger>) -> Self {
+        self.audit_logger = audit_logger;
+        self
+    }
+
     pub fn try_new(config: WordPressConfig) -> Result<Self, String> {
         // URL検証 - HTTPS強制
         if !config.url.starts_with("https://") {
@@ -1099,13 +1139,16 @@ impl WordPressHandler {
         })
     }
 
-    /// 変更系ツール呼び出しの結果を監査ログに記録する。成功/失敗どちらも
-    /// 記録する（インシデント調査では失敗した変更の試みも重要なため）。
+    /// ツール呼び出しの結果を監査ログに記録する。成功/失敗どちらも記録する
+    /// （インシデント調査では失敗した変更の試みも重要なため）。読み取りの
+    /// ツールも記録する（#55。誰が何を読んだかも分かるように）。呼び出し元と
+    /// 所要時間も記録する。引数（投稿の本文等）は記録しない。
     async fn audit_tool_call(
         &self,
         tool_name: &str,
         target_id: Option<&str>,
         result: &Result<serde_json::Value, McpError>,
+        started: std::time::Instant,
     ) {
         let success = result.is_ok();
         let level = if success {
@@ -1129,6 +1172,7 @@ impl WordPressHandler {
         if let Err(e) = result {
             entry = entry.add_metadata("error".to_string(), e.to_string());
         }
+        let entry = crate::mcp::audit_tool_call_context(entry, started);
 
         if let Err(e) = self.audit_logger.log(entry).await {
             warn!("Failed to write audit log entry for {}: {}", tool_name, e);
@@ -3749,10 +3793,10 @@ impl WordPressHandler {
 
 #[async_trait]
 impl McpHandler for WordPressHandler {
-    async fn initialize(&self, _params: InitializeParams) -> Result<serde_json::Value, McpError> {
+    async fn initialize(&self, params: InitializeParams) -> Result<serde_json::Value, McpError> {
         info!("WordPress MCP Handler initialized");
         Ok(serde_json::json!({
-            "protocolVersion": "2024-11-05",
+            "protocolVersion": crate::mcp::negotiate_protocol_version(&params.protocol_version),
             "capabilities": {
                 "tools": {
                     "listChanged": false
@@ -3770,7 +3814,7 @@ impl McpHandler for WordPressHandler {
     }
 
     async fn list_tools(&self) -> Result<Vec<Tool>, McpError> {
-        Ok(vec![
+        let tools = vec![
             Tool {
                 name: "wordpress_health_check".to_string(),
                 description: "Perform comprehensive WordPress environment health check".to_string(),
@@ -3779,6 +3823,7 @@ impl McpHandler for WordPressHandler {
                     "properties": {},
                     "required": []
                 }),
+                ..Default::default()
             },
             Tool {
                 name: "get_posts".to_string(),
@@ -3788,6 +3833,7 @@ impl McpHandler for WordPressHandler {
                     "properties": {},
                     "required": []
                 }),
+                ..Default::default()
             },
             Tool {
                 name: "get_pages".to_string(),
@@ -3797,6 +3843,7 @@ impl McpHandler for WordPressHandler {
                     "properties": {},
                     "required": []
                 }),
+                ..Default::default()
             },
             Tool {
                 name: "get_all_content".to_string(),
@@ -3806,6 +3853,7 @@ impl McpHandler for WordPressHandler {
                     "properties": {},
                     "required": []
                 }),
+                ..Default::default()
             },
             Tool {
                 name: "get_post".to_string(),
@@ -3832,6 +3880,7 @@ impl McpHandler for WordPressHandler {
                     },
                     "required": ["post_id"]
                 }),
+                ..Default::default()
             },
             Tool {
                 name: "create_post".to_string(),
@@ -3860,6 +3909,7 @@ impl McpHandler for WordPressHandler {
                     },
                     "required": ["title", "content"]
                 }),
+                ..Default::default()
             },
             Tool {
                 name: "create_advanced_post".to_string(),
@@ -3918,6 +3968,7 @@ impl McpHandler for WordPressHandler {
                     },
                     "required": ["title", "content"]
                 }),
+                ..Default::default()
             },
             Tool {
                 name: "get_comments".to_string(),
@@ -3932,6 +3983,7 @@ impl McpHandler for WordPressHandler {
                     },
                     "required": []
                 }),
+                ..Default::default()
             },
             Tool {
                 name: "upload_media".to_string(),
@@ -3964,6 +4016,7 @@ impl McpHandler for WordPressHandler {
                     },
                     "required": []
                 }),
+                ..Default::default()
             },
             Tool {
                 name: "get_media".to_string(),
@@ -3973,6 +4026,7 @@ impl McpHandler for WordPressHandler {
                     "properties": {},
                     "required": []
                 }),
+                ..Default::default()
             },
             Tool {
                 name: "get_media_item".to_string(),
@@ -3987,6 +4041,7 @@ impl McpHandler for WordPressHandler {
                     },
                     "required": ["media_id"]
                 }),
+                ..Default::default()
             },
             Tool {
                 name: "update_media".to_string(),
@@ -4023,6 +4078,7 @@ impl McpHandler for WordPressHandler {
                     },
                     "required": ["media_id"]
                 }),
+                ..Default::default()
             },
             Tool {
                 name: "delete_media".to_string(),
@@ -4041,6 +4097,7 @@ impl McpHandler for WordPressHandler {
                     },
                     "required": ["media_id"]
                 }),
+                ..Default::default()
             },
             Tool {
                 name: "create_post_with_featured_image".to_string(),
@@ -4073,6 +4130,7 @@ impl McpHandler for WordPressHandler {
                     },
                     "required": ["title", "content", "featured_media_id"]
                 }),
+                ..Default::default()
             },
             Tool {
                 name: "set_featured_image".to_string(),
@@ -4091,6 +4149,7 @@ impl McpHandler for WordPressHandler {
                     },
                     "required": ["post_id", "media_id"]
                 }),
+                ..Default::default()
             },
             Tool {
                 name: "get_categories".to_string(),
@@ -4100,6 +4159,7 @@ impl McpHandler for WordPressHandler {
                     "properties": {},
                     "required": []
                 }),
+                ..Default::default()
             },
             Tool {
                 name: "create_category".to_string(),
@@ -4126,6 +4186,7 @@ impl McpHandler for WordPressHandler {
                     },
                     "required": ["name"]
                 }),
+                ..Default::default()
             },
             Tool {
                 name: "update_category".to_string(),
@@ -4156,6 +4217,7 @@ impl McpHandler for WordPressHandler {
                     },
                     "required": ["category_id"]
                 }),
+                ..Default::default()
             },
             Tool {
                 name: "delete_category".to_string(),
@@ -4174,6 +4236,7 @@ impl McpHandler for WordPressHandler {
                     },
                     "required": ["category_id"]
                 }),
+                ..Default::default()
             },
             Tool {
                 name: "get_tags".to_string(),
@@ -4183,6 +4246,7 @@ impl McpHandler for WordPressHandler {
                     "properties": {},
                     "required": []
                 }),
+                ..Default::default()
             },
             Tool {
                 name: "create_tag".to_string(),
@@ -4205,6 +4269,7 @@ impl McpHandler for WordPressHandler {
                     },
                     "required": ["name"]
                 }),
+                ..Default::default()
             },
             Tool {
                 name: "update_tag".to_string(),
@@ -4231,6 +4296,7 @@ impl McpHandler for WordPressHandler {
                     },
                     "required": ["tag_id"]
                 }),
+                ..Default::default()
             },
             Tool {
                 name: "delete_tag".to_string(),
@@ -4249,6 +4315,7 @@ impl McpHandler for WordPressHandler {
                     },
                     "required": ["tag_id"]
                 }),
+                ..Default::default()
             },
             Tool {
                 name: "create_post_with_categories_tags".to_string(),
@@ -4291,6 +4358,7 @@ impl McpHandler for WordPressHandler {
                     },
                     "required": ["title", "content"]
                 }),
+                ..Default::default()
             },
             Tool {
                 name: "update_post_categories_tags".to_string(),
@@ -4322,6 +4390,7 @@ impl McpHandler for WordPressHandler {
                     },
                     "required": ["post_id"]
                 }),
+                ..Default::default()
             },
             Tool {
                 name: "update_post".to_string(),
@@ -4372,6 +4441,7 @@ impl McpHandler for WordPressHandler {
                     },
                     "required": ["post_id"]
                 }),
+                ..Default::default()
             },
             Tool {
                 name: "delete_post".to_string(),
@@ -4396,6 +4466,7 @@ impl McpHandler for WordPressHandler {
                     },
                     "required": ["post_id"]
                 }),
+                ..Default::default()
             },
             Tool {
                 name: "create_post_with_embeds".to_string(),
@@ -4451,6 +4522,7 @@ impl McpHandler for WordPressHandler {
                     },
                     "required": ["title", "content"]
                 }),
+                ..Default::default()
             },
             Tool {
                 name: "get_settings".to_string(),
@@ -4460,6 +4532,7 @@ impl McpHandler for WordPressHandler {
                     "properties": {},
                     "required": []
                 }),
+                ..Default::default()
             },
             Tool {
                 name: "update_settings".to_string(),
@@ -4507,6 +4580,7 @@ impl McpHandler for WordPressHandler {
                     },
                     "required": []
                 }),
+                ..Default::default()
             },
             Tool {
                 name: "set_front_page".to_string(),
@@ -4521,6 +4595,7 @@ impl McpHandler for WordPressHandler {
                     },
                     "required": ["page_id"]
                 }),
+                ..Default::default()
             },
             Tool {
                 name: "set_front_page_to_posts".to_string(),
@@ -4535,13 +4610,21 @@ impl McpHandler for WordPressHandler {
                     },
                     "required": []
                 }),
+                ..Default::default()
             },
-        ])
+        ];
+        Ok(tools
+            .into_iter()
+            .map(|tool| Tool {
+                annotations: Some(wordpress_tool_annotations(&tool.name)),
+                ..tool
+            })
+            .collect())
     }
 
     async fn call_tool(&self, params: ToolCallParams) -> Result<serde_json::Value, McpError> {
+        let started = std::time::Instant::now();
         let tool_name = params.name.clone();
-        let mutating = is_mutating_tool(&tool_name);
         let target_id = extract_target_id(&params.arguments);
 
         if let Err(e) = self
@@ -4551,20 +4634,14 @@ impl McpHandler for WordPressHandler {
         {
             warn!("WordPress tool call rate limited: {}", e);
             let result = Err(McpError::Other(format!("Rate limit exceeded: {}", e)));
-            if mutating {
-                self.audit_tool_call(&tool_name, target_id.as_deref(), &result)
-                    .await;
-            }
+            self.audit_tool_call(&tool_name, target_id.as_deref(), &result, started)
+                .await;
             return result;
         }
 
         let result = self.dispatch_tool(params).await;
-
-        if mutating {
-            self.audit_tool_call(&tool_name, target_id.as_deref(), &result)
-                .await;
-        }
-
+        self.audit_tool_call(&tool_name, target_id.as_deref(), &result, started)
+            .await;
         result
     }
 
@@ -4876,6 +4953,48 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn test_every_tool_has_annotations() {
+        let handler = rate_limited_handler(RateLimitConfig::default());
+        let tools = handler.list_tools().await.unwrap();
+        let annotations = |name: &str| {
+            tools
+                .iter()
+                .find(|t| t.name == name)
+                .and_then(|t| t.annotations.clone())
+                .unwrap_or_else(|| panic!("{} has no annotations", name))
+        };
+        for tool in &tools {
+            let a = annotations(&tool.name);
+            assert_eq!(a.open_world_hint, Some(false), "{}", tool.name);
+            assert_eq!(
+                a.read_only_hint,
+                Some(!is_mutating_tool(&tool.name)),
+                "{}",
+                tool.name
+            );
+        }
+
+        let get = annotations("get_posts");
+        assert_eq!(get.destructive_hint, None);
+
+        let create = annotations("create_post");
+        assert_eq!(create.destructive_hint, Some(false));
+        assert_eq!(create.idempotent_hint, Some(false));
+        assert_eq!(annotations("upload_media").destructive_hint, Some(false));
+
+        for name in [
+            "update_post",
+            "delete_post",
+            "set_front_page",
+            "update_settings",
+        ] {
+            let a = annotations(name);
+            assert_eq!(a.destructive_hint, Some(true), "{}", name);
+            assert_eq!(a.idempotent_hint, Some(true), "{}", name);
+        }
+    }
+
     #[test]
     fn test_extract_target_id_finds_known_keys_in_priority_order() {
         let mut args = HashMap::new();
@@ -4939,20 +5058,41 @@ mod tests {
         assert!(entries[0].metadata.contains_key("error"));
     }
 
+    /// 読み取りのツールも、呼び出し元・所要時間と一緒に記録する（#55）
     #[tokio::test]
-    async fn test_call_tool_does_not_audit_read_only_tool() {
+    async fn test_call_tool_audits_read_tools_with_caller() {
         let handler = rate_limited_handler(RateLimitConfig::default());
-
-        let result = handler
-            .call_tool(ToolCallParams {
+        let call = || {
+            handler.call_tool(ToolCallParams {
                 name: "get_fake_thing_for_test".to_string(),
                 arguments: None,
             })
-            .await;
+        };
+
+        let caller = crate::mcp::Caller::new("api_key:reader", crate::mcp::ToolAccess::All)
+            .with_subject(Some("user-1".to_string()))
+            .with_ip_address(Some("192.0.2.1".to_string()));
+        let result = crate::mcp::with_caller(caller, call()).await;
         assert!(matches!(result, Err(McpError::ToolNotFound(_))));
+        // 呼び出し元が分からない（STDIO等）場合は`local`
+        let _ = call().await;
 
         let entries = handler.audit_logger.get_all_entries().await;
-        assert!(entries.is_empty());
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].user_id.as_deref(), Some("api_key:reader"));
+        assert_eq!(
+            entries[0].metadata.get("subject").map(String::as_str),
+            Some("user-1")
+        );
+        assert!(entries[0].metadata.contains_key("duration_ms"));
+        assert_eq!(entries[0].ip_address.as_deref(), Some("192.0.2.1"));
+        assert_eq!(entries[0].result.as_deref(), Some("FAILURE"));
+        assert_eq!(
+            entries[0].action.as_deref(),
+            Some("get_fake_thing_for_test")
+        );
+        assert_eq!(entries[1].user_id.as_deref(), Some("local"));
+        assert!(!entries[1].metadata.contains_key("subject"));
     }
 
     #[test]

@@ -4,6 +4,85 @@
 
 Our project follows a detailed 0.01 increment versioning strategy to provide granular tracking of development progress and feature implementation.
 
+## 🔐 v0.19.0 - HTTPモードの認可・ツールの権限・監査ログ
+
+**Release Date:** 2026-11-08
+**Focus:** HTTPモードを組織で安全に使うための機能（OAuth 2.1、ツールの権限、監査ログ）と、MCPのプロトコル版2025-06-18への対応
+
+### ✅ HTTPモードのOAuth 2.1（#420）
+
+- `[transport.http.oauth]`で、外部の認可サーバー（Keycloak・Okta・
+  Microsoft Entra ID等）が発行したアクセストークン（JWT）を受け付ける。
+  MCPの仕様（2025-06-18の「Authorization」）のリソースサーバーとして動き、
+  ログイン（SSO・LDAP/AD・MFA）は認可サーバーが受け持つ
+- 署名・発行者・有効期限・対象（`aud`）を確かめる。別のサービス向けの
+  トークン、共有鍵（HS256等）・署名なしのトークンは受け付けない
+- Protected Resource Metadata（RFC 9728）を公開し、401・403に
+  `WWW-Authenticate`を付ける。APIキーと併用できる
+
+### ✅ APIキー・トークンごとのツールの権限（#52）
+
+- APIキーの`tools`、OAuthの`scope_tools`で、使えるツールを指定できる。
+  ツール名、`*`を使うパターン（`fs__*`等）、`@read_only`（読み取り専用の
+  ツール）が使える。省略時は、これまでどおりすべて使える
+- 使えないツールは一覧に出さず、呼び出しは拒否して監査ログに残す
+
+### ✅ 監査ログ（#416、#55）
+
+- 書き込み先を`[audit]`で指定できる。省略時は、設定ファイルと同じフォルダの
+  `audit.log`。サイズでのローテーション（既定100MB・5ファイル）を実装した
+- ツール呼び出しの記録に、呼び出し元（`api_key:<name>`・`oauth:<client>`・
+  STDIOは`local`）、利用者、IPアドレス、所要時間を加えた。HTTPモードの
+  認証の失敗も記録する。キー・トークン・ツールの引数は記録しない
+
+### ✅ MCPのプロトコル版2025-06-18（#417）
+
+- クライアントが要求した版（`2025-06-18`・`2024-11-05`）で答える
+- ツールのannotations（読み取り専用・破壊的等）、`outputSchema`、
+  `structuredContent`を、`2025-06-18`で話すクライアントに渡す。WordPressの
+  ツールにもannotationsを付けた
+
+### ✅ プラグインの隔離（#411、#413）
+
+- プラグインを、Dockerコンテナの中（`[plugins.container]`）や、Kubernetesの
+  Job（`[plugins.kubernetes]`）として起動できる。既定でネットワークなし・
+  読み取り専用のルートファイルシステム・リソースの上限付き
+
+### 🐛 修正
+
+- 監査ログが、mcp-rsの作業フォルダの`audit.log`に書かれていた問題（#416）。
+  Claude Desktop等から起動した場合、記録されていなかった可能性が高い
+- 監査ログの書き込みが、終わる前にファイルを閉じることがあった問題（#55で発見）
+- `HttpTransport::transport_info()`が、待ち受けたアドレスの代わりに設定の
+  アドレスを返しえた問題（#265）
+
+### ⚠️ 挙動の変更
+
+- 監査ログの書き込み先が、設定ファイルと同じフォルダの`audit.log`になった。
+  起動時のログに書き込み先が出る（`📝 監査ログ: <path>`）。設定ファイルを
+  使わずに起動した場合は、ファイルに書かない（`[audit] file_path`に絶対パスを
+  指定すれば書く）
+- WordPressの読み取りのツールも監査ログに記録する（以前は変更するツールだけ）。
+  ログが増えるため、ローテーションの設定を確かめる
+- `initialize`で、クライアントが`2025-06-18`を要求すれば`2025-06-18`で答える
+  （以前は常に`2024-11-05`）。プラグインには`2025-06-18`を要求する
+
+### 🗑️ 削除
+
+- 本体から使われていなかったコードを削除した: `core`モジュール（#409）、
+  `security::auth`のJWT・OAuth2・セッション認証・MFA・`compliance`等（#421）
+
+### 📚 ライブラリとして使う場合
+
+公開APIに互換性の無い変更がある。詳しくはCHANGELOG.mdを参照。
+
+- `mcp::Tool`に項目を追加した（構造体リテラルには`..Default::default()`が要る）
+- `transport::http::JsonRpcRequestHandler::handle_jsonrpc`に、呼び出し元
+  （`mcp::Caller`）の引数を追加した
+- `AuditConfig::default()`はファイルに書かない。`plugin_proxy::start_plugins`は
+  監査ログを受け取る
+- 上記の削除したモジュール・機能（features）の`mfa`・`mfa-full`
+
 ## 🌐 v0.18.4 - HTTPモードの修正
 
 **Release Date:** 2026-11-08

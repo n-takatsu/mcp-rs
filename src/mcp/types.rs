@@ -88,12 +88,44 @@ pub struct ResourceReadParams {
 }
 
 /// MCP Tool Definition
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// `title`・`output_schema`（2025-06-18）と`annotations`（2025-03-26）は、
+/// 新しい版で追加された項目。古い版（2024-11-05）で話すクライアントには
+/// 送らない（`version::tools_list_for_version`、#417）。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Tool {
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     pub description: String,
     pub input_schema: serde_json::Value,
+    /// ツールの結果の`structuredContent`のJSON Schema
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_schema: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub annotations: Option<ToolAnnotations>,
+}
+
+/// ツールの性質のヒント（2025-03-26）。クライアントが、実行前に確認するか
+/// 等を決めるのに使う。ヒントであり、保証ではない。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolAnnotations {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// 対象の状態を変えない
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read_only_hint: Option<bool>,
+    /// 既存のものを消す・上書きすることがある（読み取り専用でない場合）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destructive_hint: Option<bool>,
+    /// 同じ引数で繰り返し呼んでも、追加の影響が無い（読み取り専用でない場合）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idempotent_hint: Option<bool>,
+    /// 外部の、開かれた世界（Web検索等）とやり取りする
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open_world_hint: Option<bool>,
 }
 
 /// MCP Resource Definition
@@ -177,11 +209,39 @@ mod tests {
             name: "example".to_string(),
             description: "An example tool".to_string(),
             input_schema: serde_json::json!({"type": "object"}),
+            ..Default::default()
         };
 
         let value = serde_json::to_value(&tool).unwrap();
         assert!(value.get("inputSchema").is_some());
         assert!(value.get("input_schema").is_none());
+        // 設定していない新しい版の項目は出さない
+        assert!(value.get("title").is_none());
+        assert!(value.get("outputSchema").is_none());
+        assert!(value.get("annotations").is_none());
+    }
+
+    #[test]
+    fn test_tool_annotations_wire_format() {
+        let tool: Tool = serde_json::from_value(serde_json::json!({
+            "name": "t",
+            "description": "d",
+            "inputSchema": { "type": "object" },
+            "outputSchema": { "type": "object" },
+            "annotations": { "readOnlyHint": true, "openWorldHint": false }
+        }))
+        .unwrap();
+        assert_eq!(
+            tool.output_schema,
+            Some(serde_json::json!({ "type": "object" }))
+        );
+        let annotations = tool.annotations.clone().unwrap();
+        assert_eq!(annotations.read_only_hint, Some(true));
+        assert_eq!(annotations.open_world_hint, Some(false));
+        assert_eq!(
+            serde_json::to_value(&tool).unwrap()["annotations"],
+            serde_json::json!({ "readOnlyHint": true, "openWorldHint": false })
+        );
     }
 
     #[test]

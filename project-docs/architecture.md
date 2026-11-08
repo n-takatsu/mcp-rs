@@ -116,13 +116,12 @@ The traditional plugin architecture presents significant security vulnerabilitie
 - **Dependencies**: MCP protocol types, Security modules
 - **Pattern**: Security-first plugin architecture with `McpHandler` trait
 
-## 4. Core Layer (`src/core/`) + TLS/Encryption Layer
+## 4. Request Dispatch + TLS/Encryption Layer
 
-- **Responsibility**: Runtime management, execution context, cryptographic operations
-- **Components**: 
-  - `runtime.rs`: Secure application lifecycle and state management
-  - `registry.rs`: Verified handler and plugin registration system
-  - `context.rs`: Encrypted request-scoped execution context
+- **Responsibility**: Routing requests to handlers, cryptographic operations
+- **Components**:
+  - `mcp/server.rs`: `McpServer` merges the tools of all registered handlers and routes each call by tool name. `RequestDispatcher` gives HTTP/WebSocket the same logic as STDIO
+  - The earlier `src/core/` (`Runtime`, `HandlerRegistry`, `ExecutionContext`) was never connected to request handling and has been removed ([#409](https://github.com/n-takatsu/mcp-rs/issues/409))
   - `encryption.rs`: AES-GCM-256 encryption with PBKDF2 key derivation
 - **Security Features**:
   - TLS 1.2+ enforcement with strong cipher suites
@@ -150,15 +149,13 @@ The traditional plugin architecture presents significant security vulnerabilitie
 ## 6. MCP Protocol Layer (`src/mcp/`) + Audit Layer
 
 - **Responsibility**: MCP protocol compliance, comprehensive security auditing
-- **Components**: Protocol types, audit logging, compliance reporting
+- **Components**: Protocol types, audit logging
 - **Security Features**:
   - Comprehensive audit trail (IP, timestamp, user agent)
   - Real-time security event logging
-  - Compliance reporting (GDPR, SOC 2, ISO 27001)
   - Tamper-resistant log integrity
   - Security metrics collection
 - **Standards**: MCP JSON-RPC 2.0 + Enterprise Security Extensions
-- **Compliance**: GDPR, SOC 2 Type II, ISO 27001, PCI DSS ready
 
 ## 7. Infrastructure Layer (`src/config.rs`, `src/error.rs`) + Security Configuration
 
@@ -175,7 +172,7 @@ The traditional plugin architecture presents significant security vulnerabilitie
 
 Built-in features are implemented as handlers using the `McpHandler` trait (for example, `WordPressHandler`).
 
-Third-party plugins run as separate MCP server processes ([#392](https://github.com/n-takatsu/mcp-rs/issues/392)). `src/plugin_proxy.rs` starts each plugin listed in `[[plugins]]` as a child process, connects to it as an MCP client, and registers a `PluginHandler` that relays its tools as `<plugin>__<tool>` while applying rate limiting, audit logging, timeouts, and response size limits (stage 1, [#394](https://github.com/n-takatsu/mcp-rs/issues/394)). The earlier plugin modules (`plugin`, `plugins`, `plugin_isolation`, `docker_runtime`) were never connected to the server and have been removed.
+Third-party plugins run as separate MCP server processes ([#392](https://github.com/n-takatsu/mcp-rs/issues/392)). `src/plugin_proxy.rs` starts each plugin listed in `[[plugins]]` as a child process, connects to it as an MCP client, and registers a `PluginHandler` that relays its tools as `<plugin>__<tool>` while applying rate limiting, audit logging, timeouts, and response size limits (stage 1, [#394](https://github.com/n-takatsu/mcp-rs/issues/394)). A plugin with `[plugins.container]` is started with `docker run -i` instead, with no network, no capabilities, a read-only root filesystem, and only the configured mounts by default (stage 2, [#411](https://github.com/n-takatsu/mcp-rs/issues/411)). A plugin with `[plugins.kubernetes]` is started as a Kubernetes Job through `kubectl` and connected with `kubectl attach -i`: the pod runs as non-root with a read-only root filesystem and no service account token, under a deny-all NetworkPolicy by default, and `env` values go through a Secret owned by the Job (stage 3, [#413](https://github.com/n-takatsu/mcp-rs/issues/413), `src/plugin_proxy/kubernetes.rs`). The earlier plugin modules (`plugin`, `plugins`, `plugin_isolation`, `docker_runtime`) were never connected to the server and have been removed.
 
 ## Security Integration Architecture
 
@@ -508,7 +505,7 @@ info!(
 ## Phase 2: Transport Expansion (v0.2.0-alpha) ✅
 
 - ✅ Stdio transport implementation
-- ✅ Core Runtime Module
+- ✅ Core Runtime Module (later removed because it was never connected to request handling, #409)
 - ✅ Transport abstraction layer
 - ✅ Enhanced configuration management
 - 🔄 Plugin dynamic loading (in progress)

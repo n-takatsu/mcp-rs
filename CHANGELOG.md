@@ -7,6 +7,143 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-11-08
+
+### Added
+
+- 監査ログに、呼び出し元と結果を記録するようにした（#55）
+  - ツール呼び出しの記録に、呼び出し元（`user_id`: `api_key:<name>`・
+    `oauth:<client>`・STDIOは`local`）、利用者（`subject`: APIキーの
+    `user_id`・トークンの`sub`）、IPアドレス、所要時間（`duration_ms`）を
+    加えた
+  - WordPressの読み取りのツールも記録する（以前は変更するツールだけ）
+  - HTTPモードの認証の失敗（キー・トークンが無い・無効・スコープ不足）を
+    記録する。キー・トークン・ツールの引数は記録しない
+  - **ライブラリの変更**: `mcp::Caller`に`subject`・`ip_address`を追加。
+    `HttpTransport::with_audit_logger`、`McpServer::audit_logger`、
+    `mcp::with_caller`・`mcp::current_caller`・`mcp::audit_tool_call_context`
+    を追加
+
+- HTTPモードで、APIキー・アクセストークンごとに使えるツールを制限できるように
+  した（#52）
+  - APIキーの`tools`、OAuthの`scope_tools`（スコープ → ツール）で指定する。
+    ツール名、`*`を使うパターン（`fs__*`等）、`@read_only`（annotationsで
+    読み取り専用のツール）が使える。省略時は、これまでどおりすべて使える
+  - 使えないツールは`tools/list`に出さず、`tools/call`はツールのエラーにする。
+    拒否した呼び出しは監査ログに記録する
+  - **ライブラリの変更**: `transport::http::JsonRpcRequestHandler::handle_jsonrpc`
+    に、呼び出し元（`mcp::Caller`）の引数を追加した。`ApiKeyEntry`に`tools`、
+    `OAuthConfig`に`scope_tools`を追加。ツールを制限する設定で、
+    `with_request_handler`を使わずに`start_server`するとエラーになる。
+    `mcp::Caller`・`mcp::ToolAccess`、`RequestDispatcher::handle_message_as`、
+    `McpServer::set_audit_logger`を追加
+
+- HTTPモードで、OAuth 2.1のアクセストークン（JWT）を受け付けるようにした
+  （#420、`[transport.http.oauth]`）。MCPの仕様（2025-06-18の
+  「Authorization」）のリソースサーバーとして動き、ログインは外部の認可
+  サーバー（Keycloak・Okta・Microsoft Entra ID等）が受け持つ
+  - 署名（認可サーバーのJWKS）・発行者・有効期限・対象（`aud`）を確かめる。
+    共有鍵（HS256等）・署名なしのトークンは受け付けない
+  - Protected Resource Metadata（RFC 9728）を公開し、401・403に
+    `WWW-Authenticate`を付ける
+  - `required_scopes`で必要なスコープを指定できる
+  - APIキー（`auth_enabled`）と併用できる
+
+- MCPのプロトコル版`2025-06-18`に対応した（#417）
+  - 版の交渉: クライアントが要求した版（`2025-06-18`・`2024-11-05`）で答える。
+    それ以外は`2025-06-18`で答える。以前は常に`2024-11-05`で答えていた
+  - ツール定義の`title`・`outputSchema`・`annotations`と、ツールの結果の
+    `structuredContent`を中継する（`2025-06-18`で話すクライアントにだけ。
+    `2024-11-05`では除き、リソースリンク・音声のコンテンツはテキストに
+    置き換える）。プラグインには`2025-06-18`を要求する
+  - WordPressのツールにannotations（読み取り専用・破壊的・冪等）を付けた。
+    クライアントが、実行前に確認するか等を決めるのに使う
+  - **ライブラリの変更**: `mcp::Tool`に`title`・`output_schema`・
+    `annotations`を追加し、`Default`を実装した（構造体リテラルには
+    `..Default::default()`が要る）。`mcp::version`（版の交渉・項目の
+    取捨）と`mcp::Session`を追加
+
+- 監査ログの書き込み先を、設定の`[audit]`で指定できるようにした（#416）。
+  省略時は、設定ファイルと同じフォルダの`audit.log`に書く
+  - `file_path`（相対パスは設定ファイルのフォルダが基準）・`enabled`・
+    `max_file_size_mb`（既定100MB、0でローテーションしない）・`max_files`
+    （既定5）
+  - サイズでのローテーション（`audit.log.1`〜）を実装した。以前は設定項目
+    だけがあり、ファイルは増え続けていた
+  - 起動時のログに書き込み先を出す。書き込めない場合は警告を出し、メモリに
+    だけ残す
+  - WordPressとプラグインで、同じ監査ログを使う（以前はハンドラーごとに
+    別々の記録器が同じファイルに追記していた）
+
+- プラグインをDockerコンテナの中で起動できるようにした（#411、#392の段階2）。
+  `[[plugins]]`に`[plugins.container]`（`image`等）を書くと、`docker run -i`で
+  起動し、標準入出力で中継する。既定で、ネットワークなし（`--network=none`）・
+  全ケーパビリティ削除・ルートファイルシステム読み取り専用（`/tmp`のみ
+  書き込み可）・メモリ512MB・プロセス数256の上限付き。ホストのフォルダは
+  `mounts`で指定したものだけを、既定で読み取り専用でマウントする
+  - イメージは起動時に取得しない（`--pull=never`）。事前に`docker pull`する
+  - `env`の値はコマンドラインに載せず、dockerコマンドの環境変数経由で渡す
+  - 停止時・終了時にコンテナを`docker rm -f`で消す
+  - コンテナで起動する場合、`command`は省略できる（イメージのCMDを使う）
+- プラグインをKubernetesのJobとして起動できるようにした（#413、#392の段階3）。
+  `[[plugins]]`に`[plugins.kubernetes]`（`image`等）を書くと、`kubectl`でJobを
+  作り、`kubectl attach -i`で中継する。Podは既定で、root以外（UID 65532）・
+  全ケーパビリティ削除・seccomp RuntimeDefault・ルートファイルシステム読み取り
+  専用（`/tmp`のみ書き込み可）・メモリ512Mi・CPU 500m・ServiceAccountの
+  トークンなしで、通信をすべて拒否するNetworkPolicyの対象にする
+  - `env`の値は、Jobを所有者とするSecretに入れる（コマンドラインに載せない）
+  - Jobは再起動せず（`backoffLimit: 0`）、終了の60秒後に消える。停止時・
+    終了時は`kubectl delete`でJobとSecretを消す
+  - 必要な権限（Roleの例）は、website/docs/plugins.mdに記載
+
+### Fixed
+
+- 監査ログのファイルへの書き込みを、終わるまで待つようにした（#55で発見）。
+  #416で入れた書き込みは、書き込みが終わる前にファイルを閉じることがあり、
+  次の書き込みやローテーションと順番が入れ替わるおそれがあった
+
+- 監査ログが、mcp-rsの作業フォルダの`audit.log`（相対パス）に書かれていた
+  問題を修正（#416）。Claude Desktop等から起動した場合、作業フォルダは
+  クライアントによって決まり、書き込めない場所ではエラーを標準エラー出力に
+  出すだけで記録されなかった
+  - **ライブラリの変更**: `AuditConfig::default()`（`AuditLogger::with_defaults()`）は
+    ファイルに書かなくなった（メモリのみ）。`AuditConfig`に`max_files`を追加。
+    `plugin_proxy::start_plugins`は監査ログ（`Arc<AuditLogger>`）を受け取る。
+    `PluginHandler::start_with_audit_logger`・
+    `WordPressHandler::with_audit_logger`・`McpConfig::audit_config`を追加
+
+- `HttpTransport::transport_info()`が、ロックの競合時に実際に待ち受けた
+  アドレスの代わりに設定のアドレス（ポート0のことがある）を返しえた問題を
+  修正（#265）。待ち受けたアドレスを`std::sync::RwLock`で持ち、同期の
+  メソッドからも待たずに読めるようにした
+
+### Removed
+
+- 本体から使われていなかった認証コードを削除（#421、#419の決定）。
+  HTTPモードのAPIキー認証（`security::auth::api_key`、#342）は残す
+  - **ライブラリの変更**: 次の公開モジュール・型を削除した
+    - `security::auth`の`jwt`・`oauth2`・`session_auth`・`provider`
+      （`MultiAuthProvider`）・`middleware`（`AuthMiddleware`）・`api`
+      （`create_auth_router`）・`repository`（memory・PostgreSQL・Redis）と
+      `AuthConfig`
+    - `security::mfa`（TOTP・SMS・バックアップコード・デバイス信頼）と、
+      機能（features）の`mfa`・`mfa-full`
+    - `compliance`（GDPR/CCPAのエンジン。上記の認証の上に作られていた）
+    - `session::jwt_integration`（`SessionJwtManager`等）
+  - 依存から`jsonwebtoken`・`totp-rs`・`qrcode`を外した
+  - 関連するexample・テストと、READMEのMFA・JWTの記述、MFAの設計書
+    （`docs/design/mfa-implementation.md`）も削除した
+  - HTTPモードのOAuth 2.1による認可は#420で扱う
+
+- 本体から使われなくなった`core`モジュール（`Runtime`・`HandlerRegistry`・
+  `PluginInfo`・`ExecutionContext`）を削除（#409）。#400の修正（#406）以降、
+  リクエストの処理は`McpServer`（`RequestDispatcher`）が受け持っている。
+  `Runtime`は受信ループが起動されず、`tools/call`の処理も無かった
+  - **ライブラリの変更**: 公開モジュール`mcp_rs::core`を削除した
+  - `core`だけを試していたテスト（`tests/unit/runtime_tests.rs`・
+    `handler_tests.rs`）と、「Core Runtime Module」を完成した機能として
+    案内していたドキュメントの記述も削除・修正した
+
 ## [0.18.4] - 2026-11-08
 
 ### Fixed
