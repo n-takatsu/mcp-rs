@@ -158,7 +158,7 @@ Before `initialize`, mcp-rs uses `2024-11-05`. In STDIO mode, the version applie
     },
     "serverInfo": {
       "name": "mcp-rs",
-      "version": "0.19.0"
+      "version": "0.19.1"
     }
   },
   "id": 1
@@ -468,7 +468,7 @@ Retrieves WordPress comments.
 
 ## Version Information
 
-- **Current Version**: v0.19.0
+- **Current Version**: v0.19.1
 - **Phase 1**: MySQL (Complete)
 - **Phase 2**: PostgreSQL (Complete)
 - **Last Updated**: 2025-11-23

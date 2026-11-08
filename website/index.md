@@ -102,7 +102,11 @@ See [WordPress Integration](docs/wordpress/) for the full list of tools.
 
 ## Current Status
 
-## ✅ Recently Completed (v0.19.0)
+## ✅ Recently Completed (v0.19.1)
+
+- **🏷️ Version and Help**: `mcp-rs --version` prints the installed version, and `mcp-rs --help` lists the options
+
+## ✅ v0.19.0
 
 - **🔐 OAuth 2.1 for HTTP Mode**: Accept access tokens from an external authorization server such as Keycloak, Okta, or Microsoft Entra ID, as described in the MCP specification. See [Security](docs/security/#httpwebsocket-oauth-21-authorization)
 - **🧰 Tools per API Key or Token**: Limit which tools each API key or OAuth scope may use, for example read-only tools only. See [Security](docs/security/#limiting-tools-per-api-key-or-token)

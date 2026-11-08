@@ -4,6 +4,26 @@
 
 Our project follows a detailed 0.01 increment versioning strategy to provide granular tracking of development progress and feature implementation.
 
+## 🏷️ v0.19.1 - バージョンの表示
+
+**Release Date:** 2026-11-08
+**Focus:** インストールされているバージョンを確かめられるようにする
+
+### ✅ `--version`・`--help`（#431）
+
+- `mcp-rs --version`（`-V`）でバージョン（`mcp-rs 0.19.1`）を、`--help`
+  （`-h`）で使い方を表示して終了する。サーバーは起動せず、設定ファイル・
+  ログにも触れない。以前は`--version`を無視してサーバーとして起動し、入力を
+  待ち続けていた
+- `--config=<path>`の書き方も受け付ける
+
+### ⚠️ 挙動の変更
+
+- 知らない引数と、パスの無い`--config`は、ログに警告を出す（これまでどおり
+  無視して起動する）。将来のバージョンでは、知らない引数があると起動しない
+  ようにする予定。Claude Desktop等の設定（`args`）に`--config <path>`以外の
+  引数を書いている場合は、警告が出ないか確かめる
+
 ## 🔐 v0.19.0 - HTTPモードの認可・ツールの権限・監査ログ
 
 **Release Date:** 2026-11-08
