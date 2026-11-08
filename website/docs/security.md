@@ -155,6 +155,32 @@ user_id = "user-1"
 
 Clients send the key as `Authorization: Bearer <key>` or `X-Api-Key: <key>`. Requests without a valid key get HTTP 401. Note that `${VAR}` expansion applies only to the WordPress `url`/`username`/`password` fields, so `key` must be written as the literal value.
 
+## Limiting Tools per API Key or Token
+
+In HTTP mode, each API key (and each OAuth scope) can be limited to some of the tools. Other tools are not shown in `tools/list`, and calls to them fail with a tool error ("Tool '...' is not allowed for this API key or access token"). Refused calls are recorded in the [audit log](#audit-log) (category `Authorization`, result `DENIED`, with the key name such as `api_key:reader` or the token's client such as `oauth:my-client`).
+
+```toml
+[[transport.http.api_keys]]
+key = "replace-with-a-long-random-key"
+name = "reader"
+user_id = "user-1"
+tools = ["@read_only"]            # omit to allow every tool
+
+[[transport.http.api_keys]]
+key = "replace-with-another-key"
+name = "files"
+user_id = "user-2"
+tools = ["fs__*", "get_posts"]
+```
+
+Each item in `tools` is one of:
+
+- A tool name, such as `get_posts`
+- A pattern with `*`, which matches any text. For example, `fs__*` matches every tool of the plugin `fs`, and `delete_*` matches every tool whose name starts with `delete_`
+- `@read_only`: tools marked as read-only (`readOnlyHint: true` in their annotations). The WordPress tools that only read (`get_*` and `wordpress_health_check`) are read-only. Plugin tools are read-only when the plugin says so in its own tool definitions, so check a plugin's tools before relying on this for it. Tools without annotations are not read-only
+
+A request is allowed a tool when any item matches it. `tools = []` allows no tools. Unknown presets (such as `@admin`) and empty items stop mcp-rs from starting. STDIO mode is not limited (it is a local pipe used by one person).
+
 ## HTTP/WebSocket OAuth 2.1 Authorization
 
 In HTTP mode, mcp-rs can accept OAuth 2.1 access tokens, as described in the MCP specification (version 2025-06-18, "Authorization"). mcp-rs is the resource server: users sign in at an external authorization server (for example Keycloak, Okta, or Microsoft Entra ID), which handles SSO, LDAP/Active Directory, and MFA. mcp-rs checks the access tokens that server issues.
@@ -176,7 +202,13 @@ resource = "https://mcp.example.com/mcp"         # the URL clients use to reach 
 - mcp-rs serves the Protected Resource Metadata (RFC 9728) without authentication at `/.well-known/oauth-protected-resource` plus the path of `resource` (for the example above, `/.well-known/oauth-protected-resource/mcp`), and also at `/.well-known/oauth-protected-resource`. It tells clients which authorization server to use
 - Requests without a valid token get HTTP 401 with `WWW-Authenticate: Bearer resource_metadata="..."` (and `error="invalid_token"` when a token was sent). Tokens without `required_scopes` get HTTP 403 with `error="insufficient_scope"`
 - API keys can be used together with OAuth: when `auth_enabled = true` too, a request is accepted with either a valid API key or a valid access token
-- Mapping scopes to individual tools is not supported yet (#52)
+- To limit tools by scope, map scopes to tools with `scope_tools`. The items are written as in [`tools`](#limiting-tools-per-api-key-or-token). A token can use the tools of all its scopes that are listed. When `scope_tools` is set, a token with none of the listed scopes can use no tools. When it is not set (the default), every valid token can use every tool
+
+```toml
+[transport.http.oauth.scope_tools]
+"mcp:read" = ["@read_only"]
+"mcp:write" = ["*"]
+```
 
 ## Audit Log
 

@@ -398,6 +398,9 @@ pub struct ApiKeyEntryConfig {
     pub name: String,
     /// Identifier for whoever this key was issued to.
     pub user_id: String,
+    /// Tools this key may use (#52). Omit to allow every tool.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<String>>,
 }
 
 impl From<ApiKeyEntryConfig> for crate::transport::http::ApiKeyEntry {
@@ -406,6 +409,7 @@ impl From<ApiKeyEntryConfig> for crate::transport::http::ApiKeyEntry {
             key: entry.key,
             name: entry.name,
             user_id: entry.user_id,
+            tools: entry.tools,
         }
     }
 }
@@ -1538,6 +1542,55 @@ start_timeout_seconds = 300
         assert_eq!(audit.file_path.as_deref(), Some("C:/logs/mcp-audit.log"));
         assert_eq!(audit.max_files, Some(3));
         assert_eq!(audit.enabled, None);
+    }
+
+    /// APIキーの`tools`と、OAuthの`scope_tools`（#52）を読む
+    #[test]
+    fn test_tool_permissions_are_read_from_toml() {
+        let config: McpConfig = toml::from_str(
+            r#"
+[transport]
+type = "http"
+[transport.http]
+auth_enabled = true
+
+[[transport.http.api_keys]]
+key = "k1"
+name = "reader"
+user_id = "u1"
+tools = ["@read_only", "fs__*"]
+
+[[transport.http.api_keys]]
+key = "k2"
+name = "admin"
+user_id = "u2"
+
+[transport.http.oauth]
+issuer = "https://auth.example.com/realms/mcp"
+resource = "https://mcp.example.com/mcp"
+
+[transport.http.oauth.scope_tools]
+"mcp:read" = ["@read_only"]
+"mcp:write" = ["*"]
+
+[server]
+[handlers]
+"#,
+        )
+        .unwrap();
+        let http = config.to_transport_config().http;
+        assert_eq!(
+            http.api_keys[0].tools,
+            Some(vec!["@read_only".to_string(), "fs__*".to_string()])
+        );
+        assert_eq!(http.api_keys[1].tools, None);
+        let oauth = http.oauth.unwrap();
+        assert_eq!(
+            oauth.scope_tools["mcp:read"],
+            vec!["@read_only".to_string()]
+        );
+        assert_eq!(oauth.scope_tools["mcp:write"], vec!["*".to_string()]);
+        assert!(oauth.validate().is_ok());
     }
 
     #[test]

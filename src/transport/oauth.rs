@@ -77,6 +77,12 @@ pub struct OAuthConfig {
     /// 有効期限の確認で許す時計のずれ（秒）。既定60
     #[serde(default = "default_leeway_seconds")]
     pub leeway_seconds: u64,
+    /// スコープ → 使えるツール（#52）。APIキーの`tools`と同じ書き方。
+    /// トークンは、持っているスコープに対応するツールをすべて使える。
+    /// 設定すると、対応するスコープを1つも持たないトークンは、どのツールも
+    /// 使えない。空（既定）なら、どのトークンもすべてのツールを使える
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub scope_tools: std::collections::BTreeMap<String, Vec<String>>,
 }
 
 impl OAuthConfig {
@@ -100,6 +106,10 @@ impl OAuthConfig {
         }
         if self.leeway_seconds > 600 {
             return Err("oauth.leeway_seconds must be 600 or less".to_string());
+        }
+        for (scope, tools) in &self.scope_tools {
+            crate::mcp::ToolPatternSet::parse(tools)
+                .map_err(|e| format!("oauth.scope_tools.\"{}\" is invalid: {}", scope, e))?;
         }
         Ok(())
     }
@@ -197,6 +207,8 @@ struct CachedKeys {
 /// 使い回す
 pub struct OAuthValidator {
     config: OAuthConfig,
+    /// `scope_tools`を読んだもの
+    scope_tools: Vec<(String, crate::mcp::ToolPatternSet)>,
     client: reqwest::Client,
     keys: RwLock<Option<CachedKeys>>,
     /// JWKSのURL（設定か、メタデータから見つけたもの）
@@ -221,7 +233,15 @@ impl OAuthValidator {
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|e| format!("failed to create the HTTP client for OAuth: {}", e))?;
+        let scope_tools = config
+            .scope_tools
+            .iter()
+            .map(|(scope, tools)| {
+                crate::mcp::ToolPatternSet::parse(tools).map(|set| (scope.clone(), set))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(Self {
+            scope_tools,
             jwks_uri: RwLock::new(config.jwks_uri.clone()),
             config,
             client,
@@ -232,6 +252,27 @@ impl OAuthValidator {
 
     pub fn config(&self) -> &OAuthConfig {
         &self.config
+    }
+
+    /// 検証できたトークンの呼び出し元（名前と使えるツール、#52）
+    pub fn caller_for(&self, info: &TokenInfo) -> crate::mcp::Caller {
+        let name = info
+            .client_id
+            .as_deref()
+            .or(info.subject.as_deref())
+            .unwrap_or("unknown");
+        let access = if self.scope_tools.is_empty() {
+            crate::mcp::ToolAccess::All
+        } else {
+            crate::mcp::ToolAccess::any_of(
+                self.scope_tools
+                    .iter()
+                    .filter(|(scope, _)| info.scopes.contains(scope))
+                    .map(|(_, set)| set.clone())
+                    .collect(),
+            )
+        };
+        crate::mcp::Caller::new(format!("oauth:{}", name), access)
     }
 
     /// 起動時に、公開鍵を取得しておく。失敗しても、最初のリクエストで
@@ -642,6 +683,7 @@ pub(crate) mod test_support {
                 jwks_uri: None,
                 required_scopes: Vec::new(),
                 leeway_seconds: 0,
+                scope_tools: Default::default(),
             }
         }
 
@@ -700,6 +742,7 @@ mod tests {
             jwks_uri: None,
             required_scopes: Vec::new(),
             leeway_seconds: 60,
+            scope_tools: Default::default(),
         };
         assert!(ok.validate().is_ok());
         // 認可サーバーへのHTTPは、ループバックだけ許す
@@ -745,6 +788,7 @@ mod tests {
             jwks_uri: None,
             required_scopes: vec!["mcp:tools".to_string()],
             leeway_seconds: 60,
+            scope_tools: Default::default(),
         };
         assert_eq!(
             config.resource_metadata_path(),
@@ -960,6 +1004,7 @@ mod tests {
             jwks_uri: None,
             required_scopes: Vec::new(),
             leeway_seconds: 60,
+            scope_tools: Default::default(),
         };
         let validator = OAuthValidator::new(config).unwrap();
         let err = validator.refresh_keys(true).await.unwrap_err();

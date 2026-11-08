@@ -135,8 +135,10 @@ async fn build_server(
 ) -> Result<mcp_rs::mcp::McpServer, Box<dyn std::error::Error>> {
     let mut server = mcp_rs::mcp::McpServer::new();
 
-    // 監査ログ（#416）。WordPressとプラグインで同じものを使う
+    // 監査ログ（#416）。WordPressとプラグインで同じものを使う。HTTPモードで
+    // 呼び出しを拒否したツール（#52）も記録する
     let audit_logger = Arc::new(mcp_rs::security::AuditLogger::new(config.audit_config()));
+    server.set_audit_logger(audit_logger.clone());
     match audit_logger.file_path() {
         Some(path) => match audit_logger.check_file_output().await {
             Ok(()) => info!("📝 監査ログ: {}", path),
