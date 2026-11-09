@@ -85,7 +85,7 @@ ignore = [
     #               The default build does not open SQLite: the SQLite engine is
     #               only in the optional "database" feature, and the database
     #               path comes from the operator's own config file
-    # - Remove this entry when sqlx allows libsqlite3-sys >= 0.39.0 (#444)
+    # - Remove this entry when sqlx allows libsqlite3-sys >= 0.39.0 (#449)
     "RUSTSEC-2026-0459",
 
 ]
