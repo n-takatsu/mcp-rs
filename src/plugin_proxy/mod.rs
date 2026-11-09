@@ -107,20 +107,18 @@ fn is_docker_cli_env_var(key: &str) -> bool {
 }
 
 /// プラグインに渡す環境変数（設定の`env`の`${VAR}`を展開したもの）。
-/// 参照先が見つからない値は渡さない（APIキーの代わりに"[ERROR:...]"
-/// という文字列を渡さないため）。名前順。
+/// 参照先が見つからない値・`${`の書き方がおかしい値は渡さない（#454）。
+/// 名前順。
 fn plugin_env(config: &PluginConfig) -> Vec<(String, String)> {
     let mut env = Vec::new();
     for (key, value) in &config.env {
-        let expanded = McpConfig::expand_env_vars(value);
-        if expanded.contains("[ERROR:") {
-            warn!(
-                "Plugin '{}': environment variable '{}' is not passed because a variable it refers to is not set",
-                config.name, key
-            );
-            continue;
+        match McpConfig::expand_env_vars(value) {
+            Ok(expanded) => env.push((key.clone(), expanded)),
+            Err(e) => warn!(
+                "Plugin '{}': environment variable '{}' is not passed ({})",
+                config.name, key, e
+            ),
         }
-        env.push((key.clone(), expanded));
     }
     env.sort();
     env

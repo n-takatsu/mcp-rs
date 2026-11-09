@@ -95,15 +95,19 @@ Production Ready: TRUE ✅
 
 ## Secure Environment Variables
 
+`url`, `username` and `password` under `[handlers.wordpress]` can refer to environment variables of the mcp-rs process with `${VAR_NAME}`:
+
 ```toml
 [handlers.wordpress]
-
-## Secure variable expansion
-
 url = "${WORDPRESS_URL}"
 username = "${WORDPRESS_USERNAME}"
 password = "${WORDPRESS_PASSWORD}"
+enabled = true
 ```
+
+- If WordPress is enabled and a variable is not set, or `${` has no matching `}`, mcp-rs does not start. The error names the setting and the variable (for example `handlers.wordpress.password: environment variable 'WORDPRESS_PASSWORD' is not set`), never the value (v0.19.2 and earlier started anyway, with the text `[ERROR:WORDPRESS_PASSWORD]` as the password)
+- The values are never written to the log
+- A value is used as is: a `${` inside the value of the variable is not expanded again
 
 ## Encrypted WordPress Credentials
 
