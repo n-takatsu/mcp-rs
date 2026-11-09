@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- 本体（`mcp-rs`バイナリ）と、データベースのハンドラー（`database`機能）の
+  どちらからも使われていないモジュールを削除した（#448、約6.1万行）。
+  動作は変わらない
+  - 最上位: `ai`・`analytics`・`canary_deployment`・`cli`・`llm`・
+    `mcp_server`・`monitoring`・`operator`（`mcp-operator`バイナリと
+    `Dockerfile.operator`を含む）・`optimization`・`policy`・
+    `policy_application`・`policy_config`・`policy_validation`・
+    `policy_watcher`・`protocol`・`rollback`・`server`・`session`・
+    `threat_intelligence`・`dashboard`
+  - `security`: `audit`・`image_scanner`・`mtls`・`secure_server`・
+    `sql_injection_protection`・`tls_enforcement`・`validation`・`waf`・
+    `xss_protection`・`ids::ml`。HTTPモードのmTLSは`transport::http`に
+    あり、変わらない
+  - `transport`: `dynamic`・`factory`、`websocket`の`balancer`・
+    `compression`・`failover`・`llm_bridge`・`metrics`・`rate_limit`・
+    `transfer`
+  - `zero_trust`: `continuous_auth`・`device_verifier`・`network_analyzer`
+    （`micro_segmentation`はデータベースのハンドラーが使うので残した）
+  - どこからも読み込まれていなかった`src/bin/performance_test_execution_analysis.rs`
+    （mcp-rsを使わない単独のプログラム）と
+    `handlers/database/integrated_availability.rs`
+  - これらを使っていたテスト・examples・ベンチ・スクリプト
+  - **ライブラリの変更**: 上のモジュールと、`mcp_rs::McpServer`・
+    `mcp_rs::McpProtocol`・`mcp_rs::Session`等（`session`の再公開）を
+    削除した。MCPのサーバーは`mcp_rs::mcp::McpServer`を使う
+
 ### Fixed
 
 - 設定ファイルの`${VAR}`（環境変数）の展開の問題を直した（#454）

@@ -241,11 +241,6 @@ full = [
     "ml-anomaly-detection"
 ]
 
-# Kubernetes operator binary (only built with kubernetes-operator feature)
-[[bin]]
-name = "mcp-operator"
-path = "src/bin/mcp-operator.rs"
-required-features = ["kubernetes-operator"]
 
 # Examples temporarily disabled for CI stability
 # Enable locally with: cargo build --examples
@@ -344,22 +339,3 @@ required-features = ["database"]
 [[example]]
 name = "column_encryption_demo"
 required-features = ["database"]
-
-[[example]]
-name = "mitre_attack_demo"
-
-# Threat intelligence examples
-[[example]]
-name = "abuseipdb_demo"
-
-[[example]]
-name = "cve_demo"
-
-# ML anomaly detection example requires the ml-anomaly-detection feature
-[[example]]
-name = "ml_anomaly_demo"
-required-features = ["ml-anomaly-detection"]
-
-[[example]]
-name = "llm_integration_demo"
-required-features = ["llm-integration"]
