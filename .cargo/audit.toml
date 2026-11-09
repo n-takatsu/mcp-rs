@@ -76,4 +76,16 @@ ignore = [
     #               microarchitectural timing of our JWT signing/verification
     "RUSTSEC-2026-0387",
 
+    # RUSTSEC-2026-0459: libsqlite3-sys bundles SQLite < 3.54.0 (CVE-2026-119375)
+    # - Affects: libsqlite3-sys 0.30.1 (via sqlx-sqlite 0.8.6, the "sqlite" feature of sqlx)
+    # - Status: No fixed upgrade is available. The fix is libsqlite3-sys >= 0.39.0,
+    #           but sqlx-sqlite 0.8.6 and 0.9.0 (latest) both require < 0.38.0
+    # - Mitigation: Only a process that opens a database file and its -wal file
+    #               written by a less trusted party is exposed (local attack).
+    #               The default build does not open SQLite: the SQLite engine is
+    #               only in the optional "database" feature, and the database
+    #               path comes from the operator's own config file
+    # - Remove this entry when sqlx allows libsqlite3-sys >= 0.39.0 (#444)
+    "RUSTSEC-2026-0459",
+
 ]
