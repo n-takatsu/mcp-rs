@@ -82,6 +82,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `C:\Program Files\MCP-rs`等、実行ファイルのフォルダに書き込めない場所に
+  インストールした場合、ログの出力先がユーザーのフォルダ
+  （`%USERPROFILE%\.mcp-rs\logs`等）になるのを、フォールバックとして
+  扱わないようにした（#441）。以前は起動のたびに、`mcp_rs_status`と
+  起動時の表示にフォールバックの理由が出ていた。ログの出力先は変わらない。
+  ログの出力先の決まり方と、ファイル名の日付がUTCであることを、README・
+  websiteに書いた
+
 - Production Deployment（`deploy.yml`）を、同時には1つだけ実行するようにした
   （#445）。`main`へのpushとタグのpushが続いても、後の実行は前の実行が
   終わるのを待つ。共有のイメージのタグ（`main`・`latest`・`0.19`等）を
