@@ -16,6 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- openssl 0.10.75の脆弱性（RUSTSEC-2026-0463、`aes::unwrap_key`の範囲外
+  書き込み）を、0.10.82への更新で解消（#455）。opensslは、Linuxのビルドで
+  `native-tls`から使われている。mcp-rsは`aes::unwrap_key`を直接使っていない
 - RUSTSEC-2026-0459（`libsqlite3-sys` 0.30.1に同梱のSQLite、
   CVE-2026-119375）を、`.cargo/audit.toml`で理由を付けて無視（#444）。
   修正版（0.39.0以降）を使えるsqlxが、まだ無い（0.9.0も0.38.0未満）。
