@@ -19,79 +19,16 @@ pub mod config;
 pub mod error;
 pub mod handlers;
 pub mod logging;
-// pub mod http_server; // 削除: Transport統合により不要
-pub mod canary_deployment;
 pub mod mcp;
-pub mod mcp_server;
-pub mod server;
-pub mod session;
-pub mod threat_intelligence;
-// #[cfg(feature = "tui")]
-// pub mod dashboard;
 pub mod plugin_proxy;
-pub mod policy;
-pub mod policy_application;
-pub mod policy_config;
-pub mod policy_validation;
-pub mod policy_watcher;
-pub mod protocol;
-pub mod rollback;
 pub mod security;
 pub mod transport;
 pub mod types;
 
-// AI Integration module
-pub mod ai;
-
-// LLM Integration module
-#[cfg(feature = "llm-integration")]
-pub mod llm;
-
-// Kubernetes Operator module
-#[cfg(feature = "kubernetes-operator")]
-pub mod operator;
-
-// CLI module
-pub mod cli;
-
-// Monitoring module
-pub mod monitoring;
-
-// Analytics module
-pub mod analytics;
-
-// Optimization module
-pub mod optimization;
-
-// Zero Trust module
+// Zero Trust（データベースのハンドラーのマイクロセグメンテーションが使う）
 pub mod zero_trust;
 
 pub use error::{Error, Result, SessionError};
-pub use mcp_server::McpServer;
-pub use protocol::McpProtocol;
-
-// Session Management System exports
-pub use session::{
-    MemorySessionStorage,
-    SecurityConfig,
-    SecurityEvent,
-    SecurityEventType,
-    SecuritySeverity,
-    Session,
-    SessionFilter,
-    SessionId,
-    SessionManager,
-    SessionMiddleware,
-    SessionSecurityMiddleware,
-    SessionState,
-    SessionStorage,
-    // Real-time editing system
-    SessionWebSocketHandler,
-    WebSocketHandlerConfig,
-};
-
-// WebSocket Server exports moved to examples
-// pub use server::{...};
 
 #[cfg(test)]
 mod tests {
