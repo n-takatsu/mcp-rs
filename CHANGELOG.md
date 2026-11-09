@@ -13,6 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   （#445）。`main`へのpushとタグのpushが続いても、後の実行は前の実行が
   終わるのを待つ。共有のイメージのタグ（`main`・`latest`・`0.19`等）を
   並行して上書きしない
+- `mcp-rs`バイナリ（`src/main.rs`）が、ライブラリと同じモジュール
+  （`config`・`handlers`・`security`・`transport`等）を`mod`で読み込み直して
+  いたのをやめた（#448）。バイナリはライブラリ（`mcp_rs::`）だけを使う。
+  同じコードを2回コンパイルしなくなり、ビルドが速くなる。動作は変わらない
 
 ### Security
 
