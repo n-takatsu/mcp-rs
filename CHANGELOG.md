@@ -34,8 +34,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **ライブラリの変更**: 上のモジュールと、`mcp_rs::McpServer`・
     `mcp_rs::McpProtocol`・`mcp_rs::Session`等（`session`の再公開）を
     削除した。MCPのサーバーは`mcp_rs::mcp::McpServer`を使う
+- 使わなくなった機能（features）と依存関係を削除した（#448）。依存する
+  クレートは725個から570個に減った
+  - 機能: `session-management`・`security`・`websocket`・`mcp-protocol`・
+    `metrics`・`testing`・`simd`・`kubernetes-operator`・
+    `ml-anomaly-detection`・`llm-integration`・`full`。既定の機能（`default`）
+    は空にした（どれもコードから参照されていなかった）。`--features`で
+    これらを指定している場合は、外す
+  - 依存関係: `async-openai`・`kube`系・`smartcore`等の機械学習・
+    `prometheus`・`metrics`・圧縮（`flate2`・`brotli`・`zstd`）・
+    `tokio-postgres`・`clap`・`governor`等、コードから使われていない
+    もの
+  - WebSocketのクライアント（`wss://`）のTLSを、native-tls（Linuxでは
+    OpenSSL）からrustlsに変えた。サーバー側と同じTLSになり、OpenSSLに
+    依存しなくなった
+  - `.cargo/audit.toml`から、該当する依存関係が無くなった無視
+    （RUSTSEC-2025-0012・RUSTSEC-2024-0384・RUSTSEC-2024-0436・
+    RUSTSEC-2026-0173）を外した
+- 削除した機能のドキュメント（脅威インテリジェンス・LLM・機械学習・監視・
+  セッション・Zero Trust・WAF・ポリシー・MFA・Kubernetes operator等）と、
+  operatorのHelmチャート（`charts/mcp-operator`）・CRD・マニフェスト
+  （`k8s/crds`・`k8s/manifests`）、ポリシーのサンプル（`demo-policies`）を
+  削除した。README・websiteの、削除した機能の記述を直した
 
 ### Fixed
+
+- 既定の機能でベンチをビルドすると、`benches/postgres_jsonb_benchmarks.rs`が
+  コンパイルできなかった（#448）
 
 - 設定ファイルの`${VAR}`（環境変数）の展開の問題を直した（#454）
   - 展開した値の先頭20バイトをdebugのログに出していた。プラグインの`env`

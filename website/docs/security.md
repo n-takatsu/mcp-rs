@@ -38,13 +38,6 @@ MCP-RS implements comprehensive security measures designed for production enviro
 
 ## ✅ Layer 4: Input Validation & Attack Prevention
 
-- **SQL Injection Protection**: 11 attack pattern detection algorithms
-  - Union-based injection detection
-  - Boolean-based blind injection prevention
-  - Time-based injection monitoring
-  - Error-based injection blocking
-  - Stacked query prevention
-- **Advanced Input Validation**: Custom rule engine with real-time validation
 - **HTML Sanitization**: Safe HTML processing with whitelist filtering
 - **Media Upload Validation**: `upload_media` checks the MIME type against an allowlist, requires the filename extension to match it, verifies the file content by its magic number, and enforces a size limit (see [WordPress Integration](../wordpress/#supported-file-types))
 - **Local File Upload Restrictions**: `upload_media` reads local files (`file_path`) only from folders listed in `upload_allowed_dirs`, and is disabled by default. Paths are resolved before the check, so `..` and symbolic links cannot escape those folders
@@ -57,10 +50,6 @@ MCP-RS implements comprehensive security measures designed for production enviro
 - **Thread Safety**: Async-safe operations with proper synchronization
 - **Audit Logging**: Every WordPress tool call that changes the site (`create_*`, `update_*`, `delete_*`, `upload_*`, `set_*`) is recorded with its result, including calls rejected by rate limiting or input validation. Plugin tool calls are recorded too. Entries are appended as JSON lines to the file set in [`[audit]`](#audit-log)
 
-## 🔄 In Development
-
-- **XSS Attack Prevention**: DOM-based XSS protection and CSP implementation
-
 ## 🧪 Security Testing
 
 ## Test Coverage: **171 Test Cases** ✅
@@ -70,7 +59,6 @@ Our comprehensive security test suite covers:
 - ✅ PBKDF2 key derivation security
 - ✅ Token bucket rate limiting
 - ✅ TLS 1.2+ enforcement
-- ✅ SQL injection protection (11 attack patterns)
 - ✅ Input validation and sanitization
 - ✅ Zero-panic operations
 - ✅ WordPress authentication security
@@ -85,7 +73,6 @@ Our comprehensive security test suite covers:
 ✅ Input Validation: COMPLETE
 ✅ Application Security: COMPLETE
 ✅ Audit Logging: COMPLETE
-🔄 XSS Prevention: IN PROGRESS
 
 Security Architecture: 5-Layer Defense ✅
 Production Ready: TRUE ✅
@@ -292,12 +279,11 @@ Our enterprise-grade 5-layer security approach provides comprehensive protection
 1. **Cryptographic Layer**: AES-GCM-256 encryption with PBKDF2 key derivation
 2. **Network Layer**: TLS 1.2+ enforcement and secure transport
 3. **Access Control Layer**: Token bucket rate limiting and client isolation
-4. **Input Validation Layer**: SQL injection protection and HTML sanitization
+4. **Input Validation Layer**: Media upload validation and HTML sanitization
 5. **Application Layer**: Zero-panic operations and memory safety
 
 ## Advanced Security Features
 
-- **Real-time Threat Detection**: 11-pattern SQL injection monitoring
 - **Performance Security**: Sub-millisecond security processing
 - **Zero-Copy Security**: Secure secret handling without memory exposure
 - **Compliance Ready**: Enterprise security standards compliance

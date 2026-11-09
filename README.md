@@ -33,7 +33,7 @@ Want to contribute to a high-quality Rust codebase? Join our 205+ test, zero-war
 
 ### Security Teams 🔒
 
-Need WordPress security automation? 8-layer enterprise security architecture with WAF, SQL injection protection, XSS prevention, and comprehensive audit logging.
+Exposing mcp-rs over HTTP? Use API keys or OAuth 2.1 tokens, limit the tools each caller can use, and keep an audit log of every tool call.
 
 ## 🚀 Key Features
 
@@ -45,23 +45,6 @@ Need WordPress security automation? 8-layer enterprise security architecture wit
 - **Type-Safe Configuration**: TOML-based configuration with environment variable override
 - **Production-Ready Error Handling**: Comprehensive error types with structured logging
 - **Async/Await**: Built on `tokio` for high-performance async operations
-
-## **Kubernetes Integration (Phase 2)** ⭐ NEW
-
-- **Kubernetes Operator**: Full-featured operator built with `kube-rs` for managing MCP servers
-- **Custom Resource Definitions (CRD)**: MCPServer and SecurityPolicy resources
-- **Helm Charts**: Easy installation and management with Helm 3.0+
-- **Declarative Management**: GitOps-ready resource definitions
-- **Automatic Scaling**: HPA support with CPU/memory metrics
-- **Multi-Tenancy**: Namespace isolation with RBAC
-
-## **WebSocket Security (Phase 3)** ⭐ NEW
-
-- **Message-Level Rate Limiting**: Per-IP enforcement with JSON-RPC error responses
-- **Session Validation**: Auto-extend sessions on each message, support X-Session-ID header and cookies
-- **Authentication Timeout**: Enforce authentication within configurable time limit (default: 30s)
-- **Origin Validation**: CSRF protection with whitelist/regex patterns
-- **Audit Logging**: Track rate limit violations, auth failures, and timeout events
 
 ## **WordPress Integration (32 Tools)**
 
@@ -77,19 +60,19 @@ Need WordPress security automation? 8-layer enterprise security architecture wit
 
 The `examples/wordpress_site_builder_demo.rs` example builds and updates the public WordPress demo site at [redring.jp](https://redring.jp/). It is a real-world showcase of how mcp-rs can bootstrap a site and organize content in production.
 
-## **Enterprise Security (8-Layer Architecture)**
+## **Security**
 
-- **WAF (Web Application Firewall)**: CORS, CSP, request validation, and security headers
-- **RBAC (Role-Based Access Control)**: Multi-level access control with role hierarchy, time-based restrictions, IP filtering, and data masking
-- **Data Masking Engine** ⭐ NEW: Advanced masking with 6 types (FullMask, PartialMask, HashMask, FormatPreserving, TokenMask, Custom), batch processing (182μs/5 records), result cache (39% speedup), and GDPR/CCPA compliance
-- **AES-GCM-256 Encryption**: Military-grade encryption with PBKDF2 key derivation
-- **SQL Injection Protection**: Real-time detection of 11 attack patterns
-- **XSS Prevention**: Advanced protection against 14 XSS attack vectors
-- **Rate Limiting**: Token bucket algorithm with DDoS protection
-- **TLS Enforcement**: TLS 1.2+ with certificate validation
-- **Audit Logging**: Comprehensive security event tracking
+- **Encrypted Credentials**: The WordPress Application Password can be stored encrypted with AES-GCM-256 (PBKDF2 key derivation), or read from an environment variable
+- **HTTP Mode Authentication**: API keys, or OAuth 2.1 access tokens (JWT) issued by an external authorization server
+- **Per-Caller Tool Limits**: Allow each API key or token only the tools it needs (for example `@read_only`)
+- **TLS/mTLS**: HTTPS with a minimum TLS version, and optional client certificates
+- **Network Policy, Anti-Replay and Intrusion Detection** for the HTTP/WebSocket listener
+- **Rate Limiting** of tool calls
+- **Audit Logging**: Who called which tool, and the result
 
 ## **Database Integration (Phase 1: MySQL)**
+
+> **Note**: The database handler is library code behind the optional `database` feature. It is not connected to the `mcp-rs` binary yet, so MCP clients cannot use it ([#453](https://github.com/n-takatsu/mcp-rs/issues/453)).
 
 - **Parameterized Queries**: SQL injection prevention through parameter binding
 - **Transaction Management**: Full ACID compliance with savepoint support
@@ -230,28 +213,16 @@ Notes:
 - `mtls_enabled = true` requires `mtls_ca_cert_path`
 - Clients without a valid certificate signed by the configured CA are rejected at TLS handshake
 
-### WebSocket Configuration
+### WebSocket
+
+WebSocket is not a separate transport. In HTTP mode, set `enable_websocket_upgrade = true` to also accept MCP requests on `/ws`:
 
 ```toml
 [transport]
-transport_type = "websocket"
-```
+transport_type = "http"
 
-> **Note**: WebSocket security options (session management, rate limiting, origin validation) are configured programmatically via the WebSocket handler API. They are not part of the `mcp-config.toml` schema.
-
-📖 **For detailed WebSocket security features, see [WebSocket Security Guide](./docs/websocket-security.md)**
-
-### Examples
-
-- [Session Management Demo](./examples/websocket_session_demo.rs)
-- [Rate Limiting Demo](./examples/websocket_rate_limit_demo.rs)
-
-Run examples:
-
-```bash
-cargo run --example websocket_jwt_demo
-cargo run --example websocket_session_demo
-cargo run --example websocket_rate_limit_demo
+[transport.http]
+enable_websocket_upgrade = true
 ```
 
 ## 🏗️ Architecture
@@ -266,10 +237,10 @@ cargo run --example websocket_rate_limit_demo
                                       ▼
                            ┌─────────────────────┐
                            │   Security Layer    │
-                           │ • SQL Injection     │
-                           │ • XSS Protection    │
+                           │ • Authentication    │
+                           │ • Tool Limits       │
                            │ • Rate Limiting     │
-                           │ • Encryption        │
+                           │ • Audit Log         │
                            └─────────────────────┘
 ```
 
@@ -284,11 +255,10 @@ cargo run --example websocket_rate_limit_demo
 - [🔄 Claude Desktop Integration](./project-docs/CLAUDE_DESKTOP_INTEGRATION.md)
 - [🔄 Claude Code Integration](./project-docs/CLAUDE_CODE_INTEGRATION.md)
 - [🐳 Docker Guide](./docs/DOCKER_GUIDE.md) ⭐ NEW
-- [☸️ Kubernetes Operator Guide](./docs/KUBERNETES_GUIDE.md) ⭐ NEW
 
 ## 🔐 RBAC Quick Start
 
-mcp-rs includes a comprehensive Role-Based Access Control (RBAC) system for fine-grained security.
+The database handler includes a Role-Based Access Control (RBAC) system for fine-grained security. Like the rest of the database handler, it is not connected to the `mcp-rs` binary yet ([#453](https://github.com/n-takatsu/mcp-rs/issues/453)).
 
 ### Key Features
 

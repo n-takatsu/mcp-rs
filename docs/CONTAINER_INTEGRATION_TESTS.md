@@ -379,7 +379,6 @@ docker system prune -a --volumes
 ## 関連ドキュメント
 
 - [Docker Guide](./docs/DOCKER_GUIDE.md)
-- [Kubernetes Guide](./docs/KUBERNETES_GUIDE.md)
 - [Production Deployment Guide](./docs/PRODUCTION_DEPLOYMENT_GUIDE.md)
 - [Main README](./README.md)
 
