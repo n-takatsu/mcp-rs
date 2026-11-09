@@ -18,6 +18,15 @@ on:
           - staging
           - production
 
+# 1回の実行に1時間半ほどかかり、mainへのpushとタグのpushの両方で動く。
+# 並行して共有のイメージのタグ（main・latest・0.19・0等）を上書きしない
+# よう、同時には1つだけ実行する。実行中のものは取り消さず、後の実行は
+# 終わるのを待つ（#445）。GitHub Actionsの仕様で、待てるのは1件だけ。
+# 待っている実行があるときに次の実行が来ると、待っていたほうは取り消される
+concurrency:
+  group: production-deployment
+  cancel-in-progress: false
+
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}

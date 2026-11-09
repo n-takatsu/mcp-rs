@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Production Deployment（`deploy.yml`）を、同時には1つだけ実行するようにした
+  （#445）。`main`へのpushとタグのpushが続いても、後の実行は前の実行が
+  終わるのを待つ。共有のイメージのタグ（`main`・`latest`・`0.19`等）を
+  並行して上書きしない
+
 ### Security
 
 - RUSTSEC-2026-0459（`libsqlite3-sys` 0.30.1に同梱のSQLite、
