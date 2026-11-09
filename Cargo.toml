@@ -1,30 +1,27 @@
 [package]
 name = "mcp-rs"
-version = "0.19.2"
+version = "0.20.0"
 edition = "2021"
 authors = ["n-takatsu"]
-description = "Rust implementation of the Model Context Protocol (MCP) for AI-agent integration with Canary Deployment System"
+description = "Rust implementation of the Model Context Protocol (MCP) server for WordPress and other tools"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/n-takatsu/mcp-rs"
 
 [dependencies]
 # Core async runtime
 tokio = { version = "1.48", features = ["full"] }
-tokio-util = "0.7.17"
 futures = "0.3.31"
 
 # Web framework and HTTP
 axum = { version = "0.8", features = ["ws"] }
 tower = "0.5.2"
 tower-http = { version = "0.6", features = ["cors", "trace"] }
-hyper = { version = "1.7", features = ["full"] }
 hyper-util = { version = "0.1", features = ["server", "service", "http1", "http2", "tokio"] }
 http = "1.0"
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0.145"
-serde_yaml_ng = "0.10"
 toml = "0.9.8"
 
 # Database and storage (PostgreSQL and SQLite only - MySQL via mysql_async)
@@ -36,8 +33,6 @@ sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "sqlit
 sqlparser = { version = "0.62", optional = true, features = ["visitor"] }
 # MySQL support via secure alternative (RSA vulnerability-free)
 mysql_async = { version = "0.36", optional = true }
-# PostgreSQL native driver for advanced features
-tokio-postgres = { version = "0.7", features = ["with-chrono-0_4", "with-uuid-1", "with-serde_json-1"], optional = true }
 redis = { version = "0.26", features = ["tokio-comp", "connection-manager"], optional = true }
 # MongoDB support
 mongodb = { version = "3.6", optional = true }
@@ -53,10 +48,6 @@ uuid = { version = "1.18", features = ["v4", "serde"] }
 rand = "0.8"
 num_cpus = "1.16"
 
-# Testing dependencies
-log = "0.4"
-env_logger = "0.11"
-
 # Cryptography and security
 ring = "0.17.14"
 argon2 = { version = "0.5", features = ["std"] }
@@ -64,26 +55,17 @@ base64 = "0.22.1"
 secrecy = { version = "0.10.3", features = ["serde"] }
 zeroize = "1.8.2"
 aes-gcm = "0.10"
-chacha20poly1305 = "0.10"
 pbkdf2 = "0.12"
 sha2 = "0.10"
-ed25519-dalek = "2.1"
-x25519-dalek = { version = "2.0", features = ["static_secrets"] }
-# ML-KEM (FIPS 203, formerly Kyber) for hybrid post-quantum key exchange
-ml-kem = { version = "0.3.2", features = ["getrandom"] }
 
 # mTLS and Certificate Management
 rcgen = { version = "0.13", features = ["pem", "x509-parser"] }
 rustls = { version = "0.23", features = ["std"] }
-rustls-webpki = { version = "0.103.12", features = ["std"] }
 rustls-pemfile = "2.2"
 tokio-rustls = "0.26"
-x509-parser = "0.16"
-pem = "3.0"
 
 # Network and IP handling
 ipnet = "2.11"
-hickory-resolver = { version = "0.26.1", optional = true }
 
 # Logging and tracing
 tracing = "0.1.41"
@@ -92,7 +74,6 @@ tracing-appender = "0.2.3"
 
 # Configuration
 config = "0.15.18"
-clap = { version = "4.5.51", features = ["derive", "env", "cargo"] }
 
 # Error handling
 thiserror = "2.0.17"
@@ -107,42 +88,12 @@ regex = "1.12"
 url = "2.5.7"
 urlencoding = "2.1"
 ammonia = "4.1.3"
-fancy-regex = "0.16.2"
-
-# Rate limiting
-governor = "0.10.1"
-
-# Machine Learning and Statistics
-smartcore = { version = "0.3", optional = true, default-features = false }
-ndarray = { version = "0.15", optional = true }
-statrs = { version = "0.17", optional = true }
-
-# LLM Integration
-async-openai = { version = "0.25", optional = true }
-tiktoken-rs = { version = "0.6", optional = true }
-eventsource-stream = { version = "0.2", optional = true }
-async-stream = { version = "0.3", optional = true }
-
-# Metrics and monitoring
-prometheus = { version = "0.14", optional = true }
-metrics = { version = "0.24.2", optional = true }
-
-# Compression
-flate2 = "1.0"
-brotli = "7.0"
-zstd = "0.13"
-
-# Kubernetes operator support
-kube = { version = "0.99", features = ["runtime", "derive"], optional = true }
-k8s-openapi = { version = "0.24", features = ["v1_31"], optional = true }
-kube-runtime = { version = "0.99", optional = true }
-schemars = { version = "0.8", optional = true }
 
 # WebSocket
 tungstenite = "0.28"
-tokio-tungstenite = { version = "0.28", features = ["native-tls"] }
-tokio-native-tls = "0.3"
-native-tls = "0.2"
+# wss:// client uses rustls (the same TLS stack as the HTTP/WebSocket server
+# side) instead of native-tls, so OpenSSL is not needed on Linux (#448)
+tokio-tungstenite = { version = "0.28", features = ["rustls-tls-webpki-roots"] }
 futures-util = "0.3"
 
 # File system monitoring
@@ -153,9 +104,6 @@ crossterm = "0.27"
 # ratatui = { version = "0.29", optional = true, default-features = false }
 # tui-input = { version = "0.8", optional = true }
 
-# Testing utilities
-mockall = { version = "0.13.1", optional = true }
-
 # HSM integration via PKCS#11 (dynamically loads the provider's shared
 # library at runtime, e.g. SoftHSM2 or a real HSM's vendor-supplied module)
 cryptoki = { version = "0.12", optional = true }
@@ -164,14 +112,9 @@ jsonwebtoken = { version = "10.2", default-features = false, features = ["rust_c
 # Testing framework
 tokio-test = "0.4.4"
 tempfile = "3.23"
-# Adds rustls-based wss:// client support (unioned with the "native-tls"
-# feature already enabled for production use in [dependencies]) so tests can
-# connect over TLS to a self-signed cert built with rustls, the same TLS
-# stack the server side (src/transport/http.rs) already uses.
-tokio-tungstenite = { version = "0.28", features = ["rustls-tls-webpki-roots"] }
-
-# Integration test dependencies
-tokio-postgres = { version = "0.7", features = ["with-chrono-0_4", "with-uuid-1"] }
+# Used by tests/database
+log = "0.4"
+env_logger = "0.11"
 
 # Benchmarking
 criterion = { version = "0.5", features = ["html_reports", "async_tokio"] }
@@ -182,119 +125,25 @@ criterion = { version = "0.5", features = ["html_reports", "async_tokio"] }
 # rand = "0.8.5"
 
 [features]
-default = ["session-management", "security", "websocket", "prometheus"]
+default = []
 
-# Core features
-session-management = []
-security = []
-websocket = []
-mcp-protocol = []
+# Database handler (not connected to the mcp-rs binary yet, #453)
 database = ["mysql-backend", "postgresql-backend", "dep:sqlparser"]
-
-# MFA (Multi-Factor Authentication)
 
 # Storage backends
 redis-backend = ["redis"]
 mysql-backend = ["mysql_async"]
-postgresql-backend = ["tokio-postgres"]
+postgresql-backend = []
 sqlite = []
 mongodb-backend = ["mongodb"]
-
-# TUI Dashboard (temporarily disabled)
-# tui = ["ratatui", "crossterm", "tui-input"]
-
-# Monitoring and metrics
-metrics = ["prometheus", "dep:metrics"]
 
 # Hardware Security Module integration via PKCS#11 (e.g. SoftHSM2 or a
 # vendor-supplied PKCS#11 module for a real HSM/cloud HSM)
 hsm = ["dep:cryptoki"]
 
-# Development and testing
-testing = ["mockall"]
+# No code checks this feature; kept because CI and scripts/run-integration-tests.*
+# pass --features integration-tests
 integration-tests = []
-
-# Performance optimizations
-simd = []
-
-# Kubernetes operator
-kubernetes-operator = ["kube", "k8s-openapi", "kube-runtime", "schemars"]
-
-# Machine Learning anomaly detection
-ml-anomaly-detection = ["smartcore", "ndarray", "statrs"]
-
-# LLM Integration
-llm-integration = ["async-openai", "tiktoken-rs", "eventsource-stream", "async-stream"]
-
-# Full feature set (MySQL restored via secure mysql_async)
-full = [
-    "session-management",
-    "security",
-    "websocket",
-    "mcp-protocol",
-    "redis-backend",
-    "mysql-backend",
-    "postgresql-backend",
-    "sqlite",
-    "metrics",
-    "testing",
-    "ml-anomaly-detection"
-]
-
-# Kubernetes operator binary (only built with kubernetes-operator feature)
-[[bin]]
-name = "mcp-operator"
-path = "src/bin/mcp-operator.rs"
-required-features = ["kubernetes-operator"]
-
-# Examples temporarily disabled for CI stability
-# Enable locally with: cargo build --examples
-# [[example]]
-# name = "mysql_engine_test"
-# required-features = ["database", "mysql-backend"]
-
-# WordPress examples (for demonstration and learning)
-# [[example]]
-# name = "wordpress_categories_tags_test"
-
-# [[example]]
-# name = "wordpress_blog_service_demo"
-
-# [[example]]
-# name = "wordpress_api_test"
-
-# [[example]]
-# name = "wordpress_advanced_post_test"
-
-# [[example]]
-# name = "wordpress_embed_test"
-
-# [[example]]
-# name = "wordpress_media_crud_test"
-
-# [[example]]
-# name = "wordpress_health_check"
-
-# [[example]]
-# name = "wordpress_posts_with_taxonomy_test"
-
-# [[example]]
-# name = "wordpress_post_crud_test"
-
-# [[example]]
-# name = "wordpress_security_diagnosis"
-
-# [[example]]
-# name = "wordpress_security_integration"
-
-# Temporarily disabled due to API changes
-# [[bench]]
-# name = "session_benchmarks"
-# harness = false
-
-# Disable integration tests for CI stability
-
-
 
 [profile.dev]
 opt-level = 0
@@ -326,11 +175,6 @@ opt-level = 3
 debug = false
 lto = true
 
-# Security: Exclude resolved dependencies
-[package.metadata.audit.ignore]
-"RUSTSEC-2023-0071" = "RSA crate from sqlx-mysql (unused) - MySQL support provided by secure mysql_async v0.36.1"
-"RUSTSEC-2024-0436" = "paste crate - unmaintained but required by ratatui (currently disabled)"
-
 # Data masking examples require the database feature
 [[example]]
 name = "data_masking_demo"
@@ -344,22 +188,3 @@ required-features = ["database"]
 [[example]]
 name = "column_encryption_demo"
 required-features = ["database"]
-
-[[example]]
-name = "mitre_attack_demo"
-
-# Threat intelligence examples
-[[example]]
-name = "abuseipdb_demo"
-
-[[example]]
-name = "cve_demo"
-
-# ML anomaly detection example requires the ml-anomaly-detection feature
-[[example]]
-name = "ml_anomaly_demo"
-required-features = ["ml-anomaly-detection"]
-
-[[example]]
-name = "llm_integration_demo"
-required-features = ["llm-integration"]

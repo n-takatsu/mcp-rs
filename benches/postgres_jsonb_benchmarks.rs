@@ -2,7 +2,10 @@
 //!
 //! Benchmarks for JSONB operations and comparisons
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+#[cfg(feature = "postgresql-backend")]
+use criterion::{black_box, BenchmarkId};
+use criterion::{criterion_group, criterion_main, Criterion};
+#[cfg(feature = "postgresql-backend")]
 use serde_json::json;
 
 #[cfg(feature = "postgresql-backend")]
@@ -238,7 +241,12 @@ criterion_group!(
     jsonb_benchmarks::bench_jsonb_path_extraction
 );
 
+// postgresql-backendが無効なら、何もしないベンチにする（criterion_group!は
+// 関数を1つ以上必要とするため）
 #[cfg(not(feature = "postgresql-backend"))]
-criterion_group!(benches,);
+fn postgresql_backend_disabled(_c: &mut Criterion) {}
+
+#[cfg(not(feature = "postgresql-backend"))]
+criterion_group!(benches, postgresql_backend_disabled);
 
 criterion_main!(benches);

@@ -13,8 +13,7 @@ pub mod types;
 // 新しい可用性関連モジュール
 pub mod availability; // 可用性管理
 pub mod loadbalancer;
-pub mod retry; // リトライ戦略 // 負荷分散
-               // pub mod integrated_availability; // 統合可用性システム（一時的に無効化）
+pub mod retry; // リトライ戦略
 
 // 高度なセキュリティモジュール
 pub mod advanced_security; // 高度なセキュリティ機能（MFA、RBAC、異常検知等）

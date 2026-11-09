@@ -671,106 +671,111 @@ fn normalize_transport_type_alias(content: &str) -> Result<String, Box<dyn std::
     Ok(toml::to_string(&table)?)
 }
 
+/// 設定の値の`${VAR}`を展開できなかった理由（#454）。展開しようとした
+/// 値（パスワード等）は含めない
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EnvExpansionError {
+    /// 参照した環境変数が無い（またはUnicodeとして読めない）
+    Missing(String),
+    /// `${`に対応する`}`が無い、または変数名が空
+    Malformed,
+}
+
+impl fmt::Display for EnvExpansionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Missing(name) => write!(f, "environment variable '{}' is not set", name),
+            Self::Malformed => write!(
+                f,
+                "'${{' has no matching '}}' or an empty variable name (write ${{VAR_NAME}})"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for EnvExpansionError {}
+
+/// WordPressの設定の`${VAR}`を展開できなかった（#454）。どの項目か
+/// （`url`・`username`・`password`）と理由を持ち、値は含めない
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfigEnvError {
+    /// 項目（例: `handlers.wordpress.password`）
+    pub field: String,
+    pub reason: EnvExpansionError,
+}
+
+impl fmt::Display for ConfigEnvError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}: {}", self.field, self.reason)
+    }
+}
+
+impl std::error::Error for ConfigEnvError {}
+
 impl McpConfig {
-    /// 文字列内の環境変数を展開する
+    /// 文字列内の`${VAR_NAME}`を、環境変数の値で置き換える
     ///
-    /// # 形式
-    /// `${VAR_NAME}` の形式で環境変数を参照します。
+    /// 参照した環境変数が無い場合と、`${`に対応する`}`が無い場合は、エラー
+    /// にする（#454。以前は`[ERROR:VAR_NAME]`等の文字列に置き換えて続けて
+    /// いたため、パスワードがその文字列のまま使われた）。置き換えた値の中の
+    /// `${...}`は、もう一度は展開しない（パスワードに`${`が含まれていても
+    /// そのまま使う）。値はログに出さない
     ///
     /// # 例
     /// ```
     /// # use std::env;
-    /// # use mcp_rs::config::McpConfig;
+    /// # use mcp_rs::config::{EnvExpansionError, McpConfig};
     /// env::set_var("TEST_VAR", "value123");
-    /// let result = McpConfig::expand_env_vars("url = ${TEST_VAR}");
-    /// assert_eq!(result, "url = value123");
+    /// assert_eq!(
+    ///     McpConfig::expand_env_vars("url = ${TEST_VAR}"),
+    ///     Ok("url = value123".to_string())
+    /// );
+    /// assert_eq!(
+    ///     McpConfig::expand_env_vars("${NOT_SET_ANYWHERE_454}"),
+    ///     Err(EnvExpansionError::Missing("NOT_SET_ANYWHERE_454".to_string()))
+    /// );
     /// ```
-    ///
-    /// # 注意
-    /// - 環境変数が見つからない場合は `[ERROR:VAR_NAME]` に置換されます
-    /// - 最大100回まで再帰的に展開します（無限ループ防止）
-    pub fn expand_env_vars(input: &str) -> String {
-        let mut result = input.to_string();
-        let mut processed_vars = std::collections::HashSet::new();
-        let max_iterations = 100; // 無限ループ防止
-        let mut iteration_count = 0;
-
-        // ${VAR_NAME} パターンを検索して置換
-        loop {
-            iteration_count += 1;
-            if iteration_count > max_iterations {
-                warn!(
-                    "環境変数展開で最大反復回数({})に達しました。処理を停止します。",
-                    max_iterations
-                );
-                break;
+    pub fn expand_env_vars(input: &str) -> Result<String, EnvExpansionError> {
+        let mut out = String::with_capacity(input.len());
+        let mut rest = input;
+        while let Some(start) = rest.find("${") {
+            out.push_str(&rest[..start]);
+            let after = &rest[start + 2..];
+            let end = after.find('}').ok_or(EnvExpansionError::Malformed)?;
+            let name = &after[..end];
+            if name.is_empty() {
+                return Err(EnvExpansionError::Malformed);
             }
-
-            if let Some(start) = result.find("${") {
-                if let Some(end_pos) = result[start..].find('}') {
-                    let end = start + end_pos;
-                    let var_name = &result[start + 2..end];
-
-                    // 既に処理済みで値が見つからなかった変数は再処理しない
-                    let var_pattern = format!("${{{}}}", var_name);
-                    if processed_vars.contains(&var_pattern) {
-                        warn!(
-                            "環境変数 '{}' は既に処理済みで値が見つかりません。スキップします。",
-                            var_name
-                        );
-                        // この変数をスキップして次を探す - より安全な方法で処理停止
-                        break;
-                    }
-
-                    match std::env::var(var_name) {
-                        Ok(env_value) => {
-                            debug!(
-                                "環境変数展開成功: {} = {}",
-                                var_name,
-                                &env_value[..env_value.len().min(20)]
-                            );
-                            result.replace_range(start..end + 1, &env_value);
-                            // 成功した場合は続行
-                        }
-                        Err(_) => {
-                            warn!("環境変数 '{}' が設定されていません。", var_name);
-                            processed_vars.insert(var_pattern.clone());
-
-                            // 環境変数が見つからない場合の処理選択肢：
-                            // 1. エラーとして処理を停止
-                            // 2. 空文字に置換
-                            // 3. プレースホルダーに置換
-
-                            // Option 1: エラーとして停止（推奨）
-                            return result.replace(&var_pattern, &format!("[ERROR:{}]", var_name));
-
-                            // Option 2: 空文字に置換（コメントアウト）
-                            // result.replace_range(start..end + 1, "");
-
-                            // Option 3: 分かりやすいプレースホルダー（コメントアウト）
-                            // result.replace_range(start..end + 1, &format!("[MISSING:{}]", var_name));
-                        }
-                    }
-                } else {
-                    warn!("無効な環境変数形式が検出されました。開始位置: {}", start);
-                    // 無効な形式の場合、その部分をエラーマーカーに置換
-                    result.replace_range(start..start + 2, "[INVALID_ENV_VAR]");
-                    break;
-                }
-            } else {
-                break; // ${がない場合は正常終了
-            }
+            let value =
+                std::env::var(name).map_err(|_| EnvExpansionError::Missing(name.to_string()))?;
+            // 値（パスワード等）はログに出さない（#454）
+            debug!("Expanded environment variable '{}' in the config", name);
+            out.push_str(&value);
+            rest = &after[end + 1..];
         }
-
-        debug!("環境変数展開完了。反復回数: {}", iteration_count);
-        result
+        out.push_str(rest);
+        Ok(out)
     }
 
-    /// WordPressConfig の環境変数を展開
-    pub fn expand_wordpress_config(config: &mut WordPressConfig) {
-        config.url = Self::expand_env_vars(&config.url);
-        config.username = Self::expand_env_vars(&config.username);
-        config.password = Self::expand_env_vars(&config.password);
+    /// WordPressConfig の`url`・`username`・`password`の`${VAR}`を展開する。
+    /// 展開できなければ、どの項目のどの変数かを返す（#454）。WordPressが
+    /// 有効（`enabled = true`）でなければ、展開せずにそのままにする
+    /// （使わない設定の環境変数が無いだけで、起動を止めないため）
+    pub fn expand_wordpress_config(config: &mut WordPressConfig) -> Result<(), ConfigEnvError> {
+        if !config.enabled.unwrap_or(false) {
+            return Ok(());
+        }
+        for (field, value) in [
+            ("url", &mut config.url),
+            ("username", &mut config.username),
+            ("password", &mut config.password),
+        ] {
+            *value = Self::expand_env_vars(value).map_err(|reason| ConfigEnvError {
+                field: format!("handlers.wordpress.{}", field),
+                reason,
+            })?;
+        }
+        Ok(())
     }
 
     /// `[audit]`から、監査ログの設定を作る（#416）。書き込み先が決まらない
@@ -880,7 +885,7 @@ impl McpConfig {
         // WordPressConfig の環境変数展開を適用
         if let Some(ref mut wp_config) = final_config.handlers.wordpress {
             info!("WordPress設定で環境変数展開を適用中...");
-            Self::expand_wordpress_config(wp_config);
+            Self::expand_wordpress_config(wp_config).map_err(|e| e.to_string())?;
         }
 
         // WordPress設定の環境変数上書き
@@ -1642,7 +1647,7 @@ resource = "https://mcp.example.com/mcp"
             std::env::set_var("TEST_VAR", "test_value");
         }
         let result = McpConfig::expand_env_vars("${TEST_VAR}");
-        assert_eq!(result, "test_value");
+        assert_eq!(result, Ok("test_value".to_string()));
         unsafe {
             std::env::remove_var("TEST_VAR");
         }
@@ -1655,7 +1660,7 @@ resource = "https://mcp.example.com/mcp"
             std::env::set_var("VAR2", "value2");
         }
         let result = McpConfig::expand_env_vars("${VAR1} and ${VAR2}");
-        assert_eq!(result, "value1 and value2");
+        assert_eq!(result, Ok("value1 and value2".to_string()));
         unsafe {
             std::env::remove_var("VAR1");
             std::env::remove_var("VAR2");
@@ -1664,22 +1669,95 @@ resource = "https://mcp.example.com/mcp"
 
     #[test]
     fn test_expand_env_vars_missing() {
-        let result = McpConfig::expand_env_vars("${NONEXISTENT_VAR}");
-        assert_eq!(result, "[ERROR:NONEXISTENT_VAR]");
+        let result = McpConfig::expand_env_vars("a ${NONEXISTENT_VAR} b");
+        assert_eq!(
+            result,
+            Err(EnvExpansionError::Missing("NONEXISTENT_VAR".to_string()))
+        );
     }
 
     #[test]
-    fn test_expand_env_vars_nested() {
+    fn test_expand_env_vars_does_not_expand_values_again() {
+        // 置き換えた値の中の${...}は展開しない（パスワードに${が含まれて
+        // いても、そのまま使う。#454）
         unsafe {
-            std::env::set_var("OUTER", "prefix_${INNER}_suffix");
-            std::env::set_var("INNER", "middle");
+            std::env::set_var("OUTER_454", "pa${ss}word");
         }
-        let result = McpConfig::expand_env_vars("${OUTER}");
-        assert_eq!(result, "prefix_middle_suffix");
+        let result = McpConfig::expand_env_vars("${OUTER_454}");
+        assert_eq!(result, Ok("pa${ss}word".to_string()));
         unsafe {
-            std::env::remove_var("OUTER");
-            std::env::remove_var("INNER");
+            std::env::remove_var("OUTER_454");
         }
+    }
+
+    #[test]
+    fn test_expand_env_vars_multibyte_value() {
+        // 以前は値の先頭20バイトをログに出しており、20バイト目が文字の
+        // 途中だとpanicした（#454）
+        unsafe {
+            std::env::set_var("MULTIBYTE_454", "パスワード日本語のテスト値です");
+        }
+        let result = McpConfig::expand_env_vars("${MULTIBYTE_454}");
+        assert_eq!(result, Ok("パスワード日本語のテスト値です".to_string()));
+        unsafe {
+            std::env::remove_var("MULTIBYTE_454");
+        }
+    }
+
+    #[test]
+    fn test_expand_env_vars_malformed() {
+        assert_eq!(
+            McpConfig::expand_env_vars("${INCOMPLETE"),
+            Err(EnvExpansionError::Malformed)
+        );
+        assert_eq!(
+            McpConfig::expand_env_vars("${}"),
+            Err(EnvExpansionError::Malformed)
+        );
+        // $だけ、{だけは展開の対象ではない
+        assert_eq!(
+            McpConfig::expand_env_vars("a$b {c}"),
+            Ok("a$b {c}".to_string())
+        );
+    }
+
+    #[test]
+    fn test_expand_wordpress_config_reports_field_without_value() {
+        let mut wp: WordPressConfig = toml::from_str(
+            r#"
+            url = "https://example.com"
+            username = "admin"
+            password = "${WP_PASSWORD_NOT_SET_454}"
+            enabled = true
+            "#,
+        )
+        .unwrap();
+        let err = McpConfig::expand_wordpress_config(&mut wp).unwrap_err();
+        assert_eq!(err.field, "handlers.wordpress.password");
+        assert_eq!(
+            err.reason,
+            EnvExpansionError::Missing("WP_PASSWORD_NOT_SET_454".to_string())
+        );
+        assert_eq!(
+            err.to_string(),
+            "handlers.wordpress.password: environment variable 'WP_PASSWORD_NOT_SET_454' is not set"
+        );
+    }
+
+    #[test]
+    fn test_expand_wordpress_config_skips_disabled() {
+        // 使わない（enabledでない）WordPressの設定は、環境変数が無くても
+        // 起動を止めない
+        let mut wp: WordPressConfig = toml::from_str(
+            r#"
+            url = "${WP_URL_NOT_SET_454}"
+            password = "${WP_PASSWORD_NOT_SET_454}"
+            enabled = false
+            "#,
+        )
+        .unwrap();
+        assert!(McpConfig::expand_wordpress_config(&mut wp).is_ok());
+        assert_eq!(wp.password, "${WP_PASSWORD_NOT_SET_454}");
     }
 
     #[test]
@@ -1698,14 +1776,14 @@ resource = "https://mcp.example.com/mcp"
     #[test]
     fn test_expand_env_vars_empty_input() {
         let result = McpConfig::expand_env_vars("");
-        assert_eq!(result, "");
+        assert_eq!(result, Ok(String::new()));
     }
 
     #[test]
     fn test_expand_env_vars_no_variables() {
         let input = "plain text without variables";
         let result = McpConfig::expand_env_vars(input);
-        assert_eq!(result, input);
+        assert_eq!(result, Ok(input.to_string()));
     }
 
     #[test]
@@ -1714,7 +1792,10 @@ resource = "https://mcp.example.com/mcp"
             std::env::set_var("SPECIAL", "test@example.com:8080/path?query=1");
         }
         let result = McpConfig::expand_env_vars("url=${SPECIAL}");
-        assert_eq!(result, "url=test@example.com:8080/path?query=1");
+        assert_eq!(
+            result,
+            Ok("url=test@example.com:8080/path?query=1".to_string())
+        );
         unsafe {
             std::env::remove_var("SPECIAL");
         }
@@ -1726,29 +1807,14 @@ mod additional_tests {
     use super::*;
 
     #[test]
-    fn test_expand_env_vars_with_defaults() {
-        let result = McpConfig::expand_env_vars("${MISSING:-default_value}");
-        assert!(result.contains("default") || result.contains("ERROR"));
-    }
-
-    #[test]
-    fn test_expand_env_vars_recursive() {
-        unsafe {
-            std::env::set_var("A", "${B}");
-            std::env::set_var("B", "final");
-        }
-        let result = McpConfig::expand_env_vars("${A}");
-        assert_eq!(result, "final");
-        unsafe {
-            std::env::remove_var("A");
-            std::env::remove_var("B");
-        }
-    }
-
-    #[test]
-    fn test_expand_env_vars_malformed() {
-        let result = McpConfig::expand_env_vars("${INCOMPLETE");
-        assert!(!result.is_empty());
+    fn test_expand_env_vars_default_syntax_is_not_supported() {
+        // ${VAR:-default}の書き方には対応していない（変数名として扱う）
+        assert_eq!(
+            McpConfig::expand_env_vars("${MISSING:-default_value}"),
+            Err(EnvExpansionError::Missing(
+                "MISSING:-default_value".to_string()
+            ))
+        );
     }
 
     #[test]

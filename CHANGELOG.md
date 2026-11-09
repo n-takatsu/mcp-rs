@@ -7,6 +7,119 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-11-10
+
+### Removed
+
+- 本体（`mcp-rs`バイナリ）と、データベースのハンドラー（`database`機能）の
+  どちらからも使われていないモジュールを削除した（#448、約6.1万行）。
+  動作は変わらない
+  - 最上位: `ai`・`analytics`・`canary_deployment`・`cli`・`llm`・
+    `mcp_server`・`monitoring`・`operator`（`mcp-operator`バイナリと
+    `Dockerfile.operator`を含む）・`optimization`・`policy`・
+    `policy_application`・`policy_config`・`policy_validation`・
+    `policy_watcher`・`protocol`・`rollback`・`server`・`session`・
+    `threat_intelligence`・`dashboard`
+  - `security`: `audit`・`image_scanner`・`mtls`・`secure_server`・
+    `sql_injection_protection`・`tls_enforcement`・`validation`・`waf`・
+    `xss_protection`・`ids::ml`。HTTPモードのmTLSは`transport::http`に
+    あり、変わらない
+  - `transport`: `dynamic`・`factory`、`websocket`の`balancer`・
+    `compression`・`failover`・`llm_bridge`・`metrics`・`rate_limit`・
+    `transfer`
+  - `zero_trust`: `continuous_auth`・`device_verifier`・`network_analyzer`
+    （`micro_segmentation`はデータベースのハンドラーが使うので残した）
+  - どこからも読み込まれていなかった`src/bin/performance_test_execution_analysis.rs`
+    （mcp-rsを使わない単独のプログラム）と
+    `handlers/database/integrated_availability.rs`
+  - これらを使っていたテスト・examples・ベンチ・スクリプト
+  - **ライブラリの変更**: 上のモジュールと、`mcp_rs::McpServer`・
+    `mcp_rs::McpProtocol`・`mcp_rs::Session`等（`session`の再公開）を
+    削除した。MCPのサーバーは`mcp_rs::mcp::McpServer`を使う
+- 使わなくなった機能（features）と依存関係を削除した（#448）。依存する
+  クレートは725個から591個に減った
+  - 機能: `session-management`・`security`・`websocket`・`mcp-protocol`・
+    `metrics`・`testing`・`simd`・`kubernetes-operator`・
+    `ml-anomaly-detection`・`llm-integration`・`full`。既定の機能（`default`）
+    は空にした（どれもコードから参照されていなかった）。`--features`で
+    これらを指定している場合は、外す
+  - 依存関係: `async-openai`・`kube`系・`smartcore`等の機械学習・
+    `prometheus`・`metrics`・圧縮（`flate2`・`brotli`・`zstd`）・
+    `tokio-postgres`・`clap`・`governor`等、コードから使われていない
+    もの
+  - WebSocketのクライアント（`wss://`）のTLSを、native-tls（Linuxでは
+    OpenSSL）からrustlsに変えた。サーバー側と同じTLSになり、OpenSSLに
+    依存しなくなった
+  - `.cargo/audit.toml`から、該当する依存関係が無くなった無視
+    （RUSTSEC-2025-0012・RUSTSEC-2024-0384・RUSTSEC-2024-0436・
+    RUSTSEC-2026-0173）を外した
+- 削除した機能のドキュメント（脅威インテリジェンス・LLM・機械学習・監視・
+  セッション・Zero Trust・WAF・ポリシー・MFA・Kubernetes operator等）と、
+  operatorのHelmチャート（`charts/mcp-operator`）・CRD・マニフェスト
+  （`k8s/crds`・`k8s/manifests`）、ポリシーのサンプル（`demo-policies`）を
+  削除した。README・websiteの、削除した機能の記述を直した
+
+### Fixed
+
+- 既定の機能でベンチをビルドすると、`benches/postgres_jsonb_benchmarks.rs`が
+  コンパイルできなかった（#448）
+
+- 設定ファイルの`${VAR}`（環境変数）の展開の問題を直した（#454）
+  - 展開した値の先頭20バイトをdebugのログに出していた。プラグインの`env`
+    （APIキー等）や設定の再読み込みでは、ログのレベルがdebugだとログ
+    ファイルに残った。値は出さず、変数名だけにした。値に日本語等が含まれる
+    とpanicすることがあったのも、あわせて直った
+  - WordPressを有効にした設定で、参照した環境変数が無い場合と、`${`に
+    対応する`}`が無い場合は、起動しないようにした。どの項目のどの変数かを
+    出す（値は出さない）。以前は`[ERROR:VAR]`等の文字列をパスワードにして
+    起動し、後でWordPressの認証が分かりにくい形で失敗していた。WordPressを
+    有効にしていない設定では、これまでどおり起動を止めない
+  - 置き換えた値の中の`${...}`は、もう一度は展開しないようにした
+    （パスワードに`${`が含まれていても、そのまま使う）
+  - プラグインの`env`で`${`の書き方がおかしい値は、渡さないようにした
+    （以前は`[INVALID_ENV_VAR]`を含む文字列を渡していた）
+  - **ライブラリの変更**: `McpConfig::expand_env_vars`は
+    `Result<String, EnvExpansionError>`を、`McpConfig::expand_wordpress_config`は
+    `Result<(), ConfigEnvError>`を返す
+
+### Changed
+
+- `C:\Program Files\MCP-rs`等、実行ファイルのフォルダに書き込めない場所に
+  インストールした場合、ログの出力先がユーザーのフォルダ
+  （`%USERPROFILE%\.mcp-rs\logs`等）になるのを、フォールバックとして
+  扱わないようにした（#441）。以前は起動のたびに、`mcp_rs_status`と
+  起動時の表示にフォールバックの理由が出ていた。ログの出力先は変わらない。
+  ログの出力先の決まり方と、ファイル名の日付がUTCであることを、README・
+  websiteに書いた
+
+- Production Deployment（`deploy.yml`）を、同時には1つだけ実行するようにした
+  （#445）。`main`へのpushとタグのpushが続いても、後の実行は前の実行が
+  終わるのを待つ。共有のイメージのタグ（`main`・`latest`・`0.19`等）を
+  並行して上書きしない
+- `mcp-rs`バイナリ（`src/main.rs`）が、ライブラリと同じモジュール
+  （`config`・`handlers`・`security`・`transport`等）を`mod`で読み込み直して
+  いたのをやめた（#448）。バイナリはライブラリ（`mcp_rs::`）だけを使う。
+  同じコードを2回コンパイルしなくなり、ビルドが速くなる。動作は変わらない
+
+### Security
+
+- openssl 0.10.75の脆弱性（RUSTSEC-2026-0463、`aes::unwrap_key`の範囲外
+  書き込み）を、0.10.82への更新で解消（#455）。mcp-rsは`aes::unwrap_key`を
+  直接使っていない。その後、WebSocketのクライアントをrustlsに変えたため、
+  opensslはもう使っていない（#448）
+- 依存関係を互換の範囲で更新した（#448）: mongodb 3.6.0→3.10.0
+  （hickory-proto・hickory-resolver 0.25.2→0.26.3）、serde_with
+  3.16.1→3.24.0、rsa 0.9.9→0.9.10、rand 0.8.5→0.8.8・0.9.2→0.9.5。
+  hickory（DNS）・serde_with等の既知の脆弱性の警告（Trivy）を解消し、
+  不要になった`.cargo/audit.toml`の無視（RUSTSEC-2026-0118・
+  RUSTSEC-2026-0119・RUSTSEC-2026-0097）を外した
+- RUSTSEC-2026-0459（`libsqlite3-sys` 0.30.1に同梱のSQLite、
+  CVE-2026-119375）を、`.cargo/audit.toml`で理由を付けて無視（#444）。
+  修正版（0.39.0以降）を使えるsqlxが、まだ無い（0.9.0も0.38.0未満）。
+  信頼できない人が書いたデータベースとWALのファイルを開いた場合だけの
+  問題で、既定のビルドはSQLiteを開かない（SQLiteは任意の`database`
+  機能だけ）。sqlxが対応したら外す（#449）
+
 ## [0.19.2] - 2026-11-09
 
 ### Added

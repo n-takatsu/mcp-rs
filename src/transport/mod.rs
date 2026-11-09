@@ -8,9 +8,7 @@
 
 pub mod config;
 pub mod connection;
-pub mod dynamic;
 pub mod error;
-pub mod factory;
 pub mod http;
 pub mod oauth;
 pub mod stdio;
@@ -20,9 +18,7 @@ pub mod websocket;
 
 pub use config::TransportConfig;
 pub use connection::{ConnectionInfo, ConnectionStats};
-pub use dynamic::{DynamicTransportManager, TransportSwitcher};
 pub use error::TransportError;
-pub use factory::TransportFactory;
 pub use http::{HttpConfig, HttpTransport};
 pub use stdio::{StdioConfig, StdioTransport};
 pub use transport_trait::Transport;

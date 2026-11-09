@@ -45,10 +45,7 @@ MCP-RS provides a **comprehensive, battle-tested** implementation of the MCP (Mo
 - **⚡ Token Bucket Rate Limiting**: Advanced DDoS protection with configurable limits and burst handling
 - **🔒 TLS 1.2+ Enforcement**: Mandatory secure transport with certificate validation
 - **🚫 Zero-Panic Operations**: Complete unwrap() elimination with comprehensive Result-based error handling
-- **🛡️ SQL Injection Protection**: 11 attack pattern detection with Union/Boolean/Time-based attack prevention
-- **🚫 XSS Attack Protection**: 14 attack pattern detection with HTML sanitization and CSP headers
 - **📊 Comprehensive Audit Logging**: All security events recorded with tamper-resistant logging
-- **🎯 Advanced Input Validation**: Real-time validation with custom rules and data sanitization
 - **🔍 Data Masking**: 4 masking strategies (Full, Partial, Hash, Tokenize) for PII/PHI protection
 - **📈 Time-Based Access Control**: Business hours and emergency access support
 
@@ -102,7 +99,13 @@ See [WordPress Integration](docs/wordpress/) for the full list of tools.
 
 ## Current Status
 
-## ✅ Recently Completed (v0.19.2)
+## ✅ Recently Completed (v0.20.0)
+
+- **🧹 Cleanup**: Removed modules, features, and dependencies that the server never used (725 → 591 crates; OpenSSL is no longer needed), and corrected the documentation to match what mcp-rs actually does
+- **🔒 Environment Variables in the Config File**: Values expanded from `${VAR}` are no longer written to the debug log. With WordPress enabled, mcp-rs does not start when a referenced variable is missing, and names the setting and the variable. See [Security](docs/security/)
+- **📂 Log Location**: When installed in `C:\Program Files\MCP-rs`, the log in `%USERPROFILE%\.mcp-rs\logs` is no longer reported as a fallback
+
+## ✅ v0.19.2
 
 - **🩺 Status Tool**: Ask your AI client to call `mcp_rs_status` to see the version, the config file in use, where the log and audit log are written, and the state of each plugin. See [API](docs/api/#mcp_rs_status)
 - **🛑 Unknown Options**: mcp-rs no longer starts with an unknown option or `--config` without a path, so a typo does not silently use another config file
@@ -157,7 +160,7 @@ See the [Security documentation](docs/security/) for details.
 
 ## ✅ v0.16.0
 
-- **🌐 WebSocket Transport Enhancements**: Server mode, LLM streaming, connection pooling, load balancing
+- **🌐 WebSocket Transport Enhancements**: Server mode, LLM streaming, connection pooling, load balancing (LLM streaming, load balancing, metrics and compression were removed later because the server never used them, [#448](https://github.com/n-takatsu/mcp-rs/issues/448))
 - **🔌 Plugin Isolation System**: Inter-plugin communication, advanced error handling, Docker runtime support (removed later because it was never connected to the server; plugins are being redesigned in [#392](https://github.com/n-takatsu/mcp-rs/issues/392))
 - **🤖 LLM Streaming Integration**: OpenAI GPT-4 and Anthropic Claude 3.5 Sonnet with real-time responses
 - **📊 Metrics & Monitoring**: Real-time metrics collection, rate limiting (3 algorithms), message compression

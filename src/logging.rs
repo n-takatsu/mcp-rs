@@ -264,8 +264,10 @@ fn primary_log_dir_candidate() -> PathBuf {
     PathBuf::from("logs")
 }
 
-/// 第一候補（`LogConfig::log_dir`）が書き込めなかった場合に試す、
-/// ユーザー権限で書き込み可能な可能性が高い候補ディレクトリ（優先順）。
+/// ユーザー領域のログディレクトリ（Windowsは`%USERPROFILE%\.mcp-rs\logs`、
+/// それ以外は`$XDG_STATE_HOME/mcp-rs/logs`か`~/.local/state/mcp-rs/logs`）。
+/// 環境変数が無い場合はNone。
+///
 /// `C:\Program Files\...`のように実行ファイルが昇格権限の場所に
 /// インストールされ、非昇格プロセス（例: Claude Desktop経由のMCP
 /// サーバー起動）からは書き込めないケースを主な対象とする。
@@ -279,29 +281,34 @@ fn primary_log_dir_candidate() -> PathBuf {
 /// という事態が起きる（同一プロセス内の自己検証では検出できない）。
 /// `%USERPROFILE%`直下はこの既知フォルダー仮想化の対象外のため、こちらを
 /// 使う。
-fn fallback_log_dir_candidates() -> Vec<PathBuf> {
-    let mut candidates = Vec::new();
-
+fn user_log_dir() -> Option<PathBuf> {
     #[cfg(windows)]
-    if let Some(user_profile) = std::env::var_os("USERPROFILE") {
-        candidates.push(PathBuf::from(user_profile).join(".mcp-rs").join("logs"));
+    {
+        std::env::var_os("USERPROFILE")
+            .map(|user_profile| PathBuf::from(user_profile).join(".mcp-rs").join("logs"))
     }
 
     #[cfg(not(windows))]
     {
         if let Some(xdg_state) = std::env::var_os("XDG_STATE_HOME") {
-            candidates.push(PathBuf::from(xdg_state).join("mcp-rs").join("logs"));
-        } else if let Some(home) = std::env::var_os("HOME") {
-            candidates.push(
+            Some(PathBuf::from(xdg_state).join("mcp-rs").join("logs"))
+        } else {
+            std::env::var_os("HOME").map(|home| {
                 PathBuf::from(home)
                     .join(".local")
                     .join("state")
                     .join("mcp-rs")
-                    .join("logs"),
-            );
+                    .join("logs")
+            })
         }
     }
+}
 
+/// 通常の出力先に書き込めなかった場合に試す候補ディレクトリ（優先順）。
+/// 先頭はユーザー領域（`user_log_dir`）。
+fn fallback_log_dir_candidates() -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    candidates.extend(user_log_dir());
     candidates.push(PathBuf::from("logs"));
     candidates.push(std::env::temp_dir().join("mcp-rs").join("logs"));
 
@@ -413,19 +420,35 @@ pub fn current_log_destination() -> Option<LogDestination> {
 /// 成功した候補には起動マーカー行（`write_startup_marker`）を書き込む。
 /// 全候補が失敗した場合は`(None, ...)`を返し、呼び出し側はコンソール
 /// 出力のみへ縮退する。
+///
+/// `config.log_dir`が既定値（実行ファイルのフォルダの`logs`）の場合は、
+/// ユーザー領域（`user_log_dir`）も通常の出力先として扱う。Program Files
+/// にインストールした場合、実行ファイルのフォルダに書き込めないのは
+/// 正常な状態なので、ユーザー領域を使ってもフォールバックとして報告
+/// しない（#441）。
 fn resolve_log_destination(
     config: &LogConfig,
 ) -> (Option<rolling::RollingFileAppender>, LogDestination) {
     let mut candidates = vec![config.log_dir.clone()];
-    candidates.extend(fallback_log_dir_candidates());
-    candidates.dedup();
+    if config.log_dir == primary_log_dir_candidate() {
+        candidates.extend(user_log_dir());
+    }
+    let normal_count = candidates.len();
+    for dir in fallback_log_dir_candidates() {
+        if !candidates.contains(&dir) {
+            candidates.push(dir);
+        }
+    }
 
-    resolve_log_destination_from_candidates(&candidates, &config.rotation)
+    resolve_log_destination_from_candidates(&candidates, normal_count, &config.rotation)
 }
 
 /// `resolve_log_destination`の候補探索ロジック本体。候補リストを引数で
-/// 渡せるようにしてあるのは単体テストのため（本番では常に
-/// `[config.log_dir] + fallback_log_dir_candidates()`を渡す）。
+/// 渡せるようにしてあるのは単体テストのため。
+///
+/// 先頭の`normal_count`個の候補は通常の出力先で、どれを使っても
+/// フォールバックとして報告しない。それより後ろの候補を使った場合は、
+/// 最後の通常の候補に書き込めなかった理由を`fallback_reason`に記録する。
 ///
 /// 各候補について、`create_dir_all` → ファイルをappendモードで開く →
 /// 起動マーカー行を書いてflush → `fs::metadata`で実際にファイルが
@@ -434,44 +457,47 @@ fn resolve_log_destination(
 /// ファイルが見当たらない）は次の候補へ進む判断材料とする。
 fn resolve_log_destination_from_candidates(
     candidates: &[PathBuf],
+    normal_count: usize,
     rotation: &LogRotation,
 ) -> (Option<rolling::RollingFileAppender>, LogDestination) {
-    let mut first_failure: Option<String> = None;
+    // 失敗した候補ごとに1件ずつ記録する（添字は候補の添字と一致する）
+    let mut failures: Vec<String> = Vec::new();
+    let normal_count = normal_count.max(1);
+    let fallback_reason =
+        |failures: &[String]| failures.get(normal_count - 1).or(failures.last()).cloned();
 
     for (i, dir) in candidates.iter().enumerate() {
         if let Err(e) = ensure_log_dir(dir) {
-            if first_failure.is_none() {
-                first_failure = Some(format!("{} is not writable: {}", dir.display(), e));
-            }
+            failures.push(format!("{} is not writable: {}", dir.display(), e));
             continue;
         }
 
         let mut appender = match build_file_appender(dir, rotation, "mcp-rs.log") {
             Ok(appender) => appender,
             Err(e) => {
-                if first_failure.is_none() {
-                    first_failure = Some(format!("{} is not writable: {}", dir.display(), e));
-                }
+                failures.push(format!("{} is not writable: {}", dir.display(), e));
                 continue;
             }
         };
 
         let filename = resolved_log_filename(rotation);
         if let Err(e) = write_startup_marker(&mut appender, dir, &filename) {
-            if first_failure.is_none() {
-                first_failure = Some(format!(
-                    "{} accepted the write but it could not be verified: {}",
-                    dir.display(),
-                    e
-                ));
-            }
+            failures.push(format!(
+                "{} accepted the write but it could not be verified: {}",
+                dir.display(),
+                e
+            ));
             continue;
         }
 
         let destination = LogDestination {
             dir: Some(dir.clone()),
             rotation: rotation.clone(),
-            fallback_reason: if i == 0 { None } else { first_failure.clone() },
+            fallback_reason: if i < normal_count {
+                None
+            } else {
+                fallback_reason(&failures)
+            },
         };
         return (Some(appender), destination);
     }
@@ -481,7 +507,7 @@ fn resolve_log_destination_from_candidates(
         LogDestination {
             dir: None,
             rotation: rotation.clone(),
-            fallback_reason: first_failure,
+            fallback_reason: fallback_reason(&failures),
         },
     )
 }
@@ -1240,6 +1266,7 @@ mod tests {
 
         let (appender, destination) = resolve_log_destination_from_candidates(
             &[unwritable.clone(), writable.clone()],
+            1,
             &LogRotation::Never,
         );
 
@@ -1267,6 +1294,7 @@ mod tests {
 
         let (appender, destination) = resolve_log_destination_from_candidates(
             std::slice::from_ref(&writable),
+            1,
             &LogRotation::Never,
         );
 
@@ -1288,6 +1316,7 @@ mod tests {
 
         let (appender, destination) = resolve_log_destination_from_candidates(
             &[unwritable1, unwritable2],
+            1,
             &LogRotation::Never,
         );
 
@@ -1297,6 +1326,58 @@ mod tests {
             destination.summary(),
             "disabled (no writable location found; logging to stderr only)"
         );
+    }
+
+    /// 実行ファイルのフォルダ（1番目）に書けず、ユーザー領域（2番目）を
+    /// 使った場合は、どちらも通常の出力先なのでフォールバックとして
+    /// 報告しない（Program Filesにインストールした場合, #441）。
+    #[test]
+    fn test_resolve_log_destination_no_fallback_reason_within_normal_candidates() {
+        let temp_dir = tempdir().unwrap();
+        let exe_dir_logs = temp_dir.path().join("program_files_logs");
+        fs::write(&exe_dir_logs, b"not a directory").unwrap();
+        let user_logs = temp_dir.path().join("user_logs");
+
+        let (appender, destination) = resolve_log_destination_from_candidates(
+            &[exe_dir_logs, user_logs.clone()],
+            2,
+            &LogRotation::Never,
+        );
+
+        assert!(appender.is_some());
+        assert_eq!(destination.dir, Some(user_logs.clone()));
+        assert!(destination.fallback_reason.is_none());
+        assert_eq!(
+            destination.summary(),
+            user_logs.join("mcp-rs.log").display().to_string()
+        );
+    }
+
+    /// 通常の出力先（実行ファイルのフォルダとユーザー領域）のどちらにも
+    /// 書けずに3番目以降を使った場合は、ユーザー領域に書けなかった理由を
+    /// フォールバックの理由として報告する。
+    #[test]
+    fn test_resolve_log_destination_reports_user_dir_failure_when_falling_back() {
+        let temp_dir = tempdir().unwrap();
+        let exe_dir_logs = temp_dir.path().join("program_files_logs");
+        let user_logs = temp_dir.path().join("user_logs");
+        fs::write(&exe_dir_logs, b"not a directory").unwrap();
+        fs::write(&user_logs, b"not a directory").unwrap();
+        let temp_logs = temp_dir.path().join("temp_logs");
+
+        let (appender, destination) = resolve_log_destination_from_candidates(
+            &[exe_dir_logs.clone(), user_logs.clone(), temp_logs.clone()],
+            2,
+            &LogRotation::Never,
+        );
+
+        assert!(appender.is_some());
+        assert_eq!(destination.dir, Some(temp_logs));
+        let reason = destination
+            .fallback_reason
+            .expect("falling back beyond the user dir must record why");
+        assert!(reason.contains(&user_logs.display().to_string()));
+        assert!(!reason.contains(&exe_dir_logs.display().to_string()));
     }
 
     /// 起動マーカー行がバージョン・PIDを含んだ固定フォーマットで

@@ -475,8 +475,6 @@ kubectl logs -n mcp-production <pod-name> --tail=100 | jq '.level,.message'
 
 ## 関連ドキュメント
 
-- [Kubernetes Guide](./KUBERNETES_GUIDE.md)
-- [Security Policy Guide](../demo-policies/README.md)
 - [API Documentation](./docs/api/README.md)
 
 ---

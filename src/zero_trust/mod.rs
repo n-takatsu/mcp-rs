@@ -3,10 +3,7 @@
 //! "決して信頼せず、常に検証する" 原則に基づいた
 //! 包括的なアクセス制御システム
 
-pub mod continuous_auth;
-pub mod device_verifier;
 pub mod micro_segmentation;
-pub mod network_analyzer;
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

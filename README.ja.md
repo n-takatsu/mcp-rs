@@ -4,7 +4,7 @@
 
 > **[日本語](README.ja.md)** | **[English](README.md)**
 
-[![Version](https://img.shields.io/badge/Version-v0.19.2-blue)](https://github.com/n-takatsu/mcp-rs/releases/tag/v0.19.2)
+[![Version](https://img.shields.io/badge/Version-v0.20.0-blue)](https://github.com/n-takatsu/mcp-rs/releases/tag/v0.20.0)
 ![Architecture](https://img.shields.io/badge/Architecture-Production--Ready-green)
 ![Implementation](https://img.shields.io/badge/WordPress_Tools-32_Available-green)
 ![License](https://img.shields.io/badge/License-MIT%2FApache--2.0-green)
@@ -33,7 +33,7 @@ WordPress 運用を自動化していますか？包括的なヘルスチェッ�
 
 ## **セキュリティチーム** 🔒
 
-WordPress セキュリティ自動化が必要ですか？SQL インジェクション保護、XSS 防御、包括的な監査ログを備えた 6 層エンタープライズセキュリティアーキテクチャをご利用ください。
+mcp-rsをHTTPで公開しますか？APIキーやOAuth 2.1のトークンで認証し、呼び出し元ごとに使えるツールを絞り、すべてのツールの呼び出しを監査ログに残せます。
 
 ## 🚀 主要機能
 
@@ -60,14 +60,15 @@ WordPress セキュリティ自動化が必要ですか？SQL インジェクシ
 
 `examples/wordpress_site_builder_demo.rs` の例は、公開 WordPress デモサイト [redring.jp](https://redring.jp/) を構築・更新します。mcp-rs がサイトを立ち上げ、コンテンツを整理して実運用する流れを示す実例です。
 
-## **エンタープライズセキュリティ（6 層アーキテクチャ）**
+## **セキュリティ**
 
-- **AES-GCM-256 暗号化**: PBKDF2 鍵導出による軍用グレード暗号化
-- **SQL インジェクション保護**: 11 の攻撃パターンのリアルタイム検出
-- **XSS 防御**: 14 の XSS 攻撃ベクトルに対する高度な保護
-- **レート制限**: DDoS 保護付きトークンバケットアルゴリズム
-- **TLS 強制**: 証明書検証付き TLS 1.2+
-- **監査ログ**: 包括的なセキュリティイベント追跡
+- **認証情報の暗号化**: WordPressのApplication Passwordを、AES-GCM-256（PBKDF2で鍵を導出）で暗号化して保存できる。環境変数から読むこともできる
+- **HTTPモードの認証**: APIキー、または外部の認可サーバーが発行したOAuth 2.1のアクセストークン（JWT）
+- **呼び出し元ごとのツールの制限**: APIキー・トークンごとに、使えるツールを絞れる（例: `@read_only`）
+- **TLS・mTLS**: 最低のTLSバージョンを指定したHTTPS、クライアント証明書（任意）
+- **ネットワークポリシー・リプレイ攻撃の防止・侵入検知**（HTTP・WebSocketの待ち受け）
+- **レート制限**（ツールの呼び出し）
+- **監査ログ**: 誰がどのツールを呼び、結果がどうだったか
 
 ## **技術的優秀性**
 
@@ -83,7 +84,6 @@ WordPress セキュリティ自動化が必要ですか？SQL インジェクシ
 |------|-----|
 | **総テスト数** | 205+ (100% 合格) |
 | **コードカバレッジ** | 包括的 |
-| **セキュリティテスト** | 6 層検証 |
 | **パフォーマンス** | 本番最適化 |
 | **ドキュメント** | 完全な API ドキュメント |
 
@@ -173,7 +173,7 @@ username = "your-username"
 password = "your-application-password"   # WordPress アプリケーションパスワード
 ```
 
-`./target/release/mcp-rs --config mcp-config.toml`で起動します。パスワードを設定ファイルに書かない場合は、`${WORDPRESS_PASSWORD}`（環境変数）か[認証情報の暗号化](https://n-takatsu.github.io/mcp-rs/docs/security/#encrypted-wordpress-credentials)を使ってください。
+`./target/release/mcp-rs --config mcp-config.toml`で起動します。パスワードを設定ファイルに書かない場合は、`${WORDPRESS_PASSWORD}`（環境変数）か[認証情報の暗号化](https://n-takatsu.github.io/mcp-rs/docs/security/#encrypted-wordpress-credentials)を使ってください。`${...}`の環境変数が設定されていないと、mcp-rsは起動しません。
 
 ### HTTP TLS/mTLS 設定（任意）
 
@@ -202,6 +202,18 @@ hsts_enabled = true
 - `mtls_enabled = true` の場合、`mtls_ca_cert_path` が必須です
 - 設定した CA で検証できないクライアント証明書、または証明書未提示のクライアントは TLS ハンドシェイクで拒否されます
 
+### ログファイル
+
+ログは、次のフォルダのうち、書き込める最初のフォルダに出力されます。
+
+1. `mcp-rs`の実行ファイルと同じフォルダの`logs`（zipを展開した場所など）
+2. ユーザーのフォルダ: Windowsは`%USERPROFILE%\.mcp-rs\logs`、それ以外は`$XDG_STATE_HOME/mcp-rs/logs`か`~/.local/state/mcp-rs/logs`。`C:\Program Files\MCP-rs`にインストールした場合は、常にここになります
+3. カレントフォルダの`logs`、次に一時フォルダの`mcp-rs/logs`
+
+使っているログファイルは、`mcp_rs_status`ツールで確認できます。`fallback`と表示されるのは、1にも2にも書き込めなかった場合だけです。
+
+ファイル名の末尾は`mcp-rs.log.2026-11-09`のような日付で、1日ごとに新しいファイルになります。ファイル名の日付はUTCなので、日本時間では毎朝9:00に新しいファイルになります。ログの中の時刻は、ローカル時刻です。
+
 ## 🏗️ アーキテクチャ
 
 ```text
@@ -214,10 +226,10 @@ hsts_enabled = true
                                       ▼
                            ┌─────────────────────┐
                            │   セキュリティ層    │
-                           │ • SQL インジェクション │
-                           │ • XSS 保護          │
+                           │ • 認証              │
+                           │ • ツールの制限      │
                            │ • レート制限        │
-                           │ • 暗号化            │
+                           │ • 監査ログ          │
                            └─────────────────────┘
 ```
 

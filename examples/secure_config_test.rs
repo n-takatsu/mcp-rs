@@ -148,7 +148,7 @@ fn load_test_config() -> Result<McpConfig, Box<dyn std::error::Error>> {
 
     // WordPressConfig の環境変数展開を適用
     if let Some(ref mut wp_config) = final_config.handlers.wordpress {
-        McpConfig::expand_wordpress_config(wp_config);
+        McpConfig::expand_wordpress_config(wp_config)?;
     }
 
     Ok(final_config)

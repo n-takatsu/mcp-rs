@@ -48,9 +48,6 @@ pub mod network;
 pub mod signature;
 pub mod types;
 
-#[cfg(feature = "ml-anomaly-detection")]
-pub mod ml;
-
 pub use blocklist::IpBlocklist;
 pub use config::{IDSConfig, IDSStats};
 pub use detector::IntrusionDetectionSystem;

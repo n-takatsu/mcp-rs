@@ -23,11 +23,7 @@ MCP-RS provides a **comprehensive, battle-tested** implementation of the MCP (Mo
 - **JSON-RPC 2.0 Server**: Full-featured JSON-RPC server implementation using `axum`
 - **Request Dispatch**: `McpServer` lists tools from every handler and routes each call to the handler that provides it, in both STDIO and HTTP modes
 - **Multi-Transport Support**: Stdio, HTTP, and WebSocket communication protocols
-- **WebSocket Enhancements** (v0.16.0):
-  - Server mode with connection management and health checks
-  - LLM streaming (OpenAI GPT-4, Anthropic Claude 3.5 Sonnet)
-  - Connection pooling with 3 load balancing algorithms (RoundRobin, LeastConnections, Random)
-  - Real-time metrics, rate limiting (TokenBucket, LeakyBucket, SlidingWindow), and compression (gzip/deflate)
+- **WebSocket**: In HTTP mode, MCP requests are also accepted on `/ws` (`enable_websocket_upgrade = true`)
 - **Plugins**: Add tools from other MCP servers, run as separate processes. mcp-rs relays their tools with rate limiting and audit logging. See [Plugins]({{ site.baseurl }}/docs/plugins/)
 - **Type-Safe Configuration**: TOML-based configuration with environment variable override
 - **Production-Ready Error Handling**: Comprehensive error types with structured logging
@@ -39,11 +35,11 @@ MCP-RS provides a **comprehensive, battle-tested** implementation of the MCP (Mo
 - **🔐 AES-GCM-256 Encryption**: Military-grade encryption with PBKDF2 key derivation (100K iterations)
 - **⚡ Token Bucket Rate Limiting**: Advanced DDoS protection with configurable limits
 - **🔒 TLS 1.2+ Enforcement**: Mandatory secure transport with certificate validation
-- **🛡️ SQL Injection Protection**: 11 attack pattern detection with parameterized queries
-- **🚫 XSS Attack Protection**: 14 attack pattern detection with HTML sanitization
 - **📊 Comprehensive Audit Logging**: All security events recorded with tamper-resistant logging
 
-## 🗄️ Database Integration (Production Ready)
+## 🗄️ Database Integration
+
+> **Note**: The database handler is not connected to the `mcp-rs` binary yet ([#453](https://github.com/n-takatsu/mcp-rs/issues/453)).
 
 - **Multi-Engine Support**: PostgreSQL, MySQL, Redis, MongoDB, SQLite
 - **🔄 Dynamic Engine Switching**: Zero-downtime switching with intelligent failover
@@ -202,4 +198,4 @@ at your option.
 ---
 
 **Last Updated**: November 3, 2025
-**Version**: v0.19.2
+**Version**: v0.20.0

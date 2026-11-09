@@ -8,24 +8,8 @@
 
 システム設計とアーキテクチャ仕様書
 
-- `threat-intelligence.md` - 脅威インテリジェンス統合システムの設計仕様
-- `rollback-system.md` - ロールバックシステムの設計仕様
 - `secure-core-deployment-strategy.md` - セキュアコアデプロイメント戦略
 - `secure-core-server-design.md` - セキュアコアサーバー設計
-
-## `implementation/`
-
-実装詳細とサマリー
-
-- `threat-intelligence-summary.md` - 脅威インテリジェンス機能の実装サマリー
-- `epic-15-completion-report.md` - EPIC 15完了レポート
-- `policy-hot-reload-guide.md` - ポリシーホットリロード実装ガイド
-
-## `api/`
-
-API仕様書とリファレンス
-
-- `waf-api.md` - WAF API仕様書
 
 ## `guides/`
 
@@ -33,7 +17,6 @@ API仕様書とリファレンス
 
 - `benchmarking-guide.md` - 包括的なベンチマークガイド
 - `postgres-benchmarking-guide.md` - PostgreSQL専用ベンチマークガイド
-- `mfa-usage-guide.md` - MFA機能利用ガイド
 
 ## 📚 関連ドキュメント
 

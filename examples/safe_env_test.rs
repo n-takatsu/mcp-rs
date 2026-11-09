@@ -24,7 +24,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     for test_case in test_cases {
         let result = McpConfig::expand_env_vars(test_case);
-        println!("   '{}' → '{}'", test_case, result);
+        println!("   '{}' → {:?}", test_case, result);
     }
 
     // Test 2: 環境変数が見つからないケース
@@ -37,7 +37,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     for test_case in missing_cases {
         let result = McpConfig::expand_env_vars(test_case);
-        println!("   '{}' → '{}'", test_case, result);
+        println!("   '{}' → {:?}", test_case, result);
     }
 
     // Test 3: 無効な形式のケース
@@ -53,7 +53,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     for test_case in invalid_cases {
         let result = McpConfig::expand_env_vars(test_case);
-        println!("   '{}' → '{}'", test_case, result);
+        println!("   '{}' → {:?}", test_case, result);
     }
 
     // Test 4: 無限ループ防止テスト
@@ -63,7 +63,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     env::set_var("SELF_REF", "${SELF_REF}");
     let self_ref_test = "${SELF_REF}";
     let result = McpConfig::expand_env_vars(self_ref_test);
-    println!("   自己参照テスト: '{}' → '{}'", self_ref_test, result);
+    println!("   自己参照テスト: '{}' → {:?}", self_ref_test, result);
 
     // Test 5: 大量の環境変数でのパフォーマンステスト
     println!("\n🧪 Test 5: パフォーマンステスト");
@@ -83,7 +83,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("   複雑な文字列: {} variables", 10);
     println!("   処理時間: {:?}", duration);
-    println!("   結果（短縮）: {}...", &result[..result.len().min(50)]);
+    let result = result.unwrap_or_default();
+    println!(
+        "   結果（短縮）: {}...",
+        result.chars().take(50).collect::<String>()
+    );
 
     // Test 6: WordPress設定での実際の使用例
     println!("\n🧪 Test 6: WordPress設定での実用例");
@@ -101,7 +105,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     for example in wp_config_examples {
         let result = McpConfig::expand_env_vars(example);
-        println!("   WordPress設定: '{}' → '{}'", example, result);
+        println!("   WordPress設定: '{}' → {:?}", example, result);
     }
 
     println!("\n✅ すべてのセキュリティテストが完了しました！");

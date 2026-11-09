@@ -64,7 +64,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     for test_str in test_strings {
         let expanded = McpConfig::expand_env_vars(test_str);
-        println!("   '{}' → '{}'", test_str, expanded);
+        println!("   '{}' → {:?}", test_str, expanded);
     }
 
     println!("\n🎯 環境変数を使った安全な設定例:");

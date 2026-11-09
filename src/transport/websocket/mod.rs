@@ -2,44 +2,20 @@
 //!
 //! WebSocketベースのリアルタイム双方向通信を提供
 
-pub mod balancer;
-pub mod compression;
 pub mod connection;
-pub mod failover;
 pub mod jsonrpc;
-pub mod llm_bridge;
-pub mod metrics;
 pub mod pool;
-pub mod rate_limit;
 pub mod server;
 pub mod stream;
-pub mod transfer;
 pub mod types;
 
-pub use balancer::{
-    BalancerConfig, BalancerManager, BalancerStats, BalancingStrategy, Endpoint, EndpointStats,
-    LoadBalancer,
-};
-pub use compression::{CompressionConfig, CompressionManager, CompressionStats};
 pub use connection::{WebSocketConnection, WebSocketConnectionBuilder};
-pub use failover::{
-    Failover, FailoverConfig, FailoverEvent, FailoverManager, FailoverStatus, SessionState,
-};
 pub use jsonrpc::{error_codes, JsonRpcMessage, JsonRpcNotification};
-pub use llm_bridge::{
-    AnthropicBridge, LlmBridge, LlmBridgeFactory, LlmConfig, LlmProvider, OpenAiBridge, StreamChunk,
-};
-pub use metrics::{MetricsSnapshot, WebSocketMetrics};
 pub use pool::{ConnectionPool, PoolMetrics};
-pub use rate_limit::{LimiterStats, RateLimitConfig, RateLimitStrategy, RateLimiter};
 pub use server::{
     ConnectionId, EchoHandler, MessageHandler, ServerConfig, ServerStatistics, WebSocketServer,
 };
 pub use stream::StreamingTransport;
-pub use transfer::{
-    CompressionType, FileChunk, FileTransferProtocol, TransferManager, TransferOptions,
-    TransferProgress, TransferState,
-};
 pub use types::{PoolStatistics, WebSocketConfig, WebSocketConfigBuilder};
 
 use crate::error::{Error, Result};

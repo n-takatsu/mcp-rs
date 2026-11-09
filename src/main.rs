@@ -2,31 +2,11 @@
 //!
 //! 新しいTransport抽象化を使用したクリーンなアーキテクチャ
 
-#![allow(dead_code)]
-#![allow(unused_imports)]
-// src/lib.rsと同じ理由（async_traitのマクロ展開によるclippyの誤検出）。
-// このバイナリは下記のモジュールを独自に読み込むため、lib.rs側の許可は
-// 効かない。
-#![allow(clippy::double_must_use)]
-
-mod config;
-mod error;
-mod handlers;
-mod logging;
-mod mcp;
-mod protocol;
-mod security;
-mod server;
-mod session;
-mod transport;
-mod types;
-mod zero_trust;
-
 use mcp_rs::config::McpConfig;
 use mcp_rs::handlers::WordPressHandler;
 use mcp_rs::logging::{init_logging, LogConfig};
 use std::sync::Arc;
-use tracing::{error, info};
+use tracing::info;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -136,7 +116,8 @@ async fn load_config_from_file(path: &str) -> Result<McpConfig, Box<dyn std::err
 
     // WordPressConfig の環境変数展開を適用（McpConfig::load() と同様の処理）
     if let Some(ref mut wp_config) = config.handlers.wordpress {
-        McpConfig::expand_wordpress_config(wp_config);
+        // 参照した環境変数が無ければ起動しない（#454）。項目と変数名を出す
+        McpConfig::expand_wordpress_config(wp_config).map_err(|e| e.to_string())?;
         wp_config.resolve_encrypted_credentials()?;
     }
 
