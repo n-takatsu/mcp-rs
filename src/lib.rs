@@ -12,7 +12,6 @@
 // メッセージ無しの#[must_use]を付けるため、新しいclippyが誤検出する。
 // CIでは-A clippy::double_must_useで無効化しているが、エディタ
 // （rust-analyzer）にも同じ扱いをさせるためクレート単位で許可する。
-// src/main.rsも同じモジュールを読み込むため、同じ許可を付けている。
 #![allow(clippy::double_must_use)]
 
 pub mod cli_args;
