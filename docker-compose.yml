@@ -45,7 +45,6 @@ services:
     # Volumes (optional - uncomment if you have config files)
     # volumes:
     #   - ./configs:/app/configs:ro
-    #   - ./demo-policies:/app/demo-policies:ro
 
     # Networks
     networks:

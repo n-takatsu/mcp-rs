@@ -45,10 +45,7 @@ MCP-RS provides a **comprehensive, battle-tested** implementation of the MCP (Mo
 - **⚡ Token Bucket Rate Limiting**: Advanced DDoS protection with configurable limits and burst handling
 - **🔒 TLS 1.2+ Enforcement**: Mandatory secure transport with certificate validation
 - **🚫 Zero-Panic Operations**: Complete unwrap() elimination with comprehensive Result-based error handling
-- **🛡️ SQL Injection Protection**: 11 attack pattern detection with Union/Boolean/Time-based attack prevention
-- **🚫 XSS Attack Protection**: 14 attack pattern detection with HTML sanitization and CSP headers
 - **📊 Comprehensive Audit Logging**: All security events recorded with tamper-resistant logging
-- **🎯 Advanced Input Validation**: Real-time validation with custom rules and data sanitization
 - **🔍 Data Masking**: 4 masking strategies (Full, Partial, Hash, Tokenize) for PII/PHI protection
 - **📈 Time-Based Access Control**: Business hours and emergency access support
 
@@ -157,7 +154,7 @@ See the [Security documentation](docs/security/) for details.
 
 ## ✅ v0.16.0
 
-- **🌐 WebSocket Transport Enhancements**: Server mode, LLM streaming, connection pooling, load balancing
+- **🌐 WebSocket Transport Enhancements**: Server mode, LLM streaming, connection pooling, load balancing (LLM streaming, load balancing, metrics and compression were removed later because the server never used them, [#448](https://github.com/n-takatsu/mcp-rs/issues/448))
 - **🔌 Plugin Isolation System**: Inter-plugin communication, advanced error handling, Docker runtime support (removed later because it was never connected to the server; plugins are being redesigned in [#392](https://github.com/n-takatsu/mcp-rs/issues/392))
 - **🤖 LLM Streaming Integration**: OpenAI GPT-4 and Anthropic Claude 3.5 Sonnet with real-time responses
 - **📊 Metrics & Monitoring**: Real-time metrics collection, rate limiting (3 algorithms), message compression

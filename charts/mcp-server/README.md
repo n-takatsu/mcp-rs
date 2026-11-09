@@ -374,7 +374,6 @@ networkPolicy:
 ## Documentation
 
 - [Production Deployment Guide](../../docs/PRODUCTION_DEPLOYMENT_GUIDE.md)
-- [Kubernetes Guide](../../docs/KUBERNETES_GUIDE.md)
 - [Main README](../../README.md)
 
 ## Support
