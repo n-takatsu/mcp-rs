@@ -225,6 +225,18 @@ transport_type = "http"
 enable_websocket_upgrade = true
 ```
 
+### Log Files
+
+mcp-rs writes its log to the first of these folders that it can write to:
+
+1. `logs` in the folder of the `mcp-rs` executable (for example, where you extracted the zip)
+2. The user folder: `%USERPROFILE%\.mcp-rs\logs` on Windows, `$XDG_STATE_HOME/mcp-rs/logs` or `~/.local/state/mcp-rs/logs` elsewhere. When mcp-rs is installed in `C:\Program Files\MCP-rs`, the log is always here
+3. `logs` in the current folder, then `mcp-rs/logs` in the temporary folder
+
+The `mcp_rs_status` tool shows the log file in use. It says `fallback` only when mcp-rs could not write to 1 or 2.
+
+The file name ends with the date, such as `mcp-rs.log.2026-11-09`, and a new file starts every day. The date in the file name is in UTC, so in Japan (UTC+9) a new file starts at 9:00 every morning. The times inside the log are in local time.
+
 ## 🏗️ Architecture
 
 ```text
