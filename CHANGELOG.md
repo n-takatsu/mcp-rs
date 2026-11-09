@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- RUSTSEC-2026-0459（`libsqlite3-sys` 0.30.1に同梱のSQLite、
+  CVE-2026-119375）を、`.cargo/audit.toml`で理由を付けて無視（#444）。
+  修正版（0.39.0以降）を使えるsqlxが、まだ無い（0.9.0も0.38.0未満）。
+  信頼できない人が書いたデータベースとWALのファイルを開いた場合だけの
+  問題で、既定のビルドはSQLiteを開かない（SQLiteは任意の`database`
+  機能だけ）。sqlxが対応したら外す（#449）
+
 ## [0.19.2] - 2026-11-09
 
 ### Added
