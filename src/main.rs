@@ -116,7 +116,8 @@ async fn load_config_from_file(path: &str) -> Result<McpConfig, Box<dyn std::err
 
     // WordPressConfig の環境変数展開を適用（McpConfig::load() と同様の処理）
     if let Some(ref mut wp_config) = config.handlers.wordpress {
-        McpConfig::expand_wordpress_config(wp_config);
+        // 参照した環境変数が無ければ起動しない（#454）。項目と変数名を出す
+        McpConfig::expand_wordpress_config(wp_config).map_err(|e| e.to_string())?;
         wp_config.resolve_encrypted_credentials()?;
     }
 

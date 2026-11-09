@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- 設定ファイルの`${VAR}`（環境変数）の展開の問題を直した（#454）
+  - 展開した値の先頭20バイトをdebugのログに出していた。プラグインの`env`
+    （APIキー等）や設定の再読み込みでは、ログのレベルがdebugだとログ
+    ファイルに残った。値は出さず、変数名だけにした。値に日本語等が含まれる
+    とpanicすることがあったのも、あわせて直った
+  - WordPressを有効にした設定で、参照した環境変数が無い場合と、`${`に
+    対応する`}`が無い場合は、起動しないようにした。どの項目のどの変数かを
+    出す（値は出さない）。以前は`[ERROR:VAR]`等の文字列をパスワードにして
+    起動し、後でWordPressの認証が分かりにくい形で失敗していた。WordPressを
+    有効にしていない設定では、これまでどおり起動を止めない
+  - 置き換えた値の中の`${...}`は、もう一度は展開しないようにした
+    （パスワードに`${`が含まれていても、そのまま使う）
+  - プラグインの`env`で`${`の書き方がおかしい値は、渡さないようにした
+    （以前は`[INVALID_ENV_VAR]`を含む文字列を渡していた）
+  - **ライブラリの変更**: `McpConfig::expand_env_vars`は
+    `Result<String, EnvExpansionError>`を、`McpConfig::expand_wordpress_config`は
+    `Result<(), ConfigEnvError>`を返す
+
 ### Changed
 
 - Production Deployment（`deploy.yml`）を、同時には1つだけ実行するようにした

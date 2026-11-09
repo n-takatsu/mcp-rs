@@ -161,7 +161,8 @@ impl DynamicConfigManager {
 
         // Apply environment variable expansion for WordPress config
         if let Some(ref mut wp_config) = loaded_config.handlers.wordpress {
-            McpConfig::expand_wordpress_config(wp_config);
+            McpConfig::expand_wordpress_config(wp_config)
+                .map_err(|e| crate::error::Error::Config(e.to_string()))?;
             wp_config
                 .resolve_encrypted_credentials()
                 .map_err(|e| crate::error::Error::Internal(e.to_string()))?;

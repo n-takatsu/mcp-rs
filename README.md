@@ -201,7 +201,7 @@ username = "your-username"
 password = "your-application-password"   # WordPress Application Password
 ```
 
-Then run `./target/release/mcp-rs --config mcp-config.toml`. To keep the password out of the file, use `${WORDPRESS_PASSWORD}` or [encrypted credentials](https://n-takatsu.github.io/mcp-rs/docs/security/#encrypted-wordpress-credentials).
+Then run `./target/release/mcp-rs --config mcp-config.toml`. To keep the password out of the file, use `${WORDPRESS_PASSWORD}` or [encrypted credentials](https://n-takatsu.github.io/mcp-rs/docs/security/#encrypted-wordpress-credentials). mcp-rs does not start if a `${...}` variable is not set.
 
 ### HTTP TLS/mTLS Configuration (Optional)
 
