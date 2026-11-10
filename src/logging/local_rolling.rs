@@ -62,6 +62,10 @@ fn open_append(path: &Path) -> io::Result<File> {
 
 type Clock = Box<dyn Fn() -> DateTime<Local> + Send>;
 
+/// ファイルを切り替えたときに、新しいファイルの先頭に書く行を作る関数
+/// （切り替えた時刻と、新しいファイルのパスを受け取る。末尾に改行を含める）
+pub(crate) type RolloverHeader = Box<dyn Fn(&DateTime<Local>, &Path) -> String + Send>;
+
 /// ローカル時刻でファイルを切り替える、追記用のwriter。
 pub(crate) struct LocalRollingAppender {
     dir: PathBuf,
@@ -74,6 +78,8 @@ pub(crate) struct LocalRollingAppender {
     /// 今書いているファイルのパス。`LogDestination`と共有し、
     /// `mcp_rs_status`が実際のファイルを表示できるようにする。
     active_path: Arc<Mutex<PathBuf>>,
+    /// 切り替えたときに新しいファイルの先頭に書く行（#472）
+    rollover_header: Option<RolloverHeader>,
 }
 
 impl LocalRollingAppender {
@@ -103,7 +109,17 @@ impl LocalRollingAppender {
             current_name,
             next_rollover: next_rollover(rotation, &now),
             active_path: Arc::new(Mutex::new(path)),
+            rollover_header: None,
         })
+    }
+
+    /// ファイルを切り替えたときに、新しいファイルの先頭に書く行を設定する。
+    /// 起動したときの見出しの行は新しいファイルに無いので、これが無いと
+    /// どのプロセス（instance）の記録かを前のファイルまでさかのぼって
+    /// 調べる必要がある。
+    pub(crate) fn with_rollover_header(mut self, header: RolloverHeader) -> Self {
+        self.rollover_header = Some(header);
+        self
     }
 
     /// 今書いているファイルの名前
@@ -116,14 +132,16 @@ impl LocalRollingAppender {
         Arc::clone(&self.active_path)
     }
 
-    fn roll_if_needed(&mut self) {
-        let Some(next) = self.next_rollover else {
-            return;
-        };
+    /// 切り替えの時刻を過ぎていれば、新しいファイルに切り替える。
+    /// 切り替えた場合は、新しいファイルの先頭に書く行を返す。
+    fn roll_if_needed(&mut self) -> Option<String> {
+        let next = self.next_rollover?;
         let now = (self.clock)();
         if now < next {
-            return;
+            return None;
         }
+
+        let mut header = None;
 
         let name = file_name_for(&self.prefix, &self.rotation, &now);
         // 同じ形式の名前なので、文字列の比較で日付の前後が分かる。
@@ -133,6 +151,7 @@ impl LocalRollingAppender {
             let path = self.dir.join(&name);
             match open_append(&path) {
                 Ok(file) => {
+                    header = self.rollover_header.as_ref().map(|h| h(&now, &path));
                     self.file = file;
                     self.current_name = name;
                     *self
@@ -143,19 +162,28 @@ impl LocalRollingAppender {
                 Err(_) => {
                     // 開けなければ今のファイルに書き続け、少し後に試し直す
                     self.next_rollover = Some(now + Duration::seconds(RETRY_INTERVAL_SECS));
-                    return;
+                    return None;
                 }
             }
         }
         self.next_rollover = next_rollover(&self.rotation, &now);
+        header
     }
 }
 
 impl Write for LocalRollingAppender {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.roll_if_needed();
-        // 1件のログを1回で書く（途中で分けない）
-        self.file.write_all(buf)?;
+        match self.roll_if_needed() {
+            // 切り替えたときは、先頭の行とこの1件のログを1回で書く
+            // （同じファイルに書く別のプロセスの行と混ざらないように）
+            Some(header) => {
+                let mut bytes = header.into_bytes();
+                bytes.extend_from_slice(buf);
+                self.file.write_all(&bytes)?;
+            }
+            // 1件のログを1回で書く（途中で分けない）
+            None => self.file.write_all(buf)?,
+        }
         Ok(buf.len())
     }
 
@@ -351,5 +379,65 @@ mod tests {
         fs::write(&not_a_dir, "x").unwrap();
 
         assert!(LocalRollingAppender::new(&not_a_dir, &LogRotation::Daily, "mcp-rs.log").is_err());
+    }
+
+    fn test_header() -> RolloverHeader {
+        Box::new(|at, path| {
+            format!(
+                "=== continued at {} / log: {} ===\n",
+                at.format("%Y-%m-%dT%H:%M"),
+                path.file_name().unwrap().to_string_lossy()
+            )
+        })
+    }
+
+    /// 0時をまたいで切り替えると、新しいファイルの先頭に見出しの行が入り、
+    /// その後に切り替えのきっかけになった1件のログが続く（#472）
+    #[test]
+    fn test_writes_header_at_top_of_new_file_on_rollover() {
+        let dir = tempdir().unwrap();
+        let clock = TestClock::new(local(10, 23, 59));
+        let mut appender = LocalRollingAppender::with_clock(
+            dir.path(),
+            &LogRotation::Daily,
+            "mcp-rs.log",
+            clock.boxed(),
+        )
+        .unwrap()
+        .with_rollover_header(test_header());
+
+        appender.write_all(b"before\n").unwrap();
+        clock.set(local(11, 0, 5));
+        appender.write_all(b"after 1\n").unwrap();
+        appender.write_all(b"after 2\n").unwrap();
+
+        // 前のファイルには見出しの行を書かない
+        assert_eq!(read(dir.path(), "mcp-rs.log.2026-01-10"), "before\n");
+        assert_eq!(
+            read(dir.path(), "mcp-rs.log.2026-01-11"),
+            "=== continued at 2026-01-11T00:05 / log: mcp-rs.log.2026-01-11 ===\nafter 1\nafter 2\n"
+        );
+    }
+
+    /// 時計が戻る等で切り替えなかったときは、見出しの行を書かない
+    #[test]
+    fn test_does_not_write_header_without_rollover() {
+        let dir = tempdir().unwrap();
+        let clock = TestClock::new(local(10, 23, 59));
+        let mut appender = LocalRollingAppender::with_clock(
+            dir.path(),
+            &LogRotation::Daily,
+            "mcp-rs.log",
+            clock.boxed(),
+        )
+        .unwrap()
+        .with_rollover_header(test_header());
+
+        appender.write_all(b"a\n").unwrap();
+        clock.set(local(10, 23, 30));
+        appender.write_all(b"b\n").unwrap();
+
+        assert_eq!(read(dir.path(), "mcp-rs.log.2026-01-10"), "a\nb\n");
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
     }
 }
