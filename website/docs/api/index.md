@@ -239,6 +239,7 @@ Plugins that failed to start:
 
 - `Log` is the log file in use. mcp-rs writes the log to `logs` in the folder of the executable, or, when it cannot write there (for example, when installed in `C:\Program Files\MCP-rs`), to the user folder (`%USERPROFILE%\.mcp-rs\logs` on Windows, `$XDG_STATE_HOME/mcp-rs/logs` or `~/.local/state/mcp-rs/logs` elsewhere). `fallback: <reason>` is added only when it could write to neither and used another folder
 - The date in the log file name is the local date, and a new file starts at midnight local time (older versions used the UTC date). The times inside the log are also in local time
+- Claude Desktop may start two mcp-rs processes for one entry in `claude_desktop_config.json`. This is how Claude Desktop works, not a problem with your mcp-rs settings. Both processes write to the same log file; each line has `[pid …]`, and startup messages such as the WordPress connection check appear once per process. This is normal
 - Passwords, API keys, tokens, and environment variable values are not included
 - In HTTP mode, a caller who is not authenticated (no `auth_enabled` and no `[transport.http.oauth]`) gets the version only, so that file paths are not shown to everyone on the network. Authenticated callers also see `Caller: api_key:<name>` (or `oauth:<client>`)
 - It is read-only (`@read_only` allows it when [limiting tools](../security/#limiting-tools-per-api-key-or-token)), and calls are recorded in the audit log
