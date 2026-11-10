@@ -3,10 +3,16 @@ use std::fmt::Write as _;
 use std::fs;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Arc, Mutex, OnceLock};
 use tracing::{Event, Subscriber};
+use tracing_appender::non_blocking;
 use tracing_appender::non_blocking::WorkerGuard;
-use tracing_appender::{non_blocking, rolling};
+
+mod local_rolling;
+use local_rolling::LocalRollingAppender;
+
+/// ログファイル名の先頭（`mcp-rs.log.YYYY-MM-DD`）
+const LOG_FILE_PREFIX: &str = "mcp-rs.log";
 use tracing_subscriber::fmt::format::Writer;
 use tracing_subscriber::fmt::time::{ChronoLocal, FormatTime};
 use tracing_subscriber::fmt::{FmtContext, FormatEvent, FormatFields, FormattedFields};
@@ -315,18 +321,10 @@ fn fallback_log_dir_candidates() -> Vec<PathBuf> {
     candidates
 }
 
-/// `rotation`と現在時刻から、tracing-appenderが実際に使うログファイル名を
-/// 再計算する（`tracing_appender::rolling::Inner::join_date`は非公開の
-/// ためここで同じ命名規則を再現する）。呼び出し時点の時刻で都度計算する
-/// ことで、プロセスを起動したまま日付/時刻をまたいでローテーションが
-/// 発生していても、常に現在使われているはずの実際のファイル名を返す。
+/// `rotation`と今のローカル時刻から、ログファイル名を求める
+/// （`LocalRollingAppender`と同じ`local_rolling::file_name_for`を使う）。
 fn resolved_log_filename(rotation: &LogRotation) -> String {
-    let now = chrono::Utc::now();
-    match rotation {
-        LogRotation::Never => "mcp-rs.log".to_string(),
-        LogRotation::Daily => format!("mcp-rs.log.{}", now.format("%Y-%m-%d")),
-        LogRotation::Hourly => format!("mcp-rs.log.{}", now.format("%Y-%m-%d-%H")),
-    }
+    local_rolling::file_name_for(LOG_FILE_PREFIX, rotation, &chrono::Local::now())
 }
 
 /// 起動時に確定した、実際に使われているログ出力先の状態。
@@ -344,16 +342,26 @@ pub struct LogDestination {
     /// 最初に失敗した候補とその理由（フォールバックが発生しなかった
     /// 場合はNone）
     pub fallback_reason: Option<String>,
+    /// writer（`LocalRollingAppender`）が今書いているファイルのパス。
+    /// writerは書き込むときに切り替えるので、日付が変わった直後で
+    /// まだ何も書いていない間は、前の日のファイルのまま
+    active_file: Option<Arc<Mutex<PathBuf>>>,
 }
 
 impl LogDestination {
-    /// 現在書き込まれているはずの実際のログファイルパスを返す
-    /// （ローテーションで日付/時刻サフィックスが変わるため、呼び出し
-    /// 時点の時刻で再計算する）。
+    /// 今書き込んでいるログファイルのパスを返す。writerと共有している
+    /// パスを使い、無い場合（テスト等）は今のローカル時刻から求める。
     pub fn current_file_path(&self) -> Option<PathBuf> {
-        self.dir
-            .as_ref()
-            .map(|dir| dir.join(resolved_log_filename(&self.rotation)))
+        let dir = self.dir.as_ref()?;
+        if let Some(active) = &self.active_file {
+            return Some(
+                active
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .clone(),
+            );
+        }
+        Some(dir.join(resolved_log_filename(&self.rotation)))
     }
 
     /// stderrへの起動時告知向けの短い要約文字列（決定内容のみ。
@@ -426,9 +434,7 @@ pub fn current_log_destination() -> Option<LogDestination> {
 /// にインストールした場合、実行ファイルのフォルダに書き込めないのは
 /// 正常な状態なので、ユーザー領域を使ってもフォールバックとして報告
 /// しない（#441）。
-fn resolve_log_destination(
-    config: &LogConfig,
-) -> (Option<rolling::RollingFileAppender>, LogDestination) {
+fn resolve_log_destination(config: &LogConfig) -> (Option<LocalRollingAppender>, LogDestination) {
     let mut candidates = vec![config.log_dir.clone()];
     if config.log_dir == primary_log_dir_candidate() {
         candidates.extend(user_log_dir());
@@ -459,7 +465,7 @@ fn resolve_log_destination_from_candidates(
     candidates: &[PathBuf],
     normal_count: usize,
     rotation: &LogRotation,
-) -> (Option<rolling::RollingFileAppender>, LogDestination) {
+) -> (Option<LocalRollingAppender>, LogDestination) {
     // 失敗した候補ごとに1件ずつ記録する（添字は候補の添字と一致する）
     let mut failures: Vec<String> = Vec::new();
     let normal_count = normal_count.max(1);
@@ -472,7 +478,7 @@ fn resolve_log_destination_from_candidates(
             continue;
         }
 
-        let mut appender = match build_file_appender(dir, rotation, "mcp-rs.log") {
+        let mut appender = match build_file_appender(dir, rotation, LOG_FILE_PREFIX) {
             Ok(appender) => appender,
             Err(e) => {
                 failures.push(format!("{} is not writable: {}", dir.display(), e));
@@ -480,7 +486,7 @@ fn resolve_log_destination_from_candidates(
             }
         };
 
-        let filename = resolved_log_filename(rotation);
+        let filename = appender.current_file_name().to_string();
         if let Err(e) = write_startup_marker(&mut appender, dir, &filename) {
             failures.push(format!(
                 "{} accepted the write but it could not be verified: {}",
@@ -498,6 +504,7 @@ fn resolve_log_destination_from_candidates(
             } else {
                 fallback_reason(&failures)
             },
+            active_file: Some(appender.active_path()),
         };
         return (Some(appender), destination);
     }
@@ -508,6 +515,7 @@ fn resolve_log_destination_from_candidates(
             dir: None,
             rotation: rotation.clone(),
             fallback_reason: fallback_reason(&failures),
+            active_file: None,
         },
     )
 }
@@ -525,13 +533,12 @@ fn resolve_log_destination_from_candidates(
 /// 一貫して成功するため）。このケースへの対策は
 /// `fallback_log_dir_candidates`側でAppData配下を避けること。
 fn write_startup_marker(
-    appender: &mut rolling::RollingFileAppender,
+    appender: &mut LocalRollingAppender,
     dir: &Path,
     filename: &str,
 ) -> std::io::Result<()> {
     // 他のログ行と同じ表記（ローカル時刻・ミリ秒3桁・タイムゾーン付き）に
-    // 揃える。`resolved_log_filename`のUTC基準の日付計算とは無関係の、
-    // 人間が読むための表示用タイムスタンプ。
+    // 揃える。
     let marker = format!(
         "=== mcp-rs {} started at {} / pid {} / log: {} ===\n",
         env!("CARGO_PKG_VERSION"),
@@ -561,30 +568,17 @@ fn ensure_log_dir(dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// ログファイル用の`RollingFileAppender`を構築する。
+/// ログファイル用のwriter（ローカル時刻で切り替える）を作る。
 ///
-/// `rolling::daily()`等の便利関数は内部で`.expect()`しており、ログ
-/// ディレクトリは存在するが書き込み権限がない場合（例:
-/// `C:\Program Files\...\logs`を非昇格プロセスから使う場合）に初回の
-/// ログファイル作成へ失敗し、サーバー全体がパニックで起動できなくなって
-/// いた。`Builder::build()`は同じ初期化処理を行うが`Result`を返すため、
-/// 呼び出し側で失敗を検出してコンソール出力への縮退にフォールバック
-/// できる。
+/// ディレクトリに書き込めない場合（例: `C:\Program Files\...\logs`を
+/// 非昇格プロセスから使う場合）は、パニックせず`Err`を返す。呼び出し側は
+/// 次の候補を試すか、コンソール出力だけにする。
 fn build_file_appender(
     log_dir: &Path,
     rotation: &LogRotation,
     filename_prefix: &str,
-) -> Result<rolling::RollingFileAppender, rolling::InitError> {
-    let tracing_rotation = match rotation {
-        LogRotation::Daily => rolling::Rotation::DAILY,
-        LogRotation::Hourly => rolling::Rotation::HOURLY,
-        LogRotation::Never => rolling::Rotation::NEVER,
-    };
-
-    rolling::Builder::new()
-        .rotation(tracing_rotation)
-        .filename_prefix(filename_prefix)
-        .build(log_dir)
+) -> std::io::Result<LocalRollingAppender> {
+    LocalRollingAppender::new(log_dir, rotation, filename_prefix)
 }
 
 /// モジュール識別子
@@ -965,7 +959,7 @@ fn is_log_file(path: &Path) -> bool {
 /// `file_appender`は`init_logging`が`resolve_log_destination`で事前に
 /// 解決済み（フォールバック・失敗告知込み）のものを受け取る。
 fn init_single_file_logging(
-    file_appender: Option<rolling::RollingFileAppender>,
+    file_appender: Option<LocalRollingAppender>,
     env_filter: EnvFilter,
 ) -> Result<Option<WorkerGuard>> {
     match file_appender {
@@ -1011,7 +1005,7 @@ fn init_single_file_logging(
 
 /// 分離ログ初期化（本番推奨）
 fn init_separated_logging(
-    file_appender: Option<rolling::RollingFileAppender>,
+    file_appender: Option<LocalRollingAppender>,
     env_filter: EnvFilter,
 ) -> Result<Option<WorkerGuard>> {
     // 暫定実装：コンソール＋単一ファイル
@@ -1022,7 +1016,7 @@ fn init_separated_logging(
 
 /// ハイブリッドログ初期化（概要＋詳細分離）
 fn init_hybrid_full_logging(
-    file_appender: Option<rolling::RollingFileAppender>,
+    file_appender: Option<LocalRollingAppender>,
     env_filter: EnvFilter,
 ) -> Result<Option<WorkerGuard>> {
     // 暫定実装：コンソール＋単一ファイル
@@ -1043,7 +1037,7 @@ fn init_console_only_logging(env_filter: EnvFilter) -> Result<()> {
 
 /// ファイルのみログ初期化
 fn init_file_only_logging(
-    file_appender: Option<rolling::RollingFileAppender>,
+    file_appender: Option<LocalRollingAppender>,
     env_filter: EnvFilter,
     separation: &ModuleSeparation,
 ) -> Result<Option<WorkerGuard>> {
@@ -1189,6 +1183,7 @@ mod tests {
             dir: Some(plain_dir.clone()),
             rotation: LogRotation::Never,
             fallback_reason: None,
+            active_file: None,
         };
         assert_eq!(
             plain.summary(),
@@ -1205,6 +1200,7 @@ mod tests {
             dir: Some(fallback_dir.clone()),
             rotation: LogRotation::Never,
             fallback_reason: Some("/var/log/mcp-rs is not writable: Permission denied".to_string()),
+            active_file: None,
         };
         assert_eq!(
             fallback.summary(),
@@ -1220,6 +1216,7 @@ mod tests {
             dir: None,
             rotation: LogRotation::Never,
             fallback_reason: Some("ignored for disabled case".to_string()),
+            active_file: None,
         };
         assert_eq!(
             disabled.summary(),
@@ -1238,6 +1235,7 @@ mod tests {
             dir: Some(log_dir.clone()),
             rotation: LogRotation::Never,
             fallback_reason: None,
+            active_file: None,
         };
         let status = existing.detailed_status();
         assert!(status.contains("exists"));
@@ -1251,6 +1249,7 @@ mod tests {
             dir: Some(missing_dir),
             rotation: LogRotation::Never,
             fallback_reason: None,
+            active_file: None,
         };
         assert!(missing.detailed_status().contains("MISSING on disk"));
     }
@@ -1402,7 +1401,7 @@ mod tests {
     }
 
     /// `resolved_log_filename`が各ローテーション設定で期待する命名規則
-    /// （tracing-appender内部の`Inner::join_date`と同じ形式）を返すこと
+    /// （ローカル時刻の日付、`mcp-rs.log.YYYY-MM-DD`等）を返すこと
     /// を確認する。
     #[test]
     fn test_resolved_log_filename_matches_rotation_naming() {
