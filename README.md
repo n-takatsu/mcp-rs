@@ -235,7 +235,7 @@ mcp-rs writes its log to the first of these folders that it can write to:
 
 The `mcp_rs_status` tool shows the log file in use. It says `fallback` only when mcp-rs could not write to 1 or 2.
 
-The file name ends with the date, such as `mcp-rs.log.2026-11-09`, and a new file starts every day. The date in the file name is in UTC, so in Japan (UTC+9) a new file starts at 9:00 every morning. The times inside the log are in local time.
+The file name ends with the date, such as `mcp-rs.log.2026-11-09`, and a new file starts at midnight local time. The date in the file name and the times inside the log are both in local time (older versions used the UTC date in the file name).
 
 ## 🏗️ Architecture
 
