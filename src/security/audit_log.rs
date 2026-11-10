@@ -4,7 +4,7 @@
 use crate::error::SecurityError;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
@@ -89,14 +89,31 @@ pub struct AuditLogEntry {
     pub ip_address: Option<String>,
     /// ユーザーエージェント
     pub user_agent: Option<String>,
-    /// 追加のメタデータ
-    pub metadata: HashMap<String, String>,
+    /// 追加のメタデータ。どのプロセスが記録したかを示す`pid`と`instance`
+    /// （`crate::logging::instance_id`、通常のログの起動時の見出しの行と
+    /// 同じ値）を常に含む。キーの順に並べる（ファイルの行ごとに順序が
+    /// 変わらないように）
+    pub metadata: BTreeMap<String, String>,
     /// 要求されたリソース
     pub resource: Option<String>,
     /// 実行されたアクション
     pub action: Option<String>,
     /// 結果（成功/失敗）
     pub result: Option<String>,
+}
+
+/// どのプロセスが記録したかを示すメタデータ（`pid`と`instance`）。
+/// Claude Desktopはmcp-rsを2つのプロセスとして起動することがあり、
+/// Windowsはpidを使い回すので、`instance`（pidと起動時刻）で通常のログの
+/// 起動時の見出しの行と突き合わせる（#468）。
+fn process_metadata() -> BTreeMap<String, String> {
+    BTreeMap::from([
+        ("pid".to_string(), std::process::id().to_string()),
+        (
+            "instance".to_string(),
+            crate::logging::instance_id().to_string(),
+        ),
+    ])
 }
 
 impl AuditLogEntry {
@@ -112,7 +129,7 @@ impl AuditLogEntry {
             session_id: None,
             ip_address: None,
             user_agent: None,
-            metadata: HashMap::new(),
+            metadata: process_metadata(),
             resource: None,
             action: None,
             result: None,
@@ -515,7 +532,11 @@ impl AuditLogger {
                 entry.ip_address = None;
                 entry.user_agent = None;
                 entry.session_id = None;
-                entry.metadata.clear();
+                // どのプロセスが記録したか（pid・instance）は個人の情報では
+                // ないので残す
+                entry
+                    .metadata
+                    .retain(|key, _| key == "pid" || key == "instance");
                 entry
                     .metadata
                     .insert("gdpr_redacted".to_string(), "true".to_string());
@@ -720,10 +741,49 @@ mod tests {
                     entry.metadata.get("gdpr_redacted").map(String::as_str),
                     Some("true")
                 );
+                // 利用者の情報は消し、どのプロセスが記録したかは残す
+                assert!(!entry.metadata.contains_key("key"));
+                assert!(entry.metadata.contains_key("pid"));
+                assert!(entry.metadata.contains_key("instance"));
             } else {
                 assert_eq!(entry.message, "Other user logged in");
             }
         }
+    }
+
+    /// どの記録にも、記録したプロセスのpidとinstanceが入る（#468）
+    #[test]
+    fn test_entry_records_pid_and_instance() {
+        let entry = AuditLogEntry::new(
+            AuditLevel::Info,
+            AuditCategory::DataAccess,
+            "Tool call".to_string(),
+        );
+
+        let pid = std::process::id().to_string();
+        assert_eq!(entry.metadata.get("pid"), Some(&pid));
+        let instance = entry.metadata.get("instance").unwrap();
+        assert_eq!(instance, crate::logging::instance_id());
+        assert!(instance.starts_with(&format!("{}-", pid)));
+    }
+
+    /// `metadata`はキーの順にJSONへ出る（行ごとに順序が変わらない）
+    #[test]
+    fn test_metadata_keys_are_sorted_in_json() {
+        let entry = AuditLogEntry::new(
+            AuditLevel::Info,
+            AuditCategory::DataAccess,
+            "Tool call".to_string(),
+        )
+        .add_metadata("target_id".to_string(), "7".to_string())
+        .add_metadata("duration_ms".to_string(), "12".to_string());
+
+        let json = serde_json::to_string(&entry).unwrap();
+        let positions: Vec<usize> = ["duration_ms", "instance", "pid", "target_id"]
+            .iter()
+            .map(|key| json.find(&format!("\"{}\"", key)).unwrap())
+            .collect();
+        assert!(positions.windows(2).all(|w| w[0] < w[1]), "{}", json);
     }
 
     #[tokio::test]

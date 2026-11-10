@@ -4,7 +4,7 @@
 
 > **[日本語](README.ja.md)** | **[English](README.md)**
 
-[![Version](https://img.shields.io/badge/Version-v0.20.0-blue)](https://github.com/n-takatsu/mcp-rs/releases/tag/v0.20.0)
+[![Version](https://img.shields.io/badge/Version-v0.21.0-blue)](https://github.com/n-takatsu/mcp-rs/releases/tag/v0.21.0)
 ![Architecture](https://img.shields.io/badge/Architecture-Production--Ready-green)
 ![Implementation](https://img.shields.io/badge/WordPress_Tools-32_Available-green)
 ![License](https://img.shields.io/badge/License-MIT%2FApache--2.0-green)
@@ -212,7 +212,13 @@ hsts_enabled = true
 
 使っているログファイルは、`mcp_rs_status`ツールで確認できます。`fallback`と表示されるのは、1にも2にも書き込めなかった場合だけです。
 
-ファイル名の末尾は`mcp-rs.log.2026-11-09`のような日付で、1日ごとに新しいファイルになります。ファイル名の日付はUTCなので、日本時間では毎朝9:00に新しいファイルになります。ログの中の時刻は、ローカル時刻です。
+ファイル名の末尾は`mcp-rs.log.2026-11-09`のような日付で、ローカル時刻の0時に新しいファイルになります。ファイル名の日付も、ログの中の時刻も、ローカル時刻です（以前のバージョンでは、ファイル名の日付はUTCでした）。動き続けているmcp-rsが次の日のファイルに切り替えると、新しいファイルの先頭に`=== mcp-rs … continued at … / pid … / instance … / log: … ===`のような行が入るので、どのファイルも単独で、どのプロセスが書いたかが分かります。2つのプロセスが動いている場合（下記）は、プロセスごとに1行ずつ、`instance`の違う行が入ります。
+
+Claude Desktopは、`claude_desktop_config.json`に1つだけ登録したmcp-rsを、2つのプロセスとして起動することがあります。Claude Desktopの動作で、mcp-rsの設定の問題ではありません。2つのプロセスが同じログファイルに書くので、ログが二重になったように見えます。
+
+- ログの各行にはプロセスID（`[pid …]`）が付いているので、2つのプロセスを区別できます
+- 起動時の見出しの行（`=== mcp-rs … started at … / pid … / instance … / log: … ===`）も、プロセスごとに出ます。Windowsはプロセスの番号を使い回すので、再起動の後は、同じ`pid`が別のプロセスのことがあります。`[pid …]`は、その上にある直近の見出しの行と合わせて見てください。見出しの行には`instance`（プロセスの番号と起動時刻）も出ます。監査ログはツールの呼び出しごとに同じ`instance`を記録するので、2つのログを突き合わせられます
+- WordPressの接続の確認など、起動時の記録はプロセスごとに出ます。2回ずつ出るのは正常です
 
 ## 🏗️ アーキテクチャ
 

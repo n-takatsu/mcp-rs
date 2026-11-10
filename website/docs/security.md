@@ -226,12 +226,14 @@ Tool calls (WordPress and plugins) and, in HTTP mode, refused requests are appen
 
 Each entry has these fields:
 
-- `timestamp` (UTC) and `level` (`Info`, `Warning`, or `Error`)
+- `timestamp` and `level` (`Info`, `Warning`, or `Error`). `timestamp` is in UTC (ending in `Z`), while the regular log uses local time, so in Japan the two differ by 9 hours
 - `user_id`: who called. In HTTP mode, `api_key:<name>` for an API key, or `oauth:<client>` for an access token (the token's `azp` or `client_id`, or its `sub`). In STDIO mode, and in HTTP mode without authentication, `local`. Authentication failures have no `user_id`
 - `ip_address`: the client's IP address (HTTP mode)
 - `action`: the tool name. `resource`: the WordPress site URL, or `plugin:<name>`
 - `result`, and `message` (for example, `Plugin tool call: fs__read_text_file - SUCCESS`)
-- `metadata`: `subject` (the API key's `user_id`, or the token's `sub`), `duration_ms` (how long the tool call took), `error` (why it failed), and `target_id` (the ID of the post, page, media, category, or tag, for WordPress tools that take one)
+- `metadata`: `subject` (the API key's `user_id`, or the token's `sub`), `duration_ms` (how long the tool call took), `error` (why it failed), and `target_id` (the ID of the post, page, media, category, or tag, for WordPress tools that take one). Every entry also has `pid` and `instance`, which identify the mcp-rs process that recorded it (see below). Keys are in alphabetical order, and all values are strings
+
+Claude Desktop may start two mcp-rs processes for one entry, and Windows reuses process IDs. To find which process handled a tool call, use `instance` (the process ID and the local time it started, such as `70580-20261110T130333`). The same value appears in the regular log's startup line (`=== mcp-rs … started at … / pid … / instance … / log: … ===`) and in the `Instance` line of `mcp_rs_status`
 
 API keys, access tokens, and tool arguments (such as post content or file contents) are not recorded, because they can contain secrets. Up to version 0.18.4, only WordPress tools that change something were recorded, without the caller.
 

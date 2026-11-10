@@ -8,10 +8,13 @@
 
 ignore = [
     # RUSTSEC-2023-0071: RSA Marvin Attack
-    # - Affects: rsa 0.9.10 (via jsonwebtoken)
-    # - Status: No fixed version available
-    # - Mitigation: mcp-rs only verifies JWTs (OAuth access tokens) with public
-    #               keys; the Marvin attack needs RSA decryption with a private key
+    # - Affects: rsa 0.9.10, listed in Cargo.lock only as a dependency of
+    #            sqlx-mysql. mcp-rs does not enable sqlx's MySQL support, so
+    #            neither crate is built (`cargo tree -i rsa --all-features
+    #            --target all` prints nothing). jsonwebtoken no longer uses rsa
+    #            since it switched to the aws_lc_rs backend (#450)
+    # - Status: The fix is rsa >= 0.10.0, which sqlx-mysql 0.8.6 does not allow
+    # - Mitigation: Not compiled into mcp-rs
     "RUSTSEC-2023-0071",
     
     # RUSTSEC-2025-0134: rustls-pemfile unmaintained
@@ -21,15 +24,6 @@ ignore = [
     # - Mitigation: Only parses PEM files from the operator's own config.
     #               The replacement is rustls-pki-types' PemObject
     "RUSTSEC-2025-0134",
-
-    # RUSTSEC-2026-0387: crypto-bigint timing variability in constant-time ops
-    # - Affects: crypto-bigint 0.5.5 (via elliptic-curve -> p256/p384 -> jsonwebtoken)
-    # - Status: Fix requires crypto-bigint >=0.7.6, only available via jsonwebtoken
-    #           11.x (breaking major version bump from our pinned 10.2)
-    # - Mitigation: Evaluate jsonwebtoken 11.x migration separately; timing
-    #               side-channel requires an attacker able to measure
-    #               microarchitectural timing of our JWT signing/verification
-    "RUSTSEC-2026-0387",
 
     # RUSTSEC-2026-0459: libsqlite3-sys bundles SQLite < 3.54.0 (CVE-2026-119375)
     # - Affects: libsqlite3-sys 0.30.1 (via sqlx-sqlite 0.8.6, the "sqlite" feature of sqlx)

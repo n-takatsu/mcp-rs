@@ -158,7 +158,7 @@ Before `initialize`, mcp-rs uses `2024-11-05`. In STDIO mode, the version applie
     },
     "serverInfo": {
       "name": "mcp-rs",
-      "version": "0.20.0"
+      "version": "0.21.0"
     }
   },
   "id": 1
@@ -221,11 +221,12 @@ Lists available tools.
 mcp-rs always provides the read-only tool `mcp_rs_status` (first in `tools/list`), with or without WordPress and plugins. It returns text such as:
 
 ```text
-mcp-rs 0.20.0
+mcp-rs 0.21.0
 Mode: stdio
 Protocol version: 2025-06-18
 OS: windows (x86_64)
 Process ID: 12345
+Instance: 12345-20261109T093000
 Uptime: 1h 2m 3s
 Config file: C:\Users\me\AppData\Roaming\Claude\mcp-rs\mcp-config.toml
 Log: C:\Users\me\.mcp-rs\logs\mcp-rs.log.2026-11-09 (exists, 38.2 KB, last write ...)
@@ -238,7 +239,8 @@ Plugins that failed to start:
 ```
 
 - `Log` is the log file in use. mcp-rs writes the log to `logs` in the folder of the executable, or, when it cannot write there (for example, when installed in `C:\Program Files\MCP-rs`), to the user folder (`%USERPROFILE%\.mcp-rs\logs` on Windows, `$XDG_STATE_HOME/mcp-rs/logs` or `~/.local/state/mcp-rs/logs` elsewhere). `fallback: <reason>` is added only when it could write to neither and used another folder
-- The date in the log file name is in UTC, and a new file starts when the UTC date changes (9:00 in Japan). The times inside the log are in local time
+- The date in the log file name is the local date, and a new file starts at midnight local time (older versions used the UTC date). The times inside the log are also in local time. When a running mcp-rs moves to the next day's file, the new file starts with a `=== mcp-rs … continued at … / pid … / instance … ===` line
+- Claude Desktop may start two mcp-rs processes for one entry in `claude_desktop_config.json`. This is how Claude Desktop works, not a problem with your mcp-rs settings. Both processes write to the same log file; each line has `[pid …]` (Windows reuses process IDs, so read it together with the latest `=== mcp-rs … started … / pid … ===` line above it), and startup messages such as the WordPress connection check appear once per process. This is normal
 - Passwords, API keys, tokens, and environment variable values are not included
 - In HTTP mode, a caller who is not authenticated (no `auth_enabled` and no `[transport.http.oauth]`) gets the version only, so that file paths are not shown to everyone on the network. Authenticated callers also see `Caller: api_key:<name>` (or `oauth:<client>`)
 - It is read-only (`@read_only` allows it when [limiting tools](../security/#limiting-tools-per-api-key-or-token)), and calls are recorded in the audit log
@@ -495,7 +497,7 @@ Retrieves WordPress comments.
 
 ## Version Information
 
-- **Current Version**: v0.20.0
+- **Current Version**: v0.21.0
 - **Phase 1**: MySQL (Complete)
 - **Phase 2**: PostgreSQL (Complete)
 - **Last Updated**: 2025-11-23
