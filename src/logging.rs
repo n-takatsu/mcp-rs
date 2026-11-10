@@ -549,6 +549,22 @@ fn resolve_log_destination_from_candidates(
     )
 }
 
+/// ログファイルの見出しの行（末尾に改行を含む）。起動したとき（`started`）と、
+/// 日付でファイルを切り替えたとき（`continued`、#472）に書く。どのファイルも
+/// 単独で、どのプロセス（instance）の記録かが分かるようにする。時刻は他の
+/// ログの行と同じ表記（ローカル時刻・ミリ秒3桁・タイムゾーン付き）にする。
+fn header_line(event: &str, at: &chrono::DateTime<chrono::Local>, path: &Path) -> String {
+    format!(
+        "=== mcp-rs {} {} at {} / pid {} / instance {} / log: {} ===\n",
+        env!("CARGO_PKG_VERSION"),
+        event,
+        at.format("%Y-%m-%dT%H:%M:%S%.3f%:z"),
+        std::process::id(),
+        instance_id(),
+        path.display()
+    )
+}
+
 /// 今回のプロセス起動を示すマーカー行をログファイルに書き込み、
 /// `fs::metadata`で実際にディスク上にファイルが存在し中身が空でないかを
 /// 確認する。ローテーションにより同じファイルへ複数回分の起動ログが
@@ -566,16 +582,7 @@ fn write_startup_marker(
     dir: &Path,
     filename: &str,
 ) -> std::io::Result<()> {
-    // 他のログ行と同じ表記（ローカル時刻・ミリ秒3桁・タイムゾーン付き）に
-    // 揃える。
-    let marker = format!(
-        "=== mcp-rs {} started at {} / pid {} / instance {} / log: {} ===\n",
-        env!("CARGO_PKG_VERSION"),
-        started_at().format("%Y-%m-%dT%H:%M:%S%.3f%:z"),
-        std::process::id(),
-        instance_id(),
-        dir.join(filename).display()
-    );
+    let marker = header_line("started", started_at(), &dir.join(filename));
 
     appender.write_all(marker.as_bytes())?;
     appender.flush()?;
@@ -608,7 +615,10 @@ fn build_file_appender(
     rotation: &LogRotation,
     filename_prefix: &str,
 ) -> std::io::Result<LocalRollingAppender> {
-    LocalRollingAppender::new(log_dir, rotation, filename_prefix)
+    Ok(
+        LocalRollingAppender::new(log_dir, rotation, filename_prefix)?
+            .with_rollover_header(Box::new(|at, path| header_line("continued", at, path))),
+    )
 }
 
 /// モジュール識別子
@@ -1439,6 +1449,26 @@ mod tests {
             started.format("%Y-%m-%dT%H:%M:%S%.3f%:z")
         )));
         assert!(instance_id().ends_with(&started.format("%Y%m%dT%H%M%S").to_string()));
+    }
+
+    /// 切り替えたときの見出しの行は、起動したときと同じ形で`continued`になる
+    #[test]
+    fn test_header_line_for_continued() {
+        let at = chrono::Local::now();
+        let path = PathBuf::from("logs").join("mcp-rs.log.2026-11-11");
+        let line = header_line("continued", &at, &path);
+
+        assert_eq!(
+            line,
+            format!(
+                "=== mcp-rs {} continued at {} / pid {} / instance {} / log: {} ===\n",
+                env!("CARGO_PKG_VERSION"),
+                at.format("%Y-%m-%dT%H:%M:%S%.3f%:z"),
+                std::process::id(),
+                instance_id(),
+                path.display()
+            )
+        );
     }
 
     /// instance_idは`<pid>-<YYYYMMDDTHHMMSS>`の形で、何度呼んでも同じ（#468）

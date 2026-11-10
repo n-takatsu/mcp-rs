@@ -20,6 +20,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     （利用者の情報ではないため）
   - 起動時の見出しの行の`started at`と`instance`は、同じ1つの起動時刻から
     作る
+- 動き続けているmcp-rsが日付でログのファイルを切り替えたとき、新しい
+  ファイルの先頭に見出しの行（`=== mcp-rs … continued at … / pid … /
+  instance … / log: … ===`）を書くようにした（#472）。起動時の見出しの行は
+  起動したファイルにしか無いので、以前は前の日のファイルまでさかのぼらないと
+  `instance`が分からなかった。この行と切り替えのきっかけの1件のログは、
+  1回でまとめて書く（別のプロセスの行と混ざらない）
 - 監査ログの`timestamp`はUTC（通常のログはローカル時刻）であることを、
   websiteに書いた
 
