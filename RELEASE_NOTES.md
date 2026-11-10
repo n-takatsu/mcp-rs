@@ -4,6 +4,49 @@
 
 Our project follows a detailed 0.01 increment versioning strategy to provide granular tracking of development progress and feature implementation.
 
+## 🧹 v0.20.0 - 使っていないコードの整理
+
+**Release Date:** 2026-11-10
+**Focus:** 本体から使われていないコード・機能・依存関係を削除し、実態に合わない説明を直す。設定ファイルの環境変数の扱いを安全にする
+
+### 🧹 使っていないコードの削除（#448）
+
+- 本体（`mcp-rs`バイナリ）とデータベースのハンドラーのどちらからも使われて
+  いないモジュールを削除した（約6.1万行）。WordPress・プラグイン・HTTP
+  モードの認証等、本体の動作は変わらない
+- 使っていない機能（features）と依存関係を削除し、依存するクレートは725個
+  から591個に減った。WebSocketのクライアントのTLSをrustlsに揃え、OpenSSLを
+  使わなくなった
+- 削除した機能（脅威インテリジェンス・LLM・Kubernetes operator等）の
+  ドキュメントとHelmチャート等を削除し、README・websiteの説明を実態に
+  合わせた。データベースのハンドラーは、まだ本体につながっていない
+  ことを明記した（#453）
+
+### 🔒 設定ファイルの環境変数（#454）
+
+- `${VAR}`を展開した値の一部をdebugのログに出していたのをやめ、変数名だけに
+  した
+- WordPressを有効にした設定で、参照した環境変数が無い場合等は、起動しない
+  ようにした。どの項目のどの変数かを出す（値は出さない）
+
+### 📂 ログの出力先（#441）
+
+- `C:\Program Files\MCP-rs`にインストールした場合、ログが
+  `%USERPROFILE%\.mcp-rs\logs`に出るのを、フォールバックとして表示しない
+  ようにした。出力先は変わらない
+- ログのファイル名の日付がUTCであること等を、README・websiteに書いた
+
+### ⚠️ 挙動の変更
+
+- WordPressを有効にした設定で、`${VAR}`の環境変数が無いか、`${`に対応する
+  `}`が無いと、起動しない。以前は`[ERROR:VAR]`等の文字列を値にして起動して
+  いた
+- `--features`で、削除した機能（`websocket`・`security`・`full`等）を指定して
+  ビルドしている場合は、外す。既定の機能（`default`）は空になった
+- **ライブラリとして使っている場合**: 削除したモジュール（`mcp_rs::McpServer`
+  等）を使っていれば、`mcp_rs::mcp::McpServer`等に変える。
+  `McpConfig::expand_env_vars`等は`Result`を返す
+
 ## 🩺 v0.19.2 - 状態を確かめるツール
 
 **Release Date:** 2026-11-09

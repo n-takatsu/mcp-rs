@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-11-10
+
 ### Removed
 
 - 本体（`mcp-rs`バイナリ）と、データベースのハンドラー（`database`機能）の
@@ -35,7 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `mcp_rs::McpProtocol`・`mcp_rs::Session`等（`session`の再公開）を
     削除した。MCPのサーバーは`mcp_rs::mcp::McpServer`を使う
 - 使わなくなった機能（features）と依存関係を削除した（#448）。依存する
-  クレートは725個から570個に減った
+  クレートは725個から591個に減った
   - 機能: `session-management`・`security`・`websocket`・`mcp-protocol`・
     `metrics`・`testing`・`simd`・`kubernetes-operator`・
     `ml-anomaly-detection`・`llm-integration`・`full`。既定の機能（`default`）
@@ -102,8 +104,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 
 - openssl 0.10.75の脆弱性（RUSTSEC-2026-0463、`aes::unwrap_key`の範囲外
-  書き込み）を、0.10.82への更新で解消（#455）。opensslは、Linuxのビルドで
-  `native-tls`から使われている。mcp-rsは`aes::unwrap_key`を直接使っていない
+  書き込み）を、0.10.82への更新で解消（#455）。mcp-rsは`aes::unwrap_key`を
+  直接使っていない。その後、WebSocketのクライアントをrustlsに変えたため、
+  opensslはもう使っていない（#448）
+- 依存関係を互換の範囲で更新した（#448）: mongodb 3.6.0→3.10.0
+  （hickory-proto・hickory-resolver 0.25.2→0.26.3）、serde_with
+  3.16.1→3.24.0、rsa 0.9.9→0.9.10、rand 0.8.5→0.8.8・0.9.2→0.9.5。
+  hickory（DNS）・serde_with等の既知の脆弱性の警告（Trivy）を解消し、
+  不要になった`.cargo/audit.toml`の無視（RUSTSEC-2026-0118・
+  RUSTSEC-2026-0119・RUSTSEC-2026-0097）を外した
 - RUSTSEC-2026-0459（`libsqlite3-sys` 0.30.1に同梱のSQLite、
   CVE-2026-119375）を、`.cargo/audit.toml`で理由を付けて無視（#444）。
   修正版（0.39.0以降）を使えるsqlxが、まだ無い（0.9.0も0.38.0未満）。

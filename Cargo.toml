@@ -1,6 +1,6 @@
 [package]
 name = "mcp-rs"
-version = "0.19.2"
+version = "0.20.0"
 edition = "2021"
 authors = ["n-takatsu"]
 description = "Rust implementation of the Model Context Protocol (MCP) server for WordPress and other tools"
