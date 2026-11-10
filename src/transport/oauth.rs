@@ -525,7 +525,10 @@ fn select_key(keys: &[Jwk], kid: Option<&str>, alg: Algorithm) -> Option<Jwk> {
                 matches!(alg, Algorithm::ES256 | Algorithm::ES384)
             }
             AlgorithmParameters::OctetKeyPair(_) => alg == Algorithm::EdDSA,
-            AlgorithmParameters::OctetKey(_) => false,
+            // 共有鍵（`OctetKey`）は使わない。jsonwebtoken 11で加わり得る
+            // 知らない種類の鍵も使わない（`AlgorithmParameters`は
+            // `non_exhaustive`）
+            _ => false,
         };
         let alg_ok = jwk
             .common
@@ -591,7 +594,7 @@ pub(crate) mod test_support {
     use jsonwebtoken::{encode, EncodingKey, Header};
     use ring::{
         rand::SystemRandom,
-        signature::{EcdsaKeyPair, KeyPair, ECDSA_P256_SHA256_FIXED_SIGNING},
+        signature::{EcdsaKeyPair, Ed25519KeyPair, KeyPair, ECDSA_P256_SHA256_FIXED_SIGNING},
     };
     use std::sync::{
         atomic::{AtomicUsize, Ordering},
@@ -603,6 +606,23 @@ pub(crate) mod test_support {
         pub jwks_requests: Arc<AtomicUsize>,
         encoding_key: EncodingKey,
         kid: String,
+        /// EdDSA（Ed25519）で署名するための鍵（JWKSでは`ed-key`）
+        ed_encoding_key: EncodingKey,
+    }
+
+    /// EdDSAの鍵のJWKSでの`kid`
+    pub const ED_KID: &str = "ed-key";
+
+    fn new_ed25519_key() -> (EncodingKey, Value) {
+        let rng = SystemRandom::new();
+        let pkcs8 = Ed25519KeyPair::generate_pkcs8(&rng).unwrap();
+        let pair = Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).unwrap();
+        let jwk = serde_json::json!({
+            "kty": "OKP",
+            "crv": "Ed25519",
+            "x": URL_SAFE_NO_PAD.encode(pair.public_key().as_ref()),
+        });
+        (EncodingKey::from_ed_der(pkcs8.as_ref()), jwk)
     }
 
     pub fn now() -> u64 {
@@ -644,10 +664,15 @@ pub(crate) mod test_support {
             let (_, mut enc_jwk) = new_key();
             enc_jwk["kid"] = serde_json::json!("enc-key");
             enc_jwk["use"] = serde_json::json!("enc");
+            let (ed_encoding_key, mut ed_jwk) = new_ed25519_key();
+            ed_jwk["kid"] = serde_json::json!(ED_KID);
+            ed_jwk["use"] = serde_json::json!("sig");
+            ed_jwk["alg"] = serde_json::json!("EdDSA");
             let jwks = serde_json::json!({ "keys": [
                 enc_jwk,
                 { "kty": "oct", "kid": "hmac", "k": "c2VjcmV0" },
                 jwk,
+                ed_jwk,
             ]});
             let metadata = serde_json::json!({
                 "issuer": issuer,
@@ -673,7 +698,15 @@ pub(crate) mod test_support {
                 jwks_requests,
                 encoding_key,
                 kid,
+                ed_encoding_key,
             }
+        }
+
+        /// EdDSA（Ed25519）の鍵で署名する
+        pub fn sign_eddsa(&self, claims: &Value) -> String {
+            let mut header = Header::new(Algorithm::EdDSA);
+            header.kid = Some(ED_KID.to_string());
+            encode(&header, claims, &self.ed_encoding_key).unwrap()
         }
 
         pub fn config(&self, resource: &str) -> OAuthConfig {
@@ -873,6 +906,25 @@ mod tests {
         // 2回目は、取得済みの鍵を使う
         validator.validate(&token).await.unwrap();
         assert_eq!(server.jwks_requests.load(Ordering::SeqCst), 1);
+    }
+
+    /// EdDSA（Ed25519）で署名したトークンも検証できる（jsonwebtokenの
+    /// aws_lc_rsのバックエンドで、ES256以外の方式も動くことの確認、#450）
+    #[tokio::test]
+    async fn test_eddsa_token_is_accepted() {
+        let server = TestAuthServer::start().await;
+        let validator = OAuthValidator::new(server.config(RESOURCE)).unwrap();
+        let claims = serde_json::json!({
+            "iss": server.issuer,
+            "aud": RESOURCE,
+            "sub": "user-ed",
+            "exp": now() + 300,
+        });
+        let info = validator
+            .validate(&server.sign_eddsa(&claims))
+            .await
+            .unwrap();
+        assert_eq!(info.subject.as_deref(), Some("user-ed"));
     }
 
     #[tokio::test]
