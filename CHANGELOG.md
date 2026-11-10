@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- 監査ログの各記録に、記録したプロセスを示す`pid`と`instance`を加えた
+  （`metadata`、#468）。`instance`はプロセスの番号と起動時刻
+  （例: `70580-20261110T130333`）で、通常のログの起動時の見出しの行
+  （`=== mcp-rs … / pid … / instance … / log: … ===`）と`mcp_rs_status`
+  （`Instance`の行）にも同じ値を出す。Claude Desktopがmcp-rsを2つ起動する
+  場合や、Windowsがpidを使い回した場合でも、どのプロセスがツールの呼び出しを
+  処理したかを、2つのログで突き合わせられる
+  - GDPR等の削除の依頼で記録を消す場合も、`pid`と`instance`は残す
+    （利用者の情報ではないため）
+  - 監査ログの`metadata`のキーを、アルファベット順に並べるようにした
+    （以前は行ごとに順序が変わった）
+  - **ライブラリの変更**: `AuditLogEntry::metadata`の型を
+    `HashMap<String, String>`から`BTreeMap<String, String>`にした
+- 監査ログの`timestamp`はUTC（通常のログはローカル時刻）であることを、
+  websiteに書いた
+
 ### Documentation
 
 - Claude Desktopが、1つの登録に対してmcp-rsを2つのプロセスとして起動する

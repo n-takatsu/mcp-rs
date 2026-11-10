@@ -226,6 +226,7 @@ Mode: stdio
 Protocol version: 2025-06-18
 OS: windows (x86_64)
 Process ID: 12345
+Instance: 12345-20261109T093000
 Uptime: 1h 2m 3s
 Config file: C:\Users\me\AppData\Roaming\Claude\mcp-rs\mcp-config.toml
 Log: C:\Users\me\.mcp-rs\logs\mcp-rs.log.2026-11-09 (exists, 38.2 KB, last write ...)

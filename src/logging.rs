@@ -13,6 +13,25 @@ use local_rolling::LocalRollingAppender;
 
 /// ログファイル名の先頭（`mcp-rs.log.YYYY-MM-DD`）
 const LOG_FILE_PREFIX: &str = "mcp-rs.log";
+
+/// このプロセスを示すID（`<pid>-<起動時刻>`、例: `70580-20261110T130333`。
+/// 起動時刻はローカル時刻）。最初に呼んだ時点で決まり、以後は同じ値を返す
+/// （`init_logging`が起動の直後に呼ぶ）。
+///
+/// 通常のログの起動時の見出しの行、監査ログの各記録（`metadata.instance`）、
+/// `mcp_rs_status`に出し、2つのログを突き合わせられるようにする。
+/// Claude Desktopはmcp-rsを2つのプロセスとして起動することがあり、
+/// Windowsはpidを使い回すので、pidだけでは再起動をまたいで取り違える（#468）。
+pub fn instance_id() -> &'static str {
+    static INSTANCE_ID: OnceLock<String> = OnceLock::new();
+    INSTANCE_ID.get_or_init(|| {
+        format!(
+            "{}-{}",
+            std::process::id(),
+            chrono::Local::now().format("%Y%m%dT%H%M%S")
+        )
+    })
+}
 use tracing_subscriber::fmt::format::Writer;
 use tracing_subscriber::fmt::time::{ChronoLocal, FormatTime};
 use tracing_subscriber::fmt::{FmtContext, FormatEvent, FormatFields, FormattedFields};
@@ -540,10 +559,11 @@ fn write_startup_marker(
     // 他のログ行と同じ表記（ローカル時刻・ミリ秒3桁・タイムゾーン付き）に
     // 揃える。
     let marker = format!(
-        "=== mcp-rs {} started at {} / pid {} / log: {} ===\n",
+        "=== mcp-rs {} started at {} / pid {} / instance {} / log: {} ===\n",
         env!("CARGO_PKG_VERSION"),
         chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%.3f%:z"),
         std::process::id(),
+        instance_id(),
         dir.join(filename).display()
     );
 
@@ -637,6 +657,9 @@ impl Module {
 /// 終了し、以後`tracing::info!`等の呼び出しは実際にはファイルへ
 /// 書き込まれなくなる（チャンネルの受信側が既に存在しないため）。
 pub fn init_logging(config: &LogConfig) -> Result<Option<WorkerGuard>> {
+    // 起動時刻を含むIDなので、起動の直後に決めておく
+    let _ = instance_id();
+
     // EnvFilterを作成
     let env_filter = EnvFilter::try_new(&config.level).unwrap_or_else(|_| EnvFilter::new("info"));
 
@@ -1398,6 +1421,17 @@ mod tests {
         assert!(contents.starts_with("=== mcp-rs "));
         assert!(contents.contains(env!("CARGO_PKG_VERSION")));
         assert!(contents.contains(&std::process::id().to_string()));
+        assert!(contents.contains(&format!("/ instance {} /", instance_id())));
+    }
+
+    /// instance_idは`<pid>-<YYYYMMDDTHHMMSS>`の形で、何度呼んでも同じ（#468）
+    #[test]
+    fn test_instance_id_is_pid_and_start_time_and_stable() {
+        let id = instance_id();
+        let (pid, started) = id.split_once('-').unwrap();
+        assert_eq!(pid, std::process::id().to_string());
+        assert!(chrono::NaiveDateTime::parse_from_str(started, "%Y%m%dT%H%M%S").is_ok());
+        assert_eq!(instance_id(), id);
     }
 
     /// `resolved_log_filename`が各ローテーション設定で期待する命名規則
