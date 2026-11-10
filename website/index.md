@@ -99,7 +99,13 @@ See [WordPress Integration](docs/wordpress/) for the full list of tools.
 
 ## Current Status
 
-## ✅ Recently Completed (v0.20.0)
+## ✅ Recently Completed (v0.21.0)
+
+- **📂 Log Files by Local Date**: Log files now switch at local midnight, so the date in the file name matches the times in the log. When a running mcp-rs switches to a new file, it writes a `continued` line with its `pid` and `instance` at the top
+- **🔎 Which Process Did It**: Each audit log record has `pid` and `instance` in `metadata`, matching the log's header lines and the `Instance` line of `mcp_rs_status`, so you can tell the two processes Claude Desktop starts apart
+- **🔒 Dependencies**: jsonwebtoken 11.1 with the `aws_lc_rs` backend, the same crypto library rustls already uses
+
+## ✅ v0.20.0
 
 - **🧹 Cleanup**: Removed modules, features, and dependencies that the server never used (725 → 591 crates; OpenSSL is no longer needed), and corrected the documentation to match what mcp-rs actually does
 - **🔒 Environment Variables in the Config File**: Values expanded from `${VAR}` are no longer written to the debug log. With WordPress enabled, mcp-rs does not start when a referenced variable is missing, and names the setting and the variable. See [Security](docs/security/)
