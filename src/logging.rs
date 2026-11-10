@@ -7,6 +7,11 @@ use std::sync::{Arc, Mutex, OnceLock};
 use tracing::{Event, Subscriber};
 use tracing_appender::non_blocking;
 use tracing_appender::non_blocking::WorkerGuard;
+use tracing_subscriber::fmt::format::Writer;
+use tracing_subscriber::fmt::time::{ChronoLocal, FormatTime};
+use tracing_subscriber::fmt::{FmtContext, FormatEvent, FormatFields, FormattedFields};
+use tracing_subscriber::registry::LookupSpan;
+use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
 
 mod local_rolling;
 use local_rolling::LocalRollingAppender;
@@ -14,9 +19,19 @@ use local_rolling::LocalRollingAppender;
 /// ログファイル名の先頭（`mcp-rs.log.YYYY-MM-DD`）
 const LOG_FILE_PREFIX: &str = "mcp-rs.log";
 
+/// このプロセスの起動時刻（ローカル時刻）。最初に呼んだ時点で決まり、以後は
+/// 同じ値を返す（`init_logging`が起動の直後に呼ぶ）。起動時の見出しの行の
+/// `started at`と`instance_id`の両方に、この1つの時刻を使う。
+///
+/// ライブラリとして使い、`init_logging`を呼ばない場合は、最初に監査ログを
+/// 記録した時刻等、最初に呼ばれた時刻になる。
+fn started_at() -> &'static chrono::DateTime<chrono::Local> {
+    static STARTED_AT: OnceLock<chrono::DateTime<chrono::Local>> = OnceLock::new();
+    STARTED_AT.get_or_init(chrono::Local::now)
+}
+
 /// このプロセスを示すID（`<pid>-<起動時刻>`、例: `70580-20261110T130333`。
-/// 起動時刻はローカル時刻）。最初に呼んだ時点で決まり、以後は同じ値を返す
-/// （`init_logging`が起動の直後に呼ぶ）。
+/// 起動時刻は`started_at`）。以後は同じ値を返す。
 ///
 /// 通常のログの起動時の見出しの行、監査ログの各記録（`metadata.instance`）、
 /// `mcp_rs_status`に出し、2つのログを突き合わせられるようにする。
@@ -28,15 +43,10 @@ pub fn instance_id() -> &'static str {
         format!(
             "{}-{}",
             std::process::id(),
-            chrono::Local::now().format("%Y%m%dT%H%M%S")
+            started_at().format("%Y%m%dT%H%M%S")
         )
     })
 }
-use tracing_subscriber::fmt::format::Writer;
-use tracing_subscriber::fmt::time::{ChronoLocal, FormatTime};
-use tracing_subscriber::fmt::{FmtContext, FormatEvent, FormatFields, FormattedFields};
-use tracing_subscriber::registry::LookupSpan;
-use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
 
 /// ログのタイムスタンプをローカル時刻・ミリ秒3桁・タイムゾーン付きで
 /// 出力するフォーマッター（例: `2026-10-10T16:43:13.227+09:00`）。
@@ -561,7 +571,7 @@ fn write_startup_marker(
     let marker = format!(
         "=== mcp-rs {} started at {} / pid {} / instance {} / log: {} ===\n",
         env!("CARGO_PKG_VERSION"),
-        chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%.3f%:z"),
+        started_at().format("%Y-%m-%dT%H:%M:%S%.3f%:z"),
         std::process::id(),
         instance_id(),
         dir.join(filename).display()
@@ -657,7 +667,7 @@ impl Module {
 /// 終了し、以後`tracing::info!`等の呼び出しは実際にはファイルへ
 /// 書き込まれなくなる（チャンネルの受信側が既に存在しないため）。
 pub fn init_logging(config: &LogConfig) -> Result<Option<WorkerGuard>> {
-    // 起動時刻を含むIDなので、起動の直後に決めておく
+    // 起動時刻（見出しの行とinstance_idで使う）を、起動の直後に決めておく
     let _ = instance_id();
 
     // EnvFilterを作成
@@ -1422,6 +1432,13 @@ mod tests {
         assert!(contents.contains(env!("CARGO_PKG_VERSION")));
         assert!(contents.contains(&std::process::id().to_string()));
         assert!(contents.contains(&format!("/ instance {} /", instance_id())));
+        // started atとinstanceは同じ1つの起動時刻から作る（秒がずれない）
+        let started = started_at();
+        assert!(contents.contains(&format!(
+            "started at {} /",
+            started.format("%Y-%m-%dT%H:%M:%S%.3f%:z")
+        )));
+        assert!(instance_id().ends_with(&started.format("%Y%m%dT%H%M%S").to_string()));
     }
 
     /// instance_idは`<pid>-<YYYYMMDDTHHMMSS>`の形で、何度呼んでも同じ（#468）

@@ -18,10 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   処理したかを、2つのログで突き合わせられる
   - GDPR等の削除の依頼で記録を消す場合も、`pid`と`instance`は残す
     （利用者の情報ではないため）
-  - 監査ログの`metadata`のキーを、アルファベット順に並べるようにした
-    （以前は行ごとに順序が変わった）
-  - **ライブラリの変更**: `AuditLogEntry::metadata`の型を
-    `HashMap<String, String>`から`BTreeMap<String, String>`にした
+  - 起動時の見出しの行の`started at`と`instance`は、同じ1つの起動時刻から
+    作る
 - 監査ログの`timestamp`はUTC（通常のログはローカル時刻）であることを、
   websiteに書いた
 
@@ -34,6 +32,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **互換性のない変更（ライブラリ）**: `AuditLogEntry::metadata`の型を
+  `HashMap<String, String>`から`BTreeMap<String, String>`にした（#468）。
+  監査ログの`metadata`のキーが、アルファベット順に並ぶ（以前は行ごとに
+  順序が変わった）。`mcp-rs`バイナリの使い方と、監査ログのJSONの形
+  （キーと値）は変わらない。ライブラリとして`metadata`を`HashMap`として
+  受け取っている場合は、`BTreeMap`に変える
 - ログのファイル名の日付と、新しいファイルに切り替える時刻を、UTCから
   ローカル時刻にした（#464）。ログの中の時刻（ローカル時刻）と、ファイル名の
   日付がずれなくなる。日本では、以前は毎朝9:00に切り替わり、
