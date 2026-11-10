@@ -240,7 +240,7 @@ The file name ends with the date, such as `mcp-rs.log.2026-11-09`, and a new fil
 Claude Desktop may start two mcp-rs processes for one entry in `claude_desktop_config.json`. This is how Claude Desktop works, not a problem with your mcp-rs settings. Both processes write to the same log file, so the log can look doubled:
 
 - Each line has the process ID (`[pid …]`), so you can tell the two processes apart
-- Each process writes its own startup line (`=== mcp-rs … started at … / pid … / log: … ===`)
+- Each process writes its own startup line (`=== mcp-rs … started at … / pid … / log: … ===`). Windows reuses process IDs, so the same `pid` can belong to a different process after a restart. Read `[pid …]` together with the latest startup line above it
 - Startup messages, such as the WordPress connection check, appear once per process. Seeing them twice is normal
 
 ## 🏗️ Architecture
