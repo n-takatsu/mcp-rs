@@ -59,6 +59,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     日付の名前のファイルにある。日本では、更新した日の0:00〜8:59の記録が、
     前の日の日付の名前のファイルに入っていることがある
 
+### Security
+
+- jsonwebtoken を10.4.0から11.1.0に上げ、暗号の実装を`rust_crypto`から
+  `aws_lc_rs`に変えた（#450）。HTTPモードのOAuthのアクセストークンの検証に
+  使う。11.xの`rust_crypto`は、まだp256・p384 0.13（crypto-bigint 0.5.5）と
+  rsa 0.9を使うため、上げるだけでは脆弱性の警告が消えなかった。`aws_lc_rs`は
+  rustls（HTTPS）が既に使っている実装で、新しい暗号のライブラリは増えない
+  - crypto-bigint 0.5.5・p256・p384・rsaがビルドから無くなり、
+    RUSTSEC-2026-0387（crypto-bigint）の無視を`.cargo/audit.toml`から外した
+  - RUSTSEC-2023-0071（rsa）の無視は残す。rsaは、ビルドしていない
+    sqlx-mysqlの依存として`Cargo.lock`に載っているだけになった
+  - 検証できる署名の方式（RS256・PS256・ES256・EdDSA等）は変わらない
+
 ## [0.20.0] - 2026-11-10
 
 ### Removed
