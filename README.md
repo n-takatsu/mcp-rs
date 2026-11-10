@@ -235,7 +235,7 @@ mcp-rs writes its log to the first of these folders that it can write to:
 
 The `mcp_rs_status` tool shows the log file in use. It says `fallback` only when mcp-rs could not write to 1 or 2.
 
-The file name ends with the date, such as `mcp-rs.log.2026-11-09`, and a new file starts at midnight local time. The date in the file name and the times inside the log are both in local time (older versions used the UTC date in the file name). When a running mcp-rs moves to the next day's file, the new file starts with a line such as `=== mcp-rs … continued at … / pid … / instance … / log: … ===`, so each file shows which process wrote it.
+The file name ends with the date, such as `mcp-rs.log.2026-11-09`, and a new file starts at midnight local time. The date in the file name and the times inside the log are both in local time (older versions used the UTC date in the file name). When a running mcp-rs moves to the next day's file, the new file starts with a line such as `=== mcp-rs … continued at … / pid … / instance … / log: … ===`, so each file shows which process wrote it. When two processes are running (see below), the new file gets one such line from each, with different `instance` values.
 
 Claude Desktop may start two mcp-rs processes for one entry in `claude_desktop_config.json`. This is how Claude Desktop works, not a problem with your mcp-rs settings. Both processes write to the same log file, so the log can look doubled:
 

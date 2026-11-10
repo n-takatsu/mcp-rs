@@ -419,10 +419,39 @@ mod tests {
         );
     }
 
-    /// 時計が戻る等で切り替えなかったときは、見出しの行を書かない
+    /// 切り替えの時刻は過ぎたが、時計が戻っていて今のファイル以前の名前に
+    /// なる場合は、切り替えず、見出しの行も書かない
     #[test]
-    fn test_does_not_write_header_without_rollover() {
+    fn test_does_not_write_header_when_name_is_not_newer() {
         let dir = tempdir().unwrap();
+        let clock = TestClock::new(local(11, 0, 1));
+        let mut appender = LocalRollingAppender::with_clock(
+            dir.path(),
+            &LogRotation::Daily,
+            "mcp-rs.log",
+            clock.boxed(),
+        )
+        .unwrap()
+        .with_rollover_header(test_header());
+        appender.write_all(b"a\n").unwrap();
+
+        // 切り替えの時刻を過去にしておき、時計を前の日に戻す
+        appender.next_rollover = Some(local(10, 23, 0));
+        clock.set(local(10, 23, 30));
+        appender.write_all(b"b\n").unwrap();
+
+        assert_eq!(read(dir.path(), "mcp-rs.log.2026-01-11"), "a\nb\n");
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+        assert_eq!(appender.current_file_name(), "mcp-rs.log.2026-01-11");
+    }
+
+    /// 新しいファイルを開けなかった場合は、今のファイルに書き続け、
+    /// 見出しの行は書かない
+    #[test]
+    fn test_does_not_write_header_when_new_file_cannot_be_opened() {
+        let dir = tempdir().unwrap();
+        // 次の日のファイルと同じ名前のディレクトリを作り、開けないようにする
+        fs::create_dir(dir.path().join("mcp-rs.log.2026-01-11")).unwrap();
         let clock = TestClock::new(local(10, 23, 59));
         let mut appender = LocalRollingAppender::with_clock(
             dir.path(),
@@ -434,10 +463,15 @@ mod tests {
         .with_rollover_header(test_header());
 
         appender.write_all(b"a\n").unwrap();
-        clock.set(local(10, 23, 30));
+        clock.set(local(11, 0, 5));
         appender.write_all(b"b\n").unwrap();
 
         assert_eq!(read(dir.path(), "mcp-rs.log.2026-01-10"), "a\nb\n");
-        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+        assert_eq!(appender.current_file_name(), "mcp-rs.log.2026-01-10");
+        // 少し後に試し直す
+        assert_eq!(
+            appender.next_rollover,
+            Some(local(11, 0, 5) + Duration::seconds(RETRY_INTERVAL_SECS))
+        );
     }
 }
