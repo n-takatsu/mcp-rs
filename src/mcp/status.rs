@@ -98,6 +98,7 @@ pub async fn render_status(
         std::env::consts::ARCH
     ));
     lines.push(format!("Process ID: {}", std::process::id()));
+    lines.push(format!("Instance: {}", crate::logging::instance_id()));
     lines.push(format!(
         "Uptime: {}",
         format_duration(info.started_at.elapsed())
