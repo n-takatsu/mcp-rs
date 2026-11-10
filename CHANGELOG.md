@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documentation
+
+- Claude Desktopが、1つの登録に対してmcp-rsを2つのプロセスとして起動する
+  ことがあり、ログが二重に見えることを、README・websiteに書いた（#465）。
+  `[pid …]`でプロセスを区別できること、起動時の記録が2回ずつ出るのは
+  正常であることを説明した。mcp-rsの動作は変わらない
+
 ### Changed
 
 - ログのファイル名の日付と、新しいファイルに切り替える時刻を、UTCから
