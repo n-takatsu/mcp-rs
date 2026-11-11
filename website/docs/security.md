@@ -28,7 +28,13 @@ What mcp-rs does to protect your WordPress site, your database, and the HTTP lis
 
 ## Secure Environment Variables
 
-`url`, `username` and `password` under `[handlers.wordpress]` can refer to environment variables of the mcp-rs process with `${VAR_NAME}`:
+These settings can refer to environment variables of the mcp-rs process with `${VAR_NAME}`:
+
+- `url`, `username`, and `password` under `[handlers.wordpress]`
+- `host`, `database`, `username`, and `password` under `[database]` (see [Database](../database/))
+- The values of `env` of a plugin (see [Plugins](../plugins/))
+
+Other settings are used as written.
 
 ```toml
 [handlers.wordpress]
@@ -38,8 +44,9 @@ password = "${WORDPRESS_PASSWORD}"
 enabled = true
 ```
 
-- If WordPress is enabled and a variable is not set, or `${` has no matching `}`, mcp-rs does not start. The error names the setting and the variable (for example `handlers.wordpress.password: environment variable 'WORDPRESS_PASSWORD' is not set`), never the value (v0.19.2 and earlier started anyway, with the text `[ERROR:WORDPRESS_PASSWORD]` as the password)
+- If WordPress is enabled and one of its variables is not set, or `${` has no matching `}`, mcp-rs does not start. The error names the setting and the variable (for example `handlers.wordpress.password: environment variable 'WORDPRESS_PASSWORD' is not set`), never the value (v0.19.2 and earlier started anyway, with the text `[ERROR:WORDPRESS_PASSWORD]` as the password)
 - The values are never written to the log
+- For `[database]`, mcp-rs starts without the database tools instead, and `mcp_rs_status` shows the reason. For a plugin's `env`, that entry is not passed to the plugin
 - A value is used as is: a `${` inside the value of the variable is not expanded again
 
 ## Encrypted WordPress Credentials
@@ -109,7 +116,7 @@ name = "claude-desktop"
 user_id = "user-1"
 ```
 
-Clients send the key as `Authorization: Bearer <key>` or `X-Api-Key: <key>`. Requests without a valid key get HTTP 401. Note that `${VAR}` expansion applies only to the WordPress `url`/`username`/`password` fields, so `key` must be written as the literal value.
+Clients send the key as `Authorization: Bearer <key>` or `X-Api-Key: <key>`. Requests without a valid key get HTTP 401. `${VAR}` is not expanded in `key` (see [Secure Environment Variables](#secure-environment-variables) for where it is), so write the key itself.
 
 ## Limiting Tools per API Key or Token
 
@@ -168,7 +175,7 @@ resource = "https://mcp.example.com/mcp"         # the URL clients use to reach 
 
 ## Audit Log
 
-Tool calls (WordPress and plugins) and, in HTTP mode, refused requests are appended to an audit log file as JSON lines, one entry per line (see [What is recorded](#what-is-recorded)). By default, the file is `audit.log` in the `audit` folder next to the mcp-rs logs:
+Tool calls (WordPress, database, and plugins) and, in HTTP mode, refused requests are appended to an audit log file as JSON lines, one entry per line (see [What is recorded](#what-is-recorded)). By default, the file is `audit.log` in the `audit` folder next to the mcp-rs logs:
 
 - Windows: `%USERPROFILE%\.mcp-rs\audit\audit.log`
 - Other platforms: `$XDG_STATE_HOME/mcp-rs/audit/audit.log`, or `~/.local/state/mcp-rs/audit/audit.log` without `XDG_STATE_HOME`
@@ -193,7 +200,7 @@ The mcp-rs log shows the path at startup (`📝 監査ログ: <path>`), and so d
 
 | Event | `category` | `result` | Recorded by |
 |-------|------------|----------|-------------|
-| Every tool call (WordPress and plugins), whether it succeeds or fails | `DataAccess` | `SUCCESS` or `FAILURE` | STDIO and HTTP |
+| Every tool call (WordPress, database, and plugins), whether it succeeds or fails | `DataAccess` | `SUCCESS` or `FAILURE` | STDIO and HTTP |
 | A tool call refused because the API key or token may not use that tool ([Limiting Tools](#limiting-tools-per-api-key-or-token)) | `Authorization` | `DENIED` | HTTP |
 | A request refused because the API key or access token is missing or invalid, or lacks the required scopes | `Authentication` | `DENIED` | HTTP |
 
@@ -202,13 +209,13 @@ Each entry has these fields:
 - `timestamp` and `level` (`Info`, `Warning`, or `Error`). `timestamp` is in UTC (ending in `Z`), while the regular log uses local time, so in Japan the two differ by 9 hours
 - `user_id`: who called. In HTTP mode, `api_key:<name>` for an API key, or `oauth:<client>` for an access token (the token's `azp` or `client_id`, or its `sub`). In STDIO mode, and in HTTP mode without authentication, `local`. Authentication failures have no `user_id`
 - `ip_address`: the client's IP address (HTTP mode)
-- `action`: the tool name. `resource`: the WordPress site URL, or `plugin:<name>`
+- `action`: the tool name. `resource`: the WordPress site URL, the database connection (such as `postgresql mcp_reader@localhost:5432/app (read-only)`), or `plugin:<name>`
 - `result`, and `message` (for example, `Plugin tool call: fs__read_text_file - SUCCESS`)
-- `metadata`: `subject` (the API key's `user_id`, or the token's `sub`), `duration_ms` (how long the tool call took), `error` (why it failed), and `target_id` (the ID of the post, page, media, category, or tag, for WordPress tools that take one). Every entry also has `pid` and `instance`, which identify the mcp-rs process that recorded it (see below). Keys are in alphabetical order, and all values are strings
+- `metadata`: `subject` (the API key's `user_id`, or the token's `sub`), `duration_ms` (how long the tool call took), `error` (why it failed), `target_id` (the ID of the post, page, media, category, or tag, for WordPress tools that take one), and `sql` (for database tools: the SQL statement, shortened to 2,000 characters). Every entry also has `pid` and `instance`, which identify the mcp-rs process that recorded it (see below). Keys are in alphabetical order, and all values are strings
 
 Claude Desktop may start two mcp-rs processes for one entry, and Windows reuses process IDs. To find which process handled a tool call, use `instance` (the process ID and the local time it started, such as `70580-20261110T130333`). The same value appears in the regular log's startup line (`=== mcp-rs … started at … / pid … / instance … / log: … ===`) and in the `Instance` line of `mcp_rs_status`
 
-API keys, access tokens, and tool arguments (such as post content or file contents) are not recorded, because they can contain secrets. Up to version 0.18.4, only WordPress tools that change something were recorded, without the caller.
+API keys, access tokens, and tool arguments (such as post content or file contents) are not recorded, because they can contain secrets. The one exception is the SQL statement of database tools, so that you can see what was run; the values of its parameters (`$1`, `$2`, …) are not recorded. Do not write secrets into the SQL itself. Up to version 0.18.4, only WordPress tools that change something were recorded, without the caller.
 
 ## Best Practices
 

@@ -66,7 +66,7 @@ AIのクライアントに、WordPress・PostgreSQL・外部のMCPプラグイ�
 
 ## 前提条件
 
-- Rust 1.70+ (2021 edition)
+- Rust 1.88以降（`jsonwebtoken`・`time`等の依存クレートが必要とするため。最新の安定版を推奨）
 - アプリケーションパスワードが有効な WordPress サイト
 - WordPress REST API へのネットワークアクセス
 
