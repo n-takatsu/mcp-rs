@@ -40,6 +40,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `[::1]`）、`[transport.http] allowed_origins`に書いたオリジン（`"*"`で
   すべて）。Protected Resource Metadataは、これまでどおりどのオリジンにも
   返す
+  - `Origin`の検証は、本文を読む前のミドルウェアで行う（#488）。許可して
+    いないオリジンには、本文が壊れていても403で答える
+  - `/`・`/mcp`・`/ws`のCORSも、同じ規則で許可するオリジンを決める
+    （#488）。以前の`cors_enabled`（既定はtrue）はすべてのオリジンを許可して
+    いた。許可していないオリジンは、ブラウザーのpreflightで止まる
+  - ループバックのオリジンは常に受け付けるので、認証を設定していなければ、
+    同じPCのウェブページ（別のポートも）からは呼べる。そのことと、防ぐには
+    APIキーかOAuthを設定することを、websiteのセキュリティの節に書いた
   - **互換性のない変更（ライブラリ）**: `HttpConfig`と
     `HttpTransportConfig`に`allowed_origins`を加えた。構造体を
     `..Default::default()`無しで作っている場合は、項目を加える。
