@@ -148,8 +148,16 @@ async fn build_server(
             info!("📝 監査ログ: ファイルには書かない（[audit] enabled = false）")
         }
         None => tracing::warn!(
-            "Audit log is kept in memory only: no config file was loaded. Set [audit] file_path to an absolute path to write it to a file"
+            "Audit log is kept in memory only: no folder for it could be found (USERPROFILE/HOME is not set and no config file was loaded). Set [audit] file_path to an absolute path to write it to a file"
         ),
+    }
+    // 以前の既定の場所（設定ファイルのフォルダ）に残っている監査ログ（#474）。
+    // 移さずに残すので、どこにあるかを知らせる
+    if let Some(legacy) = config.legacy_audit_log_path() {
+        info!(
+            "📝 Audit log entries written by older versions remain in {}. New entries go to the audit log shown above; the old file was not moved",
+            legacy.display()
+        );
     }
 
     if let Some(wp_config) = &config.handlers.wordpress {

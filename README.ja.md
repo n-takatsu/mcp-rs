@@ -220,6 +220,8 @@ Claude Desktopは、`claude_desktop_config.json`に1つだけ登録したmcp-rs�
 - 起動時の見出しの行（`=== mcp-rs … started at … / pid … / instance … / log: … ===`）も、プロセスごとに出ます。Windowsはプロセスの番号を使い回すので、再起動の後は、同じ`pid`が別のプロセスのことがあります。`[pid …]`は、その上にある直近の見出しの行と合わせて見てください。見出しの行には`instance`（プロセスの番号と起動時刻）も出ます。監査ログはツールの呼び出しごとに同じ`instance`を記録するので、2つのログを突き合わせられます
 - WordPressの接続の確認など、起動時の記録はプロセスごとに出ます。2回ずつ出るのは正常です
 
+監査ログ（誰がどのツールを呼んだか）は、ログと並べて、Windowsでは`%USERPROFILE%\.mcp-rs\audit\audit.log`（それ以外は`$XDG_STATE_HOME/mcp-rs/audit`か`~/.local/state/mcp-rs/audit`）に書きます。`[audit] file_path`で変えられます。バージョン0.21.0までは、設定ファイルと同じフォルダの`audit.log`でした。そのファイルは移さずに残します。詳しくは[セキュリティ](https://n-takatsu.github.io/mcp-rs/docs/security/#audit-log)を見てください。
+
 ## 🏗️ アーキテクチャ
 
 ```text

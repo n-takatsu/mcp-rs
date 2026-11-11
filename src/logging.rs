@@ -317,23 +317,36 @@ fn primary_log_dir_candidate() -> PathBuf {
 /// `%USERPROFILE%`直下はこの既知フォルダー仮想化の対象外のため、こちらを
 /// 使う。
 fn user_log_dir() -> Option<PathBuf> {
+    user_state_dir().map(|dir| dir.join("logs"))
+}
+
+/// 監査ログの既定のフォルダ（#474）。通常のログ（`user_log_dir`）と同じ
+/// ユーザー領域の`audit`（Windowsは`%USERPROFILE%\.mcp-rs\audit`）。
+/// 環境変数が無い場合はNone。
+pub fn user_audit_dir() -> Option<PathBuf> {
+    user_state_dir().map(|dir| dir.join("audit"))
+}
+
+/// mcp-rsのユーザー領域（Windowsは`%USERPROFILE%\.mcp-rs`、それ以外は
+/// `$XDG_STATE_HOME/mcp-rs`か`~/.local/state/mcp-rs`）。AppDataを避ける
+/// 理由は`user_log_dir`のとおり。
+fn user_state_dir() -> Option<PathBuf> {
     #[cfg(windows)]
     {
         std::env::var_os("USERPROFILE")
-            .map(|user_profile| PathBuf::from(user_profile).join(".mcp-rs").join("logs"))
+            .map(|user_profile| PathBuf::from(user_profile).join(".mcp-rs"))
     }
 
     #[cfg(not(windows))]
     {
         if let Some(xdg_state) = std::env::var_os("XDG_STATE_HOME") {
-            Some(PathBuf::from(xdg_state).join("mcp-rs").join("logs"))
+            Some(PathBuf::from(xdg_state).join("mcp-rs"))
         } else {
             std::env::var_os("HOME").map(|home| {
                 PathBuf::from(home)
                     .join(".local")
                     .join("state")
                     .join("mcp-rs")
-                    .join("logs")
             })
         }
     }

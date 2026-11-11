@@ -785,10 +785,43 @@ impl McpConfig {
         Ok(())
     }
 
-    /// `[audit]`から、監査ログの設定を作る（#416）。書き込み先が決まらない
-    /// （設定ファイルを使っておらず、`file_path`も絶対パスでない）場合は、
+    /// `[audit]`から、監査ログの設定を作る（#416）。`file_path`が無ければ、
+    /// 通常のログと同じユーザー領域の`audit\audit.log`
+    /// （`logging::user_audit_dir`、#474）。相対パスの`file_path`は、設定
+    /// ファイルのフォルダを基準にする。書き込み先が決まらない場合は、
     /// ファイルに書かない設定になる。
     pub fn audit_config(&self) -> crate::security::AuditConfig {
+        self.audit_config_with_default_dir(crate::logging::user_audit_dir())
+    }
+
+    /// `file_path`を書いていないときに、以前の既定の場所（設定ファイルの
+    /// フォルダの`audit.log`、#416）に監査ログが残っていれば、その場所
+    /// （#474）。起動時に案内するため。新しい既定の場所と同じなら`None`。
+    pub fn legacy_audit_log_path(&self) -> Option<PathBuf> {
+        let settings = self.audit.clone().unwrap_or_default();
+        if settings.enabled == Some(false)
+            || settings
+                .file_path
+                .as_deref()
+                .is_some_and(|f| !f.trim().is_empty())
+        {
+            return None;
+        }
+        let legacy = self
+            .config_file
+            .as_deref()
+            .and_then(std::path::Path::parent)?
+            .join("audit.log");
+        let current = self.audit_config().log_file_path.map(PathBuf::from);
+        (legacy.is_file() && current.as_deref() != Some(legacy.as_path())).then_some(legacy)
+    }
+
+    /// `audit_config`の本体。`default_dir`は`file_path`が無いときのフォルダ。
+    /// それも無ければ、以前のとおり設定ファイルのフォルダ。
+    fn audit_config_with_default_dir(
+        &self,
+        default_dir: Option<PathBuf>,
+    ) -> crate::security::AuditConfig {
         let settings = self.audit.clone().unwrap_or_default();
         let mut audit = crate::security::AuditConfig::default();
         if settings.enabled == Some(false) {
@@ -808,7 +841,7 @@ impl McpConfig {
                     base.map(|base| base.join(file))
                 }
             }
-            _ => base.map(|base| base.join("audit.log")),
+            _ => default_dir.or(base).map(|dir| dir.join("audit.log")),
         };
         let Some(path) = path else {
             return audit;
@@ -1476,19 +1509,83 @@ start_timeout_seconds = 300
     }
 
     #[test]
-    fn test_audit_config_defaults_to_config_folder() {
+    fn test_audit_config_defaults_to_user_audit_dir() {
         let base = std::env::temp_dir().join("mcp-rs-config");
         let config_file = base.join("mcp-config.toml");
-        let config = config_with_audit(Some(config_file.to_str().unwrap()), None);
-        let audit = config.audit_config();
-        assert!(audit.enable_file_output);
+        let user_dir = std::env::temp_dir().join("mcp-rs-home").join("audit");
+
+        // 設定ファイルがあっても無くても、ユーザー領域のaudit\audit.log（#474）
+        for config_file in [Some(config_file.to_str().unwrap()), None] {
+            let audit = config_with_audit(config_file, None)
+                .audit_config_with_default_dir(Some(user_dir.clone()));
+            assert!(audit.enable_file_output);
+            assert_eq!(
+                audit.log_file_path.as_deref(),
+                Some(user_dir.join("audit.log").to_str().unwrap())
+            );
+            assert!(audit.rotation_enabled);
+            assert_eq!(audit.rotation_size, 100 * 1024 * 1024);
+            assert_eq!(audit.max_files, 5);
+        }
+
+        // ユーザー領域が分からなければ、以前のとおり設定ファイルのフォルダ
+        let audit = config_with_audit(Some(config_file.to_str().unwrap()), None)
+            .audit_config_with_default_dir(None);
         assert_eq!(
             audit.log_file_path.as_deref(),
             Some(base.join("audit.log").to_str().unwrap())
         );
-        assert!(audit.rotation_enabled);
-        assert_eq!(audit.rotation_size, 100 * 1024 * 1024);
-        assert_eq!(audit.max_files, 5);
+    }
+
+    #[test]
+    fn test_audit_config_uses_logging_user_audit_dir() {
+        let config = config_with_audit(None, None);
+        assert_eq!(
+            config.audit_config().log_file_path.map(PathBuf::from),
+            crate::logging::user_audit_dir().map(|dir| dir.join("audit.log"))
+        );
+    }
+
+    #[test]
+    fn test_legacy_audit_log_path() {
+        let base = std::env::temp_dir().join(format!("mcp-rs-legacy-audit-{}", std::process::id()));
+        std::fs::create_dir_all(&base).unwrap();
+        let config_file = base.join("mcp-config.toml");
+        let config_file = config_file.to_str().unwrap();
+
+        // 以前の既定の場所にファイルが無ければ、何も案内しない
+        assert_eq!(
+            config_with_audit(Some(config_file), None).legacy_audit_log_path(),
+            None
+        );
+
+        std::fs::write(base.join("audit.log"), "{}\n").unwrap();
+        let legacy = config_with_audit(Some(config_file), None).legacy_audit_log_path();
+        // 新しい既定の場所が分かる環境なら、残っているファイルを案内する
+        if crate::logging::user_audit_dir().is_some() {
+            assert_eq!(legacy, Some(base.join("audit.log")));
+        }
+
+        // file_pathを書いている・ファイルに書かない設定なら、案内しない
+        for settings in [
+            AuditLogSettings {
+                file_path: Some("audit.log".to_string()),
+                ..Default::default()
+            },
+            AuditLogSettings {
+                enabled: Some(false),
+                ..Default::default()
+            },
+        ] {
+            assert_eq!(
+                config_with_audit(Some(config_file), Some(settings)).legacy_audit_log_path(),
+                None
+            );
+        }
+        // 設定ファイルが無ければ、以前の既定の場所も無い
+        assert_eq!(config_with_audit(None, None).legacy_audit_log_path(), None);
+
+        std::fs::remove_dir_all(&base).unwrap();
     }
 
     #[test]
@@ -1540,10 +1637,25 @@ start_timeout_seconds = 300
         .audit_config();
         assert!(!audit.enable_file_output);
 
-        // 設定ファイルが無く、絶対パスの指定も無ければ、書き込み先が決まらない
-        let audit = config_with_audit(None, None).audit_config();
+        // 設定ファイルもユーザー領域も無く、絶対パスの指定も無ければ、
+        // 書き込み先が決まらない
+        let audit = config_with_audit(None, None).audit_config_with_default_dir(None);
         assert!(!audit.enable_file_output);
         assert_eq!(audit.log_file_path, None);
+
+        // 相対パスのfile_pathは、ユーザー領域ではなく設定ファイルのフォルダが基準
+        let audit = config_with_audit(
+            Some(config_file),
+            Some(AuditLogSettings {
+                file_path: Some("audit.log".to_string()),
+                ..Default::default()
+            }),
+        )
+        .audit_config_with_default_dir(Some(std::env::temp_dir().join("elsewhere")));
+        assert_eq!(
+            audit.log_file_path.as_deref(),
+            Some(base.join("audit.log").to_str().unwrap())
+        );
     }
 
     #[test]
