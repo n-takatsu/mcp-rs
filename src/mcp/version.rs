@@ -25,33 +25,35 @@ pub fn negotiate_protocol_version(requested: &str) -> &'static str {
         .unwrap_or(LATEST_PROTOCOL_VERSION)
 }
 
-/// mcp-rsのウェブサイト（`serverInfo`の`websiteUrl`）
-const WEBSITE_URL: &str = "https://n-takatsu.github.io/mcp-rs/";
-
 /// `initialize`の結果の`serverInfo`（Implementation）。`description`・
-/// `websiteUrl`は2025-11-25で加わった項目なので、その版だけに付ける（#475）。
+/// `websiteUrl`は2025-11-25で加わった項目なので、その版から付ける（#475）。
+/// 値はCargo.tomlの`description`・`homepage`。
 pub fn server_info_for_version(version: &str) -> Value {
     let mut info = serde_json::json!({
         "name": "mcp-rs",
         "version": env!("CARGO_PKG_VERSION")
     });
-    if supports_2025_11_features(version) {
+    if is_at_least(version, "2025-11-25") {
         info["description"] = Value::from(env!("CARGO_PKG_DESCRIPTION"));
-        info["websiteUrl"] = Value::from(WEBSITE_URL);
+        info["websiteUrl"] = Value::from(env!("CARGO_PKG_HOMEPAGE"));
     }
     info
 }
 
-/// `Implementation`の`description`・`websiteUrl`（2025-11-25）を使える版か。
-fn supports_2025_11_features(version: &str) -> bool {
-    !matches!(version, "2025-06-18" | "2024-11-05")
+/// `version`が`since`以降の版か。版は`YYYY-MM-DD`の日付なので、文字列の
+/// 比較で新旧が決まる。対応する版を足しても、項目ごとの判定を直さなくてよい
+/// ように、除く版を列挙せずに比べる。`version`は交渉で決まった版
+/// （`SUPPORTED_PROTOCOL_VERSIONS`のどれか）。
+fn is_at_least(version: &str, since: &str) -> bool {
+    version >= since
 }
 
 /// ツール定義の`title`・`outputSchema`（2025-06-18）、`annotations`
 /// （2025-03-26）、ツールの結果の`structuredContent`・リソースリンク
-/// （2025-06-18）、音声（2025-03-26）を使える版か。
+/// （2025-06-18）、音声（2025-03-26）を使える版か。2025-03-26の項目も
+/// あるが、すべてがそろうのは2025-06-18から。
 fn supports_2025_features(version: &str) -> bool {
-    version != "2024-11-05"
+    is_at_least(version, "2025-06-18")
 }
 
 /// `tools/list`の結果を、`version`で定義された項目だけにする。
@@ -133,6 +135,21 @@ mod tests {
     }
 
     #[test]
+    fn test_is_at_least() {
+        assert!(is_at_least("2025-11-25", "2025-11-25"));
+        assert!(is_at_least("2025-11-25", "2025-06-18"));
+        assert!(!is_at_least("2025-06-18", "2025-11-25"));
+        assert!(!is_at_least("2024-11-05", "2025-06-18"));
+        // 間の版を対応する版に足した場合も、新しい項目は付かない
+        assert!(!is_at_least("2025-03-26", "2025-06-18"));
+        assert!(!is_at_least("2025-03-26", "2025-11-25"));
+        // 対応する版は、新しい順に並んでいる
+        assert!(SUPPORTED_PROTOCOL_VERSIONS
+            .windows(2)
+            .all(|pair| pair[0] > pair[1]));
+    }
+
+    #[test]
     fn test_server_info_for_version() {
         let latest = server_info_for_version("2025-11-25");
         assert_eq!(latest["name"], json!("mcp-rs"));
@@ -140,7 +157,10 @@ mod tests {
         assert!(latest["description"]
             .as_str()
             .is_some_and(|d| !d.is_empty()));
-        assert_eq!(latest["websiteUrl"], json!(WEBSITE_URL));
+        assert_eq!(
+            latest["websiteUrl"],
+            json!("https://n-takatsu.github.io/mcp-rs/")
+        );
 
         // 古い版には、その版で定義された項目（name・version）だけ
         for old in ["2025-06-18", "2024-11-05"] {
