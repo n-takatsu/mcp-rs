@@ -19,35 +19,29 @@ Welcome to the MCP-RS documentation! This site contains comprehensive guides, AP
 
 ## What is MCP-RS?
 
-🚀 **Production-Ready** Rust implementation of the Model Context Protocol (MCP) for AI-agent integration with WordPress and beyond.
-
-MCP-RS provides a **comprehensive, battle-tested** implementation of the MCP (Model Context Protocol) in Rust with **complete WordPress integration**. Built with a layered architecture, it enables AI agents to perform sophisticated content management through a standardized JSON-RPC interface.
+MCP-RS is a Model Context Protocol (MCP) server written in Rust. MCP clients such as Claude Desktop and Claude Code connect to it over STDIO, and other clients over HTTP, to use tools for WordPress, a PostgreSQL database, and external MCP servers added as plugins.
 
 ## Key Features
 
 ### 🚀 Core Capabilities
 
-- **JSON-RPC 2.0 Server**: Full-featured JSON-RPC server implementation using `axum`
+- **MCP over JSON-RPC 2.0**: Protocol versions up to 2025-11-25
 - **Request Dispatch**: `McpServer` lists tools from every handler and routes each call to the handler that provides it, in both STDIO and HTTP modes
-- **Multi-Transport Support**: Stdio, HTTP, and WebSocket communication protocols
-- **Plugin Architecture**: Handler-based system with `McpHandler` trait for extensibility
-- **Type-Safe Configuration**: TOML-based configuration with environment variable override
-- **Production-Ready Error Handling**: Comprehensive error types with structured logging
-- **Async/Await**: Built on `tokio` for high-performance async operations
-- **Hot Configuration**: Dynamic configuration reloading capabilities
+- **Transports**: STDIO, and HTTP (with optional WebSocket on `/ws`)
+- **Plugins**: Add the tools of any MCP server that speaks STDIO, run as a child process, in a Docker container, or as a Kubernetes Job. See [Plugins](docs/plugins/)
+- **Configuration**: One TOML file, with `${VAR}` for values from environment variables
+- **Status Tool**: `mcp_rs_status` shows the version, config file, log files, and what failed to start
 
-## 🔒 Enterprise-Grade Security Features
+## 🔒 Security Features
 
-### 🛡️ Complete 7-Layer Security Architecture (100% Implemented)
+- **Encrypted Credentials**: The WordPress Application Password can be stored encrypted with AES-GCM-256 (PBKDF2 key derivation), or read from an environment variable
+- **HTTP Mode Authentication**: API keys, or OAuth 2.1 access tokens issued by an external authorization server
+- **Per-Caller Tool Limits**: Allow each API key or token only the tools it needs (for example `@read_only`)
+- **TLS/mTLS**: HTTPS with a minimum TLS version, and optional client certificates
+- **Rate Limiting** of WordPress and plugin tool calls
+- **Audit Logging**: Who called which tool, and the result
 
-- **🔐 RBAC (Role-Based Access Control)**: Fine-grained access control with role hierarchy and inheritance
-- **🔐 AES-GCM-256 Encryption**: Military-grade encryption with PBKDF2 key derivation (100K iterations)
-- **⚡ Token Bucket Rate Limiting**: Advanced DDoS protection with configurable limits and burst handling
-- **🔒 TLS 1.2+ Enforcement**: Mandatory secure transport with certificate validation
-- **🚫 Zero-Panic Operations**: Complete unwrap() elimination with comprehensive Result-based error handling
-- **📊 Comprehensive Audit Logging**: All security events recorded with tamper-resistant logging
-- **🔍 Data Masking**: 4 masking strategies (Full, Partial, Hash, Tokenize) for PII/PHI protection
-- **📈 Time-Based Access Control**: Business hours and emergency access support
+See [Security](docs/security/) for the settings.
 
 ## 🎯 WordPress MCP Tools (32 tools available)
 
@@ -78,24 +72,14 @@ MCP-RS provides a **comprehensive, battle-tested** implementation of the MCP (Mo
 
 See [WordPress Integration](docs/wordpress/) for the full list of tools.
 
-## 🗄️ Database MCP Tools (Multi-Engine Support)
+## 🗄️ Database MCP Tools (PostgreSQL)
 
-**📊 Database Engines:**
+- **`execute_query`**: One `SELECT`, run in a read-only transaction that is rolled back
+- **`get_schema`**: Tables, columns, keys, and indexes
+- **`execute_command`**: One `INSERT`, `UPDATE`, or `DELETE`, only with `allow_write = true`
+- Values are bound as parameters; results are limited in rows and time
 
-- **PostgreSQL**: Enterprise relational database with advanced SQL features
-- **MySQL**: Popular web-scale database with full transaction support
-- **Redis**: High-performance in-memory store with cluster support
-- **MongoDB**: Document-oriented NoSQL with aggregation pipelines
-- **SQLite**: Lightweight embedded database for development
-
-**🔧 Database Operations:**
-
-- Execute queries with SQL injection protection
-- Transaction management with configurable isolation levels
-- Schema introspection and metadata retrieval
-- Multi-engine workflows and cache-aside patterns
-- Real-time health monitoring and performance metrics
-- Connection pooling with advanced timeout handling
+See [Database Integration](docs/database/) for the settings.
 
 ## Current Status
 
@@ -179,13 +163,3 @@ See the [Security documentation](docs/security/) for details.
 - **🏗️ Code Architecture**: mod.rs refactoring for improved maintainability (5 major modules)
 - **🔒 Enterprise Security**: 7-layer security architecture with RBAC (100% Complete)
 - **🧪 Quality Assurance**: 567 test cases with 100% pass rate and zero Clippy warnings
-
-## Implementation Status
-
-- **WordPress API Handler**: Complete with featured image and media upload support
-- **Security Implementation**: 100% complete (6/6 enterprise-grade security layers)
-- **MCP Protocol Foundation**: JSON-RPC + handler trait system
-- **Error Handling**: thiserror-based type-safe error management
-- **Security Testing**: Comprehensive test suite with 100% security coverage
-
-MCP-RS is **production-ready** with enterprise-level security requirements and comprehensive WordPress integration capabilities.

@@ -95,7 +95,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("\n✅ すべてのデモが完了しました！");
     println!("\n📚 より詳細な情報:");
-    println!("   - WordPress統合ガイド: project-docs/wordpress-guide.md");
+    println!("   - WordPress: https://n-takatsu.github.io/mcp-rs/docs/wordpress/");
     println!("   - セキュリティドキュメント: docs/security.md");
     println!("   - APIリファレンス: website/docs/wordpress.md");
 
@@ -254,7 +254,7 @@ fn show_setup_guide() {
     println!("   cargo run --example wordpress_blog_service_demo");
     println!();
     println!("4. 📚 詳細ドキュメント:");
-    println!("   - project-docs/wordpress-guide.md");
+    println!("   - https://n-takatsu.github.io/mcp-rs/docs/wordpress/");
     println!("   - website/docs/wordpress.md");
     println!();
     println!("💡 ヒント: アプリケーションパスワードは通常のパスワードより安全です");

@@ -8,75 +8,21 @@ permalink: /docs/security/
 
 **[Home](../) > [Documentation](./) > Security**
 
-## 🔒 Security Overview
+## Overview
 
-MCP-RS implements comprehensive security measures designed for production environments. Our security-first approach ensures safe operation with AI agents while maintaining high performance.
+What mcp-rs does to protect your WordPress site, your database, and the HTTP listener:
 
-## 🛡️ Enterprise-Grade 5-Layer Security Architecture (93% Complete)
-
-## ✅ Layer 1: Cryptographic Security
-
-- **AES-GCM-256 Encryption**: Military-grade authenticated encryption
-- **PBKDF2 Key Derivation**: 100,000 iterations for secure key generation
-- **Secure Secret Management**: Zero-copy secret handling with automatic cleanup
-- **Cryptographic Randomness**: Hardware-backed random number generation
-
-## ✅ Layer 2: Network Security
-
-- **TLS 1.2+ Enforcement**: Mandatory secure transport layer
-- **Certificate Validation**: Strict certificate chain verification
-- **HTTPS-Only Communication**: Automatic HTTP to HTTPS redirection
-- **Secure Headers**: Content Security Policy and security headers enforcement
-
-## ✅ Layer 3: Access Control & Rate Limiting
-
-- **API Key Authentication**: Optional API key check on every HTTP/WebSocket request (`Authorization: Bearer <key>` or `X-Api-Key`). Revoked or expired keys are rejected. STDIO is unaffected (local pipe)
-- **OAuth 2.1 Authorization**: Optional check of access tokens issued by an external authorization server, for HTTP/WebSocket (see [OAuth 2.1 Authorization](#httpwebsocket-oauth-21-authorization))
-- **Token Bucket Rate Limiting**: WordPress tool calls are rate limited per WordPress site connection, with burst handling
-- **Configurable Thresholds**: Customizable rate limiting parameters
-- **Graceful Degradation**: Smooth handling of rate limit violations
-
-## ✅ Layer 4: Input Validation & Attack Prevention
-
-- **HTML Sanitization**: Safe HTML processing with whitelist filtering
-- **Media Upload Validation**: `upload_media` checks the MIME type against an allowlist, requires the filename extension to match it, verifies the file content by its magic number, and enforces a size limit (see [WordPress Integration](../wordpress/#supported-file-types))
-- **Local File Upload Restrictions**: `upload_media` reads local files (`file_path`) only from folders listed in `upload_allowed_dirs`, and is disabled by default. Paths are resolved before the check, so `..` and symbolic links cannot escape those folders
-
-## ✅ Layer 5: Application Security
-
-- **Zero-Panic Operations**: Complete elimination of panic-causing code
-- **Result-Based Error Handling**: Comprehensive error management system
-- **Memory Safety**: Rust's ownership system prevents buffer overflows
-- **Thread Safety**: Async-safe operations with proper synchronization
-- **Audit Logging**: Every WordPress tool call that changes the site (`create_*`, `update_*`, `delete_*`, `upload_*`, `set_*`) is recorded with its result, including calls rejected by rate limiting or input validation. Plugin tool calls are recorded too. Entries are appended as JSON lines to the file set in [`[audit]`](#audit-log)
-
-## 🧪 Security Testing
-
-## Test Coverage: **171 Test Cases** ✅
-
-Our comprehensive security test suite covers:
-- ✅ AES-GCM-256 encryption/decryption
-- ✅ PBKDF2 key derivation security
-- ✅ Token bucket rate limiting
-- ✅ TLS 1.2+ enforcement
-- ✅ Input validation and sanitization
-- ✅ Zero-panic operations
-- ✅ WordPress authentication security
-
-## Security Implementation Status (93% Complete)
-
-```
-🛡️ Enterprise Security Implementation:
-✅ Cryptographic Security: COMPLETE
-✅ Network Security: COMPLETE
-✅ Access Control: COMPLETE
-✅ Input Validation: COMPLETE
-✅ Application Security: COMPLETE
-✅ Audit Logging: COMPLETE
-
-Security Architecture: 5-Layer Defense ✅
-Production Ready: TRUE ✅
-```
+| Area | What mcp-rs does | Section |
+|------|------------------|---------|
+| Credentials | Reads secrets from environment variables (`${VAR}`), or stores the WordPress Application Password encrypted with AES-GCM-256 (PBKDF2 key derivation). Secrets are never written to the log | [Environment variables](#secure-environment-variables), [Encrypted credentials](#encrypted-wordpress-credentials) |
+| HTTP listener | Checks the `Origin` header, the client address, TLS (minimum version, optional client certificates), replayed requests, and suspicious requests | [`Origin`](#httpwebsocket-requests-from-web-pages-origin) |
+| Who may call | API keys, or OAuth 2.1 access tokens from an external authorization server (HTTP mode). STDIO mode needs neither: only the client that started mcp-rs can talk to it | [API keys](#httpwebsocket-api-key-authentication), [OAuth 2.1](#httpwebsocket-oauth-21-authorization) |
+| What they may call | Per API key or token, the tools it may use (for example `@read_only`) | [Limiting tools](#limiting-tools-per-api-key-or-token) |
+| How often | Rate limits on WordPress and plugin tool calls | [WordPress](../wordpress/) |
+| WordPress input | `upload_media` checks the MIME type, extension, file content, and size, and reads local files only from `upload_allowed_dirs` (off by default) | [WordPress](../wordpress/#supported-file-types) |
+| Database | Read-only by default: one `SELECT` per call, run in a read-only transaction. Writes only with `allow_write = true`. Values are bound as parameters | [Database](../database/#safety) |
+| Plugins | Plugins can run in a Docker container or a Kubernetes Job to limit what they can reach | [Plugins](../plugins/) |
+| Record | Every tool call is written to the audit log: who called which tool, and the result | [Audit log](#audit-log) |
 
 ## 🔐 Configuration Security
 
@@ -273,66 +219,11 @@ API keys, access tokens, and tool arguments (such as post content or file conten
 - Regular password rotation and access review
 - HTTPS-only connections for all WordPress API calls
 
-## 🚨 Vulnerability Management
+## Reporting a Vulnerability
 
-## Fixed Security Issues
-
-### CVE-2024-MCPRS-001 ✅ FIXED
-
-**Environment Variable Infinite Loop**
-- **Severity**: High
-- **Status**: Fixed in v0.1.0-alpha
-- **Solution**: Max iteration limits + processed variable tracking
-
-## 📋 Security Checklist
-
-## Pre-Deployment
-
-- [ ] ✅ Environment variables configured securely
-- [ ] ✅ WordPress Application Passwords generated
-- [ ] ✅ HTTPS configured for all connections
-- [ ] ✅ Security tests passing
-- [ ] ✅ Health checks validated
-
-## Regular Maintenance
-
-- [ ] Monthly security test execution
-- [ ] Quarterly dependency audits
-- [ ] Semi-annual password rotation
-- [ ] Annual security architecture review
-
-## 🎯 Security Architecture
-
-Our enterprise-grade 5-layer security approach provides comprehensive protection:
-
-1. **Cryptographic Layer**: AES-GCM-256 encryption with PBKDF2 key derivation
-2. **Network Layer**: TLS 1.2+ enforcement and secure transport
-3. **Access Control Layer**: Token bucket rate limiting and client isolation
-4. **Input Validation Layer**: Media upload validation and HTML sanitization
-5. **Application Layer**: Zero-panic operations and memory safety
-
-## Advanced Security Features
-
-- **Performance Security**: Sub-millisecond security processing
-- **Zero-Copy Security**: Secure secret handling without memory exposure
-- **Compliance Ready**: Enterprise security standards compliance
-
-## 📞 Security Contact
-
-For security-related issues:
-- **Critical Vulnerabilities**: Create private GitHub issue
-- **Security Questions**: Use [SECURITY] in issue titles
-- **Improvements**: Submit PRs with security documentation
+Report security problems privately through GitHub: on the repository's **Security** tab, choose **Report a vulnerability**. Please do not open a public issue for them.
 
 ## 📚 Additional Resources
 
-- [Security Guide](https://github.com/n-takatsu/mcp-rs/blob/main/project-docs/security-guide.md) - Comprehensive security documentation
 - [WordPress Security](https://make.wordpress.org/core/2020/11/05/application-passwords-integration-guide/) - Application Password setup
 - [Rust Security](https://doc.rust-lang.org/security.html) - Rust security guidelines
-
----
-
-**Security Version**: v0.1.0-alpha (Enterprise Grade)
-**Implementation Status**: 93% Complete (13/14 features)
-**Last Updated**: 2025-01-28
-**Next Review**: 2025-02-28
