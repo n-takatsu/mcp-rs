@@ -128,7 +128,7 @@ criterion = { version = "0.5", features = ["html_reports", "async_tokio"] }
 [features]
 default = []
 
-# Database handler (not connected to the mcp-rs binary yet, #453)
+# Database handler: [database] in the config file (PostgreSQL, #453)
 database = ["mysql-backend", "postgresql-backend", "dep:sqlparser"]
 
 # Storage backends

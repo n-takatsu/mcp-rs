@@ -113,6 +113,12 @@ jobs:
           MCP_RS_DOCKER_TESTS: "1"
         run: cargo test --lib --features integration-tests plugin_proxy::tests::test_container_plugin_is_isolated_in_docker -- --nocapture
 
+      # データベースのツール（#453）を、上のpostgresのサービスで確かめる
+      - name: Run database tool tests (PostgreSQL)
+        env:
+          TEST_DATABASE_URL: postgres://testuser:testpass@localhost:5433/mcptest
+        run: cargo test --features database --test database_postgres_tools_test -- --nocapture
+
       - name: Verify integration test compilation
         run: |
           echo "Verifying integration tests compile successfully..."

@@ -45,7 +45,7 @@ pub mod engines;
 
 // 公開API
 pub use engine::{DatabaseConnection, DatabaseEngine, DatabaseTransaction};
-pub use handler::DatabaseHandler;
+pub use handler::{DatabaseHandler, DatabaseToolOptions};
 pub use security::DatabaseSecurity;
 pub use types::{DatabaseConfig, DatabaseFeature, DatabaseType, ExecuteResult, QueryResult};
 

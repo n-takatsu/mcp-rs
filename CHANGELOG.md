@@ -7,6 +7,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- データベースのハンドラーを本体につないだ（#453の1つ目、PostgreSQL）。
+  設定ファイルの`[database]`に接続先を書くと、`execute_query`（SELECT）・
+  `get_schema`のツールが使える。`allow_write = true`のときだけ
+  `execute_command`（INSERT・UPDATE・DELETE）も出す。`database`機能を
+  含めてビルドした場合だけ使える（リリースのビルドに含めるのは次の段階）
+  - `password`等は`${VAR}`（環境変数）で渡せる。ログ・`mcp_rs_status`・
+    エラーの文には出さない。環境変数が無い場合も、データベースだけを飛ばし、
+    mcp-rs（WordPress等）は起動する
+  - 文字列とNULLのパラメーターは、PostgreSQLが期待する型（uuid・日付・
+    時刻・numeric・JSON・base64のbytea・数値等）に合わせて送る。結果で
+    返した値を、そのままパラメーターに戻せる。text・列挙型にはそのまま
+    送る。それ以外の変換しない型（interval・money・inet・配列等）には送らず、
+    `$1::text::interval`のようにtextを経由するキャストを案内するエラーに
+    する（形式の違うバイト列を送ると、別の値として保存されうるため）
+  - つながらなければ、プラグインと同じく警告を出して飛ばし、理由を
+    `mcp_rs_status`の「Handlers and plugins that failed to start」に出す
+    （以前の「Plugins that failed to start」）。接続先は`Handlers`の行に出す
+  - ツールの呼び出しは、SQL（長さを切る）と結果を監査ログに記録する。
+    パラメーターの値は記録しない
+  - `execute_query`・`get_schema`は`readOnlyHint`、`execute_command`は
+    `destructiveHint`を持つ（HTTPモードの`@read_only`等で絞れる）
+
+### Security
+
+- データベースのハンドラー（`database`機能）の`execute_query`で、データを
+  変えられないようにした（#453）。以前は、`WITH d AS (DELETE … RETURNING *)
+  SELECT …`をSELECTとして通していた。`WITH`の中の書き込みと`SELECT … INTO`
+  を拒否し、さらにPostgreSQLでは毎回、読み取り専用のトランザクション
+  （`SET TRANSACTION READ ONLY`）の中で実行してロールバックする（書き込む
+  関数を呼ぶSELECTも、データベースが拒否する）
+- PostgreSQLのパラメーターを、SQLの文字列に埋め込まずバインドするように
+  した（#453）。以前は文字列の置き換えで、`$1`が`$10`の中にも当たった。
+  パスワードもURLに埋め込まないので、記号を含んでいてもよい
+- `execute_command`は、1つのINSERT・UPDATE・DELETEだけを受け付ける
+  （DDL・`TRUNCATE`・権限の変更等は拒否する）
+- `execute_query`で取ったセッション単位の勧告ロック（`pg_advisory_lock`）
+  が、ロールバックの後も接続に残らないよう、接続をプールに戻すときに外す
+  （#453）。読み取り専用のトランザクションでは防げない副作用のため
+
+### Fixed
+
+- データベースのハンドラー（#453）: PostgreSQLの接続のたびに新しい接続の
+  プールを作っていたのを、1つのプールを共有するようにした。NUMERIC・UUID・
+  日付等の値を黙ってNULLにしていたのを、型に合わせて読む（NUMERICは桁を
+  落とさず文字列）ようにし、読めない型はそう分かる文字列にした。行が無い
+  結果でも列の名前と型を返す。1つのSQLの時間の上限（既定30秒）と、返す
+  行数の上限（既定1000行、超えたら`truncated`）を設けた。エンジンが無い
+  ときにパニックしていたのを、エラーにした
+- データベースのハンドラーの、動かなかったツール（`begin_transaction`は
+  コミット・ロールバックの手段が無かった）と、1つのデータベースでは意味の
+  無いツール（`list_engines`・`switch_engine`）を出さないようにした。
+  ツールの結果と`db://schema`のリソースを、MCPの形（`content`・`contents`）
+  で返すようにした
+
 ## [0.22.0] - 2026-11-11
 
 ### Added

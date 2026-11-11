@@ -1532,7 +1532,13 @@ mod tests {
         config.args = vec!["--exact".to_string(), "no_such_test".to_string()];
         config.call_timeout_seconds = Some(5);
         let error = PluginHandler::start(&config).await.err().unwrap();
-        assert!(error.contains("exited"), "{}", error);
+        // プロセスが終わるのと、`initialize`を書き込むのの、どちらが先かで
+        // 文が変わる（終わった後に書くと、パイプが閉じている）
+        assert!(
+            error.contains("exited") || error.contains("not running"),
+            "{}",
+            error
+        );
     }
 
     fn container_config(image: &str) -> PluginContainerConfig {
