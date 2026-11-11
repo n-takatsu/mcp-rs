@@ -5,7 +5,7 @@
 	"workspaceFolder": "/workspace",
 
 	// Setup development environment after container creation
-	"postCreateCommand": "bash -c 'cd /workspace && cargo fetch && cd web-ui && npm install'",
+	"postCreateCommand": "bash -c 'cd /workspace && cargo fetch'",
 
 	// VS Code customizations
 	"customizations": {
@@ -17,7 +17,7 @@
 			"serayuzgur.crates", // cSpell:ignore serayuzgur
 			"vadimcn.vscode-lldb", // cSpell:ignore vadimcn
 
-			// Web development (for web-ui)
+			// Web development
 				"ms-vscode.vscode-typescript-next",
 				"esbenp.prettier-vscode", // cSpell:ignore esbenp
 				"bradlc.vscode-tailwindcss", // cSpell:ignore bradlc

@@ -112,7 +112,6 @@ alias cdsrc='cd /workspaces/mcp-rs/src'
 alias cdtest='cd /workspaces/mcp-rs/tests'
 alias cdbench='cd /workspaces/mcp-rs/benches'
 alias cddocs='cd /workspaces/mcp-rs/docs'
-alias cdweb='cd /workspaces/mcp-rs/web-ui'
 
 EOF
 
@@ -154,7 +153,6 @@ alias cdsrc='cd /workspaces/mcp-rs/src'
 alias cdtest='cd /workspaces/mcp-rs/tests'
 alias cdbench='cd /workspaces/mcp-rs/benches'
 alias cddocs='cd /workspaces/mcp-rs/docs'
-alias cdweb='cd /workspaces/mcp-rs/web-ui'
 
 EOF
 fi

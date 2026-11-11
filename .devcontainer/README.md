@@ -82,7 +82,6 @@ The container comes with useful aliases for common tasks:
 - `cdtest` - Go to tests directory
 - `cdbench` - Go to benchmarks directory
 - `cddocs` - Go to docs directory
-- `cdweb` - Go to web-ui directory
 
 ## Database Setup
 
