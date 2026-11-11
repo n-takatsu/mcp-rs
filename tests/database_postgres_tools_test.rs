@@ -349,6 +349,20 @@ async fn string_and_null_parameters_follow_the_column_type() {
     .unwrap();
     assert_eq!(found["rows"], json!([[1]]));
 
+    // 同じSQLを、文字列と数値で続けて呼んでも動く（準備済みの文は、推論
+    // された型で使い回される。int4のパラメーターに、文字列も数値も合わせる）
+    let sql = format!("SELECT count(*)::int AS c FROM {table} WHERE n IS DISTINCT FROM $1");
+    for value in [json!("5"), json!(5), json!(5.0), json!(null)] {
+        let result = call(
+            &handler,
+            "execute_query",
+            json!({ "sql": sql, "params": [value] }),
+        )
+        .await
+        .unwrap_or_else(|e| panic!("{value}: {e}"));
+        assert!(result["rows"][0][0].is_number(), "{value}");
+    }
+
     // 変換できない値は、どのパラメーターかを示すエラー
     let err = call(
         &handler,

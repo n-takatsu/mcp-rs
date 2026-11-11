@@ -203,9 +203,11 @@ impl PostgreSqlConnection {
     where
         E: Executor<'e, Database = Postgres>,
     {
-        let needs_types = params
-            .iter()
-            .any(|p| matches!(p, Value::String(_) | Value::Null));
+        // パラメーターがあれば、必ず型を聞く。sqlxは同じSQLの準備済みの文を
+        // 使い回すので、一度`describe`した文は、推論された型のまま使われる。
+        // 送る値の型も、それに正確に合わせる（int4のパラメーターにint8を送ると
+        // `incorrect binary data format`になる）
+        let needs_types = !params.is_empty();
         let expected: Vec<sqlx::postgres::PgTypeInfo> = if needs_types {
             let described = executor
                 .describe(sql)
@@ -221,7 +223,10 @@ impl PostgreSqlConnection {
         params
             .iter()
             .enumerate()
-            .map(|(i, value)| PgParam::from_value(value, expected.get(i), i + 1))
+            .map(|(i, value)| {
+                PgParam::from_value(value, expected.get(i), i + 1)?
+                    .coerce(expected.get(i).map(|t| t.name()), i + 1)
+            })
             .collect()
     }
 }
@@ -232,7 +237,10 @@ enum PgParam {
     /// 型の分かったNULL（分からなければOID 0で、PostgreSQLに推論させる）
     Null(sqlx::postgres::PgTypeInfo),
     Bool(bool),
+    Int2(i16),
+    Int4(i32),
     Int(i64),
+    Float4(f32),
     Float(f64),
     Text(String),
     Uuid(uuid::Uuid),
@@ -321,6 +329,59 @@ impl PgParam {
     }
 }
 
+impl PgParam {
+    /// 送る型を、PostgreSQLが推論した型（`expected`）に正確に合わせる。
+    /// 準備済みの文はその型で使われるので、幅の違う整数等も変換する。
+    /// 合わせられない組み合わせは、そのまま送る（PostgreSQLがエラーにする）
+    fn coerce(self, expected: Option<&str>, position: usize) -> Result<Self, DatabaseError> {
+        let Some(expected) = expected else {
+            return Ok(self);
+        };
+        let out_of_range = |what: &str| {
+            DatabaseError::QueryFailed(format!(
+                "parameter ${position}: the value does not fit in {what}"
+            ))
+        };
+        let is_text = matches!(expected, "TEXT" | "VARCHAR" | "BPCHAR" | "NAME");
+        Ok(match self {
+            Self::Int(i) => match expected {
+                "INT2" => Self::Int2(i16::try_from(i).map_err(|_| out_of_range("smallint"))?),
+                "INT4" => Self::Int4(i32::try_from(i).map_err(|_| out_of_range("integer"))?),
+                "FLOAT4" => Self::Float4(i as f32),
+                "FLOAT8" => Self::Float(i as f64),
+                "NUMERIC" => Self::Numeric(
+                    string_to_numeric(&i.to_string()).ok_or_else(|| out_of_range("numeric"))?,
+                ),
+                _ if is_text => Self::Text(i.to_string()),
+                _ => Self::Int(i),
+            },
+            Self::Float(f) => match expected {
+                "FLOAT4" => Self::Float4(f as f32),
+                "NUMERIC" if f.is_finite() => Self::Numeric(
+                    string_to_numeric(&f.to_string()).ok_or_else(|| out_of_range("numeric"))?,
+                ),
+                "INT2" | "INT4" | "INT8" if f.fract() == 0.0 => {
+                    Self::Int(f as i64).coerce(Some(expected), position)?
+                }
+                _ if is_text => Self::Text(f.to_string()),
+                _ => Self::Float(f),
+            },
+            Self::Bool(b) if is_text => Self::Text(b.to_string()),
+            Self::Json(json) if is_text => Self::Text(match json {
+                serde_json::Value::String(s) => s,
+                other => other.to_string(),
+            }),
+            Self::TimestampTz(dt) => match expected {
+                "TIMESTAMP" => Self::Timestamp(dt.naive_utc()),
+                "DATE" => Self::Date(dt.date_naive()),
+                _ if is_text => Self::Text(dt.to_rfc3339()),
+                _ => Self::TimestampTz(dt),
+            },
+            other => other,
+        })
+    }
+}
+
 impl sqlx::Type<Postgres> for PgParam {
     fn type_info() -> sqlx::postgres::PgTypeInfo {
         <String as sqlx::Type<Postgres>>::type_info()
@@ -340,6 +401,9 @@ impl<'q> sqlx::Encode<'q, Postgres> for PgParam {
         match self {
             Self::Null(_) => Ok(sqlx::encode::IsNull::Yes),
             Self::Bool(v) => <bool as Encode<Postgres>>::encode_by_ref(v, buf),
+            Self::Int2(v) => <i16 as Encode<Postgres>>::encode_by_ref(v, buf),
+            Self::Int4(v) => <i32 as Encode<Postgres>>::encode_by_ref(v, buf),
+            Self::Float4(v) => <f32 as Encode<Postgres>>::encode_by_ref(v, buf),
             Self::Int(v) => <i64 as Encode<Postgres>>::encode_by_ref(v, buf),
             Self::Float(v) => <f64 as Encode<Postgres>>::encode_by_ref(v, buf),
             Self::Text(v) => <String as Encode<Postgres>>::encode_by_ref(v, buf),
@@ -366,6 +430,9 @@ impl<'q> sqlx::Encode<'q, Postgres> for PgParam {
         Some(match self {
             Self::Null(ty) => ty.clone(),
             Self::Bool(_) => <bool as Type<Postgres>>::type_info(),
+            Self::Int2(_) => <i16 as Type<Postgres>>::type_info(),
+            Self::Int4(_) => <i32 as Type<Postgres>>::type_info(),
+            Self::Float4(_) => <f32 as Type<Postgres>>::type_info(),
             Self::Int(_) => <i64 as Type<Postgres>>::type_info(),
             Self::Float(_) => <f64 as Type<Postgres>>::type_info(),
             Self::Text(_) => <String as Type<Postgres>>::type_info(),
@@ -929,6 +996,41 @@ mod tests {
         // 変換できない値は、どのパラメーターかを示すエラー
         let err = convert("not-a-uuid", "UUID").unwrap_err().to_string();
         assert!(err.contains("$1") && err.contains("uuid"), "{err}");
+        // 数値は、推論された型の幅に合わせる（準備済みの文はその型で使われる）
+        let coerce = |value: Value, expected: &'static str| {
+            PgParam::from_value(&value, Some(&PgTypeInfo::with_name(expected)), 1)
+                .unwrap()
+                .coerce(Some(expected), 1)
+        };
+        assert!(matches!(
+            coerce(Value::Int(7), "INT4"),
+            Ok(PgParam::Int4(7))
+        ));
+        assert!(matches!(
+            coerce(Value::Int(7), "INT2"),
+            Ok(PgParam::Int2(7))
+        ));
+        assert!(matches!(coerce(Value::Int(7), "INT8"), Ok(PgParam::Int(7))));
+        assert!(matches!(
+            coerce(Value::Int(7), "NUMERIC"),
+            Ok(PgParam::Numeric(_))
+        ));
+        assert!(matches!(
+            coerce(Value::Float(1.5), "NUMERIC"),
+            Ok(PgParam::Numeric(_))
+        ));
+        assert!(matches!(coerce(Value::Int(7), "TEXT"), Ok(PgParam::Text(ref s)) if s == "7"));
+        assert!(matches!(
+            coerce(Value::Float(2.0), "INT4"),
+            Ok(PgParam::Int4(2))
+        ));
+        assert!(matches!(
+            coerce(Value::String("7".into()), "INT2"),
+            Ok(PgParam::Int2(7))
+        ));
+        let err = coerce(Value::Int(100_000), "INT2").unwrap_err().to_string();
+        assert!(err.contains("$1") && err.contains("smallint"), "{err}");
+
         // 型が分からないNULLはOID 0（PostgreSQLに推論させる）
         assert!(matches!(
             PgParam::from_value(&Value::Null, None, 1),
