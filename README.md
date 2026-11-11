@@ -243,6 +243,8 @@ Claude Desktop may start two mcp-rs processes for one entry in `claude_desktop_c
 - Each process writes its own startup line (`=== mcp-rs … started at … / pid … / instance … / log: … ===`). Windows reuses process IDs, so the same `pid` can belong to a different process after a restart. Read `[pid …]` together with the latest startup line above it. The startup line also has `instance` (the process ID and start time), which the audit log records with every tool call, so you can match the two logs
 - Startup messages, such as the WordPress connection check, appear once per process. Seeing them twice is normal
 
+The audit log (who called which tool) is written next to the logs, to `%USERPROFILE%\.mcp-rs\audit\audit.log` on Windows (`$XDG_STATE_HOME/mcp-rs/audit` or `~/.local/state/mcp-rs/audit` elsewhere). `[audit] file_path` changes it. Up to version 0.21.0, it was `audit.log` in the config file's folder; that file is left where it is. See [Security](https://n-takatsu.github.io/mcp-rs/docs/security/#audit-log).
+
 ## 🏗️ Architecture
 
 ```text

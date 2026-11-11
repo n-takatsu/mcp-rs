@@ -49,6 +49,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **既定の保存先の変更**: 監査ログの既定の保存先を、設定ファイルと同じ
+  フォルダの`audit.log`から、通常のログと同じユーザー領域の
+  `audit\audit.log`にした（#474）。Windowsは
+  `%USERPROFILE%\.mcp-rs\audit\audit.log`、それ以外は
+  `$XDG_STATE_HOME/mcp-rs/audit/audit.log`か
+  `~/.local/state/mcp-rs/audit/audit.log`。Claude Desktopの案内どおりの
+  設定では、以前は`%APPDATA%\Claude\mcp-rs\audit.log`（Claudeのパッケージの
+  フォルダの中）になり、Claude Desktop上のClaudeから読めなかった。
+  通常のログ（`.mcp-rs\logs`）と並ぶので、`instance`で突き合わせやすい
+  - 設定ファイルを使わない場合も、この場所に書く（以前はメモリーだけ）
+  - `[audit] file_path`を書いていれば、これまでどおりその場所。相対パスの
+    基準も、これまでどおり設定ファイルのフォルダ
+  - 以前の場所の`audit.log`は移さない。残っていれば、起動時のログにその
+    場所を出す。以前の場所を使い続けるなら`file_path = "audit.log"`
 - Production Deployment（`deploy.yml`）の名前を「Release Image」にし、中身が
   `echo`だけだったデプロイのジョブ（Deploy to Staging・Deploy to
   Production・Rollback Deployment）を削除した（#451）。デプロイ先は無く、

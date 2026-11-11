@@ -221,17 +221,24 @@ resource = "https://mcp.example.com/mcp"         # the URL clients use to reach 
 
 ## Audit Log
 
-Tool calls (WordPress and plugins) and, in HTTP mode, refused requests are appended to an audit log file as JSON lines, one entry per line (see [What is recorded](#what-is-recorded)). By default, the file is `audit.log` in the same folder as the config file (the file passed with `--config`), so the location does not depend on the folder mcp-rs is started from. The mcp-rs log shows the path at startup (`📝 監査ログ: <path>`).
+Tool calls (WordPress and plugins) and, in HTTP mode, refused requests are appended to an audit log file as JSON lines, one entry per line (see [What is recorded](#what-is-recorded)). By default, the file is `audit.log` in the `audit` folder next to the mcp-rs logs:
+
+- Windows: `%USERPROFILE%\.mcp-rs\audit\audit.log`
+- Other platforms: `$XDG_STATE_HOME/mcp-rs/audit/audit.log`, or `~/.local/state/mcp-rs/audit/audit.log` without `XDG_STATE_HOME`
+
+The mcp-rs log shows the path at startup (`📝 監査ログ: <path>`), and so does the `Audit log` line of `mcp_rs_status`.
 
 ```toml
 [audit]
 # enabled = true              # false: keep entries in memory only (no file)
-# file_path = "audit.log"     # relative paths are resolved from the config file's folder
+# file_path = "audit.log"     # absolute path, or relative to the config file's folder
 # max_file_size_mb = 100      # rotate to audit.log.1, audit.log.2, ... before this size. 0: never rotate
 # max_files = 5               # number of rotated files to keep
 ```
 
 - If the file cannot be written (for example, the folder is read-only), mcp-rs logs a warning at startup and keeps entries in memory only. Missing folders are created
+- Up to version 0.21.0, the default was `audit.log` in the same folder as the config file. With Claude Desktop, that is usually `%APPDATA%\Claude\mcp-rs\audit.log`, inside Claude's own folder, where Claude itself could not read it. mcp-rs does not move that file: entries written before the update stay there, and new entries go to the new location. When the old file exists, mcp-rs says where it is in its log at startup, every time it starts. To stop that message, delete the old file or move it somewhere else once you no longer need it there. To keep using the old location instead, set `file_path = "audit.log"` (relative to the config file's folder)
+- In the Docker image, the default is `/home/nonroot/.local/state/mcp-rs/audit/audit.log` inside the container, which is lost when the container is recreated (and cannot be written at all with a read-only root file system, as in `docker-compose.yml`). Mount a writable volume at `/home/nonroot/.local/state/mcp-rs/audit`, or set `file_path` to an absolute path on a mounted volume
 - Up to version 0.18.4, the file was `audit.log` in the folder mcp-rs was started from. When started from an MCP client such as Claude Desktop, that folder depends on the client, and the file may not have been written at all
 
 ### What is recorded
