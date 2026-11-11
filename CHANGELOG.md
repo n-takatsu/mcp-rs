@@ -46,6 +46,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `JsonRpcRequestHandler`には、既定の実装がある
     `handle_jsonrpc_with_protocol_version`を加えた（実装している側の変更は
     要らない）
+- Unix系（Linux・macOS）で、監査ログのフォルダを本人だけが使える権限
+  （`700`）、ファイルを本人だけが読み書きできる権限（`600`）で作るように
+  した（#489）。以前はumaskに従い、多くの環境で他のユーザーも読めた
+  （監査ログには利用者名・IPアドレスが入る）。ローテーションの後の
+  ファイルも同じ。既にあるフォルダ・ファイルの権限は変えない（以前の
+  バージョンが作ったものは`chmod`で絞る）。Windowsと通常のログは変えない
 
 ### Changed
 
