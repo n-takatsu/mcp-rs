@@ -104,7 +104,9 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
             type=sha,prefix={{branch}}-,enable=${{ github.ref_type == 'branch' }}
-            type=raw,value=latest,enable={{is_default_branch}}
+          # latestは、vX.Y.Zタグのときにtype=semverが自動で付ける（flavorの
+          # latest=auto）。既定のブランチ（develop）にlatestを付ける行は
+          # 置かない。手動の実行でリリース前のイメージがlatestになるため（#482）
 
       - name: Build and push Docker image
         id: build

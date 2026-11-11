@@ -143,7 +143,7 @@ kubectl logs -f deployment/mcp-rs -n mcp-rs
 
 - **自動**: `main`ブランチへのpush → `ghcr.io/n-takatsu/mcp-rs:main`・`main-<コミット>`
 - **自動**: `vX.Y.Z`タグ → `ghcr.io/n-takatsu/mcp-rs:X.Y.Z`・`X.Y`・`X`・`latest`
-- **手動**: GitHub Actions UIから実行可能 → `<ブランチ>`・`<ブランチ>-<コミット>`（既定のブランチの`develop`を選ぶと、`latest`も）
+- **手動**: GitHub Actions UIから実行可能 → `<ブランチ>`・`<ブランチ>-<コミット>`（`latest`はタグのときだけ）
 
 ## 📈 スケーリング
 
