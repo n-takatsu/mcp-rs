@@ -22,6 +22,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `isError: true`の結果で返すこと（SEP-1303）、OAuthの`insufficient_scope`
     と`scope`（SEP-835）、Protected Resource Metadata（RFC 9728、SEP-985）は、
     既に仕様どおり
+- HTTPモードで、`initialize`の後のリクエストの`MCP-Protocol-Version`
+  ヘッダー（Streamable HTTP）を読むようにした（#484）。そのリクエストは
+  ヘッダーの版で答える（以前は、直近の`initialize`の版をすべての
+  クライアントに使っていた）。対応していない版ならHTTP 400と
+  JSON-RPCのエラー（`-32600`）で答える。ヘッダーが無いリクエストと`/ws`は、
+  これまでどおり直近の`initialize`の版
+
+### Security
+
+- HTTPモードで、ブラウザーが付ける`Origin`ヘッダーを検証するようにした
+  （#484）。許可していないオリジンからの`/mcp`・`/`・`/ws`のリクエストには
+  HTTP 403で答える。訪れたウェブページが、ブラウザー経由で（DNS
+  rebindingを含む）mcp-rsのツールを呼べないようにする（MCPの仕様の
+  MUST）。受け付けるのは、`Origin`が無いリクエスト（Claude Desktop等の
+  AIクライアント）、ループバックのオリジン（`localhost`・`127.0.0.1`・
+  `[::1]`）、`[transport.http] allowed_origins`に書いたオリジン（`"*"`で
+  すべて）。Protected Resource Metadataは、これまでどおりどのオリジンにも
+  返す
+  - **互換性のない変更（ライブラリ）**: `HttpConfig`と
+    `HttpTransportConfig`に`allowed_origins`を加えた。構造体を
+    `..Default::default()`無しで作っている場合は、項目を加える。
+    `JsonRpcRequestHandler`には、既定の実装がある
+    `handle_jsonrpc_with_protocol_version`を加えた（実装している側の変更は
+    要らない）
 
 ### Changed
 
