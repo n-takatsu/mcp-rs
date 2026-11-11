@@ -275,7 +275,7 @@ kubectl rollout undo deployment/mcp-rs --to-revision=2 -n mcp-rs
 |---|---|
 | `main`ブランチへのpush | `main`・`main-<コミット>` |
 | `vX.Y.Z`タグのpush | `X.Y.Z`・`X.Y`・`X`・`latest` |
-| GitHub ActionsのUIから手動で実行 | 選んだブランチの名前 |
+| GitHub ActionsのUIから手動で実行 | `<ブランチ>`・`<ブランチ>-<コミット>`（既定のブランチの`develop`を選ぶと、`latest`も） |
 
 タグのときは、SBOM（`.spdx.json`）をGitHubのリリースに添付します。
 
