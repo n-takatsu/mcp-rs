@@ -6,16 +6,18 @@ permalink: /docs/api/database/
 
 ## Database Engine API
 
-Comprehensive API reference for MySQL and PostgreSQL database engines in MCP-RS v0.16.0+.
+API reference for the database engines, for Rust code that uses mcp-rs as a library.
+
+> **Using mcp-rs as an MCP server?** This page is not about the tools an MCP client sees. To connect mcp-rs to a database, add a `[database]` section to the configuration file: see the [Database Integration Guide](../database.md). Only PostgreSQL can be configured there.
 
 ---
 
 ## 🗄️ Supported Databases
 
-| Database | Status | Features | Version |
-|----------|--------|----------|---------|
-| **MySQL** | ✅ Complete | Transactions, Prepared Statements, JSON | Phase 1 |
-| **PostgreSQL** | ✅ Complete | Transactions, Prepared Statements, JSON, UUID | Phase 2 |
+| Database | Library code | In the MCP server (`[database]`) | Cargo feature |
+|----------|--------------|----------------------------------|---------------|
+| **PostgreSQL** | Transactions, Prepared Statements, JSON, UUID | ✅ | `database` (default) |
+| **MySQL** | Transactions, Prepared Statements, JSON | Not yet | `mysql-backend` |
 
 ---
 
@@ -440,29 +442,7 @@ stmt.execute(&[uuid, Value::Int(123)]).await?;
 
 ### Connection Pool Configuration
 
-```toml
-[database]
-engine = "postgresql"
-
-[database.postgres]
-# Connection parameters
-host = "localhost"
-port = 5432
-username = "postgres"
-password = "password"
-database = "myapp"
-
-# Pool settings
-max_connections = 20
-connection_timeout_secs = 30
-idle_timeout_secs = 300
-max_lifetime_secs = 1800
-
-# SSL/TLS (optional)
-ssl_enabled = true
-ssl_verify = true
-
-```
+The MCP server builds its PostgreSQL connection from the `[database]` section of the configuration file (`host`, `port`, `database`, `username`, `password`, `ssl_mode`, `max_connections`, `query_timeout_seconds`). See the [Database Integration Guide](../database.md#configuration). In library code, pass the same values in `DatabaseConfig`.
 
 ---
 
@@ -511,12 +491,10 @@ match txn.commit().await {
 
 ## Version Information
 
-- **Current Version**: v0.22.0
-- **Phase 1**: MySQL (Complete)
-- **Phase 2**: PostgreSQL (Complete)
-- **Updated**: 2025-11-23
+- **MCP server**: PostgreSQL through `[database]`
+- **Library only**: MySQL (`mysql-backend` feature)
 
 ---
 
-See also: [PostgreSQL Integration Guide](../../guides/postgres-integration.md), [Performance Tuning](../../guides/performance-tuning.md)
+See also: [Database Integration Guide](../database.md), [PostgreSQL Integration Guide](../guides/postgres-integration.md)
 

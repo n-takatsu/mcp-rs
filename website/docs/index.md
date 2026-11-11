@@ -39,14 +39,13 @@ MCP-RS provides a **comprehensive, battle-tested** implementation of the MCP (Mo
 
 ## 🗄️ Database Integration
 
-> **Note**: The database handler is not connected to the `mcp-rs` binary yet ([#453](https://github.com/n-takatsu/mcp-rs/issues/453)).
+- **PostgreSQL**: Connect one database with a `[database]` section in the configuration file
+- **Read-Only by Default**: `execute_query` and `get_schema`; queries run in a read-only transaction that is rolled back
+- **Writes Only When Allowed**: `execute_command` (one INSERT, UPDATE, or DELETE) only with `allow_write = true`
+- **Typed Parameters**: `$1`, `$2`, … are bound, never inserted into the SQL text
+- **Limits**: Rows per result, time per statement, and connections
 
-- **Multi-Engine Support**: PostgreSQL, MySQL, Redis, MongoDB, SQLite
-- **🔄 Dynamic Engine Switching**: Zero-downtime switching with intelligent failover
-- **Enterprise Security**: 6-layer security architecture for all database operations
-- **Advanced Features**: Connection pooling, transaction management, schema introspection
-- **Performance Monitoring**: Real-time health checks and query optimization
-- **Multi-Engine Workflows**: Cache-aside patterns and hybrid data architectures
+See the [Database Integration Guide](./database.md).
 
 ## 🎯 WordPress Integration (32 Tools)
 

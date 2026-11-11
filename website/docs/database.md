@@ -8,333 +8,140 @@ permalink: /docs/database/
 
 **[Home]({{ site.baseurl }}/) > [Documentation]({{ site.baseurl }}/docs/) > Database Guide**
 
-**Multi-Engine Database System with Enterprise Security**
+mcp-rs can connect to one PostgreSQL database and give MCP clients tools to read its schema and run SQL. By default it only reads: queries run in a read-only transaction, and the tool that changes data is not offered.
 
----
-
-## Overview
-
-MCP-RS provides comprehensive database integration supporting 5 major database engines with unified API access and enterprise-grade security features.
-
-## Supported Database Engines
-
-## 🗄️ **PostgreSQL**
-
-- **Type**: Relational Database
-- **Features**: Advanced SQL, ACID transactions, JSON support
-- **Use Cases**: Enterprise applications, complex queries, data integrity
-- **Status**: ✅ Fully Implemented
-
-## 🐬 **MySQL**
-
-- **Type**: Relational Database
-- **Features**: Web-scale performance, replication, clustering
-- **Use Cases**: Web applications, content management, e-commerce
-- **Status**: ✅ Fully Implemented
-
-## 🔴 **Redis**
-
-- **Type**: In-Memory Key-Value Store
-- **Features**: Sub-millisecond latency, data structures, clustering
-- **Use Cases**: Caching, session storage, real-time analytics
-- **Implementation**: 558 lines of code
-- **Status**: ✅ Fully Implemented
-
-## 🍃 **MongoDB**
-
-- **Type**: Document-Oriented NoSQL
-- **Features**: Flexible schemas, aggregation pipelines, sharding
-- **Use Cases**: Content management, IoT data, flexible data models
-- **Implementation**: 952 lines of code
-- **Status**: ✅ Fully Implemented
-
-## 📄 **SQLite**
-
-- **Type**: Embedded Database
-- **Features**: Zero-configuration, serverless, cross-platform
-- **Use Cases**: Development, testing, mobile applications
-- **Status**: ✅ Basic Implementation
-
-## Security Features
-
-## 🛡️ **6-Layer Security Architecture**
-
-All database operations are protected by:
-
-1. **🔐 AES-GCM-256 Encryption**: Military-grade encryption for sensitive data
-2. **⚡ Token Bucket Rate Limiting**: DDoS protection with configurable limits
-3. **🔒 TLS 1.2+ Enforcement**: Mandatory secure transport
-4. **🛡️ SQL Injection Protection**: 11 attack pattern detection
-5. **🚫 XSS Attack Protection**: 14 attack pattern detection
-6. **📊 Comprehensive Audit Logging**: All operations logged with tamper-resistance
-
-## 🔍 **Security Monitoring**
-
-- Real-time threat detection
-- Anomaly detection and alerting
-- Security event correlation
-- Compliance reporting
-
-## Dynamic Database Engine Switching
-
-🚀 **Enterprise Feature**: Industry-leading zero-downtime database engine switching with intelligent failover and real-time optimization.
-
-## Core Capabilities
-
-### Zero-Downtime Switching
-
-- Seamless engine transitions without service interruption
-- Transaction coordination across engines
-- Connection state preservation
-- Automatic rollback on failure
-
-### Intelligent Monitoring
-
-- Real-time performance metrics collection
-- Health status monitoring for all engines
-- Automatic degradation detection
-- Predictive failure analysis
-
-### Policy-Based Automation
-
-- Performance-triggered switching
-- Time-based engine selection
-- Load-aware engine routing
-- Custom business logic integration
-
-## Switching Strategies
-
-| Strategy | Trigger | Use Case |
-|----------|---------|----------|
-| **Performance** | Response time > threshold | High-traffic optimization |
-| **Load-Based** | Connection count > limit | Auto-scaling responses |
-| **Time-Based** | Scheduled intervals | Cost optimization |
-| **Manual** | Administrative command | Maintenance operations |
-| **Failover** | Engine health failure | Disaster recovery |
-
-## Architecture Benefits
-
-### Multi-Engine Optimization
-
-```mermaid
-graph TD
-    A[Application Layer] --> B[Dynamic Engine Manager]
-    B --> C[PostgreSQL - Analytics]
-    B --> D[Redis - Caching]
-    B --> E[MongoDB - Content]
-    B --> F[MySQL - Transactions]
-
-    B --> G[Real-time Monitoring]
-    G --> H[Performance Metrics]
-    G --> I[Health Checks]
-    G --> J[Auto-Failover]
-```
-
-### Enterprise Integration
-
-- **Kubernetes Ready**: Native container orchestration support
-- **Prometheus Metrics**: Full observability integration
-- **Grafana Dashboards**: Real-time performance visualization
-- **PagerDuty Alerts**: Automated incident management
-
-## Key Features
-
-## ⚡ **Multi-Engine Workflows**
-
-```json
-// Cache-aside pattern with PostgreSQL + Redis
-{
-  "workflow": "cache_aside",
-  "primary": "postgresql",
-  "cache": "redis",
-  "ttl": 3600
-}
-```
-
-## 📊 **Health Monitoring**
-
-- Real-time database health checks
-- Performance metrics collection
-- Connection pool monitoring
-- Automated alerting
-
-## 🔧 **Connection Management**
-
-- Advanced connection pooling
-- Automatic failover handling
-- Load balancing across replicas
-- Connection lifecycle management
-
-## Database Tools
-
-## Core Operations
-
-### `execute_query` - Execute SELECT Queries
-
-```json
-{
-  "tool": "execute_query",
-  "arguments": {
-    "sql": "SELECT * FROM users WHERE active = $1",
-    "params": [true],
-    "engine": "postgresql"
-  }
-}
-```
-
-### `execute_command` - Data Modification
-
-```json
-{
-  "tool": "execute_command",
-  "arguments": {
-    "sql": "INSERT INTO users (name, email) VALUES ($1, $2)",
-    "params": ["John Doe", "john@example.com"],
-    "engine": "postgresql",
-    "transaction": true
-  }
-}
-```
-
-### `begin_transaction` - Transaction Management
-
-```json
-{
-  "tool": "begin_transaction",
-  "arguments": {
-    "engine": "postgresql",
-    "isolation_level": "REPEATABLE_READ"
-  }
-}
-```
-
-## Engine Management
-
-### `list_engines` - Available Engines
-
-```json
-{
-  "tool": "list_engines",
-  "arguments": {}
-}
-```
-
-### `switch_engine` - Change Active Engine
-
-```json
-{
-  "tool": "switch_engine",
-  "arguments": {
-    "engine_id": "redis"
-  }
-}
-```
+- **Engine**: PostgreSQL only. Other engines (MySQL, SQLite, Redis, MongoDB) exist as library code but cannot be configured yet
+- **Build**: included in the default build and in the Docker image. A build made with `--no-default-features` leaves it out, and reports that in `mcp_rs_status`
+- **Step-by-step setup**: [PostgreSQL Integration Guide](./guides/postgres-integration.md)
 
 ## Configuration
 
-## Multi-Engine Setup
+Add a `[database]` section to the configuration file:
 
 ```toml
 [database]
+engine = "postgresql"
+host = "localhost"                # default: localhost
+port = 5432                       # default: 5432
+database = "app"
+username = "mcp_reader"
+password = "${MCP_DB_PASSWORD}"   # read from an environment variable
+ssl_mode = "prefer"               # disable, allow, prefer (default), require, verify-ca, verify-full
 
-## PostgreSQL primary database
-
-[[database.engines]]
-id = "primary"
-type = "postgresql"
-host = "localhost"
-port = 5432
-database = "myapp"
-username = "user"
-password = "password"
-
-## Redis cache
-
-[[database.engines]]
-id = "cache"
-type = "redis"
-host = "localhost"
-port = 6379
-database = 0
-
-## MongoDB documents
-
-[[database.engines]]
-id = "documents"
-type = "mongodb"
-uri = "mongodb://localhost:27017"
-database = "docs"
+# Optional
+# allow_write = false             # true offers execute_command (INSERT, UPDATE, DELETE)
+# max_rows = 1000                 # rows returned by execute_query at most
+# query_timeout_seconds = 30      # time limit of one SQL statement
+# max_connections = 5             # connections in the pool at most
+# enabled = true                  # false keeps the section but does not connect
 ```
 
-## Security Configuration
+| Key | Required | Default | Notes |
+|-----|----------|---------|-------|
+| `engine` | yes | | Only `"postgresql"` |
+| `host` | | `localhost` | `${VAR}` allowed |
+| `port` | | `5432` | |
+| `database` | yes | | `${VAR}` allowed |
+| `username` | yes | | `${VAR}` allowed |
+| `password` | | none | `${VAR}` allowed. Never written to logs, `mcp_rs_status`, or error messages |
+| `ssl_mode` | | `prefer` | Same meaning as libpq's `sslmode` |
+| `allow_write` | | `false` | See [Writing data](#writing-data) |
+| `max_rows` | | `1000` | `0` means the default |
+| `query_timeout_seconds` | | `30` | `0` means the default |
+| `max_connections` | | `5` | `0` means the default |
+| `enabled` | | `true` | |
 
-```toml
-[database.security]
-enable_sql_injection_detection = true
-enable_audit_logging = true
-threat_intelligence_enabled = true
-max_query_length = 10000
+### When the database cannot be used
 
-[database.security.encryption]
-enable_column_encryption = true
-master_key_rotation_days = 90
+mcp-rs connects once at startup. If the settings are invalid, an environment variable in `${VAR}` is not set, or the database cannot be reached, mcp-rs logs a warning and starts without the database tools. WordPress and plugins still start. The reason is shown by the `mcp_rs_status` tool under "Handlers and plugins that failed to start", and a working connection is shown under "Handlers", for example `postgresql mcp_reader@localhost:5432/app (read-only)`.
+
+## Tools
+
+| Tool | Offered | Annotations |
+|------|---------|-------------|
+| `execute_query` | always | `readOnlyHint` |
+| `get_schema` | always | `readOnlyHint` |
+| `execute_command` | only with `allow_write = true` | `destructiveHint` |
+
+The read-only tools can be allowed alone in HTTP mode with `@read_only` (see [Security](./security.md)).
+
+### `execute_query`
+
+Runs one `SELECT` statement (`WITH … SELECT` is allowed) and returns the rows.
+
+```json
+{
+  "sql": "SELECT id, name, created_at FROM customers WHERE country = $1 ORDER BY id LIMIT 50",
+  "params": ["JP"]
+}
 ```
 
-## Use Cases
+The result is JSON text:
 
-## 🏪 **E-Commerce Platform**
+```json
+{
+  "columns": [
+    {"name": "id", "type": "INT4", "nullable": true, "max_length": null},
+    {"name": "name", "type": "TEXT", "nullable": true, "max_length": null},
+    {"name": "created_at", "type": "TIMESTAMPTZ", "nullable": true, "max_length": null}
+  ],
+  "rows": [[1, "Example K.K.", "2026-11-11T03:34:56+00:00"]],
+  "truncated": false,
+  "max_rows": 1000,
+  "total_rows": null,
+  "execution_time_ms": 3
+}
+```
 
-- **PostgreSQL**: Product catalog, orders, inventory
-- **Redis**: Shopping carts, session data, price caching
-- **MongoDB**: Product reviews, user-generated content
+- At most `max_rows` rows are returned. `truncated` is `true` when there were more. mcp-rs still receives the remaining rows from PostgreSQL before stopping, so use `LIMIT`, `WHERE`, or aggregates for large tables
+- A result without rows still has its `columns`
+- Values are returned by type: integers, floats, and booleans as JSON values; `numeric` as a string (no digits are lost); `uuid`, `date`, `time`, and `timestamp` as strings; `timestamptz` as RFC 3339; `json`/`jsonb` as JSON; `bytea` as base64; `text[]`, `varchar[]`, `int4[]`, and `int8[]` as JSON arrays. Other types are replaced by a note: cast such columns to text, for example `column::text`
 
-## 📰 **Content Management System**
+### `get_schema`
 
-- **MySQL**: Articles, users, permissions
-- **Redis**: Page caching, view counters
-- **MongoDB**: Media metadata, search indexes
+Lists the tables of schema `public` with their columns, types, primary keys, foreign keys, and indexes. The same information is available as the resource `db://schema`.
 
-## 📊 **Analytics Platform**
+### `execute_command`
 
-- **PostgreSQL**: User data, transactions
-- **Redis**: Real-time metrics, leaderboards
-- **MongoDB**: Event logs, flexible schemas
+Offered only with `allow_write = true`. Runs one `INSERT`, `UPDATE`, or `DELETE` statement, commits it, and returns `rows_affected`. Other statements (`CREATE`, `DROP`, `ALTER`, `TRUNCATE`, `GRANT`, several statements, …) are refused.
 
-## Performance Optimization
+```json
+{
+  "sql": "UPDATE orders SET status = $1 WHERE id = $2",
+  "params": ["shipped", 1042]
+}
+```
 
-## 🚀 **Best Practices**
+## Parameters
 
-1. **Use appropriate engines** for different data types
-2. **Implement connection pooling** for high-traffic apps
-3. **Cache frequently accessed data** in Redis
-4. **Use read replicas** for scaling read operations
-5. **Monitor and optimize slow queries**
+Write `$1`, `$2`, … in the SQL and pass the values in `params`. Values are bound as parameters and never inserted into the SQL text.
 
-## 📈 **Monitoring Metrics**
+- `params` takes strings, numbers, booleans, and `null`
+- Strings are converted to the type PostgreSQL expects for the parameter: `uuid`, `date` (`YYYY-MM-DD`), `time`, `timestamp`, `timestamptz` (RFC 3339), `numeric`, integers, floats, `boolean`, `json`/`jsonb`, and `bytea` (base64). So values returned by `execute_query` can be passed back as they are
+- Strings are also sent as they are to text columns and enum columns
+- For other types (`interval`, `money`, `inet`, arrays, …), pass a string and cast it through text in the SQL: `$1::text::interval`. Without the cast, mcp-rs refuses the parameter instead of sending it in the wrong format
+- A value that cannot be converted is refused with an error that names the parameter, for example `parameter $1: 'abc' is not a valid uuid`
 
-- Query execution time
-- Connection pool utilization
-- Cache hit/miss ratios
-- Transaction throughput
-- Error rates and patterns
+## Safety
 
-## Getting Started
+What mcp-rs does:
 
-1. **Configure Database Engines**: Set up connection details in `mcp-config.toml`
-2. **Test Connections**: Use health check tools to verify connectivity
-3. **Implement Workflows**: Design multi-engine workflows for your use case
-4. **Monitor Performance**: Set up monitoring and alerting
-5. **Scale Operations**: Use connection pooling and read replicas
+- `execute_query` accepts only a single `SELECT`. Writes inside `WITH` (`WITH d AS (DELETE … RETURNING *) SELECT …`) and `SELECT … INTO` are refused
+- Every query also runs in a read-only transaction (`SET TRANSACTION READ ONLY`) that is rolled back, so a `SELECT` that calls a function that writes is refused by PostgreSQL
+- Each statement has a time limit (`query_timeout_seconds`, via `statement_timeout`)
+- Session-level advisory locks taken by a query (`pg_advisory_lock`) are released when the connection returns to the pool
+- Each tool call is recorded in the [audit log](./security.md) with its SQL (shortened to 2,000 characters) and whether it succeeded. Parameter values are not recorded
 
-## Related Documentation
+What you should do:
 
-- **[Complete Database Guide](https://github.com/n-takatsu/mcp-rs/blob/main/project-docs/database-guide.md)** - Comprehensive developer documentation
-- **[API Reference](./api/)** - Complete API documentation
-- **[Security Guide](./security/)** - Enterprise security features
-- **[Architecture](./architecture/)** - System design overview
+- **Connect with a read-only role.** The read-only transaction cannot stop everything: extensions such as `dblink` open their own connections, which can write. A role that only has `SELECT` (and no `dblink`) closes that gap. See [Create a read-only role](./guides/postgres-integration.md#2-create-a-role-for-mcp-rs)
+- Grant the role only the tables the AI client needs to see
+- Use `allow_write = true` only with a role whose write permissions you are willing to give the AI client, and preferably not on a production database
 
----
+## Writing data
 
-**Version**: 0.22.0
-**Status**: Production Ready
-**Last Updated**: November 7, 2024
+With `allow_write = true`, mcp-rs offers `execute_command` (its annotations mark it as destructive, so MCP clients usually ask before calling it). `execute_query` stays read-only either way. The status line shows `(read-write)` instead of `(read-only)`.
+
+## Library API
+
+The engines can also be used from Rust code. See the [Database Engine API](./api/database.md).

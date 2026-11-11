@@ -126,10 +126,12 @@ criterion = { version = "0.5", features = ["html_reports", "async_tokio"] }
 # rand = "0.8.5"
 
 [features]
-default = []
+default = ["database"]
 
-# Database handler: [database] in the config file (PostgreSQL, #453)
-database = ["mysql-backend", "postgresql-backend", "dep:sqlparser"]
+# Database handler: [database] in the config file (PostgreSQL, #453).
+# On by default, so release builds and the Docker image include it. Build
+# with --no-default-features to leave it out
+database = ["postgresql-backend", "dep:sqlparser"]
 
 # Storage backends
 redis-backend = ["redis"]

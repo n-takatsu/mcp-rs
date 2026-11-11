@@ -1,5 +1,7 @@
 # Database Integration Guide 🗄️ Multi-Engine Database System
 
+> **Outdated**: This page describes a planned multi-engine design. For what mcp-rs supports now (PostgreSQL through `[database]`, with the tools `execute_query`, `get_schema`, and `execute_command`), see the [Database Integration Guide](https://n-takatsu.github.io/mcp-rs/docs/database/).
+
 ## Overview
 
 mcp-rs provides a comprehensive multi-database engine system with enterprise-grade security integration. This guide covers the complete database functionality for developers, integrators, and end users.

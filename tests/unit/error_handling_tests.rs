@@ -1,6 +1,6 @@
 //! Basic Error Handling Tests
 
-#![cfg(feature = "database")]
+#![cfg(feature = "mysql-backend")]
 
 use log::info;
 use mcp_rs::handlers::database::{

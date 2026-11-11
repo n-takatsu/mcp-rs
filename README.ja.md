@@ -70,6 +70,17 @@ mcp-rsをHTTPで公開しますか？APIキーやOAuth 2.1のトークンで認�
 - **レート制限**（ツールの呼び出し）
 - **監査ログ**: 誰がどのツールを呼び、結果がどうだったか
 
+## **データベース連携（PostgreSQL）**
+
+- **設定は1つの節**: 設定ファイルに`[database]`を書く（`engine = "postgresql"`、ホスト・データベース・ユーザー、`password = "${VAR}"`）
+- **既定は読み取りだけ**: `execute_query`（1つのSELECT。読み取り専用のトランザクションで実行してロールバック）と`get_schema`
+- **書き込みは許したときだけ**: `allow_write = true`のときだけ`execute_command`（1つのINSERT・UPDATE・DELETE）を出す
+- **型の付いたパラメーター**: `$1`・`$2`…はバインドし、SQLの文字列には埋め込まない。文字列は列の型に変換する
+- **上限**: 既定で、結果は1000行、1つのSQLは30秒、接続は5つまで
+- **監査ログ**: 呼び出しをSQLとともに記録する（パラメーターの値は記録しない）
+
+読み取り専用のロールで接続してください。詳しくは[Database Integration Guide](https://n-takatsu.github.io/mcp-rs/docs/database/)を参照してください。
+
 ## **技術的優秀性**
 
 - **非同期アーキテクチャ**: 高性能並行処理のための Tokio ベース
@@ -173,7 +184,7 @@ username = "your-username"
 password = "your-application-password"   # WordPress アプリケーションパスワード
 ```
 
-`./target/release/mcp-rs --config mcp-config.toml`で起動します。パスワードを設定ファイルに書かない場合は、`${WORDPRESS_PASSWORD}`（環境変数）か[認証情報の暗号化](https://n-takatsu.github.io/mcp-rs/docs/security/#encrypted-wordpress-credentials)を使ってください。`${...}`の環境変数が設定されていないと、mcp-rsは起動しません。
+`./target/release/mcp-rs --config mcp-config.toml`で起動します。パスワードを設定ファイルに書かない場合は、`${WORDPRESS_PASSWORD}`（環境変数）か[認証情報の暗号化](https://n-takatsu.github.io/mcp-rs/docs/security/#encrypted-wordpress-credentials)を使ってください。`${...}`の環境変数が設定されていないと、mcp-rsは起動しません（`[database]`の場合は、データベースのツールだけを出さずに起動します）。
 
 ### HTTP TLS/mTLS 設定（任意）
 
@@ -280,10 +291,10 @@ cargo run -- --config configs/development/http-transport.toml
 
 - **コア例**: `examples/` ディレクトリに格納
 - **データベース例**: `examples.disabled/` ディレクトリに格納
-  - `mysql_engine_test.rs`: MySQL データベースエンジンのテスト（`database` フィーチャーが必要）
+  - `mysql_engine_test.rs`: MySQL データベースエンジンのテスト（`mysql-backend` フィーチャーとMySQLのサーバーが必要）
   - 使用方法: `cargo run --example mysql_engine_test --features database,mysql-backend`
 
-> **注意**: データベース依存の例は、`database` フィーチャーがデフォルトで有効でない場合のCI安定性を確保するため、`examples.disabled/` に移動されています。
+> **注意**: データベースのサーバーが要る例は、CIがそれに依存しないよう`examples.disabled/`に置いています。
 
 ## テスト
 

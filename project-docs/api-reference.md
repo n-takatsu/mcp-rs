@@ -1,5 +1,7 @@
 # MCP-RS API Reference 🛡️ Security-Enhanced
 
+> **Outdated database section**: The database tools on this page (`begin_transaction`, `list_engines`, `switch_engine`, …) describe a planned multi-engine design. For what mcp-rs supports now (PostgreSQL through `[database]`, with the tools `execute_query`, `get_schema`, and `execute_command`), see the [Database Integration Guide](https://n-takatsu.github.io/mcp-rs/docs/database/).
+
 Complete API documentation for all available tools in the mcp-rs Model Context Protocol server.
 
 ## Quick Reference

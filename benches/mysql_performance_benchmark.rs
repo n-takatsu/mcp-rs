@@ -3,7 +3,7 @@
 //! Comprehensive performance testing suite for MySQL engine implementation
 //! Measures query execution performance, connection pool efficiency, and memory usage
 
-#![cfg(feature = "database")]
+#![cfg(feature = "mysql-backend")]
 
 use mcp_rs::handlers::database::{
     engine::DatabaseEngine,

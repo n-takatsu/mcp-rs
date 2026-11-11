@@ -1858,6 +1858,24 @@ start_timeout_seconds = 300
         assert!(!format!("{:?}", db).contains("s3cret"));
     }
 
+    /// 配っている設定の例（`configs/database/postgres.toml`）が、そのまま
+    /// 読めて、検証も通る（以前の例は`engine`が無く、起動しなかった）
+    #[test]
+    fn test_database_example_config_is_valid() {
+        // Dockerfile.test等、`configs`を含まないビルドでは確かめない
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("configs/database/postgres.toml");
+        let Ok(example) = std::fs::read_to_string(&path) else {
+            return;
+        };
+        let config: McpConfig =
+            toml::from_str(&format!("[transport]\n[server]\n[handlers]\n{example}")).unwrap();
+        let db = config.database.unwrap();
+        assert!(db.validate().is_ok());
+        assert!(!db.allow_write());
+        assert_eq!(db.password.as_deref(), Some("${MCP_DB_PASSWORD}"));
+    }
+
     #[test]
     fn test_database_settings_validate() {
         let valid = DatabaseSettings {
