@@ -174,7 +174,7 @@ A request is allowed a tool when any item matches it. `tools = []` allows no too
 
 ## HTTP/WebSocket OAuth 2.1 Authorization
 
-In HTTP mode, mcp-rs can accept OAuth 2.1 access tokens, as described in the MCP specification (version 2025-06-18, "Authorization"). mcp-rs is the resource server: users sign in at an external authorization server (for example Keycloak, Okta, or Microsoft Entra ID), which handles SSO, LDAP/Active Directory, and MFA. mcp-rs checks the access tokens that server issues.
+In HTTP mode, mcp-rs can accept OAuth 2.1 access tokens, as described in the MCP specification (versions 2025-06-18 and 2025-11-25, "Authorization"). mcp-rs is the resource server: users sign in at an external authorization server (for example Keycloak, Okta, or Microsoft Entra ID), which handles SSO, LDAP/Active Directory, and MFA. mcp-rs checks the access tokens that server issues.
 
 ```toml
 [transport.http.oauth]

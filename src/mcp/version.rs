@@ -7,10 +7,11 @@
 use serde_json::Value;
 
 /// 対応する最新の版
-pub const LATEST_PROTOCOL_VERSION: &str = "2025-06-18";
+pub const LATEST_PROTOCOL_VERSION: &str = "2025-11-25";
 
 /// 対応する版（新しい順）
-pub const SUPPORTED_PROTOCOL_VERSIONS: &[&str] = &[LATEST_PROTOCOL_VERSION, "2024-11-05"];
+pub const SUPPORTED_PROTOCOL_VERSIONS: &[&str] =
+    &[LATEST_PROTOCOL_VERSION, "2025-06-18", "2024-11-05"];
 
 /// `initialize`を受け取る前に使う版。古いクライアントにも読める応答にする
 pub const DEFAULT_PROTOCOL_VERSION: &str = "2024-11-05";
@@ -22,6 +23,28 @@ pub fn negotiate_protocol_version(requested: &str) -> &'static str {
         .copied()
         .find(|v| *v == requested)
         .unwrap_or(LATEST_PROTOCOL_VERSION)
+}
+
+/// mcp-rsのウェブサイト（`serverInfo`の`websiteUrl`）
+const WEBSITE_URL: &str = "https://n-takatsu.github.io/mcp-rs/";
+
+/// `initialize`の結果の`serverInfo`（Implementation）。`description`・
+/// `websiteUrl`は2025-11-25で加わった項目なので、その版だけに付ける（#475）。
+pub fn server_info_for_version(version: &str) -> Value {
+    let mut info = serde_json::json!({
+        "name": "mcp-rs",
+        "version": env!("CARGO_PKG_VERSION")
+    });
+    if supports_2025_11_features(version) {
+        info["description"] = Value::from(env!("CARGO_PKG_DESCRIPTION"));
+        info["websiteUrl"] = Value::from(WEBSITE_URL);
+    }
+    info
+}
+
+/// `Implementation`の`description`・`websiteUrl`（2025-11-25）を使える版か。
+fn supports_2025_11_features(version: &str) -> bool {
+    !matches!(version, "2025-06-18" | "2024-11-05")
 }
 
 /// ツール定義の`title`・`outputSchema`（2025-06-18）、`annotations`
@@ -100,12 +123,34 @@ mod tests {
 
     #[test]
     fn test_negotiate_protocol_version() {
+        assert_eq!(negotiate_protocol_version("2025-11-25"), "2025-11-25");
         assert_eq!(negotiate_protocol_version("2025-06-18"), "2025-06-18");
         assert_eq!(negotiate_protocol_version("2024-11-05"), "2024-11-05");
         // 対応していない版には、対応する最新の版で答える
-        assert_eq!(negotiate_protocol_version("2025-03-26"), "2025-06-18");
-        assert_eq!(negotiate_protocol_version("2099-01-01"), "2025-06-18");
-        assert_eq!(negotiate_protocol_version(""), "2025-06-18");
+        assert_eq!(negotiate_protocol_version("2025-03-26"), "2025-11-25");
+        assert_eq!(negotiate_protocol_version("2099-01-01"), "2025-11-25");
+        assert_eq!(negotiate_protocol_version(""), "2025-11-25");
+    }
+
+    #[test]
+    fn test_server_info_for_version() {
+        let latest = server_info_for_version("2025-11-25");
+        assert_eq!(latest["name"], json!("mcp-rs"));
+        assert_eq!(latest["version"], json!(env!("CARGO_PKG_VERSION")));
+        assert!(latest["description"]
+            .as_str()
+            .is_some_and(|d| !d.is_empty()));
+        assert_eq!(latest["websiteUrl"], json!(WEBSITE_URL));
+
+        // 古い版には、その版で定義された項目（name・version）だけ
+        for old in ["2025-06-18", "2024-11-05"] {
+            assert_eq!(
+                server_info_for_version(old),
+                json!({ "name": "mcp-rs", "version": env!("CARGO_PKG_VERSION") }),
+                "version {}",
+                old
+            );
+        }
     }
 
     #[test]
@@ -118,6 +163,7 @@ mod tests {
             "outputSchema": { "type": "object" },
             "annotations": { "readOnlyHint": true }
         }]});
+        assert_eq!(tools_list_for_version("2025-11-25", result.clone()), result);
         assert_eq!(tools_list_for_version("2025-06-18", result.clone()), result);
         let old = tools_list_for_version("2024-11-05", result);
         assert_eq!(
@@ -141,6 +187,10 @@ mod tests {
             "structuredContent": { "content": "hello" },
             "isError": false
         });
+        assert_eq!(
+            call_tool_result_for_version("2025-11-25", result.clone()),
+            result
+        );
         assert_eq!(
             call_tool_result_for_version("2025-06-18", result.clone()),
             result

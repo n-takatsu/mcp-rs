@@ -178,7 +178,7 @@ Each tool is offered as `<plugin name>__<tool name>`, and its description starts
 
 Only tools are relayed. A plugin's resources, prompts, and notifications (such as `notifications/tools/list_changed`) are not. mcp-rs reads the tool list once, when the plugin starts.
 
-mcp-rs asks plugins for MCP protocol version 2025-06-18, and also works with plugins that answer with an older version. Tool definitions are passed on with `title`, `outputSchema`, and `annotations`, and tool results with `content`, `structuredContent`, and `isError`. These newer fields are passed on only to clients that use version 2025-06-18. For clients that use version 2024-11-05, mcp-rs removes them, and replaces content types that version does not have (resource links and audio) with text. The same information is in `content`. Up to version 0.18.4, mcp-rs used version 2024-11-05 with every client, and did not pass on these fields.
+mcp-rs asks plugins for MCP protocol version 2025-11-25, and also works with plugins that answer with an older version (2025-06-18 and earlier). Tool definitions are passed on with `title`, `outputSchema`, and `annotations`, and tool results with `content`, `structuredContent`, and `isError`. Other fields of a plugin's tool definitions (such as `icons` and `execution`, added in 2025-11-25) are not passed on. The newer fields are passed on only to clients that use version 2025-06-18 or later. For clients that use version 2024-11-05, mcp-rs removes them, and replaces content types that version does not have (resource links and audio) with text. The same information is in `content`. Up to version 0.18.4, mcp-rs used version 2024-11-05 with every client, and did not pass on these fields.
 
 ## What mcp-rs enforces
 

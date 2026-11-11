@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- MCPのプロトコルの版`2025-11-25`に対応した（#475）。クライアントが
+  `2025-11-25`を要求すれば（Claude Desktop等）その版で答え、対応していない
+  版には`2025-11-25`で答える。`2025-06-18`・`2024-11-05`を要求する
+  クライアントには、これまでどおりその版で答える
+  - `2025-11-25`のときだけ、`initialize`の`serverInfo`に`description`と
+    `websiteUrl`を付ける
+  - プラグインにも`2025-11-25`を要求する。古い版で答えるプラグインも、
+    これまでどおり使える
+  - `2025-11-25`で加わった任意の機能（tasks・URLのelicitation・sampling
+    でのツール・アイコン）は使わない。ツールの引数の誤りを
+    `isError: true`の結果で返すこと（SEP-1303）、OAuthの`insufficient_scope`
+    と`scope`（SEP-835）、Protected Resource Metadata（RFC 9728、SEP-985）は、
+    既に仕様どおり
+
 ### Changed
 
 - Production Deployment（`deploy.yml`）の名前を「Release Image」にし、中身が
