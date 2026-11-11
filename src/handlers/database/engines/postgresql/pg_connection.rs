@@ -794,9 +794,8 @@ impl DatabaseConnection for PostgreSqlConnection {
         .execute(&mut *tx)
         .await
         .map_err(|e| DatabaseError::OperationFailed(e.to_string()))?;
-        let params = Self::pg_params(&mut *tx, sql, params)
-            .await
-            .map_err(|e| DatabaseError::OperationFailed(e.to_string()))?;
+        // `pg_params`のエラーは、包み直さずにそのまま返す（前置きが二重になる）
+        let params = Self::pg_params(&mut *tx, sql, params).await?;
         let result = bind_params(sqlx::query(sql), params)
             .execute(&mut *tx)
             .await

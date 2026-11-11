@@ -427,6 +427,8 @@ async fn values_are_not_sent_in_the_wrong_binary_format() {
             err.contains(&format!("$1::text::{type_name}")),
             "{column}: {err}"
         );
+        // 前置きは1つだけ（以前は`Operation failed: Query execution failed: …`）
+        assert!(!err.contains("Operation failed"), "{column}: {err}");
     }
     let count: i64 = sqlx::query_scalar(&format!("SELECT count(*) FROM {table}"))
         .fetch_one(&pool)
