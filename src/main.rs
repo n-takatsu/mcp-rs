@@ -247,7 +247,7 @@ async fn register_database(
     _audit_logger: Arc<mcp_rs::security::AuditLogger>,
 ) -> Result<(), String> {
     Err(
-        "this build of mcp-rs does not include database support (build with --features database)"
+        "this build of mcp-rs does not include database support (it was built with --no-default-features; build without it, or add --features database)"
             .to_string(),
     )
 }

@@ -23,11 +23,22 @@ CREATE ROLE mcp_reader LOGIN PASSWORD 'choose-a-password';
 GRANT CONNECT ON DATABASE app TO mcp_reader;
 GRANT USAGE ON SCHEMA public TO mcp_reader;
 GRANT SELECT ON ALL TABLES IN SCHEMA public TO mcp_reader;
--- Tables created later:
-ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO mcp_reader;
+-- Tables created later by the role that owns the tables (run as that role,
+-- or add FOR ROLE <owner>):
+ALTER DEFAULT PRIVILEGES FOR ROLE app_owner IN SCHEMA public GRANT SELECT ON TABLES TO mcp_reader;
 ```
 
 To hide some tables, grant `SELECT` on the tables you want to show instead of `ALL TABLES`.
+
+`ALTER DEFAULT PRIVILEGES` applies only to tables that the given role (`app_owner` here) creates later. Without `FOR ROLE`, it applies to tables created by the role running the statement.
+
+Extension functions can be executed by every role (`PUBLIC`) by default, so a read-only role can still use `dblink` if the extension is installed in the database. Do not install such extensions in the database mcp-rs connects to, or revoke their functions from `PUBLIC`. For example, move `dblink` to its own schema and revoke every function there (roles that need `dblink` then have to be granted it explicitly):
+
+```sql
+CREATE SCHEMA ext;
+ALTER EXTENSION dblink SET SCHEMA ext;
+REVOKE EXECUTE ON ALL FUNCTIONS IN SCHEMA ext FROM PUBLIC;
+```
 
 ## 3. Add `[database]` to the configuration file
 
@@ -71,7 +82,7 @@ Common reasons:
 | `password authentication failed` | The password, and that the environment variable is set for the MCP client, not only in your shell |
 | `environment variable … is not set` | The `env` of the mcp-rs entry in the MCP client's settings |
 | `database.engine = "…" is not supported` | `engine` must be `"postgresql"` |
-| `this build of mcp-rs does not include database support` | The binary was built with `--no-default-features` |
+| `this build of mcp-rs does not include database support` | The binary was built with `--no-default-features`; build it without that option |
 
 ## 5. Use the tools
 

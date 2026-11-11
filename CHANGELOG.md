@@ -36,7 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `database`機能を既定で有効にし、MySQLのエンジン（`mysql-backend`）を
   含めないようにした（#453）。ライブラリとしてMySQLのエンジンを使う場合は、
-  `--features mysql-backend`を指定する
+  `--features mysql-backend`を指定する（`database`も有効になる）
 - データベースのドキュメント（websiteの`docs/database.md`・
   `docs/guides/postgres-integration.md`・`docs/api/database.md`、README）を、
   実際の`[database]`の書き方・ツール・安全のための仕組みに合わせて書き直した。

@@ -135,7 +135,8 @@ database = ["postgresql-backend", "dep:sqlparser"]
 
 # Storage backends
 redis-backend = ["redis"]
-mysql-backend = ["mysql_async"]
+# The MySQL engine is part of the database handler code
+mysql-backend = ["database", "mysql_async"]
 postgresql-backend = []
 sqlite = []
 mongodb-backend = ["mongodb"]

@@ -134,7 +134,7 @@ What mcp-rs does:
 
 What you should do:
 
-- **Connect with a read-only role.** The read-only transaction cannot stop everything: extensions such as `dblink` open their own connections, which can write. A role that only has `SELECT` (and no `dblink`) closes that gap. See [Create a read-only role](./guides/postgres-integration.md#2-create-a-role-for-mcp-rs)
+- **Connect with a read-only role.** The read-only transaction cannot stop everything: extensions such as `dblink` open their own connections, which can write. A role that only has `SELECT` closes that gap, as long as such extensions are not installed or their functions are revoked from `PUBLIC` (they are executable by every role by default). See [Create a read-only role](./guides/postgres-integration.md#2-create-a-role-for-mcp-rs)
 - Grant the role only the tables the AI client needs to see
 - Use `allow_write = true` only with a role whose write permissions you are willing to give the AI client, and preferably not on a production database
 
