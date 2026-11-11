@@ -364,12 +364,51 @@ fn is_port_suffix(text: &str) -> bool {
         .is_some_and(|port| !port.is_empty() && port.parse::<u16>().is_ok())
 }
 
+/// `Origin`を検証するミドルウェア（#484・#488）。`/`・`/mcp`・`/ws`に
+/// `route_layer`で付ける。ハンドラーの引数（`Json`の取り出し等）より先に
+/// 動くので、許可していないオリジンには、本文が壊れていても必ず403で
+/// 答える。Protected Resource Metadataは公開の情報なので付けない。
+async fn origin_middleware(
+    State(policy): State<Arc<OriginPolicy>>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let remote_addr = request
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|info| info.0);
+    match check_origin(&policy, request.headers(), remote_addr) {
+        Ok(()) => next.run(request).await,
+        Err(status) => status.into_response(),
+    }
+}
+
+/// `/`・`/mcp`・`/ws`のCORS（#488）。許可するオリジンを`Origin`の検証と
+/// 同じ`OriginPolicy`から決めるので、許可していないオリジンはブラウザーの
+/// preflightの段階で止まる。`cors_enabled = false`ならCORSのヘッダーを
+/// 付けない（別のオリジンのページからは、ブラウザーが応答を読ませない）。
+fn mcp_cors_layer(cors_enabled: bool, policy: Arc<OriginPolicy>) -> CorsLayer {
+    if !cors_enabled {
+        return CorsLayer::new();
+    }
+    CorsLayer::new()
+        .allow_origin(tower_http::cors::AllowOrigin::predicate(
+            move |origin: &HeaderValue, _| origin.to_str().is_ok_and(|o| policy.allows(o)),
+        ))
+        .allow_methods(tower_http::cors::Any)
+        .allow_headers(tower_http::cors::Any)
+        .expose_headers(tower_http::cors::Any)
+}
+
 /// `Origin`ヘッダーを検証する（#484）。許可していないオリジンなら403。
 fn check_origin(
     policy: &OriginPolicy,
     headers: &HeaderMap,
-    remote_addr: SocketAddr,
+    remote_addr: Option<SocketAddr>,
 ) -> std::result::Result<(), StatusCode> {
+    let remote_addr = remote_addr
+        .map(|addr| addr.to_string())
+        .unwrap_or_else(|| "unknown".to_string());
     let Some(origin) = headers.get(axum::http::header::ORIGIN) else {
         return Ok(());
     };
@@ -471,8 +510,6 @@ struct HttpTransportState {
     anti_replay: Option<Arc<AntiReplayMiddleware>>,
     ids: Option<Arc<IntrusionDetectionSystem>>,
     ids_trust_forwarded_for: bool,
-    /// `Origin`ヘッダーで受け付けるオリジン（#484）
-    origin_policy: Arc<OriginPolicy>,
     api_key_manager: Option<Arc<RwLock<ApiKeyManager>>>,
     /// APIキー（`ApiKey::id`）→ 名前と使えるツール（#52）
     api_key_callers: Arc<HashMap<String, crate::mcp::Caller>>,
@@ -724,7 +761,6 @@ impl HttpTransport {
                 None
             },
             ids_trust_forwarded_for: self.config.ids_trust_forwarded_for,
-            origin_policy: Arc::new(OriginPolicy::new(&self.config.allowed_origins)),
             api_key_manager,
             api_key_callers: Arc::new(api_key_callers),
             oauth: oauth.clone(),
@@ -746,29 +782,38 @@ impl HttpTransport {
             }),
         };
 
-        let mut app = Router::new()
+        // MCPのエンドポイント: Originの検証（ミドルウェア）と、同じ
+        // OriginPolicyから作るCORS（#488）
+        let origin_policy = Arc::new(OriginPolicy::new(&self.config.allowed_origins));
+        let mcp_routes = Router::new()
             .route("/", post(handle_jsonrpc_request))
             .route("/mcp", post(handle_jsonrpc_request))
-            .route("/ws", get(handle_ws_upgrade));
+            .route("/ws", get(handle_ws_upgrade))
+            .route_layer(axum::middleware::from_fn_with_state(
+                origin_policy.clone(),
+                origin_middleware,
+            ))
+            .layer(mcp_cors_layer(self.config.cors_enabled, origin_policy));
+        // Protected Resource Metadata: 公開の情報なので、どのオリジンにも返す
+        let mut metadata_routes = Router::new();
         if let Some(validator) = &oauth {
             // RFC 9728: resourceにパスがあればその後ろ。ルートにも置く
             // （パスを付けずに探すクライアントのため）
             let path = validator.config().resource_metadata_path();
-            app = app.route(&path, get(handle_protected_resource_metadata));
+            metadata_routes = metadata_routes.route(&path, get(handle_protected_resource_metadata));
             if path != crate::transport::oauth::PROTECTED_RESOURCE_METADATA_PATH {
-                app = app.route(
+                metadata_routes = metadata_routes.route(
                     crate::transport::oauth::PROTECTED_RESOURCE_METADATA_PATH,
                     get(handle_protected_resource_metadata),
                 );
             }
         }
-        let app = app
-            .layer(if self.config.cors_enabled {
-                CorsLayer::permissive()
-            } else {
-                CorsLayer::new()
-            })
-            .with_state(state);
+        let metadata_routes = metadata_routes.layer(if self.config.cors_enabled {
+            CorsLayer::permissive()
+        } else {
+            CorsLayer::new()
+        });
+        let app = mcp_routes.merge(metadata_routes).with_state(state);
 
         info!(
             "Starting {} transport server on {}",
@@ -1198,7 +1243,6 @@ async fn handle_jsonrpc_request(
     Json(request): Json<Value>,
 ) -> std::result::Result<Response, StatusCode> {
     check_network_policy(&state.network_policy, remote_addr)?;
-    check_origin(&state.origin_policy, &headers, remote_addr)?;
     let caller = match check_auth(&state, &headers, remote_addr).await {
         Ok(caller) => caller.with_ip_address(Some(remote_addr.ip().to_string())),
         Err(response) => return Ok(*response),
@@ -1868,9 +1912,6 @@ async fn handle_ws_upgrade(
     }
 
     if let Err(status) = check_network_policy(&state.network_policy, remote_addr) {
-        return status.into_response();
-    }
-    if let Err(status) = check_origin(&state.origin_policy, &headers, remote_addr) {
         return status.into_response();
     }
     let caller = match check_auth(&state, &headers, remote_addr).await {
@@ -3934,6 +3975,25 @@ mod tests {
                 metadata["authorization_servers"],
                 serde_json::json!([auth.issuer])
             );
+
+            // 公開の情報なので、許可していないオリジンにも返し、CORSでも
+            // 読ませる（#488）
+            let response = reqwest::Client::new()
+                .get(format!("http://127.0.0.1:{}{}", port, path))
+                .header("Origin", "https://other.example")
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{}", path);
+            assert_eq!(
+                response
+                    .headers()
+                    .get("access-control-allow-origin")
+                    .and_then(|v| v.to_str().ok()),
+                Some("*"),
+                "{}",
+                path
+            );
         }
     }
 
@@ -4872,6 +4932,71 @@ mod tests {
             StatusCode::FORBIDDEN
         );
         assert_eq!(status(Some("null")).await, StatusCode::FORBIDDEN);
+    }
+
+    /// `Origin`の検証は本文を読む前に行うので、許可していないオリジンからの
+    /// 壊れた本文にも403で答える（#488）
+    #[tokio::test]
+    async fn test_disallowed_origin_gets_403_even_with_a_malformed_body() {
+        let (_transport, server_addr) = start_version_echo_server(HttpConfig::default()).await;
+        let url = format!("http://127.0.0.1:{}/mcp", server_addr.port());
+        let client = reqwest::Client::new();
+        for (content_type, body) in [("application/json", "{not json"), ("text/plain", "hello")] {
+            let response = client
+                .post(&url)
+                .header("Origin", "http://attacker.example")
+                .header("Content-Type", content_type)
+                .body(body)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::FORBIDDEN, "{content_type}");
+        }
+        // 許可しているオリジン（ループバック）なら、これまでどおり本文の誤り
+        let response = client
+            .post(&url)
+            .header("Origin", "http://localhost:3000")
+            .header("Content-Type", "application/json")
+            .body("{not json")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    /// CORSのpreflightは、`Origin`の検証と同じオリジンだけを許可する（#488）
+    #[tokio::test]
+    async fn test_cors_preflight_follows_allowed_origins() {
+        let (_transport, server_addr) = start_version_echo_server(HttpConfig {
+            allowed_origins: vec!["https://app.example.com".to_string()],
+            ..HttpConfig::default()
+        })
+        .await;
+        let url = format!("http://127.0.0.1:{}/mcp", server_addr.port());
+        let client = reqwest::Client::new();
+        let allow_origin = |origin: &'static str| {
+            let request = client
+                .request(reqwest::Method::OPTIONS, &url)
+                .header("Origin", origin)
+                .header("Access-Control-Request-Method", "POST")
+                .header("Access-Control-Request-Headers", "content-type");
+            async move {
+                let response = request.send().await.unwrap();
+                response
+                    .headers()
+                    .get("access-control-allow-origin")
+                    .map(|v| v.to_str().unwrap().to_string())
+            }
+        };
+        assert_eq!(
+            allow_origin("http://localhost:3000").await.as_deref(),
+            Some("http://localhost:3000")
+        );
+        assert_eq!(
+            allow_origin("https://app.example.com").await.as_deref(),
+            Some("https://app.example.com")
+        );
+        assert_eq!(allow_origin("http://attacker.example").await, None);
     }
 
     /// `/ws`のアップグレードも、`Origin`を検証する（#484）

@@ -136,7 +136,8 @@ In HTTP mode, mcp-rs checks the `Origin` header that browsers add to requests fr
 
 - Requests without an `Origin` header are accepted. AI clients such as Claude Desktop and command-line tools don't send one.
 - Requests from loopback origins (`http://localhost`, `http://127.0.0.1`, `http://[::1]`, `https` too, any port) are accepted.
-- Requests from other origins get HTTP 403, both on `/mcp` (and `/`) and on the `/ws` upgrade. The Protected Resource Metadata (OAuth) stays available to any origin.
+- Requests from other origins get HTTP 403, both on `/mcp` (and `/`) and on the `/ws` upgrade, before mcp-rs reads the request body. The Protected Resource Metadata (OAuth) stays available to any origin.
+- CORS follows the same rule: browsers are allowed to send requests from the accepted origins only, so a request from another origin is already stopped at the browser's preflight check. With `cors_enabled = false`, mcp-rs sends no CORS headers at all, so pages on other origins cannot read its responses even when their origin is allowed.
 
 To use mcp-rs from a web app on another origin, add it (`scheme://host[:port]`, compared without regard to case):
 
@@ -146,7 +147,7 @@ allowed_origins = ["https://app.example.com"]
 # allowed_origins = ["*"]   # any origin: only behind your own proxy that checks Origin itself
 ```
 
-The `Origin` check does not replace authentication: enable API keys or OAuth when the HTTP transport listens on anything other than loopback.
+Because loopback origins are always accepted, a web page served from your own PC, on any port (for example a local development server, or another program's local web interface), can call mcp-rs's tools through your browser when no authentication is set up. If you run untrusted local web pages, or to be safe in general, set up API keys or OAuth: the `Origin` check does not replace authentication. Always enable authentication when the HTTP transport listens on anything other than loopback.
 
 ## HTTP/WebSocket API Key Authentication
 
