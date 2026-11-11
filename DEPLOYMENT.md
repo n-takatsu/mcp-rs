@@ -116,6 +116,20 @@ docker-compose logs -f mcp-rs
 kubectl logs -f deployment/mcp-rs -n mcp-rs
 ```
 
+### 監査ログ
+
+監査ログ（誰がどのツールを呼んだか）の既定の保存先は、コンテナの中の
+`/home/nonroot/.local/state/mcp-rs/audit/audit.log`です（イメージの
+`HOME`が`/home/nonroot`のため）。`docker-compose.yml`の例はルートの
+ファイルシステムを読み取り専用（`read_only: true`）にしているので、その
+ままでは書けず、監査ログはメモリーだけになります（起動時に警告が出ます）。
+コンテナを作り直しても残すには、次のどちらかにします。
+
+- 書き込めるボリュームを`/home/nonroot/.local/state/mcp-rs/audit`に
+  マウントする
+- 設定ファイルの`[audit] file_path`に、マウントした書き込める場所の
+  絶対パスを書く（例: `file_path = "/var/lib/mcp-rs/audit.log"`）
+
 ## 🔄 CI/CD パイプライン
 
 ### GitHub Actions ワークフロー
