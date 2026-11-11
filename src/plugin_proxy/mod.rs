@@ -59,7 +59,8 @@ const MAX_TOOL_LIST_PAGES: usize = 100;
 /// 答えた場合も、そのまま使う（mcp-rsは古い版の項目も読める）
 const PROTOCOL_VERSION: &str = LATEST_PROTOCOL_VERSION;
 /// プラグインが答えてよい版。これ以外は警告を出す（使い続ける）
-const KNOWN_PLUGIN_PROTOCOL_VERSIONS: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05"];
+const KNOWN_PLUGIN_PROTOCOL_VERSIONS: &[&str] =
+    &["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
 /// 標準エラー出力の1行としてログに記録する長さの上限
 const MAX_STDERR_LINE_BYTES: u64 = 8192;
 const RATE_LIMIT_CLIENT_ID: &str = "plugin-tool-calls";
@@ -637,7 +638,7 @@ fn truncate(text: &str, max_chars: usize) -> String {
     }
 }
 
-/// プラグインのツールの結果（CallToolResult）から、仕様（2025-06-18）で
+/// プラグインのツールの結果（CallToolResult）から、仕様（2025-06-18・2025-11-25）で
 /// 定義された項目だけを残す。クライアントと話している版に合わせて、さらに
 /// 項目を除くのは`McpServer`（`call_tool_result_for_version`、#417）。
 fn call_tool_result_for_client(plugin: &str, result: Value) -> Result<Value, McpError> {

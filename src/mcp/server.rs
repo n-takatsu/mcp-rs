@@ -437,10 +437,7 @@ impl McpServer {
                 "tools": { "listChanged": false },
                 "resources": { "subscribe": false, "listChanged": false }
             },
-            "serverInfo": {
-                "name": "mcp-rs",
-                "version": env!("CARGO_PKG_VERSION")
-            }
+            "serverInfo": crate::mcp::server_info_for_version(protocol_version)
         })
     }
 
@@ -1257,14 +1254,16 @@ mod tests {
     #[tokio::test]
     async fn test_protocol_version_is_negotiated_per_session() {
         // 新しい版: 新しい項目をそのまま渡す
-        let (version, tool, result) = exchange_with_version("2025-06-18").await;
-        assert_eq!(version, serde_json::json!("2025-06-18"));
-        assert_eq!(
-            tool["outputSchema"],
-            serde_json::json!({ "type": "object" })
-        );
-        assert_eq!(tool["annotations"]["readOnlyHint"], serde_json::json!(true));
-        assert_eq!(result["structuredContent"], serde_json::json!({ "n": 1 }));
+        for requested in ["2025-11-25", "2025-06-18"] {
+            let (version, tool, result) = exchange_with_version(requested).await;
+            assert_eq!(version, serde_json::json!(requested));
+            assert_eq!(
+                tool["outputSchema"],
+                serde_json::json!({ "type": "object" })
+            );
+            assert_eq!(tool["annotations"]["readOnlyHint"], serde_json::json!(true));
+            assert_eq!(result["structuredContent"], serde_json::json!({ "n": 1 }));
+        }
 
         // 古い版: その版に無い項目を除く
         let (version, tool, result) = exchange_with_version("2024-11-05").await;
@@ -1276,8 +1275,39 @@ mod tests {
 
         // 対応していない版: 対応する最新の版で答える
         let (version, tool, _) = exchange_with_version("2025-03-26").await;
-        assert_eq!(version, serde_json::json!("2025-06-18"));
+        assert_eq!(version, serde_json::json!("2025-11-25"));
         assert!(tool.get("outputSchema").is_some());
+    }
+
+    #[tokio::test]
+    async fn test_server_info_follows_the_negotiated_version() {
+        let server_info = |requested: &str| {
+            let params = serde_json::json!({
+                "protocolVersion": requested,
+                "capabilities": {},
+                "clientInfo": { "name": "c", "version": "1" }
+            });
+            async move {
+                request(&Vec::new(), "initialize", params)
+                    .await
+                    .result
+                    .unwrap()["serverInfo"]
+                    .clone()
+            }
+        };
+
+        // 2025-11-25: description・websiteUrlを付ける
+        let latest = server_info("2025-11-25").await;
+        assert_eq!(latest["name"], serde_json::json!("mcp-rs"));
+        assert!(latest["description"].is_string());
+        assert!(latest["websiteUrl"].is_string());
+
+        // それより前の版: その版に無い項目は付けない
+        for old in ["2025-06-18", "2024-11-05"] {
+            let info = server_info(old).await;
+            assert!(info.get("description").is_none(), "version {}", old);
+            assert!(info.get("websiteUrl").is_none(), "version {}", old);
+        }
     }
 
     #[tokio::test]

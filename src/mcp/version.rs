@@ -7,10 +7,11 @@
 use serde_json::Value;
 
 /// 対応する最新の版
-pub const LATEST_PROTOCOL_VERSION: &str = "2025-06-18";
+pub const LATEST_PROTOCOL_VERSION: &str = "2025-11-25";
 
 /// 対応する版（新しい順）
-pub const SUPPORTED_PROTOCOL_VERSIONS: &[&str] = &[LATEST_PROTOCOL_VERSION, "2024-11-05"];
+pub const SUPPORTED_PROTOCOL_VERSIONS: &[&str] =
+    &[LATEST_PROTOCOL_VERSION, "2025-06-18", "2024-11-05"];
 
 /// `initialize`を受け取る前に使う版。古いクライアントにも読める応答にする
 pub const DEFAULT_PROTOCOL_VERSION: &str = "2024-11-05";
@@ -24,11 +25,35 @@ pub fn negotiate_protocol_version(requested: &str) -> &'static str {
         .unwrap_or(LATEST_PROTOCOL_VERSION)
 }
 
+/// `initialize`の結果の`serverInfo`（Implementation）。`description`・
+/// `websiteUrl`は2025-11-25で加わった項目なので、その版から付ける（#475）。
+/// 値はCargo.tomlの`description`・`homepage`。
+pub fn server_info_for_version(version: &str) -> Value {
+    let mut info = serde_json::json!({
+        "name": "mcp-rs",
+        "version": env!("CARGO_PKG_VERSION")
+    });
+    if is_at_least(version, "2025-11-25") {
+        info["description"] = Value::from(env!("CARGO_PKG_DESCRIPTION"));
+        info["websiteUrl"] = Value::from(env!("CARGO_PKG_HOMEPAGE"));
+    }
+    info
+}
+
+/// `version`が`since`以降の版か。版は`YYYY-MM-DD`の日付なので、文字列の
+/// 比較で新旧が決まる。対応する版を足しても、項目ごとの判定を直さなくてよい
+/// ように、除く版を列挙せずに比べる。`version`は交渉で決まった版
+/// （`SUPPORTED_PROTOCOL_VERSIONS`のどれか）。
+fn is_at_least(version: &str, since: &str) -> bool {
+    version >= since
+}
+
 /// ツール定義の`title`・`outputSchema`（2025-06-18）、`annotations`
 /// （2025-03-26）、ツールの結果の`structuredContent`・リソースリンク
-/// （2025-06-18）、音声（2025-03-26）を使える版か。
+/// （2025-06-18）、音声（2025-03-26）を使える版か。2025-03-26の項目も
+/// あるが、すべてがそろうのは2025-06-18から。
 fn supports_2025_features(version: &str) -> bool {
-    version != "2024-11-05"
+    is_at_least(version, "2025-06-18")
 }
 
 /// `tools/list`の結果を、`version`で定義された項目だけにする。
@@ -100,12 +125,52 @@ mod tests {
 
     #[test]
     fn test_negotiate_protocol_version() {
+        assert_eq!(negotiate_protocol_version("2025-11-25"), "2025-11-25");
         assert_eq!(negotiate_protocol_version("2025-06-18"), "2025-06-18");
         assert_eq!(negotiate_protocol_version("2024-11-05"), "2024-11-05");
         // 対応していない版には、対応する最新の版で答える
-        assert_eq!(negotiate_protocol_version("2025-03-26"), "2025-06-18");
-        assert_eq!(negotiate_protocol_version("2099-01-01"), "2025-06-18");
-        assert_eq!(negotiate_protocol_version(""), "2025-06-18");
+        assert_eq!(negotiate_protocol_version("2025-03-26"), "2025-11-25");
+        assert_eq!(negotiate_protocol_version("2099-01-01"), "2025-11-25");
+        assert_eq!(negotiate_protocol_version(""), "2025-11-25");
+    }
+
+    #[test]
+    fn test_is_at_least() {
+        assert!(is_at_least("2025-11-25", "2025-11-25"));
+        assert!(is_at_least("2025-11-25", "2025-06-18"));
+        assert!(!is_at_least("2025-06-18", "2025-11-25"));
+        assert!(!is_at_least("2024-11-05", "2025-06-18"));
+        // 間の版を対応する版に足した場合も、新しい項目は付かない
+        assert!(!is_at_least("2025-03-26", "2025-06-18"));
+        assert!(!is_at_least("2025-03-26", "2025-11-25"));
+        // 対応する版は、新しい順に並んでいる
+        assert!(SUPPORTED_PROTOCOL_VERSIONS
+            .windows(2)
+            .all(|pair| pair[0] > pair[1]));
+    }
+
+    #[test]
+    fn test_server_info_for_version() {
+        let latest = server_info_for_version("2025-11-25");
+        assert_eq!(latest["name"], json!("mcp-rs"));
+        assert_eq!(latest["version"], json!(env!("CARGO_PKG_VERSION")));
+        assert!(latest["description"]
+            .as_str()
+            .is_some_and(|d| !d.is_empty()));
+        assert_eq!(
+            latest["websiteUrl"],
+            json!("https://n-takatsu.github.io/mcp-rs/")
+        );
+
+        // 古い版には、その版で定義された項目（name・version）だけ
+        for old in ["2025-06-18", "2024-11-05"] {
+            assert_eq!(
+                server_info_for_version(old),
+                json!({ "name": "mcp-rs", "version": env!("CARGO_PKG_VERSION") }),
+                "version {}",
+                old
+            );
+        }
     }
 
     #[test]
@@ -118,6 +183,7 @@ mod tests {
             "outputSchema": { "type": "object" },
             "annotations": { "readOnlyHint": true }
         }]});
+        assert_eq!(tools_list_for_version("2025-11-25", result.clone()), result);
         assert_eq!(tools_list_for_version("2025-06-18", result.clone()), result);
         let old = tools_list_for_version("2024-11-05", result);
         assert_eq!(
@@ -141,6 +207,10 @@ mod tests {
             "structuredContent": { "content": "hello" },
             "isError": false
         });
+        assert_eq!(
+            call_tool_result_for_version("2025-11-25", result.clone()),
+            result
+        );
         assert_eq!(
             call_tool_result_for_version("2025-06-18", result.clone()),
             result

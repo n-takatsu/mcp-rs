@@ -6,6 +6,7 @@ authors = ["n-takatsu"]
 description = "Rust implementation of the Model Context Protocol (MCP) server for WordPress and other tools"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/n-takatsu/mcp-rs"
+homepage = "https://n-takatsu.github.io/mcp-rs/"
 
 [dependencies]
 # Core async runtime
