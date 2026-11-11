@@ -45,6 +45,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `configs/database/postgres.toml`も、そのまま使える例にした（以前の例は
   `engine`が無く、起動しなかった）
 
+- README（英・日）とwebsiteを、実際の機能に合わせて書き直した（#459）。
+  「Production-Ready」「7-Layer（100%）」「260+ tests」等の実態と合わない
+  表現、本体が使っていないRBACの節、存在しない機能（リアルタイム共同編集・
+  複数エンジンのデータベース等）の説明を除いた。websiteの
+  Documentation・Getting Started・Architecture・Securityの各ページと、
+  Claude Desktop統合ガイドを書き直し、READMEのドキュメントの一覧の
+  切れたリンク（`project-docs/quick-start.md`等）を直した
+- 実態と合わないドキュメントを削除した（#459）: websiteの
+  `landing-page.md`・`demo-page.md`・`marketing-content.md`、
+  `project-docs/`のClaude Desktop・Claude Code統合ガイド以外、
+  `docs/PRODUCTION_DEPLOYMENT_GUIDE.md`・`docs/CONTAINER_INTEGRATION_TESTS.md`・
+  `docs/PHASE3_COMPLETION.md`
+
 ### Security
 
 - データベースのハンドラー（`database`機能）の`execute_query`で、データを

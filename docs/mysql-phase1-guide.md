@@ -438,8 +438,7 @@ match stmt.execute(&params).await {
 ## Related Documentation
 
 - [Database Engine Architecture](./database-architecture.md)
-- [Security Implementation Details](../project-docs/security-guide.md)
-- [Testing Strategy](../project-docs/testing-guide.md)
+- [Security](https://n-takatsu.github.io/mcp-rs/docs/security/)
 - [Contributing Guide](../CONTRIBUTING.md)
 
 ## Support and Feedback

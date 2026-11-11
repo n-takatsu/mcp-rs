@@ -53,8 +53,8 @@ MCPのクライアント（Claude Desktop・Claude Code等）から使える機�
 
 ## 📚 ドキュメント
 
-- [アーキテクチャ設計](../project-docs/architecture.md)
-- [セキュリティガイド](../project-docs/security-guide.md)
+- [Architecture](https://n-takatsu.github.io/mcp-rs/docs/architecture/)
+- [Security](https://n-takatsu.github.io/mcp-rs/docs/security/)
 - [開発ガイドライン](../CONTRIBUTING.md)
 
 ## 🎯 プロジェクト管理

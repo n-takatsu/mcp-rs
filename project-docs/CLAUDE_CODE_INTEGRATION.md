@@ -141,6 +141,5 @@ Claude Codeの中では`/mcp`で接続状態を確認できます。接続でき
 ## 🔗 関連ドキュメント
 
 - [Claude Desktop統合ガイド](./CLAUDE_DESKTOP_INTEGRATION.md)
-- [WordPress統合ガイド](./wordpress-guide.md)
 - [WordPress Integration（Pages）](https://n-takatsu.github.io/mcp-rs/docs/wordpress/)
 - [Security（Pages）](https://n-takatsu.github.io/mcp-rs/docs/security/)

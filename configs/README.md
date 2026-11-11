@@ -120,5 +120,5 @@ mcp-rs --config my-config.toml
 ## 🔗 関連ドキュメント
 
 - [Claude Desktop統合ガイド](../project-docs/CLAUDE_DESKTOP_INTEGRATION.md)
-- [アーキテクチャガイド](../project-docs/architecture.md)
-- [セキュリティガイド](../project-docs/security-guide.md)
+- [Architecture](https://n-takatsu.github.io/mcp-rs/docs/architecture/)
+- [Security](https://n-takatsu.github.io/mcp-rs/docs/security/)
