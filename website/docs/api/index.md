@@ -239,7 +239,7 @@ Audit log: C:\Users\me\AppData\Roaming\Claude\mcp-rs\audit.log
 Handlers:
 - wordpress: WordPress site https://example.com
 - plugin:fs: plugin 'fs' (process): running, 16 tools
-Plugins that failed to start:
+Handlers and plugins that failed to start:
 - broken: could not start '...': ...
 ```
 

@@ -120,6 +120,10 @@ async fn load_config_from_file(path: &str) -> Result<McpConfig, Box<dyn std::err
         McpConfig::expand_wordpress_config(wp_config).map_err(|e| e.to_string())?;
         wp_config.resolve_encrypted_credentials()?;
     }
+    // データベースの${VAR}（#453）。参照した環境変数が無ければ起動しない
+    if let Some(ref mut db_config) = config.database {
+        McpConfig::expand_database_config(db_config).map_err(|e| e.to_string())?;
+    }
 
     info!("✅ カスタム設定読み込み: {}", path);
     Ok(config)
@@ -180,6 +184,22 @@ async fn build_server(
         }
     }
 
+    // データベース（#453）。つながらなければ、プラグインと同じく警告を出して
+    // 飛ばし、理由をmcp_rs_statusに出す
+    let mut startup_failures = Vec::new();
+    if let Some(db_config) = config.database.as_ref().filter(|db| db.is_enabled()) {
+        match register_database(&mut server, db_config, audit_logger.clone()).await {
+            Ok(()) => info!(
+                "✅ データベースハンドラー登録完了: {}",
+                db_config.describe()
+            ),
+            Err(reason) => {
+                tracing::warn!("Database handler was not started: {}", reason);
+                startup_failures.push(("database".to_string(), reason));
+            }
+        }
+    }
+
     // プラグイン（#394）。起動できなかったプラグインは警告を出して飛ばす
     let (plugins, plugin_failures) = mcp_rs::plugin_proxy::start_plugins_reporting_failures(
         &config.plugins,
@@ -189,16 +209,44 @@ async fn build_server(
     for (name, handler) in plugins {
         server.add_handler(format!("plugin:{}", name), handler);
     }
+    startup_failures.extend(plugin_failures);
 
     // mcp_rs_statusツール（#434）に出す情報
     server.set_status_info(mcp_rs::mcp::StatusInfo {
         mode: if http_mode { "http" } else { "stdio" }.to_string(),
         config_file: config.config_file.clone(),
         started_at: mcp_rs::mcp::process_started_at(),
-        plugin_failures,
+        plugin_failures: startup_failures,
     });
 
     Ok(server)
+}
+
+/// `[database]`のハンドラーを登録する（#453）。失敗の理由を返す
+#[cfg(feature = "database")]
+async fn register_database(
+    server: &mut mcp_rs::mcp::McpServer,
+    settings: &mcp_rs::config::DatabaseSettings,
+    audit_logger: Arc<mcp_rs::security::AuditLogger>,
+) -> Result<(), String> {
+    let handler = mcp_rs::handlers::database::handler::DatabaseHandler::from_settings(settings)
+        .await?
+        .with_audit_logger(audit_logger);
+    server.add_handler("database".to_string(), Arc::new(handler));
+    Ok(())
+}
+
+/// `database`機能を含めずにビルドしたmcp-rsでは、`[database]`を使えない
+#[cfg(not(feature = "database"))]
+async fn register_database(
+    _server: &mut mcp_rs::mcp::McpServer,
+    _settings: &mcp_rs::config::DatabaseSettings,
+    _audit_logger: Arc<mcp_rs::security::AuditLogger>,
+) -> Result<(), String> {
+    Err(
+        "this build of mcp-rs does not include database support (build with --features database)"
+            .to_string(),
+    )
 }
 
 /// STDIOモードでMCPサーバーを実行（initialize / tools/list / tools/call 等に応答）
