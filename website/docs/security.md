@@ -130,6 +130,24 @@ It asks for the WordPress username, the Application Password, and a master passw
 
   Delete `secrets.txt` afterwards.
 
+## HTTP/WebSocket: Requests from Web Pages (`Origin`)
+
+In HTTP mode, mcp-rs checks the `Origin` header that browsers add to requests from web pages, as the MCP specification requires. This stops a web page you visit from calling mcp-rs's tools through your browser, including with DNS rebinding (a page whose domain is made to point at `127.0.0.1`). Up to version 0.21.0, mcp-rs did not check `Origin`.
+
+- Requests without an `Origin` header are accepted. AI clients such as Claude Desktop and command-line tools don't send one.
+- Requests from loopback origins (`http://localhost`, `http://127.0.0.1`, `http://[::1]`, `https` too, any port) are accepted.
+- Requests from other origins get HTTP 403, both on `/mcp` (and `/`) and on the `/ws` upgrade. The Protected Resource Metadata (OAuth) stays available to any origin.
+
+To use mcp-rs from a web app on another origin, add it (`scheme://host[:port]`, compared without regard to case):
+
+```toml
+[transport.http]
+allowed_origins = ["https://app.example.com"]
+# allowed_origins = ["*"]   # any origin: only behind your own proxy that checks Origin itself
+```
+
+The `Origin` check does not replace authentication: enable API keys or OAuth when the HTTP transport listens on anything other than loopback.
+
 ## HTTP/WebSocket API Key Authentication
 
 When the HTTP transport listens on anything other than loopback, enable API key authentication. Each key is hashed in memory at startup and never logged. Startup fails if `auth_enabled = true` and no keys are configured, or if a key is empty or duplicated.

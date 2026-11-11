@@ -386,6 +386,13 @@ pub struct HttpTransportConfig {
     /// OAuth 2.1 access tokens (`[transport.http.oauth]`, #420)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub oauth: Option<crate::transport::oauth::OAuthConfig>,
+    /// Origins (e.g. `"https://app.example.com"`) allowed in the `Origin`
+    /// header of browser requests, in addition to loopback origins
+    /// (`localhost`, `127.0.0.1`, `[::1]`), #484. `"*"` allows any origin.
+    /// Requests without an `Origin` header (non-browser clients) are always
+    /// accepted. Defaults to empty (loopback origins only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed_origins: Option<Vec<String>>,
 }
 
 /// TOML-facing shape for a single API key entry under
@@ -996,6 +1003,7 @@ impl McpConfig {
                     auth_enabled: Some(false),
                     api_keys: Some(vec![]),
                     oauth: None,
+                    allowed_origins: None,
                 }),
             },
             handlers: HandlersConfig {
@@ -1215,6 +1223,7 @@ impl McpConfig {
                     .map(crate::transport::http::ApiKeyEntry::from)
                     .collect(),
                 oauth: http.oauth.clone(),
+                allowed_origins: http.allowed_origins.clone().unwrap_or_default(),
             }
         } else {
             crate::transport::http::HttpConfig::default()

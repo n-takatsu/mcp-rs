@@ -125,7 +125,7 @@ The version decides which fields mcp-rs sends:
 
 mcp-rs does not use the optional features added in `2025-11-25` (tasks, elicitation, sampling with tools, icons). When a tool fails, including when its arguments are invalid, mcp-rs returns a result with `isError: true` and the reason in `content`, as `2025-11-25` recommends, so the model can correct the arguments and try again.
 
-Before `initialize`, mcp-rs uses `2024-11-05`. In STDIO mode, the version applies to the connection. In HTTP mode, mcp-rs does not tell clients apart, so the version from the most recent `initialize` applies to every client. The `MCP-Protocol-Version` header (Streamable HTTP) is not supported yet.
+Before `initialize`, mcp-rs uses `2024-11-05`. In STDIO mode, the version applies to the connection. In HTTP mode, a client sends the negotiated version in the `MCP-Protocol-Version` header of each request after `initialize` (Streamable HTTP), and mcp-rs answers that request with the version in the header. If the version is not one mcp-rs supports, it answers with HTTP 400 and a JSON-RPC error (code `-32600`). mcp-rs ignores the header on `initialize` itself, where the version is negotiated in the body. For requests without the header, and for `/ws`, mcp-rs uses the version from the most recent `initialize`, because it does not tell clients apart. Up to version 0.21.0, mcp-rs did not read the header.
 
 **Request:**
 
