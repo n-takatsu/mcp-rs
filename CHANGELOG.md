@@ -15,7 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `execute_command`（INSERT・UPDATE・DELETE）も出す。`database`機能を
   含めてビルドした場合だけ使える（リリースのビルドに含めるのは次の段階）
   - `password`等は`${VAR}`（環境変数）で渡せる。ログ・`mcp_rs_status`・
-    エラーの文には出さない
+    エラーの文には出さない。環境変数が無い場合も、データベースだけを飛ばし、
+    mcp-rs（WordPress等）は起動する
+  - 文字列とNULLのパラメーターは、PostgreSQLが期待する型（uuid・日付・
+    時刻・numeric・JSON・base64のbytea・数値等）に合わせて送る。結果で
+    返した値を、そのままパラメーターに戻せる
   - つながらなければ、プラグインと同じく警告を出して飛ばし、理由を
     `mcp_rs_status`の「Handlers and plugins that failed to start」に出す
     （以前の「Plugins that failed to start」）。接続先は`Handlers`の行に出す
@@ -37,6 +41,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   パスワードもURLに埋め込まないので、記号を含んでいてもよい
 - `execute_command`は、1つのINSERT・UPDATE・DELETEだけを受け付ける
   （DDL・`TRUNCATE`・権限の変更等は拒否する）
+- `execute_query`で取ったセッション単位の勧告ロック（`pg_advisory_lock`）
+  が、ロールバックの後も接続に残らないよう、接続をプールに戻すときに外す
+  （#453）。読み取り専用のトランザクションでは防げない副作用のため
 
 ### Fixed
 

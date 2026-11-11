@@ -117,6 +117,8 @@ impl PostgreSqlConnection {
         }
         let type_name = raw.type_info().name().to_string();
         let decoded = match type_name.as_str() {
+            // 値の無い型（`pg_advisory_lock`等の戻り値）
+            "VOID" => Some(Value::Null),
             "BOOL" => row.try_get::<bool, _>(index).map(Value::Bool).ok(),
             "INT2" => row
                 .try_get::<i16, _>(index)
@@ -188,25 +190,282 @@ impl PostgreSqlConnection {
         })
     }
 
-    /// パラメーターを`$1`・`$2`…にバインドする
-    fn bind_params<'q>(
-        mut query: Query<'q, Postgres, PgArguments>,
-        params: &'q [Value],
-    ) -> Query<'q, Postgres, PgArguments> {
-        for param in params {
-            query = match param {
-                Value::Null => query.bind(None::<String>),
-                Value::Bool(b) => query.bind(*b),
-                Value::Int(i) => query.bind(*i),
-                Value::Float(f) => query.bind(*f),
-                Value::String(s) => query.bind(s.as_str()),
-                Value::Binary(bytes) => query.bind(bytes.as_slice()),
-                Value::Json(json) => query.bind(json),
-                Value::DateTime(dt) => query.bind(*dt),
-            };
-        }
-        query
+    /// パラメーターを、PostgreSQLが期待する型に合わせて作る。文字列とNULLが
+    /// あれば、先にSQLを`describe`して、各パラメーターの型を聞く（#453の
+    /// レビュー）。文字列を`text`のまま送ると、uuid・日付・numeric等の列と
+    /// 比べられず（`operator does not exist: uuid = text`）、結果で返した値を
+    /// そのままパラメーターに戻せないため
+    async fn pg_params<'e, E>(
+        executor: E,
+        sql: &str,
+        params: &[Value],
+    ) -> Result<Vec<PgParam>, DatabaseError>
+    where
+        E: Executor<'e, Database = Postgres>,
+    {
+        let needs_types = params
+            .iter()
+            .any(|p| matches!(p, Value::String(_) | Value::Null));
+        let expected: Vec<sqlx::postgres::PgTypeInfo> = if needs_types {
+            let described = executor
+                .describe(sql)
+                .await
+                .map_err(|e| DatabaseError::QueryFailed(e.to_string()))?;
+            match described.parameters() {
+                Some(sqlx::Either::Left(types)) => types.to_vec(),
+                _ => Vec::new(),
+            }
+        } else {
+            Vec::new()
+        };
+        params
+            .iter()
+            .enumerate()
+            .map(|(i, value)| PgParam::from_value(value, expected.get(i), i + 1))
+            .collect()
     }
+}
+
+/// PostgreSQLに送るパラメーター1つ。`produces`で型を伝える
+#[derive(Debug, Clone)]
+enum PgParam {
+    /// 型の分かったNULL（分からなければOID 0で、PostgreSQLに推論させる）
+    Null(sqlx::postgres::PgTypeInfo),
+    Bool(bool),
+    Int(i64),
+    Float(f64),
+    Text(String),
+    Uuid(uuid::Uuid),
+    Date(chrono::NaiveDate),
+    Time(chrono::NaiveTime),
+    Timestamp(chrono::NaiveDateTime),
+    TimestampTz(chrono::DateTime<Utc>),
+    /// `numeric_send`の形式のバイト列
+    Numeric(Vec<u8>),
+    Json(serde_json::Value),
+    Bytes(Vec<u8>),
+}
+
+impl PgParam {
+    /// `value`を、`expected`（PostgreSQLが期待する型）に合わせる。`position`
+    /// はエラーの文に出す`$n`の番号
+    fn from_value(
+        value: &Value,
+        expected: Option<&sqlx::postgres::PgTypeInfo>,
+        position: usize,
+    ) -> Result<Self, DatabaseError> {
+        let expected_name = expected.map(|t| t.name().to_string());
+        let invalid = |what: &str, text: &str| {
+            DatabaseError::QueryFailed(format!(
+                "parameter ${position}: '{}' is not a valid {what}",
+                text.chars().take(100).collect::<String>()
+            ))
+        };
+        Ok(match value {
+            Value::Null => Self::Null(expected.cloned().unwrap_or_else(|| {
+                sqlx::postgres::PgTypeInfo::with_oid(sqlx::postgres::types::Oid(0))
+            })),
+            Value::Bool(b) => Self::Bool(*b),
+            Value::Int(i) => Self::Int(*i),
+            Value::Float(f) => Self::Float(*f),
+            Value::Binary(bytes) => Self::Bytes(bytes.clone()),
+            Value::Json(json) => Self::Json(json.clone()),
+            Value::DateTime(dt) => Self::TimestampTz(*dt),
+            Value::String(text) => match expected_name.as_deref() {
+                Some("UUID") => Self::Uuid(
+                    uuid::Uuid::parse_str(text.trim()).map_err(|_| invalid("uuid", text))?,
+                ),
+                Some("DATE") => Self::Date(
+                    chrono::NaiveDate::parse_from_str(text.trim(), "%Y-%m-%d")
+                        .map_err(|_| invalid("date (YYYY-MM-DD)", text))?,
+                ),
+                Some("TIME") => Self::Time(
+                    chrono::NaiveTime::parse_from_str(text.trim(), "%H:%M:%S%.f")
+                        .map_err(|_| invalid("time (HH:MM:SS)", text))?,
+                ),
+                Some("TIMESTAMP") => Self::Timestamp(
+                    parse_naive_datetime(text)
+                        .ok_or_else(|| invalid("timestamp (YYYY-MM-DDTHH:MM:SS)", text))?,
+                ),
+                Some("TIMESTAMPTZ") => Self::TimestampTz(
+                    parse_datetime_tz(text)
+                        .ok_or_else(|| invalid("timestamp with time zone (RFC 3339)", text))?,
+                ),
+                Some("NUMERIC") => {
+                    Self::Numeric(string_to_numeric(text).ok_or_else(|| invalid("number", text))?)
+                }
+                Some("INT2" | "INT4" | "INT8") => {
+                    Self::Int(text.trim().parse().map_err(|_| invalid("integer", text))?)
+                }
+                Some("FLOAT4" | "FLOAT8") => {
+                    Self::Float(text.trim().parse().map_err(|_| invalid("number", text))?)
+                }
+                Some("BOOL") => Self::Bool(match text.trim().to_ascii_lowercase().as_str() {
+                    "true" | "t" | "yes" | "1" => true,
+                    "false" | "f" | "no" | "0" => false,
+                    _ => return Err(invalid("boolean", text)),
+                }),
+                Some("JSON" | "JSONB") => {
+                    Self::Json(serde_json::from_str(text).map_err(|_| invalid("JSON", text))?)
+                }
+                // 結果ではbyteaをbase64で返すので、同じ形で受け取る
+                Some("BYTEA") => Self::Bytes(
+                    base64::Engine::decode(&base64::prelude::BASE64_STANDARD, text.trim())
+                        .map_err(|_| invalid("base64 value", text))?,
+                ),
+                // text・varchar等と、ここで変換できない型（列挙型等）。後者は
+                // SQLで`$1::型`とキャストしてもらう
+                _ => Self::Text(text.clone()),
+            },
+        })
+    }
+}
+
+impl sqlx::Type<Postgres> for PgParam {
+    fn type_info() -> sqlx::postgres::PgTypeInfo {
+        <String as sqlx::Type<Postgres>>::type_info()
+    }
+
+    fn compatible(_ty: &sqlx::postgres::PgTypeInfo) -> bool {
+        true
+    }
+}
+
+impl<'q> sqlx::Encode<'q, Postgres> for PgParam {
+    fn encode_by_ref(
+        &self,
+        buf: &mut sqlx::postgres::PgArgumentBuffer,
+    ) -> Result<sqlx::encode::IsNull, sqlx::error::BoxDynError> {
+        use sqlx::Encode;
+        match self {
+            Self::Null(_) => Ok(sqlx::encode::IsNull::Yes),
+            Self::Bool(v) => <bool as Encode<Postgres>>::encode_by_ref(v, buf),
+            Self::Int(v) => <i64 as Encode<Postgres>>::encode_by_ref(v, buf),
+            Self::Float(v) => <f64 as Encode<Postgres>>::encode_by_ref(v, buf),
+            Self::Text(v) => <String as Encode<Postgres>>::encode_by_ref(v, buf),
+            Self::Uuid(v) => <uuid::Uuid as Encode<Postgres>>::encode_by_ref(v, buf),
+            Self::Date(v) => <chrono::NaiveDate as Encode<Postgres>>::encode_by_ref(v, buf),
+            Self::Time(v) => <chrono::NaiveTime as Encode<Postgres>>::encode_by_ref(v, buf),
+            Self::Timestamp(v) => {
+                <chrono::NaiveDateTime as Encode<Postgres>>::encode_by_ref(v, buf)
+            }
+            Self::TimestampTz(v) => {
+                <chrono::DateTime<Utc> as Encode<Postgres>>::encode_by_ref(v, buf)
+            }
+            Self::Numeric(bytes) => {
+                buf.extend_from_slice(bytes);
+                Ok(sqlx::encode::IsNull::No)
+            }
+            Self::Json(v) => <serde_json::Value as Encode<Postgres>>::encode_by_ref(v, buf),
+            Self::Bytes(v) => <Vec<u8> as Encode<Postgres>>::encode_by_ref(v, buf),
+        }
+    }
+
+    fn produces(&self) -> Option<sqlx::postgres::PgTypeInfo> {
+        use sqlx::Type;
+        Some(match self {
+            Self::Null(ty) => ty.clone(),
+            Self::Bool(_) => <bool as Type<Postgres>>::type_info(),
+            Self::Int(_) => <i64 as Type<Postgres>>::type_info(),
+            Self::Float(_) => <f64 as Type<Postgres>>::type_info(),
+            Self::Text(_) => <String as Type<Postgres>>::type_info(),
+            Self::Uuid(_) => <uuid::Uuid as Type<Postgres>>::type_info(),
+            Self::Date(_) => <chrono::NaiveDate as Type<Postgres>>::type_info(),
+            Self::Time(_) => <chrono::NaiveTime as Type<Postgres>>::type_info(),
+            Self::Timestamp(_) => <chrono::NaiveDateTime as Type<Postgres>>::type_info(),
+            Self::TimestampTz(_) => <chrono::DateTime<Utc> as Type<Postgres>>::type_info(),
+            Self::Numeric(_) => sqlx::postgres::PgTypeInfo::with_name("NUMERIC"),
+            Self::Json(_) => <serde_json::Value as Type<Postgres>>::type_info(),
+            Self::Bytes(_) => <Vec<u8> as Type<Postgres>>::type_info(),
+        })
+    }
+}
+
+/// パラメーターを`$1`・`$2`…にバインドする
+fn bind_params<'q>(
+    mut query: Query<'q, Postgres, PgArguments>,
+    params: Vec<PgParam>,
+) -> Query<'q, Postgres, PgArguments> {
+    for param in params {
+        query = query.bind(param);
+    }
+    query
+}
+
+/// `2026-11-11T12:34:56.5`・`2026-11-11 12:34:56`等（タイムゾーン無し）
+fn parse_naive_datetime(text: &str) -> Option<chrono::NaiveDateTime> {
+    let text = text.trim().replacen(' ', "T", 1);
+    chrono::NaiveDateTime::parse_from_str(&text, "%Y-%m-%dT%H:%M:%S%.f").ok()
+}
+
+/// RFC 3339（`2026-11-11T03:34:56+00:00`・`…Z`・日付と時刻の間が空白でもよい）
+fn parse_datetime_tz(text: &str) -> Option<chrono::DateTime<Utc>> {
+    let text = text.trim().replacen(' ', "T", 1);
+    chrono::DateTime::parse_from_rfc3339(&text)
+        .ok()
+        .map(|dt| dt.with_timezone(&Utc))
+}
+
+/// 10進の文字列を、`numeric_send`の形式にする（`numeric_to_string`の逆）。
+/// `-123.4500`・`.5`・`NaN`・`Infinity`。指数（`1e5`）は受け付けない
+pub fn string_to_numeric(text: &str) -> Option<Vec<u8>> {
+    let header = |ndigits: i16, weight: i16, sign: u16, dscale: i16| -> Vec<u8> {
+        let mut bytes = Vec::new();
+        for value in [ndigits, weight, sign as i16, dscale] {
+            bytes.extend_from_slice(&value.to_be_bytes());
+        }
+        bytes
+    };
+    let text = text.trim();
+    match text {
+        "NaN" => return Some(header(0, 0, 0xC000, 0)),
+        "Infinity" | "+Infinity" => return Some(header(0, 0, 0xD000, 0)),
+        "-Infinity" => return Some(header(0, 0, 0xF000, 0)),
+        _ => {}
+    }
+    let (negative, unsigned) = match text.strip_prefix('-') {
+        Some(rest) => (true, rest),
+        None => (false, text.strip_prefix('+').unwrap_or(text)),
+    };
+    let (int_part, frac_part) = unsigned.split_once('.').unwrap_or((unsigned, ""));
+    if (int_part.is_empty() && frac_part.is_empty())
+        || !int_part.bytes().all(|b| b.is_ascii_digit())
+        || !frac_part.bytes().all(|b| b.is_ascii_digit())
+    {
+        return None;
+    }
+    let dscale = i16::try_from(frac_part.len()).ok()?;
+    let int_part = int_part.trim_start_matches('0');
+    // 1万進の桁: 整数部は左を、小数部は右を0で埋めて4桁ずつに
+    let int_padded = format!("{}{}", "0".repeat((4 - int_part.len() % 4) % 4), int_part);
+    let frac_padded = format!("{}{}", frac_part, "0".repeat((4 - frac_part.len() % 4) % 4));
+    let mut groups: Vec<i16> = int_padded
+        .as_bytes()
+        .chunks(4)
+        .chain(frac_padded.as_bytes().chunks(4))
+        .map(|chunk| std::str::from_utf8(chunk).ok()?.parse::<i16>().ok())
+        .collect::<Option<_>>()?;
+    let mut weight = i16::try_from(int_padded.len() / 4).ok()? - 1;
+    // 先頭と末尾の0の桁を除く
+    let leading = groups.iter().take_while(|g| **g == 0).count();
+    groups.drain(..leading);
+    weight -= i16::try_from(leading).ok()?;
+    while groups.last() == Some(&0) {
+        groups.pop();
+    }
+    if groups.is_empty() {
+        return Some(header(0, 0, 0, dscale));
+    }
+    let mut bytes = header(
+        i16::try_from(groups.len()).ok()?,
+        weight,
+        if negative { 0x4000 } else { 0 },
+        dscale,
+    );
+    for group in groups {
+        bytes.extend_from_slice(&group.to_be_bytes());
+    }
+    Some(bytes)
 }
 
 /// 設定から、接続の設定を作る。パスワードはURLに埋め込まないので、記号を
@@ -242,6 +501,17 @@ pub async fn connect_pool(config: &DatabaseConfig) -> Result<PgPool, DatabaseErr
         .idle_timeout(Some(Duration::from_secs(u64::from(
             config.pool.idle_timeout.max(1),
         ))))
+        // セッション単位の勧告ロック（`pg_advisory_lock`）は、ロールバックしても
+        // 外れない。プールに戻す接続がロックを持ち続けないよう、外す（#453の
+        // レビュー）。失敗したら、その接続は閉じる
+        .after_release(|conn, _meta| {
+            Box::pin(async move {
+                sqlx::query("SELECT pg_advisory_unlock_all()")
+                    .execute(&mut *conn)
+                    .await
+                    .map(|_| true)
+            })
+        })
         .connect_with(options)
         .await
         .map_err(|e| DatabaseError::ConnectionFailed(e.to_string()))
@@ -328,7 +598,8 @@ impl DatabaseConnection for PostgreSqlConnection {
 
         let mut rows: Vec<PgRow> = Vec::new();
         {
-            let mut stream = Self::bind_params(sqlx::query(sql), params).fetch(&mut *tx);
+            let params = Self::pg_params(&mut *tx, sql, params).await?;
+            let mut stream = bind_params(sqlx::query(sql), params).fetch(&mut *tx);
             while let Some(row) = stream
                 .try_next()
                 .await
@@ -398,7 +669,10 @@ impl DatabaseConnection for PostgreSqlConnection {
         .execute(&mut *tx)
         .await
         .map_err(|e| DatabaseError::OperationFailed(e.to_string()))?;
-        let result = Self::bind_params(sqlx::query(sql), params)
+        let params = Self::pg_params(&mut *tx, sql, params)
+            .await
+            .map_err(|e| DatabaseError::OperationFailed(e.to_string()))?;
+        let result = bind_params(sqlx::query(sql), params)
             .execute(&mut *tx)
             .await
             .map_err(|e| DatabaseError::OperationFailed(e.to_string()))?;
@@ -576,5 +850,89 @@ mod tests {
         // 短すぎる・符号が不正
         assert_eq!(numeric_to_string(&[0, 1]), None);
         assert_eq!(numeric_to_string(&numeric(0, 0x1234, 0, &[1])), None);
+    }
+
+    /// 文字列→`numeric_send`→文字列で、同じ値に戻る
+    #[test]
+    fn test_string_to_numeric_round_trips() {
+        for text in [
+            "0",
+            "0.00",
+            "42",
+            "-123.4500",
+            "12345",
+            "0.001",
+            "0.000012",
+            "0.00000012",
+            "10000000000000000",
+            "19.99",
+            "12345678901234.5678",
+            "-0.0001",
+            "1.50",
+            "99999999",
+            "NaN",
+            "Infinity",
+            "-Infinity",
+        ] {
+            let bytes = string_to_numeric(text).unwrap_or_else(|| panic!("{text}"));
+            assert_eq!(numeric_to_string(&bytes).as_deref(), Some(text), "{text}");
+        }
+        // 書き方の違い（先頭の0・+・小数点の前が無い）
+        let normalized = |text: &str| numeric_to_string(&string_to_numeric(text).unwrap());
+        assert_eq!(normalized("007").as_deref(), Some("7"));
+        assert_eq!(normalized("+5").as_deref(), Some("5"));
+        assert_eq!(normalized(".5").as_deref(), Some("0.5"));
+        for invalid in ["", "-", ".", "1e5", "1.2.3", "abc", "1,000"] {
+            assert_eq!(string_to_numeric(invalid), None, "{invalid}");
+        }
+    }
+
+    /// 文字列のパラメーターを、PostgreSQLが期待する型に合わせる
+    #[test]
+    fn test_pg_param_from_string_follows_the_expected_type() {
+        use sqlx::postgres::PgTypeInfo;
+        let convert = |text: &str, expected: &'static str| {
+            PgParam::from_value(
+                &Value::String(text.to_string()),
+                Some(&PgTypeInfo::with_name(expected)),
+                1,
+            )
+        };
+        assert!(matches!(
+            convert("6f1c2a3e-9b2d-4c1a-8f00-123456789abc", "UUID"),
+            Ok(PgParam::Uuid(_))
+        ));
+        assert!(matches!(
+            convert("2026-11-11", "DATE"),
+            Ok(PgParam::Date(_))
+        ));
+        assert!(matches!(
+            convert("2026-11-11T12:34:56.500", "TIMESTAMP"),
+            Ok(PgParam::Timestamp(_))
+        ));
+        assert!(matches!(
+            convert("2026-11-11T03:34:56+00:00", "TIMESTAMPTZ"),
+            Ok(PgParam::TimestampTz(_))
+        ));
+        assert!(matches!(
+            convert("1.50", "NUMERIC"),
+            Ok(PgParam::Numeric(_))
+        ));
+        assert!(matches!(convert("42", "INT4"), Ok(PgParam::Int(42))));
+        assert!(matches!(convert("true", "BOOL"), Ok(PgParam::Bool(true))));
+        assert!(matches!(
+            convert("{\"a\":1}", "JSONB"),
+            Ok(PgParam::Json(_))
+        ));
+        assert!(matches!(convert("AQI=", "BYTEA"), Ok(PgParam::Bytes(ref b)) if b == &[1, 2]));
+        assert!(matches!(convert("hello", "TEXT"), Ok(PgParam::Text(_))));
+        // 変換できない値は、どのパラメーターかを示すエラー
+        let err = convert("not-a-uuid", "UUID").unwrap_err().to_string();
+        assert!(err.contains("$1") && err.contains("uuid"), "{err}");
+        // 型が分からないNULLはOID 0（PostgreSQLに推論させる）
+        assert!(matches!(
+            PgParam::from_value(&Value::Null, None, 1),
+            Ok(PgParam::Null(_))
+        ));
     }
 }

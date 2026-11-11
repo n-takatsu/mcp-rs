@@ -285,6 +285,125 @@ async fn execute_command_when_writes_are_allowed() {
         .unwrap();
 }
 
+/// 文字列とNULLのパラメーターは、列の型に合わせて送る。結果で返した値を、
+/// そのままパラメーターに戻せる（#453のレビュー）
+#[tokio::test]
+async fn string_and_null_parameters_follow_the_column_type() {
+    let Some((url, pool)) = test_database().await else {
+        return;
+    };
+    let table = unique_name("typed");
+    sqlx::query(&format!(
+        "CREATE TABLE {table} (id uuid, d date, amount numeric(10,2), n int, at timestamptz, doc jsonb, raw bytea)"
+    ))
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let mut settings = settings_from_url(&url);
+    settings.allow_write = Some(true);
+    let handler = DatabaseHandler::from_settings(&settings).await.unwrap();
+
+    // INSERT: uuid・日付・numeric・NULL・時刻・JSON・base64のbytea
+    let result = call(
+        &handler,
+        "execute_command",
+        json!({
+            "sql": format!("INSERT INTO {table} VALUES ($1, $2, $3, $4, $5, $6, $7)"),
+            "params": [
+                "6f1c2a3e-9b2d-4c1a-8f00-123456789abc",
+                "2026-11-11",
+                "1.50",
+                null,
+                "2026-11-11T03:34:56+00:00",
+                "{\"a\": 1}",
+                "AQI="
+            ]
+        }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(result["rows_affected"], json!(1));
+
+    // 読んだ値を、そのまま条件に使う
+    let row = call(
+        &handler,
+        "execute_query",
+        json!({ "sql": format!("SELECT id, d, amount, at, raw FROM {table}") }),
+    )
+    .await
+    .unwrap()["rows"][0]
+        .clone();
+    assert_eq!(row[2], json!("1.50"));
+    let found = call(
+        &handler,
+        "execute_query",
+        json!({
+            "sql": format!(
+                "SELECT count(*)::int AS c FROM {table} WHERE id = $1 AND d >= $2 AND amount = $3 AND at = $4 AND raw = $5 AND n IS NOT DISTINCT FROM $6"
+            ),
+            "params": [row[0], row[1], row[2], row[3], row[4], null]
+        }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(found["rows"], json!([[1]]));
+
+    // 変換できない値は、どのパラメーターかを示すエラー
+    let err = call(
+        &handler,
+        "execute_query",
+        json!({ "sql": format!("SELECT * FROM {table} WHERE id = $1"), "params": ["nope"] }),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.contains("$1") && err.contains("uuid"), "{err}");
+
+    sqlx::query(&format!("DROP TABLE {table}"))
+        .execute(&pool)
+        .await
+        .unwrap();
+}
+
+/// `execute_query`で取ったセッションの勧告ロックは、接続をプールに戻すときに
+/// 外す（#453のレビュー）
+#[tokio::test]
+async fn advisory_locks_do_not_stay_on_pooled_connections() {
+    let Some((url, pool)) = test_database().await else {
+        return;
+    };
+    let key: i64 = 453_000 + i64::from(std::process::id() % 1000);
+    let handler = DatabaseHandler::from_settings(&settings_from_url(&url))
+        .await
+        .unwrap();
+    let result = call(
+        &handler,
+        "execute_query",
+        json!({ "sql": "SELECT pg_advisory_lock($1)", "params": [key] }),
+    )
+    .await
+    .unwrap();
+    // VOIDは「表示できない値」ではなくnull
+    assert_eq!(result["rows"], json!([[null]]));
+
+    // 戻した接続の後始末は非同期なので、少し待つ
+    let mut held = 1;
+    for _ in 0..50 {
+        held = sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND objid = $1::bigint::oid",
+        )
+        .bind(key)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        if held == 0 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert_eq!(held, 0, "the advisory lock was released");
+}
+
 #[tokio::test]
 async fn values_are_decoded_by_type() {
     let Some((url, _pool)) = test_database().await else {

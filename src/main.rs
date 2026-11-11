@@ -120,10 +120,6 @@ async fn load_config_from_file(path: &str) -> Result<McpConfig, Box<dyn std::err
         McpConfig::expand_wordpress_config(wp_config).map_err(|e| e.to_string())?;
         wp_config.resolve_encrypted_credentials()?;
     }
-    // データベースの${VAR}（#453）。参照した環境変数が無ければ起動しない
-    if let Some(ref mut db_config) = config.database {
-        McpConfig::expand_database_config(db_config).map_err(|e| e.to_string())?;
-    }
 
     info!("✅ カスタム設定読み込み: {}", path);
     Ok(config)
@@ -188,7 +184,14 @@ async fn build_server(
     // 飛ばし、理由をmcp_rs_statusに出す
     let mut startup_failures = Vec::new();
     if let Some(db_config) = config.database.as_ref().filter(|db| db.is_enabled()) {
-        match register_database(&mut server, db_config, audit_logger.clone()).await {
+        // ${VAR}はここで展開する。環境変数が無くても、データベースだけを飛ばし、
+        // WordPress等は動かす（#453のレビュー）
+        let mut db_config = db_config.clone();
+        let registered = match McpConfig::expand_database_config(&mut db_config) {
+            Ok(()) => register_database(&mut server, &db_config, audit_logger.clone()).await,
+            Err(e) => Err(e.to_string()),
+        };
+        match registered {
             Ok(()) => info!(
                 "✅ データベースハンドラー登録完了: {}",
                 db_config.describe()

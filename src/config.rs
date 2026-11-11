@@ -934,7 +934,9 @@ impl McpConfig {
     }
 
     /// `[database]`の`host`・`database`・`username`・`password`の`${VAR}`を
-    /// 展開する（#453）。使わない設定（`enabled = false`）なら展開しない
+    /// 展開する（#453）。使わない設定（`enabled = false`）なら展開しない。
+    /// 設定の読み込みでは展開せず、ハンドラーを登録するときに展開する（環境
+    /// 変数が無くても、データベースだけを飛ばし、mcp-rsは起動するため）
     pub fn expand_database_config(config: &mut DatabaseSettings) -> Result<(), ConfigEnvError> {
         if !config.is_enabled() {
             return Ok(());
@@ -1098,9 +1100,6 @@ impl McpConfig {
         if let Some(ref mut wp_config) = final_config.handlers.wordpress {
             info!("WordPress設定で環境変数展開を適用中...");
             Self::expand_wordpress_config(wp_config).map_err(|e| e.to_string())?;
-        }
-        if let Some(ref mut db_config) = final_config.database {
-            Self::expand_database_config(db_config).map_err(|e| e.to_string())?;
         }
 
         // WordPress設定の環境変数上書き
