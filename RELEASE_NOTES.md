@@ -4,6 +4,49 @@
 
 Our project follows a detailed 0.01 increment versioning strategy to provide granular tracking of development progress and feature implementation.
 
+## 📂 v0.21.0 - ログのファイルの切り替えとプロセスの識別
+
+**Release Date:** 2026-11-11
+**Focus:** ログのファイルをローカル時刻の日付で切り替え、どのプロセスが記録したかを、通常のログ・監査ログ・`mcp_rs_status`で突き合わせられるようにする
+
+### 📂 ログのファイルの切り替え（#464・#472）
+
+- ログのファイル名の日付と、新しいファイルに切り替える時刻を、UTCから
+  ローカル時刻にした。日本では、以前は毎朝9:00に切り替わっていた。
+  ファイル名の形式（`mcp-rs.log.YYYY-MM-DD`）と出力先は変わらない
+- 動き続けているmcp-rsが日付でファイルを切り替えたとき、新しいファイルの
+  先頭に見出しの行（`=== mcp-rs … continued at … / pid … / instance … ===`）
+  を書く。前の日のファイルまでさかのぼらなくても、どのプロセスの記録か
+  分かる
+- 1件のログは1回で書くので、同じファイルに書く2つのプロセスの行は混ざらない
+
+### 🔎 プロセスの識別（#468・#465）
+
+- 監査ログの各記録の`metadata`に、`pid`と`instance`（プロセスの番号と起動
+  時刻、例: `70580-20261110T130333`）を加えた。同じ値を、通常のログの
+  見出しの行と`mcp_rs_status`の`Instance`の行にも出す
+- Claude Desktopが1つの登録に対してmcp-rsを2つ起動すること、`[pid …]`で
+  区別できることを、README・websiteに書いた
+- 監査ログの`timestamp`はUTC（通常のログはローカル時刻）であることを
+  websiteに書いた
+
+### 🔒 依存関係（#450）
+
+- jsonwebtokenを11.1.0に上げ、暗号の実装を`aws_lc_rs`（rustlsが既に使って
+  いるもの）に変えた。crypto-bigint 0.5.5・p256・p384・rsaがビルドから
+  無くなり、RUSTSEC-2026-0387の無視を外した。検証できる署名の方式は
+  変わらない
+
+### ⚠️ 挙動の変更
+
+- **更新した日の注意**: 更新する前に書かれた記録は、以前のとおりUTCの日付の
+  名前のファイルにある。日本では、更新した日の0:00〜8:59の記録が、前の日の
+  日付の名前のファイルに入っていることがある
+- 監査ログの`metadata`のキーが、アルファベット順に並ぶ。JSONのキーと値は
+  変わらない
+- **ライブラリとして使っている場合**: `AuditLogEntry::metadata`の型が
+  `HashMap<String, String>`から`BTreeMap<String, String>`になった
+
 ## 🧹 v0.20.0 - 使っていないコードの整理
 
 **Release Date:** 2026-11-10
