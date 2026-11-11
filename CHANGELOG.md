@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Production Deployment（`deploy.yml`）の名前を「Release Image」にし、中身が
+  `echo`だけだったデプロイのジョブ（Deploy to Staging・Deploy to
+  Production・Rollback Deployment）を削除した（#451）。デプロイ先は無く、
+  タグのpushでは`deploy-production`が動かない設定になっていた。検証・
+  イメージのビルドとpush・SBOM・Trivyのスキャンは変わらない。手動の実行
+  （`workflow_dispatch`）の環境の選択も無くした。説明
+  （`DEPLOYMENT.md`・`docs/deployment-guide.md`）を実態に合わせ、
+  使っていないSecrets（`DEPLOY_SSH_KEY`等）の記述を消した
+- GitHubのcode scanningに結果を送る`github/codeql-action/upload-sarif`を
+  v3からv4にした（#479）。v3は2026年12月に非推奨になる
+
 ## [0.21.0] - 2026-11-11
 
 ### Added
