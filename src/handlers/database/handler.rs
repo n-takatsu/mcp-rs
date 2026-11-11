@@ -895,7 +895,7 @@ impl McpHandler for DatabaseHandler {
     async fn list_tools(&self) -> Result<Vec<Tool>, McpError> {
         let params_schema = json!({
             "type": "array",
-            "description": "Values for $1, $2, ... in the SQL (bound as parameters, never inserted into the SQL text). Strings are converted to the type PostgreSQL expects for that parameter (uuid, date, timestamp, numeric, json, bytea as base64, ...), so values returned by execute_query can be passed back as they are. For other types, such as enums, cast in the SQL, e.g. $1::my_enum",
+            "description": "Values for $1, $2, ... in the SQL (bound as parameters, never inserted into the SQL text). Strings are converted to the type PostgreSQL expects for that parameter (uuid, date, timestamp, numeric, json, bytea as base64, ...), so values returned by execute_query can be passed back as they are. Strings also work for text and enum columns. For other types (interval, money, inet, arrays, ...), pass a string and cast it through text in the SQL, e.g. $1::text::interval",
             "items": {
                 "type": ["null", "boolean", "number", "string"]
             }

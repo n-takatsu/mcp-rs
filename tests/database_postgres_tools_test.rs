@@ -379,6 +379,107 @@ async fn string_and_null_parameters_follow_the_column_type() {
         .unwrap();
 }
 
+/// 変換しない型（money・interval等）には、形式の違う値を送らない。送ると、
+/// バイト数が偶然合ったときに別の値として保存される（#453の再レビュー）。
+/// textを経由するキャストなら通る
+#[tokio::test]
+async fn values_are_not_sent_in_the_wrong_binary_format() {
+    let Some((url, pool)) = test_database().await else {
+        return;
+    };
+    let table = unique_name("formats");
+    let mood = unique_name("mood");
+    let small = unique_name("small");
+    for sql in [
+        format!("CREATE TYPE {mood} AS ENUM ('happy', 'sad')"),
+        format!("CREATE DOMAIN {small} AS int"),
+        format!(
+            "CREATE TABLE {table} (m money, i interval, addr inet, tags text[], feeling {mood}, s {small})"
+        ),
+    ] {
+        sqlx::query(&sql).execute(&pool).await.unwrap();
+    }
+
+    let mut settings = settings_from_url(&url);
+    settings.allow_write = Some(true);
+    let handler = DatabaseHandler::from_settings(&settings).await.unwrap();
+
+    // 8バイトの"$1000.00"・16バイトの"1 day 2 hours 3m"は、以前は化けて
+    // 保存された。数値もmoneyの形式とは違う
+    for (column, value, type_name) in [
+        ("m", json!("$1000.00"), "money"),
+        ("m", json!(1000), "money"),
+        ("i", json!("1 day 2 hours 3m"), "interval"),
+        ("addr", json!("10.0.0.1"), "inet"),
+        ("tags", json!("{a}"), "text[]"),
+    ] {
+        let err = call(
+            &handler,
+            "execute_command",
+            json!({
+                "sql": format!("INSERT INTO {table} ({column}) VALUES ($1)"),
+                "params": [value]
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            err.contains(&format!("$1::text::{type_name}")),
+            "{column}: {err}"
+        );
+    }
+    let count: i64 = sqlx::query_scalar(&format!("SELECT count(*) FROM {table}"))
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(count, 0, "nothing may be stored from a refused parameter");
+
+    // textを経由すれば通る。列挙型の文字列と、intのドメインの数値はそのまま
+    call(
+        &handler,
+        "execute_command",
+        json!({
+            "sql": format!(
+                "INSERT INTO {table} VALUES ($1::text::money, $2::text::interval, $3::text::inet, $4::text::text[], $5, $6)"
+            ),
+            "params": ["1000.00", "1 day 2 hours 3m", "10.0.0.1", "{a,b}", "happy", 5]
+        }),
+    )
+    .await
+    .unwrap();
+    let row = call(
+        &handler,
+        "execute_query",
+        json!({
+            "sql": format!(
+                "SELECT m::numeric::text, i::text, addr::text, array_to_string(tags, ','), feeling::text, s::int FROM {table}"
+            )
+        }),
+    )
+    .await
+    .unwrap()["rows"][0]
+        .clone();
+    assert_eq!(
+        row,
+        json!([
+            "1000.00",
+            "1 day 02:03:00",
+            "10.0.0.1/32",
+            "a,b",
+            "happy",
+            5
+        ])
+    );
+
+    for sql in [
+        format!("DROP TABLE {table}"),
+        format!("DROP TYPE {mood}"),
+        format!("DROP DOMAIN {small}"),
+    ] {
+        sqlx::query(&sql).execute(&pool).await.unwrap();
+    }
+}
+
 /// `execute_query`で取ったセッションの勧告ロックは、接続をプールに戻すときに
 /// 外す（#453のレビュー）
 #[tokio::test]

@@ -19,7 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     mcp-rs（WordPress等）は起動する
   - 文字列とNULLのパラメーターは、PostgreSQLが期待する型（uuid・日付・
     時刻・numeric・JSON・base64のbytea・数値等）に合わせて送る。結果で
-    返した値を、そのままパラメーターに戻せる
+    返した値を、そのままパラメーターに戻せる。text・列挙型にはそのまま
+    送る。それ以外の変換しない型（interval・money・inet・配列等）には送らず、
+    `$1::text::interval`のようにtextを経由するキャストを案内するエラーに
+    する（形式の違うバイト列を送ると、別の値として保存されうるため）
   - つながらなければ、プラグインと同じく警告を出して飛ばし、理由を
     `mcp_rs_status`の「Handlers and plugins that failed to start」に出す
     （以前の「Plugins that failed to start」）。接続先は`Handlers`の行に出す

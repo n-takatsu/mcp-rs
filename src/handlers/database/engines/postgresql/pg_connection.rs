@@ -214,7 +214,7 @@ impl PostgreSqlConnection {
                 .await
                 .map_err(|e| DatabaseError::QueryFailed(e.to_string()))?;
             match described.parameters() {
-                Some(sqlx::Either::Left(types)) => types.to_vec(),
+                Some(sqlx::Either::Left(types)) => types.iter().map(base_type).collect(),
                 _ => Vec::new(),
             }
         } else {
@@ -224,8 +224,12 @@ impl PostgreSqlConnection {
             .iter()
             .enumerate()
             .map(|(i, value)| {
-                PgParam::from_value(value, expected.get(i), i + 1)?
-                    .coerce(expected.get(i).map(|t| t.name()), i + 1)
+                let param = PgParam::from_value(value, expected.get(i), i + 1)?
+                    .coerce(expected.get(i).map(|t| t.name()), i + 1)?;
+                match expected.get(i) {
+                    Some(ty) => param.check_fits(ty, i + 1),
+                    None => Ok(param),
+                }
             })
             .collect()
     }
@@ -357,9 +361,17 @@ impl PgParam {
             },
             Self::Float(f) => match expected {
                 "FLOAT4" => Self::Float4(f as f32),
-                "NUMERIC" if f.is_finite() => Self::Numeric(
-                    string_to_numeric(&f.to_string()).ok_or_else(|| out_of_range("numeric"))?,
-                ),
+                "NUMERIC" => {
+                    // RustのDisplayは`NaN`・`inf`なので、numericの綴りに直す
+                    let text = if f.is_nan() {
+                        "NaN".to_string()
+                    } else if f.is_infinite() {
+                        if f > 0.0 { "Infinity" } else { "-Infinity" }.to_string()
+                    } else {
+                        f.to_string()
+                    };
+                    Self::Numeric(string_to_numeric(&text).ok_or_else(|| out_of_range("numeric"))?)
+                }
                 "INT2" | "INT4" | "INT8" if f.fract() == 0.0 => {
                     Self::Int(f as i64).coerce(Some(expected), position)?
                 }
@@ -380,6 +392,52 @@ impl PgParam {
             other => other,
         })
     }
+
+    /// 送る値のバイナリ形式が、PostgreSQLが期待する型（`expected`、ドメインは
+    /// 元の型に直したもの）と同じかを確かめる。違う形式を送ると、バイト数が
+    /// 偶然合ったときにエラーにならず、別の値として保存されるため（#453の
+    /// 再レビュー: moneyに`"$1000.00"`、intervalに16バイトの文字列）
+    fn check_fits(
+        self,
+        expected: &sqlx::postgres::PgTypeInfo,
+        position: usize,
+    ) -> Result<Self, DatabaseError> {
+        use sqlx::postgres::PgTypeKind;
+        use sqlx::Encode;
+        use sqlx::TypeInfo;
+        let expected_name = expected.name();
+        let fits = match &self {
+            Self::Null(_) => true,
+            // 文字列のバイト列がそのままバイナリ形式になる型だけ
+            Self::Text(_) => {
+                ["TEXT", "VARCHAR", "BPCHAR", "NAME", "CITEXT"]
+                    .iter()
+                    .any(|name| expected_name.eq_ignore_ascii_case(name))
+                    || matches!(expected.kind(), PgTypeKind::Enum(_))
+            }
+            Self::Json(_) => matches!(expected_name, "JSON" | "JSONB"),
+            other => other
+                .produces()
+                .is_some_and(|produced| produced.name() == expected_name),
+        };
+        if fits {
+            return Ok(self);
+        }
+        let display_name = expected_name.to_ascii_lowercase();
+        Err(DatabaseError::QueryFailed(format!(
+            "parameter ${position}: mcp-rs cannot send this value as {display_name}. \
+             Pass it as a string and cast it through text in the SQL, e.g. ${position}::text::{display_name}"
+        )))
+    }
+}
+
+/// ドメインを、元の型まで直す（バイナリ形式は元の型と同じ）
+fn base_type(ty: &sqlx::postgres::PgTypeInfo) -> sqlx::postgres::PgTypeInfo {
+    let mut ty = ty.clone();
+    while let sqlx::postgres::PgTypeKind::Domain(base) = ty.kind() {
+        ty = base.clone();
+    }
+    ty
 }
 
 impl sqlx::Type<Postgres> for PgParam {
@@ -1030,6 +1088,35 @@ mod tests {
         ));
         let err = coerce(Value::Int(100_000), "INT2").unwrap_err().to_string();
         assert!(err.contains("$1") && err.contains("smallint"), "{err}");
+        // floatのNaN・Infinityも、numericの形式で送る
+        for f in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(matches!(
+                coerce(Value::Float(f), "NUMERIC"),
+                Ok(PgParam::Numeric(_))
+            ));
+        }
+
+        // 形式の合わない型には送らず、textを経由するキャストを案内する
+        // （money・intervalに文字列のバイトを送ると、別の値として保存されうる）
+        fn type_of<T: sqlx::Type<Postgres>>() -> PgTypeInfo {
+            T::type_info()
+        }
+        let interval = type_of::<sqlx::postgres::types::PgInterval>();
+        let money = type_of::<sqlx::postgres::types::PgMoney>();
+        let err = PgParam::Text("1 day 2 hours 3m".into())
+            .check_fits(&interval, 2)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("$2::text::interval"), "{err}");
+        assert!(PgParam::Int(1000).check_fits(&money, 1).is_err());
+        assert!(PgParam::Text("x".into())
+            .check_fits(&type_of::<String>(), 1)
+            .is_ok());
+        assert!(PgParam::Int4(1).check_fits(&type_of::<i32>(), 1).is_ok());
+        assert!(PgParam::Json(serde_json::json!({}))
+            .check_fits(&type_of::<serde_json::Value>(), 1)
+            .is_ok());
+        assert!(PgParam::Null(money.clone()).check_fits(&money, 1).is_ok());
 
         // 型が分からないNULLはOID 0（PostgreSQLに推論させる）
         assert!(matches!(
