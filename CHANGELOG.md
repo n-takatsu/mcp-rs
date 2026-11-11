@@ -17,6 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   （`workflow_dispatch`）の環境の選択も無くした。説明
   （`DEPLOYMENT.md`・`docs/deployment-guide.md`）を実態に合わせ、
   使っていないSecrets（`DEPLOY_SSH_KEY`等）の記述を消した
+- Release Imageのイメージの`latest`のタグを、`vX.Y.Z`タグのときだけ付ける
+  ようにした（#482）。以前は、既定のブランチ（`develop`）を選んで手動で
+  実行すると、リリース前のイメージで`latest`を上書きした。タグのpushで
+  付く`latest`は変わらない
 - GitHubのcode scanningに結果を送る`github/codeql-action/upload-sarif`を
   v3からv4にした（#479）。v3は2026年12月に非推奨になる
 
