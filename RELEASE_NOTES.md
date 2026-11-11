@@ -4,6 +4,59 @@
 
 Our project follows a detailed 0.01 increment versioning strategy to provide granular tracking of development progress and feature implementation.
 
+## 🔐 v0.22.0 - MCP 2025-11-25とHTTPモードの安全性
+
+**Release Date:** 2026-11-11
+**Focus:** MCPのプロトコルの版2025-11-25に対応し、HTTPモードでブラウザーからの呼び出しを防ぐ。監査ログを通常のログと同じ場所に、本人だけが読める権限で置く
+
+### 🆕 MCP 2025-11-25（#475）
+
+- クライアントが`2025-11-25`を要求すれば（Claude Desktop等）その版で答える。
+  `2025-06-18`・`2024-11-05`を要求するクライアントには、これまでどおりその版
+  で答える
+- `2025-11-25`では、`initialize`の`serverInfo`に`description`と`websiteUrl`を
+  付ける。プラグインにも`2025-11-25`を要求する（古い版のプラグインも使える）
+- tasks・elicitation・samplingのツール・アイコン等の任意の機能は使わない
+
+### 🔐 HTTPモード: ブラウザーからの呼び出し（#484・#488）
+
+- ブラウザーが付ける`Origin`ヘッダーを検証し、許可していないオリジンからの
+  `/mcp`・`/`・`/ws`のリクエストにはHTTP 403で答える（MCPの仕様のMUST）。
+  訪れたウェブページが、ブラウザー経由で（DNS rebindingを含む）mcp-rsの
+  ツールを呼べないようにする
+- 受け付けるのは、`Origin`が無いリクエスト（Claude Desktop等のAI
+  クライアント）、ループバックのオリジン、`[transport.http] allowed_origins`
+  に書いたオリジン。CORSも同じ規則になり、許可していないオリジンは
+  ブラウザーのpreflightで止まる
+- `initialize`の後のリクエストの`MCP-Protocol-Version`ヘッダーを読み、その版で
+  答える。対応していない版にはHTTP 400
+
+### 📝 監査ログ（#474・#489）
+
+- 既定の保存先を、通常のログと同じユーザー領域にした。Windowsは
+  `%USERPROFILE%\.mcp-rs\audit\audit.log`、それ以外は
+  `~/.local/state/mcp-rs/audit/audit.log`等。Claude Desktop上のClaudeからも
+  読め、通常のログと`instance`で突き合わせやすい
+- Linux・macOSでは、フォルダを`700`、ファイルを`600`（本人だけ）で作る
+
+### ⚠️ 挙動の変更
+
+- **監査ログの場所**: `[audit] file_path`を書いていなければ、新しい場所に
+  書く。以前の場所（設定ファイルと同じフォルダの`audit.log`、Claude Desktop
+  では多くの場合`%APPDATA%\Claude\mcp-rs\audit.log`）のファイルは移さない。
+  残っていれば、起動のたびにログにその場所を出す（消すか移すと出なくなる）。
+  以前の場所を使い続けるなら`file_path = "audit.log"`
+- **Docker**: 監査ログの既定の場所はコンテナの中
+  （`/home/nonroot/.local/state/mcp-rs/audit`）。残すにはボリュームを
+  マウントするか、`file_path`を指定する
+- **HTTPモードを別のオリジンのウェブアプリから使っている場合**: そのオリジンを
+  `allowed_origins`に加える
+- 認証を設定していないHTTPモードは、同じPCのウェブページ（別のポートも）
+  からは呼べる。防ぐにはAPIキーかOAuthを設定する
+- **ライブラリとして使っている場合**: `HttpConfig`・`HttpTransportConfig`に
+  `allowed_origins`が加わった。`..Default::default()`無しで作っていれば、
+  項目を加える
+
 ## 📂 v0.21.0 - ログのファイルの切り替えとプロセスの識別
 
 **Release Date:** 2026-11-11
