@@ -70,15 +70,16 @@ The `examples/wordpress_site_builder_demo.rs` example builds and updates the pub
 - **Rate Limiting** of tool calls
 - **Audit Logging**: Who called which tool, and the result
 
-## **Database Integration (Phase 1: MySQL)**
+## **Database Integration (PostgreSQL)**
 
-> **Note**: The database handler is library code behind the optional `database` feature. It is not connected to the `mcp-rs` binary yet, so MCP clients cannot use it ([#453](https://github.com/n-takatsu/mcp-rs/issues/453)).
+- **One Section to Connect**: Add `[database]` to the configuration file (`engine = "postgresql"`, host, database, user, and `password = "${VAR}"`)
+- **Read-Only by Default**: `execute_query` (one SELECT, run in a read-only transaction that is rolled back) and `get_schema`
+- **Writes Only When Allowed**: `execute_command` (one INSERT, UPDATE, or DELETE) is offered only with `allow_write = true`
+- **Typed Parameters**: `$1`, `$2`, … are bound, never inserted into the SQL text, and strings are converted to the column's type
+- **Limits**: Rows per result (1,000), time per statement (30 s), and connections (5) by default
+- **Audit Logging**: Each call is recorded with its SQL; parameter values are not
 
-- **Parameterized Queries**: SQL injection prevention through parameter binding
-- **Transaction Management**: Full ACID compliance with savepoint support
-- **Multiple Isolation Levels**: READ UNCOMMITTED through SERIALIZABLE
-- **Type-Safe Operations**: Rust type system enforces data safety
-- **Comprehensive Testing**: 45+ tests covering security and performance
+Connect with a read-only database role. See the [Database Integration Guide](https://n-takatsu.github.io/mcp-rs/docs/database/).
 
 ## **Technical Excellence**
 
@@ -184,7 +185,7 @@ username = "your-username"
 password = "your-application-password"   # WordPress Application Password
 ```
 
-Then run `./target/release/mcp-rs --config mcp-config.toml`. To keep the password out of the file, use `${WORDPRESS_PASSWORD}` or [encrypted credentials](https://n-takatsu.github.io/mcp-rs/docs/security/#encrypted-wordpress-credentials). mcp-rs does not start if a `${...}` variable is not set.
+Then run `./target/release/mcp-rs --config mcp-config.toml`. To keep the password out of the file, use `${WORDPRESS_PASSWORD}` or [encrypted credentials](https://n-takatsu.github.io/mcp-rs/docs/security/#encrypted-wordpress-credentials). mcp-rs does not start if a `${...}` variable is not set (in `[database]`, it starts without the database tools instead).
 
 ### HTTP TLS/mTLS Configuration (Optional)
 
@@ -278,7 +279,7 @@ The audit log (who called which tool) is written next to the logs, to `%USERPROF
 
 ## 🔐 RBAC Quick Start
 
-The database handler includes a Role-Based Access Control (RBAC) system for fine-grained security. Like the rest of the database handler, it is not connected to the `mcp-rs` binary yet ([#453](https://github.com/n-takatsu/mcp-rs/issues/453)).
+The database library code includes a Role-Based Access Control (RBAC) system for fine-grained security. It is library code: the `[database]` section of the `mcp-rs` binary does not use it yet, so limit what MCP clients can do with the permissions of the database role instead.
 
 ### Key Features
 
@@ -374,10 +375,10 @@ The project includes comprehensive examples demonstrating various features:
 
 - **Core Examples**: Located in `examples/` directory
 - **Database Examples**: Located in `examples.disabled/` directory
-  - `mysql_engine_test.rs`: MySQL database engine testing (requires `database` feature)
+  - `mysql_engine_test.rs`: MySQL database engine testing (requires the `mysql-backend` feature and a MySQL server)
   - To use: `cargo run --example mysql_engine_test --features database,mysql-backend`
 
-> **Note**: Database-dependent examples are moved to `examples.disabled/` to ensure CI stability when the `database` feature is not enabled by default.
+> **Note**: Examples that need a running database server are kept in `examples.disabled/` so that CI does not depend on one.
 
 ## Testing
 

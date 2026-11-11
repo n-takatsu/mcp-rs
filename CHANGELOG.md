@@ -9,11 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- データベースのハンドラーを本体につないだ（#453の1つ目、PostgreSQL）。
+- データベースのハンドラーを本体につないだ（#453、PostgreSQL）。
   設定ファイルの`[database]`に接続先を書くと、`execute_query`（SELECT）・
   `get_schema`のツールが使える。`allow_write = true`のときだけ
-  `execute_command`（INSERT・UPDATE・DELETE）も出す。`database`機能を
-  含めてビルドした場合だけ使える（リリースのビルドに含めるのは次の段階）
+  `execute_command`（INSERT・UPDATE・DELETE）も出す。既定のビルド
+  （`cargo build --release`）とDockerのイメージに含む
+  （`--no-default-features`で除く）
   - `password`等は`${VAR}`（環境変数）で渡せる。ログ・`mcp_rs_status`・
     エラーの文には出さない。環境変数が無い場合も、データベースだけを飛ばし、
     mcp-rs（WordPress等）は起動する
@@ -30,6 +31,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     パラメーターの値は記録しない
   - `execute_query`・`get_schema`は`readOnlyHint`、`execute_command`は
     `destructiveHint`を持つ（HTTPモードの`@read_only`等で絞れる）
+
+### Changed
+
+- `database`機能を既定で有効にし、MySQLのエンジン（`mysql-backend`）を
+  含めないようにした（#453）。ライブラリとしてMySQLのエンジンを使う場合は、
+  `--features mysql-backend`を指定する（`database`も有効になる）
+- データベースのドキュメント（websiteの`docs/database.md`・
+  `docs/guides/postgres-integration.md`・`docs/api/database.md`、README）を、
+  実際の`[database]`の書き方・ツール・安全のための仕組みに合わせて書き直した。
+  読み取り専用のロールで接続することを勧める（読み取り専用のトランザクション
+  では、`dblink`等の拡張が別の接続で書き込むのは防げないため）。
+  `configs/database/postgres.toml`も、そのまま使える例にした（以前の例は
+  `engine`が無く、起動しなかった）
 
 ### Security
 

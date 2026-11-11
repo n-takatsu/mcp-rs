@@ -3,7 +3,7 @@
 //! Comprehensive performance testing suite for MySQL engine implementation
 //! Measures query execution performance, connection pool efficiency, and memory usage
 
-#![cfg(feature = "database")]
+#![cfg(feature = "mysql-backend")]
 
 use mcp_rs::handlers::database::{
     engine::DatabaseEngine,
@@ -577,7 +577,7 @@ impl MySqlPerformanceBenchmark {
                 .args(["-o", "rss=", "-p", &std::process::id().to_string()])
                 .output()
             {
-                if let Ok(_output_str) = String::from_utf8(output.stdout) {
+                if let Ok(output_str) = String::from_utf8(output.stdout) {
                     if let Ok(rss_kb) = output_str.trim().parse::<f64>() {
                         return rss_kb / 1024.0; // Convert KB to MB
                     }

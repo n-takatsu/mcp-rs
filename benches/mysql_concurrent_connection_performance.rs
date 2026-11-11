@@ -3,7 +3,7 @@
 //! Comprehensive testing for connection pool efficiency, resource contention,
 //! and performance degradation under increasing concurrent load
 
-#![cfg(feature = "database")]
+#![cfg(feature = "mysql-backend")]
 
 use mcp_rs::handlers::database::{
     engine::DatabaseEngine,

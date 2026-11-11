@@ -2,7 +2,7 @@
 //!
 //! Comprehensive tests for MySQL database operations
 
-#![cfg(feature = "database")]
+#![cfg(feature = "mysql-backend")]
 
 #[cfg(test)]
 mod tests {

@@ -3,7 +3,7 @@
 //! Comprehensive analysis of memory usage, CPU utilization, and execution time
 //! for MySQL operations under various load conditions and data sizes
 
-#![cfg(feature = "database")]
+#![cfg(feature = "mysql-backend")]
 
 use mcp_rs::handlers::database::{
     engine::DatabaseEngine,
