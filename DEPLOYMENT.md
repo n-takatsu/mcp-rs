@@ -116,13 +116,29 @@ docker-compose logs -f mcp-rs
 kubectl logs -f deployment/mcp-rs -n mcp-rs
 ```
 
+### 監査ログ
+
+監査ログ（誰がどのツールを呼んだか）の既定の保存先は、コンテナの中の
+`/home/nonroot/.local/state/mcp-rs/audit/audit.log`です（イメージの
+`HOME`が`/home/nonroot`のため）。`docker-compose.yml`の例はルートの
+ファイルシステムを読み取り専用（`read_only: true`）にしているので、その
+ままでは書けず、監査ログはメモリーだけになります（起動時に警告が出ます）。
+コンテナを作り直しても残すには、次のどちらかにします。
+
+- 書き込めるボリュームを`/home/nonroot/.local/state/mcp-rs/audit`に
+  マウントする
+- 設定ファイルの`[audit] file_path`に、マウントした書き込める場所の
+  絶対パスを書く（例: `file_path = "/var/lib/mcp-rs/audit.log"`）
+
 ## 🔄 CI/CD パイプライン
 
 ### GitHub Actions ワークフロー
 
-`.github/workflows/deploy.yml`には以下のステージが含まれます:
+`.github/workflows/deploy.yml`（Release Image）は、リリースのDocker
+イメージを作ります。どこかのサーバーへのデプロイはしません。デプロイは、
+作ったイメージを使って、Docker・Kubernetesの手順で行います。
 
-1. **Pre-deployment checks**
+1. **Validation**
    - コードフォーマット確認
    - Clippy linting
    - ユニットテスト
@@ -131,25 +147,17 @@ kubectl logs -f deployment/mcp-rs -n mcp-rs
 2. **Build Docker image**
    - マルチプラットフォームビルド（amd64/arm64）
    - GitHub Container Registryへプッシュ
-   - SBOM生成
+   - SBOM生成（タグのときは、GitHubのリリースに添付）
 
 3. **Security scan**
    - Trivyによる脆弱性スキャン
    - GitHub Securityへ結果アップロード
 
-4. **Deploy to staging**
-   - Staging環境への自動デプロイ
-   - ヘルスチェック
-
-5. **Deploy to production**
-   - 手動承認後にProduction環境へデプロイ
-   - バックアップ、ヘルスチェック、検証
-
 ### トリガー
 
-- **自動**: `main`ブランチへのpush → Staging
-- **自動**: `v*.*.*`タグ → Production
-- **手動**: GitHub Actions UIから実行可能
+- **自動**: `main`ブランチへのpush → `ghcr.io/n-takatsu/mcp-rs:main`・`main-<コミット>`
+- **自動**: `vX.Y.Z`タグ → `ghcr.io/n-takatsu/mcp-rs:X.Y.Z`・`X.Y`・`X`・`latest`
+- **手動**: GitHub Actions UIから実行可能 → `<ブランチ>`・`<ブランチ>-<コミット>`（`latest`はタグのときだけ）
 
 ## 📈 スケーリング
 

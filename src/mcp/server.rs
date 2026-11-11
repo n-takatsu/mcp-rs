@@ -124,6 +124,20 @@ impl RequestDispatcher {
         message: &str,
         caller: &Caller,
     ) -> Result<Option<JsonRpcResponse>, McpError> {
+        self.handle_message_with_protocol_version(message, caller, None)
+            .await
+    }
+
+    /// `handle_message_as`と同じ。`protocol_version`があれば、共有の版
+    /// （最後の`initialize`で決まった版）の代わりに、このリクエストだけ
+    /// その版で応答の項目を決める。HTTPの`MCP-Protocol-Version`ヘッダー
+    /// （#484）。`initialize`には使わない（版は本文で交渉する）。
+    pub async fn handle_message_with_protocol_version(
+        &self,
+        message: &str,
+        caller: &Caller,
+        protocol_version: Option<&'static str>,
+    ) -> Result<Option<JsonRpcResponse>, McpError> {
         McpServer::process_request_as(
             message,
             &self.handlers,
@@ -131,6 +145,7 @@ impl RequestDispatcher {
             caller,
             self.audit_logger.as_deref(),
             &self.status,
+            protocol_version,
         )
         .await
     }
@@ -143,7 +158,20 @@ impl crate::transport::http::JsonRpcRequestHandler for RequestDispatcher {
         message: &str,
         caller: &Caller,
     ) -> Result<Option<serde_json::Value>, String> {
-        match self.handle_message_as(message, caller).await {
+        self.handle_jsonrpc_with_protocol_version(message, caller, None)
+            .await
+    }
+
+    async fn handle_jsonrpc_with_protocol_version(
+        &self,
+        message: &str,
+        caller: &Caller,
+        protocol_version: Option<&'static str>,
+    ) -> Result<Option<serde_json::Value>, String> {
+        match self
+            .handle_message_with_protocol_version(message, caller, protocol_version)
+            .await
+        {
             Ok(Some(response)) => serde_json::to_value(&response)
                 .map(Some)
                 .map_err(|e| e.to_string()),
@@ -283,12 +311,15 @@ impl McpServer {
             &Caller::unrestricted(),
             None,
             &crate::mcp::StatusInfo::default(),
+            None,
         )
         .await
     }
 
     /// `process_request`と同じ。`caller`が使えないツールは、`tools/list`に
     /// 出さず、`tools/call`も拒否する（#52）。拒否は`audit_logger`に記録する。
+    /// `protocol_version`があれば、`session`の版の代わりにその版で応答の
+    /// 項目を決める（HTTPの`MCP-Protocol-Version`ヘッダー、#484）。
     async fn process_request_as(
         line: &str,
         handlers: &[(String, Arc<dyn McpHandler>)],
@@ -296,8 +327,10 @@ impl McpServer {
         caller: &Caller,
         audit_logger: Option<&crate::security::AuditLogger>,
         status: &crate::mcp::StatusInfo,
+        protocol_version: Option<&'static str>,
     ) -> Result<Option<JsonRpcResponse>, McpError> {
         let request: JsonRpcRequest = serde_json::from_str(line.trim())?;
+        let version = protocol_version.unwrap_or_else(|| session.protocol_version());
 
         if request.id.is_none() {
             Self::handle_notification(&request.method);
@@ -331,7 +364,7 @@ impl McpServer {
                 let mut tools = Self::list_all_tools(handlers).await;
                 tools.retain(|tool| caller.access.allows(tool));
                 Ok(tools_list_for_version(
-                    session.protocol_version(),
+                    version,
                     serde_json::json!({ "tools": tools }),
                 ))
             }
@@ -362,7 +395,7 @@ impl McpServer {
                         }))
                     }
                     Ok(params) if params.name == crate::mcp::STATUS_TOOL_NAME => Ok(
-                        Self::call_status_tool(handlers, session, caller, audit_logger, status)
+                        Self::call_status_tool(handlers, version, caller, audit_logger, status)
                             .await,
                     ),
                     Ok(params) => match crate::mcp::with_caller(
@@ -371,10 +404,7 @@ impl McpServer {
                     )
                     .await
                     {
-                        Ok(value) => Ok(call_tool_result_for_version(
-                            session.protocol_version(),
-                            value,
-                        )),
+                        Ok(value) => Ok(call_tool_result_for_version(version, value)),
                         Err(e) => Ok(serde_json::json!({
                             "content": [{
                                 "type": "text",
@@ -437,10 +467,7 @@ impl McpServer {
                 "tools": { "listChanged": false },
                 "resources": { "subscribe": false, "listChanged": false }
             },
-            "serverInfo": {
-                "name": "mcp-rs",
-                "version": env!("CARGO_PKG_VERSION")
-            }
+            "serverInfo": crate::mcp::server_info_for_version(protocol_version)
         })
     }
 
@@ -496,20 +523,15 @@ impl McpServer {
     /// `mcp_rs_status`（#434）に答える。呼び出しは監査ログに記録する
     async fn call_status_tool(
         handlers: &[(String, Arc<dyn McpHandler>)],
-        session: &Session,
+        protocol_version: &str,
         caller: &Caller,
         audit_logger: Option<&crate::security::AuditLogger>,
         status: &crate::mcp::StatusInfo,
     ) -> serde_json::Value {
         let started = std::time::Instant::now();
-        let text = crate::mcp::render_status(
-            status,
-            session.protocol_version(),
-            caller,
-            audit_logger,
-            handlers,
-        )
-        .await;
+        let text =
+            crate::mcp::render_status(status, protocol_version, caller, audit_logger, handlers)
+                .await;
         if let Some(audit_logger) = audit_logger {
             let name = crate::mcp::STATUS_TOOL_NAME;
             let entry = crate::security::AuditLogEntry::new(
@@ -646,6 +668,7 @@ impl McpServer {
                 &Caller::unrestricted(),
                 self.audit_logger.as_deref(),
                 &self.status,
+                None,
             )
             .await
             {
@@ -1257,14 +1280,16 @@ mod tests {
     #[tokio::test]
     async fn test_protocol_version_is_negotiated_per_session() {
         // 新しい版: 新しい項目をそのまま渡す
-        let (version, tool, result) = exchange_with_version("2025-06-18").await;
-        assert_eq!(version, serde_json::json!("2025-06-18"));
-        assert_eq!(
-            tool["outputSchema"],
-            serde_json::json!({ "type": "object" })
-        );
-        assert_eq!(tool["annotations"]["readOnlyHint"], serde_json::json!(true));
-        assert_eq!(result["structuredContent"], serde_json::json!({ "n": 1 }));
+        for requested in ["2025-11-25", "2025-06-18"] {
+            let (version, tool, result) = exchange_with_version(requested).await;
+            assert_eq!(version, serde_json::json!(requested));
+            assert_eq!(
+                tool["outputSchema"],
+                serde_json::json!({ "type": "object" })
+            );
+            assert_eq!(tool["annotations"]["readOnlyHint"], serde_json::json!(true));
+            assert_eq!(result["structuredContent"], serde_json::json!({ "n": 1 }));
+        }
 
         // 古い版: その版に無い項目を除く
         let (version, tool, result) = exchange_with_version("2024-11-05").await;
@@ -1276,8 +1301,90 @@ mod tests {
 
         // 対応していない版: 対応する最新の版で答える
         let (version, tool, _) = exchange_with_version("2025-03-26").await;
-        assert_eq!(version, serde_json::json!("2025-06-18"));
+        assert_eq!(version, serde_json::json!("2025-11-25"));
         assert!(tool.get("outputSchema").is_some());
+    }
+
+    /// HTTPの`MCP-Protocol-Version`ヘッダーの版（#484）は、共有の版（最後の
+    /// `initialize`）より優先する
+    #[tokio::test]
+    async fn test_dispatcher_uses_the_per_request_protocol_version() {
+        let mut server = McpServer::new();
+        server.add_handler("s".to_string(), Arc::new(StructuredHandler));
+        let dispatcher = server.dispatcher();
+        let send = |method: &str, params: serde_json::Value| {
+            serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params })
+                .to_string()
+        };
+        // 別のクライアントが古い版でinitializeした
+        dispatcher
+            .handle_message(&send(
+                "initialize",
+                serde_json::json!({
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {},
+                    "clientInfo": { "name": "old", "version": "1" }
+                }),
+            ))
+            .await
+            .unwrap();
+
+        let structured_tool = |version: Option<&'static str>| {
+            let dispatcher = dispatcher.clone();
+            let line = send("tools/list", serde_json::json!({}));
+            async move {
+                let response = dispatcher
+                    .handle_message_with_protocol_version(&line, &Caller::unrestricted(), version)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                response.result.unwrap()["tools"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|t| t["name"] == "structured")
+                    .unwrap()
+                    .clone()
+            }
+        };
+        // ヘッダーが無ければ、共有の版（2024-11-05）
+        assert!(structured_tool(None).await.get("outputSchema").is_none());
+        // ヘッダーの版（2025-11-25）が優先する
+        assert!(structured_tool(Some("2025-11-25"))
+            .await
+            .get("outputSchema")
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn test_server_info_follows_the_negotiated_version() {
+        let server_info = |requested: &str| {
+            let params = serde_json::json!({
+                "protocolVersion": requested,
+                "capabilities": {},
+                "clientInfo": { "name": "c", "version": "1" }
+            });
+            async move {
+                request(&Vec::new(), "initialize", params)
+                    .await
+                    .result
+                    .unwrap()["serverInfo"]
+                    .clone()
+            }
+        };
+
+        // 2025-11-25: description・websiteUrlを付ける
+        let latest = server_info("2025-11-25").await;
+        assert_eq!(latest["name"], serde_json::json!("mcp-rs"));
+        assert!(latest["description"].is_string());
+        assert!(latest["websiteUrl"].is_string());
+
+        // それより前の版: その版に無い項目は付けない
+        for old in ["2025-06-18", "2024-11-05"] {
+            let info = server_info(old).await;
+            assert!(info.get("description").is_none(), "version {}", old);
+            assert!(info.get("websiteUrl").is_none(), "version {}", old);
+        }
     }
 
     #[tokio::test]

@@ -168,6 +168,15 @@ pub struct HttpConfig {
     /// (RFC 9728). `None` (the default) disables it.
     #[serde(default)]
     pub oauth: Option<OAuthConfig>,
+    /// Origins allowed in the `Origin` header, in addition to loopback
+    /// origins (`http(s)://localhost`, `127.0.0.1`, `[::1]`, any port), #484.
+    /// Compared with the whole origin (`scheme://host[:port]`, ignoring
+    /// case). `"*"` allows any origin. The MCP specification requires
+    /// servers to validate `Origin` (DNS rebinding) and to answer an
+    /// invalid one with 403. Requests without an `Origin` header -
+    /// non-browser clients - are always accepted.
+    #[serde(default)]
+    pub allowed_origins: Vec<String>,
 }
 
 fn default_websocket_max_connections() -> usize {
@@ -225,6 +234,7 @@ impl Default for HttpConfig {
             auth_enabled: false,
             api_keys: Vec::new(),
             oauth: None,
+            allowed_origins: Vec::new(),
         }
     }
 }
@@ -263,6 +273,204 @@ pub trait JsonRpcRequestHandler: Send + Sync {
         message: &str,
         caller: &crate::mcp::Caller,
     ) -> std::result::Result<Option<Value>, String>;
+
+    /// `handle_jsonrpc`と同じ。`protocol_version`は、リクエストの
+    /// `MCP-Protocol-Version`ヘッダーの版（対応する版のどれか、#484）。
+    /// ヘッダーが無いか、`initialize`では`None`。既定の実装は版を使わずに
+    /// `handle_jsonrpc`を呼ぶ。
+    async fn handle_jsonrpc_with_protocol_version(
+        &self,
+        message: &str,
+        caller: &crate::mcp::Caller,
+        protocol_version: Option<&'static str>,
+    ) -> std::result::Result<Option<Value>, String> {
+        let _ = protocol_version;
+        self.handle_jsonrpc(message, caller).await
+    }
+}
+
+/// `Origin`ヘッダーで受け付けるオリジン（#484）。MCPの仕様（Streamable
+/// HTTP）は、DNS rebinding対策として`Origin`を検証し、不正なら403で答える
+/// ことを求める。ループバック（`localhost`・`127.0.0.1`等・`[::1]`、ポートは
+/// 問わない）と、設定の`allowed_origins`を受け付ける。`Origin`の無い
+/// リクエスト（ブラウザー以外のクライアント）は受け付ける。
+#[derive(Debug, Default)]
+struct OriginPolicy {
+    /// `"*"`があれば、どのオリジンも受け付ける
+    allow_any: bool,
+    /// 小文字にし、末尾の`/`を除いたオリジン
+    allowed: HashSet<String>,
+}
+
+impl OriginPolicy {
+    fn new(allowed_origins: &[String]) -> Self {
+        let mut policy = Self::default();
+        for origin in allowed_origins {
+            let origin = normalize_origin(origin);
+            if origin == "*" {
+                policy.allow_any = true;
+            } else if !origin.is_empty() {
+                policy.allowed.insert(origin);
+            }
+        }
+        policy
+    }
+
+    fn allows(&self, origin: &str) -> bool {
+        if self.allow_any {
+            return true;
+        }
+        let origin = normalize_origin(origin);
+        is_loopback_origin(&origin) || self.allowed.contains(&origin)
+    }
+}
+
+fn normalize_origin(origin: &str) -> String {
+    origin.trim().trim_end_matches('/').to_ascii_lowercase()
+}
+
+/// `http(s)://`のループバックのオリジンか（`null`等は違う）
+fn is_loopback_origin(origin: &str) -> bool {
+    let Some(rest) = origin
+        .strip_prefix("http://")
+        .or_else(|| origin.strip_prefix("https://"))
+    else {
+        return false;
+    };
+    if rest.contains(['/', '@', '?', '#']) {
+        return false;
+    }
+    // ホスト（[IPv6]か、`:ポート`の前）
+    let host = if let Some(v6) = rest.strip_prefix('[') {
+        match v6.split_once(']') {
+            Some((host, port)) if port.is_empty() || is_port_suffix(port) => host,
+            _ => return false,
+        }
+    } else {
+        match rest.split_once(':') {
+            Some((host, port)) if is_port_suffix(&format!(":{port}")) => host,
+            Some(_) => return false,
+            None => rest,
+        }
+    };
+    host == "localhost"
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
+}
+
+fn is_port_suffix(text: &str) -> bool {
+    text.strip_prefix(':')
+        .is_some_and(|port| !port.is_empty() && port.parse::<u16>().is_ok())
+}
+
+/// `Origin`を検証するミドルウェア（#484・#488）。`/`・`/mcp`・`/ws`に
+/// `route_layer`で付ける。ハンドラーの引数（`Json`の取り出し等）より先に
+/// 動くので、許可していないオリジンには、本文が壊れていても必ず403で
+/// 答える。Protected Resource Metadataは公開の情報なので付けない。
+async fn origin_middleware(
+    State(policy): State<Arc<OriginPolicy>>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let remote_addr = request
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|info| info.0);
+    match check_origin(&policy, request.headers(), remote_addr) {
+        Ok(()) => next.run(request).await,
+        Err(status) => status.into_response(),
+    }
+}
+
+/// `/`・`/mcp`・`/ws`のCORS（#488）。許可するオリジンを`Origin`の検証と
+/// 同じ`OriginPolicy`から決めるので、許可していないオリジンはブラウザーの
+/// preflightの段階で止まる。`cors_enabled = false`ならCORSのヘッダーを
+/// 付けない（別のオリジンのページからは、ブラウザーが応答を読ませない）。
+fn mcp_cors_layer(cors_enabled: bool, policy: Arc<OriginPolicy>) -> CorsLayer {
+    if !cors_enabled {
+        return CorsLayer::new();
+    }
+    CorsLayer::new()
+        .allow_origin(tower_http::cors::AllowOrigin::predicate(
+            move |origin: &HeaderValue, _| origin.to_str().is_ok_and(|o| policy.allows(o)),
+        ))
+        .allow_methods(tower_http::cors::Any)
+        .allow_headers(tower_http::cors::Any)
+        .expose_headers(tower_http::cors::Any)
+}
+
+/// `Origin`ヘッダーを検証する（#484）。許可していないオリジンなら403。
+fn check_origin(
+    policy: &OriginPolicy,
+    headers: &HeaderMap,
+    remote_addr: Option<SocketAddr>,
+) -> std::result::Result<(), StatusCode> {
+    let remote_addr = remote_addr
+        .map(|addr| addr.to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    let Some(origin) = headers.get(axum::http::header::ORIGIN) else {
+        return Ok(());
+    };
+    match origin.to_str() {
+        Ok(origin) if policy.allows(origin) => Ok(()),
+        Ok(origin) => {
+            warn!(
+                "Rejected request from {} with Origin '{}' (not in allowed_origins)",
+                remote_addr, origin
+            );
+            Err(StatusCode::FORBIDDEN)
+        }
+        Err(_) => {
+            warn!(
+                "Rejected request from {} with an invalid Origin header",
+                remote_addr
+            );
+            Err(StatusCode::FORBIDDEN)
+        }
+    }
+}
+
+/// リクエストの`MCP-Protocol-Version`ヘッダーの版（#484）。ヘッダーが
+/// 無ければ`None`（共有の版を使う）。`initialize`では見ない（版は本文で
+/// 交渉する）。対応していない版なら、仕様どおり400で答える応答を返す。
+fn requested_protocol_version(
+    headers: &HeaderMap,
+    request: &Value,
+) -> std::result::Result<Option<&'static str>, Box<Response>> {
+    let Some(value) = headers.get("mcp-protocol-version") else {
+        return Ok(None);
+    };
+    if request.get("method").and_then(Value::as_str) == Some("initialize") {
+        return Ok(None);
+    }
+    let requested = value.to_str().unwrap_or("").trim();
+    if let Some(version) = crate::mcp::SUPPORTED_PROTOCOL_VERSIONS
+        .iter()
+        .copied()
+        .find(|v| *v == requested)
+    {
+        return Ok(Some(version));
+    }
+    warn!(
+        "Rejected request with unsupported MCP-Protocol-Version '{}'",
+        requested
+    );
+    let body = serde_json::json!({
+        "jsonrpc": "2.0",
+        "error": {
+            "code": -32600,
+            "message": format!(
+                "Unsupported MCP-Protocol-Version: '{}' (supported: {})",
+                requested,
+                crate::mcp::SUPPORTED_PROTOCOL_VERSIONS.join(", ")
+            )
+        },
+        "id": request.get("id").cloned().unwrap_or(Value::Null)
+    });
+    Err(Box::new(
+        (StatusCode::BAD_REQUEST, Json(body)).into_response(),
+    ))
 }
 
 /// `JsonRpcRequestHandler`で1件を処理する時間の上限。ツール側（WordPress・
@@ -574,29 +782,38 @@ impl HttpTransport {
             }),
         };
 
-        let mut app = Router::new()
+        // MCPのエンドポイント: Originの検証（ミドルウェア）と、同じ
+        // OriginPolicyから作るCORS（#488）
+        let origin_policy = Arc::new(OriginPolicy::new(&self.config.allowed_origins));
+        let mcp_routes = Router::new()
             .route("/", post(handle_jsonrpc_request))
             .route("/mcp", post(handle_jsonrpc_request))
-            .route("/ws", get(handle_ws_upgrade));
+            .route("/ws", get(handle_ws_upgrade))
+            .route_layer(axum::middleware::from_fn_with_state(
+                origin_policy.clone(),
+                origin_middleware,
+            ))
+            .layer(mcp_cors_layer(self.config.cors_enabled, origin_policy));
+        // Protected Resource Metadata: 公開の情報なので、どのオリジンにも返す
+        let mut metadata_routes = Router::new();
         if let Some(validator) = &oauth {
             // RFC 9728: resourceにパスがあればその後ろ。ルートにも置く
             // （パスを付けずに探すクライアントのため）
             let path = validator.config().resource_metadata_path();
-            app = app.route(&path, get(handle_protected_resource_metadata));
+            metadata_routes = metadata_routes.route(&path, get(handle_protected_resource_metadata));
             if path != crate::transport::oauth::PROTECTED_RESOURCE_METADATA_PATH {
-                app = app.route(
+                metadata_routes = metadata_routes.route(
                     crate::transport::oauth::PROTECTED_RESOURCE_METADATA_PATH,
                     get(handle_protected_resource_metadata),
                 );
             }
         }
-        let app = app
-            .layer(if self.config.cors_enabled {
-                CorsLayer::permissive()
-            } else {
-                CorsLayer::new()
-            })
-            .with_state(state);
+        let metadata_routes = metadata_routes.layer(if self.config.cors_enabled {
+            CorsLayer::permissive()
+        } else {
+            CorsLayer::new()
+        });
+        let app = mcp_routes.merge(metadata_routes).with_state(state);
 
         info!(
             "Starting {} transport server on {}",
@@ -1066,6 +1283,10 @@ async fn handle_jsonrpc_request(
         Some(&request),
     )
     .await?;
+    let protocol_version = match requested_protocol_version(&headers, &request) {
+        Ok(version) => version,
+        Err(response) => return Ok(*response),
+    };
 
     let start_time = Instant::now();
 
@@ -1102,6 +1323,7 @@ async fn handle_jsonrpc_request(
             handler.as_ref(),
             &request_str,
             &caller,
+            protocol_version,
             start_time,
         )
         .await;
@@ -1901,11 +2123,12 @@ async fn respond_with_request_handler(
     handler: &dyn JsonRpcRequestHandler,
     request_str: &str,
     caller: &crate::mcp::Caller,
+    protocol_version: Option<&'static str>,
     start_time: Instant,
 ) -> std::result::Result<Response, StatusCode> {
     match tokio::time::timeout(
         REQUEST_HANDLER_TIMEOUT,
-        handler.handle_jsonrpc(request_str, caller),
+        handler.handle_jsonrpc_with_protocol_version(request_str, caller, protocol_version),
     )
     .await
     {
@@ -3752,6 +3975,25 @@ mod tests {
                 metadata["authorization_servers"],
                 serde_json::json!([auth.issuer])
             );
+
+            // 公開の情報なので、許可していないオリジンにも返し、CORSでも
+            // 読ませる（#488）
+            let response = reqwest::Client::new()
+                .get(format!("http://127.0.0.1:{}{}", port, path))
+                .header("Origin", "https://other.example")
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{}", path);
+            assert_eq!(
+                response
+                    .headers()
+                    .get("access-control-allow-origin")
+                    .and_then(|v| v.to_str().ok()),
+                Some("*"),
+                "{}",
+                path
+            );
         }
     }
 
@@ -4584,5 +4826,253 @@ mod tests {
             response_value["result"]["method"],
             serde_json::json!("tools/list")
         );
+    }
+
+    #[test]
+    fn test_origin_policy_allows_loopback_and_configured_origins() {
+        let policy = OriginPolicy::new(&["https://App.Example.com/".to_string()]);
+        for allowed in [
+            "http://localhost",
+            "http://localhost:3000",
+            "https://127.0.0.1:8081",
+            "http://127.0.0.2",
+            "http://[::1]:6274",
+            "HTTP://LOCALHOST:3000",
+            "https://app.example.com",
+        ] {
+            assert!(policy.allows(allowed), "{allowed}");
+        }
+        for rejected in [
+            "null",
+            "https://example.com",
+            "http://localhost.example.com",
+            "http://127.0.0.1.example.com",
+            "http://localhost:3000@evil.example",
+            "http://localhost:abc",
+            "file://",
+            "https://app.example.com:8443",
+            "http://app.example.com",
+        ] {
+            assert!(!policy.allows(rejected), "{rejected}");
+        }
+        assert!(OriginPolicy::new(&["*".to_string()]).allows("https://anything.example"));
+    }
+
+    /// `MCP-Protocol-Version`ヘッダーの版（#484）を、結果の`protocol_version`
+    /// で返す
+    struct VersionEchoHandler;
+
+    #[async_trait]
+    impl JsonRpcRequestHandler for VersionEchoHandler {
+        async fn handle_jsonrpc(
+            &self,
+            message: &str,
+            caller: &crate::mcp::Caller,
+        ) -> std::result::Result<Option<Value>, String> {
+            self.handle_jsonrpc_with_protocol_version(message, caller, None)
+                .await
+        }
+
+        async fn handle_jsonrpc_with_protocol_version(
+            &self,
+            message: &str,
+            _caller: &crate::mcp::Caller,
+            protocol_version: Option<&'static str>,
+        ) -> std::result::Result<Option<Value>, String> {
+            let request: Value = serde_json::from_str(message).map_err(|e| e.to_string())?;
+            Ok(Some(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": request["id"],
+                "result": { "protocol_version": protocol_version }
+            })))
+        }
+    }
+
+    async fn start_version_echo_server(config: HttpConfig) -> (HttpTransport, SocketAddr) {
+        let transport = HttpTransport::new(HttpConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            ..config
+        })
+        .unwrap()
+        .with_request_handler(Arc::new(VersionEchoHandler));
+        transport.start_server().await.unwrap();
+        let server_addr = transport.bound_addr().await.unwrap();
+        wait_for_plain_server_ready(server_addr).await;
+        (transport, server_addr)
+    }
+
+    /// `Origin`が許可していないオリジンなら403。`Origin`が無いリクエストと、
+    /// ループバック・`allowed_origins`のオリジンは受け付ける（#484）
+    #[tokio::test]
+    async fn test_jsonrpc_rejects_disallowed_origin() {
+        let (_transport, server_addr) = start_version_echo_server(HttpConfig {
+            allowed_origins: vec!["https://app.example.com".to_string()],
+            ..HttpConfig::default()
+        })
+        .await;
+        let url = format!("http://127.0.0.1:{}/mcp", server_addr.port());
+        let client = reqwest::Client::new();
+        let status = |origin: Option<&'static str>| {
+            let mut request = client.post(&url).json(&serde_json::json!({
+                "jsonrpc": "2.0", "id": 1, "method": "tools/list"
+            }));
+            if let Some(origin) = origin {
+                request = request.header("Origin", origin);
+            }
+            async move { request.send().await.unwrap().status() }
+        };
+        assert_eq!(status(None).await, StatusCode::OK);
+        assert_eq!(status(Some("http://localhost:6274")).await, StatusCode::OK);
+        assert_eq!(
+            status(Some("https://app.example.com")).await,
+            StatusCode::OK
+        );
+        assert_eq!(
+            status(Some("http://attacker.example")).await,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(status(Some("null")).await, StatusCode::FORBIDDEN);
+    }
+
+    /// `Origin`の検証は本文を読む前に行うので、許可していないオリジンからの
+    /// 壊れた本文にも403で答える（#488）
+    #[tokio::test]
+    async fn test_disallowed_origin_gets_403_even_with_a_malformed_body() {
+        let (_transport, server_addr) = start_version_echo_server(HttpConfig::default()).await;
+        let url = format!("http://127.0.0.1:{}/mcp", server_addr.port());
+        let client = reqwest::Client::new();
+        for (content_type, body) in [("application/json", "{not json"), ("text/plain", "hello")] {
+            let response = client
+                .post(&url)
+                .header("Origin", "http://attacker.example")
+                .header("Content-Type", content_type)
+                .body(body)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::FORBIDDEN, "{content_type}");
+        }
+        // 許可しているオリジン（ループバック）なら、これまでどおり本文の誤り
+        let response = client
+            .post(&url)
+            .header("Origin", "http://localhost:3000")
+            .header("Content-Type", "application/json")
+            .body("{not json")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    /// CORSのpreflightは、`Origin`の検証と同じオリジンだけを許可する（#488）
+    #[tokio::test]
+    async fn test_cors_preflight_follows_allowed_origins() {
+        let (_transport, server_addr) = start_version_echo_server(HttpConfig {
+            allowed_origins: vec!["https://app.example.com".to_string()],
+            ..HttpConfig::default()
+        })
+        .await;
+        let url = format!("http://127.0.0.1:{}/mcp", server_addr.port());
+        let client = reqwest::Client::new();
+        let allow_origin = |origin: &'static str| {
+            let request = client
+                .request(reqwest::Method::OPTIONS, &url)
+                .header("Origin", origin)
+                .header("Access-Control-Request-Method", "POST")
+                .header("Access-Control-Request-Headers", "content-type");
+            async move {
+                let response = request.send().await.unwrap();
+                response
+                    .headers()
+                    .get("access-control-allow-origin")
+                    .map(|v| v.to_str().unwrap().to_string())
+            }
+        };
+        assert_eq!(
+            allow_origin("http://localhost:3000").await.as_deref(),
+            Some("http://localhost:3000")
+        );
+        assert_eq!(
+            allow_origin("https://app.example.com").await.as_deref(),
+            Some("https://app.example.com")
+        );
+        assert_eq!(allow_origin("http://attacker.example").await, None);
+    }
+
+    /// `/ws`のアップグレードも、`Origin`を検証する（#484）
+    #[tokio::test]
+    async fn test_ws_upgrade_rejects_disallowed_origin() {
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+
+        let (_transport, server_addr) = start_version_echo_server(HttpConfig {
+            enable_websocket_upgrade: true,
+            ..HttpConfig::default()
+        })
+        .await;
+        let url = format!("ws://127.0.0.1:{}/ws", server_addr.port());
+        let mut request = url.clone().into_client_request().unwrap();
+        request.headers_mut().insert(
+            "Origin",
+            HeaderValue::from_static("http://attacker.example"),
+        );
+        match tokio_tungstenite::connect_async(request).await {
+            Err(WsError::Http(response)) => assert_eq!(response.status(), StatusCode::FORBIDDEN),
+            other => panic!("expected the /ws upgrade to be rejected with 403, got: {other:?}"),
+        }
+
+        let mut request = url.into_client_request().unwrap();
+        request
+            .headers_mut()
+            .insert("Origin", HeaderValue::from_static("http://localhost:3000"));
+        assert!(tokio_tungstenite::connect_async(request).await.is_ok());
+    }
+
+    /// `MCP-Protocol-Version`ヘッダーの版を、ハンドラーに渡す。対応して
+    /// いない版なら400。`initialize`では見ない（#484）
+    #[tokio::test]
+    async fn test_jsonrpc_uses_mcp_protocol_version_header() {
+        let (_transport, server_addr) = start_version_echo_server(HttpConfig::default()).await;
+        let url = format!("http://127.0.0.1:{}/mcp", server_addr.port());
+        let client = reqwest::Client::new();
+        let send = |method: &'static str, header: Option<&'static str>| {
+            let mut request = client.post(&url).json(&serde_json::json!({
+                "jsonrpc": "2.0", "id": 7, "method": method
+            }));
+            if let Some(header) = header {
+                request = request.header("MCP-Protocol-Version", header);
+            }
+            async move {
+                let response = request.send().await.unwrap();
+                let status = response.status();
+                (status, response.json::<Value>().await.unwrap())
+            }
+        };
+
+        let (status, body) = send("tools/list", None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["result"]["protocol_version"], Value::Null);
+
+        for version in ["2025-11-25", "2025-06-18", "2024-11-05"] {
+            let (status, body) = send("tools/list", Some(version)).await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(
+                body["result"]["protocol_version"],
+                serde_json::json!(version)
+            );
+        }
+
+        let (status, body) = send("tools/list", Some("2099-01-01")).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["id"], serde_json::json!(7));
+        assert_eq!(body["error"]["code"], serde_json::json!(-32600));
+        assert!(body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("2099-01-01"));
+
+        // initializeでは、ヘッダーを見ない（版は本文で交渉する）
+        let (status, body) = send("initialize", Some("2099-01-01")).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["result"]["protocol_version"], Value::Null);
     }
 }

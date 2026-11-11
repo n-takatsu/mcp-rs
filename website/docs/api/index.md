@@ -112,17 +112,20 @@ pub enum IsolationLevel {
 
 Establishes connection and negotiates the protocol version and capabilities.
 
-mcp-rs supports MCP protocol versions `2025-06-18` and `2024-11-05`. If the client asks for one of them, mcp-rs answers with that version. Otherwise, it answers with `2025-06-18` (the client may then disconnect if it does not support that version). Up to version 0.18.4, mcp-rs always answered with `2024-11-05`.
+mcp-rs supports MCP protocol versions `2025-11-25`, `2025-06-18`, and `2024-11-05`. If the client asks for one of them, mcp-rs answers with that version. Otherwise, it answers with `2025-11-25` (the client may then disconnect if it does not support that version). Up to version 0.18.4, mcp-rs always answered with `2024-11-05`, and up to version 0.21.0, it did not support `2025-11-25` (it answered clients asking for it, such as Claude Desktop, with `2025-06-18`).
 
 The version decides which fields mcp-rs sends:
 
-| Field | `2025-06-18` | `2024-11-05` |
-|-------|--------------|--------------|
-| Tool `title`, `outputSchema`, `annotations` (`tools/list`) | Sent | Removed |
-| `structuredContent` (`tools/call`) | Sent | Removed (the same information is in `content`) |
-| Resource links and audio in `content` (`tools/call`) | Sent | Replaced with text |
+| Field | `2025-11-25` | `2025-06-18` | `2024-11-05` |
+|-------|--------------|--------------|--------------|
+| `serverInfo` `description`, `websiteUrl` (`initialize`) | Sent | Not sent | Not sent |
+| Tool `title`, `outputSchema`, `annotations` (`tools/list`) | Sent | Sent | Removed |
+| `structuredContent` (`tools/call`) | Sent | Sent | Removed (the same information is in `content`) |
+| Resource links and audio in `content` (`tools/call`) | Sent | Sent | Replaced with text |
 
-Before `initialize`, mcp-rs uses `2024-11-05`. In STDIO mode, the version applies to the connection. In HTTP mode, mcp-rs does not tell clients apart, so the version from the most recent `initialize` applies to every client. The `MCP-Protocol-Version` header (Streamable HTTP) is not supported yet.
+mcp-rs does not use the optional features added in `2025-11-25` (tasks, elicitation, sampling with tools, icons). When a tool fails, including when its arguments are invalid, mcp-rs returns a result with `isError: true` and the reason in `content`, as `2025-11-25` recommends, so the model can correct the arguments and try again.
+
+Before `initialize`, mcp-rs uses `2024-11-05`. In STDIO mode, the version applies to the connection. In HTTP mode, a client sends the negotiated version in the `MCP-Protocol-Version` header of each request after `initialize` (Streamable HTTP), and mcp-rs answers that request with the version in the header. If the version is not one mcp-rs supports, it answers with HTTP 400 and a JSON-RPC error (code `-32600`). mcp-rs ignores the header on `initialize` itself, where the version is negotiated in the body. For requests without the header, and for `/ws`, mcp-rs uses the version from the most recent `initialize`, because it does not tell clients apart. Up to version 0.21.0, mcp-rs did not read the header.
 
 **Request:**
 
@@ -131,7 +134,7 @@ Before `initialize`, mcp-rs uses `2024-11-05`. In STDIO mode, the version applie
   "jsonrpc": "2.0",
   "method": "initialize",
   "params": {
-    "protocolVersion": "2025-06-18",
+    "protocolVersion": "2025-11-25",
     "capabilities": {
       "roots": { "listChanged": true },
       "sampling": {}
@@ -151,14 +154,16 @@ Before `initialize`, mcp-rs uses `2024-11-05`. In STDIO mode, the version applie
 {
   "jsonrpc": "2.0",
   "result": {
-    "protocolVersion": "2025-06-18",
+    "protocolVersion": "2025-11-25",
     "capabilities": {
       "tools": { "listChanged": false },
       "resources": { "subscribe": false, "listChanged": false }
     },
     "serverInfo": {
       "name": "mcp-rs",
-      "version": "0.21.0"
+      "version": "0.22.0",
+      "description": "Rust implementation of the Model Context Protocol (MCP) server for WordPress and other tools",
+      "websiteUrl": "https://n-takatsu.github.io/mcp-rs/"
     }
   },
   "id": 1
@@ -209,7 +214,7 @@ Lists available tools.
 }
 ```
 
-`annotations` are hints for the client, such as whether to ask before running the tool (version `2025-06-18` only). The WordPress tools have them:
+`annotations` are hints for the client, such as whether to ask before running the tool (versions `2025-06-18` and later). The WordPress tools have them:
 
 - `get_*` and `wordpress_health_check`: `readOnlyHint: true`
 - `create_*` and `upload_media`: `readOnlyHint: false`, `destructiveHint: false`, `idempotentHint: false` (they add new items, and each call adds another one)
@@ -221,9 +226,9 @@ Lists available tools.
 mcp-rs always provides the read-only tool `mcp_rs_status` (first in `tools/list`), with or without WordPress and plugins. It returns text such as:
 
 ```text
-mcp-rs 0.21.0
+mcp-rs 0.22.0
 Mode: stdio
-Protocol version: 2025-06-18
+Protocol version: 2025-11-25
 OS: windows (x86_64)
 Process ID: 12345
 Instance: 12345-20261109T093000
@@ -497,7 +502,7 @@ Retrieves WordPress comments.
 
 ## Version Information
 
-- **Current Version**: v0.21.0
+- **Current Version**: v0.22.0
 - **Phase 1**: MySQL (Complete)
 - **Phase 2**: PostgreSQL (Complete)
 - **Last Updated**: 2025-11-23

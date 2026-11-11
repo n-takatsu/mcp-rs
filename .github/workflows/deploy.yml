@@ -1,6 +1,11 @@
 ---
-name: Production Deployment
+name: Release Image
 
+# リリースのDockerイメージを作るワークフロー。検証（fmt・clippy・テスト・
+# 監査）の後、イメージを作ってghcr.ioに送り、SBOMを作り（タグのときは
+# GitHubのリリースに添付）、イメージをTrivyでスキャンする。
+# どこかのサーバーへのデプロイはしない（デプロイ先が無いため、中身が
+# echoだけだったstaging・production・rollbackのジョブは削除した、#451）
 on:
   push:
     branches:
@@ -8,15 +13,6 @@ on:
     tags:
       - 'v*.*.*'
   workflow_dispatch:
-    inputs:
-      environment:
-        description: 'Deployment environment'
-        required: true
-        default: 'staging'
-        type: choice
-        options:
-          - staging
-          - production
 
 # 1回の実行に1時間半ほどかかり、mainへのpushとタグのpushの両方で動く。
 # 並行して共有のイメージのタグ（main・latest・0.19・0等）を上書きしない
@@ -33,9 +29,9 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # Build and test before deployment
+  # Build and test before building the image
   pre-deployment-checks:
-    name: Pre-deployment validation
+    name: Validation
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -82,7 +78,6 @@ jobs:
       contents: write
       packages: write
     outputs:
-      image-tag: ${{ steps.meta.outputs.tags }}
       image-digest: ${{ steps.build.outputs.digest }}
     steps:
       - uses: actions/checkout@v4
@@ -109,7 +104,9 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
             type=sha,prefix={{branch}}-,enable=${{ github.ref_type == 'branch' }}
-            type=raw,value=latest,enable={{is_default_branch}}
+          # latestは、vX.Y.Zタグのときにtype=semverが自動で付ける（flavorの
+          # latest=auto）。既定のブランチ（develop）にlatestを付ける行は
+          # 置かない。手動の実行でリリース前のイメージがlatestになるため（#482）
 
       - name: Build and push Docker image
         id: build
@@ -156,94 +153,6 @@ jobs:
           severity: 'CRITICAL,HIGH'
 
       - name: Upload Trivy results to GitHub Security
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: 'trivy-results.sarif'
-
-  # Deploy to staging
-  deploy-staging:
-    name: Deploy to Staging
-    needs: [build-docker-image, security-scan]
-    runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main' || github.event.inputs.environment == 'staging'
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Deploy to staging
-        run: |
-          echo "Deploying to staging environment..."
-          echo "Image: ${{ needs.build-docker-image.outputs.image-tag }}"
-          # Add your staging deployment commands here
-          # Example: kubectl, docker-compose, etc.
-
-      - name: Health check
-        run: |
-          echo "Running health check..."
-          # Add health check commands
-          # curl -f https://staging.mcp-rs.example.com/health
-
-      - name: Notify deployment
-        if: always()
-        run: |
-          echo "Staging deployment completed"
-          # Add notification logic (Slack, Discord, etc.)
-
-  # Deploy to production (manual approval required)
-  deploy-production:
-    name: Deploy to Production
-    needs: [build-docker-image, security-scan, deploy-staging]
-    runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v') || github.event.inputs.environment == 'production'
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Pre-deployment backup
-        run: |
-          echo "Creating backup before deployment..."
-          # Add backup commands
-
-      - name: Deploy to production
-        run: |
-          echo "Deploying to production environment..."
-          echo "Image: ${{ needs.build-docker-image.outputs.image-tag }}"
-          # Add your production deployment commands here
-
-      - name: Health check
-        run: |
-          echo "Running production health check..."
-          # Add health check commands
-          # curl -f https://mcp-rs.example.com/health
-
-      - name: Post-deployment verification
-        run: |
-          echo "Verifying deployment..."
-          # Add verification commands
-
-      - name: Notify deployment
-        if: always()
-        run: |
-          echo "Production deployment completed"
-          # Add notification logic
-
-  # Rollback capability
-  rollback:
-    name: Rollback Deployment
-    runs-on: ubuntu-latest
-    if: failure()
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Rollback to previous version
-        run: |
-          echo "Initiating rollback..."
-          # Add rollback commands
-
-      - name: Verify rollback
-        run: |
-          echo "Verifying rollback..."
-          # Add verification commands
-
-      - name: Notify rollback
-        run: |
-          echo "Rollback completed"
-          # Add notification logic

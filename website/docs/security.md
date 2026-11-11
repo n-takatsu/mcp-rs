@@ -130,6 +130,25 @@ It asks for the WordPress username, the Application Password, and a master passw
 
   Delete `secrets.txt` afterwards.
 
+## HTTP/WebSocket: Requests from Web Pages (`Origin`)
+
+In HTTP mode, mcp-rs checks the `Origin` header that browsers add to requests from web pages, as the MCP specification requires. This stops a web page you visit from calling mcp-rs's tools through your browser, including with DNS rebinding (a page whose domain is made to point at `127.0.0.1`). Up to version 0.21.0, mcp-rs did not check `Origin`.
+
+- Requests without an `Origin` header are accepted. AI clients such as Claude Desktop and command-line tools don't send one.
+- Requests from loopback origins (`http://localhost`, `http://127.0.0.1`, `http://[::1]`, `https` too, any port) are accepted.
+- Requests from other origins get HTTP 403, both on `/mcp` (and `/`) and on the `/ws` upgrade, before mcp-rs reads the request body. The Protected Resource Metadata (OAuth) stays available to any origin.
+- CORS follows the same rule: browsers are allowed to send requests from the accepted origins only, so a request from another origin is already stopped at the browser's preflight check. With `cors_enabled = false`, mcp-rs sends no CORS headers at all, so pages on other origins cannot read its responses even when their origin is allowed.
+
+To use mcp-rs from a web app on another origin, add it (`scheme://host[:port]`, compared without regard to case):
+
+```toml
+[transport.http]
+allowed_origins = ["https://app.example.com"]
+# allowed_origins = ["*"]   # any origin: only behind your own proxy that checks Origin itself
+```
+
+Because loopback origins are always accepted, a web page served from your own PC, on any port (for example a local development server, or another program's local web interface), can call mcp-rs's tools through your browser when no authentication is set up. If you run untrusted local web pages, or to be safe in general, set up API keys or OAuth: the `Origin` check does not replace authentication. Always enable authentication when the HTTP transport listens on anything other than loopback.
+
 ## HTTP/WebSocket API Key Authentication
 
 When the HTTP transport listens on anything other than loopback, enable API key authentication. Each key is hashed in memory at startup and never logged. Startup fails if `auth_enabled = true` and no keys are configured, or if a key is empty or duplicated.
@@ -174,7 +193,7 @@ A request is allowed a tool when any item matches it. `tools = []` allows no too
 
 ## HTTP/WebSocket OAuth 2.1 Authorization
 
-In HTTP mode, mcp-rs can accept OAuth 2.1 access tokens, as described in the MCP specification (version 2025-06-18, "Authorization"). mcp-rs is the resource server: users sign in at an external authorization server (for example Keycloak, Okta, or Microsoft Entra ID), which handles SSO, LDAP/Active Directory, and MFA. mcp-rs checks the access tokens that server issues.
+In HTTP mode, mcp-rs can accept OAuth 2.1 access tokens, as described in the MCP specification (versions 2025-06-18 and 2025-11-25, "Authorization"). mcp-rs is the resource server: users sign in at an external authorization server (for example Keycloak, Okta, or Microsoft Entra ID), which handles SSO, LDAP/Active Directory, and MFA. mcp-rs checks the access tokens that server issues.
 
 ```toml
 [transport.http.oauth]
@@ -203,17 +222,25 @@ resource = "https://mcp.example.com/mcp"         # the URL clients use to reach 
 
 ## Audit Log
 
-Tool calls (WordPress and plugins) and, in HTTP mode, refused requests are appended to an audit log file as JSON lines, one entry per line (see [What is recorded](#what-is-recorded)). By default, the file is `audit.log` in the same folder as the config file (the file passed with `--config`), so the location does not depend on the folder mcp-rs is started from. The mcp-rs log shows the path at startup (`📝 監査ログ: <path>`).
+Tool calls (WordPress and plugins) and, in HTTP mode, refused requests are appended to an audit log file as JSON lines, one entry per line (see [What is recorded](#what-is-recorded)). By default, the file is `audit.log` in the `audit` folder next to the mcp-rs logs:
+
+- Windows: `%USERPROFILE%\.mcp-rs\audit\audit.log`
+- Other platforms: `$XDG_STATE_HOME/mcp-rs/audit/audit.log`, or `~/.local/state/mcp-rs/audit/audit.log` without `XDG_STATE_HOME`
+
+The mcp-rs log shows the path at startup (`📝 監査ログ: <path>`), and so does the `Audit log` line of `mcp_rs_status`.
 
 ```toml
 [audit]
 # enabled = true              # false: keep entries in memory only (no file)
-# file_path = "audit.log"     # relative paths are resolved from the config file's folder
+# file_path = "audit.log"     # absolute path, or relative to the config file's folder
 # max_file_size_mb = 100      # rotate to audit.log.1, audit.log.2, ... before this size. 0: never rotate
 # max_files = 5               # number of rotated files to keep
 ```
 
 - If the file cannot be written (for example, the folder is read-only), mcp-rs logs a warning at startup and keeps entries in memory only. Missing folders are created
+- The audit log contains user names and IP addresses. On Linux and macOS, mcp-rs creates missing folders so that only your user can open them (mode `700`) and creates the file so that only your user can read and write it (`600`), whatever the umask. Existing folders and files keep their permissions; to tighten a file created by an older version, run `chmod 600 audit.log*` (and `chmod 700` on its folder). On Windows, the default folder under `%USERPROFILE%` is already limited to your user, SYSTEM, and Administrators
+- Up to version 0.21.0, the default was `audit.log` in the same folder as the config file. With Claude Desktop, that is usually `%APPDATA%\Claude\mcp-rs\audit.log`, inside Claude's own folder, where Claude itself could not read it. mcp-rs does not move that file: entries written before the update stay there, and new entries go to the new location. When the old file exists, mcp-rs says where it is in its log at startup, every time it starts. To stop that message, delete the old file or move it somewhere else once you no longer need it there. To keep using the old location instead, set `file_path = "audit.log"` (relative to the config file's folder)
+- In the Docker image, the default is `/home/nonroot/.local/state/mcp-rs/audit/audit.log` inside the container, which is lost when the container is recreated (and cannot be written at all with a read-only root file system, as in `docker-compose.yml`). Mount a writable volume at `/home/nonroot/.local/state/mcp-rs/audit`, or set `file_path` to an absolute path on a mounted volume
 - Up to version 0.18.4, the file was `audit.log` in the folder mcp-rs was started from. When started from an MCP client such as Claude Desktop, that folder depends on the client, and the file may not have been written at all
 
 ### What is recorded

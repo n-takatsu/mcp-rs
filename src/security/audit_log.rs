@@ -299,14 +299,12 @@ impl AuditLogger {
         };
         if let Some(parent) = std::path::Path::new(path).parent() {
             if !parent.as_os_str().is_empty() {
-                tokio::fs::create_dir_all(parent)
+                create_private_dir_all(parent)
                     .await
                     .map_err(|e| format!("could not create {}: {}", parent.display(), e))?;
             }
         }
-        tokio::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
+        private_append_options()
             .open(path)
             .await
             .map(|_| ())
@@ -637,9 +635,7 @@ impl AuditLogger {
             // 追記モードで開く。そうしないと2件目以降のログ記録で直前の
             // エントリしかディスクに残らず、プロセス再起動後やログ出荷時に
             // 監査証跡がほぼ消えてしまう。
-            let mut file = tokio::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
+            let mut file = private_append_options()
                 .open(file_path)
                 .await
                 .map_err(|e| SecurityError::Configuration(format!("File open failed: {}", e)))?;
@@ -655,6 +651,31 @@ impl AuditLogger {
         }
         Ok(())
     }
+}
+
+/// 監査ログには利用者名・IPアドレス等が入るので、Unix系では、新しく作る
+/// フォルダを本人だけが使える権限（700）で作る（#489）。既にあるフォルダの
+/// 権限は変えない（利用者が意図して変えている場合があるため）。Windowsでは
+/// 権限を指定しない（`%USERPROFILE%`の下は、既定で本人・SYSTEM・
+/// Administratorsだけが使える）。
+async fn create_private_dir_all(dir: &std::path::Path) -> std::io::Result<()> {
+    let mut builder = tokio::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    builder.mode(0o700);
+    builder.create(dir).await
+}
+
+/// 監査ログのファイルを追記で開く設定。Unix系では、新しく作るファイルを
+/// 本人だけが読み書きできる権限（600）で作る（#489）。既にあるファイルの
+/// 権限は変えない。ローテーションはファイルの名前を変えるだけなので、
+/// 送ったファイルの権限もそのまま。
+fn private_append_options() -> tokio::fs::OpenOptions {
+    let mut options = tokio::fs::OpenOptions::new();
+    options.create(true).append(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    options
 }
 
 /// `path`を`path.1`に、`path.1`を`path.2`に…と送り、`path.<max_files>`を
@@ -961,6 +982,80 @@ mod tests {
         // 最新のエントリは今のファイルにある
         let current = std::fs::read_to_string(&path).unwrap();
         assert!(current.contains("entry 19"), "{}", current);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Unix系では、新しく作るフォルダは700、ファイルは600。ローテーションの
+    /// 後のファイルも同じ（#489）
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_file_output_is_private_on_unix() {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+
+        let dir = std::env::temp_dir().join(format!("mcp-rs-audit-{}", Uuid::new_v4()));
+        let nested = dir.join("nested");
+        let path = nested.join("audit.log");
+        let logger = AuditLogger::new(AuditConfig {
+            enable_file_output: true,
+            log_file_path: Some(path.to_string_lossy().into_owned()),
+            rotation_size: 400,
+            max_files: 2,
+            ..Default::default()
+        });
+        logger.check_file_output().await.unwrap();
+        assert_eq!(mode(&dir), 0o700);
+        assert_eq!(mode(&nested), 0o700);
+        assert_eq!(mode(&path), 0o600);
+
+        for i in 0..20 {
+            logger
+                .log(AuditLogEntry::new(
+                    AuditLevel::Info,
+                    AuditCategory::DataAccess,
+                    format!("entry {}", i),
+                ))
+                .await
+                .unwrap();
+        }
+        assert_eq!(mode(&path), 0o600);
+        assert_eq!(mode(&nested.join("audit.log.1")), 0o600);
+        assert_eq!(mode(&nested.join("audit.log.2")), 0o600);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 既にあるフォルダ・ファイルの権限は変えない（#489）
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_existing_file_permissions_are_kept_on_unix() {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+
+        let dir = std::env::temp_dir().join(format!("mcp-rs-audit-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o750)).unwrap();
+        let path = dir.join("audit.log");
+        std::fs::write(&path, "").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+
+        let logger = AuditLogger::new(AuditConfig {
+            enable_file_output: true,
+            log_file_path: Some(path.to_string_lossy().into_owned()),
+            ..Default::default()
+        });
+        logger.check_file_output().await.unwrap();
+        logger
+            .log(AuditLogEntry::new(
+                AuditLevel::Info,
+                AuditCategory::DataAccess,
+                "entry".to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(mode(&dir), 0o750);
+        assert_eq!(mode(&path), 0o640);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -4,7 +4,7 @@
 
 > **[English](README.md)** | **[日本語](README.ja.md)**
 
-[![Version](https://img.shields.io/badge/Version-v0.21.0-blue)](https://github.com/n-takatsu/mcp-rs/releases/tag/v0.21.0)
+[![Version](https://img.shields.io/badge/Version-v0.22.0-blue)](https://github.com/n-takatsu/mcp-rs/releases/tag/v0.22.0)
 ![Architecture](https://img.shields.io/badge/Architecture-Production--Ready-green)
 ![Implementation](https://img.shields.io/badge/WordPress_Tools-32_Available-green)
 ![License](https://img.shields.io/badge/License-MIT%2FApache--2.0-green)
@@ -242,6 +242,8 @@ Claude Desktop may start two mcp-rs processes for one entry in `claude_desktop_c
 - Each line has the process ID (`[pid …]`), so you can tell the two processes apart
 - Each process writes its own startup line (`=== mcp-rs … started at … / pid … / instance … / log: … ===`). Windows reuses process IDs, so the same `pid` can belong to a different process after a restart. Read `[pid …]` together with the latest startup line above it. The startup line also has `instance` (the process ID and start time), which the audit log records with every tool call, so you can match the two logs
 - Startup messages, such as the WordPress connection check, appear once per process. Seeing them twice is normal
+
+The audit log (who called which tool) is written next to the logs, to `%USERPROFILE%\.mcp-rs\audit\audit.log` on Windows (`$XDG_STATE_HOME/mcp-rs/audit` or `~/.local/state/mcp-rs/audit` elsewhere). `[audit] file_path` changes it. Up to version 0.21.0, it was `audit.log` in the config file's folder; that file is left where it is. See [Security](https://n-takatsu.github.io/mcp-rs/docs/security/#audit-log).
 
 ## 🏗️ Architecture
 

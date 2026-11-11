@@ -7,6 +7,93 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-11-11
+
+### Added
+
+- MCPのプロトコルの版`2025-11-25`に対応した（#475）。クライアントが
+  `2025-11-25`を要求すれば（Claude Desktop等）その版で答え、対応していない
+  版には`2025-11-25`で答える。`2025-06-18`・`2024-11-05`を要求する
+  クライアントには、これまでどおりその版で答える
+  - `2025-11-25`のときだけ、`initialize`の`serverInfo`に`description`と
+    `websiteUrl`を付ける
+  - プラグインにも`2025-11-25`を要求する。古い版で答えるプラグインも、
+    これまでどおり使える
+  - `2025-11-25`で加わった任意の機能（tasks・URLのelicitation・sampling
+    でのツール・アイコン）は使わない。ツールの引数の誤りを
+    `isError: true`の結果で返すこと（SEP-1303）、OAuthの`insufficient_scope`
+    と`scope`（SEP-835）、Protected Resource Metadata（RFC 9728、SEP-985）は、
+    既に仕様どおり
+- HTTPモードで、`initialize`の後のリクエストの`MCP-Protocol-Version`
+  ヘッダー（Streamable HTTP）を読むようにした（#484）。そのリクエストは
+  ヘッダーの版で答える（以前は、直近の`initialize`の版をすべての
+  クライアントに使っていた）。対応していない版ならHTTP 400と
+  JSON-RPCのエラー（`-32600`）で答える。ヘッダーが無いリクエストと`/ws`は、
+  これまでどおり直近の`initialize`の版
+
+### Security
+
+- HTTPモードで、ブラウザーが付ける`Origin`ヘッダーを検証するようにした
+  （#484）。許可していないオリジンからの`/mcp`・`/`・`/ws`のリクエストには
+  HTTP 403で答える。訪れたウェブページが、ブラウザー経由で（DNS
+  rebindingを含む）mcp-rsのツールを呼べないようにする（MCPの仕様の
+  MUST）。受け付けるのは、`Origin`が無いリクエスト（Claude Desktop等の
+  AIクライアント）、ループバックのオリジン（`localhost`・`127.0.0.1`・
+  `[::1]`）、`[transport.http] allowed_origins`に書いたオリジン（`"*"`で
+  すべて）。Protected Resource Metadataは、これまでどおりどのオリジンにも
+  返す
+  - `Origin`の検証は、本文を読む前のミドルウェアで行う（#488）。許可して
+    いないオリジンには、本文が壊れていても403で答える
+  - `/`・`/mcp`・`/ws`のCORSも、同じ規則で許可するオリジンを決める
+    （#488）。以前の`cors_enabled`（既定はtrue）はすべてのオリジンを許可して
+    いた。許可していないオリジンは、ブラウザーのpreflightで止まる
+  - ループバックのオリジンは常に受け付けるので、認証を設定していなければ、
+    同じPCのウェブページ（別のポートも）からは呼べる。そのことと、防ぐには
+    APIキーかOAuthを設定することを、websiteのセキュリティの節に書いた
+  - **互換性のない変更（ライブラリ）**: `HttpConfig`と
+    `HttpTransportConfig`に`allowed_origins`を加えた。構造体を
+    `..Default::default()`無しで作っている場合は、項目を加える。
+    `JsonRpcRequestHandler`には、既定の実装がある
+    `handle_jsonrpc_with_protocol_version`を加えた（実装している側の変更は
+    要らない）
+- Unix系（Linux・macOS）で、監査ログのフォルダを本人だけが使える権限
+  （`700`）、ファイルを本人だけが読み書きできる権限（`600`）で作るように
+  した（#489）。以前はumaskに従い、多くの環境で他のユーザーも読めた
+  （監査ログには利用者名・IPアドレスが入る）。ローテーションの後の
+  ファイルも同じ。既にあるフォルダ・ファイルの権限は変えない（以前の
+  バージョンが作ったものは`chmod`で絞る）。Windowsと通常のログは変えない
+
+### Changed
+
+- **既定の保存先の変更**: 監査ログの既定の保存先を、設定ファイルと同じ
+  フォルダの`audit.log`から、通常のログと同じユーザー領域の
+  `audit\audit.log`にした（#474）。Windowsは
+  `%USERPROFILE%\.mcp-rs\audit\audit.log`、それ以外は
+  `$XDG_STATE_HOME/mcp-rs/audit/audit.log`か
+  `~/.local/state/mcp-rs/audit/audit.log`。Claude Desktopの案内どおりの
+  設定では、以前は`%APPDATA%\Claude\mcp-rs\audit.log`（Claudeのパッケージの
+  フォルダの中）になり、Claude Desktop上のClaudeから読めなかった。
+  通常のログ（`.mcp-rs\logs`）と並ぶので、`instance`で突き合わせやすい
+  - 設定ファイルを使わない場合も、この場所に書く（以前はメモリーだけ）
+  - `[audit] file_path`を書いていれば、これまでどおりその場所。相対パスの
+    基準も、これまでどおり設定ファイルのフォルダ
+  - 以前の場所の`audit.log`は移さない。残っていれば、起動時のログにその
+    場所を出す。以前の場所を使い続けるなら`file_path = "audit.log"`
+- Production Deployment（`deploy.yml`）の名前を「Release Image」にし、中身が
+  `echo`だけだったデプロイのジョブ（Deploy to Staging・Deploy to
+  Production・Rollback Deployment）を削除した（#451）。デプロイ先は無く、
+  タグのpushでは`deploy-production`が動かない設定になっていた。検証・
+  イメージのビルドとpush・SBOM・Trivyのスキャンは変わらない。手動の実行
+  （`workflow_dispatch`）の環境の選択も無くした。説明
+  （`DEPLOYMENT.md`・`docs/deployment-guide.md`）を実態に合わせ、
+  使っていないSecrets（`DEPLOY_SSH_KEY`等）の記述を消した
+- Release Imageのイメージの`latest`のタグを、`vX.Y.Z`タグのときだけ付ける
+  ようにした（#482）。以前は、既定のブランチ（`develop`）を選んで手動で
+  実行すると、リリース前のイメージで`latest`を上書きした。タグのpushで
+  付く`latest`は変わらない
+- GitHubのcode scanningに結果を送る`github/codeql-action/upload-sarif`を
+  v3からv4にした（#479）。v3は2026年12月に非推奨になる
+
 ## [0.21.0] - 2026-11-11
 
 ### Added

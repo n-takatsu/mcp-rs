@@ -99,7 +99,13 @@ See [WordPress Integration](docs/wordpress/) for the full list of tools.
 
 ## Current Status
 
-## ✅ Recently Completed (v0.21.0)
+## ✅ Recently Completed (v0.22.0)
+
+- **🆕 MCP Protocol 2025-11-25**: Clients that ask for the newest protocol version, such as Claude Desktop, now get it. Clients using `2025-06-18` or `2024-11-05` keep working as before
+- **🔐 Requests from Web Pages**: In HTTP mode, mcp-rs checks the `Origin` header and answers requests from web pages on other origins with 403, so a page you visit cannot call its tools through your browser. CORS follows the same rule, and `allowed_origins` adds origins. See [Security](docs/security/)
+- **📝 Audit Log Location**: The audit log is now written next to the logs, to `%USERPROFILE%\.mcp-rs\audit\audit.log` on Windows, and on Linux and macOS it is readable by your user only. The old `audit.log` next to the config file is left in place
+
+## ✅ v0.21.0
 
 - **📂 Log Files by Local Date**: Log files now switch at local midnight, so the date in the file name matches the times in the log. When a running mcp-rs switches to a new file, it writes a `continued` line with its `pid` and `instance` at the top
 - **🔎 Which Process Did It**: Each audit log record has `pid` and `instance` in `metadata`, matching the log's header lines and the `Instance` line of `mcp_rs_status`, so you can tell the two processes Claude Desktop starts apart

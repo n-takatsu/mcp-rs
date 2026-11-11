@@ -241,9 +241,12 @@ kubectl rollout undo deployment/mcp-rs --to-revision=2 -n mcp-rs
 
 ### GitHub Actionsワークフロー
 
-MCP-RSは、GitHub Actionsを使用した自動デプロイメントをサポートしています。
+`.github/workflows/deploy.yml`（Release Image）は、リリースのDocker
+イメージを作り、GitHub Container Registry（`ghcr.io/n-takatsu/mcp-rs`）に
+送ります。どこかのサーバーへのデプロイはしません。デプロイは、作った
+イメージを使って、上のDocker・Kubernetesの手順で行います。
 
-#### デプロイメントフロー
+#### ワークフローの流れ
 
 ```
 ┌──────────────┐
@@ -252,65 +255,42 @@ MCP-RSは、GitHub Actionsを使用した自動デプロイメントをサポー
        │
        ▼
 ┌──────────────┐
-│ Pre-checks  │ ← フォーマット、Clippy、テスト
+│ Validation  │ ← フォーマット、Clippy、テスト、監査
 └──────┬───────┘
        │
        ▼
 ┌──────────────┐
-│ Build Image │ ← Dockerイメージビルド
+│ Build Image │ ← Dockerイメージのビルドとpush、SBOM
 └──────┬───────┘
        │
        ▼
 ┌──────────────┐
 │ Security    │ ← Trivyスキャン
-└──────┬───────┘
-       │
-       ▼
-┌──────────────┐
-│ Deploy      │ ← Staging → Production
 └──────────────┘
 ```
 
 ### トリガー
 
-1. **自動デプロイメント**
-   - `main`ブランチへのプッシュ → Staging環境
-   - `v*.*.*`タグ → Production環境
+| きっかけ | 作るイメージのタグ |
+|---|---|
+| `main`ブランチへのpush | `main`・`main-<コミット>` |
+| `vX.Y.Z`タグのpush | `X.Y.Z`・`X.Y`・`X`・`latest` |
+| GitHub ActionsのUIから手動で実行 | `<ブランチ>`・`<ブランチ>-<コミット>` |
 
-2. **手動デプロイメント**
-   - GitHub ActionsのUIから実行
-   - 環境を選択可能（Staging/Production）
+`latest`は、`vX.Y.Z`タグのときだけ付きます。
 
-### 環境変数の設定
+タグのときは、SBOM（`.spdx.json`）をGitHubのリリースに添付します。
 
-GitHub リポジトリの設定で、以下のSecretsを設定:
+### Secrets
 
-```
-REGISTRY_USERNAME=<GitHub username>
-REGISTRY_PASSWORD=<GitHub token>
-DEPLOY_SSH_KEY=<SSH private key>
-PRODUCTION_HOST=<production server>
-```
+追加のSecretsは要りません。レジストリへのpushには、ワークフローの
+`GITHUB_TOKEN`を使います。
 
-### デプロイメントの実行
-
-#### 自動デプロイメント
-
-```bash
-# Staging環境へのデプロイ
-git push origin main
-
-# Production環境へのデプロイ
-git tag v1.0.0
-git push origin v1.0.0
-```
-
-#### 手動デプロイメント
+### 手動で実行する
 
 1. GitHubリポジトリの「Actions」タブを開く
-2. 「Production Deployment」ワークフローを選択
-3. 「Run workflow」をクリック
-4. 環境を選択して実行
+2. 「Release Image」ワークフローを選択
+3. 「Run workflow」をクリックし、ブランチを選んで実行
 
 ## 監視とログ
 
