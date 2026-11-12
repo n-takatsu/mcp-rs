@@ -11,11 +11,17 @@ on:
       - 'Dockerfile'
       - 'docker-compose*.yml'
       - '.github/workflows/docker-security.yml'
+      # 起動のしかた（引数・設定ファイル）を変えたときも、イメージの起動を確かめる
+      - 'src/main.rs'
+      - 'src/cli_args.rs'
   pull_request:
     branches: [ main, develop ]
     paths:
       - 'Dockerfile'
       - 'docker-compose*.yml'
+      - '.github/workflows/docker-security.yml'
+      - 'src/main.rs'
+      - 'src/cli_args.rs'
   schedule:
     # Run weekly on Monday at 00:00 UTC
     - cron: '0 0 * * 1'
@@ -89,11 +95,60 @@ jobs:
             echo "✅ Image size ${IMAGE_SIZE_MB}MB meets <50MB target"
           fi
 
-      - name: Test container binary
+      # イメージが既定の引数で起動し、MCPのリクエストに答えることを確かめる
+      # （#497: 以前は存在しない--transportを既定の引数にしていて起動しなかった）
+      - name: Test container startup
+        shell: bash
         run: |
-          # Test binary can be executed (ignore config errors)
-          docker run --rm ${{ env.IMAGE_NAME }}:${{ github.sha }} --version 2>&1 || true
-          echo "✅ Container binary test completed"
+          set -euo pipefail
+          IMG=${{ env.IMAGE_NAME }}:${{ github.sha }}
+
+          echo "::group::--version"
+          docker run --rm "$IMG" --version | tee version.txt
+          grep -q '^mcp-rs [0-9]' version.txt
+          echo "::endgroup::"
+
+          echo "::group::No config file mounted"
+          if docker run --rm "$IMG" 2> noconfig.txt; then
+            echo "❌ mcp-rs started without a config file"; exit 1
+          fi
+          cat noconfig.txt
+          grep -q '/app/config/mcp-config.toml' noconfig.txt
+          echo "::endgroup::"
+
+          mkdir -p smoke-config
+          printf '[server]
+log_level = "info"
+
+[transport]
+type = "stdio"
+
+[handlers]
+'             > smoke-config/mcp-config.toml
+          chmod -R a+rX smoke-config
+          REQUESTS='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"ci","version":"0"}}}
+          {"jsonrpc":"2.0","method":"notifications/initialized"}
+          {"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"mcp_rs_status","arguments":{}}}'
+
+          # docs/DOCKER_GUIDE.mdのSTDIOの例と同じ引数（-iのみ）と、
+          # docker-compose.ymlと同じ読み取り専用＋tmpfsの2通りで確かめる
+          run_stdio() {
+            echo "$REQUESTS" | sed 's/^ *//'               | timeout 60 docker run -i --rm "$@"                   -v "$PWD/smoke-config:/app/config:ro" "$IMG" > out.txt 2> err.txt || true
+            echo "--- stdout"; cat out.txt
+            echo "--- stderr (last 20 lines)"; tail -n 20 err.txt
+            grep -q '"serverInfo"' out.txt
+            grep -q 'Config file: /app/config/mcp-config.toml' out.txt
+          }
+
+          echo "::group::STDIO"
+          run_stdio
+          echo "::endgroup::"
+
+          echo "::group::STDIO, read-only root filesystem"
+          run_stdio --read-only --tmpfs /home/nonroot:uid=65532,gid=65532 --tmpfs /tmp
+          echo "::endgroup::"
+
+          echo "✅ The image starts and answers initialize and mcp_rs_status"
 
       - name: Generate SBOM (Software Bill of Materials)
         uses: anchore/sbom-action@v0
@@ -132,4 +187,4 @@ jobs:
       - name: Test Docker Compose (skip startup test)
         run: |
           echo "✅ Docker Compose validation passed"
-          echo "Note: Startup test skipped (requires config files)"
+          echo "Note: the image's startup is tested in 'Build and Security Scan'"

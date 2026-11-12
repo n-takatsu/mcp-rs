@@ -106,7 +106,7 @@
             "label": "Run MCP Server (STDIO)",
             "type": "shell",
             "command": "cargo",
-            "args": ["run", "--", "--transport", "stdio"],
+            "args": ["run", "--", "--config", "mcp-config.toml"],
             "group": "build",
             "presentation": {
                 "echo": true,
@@ -120,7 +120,7 @@
             "label": "Run MCP Server (HTTP)",
             "type": "shell",
             "command": "cargo",
-            "args": ["run", "--", "--transport", "http", "--port", "3000"],
+            "args": ["run", "--", "--config", "configs/development/http-transport.toml"],
             "group": "build",
             "presentation": {
                 "echo": true,
