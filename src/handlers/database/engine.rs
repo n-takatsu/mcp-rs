@@ -2,12 +2,9 @@
 //!
 //! 異なるデータベースエンジンに対する統一インターフェース
 
-use super::{
-    security::DatabaseSecurity,
-    types::{
-        DatabaseConfig, DatabaseError, DatabaseFeature, DatabaseSchema, DatabaseType,
-        ExecuteResult, HealthStatus, QueryContext, QueryResult, ValidationResult, Value,
-    },
+use super::types::{
+    DatabaseConfig, DatabaseError, DatabaseFeature, DatabaseSchema, DatabaseType, ExecuteResult,
+    HealthStatus, QueryContext, QueryResult, ValidationResult, Value,
 };
 use async_trait::async_trait;
 use std::sync::Arc;
@@ -190,17 +187,13 @@ impl DatabaseEngineBuilder {
             #[cfg(feature = "mysql-backend")]
             DatabaseType::MySQL => {
                 // MySQL: mysql_asyncライブラリを使用（RSA脆弱性フリー）
-                let security = Arc::new(DatabaseSecurity::new(Default::default(), None));
-                let engine =
-                    super::engines::mysql::MySqlEngine::new(config.clone(), security).await?;
+                let engine = super::engines::mysql::MySqlEngine::new(config.clone()).await?;
                 Ok(Arc::new(engine))
             }
             #[cfg(feature = "mysql-backend")]
             DatabaseType::MariaDB => {
                 // MariaDB: MySQL互換なのでmysql_asyncライブラリを使用
-                let security = Arc::new(DatabaseSecurity::new(Default::default(), None));
-                let engine =
-                    super::engines::mariadb::MariaDbEngine::new(config.clone(), security).await?;
+                let engine = super::engines::mariadb::MariaDbEngine::new(config.clone()).await?;
                 Ok(Arc::new(engine))
             }
             #[cfg(not(feature = "mysql-backend"))]

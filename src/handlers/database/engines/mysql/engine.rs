@@ -4,46 +4,32 @@
 
 use crate::handlers::database::{
     engine::{DatabaseConnection, DatabaseEngine},
-    security::DatabaseSecurity,
     types::{
         DatabaseConfig, DatabaseError, DatabaseFeature, DatabaseSchema, DatabaseType,
         ExecuteResult, HealthStatus, QueryResult, TableInfo, Value,
     },
 };
 use async_trait::async_trait;
-use std::sync::Arc;
 
 /// MySQL Database Engine (Test Implementation)
 #[derive(Clone)]
 pub struct MySqlEngine {
     config: DatabaseConfig,
-    #[allow(dead_code)] // 受け取るが使っていない（#499）
-    security: Arc<DatabaseSecurity>,
 }
 
 impl MySqlEngine {
-    /// Create new MySQL engine with security integration
-    pub async fn new(
-        config: DatabaseConfig,
-        security: Arc<DatabaseSecurity>,
-    ) -> Result<Self, DatabaseError> {
-        Ok(Self { config, security })
+    /// Create new MySQL engine
+    ///
+    /// The engine does not check queries itself. It used to take a
+    /// `DatabaseSecurity` that it never used, and had a `new_without_security`
+    /// that behaved the same (#499).
+    pub async fn new(config: DatabaseConfig) -> Result<Self, DatabaseError> {
+        Ok(Self { config })
     }
 
     /// Get database config
     pub fn get_config(&self) -> &DatabaseConfig {
         &self.config
-    }
-
-    /// Create MySQL engine without security (for testing)
-    pub async fn new_without_security(config: DatabaseConfig) -> Result<Self, DatabaseError> {
-        use crate::handlers::database::{security::DatabaseSecurity, types::SecurityConfig};
-        use std::sync::Arc;
-
-        // デフォルトのセキュリティ設定でDatabaseSecurityを作成
-        let security_config = SecurityConfig::default();
-        let security = Arc::new(DatabaseSecurity::new(security_config, None));
-        Ok(Self { config, security })
     }
 }
 

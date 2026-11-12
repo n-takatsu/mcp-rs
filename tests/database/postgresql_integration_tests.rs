@@ -40,7 +40,7 @@ mod tests {
     #[ignore] // Requires running PostgreSQL server
     async fn test_postgresql_engine_creation() {
         let config = create_test_config();
-        let result = PostgreSqlEngine::new_without_security(config).await;
+        let result = PostgreSqlEngine::new(config).await;
         assert!(result.is_ok());
 
         let engine = result.unwrap();
@@ -51,9 +51,7 @@ mod tests {
     #[ignore] // Requires running PostgreSQL server
     async fn test_postgresql_connection() {
         let config = create_test_config();
-        let engine = PostgreSqlEngine::new_without_security(config.clone())
-            .await
-            .unwrap();
+        let engine = PostgreSqlEngine::new(config.clone()).await.unwrap();
 
         let connection = engine.connect(&config).await;
         assert!(connection.is_ok());
@@ -63,9 +61,7 @@ mod tests {
     #[ignore] // Requires running PostgreSQL server
     async fn test_postgresql_simple_query() {
         let config = create_test_config();
-        let engine = PostgreSqlEngine::new_without_security(config.clone())
-            .await
-            .unwrap();
+        let engine = PostgreSqlEngine::new(config.clone()).await.unwrap();
 
         let connection = engine.connect(&config).await.unwrap();
 
@@ -81,9 +77,7 @@ mod tests {
     #[ignore] // Requires running PostgreSQL server
     async fn test_postgresql_parameterized_query() {
         let config = create_test_config();
-        let engine = PostgreSqlEngine::new_without_security(config.clone())
-            .await
-            .unwrap();
+        let engine = PostgreSqlEngine::new(config.clone()).await.unwrap();
 
         let connection = engine.connect(&config).await.unwrap();
 
@@ -102,9 +96,7 @@ mod tests {
     #[ignore] // Requires running PostgreSQL server
     async fn test_postgresql_execute() {
         let config = create_test_config();
-        let engine = PostgreSqlEngine::new_without_security(config.clone())
-            .await
-            .unwrap();
+        let engine = PostgreSqlEngine::new(config.clone()).await.unwrap();
 
         let connection = engine.connect(&config).await.unwrap();
 
@@ -123,9 +115,7 @@ mod tests {
     #[ignore] // Requires running PostgreSQL server
     async fn test_postgresql_insert_and_select() {
         let config = create_test_config();
-        let engine = PostgreSqlEngine::new_without_security(config.clone())
-            .await
-            .unwrap();
+        let engine = PostgreSqlEngine::new(config.clone()).await.unwrap();
 
         let connection = engine.connect(&config).await.unwrap();
 
@@ -162,9 +152,7 @@ mod tests {
     #[ignore] // Requires running PostgreSQL server
     async fn test_postgresql_transaction_commit() {
         let config = create_test_config();
-        let engine = PostgreSqlEngine::new_without_security(config.clone())
-            .await
-            .unwrap();
+        let engine = PostgreSqlEngine::new(config.clone()).await.unwrap();
 
         let connection = engine.connect(&config).await.unwrap();
 
@@ -199,9 +187,7 @@ mod tests {
     #[ignore] // Requires running PostgreSQL server
     async fn test_postgresql_transaction_rollback() {
         let config = create_test_config();
-        let engine = PostgreSqlEngine::new_without_security(config.clone())
-            .await
-            .unwrap();
+        let engine = PostgreSqlEngine::new(config.clone()).await.unwrap();
 
         let connection = engine.connect(&config).await.unwrap();
 
@@ -234,9 +220,7 @@ mod tests {
     #[ignore] // Requires running PostgreSQL server
     async fn test_postgresql_ping() {
         let config = create_test_config();
-        let engine = PostgreSqlEngine::new_without_security(config.clone())
-            .await
-            .unwrap();
+        let engine = PostgreSqlEngine::new(config.clone()).await.unwrap();
 
         let connection = engine.connect(&config).await.unwrap();
 
@@ -248,9 +232,7 @@ mod tests {
     #[ignore] // Requires running PostgreSQL server
     async fn test_postgresql_connection_info() {
         let config = create_test_config();
-        let engine = PostgreSqlEngine::new_without_security(config.clone())
-            .await
-            .unwrap();
+        let engine = PostgreSqlEngine::new(config.clone()).await.unwrap();
 
         let connection = engine.connect(&config).await.unwrap();
 
@@ -263,9 +245,7 @@ mod tests {
     #[ignore] // Requires running PostgreSQL server
     async fn test_postgresql_health_check() {
         let config = create_test_config();
-        let engine = PostgreSqlEngine::new_without_security(config)
-            .await
-            .unwrap();
+        let engine = PostgreSqlEngine::new(config).await.unwrap();
 
         let health = engine.health_check().await;
         assert!(health.is_ok());
@@ -279,9 +259,7 @@ mod tests {
     #[ignore] // Requires running PostgreSQL server
     async fn test_postgresql_supported_features() {
         let config = create_test_config();
-        let engine = PostgreSqlEngine::new_without_security(config)
-            .await
-            .unwrap();
+        let engine = PostgreSqlEngine::new(config).await.unwrap();
 
         use mcp_rs::handlers::database::types::DatabaseFeature;
         let features = engine.supported_features();
@@ -293,9 +271,7 @@ mod tests {
     #[tokio::test]
     async fn test_postgresql_config_validation() {
         let config = create_test_config();
-        let engine = PostgreSqlEngine::new_without_security(config.clone())
-            .await
-            .unwrap();
+        let engine = PostgreSqlEngine::new(config.clone()).await.unwrap();
 
         let validation = engine.validate_config(&config);
         assert!(validation.is_ok());

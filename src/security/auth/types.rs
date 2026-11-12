@@ -231,15 +231,17 @@ pub enum Credentials {
 }
 
 /// パスワードハッシャー
-#[derive(Clone)]
-pub struct PasswordHasher {
-    #[allow(dead_code)] // 受け取るが使っていない（#499）
-    salt_rounds: u32,
-}
+///
+/// Argon2id（`argon2`クレートの既定: メモリー19 MiB・反復2回・並列度1。
+/// OWASPの推奨値）でハッシュする。ソルトはハッシュごとにランダムに作る。
+/// 以前の`new(salt_rounds)`の引数はbcryptの考え方で、Argon2には使われて
+/// いなかったため削除した（#499）。
+#[derive(Clone, Default)]
+pub struct PasswordHasher;
 
 impl PasswordHasher {
-    pub fn new(salt_rounds: u32) -> Self {
-        Self { salt_rounds }
+    pub fn new() -> Self {
+        Self
     }
 
     /// パスワードをハッシュ化
@@ -292,12 +294,6 @@ impl PasswordHasher {
     }
 }
 
-impl Default for PasswordHasher {
-    fn default() -> Self {
-        Self::new(12)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -335,7 +331,7 @@ mod tests {
 
     #[test]
     fn test_password_hash_verify() {
-        let hasher = PasswordHasher::default();
+        let hasher = PasswordHasher;
         let password = "TestPassword123!";
         let hash = hasher.hash(password).unwrap();
 

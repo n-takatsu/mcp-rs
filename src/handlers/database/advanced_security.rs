@@ -78,19 +78,6 @@ pub struct RoleBasedAccessControl {
 
     /// ユーザーのロールマッピング (user_id -> role_names)
     user_roles: Arc<RwLock<HashMap<String, HashSet<String>>>>,
-
-    /// パーミッションキャッシュ (最適化用)
-    permission_cache: Arc<RwLock<HashMap<String, CachedPermission>>>,
-}
-
-#[derive(Debug, Clone)]
-struct CachedPermission {
-    #[allow(dead_code)] // 受け取るが使っていない（#499）
-    roles: HashSet<String>,
-    #[allow(dead_code)] // 受け取るが使っていない（#499）
-    permissions: HashSet<String>,
-    #[allow(dead_code)] // 受け取るが使っていない（#499）
-    cached_at: DateTime<Utc>,
 }
 
 impl Default for RoleBasedAccessControl {
@@ -131,7 +118,6 @@ impl RoleBasedAccessControl {
         Self {
             config: Arc::new(RwLock::new(default_config)),
             user_roles: Arc::new(RwLock::new(HashMap::new())),
-            permission_cache: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -139,9 +125,6 @@ impl RoleBasedAccessControl {
     pub async fn update_config(&self, config: super::security_config::RbacConfig) {
         let mut cfg = self.config.write().await;
         *cfg = config;
-
-        // キャッシュをクリア
-        self.permission_cache.write().await.clear();
     }
 
     /// ユーザーにロールを割り当て
@@ -152,9 +135,6 @@ impl RoleBasedAccessControl {
             .or_insert_with(HashSet::new)
             .insert(role.to_string());
 
-        // キャッシュを無効化
-        self.permission_cache.write().await.remove(user_id);
-
         info!("Assigned role '{}' to user '{}'", role, user_id);
         Ok(())
     }
@@ -164,9 +144,6 @@ impl RoleBasedAccessControl {
         let mut user_roles = self.user_roles.write().await;
         if let Some(roles) = user_roles.get_mut(user_id) {
             roles.remove(role);
-
-            // キャッシュを無効化
-            self.permission_cache.write().await.remove(user_id);
 
             info!("Revoked role '{}' from user '{}'", role, user_id);
         }

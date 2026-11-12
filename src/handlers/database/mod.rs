@@ -11,7 +11,6 @@ pub mod security;
 pub mod types;
 
 // 新しい可用性関連モジュール
-pub mod availability; // 可用性管理
 pub mod loadbalancer;
 pub mod retry; // リトライ戦略
 

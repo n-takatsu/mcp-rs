@@ -129,14 +129,13 @@ impl SecurityOverheadMeasurement {
         };
 
         // Create baseline engine without security
-        self.baseline_engine =
-            Some(MySqlEngine::new_without_security(base_db_config.clone()).await?);
+        self.baseline_engine = Some(MySqlEngine::new(base_db_config.clone()).await?);
 
         // Create secure engine with default security configuration
         let secure_config = base_db_config.clone();
 
         // For testing purposes, we'll use the same engine
-        self.secure_engine = Some(MySqlEngine::new_without_security(secure_config).await?);
+        self.secure_engine = Some(MySqlEngine::new(secure_config).await?);
 
         println!("✅ Both baseline and secure engines initialized");
         Ok(())

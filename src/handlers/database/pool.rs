@@ -2,7 +2,6 @@
 //!
 //! データベース接続プールの管理と最適化
 
-use super::availability::{AvailabilityConfig, AvailabilityManager}; // 可用性管理を追加
 use super::engine::DatabaseEngine;
 use super::types::{DatabaseConfig, DatabaseError, HealthStatus, HealthStatusType, PoolConfig};
 use async_trait::async_trait;

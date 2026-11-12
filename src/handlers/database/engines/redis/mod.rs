@@ -25,8 +25,6 @@ use chrono::Utc;
 
 /// Redis engine for in-memory data operations
 pub struct RedisEngine {
-    #[allow(dead_code)] // 受け取るが使っていない（#499）
-    config: RedisConfig,
     connection: RedisConnection,
     command_restrictor: CommandRestrictor,
 }
@@ -59,7 +57,6 @@ impl RedisEngine {
         let command_restrictor = CommandRestrictor::new();
 
         Ok(RedisEngine {
-            config: redis_config,
             connection,
             command_restrictor,
         })
