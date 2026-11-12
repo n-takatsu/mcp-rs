@@ -27,6 +27,7 @@ use std::sync::Arc;
 pub struct MongoConnection {
     client: Client,
     database: Database,
+    #[allow(dead_code)] // 受け取るが使っていない（#499）
     config: Arc<MongoConfig>,
     database_name: String,
 }

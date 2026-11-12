@@ -18,7 +18,6 @@ use tokio::sync::Mutex;
 pub struct MySqlTransaction {
     conn: Arc<Mutex<Conn>>,
     is_active: Arc<Mutex<bool>>,
-    savepoint_counter: Arc<Mutex<usize>>,
 }
 
 impl MySqlTransaction {
@@ -27,7 +26,6 @@ impl MySqlTransaction {
         Self {
             conn: Arc::new(Mutex::new(conn)),
             is_active: Arc::new(Mutex::new(true)),
-            savepoint_counter: Arc::new(Mutex::new(0)),
         }
     }
 

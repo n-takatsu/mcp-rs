@@ -276,7 +276,6 @@ impl SqlInjectionDetector {
 pub struct QueryWhitelist {
     allowed_patterns: Vec<Regex>,
     allowed_tables: HashSet<String>,
-    allowed_operations: HashMap<QueryType, Vec<String>>,
 }
 
 impl Default for QueryWhitelist {
@@ -290,7 +289,6 @@ impl QueryWhitelist {
         Self {
             allowed_patterns: Vec::new(),
             allowed_tables: HashSet::new(),
-            allowed_operations: HashMap::new(),
         }
     }
 
@@ -459,8 +457,6 @@ struct AuditLogEntry {
 enum AuditEventType {
     QueryValidation,
     QueryExecution,
-    ConnectionAttempt,
-    SecurityViolation,
 }
 
 /// レート制限器

@@ -41,7 +41,6 @@ use crate::handlers::database::types::{
 use crate::handlers::database::{DatabaseConnection, DatabaseEngine};
 use async_trait::async_trait;
 use chrono::Utc;
-use serde_json::Value as JsonValue;
 use sqlx::{PgPool, Row};
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -103,12 +102,6 @@ impl PostgresEngine {
         self.metrics.read().await.clone()
     }
 
-    /// Update pool metrics
-    async fn update_metrics(&self) {
-        let mut metrics = self.metrics.write().await;
-        metrics.update_from_pool(&self.pool);
-    }
-
     /// Get the database configuration
     pub fn config(&self) -> &PostgresConfig {
         &self.config
@@ -150,10 +143,12 @@ impl PostgresEngine {
     ///
     /// ```no_run
     /// # use mcp_rs::handlers::database::engines::postgres::PostgresEngine;
+    /// # use mcp_rs::handlers::database::engine::DatabaseTransaction;
     /// # async fn example(engine: &PostgresEngine) -> Result<(), Box<dyn std::error::Error>> {
-    /// let mut tx = engine.begin_transaction().await?;
+    /// let tx = engine.begin_transaction().await?;
     /// // ... perform operations
-    /// tx.commit().await?;
+    /// // `commit` takes `Box<Self>` (it comes from the `DatabaseTransaction` trait)
+    /// Box::new(tx).commit().await?;
     /// # Ok(())
     /// # }
     /// ```
@@ -255,34 +250,6 @@ impl DatabaseEngine for PostgresEngine {
             .try_get(0)
             .map_err(|e| DatabaseError::QueryFailed(e.to_string()))?;
         Ok(version)
-    }
-}
-
-/// Helper function to bind a JSON value to a query
-fn bind_value<'q>(
-    query: sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments>,
-    value: &'q JsonValue,
-) -> Result<sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments>> {
-    match value {
-        JsonValue::Null => Ok(query.bind(None::<String>)),
-        JsonValue::Bool(b) => Ok(query.bind(b)),
-        JsonValue::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                Ok(query.bind(i))
-            } else if let Some(f) = n.as_f64() {
-                Ok(query.bind(f))
-            } else {
-                Err(PostgresError::InvalidParameter(format!(
-                    "Unsupported number type: {}",
-                    n
-                )))
-            }
-        }
-        JsonValue::String(s) => Ok(query.bind(s.as_str())),
-        JsonValue::Array(_) | JsonValue::Object(_) => {
-            // For arrays and objects, bind as JSONB
-            Ok(query.bind(sqlx::types::Json(value)))
-        }
     }
 }
 

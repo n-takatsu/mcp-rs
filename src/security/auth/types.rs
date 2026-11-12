@@ -233,6 +233,7 @@ pub enum Credentials {
 /// パスワードハッシャー
 #[derive(Clone)]
 pub struct PasswordHasher {
+    #[allow(dead_code)] // 受け取るが使っていない（#499）
     salt_rounds: u32,
 }
 

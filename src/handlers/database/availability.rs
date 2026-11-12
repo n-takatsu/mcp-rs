@@ -15,6 +15,7 @@ use tracing::{error, info, warn};
 pub struct AvailabilityManager {
     health_checker: Arc<HealthChecker>,
     recovery_manager: Arc<RecoveryManager>,
+    #[allow(dead_code)] // 受け取るが使っていない（#499）
     failover_manager: Arc<FailoverManager>,
     circuit_breaker: Arc<CircuitBreaker>,
 }
@@ -57,6 +58,7 @@ impl AvailabilityManager {
 
 /// ヘルスチェック管理
 pub struct HealthChecker {
+    #[allow(dead_code)] // 受け取るが使っていない（#499）
     config: HealthCheckConfig,
     last_check: RwLock<DateTime<Utc>>,
     consecutive_failures: RwLock<u32>,
@@ -193,6 +195,7 @@ impl RecoveryManager {
 
 /// フェイルオーバー管理
 pub struct FailoverManager {
+    #[allow(dead_code)] // 受け取るが使っていない（#499）
     config: FailoverConfig,
     primary_failed: RwLock<bool>,
     current_endpoint: RwLock<String>,

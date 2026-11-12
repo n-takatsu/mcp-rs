@@ -17,6 +17,7 @@ use std::sync::Arc;
 #[derive(Clone)]
 pub struct MySqlEngine {
     config: DatabaseConfig,
+    #[allow(dead_code)] // 受け取るが使っていない（#499）
     security: Arc<DatabaseSecurity>,
 }
 

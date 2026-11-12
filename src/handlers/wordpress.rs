@@ -1179,19 +1179,6 @@ impl WordPressHandler {
         }
     }
 
-    /// 認証情報をリクエストに追加するヘルパーメソッド
-    fn add_authentication(&self, mut request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
-        // セキュア認証情報を優先的に使用
-        if let Some(secure_creds) = &self.secure_credentials {
-            let auth_header = format!("Basic {}", secure_creds.to_basic_auth());
-            request = request.header("Authorization", auth_header);
-        } else if let (Some(username), Some(password)) = (&self.username, &self.password) {
-            // 後方互換性のための平文認証
-            request = request.basic_auth(username, Some(password));
-        }
-        request
-    }
-
     /// リクエストを送り、成功（2xx）の応答を返す。一時的な失敗は最大
     /// `MAX_RETRIES`回まで再送するが、再送するかどうかは失敗の種類と
     /// HTTPメソッドで決める（#388）。

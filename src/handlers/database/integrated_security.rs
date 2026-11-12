@@ -55,6 +55,7 @@ pub struct IntegratedSecurityManager {
     mfa: MultiFactorAuth,
     rbac: RoleBasedAccessControl,
     anomaly_detector: AnomalyDetector,
+    #[allow(dead_code)] // 受け取るが使っていない（#499）
     column_encryption: ColumnEncryptionManager,
 
     // セキュリティ状態管理

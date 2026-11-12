@@ -74,10 +74,13 @@ pub struct DatabaseHandler {
     /// クエリ実行パスに組み込まれている（`execute_query_core`での
     /// 事前検証と`apply_column_encryption`参照）。`DatabaseSecurity`
     /// 自体の適用は未実施のまま。
+    #[allow(dead_code)] // 受け取るが使っていない（#499）
     security: Arc<DatabaseSecurity>,
     /// 脅威インテリジェンス
+    #[allow(dead_code)] // 受け取るが使っていない（#499）
     threat_intelligence: Option<Arc<ThreatDetectionEngine>>,
     /// 安全機構マネージャー
+    #[allow(dead_code)] // 受け取るが使っていない（#499）
     safety_manager: Arc<SafetyManager>,
     /// カラムレベル暗号化マネージャー（未設定ならこのハンドラでは暗号化列の
     /// 強制を一切行わない - 既存の呼び出し元には影響しないオプトイン機能）
@@ -371,23 +374,6 @@ impl DatabaseHandler {
         *active = Some(engine_id.to_string());
 
         Ok(())
-    }
-
-    /// アクティブなプールを取得
-    async fn get_active_pool(&self) -> Result<Arc<ConnectionPool>, DatabaseError> {
-        let active_id = {
-            let active = self.active_engine.read().await;
-            active.clone()
-        };
-
-        let engine_id = active_id.ok_or_else(|| {
-            DatabaseError::ConfigurationError("No active database engine".to_string())
-        })?;
-
-        self.pool_manager
-            .get_pool(&engine_id)
-            .await
-            .ok_or_else(|| DatabaseError::PoolError(format!("Pool not found: {}", engine_id)))
     }
 
     /// クエリ実行処理（`McpHandler::call_tool`経由 - 呼び出し元の識別子は
