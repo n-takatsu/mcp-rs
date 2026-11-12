@@ -152,6 +152,10 @@ impl DatabaseSecurity {
 /// なので、パターンでの検知は見逃し（書き換えた攻撃）も誤検知（正当な
 /// コメント・条件）も無くせない。データを守るのは、読み取り専用のロール・
 /// パラメーターのバインド等の仕組みで、この検知はその補助に留まる（#501）。
+///
+/// パターンは文字列の値の中も区別しないので、例えば
+/// `WHERE answer = 'false or true'`や、`--`で終わる値を含むSQLも止める
+/// （既知の誤検知）。値はSQLに埋め込まず、パラメーターで渡すこと。
 /// mcp-rsの`[database]`のツールは、この検知を使わない（#499）。
 pub struct SqlInjectionDetector {
     dangerous_patterns: Vec<Regex>,
