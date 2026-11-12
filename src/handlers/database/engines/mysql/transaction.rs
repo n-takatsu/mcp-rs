@@ -4,7 +4,7 @@
 //! Ensures data integrity and consistent database operations
 
 use crate::handlers::database::{
-    engine::{DatabaseTransaction, IsolationLevel},
+    engine::DatabaseTransaction,
     types::{DatabaseError, ExecuteResult, QueryResult, Value},
 };
 use async_trait::async_trait;
@@ -291,7 +291,6 @@ impl Drop for MySqlTransaction {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
 
     #[test]
     fn test_savepoint_naming() {

@@ -2,10 +2,9 @@
 //!
 //! Provides optimized JSONB manipulation and query capabilities
 
-use crate::handlers::database::types::{DatabaseError, ExecuteResult, QueryResult, Value};
+use crate::handlers::database::types::{DatabaseError, ExecuteResult};
 use serde_json::Value as JsonValue;
 use sqlx::{PgPool, Row};
-use std::sync::Arc;
 
 /// JSONB query builder for PostgreSQL
 ///

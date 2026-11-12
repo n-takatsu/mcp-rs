@@ -9,7 +9,7 @@ use crate::handlers::database::{
 };
 use async_trait::async_trait;
 use chrono::Utc;
-use mongodb::{options::TransactionOptions, Client, ClientSession};
+use mongodb::{Client, ClientSession};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 

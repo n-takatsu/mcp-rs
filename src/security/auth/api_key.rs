@@ -1,6 +1,6 @@
 // API Key Authentication Implementation
 
-use super::types::{AuthError, AuthResult, Permission, Role};
+use super::types::{AuthError, AuthResult, Role};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::time::{SystemTime, UNIX_EPOCH};

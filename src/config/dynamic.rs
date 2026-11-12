@@ -4,7 +4,6 @@
 
 use crate::config::McpConfig;
 use crate::error::Error;
-use config::Config;
 use std::path::Path;
 use std::sync::{Arc, RwLock};
 use tokio::sync::watch;
@@ -144,7 +143,6 @@ impl DynamicConfigManager {
         }
 
         // Use a custom config loader that reads from specific file
-        use config::Config;
 
         let settings = ::config::Config::builder()
             .add_source(

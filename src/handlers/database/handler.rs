@@ -9,11 +9,10 @@ use crate::handlers::database::{
         validate_single_query_statement, validate_single_write_statement, ColumnProvenance,
         ProjectionResolution,
     },
-    engine::{DatabaseEngine, DatabaseEngineBuilder, EngineRegistry},
+    engine::{DatabaseEngineBuilder, EngineRegistry},
     pool::{ConnectionPool, PoolManager},
     types::{
-        DatabaseConfig, DatabaseError, DatabaseType, ExecuteResult, QueryContext, QueryResult,
-        QueryType, Value,
+        DatabaseConfig, DatabaseError, DatabaseType, QueryContext, QueryResult, QueryType, Value,
     },
 };
 use crate::mcp::{

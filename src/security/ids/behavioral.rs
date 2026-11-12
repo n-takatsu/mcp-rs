@@ -2,12 +2,11 @@
 //!
 //! ベースライン学習と異常行動パターン検出を実行します。
 
-use super::{DetectionType, RequestData};
+use super::RequestData;
 use crate::error::McpError;
 use chrono::{DateTime, Duration, Timelike, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
-use std::net::IpAddr;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};

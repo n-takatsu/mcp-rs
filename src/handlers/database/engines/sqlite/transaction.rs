@@ -300,7 +300,6 @@ impl DatabaseTransaction for SqliteTransaction {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::handlers::database::types::{ConnectionConfig, DatabaseConfig};
     use sqlx::sqlite::SqlitePoolOptions;
 
     async fn create_test_pool() -> Arc<SqlitePool> {

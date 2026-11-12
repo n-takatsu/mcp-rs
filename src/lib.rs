@@ -4,8 +4,6 @@
 //! in Rust, enabling secure and efficient communication between AI systems and external
 //! resources like WordPress sites, databases, and APIs.
 
-// Allow unused imports during development
-#![allow(unused_imports)]
 // async_traitのマクロ展開が、既に#[must_use]なResultを返すメソッドに
 // メッセージ無しの#[must_use]を付けるため、新しいclippyが誤検出する。
 // CIでは-A clippy::double_must_useで無効化しているが、エディタ

@@ -9,11 +9,11 @@ use super::types::{QueryContext, QueryType, SecurityConfig, SecurityError, Valid
 pub struct ThreatDetectionEngine;
 use chrono::{DateTime, Utc};
 use regex::Regex;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use tracing::{info, warn};
+use tracing::info;
 
 /// データベースセキュリティマネージャー
 pub struct DatabaseSecurity {

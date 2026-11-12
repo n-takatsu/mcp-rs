@@ -4,7 +4,6 @@
 
 use crate::handlers::database::types::{DatabaseError, ExecuteResult, Value};
 use futures::stream::{self, StreamExt};
-use serde::Serialize;
 use sqlx::{PgPool, Postgres, Row};
 use std::io::Write;
 
