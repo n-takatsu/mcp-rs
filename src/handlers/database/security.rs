@@ -153,9 +153,11 @@ impl DatabaseSecurity {
 /// コメント・条件）も無くせない。データを守るのは、読み取り専用のロール・
 /// パラメーターのバインド等の仕組みで、この検知はその補助に留まる（#501）。
 ///
-/// パターンは文字列の値の中も区別しないので、例えば
-/// `WHERE answer = 'false or true'`や、`--`で終わる値を含むSQLも止める
-/// （既知の誤検知）。値はSQLに埋め込まず、パラメーターで渡すこと。
+/// パターンはSQL全体に当てるので、文字列の値や名前の中でも止まる（既知の
+/// 誤検知）。例えば`'false or true'`・`'good sleep'`・`'see /* note */'`の
+/// ような値や、`sleep_hours`・`benchmark_results`のような列・表の名前
+/// （`sleep`・`benchmark`等は、小文字にしたSQL全体に部分一致で当てる）。
+/// 値はSQLに埋め込まず、パラメーターで渡すこと。
 /// mcp-rsの`[database]`のツールは、この検知を使わない（#499）。
 pub struct SqlInjectionDetector {
     dangerous_patterns: Vec<Regex>,
