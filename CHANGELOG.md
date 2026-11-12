@@ -57,6 +57,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `project-docs/`のClaude Desktop・Claude Code統合ガイド以外、
   `docs/PRODUCTION_DEPLOYMENT_GUIDE.md`・`docs/CONTAINER_INTEGRATION_TESTS.md`・
   `docs/PHASE3_COMPLETION.md`
+- ビルドされない古いコードを削除した（#459）: `examples.disabled/`・
+  `tests.disabled/`・`web-ui/`・`static/demo.html`・ルートの`index.html`。
+  WordPressにつながずに成功を表示するだけだったexample
+  `wordpress_blog_service_demo`も削除した。
+  dev containerの作成時に`web-ui`で`npm install`を実行しないようにし、
+  存在しないWeb UI（8080番）の案内を削除した
 
 ### Security
 

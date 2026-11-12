@@ -268,14 +268,7 @@ cargo run -- --config configs/development/http-transport.toml
 
 ## Code Examples
 
-The project includes comprehensive examples demonstrating various features:
-
-- **Core Examples**: Located in `examples/` directory
-- **Database Examples**: Located in `examples.disabled/` directory
-  - `mysql_engine_test.rs`: MySQL database engine testing (requires the `mysql-backend` feature and a MySQL server)
-  - To use: `cargo run --example mysql_engine_test --features database,mysql-backend`
-
-> **Note**: Examples that need a running database server are kept in `examples.disabled/` so that CI does not depend on one.
+Examples are in the `examples/` directory. For example, `cargo run --example wordpress_api_test` checks the connection to the WordPress site given by `WORDPRESS_URL`. When `WORDPRESS_USERNAME` and `WORDPRESS_PASSWORD` are also set, it checks the login and creates a draft post.
 
 ## Testing
 
