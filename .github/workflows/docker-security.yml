@@ -117,14 +117,8 @@ jobs:
           echo "::endgroup::"
 
           mkdir -p smoke-config
-          printf '[server]
-log_level = "info"
-
-[transport]
-type = "stdio"
-
-[handlers]
-'             > smoke-config/mcp-config.toml
+          printf '%s\n' '[server]' 'log_level = "info"' '[transport]' 'type = "stdio"' '[handlers]' \
+            > smoke-config/mcp-config.toml
           chmod -R a+rX smoke-config
           REQUESTS='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"ci","version":"0"}}}
           {"jsonrpc":"2.0","method":"notifications/initialized"}
@@ -133,7 +127,9 @@ type = "stdio"
           # docs/DOCKER_GUIDE.mdのSTDIOの例と同じ引数（-iのみ）と、
           # docker-compose.ymlと同じ読み取り専用＋tmpfsの2通りで確かめる
           run_stdio() {
-            echo "$REQUESTS" | sed 's/^ *//'               | timeout 60 docker run -i --rm "$@"                   -v "$PWD/smoke-config:/app/config:ro" "$IMG" > out.txt 2> err.txt || true
+            echo "$REQUESTS" | sed 's/^ *//' \
+              | timeout 60 docker run -i --rm "$@" \
+                  -v "$PWD/smoke-config:/app/config:ro" "$IMG" > out.txt 2> err.txt || true
             echo "--- stdout"; cat out.txt
             echo "--- stderr (last 20 lines)"; tail -n 20 err.txt
             grep -q '"serverInfo"' out.txt
