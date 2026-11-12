@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- KubernetesのマニフェストとHelmチャート（`k8s/`・`charts/mcp-server/`）を
+  削除した（#504）。今のmcp-rsと合わず、起動しないかプローブの失敗で再起動を
+  繰り返すものだった（環境変数での設定・存在しない`/health`等のエンドポイント・
+  ポート3000等）。同じ前提の`DEPLOYMENT.md`・`docs/deployment-guide.md`・
+  `scripts/deploy/`・ルートの`nginx.conf`も削除した。コンテナで動かす
+  方法は`docs/DOCKER_GUIDE.md`を参照
+
 ## [0.23.0] - 2026-11-12
 
 ### Added
