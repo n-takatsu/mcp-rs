@@ -83,7 +83,13 @@ See [Database Integration](docs/database/) for the settings.
 
 ## Current Status
 
-## ✅ Recently Completed (v0.22.0)
+## ✅ Recently Completed (v0.23.0)
+
+- **🗄️ Database Tools**: Add a `[database]` section to connect one PostgreSQL database. `execute_query` (SELECT) and `get_schema` are always available, and `execute_command` (INSERT, UPDATE, DELETE) only with `allow_write = true`. Queries run in a read-only transaction that is rolled back, values are bound as parameters, and results are limited in rows and time. Included in the default build. See [Database Integration](docs/database/)
+- **🐳 Docker Image**: The image now starts with its default arguments. Mount a config file at `/app/config/mcp-config.toml`; see the [Docker guide](https://github.com/n-takatsu/mcp-rs/blob/main/docs/DOCKER_GUIDE.md)
+- **🧹 Honest Code and Docs**: Removed settings and arguments that were accepted but never used (such as `PasswordHasher::new(salt_rounds)`), a module whose health checks always reported success, and documentation that described features mcp-rs does not have
+
+## ✅ v0.22.0
 
 - **🆕 MCP Protocol 2025-11-25**: Clients that ask for the newest protocol version, such as Claude Desktop, now get it. Clients using `2025-06-18` or `2024-11-05` keep working as before
 - **🔐 Requests from Web Pages**: In HTTP mode, mcp-rs checks the `Origin` header and answers requests from web pages on other origins with 403, so a page you visit cannot call its tools through your browser. CORS follows the same rule, and `allowed_origins` adds origins. See [Security](docs/security/)

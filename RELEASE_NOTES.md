@@ -4,6 +4,60 @@
 
 Our project follows a detailed 0.01 increment versioning strategy to provide granular tracking of development progress and feature implementation.
 
+## 🗄️ v0.23.0 - データベースのツールとDockerのイメージ
+
+**Release Date:** 2026-11-12
+**Focus:** 1つのPostgreSQLにつなぐデータベースのツールを既定のビルドに入れる。Dockerのイメージが起動しなかったのを直す。受け取って使っていなかった設定・引数と、実態と合わないコード・ドキュメントを取り除く
+
+### 🗄️ データベースのツール（#453）
+
+- 設定ファイルの`[database]`に接続先を書くと、`execute_query`（SELECT）・
+  `get_schema`のツールが使える。`allow_write = true`のときだけ
+  `execute_command`（INSERT・UPDATE・DELETE、1文だけ）も出す
+- `execute_query`は、読み取り専用のトランザクションの中で実行して
+  ロールバックする。`WITH`の中の書き込みと`SELECT … INTO`も拒否する。
+  読み取り専用のロールで接続することを勧める
+- パラメーターはSQLに埋め込まずバインドし、PostgreSQLが期待する型に合わせて
+  送る。1つのSQLの時間（既定30秒）と行数（既定1000行）に上限がある
+- `password`等は`${VAR}`で渡せ、ログ・`mcp_rs_status`・エラーには出さない。
+  つながらなくても、データベースだけを飛ばしてmcp-rsは起動し、理由を
+  `mcp_rs_status`に出す
+- ツールの呼び出しは、SQLと結果を監査ログに記録する（パラメーターの値は
+  記録しない）
+
+### 🐳 Dockerのイメージ（#497）
+
+- 既定の引数が存在しないオプション`--transport stdio`だったため、起動
+  しなかった。既定の引数を`--config /app/config/mcp-config.toml`にした
+- `docker-compose.yml`は設定ファイルのマウント・ポート8081・名前付き
+  ボリュームでの監査ログの保存にした。`docs/DOCKER_GUIDE.md`を、STDIO
+  （Claude Desktop・Claude Code）とHTTPの実際の使い方に書き直した
+- CIで、イメージの起動と`initialize`・`mcp_rs_status`への応答、監査ログが
+  ボリュームに残ることを確かめる
+
+### 🧹 実態と合わないものを取り除く（#459・#499）
+
+- 受け取って使っていなかった設定・引数を削除した（`PasswordHasher`の
+  `salt_rounds`、`DatabaseHandler`の`DatabaseSecurity`等）。何もせずに成功を
+  返すだけだった`availability`モジュールも削除した。動作は変わらない
+- README・website・ドキュメントを実際の機能に合わせて書き直し、存在しない
+  機能を説明するページと、ビルドされない古いコードを削除した
+- クレート全体の`#![allow(dead_code)]`を外し、CIのclippyでも使われない
+  コードを警告にした
+
+### ⚠️ 挙動の変更
+
+- **Docker**: イメージは設定ファイル（`/app/config/mcp-config.toml`）を
+  マウントして使う。HTTPモードでは、`[transport.http]`に`addr = "0.0.0.0"`と
+  `network_policy_reject_external_connections = false`が要る
+- **既定のビルド**: `database`機能（PostgreSQL）を既定で含む。MySQLの
+  エンジンは含めないようにした（`--features mysql-backend`）
+- **互換性のない変更（ライブラリ）**: `PasswordHasher::new()`・
+  `DatabaseHandler::new()`・`MySqlEngine::new(config)`・
+  `MariaDbEngine::new(config)`・`MongoEngine::new_with_config(mongo_config)`
+  等、使われていなかった引数を除いた。`new_without_security`と
+  `handlers::database::availability`を削除した。このため0.23.0とした
+
 ## 🔐 v0.22.0 - MCP 2025-11-25とHTTPモードの安全性
 
 **Release Date:** 2026-11-11
