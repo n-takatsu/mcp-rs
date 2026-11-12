@@ -133,8 +133,20 @@ docker compose logs -f mcp-server
 - Logs are written to standard error, so `docker logs` shows them
 - Log files go to `/app/logs`. When the root filesystem is read-only, they go to `/home/nonroot/.local/state/mcp-rs/logs` instead
 - The audit log goes to `/home/nonroot/.local/state/mcp-rs/audit/audit.log`
-- These are inside the container and are lost when it is removed (`--rm`). To keep the audit log, mount a volume at `/home/nonroot/.local/state/mcp-rs`. With a read-only root filesystem, give `/home/nonroot` a `tmpfs` (as `docker-compose.yml` does) or a volume; when no folder is writable, mcp-rs falls back to the temporary folder
 - `mcp_rs_status` (a tool every client can call) shows the version, the config file, and where the logs and the audit log are written
+
+Files written inside the container are lost when it is removed (`--rm`, or when Docker Compose recreates it). To keep the audit log, mount a **named volume at `/home/nonroot`**:
+
+```bash
+docker run -i --rm \
+  -v /path/to/config:/app/config:ro \
+  -v mcp-rs-state:/home/nonroot \
+  ghcr.io/n-takatsu/mcp-rs:latest
+```
+
+The first time a new named volume is used, Docker copies `/home/nonroot` from the image into it, owned by `nonroot`, so mcp-rs can write there. Mounting at a deeper path such as `/home/nonroot/.local/state/mcp-rs` does not work: that folder is not in the image, so Docker creates it owned by root, and mcp-rs falls back to the temporary folder. A folder on the host (a bind mount) works only if it is owned by UID 65532.
+
+`docker-compose.yml` mounts the named volume `mcp-state` at `/home/nonroot`, and keeps the root filesystem read-only, so the logs go there too.
 
 ## Troubleshooting
 

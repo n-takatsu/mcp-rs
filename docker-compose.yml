@@ -58,17 +58,20 @@ services:
     ports:
       - "127.0.0.1:8081:8081"
 
-    # Config file (read-only). Pass secrets used as ${VAR} in it here, e.g.
-    # WORDPRESS_PASSWORD: ${WORDPRESS_PASSWORD}
     volumes:
+      # Config file (read-only)
       - ./config:/app/config:ro
+      # Logs and the audit log go under /home/nonroot (the root filesystem
+      # is read-only). The named volume keeps them when the container is
+      # recreated: Docker copies /home/nonroot from the image, owned by
+      # nonroot, into the volume when it is first used.
+      - mcp-state:/home/nonroot
+    tmpfs:
+      - /tmp
+
+    # Pass secrets used as ${VAR} in the config file here, e.g.
     # environment:
     #   WORDPRESS_PASSWORD: ${WORDPRESS_PASSWORD}
-
-    # Logs and the audit log (the root filesystem is read-only)
-    tmpfs:
-      - /home/nonroot:uid=65532,gid=65532
-      - /tmp
 
     # Networks
     networks:
@@ -122,5 +125,7 @@ networks:
         - subnet: 172.20.0.0/16
 
 volumes:
+  mcp-state:
+    driver: local
   postgres-data:
     driver: local

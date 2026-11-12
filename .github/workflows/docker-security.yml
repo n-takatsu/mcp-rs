@@ -125,7 +125,8 @@ jobs:
           {"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"mcp_rs_status","arguments":{}}}'
 
           # docs/DOCKER_GUIDE.mdのSTDIOの例と同じ引数（-iのみ）と、
-          # docker-compose.ymlと同じ読み取り専用＋tmpfsの2通りで確かめる
+          # docker-compose.ymlと同じ読み取り専用＋/home/nonrootの名前付き
+          # ボリュームの2通りで確かめる
           run_stdio() {
             echo "$REQUESTS" | sed 's/^ *//' \
               | timeout 60 docker run -i --rm "$@" \
@@ -140,8 +141,22 @@ jobs:
           run_stdio
           echo "::endgroup::"
 
-          echo "::group::STDIO, read-only root filesystem"
-          run_stdio --read-only --tmpfs /home/nonroot:uid=65532,gid=65532 --tmpfs /tmp
+          # 監査ログが名前付きボリュームに書かれ、コンテナを作り直しても
+          # 残ることを確かめる（2回起動し、2回分の記録があること）
+          echo "::group::STDIO, read-only root filesystem, named volume at /home/nonroot"
+          docker volume rm -f mcp-ci-state > /dev/null
+          for run in 1 2; do
+            run_stdio --read-only -v mcp-ci-state:/home/nonroot --tmpfs /tmp
+            grep -q 'Audit log: /home/nonroot/.local/state/mcp-rs/audit/audit.log' out.txt
+            grep -q 'Log: /home/nonroot/.local/state/mcp-rs/logs/' out.txt
+          done
+          CALLS=$(docker run --rm -v mcp-ci-state:/state:ro busybox:1.36 \
+            grep -c mcp_rs_status /state/.local/state/mcp-rs/audit/audit.log)
+          echo "Audit log entries for mcp_rs_status in the volume: $CALLS"
+          if [ "$CALLS" -lt 2 ]; then
+            echo "❌ The audit log was not kept in the named volume"; exit 1
+          fi
+          docker volume rm -f mcp-ci-state > /dev/null
           echo "::endgroup::"
 
           echo "✅ The image starts and answers initialize and mcp_rs_status"
