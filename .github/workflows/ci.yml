@@ -105,19 +105,38 @@ jobs:
       if: runner.os == 'Windows'
       run: cargo check --lib --all-features --jobs 1
 
-    # 以降のステップは同じ機能フラグ（既定）にそろえ、機能フラグの
-    # 違いによる依存クレートの再コンパイルを避ける
     - name: Run unit tests
       env:
         CARGO_PROFILE_TEST_LTO: false
       run: cargo test --lib --verbose --jobs 1
 
-    # 全テストターゲットとexampleがコンパイルできることの確認（実行はしない）
+    # 既定の機能で、全テストターゲットとexampleがコンパイルできることの確認。
+    # 下の全機能のステップだけでは、required-featuresの付け忘れ等、既定の
+    # 機能でだけ壊れるもの（#495）に気づけない
     - name: Check that all tests and examples compile
       if: runner.os == 'Linux' && matrix.rust == 'stable'
       env:
         CARGO_PROFILE_TEST_LTO: false
       run: cargo test --no-run --jobs 1
+
+    # tests/の結合テストとdoctestを実行し、exampleはコンパイルだけする
+    # （#510）。mysql_security_tests等は機能が要るので、全機能で実行する
+    # （依存クレートは既定の機能とは別にコンパイルされる）。サーバーが要る
+    # テストは#[ignore]にしてある。時間がかかるため、Ubuntuだけで実行する。
+    # 全機能の依存クレートのコンパイルに時間がかかるので、このステップだけ
+    # 並列度を上げる（ubuntu-latestは4コア・16GB。CARGO_BUILD_JOBS: 1は、
+    # 以前のランナーでのディスク・メモリー不足への対策）
+    - name: Run all tests (all features)
+      if: runner.os == 'Linux' && matrix.rust == 'stable'
+      env:
+        CARGO_PROFILE_TEST_LTO: false
+      run: cargo test --all-features --no-fail-fast --jobs 4
+
+    - name: Show disk usage
+      if: always() && runner.os == 'Linux' && matrix.rust == 'stable'
+      run: |
+        df -h /
+        du -sh target
 
     # PowerShellテスト（Windows環境のみ）- 簡素化版
     - name: Run PowerShell integration tests
