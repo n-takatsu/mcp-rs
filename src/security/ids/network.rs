@@ -2,7 +2,7 @@
 //!
 //! リクエストパターン分析とDDoS攻撃検知を実行します。
 
-use super::{RequestData, Severity};
+use super::RequestData;
 use crate::error::McpError;
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};

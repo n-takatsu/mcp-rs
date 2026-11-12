@@ -132,8 +132,6 @@ impl WebSocketConnection {
 
     /// 接続をクローズ
     pub async fn close(&self) -> Result<()> {
-        use futures_util::SinkExt;
-
         let mut stream = self.stream.lock().await;
         stream
             .close(None)

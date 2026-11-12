@@ -11,7 +11,7 @@ use axum::{
     extract::Request,
     http::{header, StatusCode},
     middleware::Next,
-    response::{IntoResponse, Response},
+    response::Response,
 };
 use std::net::IpAddr;
 use std::sync::Arc;
@@ -257,7 +257,7 @@ impl AntiReplayMiddleware {
 mod tests {
     use super::*;
     use axum::body::Body;
-    use axum::http::{Request as HttpRequest, StatusCode};
+    use axum::http::Request as HttpRequest;
     use chrono::Utc;
 
     fn create_test_middleware() -> AntiReplayMiddleware {

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- 使われていない`use`を削除し、`src/lib.rs`のクレート全体の
+  `#![allow(unused_imports)]`を外した（#502）。未使用の`use`は、機能の
+  組み合わせによらずコンパイラーの警告になる
+
 ### Fixed
 
 - ライブラリの`DatabaseSecurity`（`SqlInjectionDetector`）が、`1' OR '1'='1`

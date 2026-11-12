@@ -3,7 +3,7 @@
 //! 各マスキングタイプの実装を提供します。
 
 use crate::handlers::database::masking_rules::{HashAlgorithm, MaskingType};
-use anyhow::{Context, Result};
+use anyhow::Result;
 use sha2::{Digest, Sha256, Sha512};
 use std::collections::HashMap;
 use std::sync::Arc;

@@ -2,11 +2,11 @@
 //!
 //! Main MongoDB engine entry point
 
-use super::{config::MongoConfig, connection::MongoConnection, convert_mongodb_error};
+use super::{config::MongoConfig, connection::MongoConnection};
 use crate::handlers::database::{
     engine::{DatabaseConnection, DatabaseEngine},
     types::{
-        DatabaseConfig, DatabaseError, DatabaseFeature, DatabaseSchema, DatabaseType, HealthStatus,
+        DatabaseConfig, DatabaseError, DatabaseFeature, DatabaseType, HealthStatus,
         HealthStatusType,
     },
 };

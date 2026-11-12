@@ -8,7 +8,7 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use tokio::sync::{Mutex, Semaphore};
 use tokio::time::{interval, Duration};
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 /// 接続プール
 #[derive(Debug)]

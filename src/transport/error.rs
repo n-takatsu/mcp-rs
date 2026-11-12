@@ -2,7 +2,6 @@
 //!
 //! Error types for transport operations
 
-use std::fmt;
 use thiserror::Error;
 
 /// Transport-specific error types

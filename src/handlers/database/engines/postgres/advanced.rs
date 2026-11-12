@@ -3,9 +3,7 @@
 //! Provides CTEs, Window Functions, LATERAL JOINs, and other advanced SQL features
 
 use crate::handlers::database::types::{DatabaseError, QueryResult};
-use serde_json::Value as JsonValue;
 use sqlx::{Column, PgPool, Row, TypeInfo};
-use std::collections::HashMap;
 
 /// Common Table Expression (CTE) Builder
 #[derive(Clone, Debug)]

@@ -17,10 +17,7 @@ pub use transaction::PostgreSqlTransaction;
 
 use crate::handlers::database::{
     engine::{DatabaseConnection, DatabaseEngine},
-    types::{
-        DatabaseConfig, DatabaseError, DatabaseFeature, DatabaseSchema, DatabaseType,
-        ExecuteResult, HealthStatus, QueryResult, TableInfo, Value,
-    },
+    types::{DatabaseConfig, DatabaseError, DatabaseFeature, DatabaseType, HealthStatus},
 };
 use async_trait::async_trait;
 use std::sync::Arc;

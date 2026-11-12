@@ -1,5 +1,4 @@
 use anyhow::Result;
-use std::fmt::Write as _;
 use std::fs;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -11,7 +10,7 @@ use tracing_subscriber::fmt::format::Writer;
 use tracing_subscriber::fmt::time::{ChronoLocal, FormatTime};
 use tracing_subscriber::fmt::{FmtContext, FormatEvent, FormatFields, FormattedFields};
 use tracing_subscriber::registry::LookupSpan;
-use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
+use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 mod local_rolling;
 use local_rolling::LocalRollingAppender;

@@ -2,8 +2,7 @@
 //!
 //! データベースの負荷分散と読み書き分離機能
 
-use super::engine::DatabaseConnection;
-use super::types::{DatabaseConfig, DatabaseError, ExecuteResult, QueryResult, QueryType};
+use super::types::{DatabaseConfig, DatabaseError, QueryType};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;

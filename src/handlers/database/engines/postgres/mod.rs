@@ -35,8 +35,7 @@ pub use streaming::{
 pub use transaction::PostgresTransaction;
 
 use crate::handlers::database::types::{
-    DatabaseConfig, DatabaseError, DatabaseFeature, DatabaseType, ExecuteResult, HealthStatus,
-    HealthStatusType, QueryResult, Value,
+    DatabaseConfig, DatabaseError, DatabaseFeature, DatabaseType, HealthStatus, HealthStatusType,
 };
 use crate::handlers::database::{DatabaseConnection, DatabaseEngine};
 use async_trait::async_trait;
@@ -255,7 +254,6 @@ impl DatabaseEngine for PostgresEngine {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
 
     #[test]
     fn test_postgres_engine_creation() {

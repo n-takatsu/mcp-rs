@@ -2,7 +2,7 @@
 //!
 //! 複数のハンドラーを管理し、動的に追加・削除・切り替えを行うシステム
 
-use super::generic::{ExtendedMcpHandler, HandlerConfig, TargetType};
+use super::generic::{HandlerConfig, TargetType};
 use crate::mcp::{McpError, McpHandler};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};

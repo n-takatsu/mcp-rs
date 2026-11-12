@@ -18,7 +18,7 @@
 //! ```
 
 use serde::{Deserialize, Serialize};
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 pub mod dynamic;
 pub use dynamic::DynamicConfigManager;

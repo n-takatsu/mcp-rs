@@ -5,7 +5,6 @@
 use super::types::{DatabaseConfig, DatabaseError, DatabaseType};
 use crate::handlers::database::engine::DatabaseEngine;
 use crate::handlers::database::pool::PoolManager;
-use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
@@ -13,8 +12,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{Mutex, RwLock};
-use tracing::{debug, error, info, warn};
-use uuid::Uuid;
+use tracing::{error, info, warn};
 
 /// 動的エンジンマネージャー - メインコンポーネント
 pub struct DynamicEngineManager {

@@ -4,9 +4,9 @@
 
 use crate::handlers::database::masking_formatters::MaskingFormatter;
 use crate::handlers::database::masking_rules::{
-    CustomMasker, MaskingContext, MaskingPolicy, MaskingPurpose, MaskingRule, MaskingType,
+    CustomMasker, MaskingContext, MaskingPolicy, MaskingRule, MaskingType,
 };
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -392,7 +392,7 @@ pub struct MaskingStatistics {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::handlers::database::masking_rules::{ColumnPattern, MaskingRule};
+    use crate::handlers::database::masking_rules::{ColumnPattern, MaskingPurpose, MaskingRule};
 
     #[tokio::test]
     async fn test_mask_query_result() {
