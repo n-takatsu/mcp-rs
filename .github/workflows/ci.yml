@@ -78,6 +78,12 @@ jobs:
       # which newer clippy versions flag as a false positive.
       run: cargo clippy --lib --all-features -- -D warnings -A clippy::double_must_use
 
+    # 全機能のclippyでは、ある機能でだけ使うコードが既定のビルドで
+    # 使われない（dead_code）ことに気づけないため、既定の機能でも確かめる。
+    - name: Run clippy (default features)
+      if: runner.os == 'Linux' && matrix.rust == 'stable'
+      run: cargo clippy --lib -- -D warnings -A clippy::double_must_use
+
     # PR用の詳細なClippyレポート
     - name: Generate clippy report for PR
       if: runner.os == 'Linux' && matrix.rust == 'stable' && github.event_name == 'pull_request'

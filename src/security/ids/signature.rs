@@ -6,7 +6,6 @@ use super::{DetectionType, RequestData, Severity};
 use crate::error::McpError;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use tracing::{debug, warn};
 
 /// シグネチャ検知器

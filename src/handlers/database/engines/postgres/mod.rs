@@ -41,7 +41,6 @@ use crate::handlers::database::types::{
 use crate::handlers::database::{DatabaseConnection, DatabaseEngine};
 use async_trait::async_trait;
 use chrono::Utc;
-use serde_json::Value as JsonValue;
 use sqlx::{PgPool, Row};
 use std::sync::Arc;
 use tokio::sync::RwLock;
