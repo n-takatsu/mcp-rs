@@ -55,7 +55,8 @@ EXPOSE 8081
 # mcp-rs reads its settings from a config file. Mount one at
 # /app/config/mcp-config.toml (for example -v ./config:/app/config:ro);
 # without it, mcp-rs exits with "設定ファイルが存在しません".
-# Logs go to standard error, and to files under /home/nonroot
-# (or the temporary folder when that is not writable).
+# Logs go to standard error and to /app/logs (with a read-only root filesystem,
+# /home/nonroot/.local/state/mcp-rs/logs). The audit log goes to
+# /home/nonroot/.local/state/mcp-rs/audit.
 ENTRYPOINT ["/app/mcp-rs"]
 CMD ["--config", "/app/config/mcp-config.toml"]

@@ -131,7 +131,9 @@ docker compose logs -f mcp-server
 ## Logs and the audit log
 
 - Logs are written to standard error, so `docker logs` shows them
-- Log files and the audit log go under `/home/nonroot` (`~/.local/state/mcp-rs/logs` and `~/.mcp-rs/audit`). With a read-only root filesystem, give it a `tmpfs` (as `docker-compose.yml` does) or a volume to keep them. When no folder is writable, mcp-rs falls back to the temporary folder
+- Log files go to `/app/logs`. When the root filesystem is read-only, they go to `/home/nonroot/.local/state/mcp-rs/logs` instead
+- The audit log goes to `/home/nonroot/.local/state/mcp-rs/audit/audit.log`
+- These are inside the container and are lost when it is removed (`--rm`). To keep the audit log, mount a volume at `/home/nonroot/.local/state/mcp-rs`. With a read-only root filesystem, give `/home/nonroot` a `tmpfs` (as `docker-compose.yml` does) or a volume; when no folder is writable, mcp-rs falls back to the temporary folder
 - `mcp_rs_status` (a tool every client can call) shows the version, the config file, and where the logs and the audit log are written
 
 ## Troubleshooting
