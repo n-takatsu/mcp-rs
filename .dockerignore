@@ -69,3 +69,7 @@ venv/
 copilot-studio.json
 _config.yml
 topics.txt
+
+# Local config files (may contain API keys and passwords)
+config/
+**/mcp-config.toml

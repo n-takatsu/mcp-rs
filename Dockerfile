@@ -1,11 +1,12 @@
 # ========================================
 # Multi-stage Dockerfile for mcp-rs
-# Target: <50MB image size, <30s build time
-# Security: Non-root, minimal distroless base
+# Runtime: distroless, non-root
 # ========================================
 
-# Stage 1: Builder - Rust compilation
-FROM rust:1.83-slim-bookworm AS builder
+# Stage 1: Builder
+# 1.88 is the minimum Rust version that the dependencies require
+# (jsonwebtoken, time). Building with it also checks that minimum.
+FROM rust:1.88-slim-bookworm AS builder
 
 # Install build dependencies
 RUN apt-get update && apt-get install -y \
@@ -13,13 +14,10 @@ RUN apt-get update && apt-get install -y \
     libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Install nightly toolchain for edition2024 support
-RUN rustup toolchain install nightly && \
-    rustup default nightly
-
 WORKDIR /app
 
-# Copy all source files
+# Copy all source files. benches, examples and tests are not built, but
+# Cargo.toml names some of them, so Cargo needs them to read the manifest.
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 COPY benches ./benches
@@ -36,10 +34,9 @@ RUN strip target/release/mcp-rs
 # Stage 2: Runtime - Minimal distroless image
 FROM gcr.io/distroless/cc-debian12:nonroot
 
-# Metadata
+# The version label is added by the release workflow (docker/metadata-action).
 LABEL org.opencontainers.image.title="mcp-rs" \
       org.opencontainers.image.description="Model Context Protocol Server (Rust)" \
-      org.opencontainers.image.version="0.15.0" \
       org.opencontainers.image.vendor="n-takatsu" \
       org.opencontainers.image.source="https://github.com/n-takatsu/mcp-rs"
 
@@ -51,13 +48,15 @@ COPY --from=builder --chown=nonroot:nonroot /app/target/release/mcp-rs /app/mcp-
 # Non-root user (distroless defaults to nonroot uid 65532)
 USER nonroot:nonroot
 
-# Expose default ports
-EXPOSE 3000 3001
+# HTTP mode only. The port is set in the config file ([transport.http] port,
+# 8081 by default); STDIO mode uses no port.
+EXPOSE 8081
 
-# Set environment variables
-ENV RUST_LOG=info \
-    MCP_SERVER_PORT=3000
-
-# Default command: STDIO transport
+# mcp-rs reads its settings from a config file. Mount one at
+# /app/config/mcp-config.toml (for example -v ./config:/app/config:ro);
+# without it, mcp-rs exits with "設定ファイルが存在しません".
+# Logs go to standard error and to /app/logs (with a read-only root filesystem,
+# /home/nonroot/.local/state/mcp-rs/logs). The audit log goes to
+# /home/nonroot/.local/state/mcp-rs/audit.
 ENTRYPOINT ["/app/mcp-rs"]
-CMD ["--transport", "stdio"]
+CMD ["--config", "/app/config/mcp-config.toml"]

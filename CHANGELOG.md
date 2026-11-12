@@ -89,6 +89,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Dockerのイメージが既定の引数で起動しなかったのを直した（#497）。既定の
+  引数が存在しないオプション`--transport stdio`だったため、すぐに終了して
+  いた。既定の引数を`--config /app/config/mcp-config.toml`にし、設定
+  ファイルをマウントして使う。ビルドはnightlyをやめてRust 1.88にし、
+  読まれない`MCP_SERVER_PORT`・古い版のラベル・使わないポート（3000・
+  3001）を除いた。`docker-compose.yml`は設定ファイルのマウント・ポート
+  8081にし、ログ・監査ログを名前付きボリューム（`/home/nonroot`）に
+  残すようにし、動かないヘルスチェック（distrolessにシェルが無い）と
+  使わないRedisを除いた。`docs/DOCKER_GUIDE.md`を実際の
+  使い方（STDIO・HTTP）に書き直した。CIでイメージの起動とMCPの応答を
+  確かめる
 - データベースのハンドラー（#453）: PostgreSQLの接続のたびに新しい接続の
   プールを作っていたのを、1つのプールを共有するようにした。NUMERIC・UUID・
   日付等の値を黙ってNULLにしていたのを、型に合わせて読む（NUMERICは桁を

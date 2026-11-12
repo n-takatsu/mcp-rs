@@ -14,16 +14,15 @@ services:
     restart: unless-stopped
     
     # Ports
+    # HTTP mode needs addr = "0.0.0.0" and
+    # network_policy_reject_external_connections = false under
+    # [transport.http] in mcp-config.toml (see docker-compose.yml)
     ports:
-      - "3000:3000"
-      - "3001:3001"
+      - "127.0.0.1:8081:8081"
     
     # Environment variables
     environment:
-      RUST_LOG: debug
       RUST_BACKTRACE: 1
-      MCP_SERVER_PORT: 3000
-      MCP_TRANSPORT: http
     
     # Volumes (mount source for hot-reload)
     volumes:
@@ -36,7 +35,8 @@ services:
       - mcp-dev-network
     
     # Keep container running for development
-    command: ["cargo", "run", "--", "--transport", "http", "--port", "3000"]
+    # Uses mcp-config.toml in the repository root (not committed)
+    command: ["cargo", "run", "--", "--config", "mcp-config.toml"]
 
   # PostgreSQL (Development)
   postgres-dev:
