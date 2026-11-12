@@ -68,5 +68,4 @@ venv/
 *.backup
 copilot-studio.json
 _config.yml
-index.html
 topics.txt

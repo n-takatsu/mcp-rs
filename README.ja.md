@@ -256,7 +256,7 @@ cargo run -- --config configs/development/http-transport.toml
 
 ## 使用例
 
-例は`examples/`ディレクトリにあります（例: `cargo run --example wordpress_blog_service_demo`）。
+例は`examples/`ディレクトリにあります。例えば`cargo run --example wordpress_api_test`は、`WORDPRESS_URL`のWordPressにつながるかを確かめます。`WORDPRESS_USERNAME`・`WORDPRESS_PASSWORD`も設定すると、ログインを確かめ、下書きの投稿を1件作ります。
 
 ## テスト
 

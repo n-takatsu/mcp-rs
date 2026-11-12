@@ -137,14 +137,10 @@ transport.stop().await?;
 
 ## Demo
 
-Run the WebSocket transport demo:
+Run the WebSocket transport example:
 
 ```bash
-# Terminal 1 - Start server
-cargo run --example websocket_transport_demo -- server
-
-# Terminal 2 - Start client
-cargo run --example websocket_transport_demo -- client
+cargo run --example websocket_transport_foundation
 ```
 
 ## Architecture

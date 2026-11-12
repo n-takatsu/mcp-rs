@@ -268,7 +268,7 @@ cargo run -- --config configs/development/http-transport.toml
 
 ## Code Examples
 
-Examples are in the `examples/` directory, for example `cargo run --example wordpress_blog_service_demo`.
+Examples are in the `examples/` directory. For example, `cargo run --example wordpress_api_test` checks the connection to the WordPress site given by `WORDPRESS_URL`. When `WORDPRESS_USERNAME` and `WORDPRESS_PASSWORD` are also set, it checks the login and creates a draft post.
 
 ## Testing
 

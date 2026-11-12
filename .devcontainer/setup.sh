@@ -49,7 +49,7 @@ echo "📚 Installing documentation tools..."
 cargo install mdbook mdbook-mermaid
 
 # Install global Node.js packages for web development
-echo "📱 Installing Node.js packages for web UI..."
+echo "📱 Installing Node.js packages (TypeScript, Prettier, ESLint)..."
 npm install -g \
     typescript \
     @types/node \

@@ -42,7 +42,6 @@ This directory contains the complete Docker-based development environment for MC
 ## Available Ports
 
 - **3000**: MCP HTTP Server
-- **8080**: Web UI
 - **8081**: API Documentation
 - **5432**: PostgreSQL
 - **3306**: MySQL
