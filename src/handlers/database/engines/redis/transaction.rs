@@ -19,6 +19,7 @@ use tokio::sync::Mutex;
 pub struct RedisTransaction {
     connection: Arc<Mutex<Option<MultiplexedConnection>>>,
     pipeline: Arc<Mutex<Pipeline>>,
+    #[allow(dead_code)] // 受け取るが使っていない（#499）
     isolation_level: String,
     started_at: chrono::DateTime<chrono::Utc>,
 }

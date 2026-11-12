@@ -13,8 +13,6 @@ use tracing::info;
 /// ブロックエントリ
 #[derive(Debug, Clone)]
 struct BlockEntry {
-    reason: String,
-    blocked_at: DateTime<Utc>,
     /// `None`の場合は永続ブロック
     expires_at: Option<DateTime<Utc>>,
 }
@@ -107,8 +105,6 @@ impl IpBlocklist {
         entries.insert(
             ip,
             BlockEntry {
-                reason,
-                blocked_at: now,
                 expires_at: Some(expires_at),
             },
         );
@@ -119,14 +115,7 @@ impl IpBlocklist {
     pub async fn block_permanently(&self, ip: IpAddr, reason: String) {
         info!("Permanently blocking IP {ip}: {reason}");
         let mut entries = self.entries.write().await;
-        entries.insert(
-            ip,
-            BlockEntry {
-                reason,
-                blocked_at: Utc::now(),
-                expires_at: None,
-            },
-        );
+        entries.insert(ip, BlockEntry { expires_at: None });
         sweep_expired(&mut entries, Utc::now());
     }
 

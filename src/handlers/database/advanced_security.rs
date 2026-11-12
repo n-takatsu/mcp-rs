@@ -85,8 +85,11 @@ pub struct RoleBasedAccessControl {
 
 #[derive(Debug, Clone)]
 struct CachedPermission {
+    #[allow(dead_code)] // 受け取るが使っていない（#499）
     roles: HashSet<String>,
+    #[allow(dead_code)] // 受け取るが使っていない（#499）
     permissions: HashSet<String>,
+    #[allow(dead_code)] // 受け取るが使っていない（#499）
     cached_at: DateTime<Utc>,
 }
 

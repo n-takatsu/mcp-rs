@@ -403,6 +403,7 @@ pub enum EngineStatus {
 /// 切り替えオーケストレーター（基本実装）
 pub struct SwitchOrchestrator {
     active_manager: Arc<RwLock<ActiveEngineManager>>,
+    #[allow(dead_code)] // 受け取るが使っていない（#499）
     monitoring_system: Arc<MonitoringSystem>,
     switch_history: Arc<Mutex<VecDeque<SwitchEvent>>>,
     switch_counter: AtomicU64,
@@ -652,6 +653,7 @@ impl MonitoringSystem {
 
 /// エンジン監視
 pub struct EngineMonitor {
+    #[allow(dead_code)] // 受け取るが使っていない（#499）
     engine_id: String,
     current_metrics: Arc<RwLock<Option<EngineMetrics>>>,
 }

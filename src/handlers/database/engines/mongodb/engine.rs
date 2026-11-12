@@ -17,6 +17,7 @@ use std::sync::Arc;
 /// MongoDB Database Engine
 #[derive(Clone)]
 pub struct MongoEngine {
+    #[allow(dead_code)] // 受け取るが使っていない（#499）
     config: DatabaseConfig,
     mongo_config: Arc<MongoConfig>,
 }

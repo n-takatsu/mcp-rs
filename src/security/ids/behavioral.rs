@@ -51,12 +51,15 @@ struct RequestRecord {
     /// 識別子（ユーザーID or IP）
     identifier: String,
     /// パス
+    #[allow(dead_code)] // 受け取るが使っていない（#499）
     path: String,
     /// リクエストサイズ
+    #[allow(dead_code)] // 受け取るが使っていない（#499）
     size: usize,
     /// タイムスタンプ
     timestamp: DateTime<Utc>,
     /// IPアドレス
+    #[allow(dead_code)] // 受け取るが使っていない（#499）
     ip_address: Option<IpAddr>,
 }
 

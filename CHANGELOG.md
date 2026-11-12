@@ -63,6 +63,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `wordpress_blog_service_demo`も削除した。
   dev containerの作成時に`web-ui`で`npm install`を実行しないようにし、
   存在しないWeb UI（8080番）の案内を削除した
+- クレート全体の`#![allow(dead_code)]`を外し、使われていない関数とフィールドを
+  削除した（#459）。CIのclippyも`-A dead_code`を外し、使われないコードを
+  警告にする。受け取った設定・引数を使っていないフィールドは、実装するか
+  削除するかを#499で決めるため、`#[allow(dead_code)]`を付けて残した
+- `PostgresEngine::begin_transaction`のドキュメントの例が、コンパイル
+  できなかったのを直した（#459）
 
 ### Security
 

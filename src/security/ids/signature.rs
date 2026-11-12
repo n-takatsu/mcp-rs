@@ -13,8 +13,6 @@ use tracing::{debug, warn};
 pub struct SignatureDetector {
     /// 攻撃パターンデータベース
     patterns: Vec<AttackPattern>,
-    /// カテゴリ別パターンインデックス
-    pattern_index: HashMap<DetectionType, Vec<usize>>,
     /// カスタムルール
     custom_rules: Vec<CustomRule>,
 }
@@ -77,11 +75,9 @@ impl SignatureDetector {
     /// 新しいシグネチャ検知器を作成
     pub async fn new() -> Result<Self, McpError> {
         let patterns = Self::load_default_patterns()?;
-        let pattern_index = Self::build_index(&patterns);
 
         Ok(Self {
             patterns,
-            pattern_index,
             custom_rules: Vec::new(),
         })
     }
@@ -557,17 +553,6 @@ impl SignatureDetector {
         ]);
 
         Ok(patterns)
-    }
-
-    /// パターンインデックスを構築
-    fn build_index(patterns: &[AttackPattern]) -> HashMap<DetectionType, Vec<usize>> {
-        let mut index: HashMap<DetectionType, Vec<usize>> = HashMap::new();
-
-        for (i, pattern) in patterns.iter().enumerate() {
-            index.entry(pattern.detection_type).or_default().push(i);
-        }
-
-        index
     }
 
     /// リクエストを検知
