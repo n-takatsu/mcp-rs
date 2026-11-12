@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- ライブラリの`DatabaseSecurity`（`SqlInjectionDetector`）が、`1' OR '1'='1`
+  （末尾の引用符を元のSQLに閉じさせる形）と`OR true`を通していたのを、
+  止めるようにした（#501）。正当なサブクエリは止めない。正規表現での検知は
+  見逃しも誤検知も無くせない補助であることを、ドキュメントに書いた。
+  mcp-rsの`[database]`のツールはこの検知を使わないので、影響しない
+
 ### Removed
 
 - KubernetesのマニフェストとHelmチャート（`k8s/`・`charts/mcp-server/`）を
