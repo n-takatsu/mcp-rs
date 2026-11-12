@@ -11,8 +11,11 @@
 //! - **SQL Injection Detection**: Real-time detection of 11 attack patterns
 //! - **Rate Limiting**: Token bucket algorithm with DDoS protection
 //! - **Anomaly Detection**: Behavioral analysis and threat scoring
-//! - **Column Encryption**: AES-GCM-256 encryption for sensitive data
 //! - **Audit Logging**: Comprehensive security event tracking
+//!
+//! Column encryption is not applied here. `config.encryption.encrypted_columns`
+//! used to build a `ColumnEncryptionManager` that was never used (#499). To
+//! encrypt columns, use `DatabaseHandler::with_column_encryption`.
 //!
 //! ## Features
 //!
@@ -27,7 +30,6 @@ use super::{
         AccessDecision, ActionType, AnomalyDetector, AnomalyScore, MultiFactorAuth,
         RoleBasedAccessControl, TrustScore,
     },
-    column_encryption::ColumnEncryptionManager,
     security::{AuditLogger, DatabaseSecurity, RateLimiter, SqlInjectionDetector},
     security_config::{AdvancedSecurityConfig, ResponseAction, SeverityLevel},
     types::{QueryContext, SecurityError, ValidationResult},
@@ -55,7 +57,6 @@ pub struct IntegratedSecurityManager {
     mfa: MultiFactorAuth,
     rbac: RoleBasedAccessControl,
     anomaly_detector: AnomalyDetector,
-    column_encryption: ColumnEncryptionManager,
 
     // セキュリティ状態管理
     security_events: Arc<RwLock<Vec<SecurityEvent>>>,
@@ -78,15 +79,6 @@ impl IntegratedSecurityManager {
             mfa: MultiFactorAuth::new(),
             rbac: RoleBasedAccessControl::new(),
             anomaly_detector: AnomalyDetector::new(),
-            column_encryption: {
-                use super::column_encryption::ColumnEncryptionConfig;
-                let mut enc_config = ColumnEncryptionConfig::default();
-                // Configure encrypted columns from advanced security config
-                if let Some(ref encryption_cfg) = config.encryption.encrypted_columns {
-                    enc_config.encrypted_columns = encryption_cfg.clone();
-                }
-                ColumnEncryptionManager::new(enc_config)
-            },
 
             security_events: Arc::new(RwLock::new(Vec::new())),
             threat_intelligence: Arc::new(RwLock::new(ThreatIntelligence::new())),
@@ -440,7 +432,6 @@ impl IntegratedSecurityManager {
         health.insert("mfa".to_string(), ComponentHealth::Healthy);
         health.insert("rbac".to_string(), ComponentHealth::Healthy);
         health.insert("anomaly_detection".to_string(), ComponentHealth::Healthy);
-        health.insert("encryption".to_string(), ComponentHealth::Healthy);
         health.insert("audit_logging".to_string(), ComponentHealth::Healthy);
 
         health

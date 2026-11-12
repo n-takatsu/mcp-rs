@@ -14,8 +14,8 @@ body:
         この Issue は動的ポリシー更新機能の実装を追跡するためのものです。
         
         ## 📋 関連ドキュメント
-        - [セキュリティアーキテクチャ](../project-docs/architecture.md)
-        - [セキュリティガイド](../project-docs/security-guide.md)
+        - [Architecture](https://n-takatsu.github.io/mcp-rs/docs/architecture/)
+        - [Security](https://n-takatsu.github.io/mcp-rs/docs/security/)
         
   - type: dropdown
     id: component

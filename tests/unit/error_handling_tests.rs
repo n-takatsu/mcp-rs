@@ -1,16 +1,14 @@
 //! Basic Error Handling Tests
 
-#![cfg(feature = "database")]
+#![cfg(feature = "mysql-backend")]
 
 use log::info;
 use mcp_rs::handlers::database::{
     engines::mysql::MySqlEngine,
-    security::DatabaseSecurity,
     types::{
         ConnectionConfig, DatabaseConfig, DatabaseType, FeatureConfig, PoolConfig, SecurityConfig,
     },
 };
-use std::sync::Arc;
 
 fn init_test_logger() {
     let _ = env_logger::builder()
@@ -63,18 +61,7 @@ async fn test_basic_error_handling() {
     info!("Testing basic error handling");
 
     let config = create_test_config();
-    let security = Arc::new(DatabaseSecurity::new(
-        SecurityConfig {
-            enable_sql_injection_detection: true,
-            enable_query_whitelist: false,
-            enable_audit_logging: true,
-            threat_intelligence_enabled: false,
-            max_query_length: 1000000,
-            allowed_operations: vec![],
-        },
-        None,
-    ));
-    let _engine = MySqlEngine::new(config, security)
+    let _engine = MySqlEngine::new(config)
         .await
         .expect("Failed to create engine");
 

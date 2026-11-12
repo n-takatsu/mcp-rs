@@ -3,7 +3,7 @@
 //! Comprehensive performance comparison between MySQL, PostgreSQL, and SQLite
 //! Identifies relative strengths, weaknesses, and optimization opportunities
 
-#![cfg(feature = "database")]
+#![cfg(feature = "mysql-backend")]
 
 use mcp_rs::handlers::database::{
     engine::{DatabaseConnection, DatabaseEngine as DbEngine},
@@ -261,7 +261,7 @@ impl EnginePerformanceComparison {
             features: FeatureConfig::default(),
         };
 
-        self.mysql_engine = Some(MySqlEngine::new_without_security(mysql_config).await?);
+        self.mysql_engine = Some(MySqlEngine::new(mysql_config).await?);
 
         // Note: PostgreSQL and SQLite engines would be initialized here when available
         println!("⚠️  Note: PostgreSQL and SQLite engines not available - using MySQL baseline comparison");

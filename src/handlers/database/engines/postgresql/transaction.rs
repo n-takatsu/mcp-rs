@@ -21,7 +21,6 @@ use tokio::sync::Mutex;
 pub struct PostgreSqlTransaction {
     tx: Arc<Mutex<Option<PgTransaction<'static>>>>,
     is_active: Arc<Mutex<bool>>,
-    savepoint_counter: Arc<Mutex<usize>>,
 }
 
 impl PostgreSqlTransaction {
@@ -30,7 +29,6 @@ impl PostgreSqlTransaction {
         Self {
             tx: Arc::new(Mutex::new(Some(tx))),
             is_active: Arc::new(Mutex::new(true)),
-            savepoint_counter: Arc::new(Mutex::new(0)),
         }
     }
 

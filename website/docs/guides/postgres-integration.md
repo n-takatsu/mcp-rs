@@ -6,601 +6,106 @@ permalink: /docs/guides/postgres-integration/
 
 ## PostgreSQL Integration Guide
 
-Complete setup and integration guide for PostgreSQL support in MCP-RS v0.16.0+.
+Connect mcp-rs to a PostgreSQL database so that an MCP client (Claude Desktop, Claude Code, …) can read the schema and query the data. For every setting and tool, see the [Database Integration Guide](../database.md).
 
 ---
 
-## 📋 Table of Contents
+## 1. Check the build
 
-1. [Overview](#overview)
-2. [Installation](#installation)
-3. [Configuration](#configuration)
-4. [Connection Management](#connection-management)
-5. [Query Execution](#query-execution)
-6. [Transactions](#transactions)
-7. [JSON Support](#json-support)
-8. [Performance Tuning](#performance-tuning)
-9. [Troubleshooting](#troubleshooting)
+The database tools are in the default build (`cargo build --release`) and in the Docker image. A build made with `--no-default-features` does not include them.
 
----
+## 2. Create a role for mcp-rs
 
-## Overview
+Connect with a role that can only read what the AI client should see. mcp-rs already runs every query in a read-only transaction, but a role without write permissions also covers what a transaction cannot, such as extensions (`dblink`) that open their own connections.
 
-### Supported PostgreSQL Versions
-
-- PostgreSQL 12+
-- PostgreSQL 13, 14, 15 (tested)
-- PostgreSQL 16 (compatible)
-
-### Key Features
-
-- ✅ Full ACID compliance with 4 isolation levels
-- ✅ Parameterized queries (SQL injection prevention)
-- ✅ Connection pooling with health checks
-- ✅ JSON/JSONB native type support
-- ✅ UUID type support
-- ✅ Savepoint-based nested transactions
-- ✅ SSL/TLS connection support
-
-### Architecture
-
-```
-┌─────────────┐
-│ Application │
-│   (Rust)    │
-└──────┬──────┘
-       │
-       ▼
-┌─────────────────────────────────┐
-│   DatabaseEngine Trait          │
-│  (Unified Interface)            │
-└──────┬──────────────────────────┘
-       │
-       ▼
-┌─────────────────────────────────┐
-│  PostgreSQL Engine              │
-│  ├─ connection.rs (Pool Mgmt)   │
-│  ├─ prepared.rs (Queries)       │
-│  ├─ transaction.rs (ACID)       │
-│  └─ json_support.rs (JSON/JSONB)│
-└──────┬──────────────────────────┘
-       │
-       ▼
-┌─────────────────────────────────┐
-│   sqlx 0.8 (PostgreSQL Driver)  │
-└──────┬──────────────────────────┘
-       │
-       ▼
-┌─────────────────────────────────┐
-│  PostgreSQL Database            │
-│  (Native Protocol)              │
-└─────────────────────────────────┘
+```sql
+CREATE ROLE mcp_reader LOGIN PASSWORD 'choose-a-password';
+GRANT CONNECT ON DATABASE app TO mcp_reader;
+GRANT USAGE ON SCHEMA public TO mcp_reader;
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO mcp_reader;
+-- Tables created later by the role that owns the tables (run as that role,
+-- or add FOR ROLE <owner>):
+ALTER DEFAULT PRIVILEGES FOR ROLE app_owner IN SCHEMA public GRANT SELECT ON TABLES TO mcp_reader;
 ```
 
----
+To hide some tables, grant `SELECT` on the tables you want to show instead of `ALL TABLES`.
 
-## Installation
+`ALTER DEFAULT PRIVILEGES` applies only to tables that the given role (`app_owner` here) creates later. Without `FOR ROLE`, it applies to tables created by the role running the statement.
 
-### Step 1: Add Dependencies
+Extension functions can be executed by every role (`PUBLIC`) by default, so a read-only role can still use `dblink` if the extension is installed in the database. Do not install such extensions in the database mcp-rs connects to, or revoke their functions from `PUBLIC`. For example, move `dblink` to its own schema and revoke every function there (roles that need `dblink` then have to be granted it explicitly):
 
-Update `Cargo.toml`:
-
-```toml
-[dependencies]
-sqlx = { version = "0.8", features = ["postgres", "runtime-tokio-native-tls", "uuid", "json", "chrono"] }
-tokio = { version = "1", features = ["full"] }
-async-trait = "0.1"
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-uuid = { version = "1.0", features = ["v4", "serde"] }
-chrono = { version = "0.4", features = ["serde"] }
+```sql
+CREATE SCHEMA ext;
+ALTER EXTENSION dblink SET SCHEMA ext;
+REVOKE EXECUTE ON ALL FUNCTIONS IN SCHEMA ext FROM PUBLIC;
 ```
 
-### Step 2: Setup Docker (Optional)
-
-For development, use Docker Compose:
-
-```bash
-docker-compose -f docker-compose.postgres.yml up -d
-```
-
-Includes:
-
-- PostgreSQL 15 Alpine
-- pgAdmin for visual management
-- Health checks
-
-### Step 3: Create Database
-
-```bash
-psql -U postgres -h localhost -c "CREATE DATABASE mcp_rs;"
-psql -U postgres -h localhost -d mcp_rs < schema.sql
-```
-
----
-
-## Configuration
-
-### Configuration File (`config.toml`)
+## 3. Add `[database]` to the configuration file
 
 ```toml
 [database]
 engine = "postgresql"
-
-[database.postgres]
-# Connection parameters
 host = "localhost"
 port = 5432
-username = "postgres"
-password = "your_secure_password"
-database = "mcp_rs"
-
-# Connection pool
-max_connections = 20
-connection_timeout_secs = 30
-idle_timeout_secs = 300
-max_lifetime_secs = 1800
-
-# SSL/TLS (optional)
-ssl_enabled = false
-ssl_verify = true
-ssl_ca_cert = "/path/to/ca-cert.pem"
-
-# Query settings
-default_timeout_secs = 30
-statement_cache_size = 100
+database = "app"
+username = "mcp_reader"
+password = "${MCP_DB_PASSWORD}"
+ssl_mode = "prefer"   # use "verify-full" for a database on another machine
 ```
 
-### Environment Variables
+`${MCP_DB_PASSWORD}` is read from the environment when mcp-rs starts, so the password does not have to be in the file. With Claude Desktop, set it in the `env` of the mcp-rs entry:
 
-```bash
-# Database connection
-POSTGRES_HOST=localhost
-POSTGRES_PORT=5432
-POSTGRES_USER=postgres
-POSTGRES_PASSWORD=secure_password
-POSTGRES_DB=mcp_rs
-
-# Pool configuration
-POSTGRES_MAX_CONNECTIONS=20
-POSTGRES_CONNECTION_TIMEOUT=30
-POSTGRES_IDLE_TIMEOUT=300
-```
-
-### Rust Configuration
-
-```rust
-use mcp_rs::handlers::database::types::DatabaseConfig;
-
-let config = DatabaseConfig {
-    engine_type: "postgresql".to_string(),
-    host: "localhost".to_string(),
-    port: 5432,
-    username: "postgres".to_string(),
-    password: "password".to_string(),
-    database: "mcp_rs".to_string(),
-    max_connections: 20,
-    connection_timeout_secs: 30,
-    ..Default::default()
-};
-
-let engine = PostgreSqlEngine::new(config)?;
-```
-
----
-
-## Connection Management
-
-### Basic Connection
-
-```rust
-use mcp_rs::handlers::database::engines::postgresql::PostgreSqlEngine;
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let config = DatabaseConfig { /* ... */ };
-    let engine = PostgreSqlEngine::new(config)?;
-    
-    // Validate configuration
-    engine.validate_config()?;
-    
-    // Get database version
-    let version = engine.get_version().await?;
-    println!("PostgreSQL {}", version);
-    
-    // Connect to database
-    let conn = engine.connect().await?;
-    
-    // Health check
-    if engine.health_check().await? {
-        println!("✓ Database healthy");
+```json
+{
+  "mcpServers": {
+    "mcp-rs": {
+      "command": "C:\\Program Files\\MCP-rs\\mcp-rs.exe",
+      "args": ["--config", "C:\\Users\\you\\mcp-rs\\mcp-config.toml"],
+      "env": { "MCP_DB_PASSWORD": "choose-a-password" }
     }
-    
-    conn.close().await?;
-    Ok(())
+  }
 }
 ```
 
-### Connection Pool Usage
+## 4. Restart and check the connection
 
-```rust
-// Connection pool is created automatically
-let engine = PostgreSqlEngine::new(config)?;
+Restart the MCP client, then ask it to call `mcp_rs_status`.
 
-// Pool statistics
-let pool = engine.get_pool();
-println!("Idle connections: {}", pool.num_idle());
-println!("Total connections: {}", pool.size());
-```
+- Connected: the database appears under "Handlers", for example `postgresql mcp_reader@localhost:5432/app (read-only)`
+- Not connected: it appears under "Handlers and plugins that failed to start" with the reason. mcp-rs still starts its other handlers
 
-### Error Handling
+Common reasons:
 
-```rust
-match engine.connect().await {
-    Ok(conn) => {
-        // Use connection
-        conn.close().await?;
-    }
-    Err(DatabaseError::ConnectionFailed(msg)) => {
-        eprintln!("Connection error: {}", msg);
-    }
-    Err(e) => {
-        eprintln!("Error: {:?}", e);
-    }
-}
-```
+| Reason | What to check |
+|--------|---------------|
+| `cannot connect to …` | Host, port, and that PostgreSQL accepts connections from this machine (`listen_addresses`, `pg_hba.conf`) |
+| `password authentication failed` | The password, and that the environment variable is set for the MCP client, not only in your shell |
+| `environment variable … is not set` | The `env` of the mcp-rs entry in the MCP client's settings |
+| `database.engine = "…" is not supported` | `engine` must be `"postgresql"` |
+| `this build of mcp-rs does not include database support` | The binary was built with `--no-default-features`; build it without that option |
 
----
+## 5. Use the tools
 
-## Query Execution
+Ask the client about your data. It will call:
 
-### Safe: Parameterized Queries (Recommended)
+- `get_schema` to see the tables and columns
+- `execute_query` to run a `SELECT`, with values passed as `$1`, `$2`, … parameters
 
-```rust
-let stmt = conn.prepare(
-    "SELECT id, name, email FROM users WHERE age > $1 AND status = $2"
-).await?;
+Results are limited to 1,000 rows by default (`max_rows`), and each statement to 30 seconds (`query_timeout_seconds`). For large tables, ask for `LIMIT` or aggregates.
 
-let result = stmt.query(&[
-    Value::Int(18),
-    Value::String("active".to_string()),
-]).await?;
+## Allowing writes
 
-for row in result.rows {
-    println!("ID: {}, Name: {}", row[0], row[1]);
-}
-```
-
-### Direct Query (Use with Caution)
-
-```rust
-// Only for trusted SQL without user input
-let result = conn.query("SELECT COUNT(*) FROM users").await?;
-println!("Total users: {}", result.rows[0][0]);
-```
-
-### INSERT/UPDATE/DELETE
-
-```rust
-// Insert
-let stmt = conn.prepare(
-    "INSERT INTO users (name, email, age) VALUES ($1, $2, $3)"
-).await?;
-
-let result = stmt.execute(&[
-    Value::String("John Doe".to_string()),
-    Value::String("john@example.com".to_string()),
-    Value::Int(30),
-]).await?;
-
-println!("Inserted {} rows", result.rows_affected);
-```
-
----
-
-## Transactions
-
-### Basic Transaction
-
-```rust
-let txn = conn.begin_transaction().await?;
-
-match execute_operations(&txn).await {
-    Ok(_) => {
-        txn.commit().await?;
-        println!("✓ Transaction committed");
-    }
-    Err(e) => {
-        txn.rollback().await?;
-        eprintln!("✗ Transaction rolled back: {}", e);
-    }
-}
-
-async fn execute_operations(txn: &dyn Transaction) -> Result<(), Box<dyn Error>> {
-    let stmt = txn.prepare("INSERT INTO logs VALUES (...)").await?;
-    stmt.execute(&[]).await?;
-    Ok(())
-}
-```
-
-### Transaction with Isolation Level
-
-```rust
-use mcp_rs::handlers::database::types::IsolationLevel;
-
-let txn = conn.begin_transaction().await?;
-
-// Set isolation level
-txn.set_isolation_level(IsolationLevel::RepeatableRead).await?;
-
-// Execute operations
-// ...
-
-txn.commit().await?;
-```
-
-### Savepoint (Nested Transactions)
-
-```rust
-let txn = conn.begin_transaction().await?;
-
-// Main operation
-txn.execute("INSERT INTO accounts (balance) VALUES (1000)").await?;
-
-// Create savepoint
-txn.savepoint("before_transfer").await?;
-
-// Attempt transfer
-match txn.execute("UPDATE accounts SET balance = balance - 100").await {
-    Ok(_) => {
-        // Success - commit
-        txn.commit().await?;
-    }
-    Err(_) => {
-        // Rollback to savepoint only
-        txn.rollback_to_savepoint("before_transfer").await?;
-        
-        // Keep main operation, commit
-        txn.commit().await?;
-    }
-}
-```
-
----
-
-## JSON Support
-
-### Storing JSON
-
-```rust
-use serde_json::json;
-
-let json_data = Value::Json(json!({
-    "name": "John Doe",
-    "preferences": {
-        "theme": "dark",
-        "notifications": true
-    },
-    "tags": ["developer", "rust"]
-}));
-
-let stmt = conn.prepare(
-    "INSERT INTO user_profiles (data) VALUES ($1)"
-).await?;
-
-stmt.execute(&[json_data]).await?;
-```
-
-### Querying JSON
-
-```rust
-// Get entire JSON document
-let result = conn.query(
-    "SELECT data FROM user_profiles WHERE id = 1"
-).await?;
-
-if let Value::Json(json) = &result.rows[0][0] {
-    println!("Name: {}", json["name"]);
-    println!("Theme: {}", json["preferences"]["theme"]);
-}
-
-// JSON contains query
-let result = conn.query(
-    "SELECT * FROM user_profiles WHERE data @> '{\"preferences\":{\"theme\":\"dark\"}}'"
-).await?;
-
-println!("Found {} dark theme users", result.rows.len());
-```
-
-### JSON Functions
-
-```rust
-// Extract text value
-let result = conn.query(
-    "SELECT data->>'name' FROM user_profiles WHERE id = 1"
-).await?;
-
-// Get array length
-let result = conn.query(
-    "SELECT jsonb_array_length(data->'tags') FROM user_profiles"
-).await?;
-
-// Set JSON value
-let result = conn.query(
-    "UPDATE user_profiles SET data = jsonb_set(data, '{preferences,theme}', '\"light\"')"
-).await?;
-```
-
----
-
-## Performance Tuning
-
-### Connection Pool Optimization
+To let the client run `INSERT`, `UPDATE`, and `DELETE`, set `allow_write = true` and connect with a role that has those permissions on the tables it may change. mcp-rs then offers `execute_command`, which runs one such statement at a time. DDL (`CREATE`, `DROP`, `ALTER`, `TRUNCATE`, …) is always refused.
 
 ```toml
-[database.postgres]
-# For high-concurrency scenarios
-max_connections = 50          # Match expected concurrent clients
-connection_timeout_secs = 5   # Fail fast on exhaustion
-idle_timeout_secs = 600       # Clean up after 10 minutes
-max_lifetime_secs = 3600      # Recycle after 1 hour
-```
-
-### Query Optimization
-
-```rust
-// Use prepared statements for repeated queries
-let stmt = conn.prepare("SELECT * FROM users WHERE id = $1").await?;
-
-// Reuse statement multiple times
-for user_id in 1..1000 {
-    let result = stmt.query(&[Value::Int(user_id)]).await?;
-    // Process result
-}
-
-// Indexes help query performance
-// conn.query("CREATE INDEX idx_users_id ON users(id)").await?;
-```
-
-### Batch Operations
-
-```rust
-// Batch insert (more efficient than individual inserts)
-let mut values = vec![];
-for i in 1..1000 {
-    values.push(format!("({}, 'user{}@example.com')", i, i));
-}
-
-let sql = format!(
-    "INSERT INTO users (id, email) VALUES {}",
-    values.join(",")
-);
-
-conn.execute(&sql).await?;
+[database]
+engine = "postgresql"
+database = "app"
+username = "mcp_writer"
+password = "${MCP_DB_PASSWORD}"
+allow_write = true
 ```
 
 ---
 
-## Troubleshooting
-
-### Connection Issues
-
-**Problem**: `connection refused`
-
-**Solution**:
-
-```bash
-# Check PostgreSQL is running
-sudo systemctl status postgresql
-
-# Check port is listening
-sudo netstat -tlnp | grep 5432
-
-# Test connection manually
-psql -U postgres -h localhost -d mcp_rs
-```
-
-### Query Issues
-
-**Problem**: `syntax error at or near`
-
-**Solution**:
-
-```rust
-// Use parameterized queries
-let stmt = conn.prepare("SELECT * FROM users WHERE age > $1").await?;
-stmt.query(&[Value::Int(18)]).await?;
-
-// Not this (SQL injection risk + syntax errors)
-// let sql = format!("SELECT * FROM users WHERE age > {}", user_input);
-```
-
-### Performance Issues
-
-**Problem**: Slow queries
-
-**Solution**:
-
-```rust
-// Enable query logging
-// Add execution_time_ms tracking
-let result = stmt.query(&params).await?;
-println!("Query took {}ms", result.execution_time_ms);
-
-// Add indexes
-conn.query("CREATE INDEX idx_col ON table(column)").await?;
-
-// Analyze query plan
-conn.query("EXPLAIN ANALYZE SELECT ...").await?;
-```
-
-### Pool Exhaustion
-
-**Problem**: `pool limit reached`
-
-**Solution**:
-
-```toml
-[database.postgres]
-max_connections = 50  # Increase pool size
-idle_timeout_secs = 300  # Reduce timeout for unused connections
-```
-
----
-
-## Security Best Practices
-
-### 1. Use Parameterized Queries
-
-```rust
-// ✅ SAFE
-let stmt = conn.prepare("SELECT * FROM users WHERE email = $1").await?;
-stmt.query(&[Value::String(user_email)]).await?;
-
-// ❌ UNSAFE
-let sql = format!("SELECT * FROM users WHERE email = '{}'", user_email);
-conn.query(sql).await?;
-```
-
-### 2. Secure Password Storage
-
-```rust
-// Use environment variables or secure vaults
-let password = std::env::var("POSTGRES_PASSWORD")
-    .expect("Set POSTGRES_PASSWORD env var");
-
-let config = DatabaseConfig {
-    password,
-    ..Default::default()
-};
-```
-
-### 3. SSL/TLS Connections
-
-```toml
-[database.postgres]
-ssl_enabled = true
-ssl_verify = true
-ssl_ca_cert = "/path/to/ca-cert.pem"
-```
-
-### 4. Connection Limits
-
-```toml
-[database.postgres]
-max_connections = 20  # Limit concurrent connections
-connection_timeout_secs = 30
-```
-
----
-
-## Version Information
-
-- **Guide Version**: 1.0
-- **MCP-RS**: v0.16.0+
-- **PostgreSQL**: 12+
-- **Updated**: 2025-11-23
-
----
-
-See also: [Database Engine API](../api/database.md), [Performance Tuning Guide](./performance-tuning.md)
+See also: [Database Integration Guide](../database.md), [Security](../security.md)

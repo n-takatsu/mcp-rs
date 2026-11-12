@@ -3,7 +3,7 @@
 //! Comprehensive testing for connection pool efficiency, resource contention,
 //! and performance degradation under increasing concurrent load
 
-#![cfg(feature = "database")]
+#![cfg(feature = "mysql-backend")]
 
 use mcp_rs::handlers::database::{
     engine::DatabaseEngine,
@@ -205,7 +205,7 @@ impl ConcurrentConnectionTest {
             features: FeatureConfig::default(),
         };
 
-        self.engine = Some(MySqlEngine::new_without_security(db_config).await?);
+        self.engine = Some(MySqlEngine::new(db_config).await?);
 
         // Establish baseline performance with single connection
         self.baseline_qps = self.measure_baseline_performance().await?;
@@ -315,7 +315,7 @@ impl ConcurrentConnectionTest {
             let mut db_config = self.engine.as_ref().unwrap().get_config().clone();
             db_config.pool.max_connections = pool_size as u32;
 
-            let pool_engine = Arc::new(MySqlEngine::new_without_security(db_config).await?);
+            let pool_engine = Arc::new(MySqlEngine::new(db_config).await?);
 
             let test_results = self
                 .run_concurrent_test_with_engine(
@@ -507,7 +507,7 @@ impl ConcurrentConnectionTest {
         let mut db_config = self.engine.as_ref().unwrap().get_config().clone();
         db_config.pool.max_connections = pool_size as u32;
 
-        let engine = Arc::new(MySqlEngine::new_without_security(db_config).await?);
+        let engine = Arc::new(MySqlEngine::new(db_config).await?);
 
         let mut all_results = TestResults::new();
         let test_start = Instant::now();

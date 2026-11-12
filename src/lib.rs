@@ -4,8 +4,6 @@
 //! in Rust, enabling secure and efficient communication between AI systems and external
 //! resources like WordPress sites, databases, and APIs.
 
-// Allow unused code for future extensibility
-#![allow(dead_code)]
 // Allow unused imports during development
 #![allow(unused_imports)]
 // async_traitのマクロ展開が、既に#[must_use]なResultを返すメソッドに

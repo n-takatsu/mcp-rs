@@ -122,7 +122,7 @@ async fn execute_query_as_admin_decrypts_column_values() {
         .await
         .expect("failed to insert encrypted row");
 
-    let handler = DatabaseHandler::new(None)
+    let handler = DatabaseHandler::new()
         .await
         .expect("failed to create handler")
         .with_column_encryption(manager);
@@ -193,7 +193,7 @@ async fn execute_query_as_unprivileged_role_gets_masked_and_audited() {
         .await
         .expect("failed to insert encrypted row");
 
-    let handler = DatabaseHandler::new(None)
+    let handler = DatabaseHandler::new()
         .await
         .expect("failed to create handler")
         .with_column_encryption(manager);
@@ -306,7 +306,7 @@ async fn execute_query_join_with_ambiguous_encrypted_column_is_masked() {
         .await
         .expect("failed to insert second row into right table");
 
-    let handler = DatabaseHandler::new(None)
+    let handler = DatabaseHandler::new()
         .await
         .expect("failed to create handler")
         .with_column_encryption(manager);
@@ -382,7 +382,7 @@ async fn execute_query_with_unsupported_statement_shape_is_refused() {
     config.encrypted_columns.push(format!("{table}.value"));
     let manager = Arc::new(ColumnEncryptionManager::with_rbac(config, rbac));
 
-    let handler = DatabaseHandler::new(None)
+    let handler = DatabaseHandler::new()
         .await
         .expect("failed to create handler")
         .with_column_encryption(manager);
@@ -450,7 +450,7 @@ async fn execute_query_rejects_multi_statement_sql_before_it_ever_runs() {
     config.encrypted_columns.push(format!("{table}.value"));
     let manager = Arc::new(ColumnEncryptionManager::with_rbac(config, rbac));
 
-    let handler = DatabaseHandler::new(None)
+    let handler = DatabaseHandler::new()
         .await
         .expect("failed to create handler")
         .with_column_encryption(manager);
@@ -540,7 +540,7 @@ async fn execute_query_denial_writes_exactly_one_audit_row_for_many_result_rows(
             .expect("failed to insert encrypted row");
     }
 
-    let handler = DatabaseHandler::new(None)
+    let handler = DatabaseHandler::new()
         .await
         .expect("failed to create handler")
         .with_column_encryption(manager);
@@ -634,7 +634,7 @@ async fn execute_query_success_writes_exactly_one_audit_row_for_many_result_rows
             .expect("failed to insert encrypted row");
     }
 
-    let handler = DatabaseHandler::new(None)
+    let handler = DatabaseHandler::new()
         .await
         .expect("failed to create handler")
         .with_column_encryption(manager);
@@ -705,7 +705,7 @@ async fn execute_query_rejects_non_select_even_without_column_encryption_configu
 
     // No .with_column_encryption(...) at all - execute_query's own "SELECT
     // statements only" contract must still be enforced.
-    let handler = DatabaseHandler::new(None)
+    let handler = DatabaseHandler::new()
         .await
         .expect("failed to create handler");
     handler
@@ -800,7 +800,7 @@ async fn execute_query_masks_malformed_ciphertext_instead_of_failing_the_whole_q
         .await
         .expect("failed to insert malformed row");
 
-    let handler = DatabaseHandler::new(None)
+    let handler = DatabaseHandler::new()
         .await
         .expect("failed to create handler")
         .with_column_encryption(manager);
@@ -845,7 +845,7 @@ async fn execute_query_honors_explicit_engine_argument_over_the_active_one() {
         return;
     };
 
-    let handler = DatabaseHandler::new(None)
+    let handler = DatabaseHandler::new()
         .await
         .expect("failed to create handler");
     // The first engine added becomes active automatically.
@@ -909,7 +909,7 @@ async fn execute_query_honors_explicit_engine_argument_over_the_active_one() {
 /// all, so there's nothing here that needs a registered database.
 #[tokio::test]
 async fn execute_query_rejects_non_string_engine_argument() {
-    let handler = DatabaseHandler::new(None)
+    let handler = DatabaseHandler::new()
         .await
         .expect("failed to create handler");
     // Deliberately never call add_database().
@@ -935,7 +935,7 @@ async fn execute_query_rejects_non_string_engine_argument() {
 /// never gets as far as a real connection.
 #[tokio::test]
 async fn execute_query_with_no_active_engine_returns_an_error_not_a_panic() {
-    let handler = DatabaseHandler::new(None)
+    let handler = DatabaseHandler::new()
         .await
         .expect("failed to create handler");
     // Deliberately never call add_database().

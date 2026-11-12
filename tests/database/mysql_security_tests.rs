@@ -3,7 +3,7 @@
 //! Comprehensive security testing for MySQL engine implementation
 //! Tests SQL injection prevention, parameterized queries, and security layer integration
 
-#![cfg(feature = "database")]
+#![cfg(feature = "mysql-backend")]
 
 use log::{info, warn};
 use mcp_rs::handlers::database::{
@@ -74,7 +74,7 @@ async fn setup_test_environment(
     let config = create_test_config();
     let security = Arc::new(DatabaseSecurity::new(config.security.clone(), None));
 
-    let engine = MySqlEngine::new(config, security.clone()).await?;
+    let engine = MySqlEngine::new(config).await?;
 
     info!("Test environment setup complete");
     Ok((engine, security))

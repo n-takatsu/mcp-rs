@@ -3,7 +3,32 @@
 # ========================================
 
 services:
-  # Main MCP Server
+  # Main MCP Server (HTTP mode)
+  #
+  # mcp-rs reads ./config/mcp-config.toml. For HTTP mode in a container, it
+  # must listen on all interfaces, accept connections from outside the
+  # container, and require an API key:
+  #
+  #   [server]
+  #   log_level = "info"
+  #
+  #   [transport]
+  #   type = "http"
+  #
+  #   [transport.http]
+  #   addr = "0.0.0.0"
+  #   port = 8081
+  #   network_policy_reject_external_connections = false
+  #   auth_enabled = true
+  #
+  #   [[transport.http.api_keys]]
+  #   key = "replace-with-a-long-random-key"
+  #   name = "client"
+  #   user_id = "user-1"
+  #
+  #   [handlers]
+  #
+  # See docs/DOCKER_GUIDE.md.
   mcp-server:
     build:
       context: .
@@ -18,8 +43,6 @@ services:
     read_only: true
     cap_drop:
       - ALL
-    cap_add:
-      - NET_BIND_SERVICE
 
     # Resource limits
     deploy:
@@ -31,34 +54,32 @@ services:
           cpus: '0.5'
           memory: 128M
 
-    # Ports
+    # Ports (only on this machine; put a TLS proxy in front to expose it)
     ports:
-      - "3000:3000"  # HTTP API
-      - "3001:3001"  # WebSocket
+      - "127.0.0.1:8081:8081"
 
-    # Environment variables
-    environment:
-      RUST_LOG: ${RUST_LOG:-info}
-      MCP_SERVER_PORT: ${MCP_SERVER_PORT:-3000}
-      MCP_TRANSPORT: ${MCP_TRANSPORT:-http}
+    volumes:
+      # Config file (read-only)
+      - ./config:/app/config:ro
+      # Logs and the audit log go under /home/nonroot (the root filesystem
+      # is read-only). The named volume keeps them when the container is
+      # recreated: Docker copies /home/nonroot from the image, owned by
+      # nonroot, into the volume when it is first used.
+      - mcp-state:/home/nonroot
+    tmpfs:
+      - /tmp
 
-    # Volumes (optional - uncomment if you have config files)
-    # volumes:
-    #   - ./configs:/app/configs:ro
+    # Pass secrets used as ${VAR} in the config file here, e.g.
+    # environment:
+    #   WORDPRESS_PASSWORD: ${WORDPRESS_PASSWORD}
 
     # Networks
     networks:
       - mcp-network
 
-    # Health check
-    healthcheck:
-      test: ["CMD-SHELL", "/app/mcp-rs --health-check || exit 1"]
-      interval: 30s
-      timeout: 3s
-      retries: 3
-      start_period: 10s
-
-  # PostgreSQL Database (optional)
+  # PostgreSQL Database (optional). To give mcp-rs its database tools, add a
+  # [database] section to the config file with host = "postgres"; see
+  # website/docs/guides/postgres-integration.md for a read-only role.
   postgres:
     image: postgres:16-alpine
     container_name: mcp-postgres
@@ -96,41 +117,6 @@ services:
       timeout: 5s
       retries: 5
 
-  # Redis Cache (optional)
-  redis:
-    image: redis:7-alpine
-    container_name: mcp-redis
-    restart: unless-stopped
-
-    # Security settings
-    security_opt:
-      - no-new-privileges:true
-    read_only: true
-
-    # Resource limits
-    deploy:
-      resources:
-        limits:
-          cpus: '0.5'
-          memory: 128M
-        reservations:
-          cpus: '0.1'
-          memory: 32M
-
-    command: redis-server --appendonly yes --maxmemory 100mb --maxmemory-policy allkeys-lru
-
-    volumes:
-      - redis-data:/data
-
-    networks:
-      - mcp-network
-
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 3s
-      retries: 5
-
 networks:
   mcp-network:
     driver: bridge
@@ -139,9 +125,7 @@ networks:
         - subnet: 172.20.0.0/16
 
 volumes:
-  mcp-logs:
+  mcp-state:
     driver: local
   postgres-data:
-    driver: local
-  redis-data:
     driver: local

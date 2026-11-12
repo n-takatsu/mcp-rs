@@ -29,7 +29,7 @@ pub struct StatusInfo {
     /// 読み込んだ設定ファイル（`None`は設定ファイルを使っていない）
     pub config_file: Option<PathBuf>,
     pub started_at: Instant,
-    /// 起動できなかったプラグイン（名前、理由）
+    /// 起動できなかったプラグインと、データベースのハンドラー（名前、理由、#453）
     pub plugin_failures: Vec<(String, String)>,
 }
 
@@ -131,7 +131,7 @@ pub async fn render_status(
         });
     }
     if !info.plugin_failures.is_empty() {
-        lines.push("Plugins that failed to start:".to_string());
+        lines.push("Handlers and plugins that failed to start:".to_string());
         for (name, reason) in &info.plugin_failures {
             lines.push(format!("- {}: {}", name, reason));
         }

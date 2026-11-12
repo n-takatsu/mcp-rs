@@ -91,15 +91,13 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y postgresql-client redis-tools
-
+      # サービスのコンテナの中のpg_isready・redis-cliで確かめる。apt-getで
+      # クライアントを入れると、Ubuntuのパッケージサーバーに届かないときに
+      # テストの前で失敗するため（#495）
       - name: Verify services are ready
         run: |
-          pg_isready -h localhost -p 5433 -U testuser
-          redis-cli -h localhost -p 6380 ping
+          docker exec ${{ job.services.postgres.id }} pg_isready -U testuser -d mcptest
+          docker exec ${{ job.services.redis.id }} redis-cli ping
 
       - name: Build project
         run: cargo build --features integration-tests --release
@@ -112,6 +110,12 @@ jobs:
         env:
           MCP_RS_DOCKER_TESTS: "1"
         run: cargo test --lib --features integration-tests plugin_proxy::tests::test_container_plugin_is_isolated_in_docker -- --nocapture
+
+      # データベースのツール（#453）を、上のpostgresのサービスで確かめる
+      - name: Run database tool tests (PostgreSQL)
+        env:
+          TEST_DATABASE_URL: postgres://testuser:testpass@localhost:5433/mcptest
+        run: cargo test --features database --test database_postgres_tools_test -- --nocapture
 
       - name: Verify integration test compilation
         run: |

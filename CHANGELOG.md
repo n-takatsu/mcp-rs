@@ -7,6 +7,140 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.23.0] - 2026-11-12
+
+### Added
+
+- データベースのハンドラーを本体につないだ（#453、PostgreSQL）。
+  設定ファイルの`[database]`に接続先を書くと、`execute_query`（SELECT）・
+  `get_schema`のツールが使える。`allow_write = true`のときだけ
+  `execute_command`（INSERT・UPDATE・DELETE）も出す。既定のビルド
+  （`cargo build --release`）とDockerのイメージに含む
+  （`--no-default-features`で除く）
+  - `password`等は`${VAR}`（環境変数）で渡せる。ログ・`mcp_rs_status`・
+    エラーの文には出さない。環境変数が無い場合も、データベースだけを飛ばし、
+    mcp-rs（WordPress等）は起動する
+  - 文字列とNULLのパラメーターは、PostgreSQLが期待する型（uuid・日付・
+    時刻・numeric・JSON・base64のbytea・数値等）に合わせて送る。結果で
+    返した値を、そのままパラメーターに戻せる。text・列挙型にはそのまま
+    送る。それ以外の変換しない型（interval・money・inet・配列等）には送らず、
+    `$1::text::interval`のようにtextを経由するキャストを案内するエラーに
+    する（形式の違うバイト列を送ると、別の値として保存されうるため）
+  - つながらなければ、プラグインと同じく警告を出して飛ばし、理由を
+    `mcp_rs_status`の「Handlers and plugins that failed to start」に出す
+    （以前の「Plugins that failed to start」）。接続先は`Handlers`の行に出す
+  - ツールの呼び出しは、SQL（長さを切る）と結果を監査ログに記録する。
+    パラメーターの値は記録しない
+  - `execute_query`・`get_schema`は`readOnlyHint`、`execute_command`は
+    `destructiveHint`を持つ（HTTPモードの`@read_only`等で絞れる）
+
+### Changed
+
+- `database`機能を既定で有効にし、MySQLのエンジン（`mysql-backend`）を
+  含めないようにした（#453）。ライブラリとしてMySQLのエンジンを使う場合は、
+  `--features mysql-backend`を指定する（`database`も有効になる）
+- データベースのドキュメント（websiteの`docs/database.md`・
+  `docs/guides/postgres-integration.md`・`docs/api/database.md`、README）を、
+  実際の`[database]`の書き方・ツール・安全のための仕組みに合わせて書き直した。
+  読み取り専用のロールで接続することを勧める（読み取り専用のトランザクション
+  では、`dblink`等の拡張が別の接続で書き込むのは防げないため）。
+  `configs/database/postgres.toml`も、そのまま使える例にした（以前の例は
+  `engine`が無く、起動しなかった）
+
+- README（英・日）とwebsiteを、実際の機能に合わせて書き直した（#459）。
+  「Production-Ready」「7-Layer（100%）」「260+ tests」等の実態と合わない
+  表現、本体が使っていないRBACの節、存在しない機能（リアルタイム共同編集・
+  複数エンジンのデータベース等）の説明を除いた。websiteの
+  Documentation・Getting Started・Architecture・Securityの各ページと、
+  Claude Desktop統合ガイドを書き直し、READMEのドキュメントの一覧の
+  切れたリンク（`project-docs/quick-start.md`等）を直した
+- 実態と合わないドキュメントを削除した（#459）: websiteの
+  `landing-page.md`・`demo-page.md`・`marketing-content.md`、
+  `project-docs/`のClaude Desktop・Claude Code統合ガイド以外、
+  `docs/PRODUCTION_DEPLOYMENT_GUIDE.md`・`docs/CONTAINER_INTEGRATION_TESTS.md`・
+  `docs/PHASE3_COMPLETION.md`
+- ビルドされない古いコードを削除した（#459）: `examples.disabled/`・
+  `tests.disabled/`・`web-ui/`・`static/demo.html`・ルートの`index.html`。
+  WordPressにつながずに成功を表示するだけだったexample
+  `wordpress_blog_service_demo`も削除した。
+  dev containerの作成時に`web-ui`で`npm install`を実行しないようにし、
+  存在しないWeb UI（8080番）の案内を削除した
+- クレート全体の`#![allow(dead_code)]`を外し、使われていない関数とフィールドを
+  削除した（#459）。CIのclippyも`-A dead_code`を外し、使われないコードを
+  警告にする。受け取った設定・引数を使っていないフィールドは、実装するか
+  削除するかを#499で決めるため、`#[allow(dead_code)]`を付けて残した
+- `PostgresEngine::begin_transaction`のドキュメントの例が、コンパイル
+  できなかったのを直した（#459）
+- 受け取った設定・引数を使っていなかった箇所を削除した（#499）。効いて
+  いるように見えて実際には効いていなかったもので、動作は変わらない。
+  ライブラリのAPIが変わる
+  - `PasswordHasher::new(salt_rounds)`を`new()`にした。`salt_rounds`は
+    bcryptの考え方で、Argon2には使われていなかった。ハッシュは従来どおり
+    Argon2id（メモリー19 MiB・反復2回・並列度1）
+  - `DatabaseHandler::new(threat_intelligence)`を`new()`にした。作って
+    いた`DatabaseSecurity`（正規表現でのSQLインジェクション検知等）と
+    `SafetyManager`は、クエリの実行で使っていなかった。`[database]`の
+    安全性は、従来どおり読み取り専用のロール・文の種類の検査・
+    `allow_write`による
+  - `MySqlEngine::new(config, security)`・`MariaDbEngine::new(config,
+    security)`を`new(config)`にした。受け取った`DatabaseSecurity`は
+    使っていなかった。同じ動きの`new_without_security`を、PostgreSQL・
+    SQLiteのものも含めて削除した
+  - `IntegratedSecurityManager`は、`encryption.encrypted_columns`から
+    カラム暗号化を作るが使っていなかったので、作らないようにした。
+    カラム暗号化は`DatabaseHandler::with_column_encryption`で使う
+  - `MongoEngine::new_with_config(config, mongo_config)`を
+    `new_with_config(mongo_config)`に、`SwitchOrchestrator::new`・
+    `EngineMonitor::new`から使われない引数を除いた
+  - 何もせずに成功を返すだけだった`handlers::database::availability`
+    （ヘルスチェック・復旧・フェイルオーバー）を削除した。どこからも
+    使われていなかった
+  - ほかに、書くだけで読まれないキャッシュ・フィールドを削除した
+    （RBACの権限のキャッシュ、IDSのリクエスト履歴のパス・サイズ・IP等）
+
+### Security
+
+- データベースのハンドラー（`database`機能）の`execute_query`で、データを
+  変えられないようにした（#453）。以前は、`WITH d AS (DELETE … RETURNING *)
+  SELECT …`をSELECTとして通していた。`WITH`の中の書き込みと`SELECT … INTO`
+  を拒否し、さらにPostgreSQLでは毎回、読み取り専用のトランザクション
+  （`SET TRANSACTION READ ONLY`）の中で実行してロールバックする（書き込む
+  関数を呼ぶSELECTも、データベースが拒否する）
+- PostgreSQLのパラメーターを、SQLの文字列に埋め込まずバインドするように
+  した（#453）。以前は文字列の置き換えで、`$1`が`$10`の中にも当たった。
+  パスワードもURLに埋め込まないので、記号を含んでいてもよい
+- `execute_command`は、1つのINSERT・UPDATE・DELETEだけを受け付ける
+  （DDL・`TRUNCATE`・権限の変更等は拒否する）
+- `execute_query`で取ったセッション単位の勧告ロック（`pg_advisory_lock`）
+  が、ロールバックの後も接続に残らないよう、接続をプールに戻すときに外す
+  （#453）。読み取り専用のトランザクションでは防げない副作用のため
+
+### Fixed
+
+- Dockerのイメージが既定の引数で起動しなかったのを直した（#497）。既定の
+  引数が存在しないオプション`--transport stdio`だったため、すぐに終了して
+  いた。既定の引数を`--config /app/config/mcp-config.toml`にし、設定
+  ファイルをマウントして使う。ビルドはnightlyをやめてRust 1.88にし、
+  読まれない`MCP_SERVER_PORT`・古い版のラベル・使わないポート（3000・
+  3001）を除いた。`docker-compose.yml`は設定ファイルのマウント・ポート
+  8081にし、ログ・監査ログを名前付きボリューム（`/home/nonroot`）に
+  残すようにし、動かないヘルスチェック（distrolessにシェルが無い）と
+  使わないRedisを除いた。`docs/DOCKER_GUIDE.md`を実際の
+  使い方（STDIO・HTTP）に書き直した。CIでイメージの起動とMCPの応答を
+  確かめる
+- データベースのハンドラー（#453）: PostgreSQLの接続のたびに新しい接続の
+  プールを作っていたのを、1つのプールを共有するようにした。NUMERIC・UUID・
+  日付等の値を黙ってNULLにしていたのを、型に合わせて読む（NUMERICは桁を
+  落とさず文字列）ようにし、読めない型はそう分かる文字列にした。行が無い
+  結果でも列の名前と型を返す。1つのSQLの時間の上限（既定30秒）と、返す
+  行数の上限（既定1000行、超えたら`truncated`）を設けた。エンジンが無い
+  ときにパニックしていたのを、エラーにした
+- データベースのハンドラーの、動かなかったツール（`begin_transaction`は
+  コミット・ロールバックの手段が無かった）と、1つのデータベースでは意味の
+  無いツール（`list_engines`・`switch_engine`）を出さないようにした。
+  ツールの結果と`db://schema`のリソースを、MCPの形（`content`・`contents`）
+  で返すようにした
+
 ## [0.22.0] - 2026-11-11
 
 ### Added

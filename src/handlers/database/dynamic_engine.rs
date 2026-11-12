@@ -41,9 +41,7 @@ impl DynamicEngineManager {
         let monitoring_system = Arc::new(MonitoringSystem::new().await?);
         let metrics_collector = Arc::new(MetricsCollector::new());
 
-        let switch_orchestrator = Arc::new(
-            SwitchOrchestrator::new(active_manager.clone(), monitoring_system.clone()).await?,
-        );
+        let switch_orchestrator = Arc::new(SwitchOrchestrator::new(active_manager.clone()).await?);
 
         Ok(Self {
             active_manager,
@@ -403,7 +401,6 @@ pub enum EngineStatus {
 /// 切り替えオーケストレーター（基本実装）
 pub struct SwitchOrchestrator {
     active_manager: Arc<RwLock<ActiveEngineManager>>,
-    monitoring_system: Arc<MonitoringSystem>,
     switch_history: Arc<Mutex<VecDeque<SwitchEvent>>>,
     switch_counter: AtomicU64,
 }
@@ -411,11 +408,9 @@ pub struct SwitchOrchestrator {
 impl SwitchOrchestrator {
     pub async fn new(
         active_manager: Arc<RwLock<ActiveEngineManager>>,
-        monitoring_system: Arc<MonitoringSystem>,
     ) -> Result<Self, DatabaseError> {
         Ok(Self {
             active_manager,
-            monitoring_system,
             switch_history: Arc::new(Mutex::new(VecDeque::new())),
             switch_counter: AtomicU64::new(0),
         })
@@ -637,7 +632,7 @@ impl MonitoringSystem {
         engine_id: String,
         _engine: Arc<dyn DatabaseEngine>,
     ) -> Result<(), DatabaseError> {
-        let monitor = EngineMonitor::new(engine_id.clone());
+        let monitor = EngineMonitor::new();
         let mut monitors = self.engine_monitors.write().await;
         monitors.insert(engine_id, monitor);
         Ok(())
@@ -651,15 +646,14 @@ impl MonitoringSystem {
 }
 
 /// エンジン監視
+#[derive(Default)]
 pub struct EngineMonitor {
-    engine_id: String,
     current_metrics: Arc<RwLock<Option<EngineMetrics>>>,
 }
 
 impl EngineMonitor {
-    pub fn new(engine_id: String) -> Self {
+    pub fn new() -> Self {
         Self {
-            engine_id,
             current_metrics: Arc::new(RwLock::new(None)),
         }
     }

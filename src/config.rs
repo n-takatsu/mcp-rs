@@ -58,6 +58,9 @@ pub struct McpConfig {
     /// 監査ログ（#416）。省略時は、設定ファイルと同じフォルダの`audit.log`に書く
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audit: Option<AuditLogSettings>,
+    /// データベース（`[database]`、#453）。省略時は使わない
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub database: Option<DatabaseSettings>,
     /// 読み込んだ設定ファイルのパス（絶対パス）。監査ログの既定の書き込み先や、
     /// 相対パスの基準に使う。設定ファイルには書かない
     #[serde(skip)]
@@ -77,6 +80,150 @@ pub struct AuditLogSettings {
     pub max_file_size_mb: Option<u64>,
     /// ローテーションで残す古いファイルの数。省略時は5
     pub max_files: Option<u32>,
+}
+
+/// データベースの設定（`[database]`、#453）。今はPostgreSQLだけ。
+///
+/// 既定では読み取りだけ: `execute_query`は読み取り専用のトランザクションで
+/// 実行し、書き込みのツール（`execute_command`）は出さない。
+/// `host`・`database`・`username`・`password`には`${VAR}`（環境変数）を
+/// 書ける。`password`は`Debug`に出さない。
+#[derive(Clone, Default, Deserialize, Serialize)]
+pub struct DatabaseSettings {
+    /// `false`で使わない。省略時は`true`（`[database]`を書けば使う）
+    pub enabled: Option<bool>,
+    /// エンジン。今は`"postgresql"`だけ
+    pub engine: String,
+    /// 省略時は`localhost`
+    pub host: Option<String>,
+    /// 省略時は5432
+    pub port: Option<u16>,
+    pub database: String,
+    pub username: String,
+    /// 省略時は空（パスワード無し）。`${PGPASSWORD}`のように環境変数で渡せる
+    pub password: Option<String>,
+    /// TLS: `disable`・`prefer`（省略時）・`require`・`verify-ca`・`verify-full`
+    pub ssl_mode: Option<String>,
+    /// `true`で書き込みのツール（`execute_command`: INSERT・UPDATE・DELETE）を
+    /// 出す。省略時は`false`
+    pub allow_write: Option<bool>,
+    /// `execute_query`が返す行数の上限。省略時は1000
+    pub max_rows: Option<u32>,
+    /// 1つのSQLの時間の上限（秒）。省略時は30
+    pub query_timeout_seconds: Option<u32>,
+    /// 接続の数の上限。省略時は5
+    pub max_connections: Option<u32>,
+}
+
+impl std::fmt::Debug for DatabaseSettings {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DatabaseSettings")
+            .field("enabled", &self.enabled)
+            .field("engine", &self.engine)
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("database", &self.database)
+            .field("username", &self.username)
+            .field("password", &self.password.as_ref().map(|_| "<redacted>"))
+            .field("ssl_mode", &self.ssl_mode)
+            .field("allow_write", &self.allow_write)
+            .field("max_rows", &self.max_rows)
+            .field("query_timeout_seconds", &self.query_timeout_seconds)
+            .field("max_connections", &self.max_connections)
+            .finish()
+    }
+}
+
+impl DatabaseSettings {
+    pub const DEFAULT_MAX_ROWS: u32 = 1000;
+    pub const DEFAULT_QUERY_TIMEOUT_SECONDS: u32 = 30;
+    pub const DEFAULT_MAX_CONNECTIONS: u32 = 5;
+
+    /// 使う設定か（`enabled`の省略時は`true`）
+    pub fn is_enabled(&self) -> bool {
+        self.enabled.unwrap_or(true)
+    }
+
+    pub fn host(&self) -> &str {
+        self.host.as_deref().unwrap_or("localhost")
+    }
+
+    pub fn port(&self) -> u16 {
+        self.port.unwrap_or(5432)
+    }
+
+    pub fn allow_write(&self) -> bool {
+        self.allow_write.unwrap_or(false)
+    }
+
+    pub fn max_rows(&self) -> u32 {
+        self.max_rows
+            .filter(|n| *n > 0)
+            .unwrap_or(Self::DEFAULT_MAX_ROWS)
+    }
+
+    pub fn query_timeout_seconds(&self) -> u32 {
+        self.query_timeout_seconds
+            .filter(|n| *n > 0)
+            .unwrap_or(Self::DEFAULT_QUERY_TIMEOUT_SECONDS)
+    }
+
+    pub fn max_connections(&self) -> u32 {
+        self.max_connections
+            .filter(|n| *n > 0)
+            .unwrap_or(Self::DEFAULT_MAX_CONNECTIONS)
+    }
+
+    /// `mcp_rs_status`・ログに出す説明（パスワードは含めない）
+    pub fn describe(&self) -> String {
+        format!(
+            "{} {}@{}:{}/{} ({})",
+            self.engine,
+            self.username,
+            self.host(),
+            self.port(),
+            self.database,
+            if self.allow_write() {
+                "read-write"
+            } else {
+                "read-only"
+            }
+        )
+    }
+
+    /// 書いた値を確かめる。起動しない理由を返す
+    pub fn validate(&self) -> Result<(), String> {
+        if !self.engine.eq_ignore_ascii_case("postgresql") {
+            return Err(format!(
+                "database.engine = \"{}\" is not supported (supported: \"postgresql\")",
+                self.engine
+            ));
+        }
+        if self.database.trim().is_empty() {
+            return Err("database.database is empty".to_string());
+        }
+        if self.username.trim().is_empty() {
+            return Err("database.username is empty".to_string());
+        }
+        if let Some(mode) = &self.ssl_mode {
+            const MODES: &[&str] = &[
+                "disable",
+                "allow",
+                "prefer",
+                "require",
+                "verify-ca",
+                "verify-full",
+            ];
+            if !MODES.contains(&mode.as_str()) {
+                return Err(format!(
+                    "database.ssl_mode = \"{}\" is not valid (use one of: {})",
+                    mode,
+                    MODES.join(", ")
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// プラグイン1つ分の設定（#394）。プラグインは、別プロセスで動くMCP
@@ -635,6 +782,7 @@ impl Default for McpConfig {
             handlers: HandlersConfig { wordpress: None },
             plugins: Vec::new(),
             audit: None,
+            database: None,
             config_file: None,
         }
     }
@@ -781,6 +929,32 @@ impl McpConfig {
                 field: format!("handlers.wordpress.{}", field),
                 reason,
             })?;
+        }
+        Ok(())
+    }
+
+    /// `[database]`の`host`・`database`・`username`・`password`の`${VAR}`を
+    /// 展開する（#453）。使わない設定（`enabled = false`）なら展開しない。
+    /// 設定の読み込みでは展開せず、ハンドラーを登録するときに展開する（環境
+    /// 変数が無くても、データベースだけを飛ばし、mcp-rsは起動するため）
+    pub fn expand_database_config(config: &mut DatabaseSettings) -> Result<(), ConfigEnvError> {
+        if !config.is_enabled() {
+            return Ok(());
+        }
+        let expand = |field: &str, value: &mut String| -> Result<(), ConfigEnvError> {
+            *value = Self::expand_env_vars(value).map_err(|reason| ConfigEnvError {
+                field: format!("database.{}", field),
+                reason,
+            })?;
+            Ok(())
+        };
+        if let Some(host) = config.host.as_mut() {
+            expand("host", host)?;
+        }
+        expand("database", &mut config.database)?;
+        expand("username", &mut config.username)?;
+        if let Some(password) = config.password.as_mut() {
+            expand("password", password)?;
         }
         Ok(())
     }
@@ -1053,6 +1227,7 @@ impl McpConfig {
             },
             plugins: Vec::new(),
             audit: None,
+            database: None,
             config_file: None,
         };
 
@@ -1656,6 +1831,134 @@ start_timeout_seconds = 300
             audit.log_file_path.as_deref(),
             Some(base.join("audit.log").to_str().unwrap())
         );
+    }
+
+    #[test]
+    fn test_database_section_is_read_from_toml() {
+        let config: McpConfig = toml::from_str(
+            "[transport]\n[server]\n[handlers]\n[database]\nengine = \"postgresql\"\ndatabase = \"app\"\nusername = \"reader\"\npassword = \"s3cret\"\n",
+        )
+        .unwrap();
+        let db = config.database.unwrap();
+        assert!(db.is_enabled());
+        assert_eq!(db.host(), "localhost");
+        assert_eq!(db.port(), 5432);
+        assert!(!db.allow_write());
+        assert_eq!(db.max_rows(), DatabaseSettings::DEFAULT_MAX_ROWS);
+        assert_eq!(
+            db.query_timeout_seconds(),
+            DatabaseSettings::DEFAULT_QUERY_TIMEOUT_SECONDS
+        );
+        assert!(db.validate().is_ok());
+        // パスワードは説明にもDebugにも出さない
+        assert_eq!(
+            db.describe(),
+            "postgresql reader@localhost:5432/app (read-only)"
+        );
+        assert!(!format!("{:?}", db).contains("s3cret"));
+    }
+
+    /// 配っている設定の例（`configs/database/postgres.toml`）が、そのまま
+    /// 読めて、検証も通る（以前の例は`engine`が無く、起動しなかった）
+    #[test]
+    fn test_database_example_config_is_valid() {
+        // Dockerfile.test等、`configs`を含まないビルドでは確かめない
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("configs/database/postgres.toml");
+        let Ok(example) = std::fs::read_to_string(&path) else {
+            return;
+        };
+        let config: McpConfig =
+            toml::from_str(&format!("[transport]\n[server]\n[handlers]\n{example}")).unwrap();
+        let db = config.database.unwrap();
+        assert!(db.validate().is_ok());
+        assert!(!db.allow_write());
+        assert_eq!(db.password.as_deref(), Some("${MCP_DB_PASSWORD}"));
+    }
+
+    #[test]
+    fn test_database_settings_validate() {
+        let valid = DatabaseSettings {
+            engine: "postgresql".to_string(),
+            database: "app".to_string(),
+            username: "reader".to_string(),
+            ..Default::default()
+        };
+        assert!(valid.validate().is_ok());
+        for (invalid, expected) in [
+            (
+                DatabaseSettings {
+                    engine: "mysql".to_string(),
+                    ..valid.clone()
+                },
+                "not supported",
+            ),
+            (
+                DatabaseSettings {
+                    database: " ".to_string(),
+                    ..valid.clone()
+                },
+                "database.database",
+            ),
+            (
+                DatabaseSettings {
+                    username: String::new(),
+                    ..valid.clone()
+                },
+                "database.username",
+            ),
+            (
+                DatabaseSettings {
+                    ssl_mode: Some("strict".to_string()),
+                    ..valid.clone()
+                },
+                "ssl_mode",
+            ),
+        ] {
+            let err = invalid.validate().unwrap_err();
+            assert!(err.contains(expected), "{err}");
+        }
+        // 0や省略は既定値
+        let zero = DatabaseSettings {
+            max_rows: Some(0),
+            query_timeout_seconds: Some(0),
+            max_connections: Some(0),
+            ..valid
+        };
+        assert_eq!(zero.max_rows(), DatabaseSettings::DEFAULT_MAX_ROWS);
+        assert_eq!(
+            zero.max_connections(),
+            DatabaseSettings::DEFAULT_MAX_CONNECTIONS
+        );
+    }
+
+    #[test]
+    fn test_expand_database_config() {
+        std::env::set_var("MCP_RS_TEST_DB_PASSWORD_453", "from-env");
+        let mut db = DatabaseSettings {
+            engine: "postgresql".to_string(),
+            database: "app".to_string(),
+            username: "reader".to_string(),
+            password: Some("${MCP_RS_TEST_DB_PASSWORD_453}".to_string()),
+            ..Default::default()
+        };
+        McpConfig::expand_database_config(&mut db).unwrap();
+        assert_eq!(db.password.as_deref(), Some("from-env"));
+
+        // 無い変数は、項目と変数の名前を返す（値は出さない）
+        let mut missing = DatabaseSettings {
+            password: Some("${MCP_RS_TEST_DB_MISSING_453}".to_string()),
+            ..db.clone()
+        };
+        let err = McpConfig::expand_database_config(&mut missing).unwrap_err();
+        assert_eq!(err.field, "database.password");
+
+        // 使わない設定なら、展開しない
+        let mut disabled = DatabaseSettings {
+            enabled: Some(false),
+            ..missing
+        };
+        assert!(McpConfig::expand_database_config(&mut disabled).is_ok());
     }
 
     #[test]

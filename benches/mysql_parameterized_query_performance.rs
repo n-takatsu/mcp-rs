@@ -3,7 +3,7 @@
 //! Comprehensive performance testing for parameterized queries under high load
 //! Tests prepared statement efficiency and parameter conversion performance
 
-#![cfg(feature = "database")]
+#![cfg(feature = "mysql-backend")]
 
 use mcp_rs::handlers::database::{
     engine::DatabaseEngine,
@@ -228,7 +228,7 @@ impl ParamQueryPerformanceTest {
             features: FeatureConfig::default(),
         };
 
-        self.engine = Some(MySqlEngine::new_without_security(db_config).await?);
+        self.engine = Some(MySqlEngine::new(db_config).await?);
 
         println!("✅ MySQL engine initialized for parameterized query testing");
         Ok(())

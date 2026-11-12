@@ -1,50 +1,31 @@
 # mcp-rs
 
-🚀 **Production-Ready** Rust implementation of the Model Context Protocol (MCP) for AI-agent integration with WordPress and beyond.
+A Rust implementation of a Model Context Protocol (MCP) server that gives AI clients tools for WordPress, PostgreSQL, and external MCP plugins.
 
 > **[English](README.md)** | **[日本語](README.ja.md)**
 
-[![Version](https://img.shields.io/badge/Version-v0.22.0-blue)](https://github.com/n-takatsu/mcp-rs/releases/tag/v0.22.0)
-![Architecture](https://img.shields.io/badge/Architecture-Production--Ready-green)
+[![Version](https://img.shields.io/badge/Version-v0.23.0-blue)](https://github.com/n-takatsu/mcp-rs/releases/tag/v0.23.0)
 ![Implementation](https://img.shields.io/badge/WordPress_Tools-32_Available-green)
 ![License](https://img.shields.io/badge/License-MIT%2FApache--2.0-green)
 
 ## Overview
 
-`mcp-rs` provides a **comprehensive, battle-tested** implementation of the MCP (Model Context Protocol) in Rust with **complete WordPress integration**. Built with a layered architecture, it enables AI agents to perform sophisticated content management through a standardized JSON-RPC interface. The framework features 32 WordPress tools, enterprise-grade security, strong type safety, and is optimized for production use with GitHub Copilot and other AI coding assistants.
+`mcp-rs` is an MCP server written in Rust. MCP clients such as Claude Desktop and Claude Code connect to it over STDIO, and other clients over HTTP. It offers:
 
-## 🎯 Who Is This For?
-
-### AI Developers 🤖
-
-Building Claude Desktop apps, GPT integrations, or custom AI agents? mcp-rs provides production-ready Model Context Protocol implementation with comprehensive WordPress tooling.
-
-### Enterprise WordPress Teams 🏢
-
-Managing large-scale WordPress deployments? Get enterprise-grade security, automated content management, and seamless CI/CD integration.
-
-### DevOps Engineers ⚙️
-
-Automating WordPress operations? 32 battle-tested tools with comprehensive health checks, monitoring, and production-ready error handling.
-
-### Rust Enthusiasts 🦀
-
-Want to contribute to a high-quality Rust codebase? Join our 205+ test, zero-warning project with clean architecture and comprehensive documentation.
-
-### Security Teams 🔒
-
-Exposing mcp-rs over HTTP? Use API keys or OAuth 2.1 tokens, limit the tools each caller can use, and keep an audit log of every tool call.
+- 32 WordPress tools (posts, pages, media, categories, tags, comments, site settings) through the WordPress REST API
+- Read-only SQL tools for one PostgreSQL database (writes only when allowed)
+- The tools of external MCP servers, started as plugins (child process, Docker container, or Kubernetes Job)
+- For HTTP mode: API key or OAuth 2.1 authentication, per-caller tool limits, TLS/mTLS, rate limiting, and an audit log
 
 ## 🚀 Key Features
 
 ## **Core Capabilities**
 
-- **JSON-RPC 2.0 Server**: Full-featured JSON-RPC server implementation using `axum`
-- **Multi-Transport Support**: STDIO, HTTP, and WebSocket communication protocols
-- **Plugin Architecture**: Handler-based system with `McpHandler` trait for extensibility
-- **Type-Safe Configuration**: TOML-based configuration with environment variable override
-- **Production-Ready Error Handling**: Comprehensive error types with structured logging
-- **Async/Await**: Built on `tokio` for high-performance async operations
+- **MCP over JSON-RPC 2.0**: Protocol versions up to 2025-11-25
+- **Transports**: STDIO, and HTTP (with optional WebSocket on `/ws`)
+- **Plugins**: Add the tools of any MCP server that speaks STDIO, run as a child process, in a Docker container, or as a Kubernetes Job. See [Plugins](https://n-takatsu.github.io/mcp-rs/docs/plugins/)
+- **Configuration**: One TOML file, with `${VAR}` for values from environment variables
+- **Status Tool**: `mcp_rs_status` shows the version, config file, log files, and what failed to start
 
 ## **WordPress Integration (32 Tools)**
 
@@ -70,60 +51,44 @@ The `examples/wordpress_site_builder_demo.rs` example builds and updates the pub
 - **Rate Limiting** of tool calls
 - **Audit Logging**: Who called which tool, and the result
 
-## **Database Integration (Phase 1: MySQL)**
+## **Database Integration (PostgreSQL)**
 
-> **Note**: The database handler is library code behind the optional `database` feature. It is not connected to the `mcp-rs` binary yet, so MCP clients cannot use it ([#453](https://github.com/n-takatsu/mcp-rs/issues/453)).
+- **One Section to Connect**: Add `[database]` to the configuration file (`engine = "postgresql"`, host, database, user, and `password = "${VAR}"`)
+- **Read-Only by Default**: `execute_query` (one SELECT, run in a read-only transaction that is rolled back) and `get_schema`
+- **Writes Only When Allowed**: `execute_command` (one INSERT, UPDATE, or DELETE) is offered only with `allow_write = true`
+- **Typed Parameters**: `$1`, `$2`, … are bound, never inserted into the SQL text, and strings are converted to the column's type
+- **Limits**: Rows per result (1,000), time per statement (30 s), and connections (5) by default
+- **Audit Logging**: Each call is recorded with its SQL; parameter values are not
 
-- **Parameterized Queries**: SQL injection prevention through parameter binding
-- **Transaction Management**: Full ACID compliance with savepoint support
-- **Multiple Isolation Levels**: READ UNCOMMITTED through SERIALIZABLE
-- **Type-Safe Operations**: Rust type system enforces data safety
-- **Comprehensive Testing**: 45+ tests covering security and performance
-
-## **Technical Excellence**
-
-- **Async Architecture**: Built on Tokio for high-performance concurrency
-- **Type Safety**: 100% memory-safe Rust implementation
-- **Comprehensive Testing**: 205+ tests with 100% pass rate
-- **Zero Warnings**: Clean codebase with zero Rust linter warnings
-- **Production Ready**: Optimized build profiles and error handling
-
-## 📊 Quality Metrics
-
-| Metric | Value |
-| ------ | ----- |
-| **Total Tests** | 260+ (100% passing) |
-| **Code Coverage** | Comprehensive |
-| **Security Tests** | 8-layer validation |
-| **Performance** | Production optimized |
-| **Documentation** | Complete API docs |
+Connect with a read-only database role. See the [Database Integration Guide](https://n-takatsu.github.io/mcp-rs/docs/database/).
 
 ## 🚀 Quick Start
 
 ## Prerequisites
 
-- Rust 1.70+ (2021 edition)
+- Rust 1.88 or later (required by dependencies such as `jsonwebtoken` and `time`; the latest stable is recommended)
 - WordPress site with Application Passwords enabled
 - Network access to WordPress REST API
 
 ## Installation
 
-### 🚨 Important Notice for Claude Desktop Users
+### Claude Desktop
 
-**Claude Desktop uses STDIO (standard input/output) communication. Log messages mixed with standard output will break communication, so always use the dedicated configuration.**
+Claude Desktop starts mcp-rs and talks to it over STDIO. In STDIO mode, standard output carries only MCP messages; logs go to a file (and standard error). Add mcp-rs to `claude_desktop_config.json` with absolute paths, and pass credentials in `env`:
 
-```bash
-
-## For Claude Desktop (Important: Use dedicated config)
-
-cargo run -- --config configs/production/claude-desktop.toml
-
-## For Web UI (HTTP access)
-
-cargo run -- --config configs/development/http-transport.toml
+```json
+{
+  "mcpServers": {
+    "mcp-rs": {
+      "command": "/path/to/mcp-rs/target/release/mcp-rs",
+      "args": ["--config", "/path/to/mcp-config.toml"],
+      "env": { "WORDPRESS_PASSWORD": "your application password" }
+    }
+  }
+}
 ```
 
-> 📖 See [Claude Desktop Integration Guide](./project-docs/CLAUDE_DESKTOP_INTEGRATION.md) for detailed configuration.
+> 📖 See [Claude Desktop Integration Guide](./project-docs/CLAUDE_DESKTOP_INTEGRATION.md) (Japanese) for the settings and troubleshooting.
 
 ### Claude Code
 
@@ -184,7 +149,7 @@ username = "your-username"
 password = "your-application-password"   # WordPress Application Password
 ```
 
-Then run `./target/release/mcp-rs --config mcp-config.toml`. To keep the password out of the file, use `${WORDPRESS_PASSWORD}` or [encrypted credentials](https://n-takatsu.github.io/mcp-rs/docs/security/#encrypted-wordpress-credentials). mcp-rs does not start if a `${...}` variable is not set.
+Then run `./target/release/mcp-rs --config mcp-config.toml`. To keep the password out of the file, use `${WORDPRESS_PASSWORD}` or [encrypted credentials](https://n-takatsu.github.io/mcp-rs/docs/security/#encrypted-wordpress-credentials). mcp-rs does not start if a `${...}` variable is not set (in `[database]`, it starts without the database tools instead).
 
 ### HTTP TLS/mTLS Configuration (Optional)
 
@@ -266,84 +231,17 @@ The audit log (who called which tool) is written next to the logs, to `%USERPROF
 
 ## 📚 Documentation
 
-- [🚀 Quick Start Guide](./project-docs/quick-start.md)
-- [🔧 Configuration Reference](./project-docs/configuration.md)
-- [🔒 Security Guide](./project-docs/security.md)
-- [🛡️ RBAC (Role-Based Access Control)](./docs/RBAC.md)
-- [🏗️ Architecture Overview](./project-docs/architecture.md)
-- [📝 API Reference](./project-docs/api-reference.md)
-- [🔄 Claude Desktop Integration](./project-docs/CLAUDE_DESKTOP_INTEGRATION.md)
-- [🔄 Claude Code Integration](./project-docs/CLAUDE_CODE_INTEGRATION.md)
-- [🐳 Docker Guide](./docs/DOCKER_GUIDE.md) ⭐ NEW
+The documentation site is at [n-takatsu.github.io/mcp-rs](https://n-takatsu.github.io/mcp-rs/docs/):
 
-## 🔐 RBAC Quick Start
-
-The database handler includes a Role-Based Access Control (RBAC) system for fine-grained security. Like the rest of the database handler, it is not connected to the `mcp-rs` binary yet ([#453](https://github.com/n-takatsu/mcp-rs/issues/453)).
-
-### Key Features
-
-- **Role Hierarchy**: Inheritance-based permission management
-- **Time-Based Access**: Business hours, emergency access, break periods
-- **IP Restrictions**: CIDR-based network access control
-- **Column-Level Security**: Read/write permissions per column
-- **Row-Level Security**: Ownership-based access control
-- **Data Masking**: Full, Partial, Hash, and Tokenize strategies
-
-### Basic Usage
-
-```rust
-use mcp_rs::handlers::database::integrated_security::*;
-
-// Assign role to user
-security_manager.assign_user_role("user123", "developer").await?;
-
-// Check access (automatically enforces all RBAC policies)
-let context = QueryContext::new();
-context.insert("user_id", "user123");
-context.insert("client_ip", "10.0.1.50");
-
-let decision = security_manager.check_authentication_and_authorization(
-    "user123",
-    "SELECT * FROM users",
-    &context
-).await?;
-
-// Apply data masking
-let masked_email = security_manager.apply_data_masking(
-    "user123",
-    "users",
-    "email",
-    "john.doe@example.com"
-).await?;
-// Result for 'support' role: "joh***************"
-// Result for 'admin' role: "john.doe@example.com"
-```
-
-### Configuration Example
-
-```toml
-[security.rbac]
-enabled = true
-default_role = "read_only"
-
-[security.rbac.roles.developer]
-description = "Developer with limited write access"
-permissions = { "dev_db.*" = ["Read", "Write"] }
-
-[security.rbac.time_based_access]
-enabled = true
-timezone = "UTC"
-
-[security.rbac.time_based_access.business_hours.Monday]
-start = "09:00:00"
-end = "17:00:00"
-
-[security.rbac.ip_restrictions]
-enabled = true
-allowed_ranges = ["10.0.0.0/8", "192.168.1.0/24"]
-```
-
-📖 **Full Documentation**: See [RBAC Guide](./docs/RBAC.md) for comprehensive configuration and usage examples.
+- [WordPress](https://n-takatsu.github.io/mcp-rs/docs/wordpress/)
+- [Database (PostgreSQL)](https://n-takatsu.github.io/mcp-rs/docs/database/)
+- [Plugins](https://n-takatsu.github.io/mcp-rs/docs/plugins/)
+- [Security](https://n-takatsu.github.io/mcp-rs/docs/security/) (HTTP authentication, tool limits, TLS, audit log)
+- [API Reference](https://n-takatsu.github.io/mcp-rs/docs/api/) (`mcp_rs_status` and the MCP methods)
+- [Architecture](https://n-takatsu.github.io/mcp-rs/docs/architecture/)
+- [Claude Desktop Integration](./project-docs/CLAUDE_DESKTOP_INTEGRATION.md) (Japanese)
+- [Claude Code Integration](./project-docs/CLAUDE_CODE_INTEGRATION.md) (Japanese)
+- [Docker Guide](./docs/DOCKER_GUIDE.md)
 
 ## 🛠️ Development
 
@@ -370,14 +268,7 @@ cargo run -- --config configs/development/http-transport.toml
 
 ## Code Examples
 
-The project includes comprehensive examples demonstrating various features:
-
-- **Core Examples**: Located in `examples/` directory
-- **Database Examples**: Located in `examples.disabled/` directory
-  - `mysql_engine_test.rs`: MySQL database engine testing (requires `database` feature)
-  - To use: `cargo run --example mysql_engine_test --features database,mysql-backend`
-
-> **Note**: Database-dependent examples are moved to `examples.disabled/` to ensure CI stability when the `database` feature is not enabled by default.
+Examples are in the `examples/` directory. For example, `cargo run --example wordpress_api_test` checks the connection to the WordPress site given by `WORDPRESS_URL`. When `WORDPRESS_USERNAME` and `WORDPRESS_PASSWORD` are also set, it checks the login and creates a draft post.
 
 ## Testing
 

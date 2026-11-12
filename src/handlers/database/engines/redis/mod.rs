@@ -25,7 +25,6 @@ use chrono::Utc;
 
 /// Redis engine for in-memory data operations
 pub struct RedisEngine {
-    config: RedisConfig,
     connection: RedisConnection,
     command_restrictor: CommandRestrictor,
 }
@@ -58,7 +57,6 @@ impl RedisEngine {
         let command_restrictor = CommandRestrictor::new();
 
         Ok(RedisEngine {
-            config: redis_config,
             connection,
             command_restrictor,
         })

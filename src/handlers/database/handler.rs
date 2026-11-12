@@ -6,23 +6,21 @@ use crate::handlers::database::{
     column_encryption::ColumnEncryptionManager,
     column_provenance::{
         dialect_for, resolve_column_provenance, resolve_query_tables,
-        validate_single_query_statement, ColumnProvenance, ProjectionResolution,
+        validate_single_query_statement, validate_single_write_statement, ColumnProvenance,
+        ProjectionResolution,
     },
     engine::{DatabaseEngine, DatabaseEngineBuilder, EngineRegistry},
     pool::{ConnectionPool, PoolManager},
-    safety::{SafetyError, SafetyManager}, // 安全機構を追加
-    security::DatabaseSecurity,
     types::{
         DatabaseConfig, DatabaseError, DatabaseType, ExecuteResult, QueryContext, QueryResult,
         QueryType, Value,
     },
 };
 use crate::mcp::{
-    InitializeParams, McpError, McpHandler, Resource, ResourceReadParams, Tool, ToolCallParams,
+    InitializeParams, McpError, McpHandler, Resource, ResourceReadParams, Tool, ToolAnnotations,
+    ToolCallParams,
 };
 use crate::security::auth::types::{AuthUser, Role};
-// use crate::threat_intelligence::ThreatDetectionEngine;
-use crate::handlers::database::security::ThreatDetectionEngine;
 use crate::zero_trust::{micro_segmentation::MicroSegmentation, AccessRequest, TrustScore};
 use async_trait::async_trait;
 use base64::prelude::*;
@@ -64,19 +62,6 @@ pub struct DatabaseHandler {
     active_engine: Arc<RwLock<Option<String>>>,
     /// データベース設定
     configs: Arc<RwLock<HashMap<String, DatabaseConfig>>>,
-    /// セキュリティレイヤー
-    ///
-    /// 構築はされるが、現状`handle_execute_query`などクエリ実行パスの
-    /// どこからも参照されていない。カラムレベル暗号化・マスキングは
-    /// `DatabaseSecurity`とは別の`column_encryption`フィールド経由で
-    /// クエリ実行パスに組み込まれている（`execute_query_core`での
-    /// 事前検証と`apply_column_encryption`参照）。`DatabaseSecurity`
-    /// 自体の適用は未実施のまま。
-    security: Arc<DatabaseSecurity>,
-    /// 脅威インテリジェンス
-    threat_intelligence: Option<Arc<ThreatDetectionEngine>>,
-    /// 安全機構マネージャー
-    safety_manager: Arc<SafetyManager>,
     /// カラムレベル暗号化マネージャー（未設定ならこのハンドラでは暗号化列の
     /// 強制を一切行わない - 既存の呼び出し元には影響しないオプトイン機能）
     column_encryption: Option<Arc<ColumnEncryptionManager>>,
@@ -86,29 +71,219 @@ pub struct DatabaseHandler {
     /// は元々コードベースのどこからも参照されていなかった実装済みロジック
     /// で、Issue #226でこの経路に配線した。
     micro_segmentation: Option<Arc<MicroSegmentation>>,
+    /// ツールの設定（書き込みを許すか、返す行数の上限、#453）
+    tool_options: DatabaseToolOptions,
+    /// ツール呼び出しを記録する監査ログ（#453。WordPressと同じもの）
+    audit_logger: Option<Arc<crate::security::AuditLogger>>,
+    /// `mcp_rs_status`に出す1行（接続先。パスワードは含めない）
+    status_line: Option<String>,
 }
+
+/// データベースのツールの設定（#453）
+#[derive(Debug, Clone)]
+pub struct DatabaseToolOptions {
+    /// 書き込みのツール（`execute_command`）を出すか。既定は`false`
+    pub allow_write: bool,
+    /// `execute_query`が返す行数の上限。超えた分は返さず、`truncated`を
+    /// `true`にする
+    pub max_rows: usize,
+}
+
+impl Default for DatabaseToolOptions {
+    fn default() -> Self {
+        Self {
+            allow_write: false,
+            max_rows: 1000,
+        }
+    }
+}
+
+/// 監査ログに記録するSQLの長さの上限（文字数）
+const MAX_AUDITED_SQL_CHARS: usize = 2000;
 
 impl DatabaseHandler {
     /// 新しいデータベースハンドラーを作成
-    pub async fn new(
-        threat_intelligence: Option<Arc<ThreatDetectionEngine>>,
-    ) -> Result<Self, DatabaseError> {
-        let security = Arc::new(DatabaseSecurity::new(
-            Default::default(), // デフォルトセキュリティ設定
-            threat_intelligence.clone(),
-        ));
-
+    ///
+    /// 以前は`new(threat_intelligence)`で、`DatabaseSecurity`（正規表現での
+    /// SQLインジェクション検知等）・`SafetyManager`を作っていたが、クエリの
+    /// 実行ではどれも使っていなかったため削除した（#499）。このハンドラーの
+    /// 安全性は、読み取り専用のロール・文の種類の検査（SELECTだけ、
+    /// `allow_write`のときだけ書き込み）・カラム暗号化・マイクロ
+    /// セグメンテーションによる。
+    pub async fn new() -> Result<Self, DatabaseError> {
         Ok(Self {
             engines: Arc::new(RwLock::new(EngineRegistry::new())),
             pool_manager: Arc::new(PoolManager::new()),
             active_engine: Arc::new(RwLock::new(None)),
             configs: Arc::new(RwLock::new(HashMap::new())),
-            security,
-            threat_intelligence,
-            safety_manager: Arc::new(SafetyManager::new()),
             column_encryption: None,
             micro_segmentation: None,
+            tool_options: DatabaseToolOptions::default(),
+            audit_logger: None,
+            status_line: None,
         })
+    }
+
+    /// 設定ファイルの`[database]`から作り、つながるかを確かめる（#453）。
+    /// 失敗したら、起動時のログと`mcp_rs_status`に出す理由を返す（パスワード
+    /// は含めない）
+    pub async fn from_settings(settings: &crate::config::DatabaseSettings) -> Result<Self, String> {
+        use crate::handlers::database::types::{ConnectionConfig, FeatureConfig, PoolConfig};
+
+        settings.validate()?;
+        let max_rows = settings.max_rows() as usize;
+        let mut options = HashMap::new();
+        // 上限より1行多く読み、超えたかを知る
+        options.insert(
+            crate::handlers::database::engines::postgresql::OPTION_FETCH_LIMIT.to_string(),
+            (max_rows + 1).to_string(),
+        );
+        let config = DatabaseConfig {
+            database_type: DatabaseType::PostgreSQL,
+            connection: ConnectionConfig {
+                host: settings.host().to_string(),
+                port: settings.port(),
+                database: settings.database.clone(),
+                username: settings.username.clone(),
+                password: settings.password.clone().unwrap_or_default(),
+                ssl_mode: settings.ssl_mode.clone(),
+                timeout_seconds: 10,
+                retry_attempts: 0,
+                options,
+            },
+            pool: PoolConfig {
+                max_connections: settings.max_connections(),
+                min_connections: 0,
+                ..PoolConfig::default()
+            },
+            features: FeatureConfig {
+                query_timeout: settings.query_timeout_seconds(),
+                ..FeatureConfig::default()
+            },
+            ..DatabaseConfig::default()
+        };
+
+        let handler = Self::new()
+            .await
+            .map_err(|e| e.to_string())?
+            .with_tool_options(DatabaseToolOptions {
+                allow_write: settings.allow_write(),
+                max_rows,
+            })
+            .with_status_line(settings.describe());
+        handler
+            .add_database("postgresql".to_string(), config)
+            .await
+            .map_err(|e| format!("cannot set up {}: {}", settings.describe(), e))?;
+        handler
+            .check_connection()
+            .await
+            .map_err(|e| format!("cannot connect to {}: {}", settings.describe(), e))?;
+        Ok(handler)
+    }
+
+    /// ツールの設定（ビルダースタイル、#453）
+    pub fn with_tool_options(mut self, options: DatabaseToolOptions) -> Self {
+        self.tool_options = options;
+        self
+    }
+
+    /// ツール呼び出しを監査ログに記録する（ビルダースタイル、#453）
+    pub fn with_audit_logger(mut self, audit_logger: Arc<crate::security::AuditLogger>) -> Self {
+        self.audit_logger = Some(audit_logger);
+        self
+    }
+
+    /// `mcp_rs_status`に出す1行（ビルダースタイル、#453）
+    pub fn with_status_line(mut self, line: impl Into<String>) -> Self {
+        self.status_line = Some(line.into());
+        self
+    }
+
+    /// 登録したデータベースにつながるかを確かめる（起動時、#453）
+    pub async fn check_connection(&self) -> Result<(), DatabaseError> {
+        let (_, config, pool) = self.resolve_engine(None).await?;
+        let connection = pool.get_connection(&config).await?;
+        connection.inner().ping().await
+    }
+
+    /// 使うエンジンのID・設定・プールを決める。`engine`が無ければ、
+    /// アクティブなエンジン（#453。以前は`unwrap`で、エンジンが無いと
+    /// パニックした）
+    async fn resolve_engine(
+        &self,
+        engine: Option<&str>,
+    ) -> Result<(String, DatabaseConfig, Arc<ConnectionPool>), DatabaseError> {
+        let engine_id = match engine {
+            Some(id) => id.to_string(),
+            None => self.active_engine.read().await.clone().ok_or_else(|| {
+                DatabaseError::ConfigurationError("No active database engine".to_string())
+            })?,
+        };
+        let config = self
+            .configs
+            .read()
+            .await
+            .get(&engine_id)
+            .cloned()
+            .ok_or_else(|| {
+                DatabaseError::ConfigurationError(format!(
+                    "Configuration not found for engine: {engine_id}"
+                ))
+            })?;
+        let pool = self
+            .pool_manager
+            .get_pool(&engine_id)
+            .await
+            .ok_or_else(|| DatabaseError::PoolError(format!("Pool not found: {engine_id}")))?;
+        Ok((engine_id, config, pool))
+    }
+
+    /// ツール呼び出しを監査ログに記録する（#453）。成功・失敗とも記録する。
+    /// SQLは長さを切って記録し、パラメーターの値は記録しない
+    async fn audit_tool_call(
+        &self,
+        tool_name: &str,
+        sql: Option<&str>,
+        result: &Result<JsonValue, McpError>,
+        started: std::time::Instant,
+    ) {
+        let Some(audit_logger) = &self.audit_logger else {
+            return;
+        };
+        use crate::security::{AuditCategory, AuditLevel, AuditLogEntry};
+        let success = result.is_ok();
+        let outcome = if success { "SUCCESS" } else { "FAILURE" };
+        let mut entry = AuditLogEntry::new(
+            if success {
+                AuditLevel::Info
+            } else {
+                AuditLevel::Error
+            },
+            AuditCategory::DataAccess,
+            format!("Database tool call: {} - {}", tool_name, outcome),
+        )
+        .with_action(
+            self.status_line
+                .clone()
+                .unwrap_or_else(|| "database".to_string()),
+            tool_name.to_string(),
+        )
+        .with_result(outcome.to_string());
+        if let Some(sql) = sql {
+            let mut text: String = sql.chars().take(MAX_AUDITED_SQL_CHARS).collect();
+            if sql.chars().count() > MAX_AUDITED_SQL_CHARS {
+                text.push('…');
+            }
+            entry = entry.add_metadata("sql".to_string(), text);
+        }
+        if let Err(e) = result {
+            entry = entry.add_metadata("error".to_string(), e.to_string());
+        }
+        let entry = crate::mcp::audit_tool_call_context(entry, started);
+        if let Err(e) = audit_logger.log(entry).await {
+            warn!("Failed to write audit log entry for {}: {}", tool_name, e);
+        }
     }
 
     /// カラムレベル暗号化＋RBACを有効化する（ビルダースタイル）
@@ -176,23 +351,6 @@ impl DatabaseHandler {
         *active = Some(engine_id.to_string());
 
         Ok(())
-    }
-
-    /// アクティブなプールを取得
-    async fn get_active_pool(&self) -> Result<Arc<ConnectionPool>, DatabaseError> {
-        let active_id = {
-            let active = self.active_engine.read().await;
-            active.clone()
-        };
-
-        let engine_id = active_id.ok_or_else(|| {
-            DatabaseError::ConfigurationError("No active database engine".to_string())
-        })?;
-
-        self.pool_manager
-            .get_pool(&engine_id)
-            .await
-            .ok_or_else(|| DatabaseError::PoolError(format!("Pool not found: {}", engine_id)))
     }
 
     /// クエリ実行処理（`McpHandler::call_tool`経由 - 呼び出し元の識別子は
@@ -377,8 +535,19 @@ impl DatabaseHandler {
             Self::apply_column_encryption(&manager, resolution, &mut result, auth_user).await?;
         }
 
+        // 返す行数の上限（#453）。接続は上限より1行多く読むので、超えたかが
+        // 分かる
+        let max_rows = self.tool_options.max_rows;
+        let truncated = result.rows.len() > max_rows;
+        if truncated {
+            result.rows.truncate(max_rows);
+            result.total_rows = Some(max_rows as u64);
+        }
+
         // 結果をJSON形式で返す
         Ok(json!({
+            "truncated": truncated,
+            "max_rows": max_rows,
             "columns": result.columns.iter().map(|col| json!({
                 "name": col.name,
                 "type": col.data_type,
@@ -507,12 +676,18 @@ impl DatabaseHandler {
         Ok(())
     }
 
-    /// コマンド実行処理
+    /// コマンド実行処理（INSERT・UPDATE・DELETE）。`allow_write`のときだけ
+    /// ツールとして出す（#453）
     async fn handle_execute_command(&self, args: JsonValue) -> Result<JsonValue, McpError> {
+        if !self.tool_options.allow_write {
+            return Err(McpError::InvalidRequest(
+                "execute_command is disabled: the database is read-only (set allow_write = true in [database] to allow INSERT, UPDATE, and DELETE)".to_string(),
+            ));
+        }
         let sql: String = args
             .get("sql")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| McpError::InvalidRequest("Missing 'sql' parameter".to_string()))?
+            .ok_or_else(|| McpError::InvalidParams("Missing 'sql' parameter".to_string()))?
             .to_string();
 
         let params: Vec<Value> = if let Some(params_json) = args.get("params") {
@@ -521,29 +696,24 @@ impl DatabaseHandler {
             Vec::new()
         };
 
-        // 接続プールから接続を取得
-        let pool = self
-            .get_active_pool()
+        let (_, config, pool) = self
+            .resolve_engine(None)
             .await
             .map_err(|e| McpError::Internal(e.to_string()))?;
-
-        let config = {
-            let configs = self.configs.read().await;
-            let active_id = self.active_engine.read().await;
-            configs.get(active_id.as_ref().unwrap()).unwrap().clone()
-        };
+        // 1つのINSERT・UPDATE・DELETEだけ（DDL・権限の変更等は受け付けない）
+        let dialect = dialect_for(config.database_type.clone());
+        validate_single_write_statement(&sql, dialect.as_ref())
+            .map_err(|e| McpError::InvalidParams(e.to_string()))?;
 
         let connection = pool
             .get_connection(&config)
             .await
-            .map_err(|e| McpError::Internal(e.to_string()))?;
-
-        // コマンド実行
+            .map_err(|e| McpError::ExternalApi(e.to_string()))?;
         let result = connection
             .inner()
             .execute(&sql, &params)
             .await
-            .map_err(|e| McpError::ToolNotFound(e.to_string()))?;
+            .map_err(|e| McpError::ExternalApi(e.to_string()))?;
 
         // 結果をJSON形式で返す
         Ok(json!({
@@ -554,35 +724,22 @@ impl DatabaseHandler {
     }
 
     /// スキーマ取得処理
-    async fn handle_get_schema(&self, args: JsonValue) -> Result<JsonValue, McpError> {
-        let _schema_name: Option<String> = args
-            .get("schema_name")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-
-        // 接続プールから接続を取得
-        let pool = self
-            .get_active_pool()
+    async fn handle_get_schema(&self, _args: JsonValue) -> Result<JsonValue, McpError> {
+        let (_, config, pool) = self
+            .resolve_engine(None)
             .await
             .map_err(|e| McpError::Internal(e.to_string()))?;
-
-        let config = {
-            let configs = self.configs.read().await;
-            let active_id = self.active_engine.read().await;
-            configs.get(active_id.as_ref().unwrap()).unwrap().clone()
-        };
-
         let connection = pool
             .get_connection(&config)
             .await
-            .map_err(|e| McpError::Internal(e.to_string()))?;
+            .map_err(|e| McpError::ExternalApi(e.to_string()))?;
 
         // スキーマ取得
         let schema = connection
             .inner()
             .get_schema()
             .await
-            .map_err(|e| McpError::ToolNotFound(e.to_string()))?;
+            .map_err(|e| McpError::ExternalApi(e.to_string()))?;
 
         // 結果をJSON形式で返す
         Ok(json!({
@@ -632,49 +789,6 @@ impl DatabaseHandler {
             })).collect::<Vec<_>>()
         }))
     }
-
-    /// トランザクション開始処理
-    async fn handle_begin_transaction(&self, args: JsonValue) -> Result<JsonValue, McpError> {
-        let _isolation_level: Option<String> = args
-            .get("isolation_level")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-
-        // 接続プールから接続を取得
-        let pool = self
-            .get_active_pool()
-            .await
-            .map_err(|e| McpError::Internal(e.to_string()))?;
-
-        let config = {
-            let configs = self.configs.read().await;
-            let active_id = self.active_engine.read().await;
-            configs.get(active_id.as_ref().unwrap()).unwrap().clone()
-        };
-
-        let connection = pool
-            .get_connection(&config)
-            .await
-            .map_err(|e| McpError::Internal(e.to_string()))?;
-
-        // トランザクション開始
-        let transaction = connection
-            .inner()
-            .begin_transaction()
-            .await
-            .map_err(|e| McpError::ToolNotFound(e.to_string()))?;
-
-        let transaction_info = transaction.transaction_info();
-
-        // トランザクション情報を返す
-        Ok(json!({
-            "transaction_id": transaction_info.transaction_id,
-            "isolation_level": format!("{}", transaction_info.isolation_level),
-            "started_at": transaction_info.started_at,
-            "is_read_only": transaction_info.is_read_only
-        }))
-    }
-
     /// パラメータをパース
     fn parse_parameters(&self, params_json: &JsonValue) -> Result<Vec<Value>, McpError> {
         if let Some(array) = params_json.as_array() {
@@ -742,181 +856,131 @@ impl McpHandler for DatabaseHandler {
     }
 
     async fn list_tools(&self) -> Result<Vec<Tool>, McpError> {
-        Ok(vec![
+        let params_schema = json!({
+            "type": "array",
+            "description": "Values for $1, $2, ... in the SQL (bound as parameters, never inserted into the SQL text). Strings are converted to the type PostgreSQL expects for that parameter (uuid, date, timestamp, numeric, json, bytea as base64, ...), so values returned by execute_query can be passed back as they are. Strings also work for text and enum columns. For other types (interval, money, inet, arrays, ...), pass a string and cast it through text in the SQL, e.g. $1::text::interval",
+            "items": {
+                "type": ["null", "boolean", "number", "string"]
+            }
+        });
+        let max_rows = self.tool_options.max_rows;
+        let mut tools = vec![
             Tool {
                 name: "execute_query".to_string(),
-                description: "Execute SELECT query and return results".to_string(),
+                title: Some("Run a read-only SQL query".to_string()),
+                description: format!(
+                    "Run one SELECT statement on the configured database and return the rows as JSON. \
+                     It runs in a read-only transaction that is rolled back, so it cannot change data. \
+                     At most {max_rows} rows are returned (truncated is true when there were more): \
+                     use LIMIT, WHERE, or aggregates for large tables. Values of types that cannot be \
+                     shown are replaced by a note; cast such columns to text."
+                ),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
                         "sql": {
                             "type": "string",
-                            "description": "SQL query to execute (SELECT statements only)"
+                            "description": "One SELECT statement (WITH ... SELECT is allowed; INSERT/UPDATE/DELETE, also inside WITH, are not)"
                         },
-                        "params": {
-                            "type": "array",
-                            "description": "Query parameters for prepared statements",
-                            "items": {
-                                "oneOf": [
-                                    {"type": "null"},
-                                    {"type": "boolean"},
-                                    {"type": "number"},
-                                    {"type": "string"}
-                                ]
-                            }
-                        },
-                        "engine": {
-                            "type": "string",
-                            "description": "Database engine to use (optional, uses active engine if not specified)"
-                        }
+                        "params": params_schema.clone()
                     },
                     "required": ["sql"]
                 }),
-                ..Default::default()
-            },
-            Tool {
-                name: "execute_command".to_string(),
-                description: "Execute INSERT/UPDATE/DELETE command".to_string(),
-                input_schema: json!({
-                    "type": "object",
-                    "properties": {
-                        "sql": {
-                            "type": "string",
-                            "description": "SQL command to execute (INSERT/UPDATE/DELETE statements)"
-                        },
-                        "params": {
-                            "type": "array",
-                            "description": "Command parameters for prepared statements",
-                            "items": {
-                                "oneOf": [
-                                    {"type": "null"},
-                                    {"type": "boolean"},
-                                    {"type": "number"},
-                                    {"type": "string"}
-                                ]
-                            }
-                        },
-                        "engine": {
-                            "type": "string",
-                            "description": "Database engine to use (optional)"
-                        }
-                    },
-                    "required": ["sql"]
+                annotations: Some(ToolAnnotations {
+                    read_only_hint: Some(true),
+                    open_world_hint: Some(false),
+                    ..Default::default()
                 }),
                 ..Default::default()
             },
             Tool {
                 name: "get_schema".to_string(),
-                description: "Get database schema information".to_string(),
-                input_schema: json!({
-                    "type": "object",
-                    "properties": {
-                        "schema_name": {
-                            "type": "string",
-                            "description": "Specific schema name (optional, returns all schemas if not specified)"
-                        },
-                        "engine": {
-                            "type": "string",
-                            "description": "Database engine to use (optional)"
-                        }
-                    }
-                }),
-                ..Default::default()
-            },
-            Tool {
-                name: "begin_transaction".to_string(),
-                description: "Begin database transaction".to_string(),
-                input_schema: json!({
-                    "type": "object",
-                    "properties": {
-                        "isolation_level": {
-                            "type": "string",
-                            "enum": ["READ_UNCOMMITTED", "READ_COMMITTED", "REPEATABLE_READ", "SERIALIZABLE"],
-                            "description": "Transaction isolation level (optional, defaults to READ_COMMITTED)"
-                        },
-                        "engine": {
-                            "type": "string",
-                            "description": "Database engine to use (optional)"
-                        }
-                    }
-                }),
-                ..Default::default()
-            },
-            Tool {
-                name: "list_engines".to_string(),
-                description: "List available database engines and their status".to_string(),
+                title: Some("Show the database schema".to_string()),
+                description: "List the tables of the configured database (schema public) with their columns, types, and primary keys.".to_string(),
                 input_schema: json!({
                     "type": "object",
                     "properties": {}
                 }),
-                ..Default::default()
-            },
-            Tool {
-                name: "switch_engine".to_string(),
-                description: "Switch active database engine".to_string(),
-                input_schema: json!({
-                    "type": "object",
-                    "properties": {
-                        "engine_id": {
-                            "type": "string",
-                            "description": "ID of the engine to switch to"
-                        }
-                    },
-                    "required": ["engine_id"]
+                annotations: Some(ToolAnnotations {
+                    read_only_hint: Some(true),
+                    open_world_hint: Some(false),
+                    ..Default::default()
                 }),
                 ..Default::default()
             },
-        ])
+        ];
+        if self.tool_options.allow_write {
+            tools.push(Tool {
+                name: "execute_command".to_string(),
+                title: Some("Change data with SQL".to_string()),
+                description: "Run one INSERT, UPDATE, or DELETE statement on the configured database and commit it. Returns the number of affected rows. Other statements (CREATE, DROP, ALTER, TRUNCATE, GRANT, ...) are refused.".to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "sql": {
+                            "type": "string",
+                            "description": "One INSERT, UPDATE, or DELETE statement"
+                        },
+                        "params": params_schema
+                    },
+                    "required": ["sql"]
+                }),
+                annotations: Some(ToolAnnotations {
+                    read_only_hint: Some(false),
+                    destructive_hint: Some(true),
+                    idempotent_hint: Some(false),
+                    open_world_hint: Some(false),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            });
+        }
+        Ok(tools)
     }
 
     async fn call_tool(&self, params: ToolCallParams) -> Result<JsonValue, McpError> {
+        let started = std::time::Instant::now();
         let args = params.arguments.clone().unwrap_or_default();
         let args_json =
             serde_json::to_value(&args).map_err(|e| McpError::InvalidParams(e.to_string()))?;
+        let sql = args_json
+            .get("sql")
+            .and_then(JsonValue::as_str)
+            .map(str::to_string);
 
-        match params.name.as_str() {
-            "execute_query" => self.handle_execute_query(args_json).await,
+        let result = match params.name.as_str() {
+            // ツールとしては`engine`を出さない（設定のデータベースだけを使う）
+            "execute_query" => {
+                let mut args = args_json.clone();
+                if let Some(object) = args.as_object_mut() {
+                    object.remove("engine");
+                }
+                self.handle_execute_query(args).await
+            }
             "execute_command" => self.handle_execute_command(args_json).await,
             "get_schema" => self.handle_get_schema(args_json).await,
-            "begin_transaction" => self.handle_begin_transaction(args_json).await,
-            "list_engines" => {
-                let engines = self.engines.read().await;
-                let active_id = self.active_engine.read().await;
-
-                Ok(json!({
-                    "engines": engines.available_types().iter().map(|t| json!({
-                        "type": format!("{}", t),
-                        "is_active": active_id.as_ref().is_some_and(|id| id.contains(&format!("{}", t)))
-                    })).collect::<Vec<_>>(),
-                    "active_engine": active_id.clone()
-                }))
+            _ => {
+                return Err(McpError::ToolNotFound(format!(
+                    "Unknown tool: {}",
+                    params.name
+                )))
             }
-            "switch_engine" => {
-                let args = params.arguments.clone().unwrap_or_default();
-                let engine_id: String = args
-                    .get("engine_id")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| {
-                        McpError::InvalidRequest("Missing 'engine_id' parameter".to_string())
-                    })?
-                    .to_string();
-
-                self.switch_engine(&engine_id)
-                    .await
-                    .map_err(|e| McpError::ToolNotFound(e.to_string()))?;
-
-                Ok(json!({
-                    "success": true,
-                    "active_engine": engine_id
-                }))
-            }
-            _ => Err(McpError::InvalidRequest(format!(
-                "Unknown tool: {}",
-                params.name
-            ))),
-        }
+        };
+        self.audit_tool_call(&params.name, sql.as_deref(), &result, started)
+            .await;
+        // MCPのツールの結果（CallToolResult）にする。JSONを本文に入れる
+        let value = result?;
+        let text =
+            serde_json::to_string_pretty(&value).map_err(|e| McpError::Internal(e.to_string()))?;
+        Ok(json!({
+            "content": [{ "type": "text", "text": text }],
+            "isError": false
+        }))
     }
 
+    async fn status(&self) -> Option<String> {
+        self.status_line.clone()
+    }
     async fn list_resources(&self) -> Result<Vec<Resource>, McpError> {
         // データベーススキーマをリソースとして公開
         Ok(vec![Resource {
@@ -929,7 +993,19 @@ impl McpHandler for DatabaseHandler {
 
     async fn read_resource(&self, params: ResourceReadParams) -> Result<JsonValue, McpError> {
         match params.uri.as_str() {
-            "db://schema" => self.handle_get_schema(json!({})).await,
+            // MCPのリソースの結果（ReadResourceResult）にする（#453）
+            "db://schema" => {
+                let schema = self.handle_get_schema(json!({})).await?;
+                let text = serde_json::to_string_pretty(&schema)
+                    .map_err(|e| McpError::Internal(e.to_string()))?;
+                Ok(json!({
+                    "contents": [{
+                        "uri": "db://schema",
+                        "mimeType": "application/json",
+                        "text": text
+                    }]
+                }))
+            }
             _ => Err(McpError::InvalidRequest(format!(
                 "Unknown resource: {}",
                 params.uri

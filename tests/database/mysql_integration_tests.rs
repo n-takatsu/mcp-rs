@@ -2,7 +2,7 @@
 //!
 //! Comprehensive tests for MySQL database operations
 
-#![cfg(feature = "database")]
+#![cfg(feature = "mysql-backend")]
 
 #[cfg(test)]
 mod tests {
@@ -40,7 +40,7 @@ mod tests {
     #[ignore] // Requires running MySQL server
     async fn test_mysql_engine_creation() {
         let config = create_test_config();
-        let result = MySqlEngine::new_without_security(config).await;
+        let result = MySqlEngine::new(config).await;
         assert!(result.is_ok());
 
         let engine = result.unwrap();
@@ -51,9 +51,7 @@ mod tests {
     #[ignore] // Requires running MySQL server
     async fn test_mysql_connection() {
         let config = create_test_config();
-        let engine = MySqlEngine::new_without_security(config.clone())
-            .await
-            .unwrap();
+        let engine = MySqlEngine::new(config.clone()).await.unwrap();
 
         let connection = engine.connect(&config).await;
         assert!(connection.is_ok());
@@ -63,9 +61,7 @@ mod tests {
     #[ignore] // Requires running MySQL server
     async fn test_mysql_simple_query() {
         let config = create_test_config();
-        let engine = MySqlEngine::new_without_security(config.clone())
-            .await
-            .unwrap();
+        let engine = MySqlEngine::new(config.clone()).await.unwrap();
 
         let connection = engine.connect(&config).await.unwrap();
 
@@ -82,9 +78,7 @@ mod tests {
     #[ignore] // Requires running MySQL server
     async fn test_mysql_parameterized_query() {
         let config = create_test_config();
-        let engine = MySqlEngine::new_without_security(config.clone())
-            .await
-            .unwrap();
+        let engine = MySqlEngine::new(config.clone()).await.unwrap();
 
         let connection = engine.connect(&config).await.unwrap();
 
@@ -103,9 +97,7 @@ mod tests {
     #[ignore] // Requires running MySQL server
     async fn test_mysql_execute() {
         let config = create_test_config();
-        let engine = MySqlEngine::new_without_security(config.clone())
-            .await
-            .unwrap();
+        let engine = MySqlEngine::new(config.clone()).await.unwrap();
 
         let connection = engine.connect(&config).await.unwrap();
 
@@ -124,9 +116,7 @@ mod tests {
     #[ignore] // Requires running MySQL server
     async fn test_mysql_insert_and_select() {
         let config = create_test_config();
-        let engine = MySqlEngine::new_without_security(config.clone())
-            .await
-            .unwrap();
+        let engine = MySqlEngine::new(config.clone()).await.unwrap();
 
         let connection = engine.connect(&config).await.unwrap();
 
@@ -171,9 +161,7 @@ mod tests {
     #[ignore] // Requires running MySQL server
     async fn test_mysql_transaction_commit() {
         let config = create_test_config();
-        let engine = MySqlEngine::new_without_security(config.clone())
-            .await
-            .unwrap();
+        let engine = MySqlEngine::new(config.clone()).await.unwrap();
 
         let connection = engine.connect(&config).await.unwrap();
 
@@ -208,9 +196,7 @@ mod tests {
     #[ignore] // Requires running MySQL server
     async fn test_mysql_transaction_rollback() {
         let config = create_test_config();
-        let engine = MySqlEngine::new_without_security(config.clone())
-            .await
-            .unwrap();
+        let engine = MySqlEngine::new(config.clone()).await.unwrap();
 
         let connection = engine.connect(&config).await.unwrap();
 
@@ -243,9 +229,7 @@ mod tests {
     #[ignore] // Requires running MySQL server
     async fn test_mysql_ping() {
         let config = create_test_config();
-        let engine = MySqlEngine::new_without_security(config.clone())
-            .await
-            .unwrap();
+        let engine = MySqlEngine::new(config.clone()).await.unwrap();
 
         let connection = engine.connect(&config).await.unwrap();
 
@@ -257,9 +241,7 @@ mod tests {
     #[ignore] // Requires running MySQL server
     async fn test_mysql_connection_info() {
         let config = create_test_config();
-        let engine = MySqlEngine::new_without_security(config.clone())
-            .await
-            .unwrap();
+        let engine = MySqlEngine::new(config.clone()).await.unwrap();
 
         let connection = engine.connect(&config).await.unwrap();
 
@@ -273,7 +255,7 @@ mod tests {
     #[ignore] // Requires running MySQL server
     async fn test_mysql_health_check() {
         let config = create_test_config();
-        let engine = MySqlEngine::new_without_security(config).await.unwrap();
+        let engine = MySqlEngine::new(config).await.unwrap();
 
         let health = engine.health_check().await;
         assert!(health.is_ok());
@@ -287,7 +269,7 @@ mod tests {
     #[ignore] // Requires running MySQL server
     async fn test_mysql_supported_features() {
         let config = create_test_config();
-        let engine = MySqlEngine::new_without_security(config).await.unwrap();
+        let engine = MySqlEngine::new(config).await.unwrap();
 
         use mcp_rs::handlers::database::types::DatabaseFeature;
         let features = engine.supported_features();
@@ -299,9 +281,7 @@ mod tests {
     #[tokio::test]
     async fn test_mysql_config_validation() {
         let config = create_test_config();
-        let engine = MySqlEngine::new_without_security(config.clone())
-            .await
-            .unwrap();
+        let engine = MySqlEngine::new(config.clone()).await.unwrap();
 
         let validation = engine.validate_config(&config);
         assert!(validation.is_ok());

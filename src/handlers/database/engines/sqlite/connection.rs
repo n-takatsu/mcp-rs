@@ -163,21 +163,6 @@ impl SqliteConnection {
             }
         }
     }
-
-    /// Convert Value to sqlx parameter
-    fn value_to_param(value: &Value) -> Box<dyn sqlx::Encode<'_, sqlx::Sqlite> + Send + '_> {
-        match value {
-            Value::Null => Box::new(None::<i64>),
-            Value::Bool(b) => Box::new(*b as i64),
-            Value::Int(i) => Box::new(*i),
-            Value::Float(f) => Box::new(*f),
-            Value::String(s) => Box::new(s.as_str()),
-            Value::Binary(b) => Box::new(b.as_slice()),
-            Value::DateTime(dt) => Box::new(dt.to_rfc3339()),
-            Value::Json(j) => Box::new(j.to_string()),
-            // Uuid not supported in current Value enum
-        }
-    }
 }
 
 #[async_trait]

@@ -1,50 +1,31 @@
 # mcp-rs
 
-🚀 **本番対応** Model Context Protocol (MCP) の Rust 実装。WordPress とそれ以外のシステムとの AI エージェント統合を実現します。
+AIのクライアントに、WordPress・PostgreSQL・外部のMCPプラグインのツールを提供する、Model Context Protocol（MCP）のサーバーのRust実装です。
 
 > **[日本語](README.ja.md)** | **[English](README.md)**
 
-[![Version](https://img.shields.io/badge/Version-v0.22.0-blue)](https://github.com/n-takatsu/mcp-rs/releases/tag/v0.22.0)
-![Architecture](https://img.shields.io/badge/Architecture-Production--Ready-green)
+[![Version](https://img.shields.io/badge/Version-v0.23.0-blue)](https://github.com/n-takatsu/mcp-rs/releases/tag/v0.23.0)
 ![Implementation](https://img.shields.io/badge/WordPress_Tools-32_Available-green)
 ![License](https://img.shields.io/badge/License-MIT%2FApache--2.0-green)
 
 ## 概要
 
-`mcp-rs` は、**包括的で実戦テスト済み**の MCP（Model Context Protocol）の Rust 実装で、**完全な WordPress 統合**を提供します。レイヤード・アーキテクチャで構築され、AI エージェントが標準化された JSON-RPC インターフェースを通じて高度なコンテンツ管理を実行できるようにします。このフレームワークは 32 の WordPress ツール、エンタープライズレベルのセキュリティ、強力な型安全性を備え、GitHub Copilot や他の AI コーディングアシスタントでの本番利用に最適化されています。
+`mcp-rs`はRustで書かれたMCPのサーバーです。Claude Desktop・Claude Code等のMCPのクライアントはSTDIOで、それ以外のクライアントはHTTPでつなぎます。次の機能があります。
 
-## 🎯 対象ユーザー
-
-## **AI 開発者** 🤖
-
-Claude Desktop アプリ、GPT 統合、カスタム AI エージェントを構築していますか？ mcp-rs は包括的な WordPress ツールを備えた本番対応の Model Context Protocol 実装を提供します。
-
-## **エンタープライズ WordPress チーム** 🏢
-
-大規模な WordPress デプロイメントを管理していますか？エンタープライズグレードのセキュリティ、自動化されたコンテンツ管理、シームレスな CI/CD 統合を取得できます。
-
-## **DevOps エンジニア** ⚙️
-
-WordPress 運用を自動化していますか？包括的なヘルスチェック、監視、本番対応のエラーハンドリングを備えた 32 の実戦テスト済みツールを利用できます。
-
-## **Rust 愛好者** 🦀
-
-高品質な Rust コードベースに貢献したいですか？クリーンなアーキテクチャと包括的なドキュメントを備えた、205+ テスト、警告ゼロのプロジェクトにご参加ください。
-
-## **セキュリティチーム** 🔒
-
-mcp-rsをHTTPで公開しますか？APIキーやOAuth 2.1のトークンで認証し、呼び出し元ごとに使えるツールを絞り、すべてのツールの呼び出しを監査ログに残せます。
+- WordPress REST APIを使う32のツール（投稿・固定ページ・メディア・カテゴリ・タグ・コメント・サイト設定）
+- 1つのPostgreSQLのデータベースを読むSQLのツール（書き込みは許したときだけ）
+- プラグインとして起動した外部のMCPサーバーのツール（子プロセス・Dockerのコンテナ・KubernetesのJob）
+- HTTPモード向け: APIキー・OAuth 2.1の認証、呼び出し元ごとのツールの制限、TLS・mTLS、レート制限、監査ログ
 
 ## 🚀 主要機能
 
 ## **コア機能**
 
-- **JSON-RPC 2.0 サーバー**: `axum` を使用したフル機能 JSON-RPC サーバー実装
-- **マルチトランスポート対応**: STDIO、HTTP、WebSocket 通信プロトコル
-- **プラグインアーキテクチャ**: `McpHandler` トレイトによる拡張可能なハンドラーベースシステム
-- **型安全な設定**: 環境変数オーバーライドを備えた TOML ベース設定
-- **本番対応エラーハンドリング**: 構造化ログを備えた包括的なエラータイプ
-- **Async/Await**: 高性能非同期操作のための `tokio` ベース
+- **JSON-RPC 2.0のMCP**: プロトコルの版は2025-11-25まで
+- **トランスポート**: STDIOと、HTTP（`/ws`のWebSocketも任意で）
+- **プラグイン**: STDIOで話す任意のMCPサーバーのツールを加える。子プロセス・Dockerのコンテナ・KubernetesのJobで起動する。[Plugins](https://n-takatsu.github.io/mcp-rs/docs/plugins/)を参照
+- **設定**: 1つのTOMLファイル。`${VAR}`で環境変数の値を使える
+- **状態のツール**: `mcp_rs_status`で、バージョン・設定ファイル・ログのファイル・起動しなかったものが分かる
 
 ## **WordPress 統合（32 ツール）**
 
@@ -70,49 +51,44 @@ mcp-rsをHTTPで公開しますか？APIキーやOAuth 2.1のトークンで認�
 - **レート制限**（ツールの呼び出し）
 - **監査ログ**: 誰がどのツールを呼び、結果がどうだったか
 
-## **技術的優秀性**
+## **データベース連携（PostgreSQL）**
 
-- **非同期アーキテクチャ**: 高性能並行処理のための Tokio ベース
-- **型安全性**: 100% メモリ安全な Rust 実装
-- **包括的テスト**: 100% 合格率の 205+ テスト
-- **警告ゼロ**: `Clippy`（Rustリンター）警告ゼロのクリーンなコードベース <!-- cSpell:ignore Clippy -->
-- **本番対応**: 最適化されたビルドプロファイルとエラーハンドリング
+- **設定は1つの節**: 設定ファイルに`[database]`を書く（`engine = "postgresql"`、ホスト・データベース・ユーザー、`password = "${VAR}"`）
+- **既定は読み取りだけ**: `execute_query`（1つのSELECT。読み取り専用のトランザクションで実行してロールバック）と`get_schema`
+- **書き込みは許したときだけ**: `allow_write = true`のときだけ`execute_command`（1つのINSERT・UPDATE・DELETE）を出す
+- **型の付いたパラメーター**: `$1`・`$2`…はバインドし、SQLの文字列には埋め込まない。文字列は列の型に変換する
+- **上限**: 既定で、結果は1000行、1つのSQLは30秒、接続は5つまで
+- **監査ログ**: 呼び出しをSQLとともに記録する（パラメーターの値は記録しない）
 
-## 📊 品質指標
-
-| 指標 | 値 |
-|------|-----|
-| **総テスト数** | 205+ (100% 合格) |
-| **コードカバレッジ** | 包括的 |
-| **パフォーマンス** | 本番最適化 |
-| **ドキュメント** | 完全な API ドキュメント |
+読み取り専用のロールで接続してください。詳しくは[Database Integration Guide](https://n-takatsu.github.io/mcp-rs/docs/database/)を参照してください。
 
 ## 🚀 クイックスタート
 
 ## 前提条件
 
-- Rust 1.70+ (2021 edition)
+- Rust 1.88以降（`jsonwebtoken`・`time`等の依存クレートが必要とするため。最新の安定版を推奨）
 - アプリケーションパスワードが有効な WordPress サイト
 - WordPress REST API へのネットワークアクセス
 
 ## インストール
 
-### 🚨 Claude Desktop ユーザーへの重要なお知らせ
+### Claude Desktop
 
-**Claude Desktop は STDIO（標準入出力）通信を使用します。ログメッセージが標準出力に混在すると通信が破綻するため、必ず専用設定をご使用ください。**
+Claude Desktopはmcp-rsを起動し、STDIOで通信します。STDIOモードでは、標準出力にはMCPのメッセージだけを書き、ログはファイル（と標準エラー）に書きます。`claude_desktop_config.json`に絶対パスで登録し、認証情報は`env`で渡します。
 
-```bash
-
-## Claude Desktop 用（重要：専用設定を使用）
-
-cargo run -- --config configs/production/claude-desktop.toml
-
-## Web UI 用（HTTP アクセス）
-
-cargo run -- --config configs/development/http-transport.toml
+```json
+{
+  "mcpServers": {
+    "mcp-rs": {
+      "command": "/path/to/mcp-rs/target/release/mcp-rs",
+      "args": ["--config", "/path/to/mcp-config.toml"],
+      "env": { "WORDPRESS_PASSWORD": "your application password" }
+    }
+  }
+}
 ```
 
-> 📖 詳細な設定については [Claude Desktop 統合ガイド](./project-docs/CLAUDE_DESKTOP_INTEGRATION.md) をご覧ください。
+> 📖 設定とトラブルシューティングは [Claude Desktop 統合ガイド](./project-docs/CLAUDE_DESKTOP_INTEGRATION.md) をご覧ください。
 
 ### Claude Code
 
@@ -173,7 +149,7 @@ username = "your-username"
 password = "your-application-password"   # WordPress アプリケーションパスワード
 ```
 
-`./target/release/mcp-rs --config mcp-config.toml`で起動します。パスワードを設定ファイルに書かない場合は、`${WORDPRESS_PASSWORD}`（環境変数）か[認証情報の暗号化](https://n-takatsu.github.io/mcp-rs/docs/security/#encrypted-wordpress-credentials)を使ってください。`${...}`の環境変数が設定されていないと、mcp-rsは起動しません。
+`./target/release/mcp-rs --config mcp-config.toml`で起動します。パスワードを設定ファイルに書かない場合は、`${WORDPRESS_PASSWORD}`（環境変数）か[認証情報の暗号化](https://n-takatsu.github.io/mcp-rs/docs/security/#encrypted-wordpress-credentials)を使ってください。`${...}`の環境変数が設定されていないと、mcp-rsは起動しません（`[database]`の場合は、データベースのツールだけを出さずに起動します）。
 
 ### HTTP TLS/mTLS 設定（任意）
 
@@ -243,13 +219,17 @@ Claude Desktopは、`claude_desktop_config.json`に1つだけ登録したmcp-rs�
 
 ## 📚 ドキュメント
 
-- [🚀 クイックスタートガイド](./project-docs/quick-start.md)
-- [🔧 設定リファレンス](./project-docs/configuration.md)
-- [🔒 セキュリティガイド](./project-docs/security.md)
-- [🏗️ アーキテクチャ概要](./project-docs/architecture.md)
-- [📝 API リファレンス](./project-docs/api-reference.md)
-- [🔄 Claude Desktop 統合](./project-docs/CLAUDE_DESKTOP_INTEGRATION.md)
-- [🔄 Claude Code 統合](./project-docs/CLAUDE_CODE_INTEGRATION.md)
+ドキュメントのサイトは[n-takatsu.github.io/mcp-rs](https://n-takatsu.github.io/mcp-rs/docs/)です（英語）。
+
+- [WordPress](https://n-takatsu.github.io/mcp-rs/docs/wordpress/)
+- [データベース（PostgreSQL）](https://n-takatsu.github.io/mcp-rs/docs/database/)
+- [プラグイン](https://n-takatsu.github.io/mcp-rs/docs/plugins/)
+- [セキュリティ](https://n-takatsu.github.io/mcp-rs/docs/security/)（HTTPの認証・ツールの制限・TLS・監査ログ）
+- [APIリファレンス](https://n-takatsu.github.io/mcp-rs/docs/api/)（`mcp_rs_status`とMCPのメソッド）
+- [アーキテクチャ](https://n-takatsu.github.io/mcp-rs/docs/architecture/)
+- [Claude Desktop 統合](./project-docs/CLAUDE_DESKTOP_INTEGRATION.md)
+- [Claude Code 統合](./project-docs/CLAUDE_CODE_INTEGRATION.md)
+- [Dockerガイド](./docs/DOCKER_GUIDE.md)
 
 ## 🛠️ 開発
 
@@ -276,14 +256,7 @@ cargo run -- --config configs/development/http-transport.toml
 
 ## 使用例
 
-プロジェクトには様々な機能を示す包括的な例が含まれています：
-
-- **コア例**: `examples/` ディレクトリに格納
-- **データベース例**: `examples.disabled/` ディレクトリに格納
-  - `mysql_engine_test.rs`: MySQL データベースエンジンのテスト（`database` フィーチャーが必要）
-  - 使用方法: `cargo run --example mysql_engine_test --features database,mysql-backend`
-
-> **注意**: データベース依存の例は、`database` フィーチャーがデフォルトで有効でない場合のCI安定性を確保するため、`examples.disabled/` に移動されています。
+例は`examples/`ディレクトリにあります。例えば`cargo run --example wordpress_api_test`は、`WORDPRESS_URL`のWordPressにつながるかを確かめます。`WORDPRESS_USERNAME`・`WORDPRESS_PASSWORD`も設定すると、ログインを確かめ、下書きの投稿を1件作ります。
 
 ## テスト
 

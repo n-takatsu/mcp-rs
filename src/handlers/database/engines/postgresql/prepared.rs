@@ -114,38 +114,6 @@ impl PostgreSqlPreparedStatement {
         Ok(())
     }
 
-    /// Convert a Value to PostgreSQL compatible format
-    fn value_to_sql_string(value: &Value) -> Result<String, DatabaseError> {
-        match value {
-            Value::Null => Ok("NULL".to_string()),
-            Value::Bool(b) => Ok(b.to_string()),
-            Value::Int(i) => Ok(i.to_string()),
-            Value::Float(f) => Ok(f.to_string()),
-            Value::String(s) => {
-                // Escape single quotes in strings
-                let escaped = s.replace("'", "''");
-                Ok(format!("'{}'", escaped))
-            }
-            Value::Binary(_) => Err(DatabaseError::ValidationError(
-                "Binary type not supported in parameter binding".to_string(),
-            )),
-            Value::Json(_) => Err(DatabaseError::ValidationError(
-                "JSON type needs special handling".to_string(),
-            )),
-            Value::DateTime(_) => Err(DatabaseError::ValidationError(
-                "DateTime type needs special handling".to_string(),
-            )),
-        }
-    }
-
-    /// Convert PostgreSQL row values to our Value type
-    fn convert_row_value(value: Option<String>) -> Value {
-        match value {
-            None => Value::Null,
-            Some(s) => Value::String(s),
-        }
-    }
-
     /// Convert PostgreSQL rows to our QueryResult format
     async fn convert_rows_to_query_result(
         rows: Vec<sqlx::postgres::PgRow>,
@@ -356,53 +324,5 @@ mod tests {
             2,
         );
         assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_value_to_sql_string_integer() {
-        let val = Value::Int(42);
-        let result = PostgreSqlPreparedStatement::value_to_sql_string(&val);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), "42");
-    }
-
-    #[test]
-    fn test_value_to_sql_string_string_with_quotes() {
-        let val = Value::String("O'Brien".to_string());
-        let result = PostgreSqlPreparedStatement::value_to_sql_string(&val);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), "'O''Brien'");
-    }
-
-    #[test]
-    fn test_value_to_sql_string_null() {
-        let val = Value::Null;
-        let result = PostgreSqlPreparedStatement::value_to_sql_string(&val);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), "NULL");
-    }
-
-    #[test]
-    fn test_value_to_sql_string_boolean() {
-        let val = Value::Bool(true);
-        let result = PostgreSqlPreparedStatement::value_to_sql_string(&val);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), "true");
-    }
-
-    #[test]
-    fn test_value_to_sql_string_float() {
-        let val = Value::Float(std::f64::consts::PI);
-        let result = PostgreSqlPreparedStatement::value_to_sql_string(&val);
-        assert!(result.is_ok());
-        let result_str = result.unwrap();
-        assert!(result_str.starts_with("3.14"));
-    }
-
-    #[test]
-    fn test_value_to_sql_string_bigint() {
-        let val = Value::Int(9223372036854775807i64);
-        let result = PostgreSqlPreparedStatement::value_to_sql_string(&val);
-        assert!(result.is_ok());
     }
 }

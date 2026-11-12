@@ -197,22 +197,15 @@ fn effective_algorithm(
 #[derive(Clone)]
 pub(crate) struct DataEncryptionKey {
     key_id: String,
-    version: u32,
     backing: KeyBacking,
     algorithm: EncryptionAlgorithm,
     created_at: DateTime<Utc>,
 }
 
 impl DataEncryptionKey {
-    fn new(
-        key_id: String,
-        version: u32,
-        backing: KeyBacking,
-        algorithm: EncryptionAlgorithm,
-    ) -> Self {
+    fn new(key_id: String, backing: KeyBacking, algorithm: EncryptionAlgorithm) -> Self {
         Self {
             key_id,
-            version,
             backing,
             algorithm,
             created_at: Utc::now(),
@@ -232,26 +225,6 @@ impl Drop for DataEncryptionKey {
             use zeroize::Zeroize;
             key_bytes.zeroize();
         }
-    }
-}
-
-/// Nonce counter for AEAD operations
-struct NonceCounter {
-    counter: u128,
-}
-
-impl NonceCounter {
-    fn new() -> Self {
-        Self { counter: 0 }
-    }
-}
-
-impl NonceSequence for NonceCounter {
-    fn advance(&mut self) -> Result<Nonce, Unspecified> {
-        let mut nonce_bytes = [0u8; 12];
-        self.counter += 1;
-        nonce_bytes.copy_from_slice(&self.counter.to_le_bytes()[0..12]);
-        Nonce::try_assume_unique_for_key(&nonce_bytes)
     }
 }
 
@@ -282,16 +255,6 @@ impl Default for KeyManagerConfig {
             enable_hw_acceleration: true,
         }
     }
-}
-
-/// Parse the trailing `:v{N}` version number off a `key_id` such as
-/// `"users.ssn:v2"`. Used only to reconstruct a [`DataEncryptionKey`]'s
-/// `version` field when recovering an HSM-backed key by its label alone -
-/// the version number embedded there is cosmetic (used for logging/ordering)
-/// and never re-derived to decide the *next* version to mint.
-#[cfg(feature = "hsm")]
-fn parse_version_suffix(key_id: &str) -> Option<u32> {
-    key_id.rsplit_once(":v")?.1.parse().ok()
 }
 
 /// Key manager for encryption key lifecycle
@@ -458,7 +421,7 @@ impl KeyManager {
         };
 
         let algorithm = effective_algorithm(&backing, self.config.default_algorithm);
-        let dek = DataEncryptionKey::new(key_id.clone(), version, backing, algorithm);
+        let dek = DataEncryptionKey::new(key_id.clone(), backing, algorithm);
 
         // Store in active keys
         self.active_keys
@@ -583,7 +546,7 @@ impl KeyManager {
         let key_id = format!("{}:v{}", key_name, version);
         let backing = KeyBacking::Hsm(handle);
         let algorithm = effective_algorithm(&backing, self.config.default_algorithm);
-        let dek = DataEncryptionKey::new(key_id.clone(), version, backing, algorithm);
+        let dek = DataEncryptionKey::new(key_id.clone(), backing, algorithm);
 
         self.active_keys
             .write()
@@ -639,7 +602,6 @@ impl KeyManager {
             if let Some(handle) = provider.find_key(key_id).await.map_err(|e| {
                 SecurityError::EncryptionError(format!("HSM key lookup failed: {e}"))
             })? {
-                let version = parse_version_suffix(key_id).unwrap_or(0);
                 let backing = KeyBacking::Hsm(handle);
                 // Decryption of an existing HSM-backed key always uses
                 // Aes256Gcm regardless of the currently configured
@@ -647,7 +609,7 @@ impl KeyManager {
                 // config change since this key was created must not stop
                 // already-encrypted data from decrypting correctly.
                 let algorithm = effective_algorithm(&backing, self.config.default_algorithm);
-                let dek = DataEncryptionKey::new(key_id.to_string(), version, backing, algorithm);
+                let dek = DataEncryptionKey::new(key_id.to_string(), backing, algorithm);
                 self.historical_keys
                     .write()
                     .await

@@ -17,7 +17,6 @@ use std::sync::Arc;
 /// MongoDB Database Engine
 #[derive(Clone)]
 pub struct MongoEngine {
-    config: DatabaseConfig,
     mongo_config: Arc<MongoConfig>,
 }
 
@@ -37,20 +36,15 @@ impl MongoEngine {
         mongo_config.validate()?;
 
         Ok(Self {
-            config,
             mongo_config: Arc::new(mongo_config),
         })
     }
 
     /// Create MongoDB engine with custom config
-    pub async fn new_with_config(
-        config: DatabaseConfig,
-        mongo_config: MongoConfig,
-    ) -> Result<Self, DatabaseError> {
+    pub async fn new_with_config(mongo_config: MongoConfig) -> Result<Self, DatabaseError> {
         mongo_config.validate()?;
 
         Ok(Self {
-            config,
             mongo_config: Arc::new(mongo_config),
         })
     }
@@ -162,26 +156,12 @@ mod tests {
 
     #[test]
     fn test_mongo_supported_features() {
-        let config = DatabaseConfig {
-            database_type: DatabaseType::MongoDB,
-            connection: crate::handlers::database::types::ConnectionConfig {
-                host: "localhost".to_string(),
-                port: 27017,
-                database: "test".to_string(),
-                username: "test".to_string(),
-                password: "test".to_string(),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-
         let mongo_config = MongoConfig::new(
             "mongodb://test:test@localhost:27017".to_string(),
             "test".to_string(),
         );
 
         let engine = MongoEngine {
-            config,
             mongo_config: Arc::new(mongo_config),
         };
 

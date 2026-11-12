@@ -25,12 +25,19 @@ use crate::handlers::database::{
 use async_trait::async_trait;
 use std::sync::Arc;
 
+/// `DatabaseConfig::connection.options`のキー: `query()`で受け取る行数の
+/// 上限（#453）
+pub const OPTION_FETCH_LIMIT: &str = "fetch_limit";
+
 /// PostgreSQL Database Engine
 ///
 /// Main entry point for PostgreSQL database operations
 #[derive(Clone)]
 pub struct PostgreSqlEngine {
     config: DatabaseConfig,
+    /// 接続のプール。最初の`connect`で作り、以後の接続で共有する（#453）。
+    /// 以前は`connect`のたびに新しいプールを作っていた
+    pool: Arc<tokio::sync::OnceCell<sqlx::PgPool>>,
 }
 
 impl PostgreSqlEngine {
@@ -38,12 +45,10 @@ impl PostgreSqlEngine {
     pub async fn new(
         config: crate::handlers::database::types::DatabaseConfig,
     ) -> Result<Self, crate::handlers::database::types::DatabaseError> {
-        Ok(Self { config })
-    }
-
-    /// Create a new PostgreSQL engine without security checks (for testing)
-    pub async fn new_without_security(config: DatabaseConfig) -> Result<Self, DatabaseError> {
-        Ok(Self { config })
+        Ok(Self {
+            config,
+            pool: Arc::new(tokio::sync::OnceCell::new()),
+        })
     }
 
     /// Get database config
@@ -62,17 +67,25 @@ impl DatabaseEngine for PostgreSqlEngine {
         &self,
         config: &DatabaseConfig,
     ) -> Result<Box<dyn DatabaseConnection>, DatabaseError> {
-        // Build connection string from config
-        let connection_string = format!(
-            "postgresql://{}:{}@{}:{}/{}",
-            config.connection.username,
-            config.connection.password,
-            config.connection.host,
-            config.connection.port,
-            config.connection.database
-        );
-
-        let conn = PostgreSqlConnection::new(&connection_string).await?;
+        let pool = self
+            .pool
+            .get_or_try_init(|| pg_connection::connect_pool(config))
+            .await?
+            .clone();
+        let fetch_limit = config
+            .connection
+            .options
+            .get(OPTION_FETCH_LIMIT)
+            .and_then(|v| v.parse::<usize>().ok());
+        let conn = PostgreSqlConnection::with_pool(
+            pool,
+            config.connection.database.clone(),
+            config.connection.username.clone(),
+        )
+        .with_statement_timeout(std::time::Duration::from_secs(u64::from(
+            config.features.query_timeout,
+        )))
+        .with_fetch_limit(fetch_limit);
         Ok(Box::new(conn))
     }
 

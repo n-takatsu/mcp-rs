@@ -27,7 +27,6 @@ use std::sync::Arc;
 pub struct MongoConnection {
     client: Client,
     database: Database,
-    config: Arc<MongoConfig>,
     database_name: String,
 }
 
@@ -66,7 +65,6 @@ impl MongoConnection {
         Ok(Self {
             client,
             database: database.clone(),
-            config,
             database_name: database.name().to_string(),
         })
     }

@@ -98,9 +98,49 @@ pub fn validate_single_query_statement(
         .map_err(|e| unsupported(format!("SQL parse error: {e}")))?;
 
     match statements.as_slice() {
-        [Statement::Query(query)] if is_select_family(&query.body) => Ok(()),
+        [Statement::Query(query)] if is_read_only_query(query) => Ok(()),
         [_] => Err(unsupported("execute_query only supports SELECT statements")),
         _ => Err(unsupported("expected exactly one SQL statement")),
+    }
+}
+
+/// `execute_command`の文が、1つのINSERT・UPDATE・DELETEか（#453）。表の
+/// 作成・削除（DDL）、権限の変更、`COPY`等は受け付けない。
+pub fn validate_single_write_statement(
+    sql: &str,
+    dialect: &dyn Dialect,
+) -> Result<(), ProvenanceError> {
+    let statements = Parser::parse_sql(dialect, sql)
+        .map_err(|e| unsupported(format!("SQL parse error: {e}")))?;
+    match statements.as_slice() {
+        [Statement::Insert(_) | Statement::Update { .. } | Statement::Delete(_)] => Ok(()),
+        [_] => Err(unsupported(
+            "execute_command only supports INSERT, UPDATE, and DELETE statements",
+        )),
+        _ => Err(unsupported("expected exactly one SQL statement")),
+    }
+}
+
+/// `query`が、`WITH`の中も含めてSELECTだけか（#453）。PostgreSQLでは
+/// `WITH d AS (DELETE FROM t RETURNING *) SELECT * FROM d`のように、`WITH`の
+/// 中に書き込む文を書ける。本体（`body`）だけを見ると、これをSELECTとして
+/// 通してしまう。`SELECT … INTO 表`（表を作る）も拒否する。
+fn is_read_only_query(query: &Query) -> bool {
+    let ctes_are_read_only = query.with.as_ref().is_none_or(|with| {
+        with.cte_tables
+            .iter()
+            .all(|cte| is_read_only_query(&cte.query))
+    });
+    ctes_are_read_only && is_select_family(&query.body) && !selects_into(&query.body)
+}
+
+/// `SELECT … INTO 表`か
+fn selects_into(body: &SetExpr) -> bool {
+    match body {
+        SetExpr::Select(select) => select.into.is_some(),
+        SetExpr::Query(query) => selects_into(&query.body),
+        SetExpr::SetOperation { left, right, .. } => selects_into(left) || selects_into(right),
+        _ => false,
     }
 }
 
@@ -577,6 +617,48 @@ mod tests {
         // still reject them.
         assert!(validate("VALUES (1)").is_err());
         assert!(validate("TABLE users").is_err());
+    }
+
+    #[test]
+    fn validate_single_write_statement_accepts_only_dml() {
+        let check = |sql: &str| validate_single_write_statement(sql, &PostgreSqlDialect {});
+        for sql in [
+            "INSERT INTO users (email) VALUES ($1)",
+            "UPDATE users SET email = $1 WHERE id = $2",
+            "DELETE FROM users WHERE id = $1",
+        ] {
+            assert!(check(sql).is_ok(), "{sql}");
+        }
+        for sql in [
+            "SELECT 1",
+            "DROP TABLE users",
+            "CREATE TABLE t (id int)",
+            "TRUNCATE users",
+            "GRANT ALL ON users TO public",
+            "ALTER TABLE users ADD COLUMN x int",
+            "DELETE FROM users; DROP TABLE users",
+        ] {
+            assert!(check(sql).is_err(), "{sql}");
+        }
+    }
+
+    /// `WITH`の中の書き込みと、`SELECT … INTO`を拒否する（#453）
+    #[test]
+    fn validate_single_query_statement_rejects_writes_hidden_in_select() {
+        for sql in [
+            "WITH d AS (DELETE FROM users RETURNING *) SELECT * FROM d",
+            "WITH u AS (UPDATE users SET email = '' RETURNING id) SELECT id FROM u",
+            "WITH i AS (INSERT INTO users (email) VALUES ('x') RETURNING id) SELECT id FROM i",
+            "WITH a AS (SELECT 1), d AS (DELETE FROM users RETURNING *) SELECT * FROM a",
+            "WITH outer_cte AS (WITH d AS (DELETE FROM users RETURNING *) SELECT * FROM d) SELECT * FROM outer_cte",
+            "SELECT * INTO copied_users FROM users",
+        ] {
+            assert!(validate(sql).is_err(), "{sql}");
+        }
+        // 読むだけのWITHは通す
+        assert!(
+            validate("WITH a AS (SELECT 1 AS x), b AS (SELECT x FROM a) SELECT * FROM b").is_ok()
+        );
     }
 
     #[test]

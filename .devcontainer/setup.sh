@@ -49,7 +49,7 @@ echo "📚 Installing documentation tools..."
 cargo install mdbook mdbook-mermaid
 
 # Install global Node.js packages for web development
-echo "📱 Installing Node.js packages for web UI..."
+echo "📱 Installing Node.js packages (TypeScript, Prettier, ESLint)..."
 npm install -g \
     typescript \
     @types/node \
@@ -98,8 +98,8 @@ export MCP_LOG_LEVEL=debug
 alias mcpbuild='cargo build --all-features'
 alias mcptest='cargo test --all-features'
 alias mcpclippy='cargo clippy --all-targets --all-features -- -D warnings'
-alias mcprun='cargo run --features database -- --transport stdio'
-alias mcprunhttp='cargo run --features database -- --transport http --port 3000'
+alias mcprun='cargo run -- --config mcp-config.toml'
+alias mcprunhttp='cargo run -- --config configs/development/http-transport.toml'
 alias mcpbench='cargo bench --features database'
 alias mcpdoc='cargo doc --all-features --open'
 alias mcpaudit='cargo audit'
@@ -112,7 +112,6 @@ alias cdsrc='cd /workspaces/mcp-rs/src'
 alias cdtest='cd /workspaces/mcp-rs/tests'
 alias cdbench='cd /workspaces/mcp-rs/benches'
 alias cddocs='cd /workspaces/mcp-rs/docs'
-alias cdweb='cd /workspaces/mcp-rs/web-ui'
 
 EOF
 
@@ -140,8 +139,8 @@ export MCP_LOG_LEVEL=debug
 alias mcpbuild='cargo build --all-features'
 alias mcptest='cargo test --all-features'
 alias mcpclippy='cargo clippy --all-targets --all-features -- -D warnings'
-alias mcprun='cargo run --features database -- --transport stdio'
-alias mcprunhttp='cargo run --features database -- --transport http --port 3000'
+alias mcprun='cargo run -- --config mcp-config.toml'
+alias mcprunhttp='cargo run -- --config configs/development/http-transport.toml'
 alias mcpbench='cargo bench --features database'
 alias mcpdoc='cargo doc --all-features --open'
 alias mcpaudit='cargo audit'
@@ -154,7 +153,6 @@ alias cdsrc='cd /workspaces/mcp-rs/src'
 alias cdtest='cd /workspaces/mcp-rs/tests'
 alias cdbench='cd /workspaces/mcp-rs/benches'
 alias cddocs='cd /workspaces/mcp-rs/docs'
-alias cdweb='cd /workspaces/mcp-rs/web-ui'
 
 EOF
 fi

@@ -11,7 +11,6 @@ pub mod security;
 pub mod types;
 
 // 新しい可用性関連モジュール
-pub mod availability; // 可用性管理
 pub mod loadbalancer;
 pub mod retry; // リトライ戦略
 
@@ -45,7 +44,7 @@ pub mod engines;
 
 // 公開API
 pub use engine::{DatabaseConnection, DatabaseEngine, DatabaseTransaction};
-pub use handler::DatabaseHandler;
+pub use handler::{DatabaseHandler, DatabaseToolOptions};
 pub use security::DatabaseSecurity;
 pub use types::{DatabaseConfig, DatabaseFeature, DatabaseType, ExecuteResult, QueryResult};
 

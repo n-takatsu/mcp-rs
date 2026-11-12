@@ -161,7 +161,7 @@ Before `initialize`, mcp-rs uses `2024-11-05`. In STDIO mode, the version applie
     },
     "serverInfo": {
       "name": "mcp-rs",
-      "version": "0.22.0",
+      "version": "0.23.0",
       "description": "Rust implementation of the Model Context Protocol (MCP) server for WordPress and other tools",
       "websiteUrl": "https://n-takatsu.github.io/mcp-rs/"
     }
@@ -226,7 +226,7 @@ Lists available tools.
 mcp-rs always provides the read-only tool `mcp_rs_status` (first in `tools/list`), with or without WordPress and plugins. It returns text such as:
 
 ```text
-mcp-rs 0.22.0
+mcp-rs 0.23.0
 Mode: stdio
 Protocol version: 2025-11-25
 OS: windows (x86_64)
@@ -239,7 +239,7 @@ Audit log: C:\Users\me\AppData\Roaming\Claude\mcp-rs\audit.log
 Handlers:
 - wordpress: WordPress site https://example.com
 - plugin:fs: plugin 'fs' (process): running, 16 tools
-Plugins that failed to start:
+Handlers and plugins that failed to start:
 - broken: could not start '...': ...
 ```
 
@@ -502,7 +502,7 @@ Retrieves WordPress comments.
 
 ## Version Information
 
-- **Current Version**: v0.22.0
+- **Current Version**: v0.23.0
 - **Phase 1**: MySQL (Complete)
 - **Phase 2**: PostgreSQL (Complete)
 - **Last Updated**: 2025-11-23

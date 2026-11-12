@@ -45,7 +45,6 @@
 - `cargo-audit.toml`: Added security audit ignore configuration
 - `.github/workflows/ci.yml`: Added --ignore flag for CI
 - `src/handlers/database/engines/mysql.rs`: Complete MySQL engine implementation
-- `examples/mysql_engine_test.rs`: MySQL functionality testing
 
 ### Market Impact Consideration
 
@@ -142,7 +141,6 @@ cargo test --all-features test_timeout_strategy
 
 - `src/handlers/database/engines/mysql.rs` - MySQL engine implementation
 - `src/handlers/database/mod.rs` - Database handler registry
-- `examples/mysql_engine_test.rs` - MySQL functionality testing
 - `Cargo.toml` - Dependencies and feature flags
 
 ### Configuration Files
