@@ -51,11 +51,6 @@ impl PostgreSqlEngine {
         })
     }
 
-    /// Create a new PostgreSQL engine without security checks (for testing)
-    pub async fn new_without_security(config: DatabaseConfig) -> Result<Self, DatabaseError> {
-        Self::new(config).await
-    }
-
     /// Get database config
     pub fn get_config(&self) -> &DatabaseConfig {
         &self.config

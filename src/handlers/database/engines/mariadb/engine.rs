@@ -6,14 +6,12 @@
 use crate::handlers::database::{
     engine::{DatabaseConnection, DatabaseEngine},
     engines::mysql::MySqlEngine,
-    security::DatabaseSecurity,
     types::{
         DatabaseConfig, DatabaseError, DatabaseFeature, DatabaseSchema, DatabaseType, HealthStatus,
         QueryResult, TableInfo, Value,
     },
 };
 use async_trait::async_trait;
-use std::sync::Arc;
 
 /// MariaDB Database Engine
 ///
@@ -26,23 +24,9 @@ pub struct MariaDbEngine {
 }
 
 impl MariaDbEngine {
-    /// Create new MariaDB engine with security integration
-    pub async fn new(
-        config: DatabaseConfig,
-        security: Arc<DatabaseSecurity>,
-    ) -> Result<Self, DatabaseError> {
-        // Create underlying MySQL engine
-        let mysql_engine = MySqlEngine::new(config.clone(), security).await?;
-
-        Ok(Self {
-            mysql_engine,
-            config,
-        })
-    }
-
-    /// Create MariaDB engine without security (for testing)
-    pub async fn new_without_security(config: DatabaseConfig) -> Result<Self, DatabaseError> {
-        let mysql_engine = MySqlEngine::new_without_security(config.clone()).await?;
+    /// Create new MariaDB engine (see `MySqlEngine::new`)
+    pub async fn new(config: DatabaseConfig) -> Result<Self, DatabaseError> {
+        let mysql_engine = MySqlEngine::new(config.clone()).await?;
 
         Ok(Self {
             mysql_engine,
@@ -127,7 +111,7 @@ mod tests {
     #[tokio::test]
     async fn test_mariadb_engine_creation() {
         let config = create_test_config();
-        let engine = MariaDbEngine::new_without_security(config).await.unwrap();
+        let engine = MariaDbEngine::new(config).await.unwrap();
 
         assert_eq!(engine.engine_type(), DatabaseType::MariaDB);
     }
@@ -135,7 +119,7 @@ mod tests {
     #[tokio::test]
     async fn test_mariadb_supported_features() {
         let config = create_test_config();
-        let engine = MariaDbEngine::new_without_security(config).await.unwrap();
+        let engine = MariaDbEngine::new(config).await.unwrap();
 
         let features = engine.supported_features();
         assert!(!features.is_empty());

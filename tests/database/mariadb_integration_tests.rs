@@ -34,7 +34,7 @@ mod tests {
     #[tokio::test]
     async fn test_mariadb_engine_creation() {
         let config = create_test_config();
-        let result = MariaDbEngine::new_without_security(config).await;
+        let result = MariaDbEngine::new(config).await;
 
         match result {
             Ok(engine) => {
@@ -56,7 +56,7 @@ mod tests {
     async fn test_mariadb_supported_features() {
         let config = create_test_config();
 
-        match MariaDbEngine::new_without_security(config).await {
+        match MariaDbEngine::new(config).await {
             Ok(engine) => {
                 let features = engine.supported_features();
                 assert!(!features.is_empty());
@@ -77,7 +77,7 @@ mod tests {
     async fn test_mariadb_health_check() {
         let config = create_test_config();
 
-        match MariaDbEngine::new_without_security(config).await {
+        match MariaDbEngine::new(config).await {
             Ok(engine) => {
                 let health = engine.health_check().await;
                 match health {
@@ -106,7 +106,7 @@ mod tests {
     async fn test_mariadb_connection() {
         let config = create_test_config();
 
-        match MariaDbEngine::new_without_security(config.clone()).await {
+        match MariaDbEngine::new(config.clone()).await {
             Ok(engine) => match engine.connect(&config).await {
                 Ok(conn) => {
                     let info = conn.connection_info();
@@ -134,7 +134,7 @@ mod tests {
     async fn test_mariadb_config_validation() {
         let config = create_test_config();
 
-        match MariaDbEngine::new_without_security(config.clone()).await {
+        match MariaDbEngine::new(config.clone()).await {
             Ok(engine) => {
                 let result = engine.validate_config(&config);
                 match result {
@@ -165,7 +165,7 @@ mod tests {
     async fn test_mariadb_version() {
         let config = create_test_config();
 
-        match MariaDbEngine::new_without_security(config).await {
+        match MariaDbEngine::new(config).await {
             Ok(engine) => match engine.get_version().await {
                 Ok(version) => {
                     println!("MariaDB version: {}", version);

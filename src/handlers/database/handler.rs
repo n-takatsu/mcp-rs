@@ -11,8 +11,6 @@ use crate::handlers::database::{
     },
     engine::{DatabaseEngine, DatabaseEngineBuilder, EngineRegistry},
     pool::{ConnectionPool, PoolManager},
-    safety::{SafetyError, SafetyManager}, // 安全機構を追加
-    security::DatabaseSecurity,
     types::{
         DatabaseConfig, DatabaseError, DatabaseType, ExecuteResult, QueryContext, QueryResult,
         QueryType, Value,
@@ -23,8 +21,6 @@ use crate::mcp::{
     ToolCallParams,
 };
 use crate::security::auth::types::{AuthUser, Role};
-// use crate::threat_intelligence::ThreatDetectionEngine;
-use crate::handlers::database::security::ThreatDetectionEngine;
 use crate::zero_trust::{micro_segmentation::MicroSegmentation, AccessRequest, TrustScore};
 use async_trait::async_trait;
 use base64::prelude::*;
@@ -66,22 +62,6 @@ pub struct DatabaseHandler {
     active_engine: Arc<RwLock<Option<String>>>,
     /// データベース設定
     configs: Arc<RwLock<HashMap<String, DatabaseConfig>>>,
-    /// セキュリティレイヤー
-    ///
-    /// 構築はされるが、現状`handle_execute_query`などクエリ実行パスの
-    /// どこからも参照されていない。カラムレベル暗号化・マスキングは
-    /// `DatabaseSecurity`とは別の`column_encryption`フィールド経由で
-    /// クエリ実行パスに組み込まれている（`execute_query_core`での
-    /// 事前検証と`apply_column_encryption`参照）。`DatabaseSecurity`
-    /// 自体の適用は未実施のまま。
-    #[allow(dead_code)] // 受け取るが使っていない（#499）
-    security: Arc<DatabaseSecurity>,
-    /// 脅威インテリジェンス
-    #[allow(dead_code)] // 受け取るが使っていない（#499）
-    threat_intelligence: Option<Arc<ThreatDetectionEngine>>,
-    /// 安全機構マネージャー
-    #[allow(dead_code)] // 受け取るが使っていない（#499）
-    safety_manager: Arc<SafetyManager>,
     /// カラムレベル暗号化マネージャー（未設定ならこのハンドラでは暗号化列の
     /// 強制を一切行わない - 既存の呼び出し元には影響しないオプトイン機能）
     column_encryption: Option<Arc<ColumnEncryptionManager>>,
@@ -123,22 +103,19 @@ const MAX_AUDITED_SQL_CHARS: usize = 2000;
 
 impl DatabaseHandler {
     /// 新しいデータベースハンドラーを作成
-    pub async fn new(
-        threat_intelligence: Option<Arc<ThreatDetectionEngine>>,
-    ) -> Result<Self, DatabaseError> {
-        let security = Arc::new(DatabaseSecurity::new(
-            Default::default(), // デフォルトセキュリティ設定
-            threat_intelligence.clone(),
-        ));
-
+    ///
+    /// 以前は`new(threat_intelligence)`で、`DatabaseSecurity`（正規表現での
+    /// SQLインジェクション検知等）・`SafetyManager`を作っていたが、クエリの
+    /// 実行ではどれも使っていなかったため削除した（#499）。このハンドラーの
+    /// 安全性は、読み取り専用のロール・文の種類の検査（SELECTだけ、
+    /// `allow_write`のときだけ書き込み）・カラム暗号化・マイクロ
+    /// セグメンテーションによる。
+    pub async fn new() -> Result<Self, DatabaseError> {
         Ok(Self {
             engines: Arc::new(RwLock::new(EngineRegistry::new())),
             pool_manager: Arc::new(PoolManager::new()),
             active_engine: Arc::new(RwLock::new(None)),
             configs: Arc::new(RwLock::new(HashMap::new())),
-            security,
-            threat_intelligence,
-            safety_manager: Arc::new(SafetyManager::new()),
             column_encryption: None,
             micro_segmentation: None,
             tool_options: DatabaseToolOptions::default(),
@@ -186,7 +163,7 @@ impl DatabaseHandler {
             ..DatabaseConfig::default()
         };
 
-        let handler = Self::new(None)
+        let handler = Self::new()
             .await
             .map_err(|e| e.to_string())?
             .with_tool_options(DatabaseToolOptions {

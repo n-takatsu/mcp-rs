@@ -228,7 +228,7 @@ impl ParamQueryPerformanceTest {
             features: FeatureConfig::default(),
         };
 
-        self.engine = Some(MySqlEngine::new_without_security(db_config).await?);
+        self.engine = Some(MySqlEngine::new(db_config).await?);
 
         println!("✅ MySQL engine initialized for parameterized query testing");
         Ok(())

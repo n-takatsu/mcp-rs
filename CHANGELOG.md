@@ -69,6 +69,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   削除するかを#499で決めるため、`#[allow(dead_code)]`を付けて残した
 - `PostgresEngine::begin_transaction`のドキュメントの例が、コンパイル
   できなかったのを直した（#459）
+- 受け取った設定・引数を使っていなかった箇所を削除した（#499）。効いて
+  いるように見えて実際には効いていなかったもので、動作は変わらない。
+  ライブラリのAPIが変わる
+  - `PasswordHasher::new(salt_rounds)`を`new()`にした。`salt_rounds`は
+    bcryptの考え方で、Argon2には使われていなかった。ハッシュは従来どおり
+    Argon2id（メモリー19 MiB・反復2回・並列度1）
+  - `DatabaseHandler::new(threat_intelligence)`を`new()`にした。作って
+    いた`DatabaseSecurity`（正規表現でのSQLインジェクション検知等）と
+    `SafetyManager`は、クエリの実行で使っていなかった。`[database]`の
+    安全性は、従来どおり読み取り専用のロール・文の種類の検査・
+    `allow_write`による
+  - `MySqlEngine::new(config, security)`・`MariaDbEngine::new(config,
+    security)`を`new(config)`にした。受け取った`DatabaseSecurity`は
+    使っていなかった。同じ動きの`new_without_security`を、PostgreSQL・
+    SQLiteのものも含めて削除した
+  - `IntegratedSecurityManager`は、`encryption.encrypted_columns`から
+    カラム暗号化を作るが使っていなかったので、作らないようにした。
+    カラム暗号化は`DatabaseHandler::with_column_encryption`で使う
+  - `MongoEngine::new_with_config(config, mongo_config)`を
+    `new_with_config(mongo_config)`に、`SwitchOrchestrator::new`・
+    `EngineMonitor::new`から使われない引数を除いた
+  - 何もせずに成功を返すだけだった`handlers::database::availability`
+    （ヘルスチェック・復旧・フェイルオーバー）を削除した。どこからも
+    使われていなかった
+  - ほかに、書くだけで読まれないキャッシュ・フィールドを削除した
+    （RBACの権限のキャッシュ、IDSのリクエスト履歴のパス・サイズ・IP等）
 
 ### Security
 

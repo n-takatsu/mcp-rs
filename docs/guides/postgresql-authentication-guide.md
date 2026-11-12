@@ -87,7 +87,8 @@ async fn create_user(repo: &PostgresUserRepository) -> Result<(), AuthError> {
     user.roles.insert(Role::User);
 
     // パスワードハッシュ化
-    let password_hasher = PasswordHasher::new(12);
+    // Argon2id（argon2クレートの既定のパラメーター）でハッシュする
+    let password_hasher = PasswordHasher::new();
     let password_hash = password_hasher.hash("SecurePassword123!")?;
 
     // データベースに保存

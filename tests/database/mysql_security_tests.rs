@@ -74,7 +74,7 @@ async fn setup_test_environment(
     let config = create_test_config();
     let security = Arc::new(DatabaseSecurity::new(config.security.clone(), None));
 
-    let engine = MySqlEngine::new(config, security.clone()).await?;
+    let engine = MySqlEngine::new(config).await?;
 
     info!("Test environment setup complete");
     Ok((engine, security))

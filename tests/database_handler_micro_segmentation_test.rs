@@ -76,7 +76,7 @@ fn tool_call(sql: &str) -> ToolCallParams {
 }
 
 async fn handler_with_database(database_url: &str) -> DatabaseHandler {
-    let handler = DatabaseHandler::new(None)
+    let handler = DatabaseHandler::new()
         .await
         .expect("failed to create handler");
     handler

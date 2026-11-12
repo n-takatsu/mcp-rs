@@ -45,22 +45,14 @@ pub struct BehaviorBaseline {
     pub sample_count: usize,
 }
 
-/// リクエスト記録
+/// リクエスト記録（頻度の分析に使う。パス・サイズは`update_baseline`で
+/// ベースラインに反映するので、ここには持たない）
 #[derive(Debug, Clone)]
 struct RequestRecord {
     /// 識別子（ユーザーID or IP）
     identifier: String,
-    /// パス
-    #[allow(dead_code)] // 受け取るが使っていない（#499）
-    path: String,
-    /// リクエストサイズ
-    #[allow(dead_code)] // 受け取るが使っていない（#499）
-    size: usize,
     /// タイムスタンプ
     timestamp: DateTime<Utc>,
-    /// IPアドレス
-    #[allow(dead_code)] // 受け取るが使っていない（#499）
-    ip_address: Option<IpAddr>,
 }
 
 /// 振る舞い検知設定
@@ -273,10 +265,7 @@ impl BehavioralDetector {
     async fn record_request(&self, request: &RequestData, identifier: &str) {
         let record = RequestRecord {
             identifier: identifier.to_string(),
-            path: request.path.clone(),
-            size: request.body.as_ref().map(|b| b.len()).unwrap_or(0),
             timestamp: request.timestamp,
-            ip_address: request.source_ip,
         };
 
         let mut history = self.request_history.write().await;

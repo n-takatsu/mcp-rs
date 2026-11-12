@@ -44,7 +44,7 @@ mod database_tests {
     #[tokio::test]
     async fn test_database_handler_creation() {
         // データベースハンドラーが正常に作成できることをテスト
-        let handler = DatabaseHandler::new(None).await;
+        let handler = DatabaseHandler::new().await;
         assert!(
             handler.is_ok(),
             "DatabaseHandler should be created successfully"
@@ -65,7 +65,7 @@ mod database_tests {
 
     #[tokio::test]
     async fn test_mcp_handler_interface() {
-        let handler = DatabaseHandler::new(None).await.unwrap();
+        let handler = DatabaseHandler::new().await.unwrap();
 
         // 初期化テスト
         let init_params = InitializeParams {
