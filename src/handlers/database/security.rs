@@ -147,6 +147,12 @@ impl DatabaseSecurity {
 }
 
 /// SQLインジェクション検知器
+///
+/// 正規表現の一覧で、よくある攻撃の形を探す。SQLを書くのが呼び出し元自身
+/// なので、パターンでの検知は見逃し（書き換えた攻撃）も誤検知（正当な
+/// コメント・条件）も無くせない。データを守るのは、読み取り専用のロール・
+/// パラメーターのバインド等の仕組みで、この検知はその補助に留まる（#501）。
+/// mcp-rsの`[database]`のツールは、この検知を使わない（#499）。
 pub struct SqlInjectionDetector {
     dangerous_patterns: Vec<Regex>,
     suspicious_functions: HashSet<String>,
@@ -173,6 +179,11 @@ impl SqlInjectionDetector {
             // OR 1=1系の攻撃
             Regex::new(r"(?i)\bor\s+\d+\s*=\s*\d+").unwrap(),
             Regex::new(r"(?i)\bor\s+'[^']*'\s*=\s*'[^']*'").unwrap(),
+            // 文字列の値を閉じて始めるOR（`1' OR '1'='1`のように、末尾の
+            // 引用符を元のSQLに閉じさせる形。上のパターンは閉じた形だけ）
+            Regex::new(r"(?i)'\s*or\s+'[^']*'\s*=\s*'").unwrap(),
+            // OR true
+            Regex::new(r"(?i)\bor\s+true\b").unwrap(),
             // AND 1=1系の攻撃
             Regex::new(r"(?i)\band\s+\d+\s*=\s*\d+").unwrap(),
             Regex::new(r"(?i)\band\s+'[^']*'\s*=\s*'[^']*'").unwrap(),
