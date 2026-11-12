@@ -11,11 +11,11 @@
 //! - **SQL Injection Detection**: Real-time detection of 11 attack patterns
 //! - **Rate Limiting**: Token bucket algorithm with DDoS protection
 //! - **Anomaly Detection**: Behavioral analysis and threat scoring
+//! - **Audit Logging**: Comprehensive security event tracking
 //!
 //! Column encryption is not applied here. `config.encryption.encrypted_columns`
 //! used to build a `ColumnEncryptionManager` that was never used (#499). To
 //! encrypt columns, use `DatabaseHandler::with_column_encryption`.
-//! - **Audit Logging**: Comprehensive security event tracking
 //!
 //! ## Features
 //!
