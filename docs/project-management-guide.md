@@ -299,17 +299,23 @@ Milestone: v0.2.0-beta
 **生成されるIssue**:
 ```markdown
 Title: 📊 Weekly ROADMAP Health Check - 2026-01-27
-Labels: roadmap-health, automated, weekly-report
+Labels: roadmap-health, automated, weekly-report, documentation, priority: low
 Assignee: @n-takatsu
 ```
 
 ### 2. Issue Labeler（自動ラベル付け）
 
-**ワークフロー**: `.github/workflows/issue-labeler.yml`（今後実装予定）
+**ワークフロー**: `.github/workflows/issue-labeler.yml`
 
 **実行内容**:
-- Issue作成時にタイトル/本文からラベルを自動付与
-- 例: タイトルに "Security" → `security` ラベル追加
+- Issueを立てたとき（`opened`）に、タイトルの単語からコンポーネントのラベルを付ける
+  - `security`・`RUSTSEC`・セキュリティ・脆弱性 → `security`
+  - `database`・`PostgreSQL`・`MySQL`・`Redis`等・データベース → `database`
+  - `WebSocket` → `websocket`
+  - `Docker`・`Dockerfile` → `docker`・`infrastructure`
+  - `Kubernetes`・`k8s`・`Helm` → `kubernetes`・`infrastructure`
+- 本文は調べない（コードやファイル名に反応するため）。部分一致ではなく単語の境界で調べる
+- 種類（`enhancement`・`bug`・`documentation`・`security`）と優先度（`priority: high/medium/low`）は付けない。棚卸しで手で付ける（#517）
 
 ### 3. Project Board Automation
 
