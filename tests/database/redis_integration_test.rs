@@ -1,5 +1,8 @@
 //! Redis Phase 3 統合テスト
 //! 実際のRedisサーバーに接続して全機能をテストします
+//!
+//! Redisサーバー（localhost:6379）が要るので、既定では実行しない（#510）。
+//! 実行するには: `cargo test --all-features --test mod redis_integration -- --ignored`
 
 #[cfg(all(test, feature = "redis", feature = "database"))]
 mod redis_integration {
@@ -61,6 +64,7 @@ mod redis_integration {
     }
 
     #[tokio::test]
+    #[ignore] // Requires running Redis server (localhost:6379)
     async fn test_redis_connection() {
         let config = create_test_config();
         let result = RedisConnection::connect(&config).await;
@@ -68,6 +72,7 @@ mod redis_integration {
     }
 
     #[tokio::test]
+    #[ignore] // Requires running Redis server (localhost:6379)
     async fn test_ping() {
         let config = create_test_config();
         let conn = RedisConnection::connect(&config).await.unwrap();
@@ -76,6 +81,7 @@ mod redis_integration {
     }
 
     #[tokio::test]
+    #[ignore] // Requires running Redis server (localhost:6379)
     async fn test_string_operations() {
         let config = create_test_config();
         let conn = RedisConnection::connect(&config).await.unwrap();
@@ -103,6 +109,7 @@ mod redis_integration {
     }
 
     #[tokio::test]
+    #[ignore] // Requires running Redis server (localhost:6379)
     async fn test_incr_decr() {
         let config = create_test_config();
         let conn = RedisConnection::connect(&config).await.unwrap();
@@ -135,6 +142,7 @@ mod redis_integration {
     }
 
     #[tokio::test]
+    #[ignore] // Requires running Redis server (localhost:6379)
     async fn test_list_operations() {
         let config = create_test_config();
         let conn = RedisConnection::connect(&config).await.unwrap();
@@ -173,6 +181,7 @@ mod redis_integration {
     }
 
     #[tokio::test]
+    #[ignore] // Requires running Redis server (localhost:6379)
     async fn test_hash_operations() {
         let config = create_test_config();
         let conn = RedisConnection::connect(&config).await.unwrap();
@@ -217,6 +226,7 @@ mod redis_integration {
     }
 
     #[tokio::test]
+    #[ignore] // Requires running Redis server (localhost:6379)
     async fn test_sorted_set_operations() {
         let config = create_test_config();
         let conn = RedisConnection::connect(&config).await.unwrap();
@@ -267,6 +277,7 @@ mod redis_integration {
     }
 
     #[tokio::test]
+    #[ignore] // Requires running Redis server (localhost:6379)
     async fn test_key_operations() {
         let config = create_test_config();
         let conn = RedisConnection::connect(&config).await.unwrap();
@@ -307,6 +318,7 @@ mod redis_integration {
     }
 
     #[tokio::test]
+    #[ignore] // Requires running Redis server (localhost:6379)
     async fn test_security_restrictions() {
         // セキュリティ設定（ホワイトリスト）
         let security = RedisSecuritySettings {
