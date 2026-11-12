@@ -59,9 +59,16 @@ jobs:
     # develop/mainへのpushで保存したものを使う。PRごとに保存すると
     # Actionsのキャッシュ容量（10GB）を圧迫し、develop/mainのキャッシュが
     # 追い出されてしまうため。
+    #
+    # キーと完全に一致するキャッシュを復元したときは、保存しない。キーは
+    # Cargo.lockとツールチェーンで決まるので、ビルドする内容を変えても
+    # （例: 全機能のテストを足した#510）、それらが変わるまでキャッシュに
+    # 入らない。ビルドする内容を大きく変えたときは、prefix-keyの番号を
+    # 上げて、新しいキャッシュを保存させる
     - name: Cache Rust build
       uses: Swatinem/rust-cache@v2
       with:
+        prefix-key: v1-rust
         save-if: ${{ github.event_name == 'push' }}
 
     # fmtとclippyはOSにほぼ依存しないためUbuntuでのみ実行する。Windowsでの
