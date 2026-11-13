@@ -77,8 +77,8 @@ Patch versions are for:
 ## 1. Issue Creation and Planning
 
 ```markdown
-Title: [v0.XX.0] Feature Name
-Labels: enhancement, version-increment
+Title: [FEATURE] Feature Name
+Labels: enhancement
 ```
 
 Every 0.01 version increment should:
