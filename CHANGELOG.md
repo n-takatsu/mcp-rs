@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- 最小対応のRustのバージョンを1.98にし、`Cargo.toml`に`rust-version`として
+  宣言した（#516）。ソースからビルドするには、Rust 1.98以降が要る（以前は
+  1.88）。Dockerのイメージも1.98でビルドする。CIで、Ubuntu・Windowsの
+  1.98でのコンパイルと、`Dockerfile`のバージョンとの一致を確かめる。
+  `resolver = "3"`にしたので、`cargo update`は1.98で使えない版の依存
+  クレートを選ばない
 - 使われていない`use`を削除し、`src/lib.rs`のクレート全体の
   `#![allow(unused_imports)]`を外した（#502）。未使用の`use`は、機能の
   組み合わせによらずコンパイラーの警告になる
@@ -23,6 +29,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- 使われておらず、ビルドもできなかった`Dockerfile.test`と、`docker-compose.test.yml`
+  の`test-runner`を削除した（#516）
 - KubernetesのマニフェストとHelmチャート（`k8s/`・`charts/mcp-server/`）を
   削除した（#504）。今のmcp-rsと合わず、起動しないかプローブの失敗で再起動を
   繰り返すものだった（環境変数での設定・存在しない`/health`等のエンドポイント・

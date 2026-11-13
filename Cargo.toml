@@ -2,6 +2,12 @@
 name = "mcp-rs"
 version = "0.23.0"
 edition = "2021"
+# 最小対応のRustのバージョン（MSRV、#516）。DockerfileのFROM rust:X.Yも
+# 同じにする（CIで一致を確かめる）。上げるときは両方を同じPRで変える
+rust-version = "1.98"
+# MSRVを考慮して依存クレートを選ぶ（cargo updateが、rust-versionより
+# 新しいRustを要求する版を避ける）
+resolver = "3"
 authors = ["n-takatsu"]
 description = "Rust implementation of the Model Context Protocol (MCP) server for WordPress and other tools"
 license = "MIT OR Apache-2.0"
