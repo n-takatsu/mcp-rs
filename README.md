@@ -66,7 +66,7 @@ Connect with a read-only database role. See the [Database Integration Guide](htt
 
 ## Prerequisites
 
-- Rust 1.88 or later (required by dependencies such as `jsonwebtoken` and `time`; the latest stable is recommended)
+- Rust 1.98 or later (`rust-version` in `Cargo.toml`; the latest stable is recommended)
 - WordPress site with Application Passwords enabled
 - Network access to WordPress REST API
 

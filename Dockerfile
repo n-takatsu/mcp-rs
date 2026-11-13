@@ -4,9 +4,9 @@
 # ========================================
 
 # Stage 1: Builder
-# 1.88 is the minimum Rust version that the dependencies require
-# (jsonwebtoken, time). Building with it also checks that minimum.
-FROM rust:1.88-slim-bookworm AS builder
+# Build with the minimum supported Rust version (rust-version in
+# Cargo.toml, #516). CI checks that the two match, so raise both together.
+FROM rust:1.98-slim-bookworm AS builder
 
 # Install build dependencies
 RUN apt-get update && apt-get install -y \

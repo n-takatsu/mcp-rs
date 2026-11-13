@@ -6,7 +6,6 @@ on:
     paths:
       - '.github/workflows/container-integration-tests.yml'
       - 'docker-compose.test.yml'
-      - 'Dockerfile.test'
       - 'tests/integration/**'
       - 'src/transport/**'
       - 'src/plugin_proxy/**'
@@ -18,7 +17,6 @@ on:
     paths:
       - '.github/workflows/container-integration-tests.yml'
       - 'docker-compose.test.yml'
-      - 'Dockerfile.test'
       - 'tests/integration/**'
       - 'src/transport/**'
       - 'src/plugin_proxy/**'

@@ -200,6 +200,66 @@ jobs:
 
         echo "Configuration validation completed. Found $config_count config files."
 
+  # 最小対応のRustのバージョン（Cargo.tomlのrust-version、#516）で
+  # コンパイルできることを確かめる。testジョブはstableで動くので、依存
+  # クレートの更新や新しい機能を使ったコードでMSRVを超えても気づけない。
+  # Dockerfileは同じバージョンでビルドするので、一致も確かめる
+  msrv:
+    name: MSRV (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Read rust-version from Cargo.toml
+      id: msrv
+      shell: bash
+      run: |
+        # Windowsのランナーでは改行がCRLFになることがあるので、\rを除く
+        version=$(tr -d '\r' < Cargo.toml | sed -n 's/^rust-version = "\([0-9.]*\)"$/\1/p')
+        if [ -z "$version" ]; then
+          echo "::error file=Cargo.toml::rust-version is not set"
+          exit 1
+        fi
+        echo "Minimum supported Rust version: $version"
+        echo "version=$version" >> "$GITHUB_OUTPUT"
+
+    - name: Check that the Dockerfile builds with the same Rust version
+      if: runner.os == 'Linux'
+      shell: bash
+      env:
+        MSRV: ${{ steps.msrv.outputs.version }}
+      run: |
+        docker_version=$(tr -d '\r' < Dockerfile | sed -n 's/^FROM rust:\([0-9.]*\)-.* AS builder$/\1/p')
+        if [ "$docker_version" != "$MSRV" ]; then
+          echo "::error file=Dockerfile::FROM rust:$docker_version does not match rust-version $MSRV in Cargo.toml. Change both together."
+          exit 1
+        fi
+        echo "Dockerfile uses rust:$docker_version"
+
+    - name: Install Rust (MSRV)
+      uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: ${{ steps.msrv.outputs.version }}
+
+    # キャッシュは使わない。保存するとActionsのキャッシュの容量（10GB）を
+    # 圧迫し、testジョブのキャッシュを追い出すため（#515）。キャッシュ無しでも
+    # Ubuntu 5分・Windows 10分ほどで終わる（testジョブと並んで走る）
+
+    # Ubuntuでは、テストとexampleを含めて全機能で確かめる
+    - name: Check all targets with the MSRV
+      if: runner.os == 'Linux'
+      run: cargo check --locked --all-features --all-targets --jobs 4
+
+    # Windowsは時間がかかるので、ライブラリと実行ファイル（cfg(windows)の
+    # コードを含む）だけを確かめる
+    - name: Check the library and binary with the MSRV
+      if: runner.os == 'Windows'
+      run: cargo check --locked --all-features --lib --bins --jobs 4
+
   security:
     name: Security audit
     runs-on: ubuntu-latest
