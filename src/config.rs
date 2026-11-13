@@ -858,6 +858,48 @@ fn expand_home_dir(path: &str, home: Option<&str>) -> Option<String> {
     }
 }
 
+/// `--config`無しで起動したときの、`WORDPRESS_URL`・`WORDPRESS_USERNAME`・
+/// `WORDPRESS_PASSWORD`による上書き（後方互換性）。`WORDPRESS_URL`がある
+/// ときだけ働き、`[handlers.wordpress]`が無ければ環境変数だけで作る。
+///
+/// `keyring`を書いた設定は、URLも資格情報も上書きしない（#533）。資格情報
+/// ストアのエントリーはURLと結び付いていないので、残っていた
+/// `WORDPRESS_URL`が別のサイトを指していると、そのサイトへパスワードを
+/// 送ってしまうため。`env`は環境変数を読む関数（テストで差し替える）
+fn apply_wordpress_env_overrides(
+    wordpress: &mut Option<WordPressConfig>,
+    env: impl Fn(&str) -> Option<String>,
+) {
+    let Some(wp_url) = env("WORDPRESS_URL") else {
+        return;
+    };
+    match wordpress {
+        None => {
+            *wordpress = Some(WordPressConfig {
+                url: wp_url,
+                username: env("WORDPRESS_USERNAME").unwrap_or_default(),
+                password: env("WORDPRESS_PASSWORD").unwrap_or_default(),
+                enabled: Some(true),
+                timeout_seconds: Some(30),
+                rate_limit: Some(RateLimitConfig::default()),
+                encrypted_credentials: None, // 環境変数では平文使用
+                keyring: None,
+                upload_allowed_dirs: Vec::new(),
+            });
+        }
+        Some(wp_config) if wp_config.keyring.is_some() => {}
+        Some(wp_config) => {
+            wp_config.url = wp_url;
+            if let Some(username) = env("WORDPRESS_USERNAME") {
+                wp_config.username = username;
+            }
+            if let Some(password) = env("WORDPRESS_PASSWORD") {
+                wp_config.password = password;
+            }
+        }
+    }
+}
+
 /// 設定ファイルの`[transport] type = ...`を`transport_type`に書き換える（#375）。
 ///
 /// `TransportConfig::transport_type`は`#[serde(alias = "type")]`で`type`も
@@ -1158,33 +1200,9 @@ impl McpConfig {
         }
 
         // WordPress設定の環境変数上書き
-        if let Ok(wp_url) = std::env::var("WORDPRESS_URL") {
-            if final_config.handlers.wordpress.is_none() {
-                final_config.handlers.wordpress = Some(WordPressConfig {
-                    url: wp_url,
-                    username: std::env::var("WORDPRESS_USERNAME").unwrap_or_default(),
-                    password: std::env::var("WORDPRESS_PASSWORD").unwrap_or_default(),
-                    enabled: Some(true),
-                    timeout_seconds: Some(30),
-                    rate_limit: Some(RateLimitConfig::default()),
-                    encrypted_credentials: None, // 環境変数では平文使用
-                    keyring: None,
-                    upload_allowed_dirs: Vec::new(),
-                });
-            } else if let Some(ref mut wp_config) = final_config.handlers.wordpress {
-                wp_config.url = wp_url;
-                // keyringを書いた設定では、資格情報は資格情報ストアだけから
-                // 読む（残っていた環境変数で、黙って置き換えない、#533）
-                if wp_config.keyring.is_none() {
-                    if let Ok(username) = std::env::var("WORDPRESS_USERNAME") {
-                        wp_config.username = username;
-                    }
-                    if let Ok(password) = std::env::var("WORDPRESS_PASSWORD") {
-                        wp_config.password = password;
-                    }
-                }
-            }
-        }
+        apply_wordpress_env_overrides(&mut final_config.handlers.wordpress, |name| {
+            std::env::var(name).ok()
+        });
 
         // keyring・encrypted_credentialsの解決は上記の平文環境変数上書き
         // より後に行う。そうしないと、暗号化認証情報へ移行した後も環境に
@@ -2579,5 +2597,57 @@ mod additional_tests {
             (config.username.as_str(), config.password.as_str()),
             ("u", "p")
         );
+    }
+
+    fn env_from<'a>(vars: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
+        move |name| {
+            vars.iter()
+                .find(|(k, _)| *k == name)
+                .map(|(_, v)| v.to_string())
+        }
+    }
+
+    const STALE_ENV: &[(&str, &str)] = &[
+        ("WORDPRESS_URL", "https://other.example"),
+        ("WORDPRESS_USERNAME", "other-user"),
+        ("WORDPRESS_PASSWORD", "other-password"),
+    ];
+
+    #[test]
+    fn test_env_overrides_leave_keyring_config_alone() {
+        // 残っていたWORDPRESS_URLで、資格情報ストアのパスワードを別の
+        // サイトへ送らない（#533）
+        let mut wordpress = Some(keyring_config(""));
+        apply_wordpress_env_overrides(&mut wordpress, env_from(STALE_ENV));
+        let wp = wordpress.unwrap();
+        assert_eq!(wp.url, "https://example.com");
+        assert_eq!((wp.username.as_str(), wp.password.as_str()), ("", ""));
+    }
+
+    #[test]
+    fn test_env_overrides_apply_without_keyring() {
+        let mut wordpress = Some(
+            toml::from_str::<WordPressConfig>(
+                "url = \"https://example.com\"\nenabled = true\nusername = \"u\"\npassword = \"p\"",
+            )
+            .unwrap(),
+        );
+        apply_wordpress_env_overrides(&mut wordpress, env_from(STALE_ENV));
+        let wp = wordpress.unwrap();
+        assert_eq!(wp.url, "https://other.example");
+        assert_eq!(
+            (wp.username.as_str(), wp.password.as_str()),
+            ("other-user", "other-password")
+        );
+
+        // [handlers.wordpress]が無ければ、環境変数だけで作る
+        let mut wordpress = None;
+        apply_wordpress_env_overrides(&mut wordpress, env_from(STALE_ENV));
+        assert_eq!(wordpress.unwrap().url, "https://other.example");
+
+        // WORDPRESS_URLが無ければ、何もしない
+        let mut wordpress = None;
+        apply_wordpress_env_overrides(&mut wordpress, env_from(&[("WORDPRESS_PASSWORD", "x")]));
+        assert!(wordpress.is_none());
     }
 }

@@ -17,10 +17,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Claude Desktopは、OSの環境変数をMCPサーバーに渡さず、設定のJSONの`env`
   だけを渡すため、Claude DesktopとClaude Code・ターミナルの両方で使うと、
   同じ値を2か所に書く必要があった。資格情報ストアは、どれから起動しても同じに
-  読める。`keyring`を書いた設定では、`WORDPRESS_USERNAME`・
-  `WORDPRESS_PASSWORD`の環境変数で上書きしない。`username`・`password`・
+  読める。`keyring`を書いた設定では、`WORDPRESS_URL`・`WORDPRESS_USERNAME`・
+  `WORDPRESS_PASSWORD`の環境変数で上書きしない（残っていた`WORDPRESS_URL`
+  で、パスワードを別のサイトへ送らないため）。`username`・`password`・
   `encrypted_credentials`と一緒に書くと起動しない。平文・`${VAR}`・
-  `encrypted_credentials`は今までどおり使える
+  `encrypted_credentials`は今までどおり使える。既定で有効な機能
+  `os-keyring`に入れた。Dockerのイメージは、資格情報ストアが無いので、
+  この機能を外してビルドする
 
 ### Changed
 

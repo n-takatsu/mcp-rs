@@ -81,6 +81,7 @@ pub trait SecretStore {
 /// The OS credential store, under the [`KEYRING_SERVICE`] service.
 pub struct OsKeyring;
 
+#[cfg(feature = "os-keyring")]
 impl OsKeyring {
     fn entry(name: &str) -> Result<keyring::Entry, KeyringError> {
         keyring::Entry::new(KEYRING_SERVICE, name).map_err(map_keyring_error)
@@ -89,15 +90,24 @@ impl OsKeyring {
 
 /// `keyring::Error` messages do not contain the secret, but `BadEncoding`
 /// carries the raw bytes, so only the kind is reported for it.
+#[cfg(feature = "os-keyring")]
 fn map_keyring_error(error: keyring::Error) -> KeyringError {
     match error {
         keyring::Error::BadEncoding(_) | keyring::Error::BadDataFormat(_, _) => {
             KeyringError::Unavailable("the stored value could not be read".to_string())
         }
+        // "No default store has been set" hides why: the store failed to
+        // start (for example no D-Bus session on a Linux server). That
+        // reason is kept by store_status()
+        keyring::Error::NoDefaultStore => match keyring::Entry::store_status() {
+            Err(reason) => KeyringError::Unavailable(reason.to_string()),
+            Ok(()) => KeyringError::Unavailable(keyring::Error::NoDefaultStore.to_string()),
+        },
         other => KeyringError::Unavailable(other.to_string()),
     }
 }
 
+#[cfg(feature = "os-keyring")]
 impl SecretStore for OsKeyring {
     fn get(&self, name: &str) -> Result<Option<Zeroizing<String>>, KeyringError> {
         match Self::entry(name)?.get_password() {
@@ -120,6 +130,30 @@ impl SecretStore for OsKeyring {
             Err(e) => Err(map_keyring_error(e)),
         }
     }
+}
+
+/// Built without the `os-keyring` feature (the Docker image): every call
+/// fails with the reason.
+#[cfg(not(feature = "os-keyring"))]
+impl SecretStore for OsKeyring {
+    fn get(&self, _name: &str) -> Result<Option<Zeroizing<String>>, KeyringError> {
+        Err(not_built())
+    }
+
+    fn set(&self, _name: &str, _secret: &str) -> Result<(), KeyringError> {
+        Err(not_built())
+    }
+
+    fn delete(&self, _name: &str) -> Result<bool, KeyringError> {
+        Err(not_built())
+    }
+}
+
+#[cfg(not(feature = "os-keyring"))]
+fn not_built() -> KeyringError {
+    KeyringError::Unavailable(
+        "this mcp-rs was built without the os-keyring feature, as the Docker image is".to_string(),
+    )
 }
 
 /// WordPress credentials as kept in one keyring entry.

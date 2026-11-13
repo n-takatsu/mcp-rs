@@ -94,7 +94,8 @@ Run `set` again to change the password, `mcp-rs wordpress-keyring show example.c
 - With `keyring`, the `WORDPRESS_USERNAME` and `WORDPRESS_PASSWORD` environment variables are not used, even without `--config`
 - Secrets are never accepted as command-line arguments. Without a terminal, `set` reads the username and the Application Password as two lines from standard input
 - The credential store is read only when `enabled = true`
-- Docker, CI, and servers without a desktop session have no Secret Service. Keep using `${VAR}` or `encrypted_credentials` there; both work as before
+- Docker, CI, and servers without a desktop session have no Secret Service. Keep using `${VAR}` or `encrypted_credentials` there; both work as before. The Docker image is built without this feature (`os-keyring`, on by default when building from source)
+- What it protects against: the password is not left in plaintext in the config file, in `claude_desktop_config.json`, or in environment variables. It does not protect against other programs running as the same OS user, which can read the credential store too
 
 ## Encrypted WordPress Credentials
 

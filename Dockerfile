@@ -24,8 +24,10 @@ COPY benches ./benches
 COPY examples ./examples
 COPY tests ./tests
 
-# Build the application
-RUN cargo build --release --bin mcp-rs
+# Build the application. The os-keyring feature (#533) is left out: a
+# container has no OS credential store, so credentials come from environment
+# variables (${VAR}) or encrypted_credentials
+RUN cargo build --release --bin mcp-rs --no-default-features --features database
 
 # Strip debug symbols to reduce size
 RUN strip target/release/mcp-rs
