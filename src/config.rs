@@ -858,6 +858,22 @@ fn expand_home_dir(path: &str, home: Option<&str>) -> Option<String> {
     }
 }
 
+/// 文字列の中の`${VAR}`の変数名（`expand_env_vars`と同じ読み方）。
+/// `}`が無いところから後は読まない（展開の時にエラーになる）
+fn referenced_env_vars(input: &str) -> Vec<&str> {
+    let mut names = Vec::new();
+    let mut rest = input;
+    while let Some(start) = rest.find("${") {
+        let after = &rest[start + 2..];
+        let Some(end) = after.find('}') else {
+            break;
+        };
+        names.push(&after[..end]);
+        rest = &after[end + 1..];
+    }
+    names
+}
+
 /// `--config`無しで起動したときの、`WORDPRESS_URL`・`WORDPRESS_USERNAME`・
 /// `WORDPRESS_PASSWORD`による上書き（後方互換性）。`WORDPRESS_URL`がある
 /// ときだけ働き、`[handlers.wordpress]`が無ければ環境変数だけで作る。
@@ -931,12 +947,15 @@ pub enum EnvExpansionError {
     Missing(String),
     /// `${`に対応する`}`が無い、または変数名が空
     Malformed,
+    /// 参照した環境変数はあるが、値が空（APIキーで使う、#534）
+    Empty(String),
 }
 
 impl fmt::Display for EnvExpansionError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Missing(name) => write!(f, "environment variable '{}' is not set", name),
+            Self::Empty(name) => write!(f, "environment variable '{}' is empty", name),
             Self::Malformed => write!(
                 f,
                 "'${{' has no matching '}}' or an empty variable name (write ${{VAR_NAME}})"
@@ -1046,13 +1065,23 @@ impl McpConfig {
             return Ok(());
         }
         for (index, entry) in http.api_keys.iter_mut().flatten().enumerate() {
-            entry.key = Self::expand_env_vars(&entry.key).map_err(|reason| ConfigEnvError {
-                field: format!(
-                    "transport.http.api_keys[{}].key (name '{}')",
-                    index, entry.name
-                ),
-                reason,
-            })?;
+            let field = format!(
+                "transport.http.api_keys[{}].key (name '{}')",
+                index, entry.name
+            );
+            // 空の変数は、キーを空や短いものにしてしまう。起動時の検査
+            // （空のキー）では、どの変数が空かが分からないので、ここで止める
+            if let Some(name) = referenced_env_vars(&entry.key)
+                .into_iter()
+                .find(|name| std::env::var(name).is_ok_and(|v| v.is_empty()))
+            {
+                return Err(ConfigEnvError {
+                    field,
+                    reason: EnvExpansionError::Empty(name.to_string()),
+                });
+            }
+            entry.key = Self::expand_env_vars(&entry.key)
+                .map_err(|reason| ConfigEnvError { field, reason })?;
         }
         Ok(())
     }
@@ -2147,6 +2176,34 @@ user_id = "u2"
             "transport.http.api_keys[1].key (name 'from-env'): environment variable 'MCP_RS_TEST_API_KEY_534_UNSET' is not set"
         );
         assert!(!err.contains("prefix-"));
+    }
+
+    /// 変数はあるが空なら、その変数名を出して止める（起動時の「空のキー」
+    /// の検査では、どの変数かが分からないため）
+    #[test]
+    fn test_expand_http_api_keys_reports_empty_variable() {
+        std::env::set_var("MCP_RS_TEST_API_KEY_534_EMPTY", "");
+        let mut config = http_config_with_keys("http", true);
+        config
+            .transport
+            .http
+            .as_mut()
+            .unwrap()
+            .api_keys
+            .as_mut()
+            .unwrap()[1]
+            .key = "prefix-${MCP_RS_TEST_API_KEY_534_EMPTY}".to_string();
+        assert_eq!(
+            config.expand_http_api_keys().unwrap_err().to_string(),
+            "transport.http.api_keys[1].key (name 'from-env'): environment variable 'MCP_RS_TEST_API_KEY_534_EMPTY' is empty"
+        );
+    }
+
+    #[test]
+    fn test_referenced_env_vars() {
+        assert_eq!(referenced_env_vars("${A}-x-${B_2}"), vec!["A", "B_2"]);
+        assert_eq!(referenced_env_vars("plain"), Vec::<&str>::new());
+        assert_eq!(referenced_env_vars("${A}${unclosed"), vec!["A"]);
     }
 
     /// キーを使わない設定（STDIO・auth_enabledがfalse）では展開しない

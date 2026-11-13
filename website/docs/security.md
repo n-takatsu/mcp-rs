@@ -176,7 +176,7 @@ name = "claude-desktop"
 user_id = "user-1"
 ```
 
-- If the variable is not set, mcp-rs does not start. The error names the entry and the variable (for example `transport.http.api_keys[0].key (name 'claude-desktop'): environment variable 'MCP_API_KEY' is not set`), never the value
+- If the variable is not set or is empty, mcp-rs does not start. The error names the entry and the variable (for example `transport.http.api_keys[0].key (name 'claude-desktop'): environment variable 'MCP_API_KEY' is not set`, or `... is empty`), never the value
 - `${...}` is expanded only in HTTP mode with `auth_enabled = true`, where the keys are used
 - Up to v0.23.0, `${...}` in `key` was used as written. A key that contains `${` now has to come from an environment variable
 

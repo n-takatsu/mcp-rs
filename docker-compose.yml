@@ -71,7 +71,7 @@ services:
 
     # Pass secrets used as ${VAR} in the config file here, e.g.
     # environment:
-    #   MCP_API_KEY: ${MCP_API_KEY}
+    #   MCP_API_KEY: ${MCP_API_KEY:?set MCP_API_KEY}   # :? stops Compose if it is unset or empty
     #   WORDPRESS_PASSWORD: ${WORDPRESS_PASSWORD}
 
     # Networks
