@@ -1,0 +1,62 @@
+name: Issue Labels
+
+# Issueのラベルの決まり（docs/project-management-guide.mdの「Issueのラベルの
+# 基準」、#523）。処理はscripts/issue_labels.pyにまとめてあり、手元からも
+# 同じように実行できる。
+#
+# - Issueが開かれたとき: 優先度が無ければpriority: mediumを付ける（中身を
+#   読まずに決まる既定だけ。種類は人が付ける）
+# - 週1回（月曜 10:00 JST）と手動実行: 開いているIssueに既定を付けてから、
+#   決まりに沿っていない（種類・優先度が1つでない、決まりにないラベルが
+#   ある）Issueを一覧にし、1件でもあれば失敗にする。失敗の通知で気づける
+on:
+  issues:
+    types: [opened]
+  schedule:
+    - cron: '0 1 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: issue-labels-${{ github.event.issue.number || 'all' }}
+  cancel-in-progress: false
+
+jobs:
+  labels:
+    name: Issue labels
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      # 動かすスクリプトだけを取り出す
+      - name: Checkout the script
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts/issue_labels.py
+          sparse-checkout-cone-mode: false
+
+      # Issueのタイトル等は、ここに${{ }}で書かず、スクリプトがghで読む
+      # （スクリプトインジェクションを避けるため、#517）。作った直後に
+      # 別の操作（issue-labeler.yml・人の編集）で付くラベルと重ならない
+      # ように、少し待ってから読む
+      - name: Add the default labels to the new issue
+        if: github.event_name == 'issues'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          sleep 60
+          python3 scripts/issue_labels.py --fix --issue "$ISSUE_NUMBER"
+
+      - name: Check the open issues
+        if: github.event_name != 'issues'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: python3 scripts/issue_labels.py --fix
