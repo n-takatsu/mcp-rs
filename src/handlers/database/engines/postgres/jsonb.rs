@@ -222,6 +222,9 @@ impl JsonbHandler {
 
     /// Query JSONB using path expression
     ///
+    /// パスのキーが無い行は、結果に入らない。値がJSONの`null`の行は
+    /// `Value::Null`として入る（#513）
+    ///
     /// # Example
     /// ```ignore
     /// // SELECT (data->'user'->'name')::text FROM events

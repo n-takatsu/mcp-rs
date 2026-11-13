@@ -9,6 +9,8 @@
 
 #![cfg(feature = "database")]
 
+mod common;
+
 use mcp_rs::handlers::database::column_encryption::{
     ColumnEncryptionConfig, ColumnEncryptionManager,
 };
@@ -23,11 +25,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 async fn try_connect() -> Option<PgPool> {
-    let database_url = std::env::var("TEST_DATABASE_URL").unwrap_or_default();
-    if database_url.is_empty() {
-        println!("skipping: TEST_DATABASE_URL not set");
-        return None;
-    }
+    // 変数が無いときも、つながらないときも失敗にする（#513）。
+    // `#[ignore]`のテストなので、`--ignored`で実行したときだけ呼ばれる
+    let database_url = common::postgres_url();
     match PgPool::connect(&database_url).await {
         Ok(pool) => match sqlx::query("SELECT 1").execute(&pool).await {
             Ok(_) => Some(pool),

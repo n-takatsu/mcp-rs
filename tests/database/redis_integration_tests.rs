@@ -111,10 +111,13 @@ async fn test_redis_delete_is_blocked_by_default() {
     // DELETE（DEL）は、エンジンの既定の安全設定（RedisSecuritySettings::default）の
     // 拒否の一覧にあるので、拒否される（#513。Redisのツールの意味は#529で決める）
     let result = connection.execute("DELETE FROM test_delete_key", &[]).await;
-    assert!(
-        result.is_err(),
-        "DEL should be blocked by the default security settings"
-    );
+    // 接続の失敗など、ほかの理由のエラーでは通らないように、種類まで確かめる
+    match result {
+        Err(mcp_rs::handlers::database::types::DatabaseError::SecurityViolation(message)) => {
+            assert!(message.contains("DEL"), "unexpected message: {message}");
+        }
+        other => panic!("DEL should be blocked by the default security settings, got {other:?}"),
+    }
 }
 
 #[tokio::test]

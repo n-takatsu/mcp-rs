@@ -6,6 +6,8 @@ PostgreSQL・Redisのサーバーが要るテストは`#[ignore]`にしてあり
 
 接続先は環境変数で渡す（`tests/common/mod.rs`）。`--ignored`で実行したのに変数が無いときや、つながらないときは、テストを失敗にする。
 
+**使い捨てのデータベースを指すこと。** テストは準備で、`test_schema`のスキーマと、RBACの表（`column_encryption_permissions`・`encryption_audit_log`。本番のマイグレーションと同じ名前）を`DROP … CASCADE`で消して作り直す。ほかにも`test_`・`encryption_it_`・`microseg_it_`で始まる表を作って消す。Redisは`test:`等で始まるキーを書いて消す。
+
 | 変数 | CIの値 |
 |---|---|
 | `TEST_DATABASE_URL` | `postgres://testuser:testpass@localhost:5433/mcptest` |
