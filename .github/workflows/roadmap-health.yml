@@ -33,15 +33,17 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           echo "# 🎯 mcp-rs ROADMAP Health Check Report" > health_report.md
-          echo "**Generated**: $(date '+%Y-%m-%d %H:%M:%S JST')" >> health_report.md
+          echo "**Generated**: $(TZ=Asia/Tokyo date '+%Y-%m-%d %H:%M:%S JST')" >> health_report.md
           echo "" >> health_report.md
 
           # 📊 Overall Project Health
+          # gh issue listの既定は30件までなので、--limitを付けないと統計が
+          # 30件で頭打ちになる（#517）
           echo "## 📊 Overall Project Health" >> health_report.md
           echo "" >> health_report.md
 
-          total_issues=$(gh issue list --state all --json number | jq length)
-          open_issues=$(gh issue list --state open --json number | jq length)
+          total_issues=$(gh issue list --limit 1000 --state all --json number | jq length)
+          open_issues=$(gh issue list --limit 1000 --state open --json number | jq length)
           closed_issues=$((total_issues - open_issues))
 
           if [[ $total_issues -gt 0 ]]; then
@@ -70,19 +72,14 @@ jobs:
             echo "" >> health_report.md
 
             # マイルストーン統計
-            milestone_total=$(gh issue list --milestone "$milestone" --state all --json number | jq length)
-            milestone_open=$(gh issue list --milestone "$milestone" --state open --json number | jq length)
+            milestone_total=$(gh issue list --limit 1000 --milestone "$milestone" --state all --json number | jq length)
+            milestone_open=$(gh issue list --limit 1000 --milestone "$milestone" --state open --json number | jq length)
             milestone_closed=$((milestone_total - milestone_open))
 
             # Epic 統計
-            epic_total=$(gh issue list --milestone "$milestone" --label "epic" --state all --json number | jq length)
-            epic_open=$(gh issue list --milestone "$milestone" --label "epic" --state open --json number | jq length)
+            epic_total=$(gh issue list --limit 1000 --milestone "$milestone" --label "epic" --state all --json number | jq length)
+            epic_open=$(gh issue list --limit 1000 --milestone "$milestone" --label "epic" --state open --json number | jq length)
             epic_closed=$((epic_total - epic_open))
-
-            # Sub-Issue 統計
-            sub_total=$(gh issue list --milestone "$milestone" --label "sub-issue" --state all --json number | jq length)
-            sub_open=$(gh issue list --milestone "$milestone" --label "sub-issue" --state open --json number | jq length)
-            sub_closed=$((sub_total - sub_open))
 
             if [[ $milestone_total -gt 0 ]]; then
               milestone_progress=$((milestone_closed * 100 / milestone_total))
@@ -100,13 +97,6 @@ jobs:
               echo "| Epic Issues | $epic_total | $epic_closed | $epic_open | ${epic_progress}% |" >> health_report.md
             else
               echo "| Epic Issues | 0 | 0 | 0 | N/A |" >> health_report.md
-            fi
-
-            if [[ $sub_total -gt 0 ]]; then
-              sub_progress=$((sub_closed * 100 / sub_total))
-              echo "| Sub-Issues | $sub_total | $sub_closed | $sub_open | ${sub_progress}% |" >> health_report.md
-            else
-              echo "| Sub-Issues | 0 | 0 | 0 | N/A |" >> health_report.md
             fi
 
             echo "" >> health_report.md
@@ -132,19 +122,19 @@ jobs:
           echo "## 🚨 Health Alerts & Recommendations" >> health_report.md
           echo "" >> health_report.md
 
-          # P0 Critical Issues チェック
-          p0_issues=$(gh issue list --label "priority-p0-critical" --state open --json number | jq length)
-          if [[ $p0_issues -gt 0 ]]; then
-            echo "### 🚨 Critical Priority Issues" >> health_report.md
-            echo "- **$p0_issues P0 Critical issues** require immediate attention" >> health_report.md
+          # 優先度の高いIssue（棚卸しの基準の最上位はpriority: high）
+          high_issues=$(gh issue list --limit 1000 --label "priority: high" --state open --json number | jq length)
+          if [[ $high_issues -gt 0 ]]; then
+            echo "### 🚨 High Priority Issues" >> health_report.md
+            echo "- **$high_issues high priority issues** require attention" >> health_report.md
 
-            gh issue list --label "priority-p0-critical" --state open --json number,title,url \
+            gh issue list --limit 1000 --label "priority: high" --state open --json number,title,url \
               --jq '.[] | "- [#" + (.number|tostring) + "](" + .url + "): " + .title' >> health_report.md
             echo "" >> health_report.md
           fi
 
           # 長期オープン Issue チェック
-          old_issues=$(gh issue list --state open --json number,createdAt,title,url \
+          old_issues=$(gh issue list --limit 1000 --state open --json number,createdAt,title,url \
             --jq '[.[] | select((now - (.createdAt | fromdateiso8601)) > (30 * 86400))] | length')
           if [[ $old_issues -gt 0 ]]; then
             echo "### ⏰ Long-running Issues" >> health_report.md
@@ -158,10 +148,9 @@ jobs:
           echo "" >> health_report.md
 
           echo "### This Week Priority" >> health_report.md
-          echo "- [ ] Review and address all P0 Critical issues" >> health_report.md
-          echo "- [ ] Update Epic Issues with current Sub-Issue progress" >> health_report.md
+          echo "- [ ] Review and address all high priority issues" >> health_report.md
+          echo "- [ ] Update Epic Issues with current progress" >> health_report.md
           echo "- [ ] Validate open milestone timelines (close milestones that are complete)" >> health_report.md
-          echo "- [ ] Close completed Sub-Issues and update Epic status" >> health_report.md
           echo "" >> health_report.md
 
           echo "### Process Improvements" >> health_report.md
@@ -176,9 +165,9 @@ jobs:
 
           # 週次 Issue 作成/完了統計
           week_ago=$(date -d "7 days ago" '+%Y-%m-%d')
-          created_this_week=$(gh issue list --state all --json createdAt \
+          created_this_week=$(gh issue list --limit 1000 --state all --json createdAt \
             --jq "[.[] | select(.createdAt > \"${week_ago}T00:00:00Z\")] | length")
-          closed_this_week=$(gh issue list --state closed --json closedAt \
+          closed_this_week=$(gh issue list --limit 1000 --state closed --json closedAt \
             --jq "[.[] | select(.closedAt != null and .closedAt > \"${week_ago}T00:00:00Z\")] | length")
 
           echo "### Weekly Activity" >> health_report.md
@@ -201,11 +190,10 @@ jobs:
           # 🔗 Quick Links
           echo "## 🔗 Quick Links" >> health_report.md
           echo "" >> health_report.md
-          echo "- 🎯 [Project Board](https://github.com/${{ github.repository }}/projects/1)" >> health_report.md
           echo "- 📊 [Milestones](https://github.com/${{ github.repository }}/milestones)" >> health_report.md
           echo "- 🗺️ [ROADMAP.md](https://github.com/${{ github.repository }}/blob/develop/ROADMAP.md)" >> health_report.md
           echo "- 📋 [Epic Issues](https://github.com/${{ github.repository }}/issues?q=is%3Aopen+label%3Aepic)" >> health_report.md
-          echo "- 🚨 [Critical Issues](https://github.com/${{ github.repository }}/issues?q=is%3Aopen+label%3Apriority-p0-critical)" >> health_report.md
+          echo "- 🚨 [High Priority Issues](https://github.com/${{ github.repository }}/issues?q=is%3Aopen+label%3A%22priority%3A+high%22)" >> health_report.md
           echo "" >> health_report.md
 
       - name: 📊 Create Health Check Issue
@@ -226,13 +214,13 @@ jobs:
           **Report Type**: Weekly Automated Health Assessment
           **Next Check**: $(date -d "+7 days" '+%Y-%m-%d')
 
-          This issue will be automatically closed after 7 days. For persistent tracking, use the Project Board." \
-            --label "roadmap-health,automated,weekly-report" \
+          This issue will be automatically closed after 7 days." \
+            --label "roadmap-health,automated,weekly-report,documentation,priority: low" \
             --assignee "n-takatsu"
 
           # 前週の Health Check Issue を自動クローズ
           week_ago_date=$(date -d "7 days ago" '+%Y-%m-%d')
-          previous_issues=$(gh issue list --label "roadmap-health,weekly-report" --state open --json number,title \
+          previous_issues=$(gh issue list --limit 1000 --label "roadmap-health,weekly-report" --state open --json number,title \
             --jq ".[] | select(.title | contains(\"$week_ago_date\")) | .number")
 
           for issue_num in $previous_issues; do

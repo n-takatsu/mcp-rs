@@ -18,8 +18,10 @@ ROADMAP.md (戦略) ↔→ GitHub Milestones (計画) ↔→ GitHub Issues (実�
 
 ## 🔄 自動化ワークフロー
 
-1. **`issue-automation.yml`**: Issue管理・ラベル・Epic連携自動化
+1. **`issue-labeler.yml`**: Issueを立てたときに、タイトルからコンポーネントのラベル（`security`・`database`等）を付ける。種類と優先度は棚卸しで手で付ける（#517）
 2. **`roadmap-health.yml`**: 週次健全性チェックと進捗レポート（開いているマイルストーンを報告する。ROADMAP.mdは書き換えない）
+
+以前の`issue-automation.yml`は、ラベルを付けずにログを出すだけで、Issueのタイトルを`run:`に直接展開していた（スクリプトインジェクション）ため削除した（#517）。
 
 ROADMAP.mdは手で更新する（PR経由）。以前の`roadmap-sync.yml`（ROADMAP.mdの進捗を書き換えてdevelopに直接コミットしていた）は削除した。完了したマイルストーンはクローズする。
 
@@ -300,7 +302,7 @@ gh auth refresh -s project,read:project,write:discussion
 
 ## 📋 設定ファイル
 
-- [`.github/workflows/issue-automation.yml`](.github/workflows/issue-automation.yml)
+- [`.github/workflows/issue-labeler.yml`](.github/workflows/issue-labeler.yml)
 - [`.github/workflows/roadmap-health.yml`](.github/workflows/roadmap-health.yml)
 - [`.github/GITHUB_PROJECTS_SETUP.md`](.github/GITHUB_PROJECTS_SETUP.md)
 
