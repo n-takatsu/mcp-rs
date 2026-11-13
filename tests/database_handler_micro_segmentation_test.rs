@@ -24,6 +24,26 @@ use std::sync::Arc;
 /// same id to construct matching `AccessPolicy::resource_patterns`.
 const ENGINE_ID: &str = "pg";
 
+/// 応答から行を取り出す。`execute_query_as`は結果のJSONをそのまま返し、
+/// `call_tool`（MCPのツール）は`content[0].text`にJSONの文字列として包んで返す（#453）。
+/// どちらの形も読む（#513）
+fn rows_of(response: &serde_json::Value) -> Vec<serde_json::Value> {
+    let body = match response.get("content") {
+        Some(content) => {
+            let text = content[0]["text"]
+                .as_str()
+                .unwrap_or_else(|| panic!("tool response should have text content: {response}"));
+            serde_json::from_str(text)
+                .unwrap_or_else(|e| panic!("tool response text should be JSON ({e}): {response}"))
+        }
+        None => response.clone(),
+    };
+    body.get("rows")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_else(|| panic!("response should have a rows array: {response}"))
+}
+
 async fn try_connect() -> Option<PgPool> {
     let database_url = std::env::var("TEST_DATABASE_URL").unwrap_or_default();
     if database_url.is_empty() {
@@ -132,10 +152,7 @@ async fn allowed_role_can_query_the_table() {
         .await
         .expect("query should succeed for an allowed role");
 
-    let rows = response
-        .get("rows")
-        .and_then(|v| v.as_array())
-        .unwrap_or_else(|| panic!("response should have a rows array: {response}"));
+    let rows = rows_of(&response);
     assert_eq!(rows.len(), 1);
 
     cleanup(&pool, table).await;
@@ -422,10 +439,7 @@ async fn unset_micro_segmentation_does_not_affect_existing_behavior() {
         .call_tool(tool_call(&format!("SELECT value FROM {table}")))
         .await
         .expect("query should succeed when micro-segmentation is not configured at all");
-    let rows = response
-        .get("rows")
-        .and_then(|v| v.as_array())
-        .unwrap_or_else(|| panic!("response should have a rows array: {response}"));
+    let rows = rows_of(&response);
     assert_eq!(rows.len(), 1);
 
     cleanup(&pool, table).await;

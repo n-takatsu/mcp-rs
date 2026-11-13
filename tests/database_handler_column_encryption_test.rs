@@ -72,10 +72,23 @@ fn tool_call(sql: &str) -> ToolCallParams {
     }
 }
 
-fn rows_of(response: &serde_json::Value) -> &Vec<serde_json::Value> {
-    response
-        .get("rows")
+/// 応答から行を取り出す。`execute_query_as`は結果のJSONをそのまま返し、
+/// `call_tool`（MCPのツール）は`content[0].text`にJSONの文字列として包んで返す（#453）。
+/// どちらの形も読む（#513）
+fn rows_of(response: &serde_json::Value) -> Vec<serde_json::Value> {
+    let body = match response.get("content") {
+        Some(content) => {
+            let text = content[0]["text"]
+                .as_str()
+                .unwrap_or_else(|| panic!("tool response should have text content: {response}"));
+            serde_json::from_str(text)
+                .unwrap_or_else(|e| panic!("tool response text should be JSON ({e}): {response}"))
+        }
+        None => response.clone(),
+    };
+    body.get("rows")
         .and_then(|v| v.as_array())
+        .cloned()
         .unwrap_or_else(|| panic!("response should have a rows array: {response}"))
 }
 
