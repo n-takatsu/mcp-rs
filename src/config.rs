@@ -1030,6 +1030,33 @@ impl McpConfig {
         Ok(())
     }
 
+    /// HTTPモードのAPIキー（`[[transport.http.api_keys]]`の`key`）の`${VAR}`
+    /// を展開する（#534）。キーを設定ファイルに平文で書かずに済むように
+    /// する。展開できなければ、どのエントリーのどの変数かを返し、起動しない
+    /// （WordPressと同じ、#454）。キーを使わない設定（STDIOモード、または
+    /// `auth_enabled`が`true`でない）なら展開しない
+    pub fn expand_http_api_keys(&mut self) -> Result<(), ConfigEnvError> {
+        if self.transport.transport_type.as_deref() != Some("http") {
+            return Ok(());
+        }
+        let Some(http) = self.transport.http.as_mut() else {
+            return Ok(());
+        };
+        if !http.auth_enabled.unwrap_or(false) {
+            return Ok(());
+        }
+        for (index, entry) in http.api_keys.iter_mut().flatten().enumerate() {
+            entry.key = Self::expand_env_vars(&entry.key).map_err(|reason| ConfigEnvError {
+                field: format!(
+                    "transport.http.api_keys[{}].key (name '{}')",
+                    index, entry.name
+                ),
+                reason,
+            })?;
+        }
+        Ok(())
+    }
+
     /// `[database]`の`host`・`database`・`username`・`password`の`${VAR}`を
     /// 展開する（#453）。使わない設定（`enabled = false`）なら展開しない。
     /// 設定の読み込みでは展開せず、ハンドラーを登録するときに展開する（環境
@@ -1198,6 +1225,10 @@ impl McpConfig {
             info!("WordPress設定で環境変数展開を適用中...");
             Self::expand_wordpress_config(wp_config).map_err(|e| e.to_string())?;
         }
+        // HTTPモードのAPIキーの`${VAR}`（#534）
+        final_config
+            .expand_http_api_keys()
+            .map_err(|e| e.to_string())?;
 
         // WordPress設定の環境変数上書き
         apply_wordpress_env_overrides(&mut final_config.handlers.wordpress, |name| {
@@ -2059,6 +2090,86 @@ start_timeout_seconds = 300
         assert_eq!(audit.file_path.as_deref(), Some("C:/logs/mcp-audit.log"));
         assert_eq!(audit.max_files, Some(3));
         assert_eq!(audit.enabled, None);
+    }
+
+    fn http_config_with_keys(transport_type: &str, auth_enabled: bool) -> McpConfig {
+        toml::from_str(&format!(
+            r#"
+[transport]
+type = "{transport_type}"
+[transport.http]
+auth_enabled = {auth_enabled}
+
+[[transport.http.api_keys]]
+key = "plain-key"
+name = "plain"
+user_id = "u1"
+
+[[transport.http.api_keys]]
+key = "${{MCP_RS_TEST_API_KEY_534}}"
+name = "from-env"
+user_id = "u2"
+
+[server]
+[handlers]
+"#
+        ))
+        .unwrap()
+    }
+
+    /// APIキーの`${VAR}`を展開する（#534）
+    #[test]
+    fn test_expand_http_api_keys() {
+        std::env::set_var("MCP_RS_TEST_API_KEY_534", "key-from-env");
+        let mut config = http_config_with_keys("http", true);
+        config.expand_http_api_keys().unwrap();
+        let http = config.to_transport_config().http;
+        assert_eq!(http.api_keys[0].key, "plain-key");
+        assert_eq!(http.api_keys[1].key, "key-from-env");
+    }
+
+    /// 変数が無ければ、どのエントリーのどの変数かを返す。値は出さない
+    #[test]
+    fn test_expand_http_api_keys_reports_missing_variable() {
+        let mut config = http_config_with_keys("http", true);
+        config
+            .transport
+            .http
+            .as_mut()
+            .unwrap()
+            .api_keys
+            .as_mut()
+            .unwrap()[1]
+            .key = "prefix-${MCP_RS_TEST_API_KEY_534_UNSET}".to_string();
+        let err = config.expand_http_api_keys().unwrap_err().to_string();
+        assert_eq!(
+            err,
+            "transport.http.api_keys[1].key (name 'from-env'): environment variable 'MCP_RS_TEST_API_KEY_534_UNSET' is not set"
+        );
+        assert!(!err.contains("prefix-"));
+    }
+
+    /// キーを使わない設定（STDIO・auth_enabledがfalse）では展開しない
+    /// （変数が無くても起動を止めない）
+    #[test]
+    fn test_expand_http_api_keys_skips_unused_keys() {
+        for (transport_type, auth_enabled) in [("stdio", true), ("http", false)] {
+            let mut config = http_config_with_keys(transport_type, auth_enabled);
+            config
+                .transport
+                .http
+                .as_mut()
+                .unwrap()
+                .api_keys
+                .as_mut()
+                .unwrap()[1]
+                .key = "${MCP_RS_TEST_API_KEY_534_UNSET}".to_string();
+            config.expand_http_api_keys().unwrap();
+            assert_eq!(
+                config.transport.http.unwrap().api_keys.unwrap()[1].key,
+                "${MCP_RS_TEST_API_KEY_534_UNSET}"
+            );
+        }
     }
 
     /// APIキーの`tools`と、OAuthの`scope_tools`（#52）を読む

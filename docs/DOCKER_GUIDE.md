@@ -103,7 +103,7 @@ network_policy_reject_external_connections = false
 auth_enabled = true
 
 [[transport.http.api_keys]]
-key = "replace-with-a-long-random-key"
+key = "${MCP_API_KEY}"
 name = "client"
 user_id = "user-1"
 
@@ -113,9 +113,12 @@ user_id = "user-1"
 ```bash
 docker run -d --name mcp-rs \
   -p 127.0.0.1:8081:8081 \
+  -e MCP_API_KEY="replace-with-a-long-random-key" \
   -v /path/to/config:/app/config:ro \
   ghcr.io/n-takatsu/mcp-rs:latest
 ```
+
+`key = "${MCP_API_KEY}"` reads the key from the environment variable passed with `-e` (v0.24.0 and later), so the config file holds no secret. mcp-rs does not start if the variable is not set. Before v0.24.0, write the key itself in `key`.
 
 The endpoint is `http://127.0.0.1:8081/mcp`. `-p 127.0.0.1:8081:8081` publishes the port on this machine only. To reach it from other machines, put a TLS proxy in front of it, or enable TLS in mcp-rs; see [Security](https://n-takatsu.github.io/mcp-rs/docs/security/).
 

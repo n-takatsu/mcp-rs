@@ -165,6 +165,10 @@ impl DynamicConfigManager {
                 .resolve_credentials()
                 .map_err(|e| crate::error::Error::Internal(e.to_string()))?;
         }
+        // HTTPモードのAPIキーの`${VAR}`（#534）
+        loaded_config
+            .expand_http_api_keys()
+            .map_err(|e| crate::error::Error::Config(e.to_string()))?;
 
         Ok(loaded_config)
     }

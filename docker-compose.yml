@@ -22,7 +22,7 @@ services:
   #   auth_enabled = true
   #
   #   [[transport.http.api_keys]]
-  #   key = "replace-with-a-long-random-key"
+  #   key = "${MCP_API_KEY}"      # from the environment below (v0.24.0+)
   #   name = "client"
   #   user_id = "user-1"
   #
@@ -71,6 +71,7 @@ services:
 
     # Pass secrets used as ${VAR} in the config file here, e.g.
     # environment:
+    #   MCP_API_KEY: ${MCP_API_KEY}
     #   WORDPRESS_PASSWORD: ${WORDPRESS_PASSWORD}
 
     # Networks
