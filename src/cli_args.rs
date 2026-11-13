@@ -1,7 +1,7 @@
 //! `mcp-rs`の実行ファイルの引数（#431）
 //!
-//! `encrypt-wordpress-credentials`サブコマンドは、別に
-//! `security::credential_tool`が処理する。
+//! `encrypt-wordpress-credentials`・`wordpress-keyring`サブコマンドは、別に
+//! `security::credential_tool`・`security::keyring_tool`が処理する。
 
 /// 引数から決めた動作
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -67,6 +67,7 @@ MCP server for WordPress and other tools (STDIO or HTTP mode)
 
 Usage:
   mcp-rs [--config <path>]
+  mcp-rs {keyring} set|show|delete <name>
   mcp-rs {credentials}
   mcp-rs --version
   mcp-rs --help
@@ -74,17 +75,26 @@ Usage:
 Options:
   --config <path>  Config file to use. Without it, mcp-rs uses the first
                    of mcp-config.toml, config.toml, config/mcp.toml (in the
-                   current folder) and ~/.config/mcp-rs/config.toml
+                   current folder) and ~/.config/mcp-rs/config.toml.
+                   With --config, the WordPress credentials come only from
+                   that file (keyring, ${{VAR}}, encrypted_credentials or
+                   plain values); WORDPRESS_URL, WORDPRESS_USERNAME and
+                   WORDPRESS_PASSWORD are not read on their own
   -V, --version    Print the version and exit
   -h, --help       Print this help and exit
 
 Commands:
+  {keyring} set|show|delete <name>
+                   Keep the WordPress username and Application Password in
+                   the OS credential store, for `keyring = \"<name>\"` in the
+                   config file (run with --help for details)
   {credentials}
                    Encrypt a WordPress Application Password for the config
                    file (run with --help for details)
 ",
         version = version_text(),
         credentials = crate::security::credential_tool::SUBCOMMAND,
+        keyring = crate::security::keyring_tool::SUBCOMMAND,
     )
 }
 
@@ -163,6 +173,8 @@ mod tests {
         let help = help_text();
         assert!(help.contains("--config <path>"));
         assert!(help.contains("encrypt-wordpress-credentials"));
+        assert!(help.contains("wordpress-keyring set|show|delete <name>"));
+        assert!(help.contains("${VAR}"));
         assert!(help.contains("--version"));
     }
 }

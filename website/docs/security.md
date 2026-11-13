@@ -48,6 +48,54 @@ enabled = true
 - The values are never written to the log
 - For `[database]`, mcp-rs starts without the database tools instead, and `mcp_rs_status` shows the reason. For a plugin's `env`, that entry is not passed to the plugin
 - A value is used as is: a `${` inside the value of the variable is not expanded again
+- `${...}` in `[handlers.wordpress]` is expanded only when `enabled = true`. Without it, the WordPress tools are not registered and no error is shown
+
+### Which environment variables reach mcp-rs
+
+`${VAR}` reads the environment of the mcp-rs process, and that environment depends on the client that starts it:
+
+| Started by | Environment variables mcp-rs gets |
+|---|---|
+| Claude Code, a terminal | All of the parent's, including user environment variables (on Windows, after the client is restarted) |
+| Claude Desktop | Only a fixed set such as `PATH`, plus what `env` in `claude_desktop_config.json` lists. User environment variables are not passed |
+
+The `env` of the client (or `claude mcp add -e`) only passes values. Which variables mcp-rs reads is decided by the `${...}` in the config file. With `--config`, mcp-rs reads `WORDPRESS_URL`, `WORDPRESS_USERNAME`, and `WORDPRESS_PASSWORD` only through `${...}`; without `--config` (config file found in the default places), it also reads them directly when `WORDPRESS_URL` is set, and they override the file (except with `keyring`).
+
+To use mcp-rs from both Claude Desktop and Claude Code with environment variables, the same values must be written twice. Keep the credentials in the [OS credential store](#os-credential-store) instead.
+
+## OS Credential Store
+
+mcp-rs can read the WordPress username and Application Password from the OS credential store (v0.24.0 and later):
+
+- Windows: Credential Manager (generic credential `<name>.mcp-rs`)
+- macOS: Keychain (service `mcp-rs`, account `<name>`)
+- Linux and other Unix: Secret Service (GNOME Keyring, KWallet)
+
+No environment variables are involved, so Claude Desktop, Claude Code, and a terminal read the same credentials, and changing the password is one step.
+
+1. Register the credentials under a name of your choice, such as the site's host name. It asks for the username and the Application Password (not shown while typing):
+
+   ```bash
+   mcp-rs wordpress-keyring set example.com
+   ```
+
+2. Refer to the name from the config file, and leave `username`, `password`, and `encrypted_credentials` out of the section:
+
+   ```toml
+   [handlers.wordpress]
+   enabled = true
+   url = "https://example.com"
+   keyring = "example.com"
+   ```
+
+Run `set` again to change the password, `mcp-rs wordpress-keyring show example.com` to see the stored username (never the password), and `mcp-rs wordpress-keyring delete example.com` to remove it. Restart the client afterwards.
+
+- Startup fails if the entry does not exist, or if `keyring` is combined with `username`, `password`, or `encrypted_credentials`. The error names the entry, never the values
+- With `keyring`, the `WORDPRESS_URL`, `WORDPRESS_USERNAME`, and `WORDPRESS_PASSWORD` environment variables are not used, even without `--config`. The entry is not tied to a URL, so a leftover `WORDPRESS_URL` could otherwise send the password to another site
+- Secrets are never accepted as command-line arguments. Without a terminal, `set` reads the username and the Application Password as two lines from standard input
+- The credential store is read only when `enabled = true`
+- Docker, CI, and servers without a desktop session have no Secret Service. Keep using `${VAR}` or `encrypted_credentials` there; both work as before. The Docker image is built without this feature (`os-keyring`, on by default when building from source)
+- What it protects against: the password is not left in plaintext in the config file, in `claude_desktop_config.json`, or in environment variables. It does not protect against other programs running as the same OS user, which can read the credential store too
 
 ## Encrypted WordPress Credentials
 

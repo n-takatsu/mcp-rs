@@ -98,6 +98,7 @@ async fn test_nonexistent_host() {
         timeout_seconds: Some(5), // 短いタイムアウト
         rate_limit: None,
         encrypted_credentials: None, // 平文認証情報を使用
+        keyring: None,
         upload_allowed_dirs: Vec::new(),
     };
 
@@ -138,6 +139,7 @@ async fn test_invalid_url() {
         timeout_seconds: Some(3),
         rate_limit: None,
         encrypted_credentials: None, // 平文認証情報を使用
+        keyring: None,
         upload_allowed_dirs: Vec::new(),
     };
 

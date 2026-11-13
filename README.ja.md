@@ -72,39 +72,53 @@ AIのクライアントに、WordPress・PostgreSQL・外部のMCPプラグイ�
 
 ## インストール
 
+### WordPressの資格情報
+
+WordPressのユーザー名とアプリケーションパスワードは、OSの資格情報ストア（Windowsの資格情報マネージャー、macOSのキーチェーン、LinuxのSecret Service）に置くのがおすすめです（v0.24.0以降）。Claude Desktop・Claude Code・ターミナルのどれから起動しても、mcp-rsは同じ1か所から読みます。
+
+```bash
+mcp-rs wordpress-keyring set example.com   # ユーザー名とアプリケーションパスワードを聞かれる
+```
+
+```toml
+[handlers.wordpress]
+enabled = true            # 必須。無いとWordPressのツールを登録しない（エラーにもならない）
+url = "https://example.com"
+keyring = "example.com"   # wordpress-keyring set で付けた名前
+```
+
+環境変数をすすめない理由: Claude Desktopは、MCPサーバーに`PATH`等の決まった環境変数と、`claude_desktop_config.json`の`env`に書いたものしか渡しません。ユーザー環境変数は渡しません。一方、Claude Code・ターミナルはすべて渡します。`${WORDPRESS_PASSWORD}`で読むと、同じ値を2か所に書くことになります。環境変数と暗号化した資格情報も、引き続き使えます。[Security](https://n-takatsu.github.io/mcp-rs/docs/security/#which-environment-variables-reach-mcp-rs)を参照してください。
+
 ### Claude Desktop
 
-Claude Desktopはmcp-rsを起動し、STDIOで通信します。STDIOモードでは、標準出力にはMCPのメッセージだけを書き、ログはファイル（と標準エラー）に書きます。`claude_desktop_config.json`に絶対パスで登録し、認証情報は`env`で渡します。
+Claude Desktopはmcp-rsを起動し、STDIOで通信します。STDIOモードでは、標準出力にはMCPのメッセージだけを書き、ログはファイル（と標準エラー）に書きます。`claude_desktop_config.json`に絶対パスで登録します。Windowsのパスは、JSONの中では`/`で書くか、`\`を`\`と書きます。資格情報ストアを使うときは、`env`は要りません。
 
 ```json
 {
   "mcpServers": {
     "mcp-rs": {
-      "command": "/path/to/mcp-rs/target/release/mcp-rs",
-      "args": ["--config", "/path/to/mcp-config.toml"],
-      "env": { "WORDPRESS_PASSWORD": "your application password" }
+      "command": "C:/Program Files/MCP-rs/mcp-rs.exe",
+      "args": ["--config", "C:/Users/you/AppData/Roaming/Claude/mcp-rs/mcp-config.toml"]
     }
   }
 }
 ```
 
+- 設定ファイルで`${...}`を使うときは、読むすべての変数を`env`に書きます。`env`は値を渡すだけで、どの変数を読むかは設定ファイルの`${...}`で決まります。例えば`configs/production/claude-desktop.toml`は`WORDPRESS_URL`・`WORDPRESS_USERNAME`・`WORDPRESS_PASSWORD`を読むので、3つとも要ります
+- 設定ファイル・資格情報・`env`を変えたら、Claude Desktopをタスクトレイ（メニューバー）から終了して、起動し直します。ウィンドウを閉じただけでは動き続けます
+- 起動しない（「Server disconnected」）とき、設定ファイルの誤りはログの設定より前に起きるので、mcp-rsのログファイルには残りません。Claude Desktopの「設定」→「開発者」から、mcp-rsのログを開いて確かめます。Microsoft Store版は、`%APPDATA%\Claude\logs`には書きません
+
 > 📖 設定とトラブルシューティングは [Claude Desktop 統合ガイド](./project-docs/CLAUDE_DESKTOP_INTEGRATION.md) をご覧ください。
 
 ### Claude Code
 
-Claude Code も STDIO で mcp-rs と通信し、同じ設定ファイルを使います。mcp-rs をビルドしてから、絶対パスで登録します。`--` より後ろが mcp-rs の起動コマンドです。
+Claude Code も STDIO で mcp-rs と通信し、同じ設定ファイルを使います。絶対パスで登録します。`--` より後ろが mcp-rs の起動コマンドです。資格情報ストアを使うときは、`-e`は要りません。
 
 ```bash
-cargo build --release
-
-claude mcp add mcp-rs --scope user \
-  -e WORDPRESS_URL=https://your-wordpress-site.com \
-  -e WORDPRESS_USERNAME=your_username \
-  -e WORDPRESS_PASSWORD="your application password" \
-  -- /path/to/mcp-rs/target/release/mcp-rs --config /path/to/mcp-rs/configs/production/claude-desktop.toml
+claude mcp add mcp-rs --scope user -- "C:/Program Files/MCP-rs/mcp-rs.exe" --config C:/Users/you/AppData/Roaming/Claude/mcp-rs/mcp-config.toml
 ```
 
-接続は `claude mcp list`、または Claude Code 内の `/mcp` で確認できます。`-e` で渡した値は Claude Code の設定に保存されるため、実際の認証情報で `--scope project`（共有される `.mcp.json` に書き込まれる）を使わないでください。
+Claude Codeは自分の環境変数をmcp-rsに渡すので、`${...}`でユーザー環境変数（変えたらVS Codeを起動し直す）や、`-e`で渡した値も読めます。`-e` で渡した値は Claude Code の設定に保存されるため、実際の認証情報で `--scope project`（共有される `.mcp.json` に書き込まれる）を使わないでください。接続は `claude mcp list`、または Claude Code 内の `/mcp` で確認できます。
 
 > 📖 `.mcp.json` での登録、認証情報の暗号化、トラブルシューティングは [Claude Code 統合ガイド](./project-docs/CLAUDE_CODE_INTEGRATION.md) をご覧ください。
 
@@ -118,7 +132,7 @@ cargo build --release
 
 ビルドしたら、設定ファイルを指定して起動します。すぐに使える設定ファイルが`configs/production/`にあります。
 
-- `claude-desktop.toml`: STDIO用（Claude Desktop・Claude Code）。WordPressの接続情報は、環境変数`WORDPRESS_URL`・`WORDPRESS_USERNAME`・`WORDPRESS_PASSWORD`から読み込みます
+- `claude-desktop.toml`: STDIO用（Claude Desktop・Claude Code）。WordPressの接続情報は、環境変数`WORDPRESS_URL`・`WORDPRESS_USERNAME`・`WORDPRESS_PASSWORD`から読み込みます。資格情報ストアを使う場合は、コピーして`[handlers.wordpress]`を上のように書き換えます
 - `web-ui.toml`: HTTP用（Webクライアント）
 
 ```bash
@@ -149,7 +163,11 @@ username = "your-username"
 password = "your-application-password"   # WordPress アプリケーションパスワード
 ```
 
-`./target/release/mcp-rs --config mcp-config.toml`で起動します。パスワードを設定ファイルに書かない場合は、`${WORDPRESS_PASSWORD}`（環境変数）か[認証情報の暗号化](https://n-takatsu.github.io/mcp-rs/docs/security/#encrypted-wordpress-credentials)を使ってください。`${...}`の環境変数が設定されていないと、mcp-rsは起動しません（`[database]`の場合は、データベースのツールだけを出さずに起動します）。
+`./target/release/mcp-rs --config mcp-config.toml`で起動します。パスワードを設定ファイルに書かない場合は、`keyring = "<名前>"`（[OSの資格情報ストア](https://n-takatsu.github.io/mcp-rs/docs/security/#os-credential-store)）、`${WORDPRESS_PASSWORD}`（環境変数）、[認証情報の暗号化](https://n-takatsu.github.io/mcp-rs/docs/security/#encrypted-wordpress-credentials)のどれかを使ってください。`${...}`の環境変数が設定されていないと、mcp-rsは起動しません（`[database]`の場合は、データベースのツールだけを出さずに起動します）。
+
+- `enabled = true`が要ります。無いと、WordPressのツールを登録せず、`${...}`も展開しません（エラーにもなりません）
+- `--config`を付けると、資格情報は設定ファイルだけから決まります。`WORDPRESS_URL`・`WORDPRESS_USERNAME`・`WORDPRESS_PASSWORD`は、`${...}`を通してしか読みません。`--config`を付けない（既定の場所の設定ファイルを使う）ときは、`WORDPRESS_URL`があれば、これらを直接も読み、設定ファイルの値を上書きします（`keyring`のときを除く）
+- Dockerや、サーバーで動かすHTTPモードには、OSの資格情報ストアがありません。これまでどおり`${...}`か、暗号化した資格情報を使います
 
 ### HTTP TLS/mTLS 設定（任意）
 
