@@ -91,7 +91,7 @@ No environment variables are involved, so Claude Desktop, Claude Code, and a ter
 Run `set` again to change the password, `mcp-rs wordpress-keyring show example.com` to see the stored username (never the password), and `mcp-rs wordpress-keyring delete example.com` to remove it. Restart the client afterwards.
 
 - Startup fails if the entry does not exist, or if `keyring` is combined with `username`, `password`, or `encrypted_credentials`. The error names the entry, never the values
-- With `keyring`, the `WORDPRESS_USERNAME` and `WORDPRESS_PASSWORD` environment variables are not used, even without `--config`
+- With `keyring`, the `WORDPRESS_URL`, `WORDPRESS_USERNAME`, and `WORDPRESS_PASSWORD` environment variables are not used, even without `--config`. The entry is not tied to a URL, so a leftover `WORDPRESS_URL` could otherwise send the password to another site
 - Secrets are never accepted as command-line arguments. Without a terminal, `set` reads the username and the Application Password as two lines from standard input
 - The credential store is read only when `enabled = true`
 - Docker, CI, and servers without a desktop session have no Secret Service. Keep using `${VAR}` or `encrypted_credentials` there; both work as before. The Docker image is built without this feature (`os-keyring`, on by default when building from source)
