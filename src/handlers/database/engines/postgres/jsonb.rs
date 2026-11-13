@@ -222,10 +222,13 @@ impl JsonbHandler {
 
     /// Query JSONB using path expression
     ///
+    /// パスのキーが無い行は、結果に入らない。値がJSONの`null`の行は
+    /// `Value::Null`として入る（#513）
+    ///
     /// # Example
     /// ```ignore
-    /// // SELECT data->'user'->>'name' FROM events
-    /// let results = handler.query_jsonb_path("events", "data", "user.name").await?;
+    /// // SELECT (data->'user'->'name')::text FROM events
+    /// let results = handler.query_jsonb_path("events", "data", "user.name", None).await?;
     /// ```
     pub async fn query_jsonb_path(
         &self,
@@ -234,22 +237,18 @@ impl JsonbHandler {
         path: &str,
         condition: Option<&str>,
     ) -> Result<Vec<JsonValue>, DatabaseError> {
+        // どの段も`->`（JSONのまま）で取り出し、JSONの文字列にしてから読む。
+        // 以前は最後の段を`->>`（文字列）にしていたので、"Alice"のような値が
+        // JSONとして読めず、結果から落ちていた（#513）
         let path_expr = path
             .split('.')
-            .enumerate()
-            .fold(column.to_string(), |acc, (i, p)| {
-                if i == path.split('.').count() - 1 {
-                    format!("{}->>'{}' ", acc, p)
-                } else {
-                    format!("{}->'{}' ", acc, p)
-                }
-            });
+            .fold(column.to_string(), |acc, p| format!("{}->'{}'", acc, p));
 
         let where_clause = condition
             .map(|c| format!(" WHERE {}", c))
             .unwrap_or_default();
         let sql = format!(
-            "SELECT {} as value FROM {}{}",
+            "SELECT ({})::text as value FROM {}{}",
             path_expr, table, where_clause
         );
 
