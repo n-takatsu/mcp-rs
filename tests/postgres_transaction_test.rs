@@ -3,21 +3,31 @@
 //! Tests for PostgreSQL transaction management including savepoints and isolation levels
 
 #[cfg(feature = "postgresql-backend")]
+mod common;
+
+#[cfg(feature = "postgresql-backend")]
 mod postgres_transaction_tests {
     use mcp_rs::handlers::database::{
         engine::IsolationLevel,
         engines::postgres::{PostgresConfig, PostgresEngine},
     };
 
+    /// `TEST_DATABASE_URL`の接続先を入れたビルダー（#513）
+    fn test_config_builder(
+    ) -> mcp_rs::handlers::database::engines::postgres::config::PostgresConfigBuilder {
+        let db = crate::common::postgres();
+        PostgresConfig::builder()
+            .host(db.host)
+            .port(db.port)
+            .database(db.database)
+            .username(db.username)
+            .password(db.password)
+    }
+
     #[tokio::test]
     #[ignore] // Requires PostgreSQL server
     async fn test_transaction_creation() {
-        let config = PostgresConfig::builder()
-            .host("localhost")
-            .port(5432)
-            .database("mcp_rs_test")
-            .username("postgres")
-            .password("postgres")
+        let config = test_config_builder()
             .build()
             .expect("Failed to build config");
 
@@ -31,12 +41,7 @@ mod postgres_transaction_tests {
     #[tokio::test]
     #[ignore] // Requires PostgreSQL server
     async fn test_transaction_with_isolation_level() {
-        let config = PostgresConfig::builder()
-            .host("localhost")
-            .port(5432)
-            .database("mcp_rs_test")
-            .username("postgres")
-            .password("postgres")
+        let config = test_config_builder()
             .build()
             .expect("Failed to build config");
 
@@ -66,12 +71,7 @@ mod postgres_transaction_tests {
     #[tokio::test]
     #[ignore] // Requires PostgreSQL server
     async fn test_savepoint_operations() {
-        let config = PostgresConfig::builder()
-            .host("localhost")
-            .port(5432)
-            .database("mcp_rs_test")
-            .username("postgres")
-            .password("postgres")
+        let config = test_config_builder()
             .build()
             .expect("Failed to build config");
 
@@ -121,12 +121,7 @@ mod postgres_transaction_tests {
     #[tokio::test]
     #[ignore] // Requires PostgreSQL server
     async fn test_transaction_duration_tracking() {
-        let config = PostgresConfig::builder()
-            .host("localhost")
-            .port(5432)
-            .database("mcp_rs_test")
-            .username("postgres")
-            .password("postgres")
+        let config = test_config_builder()
             .build()
             .expect("Failed to build config");
 
@@ -152,12 +147,7 @@ mod postgres_transaction_tests {
     #[tokio::test]
     #[ignore] // Requires PostgreSQL server
     async fn test_transaction_is_active() {
-        let config = PostgresConfig::builder()
-            .host("localhost")
-            .port(5432)
-            .database("mcp_rs_test")
-            .username("postgres")
-            .password("postgres")
+        let config = test_config_builder()
             .build()
             .expect("Failed to build config");
 

@@ -1,19 +1,29 @@
 //! PostgreSQL JSONB and Migration Integration Tests
 
 #[cfg(feature = "postgresql-backend")]
+mod common;
+
+#[cfg(feature = "postgresql-backend")]
 mod postgres_jsonb_tests {
     use mcp_rs::handlers::database::engines::postgres::{
         JsonbQueryBuilder, PostgresConfig, PostgresEngine,
     };
     use serde_json::json;
 
+    /// `TEST_DATABASE_URL`の接続先を入れたビルダー（#513）
+    fn test_config_builder(
+    ) -> mcp_rs::handlers::database::engines::postgres::config::PostgresConfigBuilder {
+        let db = crate::common::postgres();
+        PostgresConfig::builder()
+            .host(db.host)
+            .port(db.port)
+            .database(db.database)
+            .username(db.username)
+            .password(db.password)
+    }
+
     async fn setup_test_engine() -> PostgresEngine {
-        let config = PostgresConfig::builder()
-            .host("localhost")
-            .port(5432)
-            .database("mcp_rs_test")
-            .username("postgres")
-            .password("postgres")
+        let config = test_config_builder()
             .build()
             .expect("Failed to build config");
 

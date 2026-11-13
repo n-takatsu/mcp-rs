@@ -3,20 +3,30 @@
 //! PostgreSQL最適化機能の統合テスト
 
 #[cfg(feature = "postgresql-backend")]
+mod common;
+
+#[cfg(feature = "postgresql-backend")]
 mod postgres_tests {
     use mcp_rs::handlers::database::engines::postgres::{
         config::SslMode, create_optimized_pool, PostgresConfig, PostgresEngine,
     };
 
+    /// `TEST_DATABASE_URL`の接続先を入れたビルダー（#513）
+    fn test_config_builder(
+    ) -> mcp_rs::handlers::database::engines::postgres::config::PostgresConfigBuilder {
+        let db = crate::common::postgres();
+        PostgresConfig::builder()
+            .host(db.host)
+            .port(db.port)
+            .database(db.database)
+            .username(db.username)
+            .password(db.password)
+    }
+
     #[tokio::test]
     #[ignore] // PostgreSQLサーバーが必要なため、デフォルトではスキップ
     async fn test_postgres_engine_creation() {
-        let config = PostgresConfig::builder()
-            .host("localhost")
-            .port(5432)
-            .database("mcp_rs_test")
-            .username("postgres")
-            .password("postgres")
+        let config = test_config_builder()
             .min_connections(5)
             .max_connections(20)
             .build()
@@ -29,12 +39,7 @@ mod postgres_tests {
     #[tokio::test]
     #[ignore] // PostgreSQLサーバーが必要なため、デフォルトではスキップ
     async fn test_postgres_pool_creation() {
-        let config = PostgresConfig::builder()
-            .host("localhost")
-            .port(5432)
-            .database("mcp_rs_test")
-            .username("postgres")
-            .password("postgres")
+        let config = test_config_builder()
             .min_connections(5)
             .max_connections(20)
             .build()

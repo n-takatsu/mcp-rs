@@ -31,15 +31,11 @@ async fn try_connect() -> Option<PgPool> {
     match PgPool::connect(&database_url).await {
         Ok(pool) => match sqlx::query("SELECT 1").execute(&pool).await {
             Ok(_) => Some(pool),
-            Err(e) => {
-                println!("skipping: cannot query test Postgres ({e})");
-                None
-            }
+            // 変数があるのにつながらないときは失敗にする。黙って飛ばすと、
+            // CIで何も確かめずに成功に見えるため（#513）
+            Err(e) => panic!("TEST_DATABASE_URL is set but cannot query PostgreSQL: {e}"),
         },
-        Err(e) => {
-            println!("skipping: cannot connect to test Postgres ({e})");
-            None
-        }
+        Err(e) => panic!("TEST_DATABASE_URL is set but cannot connect to PostgreSQL: {e}"),
     }
 }
 

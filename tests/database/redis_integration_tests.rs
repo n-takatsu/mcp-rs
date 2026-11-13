@@ -1,9 +1,7 @@
 //! Redis Database Handler Integration Tests
 //!
-//! These tests require a running Redis server.
-//! Start Redis with: docker run -d --name redis-test -p 6380:6379 redis:7.4-alpine
-//!
-//! Run tests with: cargo test --test redis_integration_tests --features database,redis-backend -- --ignored
+//! These tests require a running Redis server, given by `TEST_REDIS_URL`
+//! (e.g. `redis://localhost:6380/0`). See docs/development/integration-tests.md (#513).
 
 #![cfg(all(feature = "database", feature = "redis-backend"))]
 
@@ -16,15 +14,17 @@ use mcp_rs::handlers::database::{
 };
 
 /// Create test database configuration
+/// 接続先は`TEST_REDIS_URL`（#513）
 fn create_test_config() -> DatabaseConfig {
+    let server = crate::common::redis();
     DatabaseConfig {
         database_type: DatabaseType::Redis,
         connection: ConnectionConfig {
-            host: "localhost".to_string(),
-            port: 6380, // Using port 6380 for test container
-            database: "0".to_string(),
-            username: String::new(),
-            password: String::new(),
+            host: server.host,
+            port: server.port,
+            database: server.database,
+            username: server.username,
+            password: server.password,
             ssl_mode: None,
             timeout_seconds: 30,
             retry_attempts: 3,

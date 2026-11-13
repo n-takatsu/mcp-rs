@@ -1,15 +1,8 @@
 /// PostgreSQL Phase 2 - Actual Database Connection Tests
 /// Tests for real PostgreSQL database connectivity and operations
 ///
-/// Prerequisites:
-/// - PostgreSQL running on localhost:5432
-/// - Database: testdb
-/// - User: postgres / Password: postgres
-/// - Docker Compose environment can be started with:
-///   docker-compose -f docker-compose.postgres.yml up -d
-///
-/// Environment Variables:
-/// - TEST_POSTGRESQL_URL: Connection URL (default: postgresql://postgres:postgres@localhost:5432/testdb)
+/// 接続先は`TEST_DATABASE_URL`（例: postgres://testuser:testpass@localhost:5433/mcptest）。
+/// 実行の方法は docs/development/integration-tests.md を参照（#513）
 use sqlx::Row;
 use std::time::Duration;
 
@@ -17,28 +10,19 @@ use std::time::Duration;
 mod tests {
     use super::*;
 
-    // Test configuration
-    const DEFAULT_DB_URL: &str = "postgresql://postgres:postgres@localhost:5432/testdb";
-
     fn get_db_url() -> String {
-        std::env::var("TEST_POSTGRESQL_URL").unwrap_or_else(|_| DEFAULT_DB_URL.to_string())
+        crate::common::postgres_url()
     }
 
-    // Check if database is available
+    // つながらないときは失敗にする。黙って飛ばすと、CIで何も確かめずに成功に見えるため（#513）
     async fn is_db_available() -> bool {
-        if let Ok(url) = std::env::var("SKIP_DB_TESTS") {
-            if url == "1" {
-                return false;
-            }
-        }
-
-        match sqlx::postgres::PgPool::connect(&get_db_url()).await {
-            Ok(pool) => {
-                let _ = pool.acquire().await;
-                true
-            }
-            Err(_) => false,
-        }
+        let pool = sqlx::postgres::PgPool::connect(&get_db_url())
+            .await
+            .expect("TEST_DATABASE_URL is set but PostgreSQL is not reachable");
+        pool.acquire()
+            .await
+            .expect("TEST_DATABASE_URL is set but PostgreSQL is not reachable");
+        true
     }
 
     // ==================== Basic Connection Tests ====================
