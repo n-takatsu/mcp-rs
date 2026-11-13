@@ -1,4 +1,4 @@
-"""scripts/issue_labels.py のテスト（#523）。GitHubとClaude APIは使わない。
+"""scripts/issue_labels.py のテスト（#523）。GitHubは使わない。
 
 実行: python -m unittest discover -s scripts -p "test_*.py"
 """
@@ -13,130 +13,145 @@ import issue_labels as il  # noqa: E402
 
 
 def issue(*labels, number=1):
-    return il.Issue(number=number, title="t", body="b", labels=list(labels))
-
-
-def fixed_judge(type_="bug", priority="priority: high"):
-    calls = []
-
-    def judge(i):
-        calls.append(i.number)
-        return il.Judgment(type_, priority, "reason")
-
-    judge.calls = calls
-    return judge
+    return il.Issue(number=number, title="t", labels=list(labels))
 
 
 class Recorder:
-    def __init__(self):
+    def __init__(self, fail=False):
         self.calls = []
+        self.fail = fail
 
     def __call__(self, number, labels):
+        if self.fail:
+            raise RuntimeError("edit failed")
         self.calls.append((number, labels))
 
 
-class MissingCategoriesTest(unittest.TestCase):
-    def test_none(self):
-        self.assertEqual(il.missing_categories([]), ["type", "priority"])
+class ProblemsTest(unittest.TestCase):
+    def test_ok(self):
+        self.assertEqual(il.problems(["bug", "priority: high"]), [])
 
-    def test_type_only(self):
-        self.assertEqual(il.missing_categories(["bug", "database"]), ["priority"])
+    def test_ok_with_components(self):
+        self.assertEqual(il.problems(["enhancement", "priority: low", "database", "docker"]), [])
 
-    def test_priority_only(self):
-        self.assertEqual(il.missing_categories(["priority: low"]), ["type"])
+    def test_security_as_type(self):
+        self.assertEqual(il.problems(["security", "priority: low"]), [])
 
-    def test_complete(self):
-        self.assertEqual(il.missing_categories(["security", "priority: medium"]), [])
+    def test_security_as_component(self):
+        # security は issue-labeler.yml がコンポーネントとしても付ける
+        self.assertEqual(il.problems(["bug", "security", "priority: high"]), [])
 
-    def test_old_priority_labels_do_not_count(self):
-        # 基準外の古い優先度のラベル（#519）は、優先度として数えない
-        self.assertEqual(il.missing_categories(["enhancement", "P0-Critical"]), ["priority"])
+    def test_no_type(self):
+        self.assertEqual(il.problems(["priority: low"]), ["種類が0個"])
+
+    def test_two_types(self):
+        self.assertEqual(il.problems(["bug", "enhancement", "priority: low"]), ["種類が2個"])
+
+    def test_no_priority(self):
+        self.assertEqual(il.problems(["bug"]), ["優先度が0個"])
+
+    def test_two_priorities(self):
+        self.assertEqual(il.problems(["bug", "priority: high", "priority: low"]), ["優先度が2個"])
+
+    def test_unknown_labels(self):
+        # 古い優先度のラベル等（#519）は、決まりにないラベルとして出す
+        self.assertEqual(
+            il.problems(["bug", "priority: low", "P0-Critical", "websocket"]),
+            ["決まりにないラベル: P0-Critical"],
+        )
 
 
-class TriageTest(unittest.TestCase):
-    def test_adds_both_when_missing(self):
+class CheckTest(unittest.TestCase):
+    def test_fix_adds_default_priority_only(self):
         apply = Recorder()
-        r = il.triage(issue("database"), fixed_judge(), apply)
-        self.assertEqual(r.status, "labeled")
-        self.assertEqual(apply.calls, [(1, ["bug", "priority: high"])])
+        r = il.check(issue("database"), apply)
+        # 優先度の既定だけを付ける。種類は付けない
+        self.assertEqual(apply.calls, [(1, ["priority: medium"])])
+        self.assertEqual(r.added, ["priority: medium"])
+        self.assertEqual(r.problems, ["種類が0個"])
 
-    def test_keeps_existing_type(self):
-        # 種類が付いていれば、判定が違っても変えない。優先度だけを足す
+    def test_fix_keeps_existing_priority(self):
         apply = Recorder()
-        r = il.triage(issue("documentation"), fixed_judge("bug", "priority: low"), apply)
-        self.assertEqual(apply.calls, [(1, ["priority: low"])])
-        self.assertEqual(r.add, ["priority: low"])
-
-    def test_keeps_existing_priority(self):
-        apply = Recorder()
-        il.triage(issue("priority: medium"), fixed_judge("security", "priority: high"), apply)
-        self.assertEqual(apply.calls, [(1, ["security"])])
-
-    def test_complete_issue_is_not_judged(self):
-        judge = fixed_judge()
-        apply = Recorder()
-        r = il.triage(issue("bug", "priority: low"), judge, apply)
-        self.assertEqual(r.status, "complete")
-        self.assertEqual(judge.calls, [])
+        r = il.check(issue("bug", "priority: low"), apply)
         self.assertEqual(apply.calls, [])
+        self.assertEqual(r.problems, [])
 
-    def test_excluded_issue_is_not_judged(self):
-        judge = fixed_judge()
+    def test_without_fix_does_not_edit(self):
+        r = il.check(issue("bug"), None)
+        self.assertEqual(r.added, [])
+        self.assertEqual(r.problems, ["優先度が0個"])
+
+    def test_excluded_issue(self):
         apply = Recorder()
-        r = il.triage(issue("automated", "weekly-report"), judge, apply)
-        self.assertEqual(r.status, "excluded")
-        self.assertEqual(judge.calls, [])
+        r = il.check(issue("automated", "roadmap-health", "weekly-report"), apply)
+        self.assertTrue(r.excluded)
         self.assertEqual(apply.calls, [])
+        self.assertEqual(r.problems, [])
 
-    def test_report_only(self):
+    def test_edit_failure_is_reported(self):
+        r = il.check(issue("bug"), Recorder(fail=True))
+        self.assertIn("edit failed", r.edit_error)
+        self.assertEqual(r.problems[0], "既定のラベルを付けられなかった（priority: medium）")
+        self.assertIn("優先度が0個", r.problems)
+
+    def test_never_removes_or_replaces(self):
+        # 付けるのは足りない既定だけ。既にあるラベルを渡して外すことは無い
         apply = Recorder()
-        r = il.triage(issue(), None, apply)
-        self.assertEqual(r.status, "reported")
-        self.assertEqual(r.missing, ["type", "priority"])
-        self.assertEqual(apply.calls, [])
-
-    def test_dry_run_does_not_apply(self):
-        r = il.triage(issue(), fixed_judge(), None)
-        self.assertEqual(r.status, "dry-run")
-        self.assertEqual(r.add, ["bug", "priority: high"])
-
-    def test_judgment_outside_criteria_is_ignored(self):
-        # スキーマで絞っているが、基準外の答えが来ても付けない
-        apply = Recorder()
-        r = il.triage(issue(), fixed_judge("wontfix", "priority: critical"), apply)
-        self.assertEqual(r.add, [])
-        self.assertEqual(apply.calls, [])
-
-    def test_judge_error_is_reported(self):
-        def broken(_):
-            raise RuntimeError("boom")
-
-        apply = Recorder()
-        r = il.triage(issue(), broken, apply)
-        self.assertEqual(r.status, "error")
-        self.assertIn("boom", r.error)
-        self.assertEqual(apply.calls, [])
-
-    def test_never_removes_labels(self):
-        # 付ける処理だけで、外す処理は無い（applyに渡るのは足すラベルだけ）
-        apply = Recorder()
-        il.triage(issue("database", "P1"), fixed_judge(), apply)
-        (number, labels), = apply.calls
-        self.assertNotIn("database", labels)
-        self.assertNotIn("P1", labels)
+        il.check(issue("P1", "database"), apply)
+        self.assertEqual(apply.calls, [(1, ["priority: medium"])])
 
 
-class SummaryTest(unittest.TestCase):
-    def test_escapes_pipes(self):
-        import tempfile
+class ReportTest(unittest.TestCase):
+    def test_all_ok(self):
+        results = [il.check(issue("bug", "priority: low"), None), il.check(issue("automated"), None)]
+        self.assertEqual(il.report(results, False), "開いているIssue 1件のラベルは、決まりに沿っています。")
 
-        r = il.Result(il.Issue(5, "a|b", "", []), ["type"], ["bug"], "x|y", "dry-run")
-        with tempfile.TemporaryDirectory() as d:
-            path = os.path.join(d, "summary.md")
-            il.write_summary([r], path)
-            text = open(path, encoding="utf-8").read()
-        self.assertIn("a\\|b", text)
-        self.assertIn("x\\|y", text)
+    def test_lists_problems(self):
+        results = [il.check(issue("bug", number=7), None)]
+        text = il.report(results, False)
+        self.assertIn("1件あります", text)
+        self.assertIn("- #7 t: 優先度が0個", text)
+
+    def test_truncated(self):
+        text = il.report([], True)
+        self.assertIn("1000件に達した", text)
+
+
+class MainExitCodeTest(unittest.TestCase):
+    def setUp(self):
+        self.orig = (il.fetch_issue, il.fetch_open_issues, il.add_labels)
+        self.env = os.environ.pop("GITHUB_STEP_SUMMARY", None)
+
+    def tearDown(self):
+        il.fetch_issue, il.fetch_open_issues, il.add_labels = self.orig
+        if self.env is not None:
+            os.environ["GITHUB_STEP_SUMMARY"] = self.env
+
+    def run_main(self, argv):
+        import contextlib
+        import io
+
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            return il.main(argv)
+
+    def test_weekly_fails_on_problems(self):
+        il.fetch_open_issues = lambda: [issue("priority: low")]
+        self.assertEqual(self.run_main([]), 1)
+
+    def test_weekly_passes_when_ok(self):
+        il.fetch_open_issues = lambda: [issue("bug", "priority: low")]
+        self.assertEqual(self.run_main([]), 0)
+
+    def test_single_issue_ignores_rule_problems(self):
+        # 起票時は、種類が無くても失敗にしない（週次で扱う）
+        il.fetch_issue = lambda n: issue("database", number=n)
+        il.add_labels = Recorder()
+        self.assertEqual(self.run_main(["--fix", "--issue", "5"]), 0)
+
+    def test_single_issue_fails_when_edit_fails(self):
+        il.fetch_issue = lambda n: issue(number=n)
+        il.add_labels = Recorder(fail=True)
+        self.assertEqual(self.run_main(["--fix", "--issue", "5"]), 1)
 
 
 if __name__ == "__main__":

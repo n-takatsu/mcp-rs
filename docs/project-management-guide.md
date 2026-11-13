@@ -245,7 +245,7 @@ Milestone: v0.2.0-beta
 
 ### Issueのラベルの基準
 
-Issueには、次の種類と優先度を1つずつ付ける（Issueの棚卸しの基準）。自動のラベル付け（下記）も、この基準で付ける。
+Issueには、次の種類と優先度を1つずつ付ける（Issueの棚卸しの基準）。付けるのは人で、自動の確かめ（下記）は、付け忘れと決まりの誤りに気づかせる。
 
 | 分類 | ラベル | 付けるもの |
 |------|--------|------------|
@@ -257,35 +257,31 @@ Issueには、次の種類と優先度を1つずつ付ける（Issueの棚卸し
 | 優先度 | `priority: medium` | 次のリリースまでに対応したい。利用者に見える問題や、放置すると問題が大きくなるもの |
 | 優先度 | `priority: low` | 急がない改善・整理、ほかの対応や外部の変化を待っているもの |
 
+- `security`は、`issue-labeler.yml`がコンポーネントとしても付ける。ほかの種類（例: `bug`）と一緒に付いていてもよく、ほかの種類が無いときは`security`を種類とみなす
+- ほかに付けてよいのは、コンポーネント（`database`・`websocket`・`docker`・`kubernetes`・`infrastructure`。`issue-labeler.yml`がタイトルから付ける、#517）と、自動で作られるIssueの専用ラベル（`automated`・`cargo-audit-scheduled`・`roadmap-health`・`weekly-report`）だけ
 - 自動で作られるIssue（`automated`・`cargo-audit-scheduled`が付くもの）は、種類・優先度を付けない
-- コンポーネント（`security`・`database`・`websocket`・`docker`・`kubernetes`・`infrastructure`）は、`issue-labeler.yml`がタイトルから付ける（#517）
 
 以下の「優先度ラベル」等の表には、今は使っていない古いラベル（`priority-p0-critical`・`task`等）が残っている。整理は#519で行う。
 
-### 自動のラベル付け（種類・優先度）
+### ラベルの自動の確かめ
 
-`.github/workflows/issue-triage.yml`が、`scripts/issue_labels.py`を呼んで、足りない種類・優先度を付ける（#523）。
+`.github/workflows/issue-labels.yml`が、`scripts/issue_labels.py`を呼ぶ（#523）。AIは使わず、中身を読まずに決まることだけを自動で行う。
 
-- **いつ**: Issueが開かれたとき（リポジトリのオーナー・メンバー・コラボレーターが開いたもの）と、週1回（月曜 10:00 JST）。手動でも実行できる（既定は`--dry-run`）
-- **判定**: Claude API（既定のモデルは`claude-opus-5-5`）に、タイトルと本文と上の基準を渡す。答えは、スキーマで基準のラベルの中からだけに絞る
-- **決まり**: 既に付いている種類・優先度は変えず、ラベルを外さない。足りない分類だけを足す
-- **鍵**: リポジトリのシークレット`ANTHROPIC_API_KEY`。無いときは判定せず、足りないIssueをジョブのまとめに一覧にするだけ
-- **結果**: 付けたラベルと理由を、ジョブのまとめに表で出す
+- **Issueが開かれたとき**: 優先度が無ければ`priority: medium`を付ける。種類は付けない（中身を読まないと決まらないため）
+- **週1回（月曜 10:00 JST）と手動実行**: 開いているIssueに上の既定を付けてから、決まりに沿っていないIssue（種類が1つでない、優先度が1つでない、決まりにないラベルがある）を一覧にする。1件でもあればジョブを失敗にするので、失敗の通知で気づける。一覧はジョブのまとめにも出る
+- **決まり**: 付けるのは足りない既定だけで、既にあるラベルは付け替えない・外さない。自動で作られるIssueは確かめない
 
-手元から実行する（`gh`でログインしていること。判定するには`ANTHROPIC_API_KEY`と`pip install anthropic`が要る）:
+手元から実行する（`gh`でログインしていること）:
 
 ```bash
-# 足りないIssueを一覧にする（判定しない、ラベルも付けない）
-python scripts/issue_labels.py --missing --report-only
+# 開いているIssueを確かめる（ラベルは変えない）
+python scripts/issue_labels.py
 
-# 判定して、付ける予定のものを表示する（付けない）
-python scripts/issue_labels.py --missing --dry-run
-
-# Issue 123だけを判定して付ける
-python scripts/issue_labels.py --issue 123
+# 優先度の既定を付けてから確かめる
+python scripts/issue_labels.py --fix
 ```
 
-テスト: `python -m unittest discover -s scripts -p "test_*.py"`（GitHubとClaude APIは使わない）
+テスト: `python -m unittest discover -s scripts -p "test_*.py"`（GitHubは使わない）
 
 ### 優先度ラベル
 
