@@ -82,6 +82,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- HTTPモードで、APIキー・アクセストークンごとのツールの制限（`tools`・
+  `scope_tools`）を、リソース（`resources/list`・`resources/read`）にも
+  効かせた（#538）。以前は、`tools = []`のキーでも、`wordpress://posts`・
+  `comments`・`categories`・`tags`と`db://schema`を一覧で見て読めた。
+  各リソースは、同じデータを返す読み取り専用のツール（`get_posts`・
+  `get_comments`・`get_categories`・`get_tags`・`get_schema`）を使える
+  ときだけ読める。リソースの読み取りも、呼び出し元付きで監査ログに残す
+  （以前は記録しなかった）。ライブラリでは、`McpHandler`に
+  `resource_tool`（既定は`None`）を足した。自分のハンドラーのリソースを、
+  制限のある呼び出し元に出すには、これを実装する
 - 依存クレートを、セキュリティ勧告の修正版に上げた。`Cargo.toml`の下限も
   `tokio = "1.54"`・`ammonia = "4.1.9"`に上げたので、mcp-rsをライブラリと
   して使う側も、勧告の対象の版を選ばない

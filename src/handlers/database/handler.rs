@@ -980,6 +980,11 @@ impl McpHandler for DatabaseHandler {
     async fn status(&self) -> Option<String> {
         self.status_line.clone()
     }
+    /// `db://schema`は、`get_schema`ツールと同じ扱いにする（#538）
+    fn resource_tool(&self, uri: &str) -> Option<String> {
+        (uri == "db://schema").then(|| "get_schema".to_string())
+    }
+
     async fn list_resources(&self) -> Result<Vec<Resource>, McpError> {
         // データベーススキーマをリソースとして公開
         Ok(vec![Resource {
@@ -1009,6 +1014,33 @@ impl McpHandler for DatabaseHandler {
                 "Unknown resource: {}",
                 params.uri
             ))),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// リソースは、読み取り専用の実在するツールと同じ扱いになる（#538）
+    #[tokio::test]
+    async fn test_every_resource_maps_to_a_read_only_tool() {
+        let handler = DatabaseHandler::new().await.unwrap();
+        let tools = handler.list_tools().await.unwrap();
+        for resource in handler.list_resources().await.unwrap() {
+            let name = handler
+                .resource_tool(&resource.uri)
+                .unwrap_or_else(|| panic!("{} has no tool", resource.uri));
+            let tool = tools
+                .iter()
+                .find(|t| t.name == name)
+                .unwrap_or_else(|| panic!("{} maps to missing tool {}", resource.uri, name));
+            assert_eq!(
+                tool.annotations.as_ref().and_then(|a| a.read_only_hint),
+                Some(true),
+                "{}",
+                name
+            );
         }
     }
 }

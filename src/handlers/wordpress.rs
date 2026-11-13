@@ -4642,6 +4642,18 @@ impl McpHandler for WordPressHandler {
         Some(format!("WordPress site {}", self.base_url))
     }
 
+    /// 各リソースは、同じ一覧を返すツールと同じ扱いにする（#538）
+    fn resource_tool(&self, uri: &str) -> Option<String> {
+        let tool = match uri {
+            "wordpress://posts" => "get_posts",
+            "wordpress://comments" => "get_comments",
+            "wordpress://categories" => "get_categories",
+            "wordpress://tags" => "get_tags",
+            _ => return None,
+        };
+        Some(tool.to_string())
+    }
+
     async fn list_resources(&self) -> Result<Vec<Resource>, McpError> {
         Ok(vec![
             Resource {
@@ -4952,6 +4964,30 @@ mod tests {
             "get_settings",
         ] {
             assert!(!is_mutating_tool(name), "{} should not be mutating", name);
+        }
+    }
+
+    /// リソースは、読み取り専用の実在するツールと同じ扱いになる（#538）
+    #[tokio::test]
+    async fn test_every_resource_maps_to_a_read_only_tool() {
+        let handler = rate_limited_handler(RateLimitConfig::default());
+        let tools = handler.list_tools().await.unwrap();
+        let resources = handler.list_resources().await.unwrap();
+        assert!(!resources.is_empty());
+        for resource in resources {
+            let name = handler
+                .resource_tool(&resource.uri)
+                .unwrap_or_else(|| panic!("{} has no tool", resource.uri));
+            let tool = tools
+                .iter()
+                .find(|t| t.name == name)
+                .unwrap_or_else(|| panic!("{} maps to missing tool {}", resource.uri, name));
+            assert_eq!(
+                tool.annotations.as_ref().and_then(|a| a.read_only_hint),
+                Some(true),
+                "{}",
+                name
+            );
         }
     }
 

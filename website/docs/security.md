@@ -206,6 +206,18 @@ Each item in `tools` is one of:
 
 A request is allowed a tool when any item matches it. `tools = []` allows no tools. Unknown presets (such as `@admin`) and empty items stop mcp-rs from starting. STDIO mode is not limited (it is a local pipe used by one person).
 
+The same limits apply to resources (`resources/list` and `resources/read`, v0.24.0 and later). Each resource returns the same data as one read-only tool, and a key or token can read the resource only when it is allowed that tool:
+
+| Resource | Tool |
+|----------|------|
+| `wordpress://posts` | `get_posts` |
+| `wordpress://comments` | `get_comments` |
+| `wordpress://categories` | `get_categories` |
+| `wordpress://tags` | `get_tags` |
+| `db://schema` | `get_schema` |
+
+Other resources are not shown in `resources/list`, and reading them fails with the error "Resource '...' is not allowed for this API key or access token". So `tools = []` allows no resources either, and `tools = ["@read_only"]` allows all of them. Up to version 0.23.0, keys and tokens with limits could list and read every resource.
+
 ## HTTP/WebSocket OAuth 2.1 Authorization
 
 In HTTP mode, mcp-rs can accept OAuth 2.1 access tokens, as described in the MCP specification (versions 2025-06-18 and 2025-11-25, "Authorization"). mcp-rs is the resource server: users sign in at an external authorization server (for example Keycloak, Okta, or Microsoft Entra ID), which handles SSO, LDAP/Active Directory, and MFA. mcp-rs checks the access tokens that server issues.
@@ -263,7 +275,8 @@ The mcp-rs log shows the path at startup (`📝 監査ログ: <path>`), and so d
 | Event | `category` | `result` | Recorded by |
 |-------|------------|----------|-------------|
 | Every tool call (WordPress, database, and plugins), whether it succeeds or fails | `DataAccess` | `SUCCESS` or `FAILURE` | STDIO and HTTP |
-| A tool call refused because the API key or token may not use that tool ([Limiting Tools](#limiting-tools-per-api-key-or-token)) | `Authorization` | `DENIED` | HTTP |
+| Every resource read (`resources/read`, such as `wordpress://posts`), whether it succeeds or fails. `action` is the resource URI, and `resource` is the handler (`wordpress` or `database`) | `DataAccess` | `SUCCESS` or `FAILURE` | STDIO and HTTP |
+| A tool call or resource read refused because the API key or token may not use that tool ([Limiting Tools](#limiting-tools-per-api-key-or-token)) | `Authorization` | `DENIED` | HTTP |
 | A request refused because the API key or access token is missing or invalid, or lacks the required scopes | `Authentication` | `DENIED` | HTTP |
 
 Each entry has these fields:
