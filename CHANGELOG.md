@@ -73,7 +73,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
-- 依存クレートを、セキュリティ勧告の修正版に上げた（`Cargo.lock`のみ）
+- 依存クレートを、セキュリティ勧告の修正版に上げた。`Cargo.toml`の下限も
+  `tokio = "1.54"`・`ammonia = "4.1.9"`に上げたので、mcp-rsをライブラリと
+  して使う側も、勧告の対象の版を選ばない
   - `ammonia` 4.1.8 → 4.1.9（RUSTSEC-2026-0533: 埋め込みのSVG・MathML
     の扱いの誤りによる、変異型XSS）
   - `quinn-udp` 0.5.14 → 0.5.16（RUSTSEC-2026-0538: 切り詰められた
