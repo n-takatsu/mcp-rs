@@ -11,6 +11,15 @@ mod redis_integration {
         RedisCommand, RedisConfig, RedisConnection, RedisValue,
     };
 
+    /// 既定の拒否の一覧から、DELを除いたもの
+    fn test_blacklist() -> Vec<String> {
+        RedisSecuritySettings::default()
+            .command_blacklist
+            .into_iter()
+            .filter(|cmd| cmd != "DEL")
+            .collect()
+    }
+
     fn create_test_config() -> RedisConfig {
         let security = RedisSecuritySettings {
             command_whitelist: vec![
@@ -48,6 +57,9 @@ mod redis_integration {
                 "KEYS".to_string(),
                 "PING".to_string(),
             ],
+            // 既定の拒否の一覧（RedisSecuritySettings::default）にはDELがあり、
+            // 拒否が許可より優先される。テストの後始末にDELを使うので外す（#513）
+            command_blacklist: test_blacklist(),
             ..Default::default()
         };
 
@@ -328,18 +340,13 @@ mod redis_integration {
         // セキュリティ設定（ホワイトリスト）
         let security = RedisSecuritySettings {
             command_whitelist: vec!["GET".to_string(), "SET".to_string(), "DEL".to_string()],
+            command_blacklist: test_blacklist(),
             ..Default::default()
         };
 
         let config = RedisConfig {
-            host: "localhost".to_string(),
-            port: 6379,
-            database: 0,
-            password: None,
-            timeout_seconds: 30,
-            use_tls: false,
-            pool_settings: Default::default(),
             security,
+            ..create_test_config()
         };
 
         let conn = RedisConnection::connect(&config).await.unwrap();

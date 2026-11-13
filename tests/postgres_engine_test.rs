@@ -95,10 +95,15 @@ mod postgres_engine_tests {
         let db_config = mcp_rs::handlers::database::types::DatabaseConfig::default();
         let connection = engine.connect(&db_config).await.expect("Failed to connect");
 
-        // Create temporary table
+        // TEMP TABLEは、プールの1つの接続からしか見えず、次のexecuteが別の
+        // 接続を使うと見つからないので、普通の表を作り直す（#513）
+        connection
+            .execute("DROP TABLE IF EXISTS test_table", &[])
+            .await
+            .expect("Failed to drop table");
         let create_result = connection
             .execute(
-                "CREATE TEMP TABLE test_table (id SERIAL PRIMARY KEY, name TEXT)",
+                "CREATE TABLE test_table (id SERIAL PRIMARY KEY, name TEXT)",
                 &[],
             )
             .await;

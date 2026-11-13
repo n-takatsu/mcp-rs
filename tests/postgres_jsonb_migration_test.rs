@@ -22,6 +22,9 @@ mod postgres_jsonb_tests {
             .password(db.password)
     }
 
+    // 準備のSQLは、複数の文を1つのプリペアドステートメントにできないので
+    // raw_sqlで流す。TEMP TABLEは、プールの1つの接続からしか見えず、
+    // ハンドラーが別の接続を使うと見つからないので、普通の表を毎回作り直す（#513）
     async fn setup_test_engine() -> PostgresEngine {
         let config = test_config_builder()
             .build()
@@ -53,12 +56,13 @@ mod postgres_jsonb_tests {
 
         // Create temporary table
         let create_sql = r#"
-            CREATE TEMP TABLE test_jsonb (
+            DROP TABLE IF EXISTS test_jsonb CASCADE;
+            CREATE TABLE test_jsonb (
                 id SERIAL PRIMARY KEY,
                 data JSONB
             )
         "#;
-        sqlx::query(create_sql)
+        sqlx::raw_sql(create_sql)
             .execute(engine.pool())
             .await
             .expect("Failed to create temp table");
@@ -84,9 +88,10 @@ mod postgres_jsonb_tests {
         let handler = engine.jsonb_handler();
 
         // Create and populate temp table
-        sqlx::query(
+        sqlx::raw_sql(
             r#"
-            CREATE TEMP TABLE test_update (
+            DROP TABLE IF EXISTS test_update CASCADE;
+            CREATE TABLE test_update (
                 id SERIAL PRIMARY KEY,
                 data JSONB DEFAULT '{}'
             );
@@ -113,9 +118,10 @@ mod postgres_jsonb_tests {
         let handler = engine.jsonb_handler();
 
         // Create and populate temp table
-        sqlx::query(
+        sqlx::raw_sql(
             r#"
-            CREATE TEMP TABLE test_delete (
+            DROP TABLE IF EXISTS test_delete CASCADE;
+            CREATE TABLE test_delete (
                 id SERIAL PRIMARY KEY,
                 data JSONB DEFAULT '{}'
             );
@@ -141,9 +147,10 @@ mod postgres_jsonb_tests {
         let handler = engine.jsonb_handler();
 
         // Create and populate temp table
-        sqlx::query(
+        sqlx::raw_sql(
             r#"
-            CREATE TEMP TABLE test_query (
+            DROP TABLE IF EXISTS test_query CASCADE;
+            CREATE TABLE test_query (
                 id SERIAL PRIMARY KEY,
                 data JSONB DEFAULT '{}'
             );
@@ -173,9 +180,10 @@ mod postgres_jsonb_tests {
         let handler = engine.jsonb_handler();
 
         // Create and populate temp table
-        sqlx::query(
+        sqlx::raw_sql(
             r#"
-            CREATE TEMP TABLE test_agg (
+            DROP TABLE IF EXISTS test_agg CASCADE;
+            CREATE TABLE test_agg (
                 id SERIAL PRIMARY KEY,
                 data JSONB DEFAULT '{}'
             );
@@ -204,9 +212,10 @@ mod postgres_jsonb_tests {
         let handler = engine.jsonb_handler();
 
         // Create temp table
-        sqlx::query(
+        sqlx::raw_sql(
             r#"
-            CREATE TEMP TABLE test_gin (
+            DROP TABLE IF EXISTS test_gin CASCADE;
+            CREATE TABLE test_gin (
                 id SERIAL PRIMARY KEY,
                 data JSONB DEFAULT '{}'
             )
@@ -229,9 +238,10 @@ mod postgres_jsonb_tests {
         let handler = engine.jsonb_handler();
 
         // Create temp table with GIN index
-        sqlx::query(
+        sqlx::raw_sql(
             r#"
-            CREATE TEMP TABLE test_check_gin (
+            DROP TABLE IF EXISTS test_check_gin CASCADE;
+            CREATE TABLE test_check_gin (
                 id SERIAL PRIMARY KEY,
                 data JSONB DEFAULT '{}'
             );
@@ -321,9 +331,10 @@ mod postgres_jsonb_tests {
         let handler = engine.jsonb_handler();
 
         // Create temp table
-        sqlx::query(
+        sqlx::raw_sql(
             r#"
-            CREATE TEMP TABLE test_build (
+            DROP TABLE IF EXISTS test_build CASCADE;
+            CREATE TABLE test_build (
                 id SERIAL PRIMARY KEY,
                 name VARCHAR(100),
                 age INTEGER

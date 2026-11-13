@@ -98,7 +98,7 @@ async fn test_redis_basic_set_get() {
 
 #[tokio::test]
 #[ignore] // Requires running Redis server
-async fn test_redis_delete() {
+async fn test_redis_delete_is_blocked_by_default() {
     let config = create_test_config();
     let engine = RedisEngine::new(config.clone()).await.unwrap();
     let connection = engine.connect(&config).await.unwrap();
@@ -108,12 +108,13 @@ async fn test_redis_delete() {
         .execute("INSERT INTO test_delete_key VALUES ('value')", &[])
         .await;
 
-    // DELETE the key
+    // DELETE（DEL）は、エンジンの既定の安全設定（RedisSecuritySettings::default）の
+    // 拒否の一覧にあるので、拒否される（#513。Redisのツールの意味は#529で決める）
     let result = connection.execute("DELETE FROM test_delete_key", &[]).await;
-    assert!(result.is_ok());
-
-    let exec_result = result.unwrap();
-    assert!(exec_result.rows_affected >= 1);
+    assert!(
+        result.is_err(),
+        "DEL should be blocked by the default security settings"
+    );
 }
 
 #[tokio::test]

@@ -76,7 +76,7 @@ fn rows_of(response: &serde_json::Value) -> &Vec<serde_json::Value> {
     response
         .get("rows")
         .and_then(|v| v.as_array())
-        .expect("response should have a rows array")
+        .unwrap_or_else(|| panic!("response should have a rows array: {response}"))
 }
 
 #[tokio::test]

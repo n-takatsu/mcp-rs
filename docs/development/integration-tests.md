@@ -40,7 +40,7 @@ docker run -d --name mcp-rs-test-redis -p 6380:6379 redis:7-alpine
 export TEST_DATABASE_URL=postgres://testuser:testpass@localhost:5433/mcptest
 export TEST_REDIS_URL=redis://localhost:6380/0
 
-cargo test --features redis-backend \
+cargo test --features redis-backend --no-fail-fast \
   --test mod \
   --test postgres_engine_test --test postgres_jsonb_migration_test \
   --test postgres_transaction_test --test postgres_integration_test \

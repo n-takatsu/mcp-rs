@@ -253,7 +253,7 @@ mod tests {
         let connection = engine.connect(&config).await.unwrap();
 
         let info = connection.connection_info();
-        assert_eq!(info.database_name, "test_db");
+        assert_eq!(info.database_name, config.connection.database);
         assert!(info.connected_at.timestamp() > 0);
     }
 

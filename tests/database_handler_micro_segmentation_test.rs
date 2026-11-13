@@ -135,7 +135,7 @@ async fn allowed_role_can_query_the_table() {
     let rows = response
         .get("rows")
         .and_then(|v| v.as_array())
-        .expect("response should have a rows array");
+        .unwrap_or_else(|| panic!("response should have a rows array: {response}"));
     assert_eq!(rows.len(), 1);
 
     cleanup(&pool, table).await;
@@ -425,7 +425,7 @@ async fn unset_micro_segmentation_does_not_affect_existing_behavior() {
     let rows = response
         .get("rows")
         .and_then(|v| v.as_array())
-        .expect("response should have a rows array");
+        .unwrap_or_else(|| panic!("response should have a rows array: {response}"));
     assert_eq!(rows.len(), 1);
 
     cleanup(&pool, table).await;

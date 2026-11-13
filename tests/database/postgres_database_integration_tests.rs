@@ -14,14 +14,21 @@ mod tests {
         crate::common::postgres_url()
     }
 
-    // つながらないときは失敗にする。黙って飛ばすと、CIで何も確かめずに成功に見えるため（#513）
+    /// つないで、テスト用のスキーマ（test_schema）を作り直す（#513）。
+    /// つながらないときは失敗にする。黙って飛ばすと、CIで何も確かめずに成功に見えるため。
+    /// 前のテストのデータが残らないように、毎回スキーマを消してから作る
     async fn is_db_available() -> bool {
         let pool = sqlx::postgres::PgPool::connect(&get_db_url())
             .await
             .expect("TEST_DATABASE_URL is set but PostgreSQL is not reachable");
-        pool.acquire()
+        sqlx::raw_sql("DROP SCHEMA IF EXISTS test_schema CASCADE")
+            .execute(&pool)
             .await
-            .expect("TEST_DATABASE_URL is set but PostgreSQL is not reachable");
+            .expect("failed to drop test_schema");
+        sqlx::raw_sql(include_str!("../fixtures/postgres_test_schema.sql"))
+            .execute(&pool)
+            .await
+            .expect("failed to create test_schema");
         true
     }
 
