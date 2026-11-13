@@ -16,7 +16,7 @@ homepage = "https://n-takatsu.github.io/mcp-rs/"
 
 [dependencies]
 # Core async runtime
-tokio = { version = "1.48", features = ["full"] }
+tokio = { version = "1.54", features = ["full"] }
 futures = "0.3.31"
 
 # Web framework and HTTP
@@ -98,7 +98,7 @@ reqwest = { version = "0.12.24", default-features = false, features = ["json", "
 regex = "1.12"
 url = "2.5.7"
 urlencoding = "2.1"
-ammonia = "4.1.3"
+ammonia = "4.1.9"
 
 # WebSocket
 tungstenite = "0.28"
