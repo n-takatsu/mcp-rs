@@ -3,6 +3,9 @@
 #![cfg(feature = "database")]
 
 #[cfg(test)]
+mod common;
+
+#[cfg(test)]
 mod tests {
     use mcp_rs::handlers::database::column_encryption_rbac::{
         ColumnEncryptionRbac, EncryptionAuditLog, EncryptionOperation,
@@ -11,15 +14,27 @@ mod tests {
     use sqlx::PgPool;
     use std::sync::Arc;
 
+    /// `TEST_DATABASE_URL`につなぎ、RBACのテーブルを作り直す（#513）。
+    /// テーブルはマイグレーション（migrations/20260201_column_encryption_rbac.sql）
+    /// で作る。前のテストの権限・監査ログが残らないように、毎回消してから作る
+    /// （マイグレーションのCREATE TRIGGERは、2回目の実行で失敗するためでもある）
     async fn setup_test_db() -> PgPool {
-        // This would need a test database connection in a real test
-        // For now, this is a placeholder
-        let database_url = std::env::var("TEST_DATABASE_URL").unwrap_or_else(|_| "".to_string());
-        if database_url.is_empty() {
-            // Skip tests if no test database is configured
-            panic!("TEST_DATABASE_URL not configured, skipping tests");
-        }
-        PgPool::connect(&database_url).await.unwrap()
+        let pool = PgPool::connect(&crate::common::postgres_url())
+            .await
+            .expect("TEST_DATABASE_URL is set but PostgreSQL is not reachable");
+        sqlx::raw_sql(
+            "DROP TABLE IF EXISTS column_encryption_permissions, encryption_audit_log CASCADE",
+        )
+        .execute(&pool)
+        .await
+        .expect("failed to drop the RBAC tables");
+        sqlx::raw_sql(include_str!(
+            "../migrations/20260201_column_encryption_rbac.sql"
+        ))
+        .execute(&pool)
+        .await
+        .expect("failed to apply the RBAC migration");
+        pool
     }
 
     #[tokio::test]

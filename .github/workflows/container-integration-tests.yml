@@ -117,7 +117,7 @@ jobs:
           TEST_DATABASE_URL: postgres://testuser:testpass@localhost:5433/mcptest
           TEST_REDIS_URL: redis://localhost:6380/0
         run: >-
-          cargo test --features redis-backend
+          cargo test --features redis-backend --no-fail-fast
           --test mod
           --test postgres_engine_test --test postgres_jsonb_migration_test
           --test postgres_transaction_test --test postgres_integration_test
