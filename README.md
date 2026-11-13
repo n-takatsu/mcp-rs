@@ -316,7 +316,6 @@ You may choose either license at your option.
 
 - 📖 [Documentation](./docs/)
 - 🐛 [Issue Tracker](https://github.com/n-takatsu/mcp-rs/issues)
-- 💬 [Discussions](https://github.com/n-takatsu/mcp-rs/discussions)
 
 ---
 

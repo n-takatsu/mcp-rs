@@ -304,7 +304,6 @@ cargo test wordpress_api
 
 - 📖 [ドキュメント](./docs/)
 - 🐛 [イシュートラッカー](https://github.com/n-takatsu/mcp-rs/issues)
-- 💬 [ディスカッション](https://github.com/n-takatsu/mcp-rs/discussions)
 
 ---
 

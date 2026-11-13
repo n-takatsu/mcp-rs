@@ -19,7 +19,7 @@ mcp-rsは、エンタープライズグレードのWordPress Model Context Proto
 
 ## 📜 これまでの変更
 
-完了した機能・リリースの履歴は、[CHANGELOG.md](CHANGELOG.md)・[RELEASE_NOTES.md](RELEASE_NOTES.md)・[GitHub Releases](https://github.com/n-takatsu/mcp-rs/releases)を参照してください。このロードマップには、これからの計画だけを載せます。
+完了した機能・リリースの履歴は、[CHANGELOG.md](CHANGELOG.md)・[RELEASE_NOTES.md](RELEASE_NOTES.md)・[GitHub Releases](https://github.com/n-takatsu/mcp-rs/releases)を参照してください。このロードマップには、これからの計画と、今のマイルストーンで完了した範囲を載せます。
 
 ---
 
@@ -55,6 +55,7 @@ MCPのクライアント（Claude Desktop・Claude Code等）から使える機�
 ### 📝 そのほか
 
 - #521 VS Code（Copilot）からmcp-rsを使う手順を整え、READMEに書く
+- #449 sqlxが対応したらRUSTSEC-2026-0459（同梱のSQLiteの脆弱性）の無視を外す（sqlxの対応待ち）
 
 ---
 
