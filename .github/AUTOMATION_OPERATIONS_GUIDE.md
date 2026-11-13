@@ -18,8 +18,9 @@ ROADMAP.md (戦略) ↔→ GitHub Milestones (計画) ↔→ GitHub Issues (実�
 
 ## 🔄 自動化ワークフロー
 
-1. **`issue-labeler.yml`**: Issueを立てたときに、タイトルからコンポーネントのラベル（`security`・`database`等）を付ける。種類と優先度は棚卸しで手で付ける（#517）
-2. **`roadmap-health.yml`**: 週次健全性チェックと進捗レポート（開いているマイルストーンを報告する。ROADMAP.mdは書き換えない）
+1. **`issue-labeler.yml`**: Issueを立てたときに、タイトルからコンポーネントのラベル（`security`・`database`等）を付ける（#517）
+2. **`issue-triage.yml`**: Issueを立てたときと週1回、足りない種類・優先度のラベルを、`scripts/issue_labels.py`でClaude APIに判定させて付ける。既に付いているものは変えない（#523。詳細は`docs/project-management-guide.md`の「自動のラベル付け」）
+3. **`roadmap-health.yml`**: 週次健全性チェックと進捗レポート（開いているマイルストーンを報告する。ROADMAP.mdは書き換えない）
 
 以前の`issue-automation.yml`は、ラベルを付けずにログを出すだけで、Issueのタイトルを`run:`に直接展開していた（スクリプトインジェクション）ため削除した（#517）。
 

@@ -63,3 +63,7 @@ MYSQL_SECURITY_TEST_REPORT.md
 mcp-rs-v*-release/*.zip
 mcp-rs-v*-release/temp/
 # Note: mcp-rs-v*-release/ folders themselves are tracked for version history
+
+# Python（scripts/のスクリプトとテスト、#523）
+__pycache__/
+*.pyc

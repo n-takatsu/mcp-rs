@@ -1,0 +1,71 @@
+name: Issue Triage
+
+# Issueに、種類と優先度のラベルを付ける（#523）。処理はscripts/issue_labels.py
+# にまとめてあり、手元からも同じように実行できる。基準と使い方は
+# docs/project-management-guide.mdの「Issueのラベルの基準」を参照。
+#
+# - Issueが開かれたとき: そのIssueだけ（リポジトリのオーナー・メンバー・
+#   コラボレーターが開いたものだけ。誰でもIssueを開けるので、知らない人の
+#   Issueで毎回APIを呼ばないようにする。それ以外は週1回の実行で扱う）
+# - 週1回（月曜 10:00 JST）と手動実行: 開いているIssueのうち、足りないもの
+#
+# 既に付いている種類・優先度は変えず、外さない。判定にはClaude APIを使う。
+# シークレットANTHROPIC_API_KEYが無いときは、判定せずに足りないものを
+# ジョブのまとめに一覧にするだけ。
+on:
+  issues:
+    types: [opened]
+  schedule:
+    - cron: '0 1 * * 1'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'ラベルを付けずに、付ける予定のものを表示する'
+        type: boolean
+        default: true
+
+permissions:
+  issues: write
+
+concurrency:
+  group: issue-triage-${{ github.event.issue.number || 'all' }}
+  cancel-in-progress: false
+
+jobs:
+  triage:
+    name: Label issues
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: >-
+      github.event_name != 'issues' ||
+      contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.issue.author_association)
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install the Anthropic SDK
+        run: python -m pip install "anthropic==2.8.0"
+
+      # Issueのタイトル・本文は、ここに${{ }}で書かず、スクリプトがghで読む
+      # （スクリプトインジェクションを避けるため、#517）
+      - name: Label issues
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          args=()
+          if [ "$GITHUB_EVENT_NAME" = "issues" ]; then
+            args+=(--issue "$ISSUE_NUMBER")
+          else
+            args+=(--missing)
+          fi
+          if [ "$DRY_RUN" = "true" ]; then
+            args+=(--dry-run)
+          fi
+          python scripts/issue_labels.py "${args[@]}"

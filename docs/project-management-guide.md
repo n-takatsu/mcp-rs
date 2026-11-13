@@ -243,6 +243,50 @@ Milestone: v0.2.0-beta
 
 ## ラベリングシステム
 
+### Issueのラベルの基準
+
+Issueには、次の種類と優先度を1つずつ付ける（Issueの棚卸しの基準）。自動のラベル付け（下記）も、この基準で付ける。
+
+| 分類 | ラベル | 付けるもの |
+|------|--------|------------|
+| 種類 | `bug` | 既存の機能が、期待や文書のとおりに動かない |
+| 種類 | `security` | 脆弱性、認証・認可、秘密の値の扱い、依存関係の脆弱性など、安全に関わる |
+| 種類 | `documentation` | 文書（README・docs・コメント等）だけを変える |
+| 種類 | `enhancement` | 新しい機能、改善、整理（リファクタリング・不要なコードの削除）、CI・開発環境の整備 |
+| 優先度 | `priority: high` | リリースを止める、利用者のデータや安全に直ちに影響する、CIが壊れて開発が止まっている |
+| 優先度 | `priority: medium` | 次のリリースまでに対応したい。利用者に見える問題や、放置すると問題が大きくなるもの |
+| 優先度 | `priority: low` | 急がない改善・整理、ほかの対応や外部の変化を待っているもの |
+
+- 自動で作られるIssue（`automated`・`cargo-audit-scheduled`が付くもの）は、種類・優先度を付けない
+- コンポーネント（`security`・`database`・`websocket`・`docker`・`kubernetes`・`infrastructure`）は、`issue-labeler.yml`がタイトルから付ける（#517）
+
+以下の「優先度ラベル」等の表には、今は使っていない古いラベル（`priority-p0-critical`・`task`等）が残っている。整理は#519で行う。
+
+### 自動のラベル付け（種類・優先度）
+
+`.github/workflows/issue-triage.yml`が、`scripts/issue_labels.py`を呼んで、足りない種類・優先度を付ける（#523）。
+
+- **いつ**: Issueが開かれたとき（リポジトリのオーナー・メンバー・コラボレーターが開いたもの）と、週1回（月曜 10:00 JST）。手動でも実行できる（既定は`--dry-run`）
+- **判定**: Claude API（既定のモデルは`claude-opus-5-5`）に、タイトルと本文と上の基準を渡す。答えは、スキーマで基準のラベルの中からだけに絞る
+- **決まり**: 既に付いている種類・優先度は変えず、ラベルを外さない。足りない分類だけを足す
+- **鍵**: リポジトリのシークレット`ANTHROPIC_API_KEY`。無いときは判定せず、足りないIssueをジョブのまとめに一覧にするだけ
+- **結果**: 付けたラベルと理由を、ジョブのまとめに表で出す
+
+手元から実行する（`gh`でログインしていること。判定するには`ANTHROPIC_API_KEY`と`pip install anthropic`が要る）:
+
+```bash
+# 足りないIssueを一覧にする（判定しない、ラベルも付けない）
+python scripts/issue_labels.py --missing --report-only
+
+# 判定して、付ける予定のものを表示する（付けない）
+python scripts/issue_labels.py --missing --dry-run
+
+# Issue 123だけを判定して付ける
+python scripts/issue_labels.py --issue 123
+```
+
+テスト: `python -m unittest discover -s scripts -p "test_*.py"`（GitHubとClaude APIは使わない）
+
 ### 優先度ラベル
 
 | ラベル | 説明 | 使用例 |
