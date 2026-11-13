@@ -594,6 +594,13 @@ pub struct WordPressConfig {
     pub rate_limit: Option<RateLimitConfig>,
     /// 暗号化された認証情報（オプション）
     pub encrypted_credentials: Option<EncryptedCredentials>,
+    /// OSの資格情報ストアのエントリーの名前（#533）。書くと、ユーザー名と
+    /// アプリケーションパスワードをそこから読む（`mcp-rs wordpress-keyring
+    /// set <名前>`で登録する）。環境変数に頼らないので、Claude Desktop・
+    /// Claude Code・ターミナルのどれから起動しても同じに読める。
+    /// `username`・`password`・`encrypted_credentials`とは一緒に書けない
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keyring: Option<String>,
     /// `upload_media`の`file_path`で読み込みを許可するフォルダ。空（既定）
     /// なら`file_path`は使えない。mcp-rsが動いているマシン上のファイルを
     /// 読んでWordPressへ送る機能のため、明示的に許可したフォルダの中だけに
@@ -614,6 +621,7 @@ impl fmt::Debug for WordPressConfig {
             .field("timeout_seconds", &self.timeout_seconds)
             .field("rate_limit", &self.rate_limit)
             .field("encrypted_credentials", &self.encrypted_credentials)
+            .field("keyring", &self.keyring)
             .field("upload_allowed_dirs", &self.upload_allowed_dirs)
             .finish()
     }
@@ -667,6 +675,7 @@ impl WordPressConfig {
             timeout_seconds,
             rate_limit,
             encrypted_credentials: Some(encrypted_credentials),
+            keyring: None,
             upload_allowed_dirs: Vec::new(),
         })
     }
@@ -746,6 +755,52 @@ impl WordPressConfig {
         let secure_creds = SecureCredentials::from_encrypted(&encrypted, &master_password)?;
         self.username = secure_creds.username.clone();
         self.password = secure_creds.get_password().expose_secret().to_string();
+        Ok(())
+    }
+
+    /// 資格情報を、置き場所（OSの資格情報ストア・`encrypted_credentials`・
+    /// 平文）から読んで、`username`・`password`に入れる（#533）。設定の
+    /// 読み込みで、`${VAR}`の展開の後に1回呼ぶ
+    pub fn resolve_credentials(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        self.resolve_credentials_with(&crate::security::keyring_store::OsKeyring)
+    }
+
+    /// `resolve_credentials`の本体。`store`は、`keyring`のときに読む先
+    pub(crate) fn resolve_credentials_with(
+        &mut self,
+        store: &dyn crate::security::keyring_store::SecretStore,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let Some(name) = self.keyring.clone() else {
+            return Ok(self.resolve_encrypted_credentials()?);
+        };
+        // 使わない設定（enabled = false）では、資格情報ストアに触れない
+        // （macOSでは、読むときに許可を求めるダイアログが出ることがある）
+        if !self.enabled.unwrap_or(false) {
+            return Ok(());
+        }
+        // どれを使うかが曖昧になるので、ほかの置き場所と一緒には書けない
+        let mut others = Vec::new();
+        if !self.username.is_empty() {
+            others.push("username");
+        }
+        if !self.password.is_empty() {
+            others.push("password");
+        }
+        if self.encrypted_credentials.is_some() {
+            others.push("encrypted_credentials");
+        }
+        if !others.is_empty() {
+            return Err(format!(
+                "handlers.wordpress: keyring cannot be combined with {}. Remove {} from the config file (the keyring entry holds the username and password)",
+                others.join(", "),
+                if others.len() == 1 { "it" } else { "them" },
+            )
+            .into());
+        }
+        let credentials = crate::security::keyring_store::load_wordpress_credentials(store, &name)
+            .map_err(|e| format!("handlers.wordpress.keyring: {e}"))?;
+        self.username = credentials.username;
+        self.password = credentials.application_password.to_string();
         Ok(())
     }
 }
@@ -1113,24 +1168,30 @@ impl McpConfig {
                     timeout_seconds: Some(30),
                     rate_limit: Some(RateLimitConfig::default()),
                     encrypted_credentials: None, // 環境変数では平文使用
+                    keyring: None,
                     upload_allowed_dirs: Vec::new(),
                 });
             } else if let Some(ref mut wp_config) = final_config.handlers.wordpress {
                 wp_config.url = wp_url;
-                if let Ok(username) = std::env::var("WORDPRESS_USERNAME") {
-                    wp_config.username = username;
-                }
-                if let Ok(password) = std::env::var("WORDPRESS_PASSWORD") {
-                    wp_config.password = password;
+                // keyringを書いた設定では、資格情報は資格情報ストアだけから
+                // 読む（残っていた環境変数で、黙って置き換えない、#533）
+                if wp_config.keyring.is_none() {
+                    if let Ok(username) = std::env::var("WORDPRESS_USERNAME") {
+                        wp_config.username = username;
+                    }
+                    if let Ok(password) = std::env::var("WORDPRESS_PASSWORD") {
+                        wp_config.password = password;
+                    }
                 }
             }
         }
 
-        // encrypted_credentialsの解決は上記の平文環境変数上書きより後に
-        // 行う。そうしないと、暗号化認証情報へ移行した後も環境に残った
-        // 古いWORDPRESS_PASSWORD等が、復号済みの値を無言で上書きしてしまう
+        // keyring・encrypted_credentialsの解決は上記の平文環境変数上書き
+        // より後に行う。そうしないと、暗号化認証情報へ移行した後も環境に
+        // 残った古いWORDPRESS_PASSWORD等が、復号済みの値を無言で上書きして
+        // しまう
         if let Some(ref mut wp_config) = final_config.handlers.wordpress {
-            wp_config.resolve_encrypted_credentials()?;
+            wp_config.resolve_credentials()?;
         }
 
         // サーバー設定の環境変数上書き
@@ -1222,6 +1283,7 @@ impl McpConfig {
                     timeout_seconds: Some(30),
                     rate_limit: Some(RateLimitConfig::default()),
                     encrypted_credentials: None, // デフォルトでは平文
+                    keyring: None,
                     upload_allowed_dirs: Vec::new(),
                 }),
             },
@@ -1250,10 +1312,14 @@ impl McpConfig {
 #    export WORDPRESS_USERNAME="your_username"
 #    export WORDPRESS_PASSWORD="your_app_password"
 #
-# 2. または .env ファイルを使用:
-#    WORDPRESS_URL=https://your-wordpress-site.com
-#    WORDPRESS_USERNAME=your_username
-#    WORDPRESS_PASSWORD=your_app_password
+#    mcp-rs は .env ファイルを読みません。Claude Desktop は OS の環境変数を
+#    渡さないので、claude_desktop_config.json の env に書きます
+#
+# 2. または OS の資格情報ストアに登録 (Claude Desktop・Claude Code・
+#    ターミナルのどれからでも同じに読める):
+#    mcp-rs wordpress-keyring set your-site
+#    [handlers.wordpress] には username・password の代わりに
+#    keyring = "your-site" と書きます
 #
 # 3. 設定ファイルでは環境変数参照 (ドル記号+波括弧形式):
 #    url = "${{WORDPRESS_URL}}"
@@ -1312,10 +1378,14 @@ impl McpConfig {
 #    $env:WORDPRESS_USERNAME="your_username"
 #    $env:WORDPRESS_PASSWORD="your_app_password"
 #
-# 2. または .env ファイルを使用:
-#    WORDPRESS_URL=https://your-wordpress-site.com
-#    WORDPRESS_USERNAME=your_username
-#    WORDPRESS_PASSWORD=your_app_password
+#    mcp-rs は .env ファイルを読みません。Claude Desktop は OS の環境変数を
+#    渡さないので、claude_desktop_config.json の env に書きます
+#
+# 2. または OS の資格情報ストアに登録 (Claude Desktop・Claude Code・
+#    ターミナルのどれからでも同じに読める):
+#    mcp-rs wordpress-keyring set your-site
+#    [handlers.wordpress] には username・password の代わりに
+#    keyring = "your-site" と書きます
 #
 # 3. Application Password の生成方法:
 #    - WordPress管理画面 > ユーザー > プロフィール
@@ -2271,6 +2341,7 @@ mod additional_tests {
             timeout_seconds: Some(30),
             rate_limit: Some(RateLimitConfig::default()),
             encrypted_credentials: None,
+            keyring: None,
             upload_allowed_dirs: Vec::new(),
         };
 
@@ -2299,6 +2370,7 @@ mod additional_tests {
             timeout_seconds: Some(30),
             rate_limit: Some(RateLimitConfig::default()),
             encrypted_credentials: Some(encrypted),
+            keyring: None,
             upload_allowed_dirs: Vec::new(),
         };
 
@@ -2337,6 +2409,7 @@ mod additional_tests {
             timeout_seconds: Some(30),
             rate_limit: Some(RateLimitConfig::default()),
             encrypted_credentials: None,
+            keyring: None,
             upload_allowed_dirs: Vec::new(),
         };
 
@@ -2360,6 +2433,7 @@ mod additional_tests {
             timeout_seconds: Some(30),
             rate_limit: Some(RateLimitConfig::default()),
             encrypted_credentials: None,
+            keyring: None,
             upload_allowed_dirs: Vec::new(),
         };
 
@@ -2379,6 +2453,7 @@ mod additional_tests {
             timeout_seconds: Some(30),
             rate_limit: Some(RateLimitConfig::default()),
             encrypted_credentials: None,
+            keyring: None,
             upload_allowed_dirs: Vec::new(),
         };
 
@@ -2399,9 +2474,110 @@ mod additional_tests {
             timeout_seconds: Some(30),
             rate_limit: Some(RateLimitConfig::default()),
             encrypted_credentials: None,
+            keyring: None,
             upload_allowed_dirs: Vec::new(),
         };
 
         config.resolve_encrypted_credentials().unwrap();
+    }
+
+    /// `keyring = "<名前>"`の設定（#533）。TOMLから読んで、資格情報ストア
+    /// からユーザー名・パスワードを入れる
+    fn keyring_config(extra: &str) -> WordPressConfig {
+        let toml_str = format!(
+            "url = \"https://example.com\"\nenabled = true\nkeyring = \"example.com\"\n{extra}"
+        );
+        toml::from_str(&toml_str).unwrap()
+    }
+
+    fn store_with_example() -> crate::security::keyring_store::MemoryStore {
+        use crate::security::keyring_store::{
+            store_wordpress_credentials, MemoryStore, WordPressKeyringCredentials,
+        };
+        let store = MemoryStore::default();
+        store_wordpress_credentials(
+            &store,
+            "example.com",
+            &WordPressKeyringCredentials {
+                username: "editor".to_string(),
+                application_password: zeroize::Zeroizing::new("abcd EFGH 1234".to_string()),
+            },
+        )
+        .unwrap();
+        store
+    }
+
+    #[test]
+    fn test_resolve_credentials_reads_keyring() {
+        let store = store_with_example();
+        let mut config = keyring_config("");
+        assert_eq!(config.keyring.as_deref(), Some("example.com"));
+        config.resolve_credentials_with(&store).unwrap();
+        assert_eq!(config.username, "editor");
+        assert_eq!(config.password, "abcd EFGH 1234");
+        // 書き出すとき、keyringは残し、無ければ書かない
+        assert!(toml::to_string(&config)
+            .unwrap()
+            .contains("keyring = \"example.com\""));
+        let mut plain = keyring_config("");
+        plain.keyring = None;
+        assert!(!toml::to_string(&plain).unwrap().contains("keyring"));
+    }
+
+    #[test]
+    fn test_resolve_credentials_reports_missing_entry() {
+        let store = crate::security::keyring_store::MemoryStore::default();
+        let err = keyring_config("")
+            .resolve_credentials_with(&store)
+            .unwrap_err()
+            .to_string();
+        assert!(err.starts_with("handlers.wordpress.keyring: "));
+        assert!(err.contains("mcp-rs wordpress-keyring set example.com"));
+    }
+
+    #[test]
+    fn test_resolve_credentials_rejects_keyring_with_other_sources() {
+        let store = store_with_example();
+        let err = keyring_config("username = \"u\"\npassword = \"secret-in-file\"")
+            .resolve_credentials_with(&store)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("keyring cannot be combined with username, password"));
+        assert!(!err.contains("secret-in-file"));
+
+        let err = keyring_config(
+            "[encrypted_credentials]\nusername = \"u\"\nencrypted_password = \"ZGVhZGJlZWY=\"\nnonce = \"AAAAAAAAAAAAAAAA\"\nsalt = \"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\"",
+        )
+        .resolve_credentials_with(&store)
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("encrypted_credentials"));
+    }
+
+    #[test]
+    fn test_resolve_credentials_skips_keyring_when_disabled() {
+        // 使わない設定では、資格情報ストアを読まない（エントリーが無くても
+        // 起動を止めない）
+        let store = crate::security::keyring_store::MemoryStore::default();
+        let mut config: WordPressConfig = toml::from_str(
+            "url = \"https://example.com\"\nenabled = false\nkeyring = \"example.com\"",
+        )
+        .unwrap();
+        config.resolve_credentials_with(&store).unwrap();
+        assert_eq!(config.username, "");
+    }
+
+    #[test]
+    fn test_resolve_credentials_without_keyring_keeps_plaintext() {
+        let store = crate::security::keyring_store::MemoryStore::default();
+        let mut config: WordPressConfig = toml::from_str(
+            "url = \"https://example.com\"\nenabled = true\nusername = \"u\"\npassword = \"p\"",
+        )
+        .unwrap();
+        config.resolve_credentials_with(&store).unwrap();
+        assert_eq!(
+            (config.username.as_str(), config.password.as_str()),
+            ("u", "p")
+        );
     }
 }

@@ -161,6 +161,7 @@ impl HandlerFactory for DefaultHandlerFactory {
                     timeout_seconds: Some(config.connection.timeout_seconds as u64),
                     rate_limit: Some(crate::config::RateLimitConfig::default()),
                     encrypted_credentials: None,
+                    keyring: None,
                     upload_allowed_dirs: Vec::new(),
                 };
                 Ok(Arc::new(crate::handlers::wordpress::WordPressHandler::new(

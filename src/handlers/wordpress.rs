@@ -4737,6 +4737,7 @@ mod tests {
             timeout_seconds: Some(30),
             rate_limit: Some(RateLimitConfig::default()),
             encrypted_credentials: None,
+            keyring: None,
             upload_allowed_dirs: Vec::new(),
         };
 
@@ -4758,6 +4759,7 @@ mod tests {
             timeout_seconds: Some(30),
             rate_limit: Some(RateLimitConfig::default()),
             encrypted_credentials: None,
+            keyring: None,
             upload_allowed_dirs: Vec::new(),
         };
 
@@ -4775,6 +4777,7 @@ mod tests {
             timeout_seconds: Some(30),
             rate_limit: Some(RateLimitConfig::default()),
             encrypted_credentials: None,
+            keyring: None,
             upload_allowed_dirs: Vec::new(),
         };
         let handler = WordPressHandler::try_new(config).unwrap();
@@ -4799,6 +4802,7 @@ mod tests {
                 timeout_seconds: Some(30),
                 rate_limit: Some(RateLimitConfig::default()),
                 encrypted_credentials: None,
+                keyring: None,
                 upload_allowed_dirs: Vec::new(),
             };
 
@@ -4819,6 +4823,7 @@ mod tests {
             timeout_seconds: Some(30),
             rate_limit: Some(rate_limit),
             encrypted_credentials: None,
+            keyring: None,
             upload_allowed_dirs: Vec::new(),
         };
         WordPressHandler::try_new(config).unwrap()
@@ -5599,6 +5604,7 @@ mod tests {
             timeout_seconds: Some(30),
             rate_limit: Some(RateLimitConfig::default()),
             encrypted_credentials: None,
+            keyring: None,
             upload_allowed_dirs: dirs
                 .iter()
                 .map(|d| d.to_string_lossy().into_owned())

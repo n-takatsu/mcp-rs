@@ -6,6 +6,8 @@ pub mod encryption;
 #[cfg(feature = "hsm")]
 pub mod hsm;
 pub mod ids;
+pub mod keyring_store;
+pub mod keyring_tool;
 pub mod network_policy;
 pub mod rate_limiter;
 

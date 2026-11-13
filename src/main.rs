@@ -24,6 +24,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         return Ok(());
     }
+    // OSの資格情報ストアへの登録等（#533）。同じく設定ファイルより前に処理する
+    if args.get(1).map(String::as_str) == Some(mcp_rs::security::keyring_tool::SUBCOMMAND) {
+        if let Err(e) = mcp_rs::security::keyring_tool::run(&args[2..]) {
+            eprintln!("Error: {e}");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
 
     // --version・--help（#431）。サーバーは起動せず、設定・ログにも触れない
     let run_args = match mcp_rs::cli_args::parse_args(&args) {
@@ -118,7 +126,7 @@ async fn load_config_from_file(path: &str) -> Result<McpConfig, Box<dyn std::err
     if let Some(ref mut wp_config) = config.handlers.wordpress {
         // 参照した環境変数が無ければ起動しない（#454）。項目と変数名を出す
         McpConfig::expand_wordpress_config(wp_config).map_err(|e| e.to_string())?;
-        wp_config.resolve_encrypted_credentials()?;
+        wp_config.resolve_credentials()?;
     }
 
     info!("✅ カスタム設定読み込み: {}", path);

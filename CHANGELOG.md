@@ -7,8 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- WordPressのユーザー名とアプリケーションパスワードを、OSの資格情報ストア
+  （Windowsの資格情報マネージャー、macOSのキーチェーン、LinuxのSecret
+  Service）から読めるようにした（#533）。`[handlers.wordpress]`に
+  `keyring = "<名前>"`と書き、`mcp-rs wordpress-keyring set <名前>`で登録する
+  （`show`・`delete`もある。値は引数で受け取らず、エコー無しで読む）。
+  Claude Desktopは、OSの環境変数をMCPサーバーに渡さず、設定のJSONの`env`
+  だけを渡すため、Claude DesktopとClaude Code・ターミナルの両方で使うと、
+  同じ値を2か所に書く必要があった。資格情報ストアは、どれから起動しても同じに
+  読める。`keyring`を書いた設定では、`WORDPRESS_USERNAME`・
+  `WORDPRESS_PASSWORD`の環境変数で上書きしない。`username`・`password`・
+  `encrypted_credentials`と一緒に書くと起動しない。平文・`${VAR}`・
+  `encrypted_credentials`は今までどおり使える
+
 ### Changed
 
+- **互換性のない変更（ライブラリ）**: `WordPressConfig`に`keyring`
+  （`Option<String>`）を足した（#533）。構造体を直接作っているコードは、
+  `keyring: None`を足す必要がある。設定の読み込みでは、
+  `resolve_encrypted_credentials`の代わりに、資格情報ストアも読む
+  `resolve_credentials`を呼ぶ
+- READMEとClaude Desktopのガイドに、Claude Desktopには環境変数が渡らない
+  こと、`env`と設定ファイルの`${VAR}`の関係、`--config`の有無での
+  `WORDPRESS_*`の扱いの違い、`enabled = true`が要ること、Windowsでの設定の
+  例、設定を変えた後にClaude Desktopを終了し直すこと、起動しないときに見る
+  ログを書いた（#533）。Claude Desktopの例は、ひな形の
+  `configs/production/claude-desktop.toml`が読む3つの変数のうち1つしか
+  `env`に書いておらず、そのとおりにすると起動しなかった。資格情報ストアを
+  使う例に変え、`${VAR}`のときは3つとも要ることを書いた。
+  生成する設定のひな形のコメントにあった、mcp-rsが読まない`.env`ファイルの
+  案内を直した
 - 最小対応のRustのバージョンを1.98にし、`Cargo.toml`に`rust-version`として
   宣言した（#516）。ソースからビルドするには、Rust 1.98以降が要る（以前は
   1.88）。Dockerのイメージも1.98でビルドする。CIで、Ubuntu・Windowsの

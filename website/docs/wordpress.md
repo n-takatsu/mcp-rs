@@ -86,9 +86,15 @@ burst_size = 20
 enabled = true
 ```
 
-To keep the Application Password out of the config file in plaintext, use `encrypted_credentials` instead of `password`. See [Encrypted WordPress Credentials](../security/#encrypted-wordpress-credentials).
+`enabled = true` is required: without it, the WordPress tools are not registered (and `${...}` is not expanded), with no error.
 
-When `enabled = true`, either `username`/`password` or `encrypted_credentials` must be set, otherwise startup fails.
+To keep the Application Password out of the config file in plaintext:
+
+- `keyring = "<name>"` instead of `username`/`password`: read them from the OS credential store (Windows Credential Manager, macOS Keychain, Secret Service). This works the same whether Claude Desktop, Claude Code, or a terminal starts mcp-rs. See [OS Credential Store](../security/#os-credential-store)
+- `${WORDPRESS_PASSWORD}`: read an environment variable. Claude Desktop passes only the variables in `env` of its JSON config. See [Which environment variables reach mcp-rs](../security/#which-environment-variables-reach-mcp-rs)
+- `encrypted_credentials`: see [Encrypted WordPress Credentials](../security/#encrypted-wordpress-credentials)
+
+When `enabled = true`, one of `username`/`password`, `keyring`, or `encrypted_credentials` must be set, otherwise startup fails.
 
 To let `upload_media` read local files with `file_path`, list the folders it may read from. It is disabled when the list is empty (the default). Startup fails if a listed folder does not exist.
 

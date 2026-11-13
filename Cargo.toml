@@ -61,6 +61,9 @@ argon2 = { version = "0.5", features = ["std"] }
 base64 = "0.22.1"
 secrecy = { version = "0.10.3", features = ["serde"] }
 zeroize = "1.8.2"
+# OS credential store for WordPress credentials (#533): Windows Credential
+# Manager, macOS Keychain, Secret Service on Linux (pure-Rust zbus, no libdbus)
+keyring = "4.2.0"
 aes-gcm = "0.10"
 pbkdf2 = "0.12"
 sha2 = "0.10"

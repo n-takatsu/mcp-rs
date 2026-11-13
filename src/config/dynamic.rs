@@ -162,7 +162,7 @@ impl DynamicConfigManager {
             McpConfig::expand_wordpress_config(wp_config)
                 .map_err(|e| crate::error::Error::Config(e.to_string()))?;
             wp_config
-                .resolve_encrypted_credentials()
+                .resolve_credentials()
                 .map_err(|e| crate::error::Error::Internal(e.to_string()))?;
         }
 

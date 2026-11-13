@@ -40,14 +40,26 @@ read_only = true
 
 # WordPress設定（オプション）
 # 注意: src/config.rs の WordPressConfig 構造体は
-#   [handlers.wordpress] テーブル配下の url / username / password (必須),
-#   enabled / timeout_seconds / rate_limit のみを認識します。
+#   [handlers.wordpress] テーブル配下の url / username / password / keyring /
+#   encrypted_credentials, enabled / timeout_seconds / rate_limit /
+#   upload_allowed_dirs のみを認識します。
 #   （cache / retry / max_posts などのキーは現バージョンでは未実装のため無視されます）
+#
+# このままでは、3つの環境変数 WORDPRESS_URL・WORDPRESS_USERNAME・
+# WORDPRESS_PASSWORD を読みます。Claude Desktop は OS の環境変数を渡さない
+# ので、claude_desktop_config.json の env に3つとも書きます。
+#
+# 環境変数の代わりに OS の資格情報ストアを使うと、Claude Desktop・
+# Claude Code・ターミナルのどれから起動しても、同じ1か所から読みます。
+# `mcp-rs wordpress-keyring set your-site` で登録し、このファイルをコピーして
+# username・password の2行を消し、次のように書きます:
+#   url = "https://your-wordpress-site.com"
+#   keyring = "your-site"
 [handlers.wordpress]
-enabled = true
+enabled = true                                          # 必須。無いとWordPressのツールを登録しない
 url = "${WORDPRESS_URL}"
 username = "${WORDPRESS_USERNAME}"
-password = "${WORDPRESS_PASSWORD}"                      # WordPress Application Password（環境変数推奨）
+password = "${WORDPRESS_PASSWORD}"                      # WordPress Application Password
 timeout_seconds = 30
 
 [handlers.wordpress.rate_limit]
