@@ -55,10 +55,11 @@ jobs:
         components: rustfmt, clippy
 
     # Cargo.lockが変わっても（リリースのバージョン更新や依存関係の更新）
-    # 直前のキャッシュから部分的に復元できる。PRではキャッシュを保存せず、
-    # develop/mainへのpushで保存したものを使う。PRごとに保存すると
-    # Actionsのキャッシュ容量（10GB）を圧迫し、develop/mainのキャッシュが
-    # 追い出されてしまうため。
+    # 直前のキャッシュから部分的に復元できる。キャッシュはdevelop（既定の
+    # ブランチ）でだけ保存する（#515）。既定のブランチのキャッシュは、PR・
+    # main・タグの実行からも読める。逆に、PR・main・タグに保存したものは、
+    # そのrefの実行からしか読めず、ほとんど使われないまま、Actionsの
+    # キャッシュ容量（10GB）を圧迫してdevelopのキャッシュを追い出す。
     #
     # キーと完全に一致するキャッシュを復元したときは、保存しない。キーは
     # Cargo.lockとツールチェーンで決まるので、ビルドする内容を変えても
@@ -69,7 +70,7 @@ jobs:
       uses: Swatinem/rust-cache@v2
       with:
         prefix-key: v1-rust
-        save-if: ${{ github.event_name == 'push' }}
+        save-if: ${{ github.ref == 'refs/heads/develop' }}
 
     # fmtとclippyはOSにほぼ依存しないためUbuntuでのみ実行する。Windowsでの
     # 型チェックは後段の「Check all features」で行う。

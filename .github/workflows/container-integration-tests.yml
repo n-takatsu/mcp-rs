@@ -70,24 +70,15 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      # setup-rust-toolchainは、中でrust-cacheを使う。キャッシュはdevelop
+      # （既定のブランチ）でだけ保存する。PR・mainに保存したものは、その
+      # refの実行からしか読めず、キャッシュの容量を圧迫するため（#515）
       - name: Setup Rust
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: stable
+          cache-save-if: ${{ github.ref == 'refs/heads/develop' }}
           components: clippy, rustfmt
-
-      - name: Cache cargo dependencies
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
 
       # サービスのコンテナの中のpg_isready・redis-cliで確かめる。apt-getで
       # クライアントを入れると、Ubuntuのパッケージサーバーに届かないときに
@@ -166,6 +157,7 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: stable
+          cache-save-if: ${{ github.ref == 'refs/heads/develop' }}
 
       - name: Create kind cluster
         uses: helm/kind-action@v1
@@ -196,6 +188,7 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: stable
+          cache-save-if: ${{ github.ref == 'refs/heads/develop' }}
 
       - name: Start Keycloak
         run: |
@@ -232,14 +225,6 @@ jobs:
 
       - name: Setup Docker Buildx
         uses: docker/setup-buildx-action@v3
-
-      - name: Cache Docker layers
-        uses: actions/cache@v4
-        with:
-          path: /tmp/.buildx-cache
-          key: ${{ runner.os }}-buildx-${{ github.sha }}
-          restore-keys: |
-            ${{ runner.os }}-buildx-
 
       - name: Start test environment
         run: |
@@ -371,6 +356,7 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: stable
+          cache-save-if: ${{ github.ref == 'refs/heads/develop' }}
 
       - name: Run performance tests
         env:

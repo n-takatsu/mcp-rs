@@ -41,14 +41,10 @@ jobs:
         with:
           components: rustfmt, clippy
 
-      - name: Cache dependencies
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+      # Rustのビルドのキャッシュは使わない（#515）。このワークフローはmainと
+      # タグでだけ動くので、保存してもそのrefの次のリリースまで使われず、
+      # キャッシュの容量を圧迫するだけだった。keyもcontainer-integration-tests
+      # と同じ（Linux-cargo-<Cargo.lockのハッシュ>）で衝突していた
 
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -117,8 +113,9 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # developのdocker-security.ymlが保存したキャッシュを読むだけにする。
+          # mainとタグに保存したものは、ほかの実行から読めないため（#515）
           cache-from: type=gha
-          cache-to: type=gha,mode=max
           platforms: linux/amd64,linux/arm64
 
       - name: Generate SBOM
