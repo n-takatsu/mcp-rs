@@ -6,7 +6,7 @@
 - 種類（enhancement・bug・documentation・security）を1つ。security はコンポーネント
   としても付くので、ほかの種類と一緒に付いていてもよい
 - 優先度（priority: high・priority: medium・priority: low）を1つ
-- ほかに付けてよいのは、コンポーネントと、自動で作られるIssueの専用ラベルだけ
+- ほかに付けてよいのは、コンポーネント・epicと、自動で作られるIssueの専用ラベルだけ
 - 自動で作られるIssue（automated・cargo-audit-scheduled）は確かめない
 
 種類が1つでない・優先度が1つでない・決まりにないラベルがあるIssueを一覧にし、
@@ -14,13 +14,16 @@
 
 --fix を付けると、優先度の無いIssueに priority: medium を付ける。中身を読まずに
 決まる既定だけで、種類は付けず、ほかのラベルは付け替えない・外さない。
-種類と、既定と違う優先度は、人が付ける。
+決まりにないラベル（古い優先度のラベル等）があるIssueには付けない（報告だけ。
+P1 等の上に medium を足すと、古いラベルを外したときに優先度が気づかれずに
+下がるため）。種類と、既定と違う優先度は、人が付ける。
 
 使い方:
     python scripts/issue_labels.py                 # 開いているIssueを確かめる
     python scripts/issue_labels.py --fix           # 既定を付けてから確かめる
     python scripts/issue_labels.py --fix --issue 123
         # このIssueにだけ既定を付ける（起票時。決まりの誤りでは失敗にしない）
+    python scripts/issue_labels.py --issue 123   # このIssueだけを確かめる
 
 Issueは gh で読み書きする（GH_REPO・GH_TOKEN、または gh auth login）。
 """
@@ -40,11 +43,15 @@ PRIORITY_LABELS = ["priority: high", "priority: medium", "priority: low"]
 DEFAULT_PRIORITY = "priority: medium"
 # issue-labeler.yml がタイトルから付けるもの（security は種類と兼ねる）
 COMPONENT_LABELS = ["database", "websocket", "docker", "kubernetes", "infrastructure"]
+# 種類・優先度と一緒に付けてよいもの（roadmap-health.yml がマイルストーンの集計に使う）
+OTHER_LABELS = ["epic"]
 # 自動で作られるIssue。種類・優先度の決まりは当てはめない
 EXCLUDED_LABELS = ["automated", "cargo-audit-scheduled"]
 # 自動で作られるIssueに、専用ラベルと一緒に付くもの
 AUTOMATION_LABELS = ["roadmap-health", "weekly-report"]
-KNOWN_LABELS = set(TYPE_LABELS + PRIORITY_LABELS + COMPONENT_LABELS + EXCLUDED_LABELS + AUTOMATION_LABELS)
+KNOWN_LABELS = set(
+    TYPE_LABELS + PRIORITY_LABELS + COMPONENT_LABELS + OTHER_LABELS + EXCLUDED_LABELS + AUTOMATION_LABELS
+)
 
 LIMIT = 1000
 
@@ -70,8 +77,18 @@ def count(labels: list[str], axis: list[str]) -> int:
 
 
 def defaults_to_add(labels: list[str]) -> list[str]:
-    """中身を読まずに決まる既定のうち、足りないもの（優先度が無ければ priority: medium）。"""
+    """中身を読まずに決まる既定のうち、足りないもの（優先度が無ければ priority: medium）。
+
+    決まりにないラベルがあれば付けない。古い優先度のラベル（P1 等）の上に
+    medium を足すと、古いラベルを外したときに優先度が気づかれずに下がるため。
+    """
+    if unknown_labels(labels):
+        return []
     return [DEFAULT_PRIORITY] if count(labels, PRIORITY_LABELS) == 0 else []
+
+
+def unknown_labels(labels: list[str]) -> list[str]:
+    return [label for label in labels if label not in KNOWN_LABELS]
 
 
 def type_count(labels: list[str]) -> int:
@@ -92,7 +109,7 @@ def problems(labels: list[str]) -> list[str]:
     priorities = count(labels, PRIORITY_LABELS)
     if priorities != 1:
         found.append(f"優先度が{priorities}個")
-    unknown = [label for label in labels if label not in KNOWN_LABELS]
+    unknown = unknown_labels(labels)
     if unknown:
         found.append(f"決まりにないラベル: {', '.join(unknown)}")
     return found
@@ -178,7 +195,11 @@ def main(argv: Optional[list[str]] = None) -> int:
     args = parser.parse_args(argv)
 
     if args.issue:
-        issues = [fetch_issue(args.issue)]
+        try:
+            issues = [fetch_issue(args.issue)]
+        except Exception as e:  # 起票から読むまでの間に、削除・移管された等
+            print(f"#{args.issue} を読めなかった: {e}", file=sys.stderr)
+            return 1
         truncated = False
     else:
         issues = fetch_open_issues()
@@ -200,7 +221,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             f.write(f"## Issueのラベル\n\n{text}\n")
 
     edit_failed = any(r.edit_error for r in results)
-    if args.issue:
+    if args.issue and args.fix:
         # 起票時は、既定を付けられなかったときだけ失敗にする（決まりの誤りは週次で扱う）
         return 1 if edit_failed else 0
     return 1 if edit_failed or truncated or any(r.problems for r in results) else 0

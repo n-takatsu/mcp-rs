@@ -53,6 +53,10 @@ class ProblemsTest(unittest.TestCase):
     def test_two_priorities(self):
         self.assertEqual(il.problems(["bug", "priority: high", "priority: low"]), ["優先度が2個"])
 
+    def test_epic_is_allowed(self):
+        # roadmap-health.yml がマイルストーンの集計に使う
+        self.assertEqual(il.problems(["enhancement", "priority: medium", "epic"]), [])
+
     def test_unknown_labels(self):
         # 古い優先度のラベル等（#519）は、決まりにないラベルとして出す
         self.assertEqual(
@@ -97,8 +101,15 @@ class CheckTest(unittest.TestCase):
     def test_never_removes_or_replaces(self):
         # 付けるのは足りない既定だけ。既にあるラベルを渡して外すことは無い
         apply = Recorder()
-        il.check(issue("P1", "database"), apply)
+        il.check(issue("bug", "database"), apply)
         self.assertEqual(apply.calls, [(1, ["priority: medium"])])
+
+    def test_no_default_over_unknown_labels(self):
+        # 古い優先度のラベル（P1 等）の上に medium を足さない。報告だけにする
+        apply = Recorder()
+        r = il.check(issue("bug", "P1"), apply)
+        self.assertEqual(apply.calls, [])
+        self.assertEqual(r.problems, ["優先度が0個", "決まりにないラベル: P1"])
 
 
 class ReportTest(unittest.TestCase):
@@ -147,6 +158,18 @@ class MainExitCodeTest(unittest.TestCase):
         il.fetch_issue = lambda n: issue("database", number=n)
         il.add_labels = Recorder()
         self.assertEqual(self.run_main(["--fix", "--issue", "5"]), 0)
+
+    def test_single_issue_fails_when_fetch_fails(self):
+        def fail(n):
+            raise RuntimeError("not found")
+
+        il.fetch_issue = fail
+        self.assertEqual(self.run_main(["--fix", "--issue", "5"]), 1)
+
+    def test_single_issue_without_fix_fails_on_problems(self):
+        # --fix なしの --issue は、手元での確かめ。決まりの誤りで失敗にする
+        il.fetch_issue = lambda n: issue("database", number=n)
+        self.assertEqual(self.run_main(["--issue", "5"]), 1)
 
     def test_single_issue_fails_when_edit_fails(self):
         il.fetch_issue = lambda n: issue(number=n)
