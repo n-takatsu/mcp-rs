@@ -26,12 +26,15 @@ jobs:
         with:
           script: |
             const title = context.payload.issue.title;
+            // 単語の後ろは、\bではなく「英字が続かない」で調べる。\bだと、
+            // Postgres16・MySQL8.0・database_handlerのように数字や_が続く
+            // タイトルに付かない
             const rules = [
-              { pattern: /\bsecurity\b|\brustsec\b|セキュリティ|脆弱性/i, labels: ['security'] },
-              { pattern: /\b(database|postgres(ql)?|mysql|mariadb|redis|sqlite|mongodb)\b|データベース/i, labels: ['database'] },
-              { pattern: /\bwebsocket\b/i, labels: ['websocket'] },
-              { pattern: /\b(docker(file)?|docker-compose)\b/i, labels: ['docker', 'infrastructure'] },
-              { pattern: /\b(kubernetes|k8s|helm)\b/i, labels: ['kubernetes', 'infrastructure'] },
+              { pattern: /\b(security|rustsec)(?![a-z])|セキュリティ|脆弱性/i, labels: ['security'] },
+              { pattern: /\b(database|postgres(ql)?|mysql|mariadb|redis|sqlite|mongodb)(?![a-z])|データベース/i, labels: ['database'] },
+              { pattern: /\bwebsocket(?![a-z])/i, labels: ['websocket'] },
+              { pattern: /\bdocker(file)?(?![a-z])/i, labels: ['docker', 'infrastructure'] },
+              { pattern: /\b(kubernetes|k8s|helm)(?![a-z])/i, labels: ['kubernetes', 'infrastructure'] },
             ];
 
             const labels = [...new Set(
