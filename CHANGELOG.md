@@ -71,6 +71,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `scripts/deploy/`・ルートの`nginx.conf`も削除した。コンテナで動かす
   方法は`docs/DOCKER_GUIDE.md`を参照
 
+### Security
+
+- 依存クレートを、セキュリティ勧告の修正版に上げた（`Cargo.lock`のみ）
+  - `ammonia` 4.1.8 → 4.1.9（RUSTSEC-2026-0533: 埋め込みのSVG・MathML
+    の扱いの誤りによる、変異型XSS）
+  - `quinn-udp` 0.5.14 → 0.5.16（RUSTSEC-2026-0538: 切り詰められた
+    データグラムの後、受信ループが空回りする）
+  - `tokio` 1.48.0 → 1.54.1（RUSTSEC-2026-0386）、`rustix` 1.1.2 → 1.1.6
+    （RUSTSEC-2026-0486）。どちらも健全性（unsound）の警告
+  - `lru` 0.16.4（RUSTSEC-2026-0253）は、`mysql_async` 0.36が0.16を
+    要求するため、まだ上げられない
+
 ## [0.23.0] - 2026-11-12
 
 ### Added
