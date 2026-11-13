@@ -24,6 +24,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `encrypted_credentials`は今までどおり使える。既定で有効な機能
   `os-keyring`に入れた。Dockerのイメージは、資格情報ストアが無いので、
   この機能を外してビルドする
+- HTTPモードのAPIキー（`[[transport.http.api_keys]]`の`key`）で、`${VAR}`
+  （環境変数）を展開するようにした（#534）。キーを設定ファイルに平文で
+  書かずに済む（Dockerでは`-e`等で渡す）。変数が無いか空なら、どの
+  エントリーのどの変数かを出して起動しない（値は出さない）。キーを使う設定（HTTPモードで
+  `auth_enabled = true`）のときだけ展開する。以前は`${...}`をそのままキーと
+  して使っていたので、`${`を含むキーは環境変数から渡す必要がある
 
 ### Changed
 
@@ -32,6 +38,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `keyring: None`を足す必要がある。設定の読み込みでは、
   `resolve_encrypted_credentials`の代わりに、資格情報ストアも読む
   `resolve_credentials`を呼ぶ
+- **互換性のない変更（ライブラリ）**: `EnvExpansionError`に`Empty`（変数は
+  あるが値が空）を足した（#534）。`match`で全部の場合を書いているコードは、
+  この場合を足す必要がある
 - READMEとClaude Desktopのガイドに、Claude Desktopには環境変数が渡らない
   こと、`env`と設定ファイルの`${VAR}`の関係、`--config`の有無での
   `WORDPRESS_*`の扱いの違い、`enabled = true`が要ること、Windowsでの設定の

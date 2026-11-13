@@ -858,6 +858,22 @@ fn expand_home_dir(path: &str, home: Option<&str>) -> Option<String> {
     }
 }
 
+/// 文字列の中の`${VAR}`の変数名（`expand_env_vars`と同じ読み方）。
+/// `}`が無いところから後は読まない（展開の時にエラーになる）
+fn referenced_env_vars(input: &str) -> Vec<&str> {
+    let mut names = Vec::new();
+    let mut rest = input;
+    while let Some(start) = rest.find("${") {
+        let after = &rest[start + 2..];
+        let Some(end) = after.find('}') else {
+            break;
+        };
+        names.push(&after[..end]);
+        rest = &after[end + 1..];
+    }
+    names
+}
+
 /// `--config`無しで起動したときの、`WORDPRESS_URL`・`WORDPRESS_USERNAME`・
 /// `WORDPRESS_PASSWORD`による上書き（後方互換性）。`WORDPRESS_URL`がある
 /// ときだけ働き、`[handlers.wordpress]`が無ければ環境変数だけで作る。
@@ -931,12 +947,15 @@ pub enum EnvExpansionError {
     Missing(String),
     /// `${`に対応する`}`が無い、または変数名が空
     Malformed,
+    /// 参照した環境変数はあるが、値が空（APIキーで使う、#534）
+    Empty(String),
 }
 
 impl fmt::Display for EnvExpansionError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Missing(name) => write!(f, "environment variable '{}' is not set", name),
+            Self::Empty(name) => write!(f, "environment variable '{}' is empty", name),
             Self::Malformed => write!(
                 f,
                 "'${{' has no matching '}}' or an empty variable name (write ${{VAR_NAME}})"
@@ -1026,6 +1045,43 @@ impl McpConfig {
                 field: format!("handlers.wordpress.{}", field),
                 reason,
             })?;
+        }
+        Ok(())
+    }
+
+    /// HTTPモードのAPIキー（`[[transport.http.api_keys]]`の`key`）の`${VAR}`
+    /// を展開する（#534）。キーを設定ファイルに平文で書かずに済むように
+    /// する。展開できなければ、どのエントリーのどの変数かを返し、起動しない
+    /// （WordPressと同じ、#454）。キーを使わない設定（STDIOモード、または
+    /// `auth_enabled`が`true`でない）なら展開しない
+    pub fn expand_http_api_keys(&mut self) -> Result<(), ConfigEnvError> {
+        if self.transport.transport_type.as_deref() != Some("http") {
+            return Ok(());
+        }
+        let Some(http) = self.transport.http.as_mut() else {
+            return Ok(());
+        };
+        if !http.auth_enabled.unwrap_or(false) {
+            return Ok(());
+        }
+        for (index, entry) in http.api_keys.iter_mut().flatten().enumerate() {
+            let field = format!(
+                "transport.http.api_keys[{}].key (name '{}')",
+                index, entry.name
+            );
+            // 空の変数は、キーを空や短いものにしてしまう。起動時の検査
+            // （空のキー）では、どの変数が空かが分からないので、ここで止める
+            if let Some(name) = referenced_env_vars(&entry.key)
+                .into_iter()
+                .find(|name| std::env::var(name).is_ok_and(|v| v.is_empty()))
+            {
+                return Err(ConfigEnvError {
+                    field,
+                    reason: EnvExpansionError::Empty(name.to_string()),
+                });
+            }
+            entry.key = Self::expand_env_vars(&entry.key)
+                .map_err(|reason| ConfigEnvError { field, reason })?;
         }
         Ok(())
     }
@@ -1198,6 +1254,10 @@ impl McpConfig {
             info!("WordPress設定で環境変数展開を適用中...");
             Self::expand_wordpress_config(wp_config).map_err(|e| e.to_string())?;
         }
+        // HTTPモードのAPIキーの`${VAR}`（#534）
+        final_config
+            .expand_http_api_keys()
+            .map_err(|e| e.to_string())?;
 
         // WordPress設定の環境変数上書き
         apply_wordpress_env_overrides(&mut final_config.handlers.wordpress, |name| {
@@ -2059,6 +2119,114 @@ start_timeout_seconds = 300
         assert_eq!(audit.file_path.as_deref(), Some("C:/logs/mcp-audit.log"));
         assert_eq!(audit.max_files, Some(3));
         assert_eq!(audit.enabled, None);
+    }
+
+    fn http_config_with_keys(transport_type: &str, auth_enabled: bool) -> McpConfig {
+        toml::from_str(&format!(
+            r#"
+[transport]
+type = "{transport_type}"
+[transport.http]
+auth_enabled = {auth_enabled}
+
+[[transport.http.api_keys]]
+key = "plain-key"
+name = "plain"
+user_id = "u1"
+
+[[transport.http.api_keys]]
+key = "${{MCP_RS_TEST_API_KEY_534}}"
+name = "from-env"
+user_id = "u2"
+
+[server]
+[handlers]
+"#
+        ))
+        .unwrap()
+    }
+
+    /// APIキーの`${VAR}`を展開する（#534）
+    #[test]
+    fn test_expand_http_api_keys() {
+        std::env::set_var("MCP_RS_TEST_API_KEY_534", "key-from-env");
+        let mut config = http_config_with_keys("http", true);
+        config.expand_http_api_keys().unwrap();
+        let http = config.to_transport_config().http;
+        assert_eq!(http.api_keys[0].key, "plain-key");
+        assert_eq!(http.api_keys[1].key, "key-from-env");
+    }
+
+    /// 変数が無ければ、どのエントリーのどの変数かを返す。値は出さない
+    #[test]
+    fn test_expand_http_api_keys_reports_missing_variable() {
+        let mut config = http_config_with_keys("http", true);
+        config
+            .transport
+            .http
+            .as_mut()
+            .unwrap()
+            .api_keys
+            .as_mut()
+            .unwrap()[1]
+            .key = "prefix-${MCP_RS_TEST_API_KEY_534_UNSET}".to_string();
+        let err = config.expand_http_api_keys().unwrap_err().to_string();
+        assert_eq!(
+            err,
+            "transport.http.api_keys[1].key (name 'from-env'): environment variable 'MCP_RS_TEST_API_KEY_534_UNSET' is not set"
+        );
+        assert!(!err.contains("prefix-"));
+    }
+
+    /// 変数はあるが空なら、その変数名を出して止める（起動時の「空のキー」
+    /// の検査では、どの変数かが分からないため）
+    #[test]
+    fn test_expand_http_api_keys_reports_empty_variable() {
+        std::env::set_var("MCP_RS_TEST_API_KEY_534_EMPTY", "");
+        let mut config = http_config_with_keys("http", true);
+        config
+            .transport
+            .http
+            .as_mut()
+            .unwrap()
+            .api_keys
+            .as_mut()
+            .unwrap()[1]
+            .key = "prefix-${MCP_RS_TEST_API_KEY_534_EMPTY}".to_string();
+        assert_eq!(
+            config.expand_http_api_keys().unwrap_err().to_string(),
+            "transport.http.api_keys[1].key (name 'from-env'): environment variable 'MCP_RS_TEST_API_KEY_534_EMPTY' is empty"
+        );
+    }
+
+    #[test]
+    fn test_referenced_env_vars() {
+        assert_eq!(referenced_env_vars("${A}-x-${B_2}"), vec!["A", "B_2"]);
+        assert_eq!(referenced_env_vars("plain"), Vec::<&str>::new());
+        assert_eq!(referenced_env_vars("${A}${unclosed"), vec!["A"]);
+    }
+
+    /// キーを使わない設定（STDIO・auth_enabledがfalse）では展開しない
+    /// （変数が無くても起動を止めない）
+    #[test]
+    fn test_expand_http_api_keys_skips_unused_keys() {
+        for (transport_type, auth_enabled) in [("stdio", true), ("http", false)] {
+            let mut config = http_config_with_keys(transport_type, auth_enabled);
+            config
+                .transport
+                .http
+                .as_mut()
+                .unwrap()
+                .api_keys
+                .as_mut()
+                .unwrap()[1]
+                .key = "${MCP_RS_TEST_API_KEY_534_UNSET}".to_string();
+            config.expand_http_api_keys().unwrap();
+            assert_eq!(
+                config.transport.http.unwrap().api_keys.unwrap()[1].key,
+                "${MCP_RS_TEST_API_KEY_534_UNSET}"
+            );
+        }
     }
 
     /// APIキーの`tools`と、OAuthの`scope_tools`（#52）を読む

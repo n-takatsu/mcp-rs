@@ -128,6 +128,8 @@ async fn load_config_from_file(path: &str) -> Result<McpConfig, Box<dyn std::err
         McpConfig::expand_wordpress_config(wp_config).map_err(|e| e.to_string())?;
         wp_config.resolve_credentials()?;
     }
+    // HTTPモードのAPIキーの`${VAR}`（#534）。変数が無ければ起動しない
+    config.expand_http_api_keys().map_err(|e| e.to_string())?;
 
     info!("✅ カスタム設定読み込み: {}", path);
     Ok(config)

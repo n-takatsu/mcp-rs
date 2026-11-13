@@ -33,6 +33,7 @@ These settings can refer to environment variables of the mcp-rs process with `${
 - `url`, `username`, and `password` under `[handlers.wordpress]`
 - `host`, `database`, `username`, and `password` under `[database]` (see [Database](../database/))
 - The values of `env` of a plugin (see [Plugins](../plugins/))
+- `key` of each `[[transport.http.api_keys]]` entry, in HTTP mode with `auth_enabled = true` (v0.24.0 and later; see [API Key Authentication](#httpwebsocket-api-key-authentication))
 
 Other settings are used as written.
 
@@ -164,7 +165,20 @@ name = "claude-desktop"
 user_id = "user-1"
 ```
 
-Clients send the key as `Authorization: Bearer <key>` or `X-Api-Key: <key>`. Requests without a valid key get HTTP 401. `${VAR}` is not expanded in `key` (see [Secure Environment Variables](#secure-environment-variables) for where it is), so write the key itself.
+Clients send the key as `Authorization: Bearer <key>` or `X-Api-Key: <key>`. Requests without a valid key get HTTP 401.
+
+To keep the key out of the config file, read it from an environment variable with `${VAR}` (v0.24.0 and later). This suits Docker, where the config file is often mounted or built into an image:
+
+```toml
+[[transport.http.api_keys]]
+key = "${MCP_API_KEY}"
+name = "claude-desktop"
+user_id = "user-1"
+```
+
+- If the variable is not set or is empty, mcp-rs does not start. The error names the entry and the variable (for example `transport.http.api_keys[0].key (name 'claude-desktop'): environment variable 'MCP_API_KEY' is not set`, or `... is empty`), never the value
+- `${...}` is expanded only in HTTP mode with `auth_enabled = true`, where the keys are used
+- Up to v0.23.0, `${...}` in `key` was used as written. A key that contains `${` now has to come from an environment variable
 
 ## Limiting Tools per API Key or Token
 
