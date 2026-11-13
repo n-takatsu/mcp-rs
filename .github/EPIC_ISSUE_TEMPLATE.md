@@ -119,8 +119,8 @@
 ## 🔗 関連リソース
 
 - [ROADMAP.md](../ROADMAP.md) - 戦略的位置づけ
-- [アーキテクチャ文書](../docs/architecture.md) - 技術詳細
-- [セキュリティガイド](../docs/security.md) - セキュリティ要件
+- [アーキテクチャ文書](../website/docs/architecture/index.md) - 技術詳細
+- [セキュリティガイド](../website/docs/security.md) - セキュリティ要件
 
 ## 👥 ステークホルダー
 

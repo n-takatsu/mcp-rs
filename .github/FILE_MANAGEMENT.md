@@ -386,9 +386,9 @@ permalink: /api-reference/
 
 ## 🔗 関連リソース
 
-- [Project Management Guide](docs/project-management-guide.md)
-- [Contributing Guidelines](CONTRIBUTING.md)
-- [Project Roadmap](ROADMAP.md)
+- [Project Management Guide](../docs/project-management-guide.md)
+- [Contributing Guidelines](../CONTRIBUTING.md)
+- [Project Roadmap](../ROADMAP.md)
 
 ## 📋 ROADMAPテンプレート活用法
 
