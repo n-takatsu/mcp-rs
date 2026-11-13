@@ -33,9 +33,17 @@ Parameterized queries, transaction management, and SQL injection prevention for 
 
 ## Prerequisites
 
-- Rust 1.70+
+- Rust 1.98+ (`rust-version` in `Cargo.toml`)
 - Cargo
 - Git
+
+### Minimum supported Rust version (MSRV)
+
+The MSRV is `rust-version` in `Cargo.toml`. As a rule of thumb, it is two
+releases behind the current stable (#516). When raising it, change
+`rust-version` in `Cargo.toml` and `FROM rust:X.Y` in `Dockerfile` in the same
+PR; the `msrv` job in CI checks that they match and that the code compiles
+with that version on Ubuntu and Windows.
 
 ## Development Setup
 

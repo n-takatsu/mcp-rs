@@ -245,11 +245,9 @@ jobs:
       with:
         toolchain: ${{ steps.msrv.outputs.version }}
 
-    - name: Cache Rust build
-      uses: Swatinem/rust-cache@v2
-      with:
-        prefix-key: v1-rust
-        save-if: ${{ github.event_name == 'push' }}
+    # キャッシュは使わない。保存するとActionsのキャッシュの容量（10GB）を
+    # 圧迫し、testジョブのキャッシュを追い出すため（#515）。キャッシュ無しでも
+    # Ubuntu 5分・Windows 10分ほどで終わる（testジョブと並んで走る）
 
     # Ubuntuでは、テストとexampleを含めて全機能で確かめる
     - name: Check all targets with the MSRV
