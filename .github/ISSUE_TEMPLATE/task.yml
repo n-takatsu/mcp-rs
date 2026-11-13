@@ -1,7 +1,7 @@
 name: "📋 Task"
 description: "タスクやサブタスクの作成に使用します（Epic配下のタスクなど）"
 title: "[TASK] "
-labels: ["task"]
+labels: ["enhancement"]
 assignees: []
 
 body:
@@ -12,25 +12,17 @@ body:
         
         Epic配下のサブタスクや、個別のタスクを追跡するために使用します。
 
+        ラベルは `enhancement` が付きます。文書だけの変更なら `documentation` に、
+        優先度は `priority: high` / `priority: low` に付け替えてください（付けなければ
+        `priority: medium` が自動で付きます。docs/project-management-guide.md の
+        「Issueのラベルの基準」）。マイルストーンは、Issueの右側の欄で選びます。
+
   - type: input
     id: task-title
     attributes:
       label: "タスク名"
       description: "タスクの簡潔な名前を入力してください"
       placeholder: "例: PostgreSQL接続プール実装"
-    validations:
-      required: true
-
-  - type: dropdown
-    id: priority
-    attributes:
-      label: "優先度"
-      description: "タスクの優先度を選択してください"
-      options:
-        - "P0 (Critical)"
-        - "P1 (High)"
-        - "P2 (Medium)"
-        - "P3 (Low)"
     validations:
       required: true
 
@@ -72,17 +64,6 @@ body:
       label: "推定工数"
       description: "完了までの推定時間（例: 2日、1週間）"
       placeholder: "例: 3日"
-
-  - type: dropdown
-    id: milestone
-    attributes:
-      label: "マイルストーン"
-      description: "対象となるマイルストーン"
-      options:
-        - "v0.2.0-beta"
-        - "v0.3.0"
-        - "v1.0.0"
-        - "未定"
 
   - type: textarea
     id: dependencies

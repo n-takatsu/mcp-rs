@@ -4,7 +4,7 @@
 
 **Epic名**: [機能名]
 **リリースバージョン**: v0.x.0
-**優先度**: P0-P3
+**優先度**: priority: high / medium / low
 **推定工数**: X週間
 **ROI指標**: XXX%
 
@@ -132,10 +132,9 @@
 
 ## 📋 Epic管理用ラベル
 
-- `epic` - Epic Issue識別用
-- `roadmap-v0.x.0` - ROADMAPバージョン連携
-- `priority-p0` - 優先度識別
-- `feature-[category]` - 機能カテゴリ
+- `epic` - Epic Issue識別用（`roadmap-health.yml`がマイルストーンの集計に使う）
+- 種類（`enhancement`等）と優先度（`priority: high/medium/low`）を1つずつ。基準は`docs/project-management-guide.md`の「Issueのラベルの基準」
+- リリースのバージョンは、ラベルではなくマイルストーンで表す
 
 ---
 

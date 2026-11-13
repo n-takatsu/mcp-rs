@@ -1,7 +1,7 @@
 name: ✨ Feature Request
 description: 新機能や改善の提案
 title: "[FEATURE] "
-labels: ["enhancement", "needs-discussion"]
+labels: ["enhancement"]
 
 body:
   - type: markdown

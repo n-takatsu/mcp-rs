@@ -6,93 +6,48 @@
 
 ```text
 .github/
-├── GITHUB_FOLDER_GUIDE.md       
-
-## このファイル
-
-├── README.ja.md                 
-
-## 日本語キーワード・SEO用
-
-├── FILE_MANAGEMENT.md           
-
-## ファイル管理ガイドライン
-
-├── PROJECT_SETUP.md             
-
-## プロジェクト設定ガイド
-
-├── PR_MANAGEMENT.md             
-
-## PR管理ルール（新規追加）
-
-├── PULL_REQUEST_TEMPLATE.md     
-
-## PRテンプレート（新規追加）
-
-├── ISSUE_TEMPLATE/              
-
-## Issueテンプレート集
-
-│   ├── bug_report.md
-│   ├── bug_report.yml
-│   ├── dynamic_policy_update.yml
-│   ├── feature_request.md
-│   └── feature_request.yml
-└── workflows/                   
-
-## GitHub Actions ワークフロー
-
-    ├── ci.yml
-    ├── docs.yml
-    └── rust.yml
+├── GITHUB_FOLDER_GUIDE.md          # このファイル
+├── AUTOMATION_OPERATIONS_GUIDE.md  # Issue・ROADMAPの自動化の運用
+├── EPIC_ISSUE_TEMPLATE.md          # Epic Issueの本文のひな形
+├── ROADMAP_UPDATE_TEMPLATE.md      # ROADMAP.md更新のチェックリスト
+├── FILE_MANAGEMENT.md              # ファイル配置のガイドライン
+├── PR_MANAGEMENT.md                # PRの運用ルール
+├── PULL_REQUEST_TEMPLATE.md        # PR作成時のテンプレート
+├── README.ja.md                    # 日本語キーワード・SEO用
+├── topics.txt                      # リポジトリのトピック
+├── ISSUE_TEMPLATE/
+│   ├── bug_report.yml              # バグ報告（bug）
+│   ├── feature_request.yml         # 機能の提案（enhancement）
+│   └── task.yml                    # 個別の作業（enhancement）
+└── workflows/
+    ├── ci.yml                          # フォーマット・clippy・テスト・MSRV・cargo audit
+    ├── rust.yml                        # Rustのビルド・テスト
+    ├── docs.yml                        # ドキュメントの生成・GitHub Pages（main）
+    ├── container-integration-tests.yml # コンテナでの結合テスト
+    ├── docker-security.yml             # Dockerイメージのビルド・スキャン・SBOM
+    ├── docker-security-scan.yml        # Dockerイメージのスキャン（Trivy、毎日）
+    ├── deploy.yml                      # リリースのDockerイメージの公開
+    ├── scheduled-security-audit.yml    # 毎日のcargo audit
+    ├── issue-labeler.yml               # Issueのコンポーネントのラベル
+    ├── issue-labels.yml                # Issueの優先度の既定と、週次のラベルの確かめ
+    └── roadmap-health.yml              # 週次のROADMAPレポート
 ```
-
-## 🔧 管理ファイルの役割
-
-## PR・Issue管理
-
-- **`PR_MANAGEMENT.md`**: PRワークフローと品質管理ルール
-- **`PULL_REQUEST_TEMPLATE.md`**: GitHub PR作成時の自動テンプレート
-- **`ISSUE_TEMPLATE/`**: Issue作成時のテンプレート集
-
-## プロジェクト管理
-
-- **`FILE_MANAGEMENT.md`**: ファイル構成とネーミング規則
-- **`PROJECT_SETUP.md`**: 開発環境セットアップガイド
-
-## CI/CD
-
-- **`workflows/`**: GitHub Actions による自動化
-  - `ci.yml`: 継続的インテグレーション
-  - `docs.yml`: ドキュメント生成・デプロイ
-  - `rust.yml`: Rust固有のテスト・ビルド
 
 ## 📋 利用ガイド
 
-## 新しいPRを作成する場合
+### 新しいIssueを作成する場合
 
-1. `PR_MANAGEMENT.md` のワークフロールールを確認
-2. プロジェクトルートの `PR_DESCRIPTION.md` を更新
-3. PR作成時に `PULL_REQUEST_TEMPLATE.md` が自動適用される
+`ISSUE_TEMPLATE/`から選ぶ。ラベルの基準と作業の流れは[docs/project-management-guide.md](../docs/project-management-guide.md)を参照。
 
-## 新しいIssueを作成する場合
+### 新しいPRを作成する場合
 
-1. `ISSUE_TEMPLATE/` から適切なテンプレートを選択
-2. バグ報告: `bug_report.yml`
-3. 機能リクエスト: `feature_request.yml`
-4. ポリシー更新: `dynamic_policy_update.yml`
+`develop`へ出す。`PULL_REQUEST_TEMPLATE.md`が自動で使われる。ルールは`PR_MANAGEMENT.md`を参照。
 
-## 開発環境セットアップ
+### 自動化を確認する場合
 
-1. `PROJECT_SETUP.md` の手順に従う
-2. `FILE_MANAGEMENT.md` でコーディング規則を確認
+`AUTOMATION_OPERATIONS_GUIDE.md`を参照。
 
 ## 🔄 更新履歴
 
-- **2025-01-08**: PR管理システム追加 (`PR_MANAGEMENT.md`, `PULL_REQUEST_TEMPLATE.md`)
-- 既存: Issue テンプレート、GitHub Actions ワークフロー
-
----
-
-この構成により、GitHubリポジトリの運用がより効率的で一貫性のあるものになります。
+- **2026-11-13**: GitHub Projects・マイルストーンの初期設定の手順書と、重複していたIssueテンプレート（`.md`）を削除（#519）
+- **2025-01-08**: PR管理システム追加（`PR_MANAGEMENT.md`・`PULL_REQUEST_TEMPLATE.md`）
