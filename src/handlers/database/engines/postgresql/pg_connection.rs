@@ -14,6 +14,15 @@
 //! - 1つのSQLの時間の上限（`statement_timeout`）と、受け取る行数の上限
 //! - 値は列の型で読み取る。NUMERICは桁を落とさず文字列にし、読めない型は
 //!   NULLにせず、そう分かる文字列にする（以前は黙ってNULLにしていた）
+//!
+//! #539で、次を足した:
+//!
+//! - 受け取る結果のバイト数の上限。カーソル（`DECLARE … CURSOR`・`FETCH`）で
+//!   少しずつ受け取り、上限を超えたら止める。データベースも、それ以上の行を
+//!   作らない
+//! - 接続をプールに戻すとき、`set_config`等で変えたセッションの設定・ロールを
+//!   元に戻す
+//! - `get_schema`も、読み取り専用のトランザクションと時間の上限の中で実行する
 
 use crate::handlers::database::{
     engine::{ConnectionInfo, DatabaseConnection, DatabaseTransaction, PreparedStatement},
@@ -43,7 +52,17 @@ pub struct PostgreSqlConnection {
     /// `query()`で受け取る行数の上限（`None`は無制限）。ハンドラーは
     /// `max_rows + 1`を渡し、上限を超えたかを知る
     fetch_limit: Option<usize>,
+    /// `query()`で受け取る結果のだいたいのバイト数（`Value::approx_json_size`
+    /// の合計）の上限（`None`は無制限、#539）。超えた行まで受け取って止める
+    /// ので、ハンドラーは上限を超えたかを知れる
+    byte_limit: Option<usize>,
 }
+
+/// `query()`のカーソルの名前（トランザクションごとに1つ）
+const CURSOR_NAME: &str = "mcp_rs_cursor";
+
+/// 1回の`FETCH`で受け取る行数の上限
+const MAX_FETCH_BATCH: usize = 500;
 
 impl PostgreSqlConnection {
     /// Create a new PostgreSQL connection from connection string
@@ -80,6 +99,7 @@ impl PostgreSqlConnection {
             user_name,
             statement_timeout: Duration::from_secs(DEFAULT_STATEMENT_TIMEOUT_SECS),
             fetch_limit: None,
+            byte_limit: None,
         }
     }
 
@@ -95,9 +115,58 @@ impl PostgreSqlConnection {
         self
     }
 
+    /// `query()`で受け取る結果のバイト数の上限を設定する（#539）
+    pub fn with_byte_limit(mut self, limit: Option<usize>) -> Self {
+        self.byte_limit = limit;
+        self
+    }
+
     /// `SET LOCAL statement_timeout`の値（ミリ秒、0は上限なし）
     fn statement_timeout_ms(&self) -> u128 {
         self.statement_timeout.as_millis()
+    }
+
+    /// 読み取り専用のトランザクションを始め、1つのSQLの時間の上限を付ける。
+    /// 最後はロールバックする（コミットしない）
+    async fn begin_read_only(&self) -> Result<sqlx::Transaction<'_, Postgres>, DatabaseError> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| DatabaseError::ConnectionFailed(e.to_string()))?;
+        sqlx::query("SET TRANSACTION READ ONLY")
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| DatabaseError::QueryFailed(e.to_string()))?;
+        sqlx::query(&format!(
+            "SET LOCAL statement_timeout = {}",
+            self.statement_timeout_ms()
+        ))
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| DatabaseError::QueryFailed(e.to_string()))?;
+        Ok(tx)
+    }
+
+    /// 次の`FETCH`で受け取る行数。上限で途中で止めても、sqlxはその`FETCH`の
+    /// 残りの行を受け取って捨てるので、大きく取りすぎないようにする
+    /// （PR #545のレビュー）:
+    ///
+    /// - それまでに受け取った行数（最初は1行）。1・1・2・4…と倍々に増える
+    ///   ので、捨てる行は、最悪でもそれまでに受け取った行数ほどで済む。
+    ///   1行目だけ小さく、後の行が大きい結果でも、一度に多く取らない
+    /// - 行数・バイト数の上限の残り（バイト数は、それまでの平均の大きさで
+    ///   割る）。大きさの揃った大きな行で、倍々の分まで取らない
+    fn next_fetch_batch(&self, rows: usize, bytes: usize) -> usize {
+        let mut batch = rows.clamp(1, MAX_FETCH_BATCH);
+        if let Some(limit) = self.fetch_limit {
+            batch = batch.min(limit.saturating_sub(rows));
+        }
+        if let (Some(limit), true) = (self.byte_limit, rows > 0) {
+            let average = (bytes / rows).max(1);
+            batch = batch.min(limit.saturating_sub(bytes) / average + 1);
+        }
+        batch.max(1)
     }
 
     /// Convert sqlx Row to our Value vec
@@ -267,11 +336,9 @@ impl PgParam {
         position: usize,
     ) -> Result<Self, DatabaseError> {
         let expected_name = expected.map(|t| t.name().to_string());
-        let invalid = |what: &str, text: &str| {
-            DatabaseError::QueryFailed(format!(
-                "parameter ${position}: '{}' is not a valid {what}",
-                text.chars().take(100).collect::<String>()
-            ))
+        // 値は文に入れない。エラーの文は監査ログにも書くため（#539）
+        let invalid = |what: &str| {
+            DatabaseError::QueryFailed(format!("parameter ${position} is not a valid {what}"))
         };
         Ok(match value {
             Value::Null => Self::Null(expected.cloned().unwrap_or_else(|| {
@@ -284,46 +351,46 @@ impl PgParam {
             Value::Json(json) => Self::Json(json.clone()),
             Value::DateTime(dt) => Self::TimestampTz(*dt),
             Value::String(text) => match expected_name.as_deref() {
-                Some("UUID") => Self::Uuid(
-                    uuid::Uuid::parse_str(text.trim()).map_err(|_| invalid("uuid", text))?,
-                ),
+                Some("UUID") => {
+                    Self::Uuid(uuid::Uuid::parse_str(text.trim()).map_err(|_| invalid("uuid"))?)
+                }
                 Some("DATE") => Self::Date(
                     chrono::NaiveDate::parse_from_str(text.trim(), "%Y-%m-%d")
-                        .map_err(|_| invalid("date (YYYY-MM-DD)", text))?,
+                        .map_err(|_| invalid("date (YYYY-MM-DD)"))?,
                 ),
                 Some("TIME") => Self::Time(
                     chrono::NaiveTime::parse_from_str(text.trim(), "%H:%M:%S%.f")
-                        .map_err(|_| invalid("time (HH:MM:SS)", text))?,
+                        .map_err(|_| invalid("time (HH:MM:SS)"))?,
                 ),
                 Some("TIMESTAMP") => Self::Timestamp(
                     parse_naive_datetime(text)
-                        .ok_or_else(|| invalid("timestamp (YYYY-MM-DDTHH:MM:SS)", text))?,
+                        .ok_or_else(|| invalid("timestamp (YYYY-MM-DDTHH:MM:SS)"))?,
                 ),
                 Some("TIMESTAMPTZ") => Self::TimestampTz(
                     parse_datetime_tz(text)
-                        .ok_or_else(|| invalid("timestamp with time zone (RFC 3339)", text))?,
+                        .ok_or_else(|| invalid("timestamp with time zone (RFC 3339)"))?,
                 ),
                 Some("NUMERIC") => {
-                    Self::Numeric(string_to_numeric(text).ok_or_else(|| invalid("number", text))?)
+                    Self::Numeric(string_to_numeric(text).ok_or_else(|| invalid("number"))?)
                 }
                 Some("INT2" | "INT4" | "INT8") => {
-                    Self::Int(text.trim().parse().map_err(|_| invalid("integer", text))?)
+                    Self::Int(text.trim().parse().map_err(|_| invalid("integer"))?)
                 }
                 Some("FLOAT4" | "FLOAT8") => {
-                    Self::Float(text.trim().parse().map_err(|_| invalid("number", text))?)
+                    Self::Float(text.trim().parse().map_err(|_| invalid("number"))?)
                 }
                 Some("BOOL") => Self::Bool(match text.trim().to_ascii_lowercase().as_str() {
                     "true" | "t" | "yes" | "1" => true,
                     "false" | "f" | "no" | "0" => false,
-                    _ => return Err(invalid("boolean", text)),
+                    _ => return Err(invalid("boolean")),
                 }),
                 Some("JSON" | "JSONB") => {
-                    Self::Json(serde_json::from_str(text).map_err(|_| invalid("JSON", text))?)
+                    Self::Json(serde_json::from_str(text).map_err(|_| invalid("JSON"))?)
                 }
                 // 結果ではbyteaをbase64で返すので、同じ形で受け取る
                 Some("BYTEA") => Self::Bytes(
                     base64::Engine::decode(&base64::prelude::BASE64_STANDARD, text.trim())
-                        .map_err(|_| invalid("base64 value", text))?,
+                        .map_err(|_| invalid("base64 value"))?,
                 ),
                 // text・varchar等と、ここで変換できない型（列挙型等）。後者は
                 // SQLで`$1::型`とキャストしてもらう
@@ -506,6 +573,19 @@ impl<'q> sqlx::Encode<'q, Postgres> for PgParam {
     }
 }
 
+/// 結果の列の名前と型
+fn column_infos(columns: &[sqlx::postgres::PgColumn]) -> Vec<ColumnInfo> {
+    columns
+        .iter()
+        .map(|column| ColumnInfo {
+            name: column.name().to_string(),
+            data_type: column.type_info().name().to_string(),
+            nullable: true,
+            max_length: None,
+        })
+        .collect()
+}
+
 /// パラメーターを`$1`・`$2`…にバインドする
 fn bind_params<'q>(
     mut query: Query<'q, Postgres, PgArguments>,
@@ -611,8 +691,82 @@ pub fn connect_options(config: &ConnectionConfig) -> Result<PgConnectOptions, Da
         })?;
         options = options.ssl_mode(mode);
     }
+    // 証明書を確かめるCA（#539）。非公開のCA（RDS等）で`verify-ca`・
+    // `verify-full`を使うため
+    if let Some(path) = config.options.get(super::OPTION_SSL_ROOT_CERT) {
+        options = options.ssl_root_cert(path);
+    }
     Ok(options)
 }
+
+/// TLSが、通信の盗み見・なりすましを防げない設定のとき、その理由を返す
+/// （#539）。ループバック（`localhost`・`127.0.0.1`・`::1`）とUnixソケット
+/// では返さない。`options`は、環境変数（`PGSSLMODE`等）を反映した後の値
+pub fn weak_tls_warning(options: &PgConnectOptions) -> Option<String> {
+    let host = options.get_host();
+    let loopback = options.get_socket().is_some()
+        || host.starts_with('/')
+        || host.eq_ignore_ascii_case("localhost")
+        || host
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback());
+    if loopback {
+        return None;
+    }
+    let unencrypted = "the connection may not be encrypted";
+    let mode = options.get_ssl_mode();
+    let risk = match mode {
+        PgSslMode::VerifyFull => return None,
+        PgSslMode::VerifyCa => "the server's host name is not checked",
+        PgSslMode::Require => "the server's certificate is not checked",
+        PgSslMode::Prefer | PgSslMode::Allow => unencrypted,
+        PgSslMode::Disable => "the connection is not encrypted",
+    };
+    Some(format!(
+        "database ssl_mode is \"{}\" for {host}: {risk}. Use ssl_mode = \"verify-full\" \
+         (with ssl_root_cert for a private CA)",
+        ssl_mode_name(&mode)
+    ))
+}
+
+/// 設定ファイルの綴りの`ssl_mode`
+fn ssl_mode_name(mode: &PgSslMode) -> &'static str {
+    match mode {
+        PgSslMode::Disable => "disable",
+        PgSslMode::Allow => "allow",
+        PgSslMode::Prefer => "prefer",
+        PgSslMode::Require => "require",
+        PgSslMode::VerifyCa => "verify-ca",
+        PgSslMode::VerifyFull => "verify-full",
+    }
+}
+
+/// `ssl_root_cert`を書いたのに、`ssl_mode`が証明書を確かめない設定なら、
+/// 起動しない理由を返す（PR #545のレビュー）。sqlxは、`verify-ca`・
+/// `verify-full`のときだけCAのファイルを使い、それより弱いと黙って使わない。
+/// `options`は、環境変数（`PGSSLMODE`）を反映した後の値。設定ファイルに
+/// `ssl_mode`を書かず、`PGSSLMODE=verify-full`で指定していても止めない
+pub fn check_ssl_root_cert(
+    has_ssl_root_cert: bool,
+    options: &PgConnectOptions,
+) -> Result<(), String> {
+    let mode = options.get_ssl_mode();
+    if !has_ssl_root_cert || matches!(mode, PgSslMode::VerifyCa | PgSslMode::VerifyFull) {
+        return Ok(());
+    }
+    Err(format!(
+        "database.ssl_root_cert is set, but ssl_mode is \"{}\", which does not check the \
+         server certificate, so the CA file would not be used. Set ssl_mode = \"verify-full\" \
+         (or \"verify-ca\") in [database]",
+        ssl_mode_name(&mode)
+    ))
+}
+
+/// プールに戻す接続で実行する、セッションを元に戻すSQL（#539）
+pub const RESET_SESSION_SQL: &str = "SELECT pg_advisory_unlock_all(); \
+     SET SESSION AUTHORIZATION DEFAULT; RESET ROLE; RESET ALL";
 
 /// 設定から、接続のプールを作る（接続できるかも確かめる）
 pub async fn connect_pool(config: &DatabaseConfig) -> Result<PgPool, DatabaseError> {
@@ -626,15 +780,19 @@ pub async fn connect_pool(config: &DatabaseConfig) -> Result<PgPool, DatabaseErr
         .idle_timeout(Some(Duration::from_secs(u64::from(
             config.pool.idle_timeout.max(1),
         ))))
-        // セッション単位の勧告ロック（`pg_advisory_lock`）は、ロールバックしても
-        // 外れない。プールに戻す接続がロックを持ち続けないよう、外す（#453の
-        // レビュー）。失敗したら、その接続は閉じる
+        // プールに戻す接続を、次の利用者のために元に戻す。失敗したら、その
+        // 接続は閉じる
+        // - セッション単位の勧告ロック（`pg_advisory_lock`）は、ロールバック
+        //   しても外れない（#453のレビュー）
+        // - `execute_command`の中の`set_config('role', …, false)`等で変えた
+        //   設定は、コミットされると残る（#539）。`RESET ALL`は`role`・
+        //   `session_authorization`を戻さないので、別に戻す。`DISCARD ALL`は、
+        //   sqlxの準備済みの文のキャッシュと合わなくなるので使わない
         .after_release(|conn, _meta| {
             Box::pin(async move {
-                sqlx::query("SELECT pg_advisory_unlock_all()")
-                    .execute(&mut *conn)
-                    .await
-                    .map(|_| true)
+                // 文字列のまま渡すと、複数の文を1度に送れる（パラメーターの
+                // 無い問い合わせ）
+                conn.execute(RESET_SESSION_SQL).await.map(|_| true)
             })
         })
         .connect_with(options)
@@ -699,75 +857,128 @@ pub fn numeric_to_string(bytes: &[u8]) -> Option<String> {
     Some(text)
 }
 
+/// 表1つの列と主キー（`public`のスキーマ）
+async fn table_schema(
+    tx: &mut sqlx::Transaction<'_, Postgres>,
+    table_name: &str,
+) -> Result<TableInfo, DatabaseError> {
+    // Get column information
+    let rows = sqlx::query(
+        "SELECT column_name, data_type, is_nullable, character_maximum_length
+         FROM information_schema.columns
+         WHERE table_name = $1 AND table_schema = 'public'
+         ORDER BY ordinal_position",
+    )
+    .bind(table_name)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(|e| DatabaseError::QueryFailed(e.to_string()))?;
+
+    let mut columns = Vec::new();
+    for row in rows {
+        let name: String = row.get(0);
+        let data_type: String = row.get(1);
+        let is_nullable: String = row.get(2);
+        let max_length: Option<i32> = row.try_get(3).ok().flatten();
+
+        columns.push(ColumnInfo {
+            name,
+            data_type,
+            nullable: is_nullable == "YES",
+            max_length,
+        });
+    }
+
+    // Get primary keys. 表の名前は識別子として引用し、大文字や記号を
+    // 含む名前でも別の表を指さないようにする。一覧を読んだ後に消された表で
+    // エラーにならないよう、`to_regclass`（無ければNULL）を使う。エラーに
+    // なると、トランザクションの残りの問い合わせも失敗する
+    let pk_rows = sqlx::query(
+        "SELECT a.attname
+         FROM pg_index i
+         JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
+         WHERE i.indrelid = to_regclass(format('public.%I', $1::text)) AND i.indisprimary",
+    )
+    .bind(table_name)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(|e| DatabaseError::QueryFailed(e.to_string()))?;
+
+    let primary_keys: Vec<String> = pk_rows.iter().map(|row| row.get::<String, _>(0)).collect();
+
+    Ok(TableInfo {
+        name: table_name.to_string(),
+        schema: Some("public".to_string()),
+        columns,
+        primary_keys,
+        foreign_keys: Vec::new(),
+        indexes: Vec::new(),
+    })
+}
+
 #[async_trait]
 impl DatabaseConnection for PostgreSqlConnection {
-    /// 読み取り専用のトランザクションの中で実行し、ロールバックする
+    /// 読み取り専用のトランザクションの中で実行し、ロールバックする。行は
+    /// カーソルで少しずつ受け取り、行数・バイト数の上限で止める（#539）
     async fn query(&self, sql: &str, params: &[Value]) -> Result<QueryResult, DatabaseError> {
         let started = std::time::Instant::now();
-        let mut tx = self
-            .pool
-            .begin()
-            .await
-            .map_err(|e| DatabaseError::ConnectionFailed(e.to_string()))?;
-        sqlx::query("SET TRANSACTION READ ONLY")
+        let mut tx = self.begin_read_only().await?;
+
+        let params = Self::pg_params(&mut *tx, sql, params).await?;
+        // 末尾の`;`は、カーソルの中には書けない
+        let body = sql.trim_end().trim_end_matches(';').trim_end();
+        let declare = format!("DECLARE {CURSOR_NAME} NO SCROLL CURSOR FOR {body}");
+        bind_params(sqlx::query(&declare), params)
             .execute(&mut *tx)
             .await
             .map_err(|e| DatabaseError::QueryFailed(e.to_string()))?;
-        sqlx::query(&format!(
-            "SET LOCAL statement_timeout = {}",
-            self.statement_timeout_ms()
-        ))
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| DatabaseError::QueryFailed(e.to_string()))?;
 
-        let mut rows: Vec<PgRow> = Vec::new();
-        {
-            let params = Self::pg_params(&mut *tx, sql, params).await?;
-            let mut stream = bind_params(sqlx::query(sql), params).fetch(&mut *tx);
+        let mut columns: Option<Vec<ColumnInfo>> = None;
+        let mut result_rows: Vec<Vec<Value>> = Vec::new();
+        let mut bytes = 0usize;
+        'fetch: loop {
+            let batch = self.next_fetch_batch(result_rows.len(), bytes);
+            let fetch = format!("FETCH {batch} FROM {CURSOR_NAME}");
+            // 準備済みの文として使い回さない。同じ`FETCH`の文でも、カーソルの
+            // SQLごとに列が違うので、使い回すと前の列の情報で読んでしまう
+            let mut stream = sqlx::query(&fetch).persistent(false).fetch(&mut *tx);
+            let mut received = 0usize;
             while let Some(row) = stream
                 .try_next()
                 .await
                 .map_err(|e| DatabaseError::QueryFailed(e.to_string()))?
             {
-                rows.push(row);
-                if self.fetch_limit.is_some_and(|limit| rows.len() >= limit) {
-                    break;
+                received += 1;
+                if columns.is_none() {
+                    columns = Some(column_infos(row.columns()));
                 }
+                let values = Self::row_to_values(&row);
+                bytes += values.iter().map(Value::approx_json_size).sum::<usize>();
+                result_rows.push(values);
+                let rows_full = self
+                    .fetch_limit
+                    .is_some_and(|limit| result_rows.len() >= limit);
+                let bytes_full = self.byte_limit.is_some_and(|limit| bytes > limit);
+                if rows_full || bytes_full {
+                    break 'fetch;
+                }
+            }
+            if received < batch {
+                break;
             }
         }
 
-        let columns: Vec<ColumnInfo> = match rows.first() {
-            Some(first) => first
-                .columns()
-                .iter()
-                .map(|column| ColumnInfo {
-                    name: column.name().to_string(),
-                    data_type: column.type_info().name().to_string(),
-                    nullable: true,
-                    max_length: None,
-                })
-                .collect(),
+        let columns = match columns {
+            Some(columns) => columns,
             // 行が無くても列の名前と型を返す
             None => (&mut *tx)
                 .describe(sql)
                 .await
-                .map(|described| {
-                    described
-                        .columns()
-                        .iter()
-                        .map(|column| ColumnInfo {
-                            name: column.name().to_string(),
-                            data_type: column.type_info().name().to_string(),
-                            nullable: true,
-                            max_length: None,
-                        })
-                        .collect()
-                })
+                .map(|described| column_infos(described.columns()))
                 .unwrap_or_default(),
         };
-        let result_rows: Vec<Vec<Value>> = rows.iter().map(Self::row_to_values).collect();
-        // 読むだけなので、コミットしない
+        // 読むだけなので、コミットしない。カーソルも閉じ、データベースは
+        // 残りの行を作らない
         tx.rollback()
             .await
             .map_err(|e| DatabaseError::QueryFailed(e.to_string()))?;
@@ -823,24 +1034,29 @@ impl DatabaseConnection for PostgreSqlConnection {
         Ok(Box::new(super::transaction::PostgreSqlTransaction::new(tx)))
     }
 
+    /// 読み取り専用のトランザクションと時間の上限の中で読む（#539）
     async fn get_schema(&self) -> Result<DatabaseSchema, DatabaseError> {
+        let mut tx = self.begin_read_only().await?;
         // Get all tables in the current database
         let rows = sqlx::query(
             "SELECT table_name FROM information_schema.tables
              WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
              ORDER BY table_name",
         )
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *tx)
         .await
         .map_err(|e| DatabaseError::QueryFailed(e.to_string()))?;
 
         let mut tables = Vec::new();
         for row in rows {
             let table_name: String = row.get(0);
-            if let Ok(table_info) = self.get_table_schema(&table_name).await {
-                tables.push(table_info);
-            }
+            // 1つの表で失敗しても、トランザクションは使えなくなる。時間切れ等の
+            // エラーは、そのまま返す
+            tables.push(table_schema(&mut tx, &table_name).await?);
         }
+        tx.rollback()
+            .await
+            .map_err(|e| DatabaseError::QueryFailed(e.to_string()))?;
 
         Ok(DatabaseSchema {
             database_name: self.database_name.clone(),
@@ -851,56 +1067,12 @@ impl DatabaseConnection for PostgreSqlConnection {
     }
 
     async fn get_table_schema(&self, table_name: &str) -> Result<TableInfo, DatabaseError> {
-        // Get column information
-        let rows = sqlx::query(
-            "SELECT column_name, data_type, is_nullable, character_maximum_length
-             FROM information_schema.columns
-             WHERE table_name = $1 AND table_schema = 'public'
-             ORDER BY ordinal_position",
-        )
-        .bind(table_name)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|e| DatabaseError::QueryFailed(e.to_string()))?;
-
-        let mut columns = Vec::new();
-        for row in rows {
-            let name: String = row.get(0);
-            let data_type: String = row.get(1);
-            let is_nullable: String = row.get(2);
-            let max_length: Option<i32> = row.try_get(3).ok().flatten();
-
-            columns.push(ColumnInfo {
-                name,
-                data_type,
-                nullable: is_nullable == "YES",
-                max_length,
-            });
-        }
-
-        // Get primary keys. 表の名前は識別子として引用し、大文字や記号を
-        // 含む名前でも別の表を指さないようにする
-        let pk_rows = sqlx::query(
-            "SELECT a.attname
-             FROM pg_index i
-             JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
-             WHERE i.indrelid = format('public.%I', $1::text)::regclass AND i.indisprimary",
-        )
-        .bind(table_name)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|e| DatabaseError::QueryFailed(e.to_string()))?;
-
-        let primary_keys: Vec<String> = pk_rows.iter().map(|row| row.get::<String, _>(0)).collect();
-
-        Ok(TableInfo {
-            name: table_name.to_string(),
-            schema: Some("public".to_string()),
-            columns,
-            primary_keys,
-            foreign_keys: Vec::new(),
-            indexes: Vec::new(),
-        })
+        let mut tx = self.begin_read_only().await?;
+        let table = table_schema(&mut tx, table_name).await?;
+        tx.rollback()
+            .await
+            .map_err(|e| DatabaseError::QueryFailed(e.to_string()))?;
+        Ok(table)
     }
 
     async fn prepare(&self, _sql: &str) -> Result<Box<dyn PreparedStatement>, DatabaseError> {
@@ -1053,6 +1225,8 @@ mod tests {
         // 変換できない値は、どのパラメーターかを示すエラー
         let err = convert("not-a-uuid", "UUID").unwrap_err().to_string();
         assert!(err.contains("$1") && err.contains("uuid"), "{err}");
+        // 値はエラーの文に入れない（監査ログにも書くため、#539）
+        assert!(!err.contains("not-a-uuid"), "{err}");
         // 数値は、推論された型の幅に合わせる（準備済みの文はその型で使われる）
         let coerce = |value: Value, expected: &'static str| {
             PgParam::from_value(&value, Some(&PgTypeInfo::with_name(expected)), 1)
@@ -1122,5 +1296,106 @@ mod tests {
             PgParam::from_value(&Value::Null, None, 1),
             Ok(PgParam::Null(_))
         ));
+    }
+
+    /// ループバック以外で`verify-full`より弱いTLSなら、警告する（#539）
+    #[test]
+    fn test_weak_tls_warning() {
+        let options = |host: &str, mode: Option<&str>| {
+            let mut config = ConnectionConfig {
+                host: host.to_string(),
+                ..ConnectionConfig::default()
+            };
+            config.ssl_mode = mode.map(str::to_string);
+            connect_options(&config).unwrap()
+        };
+        for host in [
+            "localhost",
+            "127.0.0.1",
+            "::1",
+            "[::1]",
+            "/var/run/postgresql",
+        ] {
+            assert_eq!(
+                weak_tls_warning(&options(host, Some("disable"))),
+                None,
+                "{host}"
+            );
+        }
+        assert_eq!(
+            weak_tls_warning(&options("db.example.com", Some("verify-full"))),
+            None
+        );
+        for (mode, risk) in [
+            ("verify-ca", "host name"),
+            ("require", "certificate"),
+            ("prefer", "may not be encrypted"),
+            ("disable", "not encrypted"),
+        ] {
+            let warning = weak_tls_warning(&options("db.example.com", Some(mode)))
+                .unwrap_or_else(|| panic!("{mode}"));
+            assert!(
+                warning.contains(mode) && warning.contains(risk),
+                "{warning}"
+            );
+        }
+    }
+
+    /// `ssl_root_cert`を書いたら、証明書を確かめる`ssl_mode`が要る
+    /// （PR #545のレビュー）
+    #[test]
+    fn test_check_ssl_root_cert() {
+        let options = |mode: &str| {
+            let config = ConnectionConfig {
+                host: "db.example.com".to_string(),
+                ssl_mode: Some(mode.to_string()),
+                ..ConnectionConfig::default()
+            };
+            connect_options(&config).unwrap()
+        };
+        for mode in ["verify-ca", "verify-full"] {
+            assert!(check_ssl_root_cert(true, &options(mode)).is_ok(), "{mode}");
+        }
+        for mode in ["disable", "allow", "prefer", "require"] {
+            let err = check_ssl_root_cert(true, &options(mode)).unwrap_err();
+            assert!(err.contains(&format!("\"{mode}\"")), "{err}");
+            assert!(err.contains("ssl_mode = \"verify-full\""), "{err}");
+        }
+        // ssl_root_certを書いていなければ、何も言わない
+        assert!(check_ssl_root_cert(false, &options("prefer")).is_ok());
+        // 警告の文に、余計な空白が入らない
+        let warning = weak_tls_warning(&options("prefer")).unwrap();
+        assert!(!warning.contains("  "), "{warning}");
+        assert!(!RESET_SESSION_SQL.contains("  "), "{RESET_SESSION_SQL}");
+    }
+
+    /// `FETCH`の行数は、行数・バイト数の上限の残りに合わせる（#539）
+    #[tokio::test]
+    async fn test_next_fetch_batch_follows_the_limits() {
+        let pool = PgPoolOptions::new()
+            .connect_lazy("postgres://localhost/x")
+            .unwrap();
+        let conn = PostgreSqlConnection::with_pool(pool, "x".into(), "x".into());
+        // 上限なし: 1・1・2・4…と倍々に増やし、500で止める
+        assert_eq!(conn.next_fetch_batch(0, 0), 1);
+        assert_eq!(conn.next_fetch_batch(1, 10), 1);
+        assert_eq!(conn.next_fetch_batch(2, 20), 2);
+        assert_eq!(conn.next_fetch_batch(64, 640), 64);
+        assert_eq!(conn.next_fetch_batch(600, 6000), MAX_FETCH_BATCH);
+        let conn = conn
+            .with_fetch_limit(Some(1001))
+            .with_byte_limit(Some(10_000));
+        assert_eq!(conn.next_fetch_batch(0, 0), 1);
+        // 1行目が小さくても、次は倍々の分だけ（以前は500行になった）
+        assert_eq!(conn.next_fetch_batch(1, 1), 1);
+        assert_eq!(conn.next_fetch_batch(8, 8), 8);
+        // 行数の残り
+        assert_eq!(conn.next_fetch_batch(1000, 1000), 1);
+        // 1行100バイト、残り4000バイト: 40行で上限に届き、1行多く読む
+        assert_eq!(conn.next_fetch_batch(60, 6000), 41);
+        // 1行900バイト、残り1000バイト: 倍々の10行ではなく2行
+        assert_eq!(conn.next_fetch_batch(10, 9000), 2);
+        // 上限を超えていても、0にはしない
+        assert_eq!(conn.next_fetch_batch(1, 20_000), 1);
     }
 }

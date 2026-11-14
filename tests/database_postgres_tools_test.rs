@@ -644,3 +644,267 @@ async fn connection_errors_do_not_show_the_password() {
     assert!(err.contains("cannot connect"), "{err}");
     assert!(!err.contains("wrong-secret-password"), "{err}");
 }
+
+/// 結果のバイト数の上限（#539）。上限を超えた行は返さず、1行だけで超える
+/// なら大きな値を切り詰める
+#[tokio::test]
+async fn large_results_are_limited_by_bytes() {
+    let Some((url, _pool)) = test_database().await else {
+        return;
+    };
+    let mut settings = settings_from_url(&url);
+    settings.max_result_bytes = Some(100_000);
+    let handler = DatabaseHandler::from_settings(&settings).await.unwrap();
+
+    // 1行は約1KB。100KBに収まる行だけを返す
+    let result = call(
+        &handler,
+        "execute_query",
+        json!({ "sql": "SELECT n, repeat('x', 1000) AS s FROM generate_series(1, 1000) AS n" }),
+    )
+    .await
+    .unwrap();
+    let rows = result["rows"].as_array().unwrap();
+    assert_eq!(result["truncated"], json!(true));
+    assert_eq!(result["max_result_bytes"], json!(100_000));
+    assert!(rows.len() > 50 && rows.len() < 100, "{}", rows.len());
+    assert_eq!(result["total_rows"], json!(rows.len()));
+    assert!(result.to_string().len() < 150_000);
+
+    // 上限に収まる結果は、そのまま
+    let result = call(
+        &handler,
+        "execute_query",
+        json!({ "sql": "SELECT repeat('x', 1000) FROM generate_series(1, 10)" }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(result["truncated"], json!(false));
+    assert_eq!(result["rows"].as_array().unwrap().len(), 10);
+
+    // 1行だけで上限を超える: 大きな値を切り詰め、小さな値は残す
+    let result = call(
+        &handler,
+        "execute_query",
+        json!({ "sql": "SELECT 7 AS n, repeat('y', 1000000) AS big, decode(repeat('ff', 500000), 'hex') AS raw" }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(result["truncated"], json!(true));
+    let row = &result["rows"][0];
+    assert_eq!(row[0], json!(7));
+    let big = row[1].as_str().unwrap();
+    assert!(big.starts_with("yyyy"), "{}", &big[..20]);
+    assert!(
+        big.contains("[cut: 1000000 bytes in total"),
+        "{}",
+        &big[big.len() - 100..]
+    );
+    assert!(big.len() < 100_000);
+    assert!(row[2]
+        .as_str()
+        .unwrap()
+        .contains("binary value of 500000 bytes"));
+}
+
+/// 大きな行が多い結果でも、最初の行で止める（#539）。データベースも残りの
+/// 行を作らない（カーソルを閉じる）ので、すぐに返る
+#[tokio::test]
+async fn huge_rows_stop_at_the_first_row() {
+    let Some((url, _pool)) = test_database().await else {
+        return;
+    };
+    let handler = DatabaseHandler::from_settings(&settings_from_url(&url))
+        .await
+        .unwrap();
+    let started = std::time::Instant::now();
+    let result = call(
+        &handler,
+        "execute_query",
+        json!({ "sql": "SELECT repeat('x', 20000000) FROM generate_series(1, 1000)" }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(result["truncated"], json!(true));
+    assert_eq!(result["rows"].as_array().unwrap().len(), 1);
+    // 全部の行（20GB）を作らせたら、時間の上限（30秒）まで終わらない
+    assert!(started.elapsed() < std::time::Duration::from_secs(20));
+
+    // 末尾の`;`があっても動く（カーソルの中には書けないので除く）
+    let result = call(
+        &handler,
+        "execute_query",
+        json!({ "sql": "SELECT 1 AS one;  " }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(result["rows"], json!([[1]]));
+}
+
+/// 1行目だけ小さく、後の行が大きい結果でも、上限を超えた行を多く作らせない
+/// （PR #545のレビュー）。以前は、2回目の`FETCH`が500行になり、sqlxが
+/// 残りの行を受け取って捨てる間、PostgreSQLは行を作り続けた。1行ごとに
+/// 0.05秒待たせ、多く作らせると時間の上限（3秒）を超えるようにする
+#[tokio::test]
+async fn rows_growing_after_a_small_first_row_are_not_overfetched() {
+    let Some((url, _pool)) = test_database().await else {
+        return;
+    };
+    let mut settings = settings_from_url(&url);
+    settings.query_timeout_seconds = Some(3);
+    let handler = DatabaseHandler::from_settings(&settings).await.unwrap();
+    let result = call(
+        &handler,
+        "execute_query",
+        json!({ "sql": "SELECT CASE WHEN n = 1 THEN 'x' ELSE repeat('y', 4000000) END AS s, \
+                        pg_sleep(CASE WHEN n = 1 THEN 0 ELSE 0.05 END) AS wait \
+                        FROM generate_series(1, 1000) AS n" }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(result["truncated"], json!(true));
+    // 10MBに収まるのは、1行目と4MBの行2つ
+    assert_eq!(result["rows"].as_array().unwrap().len(), 3);
+}
+
+/// `execute_command`の中で変えたセッションの設定・ロールは、接続をプールに
+/// 戻すときに元に戻る（#539）
+#[tokio::test]
+async fn session_settings_do_not_stay_on_pooled_connections() {
+    let Some((url, pool)) = test_database().await else {
+        return;
+    };
+    let table = unique_name("sess");
+    let role = unique_name("other_role");
+    sqlx::query(&format!("CREATE TABLE {table} (x int)"))
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query(&format!("INSERT INTO {table} VALUES (1)"))
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query(&format!("CREATE ROLE {role}"))
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query(&format!("GRANT {role} TO CURRENT_USER"))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let mut settings = settings_from_url(&url);
+    settings.allow_write = Some(true);
+    // 接続を1つにして、同じ接続を使い回させる
+    settings.max_connections = Some(1);
+    let handler = DatabaseHandler::from_settings(&settings).await.unwrap();
+    let before = call(
+        &handler,
+        "execute_query",
+        json!({ "sql": "SELECT current_user::text, current_setting('search_path')" }),
+    )
+    .await
+    .unwrap()["rows"]
+        .clone();
+
+    let result = call(
+        &handler,
+        "execute_command",
+        json!({ "sql": format!(
+            "UPDATE {table} SET x = x WHERE set_config('role', '{role}', false) IS NOT NULL \
+             AND set_config('search_path', 'pg_catalog', false) IS NOT NULL"
+        ) }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(result["rows_affected"], json!(1));
+
+    // 戻した接続の後始末は非同期なので、少し待つ
+    let mut after = json!(null);
+    for _ in 0..50 {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        after = call(
+            &handler,
+            "execute_query",
+            json!({ "sql": "SELECT current_user::text, current_setting('search_path')" }),
+        )
+        .await
+        .unwrap()["rows"]
+            .clone();
+        if after == before {
+            break;
+        }
+    }
+    assert_eq!(after, before);
+
+    drop(handler);
+    sqlx::query(&format!("DROP TABLE {table}"))
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query(&format!("DROP ROLE {role}"))
+        .execute(&pool)
+        .await
+        .unwrap();
+}
+
+/// `ssl_root_cert`を書いたのに、`ssl_mode`が証明書を確かめない設定なら、
+/// 起動しない（PR #545のレビュー）
+#[tokio::test]
+async fn ssl_root_cert_needs_a_verifying_ssl_mode() {
+    let Some((url, _pool)) = test_database().await else {
+        return;
+    };
+    let mut settings = settings_from_url(&url);
+    settings.ssl_mode = Some("prefer".to_string());
+    settings.ssl_root_cert = Some("ca.pem".to_string());
+    let err = match DatabaseHandler::from_settings(&settings).await {
+        Ok(_) => panic!("ssl_root_cert with ssl_mode = prefer must not start"),
+        Err(err) => err,
+    };
+    assert!(
+        err.contains("ssl_root_cert") && err.contains("verify-full"),
+        "{err}"
+    );
+}
+
+/// 監査ログには、パラメーターの値を書かない（#539）。クライアントへの
+/// エラーには、PostgreSQLの文をそのまま返す
+#[tokio::test]
+async fn parameter_values_are_not_written_to_the_audit_log() {
+    let Some((url, _pool)) = test_database().await else {
+        return;
+    };
+    let audit = std::sync::Arc::new(mcp_rs::security::AuditLogger::with_defaults());
+    let handler = DatabaseHandler::from_settings(&settings_from_url(&url))
+        .await
+        .unwrap()
+        .with_audit_logger(audit.clone());
+
+    // mcp-rsの型の検査のエラー
+    let err = call(
+        &handler,
+        "execute_query",
+        json!({ "sql": "SELECT $1::uuid", "params": ["secret-value-1"] }),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.contains("$1") && err.contains("uuid"), "{err}");
+    assert!(!err.contains("secret-value-1"), "{err}");
+
+    // PostgreSQLのキャストのエラー（値を含む）
+    let err = call(
+        &handler,
+        "execute_query",
+        json!({ "sql": "SELECT $1::text::int", "params": ["secret-value-2"] }),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.contains("secret-value-2"), "{err}");
+
+    let entries = audit.get_all_entries().await;
+    let logged = serde_json::to_string(&entries).unwrap();
+    assert_eq!(entries.len(), 2, "{logged}");
+    assert!(!logged.contains("secret-value"), "{logged}");
+    assert!(logged.contains("invalid input syntax"), "{logged}");
+}

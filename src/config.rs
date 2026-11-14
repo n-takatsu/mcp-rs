@@ -104,11 +104,18 @@ pub struct DatabaseSettings {
     pub password: Option<String>,
     /// TLS: `disable`・`prefer`（省略時）・`require`・`verify-ca`・`verify-full`
     pub ssl_mode: Option<String>,
+    /// サーバーの証明書を確かめるCAのファイル（PEM、#539）。非公開のCA
+    /// （RDS等）で`verify-ca`・`verify-full`を使うとき。相対パスは設定
+    /// ファイルのフォルダを基準にする
+    pub ssl_root_cert: Option<String>,
     /// `true`で書き込みのツール（`execute_command`: INSERT・UPDATE・DELETE）を
     /// 出す。省略時は`false`
     pub allow_write: Option<bool>,
     /// `execute_query`が返す行数の上限。省略時は1000
     pub max_rows: Option<u32>,
+    /// `execute_query`が返す結果のだいたいのバイト数の上限（#539）。省略時は
+    /// 10MB（10485760）
+    pub max_result_bytes: Option<u64>,
     /// 1つのSQLの時間の上限（秒）。省略時は30
     pub query_timeout_seconds: Option<u32>,
     /// 接続の数の上限。省略時は5
@@ -126,8 +133,10 @@ impl std::fmt::Debug for DatabaseSettings {
             .field("username", &self.username)
             .field("password", &self.password.as_ref().map(|_| "<redacted>"))
             .field("ssl_mode", &self.ssl_mode)
+            .field("ssl_root_cert", &self.ssl_root_cert)
             .field("allow_write", &self.allow_write)
             .field("max_rows", &self.max_rows)
+            .field("max_result_bytes", &self.max_result_bytes)
             .field("query_timeout_seconds", &self.query_timeout_seconds)
             .field("max_connections", &self.max_connections)
             .finish()
@@ -136,6 +145,7 @@ impl std::fmt::Debug for DatabaseSettings {
 
 impl DatabaseSettings {
     pub const DEFAULT_MAX_ROWS: u32 = 1000;
+    pub const DEFAULT_MAX_RESULT_BYTES: u64 = 10 * 1024 * 1024;
     pub const DEFAULT_QUERY_TIMEOUT_SECONDS: u32 = 30;
     pub const DEFAULT_MAX_CONNECTIONS: u32 = 5;
 
@@ -160,6 +170,23 @@ impl DatabaseSettings {
         self.max_rows
             .filter(|n| *n > 0)
             .unwrap_or(Self::DEFAULT_MAX_ROWS)
+    }
+
+    pub fn max_result_bytes(&self) -> u64 {
+        self.max_result_bytes
+            .filter(|n| *n > 0)
+            .unwrap_or(Self::DEFAULT_MAX_RESULT_BYTES)
+    }
+
+    /// `ssl_root_cert`の相対パスを、`base`（設定ファイルのフォルダ）を基準に
+    /// する（#539）
+    pub fn resolve_paths(&mut self, base: Option<&std::path::Path>) {
+        if let (Some(cert), Some(base)) = (self.ssl_root_cert.as_mut(), base) {
+            let path = std::path::Path::new(cert.trim());
+            if path.is_relative() {
+                *cert = base.join(path).to_string_lossy().into_owned();
+            }
+        }
     }
 
     pub fn query_timeout_seconds(&self) -> u32 {
@@ -2022,6 +2049,29 @@ start_timeout_seconds = 300
         assert!(db.validate().is_ok());
         assert!(!db.allow_write());
         assert_eq!(db.password.as_deref(), Some("${MCP_DB_PASSWORD}"));
+    }
+
+    /// 結果のバイト数の上限の既定と、CAのファイルの相対パス（#539）
+    #[test]
+    fn test_database_result_bytes_and_ssl_root_cert_path() {
+        let mut db = DatabaseSettings::default();
+        assert_eq!(db.max_result_bytes(), 10 * 1024 * 1024);
+        db.max_result_bytes = Some(0);
+        assert_eq!(db.max_result_bytes(), 10 * 1024 * 1024);
+        db.max_result_bytes = Some(5000);
+        assert_eq!(db.max_result_bytes(), 5000);
+
+        let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        db.ssl_root_cert = Some("certs/ca.pem".to_string());
+        db.resolve_paths(Some(base));
+        assert_eq!(
+            db.ssl_root_cert.as_deref().map(std::path::PathBuf::from),
+            Some(base.join("certs/ca.pem"))
+        );
+        let absolute = base.join("ca.pem").to_string_lossy().into_owned();
+        db.ssl_root_cert = Some(absolute.clone());
+        db.resolve_paths(Some(std::path::Path::new("elsewhere")));
+        assert_eq!(db.ssl_root_cert.as_deref(), Some(absolute.as_str()));
     }
 
     #[test]

@@ -197,6 +197,12 @@ async fn build_server(
         // ${VAR}はここで展開する。環境変数が無くても、データベースだけを飛ばし、
         // WordPress等は動かす（#453のレビュー）
         let mut db_config = db_config.clone();
+        db_config.resolve_paths(
+            config
+                .config_file
+                .as_deref()
+                .and_then(std::path::Path::parent),
+        );
         let registered = match McpConfig::expand_database_config(&mut db_config) {
             Ok(()) => register_database(&mut server, &db_config, audit_logger.clone()).await,
             Err(e) => Err(e.to_string()),

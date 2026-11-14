@@ -26,6 +26,14 @@ use std::sync::Arc;
 /// 上限（#453）
 pub const OPTION_FETCH_LIMIT: &str = "fetch_limit";
 
+/// `DatabaseConfig::connection.options`のキー: `query()`で受け取る結果の
+/// だいたいのバイト数の上限（#539）
+pub const OPTION_BYTE_LIMIT: &str = "byte_limit";
+
+/// `DatabaseConfig::connection.options`のキー: サーバーの証明書を確かめる
+/// CAのファイル（#539）
+pub const OPTION_SSL_ROOT_CERT: &str = "ssl_root_cert";
+
 /// PostgreSQL Database Engine
 ///
 /// Main entry point for PostgreSQL database operations
@@ -69,11 +77,13 @@ impl DatabaseEngine for PostgreSqlEngine {
             .get_or_try_init(|| pg_connection::connect_pool(config))
             .await?
             .clone();
-        let fetch_limit = config
-            .connection
-            .options
-            .get(OPTION_FETCH_LIMIT)
-            .and_then(|v| v.parse::<usize>().ok());
+        let limit = |key: &str| {
+            config
+                .connection
+                .options
+                .get(key)
+                .and_then(|v| v.parse::<usize>().ok())
+        };
         let conn = PostgreSqlConnection::with_pool(
             pool,
             config.connection.database.clone(),
@@ -82,7 +92,8 @@ impl DatabaseEngine for PostgreSqlEngine {
         .with_statement_timeout(std::time::Duration::from_secs(u64::from(
             config.features.query_timeout,
         )))
-        .with_fetch_limit(fetch_limit);
+        .with_fetch_limit(limit(OPTION_FETCH_LIMIT))
+        .with_byte_limit(limit(OPTION_BYTE_LIMIT));
         Ok(Box::new(conn))
     }
 
