@@ -571,17 +571,19 @@ pub struct HttpTransportConfig {
     /// (#540). Defaults to 1048576 (1 MB).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_request_size: Option<usize>,
-    /// Time limit in seconds for receiving a request: the TLS handshake, the
-    /// headers, and the body, each (#540). It does not limit how long a tool
-    /// call takes. Defaults to 30.
+    /// Time limit in seconds for receiving a request (#540): the TLS
+    /// handshake and the headers as a whole, and each wait for more of the
+    /// body (not the whole body). It does not limit how long a tool call
+    /// takes. Defaults to 30.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub request_timeout_seconds: Option<u64>,
     /// Maximum number of connections served at the same time, WebSocket
     /// connections included (#540). Defaults to 1024.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_connections: Option<usize>,
-    /// Close a `/ws` connection when no message arrives for this many
-    /// seconds (#540). `0` disables the limit. Defaults to 300.
+    /// Close a `/ws` connection when nothing, not even an answer to the
+    /// server's pings, arrives for this many seconds (#540). `0` disables
+    /// the limit (and the pings). Defaults to 300.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub websocket_idle_timeout_seconds: Option<u64>,
     /// Start even when listening on a non-loopback address without any

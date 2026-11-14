@@ -74,9 +74,10 @@ pub struct HttpConfig {
     /// 413, and a larger WebSocket message closes the connection.
     pub max_request_size: usize,
     /// Time limit in milliseconds for receiving a request (#540): the TLS
-    /// handshake, the request headers (also the wait for the next request
-    /// on a kept-alive connection), and the request body, each. It does not
-    /// limit how long a tool call takes.
+    /// handshake and the request headers as a whole (also the wait for the
+    /// next request on a kept-alive connection), and each wait for more of
+    /// the request body (not the whole body). It does not limit how long a
+    /// tool call takes.
     pub timeout_ms: u64,
     /// Network access policy
     #[serde(default)]
@@ -187,8 +188,11 @@ pub struct HttpConfig {
     /// closes. Includes WebSocket connections.
     #[serde(default = "default_max_connections")]
     pub max_connections: usize,
-    /// Close a `/ws` connection when no message arrives for this many
-    /// seconds (#540). `0` disables the limit.
+    /// Close a `/ws` connection when nothing, not even an answer to the
+    /// server's pings, arrives for this many seconds (#540). The server
+    /// pings every 30 seconds (or every half of this, when shorter), so a
+    /// live but quiet client stays connected. `0` disables the limit and
+    /// the pings.
     #[serde(default = "default_websocket_idle_timeout_secs")]
     pub websocket_idle_timeout_secs: u64,
     /// Start even when `bind_addr` is not loopback and no authentication is
@@ -582,7 +586,8 @@ const AUTH_FAILURE_AUDIT_PER_MINUTE: u32 = 100;
 
 /// 認証の失敗を監査ログに書く数の制限（#540）。大量の失敗で、監査ログが
 /// ローテーションされ、本物の記録が消えないようにする。書かなかった数は、
-/// 次の1分の最初の失敗のときに、1件の記録にまとめる
+/// その1分が終わったときに、1件の記録にまとめる（PR #548のレビュー: 以前は
+/// 次の失敗が来るまで書かれなかった）
 #[derive(Debug)]
 struct AuthFailureAuditLimiter {
     window: std::sync::Mutex<AuthFailureWindow>,
@@ -591,8 +596,17 @@ struct AuthFailureAuditLimiter {
 #[derive(Debug)]
 struct AuthFailureWindow {
     started: Instant,
+    /// 監査ログに書く、1分の始まりの時刻
+    started_at: chrono::DateTime<chrono::Utc>,
     recorded: u32,
     suppressed: u64,
+}
+
+/// 書かなかった認証の失敗の数と、その1分の始まりの時刻
+#[derive(Debug, PartialEq)]
+struct SuppressedAuthFailures {
+    count: u64,
+    since: chrono::DateTime<chrono::Utc>,
 }
 
 impl AuthFailureAuditLimiter {
@@ -600,34 +614,77 @@ impl AuthFailureAuditLimiter {
         Self {
             window: std::sync::Mutex::new(AuthFailureWindow {
                 started: Instant::now(),
+                started_at: chrono::Utc::now(),
                 recorded: 0,
                 suppressed: 0,
             }),
         }
     }
 
-    /// 失敗を1件数える。戻り値は（この失敗を書くか、前の1分に書かなかった数）
-    fn admit(&self, now: Instant) -> (bool, u64) {
-        let mut window = self
-            .window
+    fn lock(&self) -> std::sync::MutexGuard<'_, AuthFailureWindow> {
+        self.window
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let mut suppressed_before = 0;
-        if now.duration_since(window.started) >= std::time::Duration::from_secs(60) {
-            suppressed_before = window.suppressed;
-            *window = AuthFailureWindow {
-                started: now,
-                recorded: 0,
-                suppressed: 0,
-            };
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// 1分が過ぎていれば、次の1分を始める。書かなかった数があれば返す
+    fn roll(window: &mut AuthFailureWindow, now: Instant) -> Option<SuppressedAuthFailures> {
+        if now.duration_since(window.started) < std::time::Duration::from_secs(60) {
+            return None;
         }
+        let report = (window.suppressed > 0).then_some(SuppressedAuthFailures {
+            count: window.suppressed,
+            since: window.started_at,
+        });
+        *window = AuthFailureWindow {
+            started: now,
+            started_at: chrono::Utc::now(),
+            recorded: 0,
+            suppressed: 0,
+        };
+        report
+    }
+
+    /// 失敗を1件数える。戻り値は（この失敗を書くか、前の1分に書かなかった数）
+    fn admit(&self, now: Instant) -> (bool, Option<SuppressedAuthFailures>) {
+        let mut window = self.lock();
+        let report = Self::roll(&mut window, now);
         if window.recorded < AUTH_FAILURE_AUDIT_PER_MINUTE {
             window.recorded += 1;
-            (true, suppressed_before)
+            (true, report)
         } else {
             window.suppressed += 1;
-            (false, suppressed_before)
+            (false, report)
         }
+    }
+
+    /// 1分が過ぎていれば、書かなかった数を返す（定期的に呼ぶ）
+    fn take_report(&self, now: Instant) -> Option<SuppressedAuthFailures> {
+        Self::roll(&mut self.lock(), now)
+    }
+}
+
+/// 書かなかった認証の失敗の数を、監査ログに1件で書く
+async fn audit_suppressed_auth_failures(
+    audit_logger: &AuditLogger,
+    report: SuppressedAuthFailures,
+) {
+    let entry = crate::security::AuditLogEntry::new(
+        crate::security::AuditLevel::Warning,
+        crate::security::AuditCategory::Authentication,
+        format!(
+            "Authentication failed {} more times in the minute from {} (not recorded one by one: at most {} per minute are recorded, without their IP addresses)",
+            report.count,
+            report.since.format("%Y-%m-%dT%H:%M:%SZ"),
+            AUTH_FAILURE_AUDIT_PER_MINUTE
+        ),
+    )
+    .with_result("DENIED".to_string());
+    if let Err(e) = audit_logger.log(entry).await {
+        warn!(
+            "Failed to write audit log entry for suppressed authentication failures: {}",
+            e
+        );
     }
 }
 
@@ -897,6 +954,25 @@ impl HttpTransport {
             auth_failure_audit: Arc::new(AuthFailureAuditLimiter::new()),
         };
         let request_timeout = std::time::Duration::from_millis(self.config.timeout_ms.max(1));
+        // 書かなかった認証の失敗の数を、1分ごとに監査ログに書く。失敗が
+        // 止まっても、記録が残るようにする（PR #548のレビュー）。サーバーが
+        // 無くなったら（状態を持つ`Weak`が切れたら）終わる
+        {
+            let limiter = Arc::downgrade(&state.auth_failure_audit);
+            let audit_logger = state.audit_logger.clone();
+            tokio::spawn(async move {
+                let mut tick = tokio::time::interval(std::time::Duration::from_secs(10));
+                loop {
+                    tick.tick().await;
+                    let Some(limiter) = limiter.upgrade() else {
+                        return;
+                    };
+                    if let Some(report) = limiter.take_report(Instant::now()) {
+                        audit_suppressed_auth_failures(&audit_logger, report).await;
+                    }
+                }
+            });
+        }
 
         // MCPのエンドポイント: Originの検証（ミドルウェア）と、同じ
         // OriginPolicyから作るCORS（#488）
@@ -1788,23 +1864,9 @@ async fn auth_middleware(
 /// トークン）そのものは記録しない。1分あたり`AUTH_FAILURE_AUDIT_PER_MINUTE`
 /// 件まで（#540）
 async fn audit_auth_failure(state: &HttpTransportState, remote_addr: SocketAddr, reason: &str) {
-    let (record, suppressed) = state.auth_failure_audit.admit(Instant::now());
-    if suppressed > 0 {
-        let entry = crate::security::AuditLogEntry::new(
-            crate::security::AuditLevel::Warning,
-            crate::security::AuditCategory::Authentication,
-            format!(
-                "Authentication failed {} more times in the previous minute (not recorded one by one: at most {} per minute are recorded)",
-                suppressed, AUTH_FAILURE_AUDIT_PER_MINUTE
-            ),
-        )
-        .with_result("DENIED".to_string());
-        if let Err(e) = state.audit_logger.log(entry).await {
-            warn!(
-                "Failed to write audit log entry for suppressed authentication failures: {}",
-                e
-            );
-        }
+    let (record, report) = state.auth_failure_audit.admit(Instant::now());
+    if let Some(report) = report {
+        audit_suppressed_auth_failures(&state.audit_logger, report).await;
     }
     if !record {
         return;
@@ -2313,16 +2375,43 @@ async fn handle_ws_socket(
     // アクセストークンの期限で閉じる（#540）。以前は接続のときにしか
     // 確かめず、期限が切れても接続を使い続けられた
     let token_deadline = expires_at.map(unix_time_to_instant);
+    // 無通信の時間の上限があれば、サーバーからpingを送る（PR #548の
+    // レビュー）。生きているクライアント（ブラウザも）は自動でpongを返し、
+    // それも受け取ったものとして数えるので、静かなだけのクライアントは
+    // 切れない。閉じるのは、何も返さない接続だけ
+    let mut ping = state.websocket_idle_timeout.map(|idle| {
+        let period = websocket_ping_interval(idle);
+        tokio::time::interval_at(tokio::time::Instant::now() + period, period)
+    });
+    let mut last_received = tokio::time::Instant::now();
 
     loop {
+        let idle_deadline = state
+            .websocket_idle_timeout
+            .map(|idle| last_received + idle);
         let msg_result = match next_ws_event(
             &mut receiver,
-            state.websocket_idle_timeout,
+            idle_deadline,
             token_deadline,
+            ping.as_mut(),
         )
         .await
         {
-            WsEvent::Message(msg_result) => msg_result,
+            WsEvent::Message(msg_result) => {
+                last_received = tokio::time::Instant::now();
+                msg_result
+            }
+            WsEvent::PingDue => {
+                let sent = sender
+                    .lock()
+                    .await
+                    .send(Message::Ping(Vec::new().into()))
+                    .await;
+                if sent.is_err() {
+                    break;
+                }
+                continue;
+            }
             WsEvent::Closed => break,
             WsEvent::IdleTimeout => {
                 debug!(
@@ -2431,40 +2520,57 @@ async fn handle_ws_socket(
 
 /// `/ws`の接続で、次に起きたこと（#540）
 enum WsEvent {
+    /// メッセージ（pongを含む）を受け取った
     Message(std::result::Result<Message, axum::Error>),
     /// 相手が接続を閉じた
     Closed,
-    /// 無通信の時間の上限を超えた
+    /// pingを送る時刻になった
+    PingDue,
+    /// 無通信の時間の上限を超えた（pingにも応答が無い）
     IdleTimeout,
     /// アクセストークンの期限が切れた
     TokenExpired,
 }
 
-/// 次のメッセージを待つ。無通信の時間の上限と、トークンの期限も見る（#540）
+/// pingを送る間隔。無通信の時間の上限の間に、少なくとも2回送る
+fn websocket_ping_interval(idle_timeout: std::time::Duration) -> std::time::Duration {
+    (idle_timeout / 2)
+        .min(std::time::Duration::from_secs(30))
+        .max(std::time::Duration::from_millis(100))
+}
+
+/// `deadline`まで待つ。`None`なら終わらない
+async fn sleep_until_or_forever(deadline: Option<tokio::time::Instant>) {
+    match deadline {
+        Some(deadline) => tokio::time::sleep_until(deadline).await,
+        None => std::future::pending().await,
+    }
+}
+
+/// 次に起きることを待つ（#540）: メッセージ、pingの時刻、無通信の時間の
+/// 上限（最後に受け取った時刻から）、トークンの期限
 async fn next_ws_event(
     receiver: &mut futures::stream::SplitStream<WebSocket>,
-    idle_timeout: Option<std::time::Duration>,
+    idle_deadline: Option<tokio::time::Instant>,
     token_deadline: Option<tokio::time::Instant>,
+    ping: Option<&mut tokio::time::Interval>,
 ) -> WsEvent {
-    let receive = async {
-        let next = match idle_timeout {
-            Some(limit) => match tokio::time::timeout(limit, receiver.next()).await {
-                Ok(next) => next,
-                Err(_) => return WsEvent::IdleTimeout,
-            },
-            None => receiver.next().await,
-        };
-        match next {
-            Some(msg_result) => WsEvent::Message(msg_result),
-            None => WsEvent::Closed,
+    let ping_due = async {
+        match ping {
+            Some(ping) => {
+                ping.tick().await;
+            }
+            None => std::future::pending().await,
         }
     };
-    match token_deadline {
-        Some(deadline) => tokio::select! {
-            event = receive => event,
-            _ = tokio::time::sleep_until(deadline) => WsEvent::TokenExpired,
+    tokio::select! {
+        next = receiver.next() => match next {
+            Some(msg_result) => WsEvent::Message(msg_result),
+            None => WsEvent::Closed,
         },
-        None => receive.await,
+        _ = sleep_until_or_forever(token_deadline) => WsEvent::TokenExpired,
+        _ = sleep_until_or_forever(idle_deadline) => WsEvent::IdleTimeout,
+        _ = ping_due => WsEvent::PingDue,
     }
 }
 
@@ -5657,9 +5763,10 @@ mod tests {
         );
     }
 
-    /// 無通信のWebSocketは、`websocket_idle_timeout_secs`で閉じる（#540）
+    /// pingに応答しない（何も読まない）WebSocketは、
+    /// `websocket_idle_timeout_secs`で閉じる（#540）
     #[tokio::test]
-    async fn test_idle_websocket_is_closed() {
+    async fn test_unresponsive_websocket_is_closed() {
         let port = start_test_server(|c| {
             c.enable_websocket_upgrade = true;
             c.websocket_idle_timeout_secs = 1;
@@ -5668,8 +5775,48 @@ mod tests {
         let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{port}/ws"))
             .await
             .unwrap();
+        // 読まない間は、届いたpingにpongを返さない
+        tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
         let code = ws_close_code(&mut ws, std::time::Duration::from_secs(5)).await;
         assert_eq!(code, Some(Some(close_code::AWAY)));
+    }
+
+    /// 何も送らないが、pingにpongを返すクライアントは閉じない（PR #548の
+    /// レビュー: 考えている間のMCPクライアント等）
+    #[tokio::test]
+    async fn test_quiet_websocket_answering_pings_stays_open() {
+        use tokio_tungstenite::tungstenite::Message as WsMessage;
+        let port = start_test_server(|c| {
+            c.enable_websocket_upgrade = true;
+            c.websocket_idle_timeout_secs = 1;
+        })
+        .await;
+        let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{port}/ws"))
+            .await
+            .unwrap();
+        // 読み続ける（tungsteniteは、読むときにpongを返す）。上限の3倍の間
+        let mut pings = 0;
+        let quiet = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            loop {
+                match ws.next().await {
+                    Some(Ok(WsMessage::Ping(_))) => pings += 1,
+                    Some(Ok(WsMessage::Close(frame))) => return Some(frame),
+                    Some(Ok(_)) => {}
+                    Some(Err(_)) | None => return None,
+                }
+            }
+        })
+        .await;
+        assert!(quiet.is_err(), "the connection was closed: {quiet:?}");
+        assert!(pings >= 2, "pings: {pings}");
+        // まだ使える
+        ws.send(WsMessage::Text(
+            serde_json::to_string(&notification_jsonrpc_request())
+                .unwrap()
+                .into(),
+        ))
+        .await
+        .unwrap();
     }
 
     /// OAuthのトークンの期限で、WebSocketの接続を閉じる（#540）。以前は
@@ -5706,14 +5853,47 @@ mod tests {
         let limiter = AuthFailureAuditLimiter::new();
         let start = std::time::Instant::now();
         for _ in 0..AUTH_FAILURE_AUDIT_PER_MINUTE {
-            assert_eq!(limiter.admit(start), (true, 0));
+            assert_eq!(limiter.admit(start), (true, None));
         }
-        assert_eq!(limiter.admit(start), (false, 0));
-        assert_eq!(limiter.admit(start), (false, 0));
-        // 次の1分: 記録を再開し、書かなかった数を返す
+        assert_eq!(limiter.admit(start), (false, None));
+        assert_eq!(limiter.admit(start), (false, None));
+        // 1分の間は、まとめない
+        assert_eq!(limiter.take_report(start), None);
+        // 1分が過ぎたら、次の失敗を待たずに、書かなかった数を返す
         let later = start + std::time::Duration::from_secs(61);
-        assert_eq!(limiter.admit(later), (true, 2));
-        assert_eq!(limiter.admit(later), (true, 0));
+        let report = limiter
+            .take_report(later)
+            .expect("a report after the minute");
+        assert_eq!(report.count, 2);
+        assert_eq!(limiter.take_report(later), None);
+        // 次の1分は、記録を再開する
+        assert_eq!(limiter.admit(later), (true, None));
+        // 失敗が来て1分が過ぎた場合も、返す
+        let limiter = AuthFailureAuditLimiter::new();
+        for _ in 0..=AUTH_FAILURE_AUDIT_PER_MINUTE {
+            limiter.admit(start);
+        }
+        let (record, report) = limiter.admit(later);
+        assert!(record);
+        assert_eq!(report.map(|r| r.count), Some(1));
+    }
+
+    /// pingの間隔は、無通信の上限の半分以下で、30秒まで
+    #[test]
+    fn test_websocket_ping_interval() {
+        use std::time::Duration;
+        assert_eq!(
+            websocket_ping_interval(Duration::from_secs(300)),
+            Duration::from_secs(30)
+        );
+        assert_eq!(
+            websocket_ping_interval(Duration::from_secs(40)),
+            Duration::from_secs(20)
+        );
+        assert_eq!(
+            websocket_ping_interval(Duration::from_secs(1)),
+            Duration::from_millis(500)
+        );
     }
 
     /// ループバック以外で、認証が無ければ起動しない（#540）

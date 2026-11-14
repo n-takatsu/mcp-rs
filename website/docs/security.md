@@ -154,13 +154,15 @@ Limits (v0.24.0 and later):
 ```toml
 [transport.http]
 # max_request_size = 1048576          # bytes of a request body, and of a WebSocket message. Larger: HTTP 413
-# request_timeout_seconds = 30        # each of: the TLS handshake, the request headers, the request body
+# request_timeout_seconds = 30        # the TLS handshake, the request headers, and each wait for more of the body
 # max_connections = 1024              # connections served at once (WebSocket included); more wait
-# websocket_idle_timeout_seconds = 300  # close /ws when nothing arrives for this long. 0: no limit
+# websocket_idle_timeout_seconds = 300  # close /ws when the client stops answering for this long. 0: no limit
 ```
 
-- `request_timeout_seconds` also limits how long a kept-alive connection waits for its next request. It does not limit how long a tool call takes
+- `request_timeout_seconds` limits the TLS handshake and the request headers as a whole. It also limits how long a kept-alive connection waits for its next request. For the request body, it limits each wait for more data, not the total: a client that keeps sending a little at a time can take longer in total. This applies only after the client has passed the checks above. It does not limit how long a tool call takes
+- On `/ws`, mcp-rs sends a ping every 30 seconds (or every half of `websocket_idle_timeout_seconds`, when that is shorter). Clients, browsers included, answer pings automatically, and the answers count as activity. So a client that is only quiet stays connected, and only a connection that answers nothing for `websocket_idle_timeout_seconds` is closed (close code 1001)
 - A `/ws` connection opened with an OAuth access token is closed when the token expires (`exp`, plus `leeway_seconds`), with close code 1008. Up to v0.23.0, the token was checked only when connecting
+- `max_connections` is shared by all clients, and there is no limit per client address. A client that is not allowed in can still hold connections until `request_timeout_seconds` passes, so many such connections can make other clients wait. When mcp-rs is reachable from the internet, put a reverse proxy in front of it that limits connections per address
 
 ## HTTP/WebSocket: Requests from Web Pages (`Origin`)
 
@@ -307,7 +309,7 @@ The mcp-rs log shows the path at startup (`📝 監査ログ: <path>`), and so d
 | Every tool call (WordPress, database, and plugins), whether it succeeds or fails | `DataAccess` | `SUCCESS` or `FAILURE` | STDIO and HTTP |
 | Every resource read (`resources/read`, such as `wordpress://posts`), whether it succeeds or fails. `action` is the resource URI, and `resource` is the handler (`wordpress` or `database`) | `DataAccess` | `SUCCESS` or `FAILURE` | STDIO and HTTP |
 | A tool call or resource read refused because the API key or token may not use that tool ([Limiting Tools](#limiting-tools-per-api-key-or-token)) | `Authorization` | `DENIED` | HTTP |
-| A request refused because the API key or access token is missing or invalid, or lacks the required scopes. At most 100 per minute are recorded one by one, so that a flood of failed requests does not rotate the real entries out of the log. The rest are counted, and recorded as one entry (`Authentication failed N more times in the previous minute …`) at the next failure after that minute | `Authentication` | `DENIED` | HTTP |
+| A request refused because the API key or access token is missing or invalid, or lacks the required scopes. At most 100 per minute are recorded one by one, so that a flood of failed requests does not rotate the real entries out of the log. The rest are counted, and recorded as one entry when that minute ends (`Authentication failed N more times in the minute from <time> …`). That entry has no IP addresses | `Authentication` | `DENIED` | HTTP |
 
 Each entry has these fields:
 
