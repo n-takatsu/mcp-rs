@@ -122,8 +122,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     そのまま使える。60万回にするには、`encrypt-wordpress-credentials`で
     作り直す
   - 導出した鍵のバイト列を、使い終わったら0で上書きする（`Zeroizing`）。
-    `aes-gcm`・`aes`の`zeroize`機能も有効にし、AES-GCMの状態と、展開した
-    AESのラウンド鍵も、捨てるときに0で上書きする
+    `aes`の`zeroize`機能も有効にし、展開したAESのラウンド鍵も、捨てる
+    ときに0で上書きする
   - **互換性のない変更（ライブラリ）**: `EncryptedCredentials`に`kdf`・
     `kdf_iterations`（どちらも`Option`）を足した。構造体を直接作っている
     コードは、これらを足す必要がある
