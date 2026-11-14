@@ -4642,6 +4642,20 @@ impl McpHandler for WordPressHandler {
         Some(format!("WordPress site {}", self.base_url))
     }
 
+    /// 各リソースは、同じデータを読めるツールと同じ扱いにする（#538）。
+    /// `wordpress://posts`は投稿の本文まで返すので、要約だけを返す
+    /// `get_posts`ではなく、本文を返す`get_post`に対応させる
+    fn resource_tool(&self, uri: &str) -> Option<String> {
+        let tool = match uri {
+            "wordpress://posts" => "get_post",
+            "wordpress://comments" => "get_comments",
+            "wordpress://categories" => "get_categories",
+            "wordpress://tags" => "get_tags",
+            _ => return None,
+        };
+        Some(tool.to_string())
+    }
+
     async fn list_resources(&self) -> Result<Vec<Resource>, McpError> {
         Ok(vec![
             Resource {
@@ -4675,6 +4689,16 @@ impl McpHandler for WordPressHandler {
         &self,
         params: ResourceReadParams,
     ) -> Result<serde_json::Value, McpError> {
+        // ツールの呼び出しと同じレート制限を通す（#538）。`wordpress://posts`
+        // 等は全ページを取得するので、1回の読み取りでも重い
+        if let Err(e) = self
+            .rate_limiter
+            .check_rate_limit(RATE_LIMIT_CLIENT_ID)
+            .await
+        {
+            warn!("WordPress resource read rate limited: {}", e);
+            return Err(McpError::Other(format!("Rate limit exceeded: {}", e)));
+        }
         match params.uri.as_str() {
             "wordpress://posts" => {
                 let posts = self.get_posts().await?;
@@ -4854,6 +4878,28 @@ mod tests {
         );
     }
 
+    /// リソースの読み取りも、ツールと同じレート制限を通る（#538）
+    #[tokio::test]
+    async fn test_read_resource_rejects_when_rate_limit_exhausted() {
+        let handler = rate_limited_handler(RateLimitConfig {
+            requests_per_second: 1,
+            burst_size: 0,
+            enabled: true,
+        });
+
+        let result = handler
+            .read_resource(ResourceReadParams {
+                uri: "wordpress://posts".to_string(),
+            })
+            .await;
+
+        assert!(
+            matches!(result, Err(McpError::Other(ref msg)) if msg.contains("Rate limit exceeded")),
+            "expected a rate-limit error, got: {:?}",
+            result
+        );
+    }
+
     #[tokio::test]
     async fn test_call_tool_audits_mutating_tool_rejected_by_rate_limit() {
         // レート制限で拒否された変更系ツール呼び出しも、WordPress側の
@@ -4952,6 +4998,30 @@ mod tests {
             "get_settings",
         ] {
             assert!(!is_mutating_tool(name), "{} should not be mutating", name);
+        }
+    }
+
+    /// リソースは、読み取り専用の実在するツールと同じ扱いになる（#538）
+    #[tokio::test]
+    async fn test_every_resource_maps_to_a_read_only_tool() {
+        let handler = rate_limited_handler(RateLimitConfig::default());
+        let tools = handler.list_tools().await.unwrap();
+        let resources = handler.list_resources().await.unwrap();
+        assert!(!resources.is_empty());
+        for resource in resources {
+            let name = handler
+                .resource_tool(&resource.uri)
+                .unwrap_or_else(|| panic!("{} has no tool", resource.uri));
+            let tool = tools
+                .iter()
+                .find(|t| t.name == name)
+                .unwrap_or_else(|| panic!("{} maps to missing tool {}", resource.uri, name));
+            assert_eq!(
+                tool.annotations.as_ref().and_then(|a| a.read_only_hint),
+                Some(true),
+                "{}",
+                name
+            );
         }
     }
 

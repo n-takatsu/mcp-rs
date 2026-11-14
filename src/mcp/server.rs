@@ -27,11 +27,26 @@ pub trait McpHandler: Send + Sync {
     async fn status(&self) -> Option<String> {
         None
     }
+
+    /// `uri`のリソースと同じデータを返す、このハンドラーのツールの名前
+    /// （#538）。APIキー・アクセストークンでツールを制限した呼び出し元は、
+    /// このツールを使えるときだけ、そのリソースを一覧で見て読める。`None`
+    /// （既定）のリソースは、制限のある呼び出し元には出さない。
+    fn resource_tool(&self, _uri: &str) -> Option<String> {
+        None
+    }
 }
 
 /// 登録されたハンドラーの一覧（登録順）。ツール名の重複時に、どちらが
 /// 使われるかを登録順で決めるため、HashMapではなく順序のある一覧で持つ。
 type Handlers = Vec<(String, Arc<dyn McpHandler>)>;
+
+/// 呼び出し元の制限で拒否したもの（監査ログの書き分けに使う）
+#[derive(Clone, Copy)]
+enum Denied {
+    Tool,
+    Resource,
+}
 
 pub struct McpServer {
     handlers: Handlers,
@@ -381,7 +396,7 @@ impl McpServer {
                     // 一方、tools/call自体のparams形式が不正な場合は
                     // プロトコルレベルの問題なのでJSON-RPCエラーのまま。
                     Ok(params) if !Self::tool_allowed(handlers, caller, &params.name).await => {
-                        Self::audit_denied_tool(audit_logger, caller, &params.name).await;
+                        Self::audit_denied(audit_logger, caller, Denied::Tool, &params.name).await;
                         Ok(serde_json::json!({
                             "content": [{
                                 "type": "text",
@@ -416,14 +431,16 @@ impl McpServer {
                 }
             }
             "resources/list" => {
-                let resources = Self::list_all_resources(handlers).await;
+                let resources = Self::list_all_resources(handlers, caller).await;
                 Ok(serde_json::json!({ "resources": resources }))
             }
             "resources/read" => {
                 match serde_json::from_value::<ResourceReadParams>(
                     request.params.clone().unwrap_or_default(),
                 ) {
-                    Ok(params) => Self::read_resource_routed(handlers, params).await,
+                    Ok(params) => {
+                        Self::read_resource_routed(handlers, params, caller, audit_logger).await
+                    }
                     Err(e) => Err(McpError::InvalidParams(e.to_string())),
                 }
             }
@@ -487,14 +504,21 @@ impl McpServer {
             .is_none_or(|tool| caller.access.allows(tool))
     }
 
-    /// 呼び出しを拒否したツールを、監査ログとログに記録する。
-    async fn audit_denied_tool(
+    /// 拒否したツールの呼び出し・リソースの読み取りを、監査ログとログに
+    /// 記録する。`name`はツール名かリソースのURI。
+    async fn audit_denied(
         audit_logger: Option<&crate::security::AuditLogger>,
         caller: &Caller,
+        kind: Denied,
         name: &str,
     ) {
+        let (what, resource) = match kind {
+            Denied::Tool => ("Tool call", "tool"),
+            Denied::Resource => ("Resource read", "resource"),
+        };
         warn!(
-            "Denied tool call '{}' by '{}': the tool is not allowed for this caller",
+            "Denied {} '{}' by '{}': it is not allowed for this caller",
+            what.to_lowercase(),
             name,
             caller.display_name()
         );
@@ -504,9 +528,9 @@ impl McpServer {
         let mut entry = crate::security::AuditLogEntry::new(
             crate::security::AuditLevel::Warning,
             crate::security::AuditCategory::Authorization,
-            format!("Tool call denied: {} by {}", name, caller.display_name()),
+            format!("{} denied: {} by {}", what, name, caller.display_name()),
         )
-        .with_action("tool".to_string(), name.to_string())
+        .with_action(resource.to_string(), name.to_string())
         .with_result("DENIED".to_string())
         .add_metadata("caller".to_string(), caller.display_name().to_string());
         entry.user_id = Some(caller.display_name().to_string());
@@ -595,33 +619,114 @@ impl McpServer {
         Err(McpError::ToolNotFound(params.name))
     }
 
-    /// 全ハンドラーのリソースを登録順にまとめる。
-    async fn list_all_resources(handlers: &[(String, Arc<dyn McpHandler>)]) -> Vec<Resource> {
+    /// `caller`が、`handler`の`uri`のリソースを読めるか（#538）。制限のある
+    /// 呼び出し元は、同じデータを返すツール（`resource_tool`）を使えるとき
+    /// だけ読める。対応するツールが無いリソースは読めない。
+    async fn resource_allowed(handler: &dyn McpHandler, caller: &Caller, uri: &str) -> bool {
+        if caller.access == crate::mcp::ToolAccess::All {
+            return true;
+        }
+        let Some(tool_name) = handler.resource_tool(uri) else {
+            return false;
+        };
+        match handler.list_tools().await {
+            Ok(tools) => tools
+                .iter()
+                .find(|tool| tool.name == tool_name)
+                .is_some_and(|tool| caller.access.allows(tool)),
+            Err(_) => false,
+        }
+    }
+
+    /// 全ハンドラーのリソースのうち、`caller`が読めるものを登録順にまとめる。
+    async fn list_all_resources(
+        handlers: &[(String, Arc<dyn McpHandler>)],
+        caller: &Caller,
+    ) -> Vec<Resource> {
         let mut resources = Vec::new();
         for (name, handler) in handlers {
             match handler.list_resources().await {
-                Ok(handler_resources) => resources.extend(handler_resources),
+                Ok(handler_resources) => {
+                    for resource in handler_resources {
+                        if Self::resource_allowed(handler.as_ref(), caller, &resource.uri).await {
+                            resources.push(resource);
+                        }
+                    }
+                }
                 Err(e) => warn!("Failed to list resources from handler '{}': {}", name, e),
             }
         }
         resources
     }
 
-    /// URIから読み出し先のハンドラーを決めて読む。
+    /// URIから読み出し先のハンドラーを決めて読む。`caller`が読めない
+    /// リソースは拒否する（#538）。読み取り・拒否は監査ログに記録する。
     async fn read_resource_routed(
         handlers: &[(String, Arc<dyn McpHandler>)],
         params: ResourceReadParams,
+        caller: &Caller,
+        audit_logger: Option<&crate::security::AuditLogger>,
     ) -> Result<serde_json::Value, McpError> {
         for (name, handler) in handlers {
             match handler.list_resources().await {
                 Ok(resources) if resources.iter().any(|r| r.uri == params.uri) => {
-                    return handler.read_resource(params).await;
+                    let uri = params.uri.clone();
+                    if !Self::resource_allowed(handler.as_ref(), caller, &uri).await {
+                        Self::audit_denied(audit_logger, caller, Denied::Resource, &uri).await;
+                        return Err(McpError::InvalidRequest(format!(
+                            "Resource '{}' is not allowed for this API key or access token",
+                            uri
+                        )));
+                    }
+                    let started = std::time::Instant::now();
+                    let result =
+                        crate::mcp::with_caller(caller.clone(), handler.read_resource(params))
+                            .await;
+                    Self::audit_resource_read(audit_logger, caller, name, &uri, &result, started)
+                        .await;
+                    return result;
                 }
                 Ok(_) => {}
                 Err(e) => warn!("Failed to list resources from handler '{}': {}", name, e),
             }
         }
         Err(McpError::ResourceNotFound(params.uri))
+    }
+
+    /// リソースの読み取りを、監査ログに記録する（#538）。
+    async fn audit_resource_read(
+        audit_logger: Option<&crate::security::AuditLogger>,
+        caller: &Caller,
+        handler_name: &str,
+        uri: &str,
+        result: &Result<serde_json::Value, McpError>,
+        started: std::time::Instant,
+    ) {
+        let Some(audit_logger) = audit_logger else {
+            return;
+        };
+        let outcome = if result.is_ok() { "SUCCESS" } else { "FAILURE" };
+        let mut entry = crate::security::AuditLogEntry::new(
+            if result.is_ok() {
+                crate::security::AuditLevel::Info
+            } else {
+                crate::security::AuditLevel::Error
+            },
+            crate::security::AuditCategory::DataAccess,
+            format!("Resource read: {} - {}", uri, outcome),
+        )
+        .with_action(handler_name.to_string(), uri.to_string())
+        .with_result(outcome.to_string());
+        if let Err(e) = result {
+            entry = entry.add_metadata("error".to_string(), e.to_string());
+        }
+        let entry = crate::mcp::with_caller(caller.clone(), async {
+            crate::mcp::audit_tool_call_context(entry, started)
+        })
+        .await;
+        if let Err(e) = audit_logger.log(entry).await {
+            warn!("Failed to write audit log entry for {}: {}", uri, e);
+        }
     }
 
     /// 通知を受け取る。現状、サーバー側で対応が必要な通知はないため
@@ -1548,6 +1653,144 @@ mod tests {
             response.result.unwrap()["tools"].as_array().unwrap().len(),
             3
         );
+    }
+
+    /// 制限のある呼び出し元は、対応するツールを使えるリソースだけを見て
+    /// 読める。対応するツールの無いリソースは読めない。読み取り・拒否は
+    /// 監査ログに残る（#538）
+    #[tokio::test]
+    async fn test_restricted_caller_reads_only_resources_of_allowed_tools() {
+        struct WithResources;
+        #[async_trait]
+        impl McpHandler for WithResources {
+            async fn initialize(
+                &self,
+                _params: InitializeParams,
+            ) -> Result<serde_json::Value, McpError> {
+                Ok(serde_json::json!({}))
+            }
+            async fn list_tools(&self) -> Result<Vec<Tool>, McpError> {
+                Ok(vec![tool("get_items"), tool("get_secrets")])
+            }
+            async fn call_tool(
+                &self,
+                _params: ToolCallParams,
+            ) -> Result<serde_json::Value, McpError> {
+                Ok(serde_json::json!({ "content": [] }))
+            }
+            async fn list_resources(&self) -> Result<Vec<Resource>, McpError> {
+                Ok(["x://items", "x://secrets", "x://unmapped"]
+                    .iter()
+                    .map(|uri| Resource {
+                        uri: uri.to_string(),
+                        name: uri.to_string(),
+                        description: None,
+                        mime_type: None,
+                    })
+                    .collect())
+            }
+            async fn read_resource(
+                &self,
+                params: ResourceReadParams,
+            ) -> Result<serde_json::Value, McpError> {
+                Ok(serde_json::json!({ "read": params.uri }))
+            }
+            fn resource_tool(&self, uri: &str) -> Option<String> {
+                match uri {
+                    "x://items" => Some("get_items".to_string()),
+                    "x://secrets" => Some("get_secrets".to_string()),
+                    _ => None,
+                }
+            }
+        }
+
+        let audit_logger = Arc::new(crate::security::AuditLogger::with_defaults());
+        let mut server = McpServer::new();
+        server.set_audit_logger(audit_logger.clone());
+        server.add_handler("x".to_string(), Arc::new(WithResources));
+        let dispatcher = server.dispatcher();
+        let send = |method: &str, params: serde_json::Value| {
+            serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params })
+                .to_string()
+        };
+        let list = |caller: Caller| {
+            let dispatcher = &dispatcher;
+            let message = send("resources/list", serde_json::json!({}));
+            async move {
+                dispatcher
+                    .handle_message_as(&message, &caller)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .result
+                    .unwrap()["resources"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|r| r["uri"].as_str().unwrap().to_string())
+                    .collect::<Vec<_>>()
+            }
+        };
+        let read = |caller: Caller, uri: &str| {
+            let dispatcher = &dispatcher;
+            let message = send("resources/read", serde_json::json!({ "uri": uri }));
+            async move {
+                dispatcher
+                    .handle_message_as(&message, &caller)
+                    .await
+                    .unwrap()
+                    .unwrap()
+            }
+        };
+        let restricted = |tools: &[&str]| {
+            let tools: Vec<String> = tools.iter().map(|t| t.to_string()).collect();
+            Caller::new(
+                "api_key:limited",
+                crate::mcp::ToolAccess::from_patterns(Some(&tools)).unwrap(),
+            )
+        };
+
+        // get_itemsだけを使えるキーは、x://itemsだけを見て読める
+        let items_only = restricted(&["get_items"]);
+        assert_eq!(list(items_only.clone()).await, vec!["x://items"]);
+        let response = read(items_only.clone(), "x://items").await;
+        assert_eq!(response.result.unwrap()["read"], "x://items");
+        for uri in ["x://secrets", "x://unmapped"] {
+            let response = read(items_only.clone(), uri).await;
+            assert!(response.result.is_none());
+            assert!(response.error.unwrap().message.contains("not allowed"));
+        }
+
+        // どのツールも使えないキーは、どのリソースも見えず読めない
+        let nothing = restricted(&[]);
+        assert!(list(nothing.clone()).await.is_empty());
+        let response = read(nothing.clone(), "x://items").await;
+        assert!(response.error.unwrap().message.contains("not allowed"));
+
+        // 無いリソースは、これまでどおり「リソースが無い」
+        let response = read(nothing, "x://missing").await;
+        let message = response.error.unwrap().message;
+        assert!(message.contains("x://missing"));
+        assert!(!message.contains("not allowed"));
+
+        // 制限の無い呼び出し元は、対応するツールの無いリソースも読める
+        assert_eq!(list(Caller::unrestricted()).await.len(), 3);
+        let response = read(Caller::unrestricted(), "x://unmapped").await;
+        assert_eq!(response.result.unwrap()["read"], "x://unmapped");
+
+        // 読み取りと拒否は、呼び出し元付きで監査ログに残る
+        let entries = audit_logger.get_all_entries().await;
+        let read_entry = entries
+            .iter()
+            .find(|e| e.message == "Resource read: x://items - SUCCESS")
+            .expect("resource read is audited");
+        assert_eq!(read_entry.user_id.as_deref(), Some("api_key:limited"));
+        let denied = entries
+            .iter()
+            .find(|e| e.message.contains("Resource read denied: x://secrets"))
+            .expect("denied resource read is audited");
+        assert_eq!(denied.user_id.as_deref(), Some("api_key:limited"));
+        assert_eq!(denied.result.as_deref(), Some("DENIED"));
     }
 
     /// `mcp_rs_status`（#434）: ハンドラーの状態・起動できなかったプラグインを
