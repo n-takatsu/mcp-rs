@@ -2402,12 +2402,19 @@ async fn handle_ws_socket(
                 msg_result
             }
             WsEvent::PingDue => {
-                let sent = sender
-                    .lock()
-                    .await
-                    .send(Message::Ping(Vec::new().into()))
-                    .await;
-                if sent.is_err() {
+                // 相手が受信を止めて送信のバッファが埋まっていると、送信で
+                // 止まり、無通信の上限も働かなくなる。送れなければ閉じる
+                // （PR #548の再レビュー）
+                let sent = tokio::time::timeout(
+                    WEBSOCKET_SEND_TIMEOUT,
+                    sender.lock().await.send(Message::Ping(Vec::new().into())),
+                )
+                .await;
+                if !matches!(sent, Ok(Ok(()))) {
+                    debug!(
+                        "Closing WebSocket connection {} from {}: a ping could not be sent",
+                        conn_id, addr
+                    );
                     break;
                 }
                 continue;
@@ -2506,6 +2513,10 @@ async fn handle_ws_socket(
                 break;
             }
         }
+        // メッセージの処理（ツールの呼び出し、最長120秒）の間は受信もpingも
+        // しないので、処理が終わった時刻から数え直す。無通信の上限より長い
+        // 処理の直後に、閉じないようにする（PR #548の再レビュー）
+        last_received = tokio::time::Instant::now();
     }
 
     state.websocket_connections.lock().await.remove(&conn_id);
@@ -2574,7 +2585,11 @@ async fn next_ws_event(
     }
 }
 
-/// 理由を付けて`/ws`の接続を閉じる
+/// `/ws`でpingやCloseフレームを送る時間の上限。相手が受信を止めていても、
+/// ここで止まらないようにする
+const WEBSOCKET_SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// 理由を付けて`/ws`の接続を閉じる。送れなくても、接続は閉じる
 async fn close_ws(
     sender: &tokio::sync::Mutex<futures::stream::SplitSink<WebSocket, Message>>,
     code: u16,
@@ -2584,7 +2599,11 @@ async fn close_ws(
         code,
         reason: reason.into(),
     };
-    let _ = sender.lock().await.send(Message::Close(Some(frame))).await;
+    let _ = tokio::time::timeout(
+        WEBSOCKET_SEND_TIMEOUT,
+        sender.lock().await.send(Message::Close(Some(frame))),
+    )
+    .await;
 }
 
 /// UNIX時刻（秒）を、tokioの時刻にする。過ぎていれば今
@@ -5777,8 +5796,17 @@ mod tests {
             .unwrap();
         // 読まない間は、届いたpingにpongを返さない
         tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
-        let code = ws_close_code(&mut ws, std::time::Duration::from_secs(5)).await;
-        assert_eq!(code, Some(Some(close_code::AWAY)));
+        // 閉じられたこと。クライアントは、読むときに溜まったpingへpongを
+        // 返そうとするので、Closeフレームを読む前に、閉じた接続への送信で
+        // エラーになることがある（CIで起きた）。Closeフレームを読めたなら、
+        // コードは1001
+        let code = ws_close_code(&mut ws, std::time::Duration::from_secs(5))
+            .await
+            .expect("the connection was not closed");
+        assert!(
+            matches!(code, None | Some(close_code::AWAY)),
+            "close code: {code:?}"
+        );
     }
 
     /// 何も送らないが、pingにpongを返すクライアントは閉じない（PR #548の
@@ -5876,6 +5904,63 @@ mod tests {
         let (record, report) = limiter.admit(later);
         assert!(record);
         assert_eq!(report.map(|r| r.count), Some(1));
+    }
+
+    /// 無通信の上限より長くかかる処理の直後に、閉じない（PR #548の
+    /// 再レビュー）。処理の間は受信もpingもしないので、処理が終わった時刻から
+    /// 数え直す
+    #[tokio::test]
+    async fn test_websocket_is_not_closed_right_after_a_long_request() {
+        use tokio_tungstenite::tungstenite::Message as WsMessage;
+        let transport = HttpTransport::new(HttpConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            enable_websocket_upgrade: true,
+            websocket_idle_timeout_secs: 1,
+            ..HttpConfig::default()
+        })
+        .unwrap()
+        .with_request_handler(Arc::new(EchoRequestHandler));
+        transport.start_server().await.unwrap();
+        let server_addr = transport.bound_addr().await.unwrap();
+        wait_for_plain_server_ready(server_addr).await;
+
+        let (mut ws, _) =
+            tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{}/ws", server_addr.port()))
+                .await
+                .unwrap();
+        let request = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/list",
+            "params": { "sleep_ms": 1500 }
+        });
+        ws.send(WsMessage::Text(request.to_string().into()))
+            .await
+            .unwrap();
+        // 応答を受け取り、その後も上限の間は閉じられない
+        let after_response = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                match ws.next().await {
+                    Some(Ok(WsMessage::Text(_))) => break,
+                    Some(Ok(WsMessage::Close(frame))) => panic!("closed: {frame:?}"),
+                    Some(Ok(_)) => {}
+                    other => panic!("unexpected: {other:?}"),
+                }
+            }
+        })
+        .await;
+        assert!(after_response.is_ok(), "no response");
+        let quiet = tokio::time::timeout(Duration::from_millis(800), async {
+            loop {
+                match ws.next().await {
+                    Some(Ok(WsMessage::Close(frame))) => return Some(frame),
+                    Some(Ok(_)) => {}
+                    Some(Err(_)) | None => return None,
+                }
+            }
+        })
+        .await;
+        assert!(quiet.is_err(), "closed right after the response: {quiet:?}");
     }
 
     /// pingの間隔は、無通信の上限の半分以下で、30秒まで
