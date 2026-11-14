@@ -60,8 +60,8 @@ impl Default for DatabaseConfig {
     }
 }
 
-/// 接続設定
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// 接続設定。`Debug`には`password`を出さない（#543）
+#[derive(Clone, Serialize, Deserialize)]
 pub struct ConnectionConfig {
     pub host: String,
     pub port: u16,
@@ -72,6 +72,29 @@ pub struct ConnectionConfig {
     pub timeout_seconds: u32,
     pub retry_attempts: u8,
     pub options: HashMap<String, String>,
+}
+
+impl std::fmt::Debug for ConnectionConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ConnectionConfig")
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("database", &self.database)
+            .field("username", &self.username)
+            .field(
+                "password",
+                &if self.password.is_empty() {
+                    ""
+                } else {
+                    "<redacted>"
+                },
+            )
+            .field("ssl_mode", &self.ssl_mode)
+            .field("timeout_seconds", &self.timeout_seconds)
+            .field("retry_attempts", &self.retry_attempts)
+            .field("options", &self.options)
+            .finish()
+    }
 }
 
 impl Default for ConnectionConfig {

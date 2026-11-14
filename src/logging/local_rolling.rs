@@ -56,8 +56,20 @@ fn first_existing_local_time(start: NaiveDateTime) -> Option<DateTime<Local>> {
     })
 }
 
+/// ログのファイルを追記で開く（#543）。Unix系では、新しく作るファイルを
+/// 本人だけが読み書きできる権限（600）で作り、シンボリックリンクはたどらない
+/// （`O_NOFOLLOW`）。ログにはツールの名前・エラーの文等が入り、ほかの利用者が
+/// 先にリンクを置くと、mcp-rsに別のファイルへ追記させられるため。既にある
+/// ファイルの権限は変えない。監査ログ（`audit_log.rs`）と同じ
 fn open_append(path: &Path) -> io::Result<File> {
-    OpenOptions::new().create(true).append(true).open(path)
+    let mut options = OpenOptions::new();
+    options.create(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    }
+    options.open(path)
 }
 
 type Clock = Box<dyn Fn() -> DateTime<Local> + Send>;
@@ -370,6 +382,25 @@ mod tests {
         appender.write_all(b"new\n").unwrap();
 
         assert_eq!(read(dir.path(), "mcp-rs.log.2026-01-10"), "existing\nnew\n");
+    }
+
+    /// 新しいログのファイルは600、リンクはたどらない（#543）
+    #[cfg(unix)]
+    #[test]
+    fn test_log_file_is_private_and_not_followed() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.log");
+        open_append(&path).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+
+        let target = dir.path().join("target.txt");
+        std::fs::write(&target, "x").unwrap();
+        let link = dir.path().join("link.log");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        assert!(open_append(&link).is_err());
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "x");
     }
 
     #[test]

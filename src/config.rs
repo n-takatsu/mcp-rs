@@ -415,6 +415,54 @@ pub fn legacy_plugins_conflict_hint(content: &str) -> Option<&'static str> {
     )
 }
 
+/// 引用符（`"`・`'`）の中を`…`に伏せる（#543）。設定の読み込みのエラーは、
+/// `invalid type: string "…", expected u16`のように、書いた値を含むことが
+/// ある。値がパスワードのこともあり、標準エラーはClaude Desktopのログに残る
+pub fn redact_quoted(message: &str) -> String {
+    let mut out = String::new();
+    let mut quote: Option<char> = None;
+    for c in message.chars() {
+        match quote {
+            Some(q) if c == q => {
+                out.push('…');
+                out.push(c);
+                quote = None;
+            }
+            Some(_) => {}
+            None => {
+                out.push(c);
+                if c == '"' || c == '\'' || c == '`' {
+                    quote = Some(c);
+                }
+            }
+        }
+    }
+    if quote.is_some() {
+        out.push('…');
+    }
+    out
+}
+
+/// TOMLの読み込みエラーを、行と列の番号と、値を伏せた理由だけで表す
+/// （#543）。tomlのエラーの表示は、誤りのある行をそのまま引用するので、
+/// `password = "…"x`のような誤りで、パスワードが標準エラーに出ていた
+pub fn describe_toml_error(error: &toml::de::Error, content: &str) -> String {
+    let reason = redact_quoted(error.message().trim());
+    match error.span() {
+        Some(span) => {
+            let before = &content[..span.start.min(content.len())];
+            let line = before.matches('\n').count() + 1;
+            let column = before
+                .rsplit('\n')
+                .next()
+                .map_or(0, |text| text.chars().count())
+                + 1;
+            format!("TOML parse error at line {line}, column {column}: {reason}")
+        }
+        None => format!("TOML parse error: {reason}"),
+    }
+}
+
 /// 読み込みエラーに、上記のヒントを添える
 pub fn with_config_hint(error: impl fmt::Display, content: &str) -> String {
     match legacy_plugins_conflict_hint(content) {
@@ -596,7 +644,8 @@ pub struct HttpTransportConfig {
 
 /// TOML-facing shape for a single API key entry under
 /// `transport.http.api_keys`. Mirrors `transport::http::ApiKeyEntry`.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+/// `Debug` does not show `key` (#543).
+#[derive(Clone, Deserialize, Serialize)]
 pub struct ApiKeyEntryConfig {
     /// The raw key value clients must present.
     pub key: String,
@@ -607,6 +656,17 @@ pub struct ApiKeyEntryConfig {
     /// Tools this key may use (#52). Omit to allow every tool.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<String>>,
+}
+
+impl fmt::Debug for ApiKeyEntryConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ApiKeyEntryConfig")
+            .field("key", &"<redacted>")
+            .field("name", &self.name)
+            .field("user_id", &self.user_id)
+            .field("tools", &self.tools)
+            .finish()
+    }
 }
 
 impl From<ApiKeyEntryConfig> for crate::transport::http::ApiKeyEntry {
@@ -1055,7 +1115,9 @@ fn apply_wordpress_env_overrides(
 /// いると両方のキーが残り、`duplicate field`で読み込みに失敗していた。
 /// キー名をそろえておけば、ファイルの値が既定値を上書きする。
 fn normalize_transport_type_alias(content: &str) -> Result<String, Box<dyn std::error::Error>> {
-    let mut table: toml::Table = content.parse()?;
+    let mut table: toml::Table = content
+        .parse()
+        .map_err(|e| describe_toml_error(&e, content))?;
     if let Some(toml::Value::Table(transport)) = table.get_mut("transport") {
         if let Some(value) = transport.remove("type") {
             if transport.contains_key("transport_type") {
@@ -1373,7 +1435,11 @@ impl McpConfig {
         // 特定の環境変数も直接対応（後方互換性）
         settings = settings.add_source(config::Environment::default().try_parsing(true));
 
-        let config: McpConfig = settings.build()?.try_deserialize()?;
+        // 値の型の誤り等のエラーは、書いた値を含むことがあるので伏せる（#543）
+        let config: McpConfig = settings
+            .build()
+            .and_then(|built| built.try_deserialize())
+            .map_err(|e| redact_quoted(&e.to_string()))?;
 
         // 環境変数による個別上書き
         let mut final_config = config;
@@ -2906,6 +2972,33 @@ mod additional_tests {
             "{message}"
         );
         assert!(!message.contains("--config config.toml"), "{message}");
+    }
+
+    /// TOMLの誤りのエラーに、行の内容（パスワード）を出さない（#543）
+    #[test]
+    fn test_toml_errors_do_not_show_the_line() {
+        let content =
+            "[handlers.wordpress]\nurl = \"https://example.com\"\npassword = \"s3cret-pw\"x\n";
+        let error = toml::from_str::<McpConfig>(content).unwrap_err();
+        assert!(
+            error.to_string().contains("s3cret-pw"),
+            "toml quotes the line"
+        );
+        let message = describe_toml_error(&error, content);
+        assert!(message.contains("line 3"), "{message}");
+        assert!(!message.contains("s3cret-pw"), "{message}");
+
+        // 型の誤りのエラーも、値を伏せる
+        let content = "[transport.http]\nport = \"s3cret-pw\"\n";
+        let error = toml::from_str::<McpConfig>(content).unwrap_err();
+        let message = describe_toml_error(&error, content);
+        assert!(!message.contains("s3cret-pw"), "{message}");
+        assert!(message.contains("line 2"), "{message}");
+
+        assert_eq!(
+            redact_quoted(r#"invalid type: string "x", expected u16"#),
+            r#"invalid type: string "…", expected u16"#
+        );
     }
 
     /// `--config`の`~/`は、ホームフォルダに展開する（PR #551のレビュー）

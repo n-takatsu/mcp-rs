@@ -127,8 +127,13 @@ async fn load_config_from_file(path: &str) -> Result<McpConfig, Box<dyn std::err
     }
 
     let content = tokio::fs::read_to_string(path).await?;
-    let mut config: McpConfig =
-        toml::from_str(&content).map_err(|e| mcp_rs::config::with_config_hint(e, &content))?;
+    let mut config: McpConfig = toml::from_str(&content).map_err(|e| {
+        // 誤りのある行（パスワードのこともある）を出さない（#543）
+        mcp_rs::config::with_config_hint(
+            mcp_rs::config::describe_toml_error(&e, &content),
+            &content,
+        )
+    })?;
     // 監査ログの既定の書き込み先（設定ファイルと同じフォルダ）に使う（#416）
     config.config_file = std::path::absolute(path).ok();
 

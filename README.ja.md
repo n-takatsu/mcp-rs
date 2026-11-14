@@ -205,7 +205,9 @@ hsts_enabled = true
 
 1. `mcp-rs`の実行ファイルと同じフォルダの`logs`（zipを展開した場所など）
 2. ユーザーのフォルダ: Windowsは`%USERPROFILE%\.mcp-rs\logs`、それ以外は`$XDG_STATE_HOME/mcp-rs/logs`か`~/.local/state/mcp-rs/logs`。`C:\Program Files\MCP-rs`にインストールした場合は、常にここになります
-3. カレントフォルダの`logs`、次に一時フォルダの`mcp-rs/logs`
+3. カレントフォルダの`logs`、次に、Windowsでだけ一時フォルダの`mcp-rs/logs`（Windowsの`%TEMP%`は利用者ごと。ほかのOSの共有の`/tmp`は使わない。v0.24.0以降）
+
+LinuxとmacOSでは、新しく作るログのフォルダを本人だけが使える権限（700）、ファイルを600で作ります（監査ログと同じ）。ログのファイルの代わりに置かれたシンボリックリンクは、たどりません。
 
 使っているログファイルは、`mcp_rs_status`ツールで確認できます。`fallback`と表示されるのは、1にも2にも書き込めなかった場合だけです。
 

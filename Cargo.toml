@@ -115,6 +115,11 @@ crossterm = "0.27"
 # library at runtime, e.g. SoftHSM2 or a real HSM's vendor-supplied module)
 cryptoki = { version = "0.12", optional = true }
 jsonwebtoken = { version = "11.1", default-features = false, features = ["aws_lc_rs"] }
+# O_NOFOLLOW for the log files (#543). Already in Cargo.lock through other
+# crates
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 # Testing framework
 tokio-test = "0.4.4"

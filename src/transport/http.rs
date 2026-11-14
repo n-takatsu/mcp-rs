@@ -219,8 +219,8 @@ fn default_websocket_idle_timeout_secs() -> u64 {
 /// A single API key accepted by this transport when `auth_enabled = true`.
 /// Distinct from `security::auth::ApiKey` (the runtime representation,
 /// which includes hash/usage/permission bookkeeping) - this is just the
-/// minimal config-facing shape.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// minimal config-facing shape. `Debug` does not show `key` (#543).
+#[derive(Clone, Serialize, Deserialize)]
 pub struct ApiKeyEntry {
     /// The raw key value clients must present. Hashed on import; never
     /// stored or logged in plaintext after startup.
@@ -235,6 +235,17 @@ pub struct ApiKeyEntry {
     /// hidden from `tools/list`, and calls to them are refused.
     #[serde(default)]
     pub tools: Option<Vec<String>>,
+}
+
+impl std::fmt::Debug for ApiKeyEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ApiKeyEntry")
+            .field("key", &"<redacted>")
+            .field("name", &self.name)
+            .field("user_id", &self.user_id)
+            .field("tools", &self.tools)
+            .finish()
+    }
 }
 
 impl Default for HttpConfig {

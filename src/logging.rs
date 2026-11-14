@@ -353,10 +353,16 @@ fn user_state_dir() -> Option<PathBuf> {
 
 /// 通常の出力先に書き込めなかった場合に試す候補ディレクトリ（優先順）。
 /// 先頭はユーザー領域（`user_log_dir`）。
+///
+/// 一時フォルダ（`mcp-rs/logs`）は、Windowsでだけ使う（#543）。Windowsの
+/// `%TEMP%`は利用者ごとだが、Unix系の`/tmp`は全員で共有する。ほかの利用者が
+/// 先に`/tmp/mcp-rs`を作ると、ログを読まれたり、リンクで別のファイルへ
+/// 追記させられたりするため
 fn fallback_log_dir_candidates() -> Vec<PathBuf> {
     let mut candidates = Vec::new();
     candidates.extend(user_log_dir());
     candidates.push(PathBuf::from("logs"));
+    #[cfg(windows)]
     candidates.push(std::env::temp_dir().join("mcp-rs").join("logs"));
 
     candidates
@@ -609,10 +615,19 @@ fn write_startup_marker(
     Ok(())
 }
 
-/// ログディレクトリを確保
+/// ログディレクトリを確保する。Unix系では、新しく作るフォルダを本人だけが
+/// 使える権限（700）で作る（#543、監査ログと同じ）。既にあるフォルダの
+/// 権限は変えない
 fn ensure_log_dir(dir: &Path) -> Result<()> {
     if !dir.exists() {
-        fs::create_dir_all(dir)?;
+        let mut builder = fs::DirBuilder::new();
+        builder.recursive(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(0o700);
+        }
+        builder.create(dir)?;
     }
     Ok(())
 }
@@ -1218,6 +1233,27 @@ mod tests {
 
         let result = build_file_appender(&log_dir, &LogRotation::Daily, "mcp-rs.log");
         assert!(result.is_ok());
+    }
+
+    /// 新しく作るログのフォルダは700（#543）
+    #[cfg(unix)]
+    #[test]
+    fn test_log_dir_is_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp_dir = tempdir().unwrap();
+        let log_dir = temp_dir.path().join("a").join("logs");
+        ensure_log_dir(&log_dir).unwrap();
+        let mode = fs::metadata(&log_dir).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700);
+    }
+
+    /// Unix系では、共有の一時フォルダにログを書かない（#543）
+    #[test]
+    fn test_fallback_uses_temp_dir_only_on_windows() {
+        let uses_temp = fallback_log_dir_candidates()
+            .iter()
+            .any(|dir| dir.starts_with(std::env::temp_dir()));
+        assert_eq!(uses_temp, cfg!(windows));
     }
 
     #[test]
