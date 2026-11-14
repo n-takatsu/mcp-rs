@@ -65,7 +65,11 @@ zeroize = "1.8.2"
 # Manager, macOS Keychain, Secret Service on Linux (pure-Rust zbus, no libdbus).
 # Behind the os-keyring feature
 keyring = { version = "4.2.0", optional = true }
-aes-gcm = "0.10"
+# zeroize: the AES-GCM state and the expanded AES round keys are overwritten
+# with zeros when dropped (#543). aes-gcm's feature does not reach aes, so
+# aes (the 0.8 used by aes-gcm 0.10) is listed only to turn it on
+aes-gcm = { version = "0.10", features = ["zeroize"] }
+aes = { version = "0.8", features = ["zeroize"] }
 pbkdf2 = "0.12"
 sha2 = "0.10"
 
