@@ -221,8 +221,15 @@ username = "{}"
 encrypted_password = "{}"
 nonce = "{}"
 salt = "{}"
+kdf = "{}"
+kdf_iterations = {}
 "#,
-            encrypted.username, encrypted.encrypted_password, encrypted.nonce, encrypted.salt
+            encrypted.username,
+            encrypted.encrypted_password,
+            encrypted.nonce,
+            encrypted.salt,
+            encrypted.kdf.as_deref().unwrap(),
+            encrypted.kdf_iterations.unwrap()
         );
 
         let mut file = tempfile::Builder::new().suffix(".toml").tempfile().unwrap();

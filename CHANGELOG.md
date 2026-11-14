@@ -114,6 +114,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- 低い指摘のまとめ（#543）の2つ目: 暗号化した資格情報の鍵の導出
+  - `encrypted_credentials`の鍵の導出（PBKDF2-HMAC-SHA256）の回数を、
+    10万回から60万回（OWASPの推奨値）にした。`encrypt-wordpress-credentials`
+    は、方式と回数を`kdf`・`kdf_iterations`として書き出す。記録の無いもの
+    （v0.23.0までに作ったもの）は、作ったときと同じ10万回で読むので、
+    そのまま使える。60万回にするには、`encrypt-wordpress-credentials`で
+    作り直す
+  - 導出した鍵のバイト列を、使い終わったら0で上書きする（`Zeroizing`）
+  - **互換性のない変更（ライブラリ）**: `EncryptedCredentials`に`kdf`・
+    `kdf_iterations`（どちらも`Option`）を足した。構造体を直接作っている
+    コードは、これらを足す必要がある
 - 低い指摘のまとめ（#543）の1つ目: ログと秘密情報の表示
   - 通常のログを、監査ログと同じく、Unix系では本人だけが使える権限で
     作るようにした。新しく作るフォルダは700、ファイルは600にし、ログの
