@@ -87,7 +87,7 @@ claude mcp add mcp-rs --scope user \
 
 ## HTTP mode
 
-Inside a container, mcp-rs must listen on all interfaces, and connections arrive from Docker's network rather than from loopback. `network_policy_reject_external_connections = true` (the default) refuses both, so set it to `false`, and require an API key:
+Inside a container, mcp-rs must listen on all interfaces, and connections arrive from Docker's network rather than from loopback. `network_policy_reject_external_connections = true` (the default) refuses both, so set it to `false`, and require an API key. From v0.24.0, mcp-rs does not start on `0.0.0.0` without authentication (API keys, OAuth, or mTLS):
 
 ```toml
 [server]
@@ -159,5 +159,6 @@ The first time a new named volume is used, Docker copies `/home/nonroot` from th
 | `error: unknown argument '--transport'` | Options from older guides. The only options are `--config`, `--version`, and `--help`; the transport is set in the config file |
 | `missing field ...` when starting | The config file must have `[server]`, `[transport]`, and `[handlers]` (empty is fine) |
 | HTTP mode exits with `Refusing to bind to non-loopback address 0.0.0.0:8081` | `network_policy_reject_external_connections` is not `false` |
+| HTTP mode exits with `refusing to listen on 0.0.0.0:8081 without authentication` (v0.24.0 and later) | No API key, OAuth, or mTLS is configured. Add `auth_enabled = true` and an API key as above. Only when a reverse proxy in front of mcp-rs authenticates clients, set `allow_unauthenticated_external = true` |
 | HTTP requests get 401 | The API key is missing or wrong (`Authorization: Bearer <key>` or `X-Api-Key: <key>`) |
 | The client in STDIO mode gets garbled messages | `-t` was used; use `-i` only |

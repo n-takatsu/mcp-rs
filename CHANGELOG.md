@@ -33,6 +33,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **互換性のない変更**: HTTPモードで、ループバック以外（`0.0.0.0`等）で
+  待ち受けるのに、認証（APIキー・OAuth・mTLS）が無い設定は、起動しない
+  ようにした（#540）。以前は警告を出すだけで起動し、ネットワークの誰でも
+  全部のツールを使えた。`auth_enabled = true`とAPIキー等を書く。mcp-rsの
+  前に置いたもの（ログインを求めるリバースプロキシ等）が認証するときだけ、
+  `[transport.http]`に`allow_unauthenticated_external = true`を書けば、
+  警告を出して起動する
+- **互換性のない変更（ライブラリ）**: `HttpConfig`に`max_connections`・
+  `websocket_idle_timeout_secs`・`allow_unauthenticated_external`、
+  `HttpTransportConfig`に`max_request_size`・`request_timeout_seconds`・
+  `max_connections`・`websocket_idle_timeout_seconds`・
+  `allow_unauthenticated_external`、`oauth::TokenInfo`に`expires_at`を
+  足した（#540）。構造体を直接作っているコードは、これらを足すか、
+  `..Default::default()`を使う必要がある
 - **互換性のない変更（ライブラリ）**: `WordPressConfig`に`keyring`
   （`Option<String>`）を足した（#533）。構造体を直接作っているコードは、
   `keyring: None`を足す必要がある。設定の読み込みでは、
@@ -86,6 +100,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- HTTPモードの受け口に、大きさ・時間・接続数の上限を付け、許していない
+  クライアントに本文を読ませないようにした（#540）
+  - 本文の大きさを`max_request_size`（既定1MB）までにした。超えたら413。
+    以前は、この設定はWebSocketにしか使われず、HTTPはaxumの既定の2MB
+    だった
+  - TLSのハンドシェイクとヘッダーを受け取る時間を、
+    `request_timeout_seconds`（既定30秒）までにした。本文は、データが
+    届く間隔を、この秒数までにした（合計ではない）。以前は時間の制限が
+    無く（`timeout_ms`はどこでも使われておらず、`axum::serve`にタイマーも
+    渡していなかった）、少しずつ送る接続（slowloris）で枠を占められた。
+    ツールの呼び出しにかかる時間は制限しない
+  - 同時の接続を`max_connections`（既定1024）までにした。超えた接続は、
+    前の接続が閉じるまで待つ
+  - ネットワークの制限（`network_policy_*`）を、接続を受け付けた時点で
+    確かめ、合わない接続はTLSのハンドシェイクもせずに閉じる。`Origin`と
+    認証も、本文を読む前に確かめる。以前は、本文を読んでJSONとして
+    解釈してから確かめていた
+  - 認証の失敗を監査ログに書くのは、1分あたり100件までにした。残りは
+    数えて、その1分が終わったときに1件にまとめて書く（IPアドレスは
+    残らない）。以前は毎回書いたので、
+    大量の失敗で監査ログがローテーションされ、本物の記録が消えた
+  - `/ws`（`enable_websocket_upgrade`）: メッセージとフレームの大きさを
+    `max_request_size`までにした（以前はtungsteniteの既定の64MiB・
+    16MiB）。サーバーから30秒ごとにpingを送り、
+    `websocket_idle_timeout_seconds`（既定300秒）の間、pongを含めて何も
+    受け取らなければ閉じる。以前は、応答の無い接続も閉じなかった。
+    クライアントは自動でpongを返すので、何も送らないだけのクライアントは
+    今までどおり切れない。OAuthのトークンで開いた接続は、トークンの期限
+    （`exp`）で閉じる（以前は接続のときにしか見なかった）
+  - 同時の接続の上限は、全部のクライアントで共有し、IPアドレスごとの上限は
+    無い。インターネットに公開する場合は、IPアドレスごとに接続を制限する
+    リバースプロキシを前に置くことを、ドキュメントに書いた
 - GitHub Actionsのワークフローで使う外部のアクションを、すべてコミットの
   SHAで固定した（#542）。版はコメントに書き、Dependabot
   （`.github/dependabot.yml`）で更新する。以前は、リリースのイメージを

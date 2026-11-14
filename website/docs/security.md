@@ -15,7 +15,7 @@ What mcp-rs does to protect your WordPress site, your database, and the HTTP lis
 | Area | What mcp-rs does | Section |
 |------|------------------|---------|
 | Credentials | Reads secrets from environment variables (`${VAR}`), or stores the WordPress Application Password encrypted with AES-GCM-256 (PBKDF2 key derivation). Secrets are never written to the log | [Environment variables](#secure-environment-variables), [Encrypted credentials](#encrypted-wordpress-credentials) |
-| HTTP listener | Checks the `Origin` header, the client address, TLS (minimum version, optional client certificates), replayed requests, and suspicious requests | [`Origin`](#httpwebsocket-requests-from-web-pages-origin) |
+| HTTP listener | Refuses to listen on the network without authentication. Checks the client address, the `Origin` header, and the credentials before reading the request body. Limits the request size, the time to send a request, and the number of connections. Also TLS (minimum version, optional client certificates), replayed requests, and suspicious requests | [Listening on the network](#httpwebsocket-listening-on-the-network), [`Origin`](#httpwebsocket-requests-from-web-pages-origin) |
 | Who may call | API keys, or OAuth 2.1 access tokens from an external authorization server (HTTP mode). STDIO mode needs neither: only the client that started mcp-rs can talk to it | [API keys](#httpwebsocket-api-key-authentication), [OAuth 2.1](#httpwebsocket-oauth-21-authorization) |
 | What they may call | Per API key or token, the tools it may use (for example `@read_only`) | [Limiting tools](#limiting-tools-per-api-key-or-token) |
 | How often | Rate limits on WordPress and plugin tool calls | [WordPress](../wordpress/) |
@@ -131,6 +131,38 @@ It asks for the WordPress username, the Application Password, and a master passw
   ```
 
   Delete `secrets.txt` afterwards.
+
+## HTTP/WebSocket: Listening on the Network
+
+When the HTTP transport listens on anything other than loopback (for example `addr = "0.0.0.0"` in Docker, with `network_policy_reject_external_connections = false`), it needs authentication: API keys, OAuth 2.1, or client certificates (mTLS). Without any of them, mcp-rs does not start (v0.24.0 and later), because anyone who can reach the address could use every tool. Up to v0.23.0, it only logged a warning.
+
+If something in front of mcp-rs authenticates the clients (for example a reverse proxy that requires a login, and mcp-rs is reachable only through it), allow it explicitly. mcp-rs then logs a warning at startup:
+
+```toml
+[transport.http]
+allow_unauthenticated_external = true
+```
+
+mcp-rs checks a request in this order, so that a client that is not allowed cannot make mcp-rs read a large body or wait for a slow one:
+
+1. When accepting the connection: the client address (`network_policy_reject_external_connections`, `network_policy_ip_whitelist`). A connection from another address is closed before the TLS handshake
+2. After the request headers: the `Origin` header, and the API key or access token
+3. Only then the request body
+
+Limits (v0.24.0 and later):
+
+```toml
+[transport.http]
+# max_request_size = 1048576          # bytes of a request body, and of a WebSocket message. Larger: HTTP 413
+# request_timeout_seconds = 30        # the TLS handshake, the request headers, and each wait for more of the body
+# max_connections = 1024              # connections served at once (WebSocket included); more wait
+# websocket_idle_timeout_seconds = 300  # close /ws when the client stops answering for this long. 0: no limit
+```
+
+- `request_timeout_seconds` limits the TLS handshake and the request headers as a whole. It also limits how long a kept-alive connection waits for its next request. For the request body, it limits each wait for more data, not the total: a client that keeps sending a little at a time can take longer in total. This applies only after the client has passed the checks above. It does not limit how long a tool call takes
+- On `/ws`, mcp-rs sends a ping every 30 seconds (or every half of `websocket_idle_timeout_seconds`, when that is shorter). Clients, browsers included, answer pings automatically, and the answers count as activity. So a client that is only quiet stays connected, and only a connection that answers nothing for `websocket_idle_timeout_seconds` is closed (close code 1001)
+- A `/ws` connection opened with an OAuth access token is closed when the token expires (`exp`, plus `leeway_seconds`), with close code 1008. Up to v0.23.0, the token was checked only when connecting
+- `max_connections` is shared by all clients, and there is no limit per client address. A client that is not allowed in can still hold connections until `request_timeout_seconds` passes, so many such connections can make other clients wait. When mcp-rs is reachable from the internet, put a reverse proxy in front of it that limits connections per address
 
 ## HTTP/WebSocket: Requests from Web Pages (`Origin`)
 
@@ -277,7 +309,7 @@ The mcp-rs log shows the path at startup (`📝 監査ログ: <path>`), and so d
 | Every tool call (WordPress, database, and plugins), whether it succeeds or fails | `DataAccess` | `SUCCESS` or `FAILURE` | STDIO and HTTP |
 | Every resource read (`resources/read`, such as `wordpress://posts`), whether it succeeds or fails. `action` is the resource URI, and `resource` is the handler (`wordpress` or `database`) | `DataAccess` | `SUCCESS` or `FAILURE` | STDIO and HTTP |
 | A tool call or resource read refused because the API key or token may not use that tool ([Limiting Tools](#limiting-tools-per-api-key-or-token)) | `Authorization` | `DENIED` | HTTP |
-| A request refused because the API key or access token is missing or invalid, or lacks the required scopes | `Authentication` | `DENIED` | HTTP |
+| A request refused because the API key or access token is missing or invalid, or lacks the required scopes. At most 100 per minute are recorded one by one, so that a flood of failed requests does not rotate the real entries out of the log. The rest are counted, and recorded as one entry when that minute ends (`Authentication failed N more times in the minute from <time> …`). That entry has no IP addresses | `Authentication` | `DENIED` | HTTP |
 
 Each entry has these fields:
 
