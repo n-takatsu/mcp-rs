@@ -15,27 +15,39 @@ concurrency:
   group: "pages"
   cancel-in-progress: true
 
+# ジョブが既定で持つ権限。リポジトリの既定の設定に依存しないよう、
+# 読み取りだけを明示する。書き込みが要るジョブは、ジョブの
+# permissions:で足す（#542）
+permissions:
+  contents: read
+
 jobs:
   # Build job
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # actions/configure-pages が、Pagesの設定を読む
+      pages: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         
       - name: Setup Ruby
-        uses: ruby/setup-ruby@v1
+        uses: ruby/setup-ruby@b3aaceaef7e0ee231b499e7b5f49c03fc1d32199 # v1.338.0
         with:
           ruby-version: '3.1'
           bundler-cache: true
           working-directory: ./website
           
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-          
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master (2026-10-16)
+        with:
+          toolchain: stable
+
       - name: Setup Pages
         id: pages
-        uses: actions/configure-pages@v5
+        uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5.0.0
         
       - name: Install Jekyll dependencies
         run: |
@@ -58,7 +70,7 @@ jobs:
           cp -r ./target/doc/* ./website/_site/rustdoc/
           
       - name: Upload artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3.0.1
         with:
           path: ./website/_site
 
@@ -76,4 +88,4 @@ jobs:
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4.0.5
