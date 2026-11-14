@@ -106,12 +106,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 async fn load_config(config_path: Option<&str>) -> Result<McpConfig, Box<dyn std::error::Error>> {
     match config_path {
         Some(path) => {
-            // 相対パスは、起動したフォルダから読む（PR #551のレビュー）。
-            // ログはまだ無いので、標準エラーに書く（標準出力はSTDIOの通信用）
-            if let Some(warning) = mcp_rs::config::relative_config_path_warning(path) {
+            // `~/`はホームフォルダに展開する（シェルを通さないクライアントでは
+            // そのまま届く）。相対パスは、起動したフォルダから読むので警告する
+            // （PR #551のレビュー）。ログはまだ無いので、標準エラーに書く
+            // （標準出力はSTDIOの通信用）
+            let path = mcp_rs::config::expand_config_path(path);
+            if let Some(warning) = mcp_rs::config::relative_config_path_warning(&path) {
                 eprintln!("[mcp-rs] warning: {warning}");
             }
-            load_config_from_file(path).await
+            load_config_from_file(&path).await
         }
         None => McpConfig::load(),
     }

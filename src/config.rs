@@ -942,8 +942,31 @@ fn no_config_file_message(home: Option<&str>, former: &[String]) -> String {
 /// `--config`が相対パスなら、警告の文を返す（PR #551のレビュー）。相対
 /// パスは、mcp-rsを起動したフォルダから読む。Claude Code等は開いたフォルダで
 /// 起動するので、そのフォルダの同じ名前のファイルを読んでしまう
+/// `--config`のパスの先頭の`~/`（Windowsでは`~\`も）を、ホームフォルダに
+/// 展開する（PR #551のレビュー）。シェルを通さないクライアントの設定（JSONの
+/// `args`等）では、`~`は展開されずにそのまま渡ってくる。展開しないと、
+/// 起動したフォルダの中の`~`という名前のフォルダを探してしまう。ホーム
+/// フォルダが分からなければ、そのまま返す（相対パスの警告が出る）
+pub fn expand_config_path(path: &str) -> String {
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .ok();
+    expand_config_path_with(path, home.as_deref())
+}
+
+fn expand_config_path_with(path: &str, home: Option<&str>) -> String {
+    let rest = path.strip_prefix("~/").or_else(|| path.strip_prefix("~\\"));
+    match rest {
+        Some(rest) => expand_home_dir(&format!("~/{}", rest.replace('\\', "/")), home)
+            .unwrap_or_else(|| path.to_string()),
+        None => path.to_string(),
+    }
+}
+
+/// `--config`（`expand_config_path`で展開した後）が相対パスなら、警告の
+/// 文を返す
 pub fn relative_config_path_warning(path: &str) -> Option<String> {
-    if std::path::Path::new(path).is_absolute() || path.starts_with('~') {
+    if std::path::Path::new(path).is_absolute() {
         return None;
     }
     let absolute = std::path::absolute(path)
@@ -2884,6 +2907,39 @@ mod additional_tests {
             "{message}"
         );
         assert!(!message.contains("--config config.toml"), "{message}");
+    }
+
+    /// `--config`の`~/`は、ホームフォルダに展開する（PR #551のレビュー）
+    #[test]
+    fn test_expand_config_path() {
+        let home = std::env::temp_dir();
+        let home_str = home.display().to_string();
+        let expanded = expand_config_path_with("~/.config/mcp-rs/config.toml", Some(&home_str));
+        assert_eq!(
+            std::path::PathBuf::from(&expanded),
+            home.join(".config").join("mcp-rs").join("config.toml")
+        );
+        assert_eq!(relative_config_path_warning(&expanded), None);
+        let expanded = expand_config_path_with("~\\mcp-rs\\config.toml", Some(&home_str));
+        assert_eq!(
+            std::path::PathBuf::from(&expanded),
+            home.join("mcp-rs").join("config.toml")
+        );
+        // ホームが分からなければそのまま（相対パスとして警告する）
+        assert_eq!(
+            expand_config_path_with("~/config.toml", None),
+            "~/config.toml"
+        );
+        assert!(relative_config_path_warning("~/config.toml").is_some());
+        // `~`で始まるほかの形（`~user/`等）は展開しない
+        assert_eq!(
+            expand_config_path_with("~user/x.toml", Some(&home_str)),
+            "~user/x.toml"
+        );
+        assert_eq!(
+            expand_config_path_with("config.toml", Some(&home_str)),
+            "config.toml"
+        );
     }
 
     /// 相対パスの`--config`は警告する（PR #551のレビュー）
