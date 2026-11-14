@@ -144,33 +144,27 @@ fn cut_cells(row: &mut [Value], max_bytes: usize) -> bool {
 /// 別に記録している）。クライアントには、伏せずに返す
 ///
 /// PostgreSQLは、値の中の引用符を`\"`等にせず、そのまま書く
-/// （`… integer: "ab"cd"`）。そのため、引用符が開いたら、文の中で同じ
-/// 引用符が最後に出るところまでを伏せる（PR #552のレビューで見つかった）。
-/// 間の表の名前等も伏せることがあるが、値が残ることはない
+/// （`… integer: "ab"cd"`）。そのため、最初の引用符（`"`か`'`）から、
+/// どちらでもよい最後の引用符までを、まとめて伏せる（PR #552のレビュー）。
+/// `"`と`'`が混ざっても（`'a' got "ab'cd"`）、値が残らない。間の表の名前等も
+/// 伏せるが、SQLは別に記録している
 fn redact_error_for_audit(message: &str) -> String {
     const MAX_CHARS: usize = 500;
-    let chars: Vec<char> = message.chars().collect();
-    let mut out = String::new();
-    let mut i = 0;
-    while i < chars.len() {
-        let c = chars[i];
-        out.push(c);
-        if c == '"' || c == '\'' {
-            match chars[i + 1..].iter().rposition(|&x| x == c) {
-                Some(offset) => {
-                    out.push('…');
-                    out.push(c);
-                    i += offset + 2;
-                }
-                None => {
-                    out.push('…');
-                    break;
-                }
+    let is_quote = |c: char| c == '"' || c == '\'';
+    let mut out = match message.find(is_quote) {
+        None => message.to_string(),
+        Some(first) => {
+            // 引用符は1バイトの文字
+            let open = &message[first..first + 1];
+            let rest = &message[first + 1..];
+            match rest.rfind(is_quote) {
+                // 最後の引用符より後ろには、引用符が無い
+                Some(last) => format!("{}{open}…{}", &message[..first], &rest[last..]),
+                // 閉じていない引用符は、最後まで伏せる
+                None => format!("{}{open}…", &message[..first]),
             }
-            continue;
         }
-        i += 1;
-    }
+    };
     if out.chars().count() > MAX_CHARS {
         out = out.chars().take(MAX_CHARS).collect();
         out.push('…');
@@ -1186,6 +1180,10 @@ mod tests {
         );
         // 閉じていない引用符は、最後まで伏せる
         assert_eq!(redact_error_for_audit("value 'secret"), "value '…");
+        // `'`と`"`が混ざっても、値の後半を残さない（PR #552の再レビュー）
+        let message = redact_error_for_audit(r#"column 'a' got "ab'cd-secret""#);
+        assert!(!message.contains("cd-secret"), "{message}");
+        assert_eq!(message, "column '…\"");
         assert_eq!(
             redact_error_for_audit("statement timeout"),
             "statement timeout"
