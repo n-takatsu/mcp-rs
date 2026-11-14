@@ -142,28 +142,34 @@ fn cut_cells(row: &mut [Value], max_bytes: usize) -> bool {
 /// `invalid input syntax for type uuid: "…"`のように、引用符の中に値を
 /// 含むことがある。引用符の中はすべて伏せる（表の名前等も伏せるが、SQLは
 /// 別に記録している）。クライアントには、伏せずに返す
+///
+/// PostgreSQLは、値の中の引用符を`\"`等にせず、そのまま書く
+/// （`… integer: "ab"cd"`）。そのため、引用符が開いたら、文の中で同じ
+/// 引用符が最後に出るところまでを伏せる（PR #552のレビューで見つかった）。
+/// 間の表の名前等も伏せることがあるが、値が残ることはない
 fn redact_error_for_audit(message: &str) -> String {
     const MAX_CHARS: usize = 500;
+    let chars: Vec<char> = message.chars().collect();
     let mut out = String::new();
-    let mut quote: Option<char> = None;
-    for c in message.chars() {
-        match quote {
-            Some(q) if c == q => {
-                out.push('…');
-                out.push(c);
-                quote = None;
-            }
-            Some(_) => {}
-            None => {
-                out.push(c);
-                if c == '"' || c == '\'' {
-                    quote = Some(c);
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        out.push(c);
+        if c == '"' || c == '\'' {
+            match chars[i + 1..].iter().rposition(|&x| x == c) {
+                Some(offset) => {
+                    out.push('…');
+                    out.push(c);
+                    i += offset + 2;
+                }
+                None => {
+                    out.push('…');
+                    break;
                 }
             }
+            continue;
         }
-    }
-    if quote.is_some() {
-        out.push('…');
+        i += 1;
     }
     if out.chars().count() > MAX_CHARS {
         out = out.chars().take(MAX_CHARS).collect();
@@ -1175,13 +1181,20 @@ mod tests {
             r#"invalid input syntax for type integer: "…""#
         );
         assert_eq!(
-            redact_error_for_audit("value 'secret' and 'more"),
-            "value '…' and '…"
+            redact_error_for_audit("value 'secret' and 'more'"),
+            "value '…'"
         );
+        // 閉じていない引用符は、最後まで伏せる
+        assert_eq!(redact_error_for_audit("value 'secret"), "value '…");
         assert_eq!(
             redact_error_for_audit("statement timeout"),
             "statement timeout"
         );
+        // 値の中の引用符で、伏せるのを終えない（PostgreSQLはそのまま書く）
+        let message =
+            redact_error_for_audit(r#"invalid input syntax for type integer: "ab"cd-secret""#);
+        assert!(!message.contains("cd-secret"), "{message}");
+        assert_eq!(message, r#"invalid input syntax for type integer: "…""#);
         let long = redact_error_for_audit(&"x".repeat(2000));
         assert_eq!(long.chars().count(), 501);
     }

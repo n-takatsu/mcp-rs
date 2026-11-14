@@ -418,11 +418,20 @@ pub fn legacy_plugins_conflict_hint(content: &str) -> Option<&'static str> {
 /// 引用符（`"`・`'`）の中を`…`に伏せる（#543）。設定の読み込みのエラーは、
 /// `invalid type: string "…", expected u16`のように、書いた値を含むことが
 /// ある。値がパスワードのこともあり、標準エラーはClaude Desktopのログに残る
+///
+/// 引用符の中の`\`は、次の1文字とあわせて飛ばす（PR #552のレビュー）。
+/// serde・configのエラーは値を`{:?}`で表示し、値の中の`"`を`\"`と書く
+/// ので、そこで伏せるのを終えると、値の残りが出てしまう。英単語の中の
+/// `'`（`can't`等）は、引用符とみなさない
 pub fn redact_quoted(message: &str) -> String {
     let mut out = String::new();
     let mut quote: Option<char> = None;
+    let mut escaped = false;
+    let mut previous: Option<char> = None;
     for c in message.chars() {
         match quote {
+            Some(_) if escaped => escaped = false,
+            Some(_) if c == '\\' => escaped = true,
             Some(q) if c == q => {
                 out.push('…');
                 out.push(c);
@@ -431,11 +440,13 @@ pub fn redact_quoted(message: &str) -> String {
             Some(_) => {}
             None => {
                 out.push(c);
-                if c == '"' || c == '\'' || c == '`' {
+                let in_word = c == '\'' && previous.is_some_and(char::is_alphanumeric);
+                if (c == '"' || c == '\'' || c == '`') && !in_word {
                     quote = Some(c);
                 }
             }
         }
+        previous = Some(c);
     }
     if quote.is_some() {
         out.push('…');
@@ -2999,6 +3010,22 @@ mod additional_tests {
             redact_quoted(r#"invalid type: string "x", expected u16"#),
             r#"invalid type: string "…", expected u16"#
         );
+        // 値の中の`"`は`\"`と表示される。その後ろも伏せる（PR #552のレビュー）
+        assert_eq!(
+            redact_quoted(r#"invalid type: string "ab\"cd-secret", expected u16"#),
+            r#"invalid type: string "…", expected u16"#
+        );
+        // 英単語の中の`'`で、後ろを全部伏せない
+        assert_eq!(
+            redact_quoted("can't parse 'x' here"),
+            "can't parse '…' here"
+        );
+
+        // 実際のエラーでも、`"`を含むパスワードを出さない
+        let content = "[transport.http]\nport = 'ab\"cd-secret'\n";
+        let error = toml::from_str::<McpConfig>(content).unwrap_err();
+        let message = describe_toml_error(&error, content);
+        assert!(!message.contains("cd-secret"), "{message}");
     }
 
     /// `--config`の`~/`は、ホームフォルダに展開する（PR #551のレビュー）

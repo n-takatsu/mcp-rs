@@ -128,6 +128,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `password = "…"x`のような誤りで、パスワードの行が標準エラー（Claude
     Desktopではそのログ）に出た。値の型の誤り（`port = "…"`等）のエラーも、
     値を伏せる
+  - データベースのツールの監査ログで、エラーの文の値を伏せるとき、値の中の
+    引用符で伏せるのを終えないようにした。PostgreSQLは値の中の`"`をそのまま
+    書くので（`"ab"cd"`）、以前は値の後半が監査ログに残った（#539で入れた
+    処理）
   - `ApiKeyEntry`・`ApiKeyEntryConfig`・`ConnectionConfig`の`Debug`で、
     APIキー・パスワードを伏せた（どこもログに出してはいなかった）
 - HTTPモードの受け口に、大きさ・時間・接続数の上限を付け、許していない
