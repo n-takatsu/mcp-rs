@@ -185,7 +185,6 @@ impl Caller {
         }
     }
 
-    /// 呼び出し元のIPアドレスを付ける
     /// HTTPモードで、認証していない呼び出し元か（#543）。HTTPでは接続元の
     /// IPアドレスを付けるが、STDIO（ローカル）では付けない。ネットワーク越しの
     /// 誰にでも、サーバーの内部情報（ファイルのパス等）を見せないために使う
@@ -193,6 +192,7 @@ impl Caller {
         self.name.is_none() && self.ip_address.is_some()
     }
 
+    /// 呼び出し元のIPアドレスを付ける
     pub fn with_ip_address(mut self, ip_address: Option<String>) -> Self {
         self.ip_address = ip_address;
         self
