@@ -60,7 +60,13 @@ enabled = true
 | Claude Code, a terminal | All of the parent's, including user environment variables (on Windows, after the client is restarted) |
 | Claude Desktop | Only a fixed set such as `PATH`, plus what `env` in `claude_desktop_config.json` lists. User environment variables are not passed |
 
-The `env` of the client (or `claude mcp add -e`) only passes values. Which variables mcp-rs reads is decided by the `${...}` in the config file. With `--config`, mcp-rs reads `WORDPRESS_URL`, `WORDPRESS_USERNAME`, and `WORDPRESS_PASSWORD` only through `${...}`; without `--config` (config file found in the default places), it also reads them directly when `WORDPRESS_URL` is set, and they override the file (except with `keyring`).
+The `env` of the client (or `claude mcp add -e`) only passes values. Which variables mcp-rs reads is decided by the `${...}` in the config file. With `--config`, mcp-rs reads `WORDPRESS_URL`, `WORDPRESS_USERNAME`, and `WORDPRESS_PASSWORD` only through `${...}`; without `--config` (`~/.config/mcp-rs/config.toml`), it also reads them directly when `WORDPRESS_URL` is set, and they override the file (except with `keyring`).
+
+### Which config file mcp-rs reads
+
+With `--config <path>`, mcp-rs reads that file. Without it, mcp-rs reads only `~/.config/mcp-rs/config.toml` (v0.24.0 and later). Config files in the current folder (`mcp-config.toml`, `config.toml`, `config/mcp.toml`) are not read without `--config`; when mcp-rs finds no config file but one of these exists, it stops and tells you to pass it with `--config`.
+
+Up to v0.23.0, mcp-rs also read these names from the current folder. Clients such as Claude Code start MCP servers in the folder you open, so with mcp-rs registered without `--config`, opening a repository that contains a `config.toml` made mcp-rs read it. Such a file could run any command as a plugin (`[[plugins]]`), or send your WordPress credentials to another site (`url` with `keyring`, or `password = "${ANY_VARIABLE}"`). Always register mcp-rs with `--config`.
 
 To use mcp-rs from both Claude Desktop and Claude Code with environment variables, the same values must be written twice. Keep the credentials in the [OS credential store](#os-credential-store) instead.
 
@@ -74,7 +80,7 @@ mcp-rs can read the WordPress username and Application Password from the OS cred
 
 No environment variables are involved, so Claude Desktop, Claude Code, and a terminal read the same credentials, and changing the password is one step.
 
-1. Register the credentials under a name of your choice, such as the site's host name. It asks for the username and the Application Password (not shown while typing):
+1. Register the credentials under a name of your choice, such as the site's host name. It asks for the site URL, the username, and the Application Password (not shown while typing):
 
    ```bash
    mcp-rs wordpress-keyring set example.com
@@ -89,11 +95,12 @@ No environment variables are involved, so Claude Desktop, Claude Code, and a ter
    keyring = "example.com"
    ```
 
-Run `set` again to change the password, `mcp-rs wordpress-keyring show example.com` to see the stored username (never the password), and `mcp-rs wordpress-keyring delete example.com` to remove it. Restart the client afterwards.
+Run `set` again to change the password, `mcp-rs wordpress-keyring show example.com` to see the stored site and username (never the password), and `mcp-rs wordpress-keyring delete example.com` to remove it. Restart the client afterwards.
 
 - Startup fails if the entry does not exist, or if `keyring` is combined with `username`, `password`, or `encrypted_credentials`. The error names the entry, never the values
-- With `keyring`, the `WORDPRESS_URL`, `WORDPRESS_USERNAME`, and `WORDPRESS_PASSWORD` environment variables are not used, even without `--config`. The entry is not tied to a URL, so a leftover `WORDPRESS_URL` could otherwise send the password to another site
-- Secrets are never accepted as command-line arguments. Without a terminal, `set` reads the username and the Application Password as two lines from standard input
+- The entry is tied to the site URL entered with `set`. mcp-rs uses it only when `url` in the config file has the same scheme, host, and port (the path does not matter), and otherwise does not start. So a config file someone else wrote cannot name your entry with `url = "https://attacker.example"` and receive the password. Credentials stored for `https://` are not sent over `http://` either
+- With `keyring`, the `WORDPRESS_URL`, `WORDPRESS_USERNAME`, and `WORDPRESS_PASSWORD` environment variables are not used, even without `--config`
+- Secrets are never accepted as command-line arguments. Without a terminal, `set` reads the site URL, the username, and the Application Password as three lines from standard input
 - The credential store is read only when `enabled = true`
 - Docker, CI, and servers without a desktop session have no Secret Service. Keep using `${VAR}` or `encrypted_credentials` there; both work as before. The Docker image is built without this feature (`os-keyring`, on by default when building from source)
 - What it protects against: the password is not left in plaintext in the config file, in `claude_desktop_config.json`, or in environment variables. It does not protect against other programs running as the same OS user, which can read the credential store too

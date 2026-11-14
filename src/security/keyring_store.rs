@@ -19,9 +19,15 @@
 //! keyring = "example.com"
 //! ```
 //!
-//! The entry holds both the username and the Application Password, as one
-//! JSON secret, so a single `mcp-rs wordpress-keyring set <name>` is all
-//! that is needed. Secret values never appear in error messages.
+//! The entry holds the site URL, the username and the Application Password,
+//! as one JSON secret, so a single `mcp-rs wordpress-keyring set <name>` is
+//! all that is needed. Secret values never appear in error messages.
+//!
+//! The site URL ties the entry to one site (#541): mcp-rs uses the entry
+//! only when the `url` of the config file has the same origin (scheme, host
+//! and port). Otherwise a config file someone else wrote (for example in a
+//! repository opened in Claude Code) could name the entry with
+//! `url = "https://attacker.example"` and receive the password.
 
 use std::fmt;
 
@@ -43,6 +49,16 @@ pub enum KeyringError {
     Unavailable(String),
     /// The entry exists but does not hold mcp-rs WordPress credentials.
     Invalid(String),
+    /// The site URL is not an http(s) URL.
+    InvalidSiteUrl(String),
+    /// The entry was stored without a site URL (before #541).
+    MissingSiteUrl(String),
+    /// The entry belongs to another site than the `url` of the config file.
+    SiteMismatch {
+        name: String,
+        stored: String,
+        configured: String,
+    },
 }
 
 impl fmt::Display for KeyringError {
@@ -60,6 +76,22 @@ impl fmt::Display for KeyringError {
             Self::Invalid(name) => write!(
                 f,
                 "the keyring entry '{name}' does not hold mcp-rs WordPress credentials. Register it again with `mcp-rs wordpress-keyring set {name}`"
+            ),
+            Self::InvalidSiteUrl(url) => write!(
+                f,
+                "'{url}' is not a site URL: use the address of the WordPress site, starting with https:// (or http://)"
+            ),
+            Self::MissingSiteUrl(name) => write!(
+                f,
+                "the credentials named '{name}' were stored without the site URL. Register them again with `mcp-rs wordpress-keyring set {name}`, which also asks for the site URL"
+            ),
+            Self::SiteMismatch {
+                name,
+                stored,
+                configured,
+            } => write!(
+                f,
+                "the credentials named '{name}' are for {stored}, but url in the config file is {configured}. They are not sent to another site. Fix url, or register credentials for {configured} with `mcp-rs wordpress-keyring set <name>`"
             ),
         }
     }
@@ -158,6 +190,10 @@ fn not_built() -> KeyringError {
 
 /// WordPress credentials as kept in one keyring entry.
 pub struct WordPressKeyringCredentials {
+    /// The site the credentials are for, as an origin
+    /// (`https://example.com`, see [`site_origin`]), #541. Empty for an
+    /// entry stored before #541.
+    pub site_url: String,
     pub username: String,
     pub application_password: Zeroizing<String>,
 }
@@ -165,6 +201,7 @@ pub struct WordPressKeyringCredentials {
 impl fmt::Debug for WordPressKeyringCredentials {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("WordPressKeyringCredentials")
+            .field("site_url", &self.site_url)
             .field("username", &self.username)
             .field("application_password", &"[REDACTED]")
             .finish()
@@ -176,6 +213,9 @@ impl fmt::Debug for WordPressKeyringCredentials {
 #[derive(Serialize, Deserialize)]
 struct StoredCredentials {
     kind: String,
+    /// The site's origin (#541). Missing in entries stored before #541
+    #[serde(default)]
+    url: String,
     username: String,
     password: String,
 }
@@ -189,6 +229,39 @@ fn check_name(name: &str) -> Result<&str, KeyringError> {
     } else {
         Ok(name)
     }
+}
+
+/// The origin of a site URL (`scheme://host[:port]`, lowercase, without the
+/// default port), #541. `None` unless it is an http(s) URL with a host.
+pub fn site_origin(url: &str) -> Option<String> {
+    let parsed = url::Url::parse(url.trim()).ok()?;
+    if !matches!(parsed.scheme(), "http" | "https") || parsed.host().is_none() {
+        return None;
+    }
+    Some(parsed.origin().ascii_serialization())
+}
+
+/// Check that `credentials` (named `name`) are for the site at
+/// `configured_url`, the `url` of the config file (#541). The scheme counts:
+/// credentials stored for https are not sent over http.
+pub fn check_site(
+    name: &str,
+    credentials: &WordPressKeyringCredentials,
+    configured_url: &str,
+) -> Result<(), KeyringError> {
+    let configured = site_origin(configured_url)
+        .ok_or_else(|| KeyringError::InvalidSiteUrl(configured_url.to_string()))?;
+    if credentials.site_url.is_empty() {
+        return Err(KeyringError::MissingSiteUrl(name.to_string()));
+    }
+    if credentials.site_url != configured {
+        return Err(KeyringError::SiteMismatch {
+            name: name.to_string(),
+            stored: credentials.site_url.clone(),
+            configured,
+        });
+    }
+    Ok(())
 }
 
 /// Read the WordPress credentials named `name`.
@@ -207,6 +280,7 @@ pub fn load_wordpress_credentials(
         return Err(KeyringError::Invalid(name.to_string()));
     }
     Ok(WordPressKeyringCredentials {
+        site_url: stored.url.clone(),
         username: stored.username.clone(),
         application_password: Zeroizing::new(stored.password.clone()),
     })
@@ -223,9 +297,12 @@ pub fn store_wordpress_credentials(
     if credentials.username.is_empty() || credentials.application_password.is_empty() {
         return Err(KeyringError::Invalid(name.to_string()));
     }
+    let site_url = site_origin(&credentials.site_url)
+        .ok_or_else(|| KeyringError::InvalidSiteUrl(credentials.site_url.clone()))?;
     let secret = Zeroizing::new(
         serde_json::to_string(&StoredCredentials {
             kind: STORED_KIND.to_string(),
+            url: site_url.clone(),
             username: credentials.username.clone(),
             password: credentials.application_password.to_string(),
         })
@@ -234,7 +311,8 @@ pub fn store_wordpress_credentials(
     store.set(name, &secret)?;
 
     let read_back = load_wordpress_credentials(store, name)?;
-    if read_back.username != credentials.username
+    if read_back.site_url != site_url
+        || read_back.username != credentials.username
         || *read_back.application_password != *credentials.application_password
     {
         return Err(KeyringError::Unavailable(
@@ -254,6 +332,7 @@ pub fn delete_wordpress_credentials(
 
 impl zeroize::Zeroize for StoredCredentials {
     fn zeroize(&mut self) {
+        self.url.zeroize();
         self.username.zeroize();
         self.password.zeroize();
     }
@@ -296,6 +375,7 @@ mod tests {
 
     fn credentials(username: &str, password: &str) -> WordPressKeyringCredentials {
         WordPressKeyringCredentials {
+            site_url: "https://example.com".to_string(),
             username: username.to_string(),
             application_password: Zeroizing::new(password.to_string()),
         }
@@ -312,6 +392,7 @@ mod tests {
         .unwrap();
 
         let loaded = load_wordpress_credentials(&store, " example.com ").unwrap();
+        assert_eq!(loaded.site_url, "https://example.com");
         assert_eq!(loaded.username, "editor\"quote");
         assert_eq!(loaded.application_password.as_str(), "abcd EFGH 1234");
         assert!(!format!("{loaded:?}").contains("abcd"));
@@ -356,6 +437,61 @@ mod tests {
             load_wordpress_credentials(&store, "other").unwrap_err(),
             KeyringError::Invalid("other".to_string())
         );
+    }
+
+    /// サイトのURLは、オリジン（スキーム・ホスト・ポート）で比べる（#541）
+    #[test]
+    fn test_site_origin_and_check_site() {
+        assert_eq!(
+            site_origin(" HTTPS://Example.COM:443/blog/ ").as_deref(),
+            Some("https://example.com")
+        );
+        assert_eq!(
+            site_origin("http://localhost:8080/wp").as_deref(),
+            Some("http://localhost:8080")
+        );
+        for invalid in ["example.com", "ftp://example.com", "", "https://"] {
+            assert_eq!(site_origin(invalid), None, "{invalid}");
+        }
+        // 保存するときに、オリジンにそろえる
+        let store = MemoryStore::default();
+        let mut stored = credentials("editor", "pw");
+        stored.site_url = "https://Example.com/wp-admin/".to_string();
+        store_wordpress_credentials(&store, "a", &stored).unwrap();
+        let loaded = load_wordpress_credentials(&store, "a").unwrap();
+        assert_eq!(loaded.site_url, "https://example.com");
+        stored.site_url = "example.com".to_string();
+        assert_eq!(
+            store_wordpress_credentials(&store, "a", &stored).unwrap_err(),
+            KeyringError::InvalidSiteUrl("example.com".to_string())
+        );
+
+        // 同じサイト（パスは見ない）なら使える
+        check_site("a", &loaded, "https://example.com/blog").unwrap();
+        // 別のホスト・スキーム・ポートには使わない
+        for other in [
+            "https://attacker.example",
+            "http://example.com",
+            "https://example.com:8443",
+            "https://example.com.attacker.example",
+        ] {
+            let err = check_site("a", &loaded, other).unwrap_err();
+            assert!(matches!(err, KeyringError::SiteMismatch { .. }), "{other}");
+            let message = err.to_string();
+            assert!(message.contains("https://example.com"), "{message}");
+            assert!(!message.contains("pw"), "{message}");
+        }
+        // URLを持たない古い項目は、作り直しを案内する
+        store
+            .set(
+                "old",
+                r#"{"kind":"wordpress","username":"u","password":"p"}"#,
+            )
+            .unwrap();
+        let old = load_wordpress_credentials(&store, "old").unwrap();
+        let err = check_site("old", &old, "https://example.com").unwrap_err();
+        assert_eq!(err, KeyringError::MissingSiteUrl("old".to_string()));
+        assert!(err.to_string().contains("mcp-rs wordpress-keyring set old"));
     }
 
     #[test]

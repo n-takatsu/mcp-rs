@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   （Windowsの資格情報マネージャー、macOSのキーチェーン、LinuxのSecret
   Service）から読めるようにした（#533）。`[handlers.wordpress]`に
   `keyring = "<名前>"`と書き、`mcp-rs wordpress-keyring set <名前>`で登録する
+  （サイトのURLも一緒に保存し、設定の`url`と同じサイトのときだけ使う、#541）
   （`show`・`delete`もある。値は引数で受け取らず、エコー無しで読む）。
   Claude Desktopは、OSの環境変数をMCPサーバーに渡さず、設定のJSONの`env`
   だけを渡すため、Claude DesktopとClaude Code・ターミナルの両方で使うと、
@@ -33,6 +34,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **互換性のない変更**: `--config`を付けずに起動したとき、今のフォルダの
+  設定ファイル（`mcp-config.toml`・`config.toml`・`config/mcp.toml`）を
+  読まないようにした（#541）。`~/.config/mcp-rs/config.toml`だけを読む。
+  Claude Code等は、開いたフォルダでMCPサーバーを起動するので、
+  `--config`無しで登録していると、開いたリポジトリの`config.toml`を読み、
+  任意のコマンドを実行させたり（`[[plugins]]`）、資格情報を別のサイトへ
+  送らせたりできた。今のフォルダの設定ファイルを使っていた場合は、
+  `--config <パス>`を付ける。設定が見つからず、今のフォルダにこれらの
+  ファイルがあるときは、読まずに、`--config`の付け方を案内して止まる
 - **互換性のない変更**: HTTPモードで、ループバック以外（`0.0.0.0`等）で
   待ち受けるのに、認証（APIキー・OAuth・mTLS）が無い設定は、起動しない
   ようにした（#540）。以前は警告を出すだけで起動し、ネットワークの誰でも
