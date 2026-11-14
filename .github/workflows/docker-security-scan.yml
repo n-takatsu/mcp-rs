@@ -38,14 +38,14 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Build Docker image
         run: |
           docker build -t mcp-rs:${{ github.sha }} .
 
       - name: Run Trivy vulnerability scanner
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: 'mcp-rs:${{ github.sha }}'
           format: 'sarif'
@@ -53,13 +53,13 @@ jobs:
           severity: 'CRITICAL,HIGH'
 
       - name: Upload Trivy results to GitHub Security tab
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
         if: always()
         with:
           sarif_file: 'trivy-results.sarif'
 
       - name: Run Trivy for JSON report
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: 'mcp-rs:${{ github.sha }}'
           format: 'json'
@@ -87,7 +87,7 @@ jobs:
           echo "✅ Image passed security scan"
 
       - name: Upload Trivy scan results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: trivy-scan-results
@@ -103,11 +103,14 @@ jobs:
 
     steps:
       - name: Send notification
+        # ブランチ名等は、run:の中に${{ }}で書かず、環境変数で渡す（#542）。
+        # JSONもjqで作り、名前に"等があっても壊れないようにする
         env:
           SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+          REPOSITORY: ${{ github.repository }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
           if [ -n "$SLACK_WEBHOOK" ]; then
-            curl -X POST -H 'Content-type: application/json' \
-              --data "{\"text\":\"🚨 Security scan failed for ${{ github.repository }} on branch ${{ github.ref_name }}\"}" \
-              $SLACK_WEBHOOK
+            jq -n --arg text "🚨 Security scan failed for $REPOSITORY on branch $REF_NAME" '{text: $text}' |
+              curl -X POST -H 'Content-type: application/json' --data @- "$SLACK_WEBHOOK"
           fi

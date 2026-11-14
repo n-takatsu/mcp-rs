@@ -86,6 +86,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- GitHub Actionsのワークフローで使う外部のアクションを、すべてコミットの
+  SHAで固定した（#542）。版はコメントに書き、Dependabot
+  （`.github/dependabot.yml`）で更新する。以前は、リリースのイメージを
+  ghcr.ioへpushするジョブ（`packages: write`）で`anchore/sbom-action@v0`
+  を、スキャンで`aquasecurity/trivy-action@master`を使っていて、上流の
+  タグ・ブランチが乗っ取られると、イメージやリリースを上書きできた。
+  `trivy-action`は、2026年3月に付け直されたタグと勧告
+  （GHSA-9p44-j4g5-cfx5）の対象を避け、v0.36.0にした。あわせて次を直した
+  - `deploy.yml`: SBOMの生成を別のジョブに移した。リリースへの添付に要る
+    `contents: write`だけを持ち、イメージをpushする権限は持たない。
+    イメージを作るジョブは`contents: read`にした
+  - `docker-security.yml`: 使っていない`packages: write`を外した
+    （イメージはpushしない）
+  - `cargo install cargo-audit`に`--locked`を付けた
+  - `docker-security-scan.yml`: 通知の`run:`の中に書いていたブランチ名
+    （`${{ github.ref_name }}`）を環境変数で渡し、JSONは`jq`で作る
+
 - データベースの`execute_query`の結果に、バイト数の上限を付けた（#539）。
   以前は行数の上限（`max_rows`）だけで、`SELECT repeat('x', 200000000)
   FROM generate_series(1, 1000)`のような、読み取り専用の正しいSELECT

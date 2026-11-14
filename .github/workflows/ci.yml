@@ -46,10 +46,10 @@ jobs:
           # - beta
           # - nightly
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
     - name: Install Rust
-      uses: dtolnay/rust-toolchain@master
+      uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master (2026-10-16)
       with:
         toolchain: ${{ matrix.rust }}
         components: rustfmt, clippy
@@ -67,7 +67,7 @@ jobs:
     # 入らない。ビルドする内容を大きく変えたときは、prefix-keyの番号を
     # 上げて、新しいキャッシュを保存させる
     - name: Cache Rust build
-      uses: Swatinem/rust-cache@v2
+      uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       with:
         prefix-key: v1-rust
         save-if: ${{ github.ref == 'refs/heads/develop' }}
@@ -219,7 +219,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
     - name: Read rust-version from Cargo.toml
       id: msrv
@@ -248,7 +248,7 @@ jobs:
         echo "Dockerfile uses rust:$docker_version"
 
     - name: Install Rust (MSRV)
-      uses: dtolnay/rust-toolchain@master
+      uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master (2026-10-16)
       with:
         toolchain: ${{ steps.msrv.outputs.version }}
 
@@ -271,11 +271,13 @@ jobs:
     name: Security audit
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
     - name: Install Rust
-      uses: dtolnay/rust-toolchain@stable
+      uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master (2026-10-16)
+      with:
+        toolchain: stable
     - name: Install cargo-audit
-      run: cargo install cargo-audit
+      run: cargo install cargo-audit --locked
     - name: Run cargo audit
       run: cargo audit --ignore RUSTSEC-2023-0071
       # RUSTSEC-2023-0071: RSA脆弱性を無視

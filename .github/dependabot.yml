@@ -1,0 +1,17 @@
+# GitHub Actionsのアクションの版を、Dependabotで更新する（#542）。
+# ワークフローでは、アクションをコミットのSHAで固定し、版をコメントに
+# 書いている。Dependabotは、SHAとコメントの版を一緒に更新するPRを作る。
+# Rustのクレート（Cargo.lock）は、ここでは更新しない（セキュリティの勧告が
+# 出たときに、必要なものだけを上げる）
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: ci
