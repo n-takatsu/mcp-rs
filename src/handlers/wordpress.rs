@@ -2689,7 +2689,15 @@ impl WordPressHandler {
                     env!("CARGO_PKG_VERSION"),
                     crate::mcp::STATUS_TOOL_NAME
                 ));
-                report.push_str(&format!("📄 Log file: {}\n\n", health.log_destination));
+                // ログのファイルのパスは、HTTPで認証していない呼び出し元には
+                // 出さない（#543、`mcp_rs_status`と同じ）
+                if crate::mcp::current_caller().is_some_and(|c| c.is_unauthenticated_remote()) {
+                    report.push_str(
+                        "📄 Log file: shown only to authenticated callers in HTTP mode\n\n",
+                    );
+                } else {
+                    report.push_str(&format!("📄 Log file: {}\n\n", health.log_destination));
+                }
 
                 if let Some(site_info) = &health.site_info {
                     report.push_str(&format!(
@@ -4999,6 +5007,46 @@ mod tests {
         ] {
             assert!(!is_mutating_tool(name), "{} should not be mutating", name);
         }
+    }
+
+    /// HTTPで認証していない呼び出し元には、ログのファイルのパスを出さない
+    /// （#543）。ローカル（STDIO）と、認証した呼び出し元には出す
+    #[tokio::test]
+    async fn test_health_check_hides_log_path_from_unauthenticated_http_callers() {
+        let handler = rate_limited_handler(RateLimitConfig::default());
+        let call = |caller: crate::mcp::Caller| {
+            let handler = &handler;
+            async move {
+                let result = crate::mcp::with_caller(
+                    caller,
+                    handler.call_tool(ToolCallParams {
+                        name: "wordpress_health_check".to_string(),
+                        arguments: None,
+                    }),
+                )
+                .await
+                .unwrap();
+                result["content"][0]["text"].as_str().unwrap().to_string()
+            }
+        };
+        let hidden = "Log file: shown only to authenticated callers";
+
+        let remote = call(
+            crate::mcp::Caller::unrestricted().with_ip_address(Some("203.0.113.1".to_string())),
+        )
+        .await;
+        assert!(remote.contains(hidden), "{remote}");
+
+        let local = call(crate::mcp::Caller::unrestricted()).await;
+        assert!(local.contains("Log file: "), "{local}");
+        assert!(!local.contains(hidden), "{local}");
+
+        let authenticated = call(
+            crate::mcp::Caller::new("api_key:a", crate::mcp::ToolAccess::All)
+                .with_ip_address(Some("203.0.113.1".to_string())),
+        )
+        .await;
+        assert!(!authenticated.contains(hidden), "{authenticated}");
     }
 
     /// リソースは、読み取り専用の実在するツールと同じ扱いになる（#538）

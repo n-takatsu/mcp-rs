@@ -114,6 +114,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- 低い指摘のまとめ（#543）の3つ目: WordPress
+  - `wordpress_health_check`は、HTTPモードで認証していない呼び出し元には、
+    ログのファイルのパスを出さないようにした（`mcp_rs_status`と同じ）
+  - AIに使わせるWordPressのアカウントは、寄稿者（Contributor）か投稿者
+    （Author）を勧めるよう、文書を直した。以前のトラブルシューティングは
+    編集者（Editor）か管理者（Administrator）を勧めていた。どちらも
+    `unfiltered_html`を持つので、プロンプトインジェクションで`<script>`
+    入りの記事をすぐに公開できる
+  - `upload_media`の`file_path`で上げたメディアは、記事に使う前から
+    公開のURLで見られることを、文書に書いた
 - 低い指摘のまとめ（#543）の2つ目: 暗号化した資格情報の鍵の導出
   - `encrypted_credentials`の鍵の導出（PBKDF2-HMAC-SHA256）の回数を、
     10万回から60万回（OWASPの推奨値）にした。`encrypt-wordpress-credentials`
