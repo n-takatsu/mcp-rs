@@ -567,6 +567,29 @@ pub struct HttpTransportConfig {
     /// accepted. Defaults to empty (loopback origins only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allowed_origins: Option<Vec<String>>,
+    /// Maximum size in bytes of a request body and of a WebSocket message
+    /// (#540). Defaults to 1048576 (1 MB).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_request_size: Option<usize>,
+    /// Time limit in seconds for receiving a request: the TLS handshake, the
+    /// headers, and the body, each (#540). It does not limit how long a tool
+    /// call takes. Defaults to 30.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_timeout_seconds: Option<u64>,
+    /// Maximum number of connections served at the same time, WebSocket
+    /// connections included (#540). Defaults to 1024.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_connections: Option<usize>,
+    /// Close a `/ws` connection when no message arrives for this many
+    /// seconds (#540). `0` disables the limit. Defaults to 300.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub websocket_idle_timeout_seconds: Option<u64>,
+    /// Start even when listening on a non-loopback address without any
+    /// authentication (API keys, OAuth, or mTLS), #540. Only for
+    /// deployments where something in front of mcp-rs authenticates
+    /// clients. Defaults to `false` (such a configuration does not start).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_unauthenticated_external: Option<bool>,
 }
 
 /// TOML-facing shape for a single API key entry under
@@ -1377,6 +1400,11 @@ impl McpConfig {
                     api_keys: Some(vec![]),
                     oauth: None,
                     allowed_origins: None,
+                    max_request_size: None,
+                    request_timeout_seconds: None,
+                    max_connections: None,
+                    websocket_idle_timeout_seconds: None,
+                    allow_unauthenticated_external: None,
                 }),
             },
             handlers: HandlersConfig {
@@ -1561,8 +1589,12 @@ impl McpConfig {
                     .parse()
                     .unwrap_or("127.0.0.1:8081".parse().unwrap()),
                 cors_enabled: http.enable_cors.unwrap_or(true),
-                max_request_size: 1048576,
-                timeout_ms: 30000,
+                max_request_size: http.max_request_size.filter(|n| *n > 0).unwrap_or(1048576),
+                timeout_ms: http
+                    .request_timeout_seconds
+                    .filter(|n| *n > 0)
+                    .unwrap_or(30)
+                    .saturating_mul(1000),
                 network_policy: crate::security::NetworkPolicy {
                     reject_external_connections: http
                         .network_policy_reject_external_connections
@@ -1607,6 +1639,11 @@ impl McpConfig {
                     .collect(),
                 oauth: http.oauth.clone(),
                 allowed_origins: http.allowed_origins.clone().unwrap_or_default(),
+                max_connections: http.max_connections.filter(|n| *n > 0).unwrap_or(1024),
+                websocket_idle_timeout_secs: http.websocket_idle_timeout_seconds.unwrap_or(300),
+                allow_unauthenticated_external: http
+                    .allow_unauthenticated_external
+                    .unwrap_or(false),
             }
         } else {
             crate::transport::http::HttpConfig::default()
