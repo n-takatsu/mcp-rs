@@ -119,7 +119,11 @@ username = "your_username"
 encrypted_password = "..."
 nonce = "..."
 salt = "..."
+kdf = "pbkdf2-sha256"
+kdf_iterations = 600000
 ```
+
+The key is derived from the master password with PBKDF2-HMAC-SHA256. `kdf` and `kdf_iterations` record how, so that mcp-rs can make the derivation stronger later without breaking existing sections. From v0.24.0, new sections use 600,000 iterations (the OWASP recommendation). Sections made with v0.23.0 and earlier have neither line, and are read with 100,000 iterations, as they were made. To move such a section to 600,000 iterations, run `encrypt-wordpress-credentials` again and replace it. Do not edit the two lines by hand: with other values, the password cannot be decrypted.
 
 Generate the `encrypted_credentials` section with the `encrypt-wordpress-credentials` subcommand (v0.18.1 and later):
 
