@@ -919,19 +919,39 @@ fn former_cwd_config_files(dir: &std::path::Path) -> Vec<String> {
 }
 
 /// 設定ファイルが見つからないときのエラーの文（#541）。`former`は、今の
-/// フォルダにあったが読まなかったファイル
+/// フォルダにあったが読まなかったファイル。案内するパスは絶対パスにする
+/// （相対パスの`--config`は、起動したフォルダから読むので、同じ問題が残る。
+/// PR #551のレビュー）
 fn no_config_file_message(home: Option<&str>, former: &[String]) -> String {
     let user_config =
         expand_home_dir(USER_CONFIG_PATH, home).unwrap_or_else(|| USER_CONFIG_PATH.to_string());
     let mut message =
-        format!("no config file: pass one with --config <path>, or create {user_config}");
+        format!("no config file: pass one with --config <absolute path>, or create {user_config}");
     if let Some(first) = former.first() {
+        let absolute = std::path::absolute(first)
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|_| first.clone());
         message.push_str(&format!(
-            ". {} in the current folder is not read without --config (v0.24.0 and later), so that a config file in a folder you open cannot run commands or send your credentials. If it is yours, start mcp-rs with --config {first}",
+            ". {} in the current folder is not read without --config (v0.24.0 and later), so that a config file in a folder you open cannot run commands or send your credentials. If it is yours, start mcp-rs with --config {absolute} (an absolute path: a relative one is read from whatever folder mcp-rs starts in)",
             former.join(", ")
         ));
     }
     message
+}
+
+/// `--config`が相対パスなら、警告の文を返す（PR #551のレビュー）。相対
+/// パスは、mcp-rsを起動したフォルダから読む。Claude Code等は開いたフォルダで
+/// 起動するので、そのフォルダの同じ名前のファイルを読んでしまう
+pub fn relative_config_path_warning(path: &str) -> Option<String> {
+    if std::path::Path::new(path).is_absolute() || path.starts_with('~') {
+        return None;
+    }
+    let absolute = std::path::absolute(path)
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| path.to_string());
+    Some(format!(
+        "--config {path} is a relative path, so mcp-rs reads it from the folder it starts in (now {absolute}). Clients such as Claude Code start mcp-rs in the folder you open, where a file with the same name could run commands or send your credentials. Register mcp-rs with an absolute path"
+    ))
 }
 
 fn expand_home_dir(path: &str, home: Option<&str>) -> Option<String> {
@@ -2843,7 +2863,7 @@ mod additional_tests {
         let dir = tempfile::tempdir().unwrap();
         assert!(former_cwd_config_files(dir.path()).is_empty());
         let message = no_config_file_message(Some("/home/u"), &[]);
-        assert!(message.contains("--config <path>"), "{message}");
+        assert!(message.contains("--config <absolute path>"), "{message}");
         assert!(message.contains("config.toml"), "{message}");
         assert!(!message.contains("current folder"), "{message}");
 
@@ -2857,7 +2877,26 @@ mod additional_tests {
             message.contains("is not read without --config"),
             "{message}"
         );
-        assert!(message.contains("--config config.toml"), "{message}");
+        // 案内は絶対パス（相対パスは、起動したフォルダから読むため）
+        let absolute = std::path::absolute("config.toml").unwrap();
+        assert!(
+            message.contains(&format!("--config {}", absolute.display())),
+            "{message}"
+        );
+        assert!(!message.contains("--config config.toml"), "{message}");
+    }
+
+    /// 相対パスの`--config`は警告する（PR #551のレビュー）
+    #[test]
+    fn test_relative_config_path_warning() {
+        let warning = relative_config_path_warning("config.toml").unwrap();
+        assert!(warning.contains("relative path"), "{warning}");
+        assert!(warning.contains("absolute path"), "{warning}");
+        let absolute = std::path::absolute("x.toml").unwrap();
+        assert_eq!(
+            relative_config_path_warning(&absolute.display().to_string()),
+            None
+        );
     }
 
     /// 設定の`url`が、資格情報を保存したサイトと違えば使わない（#541）

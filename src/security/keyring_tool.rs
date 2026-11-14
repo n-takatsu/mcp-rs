@@ -184,8 +184,13 @@ fn check_input(
     username: String,
     application_password: Zeroizing<String>,
 ) -> Result<WordPressKeyringCredentials, Box<dyn std::error::Error>> {
+    // 入力は文に入れない。2行の形のまま渡すと、1行目はユーザー名で、
+    // 取り違えるとパスワードが表示される（PR #551のレビュー）
     if super::keyring_store::site_origin(&site_url).is_none() {
-        return Err(super::keyring_store::KeyringError::InvalidSiteUrl(site_url).into());
+        return Err(
+            "the first line (the site URL) is not a URL starting with https:// or http://. Provide three lines: site URL, username, Application Password"
+                .into(),
+        );
     }
     if username.is_empty() {
         return Err("the WordPress username is empty".into());
@@ -258,12 +263,14 @@ mod tests {
             .unwrap()
             .to_string();
         assert!(err.contains("empty"));
-        // 1行目がURLでなければ止める（以前の2行の形で渡したとき等）
-        let err = read_lines("editor\nabcd EFGH 1234\n\n".as_bytes())
+        // 1行目がURLでなければ止める（以前の2行の形で渡したとき等）。
+        // 入力は文に出さない
+        let err = read_lines("secret-password\neditor\npw\n".as_bytes())
             .err()
             .unwrap()
             .to_string();
-        assert!(err.contains("is not a site URL"), "{err}");
+        assert!(err.contains("the first line (the site URL)"), "{err}");
+        assert!(!err.contains("secret-password"), "{err}");
     }
 
     #[test]
