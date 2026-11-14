@@ -86,10 +86,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `scope_tools`）を、リソース（`resources/list`・`resources/read`）にも
   効かせた（#538）。以前は、`tools = []`のキーでも、`wordpress://posts`・
   `comments`・`categories`・`tags`と`db://schema`を一覧で見て読めた。
-  各リソースは、同じデータを返す読み取り専用のツール（`get_posts`・
-  `get_comments`・`get_categories`・`get_tags`・`get_schema`）を使える
-  ときだけ読める。リソースの読み取りも、呼び出し元付きで監査ログに残す
-  （以前は記録しなかった）。ライブラリでは、`McpHandler`に
+  各リソースは、同じデータを読める読み取り専用のツールを使えるときだけ
+  読める。`wordpress://posts`は投稿の本文まで返すので`get_post`、ほかは
+  `get_comments`・`get_categories`・`get_tags`・`get_schema`。
+  リソースの読み取りも、呼び出し元付きで監査ログに残し（以前は記録
+  しなかった）、WordPressのツールと同じレート制限を通す。ライブラリでは、`McpHandler`に
   `resource_tool`（既定は`None`）を足した。自分のハンドラーのリソースを、
   制限のある呼び出し元に出すには、これを実装する
 - 依存クレートを、セキュリティ勧告の修正版に上げた。`Cargo.toml`の下限も

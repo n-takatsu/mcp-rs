@@ -206,11 +206,11 @@ Each item in `tools` is one of:
 
 A request is allowed a tool when any item matches it. `tools = []` allows no tools. Unknown presets (such as `@admin`) and empty items stop mcp-rs from starting. STDIO mode is not limited (it is a local pipe used by one person).
 
-The same limits apply to resources (`resources/list` and `resources/read`, v0.24.0 and later). Each resource returns the same data as one read-only tool, and a key or token can read the resource only when it is allowed that tool:
+The same limits apply to resources (`resources/list` and `resources/read`, v0.24.0 and later). Each resource belongs to the read-only tool that reads the same data, and a key or token can read the resource only when it is allowed that tool. `wordpress://posts` returns every published post with its full content, so it belongs to `get_post` (which returns one post with its content), not to `get_posts` (which returns only summaries):
 
 | Resource | Tool |
 |----------|------|
-| `wordpress://posts` | `get_posts` |
+| `wordpress://posts` | `get_post` |
 | `wordpress://comments` | `get_comments` |
 | `wordpress://categories` | `get_categories` |
 | `wordpress://tags` | `get_tags` |
