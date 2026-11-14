@@ -741,6 +741,32 @@ async fn huge_rows_stop_at_the_first_row() {
     assert_eq!(result["rows"], json!([[1]]));
 }
 
+/// 1行目だけ小さく、後の行が大きい結果でも、上限を超えた行を多く作らせない
+/// （PR #545のレビュー）。以前は、2回目の`FETCH`が500行になり、sqlxが
+/// 残りの行を受け取って捨てる間、PostgreSQLは行を作り続けた。1行ごとに
+/// 0.05秒待たせ、多く作らせると時間の上限（3秒）を超えるようにする
+#[tokio::test]
+async fn rows_growing_after_a_small_first_row_are_not_overfetched() {
+    let Some((url, _pool)) = test_database().await else {
+        return;
+    };
+    let mut settings = settings_from_url(&url);
+    settings.query_timeout_seconds = Some(3);
+    let handler = DatabaseHandler::from_settings(&settings).await.unwrap();
+    let result = call(
+        &handler,
+        "execute_query",
+        json!({ "sql": "SELECT CASE WHEN n = 1 THEN 'x' ELSE repeat('y', 4000000) END AS s, \
+                        pg_sleep(CASE WHEN n = 1 THEN 0 ELSE 0.05 END) AS wait \
+                        FROM generate_series(1, 1000) AS n" }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(result["truncated"], json!(true));
+    // 10MBに収まるのは、1行目と4MBの行2つ
+    assert_eq!(result["rows"].as_array().unwrap().len(), 3);
+}
+
 /// `execute_command`の中で変えたセッションの設定・ロールは、接続をプールに
 /// 戻すときに元に戻る（#539）
 #[tokio::test]
@@ -820,6 +846,26 @@ async fn session_settings_do_not_stay_on_pooled_connections() {
         .execute(&pool)
         .await
         .unwrap();
+}
+
+/// `ssl_root_cert`を書いたのに、`ssl_mode`が証明書を確かめない設定なら、
+/// 起動しない（PR #545のレビュー）
+#[tokio::test]
+async fn ssl_root_cert_needs_a_verifying_ssl_mode() {
+    let Some((url, _pool)) = test_database().await else {
+        return;
+    };
+    let mut settings = settings_from_url(&url);
+    settings.ssl_mode = Some("prefer".to_string());
+    settings.ssl_root_cert = Some("ca.pem".to_string());
+    let err = match DatabaseHandler::from_settings(&settings).await {
+        Ok(_) => panic!("ssl_root_cert with ssl_mode = prefer must not start"),
+        Err(err) => err,
+    };
+    assert!(
+        err.contains("ssl_root_cert") && err.contains("verify-full"),
+        "{err}"
+    );
 }
 
 /// 監査ログには、パラメーターの値を書かない（#539）。クライアントへの

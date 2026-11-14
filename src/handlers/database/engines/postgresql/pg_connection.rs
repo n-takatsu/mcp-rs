@@ -64,10 +64,6 @@ const CURSOR_NAME: &str = "mcp_rs_cursor";
 /// 1回の`FETCH`で受け取る行数の上限
 const MAX_FETCH_BATCH: usize = 500;
 
-/// 最初の`FETCH`で受け取る行数。1行の大きさが分かるまでは1行だけにする
-/// （1行が大きいと、途中で止めても、その`FETCH`の残りの行は送られてくる）
-const FIRST_FETCH_BATCH: usize = 1;
-
 impl PostgreSqlConnection {
     /// Create a new PostgreSQL connection from connection string
     pub async fn new(connection_string: &str) -> Result<Self, DatabaseError> {
@@ -152,14 +148,17 @@ impl PostgreSqlConnection {
         Ok(tx)
     }
 
-    /// 次の`FETCH`で受け取る行数。行数・バイト数の上限の残りに合わせ、
-    /// 上限を大きく超えて行を作らせないようにする
+    /// 次の`FETCH`で受け取る行数。上限で途中で止めても、sqlxはその`FETCH`の
+    /// 残りの行を受け取って捨てるので、大きく取りすぎないようにする
+    /// （PR #545のレビュー）:
+    ///
+    /// - それまでに受け取った行数（最初は1行）。1・1・2・4…と倍々に増える
+    ///   ので、捨てる行は、最悪でもそれまでに受け取った行数ほどで済む。
+    ///   1行目だけ小さく、後の行が大きい結果でも、一度に多く取らない
+    /// - 行数・バイト数の上限の残り（バイト数は、それまでの平均の大きさで
+    ///   割る）。大きさの揃った大きな行で、倍々の分まで取らない
     fn next_fetch_batch(&self, rows: usize, bytes: usize) -> usize {
-        let mut batch = if rows == 0 {
-            FIRST_FETCH_BATCH
-        } else {
-            MAX_FETCH_BATCH
-        };
+        let mut batch = rows.clamp(1, MAX_FETCH_BATCH);
         if let Some(limit) = self.fetch_limit {
             batch = batch.min(limit.saturating_sub(rows));
         }
@@ -717,21 +716,57 @@ pub fn weak_tls_warning(options: &PgConnectOptions) -> Option<String> {
         return None;
     }
     let unencrypted = "the connection may not be encrypted";
-    let (mode, risk) = match options.get_ssl_mode() {
+    let mode = options.get_ssl_mode();
+    let risk = match mode {
         PgSslMode::VerifyFull => return None,
-        PgSslMode::VerifyCa => ("verify-ca", "the server's host name is not checked"),
-        PgSslMode::Require => ("require", "the server's certificate is not checked"),
-        PgSslMode::Prefer => ("prefer", unencrypted),
-        PgSslMode::Allow => ("allow", unencrypted),
-        PgSslMode::Disable => ("disable", "the connection is not encrypted"),
+        PgSslMode::VerifyCa => "the server's host name is not checked",
+        PgSslMode::Require => "the server's certificate is not checked",
+        PgSslMode::Prefer | PgSslMode::Allow => unencrypted,
+        PgSslMode::Disable => "the connection is not encrypted",
     };
     Some(format!(
-        "database ssl_mode is \"{mode}\" for {host}: {risk}. Use ssl_mode = \"verify-full\"          (with ssl_root_cert for a private CA)"
+        "database ssl_mode is \"{}\" for {host}: {risk}. Use ssl_mode = \"verify-full\" \
+         (with ssl_root_cert for a private CA)",
+        ssl_mode_name(&mode)
+    ))
+}
+
+/// 設定ファイルの綴りの`ssl_mode`
+fn ssl_mode_name(mode: &PgSslMode) -> &'static str {
+    match mode {
+        PgSslMode::Disable => "disable",
+        PgSslMode::Allow => "allow",
+        PgSslMode::Prefer => "prefer",
+        PgSslMode::Require => "require",
+        PgSslMode::VerifyCa => "verify-ca",
+        PgSslMode::VerifyFull => "verify-full",
+    }
+}
+
+/// `ssl_root_cert`を書いたのに、`ssl_mode`が証明書を確かめない設定なら、
+/// 起動しない理由を返す（PR #545のレビュー）。sqlxは、`verify-ca`・
+/// `verify-full`のときだけCAのファイルを使い、それより弱いと黙って使わない。
+/// `options`は、環境変数（`PGSSLMODE`）を反映した後の値。設定ファイルに
+/// `ssl_mode`を書かず、`PGSSLMODE=verify-full`で指定していても止めない
+pub fn check_ssl_root_cert(
+    has_ssl_root_cert: bool,
+    options: &PgConnectOptions,
+) -> Result<(), String> {
+    let mode = options.get_ssl_mode();
+    if !has_ssl_root_cert || matches!(mode, PgSslMode::VerifyCa | PgSslMode::VerifyFull) {
+        return Ok(());
+    }
+    Err(format!(
+        "database.ssl_root_cert is set, but ssl_mode is \"{}\", which does not check the \
+         server certificate, so the CA file would not be used. Set ssl_mode = \"verify-full\" \
+         (or \"verify-ca\") in [database]",
+        ssl_mode_name(&mode)
     ))
 }
 
 /// プールに戻す接続で実行する、セッションを元に戻すSQL（#539）
-pub const RESET_SESSION_SQL: &str = "SELECT pg_advisory_unlock_all();      SET SESSION AUTHORIZATION DEFAULT; RESET ROLE; RESET ALL";
+pub const RESET_SESSION_SQL: &str = "SELECT pg_advisory_unlock_all(); \
+     SET SESSION AUTHORIZATION DEFAULT; RESET ROLE; RESET ALL";
 
 /// 設定から、接続のプールを作る（接続できるかも確かめる）
 pub async fn connect_pool(config: &DatabaseConfig) -> Result<PgPool, DatabaseError> {
@@ -1306,6 +1341,34 @@ mod tests {
         }
     }
 
+    /// `ssl_root_cert`を書いたら、証明書を確かめる`ssl_mode`が要る
+    /// （PR #545のレビュー）
+    #[test]
+    fn test_check_ssl_root_cert() {
+        let options = |mode: &str| {
+            let config = ConnectionConfig {
+                host: "db.example.com".to_string(),
+                ssl_mode: Some(mode.to_string()),
+                ..ConnectionConfig::default()
+            };
+            connect_options(&config).unwrap()
+        };
+        for mode in ["verify-ca", "verify-full"] {
+            assert!(check_ssl_root_cert(true, &options(mode)).is_ok(), "{mode}");
+        }
+        for mode in ["disable", "allow", "prefer", "require"] {
+            let err = check_ssl_root_cert(true, &options(mode)).unwrap_err();
+            assert!(err.contains(&format!("\"{mode}\"")), "{err}");
+            assert!(err.contains("ssl_mode = \"verify-full\""), "{err}");
+        }
+        // ssl_root_certを書いていなければ、何も言わない
+        assert!(check_ssl_root_cert(false, &options("prefer")).is_ok());
+        // 警告の文に、余計な空白が入らない
+        let warning = weak_tls_warning(&options("prefer")).unwrap();
+        assert!(!warning.contains("  "), "{warning}");
+        assert!(!RESET_SESSION_SQL.contains("  "), "{RESET_SESSION_SQL}");
+    }
+
     /// `FETCH`の行数は、行数・バイト数の上限の残りに合わせる（#539）
     #[tokio::test]
     async fn test_next_fetch_batch_follows_the_limits() {
@@ -1313,17 +1376,25 @@ mod tests {
             .connect_lazy("postgres://localhost/x")
             .unwrap();
         let conn = PostgreSqlConnection::with_pool(pool, "x".into(), "x".into());
-        // 上限なし: 最初は1行、その後はまとめて
+        // 上限なし: 1・1・2・4…と倍々に増やし、500で止める
         assert_eq!(conn.next_fetch_batch(0, 0), 1);
-        assert_eq!(conn.next_fetch_batch(1, 10), MAX_FETCH_BATCH);
+        assert_eq!(conn.next_fetch_batch(1, 10), 1);
+        assert_eq!(conn.next_fetch_batch(2, 20), 2);
+        assert_eq!(conn.next_fetch_batch(64, 640), 64);
+        assert_eq!(conn.next_fetch_batch(600, 6000), MAX_FETCH_BATCH);
         let conn = conn
             .with_fetch_limit(Some(1001))
             .with_byte_limit(Some(10_000));
         assert_eq!(conn.next_fetch_batch(0, 0), 1);
+        // 1行目が小さくても、次は倍々の分だけ（以前は500行になった）
+        assert_eq!(conn.next_fetch_batch(1, 1), 1);
+        assert_eq!(conn.next_fetch_batch(8, 8), 8);
         // 行数の残り
         assert_eq!(conn.next_fetch_batch(1000, 1000), 1);
-        // 1行100バイト、残り9000バイト: 90行で上限に届き、1行多く読む
-        assert_eq!(conn.next_fetch_batch(10, 1000), 91);
+        // 1行100バイト、残り4000バイト: 40行で上限に届き、1行多く読む
+        assert_eq!(conn.next_fetch_batch(60, 6000), 41);
+        // 1行900バイト、残り1000バイト: 倍々の10行ではなく2行
+        assert_eq!(conn.next_fetch_batch(10, 9000), 2);
         // 上限を超えていても、0にはしない
         assert_eq!(conn.next_fetch_batch(1, 20_000), 1);
     }

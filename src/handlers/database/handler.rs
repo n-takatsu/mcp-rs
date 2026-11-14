@@ -254,12 +254,16 @@ impl DatabaseHandler {
                 max_result_bytes,
             })
             .with_status_line(settings.describe());
-        // 通信を守れないTLSの設定なら、警告する（#539）。環境変数
-        // （`PGSSLMODE`等）を反映した後の値で確かめる
-        if let Some(warning) = pg_connection::connect_options(&config.connection)
-            .ok()
-            .and_then(|connect| pg_connection::weak_tls_warning(&connect))
-        {
+        // TLSの設定を確かめる（#539）。環境変数（`PGSSLMODE`等）を反映した
+        // 後の値で確かめる。`ssl_root_cert`が使われない設定なら起動しない。
+        // 通信を守れない設定なら、警告する
+        let connect = pg_connection::connect_options(&config.connection)
+            .map_err(|e| format!("cannot set up {}: {}", settings.describe(), e))?;
+        pg_connection::check_ssl_root_cert(
+            config.connection.options.contains_key(OPTION_SSL_ROOT_CERT),
+            &connect,
+        )?;
+        if let Some(warning) = pg_connection::weak_tls_warning(&connect) {
             warn!("{}", warning);
         }
         handler

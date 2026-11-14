@@ -94,8 +94,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   10MB）を超えた行は返さず、`truncated`を`true`にする。1行目だけで
   超えるときは、大きな値を切り詰める（文字列は先頭を残し、`bytea`・`json`
   は大きさを示す文に置き換える）。行はカーソル（`DECLARE … CURSOR`・
-  `FETCH`）で少しずつ受け取り、上限で閉じるので、PostgreSQLも残りの行を
-  作らない。結果には`max_result_bytes`も返す
+  `FETCH`）で少しずつ受け取り、上限で閉じる。`FETCH`の行数は、1行から倍々に増やすので（500行まで）、上限を
+  超えて作らせる行は、それまでに受け取った行数ほどで済む。上限は目安で、
+  JSONのエスケープの分は数えない。結果には`max_result_bytes`も返す
 - データベースの接続をプールに戻すとき、セッションの設定とロールを元に
   戻すようにした（#539）。以前は、`allow_write = true`のとき、
   `execute_command`の中の`set_config('role', …, false)`等で変えた設定が
@@ -111,7 +112,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   全文を返す）
 - データベースのTLSについて、`[database]`に`ssl_root_cert`（CAのファイル）
   を足した（#539）。非公開のCA（RDS等）でも、`verify-ca`・`verify-full`を
-  使える。ループバック・Unixソケット以外のホストで、`ssl_mode`が
+  使える（CAのファイルは`verify-ca`・`verify-full`のときだけ使われるので、
+  それより弱い`ssl_mode`と一緒に書くと、データベースのツールを起動しない）。
+  ループバック・Unixソケット以外のホストで、`ssl_mode`が
   `verify-full`より弱いときは、起動時に警告する（既定の`prefer`は、
   証明書を確かめず、黙って平文に落ちる）。設定に書かないとき使われる
   環境変数（`PGSSLMODE`・`PGSSLROOTCERT`・`PGPASSWORD`・`PGOPTIONS`等）と
