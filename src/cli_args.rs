@@ -73,9 +73,10 @@ Usage:
   mcp-rs --help
 
 Options:
-  --config <path>  Config file to use. Without it, mcp-rs uses the first
-                   of mcp-config.toml, config.toml, config/mcp.toml (in the
-                   current folder) and ~/.config/mcp-rs/config.toml.
+  --config <path>  Config file to use, as an absolute path (~/ is the
+                   home folder). Without it, mcp-rs reads
+                   ~/.config/mcp-rs/config.toml only. Config files in the
+                   current folder are not read without --config.
                    With --config, the WordPress credentials come only from
                    that file (keyring, ${{VAR}}, encrypted_credentials or
                    plain values); WORDPRESS_URL, WORDPRESS_USERNAME and

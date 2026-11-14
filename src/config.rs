@@ -851,6 +851,11 @@ impl WordPressConfig {
         }
         let credentials = crate::security::keyring_store::load_wordpress_credentials(store, &name)
             .map_err(|e| format!("handlers.wordpress.keyring: {e}"))?;
+        // 資格情報を保存したサイトと、設定の`url`が同じときだけ使う（#541）。
+        // 別の人が書いた設定ファイルが、この項目の名前と別のサイトの`url`を
+        // 書いて、パスワードを受け取れないようにする
+        crate::security::keyring_store::check_site(&name, &credentials, &self.url)
+            .map_err(|e| format!("handlers.wordpress.keyring: {e}"))?;
         self.username = credentials.username;
         self.password = credentials.application_password.to_string();
         Ok(())
@@ -897,6 +902,80 @@ impl Default for McpConfig {
 
 /// 先頭の`~/`をホームフォルダに置き換える（#375）。`~`で始まらない
 /// パスはそのまま返す。ホームフォルダが分からない場合は`None`。
+/// `--config`が無いときに読む設定ファイル（#541）
+const USER_CONFIG_PATH: &str = "~/.config/mcp-rs/config.toml";
+
+/// v0.23.0まで、`--config`が無いときに今のフォルダから読んでいた名前（#541）。
+/// 今は読まない。見つけたら、`--config`の付け方を案内する
+const FORMER_CWD_CONFIG_NAMES: [&str; 3] = ["mcp-config.toml", "config.toml", "config/mcp.toml"];
+
+/// `dir`（今のフォルダ）にある、以前の名前の設定ファイル
+fn former_cwd_config_files(dir: &std::path::Path) -> Vec<String> {
+    FORMER_CWD_CONFIG_NAMES
+        .iter()
+        .filter(|name| dir.join(name).is_file())
+        .map(|name| name.to_string())
+        .collect()
+}
+
+/// 設定ファイルが見つからないときのエラーの文（#541）。`former`は、今の
+/// フォルダにあったが読まなかったファイル。案内するパスは絶対パスにする
+/// （相対パスの`--config`は、起動したフォルダから読むので、同じ問題が残る。
+/// PR #551のレビュー）
+fn no_config_file_message(home: Option<&str>, former: &[String]) -> String {
+    let user_config =
+        expand_home_dir(USER_CONFIG_PATH, home).unwrap_or_else(|| USER_CONFIG_PATH.to_string());
+    let mut message =
+        format!("no config file: pass one with --config <absolute path>, or create {user_config}");
+    if let Some(first) = former.first() {
+        let absolute = std::path::absolute(first)
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|_| first.clone());
+        message.push_str(&format!(
+            ". {} in the current folder is not read without --config (v0.24.0 and later), so that a config file in a folder you open cannot run commands or send your credentials. If it is yours, start mcp-rs with --config {absolute} (an absolute path: a relative one is read from whatever folder mcp-rs starts in)",
+            former.join(", ")
+        ));
+    }
+    message
+}
+
+/// `--config`のパスの先頭の`~/`（Windowsでは`~\`も）を、ホームフォルダに
+/// 展開する（PR #551のレビュー）。シェルを通さないクライアントの設定（JSONの
+/// `args`等）では、`~`は展開されずにそのまま渡ってくる。展開しないと、
+/// 起動したフォルダの中の`~`という名前のフォルダを探してしまう。ホーム
+/// フォルダが分からなければ、そのまま返す（相対パスの警告が出る）
+pub fn expand_config_path(path: &str) -> String {
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .ok();
+    expand_config_path_with(path, home.as_deref())
+}
+
+fn expand_config_path_with(path: &str, home: Option<&str>) -> String {
+    let rest = path.strip_prefix("~/").or_else(|| path.strip_prefix("~\\"));
+    match rest {
+        Some(rest) => expand_home_dir(&format!("~/{}", rest.replace('\\', "/")), home)
+            .unwrap_or_else(|| path.to_string()),
+        None => path.to_string(),
+    }
+}
+
+/// `--config`（`expand_config_path`で展開した後）が相対パスなら、警告の
+/// 文を返す（PR #551のレビュー）。相対パスは、mcp-rsを起動したフォルダから
+/// 読む。Claude Code等は開いたフォルダで起動するので、そのフォルダの同じ
+/// 名前のファイルを読んでしまう
+pub fn relative_config_path_warning(path: &str) -> Option<String> {
+    if std::path::Path::new(path).is_absolute() {
+        return None;
+    }
+    let absolute = std::path::absolute(path)
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| path.to_string());
+    Some(format!(
+        "--config {path} is a relative path, so mcp-rs reads it from the folder it starts in (now {absolute}). Clients such as Claude Code start mcp-rs in the folder you open, where a file with the same name could run commands or send your credentials. Register mcp-rs with an absolute path"
+    ))
+}
+
 fn expand_home_dir(path: &str, home: Option<&str>) -> Option<String> {
     match path.strip_prefix("~/") {
         Some(rest) => home.filter(|h| !h.is_empty()).map(|h| {
@@ -1246,26 +1325,20 @@ impl McpConfig {
         let default_config = McpConfig::default();
         settings = settings.add_source(config::Config::try_from(&default_config)?);
 
-        // 設定ファイルを読み込み（複数の場所を試行）
-        let config_paths = [
-            "mcp-config.toml",
-            "config.toml",
-            "config/mcp.toml",
-            "~/.config/mcp-rs/config.toml",
-        ];
-
+        // 設定ファイルは、ユーザーのフォルダの1か所だけから読む（#541）。
+        // 以前は今のフォルダの`mcp-config.toml`等も読んでいたので、
+        // プロジェクトのフォルダで起動するクライアント（Claude Code等）では、
+        // 開いたリポジトリの設定ファイルで、任意のコマンド（プラグイン）を
+        // 実行させたり、資格情報を別のサイトへ送らせたりできた
         let home = std::env::var("HOME")
             .or_else(|_| std::env::var("USERPROFILE"))
             .ok();
 
         let mut config_file_found = false;
         let mut loaded_config_file = None;
-        for path in &config_paths {
-            // `~`はPathが展開しないため、自前でホームフォルダに置き換える。
-            // ホームフォルダが分からない場合、その候補は飛ばす
-            let Some(path) = expand_home_dir(path, home.as_deref()) else {
-                continue;
-            };
+        // `~`はPathが展開しないため、自前でホームフォルダに置き換える。
+        // ホームフォルダが分からない場合は、探さない
+        if let Some(path) = expand_home_dir(USER_CONFIG_PATH, home.as_deref()) {
             if std::path::Path::new(&path).exists() {
                 // 標準出力はSTDIOモードでJSON-RPCの通信専用のため、
                 // 標準エラー出力に書く（ログはこの時点で未初期化）
@@ -1277,13 +1350,17 @@ impl McpConfig {
                     settings.add_source(config::File::from_str(&content, config::FileFormat::Toml));
                 config_file_found = true;
                 loaded_config_file = std::path::absolute(&path).ok();
-                break;
             }
         }
 
-        // 設定ファイルが見つからない場合はエラーを返す
+        // 設定ファイルが見つからない場合はエラーを返す。今のフォルダに以前の
+        // 名前の設定ファイルがあれば、読まずに、`--config`の付け方を案内する
         if !config_file_found && !Self::has_env_config() {
-            return Err("設定ファイルが見つかりません".into());
+            return Err(no_config_file_message(
+                home.as_deref(),
+                &former_cwd_config_files(std::path::Path::new(".")),
+            )
+            .into());
         }
 
         // 環境変数で上書き (MCP_で始まる変数)
@@ -1454,7 +1531,8 @@ impl McpConfig {
 #    ターミナルのどれからでも同じに読める):
 #    mcp-rs wordpress-keyring set your-site
 #    [handlers.wordpress] には username・password の代わりに
-#    keyring = "your-site" と書きます
+#    keyring = "your-site" と書きます。登録のときに聞かれるサイトの
+#    URL は、url と同じにします (違うサイトには資格情報を使いません)
 #
 # 3. 設定ファイルでは環境変数参照 (ドル記号+波括弧形式):
 #    url = "${{WORDPRESS_URL}}"
@@ -1520,7 +1598,8 @@ impl McpConfig {
 #    ターミナルのどれからでも同じに読める):
 #    mcp-rs wordpress-keyring set your-site
 #    [handlers.wordpress] には username・password の代わりに
-#    keyring = "your-site" と書きます
+#    keyring = "your-site" と書きます。登録のときに聞かれるサイトの
+#    URL は、url と同じにします (違うサイトには資格情報を使いません)
 #
 # 3. Application Password の生成方法:
 #    - WordPress管理画面 > ユーザー > プロフィール
@@ -2774,6 +2853,7 @@ mod additional_tests {
             &store,
             "example.com",
             &WordPressKeyringCredentials {
+                site_url: "https://example.com".to_string(),
                 username: "editor".to_string(),
                 application_password: zeroize::Zeroizing::new("abcd EFGH 1234".to_string()),
             },
@@ -2797,6 +2877,99 @@ mod additional_tests {
         let mut plain = keyring_config("");
         plain.keyring = None;
         assert!(!toml::to_string(&plain).unwrap().contains("keyring"));
+    }
+
+    /// 今のフォルダの設定ファイルは読まず、見つけたら`--config`を案内する（#541）
+    #[test]
+    fn test_former_cwd_config_files_are_only_mentioned() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(former_cwd_config_files(dir.path()).is_empty());
+        let message = no_config_file_message(Some("/home/u"), &[]);
+        assert!(message.contains("--config <absolute path>"), "{message}");
+        assert!(message.contains("config.toml"), "{message}");
+        assert!(!message.contains("current folder"), "{message}");
+
+        std::fs::write(dir.path().join("config.toml"), "").unwrap();
+        std::fs::create_dir(dir.path().join("config")).unwrap();
+        std::fs::write(dir.path().join("config").join("mcp.toml"), "").unwrap();
+        let former = former_cwd_config_files(dir.path());
+        assert_eq!(former, vec!["config.toml", "config/mcp.toml"]);
+        let message = no_config_file_message(Some("/home/u"), &former);
+        assert!(
+            message.contains("is not read without --config"),
+            "{message}"
+        );
+        // 案内は絶対パス（相対パスは、起動したフォルダから読むため）
+        let absolute = std::path::absolute("config.toml").unwrap();
+        assert!(
+            message.contains(&format!("--config {}", absolute.display())),
+            "{message}"
+        );
+        assert!(!message.contains("--config config.toml"), "{message}");
+    }
+
+    /// `--config`の`~/`は、ホームフォルダに展開する（PR #551のレビュー）
+    #[test]
+    fn test_expand_config_path() {
+        let home = std::env::temp_dir();
+        let home_str = home.display().to_string();
+        let expanded = expand_config_path_with("~/.config/mcp-rs/config.toml", Some(&home_str));
+        assert_eq!(
+            std::path::PathBuf::from(&expanded),
+            home.join(".config").join("mcp-rs").join("config.toml")
+        );
+        assert_eq!(relative_config_path_warning(&expanded), None);
+        let expanded = expand_config_path_with("~\\mcp-rs\\config.toml", Some(&home_str));
+        assert_eq!(
+            std::path::PathBuf::from(&expanded),
+            home.join("mcp-rs").join("config.toml")
+        );
+        // ホームが分からなければそのまま（相対パスとして警告する）
+        assert_eq!(
+            expand_config_path_with("~/config.toml", None),
+            "~/config.toml"
+        );
+        assert!(relative_config_path_warning("~/config.toml").is_some());
+        // `~`で始まるほかの形（`~user/`等）は展開しない
+        assert_eq!(
+            expand_config_path_with("~user/x.toml", Some(&home_str)),
+            "~user/x.toml"
+        );
+        assert_eq!(
+            expand_config_path_with("config.toml", Some(&home_str)),
+            "config.toml"
+        );
+    }
+
+    /// 相対パスの`--config`は警告する（PR #551のレビュー）
+    #[test]
+    fn test_relative_config_path_warning() {
+        let warning = relative_config_path_warning("config.toml").unwrap();
+        assert!(warning.contains("relative path"), "{warning}");
+        assert!(warning.contains("absolute path"), "{warning}");
+        let absolute = std::path::absolute("x.toml").unwrap();
+        assert_eq!(
+            relative_config_path_warning(&absolute.display().to_string()),
+            None
+        );
+    }
+
+    /// 設定の`url`が、資格情報を保存したサイトと違えば使わない（#541）
+    #[test]
+    fn test_resolve_credentials_refuses_another_site() {
+        let store = store_with_example();
+        let mut config: WordPressConfig = toml::from_str(
+            "url = \"https://attacker.example\"\nenabled = true\nkeyring = \"example.com\"\n",
+        )
+        .unwrap();
+        let err = config
+            .resolve_credentials_with(&store)
+            .unwrap_err()
+            .to_string();
+        assert!(err.starts_with("handlers.wordpress.keyring: "), "{err}");
+        assert!(err.contains("are for https://example.com"), "{err}");
+        assert!(!err.contains("abcd"), "{err}");
+        assert!(config.password.is_empty());
     }
 
     #[test]

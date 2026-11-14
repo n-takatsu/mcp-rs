@@ -31,9 +31,11 @@ so mcp-rs reads them the same way whether Claude Desktop, Claude Code or a
 terminal starts it. No environment variables are needed.
 
   set     Register or replace the credentials named <name>. On a terminal it
-          asks for the username and the Application Password (input hidden).
-          Without a terminal it reads them as two lines from standard input.
-  show    Print the username stored under <name> (never the password).
+          asks for the site URL, the username and the Application Password
+          (input hidden). Without a terminal it reads them as three lines
+          from standard input.
+  show    Print the site URL and the username stored under <name> (never
+          the password).
   delete  Delete the credentials named <name>.
 
 <name> is any label, for example the site's host name. Refer to it from the
@@ -45,6 +47,8 @@ config file:
   keyring = \"example.com\"
 
 Leave username, password and encrypted_credentials out of that section.
+The credentials are used only when url has the same scheme, host and port
+as the site URL stored with them, so they are not sent to another site.
 Secrets are never accepted as command-line arguments.";
 
 /// What the arguments ask for.
@@ -101,15 +105,23 @@ fn run_with(args: &[String], store: &dyn SecretStore) -> Result<(), Box<dyn std:
                 read_lines(io::stdin().lock())?
             };
             store_wordpress_credentials(store, &name, &credentials)?;
+            let stored = load_wordpress_credentials(store, &name)?;
             eprintln!(
-                "Stored the credentials for '{}' as '{name}' in the OS credential store (service '{KEYRING_SERVICE}').",
-                credentials.username
+                "Stored the credentials for '{}' on {} as '{name}' in the OS credential store (service '{KEYRING_SERVICE}').",
+                stored.username, stored.site_url
             );
             eprintln!("In the config file, write this under [handlers.wordpress] and remove username, password and encrypted_credentials:");
             eprintln!("  keyring = \"{name}\"");
         }
         Action::Show(name) => {
             let credentials = load_wordpress_credentials(store, &name)?;
+            if credentials.site_url.is_empty() {
+                println!(
+                    "site: (not stored: register again with `mcp-rs {SUBCOMMAND} set {name}`)"
+                );
+            } else {
+                println!("site: {}", credentials.site_url);
+            }
             println!("username: {}", credentials.username);
             println!("password: (stored, not shown)");
         }
@@ -124,8 +136,8 @@ fn run_with(args: &[String], store: &dyn SecretStore) -> Result<(), Box<dyn std:
     Ok(())
 }
 
-/// Non-interactive input: the username and the Application Password as the
-/// first two lines.
+/// Non-interactive input: the site URL, the username and the Application
+/// Password as the first three lines.
 fn read_lines(
     mut reader: impl BufRead,
 ) -> Result<WordPressKeyringCredentials, Box<dyn std::error::Error>> {
@@ -133,15 +145,16 @@ fn read_lines(
         let mut line = Zeroizing::new(String::new());
         if reader.read_line(&mut line)? == 0 {
             return Err(format!(
-                "standard input ended before the {what}. Provide two lines: username, Application Password"
+                "standard input ended before the {what}. Provide three lines: site URL, username, Application Password"
             )
             .into());
         }
         Ok(Zeroizing::new(line.trim().to_string()))
     };
+    let site_url = next_line("site URL")?.to_string();
     let username = next_line("username")?.to_string();
     let application_password = next_line("Application Password")?;
-    check_input(username, application_password)
+    check_input(site_url, username, application_password)
 }
 
 fn read_interactive(name: &str) -> Result<WordPressKeyringCredentials, Box<dyn std::error::Error>> {
@@ -149,19 +162,36 @@ fn read_interactive(name: &str) -> Result<WordPressKeyringCredentials, Box<dyn s
     eprintln!("The Application Password is not shown while typing.");
     eprintln!();
 
+    eprint!("WordPress site URL (as in url of the config file, e.g. https://example.com): ");
+    io::stderr().flush()?;
+    let mut site_url = String::new();
+    io::stdin().lock().read_line(&mut site_url)?;
     eprint!("WordPress username: ");
     io::stderr().flush()?;
     let mut username = String::new();
     io::stdin().lock().read_line(&mut username)?;
     let application_password =
         Zeroizing::new(read_hidden("Application Password: ")?.trim().to_string());
-    check_input(username.trim().to_string(), application_password)
+    check_input(
+        site_url.trim().to_string(),
+        username.trim().to_string(),
+        application_password,
+    )
 }
 
 fn check_input(
+    site_url: String,
     username: String,
     application_password: Zeroizing<String>,
 ) -> Result<WordPressKeyringCredentials, Box<dyn std::error::Error>> {
+    // 入力は文に入れない。2行の形のまま渡すと、1行目はユーザー名で、
+    // 取り違えるとパスワードが表示される（PR #551のレビュー）
+    if super::keyring_store::site_origin(&site_url).is_none() {
+        return Err(
+            "the first line (the site URL) is not a URL starting with https:// or http://. Provide three lines: site URL, username, Application Password"
+                .into(),
+        );
+    }
     if username.is_empty() {
         return Err("the WordPress username is empty".into());
     }
@@ -169,6 +199,7 @@ fn check_input(
         return Err("the Application Password is empty".into());
     }
     Ok(WordPressKeyringCredentials {
+        site_url,
         username,
         application_password,
     })
@@ -215,17 +246,31 @@ mod tests {
 
     #[test]
     fn test_read_lines() {
-        let parsed = read_lines("  editor \r\n abcd EFGH 1234 \r\n".as_bytes()).unwrap();
+        let parsed =
+            read_lines(" https://example.com \r\n  editor \r\n abcd EFGH 1234 \r\n".as_bytes())
+                .unwrap();
+        assert_eq!(parsed.site_url, "https://example.com");
         assert_eq!(parsed.username, "editor");
         assert_eq!(parsed.application_password.as_str(), "abcd EFGH 1234");
 
-        let err = read_lines("editor\n".as_bytes()).err().unwrap().to_string();
+        let err = read_lines("https://example.com\neditor\n".as_bytes())
+            .err()
+            .unwrap()
+            .to_string();
         assert!(err.contains("Application Password"));
-        let err = read_lines("editor\n\n".as_bytes())
+        let err = read_lines("https://example.com\neditor\n\n".as_bytes())
             .err()
             .unwrap()
             .to_string();
         assert!(err.contains("empty"));
+        // 1行目がURLでなければ止める（以前の2行の形で渡したとき等）。
+        // 入力は文に出さない
+        let err = read_lines("secret-password\neditor\npw\n".as_bytes())
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(err.contains("the first line (the site URL)"), "{err}");
+        assert!(!err.contains("secret-password"), "{err}");
     }
 
     #[test]
@@ -238,6 +283,7 @@ mod tests {
             &store,
             "a",
             &WordPressKeyringCredentials {
+                site_url: "https://example.com".to_string(),
                 username: "editor".to_string(),
                 application_password: Zeroizing::new("pw".to_string()),
             },

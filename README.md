@@ -77,7 +77,7 @@ Connect with a read-only database role. See the [Database Integration Guide](htt
 Keep the WordPress username and Application Password in the OS credential store (Windows Credential Manager, macOS Keychain, Secret Service on Linux; v0.24.0 and later). mcp-rs then reads them from one place, whether Claude Desktop, Claude Code, or a terminal starts it:
 
 ```bash
-mcp-rs wordpress-keyring set example.com   # asks for the username and the Application Password
+mcp-rs wordpress-keyring set example.com   # asks for the site URL, the username and the Application Password
 ```
 
 ```toml
@@ -86,6 +86,8 @@ enabled = true            # required: without it, the WordPress tools are not re
 url = "https://example.com"
 keyring = "example.com"   # the name used with `wordpress-keyring set`
 ```
+
+The credentials are used only when `url` is the site you entered with `set` (same scheme, host, and port), so a config file that names the entry with another `url` cannot send them elsewhere.
 
 Why not environment variables: Claude Desktop passes MCP servers only a fixed set such as `PATH` plus the `env` of `claude_desktop_config.json`, never your user environment variables, while Claude Code and terminals pass all of them. With `${WORDPRESS_PASSWORD}` you would write the same values twice. Environment variables and encrypted credentials still work; see [Security](https://n-takatsu.github.io/mcp-rs/docs/security/#which-environment-variables-reach-mcp-rs).
 
@@ -166,7 +168,8 @@ password = "your-application-password"   # WordPress Application Password
 Then run `./target/release/mcp-rs --config mcp-config.toml`. To keep the password out of the file, use `keyring = "<name>"` ([OS credential store](https://n-takatsu.github.io/mcp-rs/docs/security/#os-credential-store)), `${WORDPRESS_PASSWORD}`, or [encrypted credentials](https://n-takatsu.github.io/mcp-rs/docs/security/#encrypted-wordpress-credentials). mcp-rs does not start if a `${...}` variable is not set (in `[database]`, it starts without the database tools instead).
 
 - `enabled = true` is required. Without it, mcp-rs does not register the WordPress tools and does not expand `${...}`, with no error
-- With `--config`, the credentials come only from the config file: `WORDPRESS_URL`, `WORDPRESS_USERNAME`, and `WORDPRESS_PASSWORD` are read only through `${...}`. Without `--config` (config file found in the default places), mcp-rs also reads them directly when `WORDPRESS_URL` is set, and they override the file (except with `keyring`)
+- Always pass the config file with `--config` and an absolute path, or put it at `~/.config/mcp-rs/config.toml`. A relative path is read from the folder mcp-rs starts in, which for Claude Code is the folder you open, so mcp-rs warns about it at startup. Without `--config`, mcp-rs reads only `~/.config/mcp-rs/config.toml` (v0.24.0 and later). Config files in the current folder (`mcp-config.toml`, `config.toml`, `config/mcp.toml`) are not read without `--config`: clients such as Claude Code start mcp-rs in the folder you open, and a config file there could otherwise run commands (`[[plugins]]`) or send your credentials to another site. Up to v0.23.0, mcp-rs read them
+- With `--config`, the credentials come only from the config file: `WORDPRESS_URL`, `WORDPRESS_USERNAME`, and `WORDPRESS_PASSWORD` are read only through `${...}`. Without `--config` (`~/.config/mcp-rs/config.toml`), mcp-rs also reads them directly when `WORDPRESS_URL` is set, and they override the file (except with `keyring`)
 - In Docker and HTTP mode on a server, there is no OS credential store; use `${...}` or encrypted credentials as before
 
 ### HTTP TLS/mTLS Configuration (Optional)
