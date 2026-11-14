@@ -217,7 +217,9 @@ mcp-rs writes its log to the first of these folders that it can write to:
 
 1. `logs` in the folder of the `mcp-rs` executable (for example, where you extracted the zip)
 2. The user folder: `%USERPROFILE%\.mcp-rs\logs` on Windows, `$XDG_STATE_HOME/mcp-rs/logs` or `~/.local/state/mcp-rs/logs` elsewhere. When mcp-rs is installed in `C:\Program Files\MCP-rs`, the log is always here
-3. `logs` in the current folder, then `mcp-rs/logs` in the temporary folder
+3. `logs` in the current folder, then, on Windows only, `mcp-rs/logs` in the temporary folder (`%TEMP%` is per user there; the shared `/tmp` of other systems is not used, v0.24.0 and later)
+
+On Linux and macOS, new log folders are created readable by you only (700) and new log files 600, like the audit log, and mcp-rs does not follow a symbolic link in place of a log file.
 
 The `mcp_rs_status` tool shows the log file in use. It says `fallback` only when mcp-rs could not write to 1 or 2.
 
