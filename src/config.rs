@@ -939,9 +939,6 @@ fn no_config_file_message(home: Option<&str>, former: &[String]) -> String {
     message
 }
 
-/// `--config`が相対パスなら、警告の文を返す（PR #551のレビュー）。相対
-/// パスは、mcp-rsを起動したフォルダから読む。Claude Code等は開いたフォルダで
-/// 起動するので、そのフォルダの同じ名前のファイルを読んでしまう
 /// `--config`のパスの先頭の`~/`（Windowsでは`~\`も）を、ホームフォルダに
 /// 展開する（PR #551のレビュー）。シェルを通さないクライアントの設定（JSONの
 /// `args`等）では、`~`は展開されずにそのまま渡ってくる。展開しないと、
@@ -964,7 +961,9 @@ fn expand_config_path_with(path: &str, home: Option<&str>) -> String {
 }
 
 /// `--config`（`expand_config_path`で展開した後）が相対パスなら、警告の
-/// 文を返す
+/// 文を返す（PR #551のレビュー）。相対パスは、mcp-rsを起動したフォルダから
+/// 読む。Claude Code等は開いたフォルダで起動するので、そのフォルダの同じ
+/// 名前のファイルを読んでしまう
 pub fn relative_config_path_warning(path: &str) -> Option<String> {
     if std::path::Path::new(path).is_absolute() {
         return None;
