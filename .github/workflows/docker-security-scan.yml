@@ -28,6 +28,12 @@ on:
     # Run daily at 2 AM UTC
     - cron: '0 2 * * *'
 
+# ジョブが既定で持つ権限。リポジトリの既定の設定に依存しないよう、
+# 読み取りだけを明示する。書き込みが要るジョブは、ジョブの
+# permissions:で足す（#542）
+permissions:
+  contents: read
+
 jobs:
   trivy-scan:
     name: Trivy Container Image Scan

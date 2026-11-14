@@ -15,3 +15,6 @@ updates:
           - "*"
     commit-message:
       prefix: ci
+    # 既定で付く dependencies・github_actions のラベルは、リポジトリの
+    # ラベルの決まり（#525）に無いので付けない
+    labels: []

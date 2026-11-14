@@ -33,6 +33,12 @@ env:
   CARGO_BUILD_TARGET_DIR: target
   CARGO_NET_RETRY: 2
 
+# ジョブが既定で持つ権限。リポジトリの既定の設定に依存しないよう、
+# 読み取りだけを明示する。書き込みが要るジョブは、ジョブの
+# permissions:で足す（#542）
+permissions:
+  contents: read
+
 jobs:
   test:
     name: Test

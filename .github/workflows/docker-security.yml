@@ -31,6 +31,12 @@ env:
   IMAGE_NAME: mcp-rs
   REGISTRY: ghcr.io
 
+# ジョブが既定で持つ権限。リポジトリの既定の設定に依存しないよう、
+# 読み取りだけを明示する。書き込みが要るジョブは、ジョブの
+# permissions:で足す（#542）
+permissions:
+  contents: read
+
 jobs:
   build-and-scan:
     name: Build and Security Scan

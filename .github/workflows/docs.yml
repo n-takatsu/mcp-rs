@@ -15,10 +15,20 @@ concurrency:
   group: "pages"
   cancel-in-progress: true
 
+# ジョブが既定で持つ権限。リポジトリの既定の設定に依存しないよう、
+# 読み取りだけを明示する。書き込みが要るジョブは、ジョブの
+# permissions:で足す（#542）
+permissions:
+  contents: read
+
 jobs:
   # Build job
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # actions/configure-pages が、Pagesの設定を読む
+      pages: read
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
