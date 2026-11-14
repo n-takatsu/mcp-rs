@@ -86,6 +86,10 @@ pub struct DatabaseToolOptions {
     /// `execute_query`が返す行数の上限。超えた分は返さず、`truncated`を
     /// `true`にする
     pub max_rows: usize,
+    /// `execute_query`が返す結果のだいたいのバイト数の上限（#539）。超えた
+    /// 行は返さず、`truncated`を`true`にする。1行目だけで超えるときは、
+    /// 大きな値を切り詰める
+    pub max_result_bytes: usize,
 }
 
 impl Default for DatabaseToolOptions {
@@ -93,8 +97,79 @@ impl Default for DatabaseToolOptions {
         Self {
             allow_write: false,
             max_rows: 1000,
+            max_result_bytes: crate::config::DatabaseSettings::DEFAULT_MAX_RESULT_BYTES as usize,
         }
     }
+}
+
+/// 1つの値に必ず残すバイト数（列が多くても、値が読めないほど短くしない）
+const MIN_CELL_BYTES: usize = 1024;
+
+/// `rows`を、だいたいのバイト数が`max_bytes`に収まるところまで残す（#539）。
+/// 1行目は、それだけで超えても残す（`cut_cells`で切り詰める）。行を除いたら
+/// `true`を返す
+fn keep_rows_within(rows: &mut Vec<Vec<Value>>, max_bytes: usize) -> bool {
+    let mut total = 0usize;
+    for (index, row) in rows.iter().enumerate() {
+        total += row.iter().map(Value::approx_json_size).sum::<usize>();
+        if total > max_bytes && index > 0 {
+            rows.truncate(index);
+            return true;
+        }
+    }
+    false
+}
+
+/// 1行だけで`max_bytes`を超えるとき、大きな値を切り詰める（#539）。切り
+/// 詰めたら`true`を返す
+fn cut_cells(row: &mut [Value], max_bytes: usize) -> bool {
+    let size: usize = row.iter().map(Value::approx_json_size).sum();
+    if size <= max_bytes || row.is_empty() {
+        return false;
+    }
+    let per_cell = (max_bytes / row.len()).max(MIN_CELL_BYTES);
+    let mut cut = false;
+    for value in row.iter_mut() {
+        if value.approx_json_size() > per_cell {
+            *value = std::mem::replace(value, Value::Null).cut_to(per_cell);
+            cut = true;
+        }
+    }
+    cut
+}
+
+/// 監査ログに書くエラーの文から、値を除く（#539）。PostgreSQLのエラーは、
+/// `invalid input syntax for type uuid: "…"`のように、引用符の中に値を
+/// 含むことがある。引用符の中はすべて伏せる（表の名前等も伏せるが、SQLは
+/// 別に記録している）。クライアントには、伏せずに返す
+fn redact_error_for_audit(message: &str) -> String {
+    const MAX_CHARS: usize = 500;
+    let mut out = String::new();
+    let mut quote: Option<char> = None;
+    for c in message.chars() {
+        match quote {
+            Some(q) if c == q => {
+                out.push('…');
+                out.push(c);
+                quote = None;
+            }
+            Some(_) => {}
+            None => {
+                out.push(c);
+                if c == '"' || c == '\'' {
+                    quote = Some(c);
+                }
+            }
+        }
+    }
+    if quote.is_some() {
+        out.push('…');
+    }
+    if out.chars().count() > MAX_CHARS {
+        out = out.chars().take(MAX_CHARS).collect();
+        out.push('…');
+    }
+    out
 }
 
 /// 監査ログに記録するSQLの長さの上限（文字数）
@@ -130,13 +205,21 @@ impl DatabaseHandler {
         use crate::handlers::database::types::{ConnectionConfig, FeatureConfig, PoolConfig};
 
         settings.validate()?;
+        use crate::handlers::database::engines::postgresql::{
+            pg_connection, OPTION_BYTE_LIMIT, OPTION_FETCH_LIMIT, OPTION_SSL_ROOT_CERT,
+        };
         let max_rows = settings.max_rows() as usize;
+        let max_result_bytes = usize::try_from(settings.max_result_bytes()).unwrap_or(usize::MAX);
         let mut options = HashMap::new();
         // 上限より1行多く読み、超えたかを知る
-        options.insert(
-            crate::handlers::database::engines::postgresql::OPTION_FETCH_LIMIT.to_string(),
-            (max_rows + 1).to_string(),
-        );
+        options.insert(OPTION_FETCH_LIMIT.to_string(), (max_rows + 1).to_string());
+        // バイト数も、上限を超えた行まで読んで止める（#539）
+        options.insert(OPTION_BYTE_LIMIT.to_string(), max_result_bytes.to_string());
+        if let Some(cert) = settings.ssl_root_cert.as_deref().map(str::trim) {
+            if !cert.is_empty() {
+                options.insert(OPTION_SSL_ROOT_CERT.to_string(), cert.to_string());
+            }
+        }
         let config = DatabaseConfig {
             database_type: DatabaseType::PostgreSQL,
             connection: ConnectionConfig {
@@ -168,8 +251,17 @@ impl DatabaseHandler {
             .with_tool_options(DatabaseToolOptions {
                 allow_write: settings.allow_write(),
                 max_rows,
+                max_result_bytes,
             })
             .with_status_line(settings.describe());
+        // 通信を守れないTLSの設定なら、警告する（#539）。環境変数
+        // （`PGSSLMODE`等）を反映した後の値で確かめる
+        if let Some(warning) = pg_connection::connect_options(&config.connection)
+            .ok()
+            .and_then(|connect| pg_connection::weak_tls_warning(&connect))
+        {
+            warn!("{}", warning);
+        }
         handler
             .add_database("postgresql".to_string(), config)
             .await
@@ -277,7 +369,7 @@ impl DatabaseHandler {
             entry = entry.add_metadata("sql".to_string(), text);
         }
         if let Err(e) = result {
-            entry = entry.add_metadata("error".to_string(), e.to_string());
+            entry = entry.add_metadata("error".to_string(), redact_error_for_audit(&e.to_string()));
         }
         let entry = crate::mcp::audit_tool_call_context(entry, started);
         if let Err(e) = audit_logger.log(entry).await {
@@ -526,6 +618,12 @@ impl DatabaseHandler {
             .await
             .map_err(|e| McpError::InvalidRequest(e.to_string()))?;
 
+        // 返すバイト数の上限（#539）。接続は上限を超えた行まで読んで止める
+        // ので、超えたかが分かる。暗号化の処理で値の大きさが変わる前に
+        // 確かめる
+        let max_result_bytes = self.tool_options.max_result_bytes;
+        let mut truncated = keep_rows_within(&mut result.rows, max_result_bytes);
+
         if let Some(resolution) = provenance {
             let manager = self
                 .column_encryption
@@ -537,16 +635,21 @@ impl DatabaseHandler {
         // 返す行数の上限（#453）。接続は上限より1行多く読むので、超えたかが
         // 分かる
         let max_rows = self.tool_options.max_rows;
-        let truncated = result.rows.len() > max_rows;
-        if truncated {
+        if result.rows.len() > max_rows {
             result.rows.truncate(max_rows);
-            result.total_rows = Some(max_rows as u64);
+            truncated = true;
         }
+        // 1行だけで上限を超えるなら、大きな値を切り詰める（#539）
+        if let [row] = result.rows.as_mut_slice() {
+            truncated |= cut_cells(row, max_result_bytes);
+        }
+        result.total_rows = Some(result.rows.len() as u64);
 
         // 結果をJSON形式で返す
         Ok(json!({
             "truncated": truncated,
             "max_rows": max_rows,
+            "max_result_bytes": max_result_bytes,
             "columns": result.columns.iter().map(|col| json!({
                 "name": col.name,
                 "type": col.data_type,
@@ -863,6 +966,7 @@ impl McpHandler for DatabaseHandler {
             }
         });
         let max_rows = self.tool_options.max_rows;
+        let max_result_bytes = self.tool_options.max_result_bytes;
         let mut tools = vec![
             Tool {
                 name: "execute_query".to_string(),
@@ -870,9 +974,10 @@ impl McpHandler for DatabaseHandler {
                 description: format!(
                     "Run one SELECT statement on the configured database and return the rows as JSON. \
                      It runs in a read-only transaction that is rolled back, so it cannot change data. \
-                     At most {max_rows} rows are returned (truncated is true when there were more): \
-                     use LIMIT, WHERE, or aggregates for large tables. Values of types that cannot be \
-                     shown are replaced by a note; cast such columns to text."
+                     At most {max_rows} rows and about {max_result_bytes} bytes are returned \
+                     (truncated is true when there were more, and a value too large on its own is cut): \
+                     use LIMIT, WHERE, or aggregates for large tables, and substring() for large values. \
+                     Values of types that cannot be shown are replaced by a note; cast such columns to text."
                 ),
                 input_schema: json!({
                     "type": "object",
@@ -1021,6 +1126,61 @@ impl McpHandler for DatabaseHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn text_row(sizes: &[usize]) -> Vec<Value> {
+        sizes
+            .iter()
+            .map(|n| Value::String("x".repeat(*n)))
+            .collect()
+    }
+
+    /// 上限に収まる行だけを残す。1行目は、それだけで超えても残す（#539）
+    #[test]
+    fn test_keep_rows_within() {
+        // 1行は約103バイト
+        let mut rows: Vec<Vec<Value>> = (0..10).map(|_| text_row(&[100])).collect();
+        assert!(keep_rows_within(&mut rows, 350));
+        assert_eq!(rows.len(), 3);
+
+        let mut rows: Vec<Vec<Value>> = (0..3).map(|_| text_row(&[100])).collect();
+        assert!(!keep_rows_within(&mut rows, 350));
+        assert_eq!(rows.len(), 3);
+
+        let mut rows = vec![text_row(&[10_000]), text_row(&[1])];
+        assert!(keep_rows_within(&mut rows, 350));
+        assert_eq!(rows.len(), 1);
+    }
+
+    /// 1行だけで上限を超えるとき、大きな値だけを切り詰める（#539）
+    #[test]
+    fn test_cut_cells() {
+        let mut row = text_row(&[10, 100_000]);
+        assert!(cut_cells(&mut row, 10_000));
+        assert!(matches!(&row[0], Value::String(s) if s.len() == 10));
+        assert!(matches!(&row[1], Value::String(s) if s.len() < 10_000 && s.contains("[cut:")));
+
+        let mut row = text_row(&[10, 100]);
+        assert!(!cut_cells(&mut row, 10_000));
+    }
+
+    /// 監査ログのエラーの文から、引用符の中（値）を伏せる（#539）
+    #[test]
+    fn test_redact_error_for_audit() {
+        assert_eq!(
+            redact_error_for_audit(r#"invalid input syntax for type integer: "secret""#),
+            r#"invalid input syntax for type integer: "…""#
+        );
+        assert_eq!(
+            redact_error_for_audit("value 'secret' and 'more"),
+            "value '…' and '…"
+        );
+        assert_eq!(
+            redact_error_for_audit("statement timeout"),
+            "statement timeout"
+        );
+        let long = redact_error_for_audit(&"x".repeat(2000));
+        assert_eq!(long.chars().count(), 501);
+    }
 
     /// リソースは、読み取り専用の実在するツールと同じ扱いになる（#538）
     #[tokio::test]

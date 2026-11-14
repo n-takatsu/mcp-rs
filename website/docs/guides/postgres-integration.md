@@ -91,7 +91,7 @@ Ask the client about your data. It will call:
 - `get_schema` to see the tables and columns
 - `execute_query` to run a `SELECT`, with values passed as `$1`, `$2`, … parameters
 
-Results are limited to 1,000 rows by default (`max_rows`), and each statement to 30 seconds (`query_timeout_seconds`). For large tables, ask for `LIMIT` or aggregates.
+Results are limited to 1,000 rows (`max_rows`) and about 10 MB (`max_result_bytes`) by default, and each statement to 30 seconds (`query_timeout_seconds`). For large tables, ask for `LIMIT` or aggregates.
 
 ## Allowing writes
 

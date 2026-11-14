@@ -20,7 +20,7 @@ What mcp-rs does to protect your WordPress site, your database, and the HTTP lis
 | What they may call | Per API key or token, the tools it may use (for example `@read_only`) | [Limiting tools](#limiting-tools-per-api-key-or-token) |
 | How often | Rate limits on WordPress and plugin tool calls | [WordPress](../wordpress/) |
 | WordPress input | `upload_media` checks the MIME type, extension, file content, and size, and reads local files only from `upload_allowed_dirs` (off by default) | [WordPress](../wordpress/#supported-file-types) |
-| Database | Read-only by default: one `SELECT` per call, run in a read-only transaction. Writes only with `allow_write = true`. Values are bound as parameters | [Database](../database/#safety) |
+| Database | Read-only by default: one `SELECT` per call, run in a read-only transaction. Writes only with `allow_write = true`. Values are bound as parameters. Results have a row and size limit. A warning at startup when TLS does not check the server | [Database](../database/#safety) |
 | Plugins | Plugins can run in a Docker container or a Kubernetes Job to limit what they can reach | [Plugins](../plugins/) |
 | Record | Every tool call is written to the audit log: who called which tool, and the result | [Audit log](#audit-log) |
 
@@ -290,7 +290,7 @@ Each entry has these fields:
 
 Claude Desktop may start two mcp-rs processes for one entry, and Windows reuses process IDs. To find which process handled a tool call, use `instance` (the process ID and the local time it started, such as `70580-20261110T130333`). The same value appears in the regular log's startup line (`=== mcp-rs … started at … / pid … / instance … / log: … ===`) and in the `Instance` line of `mcp_rs_status`
 
-API keys, access tokens, and tool arguments (such as post content or file contents) are not recorded, because they can contain secrets. The one exception is the SQL statement of database tools, so that you can see what was run; the values of its parameters (`$1`, `$2`, …) are not recorded. Do not write secrets into the SQL itself. Up to version 0.18.4, only WordPress tools that change something were recorded, without the caller.
+API keys, access tokens, and tool arguments (such as post content or file contents) are not recorded, because they can contain secrets. The one exception is the SQL statement of database tools, so that you can see what was run; the values of its parameters (`$1`, `$2`, …) are not recorded. Do not write secrets into the SQL itself. In the `error` of database tools, everything in quotes is replaced by `…`, because PostgreSQL error messages can contain a parameter value. Up to version 0.18.4, only WordPress tools that change something were recorded, without the caller.
 
 ## Best Practices
 

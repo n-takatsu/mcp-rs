@@ -247,6 +247,71 @@ impl Value {
     pub fn from_bool(b: bool) -> Self {
         Value::Bool(b)
     }
+
+    /// 結果のJSONにしたときの、だいたいのバイト数（#539）。結果の大きさの
+    /// 上限に使う。区切りの`,`の分を含む。バイナリはbase64の長さ
+    pub fn approx_json_size(&self) -> usize {
+        1 + match self {
+            Value::Null => 4,
+            Value::Bool(_) => 5,
+            Value::Int(_) => 20,
+            Value::Float(_) => 24,
+            Value::String(s) => s.len() + 2,
+            Value::Binary(bytes) => bytes.len().div_ceil(3) * 4 + 2,
+            Value::Json(json) => json_size(json),
+            Value::DateTime(_) => 35,
+        }
+    }
+
+    /// `max_bytes`（だいたいのバイト数）に収まらない値を短くする（#539）。
+    /// 文字列は先頭を残し、切ったと分かる文を付ける。バイナリ・JSONは
+    /// 途中で切ると別の値に見えるので、大きさを示す文に置き換える
+    pub fn cut_to(self, max_bytes: usize) -> Value {
+        let size = self.approx_json_size();
+        if size <= max_bytes {
+            return self;
+        }
+        const HINT: &str = "select a part of it, e.g. substring(column from 1 for 1000)";
+        match self {
+            Value::String(s) => {
+                let mut end = max_bytes.min(s.len());
+                while !s.is_char_boundary(end) {
+                    end -= 1;
+                }
+                Value::String(format!(
+                    "{}… [cut: {} bytes in total; {HINT}]",
+                    &s[..end],
+                    s.len()
+                ))
+            }
+            Value::Binary(bytes) => Value::String(format!(
+                "[binary value of {} bytes not shown: too large for the result; {HINT}]",
+                bytes.len()
+            )),
+            Value::Json(_) => Value::String(format!(
+                "[JSON value of about {size} bytes not shown: too large for the result; \
+                 select a part of it, e.g. column->'key']"
+            )),
+            other => other,
+        }
+    }
+}
+
+/// JSONの値を書き出したときのバイト数（書き出さずに数える）
+fn json_size(json: &serde_json::Value) -> usize {
+    struct Counter(usize);
+    impl std::io::Write for Counter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0 += buf.len();
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut counter = Counter(0);
+    let _ = serde_json::to_writer(&mut counter, json);
+    counter.0
 }
 
 /// クエリ結果
@@ -527,4 +592,46 @@ pub enum ValidationResult {
     Approved,
     Denied(String),
     Warning(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_approx_json_size() {
+        assert_eq!(Value::Null.approx_json_size(), 5);
+        assert_eq!(Value::String("abc".into()).approx_json_size(), 6);
+        // base64: 3バイト→4文字
+        assert_eq!(Value::Binary(vec![0; 3]).approx_json_size(), 7);
+        assert_eq!(
+            Value::Json(serde_json::json!({"a": [1, 2]})).approx_json_size(),
+            r#"{"a":[1,2]}"#.len() + 1
+        );
+    }
+
+    /// 大きな値を切り詰める（#539）
+    #[test]
+    fn test_cut_to() {
+        let small = Value::String("abc".into());
+        assert!(matches!(small.cut_to(100), Value::String(s) if s == "abc"));
+
+        let Value::String(cut) = Value::String("あ".repeat(100)).cut_to(10) else {
+            panic!("a string stays a string");
+        };
+        // 文字の途中では切らない（「あ」は3バイト）
+        assert!(cut.starts_with("あああ…"), "{cut}");
+        assert!(cut.contains("[cut: 300 bytes in total"), "{cut}");
+
+        let Value::String(note) = Value::Binary(vec![0; 1000]).cut_to(10) else {
+            panic!("binary becomes a note");
+        };
+        assert!(note.contains("1000 bytes"), "{note}");
+        let Value::String(note) = Value::Json(serde_json::json!(vec!["x"; 100])).cut_to(10) else {
+            panic!("JSON becomes a note");
+        };
+        assert!(note.contains("JSON value"), "{note}");
+        // 小さな型は、そのまま
+        assert!(matches!(Value::Int(1).cut_to(1), Value::Int(1)));
+    }
 }

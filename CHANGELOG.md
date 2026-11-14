@@ -41,6 +41,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **互換性のない変更（ライブラリ）**: `EnvExpansionError`に`Empty`（変数は
   あるが値が空）を足した（#534）。`match`で全部の場合を書いているコードは、
   この場合を足す必要がある
+- **互換性のない変更（ライブラリ）**: `DatabaseToolOptions`に
+  `max_result_bytes`、`DatabaseSettings`に`max_result_bytes`・
+  `ssl_root_cert`を足した（#539）。構造体を直接作っているコードは、
+  これらを足すか、`..Default::default()`を使う必要がある
 - READMEとClaude Desktopのガイドに、Claude Desktopには環境変数が渡らない
   こと、`env`と設定ファイルの`${VAR}`の関係、`--config`の有無での
   `WORDPRESS_*`の扱いの違い、`enabled = true`が要ること、Windowsでの設定の
@@ -82,6 +86,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- データベースの`execute_query`の結果に、バイト数の上限を付けた（#539）。
+  以前は行数の上限（`max_rows`）だけで、`SELECT repeat('x', 200000000)
+  FROM generate_series(1, 1000)`のような、読み取り専用の正しいSELECT
+  1つで、mcp-rsがメモリを使い切って落ちた（同じプロセスのWordPressの
+  ツール・プラグインも止まる）。`[database]`の`max_result_bytes`（既定は
+  10MB）を超えた行は返さず、`truncated`を`true`にする。1行目だけで
+  超えるときは、大きな値を切り詰める（文字列は先頭を残し、`bytea`・`json`
+  は大きさを示す文に置き換える）。行はカーソル（`DECLARE … CURSOR`・
+  `FETCH`）で少しずつ受け取り、上限で閉じるので、PostgreSQLも残りの行を
+  作らない。結果には`max_result_bytes`も返す
+- データベースの接続をプールに戻すとき、セッションの設定とロールを元に
+  戻すようにした（#539）。以前は、`allow_write = true`のとき、
+  `execute_command`の中の`set_config('role', …, false)`等で変えた設定が
+  コミットされて接続に残り、その接続の後の`execute_query`・`get_schema`が、
+  別のロールや`search_path`で動いた。`get_schema`も、読み取り専用の
+  トランザクションと`statement_timeout`の中で実行する（以前は時間の上限が
+  無かった）
+- データベースのツールの監査ログに、パラメーターの値を書かないようにした
+  （#539）。以前は、値を含むエラー（mcp-rsの型の検査の
+  `parameter $1: '<値>' is not a valid uuid`と、PostgreSQLのキャストの
+  エラー）を、そのまま`error`に書いていた。mcp-rsのエラーの文から値を除き、
+  監査ログに書くエラーの文では、引用符の中を`…`に伏せる（クライアントには
+  全文を返す）
+- データベースのTLSについて、`[database]`に`ssl_root_cert`（CAのファイル）
+  を足した（#539）。非公開のCA（RDS等）でも、`verify-ca`・`verify-full`を
+  使える。ループバック・Unixソケット以外のホストで、`ssl_mode`が
+  `verify-full`より弱いときは、起動時に警告する（既定の`prefer`は、
+  証明書を確かめず、黙って平文に落ちる）。設定に書かないとき使われる
+  環境変数（`PGSSLMODE`・`PGSSLROOTCERT`・`PGPASSWORD`・`PGOPTIONS`等）と
+  `.pgpass`を、ドキュメントに書いた
 - HTTPモードで、APIキー・アクセストークンごとのツールの制限（`tools`・
   `scope_tools`）を、リソース（`resources/list`・`resources/read`）にも
   効かせた（#538）。以前は、`tools = []`のキーでも、`wordpress://posts`・
