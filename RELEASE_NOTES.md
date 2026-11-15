@@ -4,6 +4,82 @@
 
 Our project follows a detailed 0.01 increment versioning strategy to provide granular tracking of development progress and feature implementation.
 
+## 🔐 v0.24.0 - セキュリティの見直しとOSの資格情報ストア
+
+**Release Date:** 2026-11-15
+**Focus:** WordPressの資格情報を、OSの資格情報ストアから読めるようにする。全体のセキュリティの見直し（#538〜#543）の指摘を直す。`configs/`の設定ファイルの例を、今の形に揃える
+
+### ⚠️ 移行の注意（利用者の操作が要るもの）
+
+- **`--config`無しでは、今のフォルダの設定ファイルを読まない**（#541）:
+  `mcp-config.toml`・`config.toml`・`config/mcp.toml`を今のフォルダに置いて
+  使っていた場合は、`--config <絶対パス>`を付けるか、
+  `~/.config/mcp-rs/config.toml`に置く
+- **HTTPモードで、ループバック以外で待ち受けるときは、認証が要る**（#540）:
+  APIキー・OAuth・mTLSのどれも無いと起動しない。前に置いたもの（ログインを
+  求めるリバースプロキシ等）が認証するときだけ、
+  `allow_unauthenticated_external = true`を書く
+- **リバースプロキシのヘッダーを使う設定は、`trusted_proxies`が要る**
+  （#543）: `tls_enabled`無しの`enforce_https`・証明書のピン留めと、
+  `ids_trust_forwarded_for`は、`trusted_proxies`にプロキシのアドレスを
+  書かないと起動しない
+- **Docker ComposeのPostgreSQLは、`docker-compose.postgres.yml`に分けた**
+  （#543）: `POSTGRES_PASSWORD`の既定値（`changeme`）は無くなり、設定しないと
+  止まる。`docker compose -f docker-compose.yml -f docker-compose.postgres.yml up -d`
+  で使う
+
+### 🔑 OSの資格情報ストア（#533・#541）
+
+- `[handlers.wordpress]`に`keyring = "<名前>"`と書き、
+  `mcp-rs wordpress-keyring set <名前>`でサイトのURL・ユーザー名・
+  アプリケーションパスワードを登録する（Windowsの資格情報マネージャー、
+  macOSのキーチェーン、LinuxのSecret Service）。Claude Desktop・Claude Code・
+  ターミナルのどれから起動しても、同じ1か所から読む
+- 登録したサイトのURLと、設定の`url`が同じときだけ使う。パスワードを、
+  ほかのサイトへ送らない
+- HTTPモードのAPIキーでも、`${VAR}`（環境変数）を使えるようにした（#534）
+
+### 🔐 セキュリティの見直し（#538〜#543）
+
+- **HTTPモード**: 同時の接続数・リクエストの大きさ・受け取る時間に上限を
+  付けた。WebSocket（`/ws`）は、無通信・トークンの期限・止まった相手を
+  閉じる。応答の送信は、64KB/秒より遅い回線では、大きな応答で切れることが
+  ある。認証の失敗の監査ログには、1分あたりの上限を付けた。APIキー・
+  スコープのツールの制限を、リソースにも効かせた（#538）
+- **プロキシ・IDS・リプレイ攻撃対策**: プロキシのヘッダーは
+  `trusted_proxies`からだけ使う。IDSは、呼び出し元を`X-User-ID`ではなく、
+  認証した呼び出し元かIPで見分け、記録に上限を付けた。リプレイ攻撃対策の
+  nonceは、呼び出し元ごとに覚える
+- **データベース**: `execute_query`の結果に、大きさの上限（既定10MB）を
+  付けた。プールで使い回す接続に、セッションの設定が残らないようにした。
+  TLSの設定（`ssl_root_cert`）の誤りで、確かめずにつながらないようにした。
+  `get_schema`は外部キーとインデックスも返し、NaN・±Infinityは文字列で
+  返す（#539・#543）
+- **ログと秘密情報**: Unix系で、ログを本人だけが読める権限で作る。
+  設定ファイルの誤りのエラーで、値（パスワードのことがある）を出さない。
+  暗号化した資格情報の鍵の導出を、60万回にした（今の暗号文はそのまま
+  読める。60万回にするには作り直す）
+- **CI**: 外部のアクションをSHAで固定し、ワークフローの権限を減らした（#542）
+- 使われていないコード（認証の無いTCPのサーバー、単独のWebSocketの
+  サーバー等）を削除した
+
+### 🧹 設定ファイルの例（#557）
+
+- `configs/`の例を、今のmcp-rsが読む形に直した。存在しない
+  「ファイルシステムハンドラー」等、黙って無視されていたキーを消し、
+  `examples/multi-handler.toml`を、WordPress・PostgreSQL・プラグインを
+  一緒に使う例にした。例が古くならないよう、テストで確かめる
+- 効いていなかった`[transport.stdio]`の設定を削除した（書いてあっても
+  無視する）
+
+### 互換性のない変更（ライブラリ）
+
+設定の構造体への項目の追加（`HttpConfig`・`WordPressConfig`・
+`EncryptedCredentials`等）と、使われていない型・モジュールの削除
+（`McpServer::run`・`transport::websocket::server`・`StdioTransport`・
+`handlers::multi`・`handlers::generic`・`transport::stdio`等）がある。
+詳しくはCHANGELOGを参照。このため0.24.0とした
+
 ## 🗄️ v0.23.0 - データベースのツールとDockerのイメージ
 
 **Release Date:** 2026-11-12
