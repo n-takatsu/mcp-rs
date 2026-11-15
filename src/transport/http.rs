@@ -6371,7 +6371,10 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs();
-        let token = auth.token(OAUTH_RESOURCE, serde_json::json!({ "exp": now + 2 }));
+        // 期限は、接続できるだけの余裕を持たせる。`now`は秒で切り捨てるので、
+        // 実際に残る時間は1秒ほど短い。以前の2秒では、混んだCI（Windows）で
+        // 接続する前に切れ、401になることがあった
+        let token = auth.token(OAUTH_RESOURCE, serde_json::json!({ "exp": now + 6 }));
         let mut request = format!("ws://localhost:{}/ws", port)
             .into_client_request()
             .unwrap();
@@ -6380,7 +6383,7 @@ mod tests {
             format!("Bearer {}", token).parse().unwrap(),
         );
         let (mut ws, _) = tokio_tungstenite::connect_async(request).await.unwrap();
-        let code = ws_close_code(&mut ws, std::time::Duration::from_secs(6)).await;
+        let code = ws_close_code(&mut ws, std::time::Duration::from_secs(15)).await;
         assert_eq!(code, Some(Some(close_code::POLICY)));
     }
 
