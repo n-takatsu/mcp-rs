@@ -1,13 +1,11 @@
-# MCP-RS Configuration Files v0.16.0
+# MCP-RS Configuration Files
 
-MCP-RSの設定ファイル管理ディレクトリです。用途別に整理された設定ファイルを提供します。
+MCP-RSの設定ファイルの例です。用途別に置いています。
 
-## 🆕 v0.16.0 統合アップデート
-
-- ルートレベルの分散設定ファイル（mcp-config*.toml）を `configs/` に統合
-- Transport統合アーキテクチャ対応
-- 必須ハンドラー設定の追加
-- 重複設定の解消
+- mcp-rsが読むのは、`[server]`・`[transport]`・`[handlers]`（`[handlers.wordpress]`）・`[database]`・`[[plugins]]`・`[audit]`です
+- 知らないキーはエラーにならず、黙って無視されます。そのため、ここの例は、どれも読まれないキーが無いことを、テスト（`tests/config_examples_test.rs`）で確かめています（#557）
+- v0.23.0までは、`production/`等の例に、mcp-rsが読まないキーがありました。例えば、存在しない「ファイルシステムハンドラー」（`[filesystem]`）・`[security]`・`[logging]`です
+- ファイルを読みたいときは、MCPのファイルシステムのサーバーを、プラグイン（`[[plugins]]`）として足します
 
 ## 📁 ディレクトリ構成
 
@@ -15,36 +13,30 @@ MCP-RSの設定ファイル管理ディレクトリです。用途別に整理�
 
 本番環境で使用する設定ファイル
 
-- **`main.toml`** - メイン設定（デフォルトSTDIO）
-  - Transport統合アーキテクチャ対応
-  - ファイルシステムハンドラー（読み取り専用）
-  - 標準的な本番環境設定
+- **`main.toml`** - いちばん小さいSTDIOの設定
+  - ハンドラーは無し（`mcp_rs_status`だけ）。WordPressの例をコメントで置いています
 
-- **`claude-desktop.toml`** - Claude Desktop統合用設定
-  - STDIO通信専用
-  - ログファイル出力のみ（コンソール出力制限）
-  - 本番レベルのセキュリティ設定
+- **`claude-desktop.toml`** - Claude DesktopとClaude Code用（STDIO）
+  - WordPressの資格情報を、環境変数`WORDPRESS_URL`・`WORDPRESS_USERNAME`・`WORDPRESS_PASSWORD`から読みます
 
-- **`web-ui.toml`** - Web UI用設定
-  - HTTP Transport使用
-  - コンソール + ファイルログ出力
-  - CORS設定有効
-  - WordPress + ファイルシステムハンドラー
+- **`web-ui.toml`** - このPCのWebクライアント用（HTTP、`127.0.0.1:8081`）
+  - CORS有効、WordPress
 
 ## 🔧 Development (`development/`)
 
 開発・テスト用設定ファイル
 
 - **`demo.toml`** - デモンストレーション用
-- **`http-transport.toml`** - HTTP Transport テスト用
-- **`tcp.toml`** - TCP通信テスト用
-- **`testing.toml`** - 単体テスト用設定
+- **`http-transport.toml`** - HTTP Transport テスト用（`/ws`も有効）
+- **`testing.toml`** - テスト用（STDIO、WordPressを環境変数から）
+- `tcp.toml`は削除しました（#557）。mcp-rsにTCPのトランスポートはありません
 
 ## 📚 Examples (`examples/`)
 
 設定例・学習用ファイル
 
-- **`multi-handler.toml`** - 複数ハンドラー設定例
+- **`multi-handler.toml`** - WordPress・PostgreSQL（`[database]`）・プラグイン（`[[plugins]]`）を一緒に使う例
+  - v0.23.0までは、mcp-rsが読まない形式（`[handlers.<名前>]`に`type = "..."`）の例で、起動もしなかった（#557）
 - **`log-policy-demo.toml`** - ログポリシー設定デモ
 - **`module-separated.toml`** - モジュール分離ログ例
 
@@ -92,8 +84,8 @@ mcp-rs --config my-config.toml
 
 | 用途 | 設定ファイル | Transport | ログ出力 |
 |------|--------------|-----------|----------|
-| Claude Desktop使用 | `production/claude-desktop.toml` | STDIO | ファイルのみ |
-| Web UI使用 | `production/web-ui.toml` | HTTP | コンソール + ファイル |
+| Claude Desktop使用 | `production/claude-desktop.toml` | STDIO | ファイル + 標準エラー |
+| Web UI使用 | `production/web-ui.toml` | HTTP | ファイル + 標準エラー |
 | API開発・テスト | `development/http-transport.toml` | HTTP | 詳細ログ |
 | デモ・プレゼン | `development/demo.toml` | HTTP | 標準ログ |
 
@@ -101,15 +93,14 @@ mcp-rs --config my-config.toml
 
 ## Claude Desktop使用時
 
-- **必ず** `production/claude-desktop.toml` を使用
-- STDIO通信では標準出力にログが混在すると動作不能
-- `log_level = "error"` でコンソール出力を最小限に
+- `production/claude-desktop.toml`から始めると簡単です
+- STDIOでは、標準出力はJSON-RPCの通信だけに使います。mcp-rsは、ログを標準出力に書きません（ファイルと標準エラー）
 
 ## セキュリティ
 
 - 本番環境では環境変数 `${WORDPRESS_PASSWORD}` を使用
 - パスワードを平文で設定ファイルに記載しない
-- `.env` ファイルで機密情報を管理
+- Claude Desktopでは、`claude_desktop_config.json`の`env`で渡すか、OSの資格情報ストア（`keyring`）を使います
 
 ## ログ管理
 

@@ -11,14 +11,6 @@ log_level = "info"
 [transport]
 transport_type = "stdio"
 
-[transport.stdio]
-buffer_size = 8192
-timeout_ms = 30000
-content_length_header = true
-framing_method = "content-length"
-max_message_size = 1048576
-pretty_print = false
-
 [transport.http]
 addr = "127.0.0.1"
 port = 8080

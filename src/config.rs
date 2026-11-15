@@ -547,20 +547,11 @@ pub struct TransportConfig {
     /// TOMLでは `type = "stdio"` 表記も受け付ける（configs/production/*.toml 等で使用）。
     #[serde(alias = "type")]
     pub transport_type: Option<String>,
-    /// Stdio transport configuration
-    pub stdio: Option<StdioTransportConfig>,
+    // `[transport.stdio]`（`framing_method`等）は、v0.23.0まではここで読んで
+    // いたが、サーバー（`McpServer::run_stdio`）は使っていなかったので、
+    // 削除した（#557）。書いてあっても、無視する
     /// HTTP transport configuration
     pub http: Option<HttpTransportConfig>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct StdioTransportConfig {
-    pub buffer_size: Option<usize>,
-    pub timeout_ms: Option<u64>,
-    pub content_length_header: Option<bool>,
-    pub framing_method: Option<String>, // "content-length" | "line-based"
-    pub max_message_size: Option<usize>,
-    pub pretty_print: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -961,14 +952,6 @@ impl Default for McpConfig {
             },
             transport: TransportConfig {
                 transport_type: Some("stdio".to_string()),
-                stdio: Some(StdioTransportConfig {
-                    buffer_size: Some(8192),
-                    timeout_ms: Some(30000),
-                    content_length_header: Some(true),
-                    framing_method: Some("content-length".to_string()),
-                    max_message_size: Some(1048576),
-                    pretty_print: Some(false),
-                }),
                 http: None,
             },
             handlers: HandlersConfig { wordpress: None },
@@ -1527,14 +1510,6 @@ impl McpConfig {
             },
             transport: TransportConfig {
                 transport_type: Some("stdio".to_string()),
-                stdio: Some(StdioTransportConfig {
-                    buffer_size: Some(8192),
-                    timeout_ms: Some(30000),
-                    content_length_header: Some(true),
-                    framing_method: Some("content-length".to_string()),
-                    max_message_size: Some(1048576),
-                    pretty_print: Some(false),
-                }),
                 http: Some(HttpTransportConfig {
                     addr: Some("127.0.0.1".to_string()),
                     port: Some(8080),
@@ -1706,7 +1681,7 @@ impl McpConfig {
 
     /// Convert to transport configuration
     pub fn to_transport_config(&self) -> crate::transport::TransportConfig {
-        use crate::transport::{stdio::StdioConfig, FramingMethod, TransportType};
+        use crate::transport::TransportType;
 
         let transport_type = match self.transport.transport_type.as_deref() {
             Some("stdio") => TransportType::Stdio,
@@ -1730,22 +1705,6 @@ impl McpConfig {
                 }
             }
             _ => TransportType::Stdio, // Default fallback
-        };
-
-        let stdio_config = if let Some(stdio) = &self.transport.stdio {
-            StdioConfig {
-                buffer_size: stdio.buffer_size.unwrap_or(8192),
-                timeout_ms: stdio.timeout_ms.unwrap_or(30000),
-                content_length_header: stdio.content_length_header.unwrap_or(true),
-                framing_method: match stdio.framing_method.as_deref() {
-                    Some("line-based") => FramingMethod::LineBased,
-                    _ => FramingMethod::ContentLength,
-                },
-                max_message_size: stdio.max_message_size.unwrap_or(1048576),
-                pretty_print: stdio.pretty_print.unwrap_or(false),
-            }
-        } else {
-            StdioConfig::default()
         };
 
         let http_config = if let Some(ref http) = self.transport.http {
@@ -1820,7 +1779,6 @@ impl McpConfig {
 
         crate::transport::TransportConfig {
             transport_type,
-            stdio: stdio_config,
             http: http_config,
         }
     }
@@ -2694,6 +2652,17 @@ resource = "https://mcp.example.com/mcp"
         .unwrap();
         assert!(McpConfig::expand_wordpress_config(&mut wp).is_ok());
         assert_eq!(wp.password, "${WP_PASSWORD_NOT_SET_454}");
+    }
+
+    /// v0.23.0までの`[transport.stdio]`は、書いてあっても読み込める（無視
+    /// する、#557）
+    #[test]
+    fn test_former_transport_stdio_section_is_ignored() {
+        let config: McpConfig = toml::from_str(
+            "[server]\n[transport]\ntype = \"stdio\"\n\n[transport.stdio]\nbuffer_size = 8192\nframing_method = \"content-length\"\n\n[handlers]\n",
+        )
+        .unwrap();
+        assert_eq!(config.transport.transport_type.as_deref(), Some("stdio"));
     }
 
     #[test]

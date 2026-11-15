@@ -15,7 +15,6 @@ async fn test_config_creation() {
 async fn test_transport_config() {
     let transport = TransportConfig {
         transport_type: Some("stdio".to_string()),
-        stdio: None,
         http: None,
     };
 
