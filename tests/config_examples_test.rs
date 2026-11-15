@@ -5,6 +5,13 @@
 //! 無視されていた（`[filesystem]`・`[security]`・`[logging]`等）。読んだ
 //! 設定を書き戻し、元のファイルにあって書き戻しに無いキーを、読まれない
 //! キーとみなす。
+//!
+//! 限界（PR #559のレビュー）:
+//! - 中身が自由な表（`[[plugins]]`の`env`等）の下は、どんなキーも読んだ
+//!   まま書き戻されるので、見つけられない
+//! - 読み方は、`--config`で指定したファイルと同じ`toml::from_str`。
+//!   `--config`無しの読み込み（`McpConfig::load`、`config`クレートと
+//!   環境変数）とは道が違う
 
 use mcp_rs::config::McpConfig;
 use std::path::Path;
