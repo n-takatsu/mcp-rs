@@ -83,7 +83,7 @@ The Copilot chat in VS Code uses the MCP servers registered with the Copilot CLI
 copilot mcp add mcp-rs -- /path/to/mcp-rs --config /path/to/mcp-config.toml
 ```
 
-If the chat cannot find the tools, the reason is in `~/.copilot/logs/process-*.log` (`MCP server connection failed`).
+The Copilot CLI passes mcp-rs only `PATH` from your environment, plus the variables given with `--env`, which are written as they are to `~/.copilot/mcp-config.json`. Do not register mcp-rs with credentials in a workspace `.mcp.json` or `.github/mcp.json`, which can be committed. If the chat cannot find the tools, the reason is in `~/.copilot/logs/process-*.log` (`MCP server connection failed`).
 
 ### HTTP clients
 

@@ -126,14 +126,16 @@ Claude Codeは自分の環境変数をmcp-rsに渡すので、`${...}`でユー�
 
 ### VS Code（GitHub Copilot）
 
-VS CodeのCopilotのチャットは、Copilot CLIで動き、Copilot CLIに登録したMCPサーバーを使います。`copilot`コマンドで、絶対パスで登録します。`--` より後ろが mcp-rs の起動コマンドです。登録先は`~/.copilot/mcp-config.json`で、VS Codeのチャットと、ターミナルの`copilot`の両方が読みます。
+VS CodeのCopilotのチャットは、Copilot CLI（Agent Host）で動き、Copilot CLIに登録したMCPサーバーを使います（`.vscode/mcp.json`を自分で読む従来のLocalの仕組みは、2027年2月に削除される予定です）。`copilot`コマンドで、絶対パスで登録します。`--` より後ろが mcp-rs の起動コマンドです。登録先は`~/.copilot/mcp-config.json`で、VS Codeのチャットと、ターミナルの`copilot`の両方が読みます。
 
 ```bash
 copilot mcp add mcp-rs -- "C:/Program Files/MCP-rs/mcp-rs.exe" --config C:/Users/you/AppData/Roaming/Claude/mcp-rs/mcp-config.toml
 ```
 
-- 資格情報は、資格情報ストア（`keyring`）に置きます。`.vscode/mcp.json`で`${input:...}`（値の入力）を使うサーバーは、Copilotのチャットに渡りません。Copilot CLIは、`.vscode/mcp.json`を読みません。`--env`で渡した値は、そのまま`~/.copilot/mcp-config.json`に書かれます
-- 資格情報を使うmcp-rsを、ワークスペースの`.mcp.json`・`.github/mcp.json`に登録しないでください。リポジトリに入れる前提のファイルです
+- 資格情報は、資格情報ストア（`keyring`）に置きます。Copilot CLIは、`.vscode/mcp.json`を自分では読みません。VS Codeが、そこにあるサーバーを転送しますが、`${input:...}`（値の入力）を使うサーバーは転送しません
+- Copilot CLIがmcp-rsに渡す環境変数は、`PATH`と、`--env`で書いたものだけです（[GitHubのドキュメント](https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-mcp-servers)）。`${...}`を読む設定ファイル（`configs/production/claude-desktop.toml`等）や、`encrypted_credentials`（`WORDPRESS_MASTER_PASSWORD`）を使うときは、その変数を`--env`で渡します。`--env`の値は、そのまま`~/.copilot/mcp-config.json`に書かれます
+- 実機で確かめたのは、Windowsの`keyring`です。macOS・Linuxはまだ確かめていません。Linuxでは、`DBUS_SESSION_BUS_ADDRESS`が無いと、Secret Serviceに届かないことがあります
+- 資格情報を使うmcp-rsを、ワークスペースの`.mcp.json`・`.github/mcp.json`に登録しないでください。リポジトリのフォルダにあり、リポジトリに入りうるファイルです（`.github/mcp.json`は入れる前提です）
 - 登録したら、VS Codeを起動し直し、新しいチャットを始めます。`copilot mcp list`、またはチャットで`mcp_rs_status`を呼んで確かめます
 - mcp-rsが起動しないとき、チャットは「ツールが見つからない」としか言いません。理由は、Copilot CLIのログ（`~/.copilot/logs/process-*.log`）の`MCP server connection failed`の行に、mcp-rsのエラーとともに出ます
 

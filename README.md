@@ -126,14 +126,16 @@ Claude Code passes its own environment to mcp-rs, so `${...}` can also read user
 
 ### VS Code (GitHub Copilot)
 
-The Copilot chat in VS Code runs on the Copilot CLI and uses the MCP servers registered for it. Register mcp-rs with the `copilot` command, with absolute paths. Everything after `--` is the mcp-rs command line. This writes `~/.copilot/mcp-config.json`, which both the chat in VS Code and `copilot` in a terminal read:
+The Copilot chat in VS Code runs on the Copilot CLI (the agent host; the older local harness, which reads `.vscode/mcp.json` itself, is to be removed in February 2027) and uses the MCP servers registered for it. Register mcp-rs with the `copilot` command, with absolute paths. Everything after `--` is the mcp-rs command line. This writes `~/.copilot/mcp-config.json`, which both the chat in VS Code and `copilot` in a terminal read:
 
 ```bash
 copilot mcp add mcp-rs -- "C:/Program Files/MCP-rs/mcp-rs.exe" --config C:/Users/you/AppData/Roaming/Claude/mcp-rs/mcp-config.toml
 ```
 
-- Keep the credentials in the OS credential store (`keyring`). Servers in `.vscode/mcp.json` that ask for a value with `${input:...}` are not passed to the Copilot chat, and the Copilot CLI does not read `.vscode/mcp.json`. Values given with `--env` are written as they are to `~/.copilot/mcp-config.json`
-- Do not register mcp-rs with credentials in a workspace `.mcp.json` or `.github/mcp.json`; those files are meant to be committed
+- Keep the credentials in the OS credential store (`keyring`). The Copilot CLI does not read `.vscode/mcp.json` itself; VS Code forwards the servers from it, except those that ask for a value with `${input:...}`
+- The Copilot CLI passes mcp-rs only `PATH` from your environment, plus the variables given with `--env` ([GitHub Docs](https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-mcp-servers)). A config file that reads `${...}` (such as `configs/production/claude-desktop.toml`) or uses `encrypted_credentials` (`WORDPRESS_MASTER_PASSWORD`) needs those variables in `--env`, and `--env` writes the values as they are to `~/.copilot/mcp-config.json`
+- Tested on Windows with `keyring`. macOS and Linux are not tested yet; on Linux, the Secret Service may not be reachable without `DBUS_SESSION_BUS_ADDRESS`
+- Do not register mcp-rs with credentials in a workspace `.mcp.json` or `.github/mcp.json`. They live in the repository folder and can be committed (`.github/mcp.json` is meant to be)
 - After registering, restart VS Code and start a new chat. Check with `copilot mcp list`, or ask the chat to call `mcp_rs_status`
 - If mcp-rs does not start, the chat only says it cannot find the tool. The reason is in the Copilot CLI log, `~/.copilot/logs/process-*.log`: look for `MCP server connection failed`, which includes the error from mcp-rs
 

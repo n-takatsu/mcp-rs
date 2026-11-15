@@ -48,8 +48,10 @@
 ## MCP設定
 
 VS CodeのCopilotのチャットは、Copilot CLIに登録したMCPサーバー
-（`~/.copilot/mcp-config.json`）を使い、`.vscode/mcp.json`は読みません。
-mcp-rsの登録は、READMEの「VS Code (GitHub Copilot)」を見てください。
+（`~/.copilot/mcp-config.json`）を使います。Copilot CLIは`.vscode/mcp.json`
+を自分では読まず、VS Codeが、`${input:...}`（値の入力）を使わない
+サーバーだけを転送します。mcp-rsの登録は、READMEの
+「VS Code (GitHub Copilot)」を見てください。
 `.vscode/mcp.json`は、手元に残っていても`.gitignore`の対象です。
 
 ## トラブルシューティング
