@@ -75,6 +75,16 @@ claude mcp add mcp-rs --scope user \
   -- /path/to/mcp-rs --config /path/to/mcp-config.toml
 ```
 
+### VS Code (GitHub Copilot)
+
+The Copilot chat in VS Code uses the MCP servers registered with the Copilot CLI (`~/.copilot/mcp-config.json`). Keep the credentials in the [OS credential store]({{ site.baseurl }}/docs/security/#os-credential-store): servers in `.vscode/mcp.json` that ask for a value with `${input:...}` are not passed to the Copilot chat.
+
+```bash
+copilot mcp add mcp-rs -- /path/to/mcp-rs --config /path/to/mcp-config.toml
+```
+
+If the chat cannot find the tools, the reason is in `~/.copilot/logs/process-*.log` (`MCP server connection failed`).
+
 ### HTTP clients
 
 Set `type = "http"` under `[transport]` and the address under `[transport.http]`. Turn on authentication before the listener is reachable from other machines: see [Security]({{ site.baseurl }}/docs/security/).

@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- VS Code（GitHub Copilot）のチャットからmcp-rsを使う手順を、READMEと
+  websiteのガイドに書いた（#521）。Copilot CLIに`copilot mcp add`で登録し、
+  資格情報は資格情報ストアから読む。Copilotのチャットに渡らない
+  `.vscode/mcp.json`の例（`.vscode/mcp.json.example`）は削除した
+- WordPressの資格情報が無いときのエラーで、`keyring`も選べることを示す
+  ようにした
+
 ## [0.24.0] - 2026-11-15
 
 ### Added

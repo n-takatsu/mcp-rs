@@ -124,6 +124,19 @@ Claude Code passes its own environment to mcp-rs, so `${...}` can also read user
 
 > 📖 See [Claude Code Integration Guide](./project-docs/CLAUDE_CODE_INTEGRATION.md) (Japanese) for `.mcp.json`, encrypted credentials, and troubleshooting.
 
+### VS Code (GitHub Copilot)
+
+The Copilot chat in VS Code runs on the Copilot CLI and uses the MCP servers registered for it. Register mcp-rs with the `copilot` command, with absolute paths. Everything after `--` is the mcp-rs command line. This writes `~/.copilot/mcp-config.json`, which both the chat in VS Code and `copilot` in a terminal read:
+
+```bash
+copilot mcp add mcp-rs -- "C:/Program Files/MCP-rs/mcp-rs.exe" --config C:/Users/you/AppData/Roaming/Claude/mcp-rs/mcp-config.toml
+```
+
+- Keep the credentials in the OS credential store (`keyring`). Servers in `.vscode/mcp.json` that ask for a value with `${input:...}` are not passed to the Copilot chat, and the Copilot CLI does not read `.vscode/mcp.json`. Values given with `--env` are written as they are to `~/.copilot/mcp-config.json`
+- Do not register mcp-rs with credentials in a workspace `.mcp.json` or `.github/mcp.json`; those files are meant to be committed
+- After registering, restart VS Code and start a new chat. Check with `copilot mcp list`, or ask the chat to call `mcp_rs_status`
+- If mcp-rs does not start, the chat only says it cannot find the tool. The reason is in the Copilot CLI log, `~/.copilot/logs/process-*.log`: look for `MCP server connection failed`, which includes the error from mcp-rs
+
 ### Setup
 
 ```bash

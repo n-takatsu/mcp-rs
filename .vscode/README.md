@@ -47,16 +47,10 @@
 
 ## MCP設定
 
-## セキュリティ注意事項
-
-- `mcp.json` - 実際のMCP設定（アクセストークン含む）→ **Gitignore対象**
-- `mcp.json.example` - サンプル設定ファイル（環境変数参照）→ コミット可能
-
-## 設定方法
-
-1. `mcp.json.example` を `mcp.json` にコピー
-2. 環境変数 `GITHUB_PERSONAL_ACCESS_TOKEN` を設定
-3. 必要に応じて他のMCPサーバーを追加
+VS CodeのCopilotのチャットは、Copilot CLIに登録したMCPサーバー
+（`~/.copilot/mcp-config.json`）を使い、`.vscode/mcp.json`は読みません。
+mcp-rsの登録は、READMEの「VS Code (GitHub Copilot)」を見てください。
+`.vscode/mcp.json`は、手元に残っていても`.gitignore`の対象です。
 
 ## トラブルシューティング
 
