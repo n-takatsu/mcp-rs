@@ -933,9 +933,7 @@ impl DatabaseHandler {
             Value::Null => JsonValue::Null,
             Value::Bool(b) => JsonValue::Bool(*b),
             Value::Int(i) => JsonValue::Number((*i).into()),
-            Value::Float(f) => {
-                JsonValue::Number(serde_json::Number::from_f64(*f).unwrap_or_else(|| 0.into()))
-            }
+            Value::Float(f) => float_to_json(*f),
             Value::String(s) => JsonValue::String(s.clone()),
             Value::Binary(bytes) => {
                 JsonValue::String(base64::prelude::BASE64_STANDARD.encode(bytes))
@@ -943,6 +941,18 @@ impl DatabaseHandler {
             Value::Json(j) => j.clone(),
             Value::DateTime(dt) => JsonValue::String(dt.to_rfc3339()),
         }
+    }
+}
+
+/// 浮動小数点数をJSONにする。JSONの数に無いNaN・±Infinityは、PostgreSQLと
+/// 同じ書き方の文字列（`"NaN"`・`"Infinity"`・`"-Infinity"`）にする（#543）。
+/// 以前は0にしていたので、計算できなかった値が0に見えた
+fn float_to_json(f: f64) -> JsonValue {
+    match serde_json::Number::from_f64(f) {
+        Some(n) => JsonValue::Number(n),
+        None if f.is_nan() => JsonValue::String("NaN".to_string()),
+        None if f > 0.0 => JsonValue::String("Infinity".to_string()),
+        None => JsonValue::String("-Infinity".to_string()),
     }
 }
 
@@ -1130,6 +1140,24 @@ impl McpHandler for DatabaseHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// NaN・±Infinityは、0ではなく、PostgreSQLと同じ書き方の文字列（#543）
+    #[test]
+    fn test_float_to_json_keeps_values_json_cannot_hold() {
+        assert_eq!(float_to_json(1.5), serde_json::json!(1.5));
+        assert_eq!(float_to_json(f64::NAN), serde_json::json!("NaN"));
+        assert_eq!(float_to_json(f64::INFINITY), serde_json::json!("Infinity"));
+        assert_eq!(
+            float_to_json(f64::NEG_INFINITY),
+            serde_json::json!("-Infinity")
+        );
+        // 引数として返せば、元の値に戻る（`execute_query`の引数は、
+        // 文字列をRustの`f64`として読む）
+        for text in ["NaN", "Infinity", "-Infinity"] {
+            let parsed: f64 = text.parse().unwrap();
+            assert_eq!(float_to_json(parsed), serde_json::json!(text));
+        }
+    }
 
     fn text_row(sizes: &[usize]) -> Vec<Value> {
         sizes

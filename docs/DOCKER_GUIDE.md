@@ -29,11 +29,19 @@ mcp-rs reads `/app/config/mcp-config.toml`. Mount a folder that contains it:
 
 Without it, mcp-rs exits with `設定ファイルが存在しません: /app/config/mcp-config.toml`. To use another file name, pass `--config /app/config/<name>.toml` after the image name.
 
-The config file is the same as outside Docker; see [Getting Started](https://n-takatsu.github.io/mcp-rs/docs/guides/). Pass values used as `${VAR}` in it with `-e`:
+The config file is the same as outside Docker; see [Getting Started](https://n-takatsu.github.io/mcp-rs/docs/guides/). Pass values used as `${VAR}` in it from a file with `--env-file`:
 
 ```bash
--e WORDPRESS_PASSWORD="your application password"
+--env-file /path/to/mcp-rs.env
 ```
+
+`mcp-rs.env` has one `NAME=value` per line. Do not quote the value: Docker keeps quotes as part of it, and spaces are kept as they are:
+
+```
+WORDPRESS_PASSWORD=abcd efgh ijkl mnop qrst uvwx
+```
+
+Make the file readable by you only (`chmod 600 mcp-rs.env`), and keep it out of the config folder you mount and out of Git. Do not write a password on the command line as `-e WORDPRESS_PASSWORD="…"`: it stays in your shell history, and other users of the machine can see it in the process list while `docker run` is running.
 
 ## STDIO mode (Claude Desktop, Claude Code)
 
@@ -65,25 +73,23 @@ Claude Desktop (`claude_desktop_config.json`):
       "args": [
         "run", "-i", "--rm",
         "-v", "/path/to/config:/app/config:ro",
-        "-e", "WORDPRESS_PASSWORD",
+        "--env-file", "/path/to/mcp-rs.env",
         "ghcr.io/n-takatsu/mcp-rs:latest"
-      ],
-      "env": { "WORDPRESS_PASSWORD": "your application password" }
+      ]
     }
   }
 }
 ```
 
-`-e WORDPRESS_PASSWORD` without a value passes the variable from `env` into the container.
-
 Claude Code:
 
 ```bash
 claude mcp add mcp-rs --scope user \
-  -e WORDPRESS_PASSWORD="your application password" \
   -- docker run -i --rm -v /path/to/config:/app/config:ro \
-     -e WORDPRESS_PASSWORD ghcr.io/n-takatsu/mcp-rs:latest
+     --env-file /path/to/mcp-rs.env ghcr.io/n-takatsu/mcp-rs:latest
 ```
+
+With `--env-file`, the password is in neither `claude_desktop_config.json` nor Claude Code's settings. Up to v0.23.0, this guide passed it through the client's `env` (Claude Desktop) or `-e` (Claude Code), which stores it in the client's settings file.
 
 ## HTTP mode
 
@@ -113,23 +119,34 @@ user_id = "user-1"
 ```bash
 docker run -d --name mcp-rs \
   -p 127.0.0.1:8081:8081 \
-  -e MCP_API_KEY="replace-with-a-long-random-key" \
+  --env-file /path/to/mcp-rs.env \
   -v /path/to/config:/app/config:ro \
   ghcr.io/n-takatsu/mcp-rs:latest
 ```
 
-`key = "${MCP_API_KEY}"` reads the key from the environment variable passed with `-e` (v0.24.0 and later), so the config file holds no secret. mcp-rs does not start if the variable is not set or is empty. Before v0.24.0, write the key itself in `key`.
+`mcp-rs.env` has the line `MCP_API_KEY=<a long random key>` (see [The config file](#the-config-file)). `key = "${MCP_API_KEY}"` reads the key from that environment variable (v0.24.0 and later), so the config file holds no secret. mcp-rs does not start if the variable is not set or is empty. Before v0.24.0, write the key itself in `key`.
 
 The endpoint is `http://127.0.0.1:8081/mcp`. `-p 127.0.0.1:8081:8081` publishes the port on this machine only. To reach it from other machines, put a TLS proxy in front of it, or enable TLS in mcp-rs; see [Security](https://n-takatsu.github.io/mcp-rs/docs/security/).
 
 ### Docker Compose
 
-`docker-compose.yml` runs mcp-rs in HTTP mode with `./config/mcp-config.toml` (the comment at the top of the file shows a config), a read-only root filesystem, and no Linux capabilities. It also has an optional PostgreSQL service.
+`docker-compose.yml` runs mcp-rs in HTTP mode with `./config/mcp-config.toml` (the comment at the top of the file shows a config), a read-only root filesystem, and no Linux capabilities.
 
 ```bash
 docker compose up -d mcp-server
 docker compose logs -f mcp-server
 ```
+
+PostgreSQL (optional) is in `docker-compose.postgres.yml`. Set `POSTGRES_PASSWORD` to a password of your own: there is no default, and Compose stops with an error without it. Then use both files:
+
+```bash
+export POSTGRES_PASSWORD='a long random password'
+docker compose -f docker-compose.yml -f docker-compose.postgres.yml up -d
+```
+
+To give mcp-rs the database tools, add a `[database]` section with `host = "postgres"` to the config file. Up to v0.23.0, the PostgreSQL service was in `docker-compose.yml`, and its password was `changeme` unless you set one.
+
+`docker-compose.dev.yml` (for development) publishes PostgreSQL and Redis on `127.0.0.1` only (v0.24.0 and later), since its passwords are fixed in the file and Redis has none. Up to v0.23.0, they were reachable from other machines on the network.
 
 ## Logs and the audit log
 

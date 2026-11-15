@@ -198,6 +198,18 @@ jobs:
           docker compose -f docker-compose.yml config > /dev/null
           echo "✅ docker-compose.yml is valid"
 
+      - name: Validate docker-compose.postgres.yml
+        env:
+          POSTGRES_PASSWORD: validation-only
+        run: |
+          docker compose -f docker-compose.yml -f docker-compose.postgres.yml config > /dev/null
+          echo "✅ docker-compose.postgres.yml is valid"
+          # POSTGRES_PASSWORD has no default (#543)
+          if env -u POSTGRES_PASSWORD docker compose -f docker-compose.yml -f docker-compose.postgres.yml config > /dev/null 2>&1; then
+            echo "❌ docker-compose.postgres.yml must require POSTGRES_PASSWORD"
+            exit 1
+          fi
+
       - name: Validate docker-compose.dev.yml
         run: |
           docker compose -f docker-compose.dev.yml config > /dev/null

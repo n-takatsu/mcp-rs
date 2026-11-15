@@ -857,7 +857,7 @@ pub fn numeric_to_string(bytes: &[u8]) -> Option<String> {
     Some(text)
 }
 
-/// 表1つの列と主キー（`public`のスキーマ）
+/// 表1つの列・主キー・外部キー・インデックス（`public`のスキーマ）
 async fn table_schema(
     tx: &mut sqlx::Transaction<'_, Postgres>,
     table_name: &str,
@@ -911,9 +911,81 @@ async fn table_schema(
         schema: Some("public".to_string()),
         columns,
         primary_keys,
-        foreign_keys: Vec::new(),
-        indexes: Vec::new(),
+        foreign_keys: table_foreign_keys(tx, table_name).await?,
+        indexes: table_indexes(tx, table_name).await?,
     })
+}
+
+/// 表1つの外部キー（#543）。以前は、文書にあるのに、いつも空だった。
+/// 複数の列の外部キーは、列ごとに1項目（同じ`name`）にする。参照先の表が
+/// `public`の外にあれば、`スキーマ.表`にする
+async fn table_foreign_keys(
+    tx: &mut sqlx::Transaction<'_, Postgres>,
+    table_name: &str,
+) -> Result<Vec<ForeignKeyInfo>, DatabaseError> {
+    let rows = sqlx::query(
+        "SELECT c.conname::text, a.attname::text,
+                CASE WHEN n.nspname = 'public' THEN r.relname::text
+                     ELSE n.nspname::text || '.' || r.relname::text END,
+                ra.attname::text
+         FROM pg_constraint c
+         CROSS JOIN LATERAL unnest(c.conkey, c.confkey) WITH ORDINALITY AS k(attnum, refnum, ord)
+         JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = k.attnum
+         JOIN pg_class r ON r.oid = c.confrelid
+         JOIN pg_namespace n ON n.oid = r.relnamespace
+         JOIN pg_attribute ra ON ra.attrelid = c.confrelid AND ra.attnum = k.refnum
+         WHERE c.conrelid = to_regclass(format('public.%I', $1::text)) AND c.contype = 'f'
+         ORDER BY c.conname, k.ord",
+    )
+    .bind(table_name)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(|e| DatabaseError::QueryFailed(e.to_string()))?;
+    Ok(rows
+        .iter()
+        .map(|row| ForeignKeyInfo {
+            name: row.get(0),
+            column: row.get(1),
+            referenced_table: row.get(2),
+            referenced_column: row.get(3),
+        })
+        .collect())
+}
+
+/// 表1つのインデックス（#543）。以前は、文書にあるのに、いつも空だった。
+/// `columns`は、インデックスの順のキーの列の名前。式のインデックスの式の
+/// 部分は列ではないので、`INCLUDE`の列はキーではないので、含めない
+/// （`indkey`は、キーの列の後に`INCLUDE`の列を並べる。キーの列は先頭の
+/// `indnkeyatts`個）
+async fn table_indexes(
+    tx: &mut sqlx::Transaction<'_, Postgres>,
+    table_name: &str,
+) -> Result<Vec<IndexInfo>, DatabaseError> {
+    let rows = sqlx::query(
+        "SELECT ic.relname::text, i.indisunique, i.indisprimary,
+                ARRAY(SELECT a.attname::text
+                      FROM unnest(i.indkey::int2[]) WITH ORDINALITY AS k(attnum, ord)
+                      JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = k.attnum
+                      WHERE k.ord <= i.indnkeyatts
+                      ORDER BY k.ord)
+         FROM pg_index i
+         JOIN pg_class ic ON ic.oid = i.indexrelid
+         WHERE i.indrelid = to_regclass(format('public.%I', $1::text))
+         ORDER BY ic.relname",
+    )
+    .bind(table_name)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(|e| DatabaseError::QueryFailed(e.to_string()))?;
+    Ok(rows
+        .iter()
+        .map(|row| IndexInfo {
+            name: row.get(0),
+            is_unique: row.get(1),
+            is_primary: row.get(2),
+            columns: row.get(3),
+        })
+        .collect())
 }
 
 #[async_trait]
