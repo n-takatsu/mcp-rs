@@ -52,8 +52,13 @@ enum Denied {
 /// 2.0）。JSONとして読めなければ`-32700`（Parse error）、JSONだがリクエスト
 /// でなければ`-32600`（Invalid Request）。バッチ（配列）は、MCPが使わない
 /// （2025-06-18で削除）ので`-32600`。`id`が読み取れれば付け、読み取れな
-/// ければ`null`
-fn invalid_message_response(message: &str) -> JsonRpcResponse {
+/// ければ`null`。
+///
+/// クライアントからの応答（`method`が無く、`result`か`error`がある）には
+/// 答えない（`None`、PR #555のレビュー）。JSON-RPCでは、応答には応答
+/// しない。答えると、クライアントが、同じ`id`の自分の要求への答えと
+/// 取り違えうる
+fn invalid_message_response(message: &str) -> Option<JsonRpcResponse> {
     let (code, text, id) = match serde_json::from_str::<serde_json::Value>(message) {
         Err(_) => (-32700, "Parse error", None),
         Ok(serde_json::Value::Array(_)) => (
@@ -61,6 +66,13 @@ fn invalid_message_response(message: &str) -> JsonRpcResponse {
             "Invalid Request: batch requests are not supported",
             None,
         ),
+        Ok(value)
+            if value.get("method").is_none()
+                && (value.get("result").is_some() || value.get("error").is_some()) =>
+        {
+            debug!("Ignored a JSON-RPC response from the client");
+            return None;
+        }
         Ok(value) => (
             -32600,
             "Invalid Request",
@@ -70,7 +82,7 @@ fn invalid_message_response(message: &str) -> JsonRpcResponse {
                 .cloned(),
         ),
     };
-    JsonRpcResponse {
+    Some(JsonRpcResponse {
         jsonrpc: "2.0".to_string(),
         result: None,
         error: Some(crate::mcp::JsonRpcError {
@@ -79,7 +91,7 @@ fn invalid_message_response(message: &str) -> JsonRpcResponse {
             data: None,
         }),
         id,
-    }
+    })
 }
 
 pub struct McpServer {
@@ -384,7 +396,7 @@ impl McpServer {
         let request: JsonRpcRequest = match serde_json::from_str(line) {
             Ok(request) => request,
             // 以前は何も返さず、クライアントは応答を待ち続けた（#543）
-            Err(_) => return Ok(Some(invalid_message_response(line))),
+            Err(_) => return Ok(invalid_message_response(line)),
         };
         let version = protocol_version.unwrap_or_else(|| session.protocol_version());
 
@@ -2042,5 +2054,15 @@ mod tests {
 
         // 空の行は無視する
         assert!(ask("  \n").await.is_none());
+
+        // クライアントからの応答には答えない（PR #555のレビュー）
+        assert!(ask(r#"{"jsonrpc":"2.0","id":1,"result":{}}"#)
+            .await
+            .is_none());
+        assert!(
+            ask(r#"{"jsonrpc":"2.0","id":1,"error":{"code":-1,"message":"x"}}"#)
+                .await
+                .is_none()
+        );
     }
 }

@@ -17,6 +17,20 @@ use std::net::IpAddr;
 use std::sync::Arc;
 use tracing::{debug, info, warn};
 
+/// How long to remember a nonce (#543, PR #555 review). With the timestamp
+/// checked first, a nonce can be replayed only while its timestamp is still
+/// accepted: at most twice the window (with the drift tolerance) after it is
+/// first seen. Remembering it longer than that only lets the cache fill up,
+/// so `nonce_ttl_secs` is shortened to that when timestamps are checked
+fn nonce_ttl_secs(config: &AntiReplayConfig) -> u64 {
+    if config.enable_timestamp {
+        let window = 2 * (config.time_window_secs + super::timestamp::DRIFT_TOLERANCE_SECS);
+        config.nonce_ttl_secs.min(window)
+    } else {
+        config.nonce_ttl_secs
+    }
+}
+
 /// Anti-Replay Middleware
 #[derive(Clone)]
 pub struct AntiReplayMiddleware {
@@ -37,7 +51,7 @@ impl AntiReplayMiddleware {
     /// Create a new AntiReplayMiddleware
     pub fn new(config: AntiReplayConfig) -> Self {
         let nonce_manager = Arc::new(NonceManager::with_limits(
-            config.nonce_ttl_secs,
+            nonce_ttl_secs(&config),
             config.max_nonce_cache,
             config.max_nonce_cache_per_caller,
         ));
@@ -276,6 +290,23 @@ mod tests {
     use axum::body::Body;
     use axum::http::Request as HttpRequest;
     use chrono::Utc;
+
+    #[test]
+    fn test_nonce_ttl_matches_the_timestamp_window() {
+        // 既定: 時間の幅は±(30 + 5)秒なので、70秒覚えれば足りる（以前は300秒）
+        assert_eq!(nonce_ttl_secs(&AntiReplayConfig::default()), 70);
+        let short = AntiReplayConfig {
+            nonce_ttl_secs: 10,
+            ..Default::default()
+        };
+        assert_eq!(nonce_ttl_secs(&short), 10);
+        // タイムスタンプを見ないなら、設定のまま
+        let no_timestamp = AntiReplayConfig {
+            enable_timestamp: false,
+            ..Default::default()
+        };
+        assert_eq!(nonce_ttl_secs(&no_timestamp), 300);
+    }
 
     fn create_test_middleware() -> AntiReplayMiddleware {
         let config = AntiReplayConfig::default();

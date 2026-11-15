@@ -146,12 +146,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - リプレイ攻撃対策のnonceのキャッシュを、呼び出し元（APIキー・トークン、
     無ければ接続元のIP）ごとに分けた。1つの呼び出し元は1万まで。以前は全員で
     1つ（10万）を使い、1つのクライアントが埋めると、全員のリクエストが
-    失敗した。nonceは要求の内容に結び付かない（署名しない）ので、補助的な
-    ものだと文書に書いた
+    失敗した。`trusted_proxies`のプロキシの後ろでは、`X-Forwarded-For`の
+    クライアントのアドレスで分ける。nonceを覚える時間は、タイムスタンプを
+    受け付ける間（既定で70秒）に縮めた（以前は5分）。nonceは要求の内容に
+    結び付かない（署名しない）ので、補助的なものだと文書に書いた
   - JSONとして読めないメッセージに、JSON-RPCの`-32700`（Parse error）を、
     JSONだがリクエストでないもの（バッチ等）に`-32600`（Invalid Request）を
     返すようにした（STDIO・HTTP・`/ws`、HTTPでは400）。以前は何も返さず、
-    クライアントは自分のタイムアウトまで待った
+    クライアントは自分のタイムアウトまで待った。クライアントからの応答
+    （`method`が無く、`result`か`error`がある）には、これまでどおり答えない
   - **互換性のない変更（ライブラリ）**: `HttpConfig`・`HttpTransportConfig`に
     `trusted_proxies`、IDSの`RequestData`に`caller_id`、
     `AntiReplayConfig`に`max_nonce_cache_per_caller`、

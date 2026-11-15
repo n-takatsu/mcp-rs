@@ -1660,6 +1660,7 @@ async fn handle_jsonrpc_request(
         &headers,
         remote_addr,
         &caller,
+        anti_replay_client_ip(&state, remote_addr, &headers),
     )
     .await?;
     check_ids(
@@ -2104,13 +2105,14 @@ fn check_certificate_pin(
 }
 
 /// リプレイ攻撃対策の検査。nonceは、認証した呼び出し元ごと（認証して
-/// いなければ接続元のIPごと）に覚える（#543）
+/// いなければクライアントのIPごと）に覚える（#543）
 async fn check_anti_replay_handshake(
     anti_replay: Option<&Arc<AntiReplayMiddleware>>,
     audit_logger: &AuditLogger,
     headers: &HeaderMap,
     remote_addr: SocketAddr,
     caller: &crate::mcp::Caller,
+    client_ip: IpAddr,
 ) -> std::result::Result<(), StatusCode> {
     let Some(anti_replay) = anti_replay else {
         return Ok(());
@@ -2122,7 +2124,7 @@ async fn check_anti_replay_handshake(
         timestamp: header_value(headers, "x-timestamp").map(str::to_string),
         device_id: header_value(headers, "x-device-id").map(str::to_string),
         user_agent: user_agent.clone(),
-        ip_address: Some(remote_addr.ip()),
+        ip_address: Some(client_ip),
     };
 
     if let Err(e) = anti_replay
@@ -2223,7 +2225,8 @@ fn parse_query_params(query: Option<&str>) -> HashMap<String, String> {
     map
 }
 
-/// The IP to run IDS detection/blocking against. `remote_addr` is the raw
+/// The client's IP address, for IDS detection/blocking and for keeping
+/// anti-replay nonces apart (#543, PR #555 review). `remote_addr` is the raw
 /// TCP peer address, which behind a reverse proxy/load balancer is the
 /// proxy's own IP, not the actual client's - blocking on it would ban every
 /// client behind that proxy over one bad request. `X-Forwarded-For` and
@@ -2238,7 +2241,7 @@ fn parse_query_params(query: Option<&str>) -> HashMap<String, String> {
 /// entry that is not one of the trusted proxies (#543); previously the
 /// leftmost one was used. If the header has an entry that is not an IP
 /// address, or neither header is usable, the peer address is used.
-fn client_ip_for_ids(
+fn forwarded_client_ip(
     remote_addr: SocketAddr,
     headers: &HeaderMap,
     trusted_proxies: Option<&[IpNet]>,
@@ -2277,6 +2280,19 @@ fn client_ip_for_ids(
         .unwrap_or(peer)
 }
 
+/// リプレイ攻撃対策で、nonceを分けるクライアントのIP（#543、PR #555の
+/// レビュー）。接続元が信頼するプロキシなら、プロキシの付けるヘッダーから
+/// 取る。接続元のIPのままだと、プロキシの後ろの全員が1つの枠を分け合い、
+/// 1つのクライアントが埋めると、全員が失敗する。IDSと違い、
+/// `ids_trust_forwarded_for`は見ない
+fn anti_replay_client_ip(
+    state: &HttpTransportState,
+    remote_addr: SocketAddr,
+    headers: &HeaderMap,
+) -> IpAddr {
+    forwarded_client_ip(remote_addr, headers, Some(&state.trusted_proxies))
+}
+
 /// IDSが、接続元のIPをプロキシの付けるヘッダーから取るときの、信頼する
 /// プロキシ（`ids_trust_forwarded_for`、#543）。取らなければ`None`
 fn ids_trusted_proxies(state: &HttpTransportState) -> Option<&[IpNet]> {
@@ -2306,7 +2322,7 @@ async fn check_ids(
     let Some(ids) = ids else {
         return Ok(());
     };
-    let ip = client_ip_for_ids(remote_addr, headers, trusted_proxies);
+    let ip = forwarded_client_ip(remote_addr, headers, trusted_proxies);
 
     if ids.is_blocked(ip).await {
         warn!("Rejected request from blocked IP {}", ip);
@@ -2392,6 +2408,8 @@ async fn handle_ws_upgrade(
         .caller
         .with_ip_address(Some(remote_addr.ip().to_string()));
     let expires_at = authenticated.expires_at;
+    // リプレイ攻撃対策でnonceを分けるクライアントのアドレス（#543）
+    let client_ip = anti_replay_client_ip(&state, remote_addr, &headers);
     // プロキシの付けるヘッダーは、信頼するプロキシからのものだけを使う（#543）
     let no_headers = HeaderMap::new();
     let forwarded = forwarded_headers(&state, remote_addr, &headers, &no_headers);
@@ -2436,6 +2454,7 @@ async fn handle_ws_upgrade(
         &headers,
         remote_addr,
         &caller,
+        client_ip,
     )
     .await
     {
@@ -2475,7 +2494,15 @@ async fn handle_ws_upgrade(
         .max_message_size(max_message_size)
         .max_frame_size(max_message_size)
         .on_upgrade(move |socket| {
-            handle_ws_socket(socket, state, remote_addr, caller, expires_at, permit)
+            handle_ws_socket(
+                socket,
+                state,
+                remote_addr,
+                client_ip,
+                caller,
+                expires_at,
+                permit,
+            )
         });
     response.headers_mut().extend(hsts_headers);
     response
@@ -2490,6 +2517,7 @@ async fn handle_ws_socket(
     socket: WebSocket,
     state: HttpTransportState,
     addr: SocketAddr,
+    client_ip: IpAddr,
     caller: crate::mcp::Caller,
     expires_at: Option<u64>,
     _permit: tokio::sync::OwnedSemaphorePermit,
@@ -2605,7 +2633,7 @@ async fn handle_ws_socket(
                                     .map(str::to_string),
                                 device_id: None,
                                 user_agent: None,
-                                ip_address: Some(addr.ip()),
+                                ip_address: Some(client_ip),
                             };
 
                             if let Err(e) = anti_replay
@@ -3986,7 +4014,7 @@ mod tests {
     }
 
     #[test]
-    fn client_ip_for_ids_uses_the_peer_address_when_forwarding_is_not_trusted() {
+    fn forwarded_client_ip_uses_the_peer_address_when_forwarding_is_not_trusted() {
         // Default posture: a proxy in front of us could set X-Forwarded-For
         // to anything, so without an explicit trust decision it must be
         // ignored and the real TCP peer used - otherwise any client can
@@ -3996,7 +4024,7 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert("x-forwarded-for", "198.51.100.1".parse().unwrap());
 
-        let ip = client_ip_for_ids(remote_addr, &headers, None);
+        let ip = forwarded_client_ip(remote_addr, &headers, None);
 
         assert_eq!(ip, remote_addr.ip());
     }
@@ -4006,7 +4034,7 @@ mod tests {
     }
 
     #[test]
-    fn client_ip_for_ids_ignores_the_header_from_a_peer_that_is_not_a_trusted_proxy() {
+    fn forwarded_client_ip_ignores_the_header_from_a_peer_that_is_not_a_trusted_proxy() {
         // #543: ids_trust_forwarded_for alone used to trust the header from
         // any client
         let remote_addr: SocketAddr = "203.0.113.9:12345".parse().unwrap();
@@ -4015,25 +4043,25 @@ mod tests {
         headers.insert("x-real-ip", "198.51.100.1".parse().unwrap());
 
         let trusted = proxies(&["10.0.0.0/8"]);
-        let ip = client_ip_for_ids(remote_addr, &headers, Some(&trusted));
+        let ip = forwarded_client_ip(remote_addr, &headers, Some(&trusted));
 
         assert_eq!(ip, remote_addr.ip());
     }
 
     #[test]
-    fn client_ip_for_ids_uses_the_forwarded_header_when_trusted() {
+    fn forwarded_client_ip_uses_the_forwarded_header_when_trusted() {
         let remote_addr: SocketAddr = "10.0.0.5:12345".parse().unwrap();
         let mut headers = HeaderMap::new();
         headers.insert("x-forwarded-for", "198.51.100.1".parse().unwrap());
 
         let trusted = proxies(&["10.0.0.5"]);
-        let ip = client_ip_for_ids(remote_addr, &headers, Some(&trusted));
+        let ip = forwarded_client_ip(remote_addr, &headers, Some(&trusted));
 
         assert_eq!(ip, "198.51.100.1".parse::<IpAddr>().unwrap());
     }
 
     #[test]
-    fn client_ip_for_ids_takes_the_rightmost_address_that_is_not_a_trusted_proxy() {
+    fn forwarded_client_ip_takes_the_rightmost_address_that_is_not_a_trusted_proxy() {
         // #543: the proxy appends the address it got the request from, so
         // the entries on the left are whatever the client sent. The client
         // here claims to be 192.0.2.66 to get that address blocked
@@ -4045,30 +4073,30 @@ mod tests {
         );
         let trusted = proxies(&["10.0.0.0/24"]);
 
-        let ip = client_ip_for_ids(remote_addr, &headers, Some(&trusted));
+        let ip = forwarded_client_ip(remote_addr, &headers, Some(&trusted));
         assert_eq!(ip, "198.51.100.1".parse::<IpAddr>().unwrap());
 
         // ヘッダーが2行に分かれていても、同じ
         let mut headers = HeaderMap::new();
         headers.append("x-forwarded-for", "192.0.2.66".parse().unwrap());
         headers.append("x-forwarded-for", "198.51.100.1".parse().unwrap());
-        let ip = client_ip_for_ids(remote_addr, &headers, Some(&trusted));
+        let ip = forwarded_client_ip(remote_addr, &headers, Some(&trusted));
         assert_eq!(ip, "198.51.100.1".parse::<IpAddr>().unwrap());
 
         // IPv4をIPv6で表した接続元も、信頼するプロキシとして比べる
         let mapped: SocketAddr = "[::ffff:10.0.0.5]:12345".parse().unwrap();
-        let ip = client_ip_for_ids(mapped, &headers, Some(&trusted));
+        let ip = forwarded_client_ip(mapped, &headers, Some(&trusted));
         assert_eq!(ip, "198.51.100.1".parse::<IpAddr>().unwrap());
     }
 
     #[test]
-    fn client_ip_for_ids_falls_back_to_the_peer_address_when_trusted_but_header_is_unparseable() {
+    fn forwarded_client_ip_falls_back_to_the_peer_address_when_trusted_but_header_is_unparseable() {
         let remote_addr: SocketAddr = "10.0.0.5:12345".parse().unwrap();
         let mut headers = HeaderMap::new();
         headers.insert("x-forwarded-for", "not-an-ip".parse().unwrap());
 
         let trusted = proxies(&["10.0.0.5"]);
-        let ip = client_ip_for_ids(remote_addr, &headers, Some(&trusted));
+        let ip = forwarded_client_ip(remote_addr, &headers, Some(&trusted));
 
         assert_eq!(ip, remote_addr.ip());
     }
@@ -4200,6 +4228,49 @@ mod tests {
             }
             other => panic!("expected the upgrade to be rejected with 426, got: {other:?}"),
         }
+    }
+
+    /// プロキシの後ろでは、リプレイ攻撃対策のnonceを、プロキシのIPでは
+    /// なく、クライアントのアドレスごとに覚える（#543、PR #555のレビュー）
+    #[tokio::test]
+    async fn test_anti_replay_nonces_are_kept_per_client_behind_a_trusted_proxy() {
+        let config = HttpConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            anti_replay_enabled: true,
+            trusted_proxies: vec!["127.0.0.1".to_string()],
+            ..HttpConfig::default()
+        };
+        let transport = HttpTransport::new(config).unwrap();
+        transport.start_server().await.unwrap();
+        let server_addr = transport.bound_addr().await.unwrap();
+        wait_for_plain_server_ready(server_addr).await;
+
+        let client = reqwest::Client::new();
+        let url = format!("http://127.0.0.1:{}/mcp", server_addr.port());
+        let send = |client_ip: &'static str| {
+            client
+                .post(&url)
+                .header("x-forwarded-for", client_ip)
+                .header("x-nonce", "the-same-nonce")
+                .header("x-timestamp", chrono::Utc::now().to_rfc3339())
+                .json(&serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"}))
+                .send()
+        };
+
+        assert_eq!(
+            send("198.51.100.1").await.unwrap().status(),
+            StatusCode::ACCEPTED
+        );
+        // 同じnonceでも、別のクライアントなら受け付ける
+        assert_eq!(
+            send("198.51.100.2").await.unwrap().status(),
+            StatusCode::ACCEPTED
+        );
+        // 同じクライアントが同じnonceを使えば、リプレイ
+        assert_eq!(
+            send("198.51.100.1").await.unwrap().status(),
+            StatusCode::CONFLICT
+        );
     }
 
     #[tokio::test]
