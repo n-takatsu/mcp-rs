@@ -11,7 +11,6 @@ use crate::{
     },
     transport::{
         oauth::{www_authenticate, OAuthConfig, OAuthValidator, TokenError},
-        websocket::server::{ConnectionId, MessageHandler, WebSocketConnectionInfo},
         ConnectionStats, Transport, TransportCapabilities, TransportError, TransportInfo,
         TransportType,
     },
@@ -2508,9 +2507,7 @@ async fn handle_ws_upgrade(
     response
 }
 
-/// Runs the per-connection message loop for a `/ws` client, adapted from
-/// `websocket::server::handle_socket` to use `HttpTransportState` instead of
-/// a standalone `ServerState`. Holds `_permit` for the connection's
+/// Runs the per-connection message loop for a `/ws` client. Holds `_permit` for the connection's
 /// lifetime, releasing the reserved capacity slot back to
 /// `websocket_semaphore` when the connection ends.
 async fn handle_ws_socket(
@@ -2527,7 +2524,7 @@ async fn handle_ws_socket(
     let caller_name = caller.name.clone();
     state.ws_callers.lock().await.insert(conn_id, caller);
 
-    let conn_info = WebSocketConnectionInfo::new(conn_id, addr);
+    let conn_info = WebSocketConnectionInfo::new();
     state
         .websocket_connections
         .lock()
@@ -2617,8 +2614,7 @@ async fn handle_ws_socket(
 
                 // Message-level anti-replay: WS frames carry no HTTP headers,
                 // so nonce/timestamp are read from the JSON-RPC payload's own
-                // top-level fields instead, matching the standalone
-                // WebSocketServer's existing convention.
+                // top-level fields instead.
                 if let Some(anti_replay) = &state.anti_replay {
                     if let Message::Text(text) = &msg {
                         if let Ok(value) = serde_json::from_str::<Value>(text) {
@@ -2892,6 +2888,49 @@ async fn respond_with_request_handler(
             Err(StatusCode::REQUEST_TIMEOUT)
         }
     }
+}
+
+/// `/ws`の接続ID
+type ConnectionId = Uuid;
+
+/// `/ws`の接続の情報
+#[derive(Debug, Clone)]
+struct WebSocketConnectionInfo {
+    /// 最終活動時刻
+    last_activity: Instant,
+    /// 受信メッセージ数
+    messages_received: u64,
+    /// 送信メッセージ数
+    messages_sent: u64,
+}
+
+impl WebSocketConnectionInfo {
+    fn new() -> Self {
+        Self {
+            last_activity: Instant::now(),
+            messages_received: 0,
+            messages_sent: 0,
+        }
+    }
+}
+
+/// `/ws`で受け取ったメッセージを処理する。以前は
+/// `transport::websocket::server`にあった（#543で、使われていなかった
+/// 単独のWebSocketサーバーと一緒に、そこから移した）
+#[async_trait]
+trait MessageHandler: Send + Sync {
+    /// メッセージを処理し、返すメッセージがあれば返す
+    async fn handle_message(
+        &self,
+        conn_id: ConnectionId,
+        message: Message,
+    ) -> Result<Option<Message>>;
+
+    /// 接続時のコールバック
+    async fn on_connect(&self, conn_id: ConnectionId, addr: SocketAddr) -> Result<()>;
+
+    /// 切断時のコールバック
+    async fn on_disconnect(&self, conn_id: ConnectionId) -> Result<()>;
 }
 
 /// Bridges `/ws` text frames into the same JSON-RPC request/response

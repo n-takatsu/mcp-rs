@@ -103,6 +103,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- **互換性のない変更（ライブラリ）**: 使われていないコードを削除した（#543の
+  5つ目）。mcp-rs（バイナリ）の動きは変わらない
+  - `McpServer::run`（と、それだけが使っていた`ServerCapabilities`・
+    `ToolsCapability`・`ResourcesCapability`）。認証もOriginの検査も無い、
+    生のTCPのJSON-RPCサーバーだった。STDIOは`run_stdio`、HTTPは
+    `HttpTransport`と`dispatcher`を使う
+  - 単独のWebSocketサーバー`transport::websocket::server`
+    （`WebSocketServer`・`ServerConfig`・`EchoHandler`・`MessageHandler`等）と、
+    `WebSocketTransport`のサーバーモード（`WebSocketConfig`の
+    `server_mode`・`max_connections`・`anti_replay_enabled`、
+    `WebSocketConfigBuilder`の`server_mode`・`max_connections`、
+    `is_server_mode`）。認証もOriginの検査も無かった。MCPをWebSocketで
+    受け付けるには、HTTPトランスポートの`/ws`
+    （`enable_websocket_upgrade`）を使う。`WebSocketTransport`は
+    クライアントとして残した
+  - `StdioTransport`。サーバーは`McpServer::run_stdio`でSTDIOを読み書き
+    するので、使っていなかった。設定の`StdioConfig`は残した
+  - `handlers::multi`（`MultiHandlerManager`・`DefaultHandlerFactory`・
+    `HandlerFactory`）と`handlers::generic`（`HandlerConfig`・
+    `SecurityConfig`・`ExtendedMcpHandler`等）。`SecurityConfig`は、
+    何もしていなかった
 - 使われておらず、ビルドもできなかった`Dockerfile.test`と、`docker-compose.test.yml`
   の`test-runner`を削除した（#516）
 - KubernetesのマニフェストとHelmチャート（`k8s/`・`charts/mcp-server/`）を

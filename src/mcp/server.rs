@@ -1,7 +1,5 @@
 use async_trait::async_trait;
 use std::sync::Arc;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::{TcpListener, TcpStream};
 use tracing::{debug, error, info, warn};
 
 use crate::mcp::{
@@ -100,27 +98,6 @@ pub struct McpServer {
     audit_logger: Option<Arc<crate::security::AuditLogger>>,
     /// `mcp_rs_status`に出す情報（#434）
     status: Arc<crate::mcp::StatusInfo>,
-    capabilities: ServerCapabilities,
-}
-
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-pub struct ServerCapabilities {
-    pub tools: Option<ToolsCapability>,
-    pub resources: Option<ResourcesCapability>,
-}
-
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-pub struct ToolsCapability {
-    pub list_changed: Option<bool>,
-}
-
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-pub struct ResourcesCapability {
-    pub subscribe: Option<bool>,
-    pub list_changed: Option<bool>,
 }
 
 /// クライアントとの接続1つ分の状態。`initialize`で決まったプロトコルの版を
@@ -253,15 +230,6 @@ impl McpServer {
             handlers: Vec::new(),
             audit_logger: None,
             status: Arc::new(crate::mcp::StatusInfo::default()),
-            capabilities: ServerCapabilities {
-                tools: Some(ToolsCapability {
-                    list_changed: Some(false),
-                }),
-                resources: Some(ResourcesCapability {
-                    subscribe: Some(false),
-                    list_changed: Some(false),
-                }),
-            },
         }
     }
 
@@ -303,62 +271,11 @@ impl McpServer {
         }
     }
 
-    pub async fn run(&self, addr: &str) -> Result<(), Box<dyn std::error::Error>> {
-        let listener = TcpListener::bind(addr).await?;
-        info!("MCP Server listening on {}", addr);
-
-        loop {
-            let (stream, _) = listener.accept().await?;
-            let handlers = self.handlers.clone();
-            let capabilities = self.capabilities.clone();
-
-            tokio::spawn(async move {
-                if let Err(e) = Self::handle_connection(stream, handlers, capabilities).await {
-                    error!("Error handling connection: {}", e);
-                }
-            });
-        }
-    }
-
-    async fn handle_connection(
-        mut stream: TcpStream,
-        handlers: Handlers,
-        _capabilities: ServerCapabilities,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let (reader, mut writer) = stream.split();
-        let mut reader = BufReader::new(reader);
-        let mut line = String::new();
-        let session = Session::default();
-
-        loop {
-            line.clear();
-            let bytes_read = reader.read_line(&mut line).await?;
-
-            if bytes_read == 0 {
-                break; // Connection closed
-            }
-
-            let response = match Self::process_request(&line, &handlers, &session).await {
-                Ok(Some(resp)) => resp,
-                // 通知（idなし）には応答しない（JSON-RPC 2.0）
-                Ok(None) => continue,
-                Err(e) => {
-                    warn!("Error processing request: {}", e);
-                    continue;
-                }
-            };
-
-            let response_str = serde_json::to_string(&response)?;
-            writer.write_all(response_str.as_bytes()).await?;
-            writer.write_all(b"\n").await?;
-        }
-
-        Ok(())
-    }
-
     /// 1行分のJSON-RPCメッセージを処理する。通知（`id`なし）の場合は
     /// `Ok(None)`を返し、呼び出し元は何も書き出さない。JSON-RPC 2.0では
-    /// サーバーは通知に応答してはならない（#360）。
+    /// サーバーは通知に応答してはならない（#360）。テスト用（#543で、
+    /// これを使っていたTCPのサーバー`McpServer::run`を削除した）
+    #[cfg(test)]
     async fn process_request(
         line: &str,
         handlers: &[(String, Arc<dyn McpHandler>)],

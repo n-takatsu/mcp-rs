@@ -6,10 +6,6 @@
 // 現在実装されているハンドラー
 pub mod wordpress;
 
-// 拡張性のための汎用システム
-pub mod generic;
-pub mod multi;
-
 // データベースハンドラー
 #[cfg(feature = "database")]
 pub mod database;

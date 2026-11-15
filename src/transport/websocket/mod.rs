@@ -1,20 +1,21 @@
 //! WebSocket Transport Module
 //!
-//! WebSocketベースのリアルタイム双方向通信を提供
+//! WebSocketベースのリアルタイム双方向通信を提供（クライアント）。
+//!
+//! MCPのサーバーとしてWebSocketを受け付けるのは、HTTPトランスポートの
+//! `/ws`（`HttpConfig::enable_websocket_upgrade`）。以前ここにあった単独の
+//! WebSocketサーバー（`WebSocketServer`、`server_mode`）は、認証もOriginの
+//! 検査も無く、mcp-rsも使っていなかったので、削除した（#543）
 
 pub mod connection;
 pub mod jsonrpc;
 pub mod pool;
-pub mod server;
 pub mod stream;
 pub mod types;
 
 pub use connection::{WebSocketConnection, WebSocketConnectionBuilder};
 pub use jsonrpc::{error_codes, JsonRpcMessage, JsonRpcNotification};
 pub use pool::{ConnectionPool, PoolMetrics};
-pub use server::{
-    ConnectionId, EchoHandler, MessageHandler, ServerConfig, ServerStatistics, WebSocketServer,
-};
 pub use stream::StreamingTransport;
 pub use types::{PoolStatistics, WebSocketConfig, WebSocketConfigBuilder};
 
@@ -22,7 +23,6 @@ use crate::error::{Error, Result};
 use crate::transport::{ConnectionStats, Transport, TransportInfo};
 use crate::types::{JsonRpcRequest, JsonRpcResponse};
 use async_trait::async_trait;
-use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
 
@@ -32,8 +32,6 @@ pub struct WebSocketTransport {
     config: WebSocketConfig,
     /// 接続プール
     pool: Arc<RwLock<ConnectionPool>>,
-    /// サーバーインスタンス（サーバーモード時）
-    server: Arc<Mutex<Option<WebSocketServer>>>,
     /// アクティブな接続
     active_connection: Arc<Mutex<Option<WebSocketConnection>>>,
     /// 起動状態
@@ -58,7 +56,6 @@ impl WebSocketTransport {
         Ok(Self {
             config,
             pool: Arc::new(RwLock::new(pool)),
-            server: Arc::new(Mutex::new(None)),
             active_connection: Arc::new(Mutex::new(None)),
             running: Arc::new(Mutex::new(false)),
         })
@@ -77,11 +74,6 @@ impl WebSocketTransport {
     /// 設定を取得
     pub fn config(&self) -> &WebSocketConfig {
         &self.config
-    }
-
-    /// サーバーモードかどうか
-    pub fn is_server_mode(&self) -> bool {
-        self.config.server_mode
     }
 
     /// 接続を取得
@@ -160,39 +152,9 @@ impl Transport for WebSocketTransport {
             return Ok(());
         }
 
-        if self.config.server_mode {
-            // サーバーモード：WebSocketサーバーを起動
-            // URLからSocketAddrをパース (ws://host:port -> host:port)
-            let addr_str = self
-                .config
-                .url
-                .trim_start_matches("ws://")
-                .trim_start_matches("wss://");
-            let bind_addr: SocketAddr = addr_str
-                .parse()
-                .map_err(|e| Error::ConnectionError(format!("Invalid bind address: {}", e)))?;
-
-            let server_config = ServerConfig {
-                bind_addr,
-                max_connections: self.config.max_connections,
-                max_message_size: self.config.max_message_size,
-                ping_interval: std::time::Duration::from_secs(self.config.heartbeat_interval),
-                timeout: std::time::Duration::from_secs(self.config.timeout_seconds.unwrap_or(30)),
-                network_policy: crate::security::NetworkPolicy::default(),
-                anti_replay_enabled: self.config.anti_replay_enabled,
-            };
-
-            let mut server = WebSocketServer::new(server_config);
-            server.start().await?;
-
-            let mut srv = self.server.lock().await;
-            *srv = Some(server);
-        } else {
-            // クライアントモード：接続を確立
-            let connection = WebSocketConnection::connect(&self.config.url).await?;
-            let mut active = self.active_connection.lock().await;
-            *active = Some(connection);
-        }
+        let connection = WebSocketConnection::connect(&self.config.url).await?;
+        let mut active = self.active_connection.lock().await;
+        *active = Some(connection);
 
         *running = true;
         Ok(())
@@ -204,18 +166,9 @@ impl Transport for WebSocketTransport {
             return Ok(());
         }
 
-        if self.config.server_mode {
-            // サーバーモード：サーバーを停止
-            let mut server = self.server.lock().await;
-            if let Some(mut srv) = server.take() {
-                srv.stop().await?;
-            }
-        } else {
-            // クライアントモード：アクティブな接続をクローズ
-            let mut active = self.active_connection.lock().await;
-            if let Some(conn) = active.take() {
-                conn.close().await?;
-            }
+        let mut active = self.active_connection.lock().await;
+        if let Some(conn) = active.take() {
+            conn.close().await?;
         }
 
         *running = false;
@@ -251,7 +204,7 @@ impl Transport for WebSocketTransport {
                         Ok(None)
                     }
                     Ok(JsonRpcMessage::Response(_)) => {
-                        // レスポンスは無視（サーバー側）
+                        // レスポンスは無視
                         Ok(None)
                     }
                     Err(e) => Err(e),
@@ -274,14 +227,7 @@ impl Transport for WebSocketTransport {
             transport_type: crate::transport::TransportType::WebSocket {
                 url: self.config.url.clone(),
             },
-            description: if self.config.server_mode {
-                format!(
-                    "WebSocket Server with connection pooling (max: {})",
-                    self.config.max_connections
-                )
-            } else {
-                "WebSocket Client with connection pooling".to_string()
-            },
+            description: "WebSocket Client with connection pooling".to_string(),
             capabilities: crate::transport::TransportCapabilities {
                 bidirectional: true,
                 multiplexing: true,
@@ -321,13 +267,11 @@ mod tests {
     async fn test_transport_builder() {
         let config = WebSocketConfigBuilder::new()
             .url("ws://localhost:8080")
-            .server_mode(true)
-            .max_connections(100)
             .timeout(30)
             .build();
 
         let transport = WebSocketTransport::from_config(config).unwrap();
-        assert!(transport.is_server_mode());
+        assert_eq!(transport.config().timeout_seconds, Some(30));
     }
 
     #[tokio::test]
