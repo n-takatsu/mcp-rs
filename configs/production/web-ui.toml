@@ -1,44 +1,29 @@
-# MCP-RS Web UI Configuration v0.16.0
+# mcp-rs: HTTP, for web clients on this machine
 #
-# Web UI専用設定 - HTTPモードで動作
-# セキュリティのため、認証情報は環境変数を使用することを推奨します
+# The endpoint is http://127.0.0.1:8081/mcp (and ws://127.0.0.1:8081/ws with
+# enable_websocket_upgrade). It listens on loopback only. To listen on the
+# network, authentication is required: see
+# https://n-takatsu.github.io/mcp-rs/docs/security/
+#
+# Up to v0.23.0, this file had a "filesystem handler", [security], [logging],
+# and keys under [transport.http] that mcp-rs did not read (#557).
 
 [server]
-name = "mcp-rs-webui"
-version = "0.16.0"
-stdio = false
 log_level = "info"
 
 [transport]
 type = "http"
 
-# STDIO設定（Web UI使用時は無効）
-[transport.stdio]
-buffer_size = 8192
-timeout_ms = 30000
-content_length_header = true
-framing_method = "content-length"
-max_message_size = 1048576
-pretty_print = false
-
-# HTTP サーバー設定（Web UI用）
 [transport.http]
 addr = "127.0.0.1"
 port = 8081
-cors_enabled = true
-max_request_size = 1048576
-timeout_ms = 30000
+enable_cors = true
+max_request_size = 1048576              # bytes of a request body
+request_timeout_seconds = 30
+# A web app served from another origin than localhost must be listed:
+# allowed_origins = ["https://app.example.com"]
+# enable_websocket_upgrade = true       # also accept MCP on /ws
 
-# 必須: ハンドラー設定
-[handlers]
-enabled = ["filesystem", "wordpress"]
-
-# ファイルシステムハンドラー（Web UI用）
-[filesystem]
-root_path = "."
-read_only = false
-
-# WordPress設定（環境変数使用推奨）
 [handlers.wordpress]
 enabled = true
 url = "${WORDPRESS_URL}"
@@ -50,23 +35,3 @@ timeout_seconds = 30
 enabled = true
 requests_per_second = 10
 burst_size = 20
-
-# ファイルシステム設定（オプション）
-[handlers.filesystem]
-enabled = false
-allowed_directories = []
-read_only = true
-
-# セキュリティ設定
-[security]
-allowed_origins = ["*"]
-max_concurrent_requests = 100
-request_timeout_ms = 30000
-
-# ログ設定
-[logging]
-level = "info"
-file_path = "logs/mcp-rs-webui.log"
-format = "json"
-max_size = 10
-max_files = 5

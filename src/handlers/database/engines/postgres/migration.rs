@@ -103,6 +103,19 @@ impl MigrationManager {
 
     /// Get migration history
     pub async fn get_migration_history(&self) -> Result<Vec<MigrationInfo>, DatabaseError> {
+        // マイグレーションを一度も流していないDBには_sqlx_migrationsが無い。
+        // そのときは履歴を空として返す（以前はエラーになっていた、#513）
+        let table: Option<String> =
+            sqlx::query_scalar("SELECT to_regclass('_sqlx_migrations')::text")
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| {
+                    DatabaseError::QueryFailed(format!("Failed to fetch migration history: {}", e))
+                })?;
+        if table.is_none() {
+            return Ok(Vec::new());
+        }
+
         let rows = sqlx::query(
             r#"
             SELECT version, description, installed_on, execution_time, success, checksum

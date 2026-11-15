@@ -7,6 +7,392 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.24.0] - 2026-11-15
+
+### Added
+
+- WordPressのユーザー名とアプリケーションパスワードを、OSの資格情報ストア
+  （Windowsの資格情報マネージャー、macOSのキーチェーン、LinuxのSecret
+  Service）から読めるようにした（#533）。`[handlers.wordpress]`に
+  `keyring = "<名前>"`と書き、`mcp-rs wordpress-keyring set <名前>`で登録する
+  （サイトのURLも一緒に保存し、設定の`url`と同じサイトのときだけ使う、#541）
+  （`show`・`delete`もある。値は引数で受け取らず、エコー無しで読む）。
+  Claude Desktopは、OSの環境変数をMCPサーバーに渡さず、設定のJSONの`env`
+  だけを渡すため、Claude DesktopとClaude Code・ターミナルの両方で使うと、
+  同じ値を2か所に書く必要があった。資格情報ストアは、どれから起動しても同じに
+  読める。`keyring`を書いた設定では、`WORDPRESS_URL`・`WORDPRESS_USERNAME`・
+  `WORDPRESS_PASSWORD`の環境変数で上書きしない（残っていた`WORDPRESS_URL`
+  で、パスワードを別のサイトへ送らないため）。`username`・`password`・
+  `encrypted_credentials`と一緒に書くと起動しない。平文・`${VAR}`・
+  `encrypted_credentials`は今までどおり使える。既定で有効な機能
+  `os-keyring`に入れた。Dockerのイメージは、資格情報ストアが無いので、
+  この機能を外してビルドする
+- HTTPモードのAPIキー（`[[transport.http.api_keys]]`の`key`）で、`${VAR}`
+  （環境変数）を展開するようにした（#534）。キーを設定ファイルに平文で
+  書かずに済む（Dockerでは`-e`等で渡す）。変数が無いか空なら、どの
+  エントリーのどの変数かを出して起動しない（値は出さない）。キーを使う設定（HTTPモードで
+  `auth_enabled = true`）のときだけ展開する。以前は`${...}`をそのままキーと
+  して使っていたので、`${`を含むキーは環境変数から渡す必要がある
+
+### Changed
+
+- **互換性のない変更**: `--config`を付けずに起動したとき、今のフォルダの
+  設定ファイル（`mcp-config.toml`・`config.toml`・`config/mcp.toml`）を
+  読まないようにした（#541）。`~/.config/mcp-rs/config.toml`だけを読む。
+  Claude Code等は、開いたフォルダでMCPサーバーを起動するので、
+  `--config`無しで登録していると、開いたリポジトリの`config.toml`を読み、
+  任意のコマンドを実行させたり（`[[plugins]]`）、資格情報を別のサイトへ
+  送らせたりできた。今のフォルダの設定ファイルを使っていた場合は、
+  `--config <絶対パス>`を付ける。設定が見つからず、今のフォルダにこれらの
+  ファイルがあるときは、読まずに、絶対パスでの`--config`の付け方を案内して
+  止まる。相対パスの`--config`も、起動したフォルダから読むので、起動の
+  ときに標準エラーに警告を出す。`--config ~/…`は、mcp-rsがホームフォルダに
+  展開する（以前は、シェルを通さないクライアントの設定では`~`がそのまま
+  届き、起動したフォルダの中の`~`という名前のフォルダを探していた）
+- **互換性のない変更**: HTTPモードで、ループバック以外（`0.0.0.0`等）で
+  待ち受けるのに、認証（APIキー・OAuth・mTLS）が無い設定は、起動しない
+  ようにした（#540）。以前は警告を出すだけで起動し、ネットワークの誰でも
+  全部のツールを使えた。`auth_enabled = true`とAPIキー等を書く。mcp-rsの
+  前に置いたもの（ログインを求めるリバースプロキシ等）が認証するときだけ、
+  `[transport.http]`に`allow_unauthenticated_external = true`を書けば、
+  警告を出して起動する
+- **互換性のない変更（ライブラリ）**: `HttpConfig`に`max_connections`・
+  `websocket_idle_timeout_secs`・`allow_unauthenticated_external`、
+  `HttpTransportConfig`に`max_request_size`・`request_timeout_seconds`・
+  `max_connections`・`websocket_idle_timeout_seconds`・
+  `allow_unauthenticated_external`、`oauth::TokenInfo`に`expires_at`を
+  足した（#540）。構造体を直接作っているコードは、これらを足すか、
+  `..Default::default()`を使う必要がある
+- **互換性のない変更（ライブラリ）**: `WordPressConfig`に`keyring`
+  （`Option<String>`）を足した（#533）。構造体を直接作っているコードは、
+  `keyring: None`を足す必要がある。設定の読み込みでは、
+  `resolve_encrypted_credentials`の代わりに、資格情報ストアも読む
+  `resolve_credentials`を呼ぶ
+- **互換性のない変更（ライブラリ）**: `EnvExpansionError`に`Empty`（変数は
+  あるが値が空）を足した（#534）。`match`で全部の場合を書いているコードは、
+  この場合を足す必要がある
+- **互換性のない変更（ライブラリ）**: `DatabaseToolOptions`に
+  `max_result_bytes`、`DatabaseSettings`に`max_result_bytes`・
+  `ssl_root_cert`を足した（#539）。構造体を直接作っているコードは、
+  これらを足すか、`..Default::default()`を使う必要がある
+- READMEとClaude Desktopのガイドに、Claude Desktopには環境変数が渡らない
+  こと、`env`と設定ファイルの`${VAR}`の関係、`--config`の有無での
+  `WORDPRESS_*`の扱いの違い、`enabled = true`が要ること、Windowsでの設定の
+  例、設定を変えた後にClaude Desktopを終了し直すこと、起動しないときに見る
+  ログを書いた（#533）。Claude Desktopの例は、ひな形の
+  `configs/production/claude-desktop.toml`が読む3つの変数のうち1つしか
+  `env`に書いておらず、そのとおりにすると起動しなかった。資格情報ストアを
+  使う例に変え、`${VAR}`のときは3つとも要ることを書いた。
+  生成する設定のひな形のコメントにあった、mcp-rsが読まない`.env`ファイルの
+  案内を直した
+- 最小対応のRustのバージョンを1.98にし、`Cargo.toml`に`rust-version`として
+  宣言した（#516）。ソースからビルドするには、Rust 1.98以降が要る（以前は
+  1.88）。Dockerのイメージも1.98でビルドする。CIで、Ubuntu・Windowsの
+  1.98でのコンパイルと、`Dockerfile`のバージョンとの一致を確かめる。
+  `resolver = "3"`にしたので、`cargo update`は1.98で使えない版の依存
+  クレートを選ばない
+- 使われていない`use`を削除し、`src/lib.rs`のクレート全体の
+  `#![allow(unused_imports)]`を外した（#502）。未使用の`use`は、機能の
+  組み合わせによらずコンパイラーの警告になる
+
+### Fixed
+
+- `configs/`の設定ファイルの例を、今のmcp-rsが読む形に直した（#557）。
+  mcp-rsは知らないキーを拒否しないので、古いキーは黙って無視されていた
+  - `production/claude-desktop.toml`・`main.toml`・`web-ui.toml`と
+    `development/http-transport.toml`から、mcp-rsが読まないキーを消した。
+    存在しない「ファイルシステムハンドラー」（`[filesystem]`・
+    `[handlers] enabled`）・`[security]`・`[logging]`・`server.name`等。
+    HTTPの`cors_enabled`・`timeout_ms`は、読まれる`enable_cors`・
+    `request_timeout_seconds`にした。`main.toml`は、ファイルシステム
+    ハンドラーだけの設定で、実際にはツールが何も無かった
+  - `examples/multi-handler.toml`を、WordPress・PostgreSQL・プラグインを
+    一緒に使う例に書き直した。以前は、mcp-rsが一度も読まなかった形式
+    （`[handlers.<名前>]`に`type = "..."`）で、起動もしなかった
+  - `examples/log-policy-demo.toml`・`module-separated.toml`の
+    `[handlers.wordpress]`に、要る`enabled = true`を足し、読まれない
+    `timeout`等を`timeout_seconds`にした
+  - `development/testing.toml`を読めるようにした（`[transport]`が無く、
+    `requests_per_second`が`10.0`で、読めなかった）
+  - 無いTCPのトランスポートの`development/tcp.toml`を削除した
+  - 例が今後も古くならないよう、読めて、読まれないキーが無いことを確かめる
+    テスト（`tests/config_examples_test.rs`）を足した
+  - 効いていなかった`[transport.stdio]`（`buffer_size`・`framing_method`
+    等）を、設定と例から削除した。サーバー（`McpServer::run_stdio`）は、
+    1行ずつ読み書きし、この設定を使っていなかった。書いてあっても、
+    エラーにならずに無視する。**互換性のない変更（ライブラリ）**:
+    `TransportConfig`（`config`と`transport`の両方）の`stdio`、
+    `config::StdioTransportConfig`、`transport::stdio`（`StdioConfig`）を
+    削除した
+- ライブラリの`DatabaseSecurity`（`SqlInjectionDetector`）が、`1' OR '1'='1`
+  （末尾の引用符を元のSQLに閉じさせる形）と`OR true`を通していたのを、
+  止めるようにした（#501）。正当なサブクエリは止めない。正規表現での検知は
+  見逃しも誤検知も無くせない補助であることを、ドキュメントに書いた。
+  mcp-rsの`[database]`のツールはこの検知を使わないので、影響しない
+
+### Removed
+
+- **互換性のない変更（ライブラリ）**: 使われていないコードを削除した（#543の
+  5つ目）。mcp-rs（バイナリ）の動きは変わらない
+  - `McpServer::run`（と、それだけが使っていた`ServerCapabilities`・
+    `ToolsCapability`・`ResourcesCapability`）。認証もOriginの検査も無い、
+    生のTCPのJSON-RPCサーバーだった。STDIOは`run_stdio`、HTTPは
+    `HttpTransport`と`dispatcher`を使う
+  - 単独のWebSocketサーバー`transport::websocket::server`
+    （`WebSocketServer`・`ServerConfig`・`EchoHandler`・`MessageHandler`等）と、
+    `WebSocketTransport`のサーバーモード（`WebSocketConfig`の
+    `server_mode`・`max_connections`・`anti_replay_enabled`、
+    `WebSocketConfigBuilder`の`server_mode`・`max_connections`、
+    `is_server_mode`）。認証もOriginの検査も無かった。MCPをWebSocketで
+    受け付けるには、HTTPトランスポートの`/ws`
+    （`enable_websocket_upgrade`）を使う。`WebSocketTransport`は
+    クライアントとして残した
+  - `StdioTransport`。サーバーは`McpServer::run_stdio`でSTDIOを読み書き
+    するので、使っていなかった。設定の`StdioConfig`は残した
+  - `handlers::multi`（`MultiHandlerManager`・`DefaultHandlerFactory`・
+    `HandlerFactory`）と`handlers::generic`（`HandlerConfig`・
+    `SecurityConfig`・`ExtendedMcpHandler`等）。`SecurityConfig`は、
+    何もしていなかった
+- 使われておらず、ビルドもできなかった`Dockerfile.test`と、`docker-compose.test.yml`
+  の`test-runner`を削除した（#516）
+- KubernetesのマニフェストとHelmチャート（`k8s/`・`charts/mcp-server/`）を
+  削除した（#504）。今のmcp-rsと合わず、起動しないかプローブの失敗で再起動を
+  繰り返すものだった（環境変数での設定・存在しない`/health`等のエンドポイント・
+  ポート3000等）。同じ前提の`DEPLOYMENT.md`・`docs/deployment-guide.md`・
+  `scripts/deploy/`・ルートの`nginx.conf`も削除した。コンテナで動かす
+  方法は`docs/DOCKER_GUIDE.md`を参照
+
+### Security
+
+- 低い指摘のまとめ（#543）の6つ目: その他
+  - **互換性のない変更**: `docker-compose.yml`のPostgreSQLを、
+    `docker-compose.postgres.yml`に分けた。`POSTGRES_PASSWORD`の既定値
+    （`changeme`）をやめ、設定しないとComposeが止まるようにした（`:?`）。
+    以前は、設定せずに起動すると、誰でも知っているパスワードの
+    データベースになった。同じファイルのままだと、PostgreSQLを使わない
+    ときも`POSTGRES_PASSWORD`が要るので、分けた。PostgreSQLを使うときは、
+    `-f docker-compose.yml -f docker-compose.postgres.yml`を付ける。
+    `.env.example`の`POSTGRES_PASSWORD`も空にした（Composeは`.env`を
+    読むので、コピーした`postgres`で起動できてしまう）。テスト環境
+    （`configs/docker/docker-compose.postgres.yml`）は、空なら今までどおり
+    `postgres`を使う。`docs/DOCKER_POSTGRES_GUIDE.md`は、テスト環境の
+    ファイルを指すように直した。テスト環境のPostgreSQL（2つ）とpgAdminも、
+    `127.0.0.1`だけに公開するようにした（既定のパスワードは`postgres`と
+    `admin`）
+  - `docker-compose.dev.yml`のPostgreSQLとRedisを、`127.0.0.1`だけに
+    公開するようにした。以前は、同じネットワークの誰からも、ファイルに
+    書いてあるパスワード（Redisはパスワード無し）で接続できた
+  - `docs/DOCKER_GUIDE.md`の例で、パスワードとAPIキーを、コマンド行の
+    `-e WORDPRESS_PASSWORD="…"`やクライアントの設定の`env`ではなく、
+    `--env-file`のファイル（本人だけが読める）から渡すようにした。
+    コマンド行の値は、シェルの履歴とプロセスの一覧に残る
+  - プラグインの名前で、`_`で始まるもの・終わるものを拒否するようにした。
+    例えば`fs_`のツール`fs___read`は、ほかのプラグイン`fs`のツールの指定
+    （APIキーの`tools = ["fs__*"]`）にも当たった
+- データベースの`float8`・`float4`のNaN・Infinity・-Infinityを、0ではなく、
+  文字列`"NaN"`・`"Infinity"`・`"-Infinity"`（PostgreSQLと同じ書き方）で
+  返すようにした（#543）。JSONの数では表せない。計算できなかった値が0に
+  見えていた。返した文字列は、そのまま`execute_query`の引数に使える
+- `get_schema`（と`db://schema`）が、文書のとおり、外部キーとインデックスを
+  返すようにした（#543）。以前は、いつも空だった。複数の列の外部キーは、
+  列ごとに1項目（同じ`name`）にする。インデックスの`columns`は、キーの列
+  だけ（`INCLUDE`の列と、式は含めない）
+- 低い指摘のまとめ（#543）の4つ目: HTTP
+  - `/ws`で応答を送る時間に、上限を付けた（10秒と、64KB/秒で送る時間の
+    和。10MBなら約170秒）。時間内に送れなければ、接続を閉じる。以前は、
+    受信を止めたクライアントに大きな応答を送ると、送信で止まり続け、接続の
+    枠を持ち続けた。その間、無通信の上限・トークンの期限も働かなかった。
+    64KB/秒（約512kbps）より遅い回線では、大きな応答で接続が切れることが
+    ある。Windowsでは、OSが大きな送信もすぐ受け取るので、送信では止まらず、
+    読まない相手は無通信の上限で閉じられる
+  - プロキシの付けるヘッダー（`X-Forwarded-Proto`・`Forwarded`・TLSの版・
+    証明書のフィンガープリント・`X-Forwarded-For`・`X-Real-IP`）を、
+    新しい設定`trusted_proxies`（IPアドレスかCIDR）の接続元からだけ使う
+    ようにした。以前は、どの接続元のものも信じたので、平文のHTTPで
+    `X-Forwarded-Proto: https`を付ければ`enforce_https`を通れ、証明書の
+    ピン留めのヘッダーも書けた
+  - **互換性のない変更**: `tls_enabled`無しの`enforce_https`・証明書の
+    ピン留めと、`ids_trust_forwarded_for`は、`trusted_proxies`が無いと
+    起動しない。プロキシのアドレスを`trusted_proxies`に書く
+  - IDSで、`X-Forwarded-For`の、信頼するプロキシでないいちばん右の
+    アドレスを使うようにした。以前はいちばん左（クライアントが書ける部分）
+    を使ったので、ほかのアドレスをブロックさせられた
+  - IDSで、呼び出し元を`X-User-ID`ヘッダーではなく、認証した呼び出し元
+    （APIキー・トークン）か、接続元のIPで見分けるようにした。ヘッダーは
+    クライアントが何でも書けるので、他人の名前で記録させたり、毎回違う値で
+    記録を際限なく増やしたりできた
+  - IDSが覚える呼び出し元・アドレス・集約したアラートの数に、上限
+    （それぞれ1万）を付けた。超えると、古いものから消す。古い記録の掃除も、
+    5分ごとに呼ぶようにした（以前は、掃除の関数があっても呼ばれていなかった）
+  - リプレイ攻撃対策で、タイムスタンプをnonceより先に確かめるようにした。
+    以前は、古いタイムスタンプのリクエストもnonceのキャッシュに入った
+  - リプレイ攻撃対策のnonceのキャッシュを、呼び出し元（APIキー・トークン、
+    無ければ接続元のIP）ごとに分けた。1つの呼び出し元は1万まで。以前は全員で
+    1つ（10万）を使い、1つのクライアントが埋めると、全員のリクエストが
+    失敗した。`trusted_proxies`のプロキシの後ろでは、`X-Forwarded-For`の
+    クライアントのアドレスで分ける。nonceを覚える時間は、タイムスタンプを
+    受け付ける間（既定で70秒）に縮めた（以前は5分）。nonceは要求の内容に
+    結び付かない（署名しない）ので、補助的なものだと文書に書いた
+  - JSONとして読めないメッセージに、JSON-RPCの`-32700`（Parse error）を、
+    JSONだがリクエストでないもの（バッチ等）に`-32600`（Invalid Request）を
+    返すようにした（STDIO・HTTP・`/ws`、HTTPでは400）。以前は何も返さず、
+    クライアントは自分のタイムアウトまで待った。クライアントからの応答
+    （`method`が無く、`result`か`error`がある）には、これまでどおり答えない
+  - **互換性のない変更（ライブラリ）**: `HttpConfig`・`HttpTransportConfig`に
+    `trusted_proxies`、IDSの`RequestData`に`caller_id`、
+    `AntiReplayConfig`に`max_nonce_cache_per_caller`、
+    `NetworkMonitorConfig`に`max_tracked_ips`、`BehavioralConfig`に
+    `max_baselines`を足した。構造体を直接作っているコードは、これらを
+    足すか、`..Default::default()`を使う必要がある。`NonceManager`は、
+    同じnonceでも呼び出し元（`user_id`）が違えば受け付ける
+- 低い指摘のまとめ（#543）の3つ目: WordPress
+  - `wordpress_health_check`は、HTTPモードで認証していない呼び出し元には、
+    ログのファイルのパスを出さないようにした（`mcp_rs_status`と同じ）
+  - AIに使わせるWordPressのアカウントは、寄稿者（Contributor）か投稿者
+    （Author）を勧めるよう、文書を直した。以前のトラブルシューティングは
+    編集者（Editor）か管理者（Administrator）を勧めていた。どちらも
+    `unfiltered_html`を持つので、プロンプトインジェクションで`<script>`
+    入りの記事をすぐに公開できる
+  - `upload_media`の`file_path`で上げたメディアは、記事に使う前から
+    公開のURLで見られることを、文書に書いた
+- 低い指摘のまとめ（#543）の2つ目: 暗号化した資格情報の鍵の導出
+  - `encrypted_credentials`の鍵の導出（PBKDF2-HMAC-SHA256）の回数を、
+    10万回から60万回（OWASPの推奨値）にした。`encrypt-wordpress-credentials`
+    は、方式と回数を`kdf`・`kdf_iterations`として書き出す。記録の無いもの
+    （v0.23.0までに作ったもの）は、作ったときと同じ10万回で読むので、
+    そのまま使える。60万回にするには、`encrypt-wordpress-credentials`で
+    作り直す
+  - 導出した鍵のバイト列を、使い終わったら0で上書きする（`Zeroizing`）。
+    `aes`の`zeroize`機能も有効にし、展開したAESのラウンド鍵も、捨てる
+    ときに0で上書きする
+  - **互換性のない変更（ライブラリ）**: `EncryptedCredentials`に`kdf`・
+    `kdf_iterations`（どちらも`Option`）を足した。構造体を直接作っている
+    コードは、これらを足す必要がある
+- 低い指摘のまとめ（#543）の1つ目: ログと秘密情報の表示
+  - 通常のログを、監査ログと同じく、Unix系では本人だけが使える権限で
+    作るようにした。新しく作るフォルダは700、ファイルは600にし、ログの
+    ファイルの代わりに置かれたシンボリックリンクはたどらない
+    （`O_NOFOLLOW`）。以前は、umaskのとおり（多くは755・644）で、ほかの
+    利用者がログを読めた。監査ログにも`O_NOFOLLOW`を付けた
+  - 最後の手段の一時フォルダ（`mcp-rs/logs`）は、Windowsでだけ使う。
+    Unix系の`/tmp`は全員で共有するので、ほかの利用者が先に`/tmp/mcp-rs`を
+    作ると、ログを読んだり、リンクで別のファイルへ追記させたりできた
+  - 設定ファイルの書き方の誤りのエラーで、誤りのある行をそのまま出さない
+    ようにした。行と列の番号と、値を`…`に伏せた理由だけを出す。以前は、
+    `password = "…"x`のような誤りで、パスワードの行が標準エラー（Claude
+    Desktopではそのログ）に出た。値の型の誤り（`port = "…"`等）のエラーも、
+    値を伏せる
+  - データベースのツールの監査ログで、エラーの文の値を伏せるとき、値の中の
+    引用符で伏せるのを終えないようにした。PostgreSQLは値の中の`"`をそのまま
+    書くので（`"ab"cd"`）、以前は値の後半が監査ログに残った（#539で入れた
+    処理）
+  - `ApiKeyEntry`・`ApiKeyEntryConfig`・`ConnectionConfig`の`Debug`で、
+    APIキー・パスワードを伏せた（どこもログに出してはいなかった）
+- HTTPモードの受け口に、大きさ・時間・接続数の上限を付け、許していない
+  クライアントに本文を読ませないようにした（#540）
+  - 本文の大きさを`max_request_size`（既定1MB）までにした。超えたら413。
+    以前は、この設定はWebSocketにしか使われず、HTTPはaxumの既定の2MB
+    だった
+  - TLSのハンドシェイクとヘッダーを受け取る時間を、
+    `request_timeout_seconds`（既定30秒）までにした。本文は、データが
+    届く間隔を、この秒数までにした（合計ではない）。以前は時間の制限が
+    無く（`timeout_ms`はどこでも使われておらず、`axum::serve`にタイマーも
+    渡していなかった）、少しずつ送る接続（slowloris）で枠を占められた。
+    ツールの呼び出しにかかる時間は制限しない
+  - 同時の接続を`max_connections`（既定1024）までにした。超えた接続は、
+    前の接続が閉じるまで待つ
+  - ネットワークの制限（`network_policy_*`）を、接続を受け付けた時点で
+    確かめ、合わない接続はTLSのハンドシェイクもせずに閉じる。`Origin`と
+    認証も、本文を読む前に確かめる。以前は、本文を読んでJSONとして
+    解釈してから確かめていた
+  - 認証の失敗を監査ログに書くのは、1分あたり100件までにした。残りは
+    数えて、その1分が終わったときに1件にまとめて書く（IPアドレスは
+    残らない）。以前は毎回書いたので、
+    大量の失敗で監査ログがローテーションされ、本物の記録が消えた
+  - `/ws`（`enable_websocket_upgrade`）: メッセージとフレームの大きさを
+    `max_request_size`までにした（以前はtungsteniteの既定の64MiB・
+    16MiB）。サーバーから30秒ごとにpingを送り、
+    `websocket_idle_timeout_seconds`（既定300秒）の間、pongを含めて何も
+    受け取らなければ閉じる。以前は、応答の無い接続も閉じなかった。
+    クライアントは自動でpongを返すので、何も送らないだけのクライアントは
+    今までどおり切れない。OAuthのトークンで開いた接続は、トークンの期限
+    （`exp`）で閉じる（以前は接続のときにしか見なかった）
+  - 同時の接続の上限は、全部のクライアントで共有し、IPアドレスごとの上限は
+    無い。インターネットに公開する場合は、IPアドレスごとに接続を制限する
+    リバースプロキシを前に置くことを、ドキュメントに書いた
+- GitHub Actionsのワークフローで使う外部のアクションを、すべてコミットの
+  SHAで固定した（#542）。版はコメントに書き、Dependabot
+  （`.github/dependabot.yml`）で更新する。以前は、リリースのイメージを
+  ghcr.ioへpushするジョブ（`packages: write`）で`anchore/sbom-action@v0`
+  を、スキャンで`aquasecurity/trivy-action@master`を使っていて、上流の
+  タグ・ブランチが乗っ取られると、イメージやリリースを上書きできた。
+  `trivy-action`は、2026年3月に付け直されたタグと勧告
+  （GHSA-9p44-j4g5-cfx5）の対象を避け、v0.36.0にした。あわせて次を直した
+  - `deploy.yml`: SBOMの生成を別のジョブに移した。リリースへの添付に要る
+    `contents: write`だけを持ち、イメージをpushする権限は持たない。
+    イメージを作るジョブは`contents: read`にした
+  - `docker-security.yml`: 使っていない`packages: write`を外した
+    （イメージはpushしない）
+  - `cargo install cargo-audit`に`--locked`を付けた
+  - `docker-security-scan.yml`: 通知の`run:`の中に書いていたブランチ名
+    （`${{ github.ref_name }}`）を環境変数で渡し、JSONは`jq`で作る
+
+- データベースの`execute_query`の結果に、バイト数の上限を付けた（#539）。
+  以前は行数の上限（`max_rows`）だけで、`SELECT repeat('x', 200000000)
+  FROM generate_series(1, 1000)`のような、読み取り専用の正しいSELECT
+  1つで、mcp-rsがメモリを使い切って落ちた（同じプロセスのWordPressの
+  ツール・プラグインも止まる）。`[database]`の`max_result_bytes`（既定は
+  10MB）を超えた行は返さず、`truncated`を`true`にする。1行目だけで
+  超えるときは、大きな値を切り詰める（文字列は先頭を残し、`bytea`・`json`
+  は大きさを示す文に置き換える）。行はカーソル（`DECLARE … CURSOR`・
+  `FETCH`）で少しずつ受け取り、上限で閉じる。`FETCH`の行数は、1行から倍々に増やすので（500行まで）、上限を
+  超えて作らせる行は、それまでに受け取った行数ほどで済む。上限は目安で、
+  JSONのエスケープの分は数えない。結果には`max_result_bytes`も返す
+- データベースの接続をプールに戻すとき、セッションの設定とロールを元に
+  戻すようにした（#539）。以前は、`allow_write = true`のとき、
+  `execute_command`の中の`set_config('role', …, false)`等で変えた設定が
+  コミットされて接続に残り、その接続の後の`execute_query`・`get_schema`が、
+  別のロールや`search_path`で動いた。`get_schema`も、読み取り専用の
+  トランザクションと`statement_timeout`の中で実行する（以前は時間の上限が
+  無かった）
+- データベースのツールの監査ログに、パラメーターの値を書かないようにした
+  （#539）。以前は、値を含むエラー（mcp-rsの型の検査の
+  `parameter $1: '<値>' is not a valid uuid`と、PostgreSQLのキャストの
+  エラー）を、そのまま`error`に書いていた。mcp-rsのエラーの文から値を除き、
+  監査ログに書くエラーの文では、引用符の中を`…`に伏せる（クライアントには
+  全文を返す）
+- データベースのTLSについて、`[database]`に`ssl_root_cert`（CAのファイル）
+  を足した（#539）。非公開のCA（RDS等）でも、`verify-ca`・`verify-full`を
+  使える（CAのファイルは`verify-ca`・`verify-full`のときだけ使われるので、
+  それより弱い`ssl_mode`と一緒に書くと、データベースのツールを起動しない）。
+  ループバック・Unixソケット以外のホストで、`ssl_mode`が
+  `verify-full`より弱いときは、起動時に警告する（既定の`prefer`は、
+  証明書を確かめず、黙って平文に落ちる）。設定に書かないとき使われる
+  環境変数（`PGSSLMODE`・`PGSSLROOTCERT`・`PGPASSWORD`・`PGOPTIONS`等）と
+  `.pgpass`を、ドキュメントに書いた
+- HTTPモードで、APIキー・アクセストークンごとのツールの制限（`tools`・
+  `scope_tools`）を、リソース（`resources/list`・`resources/read`）にも
+  効かせた（#538）。以前は、`tools = []`のキーでも、`wordpress://posts`・
+  `comments`・`categories`・`tags`と`db://schema`を一覧で見て読めた。
+  各リソースは、同じデータを読める読み取り専用のツールを使えるときだけ
+  読める。`wordpress://posts`は投稿の本文まで返すので`get_post`、ほかは
+  `get_comments`・`get_categories`・`get_tags`・`get_schema`。
+  リソースの読み取りも、呼び出し元付きで監査ログに残し（以前は記録
+  しなかった）、WordPressのツールと同じレート制限を通す。ライブラリでは、`McpHandler`に
+  `resource_tool`（既定は`None`）を足した。自分のハンドラーのリソースを、
+  制限のある呼び出し元に出すには、これを実装する
+- 依存クレートを、セキュリティ勧告の修正版に上げた。`Cargo.toml`の下限も
+  `tokio = "1.54"`・`ammonia = "4.1.9"`に上げたので、mcp-rsをライブラリと
+  して使う側も、勧告の対象の版を選ばない
+  - `ammonia` 4.1.8 → 4.1.9（RUSTSEC-2026-0533: 埋め込みのSVG・MathML
+    の扱いの誤りによる、変異型XSS）
+  - `quinn-udp` 0.5.14 → 0.5.16（RUSTSEC-2026-0538: 切り詰められた
+    データグラムの後、受信ループが空回りする）
+  - `tokio` 1.48.0 → 1.54.1（RUSTSEC-2026-0386）、`rustix` 1.1.2 → 1.1.6
+    （RUSTSEC-2026-0486）。どちらも健全性（unsound）の警告
+  - `lru` 0.16.4（RUSTSEC-2026-0253）は、`mysql_async` 0.36が0.16を
+    要求するため、まだ上げられない
+
 ## [0.23.0] - 2026-11-12
 
 ### Added

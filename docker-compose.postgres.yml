@@ -1,0 +1,58 @@
+# ========================================
+# PostgreSQL for docker-compose.yml (optional)
+# ========================================
+#
+# Use it together with docker-compose.yml:
+#
+#   export POSTGRES_PASSWORD='a long random password'
+#   docker compose -f docker-compose.yml -f docker-compose.postgres.yml up -d
+#
+# POSTGRES_PASSWORD has no default (#543): up to v0.23.0 it was "changeme",
+# so a database started without setting it had a well-known password. It is
+# in its own file so that docker-compose.yml alone (mcp-rs without
+# PostgreSQL) does not need it.
+
+services:
+  # PostgreSQL Database. To give mcp-rs its database tools, add a
+  # [database] section to the config file with host = "postgres"; see
+  # website/docs/guides/postgres-integration.md for a read-only role.
+  postgres:
+    image: postgres:16-alpine
+    container_name: mcp-postgres
+    restart: unless-stopped
+
+    # Security settings
+    security_opt:
+      - no-new-privileges:true
+
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 256M
+        reservations:
+          cpus: '0.25'
+          memory: 64M
+
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-mcp_db}
+      POSTGRES_USER: ${POSTGRES_USER:-mcp_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD (see docs/DOCKER_GUIDE.md)}
+      PGDATA: /var/lib/postgresql/data/pgdata
+
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+    networks:
+      - mcp-network
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-mcp_user}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres-data:
+    driver: local

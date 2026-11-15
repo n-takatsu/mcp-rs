@@ -465,7 +465,6 @@ pub trait DatabaseConnection: Send + Sync {
 ### 技術的質問
 
 - GitHub Issues: <https://github.com/n-takatsu/mcp-rs/issues>
-- GitHub Discussions: <https://github.com/n-takatsu/mcp-rs/discussions>
 
 ### コントリビューション
 

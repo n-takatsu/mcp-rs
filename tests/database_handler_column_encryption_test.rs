@@ -9,6 +9,8 @@
 
 #![cfg(feature = "database")]
 
+mod common;
+
 use mcp_rs::handlers::database::column_encryption::{
     ColumnEncryptionConfig, ColumnEncryptionManager,
 };
@@ -23,23 +25,17 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 async fn try_connect() -> Option<PgPool> {
-    let database_url = std::env::var("TEST_DATABASE_URL").unwrap_or_default();
-    if database_url.is_empty() {
-        println!("skipping: TEST_DATABASE_URL not set");
-        return None;
-    }
+    // 変数が無いときも、つながらないときも失敗にする（#513）。
+    // `#[ignore]`のテストなので、`--ignored`で実行したときだけ呼ばれる
+    let database_url = common::postgres_url();
     match PgPool::connect(&database_url).await {
         Ok(pool) => match sqlx::query("SELECT 1").execute(&pool).await {
             Ok(_) => Some(pool),
-            Err(e) => {
-                println!("skipping: cannot query test Postgres ({e})");
-                None
-            }
+            // 変数があるのにつながらないときは失敗にする。黙って飛ばすと、
+            // CIで何も確かめずに成功に見えるため（#513）
+            Err(e) => panic!("TEST_DATABASE_URL is set but cannot query PostgreSQL: {e}"),
         },
-        Err(e) => {
-            println!("skipping: cannot connect to test Postgres ({e})");
-            None
-        }
+        Err(e) => panic!("TEST_DATABASE_URL is set but cannot connect to PostgreSQL: {e}"),
     }
 }
 
@@ -76,11 +72,24 @@ fn tool_call(sql: &str) -> ToolCallParams {
     }
 }
 
-fn rows_of(response: &serde_json::Value) -> &Vec<serde_json::Value> {
-    response
-        .get("rows")
+/// 応答から行を取り出す。`execute_query_as`は結果のJSONをそのまま返し、
+/// `call_tool`（MCPのツール）は`content[0].text`にJSONの文字列として包んで返す（#453）。
+/// どちらの形も読む（#513）
+fn rows_of(response: &serde_json::Value) -> Vec<serde_json::Value> {
+    let body = match response.get("content") {
+        Some(content) => {
+            let text = content[0]["text"]
+                .as_str()
+                .unwrap_or_else(|| panic!("tool response should have text content: {response}"));
+            serde_json::from_str(text)
+                .unwrap_or_else(|e| panic!("tool response text should be JSON ({e}): {response}"))
+        }
+        None => response.clone(),
+    };
+    body.get("rows")
         .and_then(|v| v.as_array())
-        .expect("response should have a rows array")
+        .cloned()
+        .unwrap_or_else(|| panic!("response should have a rows array: {response}"))
 }
 
 #[tokio::test]

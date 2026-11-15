@@ -187,6 +187,9 @@ pub struct TokenInfo {
     pub client_id: Option<String>,
     /// トークンのスコープ（`scope`か`scp`）
     pub scopes: Vec<String>,
+    /// トークンの期限（`exp`、UNIX時刻の秒、#540）。`/ws`の接続を、この
+    /// 時刻に閉じるために使う
+    pub expires_at: Option<u64>,
 }
 
 /// トークンを受け付けない理由
@@ -326,6 +329,10 @@ impl OAuthValidator {
                 .and_then(Value::as_str)
                 .map(str::to_string),
             scopes: token_scopes(&claims),
+            expires_at: claims.get("exp").and_then(|exp| {
+                exp.as_u64()
+                    .or_else(|| exp.as_f64().filter(|f| *f >= 0.0).map(|f| f as u64))
+            }),
         };
         if !self
             .config

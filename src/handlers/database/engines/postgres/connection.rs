@@ -11,8 +11,7 @@ use crate::handlers::database::{
 };
 use async_trait::async_trait;
 use chrono::Utc;
-use sqlx::{Column, PgPool, Postgres, Row, TypeInfo};
-use std::sync::Arc;
+use sqlx::{Column, PgPool, Row, TypeInfo};
 
 use super::PostgresTransaction;
 
@@ -472,7 +471,6 @@ fn bind_value<'q>(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
 
     #[test]
     fn test_parameter_count() {

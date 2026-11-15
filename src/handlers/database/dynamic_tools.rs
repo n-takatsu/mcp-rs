@@ -2,13 +2,8 @@
 //!
 //! 動的データベース切り替え機能のMCPツールインターフェース
 
-use super::dynamic_engine::{
-    DynamicEngineManager, EngineInfo, EngineMetrics, SwitchEvent, SwitchPolicy, SwitchResult,
-    SwitchStrategy, TriggerCondition,
-};
-use super::types::{DatabaseError, DatabaseType};
+use super::dynamic_engine::{DynamicEngineManager, SwitchPolicy, SwitchStrategy, TriggerCondition};
 use crate::mcp::{McpError, Tool, ToolCallParams};
-use async_trait::async_trait;
 use serde_json::{json, Value as JsonValue};
 use std::collections::HashMap;
 use std::sync::Arc;

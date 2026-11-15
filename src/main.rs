@@ -24,6 +24,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         return Ok(());
     }
+    // OSの資格情報ストアへの登録等（#533）。同じく設定ファイルより前に処理する
+    if args.get(1).map(String::as_str) == Some(mcp_rs::security::keyring_tool::SUBCOMMAND) {
+        if let Err(e) = mcp_rs::security::keyring_tool::run(&args[2..]) {
+            eprintln!("Error: {e}");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
 
     // --version・--help（#431）。サーバーは起動せず、設定・ログにも触れない
     let run_args = match mcp_rs::cli_args::parse_args(&args) {
@@ -97,7 +105,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// 既定の場所から探す
 async fn load_config(config_path: Option<&str>) -> Result<McpConfig, Box<dyn std::error::Error>> {
     match config_path {
-        Some(path) => load_config_from_file(path).await,
+        Some(path) => {
+            // `~/`はホームフォルダに展開する（シェルを通さないクライアントでは
+            // そのまま届く）。相対パスは、起動したフォルダから読むので警告する
+            // （PR #551のレビュー）。ログはまだ無いので、標準エラーに書く
+            // （標準出力はSTDIOの通信用）
+            let path = mcp_rs::config::expand_config_path(path);
+            if let Some(warning) = mcp_rs::config::relative_config_path_warning(&path) {
+                eprintln!("[mcp-rs] warning: {warning}");
+            }
+            load_config_from_file(&path).await
+        }
         None => McpConfig::load(),
     }
 }
@@ -109,8 +127,13 @@ async fn load_config_from_file(path: &str) -> Result<McpConfig, Box<dyn std::err
     }
 
     let content = tokio::fs::read_to_string(path).await?;
-    let mut config: McpConfig =
-        toml::from_str(&content).map_err(|e| mcp_rs::config::with_config_hint(e, &content))?;
+    let mut config: McpConfig = toml::from_str(&content).map_err(|e| {
+        // 誤りのある行（パスワードのこともある）を出さない（#543）
+        mcp_rs::config::with_config_hint(
+            mcp_rs::config::describe_toml_error(&e, &content),
+            &content,
+        )
+    })?;
     // 監査ログの既定の書き込み先（設定ファイルと同じフォルダ）に使う（#416）
     config.config_file = std::path::absolute(path).ok();
 
@@ -118,8 +141,10 @@ async fn load_config_from_file(path: &str) -> Result<McpConfig, Box<dyn std::err
     if let Some(ref mut wp_config) = config.handlers.wordpress {
         // 参照した環境変数が無ければ起動しない（#454）。項目と変数名を出す
         McpConfig::expand_wordpress_config(wp_config).map_err(|e| e.to_string())?;
-        wp_config.resolve_encrypted_credentials()?;
+        wp_config.resolve_credentials()?;
     }
+    // HTTPモードのAPIキーの`${VAR}`（#534）。変数が無ければ起動しない
+    config.expand_http_api_keys().map_err(|e| e.to_string())?;
 
     info!("✅ カスタム設定読み込み: {}", path);
     Ok(config)
@@ -187,6 +212,12 @@ async fn build_server(
         // ${VAR}はここで展開する。環境変数が無くても、データベースだけを飛ばし、
         // WordPress等は動かす（#453のレビュー）
         let mut db_config = db_config.clone();
+        db_config.resolve_paths(
+            config
+                .config_file
+                .as_deref()
+                .and_then(std::path::Path::parent),
+        );
         let registered = match McpConfig::expand_database_config(&mut db_config) {
             Ok(()) => register_database(&mut server, &db_config, audit_logger.clone()).await,
             Err(e) => Err(e.to_string()),

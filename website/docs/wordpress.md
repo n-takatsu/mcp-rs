@@ -86,9 +86,15 @@ burst_size = 20
 enabled = true
 ```
 
-To keep the Application Password out of the config file in plaintext, use `encrypted_credentials` instead of `password`. See [Encrypted WordPress Credentials](../security/#encrypted-wordpress-credentials).
+`enabled = true` is required: without it, the WordPress tools are not registered (and `${...}` is not expanded), with no error.
 
-When `enabled = true`, either `username`/`password` or `encrypted_credentials` must be set, otherwise startup fails.
+To keep the Application Password out of the config file in plaintext:
+
+- `keyring = "<name>"` instead of `username`/`password`: read them from the OS credential store (Windows Credential Manager, macOS Keychain, Secret Service). This works the same whether Claude Desktop, Claude Code, or a terminal starts mcp-rs. See [OS Credential Store](../security/#os-credential-store)
+- `${WORDPRESS_PASSWORD}`: read an environment variable. Claude Desktop passes only the variables in `env` of its JSON config. See [Which environment variables reach mcp-rs](../security/#which-environment-variables-reach-mcp-rs)
+- `encrypted_credentials`: see [Encrypted WordPress Credentials](../security/#encrypted-wordpress-credentials)
+
+When `enabled = true`, one of `username`/`password`, `keyring`, or `encrypted_credentials` must be set, otherwise startup fails.
 
 To let `upload_media` read local files with `file_path`, list the folders it may read from. It is disabled when the list is empty (the default). Startup fails if a listed folder does not exist.
 
@@ -98,6 +104,16 @@ upload_allowed_dirs = ["C:/Users/me/Pictures/blog"]
 ```
 
 ## Setting up Application Passwords
+
+Create the Application Password for a WordPress user with only the role the AI client needs, preferably a dedicated user:
+
+| Role | What the AI client can do | Use when |
+|------|---------------------------|----------|
+| Contributor | Write and edit its own drafts. Cannot publish, and cannot upload media | You review and publish every post yourself |
+| Author | Also publish its own posts and upload media | You want the AI client to publish |
+| Editor, Administrator | Also edit and publish other users' posts and pages. They have `unfiltered_html`, so posts may contain `<script>` | Avoid |
+
+The content the AI client writes comes partly from what it reads: a web page, a comment, or a post can contain instructions that make it write something else (prompt injection). With Editor or Administrator, such content can publish a post with `<script>` that runs in your visitors' browsers at once. With Contributor, nothing is published until you do it, and WordPress removes `<script>` from what a Contributor or an Author saves.
 
 1. Go to **WordPress Admin** → **Users** → **Profile**
 2. Scroll to **Application Passwords** section
@@ -321,6 +337,7 @@ The upload is rejected before anything is sent to WordPress if the MIME type is 
 - The file must be inside one of the `upload_allowed_dirs` folders. The check uses the resolved path, so `..` and symbolic links (or junctions on Windows) cannot point outside them
 - A path outside the allowed folders and a file that does not exist give the same error, so the error does not reveal which files exist elsewhere
 - With STDIO (Claude Code, Claude Desktop), mcp-rs runs on the same machine as the client, so it reads the client's local files. Over HTTP/WebSocket, the client may be on another machine, and the files are read from the server. mcp-rs logs a warning at startup in that case
+- The uploaded file is public at once: WordPress gives every media file a URL that anyone can open (the `source_url` in the result), even before it is used in a post. Put only files you are willing to publish in `upload_allowed_dirs`
 
 **Example Usage:**
 
@@ -1144,7 +1161,9 @@ The health check returns a comprehensive report with the following information:
 ```
 
 🔧 Solutions:
-   • Assign Editor or Administrator role
+   • Use a role that allows what you need: Contributor for drafts,
+     Author to publish and upload media (avoid Editor and Administrator,
+     see "Setting up Application Passwords")
    • Check user has publish_posts capability
    • Verify upload_files permission enabled
    • Review role-based access restrictions

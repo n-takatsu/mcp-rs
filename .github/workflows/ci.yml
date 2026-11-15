@@ -33,6 +33,12 @@ env:
   CARGO_BUILD_TARGET_DIR: target
   CARGO_NET_RETRY: 2
 
+# ジョブが既定で持つ権限。リポジトリの既定の設定に依存しないよう、
+# 読み取りだけを明示する。書き込みが要るジョブは、ジョブの
+# permissions:で足す（#542）
+permissions:
+  contents: read
+
 jobs:
   test:
     name: Test
@@ -46,29 +52,43 @@ jobs:
           # - beta
           # - nightly
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
     - name: Install Rust
-      uses: dtolnay/rust-toolchain@master
+      uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master (2026-10-16)
       with:
         toolchain: ${{ matrix.rust }}
         components: rustfmt, clippy
 
     # Cargo.lockが変わっても（リリースのバージョン更新や依存関係の更新）
-    # 直前のキャッシュから部分的に復元できる。PRではキャッシュを保存せず、
-    # develop/mainへのpushで保存したものを使う。PRごとに保存すると
-    # Actionsのキャッシュ容量（10GB）を圧迫し、develop/mainのキャッシュが
-    # 追い出されてしまうため。
+    # 直前のキャッシュから部分的に復元できる。キャッシュはdevelop（既定の
+    # ブランチ）でだけ保存する（#515）。既定のブランチのキャッシュは、PR・
+    # main・タグの実行からも読める。逆に、PR・main・タグに保存したものは、
+    # そのrefの実行からしか読めず、ほとんど使われないまま、Actionsの
+    # キャッシュ容量（10GB）を圧迫してdevelopのキャッシュを追い出す。
+    #
+    # キーと完全に一致するキャッシュを復元したときは、保存しない。キーは
+    # Cargo.lockとツールチェーンで決まるので、ビルドする内容を変えても
+    # （例: 全機能のテストを足した#510）、それらが変わるまでキャッシュに
+    # 入らない。ビルドする内容を大きく変えたときは、prefix-keyの番号を
+    # 上げて、新しいキャッシュを保存させる
     - name: Cache Rust build
-      uses: Swatinem/rust-cache@v2
+      uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       with:
-        save-if: ${{ github.event_name == 'push' }}
+        prefix-key: v1-rust
+        save-if: ${{ github.ref == 'refs/heads/develop' }}
 
     # fmtとclippyはOSにほぼ依存しないためUbuntuでのみ実行する。Windowsでの
     # 型チェックは後段の「Check all features」で行う。
     - name: Check formatting
       if: runner.os == 'Linux' && matrix.rust == 'stable'
       run: cargo fmt --all -- --check
+
+    # scripts/のPythonのスクリプト（Issueのラベルの確かめ、#523）のテスト。
+    # GitHubは使わない
+    - name: Test Python scripts
+      if: runner.os == 'Linux' && matrix.rust == 'stable'
+      run: python3 -m unittest discover -s scripts -p "test_*.py"
 
     - name: Run clippy
       if: runner.os == 'Linux' && matrix.rust == 'stable'
@@ -105,19 +125,38 @@ jobs:
       if: runner.os == 'Windows'
       run: cargo check --lib --all-features --jobs 1
 
-    # 以降のステップは同じ機能フラグ（既定）にそろえ、機能フラグの
-    # 違いによる依存クレートの再コンパイルを避ける
     - name: Run unit tests
       env:
         CARGO_PROFILE_TEST_LTO: false
       run: cargo test --lib --verbose --jobs 1
 
-    # 全テストターゲットとexampleがコンパイルできることの確認（実行はしない）
+    # 既定の機能で、全テストターゲットとexampleがコンパイルできることの確認。
+    # 下の全機能のステップだけでは、required-featuresの付け忘れ等、既定の
+    # 機能でだけ壊れるもの（#495）に気づけない
     - name: Check that all tests and examples compile
       if: runner.os == 'Linux' && matrix.rust == 'stable'
       env:
         CARGO_PROFILE_TEST_LTO: false
       run: cargo test --no-run --jobs 1
+
+    # tests/の結合テストとdoctestを実行し、exampleはコンパイルだけする
+    # （#510）。mysql_security_tests等は機能が要るので、全機能で実行する
+    # （依存クレートは既定の機能とは別にコンパイルされる）。サーバーが要る
+    # テストは#[ignore]にしてある。時間がかかるため、Ubuntuだけで実行する。
+    # 全機能の依存クレートのコンパイルに時間がかかるので、このステップだけ
+    # 並列度を上げる（ubuntu-latestは4コア・16GB。CARGO_BUILD_JOBS: 1は、
+    # 以前のランナーでのディスク・メモリー不足への対策）
+    - name: Run all tests (all features)
+      if: runner.os == 'Linux' && matrix.rust == 'stable'
+      env:
+        CARGO_PROFILE_TEST_LTO: false
+      run: cargo test --all-features --no-fail-fast --jobs 4
+
+    - name: Show disk usage
+      if: always() && runner.os == 'Linux' && matrix.rust == 'stable'
+      run: |
+        df -h /
+        du -sh target
 
     # PowerShellテスト（Windows環境のみ）- 簡素化版
     - name: Run PowerShell integration tests
@@ -174,15 +213,77 @@ jobs:
 
         echo "Configuration validation completed. Found $config_count config files."
 
+  # 最小対応のRustのバージョン（Cargo.tomlのrust-version、#516）で
+  # コンパイルできることを確かめる。testジョブはstableで動くので、依存
+  # クレートの更新や新しい機能を使ったコードでMSRVを超えても気づけない。
+  # Dockerfileは同じバージョンでビルドするので、一致も確かめる
+  msrv:
+    name: MSRV (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+    - name: Read rust-version from Cargo.toml
+      id: msrv
+      shell: bash
+      run: |
+        # Windowsのランナーでは改行がCRLFになることがあるので、\rを除く
+        version=$(tr -d '\r' < Cargo.toml | sed -n 's/^rust-version = "\([0-9.]*\)"$/\1/p')
+        if [ -z "$version" ]; then
+          echo "::error file=Cargo.toml::rust-version is not set"
+          exit 1
+        fi
+        echo "Minimum supported Rust version: $version"
+        echo "version=$version" >> "$GITHUB_OUTPUT"
+
+    - name: Check that the Dockerfile builds with the same Rust version
+      if: runner.os == 'Linux'
+      shell: bash
+      env:
+        MSRV: ${{ steps.msrv.outputs.version }}
+      run: |
+        docker_version=$(tr -d '\r' < Dockerfile | sed -n 's/^FROM rust:\([0-9.]*\)-.* AS builder$/\1/p')
+        if [ "$docker_version" != "$MSRV" ]; then
+          echo "::error file=Dockerfile::FROM rust:$docker_version does not match rust-version $MSRV in Cargo.toml. Change both together."
+          exit 1
+        fi
+        echo "Dockerfile uses rust:$docker_version"
+
+    - name: Install Rust (MSRV)
+      uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master (2026-10-16)
+      with:
+        toolchain: ${{ steps.msrv.outputs.version }}
+
+    # キャッシュは使わない。保存するとActionsのキャッシュの容量（10GB）を
+    # 圧迫し、testジョブのキャッシュを追い出すため（#515）。キャッシュ無しでも
+    # Ubuntu 5分・Windows 10分ほどで終わる（testジョブと並んで走る）
+
+    # Ubuntuでは、テストとexampleを含めて全機能で確かめる
+    - name: Check all targets with the MSRV
+      if: runner.os == 'Linux'
+      run: cargo check --locked --all-features --all-targets --jobs 4
+
+    # Windowsは時間がかかるので、ライブラリと実行ファイル（cfg(windows)の
+    # コードを含む）だけを確かめる
+    - name: Check the library and binary with the MSRV
+      if: runner.os == 'Windows'
+      run: cargo check --locked --all-features --lib --bins --jobs 4
+
   security:
     name: Security audit
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
     - name: Install Rust
-      uses: dtolnay/rust-toolchain@stable
+      uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master (2026-10-16)
+      with:
+        toolchain: stable
     - name: Install cargo-audit
-      run: cargo install cargo-audit
+      run: cargo install cargo-audit --locked
     - name: Run cargo audit
       run: cargo audit --ignore RUSTSEC-2023-0071
       # RUSTSEC-2023-0071: RSA脆弱性を無視

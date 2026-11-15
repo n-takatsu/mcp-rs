@@ -31,6 +31,12 @@ env:
   IMAGE_NAME: mcp-rs
   REGISTRY: ghcr.io
 
+# ジョブが既定で持つ権限。リポジトリの既定の設定に依存しないよう、
+# 読み取りだけを明示する。書き込みが要るジョブは、ジョブの
+# permissions:で足す（#542）
+permissions:
+  contents: read
+
 jobs:
   build-and-scan:
     name: Build and Security Scan
@@ -38,17 +44,16 @@ jobs:
     permissions:
       contents: read
       security-events: write
-      packages: write
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Build Docker image
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           file: ./Dockerfile
@@ -56,10 +61,13 @@ jobs:
           load: true
           tags: ${{ env.IMAGE_NAME }}:${{ github.sha }}
           cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # キャッシュはdevelop（既定のブランチ）でだけ保存する。PR・main等に
+          # 保存したものは、そのrefの実行からしか読めず、キャッシュの容量を
+          # 圧迫するため（#515）。空にすると保存しない
+          cache-to: ${{ github.ref == 'refs/heads/develop' && 'type=gha,mode=max' || '' }}
 
       - name: Run Trivy vulnerability scanner
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: ${{ env.IMAGE_NAME }}:${{ github.sha }}
           format: 'sarif'
@@ -68,13 +76,13 @@ jobs:
           exit-code: '0'  # Report vulnerabilities but don't fail build
 
       - name: Upload Trivy results to GitHub Security
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
         if: always()
         with:
           sarif_file: 'trivy-results.sarif'
 
       - name: Run Trivy (Table format)
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         if: always()
         with:
           image-ref: ${{ env.IMAGE_NAME }}:${{ github.sha }}
@@ -162,7 +170,7 @@ jobs:
           echo "✅ The image starts and answers initialize and mcp_rs_status"
 
       - name: Generate SBOM (Software Bill of Materials)
-        uses: anchore/sbom-action@v0
+        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
         if: success()
         with:
           image: ${{ env.IMAGE_NAME }}:${{ github.sha }}
@@ -170,7 +178,7 @@ jobs:
           output-file: sbom.spdx.json
 
       - name: Upload SBOM artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: success()
         with:
           name: sbom-${{ github.sha }}
@@ -183,12 +191,24 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Validate docker-compose.yml
         run: |
           docker compose -f docker-compose.yml config > /dev/null
           echo "✅ docker-compose.yml is valid"
+
+      - name: Validate docker-compose.postgres.yml
+        env:
+          POSTGRES_PASSWORD: validation-only
+        run: |
+          docker compose -f docker-compose.yml -f docker-compose.postgres.yml config > /dev/null
+          echo "✅ docker-compose.postgres.yml is valid"
+          # POSTGRES_PASSWORD has no default (#543)
+          if env -u POSTGRES_PASSWORD docker compose -f docker-compose.yml -f docker-compose.postgres.yml config > /dev/null 2>&1; then
+            echo "❌ docker-compose.postgres.yml must require POSTGRES_PASSWORD"
+            exit 1
+          fi
 
       - name: Validate docker-compose.dev.yml
         run: |

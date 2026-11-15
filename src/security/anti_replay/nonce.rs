@@ -12,36 +12,70 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
 use tokio::time::interval;
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
+
+/// 使ったnonceの記録。呼び出し元ごとに分ける（#543）
+#[derive(Debug, Default)]
+struct NonceStore {
+    /// 呼び出し元 → nonce → 記録
+    scopes: HashMap<String, HashMap<String, NonceEntry>>,
+    /// すべての呼び出し元の記録の数
+    total: usize,
+}
+
+impl NonceStore {
+    /// 期限の過ぎた記録を消し、消した数を返す
+    fn remove_expired(&mut self) -> usize {
+        let now = Utc::now();
+        let before = self.total;
+        self.scopes.retain(|_, nonces| {
+            nonces.retain(|_, entry| entry.expires_at > now);
+            !nonces.is_empty()
+        });
+        self.total = self.scopes.values().map(HashMap::len).sum();
+        before - self.total
+    }
+}
 
 /// Nonce Manager
+///
+/// Remembers the nonces each caller has used, so that the same nonce is
+/// accepted only once per caller. The callers are kept apart (#543): one
+/// caller filling its share of the cache does not stop the others.
 #[derive(Debug)]
 pub struct NonceManager {
-    /// In-memory nonce store (nonce -> entry)
-    store: Arc<RwLock<HashMap<String, NonceEntry>>>,
+    /// In-memory nonce store
+    store: Arc<RwLock<NonceStore>>,
 
     /// Nonce time-to-live
     ttl: Duration,
 
-    /// Maximum cache size
+    /// Maximum cache size (all callers)
     max_cache_size: usize,
 
-    /// Cleanup interval
-    cleanup_interval: Duration,
+    /// Maximum cache size for one caller (#543)
+    max_per_caller: usize,
 }
 
 impl NonceManager {
-    /// Create a new NonceManager
+    /// Create a new NonceManager. Each caller may use the whole cache
+    /// (`max_cache_size`); see `with_limits` to limit each caller.
     pub fn new(ttl_secs: u64, max_cache_size: usize) -> Self {
+        Self::with_limits(ttl_secs, max_cache_size, max_cache_size)
+    }
+
+    /// Create a new NonceManager that keeps at most `max_per_caller` nonces
+    /// for one caller (#543), and `max_cache_size` in all.
+    pub fn with_limits(ttl_secs: u64, max_cache_size: usize, max_per_caller: usize) -> Self {
         let manager = Self {
-            store: Arc::new(RwLock::new(HashMap::new())),
+            store: Arc::new(RwLock::new(NonceStore::default())),
             ttl: Duration::from_secs(ttl_secs),
             max_cache_size,
-            cleanup_interval: Duration::from_secs(60), // Cleanup every minute
+            max_per_caller,
         };
 
         // Start background cleanup task
-        manager.start_cleanup_task();
+        manager.start_cleanup_task(Duration::from_secs(60));
 
         manager
     }
@@ -55,8 +89,10 @@ impl NonceManager {
 
     /// Validate and consume a nonce
     ///
-    /// Returns Ok(()) if the nonce is valid and not used before.
-    /// Returns Err if the nonce is duplicated or invalid.
+    /// Returns Ok(()) if the nonce is valid and not used before by the same
+    /// caller (`user_id`; `None` is one caller of its own). Returns Err if
+    /// the nonce is duplicated or invalid, or if the caller's share of the
+    /// cache, or the whole cache, is full of unexpired nonces.
     pub async fn validate_and_consume(
         &self,
         nonce: &str,
@@ -69,84 +105,83 @@ impl NonceManager {
             ));
         }
 
+        let scope = user_id.clone().unwrap_or_default();
         let mut store = self.store.write().await;
 
         // Check if already used
-        if let Some(entry) = store.get(nonce) {
+        if let Some(entry) = store.scopes.get(&scope).and_then(|n| n.get(nonce)) {
             if !entry.is_expired() {
-                warn!("Replay attack detected: nonce already used: {}", nonce);
+                warn!("Replay attack detected: nonce already used");
                 return Err(ReplayError::NonceAlreadyUsed);
             }
-            // Remove expired entry
-            store.remove(nonce);
         }
 
-        // Check cache size limit
-        if store.len() >= self.max_cache_size {
-            warn!(
-                "Nonce cache full ({} entries), clearing expired entries",
-                store.len()
-            );
-            self.cleanup_expired_locked(&mut store).await;
+        // Check cache size limits
+        let caller_count = store.scopes.get(&scope).map_or(0, HashMap::len);
+        if caller_count >= self.max_per_caller || store.total >= self.max_cache_size {
+            let removed = store.remove_expired();
+            debug!("Nonce cache full, removed {} expired entries", removed);
 
-            // If still full, reject
-            if store.len() >= self.max_cache_size {
+            let caller_count = store.scopes.get(&scope).map_or(0, HashMap::len);
+            if caller_count >= self.max_per_caller {
+                warn!("Nonce cache full for one caller ({} entries)", caller_count);
+                return Err(ReplayError::SecurityViolation(
+                    "Nonce cache full for this caller".to_string(),
+                ));
+            }
+            if store.total >= self.max_cache_size {
+                warn!("Nonce cache full ({} entries)", store.total);
                 return Err(ReplayError::SecurityViolation(
                     "Nonce cache full".to_string(),
                 ));
             }
         }
 
-        // Store the nonce
+        // Store the nonce (replacing an expired entry, if any)
         let entry = NonceEntry::new(nonce.to_string(), self.ttl.as_secs(), user_id);
-        store.insert(nonce.to_string(), entry);
+        if store
+            .scopes
+            .entry(scope)
+            .or_default()
+            .insert(nonce.to_string(), entry)
+            .is_none()
+        {
+            store.total += 1;
+        }
 
-        debug!("Nonce consumed: {} (total: {})", nonce, store.len());
+        debug!("Nonce consumed (total: {})", store.total);
 
         Ok(())
     }
 
-    /// Check if a nonce is already used (without consuming)
+    /// Check if a nonce is already used by any caller (without consuming)
     pub async fn is_used(&self, nonce: &str) -> bool {
         let store = self.store.read().await;
-        if let Some(entry) = store.get(nonce) {
-            !entry.is_expired()
-        } else {
-            false
-        }
+        store
+            .scopes
+            .values()
+            .filter_map(|nonces| nonces.get(nonce))
+            .any(|entry| !entry.is_expired())
     }
 
     /// Get current nonce count
     pub async fn nonce_count(&self) -> usize {
-        let store = self.store.read().await;
-        store.len()
-    }
-
-    /// Cleanup expired nonces (locked version for internal use)
-    async fn cleanup_expired_locked(&self, store: &mut HashMap<String, NonceEntry>) -> usize {
-        let now = Utc::now();
-        let before_count = store.len();
-
-        store.retain(|_, entry| entry.expires_at > now);
-
-        let removed = before_count - store.len();
-        if removed > 0 {
-            debug!("Cleaned up {} expired nonces", removed);
-        }
-
-        removed
+        self.store.read().await.total
     }
 
     /// Cleanup expired nonces
     pub async fn cleanup_expired(&self) -> usize {
-        let mut store = self.store.write().await;
-        self.cleanup_expired_locked(&mut store).await
+        let removed = self.store.write().await.remove_expired();
+        if removed > 0 {
+            debug!("Cleaned up {} expired nonces", removed);
+        }
+        removed
     }
 
-    /// Start background cleanup task
-    fn start_cleanup_task(&self) {
-        let store = Arc::clone(&self.store);
-        let cleanup_interval = self.cleanup_interval;
+    /// Start background cleanup task. It ends when the manager is dropped
+    /// (#543; previously it ran forever)
+    fn start_cleanup_task(&self, cleanup_interval: Duration) {
+        let store = Arc::downgrade(&self.store);
         let ttl = self.ttl;
 
         tokio::spawn(async move {
@@ -154,16 +189,12 @@ impl NonceManager {
 
             loop {
                 ticker.tick().await;
-
-                let mut store = store.write().await;
-                let now = Utc::now();
-                let before_count = store.len();
-
-                store.retain(|_, entry| entry.expires_at > now);
-
-                let removed = before_count - store.len();
+                let Some(store) = store.upgrade() else {
+                    return;
+                };
+                let removed = store.write().await.remove_expired();
                 if removed > 0 {
-                    info!(
+                    debug!(
                         "Background cleanup: removed {} expired nonces (TTL: {:?})",
                         removed, ttl
                     );
@@ -175,8 +206,7 @@ impl NonceManager {
     /// Clear all nonces (for testing)
     #[cfg(test)]
     pub async fn clear(&self) {
-        let mut store = self.store.write().await;
-        store.clear();
+        *self.store.write().await = NonceStore::default();
     }
 }
 
@@ -275,5 +305,38 @@ mod tests {
         let nonce = NonceManager::generate_nonce();
         let result = manager.validate_and_consume(&nonce, None).await;
         assert!(matches!(result, Err(ReplayError::SecurityViolation(_))));
+    }
+
+    #[tokio::test]
+    async fn test_nonces_are_kept_per_caller() {
+        // #543: 1つの呼び出し元が自分の枠を埋めても、ほかの呼び出し元は使える
+        let manager = NonceManager::with_limits(300, 100, 3);
+        let attacker = Some("ip:203.0.113.1".to_string());
+        for _ in 0..3 {
+            let nonce = NonceManager::generate_nonce();
+            manager
+                .validate_and_consume(&nonce, attacker.clone())
+                .await
+                .unwrap();
+        }
+        let result = manager
+            .validate_and_consume(&NonceManager::generate_nonce(), attacker.clone())
+            .await;
+        assert!(matches!(result, Err(ReplayError::SecurityViolation(_))));
+
+        let other = Some("ip:198.51.100.2".to_string());
+        let nonce = NonceManager::generate_nonce();
+        manager
+            .validate_and_consume(&nonce, other.clone())
+            .await
+            .unwrap();
+        // 同じ呼び出し元が同じnonceを使えば、リプレイ
+        assert!(matches!(
+            manager.validate_and_consume(&nonce, other).await,
+            Err(ReplayError::NonceAlreadyUsed)
+        ));
+        // 別の呼び出し元のnonceとは、ぶつからない
+        manager.validate_and_consume(&nonce, None).await.unwrap();
+        assert_eq!(manager.nonce_count().await, 5);
     }
 }

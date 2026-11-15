@@ -4,7 +4,7 @@
 
 use super::types::{
     DatabaseConfig, DatabaseError, DatabaseFeature, DatabaseSchema, DatabaseType, ExecuteResult,
-    HealthStatus, QueryContext, QueryResult, ValidationResult, Value,
+    HealthStatus, QueryResult, Value,
 };
 use async_trait::async_trait;
 use std::sync::Arc;
@@ -276,7 +276,6 @@ impl EngineRegistry {
 
 /// クエリビルダー補助関数
 pub mod query_builder {
-    use super::*;
 
     /// SELECTクエリビルダー
     pub struct SelectBuilder {

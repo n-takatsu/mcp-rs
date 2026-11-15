@@ -9,7 +9,7 @@ use crate::handlers::database::{
 };
 use async_trait::async_trait;
 use sqlx::postgres::PgPool;
-use sqlx::{Column, Postgres, Row};
+use sqlx::{Column, Row};
 use std::sync::Arc;
 
 /// PostgreSQL Prepared Statement Implementation

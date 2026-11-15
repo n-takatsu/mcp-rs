@@ -179,7 +179,8 @@ async fn test_sql_injection_detection() {
         "SELECT * FROM users WHERE id = 1 UNION SELECT * FROM passwords", // UNION injection
         "SELECT * FROM users WHERE id = 1' OR '1'='1",       // String injection
         "SELECT * FROM users WHERE id = 1/**/UNION/**/SELECT/**/*/**FROM/**/passwords", // Comment obfuscation
-        "SELECT * FROM users WHERE id = 1 AND (SELECT COUNT(*) FROM passwords) > 0", // Subquery injection
+        "SELECT * FROM users WHERE name = 'a' OR 'x'='x'",   // String injection (closed quotes)
+        "SELECT * FROM users WHERE id = 1 OR true",          // Boolean injection with a literal
         "SELECT * FROM users; DROP TABLE users; --",         // Stacked queries
         "SELECT * FROM users WHERE id = 1' AND EXTRACTVALUE(1, CONCAT(0x7e, (SELECT @@version), 0x7e)) --", // Error-based injection (MySQL function)
     ];
@@ -197,6 +198,25 @@ async fn test_sql_injection_detection() {
         );
 
         info!("✅ Malicious query successfully blocked");
+    }
+
+    // Subqueries are ordinary SQL, so they must not be blocked by
+    // themselves (#501). A subquery used for injection is caught by the
+    // other patterns (UNION, OR 1=1, ...), not by being a subquery.
+    let legitimate_queries = vec![
+        "SELECT * FROM users WHERE id = 1 AND (SELECT COUNT(*) FROM orders) > 0",
+        "SELECT * FROM users WHERE id IN (SELECT user_id FROM orders WHERE total > 100)",
+        "SELECT * FROM users WHERE is_active = true",
+    ];
+    for sql in &legitimate_queries {
+        let context = QueryContext::new(QueryType::Select);
+        let result = security.validate_query(sql, &context).await;
+        assert!(
+            result.is_ok(),
+            "Legitimate query should be allowed: {} ({:?})",
+            sql,
+            result.err()
+        );
     }
 
     info!(

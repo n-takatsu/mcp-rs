@@ -1,7 +1,6 @@
 //! Sorted Set (ZSET) operations for Redis
 //! Provides ZADD, ZREM, ZRANGE, ZRANK, ZCOUNT, and related operations
 
-use super::types::{RedisValue, SortedSetMember};
 use crate::handlers::database::types::DatabaseError;
 use std::collections::BTreeMap;
 

@@ -153,21 +153,7 @@ Code Quality: 0 Clippy warnings ✅
 
 ## 🏷️ ラベル付けルール
 
-## PR重要度
-
-- `priority: critical` - 緊急修正
-- `priority: high` - 重要機能
-- `priority: medium` - 通常機能
-- `priority: low` - 軽微な改善
-
-## PR種別
-
-- `type: feature` - 新機能追加
-- `type: bugfix` - バグ修正
-- `type: docs` - ドキュメント更新
-- `type: refactor` - リファクタリング
-- `type: security` - セキュリティ関連
-- `type: performance` - パフォーマンス改善
+PRにはラベルを付けない。種類と優先度は、PRが閉じるIssue（本文の`Closes #123`）に付ける。基準は[docs/project-management-guide.md](../docs/project-management-guide.md)の「Issueのラベルの基準」。
 
 ## 📋 レビュー基準
 

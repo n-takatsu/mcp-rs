@@ -1,8 +1,13 @@
+# mcp-rs: WordPress over STDIO, for tests
+#
+# Up to v0.23.0, this file did not load ([transport] was missing, and
+# requests_per_second was 10.0, #557).
 
 [server]
-bind_addr = "127.0.0.1:8080"
-stdio = false
 log_level = "info"
+
+[transport]
+type = "stdio"
 
 [handlers.wordpress]
 url = "${WORDPRESS_URL}"
@@ -13,5 +18,5 @@ timeout_seconds = 30
 
 [handlers.wordpress.rate_limit]
 enabled = false
-requests_per_second = 10.0
+requests_per_second = 10                # an integer (10.0 did not load, #557)
 burst_size = 20

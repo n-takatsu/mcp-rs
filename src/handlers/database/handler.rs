@@ -9,11 +9,10 @@ use crate::handlers::database::{
         validate_single_query_statement, validate_single_write_statement, ColumnProvenance,
         ProjectionResolution,
     },
-    engine::{DatabaseEngine, DatabaseEngineBuilder, EngineRegistry},
+    engine::{DatabaseEngineBuilder, EngineRegistry},
     pool::{ConnectionPool, PoolManager},
     types::{
-        DatabaseConfig, DatabaseError, DatabaseType, ExecuteResult, QueryContext, QueryResult,
-        QueryType, Value,
+        DatabaseConfig, DatabaseError, DatabaseType, QueryContext, QueryResult, QueryType, Value,
     },
 };
 use crate::mcp::{
@@ -87,6 +86,10 @@ pub struct DatabaseToolOptions {
     /// `execute_query`が返す行数の上限。超えた分は返さず、`truncated`を
     /// `true`にする
     pub max_rows: usize,
+    /// `execute_query`が返す結果のだいたいのバイト数の上限（#539）。超えた
+    /// 行は返さず、`truncated`を`true`にする。1行目だけで超えるときは、
+    /// 大きな値を切り詰める
+    pub max_result_bytes: usize,
 }
 
 impl Default for DatabaseToolOptions {
@@ -94,8 +97,79 @@ impl Default for DatabaseToolOptions {
         Self {
             allow_write: false,
             max_rows: 1000,
+            max_result_bytes: crate::config::DatabaseSettings::DEFAULT_MAX_RESULT_BYTES as usize,
         }
     }
+}
+
+/// 1つの値に必ず残すバイト数（列が多くても、値が読めないほど短くしない）
+const MIN_CELL_BYTES: usize = 1024;
+
+/// `rows`を、だいたいのバイト数が`max_bytes`に収まるところまで残す（#539）。
+/// 1行目は、それだけで超えても残す（`cut_cells`で切り詰める）。行を除いたら
+/// `true`を返す
+fn keep_rows_within(rows: &mut Vec<Vec<Value>>, max_bytes: usize) -> bool {
+    let mut total = 0usize;
+    for (index, row) in rows.iter().enumerate() {
+        total += row.iter().map(Value::approx_json_size).sum::<usize>();
+        if total > max_bytes && index > 0 {
+            rows.truncate(index);
+            return true;
+        }
+    }
+    false
+}
+
+/// 1行だけで`max_bytes`を超えるとき、大きな値を切り詰める（#539）。切り
+/// 詰めたら`true`を返す
+fn cut_cells(row: &mut [Value], max_bytes: usize) -> bool {
+    let size: usize = row.iter().map(Value::approx_json_size).sum();
+    if size <= max_bytes || row.is_empty() {
+        return false;
+    }
+    let per_cell = (max_bytes / row.len()).max(MIN_CELL_BYTES);
+    let mut cut = false;
+    for value in row.iter_mut() {
+        if value.approx_json_size() > per_cell {
+            *value = std::mem::replace(value, Value::Null).cut_to(per_cell);
+            cut = true;
+        }
+    }
+    cut
+}
+
+/// 監査ログに書くエラーの文から、値を除く（#539）。PostgreSQLのエラーは、
+/// `invalid input syntax for type uuid: "…"`のように、引用符の中に値を
+/// 含むことがある。引用符の中はすべて伏せる（表の名前等も伏せるが、SQLは
+/// 別に記録している）。クライアントには、伏せずに返す
+///
+/// PostgreSQLは、値の中の引用符を`\"`等にせず、そのまま書く
+/// （`… integer: "ab"cd"`）。そのため、最初の引用符（`"`か`'`）から、
+/// どちらでもよい最後の引用符までを、まとめて伏せる（PR #552のレビュー）。
+/// `"`と`'`が混ざっても（`'a' got "ab'cd"`）、値が残らない。間の表の名前等も
+/// 伏せるが、SQLは別に記録している
+fn redact_error_for_audit(message: &str) -> String {
+    const MAX_CHARS: usize = 500;
+    let is_quote = |c: char| c == '"' || c == '\'';
+    let mut out = match message.find(is_quote) {
+        None => message.to_string(),
+        Some(first) => {
+            // 引用符は1バイトの文字
+            let open = &message[first..first + 1];
+            let rest = &message[first + 1..];
+            match rest.rfind(is_quote) {
+                // 最後の引用符より後ろには、引用符が無い
+                Some(last) => format!("{}{open}…{}", &message[..first], &rest[last..]),
+                // 閉じていない引用符は、最後まで伏せる
+                None => format!("{}{open}…", &message[..first]),
+            }
+        }
+    };
+    if out.chars().count() > MAX_CHARS {
+        out = out.chars().take(MAX_CHARS).collect();
+        out.push('…');
+    }
+    out
 }
 
 /// 監査ログに記録するSQLの長さの上限（文字数）
@@ -131,13 +205,21 @@ impl DatabaseHandler {
         use crate::handlers::database::types::{ConnectionConfig, FeatureConfig, PoolConfig};
 
         settings.validate()?;
+        use crate::handlers::database::engines::postgresql::{
+            pg_connection, OPTION_BYTE_LIMIT, OPTION_FETCH_LIMIT, OPTION_SSL_ROOT_CERT,
+        };
         let max_rows = settings.max_rows() as usize;
+        let max_result_bytes = usize::try_from(settings.max_result_bytes()).unwrap_or(usize::MAX);
         let mut options = HashMap::new();
         // 上限より1行多く読み、超えたかを知る
-        options.insert(
-            crate::handlers::database::engines::postgresql::OPTION_FETCH_LIMIT.to_string(),
-            (max_rows + 1).to_string(),
-        );
+        options.insert(OPTION_FETCH_LIMIT.to_string(), (max_rows + 1).to_string());
+        // バイト数も、上限を超えた行まで読んで止める（#539）
+        options.insert(OPTION_BYTE_LIMIT.to_string(), max_result_bytes.to_string());
+        if let Some(cert) = settings.ssl_root_cert.as_deref().map(str::trim) {
+            if !cert.is_empty() {
+                options.insert(OPTION_SSL_ROOT_CERT.to_string(), cert.to_string());
+            }
+        }
         let config = DatabaseConfig {
             database_type: DatabaseType::PostgreSQL,
             connection: ConnectionConfig {
@@ -169,8 +251,21 @@ impl DatabaseHandler {
             .with_tool_options(DatabaseToolOptions {
                 allow_write: settings.allow_write(),
                 max_rows,
+                max_result_bytes,
             })
             .with_status_line(settings.describe());
+        // TLSの設定を確かめる（#539）。環境変数（`PGSSLMODE`等）を反映した
+        // 後の値で確かめる。`ssl_root_cert`が使われない設定なら起動しない。
+        // 通信を守れない設定なら、警告する
+        let connect = pg_connection::connect_options(&config.connection)
+            .map_err(|e| format!("cannot set up {}: {}", settings.describe(), e))?;
+        pg_connection::check_ssl_root_cert(
+            config.connection.options.contains_key(OPTION_SSL_ROOT_CERT),
+            &connect,
+        )?;
+        if let Some(warning) = pg_connection::weak_tls_warning(&connect) {
+            warn!("{}", warning);
+        }
         handler
             .add_database("postgresql".to_string(), config)
             .await
@@ -278,7 +373,7 @@ impl DatabaseHandler {
             entry = entry.add_metadata("sql".to_string(), text);
         }
         if let Err(e) = result {
-            entry = entry.add_metadata("error".to_string(), e.to_string());
+            entry = entry.add_metadata("error".to_string(), redact_error_for_audit(&e.to_string()));
         }
         let entry = crate::mcp::audit_tool_call_context(entry, started);
         if let Err(e) = audit_logger.log(entry).await {
@@ -527,6 +622,12 @@ impl DatabaseHandler {
             .await
             .map_err(|e| McpError::InvalidRequest(e.to_string()))?;
 
+        // 返すバイト数の上限（#539）。接続は上限を超えた行まで読んで止める
+        // ので、超えたかが分かる。暗号化の処理で値の大きさが変わる前に
+        // 確かめる
+        let max_result_bytes = self.tool_options.max_result_bytes;
+        let mut truncated = keep_rows_within(&mut result.rows, max_result_bytes);
+
         if let Some(resolution) = provenance {
             let manager = self
                 .column_encryption
@@ -538,16 +639,21 @@ impl DatabaseHandler {
         // 返す行数の上限（#453）。接続は上限より1行多く読むので、超えたかが
         // 分かる
         let max_rows = self.tool_options.max_rows;
-        let truncated = result.rows.len() > max_rows;
-        if truncated {
+        if result.rows.len() > max_rows {
             result.rows.truncate(max_rows);
-            result.total_rows = Some(max_rows as u64);
+            truncated = true;
         }
+        // 1行だけで上限を超えるなら、大きな値を切り詰める（#539）
+        if let [row] = result.rows.as_mut_slice() {
+            truncated |= cut_cells(row, max_result_bytes);
+        }
+        result.total_rows = Some(result.rows.len() as u64);
 
         // 結果をJSON形式で返す
         Ok(json!({
             "truncated": truncated,
             "max_rows": max_rows,
+            "max_result_bytes": max_result_bytes,
             "columns": result.columns.iter().map(|col| json!({
                 "name": col.name,
                 "type": col.data_type,
@@ -827,9 +933,7 @@ impl DatabaseHandler {
             Value::Null => JsonValue::Null,
             Value::Bool(b) => JsonValue::Bool(*b),
             Value::Int(i) => JsonValue::Number((*i).into()),
-            Value::Float(f) => {
-                JsonValue::Number(serde_json::Number::from_f64(*f).unwrap_or_else(|| 0.into()))
-            }
+            Value::Float(f) => float_to_json(*f),
             Value::String(s) => JsonValue::String(s.clone()),
             Value::Binary(bytes) => {
                 JsonValue::String(base64::prelude::BASE64_STANDARD.encode(bytes))
@@ -837,6 +941,18 @@ impl DatabaseHandler {
             Value::Json(j) => j.clone(),
             Value::DateTime(dt) => JsonValue::String(dt.to_rfc3339()),
         }
+    }
+}
+
+/// 浮動小数点数をJSONにする。JSONの数に無いNaN・±Infinityは、PostgreSQLと
+/// 同じ書き方の文字列（`"NaN"`・`"Infinity"`・`"-Infinity"`）にする（#543）。
+/// 以前は0にしていたので、計算できなかった値が0に見えた
+fn float_to_json(f: f64) -> JsonValue {
+    match serde_json::Number::from_f64(f) {
+        Some(n) => JsonValue::Number(n),
+        None if f.is_nan() => JsonValue::String("NaN".to_string()),
+        None if f > 0.0 => JsonValue::String("Infinity".to_string()),
+        None => JsonValue::String("-Infinity".to_string()),
     }
 }
 
@@ -864,6 +980,7 @@ impl McpHandler for DatabaseHandler {
             }
         });
         let max_rows = self.tool_options.max_rows;
+        let max_result_bytes = self.tool_options.max_result_bytes;
         let mut tools = vec![
             Tool {
                 name: "execute_query".to_string(),
@@ -871,9 +988,10 @@ impl McpHandler for DatabaseHandler {
                 description: format!(
                     "Run one SELECT statement on the configured database and return the rows as JSON. \
                      It runs in a read-only transaction that is rolled back, so it cannot change data. \
-                     At most {max_rows} rows are returned (truncated is true when there were more): \
-                     use LIMIT, WHERE, or aggregates for large tables. Values of types that cannot be \
-                     shown are replaced by a note; cast such columns to text."
+                     At most {max_rows} rows and about {max_result_bytes} bytes are returned \
+                     (truncated is true when there were more, and a value too large on its own is cut): \
+                     use LIMIT, WHERE, or aggregates for large tables, and substring() for large values. \
+                     Values of types that cannot be shown are replaced by a note; cast such columns to text."
                 ),
                 input_schema: json!({
                     "type": "object",
@@ -981,6 +1099,11 @@ impl McpHandler for DatabaseHandler {
     async fn status(&self) -> Option<String> {
         self.status_line.clone()
     }
+    /// `db://schema`は、`get_schema`ツールと同じ扱いにする（#538）
+    fn resource_tool(&self, uri: &str) -> Option<String> {
+        (uri == "db://schema").then(|| "get_schema".to_string())
+    }
+
     async fn list_resources(&self) -> Result<Vec<Resource>, McpError> {
         // データベーススキーマをリソースとして公開
         Ok(vec![Resource {
@@ -1010,6 +1133,117 @@ impl McpHandler for DatabaseHandler {
                 "Unknown resource: {}",
                 params.uri
             ))),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// NaN・±Infinityは、0ではなく、PostgreSQLと同じ書き方の文字列（#543）
+    #[test]
+    fn test_float_to_json_keeps_values_json_cannot_hold() {
+        assert_eq!(float_to_json(1.5), serde_json::json!(1.5));
+        assert_eq!(float_to_json(f64::NAN), serde_json::json!("NaN"));
+        assert_eq!(float_to_json(f64::INFINITY), serde_json::json!("Infinity"));
+        assert_eq!(
+            float_to_json(f64::NEG_INFINITY),
+            serde_json::json!("-Infinity")
+        );
+        // 引数として返せば、元の値に戻る（`execute_query`の引数は、
+        // 文字列をRustの`f64`として読む）
+        for text in ["NaN", "Infinity", "-Infinity"] {
+            let parsed: f64 = text.parse().unwrap();
+            assert_eq!(float_to_json(parsed), serde_json::json!(text));
+        }
+    }
+
+    fn text_row(sizes: &[usize]) -> Vec<Value> {
+        sizes
+            .iter()
+            .map(|n| Value::String("x".repeat(*n)))
+            .collect()
+    }
+
+    /// 上限に収まる行だけを残す。1行目は、それだけで超えても残す（#539）
+    #[test]
+    fn test_keep_rows_within() {
+        // 1行は約103バイト
+        let mut rows: Vec<Vec<Value>> = (0..10).map(|_| text_row(&[100])).collect();
+        assert!(keep_rows_within(&mut rows, 350));
+        assert_eq!(rows.len(), 3);
+
+        let mut rows: Vec<Vec<Value>> = (0..3).map(|_| text_row(&[100])).collect();
+        assert!(!keep_rows_within(&mut rows, 350));
+        assert_eq!(rows.len(), 3);
+
+        let mut rows = vec![text_row(&[10_000]), text_row(&[1])];
+        assert!(keep_rows_within(&mut rows, 350));
+        assert_eq!(rows.len(), 1);
+    }
+
+    /// 1行だけで上限を超えるとき、大きな値だけを切り詰める（#539）
+    #[test]
+    fn test_cut_cells() {
+        let mut row = text_row(&[10, 100_000]);
+        assert!(cut_cells(&mut row, 10_000));
+        assert!(matches!(&row[0], Value::String(s) if s.len() == 10));
+        assert!(matches!(&row[1], Value::String(s) if s.len() < 10_000 && s.contains("[cut:")));
+
+        let mut row = text_row(&[10, 100]);
+        assert!(!cut_cells(&mut row, 10_000));
+    }
+
+    /// 監査ログのエラーの文から、引用符の中（値）を伏せる（#539）
+    #[test]
+    fn test_redact_error_for_audit() {
+        assert_eq!(
+            redact_error_for_audit(r#"invalid input syntax for type integer: "secret""#),
+            r#"invalid input syntax for type integer: "…""#
+        );
+        assert_eq!(
+            redact_error_for_audit("value 'secret' and 'more'"),
+            "value '…'"
+        );
+        // 閉じていない引用符は、最後まで伏せる
+        assert_eq!(redact_error_for_audit("value 'secret"), "value '…");
+        // `'`と`"`が混ざっても、値の後半を残さない（PR #552の再レビュー）
+        let message = redact_error_for_audit(r#"column 'a' got "ab'cd-secret""#);
+        assert!(!message.contains("cd-secret"), "{message}");
+        assert_eq!(message, "column '…\"");
+        assert_eq!(
+            redact_error_for_audit("statement timeout"),
+            "statement timeout"
+        );
+        // 値の中の引用符で、伏せるのを終えない（PostgreSQLはそのまま書く）
+        let message =
+            redact_error_for_audit(r#"invalid input syntax for type integer: "ab"cd-secret""#);
+        assert!(!message.contains("cd-secret"), "{message}");
+        assert_eq!(message, r#"invalid input syntax for type integer: "…""#);
+        let long = redact_error_for_audit(&"x".repeat(2000));
+        assert_eq!(long.chars().count(), 501);
+    }
+
+    /// リソースは、読み取り専用の実在するツールと同じ扱いになる（#538）
+    #[tokio::test]
+    async fn test_every_resource_maps_to_a_read_only_tool() {
+        let handler = DatabaseHandler::new().await.unwrap();
+        let tools = handler.list_tools().await.unwrap();
+        for resource in handler.list_resources().await.unwrap() {
+            let name = handler
+                .resource_tool(&resource.uri)
+                .unwrap_or_else(|| panic!("{} has no tool", resource.uri));
+            let tool = tools
+                .iter()
+                .find(|t| t.name == name)
+                .unwrap_or_else(|| panic!("{} maps to missing tool {}", resource.uri, name));
+            assert_eq!(
+                tool.annotations.as_ref().and_then(|a| a.read_only_hint),
+                Some(true),
+                "{}",
+                name
+            );
         }
     }
 }

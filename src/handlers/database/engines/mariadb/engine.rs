@@ -6,10 +6,7 @@
 use crate::handlers::database::{
     engine::{DatabaseConnection, DatabaseEngine},
     engines::mysql::MySqlEngine,
-    types::{
-        DatabaseConfig, DatabaseError, DatabaseFeature, DatabaseSchema, DatabaseType, HealthStatus,
-        QueryResult, TableInfo, Value,
-    },
+    types::{DatabaseConfig, DatabaseError, DatabaseFeature, DatabaseType, HealthStatus},
 };
 use async_trait::async_trait;
 

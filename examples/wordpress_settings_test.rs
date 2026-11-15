@@ -18,6 +18,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         timeout_seconds: Some(30),
         rate_limit: None,            // テスト用なので制限なし
         encrypted_credentials: None, // 平文認証情報を使用
+        keyring: None,
         upload_allowed_dirs: Vec::new(),
     };
 

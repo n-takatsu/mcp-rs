@@ -670,11 +670,12 @@ async fn create_private_dir_all(dir: &std::path::Path) -> std::io::Result<()> {
 /// 本人だけが読み書きできる権限（600）で作る（#489）。既にあるファイルの
 /// 権限は変えない。ローテーションはファイルの名前を変えるだけなので、
 /// 送ったファイルの権限もそのまま。
+/// シンボリックリンクもたどらない（`O_NOFOLLOW`、#543）
 fn private_append_options() -> tokio::fs::OpenOptions {
     let mut options = tokio::fs::OpenOptions::new();
     options.create(true).append(true);
     #[cfg(unix)]
-    options.mode(0o600);
+    options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
     options
 }
 

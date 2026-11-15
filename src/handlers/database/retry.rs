@@ -5,7 +5,7 @@
 use super::types::{DatabaseError, ExecuteResult, QueryResult};
 use std::time::Duration;
 use tokio::time::{sleep, timeout};
-use tracing::{error, info, warn};
+use tracing::info;
 
 /// リトライ戦略
 #[derive(Debug, Clone)]

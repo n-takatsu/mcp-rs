@@ -4,7 +4,6 @@
 
 use crate::config::McpConfig;
 use crate::error::Error;
-use config::Config;
 use std::path::Path;
 use std::sync::{Arc, RwLock};
 use tokio::sync::watch;
@@ -144,7 +143,6 @@ impl DynamicConfigManager {
         }
 
         // Use a custom config loader that reads from specific file
-        use config::Config;
 
         let settings = ::config::Config::builder()
             .add_source(
@@ -164,9 +162,13 @@ impl DynamicConfigManager {
             McpConfig::expand_wordpress_config(wp_config)
                 .map_err(|e| crate::error::Error::Config(e.to_string()))?;
             wp_config
-                .resolve_encrypted_credentials()
+                .resolve_credentials()
                 .map_err(|e| crate::error::Error::Internal(e.to_string()))?;
         }
+        // HTTPモードのAPIキーの`${VAR}`（#534）
+        loaded_config
+            .expand_http_api_keys()
+            .map_err(|e| crate::error::Error::Config(e.to_string()))?;
 
         Ok(loaded_config)
     }
@@ -219,8 +221,15 @@ username = "{}"
 encrypted_password = "{}"
 nonce = "{}"
 salt = "{}"
+kdf = "{}"
+kdf_iterations = {}
 "#,
-            encrypted.username, encrypted.encrypted_password, encrypted.nonce, encrypted.salt
+            encrypted.username,
+            encrypted.encrypted_password,
+            encrypted.nonce,
+            encrypted.salt,
+            encrypted.kdf.as_deref().unwrap(),
+            encrypted.kdf_iterations.unwrap()
         );
 
         let mut file = tempfile::Builder::new().suffix(".toml").tempfile().unwrap();

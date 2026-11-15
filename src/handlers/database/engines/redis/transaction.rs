@@ -3,7 +3,6 @@
 //! Redis transactions are atomic but do not support rollback.
 //! Commands are queued during MULTI and executed atomically with EXEC.
 
-use super::types::RedisValue;
 use crate::handlers::database::{
     engine::{DatabaseTransaction, IsolationLevel, TransactionInfo},
     types::{DatabaseError, ExecuteResult, QueryResult, Value},
@@ -11,7 +10,7 @@ use crate::handlers::database::{
 use async_trait::async_trait;
 use chrono::Utc;
 use redis::aio::MultiplexedConnection;
-use redis::{AsyncCommands, Pipeline};
+use redis::Pipeline;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -218,7 +217,6 @@ impl DatabaseTransaction for RedisTransaction {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
 
     #[test]
     fn test_parse_sql_to_redis() {

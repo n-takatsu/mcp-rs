@@ -28,27 +28,30 @@ env:
   IMAGE_NAME: ${{ github.repository }}
   CARGO_TERM_COLOR: always
 
+# ジョブが既定で持つ権限。リポジトリの既定の設定に依存しないよう、
+# 読み取りだけを明示する。書き込みが要るジョブは、ジョブの
+# permissions:で足す（#542）
+permissions:
+  contents: read
+
 jobs:
   # Build and test before building the image
   pre-deployment-checks:
     name: Validation
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master (2026-10-16)
         with:
+          toolchain: stable
           components: rustfmt, clippy
 
-      - name: Cache dependencies
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+      # Rustのビルドのキャッシュは使わない（#515）。このワークフローはmainと
+      # タグでだけ動くので、保存してもそのrefの次のリリースまで使われず、
+      # キャッシュの容量を圧迫するだけだった。keyもcontainer-integration-tests
+      # と同じ（Linux-cargo-<Cargo.lockのハッシュ>）で衝突していた
 
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -64,7 +67,7 @@ jobs:
 
       - name: Security audit
         run: |
-          cargo install cargo-audit
+          cargo install cargo-audit --locked
           cargo audit --ignore RUSTSEC-2023-0071
 
   # Build Docker image
@@ -73,20 +76,18 @@ jobs:
     needs: pre-deployment-checks
     runs-on: ubuntu-latest
     permissions:
-      # write is required so the SBOM step below can attach sbom.spdx.json
-      # to the matching GitHub Release (upload-release-assets: true)
-      contents: write
+      contents: read
       packages: write
     outputs:
       image-digest: ${{ steps.build.outputs.digest }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Log in to Container Registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -94,7 +95,7 @@ jobs:
 
       - name: Extract metadata
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
@@ -110,26 +111,43 @@ jobs:
 
       - name: Build and push Docker image
         id: build
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           file: ./Dockerfile
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # developのdocker-security.ymlが保存したキャッシュを読むだけにする。
+          # mainとタグに保存したものは、ほかの実行から読めないため（#515）
           cache-from: type=gha
-          cache-to: type=gha,mode=max
           platforms: linux/amd64,linux/arm64
 
+  # SBOMを作り、タグのときはGitHubのリリースに添付する。リリースに書く
+  # contents: writeが要るが、イメージをpushする権限（packages: write）は
+  # 持たせない（#542）。外部のアクションが乗っ取られても、ghcr.ioの
+  # イメージは上書きできない
+  sbom:
+    name: Generate SBOM
+    needs: build-docker-image
+    runs-on: ubuntu-latest
+    permissions:
+      # write is required so the SBOM step below can attach sbom.spdx.json
+      # to the matching GitHub Release (upload-release-assets: true)
+      contents: write
+      packages: read
+    steps:
       - name: Generate SBOM
-        uses: anchore/sbom-action@v0
+        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
         with:
-          image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
+          image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build-docker-image.outputs.image-digest }}
+          registry-username: ${{ github.actor }}
+          registry-password: ${{ secrets.GITHUB_TOKEN }}
           format: spdx-json
           output-file: sbom.spdx.json
 
       - name: Upload SBOM
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sbom
           path: sbom.spdx.json
@@ -142,10 +160,10 @@ jobs:
     permissions:
       security-events: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Run Trivy vulnerability scanner
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build-docker-image.outputs.image-digest }}
           format: 'sarif'
@@ -153,6 +171,6 @@ jobs:
           severity: 'CRITICAL,HIGH'
 
       - name: Upload Trivy results to GitHub Security
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
         with:
           sarif_file: 'trivy-results.sarif'

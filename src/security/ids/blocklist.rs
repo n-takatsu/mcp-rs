@@ -134,6 +134,11 @@ impl IpBlocklist {
         self.entries.read().await.is_empty()
     }
 
+    /// 期限切れの一時ブロックを消す（#543、IDSの定期的な掃除）。
+    pub async fn remove_expired(&self) {
+        sweep_expired(&mut *self.entries.write().await, Utc::now());
+    }
+
     /// ブロックを解除する（誤検知時の運用対応、およびテスト用）。
     pub async fn unblock(&self, ip: IpAddr) {
         self.entries.write().await.remove(&ip);

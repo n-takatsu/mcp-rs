@@ -28,6 +28,7 @@ fn create_test_request(
         headers: HashMap::new(),
         body: None,
         source_ip,
+        caller_id: None,
         timestamp: Utc::now(),
     }
 }

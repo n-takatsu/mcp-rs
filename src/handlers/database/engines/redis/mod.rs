@@ -16,8 +16,8 @@ pub use types::{RedisCommand, RedisConfig, RedisPoolSettings, RedisSecuritySetti
 use crate::handlers::database::{
     engine::{DatabaseConnection, DatabaseEngine},
     types::{
-        DatabaseConfig, DatabaseError, DatabaseFeature, DatabaseSchema, DatabaseType,
-        ExecuteResult, HealthStatus, HealthStatusType, QueryResult, Value,
+        DatabaseConfig, DatabaseError, DatabaseFeature, DatabaseType, HealthStatus,
+        HealthStatusType,
     },
 };
 use async_trait::async_trait;
@@ -165,7 +165,6 @@ impl DatabaseEngine for RedisEngine {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
 
     #[test]
     fn test_redis_engine_creation() {

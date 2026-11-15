@@ -38,13 +38,12 @@ transport_type = "http"
 addr = "127.0.0.1"
 port = 8081
 max_connections = 100
-timeout_ms = 30000
+request_timeout_seconds = 30
 enable_cors = true
 
 [handlers.wordpress]
+enabled = true
 url = "https://demo.wordpress.com"
 username = "demo_user"
 password = "${WORDPRESS_PASSWORD}"
-timeout = 30000
-cache_ttl = 300
-max_retries = 3
+timeout_seconds = 30

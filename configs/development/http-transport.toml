@@ -1,48 +1,26 @@
-# MCP-RS HTTP Transport Configuration v0.15.1
+# mcp-rs: HTTP for development (API tests, debugging)
 #
-# Development環境用HTTP Transport設定
-# Web UI開発・API テスト・デバッグ用
+#   cargo run -- --config configs/development/http-transport.toml
+#
+# The endpoint is http://127.0.0.1:8081/mcp. Up to v0.23.0, this file had a
+# "filesystem handler", [logging], and keys under [transport.http] that
+# mcp-rs did not read (#557).
 
 [server]
-name = "mcp-rs-http-dev"
-version = "0.15.1"
-stdio = false
 log_level = "debug"
 
 [transport]
 type = "http"
 
-# HTTP Transport設定（開発用）
 [transport.http]
 addr = "127.0.0.1"
 port = 8081
-cors_enabled = true
-max_request_size = 2097152 # 2MB (開発用増量)
-timeout_ms = 60000         # 60秒 (開発用延長)
+enable_cors = true
+max_request_size = 2097152              # 2 MB (larger for development)
+request_timeout_seconds = 60
+enable_websocket_upgrade = true         # also accept MCP on /ws
 
-# STDIO設定（HTTP使用時は無効）
-[transport.stdio]
-buffer_size = 8192
-timeout_ms = 30000
-content_length_header = true
-framing_method = "content-length"
-max_message_size = 1048576
-pretty_print = true               # 開発用：JSON整形出力
-
-[logging]
-level = "debug"
-file_path = "logs/mcp-rs-http-dev.log"
-
-# 必須: ハンドラー設定（開発用）
-[handlers]
-enabled = ["filesystem", "wordpress"]
-
-# ファイルシステムハンドラー（開発用：書き込み許可）
-[filesystem]
-root_path = "."
-read_only = false
-
-# WordPress（開発用：テスト設定）
+# WordPress (a development site)
 [handlers.wordpress]
 enabled = true
 url = "https://dev-wordpress-site.com"

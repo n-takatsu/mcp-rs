@@ -6,8 +6,15 @@ on:
     paths:
       - '.github/workflows/container-integration-tests.yml'
       - 'docker-compose.test.yml'
-      - 'Dockerfile.test'
       - 'tests/integration/**'
+      - 'tests/common/**'
+      - 'tests/database/**'
+      - 'tests/fixtures/**'
+      - 'tests/*postgres*'
+      - 'tests/database_handler_*'
+      - 'tests/column_encryption_rbac_test.rs'
+      - 'migrations/**'
+      - 'src/handlers/database/**'
       - 'src/transport/**'
       - 'src/plugin_proxy/**'
       - 'src/security/**'
@@ -18,8 +25,15 @@ on:
     paths:
       - '.github/workflows/container-integration-tests.yml'
       - 'docker-compose.test.yml'
-      - 'Dockerfile.test'
       - 'tests/integration/**'
+      - 'tests/common/**'
+      - 'tests/database/**'
+      - 'tests/fixtures/**'
+      - 'tests/*postgres*'
+      - 'tests/database_handler_*'
+      - 'tests/column_encryption_rbac_test.rs'
+      - 'migrations/**'
+      - 'src/handlers/database/**'
       - 'src/transport/**'
       - 'src/plugin_proxy/**'
       - 'src/security/**'
@@ -70,26 +84,17 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # setup-rust-toolchainは、中でrust-cacheを使う。キャッシュはdevelop
+      # （既定のブランチ）でだけ保存する。PR・mainに保存したものは、その
+      # refの実行からしか読めず、キャッシュの容量を圧迫するため（#515）
       - name: Setup Rust
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+        uses: actions-rust-lang/setup-rust-toolchain@a188e68d0fd2bd36ad51dccb2b07ba6e75105f30 # v2.0.1
         with:
           toolchain: stable
+          cache-save-if: ${{ github.ref == 'refs/heads/develop' }}
           components: clippy, rustfmt
-
-      - name: Cache cargo dependencies
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
 
       # サービスのコンテナの中のpg_isready・redis-cliで確かめる。apt-getで
       # クライアントを入れると、Ubuntuのパッケージサーバーに届かないときに
@@ -116,6 +121,24 @@ jobs:
         env:
           TEST_DATABASE_URL: postgres://testuser:testpass@localhost:5433/mcptest
         run: cargo test --features database --test database_postgres_tools_test -- --nocapture
+
+      # サーバーが要る結合テスト（#[ignore]）を、上のpostgres・redisのサービスで
+      # 実行する（#513）。同じデータベース・キーを使うテストがあるので、1つずつ
+      # 実行する。対象と、ローカルで実行する方法は
+      # docs/development/integration-tests.md
+      - name: Run database integration tests (PostgreSQL, Redis)
+        env:
+          TEST_DATABASE_URL: postgres://testuser:testpass@localhost:5433/mcptest
+          TEST_REDIS_URL: redis://localhost:6380/0
+        run: >-
+          cargo test --features redis-backend --no-fail-fast
+          --test mod
+          --test postgres_engine_test --test postgres_jsonb_migration_test
+          --test postgres_transaction_test --test postgres_integration_test
+          --test database_handler_column_encryption_test
+          --test database_handler_micro_segmentation_test
+          --test column_encryption_rbac_test
+          -- --ignored --test-threads=1
 
       - name: Verify integration test compilation
         run: |
@@ -146,7 +169,7 @@ jobs:
 
       - name: Upload test results
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: test-results
           path: |
@@ -162,15 +185,16 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Rust
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+        uses: actions-rust-lang/setup-rust-toolchain@a188e68d0fd2bd36ad51dccb2b07ba6e75105f30 # v2.0.1
         with:
           toolchain: stable
+          cache-save-if: ${{ github.ref == 'refs/heads/develop' }}
 
       - name: Create kind cluster
-        uses: helm/kind-action@v1
+        uses: helm/kind-action@ea822c7bf1874f08e5a491df991c228edffc3376 # v1.15.2
         with:
           cluster_name: mcp-rs-plugins
 
@@ -192,12 +216,13 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Rust
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+        uses: actions-rust-lang/setup-rust-toolchain@a188e68d0fd2bd36ad51dccb2b07ba6e75105f30 # v2.0.1
         with:
           toolchain: stable
+          cache-save-if: ${{ github.ref == 'refs/heads/develop' }}
 
       - name: Start Keycloak
         run: |
@@ -230,18 +255,10 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Cache Docker layers
-        uses: actions/cache@v4
-        with:
-          path: /tmp/.buildx-cache
-          key: ${{ runner.os }}-buildx-${{ github.sha }}
-          restore-keys: |
-            ${{ runner.os }}-buildx-
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Start test environment
         run: |
@@ -315,7 +332,7 @@ jobs:
 
       - name: Upload Docker logs
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: docker-logs
           path: |
@@ -328,10 +345,10 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Run Trivy vulnerability scanner
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: 'fs'
           scan-ref: '.'
@@ -339,7 +356,7 @@ jobs:
           output: 'trivy-results.sarif'
 
       - name: Upload Trivy results to GitHub Security
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
         if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         with:
           sarif_file: 'trivy-results.sarif'
@@ -367,12 +384,13 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Rust
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+        uses: actions-rust-lang/setup-rust-toolchain@a188e68d0fd2bd36ad51dccb2b07ba6e75105f30 # v2.0.1
         with:
           toolchain: stable
+          cache-save-if: ${{ github.ref == 'refs/heads/develop' }}
 
       - name: Run performance tests
         env:
@@ -384,7 +402,7 @@ jobs:
           cargo test --features integration-tests performance -- --test-threads=1 --nocapture
 
       - name: Upload performance results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: performance-results
           path: target/criterion/

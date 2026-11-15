@@ -2,7 +2,7 @@
 //!
 //! リクエストパターン分析とDDoS攻撃検知を実行します。
 
-use super::{RequestData, Severity};
+use super::RequestData;
 use crate::error::McpError;
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
@@ -60,7 +60,24 @@ pub struct NetworkMonitorConfig {
     pub counter_retention_seconds: i64,
     /// 疑わしいUser-Agentパターン
     pub suspicious_user_agents: Vec<String>,
+    /// 記録するIPアドレスの数の上限（#543）。超えると、最後に見た時刻の
+    /// 古いものから消す。多くのアドレス（IPv6等）から送られても、記録が
+    /// 際限なく増えないようにする
+    #[serde(default = "default_max_tracked_ips")]
+    pub max_tracked_ips: usize,
 }
+
+fn default_max_tracked_ips() -> usize {
+    10_000
+}
+
+/// 1つのIPアドレスについて覚えておく、リクエストの時刻の数の上限（#543）。
+/// 頻度の判定（1秒に`ddos_threshold_rps`、1分に60）には、これで足りる
+const MAX_TIMESTAMPS_PER_IP: usize = 1_000;
+
+/// 1つのIPアドレスについて覚えておく、パスの数の上限（#543）。
+/// `port_scan_threshold`より十分に大きくする
+const MAX_PATHS_PER_IP: usize = 100;
 
 impl Default for NetworkMonitorConfig {
     fn default() -> Self {
@@ -77,6 +94,7 @@ impl Default for NetworkMonitorConfig {
                 "sqlmap".to_string(),
                 "nikto".to_string(),
             ],
+            max_tracked_ips: default_max_tracked_ips(),
         }
     }
 }
@@ -254,14 +272,22 @@ impl NetworkMonitor {
     /// リクエストカウンターを更新
     async fn update_request_counter(&self, ip: IpAddr) {
         let mut counters = self.request_counters.write().await;
+        let cutoff = Utc::now() - Duration::seconds(self.config.counter_retention_seconds);
+        if !counters.contains_key(&ip) && counters.len() >= self.config.max_tracked_ips {
+            // 上限（#543）: 期限の過ぎたものを消し、まだ多ければ、最後の
+            // リクエストの古いものから消す
+            counters.retain(|_, counter| counter.back().is_some_and(|t| *t >= cutoff));
+            evict_oldest(&mut counters, self.config.max_tracked_ips, |counter| {
+                counter.back().copied()
+            });
+        }
         let counter = counters.entry(ip).or_insert_with(VecDeque::new);
 
         counter.push_back(Utc::now());
 
         // 古いエントリを削除
-        let cutoff = Utc::now() - Duration::seconds(self.config.counter_retention_seconds);
         while let Some(timestamp) = counter.front() {
-            if *timestamp < cutoff {
+            if *timestamp < cutoff || counter.len() > MAX_TIMESTAMPS_PER_IP {
                 counter.pop_front();
             } else {
                 break;
@@ -272,6 +298,12 @@ impl NetworkMonitor {
     /// トラフィックパターンを更新
     async fn update_traffic_pattern(&self, ip: IpAddr, request: &RequestData) {
         let mut patterns = self.traffic_patterns.write().await;
+        if !patterns.contains_key(&ip) && patterns.len() >= self.config.max_tracked_ips {
+            // 上限（#543）: 最後に見た時刻の古いものから消す
+            evict_oldest(&mut patterns, self.config.max_tracked_ips, |pattern| {
+                Some(pattern.last_seen)
+            });
+        }
         let pattern = patterns.entry(ip).or_insert_with(|| TrafficPattern {
             ip_address: ip,
             total_requests: 0,
@@ -287,11 +319,12 @@ impl NetworkMonitor {
         pattern.total_requests += 1;
         pattern.last_seen = Utc::now();
 
-        // パス分布を更新
-        *pattern
-            .path_distribution
-            .entry(request.path.clone())
-            .or_insert(0) += 1;
+        // パス分布を更新（新しいパスは、上限まで。#543）
+        if let Some(count) = pattern.path_distribution.get_mut(&request.path) {
+            *count += 1;
+        } else if pattern.path_distribution.len() < MAX_PATHS_PER_IP {
+            pattern.path_distribution.insert(request.path.clone(), 1);
+        }
 
         // User-Agentを記録
         if let Some(ua) = request.headers.get("User-Agent") {
@@ -413,17 +446,49 @@ impl NetworkMonitor {
         Some(anomaly_score)
     }
 
-    /// 定期的なクリーンアップ
+    /// 定期的なクリーンアップ。24時間見ていないIPアドレスのパターンと、
+    /// 保持期間の過ぎたカウンターを消す（カウンターは#543から）
     pub async fn cleanup_old_data(&self) {
         let cutoff = Utc::now() - Duration::hours(24);
 
         let mut patterns = self.traffic_patterns.write().await;
         patterns.retain(|_, pattern| pattern.last_seen > cutoff);
+        let remaining = patterns.len();
+        drop(patterns);
 
-        info!(
+        let counter_cutoff = Utc::now() - Duration::seconds(self.config.counter_retention_seconds);
+        self.request_counters
+            .write()
+            .await
+            .retain(|_, counter| counter.back().is_some_and(|t| *t >= counter_cutoff));
+
+        debug!(
             "Cleaned up old traffic patterns, {} patterns remaining",
-            patterns.len()
+            remaining
         );
+    }
+}
+
+/// `map`が`max`以上なら、`last_seen`の古いものから消して、`max`の9割に
+/// する（#543）。1件ずつ消すと、新しいアドレスが来るたびに並べ替えることに
+/// なるので、まとめて消す
+pub(super) fn evict_oldest<K: Clone + Eq + std::hash::Hash + Ord, V>(
+    map: &mut HashMap<K, V>,
+    max: usize,
+    last_seen: impl Fn(&V) -> Option<DateTime<Utc>>,
+) {
+    if map.len() < max {
+        return;
+    }
+    let keep = max.saturating_sub(max / 10).saturating_sub(1);
+    let mut by_age: Vec<(Option<DateTime<Utc>>, K)> = map
+        .iter()
+        .map(|(key, v)| (last_seen(v), key.clone()))
+        .collect();
+    by_age.sort_unstable();
+    let excess = map.len().saturating_sub(keep);
+    for (_, key) in by_age.into_iter().take(excess) {
+        map.remove(&key);
     }
 }
 
@@ -450,6 +515,7 @@ mod tests {
             headers: [("User-Agent".to_string(), "Mozilla/5.0".to_string())].into(),
             body: None,
             source_ip: Some("192.168.1.100".parse().unwrap()),
+            caller_id: None,
             timestamp: Utc::now(),
         };
 
@@ -470,6 +536,7 @@ mod tests {
             headers: [("User-Agent".to_string(), "sqlmap/1.0".to_string())].into(),
             body: None,
             source_ip: Some("192.168.1.100".parse().unwrap()),
+            caller_id: None,
             timestamp: Utc::now(),
         };
 
@@ -495,6 +562,7 @@ mod tests {
                 headers: HashMap::new(),
                 body: None,
                 source_ip: Some(ip),
+                caller_id: None,
                 timestamp: Utc::now(),
             };
 

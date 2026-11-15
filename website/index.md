@@ -83,7 +83,13 @@ See [Database Integration](docs/database/) for the settings.
 
 ## Current Status
 
-## ✅ Recently Completed (v0.23.0)
+## ✅ Recently Completed (v0.24.0)
+
+- **🔑 OS Credential Store**: WordPress credentials can come from the Windows Credential Manager, the macOS Keychain, or the Linux Secret Service (`keyring = "<name>"`, registered with `mcp-rs wordpress-keyring set`), so Claude Desktop, Claude Code, and a terminal all read the same place. The entry remembers its site and is used only for that `url`. See [Security](docs/security/)
+- **🔐 Security Review**: A review of the whole server. HTTP mode no longer starts on a network address without authentication, limits connections, request sizes and times, and closes idle and stalled WebSocket connections. Without `--config`, mcp-rs no longer reads a config file in the current folder. Logs are private to your user, database results are limited in size, and headers from a reverse proxy are used only from `trusted_proxies`. See [Security](docs/security/)
+- **🧹 Config Examples**: Every example under `configs/` now loads in the current format, and a test keeps them that way
+
+## ✅ v0.23.0
 
 - **🗄️ Database Tools**: Add a `[database]` section to connect one PostgreSQL database. `execute_query` (SELECT) and `get_schema` are always available, and `execute_command` (INSERT, UPDATE, DELETE) only with `allow_write = true`. Queries run in a read-only transaction that is rolled back, values are bound as parameters, and results are limited in rows and time. Included in the default build. See [Database Integration](docs/database/)
 - **🐳 Docker Image**: The image now starts with its default arguments. Mount a config file at `/app/config/mcp-config.toml`; see the [Docker guide](https://github.com/n-takatsu/mcp-rs/blob/main/docs/DOCKER_GUIDE.md)

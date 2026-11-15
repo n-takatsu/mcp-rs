@@ -19,3 +19,6 @@ pub mod security;
 
 // テストデータとユーティリティ
 pub mod fixtures;
+
+// サーバーが要るテストの接続先（TEST_DATABASE_URL・TEST_REDIS_URL、#513）
+pub mod common;

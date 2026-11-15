@@ -179,7 +179,8 @@ impl IntrusionDetectionSystem {
             },
             source_info: SourceInfo {
                 ip_address: request.source_ip,
-                user_id: request.headers.get("X-User-ID").cloned(),
+                // 認証した呼び出し元（#543）。`X-User-ID`ヘッダーは使わない
+                user_id: request.caller_id.clone(),
                 session_id: request.headers.get("X-Session-ID").cloned(),
                 user_agent: request.headers.get("User-Agent").cloned(),
                 referer: request.headers.get("Referer").cloned(),
@@ -224,6 +225,16 @@ impl IntrusionDetectionSystem {
         stats.total_alerts += 1;
 
         Ok(())
+    }
+
+    /// 古い記録を消す（#543）。どの記録にも数の上限があるが、上限に
+    /// 達する前にも、使わなくなった記録を消すために、定期的に呼ぶ
+    /// （HTTPトランスポートは5分ごと）
+    pub async fn cleanup(&self) {
+        self.network_monitor.cleanup_old_data().await;
+        self.behavioral_detector.cleanup_old_data().await;
+        self.alert_manager.cleanup_old_alerts().await;
+        self.blocklist.remove_expired().await;
     }
 
     /// 指定したIPが現在ブロック中か判定する（IPS）。
@@ -385,6 +396,7 @@ mod tests {
             headers: std::collections::HashMap::new(),
             body: None,
             source_ip: Some(source_ip.parse().unwrap()),
+            caller_id: None,
             timestamp: Utc::now(),
         }
     }
@@ -491,6 +503,7 @@ mod tests {
             headers: std::collections::HashMap::new(),
             body: None,
             source_ip: Some("203.0.113.20".parse().unwrap()),
+            caller_id: None,
             timestamp: Utc::now(),
         };
 

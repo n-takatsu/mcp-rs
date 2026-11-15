@@ -44,8 +44,10 @@ services:
     container_name: mcp-postgres-dev
     restart: unless-stopped
     
+    # このPCからだけ（#543）。"5432:5432"は、同じネットワークの誰からも
+    # 既知のパスワード（dev_password）で接続できた
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     
     environment:
       POSTGRES_DB: mcp_dev
@@ -65,8 +67,9 @@ services:
     container_name: mcp-redis-dev
     restart: unless-stopped
     
+    # このPCからだけ（#543）。Redisはパスワードが無い
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     
     command: redis-server --appendonly yes
     

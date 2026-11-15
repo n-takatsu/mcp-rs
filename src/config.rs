@@ -18,7 +18,7 @@
 //! ```
 
 use serde::{Deserialize, Serialize};
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 pub mod dynamic;
 pub use dynamic::DynamicConfigManager;
@@ -104,11 +104,18 @@ pub struct DatabaseSettings {
     pub password: Option<String>,
     /// TLS: `disable`・`prefer`（省略時）・`require`・`verify-ca`・`verify-full`
     pub ssl_mode: Option<String>,
+    /// サーバーの証明書を確かめるCAのファイル（PEM、#539）。非公開のCA
+    /// （RDS等）で`verify-ca`・`verify-full`を使うとき。相対パスは設定
+    /// ファイルのフォルダを基準にする
+    pub ssl_root_cert: Option<String>,
     /// `true`で書き込みのツール（`execute_command`: INSERT・UPDATE・DELETE）を
     /// 出す。省略時は`false`
     pub allow_write: Option<bool>,
     /// `execute_query`が返す行数の上限。省略時は1000
     pub max_rows: Option<u32>,
+    /// `execute_query`が返す結果のだいたいのバイト数の上限（#539）。省略時は
+    /// 10MB（10485760）
+    pub max_result_bytes: Option<u64>,
     /// 1つのSQLの時間の上限（秒）。省略時は30
     pub query_timeout_seconds: Option<u32>,
     /// 接続の数の上限。省略時は5
@@ -126,8 +133,10 @@ impl std::fmt::Debug for DatabaseSettings {
             .field("username", &self.username)
             .field("password", &self.password.as_ref().map(|_| "<redacted>"))
             .field("ssl_mode", &self.ssl_mode)
+            .field("ssl_root_cert", &self.ssl_root_cert)
             .field("allow_write", &self.allow_write)
             .field("max_rows", &self.max_rows)
+            .field("max_result_bytes", &self.max_result_bytes)
             .field("query_timeout_seconds", &self.query_timeout_seconds)
             .field("max_connections", &self.max_connections)
             .finish()
@@ -136,6 +145,7 @@ impl std::fmt::Debug for DatabaseSettings {
 
 impl DatabaseSettings {
     pub const DEFAULT_MAX_ROWS: u32 = 1000;
+    pub const DEFAULT_MAX_RESULT_BYTES: u64 = 10 * 1024 * 1024;
     pub const DEFAULT_QUERY_TIMEOUT_SECONDS: u32 = 30;
     pub const DEFAULT_MAX_CONNECTIONS: u32 = 5;
 
@@ -160,6 +170,23 @@ impl DatabaseSettings {
         self.max_rows
             .filter(|n| *n > 0)
             .unwrap_or(Self::DEFAULT_MAX_ROWS)
+    }
+
+    pub fn max_result_bytes(&self) -> u64 {
+        self.max_result_bytes
+            .filter(|n| *n > 0)
+            .unwrap_or(Self::DEFAULT_MAX_RESULT_BYTES)
+    }
+
+    /// `ssl_root_cert`の相対パスを、`base`（設定ファイルのフォルダ）を基準に
+    /// する（#539）
+    pub fn resolve_paths(&mut self, base: Option<&std::path::Path>) {
+        if let (Some(cert), Some(base)) = (self.ssl_root_cert.as_mut(), base) {
+            let path = std::path::Path::new(cert.trim());
+            if path.is_relative() {
+                *cert = base.join(path).to_string_lossy().into_owned();
+            }
+        }
     }
 
     pub fn query_timeout_seconds(&self) -> u32 {
@@ -388,6 +415,65 @@ pub fn legacy_plugins_conflict_hint(content: &str) -> Option<&'static str> {
     )
 }
 
+/// 引用符（`"`・`'`）の中を`…`に伏せる（#543）。設定の読み込みのエラーは、
+/// `invalid type: string "…", expected u16`のように、書いた値を含むことが
+/// ある。値がパスワードのこともあり、標準エラーはClaude Desktopのログに残る
+///
+/// 引用符の中の`\`は、次の1文字とあわせて飛ばす（PR #552のレビュー）。
+/// serde・configのエラーは値を`{:?}`で表示し、値の中の`"`を`\"`と書く
+/// ので、そこで伏せるのを終えると、値の残りが出てしまう。英単語の中の
+/// `'`（`can't`等）は、引用符とみなさない
+pub fn redact_quoted(message: &str) -> String {
+    let mut out = String::new();
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    let mut previous: Option<char> = None;
+    for c in message.chars() {
+        match quote {
+            Some(_) if escaped => escaped = false,
+            Some(_) if c == '\\' => escaped = true,
+            Some(q) if c == q => {
+                out.push('…');
+                out.push(c);
+                quote = None;
+            }
+            Some(_) => {}
+            None => {
+                out.push(c);
+                let in_word = c == '\'' && previous.is_some_and(char::is_alphanumeric);
+                if (c == '"' || c == '\'' || c == '`') && !in_word {
+                    quote = Some(c);
+                }
+            }
+        }
+        previous = Some(c);
+    }
+    if quote.is_some() {
+        out.push('…');
+    }
+    out
+}
+
+/// TOMLの読み込みエラーを、行と列の番号と、値を伏せた理由だけで表す
+/// （#543）。tomlのエラーの表示は、誤りのある行をそのまま引用するので、
+/// `password = "…"x`のような誤りで、パスワードが標準エラーに出ていた
+pub fn describe_toml_error(error: &toml::de::Error, content: &str) -> String {
+    let reason = redact_quoted(error.message().trim());
+    match error.span() {
+        Some(span) => {
+            let before = &content[..span.start.min(content.len())];
+            let line = before.matches('\n').count() + 1;
+            let column = before
+                .rsplit('\n')
+                .next()
+                .map_or(0, |text| text.chars().count())
+                + 1;
+            format!("TOML parse error at line {line}, column {column}: {reason}")
+        }
+        None => format!("TOML parse error: {reason}"),
+    }
+}
+
 /// 読み込みエラーに、上記のヒントを添える
 pub fn with_config_hint(error: impl fmt::Display, content: &str) -> String {
     match legacy_plugins_conflict_hint(content) {
@@ -461,20 +547,11 @@ pub struct TransportConfig {
     /// TOMLでは `type = "stdio"` 表記も受け付ける（configs/production/*.toml 等で使用）。
     #[serde(alias = "type")]
     pub transport_type: Option<String>,
-    /// Stdio transport configuration
-    pub stdio: Option<StdioTransportConfig>,
+    // `[transport.stdio]`（`framing_method`等）は、v0.23.0まではここで読んで
+    // いたが、サーバー（`McpServer::run_stdio`）は使っていなかったので、
+    // 削除した（#557）。書いてあっても、無視する
     /// HTTP transport configuration
     pub http: Option<HttpTransportConfig>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct StdioTransportConfig {
-    pub buffer_size: Option<usize>,
-    pub timeout_ms: Option<u64>,
-    pub content_length_header: Option<bool>,
-    pub framing_method: Option<String>, // "content-length" | "line-based"
-    pub max_message_size: Option<usize>,
-    pub pretty_print: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -508,6 +585,15 @@ pub struct HttpTransportConfig {
     /// transport sits directly behind a trusted reverse proxy. Defaults to
     /// `false`.
     pub ids_trust_forwarded_for: Option<bool>,
+    /// IP addresses or CIDR ranges of the reverse proxies in front of
+    /// mcp-rs (#543). Headers that a proxy sets (`X-Forwarded-Proto`,
+    /// `Forwarded`, the TLS version, `certificate_pin_header`,
+    /// `X-Forwarded-For`, `X-Real-IP`) are used only on connections from
+    /// these addresses. Required by `enforce_https` and certificate pinning
+    /// without `tls_enabled`, and by `ids_trust_forwarded_for`. Defaults to
+    /// empty.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trusted_proxies: Option<Vec<String>>,
     /// Reject binding/connections from non-loopback addresses. Defaults to
     /// `true` (see `configs/security/network-policy.toml`).
     pub network_policy_reject_external_connections: Option<bool>,
@@ -540,11 +626,37 @@ pub struct HttpTransportConfig {
     /// accepted. Defaults to empty (loopback origins only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allowed_origins: Option<Vec<String>>,
+    /// Maximum size in bytes of a request body and of a WebSocket message
+    /// (#540). Defaults to 1048576 (1 MB).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_request_size: Option<usize>,
+    /// Time limit in seconds for receiving a request (#540): the TLS
+    /// handshake and the headers as a whole, and each wait for more of the
+    /// body (not the whole body). It does not limit how long a tool call
+    /// takes. Defaults to 30.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_timeout_seconds: Option<u64>,
+    /// Maximum number of connections served at the same time, WebSocket
+    /// connections included (#540). Defaults to 1024.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_connections: Option<usize>,
+    /// Close a `/ws` connection when nothing, not even an answer to the
+    /// server's pings, arrives for this many seconds (#540). `0` disables
+    /// the limit (and the pings). Defaults to 300.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub websocket_idle_timeout_seconds: Option<u64>,
+    /// Start even when listening on a non-loopback address without any
+    /// authentication (API keys, OAuth, or mTLS), #540. Only for
+    /// deployments where something in front of mcp-rs authenticates
+    /// clients. Defaults to `false` (such a configuration does not start).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_unauthenticated_external: Option<bool>,
 }
 
 /// TOML-facing shape for a single API key entry under
 /// `transport.http.api_keys`. Mirrors `transport::http::ApiKeyEntry`.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+/// `Debug` does not show `key` (#543).
+#[derive(Clone, Deserialize, Serialize)]
 pub struct ApiKeyEntryConfig {
     /// The raw key value clients must present.
     pub key: String,
@@ -555,6 +667,17 @@ pub struct ApiKeyEntryConfig {
     /// Tools this key may use (#52). Omit to allow every tool.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<String>>,
+}
+
+impl fmt::Debug for ApiKeyEntryConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ApiKeyEntryConfig")
+            .field("key", &"<redacted>")
+            .field("name", &self.name)
+            .field("user_id", &self.user_id)
+            .field("tools", &self.tools)
+            .finish()
+    }
 }
 
 impl From<ApiKeyEntryConfig> for crate::transport::http::ApiKeyEntry {
@@ -594,6 +717,13 @@ pub struct WordPressConfig {
     pub rate_limit: Option<RateLimitConfig>,
     /// 暗号化された認証情報（オプション）
     pub encrypted_credentials: Option<EncryptedCredentials>,
+    /// OSの資格情報ストアのエントリーの名前（#533）。書くと、ユーザー名と
+    /// アプリケーションパスワードをそこから読む（`mcp-rs wordpress-keyring
+    /// set <名前>`で登録する）。環境変数に頼らないので、Claude Desktop・
+    /// Claude Code・ターミナルのどれから起動しても同じに読める。
+    /// `username`・`password`・`encrypted_credentials`とは一緒に書けない
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keyring: Option<String>,
     /// `upload_media`の`file_path`で読み込みを許可するフォルダ。空（既定）
     /// なら`file_path`は使えない。mcp-rsが動いているマシン上のファイルを
     /// 読んでWordPressへ送る機能のため、明示的に許可したフォルダの中だけに
@@ -614,6 +744,7 @@ impl fmt::Debug for WordPressConfig {
             .field("timeout_seconds", &self.timeout_seconds)
             .field("rate_limit", &self.rate_limit)
             .field("encrypted_credentials", &self.encrypted_credentials)
+            .field("keyring", &self.keyring)
             .field("upload_allowed_dirs", &self.upload_allowed_dirs)
             .finish()
     }
@@ -667,6 +798,7 @@ impl WordPressConfig {
             timeout_seconds,
             rate_limit,
             encrypted_credentials: Some(encrypted_credentials),
+            keyring: None,
             upload_allowed_dirs: Vec::new(),
         })
     }
@@ -748,6 +880,57 @@ impl WordPressConfig {
         self.password = secure_creds.get_password().expose_secret().to_string();
         Ok(())
     }
+
+    /// 資格情報を、置き場所（OSの資格情報ストア・`encrypted_credentials`・
+    /// 平文）から読んで、`username`・`password`に入れる（#533）。設定の
+    /// 読み込みで、`${VAR}`の展開の後に1回呼ぶ
+    pub fn resolve_credentials(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        self.resolve_credentials_with(&crate::security::keyring_store::OsKeyring)
+    }
+
+    /// `resolve_credentials`の本体。`store`は、`keyring`のときに読む先
+    pub(crate) fn resolve_credentials_with(
+        &mut self,
+        store: &dyn crate::security::keyring_store::SecretStore,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let Some(name) = self.keyring.clone() else {
+            return Ok(self.resolve_encrypted_credentials()?);
+        };
+        // 使わない設定（enabled = false）では、資格情報ストアに触れない
+        // （macOSでは、読むときに許可を求めるダイアログが出ることがある）
+        if !self.enabled.unwrap_or(false) {
+            return Ok(());
+        }
+        // どれを使うかが曖昧になるので、ほかの置き場所と一緒には書けない
+        let mut others = Vec::new();
+        if !self.username.is_empty() {
+            others.push("username");
+        }
+        if !self.password.is_empty() {
+            others.push("password");
+        }
+        if self.encrypted_credentials.is_some() {
+            others.push("encrypted_credentials");
+        }
+        if !others.is_empty() {
+            return Err(format!(
+                "handlers.wordpress: keyring cannot be combined with {}. Remove {} from the config file (the keyring entry holds the username and password)",
+                others.join(", "),
+                if others.len() == 1 { "it" } else { "them" },
+            )
+            .into());
+        }
+        let credentials = crate::security::keyring_store::load_wordpress_credentials(store, &name)
+            .map_err(|e| format!("handlers.wordpress.keyring: {e}"))?;
+        // 資格情報を保存したサイトと、設定の`url`が同じときだけ使う（#541）。
+        // 別の人が書いた設定ファイルが、この項目の名前と別のサイトの`url`を
+        // 書いて、パスワードを受け取れないようにする
+        crate::security::keyring_store::check_site(&name, &credentials, &self.url)
+            .map_err(|e| format!("handlers.wordpress.keyring: {e}"))?;
+        self.username = credentials.username;
+        self.password = credentials.application_password.to_string();
+        Ok(())
+    }
 }
 
 impl Default for McpConfig {
@@ -769,14 +952,6 @@ impl Default for McpConfig {
             },
             transport: TransportConfig {
                 transport_type: Some("stdio".to_string()),
-                stdio: Some(StdioTransportConfig {
-                    buffer_size: Some(8192),
-                    timeout_ms: Some(30000),
-                    content_length_header: Some(true),
-                    framing_method: Some("content-length".to_string()),
-                    max_message_size: Some(1048576),
-                    pretty_print: Some(false),
-                }),
                 http: None,
             },
             handlers: HandlersConfig { wordpress: None },
@@ -790,6 +965,80 @@ impl Default for McpConfig {
 
 /// 先頭の`~/`をホームフォルダに置き換える（#375）。`~`で始まらない
 /// パスはそのまま返す。ホームフォルダが分からない場合は`None`。
+/// `--config`が無いときに読む設定ファイル（#541）
+const USER_CONFIG_PATH: &str = "~/.config/mcp-rs/config.toml";
+
+/// v0.23.0まで、`--config`が無いときに今のフォルダから読んでいた名前（#541）。
+/// 今は読まない。見つけたら、`--config`の付け方を案内する
+const FORMER_CWD_CONFIG_NAMES: [&str; 3] = ["mcp-config.toml", "config.toml", "config/mcp.toml"];
+
+/// `dir`（今のフォルダ）にある、以前の名前の設定ファイル
+fn former_cwd_config_files(dir: &std::path::Path) -> Vec<String> {
+    FORMER_CWD_CONFIG_NAMES
+        .iter()
+        .filter(|name| dir.join(name).is_file())
+        .map(|name| name.to_string())
+        .collect()
+}
+
+/// 設定ファイルが見つからないときのエラーの文（#541）。`former`は、今の
+/// フォルダにあったが読まなかったファイル。案内するパスは絶対パスにする
+/// （相対パスの`--config`は、起動したフォルダから読むので、同じ問題が残る。
+/// PR #551のレビュー）
+fn no_config_file_message(home: Option<&str>, former: &[String]) -> String {
+    let user_config =
+        expand_home_dir(USER_CONFIG_PATH, home).unwrap_or_else(|| USER_CONFIG_PATH.to_string());
+    let mut message =
+        format!("no config file: pass one with --config <absolute path>, or create {user_config}");
+    if let Some(first) = former.first() {
+        let absolute = std::path::absolute(first)
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|_| first.clone());
+        message.push_str(&format!(
+            ". {} in the current folder is not read without --config (v0.24.0 and later), so that a config file in a folder you open cannot run commands or send your credentials. If it is yours, start mcp-rs with --config {absolute} (an absolute path: a relative one is read from whatever folder mcp-rs starts in)",
+            former.join(", ")
+        ));
+    }
+    message
+}
+
+/// `--config`のパスの先頭の`~/`（Windowsでは`~\`も）を、ホームフォルダに
+/// 展開する（PR #551のレビュー）。シェルを通さないクライアントの設定（JSONの
+/// `args`等）では、`~`は展開されずにそのまま渡ってくる。展開しないと、
+/// 起動したフォルダの中の`~`という名前のフォルダを探してしまう。ホーム
+/// フォルダが分からなければ、そのまま返す（相対パスの警告が出る）
+pub fn expand_config_path(path: &str) -> String {
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .ok();
+    expand_config_path_with(path, home.as_deref())
+}
+
+fn expand_config_path_with(path: &str, home: Option<&str>) -> String {
+    let rest = path.strip_prefix("~/").or_else(|| path.strip_prefix("~\\"));
+    match rest {
+        Some(rest) => expand_home_dir(&format!("~/{}", rest.replace('\\', "/")), home)
+            .unwrap_or_else(|| path.to_string()),
+        None => path.to_string(),
+    }
+}
+
+/// `--config`（`expand_config_path`で展開した後）が相対パスなら、警告の
+/// 文を返す（PR #551のレビュー）。相対パスは、mcp-rsを起動したフォルダから
+/// 読む。Claude Code等は開いたフォルダで起動するので、そのフォルダの同じ
+/// 名前のファイルを読んでしまう
+pub fn relative_config_path_warning(path: &str) -> Option<String> {
+    if std::path::Path::new(path).is_absolute() {
+        return None;
+    }
+    let absolute = std::path::absolute(path)
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| path.to_string());
+    Some(format!(
+        "--config {path} is a relative path, so mcp-rs reads it from the folder it starts in (now {absolute}). Clients such as Claude Code start mcp-rs in the folder you open, where a file with the same name could run commands or send your credentials. Register mcp-rs with an absolute path"
+    ))
+}
+
 fn expand_home_dir(path: &str, home: Option<&str>) -> Option<String> {
     match path.strip_prefix("~/") {
         Some(rest) => home.filter(|h| !h.is_empty()).map(|h| {
@@ -803,6 +1052,64 @@ fn expand_home_dir(path: &str, home: Option<&str>) -> Option<String> {
     }
 }
 
+/// 文字列の中の`${VAR}`の変数名（`expand_env_vars`と同じ読み方）。
+/// `}`が無いところから後は読まない（展開の時にエラーになる）
+fn referenced_env_vars(input: &str) -> Vec<&str> {
+    let mut names = Vec::new();
+    let mut rest = input;
+    while let Some(start) = rest.find("${") {
+        let after = &rest[start + 2..];
+        let Some(end) = after.find('}') else {
+            break;
+        };
+        names.push(&after[..end]);
+        rest = &after[end + 1..];
+    }
+    names
+}
+
+/// `--config`無しで起動したときの、`WORDPRESS_URL`・`WORDPRESS_USERNAME`・
+/// `WORDPRESS_PASSWORD`による上書き（後方互換性）。`WORDPRESS_URL`がある
+/// ときだけ働き、`[handlers.wordpress]`が無ければ環境変数だけで作る。
+///
+/// `keyring`を書いた設定は、URLも資格情報も上書きしない（#533）。資格情報
+/// ストアのエントリーはURLと結び付いていないので、残っていた
+/// `WORDPRESS_URL`が別のサイトを指していると、そのサイトへパスワードを
+/// 送ってしまうため。`env`は環境変数を読む関数（テストで差し替える）
+fn apply_wordpress_env_overrides(
+    wordpress: &mut Option<WordPressConfig>,
+    env: impl Fn(&str) -> Option<String>,
+) {
+    let Some(wp_url) = env("WORDPRESS_URL") else {
+        return;
+    };
+    match wordpress {
+        None => {
+            *wordpress = Some(WordPressConfig {
+                url: wp_url,
+                username: env("WORDPRESS_USERNAME").unwrap_or_default(),
+                password: env("WORDPRESS_PASSWORD").unwrap_or_default(),
+                enabled: Some(true),
+                timeout_seconds: Some(30),
+                rate_limit: Some(RateLimitConfig::default()),
+                encrypted_credentials: None, // 環境変数では平文使用
+                keyring: None,
+                upload_allowed_dirs: Vec::new(),
+            });
+        }
+        Some(wp_config) if wp_config.keyring.is_some() => {}
+        Some(wp_config) => {
+            wp_config.url = wp_url;
+            if let Some(username) = env("WORDPRESS_USERNAME") {
+                wp_config.username = username;
+            }
+            if let Some(password) = env("WORDPRESS_PASSWORD") {
+                wp_config.password = password;
+            }
+        }
+    }
+}
+
 /// 設定ファイルの`[transport] type = ...`を`transport_type`に書き換える（#375）。
 ///
 /// `TransportConfig::transport_type`は`#[serde(alias = "type")]`で`type`も
@@ -811,7 +1118,9 @@ fn expand_home_dir(path: &str, home: Option<&str>) -> Option<String> {
 /// いると両方のキーが残り、`duplicate field`で読み込みに失敗していた。
 /// キー名をそろえておけば、ファイルの値が既定値を上書きする。
 fn normalize_transport_type_alias(content: &str) -> Result<String, Box<dyn std::error::Error>> {
-    let mut table: toml::Table = content.parse()?;
+    let mut table: toml::Table = content
+        .parse()
+        .map_err(|e| describe_toml_error(&e, content))?;
     if let Some(toml::Value::Table(transport)) = table.get_mut("transport") {
         if let Some(value) = transport.remove("type") {
             if transport.contains_key("transport_type") {
@@ -834,12 +1143,15 @@ pub enum EnvExpansionError {
     Missing(String),
     /// `${`に対応する`}`が無い、または変数名が空
     Malformed,
+    /// 参照した環境変数はあるが、値が空（APIキーで使う、#534）
+    Empty(String),
 }
 
 impl fmt::Display for EnvExpansionError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Missing(name) => write!(f, "environment variable '{}' is not set", name),
+            Self::Empty(name) => write!(f, "environment variable '{}' is empty", name),
             Self::Malformed => write!(
                 f,
                 "'${{' has no matching '}}' or an empty variable name (write ${{VAR_NAME}})"
@@ -929,6 +1241,43 @@ impl McpConfig {
                 field: format!("handlers.wordpress.{}", field),
                 reason,
             })?;
+        }
+        Ok(())
+    }
+
+    /// HTTPモードのAPIキー（`[[transport.http.api_keys]]`の`key`）の`${VAR}`
+    /// を展開する（#534）。キーを設定ファイルに平文で書かずに済むように
+    /// する。展開できなければ、どのエントリーのどの変数かを返し、起動しない
+    /// （WordPressと同じ、#454）。キーを使わない設定（STDIOモード、または
+    /// `auth_enabled`が`true`でない）なら展開しない
+    pub fn expand_http_api_keys(&mut self) -> Result<(), ConfigEnvError> {
+        if self.transport.transport_type.as_deref() != Some("http") {
+            return Ok(());
+        }
+        let Some(http) = self.transport.http.as_mut() else {
+            return Ok(());
+        };
+        if !http.auth_enabled.unwrap_or(false) {
+            return Ok(());
+        }
+        for (index, entry) in http.api_keys.iter_mut().flatten().enumerate() {
+            let field = format!(
+                "transport.http.api_keys[{}].key (name '{}')",
+                index, entry.name
+            );
+            // 空の変数は、キーを空や短いものにしてしまう。起動時の検査
+            // （空のキー）では、どの変数が空かが分からないので、ここで止める
+            if let Some(name) = referenced_env_vars(&entry.key)
+                .into_iter()
+                .find(|name| std::env::var(name).is_ok_and(|v| v.is_empty()))
+            {
+                return Err(ConfigEnvError {
+                    field,
+                    reason: EnvExpansionError::Empty(name.to_string()),
+                });
+            }
+            entry.key = Self::expand_env_vars(&entry.key)
+                .map_err(|reason| ConfigEnvError { field, reason })?;
         }
         Ok(())
     }
@@ -1041,26 +1390,20 @@ impl McpConfig {
         let default_config = McpConfig::default();
         settings = settings.add_source(config::Config::try_from(&default_config)?);
 
-        // 設定ファイルを読み込み（複数の場所を試行）
-        let config_paths = [
-            "mcp-config.toml",
-            "config.toml",
-            "config/mcp.toml",
-            "~/.config/mcp-rs/config.toml",
-        ];
-
+        // 設定ファイルは、ユーザーのフォルダの1か所だけから読む（#541）。
+        // 以前は今のフォルダの`mcp-config.toml`等も読んでいたので、
+        // プロジェクトのフォルダで起動するクライアント（Claude Code等）では、
+        // 開いたリポジトリの設定ファイルで、任意のコマンド（プラグイン）を
+        // 実行させたり、資格情報を別のサイトへ送らせたりできた
         let home = std::env::var("HOME")
             .or_else(|_| std::env::var("USERPROFILE"))
             .ok();
 
         let mut config_file_found = false;
         let mut loaded_config_file = None;
-        for path in &config_paths {
-            // `~`はPathが展開しないため、自前でホームフォルダに置き換える。
-            // ホームフォルダが分からない場合、その候補は飛ばす
-            let Some(path) = expand_home_dir(path, home.as_deref()) else {
-                continue;
-            };
+        // `~`はPathが展開しないため、自前でホームフォルダに置き換える。
+        // ホームフォルダが分からない場合は、探さない
+        if let Some(path) = expand_home_dir(USER_CONFIG_PATH, home.as_deref()) {
             if std::path::Path::new(&path).exists() {
                 // 標準出力はSTDIOモードでJSON-RPCの通信専用のため、
                 // 標準エラー出力に書く（ログはこの時点で未初期化）
@@ -1072,13 +1415,17 @@ impl McpConfig {
                     settings.add_source(config::File::from_str(&content, config::FileFormat::Toml));
                 config_file_found = true;
                 loaded_config_file = std::path::absolute(&path).ok();
-                break;
             }
         }
 
-        // 設定ファイルが見つからない場合はエラーを返す
+        // 設定ファイルが見つからない場合はエラーを返す。今のフォルダに以前の
+        // 名前の設定ファイルがあれば、読まずに、`--config`の付け方を案内する
         if !config_file_found && !Self::has_env_config() {
-            return Err("設定ファイルが見つかりません".into());
+            return Err(no_config_file_message(
+                home.as_deref(),
+                &former_cwd_config_files(std::path::Path::new(".")),
+            )
+            .into());
         }
 
         // 環境変数で上書き (MCP_で始まる変数)
@@ -1091,7 +1438,11 @@ impl McpConfig {
         // 特定の環境変数も直接対応（後方互換性）
         settings = settings.add_source(config::Environment::default().try_parsing(true));
 
-        let config: McpConfig = settings.build()?.try_deserialize()?;
+        // 値の型の誤り等のエラーは、書いた値を含むことがあるので伏せる（#543）
+        let config: McpConfig = settings
+            .build()
+            .and_then(|built| built.try_deserialize())
+            .map_err(|e| redact_quoted(&e.to_string()))?;
 
         // 環境変数による個別上書き
         let mut final_config = config;
@@ -1101,36 +1452,22 @@ impl McpConfig {
             info!("WordPress設定で環境変数展開を適用中...");
             Self::expand_wordpress_config(wp_config).map_err(|e| e.to_string())?;
         }
+        // HTTPモードのAPIキーの`${VAR}`（#534）
+        final_config
+            .expand_http_api_keys()
+            .map_err(|e| e.to_string())?;
 
         // WordPress設定の環境変数上書き
-        if let Ok(wp_url) = std::env::var("WORDPRESS_URL") {
-            if final_config.handlers.wordpress.is_none() {
-                final_config.handlers.wordpress = Some(WordPressConfig {
-                    url: wp_url,
-                    username: std::env::var("WORDPRESS_USERNAME").unwrap_or_default(),
-                    password: std::env::var("WORDPRESS_PASSWORD").unwrap_or_default(),
-                    enabled: Some(true),
-                    timeout_seconds: Some(30),
-                    rate_limit: Some(RateLimitConfig::default()),
-                    encrypted_credentials: None, // 環境変数では平文使用
-                    upload_allowed_dirs: Vec::new(),
-                });
-            } else if let Some(ref mut wp_config) = final_config.handlers.wordpress {
-                wp_config.url = wp_url;
-                if let Ok(username) = std::env::var("WORDPRESS_USERNAME") {
-                    wp_config.username = username;
-                }
-                if let Ok(password) = std::env::var("WORDPRESS_PASSWORD") {
-                    wp_config.password = password;
-                }
-            }
-        }
+        apply_wordpress_env_overrides(&mut final_config.handlers.wordpress, |name| {
+            std::env::var(name).ok()
+        });
 
-        // encrypted_credentialsの解決は上記の平文環境変数上書きより後に
-        // 行う。そうしないと、暗号化認証情報へ移行した後も環境に残った
-        // 古いWORDPRESS_PASSWORD等が、復号済みの値を無言で上書きしてしまう
+        // keyring・encrypted_credentialsの解決は上記の平文環境変数上書き
+        // より後に行う。そうしないと、暗号化認証情報へ移行した後も環境に
+        // 残った古いWORDPRESS_PASSWORD等が、復号済みの値を無言で上書きして
+        // しまう
         if let Some(ref mut wp_config) = final_config.handlers.wordpress {
-            wp_config.resolve_encrypted_credentials()?;
+            wp_config.resolve_credentials()?;
         }
 
         // サーバー設定の環境変数上書き
@@ -1173,14 +1510,6 @@ impl McpConfig {
             },
             transport: TransportConfig {
                 transport_type: Some("stdio".to_string()),
-                stdio: Some(StdioTransportConfig {
-                    buffer_size: Some(8192),
-                    timeout_ms: Some(30000),
-                    content_length_header: Some(true),
-                    framing_method: Some("content-length".to_string()),
-                    max_message_size: Some(1048576),
-                    pretty_print: Some(false),
-                }),
                 http: Some(HttpTransportConfig {
                     addr: Some("127.0.0.1".to_string()),
                     port: Some(8080),
@@ -1202,6 +1531,7 @@ impl McpConfig {
                     anti_replay_enabled: Some(false),
                     ids_enabled: Some(false),
                     ids_trust_forwarded_for: Some(false),
+                    trusted_proxies: Some(vec!["127.0.0.1".to_string()]),
                     network_policy_reject_external_connections: Some(true),
                     network_policy_warn_on_external_bind: Some(true),
                     network_policy_ip_whitelist: Some(vec![]),
@@ -1211,6 +1541,11 @@ impl McpConfig {
                     api_keys: Some(vec![]),
                     oauth: None,
                     allowed_origins: None,
+                    max_request_size: None,
+                    request_timeout_seconds: None,
+                    max_connections: None,
+                    websocket_idle_timeout_seconds: None,
+                    allow_unauthenticated_external: None,
                 }),
             },
             handlers: HandlersConfig {
@@ -1222,6 +1557,7 @@ impl McpConfig {
                     timeout_seconds: Some(30),
                     rate_limit: Some(RateLimitConfig::default()),
                     encrypted_credentials: None, // デフォルトでは平文
+                    keyring: None,
                     upload_allowed_dirs: Vec::new(),
                 }),
             },
@@ -1250,10 +1586,15 @@ impl McpConfig {
 #    export WORDPRESS_USERNAME="your_username"
 #    export WORDPRESS_PASSWORD="your_app_password"
 #
-# 2. または .env ファイルを使用:
-#    WORDPRESS_URL=https://your-wordpress-site.com
-#    WORDPRESS_USERNAME=your_username
-#    WORDPRESS_PASSWORD=your_app_password
+#    mcp-rs は .env ファイルを読みません。Claude Desktop は OS の環境変数を
+#    渡さないので、claude_desktop_config.json の env に書きます
+#
+# 2. または OS の資格情報ストアに登録 (Claude Desktop・Claude Code・
+#    ターミナルのどれからでも同じに読める):
+#    mcp-rs wordpress-keyring set your-site
+#    [handlers.wordpress] には username・password の代わりに
+#    keyring = "your-site" と書きます。登録のときに聞かれるサイトの
+#    URL は、url と同じにします (違うサイトには資格情報を使いません)
 #
 # 3. 設定ファイルでは環境変数参照 (ドル記号+波括弧形式):
 #    url = "${{WORDPRESS_URL}}"
@@ -1312,10 +1653,15 @@ impl McpConfig {
 #    $env:WORDPRESS_USERNAME="your_username"
 #    $env:WORDPRESS_PASSWORD="your_app_password"
 #
-# 2. または .env ファイルを使用:
-#    WORDPRESS_URL=https://your-wordpress-site.com
-#    WORDPRESS_USERNAME=your_username
-#    WORDPRESS_PASSWORD=your_app_password
+#    mcp-rs は .env ファイルを読みません。Claude Desktop は OS の環境変数を
+#    渡さないので、claude_desktop_config.json の env に書きます
+#
+# 2. または OS の資格情報ストアに登録 (Claude Desktop・Claude Code・
+#    ターミナルのどれからでも同じに読める):
+#    mcp-rs wordpress-keyring set your-site
+#    [handlers.wordpress] には username・password の代わりに
+#    keyring = "your-site" と書きます。登録のときに聞かれるサイトの
+#    URL は、url と同じにします (違うサイトには資格情報を使いません)
 #
 # 3. Application Password の生成方法:
 #    - WordPress管理画面 > ユーザー > プロフィール
@@ -1335,7 +1681,7 @@ impl McpConfig {
 
     /// Convert to transport configuration
     pub fn to_transport_config(&self) -> crate::transport::TransportConfig {
-        use crate::transport::{stdio::StdioConfig, FramingMethod, TransportType};
+        use crate::transport::TransportType;
 
         let transport_type = match self.transport.transport_type.as_deref() {
             Some("stdio") => TransportType::Stdio,
@@ -1361,22 +1707,6 @@ impl McpConfig {
             _ => TransportType::Stdio, // Default fallback
         };
 
-        let stdio_config = if let Some(stdio) = &self.transport.stdio {
-            StdioConfig {
-                buffer_size: stdio.buffer_size.unwrap_or(8192),
-                timeout_ms: stdio.timeout_ms.unwrap_or(30000),
-                content_length_header: stdio.content_length_header.unwrap_or(true),
-                framing_method: match stdio.framing_method.as_deref() {
-                    Some("line-based") => FramingMethod::LineBased,
-                    _ => FramingMethod::ContentLength,
-                },
-                max_message_size: stdio.max_message_size.unwrap_or(1048576),
-                pretty_print: stdio.pretty_print.unwrap_or(false),
-            }
-        } else {
-            StdioConfig::default()
-        };
-
         let http_config = if let Some(ref http) = self.transport.http {
             let addr = http.addr.as_deref().unwrap_or("127.0.0.1");
             let port = http.port.unwrap_or(8081);
@@ -1386,8 +1716,12 @@ impl McpConfig {
                     .parse()
                     .unwrap_or("127.0.0.1:8081".parse().unwrap()),
                 cors_enabled: http.enable_cors.unwrap_or(true),
-                max_request_size: 1048576,
-                timeout_ms: 30000,
+                max_request_size: http.max_request_size.filter(|n| *n > 0).unwrap_or(1048576),
+                timeout_ms: http
+                    .request_timeout_seconds
+                    .filter(|n| *n > 0)
+                    .unwrap_or(30)
+                    .saturating_mul(1000),
                 network_policy: crate::security::NetworkPolicy {
                     reject_external_connections: http
                         .network_policy_reject_external_connections
@@ -1420,6 +1754,7 @@ impl McpConfig {
                 anti_replay_enabled: http.anti_replay_enabled.unwrap_or(false),
                 ids_enabled: http.ids_enabled.unwrap_or(false),
                 ids_trust_forwarded_for: http.ids_trust_forwarded_for.unwrap_or(false),
+                trusted_proxies: http.trusted_proxies.clone().unwrap_or_default(),
                 enable_websocket_upgrade: http.enable_websocket_upgrade.unwrap_or(false),
                 websocket_max_connections: http.websocket_max_connections.unwrap_or(1000),
                 auth_enabled: http.auth_enabled.unwrap_or(false),
@@ -1432,6 +1767,11 @@ impl McpConfig {
                     .collect(),
                 oauth: http.oauth.clone(),
                 allowed_origins: http.allowed_origins.clone().unwrap_or_default(),
+                max_connections: http.max_connections.filter(|n| *n > 0).unwrap_or(1024),
+                websocket_idle_timeout_secs: http.websocket_idle_timeout_seconds.unwrap_or(300),
+                allow_unauthenticated_external: http
+                    .allow_unauthenticated_external
+                    .unwrap_or(false),
             }
         } else {
             crate::transport::http::HttpConfig::default()
@@ -1439,7 +1779,6 @@ impl McpConfig {
 
         crate::transport::TransportConfig {
             transport_type,
-            stdio: stdio_config,
             http: http_config,
         }
     }
@@ -1876,6 +2215,29 @@ start_timeout_seconds = 300
         assert_eq!(db.password.as_deref(), Some("${MCP_DB_PASSWORD}"));
     }
 
+    /// 結果のバイト数の上限の既定と、CAのファイルの相対パス（#539）
+    #[test]
+    fn test_database_result_bytes_and_ssl_root_cert_path() {
+        let mut db = DatabaseSettings::default();
+        assert_eq!(db.max_result_bytes(), 10 * 1024 * 1024);
+        db.max_result_bytes = Some(0);
+        assert_eq!(db.max_result_bytes(), 10 * 1024 * 1024);
+        db.max_result_bytes = Some(5000);
+        assert_eq!(db.max_result_bytes(), 5000);
+
+        let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        db.ssl_root_cert = Some("certs/ca.pem".to_string());
+        db.resolve_paths(Some(base));
+        assert_eq!(
+            db.ssl_root_cert.as_deref().map(std::path::PathBuf::from),
+            Some(base.join("certs/ca.pem"))
+        );
+        let absolute = base.join("ca.pem").to_string_lossy().into_owned();
+        db.ssl_root_cert = Some(absolute.clone());
+        db.resolve_paths(Some(std::path::Path::new("elsewhere")));
+        assert_eq!(db.ssl_root_cert.as_deref(), Some(absolute.as_str()));
+    }
+
     #[test]
     fn test_database_settings_validate() {
         let valid = DatabaseSettings {
@@ -1971,6 +2333,114 @@ start_timeout_seconds = 300
         assert_eq!(audit.file_path.as_deref(), Some("C:/logs/mcp-audit.log"));
         assert_eq!(audit.max_files, Some(3));
         assert_eq!(audit.enabled, None);
+    }
+
+    fn http_config_with_keys(transport_type: &str, auth_enabled: bool) -> McpConfig {
+        toml::from_str(&format!(
+            r#"
+[transport]
+type = "{transport_type}"
+[transport.http]
+auth_enabled = {auth_enabled}
+
+[[transport.http.api_keys]]
+key = "plain-key"
+name = "plain"
+user_id = "u1"
+
+[[transport.http.api_keys]]
+key = "${{MCP_RS_TEST_API_KEY_534}}"
+name = "from-env"
+user_id = "u2"
+
+[server]
+[handlers]
+"#
+        ))
+        .unwrap()
+    }
+
+    /// APIキーの`${VAR}`を展開する（#534）
+    #[test]
+    fn test_expand_http_api_keys() {
+        std::env::set_var("MCP_RS_TEST_API_KEY_534", "key-from-env");
+        let mut config = http_config_with_keys("http", true);
+        config.expand_http_api_keys().unwrap();
+        let http = config.to_transport_config().http;
+        assert_eq!(http.api_keys[0].key, "plain-key");
+        assert_eq!(http.api_keys[1].key, "key-from-env");
+    }
+
+    /// 変数が無ければ、どのエントリーのどの変数かを返す。値は出さない
+    #[test]
+    fn test_expand_http_api_keys_reports_missing_variable() {
+        let mut config = http_config_with_keys("http", true);
+        config
+            .transport
+            .http
+            .as_mut()
+            .unwrap()
+            .api_keys
+            .as_mut()
+            .unwrap()[1]
+            .key = "prefix-${MCP_RS_TEST_API_KEY_534_UNSET}".to_string();
+        let err = config.expand_http_api_keys().unwrap_err().to_string();
+        assert_eq!(
+            err,
+            "transport.http.api_keys[1].key (name 'from-env'): environment variable 'MCP_RS_TEST_API_KEY_534_UNSET' is not set"
+        );
+        assert!(!err.contains("prefix-"));
+    }
+
+    /// 変数はあるが空なら、その変数名を出して止める（起動時の「空のキー」
+    /// の検査では、どの変数かが分からないため）
+    #[test]
+    fn test_expand_http_api_keys_reports_empty_variable() {
+        std::env::set_var("MCP_RS_TEST_API_KEY_534_EMPTY", "");
+        let mut config = http_config_with_keys("http", true);
+        config
+            .transport
+            .http
+            .as_mut()
+            .unwrap()
+            .api_keys
+            .as_mut()
+            .unwrap()[1]
+            .key = "prefix-${MCP_RS_TEST_API_KEY_534_EMPTY}".to_string();
+        assert_eq!(
+            config.expand_http_api_keys().unwrap_err().to_string(),
+            "transport.http.api_keys[1].key (name 'from-env'): environment variable 'MCP_RS_TEST_API_KEY_534_EMPTY' is empty"
+        );
+    }
+
+    #[test]
+    fn test_referenced_env_vars() {
+        assert_eq!(referenced_env_vars("${A}-x-${B_2}"), vec!["A", "B_2"]);
+        assert_eq!(referenced_env_vars("plain"), Vec::<&str>::new());
+        assert_eq!(referenced_env_vars("${A}${unclosed"), vec!["A"]);
+    }
+
+    /// キーを使わない設定（STDIO・auth_enabledがfalse）では展開しない
+    /// （変数が無くても起動を止めない）
+    #[test]
+    fn test_expand_http_api_keys_skips_unused_keys() {
+        for (transport_type, auth_enabled) in [("stdio", true), ("http", false)] {
+            let mut config = http_config_with_keys(transport_type, auth_enabled);
+            config
+                .transport
+                .http
+                .as_mut()
+                .unwrap()
+                .api_keys
+                .as_mut()
+                .unwrap()[1]
+                .key = "${MCP_RS_TEST_API_KEY_534_UNSET}".to_string();
+            config.expand_http_api_keys().unwrap();
+            assert_eq!(
+                config.transport.http.unwrap().api_keys.unwrap()[1].key,
+                "${MCP_RS_TEST_API_KEY_534_UNSET}"
+            );
+        }
     }
 
     /// APIキーの`tools`と、OAuthの`scope_tools`（#52）を読む
@@ -2184,6 +2654,17 @@ resource = "https://mcp.example.com/mcp"
         assert_eq!(wp.password, "${WP_PASSWORD_NOT_SET_454}");
     }
 
+    /// v0.23.0までの`[transport.stdio]`は、書いてあっても読み込める（無視
+    /// する、#557）
+    #[test]
+    fn test_former_transport_stdio_section_is_ignored() {
+        let config: McpConfig = toml::from_str(
+            "[server]\n[transport]\ntype = \"stdio\"\n\n[transport.stdio]\nbuffer_size = 8192\nframing_method = \"content-length\"\n\n[handlers]\n",
+        )
+        .unwrap();
+        assert_eq!(config.transport.transport_type.as_deref(), Some("stdio"));
+    }
+
     #[test]
     fn test_transport_type_accepts_type_alias() {
         // configs/production/claude-desktop.toml (and main.toml/web-ui.toml/
@@ -2271,6 +2752,7 @@ mod additional_tests {
             timeout_seconds: Some(30),
             rate_limit: Some(RateLimitConfig::default()),
             encrypted_credentials: None,
+            keyring: None,
             upload_allowed_dirs: Vec::new(),
         };
 
@@ -2299,6 +2781,7 @@ mod additional_tests {
             timeout_seconds: Some(30),
             rate_limit: Some(RateLimitConfig::default()),
             encrypted_credentials: Some(encrypted),
+            keyring: None,
             upload_allowed_dirs: Vec::new(),
         };
 
@@ -2337,6 +2820,7 @@ mod additional_tests {
             timeout_seconds: Some(30),
             rate_limit: Some(RateLimitConfig::default()),
             encrypted_credentials: None,
+            keyring: None,
             upload_allowed_dirs: Vec::new(),
         };
 
@@ -2360,6 +2844,7 @@ mod additional_tests {
             timeout_seconds: Some(30),
             rate_limit: Some(RateLimitConfig::default()),
             encrypted_credentials: None,
+            keyring: None,
             upload_allowed_dirs: Vec::new(),
         };
 
@@ -2379,6 +2864,7 @@ mod additional_tests {
             timeout_seconds: Some(30),
             rate_limit: Some(RateLimitConfig::default()),
             encrypted_credentials: None,
+            keyring: None,
             upload_allowed_dirs: Vec::new(),
         };
 
@@ -2399,9 +2885,299 @@ mod additional_tests {
             timeout_seconds: Some(30),
             rate_limit: Some(RateLimitConfig::default()),
             encrypted_credentials: None,
+            keyring: None,
             upload_allowed_dirs: Vec::new(),
         };
 
         config.resolve_encrypted_credentials().unwrap();
+    }
+
+    /// `keyring = "<名前>"`の設定（#533）。TOMLから読んで、資格情報ストア
+    /// からユーザー名・パスワードを入れる
+    fn keyring_config(extra: &str) -> WordPressConfig {
+        let toml_str = format!(
+            "url = \"https://example.com\"\nenabled = true\nkeyring = \"example.com\"\n{extra}"
+        );
+        toml::from_str(&toml_str).unwrap()
+    }
+
+    fn store_with_example() -> crate::security::keyring_store::MemoryStore {
+        use crate::security::keyring_store::{
+            store_wordpress_credentials, MemoryStore, WordPressKeyringCredentials,
+        };
+        let store = MemoryStore::default();
+        store_wordpress_credentials(
+            &store,
+            "example.com",
+            &WordPressKeyringCredentials {
+                site_url: "https://example.com".to_string(),
+                username: "editor".to_string(),
+                application_password: zeroize::Zeroizing::new("abcd EFGH 1234".to_string()),
+            },
+        )
+        .unwrap();
+        store
+    }
+
+    #[test]
+    fn test_resolve_credentials_reads_keyring() {
+        let store = store_with_example();
+        let mut config = keyring_config("");
+        assert_eq!(config.keyring.as_deref(), Some("example.com"));
+        config.resolve_credentials_with(&store).unwrap();
+        assert_eq!(config.username, "editor");
+        assert_eq!(config.password, "abcd EFGH 1234");
+        // 書き出すとき、keyringは残し、無ければ書かない
+        assert!(toml::to_string(&config)
+            .unwrap()
+            .contains("keyring = \"example.com\""));
+        let mut plain = keyring_config("");
+        plain.keyring = None;
+        assert!(!toml::to_string(&plain).unwrap().contains("keyring"));
+    }
+
+    /// 今のフォルダの設定ファイルは読まず、見つけたら`--config`を案内する（#541）
+    #[test]
+    fn test_former_cwd_config_files_are_only_mentioned() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(former_cwd_config_files(dir.path()).is_empty());
+        let message = no_config_file_message(Some("/home/u"), &[]);
+        assert!(message.contains("--config <absolute path>"), "{message}");
+        assert!(message.contains("config.toml"), "{message}");
+        assert!(!message.contains("current folder"), "{message}");
+
+        std::fs::write(dir.path().join("config.toml"), "").unwrap();
+        std::fs::create_dir(dir.path().join("config")).unwrap();
+        std::fs::write(dir.path().join("config").join("mcp.toml"), "").unwrap();
+        let former = former_cwd_config_files(dir.path());
+        assert_eq!(former, vec!["config.toml", "config/mcp.toml"]);
+        let message = no_config_file_message(Some("/home/u"), &former);
+        assert!(
+            message.contains("is not read without --config"),
+            "{message}"
+        );
+        // 案内は絶対パス（相対パスは、起動したフォルダから読むため）
+        let absolute = std::path::absolute("config.toml").unwrap();
+        assert!(
+            message.contains(&format!("--config {}", absolute.display())),
+            "{message}"
+        );
+        assert!(!message.contains("--config config.toml"), "{message}");
+    }
+
+    /// TOMLの誤りのエラーに、行の内容（パスワード）を出さない（#543）
+    #[test]
+    fn test_toml_errors_do_not_show_the_line() {
+        let content =
+            "[handlers.wordpress]\nurl = \"https://example.com\"\npassword = \"s3cret-pw\"x\n";
+        let error = toml::from_str::<McpConfig>(content).unwrap_err();
+        assert!(
+            error.to_string().contains("s3cret-pw"),
+            "toml quotes the line"
+        );
+        let message = describe_toml_error(&error, content);
+        assert!(message.contains("line 3"), "{message}");
+        assert!(!message.contains("s3cret-pw"), "{message}");
+
+        // 型の誤りのエラーも、値を伏せる
+        let content = "[transport.http]\nport = \"s3cret-pw\"\n";
+        let error = toml::from_str::<McpConfig>(content).unwrap_err();
+        let message = describe_toml_error(&error, content);
+        assert!(!message.contains("s3cret-pw"), "{message}");
+        assert!(message.contains("line 2"), "{message}");
+
+        assert_eq!(
+            redact_quoted(r#"invalid type: string "x", expected u16"#),
+            r#"invalid type: string "…", expected u16"#
+        );
+        // 値の中の`"`は`\"`と表示される。その後ろも伏せる（PR #552のレビュー）
+        assert_eq!(
+            redact_quoted(r#"invalid type: string "ab\"cd-secret", expected u16"#),
+            r#"invalid type: string "…", expected u16"#
+        );
+        // 英単語の中の`'`で、後ろを全部伏せない
+        assert_eq!(
+            redact_quoted("can't parse 'x' here"),
+            "can't parse '…' here"
+        );
+
+        // 実際のエラーでも、`"`を含むパスワードを出さない
+        let content = "[transport.http]\nport = 'ab\"cd-secret'\n";
+        let error = toml::from_str::<McpConfig>(content).unwrap_err();
+        let message = describe_toml_error(&error, content);
+        assert!(!message.contains("cd-secret"), "{message}");
+    }
+
+    /// `--config`の`~/`は、ホームフォルダに展開する（PR #551のレビュー）
+    #[test]
+    fn test_expand_config_path() {
+        let home = std::env::temp_dir();
+        let home_str = home.display().to_string();
+        let expanded = expand_config_path_with("~/.config/mcp-rs/config.toml", Some(&home_str));
+        assert_eq!(
+            std::path::PathBuf::from(&expanded),
+            home.join(".config").join("mcp-rs").join("config.toml")
+        );
+        assert_eq!(relative_config_path_warning(&expanded), None);
+        let expanded = expand_config_path_with("~\\mcp-rs\\config.toml", Some(&home_str));
+        assert_eq!(
+            std::path::PathBuf::from(&expanded),
+            home.join("mcp-rs").join("config.toml")
+        );
+        // ホームが分からなければそのまま（相対パスとして警告する）
+        assert_eq!(
+            expand_config_path_with("~/config.toml", None),
+            "~/config.toml"
+        );
+        assert!(relative_config_path_warning("~/config.toml").is_some());
+        // `~`で始まるほかの形（`~user/`等）は展開しない
+        assert_eq!(
+            expand_config_path_with("~user/x.toml", Some(&home_str)),
+            "~user/x.toml"
+        );
+        assert_eq!(
+            expand_config_path_with("config.toml", Some(&home_str)),
+            "config.toml"
+        );
+    }
+
+    /// 相対パスの`--config`は警告する（PR #551のレビュー）
+    #[test]
+    fn test_relative_config_path_warning() {
+        let warning = relative_config_path_warning("config.toml").unwrap();
+        assert!(warning.contains("relative path"), "{warning}");
+        assert!(warning.contains("absolute path"), "{warning}");
+        let absolute = std::path::absolute("x.toml").unwrap();
+        assert_eq!(
+            relative_config_path_warning(&absolute.display().to_string()),
+            None
+        );
+    }
+
+    /// 設定の`url`が、資格情報を保存したサイトと違えば使わない（#541）
+    #[test]
+    fn test_resolve_credentials_refuses_another_site() {
+        let store = store_with_example();
+        let mut config: WordPressConfig = toml::from_str(
+            "url = \"https://attacker.example\"\nenabled = true\nkeyring = \"example.com\"\n",
+        )
+        .unwrap();
+        let err = config
+            .resolve_credentials_with(&store)
+            .unwrap_err()
+            .to_string();
+        assert!(err.starts_with("handlers.wordpress.keyring: "), "{err}");
+        assert!(err.contains("are for https://example.com"), "{err}");
+        assert!(!err.contains("abcd"), "{err}");
+        assert!(config.password.is_empty());
+    }
+
+    #[test]
+    fn test_resolve_credentials_reports_missing_entry() {
+        let store = crate::security::keyring_store::MemoryStore::default();
+        let err = keyring_config("")
+            .resolve_credentials_with(&store)
+            .unwrap_err()
+            .to_string();
+        assert!(err.starts_with("handlers.wordpress.keyring: "));
+        assert!(err.contains("mcp-rs wordpress-keyring set example.com"));
+    }
+
+    #[test]
+    fn test_resolve_credentials_rejects_keyring_with_other_sources() {
+        let store = store_with_example();
+        let err = keyring_config("username = \"u\"\npassword = \"secret-in-file\"")
+            .resolve_credentials_with(&store)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("keyring cannot be combined with username, password"));
+        assert!(!err.contains("secret-in-file"));
+
+        let err = keyring_config(
+            "[encrypted_credentials]\nusername = \"u\"\nencrypted_password = \"ZGVhZGJlZWY=\"\nnonce = \"AAAAAAAAAAAAAAAA\"\nsalt = \"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\"",
+        )
+        .resolve_credentials_with(&store)
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("encrypted_credentials"));
+    }
+
+    #[test]
+    fn test_resolve_credentials_skips_keyring_when_disabled() {
+        // 使わない設定では、資格情報ストアを読まない（エントリーが無くても
+        // 起動を止めない）
+        let store = crate::security::keyring_store::MemoryStore::default();
+        let mut config: WordPressConfig = toml::from_str(
+            "url = \"https://example.com\"\nenabled = false\nkeyring = \"example.com\"",
+        )
+        .unwrap();
+        config.resolve_credentials_with(&store).unwrap();
+        assert_eq!(config.username, "");
+    }
+
+    #[test]
+    fn test_resolve_credentials_without_keyring_keeps_plaintext() {
+        let store = crate::security::keyring_store::MemoryStore::default();
+        let mut config: WordPressConfig = toml::from_str(
+            "url = \"https://example.com\"\nenabled = true\nusername = \"u\"\npassword = \"p\"",
+        )
+        .unwrap();
+        config.resolve_credentials_with(&store).unwrap();
+        assert_eq!(
+            (config.username.as_str(), config.password.as_str()),
+            ("u", "p")
+        );
+    }
+
+    fn env_from<'a>(vars: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
+        move |name| {
+            vars.iter()
+                .find(|(k, _)| *k == name)
+                .map(|(_, v)| v.to_string())
+        }
+    }
+
+    const STALE_ENV: &[(&str, &str)] = &[
+        ("WORDPRESS_URL", "https://other.example"),
+        ("WORDPRESS_USERNAME", "other-user"),
+        ("WORDPRESS_PASSWORD", "other-password"),
+    ];
+
+    #[test]
+    fn test_env_overrides_leave_keyring_config_alone() {
+        // 残っていたWORDPRESS_URLで、資格情報ストアのパスワードを別の
+        // サイトへ送らない（#533）
+        let mut wordpress = Some(keyring_config(""));
+        apply_wordpress_env_overrides(&mut wordpress, env_from(STALE_ENV));
+        let wp = wordpress.unwrap();
+        assert_eq!(wp.url, "https://example.com");
+        assert_eq!((wp.username.as_str(), wp.password.as_str()), ("", ""));
+    }
+
+    #[test]
+    fn test_env_overrides_apply_without_keyring() {
+        let mut wordpress = Some(
+            toml::from_str::<WordPressConfig>(
+                "url = \"https://example.com\"\nenabled = true\nusername = \"u\"\npassword = \"p\"",
+            )
+            .unwrap(),
+        );
+        apply_wordpress_env_overrides(&mut wordpress, env_from(STALE_ENV));
+        let wp = wordpress.unwrap();
+        assert_eq!(wp.url, "https://other.example");
+        assert_eq!(
+            (wp.username.as_str(), wp.password.as_str()),
+            ("other-user", "other-password")
+        );
+
+        // [handlers.wordpress]が無ければ、環境変数だけで作る
+        let mut wordpress = None;
+        apply_wordpress_env_overrides(&mut wordpress, env_from(STALE_ENV));
+        assert_eq!(wordpress.unwrap().url, "https://other.example");
+
+        // WORDPRESS_URLが無ければ、何もしない
+        let mut wordpress = None;
+        apply_wordpress_env_overrides(&mut wordpress, env_from(&[("WORDPRESS_PASSWORD", "x")]));
+        assert!(wordpress.is_none());
     }
 }

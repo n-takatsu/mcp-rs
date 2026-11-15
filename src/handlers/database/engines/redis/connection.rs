@@ -9,9 +9,8 @@ use crate::handlers::database::{
 use async_trait::async_trait;
 use chrono::Utc;
 use redis::aio::MultiplexedConnection;
-use redis::{AsyncCommands, Client, RedisResult};
+use redis::{AsyncCommands, Client};
 use std::collections::HashMap;
-use std::num::NonZeroUsize;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 

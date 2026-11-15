@@ -2689,7 +2689,15 @@ impl WordPressHandler {
                     env!("CARGO_PKG_VERSION"),
                     crate::mcp::STATUS_TOOL_NAME
                 ));
-                report.push_str(&format!("📄 Log file: {}\n\n", health.log_destination));
+                // ログのファイルのパスは、HTTPで認証していない呼び出し元には
+                // 出さない（#543、`mcp_rs_status`と同じ）
+                if crate::mcp::current_caller().is_some_and(|c| c.is_unauthenticated_remote()) {
+                    report.push_str(
+                        "📄 Log file: shown only to authenticated callers in HTTP mode\n\n",
+                    );
+                } else {
+                    report.push_str(&format!("📄 Log file: {}\n\n", health.log_destination));
+                }
 
                 if let Some(site_info) = &health.site_info {
                     report.push_str(&format!(
@@ -4642,6 +4650,20 @@ impl McpHandler for WordPressHandler {
         Some(format!("WordPress site {}", self.base_url))
     }
 
+    /// 各リソースは、同じデータを読めるツールと同じ扱いにする（#538）。
+    /// `wordpress://posts`は投稿の本文まで返すので、要約だけを返す
+    /// `get_posts`ではなく、本文を返す`get_post`に対応させる
+    fn resource_tool(&self, uri: &str) -> Option<String> {
+        let tool = match uri {
+            "wordpress://posts" => "get_post",
+            "wordpress://comments" => "get_comments",
+            "wordpress://categories" => "get_categories",
+            "wordpress://tags" => "get_tags",
+            _ => return None,
+        };
+        Some(tool.to_string())
+    }
+
     async fn list_resources(&self) -> Result<Vec<Resource>, McpError> {
         Ok(vec![
             Resource {
@@ -4675,6 +4697,16 @@ impl McpHandler for WordPressHandler {
         &self,
         params: ResourceReadParams,
     ) -> Result<serde_json::Value, McpError> {
+        // ツールの呼び出しと同じレート制限を通す（#538）。`wordpress://posts`
+        // 等は全ページを取得するので、1回の読み取りでも重い
+        if let Err(e) = self
+            .rate_limiter
+            .check_rate_limit(RATE_LIMIT_CLIENT_ID)
+            .await
+        {
+            warn!("WordPress resource read rate limited: {}", e);
+            return Err(McpError::Other(format!("Rate limit exceeded: {}", e)));
+        }
         match params.uri.as_str() {
             "wordpress://posts" => {
                 let posts = self.get_posts().await?;
@@ -4737,6 +4769,7 @@ mod tests {
             timeout_seconds: Some(30),
             rate_limit: Some(RateLimitConfig::default()),
             encrypted_credentials: None,
+            keyring: None,
             upload_allowed_dirs: Vec::new(),
         };
 
@@ -4758,6 +4791,7 @@ mod tests {
             timeout_seconds: Some(30),
             rate_limit: Some(RateLimitConfig::default()),
             encrypted_credentials: None,
+            keyring: None,
             upload_allowed_dirs: Vec::new(),
         };
 
@@ -4775,6 +4809,7 @@ mod tests {
             timeout_seconds: Some(30),
             rate_limit: Some(RateLimitConfig::default()),
             encrypted_credentials: None,
+            keyring: None,
             upload_allowed_dirs: Vec::new(),
         };
         let handler = WordPressHandler::try_new(config).unwrap();
@@ -4799,6 +4834,7 @@ mod tests {
                 timeout_seconds: Some(30),
                 rate_limit: Some(RateLimitConfig::default()),
                 encrypted_credentials: None,
+                keyring: None,
                 upload_allowed_dirs: Vec::new(),
             };
 
@@ -4819,6 +4855,7 @@ mod tests {
             timeout_seconds: Some(30),
             rate_limit: Some(rate_limit),
             encrypted_credentials: None,
+            keyring: None,
             upload_allowed_dirs: Vec::new(),
         };
         WordPressHandler::try_new(config).unwrap()
@@ -4839,6 +4876,28 @@ mod tests {
             .call_tool(ToolCallParams {
                 name: "get_posts".to_string(),
                 arguments: None,
+            })
+            .await;
+
+        assert!(
+            matches!(result, Err(McpError::Other(ref msg)) if msg.contains("Rate limit exceeded")),
+            "expected a rate-limit error, got: {:?}",
+            result
+        );
+    }
+
+    /// リソースの読み取りも、ツールと同じレート制限を通る（#538）
+    #[tokio::test]
+    async fn test_read_resource_rejects_when_rate_limit_exhausted() {
+        let handler = rate_limited_handler(RateLimitConfig {
+            requests_per_second: 1,
+            burst_size: 0,
+            enabled: true,
+        });
+
+        let result = handler
+            .read_resource(ResourceReadParams {
+                uri: "wordpress://posts".to_string(),
             })
             .await;
 
@@ -4947,6 +5006,70 @@ mod tests {
             "get_settings",
         ] {
             assert!(!is_mutating_tool(name), "{} should not be mutating", name);
+        }
+    }
+
+    /// HTTPで認証していない呼び出し元には、ログのファイルのパスを出さない
+    /// （#543）。ローカル（STDIO）と、認証した呼び出し元には出す
+    #[tokio::test]
+    async fn test_health_check_hides_log_path_from_unauthenticated_http_callers() {
+        let handler = rate_limited_handler(RateLimitConfig::default());
+        let call = |caller: crate::mcp::Caller| {
+            let handler = &handler;
+            async move {
+                let result = crate::mcp::with_caller(
+                    caller,
+                    handler.call_tool(ToolCallParams {
+                        name: "wordpress_health_check".to_string(),
+                        arguments: None,
+                    }),
+                )
+                .await
+                .unwrap();
+                result["content"][0]["text"].as_str().unwrap().to_string()
+            }
+        };
+        let hidden = "Log file: shown only to authenticated callers";
+
+        let remote = call(
+            crate::mcp::Caller::unrestricted().with_ip_address(Some("203.0.113.1".to_string())),
+        )
+        .await;
+        assert!(remote.contains(hidden), "{remote}");
+
+        let local = call(crate::mcp::Caller::unrestricted()).await;
+        assert!(local.contains("Log file: "), "{local}");
+        assert!(!local.contains(hidden), "{local}");
+
+        let authenticated = call(
+            crate::mcp::Caller::new("api_key:a", crate::mcp::ToolAccess::All)
+                .with_ip_address(Some("203.0.113.1".to_string())),
+        )
+        .await;
+        assert!(!authenticated.contains(hidden), "{authenticated}");
+    }
+
+    /// リソースは、読み取り専用の実在するツールと同じ扱いになる（#538）
+    #[tokio::test]
+    async fn test_every_resource_maps_to_a_read_only_tool() {
+        let handler = rate_limited_handler(RateLimitConfig::default());
+        let tools = handler.list_tools().await.unwrap();
+        let resources = handler.list_resources().await.unwrap();
+        assert!(!resources.is_empty());
+        for resource in resources {
+            let name = handler
+                .resource_tool(&resource.uri)
+                .unwrap_or_else(|| panic!("{} has no tool", resource.uri));
+            let tool = tools
+                .iter()
+                .find(|t| t.name == name)
+                .unwrap_or_else(|| panic!("{} maps to missing tool {}", resource.uri, name));
+            assert_eq!(
+                tool.annotations.as_ref().and_then(|a| a.read_only_hint),
+                Some(true),
+                "{}",
+                name
+            );
         }
     }
 
@@ -5599,6 +5722,7 @@ mod tests {
             timeout_seconds: Some(30),
             rate_limit: Some(RateLimitConfig::default()),
             encrypted_credentials: None,
+            keyring: None,
             upload_allowed_dirs: dirs
                 .iter()
                 .map(|d| d.to_string_lossy().into_owned())

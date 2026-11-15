@@ -44,8 +44,10 @@ impl PostgresTransaction {
         pool: &PgPool,
         level: IsolationLevel,
     ) -> Result<Self, DatabaseError> {
-        let tx = Self::begin(pool).await?;
+        let mut tx = Self::begin(pool).await?;
         tx.set_isolation_level(level).await?;
+        // isolation_level()で返せるように記録する（以前は設定しても None のままだった、#513）
+        tx.isolation_level = Some(level);
         Ok(tx)
     }
 

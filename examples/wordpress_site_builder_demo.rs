@@ -136,6 +136,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         timeout_seconds: Some(30),
         rate_limit: None,
         encrypted_credentials: None,
+        keyring: None,
         upload_allowed_dirs: Vec::new(),
     })
     .map_err(|e| io::Error::other(format!("WordPress ハンドラーの初期化に失敗しました: {}", e)))?;

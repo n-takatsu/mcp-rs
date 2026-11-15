@@ -28,7 +28,7 @@
 use super::{
     advanced_security::{
         AccessDecision, ActionType, AnomalyDetector, AnomalyScore, MultiFactorAuth,
-        RoleBasedAccessControl, TrustScore,
+        RoleBasedAccessControl,
     },
     security::{AuditLogger, DatabaseSecurity, RateLimiter, SqlInjectionDetector},
     security_config::{AdvancedSecurityConfig, ResponseAction, SeverityLevel},
@@ -39,7 +39,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 
 /// Integrated Security Manager
 ///

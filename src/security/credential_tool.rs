@@ -236,7 +236,7 @@ impl Drop for RawModeGuard {
 }
 
 /// Read a line from the terminal without echoing it.
-fn read_hidden(prompt: &str) -> io::Result<Zeroizing<String>> {
+pub(crate) fn read_hidden(prompt: &str) -> io::Result<Zeroizing<String>> {
     use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 
     eprint!("{prompt}");

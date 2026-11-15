@@ -6,7 +6,22 @@ mcp-rsをClaude Desktopから使うための設定と、うまく動かないと
 
 Claude Desktopは、`claude_desktop_config.json`に書いたコマンドでmcp-rsを起動し、標準入出力（STDIO）でMCPのメッセージをやり取りします。STDIOモードのmcp-rsは、標準出力にMCPのメッセージだけを書き、ログはファイル（と標準エラー）に書くので、ログの設定で通信が壊れることはありません。
 
-## 1. mcp-rsの設定ファイル
+## 1. 資格情報を、OSの資格情報ストアに登録する
+
+WordPressのユーザー名とアプリケーションパスワードは、OSの資格情報ストア（Windowsの資格情報マネージャー、macOSのキーチェーン、LinuxのSecret Service）に置くのがおすすめです（v0.24.0以降）。環境変数を使わないので、Claude Desktop・Claude Code・ターミナルのどれから起動しても、同じ1か所から読みます。パスワードを変えたときも、直すのは1か所です。
+
+ターミナル（PowerShell等）で、名前（例: サイトのホスト名）を付けて登録します。ユーザー名とアプリケーションパスワードを聞かれます（パスワードは画面に出ません）。
+
+```powershell
+& "C:\Program Files\MCP-rs\mcp-rs.exe" wordpress-keyring set example.com
+```
+
+- パスワードを変えるときは、もう一度`set`します。`show`で登録したユーザー名を、`delete`で削除できます
+- Windowsでは、資格情報マネージャーの「Windows資格情報」→「汎用資格情報」に`example.com.mcp-rs`として出ます
+
+## 2. mcp-rsの設定ファイル
+
+設定ファイルは、例えば`%APPDATA%\Claude\mcp-rs\mcp-config.toml`に置きます。
 
 ```toml
 [transport]
@@ -16,30 +31,27 @@ type = "stdio"
 log_level = "warn"
 
 [handlers.wordpress]
-enabled = true
-url = "https://your-wordpress-site.com"
-username = "your_username"
-password = "${WORDPRESS_PASSWORD}"
+enabled = true                  # 必須。無いとWordPressのツールを登録しない（エラーにもならない）
+url = "https://example.com"
+keyring = "example.com"         # 1. で登録した名前
 ```
 
-- `${WORDPRESS_PASSWORD}`は、起動したときの環境変数から読みます（下の`env`で渡します）。パスワードを暗号化して書く方法は[Security](https://n-takatsu.github.io/mcp-rs/docs/security/#encrypted-wordpress-credentials)を参照してください
+- `keyring`を書いたときは、`username`・`password`・`encrypted_credentials`は書きません（一緒に書くと起動しません）
+- 環境変数で渡すこともできます（`password = "${WORDPRESS_PASSWORD}"`）。その場合は、`${...}`で読むすべての変数を、下の`env`に書きます（下の注意を参照）。パスワードを暗号化して書く方法は[Security](https://n-takatsu.github.io/mcp-rs/docs/security/#encrypted-wordpress-credentials)を参照してください
 - データベース（`[database]`）・プラグイン（`[[plugins]]`）も同じファイルに書きます。[Database](https://n-takatsu.github.io/mcp-rs/docs/database/)・[Plugins](https://n-takatsu.github.io/mcp-rs/docs/plugins/)を参照してください
 
-## 2. Claude Desktopの設定ファイル
+## 3. Claude Desktopの設定ファイル
 
-`claude_desktop_config.json`（Claude Desktopの「設定」→「開発者」→「設定を編集」）に、mcp-rsを絶対パスで登録します。
+`claude_desktop_config.json`（Claude Desktopの「設定」→「開発者」→「設定を編集」）に、mcp-rsを絶対パスで登録します。資格情報ストアを使うときは、`env`は要りません。
 
-**Windows:**
+**Windows:** JSONの中では、パスの`\`を`\\`と書くか、`/`で書きます。
 
 ```json
 {
   "mcpServers": {
     "mcp-rs": {
-      "command": "C:\\Program Files\\MCP-rs\\mcp-rs.exe",
-      "args": ["--config", "C:\\Users\\you\\mcp-rs\\mcp-config.toml"],
-      "env": {
-        "WORDPRESS_PASSWORD": "your application password"
-      }
+      "command": "C:/Program Files/MCP-rs/mcp-rs.exe",
+      "args": ["--config", "C:/Users/you/AppData/Roaming/Claude/mcp-rs/mcp-config.toml"]
     }
   }
 }
@@ -52,20 +64,17 @@ password = "${WORDPRESS_PASSWORD}"
   "mcpServers": {
     "mcp-rs": {
       "command": "/path/to/mcp-rs",
-      "args": ["--config", "/path/to/mcp-config.toml"],
-      "env": {
-        "WORDPRESS_PASSWORD": "your application password"
-      }
+      "args": ["--config", "/path/to/mcp-config.toml"]
     }
   }
 }
 ```
 
-> ⚠️ Claude Desktopが起動するmcp-rsは、OSのユーザーの環境変数を受け継ぐとは限りません。`${...}`で読む値は、`env`に書いてください。WordPressの`${...}`の値が無いと、mcp-rsは起動せず、Claude Desktopには「Server disconnected」と出ます（`[database]`の値が無い場合は、データベースのツールだけを出さずに起動します）。
+> ⚠️ Claude Desktopは、mcp-rsに`PATH`等の決まった環境変数と、`env`に書いたものしか渡しません。OSのユーザー環境変数に設定してあっても、mcp-rsには届きません（Claude Code・ターミナルは、親のプロセスの環境変数をそのまま渡します）。設定ファイルで`${...}`を使うときは、読むすべての変数を`env`に書きます。例えば`configs/production/claude-desktop.toml`は`WORDPRESS_URL`・`WORDPRESS_USERNAME`・`WORDPRESS_PASSWORD`の3つを読むので、3つとも要ります。`env`は値を渡すだけで、どの変数を読むかは設定ファイルの`${...}`で決まります。`--config`を付けると、`WORDPRESS_*`の環境変数を`${...}`を通してしか読みません。WordPressの`${...}`の値が無いと、mcp-rsは起動せず、Claude Desktopには「Server disconnected」と出ます（`[database]`の値が無い場合は、データベースのツールだけを出さずに起動します）。
 
-設定を変えたら、Claude Desktopを終了して起動し直します。
+設定・資格情報・環境変数を変えたら、Claude Desktopを終了して起動し直します。ウィンドウを閉じてもタスクトレイ（メニューバー）に残るので、そこから「終了」します。
 
-## 3. 確かめる
+## 4. 確かめる
 
 Claude Desktopに「mcp_rs_statusを呼んで」と頼むと、次のことが分かります。
 
@@ -77,9 +86,10 @@ Claude Desktopに「mcp_rs_statusを呼んで」と頼むと、次のことが�
 
 ### 「Server disconnected」と出る
 
-mcp-rsが起動直後に終了しています。理由は標準エラーに出るので、Claude Desktopのログ（`mcp-server-mcp-rs.log`。「設定」→「開発者」からフォルダを開けます）か、mcp-rsのログで確かめます。よくある理由:
+mcp-rsが起動直後に終了しています。設定の読み込みで失敗したときは、ログの設定より前なので、mcp-rsのログファイルには何も残りません。理由は標準エラーに出て、Claude Desktopのログにだけ残ります。「設定」→「開発者」で、mcp-rsのログを開いて確かめます（Microsoft Store版は、以前の`%APPDATA%\Claude\logs`には書きません）。よくある理由:
 
-- `${...}`の環境変数が無い: `env`に書いたか確かめる
+- `handlers.wordpress.keyring: no WordPress credentials named ...`: 資格情報ストアに、その名前で登録されていない。`mcp-rs wordpress-keyring show <名前>`で確かめる
+- `environment variable '...' is not set`: `${...}`の環境変数が`env`に無い
 - `--config`のパスが違う、パスの無い`--config`、知らないオプション: `args`を確かめる
 - 設定ファイルの書き方の誤り: エラーの文に、どのキーかが出ます
 

@@ -15,12 +15,12 @@ What mcp-rs does to protect your WordPress site, your database, and the HTTP lis
 | Area | What mcp-rs does | Section |
 |------|------------------|---------|
 | Credentials | Reads secrets from environment variables (`${VAR}`), or stores the WordPress Application Password encrypted with AES-GCM-256 (PBKDF2 key derivation). Secrets are never written to the log | [Environment variables](#secure-environment-variables), [Encrypted credentials](#encrypted-wordpress-credentials) |
-| HTTP listener | Checks the `Origin` header, the client address, TLS (minimum version, optional client certificates), replayed requests, and suspicious requests | [`Origin`](#httpwebsocket-requests-from-web-pages-origin) |
+| HTTP listener | Refuses to listen on the network without authentication. Checks the client address, the `Origin` header, and the credentials before reading the request body. Limits the request size, the time to send a request, and the number of connections. Also TLS (minimum version, optional client certificates), replayed requests, and suspicious requests | [Listening on the network](#httpwebsocket-listening-on-the-network), [`Origin`](#httpwebsocket-requests-from-web-pages-origin) |
 | Who may call | API keys, or OAuth 2.1 access tokens from an external authorization server (HTTP mode). STDIO mode needs neither: only the client that started mcp-rs can talk to it | [API keys](#httpwebsocket-api-key-authentication), [OAuth 2.1](#httpwebsocket-oauth-21-authorization) |
 | What they may call | Per API key or token, the tools it may use (for example `@read_only`) | [Limiting tools](#limiting-tools-per-api-key-or-token) |
 | How often | Rate limits on WordPress and plugin tool calls | [WordPress](../wordpress/) |
 | WordPress input | `upload_media` checks the MIME type, extension, file content, and size, and reads local files only from `upload_allowed_dirs` (off by default) | [WordPress](../wordpress/#supported-file-types) |
-| Database | Read-only by default: one `SELECT` per call, run in a read-only transaction. Writes only with `allow_write = true`. Values are bound as parameters | [Database](../database/#safety) |
+| Database | Read-only by default: one `SELECT` per call, run in a read-only transaction. Writes only with `allow_write = true`. Values are bound as parameters. Results have a row and size limit. A warning at startup when TLS does not check the server | [Database](../database/#safety) |
 | Plugins | Plugins can run in a Docker container or a Kubernetes Job to limit what they can reach | [Plugins](../plugins/) |
 | Record | Every tool call is written to the audit log: who called which tool, and the result | [Audit log](#audit-log) |
 
@@ -33,6 +33,7 @@ These settings can refer to environment variables of the mcp-rs process with `${
 - `url`, `username`, and `password` under `[handlers.wordpress]`
 - `host`, `database`, `username`, and `password` under `[database]` (see [Database](../database/))
 - The values of `env` of a plugin (see [Plugins](../plugins/))
+- `key` of each `[[transport.http.api_keys]]` entry, in HTTP mode with `auth_enabled = true` (v0.24.0 and later; see [API Key Authentication](#httpwebsocket-api-key-authentication))
 
 Other settings are used as written.
 
@@ -48,6 +49,61 @@ enabled = true
 - The values are never written to the log
 - For `[database]`, mcp-rs starts without the database tools instead, and `mcp_rs_status` shows the reason. For a plugin's `env`, that entry is not passed to the plugin
 - A value is used as is: a `${` inside the value of the variable is not expanded again
+- `${...}` in `[handlers.wordpress]` is expanded only when `enabled = true`. Without it, the WordPress tools are not registered and no error is shown
+
+### Which environment variables reach mcp-rs
+
+`${VAR}` reads the environment of the mcp-rs process, and that environment depends on the client that starts it:
+
+| Started by | Environment variables mcp-rs gets |
+|---|---|
+| Claude Code, a terminal | All of the parent's, including user environment variables (on Windows, after the client is restarted) |
+| Claude Desktop | Only a fixed set such as `PATH`, plus what `env` in `claude_desktop_config.json` lists. User environment variables are not passed |
+
+The `env` of the client (or `claude mcp add -e`) only passes values. Which variables mcp-rs reads is decided by the `${...}` in the config file. With `--config`, mcp-rs reads `WORDPRESS_URL`, `WORDPRESS_USERNAME`, and `WORDPRESS_PASSWORD` only through `${...}`; without `--config` (`~/.config/mcp-rs/config.toml`), it also reads them directly when `WORDPRESS_URL` is set, and they override the file (except with `keyring`).
+
+### Which config file mcp-rs reads
+
+With `--config <path>`, mcp-rs reads that file. Without it, mcp-rs reads only `~/.config/mcp-rs/config.toml` (v0.24.0 and later). Config files in the current folder (`mcp-config.toml`, `config.toml`, `config/mcp.toml`) are not read without `--config`; when mcp-rs finds no config file but one of these exists, it stops and tells you to pass it with `--config` and its absolute path.
+
+Up to v0.23.0, mcp-rs also read these names from the current folder. Clients such as Claude Code start MCP servers in the folder you open, so with mcp-rs registered without `--config`, opening a repository that contains a `config.toml` made mcp-rs read it. Such a file could run any command as a plugin (`[[plugins]]`), or send your WordPress credentials to another site (`url` with `keyring`, or `password = "${ANY_VARIABLE}"`). Always register mcp-rs with `--config` and an absolute path, or put the file at `~/.config/mcp-rs/config.toml`. A relative path (`--config config.toml`) is read from the folder mcp-rs starts in, which has the same problem, so mcp-rs prints a warning to standard error when `--config` is relative. `--config ~/…` is expanded to your home folder by mcp-rs itself (v0.24.0 and later), also where no shell expands it, such as the `args` of `claude_desktop_config.json`.
+
+To use mcp-rs from both Claude Desktop and Claude Code with environment variables, the same values must be written twice. Keep the credentials in the [OS credential store](#os-credential-store) instead.
+
+## OS Credential Store
+
+mcp-rs can read the WordPress username and Application Password from the OS credential store (v0.24.0 and later):
+
+- Windows: Credential Manager (generic credential `<name>.mcp-rs`)
+- macOS: Keychain (service `mcp-rs`, account `<name>`)
+- Linux and other Unix: Secret Service (GNOME Keyring, KWallet)
+
+No environment variables are involved, so Claude Desktop, Claude Code, and a terminal read the same credentials, and changing the password is one step.
+
+1. Register the credentials under a name of your choice, such as the site's host name. It asks for the site URL, the username, and the Application Password (not shown while typing):
+
+   ```bash
+   mcp-rs wordpress-keyring set example.com
+   ```
+
+2. Refer to the name from the config file, and leave `username`, `password`, and `encrypted_credentials` out of the section:
+
+   ```toml
+   [handlers.wordpress]
+   enabled = true
+   url = "https://example.com"
+   keyring = "example.com"
+   ```
+
+Run `set` again to change the password, `mcp-rs wordpress-keyring show example.com` to see the stored site and username (never the password), and `mcp-rs wordpress-keyring delete example.com` to remove it. Restart the client afterwards.
+
+- Startup fails if the entry does not exist, or if `keyring` is combined with `username`, `password`, or `encrypted_credentials`. The error names the entry, never the values
+- The entry is tied to the site URL entered with `set`. mcp-rs uses it only when `url` in the config file has the same scheme, host, and port (the path does not matter), and otherwise does not start. So a config file someone else wrote cannot name your entry with `url = "https://attacker.example"` and receive the password. Credentials stored for `https://` are not sent over `http://` either
+- With `keyring`, the `WORDPRESS_URL`, `WORDPRESS_USERNAME`, and `WORDPRESS_PASSWORD` environment variables are not used, even without `--config`
+- Secrets are never accepted as command-line arguments. Without a terminal, `set` reads the site URL, the username, and the Application Password as three lines from standard input
+- The credential store is read only when `enabled = true`
+- Docker, CI, and servers without a desktop session have no Secret Service. Keep using `${VAR}` or `encrypted_credentials` there; both work as before. The Docker image is built without this feature (`os-keyring`, on by default when building from source)
+- What it protects against: the password is not left in plaintext in the config file, in `claude_desktop_config.json`, or in environment variables. It does not protect against other programs running as the same OS user, which can read the credential store too
 
 ## Encrypted WordPress Credentials
 
@@ -63,7 +119,11 @@ username = "your_username"
 encrypted_password = "..."
 nonce = "..."
 salt = "..."
+kdf = "pbkdf2-sha256"
+kdf_iterations = 600000
 ```
+
+The key is derived from the master password with PBKDF2-HMAC-SHA256. `kdf` and `kdf_iterations` record how, so that mcp-rs can make the derivation stronger later without breaking existing sections. From v0.24.0, new sections use 600,000 iterations (the OWASP recommendation). Sections made with v0.23.0 and earlier have neither line, and are read with 100,000 iterations, as they were made. To move such a section to 600,000 iterations, run `encrypt-wordpress-credentials` again and replace it. Do not edit the two lines by hand: with other values, the password cannot be decrypted.
 
 Generate the `encrypted_credentials` section with the `encrypt-wordpress-credentials` subcommand (v0.18.1 and later):
 
@@ -82,6 +142,40 @@ It asks for the WordPress username, the Application Password, and a master passw
   ```
 
   Delete `secrets.txt` afterwards.
+
+## HTTP/WebSocket: Listening on the Network
+
+When the HTTP transport listens on anything other than loopback (for example `addr = "0.0.0.0"` in Docker, with `network_policy_reject_external_connections = false`), it needs authentication: API keys, OAuth 2.1, or client certificates (mTLS). Without any of them, mcp-rs does not start (v0.24.0 and later), because anyone who can reach the address could use every tool. Up to v0.23.0, it only logged a warning.
+
+If something in front of mcp-rs authenticates the clients (for example a reverse proxy that requires a login, and mcp-rs is reachable only through it), allow it explicitly. mcp-rs then logs a warning at startup:
+
+```toml
+[transport.http]
+allow_unauthenticated_external = true
+```
+
+mcp-rs checks a request in this order, so that a client that is not allowed cannot make mcp-rs read a large body or wait for a slow one:
+
+1. When accepting the connection: the client address (`network_policy_reject_external_connections`, `network_policy_ip_whitelist`). A connection from another address is closed before the TLS handshake
+2. After the request headers: the `Origin` header, and the API key or access token
+3. Only then the request body
+
+Limits (v0.24.0 and later):
+
+```toml
+[transport.http]
+# max_request_size = 1048576          # bytes of a request body, and of a WebSocket message. Larger: HTTP 413
+# request_timeout_seconds = 30        # the TLS handshake, the request headers, and each wait for more of the body
+# max_connections = 1024              # connections served at once (WebSocket included); more wait
+# websocket_idle_timeout_seconds = 300  # close /ws when the client stops answering for this long. 0: no limit
+```
+
+- `request_timeout_seconds` limits the TLS handshake and the request headers as a whole. It also limits how long a kept-alive connection waits for its next request. For the request body, it limits each wait for more data, not the total: a client that keeps sending a little at a time can take longer in total. This applies only after the client has passed the checks above. It does not limit how long a tool call takes
+- On `/ws`, mcp-rs sends a ping every 30 seconds (or every half of `websocket_idle_timeout_seconds`, when that is shorter). Clients, browsers included, answer pings automatically, and the answers count as activity. So a client that is only quiet stays connected, and only a connection that answers nothing for `websocket_idle_timeout_seconds` is closed (close code 1001)
+- A `/ws` connection opened with an OAuth access token is closed when the token expires (`exp`, plus `leeway_seconds`), with close code 1008. Up to v0.23.0, the token was checked only when connecting
+- On `/ws`, each response must be sent within 10 seconds plus the time it takes at 64 KB/s (for a 10 MB response, about 170 seconds). Otherwise mcp-rs closes the connection, because a client that stops reading would keep mcp-rs waiting and hold a connection. On a connection slower than 64 KB/s (about 512 kbps, such as a weak mobile connection), a large response, such as a database query result of several MB, can close the connection. Up to v0.23.0, there was no limit
+- A request that is not valid JSON gets the JSON-RPC error `-32700` (Parse error), and a JSON value that is not a request, such as a batch (an array, which MCP does not use), gets `-32600` (Invalid Request), both with `"id": null`. Over HTTP, the status is 400. A JSON-RPC response sent by the client (no `method`, with `result` or `error`) gets no answer (202 over HTTP). This applies to STDIO, HTTP, and `/ws`. Up to v0.23.0, mcp-rs did not answer them, so the client waited until its own timeout
+- `max_connections` is shared by all clients, and there is no limit per client address. A client that is not allowed in can still hold connections until `request_timeout_seconds` passes, so many such connections can make other clients wait. When mcp-rs is reachable from the internet, put a reverse proxy in front of it that limits connections per address
 
 ## HTTP/WebSocket: Requests from Web Pages (`Origin`)
 
@@ -102,6 +196,29 @@ allowed_origins = ["https://app.example.com"]
 
 Because loopback origins are always accepted, a web page served from your own PC, on any port (for example a local development server, or another program's local web interface), can call mcp-rs's tools through your browser when no authentication is set up. If you run untrusted local web pages, or to be safe in general, set up API keys or OAuth: the `Origin` check does not replace authentication. Always enable authentication when the HTTP transport listens on anything other than loopback.
 
+## HTTP/WebSocket: Behind a Reverse Proxy
+
+When mcp-rs runs behind a reverse proxy that handles TLS, some settings read headers that the proxy adds to each request:
+
+| Setting | Header |
+|---------|--------|
+| `enforce_https` (without `tls_enabled`) | `X-Forwarded-Proto: https`, or `Forwarded: proto=https` |
+| `min_tls_version` (without `tls_enabled`) | `X-Forwarded-TLS-Version`, or `X-SSL-Protocol` |
+| `certificate_pinning_enabled` (without `tls_enabled`) | `certificate_pin_header` (default `x-tls-cert-sha256`) |
+| `ids_trust_forwarded_for` | `X-Forwarded-For`, or `X-Real-IP` |
+
+A client can send these headers too. List the proxy's addresses in `trusted_proxies`; mcp-rs uses these headers only on connections from those addresses, and ignores them on others (v0.24.0 and later):
+
+```toml
+[transport.http]
+enforce_https = true
+trusted_proxies = ["127.0.0.1", "10.0.0.0/24"]   # IP addresses or CIDR ranges
+```
+
+- Without `trusted_proxies`, mcp-rs does not start with `enforce_https` or `certificate_pinning_enabled` (unless `tls_enabled = true`, where mcp-rs itself handles TLS and does not need the headers), or with `ids_trust_forwarded_for`. Without it, the TLS version header is ignored. Up to v0.23.0, mcp-rs used these headers from any client, so a client connecting over plain HTTP could pass `enforce_https` by adding `X-Forwarded-Proto: https`
+- Make sure that clients cannot reach mcp-rs except through the proxy (for example, with `network_policy_ip_whitelist`), and that the proxy replaces these headers instead of passing on the ones the client sent
+- For `X-Forwarded-For`, mcp-rs takes the rightmost address that is not in `trusted_proxies`. A proxy adds the address it received the request from to the end, so the addresses to its left are whatever the client sent. Up to v0.23.0, mcp-rs took the leftmost one, so a client could make the intrusion detection block another address
+
 ## HTTP/WebSocket API Key Authentication
 
 When the HTTP transport listens on anything other than loopback, enable API key authentication. Each key is hashed in memory at startup and never logged. Startup fails if `auth_enabled = true` and no keys are configured, or if a key is empty or duplicated.
@@ -116,7 +233,20 @@ name = "claude-desktop"
 user_id = "user-1"
 ```
 
-Clients send the key as `Authorization: Bearer <key>` or `X-Api-Key: <key>`. Requests without a valid key get HTTP 401. `${VAR}` is not expanded in `key` (see [Secure Environment Variables](#secure-environment-variables) for where it is), so write the key itself.
+Clients send the key as `Authorization: Bearer <key>` or `X-Api-Key: <key>`. Requests without a valid key get HTTP 401.
+
+To keep the key out of the config file, read it from an environment variable with `${VAR}` (v0.24.0 and later). This suits Docker, where the config file is often mounted or built into an image:
+
+```toml
+[[transport.http.api_keys]]
+key = "${MCP_API_KEY}"
+name = "claude-desktop"
+user_id = "user-1"
+```
+
+- If the variable is not set or is empty, mcp-rs does not start. The error names the entry and the variable (for example `transport.http.api_keys[0].key (name 'claude-desktop'): environment variable 'MCP_API_KEY' is not set`, or `... is empty`), never the value
+- `${...}` is expanded only in HTTP mode with `auth_enabled = true`, where the keys are used
+- Up to v0.23.0, `${...}` in `key` was used as written. A key that contains `${` now has to come from an environment variable
 
 ## Limiting Tools per API Key or Token
 
@@ -143,6 +273,18 @@ Each item in `tools` is one of:
 - `@read_only`: tools marked as read-only (`readOnlyHint: true` in their annotations). The WordPress tools that only read (`get_*` and `wordpress_health_check`) are read-only. Plugin tools are read-only when the plugin says so in its own tool definitions, so check a plugin's tools before relying on this for it. Tools without annotations are not read-only
 
 A request is allowed a tool when any item matches it. `tools = []` allows no tools. Unknown presets (such as `@admin`) and empty items stop mcp-rs from starting. STDIO mode is not limited (it is a local pipe used by one person).
+
+The same limits apply to resources (`resources/list` and `resources/read`, v0.24.0 and later). Each resource belongs to the read-only tool that reads the same data, and a key or token can read the resource only when it is allowed that tool. `wordpress://posts` returns every published post with its full content, so it belongs to `get_post` (which returns one post with its content), not to `get_posts` (which returns only summaries):
+
+| Resource | Tool |
+|----------|------|
+| `wordpress://posts` | `get_post` |
+| `wordpress://comments` | `get_comments` |
+| `wordpress://categories` | `get_categories` |
+| `wordpress://tags` | `get_tags` |
+| `db://schema` | `get_schema` |
+
+Other resources are not shown in `resources/list`, and reading them fails with the error "Resource '...' is not allowed for this API key or access token". So `tools = []` allows no resources either, and `tools = ["@read_only"]` allows all of them. Up to version 0.23.0, keys and tokens with limits could list and read every resource.
 
 ## HTTP/WebSocket OAuth 2.1 Authorization
 
@@ -173,6 +315,24 @@ resource = "https://mcp.example.com/mcp"         # the URL clients use to reach 
 "mcp:write" = ["*"]
 ```
 
+## HTTP/WebSocket: Replay Protection and Intrusion Detection
+
+Both are off by default.
+
+```toml
+[transport.http]
+# anti_replay_enabled = false   # require X-Nonce and X-Timestamp on each request
+# ids_enabled = false           # check requests for attacks, and block the client's address for a while
+```
+
+`anti_replay_enabled` requires each request to have `X-Timestamp` (RFC 3339, within 35 seconds of the server's clock) and `X-Nonce` (a value the same caller has not used while that timestamp is accepted: mcp-rs remembers a nonce for 70 seconds). On `/ws`, each message has `timestamp` and `nonce` at the top level of its JSON instead. This is an additional check, not a replacement for TLS and authentication: nothing signs the nonce and the timestamp, so they only stop a request from being sent again unchanged, and someone who can read a request can send its content again with a new nonce and timestamp.
+
+- mcp-rs checks the timestamp first, and remembers a nonce only when the timestamp is valid (v0.24.0 and later). Up to v0.23.0, a request with an old timestamp also used up a place in the cache
+- Nonces are remembered per caller: the API key or token, or the client's address without authentication (behind a proxy in `trusted_proxies`, the address from `X-Forwarded-For`, as for the intrusion detection). One caller can keep at most 10,000, and all callers 100,000. Up to v0.23.0, they shared one cache, so one client could fill it and make every request fail, and nonces were remembered for 5 minutes
+- With many addresses (for example IPv6), a client can still fill the whole cache. Remembering nonces only for 70 seconds makes this harder, but does not prevent it: limit connections per address in front of mcp-rs, or use authentication
+
+`ids_enabled` checks each request for attack patterns (such as SQL injection) and unusual behavior, and blocks the client's address for 30 minutes, or permanently for the most severe ones. It tells callers apart by the API key or token, or by the client's address without authentication. Up to v0.23.0, it used the `X-User-ID` header, which the client could set to anything. What it remembers about callers and addresses has a limit (10,000 each) and is cleaned up every 5 minutes. Behind a reverse proxy, see [Behind a Reverse Proxy](#httpwebsocket-behind-a-reverse-proxy) for `ids_trust_forwarded_for`.
+
 ## Audit Log
 
 Tool calls (WordPress, database, and plugins) and, in HTTP mode, refused requests are appended to an audit log file as JSON lines, one entry per line (see [What is recorded](#what-is-recorded)). By default, the file is `audit.log` in the `audit` folder next to the mcp-rs logs:
@@ -201,8 +361,9 @@ The mcp-rs log shows the path at startup (`📝 監査ログ: <path>`), and so d
 | Event | `category` | `result` | Recorded by |
 |-------|------------|----------|-------------|
 | Every tool call (WordPress, database, and plugins), whether it succeeds or fails | `DataAccess` | `SUCCESS` or `FAILURE` | STDIO and HTTP |
-| A tool call refused because the API key or token may not use that tool ([Limiting Tools](#limiting-tools-per-api-key-or-token)) | `Authorization` | `DENIED` | HTTP |
-| A request refused because the API key or access token is missing or invalid, or lacks the required scopes | `Authentication` | `DENIED` | HTTP |
+| Every resource read (`resources/read`, such as `wordpress://posts`), whether it succeeds or fails. `action` is the resource URI, and `resource` is the handler (`wordpress` or `database`) | `DataAccess` | `SUCCESS` or `FAILURE` | STDIO and HTTP |
+| A tool call or resource read refused because the API key or token may not use that tool ([Limiting Tools](#limiting-tools-per-api-key-or-token)) | `Authorization` | `DENIED` | HTTP |
+| A request refused because the API key or access token is missing or invalid, or lacks the required scopes. At most 100 per minute are recorded one by one, so that a flood of failed requests does not rotate the real entries out of the log. The rest are counted, and recorded as one entry when that minute ends (`Authentication failed N more times in the minute from <time> …`). That entry has no IP addresses | `Authentication` | `DENIED` | HTTP |
 
 Each entry has these fields:
 
@@ -215,7 +376,7 @@ Each entry has these fields:
 
 Claude Desktop may start two mcp-rs processes for one entry, and Windows reuses process IDs. To find which process handled a tool call, use `instance` (the process ID and the local time it started, such as `70580-20261110T130333`). The same value appears in the regular log's startup line (`=== mcp-rs … started at … / pid … / instance … / log: … ===`) and in the `Instance` line of `mcp_rs_status`
 
-API keys, access tokens, and tool arguments (such as post content or file contents) are not recorded, because they can contain secrets. The one exception is the SQL statement of database tools, so that you can see what was run; the values of its parameters (`$1`, `$2`, …) are not recorded. Do not write secrets into the SQL itself. Up to version 0.18.4, only WordPress tools that change something were recorded, without the caller.
+API keys, access tokens, and tool arguments (such as post content or file contents) are not recorded, because they can contain secrets. The one exception is the SQL statement of database tools, so that you can see what was run; the values of its parameters (`$1`, `$2`, …) are not recorded. Do not write secrets into the SQL itself. In the `error` of database tools, everything in quotes is replaced by `…`, because PostgreSQL error messages can contain a parameter value. Up to version 0.18.4, only WordPress tools that change something were recorded, without the caller.
 
 ## Best Practices
 

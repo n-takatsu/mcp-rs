@@ -1,9 +1,7 @@
 //! Integration tests proving `/ws` on `HttpTransport` (Issue #261) actually
 //! shares the transport's security stack, rather than being a route that
-//! merely looks connected. Mirrors `tests/anti_replay_websocket_test.rs`'s
-//! four scenarios against the standalone `WebSocketServer`, replaying them
-//! here against `HttpTransport`'s `/ws` to prove the anti-replay wiring
-//! survived the move onto HTTP's shared listener/TLS stack.
+//! merely looks connected: the anti-replay checks on the handshake and on
+//! each message.
 
 use futures::{SinkExt, StreamExt};
 use mcp_rs::security::anti_replay::NonceManager;

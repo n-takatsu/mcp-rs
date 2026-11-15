@@ -4,9 +4,9 @@
 # ========================================
 
 # Stage 1: Builder
-# 1.88 is the minimum Rust version that the dependencies require
-# (jsonwebtoken, time). Building with it also checks that minimum.
-FROM rust:1.88-slim-bookworm AS builder
+# Build with the minimum supported Rust version (rust-version in
+# Cargo.toml, #516). CI checks that the two match, so raise both together.
+FROM rust:1.98-slim-bookworm AS builder
 
 # Install build dependencies
 RUN apt-get update && apt-get install -y \
@@ -24,8 +24,10 @@ COPY benches ./benches
 COPY examples ./examples
 COPY tests ./tests
 
-# Build the application
-RUN cargo build --release --bin mcp-rs
+# Build the application. The os-keyring feature (#533) is left out: a
+# container has no OS credential store, so credentials come from environment
+# variables (${VAR}) or encrypted_credentials
+RUN cargo build --release --bin mcp-rs --no-default-features --features database
 
 # Strip debug symbols to reduce size
 RUN strip target/release/mcp-rs

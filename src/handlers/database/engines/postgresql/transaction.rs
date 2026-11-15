@@ -268,7 +268,6 @@ impl DatabaseTransaction for PostgreSqlTransaction {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
 
     #[test]
     fn test_transaction_creation() {

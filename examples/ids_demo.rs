@@ -344,6 +344,7 @@ fn create_request(id: &str, method: &str, path: &str) -> RequestData {
         headers: HashMap::new(),
         body: None,
         source_ip: None,
+        caller_id: None,
         timestamp: Utc::now(),
     }
 }
@@ -357,6 +358,7 @@ fn create_request_with_ip(id: &str, method: &str, path: &str, ip: Option<IpAddr>
         headers: HashMap::new(),
         body: None,
         source_ip: ip,
+        caller_id: None,
         timestamp: Utc::now(),
     }
 }
@@ -391,6 +393,7 @@ fn create_path_traversal_request() -> RequestData {
     let request = create_request("demo-trav", "GET", "/../../../etc/shadow");
     RequestData {
         source_ip: Some("203.0.113.40".parse().unwrap()),
+        caller_id: None,
         ..request
     }
 }

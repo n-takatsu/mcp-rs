@@ -4,7 +4,7 @@ A Rust implementation of a Model Context Protocol (MCP) server that gives AI cli
 
 > **[English](README.md)** | **[日本語](README.ja.md)**
 
-[![Version](https://img.shields.io/badge/Version-v0.23.0-blue)](https://github.com/n-takatsu/mcp-rs/releases/tag/v0.23.0)
+[![Version](https://img.shields.io/badge/Version-v0.24.0-blue)](https://github.com/n-takatsu/mcp-rs/releases/tag/v0.24.0)
 ![Implementation](https://img.shields.io/badge/WordPress_Tools-32_Available-green)
 ![License](https://img.shields.io/badge/License-MIT%2FApache--2.0-green)
 
@@ -66,45 +66,61 @@ Connect with a read-only database role. See the [Database Integration Guide](htt
 
 ## Prerequisites
 
-- Rust 1.88 or later (required by dependencies such as `jsonwebtoken` and `time`; the latest stable is recommended)
+- Rust 1.98 or later (`rust-version` in `Cargo.toml`; the latest stable is recommended)
 - WordPress site with Application Passwords enabled
 - Network access to WordPress REST API
 
 ## Installation
 
+### WordPress Credentials
+
+Keep the WordPress username and Application Password in the OS credential store (Windows Credential Manager, macOS Keychain, Secret Service on Linux; v0.24.0 and later). mcp-rs then reads them from one place, whether Claude Desktop, Claude Code, or a terminal starts it:
+
+```bash
+mcp-rs wordpress-keyring set example.com   # asks for the site URL, the username and the Application Password
+```
+
+```toml
+[handlers.wordpress]
+enabled = true            # required: without it, the WordPress tools are not registered (no error)
+url = "https://example.com"
+keyring = "example.com"   # the name used with `wordpress-keyring set`
+```
+
+The credentials are used only when `url` is the site you entered with `set` (same scheme, host, and port), so a config file that names the entry with another `url` cannot send them elsewhere.
+
+Why not environment variables: Claude Desktop passes MCP servers only a fixed set such as `PATH` plus the `env` of `claude_desktop_config.json`, never your user environment variables, while Claude Code and terminals pass all of them. With `${WORDPRESS_PASSWORD}` you would write the same values twice. Environment variables and encrypted credentials still work; see [Security](https://n-takatsu.github.io/mcp-rs/docs/security/#which-environment-variables-reach-mcp-rs).
+
 ### Claude Desktop
 
-Claude Desktop starts mcp-rs and talks to it over STDIO. In STDIO mode, standard output carries only MCP messages; logs go to a file (and standard error). Add mcp-rs to `claude_desktop_config.json` with absolute paths, and pass credentials in `env`:
+Claude Desktop starts mcp-rs and talks to it over STDIO. In STDIO mode, standard output carries only MCP messages; logs go to a file (and standard error). Add mcp-rs to `claude_desktop_config.json` with absolute paths. On Windows, write paths with `/`, or write each `\` as `\\` in JSON. With the credentials in the OS credential store, no `env` is needed:
 
 ```json
 {
   "mcpServers": {
     "mcp-rs": {
-      "command": "/path/to/mcp-rs/target/release/mcp-rs",
-      "args": ["--config", "/path/to/mcp-config.toml"],
-      "env": { "WORDPRESS_PASSWORD": "your application password" }
+      "command": "C:/Program Files/MCP-rs/mcp-rs.exe",
+      "args": ["--config", "C:/Users/you/AppData/Roaming/Claude/mcp-rs/mcp-config.toml"]
     }
   }
 }
 ```
 
+- If the config file uses `${...}` instead, list every variable it reads in `env`. `env` only passes values; the `${...}` in the config file decides which variables are read. For example, `configs/production/claude-desktop.toml` reads `WORDPRESS_URL`, `WORDPRESS_USERNAME`, and `WORDPRESS_PASSWORD`, so all three are needed
+- After changing the config file, the credentials, or `env`, quit Claude Desktop from the system tray (menu bar) and start it again. Closing the window leaves it running
+- If mcp-rs does not start ("Server disconnected"), errors in the config file are not in the mcp-rs log file, because they happen before logging starts. Open the mcp-rs log from Claude Desktop's settings (Developer). The Microsoft Store version does not write to `%APPDATA%\Claude\logs`
+
 > 📖 See [Claude Desktop Integration Guide](./project-docs/CLAUDE_DESKTOP_INTEGRATION.md) (Japanese) for the settings and troubleshooting.
 
 ### Claude Code
 
-Claude Code also talks to mcp-rs over STDIO and uses the same configuration file. Build mcp-rs, then register it with absolute paths. Everything after `--` is the mcp-rs command line.
+Claude Code also talks to mcp-rs over STDIO and uses the same configuration file. Register mcp-rs with absolute paths. Everything after `--` is the mcp-rs command line. With the credentials in the OS credential store, no `-e` is needed:
 
 ```bash
-cargo build --release
-
-claude mcp add mcp-rs --scope user \
-  -e WORDPRESS_URL=https://your-wordpress-site.com \
-  -e WORDPRESS_USERNAME=your_username \
-  -e WORDPRESS_PASSWORD="your application password" \
-  -- /path/to/mcp-rs/target/release/mcp-rs --config /path/to/mcp-rs/configs/production/claude-desktop.toml
+claude mcp add mcp-rs --scope user -- "C:/Program Files/MCP-rs/mcp-rs.exe" --config C:/Users/you/AppData/Roaming/Claude/mcp-rs/mcp-config.toml
 ```
 
-Check the connection with `claude mcp list`, or `/mcp` inside Claude Code. Values passed with `-e` are stored in Claude Code's settings, so do not use `--scope project` (which writes them to the shared `.mcp.json`) with real credentials.
+Claude Code passes its own environment to mcp-rs, so `${...}` can also read user environment variables (restart VS Code after changing them), or values passed with `-e`. Values passed with `-e` are stored in Claude Code's settings, so do not use `--scope project` (which writes them to the shared `.mcp.json`) with real credentials. Check the connection with `claude mcp list`, or `/mcp` inside Claude Code.
 
 > 📖 See [Claude Code Integration Guide](./project-docs/CLAUDE_CODE_INTEGRATION.md) (Japanese) for `.mcp.json`, encrypted credentials, and troubleshooting.
 
@@ -118,7 +134,7 @@ cargo build --release
 
 Then start mcp-rs with a config file. Ready-made config files are in `configs/production/`:
 
-- `claude-desktop.toml`: STDIO, for Claude Desktop and Claude Code. WordPress credentials are read from the `WORDPRESS_URL`, `WORDPRESS_USERNAME`, and `WORDPRESS_PASSWORD` environment variables
+- `claude-desktop.toml`: STDIO, for Claude Desktop and Claude Code. WordPress credentials are read from the `WORDPRESS_URL`, `WORDPRESS_USERNAME`, and `WORDPRESS_PASSWORD` environment variables. To use the OS credential store instead, copy it and change `[handlers.wordpress]` as shown above
 - `web-ui.toml`: HTTP, for web clients
 
 ```bash
@@ -149,7 +165,12 @@ username = "your-username"
 password = "your-application-password"   # WordPress Application Password
 ```
 
-Then run `./target/release/mcp-rs --config mcp-config.toml`. To keep the password out of the file, use `${WORDPRESS_PASSWORD}` or [encrypted credentials](https://n-takatsu.github.io/mcp-rs/docs/security/#encrypted-wordpress-credentials). mcp-rs does not start if a `${...}` variable is not set (in `[database]`, it starts without the database tools instead).
+Then run `./target/release/mcp-rs --config mcp-config.toml`. To keep the password out of the file, use `keyring = "<name>"` ([OS credential store](https://n-takatsu.github.io/mcp-rs/docs/security/#os-credential-store)), `${WORDPRESS_PASSWORD}`, or [encrypted credentials](https://n-takatsu.github.io/mcp-rs/docs/security/#encrypted-wordpress-credentials). mcp-rs does not start if a `${...}` variable is not set (in `[database]`, it starts without the database tools instead).
+
+- `enabled = true` is required. Without it, mcp-rs does not register the WordPress tools and does not expand `${...}`, with no error
+- Always pass the config file with `--config` and an absolute path, or put it at `~/.config/mcp-rs/config.toml`. A relative path is read from the folder mcp-rs starts in, which for Claude Code is the folder you open, so mcp-rs warns about it at startup. Without `--config`, mcp-rs reads only `~/.config/mcp-rs/config.toml` (v0.24.0 and later). Config files in the current folder (`mcp-config.toml`, `config.toml`, `config/mcp.toml`) are not read without `--config`: clients such as Claude Code start mcp-rs in the folder you open, and a config file there could otherwise run commands (`[[plugins]]`) or send your credentials to another site. Up to v0.23.0, mcp-rs read them
+- With `--config`, the credentials come only from the config file: `WORDPRESS_URL`, `WORDPRESS_USERNAME`, and `WORDPRESS_PASSWORD` are read only through `${...}`. Without `--config` (`~/.config/mcp-rs/config.toml`), mcp-rs also reads them directly when `WORDPRESS_URL` is set, and they override the file (except with `keyring`)
+- In Docker and HTTP mode on a server, there is no OS credential store; use `${...}` or encrypted credentials as before
 
 ### HTTP TLS/mTLS Configuration (Optional)
 
@@ -196,7 +217,9 @@ mcp-rs writes its log to the first of these folders that it can write to:
 
 1. `logs` in the folder of the `mcp-rs` executable (for example, where you extracted the zip)
 2. The user folder: `%USERPROFILE%\.mcp-rs\logs` on Windows, `$XDG_STATE_HOME/mcp-rs/logs` or `~/.local/state/mcp-rs/logs` elsewhere. When mcp-rs is installed in `C:\Program Files\MCP-rs`, the log is always here
-3. `logs` in the current folder, then `mcp-rs/logs` in the temporary folder
+3. `logs` in the current folder, then, on Windows only, `mcp-rs/logs` in the temporary folder (`%TEMP%` is per user there; the shared `/tmp` of other systems is not used, v0.24.0 and later)
+
+On Linux and macOS, new log folders are created readable by you only (700) and new log files 600, like the audit log, and mcp-rs does not follow a symbolic link in place of a log file.
 
 The `mcp_rs_status` tool shows the log file in use. It says `fallback` only when mcp-rs could not write to 1 or 2.
 
@@ -316,7 +339,6 @@ You may choose either license at your option.
 
 - 📖 [Documentation](./docs/)
 - 🐛 [Issue Tracker](https://github.com/n-takatsu/mcp-rs/issues)
-- 💬 [Discussions](https://github.com/n-takatsu/mcp-rs/discussions)
 
 ---
 

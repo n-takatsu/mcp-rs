@@ -10,7 +10,7 @@ use std::collections::{HashMap, VecDeque};
 use std::net::IpAddr;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 /// アラート管理システム
 pub struct AlertManager {
@@ -57,6 +57,9 @@ pub enum AlertLevel {
     /// 緊急
     Critical,
 }
+
+/// 集約したアラートの数の上限（#543）。超えると、最後の発生の古いものから消す
+const MAX_AGGREGATED_ALERTS: usize = 10_000;
 
 /// 集約されたアラート
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -257,6 +260,12 @@ impl AlertManager {
         );
 
         let mut aggregation = self.alert_aggregation.write().await;
+        if !aggregation.contains_key(&aggregation_key) {
+            // 上限（#543）: 多くのアドレスから検知されても、際限なく増やさない
+            super::network::evict_oldest(&mut aggregation, MAX_AGGREGATED_ALERTS, |agg| {
+                Some(agg.last_occurrence)
+            });
+        }
 
         let aggregated = aggregation
             .entry(aggregation_key.clone())
@@ -492,7 +501,7 @@ impl AlertManager {
         let mut aggregation = self.alert_aggregation.write().await;
         aggregation.retain(|_, agg| agg.last_occurrence > cutoff);
 
-        info!("Cleaned up old aggregated alerts");
+        debug!("Cleaned up old aggregated alerts");
     }
 }
 

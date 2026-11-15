@@ -1,5 +1,8 @@
 //! Redis Phase 3 統合テスト
 //! 実際のRedisサーバーに接続して全機能をテストします
+//!
+//! Redisサーバーが要るので、既定では実行しない（#510）。接続先は`TEST_REDIS_URL`
+//! （例: `redis://localhost:6380/0`）。実行の方法は docs/development/integration-tests.md（#513）
 
 #[cfg(all(test, feature = "redis", feature = "database"))]
 mod redis_integration {
@@ -7,6 +10,15 @@ mod redis_integration {
     use mcp_rs::handlers::database::engines::redis::{
         RedisCommand, RedisConfig, RedisConnection, RedisValue,
     };
+
+    /// 既定の拒否の一覧から、DELを除いたもの
+    fn test_blacklist() -> Vec<String> {
+        RedisSecuritySettings::default()
+            .command_blacklist
+            .into_iter()
+            .filter(|cmd| cmd != "DEL")
+            .collect()
+    }
 
     fn create_test_config() -> RedisConfig {
         let security = RedisSecuritySettings {
@@ -45,14 +57,22 @@ mod redis_integration {
                 "KEYS".to_string(),
                 "PING".to_string(),
             ],
+            // 既定の拒否の一覧（RedisSecuritySettings::default）にはDELがあり、
+            // 拒否が許可より優先される。テストの後始末にDELを使うので外す（#513）
+            command_blacklist: test_blacklist(),
             ..Default::default()
         };
 
+        // 接続先は`TEST_REDIS_URL`（#513）
+        let server = crate::common::redis();
         RedisConfig {
-            host: "localhost".to_string(),
-            port: 6379,
-            database: 0,
-            password: None,
+            host: server.host,
+            port: server.port,
+            database: server
+                .database
+                .parse()
+                .expect("TEST_REDIS_URL: invalid database number"),
+            password: (!server.password.is_empty()).then_some(server.password),
             timeout_seconds: 30,
             use_tls: false,
             pool_settings: Default::default(),
@@ -61,6 +81,7 @@ mod redis_integration {
     }
 
     #[tokio::test]
+    #[ignore] // Requires running Redis server (TEST_REDIS_URL)
     async fn test_redis_connection() {
         let config = create_test_config();
         let result = RedisConnection::connect(&config).await;
@@ -68,6 +89,7 @@ mod redis_integration {
     }
 
     #[tokio::test]
+    #[ignore] // Requires running Redis server (TEST_REDIS_URL)
     async fn test_ping() {
         let config = create_test_config();
         let conn = RedisConnection::connect(&config).await.unwrap();
@@ -76,6 +98,7 @@ mod redis_integration {
     }
 
     #[tokio::test]
+    #[ignore] // Requires running Redis server (TEST_REDIS_URL)
     async fn test_string_operations() {
         let config = create_test_config();
         let conn = RedisConnection::connect(&config).await.unwrap();
@@ -103,6 +126,7 @@ mod redis_integration {
     }
 
     #[tokio::test]
+    #[ignore] // Requires running Redis server (TEST_REDIS_URL)
     async fn test_incr_decr() {
         let config = create_test_config();
         let conn = RedisConnection::connect(&config).await.unwrap();
@@ -135,6 +159,7 @@ mod redis_integration {
     }
 
     #[tokio::test]
+    #[ignore] // Requires running Redis server (TEST_REDIS_URL)
     async fn test_list_operations() {
         let config = create_test_config();
         let conn = RedisConnection::connect(&config).await.unwrap();
@@ -173,6 +198,7 @@ mod redis_integration {
     }
 
     #[tokio::test]
+    #[ignore] // Requires running Redis server (TEST_REDIS_URL)
     async fn test_hash_operations() {
         let config = create_test_config();
         let conn = RedisConnection::connect(&config).await.unwrap();
@@ -217,6 +243,7 @@ mod redis_integration {
     }
 
     #[tokio::test]
+    #[ignore] // Requires running Redis server (TEST_REDIS_URL)
     async fn test_sorted_set_operations() {
         let config = create_test_config();
         let conn = RedisConnection::connect(&config).await.unwrap();
@@ -267,6 +294,7 @@ mod redis_integration {
     }
 
     #[tokio::test]
+    #[ignore] // Requires running Redis server (TEST_REDIS_URL)
     async fn test_key_operations() {
         let config = create_test_config();
         let conn = RedisConnection::connect(&config).await.unwrap();
@@ -307,22 +335,18 @@ mod redis_integration {
     }
 
     #[tokio::test]
+    #[ignore] // Requires running Redis server (TEST_REDIS_URL)
     async fn test_security_restrictions() {
         // セキュリティ設定（ホワイトリスト）
         let security = RedisSecuritySettings {
             command_whitelist: vec!["GET".to_string(), "SET".to_string(), "DEL".to_string()],
+            command_blacklist: test_blacklist(),
             ..Default::default()
         };
 
         let config = RedisConfig {
-            host: "localhost".to_string(),
-            port: 6379,
-            database: 0,
-            password: None,
-            timeout_seconds: 30,
-            use_tls: false,
-            pool_settings: Default::default(),
             security,
+            ..create_test_config()
         };
 
         let conn = RedisConnection::connect(&config).await.unwrap();

@@ -22,7 +22,7 @@ services:
   #   auth_enabled = true
   #
   #   [[transport.http.api_keys]]
-  #   key = "replace-with-a-long-random-key"
+  #   key = "${MCP_API_KEY}"      # from the environment below (v0.24.0+)
   #   name = "client"
   #   user_id = "user-1"
   #
@@ -71,51 +71,15 @@ services:
 
     # Pass secrets used as ${VAR} in the config file here, e.g.
     # environment:
+    #   MCP_API_KEY: ${MCP_API_KEY:?set MCP_API_KEY}   # :? stops Compose if it is unset or empty
     #   WORDPRESS_PASSWORD: ${WORDPRESS_PASSWORD}
 
     # Networks
     networks:
       - mcp-network
 
-  # PostgreSQL Database (optional). To give mcp-rs its database tools, add a
-  # [database] section to the config file with host = "postgres"; see
-  # website/docs/guides/postgres-integration.md for a read-only role.
-  postgres:
-    image: postgres:16-alpine
-    container_name: mcp-postgres
-    restart: unless-stopped
-
-    # Security settings
-    security_opt:
-      - no-new-privileges:true
-
-    # Resource limits
-    deploy:
-      resources:
-        limits:
-          cpus: '1'
-          memory: 256M
-        reservations:
-          cpus: '0.25'
-          memory: 64M
-
-    environment:
-      POSTGRES_DB: ${POSTGRES_DB:-mcp_db}
-      POSTGRES_USER: ${POSTGRES_USER:-mcp_user}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
-      PGDATA: /var/lib/postgresql/data/pgdata
-
-    volumes:
-      - postgres-data:/var/lib/postgresql/data
-
-    networks:
-      - mcp-network
-
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-mcp_user}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+  # PostgreSQL (optional) is in docker-compose.postgres.yml (#543):
+  #   POSTGRES_PASSWORD=... docker compose -f docker-compose.yml -f docker-compose.postgres.yml up -d
 
 networks:
   mcp-network:
@@ -126,6 +90,4 @@ networks:
 
 volumes:
   mcp-state:
-    driver: local
-  postgres-data:
     driver: local

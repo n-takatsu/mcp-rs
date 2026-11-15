@@ -16,15 +16,31 @@ mod tests {
     };
 
     /// Helper function to create test database config
+    /// 接続先は`TEST_DATABASE_URL`（#513）
     fn create_test_config() -> DatabaseConfig {
+        config_for(crate::common::postgres())
+    }
+
+    /// サーバーにつながない検証のテスト用（環境変数を使わない）
+    fn offline_test_config() -> DatabaseConfig {
+        config_for(crate::common::ServerUrl {
+            host: "localhost".to_string(),
+            port: 5432,
+            database: "test_db".to_string(),
+            username: "postgres".to_string(),
+            password: String::new(),
+        })
+    }
+
+    fn config_for(db: crate::common::ServerUrl) -> DatabaseConfig {
         DatabaseConfig {
             database_type: DatabaseType::PostgreSQL,
             connection: ConnectionConfig {
-                host: "localhost".to_string(),
-                port: 5433, // Using port 5433 to avoid conflict
-                database: "test_db".to_string(),
-                username: "postgres".to_string(),
-                password: "password".to_string(),
+                host: db.host,
+                port: db.port,
+                database: db.database,
+                username: db.username,
+                password: db.password,
                 ssl_mode: None,
                 timeout_seconds: 30,
                 retry_attempts: 3,
@@ -237,7 +253,7 @@ mod tests {
         let connection = engine.connect(&config).await.unwrap();
 
         let info = connection.connection_info();
-        assert_eq!(info.database_name, "test_db");
+        assert_eq!(info.database_name, config.connection.database);
         assert!(info.connected_at.timestamp() > 0);
     }
 
@@ -270,7 +286,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_postgresql_config_validation() {
-        let config = create_test_config();
+        let config = offline_test_config();
         let engine = PostgreSqlEngine::new(config.clone()).await.unwrap();
 
         let validation = engine.validate_config(&config);
