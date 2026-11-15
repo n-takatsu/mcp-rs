@@ -78,7 +78,8 @@ let config = HttpConfig {
 `/ws` shares `HttpTransport`'s entire TLS/security stack with `/` and `/mcp`:
 TLS termination (`tls_enabled` + `tls_cert_path`/`tls_key_path`, TLS 1.3 via
 rustls), `enforce_https` (rejects plain `ws://` the same way it rejects plain
-HTTP, including the reverse-proxy `X-Forwarded-Proto` case), HSTS headers,
+HTTP; behind a reverse proxy, it accepts `X-Forwarded-Proto: https` only from
+an address in `trusted_proxies`), HSTS headers,
 certificate pinning, `network_policy`, and `anti_replay_enabled`. There is no
 separate `enable_wss`/`ws_tls_*` configuration - by design, one security
 posture governs the whole listener. See `HttpConfig` in

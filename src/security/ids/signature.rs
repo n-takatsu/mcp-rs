@@ -727,6 +727,7 @@ mod tests {
             headers: HashMap::new(),
             body: None,
             source_ip: None,
+            caller_id: None,
             timestamp: Utc::now(),
         };
 
@@ -748,6 +749,7 @@ mod tests {
             headers: HashMap::new(),
             body: Some(b"<script>alert(XSS)</script>".to_vec()),
             source_ip: None,
+            caller_id: None,
             timestamp: Utc::now(),
         };
 
@@ -771,6 +773,7 @@ mod tests {
             headers: HashMap::new(),
             body: None,
             source_ip: None,
+            caller_id: None,
             timestamp: Utc::now(),
         };
 

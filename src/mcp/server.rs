@@ -48,6 +48,40 @@ enum Denied {
     Resource,
 }
 
+/// JSON-RPCのリクエストとして読めないメッセージへの応答（#543、JSON-RPC
+/// 2.0）。JSONとして読めなければ`-32700`（Parse error）、JSONだがリクエスト
+/// でなければ`-32600`（Invalid Request）。バッチ（配列）は、MCPが使わない
+/// （2025-06-18で削除）ので`-32600`。`id`が読み取れれば付け、読み取れな
+/// ければ`null`
+fn invalid_message_response(message: &str) -> JsonRpcResponse {
+    let (code, text, id) = match serde_json::from_str::<serde_json::Value>(message) {
+        Err(_) => (-32700, "Parse error", None),
+        Ok(serde_json::Value::Array(_)) => (
+            -32600,
+            "Invalid Request: batch requests are not supported",
+            None,
+        ),
+        Ok(value) => (
+            -32600,
+            "Invalid Request",
+            value
+                .get("id")
+                .filter(|id| id.is_string() || id.is_number())
+                .cloned(),
+        ),
+    };
+    JsonRpcResponse {
+        jsonrpc: "2.0".to_string(),
+        result: None,
+        error: Some(crate::mcp::JsonRpcError {
+            code,
+            message: text.to_string(),
+            data: None,
+        }),
+        id,
+    }
+}
+
 pub struct McpServer {
     handlers: Handlers,
     /// 呼び出しを拒否したツールを記録する（#52）
@@ -343,7 +377,15 @@ impl McpServer {
         status: &crate::mcp::StatusInfo,
         protocol_version: Option<&'static str>,
     ) -> Result<Option<JsonRpcResponse>, McpError> {
-        let request: JsonRpcRequest = serde_json::from_str(line.trim())?;
+        let line = line.trim();
+        if line.is_empty() {
+            return Ok(None); // 空の行（STDIOの改行だけ等）は無視する
+        }
+        let request: JsonRpcRequest = match serde_json::from_str(line) {
+            Ok(request) => request,
+            // 以前は何も返さず、クライアントは応答を待ち続けた（#543）
+            Err(_) => return Ok(Some(invalid_message_response(line))),
+        };
         let version = protocol_version.unwrap_or_else(|| session.protocol_version());
 
         if request.id.is_none() {
@@ -1953,10 +1995,52 @@ mod tests {
             .unwrap()
             .is_none());
 
-        // JSON-RPCとして読めないものはエラー
-        assert!(dispatcher
+        // JSON-RPCとして読めないものには、JSON-RPCのエラーで答える（#543）
+        let response = dispatcher
             .handle_jsonrpc("not json", &Caller::unrestricted())
             .await
-            .is_err());
+            .unwrap()
+            .expect("an unreadable message must get an error response");
+        assert_eq!(response["error"]["code"], serde_json::json!(-32700));
+        assert_eq!(response["id"], serde_json::Value::Null);
+    }
+
+    #[tokio::test]
+    async fn test_messages_that_are_not_requests_get_an_error_response() {
+        // #543: 以前は何も返さず、クライアントは応答を待ち続けた
+        let server = McpServer::new();
+        let dispatcher = server.dispatcher();
+        let caller = Caller::unrestricted();
+        let ask = |message: &'static str| {
+            let dispatcher = &dispatcher;
+            let caller = &caller;
+            async move {
+                dispatcher
+                    .handle_message_as(message, caller)
+                    .await
+                    .unwrap()
+                    .map(|r| serde_json::to_value(r).unwrap())
+            }
+        };
+
+        let parse = ask("{\"jsonrpc\": \"2.0\", \"id\": 1,").await.unwrap();
+        assert_eq!(parse["error"]["code"], serde_json::json!(-32700));
+        assert_eq!(parse["id"], serde_json::Value::Null);
+        assert!(parse.get("result").is_none());
+
+        // バッチは使えない
+        let batch = ask(r#"[{"jsonrpc":"2.0","id":1,"method":"tools/list"}]"#)
+            .await
+            .unwrap();
+        assert_eq!(batch["error"]["code"], serde_json::json!(-32600));
+        assert_eq!(batch["id"], serde_json::Value::Null);
+
+        // `method`の無いリクエスト: `id`は読めるので付ける
+        let invalid = ask(r#"{"jsonrpc":"2.0","id":7}"#).await.unwrap();
+        assert_eq!(invalid["error"]["code"], serde_json::json!(-32600));
+        assert_eq!(invalid["id"], serde_json::json!(7));
+
+        // 空の行は無視する
+        assert!(ask("  \n").await.is_none());
     }
 }

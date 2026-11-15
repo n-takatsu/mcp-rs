@@ -106,6 +106,12 @@ pub struct AntiReplayConfig {
     /// Maximum nonce cache size
     pub max_nonce_cache: usize,
 
+    /// Maximum nonces kept for one caller (#543): the authenticated user,
+    /// or else the client IP address. One caller filling its share does
+    /// not stop the others
+    #[serde(default = "default_max_nonce_cache_per_caller")]
+    pub max_nonce_cache_per_caller: usize,
+
     /// Device fingerprint verification strictness (0.0-1.0)
     pub device_match_threshold: f32,
 
@@ -114,6 +120,10 @@ pub struct AntiReplayConfig {
 
     /// Maximum devices per user
     pub max_devices_per_user: usize,
+}
+
+fn default_max_nonce_cache_per_caller() -> usize {
+    10_000
 }
 
 impl Default for AntiReplayConfig {
@@ -125,7 +135,8 @@ impl Default for AntiReplayConfig {
             time_window_secs: 30,             // ±30 seconds
             nonce_ttl_secs: 300,              // 5 minutes
             max_nonce_cache: 100_000,         // 100k entries
-            device_match_threshold: 0.8,      // 80% match
+            max_nonce_cache_per_caller: default_max_nonce_cache_per_caller(),
+            device_match_threshold: 0.8, // 80% match
             allow_new_devices: true,
             max_devices_per_user: 5,
         }

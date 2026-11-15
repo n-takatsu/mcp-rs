@@ -67,7 +67,21 @@ pub struct BehavioralConfig {
     pub statistical_sensitivity: f64,
     /// 最小サンプル数
     pub min_sample_size: usize,
+    /// ベースラインを持つ呼び出し元の数の上限（#543）。超えると、最後に
+    /// 更新した時刻の古いものから消す
+    #[serde(default = "default_max_baselines")]
+    pub max_baselines: usize,
 }
+
+fn default_max_baselines() -> usize {
+    10_000
+}
+
+/// 1つのベースラインで覚えておく、パスの数の上限（#543）
+const MAX_PATHS_PER_BASELINE: usize = 100;
+
+/// この時間更新していないベースラインは、`cleanup_old_data`で消す（#543）
+const BASELINE_RETENTION_HOURS: i64 = 24 * 7;
 
 impl Default for BehavioralConfig {
     fn default() -> Self {
@@ -77,6 +91,7 @@ impl Default for BehavioralConfig {
             max_history_size: 10000,
             statistical_sensitivity: 2.0,
             min_sample_size: 100,
+            max_baselines: default_max_baselines(),
         }
     }
 }
@@ -146,6 +161,12 @@ impl BehavioralDetector {
 
         // ベースラインを取得または作成
         let mut baselines = self.baselines.write().await;
+        if !baselines.contains_key(&identifier) {
+            // 上限（#543）
+            super::network::evict_oldest(&mut baselines, self.config.max_baselines, |b| {
+                Some(b.last_updated)
+            });
+        }
         let baseline = baselines
             .entry(identifier.clone())
             .or_insert_with(|| BehaviorBaseline::new(&identifier));
@@ -237,6 +258,15 @@ impl BehavioralDetector {
         self.baselines.read().await.values().cloned().collect()
     }
 
+    /// 長く更新していないベースラインを消す（#543）
+    pub async fn cleanup_old_data(&self) {
+        let cutoff = Utc::now() - Duration::hours(BASELINE_RETENTION_HOURS);
+        self.baselines
+            .write()
+            .await
+            .retain(|_, baseline| baseline.last_updated > cutoff);
+    }
+
     /// ベースラインをリセット
     pub async fn reset_baseline(&self, identifier: &str) {
         self.baselines.write().await.remove(identifier);
@@ -245,9 +275,11 @@ impl BehavioralDetector {
 
     /// 識別子を抽出
     fn extract_identifier(&self, request: &RequestData) -> String {
-        // ヘッダーからユーザーIDを取得
-        if let Some(user_id) = request.headers.get("X-User-ID") {
-            return format!("user:{}", user_id);
+        // 認証した呼び出し元（#543）。以前は`X-User-ID`ヘッダーを使って
+        // いたが、クライアントが何でも書けるので、他人の名前で記録させたり、
+        // 毎回違う値で、記録を際限なく増やしたりできた
+        if let Some(caller_id) = &request.caller_id {
+            return format!("caller:{}", caller_id);
         }
 
         // なければIPアドレス
@@ -280,11 +312,12 @@ impl BehavioralDetector {
     fn update_baseline(&self, baseline: &mut BehaviorBaseline, request: &RequestData) {
         baseline.sample_count += 1;
 
-        // パス頻度を更新
-        *baseline
-            .typical_paths
-            .entry(request.path.clone())
-            .or_insert(0.0) += 1.0;
+        // パス頻度を更新（新しいパスは、上限まで。#543）
+        if let Some(count) = baseline.typical_paths.get_mut(&request.path) {
+            *count += 1.0;
+        } else if baseline.typical_paths.len() < MAX_PATHS_PER_BASELINE {
+            baseline.typical_paths.insert(request.path.clone(), 1.0);
+        }
 
         // アクセス時間を記録
         let hour = request.timestamp.hour();
@@ -466,6 +499,7 @@ mod tests {
             headers: [("X-User-ID".to_string(), "user123".to_string())].into(),
             body: None,
             source_ip: Some("192.168.1.1".parse().unwrap()),
+            caller_id: None,
             timestamp: Utc::now(),
         };
 
@@ -485,9 +519,11 @@ mod tests {
             method: "GET".to_string(),
             path: "/api/products".to_string(),
             query_params: HashMap::new(),
-            headers: [("X-User-ID".to_string(), "user123".to_string())].into(),
+            // ヘッダーは、クライアントが何でも書けるので使わない（#543）
+            headers: [("X-User-ID".to_string(), "someone-else".to_string())].into(),
             body: None,
             source_ip: Some("192.168.1.1".parse().unwrap()),
+            caller_id: Some("user123".to_string()),
             timestamp: Utc::now(),
         };
 
@@ -497,7 +533,8 @@ mod tests {
             let _ = detector.analyze(&request).await;
         }
 
-        let baseline = detector.get_baseline("user:user123").await;
+        assert!(detector.get_baseline("user:someone-else").await.is_none());
+        let baseline = detector.get_baseline("caller:user123").await;
         assert!(baseline.is_some());
 
         let baseline = baseline.unwrap();

@@ -20,6 +20,7 @@ use crate::{
 use async_trait::async_trait;
 use axum::{
     extract::{
+        rejection::JsonRejection,
         ws::{close_code, CloseFrame, Message, WebSocket},
         ConnectInfo, DefaultBodyLimit, State, WebSocketUpgrade,
     },
@@ -34,6 +35,7 @@ use hyper_util::{
     server::conn::auto::Builder as HyperConnectionBuilder,
     service::TowerToHyperService,
 };
+use ipnet::IpNet;
 use rustls::{
     crypto::ring::default_provider,
     pki_types::{CertificateDer, PrivateKeyDer},
@@ -144,6 +146,17 @@ pub struct HttpConfig {
     /// actual attacker, blocking every client behind it.
     #[serde(default)]
     pub ids_trust_forwarded_for: bool,
+    /// Addresses (IP addresses or CIDR ranges) of the reverse proxies in
+    /// front of this transport (#543). Headers that a proxy sets - the
+    /// protocol (`X-Forwarded-Proto`, `Forwarded`), the TLS version, the
+    /// certificate fingerprint (`certificate_pin_header`), and the client
+    /// address (`X-Forwarded-For`, `X-Real-IP`) - are used only on
+    /// connections from these addresses, and ignored on others, since any
+    /// client can send them. Required by `enforce_https` without
+    /// `tls_enabled`, by certificate pinning without `tls_enabled`, and by
+    /// `ids_trust_forwarded_for`. Defaults to empty.
+    #[serde(default)]
+    pub trusted_proxies: Vec<String>,
     /// Mount a `/ws` WebSocket upgrade endpoint on this same listener, so it
     /// shares this transport's TLS termination, `enforce_https`, HSTS, and
     /// certificate pinning instead of running as a separate, unencrypted
@@ -273,6 +286,7 @@ impl Default for HttpConfig {
             anti_replay_enabled: false,
             ids_enabled: false,
             ids_trust_forwarded_for: false,
+            trusted_proxies: Vec::new(),
             enable_websocket_upgrade: false,
             websocket_max_connections: default_websocket_max_connections(),
             auth_enabled: false,
@@ -520,6 +534,35 @@ fn requested_protocol_version(
     ))
 }
 
+/// `id`の無いJSON-RPCのエラー（JSONとして読めない等、#543）を、400で返す。
+/// MCPの仕様（Streamable HTTP）は、受け付けられない入力に400を勧め、本文に
+/// `id`の無いJSON-RPCのエラーを置いてよいとしている
+fn jsonrpc_error_response(code: i32, message: &str) -> Response {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(jsonrpc_error_body(code, message)),
+    )
+        .into_response()
+}
+
+/// `id`の無いJSON-RPCのエラー（#543）を、`/ws`のメッセージにする
+fn jsonrpc_error_message(code: i32, message: &str) -> Message {
+    Message::Text(jsonrpc_error_body(code, message).to_string().into())
+}
+
+fn jsonrpc_error_body(code: i32, message: &str) -> Value {
+    serde_json::json!({
+        "jsonrpc": "2.0",
+        "error": { "code": code, "message": message },
+        "id": Value::Null
+    })
+}
+
+/// `id`が`null`のJSON-RPCのエラー（リクエストとして読めなかったもの）か
+fn is_error_without_id(response: &Value) -> bool {
+    response.get("error").is_some() && response.get("id").is_none_or(Value::is_null)
+}
+
 /// `JsonRpcRequestHandler`で1件を処理する時間の上限。ツール側（WordPress・
 /// プラグイン）にもそれぞれタイムアウトがあるため、それより長くとる。
 const REQUEST_HANDLER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
@@ -557,6 +600,8 @@ struct HttpTransportState {
     anti_replay: Option<Arc<AntiReplayMiddleware>>,
     ids: Option<Arc<IntrusionDetectionSystem>>,
     ids_trust_forwarded_for: bool,
+    /// 転送のヘッダーを信じるプロキシ（#543）
+    trusted_proxies: Arc<[IpNet]>,
     api_key_manager: Option<Arc<RwLock<ApiKeyManager>>>,
     /// APIキー（`ApiKey::id`）→ 名前と使えるツール（#52）
     api_key_callers: Arc<HashMap<String, crate::mcp::Caller>>,
@@ -717,8 +762,6 @@ pub struct HttpTransport {
 }
 
 impl HttpTransport {
-    /// 受け付けたJSON-RPCメッセージを直接処理するハンドラーを設定する
-    /// （#400）。`start_server()`の前に呼ぶ。
     /// 認証の失敗・リプレイ攻撃の検出等を記録する監査ログを設定する（#55）。
     /// 本体は、ツール呼び出しと同じ監査ログ（設定の`[audit]`）を渡す
     pub fn with_audit_logger(mut self, audit_logger: Arc<AuditLogger>) -> Self {
@@ -726,6 +769,8 @@ impl HttpTransport {
         self
     }
 
+    /// 受け付けたJSON-RPCメッセージを直接処理するハンドラーを設定する
+    /// （#400）。`start_server()`の前に呼ぶ。
     pub fn with_request_handler(mut self, handler: Arc<dyn JsonRpcRequestHandler>) -> Self {
         self.request_handler = RequestHandlerSlot(Some(handler));
         self
@@ -940,6 +985,9 @@ impl HttpTransport {
                 None
             },
             ids_trust_forwarded_for: self.config.ids_trust_forwarded_for,
+            trusted_proxies: parse_trusted_proxies(&self.config.trusted_proxies)
+                .map_err(|e| Error::TransportError(TransportError::Configuration(e)))?
+                .into(),
             api_key_manager,
             api_key_callers: Arc::new(api_key_callers),
             oauth: oauth.clone(),
@@ -964,6 +1012,24 @@ impl HttpTransport {
                 .then(|| std::time::Duration::from_secs(self.config.websocket_idle_timeout_secs)),
             auth_failure_audit: Arc::new(AuthFailureAuditLimiter::new()),
         };
+        // IDSの古い記録を、5分ごとに消す（#543）。以前は、掃除の関数が
+        // あっても、どこからも呼ばれていなかった。サーバーが無くなったら
+        // （IDSを持つ`Weak`が切れたら）終わる
+        if let Some(ids) = &state.ids {
+            let ids = Arc::downgrade(ids);
+            tokio::spawn(async move {
+                let period = std::time::Duration::from_secs(5 * 60);
+                let mut tick =
+                    tokio::time::interval_at(tokio::time::Instant::now() + period, period);
+                loop {
+                    tick.tick().await;
+                    let Some(ids) = ids.upgrade() else {
+                        return;
+                    };
+                    ids.cleanup().await;
+                }
+            });
+        }
         let request_timeout = std::time::Duration::from_millis(self.config.timeout_ms.max(1));
         // 書かなかった認証の失敗の数を、1分ごとに監査ログに書く。失敗が
         // 止まっても、記録が残るようにする（PR #548のレビュー）。サーバーが
@@ -1548,30 +1614,44 @@ async fn handle_jsonrpc_request(
     Extension(authenticated): Extension<Authenticated>,
     uri: axum::http::Uri,
     headers: HeaderMap,
-    Json(request): Json<Value>,
+    request: std::result::Result<Json<Value>, JsonRejection>,
 ) -> std::result::Result<Response, StatusCode> {
     // ネットワークの制限と認証は、`auth_middleware`が本文を読む前に確かめた
     let caller = authenticated
         .caller
         .with_ip_address(Some(remote_addr.ip().to_string()));
+    let request = match request {
+        Ok(Json(request)) => request,
+        // JSONとして読めない本文には、JSON-RPCの`-32700`を返す（#543）。
+        // 以前はaxumのテキストの400だった。Content-Typeの誤り（415）・
+        // 大きすぎる本文（413）等は、これまでどおり
+        Err(JsonRejection::JsonSyntaxError(_)) => {
+            state.stats.write().await.total_errors += 1;
+            return Ok(jsonrpc_error_response(-32700, "Parse error"));
+        }
+        Err(rejection) => return Err(rejection.status()),
+    };
+    // プロキシの付けるヘッダーは、信頼するプロキシからのものだけを使う（#543）
+    let no_headers = HeaderMap::new();
+    let forwarded = forwarded_headers(&state, remote_addr, &headers, &no_headers);
     check_https_enforcement(
         state.enforce_https,
         state.tls_terminated_locally,
-        &headers,
+        forwarded,
         remote_addr,
     )?;
     check_min_tls_version(
         state.min_tls_version.as_deref(),
         state.enforce_https,
         state.tls_terminated_locally,
-        &headers,
+        forwarded,
         remote_addr,
     )?;
     check_certificate_pin(
         state.certificate_pinning_enabled,
         &state.certificate_pin_header,
         &state.pinned_certificates_sha256,
-        &headers,
+        forwarded,
         remote_addr,
     )?;
     check_anti_replay_handshake(
@@ -1579,12 +1659,14 @@ async fn handle_jsonrpc_request(
         &state.audit_logger,
         &headers,
         remote_addr,
+        &caller,
     )
     .await?;
     check_ids(
         state.ids.as_ref(),
         remote_addr,
-        state.ids_trust_forwarded_for,
+        ids_trusted_proxies(&state),
+        &caller,
         &uri,
         &headers,
         Some(&request),
@@ -2021,11 +2103,14 @@ fn check_certificate_pin(
     Ok(())
 }
 
+/// リプレイ攻撃対策の検査。nonceは、認証した呼び出し元ごと（認証して
+/// いなければ接続元のIPごと）に覚える（#543）
 async fn check_anti_replay_handshake(
     anti_replay: Option<&Arc<AntiReplayMiddleware>>,
     audit_logger: &AuditLogger,
     headers: &HeaderMap,
     remote_addr: SocketAddr,
+    caller: &crate::mcp::Caller,
 ) -> std::result::Result<(), StatusCode> {
     let Some(anti_replay) = anti_replay else {
         return Ok(());
@@ -2040,7 +2125,10 @@ async fn check_anti_replay_handshake(
         ip_address: Some(remote_addr.ip()),
     };
 
-    if let Err(e) = anti_replay.validate_headers(&security_headers, None).await {
+    if let Err(e) = anti_replay
+        .validate_headers(&security_headers, caller.name.as_deref())
+        .await
+    {
         warn!(
             "Anti-replay validation rejected request from {}: {}",
             remote_addr, e
@@ -2071,7 +2159,7 @@ async fn check_anti_replay_handshake(
 /// `http::HeaderMap` always stores header names lowercased regardless of the
 /// casing a client actually sent, but the IDS's own code (`detector.rs`,
 /// `network.rs`, `behavioral.rs`, `ml/features.rs`) looks several of them up
-/// by their conventional title-cased names (`"User-Agent"`, `"X-User-ID"`,
+/// by their conventional title-cased names (`"User-Agent"`,
 /// `"X-Session-ID"`, `"Referer"`, `"Cookie"`) via an exact-match
 /// `HashMap::get`/`contains_key`. Map a lowercase name to that expected form
 /// so those lookups actually see real request headers instead of always
@@ -2081,7 +2169,6 @@ async fn check_anti_replay_handshake(
 fn canonical_ids_header_name(lowercase_name: &str) -> Option<&'static str> {
     match lowercase_name {
         "user-agent" => Some("User-Agent"),
-        "x-user-id" => Some("X-User-ID"),
         "x-session-id" => Some("X-Session-ID"),
         "referer" => Some("Referer"),
         "cookie" => Some("Cookie"),
@@ -2139,29 +2226,63 @@ fn parse_query_params(query: Option<&str>) -> HashMap<String, String> {
 /// The IP to run IDS detection/blocking against. `remote_addr` is the raw
 /// TCP peer address, which behind a reverse proxy/load balancer is the
 /// proxy's own IP, not the actual client's - blocking on it would ban every
-/// client behind that proxy over one bad request. Only consult
-/// `X-Forwarded-For`/`X-Real-IP` when `trust_forwarded` is set (meaning the
-/// operator has confirmed this transport sits directly behind a trusted
-/// proxy that sets these itself); otherwise, or if neither header parses to
-/// a valid IP, fall back to the raw peer address.
+/// client behind that proxy over one bad request. `X-Forwarded-For` and
+/// `X-Real-IP` are consulted only when `trusted_proxies` is given
+/// (`ids_trust_forwarded_for`) and the peer is one of them (#543):
+/// otherwise any client could forge them, either evading IP blocking or
+/// getting an arbitrary victim IP blocklisted.
+///
+/// A proxy appends the address it received the request from to
+/// `X-Forwarded-For`, after whatever the client sent, so the entries on the
+/// left are the client's own claims. The client's address is the rightmost
+/// entry that is not one of the trusted proxies (#543); previously the
+/// leftmost one was used. If the header has an entry that is not an IP
+/// address, or neither header is usable, the peer address is used.
 fn client_ip_for_ids(
     remote_addr: SocketAddr,
     headers: &HeaderMap,
-    trust_forwarded: bool,
+    trusted_proxies: Option<&[IpNet]>,
 ) -> IpAddr {
-    if trust_forwarded {
-        let forwarded_ip = header_value(headers, "x-forwarded-for")
-            .and_then(|value| value.split(',').next())
-            .map(str::trim)
-            .and_then(|ip| ip.parse::<IpAddr>().ok())
-            .or_else(|| {
-                header_value(headers, "x-real-ip").and_then(|value| value.trim().parse().ok())
-            });
-        if let Some(ip) = forwarded_ip {
-            return ip;
-        }
+    let peer = remote_addr.ip();
+    let Some(trusted_proxies) = trusted_proxies else {
+        return peer;
+    };
+    if !is_trusted_proxy(trusted_proxies, peer) {
+        return peer;
     }
-    remote_addr.ip()
+    // 複数の行に分かれたヘッダーは、順につないだ1つの一覧と同じ
+    let entries: Vec<&str> = headers
+        .get_all("x-forwarded-for")
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(','))
+        .map(str::trim)
+        .collect();
+    if !entries.is_empty() {
+        let mut leftmost = None;
+        for entry in entries.iter().rev() {
+            let Ok(ip) = entry.parse::<IpAddr>() else {
+                return peer;
+            };
+            if !is_trusted_proxy(trusted_proxies, ip) {
+                return ip;
+            }
+            leftmost = Some(ip);
+        }
+        // すべてが信頼するプロキシ: いちばん左（最初のプロキシ）
+        return leftmost.unwrap_or(peer);
+    }
+    header_value(headers, "x-real-ip")
+        .and_then(|value| value.trim().parse().ok())
+        .unwrap_or(peer)
+}
+
+/// IDSが、接続元のIPをプロキシの付けるヘッダーから取るときの、信頼する
+/// プロキシ（`ids_trust_forwarded_for`、#543）。取らなければ`None`
+fn ids_trusted_proxies(state: &HttpTransportState) -> Option<&[IpNet]> {
+    state
+        .ids_trust_forwarded_for
+        .then_some(&state.trusted_proxies[..])
 }
 
 /// Runs the intrusion detection/prevention system against an incoming
@@ -2170,11 +2291,14 @@ fn client_ip_for_ids(
 /// parsed JSON-RPC payload when one is available (`handle_jsonrpc_request`)
 /// or `None` when it isn't yet (`handle_ws_upgrade`, where only the
 /// blocklist check applies since there's no request body to analyze at
-/// upgrade time).
+/// upgrade time). `caller` is the authenticated caller, which the IDS uses
+/// to tell callers apart (by IP when unauthenticated), #543. The `X-User-ID`
+/// header that it used before could be set to anything by the client.
 async fn check_ids(
     ids: Option<&Arc<IntrusionDetectionSystem>>,
     remote_addr: SocketAddr,
-    trust_forwarded_for: bool,
+    trusted_proxies: Option<&[IpNet]>,
+    caller: &crate::mcp::Caller,
     uri: &axum::http::Uri,
     headers: &HeaderMap,
     body: Option<&Value>,
@@ -2182,7 +2306,7 @@ async fn check_ids(
     let Some(ids) = ids else {
         return Ok(());
     };
-    let ip = client_ip_for_ids(remote_addr, headers, trust_forwarded_for);
+    let ip = client_ip_for_ids(remote_addr, headers, trusted_proxies);
 
     if ids.is_blocked(ip).await {
         warn!("Rejected request from blocked IP {}", ip);
@@ -2217,6 +2341,7 @@ async fn check_ids(
         headers: header_map_to_string_map(headers),
         body: Some(body_bytes),
         source_ip: Some(ip),
+        caller_id: caller.name.clone(),
         timestamp: chrono::Utc::now(),
     };
 
@@ -2267,10 +2392,13 @@ async fn handle_ws_upgrade(
         .caller
         .with_ip_address(Some(remote_addr.ip().to_string()));
     let expires_at = authenticated.expires_at;
+    // プロキシの付けるヘッダーは、信頼するプロキシからのものだけを使う（#543）
+    let no_headers = HeaderMap::new();
+    let forwarded = forwarded_headers(&state, remote_addr, &headers, &no_headers);
     if let Err(status) = check_https_enforcement(
         state.enforce_https,
         state.tls_terminated_locally,
-        &headers,
+        forwarded,
         remote_addr,
     ) {
         return status.into_response();
@@ -2279,7 +2407,7 @@ async fn handle_ws_upgrade(
         state.min_tls_version.as_deref(),
         state.enforce_https,
         state.tls_terminated_locally,
-        &headers,
+        forwarded,
         remote_addr,
     ) {
         return status.into_response();
@@ -2288,7 +2416,7 @@ async fn handle_ws_upgrade(
         state.certificate_pinning_enabled,
         &state.certificate_pin_header,
         &state.pinned_certificates_sha256,
-        &headers,
+        forwarded,
         remote_addr,
     ) {
         return status.into_response();
@@ -2307,6 +2435,7 @@ async fn handle_ws_upgrade(
         &state.audit_logger,
         &headers,
         remote_addr,
+        &caller,
     )
     .await
     {
@@ -2322,7 +2451,8 @@ async fn handle_ws_upgrade(
     if let Err(status) = check_ids(
         state.ids.as_ref(),
         remote_addr,
-        state.ids_trust_forwarded_for,
+        ids_trusted_proxies(&state),
+        &caller,
         &uri,
         &headers,
         None,
@@ -2365,6 +2495,8 @@ async fn handle_ws_socket(
     _permit: tokio::sync::OwnedSemaphorePermit,
 ) {
     let conn_id = Uuid::new_v4();
+    // リプレイ攻撃対策のnonceを、呼び出し元ごとに覚えるため（#543）
+    let caller_name = caller.name.clone();
     state.ws_callers.lock().await.insert(conn_id, caller);
 
     let conn_info = WebSocketConnectionInfo::new(conn_id, addr);
@@ -2476,8 +2608,9 @@ async fn handle_ws_socket(
                                 ip_address: Some(addr.ip()),
                             };
 
-                            if let Err(e) =
-                                anti_replay.validate_headers(&security_headers, None).await
+                            if let Err(e) = anti_replay
+                                .validate_headers(&security_headers, caller_name.as_deref())
+                                .await
                             {
                                 warn!(
                                     "Anti-replay validation rejected WS message from {} ({}): {}",
@@ -2500,10 +2633,30 @@ async fn handle_ws_socket(
 
                 match state.websocket_handler.handle_message(conn_id, msg).await {
                     Ok(Some(response)) => {
+                        // 相手が受信を止めていると、送信で止まり続け、接続の枠を
+                        // 持ち続ける（#543）。大きさに合わせた時間内に送れなければ
+                        // 閉じる
+                        let limit = websocket_response_send_timeout(
+                            websocket_message_len(&response),
+                            WEBSOCKET_RESPONSE_SEND_BASE_TIMEOUT,
+                            WEBSOCKET_MIN_SEND_BYTES_PER_SEC,
+                        );
                         let mut s = sender.lock().await;
-                        if let Err(e) = s.send(response).await {
-                            error!("Failed to send WebSocket response: {}", e);
-                            break;
+                        match tokio::time::timeout(limit, s.send(response)).await {
+                            Ok(Ok(())) => {}
+                            Ok(Err(e)) => {
+                                error!("Failed to send WebSocket response: {}", e);
+                                break;
+                            }
+                            Err(_) => {
+                                warn!(
+                                    "Closing WebSocket connection {} from {}: the response could not be sent within {} seconds",
+                                    conn_id,
+                                    addr,
+                                    limit.as_secs()
+                                );
+                                break;
+                            }
                         }
 
                         if let Some(conn) =
@@ -2600,6 +2753,42 @@ async fn next_ws_event(
 /// ここで止まらないようにする
 const WEBSOCKET_SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
+/// `/ws`で応答を送る時間の上限の、大きさによらない部分（#543）
+#[cfg(not(test))]
+const WEBSOCKET_RESPONSE_SEND_BASE_TIMEOUT: std::time::Duration = WEBSOCKET_SEND_TIMEOUT;
+/// テストでは短くする（止まった相手を閉じるまで待つため）
+#[cfg(test)]
+const WEBSOCKET_RESPONSE_SEND_BASE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// `/ws`で応答を送るときの最低の速さ（バイト/秒、#543）。これより遅い
+/// 相手は、受信を止めているとみなして閉じる。64KB/秒（約512kbps）
+#[cfg(not(test))]
+const WEBSOCKET_MIN_SEND_BYTES_PER_SEC: u64 = 64 * 1024;
+/// テストでは速くする（大きな応答で、送信のバッファを埋めるため）
+#[cfg(test)]
+const WEBSOCKET_MIN_SEND_BYTES_PER_SEC: u64 = 8 * 1024 * 1024;
+
+/// `/ws`で`len`バイトの応答を送る時間の上限（#543）: `base`と、最低の速さ
+/// （`min_bytes_per_sec`）で送る時間の和。大きな応答を、遅い回線で正常に
+/// 受け取っている相手は切らない
+fn websocket_response_send_timeout(
+    len: usize,
+    base: std::time::Duration,
+    min_bytes_per_sec: u64,
+) -> std::time::Duration {
+    let millis = (len as u64).saturating_mul(1000) / min_bytes_per_sec.max(1);
+    base + std::time::Duration::from_millis(millis)
+}
+
+/// WebSocketのメッセージの本文の大きさ
+fn websocket_message_len(message: &Message) -> usize {
+    match message {
+        Message::Text(text) => text.len(),
+        Message::Binary(data) | Message::Ping(data) | Message::Pong(data) => data.len(),
+        Message::Close(_) => 0,
+    }
+}
+
 /// 理由を付けて`/ws`の接続を閉じる。送れなくても、接続は閉じる
 async fn close_ws(
     sender: &tokio::sync::Mutex<futures::stream::SplitSink<WebSocket, Message>>,
@@ -2649,7 +2838,13 @@ async fn respond_with_request_handler(
                 stats.total_response_time_ms += start_time.elapsed().as_millis() as u64;
                 stats.total_bytes_sent += response_value.to_string().len() as u64;
             }
-            Ok((response_headers(state), Json(response_value)).into_response())
+            // リクエストとして読めなかったもの（バッチ等、#543）は400
+            let status = if is_error_without_id(&response_value) {
+                StatusCode::BAD_REQUEST
+            } else {
+                StatusCode::OK
+            };
+            Ok((status, response_headers(state), Json(response_value)).into_response())
         }
         Ok(Ok(None)) => {
             state.stats.write().await.total_responses += 1;
@@ -2658,7 +2853,7 @@ async fn respond_with_request_handler(
         Ok(Err(e)) => {
             warn!("Rejected an invalid JSON-RPC message: {}", e);
             state.stats.write().await.total_errors += 1;
-            Err(StatusCode::BAD_REQUEST)
+            Ok(jsonrpc_error_response(-32600, "Invalid Request"))
         }
         Err(_) => {
             warn!(
@@ -2700,8 +2895,10 @@ impl MessageHandler for JsonRpcWsHandler {
         let request: Value = match serde_json::from_str(&text) {
             Ok(v) => v,
             Err(e) => {
+                // 以前は何も返さなかった（#543）
                 warn!("Failed to parse WebSocket JSON-RPC request: {}", e);
-                return Ok(None);
+                self.stats.write().await.total_errors += 1;
+                return Ok(Some(jsonrpc_error_message(-32700, "Parse error")));
             }
         };
 
@@ -2734,7 +2931,7 @@ impl MessageHandler for JsonRpcWsHandler {
                 Ok(Err(e)) => {
                     warn!("Rejected an invalid WebSocket JSON-RPC message: {}", e);
                     self.stats.write().await.total_errors += 1;
-                    return Ok(None);
+                    return Ok(Some(jsonrpc_error_message(-32600, "Invalid Request")));
                 }
                 Err(_) => {
                     warn!(
@@ -2908,7 +3105,65 @@ fn validate_tls_security_settings(config: &HttpConfig) -> std::result::Result<()
         }
     }
 
+    // プロキシの付けるヘッダーを使う設定は、信頼するプロキシが要る（#543）。
+    // 無いと、どのリクエストもヘッダーを信じてもらえず、拒否されるか、
+    // 設定が働かない
+    if config.trusted_proxies.is_empty() {
+        let needs_proxy = if config.enforce_https && !config.tls_enabled {
+            Some("enforce_https without tls_enabled")
+        } else if config.certificate_pinning_enabled && !config.tls_enabled {
+            Some("certificate pinning without tls_enabled")
+        } else if config.ids_enabled && config.ids_trust_forwarded_for {
+            Some("ids_trust_forwarded_for")
+        } else {
+            None
+        };
+        if let Some(setting) = needs_proxy {
+            return Err(format!(
+                "{setting} uses headers set by a reverse proxy: set trusted_proxies to the proxy's addresses (headers from other addresses are ignored)"
+            ));
+        }
+    }
+    parse_trusted_proxies(&config.trusted_proxies)?;
+
     Ok(())
+}
+
+/// `trusted_proxies`を読む（#543）。IPアドレスは、そのアドレスだけの範囲にする
+fn parse_trusted_proxies(items: &[String]) -> std::result::Result<Vec<IpNet>, String> {
+    items
+        .iter()
+        .map(|item| {
+            let item = item.trim();
+            item.parse::<IpNet>()
+                .or_else(|_| item.parse::<IpAddr>().map(IpNet::from))
+                .map_err(|_| {
+                    format!("trusted_proxies: '{item}' is not an IP address or a CIDR range")
+                })
+        })
+        .collect()
+}
+
+/// 接続元が、信頼するプロキシか（#543）。IPv4をIPv6で表したアドレス
+/// （`::ffff:192.0.2.1`）も、IPv4として比べる
+fn is_trusted_proxy(trusted_proxies: &[IpNet], ip: IpAddr) -> bool {
+    let ip = ip.to_canonical();
+    trusted_proxies.iter().any(|net| net.contains(&ip))
+}
+
+/// プロキシの付けたヘッダーとして使ってよいヘッダー（#543）。接続元が
+/// 信頼するプロキシでなければ、空（`empty`）にする
+fn forwarded_headers<'a>(
+    state: &HttpTransportState,
+    remote_addr: SocketAddr,
+    headers: &'a HeaderMap,
+    empty: &'a HeaderMap,
+) -> &'a HeaderMap {
+    if is_trusted_proxy(&state.trusted_proxies, remote_addr.ip()) {
+        headers
+    } else {
+        empty
+    }
 }
 
 fn response_headers(state: &HttpTransportState) -> HeaderMap {
@@ -3586,7 +3841,8 @@ mod tests {
         let result = check_ids(
             Some(&ids),
             remote_addr,
-            false,
+            None,
+            &crate::mcp::Caller::default(),
             &uri,
             &headers,
             Some(&benign_body),
@@ -3626,7 +3882,8 @@ mod tests {
         let result = check_ids(
             Some(&ids),
             remote_addr,
-            false,
+            None,
+            &crate::mcp::Caller::default(),
             &uri,
             &headers,
             Some(&benign_body),
@@ -3739,36 +3996,121 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert("x-forwarded-for", "198.51.100.1".parse().unwrap());
 
-        let ip = client_ip_for_ids(remote_addr, &headers, false);
+        let ip = client_ip_for_ids(remote_addr, &headers, None);
+
+        assert_eq!(ip, remote_addr.ip());
+    }
+
+    fn proxies(items: &[&str]) -> Vec<IpNet> {
+        parse_trusted_proxies(&items.iter().map(|s| s.to_string()).collect::<Vec<_>>()).unwrap()
+    }
+
+    #[test]
+    fn client_ip_for_ids_ignores_the_header_from_a_peer_that_is_not_a_trusted_proxy() {
+        // #543: ids_trust_forwarded_for alone used to trust the header from
+        // any client
+        let remote_addr: SocketAddr = "203.0.113.9:12345".parse().unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-for", "198.51.100.1".parse().unwrap());
+        headers.insert("x-real-ip", "198.51.100.1".parse().unwrap());
+
+        let trusted = proxies(&["10.0.0.0/8"]);
+        let ip = client_ip_for_ids(remote_addr, &headers, Some(&trusted));
 
         assert_eq!(ip, remote_addr.ip());
     }
 
     #[test]
     fn client_ip_for_ids_uses_the_forwarded_header_when_trusted() {
-        let remote_addr: SocketAddr = "203.0.113.9:12345".parse().unwrap();
+        let remote_addr: SocketAddr = "10.0.0.5:12345".parse().unwrap();
         let mut headers = HeaderMap::new();
-        // The first entry is the original client in a single-trusted-proxy
-        // deployment (the only topology this opt-in is meant for).
-        headers.insert(
-            "x-forwarded-for",
-            "198.51.100.1, 203.0.113.9".parse().unwrap(),
-        );
+        headers.insert("x-forwarded-for", "198.51.100.1".parse().unwrap());
 
-        let ip = client_ip_for_ids(remote_addr, &headers, true);
+        let trusted = proxies(&["10.0.0.5"]);
+        let ip = client_ip_for_ids(remote_addr, &headers, Some(&trusted));
 
         assert_eq!(ip, "198.51.100.1".parse::<IpAddr>().unwrap());
     }
 
     #[test]
+    fn client_ip_for_ids_takes_the_rightmost_address_that_is_not_a_trusted_proxy() {
+        // #543: the proxy appends the address it got the request from, so
+        // the entries on the left are whatever the client sent. The client
+        // here claims to be 192.0.2.66 to get that address blocked
+        let remote_addr: SocketAddr = "10.0.0.5:12345".parse().unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-forwarded-for",
+            "192.0.2.66, 198.51.100.1, 10.0.0.7".parse().unwrap(),
+        );
+        let trusted = proxies(&["10.0.0.0/24"]);
+
+        let ip = client_ip_for_ids(remote_addr, &headers, Some(&trusted));
+        assert_eq!(ip, "198.51.100.1".parse::<IpAddr>().unwrap());
+
+        // ヘッダーが2行に分かれていても、同じ
+        let mut headers = HeaderMap::new();
+        headers.append("x-forwarded-for", "192.0.2.66".parse().unwrap());
+        headers.append("x-forwarded-for", "198.51.100.1".parse().unwrap());
+        let ip = client_ip_for_ids(remote_addr, &headers, Some(&trusted));
+        assert_eq!(ip, "198.51.100.1".parse::<IpAddr>().unwrap());
+
+        // IPv4をIPv6で表した接続元も、信頼するプロキシとして比べる
+        let mapped: SocketAddr = "[::ffff:10.0.0.5]:12345".parse().unwrap();
+        let ip = client_ip_for_ids(mapped, &headers, Some(&trusted));
+        assert_eq!(ip, "198.51.100.1".parse::<IpAddr>().unwrap());
+    }
+
+    #[test]
     fn client_ip_for_ids_falls_back_to_the_peer_address_when_trusted_but_header_is_unparseable() {
-        let remote_addr: SocketAddr = "203.0.113.9:12345".parse().unwrap();
+        let remote_addr: SocketAddr = "10.0.0.5:12345".parse().unwrap();
         let mut headers = HeaderMap::new();
         headers.insert("x-forwarded-for", "not-an-ip".parse().unwrap());
 
-        let ip = client_ip_for_ids(remote_addr, &headers, true);
+        let trusted = proxies(&["10.0.0.5"]);
+        let ip = client_ip_for_ids(remote_addr, &headers, Some(&trusted));
 
         assert_eq!(ip, remote_addr.ip());
+    }
+
+    #[test]
+    fn parse_trusted_proxies_accepts_addresses_and_ranges() {
+        let parsed = proxies(&["10.0.0.1", " 192.168.0.0/16 ", "::1", "fd00::/8"]);
+        assert_eq!(parsed.len(), 4);
+        assert!(is_trusted_proxy(&parsed, "10.0.0.1".parse().unwrap()));
+        assert!(!is_trusted_proxy(&parsed, "10.0.0.2".parse().unwrap()));
+        assert!(is_trusted_proxy(&parsed, "192.168.3.4".parse().unwrap()));
+        assert!(is_trusted_proxy(&parsed, "fd12::1".parse().unwrap()));
+        assert!(parse_trusted_proxies(&["proxy.example.com".to_string()]).is_err());
+    }
+
+    #[test]
+    fn test_settings_that_read_proxy_headers_require_trusted_proxies() {
+        // #543
+        let enforce = HttpConfig {
+            enforce_https: true,
+            ..HttpConfig::default()
+        };
+        let error = validate_tls_security_settings(&enforce).unwrap_err();
+        assert!(error.contains("trusted_proxies"), "got: {error}");
+        assert!(validate_tls_security_settings(&HttpConfig {
+            trusted_proxies: vec!["127.0.0.1".to_string()],
+            ..enforce.clone()
+        })
+        .is_ok());
+
+        let ids = HttpConfig {
+            ids_enabled: true,
+            ids_trust_forwarded_for: true,
+            ..HttpConfig::default()
+        };
+        assert!(validate_tls_security_settings(&ids).is_err());
+
+        let bad = HttpConfig {
+            trusted_proxies: vec!["not-an-address".to_string()],
+            ..HttpConfig::default()
+        };
+        assert!(validate_tls_security_settings(&bad).is_err());
     }
 
     #[tokio::test]
@@ -3798,6 +4140,7 @@ mod tests {
             bind_addr: "127.0.0.1:0".parse().unwrap(),
             enable_websocket_upgrade: true,
             enforce_https: true,
+            trusted_proxies: vec!["127.0.0.1".to_string()],
             ..HttpConfig::default()
         };
         let transport = HttpTransport::new(config).unwrap();
@@ -3816,6 +4159,49 @@ mod tests {
         }
     }
 
+    /// 信頼するプロキシでない接続元の転送のヘッダーは、使わない（#543）。
+    /// 以前は、どの接続元のヘッダーも信じたので、平文のHTTPで
+    /// `X-Forwarded-Proto: https`を付ければ、`enforce_https`を通れた
+    #[tokio::test]
+    async fn test_forwarded_headers_from_an_untrusted_peer_are_ignored() {
+        let config = HttpConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            enable_websocket_upgrade: true,
+            enforce_https: true,
+            min_tls_version: None,
+            // テストの接続元（127.0.0.1）ではないプロキシ
+            trusted_proxies: vec!["10.0.0.1".to_string()],
+            ..HttpConfig::default()
+        };
+        let transport = HttpTransport::new(config).unwrap();
+        transport.start_server().await.unwrap();
+        let server_addr = transport.bound_addr().await.unwrap();
+        wait_for_plain_server_ready(server_addr).await;
+
+        let response = reqwest::Client::new()
+            .post(format!("http://127.0.0.1:{}/mcp", server_addr.port()))
+            .header("x-forwarded-proto", "https")
+            .header("forwarded", "proto=https")
+            .json(&serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UPGRADE_REQUIRED);
+
+        let mut request = format!("ws://localhost:{}/ws", server_addr.port())
+            .into_client_request()
+            .unwrap();
+        request
+            .headers_mut()
+            .insert("x-forwarded-proto", "https".parse().unwrap());
+        match tokio_tungstenite::connect_async(request).await {
+            Err(WsError::Http(response)) => {
+                assert_eq!(response.status(), StatusCode::UPGRADE_REQUIRED);
+            }
+            other => panic!("expected the upgrade to be rejected with 426, got: {other:?}"),
+        }
+    }
+
     #[tokio::test]
     async fn test_ws_enforce_https_accepts_with_forwarded_proto_header() {
         let config = HttpConfig {
@@ -3826,6 +4212,7 @@ mod tests {
             // targets from the separate min_tls_version forwarded-header
             // check, which also applies once enforce_https is set.
             min_tls_version: None,
+            trusted_proxies: vec!["127.0.0.1".to_string()],
             ..HttpConfig::default()
         };
         let transport = HttpTransport::new(config).unwrap();
@@ -4124,6 +4511,7 @@ mod tests {
             bind_addr: "127.0.0.1:0".parse().unwrap(),
             ids_enabled: true,
             ids_trust_forwarded_for: true,
+            trusted_proxies: vec!["127.0.0.1".to_string()],
             ..HttpConfig::default()
         };
         let transport = HttpTransport::new(config).unwrap();
@@ -6024,5 +6412,189 @@ mod tests {
         ] {
             assert_eq!(unauthenticated_external_bind(&config), None, "{config:?}");
         }
+    }
+
+    #[test]
+    fn test_websocket_response_send_timeout_grows_with_the_size() {
+        // #543: 本番の値。10MBの応答なら、10秒 + 160秒
+        let base = std::time::Duration::from_secs(10);
+        let rate = 64 * 1024;
+        assert_eq!(websocket_response_send_timeout(0, base, rate), base);
+        assert_eq!(
+            websocket_response_send_timeout(10 * 1024 * 1024, base, rate),
+            std::time::Duration::from_secs(170)
+        );
+        assert_eq!(
+            websocket_response_send_timeout(32 * 1024, base, rate),
+            std::time::Duration::from_millis(10_500)
+        );
+    }
+
+    /// `params.size`バイトの文字列を結果に入れて返す（#543、大きな応答）
+    struct LargeResponseHandler;
+
+    #[async_trait]
+    impl JsonRpcRequestHandler for LargeResponseHandler {
+        async fn handle_jsonrpc(
+            &self,
+            message: &str,
+            _caller: &crate::mcp::Caller,
+        ) -> std::result::Result<Option<Value>, String> {
+            let request: Value = serde_json::from_str(message).map_err(|e| e.to_string())?;
+            let size = request["params"]["size"].as_u64().unwrap_or(0) as usize;
+            Ok(Some(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": request["id"],
+                "result": { "data": "x".repeat(size) }
+            })))
+        }
+    }
+
+    /// テストの応答の大きさ。送信と受信のバッファ（OSによって数MB）より、
+    /// 十分に大きくする。上限は`1秒 + 32MB ÷ 8MB/秒` = 5秒（テストの値）
+    const LARGE_RESPONSE_SIZE: usize = 32 * 1024 * 1024;
+
+    async fn start_large_response_server() -> SocketAddr {
+        let config = HttpConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            enable_websocket_upgrade: true,
+            websocket_max_connections: 1,
+            ..HttpConfig::default()
+        };
+        let transport = HttpTransport::new(config)
+            .unwrap()
+            .with_request_handler(Arc::new(LargeResponseHandler));
+        transport.start_server().await.unwrap();
+        let server_addr = transport.bound_addr().await.unwrap();
+        wait_for_plain_server_ready(server_addr).await;
+        // `transport`を落としてもサーバーは動き続ける
+        server_addr
+    }
+
+    /// 受信の速さを決められるよう、TCPの上で直接、`/ws`につなぐ
+    async fn raw_ws_connect(addr: SocketAddr) -> tokio::net::TcpStream {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        stream
+            .write_all(
+                format!(
+                    "GET /ws HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n",
+                    addr.port()
+                )
+                .as_bytes(),
+            )
+            .await
+            .unwrap();
+        let mut head = Vec::new();
+        while !head.ends_with(b"\r\n\r\n") {
+            head.push(stream.read_u8().await.unwrap());
+        }
+        let head = String::from_utf8_lossy(&head);
+        assert!(head.starts_with("HTTP/1.1 101"), "got: {head}");
+        stream
+    }
+
+    /// クライアントからのテキストのフレーム（マスクは0なので、本文はそのまま）
+    async fn raw_ws_send_text(stream: &mut tokio::net::TcpStream, text: &str) {
+        use tokio::io::AsyncWriteExt;
+        let payload = text.as_bytes();
+        assert!(payload.len() < 126);
+        let mut frame = vec![0x81, 0x80 | payload.len() as u8, 0, 0, 0, 0];
+        frame.extend_from_slice(payload);
+        stream.write_all(&frame).await.unwrap();
+    }
+
+    fn large_response_request() -> String {
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": { "size": LARGE_RESPONSE_SIZE }
+        })
+        .to_string()
+    }
+
+    /// 応答を読まないクライアントは、時間内に送れないので閉じられ、接続の枠が
+    /// 戻る（#543）。以前は送信で止まり続け、枠を持ち続けた。
+    ///
+    /// Windowsでは、OSが1回の送信を大きさによらずすべて受け取る（相手が
+    /// 読まなくても、32MBの送信がすぐ終わる）ので、送信で止まらない。
+    /// そのため、Windowsでは試さない（読まない相手は、pingに応答しないので、
+    /// 無通信の上限で閉じられる）
+    #[tokio::test]
+    #[cfg_attr(
+        windows,
+        ignore = "Windows accepts a large send at once, so the send does not stall"
+    )]
+    async fn test_websocket_client_that_does_not_read_is_closed() {
+        let addr = start_large_response_server().await;
+        let mut stalled = raw_ws_connect(addr).await;
+        raw_ws_send_text(&mut stalled, &large_response_request()).await;
+
+        // 枠（websocket_max_connections = 1）は、読まないクライアントが持っている
+        let url = format!("ws://127.0.0.1:{}/ws", addr.port());
+        match tokio_tungstenite::connect_async(&url).await {
+            Err(WsError::Http(response)) => {
+                assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+            }
+            other => panic!("expected 503 while the slot is held, got: {other:?}"),
+        }
+
+        // 上限（5秒）を過ぎると閉じられ、つなげるようになる
+        let started = Instant::now();
+        loop {
+            match tokio_tungstenite::connect_async(&url).await {
+                Ok(_) => break,
+                Err(WsError::Http(response))
+                    if response.status() == StatusCode::SERVICE_UNAVAILABLE =>
+                {
+                    assert!(
+                        started.elapsed() < Duration::from_secs(60),
+                        "the connection that does not read was not closed"
+                    );
+                    sleep(Duration::from_millis(200)).await;
+                }
+                Err(e) => panic!("unexpected error: {e}"),
+            }
+        }
+        drop(stalled);
+    }
+
+    /// 遅くても読み続けているクライアントは、上限の大きさによらない部分
+    /// （テストでは1秒）より長くかかっても、閉じられない（#543）
+    #[tokio::test]
+    async fn test_websocket_client_that_reads_slowly_is_not_closed() {
+        use tokio::io::AsyncReadExt;
+        let addr = start_large_response_server().await;
+        let mut client = raw_ws_connect(addr).await;
+        raw_ws_send_text(&mut client, &large_response_request()).await;
+
+        // フレームの頭: テキスト、マスク無し、64ビットの長さ
+        let mut head = [0u8; 2];
+        client.read_exact(&mut head).await.unwrap();
+        assert_eq!(head[0], 0x81);
+        assert_eq!(head[1], 127);
+        let length = client.read_u64().await.unwrap() as usize;
+        assert!(length > LARGE_RESPONSE_SIZE);
+
+        // 2MB読むごとに100ミリ秒休む（20MB/秒より遅い。最低の速さの8MB/秒より速い）
+        let started = Instant::now();
+        let mut buffer = vec![0u8; 256 * 1024];
+        let mut received = 0;
+        let mut next_pause = 2 * 1024 * 1024;
+        while received < length {
+            let want = buffer.len().min(length - received);
+            let n = client.read(&mut buffer[..want]).await.unwrap();
+            assert!(n > 0, "closed after {received} of {length} bytes");
+            received += n;
+            if received >= next_pause {
+                next_pause += 2 * 1024 * 1024;
+                sleep(Duration::from_millis(100)).await;
+            }
+        }
+        assert!(
+            started.elapsed() > Duration::from_secs(1),
+            "the response must take longer than the base limit"
+        );
     }
 }

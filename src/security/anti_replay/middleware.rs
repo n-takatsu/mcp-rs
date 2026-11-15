@@ -36,9 +36,10 @@ pub struct AntiReplayMiddleware {
 impl AntiReplayMiddleware {
     /// Create a new AntiReplayMiddleware
     pub fn new(config: AntiReplayConfig) -> Self {
-        let nonce_manager = Arc::new(NonceManager::new(
+        let nonce_manager = Arc::new(NonceManager::with_limits(
             config.nonce_ttl_secs,
             config.max_nonce_cache,
+            config.max_nonce_cache_per_caller,
         ));
 
         let timestamp_validator = Arc::new(TimestampValidator::new(config.time_window_secs));
@@ -108,23 +109,23 @@ impl AntiReplayMiddleware {
     /// as well as by non-HTTP call sites (WebSocket per-message checks,
     /// plugin broker messages) that have no `axum::extract::Request` to
     /// extract headers from.
+    ///
+    /// `user_id` is the authenticated user. Nonces are remembered per
+    /// caller (#543): `user_id`, or else the client IP address.
+    ///
+    /// The nonce and the timestamp are not bound to the content of the
+    /// request (nothing signs them), so this only stops a request from
+    /// being sent again unchanged. Someone who can read a request can send
+    /// its content again with a new nonce and timestamp. Use TLS and
+    /// authentication; this is an additional check.
     pub async fn validate_headers(
         &self,
         headers: &SecurityHeaders,
         user_id: Option<&str>,
     ) -> Result<DeviceFingerprint, ReplayError> {
-        // 1. Validate Nonce (if enabled)
-        if self.config.enable_nonce {
-            let nonce = headers.nonce.as_ref().ok_or(ReplayError::MissingNonce)?;
-
-            self.nonce_manager
-                .validate_and_consume(nonce, user_id.map(|s| s.to_string()))
-                .await?;
-
-            debug!("Nonce validated: {}", nonce);
-        }
-
-        // 2. Validate Timestamp (if enabled)
+        // 1. Validate Timestamp (if enabled). Before the nonce (#543), so
+        // that a request with an old or future timestamp does not take a
+        // place in the nonce cache
         if self.config.enable_timestamp {
             let timestamp_str = headers
                 .timestamp
@@ -134,6 +135,22 @@ impl AntiReplayMiddleware {
             self.timestamp_validator.validate_timestamp(timestamp_str)?;
 
             debug!("Timestamp validated: {}", timestamp_str);
+        }
+
+        // 2. Validate Nonce (if enabled), per caller (#543)
+        if self.config.enable_nonce {
+            let nonce = headers.nonce.as_ref().ok_or(ReplayError::MissingNonce)?;
+            let caller = match (user_id, headers.ip_address) {
+                (Some(user_id), _) => format!("user:{user_id}"),
+                (None, Some(ip)) => format!("ip:{}", ip.to_canonical()),
+                (None, None) => String::new(),
+            };
+
+            self.nonce_manager
+                .validate_and_consume(nonce, Some(caller))
+                .await?;
+
+            debug!("Nonce validated");
         }
 
         // 3. Create/Verify Device Fingerprint (if enabled)
