@@ -115,6 +115,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - 無いTCPのトランスポートの`development/tcp.toml`を削除した
   - 例が今後も古くならないよう、読めて、読まれないキーが無いことを確かめる
     テスト（`tests/config_examples_test.rs`）を足した
+  - 効いていなかった`[transport.stdio]`（`buffer_size`・`framing_method`
+    等）を、設定と例から削除した。サーバー（`McpServer::run_stdio`）は、
+    1行ずつ読み書きし、この設定を使っていなかった。書いてあっても、
+    エラーにならずに無視する。**互換性のない変更（ライブラリ）**:
+    `TransportConfig`（`config`と`transport`の両方）の`stdio`、
+    `config::StdioTransportConfig`、`transport::stdio`（`StdioConfig`）を
+    削除した
 - ライブラリの`DatabaseSecurity`（`SqlInjectionDetector`）が、`1' OR '1'='1`
   （末尾の引用符を元のSQLに閉じさせる形）と`OR true`を通していたのを、
   止めるようにした（#501）。正当なサブクエリは止めない。正規表現での検知は
