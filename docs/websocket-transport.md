@@ -1,63 +1,26 @@
-# WebSocket Transport Implementation
+# WebSocket Transport
 
 ## Overview
 
-Complete implementation of WebSocket transport for mcp-rs with full bidirectional support, connection management, heartbeat, and comprehensive error handling.
+mcp-rs accepts MCP over WebSocket on the `/ws` endpoint of the HTTP transport. The library also has a WebSocket client (`WebSocketTransport`).
 
-## Features
+Up to v0.23.0, the library also had a standalone WebSocket server (`WebSocketServer`, and `server_mode` of `WebSocketTransport`). It had no authentication and no `Origin` check, and mcp-rs itself did not use it, so it was removed (#543). Use `/ws` on the HTTP transport instead.
 
-### ✅ Implemented
+## Server: `/ws` on the HTTP transport
 
-- **Bidirectional Communication**: Full-duplex WebSocket communication
-- **Server & Client Modes**: Can act as WebSocket server or client
-- **Message Handling**:
-  - JSON-RPC request/response serialization
-  - Asynchronous message queues with backpressure
-  - Binary and text message support
-- **Connection Management**:
-  - Automatic connection pooling
-  - Connection state tracking
-  - Graceful shutdown
-- **Heartbeat**: Ping-Pong heartbeat mechanism (configurable interval)
-- **Statistics**: Message count, byte count, connection uptime tracking
-- **Error Handling**: Comprehensive error handling with proper error types
+In the configuration file:
 
-### 🔄 To Be Implemented (Phase 2)
+```toml
+[transport]
+transport_type = "http"
 
-- **Origin Validation**: Cross-origin request security
-- **Authentication Integration**: Token-based authentication
-- **Rate Limiting Integration**: Per-connection rate limiting
-- **CSRF Protection**: CSRF token validation
-- **Automatic Reconnection**: Client-side auto-reconnect with exponential backoff
-- **Compression**: WebSocket permessage-deflate extension
-
-## Configuration
-
-```rust
-use mcp_rs::transport::websocket::WebSocketConfig;
-
-let config = WebSocketConfig {
-    url: "ws://127.0.0.1:8082".to_string(),
-    server_mode: true,              // true for server, false for client
-    timeout_seconds: Some(30),      // Connection timeout
-    enable_tls: false,              // Not enforced by WebSocketServer - see "TLS/WSS Support" below
-    heartbeat_interval: 30,         // Heartbeat interval (0 to disable)
-    max_reconnect_attempts: 5,      // Max reconnection attempts (TODO)
-    reconnect_delay: 5,             // Reconnection delay in seconds (TODO)
-    max_message_size: 16 * 1024 * 1024,  // 16MB max message size
-    max_connections: 100,           // Max concurrent connections (server mode)
-};
+[transport.http]
+enable_websocket_upgrade = true
+# websocket_max_connections = 1000       # more upgrades get 503
+# websocket_idle_timeout_seconds = 300   # close when the client answers nothing for this long
 ```
 
-## TLS/WSS Support
-
-`WebSocketServer` (the type constructed above) is a standalone, test/dev-only
-server: it binds its own plain TCP listener and never terminates TLS, so its
-`WebSocketConfig.enable_tls` field has no effect regardless of its value -
-there is also no production path to it at all, since
-`TransportFactory::create_transport` always refuses `TransportType::WebSocket`.
-
-For a real, TLS-enforcing `/ws` endpoint, mount it on `HttpTransport` instead:
+In library code:
 
 ```rust
 use mcp_rs::transport::http::HttpConfig;
@@ -75,27 +38,24 @@ let config = HttpConfig {
 };
 ```
 
-`/ws` shares `HttpTransport`'s entire TLS/security stack with `/` and `/mcp`:
+`/ws` shares `HttpTransport`'s entire security stack with `/` and `/mcp`:
 TLS termination (`tls_enabled` + `tls_cert_path`/`tls_key_path`, TLS 1.3 via
 rustls), `enforce_https` (rejects plain `ws://` the same way it rejects plain
 HTTP; behind a reverse proxy, it accepts `X-Forwarded-Proto: https` only from
-an address in `trusted_proxies`), HSTS headers,
-certificate pinning, `network_policy`, and `anti_replay_enabled`. There is no
-separate `enable_wss`/`ws_tls_*` configuration - by design, one security
-posture governs the whole listener. See `HttpConfig` in
-`src/transport/http.rs` for the authoritative field list, and
-`transport.http.enable_websocket_upgrade`/`websocket_max_connections` in
-`config.rs`'s `HttpTransportConfig` for the TOML-facing equivalents.
+an address in `trusted_proxies`), HSTS headers, certificate pinning,
+`network_policy`, the `Origin` check, API keys and OAuth, and
+`anti_replay_enabled`. There is no separate `enable_wss`/`ws_tls_*`
+configuration - by design, one security posture governs the whole listener.
+See `HttpConfig` in `src/transport/http.rs` for the authoritative field list,
+and `HttpTransportConfig` in `src/config.rs` for the TOML-facing equivalents.
 
-`/ws` on `HttpTransport` speaks MCP JSON-RPC (via the same request/response
-correlation `/mcp` uses), not the raw echo/pluggable `MessageHandler` protocol
-the standalone `WebSocketServer` demonstrates below - that server remains
-useful for exercising the WebSocket protocol layer itself (framing, ping/
-pong, custom handlers) in tests, but is not the production MCP endpoint.
+Each text message on `/ws` is one MCP JSON-RPC message, handled the same way
+as a request to `/mcp`. With `anti_replay_enabled`, each message carries
+`nonce` and `timestamp` at the top level of its JSON, since WebSocket messages
+have no HTTP headers. See [Security](../website/docs/security.md) for the
+limits (message size, idle timeout, response send timeout).
 
-## Usage Example
-
-### Server Mode
+## Client: `WebSocketTransport`
 
 ```rust
 use mcp_rs::transport::websocket::{WebSocketConfig, WebSocketTransport};
@@ -104,126 +64,28 @@ use mcp_rs::transport::Transport;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = WebSocketConfig {
-        url: "ws://127.0.0.1:8082".to_string(),
-        server_mode: true,
+        url: "ws://127.0.0.1:8082/ws".to_string(),
         ..Default::default()
     };
 
     let mut transport = WebSocketTransport::new(config)?;
-    transport.start().await?;
+    transport.start().await?; // connects to `url`
 
-    // Handle messages...
+    // Send/receive messages...
 
     transport.stop().await?;
     Ok(())
 }
 ```
 
-### Client Mode
-
-```rust
-let config = WebSocketConfig {
-    url: "ws://127.0.0.1:8082".to_string(),
-    server_mode: false,
-    ..Default::default()
-};
-
-let mut transport = WebSocketTransport::new(config)?;
-transport.start().await?;
-
-// Send/receive messages...
-
-transport.stop().await?;
-```
-
-## Demo
-
-Run the WebSocket transport example:
+Run the example:
 
 ```bash
 cargo run --example websocket_transport_foundation
 ```
 
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────┐
-│         WebSocketTransport                          │
-├─────────────────────────────────────────────────────┤
-│                                                     │
-│  ┌──────────────┐  ┌──────────────┐               │
-│  │ Connection   │  │ Message      │               │
-│  │ Manager      │  │ Processor    │               │
-│  └──────────────┘  └──────────────┘               │
-│                                                     │
-│  ┌──────────────┐  ┌──────────────┐               │
-│  │ Incoming     │  │ Outgoing     │               │
-│  │ Queue        │  │ Queue        │               │
-│  └──────────────┘  └──────────────┘               │
-│                                                     │
-│  ┌──────────────────────────────────────────────┐  │
-│  │         Heartbeat & Statistics              │  │
-│  └──────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────┘
-```
-
-## Performance
-
-- **Throughput**: Designed for high-throughput scenarios
-- **Latency**: Minimal latency with direct tokio integration
-- **Memory**: Efficient with bounded message queues
-- **Scalability**: Supports 100+ concurrent connections
-
 ## Testing
 
 ```bash
-# Run all tests
 cargo test websocket
-
-# Run with logging
-RUST_LOG=debug cargo test websocket
-
-# Run clippy
-cargo clippy --all-features -- -D warnings
 ```
-
-## Roadmap
-
-### Phase 1: Core Functionality ✅
-
-- [x] WebSocket connection handling
-- [x] Message send/receive
-- [x] Server and client modes
-- [x] Heartbeat mechanism
-- [x] Connection statistics
-
-### Phase 2: Security (Next)
-
-- [x] TLS/WSS support (via `HttpConfig::enable_websocket_upgrade` - see
-      "TLS/WSS Support" above; not implemented for the standalone
-      `WebSocketServer`)
-- [ ] Origin validation
-- [ ] Authentication integration
-- [ ] Rate limiting
-
-### Phase 3: Reliability
-
-- [ ] Automatic reconnection
-- [ ] Connection pooling (advanced)
-- [ ] Load balancing
-- [ ] Circuit breaker
-
-### Phase 4: Optimization
-
-- [ ] Compression support
-- [ ] Message batching
-- [ ] Zero-copy optimizations
-- [ ] Performance benchmarks
-
-## Contributing
-
-Contributions are welcome! Please see [CONTRIBUTING.md](../CONTRIBUTING.md) for guidelines.
-
-## License
-
-MIT OR Apache-2.0

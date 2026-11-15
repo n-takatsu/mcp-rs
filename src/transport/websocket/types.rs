@@ -175,25 +175,14 @@ pub enum HealthStatus {
 /// WebSocketトランスポート設定
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WebSocketConfig {
-    /// WebSocketサーバーURL
+    /// 接続先のWebSocketサーバーのURL
     pub url: String,
-
-    /// サーバーモード（true: サーバー、false: クライアント）
-    #[serde(default)]
-    pub server_mode: bool,
 
     /// 接続タイムアウト（秒）
     #[serde(default = "default_timeout")]
     pub timeout_seconds: Option<u64>,
 
-    /// TLS有効化。
-    ///
-    /// この値は`WebSocketServer`（サーバーモード）からは一切参照されない -
-    /// `WebSocketServer`は独立した平文TCPリスナーとして動作するテスト専用
-    /// サーバーで、TLS終端を持たない。本番でTLS/WSSを強制したい場合は
-    /// `crate::transport::http::HttpConfig::enable_websocket_upgrade`を使い、
-    /// HTTPトランスポートの既存のTLS/`enforce_https`/HSTS/証明書ピンニングを
-    /// 共有する`/ws`エンドポイントを使うこと。
+    /// TLS有効化
     #[serde(default)]
     pub enable_tls: bool,
 
@@ -213,10 +202,6 @@ pub struct WebSocketConfig {
     #[serde(default = "default_max_message_size")]
     pub max_message_size: usize,
 
-    /// 最大同時接続数（サーバーモード）
-    #[serde(default = "default_max_connections")]
-    pub max_connections: usize,
-
     /// プール設定
     #[serde(default)]
     pub pool_config: PoolConfig,
@@ -224,11 +209,6 @@ pub struct WebSocketConfig {
     /// ストリーム設定
     #[serde(default)]
     pub stream_config: StreamConfig,
-
-    /// nonce/timestampによるリプレイ攻撃対策を有効化するか（サーバーモード）。
-    /// 既存クライアントはこれらのフィールドを送らないため、デフォルトはfalse。
-    #[serde(default)]
-    pub anti_replay_enabled: bool,
 }
 
 fn default_timeout() -> Option<u64> {
@@ -251,25 +231,18 @@ fn default_max_message_size() -> usize {
     16 * 1024 * 1024 // 16MB
 }
 
-fn default_max_connections() -> usize {
-    100
-}
-
 impl Default for WebSocketConfig {
     fn default() -> Self {
         Self {
             url: "ws://localhost:8080".to_string(),
-            server_mode: false,
             timeout_seconds: default_timeout(),
             enable_tls: false,
             heartbeat_interval: default_heartbeat(),
             max_reconnect_attempts: default_max_reconnect(),
             reconnect_delay: default_reconnect_delay(),
             max_message_size: default_max_message_size(),
-            max_connections: default_max_connections(),
             pool_config: PoolConfig::default(),
             stream_config: StreamConfig::default(),
-            anti_replay_enabled: false,
         }
     }
 }
@@ -278,14 +251,12 @@ impl Default for WebSocketConfig {
 #[derive(Debug, Default)]
 pub struct WebSocketConfigBuilder {
     url: Option<String>,
-    server_mode: Option<bool>,
     timeout_seconds: Option<Option<u64>>,
     enable_tls: Option<bool>,
     heartbeat_interval: Option<u64>,
     max_reconnect_attempts: Option<u32>,
     reconnect_delay: Option<u64>,
     max_message_size: Option<usize>,
-    max_connections: Option<usize>,
     pool_config: Option<PoolConfig>,
     stream_config: Option<StreamConfig>,
 }
@@ -299,12 +270,6 @@ impl WebSocketConfigBuilder {
     /// URLを設定
     pub fn url(mut self, url: impl Into<String>) -> Self {
         self.url = Some(url.into());
-        self
-    }
-
-    /// サーバーモードを設定
-    pub fn server_mode(mut self, enabled: bool) -> Self {
-        self.server_mode = Some(enabled);
         self
     }
 
@@ -344,12 +309,6 @@ impl WebSocketConfigBuilder {
         self
     }
 
-    /// 最大接続数を設定
-    pub fn max_connections(mut self, count: usize) -> Self {
-        self.max_connections = Some(count);
-        self
-    }
-
     /// プール設定を設定
     pub fn pool_config(mut self, config: PoolConfig) -> Self {
         self.pool_config = Some(config);
@@ -368,7 +327,6 @@ impl WebSocketConfigBuilder {
 
         WebSocketConfig {
             url: self.url.unwrap_or(default.url),
-            server_mode: self.server_mode.unwrap_or(default.server_mode),
             timeout_seconds: self.timeout_seconds.unwrap_or(default.timeout_seconds),
             enable_tls: self.enable_tls.unwrap_or(default.enable_tls),
             heartbeat_interval: self
@@ -379,10 +337,8 @@ impl WebSocketConfigBuilder {
                 .unwrap_or(default.max_reconnect_attempts),
             reconnect_delay: self.reconnect_delay.unwrap_or(default.reconnect_delay),
             max_message_size: self.max_message_size.unwrap_or(default.max_message_size),
-            max_connections: self.max_connections.unwrap_or(default.max_connections),
             pool_config: self.pool_config.unwrap_or(default.pool_config),
             stream_config: self.stream_config.unwrap_or(default.stream_config),
-            anti_replay_enabled: default.anti_replay_enabled,
         }
     }
 }
