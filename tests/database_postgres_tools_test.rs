@@ -144,6 +144,105 @@ async fn read_only_by_default() {
         .unwrap();
 }
 
+/// `get_schema`は、外部キーとインデックスも返す（#543。以前はいつも空だった）
+#[tokio::test]
+async fn get_schema_returns_foreign_keys_and_indexes() {
+    let Some((url, pool)) = test_database().await else {
+        return;
+    };
+    let parent = unique_name("parent");
+    let child = unique_name("child");
+    for sql in [
+        format!("CREATE TABLE {parent} (a int, b int, PRIMARY KEY (a, b))"),
+        format!(
+            "CREATE TABLE {child} (id int PRIMARY KEY, pa int, pb int, note text, \
+             CONSTRAINT {child}_fk FOREIGN KEY (pa, pb) REFERENCES {parent} (a, b))"
+        ),
+        format!("CREATE UNIQUE INDEX {child}_note ON {child} (note, id)"),
+        format!("CREATE INDEX {child}_lower ON {child} (lower(note))"),
+    ] {
+        sqlx::query(&sql).execute(&pool).await.unwrap();
+    }
+
+    let handler = DatabaseHandler::from_settings(&settings_from_url(&url))
+        .await
+        .unwrap();
+    let schema = call(&handler, "get_schema", json!({})).await.unwrap();
+    let found = schema["tables"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == json!(child))
+        .expect("the test table is in the schema");
+
+    // 複数の列の外部キーは、列ごとに、参照先の列と組にする
+    assert_eq!(
+        found["foreign_keys"],
+        json!([
+            { "name": format!("{child}_fk"), "column": "pa", "referenced_table": parent, "referenced_column": "a" },
+            { "name": format!("{child}_fk"), "column": "pb", "referenced_table": parent, "referenced_column": "b" },
+        ])
+    );
+
+    let indexes = found["indexes"].as_array().unwrap();
+    let index = |name: String| {
+        indexes
+            .iter()
+            .find(|i| i["name"] == json!(name))
+            .unwrap_or_else(|| panic!("{name} in {indexes:?}"))
+            .clone()
+    };
+    assert_eq!(
+        index(format!("{child}_pkey")),
+        json!({ "name": format!("{child}_pkey"), "columns": ["id"], "is_unique": true, "is_primary": true })
+    );
+    assert_eq!(
+        index(format!("{child}_note")),
+        json!({ "name": format!("{child}_note"), "columns": ["note", "id"], "is_unique": true, "is_primary": false })
+    );
+    // 式のインデックスの式は、列ではないので含めない
+    assert_eq!(index(format!("{child}_lower"))["columns"], json!([]));
+
+    for table in [&child, &parent] {
+        sqlx::query(&format!("DROP TABLE {table}"))
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+}
+
+/// NaN・±Infinityは、0ではなく、文字列で返す（#543）
+#[tokio::test]
+async fn execute_query_returns_non_finite_floats_as_strings() {
+    let Some((url, _pool)) = test_database().await else {
+        return;
+    };
+    let handler = DatabaseHandler::from_settings(&settings_from_url(&url))
+        .await
+        .unwrap();
+    let result = call(
+        &handler,
+        "execute_query",
+        json!({ "sql": "SELECT 'NaN'::float8, 'Infinity'::float8, '-Infinity'::float8, 1.5::float8" }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        result["rows"],
+        json!([["NaN", "Infinity", "-Infinity", 1.5]])
+    );
+
+    // 返した文字列は、そのまま引数に使える
+    let result = call(
+        &handler,
+        "execute_query",
+        json!({ "sql": "SELECT $1::float8 = 'Infinity'::float8", "params": ["Infinity"] }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(result["rows"], json!([[true]]));
+}
+
 /// SELECTに見えて書き込むSQLは、`allow_write = true`でも`execute_query`では
 /// 書き込めない（構文の確認と、読み取り専用のトランザクションの両方）
 #[tokio::test]

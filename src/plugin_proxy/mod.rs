@@ -337,7 +337,10 @@ fn docker_cli_env() -> Vec<(String, String)> {
 }
 
 /// プラグイン名を検証する。ツール名の前に付けるため、英小文字・数字・
-/// `_`・`-`のみ。区切りと紛らわしい`__`は使えない。
+/// `_`・`-`のみ。区切りと紛らわしい`__`は使えない。`_`で始まる・終わる
+/// 名前も使えない（#543）: 例えば`fs_`のツール`fs___read`は、区切りの
+/// `__`と合わせて`_`が3つ続き、別のプラグイン`fs`のツールの指定
+/// （`tools = ["fs__*"]`）にも当たってしまう
 pub fn validate_plugin_name(name: &str) -> Result<(), String> {
     if name.is_empty() || name.len() > MAX_PLUGIN_NAME_LEN {
         return Err(format!(
@@ -358,6 +361,12 @@ pub fn validate_plugin_name(name: &str) -> Result<(), String> {
         return Err(format!(
             "plugin name '{}' must not contain '{}'",
             name, TOOL_NAME_SEPARATOR
+        ));
+    }
+    if name.starts_with('_') || name.ends_with('_') {
+        return Err(format!(
+            "plugin name '{}' must not start or end with '_'",
+            name
         ));
     }
     Ok(())
@@ -1339,7 +1348,7 @@ mod tests {
 
     #[test]
     fn test_validate_plugin_name() {
-        for ok in ["example", "my-plugin", "tool_1", "a"] {
+        for ok in ["example", "my-plugin", "tool_1", "a", "a-", "-a"] {
             assert!(validate_plugin_name(ok).is_ok(), "{}", ok);
         }
         for bad in [
@@ -1347,6 +1356,10 @@ mod tests {
             "Example",
             "my plugin",
             "a__b",
+            // #543: `fs_`のツール`fs___read`は、`fs__*`にも当たる
+            "fs_",
+            "_fs",
+            "_",
             "日本語",
             "a.b",
             &"a".repeat(65),

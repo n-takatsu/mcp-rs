@@ -135,6 +135,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- 低い指摘のまとめ（#543）の6つ目: その他
+  - **互換性のない変更**: `docker-compose.yml`のPostgreSQLを、
+    `docker-compose.postgres.yml`に分けた。`POSTGRES_PASSWORD`の既定値
+    （`changeme`）をやめ、設定しないとComposeが止まるようにした（`:?`）。
+    以前は、設定せずに起動すると、誰でも知っているパスワードの
+    データベースになった。同じファイルのままだと、PostgreSQLを使わない
+    ときも`POSTGRES_PASSWORD`が要るので、分けた。PostgreSQLを使うときは、
+    `-f docker-compose.yml -f docker-compose.postgres.yml`を付ける
+  - `docker-compose.dev.yml`のPostgreSQLとRedisを、`127.0.0.1`だけに
+    公開するようにした。以前は、同じネットワークの誰からも、ファイルに
+    書いてあるパスワード（Redisはパスワード無し）で接続できた
+  - `docs/DOCKER_GUIDE.md`の例で、パスワードとAPIキーを、コマンド行の
+    `-e WORDPRESS_PASSWORD="…"`やクライアントの設定の`env`ではなく、
+    `--env-file`のファイル（本人だけが読める）から渡すようにした。
+    コマンド行の値は、シェルの履歴とプロセスの一覧に残る
+  - プラグインの名前で、`_`で始まるもの・終わるものを拒否するようにした。
+    例えば`fs_`のツール`fs___read`は、ほかのプラグイン`fs`のツールの指定
+    （APIキーの`tools = ["fs__*"]`）にも当たった
+- データベースの`float8`・`float4`のNaN・Infinity・-Infinityを、0ではなく、
+  文字列`"NaN"`・`"Infinity"`・`"-Infinity"`（PostgreSQLと同じ書き方）で
+  返すようにした（#543）。JSONの数では表せない。計算できなかった値が0に
+  見えていた。返した文字列は、そのまま`execute_query`の引数に使える
+- `get_schema`（と`db://schema`）が、文書のとおり、外部キーとインデックスを
+  返すようにした（#543）。以前は、いつも空だった。複数の列の外部キーは、
+  列ごとに1項目（同じ`name`）にする
 - 低い指摘のまとめ（#543）の4つ目: HTTP
   - `/ws`で応答を送る時間に、上限を付けた（10秒と、64KB/秒で送る時間の
     和。10MBなら約170秒）。時間内に送れなければ、接続を閉じる。以前は、

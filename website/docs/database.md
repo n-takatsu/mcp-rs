@@ -120,11 +120,15 @@ The result is JSON text:
 - `max_result_bytes` is a guide, not an exact size of the response: mcp-rs counts a string as its length plus 2, but quotes and control characters take 2 to 6 bytes each in JSON, and the result is wrapped in a JSON string once more. A response can be several times larger than `max_result_bytes` in the worst case
 - When the first row alone is larger than `max_result_bytes`, its large values are cut: a string keeps its beginning and ends with `… [cut: N bytes in total; …]`, and `bytea` and `json` values are replaced by a note with their size. Select a part of such a value, for example `substring(column from 1 for 1000)`. mcp-rs still receives that one row whole, so a row can use as much memory as PostgreSQL allows for one row (up to about 1 GB per value)
 - A result without rows still has its `columns`
-- Values are returned by type: integers, floats, and booleans as JSON values; `numeric` as a string (no digits are lost); `uuid`, `date`, `time`, and `timestamp` as strings; `timestamptz` as RFC 3339; `json`/`jsonb` as JSON; `bytea` as base64; `text[]`, `varchar[]`, `int4[]`, and `int8[]` as JSON arrays. Other types are replaced by a note: cast such columns to text, for example `column::text`
+- Values are returned by type: integers, floats, and booleans as JSON values (`NaN`, `Infinity`, and `-Infinity`, which JSON numbers cannot hold, as those strings; up to v0.23.0, as `0`); `numeric` as a string (no digits are lost); `uuid`, `date`, `time`, and `timestamp` as strings; `timestamptz` as RFC 3339; `json`/`jsonb` as JSON; `bytea` as base64; `text[]`, `varchar[]`, `int4[]`, and `int8[]` as JSON arrays. Other types are replaced by a note: cast such columns to text, for example `column::text`
 
 ### `get_schema`
 
 Lists the tables of schema `public` with their columns, types, primary keys, foreign keys, and indexes. The same information is available as the resource `db://schema`.
+
+- A foreign key on several columns is listed once per column, with the same `name`. A table referenced outside `public` is shown as `schema.table`
+- The `columns` of an index are its columns in order. The expression part of an expression index (such as `lower(name)`) is not a column and is left out
+- Up to v0.23.0, `foreign_keys` and `indexes` were always empty
 
 ### `execute_command`
 

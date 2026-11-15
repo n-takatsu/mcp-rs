@@ -38,7 +38,7 @@ env = { EXAMPLE_API_KEY = "${EXAMPLE_API_KEY}" }
 # [plugins.rate_limit]           # same settings as [handlers.wordpress.rate_limit]
 ```
 
-- `name`: 1 to 64 characters: lowercase letters, digits, `_` and `-` (not `__`). Each name must be unique
+- `name`: 1 to 64 characters: lowercase letters, digits, `_` and `-` (not `__`, and not starting or ending with `_`, v0.24.0 and later). Each name must be unique
 - `command`: The executable to start. For a script, give the interpreter as `command` and the script in `args` (for example, `command = "node"`, `args = ["server.js"]`)
 - `env`: The only environment variables the plugin receives. `${VAR}` is replaced with mcp-rs's own environment variable. If `VAR` is not set, that entry is not passed at all
 
