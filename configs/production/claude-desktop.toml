@@ -1,95 +1,41 @@
-# MCP-RS Claude Desktop Configuration v0.15.1
+# mcp-rs: Claude Desktop and Claude Code (STDIO)
 #
-# 🚨 重要: Claude DesktopはSTDIO通信のため、標準出力にログが混在すると動作しません
-# この設定ではログをファイルのみに出力し、STDIOをJSON通信専用にします
+# The client starts mcp-rs and talks to it over standard input and output.
+# mcp-rs writes its log to a file and to standard error, never to standard
+# output. Start it with an absolute path:
+#
+#   mcp-rs --config /path/to/claude-desktop.toml
+#
+# Up to v0.23.0, this file also had sections that mcp-rs did not read
+# ([filesystem], [security], [logging], and others, #557). There is no
+# filesystem handler in mcp-rs: to let the AI client read files, add an MCP
+# filesystem server as a plugin ([[plugins]], see configs/examples/multi-handler.toml).
 
 [server]
-name = "mcp-rs-claude"
-version = "0.15.1"
-# STDIO通信設定（Claude Desktop必須）
-stdio = true
-# ログレベルを制限（ERROR以上のみコンソール出力）
 log_level = "warn"
 
 [transport]
 type = "stdio"
 
-# STDIO Transport設定（Claude Desktop専用）
-[transport.stdio]
-buffer_size = 8192
-timeout_ms = 30000
-content_length_header = true
-framing_method = "content-length"
-max_message_size = 1048576
-pretty_print = false
-
-# HTTP設定は無効（Claude DesktopはHTTP未対応）
-[transport.http]
-addr = "127.0.0.1"
-port = 8081
-cors_enabled = false
-
-# 必須: ハンドラー設定
-[handlers]
-enabled = ["filesystem"]
-
-# ファイルシステムハンドラー（Claude Desktop用：読み取り専用）
-[filesystem]
-root_path = "."
-read_only = true
-
-# WordPress設定（オプション）
-# 注意: src/config.rs の WordPressConfig 構造体は
-#   [handlers.wordpress] テーブル配下の url / username / password / keyring /
-#   encrypted_credentials, enabled / timeout_seconds / rate_limit /
-#   upload_allowed_dirs のみを認識します。
-#   （cache / retry / max_posts などのキーは現バージョンでは未実装のため無視されます）
+# WordPress. As it is, this reads three environment variables:
+# WORDPRESS_URL, WORDPRESS_USERNAME, and WORDPRESS_PASSWORD. Claude Desktop
+# does not pass the OS environment variables, so write all three in the env
+# of claude_desktop_config.json.
 #
-# このままでは、3つの環境変数 WORDPRESS_URL・WORDPRESS_USERNAME・
-# WORDPRESS_PASSWORD を読みます。Claude Desktop は OS の環境変数を渡さない
-# ので、claude_desktop_config.json の env に3つとも書きます。
-#
-# 環境変数の代わりに OS の資格情報ストアを使うと、Claude Desktop・
-# Claude Code・ターミナルのどれから起動しても、同じ1か所から読みます。
-# `mcp-rs wordpress-keyring set your-site` で登録し、このファイルをコピーして
-# username・password の2行を消し、次のように書きます:
+# With the OS credential store instead of environment variables, Claude
+# Desktop, Claude Code, and a terminal all read the same place. Register with
+# `mcp-rs wordpress-keyring set your-site`, copy this file, remove the
+# username and password lines, and write:
 #   url = "https://your-wordpress-site.com"
 #   keyring = "your-site"
 [handlers.wordpress]
-enabled = true                                          # 必須。無いとWordPressのツールを登録しない
+enabled = true                          # required: without it, the WordPress tools are not registered
 url = "${WORDPRESS_URL}"
 username = "${WORDPRESS_USERNAME}"
-password = "${WORDPRESS_PASSWORD}"                      # WordPress Application Password
+password = "${WORDPRESS_PASSWORD}"      # WordPress Application Password
 timeout_seconds = 30
 
 [handlers.wordpress.rate_limit]
 enabled = true
 requests_per_second = 10
 burst_size = 20
-
-# セキュリティ設定
-[security]
-enable_auth = false
-allowed_hosts = ["127.0.0.1", "localhost"]
-max_connections = 100
-connection_timeout_ms = 30000
-
-[security.rate_limiting]
-enabled = true
-requests_per_minute = 100
-burst_size = 20
-
-# ログ設定
-[logging]
-level = "warn"
-file_path = "logs/mcp-rs-claude.log"
-format = "json"
-include_timestamp = true
-include_caller = false
-
-[logging.file]
-enabled = false
-path = "mcp-rs.log"
-max_size_mb = 10
-max_files = 5
-rotate_daily = true

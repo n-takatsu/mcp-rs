@@ -1,49 +1,30 @@
-# MCP-RS メイン設定ファイル v0.16.0
-# Production環境のデフォルト設定
-# Transport統合アーキテクチャ対応
+# mcp-rs: the smallest STDIO configuration
+#
+# Without any handler, mcp-rs offers only mcp_rs_status. Uncomment
+# [handlers.wordpress], or add [database] or [[plugins]]
+# (see configs/examples/multi-handler.toml).
+#
+# Up to v0.23.0, this file had a "filesystem handler" and other sections
+# that mcp-rs did not read (#557). There is no filesystem handler in mcp-rs.
 
 [server]
-name = "mcp-rs-server"
-version = "0.16.0"
-# STDIOモード（Claude Desktop等との互換性）
-stdio = true
 log_level = "info"
 
 [transport]
 type = "stdio"
 
-# STDIO Transport設定（デフォルト）
-[transport.stdio]
-buffer_size = 8192
-timeout_ms = 30000
-content_length_header = true
-framing_method = "content-length"
-max_message_size = 1048576
-pretty_print = false
-
-# HTTP Transport設定（オプション）
-[transport.http]
-addr = "127.0.0.1"
-port = 8081
-cors_enabled = true
-
-[logging]
-level = "info"
-file_path = "logs/mcp-rs.log"
-
-# 必須: ハンドラー設定
+# Required, even when empty
 [handlers]
-enabled = ["filesystem"]
 
-# ファイルシステムハンドラー
-[filesystem]
-root_path = "."
-read_only = true
-
-# WordPress (オプション - 本番環境では環境変数推奨)
+# WordPress (credentials from environment variables)
 # [handlers.wordpress]
 # enabled = true
 # url = "${WORDPRESS_URL}"
 # username = "${WORDPRESS_USERNAME}"
 # password = "${WORDPRESS_PASSWORD}"
 # timeout_seconds = 30
+
+# Audit log of every tool call. Default: in the user folder, see
+# https://n-takatsu.github.io/mcp-rs/docs/security/#audit-log
+# [audit]
+# file_path = "/path/to/audit.log"

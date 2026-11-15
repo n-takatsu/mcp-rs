@@ -95,6 +95,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `configs/`の設定ファイルの例を、今のmcp-rsが読む形に直した（#557）。
+  mcp-rsは知らないキーを拒否しないので、古いキーは黙って無視されていた
+  - `production/claude-desktop.toml`・`main.toml`・`web-ui.toml`と
+    `development/http-transport.toml`から、mcp-rsが読まないキーを消した。
+    存在しない「ファイルシステムハンドラー」（`[filesystem]`・
+    `[handlers] enabled`）・`[security]`・`[logging]`・`server.name`等。
+    HTTPの`cors_enabled`・`timeout_ms`は、読まれる`enable_cors`・
+    `request_timeout_seconds`にした。`main.toml`は、ファイルシステム
+    ハンドラーだけの設定で、実際にはツールが何も無かった
+  - `examples/multi-handler.toml`を、WordPress・PostgreSQL・プラグインを
+    一緒に使う例に書き直した。以前は、mcp-rsが一度も読まなかった形式
+    （`[handlers.<名前>]`に`type = "..."`）で、起動もしなかった
+  - `examples/log-policy-demo.toml`・`module-separated.toml`の
+    `[handlers.wordpress]`に、要る`enabled = true`を足し、読まれない
+    `timeout`等を`timeout_seconds`にした
+  - `development/testing.toml`を読めるようにした（`[transport]`が無く、
+    `requests_per_second`が`10.0`で、読めなかった）
+  - 無いTCPのトランスポートの`development/tcp.toml`を削除した
+  - 例が今後も古くならないよう、読めて、読まれないキーが無いことを確かめる
+    テスト（`tests/config_examples_test.rs`）を足した
 - ライブラリの`DatabaseSecurity`（`SqlInjectionDetector`）が、`1' OR '1'='1`
   （末尾の引用符を元のSQLに閉じさせる形）と`OR true`を通していたのを、
   止めるようにした（#501）。正当なサブクエリは止めない。正規表現での検知は
