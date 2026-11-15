@@ -127,7 +127,7 @@ The result is JSON text:
 Lists the tables of schema `public` with their columns, types, primary keys, foreign keys, and indexes. The same information is available as the resource `db://schema`.
 
 - A foreign key on several columns is listed once per column, with the same `name`. A table referenced outside `public` is shown as `schema.table`
-- The `columns` of an index are its columns in order. The expression part of an expression index (such as `lower(name)`) is not a column and is left out
+- The `columns` of an index are its key columns in order. The expression part of an expression index (such as `lower(name)`) and the columns of `INCLUDE` are left out
 - Up to v0.23.0, `foreign_keys` and `indexes` were always empty
 
 ### `execute_command`

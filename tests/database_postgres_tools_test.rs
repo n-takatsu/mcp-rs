@@ -159,6 +159,7 @@ async fn get_schema_returns_foreign_keys_and_indexes() {
              CONSTRAINT {child}_fk FOREIGN KEY (pa, pb) REFERENCES {parent} (a, b))"
         ),
         format!("CREATE UNIQUE INDEX {child}_note ON {child} (note, id)"),
+        format!("CREATE INDEX {child}_pa ON {child} (pa) INCLUDE (note)"),
         format!("CREATE INDEX {child}_lower ON {child} (lower(note))"),
     ] {
         sqlx::query(&sql).execute(&pool).await.unwrap();
@@ -202,6 +203,8 @@ async fn get_schema_returns_foreign_keys_and_indexes() {
     );
     // 式のインデックスの式は、列ではないので含めない
     assert_eq!(index(format!("{child}_lower"))["columns"], json!([]));
+    // `INCLUDE`の列は、キーではないので含めない（PR #558のレビュー）
+    assert_eq!(index(format!("{child}_pa"))["columns"], json!(["pa"]));
 
     for table in [&child, &parent] {
         sqlx::query(&format!("DROP TABLE {table}"))

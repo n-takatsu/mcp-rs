@@ -953,8 +953,10 @@ async fn table_foreign_keys(
 }
 
 /// 表1つのインデックス（#543）。以前は、文書にあるのに、いつも空だった。
-/// `columns`は、インデックスの順の列の名前。式のインデックスの式の部分は
-/// 列ではないので含めない
+/// `columns`は、インデックスの順のキーの列の名前。式のインデックスの式の
+/// 部分は列ではないので、`INCLUDE`の列はキーではないので、含めない
+/// （`indkey`は、キーの列の後に`INCLUDE`の列を並べる。キーの列は先頭の
+/// `indnkeyatts`個）
 async fn table_indexes(
     tx: &mut sqlx::Transaction<'_, Postgres>,
     table_name: &str,
@@ -964,6 +966,7 @@ async fn table_indexes(
                 ARRAY(SELECT a.attname::text
                       FROM unnest(i.indkey::int2[]) WITH ORDINALITY AS k(attnum, ord)
                       JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = k.attnum
+                      WHERE k.ord <= i.indnkeyatts
                       ORDER BY k.ord)
          FROM pg_index i
          JOIN pg_class ic ON ic.oid = i.indexrelid

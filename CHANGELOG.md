@@ -142,7 +142,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     以前は、設定せずに起動すると、誰でも知っているパスワードの
     データベースになった。同じファイルのままだと、PostgreSQLを使わない
     ときも`POSTGRES_PASSWORD`が要るので、分けた。PostgreSQLを使うときは、
-    `-f docker-compose.yml -f docker-compose.postgres.yml`を付ける
+    `-f docker-compose.yml -f docker-compose.postgres.yml`を付ける。
+    `.env.example`の`POSTGRES_PASSWORD`も空にした（Composeは`.env`を
+    読むので、コピーした`postgres`で起動できてしまう）。テスト環境
+    （`configs/docker/docker-compose.postgres.yml`）は、空なら今までどおり
+    `postgres`を使う。`docs/DOCKER_POSTGRES_GUIDE.md`は、テスト環境の
+    ファイルを指すように直した
   - `docker-compose.dev.yml`のPostgreSQLとRedisを、`127.0.0.1`だけに
     公開するようにした。以前は、同じネットワークの誰からも、ファイルに
     書いてあるパスワード（Redisはパスワード無し）で接続できた
@@ -159,7 +164,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   見えていた。返した文字列は、そのまま`execute_query`の引数に使える
 - `get_schema`（と`db://schema`）が、文書のとおり、外部キーとインデックスを
   返すようにした（#543）。以前は、いつも空だった。複数の列の外部キーは、
-  列ごとに1項目（同じ`name`）にする
+  列ごとに1項目（同じ`name`）にする。インデックスの`columns`は、キーの列
+  だけ（`INCLUDE`の列と、式は含めない）
 - 低い指摘のまとめ（#543）の4つ目: HTTP
   - `/ws`で応答を送る時間に、上限を付けた（10秒と、64KB/秒で送る時間の
     和。10MBなら約170秒）。時間内に送れなければ、接続を閉じる。以前は、

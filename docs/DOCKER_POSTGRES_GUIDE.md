@@ -2,6 +2,10 @@
 
 MCP-RS Phase 2 PostgreSQL テスト環境を Docker Compose で構築・管理するためのガイドです。
 
+> **使うファイル**: このガイドは、テスト・開発用の `configs/docker/docker-compose.postgres.yml` を使います。リポジトリの直下の `docker-compose.postgres.yml` は別物で、`docker-compose.yml`（HTTPモードのmcp-rs）と一緒に使うPostgreSQLです。そちらは [DOCKER_GUIDE.md](DOCKER_GUIDE.md#docker-compose) を見てください。
+>
+> **パスワード**: テスト環境は、`POSTGRES_PASSWORD` が無いか空なら、`postgres` を使います（`.env.example` は空です）。誰でも知っているパスワードなので、ポートを外に公開する環境では、必ず自分のものに変えてください。
+
 ## 概要
 
 このセットアップは以下を提供します：
@@ -33,13 +37,13 @@ cp .env.example .env
 
 ```bash
 # プロダクション環境
-docker-compose -f docker-compose.postgres.yml up -d
+docker compose -f configs/docker/docker-compose.postgres.yml up -d
 
 # 開発環境（ログ表示）
-docker-compose -f docker-compose.postgres.yml up
+docker compose -f configs/docker/docker-compose.postgres.yml up
 
 # バックグラウンド起動
-docker-compose -f docker-compose.postgres.yml up -d
+docker compose -f configs/docker/docker-compose.postgres.yml up -d
 ```
 
 ### 3. 接続確認
@@ -63,32 +67,32 @@ psql -h localhost -p 5433 -U postgres -d testdb -c "SELECT version();"
 
 ```bash
 # 全コンテナのステータス表示
-docker-compose -f docker-compose.postgres.yml ps
+docker compose -f configs/docker/docker-compose.postgres.yml ps
 
 # ログ表示
-docker-compose -f docker-compose.postgres.yml logs -f
+docker compose -f configs/docker/docker-compose.postgres.yml logs -f
 
 # 特定コンテナのログ
-docker-compose -f docker-compose.postgres.yml logs -f postgres-primary
+docker compose -f configs/docker/docker-compose.postgres.yml logs -f postgres-primary
 ```
 
 ### コンテナ停止・再起動
 
 ```bash
 # 全コンテナ停止
-docker-compose -f docker-compose.postgres.yml stop
+docker compose -f configs/docker/docker-compose.postgres.yml stop
 
 # 全コンテナ再起動
-docker-compose -f docker-compose.postgres.yml restart
+docker compose -f configs/docker/docker-compose.postgres.yml restart
 
 # 特定コンテナ再起動
-docker-compose -f docker-compose.postgres.yml restart postgres-primary
+docker compose -f configs/docker/docker-compose.postgres.yml restart postgres-primary
 
 # コンテナ削除（データ保持）
-docker-compose -f docker-compose.postgres.yml down
+docker compose -f configs/docker/docker-compose.postgres.yml down
 
 # コンテナとボリューム削除（データ削除）
-docker-compose -f docker-compose.postgres.yml down -v
+docker compose -f configs/docker/docker-compose.postgres.yml down -v
 ```
 
 ## テスト実行
@@ -203,7 +207,7 @@ docker volume inspect postgres_primary_data
 
 ```bash
 # 全ボリューム削除
-docker-compose -f docker-compose.postgres.yml down -v
+docker compose -f configs/docker/docker-compose.postgres.yml down -v
 
 # または個別削除
 docker volume rm postgres_primary_data
@@ -236,13 +240,13 @@ postgresql://postgres:postgres@postgres-secondary:5432/testdb
 
 ```bash
 # ログ確認
-docker-compose -f docker-compose.postgres.yml logs postgres-primary
+docker compose -f configs/docker/docker-compose.postgres.yml logs postgres-primary
 
 # ボリュームクリア（データ削除）
-docker-compose -f docker-compose.postgres.yml down -v
+docker compose -f configs/docker/docker-compose.postgres.yml down -v
 
 # 再起動
-docker-compose -f docker-compose.postgres.yml up -d
+docker compose -f configs/docker/docker-compose.postgres.yml up -d
 ```
 
 ### ポート競合
@@ -252,14 +256,14 @@ docker-compose -f docker-compose.postgres.yml up -d
 netstat -tulpn | grep 5432
 
 # 別ポート指定
-POSTGRES_PORT=5432 docker-compose -f docker-compose.postgres.yml up -d
+POSTGRES_PORT=5432 docker compose -f configs/docker/docker-compose.postgres.yml up -d
 ```
 
 ### 接続タイムアウト
 
 ```bash
 # ヘルスチェック確認
-docker-compose -f docker-compose.postgres.yml ps
+docker compose -f configs/docker/docker-compose.postgres.yml ps
 
 # コンテナのヘルスチェックログ確認
 docker inspect mcp-rs-postgres-primary | grep -A 10 "Health"
@@ -269,7 +273,7 @@ docker inspect mcp-rs-postgres-primary | grep -A 10 "Health"
 
 ```bash
 # Secondary ログ確認
-docker-compose -f docker-compose.postgres.yml logs postgres-secondary
+docker compose -f configs/docker/docker-compose.postgres.yml logs postgres-secondary
 
 # Primary でレプリケーションスロット確認
 psql -h localhost -p 5432 -U postgres -d postgres \
@@ -284,7 +288,7 @@ psql -h localhost -p 5432 -U postgres -d postgres \
 
 ### Primary 構成パラメータ
 
-`docker-compose.postgres.yml` の `POSTGRES_INITDB_ARGS` で調整：
+`configs/docker/docker-compose.postgres.yml` の `POSTGRES_INITDB_ARGS` で調整：
 
 ```yaml
 POSTGRES_INITDB_ARGS: >-
@@ -347,7 +351,7 @@ healthcheck:
 
 ### ログローテーション
 
-`docker-compose.postgres.yml` で設定：
+`configs/docker/docker-compose.postgres.yml` で設定：
 
 ```yaml
 logging:
@@ -361,10 +365,10 @@ logging:
 
 ```bash
 # リアルタイムログ
-docker-compose -f docker-compose.postgres.yml logs -f
+docker compose -f configs/docker/docker-compose.postgres.yml logs -f
 
 # 最新 100 行
-docker-compose -f docker-compose.postgres.yml logs --tail=100
+docker compose -f configs/docker/docker-compose.postgres.yml logs --tail=100
 ```
 
 ## 環境変数リファレンス
