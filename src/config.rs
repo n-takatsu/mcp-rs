@@ -863,7 +863,7 @@ impl WordPressConfig {
                 && (self.username.is_empty() || self.password.is_empty())
             {
                 return Err(EncryptionError::InvalidInput(
-                    "WordPress認証情報が設定されていません。username/passwordまたはencrypted_credentialsのいずれかを指定してください".to_string(),
+                    "WordPress認証情報が設定されていません。keyring・username/password・encrypted_credentialsのいずれかを指定してください".to_string(),
                 ));
             }
             return Ok(());
