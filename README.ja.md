@@ -133,7 +133,7 @@ copilot mcp add mcp-rs -- "C:/Program Files/MCP-rs/mcp-rs.exe" --config C:/Users
 ```
 
 - 資格情報は、資格情報ストア（`keyring`）に置きます。Copilot CLIは、`.vscode/mcp.json`を自分では読みません。VS Codeが、そこにあるサーバーを転送しますが、`${input:...}`（値の入力）を使うサーバーは転送しません
-- Copilot CLIがmcp-rsに渡す環境変数は、`PATH`と、`--env`で書いたものだけです（[GitHubのドキュメント](https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-mcp-servers)）。`${...}`を読む設定ファイル（`configs/production/claude-desktop.toml`等）や、`encrypted_credentials`（`WORDPRESS_MASTER_PASSWORD`）を使うときは、その変数を`--env`で渡します。`--env`の値は、そのまま`~/.copilot/mcp-config.json`に書かれます
+- Copilot CLIがmcp-rsに渡す環境変数は、手元の環境変数の一部と、`--env`で書いたものだけです。[GitHubのドキュメント](https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-mcp-servers)では`PATH`だけですが、Windowsでは`USERPROFILE`も渡っていました（mcp-rsが`%USERPROFILE%\.mcp-rs`にログを書いた）。自分で設定した変数は当てにできないので、`${...}`を読む設定ファイル（`configs/production/claude-desktop.toml`等）や、`encrypted_credentials`（`WORDPRESS_MASTER_PASSWORD`）を使うときは、その変数を`--env`で渡します。`--env`の値は、そのまま`~/.copilot/mcp-config.json`に書かれます
 - 実機で確かめたのは、Windowsの`keyring`です。macOS・Linuxはまだ確かめていません。Linuxでは、`DBUS_SESSION_BUS_ADDRESS`が無いと、Secret Serviceに届かないことがあります
 - 資格情報を使うmcp-rsを、ワークスペースの`.mcp.json`・`.github/mcp.json`に登録しないでください。リポジトリのフォルダにあり、リポジトリに入りうるファイルです（`.github/mcp.json`は入れる前提です）
 - 登録したら、VS Codeを起動し直し、新しいチャットを始めます。`copilot mcp list`、またはチャットで`mcp_rs_status`を呼んで確かめます
