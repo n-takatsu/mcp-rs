@@ -147,7 +147,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     読むので、コピーした`postgres`で起動できてしまう）。テスト環境
     （`configs/docker/docker-compose.postgres.yml`）は、空なら今までどおり
     `postgres`を使う。`docs/DOCKER_POSTGRES_GUIDE.md`は、テスト環境の
-    ファイルを指すように直した
+    ファイルを指すように直した。テスト環境のPostgreSQL（2つ）とpgAdminも、
+    `127.0.0.1`だけに公開するようにした（既定のパスワードは`postgres`と
+    `admin`）
   - `docker-compose.dev.yml`のPostgreSQLとRedisを、`127.0.0.1`だけに
     公開するようにした。以前は、同じネットワークの誰からも、ファイルに
     書いてあるパスワード（Redisはパスワード無し）で接続できた

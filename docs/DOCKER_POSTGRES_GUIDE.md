@@ -4,7 +4,7 @@ MCP-RS Phase 2 PostgreSQL テスト環境を Docker Compose で構築・管理�
 
 > **使うファイル**: このガイドは、テスト・開発用の `configs/docker/docker-compose.postgres.yml` を使います。リポジトリの直下の `docker-compose.postgres.yml` は別物で、`docker-compose.yml`（HTTPモードのmcp-rs）と一緒に使うPostgreSQLです。そちらは [DOCKER_GUIDE.md](DOCKER_GUIDE.md#docker-compose) を見てください。
 >
-> **パスワード**: テスト環境は、`POSTGRES_PASSWORD` が無いか空なら、`postgres` を使います（`.env.example` は空です）。誰でも知っているパスワードなので、ポートを外に公開する環境では、必ず自分のものに変えてください。
+> **パスワード**: テスト環境は、`POSTGRES_PASSWORD` が無いか空なら、`postgres` を使います（`.env.example` は空です）。pgAdminの既定のパスワードも `admin` です。どれも誰でも知っているパスワードなので、ポート（5432・5433・5050）は、このPCの中（`127.0.0.1`）だけに公開します（v0.24.0から。以前は、同じネットワークの誰からも接続できました）。ほかのPCから使うときは、ポートの指定を変え、パスワードも必ず自分のものに変えてください。
 
 ## 概要
 
