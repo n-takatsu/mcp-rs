@@ -594,6 +594,15 @@ pub struct HttpTransportConfig {
     /// transport sits directly behind a trusted reverse proxy. Defaults to
     /// `false`.
     pub ids_trust_forwarded_for: Option<bool>,
+    /// IP addresses or CIDR ranges of the reverse proxies in front of
+    /// mcp-rs (#543). Headers that a proxy sets (`X-Forwarded-Proto`,
+    /// `Forwarded`, the TLS version, `certificate_pin_header`,
+    /// `X-Forwarded-For`, `X-Real-IP`) are used only on connections from
+    /// these addresses. Required by `enforce_https` and certificate pinning
+    /// without `tls_enabled`, and by `ids_trust_forwarded_for`. Defaults to
+    /// empty.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trusted_proxies: Option<Vec<String>>,
     /// Reject binding/connections from non-loopback addresses. Defaults to
     /// `true` (see `configs/security/network-policy.toml`).
     pub network_policy_reject_external_connections: Option<bool>,
@@ -1547,6 +1556,7 @@ impl McpConfig {
                     anti_replay_enabled: Some(false),
                     ids_enabled: Some(false),
                     ids_trust_forwarded_for: Some(false),
+                    trusted_proxies: Some(vec!["127.0.0.1".to_string()]),
                     network_policy_reject_external_connections: Some(true),
                     network_policy_warn_on_external_bind: Some(true),
                     network_policy_ip_whitelist: Some(vec![]),
@@ -1785,6 +1795,7 @@ impl McpConfig {
                 anti_replay_enabled: http.anti_replay_enabled.unwrap_or(false),
                 ids_enabled: http.ids_enabled.unwrap_or(false),
                 ids_trust_forwarded_for: http.ids_trust_forwarded_for.unwrap_or(false),
+                trusted_proxies: http.trusted_proxies.clone().unwrap_or_default(),
                 enable_websocket_upgrade: http.enable_websocket_upgrade.unwrap_or(false),
                 websocket_max_connections: http.websocket_max_connections.unwrap_or(1000),
                 auth_enabled: http.auth_enabled.unwrap_or(false),

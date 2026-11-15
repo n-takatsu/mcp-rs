@@ -18,12 +18,15 @@ pub struct TimestampValidator {
     drift_tolerance: Duration,
 }
 
+/// Additional seconds allowed for clock drift, on top of the time window
+pub const DRIFT_TOLERANCE_SECS: u64 = 5;
+
 impl TimestampValidator {
     /// Create a new TimestampValidator
     pub fn new(time_window_secs: u64) -> Self {
         Self {
             time_window: Duration::from_secs(time_window_secs),
-            drift_tolerance: Duration::from_secs(5), // Additional 5 seconds for clock drift
+            drift_tolerance: Duration::from_secs(DRIFT_TOLERANCE_SECS),
         }
     }
 

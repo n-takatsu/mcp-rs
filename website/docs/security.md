@@ -173,6 +173,8 @@ Limits (v0.24.0 and later):
 - `request_timeout_seconds` limits the TLS handshake and the request headers as a whole. It also limits how long a kept-alive connection waits for its next request. For the request body, it limits each wait for more data, not the total: a client that keeps sending a little at a time can take longer in total. This applies only after the client has passed the checks above. It does not limit how long a tool call takes
 - On `/ws`, mcp-rs sends a ping every 30 seconds (or every half of `websocket_idle_timeout_seconds`, when that is shorter). Clients, browsers included, answer pings automatically, and the answers count as activity. So a client that is only quiet stays connected, and only a connection that answers nothing for `websocket_idle_timeout_seconds` is closed (close code 1001)
 - A `/ws` connection opened with an OAuth access token is closed when the token expires (`exp`, plus `leeway_seconds`), with close code 1008. Up to v0.23.0, the token was checked only when connecting
+- On `/ws`, each response must be sent within 10 seconds plus the time it takes at 64 KB/s (for a 10 MB response, about 170 seconds). Otherwise mcp-rs closes the connection, because a client that stops reading would keep mcp-rs waiting and hold a connection. On a connection slower than 64 KB/s (about 512 kbps, such as a weak mobile connection), a large response, such as a database query result of several MB, can close the connection. Up to v0.23.0, there was no limit
+- A request that is not valid JSON gets the JSON-RPC error `-32700` (Parse error), and a JSON value that is not a request, such as a batch (an array, which MCP does not use), gets `-32600` (Invalid Request), both with `"id": null`. Over HTTP, the status is 400. A JSON-RPC response sent by the client (no `method`, with `result` or `error`) gets no answer (202 over HTTP). This applies to STDIO, HTTP, and `/ws`. Up to v0.23.0, mcp-rs did not answer them, so the client waited until its own timeout
 - `max_connections` is shared by all clients, and there is no limit per client address. A client that is not allowed in can still hold connections until `request_timeout_seconds` passes, so many such connections can make other clients wait. When mcp-rs is reachable from the internet, put a reverse proxy in front of it that limits connections per address
 
 ## HTTP/WebSocket: Requests from Web Pages (`Origin`)
@@ -193,6 +195,29 @@ allowed_origins = ["https://app.example.com"]
 ```
 
 Because loopback origins are always accepted, a web page served from your own PC, on any port (for example a local development server, or another program's local web interface), can call mcp-rs's tools through your browser when no authentication is set up. If you run untrusted local web pages, or to be safe in general, set up API keys or OAuth: the `Origin` check does not replace authentication. Always enable authentication when the HTTP transport listens on anything other than loopback.
+
+## HTTP/WebSocket: Behind a Reverse Proxy
+
+When mcp-rs runs behind a reverse proxy that handles TLS, some settings read headers that the proxy adds to each request:
+
+| Setting | Header |
+|---------|--------|
+| `enforce_https` (without `tls_enabled`) | `X-Forwarded-Proto: https`, or `Forwarded: proto=https` |
+| `min_tls_version` (without `tls_enabled`) | `X-Forwarded-TLS-Version`, or `X-SSL-Protocol` |
+| `certificate_pinning_enabled` (without `tls_enabled`) | `certificate_pin_header` (default `x-tls-cert-sha256`) |
+| `ids_trust_forwarded_for` | `X-Forwarded-For`, or `X-Real-IP` |
+
+A client can send these headers too. List the proxy's addresses in `trusted_proxies`; mcp-rs uses these headers only on connections from those addresses, and ignores them on others (v0.24.0 and later):
+
+```toml
+[transport.http]
+enforce_https = true
+trusted_proxies = ["127.0.0.1", "10.0.0.0/24"]   # IP addresses or CIDR ranges
+```
+
+- Without `trusted_proxies`, mcp-rs does not start with `enforce_https` or `certificate_pinning_enabled` (unless `tls_enabled = true`, where mcp-rs itself handles TLS and does not need the headers), or with `ids_trust_forwarded_for`. Without it, the TLS version header is ignored. Up to v0.23.0, mcp-rs used these headers from any client, so a client connecting over plain HTTP could pass `enforce_https` by adding `X-Forwarded-Proto: https`
+- Make sure that clients cannot reach mcp-rs except through the proxy (for example, with `network_policy_ip_whitelist`), and that the proxy replaces these headers instead of passing on the ones the client sent
+- For `X-Forwarded-For`, mcp-rs takes the rightmost address that is not in `trusted_proxies`. A proxy adds the address it received the request from to the end, so the addresses to its left are whatever the client sent. Up to v0.23.0, mcp-rs took the leftmost one, so a client could make the intrusion detection block another address
 
 ## HTTP/WebSocket API Key Authentication
 
@@ -289,6 +314,24 @@ resource = "https://mcp.example.com/mcp"         # the URL clients use to reach 
 "mcp:read" = ["@read_only"]
 "mcp:write" = ["*"]
 ```
+
+## HTTP/WebSocket: Replay Protection and Intrusion Detection
+
+Both are off by default.
+
+```toml
+[transport.http]
+# anti_replay_enabled = false   # require X-Nonce and X-Timestamp on each request
+# ids_enabled = false           # check requests for attacks, and block the client's address for a while
+```
+
+`anti_replay_enabled` requires each request to have `X-Timestamp` (RFC 3339, within 35 seconds of the server's clock) and `X-Nonce` (a value the same caller has not used while that timestamp is accepted: mcp-rs remembers a nonce for 70 seconds). On `/ws`, each message has `timestamp` and `nonce` at the top level of its JSON instead. This is an additional check, not a replacement for TLS and authentication: nothing signs the nonce and the timestamp, so they only stop a request from being sent again unchanged, and someone who can read a request can send its content again with a new nonce and timestamp.
+
+- mcp-rs checks the timestamp first, and remembers a nonce only when the timestamp is valid (v0.24.0 and later). Up to v0.23.0, a request with an old timestamp also used up a place in the cache
+- Nonces are remembered per caller: the API key or token, or the client's address without authentication (behind a proxy in `trusted_proxies`, the address from `X-Forwarded-For`, as for the intrusion detection). One caller can keep at most 10,000, and all callers 100,000. Up to v0.23.0, they shared one cache, so one client could fill it and make every request fail, and nonces were remembered for 5 minutes
+- With many addresses (for example IPv6), a client can still fill the whole cache. Remembering nonces only for 70 seconds makes this harder, but does not prevent it: limit connections per address in front of mcp-rs, or use authentication
+
+`ids_enabled` checks each request for attack patterns (such as SQL injection) and unusual behavior, and blocks the client's address for 30 minutes, or permanently for the most severe ones. It tells callers apart by the API key or token, or by the client's address without authentication. Up to v0.23.0, it used the `X-User-ID` header, which the client could set to anything. What it remembers about callers and addresses has a limit (10,000 each) and is cleaned up every 5 minutes. Behind a reverse proxy, see [Behind a Reverse Proxy](#httpwebsocket-behind-a-reverse-proxy) for `ids_trust_forwarded_for`.
 
 ## Audit Log
 

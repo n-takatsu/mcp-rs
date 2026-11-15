@@ -145,6 +145,10 @@ pub struct RequestData {
     pub body: Option<Vec<u8>>,
     /// 送信元IP
     pub source_ip: Option<IpAddr>,
+    /// 認証した呼び出し元（APIキーの名前、トークンの主体等、#543）。
+    /// 認証していなければ`None`で、送信元IPで見分ける。リクエストの
+    /// ヘッダー（`X-User-ID`等）は、クライアントが何でも書けるので使わない
+    pub caller_id: Option<String>,
     /// タイムスタンプ
     pub timestamp: DateTime<Utc>,
 }

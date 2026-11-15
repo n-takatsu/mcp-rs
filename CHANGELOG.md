@@ -114,6 +114,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- 低い指摘のまとめ（#543）の4つ目: HTTP
+  - `/ws`で応答を送る時間に、上限を付けた（10秒と、64KB/秒で送る時間の
+    和。10MBなら約170秒）。時間内に送れなければ、接続を閉じる。以前は、
+    受信を止めたクライアントに大きな応答を送ると、送信で止まり続け、接続の
+    枠を持ち続けた。その間、無通信の上限・トークンの期限も働かなかった。
+    64KB/秒（約512kbps）より遅い回線では、大きな応答で接続が切れることが
+    ある。Windowsでは、OSが大きな送信もすぐ受け取るので、送信では止まらず、
+    読まない相手は無通信の上限で閉じられる
+  - プロキシの付けるヘッダー（`X-Forwarded-Proto`・`Forwarded`・TLSの版・
+    証明書のフィンガープリント・`X-Forwarded-For`・`X-Real-IP`）を、
+    新しい設定`trusted_proxies`（IPアドレスかCIDR）の接続元からだけ使う
+    ようにした。以前は、どの接続元のものも信じたので、平文のHTTPで
+    `X-Forwarded-Proto: https`を付ければ`enforce_https`を通れ、証明書の
+    ピン留めのヘッダーも書けた
+  - **互換性のない変更**: `tls_enabled`無しの`enforce_https`・証明書の
+    ピン留めと、`ids_trust_forwarded_for`は、`trusted_proxies`が無いと
+    起動しない。プロキシのアドレスを`trusted_proxies`に書く
+  - IDSで、`X-Forwarded-For`の、信頼するプロキシでないいちばん右の
+    アドレスを使うようにした。以前はいちばん左（クライアントが書ける部分）
+    を使ったので、ほかのアドレスをブロックさせられた
+  - IDSで、呼び出し元を`X-User-ID`ヘッダーではなく、認証した呼び出し元
+    （APIキー・トークン）か、接続元のIPで見分けるようにした。ヘッダーは
+    クライアントが何でも書けるので、他人の名前で記録させたり、毎回違う値で
+    記録を際限なく増やしたりできた
+  - IDSが覚える呼び出し元・アドレス・集約したアラートの数に、上限
+    （それぞれ1万）を付けた。超えると、古いものから消す。古い記録の掃除も、
+    5分ごとに呼ぶようにした（以前は、掃除の関数があっても呼ばれていなかった）
+  - リプレイ攻撃対策で、タイムスタンプをnonceより先に確かめるようにした。
+    以前は、古いタイムスタンプのリクエストもnonceのキャッシュに入った
+  - リプレイ攻撃対策のnonceのキャッシュを、呼び出し元（APIキー・トークン、
+    無ければ接続元のIP）ごとに分けた。1つの呼び出し元は1万まで。以前は全員で
+    1つ（10万）を使い、1つのクライアントが埋めると、全員のリクエストが
+    失敗した。`trusted_proxies`のプロキシの後ろでは、`X-Forwarded-For`の
+    クライアントのアドレスで分ける。nonceを覚える時間は、タイムスタンプを
+    受け付ける間（既定で70秒）に縮めた（以前は5分）。nonceは要求の内容に
+    結び付かない（署名しない）ので、補助的なものだと文書に書いた
+  - JSONとして読めないメッセージに、JSON-RPCの`-32700`（Parse error）を、
+    JSONだがリクエストでないもの（バッチ等）に`-32600`（Invalid Request）を
+    返すようにした（STDIO・HTTP・`/ws`、HTTPでは400）。以前は何も返さず、
+    クライアントは自分のタイムアウトまで待った。クライアントからの応答
+    （`method`が無く、`result`か`error`がある）には、これまでどおり答えない
+  - **互換性のない変更（ライブラリ）**: `HttpConfig`・`HttpTransportConfig`に
+    `trusted_proxies`、IDSの`RequestData`に`caller_id`、
+    `AntiReplayConfig`に`max_nonce_cache_per_caller`、
+    `NetworkMonitorConfig`に`max_tracked_ips`、`BehavioralConfig`に
+    `max_baselines`を足した。構造体を直接作っているコードは、これらを
+    足すか、`..Default::default()`を使う必要がある。`NonceManager`は、
+    同じnonceでも呼び出し元（`user_id`）が違えば受け付ける
 - 低い指摘のまとめ（#543）の3つ目: WordPress
   - `wordpress_health_check`は、HTTPモードで認証していない呼び出し元には、
     ログのファイルのパスを出さないようにした（`mcp_rs_status`と同じ）

@@ -28,6 +28,7 @@
 //!     headers: HashMap::new(),
 //!     body: None,
 //!     source_ip: Some("192.168.1.1".parse().unwrap()),
+//!     caller_id: None,
 //!     timestamp: Utc::now(),
 //! };
 //!

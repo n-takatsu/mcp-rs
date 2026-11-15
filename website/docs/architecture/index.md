@@ -35,6 +35,7 @@ Requests over HTTP pass these checks before they reach the server (`src/transpor
 | Origin header (DNS rebinding protection) | `allowed_origins` |
 | Network policy (allowed client addresses) | `network_policy_*` |
 | TLS, minimum TLS version, mTLS | `tls_enabled`, `min_tls_version`, `mtls_enabled` |
+| Headers from a reverse proxy (`X-Forwarded-*`), used only from these addresses | `trusted_proxies` |
 | Anti-replay and intrusion detection | `anti_replay_enabled`, `ids_enabled` |
 | Authentication: API key or OAuth 2.1 access token | `auth_enabled`, `api_keys`, `[transport.http.oauth]` |
 | Tool limits per API key or token | `tools` (for example `@read_only`) |
