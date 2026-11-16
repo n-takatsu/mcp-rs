@@ -160,7 +160,7 @@ Then start mcp-rs with a config file. Ready-made config files are in `configs/pr
 
 From an MCP client (for example, ask Claude), call the `mcp_rs_status` tool to see the version, the config file in use, where the log and audit log are written, and the state of each plugin (v0.19.2 and later).
 
-To check a config file without an MCP client, run `mcp-rs check --config <path>` (v0.25.0 and later). It reads the file the same way mcp-rs does when it starts, and shows whether it loads (the line and the reason of an error), whether the WordPress credentials can be read, whether mcp-rs can reach the WordPress site and sign in (read-only requests), and where the log and the audit log are written. It exits with 1 when it finds an error. Passwords, tokens and user names are not shown. `--offline` skips the connection to the site. `[database]` and `[[plugins]]` are not checked yet:
+To check a config file without an MCP client, run `mcp-rs check --config <path>` (v0.25.0 and later). It reads the file the same way mcp-rs does when it starts, and shows whether it loads (the line and the reason of an error), whether the WordPress credentials can be read, whether mcp-rs can reach the WordPress site and sign in (read-only requests), and where the log and the audit log are written. It exits with 1 when it finds an error. Passwords, tokens and user names are not shown. Like starting mcp-rs, it creates the log and audit log folders and files if they are missing, and adds a `checked` line to the log file. `--offline` skips the connection to the site. `[database]` and `[[plugins]]` are not checked yet:
 
 ```bash
 mcp-rs check --config C:/Users/you/AppData/Roaming/Claude/mcp-rs/mcp-config.toml

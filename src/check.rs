@@ -128,9 +128,12 @@ when it starts:
   - the WordPress credentials can be read (keyring, ${{VAR}},
     encrypted_credentials)
   - mcp-rs can reach the WordPress site and sign in (read-only requests)
-  - where the log and the audit log are written. To make sure the log can
-    be written, a \"checked\" line is added to the log file
+  - where the log and the audit log are written
 Passwords, tokens and user names are not shown.
+
+Like starting mcp-rs, it creates the log and audit log folders and files
+if they do not exist, and adds a \"checked\" line to the log file to make
+sure it can be written. Nothing is sent to the site except read requests.
 
 Not checked yet: [database], [[plugins]], and the HTTP mode settings.
 
@@ -187,10 +190,11 @@ fn check_config(path: Option<&str>, report: &mut Report) -> Option<(McpConfig, b
                     .map(|p| p.display().to_string())
                     .unwrap_or_else(|| "(environment variables only)".to_string());
                 report.push(Status::Ok, "config file", file);
+                // 置き場所（平文か等）は、段に分けて読む`--config`のときだけ見る
                 report.push(
                     Status::Ok,
                     "WordPress credentials",
-                    "resolved together with the config file",
+                    "resolved together with the config file (run with --config to see where they are kept)",
                 );
                 Some((config, true))
             }
