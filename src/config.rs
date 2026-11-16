@@ -82,7 +82,7 @@ pub struct AuditLogSettings {
     pub max_files: Option<u32>,
 }
 
-/// データベースの設定（`[database]`、#453）。今はPostgreSQLだけ。
+/// データベースの設定（`[database]`、#453）。PostgreSQLと、MySQL・MariaDB（#527）。
 ///
 /// 既定では読み取りだけ: `execute_query`は読み取り専用のトランザクションで
 /// 実行し、書き込みのツール（`execute_command`）は出さない。
@@ -92,17 +92,19 @@ pub struct AuditLogSettings {
 pub struct DatabaseSettings {
     /// `false`で使わない。省略時は`true`（`[database]`を書けば使う）
     pub enabled: Option<bool>,
-    /// エンジン。今は`"postgresql"`だけ
+    /// エンジン: `"postgresql"`・`"mysql"`・`"mariadb"`（#527）
     pub engine: String,
     /// 省略時は`localhost`
     pub host: Option<String>,
-    /// 省略時は5432
+    /// 省略時は、PostgreSQLは5432、MySQL・MariaDBは3306
     pub port: Option<u16>,
     pub database: String,
     pub username: String,
     /// 省略時は空（パスワード無し）。`${PGPASSWORD}`のように環境変数で渡せる
     pub password: Option<String>,
-    /// TLS: `disable`・`prefer`（省略時）・`require`・`verify-ca`・`verify-full`
+    /// TLS: `disable`・`prefer`（省略時）・`require`・`verify-ca`・`verify-full`。
+    /// PostgreSQLは`allow`も使える。MySQLでは、PostgreSQLと同じ意味で使う
+    /// （`verify-full`は、MySQLの`VERIFY_IDENTITY`）
     pub ssl_mode: Option<String>,
     /// サーバーの証明書を確かめるCAのファイル（PEM、#539）。非公開のCA
     /// （RDS等）で`verify-ca`・`verify-full`を使うとき。相対パスは設定
@@ -159,7 +161,19 @@ impl DatabaseSettings {
     }
 
     pub fn port(&self) -> u16 {
-        self.port.unwrap_or(5432)
+        self.port
+            .unwrap_or(if self.is_mysql() { 3306 } else { 5432 })
+    }
+
+    /// `engine = "mysql"`か`"mariadb"`か（#527）。どちらも同じ実装・
+    /// 設定（ポート3306、`ssl_mode`に`allow`が無い）を使う
+    pub fn is_mysql(&self) -> bool {
+        self.engine.eq_ignore_ascii_case("mysql") || self.is_mariadb()
+    }
+
+    /// `engine = "mariadb"`か（#527）
+    pub fn is_mariadb(&self) -> bool {
+        self.engine.eq_ignore_ascii_case("mariadb")
     }
 
     pub fn allow_write(&self) -> bool {
@@ -220,9 +234,9 @@ impl DatabaseSettings {
 
     /// 書いた値を確かめる。起動しない理由を返す
     pub fn validate(&self) -> Result<(), String> {
-        if !self.engine.eq_ignore_ascii_case("postgresql") {
+        if !self.engine.eq_ignore_ascii_case("postgresql") && !self.is_mysql() {
             return Err(format!(
-                "database.engine = \"{}\" is not supported (supported: \"postgresql\")",
+                "database.engine = \"{}\" is not supported (supported: \"postgresql\", \"mysql\", \"mariadb\")",
                 self.engine
             ));
         }
@@ -241,11 +255,15 @@ impl DatabaseSettings {
                 "verify-ca",
                 "verify-full",
             ];
-            if !MODES.contains(&mode.as_str()) {
+            // MySQLには、`allow`（暗号化せずに試し、だめならTLS）が無い
+            const MYSQL_MODES: &[&str] =
+                &["disable", "prefer", "require", "verify-ca", "verify-full"];
+            let modes = if self.is_mysql() { MYSQL_MODES } else { MODES };
+            if !modes.contains(&mode.as_str()) {
                 return Err(format!(
                     "database.ssl_mode = \"{}\" is not valid (use one of: {})",
                     mode,
-                    MODES.join(", ")
+                    modes.join(", ")
                 ));
             }
         }
@@ -863,7 +881,7 @@ impl WordPressConfig {
                 && (self.username.is_empty() || self.password.is_empty())
             {
                 return Err(EncryptionError::InvalidInput(
-                    "WordPress認証情報が設定されていません。username/passwordまたはencrypted_credentialsのいずれかを指定してください".to_string(),
+                    "WordPress認証情報が設定されていません。keyring・username/password・encrypted_credentialsのいずれかを指定してください".to_string(),
                 ));
             }
             return Ok(());
@@ -1380,6 +1398,35 @@ impl McpConfig {
             audit.max_files = max_files;
         }
         audit
+    }
+
+    /// `--config`で指定したファイルを読む。ファイルが無いとき・TOMLの誤りは、
+    /// 値を伏せた理由を返す（#543）。`${VAR}`の展開と資格情報の解決は、
+    /// `resolve_wordpress_credentials`・`expand_http_api_keys`で行う。
+    /// 起動と`mcp-rs check`（#565）が同じ順で呼び、checkは段階ごとに結果を
+    /// 出す
+    pub fn read_file(path: &str) -> Result<Self, String> {
+        if !std::path::Path::new(path).exists() {
+            return Err(format!("設定ファイルが存在しません: {}", path));
+        }
+        let content =
+            std::fs::read_to_string(path).map_err(|e| format!("could not read {path}: {e}"))?;
+        let mut config: McpConfig = toml::from_str(&content)
+            .map_err(|e| with_config_hint(describe_toml_error(&e, &content), &content))?;
+        // 監査ログの既定の書き込み先（設定ファイルと同じフォルダ）に使う（#416）
+        config.config_file = std::path::absolute(path).ok();
+        Ok(config)
+    }
+
+    /// `read_file`で読んだ設定の、WordPressの`${VAR}`を展開し、資格情報
+    /// （`keyring`・`encrypted_credentials`・平文）を解決する。参照した
+    /// 環境変数が無ければ、項目と変数名を返す（#454）
+    pub fn resolve_wordpress_credentials(&mut self) -> Result<(), String> {
+        if let Some(wp_config) = self.handlers.wordpress.as_mut() {
+            Self::expand_wordpress_config(wp_config).map_err(|e| e.to_string())?;
+            wp_config.resolve_credentials().map_err(|e| e.to_string())?;
+        }
+        Ok(())
     }
 
     /// 設定ファイルから読み込み、環境変数で上書き
@@ -2250,10 +2297,18 @@ start_timeout_seconds = 300
         for (invalid, expected) in [
             (
                 DatabaseSettings {
-                    engine: "mysql".to_string(),
+                    engine: "sqlite".to_string(),
                     ..valid.clone()
                 },
                 "not supported",
+            ),
+            (
+                DatabaseSettings {
+                    engine: "mysql".to_string(),
+                    ssl_mode: Some("allow".to_string()),
+                    ..valid.clone()
+                },
+                "ssl_mode",
             ),
             (
                 DatabaseSettings {
@@ -2280,6 +2335,33 @@ start_timeout_seconds = 300
             let err = invalid.validate().unwrap_err();
             assert!(err.contains(expected), "{err}");
         }
+        // MySQL（#527）: 既定のポートは3306。`allow`以外のssl_modeを使える
+        let mysql = DatabaseSettings {
+            engine: "MySQL".to_string(),
+            ssl_mode: Some("verify-full".to_string()),
+            ..valid.clone()
+        };
+        assert!(mysql.validate().is_ok());
+        assert!(mysql.is_mysql());
+        assert_eq!(mysql.port(), 3306);
+        assert_eq!(valid.port(), 5432);
+        assert!(mysql
+            .describe()
+            .starts_with("MySQL reader@localhost:3306/app"));
+        // MariaDB（#527）も、MySQLと同じ既定・ssl_mode
+        let mariadb = DatabaseSettings {
+            engine: "mariadb".to_string(),
+            ..valid.clone()
+        };
+        assert!(mariadb.validate().is_ok());
+        assert!(mariadb.is_mysql() && mariadb.is_mariadb());
+        assert!(!mysql.is_mariadb());
+        assert_eq!(mariadb.port(), 3306);
+        let mariadb_allow = DatabaseSettings {
+            ssl_mode: Some("allow".to_string()),
+            ..mariadb
+        };
+        assert!(mariadb_allow.validate().is_err());
         // 0や省略は既定値
         let zero = DatabaseSettings {
             max_rows: Some(0),

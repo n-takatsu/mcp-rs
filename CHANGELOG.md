@@ -7,6 +7,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.25.0] - 2026-11-17
+
+### Added
+
+- `[database]`で、MySQL（8.0以降）を使えるようにした（`engine = "mysql"`、
+  #527）。PostgreSQLと同じツール・上限・監査ログで、既定は読み取りだけ。
+  パラメーターは`?`。`execute_query`は`START TRANSACTION READ ONLY`の中で
+  実行してロールバックし、SELECTの時間は`MAX_EXECUTION_TIME`で、それ以外は
+  別の接続からの`KILL QUERY`で止める。行数・バイト数の上限に達したら、
+  残りを受け取らずに接続を閉じる。プールに戻す接続はリセットする
+  （`COM_RESET_CONNECTION`）。TLSは`ssl_mode`（`allow`以外）で、
+  `ssl_root_cert`を書いたときはそのCAだけを信頼する。`get_schema`は
+  外部キー・インデックス・ビューも返し、`execute_command`は
+  `last_insert_id`も返す。既定のビルド・配るバイナリ・Dockerイメージに
+  含める（`mysql-backend`を既定の機能にした）
+- `[database]`で、MariaDB（10.6以降）を使えるようにした（`engine = "mariadb"`、
+  #527）。MySQLと同じ実装・上限で、SELECTの時間は`max_statement_time`で止める
+  （MariaDBには`MAX_EXECUTION_TIME`が無い）。MySQLかMariaDBかは、つないだ
+  サーバーの版で決めるので、`engine = "mysql"`のままMariaDBにつないでも動く。
+  MariaDBの`JSON`は文字列の型なので、文字列で返す。MariaDBだけが実行する
+  コメント（`/*M! … */`）は、中身を検査できないので拒否する
+
+- リリースに、ビルド済みのmcp-rsを付ける（#564）。Windows（x64）・macOS
+  （Apple Silicon）・Linux（x64、glibc 2.35以降）。タグで動く
+  `release-binaries.yml`が作り、それぞれの`.sha256`と、まとめた`SHA256SUMS`
+  も付ける。署名はしない。READMEに、ダウンロード・SHA256での確かめ方・
+  止められたときの開き方を書き、置き場所の例を、管理者の権限の要らない
+  `~/.mcp-rs/bin`（Windowsは`%USERPROFILE%\.mcp-rs\bin`）にした
+
+- `mcp-rs check [--config <path>] [--offline]`: MCPのクライアントを使わずに、
+  設定を確かめるコマンド（#565）。起動と同じ読み方で、設定ファイルが読めるか
+  （誤りの行と理由）、WordPressの資格情報を読めるか、サイトにつながり認証が
+  通るか（読み取りのリクエストだけ）、ログと監査ログを書けるかを表示する。
+  誤りがあれば終了コード1。パスワード・トークン・ユーザー名は表示しない。
+  `[database]`・`[[plugins]]`・HTTPモードの設定は、まだ確かめない。起動と
+  同じく、ログ・監査ログのフォルダとファイルが無ければ作り、ログファイルに
+  `checked`の見出しの行を書く
+
+### Changed
+
+- VS Code（GitHub Copilot）のチャットからmcp-rsを使う手順を、READMEと
+  websiteのガイドに書いた（#521）。Copilot CLIに`copilot mcp add`で登録し、
+  資格情報は資格情報ストアから読む。mcp-rsと関係の無い
+  `.vscode/mcp.json.example`（GitHubのMCPサーバーの例）は削除した
+- WordPressの資格情報が無いときのエラーで、`keyring`も選べることを示す
+  ようにした
+
+### Fixed
+
+- `wordpress_health_check`（と`mcp-rs check`）で、サイトに届くかを、認証の
+  要らない`/wp-json/`で確かめるようにした（PR #568のレビュー）。以前は
+  管理者だけが読める`/wp-json/wp/v2/settings`を見ていたので、投稿者・寄稿者の
+  アカウントでは、届いているのに「届かない」となり、残りの確かめを飛ばして
+  いた。設定（管理者のメールアドレス等）は、読めたときだけ表示する
+  `/wp-json/`は、まず認証情報を付けずに読み、401・403なら付けて読み直す
+  （RESTをログインした人だけに開くサイトのため）
+
 ## [0.24.0] - 2026-11-15
 
 ### Added

@@ -10,6 +10,7 @@
 // （rust-analyzer）にも同じ扱いをさせるためクレート単位で許可する。
 #![allow(clippy::double_must_use)]
 
+pub mod check;
 pub mod cli_args;
 pub mod config;
 pub mod error;

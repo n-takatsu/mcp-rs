@@ -1,0 +1,38 @@
+# mcp-rs: connect to a MariaDB database (#527, v0.25.0 and later)
+#
+# Copy this section into your mcp-rs configuration file. MCP clients then get
+# the tools execute_query and get_schema (read-only). Write ? for parameters.
+# See https://n-takatsu.github.io/mcp-rs/docs/database/#mariadb
+#
+# Connect with a user that can only read what the AI client should see. Do
+# not grant FILE (LOAD_FILE() reads files on the database server):
+#   CREATE USER 'mcp_reader'@'%' IDENTIFIED BY '...';
+#   GRANT SELECT ON app.* TO 'mcp_reader'@'%';
+
+[database]
+engine = "mariadb"
+host = "localhost"
+port = 3306
+database = "app"
+username = "mcp_reader"
+# Read from the environment when mcp-rs starts. If it is not set, mcp-rs
+# starts without the database tools and shows the reason in mcp_rs_status
+password = "${MCP_DB_PASSWORD}"
+# disable, prefer (default), require, verify-ca, verify-full.
+# Use verify-full when the database is on another machine. The certificate
+# that MariaDB 11.4 and later generate themselves is not signed by a CA
+ssl_mode = "prefer"
+# CA that signed the server certificate, for verify-ca and verify-full with a
+# private CA (relative to this file's folder). Only this CA is then trusted
+# ssl_root_cert = "certs/ca.pem"
+
+# true also offers execute_command (one INSERT, UPDATE, or DELETE at a time)
+allow_write = false
+# Rows returned by execute_query at most
+max_rows = 1000
+# Size of the execute_query result at most (bytes, about 10 MB)
+max_result_bytes = 10485760
+# Time limit of one SQL statement
+query_timeout_seconds = 30
+# Connections in the pool at most
+max_connections = 5

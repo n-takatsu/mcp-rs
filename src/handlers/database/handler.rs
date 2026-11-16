@@ -90,6 +90,8 @@ pub struct DatabaseToolOptions {
     /// 行は返さず、`truncated`を`true`にする。1行目だけで超えるときは、
     /// 大きな値を切り詰める
     pub max_result_bytes: usize,
+    /// エンジン。ツールの説明（パラメーターの書き方等）を合わせる（#527）
+    pub database_type: DatabaseType,
 }
 
 impl Default for DatabaseToolOptions {
@@ -98,6 +100,7 @@ impl Default for DatabaseToolOptions {
             allow_write: false,
             max_rows: 1000,
             max_result_bytes: crate::config::DatabaseSettings::DEFAULT_MAX_RESULT_BYTES as usize,
+            database_type: DatabaseType::PostgreSQL,
         }
     }
 }
@@ -202,11 +205,28 @@ impl DatabaseHandler {
     /// 失敗したら、起動時のログと`mcp_rs_status`に出す理由を返す（パスワード
     /// は含めない）
     pub async fn from_settings(settings: &crate::config::DatabaseSettings) -> Result<Self, String> {
+        use crate::handlers::database::engines::{
+            OPTION_BYTE_LIMIT, OPTION_FETCH_LIMIT, OPTION_SSL_ROOT_CERT,
+        };
         use crate::handlers::database::types::{ConnectionConfig, FeatureConfig, PoolConfig};
 
         settings.validate()?;
-        use crate::handlers::database::engines::postgresql::{
-            pg_connection, OPTION_BYTE_LIMIT, OPTION_FETCH_LIMIT, OPTION_SSL_ROOT_CERT,
+        // MySQL・MariaDB（#527）。`mysql-backend`無しでビルドしたmcp-rsでは
+        // 使えない
+        let database_type = if settings.is_mysql() {
+            if !cfg!(feature = "mysql-backend") {
+                return Err(
+                    "this build of mcp-rs does not include MySQL/MariaDB support (build it with --features mysql-backend)"
+                        .to_string(),
+                );
+            }
+            if settings.is_mariadb() {
+                DatabaseType::MariaDB
+            } else {
+                DatabaseType::MySQL
+            }
+        } else {
+            DatabaseType::PostgreSQL
         };
         let max_rows = settings.max_rows() as usize;
         let max_result_bytes = usize::try_from(settings.max_result_bytes()).unwrap_or(usize::MAX);
@@ -221,7 +241,7 @@ impl DatabaseHandler {
             }
         }
         let config = DatabaseConfig {
-            database_type: DatabaseType::PostgreSQL,
+            database_type: database_type.clone(),
             connection: ConnectionConfig {
                 host: settings.host().to_string(),
                 port: settings.port(),
@@ -252,22 +272,41 @@ impl DatabaseHandler {
                 allow_write: settings.allow_write(),
                 max_rows,
                 max_result_bytes,
+                database_type: database_type.clone(),
             })
             .with_status_line(settings.describe());
-        // TLSの設定を確かめる（#539）。環境変数（`PGSSLMODE`等）を反映した
-        // 後の値で確かめる。`ssl_root_cert`が使われない設定なら起動しない。
-        // 通信を守れない設定なら、警告する
-        let connect = pg_connection::connect_options(&config.connection)
-            .map_err(|e| format!("cannot set up {}: {}", settings.describe(), e))?;
-        pg_connection::check_ssl_root_cert(
-            config.connection.options.contains_key(OPTION_SSL_ROOT_CERT),
-            &connect,
-        )?;
-        if let Some(warning) = pg_connection::weak_tls_warning(&connect) {
-            warn!("{}", warning);
+        // TLSの設定を確かめる（#539）。`ssl_root_cert`が使われない設定なら
+        // 起動しない。通信を守れない設定なら、警告する
+        match database_type {
+            #[cfg(feature = "mysql-backend")]
+            DatabaseType::MySQL | DatabaseType::MariaDB => {
+                use crate::handlers::database::engines::mysql::engine as mysql;
+                mysql::check_ssl_root_cert(&config.connection)?;
+                if let Some(warning) = mysql::weak_tls_warning(&config.connection) {
+                    warn!("{}", warning);
+                }
+            }
+            _ => {
+                // 環境変数（`PGSSLMODE`等）を反映した後の値で確かめる
+                use crate::handlers::database::engines::postgresql::pg_connection;
+                let connect = pg_connection::connect_options(&config.connection)
+                    .map_err(|e| format!("cannot set up {}: {}", settings.describe(), e))?;
+                pg_connection::check_ssl_root_cert(
+                    config.connection.options.contains_key(OPTION_SSL_ROOT_CERT),
+                    &connect,
+                )?;
+                if let Some(warning) = pg_connection::weak_tls_warning(&connect) {
+                    warn!("{}", warning);
+                }
+            }
         }
+        let engine_id = match database_type {
+            DatabaseType::MySQL => "mysql",
+            DatabaseType::MariaDB => "mariadb",
+            _ => "postgresql",
+        };
         handler
-            .add_database("postgresql".to_string(), config)
+            .add_database(engine_id.to_string(), config)
             .await
             .map_err(|e| format!("cannot set up {}: {}", settings.describe(), e))?;
         handler
@@ -972,13 +1011,37 @@ impl McpHandler for DatabaseHandler {
     }
 
     async fn list_tools(&self) -> Result<Vec<Tool>, McpError> {
+        let database_type = &self.tool_options.database_type;
+        let mysql = matches!(database_type, DatabaseType::MySQL | DatabaseType::MariaDB);
+        let engine_name = if *database_type == DatabaseType::MariaDB {
+            "MariaDB"
+        } else {
+            "MySQL"
+        };
+        let params_description = if mysql {
+            // MySQL・MariaDB（#527）は`?`。文字列は、データベースが列の型に
+            // 変換する
+            format!("Values for the ? placeholders in the SQL, in order (bound as parameters, never inserted into the SQL text). {engine_name} converts strings to the column type, so values returned by execute_query (dates as 'YYYY-MM-DD HH:MM:SS', DECIMAL and JSON as text) can be passed back as they are. Binary values (BLOB, VARBINARY) are returned as base64; to pass one, use FROM_BASE64(?) in the SQL")
+        } else {
+            "Values for $1, $2, ... in the SQL (bound as parameters, never inserted into the SQL text). Strings are converted to the type PostgreSQL expects for that parameter (uuid, date, timestamp, numeric, json, bytea as base64, ...), so values returned by execute_query can be passed back as they are. Strings also work for text and enum columns. For other types (interval, money, inet, arrays, ...), pass a string and cast it through text in the SQL, e.g. $1::text::interval".to_string()
+        };
         let params_schema = json!({
             "type": "array",
-            "description": "Values for $1, $2, ... in the SQL (bound as parameters, never inserted into the SQL text). Strings are converted to the type PostgreSQL expects for that parameter (uuid, date, timestamp, numeric, json, bytea as base64, ...), so values returned by execute_query can be passed back as they are. Strings also work for text and enum columns. For other types (interval, money, inet, arrays, ...), pass a string and cast it through text in the SQL, e.g. $1::text::interval",
+            "description": params_description,
             "items": {
                 "type": ["null", "boolean", "number", "string"]
             }
         });
+        let cast_hint = if mysql {
+            "cast such columns to text with CAST(column AS CHAR)"
+        } else {
+            "cast such columns to text"
+        };
+        let schema_scope = if mysql {
+            "the configured database"
+        } else {
+            "schema public"
+        };
         let max_rows = self.tool_options.max_rows;
         let max_result_bytes = self.tool_options.max_result_bytes;
         let mut tools = vec![
@@ -991,7 +1054,7 @@ impl McpHandler for DatabaseHandler {
                      At most {max_rows} rows and about {max_result_bytes} bytes are returned \
                      (truncated is true when there were more, and a value too large on its own is cut): \
                      use LIMIT, WHERE, or aggregates for large tables, and substring() for large values. \
-                     Values of types that cannot be shown are replaced by a note; cast such columns to text."
+                     Values of types that cannot be shown are replaced by a note; {cast_hint}."
                 ),
                 input_schema: json!({
                     "type": "object",
@@ -1014,7 +1077,7 @@ impl McpHandler for DatabaseHandler {
             Tool {
                 name: "get_schema".to_string(),
                 title: Some("Show the database schema".to_string()),
-                description: "List the tables of the configured database (schema public) with their columns, types, and primary keys.".to_string(),
+                description: format!("List the tables of the configured database ({schema_scope}) with their columns, types, primary keys, foreign keys, and indexes."),
                 input_schema: json!({
                     "type": "object",
                     "properties": {}
@@ -1031,7 +1094,10 @@ impl McpHandler for DatabaseHandler {
             tools.push(Tool {
                 name: "execute_command".to_string(),
                 title: Some("Change data with SQL".to_string()),
-                description: "Run one INSERT, UPDATE, or DELETE statement on the configured database and commit it. Returns the number of affected rows. Other statements (CREATE, DROP, ALTER, TRUNCATE, GRANT, ...) are refused.".to_string(),
+                description: format!(
+                    "Run one INSERT, UPDATE, or DELETE statement on the configured database and commit it. Returns the number of affected rows{}. Other statements (CREATE, DROP, ALTER, TRUNCATE, GRANT, ...) are refused.",
+                    if mysql { " and the AUTO_INCREMENT id of an inserted row (last_insert_id)" } else { "" }
+                ),
                 input_schema: json!({
                     "type": "object",
                     "properties": {

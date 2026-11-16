@@ -4,7 +4,7 @@ AIのクライアントに、WordPress・PostgreSQL・外部のMCPプラグイ�
 
 > **[日本語](README.ja.md)** | **[English](README.md)**
 
-[![Version](https://img.shields.io/badge/Version-v0.24.0-blue)](https://github.com/n-takatsu/mcp-rs/releases/tag/v0.24.0)
+[![Version](https://img.shields.io/badge/Version-v0.25.0-blue)](https://github.com/n-takatsu/mcp-rs/releases/tag/v0.25.0)
 ![Implementation](https://img.shields.io/badge/WordPress_Tools-32_Available-green)
 ![License](https://img.shields.io/badge/License-MIT%2FApache--2.0-green)
 
@@ -51,12 +51,12 @@ AIのクライアントに、WordPress・PostgreSQL・外部のMCPプラグイ�
 - **レート制限**（ツールの呼び出し）
 - **監査ログ**: 誰がどのツールを呼び、結果がどうだったか
 
-## **データベース連携（PostgreSQL）**
+## **データベース連携（PostgreSQL・MySQL・MariaDB）**
 
-- **設定は1つの節**: 設定ファイルに`[database]`を書く（`engine = "postgresql"`、ホスト・データベース・ユーザー、`password = "${VAR}"`）
+- **設定は1つの節**: 設定ファイルに`[database]`を書く（`engine = "postgresql"`、または`"mysql"`・`"mariadb"`（v0.25.0以降）、ホスト・データベース・ユーザー、`password = "${VAR}"`）
 - **既定は読み取りだけ**: `execute_query`（1つのSELECT。読み取り専用のトランザクションで実行してロールバック）と`get_schema`
 - **書き込みは許したときだけ**: `allow_write = true`のときだけ`execute_command`（1つのINSERT・UPDATE・DELETE）を出す
-- **型の付いたパラメーター**: `$1`・`$2`…はバインドし、SQLの文字列には埋め込まない。文字列は列の型に変換する
+- **バインドするパラメーター**: `$1`・`$2`…（PostgreSQL）や`?`（MySQL・MariaDB）はバインドし、SQLの文字列には埋め込まない。文字列は列の型に変換する
 - **上限**: 既定で、結果は1000行、1つのSQLは30秒、接続は5つまで
 - **監査ログ**: 呼び出しをSQLとともに記録する（パラメーターの値は記録しない）
 
@@ -66,11 +66,58 @@ AIのクライアントに、WordPress・PostgreSQL・外部のMCPプラグイ�
 
 ## 前提条件
 
-- Rust 1.98以降（`Cargo.toml`の`rust-version`。最新の安定版を推奨）
+- 自分でビルドするとき: Rust 1.98以降（`Cargo.toml`の`rust-version`。最新の安定版を推奨）。[ビルド済みのファイル](#ダウンロード)を使うときは要りません
 - アプリケーションパスワードが有効な WordPress サイト
 - WordPress REST API へのネットワークアクセス
 
 ## インストール
+
+### ダウンロード
+
+v0.25.0から、[リリース](https://github.com/n-takatsu/mcp-rs/releases)に、次のOS向けの、ビルド済みのmcp-rsが付きます。Rustは要りません。
+
+| OS | ファイル |
+|---|---|
+| Windows（x64） | `mcp-rs-<版>-x86_64-pc-windows-msvc.zip` |
+| macOS（Apple Silicon） | `mcp-rs-<版>-aarch64-apple-darwin.tar.gz` |
+| Linux（x64、glibc 2.35以降） | `mcp-rs-<版>-x86_64-unknown-linux-gnu.tar.gz` |
+
+`mcp-rs`（`mcp-rs.exe`）は、`~/.mcp-rs/bin`（Windowsは`%USERPROFILE%\.mcp-rs\bin`）のような、自分のフォルダに置きます。管理者の権限は要らず、更新はファイルを置き換えるだけです。mcp-rsは、ログを横の`logs`に書きます。Windowsでは、`AppData`の下は避けてください。Microsoft Store版のClaude Desktopから起動すると、そこに書いたファイルが別の場所に移され、ログが見つからないことがあります。
+
+Windows（PowerShell）:
+
+```powershell
+$v = "v0.25.0"; $name = "mcp-rs-$v-x86_64-pc-windows-msvc"
+Invoke-WebRequest "https://github.com/n-takatsu/mcp-rs/releases/download/$v/$name.zip" -OutFile "$name.zip"
+Invoke-WebRequest "https://github.com/n-takatsu/mcp-rs/releases/download/$v/$name.zip.sha256" -OutFile "$name.zip.sha256"
+# リリースのワークフローが作ったファイルなら True
+(Get-FileHash "$name.zip" -Algorithm SHA256).Hash.ToLower() -eq (Get-Content "$name.zip.sha256").Split(" ")[0]
+Expand-Archive "$name.zip" -DestinationPath .
+New-Item -ItemType Directory -Force "$env:USERPROFILE\.mcp-rs\bin" | Out-Null
+Copy-Item "$name\mcp-rs.exe" "$env:USERPROFILE\.mcp-rs\bin\"
+Unblock-File "$env:USERPROFILE\.mcp-rs\bin\mcp-rs.exe"
+& "$env:USERPROFILE\.mcp-rs\bin\mcp-rs.exe" --version
+```
+
+macOS・Linux:
+
+```bash
+v=v0.25.0; name=mcp-rs-$v-aarch64-apple-darwin   # Linux: mcp-rs-$v-x86_64-unknown-linux-gnu
+curl -LO https://github.com/n-takatsu/mcp-rs/releases/download/$v/$name.tar.gz
+curl -LO https://github.com/n-takatsu/mcp-rs/releases/download/$v/$name.tar.gz.sha256
+shasum -a 256 -c $name.tar.gz.sha256   # Linux: sha256sum -c $name.tar.gz.sha256
+tar -xzf $name.tar.gz
+mkdir -p ~/.mcp-rs/bin && cp $name/mcp-rs ~/.mcp-rs/bin/
+~/.mcp-rs/bin/mcp-rs --version
+```
+
+ファイルには署名をしていません。
+
+- Windowsは、ダウンロードしたプログラムに警告を出すことがあります。上の`Unblock-File`は、ダウンロードしたファイルにWindowsが付ける印を外します。エクスプローラーでzipを展開したときは、初回に「WindowsによってPCが保護されました」と出ることがあります。SHA256を確かめてから、「詳細情報」→「実行」を選びます
+- macOSは、ブラウザーでダウンロードしたプログラムを止めます（「開発元を検証できないため開けません」）。SHA256を確かめてから、`xattr -d com.apple.quarantine ~/.mcp-rs/bin/mcp-rs`を実行します。`curl`でダウンロードしたファイルは止められません
+- リリースの`SHA256SUMS`に、すべてのファイルのSHA256があります
+
+自分でビルドするときは、[セットアップ](#セットアップ)を見てください。
 
 ### WordPressの資格情報
 
@@ -99,7 +146,7 @@ Claude Desktopはmcp-rsを起動し、STDIOで通信します。STDIOモード�
 {
   "mcpServers": {
     "mcp-rs": {
-      "command": "C:/Program Files/MCP-rs/mcp-rs.exe",
+      "command": "C:/Users/you/.mcp-rs/bin/mcp-rs.exe",
       "args": ["--config", "C:/Users/you/AppData/Roaming/Claude/mcp-rs/mcp-config.toml"]
     }
   }
@@ -108,7 +155,7 @@ Claude Desktopはmcp-rsを起動し、STDIOで通信します。STDIOモード�
 
 - 設定ファイルで`${...}`を使うときは、読むすべての変数を`env`に書きます。`env`は値を渡すだけで、どの変数を読むかは設定ファイルの`${...}`で決まります。例えば`configs/production/claude-desktop.toml`は`WORDPRESS_URL`・`WORDPRESS_USERNAME`・`WORDPRESS_PASSWORD`を読むので、3つとも要ります
 - 設定ファイル・資格情報・`env`を変えたら、Claude Desktopをタスクトレイ（メニューバー）から終了して、起動し直します。ウィンドウを閉じただけでは動き続けます
-- 起動しない（「Server disconnected」）とき、設定ファイルの誤りはログの設定より前に起きるので、mcp-rsのログファイルには残りません。Claude Desktopの「設定」→「開発者」から、mcp-rsのログを開いて確かめます。Microsoft Store版は、`%APPDATA%\Claude\logs`には書きません
+- 起動しない（「Server disconnected」）とき、設定ファイルの誤りはログの設定より前に起きるので、mcp-rsのログファイルには残りません。Claude Desktopの「設定」→「開発者」から、mcp-rsのログを開いて確かめます。Microsoft Store版は、`%APPDATA%\Claude\logs`には書きません。`mcp-rs check --config <パス>`なら、Claude Desktopを使わずに誤りを表示します
 
 > 📖 設定とトラブルシューティングは [Claude Desktop 統合ガイド](./project-docs/CLAUDE_DESKTOP_INTEGRATION.md) をご覧ください。
 
@@ -117,12 +164,27 @@ Claude Desktopはmcp-rsを起動し、STDIOで通信します。STDIOモード�
 Claude Code も STDIO で mcp-rs と通信し、同じ設定ファイルを使います。絶対パスで登録します。`--` より後ろが mcp-rs の起動コマンドです。資格情報ストアを使うときは、`-e`は要りません。
 
 ```bash
-claude mcp add mcp-rs --scope user -- "C:/Program Files/MCP-rs/mcp-rs.exe" --config C:/Users/you/AppData/Roaming/Claude/mcp-rs/mcp-config.toml
+claude mcp add mcp-rs --scope user -- "C:/Users/you/.mcp-rs/bin/mcp-rs.exe" --config C:/Users/you/AppData/Roaming/Claude/mcp-rs/mcp-config.toml
 ```
 
 Claude Codeは自分の環境変数をmcp-rsに渡すので、`${...}`でユーザー環境変数（変えたらVS Codeを起動し直す）や、`-e`で渡した値も読めます。`-e` で渡した値は Claude Code の設定に保存されるため、実際の認証情報で `--scope project`（共有される `.mcp.json` に書き込まれる）を使わないでください。接続は `claude mcp list`、または Claude Code 内の `/mcp` で確認できます。
 
 > 📖 `.mcp.json` での登録、認証情報の暗号化、トラブルシューティングは [Claude Code 統合ガイド](./project-docs/CLAUDE_CODE_INTEGRATION.md) をご覧ください。
+
+### VS Code（GitHub Copilot）
+
+VS CodeのCopilotのチャットは、Copilot CLI（Agent Host）で動き、Copilot CLIに登録したMCPサーバーを使います（`.vscode/mcp.json`を自分で読む従来のLocalの仕組みは、2027年2月に削除される予定です）。`copilot`コマンドで、絶対パスで登録します。`--` より後ろが mcp-rs の起動コマンドです。登録先は`~/.copilot/mcp-config.json`で、VS Codeのチャットと、ターミナルの`copilot`の両方が読みます。
+
+```bash
+copilot mcp add mcp-rs -- "C:/Users/you/.mcp-rs/bin/mcp-rs.exe" --config C:/Users/you/AppData/Roaming/Claude/mcp-rs/mcp-config.toml
+```
+
+- 資格情報は、資格情報ストア（`keyring`）に置きます。Copilot CLIは、`.vscode/mcp.json`を自分では読みません。VS Codeが、そこにあるサーバーを転送しますが、`${input:...}`（値の入力）を使うサーバーは転送しません
+- mcp-rsに渡る環境変数は、Copilot CLIの起動のしかたで変わります。WindowsのVS Codeでは、VS Codeの環境変数（ユーザー環境変数を含む）が、GitHubのトークン（`GITHUB_PERSONAL_ACCESS_TOKEN`）を除いて、ほぼ全部渡っていました。[GitHubのドキュメント](https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-mcp-servers)では、渡るのは`PATH`だけです。`keyring`を勧めるのは、このためでもあります。環境変数が要らず、パスワードをファイルに置きません。`${...}`を読む設定ファイル（`configs/production/claude-desktop.toml`等）や、`encrypted_credentials`（`WORDPRESS_MASTER_PASSWORD`）を使うときは、ユーザー環境変数に頼る（WindowsのVS Codeでは動いたが、ほかでは渡らないかもしれない）か、`--env`で渡す（必ず渡るが、値が平文で`~/.copilot/mcp-config.json`に書かれる）かを選びます。VS Codeは起動したときの環境変数を持ち続けるので、ユーザー環境変数を変えたら、VS Codeのウィンドウを全部閉じて起動し直します
+- 実機で確かめたのは、Windowsの`keyring`です。macOS・Linuxはまだ確かめていません。Linuxでは、`DBUS_SESSION_BUS_ADDRESS`が無いと、Secret Serviceに届かないことがあります
+- 資格情報を使うmcp-rsを、ワークスペースの`.mcp.json`・`.github/mcp.json`に登録しないでください。リポジトリのフォルダにあり、リポジトリに入りうるファイルです（`.github/mcp.json`は入れる前提です）
+- 登録したら、VS Codeを起動し直し、新しいチャットを始めます。`copilot mcp list`、またはチャットで`mcp_rs_status`を呼んで確かめます
+- mcp-rsが起動しないとき、チャットは「ツールが見つからない」としか言いません。理由は、Copilot CLIのログ（`~/.copilot/logs/process-*.log`）の`MCP server connection failed`の行に、mcp-rsのエラーとともに出ます。`mcp-rs check --config <パス>`なら、ターミナルで同じ誤りを表示します
 
 ### セットアップ
 
@@ -144,6 +206,12 @@ cargo build --release
 `mcp-rs --version`でインストールされているバージョンを、`mcp-rs --help`で使えるオプションを表示します（v0.19.1以降）。知らないオプションや、パスの無い`--config`があると起動しません（v0.19.2以降。v0.19.1はログに警告を出すだけでした）。起動しなくなった場合は、MCPのクライアントの設定にあるmcp-rsの`args`を確かめてください。
 
 MCPのクライアントから（たとえばClaudeに頼んで）`mcp_rs_status`ツールを呼ぶと、バージョン、使っている設定ファイル、ログと監査ログの書き込み先、各プラグインの状態を確かめられます（v0.19.2以降）。
+
+MCPのクライアントを使わずに設定ファイルを確かめるには、`mcp-rs check --config <パス>`を実行します（v0.25.0以降）。起動するときと同じ読み方で、ファイルが読めるか（誤りの行と理由）、WordPressの資格情報を読めるか、WordPressのサイトにつながり認証が通るか（読み取りのリクエストだけ）、ログと監査ログをどこに書くかを表示します。誤りがあれば終了コード1で終わります。パスワード・トークン・ユーザー名は表示しません。起動するときと同じく、ログと監査ログのフォルダとファイルが無ければ作り、ログファイルに`checked`の行を書きます。`--offline`で、サイトへの接続を飛ばします。`[database]`・`[[plugins]]`は、まだ確かめません。
+
+```bash
+mcp-rs check --config C:/Users/you/AppData/Roaming/Claude/mcp-rs/mcp-config.toml
+```
 
 設定ファイルを自分で書く場合は、次の最小構成から始めてください。
 

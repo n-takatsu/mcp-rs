@@ -4,6 +4,60 @@
 
 Our project follows a detailed 0.01 increment versioning strategy to provide granular tracking of development progress and feature implementation.
 
+## 🐬 v0.25.0 - MySQL・MariaDBと、ビルド済みのmcp-rs
+
+**Release Date:** 2026-11-17
+**Focus:** `[database]`で、MySQL・MariaDBを使えるようにする。リリースに、ビルド済みのmcp-rsを付ける。設定を確かめるコマンド`mcp-rs check`を足す
+
+### 🐬 MySQL・MariaDB（#527）
+
+- `engine = "mysql"`（MySQL 8.0以降）・`engine = "mariadb"`（MariaDB 10.6
+  以降。CIでは11.4で確かめた）で、PostgreSQLと同じツール・上限・監査ログを
+  使える。既定は読み取りだけで、パラメーターは`?`
+- `execute_query`は`START TRANSACTION READ ONLY`の中で実行してロールバック
+  する。SELECTの時間は、MySQLは`MAX_EXECUTION_TIME`、MariaDBは
+  `max_statement_time`で止め、それ以外は別の接続からの`KILL QUERY`で止める
+- 行数・バイト数の上限に達したら、残りを受け取らずに接続を閉じる。プールに
+  戻す接続はリセットする（`COM_RESET_CONNECTION`）
+- TLSは`ssl_mode`（`allow`以外）。`ssl_root_cert`を書いたときは、そのCAだけを
+  信頼する
+- MySQLかMariaDBかは、つないだサーバーの版で決める。MariaDBだけが実行する
+  コメント（`/*M! … */`）は、中身を検査できないので拒否する
+- 既定のビルド・配るバイナリ・Dockerイメージに含める（約0.7MB増）
+- 残る点: `sql_mode`に`NO_BACKSLASH_ESCAPES`があるサーバーでは、SQLの検査と
+  文字列の読み方が食い違う（#574。既定の設定では起きない）
+
+### 📦 ビルド済みのmcp-rs（#564）
+
+- 各リリースに、Windows（x64）・macOS（Apple Silicon）・Linux（x64、
+  glibc 2.35以降）のmcp-rsを付ける。Rustは要らない
+- それぞれの`.sha256`と、まとめた`SHA256SUMS`も付ける。署名はしない。
+  ダウンロード・確かめ方・止められたときの開き方はREADMEに書いた
+
+### 🩺 `mcp-rs check`（#565）
+
+- MCPのクライアントを使わずに、設定ファイルが読めるか（誤りの行と理由）、
+  WordPressの資格情報を読めるか、サイトにつながり認証が通るか、ログと
+  監査ログを書けるかを表示する。誤りがあれば終了コード1
+- `[database]`・`[[plugins]]`・HTTPモードの設定は、まだ確かめない
+
+### 🧩 VS Code（GitHub Copilot）（#521）
+
+- Copilotのチャットからmcp-rsを使う手順を、READMEとwebsiteのガイドに書いた
+  （`copilot mcp add`で登録し、資格情報は資格情報ストアから読む）
+
+### 🔧 修正
+
+- `wordpress_health_check`（と`mcp-rs check`）で、サイトに届くかを、認証の
+  要らない`/wp-json/`で確かめるようにした。以前は管理者だけが読める設定を
+  見ていたので、投稿者・寄稿者のアカウントでは「届かない」となっていた
+
+### 互換性
+
+- 設定ファイル・ツールに、互換性のない変更は無い
+- `mysql-backend`を既定の機能にした。`--no-default-features`でビルドすると、
+  MySQL・MariaDBは含まれない
+
 ## 🔐 v0.24.0 - セキュリティの見直しとOSの資格情報ストア
 
 **Release Date:** 2026-11-15

@@ -4,7 +4,7 @@ A Rust implementation of a Model Context Protocol (MCP) server that gives AI cli
 
 > **[English](README.md)** | **[日本語](README.ja.md)**
 
-[![Version](https://img.shields.io/badge/Version-v0.24.0-blue)](https://github.com/n-takatsu/mcp-rs/releases/tag/v0.24.0)
+[![Version](https://img.shields.io/badge/Version-v0.25.0-blue)](https://github.com/n-takatsu/mcp-rs/releases/tag/v0.25.0)
 ![Implementation](https://img.shields.io/badge/WordPress_Tools-32_Available-green)
 ![License](https://img.shields.io/badge/License-MIT%2FApache--2.0-green)
 
@@ -51,12 +51,12 @@ The `examples/wordpress_site_builder_demo.rs` example builds and updates the pub
 - **Rate Limiting** of tool calls
 - **Audit Logging**: Who called which tool, and the result
 
-## **Database Integration (PostgreSQL)**
+## **Database Integration (PostgreSQL, MySQL, MariaDB)**
 
-- **One Section to Connect**: Add `[database]` to the configuration file (`engine = "postgresql"`, host, database, user, and `password = "${VAR}"`)
+- **One Section to Connect**: Add `[database]` to the configuration file (`engine = "postgresql"`, or `"mysql"` or `"mariadb"` (v0.25.0 and later), host, database, user, and `password = "${VAR}"`)
 - **Read-Only by Default**: `execute_query` (one SELECT, run in a read-only transaction that is rolled back) and `get_schema`
 - **Writes Only When Allowed**: `execute_command` (one INSERT, UPDATE, or DELETE) is offered only with `allow_write = true`
-- **Typed Parameters**: `$1`, `$2`, … are bound, never inserted into the SQL text, and strings are converted to the column's type
+- **Bound Parameters**: `$1`, `$2`, … (PostgreSQL) or `?` (MySQL, MariaDB) are bound, never inserted into the SQL text, and strings are converted to the column's type
 - **Limits**: Rows per result (1,000), time per statement (30 s), and connections (5) by default
 - **Audit Logging**: Each call is recorded with its SQL; parameter values are not
 
@@ -66,11 +66,58 @@ Connect with a read-only database role. See the [Database Integration Guide](htt
 
 ## Prerequisites
 
-- Rust 1.98 or later (`rust-version` in `Cargo.toml`; the latest stable is recommended)
+- To build from source: Rust 1.98 or later (`rust-version` in `Cargo.toml`; the latest stable is recommended). Not needed with the [ready-built files](#download)
 - WordPress site with Application Passwords enabled
 - Network access to WordPress REST API
 
 ## Installation
+
+### Download
+
+From v0.25.0, each [release](https://github.com/n-takatsu/mcp-rs/releases) has ready-built mcp-rs for these systems. Rust is not needed:
+
+| System | File |
+|---|---|
+| Windows (x64) | `mcp-rs-<version>-x86_64-pc-windows-msvc.zip` |
+| macOS (Apple Silicon) | `mcp-rs-<version>-aarch64-apple-darwin.tar.gz` |
+| Linux (x64, glibc 2.35 or later) | `mcp-rs-<version>-x86_64-unknown-linux-gnu.tar.gz` |
+
+Put `mcp-rs` (`mcp-rs.exe`) in a folder of your own, such as `~/.mcp-rs/bin` (`%USERPROFILE%\.mcp-rs\bin` on Windows). No administrator rights are needed, and updating means replacing the file. mcp-rs writes its log to `logs` next to it. On Windows, avoid folders under `AppData`: Claude Desktop from the Microsoft Store may redirect files written there, so the log can end up somewhere else.
+
+Windows (PowerShell):
+
+```powershell
+$v = "v0.25.0"; $name = "mcp-rs-$v-x86_64-pc-windows-msvc"
+Invoke-WebRequest "https://github.com/n-takatsu/mcp-rs/releases/download/$v/$name.zip" -OutFile "$name.zip"
+Invoke-WebRequest "https://github.com/n-takatsu/mcp-rs/releases/download/$v/$name.zip.sha256" -OutFile "$name.zip.sha256"
+# True if the file is the one built by the release workflow
+(Get-FileHash "$name.zip" -Algorithm SHA256).Hash.ToLower() -eq (Get-Content "$name.zip.sha256").Split(" ")[0]
+Expand-Archive "$name.zip" -DestinationPath .
+New-Item -ItemType Directory -Force "$env:USERPROFILE\.mcp-rs\bin" | Out-Null
+Copy-Item "$name\mcp-rs.exe" "$env:USERPROFILE\.mcp-rs\bin\"
+Unblock-File "$env:USERPROFILE\.mcp-rs\bin\mcp-rs.exe"
+& "$env:USERPROFILE\.mcp-rs\bin\mcp-rs.exe" --version
+```
+
+macOS and Linux:
+
+```bash
+v=v0.25.0; name=mcp-rs-$v-aarch64-apple-darwin   # Linux: mcp-rs-$v-x86_64-unknown-linux-gnu
+curl -LO https://github.com/n-takatsu/mcp-rs/releases/download/$v/$name.tar.gz
+curl -LO https://github.com/n-takatsu/mcp-rs/releases/download/$v/$name.tar.gz.sha256
+shasum -a 256 -c $name.tar.gz.sha256   # Linux: sha256sum -c $name.tar.gz.sha256
+tar -xzf $name.tar.gz
+mkdir -p ~/.mcp-rs/bin && cp $name/mcp-rs ~/.mcp-rs/bin/
+~/.mcp-rs/bin/mcp-rs --version
+```
+
+The files are not signed:
+
+- Windows may warn about a downloaded program. `Unblock-File` (above) removes the mark that Windows puts on downloaded files. If you extracted the zip in Explorer, Windows may show "Windows protected your PC" the first time; choose "More info" → "Run anyway" only after checking the SHA256
+- macOS blocks a program downloaded with a browser ("cannot be opened because the developer cannot be verified"). After checking the SHA256, run `xattr -d com.apple.quarantine ~/.mcp-rs/bin/mcp-rs`. Files downloaded with `curl` are not blocked
+- `SHA256SUMS` in the release lists the SHA256 of every file
+
+To build it yourself instead, see [Setup](#setup).
 
 ### WordPress Credentials
 
@@ -99,7 +146,7 @@ Claude Desktop starts mcp-rs and talks to it over STDIO. In STDIO mode, standard
 {
   "mcpServers": {
     "mcp-rs": {
-      "command": "C:/Program Files/MCP-rs/mcp-rs.exe",
+      "command": "C:/Users/you/.mcp-rs/bin/mcp-rs.exe",
       "args": ["--config", "C:/Users/you/AppData/Roaming/Claude/mcp-rs/mcp-config.toml"]
     }
   }
@@ -108,7 +155,7 @@ Claude Desktop starts mcp-rs and talks to it over STDIO. In STDIO mode, standard
 
 - If the config file uses `${...}` instead, list every variable it reads in `env`. `env` only passes values; the `${...}` in the config file decides which variables are read. For example, `configs/production/claude-desktop.toml` reads `WORDPRESS_URL`, `WORDPRESS_USERNAME`, and `WORDPRESS_PASSWORD`, so all three are needed
 - After changing the config file, the credentials, or `env`, quit Claude Desktop from the system tray (menu bar) and start it again. Closing the window leaves it running
-- If mcp-rs does not start ("Server disconnected"), errors in the config file are not in the mcp-rs log file, because they happen before logging starts. Open the mcp-rs log from Claude Desktop's settings (Developer). The Microsoft Store version does not write to `%APPDATA%\Claude\logs`
+- If mcp-rs does not start ("Server disconnected"), errors in the config file are not in the mcp-rs log file, because they happen before logging starts. Open the mcp-rs log from Claude Desktop's settings (Developer). The Microsoft Store version does not write to `%APPDATA%\Claude\logs`. `mcp-rs check --config <path>` shows the error without Claude Desktop
 
 > 📖 See [Claude Desktop Integration Guide](./project-docs/CLAUDE_DESKTOP_INTEGRATION.md) (Japanese) for the settings and troubleshooting.
 
@@ -117,12 +164,27 @@ Claude Desktop starts mcp-rs and talks to it over STDIO. In STDIO mode, standard
 Claude Code also talks to mcp-rs over STDIO and uses the same configuration file. Register mcp-rs with absolute paths. Everything after `--` is the mcp-rs command line. With the credentials in the OS credential store, no `-e` is needed:
 
 ```bash
-claude mcp add mcp-rs --scope user -- "C:/Program Files/MCP-rs/mcp-rs.exe" --config C:/Users/you/AppData/Roaming/Claude/mcp-rs/mcp-config.toml
+claude mcp add mcp-rs --scope user -- "C:/Users/you/.mcp-rs/bin/mcp-rs.exe" --config C:/Users/you/AppData/Roaming/Claude/mcp-rs/mcp-config.toml
 ```
 
 Claude Code passes its own environment to mcp-rs, so `${...}` can also read user environment variables (restart VS Code after changing them), or values passed with `-e`. Values passed with `-e` are stored in Claude Code's settings, so do not use `--scope project` (which writes them to the shared `.mcp.json`) with real credentials. Check the connection with `claude mcp list`, or `/mcp` inside Claude Code.
 
 > 📖 See [Claude Code Integration Guide](./project-docs/CLAUDE_CODE_INTEGRATION.md) (Japanese) for `.mcp.json`, encrypted credentials, and troubleshooting.
+
+### VS Code (GitHub Copilot)
+
+The Copilot chat in VS Code runs on the Copilot CLI (the agent host; the older local harness, which reads `.vscode/mcp.json` itself, is to be removed in February 2027) and uses the MCP servers registered for it. Register mcp-rs with the `copilot` command, with absolute paths. Everything after `--` is the mcp-rs command line. This writes `~/.copilot/mcp-config.json`, which both the chat in VS Code and `copilot` in a terminal read:
+
+```bash
+copilot mcp add mcp-rs -- "C:/Users/you/.mcp-rs/bin/mcp-rs.exe" --config C:/Users/you/AppData/Roaming/Claude/mcp-rs/mcp-config.toml
+```
+
+- Keep the credentials in the OS credential store (`keyring`). The Copilot CLI does not read `.vscode/mcp.json` itself; VS Code forwards the servers from it, except those that ask for a value with `${input:...}`
+- Which environment variables reach mcp-rs depends on how the Copilot CLI is started. In VS Code on Windows, mcp-rs got almost all of VS Code's environment, including user environment variables, except the GitHub token (`GITHUB_PERSONAL_ACCESS_TOKEN`). [GitHub Docs](https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-mcp-servers) says only `PATH` is passed. This is another reason to use `keyring`: it needs no environment variables and keeps the password out of files. If the config file reads `${...}` (such as `configs/production/claude-desktop.toml`) or uses `encrypted_credentials` (`WORDPRESS_MASTER_PASSWORD`), either rely on user environment variables (which worked in VS Code on Windows, but may not elsewhere), or pass them with `--env`, which always works but writes the values in plain text to `~/.copilot/mcp-config.json`. VS Code keeps the environment it started with: after changing user environment variables, quit every VS Code window and start it again
+- Tested on Windows with `keyring`. macOS and Linux are not tested yet; on Linux, the Secret Service may not be reachable without `DBUS_SESSION_BUS_ADDRESS`
+- Do not register mcp-rs with credentials in a workspace `.mcp.json` or `.github/mcp.json`. They live in the repository folder and can be committed (`.github/mcp.json` is meant to be)
+- After registering, restart VS Code and start a new chat. Check with `copilot mcp list`, or ask the chat to call `mcp_rs_status`
+- If mcp-rs does not start, the chat only says it cannot find the tool. The reason is in the Copilot CLI log, `~/.copilot/logs/process-*.log`: look for `MCP server connection failed`, which includes the error from mcp-rs. `mcp-rs check --config <path>` shows the same error in a terminal
 
 ### Setup
 
@@ -144,6 +206,12 @@ Then start mcp-rs with a config file. Ready-made config files are in `configs/pr
 `mcp-rs --version` prints the installed version, and `mcp-rs --help` lists the options (v0.19.1 and later). mcp-rs does not start when it gets an unknown option or `--config` without a path (v0.19.2 and later; v0.19.1 only logged a warning), so check the `args` of the mcp-rs entry in your MCP client's settings if it stops starting.
 
 From an MCP client (for example, ask Claude), call the `mcp_rs_status` tool to see the version, the config file in use, where the log and audit log are written, and the state of each plugin (v0.19.2 and later).
+
+To check a config file without an MCP client, run `mcp-rs check --config <path>` (v0.25.0 and later). It reads the file the same way mcp-rs does when it starts, and shows whether it loads (the line and the reason of an error), whether the WordPress credentials can be read, whether mcp-rs can reach the WordPress site and sign in (read-only requests), and where the log and the audit log are written. It exits with 1 when it finds an error. Passwords, tokens and user names are not shown. Like starting mcp-rs, it creates the log and audit log folders and files if they are missing, and adds a `checked` line to the log file. `--offline` skips the connection to the site. `[database]` and `[[plugins]]` are not checked yet:
+
+```bash
+mcp-rs check --config C:/Users/you/AppData/Roaming/Claude/mcp-rs/mcp-config.toml
+```
 
 To write your own config file instead, start from the minimal example below.
 
