@@ -82,7 +82,7 @@ pub struct AuditLogSettings {
     pub max_files: Option<u32>,
 }
 
-/// データベースの設定（`[database]`、#453）。今はPostgreSQLだけ。
+/// データベースの設定（`[database]`、#453）。PostgreSQLとMySQL（#527）。
 ///
 /// 既定では読み取りだけ: `execute_query`は読み取り専用のトランザクションで
 /// 実行し、書き込みのツール（`execute_command`）は出さない。
@@ -92,17 +92,19 @@ pub struct AuditLogSettings {
 pub struct DatabaseSettings {
     /// `false`で使わない。省略時は`true`（`[database]`を書けば使う）
     pub enabled: Option<bool>,
-    /// エンジン。今は`"postgresql"`だけ
+    /// エンジン: `"postgresql"`・`"mysql"`（#527）
     pub engine: String,
     /// 省略時は`localhost`
     pub host: Option<String>,
-    /// 省略時は5432
+    /// 省略時は、PostgreSQLは5432、MySQLは3306
     pub port: Option<u16>,
     pub database: String,
     pub username: String,
     /// 省略時は空（パスワード無し）。`${PGPASSWORD}`のように環境変数で渡せる
     pub password: Option<String>,
-    /// TLS: `disable`・`prefer`（省略時）・`require`・`verify-ca`・`verify-full`
+    /// TLS: `disable`・`prefer`（省略時）・`require`・`verify-ca`・`verify-full`。
+    /// PostgreSQLは`allow`も使える。MySQLでは、PostgreSQLと同じ意味で使う
+    /// （`verify-full`は、MySQLの`VERIFY_IDENTITY`）
     pub ssl_mode: Option<String>,
     /// サーバーの証明書を確かめるCAのファイル（PEM、#539）。非公開のCA
     /// （RDS等）で`verify-ca`・`verify-full`を使うとき。相対パスは設定
@@ -159,7 +161,13 @@ impl DatabaseSettings {
     }
 
     pub fn port(&self) -> u16 {
-        self.port.unwrap_or(5432)
+        self.port
+            .unwrap_or(if self.is_mysql() { 3306 } else { 5432 })
+    }
+
+    /// `engine = "mysql"`か（#527）
+    pub fn is_mysql(&self) -> bool {
+        self.engine.eq_ignore_ascii_case("mysql")
     }
 
     pub fn allow_write(&self) -> bool {
@@ -220,9 +228,9 @@ impl DatabaseSettings {
 
     /// 書いた値を確かめる。起動しない理由を返す
     pub fn validate(&self) -> Result<(), String> {
-        if !self.engine.eq_ignore_ascii_case("postgresql") {
+        if !self.engine.eq_ignore_ascii_case("postgresql") && !self.is_mysql() {
             return Err(format!(
-                "database.engine = \"{}\" is not supported (supported: \"postgresql\")",
+                "database.engine = \"{}\" is not supported (supported: \"postgresql\", \"mysql\")",
                 self.engine
             ));
         }
@@ -241,11 +249,15 @@ impl DatabaseSettings {
                 "verify-ca",
                 "verify-full",
             ];
-            if !MODES.contains(&mode.as_str()) {
+            // MySQLには、`allow`（暗号化せずに試し、だめならTLS）が無い
+            const MYSQL_MODES: &[&str] =
+                &["disable", "prefer", "require", "verify-ca", "verify-full"];
+            let modes = if self.is_mysql() { MYSQL_MODES } else { MODES };
+            if !modes.contains(&mode.as_str()) {
                 return Err(format!(
                     "database.ssl_mode = \"{}\" is not valid (use one of: {})",
                     mode,
-                    MODES.join(", ")
+                    modes.join(", ")
                 ));
             }
         }
@@ -2279,10 +2291,18 @@ start_timeout_seconds = 300
         for (invalid, expected) in [
             (
                 DatabaseSettings {
-                    engine: "mysql".to_string(),
+                    engine: "sqlite".to_string(),
                     ..valid.clone()
                 },
                 "not supported",
+            ),
+            (
+                DatabaseSettings {
+                    engine: "mysql".to_string(),
+                    ssl_mode: Some("allow".to_string()),
+                    ..valid.clone()
+                },
+                "ssl_mode",
             ),
             (
                 DatabaseSettings {
@@ -2309,6 +2329,19 @@ start_timeout_seconds = 300
             let err = invalid.validate().unwrap_err();
             assert!(err.contains(expected), "{err}");
         }
+        // MySQL（#527）: 既定のポートは3306。`allow`以外のssl_modeを使える
+        let mysql = DatabaseSettings {
+            engine: "MySQL".to_string(),
+            ssl_mode: Some("verify-full".to_string()),
+            ..valid.clone()
+        };
+        assert!(mysql.validate().is_ok());
+        assert!(mysql.is_mysql());
+        assert_eq!(mysql.port(), 3306);
+        assert_eq!(valid.port(), 5432);
+        assert!(mysql
+            .describe()
+            .starts_with("MySQL reader@localhost:3306/app"));
         // 0や省略は既定値
         let zero = DatabaseSettings {
             max_rows: Some(0),

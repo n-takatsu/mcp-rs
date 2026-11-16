@@ -11,6 +11,7 @@ on:
       - 'tests/database/**'
       - 'tests/fixtures/**'
       - 'tests/*postgres*'
+      - 'tests/*mysql*'
       - 'tests/database_handler_*'
       - 'tests/column_encryption_rbac_test.rs'
       - 'migrations/**'
@@ -30,6 +31,7 @@ on:
       - 'tests/database/**'
       - 'tests/fixtures/**'
       - 'tests/*postgres*'
+      - 'tests/*mysql*'
       - 'tests/database_handler_*'
       - 'tests/column_encryption_rbac_test.rs'
       - 'migrations/**'
@@ -82,6 +84,21 @@ jobs:
           --health-timeout 5s
           --health-retries 5
 
+      # [database]のengine = "mysql"（#527）。MySQL 8.4は、自己署名の証明書で
+      # TLSも使える（tls_modesのテスト）
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: testpass
+          MYSQL_DATABASE: mcptest
+        ports:
+          - 3307:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -ptestpass"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -103,6 +120,7 @@ jobs:
         run: |
           docker exec ${{ job.services.postgres.id }} pg_isready -U testuser -d mcptest
           docker exec ${{ job.services.redis.id }} redis-cli ping
+          docker exec ${{ job.services.mysql.id }} mysqladmin ping -h 127.0.0.1 -ptestpass
 
       - name: Build project
         run: cargo build --features integration-tests --release
@@ -121,6 +139,15 @@ jobs:
         env:
           TEST_DATABASE_URL: postgres://testuser:testpass@localhost:5433/mcptest
         run: cargo test --features database --test database_postgres_tools_test -- --nocapture
+
+      # MySQLのツール（#527）を、上のmysqlのサービスで確かめる。書き込む関数を
+      # 作るため（execute_query_cannot_write）、rootでつなぐ
+      - name: Run database tool tests (MySQL)
+        env:
+          TEST_MYSQL_URL: mysql://root:testpass@127.0.0.1:3307/mcptest
+        run: |
+          cargo test --features database,mysql-backend --test database_mysql_tools_test -- --nocapture
+          cargo test --features database,mysql-backend --test mod database::mysql_integration_tests -- --ignored --test-threads=1
 
       # サーバーが要る結合テスト（#[ignore]）を、上のpostgres・redisのサービスで
       # 実行する（#513）。同じデータベース・キーを使うテストがあるので、1つずつ

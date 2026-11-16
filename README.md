@@ -51,12 +51,12 @@ The `examples/wordpress_site_builder_demo.rs` example builds and updates the pub
 - **Rate Limiting** of tool calls
 - **Audit Logging**: Who called which tool, and the result
 
-## **Database Integration (PostgreSQL)**
+## **Database Integration (PostgreSQL, MySQL)**
 
-- **One Section to Connect**: Add `[database]` to the configuration file (`engine = "postgresql"`, host, database, user, and `password = "${VAR}"`)
+- **One Section to Connect**: Add `[database]` to the configuration file (`engine = "postgresql"` or `"mysql"` (v0.25.0 and later), host, database, user, and `password = "${VAR}"`)
 - **Read-Only by Default**: `execute_query` (one SELECT, run in a read-only transaction that is rolled back) and `get_schema`
 - **Writes Only When Allowed**: `execute_command` (one INSERT, UPDATE, or DELETE) is offered only with `allow_write = true`
-- **Typed Parameters**: `$1`, `$2`, … are bound, never inserted into the SQL text, and strings are converted to the column's type
+- **Bound Parameters**: `$1`, `$2`, … (PostgreSQL) or `?` (MySQL) are bound, never inserted into the SQL text, and strings are converted to the column's type
 - **Limits**: Rows per result (1,000), time per statement (30 s), and connections (5) by default
 - **Audit Logging**: Each call is recorded with its SQL; parameter values are not
 

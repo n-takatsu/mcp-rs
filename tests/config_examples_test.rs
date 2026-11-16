@@ -26,10 +26,16 @@ const NOT_MCP_RS_CONFIG: &[&str] = &[
 ];
 
 /// 設定ファイルに書き写す一部分（`[database]`だけ等）。前に足して確かめる
-const SNIPPETS: &[(&str, &str)] = &[(
-    "configs/database/postgres.toml",
-    "[server]\n[transport]\n[handlers]\n",
-)];
+const SNIPPETS: &[(&str, &str)] = &[
+    (
+        "configs/database/mysql.toml",
+        "[server]\n[transport]\n[handlers]\n",
+    ),
+    (
+        "configs/database/postgres.toml",
+        "[server]\n[transport]\n[handlers]\n",
+    ),
+];
 
 fn toml_files(dir: &Path, out: &mut Vec<String>) {
     for entry in std::fs::read_dir(dir).unwrap() {

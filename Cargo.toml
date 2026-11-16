@@ -38,8 +38,10 @@ sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "sqlit
 # subqueries (WHERE/SELECT-list/HAVING, not just top-level FROM/JOIN) can be
 # found reliably instead of missed by a hand-rolled, easy-to-miss-a-case walk.
 sqlparser = { version = "0.62", optional = true, features = ["visitor"] }
-# MySQL support via secure alternative (RSA vulnerability-free)
-mysql_async = { version = "0.36", optional = true }
+# MySQL ([database] engine = "mysql", #527). TLS uses rustls with the ring
+# provider, as the HTTP server does, so no OpenSSL is needed. The default
+# features had no TLS at all
+mysql_async = { version = "0.36", optional = true, default-features = false, features = ["default-rustls-ring"] }
 redis = { version = "0.26", features = ["tokio-comp", "connection-manager"], optional = true }
 # MongoDB support
 mongodb = { version = "3.6", optional = true }
@@ -144,7 +146,7 @@ criterion = { version = "0.5", features = ["html_reports", "async_tokio"] }
 # rand = "0.8.5"
 
 [features]
-default = ["database", "os-keyring"]
+default = ["database", "mysql-backend", "os-keyring"]
 
 # `keyring = "<name>"` in [handlers.wordpress] and `mcp-rs wordpress-keyring`
 # (#533). On by default for desktop use. The Docker image leaves it out: a
@@ -153,12 +155,13 @@ os-keyring = ["dep:keyring"]
 
 # Database handler: [database] in the config file (PostgreSQL, #453).
 # On by default, so release builds and the Docker image include it. Build
-# with --no-default-features to leave it out
+# with --no-default-features to leave it out (and mysql-backend with it)
 database = ["postgresql-backend", "dep:sqlparser"]
 
 # Storage backends
 redis-backend = ["redis"]
-# The MySQL engine is part of the database handler code
+# The MySQL engine is part of the database handler code. On by default
+# (#527), so release builds and the Docker image can use engine = "mysql"
 mysql-backend = ["database", "mysql_async"]
 postgresql-backend = []
 sqlite = []
