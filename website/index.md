@@ -83,7 +83,14 @@ See [Database Integration](docs/database/) for the settings.
 
 ## Current Status
 
-## ✅ Recently Completed (v0.24.0)
+## ✅ Recently Completed (v0.25.0)
+
+- **🐬 MySQL and MariaDB**: `[database]` now also connects to MySQL (`engine = "mysql"`, 8.0 or later) and MariaDB (`engine = "mariadb"`, 10.6 or later), with the same tools and limits as PostgreSQL: read-only by default, `?` parameters, time, row and size limits, and TLS. See [Database Integration](docs/database/)
+- **📦 Ready-Built Files**: Each release now has mcp-rs for Windows (x64), macOS (Apple Silicon), and Linux (x64), with SHA256 checksums, so Rust is not needed. See the [README](https://github.com/n-takatsu/mcp-rs#download)
+- **🩺 `mcp-rs check`**: Checks a config file without an MCP client: whether it loads, whether the WordPress credentials can be read, and whether mcp-rs can reach the site and sign in
+- **🧩 VS Code (GitHub Copilot)**: How to use mcp-rs from the Copilot chat in VS Code
+
+## ✅ v0.24.0
 
 - **🔑 OS Credential Store**: WordPress credentials can come from the Windows Credential Manager, the macOS Keychain, or the Linux Secret Service (`keyring = "<name>"`, registered with `mcp-rs wordpress-keyring set`), so Claude Desktop, Claude Code, and a terminal all read the same place. The entry remembers its site and is used only for that `url`. See [Security](docs/security/)
 - **🔐 Security Review**: A review of the whole server. HTTP mode no longer starts on a network address without authentication, limits connections, request sizes and times, and closes idle and stalled WebSocket connections. Without `--config`, mcp-rs no longer reads a config file in the current folder. Logs are private to your user, database results are limited in size, and headers from a reverse proxy are used only from `trusted_proxies`. See [Security](docs/security/)

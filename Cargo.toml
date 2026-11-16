@@ -1,6 +1,6 @@
 [package]
 name = "mcp-rs"
-version = "0.24.0"
+version = "0.25.0"
 edition = "2021"
 # 最小対応のRustのバージョン（MSRV、#516）。DockerfileのFROM rust:X.Yも
 # 同じにする（CIで一致を確かめる）。上げるときは両方を同じPRで変える
