@@ -145,7 +145,9 @@ jobs:
       - name: Run database tool tests (MySQL)
         env:
           TEST_MYSQL_URL: mysql://root:testpass@127.0.0.1:3307/mcptest
-        run: cargo test --features database,mysql-backend --test database_mysql_tools_test -- --nocapture
+        run: |
+          cargo test --features database,mysql-backend --test database_mysql_tools_test -- --nocapture
+          cargo test --features database,mysql-backend --test mod database::mysql_integration_tests -- --ignored --test-threads=1
 
       # サーバーが要る結合テスト（#[ignore]）を、上のpostgres・redisのサービスで
       # 実行する（#513）。同じデータベース・キーを使うテストがあるので、1つずつ

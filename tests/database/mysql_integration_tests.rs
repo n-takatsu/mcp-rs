@@ -36,6 +36,25 @@ mod tests {
         }
     }
 
+    /// `TEST_MYSQL_URL`（例: `mysql://root:testpass@127.0.0.1:3307/mcptest`）の
+    /// 接続先。無ければ`None`で、サーバーが要るテストは何もせずに通る（#527）。
+    /// 以前は`localhost:3307`に決め打ちで、`mysql-backend`を既定の機能にした
+    /// ところ、CIのMySQLのサービスに当たって認証で失敗した
+    fn test_config() -> Option<DatabaseConfig> {
+        let url = std::env::var("TEST_MYSQL_URL")
+            .ok()
+            .filter(|url| !url.is_empty())?;
+        let url = url::Url::parse(&url).expect("TEST_MYSQL_URL must be a URL");
+        let mut config = create_test_config();
+        config.connection.host = url.host_str().unwrap_or("localhost").to_string();
+        config.connection.port = url.port().unwrap_or(3306);
+        config.connection.database = url.path().trim_start_matches('/').to_string();
+        config.connection.username = url.username().to_string();
+        config.connection.password = url.password().unwrap_or_default().to_string();
+        config.connection.ssl_mode = Some("disable".to_string());
+        Some(config)
+    }
+
     #[tokio::test]
     #[ignore] // Requires running MySQL server
     async fn test_mysql_engine_creation() {
@@ -50,7 +69,9 @@ mod tests {
     #[tokio::test]
     #[ignore] // Requires running MySQL server
     async fn test_mysql_connection() {
-        let config = create_test_config();
+        let Some(config) = test_config() else {
+            return;
+        };
         let engine = MySqlEngine::new(config.clone()).await.unwrap();
 
         let connection = engine.connect(&config).await;
@@ -60,7 +81,9 @@ mod tests {
     #[tokio::test]
     #[ignore] // Requires running MySQL server
     async fn test_mysql_simple_query() {
-        let config = create_test_config();
+        let Some(config) = test_config() else {
+            return;
+        };
         let engine = MySqlEngine::new(config.clone()).await.unwrap();
 
         let connection = engine.connect(&config).await.unwrap();
@@ -77,7 +100,9 @@ mod tests {
     #[tokio::test]
     #[ignore] // Requires running MySQL server
     async fn test_mysql_parameterized_query() {
-        let config = create_test_config();
+        let Some(config) = test_config() else {
+            return;
+        };
         let engine = MySqlEngine::new(config.clone()).await.unwrap();
 
         let connection = engine.connect(&config).await.unwrap();
@@ -96,7 +121,9 @@ mod tests {
     #[tokio::test]
     #[ignore] // Requires running MySQL server
     async fn test_mysql_execute() {
-        let config = create_test_config();
+        let Some(config) = test_config() else {
+            return;
+        };
         let engine = MySqlEngine::new(config.clone()).await.unwrap();
 
         let connection = engine.connect(&config).await.unwrap();
@@ -115,7 +142,9 @@ mod tests {
     #[tokio::test]
     #[ignore] // Requires running MySQL server
     async fn test_mysql_insert_and_select() {
-        let config = create_test_config();
+        let Some(config) = test_config() else {
+            return;
+        };
         let engine = MySqlEngine::new(config.clone()).await.unwrap();
 
         let connection = engine.connect(&config).await.unwrap();
@@ -160,7 +189,9 @@ mod tests {
     #[tokio::test]
     #[ignore] // Requires running MySQL server
     async fn test_mysql_transaction_commit() {
-        let config = create_test_config();
+        let Some(config) = test_config() else {
+            return;
+        };
         let engine = MySqlEngine::new(config.clone()).await.unwrap();
 
         let connection = engine.connect(&config).await.unwrap();
@@ -195,7 +226,9 @@ mod tests {
     #[tokio::test]
     #[ignore] // Requires running MySQL server
     async fn test_mysql_transaction_rollback() {
-        let config = create_test_config();
+        let Some(config) = test_config() else {
+            return;
+        };
         let engine = MySqlEngine::new(config.clone()).await.unwrap();
 
         let connection = engine.connect(&config).await.unwrap();
@@ -228,7 +261,9 @@ mod tests {
     #[tokio::test]
     #[ignore] // Requires running MySQL server
     async fn test_mysql_ping() {
-        let config = create_test_config();
+        let Some(config) = test_config() else {
+            return;
+        };
         let engine = MySqlEngine::new(config.clone()).await.unwrap();
 
         let connection = engine.connect(&config).await.unwrap();
@@ -240,13 +275,15 @@ mod tests {
     #[tokio::test]
     #[ignore] // Requires running MySQL server
     async fn test_mysql_connection_info() {
-        let config = create_test_config();
+        let Some(config) = test_config() else {
+            return;
+        };
         let engine = MySqlEngine::new(config.clone()).await.unwrap();
 
         let connection = engine.connect(&config).await.unwrap();
 
         let info = connection.connection_info();
-        assert_eq!(info.database_name, "test_db");
+        assert_eq!(info.database_name, config.connection.database);
         // connected_at is a timestamp, just check it exists
         assert!(info.connected_at.timestamp() > 0);
     }
