@@ -66,11 +66,58 @@ Connect with a read-only database role. See the [Database Integration Guide](htt
 
 ## Prerequisites
 
-- Rust 1.98 or later (`rust-version` in `Cargo.toml`; the latest stable is recommended)
+- To build from source: Rust 1.98 or later (`rust-version` in `Cargo.toml`; the latest stable is recommended). Not needed with the [ready-built files](#download)
 - WordPress site with Application Passwords enabled
 - Network access to WordPress REST API
 
 ## Installation
+
+### Download
+
+From v0.25.0, each [release](https://github.com/n-takatsu/mcp-rs/releases) has ready-built mcp-rs for these systems. Rust is not needed:
+
+| System | File |
+|---|---|
+| Windows (x64) | `mcp-rs-<version>-x86_64-pc-windows-msvc.zip` |
+| macOS (Apple Silicon) | `mcp-rs-<version>-aarch64-apple-darwin.tar.gz` |
+| Linux (x64, glibc 2.35 or later) | `mcp-rs-<version>-x86_64-unknown-linux-gnu.tar.gz` |
+
+Put `mcp-rs` (`mcp-rs.exe`) in a folder of your own, such as `~/.mcp-rs/bin` (`%USERPROFILE%\.mcp-rs\bin` on Windows). No administrator rights are needed, and updating means replacing the file. mcp-rs writes its log to `logs` next to it. On Windows, avoid folders under `AppData`: Claude Desktop from the Microsoft Store may redirect files written there, so the log can end up somewhere else.
+
+Windows (PowerShell):
+
+```powershell
+$v = "v0.25.0"; $name = "mcp-rs-$v-x86_64-pc-windows-msvc"
+Invoke-WebRequest "https://github.com/n-takatsu/mcp-rs/releases/download/$v/$name.zip" -OutFile "$name.zip"
+Invoke-WebRequest "https://github.com/n-takatsu/mcp-rs/releases/download/$v/$name.zip.sha256" -OutFile "$name.zip.sha256"
+# True if the file is the one built by the release workflow
+(Get-FileHash "$name.zip" -Algorithm SHA256).Hash.ToLower() -eq (Get-Content "$name.zip.sha256").Split(" ")[0]
+Expand-Archive "$name.zip" -DestinationPath .
+New-Item -ItemType Directory -Force "$env:USERPROFILE\.mcp-rs\bin" | Out-Null
+Copy-Item "$name\mcp-rs.exe" "$env:USERPROFILE\.mcp-rs\bin\"
+Unblock-File "$env:USERPROFILE\.mcp-rs\bin\mcp-rs.exe"
+& "$env:USERPROFILE\.mcp-rs\bin\mcp-rs.exe" --version
+```
+
+macOS and Linux:
+
+```bash
+v=v0.25.0; name=mcp-rs-$v-aarch64-apple-darwin   # Linux: mcp-rs-$v-x86_64-unknown-linux-gnu
+curl -LO https://github.com/n-takatsu/mcp-rs/releases/download/$v/$name.tar.gz
+curl -LO https://github.com/n-takatsu/mcp-rs/releases/download/$v/$name.tar.gz.sha256
+shasum -a 256 -c $name.tar.gz.sha256   # Linux: sha256sum -c $name.tar.gz.sha256
+tar -xzf $name.tar.gz
+mkdir -p ~/.mcp-rs/bin && cp $name/mcp-rs ~/.mcp-rs/bin/
+~/.mcp-rs/bin/mcp-rs --version
+```
+
+The files are not signed:
+
+- Windows may warn about a downloaded program. `Unblock-File` (above) removes the mark that Windows puts on downloaded files. If you extracted the zip in Explorer, Windows may show "Windows protected your PC" the first time; choose "More info" → "Run anyway" only after checking the SHA256
+- macOS blocks a program downloaded with a browser ("cannot be opened because the developer cannot be verified"). After checking the SHA256, run `xattr -d com.apple.quarantine ~/.mcp-rs/bin/mcp-rs`. Files downloaded with `curl` are not blocked
+- `SHA256SUMS` in the release lists the SHA256 of every file
+
+To build it yourself instead, see [Setup](#setup).
 
 ### WordPress Credentials
 
@@ -99,7 +146,7 @@ Claude Desktop starts mcp-rs and talks to it over STDIO. In STDIO mode, standard
 {
   "mcpServers": {
     "mcp-rs": {
-      "command": "C:/Program Files/MCP-rs/mcp-rs.exe",
+      "command": "C:/Users/you/.mcp-rs/bin/mcp-rs.exe",
       "args": ["--config", "C:/Users/you/AppData/Roaming/Claude/mcp-rs/mcp-config.toml"]
     }
   }
@@ -117,7 +164,7 @@ Claude Desktop starts mcp-rs and talks to it over STDIO. In STDIO mode, standard
 Claude Code also talks to mcp-rs over STDIO and uses the same configuration file. Register mcp-rs with absolute paths. Everything after `--` is the mcp-rs command line. With the credentials in the OS credential store, no `-e` is needed:
 
 ```bash
-claude mcp add mcp-rs --scope user -- "C:/Program Files/MCP-rs/mcp-rs.exe" --config C:/Users/you/AppData/Roaming/Claude/mcp-rs/mcp-config.toml
+claude mcp add mcp-rs --scope user -- "C:/Users/you/.mcp-rs/bin/mcp-rs.exe" --config C:/Users/you/AppData/Roaming/Claude/mcp-rs/mcp-config.toml
 ```
 
 Claude Code passes its own environment to mcp-rs, so `${...}` can also read user environment variables (restart VS Code after changing them), or values passed with `-e`. Values passed with `-e` are stored in Claude Code's settings, so do not use `--scope project` (which writes them to the shared `.mcp.json`) with real credentials. Check the connection with `claude mcp list`, or `/mcp` inside Claude Code.
@@ -129,7 +176,7 @@ Claude Code passes its own environment to mcp-rs, so `${...}` can also read user
 The Copilot chat in VS Code runs on the Copilot CLI (the agent host; the older local harness, which reads `.vscode/mcp.json` itself, is to be removed in February 2027) and uses the MCP servers registered for it. Register mcp-rs with the `copilot` command, with absolute paths. Everything after `--` is the mcp-rs command line. This writes `~/.copilot/mcp-config.json`, which both the chat in VS Code and `copilot` in a terminal read:
 
 ```bash
-copilot mcp add mcp-rs -- "C:/Program Files/MCP-rs/mcp-rs.exe" --config C:/Users/you/AppData/Roaming/Claude/mcp-rs/mcp-config.toml
+copilot mcp add mcp-rs -- "C:/Users/you/.mcp-rs/bin/mcp-rs.exe" --config C:/Users/you/AppData/Roaming/Claude/mcp-rs/mcp-config.toml
 ```
 
 - Keep the credentials in the OS credential store (`keyring`). The Copilot CLI does not read `.vscode/mcp.json` itself; VS Code forwards the servers from it, except those that ask for a value with `${input:...}`
