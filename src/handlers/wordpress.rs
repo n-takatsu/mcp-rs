@@ -2450,15 +2450,14 @@ impl WordPressHandler {
     /// （PR #568のレビュー）。以前は`/wp-json/wp/v2/settings`を見ていたが、
     /// これは管理者（`manage_options`）だけが読めるので、文書が勧める投稿者・
     /// 寄稿者のアカウントでは403になり、届いているのに「届かない」として
-    /// 残りの段を飛ばしていた。認証情報は付けない（パスワードの誤りは
-    /// 「サインイン」の段で知らせる）。設定（管理者のメールアドレス等）は、
-    /// 読めたときだけ足す
+    /// 残りの段を飛ばしていた。認証情報は、要るときだけ付ける
+    /// （`get_api_index`）。設定（管理者のメールアドレス等）は、読めたとき
+    /// だけ足す
     async fn check_site_accessibility(&self) -> Result<WordPressSiteInfo, McpError> {
-        let url = format!("{}/wp-json/", self.base_url);
-        let response =
-            self.client.get(&url).send().await.map_err(|e| {
-                McpError::ExternalApi(format!("Failed to connect to WordPress: {}", e))
-            })?;
+        let response = self
+            .get_api_index()
+            .await
+            .map_err(|e| McpError::ExternalApi(format!("Failed to connect to WordPress: {}", e)))?;
 
         if !response.status().is_success() {
             return Err(McpError::ExternalApi(format!(
@@ -2507,6 +2506,30 @@ impl WordPressHandler {
         Ok(info)
     }
 
+    /// APIのインデックス（`/wp-json/`）を読む。まず認証情報を付けずに読み、
+    /// 401・403なら、認証情報を付けて読み直す。RESTをログインした人だけに
+    /// 開くプラグインを入れたサイトでは、認証無しでは401になる（PR #568の
+    /// レビュー）。最初から付けないのは、パスワードの誤りで「届かない」と
+    /// ならないように（誤りは「サインイン」の段で知らせる）
+    async fn get_api_index(&self) -> Result<reqwest::Response, reqwest::Error> {
+        let url = format!("{}/wp-json/", self.base_url);
+        let response = self.client.get(&url).send().await?;
+        let status = response.status();
+        if status != reqwest::StatusCode::UNAUTHORIZED && status != reqwest::StatusCode::FORBIDDEN {
+            return Ok(response);
+        }
+        match (&self.username, &self.password) {
+            (Some(username), Some(password)) => {
+                self.client
+                    .get(&url)
+                    .basic_auth(username, Some(password))
+                    .send()
+                    .await
+            }
+            _ => Ok(response),
+        }
+    }
+
     /// 設定（`/wp-json/wp/v2/settings`）を読む。管理者でなければ読めないので、
     /// 読めなければ`None`
     async fn read_settings_for_health_check(&self) -> Option<serde_json::Value> {
@@ -2534,12 +2557,8 @@ impl WordPressHandler {
     /// `"namespaces"`配列を持たないため、そちらを見ると常に
     /// 偽陰性になる。
     async fn check_rest_api(&self) -> Result<(), McpError> {
-        let url = format!("{}/wp-json/", self.base_url);
-
         let response = self
-            .client
-            .get(&url)
-            .send()
+            .get_api_index()
             .await
             .map_err(|e| McpError::ExternalApi(format!("REST API check failed: {}", e)))?;
 
@@ -6112,6 +6131,58 @@ mod tests {
             "{:?}",
             health.error_details
         );
+    }
+
+    #[tokio::test]
+    async fn test_health_check_rest_closed_to_anonymous_users() {
+        // RESTをログインした人だけに開くサイト: 認証無しの`/wp-json/`は401。
+        // 認証情報を付けて読み直し、届いているとする（PR #568のレビュー）
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    return;
+                };
+                tokio::spawn(async move {
+                    let mut buf = Vec::new();
+                    let mut chunk = [0u8; 4096];
+                    while !buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                        match socket.read(&mut chunk).await {
+                            Ok(0) | Err(_) => return,
+                            Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                        }
+                    }
+                    let request = String::from_utf8_lossy(&buf).to_ascii_lowercase();
+                    let (status, body) = if !request.contains("\r\nauthorization: basic ") {
+                        ("401 Unauthorized", r#"{"code":"rest_not_logged_in"}"#)
+                    } else if request.starts_with("get /wp-json/ ") {
+                        (
+                            "200 OK",
+                            r#"{"name":"Members Only","url":"https://example.com","namespaces":["wp/v2"]}"#,
+                        )
+                    } else {
+                        ("200 OK", "[]")
+                    };
+                    let response = format!(
+                        "HTTP/1.1 {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        status,
+                        body.len(),
+                        body
+                    );
+                    let _ = socket.write_all(response.as_bytes()).await;
+                    let _ = socket.shutdown().await;
+                });
+            }
+        });
+        let mut handler = handler_for_local_server(format!("http://{}", addr));
+        handler.username = Some("author".to_string());
+        handler.password = Some("app password".to_string());
+        let health = handler.health_check().await;
+        assert!(health.site_accessible, "{:?}", health.error_details);
+        assert!(health.rest_api_available, "{:?}", health.error_details);
+        assert_eq!(health.site_info.unwrap().name, "Members Only");
     }
 
     #[tokio::test]
