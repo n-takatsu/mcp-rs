@@ -284,15 +284,30 @@ async fn execute_query_cannot_write(kind: Kind) {
         format!("SELECT * INTO @copied FROM {table}"),
         format!("DELETE FROM {table}"),
         format!("SELECT 1; DELETE FROM {table}"),
+        // MariaDBだけが実行するコメント（PR #573のレビュー）
+        format!("SELECT id FROM {table} /*M! INTO @copied */"),
+        "SELECT 1 /*M!100100 INTO OUTFILE '/tmp/mcp_rs_x' */".to_string(),
     ] {
         let err = call(&handler, "execute_query", json!({ "sql": sql }))
             .await
             .unwrap_err();
         assert!(
-            err.contains("SELECT") || err.contains("statement") || err.contains("parse"),
+            err.contains("SELECT")
+                || err.contains("statement")
+                || err.contains("parse")
+                || err.contains("/*M!"),
             "{sql}: {err}"
         );
     }
+    // そのコメントの中身は、MariaDBだけが実行する（だから拒否する）
+    let mut conn = pool.get_conn().await.unwrap();
+    let executed: Option<i64> = conn.query_first("SELECT 1 /*M! + 1 */").await.unwrap();
+    let expected = match kind {
+        Kind::MySql => 1,
+        Kind::MariaDb => 2,
+    };
+    assert_eq!(executed, Some(expected));
+    drop(conn);
     // 構文はSELECTでも、書き込む関数はデータベースが拒否する
     let err = call(
         &handler,

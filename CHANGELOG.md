@@ -24,7 +24,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   #527）。MySQLと同じ実装・上限で、SELECTの時間は`max_statement_time`で止める
   （MariaDBには`MAX_EXECUTION_TIME`が無い）。MySQLかMariaDBかは、つないだ
   サーバーの版で決めるので、`engine = "mysql"`のままMariaDBにつないでも動く。
-  MariaDBの`JSON`は文字列の型なので、文字列で返す
+  MariaDBの`JSON`は文字列の型なので、文字列で返す。MariaDBだけが実行する
+  コメント（`/*M! … */`）は、中身を検査できないので拒否する
 
 - リリースに、ビルド済みのmcp-rsを付ける（#564）。Windows（x64）・macOS
   （Apple Silicon）・Linux（x64、glibc 2.35以降）。タグで動く

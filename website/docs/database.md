@@ -210,7 +210,7 @@ GRANT SELECT ON app.* TO 'mcp_reader'@'%';
 
 ## MariaDB
 
-From v0.25.0, `engine = "mariadb"` connects to MariaDB (10.6 or later). MariaDB uses the same protocol as MySQL, so everything in [MySQL](#mysql) applies, with these differences:
+From v0.25.0, `engine = "mariadb"` connects to MariaDB (10.6 or later; tested with 11.4). MariaDB uses the same protocol as MySQL, so everything in [MySQL](#mysql) applies, with these differences:
 
 ```toml
 [database]
@@ -224,6 +224,7 @@ ssl_mode = "verify-full"
 ```
 
 - **Time limit**: `SELECT` statements are stopped by MariaDB (`max_statement_time`, as MariaDB has no `MAX_EXECUTION_TIME`). Other statements are stopped with `KILL QUERY`, as for MySQL
+- **Executable comments**: MariaDB runs the SQL inside `/*M! … */` comments, which mcp-rs cannot check (for example, `SELECT 1 /*M! INTO OUTFILE '/tmp/x' */`). mcp-rs refuses SQL with such a comment, with `engine = "mysql"` too
 - **Values**: MariaDB's `JSON` type is text (`LONGTEXT`), so `JSON` values are returned as strings, not as JSON
 - **Which server**: mcp-rs reads the server version when it connects, and uses MariaDB's time limit when the server is MariaDB. A configuration that says `engine = "mysql"` but points at MariaDB also works
 - **TLS**: MariaDB 11.4 and later offer TLS with a certificate they generate themselves. Such a certificate is not signed by a CA, so `verify-ca` and `verify-full` need a certificate from your own CA (`ssl_root_cert`)
