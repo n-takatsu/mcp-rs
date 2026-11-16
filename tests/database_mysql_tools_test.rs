@@ -490,11 +490,14 @@ async fn slow_statements_time_out() {
     settings.allow_write = Some(true);
     let handler = DatabaseHandler::from_settings(&settings).await.unwrap();
 
-    // SELECTは、サーバーのMAX_EXECUTION_TIMEで止まる
+    // SELECTは、サーバーのMAX_EXECUTION_TIMEで止まる。`count(*)`だけの
+    // 結合は、MySQLが行を作らずに数えるので、行ごとに計算させる
     let err = call(
         &handler,
         "execute_query",
-        json!({ "sql": format!("SELECT count(*) FROM {table} a, {table} b, {table} c") }),
+        json!({ "sql": format!(
+            "SELECT count(*) FROM {table} a, {table} b, {table} c WHERE a.x + b.x + c.x = -1"
+        ) }),
     )
     .await
     .unwrap_err();

@@ -164,6 +164,12 @@ pub fn check_ssl_root_cert(config: &ConnectionConfig) -> Result<(), String> {
 /// プールを作り、つながるかを確かめる。`prefer`で、サーバーがTLSを使えない
 /// ときは、暗号化せずにつなぎ直す
 async fn connect_pool(config: &DatabaseConfig) -> Result<(Pool, Opts), DatabaseError> {
+    // rustlsの暗号の実装（プロバイダー）を決める。依存クレートの都合で、
+    // ringとaws-lc-rsの両方が入っているので、決めないとTLSの接続でパニック
+    // する（CIのtls_modesで分かった）。HTTPのサーバー（`build_tls_acceptor`）
+    // と同じringにする。STDIOモードでは、HTTPのサーバーが決めないので、
+    // ここで決める。既に決まっていれば何もしない
+    let _ = rustls::crypto::ring::default_provider().install_default();
     let connection = &config.connection;
     let mode = ssl_mode(connection);
     let root_cert = connection
