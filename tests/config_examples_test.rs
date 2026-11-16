@@ -28,6 +28,10 @@ const NOT_MCP_RS_CONFIG: &[&str] = &[
 /// 設定ファイルに書き写す一部分（`[database]`だけ等）。前に足して確かめる
 const SNIPPETS: &[(&str, &str)] = &[
     (
+        "configs/database/mariadb.toml",
+        "[server]\n[transport]\n[handlers]\n",
+    ),
+    (
         "configs/database/mysql.toml",
         "[server]\n[transport]\n[handlers]\n",
     ),

@@ -1,12 +1,14 @@
-//! `[database]`のMySQL（`engine = "mysql"`）を、MCPのツールとして使う結合
-//! テスト（#527）。PostgreSQLの`database_postgres_tools_test.rs`と同じことを
-//! 確かめる。
+//! `[database]`のMySQL・MariaDB（`engine = "mysql"`・`"mariadb"`）を、MCPの
+//! ツールとして使う結合テスト（#527）。PostgreSQLの
+//! `database_postgres_tools_test.rs`と同じことを確かめる。同じテストを、
+//! MySQL（`mysql::`）とMariaDB（`mariadb::`）の両方で動かす。
 //!
-//! 実際のMySQLが要る。`TEST_MYSQL_URL`（例:
-//! `mysql://root:testpass@127.0.0.1:3307/mcptest`）が無ければ、何もせずに
-//! 通る。CIでは、Run Integration Testsのジョブのmysqlのサービスを使う。
-//! 書き込む関数を作るため、`SUPER`か`SYSTEM_VARIABLES_ADMIN`を持つユーザー
-//! （CIではroot）でつなぐ。
+//! 実際のデータベースが要る。`TEST_MYSQL_URL`（例:
+//! `mysql://root:testpass@127.0.0.1:3307/mcptest`）・`TEST_MARIADB_URL`（例:
+//! `mysql://root:testpass@127.0.0.1:3308/mcptest`）が無ければ、そのほうの
+//! テストは何もせずに通る。CIでは、Run Integration Testsのジョブの
+//! mysql・mariadbのサービスを使う。書き込む関数を作るため、`SUPER`か
+//! `SYSTEM_VARIABLES_ADMIN`を持つユーザー（CIではroot）でつなぐ。
 #![cfg(feature = "mysql-backend")]
 
 use mcp_rs::config::DatabaseSettings;
@@ -16,17 +18,43 @@ use mysql_async::prelude::*;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 
-/// `TEST_MYSQL_URL`の接続先と、テストの準備に使うプール
-async fn test_database() -> Option<(String, mysql_async::Pool)> {
-    let url = std::env::var("TEST_MYSQL_URL").unwrap_or_default();
+/// テストするデータベースの種類
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    MySql,
+    MariaDb,
+}
+
+impl Kind {
+    /// 接続先を書く環境変数
+    fn url_variable(self) -> &'static str {
+        match self {
+            Kind::MySql => "TEST_MYSQL_URL",
+            Kind::MariaDb => "TEST_MARIADB_URL",
+        }
+    }
+
+    /// `[database]`の`engine`
+    fn engine(self) -> &'static str {
+        match self {
+            Kind::MySql => "mysql",
+            Kind::MariaDb => "mariadb",
+        }
+    }
+}
+
+/// `kind`の接続先と、テストの準備に使うプール
+async fn test_database(kind: Kind) -> Option<(String, mysql_async::Pool)> {
+    let variable = kind.url_variable();
+    let url = std::env::var(variable).unwrap_or_default();
     if url.is_empty() {
-        println!("skipping: TEST_MYSQL_URL not set");
+        println!("skipping: {variable} not set");
         return None;
     }
     let pool = mysql_async::Pool::new(url.as_str());
     pool.get_conn()
         .await
-        .expect("TEST_MYSQL_URL is set but MySQL is not reachable");
+        .unwrap_or_else(|e| panic!("{variable} is set but the database is not reachable: {e}"));
     Some((url, pool))
 }
 
@@ -36,10 +64,10 @@ async fn run(pool: &mysql_async::Pool, sql: &str) {
     conn.query_drop(sql).await.unwrap();
 }
 
-fn settings_from_url(url: &str) -> DatabaseSettings {
-    let url = url::Url::parse(url).expect("TEST_MYSQL_URL must be a URL");
+fn settings_from_url(url: &str, kind: Kind) -> DatabaseSettings {
+    let url = url::Url::parse(url).expect("the test database URL must be a URL");
     DatabaseSettings {
-        engine: "mysql".to_string(),
+        engine: kind.engine().to_string(),
         host: url.host_str().map(str::to_string),
         port: url.port(),
         database: url.path().trim_start_matches('/').to_string(),
@@ -79,9 +107,8 @@ async fn tool_names(handler: &DatabaseHandler) -> Vec<String> {
         .collect()
 }
 
-#[tokio::test]
-async fn read_only_by_default() {
-    let Some((url, pool)) = test_database().await else {
+async fn read_only_by_default(kind: Kind) {
+    let Some((url, pool)) = test_database(kind).await else {
         return;
     };
     let table = unique_name("ro");
@@ -92,7 +119,7 @@ async fn read_only_by_default() {
     .await;
     run(&pool, &format!("INSERT INTO {table} VALUES (1, 'one')")).await;
 
-    let handler = DatabaseHandler::from_settings(&settings_from_url(&url))
+    let handler = DatabaseHandler::from_settings(&settings_from_url(&url, kind))
         .await
         .unwrap();
     assert_eq!(
@@ -148,9 +175,8 @@ async fn read_only_by_default() {
     run(&pool, &format!("DROP TABLE {table}")).await;
 }
 
-#[tokio::test]
-async fn get_schema_returns_foreign_keys_and_indexes() {
-    let Some((url, pool)) = test_database().await else {
+async fn get_schema_returns_foreign_keys_and_indexes(kind: Kind) {
+    let Some((url, pool)) = test_database(kind).await else {
         return;
     };
     let parent = unique_name("parent");
@@ -176,7 +202,7 @@ async fn get_schema_returns_foreign_keys_and_indexes() {
     )
     .await;
 
-    let handler = DatabaseHandler::from_settings(&settings_from_url(&url))
+    let handler = DatabaseHandler::from_settings(&settings_from_url(&url, kind))
         .await
         .unwrap();
     let schema = call(&handler, "get_schema", json!({})).await.unwrap();
@@ -231,9 +257,8 @@ async fn get_schema_returns_foreign_keys_and_indexes() {
     run(&pool, &format!("DROP TABLE {parent}")).await;
 }
 
-#[tokio::test]
-async fn execute_query_cannot_write() {
-    let Some((url, pool)) = test_database().await else {
+async fn execute_query_cannot_write(kind: Kind) {
+    let Some((url, pool)) = test_database(kind).await else {
         return;
     };
     let table = unique_name("guard");
@@ -251,7 +276,7 @@ async fn execute_query_cannot_write() {
     )
     .await;
 
-    let mut settings = settings_from_url(&url);
+    let mut settings = settings_from_url(&url, kind);
     settings.allow_write = Some(true);
     let handler = DatabaseHandler::from_settings(&settings).await.unwrap();
 
@@ -290,9 +315,8 @@ async fn execute_query_cannot_write() {
     run(&pool, &format!("DROP TABLE {table}")).await;
 }
 
-#[tokio::test]
-async fn execute_command_when_writes_are_allowed() {
-    let Some((url, pool)) = test_database().await else {
+async fn execute_command_when_writes_are_allowed(kind: Kind) {
+    let Some((url, pool)) = test_database(kind).await else {
         return;
     };
     let table = unique_name("rw");
@@ -302,7 +326,7 @@ async fn execute_command_when_writes_are_allowed() {
     )
     .await;
 
-    let mut settings = settings_from_url(&url);
+    let mut settings = settings_from_url(&url, kind);
     settings.allow_write = Some(true);
     let handler = DatabaseHandler::from_settings(&settings).await.unwrap();
     assert_eq!(
@@ -342,12 +366,11 @@ async fn execute_command_when_writes_are_allowed() {
     run(&pool, &format!("DROP TABLE {table}")).await;
 }
 
-#[tokio::test]
-async fn values_are_decoded_by_type() {
-    let Some((url, _pool)) = test_database().await else {
+async fn values_are_decoded_by_type(kind: Kind) {
+    let Some((url, _pool)) = test_database(kind).await else {
         return;
     };
-    let handler = DatabaseHandler::from_settings(&settings_from_url(&url))
+    let handler = DatabaseHandler::from_settings(&settings_from_url(&url, kind))
         .await
         .unwrap();
     let result = call(
@@ -361,6 +384,11 @@ async fn values_are_decoded_by_type() {
     )
     .await
     .unwrap();
+    // MariaDBのJSONは、文字列の型（LONGTEXT）なので、文字列のまま返す
+    let json_value = match kind {
+        Kind::MySql => json!({ "a": 1 }),
+        Kind::MariaDb => json!("{\"a\": 1}"),
+    };
     assert_eq!(
         result["rows"],
         json!([[
@@ -369,7 +397,7 @@ async fn values_are_decoded_by_type() {
             "2026-11-16",
             "2026-11-16 09:05:07",
             "-26:03:04",
-            { "a": 1 },
+            json_value,
             "YWJj",
             null,
             1.5,
@@ -388,9 +416,8 @@ async fn values_are_decoded_by_type() {
     assert_eq!(result["rows"], json!([[1]]));
 }
 
-#[tokio::test]
-async fn rows_are_limited_and_empty_results_keep_columns() {
-    let Some((url, pool)) = test_database().await else {
+async fn rows_are_limited_and_empty_results_keep_columns(kind: Kind) {
+    let Some((url, pool)) = test_database(kind).await else {
         return;
     };
     let table = unique_name("many");
@@ -400,7 +427,7 @@ async fn rows_are_limited_and_empty_results_keep_columns() {
         &format!("INSERT INTO {table} VALUES (1),(2),(3),(4),(5),(6),(7),(8),(9),(10)"),
     )
     .await;
-    let mut settings = settings_from_url(&url);
+    let mut settings = settings_from_url(&url, kind);
     settings.max_rows = Some(3);
     // 上限で止めた接続は閉じるので、1つでも続けて使えることを確かめる
     settings.max_connections = Some(1);
@@ -441,9 +468,8 @@ async fn rows_are_limited_and_empty_results_keep_columns() {
     run(&pool, &format!("DROP TABLE {table}")).await;
 }
 
-#[tokio::test]
-async fn large_results_are_limited_by_bytes() {
-    let Some((url, pool)) = test_database().await else {
+async fn large_results_are_limited_by_bytes(kind: Kind) {
+    let Some((url, pool)) = test_database(kind).await else {
         return;
     };
     let table = unique_name("big");
@@ -454,7 +480,7 @@ async fn large_results_are_limited_by_bytes() {
         &format!("INSERT INTO {table} VALUES {}", values.join(",")),
     )
     .await;
-    let mut settings = settings_from_url(&url);
+    let mut settings = settings_from_url(&url, kind);
     settings.max_result_bytes = Some(100_000);
     let handler = DatabaseHandler::from_settings(&settings).await.unwrap();
 
@@ -472,9 +498,8 @@ async fn large_results_are_limited_by_bytes() {
     run(&pool, &format!("DROP TABLE {table}")).await;
 }
 
-#[tokio::test]
-async fn slow_statements_time_out() {
-    let Some((url, pool)) = test_database().await else {
+async fn slow_statements_time_out(kind: Kind) {
+    let Some((url, pool)) = test_database(kind).await else {
         return;
     };
     let table = unique_name("slow");
@@ -485,13 +510,14 @@ async fn slow_statements_time_out() {
         &format!("INSERT INTO {table} VALUES {}", values.join(",")),
     )
     .await;
-    let mut settings = settings_from_url(&url);
+    let mut settings = settings_from_url(&url, kind);
     settings.query_timeout_seconds = Some(1);
     settings.allow_write = Some(true);
     let handler = DatabaseHandler::from_settings(&settings).await.unwrap();
 
-    // SELECTは、サーバーのMAX_EXECUTION_TIMEで止まる。`count(*)`だけの
-    // 結合は、MySQLが行を作らずに数えるので、行ごとに計算させる
+    // SELECTは、サーバーのMAX_EXECUTION_TIME（MariaDBはmax_statement_time）
+    // で止まる。`count(*)`だけの結合は、MySQLが行を作らずに数えるので、行
+    // ごとに計算させる
     let err = call(
         &handler,
         "execute_query",
@@ -501,7 +527,11 @@ async fn slow_statements_time_out() {
     )
     .await
     .unwrap_err();
-    assert!(err.contains("execution time"), "{err}");
+    let expected = match kind {
+        Kind::MySql => "execution time",
+        Kind::MariaDb => "max_statement_time",
+    };
+    assert!(err.contains(expected), "{err}");
 
     // 書き込みは、別の接続からKILL QUERYで止める
     let started = std::time::Instant::now();
@@ -524,12 +554,11 @@ async fn slow_statements_time_out() {
     run(&pool, &format!("DROP TABLE {table}")).await;
 }
 
-#[tokio::test]
-async fn connection_errors_do_not_show_the_password() {
-    let Some((url, _pool)) = test_database().await else {
+async fn connection_errors_do_not_show_the_password(kind: Kind) {
+    let Some((url, _pool)) = test_database(kind).await else {
         return;
     };
-    let mut settings = settings_from_url(&url);
+    let mut settings = settings_from_url(&url, kind);
     settings.password = Some("wrong-secret-password".to_string());
     let err = match DatabaseHandler::from_settings(&settings).await {
         Ok(_) => panic!("connecting with a wrong password must fail"),
@@ -540,9 +569,8 @@ async fn connection_errors_do_not_show_the_password() {
 }
 
 /// 接続をプールに戻すとき、セッションの変数・ロックを元に戻す
-#[tokio::test]
-async fn session_state_does_not_stay_on_pooled_connections() {
-    let Some((url, pool)) = test_database().await else {
+async fn session_state_does_not_stay_on_pooled_connections(kind: Kind) {
+    let Some((url, pool)) = test_database(kind).await else {
         return;
     };
     let table = unique_name("sess");
@@ -550,7 +578,7 @@ async fn session_state_does_not_stay_on_pooled_connections() {
     run(&pool, &format!("CREATE TABLE {table} (x int)")).await;
     run(&pool, &format!("INSERT INTO {table} VALUES (1)")).await;
 
-    let mut settings = settings_from_url(&url);
+    let mut settings = settings_from_url(&url, kind);
     settings.allow_write = Some(true);
     // 接続を1つにして、同じ接続を使い回させる
     settings.max_connections = Some(1);
@@ -589,17 +617,25 @@ async fn session_state_does_not_stay_on_pooled_connections() {
     run(&pool, &format!("DROP TABLE {table}")).await;
 }
 
-/// TLS（#527）。CIのMySQLは、自己署名の証明書でTLSを使える
-#[tokio::test]
-async fn tls_modes() {
-    let Some((url, _pool)) = test_database().await else {
+/// TLS（#527）。CIのMySQL・MariaDBは、自己署名の証明書でTLSを使える
+async fn tls_modes(kind: Kind) {
+    let Some((url, _pool)) = test_database(kind).await else {
         return;
     };
-    let cipher_sql = "SELECT VARIABLE_VALUE FROM performance_schema.session_status \
-                      WHERE VARIABLE_NAME = 'Ssl_cipher'";
+    // MariaDBは、performance_schemaが既定で無効なので、information_schemaを見る
+    let cipher_sql = match kind {
+        Kind::MySql => {
+            "SELECT VARIABLE_VALUE FROM performance_schema.session_status \
+             WHERE VARIABLE_NAME = 'Ssl_cipher'"
+        }
+        Kind::MariaDb => {
+            "SELECT VARIABLE_VALUE FROM information_schema.SESSION_STATUS \
+             WHERE VARIABLE_NAME = 'SSL_CIPHER'"
+        }
+    };
 
     // requireは暗号化する（証明書は確かめない）
-    let mut settings = settings_from_url(&url);
+    let mut settings = settings_from_url(&url, kind);
     settings.ssl_mode = Some("require".to_string());
     let handler = DatabaseHandler::from_settings(&settings).await.unwrap();
     let result = call(&handler, "execute_query", json!({ "sql": cipher_sql }))
@@ -612,7 +648,7 @@ async fn tls_modes() {
     assert!(!cipher.is_empty(), "{result}");
 
     // disableは暗号化しない
-    let handler = DatabaseHandler::from_settings(&settings_from_url(&url))
+    let handler = DatabaseHandler::from_settings(&settings_from_url(&url, kind))
         .await
         .unwrap();
     let result = call(&handler, "execute_query", json!({ "sql": cipher_sql }))
@@ -627,12 +663,11 @@ async fn tls_modes() {
 
 /// `ssl_root_cert`を書いたのに、`ssl_mode`が証明書を確かめない設定なら、
 /// 起動しない
-#[tokio::test]
-async fn ssl_root_cert_needs_a_verifying_ssl_mode() {
-    let Some((url, _pool)) = test_database().await else {
+async fn ssl_root_cert_needs_a_verifying_ssl_mode(kind: Kind) {
+    let Some((url, _pool)) = test_database(kind).await else {
         return;
     };
-    let mut settings = settings_from_url(&url);
+    let mut settings = settings_from_url(&url, kind);
     settings.ssl_mode = Some("require".to_string());
     settings.ssl_root_cert = Some("ca.pem".to_string());
     let err = match DatabaseHandler::from_settings(&settings).await {
@@ -644,3 +679,63 @@ async fn ssl_root_cert_needs_a_verifying_ssl_mode() {
         "{err}"
     );
 }
+
+/// `engine = "mysql"`のままMariaDBにつないでも、サーバーの版を見て、
+/// MariaDBの時間の上限の変数を使う
+async fn mysql_engine_setting_works_with_mariadb(kind: Kind) {
+    if kind != Kind::MariaDb {
+        return;
+    }
+    let Some((url, _pool)) = test_database(kind).await else {
+        return;
+    };
+    let handler = DatabaseHandler::from_settings(&settings_from_url(&url, Kind::MySql))
+        .await
+        .unwrap();
+    let result = call(
+        &handler,
+        "execute_query",
+        json!({ "sql": "SELECT @@SESSION.max_statement_time AS limit_seconds" }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(result["rows"], json!([[30.0]]), "{result}");
+}
+
+/// 同じテストを、MySQLとMariaDBの両方で動かす
+macro_rules! for_each_server {
+    ($($name:ident),* $(,)?) => {
+        mod mysql {
+            $(
+                #[tokio::test]
+                async fn $name() {
+                    super::$name(super::Kind::MySql).await
+                }
+            )*
+        }
+        mod mariadb {
+            $(
+                #[tokio::test]
+                async fn $name() {
+                    super::$name(super::Kind::MariaDb).await
+                }
+            )*
+        }
+    };
+}
+
+for_each_server!(
+    read_only_by_default,
+    get_schema_returns_foreign_keys_and_indexes,
+    execute_query_cannot_write,
+    execute_command_when_writes_are_allowed,
+    values_are_decoded_by_type,
+    rows_are_limited_and_empty_results_keep_columns,
+    large_results_are_limited_by_bytes,
+    slow_statements_time_out,
+    connection_errors_do_not_show_the_password,
+    session_state_does_not_stay_on_pooled_connections,
+    tls_modes,
+    ssl_root_cert_needs_a_verifying_ssl_mode,
+    mysql_engine_setting_works_with_mariadb,
+);

@@ -211,15 +211,20 @@ impl DatabaseHandler {
         use crate::handlers::database::types::{ConnectionConfig, FeatureConfig, PoolConfig};
 
         settings.validate()?;
-        // MySQL（#527）。`mysql-backend`無しでビルドしたmcp-rsでは使えない
+        // MySQL・MariaDB（#527）。`mysql-backend`無しでビルドしたmcp-rsでは
+        // 使えない
         let database_type = if settings.is_mysql() {
             if !cfg!(feature = "mysql-backend") {
                 return Err(
-                    "this build of mcp-rs does not include MySQL support (build it with --features mysql-backend)"
+                    "this build of mcp-rs does not include MySQL/MariaDB support (build it with --features mysql-backend)"
                         .to_string(),
                 );
             }
-            DatabaseType::MySQL
+            if settings.is_mariadb() {
+                DatabaseType::MariaDB
+            } else {
+                DatabaseType::MySQL
+            }
         } else {
             DatabaseType::PostgreSQL
         };
@@ -274,7 +279,7 @@ impl DatabaseHandler {
         // 起動しない。通信を守れない設定なら、警告する
         match database_type {
             #[cfg(feature = "mysql-backend")]
-            DatabaseType::MySQL => {
+            DatabaseType::MySQL | DatabaseType::MariaDB => {
                 use crate::handlers::database::engines::mysql::engine as mysql;
                 mysql::check_ssl_root_cert(&config.connection)?;
                 if let Some(warning) = mysql::weak_tls_warning(&config.connection) {
@@ -295,10 +300,10 @@ impl DatabaseHandler {
                 }
             }
         }
-        let engine_id = if database_type == DatabaseType::MySQL {
-            "mysql"
-        } else {
-            "postgresql"
+        let engine_id = match database_type {
+            DatabaseType::MySQL => "mysql",
+            DatabaseType::MariaDB => "mariadb",
+            _ => "postgresql",
         };
         handler
             .add_database(engine_id.to_string(), config)
@@ -1006,12 +1011,19 @@ impl McpHandler for DatabaseHandler {
     }
 
     async fn list_tools(&self) -> Result<Vec<Tool>, McpError> {
-        let mysql = self.tool_options.database_type == DatabaseType::MySQL;
-        let params_description = if mysql {
-            // MySQL（#527）は`?`。文字列は、MySQLが列の型に変換する
-            "Values for the ? placeholders in the SQL, in order (bound as parameters, never inserted into the SQL text). MySQL converts strings to the column type, so values returned by execute_query (dates as 'YYYY-MM-DD HH:MM:SS', DECIMAL and JSON as text) can be passed back as they are. Binary values (BLOB, VARBINARY) are returned as base64; to pass one, use FROM_BASE64(?) in the SQL"
+        let database_type = &self.tool_options.database_type;
+        let mysql = matches!(database_type, DatabaseType::MySQL | DatabaseType::MariaDB);
+        let engine_name = if *database_type == DatabaseType::MariaDB {
+            "MariaDB"
         } else {
-            "Values for $1, $2, ... in the SQL (bound as parameters, never inserted into the SQL text). Strings are converted to the type PostgreSQL expects for that parameter (uuid, date, timestamp, numeric, json, bytea as base64, ...), so values returned by execute_query can be passed back as they are. Strings also work for text and enum columns. For other types (interval, money, inet, arrays, ...), pass a string and cast it through text in the SQL, e.g. $1::text::interval"
+            "MySQL"
+        };
+        let params_description = if mysql {
+            // MySQL・MariaDB（#527）は`?`。文字列は、データベースが列の型に
+            // 変換する
+            format!("Values for the ? placeholders in the SQL, in order (bound as parameters, never inserted into the SQL text). {engine_name} converts strings to the column type, so values returned by execute_query (dates as 'YYYY-MM-DD HH:MM:SS', DECIMAL and JSON as text) can be passed back as they are. Binary values (BLOB, VARBINARY) are returned as base64; to pass one, use FROM_BASE64(?) in the SQL")
+        } else {
+            "Values for $1, $2, ... in the SQL (bound as parameters, never inserted into the SQL text). Strings are converted to the type PostgreSQL expects for that parameter (uuid, date, timestamp, numeric, json, bytea as base64, ...), so values returned by execute_query can be passed back as they are. Strings also work for text and enum columns. For other types (interval, money, inet, arrays, ...), pass a string and cast it through text in the SQL, e.g. $1::text::interval".to_string()
         };
         let params_schema = json!({
             "type": "array",

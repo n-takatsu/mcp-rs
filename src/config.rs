@@ -82,7 +82,7 @@ pub struct AuditLogSettings {
     pub max_files: Option<u32>,
 }
 
-/// データベースの設定（`[database]`、#453）。PostgreSQLとMySQL（#527）。
+/// データベースの設定（`[database]`、#453）。PostgreSQLと、MySQL・MariaDB（#527）。
 ///
 /// 既定では読み取りだけ: `execute_query`は読み取り専用のトランザクションで
 /// 実行し、書き込みのツール（`execute_command`）は出さない。
@@ -92,11 +92,11 @@ pub struct AuditLogSettings {
 pub struct DatabaseSettings {
     /// `false`で使わない。省略時は`true`（`[database]`を書けば使う）
     pub enabled: Option<bool>,
-    /// エンジン: `"postgresql"`・`"mysql"`（#527）
+    /// エンジン: `"postgresql"`・`"mysql"`・`"mariadb"`（#527）
     pub engine: String,
     /// 省略時は`localhost`
     pub host: Option<String>,
-    /// 省略時は、PostgreSQLは5432、MySQLは3306
+    /// 省略時は、PostgreSQLは5432、MySQL・MariaDBは3306
     pub port: Option<u16>,
     pub database: String,
     pub username: String,
@@ -165,9 +165,15 @@ impl DatabaseSettings {
             .unwrap_or(if self.is_mysql() { 3306 } else { 5432 })
     }
 
-    /// `engine = "mysql"`か（#527）
+    /// `engine = "mysql"`か`"mariadb"`か（#527）。どちらも同じ実装・
+    /// 設定（ポート3306、`ssl_mode`に`allow`が無い）を使う
     pub fn is_mysql(&self) -> bool {
-        self.engine.eq_ignore_ascii_case("mysql")
+        self.engine.eq_ignore_ascii_case("mysql") || self.is_mariadb()
+    }
+
+    /// `engine = "mariadb"`か（#527）
+    pub fn is_mariadb(&self) -> bool {
+        self.engine.eq_ignore_ascii_case("mariadb")
     }
 
     pub fn allow_write(&self) -> bool {
@@ -230,7 +236,7 @@ impl DatabaseSettings {
     pub fn validate(&self) -> Result<(), String> {
         if !self.engine.eq_ignore_ascii_case("postgresql") && !self.is_mysql() {
             return Err(format!(
-                "database.engine = \"{}\" is not supported (supported: \"postgresql\", \"mysql\")",
+                "database.engine = \"{}\" is not supported (supported: \"postgresql\", \"mysql\", \"mariadb\")",
                 self.engine
             ));
         }
@@ -2342,6 +2348,20 @@ start_timeout_seconds = 300
         assert!(mysql
             .describe()
             .starts_with("MySQL reader@localhost:3306/app"));
+        // MariaDB（#527）も、MySQLと同じ既定・ssl_mode
+        let mariadb = DatabaseSettings {
+            engine: "mariadb".to_string(),
+            ..valid.clone()
+        };
+        assert!(mariadb.validate().is_ok());
+        assert!(mariadb.is_mysql() && mariadb.is_mariadb());
+        assert!(!mysql.is_mariadb());
+        assert_eq!(mariadb.port(), 3306);
+        let mariadb_allow = DatabaseSettings {
+            ssl_mode: Some("allow".to_string()),
+            ..mariadb
+        };
+        assert!(mariadb_allow.validate().is_err());
         // 0や省略は既定値
         let zero = DatabaseSettings {
             max_rows: Some(0),

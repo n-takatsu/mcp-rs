@@ -1,10 +1,11 @@
-//! MySQLのエンジン（`[database]`の`engine = "mysql"`、#527）
+//! MySQLのエンジン（`[database]`の`engine = "mysql"`、#527）。MariaDB
+//! （`engine = "mariadb"`）も、このエンジンを使う（`MariaDbEngine`）
 //!
 //! 接続のプールは、最初の`connect`で1つだけ作り、以後の接続で共有する
 //! （以前は接続のたびにプールを作っていた）。接続の設定は、URLを組み立てずに
 //! 項目ごとに渡すので、パスワードが記号を含んでいてもよい。
 
-use super::MySqlConnection;
+use super::{connection::ServerKind, MySqlConnection};
 use crate::handlers::database::{
     engine::{DatabaseConnection, DatabaseEngine},
     engines::{OPTION_BYTE_LIMIT, OPTION_FETCH_LIMIT, OPTION_SSL_ROOT_CERT},
@@ -14,7 +15,9 @@ use crate::handlers::database::{
     },
 };
 use async_trait::async_trait;
-use mysql_async::{Opts, OptsBuilder, Pool, PoolConstraints, PoolOpts, SslOpts};
+use mysql_async::{
+    prelude::Queryable, Opts, OptsBuilder, Pool, PoolConstraints, PoolOpts, SslOpts,
+};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -26,8 +29,9 @@ pub const SSL_MODES: &[&str] = &["disable", "prefer", "require", "verify-ca", "v
 #[derive(Clone)]
 pub struct MySqlEngine {
     config: DatabaseConfig,
-    /// 接続のプールと、その設定。最初の`connect`で作る
-    pool: Arc<tokio::sync::OnceCell<(Pool, Opts)>>,
+    /// 接続のプールと、その設定と、つないだサーバーの種類。最初の
+    /// `connect`で作る
+    pool: Arc<tokio::sync::OnceCell<(Pool, Opts, ServerKind)>>,
 }
 
 impl MySqlEngine {
@@ -162,8 +166,9 @@ pub fn check_ssl_root_cert(config: &ConnectionConfig) -> Result<(), String> {
 }
 
 /// プールを作り、つながるかを確かめる。`prefer`で、サーバーがTLSを使えない
-/// ときは、暗号化せずにつなぎ直す
-async fn connect_pool(config: &DatabaseConfig) -> Result<(Pool, Opts), DatabaseError> {
+/// ときは、暗号化せずにつなぎ直す。サーバーの版から、MySQLかMariaDBかを
+/// 決める（`engine`の書き方ではなく、実際のサーバーに合わせる）
+async fn connect_pool(config: &DatabaseConfig) -> Result<(Pool, Opts, ServerKind), DatabaseError> {
     // rustlsの暗号の実装（プロバイダー）を決める。依存クレートの都合で、
     // ringとaws-lc-rsの両方が入っているので、決めないとTLSの接続でパニック
     // する（CIのtls_modesで分かった）。HTTPのサーバー（`build_tls_acceptor`）
@@ -186,8 +191,11 @@ async fn connect_pool(config: &DatabaseConfig) -> Result<(Pool, Opts), DatabaseE
                     format!("no connection within {} seconds", timeout.as_secs()).into(),
                 )
             })?;
-        drop(conn?);
-        Ok::<_, mysql_async::Error>((pool, opts))
+        let mut conn = conn?;
+        let version: Option<String> = conn.query_first("SELECT VERSION()").await?;
+        drop(conn);
+        let server = ServerKind::from_version(version.as_deref().unwrap_or_default());
+        Ok::<_, mysql_async::Error>((pool, opts, server))
     };
     let opts = connect_opts(config, ssl_opts(mode, root_cert)?);
     match try_connect(opts).await {
@@ -196,7 +204,7 @@ async fn connect_pool(config: &DatabaseConfig) -> Result<(Pool, Opts), DatabaseE
             if mode == "prefer" =>
         {
             tracing::info!(
-                "The MySQL server at {} does not support TLS: connecting without encryption (ssl_mode = \"prefer\")",
+                "The database server at {} does not support TLS: connecting without encryption (ssl_mode = \"prefer\")",
                 connection.host
             );
             try_connect(connect_opts(config, None))
@@ -217,7 +225,7 @@ impl DatabaseEngine for MySqlEngine {
         &self,
         config: &DatabaseConfig,
     ) -> Result<Box<dyn DatabaseConnection>, DatabaseError> {
-        let (pool, opts) = self
+        let (pool, opts, server) = self
             .pool
             .get_or_try_init(|| connect_pool(config))
             .await?
@@ -240,6 +248,7 @@ impl DatabaseEngine for MySqlEngine {
         )))
         .with_fetch_limit(limit(OPTION_FETCH_LIMIT))
         .with_byte_limit(limit(OPTION_BYTE_LIMIT))
+        .with_server(server)
         .with_connect_timeout(Duration::from_secs(u64::from(
             config.connection.timeout_seconds,
         )));

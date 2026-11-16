@@ -12,6 +12,7 @@ on:
       - 'tests/fixtures/**'
       - 'tests/*postgres*'
       - 'tests/*mysql*'
+      - 'tests/*mariadb*'
       - 'tests/database_handler_*'
       - 'tests/column_encryption_rbac_test.rs'
       - 'migrations/**'
@@ -32,6 +33,7 @@ on:
       - 'tests/fixtures/**'
       - 'tests/*postgres*'
       - 'tests/*mysql*'
+      - 'tests/*mariadb*'
       - 'tests/database_handler_*'
       - 'tests/column_encryption_rbac_test.rs'
       - 'migrations/**'
@@ -99,6 +101,21 @@ jobs:
           --health-timeout 5s
           --health-retries 10
 
+      # [database]のengine = "mariadb"（#527）。MariaDB 11.4は、自己署名の
+      # 証明書を自分で作り、TLSを使える（tls_modesのテスト）
+      mariadb:
+        image: mariadb:11.4
+        env:
+          MARIADB_ROOT_PASSWORD: testpass
+          MARIADB_DATABASE: mcptest
+        ports:
+          - 3308:3306
+        options: >-
+          --health-cmd "healthcheck.sh --connect --innodb_initialized"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -121,6 +138,7 @@ jobs:
           docker exec ${{ job.services.postgres.id }} pg_isready -U testuser -d mcptest
           docker exec ${{ job.services.redis.id }} redis-cli ping
           docker exec ${{ job.services.mysql.id }} mysqladmin ping -h 127.0.0.1 -ptestpass
+          docker exec ${{ job.services.mariadb.id }} healthcheck.sh --connect --innodb_initialized
 
       - name: Build project
         run: cargo build --features integration-tests --release
@@ -140,11 +158,13 @@ jobs:
           TEST_DATABASE_URL: postgres://testuser:testpass@localhost:5433/mcptest
         run: cargo test --features database --test database_postgres_tools_test -- --nocapture
 
-      # MySQLのツール（#527）を、上のmysqlのサービスで確かめる。書き込む関数を
-      # 作るため（execute_query_cannot_write）、rootでつなぐ
-      - name: Run database tool tests (MySQL)
+      # MySQL・MariaDBのツール（#527）を、上のmysql・mariadbのサービスで
+      # 確かめる。書き込む関数を作るため（execute_query_cannot_write）、
+      # rootでつなぐ
+      - name: Run database tool tests (MySQL, MariaDB)
         env:
           TEST_MYSQL_URL: mysql://root:testpass@127.0.0.1:3307/mcptest
+          TEST_MARIADB_URL: mysql://root:testpass@127.0.0.1:3308/mcptest
         run: |
           cargo test --features database,mysql-backend --test database_mysql_tools_test -- --nocapture
           cargo test --features database,mysql-backend --test mod database::mysql_integration_tests -- --ignored --test-threads=1

@@ -19,7 +19,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ssl_root_cert`を書いたときはそのCAだけを信頼する。`get_schema`は
   外部キー・インデックス・ビューも返し、`execute_command`は
   `last_insert_id`も返す。既定のビルド・配るバイナリ・Dockerイメージに
-  含める（`mysql-backend`を既定の機能にした）。MariaDBは、まだ使えない
+  含める（`mysql-backend`を既定の機能にした）
+- `[database]`で、MariaDB（10.6以降）を使えるようにした（`engine = "mariadb"`、
+  #527）。MySQLと同じ実装・上限で、SELECTの時間は`max_statement_time`で止める
+  （MariaDBには`MAX_EXECUTION_TIME`が無い）。MySQLかMariaDBかは、つないだ
+  サーバーの版で決めるので、`engine = "mysql"`のままMariaDBにつないでも動く。
+  MariaDBの`JSON`は文字列の型なので、文字列で返す
 
 - リリースに、ビルド済みのmcp-rsを付ける（#564）。Windows（x64）・macOS
   （Apple Silicon）・Linux（x64、glibc 2.35以降）。タグで動く
