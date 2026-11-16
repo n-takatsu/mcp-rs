@@ -21,6 +21,7 @@ use sqlparser::dialect::{
     ClickHouseDialect, Dialect, GenericDialect, MySqlDialect, PostgreSqlDialect, SQLiteDialect,
 };
 use sqlparser::parser::Parser;
+use sqlparser::tokenizer::{Token, Tokenizer, Whitespace};
 use std::collections::HashMap;
 use std::fmt;
 
@@ -81,6 +82,34 @@ pub enum ProjectionResolution {
     WildcardTable(String),
 }
 
+/// `sql`を文に分ける。MySQLの方言では、MariaDBだけが実行するコメント
+/// （`/*M! … */`・`/*M!100100 … */`）があれば拒否する（PR #573のレビュー）。
+/// sqlparserは、`/*! … */`の中身は読むが、`/*M! … */`はただのコメントと
+/// して捨てる。そのため、`SELECT 1 /*M! INTO OUTFILE '/tmp/x' */`が検査を
+/// 通り、MariaDBではファイルに書き出してしまう。`engine = "mysql"`のまま
+/// MariaDBにつなげるので、MySQLの方言では、いつも拒否する。
+fn parse_statements(sql: &str, dialect: &dyn Dialect) -> Result<Vec<Statement>, ProvenanceError> {
+    let parse_error = |e: &dyn fmt::Display| unsupported(format!("SQL parse error: {e}"));
+    if dialect.is::<MySqlDialect>() {
+        let tokens = Tokenizer::new(dialect, sql)
+            .tokenize()
+            .map_err(|e| parse_error(&e))?;
+        let mariadb_code = tokens.iter().any(|token| {
+            matches!(
+                token,
+                Token::Whitespace(Whitespace::MultiLineComment(text))
+                    if text.get(..2).is_some_and(|start| start.eq_ignore_ascii_case("m!"))
+            )
+        });
+        if mariadb_code {
+            return Err(unsupported(
+                "MariaDB executable comments (/*M! ... */) are not allowed",
+            ));
+        }
+    }
+    Parser::parse_sql(dialect, sql).map_err(|e| parse_error(&e))
+}
+
 /// Validates that `sql` is exactly one read-only query statement - a plain
 /// `SELECT` or any SELECT-family construct (`UNION`, a CTE, etc) - rejecting
 /// multiple statements or any non-query statement (`INSERT`/`UPDATE`/
@@ -94,8 +123,7 @@ pub fn validate_single_query_statement(
     sql: &str,
     dialect: &dyn Dialect,
 ) -> Result<(), ProvenanceError> {
-    let statements = Parser::parse_sql(dialect, sql)
-        .map_err(|e| unsupported(format!("SQL parse error: {e}")))?;
+    let statements = parse_statements(sql, dialect)?;
 
     match statements.as_slice() {
         [Statement::Query(query)] if is_read_only_query(query) => Ok(()),
@@ -110,8 +138,7 @@ pub fn validate_single_write_statement(
     sql: &str,
     dialect: &dyn Dialect,
 ) -> Result<(), ProvenanceError> {
-    let statements = Parser::parse_sql(dialect, sql)
-        .map_err(|e| unsupported(format!("SQL parse error: {e}")))?;
+    let statements = parse_statements(sql, dialect)?;
     match statements.as_slice() {
         [Statement::Insert(_) | Statement::Update { .. } | Statement::Delete(_)] => Ok(()),
         [_] => Err(unsupported(
@@ -173,8 +200,7 @@ pub fn resolve_column_provenance(
     sql: &str,
     dialect: &dyn Dialect,
 ) -> Result<ProjectionResolution, ProvenanceError> {
-    let statements = Parser::parse_sql(dialect, sql)
-        .map_err(|e| unsupported(format!("SQL parse error: {e}")))?;
+    let statements = parse_statements(sql, dialect)?;
 
     let [statement] = statements.as_slice() else {
         return Err(unsupported("expected exactly one SQL statement"));
@@ -240,8 +266,7 @@ pub fn resolve_query_tables(
     sql: &str,
     dialect: &dyn Dialect,
 ) -> Result<Vec<String>, ProvenanceError> {
-    let statements = Parser::parse_sql(dialect, sql)
-        .map_err(|e| unsupported(format!("SQL parse error: {e}")))?;
+    let statements = parse_statements(sql, dialect)?;
 
     let [statement] = statements.as_slice() else {
         return Err(unsupported("expected exactly one SQL statement"));
@@ -586,6 +611,46 @@ mod tests {
 
     fn validate(sql: &str) -> Result<(), ProvenanceError> {
         validate_single_query_statement(sql, &PostgreSqlDialect {})
+    }
+
+    /// MariaDBだけが実行するコメント（`/*M! … */`）を、MySQLの方言では
+    /// 拒否する。中身を検査できないため（PR #573のレビュー）
+    #[test]
+    fn mariadb_executable_comments_are_rejected() {
+        let mysql = MySqlDialect {};
+        for sql in [
+            "SELECT 1 /*M! INTO OUTFILE '/tmp/x' */",
+            "SELECT 1 /*M!100100 INTO OUTFILE '/tmp/x' */",
+            "SELECT id FROM t /*M! INTO DUMPFILE '/tmp/x' */",
+            "SELECT id FROM t /*M! UNION SELECT secret FROM other */",
+            "SELECT 1 /*m! INTO OUTFILE '/tmp/x' */",
+        ] {
+            let err = validate_single_query_statement(sql, &mysql).unwrap_err();
+            assert!(err.to_string().contains("/*M!"), "{sql}: {err}");
+            assert!(resolve_query_tables(sql, &mysql).is_err(), "{sql}");
+        }
+        assert!(validate_single_write_statement(
+            "UPDATE t SET x = 1 /*M! , y = (SELECT secret FROM other) */",
+            &mysql
+        )
+        .is_err());
+        // MySQLの`/*! … */`は、sqlparserが中身を読むので、今までどおり検査する
+        assert!(
+            validate_single_query_statement("SELECT 1 /*! INTO OUTFILE '/tmp/x' */", &mysql)
+                .is_err()
+        );
+        // ただのコメントや、文字列の中の`/*M!`は、拒否しない
+        for sql in [
+            "SELECT 1 /* M! note */",
+            "SELECT 1 /* note */",
+            "SELECT '/*M! not a comment */' AS s",
+            "SELECT 1 -- /*M! line comment */",
+        ] {
+            assert!(
+                validate_single_query_statement(sql, &mysql).is_ok(),
+                "{sql}"
+            );
+        }
     }
 
     #[test]

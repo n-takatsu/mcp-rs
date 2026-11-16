@@ -8,10 +8,10 @@ permalink: /docs/database/
 
 **[Home]({{ site.baseurl }}/) > [Documentation]({{ site.baseurl }}/docs/) > Database Guide**
 
-mcp-rs can connect to one PostgreSQL or MySQL database and give MCP clients tools to read its schema and run SQL. By default it only reads: queries run in a read-only transaction, and the tool that changes data is not offered.
+mcp-rs can connect to one PostgreSQL, MySQL, or MariaDB database and give MCP clients tools to read its schema and run SQL. By default it only reads: queries run in a read-only transaction, and the tool that changes data is not offered.
 
-- **Engines**: PostgreSQL, and MySQL from v0.25.0 (see [MySQL](#mysql)). Other engines (MariaDB, SQLite, Redis, MongoDB) exist as library code but cannot be configured yet
-- **Build**: both are included in the default build, the [ready-built files](https://github.com/n-takatsu/mcp-rs/releases), and the Docker image. A build made with `--no-default-features` leaves them out, and reports that in `mcp_rs_status`
+- **Engines**: PostgreSQL, and MySQL and MariaDB from v0.25.0 (see [MySQL](#mysql) and [MariaDB](#mariadb)). Other engines (SQLite, Redis, MongoDB) exist as library code but cannot be configured yet
+- **Build**: all three are included in the default build, the [ready-built files](https://github.com/n-takatsu/mcp-rs/releases), and the Docker image. A build made with `--no-default-features` leaves them out, and reports that in `mcp_rs_status`
 - **Step-by-step setup**: [PostgreSQL Integration Guide](./guides/postgres-integration.md)
 
 ## Configuration
@@ -40,13 +40,13 @@ ssl_mode = "prefer"               # disable, allow, prefer (default), require, v
 
 | Key | Required | Default | Notes |
 |-----|----------|---------|-------|
-| `engine` | yes | | `"postgresql"` or `"mysql"` |
+| `engine` | yes | | `"postgresql"`, `"mysql"`, or `"mariadb"` |
 | `host` | | `localhost` | `${VAR}` allowed |
-| `port` | | `5432` (MySQL: `3306`) | |
+| `port` | | `5432` (MySQL, MariaDB: `3306`) | |
 | `database` | yes | | `${VAR}` allowed |
 | `username` | yes | | `${VAR}` allowed |
 | `password` | | none | `${VAR}` allowed. Never written to logs, `mcp_rs_status`, or error messages |
-| `ssl_mode` | | `prefer` | Same meaning as libpq's `sslmode`. See [TLS](#tls). MySQL has no `allow` |
+| `ssl_mode` | | `prefer` | Same meaning as libpq's `sslmode`. See [TLS](#tls). MySQL and MariaDB have no `allow` |
 | `ssl_root_cert` | | none | PEM file of the CA that signed the server certificate. A relative path is relative to the folder of the configuration file. Used only with `ssl_mode = "verify-ca"` or `"verify-full"`: with a weaker `ssl_mode`, the database tools do not start |
 | `allow_write` | | `false` | See [Writing data](#writing-data) |
 | `max_rows` | | `1000` | `0` means the default |
@@ -175,7 +175,7 @@ With `allow_write = true`, mcp-rs offers `execute_command` (its annotations mark
 
 ## MySQL
 
-From v0.25.0, `engine = "mysql"` connects to MySQL (8.0 or later). The tools, the limits, and the audit log are the same as for PostgreSQL. MariaDB is not supported yet.
+From v0.25.0, `engine = "mysql"` connects to MySQL (8.0 or later). The tools, the limits, and the audit log are the same as for PostgreSQL. For MariaDB, see [MariaDB](#mariadb).
 
 ```toml
 [database]
@@ -207,6 +207,27 @@ Create a user that can only read what the AI client should see. Do not grant `FI
 CREATE USER 'mcp_reader'@'%' IDENTIFIED BY '...';
 GRANT SELECT ON app.* TO 'mcp_reader'@'%';
 ```
+
+## MariaDB
+
+From v0.25.0, `engine = "mariadb"` connects to MariaDB (10.6 or later; tested with 11.4). MariaDB uses the same protocol as MySQL, so everything in [MySQL](#mysql) applies, with these differences:
+
+```toml
+[database]
+engine = "mariadb"
+host = "db.example.com"
+# port = 3306                     # default for MariaDB
+database = "app"
+username = "mcp_reader"
+password = "${MCP_DB_PASSWORD}"
+ssl_mode = "verify-full"
+```
+
+- **Time limit**: `SELECT` statements are stopped by MariaDB (`max_statement_time`, as MariaDB has no `MAX_EXECUTION_TIME`). Other statements are stopped with `KILL QUERY`, as for MySQL
+- **Executable comments**: MariaDB runs the SQL inside `/*M! … */` comments, which mcp-rs cannot check (for example, `SELECT 1 /*M! INTO OUTFILE '/tmp/x' */`). mcp-rs refuses SQL with such a comment, with `engine = "mysql"` too
+- **Values**: MariaDB's `JSON` type is text (`LONGTEXT`), so `JSON` values are returned as strings, not as JSON
+- **Which server**: mcp-rs reads the server version when it connects, and uses MariaDB's time limit when the server is MariaDB. A configuration that says `engine = "mysql"` but points at MariaDB also works
+- **TLS**: MariaDB 11.4 and later offer TLS with a certificate they generate themselves. Such a certificate is not signed by a CA, so `verify-ca` and `verify-full` need a certificate from your own CA (`ssl_root_cert`)
 
 ## Library API
 

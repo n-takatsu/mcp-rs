@@ -1,12 +1,12 @@
-//! MySQLの接続（`[database]`の`engine = "mysql"`、#527）
+//! MySQL・MariaDBの接続（`[database]`の`engine = "mysql"`・`"mariadb"`、#527）
 //!
 //! PostgreSQL（`pg_connection`）と同じ安全性にそろえる:
 //!
 //! - `query()`は、毎回、読み取り専用のトランザクション（`START TRANSACTION
 //!   READ ONLY`）の中で実行し、最後にロールバックする。書き込む関数等、
 //!   SELECTに見えて書き込むSQLも、データベースが拒否する
-//! - 1つのSQLの時間の上限。SELECTは、サーバーの`MAX_EXECUTION_TIME`で
-//!   止める。それを超えて終わらないとき（書き込みや、ロックの待ち）は、
+//! - 1つのSQLの時間の上限。SELECTは、サーバーの`MAX_EXECUTION_TIME`
+//!   （MariaDBは`max_statement_time`）で止める。それを超えて終わらないとき（書き込みや、ロックの待ち）は、
 //!   別の接続から`KILL QUERY`で止め、その接続は閉じる。閉じるのにも時間の
 //!   上限を付ける（`KILL QUERY`が効かない構成でも待ち続けない）
 //! - 受け取る行数・結果のだいたいのバイト数の上限。上限に達したら、残りの
@@ -16,6 +16,9 @@
 //! - パラメーターは文字列に埋め込まず、`?`にバインドする
 //! - 接続をプールに戻すとき、`COM_RESET_CONNECTION`で、セッションの変数・
 //!   ロック（`GET_LOCK`）・一時表を元に戻す（`mysql_async`のプールの既定）
+//!
+//! MariaDBは、MySQLと同じプロトコルなので、同じ実装を使う。違いは、時間の
+//! 上限の変数（`ServerKind`）だけ。どちらかは、つないだサーバーの版で決める
 //!
 //! 以前の実装（#527の前）は、接続のたびにプールを作り、TLSを使えず、
 //! 全部の行をメモリに読み、時間の上限も無かった。
@@ -56,7 +59,47 @@ const DEFAULT_CONNECT_TIMEOUT_SECS: u64 = 10;
 /// 文字コードの番号のうち、バイナリ（`binary`）
 const BINARY_CHARSET: u16 = 63;
 
-/// MySQL Database Connection
+/// つないだサーバーの種類。時間の上限の変数が違う
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServerKind {
+    MySql,
+    MariaDb,
+}
+
+impl ServerKind {
+    /// `SELECT VERSION()`の値から決める（MariaDBは`11.4.2-MariaDB-...`）
+    pub fn from_version(version: &str) -> Self {
+        if version.to_ascii_lowercase().contains("mariadb") {
+            Self::MariaDb
+        } else {
+            Self::MySql
+        }
+    }
+
+    /// ログ・エラーの文に出す名前
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::MySql => "MySQL",
+            Self::MariaDb => "MariaDB",
+        }
+    }
+
+    /// SELECTの時間の上限を付けるSQL（`timeout_ms`はミリ秒、0は上限なし）。
+    /// MySQLの`MAX_EXECUTION_TIME`はミリ秒でSELECTだけに効く。MariaDBには
+    /// それが無く、`max_statement_time`（秒、小数も可）を使う
+    fn statement_timeout_sql(self, timeout_ms: u128) -> String {
+        match self {
+            Self::MySql => format!("SET SESSION MAX_EXECUTION_TIME = {timeout_ms}"),
+            Self::MariaDb => format!(
+                "SET SESSION max_statement_time = {}.{:03}",
+                timeout_ms / 1000,
+                timeout_ms % 1000
+            ),
+        }
+    }
+}
+
+/// MySQL Database Connection（MariaDBも）
 pub struct MySqlConnection {
     pool: Pool,
     /// `KILL QUERY`のための接続を作るときの設定
@@ -73,6 +116,8 @@ pub struct MySqlConnection {
     /// プールから接続を受け取るときの待ち時間の上限。データベースが応答
     /// しないとき・プールの接続がすべて使用中のときに、待ち続けない
     connect_timeout: Duration,
+    /// つないだサーバーの種類
+    server: ServerKind,
 }
 
 /// SQLを実行した結果。`Stopped`のときは、その接続をプールに戻さずに閉じる
@@ -94,7 +139,14 @@ impl MySqlConnection {
             fetch_limit: None,
             byte_limit: None,
             connect_timeout: Duration::from_secs(DEFAULT_CONNECT_TIMEOUT_SECS),
+            server: ServerKind::MySql,
         }
+    }
+
+    /// つないだサーバーの種類（`MySqlEngine`が、最初に版を見て決める）
+    pub fn with_server(mut self, server: ServerKind) -> Self {
+        self.server = server;
+        self
     }
 
     /// プールから接続を受け取るときの待ち時間の上限
@@ -125,7 +177,8 @@ impl MySqlConnection {
         match tokio::time::timeout(self.connect_timeout, self.pool.get_conn()).await {
             Ok(conn) => conn.map_err(|e| DatabaseError::ConnectionFailed(e.to_string())),
             Err(_) => Err(DatabaseError::ConnectionFailed(format!(
-                "no MySQL connection within {} seconds (the database did not respond, or all {} connections are in use)",
+                "no {} connection within {} seconds (the database did not respond, or all {} connections are in use)",
+                self.server.name(),
                 self.connect_timeout.as_secs(),
                 self.pool_size(),
             ))),
@@ -137,7 +190,7 @@ impl MySqlConnection {
         self.opts.pool_opts().constraints().max()
     }
 
-    /// `MAX_EXECUTION_TIME`の値（ミリ秒、0は上限なし）
+    /// SELECTの時間の上限（ミリ秒、0は上限なし）
     fn statement_timeout_ms(&self) -> u128 {
         self.statement_timeout.as_millis()
     }
@@ -204,7 +257,8 @@ impl MySqlConnection {
             .is_ok();
         if !killed && !closed {
             warn!(
-                "Could not stop a MySQL statement (KILL QUERY {} did not work): the connection was dropped, and the statement may keep running on the database server until it finishes",
+                "Could not stop a {} statement (KILL QUERY {} did not work): the connection was dropped, and the statement may keep running on the database server until it finishes",
+                self.server.name(),
                 id
             );
         }
@@ -427,8 +481,12 @@ async fn read_rows(
 }
 
 /// 読み取り専用のトランザクションを始め、SELECTの時間の上限を付ける
-async fn begin_read_only(conn: &mut Conn, timeout_ms: u128) -> Result<(), mysql_async::Error> {
-    conn.query_drop(format!("SET SESSION MAX_EXECUTION_TIME = {timeout_ms}"))
+async fn begin_read_only(
+    conn: &mut Conn,
+    timeout_ms: u128,
+    server: ServerKind,
+) -> Result<(), mysql_async::Error> {
+    conn.query_drop(server.statement_timeout_sql(timeout_ms))
         .await?;
     conn.query_drop("START TRANSACTION READ ONLY").await
 }
@@ -568,6 +626,7 @@ impl DatabaseConnection for MySqlConnection {
         let started = std::time::Instant::now();
         let conn = self.get_conn().await?;
         let timeout_ms = self.statement_timeout_ms();
+        let server = self.server;
         let params = convert_params(params);
         let (fetch_limit, byte_limit) = (self.fetch_limit, self.byte_limit);
         let sql = sql.to_string();
@@ -576,7 +635,7 @@ impl DatabaseConnection for MySqlConnection {
                 conn,
                 move |conn| {
                     Box::pin(async move {
-                        begin_read_only(conn, timeout_ms).await?;
+                        begin_read_only(conn, timeout_ms, server).await?;
                         let outcome =
                             read_rows(conn, &sql, params, fetch_limit, byte_limit).await?;
                         if let Outcome::Done(_) = &outcome {
@@ -644,12 +703,13 @@ impl DatabaseConnection for MySqlConnection {
     async fn get_schema(&self) -> Result<DatabaseSchema, DatabaseError> {
         let conn = self.get_conn().await?;
         let timeout_ms = self.statement_timeout_ms();
+        let server = self.server;
         let (tables, views) = self
             .run(
                 conn,
                 move |conn| {
                     Box::pin(async move {
-                        begin_read_only(conn, timeout_ms).await?;
+                        begin_read_only(conn, timeout_ms, server).await?;
                         let schema = read_schema(conn, None).await?;
                         conn.query_drop("ROLLBACK").await?;
                         Ok(Outcome::Done(schema))
@@ -669,13 +729,14 @@ impl DatabaseConnection for MySqlConnection {
     async fn get_table_schema(&self, table_name: &str) -> Result<TableInfo, DatabaseError> {
         let conn = self.get_conn().await?;
         let timeout_ms = self.statement_timeout_ms();
+        let server = self.server;
         let table = table_name.to_string();
         let (tables, _) = self
             .run(
                 conn,
                 move |conn| {
                     Box::pin(async move {
-                        begin_read_only(conn, timeout_ms).await?;
+                        begin_read_only(conn, timeout_ms, server).await?;
                         let schema = read_schema(conn, Some(&table)).await?;
                         conn.query_drop("ROLLBACK").await?;
                         Ok(Outcome::Done(schema))
@@ -727,6 +788,40 @@ mod tests {
 
     /// utf8mb4_general_ci
     const UTF8MB4: u16 = 45;
+
+    #[test]
+    fn server_kind_is_decided_by_the_version() {
+        assert_eq!(ServerKind::from_version("8.4.3"), ServerKind::MySql);
+        assert_eq!(
+            ServerKind::from_version("11.4.2-MariaDB-ubu2404"),
+            ServerKind::MariaDb
+        );
+        assert_eq!(
+            ServerKind::from_version("5.5.5-10.11.6-MariaDB-log"),
+            ServerKind::MariaDb
+        );
+    }
+
+    #[test]
+    fn statement_timeout_uses_the_variable_of_the_server() {
+        assert_eq!(
+            ServerKind::MySql.statement_timeout_sql(30_000),
+            "SET SESSION MAX_EXECUTION_TIME = 30000"
+        );
+        assert_eq!(
+            ServerKind::MariaDb.statement_timeout_sql(30_000),
+            "SET SESSION max_statement_time = 30.000"
+        );
+        assert_eq!(
+            ServerKind::MariaDb.statement_timeout_sql(1_500),
+            "SET SESSION max_statement_time = 1.500"
+        );
+        // 0は、どちらも上限なし
+        assert_eq!(
+            ServerKind::MariaDb.statement_timeout_sql(0),
+            "SET SESSION max_statement_time = 0.000"
+        );
+    }
 
     /// `Value`は`PartialEq`を持たないので、`Debug`の表示で比べる
     fn show(value: Value) -> String {
