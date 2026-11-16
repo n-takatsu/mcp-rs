@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `mcp-rs check [--config <path>] [--offline]`: MCPのクライアントを使わずに、
+  設定を確かめるコマンド（#565）。起動と同じ読み方で、設定ファイルが読めるか
+  （誤りの行と理由）、WordPressの資格情報を読めるか、サイトにつながり認証が
+  通るか（読み取りのリクエストだけ）、ログと監査ログを書けるかを表示する。
+  誤りがあれば終了コード1。パスワード・トークン・ユーザー名は表示しない。
+  `[database]`・`[[plugins]]`・HTTPモードの設定は、まだ確かめない。ログが
+  書けるかを確かめるため、ログファイルに`checked`の見出しの行を書く
+
 ### Changed
 
 - VS Code（GitHub Copilot）のチャットからmcp-rsを使う手順を、READMEと

@@ -108,7 +108,7 @@ Claude Desktopはmcp-rsを起動し、STDIOで通信します。STDIOモード�
 
 - 設定ファイルで`${...}`を使うときは、読むすべての変数を`env`に書きます。`env`は値を渡すだけで、どの変数を読むかは設定ファイルの`${...}`で決まります。例えば`configs/production/claude-desktop.toml`は`WORDPRESS_URL`・`WORDPRESS_USERNAME`・`WORDPRESS_PASSWORD`を読むので、3つとも要ります
 - 設定ファイル・資格情報・`env`を変えたら、Claude Desktopをタスクトレイ（メニューバー）から終了して、起動し直します。ウィンドウを閉じただけでは動き続けます
-- 起動しない（「Server disconnected」）とき、設定ファイルの誤りはログの設定より前に起きるので、mcp-rsのログファイルには残りません。Claude Desktopの「設定」→「開発者」から、mcp-rsのログを開いて確かめます。Microsoft Store版は、`%APPDATA%\Claude\logs`には書きません
+- 起動しない（「Server disconnected」）とき、設定ファイルの誤りはログの設定より前に起きるので、mcp-rsのログファイルには残りません。Claude Desktopの「設定」→「開発者」から、mcp-rsのログを開いて確かめます。Microsoft Store版は、`%APPDATA%\Claude\logs`には書きません。`mcp-rs check --config <パス>`なら、Claude Desktopを使わずに誤りを表示します
 
 > 📖 設定とトラブルシューティングは [Claude Desktop 統合ガイド](./project-docs/CLAUDE_DESKTOP_INTEGRATION.md) をご覧ください。
 
@@ -137,7 +137,7 @@ copilot mcp add mcp-rs -- "C:/Program Files/MCP-rs/mcp-rs.exe" --config C:/Users
 - 実機で確かめたのは、Windowsの`keyring`です。macOS・Linuxはまだ確かめていません。Linuxでは、`DBUS_SESSION_BUS_ADDRESS`が無いと、Secret Serviceに届かないことがあります
 - 資格情報を使うmcp-rsを、ワークスペースの`.mcp.json`・`.github/mcp.json`に登録しないでください。リポジトリのフォルダにあり、リポジトリに入りうるファイルです（`.github/mcp.json`は入れる前提です）
 - 登録したら、VS Codeを起動し直し、新しいチャットを始めます。`copilot mcp list`、またはチャットで`mcp_rs_status`を呼んで確かめます
-- mcp-rsが起動しないとき、チャットは「ツールが見つからない」としか言いません。理由は、Copilot CLIのログ（`~/.copilot/logs/process-*.log`）の`MCP server connection failed`の行に、mcp-rsのエラーとともに出ます
+- mcp-rsが起動しないとき、チャットは「ツールが見つからない」としか言いません。理由は、Copilot CLIのログ（`~/.copilot/logs/process-*.log`）の`MCP server connection failed`の行に、mcp-rsのエラーとともに出ます。`mcp-rs check --config <パス>`なら、ターミナルで同じ誤りを表示します
 
 ### セットアップ
 
@@ -159,6 +159,12 @@ cargo build --release
 `mcp-rs --version`でインストールされているバージョンを、`mcp-rs --help`で使えるオプションを表示します（v0.19.1以降）。知らないオプションや、パスの無い`--config`があると起動しません（v0.19.2以降。v0.19.1はログに警告を出すだけでした）。起動しなくなった場合は、MCPのクライアントの設定にあるmcp-rsの`args`を確かめてください。
 
 MCPのクライアントから（たとえばClaudeに頼んで）`mcp_rs_status`ツールを呼ぶと、バージョン、使っている設定ファイル、ログと監査ログの書き込み先、各プラグインの状態を確かめられます（v0.19.2以降）。
+
+MCPのクライアントを使わずに設定ファイルを確かめるには、`mcp-rs check --config <パス>`を実行します（v0.25.0以降）。起動するときと同じ読み方で、ファイルが読めるか（誤りの行と理由）、WordPressの資格情報を読めるか、WordPressのサイトにつながり認証が通るか（読み取りのリクエストだけ）、ログと監査ログをどこに書くかを表示します。誤りがあれば終了コード1で終わります。パスワード・トークン・ユーザー名は表示しません。`--offline`で、サイトへの接続を飛ばします。`[database]`・`[[plugins]]`は、まだ確かめません。
+
+```bash
+mcp-rs check --config C:/Users/you/AppData/Roaming/Claude/mcp-rs/mcp-config.toml
+```
 
 設定ファイルを自分で書く場合は、次の最小構成から始めてください。
 

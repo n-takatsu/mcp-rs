@@ -33,6 +33,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
+    // 設定を確かめる（#565）。サーバーは起動しない
+    if args.get(1).map(String::as_str) == Some(mcp_rs::check::SUBCOMMAND) {
+        match mcp_rs::check::run(&args[2..]).await {
+            Ok(true) => return Ok(()),
+            Ok(false) => std::process::exit(1),
+            Err(problem) => {
+                eprintln!(
+                    "error: {}
+",
+                    problem
+                );
+                eprint!("{}", mcp_rs::check::help_text());
+                std::process::exit(2);
+            }
+        }
+    }
+
     // --version・--help（#431）。サーバーは起動せず、設定・ログにも触れない
     let run_args = match mcp_rs::cli_args::parse_args(&args) {
         mcp_rs::cli_args::Command::Version => {
@@ -122,27 +139,11 @@ async fn load_config(config_path: Option<&str>) -> Result<McpConfig, Box<dyn std
 
 /// 指定パスから設定読み込み
 async fn load_config_from_file(path: &str) -> Result<McpConfig, Box<dyn std::error::Error>> {
-    if !std::path::Path::new(path).exists() {
-        return Err(format!("設定ファイルが存在しません: {}", path).into());
-    }
-
-    let content = tokio::fs::read_to_string(path).await?;
-    let mut config: McpConfig = toml::from_str(&content).map_err(|e| {
-        // 誤りのある行（パスワードのこともある）を出さない（#543）
-        mcp_rs::config::with_config_hint(
-            mcp_rs::config::describe_toml_error(&e, &content),
-            &content,
-        )
-    })?;
-    // 監査ログの既定の書き込み先（設定ファイルと同じフォルダ）に使う（#416）
-    config.config_file = std::path::absolute(path).ok();
-
-    // WordPressConfig の環境変数展開を適用（McpConfig::load() と同様の処理）
-    if let Some(ref mut wp_config) = config.handlers.wordpress {
-        // 参照した環境変数が無ければ起動しない（#454）。項目と変数名を出す
-        McpConfig::expand_wordpress_config(wp_config).map_err(|e| e.to_string())?;
-        wp_config.resolve_credentials()?;
-    }
+    // 誤りのある行（パスワードのこともある）は出さない（#543）。`mcp-rs
+    // check`（#565）も、同じ関数を同じ順で呼ぶ
+    let mut config = McpConfig::read_file(path)?;
+    // WordPressの`${VAR}`と資格情報。参照した環境変数が無ければ起動しない（#454）
+    config.resolve_wordpress_credentials()?;
     // HTTPモードのAPIキーの`${VAR}`（#534）。変数が無ければ起動しない
     config.expand_http_api_keys().map_err(|e| e.to_string())?;
 

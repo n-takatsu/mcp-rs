@@ -470,6 +470,13 @@ pub fn current_log_destination() -> Option<LogDestination> {
     LOG_DESTINATION.get().cloned()
 }
 
+/// `mcp-rs check`（#565）: ログを書く場所を、起動するときと同じ候補・順で
+/// 決めて返す。書けるかは、起動するときと同じく、実際に見出しの行を書いて
+/// 確かめる。見出しは`checked`にして、起動したと読まれないようにする
+pub fn check_log_destination(config: &LogConfig) -> LogDestination {
+    resolve_log_destination(config, "checked").1
+}
+
 /// 実際に使うログ出力先を解決する。`config.log_dir`への書き込みに
 /// 失敗した場合は`fallback_log_dir_candidates()`を順に試す。
 /// 成功した候補には起動マーカー行（`write_startup_marker`）を書き込む。
@@ -480,8 +487,11 @@ pub fn current_log_destination() -> Option<LogDestination> {
 /// ユーザー領域（`user_log_dir`）も通常の出力先として扱う。Program Files
 /// にインストールした場合、実行ファイルのフォルダに書き込めないのは
 /// 正常な状態なので、ユーザー領域を使ってもフォールバックとして報告
-/// しない（#441）。
-fn resolve_log_destination(config: &LogConfig) -> (Option<LocalRollingAppender>, LogDestination) {
+/// しない（#441）。`event`は見出しの行に書く言葉（`started`等）
+fn resolve_log_destination(
+    config: &LogConfig,
+    event: &str,
+) -> (Option<LocalRollingAppender>, LogDestination) {
     let mut candidates = vec![config.log_dir.clone()];
     if config.log_dir == primary_log_dir_candidate() {
         candidates.extend(user_log_dir());
@@ -493,7 +503,7 @@ fn resolve_log_destination(config: &LogConfig) -> (Option<LocalRollingAppender>,
         }
     }
 
-    resolve_log_destination_from_candidates(&candidates, normal_count, &config.rotation)
+    resolve_log_destination_from_candidates(&candidates, normal_count, &config.rotation, event)
 }
 
 /// `resolve_log_destination`の候補探索ロジック本体。候補リストを引数で
@@ -512,6 +522,7 @@ fn resolve_log_destination_from_candidates(
     candidates: &[PathBuf],
     normal_count: usize,
     rotation: &LogRotation,
+    event: &str,
 ) -> (Option<LocalRollingAppender>, LogDestination) {
     // 失敗した候補ごとに1件ずつ記録する（添字は候補の添字と一致する）
     let mut failures: Vec<String> = Vec::new();
@@ -534,7 +545,7 @@ fn resolve_log_destination_from_candidates(
         };
 
         let filename = appender.current_file_name().to_string();
-        if let Err(e) = write_startup_marker(&mut appender, dir, &filename) {
+        if let Err(e) = write_startup_marker(&mut appender, dir, &filename, event) {
             failures.push(format!(
                 "{} accepted the write but it could not be verified: {}",
                 dir.display(),
@@ -599,8 +610,9 @@ fn write_startup_marker(
     appender: &mut LocalRollingAppender,
     dir: &Path,
     filename: &str,
+    event: &str,
 ) -> std::io::Result<()> {
-    let marker = header_line("started", started_at(), &dir.join(filename));
+    let marker = header_line(event, started_at(), &dir.join(filename));
 
     appender.write_all(marker.as_bytes())?;
     appender.flush()?;
@@ -716,7 +728,7 @@ pub fn init_logging(config: &LogConfig) -> Result<Option<WorkerGuard>> {
     // eprintln!で直接出す）、プロセス全体から参照できるグローバル状態
     // にも記録する（wordpress_health_check等の診断用途）。
     let file_appender = if config.file_enabled {
-        let (appender, destination) = resolve_log_destination(config);
+        let (appender, destination) = resolve_log_destination(config, "started");
         eprintln!("[mcp-rs] log file: {}", destination.summary());
         let _ = LOG_DESTINATION.set(destination);
         appender
@@ -1358,6 +1370,7 @@ mod tests {
             &[unwritable.clone(), writable.clone()],
             1,
             &LogRotation::Never,
+            "started",
         );
 
         assert!(appender.is_some());
@@ -1386,6 +1399,7 @@ mod tests {
             std::slice::from_ref(&writable),
             1,
             &LogRotation::Never,
+            "started",
         );
 
         assert!(appender.is_some());
@@ -1408,6 +1422,7 @@ mod tests {
             &[unwritable1, unwritable2],
             1,
             &LogRotation::Never,
+            "started",
         );
 
         assert!(appender.is_none());
@@ -1432,6 +1447,7 @@ mod tests {
             &[exe_dir_logs, user_logs.clone()],
             2,
             &LogRotation::Never,
+            "started",
         );
 
         assert!(appender.is_some());
@@ -1459,6 +1475,7 @@ mod tests {
             &[exe_dir_logs.clone(), user_logs.clone(), temp_logs.clone()],
             2,
             &LogRotation::Never,
+            "started",
         );
 
         assert!(appender.is_some());
@@ -1481,7 +1498,7 @@ mod tests {
 
         let mut appender =
             build_file_appender(&log_dir, &LogRotation::Never, "mcp-rs.log").unwrap();
-        let result = write_startup_marker(&mut appender, &log_dir, "mcp-rs.log");
+        let result = write_startup_marker(&mut appender, &log_dir, "mcp-rs.log", "started");
         assert!(result.is_ok());
         drop(appender);
 
