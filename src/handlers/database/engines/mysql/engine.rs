@@ -239,7 +239,10 @@ impl DatabaseEngine for MySqlEngine {
             config.features.query_timeout,
         )))
         .with_fetch_limit(limit(OPTION_FETCH_LIMIT))
-        .with_byte_limit(limit(OPTION_BYTE_LIMIT));
+        .with_byte_limit(limit(OPTION_BYTE_LIMIT))
+        .with_connect_timeout(Duration::from_secs(u64::from(
+            config.connection.timeout_seconds,
+        )));
         Ok(Box::new(conn))
     }
 

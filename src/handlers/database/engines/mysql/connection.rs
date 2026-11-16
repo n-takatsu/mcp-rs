@@ -7,7 +7,8 @@
 //!   SELECTに見えて書き込むSQLも、データベースが拒否する
 //! - 1つのSQLの時間の上限。SELECTは、サーバーの`MAX_EXECUTION_TIME`で
 //!   止める。それを超えて終わらないとき（書き込みや、ロックの待ち）は、
-//!   別の接続から`KILL QUERY`で止め、その接続は閉じる
+//!   別の接続から`KILL QUERY`で止め、その接続は閉じる。閉じるのにも時間の
+//!   上限を付ける（`KILL QUERY`が効かない構成でも待ち続けない）
 //! - 受け取る行数・結果のだいたいのバイト数の上限。上限に達したら、残りの
 //!   行は受け取らずに、接続を閉じる（サーバーも、送るのをやめる）。MySQLの
 //!   プロトコルには、PostgreSQLのカーソル（`FETCH`）のような、少しずつ
@@ -32,7 +33,7 @@ use mysql_async::{prelude::*, Column, Conn, Opts, Pool};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
-use tracing::debug;
+use tracing::{debug, warn};
 
 /// 1つのSQLの時間の上限の既定（秒）
 const DEFAULT_STATEMENT_TIMEOUT_SECS: u64 = 30;
@@ -43,6 +44,14 @@ const CLIENT_TIMEOUT_GRACE: Duration = Duration::from_secs(2);
 
 /// `KILL QUERY`のための接続を作るときの待ち時間の上限
 const KILL_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// 止めた接続を閉じるときの待ち時間の上限（PR #572のレビュー）。
+/// `disconnect`は、閉じる前に読み残しの結果を最後まで受信するので、
+/// `KILL QUERY`が効かないと、いつまでも終わらない
+const DISCONNECT_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// プールから接続を受け取るときの待ち時間の上限の既定（秒）
+const DEFAULT_CONNECT_TIMEOUT_SECS: u64 = 10;
 
 /// 文字コードの番号のうち、バイナリ（`binary`）
 const BINARY_CHARSET: u16 = 63;
@@ -61,6 +70,9 @@ pub struct MySqlConnection {
     fetch_limit: Option<usize>,
     /// `query()`で受け取る結果のだいたいのバイト数の上限（`None`は無制限）
     byte_limit: Option<usize>,
+    /// プールから接続を受け取るときの待ち時間の上限。データベースが応答
+    /// しないとき・プールの接続がすべて使用中のときに、待ち続けない
+    connect_timeout: Duration,
 }
 
 /// SQLを実行した結果。`Stopped`のときは、その接続をプールに戻さずに閉じる
@@ -81,7 +93,14 @@ impl MySqlConnection {
             statement_timeout: Duration::from_secs(DEFAULT_STATEMENT_TIMEOUT_SECS),
             fetch_limit: None,
             byte_limit: None,
+            connect_timeout: Duration::from_secs(DEFAULT_CONNECT_TIMEOUT_SECS),
         }
+    }
+
+    /// プールから接続を受け取るときの待ち時間の上限
+    pub fn with_connect_timeout(mut self, timeout: Duration) -> Self {
+        self.connect_timeout = timeout.max(Duration::from_secs(1));
+        self
     }
 
     /// 1つのSQLの時間の上限（0は上限なし）
@@ -103,10 +122,19 @@ impl MySqlConnection {
     }
 
     async fn get_conn(&self) -> Result<Conn, DatabaseError> {
-        self.pool
-            .get_conn()
-            .await
-            .map_err(|e| DatabaseError::ConnectionFailed(e.to_string()))
+        match tokio::time::timeout(self.connect_timeout, self.pool.get_conn()).await {
+            Ok(conn) => conn.map_err(|e| DatabaseError::ConnectionFailed(e.to_string())),
+            Err(_) => Err(DatabaseError::ConnectionFailed(format!(
+                "no MySQL connection within {} seconds (the database did not respond, or all {} connections are in use)",
+                self.connect_timeout.as_secs(),
+                self.pool_size(),
+            ))),
+        }
+    }
+
+    /// プールの接続の数の上限（エラーの文に出す）
+    fn pool_size(&self) -> usize {
+        self.opts.pool_opts().constraints().max()
     }
 
     /// `MAX_EXECUTION_TIME`の値（ミリ秒、0は上限なし）
@@ -139,8 +167,7 @@ impl MySqlConnection {
             Some(limit) => match tokio::time::timeout(limit, future).await {
                 Ok(result) => result,
                 Err(_) => {
-                    self.kill_query(id).await;
-                    let _ = conn.disconnect().await;
+                    self.abandon(conn, id).await;
                     return Err(DatabaseError::TimeoutError(format!(
                         "the statement did not finish within {} seconds and was stopped",
                         self.statement_timeout.as_secs()
@@ -152,9 +179,8 @@ impl MySqlConnection {
         match result {
             Ok(Outcome::Done(value)) => Ok(value),
             Ok(Outcome::Stopped(value)) => {
-                // 残りの行は受け取らない。閉じるとサーバーも送るのをやめる
-                self.kill_query(id).await;
-                let _ = conn.disconnect().await;
+                // 残りの行は受け取らない
+                self.abandon(conn, id).await;
                 Ok(value)
             }
             Err(e) => {
@@ -165,18 +191,42 @@ impl MySqlConnection {
         }
     }
 
-    /// 別の接続から、`id`の接続で実行中のSQLを止める。止められなくても、
-    /// 呼び出し元はその接続を閉じるので、エラーにはしない
-    async fn kill_query(&self, id: u32) {
+    /// 実行中の文を止めて、`conn`を閉じる。別の接続から`KILL QUERY`で
+    /// 止め（サーバーも送るのをやめる）、閉じる。`KILL QUERY`が効かない
+    /// とき（接続の数の上限、プロキシで接続のIDがMySQLのスレッドと違う等）、
+    /// `disconnect`は読み残しを受信し続けるので、`DISCONNECT_TIMEOUT`で
+    /// 打ち切る。打ち切った接続は`disconnected`の印が付いているので、
+    /// プールは読み残しを受信せずに捨てる（PR #572のレビュー）
+    async fn abandon(&self, conn: Conn, id: u32) {
+        let killed = self.kill_query(id).await;
+        let closed = tokio::time::timeout(DISCONNECT_TIMEOUT, conn.disconnect())
+            .await
+            .is_ok();
+        if !killed && !closed {
+            warn!(
+                "Could not stop a MySQL statement (KILL QUERY {} did not work): the connection was dropped, and the statement may keep running on the database server until it finishes",
+                id
+            );
+        }
+    }
+
+    /// 別の接続から、`id`の接続で実行中のSQLを止める。止めたら`true`
+    async fn kill_query(&self, id: u32) -> bool {
         let kill = async {
             let mut conn = Conn::new(self.opts.clone()).await?;
             conn.query_drop(format!("KILL QUERY {id}")).await?;
             conn.disconnect().await
         };
         match tokio::time::timeout(KILL_CONNECT_TIMEOUT, kill).await {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => debug!("KILL QUERY {} failed: {}", id, e),
-            Err(_) => debug!("KILL QUERY {} timed out", id),
+            Ok(Ok(())) => true,
+            Ok(Err(e)) => {
+                debug!("KILL QUERY {} failed: {}", id, e);
+                false
+            }
+            Err(_) => {
+                debug!("KILL QUERY {} timed out", id);
+                false
+            }
         }
     }
 }
