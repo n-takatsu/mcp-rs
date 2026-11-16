@@ -31,7 +31,7 @@ mcp-rsは、Rustで書いたModel Context Protocol (MCP) サーバーです。Cl
 
 MCPのクライアント（Claude Desktop・Claude Code等）から使える機能に絞る。2026-11-08に範囲を見直した（#419）。SAML・LDAP・MFA・マルチテナント・請求システム・ゼロコピー/分散キャッシュは対象外とした（SAML・LDAPとの連携は、OAuth 2.1の認可サーバー（IdP）側で行う）。
 
-マイルストーンの番号は、リリースの版（クレートの`Cargo.toml`の`version`）と同じにする（2026-11-17から。それまでの「v1.0.0」は、版とは別の計画の区切りだった）。次のリリースに入れるものは、その版のマイルストーン（v0.25.0・v0.26.0）に、時期を決めていないものはv1.0.0に入れる。
+マイルストーンの番号は、リリースの版（クレートの`Cargo.toml`の`version`）と同じにする（2026-11-17から。それまでの「v1.0.0」は、版とは別の計画の区切りだった）。次のリリースに入れるものは、その版のマイルストーン（v0.25.0・v0.26.0）に、v0.26.0より後に行うものはv1.0.0（2027年6月頃）に入れる。
 
 ### ✅ 完了: HTTPモードの認可・ツールの権限・監査ログ（Epic #41）
 
@@ -96,7 +96,7 @@ MCPの仕様の2026-07-28版で、`initialize`の手続きとセッションが�
 
 - [Milestone v0.25.0](https://github.com/n-takatsu/mcp-rs/milestone/4) - 次のリリースに入るIssue
 - [Milestone v0.26.0](https://github.com/n-takatsu/mcp-rs/milestone/5) - その次のリリースに入るIssue
-- [Milestone v1.0.0](https://github.com/n-takatsu/mcp-rs/milestone/3) - 時期を決めていないIssue
+- [Milestone v1.0.0](https://github.com/n-takatsu/mcp-rs/milestone/3) - v0.26.0より後、v1.0.0までに行うIssue
 - [Epic #41](https://github.com/n-takatsu/mcp-rs/issues/41)（完了） - HTTPモードの認可・ツールの権限・監査ログ
 
 ## 📚 ドキュメント
