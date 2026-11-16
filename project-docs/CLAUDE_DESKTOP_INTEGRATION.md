@@ -13,7 +13,7 @@ WordPressのユーザー名とアプリケーションパスワードは、OSの
 ターミナル（PowerShell等）で、名前（例: サイトのホスト名）を付けて登録します。ユーザー名とアプリケーションパスワードを聞かれます（パスワードは画面に出ません）。
 
 ```powershell
-& "C:\Program Files\MCP-rs\mcp-rs.exe" wordpress-keyring set example.com
+& "$env:USERPROFILE\.mcp-rs\bin\mcp-rs.exe" wordpress-keyring set example.com
 ```
 
 - パスワードを変えるときは、もう一度`set`します。`show`で登録したユーザー名を、`delete`で削除できます
@@ -50,7 +50,7 @@ keyring = "example.com"         # 1. で登録した名前
 {
   "mcpServers": {
     "mcp-rs": {
-      "command": "C:/Program Files/MCP-rs/mcp-rs.exe",
+      "command": "C:/Users/you/.mcp-rs/bin/mcp-rs.exe",
       "args": ["--config", "C:/Users/you/AppData/Roaming/Claude/mcp-rs/mcp-config.toml"]
     }
   }

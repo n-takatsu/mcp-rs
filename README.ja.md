@@ -66,11 +66,58 @@ AIのクライアントに、WordPress・PostgreSQL・外部のMCPプラグイ�
 
 ## 前提条件
 
-- Rust 1.98以降（`Cargo.toml`の`rust-version`。最新の安定版を推奨）
+- 自分でビルドするとき: Rust 1.98以降（`Cargo.toml`の`rust-version`。最新の安定版を推奨）。[ビルド済みのファイル](#ダウンロード)を使うときは要りません
 - アプリケーションパスワードが有効な WordPress サイト
 - WordPress REST API へのネットワークアクセス
 
 ## インストール
+
+### ダウンロード
+
+v0.25.0から、[リリース](https://github.com/n-takatsu/mcp-rs/releases)に、次のOS向けの、ビルド済みのmcp-rsが付きます。Rustは要りません。
+
+| OS | ファイル |
+|---|---|
+| Windows（x64） | `mcp-rs-<版>-x86_64-pc-windows-msvc.zip` |
+| macOS（Apple Silicon） | `mcp-rs-<版>-aarch64-apple-darwin.tar.gz` |
+| Linux（x64、glibc 2.35以降） | `mcp-rs-<版>-x86_64-unknown-linux-gnu.tar.gz` |
+
+`mcp-rs`（`mcp-rs.exe`）は、`~/.mcp-rs/bin`（Windowsは`%USERPROFILE%\.mcp-rs\bin`）のような、自分のフォルダに置きます。管理者の権限は要らず、更新はファイルを置き換えるだけです。mcp-rsは、ログを横の`logs`に書きます。Windowsでは、`AppData`の下は避けてください。Microsoft Store版のClaude Desktopから起動すると、そこに書いたファイルが別の場所に移され、ログが見つからないことがあります。
+
+Windows（PowerShell）:
+
+```powershell
+$v = "v0.25.0"; $name = "mcp-rs-$v-x86_64-pc-windows-msvc"
+Invoke-WebRequest "https://github.com/n-takatsu/mcp-rs/releases/download/$v/$name.zip" -OutFile "$name.zip"
+Invoke-WebRequest "https://github.com/n-takatsu/mcp-rs/releases/download/$v/$name.zip.sha256" -OutFile "$name.zip.sha256"
+# リリースのワークフローが作ったファイルなら True
+(Get-FileHash "$name.zip" -Algorithm SHA256).Hash.ToLower() -eq (Get-Content "$name.zip.sha256").Split(" ")[0]
+Expand-Archive "$name.zip" -DestinationPath .
+New-Item -ItemType Directory -Force "$env:USERPROFILE\.mcp-rs\bin" | Out-Null
+Copy-Item "$name\mcp-rs.exe" "$env:USERPROFILE\.mcp-rs\bin\"
+Unblock-File "$env:USERPROFILE\.mcp-rs\bin\mcp-rs.exe"
+& "$env:USERPROFILE\.mcp-rs\bin\mcp-rs.exe" --version
+```
+
+macOS・Linux:
+
+```bash
+v=v0.25.0; name=mcp-rs-$v-aarch64-apple-darwin   # Linux: mcp-rs-$v-x86_64-unknown-linux-gnu
+curl -LO https://github.com/n-takatsu/mcp-rs/releases/download/$v/$name.tar.gz
+curl -LO https://github.com/n-takatsu/mcp-rs/releases/download/$v/$name.tar.gz.sha256
+shasum -a 256 -c $name.tar.gz.sha256   # Linux: sha256sum -c $name.tar.gz.sha256
+tar -xzf $name.tar.gz
+mkdir -p ~/.mcp-rs/bin && cp $name/mcp-rs ~/.mcp-rs/bin/
+~/.mcp-rs/bin/mcp-rs --version
+```
+
+ファイルには署名をしていません。
+
+- Windowsは、ダウンロードしたプログラムに警告を出すことがあります。上の`Unblock-File`は、ダウンロードしたファイルにWindowsが付ける印を外します。エクスプローラーでzipを展開したときは、初回に「WindowsによってPCが保護されました」と出ることがあります。SHA256を確かめてから、「詳細情報」→「実行」を選びます
+- macOSは、ブラウザーでダウンロードしたプログラムを止めます（「開発元を検証できないため開けません」）。SHA256を確かめてから、`xattr -d com.apple.quarantine ~/.mcp-rs/bin/mcp-rs`を実行します。`curl`でダウンロードしたファイルは止められません
+- リリースの`SHA256SUMS`に、すべてのファイルのSHA256があります
+
+自分でビルドするときは、[セットアップ](#セットアップ)を見てください。
 
 ### WordPressの資格情報
 
@@ -99,7 +146,7 @@ Claude Desktopはmcp-rsを起動し、STDIOで通信します。STDIOモード�
 {
   "mcpServers": {
     "mcp-rs": {
-      "command": "C:/Program Files/MCP-rs/mcp-rs.exe",
+      "command": "C:/Users/you/.mcp-rs/bin/mcp-rs.exe",
       "args": ["--config", "C:/Users/you/AppData/Roaming/Claude/mcp-rs/mcp-config.toml"]
     }
   }
@@ -117,7 +164,7 @@ Claude Desktopはmcp-rsを起動し、STDIOで通信します。STDIOモード�
 Claude Code も STDIO で mcp-rs と通信し、同じ設定ファイルを使います。絶対パスで登録します。`--` より後ろが mcp-rs の起動コマンドです。資格情報ストアを使うときは、`-e`は要りません。
 
 ```bash
-claude mcp add mcp-rs --scope user -- "C:/Program Files/MCP-rs/mcp-rs.exe" --config C:/Users/you/AppData/Roaming/Claude/mcp-rs/mcp-config.toml
+claude mcp add mcp-rs --scope user -- "C:/Users/you/.mcp-rs/bin/mcp-rs.exe" --config C:/Users/you/AppData/Roaming/Claude/mcp-rs/mcp-config.toml
 ```
 
 Claude Codeは自分の環境変数をmcp-rsに渡すので、`${...}`でユーザー環境変数（変えたらVS Codeを起動し直す）や、`-e`で渡した値も読めます。`-e` で渡した値は Claude Code の設定に保存されるため、実際の認証情報で `--scope project`（共有される `.mcp.json` に書き込まれる）を使わないでください。接続は `claude mcp list`、または Claude Code 内の `/mcp` で確認できます。
@@ -129,7 +176,7 @@ Claude Codeは自分の環境変数をmcp-rsに渡すので、`${...}`でユー�
 VS CodeのCopilotのチャットは、Copilot CLI（Agent Host）で動き、Copilot CLIに登録したMCPサーバーを使います（`.vscode/mcp.json`を自分で読む従来のLocalの仕組みは、2027年2月に削除される予定です）。`copilot`コマンドで、絶対パスで登録します。`--` より後ろが mcp-rs の起動コマンドです。登録先は`~/.copilot/mcp-config.json`で、VS Codeのチャットと、ターミナルの`copilot`の両方が読みます。
 
 ```bash
-copilot mcp add mcp-rs -- "C:/Program Files/MCP-rs/mcp-rs.exe" --config C:/Users/you/AppData/Roaming/Claude/mcp-rs/mcp-config.toml
+copilot mcp add mcp-rs -- "C:/Users/you/.mcp-rs/bin/mcp-rs.exe" --config C:/Users/you/AppData/Roaming/Claude/mcp-rs/mcp-config.toml
 ```
 
 - 資格情報は、資格情報ストア（`keyring`）に置きます。Copilot CLIは、`.vscode/mcp.json`を自分では読みません。VS Codeが、そこにあるサーバーを転送しますが、`${input:...}`（値の入力）を使うサーバーは転送しません

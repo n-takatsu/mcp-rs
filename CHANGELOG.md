@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- リリースに、ビルド済みのmcp-rsを付ける（#564）。Windows（x64）・macOS
+  （Apple Silicon）・Linux（x64、glibc 2.35以降）。タグで動く
+  `release-binaries.yml`が作り、それぞれの`.sha256`と、まとめた`SHA256SUMS`
+  も付ける。署名はしない。READMEに、ダウンロード・SHA256での確かめ方・
+  止められたときの開き方を書き、置き場所の例を、管理者の権限の要らない
+  `~/.mcp-rs/bin`（Windowsは`%USERPROFILE%\.mcp-rs\bin`）にした
+
 - `mcp-rs check [--config <path>] [--offline]`: MCPのクライアントを使わずに、
   設定を確かめるコマンド（#565）。起動と同じ読み方で、設定ファイルが読めるか
   （誤りの行と理由）、WordPressの資格情報を読めるか、サイトにつながり認証が
