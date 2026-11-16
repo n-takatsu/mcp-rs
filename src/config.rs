@@ -1382,6 +1382,35 @@ impl McpConfig {
         audit
     }
 
+    /// `--config`で指定したファイルを読む。ファイルが無いとき・TOMLの誤りは、
+    /// 値を伏せた理由を返す（#543）。`${VAR}`の展開と資格情報の解決は、
+    /// `resolve_wordpress_credentials`・`expand_http_api_keys`で行う。
+    /// 起動と`mcp-rs check`（#565）が同じ順で呼び、checkは段階ごとに結果を
+    /// 出す
+    pub fn read_file(path: &str) -> Result<Self, String> {
+        if !std::path::Path::new(path).exists() {
+            return Err(format!("設定ファイルが存在しません: {}", path));
+        }
+        let content =
+            std::fs::read_to_string(path).map_err(|e| format!("could not read {path}: {e}"))?;
+        let mut config: McpConfig = toml::from_str(&content)
+            .map_err(|e| with_config_hint(describe_toml_error(&e, &content), &content))?;
+        // 監査ログの既定の書き込み先（設定ファイルと同じフォルダ）に使う（#416）
+        config.config_file = std::path::absolute(path).ok();
+        Ok(config)
+    }
+
+    /// `read_file`で読んだ設定の、WordPressの`${VAR}`を展開し、資格情報
+    /// （`keyring`・`encrypted_credentials`・平文）を解決する。参照した
+    /// 環境変数が無ければ、項目と変数名を返す（#454）
+    pub fn resolve_wordpress_credentials(&mut self) -> Result<(), String> {
+        if let Some(wp_config) = self.handlers.wordpress.as_mut() {
+            Self::expand_wordpress_config(wp_config).map_err(|e| e.to_string())?;
+            wp_config.resolve_credentials().map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
     /// 設定ファイルから読み込み、環境変数で上書き
     pub fn load() -> Result<Self, Box<dyn std::error::Error>> {
         let mut settings = config::Config::builder();

@@ -2445,16 +2445,17 @@ impl WordPressHandler {
     }
 
     /// Check if WordPress site is accessible
+    ///
+    /// 届くかは、認証の要らないAPIのインデックス（`/wp-json/`）で見る
+    /// （PR #568のレビュー）。以前は`/wp-json/wp/v2/settings`を見ていたが、
+    /// これは管理者（`manage_options`）だけが読めるので、文書が勧める投稿者・
+    /// 寄稿者のアカウントでは403になり、届いているのに「届かない」として
+    /// 残りの段を飛ばしていた。認証情報は、要るときだけ付ける
+    /// （`get_api_index`）。設定（管理者のメールアドレス等）は、読めたとき
+    /// だけ足す
     async fn check_site_accessibility(&self) -> Result<WordPressSiteInfo, McpError> {
-        let url = format!("{}/wp-json/wp/v2/settings", self.base_url);
-        let mut request = self.client.get(&url);
-
-        if let (Some(username), Some(password)) = (&self.username, &self.password) {
-            request = request.basic_auth(username, Some(password));
-        }
-
-        let response = request
-            .send()
+        let response = self
+            .get_api_index()
             .await
             .map_err(|e| McpError::ExternalApi(format!("Failed to connect to WordPress: {}", e)))?;
 
@@ -2465,48 +2466,87 @@ impl WordPressHandler {
             )));
         }
 
-        let settings: serde_json::Value = response
+        let index: serde_json::Value = response
             .json()
             .await
             .map_err(|e| McpError::ExternalApi(format!("Failed to parse site info: {}", e)))?;
+        let text = |value: &serde_json::Value, key: &str| {
+            value
+                .get(key)
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+        };
+        let mut info = WordPressSiteInfo {
+            name: text(&index, "name").unwrap_or_else(|| "Unknown".to_string()),
+            description: text(&index, "description").unwrap_or_default(),
+            url: text(&index, "url").unwrap_or_else(|| self.base_url.clone()),
+            admin_email: None,
+            timezone_string: text(&index, "timezone_string").filter(|s| !s.is_empty()),
+            date_format: None,
+            time_format: None,
+            start_of_week: None,
+        };
 
-        Ok(WordPressSiteInfo {
-            name: settings
-                .get("title")
-                .and_then(|v| v.as_str())
-                .unwrap_or("Unknown")
-                .to_string(),
-            description: settings
-                .get("description")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string(),
-            url: settings
-                .get("url")
-                .and_then(|v| v.as_str())
-                .unwrap_or(&self.base_url)
-                .to_string(),
-            admin_email: settings
-                .get("admin_email")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string()),
-            timezone_string: settings
-                .get("timezone_string")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string()),
-            date_format: settings
-                .get("date_format")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string()),
-            time_format: settings
-                .get("time_format")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string()),
-            start_of_week: settings
+        // 管理者のアカウントなら、設定も読める。読めなくても誤りにしない
+        if let Some(settings) = self.read_settings_for_health_check().await {
+            if let Some(name) = text(&settings, "title") {
+                info.name = name;
+            }
+            info.admin_email = text(&settings, "admin_email");
+            info.timezone_string = text(&settings, "timezone_string")
+                .filter(|s| !s.is_empty())
+                .or(info.timezone_string);
+            info.date_format = text(&settings, "date_format");
+            info.time_format = text(&settings, "time_format");
+            info.start_of_week = settings
                 .get("start_of_week")
                 .and_then(|v| v.as_u64())
-                .map(|n| n as u8),
-        })
+                .map(|n| n as u8);
+        }
+        Ok(info)
+    }
+
+    /// APIのインデックス（`/wp-json/`）を読む。まず認証情報を付けずに読み、
+    /// 401・403なら、認証情報を付けて読み直す。RESTをログインした人だけに
+    /// 開くプラグインを入れたサイトでは、認証無しでは401になる（PR #568の
+    /// レビュー）。最初から付けないのは、パスワードの誤りで「届かない」と
+    /// ならないように（誤りは「サインイン」の段で知らせる）
+    async fn get_api_index(&self) -> Result<reqwest::Response, reqwest::Error> {
+        let url = format!("{}/wp-json/", self.base_url);
+        let response = self.client.get(&url).send().await?;
+        let status = response.status();
+        if status != reqwest::StatusCode::UNAUTHORIZED && status != reqwest::StatusCode::FORBIDDEN {
+            return Ok(response);
+        }
+        match (&self.username, &self.password) {
+            (Some(username), Some(password)) => {
+                self.client
+                    .get(&url)
+                    .basic_auth(username, Some(password))
+                    .send()
+                    .await
+            }
+            _ => Ok(response),
+        }
+    }
+
+    /// 設定（`/wp-json/wp/v2/settings`）を読む。管理者でなければ読めないので、
+    /// 読めなければ`None`
+    async fn read_settings_for_health_check(&self) -> Option<serde_json::Value> {
+        let url = format!("{}/wp-json/wp/v2/settings", self.base_url);
+        let mut request = self.client.get(&url);
+        if let (Some(username), Some(password)) = (&self.username, &self.password) {
+            request = request.basic_auth(username, Some(password));
+        }
+        let response = request.send().await.ok()?;
+        if !response.status().is_success() {
+            debug!(
+                "Site settings are not readable (status {}); this needs an administrator account and is not an error",
+                response.status()
+            );
+            return None;
+        }
+        response.json().await.ok()
     }
 
     /// Check if WordPress REST API is available
@@ -2517,12 +2557,8 @@ impl WordPressHandler {
     /// `"namespaces"`配列を持たないため、そちらを見ると常に
     /// 偽陰性になる。
     async fn check_rest_api(&self) -> Result<(), McpError> {
-        let url = format!("{}/wp-json/", self.base_url);
-
         let response = self
-            .client
-            .get(&url)
-            .send()
+            .get_api_index()
             .await
             .map_err(|e| McpError::ExternalApi(format!("REST API check failed: {}", e)))?;
 
@@ -6008,6 +6044,159 @@ mod tests {
             }
         });
         (format!("http://{}", addr), count)
+    }
+
+    /// パスごとに決まった応答を返すHTTPサーバー。`routes`は（パスの先頭、
+    /// 状態行、本文）で、どれにも合わなければ404
+    async fn spawn_routing_server(routes: Vec<(&'static str, &'static str, String)>) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let routes = Arc::new(routes);
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    return;
+                };
+                let routes = routes.clone();
+                tokio::spawn(async move {
+                    let mut buf = Vec::new();
+                    let mut chunk = [0u8; 4096];
+                    while !buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                        match socket.read(&mut chunk).await {
+                            Ok(0) | Err(_) => return,
+                            Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                        }
+                    }
+                    let request = String::from_utf8_lossy(&buf);
+                    let path = request.split_whitespace().nth(1).unwrap_or("").to_string();
+                    let (status, body) = routes
+                        .iter()
+                        .find(|(prefix, _, _)| path.starts_with(prefix))
+                        .map(|(_, status, body)| (*status, body.clone()))
+                        .unwrap_or(("404 Not Found", "{}".to_string()));
+                    let response = format!(
+                        "HTTP/1.1 {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        status,
+                        body.len(),
+                        body
+                    );
+                    let _ = socket.write_all(response.as_bytes()).await;
+                    let _ = socket.shutdown().await;
+                });
+            }
+        });
+        format!("http://{}", addr)
+    }
+
+    #[tokio::test]
+    async fn test_health_check_without_settings_access() {
+        // 投稿者・寄稿者のアカウント: 設定は403でも、届いていて、残りの段も
+        // 確かめる（PR #568のレビュー）
+        let base = spawn_routing_server(vec![
+            (
+                "/wp-json/wp/v2/settings",
+                "403 Forbidden",
+                r#"{"code":"rest_forbidden"}"#.to_string(),
+            ),
+            (
+                "/wp-json/wp/v2/users/me",
+                "200 OK",
+                r#"{"id":2,"name":"author"}"#.to_string(),
+            ),
+            ("/wp-json/wp/v2/posts", "200 OK", "[]".to_string()),
+            ("/wp-json/wp/v2/media", "200 OK", "[]".to_string()),
+            (
+                "/wp-json/",
+                "200 OK",
+                r#"{"name":"Example Site","description":"d","url":"https://example.com","namespaces":["wp/v2"]}"#
+                    .to_string(),
+            ),
+        ])
+        .await;
+        let handler = handler_for_local_server(base);
+        let health = handler.health_check().await;
+        assert!(health.site_accessible, "{:?}", health.error_details);
+        assert!(health.rest_api_available, "{:?}", health.error_details);
+        let info = health.site_info.unwrap();
+        assert_eq!(info.name, "Example Site");
+        assert_eq!(info.admin_email, None);
+        // 設定の403は、誤りとして数えない
+        assert!(
+            !health
+                .error_details
+                .iter()
+                .any(|e| e.contains("Site accessibility")),
+            "{:?}",
+            health.error_details
+        );
+    }
+
+    #[tokio::test]
+    async fn test_health_check_rest_closed_to_anonymous_users() {
+        // RESTをログインした人だけに開くサイト: 認証無しの`/wp-json/`は401。
+        // 認証情報を付けて読み直し、届いているとする（PR #568のレビュー）
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    return;
+                };
+                tokio::spawn(async move {
+                    let mut buf = Vec::new();
+                    let mut chunk = [0u8; 4096];
+                    while !buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                        match socket.read(&mut chunk).await {
+                            Ok(0) | Err(_) => return,
+                            Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                        }
+                    }
+                    let request = String::from_utf8_lossy(&buf).to_ascii_lowercase();
+                    let (status, body) = if !request.contains("\r\nauthorization: basic ") {
+                        ("401 Unauthorized", r#"{"code":"rest_not_logged_in"}"#)
+                    } else if request.starts_with("get /wp-json/ ") {
+                        (
+                            "200 OK",
+                            r#"{"name":"Members Only","url":"https://example.com","namespaces":["wp/v2"]}"#,
+                        )
+                    } else {
+                        ("200 OK", "[]")
+                    };
+                    let response = format!(
+                        "HTTP/1.1 {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        status,
+                        body.len(),
+                        body
+                    );
+                    let _ = socket.write_all(response.as_bytes()).await;
+                    let _ = socket.shutdown().await;
+                });
+            }
+        });
+        let mut handler = handler_for_local_server(format!("http://{}", addr));
+        handler.username = Some("author".to_string());
+        handler.password = Some("app password".to_string());
+        let health = handler.health_check().await;
+        assert!(health.site_accessible, "{:?}", health.error_details);
+        assert!(health.rest_api_available, "{:?}", health.error_details);
+        assert_eq!(health.site_info.unwrap().name, "Members Only");
+    }
+
+    #[tokio::test]
+    async fn test_health_check_site_not_reachable() {
+        let base = spawn_routing_server(vec![(
+            "/wp-json/",
+            "503 Service Unavailable",
+            "{}".to_string(),
+        )])
+        .await;
+        let handler = handler_for_local_server(base);
+        let health = handler.health_check().await;
+        assert!(!health.site_accessible);
+        assert!(health.error_details[0].contains("Site accessibility failed"));
     }
 
     /// テスト用のローカルHTTPサーバーに向けたハンドラー（`try_new`は

@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `mcp-rs check [--config <path>] [--offline]`: MCPのクライアントを使わずに、
+  設定を確かめるコマンド（#565）。起動と同じ読み方で、設定ファイルが読めるか
+  （誤りの行と理由）、WordPressの資格情報を読めるか、サイトにつながり認証が
+  通るか（読み取りのリクエストだけ）、ログと監査ログを書けるかを表示する。
+  誤りがあれば終了コード1。パスワード・トークン・ユーザー名は表示しない。
+  `[database]`・`[[plugins]]`・HTTPモードの設定は、まだ確かめない。起動と
+  同じく、ログ・監査ログのフォルダとファイルが無ければ作り、ログファイルに
+  `checked`の見出しの行を書く
+
 ### Changed
 
 - VS Code（GitHub Copilot）のチャットからmcp-rsを使う手順を、READMEと
@@ -15,6 +26,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `.vscode/mcp.json.example`（GitHubのMCPサーバーの例）は削除した
 - WordPressの資格情報が無いときのエラーで、`keyring`も選べることを示す
   ようにした
+
+### Fixed
+
+- `wordpress_health_check`（と`mcp-rs check`）で、サイトに届くかを、認証の
+  要らない`/wp-json/`で確かめるようにした（PR #568のレビュー）。以前は
+  管理者だけが読める`/wp-json/wp/v2/settings`を見ていたので、投稿者・寄稿者の
+  アカウントでは、届いているのに「届かない」となり、残りの確かめを飛ばして
+  いた。設定（管理者のメールアドレス等）は、読めたときだけ表示する
+  `/wp-json/`は、まず認証情報を付けずに読み、401・403なら付けて読み直す
+  （RESTをログインした人だけに開くサイトのため）
 
 ## [0.24.0] - 2026-11-15
 

@@ -91,7 +91,9 @@ Set `type = "http"` under `[transport]` and the address under `[transport.http]`
 
 ## 4. Check
 
-Ask the client to call `mcp_rs_status`. It shows the version, the config file in use, where the log and the audit log are written, and anything that failed to start, with the reason. See the [API Reference]({{ site.baseurl }}/docs/api/).
+Before starting a client, `mcp-rs check --config /path/to/mcp-config.toml` checks the config file the same way mcp-rs reads it: whether it loads, the WordPress credentials, the connection and sign-in to the site (read-only requests), and where the logs are written. It exits with 1 when it finds an error, and does not show passwords. Add `--offline` to skip the connection to the site.
+
+After the client has started mcp-rs, ask it to call `mcp_rs_status`. It shows the version, the config file in use, where the log and the audit log are written, and anything that failed to start, with the reason. See the [API Reference]({{ site.baseurl }}/docs/api/).
 
 ## Guides
 
