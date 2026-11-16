@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `mcp-rs init`: 質問に答えるだけで、使い始める準備をするコマンド（#575）。
+  WordPressのサイトのURL・ユーザー名・アプリケーションパスワードを聞いて
+  OSの資格情報ストアに入れ、設定ファイル（既定は`~/.config/mcp-rs/config.toml`）
+  を書き、`mcp-rs check`と同じ確認をし、Claude Desktop（設定ファイルに足す）・
+  Claude Code（`claude mcp add --scope user`）・GitHub Copilot
+  （`copilot mcp add`）に登録する。登録とファイルの置き換えは、1つずつ
+  確かめてから行い、置き換えるファイルは控えを残す。断ったものは、登録の
+  コマンドや設定を表示する。最初の版は、WordPressだけを聞く
+
+### Changed
+
+- `serde_json`の`preserve_order`を有効にした（#575）。Claude Desktopの設定
+  ファイルに足すとき、ほかの項目の順番を変えないため。mcp-rsが返すJSONの
+  キーも、並べ替えずに作った順になる（ライブラリとして使うときの
+  `serde_json::Map`の順番も変わる）
+
 ## [0.25.0] - 2026-11-17
 
 ### Added

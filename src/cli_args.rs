@@ -1,7 +1,7 @@
 //! `mcp-rs`の実行ファイルの引数（#431）
 //!
-//! `encrypt-wordpress-credentials`・`wordpress-keyring`・`check`サブコマンドは、
-//! 別に`security::credential_tool`・`security::keyring_tool`・`check`が処理する。
+//! `encrypt-wordpress-credentials`・`wordpress-keyring`・`check`・`init`サブコマンドは、
+//! 別に`security::credential_tool`・`security::keyring_tool`・`check`・`init`が処理する。
 
 /// 引数から決めた動作
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -67,6 +67,7 @@ MCP server for WordPress and other tools (STDIO or HTTP mode)
 
 Usage:
   mcp-rs [--config <path>]
+  mcp-rs {init} [--config <path>]
   mcp-rs {check} [--config <path>] [--offline]
   mcp-rs {keyring} set|show|delete <name>
   mcp-rs {credentials}
@@ -86,6 +87,11 @@ Options:
   -h, --help       Print this help and exit
 
 Commands:
+  {init} [--config <path>]
+                   Set up mcp-rs by answering a few questions: the WordPress
+                   credentials, the config file, and registering mcp-rs with
+                   Claude Desktop, Claude Code and GitHub Copilot (run with
+                   --help for details)
   {check} [--config <path>] [--offline]
                    Check the config file without an MCP client: whether it
                    loads, the WordPress credentials and sign-in, and where
@@ -100,6 +106,7 @@ Commands:
 ",
         version = version_text(),
         check = crate::check::SUBCOMMAND,
+        init = crate::init::SUBCOMMAND,
         credentials = crate::security::credential_tool::SUBCOMMAND,
         keyring = crate::security::keyring_tool::SUBCOMMAND,
     )
@@ -181,6 +188,7 @@ mod tests {
         assert!(help.contains("--config <path>"));
         assert!(help.contains("encrypt-wordpress-credentials"));
         assert!(help.contains("check [--config <path>] [--offline]"));
+        assert!(help.contains("init [--config <path>]"));
         assert!(help.contains("wordpress-keyring set|show|delete <name>"));
         assert!(help.contains("${VAR}"));
         assert!(help.contains("--version"));
