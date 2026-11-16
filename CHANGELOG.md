@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `[database]`で、MySQL（8.0以降）を使えるようにした（`engine = "mysql"`、
+  #527）。PostgreSQLと同じツール・上限・監査ログで、既定は読み取りだけ。
+  パラメーターは`?`。`execute_query`は`START TRANSACTION READ ONLY`の中で
+  実行してロールバックし、SELECTの時間は`MAX_EXECUTION_TIME`で、それ以外は
+  別の接続からの`KILL QUERY`で止める。行数・バイト数の上限に達したら、
+  残りを受け取らずに接続を閉じる。プールに戻す接続はリセットする
+  （`COM_RESET_CONNECTION`）。TLSは`ssl_mode`（`allow`以外）で、
+  `ssl_root_cert`を書いたときはそのCAだけを信頼する。`get_schema`は
+  外部キー・インデックス・ビューも返し、`execute_command`は
+  `last_insert_id`も返す。既定のビルド・配るバイナリ・Dockerイメージに
+  含める（`mysql-backend`を既定の機能にした）。MariaDBは、まだ使えない
+
 - リリースに、ビルド済みのmcp-rsを付ける（#564）。Windows（x64）・macOS
   （Apple Silicon）・Linux（x64、glibc 2.35以降）。タグで動く
   `release-binaries.yml`が作り、それぞれの`.sha256`と、まとめた`SHA256SUMS`

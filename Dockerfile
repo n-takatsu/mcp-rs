@@ -27,7 +27,7 @@ COPY tests ./tests
 # Build the application. The os-keyring feature (#533) is left out: a
 # container has no OS credential store, so credentials come from environment
 # variables (${VAR}) or encrypted_credentials
-RUN cargo build --release --bin mcp-rs --no-default-features --features database
+RUN cargo build --release --bin mcp-rs --no-default-features --features database,mysql-backend
 
 # Strip debug symbols to reduce size
 RUN strip target/release/mcp-rs

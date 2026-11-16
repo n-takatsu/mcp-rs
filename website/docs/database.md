@@ -8,10 +8,10 @@ permalink: /docs/database/
 
 **[Home]({{ site.baseurl }}/) > [Documentation]({{ site.baseurl }}/docs/) > Database Guide**
 
-mcp-rs can connect to one PostgreSQL database and give MCP clients tools to read its schema and run SQL. By default it only reads: queries run in a read-only transaction, and the tool that changes data is not offered.
+mcp-rs can connect to one PostgreSQL or MySQL database and give MCP clients tools to read its schema and run SQL. By default it only reads: queries run in a read-only transaction, and the tool that changes data is not offered.
 
-- **Engine**: PostgreSQL only. Other engines (MySQL, SQLite, Redis, MongoDB) exist as library code but cannot be configured yet
-- **Build**: included in the default build and in the Docker image. A build made with `--no-default-features` leaves it out, and reports that in `mcp_rs_status`
+- **Engines**: PostgreSQL, and MySQL from v0.25.0 (see [MySQL](#mysql)). Other engines (MariaDB, SQLite, Redis, MongoDB) exist as library code but cannot be configured yet
+- **Build**: both are included in the default build, the [ready-built files](https://github.com/n-takatsu/mcp-rs/releases), and the Docker image. A build made with `--no-default-features` leaves them out, and reports that in `mcp_rs_status`
 - **Step-by-step setup**: [PostgreSQL Integration Guide](./guides/postgres-integration.md)
 
 ## Configuration
@@ -40,13 +40,13 @@ ssl_mode = "prefer"               # disable, allow, prefer (default), require, v
 
 | Key | Required | Default | Notes |
 |-----|----------|---------|-------|
-| `engine` | yes | | Only `"postgresql"` |
+| `engine` | yes | | `"postgresql"` or `"mysql"` |
 | `host` | | `localhost` | `${VAR}` allowed |
-| `port` | | `5432` | |
+| `port` | | `5432` (MySQL: `3306`) | |
 | `database` | yes | | `${VAR}` allowed |
 | `username` | yes | | `${VAR}` allowed |
 | `password` | | none | `${VAR}` allowed. Never written to logs, `mcp_rs_status`, or error messages |
-| `ssl_mode` | | `prefer` | Same meaning as libpq's `sslmode`. See [TLS](#tls) |
+| `ssl_mode` | | `prefer` | Same meaning as libpq's `sslmode`. See [TLS](#tls). MySQL has no `allow` |
 | `ssl_root_cert` | | none | PEM file of the CA that signed the server certificate. A relative path is relative to the folder of the configuration file. Used only with `ssl_mode = "verify-ca"` or `"verify-full"`: with a weaker `ssl_mode`, the database tools do not start |
 | `allow_write` | | `false` | See [Writing data](#writing-data) |
 | `max_rows` | | `1000` | `0` means the default |
@@ -172,6 +172,40 @@ What you should do:
 ## Writing data
 
 With `allow_write = true`, mcp-rs offers `execute_command` (its annotations mark it as destructive, so MCP clients usually ask before calling it). `execute_query` stays read-only either way. The status line shows `(read-write)` instead of `(read-only)`.
+
+## MySQL
+
+From v0.25.0, `engine = "mysql"` connects to MySQL (8.0 or later). The tools, the limits, and the audit log are the same as for PostgreSQL. MariaDB is not supported yet.
+
+```toml
+[database]
+engine = "mysql"
+host = "db.example.com"
+# port = 3306                     # default for MySQL
+database = "app"
+username = "mcp_reader"
+password = "${MCP_DB_PASSWORD}"
+ssl_mode = "verify-full"
+```
+
+What differs from PostgreSQL:
+
+- **Parameters**: write `?` in the SQL, in the order of `params` (not `$1`). MySQL converts strings to the column type, so dates (`YYYY-MM-DD HH:MM:SS`), `DECIMAL`, and `JSON` can be passed as the strings `execute_query` returns. To pass a binary value, pass it as base64 and use `FROM_BASE64(?)`
+- **Values**: integers and floats as JSON numbers (`BIGINT UNSIGNED` values too large for a 64-bit signed integer as strings); `DECIMAL` as a string; `DATE`, `DATETIME`, `TIMESTAMP`, and `TIME` as strings (`2026-11-16`, `2026-11-16 09:05:07`, `-26:03:04`); `JSON` as JSON; binary types (`BINARY`, `VARBINARY`, `BLOB`, `BIT`) as base64. Column types are shown in lower case (`int`, `varchar`, `int unsigned`, …)
+- **Read-only**: each query runs in `START TRANSACTION READ ONLY`, which is rolled back, so a `SELECT` that calls a function that writes is refused by MySQL. `SELECT … INTO` (variables or files) is refused by mcp-rs
+- **Time limit**: `SELECT` statements are stopped by MySQL (`MAX_EXECUTION_TIME`). Other statements (`execute_command`, or a statement waiting for a lock) are stopped by mcp-rs: after `query_timeout_seconds` plus 2 seconds, it runs `KILL QUERY` on a separate connection and closes the connection. A user can stop its own statements this way without extra privileges
+- **Size limit**: MySQL sends the whole result without a cursor. At the limit, mcp-rs stops reading and closes the connection, so MySQL stops sending the rest; the next call opens a new connection
+- **Sessions**: when a connection returns to the pool, it is reset (`COM_RESET_CONNECTION`): user variables, locks taken with `GET_LOCK()`, temporary tables, and session settings do not carry over
+- **`get_schema`**: lists the tables and views of the configured database (from `information_schema`) with their columns, primary keys, foreign keys, and indexes. Views are listed under `views`, without their definition
+- **`execute_command`**: also returns `last_insert_id` (the `AUTO_INCREMENT` id of an inserted row)
+- **TLS**: `ssl_mode` takes `disable`, `prefer` (default), `require`, `verify-ca`, and `verify-full` (MySQL's `VERIFY_IDENTITY`), with the same meaning as for PostgreSQL. `prefer` connects without TLS only when the server does not offer it. With `ssl_root_cert`, only that CA is trusted; without it, `verify-ca` and `verify-full` trust the public CAs (Mozilla's list)
+
+Create a user that can only read what the AI client should see. Do not grant `FILE` (it lets `LOAD_FILE()` read files on the database server) or `PROCESS`:
+
+```sql
+CREATE USER 'mcp_reader'@'%' IDENTIFIED BY '...';
+GRANT SELECT ON app.* TO 'mcp_reader'@'%';
+```
 
 ## Library API
 

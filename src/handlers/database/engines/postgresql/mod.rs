@@ -22,17 +22,8 @@ use crate::handlers::database::{
 use async_trait::async_trait;
 use std::sync::Arc;
 
-/// `DatabaseConfig::connection.options`のキー: `query()`で受け取る行数の
-/// 上限（#453）
-pub const OPTION_FETCH_LIMIT: &str = "fetch_limit";
-
-/// `DatabaseConfig::connection.options`のキー: `query()`で受け取る結果の
-/// だいたいのバイト数の上限（#539）
-pub const OPTION_BYTE_LIMIT: &str = "byte_limit";
-
-/// `DatabaseConfig::connection.options`のキー: サーバーの証明書を確かめる
-/// CAのファイル（#539）
-pub const OPTION_SSL_ROOT_CERT: &str = "ssl_root_cert";
+// 接続の設定のキー。MySQL（#527）と共有するので、`engines`に置いた
+pub use super::{OPTION_BYTE_LIMIT, OPTION_FETCH_LIMIT, OPTION_SSL_ROOT_CERT};
 
 /// PostgreSQL Database Engine
 ///
