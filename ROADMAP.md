@@ -33,9 +33,9 @@ mcp-rsは、Rustで書いたModel Context Protocol (MCP) サーバーです。Cl
 
 MCPのクライアント（Claude Desktop・Claude Code等）から使える機能に絞る。2026-11-08に範囲を見直した（#419）。SAML・LDAP・MFA・マルチテナント・請求システム・ゼロコピー/分散キャッシュは対象外とした（SAML・LDAPとの連携は、OAuth 2.1の認可サーバー（IdP）側で行う）。
 
-マイルストーンの番号は、リリースの版（クレートの`Cargo.toml`の`version`）と同じにする（2026-11-17から。それまでの「v1.0.0」は、版とは別の計画の区切りだった）。次のリリースに入れるものは、その版のマイルストーン（v0.27.0・v0.28.0）に、v0.28.0より後に行うものはv1.0.0（2027年6月頃）に入れる。
+マイルストーンの番号は、リリースの版（クレートの`Cargo.toml`の`version`）と同じにする（2026-11-17から。それまでの「v1.0.0」は、版とは別の計画の区切りだった）。次のリリースに入れるものは、その版のマイルストーン（v0.27.0〜v0.29.0）に、v0.29.0より後に行うものはv1.0.0（2027年6月頃）に入れる。
 
-2026-11-17に、v0.26.0のリリースの後に並べ直した（MCPの新しい版 → 導入の続き → データベースの順）。
+2026-11-17に、v0.26.0のリリースとコードの点検の後に並べ直した（セキュリティ → MCPの新しい版 → 導入の続き → データベースの順。1つの版に1つの目的）。
 
 ### ✅ 完了: HTTPモードの認可・ツールの権限・監査ログ（Epic #41）
 
@@ -51,28 +51,32 @@ MCPのクライアント（Claude Desktop・Claude Code等）から使える機�
 - #576 1行で入れるインストールスクリプト（v0.26.0）
 - #577 READMEの導入手順を短くし、導入ガイドを分ける（v0.26.0）
 
-### 🔜 v0.27.0: MCPの2026-07-28版に対応する（[マイルストーン](https://github.com/n-takatsu/mcp-rs/milestone/6)）
+### 🔜 v0.27.0: セキュリティの強化（[マイルストーン](https://github.com/n-takatsu/mcp-rs/milestone/6)）
+
+2026-11-17のコードの点検で見つかったもの。直し方の多くが、今の設定で動いているものを止める（互換性の無い）変更なので、パッチ版ではなくマイナー版にし、移行の注意を1つのリリースノートにまとめる。ほかの大きな変更（MCPの新しい版）と混ぜず、セキュリティだけの版にする。
+
+- #592 HTTP/2の何も送らない接続が、接続数の上限を埋められる
+- #593 同じマシンのリバースプロキシの後ろでは、認証が無くても起動する
+- #594 MySQL・MariaDBの`verify-ca`で、`ssl_root_cert`が無いと、どのホストの公開の証明書でも受け入れる
+- #595 プラグインのツールの「読み取りだけ」の印を、`@read_only`が既定で信じない
+- #596 HTTPモードの小さな強化（ログ・WebSocket・APIキー・状態の表示）。`initialize`の項目は、v0.28.0の#570で直す
+- #597 MySQL・MariaDBのSQLの検査を、もう一度点検する（点検が途中で止まった）
+
+### 📅 v0.28.0: MCPの2026-07-28版に対応する（[マイルストーン](https://github.com/n-takatsu/mcp-rs/milestone/7)）
 
 MCPの仕様の2026-07-28版で、`initialize`の手続きとセッションが無くなった。今のmcp-rs（2025-11-25版）は、新旧の両方に対応したクライアントとは仕様どおりにつながるが、新しい版だけのクライアントとはつながらない。仕様には、`initialize`をいつまで使えるかの決まりが無く、クライアントがいつ新しい版だけになるかは、こちらで決められない。今のクライアントを壊さないよう、新旧の両方を受ける形にする（#566で調べた）。
 
 - #570 MCPの2026-07-28版（initializeの廃止）に、新旧の両方を受ける形で対応する（STDIO→HTTP→無くなったものの順）
 - #589 `mcp-rs check`で、`[database]`と`[[plugins]]`も確かめる（起動に失敗しても、ツールが無いまま動くので、理由が分かりにくい）
-- セキュリティの強化（2026-11-17のコードの点検で見つかったもの）
-  - #592 HTTP/2の何も送らない接続が、接続数の上限を埋められる
-  - #593 同じマシンのリバースプロキシの後ろでは、認証が無くても起動する
-  - #594 MySQL・MariaDBの`verify-ca`で、`ssl_root_cert`が無いと、どのホストの公開の証明書でも受け入れる
-  - #595 プラグインのツールの「読み取りだけ」の印を、`@read_only`が既定で信じない
-  - #596 HTTPモードの小さな強化（ログ・WebSocket・APIキー・状態の表示）
-  - #597 MySQL・MariaDBのSQLの検査を、もう一度点検する（点検が途中で止まった）
 
-### 📅 v0.28.0: 導入を簡単にする（続き）（[マイルストーン](https://github.com/n-takatsu/mcp-rs/milestone/7)）
+### 📅 v0.29.0: 導入を簡単にする（続き）（[マイルストーン](https://github.com/n-takatsu/mcp-rs/milestone/8)）
 
 - #578 パッケージマネージャー（winget・Homebrew・Scoop）で配る
 - #579 Claude Desktopの拡張機能（`.mcpb`）で配れるかを調べる（Claude Desktopの画面で設定を入力できる形）
 - #590 `mcp-rs init`で、`[database]`（PostgreSQL・MySQL・MariaDB）も聞く（データベースのパスワードを、資格情報ストアから読めるようにするかを含む）
 - セキュリティの小さな強化: #598 WordPressとプラグイン（応答の大きさ・ツールの名前）、#599 `mcp-rs init`とインストール（控え・権限・リリースの出所）
 
-### 📅 v0.28.0より後: データベースの対応を広げる（2026-11-13に追加、#526）
+### 📅 v0.29.0より後: データベースの対応を広げる（2026-11-13に追加、#526）
 
 データベースのハンドラーは、MySQL・MariaDB・PostgreSQL・SQLite・Redis・MongoDBのエンジンをライブラリとして持っている。用意してあるエンジンを、PostgreSQL（#453）と同じ安全性（既定は読み取りだけ、行数の上限、タイムアウト）で、本体（`[database]`）から使えるようにする。
 
@@ -106,9 +110,10 @@ MCPの仕様の2026-07-28版で、`initialize`の手続きとセッションが�
 
 ## 📋 GitHub Issues
 
-- [Milestone v0.27.0](https://github.com/n-takatsu/mcp-rs/milestone/6) - 次のリリースに入るIssue
-- [Milestone v0.28.0](https://github.com/n-takatsu/mcp-rs/milestone/7) - その次のリリースに入るIssue
-- [Milestone v1.0.0](https://github.com/n-takatsu/mcp-rs/milestone/3) - v0.28.0より後、v1.0.0までに行うIssue
+- [Milestone v0.27.0](https://github.com/n-takatsu/mcp-rs/milestone/6) - セキュリティの強化
+- [Milestone v0.28.0](https://github.com/n-takatsu/mcp-rs/milestone/7) - MCPの新しい版
+- [Milestone v0.29.0](https://github.com/n-takatsu/mcp-rs/milestone/8) - 導入を簡単にする（続き）
+- [Milestone v1.0.0](https://github.com/n-takatsu/mcp-rs/milestone/3) - v0.29.0より後、v1.0.0までに行うIssue
 - [Epic #41](https://github.com/n-takatsu/mcp-rs/issues/41)（完了） - HTTPモードの認可・ツールの権限・監査ログ
 
 ## 📚 ドキュメント
