@@ -209,26 +209,22 @@ impl Setup<'_> {
         // 知らせて選ばせる（#602）
         let mut carry: Option<toml::Table> = None;
         let mut use_previous_as_is = false;
-        let mut plaintext_files: Vec<String> = Vec::new();
+        // 新しい設定ファイルを書いたときだけ、置き換えたものとして扱う前の
+        // 設定ファイル（PR #606のレビュー。書かなかったのに前の登録を消すと、
+        // 設定が抜け落ちる）と、それに平文のパスワードがあるか
+        let mut replacing: Option<(String, bool)> = None;
         if let Some((path, used_by)) = self.previous_config() {
             match self.choose_previous(&path, &used_by)? {
                 PreviousChoice::CarryOver(table) => {
-                    if has_plaintext_secret(&table) {
-                        plaintext_files.push(path.clone());
-                    }
+                    replacing = Some((path, has_plaintext_secret(&table)));
                     carry = Some(*table);
-                    self.superseded.push(path);
                 }
                 PreviousChoice::UseAsIs => {
                     self.config_path = PathBuf::from(&path);
                     use_previous_as_is = true;
                 }
-                PreviousChoice::LeaveOut(plaintext) => {
-                    if plaintext {
-                        plaintext_files.push(path.clone());
-                    }
-                    self.superseded.push(path);
-                }
+                PreviousChoice::LeaveOut(plaintext) => replacing = Some((path, plaintext)),
+                PreviousChoice::NotReplacing => {}
             }
         }
         let config_display = self.config_path.display().to_string();
@@ -239,14 +235,33 @@ impl Setup<'_> {
         } else if self.config_path.exists() {
             self.io
                 .say(&format!("A config file already exists: {config_display}"));
-            confirm(
-                self.io,
-                "Replace it with a new one for WordPress? (a backup copy is kept)",
-                false,
-            )?
+            match &replacing {
+                // 写すと選んだので、既定は置き換える（PR #606のレビュー）
+                Some((previous, _)) if carry.is_some() => confirm(
+                    self.io,
+                    &format!(
+                        "Replace it with one that has the settings copied from {previous}? (a backup copy is kept)"
+                    ),
+                    true,
+                )?,
+                _ => confirm(
+                    self.io,
+                    "Replace it with a new one for WordPress? (a backup copy is kept)",
+                    false,
+                )?,
+            }
         } else {
             true
         };
+        let mut plaintext_files: Vec<String> = Vec::new();
+        if write_config {
+            if let Some((previous, plaintext)) = replacing {
+                if plaintext {
+                    plaintext_files.push(previous.clone());
+                }
+                self.superseded.push(previous);
+            }
+        }
         // この実行で書いた設定の、サイトのURLと資格情報の名前（確認が
         // 失敗したときに、資格情報を入れ直すため）
         let mut written = None;
@@ -268,6 +283,9 @@ impl Setup<'_> {
             }
             self.io
                 .say(&format!("Wrote the config file: {config_display}\n"));
+            if carry.is_some() {
+                self.note_copied_secrets_and_env(&content);
+            }
             written = Some((url, entry));
         } else {
             self.io.say(
@@ -367,6 +385,16 @@ impl Setup<'_> {
     /// 実際にあるもの（#602）。そのファイルと、それを使う登録の説明を返す
     fn previous_config(&self) -> Option<(String, Vec<String>)> {
         let ours = self.config_path.display().to_string();
+        // これから書く設定ファイルを使う登録があれば、移行は済んでいる。
+        // ほかの設定ファイルの登録は、意図して並べたもの（2つ目のサイト等）
+        // として扱い、今までどおり既定で残す（PR #606のレビュー）
+        if self
+            .previous
+            .iter()
+            .any(|registration| same_config_file(registration.config.as_deref(), &ours))
+        {
+            return None;
+        }
         let mut found: Option<(String, Vec<String>)> = None;
         for registration in &self.previous {
             let Some(path) = registration
@@ -417,10 +445,28 @@ impl Setup<'_> {
             .map(str::to_string);
         let plaintext = has_plaintext_secret(&table);
         let extras = extra_settings(&table);
+        let site = table
+            .get("handlers")
+            .and_then(|h| h.get("wordpress"))
+            .and_then(|w| w.get("url"))
+            .and_then(toml::Value::as_str)
+            .map(|url| format!("for {url}"))
+            .unwrap_or_else(|| "without a WordPress site".to_string());
         self.io.say(&format!(
-            "mcp-rs is already registered with another config file: {path} ({})",
+            "mcp-rs is already registered with another config file: {path} ({site}; {})",
             used_by.join(", ")
         ));
+        // 移行する前の設定か、意図して並べた別の設定（2つ目のサイト等）かは、
+        // 見分けられないので聞く（PR #606のレビュー）
+        if !confirm(
+            self.io,
+            "Is it the setup that the new config file replaces? (answer n for a setup you keep, such as one for another site)",
+            true,
+        )? {
+            self.suggested_url = None;
+            self.io.say("Keeping it as it is.\n");
+            return Ok(PreviousChoice::NotReplacing);
+        }
         if extras.is_empty() {
             self.io.say(
                 "It has nothing that a new config file for WordPress would not have, so the new one replaces it.\n",
@@ -443,6 +489,37 @@ impl Setup<'_> {
                 "3" => return Ok(PreviousChoice::LeaveOut(plaintext)),
                 _ => self.io.say("Answer 1, 2 or 3."),
             }
+        }
+    }
+
+    /// 写した設定に、平文の秘密や`${VAR}`が残るとき、知らせる（PR #606の
+    /// レビュー）。前の登録の`env`は、新しい登録に写らない
+    fn note_copied_secrets_and_env(&mut self, content: &str) {
+        let Ok(table) = content.parse::<toml::Table>() else {
+            return;
+        };
+        if has_plaintext_secret(&table) {
+            self.io.say(
+                "Note: the new config file has a password or an API key in plain text, copied from the previous one ([database] or [transport.http]). Move it to an environment variable (${...}) when you can.",
+            );
+        }
+        if !content.contains("${") {
+            return;
+        }
+        let names: Vec<String> = self
+            .previous
+            .iter()
+            .flat_map(|registration| registration.env.iter().cloned())
+            .collect();
+        if names.is_empty() {
+            self.io.say(
+                "Note: the new config file reads environment variables (${...}). MCP clients pass them only when they are registered with them, so the check below fails if they are not set for mcp-rs.",
+            );
+        } else {
+            self.io.say(&format!(
+                "Note: the new config file reads environment variables (${{...}}). The previous registration passed {}, but the new registration does not pass any. If the check below fails, set them for mcp-rs (for example in the client's settings), or move the values to the OS credential store.",
+                names.join(", ")
+            ));
         }
     }
 
@@ -1175,6 +1252,8 @@ struct Registration {
     exe: String,
     /// `--config`の値（無ければ`None`）
     config: Option<String>,
+    /// 登録で渡している環境変数の名前（値は持たない）
+    env: Vec<String>,
 }
 
 /// 前の設定ファイルをどうするか（#602）
@@ -1185,6 +1264,8 @@ enum PreviousChoice {
     UseAsIs,
     /// 写さない（平文のパスワードがあったか）
     LeaveOut(bool),
+    /// 置き換える前の設定ではない（2つ目のサイト等）。何もしない
+    NotReplacing,
 }
 
 /// `mcpServers`のうち、mcp-rsを起動する登録
@@ -1207,11 +1288,17 @@ fn mcp_rs_registrations(client: &'static str, config: &serde_json::Value) -> Vec
                 .and_then(serde_json::Value::as_array)
                 .map(|args| args.iter().filter_map(serde_json::Value::as_str).collect())
                 .unwrap_or_default();
+            let env = server
+                .get("env")
+                .and_then(serde_json::Value::as_object)
+                .map(|env| env.keys().cloned().collect())
+                .unwrap_or_default();
             Some(Registration {
                 client,
                 name: name.clone(),
                 exe: exe.to_string(),
                 config: config_arg(&args),
+                env,
             })
         })
         .collect()
@@ -1762,7 +1849,8 @@ file_path = "C:/Users/me/.mcp-rs/logs/audit.log"
         let config = serde_json::json!({ "mcpServers": {
             "mcp-rs-wordpress": {
                 "command": "C:/Program Files/MCP-rs/mcp-rs.exe",
-                "args": ["--config", "C:/old/mcp-config.toml"]
+                "args": ["--config", "C:/old/mcp-config.toml"],
+                "env": { "WORDPRESS_PASSWORD": "secret" }
             },
             "mcp-rs": { "command": "C:/Users/me/.mcp-rs/bin/mcp-rs.exe" },
             "other": { "command": "npx" }
@@ -1775,12 +1863,15 @@ file_path = "C:/Users/me/.mcp-rs/logs/audit.log"
                     name: "mcp-rs-wordpress".to_string(),
                     exe: "C:/Program Files/MCP-rs/mcp-rs.exe".to_string(),
                     config: Some("C:/old/mcp-config.toml".to_string()),
+                    // 名前だけ（値は持たない）
+                    env: vec!["WORDPRESS_PASSWORD".to_string()],
                 },
                 Registration {
                     client: "Claude Desktop",
                     name: "mcp-rs".to_string(),
                     exe: "C:/Users/me/.mcp-rs/bin/mcp-rs.exe".to_string(),
                     config: None,
+                    env: Vec::new(),
                 },
             ]
         );
@@ -1803,6 +1894,7 @@ file_path = "C:/Users/me/.mcp-rs/logs/audit.log"
             name: "mcp-rs-wordpress".to_string(),
             exe: "C:/Program Files/MCP-rs/mcp-rs.exe".to_string(),
             config: Some(old.clone()),
+            env: Vec::new(),
         }];
         let (path, used_by) = setup.previous_config().unwrap();
         assert_eq!(path, old);
@@ -1828,6 +1920,53 @@ file_path = "C:/Users/me/.mcp-rs/logs/audit.log"
         assert!(io.shown.iter().any(|s| s.contains("[[plugins]] fs")));
     }
 
+    /// 移行が済んでいる（これから書く設定ファイルを使う登録がある）ときは、
+    /// 別の設定ファイルの登録を、移行する前の設定として扱わない（PR #606の
+    /// レビュー。2つ目のサイトの登録が消えた）
+    #[test]
+    fn test_previous_config_is_ignored_after_migrating() {
+        let dir = tempfile::tempdir().unwrap();
+        let second = dir.path().join("second-blog.toml");
+        std::fs::write(&second, PREVIOUS_CONFIG).unwrap();
+        let store = MemoryStore::default();
+        let mut io = Script::new(&[]);
+        let mut setup = setup(&mut io, &store);
+        setup.config_path = dir.path().join("config.toml");
+        let registration = |name: &str, config: &Path| Registration {
+            client: "Claude Desktop",
+            name: name.to_string(),
+            exe: "mcp-rs".to_string(),
+            config: Some(config.display().to_string()),
+            env: Vec::new(),
+        };
+        setup.previous = vec![
+            registration("mcp-rs", &setup.config_path.clone()),
+            registration("second-blog", &second),
+        ];
+        assert_eq!(setup.previous_config(), None);
+        // 移行が済んでいなければ、見つける
+        setup.previous.remove(0);
+        assert!(setup.previous_config().is_some());
+    }
+
+    /// 置き換える前の設定かを先に聞き、nなら何もしない（PR #606のレビュー）
+    #[test]
+    fn test_previous_config_can_be_kept_as_another_setup() {
+        let dir = tempfile::tempdir().unwrap();
+        let second = dir.path().join("second-blog.toml");
+        std::fs::write(&second, PREVIOUS_CONFIG).unwrap();
+        let store = MemoryStore::default();
+        let mut io = Script::new(&["n"]);
+        let mut setup = setup(&mut io, &store);
+        let choice = setup
+            .choose_previous(&second.display().to_string(), &[])
+            .unwrap();
+        assert!(matches!(choice, PreviousChoice::NotReplacing));
+        // 2つ目のサイトのURLを、新しい設定の既定にしない
+        assert_eq!(setup.suggested_url, None);
+        assert!(setup.superseded.is_empty());
+    }
+
     /// 2を選ぶと、前の設定ファイルをそのまま使う
     #[test]
     fn test_previous_config_can_be_used_as_is() {
@@ -1835,7 +1974,7 @@ file_path = "C:/Users/me/.mcp-rs/logs/audit.log"
         let old_path = dir.path().join("mcp-config.toml");
         std::fs::write(&old_path, PREVIOUS_CONFIG).unwrap();
         let store = MemoryStore::default();
-        let mut io = Script::new(&["4", "2"]);
+        let mut io = Script::new(&["", "4", "2"]);
         let mut setup = setup(&mut io, &store);
         let choice = setup
             .choose_previous(&old_path.display().to_string(), &[])
