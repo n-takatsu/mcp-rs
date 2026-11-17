@@ -50,6 +50,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    // 質問に答えて使い始める準備をする（#575）。サーバーは起動しない
+    if args.get(1).map(String::as_str) == Some(mcp_rs::init::SUBCOMMAND) {
+        match mcp_rs::init::run(&args[2..]).await {
+            Ok(true) => return Ok(()),
+            Ok(false) => std::process::exit(1),
+            Err(problem) => {
+                eprintln!("error: {problem}\n");
+                eprint!("{}", mcp_rs::init::help_text());
+                std::process::exit(2);
+            }
+        }
+    }
+
     // --version・--help（#431）。サーバーは起動せず、設定・ログにも触れない
     let run_args = match mcp_rs::cli_args::parse_args(&args) {
         mcp_rs::cli_args::Command::Version => {

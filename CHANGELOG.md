@@ -7,6 +7,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.26.0] - 2026-11-17
+
+### Added
+
+- インストールスクリプト（#576）。Windowsは
+  `irm https://raw.githubusercontent.com/n-takatsu/mcp-rs/main/install/install.ps1 | iex`、
+  macOS（Apple Silicon）・Linux（x64）は
+  `curl -fsSL https://raw.githubusercontent.com/n-takatsu/mcp-rs/main/install/install.sh | sh`。
+  最新（または`MCP_RS_VERSION`の版）のリリースをダウンロードし、SHA256を
+  確かめて、`~/.mcp-rs/bin`（`%USERPROFILE%\.mcp-rs\bin`）に置き、最後に
+  `mcp-rs init`を動かすかを聞く。管理者の権限は要らず、PATH等は変えない。
+  Windowsでは、動いているmcp-rsがあっても更新できる（古いファイルを
+  `mcp-rs.exe.old`に移す）。CIで、3つのOS（Windows PowerShell 5.1・
+  PowerShell 7を含む）で実際のリリースを入れて確かめる
+- `mcp-rs init`: 質問に答えるだけで、使い始める準備をするコマンド（#575）。
+  WordPressのサイトのURL・ユーザー名・アプリケーションパスワードを聞いて
+  OSの資格情報ストアに入れ、設定ファイル（既定は`~/.config/mcp-rs/config.toml`）
+  を書き、`mcp-rs check`と同じ確認をし、Claude Desktop（設定ファイルに足す）・
+  Claude Code（`claude mcp add --scope user`）・GitHub Copilot
+  （`copilot mcp add`）に登録する。登録とファイルの置き換えは、1つずつ
+  確かめてから行い、置き換えるファイルは控えを残す。断ったものは、登録の
+  コマンドや設定を表示する。別の名前でmcp-rsを起動する登録（手で登録した
+  `mcp-rs-wordpress`等）があれば、消すかを聞く（同じツールが2組並ばない
+  ように）。同じ設定ファイルのものは既定で消し、別の設定ファイルのもの
+  （2つ目のサイト用等）は、そのパスを見せて、既定では残す。最初の版は、WordPressだけを聞く
+
+### Changed
+
+- READMEの導入手順を短くした（#577）。インストールスクリプト → `mcp-rs init`
+  → 確かめ方の3段だけにし、手で入れる手順・ソースからのビルド・クライアント
+  ごとの手での設定・設定ファイル・ログファイルは、サイトの
+  [Getting Started](https://n-takatsu.github.io/mcp-rs/docs/guides/)のガイドに
+  移した。HTTPモードのTLS・mTLS・WebSocketの設定は、Securityの文書に移した
+- `serde_json`の`preserve_order`を有効にした（#575）。Claude Desktopの設定
+  ファイルに足すとき、ほかの項目の順番を変えないため。mcp-rsが返すJSONの
+  キーも、並べ替えずに作った順になる（ライブラリとして使うときの
+  `serde_json::Map`の順番も変わる）
+
+### Fixed
+
+- MySQL・MariaDBで、サーバーの`sql_mode`に`NO_BACKSLASH_ESCAPES`か
+  `ANSI_QUOTES`（`sql_mode = ANSI`にも含まれる）があると、SQLの検査（`\'`を
+  エスケープと、`"…"`を文字列と読む）とサーバーで文字列の区切りが食い違い、
+  `SELECT … INTO OUTFILE`や`/*M! … */`の拒否をすり抜けられた（#574）。
+  接続を作ったとき・プールに戻してリセットしたときに、セッションの
+  `sql_mode`から、この2つと、`ANSI_QUOTES`を含むまとめたモード（`ANSI`、
+  MariaDBの`DB2`・`MSSQL`・`ORACLE`・`POSTGRESQL`・`MAXDB`）を外し、サーバーの
+  読み方を検査とそろえる（ほかのモードは残す）。mcp-rsの接続では、`"…"`は
+  文字列になるので、名前は`` `…` ``で囲む（ツールの説明にも書いた）。既定の
+  設定では起きない
+- `mcp-rs check`と`wordpress_health_check`で、サインインが失敗したのに、
+  権限とメディアが「OK」と出ていた（#575の確認で分かった）。どちらも認証の
+  要らない読み取りでも通るため。サインインが失敗したら、権限とメディアは
+  確かめない（`mcp-rs check`は「not checked」と出す）。`mcp-rs check`の
+  エラーは、最後にまとめて「WordPress site」の名前で出していたのを、
+  失敗した項目の名前で、確かめた順に出すようにした
+
 ## [0.25.0] - 2026-11-17
 
 ### Added

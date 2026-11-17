@@ -1,10 +1,10 @@
 # mcp-rs
 
-A Rust implementation of a Model Context Protocol (MCP) server that gives AI clients tools for WordPress, PostgreSQL, and external MCP plugins.
+A Rust implementation of a Model Context Protocol (MCP) server that gives AI clients tools for WordPress, databases (PostgreSQL, MySQL, MariaDB), and external MCP plugins.
 
 > **[English](README.md)** | **[日本語](README.ja.md)**
 
-[![Version](https://img.shields.io/badge/Version-v0.25.0-blue)](https://github.com/n-takatsu/mcp-rs/releases/tag/v0.25.0)
+[![Version](https://img.shields.io/badge/Version-v0.26.0-blue)](https://github.com/n-takatsu/mcp-rs/releases/tag/v0.26.0)
 ![Implementation](https://img.shields.io/badge/WordPress_Tools-32_Available-green)
 ![License](https://img.shields.io/badge/License-MIT%2FApache--2.0-green)
 
@@ -64,242 +64,29 @@ Connect with a read-only database role. See the [Database Integration Guide](htt
 
 ## 🚀 Quick Start
 
-## Prerequisites
+You need a WordPress site with Application Passwords (Users > Profile > Application Passwords) that mcp-rs can reach over HTTPS. Rust is not needed: each release from v0.25.0 has ready-built mcp-rs for Windows (x64), macOS (Apple Silicon), and Linux (x64).
 
-- To build from source: Rust 1.98 or later (`rust-version` in `Cargo.toml`; the latest stable is recommended). Not needed with the [ready-built files](#download)
-- WordPress site with Application Passwords enabled
-- Network access to WordPress REST API
-
-## Installation
-
-### Download
-
-From v0.25.0, each [release](https://github.com/n-takatsu/mcp-rs/releases) has ready-built mcp-rs for these systems. Rust is not needed:
-
-| System | File |
-|---|---|
-| Windows (x64) | `mcp-rs-<version>-x86_64-pc-windows-msvc.zip` |
-| macOS (Apple Silicon) | `mcp-rs-<version>-aarch64-apple-darwin.tar.gz` |
-| Linux (x64, glibc 2.35 or later) | `mcp-rs-<version>-x86_64-unknown-linux-gnu.tar.gz` |
-
-Put `mcp-rs` (`mcp-rs.exe`) in a folder of your own, such as `~/.mcp-rs/bin` (`%USERPROFILE%\.mcp-rs\bin` on Windows). No administrator rights are needed, and updating means replacing the file. mcp-rs writes its log to `logs` next to it. On Windows, avoid folders under `AppData`: Claude Desktop from the Microsoft Store may redirect files written there, so the log can end up somewhere else.
-
-Windows (PowerShell):
+**1. Install** (from v0.26.0). The script downloads the latest release, checks its SHA256, and puts mcp-rs in `~/.mcp-rs/bin` (`%USERPROFILE%\.mcp-rs\bin` on Windows), without administrator rights or changing anything else. Run it again to update:
 
 ```powershell
-$v = "v0.25.0"; $name = "mcp-rs-$v-x86_64-pc-windows-msvc"
-Invoke-WebRequest "https://github.com/n-takatsu/mcp-rs/releases/download/$v/$name.zip" -OutFile "$name.zip"
-Invoke-WebRequest "https://github.com/n-takatsu/mcp-rs/releases/download/$v/$name.zip.sha256" -OutFile "$name.zip.sha256"
-# True if the file is the one built by the release workflow
-(Get-FileHash "$name.zip" -Algorithm SHA256).Hash.ToLower() -eq (Get-Content "$name.zip.sha256").Split(" ")[0]
-Expand-Archive "$name.zip" -DestinationPath .
-New-Item -ItemType Directory -Force "$env:USERPROFILE\.mcp-rs\bin" | Out-Null
-Copy-Item "$name\mcp-rs.exe" "$env:USERPROFILE\.mcp-rs\bin\"
-Unblock-File "$env:USERPROFILE\.mcp-rs\bin\mcp-rs.exe"
-& "$env:USERPROFILE\.mcp-rs\bin\mcp-rs.exe" --version
+# Windows (PowerShell)
+irm https://raw.githubusercontent.com/n-takatsu/mcp-rs/main/install/install.ps1 | iex
 ```
-
-macOS and Linux:
 
 ```bash
-v=v0.25.0; name=mcp-rs-$v-aarch64-apple-darwin   # Linux: mcp-rs-$v-x86_64-unknown-linux-gnu
-curl -LO https://github.com/n-takatsu/mcp-rs/releases/download/$v/$name.tar.gz
-curl -LO https://github.com/n-takatsu/mcp-rs/releases/download/$v/$name.tar.gz.sha256
-shasum -a 256 -c $name.tar.gz.sha256   # Linux: sha256sum -c $name.tar.gz.sha256
-tar -xzf $name.tar.gz
-mkdir -p ~/.mcp-rs/bin && cp $name/mcp-rs ~/.mcp-rs/bin/
-~/.mcp-rs/bin/mcp-rs --version
+# macOS (Apple Silicon) and Linux (x64)
+curl -fsSL https://raw.githubusercontent.com/n-takatsu/mcp-rs/main/install/install.sh | sh
 ```
 
-The files are not signed:
-
-- Windows may warn about a downloaded program. `Unblock-File` (above) removes the mark that Windows puts on downloaded files. If you extracted the zip in Explorer, Windows may show "Windows protected your PC" the first time; choose "More info" → "Run anyway" only after checking the SHA256
-- macOS blocks a program downloaded with a browser ("cannot be opened because the developer cannot be verified"). After checking the SHA256, run `xattr -d com.apple.quarantine ~/.mcp-rs/bin/mcp-rs`. Files downloaded with `curl` are not blocked
-- `SHA256SUMS` in the release lists the SHA256 of every file
-
-To build it yourself instead, see [Setup](#setup).
-
-### WordPress Credentials
-
-Keep the WordPress username and Application Password in the OS credential store (Windows Credential Manager, macOS Keychain, Secret Service on Linux; v0.24.0 and later). mcp-rs then reads them from one place, whether Claude Desktop, Claude Code, or a terminal starts it:
+**2. Set up.** The script offers to run `mcp-rs init`, or run it yourself. It asks for the site URL, the username and the Application Password (kept in the OS credential store, not in a file), writes the config file (`~/.config/mcp-rs/config.toml`), checks the connection and sign-in, and registers mcp-rs with Claude Desktop, Claude Code and GitHub Copilot (VS Code), asking before each change:
 
 ```bash
-mcp-rs wordpress-keyring set example.com   # asks for the site URL, the username and the Application Password
+~/.mcp-rs/bin/mcp-rs init        # Windows: & "$env:USERPROFILE\.mcp-rs\bin\mcp-rs.exe" init
 ```
 
-```toml
-[handlers.wordpress]
-enabled = true            # required: without it, the WordPress tools are not registered (no error)
-url = "https://example.com"
-keyring = "example.com"   # the name used with `wordpress-keyring set`
-```
+**3. Check.** Restart the client as `init` shows, then ask it to call the `mcp_rs_status` tool. It shows the version, the config file in use, where the logs are written, and anything that failed to start. `mcp-rs check --config <path>` checks a config file without a client.
 
-The credentials are used only when `url` is the site you entered with `set` (same scheme, host, and port), so a config file that names the entry with another `url` cannot send them elsewhere.
-
-Why not environment variables: Claude Desktop passes MCP servers only a fixed set such as `PATH` plus the `env` of `claude_desktop_config.json`, never your user environment variables, while Claude Code and terminals pass all of them. With `${WORDPRESS_PASSWORD}` you would write the same values twice. Environment variables and encrypted credentials still work; see [Security](https://n-takatsu.github.io/mcp-rs/docs/security/#which-environment-variables-reach-mcp-rs).
-
-### Claude Desktop
-
-Claude Desktop starts mcp-rs and talks to it over STDIO. In STDIO mode, standard output carries only MCP messages; logs go to a file (and standard error). Add mcp-rs to `claude_desktop_config.json` with absolute paths. On Windows, write paths with `/`, or write each `\` as `\\` in JSON. With the credentials in the OS credential store, no `env` is needed:
-
-```json
-{
-  "mcpServers": {
-    "mcp-rs": {
-      "command": "C:/Users/you/.mcp-rs/bin/mcp-rs.exe",
-      "args": ["--config", "C:/Users/you/AppData/Roaming/Claude/mcp-rs/mcp-config.toml"]
-    }
-  }
-}
-```
-
-- If the config file uses `${...}` instead, list every variable it reads in `env`. `env` only passes values; the `${...}` in the config file decides which variables are read. For example, `configs/production/claude-desktop.toml` reads `WORDPRESS_URL`, `WORDPRESS_USERNAME`, and `WORDPRESS_PASSWORD`, so all three are needed
-- After changing the config file, the credentials, or `env`, quit Claude Desktop from the system tray (menu bar) and start it again. Closing the window leaves it running
-- If mcp-rs does not start ("Server disconnected"), errors in the config file are not in the mcp-rs log file, because they happen before logging starts. Open the mcp-rs log from Claude Desktop's settings (Developer). The Microsoft Store version does not write to `%APPDATA%\Claude\logs`. `mcp-rs check --config <path>` shows the error without Claude Desktop
-
-> 📖 See [Claude Desktop Integration Guide](./project-docs/CLAUDE_DESKTOP_INTEGRATION.md) (Japanese) for the settings and troubleshooting.
-
-### Claude Code
-
-Claude Code also talks to mcp-rs over STDIO and uses the same configuration file. Register mcp-rs with absolute paths. Everything after `--` is the mcp-rs command line. With the credentials in the OS credential store, no `-e` is needed:
-
-```bash
-claude mcp add mcp-rs --scope user -- "C:/Users/you/.mcp-rs/bin/mcp-rs.exe" --config C:/Users/you/AppData/Roaming/Claude/mcp-rs/mcp-config.toml
-```
-
-Claude Code passes its own environment to mcp-rs, so `${...}` can also read user environment variables (restart VS Code after changing them), or values passed with `-e`. Values passed with `-e` are stored in Claude Code's settings, so do not use `--scope project` (which writes them to the shared `.mcp.json`) with real credentials. Check the connection with `claude mcp list`, or `/mcp` inside Claude Code.
-
-> 📖 See [Claude Code Integration Guide](./project-docs/CLAUDE_CODE_INTEGRATION.md) (Japanese) for `.mcp.json`, encrypted credentials, and troubleshooting.
-
-### VS Code (GitHub Copilot)
-
-The Copilot chat in VS Code runs on the Copilot CLI (the agent host; the older local harness, which reads `.vscode/mcp.json` itself, is to be removed in February 2027) and uses the MCP servers registered for it. Register mcp-rs with the `copilot` command, with absolute paths. Everything after `--` is the mcp-rs command line. This writes `~/.copilot/mcp-config.json`, which both the chat in VS Code and `copilot` in a terminal read:
-
-```bash
-copilot mcp add mcp-rs -- "C:/Users/you/.mcp-rs/bin/mcp-rs.exe" --config C:/Users/you/AppData/Roaming/Claude/mcp-rs/mcp-config.toml
-```
-
-- Keep the credentials in the OS credential store (`keyring`). The Copilot CLI does not read `.vscode/mcp.json` itself; VS Code forwards the servers from it, except those that ask for a value with `${input:...}`
-- Which environment variables reach mcp-rs depends on how the Copilot CLI is started. In VS Code on Windows, mcp-rs got almost all of VS Code's environment, including user environment variables, except the GitHub token (`GITHUB_PERSONAL_ACCESS_TOKEN`). [GitHub Docs](https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-mcp-servers) says only `PATH` is passed. This is another reason to use `keyring`: it needs no environment variables and keeps the password out of files. If the config file reads `${...}` (such as `configs/production/claude-desktop.toml`) or uses `encrypted_credentials` (`WORDPRESS_MASTER_PASSWORD`), either rely on user environment variables (which worked in VS Code on Windows, but may not elsewhere), or pass them with `--env`, which always works but writes the values in plain text to `~/.copilot/mcp-config.json`. VS Code keeps the environment it started with: after changing user environment variables, quit every VS Code window and start it again
-- Tested on Windows with `keyring`. macOS and Linux are not tested yet; on Linux, the Secret Service may not be reachable without `DBUS_SESSION_BUS_ADDRESS`
-- Do not register mcp-rs with credentials in a workspace `.mcp.json` or `.github/mcp.json`. They live in the repository folder and can be committed (`.github/mcp.json` is meant to be)
-- After registering, restart VS Code and start a new chat. Check with `copilot mcp list`, or ask the chat to call `mcp_rs_status`
-- If mcp-rs does not start, the chat only says it cannot find the tool. The reason is in the Copilot CLI log, `~/.copilot/logs/process-*.log`: look for `MCP server connection failed`, which includes the error from mcp-rs. `mcp-rs check --config <path>` shows the same error in a terminal
-
-### Setup
-
-```bash
-git clone https://github.com/n-takatsu/mcp-rs.git
-cd mcp-rs
-cargo build --release
-```
-
-Then start mcp-rs with a config file. Ready-made config files are in `configs/production/`:
-
-- `claude-desktop.toml`: STDIO, for Claude Desktop and Claude Code. WordPress credentials are read from the `WORDPRESS_URL`, `WORDPRESS_USERNAME`, and `WORDPRESS_PASSWORD` environment variables. To use the OS credential store instead, copy it and change `[handlers.wordpress]` as shown above
-- `web-ui.toml`: HTTP, for web clients
-
-```bash
-./target/release/mcp-rs --config configs/production/claude-desktop.toml
-```
-
-`mcp-rs --version` prints the installed version, and `mcp-rs --help` lists the options (v0.19.1 and later). mcp-rs does not start when it gets an unknown option or `--config` without a path (v0.19.2 and later; v0.19.1 only logged a warning), so check the `args` of the mcp-rs entry in your MCP client's settings if it stops starting.
-
-From an MCP client (for example, ask Claude), call the `mcp_rs_status` tool to see the version, the config file in use, where the log and audit log are written, and the state of each plugin (v0.19.2 and later).
-
-To check a config file without an MCP client, run `mcp-rs check --config <path>` (v0.25.0 and later). It reads the file the same way mcp-rs does when it starts, and shows whether it loads (the line and the reason of an error), whether the WordPress credentials can be read, whether mcp-rs can reach the WordPress site and sign in (read-only requests), and where the log and the audit log are written. It exits with 1 when it finds an error. Passwords, tokens and user names are not shown. Like starting mcp-rs, it creates the log and audit log folders and files if they are missing, and adds a `checked` line to the log file. `--offline` skips the connection to the site. `[database]` and `[[plugins]]` are not checked yet:
-
-```bash
-mcp-rs check --config C:/Users/you/AppData/Roaming/Claude/mcp-rs/mcp-config.toml
-```
-
-To write your own config file instead, start from the minimal example below.
-
-## Basic Configuration
-
-Create `mcp-config.toml`:
-
-```toml
-[transport]
-type = "stdio"          # "http" for HTTP mode (see [transport.http])
-
-[server]
-log_level = "warn"      # Logs go to a file, never to standard output in STDIO mode
-
-[handlers.wordpress]
-enabled = true
-url = "https://your-wordpress-site.com"
-username = "your-username"
-password = "your-application-password"   # WordPress Application Password
-```
-
-Then run `./target/release/mcp-rs --config mcp-config.toml`. To keep the password out of the file, use `keyring = "<name>"` ([OS credential store](https://n-takatsu.github.io/mcp-rs/docs/security/#os-credential-store)), `${WORDPRESS_PASSWORD}`, or [encrypted credentials](https://n-takatsu.github.io/mcp-rs/docs/security/#encrypted-wordpress-credentials). mcp-rs does not start if a `${...}` variable is not set (in `[database]`, it starts without the database tools instead).
-
-- `enabled = true` is required. Without it, mcp-rs does not register the WordPress tools and does not expand `${...}`, with no error
-- Always pass the config file with `--config` and an absolute path, or put it at `~/.config/mcp-rs/config.toml`. A relative path is read from the folder mcp-rs starts in, which for Claude Code is the folder you open, so mcp-rs warns about it at startup. Without `--config`, mcp-rs reads only `~/.config/mcp-rs/config.toml` (v0.24.0 and later). Config files in the current folder (`mcp-config.toml`, `config.toml`, `config/mcp.toml`) are not read without `--config`: clients such as Claude Code start mcp-rs in the folder you open, and a config file there could otherwise run commands (`[[plugins]]`) or send your credentials to another site. Up to v0.23.0, mcp-rs read them
-- With `--config`, the credentials come only from the config file: `WORDPRESS_URL`, `WORDPRESS_USERNAME`, and `WORDPRESS_PASSWORD` are read only through `${...}`. Without `--config` (`~/.config/mcp-rs/config.toml`), mcp-rs also reads them directly when `WORDPRESS_URL` is set, and they override the file (except with `keyring`)
-- In Docker and HTTP mode on a server, there is no OS credential store; use `${...}` or encrypted credentials as before
-
-### HTTP TLS/mTLS Configuration (Optional)
-
-When using HTTP transport with TLS and client certificate authentication (mTLS), set:
-
-```toml
-[transport]
-transport_type = "http"
-
-[transport.http]
-addr = "127.0.0.1"
-port = 8080
-tls_enabled = true
-tls_cert_path = "./certs/server.crt"
-tls_key_path = "./certs/server.key"
-mtls_enabled = true
-mtls_ca_cert_path = "./certs/ca.crt"
-enforce_https = true
-min_tls_version = "1.3"
-hsts_enabled = true
-```
-
-Notes:
-
-- `mtls_enabled = true` requires `tls_enabled = true`
-- `mtls_enabled = true` requires `mtls_ca_cert_path`
-- Clients without a valid certificate signed by the configured CA are rejected at TLS handshake
-
-### WebSocket
-
-WebSocket is not a separate transport. In HTTP mode, set `enable_websocket_upgrade = true` to also accept MCP requests on `/ws`:
-
-```toml
-[transport]
-transport_type = "http"
-
-[transport.http]
-enable_websocket_upgrade = true
-```
-
-### Log Files
-
-mcp-rs writes its log to the first of these folders that it can write to:
-
-1. `logs` in the folder of the `mcp-rs` executable (for example, where you extracted the zip)
-2. The user folder: `%USERPROFILE%\.mcp-rs\logs` on Windows, `$XDG_STATE_HOME/mcp-rs/logs` or `~/.local/state/mcp-rs/logs` elsewhere. When mcp-rs is installed in `C:\Program Files\MCP-rs`, the log is always here
-3. `logs` in the current folder, then, on Windows only, `mcp-rs/logs` in the temporary folder (`%TEMP%` is per user there; the shared `/tmp` of other systems is not used, v0.24.0 and later)
-
-On Linux and macOS, new log folders are created readable by you only (700) and new log files 600, like the audit log, and mcp-rs does not follow a symbolic link in place of a log file.
-
-The `mcp_rs_status` tool shows the log file in use. It says `fallback` only when mcp-rs could not write to 1 or 2.
-
-The file name ends with the date, such as `mcp-rs.log.2026-11-09`, and a new file starts at midnight local time. The date in the file name and the times inside the log are both in local time (older versions used the UTC date in the file name). When a running mcp-rs moves to the next day's file, the new file starts with a line such as `=== mcp-rs … continued at … / pid … / instance … / log: … ===`, so each file shows which process wrote it. When two processes are running (see below), the new file gets one such line from each, with different `instance` values.
-
-Claude Desktop may start two mcp-rs processes for one entry in `claude_desktop_config.json`. This is how Claude Desktop works, not a problem with your mcp-rs settings. Both processes write to the same log file, so the log can look doubled:
-
-- Each line has the process ID (`[pid …]`), so you can tell the two processes apart
-- Each process writes its own startup line (`=== mcp-rs … started at … / pid … / instance … / log: … ===`). Windows reuses process IDs, so the same `pid` can belong to a different process after a restart. Read `[pid …]` together with the latest startup line above it. The startup line also has `instance` (the process ID and start time), which the audit log records with every tool call, so you can match the two logs
-- Startup messages, such as the WordPress connection check, appear once per process. Seeing them twice is normal
-
-The audit log (who called which tool) is written next to the logs, to `%USERPROFILE%\.mcp-rs\audit\audit.log` on Windows (`$XDG_STATE_HOME/mcp-rs/audit` or `~/.local/state/mcp-rs/audit` elsewhere). `[audit] file_path` changes it. Up to version 0.21.0, it was `audit.log` in the config file's folder; that file is left where it is. See [Security](https://n-takatsu.github.io/mcp-rs/docs/security/#audit-log).
+The [Getting Started guide](https://n-takatsu.github.io/mcp-rs/docs/guides/) covers the rest: reading the install script before running it, installing by hand or building from source, setting up each client by hand, the config file, where the logs are, and what to check when a client cannot find the tools.
 
 ## 🏗️ Architecture
 
@@ -324,8 +111,9 @@ The audit log (who called which tool) is written next to the logs, to `%USERPROF
 
 The documentation site is at [n-takatsu.github.io/mcp-rs](https://n-takatsu.github.io/mcp-rs/docs/):
 
+- [Getting Started](https://n-takatsu.github.io/mcp-rs/docs/guides/) (installing, setting up each client, log files)
 - [WordPress](https://n-takatsu.github.io/mcp-rs/docs/wordpress/)
-- [Database (PostgreSQL)](https://n-takatsu.github.io/mcp-rs/docs/database/)
+- [Database (PostgreSQL, MySQL, MariaDB)](https://n-takatsu.github.io/mcp-rs/docs/database/)
 - [Plugins](https://n-takatsu.github.io/mcp-rs/docs/plugins/)
 - [Security](https://n-takatsu.github.io/mcp-rs/docs/security/) (HTTP authentication, tool limits, TLS, audit log)
 - [API Reference](https://n-takatsu.github.io/mcp-rs/docs/api/) (`mcp_rs_status` and the MCP methods)

@@ -83,10 +83,17 @@ See [Database Integration](docs/database/) for the settings.
 
 ## Current Status
 
-## ✅ Recently Completed (v0.25.0)
+## ✅ Recently Completed (v0.26.0)
+
+- **⚡ Install Script**: One command installs mcp-rs on Windows, macOS (Apple Silicon), and Linux (x64): it downloads the latest release, checks its SHA256, and puts mcp-rs in `~/.mcp-rs/bin`, without administrator rights. See [Getting Started](docs/guides/#install-script)
+- **🧭 `mcp-rs init`**: Sets up mcp-rs by asking a few questions: the WordPress credentials (kept in the OS credential store), the config file, a check of the connection and sign-in, and registering mcp-rs with Claude Desktop, Claude Code, and GitHub Copilot (VS Code). See [Getting Started](docs/guides/#mcp-rs-init)
+- **🔒 MySQL and MariaDB `sql_mode`**: mcp-rs now removes `NO_BACKSLASH_ESCAPES` and `ANSI_QUOTES` from its sessions, so a server with these modes cannot make the SQL check read strings differently from the database. See [Database Integration](docs/database/)
+- **📘 Getting Started**: The README now has a three-step quick start, and the [Getting Started](docs/guides/) guide covers installing by hand, setting up each client, and the log files
+
+## ✅ v0.25.0
 
 - **🐬 MySQL and MariaDB**: `[database]` now also connects to MySQL (`engine = "mysql"`, 8.0 or later) and MariaDB (`engine = "mariadb"`, 10.6 or later), with the same tools and limits as PostgreSQL: read-only by default, `?` parameters, time, row and size limits, and TLS. See [Database Integration](docs/database/)
-- **📦 Ready-Built Files**: Each release now has mcp-rs for Windows (x64), macOS (Apple Silicon), and Linux (x64), with SHA256 checksums, so Rust is not needed. See the [README](https://github.com/n-takatsu/mcp-rs#download)
+- **📦 Ready-Built Files**: Each release now has mcp-rs for Windows (x64), macOS (Apple Silicon), and Linux (x64), with SHA256 checksums, so Rust is not needed. See [Getting Started](docs/guides/#install)
 - **🩺 `mcp-rs check`**: Checks a config file without an MCP client: whether it loads, whether the WordPress credentials can be read, and whether mcp-rs can reach the site and sign in
 - **🧩 VS Code (GitHub Copilot)**: How to use mcp-rs from the Copilot chat in VS Code
 

@@ -4,6 +4,61 @@
 
 Our project follows a detailed 0.01 increment versioning strategy to provide granular tracking of development progress and feature implementation.
 
+## 🧭 v0.26.0 - インストールスクリプトとmcp-rs init
+
+**Release Date:** 2026-11-17
+**Focus:** 導入を簡単にする（ROADMAPの「導入を簡単にする」の1〜3）。1行で入れるインストールスクリプトと、質問に答えて設定する`mcp-rs init`を足す。MySQL・MariaDBの`sql_mode`による、SQLの検査のすり抜けを直す
+
+### ⚡ インストールスクリプト（#576）
+
+- Windows: `irm https://raw.githubusercontent.com/n-takatsu/mcp-rs/main/install/install.ps1 | iex`
+- macOS（Apple Silicon）・Linux（x64）:
+  `curl -fsSL https://raw.githubusercontent.com/n-takatsu/mcp-rs/main/install/install.sh | sh`
+- 最新（または`MCP_RS_VERSION`の版）のリリースをダウンロードし、SHA256を
+  確かめ、動くことを確かめてから`~/.mcp-rs/bin`に置く。管理者の権限は
+  要らず、PATH等は変えない。最後に`mcp-rs init`を動かすかを聞く
+- Windowsでは、クライアントが動かしているmcp-rsがあっても更新できる
+- CIで、3つのOS（Windows PowerShell 5.1・PowerShell 7を含む）に実際の
+  リリースを入れて確かめる
+
+### 🧭 mcp-rs init（#575）
+
+- WordPressのサイトのURL・ユーザー名・アプリケーションパスワードを聞いて
+  OSの資格情報ストアに入れ、設定ファイル（`~/.config/mcp-rs/config.toml`）を
+  書き、`mcp-rs check`と同じ確認をする。サインインが失敗したら、その場で
+  入れ直せる
+- Claude Desktop（設定ファイルに足す）・Claude Code・GitHub Copilot（VS Code）
+  に登録する。1つずつ確かめてから行い、置き換えるファイルは控えを残す
+- 別の名前でmcp-rsを起動する登録（手で登録したもの等）があれば、消すかを
+  聞く。同じ設定ファイルのものは既定で消し、別の設定ファイルのものは既定で
+  残す
+- 最初の版は、WordPressだけを聞く（`[database]`は後で足す）
+
+### 🔒 MySQL・MariaDBの`sql_mode`（#574）
+
+- サーバーの`sql_mode`に`NO_BACKSLASH_ESCAPES`か`ANSI_QUOTES`（`ANSI`等にも
+  含まれる）があると、SQLの検査とサーバーで文字列の区切りが食い違い、
+  `SELECT … INTO OUTFILE`や`/*M! … */`の拒否をすり抜けられた。既定の設定
+  では起きない
+- mcp-rsの接続では、これらのモードを外す（ほかのモードは残す）。そのため、
+  mcp-rsの接続では`"…"`は文字列になる。名前は`` `…` ``で囲む
+
+### 🔧 修正・そのほか
+
+- `mcp-rs check`と`wordpress_health_check`で、サインインが失敗したのに、
+  権限とメディアが「OK」と出ていた
+- READMEの導入手順を3段に短くし、手で入れる手順・クライアントごとの設定・
+  ログファイルは、サイトの[Getting Started](https://n-takatsu.github.io/mcp-rs/docs/guides/)
+  に移した（#577）
+- `serde_json`の`preserve_order`を有効にした。mcp-rsが返すJSONのキーは、
+  作った順になる（ライブラリとして使うときの`serde_json::Map`の順番も変わる）
+
+### 互換性
+
+- 設定ファイル・ツールに、互換性のない変更は無い
+- MySQL・MariaDBで、サーバーが`ANSI_QUOTES`のとき、`"…"`を名前として書いた
+  SQLは、mcp-rsでは文字列として読まれる
+
 ## 🐬 v0.25.0 - MySQL・MariaDBと、ビルド済みのmcp-rs
 
 **Release Date:** 2026-11-17
