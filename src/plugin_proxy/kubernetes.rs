@@ -561,6 +561,7 @@ mod tests {
             call_timeout_seconds: None,
             max_response_bytes: None,
             rate_limit: None,
+            trust_annotations: None,
         }
     }
 

@@ -708,6 +708,8 @@ pub struct PluginHandler {
     audit_logger: Arc<AuditLogger>,
     /// 起動の仕方（`process`・`container`・`kubernetes`、#434の状態表示用）
     runtime: &'static str,
+    /// ツールの「読み取りだけ」の印を、`@read_only`に使うか（#595）
+    trust_annotations: bool,
 }
 
 impl PluginHandler {
@@ -936,6 +938,7 @@ impl PluginHandler {
             max_response_bytes,
             rate_limiter: RateLimiter::new(config.rate_limit.clone().unwrap_or_default()),
             audit_logger,
+            trust_annotations: config.trust_annotations.unwrap_or(false),
             runtime: if config.container.is_some() {
                 "container"
             } else if config.kubernetes.is_some() {
@@ -1079,6 +1082,10 @@ impl McpHandler for PluginHandler {
     async fn list_tools(&self) -> Result<Vec<Tool>, McpError> {
         // 異常終了した後も一覧には残し、呼び出し時に理由を返す
         Ok(self.tools.clone())
+    }
+
+    fn trusts_read_only_hints(&self) -> bool {
+        self.trust_annotations
     }
 
     async fn call_tool(&self, params: ToolCallParams) -> Result<Value, McpError> {
@@ -1299,6 +1306,7 @@ mod tests {
             call_timeout_seconds: Some(10),
             max_response_bytes: Some(4096),
             rate_limit: None,
+            trust_annotations: None,
         }
     }
 

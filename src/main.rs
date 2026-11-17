@@ -254,6 +254,9 @@ async fn build_server(
         audit_logger.clone(),
     )
     .await;
+    if http_mode {
+        warn_untrusted_read_only_plugins(config, &plugins).await;
+    }
     for (name, handler) in plugins {
         server.add_handler(format!("plugin:{}", name), handler);
     }
@@ -268,6 +271,51 @@ async fn build_server(
     });
 
     Ok(server)
+}
+
+/// `@read_only`の制限を書いたのに、`trust_annotations`の無いプラグインが
+/// 「読み取りだけ」の印のツールを持つとき、ログに書く（PR #604のレビュー）。
+/// v0.27.0から、そのツールは`@read_only`に含めないので、気づかずに
+/// ツールが見えなくならないように
+async fn warn_untrusted_read_only_plugins(
+    config: &McpConfig,
+    plugins: &[(String, Arc<mcp_rs::plugin_proxy::PluginHandler>)],
+) {
+    use mcp_rs::mcp::McpHandler;
+    let Some(http) = &config.transport.http else {
+        return;
+    };
+    if !http.uses_tool_preset(mcp_rs::mcp::READ_ONLY_PRESET) {
+        return;
+    }
+    for (name, handler) in plugins {
+        if handler.trusts_read_only_hints() {
+            continue;
+        }
+        let marked = handler
+            .list_tools()
+            .await
+            .map(|tools| {
+                tools
+                    .iter()
+                    .filter(|tool| {
+                        tool.annotations
+                            .as_ref()
+                            .and_then(|a| a.read_only_hint)
+                            .unwrap_or(false)
+                    })
+                    .count()
+            })
+            .unwrap_or(0);
+        if marked > 0 {
+            tracing::warn!(
+                "Plugin '{}' marks {} tool(s) as read-only, but API keys and OAuth scopes limited to {} do not get them, because trust_annotations is not set for this plugin (v0.27.0 and later). After checking its tools, set trust_annotations = true in its [[plugins]] section, or allow them by name",
+                name,
+                marked,
+                mcp_rs::mcp::READ_ONLY_PRESET
+            );
+        }
+    }
 }
 
 /// `[database]`のハンドラーを登録する（#453）。失敗の理由を返す

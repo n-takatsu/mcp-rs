@@ -33,6 +33,30 @@ pub trait McpHandler: Send + Sync {
     fn resource_tool(&self, _uri: &str) -> Option<String> {
         None
     }
+
+    /// このハンドラーのツールの「読み取りだけ」の印（`readOnlyHint`）を、
+    /// APIキー・トークンの`@read_only`の判定に使ってよいか（#595）。
+    /// mcp-rs自身のハンドラーは`true`（既定）。外部のプラグインは、設定で
+    /// 信じると書いたときだけ`true`
+    fn trusts_read_only_hints(&self) -> bool {
+        true
+    }
+}
+
+/// 呼び出し元の制限（`@read_only`等）を当てはめるときに見る、ツールの形
+/// （#595）。印を信じないハンドラーのツールからは、「読み取りだけ」の印を
+/// 外す。AIのクライアントに返す一覧は、この形ではなく元のまま
+fn tool_for_access(tool: &Tool, trusted: bool) -> std::borrow::Cow<'_, Tool> {
+    match &tool.annotations {
+        Some(annotations) if !trusted && annotations.read_only_hint.is_some() => {
+            let mut tool = tool.clone();
+            if let Some(annotations) = tool.annotations.as_mut() {
+                annotations.read_only_hint = None;
+            }
+            std::borrow::Cow::Owned(tool)
+        }
+        _ => std::borrow::Cow::Borrowed(tool),
+    }
 }
 
 /// 登録されたハンドラーの一覧（登録順）。ツール名の重複時に、どちらが
@@ -347,7 +371,18 @@ impl McpServer {
             }
             "tools/list" => {
                 let mut tools = Self::list_all_tools(handlers).await;
-                tools.retain(|tool| caller.access.allows(tool));
+                if caller.access != crate::mcp::ToolAccess::All {
+                    // 制限は、印を信じないハンドラーの印を外した形で判定する
+                    // （#595）。返す一覧は元のまま
+                    let allowed: std::collections::HashSet<String> =
+                        Self::list_access_tools(handlers)
+                            .await
+                            .into_iter()
+                            .filter(|tool| caller.access.allows(tool))
+                            .map(|tool| tool.name)
+                            .collect();
+                    tools.retain(|tool| allowed.contains(&tool.name));
+                }
                 Ok(tools_list_for_version(
                     version,
                     serde_json::json!({ "tools": tools }),
@@ -468,7 +503,7 @@ impl McpServer {
         if caller.access == crate::mcp::ToolAccess::All {
             return true;
         }
-        Self::list_all_tools(handlers)
+        Self::list_access_tools(handlers)
             .await
             .iter()
             .find(|tool| tool.name == name)
@@ -551,22 +586,42 @@ impl McpServer {
     /// 一覧を取得できないハンドラーは警告を出して飛ばす。
     /// 先頭は、本体の`mcp_rs_status`（#434）。
     async fn list_all_tools(handlers: &[(String, Arc<dyn McpHandler>)]) -> Vec<Tool> {
+        Self::collect_tools(handlers, false).await
+    }
+
+    /// `list_all_tools`と同じ一覧を、呼び出し元の制限を当てはめる形
+    /// （`tool_for_access`）で返す（#595）
+    async fn list_access_tools(handlers: &[(String, Arc<dyn McpHandler>)]) -> Vec<Tool> {
+        Self::collect_tools(handlers, true).await
+    }
+
+    async fn collect_tools(
+        handlers: &[(String, Arc<dyn McpHandler>)],
+        for_access: bool,
+    ) -> Vec<Tool> {
         let mut tools: Vec<Tool> = vec![crate::mcp::status_tool()];
         for (name, handler) in handlers {
+            let trusted = !for_access || handler.trusts_read_only_hints();
             match handler.list_tools().await {
                 Ok(handler_tools) => {
                     for tool in handler_tools {
                         if tools.iter().any(|t| t.name == tool.name) {
-                            warn!(
-                                "Tool '{}' from handler '{}' is hidden: another handler registered earlier provides a tool with the same name",
-                                tool.name, name
-                            );
+                            if !for_access {
+                                warn!(
+                                    "Tool '{}' from handler '{}' is hidden: another handler registered earlier provides a tool with the same name",
+                                    tool.name, name
+                                );
+                            }
                         } else {
-                            tools.push(tool);
+                            tools.push(tool_for_access(&tool, trusted).into_owned());
                         }
                     }
                 }
-                Err(e) => warn!("Failed to list tools from handler '{}': {}", name, e),
+                Err(e) => {
+                    if !for_access {
+                        warn!("Failed to list tools from handler '{}': {}", name, e)
+                    }
+                }
             }
         }
         tools
@@ -600,11 +655,12 @@ impl McpServer {
         let Some(tool_name) = handler.resource_tool(uri) else {
             return false;
         };
+        let trusted = handler.trusts_read_only_hints();
         match handler.list_tools().await {
             Ok(tools) => tools
                 .iter()
                 .find(|tool| tool.name == tool_name)
-                .is_some_and(|tool| caller.access.allows(tool)),
+                .is_some_and(|tool| caller.access.allows(&tool_for_access(tool, trusted))),
             Err(_) => false,
         }
     }
@@ -1482,9 +1538,20 @@ mod tests {
     /// `get_post`（読み取り専用）と`delete_post`（読み取り専用でない）を持つ
     /// ハンドラー（#52）
     fn handlers_with_annotated_tools() -> Handlers {
-        struct Annotated;
+        handlers_with_annotated_tools_trusting(true)
+    }
+
+    /// `handlers_with_annotated_tools`と同じ。`trusted`が`false`のときは、
+    /// 外部のプラグインのように、印を信じないハンドラーにする（#595）
+    fn handlers_with_annotated_tools_trusting(trusted: bool) -> Handlers {
+        struct Annotated {
+            trusted: bool,
+        }
         #[async_trait]
         impl McpHandler for Annotated {
+            fn trusts_read_only_hints(&self) -> bool {
+                self.trusted
+            }
             async fn initialize(
                 &self,
                 _params: InitializeParams,
@@ -1522,7 +1589,98 @@ mod tests {
                 Ok(serde_json::json!({}))
             }
         }
-        vec![("a".to_string(), Arc::new(Annotated))]
+        vec![("a".to_string(), Arc::new(Annotated { trusted }))]
+    }
+
+    /// 印を信じないハンドラー（外部のプラグイン）のツールは、`@read_only`に
+    /// 含めない。一覧に返す印は元のまま（#595）
+    #[tokio::test]
+    async fn test_read_only_preset_ignores_untrusted_hints() {
+        let mut server = McpServer::new();
+        for (name, handler) in handlers_with_annotated_tools_trusting(false) {
+            server.add_handler(name, handler);
+        }
+        let dispatcher = server.dispatcher();
+        let send = |method: &str, params: serde_json::Value| {
+            serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params })
+                .to_string()
+        };
+        // annotationsは2025-03-26以降の版の項目なので、新しい版で始める
+        dispatcher
+            .handle_message_as(
+                &send(
+                    "initialize",
+                    serde_json::json!({
+                        "protocolVersion": "2025-11-25",
+                        "capabilities": {},
+                        "clientInfo": { "name": "c", "version": "1" }
+                    }),
+                ),
+                &Caller::default(),
+            )
+            .await
+            .unwrap();
+        let reader = Caller::new(
+            "api_key:reader",
+            crate::mcp::ToolAccess::from_patterns(Some(&["@read_only".to_string()])).unwrap(),
+        );
+        let list = |caller: Caller| {
+            let dispatcher = &dispatcher;
+            let message = send("tools/list", serde_json::json!({}));
+            async move {
+                dispatcher
+                    .handle_message_as(&message, &caller)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .result
+                    .unwrap()["tools"]
+                    .clone()
+            }
+        };
+        let names = |tools: &serde_json::Value| -> Vec<String> {
+            tools
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|t| t["name"].as_str().unwrap().to_string())
+                .collect()
+        };
+        // 印を信じないので、get_postは@read_onlyに含まれない
+        assert_eq!(names(&list(reader.clone()).await), vec!["mcp_rs_status"]);
+        let denied = dispatcher
+            .handle_message_as(
+                &send(
+                    "tools/call",
+                    serde_json::json!({ "name": "get_post", "arguments": {} }),
+                ),
+                &reader,
+            )
+            .await
+            .unwrap()
+            .unwrap()
+            .result
+            .unwrap();
+        assert_eq!(denied["isError"], serde_json::json!(true));
+
+        // 名前で許せば使える。返す一覧の印は、元のまま（readOnlyHint: true）
+        let by_name = Caller::new(
+            "api_key:named",
+            crate::mcp::ToolAccess::from_patterns(Some(&["get_post".to_string()])).unwrap(),
+        );
+        let tools = list(by_name).await;
+        assert_eq!(names(&tools), vec!["get_post"]);
+        assert_eq!(
+            tools[0]["annotations"]["readOnlyHint"],
+            serde_json::json!(true)
+        );
+
+        // 制限の無い呼び出し元（STDIO等）には、すべてを元の印のまま返す
+        let all = list(Caller::default()).await;
+        assert_eq!(
+            names(&all),
+            vec!["mcp_rs_status", "get_post", "delete_post"]
+        );
     }
 
     #[tokio::test]
