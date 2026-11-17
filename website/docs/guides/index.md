@@ -103,7 +103,7 @@ The executable is `target/release/mcp-rs` (`mcp-rs.exe` on Windows). The default
 From v0.26.0, `mcp-rs init` asks a few questions in a terminal and does the rest:
 
 1. The WordPress site URL (`https://` only), username and Application Password. They are kept in the OS credential store (Windows Credential Manager, macOS Keychain, Secret Service on Linux), never in the config file. The password is not shown while typing
-2. It writes the config file, `~/.config/mcp-rs/config.toml`, which mcp-rs also reads without `--config`. `--config <path>` writes another file. It asks before replacing a file, and keeps a backup copy
+2. It writes the config file, `~/.config/mcp-rs/config.toml`, which mcp-rs also reads without `--config`. `--config <path>` writes another file. It asks before replacing a file, and keeps a backup copy (when the backup has a password in plain text, it offers to delete it). On macOS and Linux, the file and its folder are readable by you only
 3. It checks the config file like [`mcp-rs check`](#check): it connects to the site and signs in. If the sign-in fails, it asks for the username and the Application Password again
 4. It registers mcp-rs with Claude Desktop, Claude Code and GitHub Copilot (VS Code), asking for each one. For the ones you skip, or whose command is not found, it prints the command or the settings to add yourself
 
@@ -111,7 +111,9 @@ From v0.26.0, `mcp-rs init` asks a few questions in a terminal and does the rest
 ~/.mcp-rs/bin/mcp-rs init        # Windows: & "$env:USERPROFILE\.mcp-rs\bin\mcp-rs.exe" init
 ```
 
-If a client already starts mcp-rs under another name (for example `mcp-rs-wordpress`, registered by hand), `init` offers to remove that one, so that the same tools do not appear twice. One that uses the same config file is removed unless you answer n; one that uses another config file (such as for a second site) is kept unless you answer y.
+If a client already starts mcp-rs with another config file (for example one you registered by hand), and no client uses the new config file yet, `init` asks whether that is the setup the new config file replaces (answer n for one you keep, such as for another site). If it is, `init` lists what that file has and a new config file for WordPress would not, such as `[[plugins]]`, `[database]`, `upload_allowed_dirs`, or `[audit]` (v0.27.0 and later). You choose to copy those settings into the new config file (the default; the WordPress username and password go to the OS credential store, not the file), to keep using that config file as it is, or to leave them out. When that file has a password in plain text, `init` reminds you at the end to delete it or remove the password. When the new mcp-rs is in another folder than the one you used before, `init` also shows where the log is now written: mcp-rs writes it next to its executable when it can.
+
+If a client already starts mcp-rs under another name (for example `mcp-rs-wordpress`, registered by hand), `init` offers to remove that one, so that the same tools do not appear twice. One that uses the same config file, or the config file you just replaced, is removed unless you answer n; one that uses another config file (such as for a second site) is kept unless you answer y.
 
 At the end, `init` shows how to restart each client. Then ask the client to call `mcp_rs_status` (see [Check](#check)).
 
