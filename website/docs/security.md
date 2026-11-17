@@ -172,6 +172,7 @@ Limits (v0.24.0 and later):
 # websocket_idle_timeout_seconds = 300  # close /ws when the client stops answering for this long. 0: no limit
 ```
 
+- A connection with no request in progress for `request_timeout_seconds` is closed, over HTTP/1.1 and HTTP/2 alike (v0.27.0 and later). Up to v0.26.0, an HTTP/2 connection that answered pings but sent no request, or a connection that sent nothing at all, stayed open, so clients could fill `max_connections` without authenticating. A tool call that takes longer, or a large response being sent, does not count as idle
 - `request_timeout_seconds` limits the TLS handshake and the request headers as a whole. It also limits how long a kept-alive connection waits for its next request. For the request body, it limits each wait for more data, not the total: a client that keeps sending a little at a time can take longer in total. This applies only after the client has passed the checks above. It does not limit how long a tool call takes
 - On `/ws`, mcp-rs sends a ping every 30 seconds (or every half of `websocket_idle_timeout_seconds`, when that is shorter). Clients, browsers included, answer pings automatically, and the answers count as activity. So a client that is only quiet stays connected, and only a connection that answers nothing for `websocket_idle_timeout_seconds` is closed (close code 1001)
 - A `/ws` connection opened with an OAuth access token is closed when the token expires (`exp`, plus `leeway_seconds`), with close code 1008. Up to v0.23.0, the token was checked only when connecting

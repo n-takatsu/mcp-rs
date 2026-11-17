@@ -14,6 +14,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- HTTPモードで、処理中のリクエストが無いまま`request_timeout_seconds`
+  （既定30秒）が過ぎた接続を閉じるようにした（#592）。HTTP/2には、
+  HTTP/1.1のヘッダーを待つ時間の上限にあたるものが無く、pingに答えるだけで
+  リクエストを送らない接続や、何も送らない接続が、いつまでも残った。その
+  ため、認証無しで`max_connections`（既定1024）を埋め、ほかのクライアントを
+  つなげなくできた。時間のかかるツールの呼び出しや、大きな応答の送信中は
+  閉じない
 - HTTPモードで、APIキー・トークンの`@read_only`は、プラグインのツールを
   既定で含めないようにした（#595）。印（`readOnlyHint`）はプラグイン自身が
   付けるので、書き込むツールに付いていても、mcp-rsには分からないため。
