@@ -106,6 +106,15 @@ pub async fn render_status(
     if let Some(name) = &caller.name {
         lines.push(format!("Caller: {}", name));
     }
+    // 使えるツールを制限した呼び出し元には、設定ファイル・ログの場所、
+    // ほかのハンドラー・プラグインの状態（失敗の理由）を見せない（#596）
+    if caller.access != crate::mcp::ToolAccess::All {
+        lines.push(
+            "Other details (the config file, the logs, and the handlers) are shown only to callers that may use every tool."
+                .to_string(),
+        );
+        return lines.join("\n");
+    }
     lines.push(format!(
         "Config file: {}",
         info.config_file
@@ -213,6 +222,18 @@ mod tests {
             ..info
         };
         let text = render_status(&stdio, "2024-11-05", &Caller::unrestricted(), None, &[]).await;
+
+        // 使えるツールを制限した呼び出し元には、設定ファイル等を見せない（#596）
+        let restricted = Caller::new(
+            "api_key:reader",
+            crate::mcp::ToolAccess::from_patterns(Some(&["@read_only".to_string()])).unwrap(),
+        );
+        let limited = render_status(&stdio, "2024-11-05", &restricted, None, &[]).await;
+        assert!(limited.contains("Caller: api_key:reader"), "{limited}");
+        assert!(!limited.contains("Config file"), "{limited}");
+        assert!(!limited.contains("Log:"), "{limited}");
+        assert!(!limited.contains("Handlers"), "{limited}");
+        assert!(limited.contains("shown only to callers that may use every tool"));
         assert!(text.contains("Mode: stdio"), "{}", text);
         assert!(text.contains("Protocol version: 2024-11-05"), "{}", text);
         assert!(!text.contains("Caller:"), "{}", text);

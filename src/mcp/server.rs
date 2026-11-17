@@ -503,11 +503,14 @@ impl McpServer {
         if caller.access == crate::mcp::ToolAccess::All {
             return true;
         }
+        // 一覧に無いツールは、許さない（#596）。以前は許していたので、
+        // 一覧を返せなかったハンドラーのツールを、制限を越えて呼べる
+        // 余地があった
         Self::list_access_tools(handlers)
             .await
             .iter()
             .find(|tool| tool.name == name)
-            .is_none_or(|tool| caller.access.allows(tool))
+            .is_some_and(|tool| caller.access.allows(tool))
     }
 
     /// 拒否したツールの呼び出し・リソースの読み取りを、監査ログとログに
@@ -1755,7 +1758,9 @@ mod tests {
         assert_eq!(entry.user_id.as_deref(), Some("api_key:reader"));
         assert_eq!(entry.result.as_deref(), Some("DENIED"));
 
-        // 無いツールは、これまでどおり「ツールが無い」
+        // 一覧に無いツールは、制限のある呼び出し元には「許可されていない」
+        // （#596）。一覧を返せなかったハンドラーのツールを、制限を越えて
+        // 呼ばせない。どのツールがあるかも知らせない
         let missing = dispatcher
             .handle_message_as(&call("no_such_tool"), &caller)
             .await
@@ -1763,11 +1768,8 @@ mod tests {
             .unwrap()
             .result
             .unwrap();
+        assert_eq!(missing["isError"], serde_json::json!(true));
         assert!(missing["content"][0]["text"]
-            .as_str()
-            .unwrap()
-            .contains("no_such_tool"));
-        assert!(!missing["content"][0]["text"]
             .as_str()
             .unwrap()
             .contains("not allowed"));

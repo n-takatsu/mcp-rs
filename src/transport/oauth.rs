@@ -372,7 +372,9 @@ impl OAuthValidator {
             .and_then(|cached| select_key(&cached.keys, kid, alg))
             .ok_or_else(|| {
                 TokenError::Invalid(match kid {
-                    Some(kid) => format!("no signing key with kid '{}'", kid),
+                    // 署名を確かめる前のヘッダーの値なので、改行等を
+                    // エスケープし、長さを切ってから書く（#596）
+                    Some(kid) => format!("no signing key with kid {}", value_for_log(kid)),
                     None => "no matching signing key".to_string(),
                 })
             })
@@ -512,6 +514,16 @@ fn parse_jwks(jwks: &Value) -> Vec<Jwk> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// 呼び出し元が決める値を、ログ・監査ログに書く形にする（#596）。
+/// 制御文字・改行をエスケープし（`{:?}`）、64文字で切る
+pub fn value_for_log(value: &str) -> String {
+    const MAX_CHARS: usize = 64;
+    match value.char_indices().nth(MAX_CHARS) {
+        Some((cut, _)) => format!("{:?}...", &value[..cut]),
+        None => format!("{:?}", value),
+    }
 }
 
 /// トークンのヘッダー（`kid`・`alg`）に合う鍵を選ぶ。`kid`が無い場合は、
@@ -763,6 +775,26 @@ pub(crate) mod test_support {
             header.kid = Some(self.kid.clone());
             encode(&header, claims, &key).unwrap()
         }
+    }
+}
+
+#[cfg(test)]
+mod value_for_log_tests {
+    use super::value_for_log;
+
+    /// 改行等はエスケープし、長さを切る（#596）
+    #[test]
+    fn test_value_for_log() {
+        assert_eq!(value_for_log("key-1"), "\"key-1\"");
+        let forged = value_for_log("x'\n2026-11-17 INFO forged line");
+        assert!(!forged.contains('\n'), "{forged}");
+        assert!(forged.contains("\\n"), "{forged}");
+        let long = value_for_log(&"a".repeat(1000));
+        assert!(long.len() < 80, "{long}");
+        assert!(long.ends_with("..."), "{long}");
+        // 文字の境目で切る
+        let japanese = value_for_log(&"鍵".repeat(100));
+        assert!(japanese.ends_with("..."), "{japanese}");
     }
 }
 

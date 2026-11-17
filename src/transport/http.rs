@@ -197,7 +197,9 @@ pub struct HttpConfig {
     pub allowed_origins: Vec<String>,
     /// Maximum number of TCP connections served at the same time (#540).
     /// Further connections wait in the operating system's queue until one
-    /// closes. Includes WebSocket connections.
+    /// closes. A `/ws` connection counts only until its upgrade: after that,
+    /// it is limited by `websocket_max_connections` instead (#596; this
+    /// comment used to say WebSocket connections were included).
     #[serde(default = "default_max_connections")]
     pub max_connections: usize,
     /// Close a `/ws` connection when nothing, not even an answer to the
@@ -581,6 +583,9 @@ impl std::fmt::Debug for RequestHandlerSlot {
     }
 }
 
+/// これより短いAPIキーは、起動時に警告する（#596）
+const MIN_RECOMMENDED_API_KEY_CHARS: usize = 16;
+
 /// Shared state for HTTP transport
 #[derive(Clone)]
 struct HttpTransportState {
@@ -624,6 +629,8 @@ struct HttpTransportState {
     websocket_idle_timeout: Option<std::time::Duration>,
     /// 認証の失敗を監査ログに書く数の制限（#540）
     auth_failure_audit: Arc<AuthFailureAuditLimiter>,
+    /// アドレスごとの認証の失敗の数（#596）
+    auth_failures: Arc<AuthFailureLimiter>,
 }
 
 /// 認証を通った呼び出し元（#540）。本文を読む前のミドルウェアで決め、
@@ -849,6 +856,16 @@ impl HttpTransport {
                 )));
             }
 
+            // 短いキーは、当て推量で当たりやすい（#596）。起動は止めずに警告する
+            for entry in &self.config.api_keys {
+                if entry.key.chars().count() < MIN_RECOMMENDED_API_KEY_CHARS {
+                    warn!(
+                        "API key '{}' is shorter than {} characters, so it is easier to guess. Use a long random key, for example: openssl rand -hex 32",
+                        entry.name, MIN_RECOMMENDED_API_KEY_CHARS
+                    );
+                }
+            }
+
             // Two entries sharing a `key` would otherwise import silently
             // (the later one overwriting the earlier one in the manager's
             // hash-keyed storage), misattributing that key's usage to
@@ -1010,6 +1027,12 @@ impl HttpTransport {
             websocket_idle_timeout: (self.config.websocket_idle_timeout_secs > 0)
                 .then(|| std::time::Duration::from_secs(self.config.websocket_idle_timeout_secs)),
             auth_failure_audit: Arc::new(AuthFailureAuditLimiter::new()),
+            // 1分に20回失敗したアドレスは、その1分の残りを断る（#596）
+            auth_failures: Arc::new(AuthFailureLimiter::new(
+                20,
+                std::time::Duration::from_secs(60),
+                10_000,
+            )),
         };
         // IDSの古い記録を、5分ごとに消す（#543）。以前は、掃除の関数が
         // あっても、どこからも呼ばれていなかった。サーバーが無くなったら
@@ -2010,16 +2033,11 @@ async fn check_auth(
         } else {
             "invalid, revoked, or expired API key"
         };
-        warn!("Rejected request from {} due to {}", remote_addr, reason);
         audit_auth_failure(state, remote_addr, reason).await;
         return Err(Box::new(StatusCode::UNAUTHORIZED.into_response()));
     };
 
     let Some(token) = extract_bearer_token(headers) else {
-        warn!(
-            "Rejected request from {} due to missing access token",
-            remote_addr
-        );
         audit_auth_failure(state, remote_addr, "missing access token").await;
         return Err(Box::new(oauth_error_response(oauth.config(), None)));
     };
@@ -2040,10 +2058,6 @@ async fn check_auth(
         Err(error) => {
             match &error {
                 TokenError::Invalid(reason) => {
-                    warn!(
-                        "Rejected request from {} due to an invalid access token: {}",
-                        remote_addr, reason
-                    );
                     audit_auth_failure(
                         state,
                         remote_addr,
@@ -2052,10 +2066,6 @@ async fn check_auth(
                     .await;
                 }
                 TokenError::InsufficientScope => {
-                    warn!(
-                        "Rejected request from {}: the access token lacks the required scopes",
-                        remote_addr
-                    );
                     audit_auth_failure(state, remote_addr, "insufficient scope").await;
                 }
             }
@@ -2077,12 +2087,75 @@ async fn auth_middleware(
     if let Err(status) = check_network_policy(&state.network_policy, remote_addr) {
         return status.into_response();
     }
+    // 認証の失敗が続く相手は、しばらく確かめずに断る（#596）。プロキシの
+    // 後ろでは、`trusted_proxies`のヘッダーの相手で数える
+    let client = forwarded_client_ip(
+        remote_addr,
+        request.headers(),
+        Some(&state.trusted_proxies[..]),
+    );
+    if state.auth_failures.is_blocked(client, Instant::now()) {
+        return StatusCode::TOO_MANY_REQUESTS.into_response();
+    }
     match check_auth(&state, request.headers(), remote_addr).await {
         Ok(authenticated) => {
             request.extensions_mut().insert(authenticated);
             next.run(request).await
         }
-        Err(response) => *response,
+        Err(response) => {
+            state.auth_failures.record(client, Instant::now());
+            *response
+        }
+    }
+}
+
+/// 呼び出し元のアドレスごとの、認証の失敗の数（#596）。`window`の間に
+/// `limit`回失敗したアドレスは、その間の残りを、確かめずに断る。覚える
+/// アドレスの数に上限を付ける（たくさんのアドレスからの失敗で、メモリーを
+/// 使い切らせない）
+struct AuthFailureLimiter {
+    limit: u32,
+    window: std::time::Duration,
+    max_clients: usize,
+    failures: std::sync::Mutex<HashMap<IpAddr, (u32, Instant)>>,
+}
+
+impl AuthFailureLimiter {
+    fn new(limit: u32, window: std::time::Duration, max_clients: usize) -> Self {
+        Self {
+            limit,
+            window,
+            max_clients,
+            failures: std::sync::Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn is_blocked(&self, client: IpAddr, now: Instant) -> bool {
+        let failures = self
+            .failures
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        failures.get(&client).is_some_and(|(count, started)| {
+            *count >= self.limit && now.duration_since(*started) < self.window
+        })
+    }
+
+    fn record(&self, client: IpAddr, now: Instant) {
+        let mut failures = self
+            .failures
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if failures.len() >= self.max_clients && !failures.contains_key(&client) {
+            failures.retain(|_, (_, started)| now.duration_since(*started) < self.window);
+            if failures.len() >= self.max_clients {
+                return;
+            }
+        }
+        let entry = failures.entry(client).or_insert((0, now));
+        if now.duration_since(entry.1) >= self.window {
+            *entry = (0, now);
+        }
+        entry.0 = entry.0.saturating_add(1);
     }
 }
 
@@ -2097,6 +2170,9 @@ async fn audit_auth_failure(state: &HttpTransportState, remote_addr: SocketAddr,
     if !record {
         return;
     }
+    // ログにも、監査ログと同じ件数まで書く（#596）。以前は件数の上限が無く、
+    // 認証の無い相手が、大きな`kid`等でログを埋められた
+    warn!("Rejected request from {} due to {}", remote_addr, reason);
     let mut entry = crate::security::AuditLogEntry::new(
         crate::security::AuditLevel::Warning,
         crate::security::AuditCategory::Authentication,
@@ -2634,15 +2710,24 @@ async fn handle_ws_upgrade(
                 caller,
                 expires_at,
                 permit,
+                WsRequest { uri, headers },
             )
         });
     response.headers_mut().extend(hsts_headers);
     response
 }
 
+/// `/ws`のアップグレードのリクエスト（メッセージをIDSで確かめるときに使う、
+/// #596）
+struct WsRequest {
+    uri: axum::http::Uri,
+    headers: HeaderMap,
+}
+
 /// Runs the per-connection message loop for a `/ws` client. Holds `_permit` for the connection's
 /// lifetime, releasing the reserved capacity slot back to
 /// `websocket_semaphore` when the connection ends.
+#[allow(clippy::too_many_arguments)]
 async fn handle_ws_socket(
     socket: WebSocket,
     state: HttpTransportState,
@@ -2651,8 +2736,10 @@ async fn handle_ws_socket(
     caller: crate::mcp::Caller,
     expires_at: Option<u64>,
     _permit: tokio::sync::OwnedSemaphorePermit,
+    request: WsRequest,
 ) {
     let conn_id = Uuid::new_v4();
+    let ids_caller = caller.clone();
     // リプレイ攻撃対策のnonceを、呼び出し元ごとに覚えるため（#543）
     let caller_name = caller.name.clone();
     state.ws_callers.lock().await.insert(conn_id, caller);
@@ -2784,6 +2871,37 @@ async fn handle_ws_socket(
                                     .await;
                                 continue;
                             }
+                        }
+                    }
+                }
+
+                // メッセージも、HTTPのリクエストと同じくIDSで確かめる（#596）。
+                // 以前は、アップグレードのときにしか確かめなかった
+                if state.ids.is_some() {
+                    if let Message::Text(text) = &msg {
+                        let body = serde_json::from_str::<Value>(text).ok();
+                        if let Err(status) = check_ids(
+                            state.ids.as_ref(),
+                            addr,
+                            ids_trusted_proxies(&state),
+                            &ids_caller,
+                            &request.uri,
+                            &request.headers,
+                            body.as_ref(),
+                        )
+                        .await
+                        {
+                            info!(
+                                "Closing WebSocket connection {} from {}: intrusion detection ({})",
+                                conn_id, addr, status
+                            );
+                            close_ws(
+                                &sender,
+                                close_code::POLICY,
+                                "blocked by intrusion detection",
+                            )
+                            .await;
+                            break;
                         }
                     }
                 }
@@ -4708,6 +4826,104 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    /// `/ws`のメッセージも、IDSで確かめる（#596）。以前は、アップグレードの
+    /// ときにしか確かめなかった
+    #[tokio::test]
+    async fn test_ids_checks_websocket_messages() {
+        use futures::{SinkExt, StreamExt};
+        let config = HttpConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            ids_enabled: true,
+            enable_websocket_upgrade: true,
+            ..HttpConfig::default()
+        };
+        let transport = HttpTransport::new(config).unwrap();
+        transport.start_server().await.unwrap();
+        let server_addr = transport.bound_addr().await.unwrap();
+        wait_for_plain_server_ready(server_addr).await;
+
+        let url = format!("ws://localhost:{}/ws", server_addr.port());
+        let (mut stream, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+        stream
+            .send(tokio_tungstenite::tungstenite::Message::Text(
+                sql_injection_jsonrpc_request().to_string().into(),
+            ))
+            .await
+            .unwrap();
+        let closed = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while let Some(message) = stream.next().await {
+                match message {
+                    Ok(tokio_tungstenite::tungstenite::Message::Close(frame)) => {
+                        return frame.map(|f| f.reason.to_string());
+                    }
+                    Ok(_) => continue,
+                    Err(_) => return None,
+                }
+            }
+            None
+        })
+        .await
+        .expect("the connection was not closed");
+        assert_eq!(closed.as_deref(), Some("blocked by intrusion detection"));
+    }
+
+    /// 認証の失敗が続く相手は、しばらく確かめずに429で断る（#596）
+    #[tokio::test]
+    async fn test_repeated_authentication_failures_are_throttled() {
+        let port = start_test_server(api_key_config).await;
+        let client = reqwest::Client::new();
+        let post = |key: &'static str| {
+            client
+                .post(format!("http://127.0.0.1:{}/mcp", port))
+                .header("X-API-Key", key)
+                .json(&notification_jsonrpc_request())
+                .send()
+        };
+        for _ in 0..20 {
+            assert_eq!(
+                post("wrong-key").await.unwrap().status(),
+                StatusCode::UNAUTHORIZED
+            );
+        }
+        // 正しいキーでも、しばらくは断る（当て推量を続けさせない）
+        assert_eq!(
+            post("wrong-key").await.unwrap().status(),
+            StatusCode::TOO_MANY_REQUESTS
+        );
+        assert_eq!(
+            post("correct-key").await.unwrap().status(),
+            StatusCode::TOO_MANY_REQUESTS
+        );
+    }
+
+    #[test]
+    fn test_auth_failure_limiter() {
+        let limiter = AuthFailureLimiter::new(3, std::time::Duration::from_secs(60), 2);
+        let start = std::time::Instant::now();
+        let a: IpAddr = "192.0.2.1".parse().unwrap();
+        let b: IpAddr = "192.0.2.2".parse().unwrap();
+        let c: IpAddr = "192.0.2.3".parse().unwrap();
+        for _ in 0..2 {
+            limiter.record(a, start);
+        }
+        assert!(!limiter.is_blocked(a, start));
+        limiter.record(a, start);
+        assert!(limiter.is_blocked(a, start));
+        assert!(!limiter.is_blocked(b, start));
+        // 窓が過ぎれば、また確かめる
+        let later = start + std::time::Duration::from_secs(61);
+        assert!(!limiter.is_blocked(a, later));
+        limiter.record(a, later);
+        assert!(!limiter.is_blocked(a, later));
+        // 覚えるアドレスの数に上限がある（新しいアドレスは数えない）
+        limiter.record(b, start);
+        limiter.record(c, start);
+        for _ in 0..3 {
+            limiter.record(c, start);
+        }
+        assert!(!limiter.is_blocked(c, start));
     }
 
     #[tokio::test]
