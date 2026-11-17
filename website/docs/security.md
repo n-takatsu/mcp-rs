@@ -285,7 +285,7 @@ user_id = "user-1"
 - Up to v0.23.0, `${...}` in `key` was used as written. A key that contains `${` now has to come from an environment variable
 
 - Use long random keys, such as the output of `openssl rand -hex 32`. mcp-rs logs a warning at startup for a key shorter than 16 characters (v0.27.0 and later)
-- A client address that fails authentication 20 times within a minute gets HTTP 429 for the rest of that minute, even with a valid key, so keys cannot be guessed quickly (v0.27.0 and later). Behind a proxy in `trusted_proxies`, the address from `X-Forwarded-For` is counted
+- A client address that fails authentication 20 times within a minute gets HTTP 429 for the rest of that minute, even with a valid key, so keys cannot be guessed quickly (v0.27.0 and later). Requests being checked at the same time count too, so sending many at once does not get past the limit. Behind a proxy in `trusted_proxies`, the address from `X-Forwarded-For` is counted. Behind a proxy that is not in `trusted_proxies`, or a NAT, every client shares the proxy's address: one client's failures then make everyone get 429 for the rest of the minute, so list the proxy in `trusted_proxies`
 - `mcp_rs_status` shows a key or token limited by `tools` only the version, the mode, and the caller's name: the config file, the logs, and the state of the handlers and plugins are shown only to callers that may use every tool (v0.27.0 and later)
 
 ## Limiting Tools per API Key or Token

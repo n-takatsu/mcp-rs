@@ -2094,25 +2094,27 @@ async fn auth_middleware(
         request.headers(),
         Some(&state.trusted_proxies[..]),
     );
-    if state.auth_failures.is_blocked(client, Instant::now()) {
+    // 確かめる前に1回分を数え、通ったら戻す（PR #608のレビュー）。「止めて
+    // いるか」の確認と数えるのを1回のロックで行うので、同時に送られた
+    // リクエストも、上限を越えて確かめない
+    if !state.auth_failures.begin(client, Instant::now()) {
         return StatusCode::TOO_MANY_REQUESTS.into_response();
     }
     match check_auth(&state, request.headers(), remote_addr).await {
         Ok(authenticated) => {
+            state.auth_failures.succeeded(client);
             request.extensions_mut().insert(authenticated);
             next.run(request).await
         }
-        Err(response) => {
-            state.auth_failures.record(client, Instant::now());
-            *response
-        }
+        Err(response) => *response,
     }
 }
 
 /// 呼び出し元のアドレスごとの、認証の失敗の数（#596）。`window`の間に
-/// `limit`回失敗したアドレスは、その間の残りを、確かめずに断る。覚える
-/// アドレスの数に上限を付ける（たくさんのアドレスからの失敗で、メモリーを
-/// 使い切らせない）
+/// `limit`回失敗したアドレスは、その間の残りを、確かめずに断る。確かめて
+/// いる最中のものも数える（同時に送られたリクエストで、上限を越えさせない）。
+/// 覚えるアドレスの数に上限を付ける（たくさんのアドレスからの失敗で、
+/// メモリーを使い切らせない）
 struct AuthFailureLimiter {
     limit: u32,
     window: std::time::Duration,
@@ -2130,17 +2132,9 @@ impl AuthFailureLimiter {
         }
     }
 
-    fn is_blocked(&self, client: IpAddr, now: Instant) -> bool {
-        let failures = self
-            .failures
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        failures.get(&client).is_some_and(|(count, started)| {
-            *count >= self.limit && now.duration_since(*started) < self.window
-        })
-    }
-
-    fn record(&self, client: IpAddr, now: Instant) {
+    /// 認証を確かめる前に呼ぶ。上限に達していれば`false`（確かめずに断る）。
+    /// そうでなければ1回分を数えて`true`。認証が通ったら`succeeded`で戻す
+    fn begin(&self, client: IpAddr, now: Instant) -> bool {
         let mut failures = self
             .failures
             .lock()
@@ -2148,14 +2142,30 @@ impl AuthFailureLimiter {
         if failures.len() >= self.max_clients && !failures.contains_key(&client) {
             failures.retain(|_, (_, started)| now.duration_since(*started) < self.window);
             if failures.len() >= self.max_clients {
-                return;
+                // 覚えきれないアドレスは数えない（メモリーの上限を優先する）
+                return true;
             }
         }
         let entry = failures.entry(client).or_insert((0, now));
         if now.duration_since(entry.1) >= self.window {
             *entry = (0, now);
         }
-        entry.0 = entry.0.saturating_add(1);
+        if entry.0 >= self.limit {
+            return false;
+        }
+        entry.0 += 1;
+        true
+    }
+
+    /// 認証が通ったとき、`begin`で数えた1回分を戻す
+    fn succeeded(&self, client: IpAddr) {
+        let mut failures = self
+            .failures
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(entry) = failures.get_mut(&client) {
+            entry.0 = entry.0.saturating_sub(1);
+        }
     }
 }
 
@@ -4905,25 +4915,25 @@ mod tests {
         let a: IpAddr = "192.0.2.1".parse().unwrap();
         let b: IpAddr = "192.0.2.2".parse().unwrap();
         let c: IpAddr = "192.0.2.3".parse().unwrap();
-        for _ in 0..2 {
-            limiter.record(a, start);
+        // 確かめている最中のもの（同時に送られたリクエスト）も数えるので、
+        // 4つ目は、前の3つの結果を待たずに断る（PR #608のレビュー）
+        for _ in 0..3 {
+            assert!(limiter.begin(a, start));
         }
-        assert!(!limiter.is_blocked(a, start));
-        limiter.record(a, start);
-        assert!(limiter.is_blocked(a, start));
-        assert!(!limiter.is_blocked(b, start));
+        assert!(!limiter.begin(a, start));
+        // 通ったものは戻すので、正しいキーの呼び出し元は止まらない
+        limiter.succeeded(a);
+        assert!(limiter.begin(a, start));
+        assert!(!limiter.begin(a, start));
+        // ほかのアドレスは別に数える
+        assert!(limiter.begin(b, start));
         // 窓が過ぎれば、また確かめる
         let later = start + std::time::Duration::from_secs(61);
-        assert!(!limiter.is_blocked(a, later));
-        limiter.record(a, later);
-        assert!(!limiter.is_blocked(a, later));
-        // 覚えるアドレスの数に上限がある（新しいアドレスは数えない）
-        limiter.record(b, start);
-        limiter.record(c, start);
-        for _ in 0..3 {
-            limiter.record(c, start);
+        assert!(limiter.begin(a, later));
+        // 覚えるアドレスの数に上限がある（新しいアドレスは数えずに通す）
+        for _ in 0..5 {
+            assert!(limiter.begin(c, start));
         }
-        assert!(!limiter.is_blocked(c, start));
     }
 
     #[tokio::test]
