@@ -15,6 +15,7 @@ pub mod cli_args;
 pub mod config;
 pub mod error;
 pub mod handlers;
+pub mod init;
 pub mod logging;
 pub mod mcp;
 pub mod plugin_proxy;

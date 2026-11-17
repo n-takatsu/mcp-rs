@@ -2409,6 +2409,12 @@ impl WordPressHandler {
             health.authentication_valid = true;
             info!("✅ Authentication: OK");
         }
+        // サインインできないと、権限・メディアは確かめられない。どちらも
+        // 認証の要らない読み取りでも通るので、確かめるとOKに見えてしまう
+        // （PR #583で、誤ったパスワードで「権限OK」と出た）
+        if !health.authentication_valid {
+            return health;
+        }
 
         // 4. Check permissions
         if let Err(e) = self.check_permissions().await {

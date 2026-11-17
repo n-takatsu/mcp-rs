@@ -119,6 +119,16 @@ mkdir -p ~/.mcp-rs/bin && cp $name/mcp-rs ~/.mcp-rs/bin/
 
 自分でビルドするときは、[セットアップ](#セットアップ)を見てください。
 
+### `mcp-rs init`で設定する
+
+v0.26.0以降は、`mcp-rs init`が、ターミナルでいくつか質問して残りを行います。WordPressのサイトのURL・ユーザー名・アプリケーションパスワードを聞いてOSの資格情報ストアに入れ、設定ファイル（`~/.config/mcp-rs/config.toml`）を書き、`mcp-rs check`と同じように確かめ、Claude Desktop・Claude Code・GitHub Copilot（VS Code）に登録します。登録の前と、ファイルを置き換える前（控えを残します）に確かめ、断ったものは、登録のコマンドや設定を表示します。別の名前でmcp-rsを起動する登録（手で登録した`mcp-rs-wordpress`等）があれば、同じツールが2組並ばないよう、消すかを聞きます（別の設定ファイルを使うもの、例えば2つ目のサイト用は、yと答えない限り残します）。
+
+```bash
+~/.mcp-rs/bin/mcp-rs init        # Windows: & "$env:USERPROFILE\.mcp-rs\bin\mcp-rs.exe" init
+```
+
+以下の節は、同じことを手で行う方法です。
+
 ### WordPressの資格情報
 
 WordPressのユーザー名とアプリケーションパスワードは、OSの資格情報ストア（Windowsの資格情報マネージャー、macOSのキーチェーン、LinuxのSecret Service）に置くのがおすすめです（v0.24.0以降）。Claude Desktop・Claude Code・ターミナルのどれから起動しても、mcp-rsは同じ1か所から読みます。

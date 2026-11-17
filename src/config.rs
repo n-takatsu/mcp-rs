@@ -1020,6 +1020,16 @@ fn no_config_file_message(home: Option<&str>, former: &[String]) -> String {
     message
 }
 
+/// `--config`無しで読む設定ファイル（`~/.config/mcp-rs/config.toml`）の、
+/// ホームフォルダを展開したパス。`mcp-rs init`の既定の書き先（#575）。
+/// ホームフォルダが分からなければ`None`
+pub fn user_config_path() -> Option<String> {
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .ok()?;
+    expand_home_dir(USER_CONFIG_PATH, Some(&home)).filter(|path| !path.starts_with('~'))
+}
+
 /// `--config`のパスの先頭の`~/`（Windowsでは`~\`も）を、ホームフォルダに
 /// 展開する（PR #551のレビュー）。シェルを通さないクライアントの設定（JSONの
 /// `args`等）では、`~`は展開されずにそのまま渡ってくる。展開しないと、

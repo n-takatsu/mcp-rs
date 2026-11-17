@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `mcp-rs init`: 質問に答えるだけで、使い始める準備をするコマンド（#575）。
+  WordPressのサイトのURL・ユーザー名・アプリケーションパスワードを聞いて
+  OSの資格情報ストアに入れ、設定ファイル（既定は`~/.config/mcp-rs/config.toml`）
+  を書き、`mcp-rs check`と同じ確認をし、Claude Desktop（設定ファイルに足す）・
+  Claude Code（`claude mcp add --scope user`）・GitHub Copilot
+  （`copilot mcp add`）に登録する。登録とファイルの置き換えは、1つずつ
+  確かめてから行い、置き換えるファイルは控えを残す。断ったものは、登録の
+  コマンドや設定を表示する。別の名前でmcp-rsを起動する登録（手で登録した
+  `mcp-rs-wordpress`等）があれば、消すかを聞く（同じツールが2組並ばない
+  ように）。同じ設定ファイルのものは既定で消し、別の設定ファイルのもの
+  （2つ目のサイト用等）は、そのパスを見せて、既定では残す。最初の版は、WordPressだけを聞く
+
+### Changed
+
+- `serde_json`の`preserve_order`を有効にした（#575）。Claude Desktopの設定
+  ファイルに足すとき、ほかの項目の順番を変えないため。mcp-rsが返すJSONの
+  キーも、並べ替えずに作った順になる（ライブラリとして使うときの
+  `serde_json::Map`の順番も変わる）
+
+### Fixed
+
+- `mcp-rs check`と`wordpress_health_check`で、サインインが失敗したのに、
+  権限とメディアが「OK」と出ていた（#575の確認で分かった）。どちらも認証の
+  要らない読み取りでも通るため。サインインが失敗したら、権限とメディアは
+  確かめない（`mcp-rs check`は「not checked」と出す）。`mcp-rs check`の
+  エラーは、最後にまとめて「WordPress site」の名前で出していたのを、
+  失敗した項目の名前で、確かめた順に出すようにした
+
 ## [0.25.0] - 2026-11-17
 
 ### Added

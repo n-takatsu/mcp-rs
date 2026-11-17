@@ -119,6 +119,16 @@ The files are not signed:
 
 To build it yourself instead, see [Setup](#setup).
 
+### Set Up with `mcp-rs init`
+
+From v0.26.0, `mcp-rs init` does the rest by asking a few questions in a terminal: the WordPress site URL, username and Application Password (kept in the OS credential store), then it writes the config file (`~/.config/mcp-rs/config.toml`), checks it like `mcp-rs check`, and registers mcp-rs with Claude Desktop, Claude Code and GitHub Copilot (VS Code). It asks before each registration and before replacing a file (a backup copy is kept), and prints the command or the settings for the ones you skip. If a client already starts mcp-rs under another name (for example `mcp-rs-wordpress`, registered by hand), it offers to remove that one, so that the same tools do not appear twice (one that uses another config file, such as for a second site, is kept unless you answer y):
+
+```bash
+~/.mcp-rs/bin/mcp-rs init        # Windows: & "$env:USERPROFILE\.mcp-rs\bin\mcp-rs.exe" init
+```
+
+The sections below describe the same steps done by hand.
+
 ### WordPress Credentials
 
 Keep the WordPress username and Application Password in the OS credential store (Windows Credential Manager, macOS Keychain, Secret Service on Linux; v0.24.0 and later). mcp-rs then reads them from one place, whether Claude Desktop, Claude Code, or a terminal starts it:
