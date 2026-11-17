@@ -4,6 +4,67 @@
 
 Our project follows a detailed 0.01 increment versioning strategy to provide granular tracking of development progress and feature implementation.
 
+## 🔒 v0.27.0 - セキュリティの強化
+
+**Release Date:** 2026-11-17
+**Focus:** 2026-11-17のコードの点検で見つかったものを直す、セキュリティだけの版。直し方のいくつかは、今の設定で動いているものを止める（互換性の無い）変更なので、更新の前に「互換性」を確かめる
+
+### ⚠️ 互換性（更新の前に確かめる）
+
+- **HTTPモードでリバースプロキシの後ろ（`trusted_proxies`）**: APIキーかOAuthの
+  認証が無いと、起動しない（#593）。mTLSは、プロキシの後ろでは認証に数えない。
+  プロキシが認証するときは、`allow_unauthenticated_external = true`で明示する
+- **`@read_only`のAPIキー・トークン**: プラグインのツールを、既定で含めない
+  （#595）。確かめたプラグインは、`[[plugins]]`に`trust_annotations = true`を
+  書くか、ツールを名前で許す
+- **データベースの`ssl_mode = "verify-ca"`**（#594）: PostgreSQLでは使えない
+  （`verify-full`を使う）。MySQL・MariaDBでは`ssl_root_cert`が要る。これらの
+  設定では、データベースのツールが起動しない（`mcp_rs_status`に理由を出す）
+- **ツールを制限した呼び出し元**: 一覧に無いツールは許さない。
+  `mcp_rs_status`で、設定ファイル・ログの場所・ハンドラーとプラグインの状態を
+  見せない（#596）
+- **`execute_query`・`execute_command`**: 行の鍵（`FOR UPDATE`等）、サーバーの
+  ファイル・ほかの接続に触れる関数、PostgreSQLの`U&"…"`、MySQLのヒント
+  `SET_VAR`を断る（#597）
+
+### 🔒 HTTPモード（#592・#593・#596）
+
+- 処理中のリクエストが無いまま`request_timeout_seconds`（既定30秒）が過ぎた
+  接続を閉じる。HTTP/2の何も送らない接続で、認証無しで`max_connections`を
+  埋められた
+- 1分に20回認証に失敗したアドレスは、その1分の残りを429で断る。16文字より
+  短いAPIキーは、起動時に警告する。認証の失敗のログは、1分あたりの件数に
+  上限を設け、JWTの`kid`はエスケープしてから書く
+- `/ws`のメッセージも、IDSで確かめる
+
+### 🔒 プラグインの「読み取りだけ」の印（#595）
+
+- 印（`readOnlyHint`）はプラグイン自身が付けるので、`@read_only`は既定で
+  信じない。使えなくなるツールは、起動時にログに書く
+
+### 🔒 データベース（#594・#597）
+
+- `verify-ca`で、公開のCAが発行したどのホストの証明書でも受け入れていた
+- MySQL・MariaDBのSQLの検査を点検し直した。検査とサーバーの読み方の
+  食い違いは見つからなかった（MySQL 8.4・MariaDB 11.4の結合テストで確かめる）
+- 行の鍵と、サーバーの関数（`LOAD_FILE()`・`sys_exec()`・`pg_read_file()`・
+  `pg_ls_*`・`lo_import()`・`dblink*`・`pg_terminate_backend()`等）を断る。
+  権限を与えないのが本来の守りで、これは2つ目の守り
+
+### 🧭 mcp-rs init（#599・#602）
+
+- 置き換える登録の設定ファイルにしか無い設定（`[[plugins]]`・`[database]`等）を
+  一覧にし、新しい設定に写せる。v0.26.0への移行で、手で登録していた設定の
+  プラグイン等が抜け落ちたため
+- 控えに平文のパスワードがあれば、消すかを聞く。Unixでは、設定ファイルを
+  600、フォルダを700にする。設定ファイルは、一時ファイルに書いてから置き換える
+
+### 📦 リリース（#599）
+
+- ビルド済みのファイルに、GitHubの出所の証明（build provenance attestation）を
+  付ける。`gh attestation verify <ファイル> -R n-takatsu/mcp-rs`で確かめられる
+- ビルド済みのファイルに、`README.ja.md`も入れる
+
 ## 🧭 v0.26.0 - インストールスクリプトとmcp-rs init
 
 **Release Date:** 2026-11-17

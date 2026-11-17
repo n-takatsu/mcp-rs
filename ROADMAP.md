@@ -51,7 +51,7 @@ MCPのクライアント（Claude Desktop・Claude Code等）から使える機�
 - #576 1行で入れるインストールスクリプト（v0.26.0）
 - #577 READMEの導入手順を短くし、導入ガイドを分ける（v0.26.0）
 
-### 🔜 v0.27.0: セキュリティの強化（[マイルストーン](https://github.com/n-takatsu/mcp-rs/milestone/6)）
+### ✅ 完了: v0.27.0 セキュリティの強化（2026-11-17、[マイルストーン](https://github.com/n-takatsu/mcp-rs/milestone/6)）
 
 2026-11-17のコードの点検で見つかったもの。直し方の多くが、今の設定で動いているものを止める（互換性の無い）変更なので、パッチ版ではなくマイナー版にし、移行の注意を1つのリリースノートにまとめる。ほかの大きな変更（MCPの新しい版）と混ぜず、セキュリティだけの版にする。
 
@@ -64,7 +64,7 @@ MCPのクライアント（Claude Desktop・Claude Code等）から使える機�
 - #599 `mcp-rs init`とインストールの小さな強化（控えのパスワード・ファイルの権限・設定の書き方・リリースの出所の証明）。v0.29.0から移した
 - #602 `mcp-rs init`で、前の設定ファイルにしか無い設定を知らせ、引き継げるようにする。v0.26.0への移行で、`[[plugins]]`等が抜け落ちたため（2026-11-17に追加。セキュリティではないが、#599と同じところを直すので、この版に入れた）
 
-### 📅 v0.28.0: MCPの2026-07-28版に対応する（[マイルストーン](https://github.com/n-takatsu/mcp-rs/milestone/7)）
+### 🔜 v0.28.0: MCPの2026-07-28版に対応する（[マイルストーン](https://github.com/n-takatsu/mcp-rs/milestone/7)）
 
 MCPの仕様の2026-07-28版で、`initialize`の手続きとセッションが無くなった。今のmcp-rs（2025-11-25版）は、新旧の両方に対応したクライアントとは仕様どおりにつながるが、新しい版だけのクライアントとはつながらない。仕様には、`initialize`をいつまで使えるかの決まりが無く、クライアントがいつ新しい版だけになるかは、こちらで決められない。今のクライアントを壊さないよう、新旧の両方を受ける形にする（#566で調べた）。
 
@@ -112,7 +112,7 @@ MCPの仕様の2026-07-28版で、`initialize`の手続きとセッションが�
 
 ## 📋 GitHub Issues
 
-- [Milestone v0.27.0](https://github.com/n-takatsu/mcp-rs/milestone/6) - セキュリティの強化
+- [Milestone v0.27.0](https://github.com/n-takatsu/mcp-rs/milestone/6) - セキュリティの強化（完了）
 - [Milestone v0.28.0](https://github.com/n-takatsu/mcp-rs/milestone/7) - MCPの新しい版
 - [Milestone v0.29.0](https://github.com/n-takatsu/mcp-rs/milestone/8) - 導入を簡単にする（続き）
 - [Milestone v1.0.0](https://github.com/n-takatsu/mcp-rs/milestone/3) - v0.29.0より後、v1.0.0までに行うIssue

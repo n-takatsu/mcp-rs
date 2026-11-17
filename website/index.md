@@ -83,7 +83,17 @@ See [Database Integration](docs/database/) for the settings.
 
 ## Current Status
 
-## ✅ Recently Completed (v0.26.0)
+## ✅ Recently Completed (v0.27.0)
+
+A security release. Some fixes stop settings that used to work; see the [release notes](https://github.com/n-takatsu/mcp-rs/releases/tag/v0.27.0) before updating.
+
+- **🔒 HTTP mode**: Connections that send no requests are closed after `request_timeout_seconds`, so idle HTTP/2 connections cannot fill `max_connections`. Behind a reverse proxy (`trusted_proxies`), mcp-rs needs an API key or OAuth to start. Addresses that fail authentication 20 times in a minute get 429, and `/ws` messages are checked by the IDS. See [Security](docs/security/)
+- **🔒 `@read_only` and plugins**: `@read_only` keys no longer include plugin tools by default, because plugins set their own `readOnlyHint`. Use `trust_annotations = true` for plugins you have checked. See [Plugins](docs/plugins/)
+- **🔒 Databases**: `ssl_mode = "verify-ca"` is refused on PostgreSQL and needs `ssl_root_cert` on MySQL and MariaDB. `execute_query` refuses row locks, and both tools refuse functions that touch the server's files or other connections (`LOAD_FILE()`, `pg_read_file()`, `dblink*` and others). See [Database Integration](docs/database/)
+- **🧭 `mcp-rs init`**: Carries over settings that only the previous config file has (`[[plugins]]`, `[database]` and others), offers to delete backups with plaintext passwords, and writes files atomically with owner-only permissions on Unix
+- **📦 Release provenance**: Release files now have GitHub build provenance attestations: `gh attestation verify <file> -R n-takatsu/mcp-rs`
+
+## ✅ v0.26.0
 
 - **⚡ Install Script**: One command installs mcp-rs on Windows, macOS (Apple Silicon), and Linux (x64): it downloads the latest release, checks its SHA256, and puts mcp-rs in `~/.mcp-rs/bin`, without administrator rights. See [Getting Started](docs/guides/#install-script)
 - **🧭 `mcp-rs init`**: Sets up mcp-rs by asking a few questions: the WordPress credentials (kept in the OS credential store), the config file, a check of the connection and sign-in, and registering mcp-rs with Claude Desktop, Claude Code, and GitHub Copilot (VS Code). See [Getting Started](docs/guides/#mcp-rs-init)
