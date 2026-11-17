@@ -88,7 +88,7 @@ jobs:
           else
             cp "target/${TARGET}/release/mcp-rs" "dist/${name}/"
           fi
-          cp README.md LICENSE-MIT LICENSE-APACHE "dist/${name}/"
+          cp README.md README.ja.md LICENSE-MIT LICENSE-APACHE "dist/${name}/"
           cd dist
           if [ "${ARCHIVE}" = "zip" ]; then
             7z a -tzip "${name}.zip" "${name}" > /dev/null
@@ -124,6 +124,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      # 出所の証明（attestation）を作るため（#599）
+      id-token: write
+      attestations: write
     steps:
       - name: Download
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -131,6 +134,17 @@ jobs:
           pattern: mcp-rs-*
           path: dist
           merge-multiple: true
+
+      # 配るファイルが、このリポジトリのこのワークフローで作られたことの
+      # 証明（#599）。`.sha256`は同じリリースから取るので、リリースの
+      # ファイルを差し替えられる人には効かない。証明は、GitHubが署名して
+      # 別に保つので、`gh attestation verify`で確かめられる
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            dist/*.zip
+            dist/*.tar.gz
 
       - name: Attach to the release
         env:

@@ -799,6 +799,107 @@ async fn quoting_matches_the_sql_check(kind: Kind) {
     }
 }
 
+/// SQLの検査（sqlparser）が、コメント・文字列として通すものは、サーバーでも
+/// コメント・文字列として読まれる（#597の点検）。行の鍵とサーバーのファイルに
+/// 触れる関数は、検査で断る
+async fn tricky_sql_is_read_like_the_server(kind: Kind) {
+    let Some((url, _pool)) = test_database(kind).await else {
+        return;
+    };
+    let handler = DatabaseHandler::from_settings(&settings_from_url(&url, kind))
+        .await
+        .unwrap();
+    let query = |sql: &str| {
+        let handler = &handler;
+        let sql = sql.to_string();
+        async move { call(handler, "execute_query", json!({ "sql": sql })).await }
+    };
+    // `#`から行の終わりまでは、サーバーでもコメント
+    let result = query("SELECT 1 AS a # INTO OUTFILE '/tmp/mcp_rs_x'")
+        .await
+        .unwrap();
+    assert_eq!(result["rows"], json!([[1]]), "{result}");
+    // 文字列の前の`_utf8`と、`\'`・`''`は、サーバーでも1つの文字列
+    let result = query("SELECT _utf8'a\\' INTO OUTFILE ''/tmp/mcp_rs_x'' -- ' AS s")
+        .await
+        .unwrap();
+    assert_eq!(
+        result["rows"],
+        json!([["a' INTO OUTFILE '/tmp/mcp_rs_x' -- "]]),
+        "{result}"
+    );
+    // 並べた文字列は、つながった1つの文字列
+    let result = query("SELECT 'a' 'b' AS s").await.unwrap();
+    assert_eq!(result["rows"], json!([["ab"]]), "{result}");
+
+    // 行の鍵と、サーバーのファイルを読む関数は、検査で断る
+    for sql in [
+        "SELECT 1 AS x FROM DUAL FOR UPDATE",
+        "SELECT LOAD_FILE('/etc/passwd') AS f",
+    ] {
+        let err = query(sql).await.unwrap_err();
+        assert!(
+            err.contains("FOR UPDATE") || err.contains("load_file()"),
+            "{sql}: {err}"
+        );
+    }
+}
+
+/// MySQLのヒント`SET_VAR`は、その文の間だけセッションの変数を変え、外部キーの
+/// 確認も外せる。検査はヒントをコメントとして読むので、断る（PR #610の
+/// レビュー）。MariaDBは`SET_VAR`を知らない
+async fn set_var_hint_is_refused(kind: Kind) {
+    let Some((url, pool)) = test_database(kind).await else {
+        return;
+    };
+    let parent = unique_name("fk_parent");
+    let child = unique_name("fk_child");
+    run(
+        &pool,
+        &format!("CREATE TABLE {parent} (id int PRIMARY KEY)"),
+    )
+    .await;
+    run(
+        &pool,
+        &format!(
+            "CREATE TABLE {child} (id int PRIMARY KEY, parent_id int, \
+             FOREIGN KEY (parent_id) REFERENCES {parent}(id))"
+        ),
+    )
+    .await;
+
+    // mcp-rsを通さずに試すと、MySQLでは外部キーの確認が外れる
+    let mut conn = pool.get_conn().await.unwrap();
+    let direct = conn
+        .query_drop(format!(
+            "INSERT /*+ SET_VAR(foreign_key_checks=0) */ INTO {child} VALUES (1, 999)"
+        ))
+        .await;
+    match kind {
+        Kind::MySql => assert!(direct.is_ok(), "{direct:?}"),
+        Kind::MariaDb => assert!(direct.is_err(), "MariaDB ignores SET_VAR"),
+    }
+    drop(conn);
+
+    // mcp-rsは、どちらでも断る
+    let mut settings = settings_from_url(&url, kind);
+    settings.allow_write = Some(true);
+    let handler = DatabaseHandler::from_settings(&settings).await.unwrap();
+    let err = call(
+        &handler,
+        "execute_command",
+        json!({ "sql": format!(
+            "INSERT /*+ SET_VAR(foreign_key_checks=0) */ INTO {child} VALUES (2, 999)"
+        ) }),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.contains("SET_VAR"), "{err}");
+
+    run(&pool, &format!("DROP TABLE {child}")).await;
+    run(&pool, &format!("DROP TABLE {parent}")).await;
+}
+
 /// 同じテストを、MySQLとMariaDBの両方で動かす
 macro_rules! for_each_server {
     ($($name:ident),* $(,)?) => {
@@ -836,4 +937,6 @@ for_each_server!(
     ssl_root_cert_needs_a_verifying_ssl_mode,
     mysql_engine_setting_works_with_mariadb,
     quoting_matches_the_sql_check,
+    tricky_sql_is_read_like_the_server,
+    set_var_hint_is_refused,
 );

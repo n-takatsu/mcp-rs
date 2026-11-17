@@ -1,6 +1,6 @@
 [package]
 name = "mcp-rs"
-version = "0.26.0"
+version = "0.27.0"
 edition = "2021"
 # 最小対応のRustのバージョン（MSRV、#516）。DockerfileのFROM rust:X.Yも
 # 同じにする（CIで一致を確かめる）。上げるときは両方を同じPRで変える
@@ -24,12 +24,16 @@ axum = { version = "0.8", features = ["ws"] }
 tower = "0.5.2"
 tower-http = { version = "0.6", features = ["cors", "timeout", "trace"] }
 hyper-util = { version = "0.1", features = ["server", "service", "http1", "http2", "tokio"] }
+# 接続の何もしていない時間を数えるため、応答の本文を包む（#592）
+hyper = { version = "1", features = ["server", "http1", "http2"] }
+http-body-util = "0.1"
 http = "1.0"
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0.145", features = ["preserve_order"] }
-toml = "0.9.8"
+# preserve_order: mcp-rs initが写す設定ファイルの順番を、前のファイルと同じにする（#602）
+toml = { version = "0.9.8", features = ["preserve_order"] }
 
 # Database and storage (PostgreSQL and SQLite only - MySQL via mysql_async)
 sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "sqlite", "chrono", "uuid", "json", "migrate"], default-features = false }
@@ -128,6 +132,8 @@ jsonwebtoken = { version = "11.1", default-features = false, features = ["aws_lc
 libc = "0.2"
 
 [dev-dependencies]
+# HTTP/2のクライアント（何もしていない接続を閉じるテスト、#592）
+hyper = { version = "1", features = ["client", "http2"] }
 # Testing framework
 tokio-test = "0.4.4"
 # Test certificates for the HTTPS/mTLS tests (src/transport/http.rs)

@@ -102,9 +102,10 @@ pub struct DatabaseSettings {
     pub username: String,
     /// 省略時は空（パスワード無し）。`${PGPASSWORD}`のように環境変数で渡せる
     pub password: Option<String>,
-    /// TLS: `disable`・`prefer`（省略時）・`require`・`verify-ca`・`verify-full`。
-    /// PostgreSQLは`allow`も使える。MySQLでは、PostgreSQLと同じ意味で使う
-    /// （`verify-full`は、MySQLの`VERIFY_IDENTITY`）
+    /// TLS: `disable`・`prefer`（省略時）・`require`・`verify-full`。
+    /// PostgreSQLは`allow`も使う。MySQL・MariaDBは、`ssl_root_cert`があれば
+    /// `verify-ca`も使える（#594。PostgreSQLの`verify-ca`は使えない）。
+    /// `verify-full`は、MySQLの`VERIFY_IDENTITY`
     pub ssl_mode: Option<String>,
     /// サーバーの証明書を確かめるCAのファイル（PEM、#539）。非公開のCA
     /// （RDS等）で`verify-ca`・`verify-full`を使うとき。相対パスは設定
@@ -247,24 +248,38 @@ impl DatabaseSettings {
             return Err("database.username is empty".to_string());
         }
         if let Some(mode) = &self.ssl_mode {
-            const MODES: &[&str] = &[
-                "disable",
-                "allow",
-                "prefer",
-                "require",
-                "verify-ca",
-                "verify-full",
-            ];
+            // PostgreSQLの`verify-ca`は使えない（#594。sqlxが、ssl_root_certが
+            // あっても公開のCAを信頼し、ホスト名を見ないため）
+            const MODES: &[&str] = &["disable", "allow", "prefer", "require", "verify-full"];
             // MySQLには、`allow`（暗号化せずに試し、だめならTLS）が無い
             const MYSQL_MODES: &[&str] =
                 &["disable", "prefer", "require", "verify-ca", "verify-full"];
             let modes = if self.is_mysql() { MYSQL_MODES } else { MODES };
             if !modes.contains(&mode.as_str()) {
+                let why = if mode == "verify-ca" {
+                    ". For PostgreSQL, verify-ca would accept a certificate for any host: use verify-full"
+                } else {
+                    ""
+                };
                 return Err(format!(
-                    "database.ssl_mode = \"{}\" is not valid (use one of: {})",
+                    "database.ssl_mode = \"{}\" is not valid (use one of: {}){}",
                     mode,
-                    modes.join(", ")
+                    modes.join(", "),
+                    why
                 ));
+            }
+            // MySQL・MariaDBの`verify-ca`は、ssl_root_certが要る（#594）
+            let has_root_cert = self
+                .ssl_root_cert
+                .as_deref()
+                .is_some_and(|cert| !cert.trim().is_empty());
+            if self.is_mysql() && mode == "verify-ca" && !has_root_cert {
+                return Err(
+                    "database.ssl_mode = \"verify-ca\" needs ssl_root_cert (the CA that signed the \
+                     server certificate): without it, a certificate for any host from a public CA \
+                     would be accepted. Set ssl_root_cert, or use ssl_mode = \"verify-full\""
+                        .to_string(),
+                );
             }
         }
         Ok(())
@@ -309,6 +324,14 @@ pub struct PluginConfig {
     pub max_response_bytes: Option<usize>,
     /// ツール呼び出しのレート制限。省略時は既定値（WordPressと同じ）
     pub rate_limit: Option<RateLimitConfig>,
+    /// `true`で、プラグインがツールに付けた「読み取りだけ」の印
+    /// （`readOnlyHint`）を、APIキー・トークンの`@read_only`の判定に使う
+    /// （#595）。省略時は`false`: プラグインのツールは、`@read_only`に
+    /// 含めない。印はプラグイン自身が付けるので、書き込むツールに付いて
+    /// いても、mcp-rsには分からないため。AIのクライアントに見せる印は
+    /// 変えない
+    #[serde(default)]
+    pub trust_annotations: Option<bool>,
 }
 
 impl fmt::Debug for PluginConfig {
@@ -328,6 +351,7 @@ impl fmt::Debug for PluginConfig {
             .field("call_timeout_seconds", &self.call_timeout_seconds)
             .field("max_response_bytes", &self.max_response_bytes)
             .field("rate_limit", &self.rate_limit)
+            .field("trust_annotations", &self.trust_annotations)
             .finish()
     }
 }
@@ -669,6 +693,27 @@ pub struct HttpTransportConfig {
     /// clients. Defaults to `false` (such a configuration does not start).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allow_unauthenticated_external: Option<bool>,
+}
+
+impl HttpTransportConfig {
+    /// APIキーの`tools`か、OAuthの`scope_tools`に、`preset`（`@read_only`
+    /// 等）を書いたか
+    pub fn uses_tool_preset(&self, preset: &str) -> bool {
+        let key_items = self
+            .api_keys
+            .iter()
+            .flatten()
+            .filter_map(|key| key.tools.as_ref())
+            .flatten();
+        let scope_items = self
+            .oauth
+            .iter()
+            .flat_map(|oauth| oauth.scope_tools.values())
+            .flatten();
+        key_items
+            .chain(scope_items)
+            .any(|item| item.trim() == preset)
+    }
 }
 
 /// TOML-facing shape for a single API key entry under
@@ -2372,6 +2417,23 @@ start_timeout_seconds = 300
             ..mariadb
         };
         assert!(mariadb_allow.validate().is_err());
+        // verify-ca（#594）: PostgreSQLでは使えない。MySQL・MariaDBでは
+        // ssl_root_certが要る
+        let verify_ca = |engine: &str, cert: Option<&str>| DatabaseSettings {
+            engine: engine.to_string(),
+            ssl_mode: Some("verify-ca".to_string()),
+            ssl_root_cert: cert.map(str::to_string),
+            ..valid.clone()
+        };
+        let err = verify_ca("postgresql", Some("ca.pem"))
+            .validate()
+            .unwrap_err();
+        assert!(err.contains("verify-full"), "{err}");
+        for engine in ["mysql", "mariadb"] {
+            let err = verify_ca(engine, None).validate().unwrap_err();
+            assert!(err.contains("needs ssl_root_cert"), "{err}");
+            assert!(verify_ca(engine, Some("ca.pem")).validate().is_ok());
+        }
         // 0や省略は既定値
         let zero = DatabaseSettings {
             max_rows: Some(0),
@@ -2533,6 +2595,47 @@ user_id = "u2"
                 "${MCP_RS_TEST_API_KEY_534_UNSET}"
             );
         }
+    }
+
+    /// `@read_only`を書いたかを見分ける（PR #604のレビュー）
+    #[test]
+    fn test_uses_tool_preset() {
+        let keys: HttpTransportConfig = toml::from_str(
+            r#"
+[[api_keys]]
+key = "k"
+name = "reader"
+user_id = "u"
+tools = ["@read_only"]
+"#,
+        )
+        .unwrap();
+        assert!(keys.uses_tool_preset("@read_only"));
+        let scopes: HttpTransportConfig = toml::from_str(
+            r#"
+[oauth]
+issuer = "https://auth.example.com"
+resource = "https://mcp.example.com/mcp"
+[oauth.scope_tools]
+"mcp:read" = ["get_*"]
+"mcp:list" = [" @read_only "]
+"#,
+        )
+        .unwrap();
+        assert!(scopes.uses_tool_preset("@read_only"));
+        let names_only: HttpTransportConfig = toml::from_str(
+            r#"
+[[api_keys]]
+key = "k"
+name = "writer"
+user_id = "u"
+tools = ["get_posts"]
+"#,
+        )
+        .unwrap();
+        assert!(!names_only.uses_tool_preset("@read_only"));
+        let empty: HttpTransportConfig = toml::from_str("").unwrap();
+        assert!(!empty.uses_tool_preset("@read_only"));
     }
 
     /// APIキーの`tools`と、OAuthの`scope_tools`（#52）を読む

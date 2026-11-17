@@ -147,6 +147,8 @@ It asks for the WordPress username, the Application Password, and a master passw
 
 When the HTTP transport listens on anything other than loopback (for example `addr = "0.0.0.0"` in Docker, with `network_policy_reject_external_connections = false`), it needs authentication: API keys, OAuth 2.1, or client certificates (mTLS). Without any of them, mcp-rs does not start (v0.24.0 and later), because anyone who can reach the address could use every tool. Up to v0.23.0, it only logged a warning.
 
+The same applies behind a reverse proxy: when `trusted_proxies` is set, mcp-rs needs authentication even when it listens on loopback (v0.27.0 and later). A proxy on the same machine (nginx, Caddy, …) connects from loopback, so every client the proxy lets in looks like a local one, and listening on `127.0.0.1` does not keep out clients on the internet. Up to v0.26.0, mcp-rs started without authentication in this case. Behind a proxy, only API keys and OAuth count: client certificates (mTLS) between the proxy and mcp-rs check only the proxy, not the clients behind it.
+
 If something in front of mcp-rs authenticates the clients (for example a reverse proxy that requires a login, and mcp-rs is reachable only through it), allow it explicitly. mcp-rs then logs a warning at startup:
 
 ```toml
@@ -166,10 +168,11 @@ Limits (v0.24.0 and later):
 [transport.http]
 # max_request_size = 1048576          # bytes of a request body, and of a WebSocket message. Larger: HTTP 413
 # request_timeout_seconds = 30        # the TLS handshake, the request headers, and each wait for more of the body
-# max_connections = 1024              # connections served at once (WebSocket included); more wait
+# max_connections = 1024              # connections served at once; more wait. An open /ws connection counts toward websocket_max_connections (1000) instead
 # websocket_idle_timeout_seconds = 300  # close /ws when the client stops answering for this long. 0: no limit
 ```
 
+- A connection with no request in progress for `request_timeout_seconds` is closed, over HTTP/1.1 and HTTP/2 alike (v0.27.0 and later). Up to v0.26.0, an HTTP/2 connection that answered pings but sent no request, or a connection that sent nothing at all, stayed open, so clients could fill `max_connections` without authenticating. A tool call that takes longer, or a large response being sent, does not count as idle
 - `request_timeout_seconds` limits the TLS handshake and the request headers as a whole. It also limits how long a kept-alive connection waits for its next request. For the request body, it limits each wait for more data, not the total: a client that keeps sending a little at a time can take longer in total. This applies only after the client has passed the checks above. It does not limit how long a tool call takes
 - On `/ws`, mcp-rs sends a ping every 30 seconds (or every half of `websocket_idle_timeout_seconds`, when that is shorter). Clients, browsers included, answer pings automatically, and the answers count as activity. So a client that is only quiet stays connected, and only a connection that answers nothing for `websocket_idle_timeout_seconds` is closed (close code 1001)
 - A `/ws` connection opened with an OAuth access token is closed when the token expires (`exp`, plus `leeway_seconds`), with close code 1008. Up to v0.23.0, the token was checked only when connecting
@@ -246,6 +249,8 @@ enforce_https = true
 trusted_proxies = ["127.0.0.1", "10.0.0.0/24"]   # IP addresses or CIDR ranges
 ```
 
+With `trusted_proxies`, mcp-rs also needs API keys or OAuth (see [Listening on the Network](#httpwebsocket-listening-on-the-network)), unless the proxy authenticates the clients and you set `allow_unauthenticated_external = true`.
+
 - Without `trusted_proxies`, mcp-rs does not start with `enforce_https` or `certificate_pinning_enabled` (unless `tls_enabled = true`, where mcp-rs itself handles TLS and does not need the headers), or with `ids_trust_forwarded_for`. Without it, the TLS version header is ignored. Up to v0.23.0, mcp-rs used these headers from any client, so a client connecting over plain HTTP could pass `enforce_https` by adding `X-Forwarded-Proto: https`
 - Make sure that clients cannot reach mcp-rs except through the proxy (for example, with `network_policy_ip_whitelist`), and that the proxy replaces these headers instead of passing on the ones the client sent
 - For `X-Forwarded-For`, mcp-rs takes the rightmost address that is not in `trusted_proxies`. A proxy adds the address it received the request from to the end, so the addresses to its left are whatever the client sent. Up to v0.23.0, mcp-rs took the leftmost one, so a client could make the intrusion detection block another address
@@ -279,6 +284,10 @@ user_id = "user-1"
 - `${...}` is expanded only in HTTP mode with `auth_enabled = true`, where the keys are used
 - Up to v0.23.0, `${...}` in `key` was used as written. A key that contains `${` now has to come from an environment variable
 
+- Use long random keys, such as the output of `openssl rand -hex 32`. mcp-rs logs a warning at startup for a key shorter than 16 characters (v0.27.0 and later)
+- A client address that fails authentication 20 times within a minute gets HTTP 429 for the rest of that minute, even with a valid key, so keys cannot be guessed quickly (v0.27.0 and later). Requests being checked at the same time count too, so sending many at once does not get past the limit. Behind a proxy in `trusted_proxies`, the address from `X-Forwarded-For` is counted. Behind a proxy that is not in `trusted_proxies`, or a NAT, every client shares the proxy's address: one client's failures then make everyone get 429 for the rest of the minute, so list the proxy in `trusted_proxies`
+- `mcp_rs_status` shows a key or token limited by `tools` only the version, the mode, and the caller's name: the config file, the logs, and the state of the handlers and plugins are shown only to callers that may use every tool (v0.27.0 and later)
+
 ## Limiting Tools per API Key or Token
 
 In HTTP mode, each API key (and each OAuth scope) can be limited to some of the tools. Other tools are not shown in `tools/list`, and calls to them fail with a tool error ("Tool '...' is not allowed for this API key or access token"). Refused calls are recorded in the [audit log](#audit-log) (category `Authorization`, result `DENIED`, with the key name such as `api_key:reader` or the token's client such as `oauth:my-client`).
@@ -301,7 +310,7 @@ Each item in `tools` is one of:
 
 - A tool name, such as `get_posts`
 - A pattern with `*`, which matches any text. For example, `fs__*` matches every tool of the plugin `fs`, and `delete_*` matches every tool whose name starts with `delete_`
-- `@read_only`: tools marked as read-only (`readOnlyHint: true` in their annotations). The WordPress tools that only read (`get_*` and `wordpress_health_check`) are read-only. Plugin tools are read-only when the plugin says so in its own tool definitions, so check a plugin's tools before relying on this for it. Tools without annotations are not read-only
+- `@read_only`: tools marked as read-only (`readOnlyHint: true` in their annotations). The WordPress tools that only read (`get_*` and `wordpress_health_check`) are read-only. Tools without annotations are not read-only. Plugin tools are not included (v0.27.0 and later): a plugin marks its own tools, and mcp-rs cannot tell whether a tool marked read-only writes. To include a plugin's read-only tools, check its tools and set `trust_annotations = true` in its `[[plugins]]` section, or allow its tools by name (such as `fs__read_*`). Up to v0.26.0, `@read_only` included every plugin tool the plugin marked as read-only
 
 A request is allowed a tool when any item matches it. `tools = []` allows no tools. Unknown presets (such as `@admin`) and empty items stop mcp-rs from starting. STDIO mode is not limited (it is a local pipe used by one person).
 
@@ -362,7 +371,7 @@ Both are off by default.
 - Nonces are remembered per caller: the API key or token, or the client's address without authentication (behind a proxy in `trusted_proxies`, the address from `X-Forwarded-For`, as for the intrusion detection). One caller can keep at most 10,000, and all callers 100,000. Up to v0.23.0, they shared one cache, so one client could fill it and make every request fail, and nonces were remembered for 5 minutes
 - With many addresses (for example IPv6), a client can still fill the whole cache. Remembering nonces only for 70 seconds makes this harder, but does not prevent it: limit connections per address in front of mcp-rs, or use authentication
 
-`ids_enabled` checks each request for attack patterns (such as SQL injection) and unusual behavior, and blocks the client's address for 30 minutes, or permanently for the most severe ones. It tells callers apart by the API key or token, or by the client's address without authentication. Up to v0.23.0, it used the `X-User-ID` header, which the client could set to anything. What it remembers about callers and addresses has a limit (10,000 each) and is cleaned up every 5 minutes. Behind a reverse proxy, see [Behind a Reverse Proxy](#httpwebsocket-behind-a-reverse-proxy) for `ids_trust_forwarded_for`.
+`ids_enabled` checks each request for attack patterns (such as SQL injection) and unusual behavior, and blocks the client's address for 30 minutes, or permanently for the most severe ones. On `/ws`, it checks each message too, and closes the connection (close code 1008) when it finds an attack (v0.27.0 and later; up to v0.26.0, only the upgrade request was checked). It tells callers apart by the API key or token, or by the client's address without authentication. Up to v0.23.0, it used the `X-User-ID` header, which the client could set to anything. What it remembers about callers and addresses has a limit (10,000 each) and is cleaned up every 5 minutes. Behind a reverse proxy, see [Behind a Reverse Proxy](#httpwebsocket-behind-a-reverse-proxy) for `ids_trust_forwarded_for`.
 
 ## Audit Log
 

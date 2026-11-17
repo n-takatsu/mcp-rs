@@ -197,7 +197,9 @@ pub struct HttpConfig {
     pub allowed_origins: Vec<String>,
     /// Maximum number of TCP connections served at the same time (#540).
     /// Further connections wait in the operating system's queue until one
-    /// closes. Includes WebSocket connections.
+    /// closes. A `/ws` connection counts only until its upgrade: after that,
+    /// it is limited by `websocket_max_connections` instead (#596; this
+    /// comment used to say WebSocket connections were included).
     #[serde(default = "default_max_connections")]
     pub max_connections: usize,
     /// Close a `/ws` connection when nothing, not even an answer to the
@@ -581,6 +583,9 @@ impl std::fmt::Debug for RequestHandlerSlot {
     }
 }
 
+/// これより短いAPIキーは、起動時に警告する（#596）
+const MIN_RECOMMENDED_API_KEY_CHARS: usize = 16;
+
 /// Shared state for HTTP transport
 #[derive(Clone)]
 struct HttpTransportState {
@@ -624,6 +629,8 @@ struct HttpTransportState {
     websocket_idle_timeout: Option<std::time::Duration>,
     /// 認証の失敗を監査ログに書く数の制限（#540）
     auth_failure_audit: Arc<AuthFailureAuditLimiter>,
+    /// アドレスごとの認証の失敗の数（#596）
+    auth_failures: Arc<AuthFailureLimiter>,
 }
 
 /// 認証を通った呼び出し元（#540）。本文を読む前のミドルウェアで決め、
@@ -849,6 +856,16 @@ impl HttpTransport {
                 )));
             }
 
+            // 短いキーは、当て推量で当たりやすい（#596）。起動は止めずに警告する
+            for entry in &self.config.api_keys {
+                if entry.key.chars().count() < MIN_RECOMMENDED_API_KEY_CHARS {
+                    warn!(
+                        "API key '{}' is shorter than {} characters, so it is easier to guess. Use a long random key, for example: openssl rand -hex 32",
+                        entry.name, MIN_RECOMMENDED_API_KEY_CHARS
+                    );
+                }
+            }
+
             // Two entries sharing a `key` would otherwise import silently
             // (the later one overwriting the earlier one in the manager's
             // hash-keyed storage), misattributing that key's usage to
@@ -1010,6 +1027,12 @@ impl HttpTransport {
             websocket_idle_timeout: (self.config.websocket_idle_timeout_secs > 0)
                 .then(|| std::time::Duration::from_secs(self.config.websocket_idle_timeout_secs)),
             auth_failure_audit: Arc::new(AuthFailureAuditLimiter::new()),
+            // 1分に20回失敗したアドレスは、その1分の残りを断る（#596）
+            auth_failures: Arc::new(AuthFailureLimiter::new(
+                20,
+                std::time::Duration::from_secs(60),
+                10_000,
+            )),
         };
         // IDSの古い記録を、5分ごとに消す（#543）。以前は、掃除の関数が
         // あっても、どこからも呼ばれていなかった。サーバーが無くなったら
@@ -1174,27 +1197,54 @@ impl HttpTransport {
 
 /// ループバック以外で待ち受けるのに、認証（APIキー・OAuth・mTLS）が
 /// 無ければ、起動しない理由を返す（#540）。`allow_unauthenticated_external`
-/// で明示して許したときは、警告だけ出す
+/// で明示して許したときは、警告だけ出す。
+///
+/// `trusted_proxies`を書いたとき（リバースプロキシの後ろ）は、ループバックで
+/// 待ち受けていても同じにする（#593）。同じマシンのプロキシから来る通信は、
+/// すべてループバックからに見えるので、待ち受けるアドレス・ネットワークの
+/// 方針では、プロキシの先（インターネット等）の相手を止められない。
+///
+/// プロキシの後ろでは、mTLSを認証に数えない（PR #601のレビュー）。TLSを
+/// 終えるのはプロキシなので、mcp-rsに証明書を出すのはプロキシで、確かめ
+/// られるのは「つないできたのがプロキシか」だけ。プロキシの先の
+/// クライアントは確かめられない
 fn unauthenticated_external_bind(config: &HttpConfig) -> Option<String> {
-    let authenticated = config.auth_enabled || config.oauth.is_some() || config.mtls_enabled;
-    if authenticated || config.bind_addr.ip().is_loopback() {
+    let behind_proxy = !config.trusted_proxies.is_empty();
+    let authenticated =
+        config.auth_enabled || config.oauth.is_some() || (config.mtls_enabled && !behind_proxy);
+    if authenticated || (config.bind_addr.ip().is_loopback() && !behind_proxy) {
         return None;
     }
+    let where_from = if behind_proxy {
+        format!(
+            "{} behind a reverse proxy (trusted_proxies is set)",
+            config.bind_addr
+        )
+    } else {
+        config.bind_addr.to_string()
+    };
     if config.allow_unauthenticated_external {
         warn!(
             "⚠️  Listening on {} without authentication (allow_unauthenticated_external = true): \
              anyone who can reach it can use every tool, unless something in front of mcp-rs \
              authenticates clients",
-            config.bind_addr
+            where_from
         );
         return None;
     }
+    let proxy_note = if behind_proxy {
+        " Requests through a proxy on the same machine come from loopback, so listening on \
+         loopback does not keep out the clients the proxy lets in. Behind a proxy, client \
+         certificates (mTLS) check only the proxy, not its clients, so they do not count."
+    } else {
+        ""
+    };
     Some(format!(
         "refusing to listen on {} without authentication: anyone who can reach it could use \
-         every tool. Configure API keys (auth_enabled = true and [[transport.http.api_keys]]) or \
+         every tool.{} Configure API keys (auth_enabled = true and [[transport.http.api_keys]]) or \
          OAuth ([transport.http.oauth]). Only when something in front of mcp-rs authenticates \
          clients, set allow_unauthenticated_external = true",
-        config.bind_addr
+        where_from, proxy_note
     ))
 }
 
@@ -1282,9 +1332,70 @@ async fn serve_connections(
     }
 }
 
+/// 1つの接続の、処理中のリクエストの数と、最後に変わった時刻（#592）
+struct ConnectionActivity {
+    in_flight: std::sync::atomic::AtomicUsize,
+    last_change: std::sync::Mutex<std::time::Instant>,
+}
+
+impl ConnectionActivity {
+    fn new() -> Self {
+        Self {
+            in_flight: std::sync::atomic::AtomicUsize::new(0),
+            last_change: std::sync::Mutex::new(std::time::Instant::now()),
+        }
+    }
+
+    fn touch(&self) {
+        *self
+            .last_change
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = std::time::Instant::now();
+    }
+
+    /// 処理中のリクエストが無い時間。処理中なら0
+    fn idle_for(&self) -> std::time::Duration {
+        if self.in_flight.load(std::sync::atomic::Ordering::SeqCst) > 0 {
+            return std::time::Duration::ZERO;
+        }
+        self.last_change
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .elapsed()
+    }
+}
+
+/// リクエストを受けてから、応答の本文を送り終える（または捨てる）までの
+/// 間、処理中として数える（#592）
+struct ActivityGuard(Arc<ConnectionActivity>);
+
+impl ActivityGuard {
+    fn new(activity: Arc<ConnectionActivity>) -> Self {
+        activity
+            .in_flight
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        activity.touch();
+        Self(activity)
+    }
+}
+
+impl Drop for ActivityGuard {
+    fn drop(&mut self) {
+        self.0.touch();
+        self.0
+            .in_flight
+            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 /// 1つの接続で、HTTP/1.1かHTTP/2のリクエストを処理する。ヘッダーを読む
 /// 時間（HTTP/1.1）と、応答の無い接続を見つけるping（HTTP/2）に`timeout`を
-/// 使う（#540）
+/// 使う（#540）。
+///
+/// 処理中のリクエストが無いまま`timeout`が過ぎた接続は、閉じる（#592）。
+/// HTTP/2には、HTTP/1.1の`header_read_timeout`にあたる上限が無く、pingに
+/// 答える相手は、何も送らなくても接続を持ち続けられた。接続を開いて何も
+/// 送らない相手で、`max_connections`を認証無しに埋められた
 async fn serve_connection<I>(
     io: I,
     service: ConnectionService,
@@ -1293,6 +1404,9 @@ async fn serve_connection<I>(
 ) where
     I: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
+    use http_body_util::BodyExt;
+    use hyper::service::Service as _;
+
     let io = TokioIo::new(io);
     let mut builder = HyperConnectionBuilder::new(TokioExecutor::new());
     builder
@@ -1304,13 +1418,55 @@ async fn serve_connection<I>(
         .timer(TokioTimer::new())
         .keep_alive_interval(timeout)
         .keep_alive_timeout(timeout);
-    let hyper_service = TowerToHyperService::new(service);
-    if let Err(e) = builder
-        .serve_connection_with_upgrades(io, hyper_service)
-        .await
-    {
-        // 時間切れ・相手が切った等。よくあることなので、エラーにはしない
-        debug!("HTTP connection error for {}: {}", remote_addr, e);
+    let activity = Arc::new(ConnectionActivity::new());
+    let inner = TowerToHyperService::new(service);
+    let tracked = activity.clone();
+    let hyper_service = hyper::service::service_fn(move |request| {
+        let guard = ActivityGuard::new(tracked.clone());
+        let response = inner.call(request);
+        async move {
+            let response = response.await?;
+            // 本文を送り終えるか捨てるまで、処理中として数える
+            Ok::<_, std::convert::Infallible>(response.map(|body| {
+                axum::body::Body::new(body.map_frame(move |frame| {
+                    let _ = &guard;
+                    frame
+                }))
+            }))
+        }
+    });
+    let connection = builder.serve_connection_with_upgrades(io, hyper_service);
+    tokio::pin!(connection);
+    let mut closing = false;
+    loop {
+        let wait = timeout.saturating_sub(activity.idle_for());
+        tokio::select! {
+            result = connection.as_mut() => {
+                if let Err(e) = result {
+                    // 時間切れ・相手が切った等。よくあることなので、エラーにはしない
+                    debug!("HTTP connection error for {}: {}", remote_addr, e);
+                }
+                return;
+            }
+            _ = tokio::time::sleep(wait.max(std::time::Duration::from_millis(10))) => {
+                if activity.idle_for() < timeout {
+                    // 処理中のリクエストがあるか、最近まであった。閉じる手続きの
+                    // 開始とほぼ同時に届いて受け付けたリクエストも、最後まで
+                    // 処理させる（PR #605のレビュー）
+                    continue;
+                }
+                if closing {
+                    // 閉じる手続きに応じない相手は、そのまま切る
+                    debug!("Closed idle connection from {} without waiting for it", remote_addr);
+                    return;
+                }
+                debug!("Closing idle connection from {} (no request for {:?})", remote_addr, timeout);
+                connection.as_mut().graceful_shutdown();
+                closing = true;
+                // 閉じる手続きに応じるのを、さらに`timeout`まで待つ
+                activity.touch();
+            }
+        }
     }
 }
 
@@ -1877,16 +2033,11 @@ async fn check_auth(
         } else {
             "invalid, revoked, or expired API key"
         };
-        warn!("Rejected request from {} due to {}", remote_addr, reason);
         audit_auth_failure(state, remote_addr, reason).await;
         return Err(Box::new(StatusCode::UNAUTHORIZED.into_response()));
     };
 
     let Some(token) = extract_bearer_token(headers) else {
-        warn!(
-            "Rejected request from {} due to missing access token",
-            remote_addr
-        );
         audit_auth_failure(state, remote_addr, "missing access token").await;
         return Err(Box::new(oauth_error_response(oauth.config(), None)));
     };
@@ -1907,10 +2058,6 @@ async fn check_auth(
         Err(error) => {
             match &error {
                 TokenError::Invalid(reason) => {
-                    warn!(
-                        "Rejected request from {} due to an invalid access token: {}",
-                        remote_addr, reason
-                    );
                     audit_auth_failure(
                         state,
                         remote_addr,
@@ -1919,10 +2066,6 @@ async fn check_auth(
                     .await;
                 }
                 TokenError::InsufficientScope => {
-                    warn!(
-                        "Rejected request from {}: the access token lacks the required scopes",
-                        remote_addr
-                    );
                     audit_auth_failure(state, remote_addr, "insufficient scope").await;
                 }
             }
@@ -1944,12 +2087,85 @@ async fn auth_middleware(
     if let Err(status) = check_network_policy(&state.network_policy, remote_addr) {
         return status.into_response();
     }
+    // 認証の失敗が続く相手は、しばらく確かめずに断る（#596）。プロキシの
+    // 後ろでは、`trusted_proxies`のヘッダーの相手で数える
+    let client = forwarded_client_ip(
+        remote_addr,
+        request.headers(),
+        Some(&state.trusted_proxies[..]),
+    );
+    // 確かめる前に1回分を数え、通ったら戻す（PR #608のレビュー）。「止めて
+    // いるか」の確認と数えるのを1回のロックで行うので、同時に送られた
+    // リクエストも、上限を越えて確かめない
+    if !state.auth_failures.begin(client, Instant::now()) {
+        return StatusCode::TOO_MANY_REQUESTS.into_response();
+    }
     match check_auth(&state, request.headers(), remote_addr).await {
         Ok(authenticated) => {
+            state.auth_failures.succeeded(client);
             request.extensions_mut().insert(authenticated);
             next.run(request).await
         }
         Err(response) => *response,
+    }
+}
+
+/// 呼び出し元のアドレスごとの、認証の失敗の数（#596）。`window`の間に
+/// `limit`回失敗したアドレスは、その間の残りを、確かめずに断る。確かめて
+/// いる最中のものも数える（同時に送られたリクエストで、上限を越えさせない）。
+/// 覚えるアドレスの数に上限を付ける（たくさんのアドレスからの失敗で、
+/// メモリーを使い切らせない）
+struct AuthFailureLimiter {
+    limit: u32,
+    window: std::time::Duration,
+    max_clients: usize,
+    failures: std::sync::Mutex<HashMap<IpAddr, (u32, Instant)>>,
+}
+
+impl AuthFailureLimiter {
+    fn new(limit: u32, window: std::time::Duration, max_clients: usize) -> Self {
+        Self {
+            limit,
+            window,
+            max_clients,
+            failures: std::sync::Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// 認証を確かめる前に呼ぶ。上限に達していれば`false`（確かめずに断る）。
+    /// そうでなければ1回分を数えて`true`。認証が通ったら`succeeded`で戻す
+    fn begin(&self, client: IpAddr, now: Instant) -> bool {
+        let mut failures = self
+            .failures
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if failures.len() >= self.max_clients && !failures.contains_key(&client) {
+            failures.retain(|_, (_, started)| now.duration_since(*started) < self.window);
+            if failures.len() >= self.max_clients {
+                // 覚えきれないアドレスは数えない（メモリーの上限を優先する）
+                return true;
+            }
+        }
+        let entry = failures.entry(client).or_insert((0, now));
+        if now.duration_since(entry.1) >= self.window {
+            *entry = (0, now);
+        }
+        if entry.0 >= self.limit {
+            return false;
+        }
+        entry.0 += 1;
+        true
+    }
+
+    /// 認証が通ったとき、`begin`で数えた1回分を戻す
+    fn succeeded(&self, client: IpAddr) {
+        let mut failures = self
+            .failures
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(entry) = failures.get_mut(&client) {
+            entry.0 = entry.0.saturating_sub(1);
+        }
     }
 }
 
@@ -1964,6 +2180,9 @@ async fn audit_auth_failure(state: &HttpTransportState, remote_addr: SocketAddr,
     if !record {
         return;
     }
+    // ログにも、監査ログと同じ件数まで書く（#596）。以前は件数の上限が無く、
+    // 認証の無い相手が、大きな`kid`等でログを埋められた
+    warn!("Rejected request from {} due to {}", remote_addr, reason);
     let mut entry = crate::security::AuditLogEntry::new(
         crate::security::AuditLevel::Warning,
         crate::security::AuditCategory::Authentication,
@@ -2501,15 +2720,24 @@ async fn handle_ws_upgrade(
                 caller,
                 expires_at,
                 permit,
+                WsRequest { uri, headers },
             )
         });
     response.headers_mut().extend(hsts_headers);
     response
 }
 
+/// `/ws`のアップグレードのリクエスト（メッセージをIDSで確かめるときに使う、
+/// #596）
+struct WsRequest {
+    uri: axum::http::Uri,
+    headers: HeaderMap,
+}
+
 /// Runs the per-connection message loop for a `/ws` client. Holds `_permit` for the connection's
 /// lifetime, releasing the reserved capacity slot back to
 /// `websocket_semaphore` when the connection ends.
+#[allow(clippy::too_many_arguments)]
 async fn handle_ws_socket(
     socket: WebSocket,
     state: HttpTransportState,
@@ -2518,8 +2746,10 @@ async fn handle_ws_socket(
     caller: crate::mcp::Caller,
     expires_at: Option<u64>,
     _permit: tokio::sync::OwnedSemaphorePermit,
+    request: WsRequest,
 ) {
     let conn_id = Uuid::new_v4();
+    let ids_caller = caller.clone();
     // リプレイ攻撃対策のnonceを、呼び出し元ごとに覚えるため（#543）
     let caller_name = caller.name.clone();
     state.ws_callers.lock().await.insert(conn_id, caller);
@@ -2651,6 +2881,37 @@ async fn handle_ws_socket(
                                     .await;
                                 continue;
                             }
+                        }
+                    }
+                }
+
+                // メッセージも、HTTPのリクエストと同じくIDSで確かめる（#596）。
+                // 以前は、アップグレードのときにしか確かめなかった
+                if state.ids.is_some() {
+                    if let Message::Text(text) = &msg {
+                        let body = serde_json::from_str::<Value>(text).ok();
+                        if let Err(status) = check_ids(
+                            state.ids.as_ref(),
+                            addr,
+                            ids_trusted_proxies(&state),
+                            &ids_caller,
+                            &request.uri,
+                            &request.headers,
+                            body.as_ref(),
+                        )
+                        .await
+                        {
+                            info!(
+                                "Closing WebSocket connection {} from {}: intrusion detection ({})",
+                                conn_id, addr, status
+                            );
+                            close_ws(
+                                &sender,
+                                close_code::POLICY,
+                                "blocked by intrusion detection",
+                            )
+                            .await;
+                            break;
                         }
                     }
                 }
@@ -4208,6 +4469,8 @@ mod tests {
             enable_websocket_upgrade: true,
             enforce_https: true,
             trusted_proxies: vec!["127.0.0.1".to_string()],
+            // 認証を確かめるテストではない（#593: trusted_proxiesには認証が要る）
+            allow_unauthenticated_external: true,
             ..HttpConfig::default()
         };
         let transport = HttpTransport::new(config).unwrap();
@@ -4238,6 +4501,8 @@ mod tests {
             min_tls_version: None,
             // テストの接続元（127.0.0.1）ではないプロキシ
             trusted_proxies: vec!["10.0.0.1".to_string()],
+            // 認証を確かめるテストではない（#593: trusted_proxiesには認証が要る）
+            allow_unauthenticated_external: true,
             ..HttpConfig::default()
         };
         let transport = HttpTransport::new(config).unwrap();
@@ -4277,6 +4542,8 @@ mod tests {
             bind_addr: "127.0.0.1:0".parse().unwrap(),
             anti_replay_enabled: true,
             trusted_proxies: vec!["127.0.0.1".to_string()],
+            // 認証を確かめるテストではない（#593: trusted_proxiesには認証が要る）
+            allow_unauthenticated_external: true,
             ..HttpConfig::default()
         };
         let transport = HttpTransport::new(config).unwrap();
@@ -4323,6 +4590,8 @@ mod tests {
             // check, which also applies once enforce_https is set.
             min_tls_version: None,
             trusted_proxies: vec!["127.0.0.1".to_string()],
+            // 認証を確かめるテストではない（#593: trusted_proxiesには認証が要る）
+            allow_unauthenticated_external: true,
             ..HttpConfig::default()
         };
         let transport = HttpTransport::new(config).unwrap();
@@ -4569,6 +4838,104 @@ mod tests {
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
 
+    /// `/ws`のメッセージも、IDSで確かめる（#596）。以前は、アップグレードの
+    /// ときにしか確かめなかった
+    #[tokio::test]
+    async fn test_ids_checks_websocket_messages() {
+        use futures::{SinkExt, StreamExt};
+        let config = HttpConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            ids_enabled: true,
+            enable_websocket_upgrade: true,
+            ..HttpConfig::default()
+        };
+        let transport = HttpTransport::new(config).unwrap();
+        transport.start_server().await.unwrap();
+        let server_addr = transport.bound_addr().await.unwrap();
+        wait_for_plain_server_ready(server_addr).await;
+
+        let url = format!("ws://localhost:{}/ws", server_addr.port());
+        let (mut stream, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+        stream
+            .send(tokio_tungstenite::tungstenite::Message::Text(
+                sql_injection_jsonrpc_request().to_string().into(),
+            ))
+            .await
+            .unwrap();
+        let closed = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while let Some(message) = stream.next().await {
+                match message {
+                    Ok(tokio_tungstenite::tungstenite::Message::Close(frame)) => {
+                        return frame.map(|f| f.reason.to_string());
+                    }
+                    Ok(_) => continue,
+                    Err(_) => return None,
+                }
+            }
+            None
+        })
+        .await
+        .expect("the connection was not closed");
+        assert_eq!(closed.as_deref(), Some("blocked by intrusion detection"));
+    }
+
+    /// 認証の失敗が続く相手は、しばらく確かめずに429で断る（#596）
+    #[tokio::test]
+    async fn test_repeated_authentication_failures_are_throttled() {
+        let port = start_test_server(api_key_config).await;
+        let client = reqwest::Client::new();
+        let post = |key: &'static str| {
+            client
+                .post(format!("http://127.0.0.1:{}/mcp", port))
+                .header("X-API-Key", key)
+                .json(&notification_jsonrpc_request())
+                .send()
+        };
+        for _ in 0..20 {
+            assert_eq!(
+                post("wrong-key").await.unwrap().status(),
+                StatusCode::UNAUTHORIZED
+            );
+        }
+        // 正しいキーでも、しばらくは断る（当て推量を続けさせない）
+        assert_eq!(
+            post("wrong-key").await.unwrap().status(),
+            StatusCode::TOO_MANY_REQUESTS
+        );
+        assert_eq!(
+            post("correct-key").await.unwrap().status(),
+            StatusCode::TOO_MANY_REQUESTS
+        );
+    }
+
+    #[test]
+    fn test_auth_failure_limiter() {
+        let limiter = AuthFailureLimiter::new(3, std::time::Duration::from_secs(60), 2);
+        let start = std::time::Instant::now();
+        let a: IpAddr = "192.0.2.1".parse().unwrap();
+        let b: IpAddr = "192.0.2.2".parse().unwrap();
+        let c: IpAddr = "192.0.2.3".parse().unwrap();
+        // 確かめている最中のもの（同時に送られたリクエスト）も数えるので、
+        // 4つ目は、前の3つの結果を待たずに断る（PR #608のレビュー）
+        for _ in 0..3 {
+            assert!(limiter.begin(a, start));
+        }
+        assert!(!limiter.begin(a, start));
+        // 通ったものは戻すので、正しいキーの呼び出し元は止まらない
+        limiter.succeeded(a);
+        assert!(limiter.begin(a, start));
+        assert!(!limiter.begin(a, start));
+        // ほかのアドレスは別に数える
+        assert!(limiter.begin(b, start));
+        // 窓が過ぎれば、また確かめる
+        let later = start + std::time::Duration::from_secs(61);
+        assert!(limiter.begin(a, later));
+        // 覚えるアドレスの数に上限がある（新しいアドレスは数えずに通す）
+        for _ in 0..5 {
+            assert!(limiter.begin(c, start));
+        }
+    }
+
     #[tokio::test]
     async fn test_ids_blocklist_persists_for_later_benign_requests_from_same_ip() {
         let config = HttpConfig {
@@ -4622,6 +4989,8 @@ mod tests {
             ids_enabled: true,
             ids_trust_forwarded_for: true,
             trusted_proxies: vec!["127.0.0.1".to_string()],
+            // 認証を確かめるテストではない（#593: trusted_proxiesには認証が要る）
+            allow_unauthenticated_external: true,
             ..HttpConfig::default()
         };
         let transport = HttpTransport::new(config).unwrap();
@@ -6191,6 +6560,61 @@ mod tests {
         assert!(started.elapsed() < std::time::Duration::from_secs(4));
     }
 
+    /// 何も送らない接続は、`timeout_ms`で閉じる（#592）。以前は、
+    /// プロトコルを決める前（最初のバイトを待つ間）に上限が無かった
+    #[tokio::test]
+    async fn test_connection_that_sends_nothing_is_closed() {
+        let port = start_test_server(|c| c.timeout_ms = 500).await;
+        let started = std::time::Instant::now();
+        let (_, closed) = raw_exchange(port, b"", std::time::Duration::from_secs(5)).await;
+        assert!(closed, "the connection was not closed");
+        assert!(started.elapsed() < std::time::Duration::from_secs(4));
+    }
+
+    /// HTTP/2で、pingには答えるが、リクエストを送らない接続も閉じる
+    /// （#592）。リクエストの後に何もしなくなった接続も同じ
+    #[tokio::test]
+    async fn test_idle_http2_connection_is_closed() {
+        let port = start_test_server(|c| c.timeout_ms = 500).await;
+        let stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .unwrap();
+        // hyperのクライアントは、サーバーのpingに自動で答える
+        let (mut sender, connection) =
+            hyper::client::conn::http2::handshake(TokioExecutor::new(), TokioIo::new(stream))
+                .await
+                .unwrap();
+        let connection = tokio::spawn(connection);
+
+        // 1回は使える
+        let request = hyper::Request::builder()
+            .uri(format!("http://127.0.0.1:{port}/nothing-here"))
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let response = sender.send_request(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        drop(response);
+
+        // その後、何もしなければ閉じられる
+        let started = std::time::Instant::now();
+        let closed = tokio::time::timeout(std::time::Duration::from_secs(5), connection).await;
+        assert!(closed.is_ok(), "the HTTP/2 connection was not closed");
+        assert!(started.elapsed() < std::time::Duration::from_secs(4));
+    }
+
+    /// 処理中のリクエストがある間は、何もしていない接続として閉じない
+    /// （#592）
+    #[test]
+    fn test_connection_activity_counts_requests_in_flight() {
+        let activity = Arc::new(ConnectionActivity::new());
+        let guard = ActivityGuard::new(activity.clone());
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        assert_eq!(activity.idle_for(), std::time::Duration::ZERO);
+        drop(guard);
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        assert!(activity.idle_for() >= std::time::Duration::from_millis(20));
+    }
+
     /// 本文を送り終えないリクエストも、`timeout_ms`で打ち切る（#540）
     #[tokio::test]
     async fn test_slow_body_is_cut_off_after_the_timeout() {
@@ -6525,6 +6949,36 @@ mod tests {
         ] {
             assert_eq!(unauthenticated_external_bind(&config), None, "{config:?}");
         }
+
+        // リバースプロキシの後ろ（trusted_proxies）では、ループバックで
+        // 待ち受けていても、認証が要る（#593）
+        let behind_proxy = HttpConfig {
+            bind_addr: "127.0.0.1:8081".parse().unwrap(),
+            trusted_proxies: vec!["127.0.0.1".to_string()],
+            ..HttpConfig::default()
+        };
+        let reason = unauthenticated_external_bind(&behind_proxy).unwrap();
+        assert!(reason.contains("reverse proxy"), "{reason}");
+        for config in [
+            HttpConfig {
+                auth_enabled: true,
+                ..behind_proxy.clone()
+            },
+            HttpConfig {
+                allow_unauthenticated_external: true,
+                ..behind_proxy.clone()
+            },
+        ] {
+            assert_eq!(unauthenticated_external_bind(&config), None, "{config:?}");
+        }
+        // プロキシの後ろのmTLSは、プロキシを確かめるだけなので、認証に
+        // 数えない（PR #601のレビュー）
+        let mtls_behind_proxy = HttpConfig {
+            mtls_enabled: true,
+            ..behind_proxy.clone()
+        };
+        let reason = unauthenticated_external_bind(&mtls_behind_proxy).unwrap();
+        assert!(reason.contains("mTLS"), "{reason}");
     }
 
     #[test]

@@ -4,7 +4,7 @@ AIのクライアントに、WordPress・データベース（PostgreSQL・MySQL
 
 > **[日本語](README.ja.md)** | **[English](README.md)**
 
-[![Version](https://img.shields.io/badge/Version-v0.26.0-blue)](https://github.com/n-takatsu/mcp-rs/releases/tag/v0.26.0)
+[![Version](https://img.shields.io/badge/Version-v0.27.0-blue)](https://github.com/n-takatsu/mcp-rs/releases/tag/v0.27.0)
 ![Implementation](https://img.shields.io/badge/WordPress_Tools-32_Available-green)
 ![License](https://img.shields.io/badge/License-MIT%2FApache--2.0-green)
 
@@ -66,7 +66,7 @@ AIのクライアントに、WordPress・データベース（PostgreSQL・MySQL
 
 HTTPSでつながる、アプリケーションパスワード（ユーザー → プロフィール → アプリケーションパスワード）を使えるWordPressのサイトが要ります。Rustは要りません。v0.25.0から、各リリースに、Windows（x64）・macOS（Apple Silicon）・Linux（x64）向けのビルド済みのmcp-rsが付きます。
 
-**1. 入れる**（v0.26.0から）。スクリプトが、最新のリリースをダウンロードしてSHA256を確かめ、`~/.mcp-rs/bin`（Windowsは`%USERPROFILE%\.mcp-rs\bin`）に置きます。管理者の権限は要らず、ほかには何も変えません。更新も、もう一度動かすだけです。
+**1. インストール**（v0.26.0から）。スクリプトが、最新のリリースをダウンロードしてSHA256を確かめ、`~/.mcp-rs/bin`（Windowsは`%USERPROFILE%\.mcp-rs\bin`）に置きます。管理者の権限は要らず、ほかには何も変えません。更新も、もう一度動かすだけです。
 
 ```powershell
 # Windows（PowerShell）
@@ -78,7 +78,7 @@ irm https://raw.githubusercontent.com/n-takatsu/mcp-rs/main/install/install.ps1 
 curl -fsSL https://raw.githubusercontent.com/n-takatsu/mcp-rs/main/install/install.sh | sh
 ```
 
-**2. 設定する。** スクリプトが`mcp-rs init`を動かすかを聞きます（自分で動かしても構いません）。サイトのURL・ユーザー名・アプリケーションパスワードを聞き（ファイルではなく、OSの資格情報ストアに入れます）、設定ファイル（`~/.config/mcp-rs/config.toml`）を書き、接続とサインインを確かめ、Claude Desktop・Claude Code・GitHub Copilot（VS Code）に登録します。変える前には、1つずつ確かめます。
+**2. セットアップ** スクリプトが`mcp-rs init`を動かすかを聞きます（自分で動かしても構いません）。サイトのURL・ユーザー名・アプリケーションパスワードを聞き（ファイルではなく、OSの資格情報ストアに入れます）、設定ファイル（`~/.config/mcp-rs/config.toml`）を書き、接続とサインインを確かめ、Claude Desktop・Claude Code・GitHub Copilot（VS Code）に登録します。変える前には、1つずつ確かめます。
 
 ```bash
 ~/.mcp-rs/bin/mcp-rs init        # Windows: & "$env:USERPROFILE\.mcp-rs\bin\mcp-rs.exe" init
