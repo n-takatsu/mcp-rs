@@ -33,6 +33,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- READMEの導入手順を短くした（#577）。インストールスクリプト → `mcp-rs init`
+  → 確かめ方の3段だけにし、手で入れる手順・ソースからのビルド・クライアント
+  ごとの手での設定・設定ファイル・ログファイルは、サイトの
+  [Getting Started](https://n-takatsu.github.io/mcp-rs/docs/guides/)のガイドに
+  移した。HTTPモードのTLS・mTLS・WebSocketの設定は、Securityの文書に移した
 - `serde_json`の`preserve_order`を有効にした（#575）。Claude Desktopの設定
   ファイルに足すとき、ほかの項目の順番を変えないため。mcp-rsが返すJSONの
   キーも、並べ替えずに作った順になる（ライブラリとして使うときの
