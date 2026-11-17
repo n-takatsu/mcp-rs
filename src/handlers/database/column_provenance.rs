@@ -106,6 +106,44 @@ fn parse_statements(sql: &str, dialect: &dyn Dialect) -> Result<Vec<Statement>, 
                 "MariaDB executable comments (/*M! ... */) are not allowed",
             ));
         }
+        // MySQLのヒント`SET_VAR(変数=値)`は、その文の間だけセッションの
+        // 変数を変える（`foreign_key_checks=0`で外部キーの確認を外す等）。
+        // 検査はヒントをコメントとして読むので、断る（PR #610のレビュー）
+        let set_var = tokens.iter().any(|token| {
+            matches!(
+                token,
+                Token::Whitespace(Whitespace::MultiLineComment(text))
+                    if text.starts_with('+') && text.to_ascii_lowercase().contains("set_var")
+            )
+        });
+        if set_var {
+            return Err(unsupported(
+                "the optimizer hint SET_VAR is not allowed: it changes session settings for the statement",
+            ));
+        }
+    }
+    if dialect.is::<PostgreSqlDialect>() {
+        // PostgreSQLの`U&"…"`（Unicodeのエスケープで書いた名前）は、
+        // `U&"pg\005Fread_file"`が`pg_read_file`になる。sqlparserは、これを
+        // 列`U`と名前の`&`と読むので、関数の検査を通ってしまう。ふつうの
+        // SQLでは使わないので、断る（PR #610のレビュー）
+        let tokens = Tokenizer::new(dialect, sql)
+            .tokenize()
+            .map_err(|e| parse_error(&e))?;
+        let unicode_identifier = tokens.windows(3).any(|window| {
+            matches!(
+                window,
+                [Token::Word(u), Token::Ampersand, Token::Word(quoted)]
+                    if u.quote_style.is_none()
+                        && u.value.eq_ignore_ascii_case("u")
+                        && quoted.quote_style == Some('"')
+            )
+        });
+        if unicode_identifier {
+            return Err(unsupported(
+                "Unicode escape identifiers (U&\"...\") are not allowed",
+            ));
+        }
     }
     Parser::parse_sql(dialect, sql).map_err(|e| parse_error(&e))
 }
@@ -170,13 +208,20 @@ const SERVER_SIDE_FUNCTIONS: &[&str] = &[
     // PostgreSQL: サーバーのファイルと大きなオブジェクトの間で写す
     "lo_import",
     "lo_export",
+    // PostgreSQL: ほかの接続を切る・止める。同じロールの接続なら、特別な
+    // 権限が無くても切れる（PR #610のレビュー）
+    "pg_terminate_backend",
+    "pg_cancel_backend",
+];
+
+/// 名前がこれで始まる関数も断る（#597、PR #610のレビュー）
+const SERVER_SIDE_FUNCTION_PREFIXES: &[&str] = &[
     // PostgreSQL: dblinkは別の接続を開くので、読み取り専用のトランザクションの
-    // 外で書き込める
+    // 外で書き込める（dblink・dblink_exec・dblink_connect・dblink_open等）
     "dblink",
-    "dblink_exec",
-    "dblink_connect",
-    "dblink_connect_u",
-    "dblink_send_query",
+    // PostgreSQL: サーバーのフォルダの一覧（pg_ls_dir・pg_ls_logdir・
+    // pg_ls_waldir等）
+    "pg_ls_",
 ];
 
 /// 文の中の、副作用のあるもの（#597）。`execute_query`（`read_only`）では、
@@ -226,7 +271,13 @@ fn refuse_side_effects(statement: &Statement, read_only: bool) -> Result<(), Pro
             .last()
             .and_then(|part| part.as_ident())
             .map(|ident| ident.value.to_ascii_lowercase());
-        match name.filter(|n| SERVER_SIDE_FUNCTIONS.contains(&n.as_str())) {
+        let refused = |n: &String| {
+            SERVER_SIDE_FUNCTIONS.contains(&n.as_str())
+                || SERVER_SIDE_FUNCTION_PREFIXES
+                    .iter()
+                    .any(|prefix| n.starts_with(prefix))
+        };
+        match name.filter(refused) {
             Some(name) => ControlFlow::Break(format!(
                 "the function {name}() is not allowed: it reaches files or connections on the database server"
             )),
@@ -769,9 +820,35 @@ mod tests {
             "SELECT lo_export(1, '/tmp/x')",
             "SELECT * FROM dblink('dbname=app', 'DELETE FROM users') AS t(x int)",
             "SELECT dblink_exec('dbname=app', 'DELETE FROM users')",
+            "SELECT dblink_open('c', 'SELECT 1')",
+            "SELECT pg_ls_logdir()",
+            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity",
+            "SELECT pg_cancel_backend(1)",
+            // Unicodeのエスケープで書いた名前（PR #610のレビュー）
+            r#"SELECT U&"pg\005Fread_file"('/etc/passwd')"#,
+            r#"SELECT u&"dblink\005Fexec"('x', 'y')"#,
         ] {
             assert!(validate_single_query_statement(sql, &pg).is_err(), "{sql}");
         }
+        // ふつうの引用符つきの名前・U&の文字列は通す
+        assert!(validate_single_query_statement(r#"SELECT "id" FROM users"#, &pg).is_ok());
+        assert!(validate_single_query_statement("SELECT 1 & 2", &pg).is_ok());
+        // MySQLのヒントSET_VARは断る。ほかのヒントは通す（PR #610のレビュー）
+        assert!(validate_single_write_statement(
+            "INSERT /*+ SET_VAR(foreign_key_checks=0) */ INTO users (id) VALUES (1)",
+            &mysql
+        )
+        .is_err());
+        assert!(validate_single_query_statement(
+            "SELECT /*+ set_var(sort_buffer_size = 16M) */ id FROM users",
+            &mysql
+        )
+        .is_err());
+        assert!(validate_single_query_statement(
+            "SELECT /*+ MAX_EXECUTION_TIME(1000) */ 1",
+            &mysql
+        )
+        .is_ok());
         // 書き込みの道具でも、関数は断る。行の鍵は書き込みの文には要らない
         assert!(validate_single_write_statement(
             "UPDATE users SET email = LOAD_FILE('/etc/passwd') WHERE id = 1",

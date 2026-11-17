@@ -845,6 +845,61 @@ async fn tricky_sql_is_read_like_the_server(kind: Kind) {
     }
 }
 
+/// MySQLのヒント`SET_VAR`は、その文の間だけセッションの変数を変え、外部キーの
+/// 確認も外せる。検査はヒントをコメントとして読むので、断る（PR #610の
+/// レビュー）。MariaDBは`SET_VAR`を知らない
+async fn set_var_hint_is_refused(kind: Kind) {
+    let Some((url, pool)) = test_database(kind).await else {
+        return;
+    };
+    let parent = unique_name("fk_parent");
+    let child = unique_name("fk_child");
+    run(
+        &pool,
+        &format!("CREATE TABLE {parent} (id int PRIMARY KEY)"),
+    )
+    .await;
+    run(
+        &pool,
+        &format!(
+            "CREATE TABLE {child} (id int PRIMARY KEY, parent_id int, \
+             FOREIGN KEY (parent_id) REFERENCES {parent}(id))"
+        ),
+    )
+    .await;
+
+    // mcp-rsを通さずに試すと、MySQLでは外部キーの確認が外れる
+    let mut conn = pool.get_conn().await.unwrap();
+    let direct = conn
+        .query_drop(format!(
+            "INSERT /*+ SET_VAR(foreign_key_checks=0) */ INTO {child} VALUES (1, 999)"
+        ))
+        .await;
+    match kind {
+        Kind::MySql => assert!(direct.is_ok(), "{direct:?}"),
+        Kind::MariaDb => assert!(direct.is_err(), "MariaDB ignores SET_VAR"),
+    }
+    drop(conn);
+
+    // mcp-rsは、どちらでも断る
+    let mut settings = settings_from_url(&url, kind);
+    settings.allow_write = Some(true);
+    let handler = DatabaseHandler::from_settings(&settings).await.unwrap();
+    let err = call(
+        &handler,
+        "execute_command",
+        json!({ "sql": format!(
+            "INSERT /*+ SET_VAR(foreign_key_checks=0) */ INTO {child} VALUES (2, 999)"
+        ) }),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.contains("SET_VAR"), "{err}");
+
+    run(&pool, &format!("DROP TABLE {child}")).await;
+    run(&pool, &format!("DROP TABLE {parent}")).await;
+}
+
 /// 同じテストを、MySQLとMariaDBの両方で動かす
 macro_rules! for_each_server {
     ($($name:ident),* $(,)?) => {
@@ -883,4 +938,5 @@ for_each_server!(
     mysql_engine_setting_works_with_mariadb,
     quoting_matches_the_sql_check,
     tricky_sql_is_read_like_the_server,
+    set_var_hint_is_refused,
 );

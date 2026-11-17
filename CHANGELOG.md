@@ -31,8 +31,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `execute_query`・`execute_command`で、データベースのサーバーのファイル・
   接続に触れる関数を断るようにした（#597）。MySQL・MariaDBの`LOAD_FILE()`・
   `sys_exec()`・`sys_eval()`、PostgreSQLの`pg_read_file()`・
-  `pg_read_binary_file()`・`pg_ls_dir()`・`pg_stat_file()`・`lo_import()`・
-  `lo_export()`・`dblink`の関数（`FROM`の中も）。読み取り専用の
+  `pg_read_binary_file()`・`pg_ls_*`・`pg_stat_file()`・`lo_import()`・
+  `lo_export()`・`dblink*`の関数（`FROM`の中も）、ほかの接続を切る
+  `pg_terminate_backend()`・`pg_cancel_backend()`。PostgreSQLの
+  `U&"…"`（Unicodeのエスケープで書いた名前。関数の名前を言い換えられる）と、
+  MySQLのヒント`SET_VAR(…)`（その文の間だけ`foreign_key_checks`等を
+  変える）も断る。読み取り専用の
   トランザクションでは止まらないため。権限を与えないのが本来の守りで、
   これは2つ目の守り
 - MySQL・MariaDBのSQLの検査を点検し直した（#597）。`#`・空白の無い`--`・
