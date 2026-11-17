@@ -69,6 +69,8 @@ impl PostgreSqlConnection {
     pub async fn new(connection_string: &str) -> Result<Self, DatabaseError> {
         let options = PgConnectOptions::from_str(connection_string)
             .map_err(|e| DatabaseError::ConfigurationError(e.to_string()))?;
+        // 接続文字列の`?sslmode=verify-ca`も止める（PR #600のレビュー）
+        refuse_verify_ca(&options)?;
         let database_name = options.get_database().unwrap_or("unknown").to_string();
         let user_name = options.get_username().to_string();
         let pool = PgPool::connect_with(options)
@@ -673,6 +675,24 @@ pub fn string_to_numeric(text: &str) -> Option<Vec<u8>> {
     Some(bytes)
 }
 
+/// `verify-ca`なら、エラーを返す（#594）。sqlx 0.8は、`verify-ca`で、公開の
+/// CA（webpki-roots）に`ssl_root_cert`を足して確かめ、ホスト名は見ない。
+/// そのため、`ssl_root_cert`があっても、公開のCAが発行したどのホストの
+/// 証明書でも受け入れてしまう。設定ファイル・`PGSSLMODE`・接続文字列の
+/// どれから来ても止める
+fn refuse_verify_ca(options: &PgConnectOptions) -> Result<(), DatabaseError> {
+    if matches!(options.get_ssl_mode(), PgSslMode::VerifyCa) {
+        return Err(DatabaseError::ConfigurationError(
+            "ssl_mode \"verify-ca\" is not supported for PostgreSQL (from the config file, \
+             PGSSLMODE, or the connection string): it does not check the host name, and the \
+             public CAs are trusted even with ssl_root_cert, so it would accept a certificate for \
+             any host. Use ssl_mode = \"verify-full\" (with ssl_root_cert for a private CA)"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
 /// 設定から、接続の設定を作る。パスワードはURLに埋め込まないので、記号を
 /// 含んでいてもよい
 pub fn connect_options(config: &ConnectionConfig) -> Result<PgConnectOptions, DatabaseError> {
@@ -691,6 +711,8 @@ pub fn connect_options(config: &ConnectionConfig) -> Result<PgConnectOptions, Da
         })?;
         options = options.ssl_mode(mode);
     }
+    // `verify-ca`は使えない（#594）
+    refuse_verify_ca(&options)?;
     // 証明書を確かめるCA（#539）。非公開のCA（RDS等）で`verify-ca`・
     // `verify-full`を使うため
     if let Some(path) = config.options.get(super::OPTION_SSL_ROOT_CERT) {
@@ -759,7 +781,7 @@ pub fn check_ssl_root_cert(
     Err(format!(
         "database.ssl_root_cert is set, but ssl_mode is \"{}\", which does not check the \
          server certificate, so the CA file would not be used. Set ssl_mode = \"verify-full\" \
-         (or \"verify-ca\") in [database]",
+         in [database]",
         ssl_mode_name(&mode)
     ))
 }
@@ -1399,7 +1421,6 @@ mod tests {
             None
         );
         for (mode, risk) in [
-            ("verify-ca", "host name"),
             ("require", "certificate"),
             ("prefer", "may not be encrypted"),
             ("disable", "not encrypted"),
@@ -1411,6 +1432,36 @@ mod tests {
                 "{warning}"
             );
         }
+    }
+
+    /// `verify-ca`は使えない（#594）。sqlxが、ssl_root_certがあっても公開の
+    /// CAを信頼し、ホスト名を見ないので、どのホストの証明書でも受け入れる
+    #[test]
+    fn test_verify_ca_is_refused() {
+        for cert in [None, Some("ca.pem")] {
+            let mut config = ConnectionConfig {
+                host: "db.example.com".to_string(),
+                ssl_mode: Some("verify-ca".to_string()),
+                ..ConnectionConfig::default()
+            };
+            if let Some(cert) = cert {
+                config.options.insert(
+                    super::super::OPTION_SSL_ROOT_CERT.to_string(),
+                    cert.to_string(),
+                );
+            }
+            let err = connect_options(&config).unwrap_err().to_string();
+            assert!(
+                err.contains("verify-ca") && err.contains("verify-full"),
+                "{err}"
+            );
+        }
+        // 接続文字列から来ても止める（PR #600のレビュー）
+        let options = PgConnectOptions::from_str(
+            "postgres://u@db.example.com/app?sslmode=verify-ca&sslrootcert=ca.pem",
+        )
+        .unwrap();
+        assert!(refuse_verify_ca(&options).is_err());
     }
 
     /// `ssl_root_cert`を書いたら、証明書を確かめる`ssl_mode`が要る
@@ -1425,9 +1476,7 @@ mod tests {
             };
             connect_options(&config).unwrap()
         };
-        for mode in ["verify-ca", "verify-full"] {
-            assert!(check_ssl_root_cert(true, &options(mode)).is_ok(), "{mode}");
-        }
+        assert!(check_ssl_root_cert(true, &options("verify-full")).is_ok());
         for mode in ["disable", "allow", "prefer", "require"] {
             let err = check_ssl_root_cert(true, &options(mode)).unwrap_err();
             assert!(err.contains(&format!("\"{mode}\"")), "{err}");

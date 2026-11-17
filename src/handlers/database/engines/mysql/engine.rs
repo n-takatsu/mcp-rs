@@ -62,7 +62,9 @@ fn ssl_mode(config: &ConnectionConfig) -> &str {
 ///
 /// - `prefer`・`require`: 暗号化するが、証明書は確かめない（`prefer`は、
 ///   サーバーがTLSを使えなければ暗号化せずにつなぐ）
-/// - `verify-ca`: 証明書を確かめるが、ホスト名は確かめない
+/// - `verify-ca`: 証明書を確かめるが、ホスト名は確かめない。`root_cert`が
+///   要る（#594）。公開のCAで確かめると、ホスト名を見ないので、公開のCAが
+///   発行したどのホストの証明書でも受け入れてしまう
 /// - `verify-full`: 証明書とホスト名を確かめる
 ///
 /// `root_cert`は、証明書を確かめるCAのファイル（PEM）。書いたときは、その
@@ -80,6 +82,9 @@ pub fn ssl_opts(mode: &str, root_cert: Option<&str>) -> Result<Option<SslOpts>, 
             SslOpts::default()
                 .with_danger_accept_invalid_certs(true)
                 .with_danger_skip_domain_validation(true),
+        )),
+        "verify-ca" if root_cert.is_none() => Err(DatabaseError::ConfigurationError(
+            VERIFY_CA_NEEDS_ROOT_CERT.to_string(),
         )),
         "verify-ca" => Ok(Some(
             with_root(SslOpts::default()).with_danger_skip_domain_validation(true),
@@ -190,10 +195,20 @@ pub fn weak_tls_warning(config: &ConnectionConfig) -> Option<String> {
     ))
 }
 
+/// `verify-ca`で`ssl_root_cert`が無いときのエラー（#594）
+const VERIFY_CA_NEEDS_ROOT_CERT: &str = "database.ssl_mode = \"verify-ca\" needs ssl_root_cert \
+     (the CA that signed the server certificate): verify-ca does not check the host name, so \
+     with the public CAs it would accept a certificate for any host. Set ssl_root_cert, or use \
+     ssl_mode = \"verify-full\"";
+
 /// `ssl_root_cert`を書いたのに、`ssl_mode`が証明書を確かめない設定なら、
-/// 起動しない理由を返す（PostgreSQLと同じ）
+/// 起動しない理由を返す（PostgreSQLと同じ）。`verify-ca`で`ssl_root_cert`が
+/// 無いときも、起動しない（#594）
 pub fn check_ssl_root_cert(config: &ConnectionConfig) -> Result<(), String> {
     let mode = ssl_mode(config);
+    if mode == "verify-ca" && !config.options.contains_key(OPTION_SSL_ROOT_CERT) {
+        return Err(VERIFY_CA_NEEDS_ROOT_CERT.to_string());
+    }
     if !config.options.contains_key(OPTION_SSL_ROOT_CERT)
         || matches!(mode, "verify-ca" | "verify-full")
     {
@@ -362,6 +377,9 @@ mod tests {
         assert_eq!(verify_ca.root_certs().len(), 1);
         // CAのファイルを書いたら、そのCAだけを信頼する
         assert!(verify_ca.disable_built_in_roots());
+        // ssl_root_cert無しのverify-caは、どのホストの公開の証明書でも
+        // 受け入れるので、使えない（#594）
+        assert!(ssl_opts("verify-ca", None).is_err());
         let verify_full = ssl_opts("verify-full", None).unwrap().unwrap();
         assert!(!verify_full.accept_invalid_certs());
         assert!(!verify_full.skip_domain_validation());
@@ -416,6 +434,9 @@ mod tests {
         assert!(check_ssl_root_cert(&connection("db", Some("require"), false)).is_ok());
         assert!(check_ssl_root_cert(&connection("db", Some("verify-full"), true)).is_ok());
         assert!(check_ssl_root_cert(&connection("db", Some("verify-ca"), true)).is_ok());
+        // verify-caは、ssl_root_certが要る（#594）
+        let error = check_ssl_root_cert(&connection("db", Some("verify-ca"), false)).unwrap_err();
+        assert!(error.contains("needs ssl_root_cert"), "{error}");
         let error = check_ssl_root_cert(&connection("db", Some("require"), true)).unwrap_err();
         assert!(error.contains("would not be used"), "{error}");
         // 省略時は`prefer`で、CAのファイルを使わない

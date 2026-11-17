@@ -26,10 +26,10 @@ port = 5432                       # default: 5432
 database = "app"
 username = "mcp_reader"
 password = "${MCP_DB_PASSWORD}"   # read from an environment variable
-ssl_mode = "prefer"               # disable, allow, prefer (default), require, verify-ca, verify-full
+ssl_mode = "prefer"               # disable, allow, prefer (default), require, verify-full
 
 # Optional
-# ssl_root_cert = "certs/ca.pem"  # CA that signed the server certificate (verify-ca, verify-full)
+# ssl_root_cert = "certs/ca.pem"  # CA that signed the server certificate (verify-full)
 # allow_write = false             # true offers execute_command (INSERT, UPDATE, DELETE)
 # max_rows = 1000                 # rows returned by execute_query at most
 # max_result_bytes = 10485760     # size of the execute_query result at most (about 10 MB)
@@ -47,7 +47,7 @@ ssl_mode = "prefer"               # disable, allow, prefer (default), require, v
 | `username` | yes | | `${VAR}` allowed |
 | `password` | | none | `${VAR}` allowed. Never written to logs, `mcp_rs_status`, or error messages |
 | `ssl_mode` | | `prefer` | Same meaning as libpq's `sslmode`. See [TLS](#tls). MySQL and MariaDB have no `allow` |
-| `ssl_root_cert` | | none | PEM file of the CA that signed the server certificate. A relative path is relative to the folder of the configuration file. Used only with `ssl_mode = "verify-ca"` or `"verify-full"`: with a weaker `ssl_mode`, the database tools do not start |
+| `ssl_root_cert` | | none | PEM file of the CA that signed the server certificate. A relative path is relative to the folder of the configuration file. Used only with `ssl_mode = "verify-full"` (MySQL and MariaDB: also `"verify-ca"`, which requires it): with a weaker `ssl_mode`, the database tools do not start |
 | `allow_write` | | `false` | See [Writing data](#writing-data) |
 | `max_rows` | | `1000` | `0` means the default |
 | `max_result_bytes` | | `10485760` (10 MB) | About how many bytes of values `execute_query` returns (see below). `0` means the default |
@@ -59,7 +59,11 @@ ssl_mode = "prefer"               # disable, allow, prefer (default), require, v
 
 The default `ssl_mode = "prefer"` uses TLS when the server offers it, but does not check the server certificate, and silently connects without TLS when the server does not offer it. Anyone on the network path can then read the queries and results, or pose as the server and receive the password.
 
-When the database is on another machine, use `ssl_mode = "verify-full"`. It checks that the certificate is signed by a trusted CA and matches `host`. For a private CA (for example Amazon RDS), download its certificate and point `ssl_root_cert` to it. The CA file is used only with `verify-ca` or `verify-full`, so mcp-rs starts without the database tools when `ssl_root_cert` is set with a weaker `ssl_mode` (including `PGSSLMODE` when `ssl_mode` is not set), and shows the reason in `mcp_rs_status`. mcp-rs logs a warning at startup when the host is not `localhost`, `127.0.0.1`, `::1`, or a Unix socket, and `ssl_mode` is weaker than `verify-full`.
+When the database is on another machine, use `ssl_mode = "verify-full"`. It checks that the certificate is signed by a trusted CA and matches `host`. For a private CA (for example Amazon RDS), download its certificate and point `ssl_root_cert` to it. The CA file is used only with `verify-full` (and `verify-ca` on MySQL and MariaDB), so mcp-rs starts without the database tools when `ssl_root_cert` is set with a weaker `ssl_mode` (including `PGSSLMODE` when `ssl_mode` is not set), and shows the reason in `mcp_rs_status`. mcp-rs logs a warning at startup when the host is not `localhost`, `127.0.0.1`, `::1`, or a Unix socket, and `ssl_mode` is weaker than `verify-full`.
+
+For PostgreSQL, `verify-ca` is not supported (from v0.27.0): mcp-rs starts without the database tools and shows the reason, also when `PGSSLMODE=verify-ca`. `verify-ca` does not check the host name, and the TLS library mcp-rs uses for PostgreSQL trusts the public CAs even with `ssl_root_cert`, so any certificate from a public CA, for any host, would be accepted. Use `verify-full`. With `ssl_root_cert`, `verify-full` trusts that CA in addition to the public CAs, and checks that the certificate is for `host`.
+
+If you used `verify-ca` because `host` is not the name in the certificate (you connect by an IP address, or through an SSH tunnel to `localhost`), do not change to `require`: it does not check the certificate at all, which is weaker than `verify-ca` was. Connect by the name in the certificate instead. When that name does not resolve to the address you use, map it in the hosts file (`/etc/hosts`, or `C:\Windows\System32\drivers\etc\hosts`), for example `127.0.0.1 db.example.com` for a tunnel, and set `host = "db.example.com"` with the tunnel's `port`.
 
 Like libpq, mcp-rs also reads these when the configuration file does not set the value:
 
@@ -200,7 +204,7 @@ What differs from PostgreSQL:
 - **`sql_mode`**: on its connections, mcp-rs removes `NO_BACKSLASH_ESCAPES`, `ANSI_QUOTES`, and the combination modes that include `ANSI_QUOTES` (`ANSI`; on MariaDB also `DB2`, `MSSQL`, `ORACLE`, `POSTGRESQL`, `MAXDB`) from the session's `sql_mode`, keeping the other modes. mcp-rs checks the SQL before running it, and these modes make the server split strings differently from that check (`\'` would end a string, and `"…"` would be a name), so SQL that looks harmless to the check could run something else. With mcp-rs, `\'` escapes a quote and `"…"` is a string: quote names with backticks (`` `name` ``)
 - **`get_schema`**: lists the tables and views of the configured database (from `information_schema`) with their columns, primary keys, foreign keys, and indexes. Views are listed under `views`, without their definition
 - **`execute_command`**: also returns `last_insert_id` (the `AUTO_INCREMENT` id of an inserted row)
-- **TLS**: `ssl_mode` takes `disable`, `prefer` (default), `require`, `verify-ca`, and `verify-full` (MySQL's `VERIFY_IDENTITY`), with the same meaning as for PostgreSQL. `prefer` connects without TLS only when the server does not offer it. With `ssl_root_cert`, only that CA is trusted; without it, `verify-ca` and `verify-full` trust the public CAs (Mozilla's list)
+- **TLS**: `ssl_mode` takes `disable`, `prefer` (default), `require`, `verify-ca`, and `verify-full` (MySQL's `VERIFY_IDENTITY`), with the same meaning as for PostgreSQL. `prefer` connects without TLS only when the server does not offer it. With `ssl_root_cert`, only that CA is trusted; without it, `verify-full` trusts the public CAs (Mozilla's list). `verify-ca` requires `ssl_root_cert` (from v0.27.0): it does not check the host name, so it accepts a certificate for any host from that CA. Use `verify-ca` only when `ssl_root_cert` is a CA that issues certificates only for your own servers (your own CA, or a cloud provider's database CA such as Amazon RDS). When the server's certificate is from a public CA (Let's Encrypt, DigiCert, …), use `verify-full`
 
 Create a user that can only read what the AI client should see. Do not grant `FILE` (it lets `LOAD_FILE()` read files on the database server) or `PROCESS`:
 
