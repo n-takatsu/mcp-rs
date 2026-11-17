@@ -126,7 +126,9 @@ pub fn validate_single_query_statement(
     let statements = parse_statements(sql, dialect)?;
 
     match statements.as_slice() {
-        [Statement::Query(query)] if is_read_only_query(query) => Ok(()),
+        [statement @ Statement::Query(query)] if is_read_only_query(query) => {
+            refuse_side_effects(statement, true)
+        }
         [_] => Err(unsupported("execute_query only supports SELECT statements")),
         _ => Err(unsupported("expected exactly one SQL statement")),
     }
@@ -140,11 +142,100 @@ pub fn validate_single_write_statement(
 ) -> Result<(), ProvenanceError> {
     let statements = parse_statements(sql, dialect)?;
     match statements.as_slice() {
-        [Statement::Insert(_) | Statement::Update { .. } | Statement::Delete(_)] => Ok(()),
+        [statement @ (Statement::Insert(_) | Statement::Update { .. } | Statement::Delete(_))] => {
+            refuse_side_effects(statement, false)
+        }
         [_] => Err(unsupported(
             "execute_command only supports INSERT, UPDATE, and DELETE statements",
         )),
         _ => Err(unsupported("expected exactly one SQL statement")),
+    }
+}
+
+/// データベースのサーバーのファイル・ほかの接続に触れる関数（#597）。
+/// 読み取り専用のトランザクションでは止まらない（表への書き込みではない
+/// ため）。権限（MySQLの`FILE`、PostgreSQLの`pg_read_server_files`等）を
+/// 与えないのが本来の守りで、これは念のための2つ目の守り
+const SERVER_SIDE_FUNCTIONS: &[&str] = &[
+    // MySQL・MariaDB: サーバーのファイルを読む
+    "load_file",
+    // MySQL・MariaDB: よく入れられるUDF（lib_mysqludf_sys）。OSのコマンドを動かす
+    "sys_exec",
+    "sys_eval",
+    // PostgreSQL: サーバーのファイル・フォルダを読む
+    "pg_read_file",
+    "pg_read_binary_file",
+    "pg_ls_dir",
+    "pg_stat_file",
+    // PostgreSQL: サーバーのファイルと大きなオブジェクトの間で写す
+    "lo_import",
+    "lo_export",
+    // PostgreSQL: dblinkは別の接続を開くので、読み取り専用のトランザクションの
+    // 外で書き込める
+    "dblink",
+    "dblink_exec",
+    "dblink_connect",
+    "dblink_connect_u",
+    "dblink_send_query",
+];
+
+/// 文の中の、副作用のあるもの（#597）。`execute_query`（`read_only`）では、
+/// 行の鍵（`FOR UPDATE`・`FOR SHARE`等）も断る。読み取りの道具なのに、
+/// ほかの書き込みを待たせられるため（PostgreSQLは読み取り専用の
+/// トランザクションで拒否するが、MySQLは通すことがある）。どちらの道具でも、
+/// `SERVER_SIDE_FUNCTIONS`の関数を断る。副問い合わせの中も見る
+fn refuse_side_effects(statement: &Statement, read_only: bool) -> Result<(), ProvenanceError> {
+    use sqlparser::ast::{Visit, Visitor};
+    use std::ops::ControlFlow;
+
+    struct Finder {
+        read_only: bool,
+    }
+    impl Visitor for Finder {
+        type Break = String;
+        fn pre_visit_query(&mut self, query: &Query) -> ControlFlow<String> {
+            if self.read_only && !query.locks.is_empty() {
+                return ControlFlow::Break(
+                    "execute_query does not take row locks (FOR UPDATE, FOR SHARE)".to_string(),
+                );
+            }
+            ControlFlow::Continue(())
+        }
+        fn pre_visit_expr(&mut self, expr: &Expr) -> ControlFlow<String> {
+            match expr {
+                Expr::Function(function) => check_function(&function.name),
+                _ => ControlFlow::Continue(()),
+            }
+        }
+        // `FROM dblink(...)`のように、表として呼ぶ関数
+        fn pre_visit_table_factor(&mut self, table: &TableFactor) -> ControlFlow<String> {
+            match table {
+                TableFactor::Table {
+                    name,
+                    args: Some(_),
+                    ..
+                }
+                | TableFactor::Function { name, .. } => check_function(name),
+                _ => ControlFlow::Continue(()),
+            }
+        }
+    }
+    fn check_function(name: &ObjectName) -> ControlFlow<String> {
+        let name = name
+            .0
+            .last()
+            .and_then(|part| part.as_ident())
+            .map(|ident| ident.value.to_ascii_lowercase());
+        match name.filter(|n| SERVER_SIDE_FUNCTIONS.contains(&n.as_str())) {
+            Some(name) => ControlFlow::Break(format!(
+                "the function {name}() is not allowed: it reaches files or connections on the database server"
+            )),
+            None => ControlFlow::Continue(()),
+        }
+    }
+    match statement.visit(&mut Finder { read_only }) {
+        ControlFlow::Break(reason) => Err(unsupported(reason)),
+        ControlFlow::Continue(()) => Ok(()),
     }
 }
 
@@ -645,6 +736,95 @@ mod tests {
             "SELECT 1 /* note */",
             "SELECT '/*M! not a comment */' AS s",
             "SELECT 1 -- /*M! line comment */",
+        ] {
+            assert!(
+                validate_single_query_statement(sql, &mysql).is_ok(),
+                "{sql}"
+            );
+        }
+    }
+
+    /// 行の鍵と、サーバーのファイル・接続に触れる関数を断る（#597）
+    #[test]
+    fn side_effects_are_refused() {
+        let mysql = MySqlDialect {};
+        let pg = PostgreSqlDialect {};
+        for sql in [
+            "SELECT id FROM users FOR UPDATE",
+            "SELECT id FROM users FOR SHARE",
+            "SELECT * FROM (SELECT id FROM users FOR UPDATE) AS t",
+            "SELECT LOAD_FILE('/etc/passwd')",
+            "SELECT id FROM users WHERE email = load_file('/etc/passwd')",
+            "SELECT sys_exec('id')",
+        ] {
+            let err = validate_single_query_statement(sql, &mysql).unwrap_err();
+            assert!(
+                err.to_string().contains("FOR UPDATE") || err.to_string().contains("()"),
+                "{sql}: {err}"
+            );
+        }
+        for sql in [
+            "SELECT id FROM users FOR UPDATE",
+            "SELECT pg_read_file('/etc/passwd')",
+            "SELECT lo_export(1, '/tmp/x')",
+            "SELECT * FROM dblink('dbname=app', 'DELETE FROM users') AS t(x int)",
+            "SELECT dblink_exec('dbname=app', 'DELETE FROM users')",
+        ] {
+            assert!(validate_single_query_statement(sql, &pg).is_err(), "{sql}");
+        }
+        // 書き込みの道具でも、関数は断る。行の鍵は書き込みの文には要らない
+        assert!(validate_single_write_statement(
+            "UPDATE users SET email = LOAD_FILE('/etc/passwd') WHERE id = 1",
+            &mysql
+        )
+        .is_err());
+        // ふつうの関数・列名は通す
+        for sql in [
+            "SELECT COUNT(*), MAX(id) FROM users",
+            "SELECT load_file_name FROM users",
+            "SELECT GET_LOCK('x', 0)",
+        ] {
+            assert!(
+                validate_single_query_statement(sql, &mysql).is_ok(),
+                "{sql}"
+            );
+        }
+        assert!(validate_single_write_statement(
+            "UPDATE users SET email = LOWER(email) WHERE id = 1",
+            &mysql
+        )
+        .is_ok());
+    }
+
+    /// MySQLのコメント・文字列の書き方は、サーバーと同じに読む（#597の点検）。
+    /// 検査では文字列・コメントに見えて、サーバーでは書き出しを実行する、
+    /// という食い違いが無いこと
+    #[test]
+    fn mysql_comments_and_strings_are_read_like_the_server() {
+        let mysql = MySqlDialect {};
+        // サーバーでINTO OUTFILEを実行する書き方は、どれも断る
+        for sql in [
+            "SELECT 1 INTO OUTFILE '/tmp/x'",
+            "SELECT 1 INTO DUMPFILE '/tmp/x'",
+            "SELECT 1 FROM t INTO OUTFILE '/tmp/x'",
+            "SELECT 1 --1 INTO OUTFILE '/tmp/x'",
+            "SELECT 1 # x\n INTO OUTFILE '/tmp/x'",
+            "SELECT 1 /*!50000 INTO OUTFILE '/tmp/x' */",
+            "SELECT 1 /* a /* b */ INTO OUTFILE '/tmp/x' /* */",
+            "SELECT 1 AS `a\\` INTO OUTFILE '/tmp/x' -- `",
+            "SELECT * FROM t WHERE a = 'x' INTO @y",
+        ] {
+            assert!(
+                validate_single_query_statement(sql, &mysql).is_err(),
+                "{sql}"
+            );
+        }
+        // サーバーでもコメント・文字列なので、通してよい
+        for sql in [
+            "SELECT 1 # INTO OUTFILE '/tmp/x'",
+            "SELECT _utf8'a\\' INTO OUTFILE ''/tmp/x'' -- ' AS s",
+            "SELECT 'a' 'b'",
+            "SELECT /*+ MAX_EXECUTION_TIME(1000) */ 1",
         ] {
             assert!(
                 validate_single_query_statement(sql, &mysql).is_ok(),
