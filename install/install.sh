@@ -40,7 +40,7 @@ target() {
         Darwin/arm64) echo "aarch64-apple-darwin" ;;
         Linux/x86_64 | Linux/amd64) echo "x86_64-unknown-linux-gnu" ;;
         *)
-            fail "no ready-built mcp-rs for ${os} (${arch}). Ready-built files exist for macOS (Apple Silicon), Linux (x64) and Windows (x64; use install.ps1). To build it yourself, see https://github.com/${REPO}#setup"
+            fail "no ready-built mcp-rs for ${os} (${arch}). Ready-built files exist for macOS (Apple Silicon), Linux (x64) and Windows (x64; use install.ps1). To build it yourself, see https://n-takatsu.github.io/mcp-rs/docs/guides/#build-from-source"
             ;;
     esac
 }

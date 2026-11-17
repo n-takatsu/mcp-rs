@@ -875,7 +875,7 @@ fn config_toml(url: &str, entry: &str) -> String {
     format!(
         "# mcp-rs config file, written by `mcp-rs init` (mcp-rs {version}).
 # Check it with: mcp-rs check --config <this file>
-# Settings: https://github.com/n-takatsu/mcp-rs#basic-configuration
+# Settings: https://n-takatsu.github.io/mcp-rs/docs/guides/#config-file
 
 [transport]
 type = \"stdio\"

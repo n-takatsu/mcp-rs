@@ -86,7 +86,7 @@ See [Database Integration](docs/database/) for the settings.
 ## ✅ Recently Completed (v0.25.0)
 
 - **🐬 MySQL and MariaDB**: `[database]` now also connects to MySQL (`engine = "mysql"`, 8.0 or later) and MariaDB (`engine = "mariadb"`, 10.6 or later), with the same tools and limits as PostgreSQL: read-only by default, `?` parameters, time, row and size limits, and TLS. See [Database Integration](docs/database/)
-- **📦 Ready-Built Files**: Each release now has mcp-rs for Windows (x64), macOS (Apple Silicon), and Linux (x64), with SHA256 checksums, so Rust is not needed. See the [README](https://github.com/n-takatsu/mcp-rs#download)
+- **📦 Ready-Built Files**: Each release now has mcp-rs for Windows (x64), macOS (Apple Silicon), and Linux (x64), with SHA256 checksums, so Rust is not needed. See [Getting Started](docs/guides/#install)
 - **🩺 `mcp-rs check`**: Checks a config file without an MCP client: whether it loads, whether the WordPress credentials can be read, and whether mcp-rs can reach the site and sign in
 - **🧩 VS Code (GitHub Copilot)**: How to use mcp-rs from the Copilot chat in VS Code
 
