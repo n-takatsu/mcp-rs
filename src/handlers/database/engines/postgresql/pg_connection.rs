@@ -69,6 +69,8 @@ impl PostgreSqlConnection {
     pub async fn new(connection_string: &str) -> Result<Self, DatabaseError> {
         let options = PgConnectOptions::from_str(connection_string)
             .map_err(|e| DatabaseError::ConfigurationError(e.to_string()))?;
+        // 接続文字列の`?sslmode=verify-ca`も止める（PR #600のレビュー）
+        refuse_verify_ca(&options)?;
         let database_name = options.get_database().unwrap_or("unknown").to_string();
         let user_name = options.get_username().to_string();
         let pool = PgPool::connect_with(options)
@@ -673,6 +675,24 @@ pub fn string_to_numeric(text: &str) -> Option<Vec<u8>> {
     Some(bytes)
 }
 
+/// `verify-ca`なら、エラーを返す（#594）。sqlx 0.8は、`verify-ca`で、公開の
+/// CA（webpki-roots）に`ssl_root_cert`を足して確かめ、ホスト名は見ない。
+/// そのため、`ssl_root_cert`があっても、公開のCAが発行したどのホストの
+/// 証明書でも受け入れてしまう。設定ファイル・`PGSSLMODE`・接続文字列の
+/// どれから来ても止める
+fn refuse_verify_ca(options: &PgConnectOptions) -> Result<(), DatabaseError> {
+    if matches!(options.get_ssl_mode(), PgSslMode::VerifyCa) {
+        return Err(DatabaseError::ConfigurationError(
+            "ssl_mode \"verify-ca\" is not supported for PostgreSQL (from the config file, \
+             PGSSLMODE, or the connection string): it does not check the host name, and the \
+             public CAs are trusted even with ssl_root_cert, so it would accept a certificate for \
+             any host. Use ssl_mode = \"verify-full\" (with ssl_root_cert for a private CA)"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
 /// 設定から、接続の設定を作る。パスワードはURLに埋め込まないので、記号を
 /// 含んでいてもよい
 pub fn connect_options(config: &ConnectionConfig) -> Result<PgConnectOptions, DatabaseError> {
@@ -691,19 +711,8 @@ pub fn connect_options(config: &ConnectionConfig) -> Result<PgConnectOptions, Da
         })?;
         options = options.ssl_mode(mode);
     }
-    // `verify-ca`は使えない（#594）。sqlx 0.8は、`verify-ca`で、公開のCA
-    // （webpki-roots）に`ssl_root_cert`を足して確かめ、ホスト名は見ない。
-    // そのため、`ssl_root_cert`があっても、公開のCAが発行したどのホストの
-    // 証明書でも受け入れてしまう。`PGSSLMODE`で指定したときも同じ
-    if matches!(options.get_ssl_mode(), PgSslMode::VerifyCa) {
-        return Err(DatabaseError::ConfigurationError(
-            "ssl_mode \"verify-ca\" is not supported for PostgreSQL (from the config file or \
-             PGSSLMODE): it does not check the host name, and the public CAs are trusted even \
-             with ssl_root_cert, so it would accept a certificate for any host. Use ssl_mode = \
-             \"verify-full\" (with ssl_root_cert for a private CA)"
-                .to_string(),
-        ));
-    }
+    // `verify-ca`は使えない（#594）
+    refuse_verify_ca(&options)?;
     // 証明書を確かめるCA（#539）。非公開のCA（RDS等）で`verify-ca`・
     // `verify-full`を使うため
     if let Some(path) = config.options.get(super::OPTION_SSL_ROOT_CERT) {
@@ -1447,6 +1456,12 @@ mod tests {
                 "{err}"
             );
         }
+        // 接続文字列から来ても止める（PR #600のレビュー）
+        let options = PgConnectOptions::from_str(
+            "postgres://u@db.example.com/app?sslmode=verify-ca&sslrootcert=ca.pem",
+        )
+        .unwrap();
+        assert!(refuse_verify_ca(&options).is_err());
     }
 
     /// `ssl_root_cert`を書いたら、証明書を確かめる`ssl_mode`が要る

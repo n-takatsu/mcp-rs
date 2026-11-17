@@ -22,7 +22,9 @@ password = "${MCP_DB_PASSWORD}"
 # Use verify-full when the database is on another machine
 ssl_mode = "prefer"
 # CA that signed the server certificate, for verify-full with a private CA, and
-# required for verify-ca (relative to this file's folder). Only this CA is then trusted
+# required for verify-ca (relative to this file's folder). Use verify-ca only
+# with a CA that issues certificates only for your own servers: verify-ca does
+# not check the host name, so with a public CA, use verify-full. Only this CA is then trusted
 # ssl_root_cert = "certs/ca.pem"
 
 # true also offers execute_command (one INSERT, UPDATE, or DELETE at a time)
