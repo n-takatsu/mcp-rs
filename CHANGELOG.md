@@ -16,7 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Claude Code（`claude mcp add --scope user`）・GitHub Copilot
   （`copilot mcp add`）に登録する。登録とファイルの置き換えは、1つずつ
   確かめてから行い、置き換えるファイルは控えを残す。断ったものは、登録の
-  コマンドや設定を表示する。最初の版は、WordPressだけを聞く
+  コマンドや設定を表示する。別の名前でmcp-rsを起動する登録（手で登録した
+  `mcp-rs-wordpress`等）があれば、消すかを聞く（同じツールが2組並ばない
+  ように）。最初の版は、WordPressだけを聞く
 
 ### Changed
 

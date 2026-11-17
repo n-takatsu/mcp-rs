@@ -451,8 +451,9 @@ impl Setup<'_> {
         path: &Path,
         launch: &Launch,
     ) -> Result<bool, Box<dyn std::error::Error>> {
+        let config = read_claude_desktop_config(path)?;
         let mut replace = false;
-        if claude_desktop_has_entry(path)? {
+        if claude_desktop_has_entry(&config) {
             replace = confirm(
                 self.io,
                 &format!(
@@ -466,7 +467,9 @@ impl Setup<'_> {
                 return Ok(false);
             }
         }
-        match add_to_claude_desktop(path, launch, replace)? {
+        let remove =
+            self.choose_duplicates_to_remove("Claude Desktop", &other_mcp_rs_servers(&config))?;
+        match add_to_claude_desktop(path, launch, replace, &remove)? {
             Some(backup) => self.io.say(&format!(
                 "Claude Desktop: registered in {} (the previous settings are kept as {}).",
                 path.display(),
@@ -478,6 +481,33 @@ impl Setup<'_> {
             )),
         }
         Ok(true)
+    }
+
+    /// 別の名前で登録された mcp-rs（手で登録したもの等）を、1つずつ消すかを
+    /// 聞く。消すものの名前を返す。同じ mcp-rs が2つ動くと、同じツールが
+    /// 2組並び、AIがどちらを使うか分からなくなる（#575）
+    fn choose_duplicates_to_remove(
+        &mut self,
+        client: &str,
+        others: &[String],
+    ) -> io::Result<Vec<String>> {
+        let mut remove = Vec::new();
+        for name in others {
+            if confirm(
+                self.io,
+                &format!(
+                    "{client} also starts mcp-rs as \"{name}\". Remove it, so that only one mcp-rs runs? (otherwise the same tools appear twice)"
+                ),
+                true,
+            )? {
+                remove.push(name.clone());
+            } else {
+                self.io.say(&format!(
+                    "Kept \"{name}\". {client} will start two mcp-rs servers with the same tools; remove one of them later."
+                ));
+            }
+        }
+        Ok(remove)
     }
 
     /// `claude`・`copilot`のコマンドで登録する。登録したら`true`。
@@ -527,16 +557,34 @@ impl Setup<'_> {
             }
             // 消せなくても、登録を試す（別のスコープの登録は、消さずに
             // ユーザーのスコープへ足せることがある。PR #583のレビュー）
-            if let Err(reason) = run_quietly(&program, &cli.remove_args()) {
+            if let Err(reason) = run_quietly(&program, &cli.remove_args(SERVER_NAME)) {
                 self.io.say(&format!(
                     "{}: could not remove the existing \"{SERVER_NAME}\" ({reason}). Trying to register mcp-rs anyway.",
                     cli.label
                 ));
             }
         }
+        // 別の名前のmcp-rs（設定ファイルを読んで探す。内容は表示しない）
+        let others = cli
+            .config_file()
+            .and_then(|path| read_json_file(&path).ok())
+            .map(|config| other_mcp_rs_servers(&config))
+            .unwrap_or_default();
+        let remove = self.choose_duplicates_to_remove(cli.label, &others)?;
         match run_quietly(&program, &cli.add_args(launch)) {
             Ok(()) => {
                 self.io.say(&format!("{}: registered.", cli.label));
+                for name in remove {
+                    match run_quietly(&program, &cli.remove_args(&name)) {
+                        Ok(()) => self.io.say(&format!("{}: removed \"{name}\".", cli.label)),
+                        Err(reason) => self.io.say(&format!(
+                            "{}: could not remove \"{name}\" ({reason}). Remove it with `{} {}`.",
+                            cli.label,
+                            cli.program,
+                            cli.remove_args(&name).join(" ")
+                        )),
+                    }
+                }
                 Ok(true)
             }
             Err(reason) => {
@@ -605,6 +653,8 @@ struct Cli {
     add_options: &'static [&'static str],
     /// `mcp remove`の、名前より後に付ける引数
     remove_options: &'static [&'static str],
+    /// 登録を書く設定ファイル（別の名前のmcp-rsを探すために読む）
+    config_file: fn() -> Option<PathBuf>,
 }
 
 impl Cli {
@@ -615,6 +665,7 @@ impl Cli {
         program: "claude",
         add_options: &["--scope", "user"],
         remove_options: &["--scope", "user"],
+        config_file: claude_code_config_file,
     };
     /// Copilot CLI（VS CodeのCopilotのチャットも、これの登録を使う）。
     /// `~/.copilot/mcp-config.json`に書く
@@ -623,6 +674,7 @@ impl Cli {
         program: "copilot",
         add_options: &[],
         remove_options: &[],
+        config_file: copilot_config_file,
     };
 
     fn add_args(&self, launch: &Launch) -> Vec<String> {
@@ -635,8 +687,8 @@ impl Cli {
         args
     }
 
-    fn remove_args(&self) -> Vec<String> {
-        let mut args: Vec<String> = ["mcp", "remove", SERVER_NAME]
+    fn remove_args(&self, name: &str) -> Vec<String> {
+        let mut args: Vec<String> = ["mcp", "remove", name]
             .iter()
             .map(|s| s.to_string())
             .collect();
@@ -644,11 +696,68 @@ impl Cli {
         args
     }
 
+    fn config_file(&self) -> Option<PathBuf> {
+        (self.config_file)()
+    }
+
     /// 手で実行するときのコマンド
     fn add_command_text(&self, launch: &Launch) -> String {
         let args: Vec<String> = self.add_args(launch).iter().map(|a| quote_arg(a)).collect();
         format!("{} {}", self.program, args.join(" "))
     }
+}
+
+/// ホームフォルダ
+fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .filter(|home| !home.is_empty())
+        .map(PathBuf::from)
+}
+
+/// Claude Codeのユーザーの設定（`--scope user`の登録）。
+/// `CLAUDE_CONFIG_DIR`があれば、その中
+fn claude_code_config_file() -> Option<PathBuf> {
+    match std::env::var_os("CLAUDE_CONFIG_DIR").filter(|dir| !dir.is_empty()) {
+        Some(dir) => Some(PathBuf::from(dir).join(".claude.json")),
+        None => Some(home_dir()?.join(".claude.json")),
+    }
+}
+
+/// Copilot CLIのユーザーの設定
+fn copilot_config_file() -> Option<PathBuf> {
+    Some(home_dir()?.join(".copilot").join("mcp-config.json"))
+}
+
+/// `command`が mcp-rs の実行ファイルか（ファイル名で見分ける）
+fn is_mcp_rs_command(command: &str) -> bool {
+    let file = command
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    file == "mcp-rs" || file == "mcp-rs.exe"
+}
+
+/// `mcpServers`のうち、`mcp-rs`以外の名前で mcp-rs を起動するもの
+fn other_mcp_rs_servers(config: &serde_json::Value) -> Vec<String> {
+    config
+        .get("mcpServers")
+        .and_then(serde_json::Value::as_object)
+        .map(|servers| {
+            servers
+                .iter()
+                .filter(|(name, server)| {
+                    name.as_str() != SERVER_NAME
+                        && server
+                            .get("command")
+                            .and_then(serde_json::Value::as_str)
+                            .is_some_and(is_mcp_rs_command)
+                })
+                .map(|(name, _)| name.clone())
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// 表示するコマンドの引数を、空白等があれば`"`で囲む
@@ -827,43 +936,56 @@ fn claude_desktop_entry_text(launch: &Launch) -> String {
 fn read_claude_desktop_config(
     path: &Path,
 ) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    read_json_file(path).map_err(|e| {
+        format!(
+            "{e}. Fix it in Claude Desktop (Settings > Developer > Edit Config), then run mcp-rs init again"
+        )
+        .into()
+    })
+}
+
+/// JSONのファイルを読む。無ければ空のオブジェクト。エラーの文に内容は入れない
+fn read_json_file(path: &Path) -> Result<serde_json::Value, String> {
     if !path.exists() {
         return Ok(serde_json::json!({}));
     }
-    let content = std::fs::read_to_string(path)?;
+    let content = std::fs::read_to_string(path)
+        .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
     let content = content.trim_start_matches('\u{feff}');
     if content.trim().is_empty() {
         return Ok(serde_json::json!({}));
     }
     let value: serde_json::Value = serde_json::from_str(content).map_err(|e| {
         format!(
-            "cannot read {} as JSON (line {}, column {}). Fix it in Claude Desktop (Settings > Developer > Edit Config), then run mcp-rs init again",
+            "cannot read {} as JSON (line {}, column {})",
             path.display(),
             e.line(),
             e.column()
         )
     })?;
     if !value.is_object() {
-        return Err(format!("{} is not a JSON object", path.display()).into());
+        return Err(format!("{} is not a JSON object", path.display()));
     }
     Ok(value)
 }
 
-/// Claude Desktopに、もう`mcp-rs`の登録があるか
-fn claude_desktop_has_entry(path: &Path) -> Result<bool, Box<dyn std::error::Error>> {
-    Ok(read_claude_desktop_config(path)?
+/// Claude Desktopの設定に、もう`mcp-rs`の登録があるか
+fn claude_desktop_has_entry(config: &serde_json::Value) -> bool {
+    config
         .get("mcpServers")
         .and_then(|servers| servers.get(SERVER_NAME))
-        .is_some())
+        .is_some()
 }
 
 /// Claude Desktopの設定ファイルの`mcpServers`に、mcp-rsを足す。ほかの項目と
-/// 順番は変えない。前のファイルは別の名前で残し、そのパスを返す。`replace`が
-/// 無いのに、もう登録があればエラー
+/// 順番は変えない。`remove`の名前の登録（別の名前のmcp-rs）は消す。前の
+/// ファイルは別の名前で残し、そのパスを返す。`replace`が無いのに、もう
+/// 登録があればエラー
 fn add_to_claude_desktop(
     path: &Path,
     launch: &Launch,
     replace: bool,
+    remove: &[String],
 ) -> Result<Option<PathBuf>, Box<dyn std::error::Error>> {
     let mut config = read_claude_desktop_config(path)?;
     let root = config
@@ -879,6 +1001,10 @@ fn add_to_claude_desktop(
         return Err(format!("Claude Desktop already has a server named \"{SERVER_NAME}\"").into());
     }
     servers.insert(SERVER_NAME.to_string(), claude_desktop_entry(launch));
+    for name in remove {
+        // `remove`は、preserve_orderでは順番を変える（最後の項目と入れ替える）
+        servers.shift_remove(name);
+    }
     let content = serde_json::to_string_pretty(&config)? + "\n";
     let backup = if path.exists() {
         let backup = backup_path(path);
@@ -1054,9 +1180,11 @@ mod tests {
   "after": true
 }"#;
         std::fs::write(&path, before).unwrap();
-        assert!(!claude_desktop_has_entry(&path).unwrap());
+        assert!(!claude_desktop_has_entry(
+            &read_claude_desktop_config(&path).unwrap()
+        ));
 
-        let backup = add_to_claude_desktop(&path, &launch(), false)
+        let backup = add_to_claude_desktop(&path, &launch(), false, &[])
             .unwrap()
             .unwrap();
         assert_eq!(std::fs::read_to_string(backup).unwrap(), before);
@@ -1075,11 +1203,50 @@ mod tests {
                 "args": ["--config", "C:/Users/me/.config/mcp-rs/config.toml"]
             })
         );
-        assert!(claude_desktop_has_entry(&path).unwrap());
+        assert!(claude_desktop_has_entry(
+            &read_claude_desktop_config(&path).unwrap()
+        ));
 
         // もう登録があるときは、replaceが要る
-        assert!(add_to_claude_desktop(&path, &launch(), false).is_err());
-        assert!(add_to_claude_desktop(&path, &launch(), true).is_ok());
+        assert!(add_to_claude_desktop(&path, &launch(), false, &[]).is_err());
+        assert!(add_to_claude_desktop(&path, &launch(), true, &[]).is_ok());
+    }
+
+    /// 別の名前で mcp-rs を起動する登録を見つける（#575）
+    #[test]
+    fn test_other_mcp_rs_servers() {
+        let config = serde_json::json!({
+            "mcpServers": {
+                "mcp-rs": {"command": "C:/x/mcp-rs.exe"},
+                "mcp-rs-wordpress": {"command": "C:/Program Files/MCP-rs/mcp-rs.exe"},
+                "blog": {"command": "C:\\tools\\MCP-RS.EXE", "args": []},
+                "unix": {"command": "/home/me/.mcp-rs/bin/mcp-rs"},
+                "other": {"command": "npx", "args": ["mcp-rs"]},
+                "similar": {"command": "/usr/bin/mcp-rs-helper"},
+                "remote": {"url": "https://example.com/mcp"}
+            }
+        });
+        assert_eq!(
+            other_mcp_rs_servers(&config),
+            ["mcp-rs-wordpress", "blog", "unix"]
+        );
+        assert!(other_mcp_rs_servers(&serde_json::json!({})).is_empty());
+    }
+
+    /// 別の名前の登録を消し、ほかの順番は変えない
+    #[test]
+    fn test_add_to_claude_desktop_removes_duplicates() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("claude_desktop_config.json");
+        std::fs::write(
+            &path,
+            r#"{"mcpServers": {"a": {"command": "a"}, "mcp-rs-wordpress": {"command": "mcp-rs.exe"}, "b": {"command": "b"}, "c": {"command": "c"}}}"#,
+        )
+        .unwrap();
+        add_to_claude_desktop(&path, &launch(), false, &["mcp-rs-wordpress".to_string()]).unwrap();
+        let value = read_claude_desktop_config(&path).unwrap();
+        let names: Vec<&String> = value["mcpServers"].as_object().unwrap().keys().collect();
+        assert_eq!(names, ["a", "b", "c", "mcp-rs"]);
     }
 
     #[test]
@@ -1087,7 +1254,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("claude_desktop_config.json");
         assert_eq!(
-            add_to_claude_desktop(&path, &launch(), false).unwrap(),
+            add_to_claude_desktop(&path, &launch(), false, &[]).unwrap(),
             None
         );
         let value: serde_json::Value =
@@ -1100,7 +1267,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("claude_desktop_config.json");
         std::fs::write(&path, "{ \"mcpServers\": { \"x\": SECRET } ").unwrap();
-        let err = add_to_claude_desktop(&path, &launch(), false)
+        let err = add_to_claude_desktop(&path, &launch(), false, &[])
             .unwrap_err()
             .to_string();
         assert!(err.contains("line"), "{err}");
@@ -1130,7 +1297,7 @@ mod tests {
             ])
         );
         assert_eq!(
-            Cli::CLAUDE_CODE.remove_args(),
+            Cli::CLAUDE_CODE.remove_args("mcp-rs"),
             args(&["mcp", "remove", "mcp-rs", "--scope", "user"])
         );
         assert_eq!(
@@ -1138,8 +1305,8 @@ mod tests {
             "copilot mcp add mcp-rs -- \"C:/Program Files/mcp-rs/mcp-rs.exe\" --config C:/cfg/config.toml"
         );
         assert_eq!(
-            Cli::COPILOT.remove_args(),
-            args(&["mcp", "remove", "mcp-rs"])
+            Cli::COPILOT.remove_args("mcp-rs-wordpress"),
+            args(&["mcp", "remove", "mcp-rs-wordpress"])
         );
     }
 
