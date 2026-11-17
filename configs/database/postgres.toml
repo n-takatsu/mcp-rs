@@ -19,11 +19,12 @@ username = "mcp_reader"
 # Read from the environment when mcp-rs starts. If it is not set, mcp-rs
 # starts without the database tools and shows the reason in mcp_rs_status
 password = "${MCP_DB_PASSWORD}"
-# disable, allow, prefer (default), require, verify-ca, verify-full.
-# Use verify-full when the database is on another machine
+# disable, allow, prefer (default), require, verify-full.
+# Use verify-full when the database is on another machine. verify-ca is not
+# supported for PostgreSQL (it would accept a certificate for any host)
 ssl_mode = "prefer"
-# CA that signed the server certificate, for verify-ca and verify-full with a
-# private CA (relative to this file's folder)
+# CA that signed the server certificate, for verify-full with a private CA
+# (relative to this file's folder)
 # ssl_root_cert = "certs/ca.pem"
 
 # true also offers execute_command (one INSERT, UPDATE, or DELETE at a time)

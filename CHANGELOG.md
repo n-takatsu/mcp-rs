@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- データベースの`ssl_mode = "verify-ca"`で、なりすましを防げなかった（#594）。
+  `verify-ca`はホスト名を確かめないので、公開のCAを信頼すると、公開のCAが
+  発行したどのホストの証明書でも受け入れてしまう
+  - **PostgreSQL**: `verify-ca`は使えなくした（`PGSSLMODE=verify-ca`も）。
+    sqlxは、`ssl_root_cert`があっても公開のCAを信頼するため。`verify-full`を
+    使う
+  - **MySQL・MariaDB**: `verify-ca`は、`ssl_root_cert`が要る（そのCAだけを
+    信頼する）。無ければ、データベースのツールは起動しない
+  - 互換性: これらの設定は、データベースのツールが起動しなくなる
+    （`mcp_rs_status`に理由を出す）
+
 ## [0.26.0] - 2026-11-17
 
 ### Added
