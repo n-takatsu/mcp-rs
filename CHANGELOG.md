@@ -24,6 +24,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- `execute_query`で、行の鍵（`FOR UPDATE`・`FOR SHARE`）を断るようにした
+  （#597）。読み取りの道具なのに、ほかの書き込みを待たせられたため
+  （PostgreSQLは読み取り専用のトランザクションで拒否するが、MySQLは通す
+  ことがある）。副問い合わせの中も見る
+- `execute_query`・`execute_command`で、データベースのサーバーのファイル・
+  接続に触れる関数を断るようにした（#597）。MySQL・MariaDBの`LOAD_FILE()`・
+  `sys_exec()`・`sys_eval()`、PostgreSQLの`pg_read_file()`・
+  `pg_read_binary_file()`・`pg_ls_*`・`pg_stat_file()`・`lo_import()`・
+  `lo_export()`・`dblink*`の関数（`FROM`の中も）、ほかの接続を切る
+  `pg_terminate_backend()`・`pg_cancel_backend()`。PostgreSQLの
+  `U&"…"`（Unicodeのエスケープで書いた名前。関数の名前を言い換えられる）と、
+  MySQLのヒント`SET_VAR(…)`（その文の間だけ`foreign_key_checks`等を
+  変える）も断る。読み取り専用の
+  トランザクションでは止まらないため。権限を与えないのが本来の守りで、
+  これは2つ目の守り
+- MySQL・MariaDBのSQLの検査を点検し直した（#597）。`#`・空白の無い`--`・
+  版付きの`/*!…*/`・入れ子のコメント・`` ` ``の中の`\`・文字列の前の
+  `_utf8`等で、検査とサーバーの読み方が食い違うものは無かった（単体
+  テストと、MySQL 8.4・MariaDB 11.4の結合テストで確かめる）
 - HTTPモードの小さな強化（#596）
   - 認証の失敗の警告のログを、監査ログと同じく1分あたりの件数の上限まで
     にした。JWTの`kid`（署名を確かめる前のヘッダーの値）は、改行等を

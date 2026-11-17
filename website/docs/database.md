@@ -159,7 +159,8 @@ Write `$1`, `$2`, … in the SQL and pass the values in `params`. Values are bou
 
 What mcp-rs does:
 
-- `execute_query` accepts only a single `SELECT`. Writes inside `WITH` (`WITH d AS (DELETE … RETURNING *) SELECT …`) and `SELECT … INTO` are refused
+- `execute_query` accepts only a single `SELECT`. Writes inside `WITH` (`WITH d AS (DELETE … RETURNING *) SELECT …`) and `SELECT … INTO` are refused. Row locks (`FOR UPDATE`, `FOR SHARE`) are refused too, because a read-only tool should not make other writes wait (v0.27.0 and later)
+- Both tools refuse functions that reach files or connections on the database server, which a read-only transaction does not stop: `LOAD_FILE()` and the `sys_exec()`/`sys_eval()` functions on MySQL and MariaDB; `pg_read_file()`, `pg_read_binary_file()`, `pg_ls_dir()`, `pg_stat_file()`, `lo_import()`, `lo_export()`, the `pg_ls_*` and `dblink*` functions, and `pg_terminate_backend()`/`pg_cancel_backend()` (which stop other connections of the same role) on PostgreSQL (v0.27.0 and later). On PostgreSQL, names written with Unicode escapes (`U&"…"`) are refused, so these functions cannot be written another way. On MySQL, the optimizer hint `SET_VAR(…)` is refused: it changes session settings, such as `foreign_key_checks`, for the statement. This is a second line of defense: do not give the role the privileges these need (MySQL's `FILE`, PostgreSQL's `pg_read_server_files` and `pg_write_server_files`)
 - Every query also runs in a read-only transaction (`SET TRANSACTION READ ONLY`) that is rolled back, so a `SELECT` that calls a function that writes is refused by PostgreSQL
 - Each statement has a time limit (`query_timeout_seconds`, via `statement_timeout`). `get_schema` also runs in a read-only transaction with this limit. The limit applies to each statement, not to the whole tool call: `execute_query` reads rows with several `FETCH` statements, and `get_schema` runs a few statements per table, so one call can take longer in total
 - The result has a size limit (`max_rows`, `max_result_bytes`), so one query cannot fill the memory of mcp-rs
@@ -176,6 +177,8 @@ What you should do:
 ## Writing data
 
 With `allow_write = true`, mcp-rs offers `execute_command` (its annotations mark it as destructive, so MCP clients usually ask before calling it). `execute_query` stays read-only either way. The status line shows `(read-write)` instead of `(read-only)`.
+
+`execute_command` takes one `INSERT`, `UPDATE`, or `DELETE`, including the forms that read other tables (`INSERT … SELECT`, an `UPDATE` or `DELETE` that joins several tables, and MySQL's `ON DUPLICATE KEY UPDATE`). They can only do what the database role may do, so limit the role's write permissions to the tables the AI client should change.
 
 ## MySQL
 
