@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- リリースのビルド済みのファイル（`.zip`・`.tar.gz`）に、`README.ja.md`も
+  入れる（`README.md`だけだった）
+
 ### Security
 
 - HTTPモードで、`trusted_proxies`を書いた（リバースプロキシの後ろの）ときは、

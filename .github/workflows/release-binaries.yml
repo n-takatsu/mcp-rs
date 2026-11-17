@@ -88,7 +88,7 @@ jobs:
           else
             cp "target/${TARGET}/release/mcp-rs" "dist/${name}/"
           fi
-          cp README.md LICENSE-MIT LICENSE-APACHE "dist/${name}/"
+          cp README.md README.ja.md LICENSE-MIT LICENSE-APACHE "dist/${name}/"
           cd dist
           if [ "${ARCHIVE}" = "zip" ]; then
             7z a -tzip "${name}.zip" "${name}" > /dev/null
