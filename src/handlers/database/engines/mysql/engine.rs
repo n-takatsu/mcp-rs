@@ -93,15 +93,44 @@ pub fn ssl_opts(mode: &str, root_cert: Option<&str>) -> Result<Option<SslOpts>, 
     }
 }
 
-/// 接続を作ったとき・プールに戻してリセットしたときに、毎回実行するSQL（#574）。
+/// 接続のセッションの`sql_mode`から外すモード（#574）。
 ///
-/// セッションの`sql_mode`から`NO_BACKSLASH_ESCAPES`を外す。mcp-rsのSQLの検査
-/// （sqlparserの`MySqlDialect`）は、文字列の中の`\'`を引用符のエスケープと
-/// 読む。サーバーが`NO_BACKSLASH_ESCAPES`だと、`'\'`で文字列が終わったと読む
-/// ので、`SELECT '\' /*M! INTO OUTFILE '/tmp/x' */ -- '`が、検査では全体が
-/// 文字列とコメントに見えて通り、サーバーでは実行されてしまう。サーバーの読み
-/// 方を、検査と同じにそろえる。ほかの`sql_mode`は変えない
-pub const SESSION_SETUP_SQL: &str = "SET SESSION sql_mode = TRIM(BOTH ',' FROM REPLACE(CONCAT(',', @@SESSION.sql_mode, ','), ',NO_BACKSLASH_ESCAPES,', ','))";
+/// mcp-rsのSQLの検査（sqlparserの`MySqlDialect`）は、文字列の中の`\'`を
+/// 引用符のエスケープと読み、`"…"`を文字列と読む。サーバーの読み方が違うと、
+/// 検査では文字列やコメントに見えるところを、サーバーはSQLとして実行する。
+///
+/// - `NO_BACKSLASH_ESCAPES`: `'\'`で文字列が終わる。
+///   `SELECT '\' /*M! INTO OUTFILE '/tmp/x' */ -- '`が通ってしまう
+/// - `ANSI_QUOTES`: `"…"`が識別子になり、中の`\`はエスケープにならない。
+///   `SELECT 1 AS "a\" INTO OUTFILE '/tmp/x' -- "`が通ってしまう（PR #585の
+///   レビュー）
+/// - `ANSI_QUOTES`を含む、まとめたモード（MySQL・MariaDBの`ANSI`、MariaDBの
+///   `DB2`・`MSSQL`・`ORACLE`・`POSTGRESQL`・`MAXDB`）。`@@sql_mode`には、
+///   中身のモードと一緒に、まとめた名前も残る。名前を残すと、設定し直した
+///   ときに`ANSI_QUOTES`がまた入る。中身のほかのモード（`PIPES_AS_CONCAT`等）は
+///   残る
+pub const STRIPPED_SQL_MODES: &[&str] = &[
+    "NO_BACKSLASH_ESCAPES",
+    "ANSI_QUOTES",
+    "ANSI",
+    "DB2",
+    "MSSQL",
+    "ORACLE",
+    "POSTGRESQL",
+    "MAXDB",
+];
+
+/// 接続を作ったとき・プールに戻してリセットしたときに、毎回実行するSQL（#574）。
+/// セッションの`sql_mode`から`STRIPPED_SQL_MODES`を外し、サーバーの読み方を
+/// 検査とそろえる。ほかのモードは変えない。前後にカンマを付けてから
+/// `,<モード>,`を置き換えるので、先頭・途中・末尾のどこにあっても外れる
+pub fn session_setup_sql() -> String {
+    let stripped = STRIPPED_SQL_MODES.iter().fold(
+        "CONCAT(',', @@SESSION.sql_mode, ',')".to_string(),
+        |expr, mode| format!("REPLACE({expr}, ',{mode},', ',')"),
+    );
+    format!("SET SESSION sql_mode = TRIM(BOTH ',' FROM {stripped})")
+}
 
 /// 設定から、接続の設定を作る。`tls`は`ssl_opts`の結果
 pub fn connect_opts(config: &DatabaseConfig, tls: Option<SslOpts>) -> Opts {
@@ -117,7 +146,7 @@ pub fn connect_opts(config: &DatabaseConfig, tls: Option<SslOpts>) -> Opts {
         // localhostでも、書いたとおりTCPでつなぐ（Unixソケットに切り替えない）
         .prefer_socket(false)
         // 新しい接続と、リセットした接続で、毎回実行する（#574）
-        .setup(vec![SESSION_SETUP_SQL])
+        .setup(vec![session_setup_sql()])
         .pool_opts(
             PoolOpts::default()
                 .with_constraints(constraints)
@@ -355,8 +384,20 @@ mod tests {
         assert_eq!(opts.tcp_port(), 3306);
         assert!(!opts.prefer_socket());
         assert!(opts.pool_opts().reset_connection());
-        // 新しい接続・リセットした接続で、NO_BACKSLASH_ESCAPESを外す（#574）
-        assert_eq!(opts.setup(), [SESSION_SETUP_SQL.to_string()]);
+        // 新しい接続・リセットした接続で、検査と読み方が違うモードを外す（#574）
+        assert_eq!(opts.setup(), [session_setup_sql()]);
+    }
+
+    /// 外すモードを、カンマで区切った名前として置き換える（`ANSI`で
+    /// `ANSI_QUOTES`の一部を消さない）
+    #[test]
+    fn test_session_setup_sql() {
+        let sql = session_setup_sql();
+        assert!(sql.starts_with("SET SESSION sql_mode = TRIM(BOTH ',' FROM "));
+        for mode in STRIPPED_SQL_MODES {
+            assert!(sql.contains(&format!("',{mode},', ','")), "{mode}: {sql}");
+        }
+        assert!(sql.contains("CONCAT(',', @@SESSION.sql_mode, ',')"));
     }
 
     #[test]
