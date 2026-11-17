@@ -324,6 +324,14 @@ pub struct PluginConfig {
     pub max_response_bytes: Option<usize>,
     /// ツール呼び出しのレート制限。省略時は既定値（WordPressと同じ）
     pub rate_limit: Option<RateLimitConfig>,
+    /// `true`で、プラグインがツールに付けた「読み取りだけ」の印
+    /// （`readOnlyHint`）を、APIキー・トークンの`@read_only`の判定に使う
+    /// （#595）。省略時は`false`: プラグインのツールは、`@read_only`に
+    /// 含めない。印はプラグイン自身が付けるので、書き込むツールに付いて
+    /// いても、mcp-rsには分からないため。AIのクライアントに見せる印は
+    /// 変えない
+    #[serde(default)]
+    pub trust_annotations: Option<bool>,
 }
 
 impl fmt::Debug for PluginConfig {
@@ -343,6 +351,7 @@ impl fmt::Debug for PluginConfig {
             .field("call_timeout_seconds", &self.call_timeout_seconds)
             .field("max_response_bytes", &self.max_response_bytes)
             .field("rate_limit", &self.rate_limit)
+            .field("trust_annotations", &self.trust_annotations)
             .finish()
     }
 }

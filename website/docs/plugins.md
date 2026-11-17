@@ -35,6 +35,7 @@ env = { EXAMPLE_API_KEY = "${EXAMPLE_API_KEY}" }
 # working_dir = "C:/tools"       # default: the folder mcp-rs runs in
 # call_timeout_seconds = 30      # startup and each tool call
 # max_response_bytes = 1048576   # largest message accepted from the plugin
+# trust_annotations = false      # true: @read_only API keys may use the tools the plugin marks read-only
 # [plugins.rate_limit]           # same settings as [handlers.wordpress.rate_limit]
 ```
 
@@ -185,6 +186,7 @@ mcp-rs asks plugins for MCP protocol version 2025-11-25, and also works with plu
 - **Isolation (container and Kubernetes only)**: See [Running a plugin in a container](#running-a-plugin-in-a-container) and [Running a plugin on Kubernetes](#running-a-plugin-on-kubernetes)
 - **Environment**: mcp-rs does not pass its own environment variables to the plugin. WordPress credentials and `WORDPRESS_MASTER_PASSWORD` stay in mcp-rs. Only the variables in `env` are passed (on Windows, `SystemRoot` too, because some programs cannot start without it)
 - **Rate limiting**: Tool calls to each plugin are rate limited, with the same defaults as WordPress
+- **Read-only marks**: A plugin marks its own tools as read-only (`readOnlyHint`). In HTTP mode, an API key or token limited to `@read_only` does not get the plugin's tools, because mcp-rs cannot check the marks (v0.27.0 and later). Set `trust_annotations = true` after checking the plugin's tools, or allow them by name. MCP clients still see the marks as the plugin sent them
 - **Audit log**: Every plugin tool call is recorded, whether it succeeds or fails, in the same audit log file as WordPress tool calls (see [Audit Log](../security/#audit-log))
 - **Timeout**: If the plugin does not answer within `call_timeout_seconds`, the call fails. A late answer is discarded
 - **Response size**: A message larger than `max_response_bytes` is discarded and the call fails

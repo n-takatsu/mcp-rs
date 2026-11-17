@@ -305,7 +305,7 @@ Each item in `tools` is one of:
 
 - A tool name, such as `get_posts`
 - A pattern with `*`, which matches any text. For example, `fs__*` matches every tool of the plugin `fs`, and `delete_*` matches every tool whose name starts with `delete_`
-- `@read_only`: tools marked as read-only (`readOnlyHint: true` in their annotations). The WordPress tools that only read (`get_*` and `wordpress_health_check`) are read-only. Plugin tools are read-only when the plugin says so in its own tool definitions, so check a plugin's tools before relying on this for it. Tools without annotations are not read-only
+- `@read_only`: tools marked as read-only (`readOnlyHint: true` in their annotations). The WordPress tools that only read (`get_*` and `wordpress_health_check`) are read-only. Tools without annotations are not read-only. Plugin tools are not included (v0.27.0 and later): a plugin marks its own tools, and mcp-rs cannot tell whether a tool marked read-only writes. To include a plugin's read-only tools, check its tools and set `trust_annotations = true` in its `[[plugins]]` section, or allow its tools by name (such as `fs__read_*`). Up to v0.26.0, `@read_only` included every plugin tool the plugin marked as read-only
 
 A request is allowed a tool when any item matches it. `tools = []` allows no tools. Unknown presets (such as `@admin`) and empty items stop mcp-rs from starting. STDIO mode is not limited (it is a local pipe used by one person).
 

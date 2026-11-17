@@ -14,6 +14,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- HTTPモードで、APIキー・トークンの`@read_only`は、プラグインのツールを
+  既定で含めないようにした（#595）。印（`readOnlyHint`）はプラグイン自身が
+  付けるので、書き込むツールに付いていても、mcp-rsには分からないため。
+  確かめたプラグインは、`[[plugins]]`に`trust_annotations = true`を書くか、
+  ツールを名前で許す。AIのクライアントに見せる印は変えない（STDIOモードは
+  影響しない）。互換性: `@read_only`のキーで使えていたプラグインのツールが、
+  使えなくなる
 - HTTPモードで、`trusted_proxies`を書いた（リバースプロキシの後ろの）ときは、
   ループバックで待ち受けていても、認証（APIキー・OAuth・mTLS）が無ければ
   起動しないようにした（#593）。同じマシンのプロキシ（nginx等）から来る
