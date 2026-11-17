@@ -1,4 +1,4 @@
-# mcp-rs
+# <img src="website/assets/favicon.svg" alt="" width="36" height="36"> mcp-rs
 
 AIのクライアントに、WordPress・データベース（PostgreSQL・MySQL・MariaDB）・外部のMCPプラグインのツールを提供する、Model Context Protocol（MCP）のサーバーのRust実装です。
 

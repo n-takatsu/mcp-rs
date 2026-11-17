@@ -1,4 +1,4 @@
-# mcp-rs
+# <img src="website/assets/favicon.svg" alt="" width="36" height="36"> mcp-rs
 
 A Rust implementation of a Model Context Protocol (MCP) server that gives AI clients tools for WordPress, databases (PostgreSQL, MySQL, MariaDB), and external MCP plugins.
 
