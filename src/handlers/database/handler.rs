@@ -1042,6 +1042,12 @@ impl McpHandler for DatabaseHandler {
         } else {
             "schema public"
         };
+        // MySQL・MariaDBの接続は、ANSI_QUOTESを外すので、"…"は文字列（#574）
+        let quote_hint = if mysql {
+            " Quote identifiers with backticks (`name`): \"name\" is a string."
+        } else {
+            ""
+        };
         let max_rows = self.tool_options.max_rows;
         let max_result_bytes = self.tool_options.max_result_bytes;
         let mut tools = vec![
@@ -1054,7 +1060,7 @@ impl McpHandler for DatabaseHandler {
                      At most {max_rows} rows and about {max_result_bytes} bytes are returned \
                      (truncated is true when there were more, and a value too large on its own is cut): \
                      use LIMIT, WHERE, or aggregates for large tables, and substring() for large values. \
-                     Values of types that cannot be shown are replaced by a note; {cast_hint}."
+                     Values of types that cannot be shown are replaced by a note; {cast_hint}.{quote_hint}"
                 ),
                 input_schema: json!({
                     "type": "object",

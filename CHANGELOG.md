@@ -40,6 +40,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- MySQL・MariaDBで、サーバーの`sql_mode`に`NO_BACKSLASH_ESCAPES`か
+  `ANSI_QUOTES`（`sql_mode = ANSI`にも含まれる）があると、SQLの検査（`\'`を
+  エスケープと、`"…"`を文字列と読む）とサーバーで文字列の区切りが食い違い、
+  `SELECT … INTO OUTFILE`や`/*M! … */`の拒否をすり抜けられた（#574）。
+  接続を作ったとき・プールに戻してリセットしたときに、セッションの
+  `sql_mode`から、この2つと、`ANSI_QUOTES`を含むまとめたモード（`ANSI`、
+  MariaDBの`DB2`・`MSSQL`・`ORACLE`・`POSTGRESQL`・`MAXDB`）を外し、サーバーの
+  読み方を検査とそろえる（ほかのモードは残す）。mcp-rsの接続では、`"…"`は
+  文字列になるので、名前は`` `…` ``で囲む（ツールの説明にも書いた）。既定の
+  設定では起きない
 - `mcp-rs check`と`wordpress_health_check`で、サインインが失敗したのに、
   権限とメディアが「OK」と出ていた（#575の確認で分かった）。どちらも認証の
   要らない読み取りでも通るため。サインインが失敗したら、権限とメディアは
