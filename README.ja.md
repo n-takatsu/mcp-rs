@@ -82,7 +82,21 @@ v0.25.0から、[リリース](https://github.com/n-takatsu/mcp-rs/releases)に�
 | macOS（Apple Silicon） | `mcp-rs-<版>-aarch64-apple-darwin.tar.gz` |
 | Linux（x64、glibc 2.35以降） | `mcp-rs-<版>-x86_64-unknown-linux-gnu.tar.gz` |
 
-`mcp-rs`（`mcp-rs.exe`）は、`~/.mcp-rs/bin`（Windowsは`%USERPROFILE%\.mcp-rs\bin`）のような、自分のフォルダに置きます。管理者の権限は要らず、更新はファイルを置き換えるだけです。mcp-rsは、ログを横の`logs`に書きます。Windowsでは、`AppData`の下は避けてください。Microsoft Store版のClaude Desktopから起動すると、そこに書いたファイルが別の場所に移され、ログが見つからないことがあります。
+一番簡単なのは、インストールスクリプトです（v0.26.0から）。最新のリリースをダウンロードしてSHA256を確かめ、`~/.mcp-rs/bin`（Windowsは`%USERPROFILE%\.mcp-rs\bin`）に置き、ほかには何も変えません。最後に[`mcp-rs init`](#mcp-rs-initで設定する)を動かすかを聞きます。更新も、もう一度動かすだけです。
+
+```powershell
+# Windows（PowerShell）
+irm https://raw.githubusercontent.com/n-takatsu/mcp-rs/main/install/install.ps1 | iex
+```
+
+```bash
+# macOS（Apple Silicon）・Linux（x64）
+curl -fsSL https://raw.githubusercontent.com/n-takatsu/mcp-rs/main/install/install.sh | sh
+```
+
+先に中身を読むときは、ファイル（[install.ps1](install/install.ps1)・[install.sh](install/install.sh)）をダウンロードして動かします。`MCP_RS_VERSION`（例: `v0.25.0`）で別の版を、`MCP_RS_INSTALL_DIR`で別のフォルダを指定できます。
+
+手で入れるときは、`mcp-rs`（`mcp-rs.exe`）を、`~/.mcp-rs/bin`（Windowsは`%USERPROFILE%\.mcp-rs\bin`）のような、自分のフォルダに置きます。管理者の権限は要らず、更新はファイルを置き換えるだけです。mcp-rsは、ログを横の`logs`に書きます。Windowsでは、`AppData`の下は避けてください。Microsoft Store版のClaude Desktopから起動すると、そこに書いたファイルが別の場所に移され、ログが見つからないことがあります。
 
 Windows（PowerShell）:
 

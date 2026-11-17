@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- インストールスクリプト（#576）。Windowsは
+  `irm https://raw.githubusercontent.com/n-takatsu/mcp-rs/main/install/install.ps1 | iex`、
+  macOS（Apple Silicon）・Linux（x64）は
+  `curl -fsSL https://raw.githubusercontent.com/n-takatsu/mcp-rs/main/install/install.sh | sh`。
+  最新（または`MCP_RS_VERSION`の版）のリリースをダウンロードし、SHA256を
+  確かめて、`~/.mcp-rs/bin`（`%USERPROFILE%\.mcp-rs\bin`）に置き、最後に
+  `mcp-rs init`を動かすかを聞く。管理者の権限は要らず、PATH等は変えない。
+  Windowsでは、動いているmcp-rsがあっても更新できる（古いファイルを
+  `mcp-rs.exe.old`に移す）。CIで、3つのOS（Windows PowerShell 5.1・
+  PowerShell 7を含む）で実際のリリースを入れて確かめる
 - `mcp-rs init`: 質問に答えるだけで、使い始める準備をするコマンド（#575）。
   WordPressのサイトのURL・ユーザー名・アプリケーションパスワードを聞いて
   OSの資格情報ストアに入れ、設定ファイル（既定は`~/.config/mcp-rs/config.toml`）

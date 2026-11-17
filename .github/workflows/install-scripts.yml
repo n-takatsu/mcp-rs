@@ -1,0 +1,110 @@
+---
+name: Install Scripts
+
+# install/install.sh・install/install.ps1（#576）を、3つのOSで、実際の
+# リリースのファイルを入れて確かめる。スクリプトはmainのものを配るので、
+# 変えたPRで確かめてからマージする
+on:
+  pull_request:
+    paths:
+      - 'install/**'
+      - '.github/workflows/install-scripts.yml'
+  push:
+    branches: [develop]
+    paths:
+      - 'install/**'
+      - '.github/workflows/install-scripts.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  shellcheck:
+    name: ShellCheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: ShellCheck install.sh
+        run: shellcheck --shell=sh install/install.sh
+
+  unix:
+    name: install.sh (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      MCP_RS_INSTALL_DIR: ${{ github.workspace }}/../mcp-rs-bin
+      MCP_RS_NO_INIT: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # curl | sh と同じく、標準入力からスクリプトを読ませる。最新のリリース
+      - name: Install the latest release (piped into sh)
+        run: |
+          sh < install/install.sh
+          "${MCP_RS_INSTALL_DIR}/mcp-rs" --version
+
+      # 2回目は、置き換え（更新）になる。版を指定する
+      - name: Install a given release again
+        env:
+          MCP_RS_VERSION: v0.25.0
+        run: |
+          sh install/install.sh
+          test "$("${MCP_RS_INSTALL_DIR}/mcp-rs" --version)" = "mcp-rs 0.25.0"
+
+      # ビルド済みのファイルが無い版は、何も入れずに失敗する
+      - name: A release without ready-built files fails
+        env:
+          MCP_RS_VERSION: v0.24.0
+          MCP_RS_INSTALL_DIR: ${{ github.workspace }}/../mcp-rs-none
+        run: |
+          if sh install/install.sh; then
+            echo "::error::install.sh succeeded for a release without ready-built files"
+            exit 1
+          fi
+          test ! -e "${MCP_RS_INSTALL_DIR}/mcp-rs"
+
+  windows:
+    name: install.ps1 (${{ matrix.shell }})
+    strategy:
+      fail-fast: false
+      matrix:
+        # Windows PowerShell 5.1（irm | iexの既定）と、PowerShell 7
+        shell: [powershell, pwsh]
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: ${{ matrix.shell }}
+    env:
+      MCP_RS_INSTALL_DIR: ${{ github.workspace }}\..\mcp-rs-bin
+      MCP_RS_NO_INIT: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # irm | iex と同じく、スクリプトの文字列をInvoke-Expressionで動かす
+      - name: Install the latest release (Invoke-Expression)
+        run: |
+          Get-Content -Raw install/install.ps1 | Invoke-Expression
+          & "$env:MCP_RS_INSTALL_DIR\mcp-rs.exe" --version
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: Install a given release again
+        env:
+          MCP_RS_VERSION: v0.25.0
+        run: |
+          Get-Content -Raw install/install.ps1 | Invoke-Expression
+          $version = & "$env:MCP_RS_INSTALL_DIR\mcp-rs.exe" --version
+          if ($version -ne 'mcp-rs 0.25.0') { throw "unexpected version: $version" }
+
+      - name: A release without ready-built files fails
+        env:
+          MCP_RS_VERSION: v0.24.0
+          MCP_RS_INSTALL_DIR: ${{ github.workspace }}\..\mcp-rs-none
+        run: |
+          $failed = $false
+          try { Get-Content -Raw install/install.ps1 | Invoke-Expression } catch { $failed = $true; Write-Host "failed as expected: $($_.Exception.Message)" }
+          if (-not $failed) { throw 'install.ps1 succeeded for a release without ready-built files' }
+          if (Test-Path "$env:MCP_RS_INSTALL_DIR\mcp-rs.exe") { throw 'mcp-rs.exe was installed' }
