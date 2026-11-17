@@ -168,7 +168,7 @@ Limits (v0.24.0 and later):
 [transport.http]
 # max_request_size = 1048576          # bytes of a request body, and of a WebSocket message. Larger: HTTP 413
 # request_timeout_seconds = 30        # the TLS handshake, the request headers, and each wait for more of the body
-# max_connections = 1024              # connections served at once (WebSocket included); more wait
+# max_connections = 1024              # connections served at once; more wait. An open /ws connection counts toward websocket_max_connections (1000) instead
 # websocket_idle_timeout_seconds = 300  # close /ws when the client stops answering for this long. 0: no limit
 ```
 
@@ -284,6 +284,10 @@ user_id = "user-1"
 - `${...}` is expanded only in HTTP mode with `auth_enabled = true`, where the keys are used
 - Up to v0.23.0, `${...}` in `key` was used as written. A key that contains `${` now has to come from an environment variable
 
+- Use long random keys, such as the output of `openssl rand -hex 32`. mcp-rs logs a warning at startup for a key shorter than 16 characters (v0.27.0 and later)
+- A client address that fails authentication 20 times within a minute gets HTTP 429 for the rest of that minute, even with a valid key, so keys cannot be guessed quickly (v0.27.0 and later). Requests being checked at the same time count too, so sending many at once does not get past the limit. Behind a proxy in `trusted_proxies`, the address from `X-Forwarded-For` is counted. Behind a proxy that is not in `trusted_proxies`, or a NAT, every client shares the proxy's address: one client's failures then make everyone get 429 for the rest of the minute, so list the proxy in `trusted_proxies`
+- `mcp_rs_status` shows a key or token limited by `tools` only the version, the mode, and the caller's name: the config file, the logs, and the state of the handlers and plugins are shown only to callers that may use every tool (v0.27.0 and later)
+
 ## Limiting Tools per API Key or Token
 
 In HTTP mode, each API key (and each OAuth scope) can be limited to some of the tools. Other tools are not shown in `tools/list`, and calls to them fail with a tool error ("Tool '...' is not allowed for this API key or access token"). Refused calls are recorded in the [audit log](#audit-log) (category `Authorization`, result `DENIED`, with the key name such as `api_key:reader` or the token's client such as `oauth:my-client`).
@@ -367,7 +371,7 @@ Both are off by default.
 - Nonces are remembered per caller: the API key or token, or the client's address without authentication (behind a proxy in `trusted_proxies`, the address from `X-Forwarded-For`, as for the intrusion detection). One caller can keep at most 10,000, and all callers 100,000. Up to v0.23.0, they shared one cache, so one client could fill it and make every request fail, and nonces were remembered for 5 minutes
 - With many addresses (for example IPv6), a client can still fill the whole cache. Remembering nonces only for 70 seconds makes this harder, but does not prevent it: limit connections per address in front of mcp-rs, or use authentication
 
-`ids_enabled` checks each request for attack patterns (such as SQL injection) and unusual behavior, and blocks the client's address for 30 minutes, or permanently for the most severe ones. It tells callers apart by the API key or token, or by the client's address without authentication. Up to v0.23.0, it used the `X-User-ID` header, which the client could set to anything. What it remembers about callers and addresses has a limit (10,000 each) and is cleaned up every 5 minutes. Behind a reverse proxy, see [Behind a Reverse Proxy](#httpwebsocket-behind-a-reverse-proxy) for `ids_trust_forwarded_for`.
+`ids_enabled` checks each request for attack patterns (such as SQL injection) and unusual behavior, and blocks the client's address for 30 minutes, or permanently for the most severe ones. On `/ws`, it checks each message too, and closes the connection (close code 1008) when it finds an attack (v0.27.0 and later; up to v0.26.0, only the upgrade request was checked). It tells callers apart by the API key or token, or by the client's address without authentication. Up to v0.23.0, it used the `X-User-ID` header, which the client could set to anything. What it remembers about callers and addresses has a limit (10,000 each) and is cleaned up every 5 minutes. Behind a reverse proxy, see [Behind a Reverse Proxy](#httpwebsocket-behind-a-reverse-proxy) for `ids_trust_forwarded_for`.
 
 ## Audit Log
 
