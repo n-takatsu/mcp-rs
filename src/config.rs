@@ -695,6 +695,27 @@ pub struct HttpTransportConfig {
     pub allow_unauthenticated_external: Option<bool>,
 }
 
+impl HttpTransportConfig {
+    /// APIキーの`tools`か、OAuthの`scope_tools`に、`preset`（`@read_only`
+    /// 等）を書いたか
+    pub fn uses_tool_preset(&self, preset: &str) -> bool {
+        let key_items = self
+            .api_keys
+            .iter()
+            .flatten()
+            .filter_map(|key| key.tools.as_ref())
+            .flatten();
+        let scope_items = self
+            .oauth
+            .iter()
+            .flat_map(|oauth| oauth.scope_tools.values())
+            .flatten();
+        key_items
+            .chain(scope_items)
+            .any(|item| item.trim() == preset)
+    }
+}
+
 /// TOML-facing shape for a single API key entry under
 /// `transport.http.api_keys`. Mirrors `transport::http::ApiKeyEntry`.
 /// `Debug` does not show `key` (#543).
@@ -2574,6 +2595,47 @@ user_id = "u2"
                 "${MCP_RS_TEST_API_KEY_534_UNSET}"
             );
         }
+    }
+
+    /// `@read_only`を書いたかを見分ける（PR #604のレビュー）
+    #[test]
+    fn test_uses_tool_preset() {
+        let keys: HttpTransportConfig = toml::from_str(
+            r#"
+[[api_keys]]
+key = "k"
+name = "reader"
+user_id = "u"
+tools = ["@read_only"]
+"#,
+        )
+        .unwrap();
+        assert!(keys.uses_tool_preset("@read_only"));
+        let scopes: HttpTransportConfig = toml::from_str(
+            r#"
+[oauth]
+issuer = "https://auth.example.com"
+resource = "https://mcp.example.com/mcp"
+[oauth.scope_tools]
+"mcp:read" = ["get_*"]
+"mcp:list" = [" @read_only "]
+"#,
+        )
+        .unwrap();
+        assert!(scopes.uses_tool_preset("@read_only"));
+        let names_only: HttpTransportConfig = toml::from_str(
+            r#"
+[[api_keys]]
+key = "k"
+name = "writer"
+user_id = "u"
+tools = ["get_posts"]
+"#,
+        )
+        .unwrap();
+        assert!(!names_only.uses_tool_preset("@read_only"));
+        let empty: HttpTransportConfig = toml::from_str("").unwrap();
+        assert!(!empty.uses_tool_preset("@read_only"));
     }
 
     /// APIキーの`tools`と、OAuthの`scope_tools`（#52）を読む
