@@ -24,6 +24,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- リリースのビルド済みのファイル（`.zip`・`.tar.gz`）に、GitHubの出所の
+  証明（build provenance attestation）を付ける（#599）。`.sha256`は同じ
+  リリースから取るので、壊れたダウンロードは見つかるが、リリースのファイルを
+  差し替えられる人には効かない。`gh attestation verify <ファイル> -R
+  n-takatsu/mcp-rs`で、このリポジトリのリリースのワークフローが作ったことを
+  確かめられる
 - `mcp-rs init`の小さな強化（#599）: 置き換えた設定ファイルの控えに
   平文のパスワードがあれば、消すかを聞く。前の設定ファイルに平文の
   パスワードが残っていれば、最後に知らせる。Unixでは、書く設定ファイルと
