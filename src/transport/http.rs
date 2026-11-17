@@ -1179,10 +1179,16 @@ impl HttpTransport {
 /// `trusted_proxies`を書いたとき（リバースプロキシの後ろ）は、ループバックで
 /// 待ち受けていても同じにする（#593）。同じマシンのプロキシから来る通信は、
 /// すべてループバックからに見えるので、待ち受けるアドレス・ネットワークの
-/// 方針では、プロキシの先（インターネット等）の相手を止められない
+/// 方針では、プロキシの先（インターネット等）の相手を止められない。
+///
+/// プロキシの後ろでは、mTLSを認証に数えない（PR #601のレビュー）。TLSを
+/// 終えるのはプロキシなので、mcp-rsに証明書を出すのはプロキシで、確かめ
+/// られるのは「つないできたのがプロキシか」だけ。プロキシの先の
+/// クライアントは確かめられない
 fn unauthenticated_external_bind(config: &HttpConfig) -> Option<String> {
-    let authenticated = config.auth_enabled || config.oauth.is_some() || config.mtls_enabled;
     let behind_proxy = !config.trusted_proxies.is_empty();
+    let authenticated =
+        config.auth_enabled || config.oauth.is_some() || (config.mtls_enabled && !behind_proxy);
     if authenticated || (config.bind_addr.ip().is_loopback() && !behind_proxy) {
         return None;
     }
@@ -1205,7 +1211,8 @@ fn unauthenticated_external_bind(config: &HttpConfig) -> Option<String> {
     }
     let proxy_note = if behind_proxy {
         " Requests through a proxy on the same machine come from loopback, so listening on \
-         loopback does not keep out the clients the proxy lets in."
+         loopback does not keep out the clients the proxy lets in. Behind a proxy, client \
+         certificates (mTLS) check only the proxy, not its clients, so they do not count."
     } else {
         ""
     };
@@ -6577,6 +6584,14 @@ mod tests {
         ] {
             assert_eq!(unauthenticated_external_bind(&config), None, "{config:?}");
         }
+        // プロキシの後ろのmTLSは、プロキシを確かめるだけなので、認証に
+        // 数えない（PR #601のレビュー）
+        let mtls_behind_proxy = HttpConfig {
+            mtls_enabled: true,
+            ..behind_proxy.clone()
+        };
+        let reason = unauthenticated_external_bind(&mtls_behind_proxy).unwrap();
+        assert!(reason.contains("mTLS"), "{reason}");
     }
 
     #[test]
