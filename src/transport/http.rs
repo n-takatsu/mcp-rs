@@ -1309,9 +1309,70 @@ async fn serve_connections(
     }
 }
 
+/// 1つの接続の、処理中のリクエストの数と、最後に変わった時刻（#592）
+struct ConnectionActivity {
+    in_flight: std::sync::atomic::AtomicUsize,
+    last_change: std::sync::Mutex<std::time::Instant>,
+}
+
+impl ConnectionActivity {
+    fn new() -> Self {
+        Self {
+            in_flight: std::sync::atomic::AtomicUsize::new(0),
+            last_change: std::sync::Mutex::new(std::time::Instant::now()),
+        }
+    }
+
+    fn touch(&self) {
+        *self
+            .last_change
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = std::time::Instant::now();
+    }
+
+    /// 処理中のリクエストが無い時間。処理中なら0
+    fn idle_for(&self) -> std::time::Duration {
+        if self.in_flight.load(std::sync::atomic::Ordering::SeqCst) > 0 {
+            return std::time::Duration::ZERO;
+        }
+        self.last_change
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .elapsed()
+    }
+}
+
+/// リクエストを受けてから、応答の本文を送り終える（または捨てる）までの
+/// 間、処理中として数える（#592）
+struct ActivityGuard(Arc<ConnectionActivity>);
+
+impl ActivityGuard {
+    fn new(activity: Arc<ConnectionActivity>) -> Self {
+        activity
+            .in_flight
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        activity.touch();
+        Self(activity)
+    }
+}
+
+impl Drop for ActivityGuard {
+    fn drop(&mut self) {
+        self.0.touch();
+        self.0
+            .in_flight
+            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 /// 1つの接続で、HTTP/1.1かHTTP/2のリクエストを処理する。ヘッダーを読む
 /// 時間（HTTP/1.1）と、応答の無い接続を見つけるping（HTTP/2）に`timeout`を
-/// 使う（#540）
+/// 使う（#540）。
+///
+/// 処理中のリクエストが無いまま`timeout`が過ぎた接続は、閉じる（#592）。
+/// HTTP/2には、HTTP/1.1の`header_read_timeout`にあたる上限が無く、pingに
+/// 答える相手は、何も送らなくても接続を持ち続けられた。接続を開いて何も
+/// 送らない相手で、`max_connections`を認証無しに埋められた
 async fn serve_connection<I>(
     io: I,
     service: ConnectionService,
@@ -1320,6 +1381,9 @@ async fn serve_connection<I>(
 ) where
     I: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
+    use http_body_util::BodyExt;
+    use hyper::service::Service as _;
+
     let io = TokioIo::new(io);
     let mut builder = HyperConnectionBuilder::new(TokioExecutor::new());
     builder
@@ -1331,13 +1395,53 @@ async fn serve_connection<I>(
         .timer(TokioTimer::new())
         .keep_alive_interval(timeout)
         .keep_alive_timeout(timeout);
-    let hyper_service = TowerToHyperService::new(service);
-    if let Err(e) = builder
-        .serve_connection_with_upgrades(io, hyper_service)
-        .await
-    {
-        // 時間切れ・相手が切った等。よくあることなので、エラーにはしない
-        debug!("HTTP connection error for {}: {}", remote_addr, e);
+    let activity = Arc::new(ConnectionActivity::new());
+    let inner = TowerToHyperService::new(service);
+    let tracked = activity.clone();
+    let hyper_service = hyper::service::service_fn(move |request| {
+        let guard = ActivityGuard::new(tracked.clone());
+        let response = inner.call(request);
+        async move {
+            let response = response.await?;
+            // 本文を送り終えるか捨てるまで、処理中として数える
+            Ok::<_, std::convert::Infallible>(response.map(|body| {
+                axum::body::Body::new(body.map_frame(move |frame| {
+                    let _ = &guard;
+                    frame
+                }))
+            }))
+        }
+    });
+    let connection = builder.serve_connection_with_upgrades(io, hyper_service);
+    tokio::pin!(connection);
+    let mut closing = false;
+    loop {
+        let wait = if closing {
+            timeout
+        } else {
+            timeout.saturating_sub(activity.idle_for())
+        };
+        tokio::select! {
+            result = connection.as_mut() => {
+                if let Err(e) = result {
+                    // 時間切れ・相手が切った等。よくあることなので、エラーにはしない
+                    debug!("HTTP connection error for {}: {}", remote_addr, e);
+                }
+                return;
+            }
+            _ = tokio::time::sleep(wait.max(std::time::Duration::from_millis(10))) => {
+                if closing {
+                    // 閉じる手続きに応じない相手は、そのまま切る
+                    debug!("Closed idle connection from {} without waiting for it", remote_addr);
+                    return;
+                }
+                if activity.idle_for() >= timeout {
+                    debug!("Closing idle connection from {} (no request for {:?})", remote_addr, timeout);
+                    connection.as_mut().graceful_shutdown();
+                    closing = true;
+                }
+            }
+        }
     }
 }
 
@@ -6226,6 +6330,61 @@ mod tests {
         .await;
         assert!(closed, "the connection was not closed");
         assert!(started.elapsed() < std::time::Duration::from_secs(4));
+    }
+
+    /// 何も送らない接続は、`timeout_ms`で閉じる（#592）。以前は、
+    /// プロトコルを決める前（最初のバイトを待つ間）に上限が無かった
+    #[tokio::test]
+    async fn test_connection_that_sends_nothing_is_closed() {
+        let port = start_test_server(|c| c.timeout_ms = 500).await;
+        let started = std::time::Instant::now();
+        let (_, closed) = raw_exchange(port, b"", std::time::Duration::from_secs(5)).await;
+        assert!(closed, "the connection was not closed");
+        assert!(started.elapsed() < std::time::Duration::from_secs(4));
+    }
+
+    /// HTTP/2で、pingには答えるが、リクエストを送らない接続も閉じる
+    /// （#592）。リクエストの後に何もしなくなった接続も同じ
+    #[tokio::test]
+    async fn test_idle_http2_connection_is_closed() {
+        let port = start_test_server(|c| c.timeout_ms = 500).await;
+        let stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .unwrap();
+        // hyperのクライアントは、サーバーのpingに自動で答える
+        let (mut sender, connection) =
+            hyper::client::conn::http2::handshake(TokioExecutor::new(), TokioIo::new(stream))
+                .await
+                .unwrap();
+        let connection = tokio::spawn(connection);
+
+        // 1回は使える
+        let request = hyper::Request::builder()
+            .uri(format!("http://127.0.0.1:{port}/nothing-here"))
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let response = sender.send_request(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        drop(response);
+
+        // その後、何もしなければ閉じられる
+        let started = std::time::Instant::now();
+        let closed = tokio::time::timeout(std::time::Duration::from_secs(5), connection).await;
+        assert!(closed.is_ok(), "the HTTP/2 connection was not closed");
+        assert!(started.elapsed() < std::time::Duration::from_secs(4));
+    }
+
+    /// 処理中のリクエストがある間は、何もしていない接続として閉じない
+    /// （#592）
+    #[test]
+    fn test_connection_activity_counts_requests_in_flight() {
+        let activity = Arc::new(ConnectionActivity::new());
+        let guard = ActivityGuard::new(activity.clone());
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        assert_eq!(activity.idle_for(), std::time::Duration::ZERO);
+        drop(guard);
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        assert!(activity.idle_for() >= std::time::Duration::from_millis(20));
     }
 
     /// 本文を送り終えないリクエストも、`timeout_ms`で打ち切る（#540）

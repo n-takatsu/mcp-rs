@@ -24,6 +24,9 @@ axum = { version = "0.8", features = ["ws"] }
 tower = "0.5.2"
 tower-http = { version = "0.6", features = ["cors", "timeout", "trace"] }
 hyper-util = { version = "0.1", features = ["server", "service", "http1", "http2", "tokio"] }
+# 接続の何もしていない時間を数えるため、応答の本文を包む（#592）
+hyper = { version = "1", features = ["server", "http1", "http2"] }
+http-body-util = "0.1"
 http = "1.0"
 
 # Serialization
@@ -128,6 +131,8 @@ jsonwebtoken = { version = "11.1", default-features = false, features = ["aws_lc
 libc = "0.2"
 
 [dev-dependencies]
+# HTTP/2のクライアント（何もしていない接続を閉じるテスト、#592）
+hyper = { version = "1", features = ["client", "http2"] }
 # Testing framework
 tokio-test = "0.4.4"
 # Test certificates for the HTTPS/mTLS tests (src/transport/http.rs)
