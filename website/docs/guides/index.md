@@ -83,6 +83,7 @@ The files are not signed:
 - Windows may warn about a downloaded program. `Unblock-File` (above) removes the mark that Windows puts on downloaded files. If you extracted the zip in Explorer, Windows may show "Windows protected your PC" the first time; choose "More info" → "Run anyway" only after checking the SHA256
 - macOS blocks a program downloaded with a browser ("cannot be opened because the developer cannot be verified"). After checking the SHA256, run `xattr -d com.apple.quarantine ~/.mcp-rs/bin/mcp-rs`. Files downloaded with `curl` are not blocked
 - `SHA256SUMS` in the release lists the SHA256 of every file
+- The SHA256 files come from the same release, so they show that the download is complete, not who made it. From v0.27.0, each `.zip` and `.tar.gz` also has a build provenance attestation, signed by GitHub, that shows it was built by this repository's release workflow. With the [GitHub CLI](https://cli.github.com/), check it before running the file: `gh attestation verify mcp-rs-v0.27.0-x86_64-pc-windows-msvc.zip -R n-takatsu/mcp-rs`
 
 ### Build from source {#build-from-source}
 
