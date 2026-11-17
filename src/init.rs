@@ -248,7 +248,12 @@ impl Setup<'_> {
             if report.count(crate::check::Status::Error) == 0 {
                 break;
             }
-            if let Some((url, entry)) = &written {
+            // 入れ直しで直るのは、サインインのエラーだけ（URLの誤り・サイトに
+            // つながらない等は、入れ直しても直らない。PR #583のレビュー）
+            let sign_in_failed = report
+                .find("WordPress sign-in")
+                .is_some_and(|(status, _)| status == crate::check::Status::Error);
+            if let (Some((url, entry)), true) = (&written, sign_in_failed) {
                 if confirm(
                     self.io,
                     "If the username or the Application Password was wrong, enter them again?",
@@ -467,8 +472,11 @@ impl Setup<'_> {
                 return Ok(false);
             }
         }
-        let remove =
-            self.choose_duplicates_to_remove("Claude Desktop", &other_mcp_rs_servers(&config))?;
+        let remove = self.choose_duplicates_to_remove(
+            "Claude Desktop",
+            &other_mcp_rs_servers(&config),
+            launch,
+        )?;
         match add_to_claude_desktop(path, launch, replace, &remove)? {
             Some(backup) => self.io.say(&format!(
                 "Claude Desktop: registered in {} (the previous settings are kept as {}).",
@@ -486,25 +494,39 @@ impl Setup<'_> {
     /// 別の名前で登録された mcp-rs（手で登録したもの等）を、1つずつ消すかを
     /// 聞く。消すものの名前を返す。同じ mcp-rs が2つ動くと、同じツールが
     /// 2組並び、AIがどちらを使うか分からなくなる（#575）
+    ///
+    /// 同じ設定ファイルを使うものは重複なので、既定は「はい」。別の設定
+    /// ファイル（2つ目のサイト・データベース用等）のものは、意図して並べて
+    /// いることがあるので、そのパスを見せて、既定は「いいえ」にする（PR #583
+    /// のレビュー。Claude Code・Copilotの登録は、消すと控えが残らない）
     fn choose_duplicates_to_remove(
         &mut self,
         client: &str,
-        others: &[String],
+        others: &[OtherServer],
+        launch: &Launch,
     ) -> io::Result<Vec<String>> {
         let mut remove = Vec::new();
-        for name in others {
-            if confirm(
-                self.io,
-                &format!(
-                    "{client} also starts mcp-rs as \"{name}\". Remove it, so that only one mcp-rs runs? (otherwise the same tools appear twice)"
-                ),
-                true,
-            )? {
-                remove.push(name.clone());
+        for other in others {
+            let name = &other.name;
+            let same_config = same_config_file(other.config.as_deref(), &launch.config);
+            let question = if same_config {
+                format!(
+                    "{client} also starts mcp-rs as \"{name}\" with the same config file. Remove it, so that only one mcp-rs runs? (otherwise the same tools appear twice)"
+                )
             } else {
+                format!(
+                    "{client} also starts mcp-rs as \"{name}\" with another config file ({}). If it is the setup you are replacing, remove it (otherwise the same tools may appear twice). Remove it?",
+                    other.config.as_deref().unwrap_or("~/.config/mcp-rs/config.toml")
+                )
+            };
+            if confirm(self.io, &question, same_config)? {
+                remove.push(name.clone());
+            } else if same_config {
                 self.io.say(&format!(
                     "Kept \"{name}\". {client} will start two mcp-rs servers with the same tools; remove one of them later."
                 ));
+            } else {
+                self.io.say(&format!("Kept \"{name}\"."));
             }
         }
         Ok(remove)
@@ -570,7 +592,7 @@ impl Setup<'_> {
             .and_then(|path| read_json_file(&path).ok())
             .map(|config| other_mcp_rs_servers(&config))
             .unwrap_or_default();
-        let remove = self.choose_duplicates_to_remove(cli.label, &others)?;
+        let remove = self.choose_duplicates_to_remove(cli.label, &others, launch)?;
         match run_quietly(&program, &cli.add_args(launch)) {
             Ok(()) => {
                 self.io.say(&format!("{}: registered.", cli.label));
@@ -739,25 +761,79 @@ fn is_mcp_rs_command(command: &str) -> bool {
     file == "mcp-rs" || file == "mcp-rs.exe"
 }
 
+/// 別の名前で mcp-rs を起動する登録
+#[derive(Debug, PartialEq, Eq)]
+struct OtherServer {
+    name: String,
+    /// `--config`の値（無ければ`None`。`~/.config/mcp-rs/config.toml`を読む）
+    config: Option<String>,
+}
+
 /// `mcpServers`のうち、`mcp-rs`以外の名前で mcp-rs を起動するもの
-fn other_mcp_rs_servers(config: &serde_json::Value) -> Vec<String> {
-    config
+fn other_mcp_rs_servers(config: &serde_json::Value) -> Vec<OtherServer> {
+    let Some(servers) = config
         .get("mcpServers")
         .and_then(serde_json::Value::as_object)
-        .map(|servers| {
-            servers
-                .iter()
-                .filter(|(name, server)| {
-                    name.as_str() != SERVER_NAME
-                        && server
-                            .get("command")
-                            .and_then(serde_json::Value::as_str)
-                            .is_some_and(is_mcp_rs_command)
-                })
-                .map(|(name, _)| name.clone())
-                .collect()
+    else {
+        return Vec::new();
+    };
+    servers
+        .iter()
+        .filter(|(name, server)| {
+            name.as_str() != SERVER_NAME
+                && server
+                    .get("command")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(is_mcp_rs_command)
         })
-        .unwrap_or_default()
+        .map(|(name, server)| {
+            let args: Vec<&str> = server
+                .get("args")
+                .and_then(serde_json::Value::as_array)
+                .map(|args| args.iter().filter_map(serde_json::Value::as_str).collect())
+                .unwrap_or_default();
+            OtherServer {
+                name: name.clone(),
+                config: config_arg(&args),
+            }
+        })
+        .collect()
+}
+
+/// mcp-rsの引数の`--config`の値
+fn config_arg(args: &[&str]) -> Option<String> {
+    let mut rest = args.iter();
+    while let Some(arg) = rest.next() {
+        if *arg == "--config" {
+            return rest.next().map(|path| path.to_string());
+        }
+        if let Some(path) = arg.strip_prefix("--config=") {
+            return Some(path.to_string());
+        }
+    }
+    None
+}
+
+/// 2つの設定ファイルが同じか（`None`は`--config`無し、つまり
+/// `~/.config/mcp-rs/config.toml`）。`~/`を展開し、区切り文字をそろえ、
+/// Windowsでは大文字・小文字を区別しない
+fn same_config_file(other: Option<&str>, ours: &str) -> bool {
+    let normalize = |path: &str| {
+        let path = crate::config::expand_config_path(path.trim()).replace('\\', "/");
+        if cfg!(windows) {
+            path.to_lowercase()
+        } else {
+            path
+        }
+    };
+    let other = match other {
+        Some(path) => path.to_string(),
+        None => match crate::config::user_config_path() {
+            Some(path) => path,
+            None => return false,
+        },
+    };
+    normalize(&other) == normalize(ours)
 }
 
 /// 表示するコマンドの引数を、空白等があれば`"`で囲む
@@ -1226,11 +1302,81 @@ mod tests {
                 "remote": {"url": "https://example.com/mcp"}
             }
         });
+        let names: Vec<String> = other_mcp_rs_servers(&config)
+            .into_iter()
+            .map(|other| other.name)
+            .collect();
+        assert_eq!(names, ["mcp-rs-wordpress", "blog", "unix"]);
+        assert!(other_mcp_rs_servers(&serde_json::json!({})).is_empty());
+    }
+
+    /// `--config`の値を読み、同じ設定ファイルかを見分ける（PR #583のレビュー）
+    #[test]
+    fn test_config_arg_and_same_config_file() {
+        assert_eq!(
+            config_arg(&["--config", "a.toml"]),
+            Some("a.toml".to_string())
+        );
+        assert_eq!(config_arg(&["--config=b.toml"]), Some("b.toml".to_string()));
+        assert_eq!(config_arg(&[]), None);
+        let config = serde_json::json!({"mcpServers": {
+            "second-blog": {"command": "mcp-rs", "args": ["--config", "/home/me/second-blog.toml"]}
+        }});
         assert_eq!(
             other_mcp_rs_servers(&config),
-            ["mcp-rs-wordpress", "blog", "unix"]
+            [OtherServer {
+                name: "second-blog".to_string(),
+                config: Some("/home/me/second-blog.toml".to_string())
+            }]
         );
-        assert!(other_mcp_rs_servers(&serde_json::json!({})).is_empty());
+
+        assert!(same_config_file(Some("/home/me/a.toml"), "/home/me/a.toml"));
+        assert!(!same_config_file(
+            Some("/home/me/second-blog.toml"),
+            "/home/me/a.toml"
+        ));
+        if cfg!(windows) {
+            assert!(same_config_file(
+                Some("C:/Users/Me/Config.toml"),
+                "c:\\users\\me\\config.toml"
+            ));
+        }
+        // --config無しは、~/.config/mcp-rs/config.toml
+        if let Some(user_config) = crate::config::user_config_path() {
+            assert!(same_config_file(None, &user_config));
+            assert!(!same_config_file(None, "/somewhere/else.toml"));
+        }
+    }
+
+    /// 別の設定ファイルのmcp-rsは、既定では消さない。同じ設定ファイルの
+    /// ものは、既定で消す
+    #[test]
+    fn test_choose_duplicates_to_remove() {
+        let store = MemoryStore::default();
+        let launch = Launch {
+            exe: "mcp-rs".to_string(),
+            config: "/home/me/a.toml".to_string(),
+        };
+        let others = vec![
+            OtherServer {
+                name: "old".to_string(),
+                config: Some("/home/me/a.toml".to_string()),
+            },
+            OtherServer {
+                name: "second-blog".to_string(),
+                config: Some("/home/me/second-blog.toml".to_string()),
+            },
+        ];
+        // Enterだけで進める
+        let mut io = Script::new(&["", ""]);
+        let remove = setup(&mut io, &store)
+            .choose_duplicates_to_remove("Claude Code", &others, &launch)
+            .unwrap();
+        assert_eq!(remove, ["old"]);
+        assert!(io
+            .shown
+            .iter()
+            .any(|s| s.contains("/home/me/second-blog.toml") && s.contains("[y/N]")));
     }
 
     /// 別の名前の登録を消し、ほかの順番は変えない

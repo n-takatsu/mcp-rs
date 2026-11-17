@@ -18,7 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   確かめてから行い、置き換えるファイルは控えを残す。断ったものは、登録の
   コマンドや設定を表示する。別の名前でmcp-rsを起動する登録（手で登録した
   `mcp-rs-wordpress`等）があれば、消すかを聞く（同じツールが2組並ばない
-  ように）。最初の版は、WordPressだけを聞く
+  ように）。同じ設定ファイルのものは既定で消し、別の設定ファイルのもの
+  （2つ目のサイト用等）は、そのパスを見せて、既定では残す。最初の版は、WordPressだけを聞く
 
 ### Changed
 
