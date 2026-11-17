@@ -55,6 +55,17 @@ jobs:
           sh install/install.sh
           test "$("${MCP_RS_INSTALL_DIR}/mcp-rs" --version)" = "mcp-rs 0.25.0"
 
+      # 端末が無いとき（Docker・CI・端末の無いssh）は、initを聞かずに、
+      # 案内を出して正常に終わる（PR #584のレビュー。/dev/ttyはあるが
+      # 開けない）
+      - name: Install without a terminal and without MCP_RS_NO_INIT
+        env:
+          MCP_RS_NO_INIT: ''
+        run: |
+          sh install/install.sh < /dev/null > out.txt 2>&1 || { cat out.txt; exit 1; }
+          cat out.txt
+          grep -q 'Next, set it up with' out.txt
+
       # ビルド済みのファイルが無い版は、何も入れずに失敗する
       - name: A release without ready-built files fails
         env:
@@ -98,6 +109,16 @@ jobs:
           Get-Content -Raw install/install.ps1 | Invoke-Expression
           $version = & "$env:MCP_RS_INSTALL_DIR\mcp-rs.exe" --version
           if ($version -ne 'mcp-rs 0.25.0') { throw "unexpected version: $version" }
+
+      # -NonInteractiveでは、initを聞かずに、案内を出して正常に終わる
+      - name: Install with -NonInteractive and without MCP_RS_NO_INIT
+        env:
+          MCP_RS_NO_INIT: ''
+        run: |
+          $out = & ${{ matrix.shell }} -NoProfile -NonInteractive -Command "Get-Content -Raw install/install.ps1 | Invoke-Expression" 2>&1 | Out-String
+          Write-Host $out
+          if ($LASTEXITCODE -ne 0) { throw "install.ps1 failed" }
+          if ($out -notmatch 'Next, set it up with') { throw 'no "Next" message' }
 
       - name: A release without ready-built files fails
         env:

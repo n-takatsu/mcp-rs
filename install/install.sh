@@ -102,14 +102,17 @@ main() {
     [ -f "${work}/${name}/mcp-rs" ] || fail "the download does not contain ${name}/mcp-rs"
 
     mkdir -p "${install_dir}"
-    # Copy next to it first, then rename, so a running mcp-rs keeps working
-    cp "${work}/${name}/mcp-rs" "${install_dir}/mcp-rs.new"
-    chmod 755 "${install_dir}/mcp-rs.new"
-    mv -f "${install_dir}/mcp-rs.new" "${install_dir}/mcp-rs"
-
+    # Copy next to it first, check that it runs, then rename, so a running
+    # mcp-rs keeps working and one that does not run replaces nothing
+    new="${install_dir}/mcp-rs.new"
+    cp "${work}/${name}/mcp-rs" "${new}"
+    chmod 755 "${new}"
+    if ! installed=$("${new}" --version 2>&1); then
+        rm -f "${new}"
+        fail "the downloaded mcp-rs does not run on this system: ${installed} (on Linux, glibc 2.35 or later is needed). Nothing was replaced"
+    fi
     exe="${install_dir}/mcp-rs"
-    installed=$("${exe}" --version 2>&1) ||
-        fail "mcp-rs was installed but does not run: ${installed} (on Linux, glibc 2.35 or later is needed)"
+    mv -f "${new}" "${exe}"
     say "Installed ${installed}: ${exe}"
     say ""
 
@@ -117,8 +120,10 @@ main() {
         say "Next, set it up with: ${exe} init"
         return
     fi
-    # Piped into sh, standard input is this script, so ask the terminal
-    if [ -r /dev/tty ] && [ -w /dev/tty ]; then
+    # Piped into sh, standard input is this script, so ask the terminal.
+    # /dev/tty exists even without a terminal (Docker, CI, ssh without a
+    # terminal), so check that it can be opened
+    if (: < /dev/tty > /dev/tty) 2> /dev/null; then
         printf 'Run mcp-rs init now, to set up WordPress and register mcp-rs with your MCP clients? [Y/n] ' > /dev/tty
         answer=""
         read -r answer < /dev/tty || answer="n"

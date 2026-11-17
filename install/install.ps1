@@ -90,37 +90,49 @@ function Install-McpRs {
         $downloaded = Join-Path $work "$name\mcp-rs.exe"
         if (-not (Test-Path $downloaded)) { throw "the download does not contain $name\mcp-rs.exe" }
 
+        # Check that it runs before replacing anything
+        Unblock-File $downloaded
+        $installed = & $downloaded --version 2>&1
+        if ($LASTEXITCODE -ne 0) { throw "the downloaded mcp-rs does not run on this system: $installed. Nothing was replaced" }
+
         New-Item -ItemType Directory -Force -Path $installDir | Out-Null
         $exe = Join-Path $installDir 'mcp-rs.exe'
+        $old = "$exe.old"
         try {
             # A running mcp-rs.exe cannot be overwritten, but it can be
             # renamed: move it aside, so updating works while Claude Desktop
             # or VS Code is running it (they use the new one after a restart)
-            $old = "$exe.old"
             if (Test-Path $old) { Remove-Item -Force $old -ErrorAction SilentlyContinue }
             if (Test-Path $exe) { Move-Item -Force $exe $old }
             Copy-Item -Force $downloaded $exe
             Remove-Item -Force $old -ErrorAction SilentlyContinue
         } catch {
+            # Put the previous one back, so mcp-rs.exe is never missing
+            if (-not (Test-Path $exe) -and (Test-Path $old)) {
+                Move-Item -Force $old $exe -ErrorAction SilentlyContinue
+            }
             throw "could not replace $exe ($($_.Exception.Message)). If Claude Desktop or VS Code is running mcp-rs, quit it (Claude Desktop from the system tray) and run this again"
         }
-        # Remove the mark Windows puts on downloaded files
-        Unblock-File $exe
     } finally {
         Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
     }
 
-    $installed = & $exe --version 2>&1
-    if ($LASTEXITCODE -ne 0) { throw "mcp-rs was installed but does not run: $installed" }
     Write-Host "Installed ${installed}: $exe"
     Write-Host ''
 
     $next = "Next, set it up with: & `"$exe`" init"
-    if ($env:MCP_RS_NO_INIT -eq '1' -or -not [Environment]::UserInteractive) {
+    $nonInteractive = [Environment]::GetCommandLineArgs() | Where-Object { $_ -like '-NonI*' }
+    if ($env:MCP_RS_NO_INIT -eq '1' -or -not [Environment]::UserInteractive -or $nonInteractive) {
         Write-Host $next
         return
     }
-    $answer = Read-Host 'Run mcp-rs init now, to set up WordPress and register mcp-rs with your MCP clients? [Y/n]'
+    try {
+        $answer = Read-Host 'Run mcp-rs init now, to set up WordPress and register mcp-rs with your MCP clients? [Y/n]'
+    } catch {
+        # No way to ask (for example powershell -NonInteractive)
+        Write-Host $next
+        return
+    }
     if ($answer -eq '' -or $answer -match '^(y|yes)$') {
         & $exe init
     } else {
