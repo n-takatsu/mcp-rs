@@ -25,6 +25,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   キーも、並べ替えずに作った順になる（ライブラリとして使うときの
   `serde_json::Map`の順番も変わる）
 
+### Fixed
+
+- `mcp-rs check`と`wordpress_health_check`で、サインインが失敗したのに、
+  権限とメディアが「OK」と出ていた（#575の確認で分かった）。どちらも認証の
+  要らない読み取りでも通るため。サインインが失敗したら、権限とメディアは
+  確かめない（`mcp-rs check`は「not checked」と出す）。`mcp-rs check`の
+  エラーは、最後にまとめて「WordPress site」の名前で出していたのを、
+  失敗した項目の名前で、確かめた順に出すようにした
+
 ## [0.25.0] - 2026-11-17
 
 ### Added

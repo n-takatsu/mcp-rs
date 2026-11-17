@@ -325,30 +325,70 @@ async fn check_wordpress(
         return;
     }
     let health = handler.health_check().await;
-    if health.site_accessible {
+    report_health(&wp.url, &health, report);
+}
+
+/// `health_check`の結果を、確かめた順に1項目ずつ表示する。失敗した項目は、
+/// その項目の名前でエラーにする（PR #583のレビューの前は、エラーをすべて
+/// 「WordPress site」の名前で最後にまとめて出していた）。サインインが
+/// 失敗したら、権限・メディアは確かめていない
+fn report_health(
+    url: &str,
+    health: &crate::handlers::wordpress::WordPressHealthCheck,
+    report: &mut Report,
+) {
+    // `health_check`がエラーの文の先頭に付ける言葉と、項目
+    const SITE: (&str, &str) = ("Site accessibility failed", "WordPress site");
+    const STEPS: [(&str, &str); 4] = [
+        ("REST API check failed", "WordPress REST API"),
+        ("Authentication failed", "WordPress sign-in"),
+        ("Permissions check failed", "WordPress permissions"),
+        ("Media upload check failed", "WordPress media"),
+    ];
+    let mut shown = vec![false; health.error_details.len()];
+    let mut detail = |prefix: &str| -> String {
+        match health
+            .error_details
+            .iter()
+            .position(|d| d.starts_with(prefix))
+        {
+            Some(i) => {
+                shown[i] = true;
+                health.error_details[i].clone()
+            }
+            None => "failed".to_string(),
+        }
+    };
+    if !health.site_accessible {
+        report.push(Status::Error, SITE.1, detail(SITE.0));
+    } else {
         let name = health
             .site_info
             .as_ref()
             .map(|info| format!(" \"{}\"", info.name))
             .unwrap_or_default();
-        report.push(
-            Status::Ok,
-            "WordPress site",
-            format!("{}{} is reachable", wp.url, name),
-        );
-    }
-    for (ok, item) in [
-        (health.rest_api_available, "WordPress REST API"),
-        (health.authentication_valid, "WordPress sign-in"),
-        (health.permissions_adequate, "WordPress permissions"),
-        (health.media_upload_possible, "WordPress media"),
-    ] {
-        if health.site_accessible && ok {
-            report.push(Status::Ok, item, "OK");
+        report.push(Status::Ok, SITE.1, format!("{url}{name} is reachable"));
+        let oks = [
+            health.rest_api_available,
+            health.authentication_valid,
+            health.permissions_adequate,
+            health.media_upload_possible,
+        ];
+        for (index, ((prefix, item), ok)) in STEPS.iter().zip(oks).enumerate() {
+            if ok {
+                report.push(Status::Ok, item, "OK");
+            } else if index >= 2 && !health.authentication_valid {
+                report.push(Status::Skip, item, "not checked: the sign-in failed");
+            } else {
+                report.push(Status::Error, item, detail(prefix));
+            }
         }
     }
-    for detail in &health.error_details {
-        report.push(Status::Error, "WordPress site", detail.clone());
+    // どの項目にも当たらないエラー（念のため）
+    for (detail, shown) in health.error_details.iter().zip(shown) {
+        if !shown {
+            report.push(Status::Error, SITE.1, detail.clone());
+        }
     }
 }
 
@@ -437,6 +477,83 @@ mod tests {
 
     fn args(list: &[&str]) -> Vec<String> {
         list.iter().map(|s| s.to_string()).collect()
+    }
+
+    fn health(oks: [bool; 5], errors: &[&str]) -> crate::handlers::wordpress::WordPressHealthCheck {
+        crate::handlers::wordpress::WordPressHealthCheck {
+            site_accessible: oks[0],
+            rest_api_available: oks[1],
+            authentication_valid: oks[2],
+            permissions_adequate: oks[3],
+            media_upload_possible: oks[4],
+            error_details: errors.iter().map(|s| s.to_string()).collect(),
+            site_info: None,
+            log_destination: String::new(),
+        }
+    }
+
+    /// サインインが失敗したら、その項目のエラーにし、権限・メディアは
+    /// 確かめていないと出す（PR #583。誤ったパスワードで「権限OK」と出た）
+    #[test]
+    fn test_report_health_when_the_sign_in_fails() {
+        let mut report = Report::default();
+        report_health(
+            "https://example.com",
+            &health(
+                [true, true, false, false, false],
+                &["Authentication failed: Invalid credentials"],
+            ),
+            &mut report,
+        );
+        assert_eq!(report.find("WordPress site").unwrap().0, Status::Ok);
+        assert_eq!(report.find("WordPress REST API").unwrap().0, Status::Ok);
+        assert_eq!(
+            report.find("WordPress sign-in"),
+            Some((Status::Error, "Authentication failed: Invalid credentials"))
+        );
+        assert_eq!(
+            report.find("WordPress permissions").unwrap().0,
+            Status::Skip
+        );
+        assert_eq!(report.find("WordPress media").unwrap().0, Status::Skip);
+        assert_eq!(report.count(Status::Error), 1);
+    }
+
+    #[test]
+    fn test_report_health_ok_and_unreachable() {
+        let mut report = Report::default();
+        report_health("https://example.com", &health([true; 5], &[]), &mut report);
+        assert_eq!(report.count(Status::Ok), 5);
+        assert_eq!(report.count(Status::Error), 0);
+
+        let mut report = Report::default();
+        report_health(
+            "https://example.com",
+            &health([false; 5], &["Site accessibility failed: timeout"]),
+            &mut report,
+        );
+        assert_eq!(
+            report.find("WordPress site"),
+            Some((Status::Error, "Site accessibility failed: timeout"))
+        );
+        assert_eq!(report.count(Status::Error), 1);
+        assert!(report.find("WordPress sign-in").is_none());
+
+        // 権限だけが失敗した
+        let mut report = Report::default();
+        report_health(
+            "https://example.com",
+            &health(
+                [true, true, true, false, true],
+                &["Permissions check failed: 403"],
+            ),
+            &mut report,
+        );
+        assert_eq!(
+            report.find("WordPress permissions"),
+            Some((Status::Error, "Permissions check failed: 403"))
+        );
+        assert_eq!(report.count(Status::Error), 1);
     }
 
     /// 設定ファイルを書いて、`check_config`を呼ぶ
