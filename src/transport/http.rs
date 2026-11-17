@@ -1174,27 +1174,54 @@ impl HttpTransport {
 
 /// ループバック以外で待ち受けるのに、認証（APIキー・OAuth・mTLS）が
 /// 無ければ、起動しない理由を返す（#540）。`allow_unauthenticated_external`
-/// で明示して許したときは、警告だけ出す
+/// で明示して許したときは、警告だけ出す。
+///
+/// `trusted_proxies`を書いたとき（リバースプロキシの後ろ）は、ループバックで
+/// 待ち受けていても同じにする（#593）。同じマシンのプロキシから来る通信は、
+/// すべてループバックからに見えるので、待ち受けるアドレス・ネットワークの
+/// 方針では、プロキシの先（インターネット等）の相手を止められない。
+///
+/// プロキシの後ろでは、mTLSを認証に数えない（PR #601のレビュー）。TLSを
+/// 終えるのはプロキシなので、mcp-rsに証明書を出すのはプロキシで、確かめ
+/// られるのは「つないできたのがプロキシか」だけ。プロキシの先の
+/// クライアントは確かめられない
 fn unauthenticated_external_bind(config: &HttpConfig) -> Option<String> {
-    let authenticated = config.auth_enabled || config.oauth.is_some() || config.mtls_enabled;
-    if authenticated || config.bind_addr.ip().is_loopback() {
+    let behind_proxy = !config.trusted_proxies.is_empty();
+    let authenticated =
+        config.auth_enabled || config.oauth.is_some() || (config.mtls_enabled && !behind_proxy);
+    if authenticated || (config.bind_addr.ip().is_loopback() && !behind_proxy) {
         return None;
     }
+    let where_from = if behind_proxy {
+        format!(
+            "{} behind a reverse proxy (trusted_proxies is set)",
+            config.bind_addr
+        )
+    } else {
+        config.bind_addr.to_string()
+    };
     if config.allow_unauthenticated_external {
         warn!(
             "⚠️  Listening on {} without authentication (allow_unauthenticated_external = true): \
              anyone who can reach it can use every tool, unless something in front of mcp-rs \
              authenticates clients",
-            config.bind_addr
+            where_from
         );
         return None;
     }
+    let proxy_note = if behind_proxy {
+        " Requests through a proxy on the same machine come from loopback, so listening on \
+         loopback does not keep out the clients the proxy lets in. Behind a proxy, client \
+         certificates (mTLS) check only the proxy, not its clients, so they do not count."
+    } else {
+        ""
+    };
     Some(format!(
         "refusing to listen on {} without authentication: anyone who can reach it could use \
-         every tool. Configure API keys (auth_enabled = true and [[transport.http.api_keys]]) or \
+         every tool.{} Configure API keys (auth_enabled = true and [[transport.http.api_keys]]) or \
          OAuth ([transport.http.oauth]). Only when something in front of mcp-rs authenticates \
          clients, set allow_unauthenticated_external = true",
-        config.bind_addr
+        where_from, proxy_note
     ))
 }
 
@@ -4208,6 +4235,8 @@ mod tests {
             enable_websocket_upgrade: true,
             enforce_https: true,
             trusted_proxies: vec!["127.0.0.1".to_string()],
+            // 認証を確かめるテストではない（#593: trusted_proxiesには認証が要る）
+            allow_unauthenticated_external: true,
             ..HttpConfig::default()
         };
         let transport = HttpTransport::new(config).unwrap();
@@ -4238,6 +4267,8 @@ mod tests {
             min_tls_version: None,
             // テストの接続元（127.0.0.1）ではないプロキシ
             trusted_proxies: vec!["10.0.0.1".to_string()],
+            // 認証を確かめるテストではない（#593: trusted_proxiesには認証が要る）
+            allow_unauthenticated_external: true,
             ..HttpConfig::default()
         };
         let transport = HttpTransport::new(config).unwrap();
@@ -4277,6 +4308,8 @@ mod tests {
             bind_addr: "127.0.0.1:0".parse().unwrap(),
             anti_replay_enabled: true,
             trusted_proxies: vec!["127.0.0.1".to_string()],
+            // 認証を確かめるテストではない（#593: trusted_proxiesには認証が要る）
+            allow_unauthenticated_external: true,
             ..HttpConfig::default()
         };
         let transport = HttpTransport::new(config).unwrap();
@@ -4323,6 +4356,8 @@ mod tests {
             // check, which also applies once enforce_https is set.
             min_tls_version: None,
             trusted_proxies: vec!["127.0.0.1".to_string()],
+            // 認証を確かめるテストではない（#593: trusted_proxiesには認証が要る）
+            allow_unauthenticated_external: true,
             ..HttpConfig::default()
         };
         let transport = HttpTransport::new(config).unwrap();
@@ -4622,6 +4657,8 @@ mod tests {
             ids_enabled: true,
             ids_trust_forwarded_for: true,
             trusted_proxies: vec!["127.0.0.1".to_string()],
+            // 認証を確かめるテストではない（#593: trusted_proxiesには認証が要る）
+            allow_unauthenticated_external: true,
             ..HttpConfig::default()
         };
         let transport = HttpTransport::new(config).unwrap();
@@ -6525,6 +6562,36 @@ mod tests {
         ] {
             assert_eq!(unauthenticated_external_bind(&config), None, "{config:?}");
         }
+
+        // リバースプロキシの後ろ（trusted_proxies）では、ループバックで
+        // 待ち受けていても、認証が要る（#593）
+        let behind_proxy = HttpConfig {
+            bind_addr: "127.0.0.1:8081".parse().unwrap(),
+            trusted_proxies: vec!["127.0.0.1".to_string()],
+            ..HttpConfig::default()
+        };
+        let reason = unauthenticated_external_bind(&behind_proxy).unwrap();
+        assert!(reason.contains("reverse proxy"), "{reason}");
+        for config in [
+            HttpConfig {
+                auth_enabled: true,
+                ..behind_proxy.clone()
+            },
+            HttpConfig {
+                allow_unauthenticated_external: true,
+                ..behind_proxy.clone()
+            },
+        ] {
+            assert_eq!(unauthenticated_external_bind(&config), None, "{config:?}");
+        }
+        // プロキシの後ろのmTLSは、プロキシを確かめるだけなので、認証に
+        // 数えない（PR #601のレビュー）
+        let mtls_behind_proxy = HttpConfig {
+            mtls_enabled: true,
+            ..behind_proxy.clone()
+        };
+        let reason = unauthenticated_external_bind(&mtls_behind_proxy).unwrap();
+        assert!(reason.contains("mTLS"), "{reason}");
     }
 
     #[test]

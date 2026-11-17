@@ -147,6 +147,8 @@ It asks for the WordPress username, the Application Password, and a master passw
 
 When the HTTP transport listens on anything other than loopback (for example `addr = "0.0.0.0"` in Docker, with `network_policy_reject_external_connections = false`), it needs authentication: API keys, OAuth 2.1, or client certificates (mTLS). Without any of them, mcp-rs does not start (v0.24.0 and later), because anyone who can reach the address could use every tool. Up to v0.23.0, it only logged a warning.
 
+The same applies behind a reverse proxy: when `trusted_proxies` is set, mcp-rs needs authentication even when it listens on loopback (v0.27.0 and later). A proxy on the same machine (nginx, Caddy, …) connects from loopback, so every client the proxy lets in looks like a local one, and listening on `127.0.0.1` does not keep out clients on the internet. Up to v0.26.0, mcp-rs started without authentication in this case. Behind a proxy, only API keys and OAuth count: client certificates (mTLS) between the proxy and mcp-rs check only the proxy, not the clients behind it.
+
 If something in front of mcp-rs authenticates the clients (for example a reverse proxy that requires a login, and mcp-rs is reachable only through it), allow it explicitly. mcp-rs then logs a warning at startup:
 
 ```toml
@@ -245,6 +247,8 @@ A client can send these headers too. List the proxy's addresses in `trusted_prox
 enforce_https = true
 trusted_proxies = ["127.0.0.1", "10.0.0.0/24"]   # IP addresses or CIDR ranges
 ```
+
+With `trusted_proxies`, mcp-rs also needs API keys or OAuth (see [Listening on the Network](#httpwebsocket-listening-on-the-network)), unless the proxy authenticates the clients and you set `allow_unauthenticated_external = true`.
 
 - Without `trusted_proxies`, mcp-rs does not start with `enforce_https` or `certificate_pinning_enabled` (unless `tls_enabled = true`, where mcp-rs itself handles TLS and does not need the headers), or with `ids_trust_forwarded_for`. Without it, the TLS version header is ignored. Up to v0.23.0, mcp-rs used these headers from any client, so a client connecting over plain HTTP could pass `enforce_https` by adding `X-Forwarded-Proto: https`
 - Make sure that clients cannot reach mcp-rs except through the proxy (for example, with `network_policy_ip_whitelist`), and that the proxy replaces these headers instead of passing on the ones the client sent
