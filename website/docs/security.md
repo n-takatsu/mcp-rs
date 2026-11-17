@@ -177,6 +177,37 @@ Limits (v0.24.0 and later):
 - A request that is not valid JSON gets the JSON-RPC error `-32700` (Parse error), and a JSON value that is not a request, such as a batch (an array, which MCP does not use), gets `-32600` (Invalid Request), both with `"id": null`. Over HTTP, the status is 400. A JSON-RPC response sent by the client (no `method`, with `result` or `error`) gets no answer (202 over HTTP). This applies to STDIO, HTTP, and `/ws`. Up to v0.23.0, mcp-rs did not answer them, so the client waited until its own timeout
 - `max_connections` is shared by all clients, and there is no limit per client address. A client that is not allowed in can still hold connections until `request_timeout_seconds` passes, so many such connections can make other clients wait. When mcp-rs is reachable from the internet, put a reverse proxy in front of it that limits connections per address
 
+## HTTP: TLS, Client Certificates, and WebSocket {#http-tls}
+
+To serve HTTPS from mcp-rs itself, and to require client certificates (mTLS):
+
+```toml
+[transport]
+type = "http"
+
+[transport.http]
+addr = "127.0.0.1"
+port = 8080
+tls_enabled = true
+tls_cert_path = "./certs/server.crt"
+tls_key_path = "./certs/server.key"
+mtls_enabled = true
+mtls_ca_cert_path = "./certs/ca.crt"
+enforce_https = true
+min_tls_version = "1.3"
+hsts_enabled = true
+```
+
+- `mtls_enabled = true` requires `tls_enabled = true` and `mtls_ca_cert_path`
+- Clients without a valid certificate signed by the configured CA are rejected at the TLS handshake
+
+WebSocket is not a separate transport. In HTTP mode, `enable_websocket_upgrade = true` also accepts MCP requests on `/ws`, with the same authentication and limits as HTTP:
+
+```toml
+[transport.http]
+enable_websocket_upgrade = true
+```
+
 ## HTTP/WebSocket: Requests from Web Pages (`Origin`)
 
 In HTTP mode, mcp-rs checks the `Origin` header that browsers add to requests from web pages, as the MCP specification requires. This stops a web page you visit from calling mcp-rs's tools through your browser, including with DNS rebinding (a page whose domain is made to point at `127.0.0.1`). Up to version 0.21.0, mcp-rs did not check `Origin`.
