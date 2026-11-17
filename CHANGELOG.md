@@ -41,7 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - MySQL・MariaDBで、サーバーの`sql_mode`に`NO_BACKSLASH_ESCAPES`があると、
-  SQLの検査（文字列の中の`'`をエスケープと読む）とサーバーで文字列の
+  SQLの検査（文字列の中の`\'`をエスケープと読む）とサーバーで文字列の
   区切りが食い違い、`SELECT … INTO OUTFILE`や`/*M! … */`の拒否をすり抜け
   られた（#574）。接続を作ったとき・プールに戻してリセットしたときに、
   セッションの`sql_mode`から`NO_BACKSLASH_ESCAPES`を外し、サーバーの読み方を
