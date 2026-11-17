@@ -82,7 +82,21 @@ From v0.25.0, each [release](https://github.com/n-takatsu/mcp-rs/releases) has r
 | macOS (Apple Silicon) | `mcp-rs-<version>-aarch64-apple-darwin.tar.gz` |
 | Linux (x64, glibc 2.35 or later) | `mcp-rs-<version>-x86_64-unknown-linux-gnu.tar.gz` |
 
-Put `mcp-rs` (`mcp-rs.exe`) in a folder of your own, such as `~/.mcp-rs/bin` (`%USERPROFILE%\.mcp-rs\bin` on Windows). No administrator rights are needed, and updating means replacing the file. mcp-rs writes its log to `logs` next to it. On Windows, avoid folders under `AppData`: Claude Desktop from the Microsoft Store may redirect files written there, so the log can end up somewhere else.
+The quickest way is the install script (from v0.26.0). It downloads the latest release, checks its SHA256, puts mcp-rs in `~/.mcp-rs/bin` (`%USERPROFILE%\.mcp-rs\bin` on Windows) without changing anything else, and then offers to run [`mcp-rs init`](#set-up-with-mcp-rs-init). Run it again to update:
+
+```powershell
+# Windows (PowerShell)
+irm https://raw.githubusercontent.com/n-takatsu/mcp-rs/main/install/install.ps1 | iex
+```
+
+```bash
+# macOS (Apple Silicon) and Linux (x64)
+curl -fsSL https://raw.githubusercontent.com/n-takatsu/mcp-rs/main/install/install.sh | sh
+```
+
+To read the script first, download it ([install.ps1](install/install.ps1), [install.sh](install/install.sh)) and run the file. `MCP_RS_VERSION` (such as `v0.25.0`) installs another release, and `MCP_RS_INSTALL_DIR` another folder.
+
+To install by hand instead: put `mcp-rs` (`mcp-rs.exe`) in a folder of your own, such as `~/.mcp-rs/bin` (`%USERPROFILE%\.mcp-rs\bin` on Windows). No administrator rights are needed, and updating means replacing the file. mcp-rs writes its log to `logs` next to it. On Windows, avoid folders under `AppData`: Claude Desktop from the Microsoft Store may redirect files written there, so the log can end up somewhere else.
 
 Windows (PowerShell):
 
