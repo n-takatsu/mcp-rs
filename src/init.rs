@@ -209,7 +209,12 @@ impl Setup<'_> {
         } else {
             true
         };
+        // この実行で書いた設定の、サイトのURLと資格情報の名前（確認が
+        // 失敗したときに、資格情報を入れ直すため）
+        let mut written = None;
         if write_config {
+            // 資格情報ストアが使えるかを、質問の前に確かめる（PR #583のレビュー）
+            check_store(self.store)?;
             let (url, entry) = self.wordpress_credentials()?;
             let backup = write_config_file(&self.config_path, &config_toml(&url, &entry))?;
             if let Some(backup) = backup {
@@ -220,25 +225,42 @@ impl Setup<'_> {
             }
             self.io
                 .say(&format!("Wrote the config file: {config_display}\n"));
+            written = Some((url, entry));
         } else {
             self.io.say(
                 "Keeping the config file as it is. Checking it and registering mcp-rs with it.\n",
             );
         }
 
-        // 3. 確かめる
-        self.io
-            .say("Checking the config file (like `mcp-rs check`)...");
-        let report = crate::check::check(&crate::check::CheckArgs {
-            config: Some(config_display.clone()),
-            offline: false,
-            help: false,
-        })
-        .await;
-        self.io.say(&report.render());
-        if report.count(crate::check::Status::Error) > 0 {
+        // 3. 確かめる。認証が通らなければ、その場で資格情報を入れ直せる
+        // （PR #583のレビュー。やり直しで、既定の答えのまま同じ失敗に
+        // 戻らないように）
+        loop {
+            self.io
+                .say("Checking the config file (like `mcp-rs check`)...");
+            let report = crate::check::check(&crate::check::CheckArgs {
+                config: Some(config_display.clone()),
+                offline: false,
+                help: false,
+            })
+            .await;
+            self.io.say(&report.render());
+            if report.count(crate::check::Status::Error) == 0 {
+                break;
+            }
+            if let Some((url, entry)) = &written {
+                if confirm(
+                    self.io,
+                    "If the username or the Application Password was wrong, enter them again?",
+                    true,
+                )? {
+                    let (url, entry) = (url.clone(), entry.clone());
+                    self.enter_credentials(&url, &entry)?;
+                    continue;
+                }
+            }
             self.io.say(
-                "mcp-rs would not work with this config file yet. Fix the errors above (for example, run mcp-rs init again and check the URL, the username and the Application Password), then run mcp-rs init again to register it.",
+                "mcp-rs would not work with this config file yet, so it was not registered with any client. Fix the errors above, then run mcp-rs init again. To enter the credentials again, answer y to replacing the config file and n to using the stored credentials.",
             );
             return Ok(false);
         }
@@ -255,7 +277,7 @@ impl Setup<'_> {
         ));
         let mut restart = Vec::new();
         if self.register_claude_desktop(&launch)? {
-            restart.push("Claude Desktop: quit it from the system tray (menu bar on macOS) and start it again. Closing the window leaves it running");
+            restart.push("Claude Desktop: quit it from the system tray (menu bar on macOS) and start it again. Closing the window leaves it running. If mcp-rs does not appear, check Settings > Developer");
         }
         if self.register_cli(&launch, &Cli::CLAUDE_CODE)? {
             restart.push("Claude Code: start a new session, then check with /mcp");
@@ -285,9 +307,9 @@ impl Setup<'_> {
                 .ask("Site URL (for example https://example.com): ")?;
             match normalize_site_url(&answer) {
                 Some(url) => break url,
-                None => self
-                    .io
-                    .say("Enter a URL that starts with https:// or http://."),
+                None => self.io.say(
+                    "Enter a URL that starts with https:// (mcp-rs connects to WordPress over HTTPS only).",
+                ),
             }
         };
         let suggested = default_entry_name(&url);
@@ -340,7 +362,16 @@ impl Setup<'_> {
             }
             Err(e) => return Err(e.into()),
         }
+        self.enter_credentials(&url, &entry)?;
+        Ok((url, entry))
+    }
 
+    /// ユーザー名とアプリケーションパスワードを聞き、`entry`の名前で入れる
+    fn enter_credentials(
+        &mut self,
+        url: &str,
+        entry: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let username = loop {
             let answer = self.io.ask("WordPress username: ")?;
             if !answer.is_empty() {
@@ -359,9 +390,9 @@ impl Setup<'_> {
         };
         store_wordpress_credentials(
             self.store,
-            &entry,
+            entry,
             &WordPressKeyringCredentials {
-                site_url: url.clone(),
+                site_url: url.to_string(),
                 username,
                 application_password,
             },
@@ -369,7 +400,7 @@ impl Setup<'_> {
         self.io.say(&format!(
             "Stored the credentials as '{entry}' in the OS credential store.\n"
         ));
-        Ok((url, entry))
+        Ok(())
     }
 
     /// Claude Desktopの設定ファイルに足す。登録したら`true`
@@ -377,31 +408,56 @@ impl Setup<'_> {
         &mut self,
         launch: &Launch,
     ) -> Result<bool, Box<dyn std::error::Error>> {
-        let Some(path) = claude_desktop_config_path() else {
-            return Ok(false);
-        };
-        if !path.parent().is_some_and(Path::is_dir) {
-            self.io.say("Claude Desktop: not found (skipped).");
+        let paths = select_claude_desktop_configs(&claude_desktop_config_candidates());
+        if paths.is_empty() {
+            if cfg!(any(target_os = "windows", target_os = "macos")) {
+                self.io.say("Claude Desktop: not found (skipped).");
+            }
             return Ok(false);
         }
+        let list = paths
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
         if !confirm(
             self.io,
-            &format!("Register mcp-rs with Claude Desktop ({})?", path.display()),
+            &format!("Register mcp-rs with Claude Desktop ({list})?"),
             true,
         )? {
             self.io.say(&format!(
-                "Skipped. To add it yourself, put this under \"mcpServers\" in {}:\n{}\n",
-                path.display(),
+                "Skipped. To add it yourself, put this under \"mcpServers\" in {list}:\n{}\n",
                 claude_desktop_entry_text(launch)
             ));
             return Ok(false);
         }
+        let mut registered = false;
+        for path in &paths {
+            match self.add_claude_desktop_file(path, launch) {
+                Ok(done) => registered |= done,
+                Err(e) => self.io.say(&format!(
+                    "Claude Desktop: could not update {}: {e}\nTo add it yourself, put this under \"mcpServers\":\n{}\n",
+                    path.display(),
+                    claude_desktop_entry_text(launch)
+                )),
+            }
+        }
+        Ok(registered)
+    }
+
+    /// Claude Desktopの設定ファイル1つに足す。足したら`true`
+    fn add_claude_desktop_file(
+        &mut self,
+        path: &Path,
+        launch: &Launch,
+    ) -> Result<bool, Box<dyn std::error::Error>> {
         let mut replace = false;
-        if claude_desktop_has_entry(&path)? {
+        if claude_desktop_has_entry(path)? {
             replace = confirm(
                 self.io,
                 &format!(
-                    "Claude Desktop already has a server named \"{SERVER_NAME}\". Replace it?"
+                    "{} already has a server named \"{SERVER_NAME}\". Replace it?",
+                    path.display()
                 ),
                 true,
             )?;
@@ -410,19 +466,22 @@ impl Setup<'_> {
                 return Ok(false);
             }
         }
-        let backup = add_to_claude_desktop(&path, launch, replace)?;
-        if let Some(backup) = backup {
-            self.io.say(&format!(
-                "Claude Desktop: registered (the previous settings are kept as {}).",
+        match add_to_claude_desktop(path, launch, replace)? {
+            Some(backup) => self.io.say(&format!(
+                "Claude Desktop: registered in {} (the previous settings are kept as {}).",
+                path.display(),
                 backup.display()
-            ));
-        } else {
-            self.io.say("Claude Desktop: registered.");
+            )),
+            None => self.io.say(&format!(
+                "Claude Desktop: registered in {}.",
+                path.display()
+            )),
         }
         Ok(true)
     }
 
-    /// `claude`・`copilot`のコマンドで登録する。登録したら`true`
+    /// `claude`・`copilot`のコマンドで登録する。登録したら`true`。
+    /// コマンドが動かなくても、ほかのクライアントの登録に進む
     fn register_cli(
         &mut self,
         launch: &Launch,
@@ -466,37 +525,63 @@ impl Setup<'_> {
                     .say(&format!("Kept the {} settings as they are.", cli.label));
                 return Ok(false);
             }
-            let removed = Command::new(&program)
-                .args(cli.remove_args())
-                .stdin(Stdio::null())
-                .output()?;
-            if !removed.status.success() {
+            // 消せなくても、登録を試す（別のスコープの登録は、消さずに
+            // ユーザーのスコープへ足せることがある。PR #583のレビュー）
+            if let Err(reason) = run_quietly(&program, &cli.remove_args()) {
                 self.io.say(&format!(
-                    "{}: could not remove the existing \"{SERVER_NAME}\": {}\nRemove it with `{} {}`, then register mcp-rs with:\n  {manual}\n",
-                    cli.label,
-                    String::from_utf8_lossy(&removed.stderr).trim(),
-                    cli.program,
-                    cli.remove_args().join(" ")
+                    "{}: could not remove the existing \"{SERVER_NAME}\" ({reason}). Trying to register mcp-rs anyway.",
+                    cli.label
                 ));
-                return Ok(false);
             }
         }
-        let added = Command::new(&program)
-            .args(cli.add_args(launch))
-            .stdin(Stdio::null())
-            .output()?;
-        if added.status.success() {
-            self.io.say(&format!("{}: registered.", cli.label));
-            Ok(true)
-        } else {
-            self.io.say(&format!(
-                "{}: registering failed: {}\nRegister it yourself with:\n  {manual}\n",
-                cli.label,
-                String::from_utf8_lossy(&added.stderr).trim()
-            ));
-            Ok(false)
+        match run_quietly(&program, &cli.add_args(launch)) {
+            Ok(()) => {
+                self.io.say(&format!("{}: registered.", cli.label));
+                Ok(true)
+            }
+            Err(reason) => {
+                self.io.say(&format!(
+                    "{}: registering failed ({reason}).\nRegister it yourself with:\n  {manual}\n",
+                    cli.label
+                ));
+                Ok(false)
+            }
         }
     }
+}
+
+/// 資格情報ストアが使えるかを確かめる（`os-keyring`無しのビルド、
+/// Secret Serviceの無いLinux等では使えない）
+fn check_store(store: &dyn SecretStore) -> Result<(), Box<dyn std::error::Error>> {
+    match store.get("mcp-rs-init-check") {
+        Ok(_) => Ok(()),
+        Err(e) => Err(format!(
+            "the OS credential store cannot be used ({e}). mcp-rs init keeps the WordPress credentials there; see the README for other ways (environment variables or encrypted credentials)"
+        )
+        .into()),
+    }
+}
+
+/// コマンドを動かす。出力は表示しない（登録の内容に秘密があることがある）。
+/// 失敗したら、エラーの出力の最後の行を返す
+fn run_quietly(program: &Path, args: &[String]) -> Result<(), String> {
+    let output = Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| format!("could not run {}: {e}", program.display()))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let last = stderr
+        .lines()
+        .rev()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or("no error message")
+        .trim()
+        .to_string();
+    Err(last)
 }
 
 /// クライアントが起動するmcp-rs
@@ -576,11 +661,13 @@ fn quote_arg(arg: &str) -> String {
 }
 
 /// 入力されたサイトのURLを、設定ファイルに書く形にする（前後の空白と、
-/// 末尾の`/`を除く）。http(s)のURLでなければ`None`
+/// 末尾の`/`を除く）。`https://`のURLでなければ`None`（WordPressの
+/// ハンドラーは、`https://`でしか起動しない。PR #583のレビュー）
 fn normalize_site_url(input: &str) -> Option<String> {
     let url = input.trim().trim_end_matches('/');
     site_origin(url)?;
-    Some(url.to_string())
+    // ハンドラーと同じく、小文字の`https://`だけを受け付ける
+    url.starts_with("https://").then(|| url.to_string())
 }
 
 /// 資格情報の名前の既定（サイトのホスト名。既定でないポートがあれば付ける）
@@ -653,27 +740,72 @@ fn backup_path(path: &Path) -> PathBuf {
     path.with_file_name(format!("{name}.bak-{stamp}"))
 }
 
-/// Claude Desktopの設定ファイルの場所。Claude Desktopが無いOS（Linux）は`None`
-fn claude_desktop_config_path() -> Option<PathBuf> {
+/// Claude Desktopの設定ファイルの名前
+const CLAUDE_DESKTOP_CONFIG: &str = "claude_desktop_config.json";
+
+/// Claude Desktopの設定ファイルがあり得る場所（先にあるものを優先する）。
+/// Claude Desktopが無いOS（Linux）は空。
+///
+/// Windowsは`%APPDATA%\Claude`。Microsoft Store版（MSIX）は、
+/// `%LOCALAPPDATA%\Packages\Claude_<id>\LocalCache\Roaming\Claude`を読む
+/// ことがあるという報告がある（PR #583のレビュー）ので、そちらも見る
+fn claude_desktop_config_candidates() -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
     if cfg!(target_os = "windows") {
-        let appdata = std::env::var_os("APPDATA")?;
-        Some(
-            PathBuf::from(appdata)
-                .join("Claude")
-                .join("claude_desktop_config.json"),
-        )
+        if let Some(appdata) = std::env::var_os("APPDATA") {
+            candidates.push(
+                PathBuf::from(appdata)
+                    .join("Claude")
+                    .join(CLAUDE_DESKTOP_CONFIG),
+            );
+        }
+        if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+            let packages = PathBuf::from(local).join("Packages");
+            if let Ok(entries) = std::fs::read_dir(&packages) {
+                let mut packaged: Vec<PathBuf> = entries
+                    .flatten()
+                    .filter(|entry| entry.file_name().to_string_lossy().starts_with("Claude_"))
+                    .map(|entry| {
+                        entry
+                            .path()
+                            .join("LocalCache")
+                            .join("Roaming")
+                            .join("Claude")
+                            .join(CLAUDE_DESKTOP_CONFIG)
+                    })
+                    .collect();
+                packaged.sort();
+                candidates.extend(packaged);
+            }
+        }
     } else if cfg!(target_os = "macos") {
-        let home = std::env::var_os("HOME")?;
-        Some(
-            PathBuf::from(home)
-                .join("Library")
-                .join("Application Support")
-                .join("Claude")
-                .join("claude_desktop_config.json"),
-        )
-    } else {
-        None
+        if let Some(home) = std::env::var_os("HOME") {
+            candidates.push(
+                PathBuf::from(home)
+                    .join("Library")
+                    .join("Application Support")
+                    .join("Claude")
+                    .join(CLAUDE_DESKTOP_CONFIG),
+            );
+        }
     }
+    candidates
+}
+
+/// 書く設定ファイルを選ぶ。あるファイルはすべて（どちらをClaude Desktopが
+/// 読むか分からないので、両方に足す）。1つも無ければ、`Claude`のフォルダが
+/// ある最初の場所（Claude Desktopを入れたが、設定をまだ保存していない）
+fn select_claude_desktop_configs(candidates: &[PathBuf]) -> Vec<PathBuf> {
+    let existing: Vec<PathBuf> = candidates.iter().filter(|p| p.is_file()).cloned().collect();
+    if !existing.is_empty() {
+        return existing;
+    }
+    candidates
+        .iter()
+        .find(|p| p.parent().is_some_and(Path::is_dir))
+        .cloned()
+        .into_iter()
+        .collect()
 }
 
 /// Claude Desktopに足す1件
@@ -878,6 +1010,9 @@ mod tests {
         );
         assert_eq!(normalize_site_url("example.com"), None);
         assert_eq!(normalize_site_url("ftp://example.com"), None);
+        // mcp-rsは、https://でしかWordPressにつながない（PR #583のレビュー）
+        assert_eq!(normalize_site_url("http://example.com"), None);
+        assert_eq!(normalize_site_url("HTTPS://example.com"), None);
         assert_eq!(default_entry_name("https://example.com"), "example.com");
         assert_eq!(
             default_entry_name("http://localhost:8080/wp"),
@@ -1021,6 +1156,92 @@ mod tests {
         assert_eq!(find_program_in("missing", dirs(), &["exe", "cmd"]), None);
     }
 
+    /// 設定ファイルがあれば、すべてを選ぶ。無ければ、Claudeのフォルダがある
+    /// 最初の場所（PR #583のレビュー。Microsoft Store版）
+    #[test]
+    fn test_select_claude_desktop_configs() {
+        let dir = tempfile::tempdir().unwrap();
+        let roaming = dir.path().join("Roaming").join("Claude");
+        let packaged = dir.path().join("Packages").join("Claude");
+        let roaming_file = roaming.join(CLAUDE_DESKTOP_CONFIG);
+        let packaged_file = packaged.join(CLAUDE_DESKTOP_CONFIG);
+        let candidates = vec![roaming_file.clone(), packaged_file.clone()];
+
+        // Claude Desktopが無い
+        assert!(select_claude_desktop_configs(&candidates).is_empty());
+        // フォルダだけある（設定をまだ保存していない）
+        std::fs::create_dir_all(&packaged).unwrap();
+        assert_eq!(
+            select_claude_desktop_configs(&candidates),
+            vec![packaged_file.clone()]
+        );
+        std::fs::create_dir_all(&roaming).unwrap();
+        assert_eq!(
+            select_claude_desktop_configs(&candidates),
+            vec![roaming_file.clone()]
+        );
+        // あるファイルはすべて
+        std::fs::write(&packaged_file, "{}").unwrap();
+        assert_eq!(
+            select_claude_desktop_configs(&candidates),
+            vec![packaged_file.clone()]
+        );
+        std::fs::write(&roaming_file, "{}").unwrap();
+        assert_eq!(
+            select_claude_desktop_configs(&candidates),
+            vec![roaming_file, packaged_file]
+        );
+    }
+
+    /// 資格情報ストアが使えなければ、質問の前に止める
+    #[test]
+    fn test_check_store() {
+        struct Broken;
+        impl SecretStore for Broken {
+            fn get(&self, _: &str) -> Result<Option<Zeroizing<String>>, KeyringError> {
+                Err(KeyringError::Unavailable("no Secret Service".to_string()))
+            }
+            fn set(&self, _: &str, _: &str) -> Result<(), KeyringError> {
+                unreachable!()
+            }
+            fn delete(&self, _: &str) -> Result<bool, KeyringError> {
+                unreachable!()
+            }
+        }
+        assert!(check_store(&MemoryStore::default()).is_ok());
+        let err = check_store(&Broken).unwrap_err().to_string();
+        assert!(err.contains("no Secret Service"), "{err}");
+    }
+
+    /// 起動できないコマンドは、エラーの文にして続ける（PR #583のレビュー）
+    #[test]
+    fn test_run_quietly_reports_failures() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("no-such-program");
+        let err = run_quietly(&missing, &args(&["mcp", "add"])).unwrap_err();
+        assert!(err.contains("could not run"), "{err}");
+    }
+
+    /// 入れ直した資格情報で、前の登録を置き換える
+    #[test]
+    fn test_enter_credentials_replaces_stored_ones() {
+        let store = MemoryStore::default();
+        let mut io = Script::new(&["editor", "wrong"]);
+        setup(&mut io, &store)
+            .enter_credentials("https://example.com", "example.com")
+            .unwrap();
+        let mut io = Script::new(&["editor", "right"]);
+        setup(&mut io, &store)
+            .enter_credentials("https://example.com", "example.com")
+            .unwrap();
+        assert_eq!(
+            *load_wordpress_credentials(&store, "example.com")
+                .unwrap()
+                .application_password,
+            "right"
+        );
+    }
+
     #[test]
     fn test_confirm() {
         let mut io = Script::new(&["", "maybe", "N"]);
@@ -1035,6 +1256,7 @@ mod tests {
         let store = MemoryStore::default();
         let mut io = Script::new(&[
             "example.com",          // URLでない
+            "http://example.com",   // httpsでない
             "https://example.com/", // 末尾の/は除く
             "",                     // 名前は既定（example.com）
             "editor",
