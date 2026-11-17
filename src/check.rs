@@ -9,6 +9,7 @@
 //! 起動時の検査、黙って無視されるキー。
 
 use crate::config::{McpConfig, WordPressConfig};
+use std::path::Path;
 
 /// サブコマンドの名前
 pub const SUBCOMMAND: &str = "check";
@@ -163,6 +164,27 @@ pub async fn run(args: &[String]) -> Result<bool, String> {
     Ok(report.count(Status::Error) == 0)
 }
 
+/// Unixで、設定ファイルをほかのユーザーが読めるなら、その知らせ（#599）。
+/// パスワードを書き足すことがあるので、本人だけが読めるようにする
+fn readable_by_others(path: &Path) -> Option<String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(path).ok()?.permissions().mode() & 0o777;
+        (mode & 0o077 != 0).then(|| {
+            format!(
+                "other users can read it (mode {mode:o}). Run chmod 600 {}",
+                path.display()
+            )
+        })
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        None
+    }
+}
+
 /// 確かめる。表示はしない
 pub async fn check(args: &CheckArgs) -> Report {
     let mut report = Report::default();
@@ -221,7 +243,10 @@ fn check_config(path: Option<&str>, report: &mut Report) -> Option<(McpConfig, b
         .as_ref()
         .map(|p| p.display().to_string())
         .unwrap_or(path);
-    report.push(Status::Ok, "config file", shown);
+    report.push(Status::Ok, "config file", shown.clone());
+    if let Some(warning) = readable_by_others(Path::new(&shown)) {
+        report.push(Status::Warn, "config file permissions", warning);
+    }
 
     // 置き場所は、解決する前の設定から決める（解決すると平文と同じになる）
     let source = config

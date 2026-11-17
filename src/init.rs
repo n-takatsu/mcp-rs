@@ -121,6 +121,9 @@ pub async fn run(args: &[String]) -> Result<bool, String> {
         io: &mut terminal,
         store: &OsKeyring,
         config_path,
+        previous: discover_registrations(),
+        superseded: Vec::new(),
+        suggested_url: None,
     }
     .run()
     .await;
@@ -187,6 +190,13 @@ struct Setup<'a> {
     io: &'a mut dyn Prompt,
     store: &'a dyn SecretStore,
     config_path: PathBuf,
+    /// クライアントに今ある、mcp-rsの登録（#602）
+    previous: Vec<Registration>,
+    /// 新しい設定ファイルに置き換える、前の設定ファイル（#602）。これを使う
+    /// 登録は、重複として既定で消す
+    superseded: Vec<String>,
+    /// 前の設定ファイルにあった、WordPressのサイトのURL（#602）
+    suggested_url: Option<String>,
 }
 
 impl Setup<'_> {
@@ -195,10 +205,38 @@ impl Setup<'_> {
             "mcp-rs {} init: set up mcp-rs for Claude Desktop, Claude Code and GitHub Copilot.\nPress Ctrl+C to stop at any time.\n",
             env!("CARGO_PKG_VERSION")
         ));
+        // 0. 前の設定ファイル（手で登録したmcp-rs等）にしか無い設定を、
+        // 知らせて選ばせる（#602）
+        let mut carry: Option<toml::Table> = None;
+        let mut use_previous_as_is = false;
+        let mut plaintext_files: Vec<String> = Vec::new();
+        if let Some((path, used_by)) = self.previous_config() {
+            match self.choose_previous(&path, &used_by)? {
+                PreviousChoice::CarryOver(table) => {
+                    if has_plaintext_secret(&table) {
+                        plaintext_files.push(path.clone());
+                    }
+                    carry = Some(*table);
+                    self.superseded.push(path);
+                }
+                PreviousChoice::UseAsIs => {
+                    self.config_path = PathBuf::from(&path);
+                    use_previous_as_is = true;
+                }
+                PreviousChoice::LeaveOut(plaintext) => {
+                    if plaintext {
+                        plaintext_files.push(path.clone());
+                    }
+                    self.superseded.push(path);
+                }
+            }
+        }
         let config_display = self.config_path.display().to_string();
 
         // 1・2. 資格情報と設定ファイル
-        let write_config = if self.config_path.exists() {
+        let write_config = if use_previous_as_is {
+            false
+        } else if self.config_path.exists() {
             self.io
                 .say(&format!("A config file already exists: {config_display}"));
             confirm(
@@ -216,12 +254,17 @@ impl Setup<'_> {
             // 資格情報ストアが使えるかを、質問の前に確かめる（PR #583のレビュー）
             check_store(self.store)?;
             let (url, entry) = self.wordpress_credentials()?;
-            let backup = write_config_file(&self.config_path, &config_toml(&url, &entry))?;
+            let content = match &carry {
+                Some(old) => carry_over_toml(old, &url, &entry)?,
+                None => config_toml(&url, &entry),
+            };
+            let backup = write_config_file(&self.config_path, &content)?;
             if let Some(backup) = backup {
                 self.io.say(&format!(
                     "Kept the previous config file as {}",
                     backup.display()
                 ));
+                self.offer_to_delete_secret_backup(&backup)?;
             }
             self.io
                 .say(&format!("Wrote the config file: {config_display}\n"));
@@ -235,6 +278,7 @@ impl Setup<'_> {
         // 3. 確かめる。認証が通らなければ、その場で資格情報を入れ直せる
         // （PR #583のレビュー。やり直しで、既定の答えのまま同じ失敗に
         // 戻らないように）
+        let log_file;
         loop {
             self.io
                 .say("Checking the config file (like `mcp-rs check`)...");
@@ -246,6 +290,7 @@ impl Setup<'_> {
             .await;
             self.io.say(&report.render());
             if report.count(crate::check::Status::Error) == 0 {
+                log_file = report.find("log file").map(|(_, file)| file.to_string());
                 break;
             }
             // 入れ直しで直るのは、サインインのエラーだけ（URLの誤り・サイトに
@@ -298,7 +343,126 @@ impl Setup<'_> {
                 self.io.say(&format!("  - {line}"));
             }
         }
+        // ログの場所は、実行ファイルの場所で決まる（#602）
+        let moved_from: Vec<&str> = self
+            .previous
+            .iter()
+            .filter(|registration| !same_file(&registration.exe, &launch.exe))
+            .map(|registration| registration.exe.as_str())
+            .collect();
+        if let (Some(log_file), Some(old)) = (&log_file, moved_from.first()) {
+            self.io.say(&format!(
+                "\nLogs: mcp-rs now writes its log to {log_file}. The mcp-rs you used before ({old}) wrote it in another folder (next to it, or in the .mcp-rs/logs folder of your home folder)."
+            ));
+        }
+        for file in plaintext_files {
+            self.io.say(&format!(
+                "\nNote: {file} still has a password in plain text. mcp-rs no longer uses that file: delete it, or remove the password from it."
+            ));
+        }
         Ok(true)
+    }
+
+    /// 今の登録が使う設定ファイルのうち、これから書く設定ファイルと違い、
+    /// 実際にあるもの（#602）。そのファイルと、それを使う登録の説明を返す
+    fn previous_config(&self) -> Option<(String, Vec<String>)> {
+        let ours = self.config_path.display().to_string();
+        let mut found: Option<(String, Vec<String>)> = None;
+        for registration in &self.previous {
+            let Some(path) = registration
+                .config
+                .clone()
+                .or_else(crate::config::user_config_path)
+            else {
+                continue;
+            };
+            if same_config_file(Some(&path), &ours) || !Path::new(&path).is_file() {
+                continue;
+            }
+            let label = format!("{} \"{}\"", registration.client, registration.name);
+            match &mut found {
+                Some((first, used_by)) if same_config_file(Some(&path), first) => {
+                    used_by.push(label)
+                }
+                Some(_) => {}
+                None => found = Some((path, vec![label])),
+            }
+        }
+        found
+    }
+
+    /// 前の設定ファイルをどうするかを聞く（#602）
+    fn choose_previous(
+        &mut self,
+        path: &str,
+        used_by: &[String],
+    ) -> Result<PreviousChoice, Box<dyn std::error::Error>> {
+        let text = std::fs::read_to_string(path)?;
+        let table: toml::Table = match text.trim_start_matches('\u{feff}').parse() {
+            Ok(table) => table,
+            Err(_) => {
+                self.io.say(&format!(
+                    "mcp-rs is registered with {path} ({}), but it cannot be read as TOML, so nothing is copied from it.\n",
+                    used_by.join(", ")
+                ));
+                return Ok(PreviousChoice::LeaveOut(false));
+            }
+        };
+        self.suggested_url = table
+            .get("handlers")
+            .and_then(|h| h.get("wordpress"))
+            .and_then(|w| w.get("url"))
+            .and_then(toml::Value::as_str)
+            .filter(|url| !url.contains("${"))
+            .map(str::to_string);
+        let plaintext = has_plaintext_secret(&table);
+        let extras = extra_settings(&table);
+        self.io.say(&format!(
+            "mcp-rs is already registered with another config file: {path} ({})",
+            used_by.join(", ")
+        ));
+        if extras.is_empty() {
+            self.io.say(
+                "It has nothing that a new config file for WordPress would not have, so the new one replaces it.\n",
+            );
+            return Ok(PreviousChoice::LeaveOut(plaintext));
+        }
+        self.io
+            .say("It has settings that a new config file for WordPress would not have:");
+        for extra in &extras {
+            self.io.say(&format!("  - {extra}"));
+        }
+        self.io.say("  1. Copy these settings into the new config file (the WordPress credentials go to the OS credential store, not the file)");
+        self.io.say("  2. Keep using that config file as it is");
+        self.io.say("  3. Leave these settings out");
+        loop {
+            let answer = self.io.ask("Choose 1, 2 or 3 [1]: ")?;
+            match answer.as_str() {
+                "" | "1" => return Ok(PreviousChoice::CarryOver(Box::new(table))),
+                "2" => return Ok(PreviousChoice::UseAsIs),
+                "3" => return Ok(PreviousChoice::LeaveOut(plaintext)),
+                _ => self.io.say("Answer 1, 2 or 3."),
+            }
+        }
+    }
+
+    /// 平文のパスワードを含む控えなら、消すかを聞く（#599）
+    fn offer_to_delete_secret_backup(&mut self, backup: &Path) -> io::Result<()> {
+        let plaintext = std::fs::read_to_string(backup)
+            .ok()
+            .and_then(|text| text.parse::<toml::Table>().ok())
+            .is_some_and(|table| has_plaintext_secret(&table));
+        if plaintext
+            && confirm(
+                self.io,
+                "The backup copy has a password in plain text, which the new config file does not need. Delete the backup copy?",
+                true,
+            )?
+        {
+            std::fs::remove_file(backup)?;
+            self.io.say("Deleted the backup copy.");
+        }
+        Ok(())
     }
 
     /// サイトのURLを聞き、資格情報を資格情報ストアに入れる（入っていれば
@@ -307,9 +471,19 @@ impl Setup<'_> {
         self.io.say("WordPress site");
         self.io.say("  mcp-rs signs in with an Application Password (WordPress: Users > Profile > Application Passwords).");
         let url = loop {
-            let answer = self
-                .io
-                .ask("Site URL (for example https://example.com): ")?;
+            let answer = match &self.suggested_url {
+                Some(suggested) => {
+                    let answer = self.io.ask(&format!("Site URL [{suggested}]: "))?;
+                    if answer.is_empty() {
+                        suggested.clone()
+                    } else {
+                        answer
+                    }
+                }
+                None => self
+                    .io
+                    .ask("Site URL (for example https://example.com): ")?,
+            };
             match normalize_site_url(&answer) {
                 Some(url) => break url,
                 None => self.io.say(
@@ -508,8 +682,17 @@ impl Setup<'_> {
         let mut remove = Vec::new();
         for other in others {
             let name = &other.name;
-            let same_config = same_config_file(other.config.as_deref(), &launch.config);
-            let question = if same_config {
+            let replaced = self
+                .superseded
+                .iter()
+                .find(|path| same_config_file(other.config.as_deref(), path));
+            let same_config =
+                same_config_file(other.config.as_deref(), &launch.config) || replaced.is_some();
+            let question = if let Some(replaced) = replaced {
+                format!(
+                    "{client} also starts mcp-rs as \"{name}\" with the previous config file ({replaced}), which the new one replaces. Remove it, so that only one mcp-rs runs?"
+                )
+            } else if same_config {
                 format!(
                     "{client} also starts mcp-rs as \"{name}\" with the same config file. Remove it, so that only one mcp-rs runs? (otherwise the same tools appear twice)"
                 )
@@ -899,20 +1082,296 @@ keyring = {entry}
 }
 
 /// `path`に`content`を書く。フォルダが無ければ作る。前のファイルがあれば、
-/// 別の名前で残し、そのパスを返す
+/// 別の名前で残し、そのパスを返す。Unixでは、フォルダを本人だけ（700）、
+/// ファイルと控えを本人だけが読める（600）ようにする（#599）。後で
+/// `[database]`のパスワード等を書き足すことがあるため
 fn write_config_file(path: &Path, content: &str) -> io::Result<Option<PathBuf>> {
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+        create_private_dir_all(parent)?;
     }
     let backup = if path.exists() {
         let backup = backup_path(path);
         std::fs::copy(path, &backup)?;
+        make_private(&backup)?;
         Some(backup)
     } else {
         None
     };
-    std::fs::write(path, content)?;
+    write_atomically(path, content, true)?;
     Ok(backup)
+}
+
+/// フォルダを作る。Unixでは、新しく作るフォルダを本人だけ（700）にする
+fn create_private_dir_all(dir: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(dir)
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::create_dir_all(dir)
+    }
+}
+
+/// Unixでは、ファイルを本人だけが読み書きできる（600）ようにする
+fn make_private(path: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        Ok(())
+    }
+}
+
+/// 同じフォルダの別の名前に書いてから、名前を変えて置き換える（#599）。
+/// 途中で止まっても、元のファイルが壊れない。`private`なら、Unixでは
+/// 本人だけが読めるようにする
+fn write_atomically(path: &Path, content: &str, private: bool) -> io::Result<()> {
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let temporary = path.with_file_name(format!(".{name}.mcp-rs-init-{}", std::process::id()));
+    let result = (|| {
+        std::fs::write(&temporary, content)?;
+        if private {
+            make_private(&temporary)?;
+        }
+        std::fs::rename(&temporary, path)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    result
+}
+
+/// 2つのファイルのパスが同じか（区切り文字をそろえ、Windowsでは大文字・
+/// 小文字を区別しない）
+fn same_file(a: &str, b: &str) -> bool {
+    let normalize = |path: &str| {
+        let path = path.trim().replace('\\', "/");
+        if cfg!(windows) {
+            path.to_lowercase()
+        } else {
+            path
+        }
+    };
+    normalize(a) == normalize(b)
+}
+
+/// クライアントにある、mcp-rsの登録（#602）
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Registration {
+    client: &'static str,
+    name: String,
+    exe: String,
+    /// `--config`の値（無ければ`None`）
+    config: Option<String>,
+}
+
+/// 前の設定ファイルをどうするか（#602）
+enum PreviousChoice {
+    /// 新しい設定ファイルに写す
+    CarryOver(Box<toml::Table>),
+    /// そのまま使う
+    UseAsIs,
+    /// 写さない（平文のパスワードがあったか）
+    LeaveOut(bool),
+}
+
+/// `mcpServers`のうち、mcp-rsを起動する登録
+fn mcp_rs_registrations(client: &'static str, config: &serde_json::Value) -> Vec<Registration> {
+    let Some(servers) = config
+        .get("mcpServers")
+        .and_then(serde_json::Value::as_object)
+    else {
+        return Vec::new();
+    };
+    servers
+        .iter()
+        .filter_map(|(name, server)| {
+            let exe = server.get("command").and_then(serde_json::Value::as_str)?;
+            if !is_mcp_rs_command(exe) {
+                return None;
+            }
+            let args: Vec<&str> = server
+                .get("args")
+                .and_then(serde_json::Value::as_array)
+                .map(|args| args.iter().filter_map(serde_json::Value::as_str).collect())
+                .unwrap_or_default();
+            Some(Registration {
+                client,
+                name: name.clone(),
+                exe: exe.to_string(),
+                config: config_arg(&args),
+            })
+        })
+        .collect()
+}
+
+/// Claude Desktop・Claude Code・Copilotにある、mcp-rsの登録（#602）。
+/// 読めない設定ファイルは飛ばす。内容は表示しない
+fn discover_registrations() -> Vec<Registration> {
+    let mut found = Vec::new();
+    for path in select_claude_desktop_configs(&claude_desktop_config_candidates()) {
+        if let Ok(config) = read_json_file(&path) {
+            found.extend(mcp_rs_registrations("Claude Desktop", &config));
+        }
+    }
+    for (client, path) in [
+        ("Claude Code", claude_code_config_file()),
+        ("GitHub Copilot", copilot_config_file()),
+    ] {
+        if let Some(config) = path.and_then(|path| read_json_file(&path).ok()) {
+            found.extend(mcp_rs_registrations(client, &config));
+        }
+    }
+    found
+}
+
+/// `[handlers.wordpress]`の資格情報の項目（新しい設定には写さない）
+const WORDPRESS_CREDENTIAL_KEYS: [&str; 4] =
+    ["username", "password", "encrypted_credentials", "keyring"];
+
+/// 前の設定にあって、`init`が書く設定（`config_toml`）に無いもの（#602）
+fn extra_settings(old: &toml::Table) -> Vec<String> {
+    let mut extras = Vec::new();
+    for (key, value) in old {
+        match key.as_str() {
+            "transport" => {
+                if let Some(table) = value.as_table() {
+                    let kind = table
+                        .get("type")
+                        .or_else(|| table.get("transport_type"))
+                        .and_then(toml::Value::as_str);
+                    if kind.is_some_and(|kind| kind != "stdio") {
+                        extras.push(format!(
+                            "[transport] type = \"{}\" (the new config file uses stdio, which MCP clients need)",
+                            kind.unwrap_or_default()
+                        ));
+                    }
+                    for (sub, _) in table
+                        .iter()
+                        .filter(|(sub, v)| v.is_table() && *sub != "stdio")
+                    {
+                        extras.push(format!("[transport.{sub}]"));
+                    }
+                }
+            }
+            "server" => {
+                if let Some(table) = value.as_table() {
+                    for (sub, value) in table {
+                        if sub == "log_level" && value.as_str() == Some("warn") {
+                            continue;
+                        }
+                        extras.push(format!("[server] {sub}"));
+                    }
+                }
+            }
+            "handlers" => {
+                if let Some(table) = value.as_table() {
+                    for (handler, value) in table {
+                        if handler != "wordpress" {
+                            extras.push(format!("[handlers.{handler}]"));
+                            continue;
+                        }
+                        let Some(wordpress) = value.as_table() else {
+                            continue;
+                        };
+                        for (sub, _) in wordpress {
+                            if !["enabled", "url"].contains(&sub.as_str())
+                                && !WORDPRESS_CREDENTIAL_KEYS.contains(&sub.as_str())
+                            {
+                                extras.push(format!("[handlers.wordpress] {sub}"));
+                            }
+                        }
+                    }
+                }
+            }
+            "plugins" => {
+                let names: Vec<&str> = value
+                    .as_array()
+                    .map(|plugins| {
+                        plugins
+                            .iter()
+                            .filter_map(|p| p.get("name").and_then(toml::Value::as_str))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                extras.push(format!("[[plugins]] {}", names.join(", ")));
+            }
+            other => extras.push(format!("[{other}]")),
+        }
+    }
+    extras
+}
+
+/// 前の設定を写した、新しい設定ファイル（#602）。`[handlers.wordpress]`は、
+/// 資格情報を外して`url`・`keyring`にし、`[transport]`はSTDIOにする
+/// （MCPのクライアントはSTDIOで起動する）。前のファイルのコメントは写らない
+fn carry_over_toml(old: &toml::Table, url: &str, entry: &str) -> Result<String, toml::ser::Error> {
+    let mut table = old.clone();
+    let transport = table
+        .entry("transport")
+        .or_insert_with(|| toml::Value::Table(toml::Table::new()));
+    if let Some(transport) = transport.as_table_mut() {
+        transport.remove("transport_type");
+        transport.insert("type".to_string(), toml::Value::String("stdio".to_string()));
+    }
+    let handlers = table
+        .entry("handlers")
+        .or_insert_with(|| toml::Value::Table(toml::Table::new()));
+    if let Some(handlers) = handlers.as_table_mut() {
+        let wordpress = handlers
+            .entry("wordpress")
+            .or_insert_with(|| toml::Value::Table(toml::Table::new()));
+        if let Some(wordpress) = wordpress.as_table_mut() {
+            for key in WORDPRESS_CREDENTIAL_KEYS {
+                wordpress.remove(key);
+            }
+            wordpress.insert("enabled".to_string(), toml::Value::Boolean(true));
+            wordpress.insert("url".to_string(), toml::Value::String(url.to_string()));
+            wordpress.insert(
+                "keyring".to_string(),
+                toml::Value::String(entry.to_string()),
+            );
+        }
+    }
+    let body = toml::to_string(&table)?;
+    Ok(format!(
+        "# mcp-rs config file, written by `mcp-rs init` (mcp-rs {}) from a previous\n# config file. The WordPress username and Application Password are kept in\n# the OS credential store (mcp-rs wordpress-keyring show {entry}).\n# Check it with: mcp-rs check --config <this file>\n\n{body}",
+        env!("CARGO_PKG_VERSION")
+    ))
+}
+
+/// 平文のパスワード・APIキーを含む設定か（`${VAR}`は平文ではない、#599）
+fn has_plaintext_secret(table: &toml::Table) -> bool {
+    let plain = |value: Option<&toml::Value>| {
+        value
+            .and_then(toml::Value::as_str)
+            .is_some_and(|s| !s.trim().is_empty() && !s.contains("${"))
+    };
+    let get = |path: &[&str]| -> Option<&toml::Value> {
+        let mut value = table.get(path[0])?;
+        for key in &path[1..] {
+            value = value.get(key)?;
+        }
+        Some(value)
+    };
+    let api_key = get(&["transport", "http", "api_keys"])
+        .and_then(toml::Value::as_array)
+        .is_some_and(|keys| keys.iter().any(|k| plain(k.get("key"))));
+    plain(get(&["handlers", "wordpress", "password"]))
+        || plain(get(&["database", "password"]))
+        || api_key
 }
 
 /// `path`の控えのパス（`<name>.bak-<日時>`）
@@ -1089,7 +1548,9 @@ fn add_to_claude_desktop(
     } else {
         None
     };
-    std::fs::write(path, content)?;
+    // Claude Desktopが同時に書いても、途中で止まっても、壊れたファイルを
+    // 残さない（#599）
+    write_atomically(path, &content, false)?;
     Ok(backup)
 }
 
@@ -1110,7 +1571,9 @@ fn find_program_in(
     dirs: impl Iterator<Item = PathBuf>,
     extensions: &[&str],
 ) -> Option<PathBuf> {
-    for dir in dirs {
+    // `PATH`の相対パス（空の項目は今のフォルダ）は見ない（#599）。開いた
+    // フォルダの`claude`等を動かさないため
+    for dir in dirs.filter(|dir| dir.is_absolute()) {
         for extension in extensions {
             let candidate = if extension.is_empty() {
                 dir.join(name)
@@ -1178,7 +1641,261 @@ mod tests {
             io,
             store,
             config_path: PathBuf::from("unused.toml"),
+            previous: Vec::new(),
+            superseded: Vec::new(),
+            suggested_url: None,
         }
+    }
+
+    /// 手で登録していた設定（#602の実機の例）
+    const PREVIOUS_CONFIG: &str = r#"
+[server]
+bind_addr = "127.0.0.1:8080"
+log_level = "info"
+
+[transport]
+type = "stdio"
+
+[transport.http]
+port = 8080
+
+[handlers.wordpress]
+url = "https://example.com"
+username = "editor"
+password = "plain secret"
+enabled = true
+timeout_seconds = 30
+upload_allowed_dirs = ["C:/Users/me/Pictures/mcp-upload"]
+
+[handlers.wordpress.rate_limit]
+requests_per_second = 10
+burst_size = 20
+enabled = true
+
+[[plugins]]
+name = "fs"
+command = "node"
+args = ["server.js", "C:/data"]
+
+[audit]
+file_path = "C:/Users/me/.mcp-rs/logs/audit.log"
+"#;
+
+    #[test]
+    fn test_extra_settings_lists_what_a_new_file_would_lose() {
+        let old: toml::Table = PREVIOUS_CONFIG.parse().unwrap();
+        let extras = extra_settings(&old);
+        for expected in [
+            "[server] bind_addr",
+            "[server] log_level",
+            "[transport.http]",
+            "[handlers.wordpress] timeout_seconds",
+            "[handlers.wordpress] upload_allowed_dirs",
+            "[handlers.wordpress] rate_limit",
+            "[[plugins]] fs",
+            "[audit]",
+        ] {
+            assert!(
+                extras.iter().any(|e| e == expected),
+                "{expected}: {extras:?}"
+            );
+        }
+        // 資格情報・url・enabledは、新しい設定にもある（資格情報は資格情報ストアへ）
+        assert!(!extras
+            .iter()
+            .any(|e| e.contains("password") || e.contains("username")));
+        assert!(!extras
+            .iter()
+            .any(|e| e.ends_with(" url") || e.ends_with(" enabled")));
+        // 新しい設定と同じものだけなら、何も無い
+        let fresh: toml::Table = config_toml("https://example.com", "example.com")
+            .parse()
+            .unwrap();
+        assert!(
+            extra_settings(&fresh).is_empty(),
+            "{:?}",
+            extra_settings(&fresh)
+        );
+    }
+
+    /// 写した設定は、起動と同じ形で読め、資格情報を含まない（#602）
+    #[test]
+    fn test_carry_over_toml_keeps_settings_without_credentials() {
+        let old: toml::Table = PREVIOUS_CONFIG.parse().unwrap();
+        let text = carry_over_toml(&old, "https://example.com", "example.com").unwrap();
+        assert!(!text.contains("plain secret"), "{text}");
+        assert!(!text.contains("editor"), "{text}");
+        let config: crate::config::McpConfig = toml::from_str(&text).unwrap();
+        let wordpress = config.handlers.wordpress.unwrap();
+        assert_eq!(wordpress.url, "https://example.com");
+        assert_eq!(wordpress.keyring.as_deref(), Some("example.com"));
+        assert_eq!(wordpress.enabled, Some(true));
+        assert_eq!(config.plugins.len(), 1);
+        assert_eq!(config.plugins[0].name, "fs");
+        assert_eq!(config.transport.transport_type.as_deref(), Some("stdio"));
+        let table: toml::Table = text.parse().unwrap();
+        assert!(extra_settings(&table)
+            .iter()
+            .any(|e| e == "[handlers.wordpress] upload_allowed_dirs"));
+        assert!(!has_plaintext_secret(&table));
+    }
+
+    #[test]
+    fn test_has_plaintext_secret() {
+        let secret = |text: &str| has_plaintext_secret(&text.parse::<toml::Table>().unwrap());
+        assert!(secret(PREVIOUS_CONFIG));
+        assert!(!secret(
+            "[handlers.wordpress]\npassword = \"${WORDPRESS_PASSWORD}\""
+        ));
+        assert!(!secret("[handlers.wordpress]\nkeyring = \"example.com\""));
+        assert!(secret("[database]\npassword = \"db secret\""));
+        assert!(secret(
+            "[transport.http]\n[[transport.http.api_keys]]\nkey = \"k\""
+        ));
+        assert!(!secret(
+            "[transport.http]\n[[transport.http.api_keys]]\nkey = \"${KEY}\""
+        ));
+    }
+
+    #[test]
+    fn test_mcp_rs_registrations() {
+        let config = serde_json::json!({ "mcpServers": {
+            "mcp-rs-wordpress": {
+                "command": "C:/Program Files/MCP-rs/mcp-rs.exe",
+                "args": ["--config", "C:/old/mcp-config.toml"]
+            },
+            "mcp-rs": { "command": "C:/Users/me/.mcp-rs/bin/mcp-rs.exe" },
+            "other": { "command": "npx" }
+        }});
+        assert_eq!(
+            mcp_rs_registrations("Claude Desktop", &config),
+            vec![
+                Registration {
+                    client: "Claude Desktop",
+                    name: "mcp-rs-wordpress".to_string(),
+                    exe: "C:/Program Files/MCP-rs/mcp-rs.exe".to_string(),
+                    config: Some("C:/old/mcp-config.toml".to_string()),
+                },
+                Registration {
+                    client: "Claude Desktop",
+                    name: "mcp-rs".to_string(),
+                    exe: "C:/Users/me/.mcp-rs/bin/mcp-rs.exe".to_string(),
+                    config: None,
+                },
+            ]
+        );
+    }
+
+    /// 前の設定ファイルを見つけ、写すかを聞く。写すと、新しい設定に入り、
+    /// その設定ファイルを使う登録は、重複として既定で消す（#602）
+    #[test]
+    fn test_previous_config_is_carried_over() {
+        let dir = tempfile::tempdir().unwrap();
+        let old_path = dir.path().join("mcp-config.toml");
+        std::fs::write(&old_path, PREVIOUS_CONFIG).unwrap();
+        let old = old_path.display().to_string();
+        let store = MemoryStore::default();
+        let mut io = Script::new(&["", "", ""]);
+        let mut setup = setup(&mut io, &store);
+        setup.config_path = dir.path().join("new").join("config.toml");
+        setup.previous = vec![Registration {
+            client: "Claude Desktop",
+            name: "mcp-rs-wordpress".to_string(),
+            exe: "C:/Program Files/MCP-rs/mcp-rs.exe".to_string(),
+            config: Some(old.clone()),
+        }];
+        let (path, used_by) = setup.previous_config().unwrap();
+        assert_eq!(path, old);
+        assert_eq!(used_by, ["Claude Desktop \"mcp-rs-wordpress\""]);
+        // Enterだけで、写す（1）
+        let choice = setup.choose_previous(&path, &used_by).unwrap();
+        assert!(matches!(choice, PreviousChoice::CarryOver(_)));
+        assert_eq!(setup.suggested_url.as_deref(), Some("https://example.com"));
+        setup.superseded.push(path);
+        // 前の設定ファイルを使う登録は、既定で消す
+        let launch = Launch {
+            exe: "mcp-rs".to_string(),
+            config: setup.config_path.display().to_string(),
+        };
+        let others = vec![OtherServer {
+            name: "mcp-rs-wordpress".to_string(),
+            config: Some(old),
+        }];
+        let remove = setup
+            .choose_duplicates_to_remove("Claude Desktop", &others, &launch)
+            .unwrap();
+        assert_eq!(remove, ["mcp-rs-wordpress"]);
+        assert!(io.shown.iter().any(|s| s.contains("[[plugins]] fs")));
+    }
+
+    /// 2を選ぶと、前の設定ファイルをそのまま使う
+    #[test]
+    fn test_previous_config_can_be_used_as_is() {
+        let dir = tempfile::tempdir().unwrap();
+        let old_path = dir.path().join("mcp-config.toml");
+        std::fs::write(&old_path, PREVIOUS_CONFIG).unwrap();
+        let store = MemoryStore::default();
+        let mut io = Script::new(&["4", "2"]);
+        let mut setup = setup(&mut io, &store);
+        let choice = setup
+            .choose_previous(&old_path.display().to_string(), &[])
+            .unwrap();
+        assert!(matches!(choice, PreviousChoice::UseAsIs));
+        assert!(io.shown.iter().any(|s| s == "Answer 1, 2 or 3."));
+    }
+
+    /// 平文のパスワードを含む控えは、消すかを聞く（#599）
+    #[test]
+    fn test_secret_backup_can_be_deleted() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, PREVIOUS_CONFIG).unwrap();
+        let backup = write_config_file(&path, "[server]\n").unwrap().unwrap();
+        let store = MemoryStore::default();
+        let mut io = Script::new(&[""]);
+        setup(&mut io, &store)
+            .offer_to_delete_secret_backup(&backup)
+            .unwrap();
+        assert!(!backup.exists());
+        // 平文のパスワードが無い控えは、聞かずに残す
+        let backup = write_config_file(&path, "[server]\nlog_level = \"warn\"\n")
+            .unwrap()
+            .unwrap();
+        let mut io = Script::new(&[]);
+        setup(&mut io, &store)
+            .offer_to_delete_secret_backup(&backup)
+            .unwrap();
+        assert!(backup.exists());
+    }
+
+    /// Unixでは、書いた設定ファイル・控え・フォルダを本人だけにする（#599）
+    #[cfg(unix)]
+    #[test]
+    fn test_config_file_is_private_on_unix() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("new").join("config.toml");
+        write_config_file(&path, "a").unwrap();
+        let backup = write_config_file(&path, "b").unwrap().unwrap();
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&path), 0o600);
+        assert_eq!(mode(&backup), 0o600);
+        assert_eq!(mode(path.parent().unwrap()), 0o700);
+    }
+
+    /// 書き換えは、一時ファイルを残さない（#599）
+    #[test]
+    fn test_write_atomically_leaves_no_temporary_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("claude_desktop_config.json");
+        std::fs::write(&path, "old").unwrap();
+        write_atomically(&path, "new", false).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "new");
+        let names: Vec<String> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, ["claude_desktop_config.json"]);
     }
 
     #[test]
@@ -1467,6 +2184,9 @@ mod tests {
         );
         assert_eq!(find_program_in("tool", dirs(), &["exe"]), None);
         assert_eq!(find_program_in("missing", dirs(), &["exe", "cmd"]), None);
+        // 相対パスの項目（今のフォルダ等）は見ない（#599）
+        let relative = || vec![PathBuf::from("."), PathBuf::from("")].into_iter();
+        assert_eq!(find_program_in("tool", relative(), &["exe", "cmd"]), None);
     }
 
     /// 設定ファイルがあれば、すべてを選ぶ。無ければ、Claudeのフォルダがある

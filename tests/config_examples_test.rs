@@ -131,8 +131,11 @@ fn config_examples_load_without_ignored_keys() {
 fn ignored_keys_are_found() {
     // このテストの確かめ方が、読まれないキーを見つけられること
     let text = "[server]\nlog_level = \"info\"\n[transport]\ntype = \"stdio\"\n[handlers]\n[filesystem]\nroot_path = \".\"\n[handlers.wordpress]\nenabled = true\nurl = \"https://example.com\"\nusername = \"u\"\npassword = \"p\"\ntimeout = 30\n";
+    // 順番は、tomlの`preserve_order`で、ファイルに書いた順になる（#602）
+    let mut keys = ignored_keys(text).unwrap();
+    keys.sort();
     assert_eq!(
-        ignored_keys(text).unwrap(),
+        keys,
         vec![
             "filesystem".to_string(),
             "handlers.wordpress.timeout".to_string()
