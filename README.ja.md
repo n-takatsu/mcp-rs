@@ -4,7 +4,7 @@ AIのクライアントに、WordPress・データベース（PostgreSQL・MySQL
 
 > **[日本語](README.ja.md)** | **[English](README.md)**
 
-[![Version](https://img.shields.io/badge/Version-v0.25.0-blue)](https://github.com/n-takatsu/mcp-rs/releases/tag/v0.25.0)
+[![Version](https://img.shields.io/badge/Version-v0.26.0-blue)](https://github.com/n-takatsu/mcp-rs/releases/tag/v0.26.0)
 ![Implementation](https://img.shields.io/badge/WordPress_Tools-32_Available-green)
 ![License](https://img.shields.io/badge/License-MIT%2FApache--2.0-green)
 
