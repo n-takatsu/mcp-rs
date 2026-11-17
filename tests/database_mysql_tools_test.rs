@@ -717,6 +717,66 @@ async fn mysql_engine_setting_works_with_mariadb(kind: Kind) {
     assert_eq!(result["rows"], json!([[30.0]]), "{result}");
 }
 
+/// サーバーの`sql_mode`に`NO_BACKSLASH_ESCAPES`があっても、mcp-rsの接続では
+/// 外し、文字列の読み方をSQLの検査（sqlparser）とそろえる（#574）
+async fn backslash_escapes_match_the_sql_check(kind: Kind) {
+    let Some((url, pool)) = test_database(kind).await else {
+        return;
+    };
+    let mut conn = pool.get_conn().await.unwrap();
+    let before: String = conn
+        .query_first("SELECT @@GLOBAL.sql_mode")
+        .await
+        .unwrap()
+        .unwrap();
+    // サーバーの既定に足す（このテストの終わりに戻す。ほかのテストは、
+    // 文字列に\を使わないので、影響しない）
+    conn.query_drop(
+        "SET GLOBAL sql_mode = CONCAT_WS(',', NULLIF(@@GLOBAL.sql_mode, ''), 'NO_BACKSLASH_ESCAPES')",
+    )
+    .await
+    .unwrap();
+    let during: String = conn
+        .query_first("SELECT @@GLOBAL.sql_mode")
+        .await
+        .unwrap()
+        .unwrap();
+
+    // 新しい接続は、サーバーの既定（NO_BACKSLASH_ESCAPES）で始まる
+    let result = match DatabaseHandler::from_settings(&settings_from_url(&url, kind)).await {
+        Ok(handler) => {
+            call(
+                &handler,
+                "execute_query",
+                json!({ "sql": "SELECT @@SESSION.sql_mode AS mode, 'a\\'b' AS s" }),
+            )
+            .await
+        }
+        Err(e) => Err(e),
+    };
+    // 確かめる前に戻す
+    conn.query_drop(format!("SET GLOBAL sql_mode = '{before}'"))
+        .await
+        .unwrap();
+
+    assert!(during.contains("NO_BACKSLASH_ESCAPES"), "{during}");
+    let result = result.unwrap();
+    let mode = result["rows"][0][0]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    assert!(!mode.contains("NO_BACKSLASH_ESCAPES"), "{mode}");
+    // ほかのsql_modeは残す
+    for other in during.split(',').filter(|m| *m != "NO_BACKSLASH_ESCAPES") {
+        assert!(
+            mode.split(',').any(|m| m == other),
+            "{other} was removed: {mode}"
+        );
+    }
+    // \' は、引用符のエスケープとして読まれる（検査と同じ）
+    assert_eq!(result["rows"][0][1], json!("a'b"), "{result}");
+}
+
 /// 同じテストを、MySQLとMariaDBの両方で動かす
 macro_rules! for_each_server {
     ($($name:ident),* $(,)?) => {
@@ -753,4 +813,5 @@ for_each_server!(
     tls_modes,
     ssl_root_cert_needs_a_verifying_ssl_mode,
     mysql_engine_setting_works_with_mariadb,
+    backslash_escapes_match_the_sql_check,
 );

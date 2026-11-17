@@ -40,6 +40,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- MySQL・MariaDBで、サーバーの`sql_mode`に`NO_BACKSLASH_ESCAPES`があると、
+  SQLの検査（文字列の中の`'`をエスケープと読む）とサーバーで文字列の
+  区切りが食い違い、`SELECT … INTO OUTFILE`や`/*M! … */`の拒否をすり抜け
+  られた（#574）。接続を作ったとき・プールに戻してリセットしたときに、
+  セッションの`sql_mode`から`NO_BACKSLASH_ESCAPES`を外し、サーバーの読み方を
+  検査とそろえる（ほかの`sql_mode`は変えない）。既定の設定では起きない
 - `mcp-rs check`と`wordpress_health_check`で、サインインが失敗したのに、
   権限とメディアが「OK」と出ていた（#575の確認で分かった）。どちらも認証の
   要らない読み取りでも通るため。サインインが失敗したら、権限とメディアは
