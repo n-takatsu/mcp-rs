@@ -147,6 +147,8 @@ It asks for the WordPress username, the Application Password, and a master passw
 
 When the HTTP transport listens on anything other than loopback (for example `addr = "0.0.0.0"` in Docker, with `network_policy_reject_external_connections = false`), it needs authentication: API keys, OAuth 2.1, or client certificates (mTLS). Without any of them, mcp-rs does not start (v0.24.0 and later), because anyone who can reach the address could use every tool. Up to v0.23.0, it only logged a warning.
 
+The same applies behind a reverse proxy: when `trusted_proxies` is set, mcp-rs needs authentication even when it listens on loopback (v0.27.0 and later). A proxy on the same machine (nginx, Caddy, …) connects from loopback, so every client the proxy lets in looks like a local one, and listening on `127.0.0.1` does not keep out clients on the internet. Up to v0.26.0, mcp-rs started without authentication in this case.
+
 If something in front of mcp-rs authenticates the clients (for example a reverse proxy that requires a login, and mcp-rs is reachable only through it), allow it explicitly. mcp-rs then logs a warning at startup:
 
 ```toml
