@@ -1416,11 +1416,7 @@ async fn serve_connection<I>(
     tokio::pin!(connection);
     let mut closing = false;
     loop {
-        let wait = if closing {
-            timeout
-        } else {
-            timeout.saturating_sub(activity.idle_for())
-        };
+        let wait = timeout.saturating_sub(activity.idle_for());
         tokio::select! {
             result = connection.as_mut() => {
                 if let Err(e) = result {
@@ -1430,16 +1426,22 @@ async fn serve_connection<I>(
                 return;
             }
             _ = tokio::time::sleep(wait.max(std::time::Duration::from_millis(10))) => {
+                if activity.idle_for() < timeout {
+                    // 処理中のリクエストがあるか、最近まであった。閉じる手続きの
+                    // 開始とほぼ同時に届いて受け付けたリクエストも、最後まで
+                    // 処理させる（PR #605のレビュー）
+                    continue;
+                }
                 if closing {
                     // 閉じる手続きに応じない相手は、そのまま切る
                     debug!("Closed idle connection from {} without waiting for it", remote_addr);
                     return;
                 }
-                if activity.idle_for() >= timeout {
-                    debug!("Closing idle connection from {} (no request for {:?})", remote_addr, timeout);
-                    connection.as_mut().graceful_shutdown();
-                    closing = true;
-                }
+                debug!("Closing idle connection from {} (no request for {:?})", remote_addr, timeout);
+                connection.as_mut().graceful_shutdown();
+                closing = true;
+                // 閉じる手続きに応じるのを、さらに`timeout`まで待つ
+                activity.touch();
             }
         }
     }
