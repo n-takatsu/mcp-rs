@@ -22,7 +22,7 @@ use tracing::info;
 use super::{truncate, validate_option_value, Cleanup, CONTAINER_LABEL};
 use crate::config::{PluginConfig, PluginKubernetesConfig};
 
-const DEFAULT_KUBECTL_COMMAND: &str = "kubectl";
+pub(super) const DEFAULT_KUBECTL_COMMAND: &str = "kubectl";
 const DEFAULT_MEMORY: &str = "512Mi";
 const DEFAULT_CPU: &str = "500m";
 const DEFAULT_RUN_AS_USER: u32 = 65532;
@@ -136,7 +136,10 @@ fn is_dns_label(value: &str) -> bool {
 }
 
 /// 設定を検証する。
-fn validate(config: &PluginConfig, kubernetes: &PluginKubernetesConfig) -> Result<(), String> {
+pub(super) fn validate(
+    config: &PluginConfig,
+    kubernetes: &PluginKubernetesConfig,
+) -> Result<(), String> {
     let field = |name: &str| format!("kubernetes.{}", name);
     validate_option_value(&field("image"), kubernetes.image.trim())?;
     if let Some(namespace) = &kubernetes.namespace {
