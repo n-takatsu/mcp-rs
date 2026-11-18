@@ -349,6 +349,22 @@ pub trait JsonRpcRequestHandler: Send + Sync {
         let _ = protocol_version;
         self.handle_jsonrpc(message, caller).await
     }
+
+    /// `handle_jsonrpc_with_protocol_version`と同じ。`session`は、この
+    /// リクエストに使う接続の状態（`initialize`で決まった版、#570・#596）。
+    /// `/mcp`はリクエストごとに新しいものを、`/ws`は接続ごとのものを渡す。
+    /// 既定の実装は`session`を使わない。
+    async fn handle_jsonrpc_in_session(
+        &self,
+        message: &str,
+        caller: &crate::mcp::Caller,
+        protocol_version: Option<&'static str>,
+        session: &crate::mcp::Session,
+    ) -> std::result::Result<Option<Value>, String> {
+        let _ = session;
+        self.handle_jsonrpc_with_protocol_version(message, caller, protocol_version)
+            .await
+    }
 }
 
 /// `Origin`ヘッダーで受け付けるオリジン（#484）。MCPの仕様（Streamable
@@ -518,21 +534,152 @@ fn requested_protocol_version(
         "Rejected request with unsupported MCP-Protocol-Version '{}'",
         requested
     );
+    // 2026-07-28の`UnsupportedProtocolVersion`（#570）。以前は`-32600`
+    // だった。`data`で、対応する版（`initialize`で交渉する版も）を知らせる
+    let supported = crate::mcp::all_supported_protocol_versions();
     let body = serde_json::json!({
         "jsonrpc": "2.0",
         "error": {
-            "code": -32600,
+            "code": crate::mcp::UNSUPPORTED_PROTOCOL_VERSION_CODE,
             "message": format!(
                 "Unsupported MCP-Protocol-Version: '{}' (supported: {})",
                 requested,
-                crate::mcp::SUPPORTED_PROTOCOL_VERSIONS.join(", ")
-            )
+                supported.join(", ")
+            ),
+            "data": { "supported": supported, "requested": requested }
         },
         "id": request.get("id").cloned().unwrap_or(Value::Null)
     });
     Err(Box::new(
         (StatusCode::BAD_REQUEST, Json(body)).into_response(),
     ))
+}
+
+/// ヘッダーと本文が合わないときのエラー（2026-07-28の`HeaderMismatch`）
+const HEADER_MISMATCH_CODE: i32 = -32020;
+
+/// リクエストが2026-07-28のものか（#570）。本文の`params._meta`に版が
+/// あるか、`MCP-Protocol-Version`ヘッダーが2026-07-28の版なら、そう扱う。
+/// `initialize`は今までどおり（legacy）。
+///
+/// 2026-07-28のリクエストでは、仕様（Streamable HTTP）どおり、ヘッダーと
+/// 本文が合うかを確かめ、合わなければ400と`-32020`を返す。
+/// - `MCP-Protocol-Version`と`_meta`の`io.modelcontextprotocol/protocolVersion`
+/// - `Mcp-Method`と`method`
+/// - `tools/call`・`prompts/get`では`Mcp-Name`と`params.name`、
+///   `resources/read`では`Mcp-Name`と`params.uri`
+///
+/// ヘッダーが無いのも、合わないのと同じに扱う。
+fn is_modern_request(
+    headers: &HeaderMap,
+    request: &Value,
+) -> std::result::Result<bool, Box<Response>> {
+    let method = request.get("method").and_then(Value::as_str);
+    if method == Some("initialize") {
+        return Ok(false);
+    }
+    let body_version = request
+        .get("params")
+        .and_then(|params| params.get("_meta"))
+        .and_then(|meta| meta.get(crate::mcp::META_PROTOCOL_VERSION));
+    let header_version = header_value(headers, "mcp-protocol-version").map(str::trim);
+    if body_version.is_none() && !header_version.is_some_and(crate::mcp::is_modern_protocol_version)
+    {
+        return Ok(false);
+    }
+
+    let mismatch = |message: String| -> std::result::Result<bool, Box<Response>> {
+        warn!("Rejected an MCP request: {}", message);
+        let body = serde_json::json!({
+            "jsonrpc": "2.0",
+            "error": { "code": HEADER_MISMATCH_CODE, "message": message },
+            "id": request
+                .get("id")
+                .filter(|id| id.is_string() || id.is_number())
+                .cloned()
+                .unwrap_or(Value::Null)
+        });
+        Err(Box::new(
+            (StatusCode::BAD_REQUEST, Json(body)).into_response(),
+        ))
+    };
+    let check =
+        |header: &str, actual: Option<&str>, expected: Option<&str>| match (actual, expected) {
+            (Some(actual), Some(expected)) if actual == expected => Ok(()),
+            (None, _) => Err(format!("Header mismatch: {} header is missing", header)),
+            (Some(actual), expected) => Err(format!(
+                "Header mismatch: {} header value '{}' does not match body value '{}'",
+                header,
+                actual,
+                expected.unwrap_or("")
+            )),
+        };
+
+    if let Err(message) = check(
+        "MCP-Protocol-Version",
+        header_version,
+        body_version.and_then(Value::as_str),
+    ) {
+        return mismatch(message);
+    }
+    if let Err(message) = check("Mcp-Method", header_value(headers, "mcp-method"), method) {
+        return mismatch(message);
+    }
+    let name_field = match method {
+        Some("tools/call") | Some("prompts/get") => Some("name"),
+        Some("resources/read") => Some("uri"),
+        _ => None,
+    };
+    if let Some(field) = name_field {
+        let name = headers
+            .get("mcp-name")
+            .and_then(|value| decode_mcp_header_value(value.as_bytes()));
+        let expected = request
+            .get("params")
+            .and_then(|params| params.get(field))
+            .and_then(Value::as_str);
+        if let Err(message) = check("Mcp-Name", name.as_deref(), expected) {
+            return mismatch(message);
+        }
+    }
+    Ok(true)
+}
+
+/// `Mcp-Name`等のヘッダーの値を読む（2026-07-28）。ASCIIで送れない値は、
+/// UTF-8のバイト列をBase64にして`=?base64?…?=`で囲んで送られる。
+/// 読めなければ`None`（ヘッダーが無いのと同じに扱う）。
+fn decode_mcp_header_value(raw: &[u8]) -> Option<String> {
+    use base64::Engine as _;
+    let value = std::str::from_utf8(raw).ok()?;
+    match value
+        .strip_prefix("=?base64?")
+        .and_then(|rest| rest.strip_suffix("?="))
+    {
+        Some(encoded) => {
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(encoded)
+                .ok()?;
+            String::from_utf8(bytes).ok()
+        }
+        None if value.is_ascii() => Some(value.to_string()),
+        None => None,
+    }
+}
+
+/// 2026-07-28のリクエストへの応答のHTTPの状態（#570）。仕様
+/// （Streamable HTTP）どおり、知らないメソッド（`-32601`）は404、
+/// 版・`_meta`・能力の誤り（`-32022`・`-32602`・`-32021`）は400。
+/// ほかは200。
+fn modern_response_status(response: &Value) -> StatusCode {
+    match response
+        .get("error")
+        .and_then(|error| error.get("code"))
+        .and_then(Value::as_i64)
+    {
+        Some(-32601) => StatusCode::NOT_FOUND,
+        Some(-32602) | Some(-32021) | Some(-32022) => StatusCode::BAD_REQUEST,
+        _ => StatusCode::OK,
+    }
 }
 
 /// `id`の無いJSON-RPCのエラー（JSONとして読めない等、#543）を、400で返す。
@@ -610,8 +757,8 @@ struct HttpTransportState {
     /// APIキー（`ApiKey::id`）→ 名前と使えるツール（#52）
     api_key_callers: Arc<HashMap<String, crate::mcp::Caller>>,
     oauth: Option<Arc<OAuthValidator>>,
-    /// `/ws`の接続 → 呼び出し元（接続時の認証で決まる、#52）
-    ws_callers: Arc<tokio::sync::Mutex<HashMap<ConnectionId, crate::mcp::Caller>>>,
+    /// `/ws`の接続 → 呼び出し元（接続時の認証で決まる、#52）と接続の状態
+    ws_callers: WsClients,
     audit_logger: Arc<AuditLogger>,
     websocket_upgrade_enabled: bool,
     // Reserves capacity atomically at upgrade time (before the handshake
@@ -1828,9 +1975,18 @@ async fn handle_jsonrpc_request(
         Some(&request),
     )
     .await?;
-    let protocol_version = match requested_protocol_version(&headers, &request) {
-        Ok(version) => version,
+    // 2026-07-28のリクエストは、版を本文の`_meta`で決める（#570）
+    let modern = match is_modern_request(&headers, &request) {
+        Ok(modern) => modern,
         Err(response) => return Ok(*response),
+    };
+    let protocol_version = if modern {
+        None
+    } else {
+        match requested_protocol_version(&headers, &request) {
+            Ok(version) => version,
+            Err(response) => return Ok(*response),
+        }
     };
 
     let start_time = Instant::now();
@@ -1869,6 +2025,7 @@ async fn handle_jsonrpc_request(
             &request_str,
             &caller,
             protocol_version,
+            modern,
             start_time,
         )
         .await;
@@ -2752,7 +2909,13 @@ async fn handle_ws_socket(
     let ids_caller = caller.clone();
     // リプレイ攻撃対策のnonceを、呼び出し元ごとに覚えるため（#543）
     let caller_name = caller.name.clone();
-    state.ws_callers.lock().await.insert(conn_id, caller);
+    state.ws_callers.lock().await.insert(
+        conn_id,
+        WsClient {
+            caller,
+            session: Arc::new(crate::mcp::Session::default()),
+        },
+    );
 
     let conn_info = WebSocketConnectionInfo::new();
     state
@@ -3102,17 +3265,29 @@ fn unix_time_to_instant(unix_seconds: u64) -> tokio::time::Instant {
 
 /// `JsonRpcRequestHandler`でリクエストを処理し、HTTPの応答にする（#400）。
 /// 応答があれば200でJSON-RPCの応答を、通知なら202（本文なし、#374）を返す。
+/// 2026-07-28のリクエスト（`modern`）へのエラーは、仕様どおり404・400で
+/// 返す（`modern_response_status`、#570）。
+///
+/// 接続の状態（`initialize`で決まった版）は、リクエストごとに新しく作る
+/// （#570・#596）。以前は全クライアントで1つを共有していたため、ある
+/// 呼び出し元の`initialize`が、ほかの呼び出し元の版を変えていた。
+/// 2025-06-18以降のクライアントは、`initialize`の後のリクエストに
+/// `MCP-Protocol-Version`ヘッダーを付ける。ヘッダーの無いリクエストは、
+/// 対応する一番古い版（`DEFAULT_PROTOCOL_VERSION`）で答える。
+#[allow(clippy::too_many_arguments)]
 async fn respond_with_request_handler(
     state: &HttpTransportState,
     handler: &dyn JsonRpcRequestHandler,
     request_str: &str,
     caller: &crate::mcp::Caller,
     protocol_version: Option<&'static str>,
+    modern: bool,
     start_time: Instant,
 ) -> std::result::Result<Response, StatusCode> {
+    let session = crate::mcp::Session::default();
     match tokio::time::timeout(
         REQUEST_HANDLER_TIMEOUT,
-        handler.handle_jsonrpc_with_protocol_version(request_str, caller, protocol_version),
+        handler.handle_jsonrpc_in_session(request_str, caller, protocol_version, &session),
     )
     .await
     {
@@ -3126,6 +3301,8 @@ async fn respond_with_request_handler(
             // リクエストとして読めなかったもの（バッチ等、#543）は400
             let status = if is_error_without_id(&response_value) {
                 StatusCode::BAD_REQUEST
+            } else if modern {
+                modern_response_status(&response_value)
             } else {
                 StatusCode::OK
             };
@@ -3153,6 +3330,19 @@ async fn respond_with_request_handler(
 
 /// `/ws`の接続ID
 type ConnectionId = Uuid;
+
+/// `/ws`の接続1つ分の、呼び出し元と状態
+#[derive(Clone)]
+struct WsClient {
+    /// 接続時の認証で決まる呼び出し元（#52）
+    caller: crate::mcp::Caller,
+    /// `initialize`で決まったプロトコルの版。接続ごとに持つ（#570・#596）。
+    /// 以前は全クライアントで1つを共有していた
+    session: Arc<crate::mcp::Session>,
+}
+
+/// `/ws`の接続 → `WsClient`
+type WsClients = Arc<tokio::sync::Mutex<HashMap<ConnectionId, WsClient>>>;
 
 /// `/ws`の接続の情報
 #[derive(Debug, Clone)]
@@ -3201,8 +3391,9 @@ trait MessageHandler: Send + Sync {
 struct JsonRpcWsHandler {
     /// 設定されていれば、フレームをチャンネルに流さず直接処理する（#400）
     request_handler: Option<Arc<dyn JsonRpcRequestHandler>>,
-    /// 接続 → 呼び出し元（#52）。見つからない接続は、どのツールも使えない
-    callers: Arc<tokio::sync::Mutex<HashMap<ConnectionId, crate::mcp::Caller>>>,
+    /// 接続 → 呼び出し元（#52）と接続の状態。見つからない接続は、どの
+    /// ツールも使えない
+    callers: WsClients,
     request_sender: tokio::sync::mpsc::Sender<String>,
     pending_responses: Arc<RwLock<HashMap<Value, tokio::sync::oneshot::Sender<JsonRpcResponse>>>>,
     stats: Arc<RwLock<HttpStats>>,
@@ -3237,21 +3428,24 @@ impl MessageHandler for JsonRpcWsHandler {
         }
 
         if let Some(handler) = &self.request_handler {
-            let caller = self
+            let client = self
                 .callers
                 .lock()
                 .await
                 .get(&conn_id)
                 .cloned()
-                .unwrap_or_else(|| {
-                    crate::mcp::Caller::new(
+                .unwrap_or_else(|| WsClient {
+                    caller: crate::mcp::Caller::new(
                         "unknown-websocket-connection",
                         crate::mcp::ToolAccess::any_of(Vec::new()),
-                    )
+                    ),
+                    session: Arc::new(crate::mcp::Session::default()),
                 });
+            // `/ws`は、今までどおり`initialize`で版を決める（legacy、#570）。
+            // 版は接続ごと
             let response = match tokio::time::timeout(
                 REQUEST_HANDLER_TIMEOUT,
-                handler.handle_jsonrpc(&text, &caller),
+                handler.handle_jsonrpc_in_session(&text, &client.caller, None, &client.session),
             )
             .await
             {
@@ -6441,16 +6635,315 @@ mod tests {
         let (status, body) = send("tools/list", Some("2099-01-01")).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert_eq!(body["id"], serde_json::json!(7));
-        assert_eq!(body["error"]["code"], serde_json::json!(-32600));
+        // 2026-07-28の`UnsupportedProtocolVersion`（#570。以前は-32600）
+        assert_eq!(body["error"]["code"], serde_json::json!(-32022));
         assert!(body["error"]["message"]
             .as_str()
             .unwrap()
             .contains("2099-01-01"));
+        assert_eq!(
+            body["error"]["data"]["requested"],
+            serde_json::json!("2099-01-01")
+        );
+        assert_eq!(
+            body["error"]["data"]["supported"][0],
+            serde_json::json!("2026-07-28")
+        );
 
         // initializeでは、ヘッダーを見ない（版は本文で交渉する）
         let (status, body) = send("initialize", Some("2099-01-01")).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["result"]["protocol_version"], Value::Null);
+    }
+
+    /// 実際の`RequestDispatcher`（ハンドラー無し。`mcp_rs_status`だけ）で
+    /// 答えるサーバー（#570）
+    async fn start_dispatcher_server(config: HttpConfig) -> (HttpTransport, SocketAddr) {
+        let server = crate::mcp::McpServer::new();
+        let transport = HttpTransport::new(HttpConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            ..config
+        })
+        .unwrap()
+        .with_request_handler(Arc::new(server.dispatcher()));
+        transport.start_server().await.unwrap();
+        let server_addr = transport.bound_addr().await.unwrap();
+        wait_for_plain_server_ready(server_addr).await;
+        (transport, server_addr)
+    }
+
+    fn modern_body(method: &str, params: Value) -> Value {
+        let mut params = params;
+        params["_meta"] = serde_json::json!({
+            "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+            "io.modelcontextprotocol/clientCapabilities": {}
+        });
+        serde_json::json!({ "jsonrpc": "2.0", "id": 9, "method": method, "params": params })
+    }
+
+    async fn post_modern(
+        client: &reqwest::Client,
+        url: &str,
+        headers: &[(&str, &str)],
+        body: &Value,
+    ) -> (StatusCode, Value) {
+        let mut request = client.post(url).json(body);
+        for (name, value) in headers {
+            request = request.header(*name, *value);
+        }
+        let response = request.send().await.unwrap();
+        let status = response.status();
+        (status, response.json::<Value>().await.unwrap())
+    }
+
+    /// 2026-07-28のリクエストを、`initialize`無しで受ける。ヘッダーと本文が
+    /// 合わなければ400と-32020（#570の段階2）
+    #[tokio::test]
+    async fn test_modern_requests_over_http() {
+        let (_transport, server_addr) = start_dispatcher_server(HttpConfig::default()).await;
+        let url = format!("http://127.0.0.1:{}/mcp", server_addr.port());
+        let client = reqwest::Client::new();
+        let version = ("MCP-Protocol-Version", "2026-07-28");
+
+        // server/discover
+        let (status, body) = post_modern(
+            &client,
+            &url,
+            &[version, ("Mcp-Method", "server/discover")],
+            &modern_body("server/discover", serde_json::json!({})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["result"]["resultType"], serde_json::json!("complete"));
+        assert_eq!(
+            body["result"]["supportedVersions"],
+            serde_json::json!(["2026-07-28"])
+        );
+
+        // tools/call。Mcp-Nameは、Base64で送ってもよい
+        let call = modern_body(
+            "tools/call",
+            serde_json::json!({ "name": "mcp_rs_status", "arguments": {} }),
+        );
+        for name in ["mcp_rs_status", "=?base64?bWNwX3JzX3N0YXR1cw==?="] {
+            let (status, body) = post_modern(
+                &client,
+                &url,
+                &[version, ("Mcp-Method", "tools/call"), ("Mcp-Name", name)],
+                &call,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            assert!(body["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("Protocol version: 2026-07-28"));
+        }
+
+        // ヘッダーと本文が合わない・ヘッダーが無い
+        let tools_list = modern_body("tools/list", serde_json::json!({}));
+        let mut legacy_body = tools_list.clone();
+        legacy_body["params"] = serde_json::json!({});
+        let cases: Vec<(Vec<(&str, &str)>, &Value)> = vec![
+            // Mcp-Methodが無い
+            (vec![version], &tools_list),
+            // Mcp-Methodが違う
+            (vec![version, ("Mcp-Method", "tools/call")], &tools_list),
+            // 版のヘッダーが無い（本文には版がある）
+            (vec![("Mcp-Method", "tools/list")], &tools_list),
+            // 版のヘッダーが本文と違う
+            (
+                vec![
+                    ("MCP-Protocol-Version", "2025-11-25"),
+                    ("Mcp-Method", "tools/list"),
+                ],
+                &tools_list,
+            ),
+            // ヘッダーは2026-07-28で、本文に版が無い
+            (vec![version, ("Mcp-Method", "tools/list")], &legacy_body),
+            // Mcp-Nameが無い
+            (vec![version, ("Mcp-Method", "tools/call")], &call),
+            // Mcp-Nameが違う
+            (
+                vec![
+                    version,
+                    ("Mcp-Method", "tools/call"),
+                    ("Mcp-Name", "delete_post"),
+                ],
+                &call,
+            ),
+        ];
+        for (headers, body) in cases {
+            let (status, response) = post_modern(&client, &url, &headers, body).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{headers:?}: {response}");
+            assert_eq!(response["error"]["code"], serde_json::json!(-32020));
+            assert_eq!(response["id"], serde_json::json!(9));
+            assert!(response["error"]["message"]
+                .as_str()
+                .unwrap()
+                .starts_with("Header mismatch"));
+        }
+
+        // 知らないメソッドは404と-32601
+        let (status, body) = post_modern(
+            &client,
+            &url,
+            &[version, ("Mcp-Method", "ping")],
+            &modern_body("ping", serde_json::json!({})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body["error"]["code"], serde_json::json!(-32601));
+
+        // 対応していない版は400と-32022
+        let mut unsupported = tools_list.clone();
+        unsupported["params"]["_meta"]["io.modelcontextprotocol/protocolVersion"] =
+            serde_json::json!("2099-01-01");
+        let (status, body) = post_modern(
+            &client,
+            &url,
+            &[
+                ("MCP-Protocol-Version", "2099-01-01"),
+                ("Mcp-Method", "tools/list"),
+            ],
+            &unsupported,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["error"]["code"], serde_json::json!(-32022));
+
+        // クライアントの能力が無ければ400と-32602
+        let mut no_capabilities = tools_list.clone();
+        no_capabilities["params"]["_meta"]
+            .as_object_mut()
+            .unwrap()
+            .remove("io.modelcontextprotocol/clientCapabilities");
+        let (status, body) = post_modern(
+            &client,
+            &url,
+            &[version, ("Mcp-Method", "tools/list")],
+            &no_capabilities,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["error"]["code"], serde_json::json!(-32602));
+
+        // ツールの失敗は、今までどおり200（CallToolResultのisError）
+        let missing = modern_body("tools/call", serde_json::json!({ "name": "no_such_tool" }));
+        let (status, body) = post_modern(
+            &client,
+            &url,
+            &[
+                version,
+                ("Mcp-Method", "tools/call"),
+                ("Mcp-Name", "no_such_tool"),
+            ],
+            &missing,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["result"]["isError"], serde_json::json!(true));
+    }
+
+    /// `/mcp`の`initialize`は、ほかのリクエストの版を変えない（#570・
+    /// #596）。版は`MCP-Protocol-Version`ヘッダーで決まり、無ければ
+    /// 対応する一番古い版
+    #[tokio::test]
+    async fn test_http_initialize_does_not_change_the_version_of_other_requests() {
+        let (_transport, server_addr) = start_dispatcher_server(HttpConfig::default()).await;
+        let url = format!("http://127.0.0.1:{}/mcp", server_addr.port());
+        let client = reqwest::Client::new();
+        let (status, body) = post_modern(
+            &client,
+            &url,
+            &[],
+            &serde_json::json!({
+                "jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-11-25",
+                    "capabilities": {},
+                    "clientInfo": { "name": "a", "version": "1" }
+                }
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            body["result"]["protocolVersion"],
+            serde_json::json!("2025-11-25")
+        );
+
+        let tools_list = serde_json::json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" });
+        let (_, body) = post_modern(&client, &url, &[], &tools_list).await;
+        assert!(body["result"]["tools"][0].get("title").is_none(), "{body}");
+        let (_, body) = post_modern(
+            &client,
+            &url,
+            &[("MCP-Protocol-Version", "2025-11-25")],
+            &tools_list,
+        )
+        .await;
+        assert!(body["result"]["tools"][0].get("title").is_some(), "{body}");
+        assert!(body["result"].get("resultType").is_none());
+    }
+
+    /// `/ws`の版は、接続ごと（#570・#596）。以前は全接続で1つを共有して
+    /// いた
+    #[tokio::test]
+    async fn test_websocket_protocol_version_is_per_connection() {
+        let (_transport, server_addr) = start_dispatcher_server(HttpConfig {
+            enable_websocket_upgrade: true,
+            ..HttpConfig::default()
+        })
+        .await;
+        let url = format!("ws://127.0.0.1:{}/ws", server_addr.port());
+        let (mut old, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+        let (mut new, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+
+        async fn exchange<S>(ws: &mut S, request: Value) -> Value
+        where
+            S: futures::Sink<tokio_tungstenite::tungstenite::Message>
+                + futures::Stream<
+                    Item = std::result::Result<
+                        tokio_tungstenite::tungstenite::Message,
+                        tokio_tungstenite::tungstenite::Error,
+                    >,
+                > + Unpin,
+            <S as futures::Sink<tokio_tungstenite::tungstenite::Message>>::Error: std::fmt::Debug,
+        {
+            ws.send(tokio_tungstenite::tungstenite::Message::Text(
+                request.to_string().into(),
+            ))
+            .await
+            .unwrap();
+            let message = tokio::time::timeout(Duration::from_secs(5), ws.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            let tokio_tungstenite::tungstenite::Message::Text(text) = message else {
+                panic!("expected a text frame");
+            };
+            serde_json::from_str(&text).unwrap()
+        }
+        let initialize = |version: &str| {
+            serde_json::json!({
+                "jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {
+                    "protocolVersion": version,
+                    "capabilities": {},
+                    "clientInfo": { "name": "ws", "version": "1" }
+                }
+            })
+        };
+        exchange(&mut new, initialize("2025-11-25")).await;
+        // 後から別の接続が古い版でinitializeしても、先の接続の版は変わらない
+        exchange(&mut old, initialize("2024-11-05")).await;
+        let tools_list = serde_json::json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" });
+        let body = exchange(&mut new, tools_list.clone()).await;
+        assert!(body["result"]["tools"][0].get("title").is_some(), "{body}");
+        let body = exchange(&mut old, tools_list).await;
+        assert!(body["result"]["tools"][0].get("title").is_none(), "{body}");
     }
 
     // ---- #540: limits on requests, connections, and WebSocket ----

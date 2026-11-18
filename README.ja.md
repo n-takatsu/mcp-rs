@@ -21,7 +21,7 @@ AIのクライアントに、WordPress・データベース（PostgreSQL・MySQL
 
 ## **コア機能**
 
-- **JSON-RPC 2.0のMCP**: プロトコルの版は2025-11-25まで（`initialize`を使う）と、2026-07-28（`server/discover`と、リクエストごとの`_meta`。今はSTDIOだけ）
+- **JSON-RPC 2.0のMCP**: プロトコルの版は2025-11-25まで（`initialize`を使う）と、2026-07-28（`server/discover`と、リクエストごとの`_meta`。STDIOとHTTPの`/mcp`）
 - **トランスポート**: STDIOと、HTTP（`/ws`のWebSocketも任意で）
 - **プラグイン**: STDIOで話す任意のMCPサーバーのツールを加える。子プロセス・Dockerのコンテナ・KubernetesのJobで起動する。[Plugins](https://n-takatsu.github.io/mcp-rs/docs/plugins/)を参照
 - **設定**: 1つのTOMLファイル。`${VAR}`で環境変数の値を使える
