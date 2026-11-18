@@ -16,6 +16,53 @@ pub const SUPPORTED_PROTOCOL_VERSIONS: &[&str] =
 /// `initialize`を受け取る前に使う版。古いクライアントにも読める応答にする
 pub const DEFAULT_PROTOCOL_VERSION: &str = "2024-11-05";
 
+/// `initialize`を使わない版（#570）。版・クライアントの能力を、リクエスト
+/// ごとに`params._meta`で受け取る（ステートレス）。`initialize`で交渉する
+/// 版（`SUPPORTED_PROTOCOL_VERSIONS`）とは別に持ち、新旧の両方を受ける
+/// （仕様の「dual-era」）。
+pub const MODERN_PROTOCOL_VERSION: &str = "2026-07-28";
+
+/// `_meta`で受ける版（新しい順）。`server/discover`の`supportedVersions`
+pub const MODERN_PROTOCOL_VERSIONS: &[&str] = &[MODERN_PROTOCOL_VERSION];
+
+/// リクエストの`_meta`の、版・クライアントの能力・クライアントの情報・
+/// サーバーの情報のキー（2026-07-28）
+pub const META_PROTOCOL_VERSION: &str = "io.modelcontextprotocol/protocolVersion";
+pub const META_CLIENT_CAPABILITIES: &str = "io.modelcontextprotocol/clientCapabilities";
+pub const META_CLIENT_INFO: &str = "io.modelcontextprotocol/clientInfo";
+pub const META_SERVER_INFO: &str = "io.modelcontextprotocol/serverInfo";
+
+/// 対応していない版を要求されたときのエラー（2026-07-28の
+/// `UnsupportedProtocolVersion`）
+pub const UNSUPPORTED_PROTOCOL_VERSION_CODE: i32 = -32022;
+
+/// `_meta`で要求できる版か
+pub fn is_modern_protocol_version(version: &str) -> bool {
+    MODERN_PROTOCOL_VERSIONS.contains(&version)
+}
+
+/// 対応するすべての版（新しい順）。`_meta`で受ける版と、`initialize`で
+/// 交渉する版。対応していない版へのエラーの`data.supported`に入れ、
+/// クライアントが`initialize`に戻れることも伝える
+pub fn all_supported_protocol_versions() -> Vec<&'static str> {
+    MODERN_PROTOCOL_VERSIONS
+        .iter()
+        .chain(SUPPORTED_PROTOCOL_VERSIONS)
+        .copied()
+        .collect()
+}
+
+/// 版が、リクエストごとの`_meta`で受けるもの（2026-07-28）か、
+/// `initialize`で交渉する（HTTPではヘッダーでも受ける）もの（legacy）か。
+/// `mcp_rs_status`に出す
+pub fn protocol_era(version: &str) -> &'static str {
+    if is_modern_protocol_version(version) {
+        "stateless, per-request _meta"
+    } else {
+        "legacy"
+    }
+}
+
 /// クライアントが要求した版から、使う版を決める。
 pub fn negotiate_protocol_version(requested: &str) -> &'static str {
     SUPPORTED_PROTOCOL_VERSIONS

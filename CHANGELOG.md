@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- MCPの2026-07-28版（`initialize`を使わない版）のリクエストを、STDIOで
+  受けるようにした（#570の段階1）。今までの`initialize`も、そのまま使える
+  （新旧の両方を受ける）。`server/discover`に、対応する版・能力・サーバーの
+  情報を返す。`params._meta`に版（`io.modelcontextprotocol/protocolVersion`）
+  があるリクエストは、`initialize`無しで、そのリクエストだけその版で答える。
+  版・クライアントの能力が無ければ`-32602`、対応していない版なら`-32022`
+  （`data`に対応する版）。結果には`resultType`・`_meta`のサーバーの情報、
+  一覧・リソースの読み取りには`ttlMs`・`cacheScope`を付ける。
+  `mcp_rs_status`に、使っている版がどちらの形かと、対応する版を出す。
+  HTTP（`/mcp`）のヘッダーの確かめ等は、段階2で行う
+
 ## [0.27.0] - 2026-11-17
 
 ### Changed

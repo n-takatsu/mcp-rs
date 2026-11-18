@@ -116,6 +116,135 @@ fn invalid_message_response(message: &str) -> Option<JsonRpcResponse> {
     })
 }
 
+/// サーバーの能力。`initialize`と`server/discover`で同じものを返す
+fn server_capabilities() -> serde_json::Value {
+    serde_json::json!({
+        "tools": { "listChanged": false },
+        "resources": { "subscribe": false, "listChanged": false }
+    })
+}
+
+fn invalid_params(message: String) -> crate::mcp::JsonRpcError {
+    crate::mcp::JsonRpcError {
+        code: -32602,
+        message: format!("Invalid params: {}", message),
+        data: None,
+    }
+}
+
+/// リクエストが2026-07-28のもの（`params._meta`に版がある）なら、その版
+/// （#570）。`initialize`と、`_meta`に版の無いリクエストは今までどおり
+/// （legacy）で`None`。
+///
+/// 2026-07-28のリクエストで、版・クライアントの能力が無い・形が違えば
+/// `-32602`、対応していない版なら`-32022`（`data`に`supported`・
+/// `requested`）。`server/discover`は2026-07-28にしか無いので、版が無ければ
+/// `-32602`。
+fn modern_request_version(
+    request: &JsonRpcRequest,
+) -> Result<Option<&'static str>, crate::mcp::JsonRpcError> {
+    use crate::mcp::{META_CLIENT_CAPABILITIES, META_PROTOCOL_VERSION};
+    if request.method == "initialize" {
+        return Ok(None);
+    }
+    let meta = request
+        .params
+        .as_ref()
+        .and_then(|params| params.get("_meta"));
+    let Some(requested) = meta.and_then(|meta| meta.get(META_PROTOCOL_VERSION)) else {
+        if request.method == "server/discover" {
+            return Err(invalid_params(format!(
+                "server/discover requires '{}' in params._meta",
+                META_PROTOCOL_VERSION
+            )));
+        }
+        return Ok(None);
+    };
+    let Some(requested) = requested.as_str() else {
+        return Err(invalid_params(format!(
+            "'{}' in params._meta must be a string",
+            META_PROTOCOL_VERSION
+        )));
+    };
+    if !meta
+        .and_then(|meta| meta.get(META_CLIENT_CAPABILITIES))
+        .is_some_and(serde_json::Value::is_object)
+    {
+        return Err(invalid_params(format!(
+            "params._meta requires '{}' (an object)",
+            META_CLIENT_CAPABILITIES
+        )));
+    }
+    match crate::mcp::MODERN_PROTOCOL_VERSIONS
+        .iter()
+        .copied()
+        .find(|v| *v == requested)
+    {
+        Some(version) => Ok(Some(version)),
+        None => Err(crate::mcp::JsonRpcError {
+            code: crate::mcp::UNSUPPORTED_PROTOCOL_VERSION_CODE,
+            message: "Unsupported protocol version".to_string(),
+            data: Some(serde_json::json!({
+                "supported": crate::mcp::all_supported_protocol_versions(),
+                "requested": requested
+            })),
+        }),
+    }
+}
+
+/// `server/discover`の結果（2026-07-28）。`supportedVersions`は、`_meta`で
+/// 受ける版だけ（`initialize`で交渉する版は、`server/discover`では使えない
+/// ため）。呼び出し元によらず同じなので、`cacheScope`は`public`。
+/// `resultType`・`_meta`のサーバーの情報は`modern_result`で付ける
+fn discover_result() -> serde_json::Value {
+    serde_json::json!({
+        "supportedVersions": crate::mcp::MODERN_PROTOCOL_VERSIONS,
+        "capabilities": server_capabilities(),
+        "ttlMs": DISCOVER_TTL_MS,
+        "cacheScope": "public"
+    })
+}
+
+/// `server/discover`の結果を、クライアントが使い回してよい時間。版・能力は
+/// mcp-rsを入れ替えるまで変わらない
+const DISCOVER_TTL_MS: u64 = 3_600_000;
+
+/// ツール・リソースの一覧を、クライアントが使い回してよい時間。一覧は、
+/// 起動中は変わらない（`listChanged`は`false`）
+const LIST_TTL_MS: u64 = 300_000;
+
+/// 2026-07-28のリクエストへの結果に、その版の項目を付ける（#570）。
+///
+/// - `resultType`: 必須。mcp-rsは途中で入力を求めない（MRTRを使わない）
+///   ので、いつも`complete`
+/// - `_meta`の`io.modelcontextprotocol/serverInfo`（SHOULD）
+/// - 一覧・リソースの読み取りの`ttlMs`・`cacheScope`。一覧は、APIキー・
+///   アクセストークンによって変わるので`private`。リソースの中身
+///   （投稿等）は変わりうるので、使い回さない（`ttlMs`は0）
+fn modern_result(method: &str, version: &str, mut result: serde_json::Value) -> serde_json::Value {
+    let serde_json::Value::Object(fields) = &mut result else {
+        return result;
+    };
+    fields.insert("resultType".to_string(), "complete".into());
+    let cache = match method {
+        "tools/list" | "resources/list" => Some(LIST_TTL_MS),
+        "resources/read" => Some(0),
+        _ => None,
+    };
+    if let Some(ttl_ms) = cache {
+        fields.entry("ttlMs").or_insert(ttl_ms.into());
+        fields.entry("cacheScope").or_insert("private".into());
+    }
+    let meta = fields
+        .entry("_meta")
+        .or_insert_with(|| serde_json::json!({}));
+    if let serde_json::Value::Object(meta) = meta {
+        meta.entry(crate::mcp::META_SERVER_INFO)
+            .or_insert_with(|| crate::mcp::server_info_for_version(version));
+    }
+    result
+}
+
 pub struct McpServer {
     handlers: Handlers,
     /// 呼び出しを拒否したツールを記録する（#52）
@@ -339,12 +468,27 @@ impl McpServer {
             // 以前は何も返さず、クライアントは応答を待ち続けた（#543）
             Err(_) => return Ok(invalid_message_response(line)),
         };
-        let version = protocol_version.unwrap_or_else(|| session.protocol_version());
-
         if request.id.is_none() {
             Self::handle_notification(&request.method);
             return Ok(None);
         }
+
+        // `_meta`に版があれば2026-07-28のリクエストとして、`session`を使わず
+        // その版で答える（#570）。版は、このリクエストだけのもの
+        let modern = match modern_request_version(&request) {
+            Ok(modern) => modern,
+            Err(error) => {
+                return Ok(Some(JsonRpcResponse {
+                    jsonrpc: "2.0".to_string(),
+                    result: None,
+                    error: Some(error),
+                    id: request.id,
+                }))
+            }
+        };
+        let version = modern
+            .or(protocol_version)
+            .unwrap_or_else(|| session.protocol_version());
 
         // 注意: ここで `?` を使って早期returnしてはいけない。そうすると
         // request.id を失い、クライアントには何の応答も返らないまま接続が
@@ -369,6 +513,9 @@ impl McpServer {
                     Err(e) => Err(McpError::InvalidParams(e.to_string())),
                 }
             }
+            // `modern_request_version`が、`_meta`に版の無い`server/discover`を
+            // 拒否しているので、ここに来るのは2026-07-28のリクエストだけ
+            "server/discover" => Ok(discover_result()),
             "tools/list" => {
                 let mut tools = Self::list_all_tools(handlers).await;
                 if caller.access != crate::mcp::ToolAccess::All {
@@ -452,6 +599,10 @@ impl McpServer {
             }
             _ => Err(McpError::InvalidMethod(request.method.clone())),
         };
+        let result = match modern {
+            Some(version) => result.map(|result| modern_result(&request.method, version, result)),
+            None => result,
+        };
 
         Ok(Some(match result {
             Ok(result) => JsonRpcResponse {
@@ -485,10 +636,7 @@ impl McpServer {
         }
         serde_json::json!({
             "protocolVersion": protocol_version,
-            "capabilities": {
-                "tools": { "listChanged": false },
-                "resources": { "subscribe": false, "listChanged": false }
-            },
+            "capabilities": server_capabilities(),
             "serverInfo": crate::mcp::server_info_for_version(protocol_version)
         })
     }
@@ -2140,6 +2288,324 @@ mod tests {
             ask(r#"{"jsonrpc":"2.0","id":1,"error":{"code":-1,"message":"x"}}"#)
                 .await
                 .is_none()
+        );
+    }
+
+    /// 2026-07-28のリクエストの`_meta`（#570）
+    fn modern_meta(version: &str) -> serde_json::Value {
+        serde_json::json!({
+            "io.modelcontextprotocol/protocolVersion": version,
+            "io.modelcontextprotocol/clientInfo": { "name": "test", "version": "1.0.0" },
+            "io.modelcontextprotocol/clientCapabilities": {}
+        })
+    }
+
+    async fn request_with_session(
+        handlers: &Handlers,
+        session: &Session,
+        method: &str,
+        params: serde_json::Value,
+    ) -> JsonRpcResponse {
+        let line = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": method,
+            "params": params
+        })
+        .to_string();
+        McpServer::process_request(&line, handlers, session)
+            .await
+            .unwrap()
+            .expect("a request with an id must get a response")
+    }
+
+    fn assert_server_info(result: &serde_json::Value) {
+        let info = &result["_meta"]["io.modelcontextprotocol/serverInfo"];
+        assert_eq!(info["name"], serde_json::json!("mcp-rs"));
+        assert_eq!(
+            info["version"],
+            serde_json::json!(env!("CARGO_PKG_VERSION"))
+        );
+    }
+
+    #[tokio::test]
+    async fn test_server_discover_returns_versions_and_capabilities() {
+        let response = request(
+            &two_handlers(),
+            "server/discover",
+            serde_json::json!({ "_meta": modern_meta("2026-07-28") }),
+        )
+        .await;
+        assert!(response.error.is_none(), "{:?}", response.error);
+        let result = response.result.unwrap();
+        assert_eq!(result["resultType"], serde_json::json!("complete"));
+        assert_eq!(
+            result["supportedVersions"],
+            serde_json::json!(["2026-07-28"])
+        );
+        assert_eq!(result["capabilities"], server_capabilities());
+        assert_eq!(result["cacheScope"], serde_json::json!("public"));
+        assert!(result["ttlMs"].as_u64().is_some());
+        assert_server_info(&result);
+        // initializeの応答の項目は無い
+        assert!(result.get("protocolVersion").is_none());
+        assert!(result.get("serverInfo").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_server_discover_without_version_is_invalid_params() {
+        for params in [
+            serde_json::json!({}),
+            serde_json::json!({ "_meta": {} }),
+            serde_json::Value::Null,
+        ] {
+            let response = request(&two_handlers(), "server/discover", params.clone()).await;
+            let error = response.error.expect("must be an error");
+            assert_eq!(error.code, -32602, "params {}", params);
+            assert!(
+                error.message.contains("protocolVersion"),
+                "{}",
+                error.message
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_modern_request_with_bad_meta_is_invalid_params() {
+        let cases = [
+            // クライアントの能力が無い
+            serde_json::json!({ "io.modelcontextprotocol/protocolVersion": "2026-07-28" }),
+            // クライアントの能力がオブジェクトでない
+            serde_json::json!({
+                "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                "io.modelcontextprotocol/clientCapabilities": "all"
+            }),
+            // 版が文字列でない
+            serde_json::json!({
+                "io.modelcontextprotocol/protocolVersion": 20260728,
+                "io.modelcontextprotocol/clientCapabilities": {}
+            }),
+        ];
+        for meta in cases {
+            for method in ["server/discover", "tools/list"] {
+                let response = request(
+                    &two_handlers(),
+                    method,
+                    serde_json::json!({ "_meta": meta }),
+                )
+                .await;
+                let error = response.error.expect("must be an error");
+                assert_eq!(error.code, -32602, "{} with {}", method, meta);
+                assert!(response.result.is_none());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_modern_request_with_unsupported_version() {
+        // 知らない版も、initializeで交渉する版も、_metaでは受けない
+        for requested in ["1900-01-01", "2025-11-25"] {
+            let response = request(
+                &two_handlers(),
+                "tools/list",
+                serde_json::json!({ "_meta": modern_meta(requested) }),
+            )
+            .await;
+            let error = response.error.expect("must be an error");
+            assert_eq!(error.code, -32022);
+            assert_eq!(error.message, "Unsupported protocol version");
+            let data = error.data.unwrap();
+            assert_eq!(data["requested"], serde_json::json!(requested));
+            // initializeに戻れるよう、legacyの版も知らせる
+            assert_eq!(
+                data["supported"],
+                serde_json::json!(["2026-07-28", "2025-11-25", "2025-06-18", "2024-11-05"])
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_modern_requests_without_initialize() {
+        let handlers = two_handlers();
+        let session = Session::default();
+        let meta = modern_meta("2026-07-28");
+
+        let tools = request_with_session(
+            &handlers,
+            &session,
+            "tools/list",
+            serde_json::json!({ "_meta": meta }),
+        )
+        .await
+        .result
+        .unwrap();
+        assert_eq!(tools["resultType"], serde_json::json!("complete"));
+        assert_eq!(tools["ttlMs"], serde_json::json!(LIST_TTL_MS));
+        assert_eq!(tools["cacheScope"], serde_json::json!("private"));
+        assert_server_info(&tools);
+        let names: Vec<&str> = tools["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            names,
+            ["mcp_rs_status", "get_post", "shared", "plugin__echo"]
+        );
+        // 新しい版なので、2025-06-18以降の項目（title等）も付く
+        assert!(tools["tools"][0].get("title").is_some());
+
+        let call = request_with_session(
+            &handlers,
+            &session,
+            "tools/call",
+            serde_json::json!({ "name": "plugin__echo", "arguments": {}, "_meta": meta }),
+        )
+        .await
+        .result
+        .unwrap();
+        assert_eq!(call["resultType"], serde_json::json!("complete"));
+        assert_eq!(
+            call["content"][0]["text"],
+            serde_json::json!("second:plugin__echo")
+        );
+        assert!(call.get("ttlMs").is_none());
+        assert_server_info(&call);
+
+        let resources = request_with_session(
+            &handlers,
+            &session,
+            "resources/list",
+            serde_json::json!({ "_meta": meta }),
+        )
+        .await
+        .result
+        .unwrap();
+        assert_eq!(resources["resultType"], serde_json::json!("complete"));
+        assert_eq!(resources["cacheScope"], serde_json::json!("private"));
+        assert_eq!(resources["resources"].as_array().unwrap().len(), 2);
+
+        let read = request_with_session(
+            &handlers,
+            &session,
+            "resources/read",
+            serde_json::json!({ "uri": "second://items", "_meta": meta }),
+        )
+        .await
+        .result
+        .unwrap();
+        assert_eq!(read["from"], serde_json::json!("second"));
+        assert_eq!(read["resultType"], serde_json::json!("complete"));
+        assert_eq!(read["ttlMs"], serde_json::json!(0));
+        assert_eq!(read["cacheScope"], serde_json::json!("private"));
+
+        // 2026-07-28のリクエストは、接続の版を変えない
+        assert_eq!(session.protocol_version(), DEFAULT_PROTOCOL_VERSION);
+    }
+
+    #[tokio::test]
+    async fn test_modern_errors_and_removed_methods() {
+        let meta = modern_meta("2026-07-28");
+        // pingは2026-07-28に無い
+        let response = request(
+            &two_handlers(),
+            "ping",
+            serde_json::json!({ "_meta": meta }),
+        )
+        .await;
+        assert_eq!(response.error.unwrap().code, -32601);
+        // エラーには、結果の項目を付けない
+        let response = request(
+            &two_handlers(),
+            "tools/call",
+            serde_json::json!({ "_meta": meta }),
+        )
+        .await;
+        assert_eq!(response.error.unwrap().code, -32602);
+        assert!(response.result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_legacy_and_modern_requests_on_the_same_connection() {
+        let handlers = two_handlers();
+        let session = Session::default();
+        let init = request_with_session(
+            &handlers,
+            &session,
+            "initialize",
+            serde_json::json!({
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": { "name": "legacy", "version": "1.0.0" }
+            }),
+        )
+        .await
+        .result
+        .unwrap();
+        assert_eq!(init["protocolVersion"], serde_json::json!("2024-11-05"));
+        assert_eq!(session.protocol_version(), "2024-11-05");
+
+        // legacy: 今までどおり（2026-07-28の項目は付けない）
+        let legacy = request_with_session(&handlers, &session, "tools/list", serde_json::json!({}))
+            .await
+            .result
+            .unwrap();
+        assert!(legacy.get("resultType").is_none());
+        assert!(legacy.get("_meta").is_none());
+        assert!(legacy["tools"][0].get("title").is_none());
+
+        // 同じ接続でも、_metaに版があれば、その版で答える
+        let modern = request_with_session(
+            &handlers,
+            &session,
+            "tools/list",
+            serde_json::json!({ "_meta": modern_meta("2026-07-28") }),
+        )
+        .await
+        .result
+        .unwrap();
+        assert_eq!(modern["resultType"], serde_json::json!("complete"));
+        assert!(modern["tools"][0].get("title").is_some());
+        assert_eq!(session.protocol_version(), "2024-11-05");
+
+        // legacyのリクエストの_meta（progressToken等）は、今までどおり
+        let with_token = request_with_session(
+            &handlers,
+            &session,
+            "tools/list",
+            serde_json::json!({ "_meta": { "progressToken": 1 } }),
+        )
+        .await
+        .result
+        .unwrap();
+        assert!(with_token.get("resultType").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_status_tool_shows_modern_protocol_version() {
+        let response = request(
+            &two_handlers(),
+            "tools/call",
+            serde_json::json!({
+                "name": "mcp_rs_status",
+                "_meta": modern_meta("2026-07-28")
+            }),
+        )
+        .await;
+        let text = response.result.unwrap()["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(
+            text.contains("Protocol version: 2026-07-28 (stateless, per-request _meta)"),
+            "{}",
+            text
+        );
+        assert!(
+            text.contains("Supported protocol versions: 2026-07-28, 2025-11-25"),
+            "{}",
+            text
         );
     }
 }
