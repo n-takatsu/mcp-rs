@@ -205,6 +205,55 @@ impl DatabaseHandler {
     /// 失敗したら、起動時のログと`mcp_rs_status`に出す理由を返す（パスワード
     /// は含めない）
     pub async fn from_settings(settings: &crate::config::DatabaseSettings) -> Result<Self, String> {
+        let (database_type, config) = Self::database_config(settings)?;
+        let max_rows = settings.max_rows() as usize;
+        let max_result_bytes = usize::try_from(settings.max_result_bytes()).unwrap_or(usize::MAX);
+        let handler = Self::new()
+            .await
+            .map_err(|e| e.to_string())?
+            .with_tool_options(DatabaseToolOptions {
+                allow_write: settings.allow_write(),
+                max_rows,
+                max_result_bytes,
+                database_type: database_type.clone(),
+            })
+            .with_status_line(settings.describe());
+        // TLSの設定を確かめる（#539）。`ssl_root_cert`が使われない設定なら
+        // 起動しない。通信を守れない設定なら、警告する
+        if let Some(warning) = Self::tls_warning(&database_type, &config, settings)? {
+            warn!("{}", warning);
+        }
+        let engine_id = match database_type {
+            DatabaseType::MySQL => "mysql",
+            DatabaseType::MariaDB => "mariadb",
+            _ => "postgresql",
+        };
+        handler
+            .add_database(engine_id.to_string(), config)
+            .await
+            .map_err(|e| format!("cannot set up {}: {}", settings.describe(), e))?;
+        handler
+            .check_connection()
+            .await
+            .map_err(|e| format!("cannot connect to {}: {}", settings.describe(), e))?;
+        Ok(handler)
+    }
+
+    /// `[database]`を、つながずに確かめる（`mcp-rs check`、#589）。
+    /// `from_settings`と同じ確かめ方（`engine`・`ssl_mode`・`ssl_root_cert`・
+    /// このビルドで使えるか）。通信を守れない設定なら、その警告を返す。
+    /// `${VAR}`は、先に展開しておく
+    pub fn check_settings(
+        settings: &crate::config::DatabaseSettings,
+    ) -> Result<Option<String>, String> {
+        let (database_type, config) = Self::database_config(settings)?;
+        Self::tls_warning(&database_type, &config, settings)
+    }
+
+    /// `[database]`から、エンジンの種類と接続の設定を作る
+    fn database_config(
+        settings: &crate::config::DatabaseSettings,
+    ) -> Result<(DatabaseType, DatabaseConfig), String> {
         use crate::handlers::database::engines::{
             OPTION_BYTE_LIMIT, OPTION_FETCH_LIMIT, OPTION_SSL_ROOT_CERT,
         };
@@ -264,56 +313,37 @@ impl DatabaseHandler {
             },
             ..DatabaseConfig::default()
         };
+        Ok((database_type, config))
+    }
 
-        let handler = Self::new()
-            .await
-            .map_err(|e| e.to_string())?
-            .with_tool_options(DatabaseToolOptions {
-                allow_write: settings.allow_write(),
-                max_rows,
-                max_result_bytes,
-                database_type: database_type.clone(),
-            })
-            .with_status_line(settings.describe());
-        // TLSの設定を確かめる（#539）。`ssl_root_cert`が使われない設定なら
-        // 起動しない。通信を守れない設定なら、警告する
+    /// TLSの設定を確かめる（#539）。`ssl_root_cert`が使われない設定なら
+    /// `Err`。通信を守れない設定なら、その警告
+    fn tls_warning(
+        database_type: &DatabaseType,
+        config: &DatabaseConfig,
+        settings: &crate::config::DatabaseSettings,
+    ) -> Result<Option<String>, String> {
         match database_type {
             #[cfg(feature = "mysql-backend")]
             DatabaseType::MySQL | DatabaseType::MariaDB => {
                 use crate::handlers::database::engines::mysql::engine as mysql;
+                let _ = settings;
                 mysql::check_ssl_root_cert(&config.connection)?;
-                if let Some(warning) = mysql::weak_tls_warning(&config.connection) {
-                    warn!("{}", warning);
-                }
+                Ok(mysql::weak_tls_warning(&config.connection))
             }
             _ => {
                 // 環境変数（`PGSSLMODE`等）を反映した後の値で確かめる
                 use crate::handlers::database::engines::postgresql::pg_connection;
+                use crate::handlers::database::engines::OPTION_SSL_ROOT_CERT;
                 let connect = pg_connection::connect_options(&config.connection)
                     .map_err(|e| format!("cannot set up {}: {}", settings.describe(), e))?;
                 pg_connection::check_ssl_root_cert(
                     config.connection.options.contains_key(OPTION_SSL_ROOT_CERT),
                     &connect,
                 )?;
-                if let Some(warning) = pg_connection::weak_tls_warning(&connect) {
-                    warn!("{}", warning);
-                }
+                Ok(pg_connection::weak_tls_warning(&connect))
             }
         }
-        let engine_id = match database_type {
-            DatabaseType::MySQL => "mysql",
-            DatabaseType::MariaDB => "mariadb",
-            _ => "postgresql",
-        };
-        handler
-            .add_database(engine_id.to_string(), config)
-            .await
-            .map_err(|e| format!("cannot set up {}: {}", settings.describe(), e))?;
-        handler
-            .check_connection()
-            .await
-            .map_err(|e| format!("cannot connect to {}: {}", settings.describe(), e))?;
-        Ok(handler)
     }
 
     /// ツールの設定（ビルダースタイル、#453）

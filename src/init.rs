@@ -1653,7 +1653,7 @@ fn find_program(name: &str) -> Option<PathBuf> {
     find_program_in(name, std::env::split_paths(&path), extensions)
 }
 
-fn find_program_in(
+pub(crate) fn find_program_in(
     name: &str,
     dirs: impl Iterator<Item = PathBuf>,
     extensions: &[&str],

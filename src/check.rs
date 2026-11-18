@@ -5,11 +5,17 @@
 //! 起動と同じ関数・同じ順で設定を読み、段階ごとに結果を表示する。
 //! パスワード・トークン・ユーザー名は表示しない。
 //!
-//! まだ確かめないもの: `[database]`・`[[plugins]]`の起動、HTTPモードの
-//! 起動時の検査、黙って無視されるキー。
+//! `[database]`・`[[plugins]]`も確かめる（#589）。起動に失敗しても、
+//! mcp-rsはそのツールが無いまま動くので、理由が分かりにくいため。
+//!
+//! まだ確かめないもの: HTTPモードの起動時の検査、黙って無視されるキー。
 
-use crate::config::{McpConfig, WordPressConfig};
-use std::path::Path;
+use crate::config::{McpConfig, PluginConfig, WordPressConfig};
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+/// データベースへの接続・プラグインの起動を待つ時間（1つにつき、#589）
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// サブコマンドの名前
 pub const SUBCOMMAND: &str = "check";
@@ -90,7 +96,8 @@ impl Report {
 pub struct CheckArgs {
     /// `--config <path>`
     pub config: Option<String>,
-    /// `--offline`: WordPressのサイトにつながない
+    /// `--offline`: WordPressのサイト・データベースにつながず、プラグインを
+    /// 起動しない
     pub offline: bool,
     /// `--help`
     pub help: bool,
@@ -129,24 +136,34 @@ when it starts:
   - the WordPress credentials can be read (keyring, ${{VAR}},
     encrypted_credentials)
   - mcp-rs can reach the WordPress site and sign in (read-only requests)
+  - [database]: the settings (engine, ssl_mode, ssl_root_cert, ${{VAR}}),
+    and that mcp-rs can connect and sign in. Weak TLS settings are warned
+  - [[plugins]]: the command can be found, and each plugin starts and
+    answers MCP initialize and tools/list. It is stopped afterwards
   - where the log and the audit log are written
 Passwords, tokens and user names are not shown.
 
 Like starting mcp-rs, it creates the log and audit log folders and files
 if they do not exist, and adds a \"checked\" line to the log file to make
-sure it can be written. Nothing is sent to the site except read requests.
+sure it can be written. Nothing is sent to the site except read requests,
+and nothing is written to the database. Starting a plugin runs its command
+(or its container or Kubernetes Job) for a moment; use --offline to avoid
+it. Connecting and starting each wait up to {timeout} seconds.
 
-Not checked yet: [database], [[plugins]], and the HTTP mode settings.
+Not checked yet: the HTTP mode settings.
 
 Options:
   --config <path>  Config file to check, as for starting mcp-rs. Without
                    it, ~/.config/mcp-rs/config.toml is checked
-  --offline        Do not connect to the WordPress site
+  --offline        Do not connect to the WordPress site or the database,
+                   and do not start the plugins (only their settings and
+                   commands are checked)
   -h, --help       Print this help and exit
 
 Exit status: 0 when no errors were found (warnings are allowed), 1 when
 there were errors, 2 for wrong arguments.
-"
+",
+        timeout = CONNECT_TIMEOUT.as_secs()
     )
 }
 
@@ -192,6 +209,8 @@ pub async fn check(args: &CheckArgs) -> Report {
         return report;
     };
     check_wordpress(&config, credentials_ok, args.offline, &mut report).await;
+    check_database(&config, args.offline, &mut report).await;
+    check_plugins(&config.plugins, args.offline, &mut report).await;
     check_logs(&config, &mut report);
     check_audit_log(&config, &mut report).await;
     note_unchecked(&config, &mut report);
@@ -468,25 +487,209 @@ async fn check_audit_log(config: &McpConfig, report: &mut Report) {
     }
 }
 
+/// `[database]`: 設定（`${VAR}`・`engine`・`ssl_mode`・`ssl_root_cert`）と、
+/// つながってログインできるか（#589）。起動と同じ順・同じ関数で確かめる。
+/// 書き込みはしない
+async fn check_database(config: &McpConfig, offline: bool, report: &mut Report) {
+    const SETTINGS: &str = "database settings";
+    const CONNECTION: &str = "database";
+    let Some(settings) = &config.database else {
+        return;
+    };
+    if !settings.is_enabled() {
+        report.push(Status::Skip, CONNECTION, "enabled = false");
+        return;
+    }
+    let mut settings = settings.clone();
+    settings.resolve_paths(config.config_file.as_deref().and_then(Path::parent));
+    if let Err(e) = McpConfig::expand_database_config(&mut settings) {
+        report.push(Status::Error, SETTINGS, e.to_string());
+        return;
+    }
+    match database_settings_warning(&settings) {
+        Ok(None) => report.push(Status::Ok, SETTINGS, settings.describe()),
+        Ok(Some(warning)) => report.push(
+            Status::Warn,
+            SETTINGS,
+            format!("{}: {}", settings.describe(), warning),
+        ),
+        Err(e) => {
+            report.push(Status::Error, SETTINGS, e);
+            return;
+        }
+    }
+    if offline {
+        report.push(Status::Skip, CONNECTION, "not connected: --offline");
+        return;
+    }
+    match tokio::time::timeout(CONNECT_TIMEOUT, connect_database(&settings)).await {
+        Ok(Ok(())) => report.push(
+            Status::Ok,
+            CONNECTION,
+            format!("connected and signed in to {}", settings.describe()),
+        ),
+        Ok(Err(e)) => report.push(Status::Error, CONNECTION, e),
+        Err(_) => report.push(
+            Status::Error,
+            CONNECTION,
+            format!(
+                "{} did not answer within {} seconds",
+                settings.describe(),
+                CONNECT_TIMEOUT.as_secs()
+            ),
+        ),
+    }
+}
+
+/// `[database]`の設定を確かめる。通信を守れない設定なら、その警告
+#[cfg(feature = "database")]
+fn database_settings_warning(
+    settings: &crate::config::DatabaseSettings,
+) -> Result<Option<String>, String> {
+    crate::handlers::database::handler::DatabaseHandler::check_settings(settings)
+}
+
+#[cfg(not(feature = "database"))]
+fn database_settings_warning(
+    settings: &crate::config::DatabaseSettings,
+) -> Result<Option<String>, String> {
+    settings.validate()?;
+    Err(
+        "this build of mcp-rs does not include database support (it was built with --no-default-features; build without it, or add --features database)"
+            .to_string(),
+    )
+}
+
+/// 起動と同じ関数で、データベースにつなぎ、ログインできるかを確かめる
+#[cfg(feature = "database")]
+async fn connect_database(settings: &crate::config::DatabaseSettings) -> Result<(), String> {
+    crate::handlers::database::handler::DatabaseHandler::from_settings(settings)
+        .await
+        .map(drop)
+}
+
+#[cfg(not(feature = "database"))]
+async fn connect_database(_settings: &crate::config::DatabaseSettings) -> Result<(), String> {
+    Ok(())
+}
+
+/// `[[plugins]]`: 1つずつ、起動に使うコマンドが見つかるかと、起動して
+/// MCPの`initialize`・`tools/list`に答えるか（#589）。確かめたら止める
+async fn check_plugins(plugins: &[PluginConfig], offline: bool, report: &mut Report) {
+    let mut seen = std::collections::HashSet::new();
+    for plugin in plugins {
+        let item = format!("plugin '{}'", plugin.name);
+        if !plugin.enabled.unwrap_or(true) {
+            report.push(Status::Skip, &item, "enabled = false");
+            continue;
+        }
+        if !seen.insert(plugin.name.as_str()) {
+            report.push(
+                Status::Error,
+                &item,
+                "another plugin has the same name; only the first one is started",
+            );
+            continue;
+        }
+        let program = match crate::plugin_proxy::launcher_program(plugin) {
+            Ok(program) => program,
+            Err(e) => {
+                report.push(Status::Error, &item, e);
+                continue;
+            }
+        };
+        if let Err(e) = find_command(&program) {
+            report.push(Status::Error, &item, e);
+            continue;
+        }
+        if offline {
+            report.push(
+                Status::Skip,
+                &item,
+                format!("'{}' was found (not started: --offline)", program),
+            );
+            continue;
+        }
+        report_plugin_start(plugin, &item, report).await;
+    }
+}
+
+/// プラグインを起動して、ツールの一覧まで受け取り、止める。監査ログは
+/// メモリにだけ残す（ツールは呼ばない）
+async fn report_plugin_start(plugin: &PluginConfig, item: &str, report: &mut Report) {
+    use crate::mcp::McpHandler as _;
+    let started = tokio::time::timeout(
+        CONNECT_TIMEOUT,
+        crate::plugin_proxy::PluginHandler::start(plugin),
+    )
+    .await;
+    match started {
+        Ok(Ok(handler)) => {
+            let tools = handler.list_tools().await.map(|t| t.len()).unwrap_or(0);
+            // 落とすと、プロセス（コンテナ・Job）を止める
+            drop(handler);
+            report.push(
+                Status::Ok,
+                item,
+                format!("started and answered with {} tool(s); stopped", tools),
+            );
+        }
+        Ok(Err(e)) => report.push(Status::Error, item, e),
+        Err(_) => {
+            let hint = if plugin.container.is_some() || plugin.kubernetes.is_some() {
+                ". A container or a Kubernetes Job can take longer the first time (pulling the image); mcp-rs itself waits longer when it starts"
+            } else {
+                ""
+            };
+            report.push(
+                Status::Error,
+                item,
+                format!(
+                    "did not answer initialize and tools/list within {} seconds{}",
+                    CONNECT_TIMEOUT.as_secs(),
+                    hint
+                ),
+            )
+        }
+    }
+}
+
+/// 起動に使うコマンドを探す。パスで書いてあればそのファイルを、名前だけ
+/// なら`PATH`（絶対パスの項目だけ）を探す。Windowsでは、拡張子の無い名前に
+/// `.exe`だけを補う（起動に使う`Command::new`と同じ。`npx`等の`.cmd`は、
+/// `npx.cmd`と書く必要がある）
+fn find_command(program: &str) -> Result<PathBuf, String> {
+    let path = Path::new(program);
+    if path.is_absolute() || path.components().count() > 1 {
+        return if path.is_file() {
+            Ok(path.to_path_buf())
+        } else {
+            Err(format!("'{}' was not found", program))
+        };
+    }
+    let search = |extensions: &[&str]| {
+        let dirs = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+            .collect::<Vec<_>>();
+        crate::init::find_program_in(program, dirs.into_iter(), extensions)
+    };
+    let bare_on_windows = cfg!(windows) && path.extension().is_none();
+    if let Some(found) = search(if bare_on_windows { &["exe"] } else { &[""] }) {
+        return Ok(found);
+    }
+    if bare_on_windows {
+        for extension in ["cmd", "bat"] {
+            if search(&[extension]).is_some() {
+                return Err(format!(
+                    "'{program}.exe' was not found in PATH, but '{program}.{extension}' was. Write command = '{program}.{extension}'"
+                ));
+            }
+        }
+    }
+    Err(format!("'{}' was not found in PATH", program))
+}
+
 /// まだ確かめないもの
 fn note_unchecked(config: &McpConfig, report: &mut Report) {
-    if config.database.as_ref().is_some_and(|db| db.is_enabled()) {
-        report.push(
-            Status::Skip,
-            "database",
-            "not checked yet; after starting mcp-rs, see mcp_rs_status",
-        );
-    }
-    if !config.plugins.is_empty() {
-        report.push(
-            Status::Skip,
-            "plugins",
-            format!(
-                "{} plugin(s) not checked yet; after starting mcp-rs, see mcp_rs_status",
-                config.plugins.len()
-            ),
-        );
-    }
     if config.transport.transport_type.as_deref() == Some("http") {
         report.push(
             Status::Skip,
@@ -714,5 +917,167 @@ mod tests {
         let text = report.render();
         assert!(text.contains("ERROR  b: broken"), "{text}");
         assert!(text.ends_with("1 error, 1 warning.\n"), "{text}");
+    }
+
+    /// `[database]`・`[[plugins]]`を足した設定を読む（#589）
+    fn config_with(extra: &str) -> McpConfig {
+        let text = format!(
+            "[server]\n\n[transport]\ntype = \"stdio\"\n\n[handlers]\n\n{}",
+            extra
+        );
+        let (config, report) = check_text(&text);
+        config
+            .unwrap_or_else(|| panic!("config did not load: {}", report.render()))
+            .0
+    }
+
+    async fn database_report(extra: &str, offline: bool) -> Report {
+        let mut report = Report::default();
+        check_database(&config_with(extra), offline, &mut report).await;
+        report
+    }
+
+    #[tokio::test]
+    async fn test_database_settings() {
+        // [database]が無ければ、何も出さない
+        let report = database_report("", false).await;
+        assert_eq!(report.items.len(), 0);
+
+        let report = database_report(
+            "[database]\nenabled = false\nengine = \"postgresql\"\ndatabase = \"app\"\nusername = \"u\"\n",
+            false,
+        )
+        .await;
+        assert_eq!(
+            report.find("database"),
+            Some((Status::Skip, "enabled = false"))
+        );
+
+        // 環境変数が無い
+        let report = database_report(
+            "[database]\nengine = \"postgresql\"\ndatabase = \"app\"\nusername = \"u\"\npassword = \"${MCP_RS_TEST_SURELY_UNSET_DB_PASSWORD}\"\n",
+            true,
+        )
+        .await;
+        let (status, detail) = report.find("database settings").unwrap();
+        assert_eq!(status, Status::Error);
+        assert!(
+            detail.contains("MCP_RS_TEST_SURELY_UNSET_DB_PASSWORD"),
+            "{detail}"
+        );
+        assert!(report.find("database").is_none());
+
+        // 書いた値の誤り
+        let report = database_report(
+            "[database]\nengine = \"postgresql\"\ndatabase = \"app\"\nusername = \"u\"\nssl_mode = \"strict\"\n",
+            true,
+        )
+        .await;
+        let (status, detail) = report.find("database settings").unwrap();
+        assert_eq!(status, Status::Error);
+        assert!(detail.contains("ssl_mode"), "{detail}");
+    }
+
+    #[cfg(feature = "database")]
+    #[tokio::test]
+    async fn test_database_offline_and_weak_tls() {
+        // ループバックなら、TLSの警告は出さない。--offlineでは、つながない
+        let report = database_report(
+            "[database]\nengine = \"postgresql\"\nhost = \"127.0.0.1\"\ndatabase = \"app\"\nusername = \"reader\"\npassword = \"s3cret-value\"\n",
+            true,
+        )
+        .await;
+        let (status, detail) = report.find("database settings").unwrap();
+        assert_eq!(status, Status::Ok, "{detail}");
+        assert!(detail.contains("reader@127.0.0.1:5432/app"), "{detail}");
+        assert_eq!(
+            report.find("database"),
+            Some((Status::Skip, "not connected: --offline"))
+        );
+        assert!(!report.render().contains("s3cret-value"));
+
+        // ネットワークの向こうで、暗号化を確かめない設定
+        let report = database_report(
+            "[database]\nengine = \"postgresql\"\nhost = \"db.example.com\"\ndatabase = \"app\"\nusername = \"reader\"\nssl_mode = \"require\"\n",
+            true,
+        )
+        .await;
+        let (status, detail) = report.find("database settings").unwrap();
+        assert_eq!(status, Status::Warn);
+        assert!(detail.contains("verify-full"), "{detail}");
+    }
+
+    /// つながらなければエラー。パスワードは出さない
+    #[cfg(feature = "database")]
+    #[tokio::test]
+    async fn test_database_connection_failure() {
+        let report = database_report(
+            "[database]\nengine = \"postgresql\"\nhost = \"127.0.0.1\"\nport = 1\ndatabase = \"app\"\nusername = \"reader\"\npassword = \"s3cret-value\"\nssl_mode = \"disable\"\n",
+            false,
+        )
+        .await;
+        let (status, detail) = report.find("database").unwrap();
+        assert_eq!(status, Status::Error, "{detail}");
+        assert!(detail.contains("127.0.0.1:1"), "{detail}");
+        assert!(!report.render().contains("s3cret-value"));
+    }
+
+    #[tokio::test]
+    async fn test_plugins_offline() {
+        let exe = std::env::current_exe().unwrap();
+        let exe = exe.to_string_lossy().replace('\\', "/");
+        let config = config_with(&format!(
+            "[[plugins]]\nname = \"found\"\ncommand = \"{exe}\"\n\n\
+             [[plugins]]\nname = \"found\"\ncommand = \"{exe}\"\n\n\
+             [[plugins]]\nname = \"missing\"\ncommand = \"mcp-rs-surely-missing-command\"\n\n\
+             [[plugins]]\nname = \"off\"\ncommand = \"mcp-rs-surely-missing-command\"\nenabled = false\n\n\
+             [[plugins]]\nname = \"bad name\"\ncommand = \"{exe}\"\n"
+        ));
+        let mut report = Report::default();
+        check_plugins(&config.plugins, true, &mut report).await;
+
+        let (status, detail) = report.find("plugin 'found'").unwrap();
+        assert_eq!(status, Status::Skip);
+        assert!(detail.contains("--offline"), "{detail}");
+        // 同じ名前の2つ目
+        let duplicate = report
+            .items
+            .iter()
+            .filter(|(_, item, _)| item == "plugin 'found'")
+            .nth(1)
+            .unwrap();
+        assert_eq!(duplicate.0, Status::Error);
+        assert!(duplicate.2.contains("same name"));
+
+        let (status, detail) = report.find("plugin 'missing'").unwrap();
+        assert_eq!(status, Status::Error);
+        assert!(detail.contains("not found"), "{detail}");
+        assert_eq!(
+            report.find("plugin 'off'"),
+            Some((Status::Skip, "enabled = false"))
+        );
+        assert_eq!(report.find("plugin 'bad name'").unwrap().0, Status::Error);
+    }
+
+    /// 起動して、ツールの一覧を受け取り、止める
+    #[tokio::test]
+    async fn test_plugin_starts_and_stops() {
+        let plugin = crate::plugin_proxy::tests::test_plugin_config("echo");
+        let mut report = Report::default();
+        check_plugins(&[plugin], false, &mut report).await;
+        let (status, detail) = report.find("plugin 'echo'").unwrap();
+        assert_eq!(status, Status::Ok, "{detail}");
+        assert!(detail.starts_with("started and answered with"), "{detail}");
+        assert!(detail.ends_with("stopped"), "{detail}");
+    }
+
+    #[test]
+    fn test_find_command() {
+        let exe = std::env::current_exe().unwrap();
+        assert_eq!(find_command(exe.to_str().unwrap()).unwrap(), exe);
+        assert!(find_command("mcp-rs-surely-missing-command")
+            .unwrap_err()
+            .contains("not found in PATH"));
+        assert!(find_command("./mcp-rs-surely-missing-command").is_err());
     }
 }

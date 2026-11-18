@@ -31,6 +31,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ファビコン（PNGの32×32・180×180とSVG）。クライアントが外のサイトに取りに
   行かないよう、`data:`のURIで埋め込む。約4KBあるので、2026-07-28の、ほかの
   結果の`_meta`のサーバーの情報には付けない。表示するかはクライアントによる
+- `mcp-rs check`で、`[database]`と`[[plugins]]`も確かめる（#589）。
+  起動に失敗しても、mcp-rsはそのツールが無いまま動き、クライアントは
+  「ツールが見つからない」としか言わないため。`[database]`は、設定
+  （`engine`・`ssl_mode`・`ssl_root_cert`・`${VAR}`）、TLSの弱い設定の警告、
+  つながってログインできるか（書き込みはしない。パスワードは表示しない）。
+  `[[plugins]]`は、1つずつ、起動に使うコマンド（コンテナなら`docker`等、
+  Kubernetesなら`kubectl`等）が見つかるかと、起動してツールの一覧を返すか
+  （確かめたら止める）。Windowsで`npx`等の`.cmd`を拡張子無しで書いていれば、
+  `npx.cmd`と書くよう知らせる。接続・起動は、1つにつき10秒まで待つ。
+  `--offline`では、データベースにつながず、プラグインを起動しない
 
 ### Fixed
 
