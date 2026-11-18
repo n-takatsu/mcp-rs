@@ -18,7 +18,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   （`data`に対応する版）。結果には`resultType`・`_meta`のサーバーの情報、
   一覧・リソースの読み取りには`ttlMs`・`cacheScope`を付ける。
   `mcp_rs_status`に、使っている版がどちらの形かと、対応する版を出す。
-  HTTP（`/mcp`）のヘッダーの確かめ等は、段階2で行う
+- HTTP（`/mcp`）でも、2026-07-28版のリクエストを受けるようにした（#570の
+  段階2）。`MCP-Protocol-Version: 2026-07-28`を受け、ヘッダーと本文
+  （`MCP-Protocol-Version`と`_meta`の版、`Mcp-Method`と`method`、
+  `tools/call`・`resources/read`の`Mcp-Name`と`params.name`・`params.uri`）が
+  合うかを確かめる。合わない・ヘッダーが無ければ400と`-32020`。`Mcp-Name`は
+  `=?base64?…?=`の形でも受ける。2026-07-28のリクエストへのエラーは、知らない
+  メソッドなら404と`-32601`、版・`_meta`の誤りなら400で返す。セッションは
+  持たず、APIキー・OAuthによるツールの制限・監査ログはリクエストごとに効く
+
+### Changed
+
+- HTTPの`/mcp`で、対応していない`MCP-Protocol-Version`には、`-32600`では
+  なく`-32022`（`data`に対応する版と、要求された版）を返す（#570）
+- HTTPで、ある呼び出し元の`initialize`が、ほかの呼び出し元の版を変えない
+  ようにした（#570・#596）。以前は、`/mcp`・`/ws`の全クライアントで版を
+  1つ共有していた。`/mcp`の版は、リクエストの`MCP-Protocol-Version`
+  ヘッダーで決まり、無ければ対応する一番古い版（2024-11-05）で答える
+  （2025-06-18以降のクライアントは、ヘッダーを付ける）。`/ws`の版は、接続
+  ごとに`initialize`で決まる（`/ws`は今までどおり、2026-07-28の形を使わない）
 
 ## [0.27.0] - 2026-11-17
 

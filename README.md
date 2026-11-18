@@ -21,7 +21,7 @@ A Rust implementation of a Model Context Protocol (MCP) server that gives AI cli
 
 ## **Core Capabilities**
 
-- **MCP over JSON-RPC 2.0**: Protocol versions up to 2025-11-25 (with `initialize`), and 2026-07-28 (`server/discover` and per-request `_meta`, STDIO only for now)
+- **MCP over JSON-RPC 2.0**: Protocol versions up to 2025-11-25 (with `initialize`), and 2026-07-28 (`server/discover` and per-request `_meta`, over STDIO and HTTP `/mcp`)
 - **Transports**: STDIO, and HTTP (with optional WebSocket on `/ws`)
 - **Plugins**: Add the tools of any MCP server that speaks STDIO, run as a child process, in a Docker container, or as a Kubernetes Job. See [Plugins](https://n-takatsu.github.io/mcp-rs/docs/plugins/)
 - **Configuration**: One TOML file, with `${VAR}` for values from environment variables

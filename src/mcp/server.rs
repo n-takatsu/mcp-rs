@@ -328,10 +328,25 @@ impl RequestDispatcher {
         caller: &Caller,
         protocol_version: Option<&'static str>,
     ) -> Result<Option<JsonRpcResponse>, McpError> {
+        self.handle_message_in_session(message, caller, protocol_version, &self.session)
+            .await
+    }
+
+    /// `handle_message_with_protocol_version`と同じ。共有の接続の状態の
+    /// 代わりに、`session`を使う（#570・#596）。HTTPの`/mcp`はリクエスト
+    /// ごとに新しい状態を、`/ws`は接続ごとの状態を渡す。ある呼び出し元の
+    /// `initialize`が、ほかの呼び出し元の版を変えないように
+    pub async fn handle_message_in_session(
+        &self,
+        message: &str,
+        caller: &Caller,
+        protocol_version: Option<&'static str>,
+        session: &Session,
+    ) -> Result<Option<JsonRpcResponse>, McpError> {
         McpServer::process_request_as(
             message,
             &self.handlers,
-            &self.session,
+            session,
             caller,
             self.audit_logger.as_deref(),
             &self.status,
@@ -360,6 +375,25 @@ impl crate::transport::http::JsonRpcRequestHandler for RequestDispatcher {
     ) -> Result<Option<serde_json::Value>, String> {
         match self
             .handle_message_with_protocol_version(message, caller, protocol_version)
+            .await
+        {
+            Ok(Some(response)) => serde_json::to_value(&response)
+                .map(Some)
+                .map_err(|e| e.to_string()),
+            Ok(None) => Ok(None),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
+    async fn handle_jsonrpc_in_session(
+        &self,
+        message: &str,
+        caller: &Caller,
+        protocol_version: Option<&'static str>,
+        session: &Session,
+    ) -> Result<Option<serde_json::Value>, String> {
+        match self
+            .handle_message_in_session(message, caller, protocol_version, session)
             .await
         {
             Ok(Some(response)) => serde_json::to_value(&response)
@@ -2607,5 +2641,55 @@ mod tests {
             "{}",
             text
         );
+    }
+
+    /// 呼び出し元の制限は、2026-07-28のリクエストでも効く（#570）
+    #[tokio::test]
+    async fn test_restricted_caller_in_modern_requests() {
+        let mut server = McpServer::new();
+        for (name, handler) in two_handlers() {
+            server.add_handler(name, handler);
+        }
+        let dispatcher = server.dispatcher();
+        let caller = Caller::new(
+            "api_key:named",
+            crate::mcp::ToolAccess::from_patterns(Some(&["get_post".to_string()])).unwrap(),
+        );
+        let send = |method: &str, mut params: serde_json::Value| {
+            params["_meta"] = modern_meta("2026-07-28");
+            serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params })
+                .to_string()
+        };
+        let tools = dispatcher
+            .handle_message_as(&send("tools/list", serde_json::json!({})), &caller)
+            .await
+            .unwrap()
+            .unwrap()
+            .result
+            .unwrap();
+        let names: Vec<&str> = tools["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, ["get_post"]);
+        assert_eq!(tools["resultType"], serde_json::json!("complete"));
+
+        let denied = dispatcher
+            .handle_message_as(
+                &send("tools/call", serde_json::json!({ "name": "plugin__echo" })),
+                &caller,
+            )
+            .await
+            .unwrap()
+            .unwrap()
+            .result
+            .unwrap();
+        assert_eq!(denied["isError"], serde_json::json!(true));
+        assert!(denied["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("not allowed"));
     }
 }
