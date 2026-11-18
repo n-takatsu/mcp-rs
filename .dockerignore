@@ -18,6 +18,10 @@ target/
 docs/
 project-docs/
 website/
+# mcp-rsのアイコン（サーバーの情報のicons、#570）。ビルドで埋め込む
+!website/assets/favicon-32.png
+!website/assets/apple-touch-icon.png
+!website/assets/favicon.svg
 *.md
 !README.md
 LICENSE-*
