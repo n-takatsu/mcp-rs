@@ -83,7 +83,13 @@ See [Database Integration](docs/database/) for the settings.
 
 ## Current Status
 
-## ✅ Recently Completed (v0.27.0)
+## ✅ Recently Completed (v0.28.0)
+
+- **🆕 MCP 2026-07-28**: mcp-rs accepts the new version of MCP, which has no `initialize` and no sessions (`server/discover`, and the version in each request's `_meta`), over STDIO and HTTP. Clients that use `initialize`, such as Claude Desktop, work as before. In HTTP mode, an `initialize` from one client no longer changes the protocol version for other clients. See [API](docs/api/)
+- **🩺 `mcp-rs check`**: Also checks `[database]` (the settings, weak TLS, and connecting and signing in) and `[[plugins]]` (the command can be found, and each plugin starts and lists its tools). `--offline` checks only the settings. See [Getting Started](docs/guides/#check)
+- **🖼️ Icon**: mcp-rs sends its logo in the server information, for clients that show it
+
+## ✅ v0.27.0
 
 A security release. Some fixes stop settings that used to work; see the [release notes](https://github.com/n-takatsu/mcp-rs/releases/tag/v0.27.0) before updating.
 
@@ -104,7 +110,7 @@ A security release. Some fixes stop settings that used to work; see the [release
 
 - **🐬 MySQL and MariaDB**: `[database]` now also connects to MySQL (`engine = "mysql"`, 8.0 or later) and MariaDB (`engine = "mariadb"`, 10.6 or later), with the same tools and limits as PostgreSQL: read-only by default, `?` parameters, time, row and size limits, and TLS. See [Database Integration](docs/database/)
 - **📦 Ready-Built Files**: Each release now has mcp-rs for Windows (x64), macOS (Apple Silicon), and Linux (x64), with SHA256 checksums, so Rust is not needed. See [Getting Started](docs/guides/#install)
-- **🩺 `mcp-rs check`**: Checks a config file without an MCP client: whether it loads, whether the WordPress credentials can be read, and whether mcp-rs can reach the site and sign in
+- **🩺 `mcp-rs check`**: Checks a config file without an MCP client: whether it loads, whether the WordPress credentials can be read, whether mcp-rs can reach the site and sign in, whether it can connect to the database, and whether each plugin starts
 - **🧩 VS Code (GitHub Copilot)**: How to use mcp-rs from the Copilot chat in VS Code
 
 ## ✅ v0.24.0

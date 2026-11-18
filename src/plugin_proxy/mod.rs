@@ -372,6 +372,30 @@ pub fn validate_plugin_name(name: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// プラグインの設定を、起動せずに確かめる（`mcp-rs check`、#589）。
+/// 起動するときと同じ確かめ方で、起動に使うコマンド（プロセスなら
+/// `command`、コンテナなら`docker`等、Kubernetesなら`kubectl`等）を返す
+pub fn launcher_program(config: &PluginConfig) -> Result<String, String> {
+    validate_plugin_name(&config.name)?;
+    match (&config.container, &config.kubernetes) {
+        (Some(_), Some(_)) => Err("container and kubernetes cannot both be set".to_string()),
+        (Some(container), None) => {
+            container_launch(config, container, &[], "check").map(|launch| launch.program)
+        }
+        (None, Some(kubernetes)) => {
+            kubernetes::validate(config, kubernetes)?;
+            Ok(kubernetes
+                .kubectl_command
+                .as_deref()
+                .unwrap_or(kubernetes::DEFAULT_KUBECTL_COMMAND)
+                .trim()
+                .to_string())
+        }
+        (None, None) if config.command.trim().is_empty() => Err("command is empty".to_string()),
+        (None, None) => Ok(config.command.clone()),
+    }
+}
+
 /// 設定されたプラグインを起動する。起動できなかったプラグインは警告を
 /// 出して飛ばし、本体の起動は続ける（そのプラグインのツールが使えない
 /// だけにする）。ツール呼び出しは`audit_logger`に記録する（本体の他の
@@ -1142,7 +1166,7 @@ impl McpHandler for PluginHandler {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::config::{PluginKubernetesConfig, PluginMountConfig};
 
@@ -1277,7 +1301,9 @@ mod tests {
         }
     }
 
-    fn test_plugin_config(name: &str) -> PluginConfig {
+    /// テスト用のプラグイン（このテストのバイナリ）の設定。`mcp-rs check`の
+    /// テスト（#589）でも使う
+    pub(crate) fn test_plugin_config(name: &str) -> PluginConfig {
         let exe = std::env::current_exe().unwrap();
         let mut env = HashMap::new();
         env.insert(TEST_PLUGIN_ENV.to_string(), "1".to_string());

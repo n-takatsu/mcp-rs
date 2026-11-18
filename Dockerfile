@@ -23,6 +23,8 @@ COPY src ./src
 COPY benches ./benches
 COPY examples ./examples
 COPY tests ./tests
+# サーバーの情報のアイコン（#570）。include_bytes!で埋め込む
+COPY website/assets/favicon-32.png website/assets/apple-touch-icon.png website/assets/favicon.svg ./website/assets/
 
 # Build the application. The os-keyring feature (#533) is left out: a
 # container has no OS credential store, so credentials come from environment

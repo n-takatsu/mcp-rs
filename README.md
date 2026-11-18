@@ -1,10 +1,10 @@
-# mcp-rs
+# <img src="website/assets/favicon.svg" alt="" width="36" height="36"> mcp-rs
 
 A Rust implementation of a Model Context Protocol (MCP) server that gives AI clients tools for WordPress, databases (PostgreSQL, MySQL, MariaDB), and external MCP plugins.
 
 > **[English](README.md)** | **[日本語](README.ja.md)**
 
-[![Version](https://img.shields.io/badge/Version-v0.27.0-blue)](https://github.com/n-takatsu/mcp-rs/releases/tag/v0.27.0)
+[![Version](https://img.shields.io/badge/Version-v0.28.0-blue)](https://github.com/n-takatsu/mcp-rs/releases/tag/v0.28.0)
 ![Implementation](https://img.shields.io/badge/WordPress_Tools-32_Available-green)
 ![License](https://img.shields.io/badge/License-MIT%2FApache--2.0-green)
 
@@ -21,7 +21,7 @@ A Rust implementation of a Model Context Protocol (MCP) server that gives AI cli
 
 ## **Core Capabilities**
 
-- **MCP over JSON-RPC 2.0**: Protocol versions up to 2025-11-25
+- **MCP over JSON-RPC 2.0**: Protocol versions up to 2025-11-25 (with `initialize`), and 2026-07-28 (`server/discover` and per-request `_meta`, over STDIO and HTTP `/mcp`)
 - **Transports**: STDIO, and HTTP (with optional WebSocket on `/ws`)
 - **Plugins**: Add the tools of any MCP server that speaks STDIO, run as a child process, in a Docker container, or as a Kubernetes Job. See [Plugins](https://n-takatsu.github.io/mcp-rs/docs/plugins/)
 - **Configuration**: One TOML file, with `${VAR}` for values from environment variables

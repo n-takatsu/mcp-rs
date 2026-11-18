@@ -1,10 +1,10 @@
-# mcp-rs
+# <img src="website/assets/favicon.svg" alt="" width="36" height="36"> mcp-rs
 
 AIのクライアントに、WordPress・データベース（PostgreSQL・MySQL・MariaDB）・外部のMCPプラグインのツールを提供する、Model Context Protocol（MCP）のサーバーのRust実装です。
 
 > **[日本語](README.ja.md)** | **[English](README.md)**
 
-[![Version](https://img.shields.io/badge/Version-v0.27.0-blue)](https://github.com/n-takatsu/mcp-rs/releases/tag/v0.27.0)
+[![Version](https://img.shields.io/badge/Version-v0.28.0-blue)](https://github.com/n-takatsu/mcp-rs/releases/tag/v0.28.0)
 ![Implementation](https://img.shields.io/badge/WordPress_Tools-32_Available-green)
 ![License](https://img.shields.io/badge/License-MIT%2FApache--2.0-green)
 
@@ -21,7 +21,7 @@ AIのクライアントに、WordPress・データベース（PostgreSQL・MySQL
 
 ## **コア機能**
 
-- **JSON-RPC 2.0のMCP**: プロトコルの版は2025-11-25まで
+- **JSON-RPC 2.0のMCP**: プロトコルの版は2025-11-25まで（`initialize`を使う）と、2026-07-28（`server/discover`と、リクエストごとの`_meta`。STDIOとHTTPの`/mcp`）
 - **トランスポート**: STDIOと、HTTP（`/ws`のWebSocketも任意で）
 - **プラグイン**: STDIOで話す任意のMCPサーバーのツールを加える。子プロセス・Dockerのコンテナ・KubernetesのJobで起動する。[Plugins](https://n-takatsu.github.io/mcp-rs/docs/plugins/)を参照
 - **設定**: 1つのTOMLファイル。`${VAR}`で環境変数の値を使える

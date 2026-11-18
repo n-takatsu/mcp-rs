@@ -91,7 +91,15 @@ pub async fn render_status(
     }
 
     lines.push(format!("Mode: {}", info.mode));
-    lines.push(format!("Protocol version: {}", protocol_version));
+    lines.push(format!(
+        "Protocol version: {} ({})",
+        protocol_version,
+        crate::mcp::protocol_era(protocol_version)
+    ));
+    lines.push(format!(
+        "Supported protocol versions: {}",
+        crate::mcp::all_supported_protocol_versions().join(", ")
+    ));
     lines.push(format!(
         "OS: {} ({})",
         std::env::consts::OS,

@@ -4,6 +4,63 @@
 
 Our project follows a detailed 0.01 increment versioning strategy to provide granular tracking of development progress and feature implementation.
 
+## 🆕 v0.28.0 - MCPの2026-07-28版への対応
+
+**Release Date:** 2026-11-18
+**Focus:** MCPの仕様の2026-07-28版（`initialize`とセッションが無い版）に、新旧の両方を受ける形で対応する。今の`initialize`を使うクライアント（Claude Desktop等）は、今までどおり使える。`mcp-rs check`で、`[database]`と`[[plugins]]`も確かめる
+
+### ⚠️ 互換性（HTTPモード）
+
+STDIOモード（Claude Desktop・Claude Code・VS Code等）では、今までどおりに動く。HTTPモードでは、次の点が変わる。
+
+- **`/mcp`で、`MCP-Protocol-Version`ヘッダーの無いリクエスト**: 対応する
+  一番古い版（2024-11-05）で答える。以前は、最後の`initialize`（どの
+  クライアントのものでも）の版で答えていた。2025-06-18以降のクライアントは、
+  仕様どおりヘッダーを付けるので変わらない（#570・#596）
+- **`/ws`**: 版は、接続ごとに、その接続の`initialize`で決まる。以前は、全部の
+  接続で1つを共有していた
+- **対応していない`MCP-Protocol-Version`**: エラーのコードが`-32600`から
+  `-32022`になり、`data`に対応する版と要求された版が入る（HTTPの400は同じ）
+- **エラーのコード**: リソースが無いときは`-32603`から`-32002`（2026-07-28の
+  リクエストでは`-32602`）。`ping`には、`-32601`ではなく空の結果で答える
+
+### 🆕 MCPの2026-07-28版（#570）
+
+- **STDIO**（#618）: `server/discover`に、対応する版・能力・サーバーの情報を
+  返す。`params._meta`に版があるリクエストは、`initialize`無しで、その
+  リクエストだけその版で答える。版・クライアントの能力が無ければ`-32602`、
+  対応していない版なら`-32022`。結果には`resultType`、一覧には`ttlMs`・
+  `cacheScope`を付ける
+- **HTTP（`/mcp`）**（#619）: `MCP-Protocol-Version: 2026-07-28`を受け、
+  ヘッダー（`MCP-Protocol-Version`・`Mcp-Method`・`Mcp-Name`）と本文が合うかを
+  確かめる。合わなければ400と`-32020`。知らないメソッドは404と`-32601`。
+  セッションは持たず、APIキー・OAuthによるツールの制限と監査ログは、
+  リクエストごとに効く。`/ws`は今までどおり（`initialize`を使う）
+- **無くなったもの・変わったもの**（#620）: 古いエラーコード・
+  `logging/setLevel`・`resources/subscribe`・サーバーからの要求は、使って
+  いないことを確かめた。`ping`とリソースが無いときのエラーを、版に合わせた
+- **アイコン**（#621）: `initialize`（2025-11-25以降）と`server/discover`の
+  サーバーの情報に、mcp-rsのアイコン（PNGとSVG、`data:`のURI）を付ける
+- `mcp_rs_status`に、使っている版の形（`legacy`か、リクエストごとの`_meta`か）と、
+  対応する版を出す
+
+### 🩺 mcp-rs check（#589）
+
+- `[database]`: 設定（`engine`・`ssl_mode`・`ssl_root_cert`・`${VAR}`）、TLSの
+  弱い設定の警告、つながってログインできるか（書き込みはしない。パスワードは
+  表示しない）
+- `[[plugins]]`: 起動に使うコマンド（`docker`・`kubectl`を含む）が見つかるかと、
+  起動してツールの一覧を返すか（確かめたら止める）。Windowsで`npx`等を
+  拡張子無しで書いていれば、`npx.cmd`と書くよう知らせる
+- 接続・起動は、1つにつき10秒まで待つ。`--offline`では、つながず、起動しない
+
+### 確かめていないこと
+
+- Copilot（新旧の両方に対応）で、`initialize`に戻らずに2026-07-28版で
+  つながること。v0.29.0で確かめる（#570）。Claude Desktopでは、`initialize`で
+  今までどおりつながることを確かめた
+- クライアントが、アイコンを表示するか
+
 ## 🔒 v0.27.0 - セキュリティの強化
 
 **Release Date:** 2026-11-17

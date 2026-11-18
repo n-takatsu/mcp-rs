@@ -118,16 +118,42 @@ The version decides which fields mcp-rs sends:
 
 | Field | `2025-11-25` | `2025-06-18` | `2024-11-05` |
 |-------|--------------|--------------|--------------|
-| `serverInfo` `description`, `websiteUrl` (`initialize`) | Sent | Not sent | Not sent |
+| `serverInfo` `description`, `websiteUrl`, `icons` (`initialize`) | Sent | Not sent | Not sent |
 | Tool `title`, `outputSchema`, `annotations` (`tools/list`) | Sent | Sent | Removed |
 | `structuredContent` (`tools/call`) | Sent | Sent | Removed (the same information is in `content`) |
 | Resource links and audio in `content` (`tools/call`) | Sent | Sent | Replaced with text |
 
-mcp-rs does not use the optional features added in `2025-11-25` (tasks, elicitation, sampling with tools, icons). When a tool fails, including when its arguments are invalid, mcp-rs returns a result with `isError: true` and the reason in `content`, as `2025-11-25` recommends, so the model can correct the arguments and try again.
+`icons` (v0.28.0 and later) is the mcp-rs logo as `data:` URIs (PNG 32×32 and 180×180, and SVG), so clients do not fetch it from another site. mcp-rs does not use the other optional features added in `2025-11-25` (tasks, elicitation, sampling with tools). When a tool fails, including when its arguments are invalid, mcp-rs returns a result with `isError: true` and the reason in `content`, as `2025-11-25` recommends, so the model can correct the arguments and try again.
 
-Before `initialize`, mcp-rs uses `2024-11-05`. In STDIO mode, the version applies to the connection. In HTTP mode, a client sends the negotiated version in the `MCP-Protocol-Version` header of each request after `initialize` (Streamable HTTP), and mcp-rs answers that request with the version in the header. If the version is not one mcp-rs supports, it answers with HTTP 400 and a JSON-RPC error (code `-32600`). mcp-rs ignores the header on `initialize` itself, where the version is negotiated in the body. For requests without the header, and for `/ws`, mcp-rs uses the version from the most recent `initialize`, because it does not tell clients apart. Up to version 0.21.0, mcp-rs did not read the header.
+Before `initialize`, mcp-rs uses `2024-11-05`. In STDIO mode, the version applies to the connection. In HTTP mode, a client sends the negotiated version in the `MCP-Protocol-Version` header of each request after `initialize` (Streamable HTTP), and mcp-rs answers that request with the version in the header. If the version is not one mcp-rs supports, it answers with HTTP 400 and a JSON-RPC error with code `-32022` and `data` `{ "supported": [...], "requested": "..." }` (up to v0.27.0, code `-32600`). mcp-rs ignores the header on `initialize` itself, where the version is negotiated in the body. On `/mcp`, requests without the header get `2024-11-05`; on `/ws`, each connection uses the version from its own `initialize`. Up to v0.27.0, an `initialize` from any client changed the version for requests without the header and for every `/ws` connection. Up to version 0.21.0, mcp-rs did not read the header.
 
-**Request:**
+In the legacy versions, mcp-rs answers `ping` with an empty result (v0.28.0 and later; up to v0.27.0, `-32601`). When a resource does not exist, `resources/read` returns code `-32002` with `data` `{ "uri": "..." }` (up to v0.27.0, `-32603`).
+
+#### Version 2026-07-28 (without `initialize`)
+
+mcp-rs v0.28.0 and later also accept version `2026-07-28`, which has no `initialize` and no sessions. They accept both forms in the same process (dual-era): a request with the version in `params._meta` is answered statelessly in `2026-07-28`, and an `initialize` starts the legacy form above. Clients that send `initialize` first, such as Claude Desktop, work as before.
+
+- `server/discover` returns the supported versions (`["2026-07-28"]`), the capabilities, and the server information (with `icons`) in `_meta["io.modelcontextprotocol/serverInfo"]`
+- Each request carries `io.modelcontextprotocol/protocolVersion` and `io.modelcontextprotocol/clientCapabilities` (an object) in `params._meta`. Without them, mcp-rs answers `-32602`; with a version it does not support, `-32022` with `data.supported` (which also lists the `initialize` versions) and `data.requested`
+- Results have `resultType: "complete"` and the server information in `_meta`. `tools/list` and `resources/list` have `ttlMs: 300000` and `cacheScope: "private"` (the lists depend on the API key or token), and `resources/read` has `ttlMs: 0`
+- `ping` is not part of `2026-07-28` (`-32601`). A missing resource is `-32602`
+- HTTP (`/mcp`): send `MCP-Protocol-Version: 2026-07-28`, `Mcp-Method`, and, for `tools/call` and `resources/read`, `Mcp-Name` (the tool name or URI; `=?base64?…?=` for values that are not plain ASCII). If a header is missing or does not match the body, mcp-rs answers HTTP 400 with `-32020`. Unknown methods get HTTP 404 with `-32601`, and version or `_meta` errors get HTTP 400. API keys, OAuth scopes and the audit log apply to each request. `/ws` uses only the legacy form
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "server/discover",
+  "params": {
+    "_meta": {
+      "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+      "io.modelcontextprotocol/clientCapabilities": {}
+    }
+  },
+  "id": 1
+}
+```
+
+**Request (`initialize`):**
 
 ```json
 {
@@ -148,7 +174,7 @@ Before `initialize`, mcp-rs uses `2024-11-05`. In STDIO mode, the version applie
 }
 ```
 
-**Response:**
+**Response (`icons` shortened):**
 
 ```json
 {
@@ -161,9 +187,14 @@ Before `initialize`, mcp-rs uses `2024-11-05`. In STDIO mode, the version applie
     },
     "serverInfo": {
       "name": "mcp-rs",
-      "version": "0.27.0",
+      "version": "0.28.0",
       "description": "Rust implementation of the Model Context Protocol (MCP) server for WordPress and other tools",
-      "websiteUrl": "https://n-takatsu.github.io/mcp-rs/"
+      "websiteUrl": "https://n-takatsu.github.io/mcp-rs/",
+      "icons": [
+        { "src": "data:image/png;base64,...", "mimeType": "image/png", "sizes": ["32x32"] },
+        { "src": "data:image/png;base64,...", "mimeType": "image/png", "sizes": ["180x180"] },
+        { "src": "data:image/svg+xml;base64,...", "mimeType": "image/svg+xml", "sizes": ["any"] }
+      ]
     }
   },
   "id": 1
@@ -226,9 +257,10 @@ Lists available tools.
 mcp-rs always provides the read-only tool `mcp_rs_status` (first in `tools/list`), with or without WordPress and plugins. It returns text such as:
 
 ```text
-mcp-rs 0.27.0
+mcp-rs 0.28.0
 Mode: stdio
-Protocol version: 2025-11-25
+Protocol version: 2025-11-25 (legacy)
+Supported protocol versions: 2026-07-28, 2025-11-25, 2025-06-18, 2024-11-05
 OS: windows (x86_64)
 Process ID: 12345
 Instance: 12345-20261109T093000
@@ -502,7 +534,7 @@ Retrieves WordPress comments.
 
 ## Version Information
 
-- **Current Version**: v0.27.0
+- **Current Version**: v0.28.0
 - **Phase 1**: MySQL (Complete)
 - **Phase 2**: PostgreSQL (Complete)
 - **Last Updated**: 2025-11-23

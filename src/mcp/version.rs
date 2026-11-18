@@ -16,6 +16,53 @@ pub const SUPPORTED_PROTOCOL_VERSIONS: &[&str] =
 /// `initialize`を受け取る前に使う版。古いクライアントにも読める応答にする
 pub const DEFAULT_PROTOCOL_VERSION: &str = "2024-11-05";
 
+/// `initialize`を使わない版（#570）。版・クライアントの能力を、リクエスト
+/// ごとに`params._meta`で受け取る（ステートレス）。`initialize`で交渉する
+/// 版（`SUPPORTED_PROTOCOL_VERSIONS`）とは別に持ち、新旧の両方を受ける
+/// （仕様の「dual-era」）。
+pub const MODERN_PROTOCOL_VERSION: &str = "2026-07-28";
+
+/// `_meta`で受ける版（新しい順）。`server/discover`の`supportedVersions`
+pub const MODERN_PROTOCOL_VERSIONS: &[&str] = &[MODERN_PROTOCOL_VERSION];
+
+/// リクエストの`_meta`の、版・クライアントの能力・クライアントの情報・
+/// サーバーの情報のキー（2026-07-28）
+pub const META_PROTOCOL_VERSION: &str = "io.modelcontextprotocol/protocolVersion";
+pub const META_CLIENT_CAPABILITIES: &str = "io.modelcontextprotocol/clientCapabilities";
+pub const META_CLIENT_INFO: &str = "io.modelcontextprotocol/clientInfo";
+pub const META_SERVER_INFO: &str = "io.modelcontextprotocol/serverInfo";
+
+/// 対応していない版を要求されたときのエラー（2026-07-28の
+/// `UnsupportedProtocolVersion`）
+pub const UNSUPPORTED_PROTOCOL_VERSION_CODE: i32 = -32022;
+
+/// `_meta`で要求できる版か
+pub fn is_modern_protocol_version(version: &str) -> bool {
+    MODERN_PROTOCOL_VERSIONS.contains(&version)
+}
+
+/// 対応するすべての版（新しい順）。`_meta`で受ける版と、`initialize`で
+/// 交渉する版。対応していない版へのエラーの`data.supported`に入れ、
+/// クライアントが`initialize`に戻れることも伝える
+pub fn all_supported_protocol_versions() -> Vec<&'static str> {
+    MODERN_PROTOCOL_VERSIONS
+        .iter()
+        .chain(SUPPORTED_PROTOCOL_VERSIONS)
+        .copied()
+        .collect()
+}
+
+/// 版が、リクエストごとの`_meta`で受けるもの（2026-07-28）か、
+/// `initialize`で交渉する（HTTPではヘッダーでも受ける）もの（legacy）か。
+/// `mcp_rs_status`に出す
+pub fn protocol_era(version: &str) -> &'static str {
+    if is_modern_protocol_version(version) {
+        "stateless, per-request _meta"
+    } else {
+        "legacy"
+    }
+}
+
 /// クライアントが要求した版から、使う版を決める。
 pub fn negotiate_protocol_version(requested: &str) -> &'static str {
     SUPPORTED_PROTOCOL_VERSIONS
@@ -38,6 +85,54 @@ pub fn server_info_for_version(version: &str) -> Value {
         info["websiteUrl"] = Value::from(env!("CARGO_PKG_HOMEPAGE"));
     }
     info
+}
+
+/// `server_info_for_version`に、mcp-rsのアイコン（`icons`、2025-11-25で
+/// 加わった項目）を足したもの（#570）。図柄はサイトのファビコン
+/// （`website/assets`、#613）。クライアントが外のサイトに取りに行かない
+/// よう、`data:`のURIで埋め込む。
+///
+/// 約4KBあるので、`initialize`と`server/discover`の結果だけに付ける。
+/// 2026-07-28の、ほかの結果の`_meta`のサーバーの情報には付けない。
+pub fn server_info_with_icons(version: &str) -> Value {
+    let mut info = server_info_for_version(version);
+    if is_at_least(version, "2025-11-25") {
+        info["icons"] = server_icons();
+    }
+    info
+}
+
+/// mcp-rsのアイコン。クライアントが必ず表示できるPNG（仕様のMUST）を
+/// 2つの大きさで、拡大しても崩れないSVGを1つ
+fn server_icons() -> Value {
+    use base64::Engine as _;
+    let data_uri = |mime_type: &str, bytes: &[u8]| {
+        format!(
+            "data:{};base64,{}",
+            mime_type,
+            base64::engine::general_purpose::STANDARD.encode(bytes)
+        )
+    };
+    serde_json::json!([
+        {
+            "src": data_uri("image/png", include_bytes!("../../website/assets/favicon-32.png")),
+            "mimeType": "image/png",
+            "sizes": ["32x32"]
+        },
+        {
+            "src": data_uri(
+                "image/png",
+                include_bytes!("../../website/assets/apple-touch-icon.png")
+            ),
+            "mimeType": "image/png",
+            "sizes": ["180x180"]
+        },
+        {
+            "src": data_uri("image/svg+xml", include_bytes!("../../website/assets/favicon.svg")),
+            "mimeType": "image/svg+xml",
+            "sizes": ["any"]
+        }
+    ])
 }
 
 /// `version`が`since`以降の版か。版は`YYYY-MM-DD`の日付なので、文字列の
@@ -226,5 +321,56 @@ mod tests {
         );
         assert_eq!(content[2]["type"], json!("text"));
         assert!(content[2]["text"].as_str().unwrap().contains("audio/wav"));
+    }
+
+    #[test]
+    fn test_server_info_with_icons() {
+        use base64::Engine as _;
+        for version in ["2026-07-28", "2025-11-25"] {
+            let info = server_info_with_icons(version);
+            // アイコン以外は、server_info_for_versionと同じ
+            let mut without_icons = info.clone();
+            without_icons.as_object_mut().unwrap().remove("icons");
+            assert_eq!(without_icons, server_info_for_version(version));
+
+            let icons = info["icons"].as_array().expect("icons");
+            let expected: [(&str, &str, &[u8]); 3] = [
+                (
+                    "image/png",
+                    "32x32",
+                    include_bytes!("../../website/assets/favicon-32.png"),
+                ),
+                (
+                    "image/png",
+                    "180x180",
+                    include_bytes!("../../website/assets/apple-touch-icon.png"),
+                ),
+                (
+                    "image/svg+xml",
+                    "any",
+                    include_bytes!("../../website/assets/favicon.svg"),
+                ),
+            ];
+            assert_eq!(icons.len(), expected.len());
+            for (icon, (mime_type, size, bytes)) in icons.iter().zip(expected) {
+                assert_eq!(icon["mimeType"], json!(mime_type));
+                assert_eq!(icon["sizes"], json!([size]));
+                // 外に取りに行かない、data:のURI
+                let src = icon["src"].as_str().unwrap();
+                let encoded = src
+                    .strip_prefix(&format!("data:{};base64,", mime_type))
+                    .expect("a data: URI");
+                assert_eq!(
+                    base64::engine::general_purpose::STANDARD
+                        .decode(encoded)
+                        .unwrap(),
+                    bytes
+                );
+            }
+        }
+        // 古い版には、iconsが無い
+        for old in ["2025-06-18", "2024-11-05"] {
+            assert_eq!(server_info_with_icons(old), server_info_for_version(old));
+        }
     }
 }
