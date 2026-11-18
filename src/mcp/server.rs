@@ -192,6 +192,28 @@ fn modern_request_version(
     }
 }
 
+/// リソースが無いときのエラー（2025-11-25までの版）。2026-07-28では
+/// 使わず、`-32602`にする
+const RESOURCE_NOT_FOUND_CODE: i32 = -32002;
+
+/// エラーを、リクエストの版の形のJSON-RPCのエラーにする（#570）。
+/// リソースが無いときは、legacyなら`-32002`、2026-07-28なら`-32602`
+/// （以前は、どちらも`-32603`だった）。`data`に、そのURIを入れる
+fn error_for_era(error: McpError, modern: bool) -> crate::mcp::JsonRpcError {
+    match error {
+        McpError::ResourceNotFound(uri) => crate::mcp::JsonRpcError {
+            code: if modern {
+                -32602
+            } else {
+                RESOURCE_NOT_FOUND_CODE
+            },
+            message: format!("Resource not found: {}", uri),
+            data: Some(serde_json::json!({ "uri": uri })),
+        },
+        error => error.into(),
+    }
+}
+
 /// `server/discover`の結果（2026-07-28）。`supportedVersions`は、`_meta`で
 /// 受ける版だけ（`initialize`で交渉する版は、`server/discover`では使えない
 /// ため）。呼び出し元によらず同じなので、`cacheScope`は`public`。
@@ -550,6 +572,9 @@ impl McpServer {
             // `modern_request_version`が、`_meta`に版の無い`server/discover`を
             // 拒否しているので、ここに来るのは2026-07-28のリクエストだけ
             "server/discover" => Ok(discover_result()),
+            // legacyの版では、pingに空の結果で答える（MUST）。以前は
+            // `-32601`だった。2026-07-28には無いので、`-32601`のまま（#570）
+            "ping" if modern.is_none() => Ok(serde_json::json!({})),
             "tools/list" => {
                 let mut tools = Self::list_all_tools(handlers).await;
                 if caller.access != crate::mcp::ToolAccess::All {
@@ -648,7 +673,7 @@ impl McpServer {
             Err(e) => JsonRpcResponse {
                 jsonrpc: "2.0".to_string(),
                 result: None,
-                error: Some(e.into()),
+                error: Some(error_for_era(e, modern.is_some())),
                 id: request.id,
             },
         }))
@@ -2691,5 +2716,55 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("not allowed"));
+    }
+
+    /// legacyの版では、pingに空の結果で答える。2026-07-28では-32601（#570）
+    #[tokio::test]
+    async fn test_ping_is_answered_only_in_legacy_requests() {
+        let response = request(&two_handlers(), "ping", serde_json::json!({})).await;
+        assert!(response.error.is_none(), "{:?}", response.error);
+        assert_eq!(response.result, Some(serde_json::json!({})));
+        let response = request(&two_handlers(), "ping", serde_json::Value::Null).await;
+        assert_eq!(response.result, Some(serde_json::json!({})));
+
+        let response = request(
+            &two_handlers(),
+            "ping",
+            serde_json::json!({ "_meta": modern_meta("2026-07-28") }),
+        )
+        .await;
+        assert_eq!(response.error.unwrap().code, -32601);
+    }
+
+    /// リソースが無いときは、legacyなら-32002、2026-07-28なら-32602（#570）
+    #[tokio::test]
+    async fn test_resource_not_found_code_depends_on_the_era() {
+        let response = request(
+            &two_handlers(),
+            "resources/read",
+            serde_json::json!({ "uri": "nothing://here" }),
+        )
+        .await;
+        let error = response.error.expect("must be an error");
+        assert_eq!(error.code, -32002);
+        assert_eq!(
+            error.data,
+            Some(serde_json::json!({ "uri": "nothing://here" }))
+        );
+        assert!(error.message.contains("nothing://here"));
+
+        let response = request(
+            &two_handlers(),
+            "resources/read",
+            serde_json::json!({ "uri": "nothing://here", "_meta": modern_meta("2026-07-28") }),
+        )
+        .await;
+        let error = response.error.expect("must be an error");
+        assert_eq!(error.code, -32602);
+        assert_eq!(
+            error.data,
+            Some(serde_json::json!({ "uri": "nothing://here" }))
+        );
+        assert!(response.result.is_none());
     }
 }
