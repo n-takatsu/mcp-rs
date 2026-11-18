@@ -87,6 +87,54 @@ pub fn server_info_for_version(version: &str) -> Value {
     info
 }
 
+/// `server_info_for_version`に、mcp-rsのアイコン（`icons`、2025-11-25で
+/// 加わった項目）を足したもの（#570）。図柄はサイトのファビコン
+/// （`website/assets`、#613）。クライアントが外のサイトに取りに行かない
+/// よう、`data:`のURIで埋め込む。
+///
+/// 約4KBあるので、`initialize`と`server/discover`の結果だけに付ける。
+/// 2026-07-28の、ほかの結果の`_meta`のサーバーの情報には付けない。
+pub fn server_info_with_icons(version: &str) -> Value {
+    let mut info = server_info_for_version(version);
+    if is_at_least(version, "2025-11-25") {
+        info["icons"] = server_icons();
+    }
+    info
+}
+
+/// mcp-rsのアイコン。クライアントが必ず表示できるPNG（仕様のMUST）を
+/// 2つの大きさで、拡大しても崩れないSVGを1つ
+fn server_icons() -> Value {
+    use base64::Engine as _;
+    let data_uri = |mime_type: &str, bytes: &[u8]| {
+        format!(
+            "data:{};base64,{}",
+            mime_type,
+            base64::engine::general_purpose::STANDARD.encode(bytes)
+        )
+    };
+    serde_json::json!([
+        {
+            "src": data_uri("image/png", include_bytes!("../../website/assets/favicon-32.png")),
+            "mimeType": "image/png",
+            "sizes": ["32x32"]
+        },
+        {
+            "src": data_uri(
+                "image/png",
+                include_bytes!("../../website/assets/apple-touch-icon.png")
+            ),
+            "mimeType": "image/png",
+            "sizes": ["180x180"]
+        },
+        {
+            "src": data_uri("image/svg+xml", include_bytes!("../../website/assets/favicon.svg")),
+            "mimeType": "image/svg+xml",
+            "sizes": ["any"]
+        }
+    ])
+}
+
 /// `version`が`since`以降の版か。版は`YYYY-MM-DD`の日付なので、文字列の
 /// 比較で新旧が決まる。対応する版を足しても、項目ごとの判定を直さなくてよい
 /// ように、除く版を列挙せずに比べる。`version`は交渉で決まった版
@@ -273,5 +321,56 @@ mod tests {
         );
         assert_eq!(content[2]["type"], json!("text"));
         assert!(content[2]["text"].as_str().unwrap().contains("audio/wav"));
+    }
+
+    #[test]
+    fn test_server_info_with_icons() {
+        use base64::Engine as _;
+        for version in ["2026-07-28", "2025-11-25"] {
+            let info = server_info_with_icons(version);
+            // アイコン以外は、server_info_for_versionと同じ
+            let mut without_icons = info.clone();
+            without_icons.as_object_mut().unwrap().remove("icons");
+            assert_eq!(without_icons, server_info_for_version(version));
+
+            let icons = info["icons"].as_array().expect("icons");
+            let expected: [(&str, &str, &[u8]); 3] = [
+                (
+                    "image/png",
+                    "32x32",
+                    include_bytes!("../../website/assets/favicon-32.png"),
+                ),
+                (
+                    "image/png",
+                    "180x180",
+                    include_bytes!("../../website/assets/apple-touch-icon.png"),
+                ),
+                (
+                    "image/svg+xml",
+                    "any",
+                    include_bytes!("../../website/assets/favicon.svg"),
+                ),
+            ];
+            assert_eq!(icons.len(), expected.len());
+            for (icon, (mime_type, size, bytes)) in icons.iter().zip(expected) {
+                assert_eq!(icon["mimeType"], json!(mime_type));
+                assert_eq!(icon["sizes"], json!([size]));
+                // 外に取りに行かない、data:のURI
+                let src = icon["src"].as_str().unwrap();
+                let encoded = src
+                    .strip_prefix(&format!("data:{};base64,", mime_type))
+                    .expect("a data: URI");
+                assert_eq!(
+                    base64::engine::general_purpose::STANDARD
+                        .decode(encoded)
+                        .unwrap(),
+                    bytes
+                );
+            }
+        }
+        // 古い版には、iconsが無い
+        for old in ["2025-06-18", "2024-11-05"] {
+            assert_eq!(server_info_with_icons(old), server_info_for_version(old));
+        }
     }
 }
