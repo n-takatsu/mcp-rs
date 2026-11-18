@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `update_post`で、既存の投稿を予約投稿にできるようにした（#625）。`date`
+  （公開日時、ISO8601、サイトのタイムゾーン）を足した。下書きで確かめてから
+  予約する、という手順が、mcp-rsのツールだけで行える。`get_post`に公開日時
+  （`Date:`、予約済みなら`scheduled`）を出し、`get_posts`に`status`（`future`・
+  `draft`・`any`等、カンマ区切り）を足して、予約済み・下書きの投稿も一覧
+  できるようにした（既定は今までどおり公開済みだけ）
+
+### Fixed
+
+- `update_post`で、日付の無い`status: "future"`を断る（#625）。WordPressは、
+  日付の無い予約を、すぐに公開してしまう。以前は確かめずに送っていたので、
+  既存の下書きが意図せず公開される恐れがあった。既に予約済みの投稿なら、
+  日付を送らずに`future`のまま更新できる
+
 ## [0.28.0] - 2026-11-18
 
 ### Added

@@ -271,6 +271,45 @@ fn featured_media_label(media_id: Option<u64>, source_url: Option<&str>) -> Stri
     }
 }
 
+/// `get_post`・`update_post`に出す公開日時。予約済みなら、そう添える
+/// （#625）。WordPressの`date`は、サイトのタイムゾーンの時刻
+fn post_date_label(post: &WordPressPost) -> String {
+    match (post.date.as_deref(), post.status.as_str()) {
+        (Some(date), "future") => format!("{} (site time, scheduled)", date),
+        (Some(date), _) => format!("{} (site time)", date),
+        (None, _) => "N/A".to_string(),
+    }
+}
+
+/// `get_posts`の`status`引数（#625）。WordPressの投稿の状態の名前
+/// （英小文字・`_`・`-`）か`any`を、カンマ区切りで受ける。URLに入れる
+/// ので、ほかの文字は断る
+fn post_status_filter_arg(
+    args: &HashMap<String, serde_json::Value>,
+) -> Result<Option<String>, McpError> {
+    let Some(value) = args.get("status") else {
+        return Ok(None);
+    };
+    let Some(status) = value.as_str().map(str::trim).filter(|s| !s.is_empty()) else {
+        return Err(McpError::InvalidParams(
+            "status must be a non-empty string, e.g. 'future' or 'future,draft'".to_string(),
+        ));
+    };
+    let valid = status.split(',').all(|part| {
+        !part.is_empty()
+            && part
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c == '_' || c == '-')
+    });
+    if !valid {
+        return Err(McpError::InvalidParams(format!(
+            "status '{}' is not valid: use post statuses such as 'publish', 'future', 'draft', 'pending', 'private' or 'any', separated by commas",
+            status
+        )));
+    }
+    Ok(Some(status.to_string()))
+}
+
 /// 投稿/固定ページの一覧を、各項目の要点（id・title・status・date・
 /// link・slug・抜粋）のみを含む簡潔なJSON配列にまとめる。
 /// 本文全体を含めないのは出力サイズを抑えるため；抜粋は文字境界を
@@ -696,7 +735,7 @@ fn validate_post_status(status: &str, date: Option<&str>) -> Result<(), McpError
     let has_date = date.is_some_and(|d| !d.trim().is_empty());
     if status == "future" && !has_date {
         return Err(McpError::InvalidParams(
-            "status 'future' (scheduled) requires a publish date; without it WordPress publishes the post immediately. Only create_advanced_post accepts 'date' (ISO8601); with other tools, use 'draft' instead".to_string(),
+            "status 'future' (scheduled) requires a publish date; without it WordPress publishes the post immediately. Pass 'date' (ISO8601, site time) with create_advanced_post or update_post; with other tools, use 'draft' instead".to_string(),
         ));
     }
     Ok(())
@@ -1046,6 +1085,9 @@ pub struct PostUpdateParams {
     pub title: Option<String>,
     pub content: Option<String>,
     pub status: Option<String>,
+    /// 公開日時（ISO8601、サイトのタイムゾーン、#625）。未来の日時と
+    /// `status: "future"`で、既存の投稿を予約投稿にする
+    pub date: Option<String>,
     pub categories: Option<Vec<u64>>,
     pub tags: Option<Vec<u64>>,
     pub featured_media_id: Option<u64>,
@@ -1388,16 +1430,22 @@ impl WordPressHandler {
         Ok((all_items, total_items))
     }
 
-    async fn get_posts(&self) -> Result<Vec<WordPressPost>, McpError> {
+    /// 投稿の一覧。`status`が無ければ、公開済みの投稿だけ（WordPressの
+    /// 既定）。`future`・`draft`等や`any`、カンマ区切りで、予約済み・下書き
+    /// の投稿も取れる（#625）
+    async fn get_posts(&self, status: Option<&str>) -> Result<Vec<WordPressPost>, McpError> {
         info!(
             "Fetching WordPress posts from: {}/wp-json/wp/v2/posts",
             self.base_url
         );
+        let status_query = status
+            .map(|status| format!("&status={}", status))
+            .unwrap_or_default();
         let (items, _total) = self
             .fetch_all_pages(|page| {
                 format!(
-                    "{}/wp-json/wp/v2/posts?per_page=100&page={}",
-                    self.base_url, page
+                    "{}/wp-json/wp/v2/posts?per_page=100&page={}{}",
+                    self.base_url, page, status_query
                 )
             })
             .await?;
@@ -1425,7 +1473,7 @@ impl WordPressHandler {
     pub async fn get_all_content(
         &self,
     ) -> Result<(Vec<WordPressPost>, Vec<WordPressPost>), McpError> {
-        let posts_future = self.get_posts();
+        let posts_future = self.get_posts(None);
         let pages_future = self.get_pages();
 
         let (posts, pages) = tokio::try_join!(posts_future, pages_future)?;
@@ -2005,6 +2053,15 @@ impl WordPressHandler {
 
         info!("Updating WordPress {}: {}", post_type, post_id);
 
+        // 日付の無い`future`は、すぐに公開されてしまう（#625）。既に予約
+        // 済みの投稿（公開日時が未来）なら、日付を送らなくても予約のまま
+        if params.status.as_deref() == Some("future") {
+            let has_date = params.date.as_deref().is_some_and(|d| !d.trim().is_empty());
+            if !has_date && self.get_post(post_id, post_type, false).await?.status != "future" {
+                validate_post_status("future", None)?;
+            }
+        }
+
         let mut update_data = serde_json::Map::new();
 
         if let Some(title) = params.title {
@@ -2021,6 +2078,10 @@ impl WordPressHandler {
 
         if let Some(slug) = params.slug {
             update_data.insert("slug".to_string(), serde_json::Value::String(slug));
+        }
+
+        if let Some(date) = params.date.filter(|d| !d.trim().is_empty()) {
+            update_data.insert("date".to_string(), serde_json::Value::String(date));
         }
 
         if let Some(cats) = params.categories {
@@ -2803,7 +2864,9 @@ impl WordPressHandler {
                 }))
             }
             "get_posts" => {
-                let posts = self.get_posts().await?;
+                let args = params.arguments.unwrap_or_default();
+                let status = post_status_filter_arg(&args)?;
+                let posts = self.get_posts(status.as_deref()).await?;
                 let summary = summarize_posts(&posts);
                 Ok(serde_json::json!({
                     "content": [{
@@ -2936,11 +2999,12 @@ impl WordPressHandler {
                 Ok(serde_json::json!({
                     "content": [{
                         "type": "text",
-                        "text": format!("Post Details:\nID: {}\nFormat: {}\nTitle: {}\nStatus: {}\nSlug: {}\nCategories: {}\nTags: {}\nFeatured Media: {}\n{}Content:\n{}",
+                        "text": format!("Post Details:\nID: {}\nFormat: {}\nTitle: {}\nStatus: {}\nDate: {}\nSlug: {}\nCategories: {}\nTags: {}\nFeatured Media: {}\n{}Content:\n{}",
                             post.id.map(|id| id.to_string()).unwrap_or_else(|| "N/A".to_string()),
                             post_format_label(&post, format),
                             title,
                             post.status,
+                            post_date_label(&post),
                             post_slug_label(&post),
                             categories_names.join(", "),
                             tags_names.join(", "),
@@ -3579,6 +3643,10 @@ impl WordPressHandler {
                     .get("status")
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
+                let date = args
+                    .get("date")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
 
                 let categories = args
                     .get("categories")
@@ -3601,6 +3669,7 @@ impl WordPressHandler {
                             title,
                             content,
                             status,
+                            date,
                             categories,
                             tags,
                             featured_media_id,
@@ -3613,8 +3682,8 @@ impl WordPressHandler {
                 Ok(serde_json::json!({
                     "content": [{
                         "type": "text",
-                        "text": format!("Updated {} ID {} - Title: '{}', Status: {}, Slug: {}",
-                            post_type, post_id, post.title.rendered, post.status, post_slug_label(&post))
+                        "text": format!("Updated {} ID {} - Title: '{}', Status: {}, Date: {}, Slug: {}",
+                            post_type, post_id, post.title.rendered, post.status, post_date_label(&post), post_slug_label(&post))
                     }],
                     "isError": false
                 }))
@@ -3870,10 +3939,15 @@ impl McpHandler for WordPressHandler {
             },
             Tool {
                 name: "get_posts".to_string(),
-                description: "Retrieve WordPress posts".to_string(),
+                description: "Retrieve WordPress posts (published ones by default)".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
-                    "properties": {},
+                    "properties": {
+                        "status": {
+                            "type": "string",
+                            "description": "Which posts to list (optional): 'publish' (default), 'future' (scheduled), 'draft', 'pending', 'private', or 'any'. Several can be given with commas, e.g. 'future,draft'. Other than 'publish', the credentials must be allowed to edit posts"
+                        }
+                    },
                     "required": []
                 }),
                 ..Default::default()
@@ -4461,7 +4535,11 @@ impl McpHandler for WordPressHandler {
                         },
                         "status": {
                             "type": "string",
-                            "description": "Post status: publish, draft, private (optional)"
+                            "description": "Post status (optional): 'publish', 'draft', 'pending', 'private', or 'future' (scheduled; needs 'date' unless the post is already scheduled)"
+                        },
+                        "date": {
+                            "type": "string",
+                            "description": "Publication date (optional, ISO8601 in the site's time zone, e.g. '2026-11-19T10:00:00'). With status 'future' and a future date, the post is scheduled. get_post shows the current date"
                         },
                         "categories": {
                             "type": "array",
@@ -4751,7 +4829,7 @@ impl McpHandler for WordPressHandler {
         }
         match params.uri.as_str() {
             "wordpress://posts" => {
-                let posts = self.get_posts().await?;
+                let posts = self.get_posts(None).await?;
                 Ok(serde_json::json!({
                     "contents": [{
                         "uri": params.uri,
@@ -7079,5 +7157,210 @@ mod tests {
                 name
             );
         }
+    }
+
+    // ---- #625: 既存の投稿を予約投稿にする ----
+
+    fn post_json_with(status: &str, date: &str) -> String {
+        serde_json::json!({
+            "id": 7,
+            "slug": "post",
+            "status": status,
+            "date": date,
+            "type": "post",
+            "title": {"rendered": "テスト"},
+            "content": {"rendered": "<p>本文</p>"}
+        })
+        .to_string()
+    }
+
+    async fn call_update_post(
+        handler: &WordPressHandler,
+        args: serde_json::Value,
+    ) -> Result<serde_json::Value, McpError> {
+        let args: HashMap<String, serde_json::Value> =
+            serde_json::from_value(args).expect("arguments must be an object");
+        handler
+            .call_tool(ToolCallParams {
+                name: "update_post".to_string(),
+                arguments: Some(args),
+            })
+            .await
+    }
+
+    /// `date`と`future`を送ると、予約投稿になる。結果に公開日時を出す
+    #[tokio::test]
+    async fn test_update_post_schedules_with_date() {
+        let (base_url, captured) =
+            spawn_body_capturing_server(post_json_with("future", "2030-01-01T10:00:00")).await;
+        let handler = handler_for_local_server(base_url);
+        let result = call_update_post(
+            &handler,
+            serde_json::json!({
+                "post_id": 7,
+                "status": "future",
+                "date": "2030-01-01T10:00:00"
+            }),
+        )
+        .await
+        .unwrap();
+
+        let bodies = captured.lock().await;
+        // 日付があれば、投稿を取りに行かずに更新だけを送る
+        assert_eq!(bodies.len(), 1);
+        let sent: serde_json::Value = serde_json::from_str(&bodies[0]).unwrap();
+        assert_eq!(
+            sent,
+            serde_json::json!({"status": "future", "date": "2030-01-01T10:00:00"})
+        );
+        assert!(
+            tool_text(&result).contains("Date: 2030-01-01T10:00:00 (site time, scheduled)"),
+            "{}",
+            tool_text(&result)
+        );
+    }
+
+    /// 日付だけを変える（予約の日時の変更・公開日時の修正）
+    #[tokio::test]
+    async fn test_update_post_sends_date_only() {
+        let (base_url, captured) =
+            spawn_body_capturing_server(post_json_with("draft", "2030-02-01T09:00:00")).await;
+        let handler = handler_for_local_server(base_url);
+        call_update_post(
+            &handler,
+            serde_json::json!({"post_id": 7, "date": "2030-02-01T09:00:00"}),
+        )
+        .await
+        .unwrap();
+        let bodies = captured.lock().await;
+        let sent: serde_json::Value = serde_json::from_str(&bodies[0]).unwrap();
+        assert_eq!(sent, serde_json::json!({"date": "2030-02-01T09:00:00"}));
+    }
+
+    /// 日付の無い`future`は、予約済みでない投稿なら断り、更新を送らない
+    /// （WordPressがすぐに公開してしまうため）
+    #[tokio::test]
+    async fn test_update_post_refuses_future_without_date_for_a_draft() {
+        for date in [None, Some(""), Some("  ")] {
+            let (base_url, captured) =
+                spawn_body_capturing_server(post_json_with("draft", "2026-11-18T23:00:00")).await;
+            let handler = handler_for_local_server(base_url);
+            let mut args = serde_json::json!({"post_id": 7, "status": "future"});
+            if let Some(date) = date {
+                args["date"] = serde_json::json!(date);
+            }
+            let result = call_update_post(&handler, args).await;
+            assert!(
+                matches!(result, Err(McpError::InvalidParams(ref msg)) if msg.contains("requires a publish date")),
+                "date {:?}: {:?}",
+                date,
+                result
+            );
+            // 今の状態を確かめる読み取り（本文の無いGET）だけで、更新は送らない
+            let bodies = captured.lock().await;
+            assert!(bodies.iter().all(|body| body.is_empty()), "{:?}", bodies);
+        }
+    }
+
+    /// 既に予約済みの投稿なら、日付を送らずに`future`のまま更新できる
+    #[tokio::test]
+    async fn test_update_post_keeps_an_already_scheduled_post() {
+        let (base_url, captured) =
+            spawn_body_capturing_server(post_json_with("future", "2030-01-01T10:00:00")).await;
+        let handler = handler_for_local_server(base_url);
+        call_update_post(
+            &handler,
+            serde_json::json!({"post_id": 7, "status": "future", "title": "新しい題"}),
+        )
+        .await
+        .unwrap();
+        let bodies = captured.lock().await;
+        let sent: Vec<serde_json::Value> = bodies
+            .iter()
+            .filter(|body| !body.is_empty())
+            .map(|body| serde_json::from_str(body).unwrap())
+            .collect();
+        assert_eq!(
+            sent,
+            vec![serde_json::json!({"title": "新しい題", "status": "future"})]
+        );
+    }
+
+    #[test]
+    fn test_post_date_label() {
+        let post = |status: &str, date: Option<&str>| -> WordPressPost {
+            let mut value: serde_json::Value =
+                serde_json::from_str(&post_json_with(status, "x")).unwrap();
+            value["date"] = serde_json::json!(date);
+            serde_json::from_value(value).unwrap()
+        };
+        assert_eq!(
+            post_date_label(&post("future", Some("2030-01-01T10:00:00"))),
+            "2030-01-01T10:00:00 (site time, scheduled)"
+        );
+        assert_eq!(
+            post_date_label(&post("publish", Some("2026-11-18T19:00:00"))),
+            "2026-11-18T19:00:00 (site time)"
+        );
+        assert_eq!(post_date_label(&post("draft", None)), "N/A");
+    }
+
+    #[test]
+    fn test_post_status_filter_arg() {
+        let args = |value: serde_json::Value| -> HashMap<String, serde_json::Value> {
+            [("status".to_string(), value)].into_iter().collect()
+        };
+        assert_eq!(post_status_filter_arg(&HashMap::new()).unwrap(), None);
+        for ok in ["future", "future,draft", "any", " publish "] {
+            assert_eq!(
+                post_status_filter_arg(&args(serde_json::json!(ok))).unwrap(),
+                Some(ok.trim().to_string())
+            );
+        }
+        // URLに入る値なので、状態の名前以外は断る
+        for bad in [
+            serde_json::json!("future&per_page=1"),
+            serde_json::json!("future,"),
+            serde_json::json!("Future"),
+            serde_json::json!(""),
+            serde_json::json!(3),
+        ] {
+            assert!(
+                matches!(
+                    post_status_filter_arg(&args(bad.clone())),
+                    Err(McpError::InvalidParams(_))
+                ),
+                "{}",
+                bad
+            );
+        }
+    }
+
+    /// `get_posts`の`status`を、WordPressの一覧の`status`で送る
+    #[tokio::test]
+    async fn test_get_posts_with_status_lists_scheduled_posts() {
+        let list = format!("[{}]", post_json_with("future", "2030-01-01T10:00:00"));
+        let base = spawn_routing_server(vec![(
+            "/wp-json/wp/v2/posts?per_page=100&page=1&status=future",
+            "200 OK",
+            list,
+        )])
+        .await;
+        let handler = handler_for_local_server(base);
+        let args: HashMap<String, serde_json::Value> =
+            [("status".to_string(), serde_json::json!("future"))]
+                .into_iter()
+                .collect();
+        let result = handler
+            .call_tool(ToolCallParams {
+                name: "get_posts".to_string(),
+                arguments: Some(args),
+            })
+            .await
+            .unwrap();
+        let text = tool_text(&result);
+        assert!(text.starts_with("Found 1 posts"), "{}", text);
+        assert!(text.contains("\"status\": \"future\""), "{}", text);
+        assert!(text.contains("2030-01-01T10:00:00"), "{}", text);
     }
 }
