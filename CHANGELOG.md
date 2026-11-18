@@ -27,6 +27,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   メソッドなら404と`-32601`、版・`_meta`の誤りなら400で返す。セッションは
   持たず、APIキー・OAuthによるツールの制限・監査ログはリクエストごとに効く
 
+### Fixed
+
+- legacyの版（`initialize`を使う）で、`ping`に空の結果で答える（仕様の
+  MUST）。以前は`-32601`だった。2026-07-28の版には`ping`が無いので、
+  `-32601`のまま（#570）
+- リソースが無いときのエラーを、legacyの版では`-32002`、2026-07-28の版では
+  `-32602`（HTTPでは400）にした。以前は、どちらも`-32603`だった。`data`に
+  そのURIを入れる（#570）
+
 ### Changed
 
 - HTTPの`/mcp`で、対応していない`MCP-Protocol-Version`には、`-32600`では
