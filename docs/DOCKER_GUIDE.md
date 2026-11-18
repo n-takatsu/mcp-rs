@@ -8,7 +8,7 @@ Release images are published to the GitHub Container Registry:
 
 ```bash
 docker pull ghcr.io/n-takatsu/mcp-rs:latest     # latest release
-docker pull ghcr.io/n-takatsu/mcp-rs:0.27       # a release line
+docker pull ghcr.io/n-takatsu/mcp-rs:0.28       # a release line
 ```
 
 Or build it from the repository:
