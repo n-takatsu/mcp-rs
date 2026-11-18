@@ -64,14 +64,16 @@ MCPのクライアント（Claude Desktop・Claude Code等）から使える機�
 - #599 `mcp-rs init`とインストールの小さな強化（控えのパスワード・ファイルの権限・設定の書き方・リリースの出所の証明）。v0.29.0から移した
 - #602 `mcp-rs init`で、前の設定ファイルにしか無い設定を知らせ、引き継げるようにする。v0.26.0への移行で、`[[plugins]]`等が抜け落ちたため（2026-11-17に追加。セキュリティではないが、#599と同じところを直すので、この版に入れた）
 
-### 🔜 v0.28.0: MCPの2026-07-28版に対応する（[マイルストーン](https://github.com/n-takatsu/mcp-rs/milestone/7)）
+### ✅ 完了: v0.28.0 MCPの2026-07-28版に対応する（2026-11-18、[マイルストーン](https://github.com/n-takatsu/mcp-rs/milestone/7)）
 
 MCPの仕様の2026-07-28版で、`initialize`の手続きとセッションが無くなった。今のmcp-rs（2025-11-25版）は、新旧の両方に対応したクライアントとは仕様どおりにつながるが、新しい版だけのクライアントとはつながらない。仕様には、`initialize`をいつまで使えるかの決まりが無く、クライアントがいつ新しい版だけになるかは、こちらで決められない。今のクライアントを壊さないよう、新旧の両方を受ける形にする（#566で調べた）。
 
-- #570 MCPの2026-07-28版（initializeの廃止）に、新旧の両方を受ける形で対応する（STDIO→HTTP→無くなったものの順）
+- #570 MCPの2026-07-28版（initializeの廃止）に、新旧の両方を受ける形で対応する（STDIO #618 → HTTP #619 → 無くなったもの #620、サーバーの情報のアイコン #621）。Copilotでの実機の確認だけが残ったので、v0.29.0に移した
 - #589 `mcp-rs check`で、`[database]`と`[[plugins]]`も確かめる（起動に失敗しても、ツールが無いまま動くので、理由が分かりにくい）
 
-### 📅 v0.29.0: 導入を簡単にする（続き）（[マイルストーン](https://github.com/n-takatsu/mcp-rs/milestone/8)）
+### 🔜 v0.29.0: 導入を簡単にする（続き）（[マイルストーン](https://github.com/n-takatsu/mcp-rs/milestone/8)）
+
+- #570 の残り: Copilot（新旧の両方に対応）から、`initialize`に戻らずにつながることを、実機で確かめる（v0.28.0から移した）
 
 - #578 パッケージマネージャー（winget・Homebrew・Scoop）で配る
 - #579 Claude Desktopの拡張機能（`.mcpb`）で配れるかを調べる（Claude Desktopの画面で設定を入力できる形）
@@ -113,7 +115,7 @@ MCPの仕様の2026-07-28版で、`initialize`の手続きとセッションが�
 ## 📋 GitHub Issues
 
 - [Milestone v0.27.0](https://github.com/n-takatsu/mcp-rs/milestone/6) - セキュリティの強化（完了）
-- [Milestone v0.28.0](https://github.com/n-takatsu/mcp-rs/milestone/7) - MCPの新しい版
+- [Milestone v0.28.0](https://github.com/n-takatsu/mcp-rs/milestone/7) - MCPの新しい版（完了）
 - [Milestone v0.29.0](https://github.com/n-takatsu/mcp-rs/milestone/8) - 導入を簡単にする（続き）
 - [Milestone v1.0.0](https://github.com/n-takatsu/mcp-rs/milestone/3) - v0.29.0より後、v1.0.0までに行うIssue
 - [Epic #41](https://github.com/n-takatsu/mcp-rs/issues/41)（完了） - HTTPモードの認可・ツールの権限・監査ログ

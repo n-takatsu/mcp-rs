@@ -83,7 +83,13 @@ See [Database Integration](docs/database/) for the settings.
 
 ## Current Status
 
-## ✅ Recently Completed (v0.27.0)
+## ✅ Recently Completed (v0.28.0)
+
+- **🆕 MCP 2026-07-28**: mcp-rs accepts the new version of MCP, which has no `initialize` and no sessions (`server/discover`, and the version in each request's `_meta`), over STDIO and HTTP. Clients that use `initialize`, such as Claude Desktop, work as before. In HTTP mode, an `initialize` from one client no longer changes the protocol version for other clients. See [API](docs/api/)
+- **🩺 `mcp-rs check`**: Also checks `[database]` (the settings, weak TLS, and connecting and signing in) and `[[plugins]]` (the command can be found, and each plugin starts and lists its tools). `--offline` checks only the settings. See [Getting Started](docs/guides/#check)
+- **🖼️ Icon**: mcp-rs sends its logo in the server information, for clients that show it
+
+## ✅ v0.27.0
 
 A security release. Some fixes stop settings that used to work; see the [release notes](https://github.com/n-takatsu/mcp-rs/releases/tag/v0.27.0) before updating.
 
