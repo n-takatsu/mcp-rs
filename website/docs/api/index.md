@@ -506,7 +506,7 @@ Retrieves a prompt.
 
 #### `get_posts`
 
-Retrieves WordPress posts.
+Retrieves WordPress posts (published ones by default; `status` lists scheduled posts, drafts and others).
 
 #### `create_post`
 
