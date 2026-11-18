@@ -217,13 +217,20 @@ fn error_for_era(error: McpError, modern: bool) -> crate::mcp::JsonRpcError {
 /// `server/discover`の結果（2026-07-28）。`supportedVersions`は、`_meta`で
 /// 受ける版だけ（`initialize`で交渉する版は、`server/discover`では使えない
 /// ため）。呼び出し元によらず同じなので、`cacheScope`は`public`。
-/// `resultType`・`_meta`のサーバーの情報は`modern_result`で付ける
+/// `_meta`のサーバーの情報は、アイコン付きで先に入れる（`modern_result`は、
+/// 既にあれば上書きしない）。`resultType`は`modern_result`で付ける
 fn discover_result() -> serde_json::Value {
     serde_json::json!({
         "supportedVersions": crate::mcp::MODERN_PROTOCOL_VERSIONS,
         "capabilities": server_capabilities(),
         "ttlMs": DISCOVER_TTL_MS,
-        "cacheScope": "public"
+        "cacheScope": "public",
+        // アイコンは、ここと`initialize`だけに付ける（ほかの結果の`_meta`
+        // には付けない）
+        "_meta": {
+            crate::mcp::META_SERVER_INFO:
+                crate::mcp::server_info_with_icons(crate::mcp::MODERN_PROTOCOL_VERSION)
+        }
     })
 }
 
@@ -696,7 +703,7 @@ impl McpServer {
         serde_json::json!({
             "protocolVersion": protocol_version,
             "capabilities": server_capabilities(),
-            "serverInfo": crate::mcp::server_info_for_version(protocol_version)
+            "serverInfo": crate::mcp::server_info_with_icons(protocol_version)
         })
     }
 
@@ -2766,5 +2773,45 @@ mod tests {
             Some(serde_json::json!({ "uri": "nothing://here" }))
         );
         assert!(response.result.is_none());
+    }
+
+    /// アイコンは、initialize（2025-11-25以降）とserver/discoverだけに付け、
+    /// ほかの結果の_metaには付けない（#570）
+    #[tokio::test]
+    async fn test_server_icons_only_in_initialize_and_discover() {
+        let initialize = |version: &str| {
+            serde_json::json!({
+                "protocolVersion": version,
+                "capabilities": {},
+                "clientInfo": { "name": "c", "version": "1" }
+            })
+        };
+        let result = request(&two_handlers(), "initialize", initialize("2025-11-25"))
+            .await
+            .result
+            .unwrap();
+        assert_eq!(result["serverInfo"]["icons"].as_array().unwrap().len(), 3);
+        let result = request(&two_handlers(), "initialize", initialize("2024-11-05"))
+            .await
+            .result
+            .unwrap();
+        assert!(result["serverInfo"].get("icons").is_none());
+
+        let meta = serde_json::json!({ "_meta": modern_meta("2026-07-28") });
+        let discover = request(&two_handlers(), "server/discover", meta.clone())
+            .await
+            .result
+            .unwrap();
+        let info = &discover["_meta"]["io.modelcontextprotocol/serverInfo"];
+        assert_eq!(info["icons"].as_array().unwrap().len(), 3);
+        assert_eq!(info["name"], serde_json::json!("mcp-rs"));
+
+        let tools = request(&two_handlers(), "tools/list", meta)
+            .await
+            .result
+            .unwrap();
+        let info = &tools["_meta"]["io.modelcontextprotocol/serverInfo"];
+        assert_eq!(info["name"], serde_json::json!("mcp-rs"));
+        assert!(info.get("icons").is_none());
     }
 }
