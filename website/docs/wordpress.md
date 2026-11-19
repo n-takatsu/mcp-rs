@@ -103,6 +103,22 @@ To let `upload_media` read local files with `file_path`, list the folders it may
 upload_allowed_dirs = ["C:/Users/me/Pictures/blog"]
 ```
 
+### Custom post types {#custom-post-types}
+
+Plugins add post types such as products (WooCommerce) and events, and taxonomies such as product categories. mcp-rs uses a custom post type only when it is listed in `post_types` (v0.30.0 and later), so the AI does not change products or other content by accident:
+
+```toml
+[handlers.wordpress]
+post_types = ["product"]
+```
+
+- `post` and `page` are always allowed. With `sites`, a site without its own `post_types` uses the one in `[handlers.wordpress]`
+- `get_post_types` lists the site's post types and taxonomies, and shows which ones mcp-rs may use
+- A listed type can be passed as `post_type` to `get_posts`, `get_post`, `create_advanced_post`, `update_post`, `delete_post` and the revision tools. The tools show only the allowed types in `post_type`
+- The post type must be in the REST API under `/wp/v2` (the type's `show_in_rest`). Types with their own API, such as WooCommerce products in `wc/v3` on some sites, are refused with the reason
+- `get_taxonomies` lists the taxonomies with their `rest_base`, and `get_terms` lists the terms of one. `create_advanced_post` and `update_post` take `terms`, such as `{"product_cat": [12, 15]}`, to set the terms of the listed taxonomies. `get_post` shows them for a custom post type. Creating and changing terms of custom taxonomies is not supported yet
+- The WordPress user's capabilities still apply: the Application Password user must be allowed to edit the post type
+
 ### Using more than one site {#sites}
 
 One mcp-rs can use several WordPress sites (v0.30.0 and later). Write every site in its own `[handlers.wordpress.sites.<site>]` table, and keep only the settings for all sites in `[handlers.wordpress]`:
