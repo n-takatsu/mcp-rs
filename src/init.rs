@@ -350,7 +350,7 @@ impl Setup<'_> {
         }
 
         // 4. クライアントに登録する
-        let exe = std::env::current_exe()?;
+        let exe = stable_exe_path(&std::env::current_exe()?, |path| path.exists());
         let launch = Launch {
             exe: exe.display().to_string(),
             config: config_display,
@@ -1376,6 +1376,34 @@ pub(crate) fn ask_database_password(io: &mut dyn Prompt) -> io::Result<Zeroizing
         }
         io.say("The password is empty.");
     }
+}
+
+/// クライアントに登録する、mcp-rsの実行ファイルのパス（#578）。Homebrewで
+/// 入れたmcp-rsは、版ごとのフォルダ（`<prefix>/Cellar/mcp-rs/<版>/bin/mcp-rs`）
+/// にあり、更新すると古い版のフォルダは消える。そのパスを登録すると、
+/// 更新の後にクライアントが起動できなくなるので、版によらない
+/// `<prefix>/opt/mcp-rs/bin/mcp-rs`があれば、そちらにする。`exists`は、
+/// パスがあるかを確かめる関数（テストで差し替える）
+fn stable_exe_path(exe: &Path, exists: impl Fn(&Path) -> bool) -> PathBuf {
+    let components: Vec<_> = exe.components().collect();
+    if let Some(cellar) = components
+        .iter()
+        .position(|component| component.as_os_str() == "Cellar")
+    {
+        // Cellar/<formula>/<版>/<残り>
+        if components.len() > cellar + 3 {
+            let prefix: PathBuf = components[..cellar].iter().collect();
+            let rest: PathBuf = components[cellar + 3..].iter().collect();
+            let opt = prefix
+                .join("opt")
+                .join(components[cellar + 1].as_os_str())
+                .join(rest);
+            if exists(&opt) {
+                return opt;
+            }
+        }
+    }
+    exe.to_path_buf()
 }
 
 /// `mcp-rs init`で聞いた、`[database]`の値（#590）
@@ -2992,6 +3020,34 @@ file_path = "C:/Users/me/.mcp-rs/logs/audit.log"
         }
         for host in ["db.example.com", "10.0.0.5", "localhost.example.com"] {
             assert!(!is_loopback_host(host), "{host}");
+        }
+    }
+
+    /// Homebrewの版ごとのフォルダではなく、版によらないパスを登録する（#578）
+    #[test]
+    fn test_stable_exe_path_for_homebrew() {
+        let cellar = Path::new("/opt/homebrew/Cellar/mcp-rs/0.29.0/bin/mcp-rs");
+        assert_eq!(
+            stable_exe_path(cellar, |_| true),
+            PathBuf::from("/opt/homebrew/opt/mcp-rs/bin/mcp-rs")
+        );
+        let linux = Path::new("/home/linuxbrew/.linuxbrew/Cellar/mcp-rs/0.29.0/bin/mcp-rs");
+        assert_eq!(
+            stable_exe_path(linux, |_| true),
+            PathBuf::from("/home/linuxbrew/.linuxbrew/opt/mcp-rs/bin/mcp-rs")
+        );
+        // 版によらないパスが無ければ、そのまま
+        assert_eq!(stable_exe_path(cellar, |_| false), cellar);
+        // Homebrewでなければ、そのまま
+        for other in [
+            "C:/Users/me/.mcp-rs/bin/mcp-rs.exe",
+            "/usr/local/bin/mcp-rs",
+            "/opt/homebrew/Cellar/mcp-rs",
+        ] {
+            assert_eq!(
+                stable_exe_path(Path::new(other), |_| true),
+                Path::new(other)
+            );
         }
     }
 }

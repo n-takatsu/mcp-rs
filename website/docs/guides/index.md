@@ -47,6 +47,27 @@ curl -fsSL https://raw.githubusercontent.com/n-takatsu/mcp-rs/main/install/insta
 
 To read the script first, download it ([install.ps1](https://github.com/n-takatsu/mcp-rs/blob/main/install/install.ps1), [install.sh](https://github.com/n-takatsu/mcp-rs/blob/main/install/install.sh)) and run the file. `MCP_RS_VERSION` (such as `v0.25.0`) installs another release, `MCP_RS_INSTALL_DIR` another folder, and `MCP_RS_NO_INIT=1` skips the question about `mcp-rs init`.
 
+### Scoop and Homebrew {#package-managers}
+
+mcp-rs can also be installed with [Scoop](https://scoop.sh/) on Windows and [Homebrew](https://brew.sh/) on macOS (Apple Silicon) and Linux (x64), from the bucket and tap of this project (v0.29.0 and later). Both install the same ready-built mcp-rs from the release, and update it with the package manager's own command:
+
+```powershell
+# Windows (Scoop)
+scoop bucket add n-takatsu https://github.com/n-takatsu/scoop-bucket
+scoop install n-takatsu/mcp-rs
+mcp-rs init
+```
+
+```bash
+# macOS (Apple Silicon) and Linux (x64) (Homebrew)
+brew install n-takatsu/tap/mcp-rs
+mcp-rs init
+```
+
+Update with `scoop update mcp-rs` or `brew upgrade mcp-rs`, then restart the clients. `mcp-rs init` registers a path that stays the same across updates: Scoop's `apps\mcp-rs\current` folder, and Homebrew's `opt/mcp-rs/bin/mcp-rs` (not the folder of one version under `Cellar`, which an update removes). With Scoop, the log folder (`logs` next to mcp-rs) is kept across updates. The bucket and the tap follow new releases automatically, usually within a day.
+
+winget is not supported yet.
+
 ### By hand {#install-by-hand}
 
 Put `mcp-rs` (`mcp-rs.exe`) in a folder of your own, such as `~/.mcp-rs/bin` (`%USERPROFILE%\.mcp-rs\bin` on Windows). No administrator rights are needed, and updating means replacing the file. mcp-rs writes its log to `logs` next to it. On Windows, avoid folders under `AppData`: Claude Desktop from the Microsoft Store may redirect files written there, so the log can end up somewhere else.
