@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- 投稿・固定ページのリビジョンを見て、書き戻すツール（#641）。
+  `get_revisions`（新しい順に、日時・書いた人・題・長さ・本文の先頭）・
+  `get_revision`（1つの題・抜粋・本文。`format`は`get_post`と同じ）・
+  `restore_revision`（題・本文・抜粋をリビジョンのものにする。状態・
+  公開日時・スラッグ・カテゴリ・タグは変えない）。WordPressは書き戻す前の
+  内容を新しいリビジョンとして残すので、書き戻しも元に戻せる。別の投稿の
+  リビジョンは断る。原文が読めない（編集の権限が無い）ときは、表示用の
+  HTMLで上書きしない
+- コメントのツールの監査ログに、コメントのID（`comment_id`）を残す（#639の
+  漏れ）
+
 - 1つのmcp-rsで、複数のWordPressのサイトを使えるようにした（#640）。
   各サイトを対等に`[handlers.wordpress.sites.<名前>]`に書き（`url`・
   資格情報等）、`[handlers.wordpress]`には、全体の`enabled`・既定のサイト

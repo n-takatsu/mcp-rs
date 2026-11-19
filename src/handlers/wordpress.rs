@@ -655,7 +655,7 @@ const RATE_LIMIT_CLIENT_ID: &str = "wordpress-tool-calls";
 /// - 変更しないツール（`get_*`等）: 読み取り専用
 /// - `create_*`・`upload_*`: 新しく作る。既存のものは変えないが、繰り返すと
 ///   その分作られる
-/// - `update_*`・`set_*`・`delete_*`: 既存のものを上書き・削除する。同じ引数で
+/// - `update_*`・`set_*`・`delete_*`・`restore_*`: 既存のものを上書き・削除する。同じ引数で
 ///   繰り返しても、追加の影響は無い
 ///
 /// どのツールも、設定したWordPressサイトとだけやり取りする（開かれた世界では
@@ -681,9 +681,11 @@ fn wordpress_tool_annotations(name: &str) -> ToolAnnotations {
 }
 
 /// 変更系ツールのツール名接頭辞。本ファイルのツール命名規則
-/// （`create_*`/`update_*`/`delete_*`/`upload_*`/`set_*`）に合わせており、
+/// （`create_*`/`update_*`/`delete_*`/`upload_*`/`set_*`/`restore_*`）に合わせており、
 /// 新規ツール追加時も個別対応なしに自動的に監査ログ対象へ含まれる。
-const MUTATING_TOOL_PREFIXES: &[&str] = &["create_", "update_", "delete_", "upload_", "set_"];
+const MUTATING_TOOL_PREFIXES: &[&str] = &[
+    "create_", "update_", "delete_", "upload_", "set_", "restore_",
+];
 
 /// ツール名が変更系（WordPress側の状態を変更する）かどうかを判定する。
 fn is_mutating_tool(name: &str) -> bool {
@@ -997,6 +999,7 @@ fn extract_target_id(arguments: &Option<HashMap<String, serde_json::Value>>) -> 
         "category_id",
         "tag_id",
         "page_id",
+        "comment_id",
         "posts_page_id",
     ];
     let args = arguments.as_ref()?;
@@ -1222,6 +1225,40 @@ pub struct WordPressContent {
     pub protected: bool,
 }
 
+/// 投稿・固定ページのリビジョン（#641）
+#[derive(Debug, Serialize, Deserialize)]
+pub struct WordPressRevision {
+    pub id: u64,
+    /// リビジョンの元の投稿のID
+    #[serde(default)]
+    pub parent: u64,
+    /// 書いた人（ユーザーのID）
+    #[serde(default)]
+    pub author: u64,
+    #[serde(default)]
+    pub date: Option<String>,
+    pub title: WordPressContent,
+    pub content: WordPressContent,
+    #[serde(default)]
+    pub excerpt: Option<WordPressContent>,
+}
+
+/// リビジョンを1行で表す（#641）。本文は、タグを除いた文字数と、先頭の
+/// 100文字
+fn revision_summary(revision: &WordPressRevision, author: &str) -> String {
+    let text = html_to_plain_text(&revision.content.rendered);
+    let text = text.trim();
+    format!(
+        "ID {} (Date: {}, Author: {}): {} — {} characters: {}",
+        revision.id,
+        revision.date.as_deref().unwrap_or("unknown"),
+        author,
+        html_to_plain_text(&revision.title.rendered).trim(),
+        text.chars().count(),
+        truncate_chars_with_ellipsis(text, 100)
+    )
+}
+
 /// WordPressのコメント。コメントした人のメールアドレス・IPアドレスは、
 /// 管理（承認・スパム・返信）に要らないので、読まない・出さない（#639）
 #[derive(Debug, Serialize, Deserialize)]
@@ -1269,6 +1306,22 @@ fn comment_status_arg(
             .ok_or_else(|| {
                 McpError::InvalidParams(format!("{key} must be one of: {}", allowed.join(", ")))
             }),
+    }
+}
+
+/// リビジョンのツールの`post_type`（#641）。`post`か`page`だけを受ける
+fn revision_post_type_arg(
+    args: &HashMap<String, serde_json::Value>,
+) -> Result<&'static str, McpError> {
+    match args.get("post_type") {
+        None | Some(serde_json::Value::Null) => Ok("post"),
+        Some(value) => match value.as_str() {
+            Some("post") => Ok("post"),
+            Some("page") => Ok("page"),
+            _ => Err(McpError::InvalidParams(
+                "post_type must be 'post' or 'page'".to_string(),
+            )),
+        },
     }
 }
 
@@ -2107,6 +2160,110 @@ impl WordPressHandler {
             "Deleting WordPress comment {} (force: {})",
             comment_id, force
         );
+        self.execute_request_with_retry(request).await
+    }
+
+    /// 投稿・固定ページのリビジョンの一覧（#641）。新しい順
+    async fn get_revisions(
+        &self,
+        post_id: u64,
+        post_type: &str,
+    ) -> Result<Vec<WordPressRevision>, McpError> {
+        let endpoint = endpoint_for_post_type(post_type);
+        let (items, _total) = self
+            .fetch_all_pages(|page| {
+                format!(
+                    "{}/wp-json/wp/v2/{}/{}/revisions?per_page=100&page={}",
+                    self.base_url, endpoint, post_id, page
+                )
+            })
+            .await?;
+        Ok(items)
+    }
+
+    /// リビジョンを1つ、編集用の原文（`context=edit`）も含めて読む（#641）
+    async fn get_revision(
+        &self,
+        post_id: u64,
+        revision_id: u64,
+        post_type: &str,
+    ) -> Result<WordPressRevision, McpError> {
+        let endpoint = endpoint_for_post_type(post_type);
+        let url = format!(
+            "{}/wp-json/wp/v2/{}/{}/revisions/{}",
+            self.base_url, endpoint, post_id, revision_id
+        );
+        let revision: WordPressRevision = self.fetch_json(&url, Some("edit")).await?;
+        // 別の投稿のリビジョンを、この投稿に書き戻さない
+        if revision.parent != 0 && revision.parent != post_id {
+            return Err(McpError::InvalidParams(format!(
+                "revision {} belongs to {} {}, not {}",
+                revision_id, post_type, revision.parent, post_id
+            )));
+        }
+        Ok(revision)
+    }
+
+    /// 投稿を、リビジョンのタイトル・本文・抜粋に書き戻す（#641）。状態・
+    /// 公開日時・スラッグ等は変えない。WordPressは、書き戻す前の内容を
+    /// 新しいリビジョンとして残すので、書き戻しも元に戻せる
+    async fn restore_revision(
+        &self,
+        post_id: u64,
+        revision_id: u64,
+        post_type: &str,
+    ) -> Result<(WordPressRevision, WordPressPost), McpError> {
+        let revision = self.get_revision(post_id, revision_id, post_type).await?;
+        let raw = |content: &WordPressContent, field: &str| {
+            content.raw.clone().ok_or_else(|| {
+                McpError::ExternalApi(format!(
+                    "WordPress did not return the {field} of revision {revision_id} as source: restoring needs credentials with edit permission"
+                ))
+            })
+        };
+        let mut body = serde_json::json!({
+            "title": raw(&revision.title, "title")?,
+            "content": raw(&revision.content, "content")?,
+        });
+        if let Some(excerpt) = revision.excerpt.as_ref().and_then(|e| e.raw.clone()) {
+            body["excerpt"] = serde_json::json!(excerpt);
+        }
+
+        let endpoint = endpoint_for_post_type(post_type);
+        let url = format!("{}/wp-json/wp/v2/{}/{}", self.base_url, endpoint, post_id);
+        let mut request = self.client.post(&url).json(&body);
+        if let (Some(username), Some(password)) = (&self.username, &self.password) {
+            request = request.basic_auth(username, Some(password));
+        }
+        info!(
+            "Restoring WordPress {} {} to revision {}",
+            post_type, post_id, revision_id
+        );
+        let post = self.execute_request_with_retry(request).await?;
+        Ok((revision, post))
+    }
+
+    /// 投稿者の名前（#641）。読めなければ`None`
+    async fn user_name(&self, user_id: u64) -> Option<String> {
+        let url = format!("{}/wp-json/wp/v2/users/{}", self.base_url, user_id);
+        let user: serde_json::Value = self.fetch_json(&url, None).await.ok()?;
+        user.get("name")
+            .and_then(|n| n.as_str())
+            .map(str::to_string)
+    }
+
+    /// GETして、JSONとして読む。`context`があれば付ける
+    async fn fetch_json<T>(&self, url: &str, context: Option<&str>) -> Result<T, McpError>
+    where
+        T: for<'de> serde::Deserialize<'de>,
+    {
+        let mut request = self.client.get(url);
+        if let Some(context) = context {
+            request = request.query(&[("context", context)]);
+        }
+        if let (Some(username), Some(password)) = (&self.username, &self.password) {
+            request = request.basic_auth(username, Some(password));
+        }
         self.execute_request_with_retry(request).await
     }
 
@@ -4189,6 +4346,120 @@ impl WordPressHandler {
                     "isError": false
                 }))
             }
+            "get_revisions" => {
+                let args = params.arguments.unwrap_or_default();
+                let post_id = positive_id_arg(&args, "post_id")?
+                    .ok_or_else(|| McpError::InvalidParams("Missing post_id".to_string()))?;
+                let post_type = revision_post_type_arg(&args)?;
+
+                let revisions = self.get_revisions(post_id, post_type).await?;
+                let mut authors: HashMap<u64, String> = HashMap::new();
+                for revision in &revisions {
+                    if revision.author > 0 && !authors.contains_key(&revision.author) {
+                        let name = self
+                            .user_name(revision.author)
+                            .await
+                            .unwrap_or_else(|| format!("user {}", revision.author));
+                        authors.insert(revision.author, name);
+                    }
+                }
+                let lines: Vec<String> = revisions
+                    .iter()
+                    .map(|revision| {
+                        let author = authors
+                            .get(&revision.author)
+                            .map(String::as_str)
+                            .unwrap_or("unknown");
+                        revision_summary(revision, author)
+                    })
+                    .collect();
+                let text = if lines.is_empty() {
+                    format!("{post_type} {post_id} has no revisions.")
+                } else {
+                    format!(
+                        "Found {} revisions of {} {} (newest first):\n{}",
+                        lines.len(),
+                        post_type,
+                        post_id,
+                        lines.join("\n")
+                    )
+                };
+                Ok(serde_json::json!({
+                    "content": [{"type": "text", "text": text}],
+                    "isError": false
+                }))
+            }
+            "get_revision" => {
+                let args = params.arguments.unwrap_or_default();
+                let post_id = positive_id_arg(&args, "post_id")?
+                    .ok_or_else(|| McpError::InvalidParams("Missing post_id".to_string()))?;
+                let revision_id = positive_id_arg(&args, "revision_id")?
+                    .ok_or_else(|| McpError::InvalidParams("Missing revision_id".to_string()))?;
+                let post_type = revision_post_type_arg(&args)?;
+                let format = PostContentFormat::parse(args.get("format"))?;
+
+                let revision = self.get_revision(post_id, revision_id, post_type).await?;
+                let author = match self.user_name(revision.author).await {
+                    Some(name) => name,
+                    None => format!("user {}", revision.author),
+                };
+                let format_label = match format {
+                    PostContentFormat::Raw if revision.content.raw.is_some() => "raw",
+                    PostContentFormat::Raw => "rendered HTML (raw source unavailable)",
+                    PostContentFormat::Rendered => "rendered HTML",
+                    PostContentFormat::Text => "plain text",
+                };
+                let excerpt = revision
+                    .excerpt
+                    .as_ref()
+                    .map(|e| post_content_for_display(e, format))
+                    .unwrap_or_default();
+                Ok(serde_json::json!({
+                    "content": [{
+                        "type": "text",
+                        "text": format!(
+                            "Revision Details:\nID: {}\nOf: {} {}\nFormat: {}\nDate: {}\nAuthor: {}\nTitle: {}\nExcerpt: {}\nContent:\n{}",
+                            revision.id,
+                            post_type,
+                            post_id,
+                            format_label,
+                            revision.date.as_deref().unwrap_or("unknown"),
+                            author,
+                            post_content_for_display(&revision.title, format),
+                            excerpt,
+                            post_content_for_display(&revision.content, format)
+                        )
+                    }],
+                    "isError": false
+                }))
+            }
+            "restore_revision" => {
+                let args = params.arguments.unwrap_or_default();
+                let post_id = positive_id_arg(&args, "post_id")?
+                    .ok_or_else(|| McpError::InvalidParams("Missing post_id".to_string()))?;
+                let revision_id = positive_id_arg(&args, "revision_id")?
+                    .ok_or_else(|| McpError::InvalidParams("Missing revision_id".to_string()))?;
+                let post_type = revision_post_type_arg(&args)?;
+
+                let (revision, post) = self
+                    .restore_revision(post_id, revision_id, post_type)
+                    .await?;
+                Ok(serde_json::json!({
+                    "content": [{
+                        "type": "text",
+                        "text": format!(
+                            "Restored {} {} to revision {} (from {}): title, content and excerpt. Title: {}, Status: {}. The status, date and slug were not changed. WordPress keeps the content before the restore as a new revision, so get_revisions and restore_revision can undo it",
+                            post_type,
+                            post_id,
+                            revision.id,
+                            revision.date.as_deref().unwrap_or("unknown"),
+                            post.title.rendered,
+                            post.status
+                        )
+                    }],
+                    "isError": false
+                }))
+            }
             "create_comment" => {
                 let args = params.arguments.unwrap_or_default();
                 let content = args
@@ -4778,6 +5049,83 @@ impl McpHandler for WordPressHandler {
                         }
                     },
                     "required": []
+                }),
+                ..Default::default()
+            },
+            Tool {
+                name: "get_revisions".to_string(),
+                description: "List the revisions (saved versions) of a post or page, newest first: revision ID, date, author, title, length and the start of the content. Needs credentials with edit permission on the post. Use get_revision to read one and restore_revision to go back to it".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "post_id": {
+                            "type": "number",
+                            "description": "Post or page ID"
+                        },
+                        "post_type": {
+                            "type": "string",
+                            "enum": ["post", "page"],
+                            "description": "Defaults to 'post'",
+                            "default": "post"
+                        }
+                    },
+                    "required": ["post_id"]
+                }),
+                ..Default::default()
+            },
+            Tool {
+                name: "get_revision".to_string(),
+                description: "Read one revision of a post or page: title, excerpt and content".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "post_id": {
+                            "type": "number",
+                            "description": "Post or page ID"
+                        },
+                        "revision_id": {
+                            "type": "number",
+                            "description": "Revision ID, from get_revisions"
+                        },
+                        "post_type": {
+                            "type": "string",
+                            "enum": ["post", "page"],
+                            "description": "Defaults to 'post'",
+                            "default": "post"
+                        },
+                        "format": {
+                            "type": "string",
+                            "enum": ["raw", "rendered", "text"],
+                            "description": "'raw' (editable source, the default), 'rendered' (HTML), or 'text' (plain text)",
+                            "default": "raw"
+                        }
+                    },
+                    "required": ["post_id", "revision_id"]
+                }),
+                ..Default::default()
+            },
+            Tool {
+                name: "restore_revision".to_string(),
+                description: "Restore a post or page to one of its revisions: its title, content and excerpt are replaced with the revision's. The status, publish date, slug, categories and tags are not changed, so a published post stays published with the restored content. WordPress keeps the content before the restore as a new revision, so the restore can be undone".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "post_id": {
+                            "type": "number",
+                            "description": "Post or page ID"
+                        },
+                        "revision_id": {
+                            "type": "number",
+                            "description": "Revision ID to restore, from get_revisions"
+                        },
+                        "post_type": {
+                            "type": "string",
+                            "enum": ["post", "page"],
+                            "description": "Defaults to 'post'",
+                            "default": "post"
+                        }
+                    },
+                    "required": ["post_id", "revision_id"]
                 }),
                 ..Default::default()
             },
@@ -8595,5 +8943,218 @@ mod tests {
         for name in ["create_comment", "update_comment", "delete_comment"] {
             assert!(tools.iter().any(|t| t.name == name), "{name}");
         }
+    }
+
+    // ---- #641: リビジョン ----
+
+    /// リビジョンの応答（`context=edit`）。書き戻しの応答（投稿）としても読める
+    /// ように、投稿の項目（`status`・`slug`・`type`）も持たせる
+    fn revision_json(id: u64, parent: u64) -> serde_json::Value {
+        serde_json::json!({
+            "id": id,
+            "parent": parent,
+            "author": 2,
+            "date": "2026-11-18T09:00:00",
+            "title": {"raw": "前の題", "rendered": "前の題"},
+            "content": {"raw": "<!-- wp:paragraph --><p>前の本文</p><!-- /wp:paragraph -->", "rendered": "<p>前の本文</p>"},
+            "excerpt": {"raw": "前の抜粋", "rendered": "<p>前の抜粋</p>"},
+            "status": "publish",
+            "slug": "post",
+            "type": "post"
+        })
+    }
+
+    /// 一覧: 新しい順に、日時・書いた人の名前・題・長さを出す
+    #[tokio::test]
+    async fn test_get_revisions_lists_with_author_names() {
+        let list = serde_json::json!([revision_json(12, 7), revision_json(11, 7)]).to_string();
+        let base = spawn_routing_server(vec![
+            (
+                "/wp-json/wp/v2/posts/7/revisions?per_page=100&page=1",
+                "200 OK\r\nX-WP-Total: 2\r\nX-WP-TotalPages: 1",
+                list,
+            ),
+            (
+                "/wp-json/wp/v2/users/2",
+                "200 OK",
+                r#"{"id":2,"name":"編集者"}"#.to_string(),
+            ),
+        ])
+        .await;
+        let handler = handler_for_local_server(base);
+        let result = call_tool_with(&handler, "get_revisions", serde_json::json!({"post_id": 7}))
+            .await
+            .unwrap();
+        let text = tool_text(&result);
+        assert!(
+            text.starts_with("Found 2 revisions of post 7 (newest first):\nID 12 (Date: 2026-11-18T09:00:00, Author: 編集者): 前の題 — 4 characters: 前の本文"),
+            "{text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_revisions_of_a_page_without_revisions() {
+        let base = spawn_routing_server(vec![(
+            "/wp-json/wp/v2/pages/3/revisions?per_page=100&page=1",
+            "200 OK\r\nX-WP-Total: 0\r\nX-WP-TotalPages: 0",
+            "[]".to_string(),
+        )])
+        .await;
+        let handler = handler_for_local_server(base);
+        let result = call_tool_with(
+            &handler,
+            "get_revisions",
+            serde_json::json!({"post_id": 3, "post_type": "page"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(tool_text(&result), "page 3 has no revisions.");
+    }
+
+    /// 1つのリビジョンを、既定では編集用の原文で読む
+    #[tokio::test]
+    async fn test_get_revision_reads_raw_by_default() {
+        let base = spawn_routing_server(vec![(
+            "/wp-json/wp/v2/posts/7/revisions/11?context=edit",
+            "200 OK",
+            revision_json(11, 7).to_string(),
+        )])
+        .await;
+        let handler = handler_for_local_server(base);
+        let result = call_tool_with(
+            &handler,
+            "get_revision",
+            serde_json::json!({"post_id": 7, "revision_id": 11}),
+        )
+        .await
+        .unwrap();
+        let text = tool_text(&result);
+        assert!(text.contains("Format: raw"), "{text}");
+        assert!(text.contains("Excerpt: 前の抜粋"), "{text}");
+        assert!(text.contains("<!-- wp:paragraph -->"), "{text}");
+
+        let result = call_tool_with(
+            &handler,
+            "get_revision",
+            serde_json::json!({"post_id": 7, "revision_id": 11, "format": "text"}),
+        )
+        .await
+        .unwrap();
+        assert!(tool_text(&result).ends_with("Content:\n前の本文"));
+    }
+
+    /// 書き戻し: リビジョンの原文の題・本文・抜粋だけを送る（状態等は送らない）
+    #[tokio::test]
+    async fn test_restore_revision_sends_title_content_and_excerpt() {
+        let (base_url, captured) =
+            spawn_body_capturing_server(revision_json(11, 7).to_string()).await;
+        let handler = handler_for_local_server(base_url);
+        let result = call_tool_with(
+            &handler,
+            "restore_revision",
+            serde_json::json!({"post_id": 7, "revision_id": 11}),
+        )
+        .await
+        .unwrap();
+        let bodies = captured.lock().await;
+        assert_eq!(bodies.len(), 2, "{:?}", bodies);
+        assert!(bodies[0].is_empty());
+        let sent: serde_json::Value = serde_json::from_str(&bodies[1]).unwrap();
+        assert_eq!(
+            sent,
+            serde_json::json!({
+                "title": "前の題",
+                "content": "<!-- wp:paragraph --><p>前の本文</p><!-- /wp:paragraph -->",
+                "excerpt": "前の抜粋"
+            })
+        );
+        let text = tool_text(&result);
+        assert!(text.starts_with("Restored post 7 to revision 11"), "{text}");
+        assert!(text.contains("Status: publish"), "{text}");
+    }
+
+    /// 別の投稿のリビジョンは、書き戻さない
+    #[tokio::test]
+    async fn test_restore_revision_refuses_another_posts_revision() {
+        let (base_url, captured) =
+            spawn_body_capturing_server(revision_json(11, 8).to_string()).await;
+        let handler = handler_for_local_server(base_url);
+        let result = call_tool_with(
+            &handler,
+            "restore_revision",
+            serde_json::json!({"post_id": 7, "revision_id": 11}),
+        )
+        .await;
+        assert!(
+            matches!(result, Err(McpError::InvalidParams(ref msg)) if msg == "revision 11 belongs to post 8, not 7"),
+            "{:?}",
+            result
+        );
+        // 読んだだけで、書き戻しは送らない
+        assert_eq!(captured.lock().await.len(), 1);
+    }
+
+    /// 原文が読めなければ（編集の権限が無い）、表示用HTMLで上書きしない
+    #[tokio::test]
+    async fn test_restore_revision_needs_raw_source() {
+        let mut revision = revision_json(11, 7);
+        revision["title"] = serde_json::json!({"rendered": "前の題"});
+        revision["content"] = serde_json::json!({"rendered": "<p>前の本文</p>"});
+        let (base_url, captured) = spawn_body_capturing_server(revision.to_string()).await;
+        let handler = handler_for_local_server(base_url);
+        let result = call_tool_with(
+            &handler,
+            "restore_revision",
+            serde_json::json!({"post_id": 7, "revision_id": 11}),
+        )
+        .await;
+        assert!(
+            matches!(result, Err(McpError::ExternalApi(ref msg)) if msg.contains("needs credentials with edit permission")),
+            "{:?}",
+            result
+        );
+        assert_eq!(captured.lock().await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_revision_tools_check_arguments_and_marks() {
+        let handler = handler_for_local_server("http://127.0.0.1:9".to_string());
+        for (name, args, message) in [
+            ("get_revisions", serde_json::json!({}), "Missing post_id"),
+            (
+                "get_revisions",
+                serde_json::json!({"post_id": 7, "post_type": "attachment"}),
+                "post_type must be 'post' or 'page'",
+            ),
+            (
+                "get_revision",
+                serde_json::json!({"post_id": 7}),
+                "Missing revision_id",
+            ),
+            (
+                "restore_revision",
+                serde_json::json!({"post_id": 7, "revision_id": 0}),
+                "revision_id must be a positive integer",
+            ),
+        ] {
+            let result = call_tool_with(&handler, name, args.clone()).await;
+            assert!(
+                matches!(result, Err(McpError::InvalidParams(ref msg)) if msg.contains(message)),
+                "{name} {args}: {:?}",
+                result
+            );
+        }
+        for name in ["get_revisions", "get_revision"] {
+            assert_eq!(wordpress_tool_annotations(name).read_only_hint, Some(true));
+        }
+        let restore = wordpress_tool_annotations("restore_revision");
+        assert_eq!(restore.read_only_hint, Some(false));
+        assert_eq!(restore.destructive_hint, Some(true));
+        assert_eq!(restore.idempotent_hint, Some(true));
+        assert!(is_mutating_tool("restore_revision"));
+        // コメントのツールの監査ログに、コメントのIDを残す
+        let args: HashMap<String, serde_json::Value> =
+            serde_json::from_value(serde_json::json!({"comment_id": 5})).unwrap();
+        assert_eq!(extract_target_id(&Some(args)), Some("5".to_string()));
     }
 }
