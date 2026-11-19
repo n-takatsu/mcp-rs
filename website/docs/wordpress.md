@@ -103,6 +103,38 @@ To let `upload_media` read local files with `file_path`, list the folders it may
 upload_allowed_dirs = ["C:/Users/me/Pictures/blog"]
 ```
 
+### Using more than one site {#sites}
+
+One mcp-rs can use several WordPress sites (v0.30.0 and later). Write every site in its own `[handlers.wordpress.sites.<site>]` table, and keep only the settings for all sites in `[handlers.wordpress]`:
+
+```toml
+[handlers.wordpress]
+enabled = true
+default_site = "blog"               # the site used when a tool call names none
+timeout_seconds = 30                # optional: for every site, unless a site sets its own
+
+[handlers.wordpress.sites.blog]
+url = "https://blog.example.com"
+keyring = "blog"
+
+[handlers.wordpress.sites.shop]
+url = "https://shop.example.com"
+keyring = "shop"
+```
+
+- **Tools**: the tools stay the same (the number of tools does not grow). Each tool gets a `site` argument: `get_posts` with `site: "shop"` reads the shop's posts. Without `site`, `default_site` is used, so ask the AI to name the site when it is not the default
+- **`[handlers.wordpress]`**: `enabled = true` turns on all the sites. `default_site` is required when two or more sites are used. `timeout_seconds`, `rate_limit` and `upload_allowed_dirs` apply to every site that does not set its own. Write `url` and the credentials (`keyring`, `username`/`password`, `encrypted_credentials`) only in the sites' tables
+- **Each site**: `url` and the credentials, and optionally `timeout_seconds`, `rate_limit` and `upload_allowed_dirs`. Write `enabled = false` to stop using one site. Site names use lowercase letters, digits, `_` and `-`, up to 32 characters
+- **Credentials**: each site has its own, preferably a dedicated user with an Application Password on that site. Store them with `mcp-rs wordpress-keyring set <name>` for each site
+- **Rate limit and audit log**: each site has its own rate limit. The audit log records the site's URL with each tool call
+- `mcp-rs check` checks each site, and `mcp_rs_status` lists them. `mcp-rs uninstall` offers to delete each site's entry in the OS credential store
+- Resources (`wordpress://posts` and others) read the default site only
+- In HTTP mode, the tool limits of an API key or access token apply to every site: a key allowed `get_posts` can read the posts of all the sites
+- `WORDPRESS_URL`, `WORDPRESS_USERNAME` and `WORDPRESS_PASSWORD` do not change a config file with `sites`
+- `mcp-rs init` sets up one site, in the one-site form (`url` and `keyring` directly in `[handlers.wordpress]`). To use more sites, rewrite the config file in this form by hand. `init` keeps using a config file that already has `sites` as it is
+
+With one site, `url` and the credentials can still be written directly in `[handlers.wordpress]`, as in the examples above. That site is named `default`, and the tools get no `site` argument.
+
 ## Setting up Application Passwords
 
 Create the Application Password for a WordPress user with only the role the AI client needs, preferably a dedicated user:

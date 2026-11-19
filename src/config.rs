@@ -34,7 +34,7 @@ pub(crate) static WORDPRESS_MASTER_PASSWORD_ENV_LOCK: std::sync::Mutex<()> =
     std::sync::Mutex::new(());
 
 // 前方宣言用の型エイリアス
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::path::PathBuf;
 
@@ -799,8 +799,17 @@ pub struct HandlersConfig {
     // pub custom: Option<HashMap<String, serde_json::Value>>,
 }
 
+/// `[handlers.wordpress]`と、`[handlers.wordpress.sites.<名前>]`の各サイト。
+///
+/// サイトが1つなら、`[handlers.wordpress]`に`url`・資格情報を直接書ける
+/// （今までの形。サイトの名前は`default`）。複数のサイト（#640）は、すべて
+/// `sites`の下に対等に書き、`[handlers.wordpress]`には、全体の`enabled`・
+/// 既定のサイト（`default_site`）・全サイト共通の設定（`timeout_seconds`・
+/// `rate_limit`・`upload_allowed_dirs`。サイトごとに上書きできる）だけを書く
 #[derive(Clone, Deserialize, Serialize)]
 pub struct WordPressConfig {
+    /// サイトのURL。`sites`を使うときは、各サイトに書く
+    #[serde(default)]
     pub url: String,
     /// `encrypted_credentials`のみを指定する設定も許容するため、省略可能
     /// （省略時は空文字列。`resolve_encrypted_credentials`が復号結果で
@@ -830,6 +839,38 @@ pub struct WordPressConfig {
     /// 限定する（起動時に存在しないフォルダが指定されていればエラー）。
     #[serde(default)]
     pub upload_allowed_dirs: Vec<String>,
+    /// ツールの`site`の引数を省いたときに使うサイトの名前（#640）。
+    /// `[handlers.wordpress]`にだけ書く。使うサイトが1つなら省ける
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_site: Option<String>,
+    /// WordPressのサイト（#640）。`[handlers.wordpress.sites.<名前>]`に、
+    /// `url`・資格情報等を書く。`enabled = false`で、そのサイトだけを止める。
+    /// ツールは増やさず、`site`の引数で選ぶ
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub sites: BTreeMap<String, WordPressConfig>,
+}
+
+/// `sites`を使わない（今までの形の）サイトの名前（#640）
+pub const DEFAULT_WORDPRESS_SITE: &str = "default";
+
+/// WordPressのサイトの名前の長さの上限（#640）
+const MAX_WORDPRESS_SITE_NAME_LEN: usize = 32;
+
+/// WordPressのサイトの名前を確かめる（#640）。英小文字・数字・`_`・`-`で、
+/// 32文字まで
+fn check_wordpress_site_name(name: &str) -> Result<(), String> {
+    let valid = !name.is_empty()
+        && name.len() <= MAX_WORDPRESS_SITE_NAME_LEN
+        && name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-');
+    if valid {
+        Ok(())
+    } else {
+        Err(format!(
+            "WordPress site name '{name}' is not valid: use lowercase letters, digits, '_' and '-', up to {MAX_WORDPRESS_SITE_NAME_LEN} characters"
+        ))
+    }
 }
 
 // Debugトレイトでパスワードを露出しないようにカスタム実装
@@ -846,6 +887,8 @@ impl fmt::Debug for WordPressConfig {
             .field("encrypted_credentials", &self.encrypted_credentials)
             .field("keyring", &self.keyring)
             .field("upload_allowed_dirs", &self.upload_allowed_dirs)
+            .field("default_site", &self.default_site)
+            .field("sites", &self.sites)
             .finish()
     }
 }
@@ -900,6 +943,8 @@ impl WordPressConfig {
             encrypted_credentials: Some(encrypted_credentials),
             keyring: None,
             upload_allowed_dirs: Vec::new(),
+            default_site: None,
+            sites: Default::default(),
         })
     }
 
@@ -993,6 +1038,157 @@ impl WordPressConfig {
         &mut self,
         store: &dyn crate::security::keyring_store::SecretStore,
     ) -> Result<(), Box<dyn std::error::Error>> {
+        // 今までの形（サイトが1つ）
+        if self.sites.is_empty() {
+            return self.resolve_site_credentials(store, "handlers.wordpress");
+        }
+        // 複数のサイト（#640）。全体が使われないときは、読まない
+        if !self.enabled.unwrap_or(false) {
+            return Ok(());
+        }
+        self.check_sites_layout()?;
+        self.inherit_into_sites();
+        for (name, site) in self.sites.iter_mut() {
+            let label = format!("handlers.wordpress.sites.{name}");
+            site.resolve_site_credentials(store, &label).map_err(
+                |e| -> Box<dyn std::error::Error> {
+                    let message = e.to_string();
+                    if message.starts_with(&label) {
+                        message.into()
+                    } else {
+                        format!("{label}: {message}").into()
+                    }
+                },
+            )?;
+        }
+        Ok(())
+    }
+
+    /// 各サイトの`enabled`を決める（#640）。全体（`[handlers.wordpress]`）が
+    /// 使われなければ、どのサイトも使わない。使われるなら、`enabled = false`
+    /// と書いたサイト以外を使う
+    fn inherit_into_sites(&mut self) {
+        let enabled = self.enabled.unwrap_or(false);
+        for site in self.sites.values_mut() {
+            site.enabled = Some(enabled && site.enabled.unwrap_or(true));
+        }
+    }
+
+    /// `sites`を使うときの、表の書き方を確かめる（#640）。サイトの`url`・
+    /// 資格情報は、`[handlers.wordpress]`ではなく各サイトに書く。
+    /// `default_site`・`sites`は、`[handlers.wordpress]`にだけ書く
+    fn check_sites_layout(&self) -> Result<(), String> {
+        let site_keys: Vec<&str> = [
+            ("url", !self.url.is_empty()),
+            ("username", !self.username.is_empty()),
+            ("password", !self.password.is_empty()),
+            ("keyring", self.keyring.is_some()),
+            (
+                "encrypted_credentials",
+                self.encrypted_credentials.is_some(),
+            ),
+        ]
+        .into_iter()
+        .filter_map(|(key, set)| set.then_some(key))
+        .collect();
+        if !site_keys.is_empty() {
+            return Err(format!(
+                "handlers.wordpress: with [handlers.wordpress.sites.<site>], write {} in each site's table, not in [handlers.wordpress]",
+                site_keys.join(", ")
+            ));
+        }
+        for (name, site) in &self.sites {
+            let label = format!("handlers.wordpress.sites.{name}");
+            check_wordpress_site_name(name).map_err(|e| format!("{label}: {e}"))?;
+            if site.default_site.is_some() || !site.sites.is_empty() {
+                return Err(format!(
+                    "{label}: default_site and sites can be written only in [handlers.wordpress]"
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// 使うWordPressのサイトの一覧（#640）。最初が既定のサイト。
+    ///
+    /// - `sites`が無ければ、`[handlers.wordpress]`の1つ（名前は`default`）
+    /// - `sites`があれば、使うサイトを、既定のサイト、残りを名前の順に。
+    ///   全サイト共通の設定（`timeout_seconds`・`rate_limit`・
+    ///   `upload_allowed_dirs`）は、サイトに無ければ`[handlers.wordpress]`の
+    ///   ものを使う。使うサイトが2つ以上なら、`default_site`が要る
+    ///
+    /// 返す設定には、`sites`・`default_site`を含めない
+    pub fn site_list(&self) -> Result<Vec<(String, WordPressConfig)>, String> {
+        if self.sites.is_empty() {
+            if let Some(default_site) = &self.default_site {
+                return Err(format!(
+                    "handlers.wordpress.default_site: there is no [handlers.wordpress.sites.{default_site}]. default_site is used with [handlers.wordpress.sites.<site>]"
+                ));
+            }
+            if self.url.trim().is_empty() {
+                return Err("handlers.wordpress.url is not set".to_string());
+            }
+            return Ok(vec![(DEFAULT_WORDPRESS_SITE.to_string(), self.clone())]);
+        }
+        self.check_sites_layout()?;
+        let mut list = Vec::new();
+        for (name, site) in &self.sites {
+            if !(self.enabled.unwrap_or(false) && site.enabled.unwrap_or(true)) {
+                continue;
+            }
+            if site.url.trim().is_empty() {
+                return Err(format!("handlers.wordpress.sites.{name}.url is not set"));
+            }
+            let mut site = site.clone();
+            site.enabled = Some(true);
+            site.timeout_seconds = site.timeout_seconds.or(self.timeout_seconds);
+            if site.rate_limit.is_none() {
+                site.rate_limit = self.rate_limit.clone();
+            }
+            if site.upload_allowed_dirs.is_empty() {
+                site.upload_allowed_dirs = self.upload_allowed_dirs.clone();
+            }
+            list.push((name.clone(), site));
+        }
+        if list.is_empty() {
+            return Err(
+                "handlers.wordpress: every site in [handlers.wordpress.sites.<site>] has enabled = false"
+                    .to_string(),
+            );
+        }
+        match &self.default_site {
+            Some(default_site) => {
+                let index = list
+                    .iter()
+                    .position(|(name, _)| name == default_site)
+                    .ok_or_else(|| {
+                        let names: Vec<&str> = list.iter().map(|(n, _)| n.as_str()).collect();
+                        format!(
+                            "handlers.wordpress.default_site: '{default_site}' is not a site in use. Use one of: {}",
+                            names.join(", ")
+                        )
+                    })?;
+                let default = list.remove(index);
+                list.insert(0, default);
+            }
+            None if list.len() > 1 => {
+                let names: Vec<&str> = list.iter().map(|(n, _)| n.as_str()).collect();
+                return Err(format!(
+                    "handlers.wordpress.default_site is required with more than one site: write default_site = \"<site>\", one of: {}",
+                    names.join(", ")
+                ));
+            }
+            None => {}
+        }
+        Ok(list)
+    }
+
+    /// 1つのサイトの資格情報を読む。`label`は、エラーに出す表の名前
+    fn resolve_site_credentials(
+        &mut self,
+        store: &dyn crate::security::keyring_store::SecretStore,
+        label: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let Some(name) = self.keyring.clone() else {
             return Ok(self.resolve_encrypted_credentials()?);
         };
@@ -1014,19 +1210,20 @@ impl WordPressConfig {
         }
         if !others.is_empty() {
             return Err(format!(
-                "handlers.wordpress: keyring cannot be combined with {}. Remove {} from the config file (the keyring entry holds the username and password)",
+                "{}: keyring cannot be combined with {}. Remove {} from the config file (the keyring entry holds the username and password)",
+                label,
                 others.join(", "),
                 if others.len() == 1 { "it" } else { "them" },
             )
             .into());
         }
         let credentials = crate::security::keyring_store::load_wordpress_credentials(store, &name)
-            .map_err(|e| format!("handlers.wordpress.keyring: {e}"))?;
+            .map_err(|e| format!("{label}.keyring: {e}"))?;
         // 資格情報を保存したサイトと、設定の`url`が同じときだけ使う（#541）。
         // 別の人が書いた設定ファイルが、この項目の名前と別のサイトの`url`を
         // 書いて、パスワードを受け取れないようにする
         crate::security::keyring_store::check_site(&name, &credentials, &self.url)
-            .map_err(|e| format!("handlers.wordpress.keyring: {e}"))?;
+            .map_err(|e| format!("{label}.keyring: {e}"))?;
         self.username = credentials.username;
         self.password = credentials.application_password.to_string();
         Ok(())
@@ -1206,9 +1403,13 @@ fn apply_wordpress_env_overrides(
                 encrypted_credentials: None, // 環境変数では平文使用
                 keyring: None,
                 upload_allowed_dirs: Vec::new(),
+                default_site: None,
+                sites: Default::default(),
             });
         }
         Some(wp_config) if wp_config.keyring.is_some() => {}
+        // 複数のサイト（#640）は、どのサイトかが決まらないので、上書きしない
+        Some(wp_config) if !wp_config.sites.is_empty() => {}
         Some(wp_config) => {
             wp_config.url = wp_url;
             if let Some(username) = env("WORDPRESS_USERNAME") {
@@ -1343,13 +1544,30 @@ impl McpConfig {
         if !config.enabled.unwrap_or(false) {
             return Ok(());
         }
+        config.inherit_into_sites();
+        Self::expand_wordpress_fields(config, "handlers.wordpress")?;
+        // ほかのサイト（#640）
+        for (name, site) in config.sites.iter_mut() {
+            if site.enabled.unwrap_or(false) {
+                Self::expand_wordpress_fields(site, &format!("handlers.wordpress.sites.{name}"))?;
+            }
+        }
+        Ok(())
+    }
+
+    /// 1つのサイトの`url`・`username`・`password`の`${VAR}`を展開する。
+    /// `prefix`は、エラーに出す表の名前
+    fn expand_wordpress_fields(
+        config: &mut WordPressConfig,
+        prefix: &str,
+    ) -> Result<(), ConfigEnvError> {
         for (field, value) in [
             ("url", &mut config.url),
             ("username", &mut config.username),
             ("password", &mut config.password),
         ] {
             *value = Self::expand_env_vars(value).map_err(|reason| ConfigEnvError {
-                field: format!("handlers.wordpress.{}", field),
+                field: format!("{prefix}.{field}"),
                 reason,
             })?;
         }
@@ -1752,6 +1970,8 @@ impl McpConfig {
                     encrypted_credentials: None, // デフォルトでは平文
                     keyring: None,
                     upload_allowed_dirs: Vec::new(),
+                    default_site: None,
+                    sites: Default::default(),
                 }),
             },
             plugins: Vec::new(),
@@ -3040,6 +3260,8 @@ mod additional_tests {
             encrypted_credentials: None,
             keyring: None,
             upload_allowed_dirs: Vec::new(),
+            default_site: None,
+            sites: Default::default(),
         };
 
         let debug_output = format!("{:?}", config);
@@ -3069,6 +3291,8 @@ mod additional_tests {
             encrypted_credentials: Some(encrypted),
             keyring: None,
             upload_allowed_dirs: Vec::new(),
+            default_site: None,
+            sites: Default::default(),
         };
 
         // マスターパスワード環境変数が無い場合はエラーになり、
@@ -3108,6 +3332,8 @@ mod additional_tests {
             encrypted_credentials: None,
             keyring: None,
             upload_allowed_dirs: Vec::new(),
+            default_site: None,
+            sites: Default::default(),
         };
 
         config.resolve_encrypted_credentials().unwrap();
@@ -3132,6 +3358,8 @@ mod additional_tests {
             encrypted_credentials: None,
             keyring: None,
             upload_allowed_dirs: Vec::new(),
+            default_site: None,
+            sites: Default::default(),
         };
 
         assert!(config.resolve_encrypted_credentials().is_err());
@@ -3152,6 +3380,8 @@ mod additional_tests {
             encrypted_credentials: None,
             keyring: None,
             upload_allowed_dirs: Vec::new(),
+            default_site: None,
+            sites: Default::default(),
         };
 
         config.resolve_encrypted_credentials().unwrap();
@@ -3173,6 +3403,8 @@ mod additional_tests {
             encrypted_credentials: None,
             keyring: None,
             upload_allowed_dirs: Vec::new(),
+            default_site: None,
+            sites: Default::default(),
         };
 
         config.resolve_encrypted_credentials().unwrap();
@@ -3220,6 +3452,190 @@ mod additional_tests {
         let mut plain = keyring_config("");
         plain.keyring = None;
         assert!(!toml::to_string(&plain).unwrap().contains("keyring"));
+    }
+
+    // ---- #640: 複数のWordPressのサイト ----
+
+    fn sites_config(toml_str: &str) -> WordPressConfig {
+        toml::from_str(toml_str).unwrap()
+    }
+
+    const TWO_SITES: &str = "enabled = true\ndefault_site = \"shop\"\ntimeout_seconds = 60\n\
+         upload_allowed_dirs = [\"/shared\"]\n\
+         [sites.blog]\nurl = \"https://blog.example.com\"\nusername = \"u\"\npassword = \"p\"\n\
+         [sites.shop]\nurl = \"https://shop.example.com\"\nusername = \"u\"\npassword = \"p\"\ntimeout_seconds = 5\n\
+         upload_allowed_dirs = [\"/shop\"]\n\
+         [sites.old]\nurl = \"https://old.example.com\"\nenabled = false\n";
+
+    /// 既定のサイトが最初、残りは名前の順。`enabled = false`のサイトは使わない。
+    /// 共通の設定は、サイトに無ければ`[handlers.wordpress]`のもの
+    #[test]
+    fn test_site_list_order_default_and_shared_settings() {
+        let list = sites_config(TWO_SITES).site_list().unwrap();
+        let names: Vec<_> = list.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, ["shop", "blog"]);
+        let (shop, blog) = (&list[0].1, &list[1].1);
+        assert_eq!(shop.timeout_seconds, Some(5));
+        assert_eq!(blog.timeout_seconds, Some(60));
+        assert_eq!(shop.upload_allowed_dirs, ["/shop"]);
+        assert_eq!(blog.upload_allowed_dirs, ["/shared"]);
+        assert!(list
+            .iter()
+            .all(|(_, c)| c.enabled == Some(true) && c.sites.is_empty()));
+
+        // 使うサイトが1つなら、default_siteは要らない
+        let one =
+            sites_config("enabled = true\n[sites.blog]\nurl = \"https://blog.example.com\"\n");
+        assert_eq!(one.site_list().unwrap()[0].0, "blog");
+
+        // 今までの形（sitesが無い）は、defaultという名前の1つ
+        let single = sites_config("url = \"https://blog.example.com\"\nenabled = true\n");
+        let list = single.site_list().unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].0, "default");
+    }
+
+    #[test]
+    fn test_site_list_refuses_unclear_layouts() {
+        for (toml_str, message) in [
+            (
+                "enabled = true\n[sites.blog]\nurl = \"b\"\n[sites.shop]\nurl = \"s\"\n",
+                "default_site is required with more than one site: write default_site = \"<site>\", one of: blog, shop",
+            ),
+            (
+                "enabled = true\ndefault_site = \"other\"\n[sites.blog]\nurl = \"b\"\n",
+                "'other' is not a site in use. Use one of: blog",
+            ),
+            (
+                "enabled = true\ndefault_site = \"old\"\n[sites.blog]\nurl = \"b\"\n[sites.old]\nurl = \"o\"\nenabled = false\n",
+                "'old' is not a site in use",
+            ),
+            (
+                "url = \"https://a\"\nenabled = true\ndefault_site = \"blog\"\n",
+                "there is no [handlers.wordpress.sites.blog]",
+            ),
+            (
+                "url = \"https://a\"\nkeyring = \"a\"\nenabled = true\n[sites.blog]\nurl = \"b\"\n",
+                "write url, keyring in each site's table, not in [handlers.wordpress]",
+            ),
+            (
+                "enabled = true\n[sites.\"My Blog\"]\nurl = \"b\"\n",
+                "handlers.wordpress.sites.My Blog: WordPress site name 'My Blog' is not valid",
+            ),
+            (
+                "enabled = true\n[sites.blog]\nurl = \"b\"\ndefault_site = \"x\"\n",
+                "default_site and sites can be written only in [handlers.wordpress]",
+            ),
+            (
+                "enabled = true\n[sites.blog]\nurl = \"b\"\n[sites.blog.sites.more]\nurl = \"m\"\n",
+                "default_site and sites can be written only in [handlers.wordpress]",
+            ),
+            (
+                "enabled = true\n[sites.blog]\nusername = \"u\"\n",
+                "handlers.wordpress.sites.blog.url is not set",
+            ),
+            (
+                "enabled = true\n[sites.blog]\nurl = \"b\"\nenabled = false\n",
+                "every site in [handlers.wordpress.sites.<site>] has enabled = false",
+            ),
+            ("enabled = true\n", "handlers.wordpress.url is not set"),
+        ] {
+            let err = sites_config(toml_str).site_list().unwrap_err();
+            assert!(err.contains(message), "{toml_str}: {err}");
+        }
+    }
+
+    /// サイトごとに、自分の`keyring`を読む。誤りには、どのサイトかを出す
+    #[test]
+    fn test_resolve_credentials_reads_each_site() {
+        use crate::security::keyring_store::{
+            store_wordpress_credentials, WordPressKeyringCredentials,
+        };
+        let store = store_with_example();
+        store_wordpress_credentials(
+            &store,
+            "shop",
+            &WordPressKeyringCredentials {
+                site_url: "https://shop.example.com".to_string(),
+                username: "shopkeeper".to_string(),
+                application_password: zeroize::Zeroizing::new("shop pass".to_string()),
+            },
+        )
+        .unwrap();
+        let two = |shop: &str| {
+            sites_config(&format!(
+                "enabled = true\ndefault_site = \"blog\"\n\
+                 [sites.blog]\nurl = \"https://example.com\"\nkeyring = \"example.com\"\n\
+                 [sites.shop]\n{shop}"
+            ))
+        };
+        let mut config = two("url = \"https://shop.example.com\"\nkeyring = \"shop\"\n");
+        config.resolve_credentials_with(&store).unwrap();
+        assert_eq!(config.sites["blog"].username, "editor");
+        let shop = &config.sites["shop"];
+        assert_eq!(shop.username, "shopkeeper");
+        assert_eq!(shop.password, "shop pass");
+
+        // 資格情報を保存したサイトと`url`が違えば、使わない（#541と同じ）
+        let mut wrong = two("url = \"https://evil.example.com\"\nkeyring = \"shop\"\n");
+        let err = wrong
+            .resolve_credentials_with(&store)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.starts_with("handlers.wordpress.sites.shop.keyring: "),
+            "{err}"
+        );
+
+        // 資格情報の無いサイト
+        let mut missing = two("url = \"https://shop.example.com\"\n");
+        let err = missing
+            .resolve_credentials_with(&store)
+            .unwrap_err()
+            .to_string();
+        assert!(err.starts_with("handlers.wordpress.sites.shop: "), "{err}");
+
+        // 使わないサイト・全体を使わない設定は、読まない
+        let mut disabled =
+            two("url = \"https://shop.example.com\"\nenabled = false\nkeyring = \"none\"\n");
+        disabled.resolve_credentials_with(&store).unwrap();
+        let mut off = two("url = \"https://shop.example.com\"\nkeyring = \"none\"\n");
+        off.enabled = Some(false);
+        off.resolve_credentials_with(&store).unwrap();
+
+        // [handlers.wordpress]にサイトの項目を書いた
+        let mut mixed = two("url = \"https://shop.example.com\"\nkeyring = \"shop\"\n");
+        mixed.url = "https://example.com".to_string();
+        let err = mixed
+            .resolve_credentials_with(&store)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("write url in each site's table"), "{err}");
+    }
+
+    /// サイトの`${VAR}`も展開し、誤りにはサイトの表の名前を出す
+    #[test]
+    fn test_expand_wordpress_config_expands_sites() {
+        let mut config = sites_config(
+            "enabled = true\ndefault_site = \"blog\"\n\
+             [sites.blog]\nurl = \"https://blog.example.com\"\n\
+             [sites.shop]\nurl = \"https://shop.example.com\"\npassword = \"${MCP_RS_TEST_UNSET_640}\"\n",
+        );
+        let err = McpConfig::expand_wordpress_config(&mut config).unwrap_err();
+        assert_eq!(err.field, "handlers.wordpress.sites.shop.password");
+    }
+
+    /// `WORDPRESS_URL`等は、複数のサイトの設定を上書きしない
+    #[test]
+    fn test_env_overrides_leave_sites_alone() {
+        let mut wordpress = Some(sites_config(TWO_SITES));
+        apply_wordpress_env_overrides(&mut wordpress, |name| match name {
+            "WORDPRESS_URL" => Some("https://evil.example.com".to_string()),
+            _ => Some("x".to_string()),
+        });
+        let config = wordpress.unwrap();
+        assert!(config.url.is_empty());
+        assert_eq!(config.sites["blog"].url, "https://blog.example.com");
     }
 
     /// 今のフォルダの設定ファイルは読まず、見つけたら`--config`を案内する（#541）

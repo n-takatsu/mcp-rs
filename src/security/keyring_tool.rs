@@ -46,6 +46,7 @@ config file:
   enabled = true
   keyring = \"example.com\"
 
+For another site, write the same in [handlers.wordpress.sites.<site>].
 Leave username, password and encrypted_credentials out of that section.
 The credentials are used only when url has the same scheme, host and port
 as the site URL stored with them, so they are not sent to another site.
@@ -110,7 +111,7 @@ fn run_with(args: &[String], store: &dyn SecretStore) -> Result<(), Box<dyn std:
                 "Stored the credentials for '{}' on {} as '{name}' in the OS credential store (service '{KEYRING_SERVICE}').",
                 stored.username, stored.site_url
             );
-            eprintln!("In the config file, write this under [handlers.wordpress] and remove username, password and encrypted_credentials:");
+            eprintln!("In the config file, write this under [handlers.wordpress] (or the site's [handlers.wordpress.sites.<site>]) and remove username, password and encrypted_credentials:");
             eprintln!("  keyring = \"{name}\"");
         }
         Action::Show(name) => {

@@ -282,16 +282,32 @@ fn check_config(path: Option<&str>, report: &mut Report) -> Option<(McpConfig, b
     }
 
     // 置き場所は、解決する前の設定から決める（解決すると平文と同じになる）
-    let source = config
+    // ほかのサイトがあれば、サイトごとに（#640）
+    let sources: Vec<(String, (Status, String))> = config
         .handlers
         .wordpress
         .as_ref()
         .filter(|wp| wp.enabled == Some(true))
-        .map(credential_source);
+        .and_then(|wp| {
+            let sites = wp.site_list().ok()?;
+            let multiple = sites.len() > 1;
+            Some(
+                sites
+                    .iter()
+                    .map(|(name, site)| {
+                        (
+                            site_item("WordPress credentials", multiple.then_some(name)),
+                            credential_source(site),
+                        )
+                    })
+                    .collect(),
+            )
+        })
+        .unwrap_or_default();
     let credentials_ok = match config.resolve_wordpress_credentials() {
         Ok(()) => {
-            if let Some((status, detail)) = source {
-                report.push(status, "WordPress credentials", detail);
+            for (item, (status, detail)) in sources {
+                report.push(status, &item, detail);
             }
             true
         }
@@ -304,6 +320,14 @@ fn check_config(path: Option<&str>, report: &mut Report) -> Option<(McpConfig, b
         report.push(Status::Error, "HTTP API keys", e.to_string());
     }
     Some((config, credentials_ok))
+}
+
+/// 項目の名前。ほかのサイトがあれば、サイトの名前を付ける（#640）
+fn site_item(item: &str, site: Option<&String>) -> String {
+    match site {
+        Some(site) => format!("{item} ({site})"),
+        None => item.to_string(),
+    }
 }
 
 /// 資格情報の置き場所の説明。平文で書いてあれば知らせる
@@ -392,23 +416,35 @@ async fn check_wordpress(
         );
         return;
     }
-    let handler = match crate::handlers::WordPressHandler::try_new(wp.clone()) {
-        Ok(handler) => handler,
+    // ほかのサイトがあれば、サイトごとに確かめる（#640）
+    let sites = match wp.site_list() {
+        Ok(sites) => sites,
         Err(e) => {
             report.push(Status::Error, ITEM, e);
             return;
         }
     };
-    if offline {
-        report.push(
-            Status::Skip,
-            "WordPress site",
-            format!("{} (not connected: --offline)", wp.url),
-        );
-        return;
+    let multiple = sites.len() > 1;
+    for (name, site) in &sites {
+        let label = multiple.then_some(name);
+        let handler = match crate::handlers::WordPressHandler::try_new(site.clone()) {
+            Ok(handler) => handler,
+            Err(e) => {
+                report.push(Status::Error, &site_item(ITEM, label), e);
+                continue;
+            }
+        };
+        if offline {
+            report.push(
+                Status::Skip,
+                &site_item("WordPress site", label),
+                format!("{} (not connected: --offline)", site.url),
+            );
+            continue;
+        }
+        let health = handler.health_check().await;
+        report_health(&site.url, label, &health, report);
     }
-    let health = handler.health_check().await;
-    report_health(&wp.url, &health, report);
 }
 
 /// `health_check`の結果を、確かめた順に1項目ずつ表示する。失敗した項目は、
@@ -417,6 +453,7 @@ async fn check_wordpress(
 /// 失敗したら、権限・メディアは確かめていない
 fn report_health(
     url: &str,
+    site: Option<&String>,
     health: &crate::handlers::wordpress::WordPressHealthCheck,
     report: &mut Report,
 ) {
@@ -443,14 +480,18 @@ fn report_health(
         }
     };
     if !health.site_accessible {
-        report.push(Status::Error, SITE.1, detail(SITE.0));
+        report.push(Status::Error, &site_item(SITE.1, site), detail(SITE.0));
     } else {
         let name = health
             .site_info
             .as_ref()
             .map(|info| format!(" \"{}\"", info.name))
             .unwrap_or_default();
-        report.push(Status::Ok, SITE.1, format!("{url}{name} is reachable"));
+        report.push(
+            Status::Ok,
+            &site_item(SITE.1, site),
+            format!("{url}{name} is reachable"),
+        );
         let oks = [
             health.rest_api_available,
             health.authentication_valid,
@@ -458,19 +499,20 @@ fn report_health(
             health.media_upload_possible,
         ];
         for (index, ((prefix, item), ok)) in STEPS.iter().zip(oks).enumerate() {
+            let item = site_item(item, site);
             if ok {
-                report.push(Status::Ok, item, "OK");
+                report.push(Status::Ok, &item, "OK");
             } else if index >= 2 && !health.authentication_valid {
-                report.push(Status::Skip, item, "not checked: the sign-in failed");
+                report.push(Status::Skip, &item, "not checked: the sign-in failed");
             } else {
-                report.push(Status::Error, item, detail(prefix));
+                report.push(Status::Error, &item, detail(prefix));
             }
         }
     }
     // どの項目にも当たらないエラー（念のため）
     for (detail, shown) in health.error_details.iter().zip(shown) {
         if !shown {
-            report.push(Status::Error, SITE.1, detail.clone());
+            report.push(Status::Error, &site_item(SITE.1, site), detail.clone());
         }
     }
 }
@@ -766,6 +808,7 @@ mod tests {
         let mut report = Report::default();
         report_health(
             "https://example.com",
+            None,
             &health(
                 [true, true, false, false, false],
                 &["Authentication failed: Invalid credentials"],
@@ -789,13 +832,19 @@ mod tests {
     #[test]
     fn test_report_health_ok_and_unreachable() {
         let mut report = Report::default();
-        report_health("https://example.com", &health([true; 5], &[]), &mut report);
+        report_health(
+            "https://example.com",
+            None,
+            &health([true; 5], &[]),
+            &mut report,
+        );
         assert_eq!(report.count(Status::Ok), 5);
         assert_eq!(report.count(Status::Error), 0);
 
         let mut report = Report::default();
         report_health(
             "https://example.com",
+            None,
             &health([false; 5], &["Site accessibility failed: timeout"]),
             &mut report,
         );
@@ -810,6 +859,7 @@ mod tests {
         let mut report = Report::default();
         report_health(
             "https://example.com",
+            None,
             &health(
                 [true, true, true, false, true],
                 &["Permissions check failed: 403"],
@@ -944,6 +994,31 @@ mod tests {
         let mut report = Report::default();
         check_wordpress(&config, ok, true, &mut report).await;
         assert_eq!(report.find("WordPress").unwrap().0, Status::Error);
+    }
+
+    /// ほかのサイトがあれば、サイトごとに確かめ、項目にサイトの名前を付ける（#640）
+    #[tokio::test]
+    async fn test_wordpress_checks_each_site() {
+        let (result, report) = check_text(
+            "[server]\n[transport]\n[handlers.wordpress]\nenabled = true\ndefault_site = \"blog\"\n\
+             [handlers.wordpress.sites.blog]\nurl = \"https://blog.example.com\"\nusername = \"u\"\npassword = \"p\"\n\
+             [handlers.wordpress.sites.shop]\nurl = \"https://shop.example.com\"\nusername = \"u\"\npassword = \"p\"\n",
+        );
+        assert_eq!(
+            report.find("WordPress credentials (blog)").unwrap().0,
+            Status::Warn
+        );
+        assert_eq!(
+            report.find("WordPress credentials (shop)").unwrap().0,
+            Status::Warn
+        );
+        let (config, ok) = result.unwrap();
+        let mut report = Report::default();
+        check_wordpress(&config, ok, true, &mut report).await;
+        let (_, blog) = report.find("WordPress site (blog)").unwrap();
+        assert!(blog.starts_with("https://blog.example.com"), "{blog}");
+        let (_, shop) = report.find("WordPress site (shop)").unwrap();
+        assert!(shop.starts_with("https://shop.example.com"), "{shop}");
     }
 
     #[test]
