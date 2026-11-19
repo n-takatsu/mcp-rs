@@ -364,6 +364,7 @@ The upload is rejected before anything is sent to WordPress if the MIME type is 
 - A path outside the allowed folders and a file that does not exist give the same error, so the error does not reveal which files exist elsewhere
 - With STDIO (Claude Code, Claude Desktop), mcp-rs runs on the same machine as the client, so it reads the client's local files. Over HTTP/WebSocket, the client may be on another machine, and the files are read from the server. mcp-rs logs a warning at startup in that case
 - The uploaded file is public at once: WordPress gives every media file a URL that anyone can open (the `source_url` in the result), even before it is used in a post. Put only files you are willing to publish in `upload_allowed_dirs`
+- The AI client decides which file to upload. A request in a web page, a document or a plugin's answer can lead it to upload a file you did not mean to publish. Do not allow whole folders such as Pictures or Documents: make a folder only for files to publish (for example `C:/Users/me/Pictures/mcp-upload`), and move files into it when you want the AI to use them
 
 **Example Usage:**
 

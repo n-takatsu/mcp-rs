@@ -112,6 +112,64 @@ fn is_safe_to_resend(method: &reqwest::Method) -> bool {
     )
 }
 
+/// WordPressの1つの応答の大きさの上限（#598）。乗っ取られたサイト等が、
+/// 大きな応答でメモリーを使い切らせないように。1ページ100件の投稿（本文
+/// 付き）でも、ふつうは数MB
+const MAX_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
+
+/// エラーの応答の本文は、診断に使う分（WordPressの`code`・`message`）だけ読む
+const MAX_ERROR_BODY_BYTES: usize = 64 * 1024;
+
+/// 一覧の全件取得（`fetch_all_pages`）で読むページ数の上限（#598）。1ページ
+/// 100件なので、10,000件。`X-WP-TotalPages`をそのまま信じると、大量の
+/// ページを読み続けさせられる
+const MAX_LIST_PAGES: u32 = 100;
+
+/// 一覧の全件取得で読む、応答の合計の大きさの上限（#598）
+const MAX_LIST_BYTES: usize = 64 * 1024 * 1024;
+
+/// 応答の本文を、`limit`バイトまで読む（#598）。超えたら、読むのをやめて
+/// エラーにする（`Content-Length`が上限を超えていれば、読まずに）
+async fn read_body_limited(
+    mut response: reqwest::Response,
+    limit: usize,
+) -> Result<String, McpError> {
+    let too_large = || {
+        McpError::ExternalApi(format!(
+            "the WordPress response is larger than {} MB, the most mcp-rs reads for one request",
+            limit / (1024 * 1024)
+        ))
+    };
+    if response
+        .content_length()
+        .is_some_and(|length| length > limit as u64)
+    {
+        return Err(too_large());
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(McpError::Http)? {
+        if body.len() + chunk.len() > limit {
+            return Err(too_large());
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(String::from_utf8_lossy(&body).into_owned())
+}
+
+/// エラーの応答の本文を、`MAX_ERROR_BODY_BYTES`まで読む。読めなければ空。
+/// 上限を超えた分は読まない（診断には先頭で足りる）
+async fn read_error_body(mut response: reqwest::Response) -> String {
+    let mut body = Vec::new();
+    while let Ok(Some(chunk)) = response.chunk().await {
+        let room = MAX_ERROR_BODY_BYTES - body.len();
+        body.extend_from_slice(&chunk[..chunk.len().min(room)]);
+        if body.len() >= MAX_ERROR_BODY_BYTES {
+            break;
+        }
+    }
+    String::from_utf8_lossy(&body).into_owned()
+}
+
 /// POST・DELETEを再送しなかったときに、エラーメッセージに添える注意。
 /// MCPクライアントが結果を確かめずに同じ呼び出しを繰り返さないように。
 const NOT_RESENT_NOTE: &str = ". Not retried automatically: WordPress may have already processed this request. Check whether it took effect before trying again";
@@ -1265,7 +1323,7 @@ impl WordPressHandler {
                     } else {
                         // 本文のcode/messageを診断用に含める
                         // （例: rest_post_invalid_id）
-                        let body = response.text().await.unwrap_or_default();
+                        let body = read_error_body(response).await;
                         let mut message = format_wp_error(status, &body);
                         if attempt > 1 {
                             message.push_str(&format!(" (after {} attempts)", attempt));
@@ -1326,7 +1384,7 @@ impl WordPressHandler {
             .await?;
         // 本文はログに出さない。context=editの応答には投稿の
         // 閲覧パスワードや未公開の下書き等が含まれうるため
-        let text = response.text().await.map_err(McpError::Http)?;
+        let text = read_body_limited(response, MAX_RESPONSE_BYTES).await?;
         debug!("Response body: {} bytes", text.len());
         parse_success_body(&text)
     }
@@ -1343,17 +1401,18 @@ impl WordPressHandler {
         T: for<'de> serde::Deserialize<'de>,
     {
         let response = self.send_with_retry(|| Ok(build_request())).await?;
-        let text = response.text().await.map_err(McpError::Http)?;
+        let text = read_body_limited(response, MAX_RESPONSE_BYTES).await?;
         parse_success_body(&text)
     }
 
     /// `execute_request_with_retry`と同じリトライ処理に加え、
     /// WordPress REST APIのページネーションヘッダー（`X-WP-TotalPages`）
-    /// を読み取って返す。一覧系エンドポイントの全件取得に使う。
+    /// を読み取って返す。一覧系エンドポイントの全件取得に使う。最後の値は、
+    /// 読んだ本文の大きさ（バイト）
     async fn execute_request_with_retry_capturing_total_pages<T>(
         &self,
         request_builder: reqwest::RequestBuilder,
-    ) -> Result<(T, u32, u64), McpError>
+    ) -> Result<(T, u32, u64, usize), McpError>
     where
         T: for<'de> serde::Deserialize<'de>,
     {
@@ -1376,9 +1435,9 @@ impl WordPressHandler {
             .and_then(|v| v.to_str().ok())
             .and_then(|s| s.parse::<u64>().ok())
             .unwrap_or(0);
-        let text = response.text().await.map_err(McpError::Http)?;
+        let text = read_body_limited(response, MAX_RESPONSE_BYTES).await?;
         let data = parse_success_body(&text)?;
-        Ok((data, total_pages, total_items))
+        Ok((data, total_pages, total_items, text.len()))
     }
 
     /// 一覧系エンドポイントを`per_page=100`かつ`X-WP-TotalPages`に基づく
@@ -1398,6 +1457,7 @@ impl WordPressHandler {
     {
         let mut all_items: Vec<T> = Vec::new();
         let mut page: u32 = 1;
+        let mut read_bytes: usize = 0;
 
         let total_items: u64 = loop {
             let url = url_for_page(page);
@@ -1407,13 +1467,30 @@ impl WordPressHandler {
                 request = request.basic_auth(username, Some(password));
             }
 
-            let (items, total_pages, reported_total): (Vec<T>, u32, u64) = self
+            let (items, total_pages, reported_total, bytes): (Vec<T>, u32, u64, usize) = self
                 .execute_request_with_retry_capturing_total_pages(request)
                 .await?;
 
             all_items.extend(items);
+            read_bytes += bytes;
+            if read_bytes > MAX_LIST_BYTES {
+                return Err(McpError::ExternalApi(format!(
+                    "the WordPress list is larger than {} MB in total, the most mcp-rs reads for one list",
+                    MAX_LIST_BYTES / (1024 * 1024)
+                )));
+            }
 
             if page >= total_pages.max(1) {
+                break reported_total;
+            }
+            // `X-WP-TotalPages`をそのまま信じない（#598）
+            if page >= MAX_LIST_PAGES {
+                warn!(
+                    "fetch_all_pages: WordPress reports {} pages; read only the first {} ({} items)",
+                    total_pages,
+                    MAX_LIST_PAGES,
+                    all_items.len()
+                );
                 break reported_total;
             }
             page += 1;
@@ -1572,11 +1649,12 @@ impl WordPressHandler {
         if !status.is_success() {
             // WordPressのエラーコード（empty_content等）を含めないと、
             // 失敗の原因が分からない
-            let body = response.text().await.unwrap_or_default();
+            let body = read_error_body(response).await;
             return Err(McpError::ExternalApi(format_wp_error(status, &body)));
         }
 
-        let created_post: WordPressPost = response.json().await?;
+        let text = read_body_limited(response, MAX_RESPONSE_BYTES).await?;
+        let created_post: WordPressPost = serde_json::from_str(&text)?;
         Ok(created_post)
     }
 
@@ -2613,7 +2691,8 @@ impl WordPressHandler {
             );
             return None;
         }
-        response.json().await.ok()
+        let text = read_body_limited(response, MAX_RESPONSE_BYTES).await.ok()?;
+        serde_json::from_str(&text).ok()
     }
 
     /// Check if WordPress REST API is available
@@ -7362,5 +7441,65 @@ mod tests {
         assert!(text.starts_with("Found 1 posts"), "{}", text);
         assert!(text.contains("\"status\": \"future\""), "{}", text);
         assert!(text.contains("2030-01-01T10:00:00"), "{}", text);
+    }
+
+    // ---- #598: 応答の大きさ・ページ数の上限 ----
+
+    fn response_with(body: &str) -> reqwest::Response {
+        reqwest::Response::from(http::Response::new(body.to_string()))
+    }
+
+    #[tokio::test]
+    async fn test_read_body_limited() {
+        assert_eq!(
+            read_body_limited(response_with("hello"), 5).await.unwrap(),
+            "hello"
+        );
+        let err = read_body_limited(response_with("hello!"), 5)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, McpError::ExternalApi(ref msg) if msg.contains("larger than")),
+            "{err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_read_error_body_reads_only_the_beginning() {
+        let big = "x".repeat(MAX_ERROR_BODY_BYTES + 10);
+        assert_eq!(
+            read_error_body(response_with(&big)).await.len(),
+            MAX_ERROR_BODY_BYTES
+        );
+        assert_eq!(read_error_body(response_with("{}")).await, "{}");
+    }
+
+    /// `X-WP-TotalPages`がとても大きくても、`MAX_LIST_PAGES`ページで止める
+    #[tokio::test]
+    async fn test_fetch_all_pages_stops_at_the_page_limit() {
+        use std::sync::atomic::Ordering;
+        // 状態行の後ろに、ページ数のヘッダーを足す
+        let (base, count) = spawn_fixed_response_server(
+            "200 OK\r\nX-WP-TotalPages: 4294967295\r\nX-WP-Total: 1",
+            "[]".to_string(),
+        )
+        .await;
+        let handler = handler_for_local_server(base);
+        let posts = handler.get_posts(None).await.unwrap();
+        assert!(posts.is_empty());
+        assert_eq!(count.load(Ordering::SeqCst), MAX_LIST_PAGES as usize);
+    }
+
+    /// 大きすぎる応答は、エラーにする（読み切らない）
+    #[tokio::test]
+    async fn test_too_large_response_is_an_error() {
+        let (base, _count) =
+            spawn_fixed_response_server("200 OK", "x".repeat(MAX_RESPONSE_BYTES + 1)).await;
+        let handler = handler_for_local_server(base);
+        let err = handler.get_posts(None).await.unwrap_err();
+        assert!(
+            matches!(err, McpError::ExternalApi(ref msg) if msg.contains("larger than 32 MB")),
+            "{err:?}"
+        );
     }
 }
