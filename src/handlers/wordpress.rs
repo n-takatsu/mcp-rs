@@ -1222,13 +1222,92 @@ pub struct WordPressContent {
     pub protected: bool,
 }
 
+/// WordPressのコメント。コメントした人のメールアドレス・IPアドレスは、
+/// 管理（承認・スパム・返信）に要らないので、読まない・出さない（#639）
 #[derive(Debug, Serialize, Deserialize)]
 pub struct WordPressComment {
     pub id: Option<u64>,
     pub post: u64,
+    /// 返信先のコメントのID（返信でなければ0）
+    #[serde(default)]
+    pub parent: u64,
+    /// `approved`・`hold`・`spam`・`trash`
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub date: Option<String>,
     pub content: HashMap<String, String>,
+    #[serde(default)]
     pub author_name: String,
-    pub author_email: String,
+    #[serde(default)]
+    pub link: Option<String>,
+}
+
+/// `get_comments`の`status`で受ける、コメントの状態（#639）。`all`は、
+/// 承認済みと承認待ち
+const COMMENT_LIST_STATUSES: &[&str] = &["approve", "hold", "spam", "trash", "all"];
+
+/// `create_comment`・`update_comment`の`status`で受ける、コメントの状態（#639）
+const COMMENT_SET_STATUSES: &[&str] = &["approve", "hold", "spam", "trash"];
+
+/// `create_comment`の既定の状態（#639）。WordPressのコメントには下書きが
+/// 無いので、AIが書いた返信は承認待ちで作り、人が確かめてから公開する
+const DEFAULT_REPLY_STATUS: &str = "hold";
+
+/// 引数`key`の、コメントの状態を読む（#639）。`allowed`の中の値だけを受ける
+fn comment_status_arg(
+    args: &HashMap<String, serde_json::Value>,
+    key: &str,
+    allowed: &[&str],
+) -> Result<Option<String>, McpError> {
+    match args.get(key) {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(value) => value
+            .as_str()
+            .filter(|s| allowed.contains(s))
+            .map(|s| Some(s.to_string()))
+            .ok_or_else(|| {
+                McpError::InvalidParams(format!("{key} must be one of: {}", allowed.join(", ")))
+            }),
+    }
+}
+
+/// 引数`key`の、正の整数のIDを読む（#639）
+fn positive_id_arg(
+    args: &HashMap<String, serde_json::Value>,
+    key: &str,
+) -> Result<Option<u64>, McpError> {
+    match args.get(key) {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(value) => value
+            .as_u64()
+            .filter(|n| *n > 0)
+            .map(Some)
+            .ok_or_else(|| McpError::InvalidParams(format!("{key} must be a positive integer"))),
+    }
+}
+
+/// コメントを1行で表す（#639）。本文は、タグを除いて200文字まで
+fn comment_summary(comment: &WordPressComment) -> String {
+    let content = comment
+        .content
+        .get("rendered")
+        .map(|c| truncate_chars_with_ellipsis(html_to_plain_text(c).trim(), 200))
+        .unwrap_or_default();
+    format!(
+        "ID {} on post {}{} (Status: {}, Author: {}, Date: {}): {}",
+        display_opt_id(comment.id),
+        comment.post,
+        if comment.parent > 0 {
+            format!(", reply to {}", comment.parent)
+        } else {
+            String::new()
+        },
+        comment.status.as_deref().unwrap_or("unknown"),
+        comment.author_name,
+        comment.date.as_deref().unwrap_or("unknown"),
+        content
+    )
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1918,7 +1997,13 @@ impl WordPressHandler {
         Ok(created_post)
     }
 
-    async fn get_comments(&self, post_id: Option<u64>) -> Result<Vec<WordPressComment>, McpError> {
+    /// コメントの一覧。`status`を渡せば、その状態のコメント（#639）。
+    /// 渡さなければ、WordPressの既定（承認済み）
+    async fn get_comments(
+        &self,
+        post_id: Option<u64>,
+        status: Option<&str>,
+    ) -> Result<Vec<WordPressComment>, McpError> {
         let (items, _total) = self
             .fetch_all_pages(|page| {
                 let mut url = format!(
@@ -1928,10 +2013,101 @@ impl WordPressHandler {
                 if let Some(post_id) = post_id {
                     url = format!("{}&post={}", url, post_id);
                 }
+                if let Some(status) = status {
+                    url = format!("{}&status={}", url, status);
+                }
                 url
             })
             .await?;
         Ok(items)
+    }
+
+    /// コメントを1件読む（#639）
+    async fn get_comment(&self, comment_id: u64) -> Result<WordPressComment, McpError> {
+        let url = format!("{}/wp-json/wp/v2/comments/{}", self.base_url, comment_id);
+        let mut request = self.client.get(&url);
+        if let (Some(username), Some(password)) = (&self.username, &self.password) {
+            request = request.basic_auth(username, Some(password));
+        }
+        self.execute_request_with_retry(request).await
+    }
+
+    /// コメントを作る（返信は`parent`付き）（#639）。書いた人は、設定した
+    /// WordPressのユーザーになる
+    async fn create_comment(
+        &self,
+        post_id: u64,
+        parent: Option<u64>,
+        content: &str,
+        status: &str,
+    ) -> Result<WordPressComment, McpError> {
+        let url = format!("{}/wp-json/wp/v2/comments", self.base_url);
+        let mut body = serde_json::json!({
+            "post": post_id,
+            "content": content,
+            "status": status,
+        });
+        if let Some(parent) = parent {
+            body["parent"] = serde_json::json!(parent);
+        }
+        let mut request = self.client.post(&url).json(&body);
+        if let (Some(username), Some(password)) = (&self.username, &self.password) {
+            request = request.basic_auth(username, Some(password));
+        }
+        info!(
+            "Creating WordPress comment on post {} (parent: {:?}, status: {})",
+            post_id, parent, status
+        );
+        self.execute_request_with_retry(request).await
+    }
+
+    /// コメントの状態・本文を変える（#639）
+    async fn update_comment(
+        &self,
+        comment_id: u64,
+        status: Option<&str>,
+        content: Option<&str>,
+    ) -> Result<WordPressComment, McpError> {
+        let url = format!("{}/wp-json/wp/v2/comments/{}", self.base_url, comment_id);
+        let mut body = serde_json::Map::new();
+        if let Some(status) = status {
+            body.insert("status".to_string(), serde_json::json!(status));
+        }
+        if let Some(content) = content {
+            body.insert("content".to_string(), serde_json::json!(content));
+        }
+        let mut request = self.client.post(&url).json(&body);
+        if let (Some(username), Some(password)) = (&self.username, &self.password) {
+            request = request.basic_auth(username, Some(password));
+        }
+        info!(
+            "Updating WordPress comment {} (status: {:?}, content: {})",
+            comment_id,
+            status,
+            content.is_some()
+        );
+        self.execute_request_with_retry(request).await
+    }
+
+    /// コメントを消す（#639）。`force`が偽ならゴミ箱へ
+    async fn delete_comment(
+        &self,
+        comment_id: u64,
+        force: bool,
+    ) -> Result<serde_json::Value, McpError> {
+        let url = format!("{}/wp-json/wp/v2/comments/{}", self.base_url, comment_id);
+        let mut request = self.client.delete(&url);
+        if force {
+            request = request.query(&[("force", "true")]);
+        }
+        if let (Some(username), Some(password)) = (&self.username, &self.password) {
+            request = request.basic_auth(username, Some(password));
+        }
+        info!(
+            "Deleting WordPress comment {} (force: {})",
+            comment_id, force
+        );
+        self.execute_request_with_retry(request).await
     }
 
     /// Upload media file to WordPress
@@ -3451,8 +3627,9 @@ impl WordPressHandler {
             "get_comments" => {
                 let args = params.arguments.unwrap_or_default();
                 let post_id = args.get("post_id").and_then(|v| v.as_u64());
+                let status = comment_status_arg(&args, "status", COMMENT_LIST_STATUSES)?;
 
-                let comments = self.get_comments(post_id).await?;
+                let comments = self.get_comments(post_id, status.as_deref()).await?;
                 Ok(serde_json::json!({
                     "content": [{
                         "type": "text",
@@ -4012,6 +4189,96 @@ impl WordPressHandler {
                     "isError": false
                 }))
             }
+            "create_comment" => {
+                let args = params.arguments.unwrap_or_default();
+                let content = args
+                    .get("content")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.trim().is_empty())
+                    .ok_or_else(|| McpError::InvalidParams("Missing content".to_string()))?;
+                let parent = positive_id_arg(&args, "parent")?;
+                let status = comment_status_arg(&args, "status", &["approve", "hold"])?
+                    .unwrap_or_else(|| DEFAULT_REPLY_STATUS.to_string());
+                // 返信なら、投稿は返信先のコメントから決められる
+                let post_id = match (positive_id_arg(&args, "post_id")?, parent) {
+                    (Some(post_id), _) => post_id,
+                    (None, Some(parent)) => self.get_comment(parent).await?.post,
+                    (None, None) => {
+                        return Err(McpError::InvalidParams(
+                            "Missing post_id (or parent, to reply to a comment)".to_string(),
+                        ))
+                    }
+                };
+
+                let comment = self
+                    .create_comment(post_id, parent, content, &status)
+                    .await?;
+                let note = if comment.status.as_deref() == Some("hold") {
+                    "\nThe comment is held for moderation and not shown on the site. Approve it with update_comment (status: approve) or in the WordPress admin."
+                } else {
+                    ""
+                };
+                Ok(serde_json::json!({
+                    "content": [{
+                        "type": "text",
+                        "text": format!("Created comment {}{}", comment_summary(&comment), note)
+                    }],
+                    "isError": false
+                }))
+            }
+            "update_comment" => {
+                let args = params.arguments.unwrap_or_default();
+                let comment_id = positive_id_arg(&args, "comment_id")?
+                    .ok_or_else(|| McpError::InvalidParams("Missing comment_id".to_string()))?;
+                let status = comment_status_arg(&args, "status", COMMENT_SET_STATUSES)?;
+                let content = match args.get("content") {
+                    None | Some(serde_json::Value::Null) => None,
+                    Some(value) => Some(
+                        value
+                            .as_str()
+                            .filter(|s| !s.trim().is_empty())
+                            .ok_or_else(|| {
+                                McpError::InvalidParams(
+                                    "content must be a non-empty string".to_string(),
+                                )
+                            })?,
+                    ),
+                };
+                if status.is_none() && content.is_none() {
+                    return Err(McpError::InvalidParams(
+                        "Pass status or content to change".to_string(),
+                    ));
+                }
+
+                let comment = self
+                    .update_comment(comment_id, status.as_deref(), content)
+                    .await?;
+                Ok(serde_json::json!({
+                    "content": [{
+                        "type": "text",
+                        "text": format!("Updated comment {}", comment_summary(&comment))
+                    }],
+                    "isError": false
+                }))
+            }
+            "delete_comment" => {
+                let args = params.arguments.unwrap_or_default();
+                let comment_id = positive_id_arg(&args, "comment_id")?
+                    .ok_or_else(|| McpError::InvalidParams("Missing comment_id".to_string()))?;
+                let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+
+                self.delete_comment(comment_id, force).await?;
+                Ok(serde_json::json!({
+                    "content": [{
+                        "type": "text",
+                        "text": format!("Deleted comment ID {} ({})",
+                            comment_id,
+                            if force { "permanently" } else { "moved to trash" }
+                        )
+                    }],
+                    "isError": false
+                }))
+            }
             "delete_post" => {
                 let args = params.arguments.unwrap_or_default();
                 let post_id = args
@@ -4496,16 +4763,93 @@ impl McpHandler for WordPressHandler {
             },
             Tool {
                 name: "get_comments".to_string(),
-                description: "Retrieve WordPress comments".to_string(),
+                description: "Retrieve WordPress comments (ID, post, parent, status, author name, date, content). By default only approved comments; use status 'hold' to see comments awaiting moderation. Commenters' email and IP addresses are not shown".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
                         "post_id": {
                             "type": "number",
                             "description": "Optional post ID to filter comments"
+                        },
+                        "status": {
+                            "type": "string",
+                            "enum": COMMENT_LIST_STATUSES,
+                            "description": "Comment status: 'approve' (approved, the default), 'hold' (awaiting moderation), 'spam', 'trash', or 'all' (approved and awaiting moderation)"
                         }
                     },
                     "required": []
+                }),
+                ..Default::default()
+            },
+            Tool {
+                name: "create_comment".to_string(),
+                description: "Create a comment, usually a reply to another comment (parent), as the configured WordPress user. WordPress comments have no drafts, so by default the comment is held for moderation and is not shown on the site until approved (update_comment with status 'approve', or in the WordPress admin). Pass status 'approve' to publish it at once".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "post_id": {
+                            "type": "number",
+                            "description": "Post or page ID to comment on. Optional when parent is given (the post of the parent comment is used)"
+                        },
+                        "parent": {
+                            "type": "number",
+                            "description": "ID of the comment to reply to"
+                        },
+                        "content": {
+                            "type": "string",
+                            "description": "Comment text"
+                        },
+                        "status": {
+                            "type": "string",
+                            "enum": ["hold", "approve"],
+                            "description": "'hold' (held for moderation, the default) or 'approve' (published at once)",
+                            "default": DEFAULT_REPLY_STATUS
+                        }
+                    },
+                    "required": ["content"]
+                }),
+                ..Default::default()
+            },
+            Tool {
+                name: "update_comment".to_string(),
+                description: "Change a comment's status (approve, hold for moderation, mark as spam, move to trash) or its text. Approving a comment publishes it on the site".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "comment_id": {
+                            "type": "number",
+                            "description": "Comment ID"
+                        },
+                        "status": {
+                            "type": "string",
+                            "enum": COMMENT_SET_STATUSES,
+                            "description": "'approve' (published), 'hold' (back to awaiting moderation), 'spam', or 'trash'"
+                        },
+                        "content": {
+                            "type": "string",
+                            "description": "New comment text"
+                        }
+                    },
+                    "required": ["comment_id"]
+                }),
+                ..Default::default()
+            },
+            Tool {
+                name: "delete_comment".to_string(),
+                description: "Delete a comment. By default it is moved to the trash".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "comment_id": {
+                            "type": "number",
+                            "description": "Comment ID"
+                        },
+                        "force": {
+                            "type": "boolean",
+                            "description": "Delete permanently instead of moving to the trash"
+                        }
+                    },
+                    "required": ["comment_id"]
                 }),
                 ..Default::default()
             },
@@ -5246,7 +5590,7 @@ impl McpHandler for WordPressHandler {
                 }))
             }
             "wordpress://comments" => {
-                let comments = self.get_comments(None).await?;
+                let comments = self.get_comments(None, None).await?;
                 Ok(serde_json::json!({
                     "contents": [{
                         "uri": params.uri,
@@ -7989,5 +8333,255 @@ mod tests {
         assert!(
             tool_text(&result).starts_with("Found 0 pages (page 1 of 1, 20 per page; 0 in total):")
         );
+    }
+
+    // ---- #639: コメントの管理 ----
+
+    fn comment_json(id: u64, status: &str, parent: u64) -> serde_json::Value {
+        serde_json::json!({
+            "id": id,
+            "post": 7,
+            "parent": parent,
+            "status": status,
+            "date": "2026-11-19T10:00:00",
+            "author_name": "読者",
+            "author_email": "reader@example.com",
+            "author_ip": "203.0.113.9",
+            "link": "https://example.com/post/#comment-1",
+            "content": {"rendered": "<p>ありがとうございます</p>"}
+        })
+    }
+
+    async fn call_tool_with(
+        handler: &WordPressHandler,
+        name: &str,
+        args: serde_json::Value,
+    ) -> Result<serde_json::Value, McpError> {
+        let args: HashMap<String, serde_json::Value> =
+            serde_json::from_value(args).expect("arguments must be an object");
+        handler
+            .call_tool(ToolCallParams {
+                name: name.to_string(),
+                arguments: Some(args),
+            })
+            .await
+    }
+
+    /// `status`で絞る。メールアドレス・IPアドレスは出さない
+    #[tokio::test]
+    async fn test_get_comments_filters_by_status_without_personal_data() {
+        let list = serde_json::json!([comment_json(1, "hold", 0)]).to_string();
+        let base = spawn_routing_server(vec![(
+            "/wp-json/wp/v2/comments?per_page=100&page=1&post=7&status=hold",
+            "200 OK\r\nX-WP-Total: 1\r\nX-WP-TotalPages: 1",
+            list,
+        )])
+        .await;
+        let handler = handler_for_local_server(base);
+        let result = call_tool_with(
+            &handler,
+            "get_comments",
+            serde_json::json!({"post_id": 7, "status": "hold"}),
+        )
+        .await
+        .unwrap();
+        let text = tool_text(&result);
+        assert!(text.starts_with("Found 1 comments:"), "{text}");
+        assert!(text.contains("\"status\": \"hold\""), "{text}");
+        assert!(!text.contains("reader@example.com"), "{text}");
+        assert!(!text.contains("203.0.113.9"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn test_get_comments_refuses_unknown_status() {
+        let handler = handler_for_local_server("http://127.0.0.1:9".to_string());
+        let result = call_tool_with(
+            &handler,
+            "get_comments",
+            serde_json::json!({"status": "approve&post=1"}),
+        )
+        .await;
+        assert!(
+            matches!(result, Err(McpError::InvalidParams(ref msg)) if msg.contains("status must be one of")),
+            "{:?}",
+            result
+        );
+    }
+
+    /// 返信は、既定で承認待ちで作る。投稿は、返信先のコメントから決める
+    #[tokio::test]
+    async fn test_create_comment_reply_is_held_by_default() {
+        let (base_url, captured) =
+            spawn_body_capturing_server(comment_json(5, "hold", 1).to_string()).await;
+        let handler = handler_for_local_server(base_url);
+        let result = call_tool_with(
+            &handler,
+            "create_comment",
+            serde_json::json!({"parent": 1, "content": "ご質問ありがとうございます"}),
+        )
+        .await
+        .unwrap();
+        let bodies = captured.lock().await;
+        // 返信先のコメントを読む（本文の無いGET）、作る
+        assert_eq!(bodies.len(), 2, "{:?}", bodies);
+        assert!(bodies[0].is_empty());
+        let sent: serde_json::Value = serde_json::from_str(&bodies[1]).unwrap();
+        assert_eq!(
+            sent,
+            serde_json::json!({
+                "post": 7,
+                "parent": 1,
+                "content": "ご質問ありがとうございます",
+                "status": "hold"
+            })
+        );
+        let text = tool_text(&result);
+        assert!(
+            text.contains("ID 5 on post 7, reply to 1 (Status: hold"),
+            "{text}"
+        );
+        assert!(text.contains("held for moderation"), "{text}");
+    }
+
+    /// `status: approve`で、すぐに公開する。`post_id`があれば、返信先を読まない
+    #[tokio::test]
+    async fn test_create_comment_can_publish_at_once() {
+        let (base_url, captured) =
+            spawn_body_capturing_server(comment_json(6, "approved", 1).to_string()).await;
+        let handler = handler_for_local_server(base_url);
+        let result = call_tool_with(
+            &handler,
+            "create_comment",
+            serde_json::json!({"post_id": 7, "parent": 1, "content": "返信", "status": "approve"}),
+        )
+        .await
+        .unwrap();
+        let bodies = captured.lock().await;
+        assert_eq!(bodies.len(), 1);
+        let sent: serde_json::Value = serde_json::from_str(&bodies[0]).unwrap();
+        assert_eq!(sent["status"], "approve");
+        assert!(!tool_text(&result).contains("held for moderation"));
+    }
+
+    #[tokio::test]
+    async fn test_create_comment_requires_content_and_post() {
+        let handler = handler_for_local_server("http://127.0.0.1:9".to_string());
+        for (args, message) in [
+            (serde_json::json!({"post_id": 7}), "Missing content"),
+            (
+                serde_json::json!({"post_id": 7, "content": "  "}),
+                "Missing content",
+            ),
+            (serde_json::json!({"content": "返信"}), "Missing post_id"),
+            (
+                serde_json::json!({"post_id": 7, "content": "返信", "status": "spam"}),
+                "status must be one of: approve, hold",
+            ),
+            (
+                serde_json::json!({"post_id": 0, "content": "返信"}),
+                "post_id must be a positive integer",
+            ),
+        ] {
+            let result = call_tool_with(&handler, "create_comment", args.clone()).await;
+            assert!(
+                matches!(result, Err(McpError::InvalidParams(ref msg)) if msg.contains(message)),
+                "{args}: {:?}",
+                result
+            );
+        }
+    }
+
+    /// 状態を変える
+    #[tokio::test]
+    async fn test_update_comment_changes_status() {
+        let (base_url, captured) =
+            spawn_body_capturing_server(comment_json(1, "spam", 0).to_string()).await;
+        let handler = handler_for_local_server(base_url);
+        let result = call_tool_with(
+            &handler,
+            "update_comment",
+            serde_json::json!({"comment_id": 1, "status": "spam"}),
+        )
+        .await
+        .unwrap();
+        let bodies = captured.lock().await;
+        let sent: serde_json::Value = serde_json::from_str(&bodies[0]).unwrap();
+        assert_eq!(sent, serde_json::json!({"status": "spam"}));
+        assert!(tool_text(&result).contains("(Status: spam"));
+    }
+
+    #[tokio::test]
+    async fn test_update_comment_requires_a_change() {
+        let handler = handler_for_local_server("http://127.0.0.1:9".to_string());
+        for (args, message) in [
+            (
+                serde_json::json!({"comment_id": 1}),
+                "Pass status or content",
+            ),
+            (
+                serde_json::json!({"status": "approve"}),
+                "Missing comment_id",
+            ),
+            (
+                serde_json::json!({"comment_id": 1, "status": "all"}),
+                "status must be one of",
+            ),
+        ] {
+            let result = call_tool_with(&handler, "update_comment", args.clone()).await;
+            assert!(
+                matches!(result, Err(McpError::InvalidParams(ref msg)) if msg.contains(message)),
+                "{args}: {:?}",
+                result
+            );
+        }
+    }
+
+    /// 既定はゴミ箱。`force`で完全に消す
+    #[tokio::test]
+    async fn test_delete_comment_moves_to_trash_by_default() {
+        let (base_url, _) =
+            spawn_body_capturing_server(comment_json(1, "trash", 0).to_string()).await;
+        let handler = handler_for_local_server(base_url);
+        let trashed = call_tool_with(
+            &handler,
+            "delete_comment",
+            serde_json::json!({"comment_id": 1}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(tool_text(&trashed), "Deleted comment ID 1 (moved to trash)");
+        let deleted = call_tool_with(
+            &handler,
+            "delete_comment",
+            serde_json::json!({"comment_id": 1, "force": true}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(tool_text(&deleted), "Deleted comment ID 1 (permanently)");
+    }
+
+    /// 印: 読むだけ・作る・変える（#417と同じ規則）。変えるツールは監査ログに残る
+    #[tokio::test]
+    async fn test_comment_tools_annotations() {
+        assert_eq!(
+            wordpress_tool_annotations("get_comments").read_only_hint,
+            Some(true)
+        );
+        let create = wordpress_tool_annotations("create_comment");
+        assert_eq!(create.read_only_hint, Some(false));
+        assert_eq!(create.destructive_hint, Some(false));
+        for name in ["update_comment", "delete_comment"] {
+            let a = wordpress_tool_annotations(name);
+            assert_eq!(a.read_only_hint, Some(false), "{name}");
+            assert_eq!(a.destructive_hint, Some(true), "{name}");
+        }
+        for name in ["create_comment", "update_comment", "delete_comment"] {
+            assert!(is_mutating_tool(name), "{name}");
+        }
+        let handler = handler_for_local_server("http://127.0.0.1:9".to_string());
+        let tools = handler.list_tools().await.unwrap();
+        for name in ["create_comment", "update_comment", "delete_comment"] {
+            assert!(tools.iter().any(|t| t.name == name), "{name}");
+        }
     }
 }

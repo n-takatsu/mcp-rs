@@ -518,9 +518,12 @@ Creates a new WordPress post.
 
 #### `get_comments`
 
-Retrieves WordPress comments.
+Retrieves WordPress comments (approved ones by default).
 
 - `post_id` (number, optional)
+- `status` (string, optional): `approve`, `hold`, `spam`, `trash`, or `all`
+
+`create_comment`, `update_comment`, and `delete_comment` reply to, moderate, and delete comments. See [WordPress](../wordpress/#comments).
 
 ### Resources
 

@@ -37,7 +37,7 @@ MCP-RS provides comprehensive WordPress integration through the WordPress REST A
 - **SEO Integration**: Meta fields for Yoast SEO and other plugins
 - **Post Retrieval**: Get all published posts with metadata
 - **Complete CRUD**: Create, read, update, and delete operations
-- **Comment Management**: Retrieve and manage post comments
+- **Comment Management**: List comments by status, approve, mark as spam, reply, and delete (v0.30.0 and later)
 
 ## 🖼️ Media Management
 
@@ -557,12 +557,17 @@ Delete a WordPress post.
 
 **Note:** When `force` is `false` (default), the post is moved to trash. When `true`, it's permanently deleted.
 
+## Comments {#comments}
+
+Comments are read and changed as the configured WordPress user, who needs to be able to moderate comments (an Editor or Administrator) to list comments awaiting moderation, spam or trash, and to change them. The commenter's email and IP addresses are not shown (v0.30.0 and later; up to v0.29.0, `get_comments` showed the email address).
+
 ## `get_comments`
 
-Retrieve WordPress comments.
+Retrieve WordPress comments: ID, post, parent (the comment it replies to, `0` if none), status, author name, date, link, and content.
 
 **Parameters:**
 - `post_id` (number, optional): Filter comments by specific post
+- `status` (string, optional): `approve` (approved, the default), `hold` (awaiting moderation), `spam`, `trash`, or `all` (approved and awaiting moderation). v0.30.0 and later
 
 **Example Usage:**
 
@@ -575,6 +580,49 @@ Retrieve WordPress comments.
 }
 
 ```
+
+## `create_comment`
+
+Create a comment as the configured WordPress user, usually a reply to another comment (v0.30.0 and later).
+
+WordPress comments have no drafts. So that you can check a reply the AI wrote before it appears on the site, the comment is held for moderation by default. Approve it with `update_comment` (`status: "approve"`) or in the WordPress admin (**Comments**). Pass `status: "approve"` to publish it at once.
+
+**Parameters:**
+- `content` (string, required): Comment text
+- `parent` (number, optional): ID of the comment to reply to
+- `post_id` (number, optional): Post or page to comment on. Required without `parent`; with `parent`, the post of that comment is used
+- `status` (string, optional): `hold` (held for moderation, the default) or `approve` (published at once)
+
+**Example Usage:**
+
+```json
+{
+  "tool": "create_comment",
+  "arguments": {
+    "parent": 45,
+    "content": "Thank you for your question. The setting is under Settings > Reading."
+  }
+}
+```
+
+## `update_comment`
+
+Change a comment's status or text (v0.30.0 and later). Approving a comment publishes it on the site.
+
+**Parameters:**
+- `comment_id` (number, required): Comment ID
+- `status` (string, optional): `approve` (published), `hold` (back to awaiting moderation), `spam`, or `trash`
+- `content` (string, optional): New comment text
+
+Pass `status`, `content`, or both.
+
+## `delete_comment`
+
+Delete a comment (v0.30.0 and later).
+
+**Parameters:**
+- `comment_id` (number, required): Comment ID
+- `force` (boolean, optional): Delete permanently instead of moving to the trash (default: `false`)
 
 ## `get_categories`
 

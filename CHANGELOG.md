@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- コメントを管理するツール（#639）。`create_comment`（返信は`parent`。
+  `post_id`を省けば、返信先のコメントの投稿にする）・`update_comment`
+  （承認・承認待ちに戻す・スパム・ゴミ箱、本文の変更）・`delete_comment`
+  （既定はゴミ箱、`force`で完全に削除）。WordPressのコメントには下書きが
+  無いので、`create_comment`は、既定で承認待ち（`hold`）で作り、サイトには
+  出さない（`status: "approve"`ですぐに公開）。`get_comments`に`status`
+  （`approve`・`hold`・`spam`・`trash`・`all`）を足した。結果に、返信先・
+  状態・日時・リンクも出す
+
+### Changed
+
+- `get_comments`は、コメントした人のメールアドレスを出さない（#639）。
+  コメントの管理には要らず、AIとの会話やログに残さないため
+
 ## [0.29.0] - 2026-11-19
 
 ### Removed
