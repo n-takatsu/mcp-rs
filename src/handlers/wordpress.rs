@@ -294,6 +294,56 @@ fn protected_content_note(post: &WordPressPost) -> Option<&'static str> {
     )
 }
 
+/// リソースのテンプレートで読むもの（#644）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResourceKind {
+    Post,
+    Page,
+    Media,
+}
+
+/// テンプレートの`{id}`か、埋めたID
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResourceId {
+    Placeholder,
+    Id(u64),
+}
+
+/// `wordpress://post/{id}`・`wordpress://post/123`等を読む（#644）。IDは
+/// 正の整数だけ（先頭の0・符号・空白等は受けない）
+fn resource_template_target(uri: &str) -> Option<(ResourceKind, ResourceId)> {
+    let rest = uri.strip_prefix("wordpress://")?;
+    let (kind, id) = rest.split_once('/')?;
+    let kind = match kind {
+        "post" => ResourceKind::Post,
+        "page" => ResourceKind::Page,
+        "media" => ResourceKind::Media,
+        _ => return None,
+    };
+    let id = if id == "{id}" {
+        ResourceId::Placeholder
+    } else if !id.is_empty()
+        && id.len() <= 20
+        && !id.starts_with('0')
+        && id.chars().all(|c| c.is_ascii_digit())
+    {
+        ResourceId::Id(id.parse().ok()?)
+    } else {
+        return None;
+    };
+    Some((kind, id))
+}
+
+/// WordPressが「無い」（404）と答えたら、リソースが無い（`-32002`）にする（#644）
+fn not_found_as_resource(error: McpError, uri: &str) -> McpError {
+    match &error {
+        McpError::ExternalApi(message) if message.contains(" 404 ") => {
+            McpError::ResourceNotFound(uri.to_string())
+        }
+        _ => error,
+    }
+}
+
 /// WordPressの投稿タイプ・タクソノミーの名前の形か（#642）。URLに入れるので、
 /// 英小文字・数字・`_`・`-`だけを受ける
 fn is_slug(name: &str) -> bool {
@@ -6344,9 +6394,39 @@ impl McpHandler for WordPressHandler {
             "wordpress://comments" => "get_comments",
             "wordpress://categories" => "get_categories",
             "wordpress://tags" => "get_tags",
-            _ => return None,
+            // テンプレート（#644）。テンプレートの文字列と、作ったURIの両方
+            _ => match resource_template_target(uri)? {
+                (ResourceKind::Post | ResourceKind::Page, _) => "get_post",
+                (ResourceKind::Media, _) => "get_media_item",
+            },
         };
         Some(tool.to_string())
+    }
+
+    async fn list_resource_templates(&self) -> Result<Vec<crate::mcp::ResourceTemplate>, McpError> {
+        let template = |uri: &str, name: &str, description: &str| crate::mcp::ResourceTemplate {
+            uri_template: uri.to_string(),
+            name: name.to_string(),
+            description: Some(description.to_string()),
+            mime_type: Some("application/json".to_string()),
+        };
+        Ok(vec![
+            template(
+                "wordpress://post/{id}",
+                "WordPress Post",
+                "One post by ID, with its editable source when the credentials allow",
+            ),
+            template(
+                "wordpress://page/{id}",
+                "WordPress Page",
+                "One page by ID, with its editable source when the credentials allow",
+            ),
+            template(
+                "wordpress://media/{id}",
+                "WordPress Media Item",
+                "One media item by ID: URL, type, title, alt text and caption",
+            ),
+        ])
     }
 
     async fn list_resources(&self) -> Result<Vec<Resource>, McpError> {
@@ -6433,7 +6513,39 @@ impl McpHandler for WordPressHandler {
                     }]
                 }))
             }
-            _ => Err(McpError::ResourceNotFound(params.uri)),
+            uri => match resource_template_target(uri) {
+                Some((kind, ResourceId::Id(id))) => {
+                    let text = match kind {
+                        ResourceKind::Post | ResourceKind::Page => {
+                            let post_type = if kind == ResourceKind::Page {
+                                "page"
+                            } else {
+                                "post"
+                            };
+                            let post = self
+                                .get_post(id, post_type, true)
+                                .await
+                                .map_err(|e| not_found_as_resource(e, uri))?;
+                            serde_json::to_string_pretty(&post)?
+                        }
+                        ResourceKind::Media => {
+                            let media = self
+                                .get_media_item(id)
+                                .await
+                                .map_err(|e| not_found_as_resource(e, uri))?;
+                            serde_json::to_string_pretty(&media)?
+                        }
+                    };
+                    Ok(serde_json::json!({
+                        "contents": [{
+                            "uri": uri,
+                            "mimeType": "application/json",
+                            "text": text
+                        }]
+                    }))
+                }
+                _ => Err(McpError::ResourceNotFound(params.uri)),
+            },
         }
     }
 }
@@ -9928,5 +10040,98 @@ mod tests {
                 "{post_type}: {err}"
             );
         }
+    }
+
+    // ---- #644: リソースのテンプレート ----
+
+    #[test]
+    fn test_resource_template_target_parses_ids() {
+        assert_eq!(
+            resource_template_target("wordpress://post/{id}"),
+            Some((ResourceKind::Post, ResourceId::Placeholder))
+        );
+        assert_eq!(
+            resource_template_target("wordpress://page/42"),
+            Some((ResourceKind::Page, ResourceId::Id(42)))
+        );
+        assert_eq!(
+            resource_template_target("wordpress://media/7"),
+            Some((ResourceKind::Media, ResourceId::Id(7)))
+        );
+        for uri in [
+            "wordpress://post/0",
+            "wordpress://post/012",
+            "wordpress://post/-1",
+            "wordpress://post/ 1",
+            "wordpress://post/1a",
+            "wordpress://post/",
+            "wordpress://post/1/x",
+            "wordpress://posts/1",
+            "wordpress://user/1",
+            "other://post/1",
+            "wordpress://post/99999999999999999999999",
+        ] {
+            assert_eq!(resource_template_target(uri), None, "{uri}");
+        }
+    }
+
+    /// テンプレートは、どれも読み取りのツールに対応する（#538と同じ規則）
+    #[tokio::test]
+    async fn test_every_resource_template_maps_to_a_read_only_tool() {
+        let handler = rate_limited_handler(RateLimitConfig::default());
+        let tools = handler.list_tools().await.unwrap();
+        let templates = handler.list_resource_templates().await.unwrap();
+        assert_eq!(templates.len(), 3);
+        for template in templates {
+            let name = handler.resource_tool(&template.uri_template).unwrap();
+            let tool = tools.iter().find(|t| t.name == name).unwrap();
+            assert_eq!(
+                tool.annotations.as_ref().and_then(|a| a.read_only_hint),
+                Some(true),
+                "{}",
+                template.uri_template
+            );
+            let filled = template.uri_template.replace("{id}", "5");
+            assert_eq!(handler.resource_tool(&filled), Some(name));
+        }
+    }
+
+    /// 1件を読む。WordPressが404なら、無いリソース（-32002）
+    #[tokio::test]
+    async fn test_read_post_by_template_and_not_found() {
+        let base = spawn_routing_server(vec![
+            (
+                "/wp-json/wp/v2/pages/7",
+                "200 OK",
+                post_json_with("publish", "2026-11-10T10:00:00"),
+            ),
+            (
+                "/wp-json/wp/v2/posts/9",
+                "404 Not Found",
+                r#"{"code":"rest_post_invalid_id","message":"Invalid post ID."}"#.to_string(),
+            ),
+        ])
+        .await;
+        let handler = handler_for_local_server(base);
+        let page = handler
+            .read_resource(ResourceReadParams {
+                uri: "wordpress://page/7".to_string(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(page["contents"][0]["uri"], "wordpress://page/7");
+        let text = page["contents"][0]["text"].as_str().unwrap();
+        assert!(text.contains("\"id\": 7"), "{text}");
+
+        let missing = handler
+            .read_resource(ResourceReadParams {
+                uri: "wordpress://post/9".to_string(),
+            })
+            .await;
+        assert!(
+            matches!(missing, Err(McpError::ResourceNotFound(ref uri)) if uri == "wordpress://post/9"),
+            "{:?}",
+            missing
+        );
     }
 }

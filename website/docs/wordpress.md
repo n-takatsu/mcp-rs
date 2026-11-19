@@ -144,7 +144,7 @@ keyring = "shop"
 - **Credentials**: each site has its own, preferably a dedicated user with an Application Password on that site. Store them with `mcp-rs wordpress-keyring set <name>` for each site
 - **Rate limit and audit log**: each site has its own rate limit. The audit log records the site's URL with each tool call
 - `mcp-rs check` checks each site, and `mcp_rs_status` lists them. `mcp-rs uninstall` offers to delete each site's entry in the OS credential store
-- Resources (`wordpress://posts` and others) read the default site only
+- Resources (`wordpress://posts` and others) and resource templates (`wordpress://post/{id}` and others) read the default site only
 - In HTTP mode, the tool limits of an API key or access token apply to every site: a key allowed `get_posts` can read the posts of all the sites
 - `WORDPRESS_URL`, `WORDPRESS_USERNAME` and `WORDPRESS_PASSWORD` do not change a config file with `sites`
 - `mcp-rs init` sets up one site, in the one-site form (`url` and `keyring` directly in `[handlers.wordpress]`). To use more sites, rewrite the config file in this form by hand. `init` keeps using a config file that already has `sites` as it is

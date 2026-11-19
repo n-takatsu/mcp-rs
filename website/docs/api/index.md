@@ -135,7 +135,7 @@ mcp-rs v0.28.0 and later also accept version `2026-07-28`, which has no `initial
 
 - `server/discover` returns the supported versions (`["2026-07-28"]`), the capabilities, and the server information (with `icons`) in `_meta["io.modelcontextprotocol/serverInfo"]`
 - Each request carries `io.modelcontextprotocol/protocolVersion` and `io.modelcontextprotocol/clientCapabilities` (an object) in `params._meta`. Without them, mcp-rs answers `-32602`; with a version it does not support, `-32022` with `data.supported` (which also lists the `initialize` versions) and `data.requested`
-- Results have `resultType: "complete"` and the server information in `_meta`. `tools/list`, `resources/list` and `prompts/list` have `ttlMs: 300000` and `cacheScope: "private"` (the lists depend on the API key or token), and `resources/read` and `prompts/get` have `ttlMs: 0`
+- Results have `resultType: "complete"` and the server information in `_meta`. `tools/list`, `resources/list`, `resources/templates/list` and `prompts/list` have `ttlMs: 300000` and `cacheScope: "private"` (the lists depend on the API key or token), and `resources/read` and `prompts/get` have `ttlMs: 0`
 - `ping` is not part of `2026-07-28` (`-32601`). A missing resource is `-32602`
 - HTTP (`/mcp`): send `MCP-Protocol-Version: 2026-07-28`, `Mcp-Method`, and, for `tools/call`, `prompts/get` and `resources/read`, `Mcp-Name` (the tool or prompt name, or the URI; `=?base64?…?=` for values that are not plain ASCII). If a header is missing or does not match the body, mcp-rs answers HTTP 400 with `-32020`. Unknown methods get HTTP 404 with `-32601`, and version or `_meta` errors get HTTP 400. API keys, OAuth scopes and the audit log apply to each request. `/ws` uses only the legacy form
 
@@ -365,6 +365,27 @@ Lists available resources.
 }
 ```
 
+#### `resources/templates/list`
+
+Lists resource templates (v0.30.0 and later): URIs with a part to fill in, such as `{id}`. Read the filled-in URI with `resources/read`. Templates follow the same limits as resources.
+
+```json
+{
+  "jsonrpc": "2.0",
+  "result": {
+    "resourceTemplates": [
+      {
+        "uriTemplate": "wordpress://post/{id}",
+        "name": "WordPress Post",
+        "description": "One post by ID, with its editable source when the credentials allow",
+        "mimeType": "application/json"
+      }
+    ]
+  },
+  "id": 5
+}
+```
+
 #### `resources/read`
 
 Reads a resource.
@@ -533,12 +554,18 @@ Retrieves WordPress comments (approved ones by default).
 
 ### Resources
 
-- `wordpress://posts` - All published posts
-- `wordpress://pages` - All published pages
-- `wordpress://media` - Media library items
+- `wordpress://posts` - All published posts, with their content
+- `wordpress://comments` - Approved comments
 - `wordpress://categories` - Post categories
 - `wordpress://tags` - Post tags
-- `wordpress://users` - Site users
+
+Resource templates (`resources/templates/list`, v0.30.0 and later) read one item by ID:
+
+- `wordpress://post/{id}` - One post, with its editable source when the credentials allow
+- `wordpress://page/{id}` - One page
+- `wordpress://media/{id}` - One media item
+
+For example, `resources/read` with `"uri": "wordpress://post/123"`. A missing item returns `-32002`. With more than one site, the resources and templates read the default site.
 
 ---
 

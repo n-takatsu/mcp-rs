@@ -42,6 +42,14 @@ pub trait McpHandler: Send + Sync {
         true
     }
 
+    /// このハンドラーのリソースのテンプレート（#644）。既定は無し。
+    /// テンプレートから作ったURIは、`resource_tool`が`Some`を返すものとして
+    /// このハンドラーに振り分ける。`resource_tool`には、テンプレートの文字列
+    /// （`wordpress://post/{id}`）も渡す
+    async fn list_resource_templates(&self) -> Result<Vec<crate::mcp::ResourceTemplate>, McpError> {
+        Ok(Vec::new())
+    }
+
     /// このハンドラーのプロンプト（#643）。既定は無し
     fn prompts(&self) -> Vec<PromptSpec> {
         Vec::new()
@@ -273,7 +281,9 @@ fn modern_result(method: &str, version: &str, mut result: serde_json::Value) -> 
     };
     fields.insert("resultType".to_string(), "complete".into());
     let cache = match method {
-        "tools/list" | "resources/list" | "prompts/list" => Some(LIST_TTL_MS),
+        "tools/list" | "resources/list" | "resources/templates/list" | "prompts/list" => {
+            Some(LIST_TTL_MS)
+        }
         "resources/read" | "prompts/get" => Some(0),
         _ => None,
     };
@@ -680,6 +690,31 @@ impl McpServer {
                     Err(e) => Err(McpError::InvalidParams(e.to_string())),
                 }
             }
+            "resources/templates/list" => {
+                let mut templates = Vec::new();
+                for (name, handler) in handlers {
+                    match handler.list_resource_templates().await {
+                        Ok(list) => {
+                            for template in list {
+                                if Self::resource_allowed(
+                                    handler.as_ref(),
+                                    caller,
+                                    &template.uri_template,
+                                )
+                                .await
+                                {
+                                    templates.push(template);
+                                }
+                            }
+                        }
+                        Err(e) => warn!(
+                            "Failed to list resource templates from handler '{}': {}",
+                            name, e
+                        ),
+                    }
+                }
+                Ok(serde_json::json!({ "resourceTemplates": templates }))
+            }
             "prompts/list" => {
                 let mut prompts = Vec::new();
                 for (_, spec) in Self::list_all_prompts(handlers).await {
@@ -1021,30 +1056,46 @@ impl McpServer {
         caller: &Caller,
         audit_logger: Option<&crate::security::AuditLogger>,
     ) -> Result<serde_json::Value, McpError> {
+        // 一覧にあるURIを持つハンドラー、無ければ、テンプレートから作ったURIを
+        // 引き受けるハンドラー（#644）
+        let mut owner = None;
         for (name, handler) in handlers {
             match handler.list_resources().await {
                 Ok(resources) if resources.iter().any(|r| r.uri == params.uri) => {
-                    let uri = params.uri.clone();
-                    if !Self::resource_allowed(handler.as_ref(), caller, &uri).await {
-                        Self::audit_denied(audit_logger, caller, Denied::Resource, &uri).await;
-                        return Err(McpError::InvalidRequest(format!(
-                            "Resource '{}' is not allowed for this API key or access token",
-                            uri
-                        )));
-                    }
-                    let started = std::time::Instant::now();
-                    let result =
-                        crate::mcp::with_caller(caller.clone(), handler.read_resource(params))
-                            .await;
-                    Self::audit_resource_read(audit_logger, caller, name, &uri, &result, started)
-                        .await;
-                    return result;
+                    owner = Some((name, handler));
+                    break;
                 }
                 Ok(_) => {}
                 Err(e) => warn!("Failed to list resources from handler '{}': {}", name, e),
             }
         }
-        Err(McpError::ResourceNotFound(params.uri))
+        if owner.is_none() {
+            for (name, handler) in handlers {
+                let has_templates = handler
+                    .list_resource_templates()
+                    .await
+                    .is_ok_and(|templates| !templates.is_empty());
+                if has_templates && handler.resource_tool(&params.uri).is_some() {
+                    owner = Some((name, handler));
+                    break;
+                }
+            }
+        }
+        let Some((name, handler)) = owner else {
+            return Err(McpError::ResourceNotFound(params.uri));
+        };
+        let uri = params.uri.clone();
+        if !Self::resource_allowed(handler.as_ref(), caller, &uri).await {
+            Self::audit_denied(audit_logger, caller, Denied::Resource, &uri).await;
+            return Err(McpError::InvalidRequest(format!(
+                "Resource '{}' is not allowed for this API key or access token",
+                uri
+            )));
+        }
+        let started = std::time::Instant::now();
+        let result = crate::mcp::with_caller(caller.clone(), handler.read_resource(params)).await;
+        Self::audit_resource_read(audit_logger, caller, name, &uri, &result, started).await;
+        result
     }
 
     /// リソースの読み取りを、監査ログに記録する（#538）。
@@ -3120,5 +3171,177 @@ mod tests {
         let got = modern_result("prompts/get", "2026-07-28", serde_json::json!({}));
         assert_eq!(got["ttlMs"], serde_json::json!(0));
         assert_eq!(got["resultType"], "complete");
+    }
+
+    // ---- #644: リソースのテンプレート ----
+
+    /// `t://item/{id}`のテンプレートと、読み取りのツール`get_item`を持つ
+    struct WithTemplates;
+
+    #[async_trait]
+    impl McpHandler for WithTemplates {
+        async fn initialize(&self, _: InitializeParams) -> Result<serde_json::Value, McpError> {
+            Ok(serde_json::json!({}))
+        }
+        async fn list_tools(&self) -> Result<Vec<Tool>, McpError> {
+            Ok(vec![Tool {
+                annotations: Some(crate::mcp::ToolAnnotations {
+                    read_only_hint: Some(true),
+                    ..Default::default()
+                }),
+                ..tool("get_item")
+            }])
+        }
+        async fn call_tool(&self, _: ToolCallParams) -> Result<serde_json::Value, McpError> {
+            Ok(serde_json::json!({}))
+        }
+        async fn list_resources(&self) -> Result<Vec<Resource>, McpError> {
+            Ok(Vec::new())
+        }
+        async fn read_resource(
+            &self,
+            params: ResourceReadParams,
+        ) -> Result<serde_json::Value, McpError> {
+            Ok(serde_json::json!({"contents": [{"uri": params.uri, "text": "item"}]}))
+        }
+        fn resource_tool(&self, uri: &str) -> Option<String> {
+            let id = uri.strip_prefix("t://item/")?;
+            (id == "{id}" || id.chars().all(|c| c.is_ascii_digit())).then(|| "get_item".to_string())
+        }
+        async fn list_resource_templates(
+            &self,
+        ) -> Result<Vec<crate::mcp::ResourceTemplate>, McpError> {
+            Ok(vec![crate::mcp::ResourceTemplate {
+                uri_template: "t://item/{id}".to_string(),
+                name: "Item".to_string(),
+                description: None,
+                mime_type: Some("application/json".to_string()),
+            }])
+        }
+    }
+
+    async fn template_request(
+        method: &str,
+        params: serde_json::Value,
+        caller: &Caller,
+        audit_logger: Option<&crate::security::AuditLogger>,
+    ) -> JsonRpcResponse {
+        let handlers: Handlers = vec![("t".to_string(), Arc::new(WithTemplates))];
+        let line =
+            serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
+                .to_string();
+        McpServer::process_request_as(
+            &line,
+            &handlers,
+            &Session::default(),
+            caller,
+            audit_logger,
+            &crate::mcp::StatusInfo::default(),
+            None,
+        )
+        .await
+        .unwrap()
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_resource_templates_list_and_read() {
+        let all = Caller::unrestricted();
+        let list = template_request(
+            "resources/templates/list",
+            serde_json::json!({}),
+            &all,
+            None,
+        )
+        .await
+        .result
+        .unwrap();
+        assert_eq!(
+            list["resourceTemplates"],
+            serde_json::json!([{"uriTemplate": "t://item/{id}", "name": "Item", "mimeType": "application/json"}])
+        );
+        let read = template_request(
+            "resources/read",
+            serde_json::json!({"uri": "t://item/5"}),
+            &all,
+            None,
+        )
+        .await
+        .result
+        .unwrap();
+        assert_eq!(read["contents"][0]["uri"], "t://item/5");
+        // テンプレートに合わないURIは、無いリソース
+        let missing = template_request(
+            "resources/read",
+            serde_json::json!({"uri": "t://item/x"}),
+            &all,
+            None,
+        )
+        .await
+        .error
+        .unwrap();
+        assert_eq!(missing.code, -32002);
+    }
+
+    /// 読み取りのツールを使えない呼び出し元には、テンプレートを出さず、読ませない
+    #[tokio::test]
+    async fn test_resource_templates_follow_tool_limits() {
+        let reader = Caller::new(
+            "api_key:reader",
+            crate::mcp::ToolAccess::from_patterns(Some(&["@read_only".to_string()])).unwrap(),
+        );
+        let list = template_request(
+            "resources/templates/list",
+            serde_json::json!({}),
+            &reader,
+            None,
+        )
+        .await
+        .result
+        .unwrap();
+        assert_eq!(list["resourceTemplates"].as_array().unwrap().len(), 1);
+
+        let other = Caller::new(
+            "api_key:other",
+            crate::mcp::ToolAccess::from_patterns(Some(&["other_tool".to_string()])).unwrap(),
+        );
+        let list = template_request(
+            "resources/templates/list",
+            serde_json::json!({}),
+            &other,
+            None,
+        )
+        .await
+        .result
+        .unwrap();
+        assert!(list["resourceTemplates"].as_array().unwrap().is_empty());
+        let audit = crate::security::AuditLogger::with_defaults();
+        let denied = template_request(
+            "resources/read",
+            serde_json::json!({"uri": "t://item/5"}),
+            &other,
+            Some(&audit),
+        )
+        .await
+        .error
+        .unwrap();
+        assert!(
+            denied.message.contains("is not allowed"),
+            "{}",
+            denied.message
+        );
+        let entries = audit.get_all_entries().await;
+        assert_eq!(entries[0].action, Some("t://item/5".to_string()));
+    }
+
+    #[test]
+    fn test_resource_templates_list_modern_fields() {
+        let list = modern_result(
+            "resources/templates/list",
+            "2026-07-28",
+            serde_json::json!({"resourceTemplates": []}),
+        );
+        assert_eq!(list["ttlMs"], serde_json::json!(LIST_TTL_MS));
+        assert_eq!(list["cacheScope"], "private");
     }
 }
