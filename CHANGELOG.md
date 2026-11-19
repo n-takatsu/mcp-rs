@@ -33,6 +33,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Scoop（Windows）とHomebrew（macOS Apple Silicon・Linux x64）で入れられる
+  ようにした（#578）。`scoop bucket add n-takatsu https://github.com/n-takatsu/scoop-bucket`・
+  `scoop install n-takatsu/mcp-rs`、`brew install n-takatsu/tap/mcp-rs`。
+  リリースのビルド済みのmcp-rsを入れる。manifest・formulaの元は
+  `packaging/`にあり、CI（`packaging.yml`）で実際に入れて確かめる。bucket・
+  tapは、新しいリリースに自動で追いつく。wingetは、まだ
+- `mcp-rs init`は、Homebrewで入れたmcp-rsを、版によらないパス
+  （`<prefix>/opt/mcp-rs/bin/mcp-rs`）で登録する（#578）。版ごとのフォルダ
+  （`Cellar/mcp-rs/<版>`）は、更新で消えるため
 - `mcp-rs database-keyring set|show|delete <名前>`（#628）。`[database]`の
   パスワードを、`mcp-rs init`を使わずに資格情報ストアに入れる・見る・
   消す。`set`は、設定ファイル（`--config`。無ければ既定の場所）に
