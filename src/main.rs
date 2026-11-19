@@ -33,6 +33,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
+    // mcp-rsの登録を外す（#636）
+    if args.get(1).map(String::as_str) == Some(mcp_rs::uninstall::SUBCOMMAND) {
+        match mcp_rs::uninstall::run(&args[2..]) {
+            Ok(true) => return Ok(()),
+            Ok(false) => std::process::exit(1),
+            Err(e) => {
+                eprintln!("Error: {e}");
+                std::process::exit(2);
+            }
+        }
+    }
+
     // データベースのパスワードを資格情報ストアに入れる等（#628）
     if args.get(1).map(String::as_str) == Some(mcp_rs::database_keyring::SUBCOMMAND) {
         if let Err(e) = mcp_rs::database_keyring::run(&args[2..]) {

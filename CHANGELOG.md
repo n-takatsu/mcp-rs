@@ -48,6 +48,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `mcp-rs uninstall`（#636）。`mcp-rs init`が設定したものを、1つずつ
+  確かめてから外す: Claude Desktop（設定ファイルの控えを残す）・Claude Code・
+  Copilotの、mcp-rsの登録、設定ファイルの`keyring`が指す、資格情報ストアの
+  WordPress・データベースの項目、設定ファイル（既定は残す）。mcp-rs自身は
+  消さず、入れ方（Scoop・Homebrew・インストールスクリプト・それ以外）に
+  合わせた消し方を示す
 - `mcp-rs check`と`mcp_rs_status`で、新しい版があれば知らせる（#635）。
   GitHubのリリースの最新の版と比べ、入れ方（Scoop・Homebrew・インストール
   スクリプト・それ以外）に合わせた更新のしかたを示す。GitHub
