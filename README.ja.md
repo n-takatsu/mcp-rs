@@ -7,14 +7,14 @@ Claudeに頼んで、WordPressの記事の下書き・予約投稿・公開、�
 > **[日本語](README.ja.md)** | **[English](README.md)**
 
 [![Version](https://img.shields.io/badge/Version-v0.29.0-blue)](https://github.com/n-takatsu/mcp-rs/releases/tag/v0.29.0)
-![Implementation](https://img.shields.io/badge/WordPress_Tools-38_Available-green)
+![Implementation](https://img.shields.io/badge/WordPress_Tools-41_Available-green)
 ![License](https://img.shields.io/badge/License-MIT%2FApache--2.0-green)
 
 ## 概要
 
 `mcp-rs`はRustで書かれたMCPのサーバーです。Claude Desktop・Claude Code等のMCPのクライアントはSTDIOで、それ以外のクライアントはHTTPでつなぎます。次の機能があります。
 
-- WordPress REST APIを使う38のツール（投稿・固定ページ・メディア・カテゴリ・タグ・コメント・サイト設定）
+- WordPress REST APIを使う41のツール（投稿・固定ページ・カスタム投稿タイプ・メディア・カテゴリ・タグ等のタクソノミー・コメント・サイト設定）
 - 1つのPostgreSQL・MySQL・MariaDBのデータベースを読むSQLのツール（書き込みは許したときだけ）
 - プラグインとして起動した外部のMCPサーバーのツール（子プロセス・Dockerのコンテナ・KubernetesのJob）
 - HTTPモード向け: APIキー・OAuth 2.1の認証、呼び出し元ごとのツールの制限、TLS・mTLS、レート制限、監査ログ
@@ -29,7 +29,7 @@ Claudeに頼んで、WordPressの記事の下書き・予約投稿・公開、�
 - **設定**: 1つのTOMLファイル。`${VAR}`で環境変数の値を使える
 - **状態のツール**: `mcp_rs_status`で、バージョン・設定ファイル・ログのファイル・起動しなかったものが分かる
 
-## **WordPress 統合（38 ツール）**
+## **WordPress 統合（41 ツール）**
 
 - **投稿・固定ページ管理**: 作成・取得（編集用の原文を全文）・更新・削除。SEO メタデータと予約投稿に対応。リビジョンの一覧と書き戻し
 - **メディア管理**: base64 でのアップロード（形式・拡張子・内容を検証）、一覧、メタデータ更新、削除、アイキャッチ画像の設定
@@ -38,6 +38,7 @@ Claudeに頼んで、WordPressの記事の下書き・予約投稿・公開、�
 - **YouTube・ソーシャル埋め込み**: セキュリティ検証付きリッチメディア統合
 - **サイト設定**: サイト設定とフロントページ設定の取得・更新
 - **ヘルスチェック**: 接続・認証・権限・メディアアップロード可否の確認
+- **カスタム投稿タイプ**: 商品・イベント等、サイトが REST API に出している投稿タイプを、`post_types` で許したときに使う。独自のタクソノミーの項目も付けられる（[文書](https://n-takatsu.github.io/mcp-rs/docs/wordpress/#custom-post-types)）
 - **複数のサイト**: 1つの mcp-rs で複数の WordPress サイトを使う。各ツールの `site` の引数で選ぶ（[文書](https://n-takatsu.github.io/mcp-rs/docs/wordpress/#sites)）
 
 ### ライブデモサイト

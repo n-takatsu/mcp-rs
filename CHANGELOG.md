@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- カスタム投稿タイプと独自のタクソノミーを扱えるようにした（#642）。使う
+  カスタム投稿タイプは、設定の`post_types`（例: `["product"]`）に書いた
+  ものだけ（既定は今までどおり`post`・`page`だけ。AIが商品等を誤って
+  書き換えないように）。`get_posts`・`get_post`・`create_advanced_post`・
+  `update_post`・`delete_post`・リビジョンのツールの`post_type`に、許した
+  型を渡せる（ツールの`post_type`には、許した型だけを出す）。サイトの
+  `/wp/v2/types`の`rest_base`を使い、`wp/v2`に無い型は理由を示して断る。
+  新しいツール: `get_post_types`（型と、使えるか）・`get_taxonomies`・
+  `get_terms`。`create_advanced_post`・`update_post`の`terms`
+  （`{"product_cat": [12, 15]}`）で、タクソノミーの項目を付け替える。
+  `get_post`は、カスタム投稿タイプの項目も出す。独自のタクソノミーの項目の
+  作成・変更は、まだ
+
 - 投稿・固定ページのリビジョンを見て、書き戻すツール（#641）。
   `get_revisions`（新しい順に、日時・書いた人・題・長さ・本文の先頭）・
   `get_revision`（1つの題・抜粋・本文。`format`は`get_post`と同じ）・
@@ -46,6 +59,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `post_type`に`post`・`page`以外の値を渡したとき、断る（#642）。以前は、
+  知らない値を投稿（`post`）として扱っていた。ライブラリとして使う場合:
+  `PostCreateParams`・`PostUpdateParams`に`terms`、`WordPressPost`に
+  `extra`、`WordPressConfig`に`post_types`を足した
 - `get_comments`は、コメントした人のメールアドレスを出さない（#639）。
   コメントの管理には要らず、AIとの会話やログに残さないため
 

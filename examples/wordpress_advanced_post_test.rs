@@ -17,6 +17,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         encrypted_credentials: None, // 平文認証情報を使用
         keyring: None,
         upload_allowed_dirs: Vec::new(),
+        post_types: Vec::new(),
         default_site: None,
         sites: Default::default(),
     };
@@ -39,6 +40,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             featured_media_id: None,
             meta: None,
             slug: None,
+            terms: None,
         })
         .await?;
     println!("✅ Draft post created with ID: {:?}", draft_post.id);
@@ -83,6 +85,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             featured_media_id: None,
             meta: Some(seo_meta),
             slug: None,
+            terms: None,
         })
         .await?;
     println!("✅ SEO post created with ID: {:?}", seo_post.id);
@@ -101,6 +104,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             featured_media_id: None,
             meta: None,
             slug: None,
+            terms: None,
         })
         .await?;
     println!("✅ Private page created with ID: {:?}", private_page.id);
@@ -120,6 +124,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             featured_media_id: None,
             meta: None,
             slug: None,
+            terms: None,
         })
         .await?;
     println!("✅ Scheduled post created with ID: {:?}", scheduled_post.id);

@@ -294,13 +294,14 @@ fn protected_content_note(post: &WordPressPost) -> Option<&'static str> {
     )
 }
 
-/// post_type（"post" | "page"）からREST APIのエンドポイントセグメントを
-/// 決定する。"post"・未知の値はすべて"posts"として扱う。
-fn endpoint_for_post_type(post_type: &str) -> &'static str {
-    match post_type {
-        "page" => "pages",
-        _ => "posts",
-    }
+/// WordPressの投稿タイプ・タクソノミーの名前の形か（#642）。URLに入れるので、
+/// 英小文字・数字・`_`・`-`だけを受ける
+fn is_slug(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
 }
 
 /// カテゴリ/タグのIDリストを、id→name対応表を使って名前のリストに
@@ -1136,6 +1137,13 @@ fn advanced_post_body(params: PostCreateParams) -> serde_json::Value {
         );
     }
 
+    // タクソノミーの項目（#642）
+    if let Some(terms) = params.terms {
+        for (taxonomy, ids) in terms {
+            post_data[taxonomy] = serde_json::json!(ids);
+        }
+    }
+
     post_data
 }
 
@@ -1167,6 +1175,10 @@ pub struct WordPressHandler {
     /// `upload_media`の`file_path`で読み込みを許可するフォルダ（起動時に
     /// 正規化済み）。空なら`file_path`は使えない。
     upload_allowed_dirs: Arc<Vec<PathBuf>>,
+    /// `post`・`page`のほかに使ってよいカスタム投稿タイプ（#642）
+    allowed_post_types: Arc<Vec<String>>,
+    /// カスタム投稿タイプのREST APIの場所（`rest_base`）。サイトに1回だけ聞く
+    type_endpoints: Arc<tokio::sync::Mutex<HashMap<String, String>>>,
 }
 
 // Debugトレイトでパスワードを露出しないようにカスタム実装
@@ -1206,6 +1218,9 @@ pub struct WordPressPost {
     pub featured_media: Option<u64>,
     pub categories: Option<Vec<u64>>,
     pub tags: Option<Vec<u64>>,
+    /// ほかの項目（独自のタクソノミーの項目等、#642）。読むだけで、書き出さない
+    #[serde(flatten, default, skip_serializing)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1310,19 +1325,122 @@ fn comment_status_arg(
 }
 
 /// リビジョンのツールの`post_type`（#641）。`post`か`page`だけを受ける
-fn revision_post_type_arg(
-    args: &HashMap<String, serde_json::Value>,
-) -> Result<&'static str, McpError> {
+fn revision_post_type_arg(args: &HashMap<String, serde_json::Value>) -> Result<&str, McpError> {
     match args.get("post_type") {
         None | Some(serde_json::Value::Null) => Ok("post"),
-        Some(value) => match value.as_str() {
-            Some("post") => Ok("post"),
-            Some("page") => Ok("page"),
-            _ => Err(McpError::InvalidParams(
-                "post_type must be 'post' or 'page'".to_string(),
-            )),
-        },
+        Some(value) => value
+            .as_str()
+            .ok_or_else(|| McpError::InvalidParams("post_type must be a string".to_string())),
     }
+}
+
+/// 投稿の項目として送れない名前（#642）。`terms`で、ほかの項目を上書きしない
+const RESERVED_POST_FIELDS: &[&str] = &[
+    "id",
+    "date",
+    "date_gmt",
+    "slug",
+    "status",
+    "type",
+    "password",
+    "title",
+    "content",
+    "excerpt",
+    "author",
+    "featured_media",
+    "comment_status",
+    "ping_status",
+    "format",
+    "meta",
+    "sticky",
+    "template",
+    "parent",
+    "menu_order",
+];
+
+/// 引数`terms`（#642）。`{"<タクソノミーのrest_base>": [項目のID, ...]}`
+fn terms_arg(
+    args: &HashMap<String, serde_json::Value>,
+) -> Result<Option<std::collections::BTreeMap<String, Vec<u64>>>, McpError> {
+    let invalid = |message: String| McpError::InvalidParams(message);
+    let Some(value) = args.get("terms").filter(|v| !v.is_null()) else {
+        return Ok(None);
+    };
+    let object = value.as_object().ok_or_else(|| {
+        invalid("terms must be an object such as {\"product_cat\": [12, 15]}".to_string())
+    })?;
+    let mut terms = std::collections::BTreeMap::new();
+    for (taxonomy, ids) in object {
+        if !is_slug(taxonomy) || RESERVED_POST_FIELDS.contains(&taxonomy.as_str()) {
+            return Err(invalid(format!(
+                "terms: '{}' is not a taxonomy (use the rest_base from get_taxonomies)",
+                truncate_chars_with_ellipsis(taxonomy, MAX_ECHOED_INPUT_CHARS)
+            )));
+        }
+        let ids = ids
+            .as_array()
+            .and_then(|items| {
+                items
+                    .iter()
+                    .map(|id| id.as_u64().filter(|n| *n > 0))
+                    .collect::<Option<Vec<u64>>>()
+            })
+            .ok_or_else(|| invalid(format!("terms.{taxonomy} must be a list of term IDs")))?;
+        terms.insert(taxonomy.clone(), ids);
+    }
+    Ok(Some(terms))
+}
+
+/// ツールの`post_type`の引数（`enum`が`post`・`page`のもの）に、設定で
+/// 許したカスタム投稿タイプを足す（#642）。AIには、使える型だけを見せる
+fn with_allowed_post_types(tool: &mut Tool, allowed: &[String]) {
+    if allowed.is_empty() {
+        return;
+    }
+    // get_postsは、カスタム投稿タイプを許したときだけ`post_type`を持つ
+    if tool.name == "get_posts" {
+        if let Some(properties) = tool
+            .input_schema
+            .get_mut("properties")
+            .and_then(|p| p.as_object_mut())
+        {
+            properties.insert(
+                "post_type".to_string(),
+                serde_json::json!({
+                    "type": "string",
+                    "enum": ["post"],
+                    "description": "Post type to list. Defaults to 'post'.",
+                    "default": "post"
+                }),
+            );
+        }
+    }
+    let Some(post_type) = tool
+        .input_schema
+        .get_mut("properties")
+        .and_then(|p| p.get_mut("post_type"))
+        .and_then(|p| p.as_object_mut())
+    else {
+        return;
+    };
+    let Some(values) = post_type.get_mut("enum").and_then(|e| e.as_array_mut()) else {
+        return;
+    };
+    for name in allowed {
+        values.push(serde_json::json!(name));
+    }
+    let description = post_type
+        .get("description")
+        .and_then(|d| d.as_str())
+        .unwrap_or("Content type")
+        .to_string();
+    post_type.insert(
+        "description".to_string(),
+        serde_json::json!(format!(
+            "{description} Custom post types allowed in the config: {}",
+            allowed.join(", ")
+        )),
+    );
 }
 
 /// 引数`key`の、正の整数のIDを読む（#639）
@@ -1497,6 +1615,9 @@ pub struct PostCreateParams {
     pub meta: Option<HashMap<String, String>>, // SEOメタデータ等
     /// URLのスラッグ。`None`のときは送らず、WordPressがタイトルから作る
     pub slug: Option<String>,
+    /// タクソノミーの項目（#642）。キーはタクソノミーの`rest_base`
+    /// （例: `product_cat`）、値は項目のID
+    pub terms: Option<std::collections::BTreeMap<String, Vec<u64>>>,
 }
 
 /// WordPress post update parameters
@@ -1514,6 +1635,9 @@ pub struct PostUpdateParams {
     pub meta: Option<HashMap<String, String>>,
     /// URLのスラッグ。WordPressはタイトルを変えてもスラッグを変えない
     pub slug: Option<String>,
+    /// タクソノミーの項目（#642）。`PostCreateParams::terms`と同じ。渡した
+    /// タクソノミーの項目を、この一覧に置き換える
+    pub terms: Option<std::collections::BTreeMap<String, Vec<u64>>>,
 }
 
 impl Default for PostCreateParams {
@@ -1530,6 +1654,7 @@ impl Default for PostCreateParams {
             featured_media_id: None,
             meta: None,
             slug: None,
+            terms: None,
         }
     }
 }
@@ -1589,6 +1714,15 @@ impl WordPressHandler {
             );
         }
 
+        let allowed_post_types = config.post_types.clone();
+        for post_type in &allowed_post_types {
+            if !is_slug(post_type) || matches!(post_type.as_str(), "post" | "page") {
+                return Err(format!(
+                    "post_types: '{post_type}' is not a custom post type name (lowercase letters, digits, '_' and '-'; post and page are always allowed)"
+                ));
+            }
+        }
+
         Ok(Self {
             client,
             base_url: config.url.clone(),
@@ -1598,6 +1732,8 @@ impl WordPressHandler {
             rate_limiter,
             audit_logger,
             upload_allowed_dirs: Arc::new(upload_allowed_dirs),
+            allowed_post_types: Arc::new(allowed_post_types),
+            type_endpoints: Default::default(),
         })
     }
 
@@ -1963,7 +2099,7 @@ impl WordPressHandler {
         post_type: &str,
         include_raw: bool,
     ) -> Result<WordPressPost, McpError> {
-        let endpoint = endpoint_for_post_type(post_type);
+        let endpoint = self.post_type_endpoint(post_type).await?;
         let url = format!("{}/wp-json/wp/v2/{}/{}", self.base_url, endpoint, post_id);
 
         info!("Fetching WordPress {}: {}", post_type, post_id);
@@ -2025,7 +2161,7 @@ impl WordPressHandler {
         validate_post_status(&params.status, params.date.as_deref())?;
 
         // 投稿タイプに応じてエンドポイントを決定
-        let endpoint = endpoint_for_post_type(&params.post_type);
+        let endpoint = self.post_type_endpoint(&params.post_type).await?;
         let url = format!("{}/wp-json/wp/v2/{}", self.base_url, endpoint);
         let post_data = advanced_post_body(params);
 
@@ -2163,13 +2299,138 @@ impl WordPressHandler {
         self.execute_request_with_retry(request).await
     }
 
+    /// 投稿タイプのREST APIの場所（#642）。`post`・`page`はそのまま。
+    /// カスタム投稿タイプは、設定の`post_types`にあるものだけを、サイトの
+    /// `/wp/v2/types/<名前>`の`rest_base`で（`wp/v2`にあるものだけ）
+    async fn post_type_endpoint(&self, post_type: &str) -> Result<String, McpError> {
+        match post_type {
+            "post" => return Ok("posts".to_string()),
+            "page" => return Ok("pages".to_string()),
+            _ => {}
+        }
+        if !is_slug(post_type) {
+            return Err(McpError::InvalidParams(format!(
+                "post_type '{}' is not a post type name",
+                truncate_chars_with_ellipsis(post_type, MAX_ECHOED_INPUT_CHARS)
+            )));
+        }
+        if !self.allowed_post_types.iter().any(|t| t == post_type) {
+            return Err(McpError::InvalidParams(format!(
+                "post_type '{post_type}' is not allowed: mcp-rs uses only post, page{}. To use it, add it to post_types in [handlers.wordpress] (see get_post_types)",
+                self.allowed_post_types
+                    .iter()
+                    .map(|t| format!(", {t}"))
+                    .collect::<String>()
+            )));
+        }
+        if let Some(endpoint) = self.type_endpoints.lock().await.get(post_type) {
+            return Ok(endpoint.clone());
+        }
+        let url = format!("{}/wp-json/wp/v2/types/{}", self.base_url, post_type);
+        let info: serde_json::Value = self.fetch_json(&url, None).await.map_err(|e| {
+            McpError::ExternalApi(format!(
+                "post type '{post_type}' was not found in the site's REST API: {e}"
+            ))
+        })?;
+        let namespace = info
+            .get("rest_namespace")
+            .and_then(|v| v.as_str())
+            .unwrap_or("wp/v2");
+        let endpoint = info
+            .get("rest_base")
+            .and_then(|v| v.as_str())
+            .filter(|base| is_slug(base) && namespace == "wp/v2")
+            .ok_or_else(|| {
+                McpError::ExternalApi(format!(
+                    "post type '{post_type}' is not available under /wp/v2 of the REST API (namespace '{namespace}'), so mcp-rs cannot use it"
+                ))
+            })?
+            .to_string();
+        self.type_endpoints
+            .lock()
+            .await
+            .insert(post_type.to_string(), endpoint.clone());
+        Ok(endpoint)
+    }
+
+    /// 投稿の、独自のタクソノミーの項目（#642）。例: `product_cat: 12, 15`。
+    /// タクソノミーが読めなければ`None`
+    async fn custom_terms_label(&self, post_type: &str, post: &WordPressPost) -> Option<String> {
+        let url = format!(
+            "{}/wp-json/wp/v2/taxonomies?type={}",
+            self.base_url, post_type
+        );
+        let taxonomies: serde_json::Map<String, serde_json::Value> =
+            self.fetch_json(&url, None).await.ok()?;
+        let parts: Vec<String> = taxonomies
+            .values()
+            .filter_map(|info| info.get("rest_base").and_then(|b| b.as_str()))
+            .filter_map(|base| {
+                let ids = post.extra.get(base)?.as_array()?;
+                let ids: Vec<String> = ids
+                    .iter()
+                    .filter_map(|id| id.as_u64())
+                    .map(|id| id.to_string())
+                    .collect();
+                Some(format!(
+                    "{base}: {}",
+                    if ids.is_empty() {
+                        "none".to_string()
+                    } else {
+                        ids.join(", ")
+                    }
+                ))
+            })
+            .collect();
+        (!parts.is_empty()).then(|| parts.join("; "))
+    }
+
+    /// タクソノミーの項目の一覧（#642）。`taxonomy`は、タクソノミーの名前か
+    /// `rest_base`。サイトの`/wp/v2/taxonomies`で、`wp/v2`の場所を確かめる
+    async fn get_terms(&self, taxonomy: &str) -> Result<Vec<serde_json::Value>, McpError> {
+        if !is_slug(taxonomy) {
+            return Err(McpError::InvalidParams(format!(
+                "taxonomy '{}' is not a taxonomy name",
+                truncate_chars_with_ellipsis(taxonomy, MAX_ECHOED_INPUT_CHARS)
+            )));
+        }
+        let taxonomies: serde_json::Map<String, serde_json::Value> = self
+            .fetch_json(&format!("{}/wp-json/wp/v2/taxonomies", self.base_url), None)
+            .await?;
+        let rest_base = taxonomies
+            .iter()
+            .find_map(|(slug, info)| {
+                let base = info.get("rest_base").and_then(|b| b.as_str())?;
+                let namespace = info
+                    .get("rest_namespace")
+                    .and_then(|n| n.as_str())
+                    .unwrap_or("wp/v2");
+                (namespace == "wp/v2" && is_slug(base) && (slug == taxonomy || base == taxonomy))
+                    .then(|| base.to_string())
+            })
+            .ok_or_else(|| {
+                McpError::InvalidParams(format!(
+                    "taxonomy '{taxonomy}' was not found under /wp/v2 of the site's REST API (see get_taxonomies)"
+                ))
+            })?;
+        let (items, _total) = self
+            .fetch_all_pages(|page| {
+                format!(
+                    "{}/wp-json/wp/v2/{}?per_page=100&page={}",
+                    self.base_url, rest_base, page
+                )
+            })
+            .await?;
+        Ok(items)
+    }
+
     /// 投稿・固定ページのリビジョンの一覧（#641）。新しい順
     async fn get_revisions(
         &self,
         post_id: u64,
         post_type: &str,
     ) -> Result<Vec<WordPressRevision>, McpError> {
-        let endpoint = endpoint_for_post_type(post_type);
+        let endpoint = self.post_type_endpoint(post_type).await?;
         let (items, _total) = self
             .fetch_all_pages(|page| {
                 format!(
@@ -2188,7 +2449,7 @@ impl WordPressHandler {
         revision_id: u64,
         post_type: &str,
     ) -> Result<WordPressRevision, McpError> {
-        let endpoint = endpoint_for_post_type(post_type);
+        let endpoint = self.post_type_endpoint(post_type).await?;
         let url = format!(
             "{}/wp-json/wp/v2/{}/{}/revisions/{}",
             self.base_url, endpoint, post_id, revision_id
@@ -2229,7 +2490,7 @@ impl WordPressHandler {
             body["excerpt"] = serde_json::json!(excerpt);
         }
 
-        let endpoint = endpoint_for_post_type(post_type);
+        let endpoint = self.post_type_endpoint(post_type).await?;
         let url = format!("{}/wp-json/wp/v2/{}/{}", self.base_url, endpoint, post_id);
         let mut request = self.client.post(&url).json(&body);
         if let (Some(username), Some(password)) = (&self.username, &self.password) {
@@ -2688,6 +2949,7 @@ impl WordPressHandler {
             featured_media_id,
             meta: None,
             slug: None,
+            terms: None,
         })
         .await
     }
@@ -2719,7 +2981,7 @@ impl WordPressHandler {
         post_type: &str,
         params: PostUpdateParams,
     ) -> Result<WordPressPost, McpError> {
-        let endpoint = endpoint_for_post_type(post_type);
+        let endpoint = self.post_type_endpoint(post_type).await?;
         let url = format!("{}/wp-json/wp/v2/{}/{}", self.base_url, endpoint, post_id);
 
         info!("Updating WordPress {}: {}", post_type, post_id);
@@ -2749,6 +3011,13 @@ impl WordPressHandler {
 
         if let Some(slug) = params.slug {
             update_data.insert("slug".to_string(), serde_json::Value::String(slug));
+        }
+
+        // タクソノミーの項目（#642）
+        if let Some(terms) = params.terms {
+            for (taxonomy, ids) in terms {
+                update_data.insert(taxonomy, serde_json::json!(ids));
+            }
         }
 
         if let Some(date) = params.date.filter(|d| !d.trim().is_empty()) {
@@ -2813,7 +3082,7 @@ impl WordPressHandler {
         post_type: &str,
         force: bool,
     ) -> Result<serde_json::Value, McpError> {
-        let endpoint = endpoint_for_post_type(post_type);
+        let endpoint = self.post_type_endpoint(post_type).await?;
         let url = format!("{}/wp-json/wp/v2/{}/{}", self.base_url, endpoint, post_id);
 
         let mut request = self.client.delete(&url);
@@ -3538,16 +3807,18 @@ impl WordPressHandler {
             "get_posts" | "get_pages" => {
                 let args = params.arguments.unwrap_or_default();
                 let (endpoint, with_taxonomies) = if params.name == "get_posts" {
-                    ("posts", true)
+                    // カスタム投稿タイプ（#642）
+                    let post_type = revision_post_type_arg(&args)?;
+                    (self.post_type_endpoint(post_type).await?, true)
                 } else {
-                    ("pages", false)
+                    ("pages".to_string(), false)
                 };
                 let query = post_list_query_arg(&args, with_taxonomies)?;
-                let (items, page) = self.list(endpoint, &query).await?;
+                let (items, page) = self.list(&endpoint, &query).await?;
                 Ok(serde_json::json!({
                     "content": [{
                         "type": "text",
-                        "text": list_result_text(endpoint, &items, page)
+                        "text": list_result_text(&endpoint, &items, page)
                     }],
                     "isError": false
                 }))
@@ -3649,9 +3920,15 @@ impl WordPressHandler {
                 // されていない原文）
                 let title = post_content_for_display(&post.title, format);
                 let content_body = post_content_for_display(&post.content, format);
-                let note = protected_content_note(&post)
+                let mut note = protected_content_note(&post)
                     .map(|note| format!("Note: {}\n", note))
                     .unwrap_or_default();
+                // カスタム投稿タイプの、独自のタクソノミーの項目（#642）
+                if !matches!(post_type, "post" | "page") {
+                    if let Some(terms) = self.custom_terms_label(post_type, &post).await {
+                        note = format!("Terms: {terms}\n{note}");
+                    }
+                }
 
                 Ok(serde_json::json!({
                     "content": [{
@@ -3762,6 +4039,7 @@ impl WordPressHandler {
                         featured_media_id,
                         meta,
                         slug,
+                        terms: terms_arg(&args)?,
                     })
                     .await?;
 
@@ -4333,6 +4611,7 @@ impl WordPressHandler {
                             featured_media_id,
                             meta: None,
                             slug,
+                            terms: terms_arg(&args)?,
                         },
                     )
                     .await?;
@@ -4342,6 +4621,131 @@ impl WordPressHandler {
                         "type": "text",
                         "text": format!("Updated {} ID {} - Title: '{}', Status: {}, Date: {}, Slug: {}",
                             post_type, post_id, post.title.rendered, post.status, post_date_label(&post), post_slug_label(&post))
+                    }],
+                    "isError": false
+                }))
+            }
+            "get_post_types" => {
+                let types: serde_json::Map<String, serde_json::Value> = self
+                    .fetch_json(&format!("{}/wp-json/wp/v2/types", self.base_url), None)
+                    .await?;
+                let mut lines = Vec::new();
+                for (slug, info) in &types {
+                    let allowed = matches!(slug.as_str(), "post" | "page")
+                        || self.allowed_post_types.iter().any(|t| t == slug);
+                    let taxonomies = info
+                        .get("taxonomies")
+                        .and_then(|t| t.as_array())
+                        .map(|t| {
+                            t.iter()
+                                .filter_map(|v| v.as_str())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        })
+                        .unwrap_or_default();
+                    lines.push(format!(
+                        "{} ({}): {}; taxonomies: {}",
+                        slug,
+                        info.get("name").and_then(|n| n.as_str()).unwrap_or(""),
+                        if allowed {
+                            "usable"
+                        } else {
+                            "not allowed (add it to post_types in [handlers.wordpress] to use it)"
+                        },
+                        if taxonomies.is_empty() {
+                            "none"
+                        } else {
+                            &taxonomies
+                        }
+                    ));
+                }
+                Ok(serde_json::json!({
+                    "content": [{
+                        "type": "text",
+                        "text": format!("Found {} post types:\n{}", lines.len(), lines.join("\n"))
+                    }],
+                    "isError": false
+                }))
+            }
+            "get_taxonomies" => {
+                let args = params.arguments.unwrap_or_default();
+                let mut url = format!("{}/wp-json/wp/v2/taxonomies", self.base_url);
+                if let Some(post_type) = args.get("post_type").and_then(|v| v.as_str()) {
+                    if !is_slug(post_type) {
+                        return Err(McpError::InvalidParams(
+                            "post_type is not a post type name".to_string(),
+                        ));
+                    }
+                    url = format!("{url}?type={post_type}");
+                }
+                let taxonomies: serde_json::Map<String, serde_json::Value> =
+                    self.fetch_json(&url, None).await?;
+                let lines: Vec<String> = taxonomies
+                    .iter()
+                    .map(|(slug, info)| {
+                        let text = |key: &str| {
+                            info.get(key)
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string()
+                        };
+                        let types = info
+                            .get("types")
+                            .and_then(|t| t.as_array())
+                            .map(|t| {
+                                t.iter()
+                                    .filter_map(|v| v.as_str())
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            })
+                            .unwrap_or_default();
+                        format!(
+                            "{} ({}): rest_base {} (the key in terms and in posts), hierarchical: {}, post types: {}",
+                            slug,
+                            text("name"),
+                            text("rest_base"),
+                            info.get("hierarchical")
+                                .and_then(|h| h.as_bool())
+                                .unwrap_or(false),
+                            types
+                        )
+                    })
+                    .collect();
+                Ok(serde_json::json!({
+                    "content": [{
+                        "type": "text",
+                        "text": format!("Found {} taxonomies:\n{}", lines.len(), lines.join("\n"))
+                    }],
+                    "isError": false
+                }))
+            }
+            "get_terms" => {
+                let args = params.arguments.unwrap_or_default();
+                let taxonomy = args
+                    .get("taxonomy")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| McpError::InvalidParams("Missing taxonomy".to_string()))?;
+                let terms = self.get_terms(taxonomy).await?;
+                let lines: Vec<String> = terms
+                    .iter()
+                    .map(|term| {
+                        let number =
+                            |key: &str| term.get(key).and_then(|v| v.as_u64()).unwrap_or(0);
+                        let text = |key: &str| term.get(key).and_then(|v| v.as_str()).unwrap_or("");
+                        format!(
+                            "ID {}: {} (slug: {}, parent: {}, posts: {})",
+                            number("id"),
+                            text("name"),
+                            text("slug"),
+                            number("parent"),
+                            number("count")
+                        )
+                    })
+                    .collect();
+                Ok(serde_json::json!({
+                    "content": [{
+                        "type": "text",
+                        "text": format!("Found {} terms in {}:\n{}", lines.len(), taxonomy, lines.join("\n"))
                     }],
                     "isError": false
                 }))
@@ -4980,6 +5384,11 @@ impl McpHandler for WordPressHandler {
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
+                        "terms": {
+                            "type": "object",
+                            "description": "Terms of taxonomies, such as a custom post type's own categories: {\"<taxonomy rest_base>\": [term IDs]}, e.g. {\"product_cat\": [12, 15]}. Each listed taxonomy's terms are replaced with the given ones. See get_taxonomies and get_terms",
+                            "additionalProperties": {"type": "array", "items": {"type": "number"}}
+                        },
                         "title": {
                             "type": "string",
                             "description": "The post/page title"
@@ -5049,6 +5458,42 @@ impl McpHandler for WordPressHandler {
                         }
                     },
                     "required": []
+                }),
+                ..Default::default()
+            },
+            Tool {
+                name: "get_post_types".to_string(),
+                description: "List the site's post types (post, page, and custom ones such as products or events) with their taxonomies, and whether mcp-rs may use each. Custom post types are used only when listed in post_types in the mcp-rs config".to_string(),
+                input_schema: serde_json::json!({"type": "object", "properties": {}, "required": []}),
+                ..Default::default()
+            },
+            Tool {
+                name: "get_taxonomies".to_string(),
+                description: "List the site's taxonomies (categories, tags, and custom ones such as product categories) with the rest_base to use as the key in terms".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "post_type": {
+                            "type": "string",
+                            "description": "Only the taxonomies of this post type"
+                        }
+                    },
+                    "required": []
+                }),
+                ..Default::default()
+            },
+            Tool {
+                name: "get_terms".to_string(),
+                description: "List the terms of a taxonomy (for example the product categories): ID, name, slug, parent and number of posts. Use the IDs in terms of create_advanced_post and update_post".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "taxonomy": {
+                            "type": "string",
+                            "description": "Taxonomy name or rest_base, from get_taxonomies"
+                        }
+                    },
+                    "required": ["taxonomy"]
                 }),
                 ..Default::default()
             },
@@ -5614,6 +6059,11 @@ impl McpHandler for WordPressHandler {
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
+                        "terms": {
+                            "type": "object",
+                            "description": "Terms of taxonomies, such as a custom post type's own categories: {\"<taxonomy rest_base>\": [term IDs]}, e.g. {\"product_cat\": [12, 15]}. Each listed taxonomy's terms are replaced with the given ones. See get_taxonomies and get_terms",
+                            "additionalProperties": {"type": "array", "items": {"type": "number"}}
+                        },
                         "post_id": {
                             "type": "number",
                             "description": "Post or page ID to update"
@@ -5835,9 +6285,13 @@ impl McpHandler for WordPressHandler {
         ];
         Ok(tools
             .into_iter()
-            .map(|tool| Tool {
-                annotations: Some(wordpress_tool_annotations(&tool.name)),
-                ..tool
+            .map(|tool| {
+                let mut tool = Tool {
+                    annotations: Some(wordpress_tool_annotations(&tool.name)),
+                    ..tool
+                };
+                with_allowed_post_types(&mut tool, &self.allowed_post_types);
+                tool
             })
             .collect())
     }
@@ -5990,6 +6444,7 @@ mod tests {
             encrypted_credentials: None,
             keyring: None,
             upload_allowed_dirs: Vec::new(),
+            post_types: Vec::new(),
             default_site: None,
             sites: Default::default(),
         };
@@ -6014,6 +6469,7 @@ mod tests {
             encrypted_credentials: None,
             keyring: None,
             upload_allowed_dirs: Vec::new(),
+            post_types: Vec::new(),
             default_site: None,
             sites: Default::default(),
         };
@@ -6034,6 +6490,7 @@ mod tests {
             encrypted_credentials: None,
             keyring: None,
             upload_allowed_dirs: Vec::new(),
+            post_types: Vec::new(),
             default_site: None,
             sites: Default::default(),
         };
@@ -6061,6 +6518,7 @@ mod tests {
                 encrypted_credentials: None,
                 keyring: None,
                 upload_allowed_dirs: Vec::new(),
+                post_types: Vec::new(),
                 default_site: None,
                 sites: Default::default(),
             };
@@ -6084,6 +6542,7 @@ mod tests {
             encrypted_credentials: None,
             keyring: None,
             upload_allowed_dirs: Vec::new(),
+            post_types: Vec::new(),
             default_site: None,
             sites: Default::default(),
         };
@@ -6526,6 +6985,7 @@ mod tests {
             featured_media: None,
             categories: None,
             tags: None,
+            extra: Default::default(),
         }];
 
         let summary = summarize_posts(&posts);
@@ -6588,14 +7048,6 @@ mod tests {
     fn test_display_opt_id_formats_without_debug_artifacts() {
         assert_eq!(display_opt_id(Some(328)), "328");
         assert_eq!(display_opt_id(None), "N/A");
-    }
-
-    #[test]
-    fn test_endpoint_for_post_type_routes_pages_and_posts() {
-        assert_eq!(endpoint_for_post_type("page"), "pages");
-        assert_eq!(endpoint_for_post_type("post"), "posts");
-        // 未知の値は投稿として扱う（既定の振る舞い）
-        assert_eq!(endpoint_for_post_type("anything-else"), "posts");
     }
 
     #[test]
@@ -6956,6 +7408,7 @@ mod tests {
                 .iter()
                 .map(|d| d.to_string_lossy().into_owned())
                 .collect(),
+            post_types: Vec::new(),
             default_site: None,
             sites: Default::default(),
         };
@@ -7406,6 +7859,8 @@ mod tests {
             rate_limiter: Arc::new(RateLimiter::new(RateLimitConfig::default())),
             audit_logger: Arc::new(AuditLogger::with_defaults()),
             upload_allowed_dirs: Arc::new(Vec::new()),
+            allowed_post_types: Arc::new(vec!["product".to_string()]),
+            type_endpoints: Default::default(),
         }
     }
 
@@ -7798,6 +8253,7 @@ mod tests {
             featured_media: None,
             categories: None,
             tags: None,
+            extra: Default::default(),
         }
     }
 
@@ -9124,7 +9580,7 @@ mod tests {
             (
                 "get_revisions",
                 serde_json::json!({"post_id": 7, "post_type": "attachment"}),
-                "post_type must be 'post' or 'page'",
+                "post_type 'attachment' is not allowed",
             ),
             (
                 "get_revision",
@@ -9156,5 +9612,309 @@ mod tests {
         let args: HashMap<String, serde_json::Value> =
             serde_json::from_value(serde_json::json!({"comment_id": 5})).unwrap();
         assert_eq!(extract_target_id(&Some(args)), Some("5".to_string()));
+    }
+
+    // ---- #642: カスタム投稿タイプと独自のタクソノミー ----
+    // handler_for_local_serverは、post_types = ["product"]
+
+    fn product_type_json() -> String {
+        r#"{"slug":"product","name":"Products","rest_base":"products","rest_namespace":"wp/v2","taxonomies":["product_cat"]}"#.to_string()
+    }
+
+    fn product_json() -> serde_json::Value {
+        serde_json::json!({
+            "id": 21,
+            "slug": "mug",
+            "status": "publish",
+            "type": "product",
+            "title": {"rendered": "マグカップ"},
+            "content": {"rendered": "<p>説明</p>"},
+            "product_cat": [12, 15],
+            // 投稿タイプの応答としても読めるように
+            "rest_base": "products",
+            "rest_namespace": "wp/v2"
+        })
+    }
+
+    /// 設定で許したカスタム投稿タイプは、サイトの`rest_base`の場所を使う
+    #[tokio::test]
+    async fn test_custom_post_type_uses_rest_base() {
+        let list = serde_json::json!([product_json()]).to_string();
+        let base = spawn_routing_server(vec![
+            (
+                "/wp-json/wp/v2/types/product",
+                "200 OK",
+                product_type_json(),
+            ),
+            (
+                "/wp-json/wp/v2/products?per_page=100&page=1",
+                "200 OK\r\nX-WP-Total: 1\r\nX-WP-TotalPages: 1",
+                list,
+            ),
+        ])
+        .await;
+        let handler = handler_for_local_server(base);
+        assert_eq!(handler.post_type_endpoint("post").await.unwrap(), "posts");
+        assert_eq!(handler.post_type_endpoint("page").await.unwrap(), "pages");
+        let result = call_tool_with(
+            &handler,
+            "get_posts",
+            serde_json::json!({"post_type": "product"}),
+        )
+        .await
+        .unwrap();
+        let text = tool_text(&result);
+        assert!(text.starts_with("Found 1 products:"), "{text}");
+        assert!(text.contains("マグカップ"), "{text}");
+        // 2回目は、サイトに聞かない
+        assert!(handler.type_endpoints.lock().await.contains_key("product"));
+    }
+
+    /// 設定に無い型・名前の形でない型は、サイトに送らない
+    #[tokio::test]
+    async fn test_custom_post_type_must_be_allowed() {
+        let handler = handler_for_local_server("http://127.0.0.1:9".to_string());
+        for (post_type, message) in [
+            ("event", "post_type 'event' is not allowed: mcp-rs uses only post, page, product. To use it, add it to post_types"),
+            ("../users", "is not a post type name"),
+        ] {
+            let result = call_tool_with(
+                &handler,
+                "get_post",
+                serde_json::json!({"post_id": 1, "post_type": post_type}),
+            )
+            .await;
+            assert!(
+                matches!(result, Err(McpError::InvalidParams(ref msg)) if msg.contains(message)),
+                "{post_type}: {:?}",
+                result
+            );
+        }
+    }
+
+    /// `wp/v2`の外（WooCommerceの`wc/v3`等）にある型は使えない
+    #[tokio::test]
+    async fn test_custom_post_type_outside_wp_v2_is_refused() {
+        let base = spawn_routing_server(vec![(
+            "/wp-json/wp/v2/types/product",
+            "200 OK",
+            r#"{"slug":"product","rest_base":"products","rest_namespace":"wc/v3"}"#.to_string(),
+        )])
+        .await;
+        let handler = handler_for_local_server(base);
+        let err = handler.post_type_endpoint("product").await.unwrap_err();
+        assert!(err.to_string().contains("namespace 'wc/v3'"), "{err}");
+    }
+
+    /// `terms`で、独自のタクソノミーの項目を付け替える
+    #[tokio::test]
+    async fn test_update_post_sends_terms() {
+        let (base_url, captured) = spawn_body_capturing_server(product_json().to_string()).await;
+        let handler = handler_for_local_server(base_url);
+        call_tool_with(
+            &handler,
+            "update_post",
+            serde_json::json!({
+                "post_id": 21,
+                "post_type": "product",
+                "terms": {"product_cat": [12, 15], "product_tag": []}
+            }),
+        )
+        .await
+        .unwrap();
+        let bodies = captured.lock().await;
+        let sent: serde_json::Value = serde_json::from_str(bodies.last().unwrap()).unwrap();
+        assert_eq!(
+            sent,
+            serde_json::json!({"product_cat": [12, 15], "product_tag": []})
+        );
+    }
+
+    #[test]
+    fn test_terms_arg_rejects_other_fields_and_bad_ids() {
+        let args = |value: serde_json::Value| -> HashMap<String, serde_json::Value> {
+            serde_json::from_value(serde_json::json!({ "terms": value })).unwrap()
+        };
+        assert_eq!(terms_arg(&HashMap::new()).unwrap(), None);
+        for (value, message) in [
+            (serde_json::json!([1]), "terms must be an object"),
+            (
+                serde_json::json!({"status": [1]}),
+                "'status' is not a taxonomy",
+            ),
+            (serde_json::json!({"Product Cat": [1]}), "is not a taxonomy"),
+            (
+                serde_json::json!({"product_cat": 1}),
+                "terms.product_cat must be a list of term IDs",
+            ),
+            (
+                serde_json::json!({"product_cat": [0]}),
+                "terms.product_cat must be a list of term IDs",
+            ),
+        ] {
+            let err = terms_arg(&args(value.clone())).unwrap_err();
+            assert!(err.to_string().contains(message), "{value}: {err}");
+        }
+    }
+
+    /// 型の一覧は、使えるか（設定で許したか）も出す
+    #[tokio::test]
+    async fn test_get_post_types_shows_whether_usable() {
+        let base = spawn_routing_server(vec![(
+            "/wp-json/wp/v2/types",
+            "200 OK",
+            r#"{"post":{"name":"Posts","taxonomies":["category","post_tag"]},"product":{"name":"Products","taxonomies":["product_cat"]},"event":{"name":"Events","taxonomies":[]}}"#.to_string(),
+        )])
+        .await;
+        let handler = handler_for_local_server(base);
+        let result = call_tool_with(&handler, "get_post_types", serde_json::json!({}))
+            .await
+            .unwrap();
+        let text = tool_text(&result);
+        assert!(
+            text.contains("post (Posts): usable; taxonomies: category, post_tag"),
+            "{text}"
+        );
+        assert!(
+            text.contains("product (Products): usable; taxonomies: product_cat"),
+            "{text}"
+        );
+        assert!(
+            text.contains("event (Events): not allowed (add it to post_types"),
+            "{text}"
+        );
+    }
+
+    /// 項目の一覧は、タクソノミーの名前から`rest_base`を決めて読む
+    #[tokio::test]
+    async fn test_get_terms_resolves_rest_base() {
+        let base = spawn_routing_server(vec![
+            (
+                "/wp-json/wp/v2/taxonomies",
+                "200 OK",
+                r#"{"product_cat":{"name":"Product categories","rest_base":"product_cat","rest_namespace":"wp/v2"}}"#.to_string(),
+            ),
+            (
+                "/wp-json/wp/v2/product_cat?per_page=100&page=1",
+                "200 OK\r\nX-WP-Total: 1\r\nX-WP-TotalPages: 1",
+                r#"[{"id":12,"name":"食器","slug":"dishes","parent":0,"count":3}]"#.to_string(),
+            ),
+        ])
+        .await;
+        let handler = handler_for_local_server(base);
+        let result = call_tool_with(
+            &handler,
+            "get_terms",
+            serde_json::json!({"taxonomy": "product_cat"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            tool_text(&result),
+            "Found 1 terms in product_cat:\nID 12: 食器 (slug: dishes, parent: 0, posts: 3)"
+        );
+        let missing = call_tool_with(
+            &handler,
+            "get_terms",
+            serde_json::json!({"taxonomy": "genre"}),
+        )
+        .await;
+        assert!(
+            matches!(missing, Err(McpError::InvalidParams(ref msg)) if msg.contains("taxonomy 'genre' was not found")),
+            "{:?}",
+            missing
+        );
+    }
+
+    /// カスタム投稿タイプの`get_post`は、独自のタクソノミーの項目も出す
+    #[tokio::test]
+    async fn test_get_post_shows_custom_terms() {
+        let base = spawn_routing_server(vec![
+            (
+                "/wp-json/wp/v2/types/product",
+                "200 OK",
+                product_type_json(),
+            ),
+            (
+                "/wp-json/wp/v2/products/21",
+                "200 OK",
+                product_json().to_string(),
+            ),
+            (
+                "/wp-json/wp/v2/taxonomies?type=product",
+                "200 OK",
+                r#"{"product_cat":{"rest_base":"product_cat"}}"#.to_string(),
+            ),
+            (
+                "/wp-json/wp/v2/categories",
+                "200 OK\r\nX-WP-TotalPages: 1",
+                "[]".to_string(),
+            ),
+            (
+                "/wp-json/wp/v2/tags",
+                "200 OK\r\nX-WP-TotalPages: 1",
+                "[]".to_string(),
+            ),
+        ])
+        .await;
+        let handler = handler_for_local_server(base);
+        let result = call_tool_with(
+            &handler,
+            "get_post",
+            serde_json::json!({"post_id": 21, "post_type": "product"}),
+        )
+        .await
+        .unwrap();
+        let text = tool_text(&result);
+        assert!(text.contains("Terms: product_cat: 12, 15\n"), "{text}");
+    }
+
+    /// ツールの`post_type`には、許した型だけを見せる
+    #[tokio::test]
+    async fn test_tools_list_only_allowed_post_types() {
+        let handler = handler_for_local_server("http://127.0.0.1:9".to_string());
+        let tools = handler.list_tools().await.unwrap();
+        let enum_of = |name: &str| {
+            tools.iter().find(|t| t.name == name).unwrap().input_schema["properties"]["post_type"]
+                ["enum"]
+                .clone()
+        };
+        assert_eq!(
+            enum_of("get_post"),
+            serde_json::json!(["post", "page", "product"])
+        );
+        assert_eq!(
+            enum_of("update_post"),
+            serde_json::json!(["post", "page", "product"])
+        );
+        assert_eq!(enum_of("get_posts"), serde_json::json!(["post", "product"]));
+
+        // 許していなければ、今までと同じ（get_postsにpost_typeは無い）
+        let plain = rate_limited_handler(RateLimitConfig::default());
+        let tools = plain.list_tools().await.unwrap();
+        let get_posts = tools.iter().find(|t| t.name == "get_posts").unwrap();
+        assert!(get_posts.input_schema["properties"]
+            .get("post_type")
+            .is_none());
+        let get_post = tools.iter().find(|t| t.name == "get_post").unwrap();
+        assert_eq!(
+            get_post.input_schema["properties"]["post_type"]["enum"],
+            serde_json::json!(["post", "page"])
+        );
+    }
+
+    #[test]
+    fn test_try_new_rejects_bad_post_types() {
+        for post_type in ["Product", "page", "a/b"] {
+            let config: WordPressConfig = toml::from_str(&format!(
+                "url = \"https://example.com\"\nenabled = true\nusername = \"u\"\npassword = \"p\"\npost_types = [\"{post_type}\"]\n"
+            ))
+            .unwrap();
+            let err = WordPressHandler::try_new(config).unwrap_err();
+            assert!(
+                err.contains("is not a custom post type name"),
+                "{post_type}: {err}"
+            );
+        }
     }
 }
