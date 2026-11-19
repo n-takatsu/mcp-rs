@@ -32,6 +32,25 @@ Each [release](https://github.com/n-takatsu/mcp-rs/releases) from v0.25.0 has re
 | macOS (Apple Silicon) | `mcp-rs-<version>-aarch64-apple-darwin.tar.gz` |
 | Linux (x64, glibc 2.35 or later) | `mcp-rs-<version>-x86_64-unknown-linux-gnu.tar.gz` |
 
+### Claude Desktop extension {#claude-desktop-extension}
+
+For Claude Desktop only, the easiest way is the extension file (v0.30.0 and later). It contains mcp-rs for Windows, macOS (Apple Silicon) and Linux, and the settings are entered in Claude Desktop instead of a config file:
+
+1. Download `mcp-rs-<version>.mcpb` from the [release](https://github.com/n-takatsu/mcp-rs/releases)
+2. Open it (double-click, or drag it onto Claude Desktop's Settings > Extensions), and install it
+3. In the extension's settings, enter the WordPress site URL, the username, and the [Application Password](#credentials). Claude Desktop keeps the password encrypted in the OS's own store (Windows Credential Manager, macOS Keychain)
+4. Ask Claude "What is the status of mcp-rs?". `mcp_rs_status` shows the site, or what is still missing
+
+Notes:
+
+- To use a database, several sites or plugins, choose your own mcp-rs config file in the extension's settings. It is passed to mcp-rs as `MCP_RS_CONFIG` and used instead of the extension's own config. Whether you still fill in the three fields depends on that file:
+  - If it keeps the WordPress credentials in the OS credential store (`keyring`, as `mcp-rs init` writes), leave the three fields empty
+  - If it reads them from `${WORDPRESS_URL}`, `${WORDPRESS_USERNAME}` and `${WORDPRESS_PASSWORD}`, fill in the three fields: the extension passes them as those variables. If they are left empty, mcp-rs starts without WordPress and `mcp_rs_status` says what is missing
+  - The extension always runs mcp-rs in STDIO mode, even if the file sets `[transport] type = "http"`
+- The extension is not signed. Check the file with its `.sha256` or `gh attestation verify mcp-rs-<version>.mcpb --repo n-takatsu/mcp-rs`. To update, install the extension file of the new release
+- Do not also register mcp-rs with `mcp-rs init` for Claude Desktop: the same tools would appear twice. Claude Code and VS Code (GitHub Copilot) cannot use the extension; use `mcp-rs init` for them
+- While mcp-rs runs, the password is in its environment, as with `env` in the Claude Desktop config file
+
 ### Install script {#install-script}
 
 From v0.26.0, the install script downloads the latest release, checks its SHA256, puts mcp-rs in `~/.mcp-rs/bin` (`%USERPROFILE%\.mcp-rs\bin` on Windows) without changing anything else (no PATH or other settings), and then offers to run [`mcp-rs init`](#mcp-rs-init). No administrator rights are needed. Run it again to update; on Windows, this works even while a client is running mcp-rs (the client uses the new one after a restart):

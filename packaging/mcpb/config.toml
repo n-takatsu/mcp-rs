@@ -1,0 +1,17 @@
+# mcp-rs config file for the Claude Desktop extension (.mcpb, #632).
+#
+# The extension passes the site URL, username and Application Password that
+# you enter in Claude Desktop as environment variables. To use a database,
+# several sites or plugins, choose your own config file in the extension's
+# settings instead (it is passed as MCP_RS_CONFIG and replaces this file).
+
+[server]
+
+[transport]
+type = "stdio"
+
+[handlers.wordpress]
+enabled = true
+url = "${WORDPRESS_URL}"
+username = "${WORDPRESS_USERNAME}"
+password = "${WORDPRESS_PASSWORD}"

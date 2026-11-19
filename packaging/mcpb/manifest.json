@@ -1,0 +1,93 @@
+{
+  "manifest_version": "0.3",
+  "name": "mcp-rs",
+  "display_name": "mcp-rs (WordPress)",
+  "version": "0.0.0",
+  "description": "Manage a WordPress site from Claude: posts, pages, media, categories, tags, comments and settings.",
+  "long_description": "mcp-rs is an MCP server written in Rust. Enter your WordPress site's URL, a username and an Application Password, and Claude can draft, review and publish posts, manage media and comments, and more. Changes that delete or publish content are marked so that Claude asks before running them. For a database, several sites or plugins, choose an mcp-rs config file instead.",
+  "author": {
+    "name": "n-takatsu",
+    "url": "https://github.com/n-takatsu"
+  },
+  "homepage": "https://n-takatsu.github.io/mcp-rs/",
+  "documentation": "https://n-takatsu.github.io/mcp-rs/docs/guides/#claude-desktop-extension",
+  "support": "https://github.com/n-takatsu/mcp-rs/issues",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/n-takatsu/mcp-rs"
+  },
+  "license": "MIT OR Apache-2.0",
+  "icon": "icon.png",
+  "keywords": ["wordpress", "cms", "blog", "rust"],
+  "server": {
+    "type": "binary",
+    "entry_point": "server/linux/mcp-rs",
+    "mcp_config": {
+      "command": "${__dirname}/server/linux/mcp-rs",
+      "args": ["--config", "${__dirname}/config.toml"],
+      "env": {
+        "WORDPRESS_URL": "${user_config.wordpress_url}",
+        "WORDPRESS_USERNAME": "${user_config.wordpress_username}",
+        "WORDPRESS_PASSWORD": "${user_config.wordpress_password}",
+        "MCP_RS_CONFIG": "${user_config.config_file}",
+        "MCP_RS_MCPB": "1"
+      },
+      "platform_overrides": {
+        "win32": {
+          "command": "${__dirname}/server/windows/mcp-rs.exe",
+          "args": ["--config", "${__dirname}/config.toml"],
+          "env": {
+            "WORDPRESS_URL": "${user_config.wordpress_url}",
+            "WORDPRESS_USERNAME": "${user_config.wordpress_username}",
+            "WORDPRESS_PASSWORD": "${user_config.wordpress_password}",
+            "MCP_RS_CONFIG": "${user_config.config_file}",
+            "MCP_RS_MCPB": "1"
+          }
+        },
+        "darwin": {
+          "command": "${__dirname}/server/macos/mcp-rs",
+          "args": ["--config", "${__dirname}/config.toml"],
+          "env": {
+            "WORDPRESS_URL": "${user_config.wordpress_url}",
+            "WORDPRESS_USERNAME": "${user_config.wordpress_username}",
+            "WORDPRESS_PASSWORD": "${user_config.wordpress_password}",
+            "MCP_RS_CONFIG": "${user_config.config_file}",
+            "MCP_RS_MCPB": "1"
+          }
+        }
+      }
+    }
+  },
+  "tools_generated": true,
+  "prompts_generated": true,
+  "user_config": {
+    "wordpress_url": {
+      "type": "string",
+      "title": "WordPress site URL",
+      "description": "For example https://example.com (https only). Leave empty when you choose a config file below.",
+      "required": false
+    },
+    "wordpress_username": {
+      "type": "string",
+      "title": "WordPress username",
+      "description": "The user the Application Password belongs to. A user with only the role you need (such as Editor) is safer.",
+      "required": false
+    },
+    "wordpress_password": {
+      "type": "string",
+      "title": "Application Password",
+      "description": "Create it in WordPress under Users > Profile > Application Passwords. This is not your login password.",
+      "sensitive": true,
+      "required": false
+    },
+    "config_file": {
+      "type": "file",
+      "title": "mcp-rs config file (optional)",
+      "description": "For a database, several sites or plugins: an mcp-rs config file (config.toml). When chosen, it is used instead of the three fields above.",
+      "required": false
+    }
+  },
+  "compatibility": {
+    "platforms": ["darwin", "win32", "linux"]
+  }
+}

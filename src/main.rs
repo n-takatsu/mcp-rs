@@ -104,8 +104,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    // 設定読み込み（ログ設定のため最初に実行）
-    let config = load_config(run_args.config.as_deref()).await?;
+    // 設定読み込み（ログ設定のため最初に実行）。`MCP_RS_CONFIG`は`--config`
+    // より優先する（Claude Desktopの拡張機能で選んだ設定ファイル、#632）
+    let config_path = mcp_rs::config::config_path_from_env(
+        std::env::var(mcp_rs::config::CONFIG_ENV_VAR)
+            .ok()
+            .as_deref(),
+    )
+    .or(run_args.config.clone());
+    let config = load_config(config_path.as_deref()).await?;
 
     // ログシステム初期化
     // `_log_guard`はプロセス終了まで保持する必要がある（dropすると
@@ -176,6 +183,11 @@ async fn load_config_from_file(path: &str) -> Result<McpConfig, Box<dyn std::err
     // 誤りのある行（パスワードのこともある）は出さない（#543）。`mcp-rs
     // check`（#565）も、同じ関数を同じ順で呼ぶ
     let mut config = McpConfig::read_file(path)?;
+    // Claude Desktopの拡張機能で、サイトがまだ入力されていなければ、WordPressを
+    // 使わずに起動する（#632）
+    if mcp_rs::config::started_by_extension() {
+        config.prepare_for_extension();
+    }
     // WordPressの`${VAR}`と資格情報。参照した環境変数が無ければ起動しない（#454）
     config.resolve_wordpress_credentials()?;
     // HTTPモードのAPIキーの`${VAR}`（#534）。変数が無ければ起動しない
@@ -302,6 +314,7 @@ async fn build_server(
         server.add_handler(format!("plugin:{}", name), handler);
     }
     startup_failures.extend(plugin_failures);
+    startup_failures.extend(config.startup_notes.iter().cloned());
 
     // mcp_rs_statusツール（#434）に出す情報
     server.set_status_info(mcp_rs::mcp::StatusInfo {

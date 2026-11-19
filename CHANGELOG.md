@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Claude Desktopの拡張機能（MCP Bundle、`mcp-rs-<版>.mcpb`）をリリースに
+  付ける（#632）。Windows・macOS（Apple Silicon）・Linuxのmcp-rsを1つに
+  まとめ、サイトのURL・ユーザー名・アプリケーションパスワード（Claude
+  DesktopがOSの保管場所に暗号化して保管）をClaude Desktopの画面で入力する。
+  データベース・複数のサイト・プラグインには、画面で設定ファイルを選ぶ。
+  署名はしない（SHA256と出所の証明は付ける）。中身は`packaging/mcpb/`、
+  `release-binaries.yml`で公式のCLI（`@anthropic-ai/mcpb`）で確かめて作る
+- 環境変数`MCP_RS_CONFIG`（#632）。`--config`の代わりに使う設定ファイル。
+  拡張機能から起動したとき（`MCP_RS_MCPB=1`）は、サイトが入力されて
+  いなければ、止まらずにWordPressを使わずに起動し、何を入力するかを
+  `mcp_rs_status`に出す
+
 - MCPのリソースのテンプレート（`resources/templates/list`）で、1件ずつ読める
   ようにした（#644）。`wordpress://post/{id}`・`wordpress://page/{id}`
   （編集用の原文も、資格情報で読めれば）・`wordpress://media/{id}`。
