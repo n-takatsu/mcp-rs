@@ -48,6 +48,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `get_posts`・`get_pages`で、検索・絞り込み・ページを指定できるように
+  した（#637）。`search`・`categories`・`tags`（固定ページには無い）・
+  `author`・`after`・`before`・`orderby`・`order`・`per_page`・`page`。
+  どれかを渡すと、全件ではなくそのページだけ（既定は20件）を読み、
+  1行目にページと総件数を出す。何も渡さなければ、今までどおり全件。
+  値は、形を確かめ、URLの形に符号化して送る。`get_pages`も`status`を
+  受けるようにした
 - Scoop（Windows）とHomebrew（macOS Apple Silicon・Linux x64）で入れられる
   ようにした（#578）。`scoop bucket add n-takatsu https://github.com/n-takatsu/scoop-bucket`・
   `scoop install n-takatsu/mcp-rs`、`brew install n-takatsu/tap/mcp-rs`。

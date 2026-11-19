@@ -315,10 +315,26 @@ Retrieve WordPress posts. By default, only published posts.
 
 **Parameters:**
 - `status` (string, optional): Which posts to list: `publish` (default), `future` (scheduled), `draft`, `pending`, `private`, or `any`. Several can be given with commas, for example `future,draft` (v0.29.0 and later). Other than `publish`, the credentials must be allowed to edit posts
+- `search` (string, optional): Keyword to search for in the title and content
+- `categories`, `tags` (arrays of IDs, optional): Only posts in any of these categories, or with any of these tags (`get_categories` and `get_tags` list the IDs)
+- `author` (number, optional): Author user ID
+- `after`, `before` (string, optional): Only posts published after or before this date or date-time, in the site's time zone (`2026-11-01` or `2026-11-01T09:00:00`)
+- `orderby` (optional): `date` (default), `modified`, `title`, `id`, `slug`, `author`, or `relevance` (with `search`)
+- `order` (optional): `desc` (default) or `asc`
+- `per_page` (1-100), `page` (from 1) (optional)
+
+Without any of `search`, `categories`, `tags`, `author`, `after`, `before`, `orderby`, `order`, `per_page`, and `page`, `get_posts` returns all posts (up to 100 pages of 100). With any of them (v0.29.0 and later), it reads only one page (20 posts unless `per_page` is given), and the first line shows the page and the total, for example `Found 3 posts (page 1 of 3, 3 per page; 8 in total)`. Use `page` for the next ones:
+
+```json
+{
+  "tool": "get_posts",
+  "arguments": { "search": "mcp-rs", "after": "2026-11-01", "per_page": 10 }
+}
+```
 
 ### `get_pages`
 
-Retrieve WordPress pages.
+Retrieve WordPress pages. It takes the same `status`, `search`, `author`, `after`, `before`, `orderby` (also `menu_order`), `order`, `per_page`, and `page` as `get_posts` (v0.29.0 and later), but not `categories` and `tags`, which pages do not have.
 
 ### `get_all_content`
 
