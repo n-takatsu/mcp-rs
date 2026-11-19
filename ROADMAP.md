@@ -1,7 +1,7 @@
 # 🗺️ mcp-rs プロジェクト ロードマップ
 
 > **最終更新**: 2026年11月19日
-> **バージョン**: v1.10
+> **バージョン**: v1.11
 > **ステータス**: アクティブ開発中
 
 ## 🎯 プロジェクト概要
@@ -37,34 +37,35 @@ mcp-rsは、Rustで書いたModel Context Protocol (MCP) サーバーです。Cl
 
 マイルストーンの番号は、リリースの版（クレートの`Cargo.toml`の`version`）と同じにする（2026-11-17から）。次のリリースに入れるものはその版のマイルストーンに、後に行うものはv1.0.0（2027年6月頃）に入れる。1つの版に1つの目的を持たせる。
 
-### 🔜 v0.30.0（[マイルストーン](https://github.com/n-takatsu/mcp-rs/milestone/9)）
-
-- #570 の残り: Copilot（新旧の両方に対応）から、`initialize`に戻らずにつながることを、実機で確かめる（Copilotのクレジットが戻る2026-12-01以降。v0.28.0→v0.29.0→v0.30.0と移した）
-
-ほかに入れるものは、これから決める。
-
-### 📦 v1.0.0（2027年6月頃、[マイルストーン](https://github.com/n-takatsu/mcp-rs/milestone/3)）
+リリースが予定より早く進んでいるので、2026-11-19の見直しで、1つの版に入れる項目を増やし、v1.0.0までをv0.30.0・v0.31.0の2つの版にまとめた。v1.0.0の目安（2027年6月頃）は変えず、早く進んだ分は、安定化と実際に使う期間に充てる。
 
 MCPのクライアント（Claude Desktop・Claude Code等）から使える機能に絞る（#419で範囲を見直した。SAML・LDAP・MFA・マルチテナント・請求システム・ゼロコピー/分散キャッシュは対象外。SAML・LDAPとの連携は、OAuth 2.1の認可サーバー（IdP）側で行う）。
 
-**導入を簡単にする（続き）**
+### 🔜 v0.30.0: 使いやすさ（WordPress・MCP・導入）（[マイルストーン](https://github.com/n-takatsu/mcp-rs/milestone/9)）
 
-- #632 Claude Desktopの拡張機能（`.mcpb`）をリリースに付ける（#579の調査の続き）
-- #634 wingetで配る（#578の続き。外部の審査と、書き込みの鍵が要る）
-- #645 `mcp-rs init`で、WordPressを使わずにデータベースだけを設定する（#590で見送った）
-- #631 Dockerイメージを静的リンクにし、土台を`distroless/static`にする（Code scanningの土台の部品の警告を減らす）
-
-**WordPress**（2026-11-19の見直しで加えた）
+**WordPress**
 
 - #640 1つのmcp-rsで、複数のWordPressサイトを使う
 - #639 コメントを管理する（承認・スパム・返信・削除）
 - #641 投稿のリビジョンを見て、前の版に戻す
 - #642 カスタム投稿タイプと独自のタクソノミー
 
-**MCPの機能**（2026-11-19の見直しで加えた）
+**MCPの機能**
 
 - #643 MCPのプロンプト（定型の頼み方）を出す
 - #644 リソースのテンプレートで、投稿等を1件ずつ読む
+
+**導入を簡単にする（続き）**
+
+- #632 Claude Desktopの拡張機能（`.mcpb`）をリリースに付ける（#579の調査の続き）
+- #645 `mcp-rs init`で、WordPressを使わずにデータベースだけを設定する（#590で見送った）
+- #617 設定ファイルのエラーで項目の名前を伏せない・STDIOモードでCtrl+Cを受けて終わる
+
+**確かめること**
+
+- #570 の残り: Copilot（新旧の両方に対応）から、`initialize`に戻らずにつながることを、実機で確かめる（Copilotのクレジットが戻る2026-12-01以降）。v0.30.0のリリースを待たせない。それより前にv0.30.0を出すときは、次の版に移す
+
+### 📅 v0.31.0: データベースとプラグイン（[マイルストーン](https://github.com/n-takatsu/mcp-rs/milestone/10)）
 
 **データベースの対応を広げる**（#526）
 
@@ -81,9 +82,15 @@ MCPのクライアント（Claude Desktop・Claude Code等）から使える機�
 - #615 プラグインのコンテナで、許可した行き先にだけ通信できるようにする（egressの許可リスト）
 - #616 プラグインを、ストアのように探して入れ、管理する
 
-**そのほか**
+**配布**
 
-- #617 設定ファイルのエラーで項目の名前を伏せない・STDIOモードでCtrl+Cを受けて終わる
+- #631 Dockerイメージを静的リンクにし、土台を`distroless/static`にする（Code scanningの土台の部品の警告を減らす）
+- #634 wingetで配る（#578の続き。外部の審査と、書き込みの鍵が要る）
+
+### 📦 v1.0.0（2027年6月頃、[マイルストーン](https://github.com/n-takatsu/mcp-rs/milestone/3)）
+
+v0.31.0までで機能をそろえ、v1.0.0までは安定化と、実際に使って見つかった問題の修正に充てる。
+
 - #449 sqlxが対応したらRUSTSEC-2026-0459（同梱のSQLiteの脆弱性）の無視を外す（sqlxの対応待ち）
 
 ---
@@ -92,8 +99,9 @@ MCPのクライアント（Claude Desktop・Claude Code等）から使える機�
 
 ## 📋 GitHub Issues
 
-- [Milestone v0.30.0](https://github.com/n-takatsu/mcp-rs/milestone/9) - Copilotでの確認（#570）ほか
-- [Milestone v1.0.0](https://github.com/n-takatsu/mcp-rs/milestone/3) - v0.30.0より後、v1.0.0までに行うIssue
+- [Milestone v0.30.0](https://github.com/n-takatsu/mcp-rs/milestone/9) - 使いやすさ（WordPress・MCP・導入）
+- [Milestone v0.31.0](https://github.com/n-takatsu/mcp-rs/milestone/10) - データベースとプラグイン
+- [Milestone v1.0.0](https://github.com/n-takatsu/mcp-rs/milestone/3) - 安定化（v0.31.0より後）
 - 完了: [v0.29.0](https://github.com/n-takatsu/mcp-rs/milestone/8)（導入を簡単にする（続き）と使いやすさ）・[v0.27.0](https://github.com/n-takatsu/mcp-rs/milestone/6)（セキュリティの強化）・[v0.28.0](https://github.com/n-takatsu/mcp-rs/milestone/7)（MCPの新しい版）・[Epic #41](https://github.com/n-takatsu/mcp-rs/issues/41)（HTTPモードの認可・ツールの権限・監査ログ）
 
 ## 📚 ドキュメント
