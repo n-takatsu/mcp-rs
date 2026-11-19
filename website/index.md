@@ -43,7 +43,7 @@ MCP-RS is a Model Context Protocol (MCP) server written in Rust. MCP clients suc
 
 See [Security](docs/security/) for the settings.
 
-## 🎯 WordPress MCP Tools (32 tools available)
+## 🎯 WordPress MCP Tools (35 tools available)
 
 **📝 Content Management:**
 
@@ -62,7 +62,7 @@ See [Security](docs/security/) for the settings.
 **🔗 Content Integration:**
 
 - Create posts with taxonomy
-- Comment retrieval
+- Comment moderation: approve, mark as spam, reply, and delete
 
 **⚙️ Site Management:**
 
