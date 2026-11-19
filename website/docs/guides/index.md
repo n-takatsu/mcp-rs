@@ -17,6 +17,7 @@ The short way is two commands: the [install script](#install-script), then [`mcp
 - [3. Set up by hand](#by-hand)
 - [4. Check](#check)
 - [5. Log files](#log-files)
+- [6. Uninstall](#uninstall)
 - [HTTP clients](#http)
 
 ## 1. Install {#install}
@@ -267,6 +268,20 @@ Claude Desktop may start two mcp-rs processes for one entry in `claude_desktop_c
 - Startup messages, such as the WordPress connection check, appear once per process. Seeing them twice is normal
 
 The audit log (who called which tool) is written next to the logs, to `%USERPROFILE%\.mcp-rs\audit\audit.log` on Windows (`$XDG_STATE_HOME/mcp-rs/audit` or `~/.local/state/mcp-rs/audit` elsewhere). `[audit] file_path` changes it. Up to version 0.21.0, it was `audit.log` in the config file's folder; that file is left where it is. See [Security]({{ site.baseurl }}/docs/security/#audit-log).
+
+## 6. Uninstall {#uninstall}
+
+`mcp-rs uninstall` (v0.29.0 and later) removes what `mcp-rs init` set up, asking before each step:
+
+1. The mcp-rs registrations in Claude Desktop (a backup copy of `claude_desktop_config.json` is kept), Claude Code, and GitHub Copilot (VS Code)
+2. The WordPress and database credentials in the OS credential store that the config files refer to (`keyring = "<name>"`)
+3. The config files (kept unless you answer y)
+
+```bash
+~/.mcp-rs/bin/mcp-rs uninstall        # Windows: & "$env:USERPROFILE\.mcp-rs\bin\mcp-rs.exe" uninstall
+```
+
+It does not delete mcp-rs itself, and at the end shows how to remove it for the way it was installed: `scoop uninstall mcp-rs`, `brew uninstall mcp-rs`, or deleting the folder `~/.mcp-rs/bin` (with the logs next to it). Restart the MCP clients afterwards. Removing mcp-rs with Scoop or Homebrew alone leaves the registrations and the credentials, so run `mcp-rs uninstall` first.
 
 ## HTTP clients {#http}
 

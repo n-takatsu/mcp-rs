@@ -950,7 +950,7 @@ pub(crate) fn check_store(store: &dyn SecretStore) -> Result<(), Box<dyn std::er
 
 /// コマンドを動かす。出力は表示しない（登録の内容に秘密があることがある）。
 /// 失敗したら、エラーの出力の最後の行を返す
-fn run_quietly(program: &Path, args: &[String]) -> Result<(), String> {
+pub(crate) fn run_quietly(program: &Path, args: &[String]) -> Result<(), String> {
     let output = Command::new(program)
         .args(args)
         .stdin(Stdio::null())
@@ -984,9 +984,9 @@ impl Launch {
 }
 
 /// 登録のコマンドを持つクライアント
-struct Cli {
-    label: &'static str,
-    program: &'static str,
+pub(crate) struct Cli {
+    pub(crate) label: &'static str,
+    pub(crate) program: &'static str,
     /// `mcp add`の、名前より前に付ける引数
     add_options: &'static [&'static str],
     /// `mcp remove`の、名前より後に付ける引数
@@ -998,7 +998,7 @@ struct Cli {
 impl Cli {
     /// Claude Code。どのフォルダで開いても使えるよう、ユーザーの設定に入れる
     /// （`--scope project`は、共有の`.mcp.json`に書くので使わない）
-    const CLAUDE_CODE: Cli = Cli {
+    pub(crate) const CLAUDE_CODE: Cli = Cli {
         label: "Claude Code",
         program: "claude",
         add_options: &["--scope", "user"],
@@ -1007,7 +1007,7 @@ impl Cli {
     };
     /// Copilot CLI（VS CodeのCopilotのチャットも、これの登録を使う）。
     /// `~/.copilot/mcp-config.json`に書く
-    const COPILOT: Cli = Cli {
+    pub(crate) const COPILOT: Cli = Cli {
         label: "GitHub Copilot (VS Code)",
         program: "copilot",
         add_options: &[],
@@ -1025,7 +1025,7 @@ impl Cli {
         args
     }
 
-    fn remove_args(&self, name: &str) -> Vec<String> {
+    pub(crate) fn remove_args(&self, name: &str) -> Vec<String> {
         let mut args: Vec<String> = ["mcp", "remove", name]
             .iter()
             .map(|s| s.to_string())
@@ -1034,7 +1034,7 @@ impl Cli {
         args
     }
 
-    fn config_file(&self) -> Option<PathBuf> {
+    pub(crate) fn config_file(&self) -> Option<PathBuf> {
         (self.config_file)()
     }
 
@@ -1570,12 +1570,12 @@ fn same_file(a: &str, b: &str) -> bool {
 
 /// クライアントにある、mcp-rsの登録（#602）
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct Registration {
-    client: &'static str,
-    name: String,
-    exe: String,
+pub(crate) struct Registration {
+    pub(crate) client: &'static str,
+    pub(crate) name: String,
+    pub(crate) exe: String,
     /// `--config`の値（無ければ`None`）
-    config: Option<String>,
+    pub(crate) config: Option<String>,
     /// 登録で渡している環境変数の名前（値は持たない）
     env: Vec<String>,
 }
@@ -1593,7 +1593,10 @@ enum PreviousChoice {
 }
 
 /// `mcpServers`のうち、mcp-rsを起動する登録
-fn mcp_rs_registrations(client: &'static str, config: &serde_json::Value) -> Vec<Registration> {
+pub(crate) fn mcp_rs_registrations(
+    client: &'static str,
+    config: &serde_json::Value,
+) -> Vec<Registration> {
     let Some(servers) = config
         .get("mcpServers")
         .and_then(serde_json::Value::as_object)
@@ -1804,7 +1807,7 @@ const CLAUDE_DESKTOP_CONFIG: &str = "claude_desktop_config.json";
 /// Windowsは`%APPDATA%\Claude`。Microsoft Store版（MSIX）は、
 /// `%LOCALAPPDATA%\Packages\Claude_<id>\LocalCache\Roaming\Claude`を読む
 /// ことがあるという報告がある（PR #583のレビュー）ので、そちらも見る
-fn claude_desktop_config_candidates() -> Vec<PathBuf> {
+pub(crate) fn claude_desktop_config_candidates() -> Vec<PathBuf> {
     let mut candidates = Vec::new();
     if cfg!(target_os = "windows") {
         if let Some(appdata) = std::env::var_os("APPDATA") {
@@ -1850,7 +1853,7 @@ fn claude_desktop_config_candidates() -> Vec<PathBuf> {
 /// 書く設定ファイルを選ぶ。あるファイルはすべて（どちらをClaude Desktopが
 /// 読むか分からないので、両方に足す）。1つも無ければ、`Claude`のフォルダが
 /// ある最初の場所（Claude Desktopを入れたが、設定をまだ保存していない）
-fn select_claude_desktop_configs(candidates: &[PathBuf]) -> Vec<PathBuf> {
+pub(crate) fn select_claude_desktop_configs(candidates: &[PathBuf]) -> Vec<PathBuf> {
     let existing: Vec<PathBuf> = candidates.iter().filter(|p| p.is_file()).cloned().collect();
     if !existing.is_empty() {
         return existing;
@@ -1891,7 +1894,7 @@ fn read_claude_desktop_config(
 }
 
 /// JSONのファイルを読む。無ければ空のオブジェクト。エラーの文に内容は入れない
-fn read_json_file(path: &Path) -> Result<serde_json::Value, String> {
+pub(crate) fn read_json_file(path: &Path) -> Result<serde_json::Value, String> {
     if !path.exists() {
         return Ok(serde_json::json!({}));
     }
@@ -1921,6 +1924,28 @@ fn claude_desktop_has_entry(config: &serde_json::Value) -> bool {
         .get("mcpServers")
         .and_then(|servers| servers.get(SERVER_NAME))
         .is_some()
+}
+
+/// Claude Desktopの設定ファイルの`mcpServers`から、`names`の登録を消す
+/// （`mcp-rs uninstall`、#636）。ほかの項目と順番は変えない。前のファイルは
+/// 別の名前で残し、そのパスを返す
+pub(crate) fn remove_from_claude_desktop(
+    path: &Path,
+    names: &[String],
+) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let mut config = read_json_file(path)?;
+    let servers = config
+        .get_mut("mcpServers")
+        .and_then(serde_json::Value::as_object_mut)
+        .ok_or("the Claude Desktop config file has no \"mcpServers\" object")?;
+    for name in names {
+        servers.shift_remove(name);
+    }
+    let content = serde_json::to_string_pretty(&config)? + "\n";
+    let backup = backup_path(path);
+    std::fs::copy(path, &backup)?;
+    write_atomically(path, &content, false)?;
+    Ok(backup)
 }
 
 /// Claude Desktopの設定ファイルの`mcpServers`に、mcp-rsを足す。ほかの項目と
@@ -1967,7 +1992,7 @@ fn add_to_claude_desktop(
 
 /// `PATH`から、コマンドのファイルを探す。Windowsでは`.exe`・`.cmd`・`.bat`も
 /// 探す（npmで入れた`claude.cmd`等。`Command::new`は`.exe`しか補わない）
-fn find_program(name: &str) -> Option<PathBuf> {
+pub(crate) fn find_program(name: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
     let extensions: &[&str] = if cfg!(windows) {
         &["exe", "cmd", "bat"]

@@ -93,6 +93,10 @@ Commands:
                    credentials, the config file, and registering mcp-rs with
                    Claude Desktop, Claude Code and GitHub Copilot (run with
                    --help for details)
+  {uninstall}
+                   Remove what init set up: the registrations in the MCP
+                   clients and the credentials in the OS credential store,
+                   asking before each step (run with --help for details)
   {check} [--config <path>] [--offline]
                    Check the config file without an MCP client: whether it
                    loads, the WordPress credentials and sign-in, and where
@@ -112,6 +116,7 @@ Commands:
         version = version_text(),
         check = crate::check::SUBCOMMAND,
         init = crate::init::SUBCOMMAND,
+        uninstall = crate::uninstall::SUBCOMMAND,
         credentials = crate::security::credential_tool::SUBCOMMAND,
         keyring = crate::security::keyring_tool::SUBCOMMAND,
         database_keyring = crate::database_keyring::SUBCOMMAND,
@@ -197,6 +202,7 @@ mod tests {
         assert!(help.contains("init [--config <path>]"));
         assert!(help.contains("wordpress-keyring set|show|delete <name>"));
         assert!(help.contains("database-keyring set|show|delete <name>"));
+        assert!(help.contains("uninstall"));
         assert!(help.contains("${VAR}"));
         assert!(help.contains("--version"));
     }
