@@ -839,6 +839,12 @@ pub struct WordPressConfig {
     /// 限定する（起動時に存在しないフォルダが指定されていればエラー）。
     #[serde(default)]
     pub upload_allowed_dirs: Vec<String>,
+    /// `post`・`page`のほかに使ってよい、カスタム投稿タイプ（#642。例:
+    /// `["product"]`）。既定は空（`post`・`page`だけ）。AIに商品等を
+    /// 書き換えさせるかは、ここで決める。`sites`では、サイトに無ければ
+    /// `[handlers.wordpress]`のものを使う
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub post_types: Vec<String>,
     /// ツールの`site`の引数を省いたときに使うサイトの名前（#640）。
     /// `[handlers.wordpress]`にだけ書く。使うサイトが1つなら省ける
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -887,6 +893,7 @@ impl fmt::Debug for WordPressConfig {
             .field("encrypted_credentials", &self.encrypted_credentials)
             .field("keyring", &self.keyring)
             .field("upload_allowed_dirs", &self.upload_allowed_dirs)
+            .field("post_types", &self.post_types)
             .field("default_site", &self.default_site)
             .field("sites", &self.sites)
             .finish()
@@ -943,6 +950,7 @@ impl WordPressConfig {
             encrypted_credentials: Some(encrypted_credentials),
             keyring: None,
             upload_allowed_dirs: Vec::new(),
+            post_types: Vec::new(),
             default_site: None,
             sites: Default::default(),
         })
@@ -1147,6 +1155,9 @@ impl WordPressConfig {
             }
             if site.upload_allowed_dirs.is_empty() {
                 site.upload_allowed_dirs = self.upload_allowed_dirs.clone();
+            }
+            if site.post_types.is_empty() {
+                site.post_types = self.post_types.clone();
             }
             list.push((name.clone(), site));
         }
@@ -1403,6 +1414,7 @@ fn apply_wordpress_env_overrides(
                 encrypted_credentials: None, // 環境変数では平文使用
                 keyring: None,
                 upload_allowed_dirs: Vec::new(),
+                post_types: Vec::new(),
                 default_site: None,
                 sites: Default::default(),
             });
@@ -1970,6 +1982,7 @@ impl McpConfig {
                     encrypted_credentials: None, // デフォルトでは平文
                     keyring: None,
                     upload_allowed_dirs: Vec::new(),
+                    post_types: Vec::new(),
                     default_site: None,
                     sites: Default::default(),
                 }),
@@ -3260,6 +3273,7 @@ mod additional_tests {
             encrypted_credentials: None,
             keyring: None,
             upload_allowed_dirs: Vec::new(),
+            post_types: Vec::new(),
             default_site: None,
             sites: Default::default(),
         };
@@ -3291,6 +3305,7 @@ mod additional_tests {
             encrypted_credentials: Some(encrypted),
             keyring: None,
             upload_allowed_dirs: Vec::new(),
+            post_types: Vec::new(),
             default_site: None,
             sites: Default::default(),
         };
@@ -3332,6 +3347,7 @@ mod additional_tests {
             encrypted_credentials: None,
             keyring: None,
             upload_allowed_dirs: Vec::new(),
+            post_types: Vec::new(),
             default_site: None,
             sites: Default::default(),
         };
@@ -3358,6 +3374,7 @@ mod additional_tests {
             encrypted_credentials: None,
             keyring: None,
             upload_allowed_dirs: Vec::new(),
+            post_types: Vec::new(),
             default_site: None,
             sites: Default::default(),
         };
@@ -3380,6 +3397,7 @@ mod additional_tests {
             encrypted_credentials: None,
             keyring: None,
             upload_allowed_dirs: Vec::new(),
+            post_types: Vec::new(),
             default_site: None,
             sites: Default::default(),
         };
@@ -3403,6 +3421,7 @@ mod additional_tests {
             encrypted_credentials: None,
             keyring: None,
             upload_allowed_dirs: Vec::new(),
+            post_types: Vec::new(),
             default_site: None,
             sites: Default::default(),
         };
@@ -3461,10 +3480,10 @@ mod additional_tests {
     }
 
     const TWO_SITES: &str = "enabled = true\ndefault_site = \"shop\"\ntimeout_seconds = 60\n\
-         upload_allowed_dirs = [\"/shared\"]\n\
+         upload_allowed_dirs = [\"/shared\"]\npost_types = [\"product\"]\n\
          [sites.blog]\nurl = \"https://blog.example.com\"\nusername = \"u\"\npassword = \"p\"\n\
          [sites.shop]\nurl = \"https://shop.example.com\"\nusername = \"u\"\npassword = \"p\"\ntimeout_seconds = 5\n\
-         upload_allowed_dirs = [\"/shop\"]\n\
+         upload_allowed_dirs = [\"/shop\"]\npost_types = [\"event\"]\n\
          [sites.old]\nurl = \"https://old.example.com\"\nenabled = false\n";
 
     /// 既定のサイトが最初、残りは名前の順。`enabled = false`のサイトは使わない。
@@ -3479,6 +3498,8 @@ mod additional_tests {
         assert_eq!(blog.timeout_seconds, Some(60));
         assert_eq!(shop.upload_allowed_dirs, ["/shop"]);
         assert_eq!(blog.upload_allowed_dirs, ["/shared"]);
+        assert_eq!(shop.post_types, ["event"]);
+        assert_eq!(blog.post_types, ["product"]);
         assert!(list
             .iter()
             .all(|(_, c)| c.enabled == Some(true) && c.sites.is_empty()));

@@ -12,7 +12,7 @@ A Rust implementation of a Model Context Protocol (MCP) server that gives AI cli
 
 `mcp-rs` is an MCP server written in Rust. MCP clients such as Claude Desktop and Claude Code connect to it over STDIO, and other clients over HTTP. It offers:
 
-- 38 WordPress tools (posts, pages, media, categories, tags, comments, site settings) through the WordPress REST API
+- 41 WordPress tools (posts, pages, custom post types, media, categories, tags and other taxonomies, comments, site settings) through the WordPress REST API
 - Read-only SQL tools for one PostgreSQL database (writes only when allowed)
 - The tools of external MCP servers, started as plugins (child process, Docker container, or Kubernetes Job)
 - For HTTP mode: API key or OAuth 2.1 authentication, per-caller tool limits, TLS/mTLS, rate limiting, and an audit log
@@ -27,7 +27,7 @@ A Rust implementation of a Model Context Protocol (MCP) server that gives AI cli
 - **Configuration**: One TOML file, with `${VAR}` for values from environment variables
 - **Status Tool**: `mcp_rs_status` shows the version, config file, log files, and what failed to start
 
-## **WordPress Integration (38 Tools)**
+## **WordPress Integration (41 Tools)**
 
 - **Posts & Pages Management**: Create, read (full editable source), update, and delete posts and pages, with SEO metadata and scheduling; list revisions and restore one
 - **Media Management**: Upload with base64 (type, extension, and content validation), list, update metadata, delete, and set featured images
@@ -36,6 +36,7 @@ A Rust implementation of a Model Context Protocol (MCP) server that gives AI cli
 - **YouTube & Social Embeds**: Rich media integration with security validation
 - **Site Settings**: Read and update site settings and the front page configuration
 - **Health Check**: Verify connectivity, authentication, permissions, and media upload capability
+- **Custom Post Types**: Products, events and other post types that the site exposes in the REST API, when allowed in `post_types`, with their own taxonomies ([docs](https://n-takatsu.github.io/mcp-rs/docs/wordpress/#custom-post-types))
 - **Multiple Sites**: Use several WordPress sites from one mcp-rs; each tool takes a `site` argument ([docs](https://n-takatsu.github.io/mcp-rs/docs/wordpress/#sites))
 
 ### Live Demo Site

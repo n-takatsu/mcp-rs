@@ -138,6 +138,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         encrypted_credentials: None,
         keyring: None,
         upload_allowed_dirs: Vec::new(),
+        post_types: Vec::new(),
         default_site: None,
         sites: Default::default(),
     })
@@ -328,6 +329,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 featured_media_id: None,
                 meta: None,
                 slug: None,
+                terms: None,
             })
             .await
         {
@@ -569,6 +571,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 featured_media_id: None,
                 meta: None,
                 slug: None,
+                terms: None,
             })
             .await
         {
