@@ -10,24 +10,6 @@ pub mod safety; // 安全機構モジュールを追加
 pub mod security;
 pub mod types;
 
-// 新しい可用性関連モジュール
-pub mod loadbalancer;
-pub mod retry; // リトライ戦略
-
-// 高度なセキュリティモジュール
-pub mod advanced_security; // 高度なセキュリティ機能（MFA、RBAC、異常検知等）
-pub mod integrated_security;
-pub mod security_config; // 拡張セキュリティ設定 // 統合セキュリティマネージャー
-
-// 動的データベース切り替えモジュール
-pub mod dynamic_engine; // 動的エンジン切り替え機能
-pub mod dynamic_tools; // 動的切り替えMCPツール
-
-// データマスキングモジュール
-pub mod data_masking; // データマスキングエンジン
-pub mod masking_formatters; // マスキングフォーマッタ
-pub mod masking_rules; // マスキングルール定義
-
 // カラムレベル暗号化モジュール
 pub mod column_encryption; // Column-level encryption with key management
 pub mod column_encryption_rbac; // RBAC integration for column encryption
@@ -48,11 +30,6 @@ pub use handler::{DatabaseHandler, DatabaseToolOptions};
 pub use security::DatabaseSecurity;
 pub use types::{DatabaseConfig, DatabaseFeature, DatabaseType, ExecuteResult, QueryResult};
 
-// 高度なセキュリティAPI
-pub use advanced_security::{AnomalyDetector, MultiFactorAuth, RoleBasedAccessControl};
-pub use integrated_security::{IntegratedSecurityManager, SecurityCheckResult};
-pub use security_config::AdvancedSecurityConfig;
-
 // カラムレベル暗号化API
 pub use column_encryption::{
     CacheStats, ColumnEncryptionConfig, ColumnEncryptionManager, EncryptionAlgorithm, KeyManager,
@@ -60,12 +37,4 @@ pub use column_encryption::{
 };
 pub use column_encryption_rbac::{
     ColumnEncryptionPermission, ColumnEncryptionRbac, EncryptionAuditLog, EncryptionOperation,
-};
-
-// データマスキングAPI
-pub use data_masking::{AuditEntry, DataMaskingEngine, MaskingStatistics};
-pub use masking_formatters::{MaskingFormatter, PredefinedFormatters};
-pub use masking_rules::{
-    ColumnPattern, CustomMasker, DataType, HashAlgorithm, MaskingContext, MaskingPolicy,
-    MaskingPurpose, MaskingRule, MaskingType, NetworkConstraints, TimeConstraints, TimeRange,
 };

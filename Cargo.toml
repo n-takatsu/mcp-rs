@@ -61,7 +61,6 @@ uuid = { version = "1.18", features = ["v4", "serde"] }
 
 # Random number generation (for benchmarks and testing)
 rand = "0.8"
-num_cpus = "1.16"
 
 # Cryptography and security
 ring = "0.17.14"
@@ -214,14 +213,6 @@ debug = false
 lto = true
 
 # Data masking examples require the database feature
-[[example]]
-name = "data_masking_demo"
-required-features = ["database"]
-
-[[example]]
-name = "data_masking_advanced_demo"
-required-features = ["database"]
-
 # Column encryption example requires the database feature
 [[example]]
 name = "column_encryption_demo"

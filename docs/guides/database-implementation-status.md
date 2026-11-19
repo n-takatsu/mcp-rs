@@ -372,8 +372,6 @@ src/handlers/database/engines/sqlite/
 
 ### ドキュメント - 共通
 
-- `docs/database-availability-guide.md` - 高可用性ガイド
-- `docs/database-security-enhancement-plan.md` - セキュリティ拡張計画
 - `docs/design/database-handler.md` - データベースハンドラー設計
 
 ---
