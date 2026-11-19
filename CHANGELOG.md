@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.29.0] - 2026-11-19
+
 ### Removed
 
 - 本体（`[database]`・`DatabaseHandler`）から使われていなかった、データベースの
@@ -85,7 +87,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   聞く（`password`を消す。コメント等は残し、控えを残す）。無ければ、
   `mcp-rs init`と同じ質問で項目を作り、`[database]`を書き足すかを聞く。
   `show`はパスワードを出さない。WordPressの資格情報は、見せず、消さない
-
 - `mcp-rs init`で、データベース（PostgreSQL・MySQL・MariaDB）も設定できる
   ようにした（#590）。WordPressに続けて、使うかを聞き、エンジン・ホスト・
   ポート・データベース名・ユーザー名・パスワード・TLS（`ssl_mode`。ループ
@@ -99,7 +100,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   項目は、`host`・`port`・`username`と結び付いていて、`[database]`の値が
   違えば使わない（ほかの人が書いた設定ファイルで、パスワードを別の
   サーバーに送らせないため）。`password`とは一緒に書けない
-
 - `update_post`で、既存の投稿を予約投稿にできるようにした（#625）。`date`
   （公開日時、ISO8601、サイトのタイムゾーン）を足した。下書きで確かめてから
   予約する、という手順が、mcp-rsのツールだけで行える。`get_post`に公開日時
