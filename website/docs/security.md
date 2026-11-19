@@ -314,7 +314,7 @@ Each item in `tools` is one of:
 
 A request is allowed a tool when any item matches it. `tools = []` allows no tools. Unknown presets (such as `@admin`) and empty items stop mcp-rs from starting. STDIO mode is not limited (it is a local pipe used by one person).
 
-The same limits apply to resources (`resources/list` and `resources/read`, v0.24.0 and later). Each resource belongs to the read-only tool that reads the same data, and a key or token can read the resource only when it is allowed that tool. `wordpress://posts` returns every published post with its full content, so it belongs to `get_post` (which returns one post with its content), not to `get_posts` (which returns only summaries):
+The same limits apply to resources (`resources/list` and `resources/read`, v0.24.0 and later) and resource templates (`resources/templates/list`, v0.30.0 and later). Each resource belongs to the read-only tool that reads the same data, and a key or token can read the resource only when it is allowed that tool. `wordpress://posts` returns every published post with its full content, so it belongs to `get_post` (which returns one post with its content), not to `get_posts` (which returns only summaries):
 
 | Resource | Tool |
 |----------|------|
@@ -322,6 +322,8 @@ The same limits apply to resources (`resources/list` and `resources/read`, v0.24
 | `wordpress://comments` | `get_comments` |
 | `wordpress://categories` | `get_categories` |
 | `wordpress://tags` | `get_tags` |
+| `wordpress://post/{id}`, `wordpress://page/{id}` | `get_post` |
+| `wordpress://media/{id}` | `get_media_item` |
 | `db://schema` | `get_schema` |
 
 Other resources are not shown in `resources/list`, and reading them fails with the error "Resource '...' is not allowed for this API key or access token". So `tools = []` allows no resources either, and `tools = ["@read_only"]` allows all of them. Up to version 0.23.0, keys and tokens with limits could list and read every resource.

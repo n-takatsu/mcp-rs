@@ -138,6 +138,19 @@ pub struct Resource {
     pub mime_type: Option<String>,
 }
 
+/// リソースのテンプレート（#644）。`uri_template`（RFC 6570）の`{id}`等を
+/// 埋めたURIを、`resources/read`で読む
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ResourceTemplate {
+    pub uri_template: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mime_type: Option<String>,
+}
+
 /// MCPのプロンプト（#643）。クライアントのメニュー等から選ぶ、定型の頼み方
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Prompt {

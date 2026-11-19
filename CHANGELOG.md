@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- MCPのリソースのテンプレート（`resources/templates/list`）で、1件ずつ読める
+  ようにした（#644）。`wordpress://post/{id}`・`wordpress://page/{id}`
+  （編集用の原文も、資格情報で読めれば）・`wordpress://media/{id}`。
+  読める範囲は今のリソースと同じ（対応する読み取りのツールを使える
+  呼び出し元だけ、#538）で、監査ログに残す。無いIDは`-32002`。
+  2026-07-28では、一覧に`ttlMs`・`cacheScope`を付ける。APIの文書に
+  書いてあった、無いリソース（`wordpress://pages`等）を直した
+
 - MCPのプロンプト（`prompts/list`・`prompts/get`）を出す（#643）。
   クライアントのメニュー（Claude Desktopの「+」等）から選ぶ、定型の頼み方:
   `draft_post`（記事の下書き。下書きで作り、公開しない）・

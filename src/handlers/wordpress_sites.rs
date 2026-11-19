@@ -181,6 +181,10 @@ impl McpHandler for WordPressSites {
         Ok(result)
     }
 
+    async fn list_resource_templates(&self) -> Result<Vec<crate::mcp::ResourceTemplate>, McpError> {
+        self.default_site().list_resource_templates().await
+    }
+
     fn resource_tool(&self, uri: &str) -> Option<String> {
         self.default_site().resource_tool(uri)
     }
