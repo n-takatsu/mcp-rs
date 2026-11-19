@@ -297,6 +297,16 @@ To check a draft first and schedule it afterwards, update it with `status: "futu
 - To change the time of a scheduled post, send only `date`
 - `get_posts` with `status: "future"` lists the scheduled posts
 
+### Revisions {#revisions}
+
+WordPress keeps earlier versions (revisions) of posts and pages when they are saved. If the AI changed a post in a way you do not want, go back to an earlier version (v0.30.0 and later). These tools need credentials with permission to edit the post.
+
+- `get_revisions`: the revisions of a post or page, newest first, with the revision ID, date, author, title, length and the start of the content. Parameters: `post_id` (required), `post_type` (`post`, the default, or `page`)
+- `get_revision`: one revision's title, excerpt and content. Parameters: `post_id`, `revision_id` (required), `post_type`, `format` (`raw`, the default, `rendered` or `text`, as in `get_post`)
+- `restore_revision`: replace the title, content and excerpt of the post with those of the revision. The status, publish date, slug, categories and tags are not changed, so a published post stays published with the restored content. Parameters: `post_id`, `revision_id` (required), `post_type`
+
+WordPress saves the content before the restore as a new revision, so a restore can be undone the same way. A revision of another post is refused. The site may limit the number of revisions it keeps (`WP_POST_REVISIONS`).
+
 ### `delete_post`
 
 Delete a WordPress post.

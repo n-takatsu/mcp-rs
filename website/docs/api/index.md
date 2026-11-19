@@ -249,7 +249,7 @@ Lists available tools.
 
 - `get_*` and `wordpress_health_check`: `readOnlyHint: true`
 - `create_*` and `upload_media`: `readOnlyHint: false`, `destructiveHint: false`, `idempotentHint: false` (they add new items, and each call adds another one)
-- `update_*`, `set_*`, and `delete_*`: `readOnlyHint: false`, `destructiveHint: true`, `idempotentHint: true` (they change or delete existing items)
+- `update_*`, `set_*`, `delete_*`, and `restore_revision`: `readOnlyHint: false`, `destructiveHint: true`, `idempotentHint: true` (they change or delete existing items)
 - All WordPress tools: `openWorldHint: false` (they work only with the configured WordPress site)
 
 #### `mcp_rs_status`
