@@ -151,6 +151,16 @@ keyring = "shop"
 
 With one site, `url` and the credentials can still be written directly in `[handlers.wordpress]`, as in the examples above. That site is named `default`, and the tools get no `site` argument.
 
+## Prompts {#prompts}
+
+From v0.30.0, mcp-rs offers prompts: ready-made requests that you pick in the client (for example from the "+" menu in Claude Desktop) instead of typing them. They ask the AI to confirm with you before changing anything.
+
+- **Draft a blog post** (`draft_post`): give a topic and optional notes. The AI picks categories and tags from the site and creates a draft, without publishing it
+- **Review a post's SEO** (`review_post_seo`): give a post ID. The AI checks the title, slug, excerpt, headings and links and suggests changes, and changes the post only after you approve
+- **Moderate comments** (`moderate_comments`): optionally a post ID. The AI goes through the comments awaiting moderation and suggests what to do with each
+
+With more than one site, each prompt also takes `site`. The prompts are in English; the AI answers in the language you use.
+
 ## Setting up Application Passwords
 
 Create the Application Password for a WordPress user with only the role the AI client needs, preferably a dedicated user:

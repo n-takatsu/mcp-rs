@@ -1202,6 +1202,18 @@ impl McpHandler for DatabaseHandler {
         self.status_line.clone()
     }
     /// `db://schema`は、`get_schema`ツールと同じ扱いにする（#538）
+    fn prompts(&self) -> Vec<crate::mcp::PromptSpec> {
+        crate::handlers::prompts::database_prompts()
+    }
+
+    async fn get_prompt(
+        &self,
+        name: &str,
+        arguments: &std::collections::HashMap<String, String>,
+    ) -> Result<serde_json::Value, McpError> {
+        crate::handlers::prompts::database_prompt(name, arguments)
+    }
+
     fn resource_tool(&self, uri: &str) -> Option<String> {
         (uri == "db://schema").then(|| "get_schema".to_string())
     }

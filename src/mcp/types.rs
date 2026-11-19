@@ -138,6 +138,55 @@ pub struct Resource {
     pub mime_type: Option<String>,
 }
 
+/// MCPのプロンプト（#643）。クライアントのメニュー等から選ぶ、定型の頼み方
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Prompt {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub arguments: Vec<PromptArgument>,
+}
+
+/// プロンプトの引数（#643）。値は文字列
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PromptArgument {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub required: bool,
+}
+
+/// ハンドラーが出すプロンプトと、そのプロンプトがAIに使わせるツール（#643）。
+/// 呼び出し元がツールのどれかを使えなければ、プロンプトも出さない
+#[derive(Debug, Clone)]
+pub struct PromptSpec {
+    pub prompt: Prompt,
+    pub tools: Vec<String>,
+}
+
+/// `prompts/get`の`params`（#643）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PromptGetParams {
+    pub name: String,
+    #[serde(default)]
+    pub arguments: HashMap<String, String>,
+}
+
+/// `prompts/get`の結果（#643）。AIへの頼み（`user`の発言）を1つ返す
+pub fn prompt_result(description: &str, text: String) -> serde_json::Value {
+    serde_json::json!({
+        "description": description,
+        "messages": [{
+            "role": "user",
+            "content": {"type": "text", "text": text}
+        }]
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
