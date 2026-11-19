@@ -232,9 +232,9 @@ async fn build_server(
                 .as_deref()
                 .and_then(std::path::Path::parent),
         );
-        let registered = match McpConfig::expand_database_config(&mut db_config) {
+        let registered = match McpConfig::resolve_database_credentials(&mut db_config) {
             Ok(()) => register_database(&mut server, &db_config, audit_logger.clone()).await,
-            Err(e) => Err(e.to_string()),
+            Err(e) => Err(e),
         };
         match registered {
             Ok(()) => info!(

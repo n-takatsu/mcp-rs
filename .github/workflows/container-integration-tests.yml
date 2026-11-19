@@ -245,10 +245,15 @@ jobs:
         with:
           cluster_name: mcp-rs-plugins
 
+      # kindのノードが、自分でイメージを取得する。`kind load docker-image`は、
+      # Dockerのイメージを全プラットフォーム分読み込もうとし、手元のDockerに
+      # 他のプラットフォームの中身が無いと失敗する（2026-11-19から
+      # `ctr: content digest ...: not found`）。テストはIfNotPresentなので、
+      # ノードにあるイメージを使う
       - name: Load test image into the cluster
         run: |
-          docker pull python:3.12-alpine
-          kind load docker-image python:3.12-alpine --name mcp-rs-plugins
+          docker exec mcp-rs-plugins-control-plane crictl pull python:3.12-alpine
+          docker exec mcp-rs-plugins-control-plane crictl images | grep python
 
       - name: Run plugin Kubernetes isolation test
         env:

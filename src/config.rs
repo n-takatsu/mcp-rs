@@ -102,6 +102,11 @@ pub struct DatabaseSettings {
     pub username: String,
     /// 省略時は空（パスワード無し）。`${PGPASSWORD}`のように環境変数で渡せる
     pub password: Option<String>,
+    /// OSの資格情報ストアの、パスワードの項目の名前（#590）。`mcp-rs init`が
+    /// 保存する。項目は`host`・`port`・`username`と結び付いていて、
+    /// `[database]`の値が違えば使わない。`password`とは一緒に書けない
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keyring: Option<String>,
     /// TLS: `disable`・`prefer`（省略時）・`require`・`verify-full`。
     /// PostgreSQLは`allow`も使う。MySQL・MariaDBは、`ssl_root_cert`があれば
     /// `verify-ca`も使える（#594。PostgreSQLの`verify-ca`は使えない）。
@@ -135,6 +140,7 @@ impl std::fmt::Debug for DatabaseSettings {
             .field("database", &self.database)
             .field("username", &self.username)
             .field("password", &self.password.as_ref().map(|_| "<redacted>"))
+            .field("keyring", &self.keyring)
             .field("ssl_mode", &self.ssl_mode)
             .field("ssl_root_cert", &self.ssl_root_cert)
             .field("allow_write", &self.allow_write)
@@ -1378,6 +1384,44 @@ impl McpConfig {
         if let Some(password) = config.password.as_mut() {
             expand("password", password)?;
         }
+        Ok(())
+    }
+
+    /// `[database]`の`${VAR}`を展開し（`expand_database_config`）、`keyring`が
+    /// あれば、OSの資格情報ストアからパスワードを読む（#590）。起動と
+    /// `mcp-rs check`で使う。使わない設定（`enabled = false`）なら何もしない
+    pub fn resolve_database_credentials(config: &mut DatabaseSettings) -> Result<(), String> {
+        Self::resolve_database_credentials_with(config, &crate::security::keyring_store::OsKeyring)
+    }
+
+    /// `resolve_database_credentials`の本体。`store`は、`keyring`のときに
+    /// 読む先
+    pub fn resolve_database_credentials_with(
+        config: &mut DatabaseSettings,
+        store: &dyn crate::security::keyring_store::SecretStore,
+    ) -> Result<(), String> {
+        if !config.is_enabled() {
+            return Ok(());
+        }
+        Self::expand_database_config(config).map_err(|e| e.to_string())?;
+        let Some(name) = config.keyring.clone() else {
+            return Ok(());
+        };
+        if config.password.is_some() {
+            return Err(
+                "database: keyring cannot be combined with password. Remove password from [database] (the keyring entry holds it)"
+                    .to_string(),
+            );
+        }
+        let credentials = crate::security::keyring_store::load_database_credentials(
+            store,
+            &name,
+            config.host(),
+            config.port(),
+            &config.username,
+        )
+        .map_err(|e| format!("database.keyring: {e}"))?;
+        config.password = Some(credentials.password.to_string());
         Ok(())
     }
 
@@ -3374,5 +3418,62 @@ mod additional_tests {
         let mut wordpress = None;
         apply_wordpress_env_overrides(&mut wordpress, env_from(&[("WORDPRESS_PASSWORD", "x")]));
         assert!(wordpress.is_none());
+    }
+
+    /// `[database]`の`keyring`から、パスワードを読む（#590）
+    #[test]
+    fn test_resolve_database_credentials_with_keyring() {
+        use crate::security::keyring_store::{
+            store_database_credentials, DatabaseKeyringCredentials, MemoryStore,
+        };
+        let store = MemoryStore::default();
+        store_database_credentials(
+            &store,
+            "app@db",
+            &DatabaseKeyringCredentials {
+                host: "db.example.com".to_string(),
+                port: 5432,
+                username: "reader".to_string(),
+                password: zeroize::Zeroizing::new("s3cret".to_string()),
+            },
+        )
+        .unwrap();
+        let settings = || DatabaseSettings {
+            engine: "postgresql".to_string(),
+            host: Some("db.example.com".to_string()),
+            database: "app".to_string(),
+            username: "reader".to_string(),
+            keyring: Some("app@db".to_string()),
+            ..Default::default()
+        };
+
+        let mut db = settings();
+        McpConfig::resolve_database_credentials_with(&mut db, &store).unwrap();
+        assert_eq!(db.password.as_deref(), Some("s3cret"));
+
+        // passwordと一緒には書けない
+        let mut both = DatabaseSettings {
+            password: Some("other".to_string()),
+            ..settings()
+        };
+        let err = McpConfig::resolve_database_credentials_with(&mut both, &store).unwrap_err();
+        assert!(err.contains("cannot be combined"), "{err}");
+
+        // 別のホストには使わない
+        let mut elsewhere = DatabaseSettings {
+            host: Some("attacker.example".to_string()),
+            ..settings()
+        };
+        let err = McpConfig::resolve_database_credentials_with(&mut elsewhere, &store).unwrap_err();
+        assert!(err.starts_with("database.keyring:"), "{err}");
+        assert!(elsewhere.password.is_none());
+
+        // 使わない設定では、資格情報ストアを読まない
+        let mut disabled = DatabaseSettings {
+            enabled: Some(false),
+            keyring: Some("missing".to_string()),
+            ..settings()
+        };
+        assert!(McpConfig::resolve_database_credentials_with(&mut disabled, &store).is_ok());
     }
 }
