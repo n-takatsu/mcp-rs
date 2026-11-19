@@ -9,6 +9,7 @@ Ask Claude to draft, schedule, and publish WordPress posts, upload media, or mod
 [![Version](https://img.shields.io/badge/Version-v0.29.0-blue)](https://github.com/n-takatsu/mcp-rs/releases/tag/v0.29.0)
 ![Implementation](https://img.shields.io/badge/WordPress_Tools-41_Available-green)
 ![License](https://img.shields.io/badge/License-MIT%2FApache--2.0-green)
+![CodeRabbit Pull Request Reviews](https://img.shields.io/coderabbit/prs/github/n-takatsu/mcp-rs?utm_source=oss&utm_medium=github&utm_campaign=n-takatsu%2Fmcp-rs&labelColor=171717&color=FF570A&link=https%3A%2F%2Fcoderabbit.ai&label=CodeRabbit+Reviews)
 
 ## Overview
 
