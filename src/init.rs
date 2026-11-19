@@ -452,6 +452,20 @@ impl Setup<'_> {
                 return Ok(PreviousChoice::LeaveOut(false));
             }
         };
+        // 複数のWordPressのサイト（#640）。サイトを写す作りはまだ無いので
+        // （#657）、置き換えずに、そのまま使う
+        if table
+            .get("handlers")
+            .and_then(|h| h.get("wordpress"))
+            .and_then(|w| w.get("sites"))
+            .is_some()
+        {
+            self.io.say(&format!(
+                "mcp-rs is registered with {path} ({}), which uses more than one WordPress site ([handlers.wordpress.sites]). mcp-rs init keeps using it as it is.\n",
+                used_by.join(", ")
+            ));
+            return Ok(PreviousChoice::UseAsIs);
+        }
         self.suggested_url = table
             .get("handlers")
             .and_then(|h| h.get("wordpress"))
@@ -2314,6 +2328,27 @@ file_path = "C:/Users/me/.mcp-rs/logs/audit.log"
         // 2つ目のサイトのURLを、新しい設定の既定にしない
         assert_eq!(setup.suggested_url, None);
         assert!(setup.superseded.is_empty());
+    }
+
+    /// 複数のWordPressのサイトを使う設定は、聞かずにそのまま使う（#640）
+    #[test]
+    fn test_previous_config_with_sites_is_used_as_is() {
+        let dir = tempfile::tempdir().unwrap();
+        let old_path = dir.path().join("sites.toml");
+        std::fs::write(
+            &old_path,
+            "[handlers.wordpress]\nenabled = true\ndefault_site = \"blog\"\n\n\
+             [handlers.wordpress.sites.blog]\nurl = \"https://blog.example.com\"\nkeyring = \"blog\"\n",
+        )
+        .unwrap();
+        let store = MemoryStore::default();
+        let mut io = Script::new(&[]);
+        let mut setup = setup(&mut io, &store);
+        let choice = setup
+            .choose_previous(&old_path.display().to_string(), &[])
+            .unwrap();
+        assert!(matches!(choice, PreviousChoice::UseAsIs));
+        assert!(io.shown.join("\n").contains("more than one WordPress site"));
     }
 
     /// 2を選ぶと、前の設定ファイルをそのまま使う

@@ -1000,7 +1000,8 @@ mod tests {
     #[tokio::test]
     async fn test_wordpress_checks_each_site() {
         let (result, report) = check_text(
-            "[server]\n[transport]\n[handlers.wordpress]\nname = \"blog\"\nurl = \"https://blog.example.com\"\nusername = \"u\"\npassword = \"p\"\nenabled = true\n\
+            "[server]\n[transport]\n[handlers.wordpress]\nenabled = true\ndefault_site = \"blog\"\n\
+             [handlers.wordpress.sites.blog]\nurl = \"https://blog.example.com\"\nusername = \"u\"\npassword = \"p\"\n\
              [handlers.wordpress.sites.shop]\nurl = \"https://shop.example.com\"\nusername = \"u\"\npassword = \"p\"\n",
         );
         assert_eq!(

@@ -37,6 +37,8 @@ MCP-RSの設定ファイルの例です。用途別に置いています。
 
 - **`multi-handler.toml`** - WordPress・PostgreSQL（`[database]`）・プラグイン（`[[plugins]]`）を一緒に使う例
   - v0.23.0までは、mcp-rsが読まない形式（`[handlers.<名前>]`に`type = "..."`）の例で、起動もしなかった（#557）
+- **`multi-site.toml`** - 1つのmcp-rsで、2つのWordPressのサイトを使う例（`[handlers.wordpress.sites.<名前>]`、v0.30.0以降）
+- **`claude-desktop-config.example.json`**・**`copilot-studio.example.json`** - MCPのクライアントへの登録の例（`--config`で設定ファイルを渡す。`mcp-rs init`が書く形）
 - **`log-policy-demo.toml`** - ログポリシー設定デモ
 - **`module-separated.toml`** - モジュール分離ログ例
 

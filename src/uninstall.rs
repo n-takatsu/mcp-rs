@@ -565,7 +565,8 @@ mod tests {
         let config = dir.path().join("config.toml");
         std::fs::write(
             &config,
-            "[handlers.wordpress]\nurl = \"https://blog.example.com\"\nkeyring = \"blog\"\n\n\
+            "[handlers.wordpress]\nenabled = true\ndefault_site = \"blog\"\n\n\
+             [handlers.wordpress.sites.blog]\nurl = \"https://blog.example.com\"\nkeyring = \"blog\"\n\n\
              [handlers.wordpress.sites.shop]\nurl = \"https://shop.example.com\"\nkeyring = \"shop\"\n\n\
              [handlers.wordpress.sites.again]\nurl = \"https://blog.example.com\"\nkeyring = \"blog\"\n",
         )
