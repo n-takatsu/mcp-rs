@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- MCPのプロンプト（`prompts/list`・`prompts/get`）を出す（#643）。
+  クライアントのメニュー（Claude Desktopの「+」等）から選ぶ、定型の頼み方:
+  `draft_post`（記事の下書き。下書きで作り、公開しない）・
+  `review_post_seo`（投稿のSEOの見直し。書き換えは承認の後）・
+  `moderate_comments`（承認待ちのコメント。変えるのは決めた後）・
+  `summarize_table`（`[database]`のとき。表の要約、読むだけ）。文は英語で、
+  利用者の言葉で答えるよう頼む。能力に`prompts`を足した。HTTPモードでは、
+  プロンプトが使うツールをすべて使えるAPIキー・トークンにだけ出し、断った
+  `prompts/get`は監査ログに残す。複数のWordPressのサイトでは`site`の引数を
+  持つ。2026-07-28では`ttlMs`・`cacheScope`を付ける。プラグインの
+  プロンプトは、まだ中継しない。APIの文書に書いてあった、無いプロンプトの
+  例を直した
+
 - カスタム投稿タイプと独自のタクソノミーを扱えるようにした（#642）。使う
   カスタム投稿タイプは、設定の`post_types`（例: `["product"]`）に書いた
   ものだけ（既定は今までどおり`post`・`page`だけ。AIが商品等を誤って

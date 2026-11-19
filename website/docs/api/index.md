@@ -135,9 +135,9 @@ mcp-rs v0.28.0 and later also accept version `2026-07-28`, which has no `initial
 
 - `server/discover` returns the supported versions (`["2026-07-28"]`), the capabilities, and the server information (with `icons`) in `_meta["io.modelcontextprotocol/serverInfo"]`
 - Each request carries `io.modelcontextprotocol/protocolVersion` and `io.modelcontextprotocol/clientCapabilities` (an object) in `params._meta`. Without them, mcp-rs answers `-32602`; with a version it does not support, `-32022` with `data.supported` (which also lists the `initialize` versions) and `data.requested`
-- Results have `resultType: "complete"` and the server information in `_meta`. `tools/list` and `resources/list` have `ttlMs: 300000` and `cacheScope: "private"` (the lists depend on the API key or token), and `resources/read` has `ttlMs: 0`
+- Results have `resultType: "complete"` and the server information in `_meta`. `tools/list`, `resources/list` and `prompts/list` have `ttlMs: 300000` and `cacheScope: "private"` (the lists depend on the API key or token), and `resources/read` and `prompts/get` have `ttlMs: 0`
 - `ping` is not part of `2026-07-28` (`-32601`). A missing resource is `-32602`
-- HTTP (`/mcp`): send `MCP-Protocol-Version: 2026-07-28`, `Mcp-Method`, and, for `tools/call` and `resources/read`, `Mcp-Name` (the tool name or URI; `=?base64?…?=` for values that are not plain ASCII). If a header is missing or does not match the body, mcp-rs answers HTTP 400 with `-32020`. Unknown methods get HTTP 404 with `-32601`, and version or `_meta` errors get HTTP 400. API keys, OAuth scopes and the audit log apply to each request. `/ws` uses only the legacy form
+- HTTP (`/mcp`): send `MCP-Protocol-Version: 2026-07-28`, `Mcp-Method`, and, for `tools/call`, `prompts/get` and `resources/read`, `Mcp-Name` (the tool or prompt name, or the URI; `=?base64?…?=` for values that are not plain ASCII). If a header is missing or does not match the body, mcp-rs answers HTTP 400 with `-32020`. Unknown methods get HTTP 404 with `-32601`, and version or `_meta` errors get HTTP 400. API keys, OAuth scopes and the audit log apply to each request. `/ws` uses only the legacy form
 
 ```json
 {
@@ -404,9 +404,18 @@ Reads a resource.
 
 ### Prompts
 
-#### `prompts/list`
+Prompts are ready-made requests that the user picks in the client (for example from the "+" menu in Claude Desktop), v0.30.0 and later. Each one returns a request to the AI as one `user` message; it calls no tools by itself. They ask the AI to confirm with the user before changing anything. The capability is `"prompts": { "listChanged": false }`.
 
-Lists available prompts.
+| Prompt | Arguments | Shown when |
+|---|---|---|
+| `draft_post` | `topic` (required), `notes` | WordPress is configured. Creates the post as a draft only |
+| `review_post_seo` | `post_id` (required) | WordPress is configured. Changes the post only after you approve |
+| `moderate_comments` | `post_id` | WordPress is configured. Changes comments only after you decide |
+| `summarize_table` | `table` (required) | `[database]` is configured. Only reads |
+
+With more than one WordPress site, the WordPress prompts also take `site`. In HTTP mode, a prompt is listed and returned only when the API key or access token may use all the tools it asks the AI to use (for example, `draft_post` needs `create_advanced_post`); a denied `prompts/get` is recorded in the audit log. Plugins' prompts are not relayed.
+
+#### `prompts/list`
 
 **Request:**
 
@@ -418,7 +427,7 @@ Lists available prompts.
 }
 ```
 
-**Response:**
+**Response (excerpt):**
 
 ```json
 {
@@ -426,14 +435,11 @@ Lists available prompts.
   "result": {
     "prompts": [
       {
-        "name": "wordpress_content_analysis",
-        "description": "Analyze WordPress content for SEO and readability",
+        "name": "review_post_seo",
+        "title": "Review a post's SEO",
+        "description": "Check a post's title, slug, excerpt, headings and links, and suggest improvements. The post is changed only after you approve",
         "arguments": [
-          {
-            "name": "post_id",
-            "description": "WordPress post ID to analyze",
-            "required": true
-          }
+          { "name": "post_id", "description": "ID of the post to review", "required": true }
         ]
       }
     ]
@@ -444,7 +450,7 @@ Lists available prompts.
 
 #### `prompts/get`
 
-Retrieves a prompt.
+Argument values are strings. An unknown prompt or a missing required argument returns `-32602`.
 
 **Request:**
 
@@ -453,26 +459,26 @@ Retrieves a prompt.
   "jsonrpc": "2.0",
   "method": "prompts/get",
   "params": {
-    "name": "wordpress_content_analysis",
+    "name": "review_post_seo",
     "arguments": { "post_id": "123" }
   },
   "id": 7
 }
 ```
 
-**Response:**
+**Response (excerpt):**
 
 ```json
 {
   "jsonrpc": "2.0",
   "result": {
-    "description": "WordPress content analysis prompt",
+    "description": "Check a post's title, slug, excerpt, headings and links, and suggest improvements. The post is changed only after you approve",
     "messages": [
       {
         "role": "user",
         "content": {
           "type": "text",
-          "text": "Please analyze the following WordPress post..."
+          "text": "Review the SEO of post 123 on my WordPress site.\n\n1. Read it with get_post (format \"raw\"). ..."
         }
       }
     ]

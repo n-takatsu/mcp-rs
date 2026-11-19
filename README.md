@@ -39,6 +39,7 @@ Ask Claude to draft, schedule, and publish WordPress posts, upload media, or mod
 - **Site Settings**: Read and update site settings and the front page configuration
 - **Health Check**: Verify connectivity, authentication, permissions, and media upload capability
 - **Custom Post Types**: Products, events and other post types that the site exposes in the REST API, when allowed in `post_types`, with their own taxonomies ([docs](https://n-takatsu.github.io/mcp-rs/docs/wordpress/#custom-post-types))
+- **Prompts**: Ready-made requests in the client's menu: draft a post, review a post's SEO, moderate comments (and summarize a database table)
 - **Multiple Sites**: Use several WordPress sites from one mcp-rs; each tool takes a `site` argument ([docs](https://n-takatsu.github.io/mcp-rs/docs/wordpress/#sites))
 
 ### Live Demo Site

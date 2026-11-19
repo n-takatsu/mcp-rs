@@ -39,6 +39,7 @@ Claudeに頼んで、WordPressの記事の下書き・予約投稿・公開、�
 - **サイト設定**: サイト設定とフロントページ設定の取得・更新
 - **ヘルスチェック**: 接続・認証・権限・メディアアップロード可否の確認
 - **カスタム投稿タイプ**: 商品・イベント等、サイトが REST API に出している投稿タイプを、`post_types` で許したときに使う。独自のタクソノミーの項目も付けられる（[文書](https://n-takatsu.github.io/mcp-rs/docs/wordpress/#custom-post-types)）
+- **プロンプト**: クライアントのメニューから選べる定型の頼み方（記事の下書き・SEOの見直し・コメントの処理、データベースの表の要約）
 - **複数のサイト**: 1つの mcp-rs で複数の WordPress サイトを使う。各ツールの `site` の引数で選ぶ（[文書](https://n-takatsu.github.io/mcp-rs/docs/wordpress/#sites)）
 
 ### ライブデモサイト

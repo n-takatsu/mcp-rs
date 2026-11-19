@@ -4,8 +4,8 @@ use tracing::{debug, error, info, warn};
 
 use crate::mcp::{
     call_tool_result_for_version, negotiate_protocol_version, tools_list_for_version, Caller,
-    InitializeParams, JsonRpcRequest, JsonRpcResponse, McpError, Resource, ResourceReadParams,
-    Tool, ToolCallParams, DEFAULT_PROTOCOL_VERSION,
+    InitializeParams, JsonRpcRequest, JsonRpcResponse, McpError, PromptGetParams, PromptSpec,
+    Resource, ResourceReadParams, Tool, ToolCallParams, DEFAULT_PROTOCOL_VERSION,
 };
 
 #[async_trait]
@@ -41,6 +41,21 @@ pub trait McpHandler: Send + Sync {
     fn trusts_read_only_hints(&self) -> bool {
         true
     }
+
+    /// このハンドラーのプロンプト（#643）。既定は無し
+    fn prompts(&self) -> Vec<PromptSpec> {
+        Vec::new()
+    }
+
+    /// プロンプトの中身（#643）。`name`は`prompts`のどれか。引数は、
+    /// 必須のものがあることを確かめてから渡す
+    async fn get_prompt(
+        &self,
+        name: &str,
+        _arguments: &std::collections::HashMap<String, String>,
+    ) -> Result<serde_json::Value, McpError> {
+        Err(McpError::InvalidParams(format!("Unknown prompt: {name}")))
+    }
 }
 
 /// 呼び出し元の制限（`@read_only`等）を当てはめるときに見る、ツールの形
@@ -68,6 +83,7 @@ type Handlers = Vec<(String, Arc<dyn McpHandler>)>;
 enum Denied {
     Tool,
     Resource,
+    Prompt,
 }
 
 /// JSON-RPCのリクエストとして読めないメッセージへの応答（#543、JSON-RPC
@@ -120,7 +136,8 @@ fn invalid_message_response(message: &str) -> Option<JsonRpcResponse> {
 fn server_capabilities() -> serde_json::Value {
     serde_json::json!({
         "tools": { "listChanged": false },
-        "resources": { "subscribe": false, "listChanged": false }
+        "resources": { "subscribe": false, "listChanged": false },
+        "prompts": { "listChanged": false }
     })
 }
 
@@ -256,8 +273,8 @@ fn modern_result(method: &str, version: &str, mut result: serde_json::Value) -> 
     };
     fields.insert("resultType".to_string(), "complete".into());
     let cache = match method {
-        "tools/list" | "resources/list" => Some(LIST_TTL_MS),
-        "resources/read" => Some(0),
+        "tools/list" | "resources/list" | "prompts/list" => Some(LIST_TTL_MS),
+        "resources/read" | "prompts/get" => Some(0),
         _ => None,
     };
     if let Some(ttl_ms) = cache {
@@ -663,6 +680,25 @@ impl McpServer {
                     Err(e) => Err(McpError::InvalidParams(e.to_string())),
                 }
             }
+            "prompts/list" => {
+                let mut prompts = Vec::new();
+                for (_, spec) in Self::list_all_prompts(handlers).await {
+                    if Self::prompt_allowed(handlers, caller, &spec).await {
+                        prompts.push(spec.prompt);
+                    }
+                }
+                Ok(serde_json::json!({ "prompts": prompts }))
+            }
+            "prompts/get" => {
+                match serde_json::from_value::<PromptGetParams>(
+                    request.params.clone().unwrap_or_default(),
+                ) {
+                    Ok(params) => {
+                        Self::get_prompt_routed(handlers, params, caller, audit_logger).await
+                    }
+                    Err(e) => Err(McpError::InvalidParams(e.to_string())),
+                }
+            }
             _ => Err(McpError::InvalidMethod(request.method.clone())),
         };
         let result = match modern {
@@ -707,6 +743,79 @@ impl McpServer {
         })
     }
 
+    /// 全ハンドラーのプロンプト（#643）。同じ名前は、先に登録したハンドラーのもの
+    async fn list_all_prompts(
+        handlers: &[(String, Arc<dyn McpHandler>)],
+    ) -> Vec<(Arc<dyn McpHandler>, PromptSpec)> {
+        let mut prompts: Vec<(Arc<dyn McpHandler>, PromptSpec)> = Vec::new();
+        for (_, handler) in handlers {
+            for spec in handler.prompts() {
+                if prompts
+                    .iter()
+                    .any(|(_, p)| p.prompt.name == spec.prompt.name)
+                {
+                    continue;
+                }
+                prompts.push((handler.clone(), spec));
+            }
+        }
+        prompts
+    }
+
+    /// `caller`が、プロンプトの使うツールをすべて使えるか（#643）
+    async fn prompt_allowed(
+        handlers: &[(String, Arc<dyn McpHandler>)],
+        caller: &Caller,
+        spec: &PromptSpec,
+    ) -> bool {
+        for tool in &spec.tools {
+            if !Self::tool_allowed(handlers, caller, tool).await {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// `prompts/get`（#643）。無いプロンプト・必須の引数が無いときは`-32602`。
+    /// 呼び出し元が使えないプロンプトは、断って監査ログに残す
+    async fn get_prompt_routed(
+        handlers: &[(String, Arc<dyn McpHandler>)],
+        params: PromptGetParams,
+        caller: &Caller,
+        audit_logger: Option<&crate::security::AuditLogger>,
+    ) -> Result<serde_json::Value, McpError> {
+        let Some((handler, spec)) = Self::list_all_prompts(handlers)
+            .await
+            .into_iter()
+            .find(|(_, spec)| spec.prompt.name == params.name)
+        else {
+            return Err(McpError::InvalidParams(format!(
+                "Unknown prompt: {}",
+                params.name
+            )));
+        };
+        if !Self::prompt_allowed(handlers, caller, &spec).await {
+            Self::audit_denied(audit_logger, caller, Denied::Prompt, &params.name).await;
+            return Err(McpError::InvalidParams(format!(
+                "Prompt '{}' is not allowed for this API key or access token",
+                params.name
+            )));
+        }
+        for argument in spec.prompt.arguments.iter().filter(|a| a.required) {
+            let given = params
+                .arguments
+                .get(&argument.name)
+                .is_some_and(|value| !value.trim().is_empty());
+            if !given {
+                return Err(McpError::InvalidParams(format!(
+                    "Prompt '{}' needs the argument '{}'",
+                    params.name, argument.name
+                )));
+            }
+        }
+        handler.get_prompt(&params.name, &params.arguments).await
+    }
+
     /// `caller`が`name`のツールを使えるか。そのツールが無い場合は`true`
     /// （呼び出しは、これまでどおり「ツールが無い」で失敗する）。
     async fn tool_allowed(
@@ -738,6 +847,7 @@ impl McpServer {
         let (what, resource) = match kind {
             Denied::Tool => ("Tool call", "tool"),
             Denied::Resource => ("Resource read", "resource"),
+            Denied::Prompt => ("Prompt", "prompt"),
         };
         warn!(
             "Denied {} '{}' by '{}': it is not allowed for this caller",
@@ -2816,5 +2926,199 @@ mod tests {
         let info = &tools["_meta"]["io.modelcontextprotocol/serverInfo"];
         assert_eq!(info["name"], serde_json::json!("mcp-rs"));
         assert!(info.get("icons").is_none());
+    }
+
+    // ---- #643: プロンプト ----
+
+    /// ツール`get_post`・`delete_post`と、それぞれを使うプロンプトを持つ
+    struct WithPrompts;
+
+    #[async_trait]
+    impl McpHandler for WithPrompts {
+        async fn initialize(&self, _: InitializeParams) -> Result<serde_json::Value, McpError> {
+            Ok(serde_json::json!({}))
+        }
+        async fn list_tools(&self) -> Result<Vec<Tool>, McpError> {
+            Ok(vec![tool("get_post"), tool("delete_post")])
+        }
+        async fn call_tool(&self, _: ToolCallParams) -> Result<serde_json::Value, McpError> {
+            Ok(serde_json::json!({}))
+        }
+        async fn list_resources(&self) -> Result<Vec<Resource>, McpError> {
+            Ok(Vec::new())
+        }
+        async fn read_resource(
+            &self,
+            _: ResourceReadParams,
+        ) -> Result<serde_json::Value, McpError> {
+            Ok(serde_json::json!({}))
+        }
+        fn prompts(&self) -> Vec<PromptSpec> {
+            let prompt = |name: &str, tool: &str| PromptSpec {
+                prompt: crate::mcp::Prompt {
+                    name: name.to_string(),
+                    title: None,
+                    description: Some(format!("uses {tool}")),
+                    arguments: vec![crate::mcp::PromptArgument {
+                        name: "post_id".to_string(),
+                        description: None,
+                        required: true,
+                    }],
+                },
+                tools: vec![tool.to_string()],
+            };
+            vec![
+                prompt("read_it", "get_post"),
+                prompt("remove_it", "delete_post"),
+            ]
+        }
+        async fn get_prompt(
+            &self,
+            name: &str,
+            arguments: &std::collections::HashMap<String, String>,
+        ) -> Result<serde_json::Value, McpError> {
+            Ok(crate::mcp::prompt_result(
+                name,
+                format!("{name} {}", arguments["post_id"]),
+            ))
+        }
+    }
+
+    async fn prompt_request(
+        method: &str,
+        params: serde_json::Value,
+        caller: &Caller,
+        audit_logger: Option<&crate::security::AuditLogger>,
+    ) -> JsonRpcResponse {
+        let handlers: Handlers = vec![("p".to_string(), Arc::new(WithPrompts))];
+        let line =
+            serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
+                .to_string();
+        McpServer::process_request_as(
+            &line,
+            &handlers,
+            &Session::default(),
+            caller,
+            audit_logger,
+            &crate::mcp::StatusInfo::default(),
+            None,
+        )
+        .await
+        .unwrap()
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_prompts_list_and_get() {
+        let all = Caller::unrestricted();
+        let list = prompt_request("prompts/list", serde_json::json!({}), &all, None)
+            .await
+            .result
+            .unwrap();
+        let names: Vec<&str> = list["prompts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, ["read_it", "remove_it"]);
+        assert_eq!(
+            list["prompts"][0]["arguments"][0],
+            serde_json::json!({"name": "post_id", "required": true})
+        );
+
+        let got = prompt_request(
+            "prompts/get",
+            serde_json::json!({"name": "read_it", "arguments": {"post_id": "7"}}),
+            &all,
+            None,
+        )
+        .await
+        .result
+        .unwrap();
+        assert_eq!(got["messages"][0]["role"], "user");
+        assert_eq!(got["messages"][0]["content"]["text"], "read_it 7");
+    }
+
+    /// 無いプロンプト・必須の引数が無いときは-32602
+    #[tokio::test]
+    async fn test_prompts_get_errors() {
+        let all = Caller::unrestricted();
+        for (params, message) in [
+            (serde_json::json!({"name": "nope"}), "Unknown prompt: nope"),
+            (
+                serde_json::json!({"name": "read_it"}),
+                "Prompt 'read_it' needs the argument 'post_id'",
+            ),
+            (
+                serde_json::json!({"name": "read_it", "arguments": {"post_id": " "}}),
+                "needs the argument 'post_id'",
+            ),
+        ] {
+            let error = prompt_request("prompts/get", params.clone(), &all, None)
+                .await
+                .error
+                .unwrap();
+            assert_eq!(error.code, -32602, "{params}");
+            assert!(
+                error.message.contains(message),
+                "{params}: {}",
+                error.message
+            );
+        }
+    }
+
+    /// 使えないツールを使うプロンプトは、一覧に出さず、取り出しも断って記録する
+    #[tokio::test]
+    async fn test_prompts_follow_tool_limits() {
+        let reader = Caller::new(
+            "api_key:reader",
+            crate::mcp::ToolAccess::from_patterns(Some(&["get_post".to_string()])).unwrap(),
+        );
+        let list = prompt_request("prompts/list", serde_json::json!({}), &reader, None)
+            .await
+            .result
+            .unwrap();
+        assert_eq!(list["prompts"].as_array().unwrap().len(), 1);
+        assert_eq!(list["prompts"][0]["name"], "read_it");
+
+        let audit = crate::security::AuditLogger::with_defaults();
+        let error = prompt_request(
+            "prompts/get",
+            serde_json::json!({"name": "remove_it", "arguments": {"post_id": "7"}}),
+            &reader,
+            Some(&audit),
+        )
+        .await
+        .error
+        .unwrap();
+        assert!(
+            error.message.contains("is not allowed"),
+            "{}",
+            error.message
+        );
+        let entries = audit.get_all_entries().await;
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].action, Some("remove_it".to_string()));
+        assert_eq!(entries[0].resource, Some("prompt".to_string()));
+    }
+
+    /// 能力にプロンプトを出し、2026-07-28では一覧に使い回しの時間を付ける
+    #[test]
+    fn test_prompts_capability_and_modern_fields() {
+        assert_eq!(
+            server_capabilities()["prompts"],
+            serde_json::json!({"listChanged": false})
+        );
+        let list = modern_result(
+            "prompts/list",
+            "2026-07-28",
+            serde_json::json!({"prompts": []}),
+        );
+        assert_eq!(list["ttlMs"], serde_json::json!(LIST_TTL_MS));
+        assert_eq!(list["cacheScope"], "private");
+        let got = modern_result("prompts/get", "2026-07-28", serde_json::json!({}));
+        assert_eq!(got["ttlMs"], serde_json::json!(0));
+        assert_eq!(got["resultType"], "complete");
     }
 }

@@ -129,6 +129,58 @@ impl McpHandler for WordPressSites {
         Some(format!("WordPress sites ({})", lines.join("; ")))
     }
 
+    /// プロンプトに、サイトを選ぶ引数`site`を足す（#643）
+    fn prompts(&self) -> Vec<crate::mcp::PromptSpec> {
+        let names = self.names();
+        self.default_site()
+            .prompts()
+            .into_iter()
+            .map(|mut spec| {
+                spec.prompt.arguments.push(crate::mcp::PromptArgument {
+                    name: SITE_ARGUMENT.to_string(),
+                    description: Some(format!(
+                        "WordPress site: {}. Defaults to '{}'",
+                        names.join(", "),
+                        names[0]
+                    )),
+                    required: false,
+                });
+                spec
+            })
+            .collect()
+    }
+
+    async fn get_prompt(
+        &self,
+        name: &str,
+        arguments: &std::collections::HashMap<String, String>,
+    ) -> Result<serde_json::Value, McpError> {
+        let site = arguments
+            .get(SITE_ARGUMENT)
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty());
+        if let Some(site) = site {
+            if !self.names().contains(&site) {
+                return Err(McpError::InvalidParams(format!(
+                    "site must be one of: {}",
+                    self.names().join(", ")
+                )));
+            }
+        }
+        let mut result = self.default_site().get_prompt(name, arguments).await?;
+        if let Some(site) = site {
+            if let Some(text) = result["messages"][0]["content"]["text"].as_str() {
+                let text = format!(
+                    "Use the WordPress site \"{site}\": pass site \"{site}\" to every tool call.
+
+{text}"
+                );
+                result["messages"][0]["content"]["text"] = serde_json::json!(text);
+            }
+        }
+        Ok(result)
+    }
+
     fn resource_tool(&self, uri: &str) -> Option<String> {
         self.default_site().resource_tool(uri)
     }

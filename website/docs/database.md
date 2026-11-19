@@ -161,6 +161,10 @@ Offered only with `allow_write = true`. Runs one `INSERT`, `UPDATE`, or `DELETE`
 }
 ```
 
+## Prompt
+
+`summarize_table` (v0.30.0 and later) is a ready-made request, picked in the client's prompt menu, that asks the AI to describe a table: its columns, number of rows and how values are distributed. It reads with small `SELECT` queries only, and does not quote personal data.
+
 ## Parameters
 
 Write `$1`, `$2`, … in the SQL and pass the values in `params`. Values are bound as parameters and never inserted into the SQL text.

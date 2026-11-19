@@ -6326,6 +6326,18 @@ impl McpHandler for WordPressHandler {
     /// 各リソースは、同じデータを読めるツールと同じ扱いにする（#538）。
     /// `wordpress://posts`は投稿の本文まで返すので、要約だけを返す
     /// `get_posts`ではなく、本文を返す`get_post`に対応させる
+    fn prompts(&self) -> Vec<crate::mcp::PromptSpec> {
+        crate::handlers::prompts::wordpress_prompts()
+    }
+
+    async fn get_prompt(
+        &self,
+        name: &str,
+        arguments: &HashMap<String, String>,
+    ) -> Result<serde_json::Value, McpError> {
+        crate::handlers::prompts::wordpress_prompt(name, arguments)
+    }
+
     fn resource_tool(&self, uri: &str) -> Option<String> {
         let tool = match uri {
             "wordpress://posts" => "get_post",
