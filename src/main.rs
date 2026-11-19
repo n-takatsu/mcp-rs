@@ -33,6 +33,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
+    // データベースのパスワードを資格情報ストアに入れる等（#628）
+    if args.get(1).map(String::as_str) == Some(mcp_rs::database_keyring::SUBCOMMAND) {
+        if let Err(e) = mcp_rs::database_keyring::run(&args[2..]) {
+            eprintln!("Error: {e}");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+
     // 設定を確かめる（#565）。サーバーは起動しない
     if args.get(1).map(String::as_str) == Some(mcp_rs::check::SUBCOMMAND) {
         match mcp_rs::check::run(&args[2..]).await {
