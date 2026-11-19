@@ -141,7 +141,7 @@ pub async fn run(args: &[String]) -> Result<bool, String> {
 }
 
 /// 質問と表示。テストでは、決めた答えを返すものに置き換える
-trait Prompt {
+pub(crate) trait Prompt {
     /// 1行の答え（前後の空白を除く）
     fn ask(&mut self, question: &str) -> io::Result<String>;
     /// 画面に出さずに読む答え
@@ -150,7 +150,7 @@ trait Prompt {
 }
 
 /// 端末
-struct Terminal;
+pub(crate) struct Terminal;
 
 impl Prompt for Terminal {
     fn ask(&mut self, question: &str) -> io::Result<String> {
@@ -177,7 +177,7 @@ impl Prompt for Terminal {
 }
 
 /// はい・いいえの質問。空の答えは`default`
-fn confirm(io: &mut dyn Prompt, question: &str, default: bool) -> io::Result<bool> {
+pub(crate) fn confirm(io: &mut dyn Prompt, question: &str, default: bool) -> io::Result<bool> {
     let hint = if default { "[Y/n]" } else { "[y/N]" };
     loop {
         let answer = io.ask(&format!("{question} {hint} "))?;
@@ -664,7 +664,7 @@ impl Setup<'_> {
             return Ok(());
         }
         check_store(self.store)?;
-        let answers = self.database_answers()?;
+        let answers = ask_database(self.io, self.store, None)?;
         let backup = append_to_config_file(&self.config_path, &database_toml(&answers)?)?;
         self.io.say(&format!(
             "Kept the previous config file as {}",
@@ -676,138 +676,6 @@ impl Setup<'_> {
             self.config_path.display()
         ));
         Ok(())
-    }
-
-    /// `[database]`の値を聞く。パスワードは資格情報ストアに入れる
-    fn database_answers(&mut self) -> Result<DatabaseAnswers, Box<dyn std::error::Error>> {
-        self.io.say("Database");
-        let engine = loop {
-            let answer = self
-                .io
-                .ask("Engine: postgresql, mysql or mariadb [postgresql]: ")?
-                .to_ascii_lowercase();
-            match answer.as_str() {
-                "" => break "postgresql".to_string(),
-                "postgresql" | "mysql" | "mariadb" => break answer,
-                _ => self.io.say("Enter postgresql, mysql or mariadb."),
-            }
-        };
-        let host = self.ask_with_default("Host", "localhost")?;
-        let default_port = if engine == "postgresql" { 5432 } else { 3306 };
-        let port = loop {
-            let answer = self.io.ask(&format!("Port [{default_port}]: "))?;
-            if answer.is_empty() {
-                break default_port;
-            }
-            match answer.parse::<u16>() {
-                Ok(port) if port > 0 => break port,
-                _ => self.io.say("Enter a port number (1-65535)."),
-            }
-        };
-        let database = self.ask_required("Database name: ", "The database name is empty.")?;
-        self.io.say("  Use a database user that can only read what the AI needs. mcp-rs refuses SQL that writes, but the user's permissions are the real limit.");
-        let username = self.ask_required("User name: ", "The user name is empty.")?;
-        let password = self
-            .io
-            .ask_hidden("Password (not shown while typing; leave empty if there is none): ")?;
-        let keyring = if password.is_empty() {
-            None
-        } else {
-            let suggested = format!("{database}@{host}");
-            let answer = self.io.ask(&format!(
-                "Name for this password in the OS credential store [{suggested}]: "
-            ))?;
-            let entry = if answer.is_empty() { suggested } else { answer };
-            store_database_credentials(
-                self.store,
-                &entry,
-                &DatabaseKeyringCredentials {
-                    host: host.clone(),
-                    port,
-                    username: username.clone(),
-                    password,
-                },
-            )?;
-            self.io.say(&format!(
-                "Stored the password as '{entry}' in the OS credential store."
-            ));
-            Some(entry)
-        };
-
-        let loopback = is_loopback_host(&host);
-        let ssl_default = if loopback { "prefer" } else { "verify-full" };
-        if !loopback {
-            self.io.say("  The database is on another machine: verify-full encrypts the connection and checks the server's certificate and host name.");
-        }
-        let ssl_mode = loop {
-            let answer = self.ask_with_default("TLS (ssl_mode)", ssl_default)?;
-            let check = crate::config::DatabaseSettings {
-                engine: engine.clone(),
-                database: database.clone(),
-                username: username.clone(),
-                ssl_mode: Some(answer.clone()),
-                // `verify-ca`の確認（ssl_root_certが要る）は、次の質問の後で行う
-                ssl_root_cert: Some("-".to_string()),
-                ..Default::default()
-            };
-            match check.validate() {
-                Ok(()) => break answer,
-                Err(e) => self.io.say(&e),
-            }
-        };
-        let ssl_root_cert = if ssl_mode.starts_with("verify") {
-            let answer = self.io.ask(
-                "CA certificate file (PEM) for a private CA, such as Amazon RDS (leave empty for a public CA): ",
-            )?;
-            (!answer.is_empty()).then_some(answer)
-        } else {
-            None
-        };
-
-        let allow_write = confirm(
-            self.io,
-            "Also let the AI change data (INSERT, UPDATE, DELETE)?",
-            false,
-        )? && confirm(
-            self.io,
-            &format!("The AI will be able to change and delete data in '{database}'. Allow it?"),
-            false,
-        )?;
-
-        let answers = DatabaseAnswers {
-            engine,
-            host,
-            port,
-            database,
-            username,
-            keyring,
-            ssl_mode,
-            ssl_root_cert,
-            allow_write,
-        };
-        answers.settings().validate()?;
-        Ok(answers)
-    }
-
-    /// `[既定]`付きで聞く。空の答えは`default`
-    fn ask_with_default(&mut self, question: &str, default: &str) -> io::Result<String> {
-        let answer = self.io.ask(&format!("{question} [{default}]: "))?;
-        Ok(if answer.is_empty() {
-            default.to_string()
-        } else {
-            answer
-        })
-    }
-
-    /// 空でない答えを聞く
-    fn ask_required(&mut self, question: &str, empty: &str) -> io::Result<String> {
-        loop {
-            let answer = self.io.ask(question)?;
-            if !answer.is_empty() {
-                return Ok(answer);
-            }
-            self.io.say(empty);
-        }
     }
 
     /// ユーザー名とアプリケーションパスワードを聞き、`entry`の名前で入れる
@@ -1070,7 +938,7 @@ impl Setup<'_> {
 
 /// 資格情報ストアが使えるかを確かめる（`os-keyring`無しのビルド、
 /// Secret Serviceの無いLinux等では使えない）
-fn check_store(store: &dyn SecretStore) -> Result<(), Box<dyn std::error::Error>> {
+pub(crate) fn check_store(store: &dyn SecretStore) -> Result<(), Box<dyn std::error::Error>> {
     match store.get("mcp-rs-init-check") {
         Ok(_) => Ok(()),
         Err(e) => Err(format!(
@@ -1346,9 +1214,173 @@ keyring = {entry}
     )
 }
 
+/// `[database]`の値を聞く。パスワードは資格情報ストアに入れる（#590）。
+/// `entry`があれば、その名前で入れる（`database-keyring set <名前>`、#628。
+/// そのときは、パスワードを空にできない）
+pub(crate) fn ask_database(
+    io: &mut dyn Prompt,
+    store: &dyn SecretStore,
+    entry: Option<&str>,
+) -> Result<DatabaseAnswers, Box<dyn std::error::Error>> {
+    io.say("Database");
+    let engine = loop {
+        let answer = io
+            .ask("Engine: postgresql, mysql or mariadb [postgresql]: ")?
+            .to_ascii_lowercase();
+        match answer.as_str() {
+            "" => break "postgresql".to_string(),
+            "postgresql" | "mysql" | "mariadb" => break answer,
+            _ => io.say("Enter postgresql, mysql or mariadb."),
+        }
+    };
+    let host = ask_with_default(io, "Host", "localhost")?;
+    let default_port = if engine == "postgresql" { 5432 } else { 3306 };
+    let port = loop {
+        let answer = io.ask(&format!("Port [{default_port}]: "))?;
+        if answer.is_empty() {
+            break default_port;
+        }
+        match answer.parse::<u16>() {
+            Ok(port) if port > 0 => break port,
+            _ => io.say("Enter a port number (1-65535)."),
+        }
+    };
+    let database = ask_required(io, "Database name: ", "The database name is empty.")?;
+    io.say("  Use a database user that can only read what the AI needs. mcp-rs refuses SQL that writes, but the user's permissions are the real limit.");
+    let username = ask_required(io, "User name: ", "The user name is empty.")?;
+    let password = match entry {
+        Some(_) => ask_database_password(io)?,
+        None => {
+            io.ask_hidden("Password (not shown while typing; leave empty if there is none): ")?
+        }
+    };
+    let keyring = if password.is_empty() {
+        None
+    } else {
+        let entry = match entry {
+            Some(entry) => entry.to_string(),
+            None => {
+                let suggested = format!("{database}@{host}");
+                let answer = io.ask(&format!(
+                    "Name for this password in the OS credential store [{suggested}]: "
+                ))?;
+                if answer.is_empty() {
+                    suggested
+                } else {
+                    answer
+                }
+            }
+        };
+        store_database_credentials(
+            store,
+            &entry,
+            &DatabaseKeyringCredentials {
+                host: host.clone(),
+                port,
+                username: username.clone(),
+                password,
+            },
+        )?;
+        io.say(&format!(
+            "Stored the password as '{entry}' in the OS credential store."
+        ));
+        Some(entry)
+    };
+
+    let loopback = is_loopback_host(&host);
+    let ssl_default = if loopback { "prefer" } else { "verify-full" };
+    if !loopback {
+        io.say("  The database is on another machine: verify-full encrypts the connection and checks the server's certificate and host name.");
+    }
+    let ssl_mode = loop {
+        let answer = ask_with_default(io, "TLS (ssl_mode)", ssl_default)?;
+        let check = crate::config::DatabaseSettings {
+            engine: engine.clone(),
+            database: database.clone(),
+            username: username.clone(),
+            ssl_mode: Some(answer.clone()),
+            // `verify-ca`の確認（ssl_root_certが要る）は、次の質問の後で行う
+            ssl_root_cert: Some("-".to_string()),
+            ..Default::default()
+        };
+        match check.validate() {
+            Ok(()) => break answer,
+            Err(e) => io.say(&e),
+        }
+    };
+    let ssl_root_cert = if ssl_mode.starts_with("verify") {
+        let answer = io.ask(
+            "CA certificate file (PEM) for a private CA, such as Amazon RDS (leave empty for a public CA): ",
+        )?;
+        (!answer.is_empty()).then_some(answer)
+    } else {
+        None
+    };
+
+    let allow_write = confirm(
+        io,
+        "Also let the AI change data (INSERT, UPDATE, DELETE)?",
+        false,
+    )? && confirm(
+        io,
+        &format!("The AI will be able to change and delete data in '{database}'. Allow it?"),
+        false,
+    )?;
+
+    let answers = DatabaseAnswers {
+        engine,
+        host,
+        port,
+        database,
+        username,
+        keyring,
+        ssl_mode,
+        ssl_root_cert,
+        allow_write,
+    };
+    answers.settings().validate()?;
+    Ok(answers)
+}
+
+/// `[既定]`付きで聞く。空の答えは`default`
+pub(crate) fn ask_with_default(
+    io: &mut dyn Prompt,
+    question: &str,
+    default: &str,
+) -> io::Result<String> {
+    let answer = io.ask(&format!("{question} [{default}]: "))?;
+    Ok(if answer.is_empty() {
+        default.to_string()
+    } else {
+        answer
+    })
+}
+
+/// 空でない答えを聞く
+pub(crate) fn ask_required(io: &mut dyn Prompt, question: &str, empty: &str) -> io::Result<String> {
+    loop {
+        let answer = io.ask(question)?;
+        if !answer.is_empty() {
+            return Ok(answer);
+        }
+        io.say(empty);
+    }
+}
+
+/// 空でないパスワードを、画面に出さずに聞く（#628）
+pub(crate) fn ask_database_password(io: &mut dyn Prompt) -> io::Result<Zeroizing<String>> {
+    loop {
+        let password = io.ask_hidden("Password (not shown while typing): ")?;
+        if !password.is_empty() {
+            return Ok(password);
+        }
+        io.say("The password is empty.");
+    }
+}
+
 /// `mcp-rs init`で聞いた、`[database]`の値（#590）
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct DatabaseAnswers {
+pub(crate) struct DatabaseAnswers {
     engine: String,
     host: String,
     port: u16,
@@ -1381,7 +1413,7 @@ impl DatabaseAnswers {
 
 /// 設定ファイルに書き足す`[database]`の節。値はTOMLとして書く（引用符等を
 /// エスケープする）。パスワードは書かず、`keyring`で資格情報ストアを指す
-fn database_toml(answers: &DatabaseAnswers) -> Result<String, toml::ser::Error> {
+pub(crate) fn database_toml(answers: &DatabaseAnswers) -> Result<String, toml::ser::Error> {
     let mut root = toml::Table::new();
     root.insert(
         "database".to_string(),
@@ -1408,7 +1440,7 @@ fn is_loopback_host(host: &str) -> bool {
 /// 設定ファイルの最後に`section`を書き足す（#590）。前のファイルを控えに
 /// 残し、そのパスを返す。置き換えは`write_config_file`と同じく、一時
 /// ファイルを経て行い、Unixでは本人だけが読めるようにする
-fn append_to_config_file(path: &Path, section: &str) -> io::Result<PathBuf> {
+pub(crate) fn append_to_config_file(path: &Path, section: &str) -> io::Result<PathBuf> {
     let mut content = std::fs::read_to_string(path)?;
     let backup = backup_path(path);
     std::fs::copy(path, &backup)?;
@@ -1459,7 +1491,7 @@ fn create_private_dir_all(dir: &Path) -> io::Result<()> {
 }
 
 /// Unixでは、ファイルを本人だけが読み書きできる（600）ようにする
-fn make_private(path: &Path) -> io::Result<()> {
+pub(crate) fn make_private(path: &Path) -> io::Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -1475,7 +1507,7 @@ fn make_private(path: &Path) -> io::Result<()> {
 /// 同じフォルダの別の名前に書いてから、名前を変えて置き換える（#599）。
 /// 途中で止まっても、元のファイルが壊れない。`private`なら、Unixでは
 /// 本人だけが読めるようにする
-fn write_atomically(path: &Path, content: &str, private: bool) -> io::Result<()> {
+pub(crate) fn write_atomically(path: &Path, content: &str, private: bool) -> io::Result<()> {
     let name = path
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -1726,7 +1758,7 @@ fn has_plaintext_secret(table: &toml::Table) -> bool {
 }
 
 /// `path`の控えのパス（`<name>.bak-<日時>`）
-fn backup_path(path: &Path) -> PathBuf {
+pub(crate) fn backup_path(path: &Path) -> PathBuf {
     let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
     let name = path
         .file_name()

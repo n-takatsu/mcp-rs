@@ -387,12 +387,12 @@ pub fn load_database_credentials(
     let name = check_name(name).map_err(|e| e.to_string())?;
     let not_database = || {
         format!(
-            "the keyring entry '{name}' does not hold mcp-rs database credentials. Run mcp-rs init again to store them"
+            "the keyring entry '{name}' does not hold mcp-rs database credentials. Store them with `mcp-rs database-keyring set {name}`"
         )
     };
     let secret = store.get(name).map_err(|e| e.to_string())?.ok_or_else(|| {
         format!(
-            "no database credentials named '{name}' in the OS credential store. Run mcp-rs init to store them"
+            "no database credentials named '{name}' in the OS credential store. Store them with `mcp-rs database-keyring set {name}`"
         )
     })?;
     let stored: StoredDatabaseCredentials =
@@ -406,7 +406,7 @@ pub fn load_database_credentials(
         || stored.username != username
     {
         return Err(format!(
-            "the database credentials named '{name}' are for {}@{}:{}, but [database] is {}@{}:{}. They are not sent to another server. Fix [database], or run mcp-rs init again",
+            "the database credentials named '{name}' are for {}@{}:{}, but [database] is {}@{}:{}. They are not sent to another server. Fix [database], or store them again with `mcp-rs database-keyring set {name}`",
             stored.username, stored.host, stored.port, username, host.trim(), port
         ));
     }
@@ -416,6 +416,49 @@ pub fn load_database_credentials(
         username: stored.username.clone(),
         password: Zeroizing::new(stored.password.clone()),
     })
+}
+
+/// What a keyring entry holds, as `mcp-rs database-keyring show` and
+/// `delete` see it (#628). The password is not read out.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DatabaseEntry {
+    /// mcp-rs database credentials for this server and user
+    Database {
+        host: String,
+        port: u16,
+        username: String,
+    },
+    /// An entry that is not mcp-rs database credentials (for example
+    /// WordPress credentials)
+    Other,
+}
+
+/// The entry named `name`, or `None` if there is none.
+pub fn database_entry(
+    store: &dyn SecretStore,
+    name: &str,
+) -> Result<Option<DatabaseEntry>, String> {
+    let name = check_name(name).map_err(|e| e.to_string())?;
+    let Some(secret) = store.get(name).map_err(|e| e.to_string())? else {
+        return Ok(None);
+    };
+    Ok(Some(
+        match serde_json::from_str::<StoredDatabaseCredentials>(&secret) {
+            Ok(stored) => {
+                let stored = Zeroizing::new(stored);
+                if stored.kind == STORED_DATABASE_KIND {
+                    DatabaseEntry::Database {
+                        host: stored.host.clone(),
+                        port: stored.port,
+                        username: stored.username.clone(),
+                    }
+                } else {
+                    DatabaseEntry::Other
+                }
+            }
+            Err(_) => DatabaseEntry::Other,
+        },
+    ))
 }
 
 /// Create or replace the database credentials named `name`, then read them
@@ -656,7 +699,7 @@ mod tests {
 
         let err = load_database_credentials(&store, "missing", "db.example.com", 5432, "reader")
             .unwrap_err();
-        assert!(err.contains("mcp-rs init"), "{err}");
+        assert!(err.contains("mcp-rs database-keyring set missing"), "{err}");
 
         // WordPressの項目は、データベースの資格情報として使わない
         store_wordpress_credentials(&store, "site", &credentials("editor", "app pass")).unwrap();
