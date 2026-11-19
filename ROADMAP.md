@@ -1,7 +1,7 @@
 # 🗺️ mcp-rs プロジェクト ロードマップ
 
 > **最終更新**: 2026年11月19日
-> **バージョン**: v1.9
+> **バージョン**: v1.10
 > **ステータス**: アクティブ開発中
 
 ## 🎯 プロジェクト概要
@@ -29,6 +29,7 @@ mcp-rsは、Rustで書いたModel Context Protocol (MCP) サーバーです。Cl
 | v0.25.0・v0.26.0 | 2026-11-17 | 導入を簡単にする: ビルド済みのファイル（#564）、`mcp-rs check`（#565）、`mcp-rs init`（#575）、インストールスクリプト（#576）、MySQL・MariaDB（#527） |
 | v0.27.0 | 2026-11-17 | セキュリティの強化（#592〜#599・#602） |
 | v0.28.0 | 2026-11-18 | MCPの2026-07-28版に、新旧の両方を受ける形で対応する（#570）、`mcp-rs check`で`[database]`・`[[plugins]]`も確かめる（#589） |
+| v0.29.0 | 2026-11-19 | 導入を簡単にする（続き）と使いやすさ: `init`でデータベース（#590）、`database-keyring`（#628）、ScoopとHomebrew（#578）、`uninstall`（#636）、新しい版の知らせ（#635）、投稿の検索（#637）、予約投稿（#625）、使われていないモジュールの整理（#638）、小さな強化（#598） |
 
 ---
 
@@ -36,29 +37,11 @@ mcp-rsは、Rustで書いたModel Context Protocol (MCP) サーバーです。Cl
 
 マイルストーンの番号は、リリースの版（クレートの`Cargo.toml`の`version`）と同じにする（2026-11-17から）。次のリリースに入れるものはその版のマイルストーンに、後に行うものはv1.0.0（2027年6月頃）に入れる。1つの版に1つの目的を持たせる。
 
-### 🔜 v0.29.0: 導入を簡単にする（続き）と使いやすさ（[マイルストーン](https://github.com/n-takatsu/mcp-rs/milestone/8)）
-
-完了したもの:
-
-- ✅ #590 `mcp-rs init`で、`[database]`も設定する（パスワードは資格情報ストア、`[database]`の`keyring`）
-- ✅ #628 `mcp-rs database-keyring`（`[database]`のパスワードを、`init`を使わずに資格情報ストアに入れる）
-- ✅ #578 ScoopとHomebrewで配る（[scoop-bucket](https://github.com/n-takatsu/scoop-bucket)・[homebrew-tap](https://github.com/n-takatsu/homebrew-tap)。新しいリリースに自動で追いつく）
-- ✅ #579 Claude Desktopの拡張機能（`.mcpb`）で配れるかを調べた（使える見込み。実装は#632）
-- ✅ #625 既存の投稿を、`update_post`で予約投稿にできる
-- ✅ #598 WordPressとプラグインの小さな強化（応答の大きさ・ツールの名前・相対パス）
-
-これから（2026-11-19のROADMAPの見直しで加えた）:
-
-- #635 `mcp_rs_status`・`mcp-rs check`で、新しい版があれば知らせる（入れ方に合わせた更新のコマンドも）
-- #636 mcp-rsの登録を外すコマンド（Claude Desktop・Claude Code・Copilot、資格情報ストアの項目）
-- #637 `get_posts`で、検索・絞り込み・ページを指定する（今は全件を読む）
-- #638 使われていないデータベースのモジュールを消す（約6,900行と、古い`engines/postgres`）
-
-### 📅 v0.30.0（[マイルストーン](https://github.com/n-takatsu/mcp-rs/milestone/9)）
+### 🔜 v0.30.0（[マイルストーン](https://github.com/n-takatsu/mcp-rs/milestone/9)）
 
 - #570 の残り: Copilot（新旧の両方に対応）から、`initialize`に戻らずにつながることを、実機で確かめる（Copilotのクレジットが戻る2026-12-01以降。v0.28.0→v0.29.0→v0.30.0と移した）
 
-ほかに入れるものは、v0.29.0のリリースの後に決める。
+ほかに入れるものは、これから決める。
 
 ### 📦 v1.0.0（2027年6月頃、[マイルストーン](https://github.com/n-takatsu/mcp-rs/milestone/3)）
 
@@ -109,10 +92,9 @@ MCPのクライアント（Claude Desktop・Claude Code等）から使える機�
 
 ## 📋 GitHub Issues
 
-- [Milestone v0.29.0](https://github.com/n-takatsu/mcp-rs/milestone/8) - 導入を簡単にする（続き）と使いやすさ
 - [Milestone v0.30.0](https://github.com/n-takatsu/mcp-rs/milestone/9) - Copilotでの確認（#570）ほか
 - [Milestone v1.0.0](https://github.com/n-takatsu/mcp-rs/milestone/3) - v0.30.0より後、v1.0.0までに行うIssue
-- 完了: [v0.27.0](https://github.com/n-takatsu/mcp-rs/milestone/6)（セキュリティの強化）・[v0.28.0](https://github.com/n-takatsu/mcp-rs/milestone/7)（MCPの新しい版）・[Epic #41](https://github.com/n-takatsu/mcp-rs/issues/41)（HTTPモードの認可・ツールの権限・監査ログ）
+- 完了: [v0.29.0](https://github.com/n-takatsu/mcp-rs/milestone/8)（導入を簡単にする（続き）と使いやすさ）・[v0.27.0](https://github.com/n-takatsu/mcp-rs/milestone/6)（セキュリティの強化）・[v0.28.0](https://github.com/n-takatsu/mcp-rs/milestone/7)（MCPの新しい版）・[Epic #41](https://github.com/n-takatsu/mcp-rs/issues/41)（HTTPモードの認可・ツールの権限・監査ログ）
 
 ## 📚 ドキュメント
 

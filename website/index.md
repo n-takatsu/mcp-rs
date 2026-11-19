@@ -83,7 +83,18 @@ See [Database Integration](docs/database/) for the settings.
 
 ## Current Status
 
-## ✅ Recently Completed (v0.28.0)
+## ✅ Recently Completed (v0.29.0)
+
+Easier to set up and to use. Some changes affect existing settings; see the [release notes](https://github.com/n-takatsu/mcp-rs/releases/tag/v0.29.0) before updating.
+
+- **📦 Scoop and Homebrew**: `scoop install n-takatsu/mcp-rs` on Windows and `brew install n-takatsu/tap/mcp-rs` on macOS (Apple Silicon) and Linux (x64), from this project's bucket and tap, which follow new releases automatically. See [Getting Started](docs/guides/#package-managers)
+- **🧭 `mcp-rs init` with databases**: `init` also sets up `[database]` (PostgreSQL, MySQL, MariaDB), with the password in the OS credential store (`keyring` in `[database]`). `mcp-rs database-keyring` stores it without `init`. See [Database Integration](docs/database/#keyring)
+- **🧹 `mcp-rs uninstall`**: Removes the registrations in Claude Desktop, Claude Code and Copilot, and the credentials, asking before each step. See [Getting Started](docs/guides/#uninstall)
+- **🔔 New versions**: `mcp-rs check` and `mcp_rs_status` say when a new version is available, with the update command for the way you installed mcp-rs
+- **🔎 Searching posts**: `get_posts` and `get_pages` take a keyword, categories, tags, dates and a page, and show the total. `update_post` can schedule an existing post (`date`). See [WordPress](docs/wordpress/)
+- **🔒 Hardening**: Limits on the size of WordPress responses, checks on plugin tool names, and plugin paths relative to the config file. Unused database modules (about 17,000 lines) were removed
+
+## ✅ v0.28.0
 
 - **🆕 MCP 2026-07-28**: mcp-rs accepts the new version of MCP, which has no `initialize` and no sessions (`server/discover`, and the version in each request's `_meta`), over STDIO and HTTP. Clients that use `initialize`, such as Claude Desktop, work as before. In HTTP mode, an `initialize` from one client no longer changes the protocol version for other clients. See [API](docs/api/)
 - **🩺 `mcp-rs check`**: Also checks `[database]` (the settings, weak TLS, and connecting and signing in) and `[[plugins]]` (the command can be found, and each plugin starts and lists its tools). `--offline` checks only the settings. See [Getting Started](docs/guides/#check)
