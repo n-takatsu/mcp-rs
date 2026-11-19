@@ -355,8 +355,22 @@ fn keyring_entries(path: &Path) -> Vec<(String, &'static str)> {
             .filter(|name| !name.is_empty())
             .map(str::to_string)
     };
-    if let Some(name) = keyring(table.get("handlers").and_then(|h| h.get("wordpress"))) {
+    let wordpress = table.get("handlers").and_then(|h| h.get("wordpress"));
+    if let Some(name) = keyring(wordpress) {
         entries.push((name, "WordPress"));
+    }
+    // ほかのサイト（#640）
+    if let Some(sites) = wordpress
+        .and_then(|w| w.get("sites"))
+        .and_then(toml::Value::as_table)
+    {
+        for site in sites.values() {
+            if let Some(name) = keyring(Some(site)) {
+                if !entries.iter().any(|(existing, _)| *existing == name) {
+                    entries.push((name, "WordPress"));
+                }
+            }
+        }
     }
     if let Some(name) = keyring(table.get("database")) {
         entries.push((name, "database"));
@@ -542,6 +556,27 @@ mod tests {
             PathBuf::from("C:/b/config.toml"),
         ]);
         assert_eq!(paths.len(), 2);
+    }
+
+    /// ほかのWordPressのサイトの項目も、消すかを聞く（#640）。同じ名前は1回
+    #[test]
+    fn test_keyring_entries_include_other_sites() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("config.toml");
+        std::fs::write(
+            &config,
+            "[handlers.wordpress]\nurl = \"https://blog.example.com\"\nkeyring = \"blog\"\n\n\
+             [handlers.wordpress.sites.shop]\nurl = \"https://shop.example.com\"\nkeyring = \"shop\"\n\n\
+             [handlers.wordpress.sites.again]\nurl = \"https://blog.example.com\"\nkeyring = \"blog\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            keyring_entries(&config),
+            vec![
+                ("blog".to_string(), "WordPress"),
+                ("shop".to_string(), "WordPress")
+            ]
+        );
     }
 
     #[test]

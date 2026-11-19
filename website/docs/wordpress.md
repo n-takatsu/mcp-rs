@@ -103,6 +103,31 @@ To let `upload_media` read local files with `file_path`, list the folders it may
 upload_allowed_dirs = ["C:/Users/me/Pictures/blog"]
 ```
 
+### Using more than one site {#sites}
+
+One mcp-rs can use several WordPress sites (v0.30.0 and later). Write each additional site in `[handlers.wordpress.sites.<site>]`, with the same settings as `[handlers.wordpress]` (`url`, `keyring` or `username`/`password`, `timeout_seconds`, `rate_limit`, `upload_allowed_dirs`, and so on):
+
+```toml
+[handlers.wordpress]
+name = "blog"                       # optional, "default" when omitted
+url = "https://blog.example.com"
+keyring = "blog"
+enabled = true
+
+[handlers.wordpress.sites.shop]
+url = "https://shop.example.com"
+keyring = "shop"
+```
+
+- The tools stay the same (the number of tools does not grow). Each tool gets a `site` argument: `get_posts` with `site: "shop"` reads the shop's posts. Without `site`, the first site (`[handlers.wordpress]`) is used, so ask the AI to name the site when it is not the first
+- Site names use lowercase letters, digits, `_` and `-`, up to 32 characters. `name` and `sites` are written only in `[handlers.wordpress]`
+- Additional sites are used only when `[handlers.wordpress]` has `enabled = true`. `enabled` in a site's table can be omitted (it follows `[handlers.wordpress]`); write `enabled = false` to stop using one site
+- Each site has its own credentials, rate limit and Application Password user. Store each site's credentials with `mcp-rs wordpress-keyring set <name>`. The audit log records the site's URL with each tool call
+- `mcp-rs check` checks each site, and `mcp_rs_status` lists them. `mcp-rs uninstall` offers to delete each site's entry in the OS credential store
+- Resources (`wordpress://posts` and others) read the first site only
+- In HTTP mode, the tool limits of an API key or access token apply to every site: a key allowed `get_posts` can read the posts of all the sites
+- `mcp-rs init` sets up only the first site. Add the others to the config file by hand
+
 ## Setting up Application Passwords
 
 Create the Application Password for a WordPress user with only the role the AI client needs, preferably a dedicated user:

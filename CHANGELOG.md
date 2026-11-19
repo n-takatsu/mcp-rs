@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- 1つのmcp-rsで、複数のWordPressのサイトを使えるようにした（#640）。
+  `[handlers.wordpress.sites.<名前>]`に、`[handlers.wordpress]`と同じ項目
+  （`url`・`keyring`等）を書く。ツールは増やさず、各ツールに`site`の引数を
+  足す（省けば最初のサイト。最初のサイトの名前は`name`、省けば`default`）。
+  資格情報・レート制限・監査ログ（サイトのURL）は、サイトごと。
+  `mcp-rs check`はサイトごとに確かめ、`mcp_rs_status`はサイトを並べ、
+  `mcp-rs uninstall`は各サイトの資格情報ストアの項目を消すかを聞く。
+  サイトが1つなら、今までと変わらない（`site`の引数も付かない）。リソースは
+  最初のサイトだけ。`mcp-rs init`は、最初のサイトだけを設定する
+
 - コメントを管理するツール（#639）。`create_comment`（返信は`parent`。
   `post_id`を省けば、返信先のコメントの投稿にする）・`update_comment`
   （承認・承認待ちに戻す・スパム・ゴミ箱、本文の変更）・`delete_comment`

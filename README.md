@@ -36,6 +36,7 @@ A Rust implementation of a Model Context Protocol (MCP) server that gives AI cli
 - **YouTube & Social Embeds**: Rich media integration with security validation
 - **Site Settings**: Read and update site settings and the front page configuration
 - **Health Check**: Verify connectivity, authentication, permissions, and media upload capability
+- **Multiple Sites**: Use several WordPress sites from one mcp-rs; each tool takes a `site` argument ([docs](https://n-takatsu.github.io/mcp-rs/docs/wordpress/#sites))
 
 ### Live Demo Site
 

@@ -222,21 +222,41 @@ async fn build_server(
 
     if let Some(wp_config) = &config.handlers.wordpress {
         if wp_config.enabled.unwrap_or(false) {
-            let wp_handler = WordPressHandler::try_new(wp_config.clone())
-                .map_err(|e| format!("WordPress handler creation failed: {}", e))?
-                .with_audit_logger(audit_logger.clone());
+            // サイトごとにハンドラーを作る（#640）。ほかのサイトが無ければ、
+            // 今までどおり1つのハンドラーを登録する（引数`site`は足さない）
+            let site_list = wp_config.site_list()?;
+            let mut sites: Vec<(String, Arc<dyn mcp_rs::mcp::McpHandler>)> = Vec::new();
+            for (name, site_config) in site_list {
+                let wp_handler = WordPressHandler::try_new(site_config.clone())
+                    .map_err(|e| format!("WordPress handler creation failed ({}): {}", name, e))?
+                    .with_audit_logger(audit_logger.clone());
 
-            // STDIOと違い、HTTP/WebSocketのクライアントは別のマシンにいる
-            // ことがある。その場合、file_pathで読まれるのはクライアントの
-            // 手元ではなく、このサーバー上のファイルになる
-            if http_mode && !wp_config.upload_allowed_dirs.is_empty() {
-                tracing::warn!(
-                    "upload_allowed_dirs is set: clients connected over HTTP/WebSocket can upload files from these folders on this server via upload_media file_path"
+                // STDIOと違い、HTTP/WebSocketのクライアントは別のマシンにいる
+                // ことがある。その場合、file_pathで読まれるのはクライアントの
+                // 手元ではなく、このサーバー上のファイルになる
+                if http_mode && !site_config.upload_allowed_dirs.is_empty() {
+                    tracing::warn!(
+                        "upload_allowed_dirs is set: clients connected over HTTP/WebSocket can upload files from these folders on this server via upload_media file_path"
+                    );
+                }
+                info!(
+                    "✅ WordPressハンドラー登録完了: {} ({})",
+                    site_config.url, name
                 );
+                sites.push((name, Arc::new(wp_handler)));
             }
 
-            server.add_handler("wordpress".to_string(), Arc::new(wp_handler));
-            info!("✅ WordPressハンドラー登録完了: {}", wp_config.url);
+            if sites.len() == 1 {
+                let (_, handler) = sites.remove(0);
+                server.add_handler("wordpress".to_string(), handler);
+            } else {
+                server.add_handler(
+                    "wordpress".to_string(),
+                    Arc::new(mcp_rs::handlers::wordpress_sites::WordPressSites::new(
+                        sites,
+                    )),
+                );
+            }
         }
     }
 

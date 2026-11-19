@@ -36,6 +36,7 @@ AIのクライアントに、WordPress・データベース（PostgreSQL・MySQL
 - **YouTube・ソーシャル埋め込み**: セキュリティ検証付きリッチメディア統合
 - **サイト設定**: サイト設定とフロントページ設定の取得・更新
 - **ヘルスチェック**: 接続・認証・権限・メディアアップロード可否の確認
+- **複数のサイト**: 1つの mcp-rs で複数の WordPress サイトを使う。各ツールの `site` の引数で選ぶ（[文書](https://n-takatsu.github.io/mcp-rs/docs/wordpress/#sites)）
 
 ### ライブデモサイト
 

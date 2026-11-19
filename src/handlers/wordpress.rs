@@ -5642,6 +5642,8 @@ mod tests {
             encrypted_credentials: None,
             keyring: None,
             upload_allowed_dirs: Vec::new(),
+            name: None,
+            sites: Default::default(),
         };
 
         let result = WordPressHandler::try_new(insecure_config);
@@ -5664,6 +5666,8 @@ mod tests {
             encrypted_credentials: None,
             keyring: None,
             upload_allowed_dirs: Vec::new(),
+            name: None,
+            sites: Default::default(),
         };
 
         let result = WordPressHandler::try_new(secure_config);
@@ -5682,6 +5686,8 @@ mod tests {
             encrypted_credentials: None,
             keyring: None,
             upload_allowed_dirs: Vec::new(),
+            name: None,
+            sites: Default::default(),
         };
         let handler = WordPressHandler::try_new(config).unwrap();
 
@@ -5707,6 +5713,8 @@ mod tests {
                 encrypted_credentials: None,
                 keyring: None,
                 upload_allowed_dirs: Vec::new(),
+                name: None,
+                sites: Default::default(),
             };
 
             let result = WordPressHandler::try_new(config);
@@ -5728,6 +5736,8 @@ mod tests {
             encrypted_credentials: None,
             keyring: None,
             upload_allowed_dirs: Vec::new(),
+            name: None,
+            sites: Default::default(),
         };
         WordPressHandler::try_new(config).unwrap()
     }
@@ -6598,6 +6608,8 @@ mod tests {
                 .iter()
                 .map(|d| d.to_string_lossy().into_owned())
                 .collect(),
+            name: None,
+            sites: Default::default(),
         };
         WordPressHandler::try_new(config).unwrap()
     }
