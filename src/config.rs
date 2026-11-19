@@ -292,6 +292,33 @@ impl DatabaseSettings {
     }
 }
 
+impl PluginConfig {
+    /// 相対パスの`command`・`working_dir`を、`base`（設定ファイルのフォルダ）
+    /// を基準にする（#598）。以前は、mcp-rsを起動したフォルダ（Claude Code
+    /// では開いたフォルダ）を基準にしていた。`command`は、区切り文字を含む
+    /// とき（`./server`・`scripts/run.sh`等）だけ。`node`のような名前だけの
+    /// ものは、今までどおり`PATH`から探す。コンテナ・Kubernetesでは、
+    /// どちらもコンテナの中のパスなので変えない
+    pub fn resolve_paths(&mut self, base: Option<&std::path::Path>) {
+        let Some(base) = base else {
+            return;
+        };
+        if self.container.is_some() || self.kubernetes.is_some() {
+            return;
+        }
+        let command = self.command.trim();
+        let has_separator = command.contains('/') || command.contains('\\');
+        if has_separator && std::path::Path::new(command).is_relative() {
+            self.command = base.join(command).to_string_lossy().into_owned();
+        }
+        if let Some(dir) = self.working_dir.as_mut() {
+            if std::path::Path::new(dir.trim()).is_relative() {
+                *dir = base.join(dir.trim()).to_string_lossy().into_owned();
+            }
+        }
+    }
+}
+
 /// プラグイン1つ分の設定（#394）。プラグインは、別プロセスで動くMCP
 /// サーバー（標準入出力で通信する）として起動する。
 #[derive(Clone, Deserialize, Serialize)]
@@ -1387,6 +1414,18 @@ impl McpConfig {
         Ok(())
     }
 
+    /// プラグインの相対パスを、設定ファイルのフォルダを基準にする（#598）
+    fn resolve_plugin_paths(&mut self) {
+        let base = self
+            .config_file
+            .as_deref()
+            .and_then(std::path::Path::parent)
+            .map(std::path::Path::to_path_buf);
+        for plugin in &mut self.plugins {
+            plugin.resolve_paths(base.as_deref());
+        }
+    }
+
     /// `[database]`の`${VAR}`を展開し（`expand_database_config`）、`keyring`が
     /// あれば、OSの資格情報ストアからパスワードを読む（#590）。起動と
     /// `mcp-rs check`で使う。使わない設定（`enabled = false`）なら何もしない
@@ -1514,6 +1553,7 @@ impl McpConfig {
             .map_err(|e| with_config_hint(describe_toml_error(&e, &content), &content))?;
         // 監査ログの既定の書き込み先（設定ファイルと同じフォルダ）に使う（#416）
         config.config_file = std::path::absolute(path).ok();
+        config.resolve_plugin_paths();
         Ok(config)
     }
 
@@ -1626,6 +1666,7 @@ impl McpConfig {
         }
 
         final_config.config_file = loaded_config_file;
+        final_config.resolve_plugin_paths();
         Ok(final_config)
     }
 
@@ -3475,5 +3516,80 @@ mod additional_tests {
             ..settings()
         };
         assert!(McpConfig::resolve_database_credentials_with(&mut disabled, &store).is_ok());
+    }
+
+    /// プラグインの相対パスは、設定ファイルのフォルダを基準にする（#598）
+    #[test]
+    fn test_plugin_relative_paths_are_resolved_from_the_config_folder() {
+        let base = std::path::Path::new("/configs");
+        let plugin = |command: &str, working_dir: Option<&str>| PluginConfig {
+            name: "p".to_string(),
+            command: command.to_string(),
+            args: Vec::new(),
+            env: HashMap::new(),
+            working_dir: working_dir.map(str::to_string),
+            container: None,
+            kubernetes: None,
+            enabled: None,
+            call_timeout_seconds: None,
+            max_response_bytes: None,
+            rate_limit: None,
+            trust_annotations: None,
+        };
+
+        let mut relative = plugin("./server", Some("data"));
+        relative.resolve_paths(Some(base));
+        assert_eq!(
+            std::path::Path::new(&relative.command),
+            base.join("./server")
+        );
+        assert_eq!(
+            std::path::Path::new(relative.working_dir.as_deref().unwrap()),
+            base.join("data")
+        );
+
+        // 名前だけのコマンドは、今までどおりPATHから探す
+        let mut on_path = plugin("node", None);
+        on_path.resolve_paths(Some(base));
+        assert_eq!(on_path.command, "node");
+
+        // 絶対パスは変えない
+        let absolute_command = if cfg!(windows) {
+            "C:/bin/server"
+        } else {
+            "/bin/server"
+        };
+        let mut absolute = plugin(absolute_command, None);
+        absolute.resolve_paths(Some(base));
+        assert_eq!(absolute.command, absolute_command);
+
+        // コンテナの中のパスは変えない
+        let mut container = plugin("./server", Some("data"));
+        container.container = Some(toml::from_str("image = \"x\"").unwrap());
+        container.resolve_paths(Some(base));
+        assert_eq!(container.command, "./server");
+        assert_eq!(container.working_dir.as_deref(), Some("data"));
+    }
+
+    /// `read_file`で読んだ設定のプラグインは、設定ファイルのフォルダを基準にする
+    #[test]
+    fn test_read_file_resolves_plugin_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mcp-config.toml");
+        std::fs::write(
+            &path,
+            "[server]\n\n[transport]\ntype = \"stdio\"\n\n[handlers]\n\n[[plugins]]\nname = \"p\"\ncommand = \"bin/server\"\nworking_dir = \"work\"\n",
+        )
+        .unwrap();
+        let config = McpConfig::read_file(path.to_str().unwrap()).unwrap();
+        let folder = std::path::absolute(dir.path()).unwrap();
+        assert_eq!(
+            std::path::Path::new(&config.plugins[0].command),
+            folder.join("bin/server")
+        );
+        assert_eq!(
+            std::path::Path::new(config.plugins[0].working_dir.as_deref().unwrap()),
+            folder.join("work")
+        );
     }
 }

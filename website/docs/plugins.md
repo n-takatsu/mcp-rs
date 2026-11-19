@@ -32,7 +32,7 @@ env = { EXAMPLE_API_KEY = "${EXAMPLE_API_KEY}" }
 
 # Optional:
 # enabled = true                 # false: do not start this plugin
-# working_dir = "C:/tools"       # default: the folder mcp-rs runs in
+# working_dir = "C:/tools"       # default: the folder mcp-rs runs in; a relative path is relative to the config file's folder
 # call_timeout_seconds = 30      # startup and each tool call
 # max_response_bytes = 1048576   # largest message accepted from the plugin
 # trust_annotations = false      # true: @read_only API keys may use the tools the plugin marks read-only
@@ -40,7 +40,7 @@ env = { EXAMPLE_API_KEY = "${EXAMPLE_API_KEY}" }
 ```
 
 - `name`: 1 to 64 characters: lowercase letters, digits, `_` and `-` (not `__`, and not starting or ending with `_`, v0.24.0 and later). Each name must be unique
-- `command`: The executable to start. For a script, give the interpreter as `command` and the script in `args` (for example, `command = "node"`, `args = ["server.js"]`)
+- `command`: The executable to start. For a script, give the interpreter as `command` and the script in `args` (for example, `command = "node"`, `args = ["server.js"]`). A name without a folder (such as `node`) is looked up in `PATH`. A relative path with a folder (such as `./server` or `bin/server.exe`) is relative to the folder of the config file (v0.29.0 and later; up to v0.28.0, to the folder mcp-rs was started in, which in Claude Code is the folder you opened). `working_dir` works the same way. In a container or on Kubernetes, both are paths inside the container and are not changed
 - `env`: The only environment variables the plugin receives. `${VAR}` is replaced with mcp-rs's own environment variable. If `VAR` is not set, that entry is not passed at all
 
 ## Running a plugin in a container
@@ -176,6 +176,10 @@ If the plugin cannot start (for example, the image cannot be pulled, or the pod 
 ## How tools appear
 
 Each tool is offered as `<plugin name>__<tool name>`, and its description starts with `[plugin: <name>]`. For example, the plugin `example` with a tool `search` becomes `example__search`. If a plugin tool has the same name as a built-in tool or another plugin's tool, the one registered first is used and a warning is logged. Built-in handlers are registered before plugins.
+
+A tool whose name is not a valid MCP tool name is left out with a warning (v0.29.0 and later): `<plugin name>__<tool name>` may have only letters, digits, `_`, `-` and `.`, and at most 128 characters. Names with spaces, control characters or `*` would otherwise reach the log, the audit log, and the tool names allowed for API keys.
+
+**Tool descriptions are written by the plugin.** The AI client reads them to decide when to use a tool, so a plugin can put instructions in them, for example to call another tool or to send data somewhere (tool poisoning). mcp-rs passes descriptions on as they are and does not check them. Add only plugins you trust, read their tool descriptions (the client shows them, or ask it to list the tools), and limit API keys to the tools they need.
 
 Only tools are relayed. A plugin's resources, prompts, and notifications (such as `notifications/tools/list_changed`) are not. mcp-rs reads the tool list once, when the plugin starts.
 
