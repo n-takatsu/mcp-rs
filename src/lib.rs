@@ -23,6 +23,7 @@ pub mod plugin_proxy;
 pub mod security;
 pub mod transport;
 pub mod types;
+pub mod update_check;
 
 // Zero Trust（データベースのハンドラーのマイクロセグメンテーションが使う）
 pub mod zero_trust;

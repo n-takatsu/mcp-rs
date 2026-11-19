@@ -593,6 +593,10 @@ pub struct ServerConfig {
     pub log_retention: Option<LogRetentionConfig>,
     /// ログモジュール分離設定
     pub log_module: Option<LogModuleConfig>,
+    /// 新しい版があるかを、GitHubに問い合わせて確かめるか（#635）。
+    /// `mcp-rs check`と、STDIOモードの`mcp_rs_status`が使う。省略時は`true`
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub check_updates: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -1033,6 +1037,7 @@ impl Default for McpConfig {
     fn default() -> Self {
         Self {
             server: ServerConfig {
+                check_updates: None,
                 bind_addr: Some("127.0.0.1:8080".to_string()),
                 stdio: Some(false),
                 log_level: Some("info".to_string()),
@@ -1682,6 +1687,7 @@ impl McpConfig {
     pub fn generate_sample_config() -> Result<(), Box<dyn std::error::Error>> {
         let sample_config = McpConfig {
             server: ServerConfig {
+                check_updates: None,
                 bind_addr: Some("127.0.0.1:8080".to_string()),
                 stdio: Some(false),
                 log_level: Some("info".to_string()),

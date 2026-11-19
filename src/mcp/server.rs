@@ -2184,6 +2184,8 @@ mod tests {
             config_file: Some(std::path::PathBuf::from("C:/cfg/mcp-config.toml")),
             started_at: std::time::Instant::now(),
             plugin_failures: vec![("fs".to_string(), "npx was not found".to_string())],
+            // テストでGitHubに問い合わせない
+            check_updates: false,
         });
         let dispatcher = server.dispatcher();
         let call = serde_json::json!({
@@ -2212,6 +2214,7 @@ mod tests {
             "- wordpress: WordPress site https://example.com",
             "- broken",
             "- fs: npx was not found",
+            "Update check: off ([server] check_updates = false)",
         ] {
             assert!(
                 text.contains(expected),

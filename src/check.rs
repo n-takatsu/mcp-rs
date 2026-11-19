@@ -221,6 +221,7 @@ pub async fn check(args: &CheckArgs) -> Report {
     let Some((config, credentials_ok)) = check_config(args.config.as_deref(), &mut report) else {
         return report;
     };
+    check_version(&config, args.offline, &mut report).await;
     check_wordpress(&config, credentials_ok, args.offline, &mut report).await;
     check_database(&config, args.offline, &mut report).await;
     check_plugins(&config.plugins, args.offline, &mut report).await;
@@ -328,6 +329,31 @@ fn credential_source(wp: &WordPressConfig) -> (Status, String) {
             "the password is written in the config file. Consider the OS credential store (keyring = \"<name>\", mcp-rs wordpress-keyring set <name>)".to_string(),
         )
     }
+}
+
+/// 新しい版があるか（#635）。GitHubのリリースの最新の版と比べる
+async fn check_version(config: &McpConfig, offline: bool, report: &mut Report) {
+    const ITEM: &str = "mcp-rs version";
+    if offline {
+        report.push(Status::Skip, ITEM, "not checked: --offline");
+        return;
+    }
+    if config.server.check_updates == Some(false) {
+        report.push(
+            Status::Skip,
+            ITEM,
+            "not checked: [server] check_updates = false",
+        );
+        return;
+    }
+    let status = crate::update_check::check().await;
+    let detail = status.describe(crate::update_check::InstallMethod::current());
+    let level = match status {
+        crate::update_check::UpdateStatus::UpToDate { .. } => Status::Ok,
+        crate::update_check::UpdateStatus::Available { .. } => Status::Warn,
+        crate::update_check::UpdateStatus::Unknown(_) => Status::Skip,
+    };
+    report.push(level, ITEM, detail);
 }
 
 /// WordPress: 使う設定か、ハンドラーを作れるか、サイトにつながるか

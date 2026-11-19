@@ -31,6 +31,9 @@ pub struct StatusInfo {
     pub started_at: Instant,
     /// 起動できなかったプラグインと、データベースのハンドラー（名前、理由、#453）
     pub plugin_failures: Vec<(String, String)>,
+    /// 新しい版があるかを、GitHubに問い合わせて確かめるか（#635）。STDIO
+    /// モードで、`[server] check_updates`が`false`でないとき
+    pub check_updates: bool,
 }
 
 impl Default for StatusInfo {
@@ -40,6 +43,7 @@ impl Default for StatusInfo {
             config_file: None,
             started_at: Instant::now(),
             plugin_failures: Vec::new(),
+            check_updates: false,
         }
     }
 }
@@ -100,6 +104,16 @@ pub async fn render_status(
         "Supported protocol versions: {}",
         crate::mcp::all_supported_protocol_versions().join(", ")
     ));
+    // 新しい版（#635）。問い合わせは、プロセスで最初の1回だけ
+    if info.check_updates {
+        let status = crate::update_check::check_once().await;
+        lines.push(format!(
+            "Update check: {}",
+            status.describe(crate::update_check::InstallMethod::current())
+        ));
+    } else if info.mode == "stdio" {
+        lines.push("Update check: off ([server] check_updates = false)".to_string());
+    }
     lines.push(format!(
         "OS: {} ({})",
         std::env::consts::OS,

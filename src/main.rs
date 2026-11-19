@@ -277,6 +277,8 @@ async fn build_server(
         config_file: config.config_file.clone(),
         started_at: mcp_rs::mcp::process_started_at(),
         plugin_failures: startup_failures,
+        // HTTPモードでは問い合わせない（#635）
+        check_updates: !http_mode && config.server.check_updates != Some(false),
     });
 
     Ok(server)

@@ -48,6 +48,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `mcp-rs check`と`mcp_rs_status`で、新しい版があれば知らせる（#635）。
+  GitHubのリリースの最新の版と比べ、入れ方（Scoop・Homebrew・インストール
+  スクリプト・それ以外）に合わせた更新のしかたを示す。GitHub
+  （`api.github.com`）には、版を含む`User-Agent`だけを送る。
+  `mcp_rs_status`は、STDIOモードでだけ、mcp-rsが動いている間に1回だけ
+  問い合わせる（HTTPモードでは問い合わせない）。`mcp-rs check --offline`は
+  問い合わせない。`[server] check_updates = false`で止められる
 - `get_posts`・`get_pages`で、検索・絞り込み・ページを指定できるように
   した（#637）。`search`・`categories`・`tags`（固定ページには無い）・
   `author`・`after`・`before`・`orderby`・`order`・`per_page`・`page`。
