@@ -65,6 +65,10 @@ pub struct McpConfig {
     /// 相対パスの基準に使う。設定ファイルには書かない
     #[serde(skip)]
     pub config_file: Option<PathBuf>,
+    /// 起動はするが使えないもの（名前、理由）。`mcp_rs_status`に出す。
+    /// 拡張機能で、サイトがまだ入力されていないとき等（#632）
+    #[serde(skip)]
+    pub startup_notes: Vec<(String, String)>,
 }
 
 /// 監査ログの設定（`[audit]`、#416）
@@ -1268,6 +1272,7 @@ impl Default for McpConfig {
             audit: None,
             database: None,
             config_file: None,
+            startup_notes: Vec::new(),
         }
     }
 }
@@ -1312,6 +1317,28 @@ fn no_config_file_message(home: Option<&str>, former: &[String]) -> String {
 }
 
 /// `--config`無しで読む設定ファイル（`~/.config/mcp-rs/config.toml`）の、
+/// Claude Desktopの拡張機能（`.mcpb`）から起動したことを示す環境変数（#632）。
+/// 値は`1`
+pub const EXTENSION_ENV_VAR: &str = "MCP_RS_MCPB";
+
+/// 拡張機能から起動したか（#632）
+pub fn started_by_extension() -> bool {
+    std::env::var(EXTENSION_ENV_VAR).is_ok_and(|v| v == "1")
+}
+
+/// `--config`の代わりに使う設定ファイルの環境変数（#632）。Claude Desktopの
+/// 拡張機能（`.mcpb`）は、画面で選んだ設定ファイルをこれで渡す
+pub const CONFIG_ENV_VAR: &str = "MCP_RS_CONFIG";
+
+/// `MCP_RS_CONFIG`の値から、設定ファイルのパスを決める（#632）。空・空白、
+/// 拡張機能が埋めなかった`${user_config.…}`は、無いものとする
+pub fn config_path_from_env(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|path| !path.is_empty() && !path.contains("${"))
+        .map(str::to_string)
+}
+
 /// ホームフォルダを展開したパス。`mcp-rs init`の既定の書き先（#575）。
 /// ホームフォルダが分からなければ`None`
 pub fn user_config_path() -> Option<String> {
@@ -1792,6 +1819,54 @@ impl McpConfig {
         Ok(config)
     }
 
+    /// 拡張機能（#632）で、サイトのURL・ユーザー名・アプリケーションパスワードが
+    /// 入力されていなければ、WordPressを使わずに起動し、何を入力するかを
+    /// `mcp_rs_status`に出す（拡張機能では、起動に失敗すると、Claude Desktopには
+    /// 「切断された」としか出ないため）。拡張機能が埋めなかった
+    /// `${user_config.…}`は、入力されていないものとする
+    pub fn allow_unset_extension_site(&mut self) {
+        let Some(wordpress) = self.handlers.wordpress.as_mut() else {
+            return;
+        };
+        if !wordpress.enabled.unwrap_or(false) || !wordpress.sites.is_empty() {
+            return;
+        }
+        let unset = |value: &str| {
+            Self::expand_env_vars(value)
+                .map(|v| v.trim().is_empty() || v.contains("${user_config."))
+                .unwrap_or(true)
+        };
+        let missing: Vec<&str> = [
+            ("the site URL", unset(&wordpress.url)),
+            (
+                "the username",
+                wordpress.keyring.is_none()
+                    && wordpress.encrypted_credentials.is_none()
+                    && unset(&wordpress.username),
+            ),
+            (
+                "the Application Password",
+                wordpress.keyring.is_none()
+                    && wordpress.encrypted_credentials.is_none()
+                    && unset(&wordpress.password),
+            ),
+        ]
+        .into_iter()
+        .filter_map(|(name, missing)| missing.then_some(name))
+        .collect();
+        if missing.is_empty() {
+            return;
+        }
+        wordpress.enabled = Some(false);
+        self.startup_notes.push((
+            "wordpress".to_string(),
+            format!(
+                "not set up: enter {} in Claude Desktop (Settings > Extensions > mcp-rs > Configure), or choose an mcp-rs config file there, then restart the extension",
+                missing.join(", ")
+            ),
+        ));
+    }
+
     /// `read_file`で読んだ設定の、WordPressの`${VAR}`を展開し、資格情報
     /// （`keyring`・`encrypted_credentials`・平文）を解決する。参照した
     /// 環境変数が無ければ、項目と変数名を返す（#454）
@@ -1991,6 +2066,7 @@ impl McpConfig {
             audit: None,
             database: None,
             config_file: None,
+            startup_notes: Vec::new(),
         };
 
         let toml_content = toml::to_string_pretty(&sample_config)?;
@@ -4034,5 +4110,80 @@ mod additional_tests {
             std::path::Path::new(config.plugins[0].working_dir.as_deref().unwrap()),
             folder.join("work")
         );
+    }
+
+    // ---- #632: Claude Desktopの拡張機能 ----
+
+    #[test]
+    fn test_config_path_from_env() {
+        assert_eq!(
+            config_path_from_env(Some(" C:/me/config.toml ")),
+            Some("C:/me/config.toml".to_string())
+        );
+        for value in [
+            None,
+            Some(""),
+            Some("  "),
+            Some("${user_config.config_file}"),
+        ] {
+            assert_eq!(config_path_from_env(value), None, "{value:?}");
+        }
+    }
+
+    fn extension_config(url: &str, username: &str, password: &str) -> McpConfig {
+        let mut config = McpConfig::default();
+        config.handlers.wordpress = Some(
+            toml::from_str(&format!(
+                "enabled = true\nurl = \"{url}\"\nusername = \"{username}\"\npassword = \"{password}\"\n"
+            ))
+            .unwrap(),
+        );
+        config
+    }
+
+    /// サイトが入力されていなければ、WordPressを使わずに起動し、何を入力するかを残す
+    #[test]
+    fn test_allow_unset_extension_site() {
+        let mut empty = extension_config("", "", "");
+        empty.allow_unset_extension_site();
+        assert_eq!(
+            empty.handlers.wordpress.as_ref().unwrap().enabled,
+            Some(false)
+        );
+        assert_eq!(empty.startup_notes.len(), 1);
+        assert!(empty.startup_notes[0]
+            .1
+            .contains("enter the site URL, the username, the Application Password"));
+
+        // 拡張機能が埋めなかった${user_config.…}も、入力されていないとみなす
+        let mut placeholder = extension_config("${user_config.wordpress_url}", "editor", "pass");
+        placeholder.allow_unset_extension_site();
+        assert_eq!(
+            placeholder.handlers.wordpress.as_ref().unwrap().enabled,
+            Some(false)
+        );
+        assert!(placeholder.startup_notes[0]
+            .1
+            .contains("enter the site URL in"));
+
+        // 入力されていれば、何も変えない
+        let mut filled = extension_config("https://example.com", "editor", "pass");
+        filled.allow_unset_extension_site();
+        assert_eq!(
+            filled.handlers.wordpress.as_ref().unwrap().enabled,
+            Some(true)
+        );
+        assert!(filled.startup_notes.is_empty());
+    }
+
+    /// 拡張機能に入れる設定ファイルが読め、サイトを入力すればWordPressを使う
+    #[test]
+    fn test_extension_config_file_reads() {
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("packaging/mcpb/config.toml");
+        let config = McpConfig::read_file(path.to_str().unwrap()).unwrap();
+        let wordpress = config.handlers.wordpress.unwrap();
+        assert_eq!(wordpress.enabled, Some(true));
+        assert_eq!(wordpress.url, "${WORDPRESS_URL}");
     }
 }
