@@ -1208,6 +1208,7 @@ mod tests {
     #[test]
     fn test_log_config_from_server_config() {
         let server_config = crate::config::ServerConfig {
+            check_updates: None,
             bind_addr: None,
             stdio: None,
             log_level: Some("debug".to_string()),

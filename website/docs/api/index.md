@@ -261,6 +261,7 @@ mcp-rs 0.28.0
 Mode: stdio
 Protocol version: 2025-11-25 (legacy)
 Supported protocol versions: 2026-07-28, 2025-11-25, 2025-06-18, 2024-11-05
+Update check: 0.28.0 is the latest release
 OS: windows (x86_64)
 Process ID: 12345
 Instance: 12345-20261109T093000
