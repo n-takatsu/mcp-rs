@@ -112,22 +112,7 @@ The [Getting Started guide](https://n-takatsu.github.io/mcp-rs/docs/guides/) cov
 
 ## 🏗️ Architecture
 
-```text
-┌─────────────────────┐    ┌─────────────────────┐    ┌─────────────────────┐
-│   AI Agent/Client   │───▶│    MCP Server       │───▶│   WordPress Site    │
-│  (Claude Desktop,   │    │   (mcp-rs)          │    │   (REST API)        │
-│   Custom AI, etc)   │    │                     │    │                     │
-└─────────────────────┘    └─────────────────────┘    └─────────────────────┘
-                                      │
-                                      ▼
-                           ┌─────────────────────┐
-                           │   Security Layer    │
-                           │ • Authentication    │
-                           │ • Tool Limits       │
-                           │ • Rate Limiting     │
-                           │ • Audit Log         │
-                           └─────────────────────┘
-```
+![mcp-rs architecture: AI clients connect over STDIO or HTTP; mcp-rs checks each call and offers tools for WordPress sites, one database, and plugins](https://raw.githubusercontent.com/n-takatsu/mcp-rs/develop/website/assets/architecture.svg)
 
 ## 📚 Documentation
 
