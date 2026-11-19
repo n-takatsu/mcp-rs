@@ -506,7 +506,7 @@ Retrieves a prompt.
 
 #### `get_posts`
 
-Retrieves WordPress posts (published ones by default; `status` lists scheduled posts, drafts and others).
+Retrieves WordPress posts (published ones by default; `status` lists scheduled posts, drafts and others). `search`, `categories`, `tags`, `author`, `after`, `before`, `orderby`, `order`, `per_page`, and `page` read one page and show the total. See [WordPress](../wordpress/#get_posts).
 
 #### `create_post`
 
