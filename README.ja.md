@@ -2,10 +2,12 @@
 
 AIのクライアントに、WordPress・データベース（PostgreSQL・MySQL・MariaDB）・外部のMCPプラグインのツールを提供する、Model Context Protocol（MCP）のサーバーのRust実装です。
 
+Claudeに頼んで、WordPressの記事の下書き・予約投稿・公開、メディアのアップロード、コメントの承認ができます。ScoopかHomebrewで入れて、`mcp-rs init`の質問に答えれば、Claude Desktop・Claude Code・GitHub Copilotに登録されます。
+
 > **[日本語](README.ja.md)** | **[English](README.md)**
 
 [![Version](https://img.shields.io/badge/Version-v0.29.0-blue)](https://github.com/n-takatsu/mcp-rs/releases/tag/v0.29.0)
-![Implementation](https://img.shields.io/badge/WordPress_Tools-32_Available-green)
+![Implementation](https://img.shields.io/badge/WordPress_Tools-38_Available-green)
 ![License](https://img.shields.io/badge/License-MIT%2FApache--2.0-green)
 
 ## 概要
@@ -13,7 +15,7 @@ AIのクライアントに、WordPress・データベース（PostgreSQL・MySQL
 `mcp-rs`はRustで書かれたMCPのサーバーです。Claude Desktop・Claude Code等のMCPのクライアントはSTDIOで、それ以外のクライアントはHTTPでつなぎます。次の機能があります。
 
 - WordPress REST APIを使う38のツール（投稿・固定ページ・メディア・カテゴリ・タグ・コメント・サイト設定）
-- 1つのPostgreSQLのデータベースを読むSQLのツール（書き込みは許したときだけ）
+- 1つのPostgreSQL・MySQL・MariaDBのデータベースを読むSQLのツール（書き込みは許したときだけ）
 - プラグインとして起動した外部のMCPサーバーのツール（子プロセス・Dockerのコンテナ・KubernetesのJob）
 - HTTPモード向け: APIキー・OAuth 2.1の認証、呼び出し元ごとのツールの制限、TLS・mTLS、レート制限、監査ログ
 
@@ -44,7 +46,7 @@ AIのクライアントに、WordPress・データベース（PostgreSQL・MySQL
 
 ## **セキュリティ**
 
-- **認証情報の暗号化**: WordPressのApplication Passwordを、AES-GCM-256（PBKDF2で鍵を導出）で暗号化して保存できる。環境変数から読むこともできる
+- **認証情報をファイルに書かない**: `mcp-rs init`は、WordPressのApplication Passwordとデータベースのパスワードを、OSの資格情報ストアに入れる。AES-GCM-256（PBKDF2で鍵を導出）で暗号化して保存することも、環境変数から読むこともできる
 - **HTTPモードの認証**: APIキー、または外部の認可サーバーが発行したOAuth 2.1のアクセストークン（JWT）
 - **呼び出し元ごとのツールの制限**: APIキー・トークンごとに、使えるツールを絞れる（例: `@read_only`）
 - **TLS・mTLS**: 最低のTLSバージョンを指定したHTTPS、クライアント証明書（任意）
@@ -67,7 +69,20 @@ AIのクライアントに、WordPress・データベース（PostgreSQL・MySQL
 
 HTTPSでつながる、アプリケーションパスワード（ユーザー → プロフィール → アプリケーションパスワード）を使えるWordPressのサイトが要ります。Rustは要りません。v0.25.0から、各リリースに、Windows（x64）・macOS（Apple Silicon）・Linux（x64）向けのビルド済みのmcp-rsが付きます。
 
-**1. インストール**（v0.26.0から）。スクリプトが、最新のリリースをダウンロードしてSHA256を確かめ、`~/.mcp-rs/bin`（Windowsは`%USERPROFILE%\.mcp-rs\bin`）に置きます。管理者の権限は要らず、ほかには何も変えません。更新も、もう一度動かすだけです。
+**1. インストール** パッケージマネージャーで入れます（v0.29.0から）。リリースのビルド済みのmcp-rsを入れ、ほかのパッケージと一緒に更新できます（`scoop update`・`brew upgrade`）。
+
+```powershell
+# Windows（Scoop）
+scoop bucket add n-takatsu https://github.com/n-takatsu/scoop-bucket
+scoop install n-takatsu/mcp-rs
+```
+
+```bash
+# macOS（Apple Silicon）・Linux（x64）（Homebrew）
+brew install n-takatsu/tap/mcp-rs
+```
+
+インストールスクリプトでも入れられます（v0.26.0から）。スクリプトが、最新のリリースをダウンロードしてSHA256を確かめ、`~/.mcp-rs/bin`（Windowsは`%USERPROFILE%\.mcp-rs\bin`）に置きます。管理者の権限は要らず、ほかには何も変えません。更新も、もう一度動かすだけです。
 
 ```powershell
 # Windows（PowerShell）
@@ -79,13 +94,17 @@ irm https://raw.githubusercontent.com/n-takatsu/mcp-rs/main/install/install.ps1 
 curl -fsSL https://raw.githubusercontent.com/n-takatsu/mcp-rs/main/install/install.sh | sh
 ```
 
-**2. セットアップ** スクリプトが`mcp-rs init`を動かすかを聞きます（自分で動かしても構いません）。サイトのURL・ユーザー名・アプリケーションパスワードを聞き（ファイルではなく、OSの資格情報ストアに入れます）、設定ファイル（`~/.config/mcp-rs/config.toml`）を書き、接続とサインインを確かめ、Claude Desktop・Claude Code・GitHub Copilot（VS Code）に登録します。変える前には、1つずつ確かめます。
+**2. セットアップ** `mcp-rs init`を動かします（インストールスクリプトは、動かすかを聞きます）。サイトのURL・ユーザー名・アプリケーションパスワードを聞き（ファイルではなく、OSの資格情報ストアに入れます）、設定ファイル（`~/.config/mcp-rs/config.toml`）を書き、接続とサインインを確かめ、Claude Desktop・Claude Code・GitHub Copilot（VS Code）に登録します。変える前には、1つずつ確かめます。
 
 ```bash
-~/.mcp-rs/bin/mcp-rs init        # Windows: & "$env:USERPROFILE\.mcp-rs\bin\mcp-rs.exe" init
+mcp-rs init
+# スクリプトで入れた場合: ~/.mcp-rs/bin/mcp-rs init
+# （Windows: & "$env:USERPROFILE\.mcp-rs\bin\mcp-rs.exe" init）
 ```
 
-**3. 確かめる。** `init`が表示するとおりにクライアントを再起動し、`mcp_rs_status`のツールを呼ぶよう頼みます。版・使っている設定ファイル・ログの場所と、起動に失敗したものが分かります。クライアントを使わずに設定ファイルを確かめるには、`mcp-rs check --config <パス>`を使います。
+**3. 確かめる。** `init`が表示するとおりにクライアントを再起動し、`mcp_rs_status`のツールを呼ぶよう頼みます。版・使っている設定ファイル・ログの場所と、起動に失敗したもの、新しい版が出ているかが分かります。クライアントを使わずに設定ファイルを確かめるには、`mcp-rs check --config <パス>`を使います。
+
+`init`が設定したもの（クライアントへの登録、資格情報ストアの項目、選べば設定ファイル）を外すには、`mcp-rs uninstall`を動かします。変える前に1つずつ確かめ、入れ方に合わせたmcp-rs自身の消し方も示します。
 
 ほかのこと（スクリプトを読んでから動かす方法、手で入れる・ソースからビルドする方法、クライアントごとの手での設定、設定ファイル、ログの場所、クライアントがツールを見つけられないときに見るところ）は、[Getting Startedのガイド](https://n-takatsu.github.io/mcp-rs/docs/guides/)（英語）にあります。
 
