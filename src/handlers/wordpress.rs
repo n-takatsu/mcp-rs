@@ -112,6 +112,64 @@ fn is_safe_to_resend(method: &reqwest::Method) -> bool {
     )
 }
 
+/// WordPressの1つの応答の大きさの上限（#598）。乗っ取られたサイト等が、
+/// 大きな応答でメモリーを使い切らせないように。1ページ100件の投稿（本文
+/// 付き）でも、ふつうは数MB
+const MAX_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
+
+/// エラーの応答の本文は、診断に使う分（WordPressの`code`・`message`）だけ読む
+const MAX_ERROR_BODY_BYTES: usize = 64 * 1024;
+
+/// 一覧の全件取得（`fetch_all_pages`）で読むページ数の上限（#598）。1ページ
+/// 100件なので、10,000件。`X-WP-TotalPages`をそのまま信じると、大量の
+/// ページを読み続けさせられる
+const MAX_LIST_PAGES: u32 = 100;
+
+/// 一覧の全件取得で読む、応答の合計の大きさの上限（#598）
+const MAX_LIST_BYTES: usize = 64 * 1024 * 1024;
+
+/// 応答の本文を、`limit`バイトまで読む（#598）。超えたら、読むのをやめて
+/// エラーにする（`Content-Length`が上限を超えていれば、読まずに）
+async fn read_body_limited(
+    mut response: reqwest::Response,
+    limit: usize,
+) -> Result<String, McpError> {
+    let too_large = || {
+        McpError::ExternalApi(format!(
+            "the WordPress response is larger than {} MB, the most mcp-rs reads for one request",
+            limit / (1024 * 1024)
+        ))
+    };
+    if response
+        .content_length()
+        .is_some_and(|length| length > limit as u64)
+    {
+        return Err(too_large());
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(McpError::Http)? {
+        if body.len() + chunk.len() > limit {
+            return Err(too_large());
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(String::from_utf8_lossy(&body).into_owned())
+}
+
+/// エラーの応答の本文を、`MAX_ERROR_BODY_BYTES`まで読む。読めなければ空。
+/// 上限を超えた分は読まない（診断には先頭で足りる）
+async fn read_error_body(mut response: reqwest::Response) -> String {
+    let mut body = Vec::new();
+    while let Ok(Some(chunk)) = response.chunk().await {
+        let room = MAX_ERROR_BODY_BYTES - body.len();
+        body.extend_from_slice(&chunk[..chunk.len().min(room)]);
+        if body.len() >= MAX_ERROR_BODY_BYTES {
+            break;
+        }
+    }
+    String::from_utf8_lossy(&body).into_owned()
+}
+
 /// POST・DELETEを再送しなかったときに、エラーメッセージに添える注意。
 /// MCPクライアントが結果を確かめずに同じ呼び出しを繰り返さないように。
 const NOT_RESENT_NOTE: &str = ". Not retried automatically: WordPress may have already processed this request. Check whether it took effect before trying again";
@@ -268,6 +326,275 @@ fn featured_media_label(media_id: Option<u64>, source_url: Option<&str>) -> Stri
         (None | Some(0), _) => "none".to_string(),
         (Some(id), Some(url)) if !url.is_empty() => format!("{} ({})", id, url),
         (Some(id), _) => id.to_string(),
+    }
+}
+
+/// `get_post`・`update_post`に出す公開日時。予約済みなら、そう添える
+/// （#625）。WordPressの`date`は、サイトのタイムゾーンの時刻
+fn post_date_label(post: &WordPressPost) -> String {
+    match (post.date.as_deref(), post.status.as_str()) {
+        (Some(date), "future") => format!("{} (site time, scheduled)", date),
+        (Some(date), _) => format!("{} (site time)", date),
+        (None, _) => "N/A".to_string(),
+    }
+}
+
+/// `get_posts`の`status`引数（#625）。WordPressの投稿の状態の名前
+/// （英小文字・`_`・`-`）か`any`を、カンマ区切りで受ける。URLに入れる
+/// ので、ほかの文字は断る
+fn post_status_filter_arg(
+    args: &HashMap<String, serde_json::Value>,
+) -> Result<Option<String>, McpError> {
+    let Some(value) = args.get("status") else {
+        return Ok(None);
+    };
+    let Some(status) = value.as_str().map(str::trim).filter(|s| !s.is_empty()) else {
+        return Err(McpError::InvalidParams(
+            "status must be a non-empty string, e.g. 'future' or 'future,draft'".to_string(),
+        ));
+    };
+    let valid = status.split(',').all(|part| {
+        !part.is_empty()
+            && part
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c == '_' || c == '-')
+    });
+    if !valid {
+        return Err(McpError::InvalidParams(format!(
+            "status '{}' is not valid: use post statuses such as 'publish', 'future', 'draft', 'pending', 'private' or 'any', separated by commas",
+            status
+        )));
+    }
+    Ok(Some(status.to_string()))
+}
+
+/// 検索・絞り込み・ページを指定したときに、1ページで返す件数の既定（#637）
+const DEFAULT_LIST_PER_PAGE: u32 = 20;
+
+/// `get_posts`・`get_pages`の検索・絞り込み・ページ（#637）。値はURLに入れる
+/// ので、`post_list_query_arg`で形を確かめてから作る
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct PostListQuery {
+    /// 投稿の状態（#625）
+    status: Option<String>,
+    search: Option<String>,
+    categories: Vec<u64>,
+    tags: Vec<u64>,
+    author: Option<u64>,
+    /// この日時より後（サイトのタイムゾーン、ISO8601）
+    after: Option<String>,
+    /// この日時より前
+    before: Option<String>,
+    orderby: Option<String>,
+    order: Option<String>,
+    per_page: Option<u32>,
+    page: Option<u32>,
+}
+
+impl PostListQuery {
+    /// 検索・絞り込み・ページのどれかを指定したか。指定したら、全件ではなく、
+    /// そのページだけを読む。`status`だけなら、今までどおり全件（#625）
+    fn is_single_page(&self) -> bool {
+        self.search.is_some()
+            || !self.categories.is_empty()
+            || !self.tags.is_empty()
+            || self.author.is_some()
+            || self.after.is_some()
+            || self.before.is_some()
+            || self.orderby.is_some()
+            || self.order.is_some()
+            || self.per_page.is_some()
+            || self.page.is_some()
+    }
+
+    /// 一覧のURLに付ける問い合わせ（`per_page`・`page`を除く）。値は
+    /// URLの形に符号化する
+    fn query_string(&self) -> String {
+        let join = |ids: &[u64]| ids.iter().map(u64::to_string).collect::<Vec<_>>().join(",");
+        let mut query = url::form_urlencoded::Serializer::new(String::new());
+        let pairs = [
+            ("status", self.status.clone()),
+            ("search", self.search.clone()),
+            (
+                "categories",
+                (!self.categories.is_empty()).then(|| join(&self.categories)),
+            ),
+            ("tags", (!self.tags.is_empty()).then(|| join(&self.tags))),
+            ("author", self.author.map(|a| a.to_string())),
+            ("after", self.after.clone()),
+            ("before", self.before.clone()),
+            ("orderby", self.orderby.clone()),
+            ("order", self.order.clone()),
+        ];
+        for (key, value) in pairs {
+            if let Some(value) = value {
+                query.append_pair(key, &value);
+            }
+        }
+        query.finish()
+    }
+}
+
+/// 1ページだけを読んだときの、ページの情報（#637）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ListPage {
+    page: u32,
+    per_page: u32,
+    total_pages: u32,
+    total: u64,
+}
+
+/// `get_posts`・`get_pages`の引数から、検索・絞り込み・ページを読む（#637）。
+/// `with_taxonomies`が偽（固定ページ）なら、`categories`・`tags`を断る
+fn post_list_query_arg(
+    args: &HashMap<String, serde_json::Value>,
+    with_taxonomies: bool,
+) -> Result<PostListQuery, McpError> {
+    let invalid = |message: String| McpError::InvalidParams(message);
+    let positive = |name: &str| -> Result<Option<u64>, McpError> {
+        match args.get(name) {
+            None | Some(serde_json::Value::Null) => Ok(None),
+            Some(value) => value
+                .as_u64()
+                .filter(|n| *n > 0)
+                .map(Some)
+                .ok_or_else(|| invalid(format!("{name} must be a positive integer"))),
+        }
+    };
+    let ids = |name: &str| -> Result<Vec<u64>, McpError> {
+        let Some(value) = args.get(name) else {
+            return Ok(Vec::new());
+        };
+        if !with_taxonomies {
+            return Err(invalid(format!("pages have no {name}")));
+        }
+        let values = match value {
+            serde_json::Value::Array(values) => values.clone(),
+            other => vec![other.clone()],
+        };
+        if values.is_empty() || values.len() > 100 {
+            return Err(invalid(format!("{name} must list 1 to 100 IDs")));
+        }
+        values
+            .iter()
+            .map(|v| {
+                v.as_u64()
+                    .filter(|n| *n > 0)
+                    .ok_or_else(|| invalid(format!("{name} must be positive integer IDs")))
+            })
+            .collect()
+    };
+    let text = |name: &str| -> Result<Option<String>, McpError> {
+        match args.get(name) {
+            None | Some(serde_json::Value::Null) => Ok(None),
+            Some(value) => value
+                .as_str()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(|s| Some(s.to_string()))
+                .ok_or_else(|| invalid(format!("{name} must be a non-empty string"))),
+        }
+    };
+    // 日時（ISO8601）。日付だけなら、その日の0時にする
+    let datetime = |name: &str| -> Result<Option<String>, McpError> {
+        let Some(value) = text(name)? else {
+            return Ok(None);
+        };
+        let looks_like_datetime = value.len() >= 10
+            && value.len() <= 35
+            && value.as_bytes()[..10].iter().enumerate().all(|(i, b)| {
+                if i == 4 || i == 7 {
+                    *b == b'-'
+                } else {
+                    b.is_ascii_digit()
+                }
+            })
+            && value
+                .chars()
+                .all(|c| c.is_ascii_digit() || matches!(c, '-' | ':' | 'T' | '+' | 'Z' | '.'));
+        if !looks_like_datetime {
+            return Err(invalid(format!(
+                "{name} must be a date or date-time in ISO8601, e.g. '2026-11-01' or '2026-11-01T09:00:00'"
+            )));
+        }
+        Ok(Some(if value.len() == 10 {
+            format!("{value}T00:00:00")
+        } else {
+            value
+        }))
+    };
+
+    let search = text("search")?;
+    if search.as_ref().is_some_and(|s| s.chars().count() > 200) {
+        return Err(invalid("search must be at most 200 characters".to_string()));
+    }
+    let orderby = text("orderby")?;
+    if let Some(orderby) = &orderby {
+        let mut allowed = vec![
+            "date",
+            "modified",
+            "title",
+            "id",
+            "slug",
+            "author",
+            "relevance",
+        ];
+        if !with_taxonomies {
+            allowed.push("menu_order");
+        }
+        if !allowed.contains(&orderby.as_str()) {
+            return Err(invalid(format!(
+                "orderby must be one of: {}",
+                allowed.join(", ")
+            )));
+        }
+        if orderby == "relevance" && search.is_none() {
+            return Err(invalid("orderby 'relevance' needs search".to_string()));
+        }
+    }
+    let order = text("order")?;
+    if order.as_deref().is_some_and(|o| o != "asc" && o != "desc") {
+        return Err(invalid("order must be 'asc' or 'desc'".to_string()));
+    }
+    let per_page = positive("per_page")?;
+    if per_page.is_some_and(|n| n > 100) {
+        return Err(invalid("per_page must be 1 to 100".to_string()));
+    }
+    let page = positive("page")?;
+    if page.is_some_and(|n| n > u64::from(u32::MAX)) {
+        return Err(invalid("page is too large".to_string()));
+    }
+    Ok(PostListQuery {
+        status: post_status_filter_arg(args)?,
+        search,
+        categories: ids("categories")?,
+        tags: ids("tags")?,
+        author: positive("author")?,
+        after: datetime("after")?,
+        before: datetime("before")?,
+        orderby,
+        order,
+        per_page: per_page.map(|n| n as u32),
+        page: page.map(|n| n as u32),
+    })
+}
+
+/// 一覧の結果の文（#637）。1ページだけを読んだときは、ページと総件数を添える
+fn list_result_text(kind: &str, items: &[WordPressPost], page: Option<ListPage>) -> String {
+    let summary = serde_json::to_string_pretty(&summarize_posts(items))
+        .unwrap_or_else(|_| format!("Failed to serialize {kind}"));
+    match page {
+        None => format!("Found {} {}:\n{}", items.len(), kind, summary),
+        Some(page) => format!(
+            "Found {} {} (page {} of {}, {} per page; {} in total):\n{}",
+            items.len(),
+            kind,
+            page.page,
+            page.total_pages.max(1),
+            page.per_page,
+            page.total,
+            summary
+        ),
     }
 }
 
@@ -696,7 +1023,7 @@ fn validate_post_status(status: &str, date: Option<&str>) -> Result<(), McpError
     let has_date = date.is_some_and(|d| !d.trim().is_empty());
     if status == "future" && !has_date {
         return Err(McpError::InvalidParams(
-            "status 'future' (scheduled) requires a publish date; without it WordPress publishes the post immediately. Only create_advanced_post accepts 'date' (ISO8601); with other tools, use 'draft' instead".to_string(),
+            "status 'future' (scheduled) requires a publish date; without it WordPress publishes the post immediately. Pass 'date' (ISO8601, site time) with create_advanced_post or update_post; with other tools, use 'draft' instead".to_string(),
         ));
     }
     Ok(())
@@ -1046,6 +1373,9 @@ pub struct PostUpdateParams {
     pub title: Option<String>,
     pub content: Option<String>,
     pub status: Option<String>,
+    /// 公開日時（ISO8601、サイトのタイムゾーン、#625）。未来の日時と
+    /// `status: "future"`で、既存の投稿を予約投稿にする
+    pub date: Option<String>,
     pub categories: Option<Vec<u64>>,
     pub tags: Option<Vec<u64>>,
     pub featured_media_id: Option<u64>,
@@ -1223,7 +1553,7 @@ impl WordPressHandler {
                     } else {
                         // 本文のcode/messageを診断用に含める
                         // （例: rest_post_invalid_id）
-                        let body = response.text().await.unwrap_or_default();
+                        let body = read_error_body(response).await;
                         let mut message = format_wp_error(status, &body);
                         if attempt > 1 {
                             message.push_str(&format!(" (after {} attempts)", attempt));
@@ -1284,7 +1614,7 @@ impl WordPressHandler {
             .await?;
         // 本文はログに出さない。context=editの応答には投稿の
         // 閲覧パスワードや未公開の下書き等が含まれうるため
-        let text = response.text().await.map_err(McpError::Http)?;
+        let text = read_body_limited(response, MAX_RESPONSE_BYTES).await?;
         debug!("Response body: {} bytes", text.len());
         parse_success_body(&text)
     }
@@ -1301,17 +1631,18 @@ impl WordPressHandler {
         T: for<'de> serde::Deserialize<'de>,
     {
         let response = self.send_with_retry(|| Ok(build_request())).await?;
-        let text = response.text().await.map_err(McpError::Http)?;
+        let text = read_body_limited(response, MAX_RESPONSE_BYTES).await?;
         parse_success_body(&text)
     }
 
     /// `execute_request_with_retry`と同じリトライ処理に加え、
     /// WordPress REST APIのページネーションヘッダー（`X-WP-TotalPages`）
-    /// を読み取って返す。一覧系エンドポイントの全件取得に使う。
+    /// を読み取って返す。一覧系エンドポイントの全件取得に使う。最後の値は、
+    /// 読んだ本文の大きさ（バイト）
     async fn execute_request_with_retry_capturing_total_pages<T>(
         &self,
         request_builder: reqwest::RequestBuilder,
-    ) -> Result<(T, u32, u64), McpError>
+    ) -> Result<(T, u32, u64, usize), McpError>
     where
         T: for<'de> serde::Deserialize<'de>,
     {
@@ -1334,9 +1665,9 @@ impl WordPressHandler {
             .and_then(|v| v.to_str().ok())
             .and_then(|s| s.parse::<u64>().ok())
             .unwrap_or(0);
-        let text = response.text().await.map_err(McpError::Http)?;
+        let text = read_body_limited(response, MAX_RESPONSE_BYTES).await?;
         let data = parse_success_body(&text)?;
-        Ok((data, total_pages, total_items))
+        Ok((data, total_pages, total_items, text.len()))
     }
 
     /// 一覧系エンドポイントを`per_page=100`かつ`X-WP-TotalPages`に基づく
@@ -1356,6 +1687,7 @@ impl WordPressHandler {
     {
         let mut all_items: Vec<T> = Vec::new();
         let mut page: u32 = 1;
+        let mut read_bytes: usize = 0;
 
         let total_items: u64 = loop {
             let url = url_for_page(page);
@@ -1365,13 +1697,30 @@ impl WordPressHandler {
                 request = request.basic_auth(username, Some(password));
             }
 
-            let (items, total_pages, reported_total): (Vec<T>, u32, u64) = self
+            let (items, total_pages, reported_total, bytes): (Vec<T>, u32, u64, usize) = self
                 .execute_request_with_retry_capturing_total_pages(request)
                 .await?;
 
             all_items.extend(items);
+            read_bytes += bytes;
+            if read_bytes > MAX_LIST_BYTES {
+                return Err(McpError::ExternalApi(format!(
+                    "the WordPress list is larger than {} MB in total, the most mcp-rs reads for one list",
+                    MAX_LIST_BYTES / (1024 * 1024)
+                )));
+            }
 
             if page >= total_pages.max(1) {
+                break reported_total;
+            }
+            // `X-WP-TotalPages`をそのまま信じない（#598）
+            if page >= MAX_LIST_PAGES {
+                warn!(
+                    "fetch_all_pages: WordPress reports {} pages; read only the first {} ({} items)",
+                    total_pages,
+                    MAX_LIST_PAGES,
+                    all_items.len()
+                );
                 break reported_total;
             }
             page += 1;
@@ -1388,44 +1737,80 @@ impl WordPressHandler {
         Ok((all_items, total_items))
     }
 
-    async fn get_posts(&self) -> Result<Vec<WordPressPost>, McpError> {
-        info!(
-            "Fetching WordPress posts from: {}/wp-json/wp/v2/posts",
-            self.base_url
-        );
-        let (items, _total) = self
-            .fetch_all_pages(|page| {
-                format!(
-                    "{}/wp-json/wp/v2/posts?per_page=100&page={}",
-                    self.base_url, page
-                )
-            })
-            .await?;
-        Ok(items)
+    /// 投稿の一覧。`status`が無ければ、公開済みの投稿だけ（WordPressの
+    /// 既定）。`future`・`draft`等や`any`、カンマ区切りで、予約済み・下書き
+    /// の投稿も取れる（#625）
+    async fn get_posts(&self, status: Option<&str>) -> Result<Vec<WordPressPost>, McpError> {
+        let query = PostListQuery {
+            status: status.map(str::to_string),
+            ..Default::default()
+        };
+        Ok(self.list("posts", &query).await?.0)
     }
 
     /// Get all WordPress pages
     async fn get_pages(&self) -> Result<Vec<WordPressPost>, McpError> {
+        Ok(self.list("pages", &PostListQuery::default()).await?.0)
+    }
+
+    /// 投稿（`posts`）・固定ページ（`pages`）の一覧（#637）。検索・絞り込み・
+    /// ページを指定していれば、そのページだけを読み、ページの情報も返す。
+    /// 指定していなければ、全件を読む（`fetch_all_pages`の上限まで）
+    async fn list(
+        &self,
+        endpoint: &str,
+        query: &PostListQuery,
+    ) -> Result<(Vec<WordPressPost>, Option<ListPage>), McpError> {
         info!(
-            "Fetching WordPress pages from: {}/wp-json/wp/v2/pages",
-            self.base_url
+            "Fetching WordPress {} from: {}/wp-json/wp/v2/{}",
+            endpoint, self.base_url, endpoint
         );
-        let (items, _total) = self
-            .fetch_all_pages(|page| {
-                format!(
-                    "{}/wp-json/wp/v2/pages?per_page=100&page={}",
-                    self.base_url, page
-                )
-            })
+        let filters = query.query_string();
+        let filters = if filters.is_empty() {
+            String::new()
+        } else {
+            format!("&{filters}")
+        };
+        if !query.is_single_page() {
+            let (items, _total) = self
+                .fetch_all_pages(|page| {
+                    format!(
+                        "{}/wp-json/wp/v2/{}?per_page=100&page={}{}",
+                        self.base_url, endpoint, page, filters
+                    )
+                })
+                .await?;
+            return Ok((items, None));
+        }
+        let per_page = query.per_page.unwrap_or(DEFAULT_LIST_PER_PAGE);
+        let page = query.page.unwrap_or(1);
+        let url = format!(
+            "{}/wp-json/wp/v2/{}?per_page={}&page={}{}",
+            self.base_url, endpoint, per_page, page, filters
+        );
+        let mut request = self.client.get(&url);
+        if let (Some(username), Some(password)) = (&self.username, &self.password) {
+            request = request.basic_auth(username, Some(password));
+        }
+        let (items, total_pages, total, _bytes): (Vec<WordPressPost>, u32, u64, usize) = self
+            .execute_request_with_retry_capturing_total_pages(request)
             .await?;
-        Ok(items)
+        Ok((
+            items,
+            Some(ListPage {
+                page,
+                per_page,
+                total_pages,
+                total,
+            }),
+        ))
     }
 
     /// Get both posts and pages
     pub async fn get_all_content(
         &self,
     ) -> Result<(Vec<WordPressPost>, Vec<WordPressPost>), McpError> {
-        let posts_future = self.get_posts();
+        let posts_future = self.get_posts(None);
         let pages_future = self.get_pages();
 
         let (posts, pages) = tokio::try_join!(posts_future, pages_future)?;
@@ -1524,11 +1909,12 @@ impl WordPressHandler {
         if !status.is_success() {
             // WordPressのエラーコード（empty_content等）を含めないと、
             // 失敗の原因が分からない
-            let body = response.text().await.unwrap_or_default();
+            let body = read_error_body(response).await;
             return Err(McpError::ExternalApi(format_wp_error(status, &body)));
         }
 
-        let created_post: WordPressPost = response.json().await?;
+        let text = read_body_limited(response, MAX_RESPONSE_BYTES).await?;
+        let created_post: WordPressPost = serde_json::from_str(&text)?;
         Ok(created_post)
     }
 
@@ -2005,6 +2391,15 @@ impl WordPressHandler {
 
         info!("Updating WordPress {}: {}", post_type, post_id);
 
+        // 日付の無い`future`は、すぐに公開されてしまう（#625）。既に予約
+        // 済みの投稿（公開日時が未来）なら、日付を送らなくても予約のまま
+        if params.status.as_deref() == Some("future") {
+            let has_date = params.date.as_deref().is_some_and(|d| !d.trim().is_empty());
+            if !has_date && self.get_post(post_id, post_type, false).await?.status != "future" {
+                validate_post_status("future", None)?;
+            }
+        }
+
         let mut update_data = serde_json::Map::new();
 
         if let Some(title) = params.title {
@@ -2021,6 +2416,10 @@ impl WordPressHandler {
 
         if let Some(slug) = params.slug {
             update_data.insert("slug".to_string(), serde_json::Value::String(slug));
+        }
+
+        if let Some(date) = params.date.filter(|d| !d.trim().is_empty()) {
+            update_data.insert("date".to_string(), serde_json::Value::String(date));
         }
 
         if let Some(cats) = params.categories {
@@ -2552,7 +2951,8 @@ impl WordPressHandler {
             );
             return None;
         }
-        response.json().await.ok()
+        let text = read_body_limited(response, MAX_RESPONSE_BYTES).await.ok()?;
+        serde_json::from_str(&text).ok()
     }
 
     /// Check if WordPress REST API is available
@@ -2802,32 +3202,19 @@ impl WordPressHandler {
                     "isError": !health.error_details.is_empty()
                 }))
             }
-            "get_posts" => {
-                let posts = self.get_posts().await?;
-                let summary = summarize_posts(&posts);
+            "get_posts" | "get_pages" => {
+                let args = params.arguments.unwrap_or_default();
+                let (endpoint, with_taxonomies) = if params.name == "get_posts" {
+                    ("posts", true)
+                } else {
+                    ("pages", false)
+                };
+                let query = post_list_query_arg(&args, with_taxonomies)?;
+                let (items, page) = self.list(endpoint, &query).await?;
                 Ok(serde_json::json!({
                     "content": [{
                         "type": "text",
-                        "text": format!("Found {} posts:\n{}",
-                            posts.len(),
-                            serde_json::to_string_pretty(&summary)
-                                .unwrap_or_else(|_| "Failed to serialize posts".to_string())
-                        )
-                    }],
-                    "isError": false
-                }))
-            }
-            "get_pages" => {
-                let pages = self.get_pages().await?;
-                let summary = summarize_posts(&pages);
-                Ok(serde_json::json!({
-                    "content": [{
-                        "type": "text",
-                        "text": format!("Found {} pages:\n{}",
-                            pages.len(),
-                            serde_json::to_string_pretty(&summary)
-                                .unwrap_or_else(|_| "Failed to serialize pages".to_string())
-                        )
+                        "text": list_result_text(endpoint, &items, page)
                     }],
                     "isError": false
                 }))
@@ -2936,11 +3323,12 @@ impl WordPressHandler {
                 Ok(serde_json::json!({
                     "content": [{
                         "type": "text",
-                        "text": format!("Post Details:\nID: {}\nFormat: {}\nTitle: {}\nStatus: {}\nSlug: {}\nCategories: {}\nTags: {}\nFeatured Media: {}\n{}Content:\n{}",
+                        "text": format!("Post Details:\nID: {}\nFormat: {}\nTitle: {}\nStatus: {}\nDate: {}\nSlug: {}\nCategories: {}\nTags: {}\nFeatured Media: {}\n{}Content:\n{}",
                             post.id.map(|id| id.to_string()).unwrap_or_else(|| "N/A".to_string()),
                             post_format_label(&post, format),
                             title,
                             post.status,
+                            post_date_label(&post),
                             post_slug_label(&post),
                             categories_names.join(", "),
                             tags_names.join(", "),
@@ -3579,6 +3967,10 @@ impl WordPressHandler {
                     .get("status")
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
+                let date = args
+                    .get("date")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
 
                 let categories = args
                     .get("categories")
@@ -3601,6 +3993,7 @@ impl WordPressHandler {
                             title,
                             content,
                             status,
+                            date,
                             categories,
                             tags,
                             featured_media_id,
@@ -3613,8 +4006,8 @@ impl WordPressHandler {
                 Ok(serde_json::json!({
                     "content": [{
                         "type": "text",
-                        "text": format!("Updated {} ID {} - Title: '{}', Status: {}, Slug: {}",
-                            post_type, post_id, post.title.rendered, post.status, post_slug_label(&post))
+                        "text": format!("Updated {} ID {} - Title: '{}', Status: {}, Date: {}, Slug: {}",
+                            post_type, post_id, post.title.rendered, post.status, post_date_label(&post), post_slug_label(&post))
                     }],
                     "isError": false
                 }))
@@ -3870,20 +4263,108 @@ impl McpHandler for WordPressHandler {
             },
             Tool {
                 name: "get_posts".to_string(),
-                description: "Retrieve WordPress posts".to_string(),
+                description: "Retrieve WordPress posts (published ones by default). Without search, filters or page options, it returns all posts; with them, one page and the total".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
-                    "properties": {},
+                    "properties": {
+                        "status": {
+                            "type": "string",
+                            "description": "Which posts to list (optional): 'publish' (default), 'future' (scheduled), 'draft', 'pending', 'private', or 'any'. Several can be given with commas, e.g. 'future,draft'. Other than 'publish', the credentials must be allowed to edit posts"
+                        },
+                        "search": {
+                            "type": "string",
+                            "description": "Keyword to search for in the title and content (optional)"
+                        },
+                        "categories": {
+                            "type": "array",
+                            "items": {"type": "number"},
+                            "description": "Only posts in any of these category IDs (optional; get_categories lists them)"
+                        },
+                        "tags": {
+                            "type": "array",
+                            "items": {"type": "number"},
+                            "description": "Only posts with any of these tag IDs (optional; get_tags lists them)"
+                        },
+                        "author": {
+                            "type": "number",
+                            "description": "Author user ID (optional)"
+                        },
+                        "after": {
+                            "type": "string",
+                            "description": "Only items published after this date or date-time, ISO8601 in the site's time zone, e.g. '2026-11-01' (optional)"
+                        },
+                        "before": {
+                            "type": "string",
+                            "description": "Only items published before this date or date-time (optional)"
+                        },
+                        "orderby": {
+                            "type": "string",
+                            "enum": ["date", "modified", "title", "id", "slug", "author", "relevance"],
+                            "description": "Sort field (optional, default 'date'). 'relevance' needs search"
+                        },
+                        "order": {
+                            "type": "string",
+                            "enum": ["asc", "desc"],
+                            "description": "Sort order (optional, default 'desc')"
+                        },
+                        "per_page": {
+                            "type": "number",
+                            "description": "Items per page, 1-100 (optional). With any of search, filters or page options, only one page is read (default 20 per page), and the result shows the total"
+                        },
+                        "page": {
+                            "type": "number",
+                            "description": "Page number, from 1 (optional)"
+                        }
+                    },
                     "required": []
                 }),
                 ..Default::default()
             },
             Tool {
                 name: "get_pages".to_string(),
-                description: "Retrieve WordPress pages".to_string(),
+                description: "Retrieve WordPress pages. Without search, filters or page options, it returns all pages; with them, one page and the total".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
-                    "properties": {},
+                    "properties": {
+                        "status": {
+                            "type": "string",
+                            "description": "Which pages to list (optional): 'publish' (default), 'future', 'draft', 'pending', 'private', or 'any', separated by commas. Other than 'publish', the credentials must be allowed to edit pages"
+                        },
+                        "search": {
+                            "type": "string",
+                            "description": "Keyword to search for in the title and content (optional)"
+                        },
+                        "author": {
+                            "type": "number",
+                            "description": "Author user ID (optional)"
+                        },
+                        "after": {
+                            "type": "string",
+                            "description": "Only items published after this date or date-time, ISO8601 in the site's time zone, e.g. '2026-11-01' (optional)"
+                        },
+                        "before": {
+                            "type": "string",
+                            "description": "Only items published before this date or date-time (optional)"
+                        },
+                        "orderby": {
+                            "type": "string",
+                            "enum": ["date", "modified", "title", "id", "slug", "author", "relevance", "menu_order"],
+                            "description": "Sort field (optional, default 'date'). 'relevance' needs search"
+                        },
+                        "order": {
+                            "type": "string",
+                            "enum": ["asc", "desc"],
+                            "description": "Sort order (optional, default 'desc')"
+                        },
+                        "per_page": {
+                            "type": "number",
+                            "description": "Items per page, 1-100 (optional). With any of search, filters or page options, only one page is read (default 20 per page), and the result shows the total"
+                        },
+                        "page": {
+                            "type": "number",
+                            "description": "Page number, from 1 (optional)"
+                        }
+                    },
                     "required": []
                 }),
                 ..Default::default()
@@ -4461,7 +4942,11 @@ impl McpHandler for WordPressHandler {
                         },
                         "status": {
                             "type": "string",
-                            "description": "Post status: publish, draft, private (optional)"
+                            "description": "Post status (optional): 'publish', 'draft', 'pending', 'private', or 'future' (scheduled; needs 'date' unless the post is already scheduled)"
+                        },
+                        "date": {
+                            "type": "string",
+                            "description": "Publication date (optional, ISO8601 in the site's time zone, e.g. '2026-11-19T10:00:00'). With status 'future' and a future date, the post is scheduled. get_post shows the current date"
                         },
                         "categories": {
                             "type": "array",
@@ -4751,7 +5236,7 @@ impl McpHandler for WordPressHandler {
         }
         match params.uri.as_str() {
             "wordpress://posts" => {
-                let posts = self.get_posts().await?;
+                let posts = self.get_posts(None).await?;
                 Ok(serde_json::json!({
                     "contents": [{
                         "uri": params.uri,
@@ -7079,5 +7564,430 @@ mod tests {
                 name
             );
         }
+    }
+
+    // ---- #625: 既存の投稿を予約投稿にする ----
+
+    fn post_json_with(status: &str, date: &str) -> String {
+        serde_json::json!({
+            "id": 7,
+            "slug": "post",
+            "status": status,
+            "date": date,
+            "type": "post",
+            "title": {"rendered": "テスト"},
+            "content": {"rendered": "<p>本文</p>"}
+        })
+        .to_string()
+    }
+
+    async fn call_update_post(
+        handler: &WordPressHandler,
+        args: serde_json::Value,
+    ) -> Result<serde_json::Value, McpError> {
+        let args: HashMap<String, serde_json::Value> =
+            serde_json::from_value(args).expect("arguments must be an object");
+        handler
+            .call_tool(ToolCallParams {
+                name: "update_post".to_string(),
+                arguments: Some(args),
+            })
+            .await
+    }
+
+    /// `date`と`future`を送ると、予約投稿になる。結果に公開日時を出す
+    #[tokio::test]
+    async fn test_update_post_schedules_with_date() {
+        let (base_url, captured) =
+            spawn_body_capturing_server(post_json_with("future", "2030-01-01T10:00:00")).await;
+        let handler = handler_for_local_server(base_url);
+        let result = call_update_post(
+            &handler,
+            serde_json::json!({
+                "post_id": 7,
+                "status": "future",
+                "date": "2030-01-01T10:00:00"
+            }),
+        )
+        .await
+        .unwrap();
+
+        let bodies = captured.lock().await;
+        // 日付があれば、投稿を取りに行かずに更新だけを送る
+        assert_eq!(bodies.len(), 1);
+        let sent: serde_json::Value = serde_json::from_str(&bodies[0]).unwrap();
+        assert_eq!(
+            sent,
+            serde_json::json!({"status": "future", "date": "2030-01-01T10:00:00"})
+        );
+        assert!(
+            tool_text(&result).contains("Date: 2030-01-01T10:00:00 (site time, scheduled)"),
+            "{}",
+            tool_text(&result)
+        );
+    }
+
+    /// 日付だけを変える（予約の日時の変更・公開日時の修正）
+    #[tokio::test]
+    async fn test_update_post_sends_date_only() {
+        let (base_url, captured) =
+            spawn_body_capturing_server(post_json_with("draft", "2030-02-01T09:00:00")).await;
+        let handler = handler_for_local_server(base_url);
+        call_update_post(
+            &handler,
+            serde_json::json!({"post_id": 7, "date": "2030-02-01T09:00:00"}),
+        )
+        .await
+        .unwrap();
+        let bodies = captured.lock().await;
+        let sent: serde_json::Value = serde_json::from_str(&bodies[0]).unwrap();
+        assert_eq!(sent, serde_json::json!({"date": "2030-02-01T09:00:00"}));
+    }
+
+    /// 日付の無い`future`は、予約済みでない投稿なら断り、更新を送らない
+    /// （WordPressがすぐに公開してしまうため）
+    #[tokio::test]
+    async fn test_update_post_refuses_future_without_date_for_a_draft() {
+        for date in [None, Some(""), Some("  ")] {
+            let (base_url, captured) =
+                spawn_body_capturing_server(post_json_with("draft", "2026-11-18T23:00:00")).await;
+            let handler = handler_for_local_server(base_url);
+            let mut args = serde_json::json!({"post_id": 7, "status": "future"});
+            if let Some(date) = date {
+                args["date"] = serde_json::json!(date);
+            }
+            let result = call_update_post(&handler, args).await;
+            assert!(
+                matches!(result, Err(McpError::InvalidParams(ref msg)) if msg.contains("requires a publish date")),
+                "date {:?}: {:?}",
+                date,
+                result
+            );
+            // 今の状態を確かめる読み取り（本文の無いGET）だけで、更新は送らない
+            let bodies = captured.lock().await;
+            assert!(bodies.iter().all(|body| body.is_empty()), "{:?}", bodies);
+        }
+    }
+
+    /// 既に予約済みの投稿なら、日付を送らずに`future`のまま更新できる
+    #[tokio::test]
+    async fn test_update_post_keeps_an_already_scheduled_post() {
+        let (base_url, captured) =
+            spawn_body_capturing_server(post_json_with("future", "2030-01-01T10:00:00")).await;
+        let handler = handler_for_local_server(base_url);
+        call_update_post(
+            &handler,
+            serde_json::json!({"post_id": 7, "status": "future", "title": "新しい題"}),
+        )
+        .await
+        .unwrap();
+        let bodies = captured.lock().await;
+        let sent: Vec<serde_json::Value> = bodies
+            .iter()
+            .filter(|body| !body.is_empty())
+            .map(|body| serde_json::from_str(body).unwrap())
+            .collect();
+        assert_eq!(
+            sent,
+            vec![serde_json::json!({"title": "新しい題", "status": "future"})]
+        );
+    }
+
+    #[test]
+    fn test_post_date_label() {
+        let post = |status: &str, date: Option<&str>| -> WordPressPost {
+            let mut value: serde_json::Value =
+                serde_json::from_str(&post_json_with(status, "x")).unwrap();
+            value["date"] = serde_json::json!(date);
+            serde_json::from_value(value).unwrap()
+        };
+        assert_eq!(
+            post_date_label(&post("future", Some("2030-01-01T10:00:00"))),
+            "2030-01-01T10:00:00 (site time, scheduled)"
+        );
+        assert_eq!(
+            post_date_label(&post("publish", Some("2026-11-18T19:00:00"))),
+            "2026-11-18T19:00:00 (site time)"
+        );
+        assert_eq!(post_date_label(&post("draft", None)), "N/A");
+    }
+
+    #[test]
+    fn test_post_status_filter_arg() {
+        let args = |value: serde_json::Value| -> HashMap<String, serde_json::Value> {
+            [("status".to_string(), value)].into_iter().collect()
+        };
+        assert_eq!(post_status_filter_arg(&HashMap::new()).unwrap(), None);
+        for ok in ["future", "future,draft", "any", " publish "] {
+            assert_eq!(
+                post_status_filter_arg(&args(serde_json::json!(ok))).unwrap(),
+                Some(ok.trim().to_string())
+            );
+        }
+        // URLに入る値なので、状態の名前以外は断る
+        for bad in [
+            serde_json::json!("future&per_page=1"),
+            serde_json::json!("future,"),
+            serde_json::json!("Future"),
+            serde_json::json!(""),
+            serde_json::json!(3),
+        ] {
+            assert!(
+                matches!(
+                    post_status_filter_arg(&args(bad.clone())),
+                    Err(McpError::InvalidParams(_))
+                ),
+                "{}",
+                bad
+            );
+        }
+    }
+
+    /// `get_posts`の`status`を、WordPressの一覧の`status`で送る
+    #[tokio::test]
+    async fn test_get_posts_with_status_lists_scheduled_posts() {
+        let list = format!("[{}]", post_json_with("future", "2030-01-01T10:00:00"));
+        let base = spawn_routing_server(vec![(
+            "/wp-json/wp/v2/posts?per_page=100&page=1&status=future",
+            "200 OK",
+            list,
+        )])
+        .await;
+        let handler = handler_for_local_server(base);
+        let args: HashMap<String, serde_json::Value> =
+            [("status".to_string(), serde_json::json!("future"))]
+                .into_iter()
+                .collect();
+        let result = handler
+            .call_tool(ToolCallParams {
+                name: "get_posts".to_string(),
+                arguments: Some(args),
+            })
+            .await
+            .unwrap();
+        let text = tool_text(&result);
+        assert!(text.starts_with("Found 1 posts"), "{}", text);
+        assert!(text.contains("\"status\": \"future\""), "{}", text);
+        assert!(text.contains("2030-01-01T10:00:00"), "{}", text);
+    }
+
+    // ---- #598: 応答の大きさ・ページ数の上限 ----
+
+    fn response_with(body: &str) -> reqwest::Response {
+        reqwest::Response::from(http::Response::new(body.to_string()))
+    }
+
+    #[tokio::test]
+    async fn test_read_body_limited() {
+        assert_eq!(
+            read_body_limited(response_with("hello"), 5).await.unwrap(),
+            "hello"
+        );
+        let err = read_body_limited(response_with("hello!"), 5)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, McpError::ExternalApi(ref msg) if msg.contains("larger than")),
+            "{err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_read_error_body_reads_only_the_beginning() {
+        let big = "x".repeat(MAX_ERROR_BODY_BYTES + 10);
+        assert_eq!(
+            read_error_body(response_with(&big)).await.len(),
+            MAX_ERROR_BODY_BYTES
+        );
+        assert_eq!(read_error_body(response_with("{}")).await, "{}");
+    }
+
+    /// `X-WP-TotalPages`がとても大きくても、`MAX_LIST_PAGES`ページで止める
+    #[tokio::test]
+    async fn test_fetch_all_pages_stops_at_the_page_limit() {
+        use std::sync::atomic::Ordering;
+        // 状態行の後ろに、ページ数のヘッダーを足す
+        let (base, count) = spawn_fixed_response_server(
+            "200 OK\r\nX-WP-TotalPages: 4294967295\r\nX-WP-Total: 1",
+            "[]".to_string(),
+        )
+        .await;
+        let handler = handler_for_local_server(base);
+        let posts = handler.get_posts(None).await.unwrap();
+        assert!(posts.is_empty());
+        assert_eq!(count.load(Ordering::SeqCst), MAX_LIST_PAGES as usize);
+    }
+
+    /// 大きすぎる応答は、エラーにする（読み切らない）
+    #[tokio::test]
+    async fn test_too_large_response_is_an_error() {
+        let (base, _count) =
+            spawn_fixed_response_server("200 OK", "x".repeat(MAX_RESPONSE_BYTES + 1)).await;
+        let handler = handler_for_local_server(base);
+        let err = handler.get_posts(None).await.unwrap_err();
+        assert!(
+            matches!(err, McpError::ExternalApi(ref msg) if msg.contains("larger than 32 MB")),
+            "{err:?}"
+        );
+    }
+
+    // ---- #637: 検索・絞り込み・ページ ----
+
+    fn list_args(value: serde_json::Value) -> HashMap<String, serde_json::Value> {
+        serde_json::from_value(value).unwrap()
+    }
+
+    #[test]
+    fn test_post_list_query_arg() {
+        // 何も無ければ、今までどおり全件
+        let query = post_list_query_arg(&HashMap::new(), true).unwrap();
+        assert_eq!(query, PostListQuery::default());
+        assert!(!query.is_single_page());
+        // statusだけも、全件（#625）
+        let query =
+            post_list_query_arg(&list_args(serde_json::json!({"status": "future"})), true).unwrap();
+        assert!(!query.is_single_page());
+
+        let query = post_list_query_arg(
+            &list_args(serde_json::json!({
+                "search": " hello world ",
+                "categories": [3, 4],
+                "tags": 7,
+                "author": 2,
+                "after": "2026-11-01",
+                "before": "2026-11-30T23:59:59",
+                "orderby": "relevance",
+                "order": "asc",
+                "per_page": 5,
+                "page": 2
+            })),
+            true,
+        )
+        .unwrap();
+        assert!(query.is_single_page());
+        assert_eq!(query.search.as_deref(), Some("hello world"));
+        assert_eq!(query.categories, vec![3, 4]);
+        assert_eq!(query.tags, vec![7]);
+        assert_eq!(query.after.as_deref(), Some("2026-11-01T00:00:00"));
+        assert_eq!(query.before.as_deref(), Some("2026-11-30T23:59:59"));
+        assert_eq!((query.per_page, query.page), (Some(5), Some(2)));
+
+        for (bad, why) in [
+            (serde_json::json!({"categories": [0]}), "positive integer"),
+            (serde_json::json!({"categories": []}), "1 to 100"),
+            (serde_json::json!({"author": -1}), "positive integer"),
+            (serde_json::json!({"after": "last week"}), "ISO8601"),
+            (serde_json::json!({"after": "2026-11-01&x=1"}), "ISO8601"),
+            (serde_json::json!({"orderby": "rand"}), "orderby must be"),
+            (serde_json::json!({"orderby": "relevance"}), "needs search"),
+            (serde_json::json!({"order": "up"}), "'asc' or 'desc'"),
+            (serde_json::json!({"per_page": 101}), "1 to 100"),
+            (serde_json::json!({"page": 0}), "positive integer"),
+            (serde_json::json!({"search": ""}), "non-empty"),
+            (
+                serde_json::json!({"search": "x".repeat(201)}),
+                "200 characters",
+            ),
+        ] {
+            match post_list_query_arg(&list_args(bad.clone()), true) {
+                Err(McpError::InvalidParams(msg)) => assert!(msg.contains(why), "{bad}: {msg}"),
+                other => panic!("{bad}: {other:?}"),
+            }
+        }
+        // 固定ページには、カテゴリー・タグが無い。menu_orderで並べられる
+        assert!(post_list_query_arg(&list_args(serde_json::json!({"tags": [1]})), false).is_err());
+        assert!(post_list_query_arg(
+            &list_args(serde_json::json!({"orderby": "menu_order"})),
+            false
+        )
+        .is_ok());
+        assert!(post_list_query_arg(
+            &list_args(serde_json::json!({"orderby": "menu_order"})),
+            true
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn test_post_list_query_string_is_encoded() {
+        let query = PostListQuery {
+            status: Some("publish".to_string()),
+            search: Some("Rust & MCP 日本語".to_string()),
+            categories: vec![3, 4],
+            after: Some("2026-11-01T00:00:00+09:00".to_string()),
+            ..Default::default()
+        };
+        let encoded = query.query_string();
+        assert_eq!(
+            encoded,
+            "status=publish&search=Rust+%26+MCP+%E6%97%A5%E6%9C%AC%E8%AA%9E&categories=3%2C4&after=2026-11-01T00%3A00%3A00%2B09%3A00"
+        );
+        assert_eq!(PostListQuery::default().query_string(), "");
+    }
+
+    #[test]
+    fn test_list_result_text() {
+        assert!(list_result_text("posts", &[], None).starts_with("Found 0 posts:"));
+        let page = ListPage {
+            page: 2,
+            per_page: 5,
+            total_pages: 3,
+            total: 12,
+        };
+        assert!(list_result_text("posts", &[], Some(page))
+            .starts_with("Found 0 posts (page 2 of 3, 5 per page; 12 in total):"));
+    }
+
+    /// 検索・絞り込みを渡すと、そのページだけを、符号化したURLで読む
+    #[tokio::test]
+    async fn test_get_posts_with_search_reads_one_page() {
+        let list = format!("[{}]", post_json_with("publish", "2026-11-10T10:00:00"));
+        // 状態行の後ろに、ページのヘッダーを足す
+        let base = spawn_routing_server(vec![(
+            "/wp-json/wp/v2/posts?per_page=5&page=2&search=hello+world&categories=3%2C4",
+            "200 OK\r\nX-WP-Total: 6\r\nX-WP-TotalPages: 2",
+            list,
+        )])
+        .await;
+        let handler = handler_for_local_server(base);
+        let result = handler
+            .call_tool(ToolCallParams {
+                name: "get_posts".to_string(),
+                arguments: Some(list_args(serde_json::json!({
+                    "search": "hello world",
+                    "categories": [3, 4],
+                    "per_page": 5,
+                    "page": 2
+                }))),
+            })
+            .await
+            .unwrap();
+        let text = tool_text(&result);
+        assert!(
+            text.starts_with("Found 1 posts (page 2 of 2, 5 per page; 6 in total):"),
+            "{text}"
+        );
+    }
+
+    /// 固定ページも同じ。ページの既定は20件
+    #[tokio::test]
+    async fn test_get_pages_with_search_uses_the_default_page_size() {
+        let base = spawn_routing_server(vec![(
+            "/wp-json/wp/v2/pages?per_page=20&page=1&search=about",
+            "200 OK\r\nX-WP-Total: 0\r\nX-WP-TotalPages: 0",
+            "[]".to_string(),
+        )])
+        .await;
+        let handler = handler_for_local_server(base);
+        let result = handler
+            .call_tool(ToolCallParams {
+                name: "get_pages".to_string(),
+                arguments: Some(list_args(serde_json::json!({"search": "about"}))),
+            })
+            .await
+            .unwrap();
+        assert!(
+            tool_text(&result).starts_with("Found 0 pages (page 1 of 1, 20 per page; 0 in total):")
+        );
     }
 }

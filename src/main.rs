@@ -33,6 +33,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
+    // mcp-rsの登録を外す（#636）
+    if args.get(1).map(String::as_str) == Some(mcp_rs::uninstall::SUBCOMMAND) {
+        match mcp_rs::uninstall::run(&args[2..]) {
+            Ok(true) => return Ok(()),
+            Ok(false) => std::process::exit(1),
+            Err(e) => {
+                eprintln!("Error: {e}");
+                std::process::exit(2);
+            }
+        }
+    }
+
+    // データベースのパスワードを資格情報ストアに入れる等（#628）
+    if args.get(1).map(String::as_str) == Some(mcp_rs::database_keyring::SUBCOMMAND) {
+        if let Err(e) = mcp_rs::database_keyring::run(&args[2..]) {
+            eprintln!("Error: {e}");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+
     // 設定を確かめる（#565）。サーバーは起動しない
     if args.get(1).map(String::as_str) == Some(mcp_rs::check::SUBCOMMAND) {
         match mcp_rs::check::run(&args[2..]).await {
@@ -232,9 +253,9 @@ async fn build_server(
                 .as_deref()
                 .and_then(std::path::Path::parent),
         );
-        let registered = match McpConfig::expand_database_config(&mut db_config) {
+        let registered = match McpConfig::resolve_database_credentials(&mut db_config) {
             Ok(()) => register_database(&mut server, &db_config, audit_logger.clone()).await,
-            Err(e) => Err(e.to_string()),
+            Err(e) => Err(e),
         };
         match registered {
             Ok(()) => info!(
@@ -268,6 +289,8 @@ async fn build_server(
         config_file: config.config_file.clone(),
         started_at: mcp_rs::mcp::process_started_at(),
         plugin_failures: startup_failures,
+        // HTTPモードでは問い合わせない（#635）
+        check_updates: !http_mode && config.server.check_updates != Some(false),
     });
 
     Ok(server)

@@ -17,6 +17,7 @@ The short way is two commands: the [install script](#install-script), then [`mcp
 - [3. Set up by hand](#by-hand)
 - [4. Check](#check)
 - [5. Log files](#log-files)
+- [6. Uninstall](#uninstall)
 - [HTTP clients](#http)
 
 ## 1. Install {#install}
@@ -46,6 +47,27 @@ curl -fsSL https://raw.githubusercontent.com/n-takatsu/mcp-rs/main/install/insta
 ```
 
 To read the script first, download it ([install.ps1](https://github.com/n-takatsu/mcp-rs/blob/main/install/install.ps1), [install.sh](https://github.com/n-takatsu/mcp-rs/blob/main/install/install.sh)) and run the file. `MCP_RS_VERSION` (such as `v0.25.0`) installs another release, `MCP_RS_INSTALL_DIR` another folder, and `MCP_RS_NO_INIT=1` skips the question about `mcp-rs init`.
+
+### Scoop and Homebrew {#package-managers}
+
+mcp-rs can also be installed with [Scoop](https://scoop.sh/) on Windows and [Homebrew](https://brew.sh/) on macOS (Apple Silicon) and Linux (x64), from the bucket and tap of this project (v0.29.0 and later). Both install the same ready-built mcp-rs from the release, and update it with the package manager's own command:
+
+```powershell
+# Windows (Scoop)
+scoop bucket add n-takatsu https://github.com/n-takatsu/scoop-bucket
+scoop install n-takatsu/mcp-rs
+mcp-rs init
+```
+
+```bash
+# macOS (Apple Silicon) and Linux (x64) (Homebrew)
+brew install n-takatsu/tap/mcp-rs
+mcp-rs init
+```
+
+Update with `scoop update mcp-rs` or `brew upgrade mcp-rs`, then restart the clients. `mcp-rs init` registers a path that stays the same across updates: Scoop's `apps\mcp-rs\current` folder, and Homebrew's `opt/mcp-rs/bin/mcp-rs` (not the folder of one version under `Cellar`, which an update removes). With Scoop, the log folder (`logs` next to mcp-rs) is kept across updates. The bucket and the tap follow new releases automatically, usually within a day.
+
+winget is not supported yet.
 
 ### By hand {#install-by-hand}
 
@@ -105,8 +127,9 @@ From v0.26.0, `mcp-rs init` asks a few questions in a terminal and does the rest
 
 1. The WordPress site URL (`https://` only), username and Application Password. They are kept in the OS credential store (Windows Credential Manager, macOS Keychain, Secret Service on Linux), never in the config file. The password is not shown while typing
 2. It writes the config file, `~/.config/mcp-rs/config.toml`, which mcp-rs also reads without `--config`. `--config <path>` writes another file. It asks before replacing a file, and keeps a backup copy (when the backup has a password in plain text, it offers to delete it). On macOS and Linux, the file and its folder are readable by you only
-3. It checks the config file like [`mcp-rs check`](#check): it connects to the site and signs in. If the sign-in fails, it asks for the username and the Application Password again
-4. It registers mcp-rs with Claude Desktop, Claude Code and GitHub Copilot (VS Code), asking for each one. For the ones you skip, or whose command is not found, it prints the command or the settings to add yourself
+3. It asks whether the AI should also read a database (PostgreSQL, MySQL or MariaDB, v0.29.0 and later). If so, it asks for the engine, host, port, database, user and password, and the TLS setting (`verify-full` is the default for a database on another machine), and adds `[database]` to the config file. The password goes to the OS credential store (`keyring` in `[database]`), not the file. Writing data (`allow_write`) stays off unless you allow it, and it asks twice. When the config file already has `[database]`, it is kept as it is. When you keep an existing config file, only the `[database]` section is added (a backup copy is kept). See [Database Integration](../database/)
+4. It checks the config file like [`mcp-rs check`](#check): it connects to the site and signs in, and connects to the database. If the sign-in fails, it asks for the username and the Application Password again. If only the database cannot be used, it still registers mcp-rs: mcp-rs starts without the database tools until `[database]` is fixed
+5. It registers mcp-rs with Claude Desktop, Claude Code and GitHub Copilot (VS Code), asking for each one. For the ones you skip, or whose command is not found, it prints the command or the settings to add yourself
 
 ```bash
 ~/.mcp-rs/bin/mcp-rs init        # Windows: & "$env:USERPROFILE\.mcp-rs\bin\mcp-rs.exe" init
@@ -142,6 +165,7 @@ type = "stdio"          # "http" for HTTP mode
 
 [server]
 log_level = "warn"      # Logs go to a file, never to standard output in STDIO mode
+# check_updates = false # do not ask GitHub whether a new version is available
 
 [handlers.wordpress]
 enabled = true            # required: without it, the WordPress tools are not registered (no error)
@@ -219,6 +243,8 @@ mcp-rs check --config C:/Users/you/.config/mcp-rs/config.toml
 
 It shows whether the file loads (the line and the reason of an error), whether the WordPress credentials can be read, whether mcp-rs can reach the site and sign in (read-only requests; when the sign-in fails, the permissions and media are not checked), and where the log and the audit log are written. It exits with 1 when it finds an error. Passwords, tokens and user names are not shown. Like starting mcp-rs, it creates the log and audit log folders and files if they are missing, and adds a `checked` line to the log file. It also checks `[database]` (v0.28.0 and later): the settings (`engine`, `ssl_mode`, `ssl_root_cert`, `${VAR}`), a warning for weak TLS settings, and whether mcp-rs can connect and sign in (nothing is written). For each of `[[plugins]]`, it checks that the command (or `docker`, `kubectl`) can be found, then starts the plugin, waits for its list of tools, and stops it. Connecting and starting each wait up to 10 seconds. `--offline` skips the connections to the site and the database, and does not start the plugins.
 
+`mcp-rs check` and `mcp_rs_status` also say whether a new version of mcp-rs is available (v0.29.0 and later), and how to update for the way you installed it (Scoop, Homebrew, the install script, or the releases page), for example `mcp-rs 0.30.0 is available (this is 0.29.0). To update, scoop update mcp-rs, then restart the MCP clients`. For this, mcp-rs asks GitHub (`api.github.com`) for the latest release, sending only a `User-Agent` with its version. `mcp_rs_status` asks once while mcp-rs runs, and only in STDIO mode. `--offline` skips it, and `check_updates = false` in `[server]` turns it off.
+
 After the client has started mcp-rs, ask it to call the `mcp_rs_status` tool. It shows the version, the config file in use, where the log and the audit log are written, and anything that failed to start, with the reason. See the [API Reference]({{ site.baseurl }}/docs/api/).
 
 ## 5. Log files {#log-files}
@@ -242,6 +268,20 @@ Claude Desktop may start two mcp-rs processes for one entry in `claude_desktop_c
 - Startup messages, such as the WordPress connection check, appear once per process. Seeing them twice is normal
 
 The audit log (who called which tool) is written next to the logs, to `%USERPROFILE%\.mcp-rs\audit\audit.log` on Windows (`$XDG_STATE_HOME/mcp-rs/audit` or `~/.local/state/mcp-rs/audit` elsewhere). `[audit] file_path` changes it. Up to version 0.21.0, it was `audit.log` in the config file's folder; that file is left where it is. See [Security]({{ site.baseurl }}/docs/security/#audit-log).
+
+## 6. Uninstall {#uninstall}
+
+`mcp-rs uninstall` (v0.29.0 and later) removes what `mcp-rs init` set up, asking before each step:
+
+1. The mcp-rs registrations in Claude Desktop (a backup copy of `claude_desktop_config.json` is kept), Claude Code, and GitHub Copilot (VS Code)
+2. The WordPress and database credentials in the OS credential store that the config files refer to (`keyring = "<name>"`)
+3. The config files (kept unless you answer y)
+
+```bash
+~/.mcp-rs/bin/mcp-rs uninstall        # Windows: & "$env:USERPROFILE\.mcp-rs\bin\mcp-rs.exe" uninstall
+```
+
+It does not delete mcp-rs itself, and at the end shows how to remove it for the way it was installed: `scoop uninstall mcp-rs`, `brew uninstall mcp-rs`, or deleting the folder `~/.mcp-rs/bin` (with the logs next to it). Restart the MCP clients afterwards. Removing mcp-rs with Scoop or Homebrew alone leaves the registrations and the credentials, so run `mcp-rs uninstall` first.
 
 ## HTTP clients {#http}
 

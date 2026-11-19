@@ -7,6 +7,113 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.29.0] - 2026-11-19
+
+### Removed
+
+- 本体（`[database]`・`DatabaseHandler`）から使われていなかった、データベースの
+  モジュールを消した（#638）。`handlers::database`の`loadbalancer`・`retry`・
+  `advanced_security`（`AnomalyDetector`・`MultiFactorAuth`・
+  `RoleBasedAccessControl`）・`integrated_security`・`security_config`・
+  `dynamic_engine`・`dynamic_tools`・`data_masking`・`masking_formatters`・
+  `masking_rules`と、古いPostgreSQLの実装`engines::postgres`
+  （`PostgresEngine`。本体は`engines::postgresql`を使う）。それだけを使う
+  テスト・例・ベンチマーク・設計の文書（`docs/`）と、使われなくなった依存
+  （`num_cpus`）も消した。約17,000行。動かない「TODO」（VPNの検証・cron式・
+  ClickHouse等）が残り、点検の範囲を増やしていた。**互換性**: mcp-rsを
+  ライブラリとして使い、これらの型を使っていた場合は、ビルドできなくなる
+  （mcp-rs本体の動きは変わらない）
+
+### Security
+
+- WordPressの応答を読む大きさに上限を設けた（#598）。1つの応答は32MB、
+  一覧の全件取得（`get_posts`等）は合計64MB・100ページ（10,000件）まで。
+  以前は、応答を丸ごと読み、`X-WP-TotalPages`をそのまま信じていたので、
+  乗っ取られたサイト等が、大きな応答や大量のページで、メモリーを使い
+  切らせられた。上限を超えた応答はエラーにする。100ページを超える一覧は、
+  先頭の100ページを返し、ログに警告を出す。エラーの応答の本文は、
+  先頭の64KBだけを読む
+- プラグインのツールの名前を確かめる（#598）。MCPの名前の形（英数字・`_`・
+  `-`・`.`、プラグインの名前を付けて128文字まで）でないツールは、警告を
+  出して使わない。空白・制御文字・`*`の入った名前が、ログ・監査ログ・
+  ツールの制限の名前の指定に、そのまま入っていた。ツールの説明に
+  AIへの指示を入れられること（tool poisoning）を、文書に書いた
+
+### Changed
+
+- プラグインの相対パスの`command`（区切り文字を含むもの）と`working_dir`を、
+  設定ファイルのフォルダを基準にする（#598）。以前は、mcp-rsを起動した
+  フォルダ（Claude Codeでは開いたフォルダ）を基準にしていたので、開いた
+  フォルダの同じ名前のプログラムを動かすおそれがあった。`node`のような名前だけの
+  コマンドは、今までどおり`PATH`から探す。コンテナ・Kubernetesのプラグインは
+  変わらない
+
+### Added
+
+- `mcp-rs uninstall`（#636）。`mcp-rs init`が設定したものを、1つずつ
+  確かめてから外す: Claude Desktop（設定ファイルの控えを残す）・Claude Code・
+  Copilotの、mcp-rsの登録、設定ファイルの`keyring`が指す、資格情報ストアの
+  WordPress・データベースの項目、設定ファイル（既定は残す）。mcp-rs自身は
+  消さず、入れ方（Scoop・Homebrew・インストールスクリプト・それ以外）に
+  合わせた消し方を示す
+- `mcp-rs check`と`mcp_rs_status`で、新しい版があれば知らせる（#635）。
+  GitHubのリリースの最新の版と比べ、入れ方（Scoop・Homebrew・インストール
+  スクリプト・それ以外）に合わせた更新のしかたを示す。GitHub
+  （`api.github.com`）には、版を含む`User-Agent`だけを送る。
+  `mcp_rs_status`は、STDIOモードでだけ、mcp-rsが動いている間に1回だけ
+  問い合わせる（HTTPモードでは問い合わせない）。`mcp-rs check --offline`は
+  問い合わせない。`[server] check_updates = false`で止められる
+- `get_posts`・`get_pages`で、検索・絞り込み・ページを指定できるように
+  した（#637）。`search`・`categories`・`tags`（固定ページには無い）・
+  `author`・`after`・`before`・`orderby`・`order`・`per_page`・`page`。
+  どれかを渡すと、全件ではなくそのページだけ（既定は20件）を読み、
+  1行目にページと総件数を出す。何も渡さなければ、今までどおり全件。
+  値は、形を確かめ、URLの形に符号化して送る。`get_pages`も`status`を
+  受けるようにした
+- Scoop（Windows）とHomebrew（macOS Apple Silicon・Linux x64）で入れられる
+  ようにした（#578）。`scoop bucket add n-takatsu https://github.com/n-takatsu/scoop-bucket`・
+  `scoop install n-takatsu/mcp-rs`、`brew install n-takatsu/tap/mcp-rs`。
+  リリースのビルド済みのmcp-rsを入れる。manifest・formulaの元は
+  `packaging/`にあり、CI（`packaging.yml`）で実際に入れて確かめる。bucket・
+  tapは、新しいリリースに自動で追いつく。wingetは、まだ
+- `mcp-rs init`は、Homebrewで入れたmcp-rsを、版によらないパス
+  （`<prefix>/opt/mcp-rs/bin/mcp-rs`）で登録する（#578）。版ごとのフォルダ
+  （`Cellar/mcp-rs/<版>`）は、更新で消えるため
+- `mcp-rs database-keyring set|show|delete <名前>`（#628）。`[database]`の
+  パスワードを、`mcp-rs init`を使わずに資格情報ストアに入れる・見る・
+  消す。`set`は、設定ファイル（`--config`。無ければ既定の場所）に
+  `[database]`があれば、そのホスト・ポート・ユーザー名を既定にして
+  パスワードを入れ直し、`[database]`を`keyring`を使う形に書き換えるかを
+  聞く（`password`を消す。コメント等は残し、控えを残す）。無ければ、
+  `mcp-rs init`と同じ質問で項目を作り、`[database]`を書き足すかを聞く。
+  `show`はパスワードを出さない。WordPressの資格情報は、見せず、消さない
+- `mcp-rs init`で、データベース（PostgreSQL・MySQL・MariaDB）も設定できる
+  ようにした（#590）。WordPressに続けて、使うかを聞き、エンジン・ホスト・
+  ポート・データベース名・ユーザー名・パスワード・TLS（`ssl_mode`。ループ
+  バック以外では`verify-full`が既定）・CAのファイルを聞いて、設定ファイルに
+  `[database]`を書き足す（ファイルは置き換えず、控えを残す。既に`[database]`
+  があれば、そのまま）。書き込み（`allow_write`）は既定で無効で、許すときは
+  2回確かめる。データベースだけが使えないときは、登録を止めない
+- `[database]`の`keyring`（#590）。パスワードを、WordPressと同じくOSの資格
+  情報ストアから読む。Claude Desktopはユーザーの環境変数を渡さないので、
+  `${VAR}`では、クライアントの設定に平文で書く必要があった。資格情報ストアの
+  項目は、`host`・`port`・`username`と結び付いていて、`[database]`の値が
+  違えば使わない（ほかの人が書いた設定ファイルで、パスワードを別の
+  サーバーに送らせないため）。`password`とは一緒に書けない
+- `update_post`で、既存の投稿を予約投稿にできるようにした（#625）。`date`
+  （公開日時、ISO8601、サイトのタイムゾーン）を足した。下書きで確かめてから
+  予約する、という手順が、mcp-rsのツールだけで行える。`get_post`に公開日時
+  （`Date:`、予約済みなら`scheduled`）を出し、`get_posts`に`status`（`future`・
+  `draft`・`any`等、カンマ区切り）を足して、予約済み・下書きの投稿も一覧
+  できるようにした（既定は今までどおり公開済みだけ）
+
+### Fixed
+
+- `update_post`で、日付の無い`status: "future"`を断る（#625）。WordPressは、
+  日付の無い予約を、すぐに公開してしまう。以前は確かめずに送っていたので、
+  既存の下書きが意図せず公開される恐れがあった。既に予約済みの投稿なら、
+  日付を送らずに`future`のまま更新できる
+
 ## [0.28.0] - 2026-11-18
 
 ### Added

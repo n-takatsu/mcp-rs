@@ -4,7 +4,7 @@ A Rust implementation of a Model Context Protocol (MCP) server that gives AI cli
 
 > **[English](README.md)** | **[日本語](README.ja.md)**
 
-[![Version](https://img.shields.io/badge/Version-v0.28.0-blue)](https://github.com/n-takatsu/mcp-rs/releases/tag/v0.28.0)
+[![Version](https://img.shields.io/badge/Version-v0.29.0-blue)](https://github.com/n-takatsu/mcp-rs/releases/tag/v0.29.0)
 ![Implementation](https://img.shields.io/badge/WordPress_Tools-32_Available-green)
 ![License](https://img.shields.io/badge/License-MIT%2FApache--2.0-green)
 
@@ -86,7 +86,7 @@ curl -fsSL https://raw.githubusercontent.com/n-takatsu/mcp-rs/main/install/insta
 
 **3. Check.** Restart the client as `init` shows, then ask it to call the `mcp_rs_status` tool. It shows the version, the config file in use, where the logs are written, and anything that failed to start. `mcp-rs check --config <path>` checks a config file without a client.
 
-The [Getting Started guide](https://n-takatsu.github.io/mcp-rs/docs/guides/) covers the rest: reading the install script before running it, installing by hand or building from source, setting up each client by hand, the config file, where the logs are, and what to check when a client cannot find the tools.
+The [Getting Started guide](https://n-takatsu.github.io/mcp-rs/docs/guides/) covers the rest: reading the install script before running it, installing with Scoop or Homebrew, by hand or from source, setting up each client by hand, the config file, where the logs are, and what to check when a client cannot find the tools.
 
 ## 🏗️ Architecture
 

@@ -18,8 +18,9 @@ PostgreSQL・Redisのサーバーが要るテストは`#[ignore]`にしてあり
 | データベース | テスト（`--test`） |
 |---|---|
 | PostgreSQL（`engines::postgresql`、本体のハンドラーが使う） | `mod`の`database::postgresql_integration_tests`・`database::postgres_database_integration_tests`、`database_handler_column_encryption_test`・`database_handler_micro_segmentation_test`・`column_encryption_rbac_test` |
-| PostgreSQL（`engines::postgres`） | `postgres_engine_test`・`postgres_jsonb_migration_test`・`postgres_transaction_test`・`postgres_integration_test` |
 | Redis | `mod`の`database::redis_integration_test`・`database::redis_integration_tests` |
+
+古いPostgreSQLの実装（`engines::postgres`）とそのテストは、本体から使われていなかったので消した（#638）。
 
 `database_postgres_tools_test`（データベースのツール、#453）は`#[ignore]`ではなく、`TEST_DATABASE_URL`があれば実行し、無ければ飛ばす。
 
@@ -44,8 +45,6 @@ export TEST_REDIS_URL=redis://localhost:6380/0
 
 cargo test --features redis-backend --no-fail-fast \
   --test mod \
-  --test postgres_engine_test --test postgres_jsonb_migration_test \
-  --test postgres_transaction_test --test postgres_integration_test \
   --test database_handler_column_encryption_test \
   --test database_handler_micro_segmentation_test \
   --test column_encryption_rbac_test \

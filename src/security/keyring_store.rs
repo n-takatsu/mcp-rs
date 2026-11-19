@@ -330,6 +330,172 @@ pub fn delete_wordpress_credentials(
     store.delete(check_name(name)?)
 }
 
+/// Database credentials as kept in one keyring entry (#590).
+///
+/// Like the site URL of WordPress credentials (#541), the entry records
+/// where the password is for: the host, the port and the user. mcp-rs uses
+/// the entry only when `[database]` in the config file names the same ones,
+/// so a config file someone else wrote cannot send the password to another
+/// server.
+pub struct DatabaseKeyringCredentials {
+    /// The host as written in `[database]` (compared ignoring case)
+    pub host: String,
+    pub port: u16,
+    pub username: String,
+    pub password: Zeroizing<String>,
+}
+
+impl fmt::Debug for DatabaseKeyringCredentials {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DatabaseKeyringCredentials")
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("username", &self.username)
+            .field("password", &"[REDACTED]")
+            .finish()
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+struct StoredDatabaseCredentials {
+    kind: String,
+    host: String,
+    port: u16,
+    username: String,
+    password: String,
+}
+
+impl zeroize::Zeroize for StoredDatabaseCredentials {
+    fn zeroize(&mut self) {
+        self.host.zeroize();
+        self.username.zeroize();
+        self.password.zeroize();
+    }
+}
+
+const STORED_DATABASE_KIND: &str = "database";
+
+/// Read the database credentials named `name` and check that they are for
+/// `host`, `port` and `username` (the values of `[database]`).
+pub fn load_database_credentials(
+    store: &dyn SecretStore,
+    name: &str,
+    host: &str,
+    port: u16,
+    username: &str,
+) -> Result<DatabaseKeyringCredentials, String> {
+    let name = check_name(name).map_err(|e| e.to_string())?;
+    let not_database = || {
+        format!(
+            "the keyring entry '{name}' does not hold mcp-rs database credentials. Store them with `mcp-rs database-keyring set {name}`"
+        )
+    };
+    let secret = store.get(name).map_err(|e| e.to_string())?.ok_or_else(|| {
+        format!(
+            "no database credentials named '{name}' in the OS credential store. Store them with `mcp-rs database-keyring set {name}`"
+        )
+    })?;
+    let stored: StoredDatabaseCredentials =
+        serde_json::from_str(&secret).map_err(|_| not_database())?;
+    let stored = Zeroizing::new(stored);
+    if stored.kind != STORED_DATABASE_KIND || stored.username.is_empty() {
+        return Err(not_database());
+    }
+    if !stored.host.eq_ignore_ascii_case(host.trim())
+        || stored.port != port
+        || stored.username != username
+    {
+        return Err(format!(
+            "the database credentials named '{name}' are for {}@{}:{}, but [database] is {}@{}:{}. They are not sent to another server. Fix [database], or store them again with `mcp-rs database-keyring set {name}`",
+            stored.username, stored.host, stored.port, username, host.trim(), port
+        ));
+    }
+    Ok(DatabaseKeyringCredentials {
+        host: stored.host.clone(),
+        port: stored.port,
+        username: stored.username.clone(),
+        password: Zeroizing::new(stored.password.clone()),
+    })
+}
+
+/// What a keyring entry holds, as `mcp-rs database-keyring show` and
+/// `delete` see it (#628). The password is not read out.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DatabaseEntry {
+    /// mcp-rs database credentials for this server and user
+    Database {
+        host: String,
+        port: u16,
+        username: String,
+    },
+    /// An entry that is not mcp-rs database credentials (for example
+    /// WordPress credentials)
+    Other,
+}
+
+/// The entry named `name`, or `None` if there is none.
+pub fn database_entry(
+    store: &dyn SecretStore,
+    name: &str,
+) -> Result<Option<DatabaseEntry>, String> {
+    let name = check_name(name).map_err(|e| e.to_string())?;
+    let Some(secret) = store.get(name).map_err(|e| e.to_string())? else {
+        return Ok(None);
+    };
+    Ok(Some(
+        match serde_json::from_str::<StoredDatabaseCredentials>(&secret) {
+            Ok(stored) => {
+                let stored = Zeroizing::new(stored);
+                if stored.kind == STORED_DATABASE_KIND {
+                    DatabaseEntry::Database {
+                        host: stored.host.clone(),
+                        port: stored.port,
+                        username: stored.username.clone(),
+                    }
+                } else {
+                    DatabaseEntry::Other
+                }
+            }
+            Err(_) => DatabaseEntry::Other,
+        },
+    ))
+}
+
+/// Create or replace the database credentials named `name`, then read them
+/// back to make sure startup will find the same values.
+pub fn store_database_credentials(
+    store: &dyn SecretStore,
+    name: &str,
+    credentials: &DatabaseKeyringCredentials,
+) -> Result<(), String> {
+    let name = check_name(name).map_err(|e| e.to_string())?;
+    if credentials.username.is_empty() || credentials.host.trim().is_empty() {
+        return Err("the database host and user name must not be empty".to_string());
+    }
+    let secret = Zeroizing::new(
+        serde_json::to_string(&StoredDatabaseCredentials {
+            kind: STORED_DATABASE_KIND.to_string(),
+            host: credentials.host.trim().to_string(),
+            port: credentials.port,
+            username: credentials.username.clone(),
+            password: credentials.password.to_string(),
+        })
+        .map_err(|e| e.to_string())?,
+    );
+    store.set(name, &secret).map_err(|e| e.to_string())?;
+    let read_back = load_database_credentials(
+        store,
+        name,
+        &credentials.host,
+        credentials.port,
+        &credentials.username,
+    )?;
+    if *read_back.password != *credentials.password {
+        return Err("the stored credentials did not read back unchanged".to_string());
+    }
+    Ok(())
+}
+
 impl zeroize::Zeroize for StoredCredentials {
     fn zeroize(&mut self) {
         self.url.zeroize();
@@ -500,5 +666,48 @@ mod tests {
         assert!(not_found.contains("mcp-rs wordpress-keyring set example.com"));
         let unavailable = KeyringError::Unavailable("no D-Bus".to_string()).to_string();
         assert!(unavailable.contains("${VAR}"));
+    }
+
+    fn database_credentials(password: &str) -> DatabaseKeyringCredentials {
+        DatabaseKeyringCredentials {
+            host: "db.example.com".to_string(),
+            port: 5432,
+            username: "reader".to_string(),
+            password: Zeroizing::new(password.to_string()),
+        }
+    }
+
+    #[test]
+    fn test_database_credentials_round_trip_and_server_check() {
+        let store = MemoryStore::default();
+        store_database_credentials(&store, "app@db", &database_credentials("s3cret")).unwrap();
+        let loaded =
+            load_database_credentials(&store, "app@db", "DB.example.com", 5432, "reader").unwrap();
+        assert_eq!(*loaded.password, "s3cret");
+        assert!(!format!("{:?}", loaded).contains("s3cret"));
+
+        // 別のサーバー・ポート・ユーザーには使わない（パスワードを出さない）
+        for (host, port, user) in [
+            ("attacker.example", 5432, "reader"),
+            ("db.example.com", 6543, "reader"),
+            ("db.example.com", 5432, "admin"),
+        ] {
+            let err = load_database_credentials(&store, "app@db", host, port, user).unwrap_err();
+            assert!(err.contains("not sent to another server"), "{err}");
+            assert!(!err.contains("s3cret"));
+        }
+
+        let err = load_database_credentials(&store, "missing", "db.example.com", 5432, "reader")
+            .unwrap_err();
+        assert!(err.contains("mcp-rs database-keyring set missing"), "{err}");
+
+        // WordPressの項目は、データベースの資格情報として使わない
+        store_wordpress_credentials(&store, "site", &credentials("editor", "app pass")).unwrap();
+        let err = load_database_credentials(&store, "site", "db.example.com", 5432, "reader")
+            .unwrap_err();
+        assert!(
+            err.contains("does not hold mcp-rs database credentials"),
+            "{err}"
+        );
     }
 }

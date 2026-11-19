@@ -372,6 +372,18 @@ pub fn validate_plugin_name(name: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// MCPのツールの名前の長さの上限（2025-11-25の仕様の`SHOULD`）
+const MAX_TOOL_NAME_LENGTH: usize = 128;
+
+/// MCPのツールの名前の形か（#598）。英数字・`_`・`-`・`.`で、1〜128文字
+/// （2025-11-25の仕様の`SHOULD`）。プラグインの名前を前に付けた名前で確かめる
+fn is_valid_tool_name(name: &str) -> bool {
+    (1..=MAX_TOOL_NAME_LENGTH).contains(&name.len())
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+}
+
 /// プラグインの設定を、起動せずに確かめる（`mcp-rs check`、#589）。
 /// 起動するときと同じ確かめ方で、起動に使うコマンド（プロセスなら
 /// `command`、コンテナなら`docker`等、Kubernetesなら`kubectl`等）を返す
@@ -924,6 +936,17 @@ impl PluginHandler {
                 continue;
             };
             let name = format!("{}{}{}", config.name, TOOL_NAME_SEPARATOR, original);
+            // MCPのツールの名前の形（#598）。空白・制御文字・`*`等の入った
+            // 名前は、ログ・監査ログ・ツールの制限の名前の指定を乱すので使わない
+            if !is_valid_tool_name(&name) {
+                warn!(
+                    "Plugin '{}' listed tool {:?}, whose name is not a valid MCP tool name (letters, digits, '_', '-' and '.', at most {} characters with the plugin name) (ignored)",
+                    config.name,
+                    original.chars().take(80).collect::<String>(),
+                    MAX_TOOL_NAME_LENGTH
+                );
+                continue;
+            }
             if original_names.contains_key(&name) {
                 warn!(
                     "Plugin '{}' listed tool '{}' twice (ignored the second)",
@@ -2085,6 +2108,29 @@ for line in sys.stdin:
                 tokio::time::sleep(Duration::from_secs(1)).await;
             }
             assert!(remaining.is_empty(), "left for {}: {}", plugin, remaining);
+        }
+    }
+
+    #[test]
+    fn test_is_valid_tool_name() {
+        for ok in [
+            "fs__read_file",
+            "a",
+            "x.y-z_1",
+            &"a".repeat(MAX_TOOL_NAME_LENGTH),
+        ] {
+            assert!(is_valid_tool_name(ok), "{ok}");
+        }
+        for bad in [
+            "",
+            "fs__read file",
+            "fs__read\nfile",
+            "fs__*",
+            "fs__読む",
+            "fs__a/b",
+            &"a".repeat(MAX_TOOL_NAME_LENGTH + 1),
+        ] {
+            assert!(!is_valid_tool_name(bad), "{bad:?}");
         }
     }
 }

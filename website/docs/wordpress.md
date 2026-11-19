@@ -222,7 +222,8 @@ Update an existing WordPress post.
 - `post_id` (number): ID of the post to update
 - `title` (string, optional): New post title
 - `content` (string, optional): New post content
-- `status` (string, optional): New post status
+- `status` (string, optional): New post status: `publish`, `draft`, `pending`, `private`, or `future` (scheduled). `future` needs `date`, unless the post is already scheduled
+- `date` (string, optional): Publication date, ISO8601 in the site's time zone (for example `2026-11-19T10:00:00`). See [Scheduling an existing post](#scheduling-an-existing-post) (v0.29.0 and later)
 - `categories` (array, optional): New category IDs
 - `tags` (array, optional): New tag IDs
 - `featured_media_id` (number, optional): New featured image ID
@@ -243,6 +244,26 @@ Update an existing WordPress post.
 }
 
 ```
+
+### Scheduling an existing post
+
+To check a draft first and schedule it afterwards, update it with `status: "future"` and a future `date` (v0.29.0 and later):
+
+```json
+{
+  "tool": "update_post",
+  "arguments": {
+    "post_id": 123,
+    "status": "future",
+    "date": "2026-11-19T10:00:00"
+  }
+}
+```
+
+- `date` is in the site's time zone (Settings → General). `get_post` shows the date with a `Date:` line, marked `scheduled` for a scheduled post
+- `status: "future"` without `date` is refused unless the post is already scheduled: WordPress would publish it immediately. Up to v0.28.0, `update_post` had no `date` and sent `future` as it was
+- To change the time of a scheduled post, send only `date`
+- `get_posts` with `status: "future"` lists the scheduled posts
 
 ### `delete_post`
 
@@ -290,11 +311,30 @@ Notes:
 
 ### `get_posts`
 
-Retrieve WordPress posts.
+Retrieve WordPress posts. By default, only published posts.
+
+**Parameters:**
+- `status` (string, optional): Which posts to list: `publish` (default), `future` (scheduled), `draft`, `pending`, `private`, or `any`. Several can be given with commas, for example `future,draft` (v0.29.0 and later). Other than `publish`, the credentials must be allowed to edit posts
+- `search` (string, optional): Keyword to search for in the title and content
+- `categories`, `tags` (arrays of IDs, optional): Only posts in any of these categories, or with any of these tags (`get_categories` and `get_tags` list the IDs)
+- `author` (number, optional): Author user ID
+- `after`, `before` (string, optional): Only posts published after or before this date or date-time, in the site's time zone (`2026-11-01` or `2026-11-01T09:00:00`)
+- `orderby` (optional): `date` (default), `modified`, `title`, `id`, `slug`, `author`, or `relevance` (with `search`)
+- `order` (optional): `desc` (default) or `asc`
+- `per_page` (1-100), `page` (from 1) (optional)
+
+Without any of `search`, `categories`, `tags`, `author`, `after`, `before`, `orderby`, `order`, `per_page`, and `page`, `get_posts` returns all posts (up to 100 pages of 100). With any of them (v0.29.0 and later), it reads only one page (20 posts unless `per_page` is given), and the first line shows the page and the total, for example `Found 3 posts (page 1 of 3, 3 per page; 8 in total)`. Use `page` for the next ones:
+
+```json
+{
+  "tool": "get_posts",
+  "arguments": { "search": "mcp-rs", "after": "2026-11-01", "per_page": 10 }
+}
+```
 
 ### `get_pages`
 
-Retrieve WordPress pages.
+Retrieve WordPress pages. It takes the same `status`, `search`, `author`, `after`, `before`, `orderby` (also `menu_order`), `order`, `per_page`, and `page` as `get_posts` (v0.29.0 and later), but not `categories` and `tags`, which pages do not have.
 
 ### `get_all_content`
 
@@ -313,6 +353,8 @@ Retrieve a single WordPress post or page by ID, with its full content (not trunc
   - `text`: Plain text with tags removed
 
 For a password-protected post read without edit permission, WordPress hides the content, and the output includes a note not to treat the content as empty.
+
+The output has a `Date:` line with the publication date in the site's time zone, marked `scheduled` for a scheduled post, for example `Date: 2026-11-19T10:00:00 (site time, scheduled)` (v0.29.0 and later).
 
 The output has a `Slug:` line with the post's URL slug (a Japanese slug is shown decoded). A draft created without a slug shows `none`, because WordPress generates the slug when the post is published.
 
@@ -338,6 +380,7 @@ The upload is rejected before anything is sent to WordPress if the MIME type is 
 - A path outside the allowed folders and a file that does not exist give the same error, so the error does not reveal which files exist elsewhere
 - With STDIO (Claude Code, Claude Desktop), mcp-rs runs on the same machine as the client, so it reads the client's local files. Over HTTP/WebSocket, the client may be on another machine, and the files are read from the server. mcp-rs logs a warning at startup in that case
 - The uploaded file is public at once: WordPress gives every media file a URL that anyone can open (the `source_url` in the result), even before it is used in a post. Put only files you are willing to publish in `upload_allowed_dirs`
+- The AI client decides which file to upload. A request in a web page, a document or a plugin's answer can lead it to upload a file you did not mean to publish. Do not allow whole folders such as Pictures or Documents: make a folder only for files to publish (for example `C:/Users/me/Pictures/mcp-upload`), and move files into it when you want the AI to use them
 
 **Example Usage:**
 
@@ -467,7 +510,8 @@ Update an existing WordPress post with comprehensive options.
 - `post_id` (number): ID of post to update
 - `title` (string, optional): New post title
 - `content` (string, optional): New post content
-- `status` (string, optional): `publish`, `draft`, `pending`, or `private`. Defaults to `draft`
+- `status` (string, optional): `publish`, `draft`, `pending`, `private`, or `future` (scheduled, with `date`). Unchanged when omitted
+- `date` (string, optional): Publication date, ISO8601 in the site's time zone. See [Scheduling an existing post](#scheduling-an-existing-post)
 - `categories` (array, optional): Array of category IDs
 - `tags` (array, optional): Array of tag IDs
 - `featured_media_id` (number, optional): Featured image media ID

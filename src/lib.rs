@@ -13,6 +13,7 @@
 pub mod check;
 pub mod cli_args;
 pub mod config;
+pub mod database_keyring;
 pub mod error;
 pub mod handlers;
 pub mod init;
@@ -22,6 +23,8 @@ pub mod plugin_proxy;
 pub mod security;
 pub mod transport;
 pub mod types;
+pub mod uninstall;
+pub mod update_check;
 
 // Zero Trust（データベースのハンドラーのマイクロセグメンテーションが使う）
 pub mod zero_trust;

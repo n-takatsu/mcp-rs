@@ -1,0 +1,111 @@
+name: Packaging
+
+# Scoopのmanifest・Homebrewのformula（#578）で、リリースのmcp-rsを実際に
+# 入れて確かめる。bucket（n-takatsu/scoop-bucket）・tap（n-takatsu/homebrew-tap）
+# には、ここで確かめたファイルの写しを置く
+on:
+  pull_request:
+    paths:
+      - 'packaging/**'
+      - '.github/workflows/packaging.yml'
+  push:
+    branches: [develop]
+    paths:
+      - 'packaging/**'
+      - '.github/workflows/packaging.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  scoop:
+    name: Scoop (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Scoop
+        shell: pwsh
+        run: |
+          Invoke-RestMethod -Uri https://get.scoop.sh -OutFile install-scoop.ps1
+          .\install-scoop.ps1 -RunAsAdmin
+          Join-Path $HOME 'scoop\shims' | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Install mcp-rs with the manifest
+        shell: pwsh
+        run: |
+          scoop install .\packaging\scoop\mcp-rs.json
+          $expected = (Get-Content packaging\scoop\mcp-rs.json -Raw | ConvertFrom-Json).version
+          $actual = mcp-rs --version
+          Write-Host $actual
+          if ($actual -notmatch [regex]::Escape($expected)) { throw "expected mcp-rs $expected" }
+
+      # mcp-rs initは、起動したmcp-rsのパスを登録する。Scoopのshimが、版に
+      # よらないcurrentのフォルダを指していることを確かめる
+      - name: Check that the shim points to the current folder
+        shell: pwsh
+        run: |
+          $shim = Get-Content (Join-Path $HOME 'scoop\shims\mcp-rs.shim') -Raw
+          Write-Host $shim
+          if ($shim -notmatch '\\current\\') { throw "the shim does not point to apps\mcp-rs\current" }
+
+      # bucketの自動更新（checkver・autoupdate）で、今の版のURL・ハッシュが
+      # 作り直せることを確かめる
+      - name: Check checkver and autoupdate
+        shell: pwsh
+        run: |
+          $bucket = Join-Path $env:RUNNER_TEMP 'bucket'
+          New-Item -ItemType Directory -Force $bucket | Out-Null
+          Copy-Item packaging\scoop\mcp-rs.json $bucket
+          $checkver = Join-Path $HOME 'scoop\apps\scoop\current\bin\checkver.ps1'
+          & $checkver -App mcp-rs -Dir $bucket -ForceUpdate
+          $original = Get-Content packaging\scoop\mcp-rs.json -Raw | ConvertFrom-Json
+          $updated = Get-Content (Join-Path $bucket 'mcp-rs.json') -Raw | ConvertFrom-Json
+          $o = $original.architecture.'64bit'
+          $u = $updated.architecture.'64bit'
+          if ($o.url -ne $u.url -or $o.hash -ne $u.hash -or $o.extract_dir -ne $u.extract_dir) {
+            throw "autoupdate produced url=$($u.url) hash=$($u.hash) extract_dir=$($u.extract_dir)"
+          }
+
+  homebrew:
+    name: Homebrew (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        # macOSはApple Silicon、Linuxはx86_64（リリースにあるもの）
+        os: [macos-latest, ubuntu-latest]
+    env:
+      HOMEBREW_NO_AUTO_UPDATE: '1'
+      HOMEBREW_NO_INSTALL_CLEANUP: '1'
+      HOMEBREW_NO_ANALYTICS: '1'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Put Homebrew on PATH (Linux)
+        if: runner.os == 'Linux'
+        run: echo "/home/linuxbrew/.linuxbrew/bin" >> "$GITHUB_PATH"
+
+      # Homebrewは、tapに無いformulaを入れないので、手元のtapに置く
+      - name: Install mcp-rs with the formula
+        run: |
+          brew tap-new --no-git mcp-rs-ci/local
+          cp packaging/homebrew/mcp-rs.rb "$(brew --repository mcp-rs-ci/local)/Formula/mcp-rs.rb"
+          brew install mcp-rs-ci/local/mcp-rs
+          brew test mcp-rs-ci/local/mcp-rs
+          mcp-rs --version
+
+      # mcp-rs initは、版によらない<prefix>/opt/mcp-rs/bin/mcp-rsを登録する
+      - name: Check the version-independent path
+        run: |
+          opt="$(brew --prefix)/opt/mcp-rs/bin/mcp-rs"
+          test -x "$opt"
+          "$opt" --version
+
+      - name: Audit the formula
+        run: brew audit --formula mcp-rs-ci/local/mcp-rs

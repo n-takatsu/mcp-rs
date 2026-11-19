@@ -102,6 +102,11 @@ pub struct DatabaseSettings {
     pub username: String,
     /// 省略時は空（パスワード無し）。`${PGPASSWORD}`のように環境変数で渡せる
     pub password: Option<String>,
+    /// OSの資格情報ストアの、パスワードの項目の名前（#590）。`mcp-rs init`が
+    /// 保存する。項目は`host`・`port`・`username`と結び付いていて、
+    /// `[database]`の値が違えば使わない。`password`とは一緒に書けない
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keyring: Option<String>,
     /// TLS: `disable`・`prefer`（省略時）・`require`・`verify-full`。
     /// PostgreSQLは`allow`も使う。MySQL・MariaDBは、`ssl_root_cert`があれば
     /// `verify-ca`も使える（#594。PostgreSQLの`verify-ca`は使えない）。
@@ -135,6 +140,7 @@ impl std::fmt::Debug for DatabaseSettings {
             .field("database", &self.database)
             .field("username", &self.username)
             .field("password", &self.password.as_ref().map(|_| "<redacted>"))
+            .field("keyring", &self.keyring)
             .field("ssl_mode", &self.ssl_mode)
             .field("ssl_root_cert", &self.ssl_root_cert)
             .field("allow_write", &self.allow_write)
@@ -283,6 +289,33 @@ impl DatabaseSettings {
             }
         }
         Ok(())
+    }
+}
+
+impl PluginConfig {
+    /// 相対パスの`command`・`working_dir`を、`base`（設定ファイルのフォルダ）
+    /// を基準にする（#598）。以前は、mcp-rsを起動したフォルダ（Claude Code
+    /// では開いたフォルダ）を基準にしていた。`command`は、区切り文字を含む
+    /// とき（`./server`・`scripts/run.sh`等）だけ。`node`のような名前だけの
+    /// ものは、今までどおり`PATH`から探す。コンテナ・Kubernetesでは、
+    /// どちらもコンテナの中のパスなので変えない
+    pub fn resolve_paths(&mut self, base: Option<&std::path::Path>) {
+        let Some(base) = base else {
+            return;
+        };
+        if self.container.is_some() || self.kubernetes.is_some() {
+            return;
+        }
+        let command = self.command.trim();
+        let has_separator = command.contains('/') || command.contains('\\');
+        if has_separator && std::path::Path::new(command).is_relative() {
+            self.command = base.join(command).to_string_lossy().into_owned();
+        }
+        if let Some(dir) = self.working_dir.as_mut() {
+            if std::path::Path::new(dir.trim()).is_relative() {
+                *dir = base.join(dir.trim()).to_string_lossy().into_owned();
+            }
+        }
     }
 }
 
@@ -560,6 +593,10 @@ pub struct ServerConfig {
     pub log_retention: Option<LogRetentionConfig>,
     /// ログモジュール分離設定
     pub log_module: Option<LogModuleConfig>,
+    /// 新しい版があるかを、GitHubに問い合わせて確かめるか（#635）。
+    /// `mcp-rs check`と、STDIOモードの`mcp_rs_status`が使う。省略時は`true`
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub check_updates: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -1000,6 +1037,7 @@ impl Default for McpConfig {
     fn default() -> Self {
         Self {
             server: ServerConfig {
+                check_updates: None,
                 bind_addr: Some("127.0.0.1:8080".to_string()),
                 stdio: Some(false),
                 log_level: Some("info".to_string()),
@@ -1381,6 +1419,56 @@ impl McpConfig {
         Ok(())
     }
 
+    /// プラグインの相対パスを、設定ファイルのフォルダを基準にする（#598）
+    fn resolve_plugin_paths(&mut self) {
+        let base = self
+            .config_file
+            .as_deref()
+            .and_then(std::path::Path::parent)
+            .map(std::path::Path::to_path_buf);
+        for plugin in &mut self.plugins {
+            plugin.resolve_paths(base.as_deref());
+        }
+    }
+
+    /// `[database]`の`${VAR}`を展開し（`expand_database_config`）、`keyring`が
+    /// あれば、OSの資格情報ストアからパスワードを読む（#590）。起動と
+    /// `mcp-rs check`で使う。使わない設定（`enabled = false`）なら何もしない
+    pub fn resolve_database_credentials(config: &mut DatabaseSettings) -> Result<(), String> {
+        Self::resolve_database_credentials_with(config, &crate::security::keyring_store::OsKeyring)
+    }
+
+    /// `resolve_database_credentials`の本体。`store`は、`keyring`のときに
+    /// 読む先
+    pub fn resolve_database_credentials_with(
+        config: &mut DatabaseSettings,
+        store: &dyn crate::security::keyring_store::SecretStore,
+    ) -> Result<(), String> {
+        if !config.is_enabled() {
+            return Ok(());
+        }
+        Self::expand_database_config(config).map_err(|e| e.to_string())?;
+        let Some(name) = config.keyring.clone() else {
+            return Ok(());
+        };
+        if config.password.is_some() {
+            return Err(
+                "database: keyring cannot be combined with password. Remove password from [database] (the keyring entry holds it)"
+                    .to_string(),
+            );
+        }
+        let credentials = crate::security::keyring_store::load_database_credentials(
+            store,
+            &name,
+            config.host(),
+            config.port(),
+            &config.username,
+        )
+        .map_err(|e| format!("database.keyring: {e}"))?;
+        config.password = Some(credentials.password.to_string());
+        Ok(())
+    }
+
     /// `[audit]`から、監査ログの設定を作る（#416）。`file_path`が無ければ、
     /// 通常のログと同じユーザー領域の`audit\audit.log`
     /// （`logging::user_audit_dir`、#474）。相対パスの`file_path`は、設定
@@ -1470,6 +1558,7 @@ impl McpConfig {
             .map_err(|e| with_config_hint(describe_toml_error(&e, &content), &content))?;
         // 監査ログの既定の書き込み先（設定ファイルと同じフォルダ）に使う（#416）
         config.config_file = std::path::absolute(path).ok();
+        config.resolve_plugin_paths();
         Ok(config)
     }
 
@@ -1582,6 +1671,7 @@ impl McpConfig {
         }
 
         final_config.config_file = loaded_config_file;
+        final_config.resolve_plugin_paths();
         Ok(final_config)
     }
 
@@ -1597,6 +1687,7 @@ impl McpConfig {
     pub fn generate_sample_config() -> Result<(), Box<dyn std::error::Error>> {
         let sample_config = McpConfig {
             server: ServerConfig {
+                check_updates: None,
                 bind_addr: Some("127.0.0.1:8080".to_string()),
                 stdio: Some(false),
                 log_level: Some("info".to_string()),
@@ -3374,5 +3465,137 @@ mod additional_tests {
         let mut wordpress = None;
         apply_wordpress_env_overrides(&mut wordpress, env_from(&[("WORDPRESS_PASSWORD", "x")]));
         assert!(wordpress.is_none());
+    }
+
+    /// `[database]`の`keyring`から、パスワードを読む（#590）
+    #[test]
+    fn test_resolve_database_credentials_with_keyring() {
+        use crate::security::keyring_store::{
+            store_database_credentials, DatabaseKeyringCredentials, MemoryStore,
+        };
+        let store = MemoryStore::default();
+        store_database_credentials(
+            &store,
+            "app@db",
+            &DatabaseKeyringCredentials {
+                host: "db.example.com".to_string(),
+                port: 5432,
+                username: "reader".to_string(),
+                password: zeroize::Zeroizing::new("s3cret".to_string()),
+            },
+        )
+        .unwrap();
+        let settings = || DatabaseSettings {
+            engine: "postgresql".to_string(),
+            host: Some("db.example.com".to_string()),
+            database: "app".to_string(),
+            username: "reader".to_string(),
+            keyring: Some("app@db".to_string()),
+            ..Default::default()
+        };
+
+        let mut db = settings();
+        McpConfig::resolve_database_credentials_with(&mut db, &store).unwrap();
+        assert_eq!(db.password.as_deref(), Some("s3cret"));
+
+        // passwordと一緒には書けない
+        let mut both = DatabaseSettings {
+            password: Some("other".to_string()),
+            ..settings()
+        };
+        let err = McpConfig::resolve_database_credentials_with(&mut both, &store).unwrap_err();
+        assert!(err.contains("cannot be combined"), "{err}");
+
+        // 別のホストには使わない
+        let mut elsewhere = DatabaseSettings {
+            host: Some("attacker.example".to_string()),
+            ..settings()
+        };
+        let err = McpConfig::resolve_database_credentials_with(&mut elsewhere, &store).unwrap_err();
+        assert!(err.starts_with("database.keyring:"), "{err}");
+        assert!(elsewhere.password.is_none());
+
+        // 使わない設定では、資格情報ストアを読まない
+        let mut disabled = DatabaseSettings {
+            enabled: Some(false),
+            keyring: Some("missing".to_string()),
+            ..settings()
+        };
+        assert!(McpConfig::resolve_database_credentials_with(&mut disabled, &store).is_ok());
+    }
+
+    /// プラグインの相対パスは、設定ファイルのフォルダを基準にする（#598）
+    #[test]
+    fn test_plugin_relative_paths_are_resolved_from_the_config_folder() {
+        let base = std::path::Path::new("/configs");
+        let plugin = |command: &str, working_dir: Option<&str>| PluginConfig {
+            name: "p".to_string(),
+            command: command.to_string(),
+            args: Vec::new(),
+            env: HashMap::new(),
+            working_dir: working_dir.map(str::to_string),
+            container: None,
+            kubernetes: None,
+            enabled: None,
+            call_timeout_seconds: None,
+            max_response_bytes: None,
+            rate_limit: None,
+            trust_annotations: None,
+        };
+
+        let mut relative = plugin("./server", Some("data"));
+        relative.resolve_paths(Some(base));
+        assert_eq!(
+            std::path::Path::new(&relative.command),
+            base.join("./server")
+        );
+        assert_eq!(
+            std::path::Path::new(relative.working_dir.as_deref().unwrap()),
+            base.join("data")
+        );
+
+        // 名前だけのコマンドは、今までどおりPATHから探す
+        let mut on_path = plugin("node", None);
+        on_path.resolve_paths(Some(base));
+        assert_eq!(on_path.command, "node");
+
+        // 絶対パスは変えない
+        let absolute_command = if cfg!(windows) {
+            "C:/bin/server"
+        } else {
+            "/bin/server"
+        };
+        let mut absolute = plugin(absolute_command, None);
+        absolute.resolve_paths(Some(base));
+        assert_eq!(absolute.command, absolute_command);
+
+        // コンテナの中のパスは変えない
+        let mut container = plugin("./server", Some("data"));
+        container.container = Some(toml::from_str("image = \"x\"").unwrap());
+        container.resolve_paths(Some(base));
+        assert_eq!(container.command, "./server");
+        assert_eq!(container.working_dir.as_deref(), Some("data"));
+    }
+
+    /// `read_file`で読んだ設定のプラグインは、設定ファイルのフォルダを基準にする
+    #[test]
+    fn test_read_file_resolves_plugin_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mcp-config.toml");
+        std::fs::write(
+            &path,
+            "[server]\n\n[transport]\ntype = \"stdio\"\n\n[handlers]\n\n[[plugins]]\nname = \"p\"\ncommand = \"bin/server\"\nworking_dir = \"work\"\n",
+        )
+        .unwrap();
+        let config = McpConfig::read_file(path.to_str().unwrap()).unwrap();
+        let folder = std::path::absolute(dir.path()).unwrap();
+        assert_eq!(
+            std::path::Path::new(&config.plugins[0].command),
+            folder.join("bin/server")
+        );
+        assert_eq!(
+            std::path::Path::new(config.plugins[0].working_dir.as_deref().unwrap()),
+            folder.join("work")
+        );
     }
 }

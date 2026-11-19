@@ -4,6 +4,75 @@
 
 Our project follows a detailed 0.01 increment versioning strategy to provide granular tracking of development progress and feature implementation.
 
+## 🧭 v0.29.0 - 導入を簡単にする（続き）と使いやすさ
+
+**Release Date:** 2026-11-19
+**Focus:** ScoopとHomebrewで入れられる。`mcp-rs init`でデータベースも設定し、`mcp-rs uninstall`で外せる。新しい版があれば知らせる。`get_posts`・`get_pages`で検索・絞り込みができ、既存の投稿を予約投稿にできる
+
+### ⚠️ 互換性
+
+- **プラグインの相対パス**（#598）: `[[plugins]]`の、区切り文字を含む
+  相対パスの`command`と`working_dir`は、設定ファイルのフォルダを基準に
+  する。以前は、mcp-rsを起動したフォルダを基準にしていた。`node`のような
+  名前だけのコマンドと、コンテナ・Kubernetesのプラグインは変わらない
+- **プラグインのツールの名前**（#598）: 英数字・`_`・`-`・`.`以外を含む
+  名前（128文字を超えるものも）のツールは、警告を出して使わない
+- **WordPressの応答の大きさ**（#598）: 1つの応答は32MBまで、一覧の全件
+  取得は合計64MB・100ページ（10,000件）まで。100ページを超える一覧は、
+  先頭の100ページを返す
+- **ライブラリとして使う場合**（#638）: 本体から使われていなかった
+  データベースのモジュール（`loadbalancer`・`retry`・`advanced_security`・
+  `data_masking`等と、古い`engines::postgres`）を消した。これらの型を
+  使っていれば、ビルドできなくなる。mcp-rs本体の動きは変わらない
+
+### 📦 ScoopとHomebrew（#578）
+
+- Windows: `scoop bucket add n-takatsu https://github.com/n-takatsu/scoop-bucket`、
+  `scoop install n-takatsu/mcp-rs`
+- macOS（Apple Silicon）・Linux（x64）: `brew install n-takatsu/tap/mcp-rs`
+- bucket・tapは、新しいリリースに自動で追いつく。`mcp-rs init`は、Homebrewで
+  入れたmcp-rsを、版によらないパスで登録する
+
+### 🗄️ データベースの設定（#590・#628）
+
+- `mcp-rs init`で、WordPressに続けて、データベース（PostgreSQL・MySQL・
+  MariaDB）も設定できる。パスワードはOSの資格情報ストアに入れ、設定
+  ファイルには`[database]`の`keyring`（項目の名前）だけを書く
+- 資格情報ストアの項目は、`host`・`port`・`username`と結び付いていて、
+  値が違えば使わない
+- `mcp-rs database-keyring set|show|delete <名前>`で、`init`を使わずに
+  パスワードを入れる・見る・消す。既にある`[database]`の`password`を、
+  `keyring`を使う形に書き換えることもできる
+
+### 🧹 mcp-rs uninstall（#636）
+
+- Claude Desktop・Claude Code・Copilotの、mcp-rsの登録と、資格情報ストアの
+  項目を、1つずつ確かめてから外す。設定ファイルは、既定では残す
+- mcp-rs自身は消さず、入れ方に合わせた消し方を示す
+
+### 🔔 新しい版の知らせ（#635）
+
+- `mcp-rs check`と`mcp_rs_status`で、新しい版があれば、入れ方（Scoop・
+  Homebrew・インストールスクリプト等）に合わせた更新のしかたと一緒に知らせる
+- GitHubには、版を含む`User-Agent`だけを送る。`[server] check_updates = false`
+  で止められる
+
+### 📝 WordPress（#637・#625）
+
+- `get_posts`・`get_pages`で、`search`・`categories`・`tags`・`author`・
+  `after`・`before`・`orderby`・`order`・`per_page`・`page`を指定できる。
+  指定すると、そのページだけを読み、ページと総件数を出す。何も
+  指定しなければ、今までどおり全件
+- `update_post`の`date`で、既存の投稿を予約投稿にできる。`get_post`に
+  公開日時を出し、`get_posts`の`status`で予約済み・下書きも一覧できる
+- 日付の無い`status: "future"`は断る（WordPressがすぐに公開してしまうため）
+
+### 確かめていないこと
+
+- Copilotで、`initialize`に戻らずに2026-07-28版でつながること。v0.30.0で
+  確かめる（#570）
+- Scoop・Homebrewのbucket・tapが、このリリースに追いつくこと（1日以内）
+
 ## 🆕 v0.28.0 - MCPの2026-07-28版への対応
 
 **Release Date:** 2026-11-18

@@ -2632,7 +2632,7 @@ checksum = "47e1ffaa40ddd1f3ed91f717a33c8c0ee23fff369e3aa8772b9605cc1d22f4c3"
 
 [[package]]
 name = "mcp-rs"
-version = "0.28.0"
+version = "0.29.0"
 dependencies = [
  "aes 0.8.4",
  "aes-gcm",
@@ -2661,7 +2661,6 @@ dependencies = [
  "log",
  "mongodb",
  "mysql_async",
- "num_cpus",
  "pbkdf2 0.12.2",
  "rand 0.8.8",
  "rcgen",
@@ -2685,6 +2684,7 @@ dependencies = [
  "tokio-test",
  "tokio-tungstenite",
  "toml",
+ "toml_edit",
  "tower",
  "tower-http",
  "tracing",
@@ -3082,16 +3082,6 @@ checksum = "071dfc062690e90b734c0b2273ce72ad0ffa95f0c74596bc250dcfd960262841"
 dependencies = [
  "autocfg",
  "libm",
-]
-
-[[package]]
-name = "num_cpus"
-version = "1.17.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "91df4bbde75afed763b708b7eee1e8e7651e02d97f6d5dd763e89367e957b23b"
-dependencies = [
- "hermit-abi",
- "libc",
 ]
 
 [[package]]
@@ -5130,6 +5120,7 @@ dependencies = [
  "indexmap",
  "toml_datetime",
  "toml_parser",
+ "toml_writer",
  "winnow 0.7.14",
 ]
 

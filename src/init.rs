@@ -8,8 +8,9 @@
 //! 4. Claude Desktop・Claude Code・Copilot（VS Code）に登録する。1つずつ
 //!    確かめてから行い、断ったものは、登録のコマンドや設定を表示する
 //!
-//! 最初の版は、WordPressだけを聞く（`[database]`は後で足す）。パスワードは
-//! 引数で受け取らない。画面には出さない。
+//! WordPressに続けて、データベース（`[database]`、PostgreSQL・MySQL・
+//! MariaDB）も聞く（#590）。データベースのパスワードも、資格情報ストアに
+//! 入れる。パスワードは引数で受け取らない。画面には出さない。
 
 use std::io::{self, BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -19,8 +20,9 @@ use zeroize::Zeroizing;
 
 use crate::security::credential_tool::read_hidden;
 use crate::security::keyring_store::{
-    load_wordpress_credentials, site_origin, store_wordpress_credentials, KeyringError, OsKeyring,
-    SecretStore, WordPressKeyringCredentials,
+    load_wordpress_credentials, site_origin, store_database_credentials,
+    store_wordpress_credentials, DatabaseKeyringCredentials, KeyringError, OsKeyring, SecretStore,
+    WordPressKeyringCredentials,
 };
 
 /// サブコマンドの名前
@@ -75,9 +77,12 @@ Sets up mcp-rs by asking a few questions:
      OS credential store (Windows Credential Manager, macOS Keychain,
      Secret Service on Linux)
   2. writes the config file (asks before replacing one, and keeps a backup)
-  3. checks the config file like `mcp-rs check`: it connects to the site
-     and signs in with read-only requests
-  4. registers mcp-rs with Claude Desktop, Claude Code and GitHub Copilot
+  3. optionally, a database for the AI to read (PostgreSQL, MySQL or
+     MariaDB): adds [database] to the config file, with the password in the
+     OS credential store. Writing data stays off unless you allow it
+  4. checks the config file like `mcp-rs check`: it connects to the site
+     and signs in with read-only requests, and connects to the database
+  5. registers mcp-rs with Claude Desktop, Claude Code and GitHub Copilot
      (VS Code), asking for each one. For the ones you skip, it prints the
      command or the settings to add yourself
 
@@ -136,7 +141,7 @@ pub async fn run(args: &[String]) -> Result<bool, String> {
 }
 
 /// 質問と表示。テストでは、決めた答えを返すものに置き換える
-trait Prompt {
+pub(crate) trait Prompt {
     /// 1行の答え（前後の空白を除く）
     fn ask(&mut self, question: &str) -> io::Result<String>;
     /// 画面に出さずに読む答え
@@ -145,7 +150,7 @@ trait Prompt {
 }
 
 /// 端末
-struct Terminal;
+pub(crate) struct Terminal;
 
 impl Prompt for Terminal {
     fn ask(&mut self, question: &str) -> io::Result<String> {
@@ -172,7 +177,7 @@ impl Prompt for Terminal {
 }
 
 /// はい・いいえの質問。空の答えは`default`
-fn confirm(io: &mut dyn Prompt, question: &str, default: bool) -> io::Result<bool> {
+pub(crate) fn confirm(io: &mut dyn Prompt, question: &str, default: bool) -> io::Result<bool> {
     let hint = if default { "[Y/n]" } else { "[y/N]" };
     loop {
         let answer = io.ask(&format!("{question} {hint} "))?;
@@ -293,6 +298,10 @@ impl Setup<'_> {
             );
         }
 
+        // 2b. データベース（#590）。設定ファイルに`[database]`が無ければ
+        // 聞き、その節だけを書き足す（ファイルは置き換えない）
+        self.database_step()?;
+
         // 3. 確かめる。認証が通らなければ、その場で資格情報を入れ直せる
         // （PR #583のレビュー。やり直しで、既定の答えのまま同じ失敗に
         // 戻らないように）
@@ -307,7 +316,14 @@ impl Setup<'_> {
             })
             .await;
             self.io.say(&report.render());
-            if report.count(crate::check::Status::Error) == 0 {
+            // データベースだけのエラーでは、登録を止めない。mcp-rsは、
+            // データベースのツールが無いまま起動する（#590）
+            if report.count_errors_except(&crate::check::DATABASE_ITEMS) == 0 {
+                if report.count(crate::check::Status::Error) > 0 {
+                    self.io.say(
+                        "The database cannot be used yet: until the errors above are fixed, mcp-rs starts without the database tools. Fix [database] in the config file, then check again with mcp-rs check.\n",
+                    );
+                }
                 log_file = report.find("log file").map(|(_, file)| file.to_string());
                 break;
             }
@@ -334,7 +350,7 @@ impl Setup<'_> {
         }
 
         // 4. クライアントに登録する
-        let exe = std::env::current_exe()?;
+        let exe = stable_exe_path(&std::env::current_exe()?, |path| path.exists());
         let launch = Launch {
             exe: exe.display().to_string(),
             config: config_display,
@@ -622,6 +638,46 @@ impl Setup<'_> {
         Ok((url, entry))
     }
 
+    /// データベースを使うかを聞き、使うなら`[database]`を設定ファイルに
+    /// 書き足す（#590）。既に`[database]`があれば、そのままにする
+    fn database_step(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        let content = match std::fs::read_to_string(&self.config_path) {
+            Ok(content) => content,
+            Err(_) => return Ok(()),
+        };
+        match content.parse::<toml::Table>() {
+            Ok(table) if table.contains_key("database") => {
+                self.io
+                    .say("The config file already has [database]. Keeping it as it is.\n");
+                return Ok(());
+            }
+            Ok(_) => {}
+            // 読めない設定ファイルには書き足さない（確認でエラーになる）
+            Err(_) => return Ok(()),
+        }
+        if !confirm(
+            self.io,
+            "Also let the AI read a database (PostgreSQL, MySQL or MariaDB)?",
+            false,
+        )? {
+            self.io.say("");
+            return Ok(());
+        }
+        check_store(self.store)?;
+        let answers = ask_database(self.io, self.store, None)?;
+        let backup = append_to_config_file(&self.config_path, &database_toml(&answers)?)?;
+        self.io.say(&format!(
+            "Kept the previous config file as {}",
+            backup.display()
+        ));
+        self.offer_to_delete_secret_backup(&backup)?;
+        self.io.say(&format!(
+            "Added [database] to the config file: {}\n",
+            self.config_path.display()
+        ));
+        Ok(())
+    }
+
     /// ユーザー名とアプリケーションパスワードを聞き、`entry`の名前で入れる
     fn enter_credentials(
         &mut self,
@@ -882,7 +938,7 @@ impl Setup<'_> {
 
 /// 資格情報ストアが使えるかを確かめる（`os-keyring`無しのビルド、
 /// Secret Serviceの無いLinux等では使えない）
-fn check_store(store: &dyn SecretStore) -> Result<(), Box<dyn std::error::Error>> {
+pub(crate) fn check_store(store: &dyn SecretStore) -> Result<(), Box<dyn std::error::Error>> {
     match store.get("mcp-rs-init-check") {
         Ok(_) => Ok(()),
         Err(e) => Err(format!(
@@ -894,7 +950,7 @@ fn check_store(store: &dyn SecretStore) -> Result<(), Box<dyn std::error::Error>
 
 /// コマンドを動かす。出力は表示しない（登録の内容に秘密があることがある）。
 /// 失敗したら、エラーの出力の最後の行を返す
-fn run_quietly(program: &Path, args: &[String]) -> Result<(), String> {
+pub(crate) fn run_quietly(program: &Path, args: &[String]) -> Result<(), String> {
     let output = Command::new(program)
         .args(args)
         .stdin(Stdio::null())
@@ -928,9 +984,9 @@ impl Launch {
 }
 
 /// 登録のコマンドを持つクライアント
-struct Cli {
-    label: &'static str,
-    program: &'static str,
+pub(crate) struct Cli {
+    pub(crate) label: &'static str,
+    pub(crate) program: &'static str,
     /// `mcp add`の、名前より前に付ける引数
     add_options: &'static [&'static str],
     /// `mcp remove`の、名前より後に付ける引数
@@ -942,7 +998,7 @@ struct Cli {
 impl Cli {
     /// Claude Code。どのフォルダで開いても使えるよう、ユーザーの設定に入れる
     /// （`--scope project`は、共有の`.mcp.json`に書くので使わない）
-    const CLAUDE_CODE: Cli = Cli {
+    pub(crate) const CLAUDE_CODE: Cli = Cli {
         label: "Claude Code",
         program: "claude",
         add_options: &["--scope", "user"],
@@ -951,7 +1007,7 @@ impl Cli {
     };
     /// Copilot CLI（VS CodeのCopilotのチャットも、これの登録を使う）。
     /// `~/.copilot/mcp-config.json`に書く
-    const COPILOT: Cli = Cli {
+    pub(crate) const COPILOT: Cli = Cli {
         label: "GitHub Copilot (VS Code)",
         program: "copilot",
         add_options: &[],
@@ -969,7 +1025,7 @@ impl Cli {
         args
     }
 
-    fn remove_args(&self, name: &str) -> Vec<String> {
+    pub(crate) fn remove_args(&self, name: &str) -> Vec<String> {
         let mut args: Vec<String> = ["mcp", "remove", name]
             .iter()
             .map(|s| s.to_string())
@@ -978,7 +1034,7 @@ impl Cli {
         args
     }
 
-    fn config_file(&self) -> Option<PathBuf> {
+    pub(crate) fn config_file(&self) -> Option<PathBuf> {
         (self.config_file)()
     }
 
@@ -1158,6 +1214,274 @@ keyring = {entry}
     )
 }
 
+/// `[database]`の値を聞く。パスワードは資格情報ストアに入れる（#590）。
+/// `entry`があれば、その名前で入れる（`database-keyring set <名前>`、#628。
+/// そのときは、パスワードを空にできない）
+pub(crate) fn ask_database(
+    io: &mut dyn Prompt,
+    store: &dyn SecretStore,
+    entry: Option<&str>,
+) -> Result<DatabaseAnswers, Box<dyn std::error::Error>> {
+    io.say("Database");
+    let engine = loop {
+        let answer = io
+            .ask("Engine: postgresql, mysql or mariadb [postgresql]: ")?
+            .to_ascii_lowercase();
+        match answer.as_str() {
+            "" => break "postgresql".to_string(),
+            "postgresql" | "mysql" | "mariadb" => break answer,
+            _ => io.say("Enter postgresql, mysql or mariadb."),
+        }
+    };
+    let host = ask_with_default(io, "Host", "localhost")?;
+    let default_port = if engine == "postgresql" { 5432 } else { 3306 };
+    let port = loop {
+        let answer = io.ask(&format!("Port [{default_port}]: "))?;
+        if answer.is_empty() {
+            break default_port;
+        }
+        match answer.parse::<u16>() {
+            Ok(port) if port > 0 => break port,
+            _ => io.say("Enter a port number (1-65535)."),
+        }
+    };
+    let database = ask_required(io, "Database name: ", "The database name is empty.")?;
+    io.say("  Use a database user that can only read what the AI needs. mcp-rs refuses SQL that writes, but the user's permissions are the real limit.");
+    let username = ask_required(io, "User name: ", "The user name is empty.")?;
+    let password = match entry {
+        Some(_) => ask_database_password(io)?,
+        None => {
+            io.ask_hidden("Password (not shown while typing; leave empty if there is none): ")?
+        }
+    };
+    let keyring = if password.is_empty() {
+        None
+    } else {
+        let entry = match entry {
+            Some(entry) => entry.to_string(),
+            None => {
+                let suggested = format!("{database}@{host}");
+                let answer = io.ask(&format!(
+                    "Name for this password in the OS credential store [{suggested}]: "
+                ))?;
+                if answer.is_empty() {
+                    suggested
+                } else {
+                    answer
+                }
+            }
+        };
+        store_database_credentials(
+            store,
+            &entry,
+            &DatabaseKeyringCredentials {
+                host: host.clone(),
+                port,
+                username: username.clone(),
+                password,
+            },
+        )?;
+        io.say(&format!(
+            "Stored the password as '{entry}' in the OS credential store."
+        ));
+        Some(entry)
+    };
+
+    let loopback = is_loopback_host(&host);
+    let ssl_default = if loopback { "prefer" } else { "verify-full" };
+    if !loopback {
+        io.say("  The database is on another machine: verify-full encrypts the connection and checks the server's certificate and host name.");
+    }
+    let ssl_mode = loop {
+        let answer = ask_with_default(io, "TLS (ssl_mode)", ssl_default)?;
+        let check = crate::config::DatabaseSettings {
+            engine: engine.clone(),
+            database: database.clone(),
+            username: username.clone(),
+            ssl_mode: Some(answer.clone()),
+            // `verify-ca`の確認（ssl_root_certが要る）は、次の質問の後で行う
+            ssl_root_cert: Some("-".to_string()),
+            ..Default::default()
+        };
+        match check.validate() {
+            Ok(()) => break answer,
+            Err(e) => io.say(&e),
+        }
+    };
+    let ssl_root_cert = if ssl_mode.starts_with("verify") {
+        let answer = io.ask(
+            "CA certificate file (PEM) for a private CA, such as Amazon RDS (leave empty for a public CA): ",
+        )?;
+        (!answer.is_empty()).then_some(answer)
+    } else {
+        None
+    };
+
+    let allow_write = confirm(
+        io,
+        "Also let the AI change data (INSERT, UPDATE, DELETE)?",
+        false,
+    )? && confirm(
+        io,
+        &format!("The AI will be able to change and delete data in '{database}'. Allow it?"),
+        false,
+    )?;
+
+    let answers = DatabaseAnswers {
+        engine,
+        host,
+        port,
+        database,
+        username,
+        keyring,
+        ssl_mode,
+        ssl_root_cert,
+        allow_write,
+    };
+    answers.settings().validate()?;
+    Ok(answers)
+}
+
+/// `[既定]`付きで聞く。空の答えは`default`
+pub(crate) fn ask_with_default(
+    io: &mut dyn Prompt,
+    question: &str,
+    default: &str,
+) -> io::Result<String> {
+    let answer = io.ask(&format!("{question} [{default}]: "))?;
+    Ok(if answer.is_empty() {
+        default.to_string()
+    } else {
+        answer
+    })
+}
+
+/// 空でない答えを聞く
+pub(crate) fn ask_required(io: &mut dyn Prompt, question: &str, empty: &str) -> io::Result<String> {
+    loop {
+        let answer = io.ask(question)?;
+        if !answer.is_empty() {
+            return Ok(answer);
+        }
+        io.say(empty);
+    }
+}
+
+/// 空でないパスワードを、画面に出さずに聞く（#628）
+pub(crate) fn ask_database_password(io: &mut dyn Prompt) -> io::Result<Zeroizing<String>> {
+    loop {
+        let password = io.ask_hidden("Password (not shown while typing): ")?;
+        if !password.is_empty() {
+            return Ok(password);
+        }
+        io.say("The password is empty.");
+    }
+}
+
+/// クライアントに登録する、mcp-rsの実行ファイルのパス（#578）。Homebrewで
+/// 入れたmcp-rsは、版ごとのフォルダ（`<prefix>/Cellar/mcp-rs/<版>/bin/mcp-rs`）
+/// にあり、更新すると古い版のフォルダは消える。そのパスを登録すると、
+/// 更新の後にクライアントが起動できなくなるので、版によらない
+/// `<prefix>/opt/mcp-rs/bin/mcp-rs`があれば、そちらにする。`exists`は、
+/// パスがあるかを確かめる関数（テストで差し替える）
+fn stable_exe_path(exe: &Path, exists: impl Fn(&Path) -> bool) -> PathBuf {
+    let components: Vec<_> = exe.components().collect();
+    if let Some(cellar) = components
+        .iter()
+        .position(|component| component.as_os_str() == "Cellar")
+    {
+        // Cellar/<formula>/<版>/<残り>
+        if components.len() > cellar + 3 {
+            let prefix: PathBuf = components[..cellar].iter().collect();
+            let rest: PathBuf = components[cellar + 3..].iter().collect();
+            let opt = prefix
+                .join("opt")
+                .join(components[cellar + 1].as_os_str())
+                .join(rest);
+            if exists(&opt) {
+                return opt;
+            }
+        }
+    }
+    exe.to_path_buf()
+}
+
+/// `mcp-rs init`で聞いた、`[database]`の値（#590）
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DatabaseAnswers {
+    engine: String,
+    host: String,
+    port: u16,
+    database: String,
+    username: String,
+    /// パスワードを入れた、資格情報ストアの項目の名前。パスワードが無ければ`None`
+    keyring: Option<String>,
+    ssl_mode: String,
+    ssl_root_cert: Option<String>,
+    allow_write: bool,
+}
+
+impl DatabaseAnswers {
+    /// 確かめるための`DatabaseSettings`
+    fn settings(&self) -> crate::config::DatabaseSettings {
+        crate::config::DatabaseSettings {
+            engine: self.engine.clone(),
+            host: Some(self.host.clone()),
+            port: Some(self.port),
+            database: self.database.clone(),
+            username: self.username.clone(),
+            keyring: self.keyring.clone(),
+            ssl_mode: Some(self.ssl_mode.clone()),
+            ssl_root_cert: self.ssl_root_cert.clone(),
+            allow_write: self.allow_write.then_some(true),
+            ..Default::default()
+        }
+    }
+}
+
+/// 設定ファイルに書き足す`[database]`の節。値はTOMLとして書く（引用符等を
+/// エスケープする）。パスワードは書かず、`keyring`で資格情報ストアを指す
+pub(crate) fn database_toml(answers: &DatabaseAnswers) -> Result<String, toml::ser::Error> {
+    let mut root = toml::Table::new();
+    root.insert(
+        "database".to_string(),
+        toml::Value::try_from(answers.settings())?,
+    );
+    Ok(format!(
+        "# Database (added by mcp-rs init). The password is in the OS credential store (keyring)\n{}",
+        toml::to_string(&root)?
+    ))
+}
+
+/// ループバック（同じマシン）のホストか。TLSの既定を決める
+fn is_loopback_host(host: &str) -> bool {
+    let host = host.trim();
+    host.eq_ignore_ascii_case("localhost")
+        || host.starts_with('/')
+        || host
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
+}
+
+/// 設定ファイルの最後に`section`を書き足す（#590）。前のファイルを控えに
+/// 残し、そのパスを返す。置き換えは`write_config_file`と同じく、一時
+/// ファイルを経て行い、Unixでは本人だけが読めるようにする
+pub(crate) fn append_to_config_file(path: &Path, section: &str) -> io::Result<PathBuf> {
+    let mut content = std::fs::read_to_string(path)?;
+    let backup = backup_path(path);
+    std::fs::copy(path, &backup)?;
+    make_private(&backup)?;
+    if !content.is_empty() && !content.ends_with('\n') {
+        content.push('\n');
+    }
+    content.push('\n');
+    content.push_str(section);
+    write_atomically(path, &content, true)?;
+    Ok(backup)
+}
+
 /// `path`に`content`を書く。フォルダが無ければ作る。前のファイルがあれば、
 /// 別の名前で残し、そのパスを返す。Unixでは、フォルダを本人だけ（700）、
 /// ファイルと控えを本人だけが読める（600）ようにする（#599）。後で
@@ -1195,7 +1519,7 @@ fn create_private_dir_all(dir: &Path) -> io::Result<()> {
 }
 
 /// Unixでは、ファイルを本人だけが読み書きできる（600）ようにする
-fn make_private(path: &Path) -> io::Result<()> {
+pub(crate) fn make_private(path: &Path) -> io::Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -1211,7 +1535,7 @@ fn make_private(path: &Path) -> io::Result<()> {
 /// 同じフォルダの別の名前に書いてから、名前を変えて置き換える（#599）。
 /// 途中で止まっても、元のファイルが壊れない。`private`なら、Unixでは
 /// 本人だけが読めるようにする
-fn write_atomically(path: &Path, content: &str, private: bool) -> io::Result<()> {
+pub(crate) fn write_atomically(path: &Path, content: &str, private: bool) -> io::Result<()> {
     let name = path
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -1246,12 +1570,12 @@ fn same_file(a: &str, b: &str) -> bool {
 
 /// クライアントにある、mcp-rsの登録（#602）
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct Registration {
-    client: &'static str,
-    name: String,
-    exe: String,
+pub(crate) struct Registration {
+    pub(crate) client: &'static str,
+    pub(crate) name: String,
+    pub(crate) exe: String,
     /// `--config`の値（無ければ`None`）
-    config: Option<String>,
+    pub(crate) config: Option<String>,
     /// 登録で渡している環境変数の名前（値は持たない）
     env: Vec<String>,
 }
@@ -1269,7 +1593,10 @@ enum PreviousChoice {
 }
 
 /// `mcpServers`のうち、mcp-rsを起動する登録
-fn mcp_rs_registrations(client: &'static str, config: &serde_json::Value) -> Vec<Registration> {
+pub(crate) fn mcp_rs_registrations(
+    client: &'static str,
+    config: &serde_json::Value,
+) -> Vec<Registration> {
     let Some(servers) = config
         .get("mcpServers")
         .and_then(serde_json::Value::as_object)
@@ -1462,7 +1789,7 @@ fn has_plaintext_secret(table: &toml::Table) -> bool {
 }
 
 /// `path`の控えのパス（`<name>.bak-<日時>`）
-fn backup_path(path: &Path) -> PathBuf {
+pub(crate) fn backup_path(path: &Path) -> PathBuf {
     let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
     let name = path
         .file_name()
@@ -1480,7 +1807,7 @@ const CLAUDE_DESKTOP_CONFIG: &str = "claude_desktop_config.json";
 /// Windowsは`%APPDATA%\Claude`。Microsoft Store版（MSIX）は、
 /// `%LOCALAPPDATA%\Packages\Claude_<id>\LocalCache\Roaming\Claude`を読む
 /// ことがあるという報告がある（PR #583のレビュー）ので、そちらも見る
-fn claude_desktop_config_candidates() -> Vec<PathBuf> {
+pub(crate) fn claude_desktop_config_candidates() -> Vec<PathBuf> {
     let mut candidates = Vec::new();
     if cfg!(target_os = "windows") {
         if let Some(appdata) = std::env::var_os("APPDATA") {
@@ -1526,7 +1853,7 @@ fn claude_desktop_config_candidates() -> Vec<PathBuf> {
 /// 書く設定ファイルを選ぶ。あるファイルはすべて（どちらをClaude Desktopが
 /// 読むか分からないので、両方に足す）。1つも無ければ、`Claude`のフォルダが
 /// ある最初の場所（Claude Desktopを入れたが、設定をまだ保存していない）
-fn select_claude_desktop_configs(candidates: &[PathBuf]) -> Vec<PathBuf> {
+pub(crate) fn select_claude_desktop_configs(candidates: &[PathBuf]) -> Vec<PathBuf> {
     let existing: Vec<PathBuf> = candidates.iter().filter(|p| p.is_file()).cloned().collect();
     if !existing.is_empty() {
         return existing;
@@ -1567,7 +1894,7 @@ fn read_claude_desktop_config(
 }
 
 /// JSONのファイルを読む。無ければ空のオブジェクト。エラーの文に内容は入れない
-fn read_json_file(path: &Path) -> Result<serde_json::Value, String> {
+pub(crate) fn read_json_file(path: &Path) -> Result<serde_json::Value, String> {
     if !path.exists() {
         return Ok(serde_json::json!({}));
     }
@@ -1597,6 +1924,28 @@ fn claude_desktop_has_entry(config: &serde_json::Value) -> bool {
         .get("mcpServers")
         .and_then(|servers| servers.get(SERVER_NAME))
         .is_some()
+}
+
+/// Claude Desktopの設定ファイルの`mcpServers`から、`names`の登録を消す
+/// （`mcp-rs uninstall`、#636）。ほかの項目と順番は変えない。前のファイルは
+/// 別の名前で残し、そのパスを返す
+pub(crate) fn remove_from_claude_desktop(
+    path: &Path,
+    names: &[String],
+) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let mut config = read_json_file(path)?;
+    let servers = config
+        .get_mut("mcpServers")
+        .and_then(serde_json::Value::as_object_mut)
+        .ok_or("the Claude Desktop config file has no \"mcpServers\" object")?;
+    for name in names {
+        servers.shift_remove(name);
+    }
+    let content = serde_json::to_string_pretty(&config)? + "\n";
+    let backup = backup_path(path);
+    std::fs::copy(path, &backup)?;
+    write_atomically(path, &content, false)?;
+    Ok(backup)
 }
 
 /// Claude Desktopの設定ファイルの`mcpServers`に、mcp-rsを足す。ほかの項目と
@@ -1643,7 +1992,7 @@ fn add_to_claude_desktop(
 
 /// `PATH`から、コマンドのファイルを探す。Windowsでは`.exe`・`.cmd`・`.bat`も
 /// 探す（npmで入れた`claude.cmd`等。`Command::new`は`.exe`しか補わない）
-fn find_program(name: &str) -> Option<PathBuf> {
+pub(crate) fn find_program(name: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
     let extensions: &[&str] = if cfg!(windows) {
         &["exe", "cmd", "bat"]
@@ -2491,5 +2840,239 @@ file_path = "C:/Users/me/.mcp-rs/logs/audit.log"
             load_wordpress_credentials(&store, "blog").unwrap().site_url,
             "https://other.example"
         );
+    }
+
+    // ---- #590: [database] ----
+
+    const WORDPRESS_ONLY_CONFIG: &str = "[server]\n\n[transport]\ntype = \"stdio\"\n\n[handlers.wordpress]\nurl = \"https://example.com\"\nenabled = true\nkeyring = \"example.com\"\n";
+
+    fn config_in_temp(content: &str) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, content).unwrap();
+        (dir, path)
+    }
+
+    fn database_setup<'a>(io: &'a mut Script, store: &'a MemoryStore, path: &Path) -> Setup<'a> {
+        Setup {
+            config_path: path.to_path_buf(),
+            ..setup(io, store)
+        }
+    }
+
+    #[test]
+    fn test_database_step_adds_the_section_and_stores_the_password() {
+        let (_dir, path) = config_in_temp(WORDPRESS_ONLY_CONFIG);
+        let store = MemoryStore::default();
+        let mut io = Script::new(&[
+            "y",              // データベースも使う
+            "",               // postgresql
+            "db.example.com", // ホスト
+            "",               // 5432
+            "app",            // データベース名
+            "reader",         // ユーザー名
+            "s3cret",         // パスワード
+            "",               // 項目の名前: app@db.example.com
+            "",               // ssl_mode: verify-full（ループバックではない）
+            "",               // CAのファイル無し
+            "",               // 書き込みは許さない
+        ]);
+        database_setup(&mut io, &store, &path)
+            .database_step()
+            .unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        // 前の設定は、そのまま残る
+        assert!(content.starts_with(WORDPRESS_ONLY_CONFIG), "{content}");
+        assert!(!content.contains("s3cret"), "{content}");
+        let config: crate::config::McpConfig = toml::from_str(&content).unwrap();
+        let db = config.database.unwrap();
+        assert_eq!(db.engine, "postgresql");
+        assert_eq!(db.host.as_deref(), Some("db.example.com"));
+        assert_eq!(db.port, Some(5432));
+        assert_eq!(db.keyring.as_deref(), Some("app@db.example.com"));
+        assert_eq!(db.ssl_mode.as_deref(), Some("verify-full"));
+        assert!(db.password.is_none());
+        assert_eq!(db.allow_write, None);
+
+        // 書いた設定から、資格情報ストアのパスワードが読める
+        let mut resolved = db.clone();
+        crate::config::McpConfig::resolve_database_credentials_with(&mut resolved, &store).unwrap();
+        assert_eq!(resolved.password.as_deref(), Some("s3cret"));
+
+        // 控えが残る
+        let backups = std::fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .filter(|e| {
+                e.as_ref()
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("config.toml.bak-")
+            })
+            .count();
+        assert_eq!(backups, 1);
+    }
+
+    #[test]
+    fn test_database_step_on_loopback_mysql_with_writing() {
+        let (_dir, path) = config_in_temp(WORDPRESS_ONLY_CONFIG);
+        let store = MemoryStore::default();
+        let mut io = Script::new(&[
+            "y", "mysql", "", "", "shop", "app", "", // パスワード無し
+            "", // ssl_mode: prefer（ループバック）
+            "y", "y", // 書き込みを許す（2回確かめる）
+        ]);
+        database_setup(&mut io, &store, &path)
+            .database_step()
+            .unwrap();
+        let config: crate::config::McpConfig =
+            toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let db = config.database.unwrap();
+        assert_eq!(db.engine, "mysql");
+        assert_eq!(db.host.as_deref(), Some("localhost"));
+        assert_eq!(db.port, Some(3306));
+        assert_eq!(db.keyring, None);
+        assert_eq!(db.ssl_mode.as_deref(), Some("prefer"));
+        assert_eq!(db.allow_write, Some(true));
+        assert!(io
+            .shown
+            .iter()
+            .any(|s| s.contains("change and delete data in 'shop'")));
+    }
+
+    #[test]
+    fn test_database_step_keeps_an_existing_section_and_can_be_declined() {
+        let with_db = format!(
+            "{WORDPRESS_ONLY_CONFIG}\n[database]\nengine = \"postgresql\"\ndatabase = \"x\"\nusername = \"y\"\n"
+        );
+        let (_dir, path) = config_in_temp(&with_db);
+        let store = MemoryStore::default();
+        let mut io = Script::new(&[]);
+        database_setup(&mut io, &store, &path)
+            .database_step()
+            .unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), with_db);
+        assert!(io
+            .shown
+            .iter()
+            .any(|s| s.contains("already has [database]")));
+
+        let (_dir, path) = config_in_temp(WORDPRESS_ONLY_CONFIG);
+        let mut io = Script::new(&["n"]);
+        database_setup(&mut io, &store, &path)
+            .database_step()
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            WORDPRESS_ONLY_CONFIG
+        );
+    }
+
+    #[test]
+    fn test_database_step_asks_again_for_invalid_answers() {
+        let (_dir, path) = config_in_temp(WORDPRESS_ONLY_CONFIG);
+        let store = MemoryStore::default();
+        let mut io = Script::new(&[
+            "y",
+            "oracle",
+            "postgresql",
+            "10.0.0.5",
+            "99999",
+            "5433",
+            "",
+            "app",
+            "",
+            "reader",
+            "",
+            "verify-ca", // PostgreSQLでは使えない
+            "",          // verify-full
+            "C:/certs/ca.pem",
+            "",
+        ]);
+        database_setup(&mut io, &store, &path)
+            .database_step()
+            .unwrap();
+        let config: crate::config::McpConfig =
+            toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let db = config.database.unwrap();
+        assert_eq!(db.port, Some(5433));
+        assert_eq!(db.database, "app");
+        assert_eq!(db.ssl_mode.as_deref(), Some("verify-full"));
+        assert_eq!(db.ssl_root_cert.as_deref(), Some("C:/certs/ca.pem"));
+        assert!(io
+            .shown
+            .iter()
+            .any(|s| s == "Enter postgresql, mysql or mariadb."));
+        assert!(io
+            .shown
+            .iter()
+            .any(|s| s.contains("verify-ca would accept")));
+    }
+
+    #[test]
+    fn test_database_toml_escapes_values() {
+        let answers = DatabaseAnswers {
+            engine: "postgresql".to_string(),
+            host: "db.example.com".to_string(),
+            port: 5432,
+            database: "a\"b".to_string(),
+            username: "reader".to_string(),
+            keyring: Some("a\"b@db".to_string()),
+            ssl_mode: "verify-full".to_string(),
+            ssl_root_cert: None,
+            allow_write: false,
+        };
+        let text = database_toml(&answers).unwrap();
+        assert!(text.starts_with("# Database (added by mcp-rs init)"));
+        let parsed: toml::Table = text.parse().unwrap();
+        assert_eq!(parsed["database"]["database"].as_str(), Some("a\"b"));
+        assert!(parsed["database"].get("allow_write").is_none());
+        assert!(parsed["database"].get("password").is_none());
+    }
+
+    #[test]
+    fn test_is_loopback_host() {
+        for host in [
+            "localhost",
+            "LOCALHOST",
+            "127.0.0.1",
+            "::1",
+            "[::1]",
+            "/var/run/postgresql",
+        ] {
+            assert!(is_loopback_host(host), "{host}");
+        }
+        for host in ["db.example.com", "10.0.0.5", "localhost.example.com"] {
+            assert!(!is_loopback_host(host), "{host}");
+        }
+    }
+
+    /// Homebrewの版ごとのフォルダではなく、版によらないパスを登録する（#578）
+    #[test]
+    fn test_stable_exe_path_for_homebrew() {
+        let cellar = Path::new("/opt/homebrew/Cellar/mcp-rs/0.29.0/bin/mcp-rs");
+        assert_eq!(
+            stable_exe_path(cellar, |_| true),
+            PathBuf::from("/opt/homebrew/opt/mcp-rs/bin/mcp-rs")
+        );
+        let linux = Path::new("/home/linuxbrew/.linuxbrew/Cellar/mcp-rs/0.29.0/bin/mcp-rs");
+        assert_eq!(
+            stable_exe_path(linux, |_| true),
+            PathBuf::from("/home/linuxbrew/.linuxbrew/opt/mcp-rs/bin/mcp-rs")
+        );
+        // 版によらないパスが無ければ、そのまま
+        assert_eq!(stable_exe_path(cellar, |_| false), cellar);
+        // Homebrewでなければ、そのまま
+        for other in [
+            "C:/Users/me/.mcp-rs/bin/mcp-rs.exe",
+            "/usr/local/bin/mcp-rs",
+            "/opt/homebrew/Cellar/mcp-rs",
+        ] {
+            assert_eq!(
+                stable_exe_path(Path::new(other), |_| true),
+                Path::new(other)
+            );
+        }
     }
 }
