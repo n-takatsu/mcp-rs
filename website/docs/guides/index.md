@@ -43,7 +43,10 @@ For Claude Desktop only, the easiest way is the extension file (v0.30.0 and late
 
 Notes:
 
-- To use a database, several sites or plugins, choose your own mcp-rs config file in the extension's settings instead of the three fields. It is passed to mcp-rs as `MCP_RS_CONFIG`
+- To use a database, several sites or plugins, choose your own mcp-rs config file in the extension's settings. It is passed to mcp-rs as `MCP_RS_CONFIG` and used instead of the extension's own config. Whether you still fill in the three fields depends on that file:
+  - If it keeps the WordPress credentials in the OS credential store (`keyring`, as `mcp-rs init` writes), leave the three fields empty
+  - If it reads them from `${WORDPRESS_URL}`, `${WORDPRESS_USERNAME}` and `${WORDPRESS_PASSWORD}`, fill in the three fields: the extension passes them as those variables. If they are left empty, mcp-rs starts without WordPress and `mcp_rs_status` says what is missing
+  - The extension always runs mcp-rs in STDIO mode, even if the file sets `[transport] type = "http"`
 - The extension is not signed. Check the file with its `.sha256` or `gh attestation verify mcp-rs-<version>.mcpb --repo n-takatsu/mcp-rs`. To update, install the extension file of the new release
 - Do not also register mcp-rs with `mcp-rs init` for Claude Desktop: the same tools would appear twice. Claude Code and VS Code (GitHub Copilot) cannot use the extension; use `mcp-rs init` for them
 - While mcp-rs runs, the password is in its environment, as with `env` in the Claude Desktop config file

@@ -1824,6 +1824,20 @@ impl McpConfig {
     /// `mcp_rs_status`に出す（拡張機能では、起動に失敗すると、Claude Desktopには
     /// 「切断された」としか出ないため）。拡張機能が埋めなかった
     /// `${user_config.…}`は、入力されていないものとする
+    /// 拡張機能（#632）から起動したときの設定。Claude DesktopはSTDIOで
+    /// つなぐので、選んだ設定ファイルがHTTPモードでも、STDIOで動かす
+    /// （PR #666のレビュー）。サイトが未入力なら`allow_unset_extension_site`
+    pub fn prepare_for_extension(&mut self) {
+        if self.transport.transport_type.as_deref() != Some("stdio") {
+            info!(
+                "Started by the Claude Desktop extension: using STDIO instead of [transport] type = {:?}",
+                self.transport.transport_type.as_deref().unwrap_or("(not set)")
+            );
+            self.transport.transport_type = Some("stdio".to_string());
+        }
+        self.allow_unset_extension_site();
+    }
+
     pub fn allow_unset_extension_site(&mut self) {
         let Some(wordpress) = self.handlers.wordpress.as_mut() else {
             return;
@@ -4174,6 +4188,21 @@ mod additional_tests {
             Some(true)
         );
         assert!(filled.startup_notes.is_empty());
+    }
+
+    /// 拡張機能から起動したら、選んだ設定ファイルがHTTPモードでもSTDIOにする
+    /// （PR #666のレビュー）
+    #[test]
+    fn test_prepare_for_extension_uses_stdio() {
+        let mut config = extension_config("https://example.com", "editor", "pass");
+        config.transport.transport_type = Some("http".to_string());
+        config.prepare_for_extension();
+        assert_eq!(config.transport.transport_type.as_deref(), Some("stdio"));
+        assert!(matches!(
+            config.to_transport_config().transport_type,
+            crate::transport::TransportType::Stdio
+        ));
+        assert!(config.startup_notes.is_empty());
     }
 
     /// 拡張機能に入れる設定ファイルが読め、サイトを入力すればWordPressを使う

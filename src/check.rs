@@ -218,7 +218,12 @@ fn readable_by_others(path: &Path) -> Option<String> {
 /// 確かめる。表示はしない
 pub async fn check(args: &CheckArgs) -> Report {
     let mut report = Report::default();
-    let Some((config, credentials_ok)) = check_config(args.config.as_deref(), &mut report) else {
+    // 起動と同じく、`MCP_RS_CONFIG`を`--config`より優先する（#632、PR #666のレビュー）
+    let config_path = crate::config::config_path_from_env(
+        std::env::var(crate::config::CONFIG_ENV_VAR).ok().as_deref(),
+    )
+    .or(args.config.clone());
+    let Some((config, credentials_ok)) = check_config(config_path.as_deref(), &mut report) else {
         return report;
     };
     check_version(&config, args.offline, &mut report).await;

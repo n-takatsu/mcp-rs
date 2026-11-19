@@ -186,7 +186,7 @@ async fn load_config_from_file(path: &str) -> Result<McpConfig, Box<dyn std::err
     // Claude Desktopの拡張機能で、サイトがまだ入力されていなければ、WordPressを
     // 使わずに起動する（#632）
     if mcp_rs::config::started_by_extension() {
-        config.allow_unset_extension_site();
+        config.prepare_for_extension();
     }
     // WordPressの`${VAR}`と資格情報。参照した環境変数が無ければ起動しない（#454）
     config.resolve_wordpress_credentials()?;
