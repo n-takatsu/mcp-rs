@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- 本体（`[database]`・`DatabaseHandler`）から使われていなかった、データベースの
+  モジュールを消した（#638）。`handlers::database`の`loadbalancer`・`retry`・
+  `advanced_security`（`AnomalyDetector`・`MultiFactorAuth`・
+  `RoleBasedAccessControl`）・`integrated_security`・`security_config`・
+  `dynamic_engine`・`dynamic_tools`・`data_masking`・`masking_formatters`・
+  `masking_rules`と、古いPostgreSQLの実装`engines::postgres`
+  （`PostgresEngine`。本体は`engines::postgresql`を使う）。それだけを使う
+  テスト・例・ベンチマーク・設計の文書（`docs/`）と、使われなくなった依存
+  （`num_cpus`）も消した。約17,000行。動かない「TODO」（VPNの検証・cron式・
+  ClickHouse等）が残り、点検の範囲を増やしていた。**互換性**: mcp-rsを
+  ライブラリとして使い、これらの型を使っていた場合は、ビルドできなくなる
+  （mcp-rs本体の動きは変わらない）
+
 ### Security
 
 - WordPressの応答を読む大きさに上限を設けた（#598）。1つの応答は32MB、

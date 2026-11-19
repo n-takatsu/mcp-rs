@@ -180,8 +180,6 @@ jobs:
         run: >-
           cargo test --features redis-backend --no-fail-fast
           --test mod
-          --test postgres_engine_test --test postgres_jsonb_migration_test
-          --test postgres_transaction_test --test postgres_integration_test
           --test database_handler_column_encryption_test
           --test database_handler_micro_segmentation_test
           --test column_encryption_rbac_test
