@@ -14,6 +14,10 @@ use crate::config::{McpConfig, PluginConfig, WordPressConfig};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+/// `[database]`の項目の名前。データベースが使えなくても、mcp-rsはその
+/// ツールが無いまま起動する
+pub const DATABASE_ITEMS: [&str; 2] = ["database settings", "database"];
+
 /// データベースへの接続・プラグインの起動を待つ時間（1つにつき、#589）
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -53,6 +57,15 @@ pub struct Report {
 impl Report {
     fn push(&mut self, status: Status, item: &str, detail: impl Into<String>) {
         self.items.push((status, item.to_string(), detail.into()));
+    }
+
+    /// `items`以外の項目の、エラーの数（#590。`mcp-rs init`は、データベース
+    /// だけのエラーでは登録を止めない）
+    pub fn count_errors_except(&self, items: &[&str]) -> usize {
+        self.items
+            .iter()
+            .filter(|(s, item, _)| *s == Status::Error && !items.contains(&item.as_str()))
+            .count()
     }
 
     /// `status`の項目の数
@@ -491,8 +504,8 @@ async fn check_audit_log(config: &McpConfig, report: &mut Report) {
 /// つながってログインできるか（#589）。起動と同じ順・同じ関数で確かめる。
 /// 書き込みはしない
 async fn check_database(config: &McpConfig, offline: bool, report: &mut Report) {
-    const SETTINGS: &str = "database settings";
-    const CONNECTION: &str = "database";
+    const SETTINGS: &str = DATABASE_ITEMS[0];
+    const CONNECTION: &str = DATABASE_ITEMS[1];
     let Some(settings) = &config.database else {
         return;
     };
@@ -502,8 +515,8 @@ async fn check_database(config: &McpConfig, offline: bool, report: &mut Report) 
     }
     let mut settings = settings.clone();
     settings.resolve_paths(config.config_file.as_deref().and_then(Path::parent));
-    if let Err(e) = McpConfig::expand_database_config(&mut settings) {
-        report.push(Status::Error, SETTINGS, e.to_string());
+    if let Err(e) = McpConfig::resolve_database_credentials(&mut settings) {
+        report.push(Status::Error, SETTINGS, e);
         return;
     }
     match database_settings_warning(&settings) {

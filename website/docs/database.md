@@ -16,7 +16,7 @@ mcp-rs can connect to one PostgreSQL, MySQL, or MariaDB database and give MCP cl
 
 ## Configuration
 
-Add a `[database]` section to the configuration file:
+[`mcp-rs init`](../guides/#mcp-rs-init) can add the `[database]` section for you, with the password in the OS credential store (v0.29.0 and later). To write it by hand, add a `[database]` section to the configuration file:
 
 ```toml
 [database]
@@ -46,6 +46,7 @@ ssl_mode = "prefer"               # disable, allow, prefer (default), require, v
 | `database` | yes | | `${VAR}` allowed |
 | `username` | yes | | `${VAR}` allowed |
 | `password` | | none | `${VAR}` allowed. Never written to logs, `mcp_rs_status`, or error messages |
+| `keyring` | | none | Name of the entry in the OS credential store that holds the password, instead of `password` (v0.29.0 and later). `mcp-rs init` stores it. The entry is tied to `host`, `port` and `username`: with other values in `[database]`, mcp-rs does not use it, so a config file someone else wrote cannot send the password to another server. Cannot be combined with `password` |
 | `ssl_mode` | | `prefer` | Same meaning as libpq's `sslmode`. See [TLS](#tls). MySQL and MariaDB have no `allow` |
 | `ssl_root_cert` | | none | PEM file of the CA that signed the server certificate. A relative path is relative to the folder of the configuration file. Used only with `ssl_mode = "verify-full"` (MySQL and MariaDB: also `"verify-ca"`, which requires it): with a weaker `ssl_mode`, the database tools do not start |
 | `allow_write` | | `false` | See [Writing data](#writing-data) |

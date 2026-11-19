@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `mcp-rs init`で、データベース（PostgreSQL・MySQL・MariaDB）も設定できる
+  ようにした（#590）。WordPressに続けて、使うかを聞き、エンジン・ホスト・
+  ポート・データベース名・ユーザー名・パスワード・TLS（`ssl_mode`。ループ
+  バック以外では`verify-full`が既定）・CAのファイルを聞いて、設定ファイルに
+  `[database]`を書き足す（ファイルは置き換えず、控えを残す。既に`[database]`
+  があれば、そのまま）。書き込み（`allow_write`）は既定で無効で、許すときは
+  2回確かめる。データベースだけが使えないときは、登録を止めない
+- `[database]`の`keyring`（#590）。パスワードを、WordPressと同じくOSの資格
+  情報ストアから読む。Claude Desktopはユーザーの環境変数を渡さないので、
+  `${VAR}`では、クライアントの設定に平文で書く必要があった。資格情報ストアの
+  項目は、`host`・`port`・`username`と結び付いていて、`[database]`の値が
+  違えば使わない（ほかの人が書いた設定ファイルで、パスワードを別の
+  サーバーに送らせないため）。`password`とは一緒に書けない
+
 - `update_post`で、既存の投稿を予約投稿にできるようにした（#625）。`date`
   （公開日時、ISO8601、サイトのタイムゾーン）を足した。下書きで確かめてから
   予約する、という手順が、mcp-rsのツールだけで行える。`get_post`に公開日時
