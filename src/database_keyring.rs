@@ -19,8 +19,8 @@ use std::path::{Path, PathBuf};
 
 use crate::config::DatabaseSettings;
 use crate::init::{
-    append_to_config_file, ask_database, ask_database_password, ask_with_default, backup_path,
-    check_store, confirm, database_toml, make_private, write_atomically, Prompt, Terminal,
+    append_to_config_file, ask_database, ask_database_password, ask_with_default, check_store,
+    confirm, database_toml, make_backup, write_atomically, Prompt, Terminal,
 };
 use crate::security::keyring_store::{
     database_entry, store_database_credentials, DatabaseEntry, DatabaseKeyringCredentials,
@@ -318,9 +318,7 @@ fn update(
         true,
     )? {
         let updated = edit_database(content, name, &changes)?;
-        let backup = backup_path(path);
-        std::fs::copy(path, &backup)?;
-        make_private(&backup)?;
+        let backup = make_backup(path, true)?;
         write_atomically(path, &updated, true)?;
         io.say(&format!(
             "Changed [database] in {} (kept the previous file as {}). mcp-rs uses it the next time it starts.",
