@@ -50,11 +50,12 @@ mod windows {
     };
     use windows_sys::Win32::Security::Authorization::{
         ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
-        SDDL_REVISION_1,
+        GetSecurityInfo, SDDL_REVISION_1, SE_FILE_OBJECT,
     };
     use windows_sys::Win32::Security::{
-        GetTokenInformation, TokenUser, PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES, TOKEN_QUERY,
-        TOKEN_USER,
+        GetSecurityDescriptorControl, GetTokenInformation, TokenUser, ACL,
+        DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES, SE_DACL_PROTECTED,
+        TOKEN_QUERY, TOKEN_USER,
     };
     use windows_sys::Win32::Storage::FileSystem::{
         CreateFileW, GetVolumeInformationByHandleW, CREATE_NEW, FILE_ATTRIBUTE_NORMAL,
@@ -206,7 +207,12 @@ mod windows {
         Ok(file)
     }
 
-    /// ファイルのあるボリュームが、ACLを保てるか（`FILE_PERSISTENT_ACLS`）
+    /// 作ったファイルに、渡したACLが付いたか。
+    ///
+    /// まずボリュームがACLを保てるか（`FILE_PERSISTENT_ACLS`）を見る。
+    /// SMB 3.0の共有等で、この問い合わせ自体が使えないときは、ファイルの
+    /// ACLを読み、親から受け継がない（保護された）ACLが付いているかで決める
+    /// （PR #678のレビュー）
     fn supports_acls(file: &File) -> io::Result<bool> {
         use std::os::windows::io::AsRawHandle;
         // Win32::System::SystemServicesの値（そのためだけに機能を足さない）
@@ -225,31 +231,148 @@ mod windows {
                 std::ptr::null_mut(),
                 0,
             )
-        } == 0
+        } != 0
         {
-            return Err(io::Error::last_os_error());
+            return Ok(flags & FILE_PERSISTENT_ACLS != 0);
         }
-        Ok(flags & FILE_PERSISTENT_ACLS != 0)
+        has_protected_dacl(file)
     }
 
-    /// `CreateFileW`に渡すパス。std::fsと同じく、長いパス（`MAX_PATH`以上）は
-    /// 絶対パスにして`\\?\`を付ける（PR #678のレビュー）。短いパスは、
+    /// ファイルに、親から受け継がない（保護された）ACLが付いているか
+    fn has_protected_dacl(file: &File) -> io::Result<bool> {
+        use std::os::windows::io::AsRawHandle;
+        let mut dacl: *mut ACL = std::ptr::null_mut();
+        let mut descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+        // SAFETY: 開いているファイルのハンドル（GENERIC_READで、READ_CONTROLを
+        // 含む）と、書き込み先のポインターを渡す
+        let status = unsafe {
+            GetSecurityInfo(
+                file.as_raw_handle(),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                &mut dacl,
+                std::ptr::null_mut(),
+                &mut descriptor,
+            )
+        };
+        if status != 0 {
+            return Err(io::Error::from_raw_os_error(status as i32));
+        }
+        let descriptor = LocalBox(descriptor);
+        let mut control = 0u16;
+        let mut revision = 0u32;
+        // SAFETY: 上で得たセキュリティ記述子を渡す
+        if unsafe { GetSecurityDescriptorControl(descriptor.0, &mut control, &mut revision) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // ACLが無い（NULL DACL）のは、だれでも使える状態
+        Ok(!dacl.is_null() && control & SE_DACL_PROTECTED != 0)
+    }
+
+    /// `CreateFileW`に渡すパス。std::fsと同じく、絶対パスにして`MAX_PATH`
+    /// 以上になるときは、`\\?\`を付ける（PR #678のレビュー）。短いパスは、
     /// そのまま渡す
     fn long_path(path: &Path) -> io::Result<std::path::PathBuf> {
+        use std::os::windows::ffi::OsStringExt;
         const MAX_PATH: usize = 260;
-        let length = path.as_os_str().encode_wide().count();
-        let text = path.as_os_str().to_string_lossy();
-        if length < MAX_PATH || text.starts_with(r"\\?\") || text.starts_with(r"\\.\") {
+        let backslash = u16::from(b'\\');
+        let units: Vec<u16> = path.as_os_str().encode_wide().collect();
+        // 既に`\\?\`・`\\.\`の付いたパスは、そのまま
+        let device = |c: u8| {
+            units.len() >= 4
+                && units[0] == backslash
+                && units[1] == backslash
+                && units[2] == u16::from(c)
+                && units[3] == backslash
+        };
+        if device(b'?') || device(b'.') {
             return Ok(path.to_path_buf());
         }
-        // `absolute`は、`.`・`..`も解決する（GetFullPathNameW）
+        // 短い相対パスでも、今のフォルダが深ければ長くなるので、絶対パスの
+        // 長さで決める。`absolute`は、`.`・`..`も解決する（GetFullPathNameW）
         let absolute = std::path::absolute(path)?;
-        let absolute = absolute.as_os_str().to_string_lossy();
-        let verbatim = match absolute.strip_prefix(r"\\") {
-            Some(unc) => format!(r"\\?\UNC\{unc}"),
-            None => format!(r"\\?\{absolute}"),
+        let absolute: Vec<u16> = absolute.as_os_str().encode_wide().collect();
+        if absolute.len() < MAX_PATH {
+            return Ok(path.to_path_buf());
+        }
+        // 単独のサロゲートも保つため、UTF-16の列のまま接頭辞を付ける
+        let (prefix, body): (&str, &[u16]) = match absolute.strip_prefix(&[backslash, backslash]) {
+            Some(unc) => (r"\\?\UNC\", unc),
+            None => (r"\\?\", &absolute[..]),
         };
-        Ok(std::path::PathBuf::from(verbatim))
+        let verbatim: Vec<u16> = prefix.encode_utf16().chain(body.iter().copied()).collect();
+        Ok(std::path::PathBuf::from(std::ffi::OsString::from_wide(
+            &verbatim,
+        )))
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        fn starts_with(path: &Path, prefix: &str) -> bool {
+            let units: Vec<u16> = path.as_os_str().encode_wide().collect();
+            let prefix: Vec<u16> = prefix.encode_utf16().collect();
+            units.starts_with(&prefix)
+        }
+
+        /// 短い相対パスでも、絶対パスが長ければ`\\?\`を付ける
+        /// （PR #678のレビュー）。今のフォルダ（リポジトリ）＋252文字で、
+        /// 260文字を超える
+        #[test]
+        fn long_path_uses_the_absolute_length() {
+            let relative = format!(r"{}\b", "a".repeat(250));
+            let converted = long_path(Path::new(&relative)).unwrap();
+            assert!(starts_with(&converted, r"\\?\"), "{converted:?}");
+            assert!(converted.is_absolute());
+
+            let short = Path::new("secret.toml");
+            assert_eq!(long_path(short).unwrap(), short);
+        }
+
+        #[test]
+        fn long_path_keeps_unc_and_device_paths() {
+            let unc = format!(r"\\server\share\{}\secret.toml", "a".repeat(250));
+            let converted = long_path(Path::new(&unc)).unwrap();
+            assert!(
+                starts_with(&converted, r"\\?\UNC\server\share\"),
+                "{converted:?}"
+            );
+
+            let verbatim = format!(r"\\?\C:\{}\secret.toml", "a".repeat(250));
+            assert_eq!(
+                long_path(Path::new(&verbatim)).unwrap(),
+                Path::new(&verbatim)
+            );
+        }
+
+        /// 単独のサロゲートを、U+FFFDに変えずに保つ（PR #678のレビュー）
+        #[test]
+        fn long_path_keeps_lone_surrogates() {
+            use std::os::windows::ffi::OsStringExt;
+            let mut units: Vec<u16> = format!(r"C:\{}\", "a".repeat(260)).encode_utf16().collect();
+            units.push(0xD800);
+            let path = std::path::PathBuf::from(std::ffi::OsString::from_wide(&units));
+            let converted = long_path(&path).unwrap();
+            let converted: Vec<u16> = converted.as_os_str().encode_wide().collect();
+            assert_eq!(converted.last(), Some(&0xD800));
+        }
+
+        /// 本人だけで作ったファイルには、保護されたACLがある。stdで作った
+        /// ファイル（親から受け継ぐ）には無い
+        #[test]
+        fn has_protected_dacl_tells_private_files() {
+            let dir = tempfile::tempdir().unwrap();
+            let private = dir.path().join("private.toml");
+            let file = create_new_private(&private).unwrap();
+            assert!(has_protected_dacl(&file).unwrap());
+
+            let inherited = dir.path().join("inherited.toml");
+            let file = File::create(&inherited).unwrap();
+            assert!(!has_protected_dacl(&file).unwrap());
+        }
     }
 
     #[cfg(test)]
