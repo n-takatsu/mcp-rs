@@ -435,9 +435,7 @@ async fn run_stdio_server(config: &McpConfig) -> Result<bool, Box<dyn std::error
             true
         }
     };
-    // serverを破棄すると、プラグインの子プロセスも終了する
-    drop(server);
-    wait_for_plugin_cleanups().await;
+    stop_plugins(server).await;
     Ok(interrupted)
 }
 
@@ -464,10 +462,17 @@ async fn run_http_server(
 
     tokio::signal::ctrl_c().await?;
     info!("👋 MCP-RS終了");
-    // serverを破棄すると、プラグインの子プロセスも終了する
+    stop_plugins(server).await;
+    Ok(())
+}
+
+/// プラグインの子プロセス・コンテナを止め、後片付けの終了を待つ（#673）。
+/// HTTPモードでは、ハンドラーをHTTPの処理と共有しているので、`server`の
+/// 破棄だけでは止まらない
+async fn stop_plugins(server: mcp_rs::mcp::McpServer) {
+    server.shutdown().await;
     drop(server);
     wait_for_plugin_cleanups().await;
-    Ok(())
 }
 
 /// コンテナ・Kubernetesのプラグインの後片付け（`docker rm -f`等）の終了を
