@@ -437,6 +437,7 @@ async fn run_stdio_server(config: &McpConfig) -> Result<bool, Box<dyn std::error
     };
     // serverを破棄すると、プラグインの子プロセスも終了する
     drop(server);
+    wait_for_plugin_cleanups().await;
     Ok(interrupted)
 }
 
@@ -465,5 +466,22 @@ async fn run_http_server(
     info!("👋 MCP-RS終了");
     // serverを破棄すると、プラグインの子プロセスも終了する
     drop(server);
+    wait_for_plugin_cleanups().await;
     Ok(())
+}
+
+/// コンテナ・Kubernetesのプラグインの後片付け（`docker rm -f`等）の終了を
+/// 待つ（PR #672のレビュー）。待たずに終わると、コンテナ等が残ることがある
+async fn wait_for_plugin_cleanups() {
+    let timeout = std::time::Duration::from_secs(10);
+    let finished =
+        tokio::task::spawn_blocking(move || mcp_rs::plugin_proxy::wait_for_cleanups(timeout))
+            .await
+            .unwrap_or(false);
+    if !finished {
+        tracing::warn!(
+            "Stopping plugin containers or Kubernetes jobs did not finish within {} seconds: remove any left over by hand (docker ps -a / kubectl get jobs)",
+            timeout.as_secs()
+        );
+    }
 }

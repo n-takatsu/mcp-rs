@@ -93,7 +93,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - 設定ファイルが無くても、STDIOモードでは起動する（#667）。`--config`が無く、
-  `~/.config/mcp-rs/config.toml`も無いとき、エラーで終わらず、設定なし
+  `~/.config/mcp-rs/config.toml`も、環境変数による設定（`WORDPRESS_URL`等）も
+  無いとき、エラーで終わらず、設定なし
   （ハンドラー無し、`mcp_rs_status`だけ）で起動する。ログに警告を出し、
   `mcp_rs_status`の`Config file`に、設定ファイルが無いことと直し方
   （`mcp-rs init`か`--config`）を出す。MCPの一覧サイト（Glama等）・
@@ -119,7 +120,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   書いたものなので、64文字で切り、制御文字をエスケープする
 - STDIOモードで、Ctrl+Cを受けて終わる（#617）。標準入力の終わりと同じく、
   プラグインを止めてから、終了コード0で終わる。以前は、Windowsで
-  `STATUS_CONTROL_C_EXIT`（0以外）で止まり、`cargo run`がエラーを出していた
+  `STATUS_CONTROL_C_EXIT`（0以外）で止まり、`cargo run`がエラーを出していた。
+  STDIOモードの終了（Ctrl+C・標準入力の終わり）で、コンテナ・Kubernetesの
+  プラグインの後片付け（`docker rm -f`・`kubectl delete`）の終了を、最長10秒
+  待ってから終わる（PR #672のレビュー）。以前は待たずに終わり、コンテナ・
+  Job・Secretが残ることがあった
 
 ## [0.29.0] - 2026-11-19
 
