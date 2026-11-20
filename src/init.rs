@@ -11,6 +11,9 @@
 //! WordPressに続けて、データベース（`[database]`、PostgreSQL・MySQL・
 //! MariaDB）も聞く（#590）。データベースのパスワードも、資格情報ストアに
 //! 入れる。パスワードは引数で受け取らない。画面には出さない。
+//! 設定ファイルを新しく書くときは、最初に、WordPress・データベース・両方の
+//! どれを使うかを聞く（#645）。データベースだけなら、`[handlers.wordpress]`の
+//! 無い設定ファイルを書く。
 
 use std::io::{self, BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -73,13 +76,14 @@ pub fn help_text() -> String {
         "Usage: mcp-rs {SUBCOMMAND} [--config <path>]
 
 Sets up mcp-rs by asking a few questions:
-  1. the WordPress site URL, username and Application Password, kept in the
-     OS credential store (Windows Credential Manager, macOS Keychain,
-     Secret Service on Linux)
+  1. what the AI uses: a WordPress site, a database, or both. For WordPress,
+     the site URL, username and Application Password, kept in the OS
+     credential store (Windows Credential Manager, macOS Keychain, Secret
+     Service on Linux)
   2. writes the config file (asks before replacing one, and keeps a backup)
-  3. optionally, a database for the AI to read (PostgreSQL, MySQL or
-     MariaDB): adds [database] to the config file, with the password in the
-     OS credential store. Writing data stays off unless you allow it
+  3. a database for the AI to read (PostgreSQL, MySQL or MariaDB): adds
+     [database] to the config file, with the password in the OS credential
+     store. Writing data stays off unless you allow it
   4. checks the config file like `mcp-rs check`: it connects to the site
      and signs in with read-only requests, and connects to the database
   5. registers mcp-rs with Claude Desktop, Claude Code and GitHub Copilot
@@ -251,7 +255,7 @@ impl Setup<'_> {
                 )?,
                 _ => confirm(
                     self.io,
-                    "Replace it with a new one for WordPress? (a backup copy is kept)",
+                    "Replace it with a new one? (a backup copy is kept; answer n to keep it and add to it)",
                     false,
                 )?,
             }
@@ -270,13 +274,25 @@ impl Setup<'_> {
         // この実行で書いた設定の、サイトのURLと資格情報の名前（確認が
         // 失敗したときに、資格情報を入れ直すため）
         let mut written = None;
+        // データベースを聞くか（#645）。既にある設定ファイルを残すときは、
+        // `[database]`が無ければ、足すかを聞く
+        let mut database = DatabaseQuestion::Offer;
         if write_config {
+            // 何を使うか（#645）。WordPressを使わず、データベースだけでもよい
+            let uses = self.choose_uses()?;
             // 資格情報ストアが使えるかを、質問の前に確かめる（PR #583のレビュー）
             check_store(self.store)?;
-            let (url, entry) = self.wordpress_credentials()?;
+            let wordpress = if uses.wordpress() {
+                Some(self.wordpress_credentials()?)
+            } else {
+                None
+            };
+            let site = wordpress
+                .as_ref()
+                .map(|(url, entry)| (url.as_str(), entry.as_str()));
             let content = match &carry {
-                Some(old) => carry_over_toml(old, &url, &entry)?,
-                None => config_toml(&url, &entry),
+                Some(old) => carry_over_toml(old, site)?,
+                None => config_toml(site),
             };
             let backup = write_config_file(&self.config_path, &content)?;
             if let Some(backup) = backup {
@@ -291,7 +307,12 @@ impl Setup<'_> {
             if carry.is_some() {
                 self.note_copied_secrets_and_env(&content);
             }
-            written = Some((url, entry));
+            written = wordpress;
+            database = if uses.database() {
+                DatabaseQuestion::Required
+            } else {
+                DatabaseQuestion::Skip
+            };
         } else {
             self.io.say(
                 "Keeping the config file as it is. Checking it and registering mcp-rs with it.\n",
@@ -300,11 +321,21 @@ impl Setup<'_> {
 
         // 2b. データベース（#590）。設定ファイルに`[database]`が無ければ
         // 聞き、その節だけを書き足す（ファイルは置き換えない）
-        self.database_step()?;
+        if database != DatabaseQuestion::Skip {
+            self.database_step(database == DatabaseQuestion::Offer)?;
+        }
 
         // 3. 確かめる。認証が通らなければ、その場で資格情報を入れ直せる
         // （PR #583のレビュー。やり直しで、既定の答えのまま同じ失敗に
         // 戻らないように）
+        // WordPressを使わない設定（データベースだけ、#645）では、データベースの
+        // エラーでも登録しない（使えるツールが無いため）
+        let uses_wordpress = config_uses_wordpress(&self.config_path);
+        let not_blocking: &[&str] = if uses_wordpress {
+            &crate::check::DATABASE_ITEMS
+        } else {
+            &[]
+        };
         let log_file;
         loop {
             self.io
@@ -318,7 +349,7 @@ impl Setup<'_> {
             self.io.say(&report.render());
             // データベースだけのエラーでは、登録を止めない。mcp-rsは、
             // データベースのツールが無いまま起動する（#590）
-            if report.count_errors_except(&crate::check::DATABASE_ITEMS) == 0 {
+            if report.count_errors_except(not_blocking) == 0 {
                 if report.count(crate::check::Status::Error) > 0 {
                     self.io.say(
                         "The database cannot be used yet: until the errors above are fixed, mcp-rs starts without the database tools. Fix [database] in the config file, then check again with mcp-rs check.\n",
@@ -343,9 +374,15 @@ impl Setup<'_> {
                     continue;
                 }
             }
-            self.io.say(
-                "mcp-rs would not work with this config file yet, so it was not registered with any client. Fix the errors above, then run mcp-rs init again. To enter the credentials again, answer y to replacing the config file and n to using the stored credentials.",
-            );
+            if uses_wordpress {
+                self.io.say(
+                    "mcp-rs would not work with this config file yet, so it was not registered with any client. Fix the errors above, then run mcp-rs init again. To enter the credentials again, answer y to replacing the config file and n to using the stored credentials.",
+                );
+            } else {
+                self.io.say(
+                    "mcp-rs would have no tools to use with this config file yet, so it was not registered with any client. Fix [database] in the config file (to store the password again: mcp-rs database-keyring set), then run mcp-rs init again.",
+                );
+            }
             return Ok(false);
         }
 
@@ -652,9 +689,27 @@ impl Setup<'_> {
         Ok((url, entry))
     }
 
-    /// データベースを使うかを聞き、使うなら`[database]`を設定ファイルに
-    /// 書き足す（#590）。既に`[database]`があれば、そのままにする
-    fn database_step(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+    /// 設定ファイルを新しく書くときに、何を使うかを聞く（#645）
+    fn choose_uses(&mut self) -> io::Result<Uses> {
+        self.io.say("What should the AI use through mcp-rs?");
+        self.io.say("  1. A WordPress site");
+        self.io
+            .say("  2. A database (PostgreSQL, MySQL or MariaDB), without WordPress");
+        self.io.say("  3. Both");
+        loop {
+            match self.io.ask("Choose 1, 2 or 3 [1]: ")?.as_str() {
+                "" | "1" => return Ok(Uses::WordPress),
+                "2" => return Ok(Uses::Database),
+                "3" => return Ok(Uses::Both),
+                _ => self.io.say("Answer 1, 2 or 3."),
+            }
+        }
+    }
+
+    /// `[database]`を設定ファイルに書き足す（#590）。`ask`なら、使うかを
+    /// 先に聞く（データベースを使うと選んだとき（#645）は聞かない）。既に
+    /// `[database]`があれば、そのままにする
+    fn database_step(&mut self, ask: bool) -> Result<(), Box<dyn std::error::Error>> {
         let content = match std::fs::read_to_string(&self.config_path) {
             Ok(content) => content,
             Err(_) => return Ok(()),
@@ -669,11 +724,13 @@ impl Setup<'_> {
             // 読めない設定ファイルには書き足さない（確認でエラーになる）
             Err(_) => return Ok(()),
         }
-        if !confirm(
-            self.io,
-            "Also let the AI read a database (PostgreSQL, MySQL or MariaDB)?",
-            false,
-        )? {
+        if ask
+            && !confirm(
+                self.io,
+                "Also let the AI read a database (PostgreSQL, MySQL or MariaDB)?",
+                false,
+            )?
+        {
             self.io.say("");
             return Ok(());
         }
@@ -1199,10 +1256,11 @@ fn default_entry_name(url: &str) -> String {
         .unwrap_or_else(|| "wordpress".to_string())
 }
 
-/// 書く設定ファイル。WordPressだけを使い、資格情報はOSの資格情報ストアから読む
-fn config_toml(url: &str, entry: &str) -> String {
-    let quote = |s: &str| toml::Value::String(s.to_string()).to_string();
-    format!(
+/// 書く設定ファイル。`wordpress`（サイトのURLと資格情報の名前）があれば
+/// WordPressを使い、資格情報はOSの資格情報ストアから読む。無ければ
+/// WordPressを使わない（データベースだけ、#645。`[database]`は後で書き足す）
+fn config_toml(wordpress: Option<(&str, &str)>) -> String {
+    let mut text = format!(
         "# mcp-rs config file, written by `mcp-rs init` (mcp-rs {version}).
 # Check it with: mcp-rs check --config <this file>
 # Settings: https://n-takatsu.github.io/mcp-rs/docs/guides/#config-file
@@ -1213,19 +1271,82 @@ type = \"stdio\"
 [server]
 # Logs go to a file, never to standard output in STDIO mode
 log_level = \"warn\"
+",
+        version = env!("CARGO_PKG_VERSION"),
+    );
+    text.push('\n');
+    match wordpress {
+        Some((url, entry)) => text.push_str(&wordpress_toml(url, entry)),
+        // `--config`で読むときは`[handlers]`が要る（無いと起動しない）
+        None => {
+            text.push_str("# Without WordPress (mcp-rs init can add a site later)\n[handlers]\n")
+        }
+    }
+    text
+}
 
-[handlers.wordpress]
+/// 1つのサイトの`[handlers.wordpress]`の節
+fn wordpress_toml(url: &str, entry: &str) -> String {
+    let quote = |s: &str| toml::Value::String(s.to_string()).to_string();
+    format!(
+        "[handlers.wordpress]
 enabled = true
 url = {url}
 # The username and the Application Password are kept in the OS credential
 # store under this name (mcp-rs wordpress-keyring show {entry_plain})
 keyring = {entry}
 ",
-        version = env!("CARGO_PKG_VERSION"),
         url = quote(url),
         entry = quote(entry),
         entry_plain = entry,
     )
+}
+
+/// 設定ファイルに`[handlers.wordpress]`があるか（#645）。読めなければ、
+/// あるとみなす（データベースのエラーで登録を止めない、今までの扱い）
+fn config_uses_wordpress(path: &Path) -> bool {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|text| {
+            text.trim_start_matches('\u{feff}')
+                .parse::<toml::Table>()
+                .ok()
+        })
+        .is_none_or(|table| {
+            table
+                .get("handlers")
+                .and_then(|h| h.get("wordpress"))
+                .is_some()
+        })
+}
+
+/// 設定ファイルを新しく書くときに使うもの（#645）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Uses {
+    WordPress,
+    Database,
+    Both,
+}
+
+impl Uses {
+    fn wordpress(self) -> bool {
+        self != Uses::Database
+    }
+
+    fn database(self) -> bool {
+        self != Uses::WordPress
+    }
+}
+
+/// データベース（`[database]`）を聞くか（#645）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DatabaseQuestion {
+    /// 使うかを聞く（既にある設定ファイルを残したとき）
+    Offer,
+    /// 使うと選んだので、使うかは聞かずに設定を聞く
+    Required,
+    /// 使わないと選んだので、聞かない
+    Skip,
 }
 
 /// `[database]`の値を聞く。パスワードは資格情報ストアに入れる（#590）。
@@ -1744,8 +1865,13 @@ fn extra_settings(old: &toml::Table) -> Vec<String> {
 
 /// 前の設定を写した、新しい設定ファイル（#602）。`[handlers.wordpress]`は、
 /// 資格情報を外して`url`・`keyring`にし、`[transport]`はSTDIOにする
-/// （MCPのクライアントはSTDIOで起動する）。前のファイルのコメントは写らない
-fn carry_over_toml(old: &toml::Table, url: &str, entry: &str) -> Result<String, toml::ser::Error> {
+/// （MCPのクライアントはSTDIOで起動する）。前のファイルのコメントは写らない。
+/// `wordpress`が無ければ（データベースだけ、#645）、`[handlers.wordpress]`を
+/// 写さない
+fn carry_over_toml(
+    old: &toml::Table,
+    wordpress: Option<(&str, &str)>,
+) -> Result<String, toml::ser::Error> {
     let mut table = old.clone();
     let transport = table
         .entry("transport")
@@ -1754,6 +1880,28 @@ fn carry_over_toml(old: &toml::Table, url: &str, entry: &str) -> Result<String, 
         transport.remove("transport_type");
         transport.insert("type".to_string(), toml::Value::String("stdio".to_string()));
     }
+    let Some((url, entry)) = wordpress else {
+        // `[handlers]`は残す（`--config`で読むときに要る）
+        match table
+            .get_mut("handlers")
+            .and_then(toml::Value::as_table_mut)
+        {
+            Some(handlers) => {
+                handlers.remove("wordpress");
+            }
+            None => {
+                table.insert(
+                    "handlers".to_string(),
+                    toml::Value::Table(toml::Table::new()),
+                );
+            }
+        }
+        let body = toml::to_string(&table)?;
+        return Ok(format!(
+            "# mcp-rs config file, written by `mcp-rs init` (mcp-rs {}) from a previous\n# config file, without WordPress.\n# Check it with: mcp-rs check --config <this file>\n\n{body}",
+            env!("CARGO_PKG_VERSION")
+        ));
+    };
     let handlers = table
         .entry("handlers")
         .or_insert_with(|| toml::Value::Table(toml::Table::new()));
@@ -2158,7 +2306,7 @@ file_path = "C:/Users/me/.mcp-rs/logs/audit.log"
             .iter()
             .any(|e| e.ends_with(" url") || e.ends_with(" enabled")));
         // 新しい設定と同じものだけなら、何も無い
-        let fresh: toml::Table = config_toml("https://example.com", "example.com")
+        let fresh: toml::Table = config_toml(Some(("https://example.com", "example.com")))
             .parse()
             .unwrap();
         assert!(
@@ -2172,7 +2320,7 @@ file_path = "C:/Users/me/.mcp-rs/logs/audit.log"
     #[test]
     fn test_carry_over_toml_keeps_settings_without_credentials() {
         let old: toml::Table = PREVIOUS_CONFIG.parse().unwrap();
-        let text = carry_over_toml(&old, "https://example.com", "example.com").unwrap();
+        let text = carry_over_toml(&old, Some(("https://example.com", "example.com"))).unwrap();
         assert!(!text.contains("plain secret"), "{text}");
         assert!(!text.contains("editor"), "{text}");
         let config: crate::config::McpConfig = toml::from_str(&text).unwrap();
@@ -2465,13 +2613,79 @@ file_path = "C:/Users/me/.mcp-rs/logs/audit.log"
     /// 書いた設定ファイルを、起動と同じ形で読める
     #[test]
     fn test_config_toml_loads() {
-        let text = config_toml("https://example.com", "example \"site\"");
+        let text = config_toml(Some(("https://example.com", "example \"site\"")));
         let config: crate::config::McpConfig = toml::from_str(&text).unwrap();
         let wordpress = config.handlers.wordpress.unwrap();
         assert_eq!(wordpress.enabled, Some(true));
         assert_eq!(wordpress.url, "https://example.com");
         assert_eq!(wordpress.keyring.as_deref(), Some("example \"site\""));
         assert_eq!(config.transport.transport_type.as_deref(), Some("stdio"));
+    }
+
+    /// 何を使うかを聞く（#645）。Enterだけなら、今までどおりWordPress
+    #[test]
+    fn test_choose_uses() {
+        let store = MemoryStore::default();
+        let mut io = Script::new(&["", "4", "2", "3"]);
+        let mut setup = setup(&mut io, &store);
+        assert_eq!(setup.choose_uses().unwrap(), Uses::WordPress);
+        assert_eq!(setup.choose_uses().unwrap(), Uses::Database);
+        assert_eq!(setup.choose_uses().unwrap(), Uses::Both);
+        assert!(io.shown.iter().any(|s| s == "Answer 1, 2 or 3."));
+        assert!(Uses::Both.wordpress() && Uses::Both.database());
+        assert!(!Uses::Database.wordpress() && !Uses::WordPress.database());
+    }
+
+    /// データベースだけの設定ファイルは、`[handlers.wordpress]`を持たず、
+    /// 起動と同じ形で読める（#645）
+    #[test]
+    fn test_config_toml_without_wordpress() {
+        let text = config_toml(None);
+        assert!(!text.contains("wordpress]"), "{text}");
+        let (_dir, path) = config_in_temp(&text);
+        // `--config`で読む形（起動・mcp-rs checkと同じ）
+        let config = crate::config::McpConfig::read_file(&path.display().to_string()).unwrap();
+        assert!(config.handlers.wordpress.is_none());
+        assert_eq!(config.transport.transport_type.as_deref(), Some("stdio"));
+        assert!(!config_uses_wordpress(&path));
+        let (_dir, path) = config_in_temp(WORDPRESS_ONLY_CONFIG);
+        assert!(config_uses_wordpress(&path));
+        // 読めない設定ファイルは、WordPressを使うとみなす（今までの扱い）
+        assert!(config_uses_wordpress(Path::new("no such file.toml")));
+    }
+
+    /// データベースだけを選ぶと、前の設定の`[handlers.wordpress]`（平文の
+    /// パスワードを含む）を写さず、ほかの設定は写す（#645）
+    #[test]
+    fn test_carry_over_toml_without_wordpress() {
+        let old: toml::Table = PREVIOUS_CONFIG.parse().unwrap();
+        let text = carry_over_toml(&old, None).unwrap();
+        assert!(!text.contains("plain secret"), "{text}");
+        assert!(!text.contains("wordpress"), "{text}");
+        let (_dir, path) = config_in_temp(&text);
+        let config = crate::config::McpConfig::read_file(&path.display().to_string()).unwrap();
+        assert!(config.handlers.wordpress.is_none());
+        assert_eq!(config.plugins.len(), 1);
+        assert_eq!(config.transport.transport_type.as_deref(), Some("stdio"));
+        assert!(!has_plaintext_secret(&text.parse().unwrap()));
+    }
+
+    /// データベースを使うと選んだときは、使うかを聞かずに設定を聞く（#645）
+    #[test]
+    fn test_database_step_without_asking() {
+        let (_dir, path) = config_in_temp(&config_toml(None));
+        let store = MemoryStore::default();
+        let mut io = Script::new(&["", "", "", "app", "reader", "", "", ""]);
+        database_setup(&mut io, &store, &path)
+            .database_step(false)
+            .unwrap();
+        assert!(!io.shown.iter().any(|s| s.contains("Also let the AI read")));
+        let config = crate::config::McpConfig::read_file(&path.display().to_string()).unwrap();
+        assert!(config.handlers.wordpress.is_none());
+        let db = config.database.unwrap();
+        assert_eq!(db.engine, "postgresql");
+        assert_eq!(db.database, "app");
+        assert!(!config_uses_wordpress(&path));
     }
 
     #[test]
@@ -2913,7 +3127,7 @@ file_path = "C:/Users/me/.mcp-rs/logs/audit.log"
             "",               // 書き込みは許さない
         ]);
         database_setup(&mut io, &store, &path)
-            .database_step()
+            .database_step(true)
             .unwrap();
 
         let content = std::fs::read_to_string(&path).unwrap();
@@ -2959,7 +3173,7 @@ file_path = "C:/Users/me/.mcp-rs/logs/audit.log"
             "y", "y", // 書き込みを許す（2回確かめる）
         ]);
         database_setup(&mut io, &store, &path)
-            .database_step()
+            .database_step(true)
             .unwrap();
         let config: crate::config::McpConfig =
             toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
@@ -2985,7 +3199,7 @@ file_path = "C:/Users/me/.mcp-rs/logs/audit.log"
         let store = MemoryStore::default();
         let mut io = Script::new(&[]);
         database_setup(&mut io, &store, &path)
-            .database_step()
+            .database_step(true)
             .unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), with_db);
         assert!(io
@@ -2996,7 +3210,7 @@ file_path = "C:/Users/me/.mcp-rs/logs/audit.log"
         let (_dir, path) = config_in_temp(WORDPRESS_ONLY_CONFIG);
         let mut io = Script::new(&["n"]);
         database_setup(&mut io, &store, &path)
-            .database_step()
+            .database_step(true)
             .unwrap();
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
@@ -3026,7 +3240,7 @@ file_path = "C:/Users/me/.mcp-rs/logs/audit.log"
             "",
         ]);
         database_setup(&mut io, &store, &path)
-            .database_step()
+            .database_step(true)
             .unwrap();
         let config: crate::config::McpConfig =
             toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();

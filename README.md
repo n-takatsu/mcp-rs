@@ -98,7 +98,7 @@ irm https://raw.githubusercontent.com/n-takatsu/mcp-rs/main/install/install.ps1 
 curl -fsSL https://raw.githubusercontent.com/n-takatsu/mcp-rs/main/install/install.sh | sh
 ```
 
-**2. Set up.** Run `mcp-rs init` (the install script offers to run it). It asks for the site URL, the username and the Application Password (kept in the OS credential store, not in a file), writes the config file (`~/.config/mcp-rs/config.toml`), checks the connection and sign-in, and registers mcp-rs with Claude Desktop, Claude Code and GitHub Copilot (VS Code), asking before each change:
+**2. Set up.** Run `mcp-rs init` (the install script offers to run it). It asks for the site URL, the username and the Application Password (kept in the OS credential store, not in a file; it can also set up a database, with or without WordPress), writes the config file (`~/.config/mcp-rs/config.toml`), checks the connection and sign-in, and registers mcp-rs with Claude Desktop, Claude Code and GitHub Copilot (VS Code), asking before each change:
 
 ```bash
 mcp-rs init

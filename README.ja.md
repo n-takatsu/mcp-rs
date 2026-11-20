@@ -97,7 +97,7 @@ irm https://raw.githubusercontent.com/n-takatsu/mcp-rs/main/install/install.ps1 
 curl -fsSL https://raw.githubusercontent.com/n-takatsu/mcp-rs/main/install/install.sh | sh
 ```
 
-**2. セットアップ** `mcp-rs init`を動かします（インストールスクリプトは、動かすかを聞きます）。サイトのURL・ユーザー名・アプリケーションパスワードを聞き（ファイルではなく、OSの資格情報ストアに入れます）、設定ファイル（`~/.config/mcp-rs/config.toml`）を書き、接続とサインインを確かめ、Claude Desktop・Claude Code・GitHub Copilot（VS Code）に登録します。変える前には、1つずつ確かめます。
+**2. セットアップ** `mcp-rs init`を動かします（インストールスクリプトは、動かすかを聞きます）。サイトのURL・ユーザー名・アプリケーションパスワードを聞き（ファイルではなく、OSの資格情報ストアに入れます。データベースも、WordPressと一緒にでも、データベースだけでも設定できます）、設定ファイル（`~/.config/mcp-rs/config.toml`）を書き、接続とサインインを確かめ、Claude Desktop・Claude Code・GitHub Copilot（VS Code）に登録します。変える前には、1つずつ確かめます。
 
 ```bash
 mcp-rs init

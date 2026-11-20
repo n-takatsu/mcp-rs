@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `mcp-rs init`で、WordPressを使わずにデータベースだけを設定できるように
+  した（#645）。設定ファイルを新しく書くときに、最初に何を使うか
+  （WordPress・データベース・両方）を聞く。データベースだけなら、
+  `[handlers.wordpress]`の無い設定ファイル（空の`[handlers]`と`[database]`）を
+  書き、確かめてからクライアントに登録する。データベースだけの設定では、
+  データベースの確認が失敗したら登録しない（使えるツールが無いため。
+  WordPressもあるときは、今までどおり登録する）。前の設定を写す（#602）
+  ときは、`[handlers.wordpress]`を写さない。既にある設定ファイルを残す
+  ときは、今までどおり`[database]`が無ければ足すかを聞く
+
 - Claude Desktopの拡張機能（MCP Bundle、`mcp-rs-<版>.mcpb`）をリリースに
   付ける（#632）。Windows・macOS（Apple Silicon）・Linuxのmcp-rsを1つに
   まとめ、サイトのURL・ユーザー名・アプリケーションパスワード（Claude
