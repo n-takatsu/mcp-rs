@@ -1653,8 +1653,23 @@ pub(crate) mod tests {
             .await
             .unwrap_err();
         assert!(error.to_string().contains("shutting down"), "{}", error);
+
+        // プラグインのプロセスが実際に終わる（`dispatcher`が残っていても）
+        // （PR #675のレビュー）
+        let exited = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let Ok(Some(_)) = handler.connection.lock().await.child.try_wait() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await;
+        assert!(exited.is_ok(), "the plugin process is still running");
+
         // 2回目は何もしない
         server.shutdown().await;
+        drop(_dispatcher);
     }
 
     #[tokio::test]
