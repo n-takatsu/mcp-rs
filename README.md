@@ -71,7 +71,7 @@ Connect with a read-only database role. See the [Database Integration Guide](htt
 
 ## 🚀 Quick Start
 
-You need a WordPress site with Application Passwords (Users > Profile > Application Passwords) that mcp-rs can reach over HTTPS. Rust is not needed: each release from v0.25.0 has ready-built mcp-rs for Windows (x64), macOS (Apple Silicon), and Linux (x64).
+To use WordPress, you need a site with Application Passwords (Users > Profile > Application Passwords) that mcp-rs can reach over HTTPS. To use only a database (PostgreSQL, MySQL or MariaDB), no WordPress site is needed: answer 2, "A database", to the first question of `mcp-rs init`. Rust is not needed: each release from v0.25.0 has ready-built mcp-rs for Windows (x64), macOS (Apple Silicon), and Linux (x64).
 
 **1. Install** with a package manager (from v0.29.0). It installs the release's ready-built mcp-rs, and updates it with your other packages (`scoop update`, `brew upgrade`):
 
@@ -98,7 +98,7 @@ irm https://raw.githubusercontent.com/n-takatsu/mcp-rs/main/install/install.ps1 
 curl -fsSL https://raw.githubusercontent.com/n-takatsu/mcp-rs/main/install/install.sh | sh
 ```
 
-**2. Set up.** Run `mcp-rs init` (the install script offers to run it). It asks for the site URL, the username and the Application Password (kept in the OS credential store, not in a file), writes the config file (`~/.config/mcp-rs/config.toml`), checks the connection and sign-in, and registers mcp-rs with Claude Desktop, Claude Code and GitHub Copilot (VS Code), asking before each change:
+**2. Set up.** Run `mcp-rs init` (the install script offers to run it). It asks for the site URL, the username and the Application Password (kept in the OS credential store, not in a file; it can also set up a database, with or without WordPress; for a database only, it skips the WordPress questions), writes the config file (`~/.config/mcp-rs/config.toml`), checks the connection and sign-in, and registers mcp-rs with Claude Desktop, Claude Code and GitHub Copilot (VS Code), asking before each change:
 
 ```bash
 mcp-rs init

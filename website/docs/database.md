@@ -16,7 +16,7 @@ mcp-rs can connect to one PostgreSQL, MySQL, or MariaDB database and give MCP cl
 
 ## Configuration
 
-[`mcp-rs init`](../guides/#mcp-rs-init) can add the `[database]` section for you, with the password in the OS credential store (v0.29.0 and later). To write it by hand, add a `[database]` section to the configuration file:
+[`mcp-rs init`](../guides/#mcp-rs-init) can add the `[database]` section for you, with the password in the OS credential store (v0.29.0 and later). From v0.30.0, it can also set up a database without WordPress (answer 2, "A database", to its first question): the config file then has `[database]` and no `[handlers.wordpress]`. To write it by hand, add a `[database]` section to the configuration file:
 
 ```toml
 [database]

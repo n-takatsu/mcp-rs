@@ -946,7 +946,7 @@ const MAX_WORDPRESS_SITE_NAME_LEN: usize = 32;
 
 /// WordPressのサイトの名前を確かめる（#640）。英小文字・数字・`_`・`-`で、
 /// 32文字まで
-fn check_wordpress_site_name(name: &str) -> Result<(), String> {
+pub(crate) fn check_wordpress_site_name(name: &str) -> Result<(), String> {
     let valid = !name.is_empty()
         && name.len() <= MAX_WORDPRESS_SITE_NAME_LEN
         && name
