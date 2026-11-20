@@ -199,7 +199,8 @@ mod windows {
         use std::path::Path;
 
         use windows_sys::Win32::Security::Authorization::{
-            ConvertSecurityDescriptorToStringSecurityDescriptorW, GetNamedSecurityInfoW,
+            ConvertSecurityDescriptorToStringSecurityDescriptorW,
+            ConvertStringSecurityDescriptorToSecurityDescriptorW, GetNamedSecurityInfoW,
             SDDL_REVISION_1, SE_FILE_OBJECT,
         };
         use windows_sys::Win32::Security::{DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR};
@@ -230,11 +231,16 @@ mod windows {
                 path.display()
             );
             let descriptor = LocalBox(descriptor);
+            descriptor_to_sddl(descriptor.0)
+        }
+
+        /// セキュリティ記述子のDACLを、SDDLの文字列にする
+        fn descriptor_to_sddl(descriptor: PSECURITY_DESCRIPTOR) -> String {
             let mut string: *mut u16 = std::ptr::null_mut();
-            // SAFETY: 上で得たセキュリティ記述子を渡す
+            // SAFETY: 呼び出し側が得た、生きているセキュリティ記述子を渡す
             let ok = unsafe {
                 ConvertSecurityDescriptorToStringSecurityDescriptorW(
-                    descriptor.0,
+                    descriptor,
                     SDDL_REVISION_1,
                     DACL_SECURITY_INFORMATION,
                     &mut string,
@@ -253,7 +259,25 @@ mod windows {
         /// 本人・SYSTEM・Administratorsだけで、受け継いでいないACLか
         pub(crate) fn assert_private(path: &Path) {
             let sddl = dacl_sddl(path);
-            let expected = super::private_sddl(&super::current_user_sid().unwrap());
+            // Windowsは、よく知られたSIDを短い名前で書く（組み込みの
+            // Administratorは`LA`等）。期待する値も、同じ変換を通して比べる
+            let expected = wide(super::private_sddl(&super::current_user_sid().unwrap()).as_ref());
+            let mut descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+            // SAFETY: 0で終わるSDDLと、書き込み先のポインターを渡す
+            let ok = unsafe {
+                ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                    expected.as_ptr(),
+                    SDDL_REVISION_1,
+                    &mut descriptor,
+                    std::ptr::null_mut(),
+                )
+            };
+            assert_ne!(
+                ok, 0,
+                "ConvertStringSecurityDescriptorToSecurityDescriptorW failed"
+            );
+            let descriptor = LocalBox(descriptor);
+            let expected = descriptor_to_sddl(descriptor.0);
             assert_eq!(sddl, expected, "ACL of {}", path.display());
         }
     }
