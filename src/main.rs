@@ -154,7 +154,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     other
                 );
             }
-            run_stdio_server(&config).await
+            if run_stdio_server(&config).await? {
+                // 標準入力の読み込みは止められず、tokioの終了がそれを待つので、
+                // ログを書き終えてから、ここで終わる（#617）
+                drop(_log_guard);
+                std::process::exit(0);
+            }
+            Ok(())
         }
     }
 }
@@ -401,11 +407,28 @@ async fn register_database(
     )
 }
 
-/// STDIOモードでMCPサーバーを実行（initialize / tools/list / tools/call 等に応答）
-async fn run_stdio_server(config: &McpConfig) -> Result<(), Box<dyn std::error::Error>> {
+/// STDIOモードでMCPサーバーを実行（initialize / tools/list / tools/call 等に応答）。
+/// 標準入力の終わり（EOF）か、Ctrl+C（#617）で終わる。Ctrl+Cで終わったら
+/// `true`
+async fn run_stdio_server(config: &McpConfig) -> Result<bool, Box<dyn std::error::Error>> {
     let server = build_server(config, false).await?;
     info!("🔌 STDIOモードで待機中");
-    server.run_stdio().await
+    let interrupted = tokio::select! {
+        result = server.run_stdio() => {
+            result?;
+            false
+        }
+        // Ctrl+Cを受けないと、Windowsが既定でプロセスを止め、終了コードが
+        // 0以外（STATUS_CONTROL_C_EXIT）になる
+        result = tokio::signal::ctrl_c() => {
+            result?;
+            info!("👋 MCP-RS終了（Ctrl+C）");
+            true
+        }
+    };
+    // serverを破棄すると、プラグインの子プロセスも終了する
+    drop(server);
+    Ok(interrupted)
 }
 
 /// HTTPモードでMCPサーバーを実行する。`/mcp`（と`/`）へのPOST、および

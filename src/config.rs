@@ -533,11 +533,85 @@ pub fn redact_quoted(message: &str) -> String {
     out
 }
 
+/// 項目の名前として出す長さの上限（#617）
+const FIELD_NAME_MAX_CHARS: usize = 64;
+
+/// 設定の読み込みのエラーの理由を、値を伏せて表す（#543）。ただし、
+/// `missing field`・`unknown field`の項目の名前は残す（#617）。伏せると、
+/// どこを直せばよいか分からない。項目の名前はmcp-rsの設定の型が決める
+/// もので、値ではない。`unknown field`の名前と、`expected one of …`の
+/// 候補は残すが、名前はユーザーが書いたものなので、長さを切り、制御文字を
+/// エスケープする。configクレートが付ける` for key `…``（項目の場所）も
+/// 残す。前に引用符の無いときだけ扱う（値の中の同じ文字列で、値を出さない
+/// ように）
+pub fn redact_config_error(message: &str) -> String {
+    for (prefix, keep_candidates) in [("missing field `", false), ("unknown field `", true)] {
+        let Some(start) = message.find(prefix) else {
+            continue;
+        };
+        let before = &message[..start];
+        if before.contains(['"', '\'', '`']) {
+            continue;
+        }
+        let after_prefix = &message[start + prefix.len()..];
+        let Some(name_len) = after_prefix.find('`') else {
+            continue;
+        };
+        let name = &after_prefix[..name_len];
+        let rest = &after_prefix[name_len + 1..];
+        let rest = if keep_candidates || rest.starts_with(" for key `") {
+            keep_field_names(rest)
+        } else {
+            redact_quoted(rest)
+        };
+        return format!("{before}{prefix}{}`{rest}", sanitize_field_name(name));
+    }
+    redact_quoted(message)
+}
+
+/// `, expected one of `a`, `b``の候補（`` ` ``の中）を残し、ほかの引用符の
+/// 中は伏せる。`` ` ``が対にならなければ、すべて伏せる
+fn keep_field_names(text: &str) -> String {
+    let parts: Vec<&str> = text.split('`').collect();
+    if parts.len().is_multiple_of(2) {
+        return redact_quoted(text);
+    }
+    parts
+        .iter()
+        .enumerate()
+        .map(|(i, part)| {
+            if i % 2 == 1 {
+                sanitize_field_name(part)
+            } else {
+                redact_quoted(part)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("`")
+}
+
+/// ユーザーが書いた項目の名前を、エラーに出せる形にする（#617）
+fn sanitize_field_name(name: &str) -> String {
+    let mut out = String::new();
+    for (i, c) in name.chars().enumerate() {
+        if i == FIELD_NAME_MAX_CHARS {
+            out.push('…');
+            break;
+        }
+        if c.is_control() {
+            out.extend(c.escape_default());
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 /// TOMLの読み込みエラーを、行と列の番号と、値を伏せた理由だけで表す
 /// （#543）。tomlのエラーの表示は、誤りのある行をそのまま引用するので、
 /// `password = "…"x`のような誤りで、パスワードが標準エラーに出ていた
 pub fn describe_toml_error(error: &toml::de::Error, content: &str) -> String {
-    let reason = redact_quoted(error.message().trim());
+    let reason = redact_config_error(error.message().trim());
     match error.span() {
         Some(span) => {
             let before = &content[..span.start.min(content.len())];
@@ -1952,7 +2026,7 @@ impl McpConfig {
         let config: McpConfig = settings
             .build()
             .and_then(|built| built.try_deserialize())
-            .map_err(|e| redact_quoted(&e.to_string()))?;
+            .map_err(|e| redact_config_error(&e.to_string()))?;
 
         // 環境変数による個別上書き
         let mut final_config = config;
@@ -3819,6 +3893,67 @@ mod additional_tests {
         let error = toml::from_str::<McpConfig>(content).unwrap_err();
         let message = describe_toml_error(&error, content);
         assert!(!message.contains("cd-secret"), "{message}");
+    }
+
+    /// 足りない項目・知らない項目の名前は伏せない（#617）
+    #[test]
+    fn test_config_errors_show_field_names() {
+        // `[handlers]`が無い
+        let content = "[server]\n[transport]\n";
+        let error = toml::from_str::<McpConfig>(content).unwrap_err();
+        let message = describe_toml_error(&error, content);
+        assert!(message.contains("missing field `handlers`"), "{message}");
+
+        assert_eq!(
+            redact_config_error("missing field `handlers`"),
+            "missing field `handlers`"
+        );
+        // 知らない項目は、名前と候補を出す
+        assert_eq!(
+            redact_config_error("unknown field `pasword`, expected one of `url`, `password`"),
+            "unknown field `pasword`, expected one of `url`, `password`"
+        );
+        assert_eq!(
+            redact_config_error("unknown field `x`, there are no fields"),
+            "unknown field `x`, there are no fields"
+        );
+        // ユーザーが書いた名前は、制御文字をエスケープし、長さを切る
+        let long = "a".repeat(100);
+        let message = redact_config_error(&format!("unknown field `{long}\u{1b}[31m`"));
+        assert!(
+            message.contains(&format!("`{}…`", "a".repeat(64))),
+            "{message}"
+        );
+        let message = redact_config_error("unknown field `a\u{1b}[31m\nb`, expected `url`");
+        assert_eq!(message, "unknown field `a\\u{1b}[31m\\nb`, expected `url`");
+
+        // 値は今までどおり伏せる。値の中に同じ文字列があっても、出さない
+        assert_eq!(
+            redact_config_error(r#"invalid type: string "missing field `s3cret`", expected u16"#),
+            r#"invalid type: string "…", expected u16"#
+        );
+        assert_eq!(
+            redact_config_error(r#"missing field `handlers` for key "s3cret""#),
+            r#"missing field `handlers` for key "…""#
+        );
+        let content = "[transport.http]\nport = \"s3cret-pw\"\n";
+        let error = toml::from_str::<McpConfig>(content).unwrap_err();
+        assert!(!describe_toml_error(&error, content).contains("s3cret-pw"));
+
+        // `--config`無し（configクレート、`McpConfig::load`）のエラーも同じ
+        let content = "[[plugins]]\ncommand = \"s3cret-cmd\"\n";
+        let error = config::Config::builder()
+            .add_source(config::Config::try_from(&McpConfig::default()).unwrap())
+            .add_source(config::File::from_str(content, config::FileFormat::Toml))
+            .build()
+            .and_then(|built| built.try_deserialize::<McpConfig>())
+            .unwrap_err();
+        let message = redact_config_error(&error.to_string());
+        assert!(
+            message.contains("missing field `name` for key `plugins`"),
+            "{message}"
+        );
+        assert!(!message.contains("s3cret-cmd"), "{message}");
     }
 
     /// `--config`の`~/`は、ホームフォルダに展開する（PR #551のレビュー）
