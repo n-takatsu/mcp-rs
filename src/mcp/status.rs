@@ -28,6 +28,8 @@ pub struct StatusInfo {
     pub mode: String,
     /// 読み込んだ設定ファイル（`None`は設定ファイルを使っていない）
     pub config_file: Option<PathBuf>,
+    /// 設定ファイルが無いまま、設定なしで起動したときの案内（#667）
+    pub missing_config_file: Option<String>,
     pub started_at: Instant,
     /// 起動できなかったプラグインと、データベースのハンドラー（名前、理由、#453）
     pub plugin_failures: Vec<(String, String)>,
@@ -41,6 +43,7 @@ impl Default for StatusInfo {
         Self {
             mode: "unknown".to_string(),
             config_file: None,
+            missing_config_file: None,
             started_at: Instant::now(),
             plugin_failures: Vec::new(),
             check_updates: false,
@@ -139,10 +142,14 @@ pub async fn render_status(
     }
     lines.push(format!(
         "Config file: {}",
-        info.config_file
-            .as_ref()
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|| "none (built-in defaults)".to_string())
+        match (&info.config_file, &info.missing_config_file) {
+            (Some(path), _) => path.display().to_string(),
+            // 設定なしで起動した（#667）。直し方を出す
+            (None, Some(message)) => format!(
+                "none. {message}, then restart mcp-rs (or the client). Until then, only mcp_rs_status is available"
+            ),
+            (None, None) => "none (built-in defaults)".to_string(),
+        }
     ));
     lines.push(format!("Log: {}", log_status()));
     lines.push(format!(
@@ -259,6 +266,23 @@ mod tests {
         assert!(text.contains("Mode: stdio"), "{}", text);
         assert!(text.contains("Protocol version: 2024-11-05"), "{}", text);
         assert!(!text.contains("Caller:"), "{}", text);
+    }
+
+    /// 設定なしで起動したとき、設定ファイルが無いことと直し方を出す（#667）
+    #[tokio::test]
+    async fn test_missing_config_file_is_explained() {
+        let info = StatusInfo {
+            mode: "stdio".to_string(),
+            missing_config_file: Some(
+                "no config file: run `mcp-rs init` to create /home/u/.config/mcp-rs/config.toml, or pass one with --config <absolute path>".to_string(),
+            ),
+            ..Default::default()
+        };
+        let text = render_status(&info, "2025-06-18", &Caller::unrestricted(), None, &[]).await;
+        assert!(text.contains("Config file: none. no config file"), "{text}");
+        assert!(text.contains("mcp-rs init"), "{text}");
+        assert!(text.contains("--config"), "{text}");
+        assert!(text.contains("only mcp_rs_status is available"), "{text}");
     }
 
     #[tokio::test]

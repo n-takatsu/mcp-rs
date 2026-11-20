@@ -92,12 +92,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- 設定ファイルが無くても、STDIOモードでは起動する（#667）。`--config`が無く、
+  `~/.config/mcp-rs/config.toml`も、環境変数による設定（`WORDPRESS_URL`等）も
+  無いとき、エラーで終わらず、設定なし
+  （ハンドラー無し、`mcp_rs_status`だけ）で起動する。ログに警告を出し、
+  `mcp_rs_status`の`Config file`に、設定ファイルが無いことと直し方
+  （`mcp-rs init`か`--config`）を出す。MCPの一覧サイト（Glama等）・
+  インスペクターが設定なしで`tools/list`を読めるように、またクライアントに
+  「起動しない」としか出ないのを避けるため。変えないこと: 今のフォルダの
+  設定ファイルは読まない（#541、以前の名前のファイルの案内も出す）。
+  `--config`で渡したファイルが無い・読めないとき、HTTPモード、
+  `mcp-rs check`は、今までどおりエラー。案内の文に`mcp-rs init`を足した。
+  ライブラリとして使う場合: `McpConfig`・`StatusInfo`に
+  `missing_config_file`、`McpConfig::load_for_startup`・`uses_stdio`を足した
 - `post_type`に`post`・`page`以外の値を渡したとき、断る（#642）。以前は、
   知らない値を投稿（`post`）として扱っていた。ライブラリとして使う場合:
   `PostCreateParams`・`PostUpdateParams`に`terms`、`WordPressPost`に
   `extra`、`WordPressConfig`に`post_types`を足した
 - `get_comments`は、コメントした人のメールアドレスを出さない（#639）。
   コメントの管理には要らず、AIとの会話やログに残さないため
+
+### Fixed
+
+- 設定ファイルのエラーで、足りない項目・知らない項目の名前を伏せない
+  （#617）。以前は``missing field `…` ``のように出て、どこを直せばよいか
+  分からなかった。値は今までどおり伏せる（#543）。知らない項目の名前は、
+  書いたものなので、64文字で切り、制御文字をエスケープする
+- STDIOモードで、Ctrl+Cを受けて終わる（#617）。標準入力の終わりと同じく、
+  プラグインを止めてから、終了コード0で終わる。以前は、Windowsで
+  `STATUS_CONTROL_C_EXIT`（0以外）で止まり、`cargo run`がエラーを出していた。
+  STDIOモードの終了（Ctrl+C・標準入力の終わり）で、コンテナ・Kubernetesの
+  プラグインの後片付け（`docker rm -f`・`kubectl delete`）の終了を、最長10秒
+  待ってから終わる（PR #672のレビュー）。以前は待たずに終わり、コンテナ・
+  Job・Secretが残ることがあった
 
 ## [0.29.0] - 2026-11-19
 

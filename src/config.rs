@@ -69,6 +69,10 @@ pub struct McpConfig {
     /// 拡張機能で、サイトがまだ入力されていないとき等（#632）
     #[serde(skip)]
     pub startup_notes: Vec<(String, String)>,
+    /// 設定ファイルが無いまま、設定なし（ハンドラー無し）で起動したときの
+    /// 案内（#667）。`None`は、設定ファイルか環境変数で設定した
+    #[serde(skip)]
+    pub missing_config_file: Option<String>,
 }
 
 /// 監査ログの設定（`[audit]`、#416）
@@ -533,11 +537,85 @@ pub fn redact_quoted(message: &str) -> String {
     out
 }
 
+/// 項目の名前として出す長さの上限（#617）
+const FIELD_NAME_MAX_CHARS: usize = 64;
+
+/// 設定の読み込みのエラーの理由を、値を伏せて表す（#543）。ただし、
+/// `missing field`・`unknown field`の項目の名前は残す（#617）。伏せると、
+/// どこを直せばよいか分からない。項目の名前はmcp-rsの設定の型が決める
+/// もので、値ではない。`unknown field`の名前と、`expected one of …`の
+/// 候補は残すが、名前はユーザーが書いたものなので、長さを切り、制御文字を
+/// エスケープする。configクレートが付ける` for key `…``（項目の場所）も
+/// 残す。前に引用符の無いときだけ扱う（値の中の同じ文字列で、値を出さない
+/// ように）
+pub fn redact_config_error(message: &str) -> String {
+    for (prefix, keep_candidates) in [("missing field `", false), ("unknown field `", true)] {
+        let Some(start) = message.find(prefix) else {
+            continue;
+        };
+        let before = &message[..start];
+        if before.contains(['"', '\'', '`']) {
+            continue;
+        }
+        let after_prefix = &message[start + prefix.len()..];
+        let Some(name_len) = after_prefix.find('`') else {
+            continue;
+        };
+        let name = &after_prefix[..name_len];
+        let rest = &after_prefix[name_len + 1..];
+        let rest = if keep_candidates || rest.starts_with(" for key `") {
+            keep_field_names(rest)
+        } else {
+            redact_quoted(rest)
+        };
+        return format!("{before}{prefix}{}`{rest}", sanitize_field_name(name));
+    }
+    redact_quoted(message)
+}
+
+/// `, expected one of `a`, `b``の候補（`` ` ``の中）を残し、ほかの引用符の
+/// 中は伏せる。`` ` ``が対にならなければ、すべて伏せる
+fn keep_field_names(text: &str) -> String {
+    let parts: Vec<&str> = text.split('`').collect();
+    if parts.len().is_multiple_of(2) {
+        return redact_quoted(text);
+    }
+    parts
+        .iter()
+        .enumerate()
+        .map(|(i, part)| {
+            if i % 2 == 1 {
+                sanitize_field_name(part)
+            } else {
+                redact_quoted(part)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("`")
+}
+
+/// ユーザーが書いた項目の名前を、エラーに出せる形にする（#617）
+fn sanitize_field_name(name: &str) -> String {
+    let mut out = String::new();
+    for (i, c) in name.chars().enumerate() {
+        if i == FIELD_NAME_MAX_CHARS {
+            out.push('…');
+            break;
+        }
+        if c.is_control() {
+            out.extend(c.escape_default());
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 /// TOMLの読み込みエラーを、行と列の番号と、値を伏せた理由だけで表す
 /// （#543）。tomlのエラーの表示は、誤りのある行をそのまま引用するので、
 /// `password = "…"x`のような誤りで、パスワードが標準エラーに出ていた
 pub fn describe_toml_error(error: &toml::de::Error, content: &str) -> String {
-    let reason = redact_quoted(error.message().trim());
+    let reason = redact_config_error(error.message().trim());
     match error.span() {
         Some(span) => {
             let before = &content[..span.start.min(content.len())];
@@ -1273,6 +1351,7 @@ impl Default for McpConfig {
             database: None,
             config_file: None,
             startup_notes: Vec::new(),
+            missing_config_file: None,
         }
     }
 }
@@ -1302,8 +1381,9 @@ fn former_cwd_config_files(dir: &std::path::Path) -> Vec<String> {
 fn no_config_file_message(home: Option<&str>, former: &[String]) -> String {
     let user_config =
         expand_home_dir(USER_CONFIG_PATH, home).unwrap_or_else(|| USER_CONFIG_PATH.to_string());
-    let mut message =
-        format!("no config file: pass one with --config <absolute path>, or create {user_config}");
+    let mut message = format!(
+        "no config file: run `mcp-rs init` to create {user_config}, or pass one with --config <absolute path>"
+    );
     if let Some(first) = former.first() {
         let absolute = std::path::absolute(first)
             .map(|p| p.display().to_string())
@@ -1892,8 +1972,22 @@ impl McpConfig {
         Ok(())
     }
 
-    /// 設定ファイルから読み込み、環境変数で上書き
+    /// 設定ファイルから読み込み、環境変数で上書き。設定ファイルが無ければ
+    /// エラー（`mcp-rs check`が使う）
     pub fn load() -> Result<Self, Box<dyn std::error::Error>> {
+        Self::load_with(false)
+    }
+
+    /// `--config`無しで起動するときの読み込み（#667）。設定ファイルが無ければ、
+    /// エラーで終わらず、設定なし（ハンドラー無し、`mcp_rs_status`だけ）で
+    /// 起動できる設定を返し、`missing_config_file`に案内を入れる。STDIO
+    /// モードだけ。HTTPモードは、認証等が既定のまま待ち受けないよう、
+    /// 今までどおりエラー
+    pub fn load_for_startup() -> Result<Self, Box<dyn std::error::Error>> {
+        Self::load_with(true)
+    }
+
+    fn load_with(allow_missing_file: bool) -> Result<Self, Box<dyn std::error::Error>> {
         let mut settings = config::Config::builder();
 
         // デフォルト値を設定
@@ -1928,14 +2022,19 @@ impl McpConfig {
             }
         }
 
-        // 設定ファイルが見つからない場合はエラーを返す。今のフォルダに以前の
-        // 名前の設定ファイルがあれば、読まずに、`--config`の付け方を案内する
-        if !config_file_found && !Self::has_env_config() {
-            return Err(no_config_file_message(
+        // 設定ファイルが見つからない場合はエラーを返す（起動では、STDIOモード
+        // なら設定なしで続ける、#667）。今のフォルダに以前の名前の設定ファイルが
+        // あれば、読まずに、`--config`の付け方を案内する
+        let missing_config_file = (!config_file_found && !Self::has_env_config()).then(|| {
+            no_config_file_message(
                 home.as_deref(),
                 &former_cwd_config_files(std::path::Path::new(".")),
             )
-            .into());
+        });
+        if let Some(message) = &missing_config_file {
+            if !allow_missing_file {
+                return Err(message.clone().into());
+            }
         }
 
         // 環境変数で上書き (MCP_で始まる変数)
@@ -1952,7 +2051,7 @@ impl McpConfig {
         let config: McpConfig = settings
             .build()
             .and_then(|built| built.try_deserialize())
-            .map_err(|e| redact_quoted(&e.to_string()))?;
+            .map_err(|e| redact_config_error(&e.to_string()))?;
 
         // 環境変数による個別上書き
         let mut final_config = config;
@@ -1991,7 +2090,22 @@ impl McpConfig {
 
         final_config.config_file = loaded_config_file;
         final_config.resolve_plugin_paths();
+        if let Some(message) = missing_config_file {
+            if !final_config.uses_stdio() {
+                return Err(message.into());
+            }
+            final_config.missing_config_file = Some(message);
+        }
         Ok(final_config)
+    }
+
+    /// STDIOモードで動くか。`[transport] type`が`http`以外（知らない値も
+    /// STDIOで動く）
+    pub fn uses_stdio(&self) -> bool {
+        !matches!(
+            self.to_transport_config().transport_type,
+            crate::transport::TransportType::Http { .. }
+        )
     }
 
     /// 環境変数による設定があるかチェック
@@ -2081,6 +2195,7 @@ impl McpConfig {
             database: None,
             config_file: None,
             startup_notes: Vec::new(),
+            missing_config_file: None,
         };
 
         let toml_content = toml::to_string_pretty(&sample_config)?;
@@ -3756,6 +3871,7 @@ mod additional_tests {
         assert!(former_cwd_config_files(dir.path()).is_empty());
         let message = no_config_file_message(Some("/home/u"), &[]);
         assert!(message.contains("--config <absolute path>"), "{message}");
+        assert!(message.contains("`mcp-rs init`"), "{message}");
         assert!(message.contains("config.toml"), "{message}");
         assert!(!message.contains("current folder"), "{message}");
 
@@ -3819,6 +3935,78 @@ mod additional_tests {
         let error = toml::from_str::<McpConfig>(content).unwrap_err();
         let message = describe_toml_error(&error, content);
         assert!(!message.contains("cd-secret"), "{message}");
+    }
+
+    /// 設定なしで起動するのはSTDIOモードだけ（#667）。HTTPモードかの判定
+    #[test]
+    fn test_uses_stdio() {
+        let mut config = McpConfig::default();
+        assert!(config.uses_stdio());
+        config.transport.transport_type = Some("unknown".to_string());
+        assert!(config.uses_stdio());
+        config.transport.transport_type = Some("http".to_string());
+        assert!(!config.uses_stdio());
+    }
+
+    /// 足りない項目・知らない項目の名前は伏せない（#617）
+    #[test]
+    fn test_config_errors_show_field_names() {
+        // `[handlers]`が無い
+        let content = "[server]\n[transport]\n";
+        let error = toml::from_str::<McpConfig>(content).unwrap_err();
+        let message = describe_toml_error(&error, content);
+        assert!(message.contains("missing field `handlers`"), "{message}");
+
+        assert_eq!(
+            redact_config_error("missing field `handlers`"),
+            "missing field `handlers`"
+        );
+        // 知らない項目は、名前と候補を出す
+        assert_eq!(
+            redact_config_error("unknown field `pasword`, expected one of `url`, `password`"),
+            "unknown field `pasword`, expected one of `url`, `password`"
+        );
+        assert_eq!(
+            redact_config_error("unknown field `x`, there are no fields"),
+            "unknown field `x`, there are no fields"
+        );
+        // ユーザーが書いた名前は、制御文字をエスケープし、長さを切る
+        let long = "a".repeat(100);
+        let message = redact_config_error(&format!("unknown field `{long}\u{1b}[31m`"));
+        assert!(
+            message.contains(&format!("`{}…`", "a".repeat(64))),
+            "{message}"
+        );
+        let message = redact_config_error("unknown field `a\u{1b}[31m\nb`, expected `url`");
+        assert_eq!(message, "unknown field `a\\u{1b}[31m\\nb`, expected `url`");
+
+        // 値は今までどおり伏せる。値の中に同じ文字列があっても、出さない
+        assert_eq!(
+            redact_config_error(r#"invalid type: string "missing field `s3cret`", expected u16"#),
+            r#"invalid type: string "…", expected u16"#
+        );
+        assert_eq!(
+            redact_config_error(r#"missing field `handlers` for key "s3cret""#),
+            r#"missing field `handlers` for key "…""#
+        );
+        let content = "[transport.http]\nport = \"s3cret-pw\"\n";
+        let error = toml::from_str::<McpConfig>(content).unwrap_err();
+        assert!(!describe_toml_error(&error, content).contains("s3cret-pw"));
+
+        // `--config`無し（configクレート、`McpConfig::load`）のエラーも同じ
+        let content = "[[plugins]]\ncommand = \"s3cret-cmd\"\n";
+        let error = config::Config::builder()
+            .add_source(config::Config::try_from(&McpConfig::default()).unwrap())
+            .add_source(config::File::from_str(content, config::FileFormat::Toml))
+            .build()
+            .and_then(|built| built.try_deserialize::<McpConfig>())
+            .unwrap_err();
+        let message = redact_config_error(&error.to_string());
+        assert!(
+            message.contains("missing field `name` for key `plugins`"),
+            "{message}"
+        );
+        assert!(!message.contains("s3cret-cmd"), "{message}");
     }
 
     /// `--config`の`~/`は、ホームフォルダに展開する（PR #551のレビュー）
