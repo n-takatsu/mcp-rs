@@ -580,6 +580,31 @@ mod tests {
         );
     }
 
+    /// `mcp-rs init`でサイトを足した設定ファイル（#657）の資格情報も消せる
+    #[test]
+    fn test_keyring_entries_after_init_adds_a_site() {
+        let single = "[transport]\ntype = \"stdio\"\n[server]\n[handlers.wordpress]\nenabled = true\nurl = \"https://example.com\"\nkeyring = \"example.com\"\n\n[database]\nengine = \"postgresql\"\ndatabase = \"app\"\nusername = \"reader\"\nkeyring = \"app@localhost\"\n";
+        let (text, _) = crate::init::add_site_toml(
+            single,
+            Some("example"),
+            "shop",
+            "https://shop.example.com",
+            "shop.example.com",
+        )
+        .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("config.toml");
+        std::fs::write(&config, text).unwrap();
+        assert_eq!(
+            keyring_entries(&config),
+            vec![
+                ("example.com".to_string(), "WordPress"),
+                ("shop.example.com".to_string(), "WordPress"),
+                ("app@localhost".to_string(), "database"),
+            ]
+        );
+    }
+
     #[test]
     fn test_run_rejects_arguments() {
         assert!(run(&["--force".to_string()]).is_err());

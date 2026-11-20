@@ -13,7 +13,8 @@
 //! 入れる。パスワードは引数で受け取らない。画面には出さない。
 //! 設定ファイルを新しく書くときは、最初に、WordPress・データベース・両方の
 //! どれを使うかを聞く（#645）。データベースだけなら、`[handlers.wordpress]`の
-//! 無い設定ファイルを書く。
+//! 無い設定ファイルを書く。WordPressを使う設定ファイルには、2つ目以降の
+//! サイト（`[handlers.wordpress.sites.<名前>]`）を足せる（#657）。
 
 use std::io::{self, BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -80,7 +81,9 @@ Sets up mcp-rs by asking a few questions:
      the site URL, username and Application Password, kept in the OS
      credential store (Windows Credential Manager, macOS Keychain, Secret
      Service on Linux)
-  2. writes the config file (asks before replacing one, and keeps a backup)
+  2. writes the config file (asks before replacing one, and keeps a backup).
+     It can add more WordPress sites ([handlers.wordpress.sites.<name>]),
+     also to a config file you keep
   3. a database for the AI to read (PostgreSQL, MySQL or MariaDB): adds
      [database] to the config file, with the password in the OS credential
      store. Writing data stays off unless you allow it
@@ -133,6 +136,7 @@ pub async fn run(args: &[String]) -> Result<bool, String> {
         previous: discover_registrations(),
         superseded: Vec::new(),
         suggested_url: None,
+        added_sites: Vec::new(),
     }
     .run()
     .await;
@@ -206,6 +210,9 @@ struct Setup<'a> {
     superseded: Vec<String>,
     /// 前の設定ファイルにあった、WordPressのサイトのURL（#602）
     suggested_url: Option<String>,
+    /// この実行で足したWordPressのサイトのURL（#657）。同じサイトを使う、
+    /// 別の設定ファイルの登録（「2つ目のサイト用」）は、重複として既定で消す
+    added_sites: Vec<String>,
 }
 
 impl Setup<'_> {
@@ -272,8 +279,8 @@ impl Setup<'_> {
             }
         }
         // この実行で書いた設定の、サイトのURLと資格情報の名前（確認が
-        // 失敗したときに、資格情報を入れ直すため）
-        let mut written = None;
+        // 失敗したときに、資格情報を入れ直すため）。サイトを足すと増える（#657）
+        let mut written: Vec<(String, String)> = Vec::new();
         // データベースを聞くか（#645）。既にある設定ファイルを残すときは、
         // `[database]`が無ければ、足すかを聞く
         let mut database = DatabaseQuestion::Offer;
@@ -283,7 +290,7 @@ impl Setup<'_> {
             // 資格情報ストアが使えるかを、質問の前に確かめる（PR #583のレビュー）
             check_store(self.store)?;
             let wordpress = if uses.wordpress() {
-                Some(self.wordpress_credentials()?)
+                Some(self.wordpress_credentials(&[])?)
             } else {
                 None
             };
@@ -307,7 +314,7 @@ impl Setup<'_> {
             if carry.is_some() {
                 self.note_copied_secrets_and_env(&content);
             }
-            written = wordpress;
+            written.extend(wordpress);
             database = if uses.database() {
                 DatabaseQuestion::Required
             } else {
@@ -317,6 +324,14 @@ impl Setup<'_> {
             self.io.say(
                 "Keeping the config file as it is. Checking it and registering mcp-rs with it.\n",
             );
+        }
+
+        // 2a. WordPressのサイトを足す（#657）。WordPressを使う設定ファイルなら、
+        // 2つ目以降のサイトを足せる。既にある設定ファイルを残し、WordPressが
+        // 無ければ、最初のサイトを足せる（#645）。データベースだけと選んだ
+        // ときは聞かない
+        if !(write_config && written.is_empty()) {
+            written.extend(self.wordpress_sites_step()?);
         }
 
         // 2b. データベース（#590）。設定ファイルに`[database]`が無ければ
@@ -359,17 +374,24 @@ impl Setup<'_> {
                 break;
             }
             // 入れ直しで直るのは、サインインのエラーだけ（URLの誤り・サイトに
-            // つながらない等は、入れ直しても直らない。PR #583のレビュー）
-            let sign_in_failed = report
-                .find("WordPress sign-in")
-                .is_some_and(|(status, _)| status == crate::check::Status::Error);
-            if let (Some((url, entry)), true) = (&written, sign_in_failed) {
-                if confirm(
-                    self.io,
-                    "If the username or the Application Password was wrong, enter them again?",
-                    true,
-                )? {
-                    let (url, entry) = (url.clone(), entry.clone());
+            // つながらない等は、入れ直しても直らない。PR #583のレビュー）。
+            // 複数のサイト（#657）では、サイトごとの項目を見る
+            let sign_in_failed = written
+                .iter()
+                .find(|(url, _)| {
+                    report
+                        .find(&sign_in_item(&self.config_path, url))
+                        .is_some_and(|(status, _)| status == crate::check::Status::Error)
+                })
+                .cloned();
+            if let Some((url, entry)) = sign_in_failed {
+                let question = if written.len() > 1 {
+                    format!("If the username or the Application Password for {url} was wrong, enter them again?")
+                } else {
+                    "If the username or the Application Password was wrong, enter them again?"
+                        .to_string()
+                };
+                if confirm(self.io, &question, true)? {
                     self.enter_credentials(&url, &entry)?;
                     continue;
                 }
@@ -498,7 +520,7 @@ impl Setup<'_> {
             .is_some()
         {
             self.io.say(&format!(
-                "mcp-rs is registered with {path} ({}), which uses more than one WordPress site ([handlers.wordpress.sites]). mcp-rs init keeps using it as it is.\n",
+                "mcp-rs is registered with {path} ({}), which uses more than one WordPress site ([handlers.wordpress.sites]). mcp-rs init keeps using it, and can add a site to it.\n",
                 used_by.join(", ")
             ));
             return Ok(PreviousChoice::UseAsIs);
@@ -531,7 +553,7 @@ impl Setup<'_> {
             true,
         )? {
             self.suggested_url = None;
-            self.io.say("Keeping it as it is.\n");
+            self.io.say("Keeping it as it is. To use that site from the new config file instead, add it when mcp-rs init asks to add another WordPress site; mcp-rs init then offers to remove the registration that uses the other config file.\n");
             return Ok(PreviousChoice::NotReplacing);
         }
         if extras.is_empty() {
@@ -610,8 +632,13 @@ impl Setup<'_> {
     }
 
     /// サイトのURLを聞き、資格情報を資格情報ストアに入れる（入っていれば
-    /// 使うかを聞く）。設定ファイルに書くURLと、資格情報の名前を返す
-    fn wordpress_credentials(&mut self) -> Result<(String, String), Box<dyn std::error::Error>> {
+    /// 使うかを聞く）。設定ファイルに書くURLと、資格情報の名前を返す。
+    /// `taken`は、設定ファイルに既にあるサイト（#657）。同じURL・同じ
+    /// 資格情報の名前は使わない
+    fn wordpress_credentials(
+        &mut self,
+        taken: &[ConfiguredSite],
+    ) -> Result<(String, String), Box<dyn std::error::Error>> {
         self.io.say("WordPress site");
         self.io.say("  mcp-rs signs in with an Application Password (WordPress: Users > Profile > Application Passwords).");
         let url = loop {
@@ -629,17 +656,42 @@ impl Setup<'_> {
                     .ask("Site URL (for example https://example.com): ")?,
             };
             match normalize_site_url(&answer) {
-                Some(url) => break url,
+                Some(url) => match taken.iter().find(|site| site.url == url) {
+                    Some(site) => self.io.say(&format!(
+                        "{url} is already in the config file{}. Enter another site.",
+                        site.label()
+                    )),
+                    None => break url,
+                },
                 None => self.io.say(
                     "Enter a URL that starts with https:// (mcp-rs connects to WordPress over HTTPS only).",
                 ),
             }
         };
-        let suggested = default_entry_name(&url);
-        let answer = self.io.ask(&format!(
-            "Name for these credentials in the OS credential store [{suggested}]: "
-        ))?;
-        let entry = if answer.is_empty() { suggested } else { answer };
+        let used: Vec<String> = taken.iter().filter_map(|s| s.keyring.clone()).collect();
+        let suggested = unique_name(&default_entry_name(&url), &used);
+        let entry = loop {
+            let answer = self.io.ask(&format!(
+                "Name for these credentials in the OS credential store [{suggested}]: "
+            ))?;
+            let entry = if answer.is_empty() {
+                suggested.clone()
+            } else {
+                answer
+            };
+            // 別のサイトの資格情報を上書きしない（#657）
+            match taken
+                .iter()
+                .find(|site| site.keyring.as_deref() == Some(&entry))
+            {
+                Some(site) => self.io.say(&format!(
+                    "'{entry}' holds the credentials of {}{}. Choose another name.",
+                    site.url,
+                    site.label()
+                )),
+                None => break entry,
+            }
+        };
 
         match load_wordpress_credentials(self.store, &entry) {
             Ok(stored) if site_origin(&url).as_deref() == Some(stored.site_url.as_str()) => {
@@ -747,6 +799,160 @@ impl Setup<'_> {
             self.config_path.display()
         ));
         Ok(())
+    }
+
+    /// WordPressのサイトを足すかを聞き、足す（#657）。足したサイトの、URLと
+    /// 資格情報の名前を返す（確認が失敗したときに入れ直すため）。設定
+    /// ファイルにWordPressが無ければ（データベースだけ、#645）、最初の
+    /// サイトを足すかを聞く
+    fn wordpress_sites_step(
+        &mut self,
+    ) -> Result<Vec<(String, String)>, Box<dyn std::error::Error>> {
+        let mut added = Vec::new();
+        loop {
+            let Ok(text) = std::fs::read_to_string(&self.config_path) else {
+                return Ok(added);
+            };
+            let text = text.trim_start_matches('\u{feff}').to_string();
+            // 読めない設定ファイルには書き足さない（確認でエラーになる）
+            let Ok(table) = text.parse::<toml::Table>() else {
+                return Ok(added);
+            };
+            let sites = configured_sites(&table);
+            let question = if sites.is_empty() {
+                "Also let the AI use a WordPress site?".to_string()
+            } else {
+                let urls: Vec<&str> = sites.iter().map(|site| site.url.as_str()).collect();
+                format!(
+                    "Add another WordPress site to this mcp-rs (now: {})?",
+                    urls.join(", ")
+                )
+            };
+            if !confirm(self.io, &question, false)? {
+                self.io.say("");
+                return Ok(added);
+            }
+            check_store(self.store)?;
+            // 前の設定ファイルのURL（#602）は、最初のサイトの既定。足すサイトには使わない
+            self.suggested_url = None;
+            let new_text = if sites.is_empty() {
+                let (url, entry) = self.wordpress_credentials(&[])?;
+                let mut new_text = text.clone();
+                if !new_text.is_empty() && !new_text.ends_with('\n') {
+                    new_text.push('\n');
+                }
+                new_text.push('\n');
+                new_text.push_str(&wordpress_toml(&url, &entry));
+                added.push((url, entry));
+                new_text
+            } else {
+                match self.add_site(&text, &sites)? {
+                    Some((new_text, url, entry)) => {
+                        added.push((url, entry));
+                        new_text
+                    }
+                    None => return Ok(added),
+                }
+            };
+            // 書く前に、起動と同じ形で読めるかを確かめる
+            if let Err(e) = check_sites_config(&new_text) {
+                self.io.say(&format!(
+                    "Could not add the site: {e}. The config file is kept as it is; add the site by hand (see the WordPress guide)."
+                ));
+                return Ok(added);
+            }
+            if let Some(backup) = write_config_file(&self.config_path, &new_text)? {
+                self.io.say(&format!(
+                    "Kept the previous config file as {}",
+                    backup.display()
+                ));
+                self.offer_to_delete_secret_backup(&backup)?;
+            }
+            if let Some((url, _)) = added.last() {
+                self.added_sites.push(url.clone());
+            }
+            self.io.say(&format!(
+                "Updated the config file: {}\n",
+                self.config_path.display()
+            ));
+        }
+    }
+
+    /// 2つ目以降のサイトを聞き、足した設定ファイルの中身と、足したサイトの
+    /// URL・資格情報の名前を返す（#657）。1つのサイトの形（`[handlers.wordpress]`
+    /// に`url`）なら、今のサイトにも名前を付けて、`sites`の下に移す
+    #[allow(clippy::type_complexity)]
+    fn add_site(
+        &mut self,
+        text: &str,
+        sites: &[ConfiguredSite],
+    ) -> Result<Option<(String, String, String)>, Box<dyn std::error::Error>> {
+        let mut names: Vec<String> = sites.iter().filter_map(|s| s.name.clone()).collect();
+        // 1つのサイトの形なら、今のサイトの名前を聞く
+        let existing = match sites {
+            [site] if site.name.is_none() => {
+                self.io.say(&format!(
+                    "With more than one site, each site has a name, which the AI passes as the `site` argument of the tools. The site {} moves to [handlers.wordpress.sites.<name>] and stays the default site (used when a tool call names no site).",
+                    site.url
+                ));
+                let name = self.ask_site_name(
+                    &format!("Name for {}", site.url),
+                    &suggested_site_name(&site.url, &names),
+                    &names,
+                )?;
+                names.push(name.clone());
+                Some(name)
+            }
+            _ => None,
+        };
+        let (url, entry) = self.wordpress_credentials(sites)?;
+        let name = self.ask_site_name(
+            &format!("Name for {url}"),
+            &suggested_site_name(&url, &names),
+            &names,
+        )?;
+        let (new_text, default_site) = match add_site_toml(
+            text,
+            existing.as_deref(),
+            &name,
+            &url,
+            &entry,
+        ) {
+            Ok(done) => done,
+            Err(e) => {
+                self.io.say(&format!(
+                        "Could not add the site: {e}. The config file is kept as it is; add the site by hand (see the WordPress guide). The credentials are stored as '{entry}'."
+                    ));
+                return Ok(None);
+            }
+        };
+        self.io.say(&format!(
+            "Added the site '{name}' ({url}). Tool calls without a `site` argument use '{default_site}' (default_site in [handlers.wordpress])."
+        ));
+        Ok(Some((new_text, url, entry)))
+    }
+
+    /// サイトの名前を聞く（#657）。英小文字・数字・`_`・`-`で、ほかの
+    /// サイトと違う名前
+    fn ask_site_name(
+        &mut self,
+        question: &str,
+        suggested: &str,
+        taken: &[String],
+    ) -> io::Result<String> {
+        loop {
+            let answer = ask_with_default(self.io, question, suggested)?;
+            if taken.contains(&answer) {
+                self.io.say(&format!(
+                    "'{answer}' is already a site name. Choose another."
+                ));
+                continue;
+            }
+            match crate::config::check_wordpress_site_name(&answer) {
+                Ok(()) => return Ok(answer),
+                Err(e) => self.io.say(&e),
+            }
+        }
     }
 
     /// ユーザー名とアプリケーションパスワードを聞き、`entry`の名前で入れる
@@ -892,7 +1098,29 @@ impl Setup<'_> {
                 .find(|path| same_config_file(other.config.as_deref(), path));
             let same_config =
                 same_config_file(other.config.as_deref(), &launch.config) || replaced.is_some();
-            let question = if let Some(replaced) = replaced {
+            // この実行で足したサイトを使う、別の設定ファイルの登録（#657）
+            let added = if same_config {
+                None
+            } else {
+                other
+                    .config
+                    .clone()
+                    .or_else(crate::config::user_config_path)
+                    .map(|path| config_site_urls(&path))
+                    .unwrap_or_default()
+                    .into_iter()
+                    .find(|url| {
+                        self.added_sites
+                            .iter()
+                            .any(|added| comparable_site_url(added) == *url)
+                    })
+            };
+            let question = if let Some(url) = &added {
+                format!(
+                    "{client} also starts mcp-rs as \"{name}\" with another config file ({}) for {url}, which the new config file now has as a site. Remove it, so that only one mcp-rs uses the site?",
+                    other.config.as_deref().unwrap_or("~/.config/mcp-rs/config.toml")
+                )
+            } else if let Some(replaced) = replaced {
                 format!(
                     "{client} also starts mcp-rs as \"{name}\" with the previous config file ({replaced}), which the new one replaces. Remove it, so that only one mcp-rs runs?"
                 )
@@ -906,7 +1134,7 @@ impl Setup<'_> {
                     other.config.as_deref().unwrap_or("~/.config/mcp-rs/config.toml")
                 )
             };
-            if confirm(self.io, &question, same_config)? {
+            if confirm(self.io, &question, same_config || added.is_some())? {
                 remove.push(name.clone());
             } else if same_config {
                 self.io.say(&format!(
@@ -1318,6 +1546,234 @@ fn config_uses_wordpress(path: &Path) -> bool {
                 .and_then(|h| h.get("wordpress"))
                 .is_some()
         })
+}
+
+/// 設定ファイルにあるWordPressのサイト（#657）
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ConfiguredSite {
+    /// `[handlers.wordpress.sites.<名前>]`の名前。1つのサイトの形なら`None`
+    name: Option<String>,
+    url: String,
+    keyring: Option<String>,
+}
+
+impl ConfiguredSite {
+    /// 表示に付ける名前（` (site 'blog')`）
+    fn label(&self) -> String {
+        self.name
+            .as_deref()
+            .map(|name| format!(" (site '{name}')"))
+            .unwrap_or_default()
+    }
+}
+
+/// 比べるための、サイトのURL（末尾の`/`を除く）
+fn comparable_site_url(url: &str) -> String {
+    normalize_site_url(url).unwrap_or_else(|| url.trim().trim_end_matches('/').to_string())
+}
+
+/// 設定にあるWordPressのサイト（#657）
+fn configured_sites(table: &toml::Table) -> Vec<ConfiguredSite> {
+    let Some(wordpress) = table.get("handlers").and_then(|h| h.get("wordpress")) else {
+        return Vec::new();
+    };
+    let site = |name: Option<String>, value: &toml::Value| {
+        let url = value.get("url").and_then(toml::Value::as_str)?;
+        Some(ConfiguredSite {
+            name,
+            url: comparable_site_url(url),
+            keyring: value
+                .get("keyring")
+                .and_then(toml::Value::as_str)
+                .map(str::to_string),
+        })
+    };
+    match wordpress.get("sites").and_then(toml::Value::as_table) {
+        Some(sites) if !sites.is_empty() => sites
+            .iter()
+            .filter_map(|(name, value)| site(Some(name.clone()), value))
+            .collect(),
+        _ => site(None, wordpress).into_iter().collect(),
+    }
+}
+
+/// 設定ファイルにあるWordPressのサイトのURL（#657）。読めなければ空
+fn config_site_urls(path: &str) -> Vec<String> {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|text| {
+            text.trim_start_matches('\u{feff}')
+                .parse::<toml::Table>()
+                .ok()
+        })
+        .map(|table| {
+            configured_sites(&table)
+                .into_iter()
+                .map(|s| s.url)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// `taken`に無い名前（あれば`-2`・`-3`…を付ける）
+fn unique_name(base: &str, taken: &[String]) -> String {
+    if !taken.iter().any(|name| name == base) {
+        return base.to_string();
+    }
+    (2..)
+        .map(|n| format!("{base}-{n}"))
+        .find(|name| !taken.contains(name))
+        .unwrap_or_else(|| base.to_string())
+}
+
+/// サイトの名前の既定（#657）。ホスト名の最初の部分（`www.`は除く。
+/// 例: `blog.example.com`は`blog`）を、使える文字（英小文字・数字・`_`・`-`）
+/// にしたもの
+fn suggested_site_name(url: &str, taken: &[String]) -> String {
+    const MAX: usize = 28; // `-2`等を付けても32文字に収まるように
+    let host = url::Url::parse(url)
+        .ok()
+        .and_then(|parsed| parsed.host_str().map(str::to_string))
+        .unwrap_or_default();
+    let base = if host.parse::<std::net::IpAddr>().is_ok() || host.starts_with('[') {
+        host.clone()
+    } else {
+        host.split('.')
+            .find(|label| *label != "www" && !label.is_empty())
+            .unwrap_or_default()
+            .to_string()
+    };
+    let mut name: String = base
+        .to_ascii_lowercase()
+        .chars()
+        .map(|c| {
+            if c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    name = name.trim_matches('-').chars().take(MAX).collect();
+    if name.is_empty() {
+        name = "site".to_string();
+    }
+    unique_name(&name, taken)
+}
+
+/// `[handlers.wordpress]`のうち、サイトごとに書くもの（`sites`の形では、
+/// 各サイトの表に書く。#640）
+const SITE_KEYS: [&str; 5] = [
+    "url",
+    "username",
+    "password",
+    "keyring",
+    "encrypted_credentials",
+];
+
+/// 設定ファイルの中身に、サイトを足す（#657）。コメント等は残す。
+/// `existing`があれば、1つのサイトの形の今のサイトを、その名前で`sites`の
+/// 下に移し、既定のサイトにする。足した中身と、既定のサイトの名前を返す
+pub(crate) fn add_site_toml(
+    text: &str,
+    existing: Option<&str>,
+    name: &str,
+    url: &str,
+    entry: &str,
+) -> Result<(String, String), String> {
+    let mut doc: toml_edit::DocumentMut = text
+        .parse()
+        .map_err(|e: toml_edit::TomlError| e.message().to_string())?;
+    let wordpress = doc
+        .get_mut("handlers")
+        .and_then(toml_edit::Item::as_table_mut)
+        .and_then(|handlers| handlers.get_mut("wordpress"))
+        .and_then(toml_edit::Item::as_table_mut)
+        .ok_or("[handlers.wordpress] is not written as a table")?;
+    // 1つのサイトの形から、`sites`の形にする
+    let moved = match existing {
+        Some(existing) => {
+            let mut site = toml_edit::Table::new();
+            for key in SITE_KEYS {
+                if let Some((key, item)) = wordpress.remove_entry(key) {
+                    site.insert_formatted(&key, item);
+                }
+            }
+            site.decor_mut().set_prefix("\n");
+            Some((existing.to_string(), site))
+        }
+        None => None,
+    };
+    if wordpress.get("sites").is_none() {
+        let mut sites = toml_edit::Table::new();
+        sites.set_implicit(true);
+        wordpress.insert("sites", toml_edit::Item::Table(sites));
+    }
+    // 既定のサイト。無ければ、今のサイト（`site`を省いた呼び出しは、
+    // 今までと同じサイトへ行く）
+    let default_site = match wordpress.get("default_site").and_then(|v| v.as_str()) {
+        Some(default_site) => default_site.to_string(),
+        None => {
+            let first = moved.as_ref().map(|(name, _)| name.clone()).or_else(|| {
+                wordpress
+                    .get("sites")
+                    .and_then(toml_edit::Item::as_table)
+                    .and_then(|sites| sites.iter().next().map(|(name, _)| name.to_string()))
+            });
+            let first = first.ok_or("[handlers.wordpress.sites] is not written as tables")?;
+            wordpress.insert("default_site", toml_edit::value(first.clone()));
+            first
+        }
+    };
+    let sites = wordpress
+        .get_mut("sites")
+        .and_then(toml_edit::Item::as_table_mut)
+        .ok_or("[handlers.wordpress.sites] is not written as tables")?;
+    if let Some((existing, site)) = moved {
+        sites.insert(&existing, toml_edit::Item::Table(site));
+    }
+    let mut site = toml_edit::Table::new();
+    site.decor_mut().set_prefix(format!(
+        "\n# Added by mcp-rs init. The username and the Application Password are kept\n# in the OS credential store (mcp-rs wordpress-keyring show {entry})\n"
+    ));
+    site.insert("url", toml_edit::value(url));
+    site.insert("keyring", toml_edit::value(entry));
+    sites.insert(name, toml_edit::Item::Table(site));
+    let text = doc.to_string();
+    check_sites_config(&text)?;
+    Ok((text, default_site))
+}
+
+/// 設定ファイルの中身を、起動と同じ形で読み、WordPressのサイトの一覧を
+/// 作れるかを確かめる（#657）
+fn check_sites_config(text: &str) -> Result<(), String> {
+    let config: crate::config::McpConfig =
+        toml::from_str(text).map_err(|e| e.message().to_string())?;
+    if let Some(wordpress) = &config.handlers.wordpress {
+        wordpress.site_list()?;
+    }
+    Ok(())
+}
+
+/// `mcp-rs check`の、サイトのサインインの項目の名前（#657）。使うサイトが
+/// 2つ以上なら、サイトの名前が付く
+fn sign_in_item(path: &Path, url: &str) -> String {
+    let url = comparable_site_url(url);
+    let name = crate::config::McpConfig::read_file(&path.display().to_string())
+        .ok()
+        .and_then(|config| config.handlers.wordpress)
+        .and_then(|wordpress| wordpress.site_list().ok())
+        .filter(|sites| sites.len() > 1)
+        .and_then(|sites| {
+            sites
+                .into_iter()
+                .find(|(_, site)| comparable_site_url(&site.url) == url)
+                .map(|(name, _)| name)
+        });
+    match name {
+        Some(name) => format!("WordPress sign-in ({name})"),
+        None => "WordPress sign-in".to_string(),
+    }
 }
 
 /// 設定ファイルを新しく書くときに使うもの（#645）
@@ -2242,6 +2698,7 @@ mod tests {
             previous: Vec::new(),
             superseded: Vec::new(),
             suggested_url: None,
+            added_sites: Vec::new(),
         }
     }
 
@@ -3032,7 +3489,7 @@ file_path = "C:/Users/me/.mcp-rs/logs/audit.log"
             "editor",
             "abcd efgh ijkl",
         ]);
-        let (url, entry) = setup(&mut io, &store).wordpress_credentials().unwrap();
+        let (url, entry) = setup(&mut io, &store).wordpress_credentials(&[]).unwrap();
         assert_eq!(url, "https://example.com");
         assert_eq!(entry, "example.com");
         let stored = load_wordpress_credentials(&store, "example.com").unwrap();
@@ -3058,7 +3515,7 @@ file_path = "C:/Users/me/.mcp-rs/logs/audit.log"
         )
         .unwrap();
         let mut io = Script::new(&["https://example.com", "", "y"]);
-        let (_, entry) = setup(&mut io, &store).wordpress_credentials().unwrap();
+        let (_, entry) = setup(&mut io, &store).wordpress_credentials(&[]).unwrap();
         assert_eq!(entry, "example.com");
         assert_eq!(
             *load_wordpress_credentials(&store, "example.com")
@@ -3084,7 +3541,7 @@ file_path = "C:/Users/me/.mcp-rs/logs/audit.log"
         )
         .unwrap();
         let mut io = Script::new(&["https://example.com", "blog", "n"]);
-        assert!(setup(&mut io, &store).wordpress_credentials().is_err());
+        assert!(setup(&mut io, &store).wordpress_credentials(&[]).is_err());
         assert_eq!(
             load_wordpress_credentials(&store, "blog").unwrap().site_url,
             "https://other.example"
@@ -3257,6 +3714,272 @@ file_path = "C:/Users/me/.mcp-rs/logs/audit.log"
             .shown
             .iter()
             .any(|s| s.contains("verify-ca would accept")));
+    }
+
+    // ---- #657: WordPressのサイトを足す ----
+
+    /// 1つのサイトの形に足すと、今のサイトを名前付きで`sites`の下に移し、
+    /// 既定のサイトにする。ほかの設定・コメントは残る
+    #[test]
+    fn test_add_site_toml_moves_the_single_site() {
+        let text = format!(
+            "{}\n[handlers.wordpress.rate_limit]\nrequests_per_second = 5\nburst_size = 10\nenabled = true\n\n[database]\nengine = \"postgresql\"\ndatabase = \"app\"\nusername = \"reader\"\n",
+            config_toml(Some(("https://example.com", "example.com")))
+        );
+        let (new_text, default_site) = add_site_toml(
+            &text,
+            Some("example"),
+            "shop",
+            "https://shop.example.com",
+            "shop.example.com",
+        )
+        .unwrap();
+        assert_eq!(default_site, "example");
+        // コメントは残る
+        assert!(
+            new_text.contains("# mcp-rs config file, written by"),
+            "{new_text}"
+        );
+        assert!(
+            new_text.contains("mcp-rs wordpress-keyring show example.com"),
+            "{new_text}"
+        );
+        let config: crate::config::McpConfig = toml::from_str(&new_text).unwrap();
+        assert!(config.database.is_some());
+        let wordpress = config.handlers.wordpress.unwrap();
+        assert_eq!(wordpress.url, "");
+        assert_eq!(wordpress.keyring, None);
+        assert_eq!(wordpress.default_site.as_deref(), Some("example"));
+        let sites = wordpress.site_list().unwrap();
+        let names: Vec<&str> = sites.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(names, ["example", "shop"]);
+        assert_eq!(sites[0].1.url, "https://example.com");
+        assert_eq!(sites[0].1.keyring.as_deref(), Some("example.com"));
+        assert_eq!(sites[1].1.url, "https://shop.example.com");
+        assert_eq!(sites[1].1.keyring.as_deref(), Some("shop.example.com"));
+        // 全サイト共通の設定は、[handlers.wordpress]に残り、各サイトが使う
+        assert_eq!(
+            sites[1].1.rate_limit.as_ref().unwrap().requests_per_second,
+            5
+        );
+    }
+
+    /// 既に`sites`の形なら、サイトを足すだけ。`default_site`は変えない
+    #[test]
+    fn test_add_site_toml_to_the_sites_form() {
+        let text = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("configs/examples/multi-site.toml"),
+        )
+        .unwrap();
+        let (new_text, default_site) =
+            add_site_toml(&text, None, "news", "https://news.example.com", "news").unwrap();
+        assert_eq!(default_site, "blog");
+        let config: crate::config::McpConfig = toml::from_str(&new_text).unwrap();
+        let sites = config.handlers.wordpress.unwrap().site_list().unwrap();
+        let names: Vec<&str> = sites.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(names, ["blog", "news", "shop"]);
+        assert!(new_text.contains("# enabled = false"), "{new_text}");
+
+        // サイトが1つの`sites`の形では、そのサイトを既定にする
+        let one = "[transport]\n[server]\n[handlers.wordpress]\nenabled = true\n\n[handlers.wordpress.sites.blog]\nurl = \"https://blog.example.com\"\nkeyring = \"blog\"\n";
+        let (new_text, default_site) =
+            add_site_toml(one, None, "shop", "https://shop.example.com", "shop").unwrap();
+        assert_eq!(default_site, "blog");
+        assert!(new_text.contains("default_site = \"blog\""), "{new_text}");
+    }
+
+    /// 表で書いていない`[handlers.wordpress]`には足さない
+    #[test]
+    fn test_add_site_toml_refuses_an_inline_table() {
+        let text = "[transport]\n[server]\n[handlers]\nwordpress = { enabled = true, url = \"https://example.com\", keyring = \"example.com\" }\n";
+        assert!(add_site_toml(
+            text,
+            Some("example"),
+            "shop",
+            "https://shop.example.com",
+            "shop"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn test_suggested_site_name() {
+        assert_eq!(suggested_site_name("https://blog.example.com", &[]), "blog");
+        assert_eq!(
+            suggested_site_name("https://www.example.com", &[]),
+            "example"
+        );
+        assert_eq!(
+            suggested_site_name("https://example.com/shop", &["example".to_string()]),
+            "example-2"
+        );
+        assert_eq!(
+            suggested_site_name("https://192.168.1.5:8443", &[]),
+            "192-168-1-5"
+        );
+        assert_eq!(
+            suggested_site_name("https://My_Blog.example.com", &[]),
+            "my_blog"
+        );
+        let long = suggested_site_name(&format!("https://{}.example.com", "a".repeat(60)), &[]);
+        assert!(
+            crate::config::check_wordpress_site_name(&long).is_ok(),
+            "{long}"
+        );
+        assert_eq!(
+            unique_name("a", &["a".to_string(), "a-2".to_string()]),
+            "a-3"
+        );
+    }
+
+    /// 2つ目のサイトを足す。同じURL・ほかのサイトの資格情報の名前は断る
+    #[test]
+    fn test_wordpress_sites_step_adds_a_second_site() {
+        let (_dir, path) =
+            config_in_temp(&config_toml(Some(("https://example.com", "example.com"))));
+        let store = MemoryStore::default();
+        let mut io = Script::new(&[
+            "y",                        // サイトを足す
+            "",                         // 今のサイトの名前: example
+            "https://example.com/",     // 既にある
+            "https://shop.example.com", // 足すサイト
+            "example.com",              // 今のサイトの資格情報の名前
+            "",                         // shop.example.com
+            "editor",
+            "shop password",
+            "Shop!",   // 使えない名前
+            "example", // 今のサイトの名前
+            "",        // shop
+            "n",       // もう足さない
+        ]);
+        let mut setup = database_setup(&mut io, &store, &path);
+        let added = setup.wordpress_sites_step().unwrap();
+        assert_eq!(
+            added,
+            [(
+                "https://shop.example.com".to_string(),
+                "shop.example.com".to_string()
+            )]
+        );
+        assert_eq!(setup.added_sites, ["https://shop.example.com"]);
+        let config = crate::config::McpConfig::read_file(&path.display().to_string()).unwrap();
+        let wordpress = config.handlers.wordpress.unwrap();
+        assert_eq!(wordpress.default_site.as_deref(), Some("example"));
+        let sites = wordpress.site_list().unwrap();
+        assert_eq!(sites[1].0, "shop");
+        let stored = load_wordpress_credentials(&store, "shop.example.com").unwrap();
+        assert_eq!(stored.site_url, "https://shop.example.com");
+        assert_eq!(stored.username, "editor");
+        let shown = io.shown.join("\n");
+        assert!(
+            shown.contains("https://example.com is already in the config file"),
+            "{shown}"
+        );
+        assert!(
+            shown.contains("'example.com' holds the credentials of https://example.com"),
+            "{shown}"
+        );
+        assert!(
+            shown.contains("'example' is already a site name"),
+            "{shown}"
+        );
+        assert!(shown.contains("is not valid"), "{shown}");
+        assert!(!shown.contains("shop password"));
+        // 控えが残る
+        assert!(std::fs::read_dir(path.parent().unwrap()).unwrap().any(|e| e
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with("config.toml.bak-")));
+        assert_eq!(
+            sign_in_item(&path, "https://shop.example.com/"),
+            "WordPress sign-in (shop)"
+        );
+    }
+
+    /// データベースだけの設定ファイルには、最初のサイトを足せる（#645）。
+    /// 断れば変えない
+    #[test]
+    fn test_wordpress_sites_step_adds_the_first_site() {
+        let database_only = format!(
+            "{}\n[database]\nengine = \"postgresql\"\ndatabase = \"app\"\nusername = \"reader\"\n",
+            config_toml(None)
+        );
+        let (_dir, path) = config_in_temp(&database_only);
+        let store = MemoryStore::default();
+        let mut io = Script::new(&["n"]);
+        assert!(database_setup(&mut io, &store, &path)
+            .wordpress_sites_step()
+            .unwrap()
+            .is_empty());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), database_only);
+        assert!(io
+            .shown
+            .iter()
+            .any(|s| s.contains("Also let the AI use a WordPress site?")));
+
+        let mut io = Script::new(&["y", "https://example.com", "", "editor", "pw", "n"]);
+        let added = database_setup(&mut io, &store, &path)
+            .wordpress_sites_step()
+            .unwrap();
+        assert_eq!(added.len(), 1);
+        let config = crate::config::McpConfig::read_file(&path.display().to_string()).unwrap();
+        assert!(config.database.is_some());
+        let wordpress = config.handlers.wordpress.unwrap();
+        assert_eq!(wordpress.url, "https://example.com");
+        assert_eq!(wordpress.keyring.as_deref(), Some("example.com"));
+        assert!(wordpress.sites.is_empty());
+        assert_eq!(
+            sign_in_item(&path, "https://example.com"),
+            "WordPress sign-in"
+        );
+        // 次は「もう1つ足すか」を聞いた
+        assert!(io
+            .shown
+            .iter()
+            .any(|s| s
+                .contains("Add another WordPress site to this mcp-rs (now: https://example.com)")));
+    }
+
+    /// 足したサイトを使う、別の設定ファイルの登録（「2つ目のサイト用」）は、
+    /// 重複として既定で消す。ほかの別の設定ファイルの登録は、今までどおり
+    /// 既定で残す（#657）
+    #[test]
+    fn test_registration_for_an_added_site_is_removed_by_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let shop = dir.path().join("shop.toml");
+        std::fs::write(
+            &shop,
+            "[handlers.wordpress]\nenabled = true\nurl = \"https://shop.example.com/\"\nkeyring = \"shop\"\n",
+        )
+        .unwrap();
+        let news = dir.path().join("news.toml");
+        std::fs::write(
+            &news,
+            "[handlers.wordpress]\nenabled = true\nurl = \"https://news.example.com\"\nkeyring = \"news\"\n",
+        )
+        .unwrap();
+        let store = MemoryStore::default();
+        let mut io = Script::new(&["", ""]);
+        let mut setup = setup(&mut io, &store);
+        setup.added_sites = vec!["https://shop.example.com".to_string()];
+        let others = [
+            OtherServer {
+                name: "mcp-rs-shop".to_string(),
+                config: Some(shop.display().to_string()),
+            },
+            OtherServer {
+                name: "mcp-rs-news".to_string(),
+                config: Some(news.display().to_string()),
+            },
+        ];
+        let remove = setup
+            .choose_duplicates_to_remove("Claude Desktop", &others, &launch())
+            .unwrap();
+        assert_eq!(remove, ["mcp-rs-shop"]);
+        assert!(io.shown.iter().any(|s| s.contains(
+            "for https://shop.example.com, which the new config file now has as a site"
+        )));
     }
 
     #[test]

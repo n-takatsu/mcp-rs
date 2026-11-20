@@ -147,7 +147,7 @@ keyring = "shop"
 - Resources (`wordpress://posts` and others) and resource templates (`wordpress://post/{id}` and others) read the default site only
 - In HTTP mode, the tool limits of an API key or access token apply to every site: a key allowed `get_posts` can read the posts of all the sites
 - `WORDPRESS_URL`, `WORDPRESS_USERNAME` and `WORDPRESS_PASSWORD` do not change a config file with `sites`
-- `mcp-rs init` sets up one site, in the one-site form (`url` and `keyring` directly in `[handlers.wordpress]`). To use more sites, rewrite the config file in this form by hand. `init` keeps using a config file that already has `sites` as it is
+- [`mcp-rs init`](../guides/#mcp-rs-init) sets up the first site in the one-site form (`url` and `keyring` directly in `[handlers.wordpress]`), and then asks whether to add another site. From v0.30.0, adding one asks for a name for the site you have (it moves to `[handlers.wordpress.sites.<name>]` and becomes `default_site`, so tool calls without `site` still go to it), and for the new site's URL, credentials (kept in the OS credential store) and name. The rest of the config file and its comments are kept, with a backup copy. Run `mcp-rs init` again and keep the config file to add more sites later. To change the default site, edit `default_site`
 
 With one site, `url` and the credentials can still be written directly in `[handlers.wordpress]`, as in the examples above. That site is named `default`, and the tools get no `site` argument.
 

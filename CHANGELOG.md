@@ -19,6 +19,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ときは、`[handlers.wordpress]`を写さない。既にある設定ファイルを残す
   ときは、今までどおり`[database]`が無ければ足すかを聞く
 
+- `mcp-rs init`で、2つ目以降のWordPressのサイトを足せるようにした（#657）。
+  WordPressを使う設定ファイルを書いた後と、既にある設定ファイルを残す
+  ときに、サイトを足すかを聞く（データベースだけの設定ファイルには、最初の
+  サイトを足せる）。サイトのURL・資格情報（資格情報ストアへ）・名前を聞き、
+  `[handlers.wordpress.sites.<名前>]`を書き足す（控えを残し、ほかの設定・
+  コメントはそのまま）。1つのサイトの形なら、今のサイトにも名前を付けて
+  `sites`の下に移し、`default_site`にする（`site`を省いた呼び出しは、
+  今までと同じサイトへ行く）。設定ファイルにある同じURL・ほかのサイトの
+  資格情報の名前は使わない。サインインに失敗したら、そのサイトの資格情報を
+  入れ直せる。「2つ目のサイト用」に別の設定ファイルで登録したmcp-rsは、
+  今までどおり既定で残すが、そのサイトを足したときは、重複として既定で
+  消す（#602の作りの見直し）。`mcp-rs uninstall`は、1つの設定ファイルの
+  全サイトの資格情報を消せる
+
 - Claude Desktopの拡張機能（MCP Bundle、`mcp-rs-<版>.mcpb`）をリリースに
   付ける（#632）。Windows・macOS（Apple Silicon）・Linuxのmcp-rsを1つに
   まとめ、サイトのURL・ユーザー名・アプリケーションパスワード（Claude
