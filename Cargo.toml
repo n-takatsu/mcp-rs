@@ -131,6 +131,10 @@ jsonwebtoken = { version = "11.1", default-features = false, features = ["aws_lc
 # crates
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+# Windowsで、設定ファイルと控えを本人だけが使えるACLで作る（#674）.
+# Already in Cargo.lock through other crates
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Threading"] }
 
 [dev-dependencies]
 # HTTP/2のクライアント（何もしていない接続を閉じるテスト、#592）
