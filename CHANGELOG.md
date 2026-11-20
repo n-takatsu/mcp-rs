@@ -92,6 +92,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- 設定ファイルが無くても、STDIOモードでは起動する（#667）。`--config`が無く、
+  `~/.config/mcp-rs/config.toml`も無いとき、エラーで終わらず、設定なし
+  （ハンドラー無し、`mcp_rs_status`だけ）で起動する。ログに警告を出し、
+  `mcp_rs_status`の`Config file`に、設定ファイルが無いことと直し方
+  （`mcp-rs init`か`--config`）を出す。MCPの一覧サイト（Glama等）・
+  インスペクターが設定なしで`tools/list`を読めるように、またクライアントに
+  「起動しない」としか出ないのを避けるため。変えないこと: 今のフォルダの
+  設定ファイルは読まない（#541、以前の名前のファイルの案内も出す）。
+  `--config`で渡したファイルが無い・読めないとき、HTTPモード、
+  `mcp-rs check`は、今までどおりエラー。案内の文に`mcp-rs init`を足した。
+  ライブラリとして使う場合: `McpConfig`・`StatusInfo`に
+  `missing_config_file`、`McpConfig::load_for_startup`・`uses_stdio`を足した
 - `post_type`に`post`・`page`以外の値を渡したとき、断る（#642）。以前は、
   知らない値を投稿（`post`）として扱っていた。ライブラリとして使う場合:
   `PostCreateParams`・`PostUpdateParams`に`terms`、`WordPressPost`に

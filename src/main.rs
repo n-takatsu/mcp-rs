@@ -129,7 +129,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 既に1箇所だけ表示済み（"📂 ログ出力先: ..."）。ここで
     // log_config.log_dir（未解決の設定値）を別に表示すると、
     // フォールバックが発生した場合に2つの異なるパスが出て矛盾する。
-    info!("✅ 設定読み込み完了");
+    match &config.missing_config_file {
+        // 設定なしで起動した（#667）。クライアントには「起動しない」としか
+        // 出ないので、終わらずに、mcp_rs_statusでも直し方を伝える
+        Some(message) => tracing::warn!(
+            "{message}. Starting without a config file: only the mcp_rs_status tool is available"
+        ),
+        None => info!("✅ 設定読み込み完了"),
+    }
 
     // どちらのモードも、ハンドラー（WordPress・プラグイン）を登録した
     // McpServerでリクエストを処理する。HTTPモードは以前core::Runtime経由
@@ -180,7 +187,8 @@ async fn load_config(config_path: Option<&str>) -> Result<McpConfig, Box<dyn std
             }
             load_config_from_file(&path).await
         }
-        None => McpConfig::load(),
+        // 設定ファイルが無ければ、STDIOモードでは設定なしで起動する（#667）
+        None => McpConfig::load_for_startup(),
     }
 }
 
@@ -326,6 +334,7 @@ async fn build_server(
     server.set_status_info(mcp_rs::mcp::StatusInfo {
         mode: if http_mode { "http" } else { "stdio" }.to_string(),
         config_file: config.config_file.clone(),
+        missing_config_file: config.missing_config_file.clone(),
         started_at: mcp_rs::mcp::process_started_at(),
         plugin_failures: startup_failures,
         // HTTPモードでは問い合わせない（#635）

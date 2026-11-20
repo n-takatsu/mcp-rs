@@ -2343,6 +2343,7 @@ mod tests {
         server.set_status_info(crate::mcp::StatusInfo {
             mode: "stdio".to_string(),
             config_file: Some(std::path::PathBuf::from("C:/cfg/mcp-config.toml")),
+            missing_config_file: None,
             started_at: std::time::Instant::now(),
             plugin_failures: vec![("fs".to_string(), "npx was not found".to_string())],
             // テストでGitHubに問い合わせない

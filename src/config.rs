@@ -69,6 +69,10 @@ pub struct McpConfig {
     /// 拡張機能で、サイトがまだ入力されていないとき等（#632）
     #[serde(skip)]
     pub startup_notes: Vec<(String, String)>,
+    /// 設定ファイルが無いまま、設定なし（ハンドラー無し）で起動したときの
+    /// 案内（#667）。`None`は、設定ファイルか環境変数で設定した
+    #[serde(skip)]
+    pub missing_config_file: Option<String>,
 }
 
 /// 監査ログの設定（`[audit]`、#416）
@@ -1347,6 +1351,7 @@ impl Default for McpConfig {
             database: None,
             config_file: None,
             startup_notes: Vec::new(),
+            missing_config_file: None,
         }
     }
 }
@@ -1376,8 +1381,9 @@ fn former_cwd_config_files(dir: &std::path::Path) -> Vec<String> {
 fn no_config_file_message(home: Option<&str>, former: &[String]) -> String {
     let user_config =
         expand_home_dir(USER_CONFIG_PATH, home).unwrap_or_else(|| USER_CONFIG_PATH.to_string());
-    let mut message =
-        format!("no config file: pass one with --config <absolute path>, or create {user_config}");
+    let mut message = format!(
+        "no config file: run `mcp-rs init` to create {user_config}, or pass one with --config <absolute path>"
+    );
     if let Some(first) = former.first() {
         let absolute = std::path::absolute(first)
             .map(|p| p.display().to_string())
@@ -1966,8 +1972,22 @@ impl McpConfig {
         Ok(())
     }
 
-    /// 設定ファイルから読み込み、環境変数で上書き
+    /// 設定ファイルから読み込み、環境変数で上書き。設定ファイルが無ければ
+    /// エラー（`mcp-rs check`が使う）
     pub fn load() -> Result<Self, Box<dyn std::error::Error>> {
+        Self::load_with(false)
+    }
+
+    /// `--config`無しで起動するときの読み込み（#667）。設定ファイルが無ければ、
+    /// エラーで終わらず、設定なし（ハンドラー無し、`mcp_rs_status`だけ）で
+    /// 起動できる設定を返し、`missing_config_file`に案内を入れる。STDIO
+    /// モードだけ。HTTPモードは、認証等が既定のまま待ち受けないよう、
+    /// 今までどおりエラー
+    pub fn load_for_startup() -> Result<Self, Box<dyn std::error::Error>> {
+        Self::load_with(true)
+    }
+
+    fn load_with(allow_missing_file: bool) -> Result<Self, Box<dyn std::error::Error>> {
         let mut settings = config::Config::builder();
 
         // デフォルト値を設定
@@ -2002,14 +2022,19 @@ impl McpConfig {
             }
         }
 
-        // 設定ファイルが見つからない場合はエラーを返す。今のフォルダに以前の
-        // 名前の設定ファイルがあれば、読まずに、`--config`の付け方を案内する
-        if !config_file_found && !Self::has_env_config() {
-            return Err(no_config_file_message(
+        // 設定ファイルが見つからない場合はエラーを返す（起動では、STDIOモード
+        // なら設定なしで続ける、#667）。今のフォルダに以前の名前の設定ファイルが
+        // あれば、読まずに、`--config`の付け方を案内する
+        let missing_config_file = (!config_file_found && !Self::has_env_config()).then(|| {
+            no_config_file_message(
                 home.as_deref(),
                 &former_cwd_config_files(std::path::Path::new(".")),
             )
-            .into());
+        });
+        if let Some(message) = &missing_config_file {
+            if !allow_missing_file {
+                return Err(message.clone().into());
+            }
         }
 
         // 環境変数で上書き (MCP_で始まる変数)
@@ -2065,7 +2090,22 @@ impl McpConfig {
 
         final_config.config_file = loaded_config_file;
         final_config.resolve_plugin_paths();
+        if let Some(message) = missing_config_file {
+            if !final_config.uses_stdio() {
+                return Err(message.into());
+            }
+            final_config.missing_config_file = Some(message);
+        }
         Ok(final_config)
+    }
+
+    /// STDIOモードで動くか。`[transport] type`が`http`以外（知らない値も
+    /// STDIOで動く）
+    pub fn uses_stdio(&self) -> bool {
+        !matches!(
+            self.to_transport_config().transport_type,
+            crate::transport::TransportType::Http { .. }
+        )
     }
 
     /// 環境変数による設定があるかチェック
@@ -2155,6 +2195,7 @@ impl McpConfig {
             database: None,
             config_file: None,
             startup_notes: Vec::new(),
+            missing_config_file: None,
         };
 
         let toml_content = toml::to_string_pretty(&sample_config)?;
@@ -3830,6 +3871,7 @@ mod additional_tests {
         assert!(former_cwd_config_files(dir.path()).is_empty());
         let message = no_config_file_message(Some("/home/u"), &[]);
         assert!(message.contains("--config <absolute path>"), "{message}");
+        assert!(message.contains("`mcp-rs init`"), "{message}");
         assert!(message.contains("config.toml"), "{message}");
         assert!(!message.contains("current folder"), "{message}");
 
@@ -3893,6 +3935,17 @@ mod additional_tests {
         let error = toml::from_str::<McpConfig>(content).unwrap_err();
         let message = describe_toml_error(&error, content);
         assert!(!message.contains("cd-secret"), "{message}");
+    }
+
+    /// 設定なしで起動するのはSTDIOモードだけ（#667）。HTTPモードかの判定
+    #[test]
+    fn test_uses_stdio() {
+        let mut config = McpConfig::default();
+        assert!(config.uses_stdio());
+        config.transport.transport_type = Some("unknown".to_string());
+        assert!(config.uses_stdio());
+        config.transport.transport_type = Some("http".to_string());
+        assert!(!config.uses_stdio());
     }
 
     /// 足りない項目・知らない項目の名前は伏せない（#617）
