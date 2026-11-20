@@ -2334,7 +2334,8 @@ pub(crate) fn append_to_config_file(path: &Path, section: &str) -> io::Result<Pa
 
 /// `path`に`content`を書く。フォルダが無ければ作る。前のファイルがあれば、
 /// 別の名前で残し、そのパスを返す。Unixでは、フォルダを本人だけ（700）、
-/// ファイルと控えを本人だけが読める（600）ようにする（#599）。後で
+/// ファイルと控えを本人だけが読める（600）ようにする（#599）。Windowsでは、
+/// ファイルと控えを本人・SYSTEM・Administratorsだけが使えるACLで作る（#674）。後で
 /// `[database]`のパスワード等を書き足すことがあるため
 fn write_config_file(path: &Path, content: &str) -> io::Result<Option<PathBuf>> {
     if let Some(parent) = path.parent() {
@@ -2380,8 +2381,9 @@ pub(crate) fn make_private(path: &Path) -> io::Result<()> {
 }
 
 /// 同じフォルダの別の名前に書いてから、名前を変えて置き換える（#599）。
-/// 途中で止まっても、元のファイルが壊れない。`private`なら、Unixでは
-/// 本人だけが読めるようにする
+/// 途中で止まっても、元のファイルが壊れない。`private`なら、本人だけが
+/// 読めるようにする（Unixは600、Windowsは本人・SYSTEM・Administratorsだけの
+/// ACL。#674）
 pub(crate) fn write_atomically(path: &Path, content: &str, private: bool) -> io::Result<()> {
     let name = path
         .file_name()
@@ -2392,15 +2394,17 @@ pub(crate) fn write_atomically(path: &Path, content: &str, private: bool) -> io:
         // 本人だけが読めるファイルは、作るときから600にする（書いた後に
         // 変えると、その間に読まれ得る。PR #671のレビュー）。前の実行が
         // 残した一時ファイルは消してから、新しく作る
+        // （Windowsでは、本人・SYSTEM・Administratorsだけが使えるACLで
+        // 作る。#674）。名前を変えても、ACLはそのまま
         let _ = std::fs::remove_file(&temporary);
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        if private {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let mut file = options.open(&temporary)?;
+        let mut file = if private {
+            crate::private_file::create_new_private(&temporary)?
+        } else {
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temporary)?
+        };
         file.write_all(content.as_bytes())?;
         file.sync_all()?;
         drop(file);
@@ -2693,7 +2697,7 @@ pub(crate) fn backup_path(path: &Path) -> PathBuf {
 
 /// `path`の控えを作り、そのパスを返す。同じ秒の控えがあれば、`-2`・`-3`…を
 /// 付けた名前にし、前の控えを上書きしない（PR #671のレビュー）。`private`
-/// なら、Unixでは作るときから本人だけが読めるようにする
+/// なら、作るときから本人だけが読めるようにする（Windowsも。#674）
 pub(crate) fn make_backup(path: &Path, private: bool) -> io::Result<PathBuf> {
     let base = backup_path(path);
     let mut source = std::fs::File::open(path)?;
@@ -2703,14 +2707,15 @@ pub(crate) fn make_backup(path: &Path, private: bool) -> io::Result<PathBuf> {
         } else {
             PathBuf::from(format!("{}-{n}", base.display()))
         };
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        if private {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        match options.open(&candidate) {
+        let opened = if private {
+            crate::private_file::create_new_private(&candidate)
+        } else {
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&candidate)
+        };
+        match opened {
             Ok(mut backup) => {
                 io::copy(&mut source, &mut backup)?;
                 drop(backup);
@@ -3318,6 +3323,21 @@ file_path = "C:/Users/me/.mcp-rs/logs/audit.log"
         assert_eq!(mode(&path), 0o600);
         assert_eq!(mode(&backup), 0o600);
         assert_eq!(mode(path.parent().unwrap()), 0o700);
+    }
+
+    /// Windowsでは、設定ファイルと控えを、本人・SYSTEM・Administratorsだけが
+    /// 使えるACLで作る（#674）
+    #[cfg(windows)]
+    #[test]
+    fn test_config_file_is_private_on_windows() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("new").join("config.toml");
+        write_config_file(&path, "a").unwrap();
+        let backup = write_config_file(&path, "b").unwrap().unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "b");
+        assert_eq!(std::fs::read_to_string(&backup).unwrap(), "a");
+        crate::private_file::assert_private_on_windows(&path);
+        crate::private_file::assert_private_on_windows(&backup);
     }
 
     /// 書き換えは、一時ファイルを残さない（#599）

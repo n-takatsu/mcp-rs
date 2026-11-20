@@ -173,6 +173,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ライブラリとして使う場合: `McpHandler`に`shutdown`（既定は何もしない）、
   `McpServer`に`shutdown`を足した
 
+### Security
+
+- Windowsで、`mcp-rs init`・`mcp-rs database-keyring`が書く設定ファイル・
+  控え・一時ファイルを、本人・SYSTEM・Administratorsだけが使えるACL
+  （親フォルダから受け継がない）で作るようにした（#674）。Unixの`600`と
+  同じく、内容を書く前の、作るときから制限する。以前は親フォルダのACLを
+  受け継いだので、`--config`でほかの人も読めるフォルダに書くと、設定
+  ファイルに残った平文のパスワードや、前の設定ファイルの控えを、ほかの
+  ローカルユーザーが読めた。前の版で作った控え等のACLは変えない。FAT32・
+  exFAT等のACLの無いファイルシステムでは、本人だけにできないので、
+  何も書かずにエラーにする
+
 ## [0.29.0] - 2026-11-19
 
 ### Removed

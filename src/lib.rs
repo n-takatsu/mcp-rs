@@ -20,6 +20,7 @@ pub mod init;
 pub mod logging;
 pub mod mcp;
 pub mod plugin_proxy;
+pub(crate) mod private_file;
 pub mod security;
 pub mod transport;
 pub mod types;
