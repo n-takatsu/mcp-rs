@@ -45,7 +45,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   この実行で作った資格情報の項目を消す（サイト名を聞く途中で止めたときも）。
   データベースのパスワードの名前は、WordPressのサイトに使わない。別の設定
   ファイルのURLが`${VAR}`なら、一致とはみなさない。各サイトの平文の
-  パスワードも、控えを消すかを聞く対象にした。`mcp-rs uninstall`は、1つの設定ファイルの
+  パスワードも、控えを消すかを聞く対象にした。別の登録が`env`で`MCP_RS_CONFIG`を
+  渡していれば、起動と同じくそちらの設定ファイルで照合し、既定では残す。
+  Claude Desktopの設定の控えも、本人だけが読めるようにした。`mcp-rs uninstall`は、1つの設定ファイルの
   全サイトの資格情報を消せる
 
 - Claude Desktopの拡張機能（MCP Bundle、`mcp-rs-<版>.mcpb`）をリリースに

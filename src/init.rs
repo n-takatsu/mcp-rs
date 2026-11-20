@@ -255,7 +255,13 @@ impl Setup<'_> {
         if let Some(other) = crate::config::config_path_from_env(
             std::env::var(crate::config::CONFIG_ENV_VAR).ok().as_deref(),
         ) {
-            if !same_config_file(Some(&other), &config_display) {
+            // 相対パスは、`init`と同じ基準で絶対パスにしてから比べる
+            // （PR #671のレビュー）
+            let expanded = crate::config::expand_config_path(&other);
+            let absolute = std::path::absolute(&expanded)
+                .map(|path| path.display().to_string())
+                .unwrap_or(expanded);
+            if !same_config_file(Some(&absolute), &config_display) {
                 return Err(format!(
                     "the environment variable {} is set to {other}, and mcp-rs uses it instead of --config. MCP clients that pass it on (such as Claude Code and VS Code) would start mcp-rs with that file, not with {config_display}. Remove the variable and run mcp-rs init again, or run mcp-rs init --config {}",
                     crate::config::CONFIG_ENV_VAR,
@@ -1232,21 +1238,20 @@ impl Setup<'_> {
         let mut remove = Vec::new();
         for other in others {
             let name = &other.name;
+            // 起動で実際に読む設定ファイルで照合する（PR #671のレビュー）
+            let effective = other.effective_config();
             let replaced = self
                 .superseded
                 .iter()
-                .find(|path| same_config_file(other.config.as_deref(), path));
-            let same_config =
-                same_config_file(other.config.as_deref(), &launch.config) || replaced.is_some();
+                .find(|path| same_config_file(effective, path));
+            let same_config = same_config_file(effective, &launch.config) || replaced.is_some();
             // この実行で足したサイトを使う、別の設定ファイルの登録（#657）。
             // `~`は起動と同じく展開する。相対パスは、クライアントが起動する
             // フォルダで決まり、ここで読むファイルと違うことがあるので、
             // 既定では消さない。その設定ファイルに、足していないサイトや
             // データベース・プラグインがあれば、既定では消さない（PR #671の
             // レビュー）
-            let other_path = other
-                .config
-                .as_deref()
+            let other_path = effective
                 .map(crate::config::expand_config_path)
                 .or_else(crate::config::user_config_path);
             let relative = other_path
@@ -1265,14 +1270,14 @@ impl Setup<'_> {
                 _ => (None, false),
             };
             let question = if let Some(url) = &added {
-                let rest = if covered && !relative {
+                let rest = if covered && !relative && other.env_config.is_none() {
                     "Remove it, so that only one mcp-rs uses the site?"
                 } else {
                     "It may also have other sites or settings, or it is a relative path. Remove it?"
                 };
                 format!(
                     "{client} also starts mcp-rs as \"{name}\" with another config file ({}) for {url}, which the new config file now has as a site. {rest}",
-                    other.config.as_deref().unwrap_or("~/.config/mcp-rs/config.toml")
+                    effective.unwrap_or("~/.config/mcp-rs/config.toml")
                 )
             } else if let Some(replaced) = replaced {
                 format!(
@@ -1285,10 +1290,12 @@ impl Setup<'_> {
             } else {
                 format!(
                     "{client} also starts mcp-rs as \"{name}\" with another config file ({}). If it is the setup you are replacing, remove it (otherwise the same tools may appear twice). Remove it?",
-                    other.config.as_deref().unwrap_or("~/.config/mcp-rs/config.toml")
+                    effective.unwrap_or("~/.config/mcp-rs/config.toml")
                 )
             };
-            let default = same_config || (added.is_some() && covered && !relative);
+            // `MCP_RS_CONFIG`で別の設定ファイルを読む登録は、既定では消さない
+            let overridden = other.env_config.is_some();
+            let default = same_config || (added.is_some() && covered && !relative && !overridden);
             if confirm(self.io, &question, default)? {
                 remove.push(name.clone());
             } else if same_config {
@@ -1537,6 +1544,16 @@ struct OtherServer {
     name: String,
     /// `--config`の値（無ければ`None`。`~/.config/mcp-rs/config.toml`を読む）
     config: Option<String>,
+    /// 登録の`env`で渡す`MCP_RS_CONFIG`（#632）。起動では`--config`より
+    /// 優先される（PR #671のレビュー）
+    env_config: Option<String>,
+}
+
+impl OtherServer {
+    /// 起動で実際に読む設定ファイル（`MCP_RS_CONFIG`、無ければ`--config`）
+    fn effective_config(&self) -> Option<&str> {
+        self.env_config.as_deref().or(self.config.as_deref())
+    }
 }
 
 /// `mcpServers`のうち、`mcp-rs`以外の名前で mcp-rs を起動するもの
@@ -1562,9 +1579,16 @@ fn other_mcp_rs_servers(config: &serde_json::Value) -> Vec<OtherServer> {
                 .and_then(serde_json::Value::as_array)
                 .map(|args| args.iter().filter_map(serde_json::Value::as_str).collect())
                 .unwrap_or_default();
+            let env_config = crate::config::config_path_from_env(
+                server
+                    .get("env")
+                    .and_then(|env| env.get(crate::config::CONFIG_ENV_VAR))
+                    .and_then(serde_json::Value::as_str),
+            );
             OtherServer {
                 name: name.clone(),
                 config: config_arg(&args),
+                env_config,
             }
         })
         .collect()
@@ -2846,7 +2870,7 @@ pub(crate) fn remove_from_claude_desktop(
         servers.shift_remove(name);
     }
     let content = serde_json::to_string_pretty(&config)? + "\n";
-    let backup = make_backup(path, false)?;
+    let backup = make_backup(path, true)?;
     write_atomically(path, &content, false)?;
     Ok(backup)
 }
@@ -2881,7 +2905,7 @@ fn add_to_claude_desktop(
     }
     let content = serde_json::to_string_pretty(&config)? + "\n";
     let backup = if path.exists() {
-        Some(make_backup(path, false)?)
+        Some(make_backup(path, true)?)
     } else {
         None
     };
@@ -3164,6 +3188,7 @@ file_path = "C:/Users/me/.mcp-rs/logs/audit.log"
         let others = vec![OtherServer {
             name: "mcp-rs-wordpress".to_string(),
             config: Some(old),
+            env_config: None,
         }];
         let remove = setup
             .choose_duplicates_to_remove("Claude Desktop", &others, &launch)
@@ -3594,7 +3619,8 @@ file_path = "C:/Users/me/.mcp-rs/logs/audit.log"
             other_mcp_rs_servers(&config),
             [OtherServer {
                 name: "second-blog".to_string(),
-                config: Some("/home/me/second-blog.toml".to_string())
+                config: Some("/home/me/second-blog.toml".to_string()),
+                env_config: None,
             }]
         );
 
@@ -3629,10 +3655,12 @@ file_path = "C:/Users/me/.mcp-rs/logs/audit.log"
             OtherServer {
                 name: "old".to_string(),
                 config: Some("/home/me/a.toml".to_string()),
+                env_config: None,
             },
             OtherServer {
                 name: "second-blog".to_string(),
                 config: Some("/home/me/second-blog.toml".to_string()),
+                env_config: None,
             },
         ];
         // Enterだけで進める
@@ -4327,10 +4355,12 @@ file_path = "C:/Users/me/.mcp-rs/logs/audit.log"
             OtherServer {
                 name: "mcp-rs-shop".to_string(),
                 config: Some(shop.display().to_string()),
+                env_config: None,
             },
             OtherServer {
                 name: "mcp-rs-news".to_string(),
                 config: Some(news.display().to_string()),
+                env_config: None,
             },
         ];
         let remove = setup
@@ -4362,11 +4392,13 @@ file_path = "C:/Users/me/.mcp-rs/logs/audit.log"
             OtherServer {
                 name: "mcp-rs-shop".to_string(),
                 config: Some(shop.display().to_string()),
+                env_config: None,
             },
             // 相対パス（`init`のフォルダで見つからなければ、そもそも一致しない）
             OtherServer {
                 name: "mcp-rs-relative".to_string(),
                 config: Some("shop.toml".to_string()),
+                env_config: None,
             },
         ];
         let remove = setup
@@ -4559,6 +4591,7 @@ file_path = "C:/Users/me/.mcp-rs/logs/audit.log"
                 &[OtherServer {
                     name: "mcp-rs-other".to_string(),
                     config: Some(other.display().to_string()),
+                    env_config: None,
                 }],
                 &launch(),
             )
@@ -4580,6 +4613,54 @@ file_path = "C:/Users/me/.mcp-rs/logs/audit.log"
         assert!(!secret(
             "[handlers.wordpress.sites.blog]\nurl = \"https://blog.example.com\"\nkeyring = \"blog\"\n"
         ));
+    }
+
+    /// 登録の`env`の`MCP_RS_CONFIG`は、`--config`より優先して照合する。
+    /// それで別の設定ファイルを読む登録は、既定では消さない（PR #671の
+    /// 3回目のレビュー）
+    #[test]
+    fn test_registration_with_mcp_rs_config_in_env_is_kept_by_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let shop = dir.path().join("shop.toml");
+        std::fs::write(
+            &shop,
+            "[handlers.wordpress]\nenabled = true\nurl = \"https://shop.example.com\"\nkeyring = \"shop\"\n",
+        )
+        .unwrap();
+        let database = dir.path().join("database.toml");
+        let config = serde_json::json!({ "mcpServers": { "mcp-rs-db": {
+            "command": "mcp-rs",
+            "args": ["--config", shop.display().to_string()],
+            "env": { "MCP_RS_CONFIG": database.display().to_string() }
+        }}});
+        let others = other_mcp_rs_servers(&config);
+        assert_eq!(
+            others[0].effective_config(),
+            Some(database.display().to_string().as_str())
+        );
+        let store = MemoryStore::default();
+        let mut io = Script::new(&[""]);
+        let mut setup = setup(&mut io, &store);
+        setup.added_sites = vec!["https://shop.example.com".to_string()];
+        let remove = setup
+            .choose_duplicates_to_remove("Claude Desktop", &others, &launch())
+            .unwrap();
+        assert!(remove.is_empty(), "{remove:?}");
+    }
+
+    /// Claude Desktopの設定の控えも、本人だけが読める（PR #671の3回目のレビュー）
+    #[cfg(unix)]
+    #[test]
+    fn test_claude_desktop_backup_is_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("claude_desktop_config.json");
+        std::fs::write(&path, "{\"mcpServers\":{}}").unwrap();
+        let backup = add_to_claude_desktop(&path, &launch(), false, &[])
+            .unwrap()
+            .unwrap();
+        let mode = std::fs::metadata(&backup).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
     }
 
     /// 同じ秒に控えを作っても、前の控えを上書きしない
