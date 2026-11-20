@@ -39,10 +39,9 @@ pub(crate) fn create_new_private(path: &Path) -> io::Result<File> {
 
 #[cfg(windows)]
 mod windows {
-    use std::ffi::OsString;
     use std::fs::File;
     use std::io;
-    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+    use std::os::windows::ffi::OsStrExt;
     use std::os::windows::io::{AsRawHandle, FromRawHandle};
     use std::path::Path;
 
@@ -55,8 +54,9 @@ mod windows {
         SE_FILE_OBJECT,
     };
     use windows_sys::Win32::Security::{
-        GetTokenInformation, TokenUser, DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
-        SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER,
+        GetSecurityDescriptorControl, GetTokenInformation, TokenUser, ACL,
+        DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES, SE_DACL_PROTECTED,
+        TOKEN_QUERY, TOKEN_USER,
     };
     use windows_sys::Win32::Storage::FileSystem::{
         CreateFileW, GetVolumeInformationByHandleW, CREATE_NEW, FILE_ATTRIBUTE_NORMAL,
@@ -244,6 +244,7 @@ mod windows {
     }
 
     fn verify_private_dacl(file: &File, expected: &LocalBox<std::ffi::c_void>) -> io::Result<()> {
+        let mut dacl: *mut ACL = std::ptr::null_mut();
         let mut actual: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
         // SAFETY: GENERIC_READで開いたハンドル（READ_CONTROLを含む）と、
         // セキュリティ記述子の書き込み先を渡す。
@@ -254,7 +255,7 @@ mod windows {
                 DACL_SECURITY_INFORMATION,
                 std::ptr::null_mut(),
                 std::ptr::null_mut(),
-                std::ptr::null_mut(),
+                &mut dacl,
                 std::ptr::null_mut(),
                 &mut actual,
             )
@@ -263,7 +264,17 @@ mod windows {
             return Err(io::Error::from_raw_os_error(status as i32));
         }
         let actual = LocalBox(actual);
-        if descriptor_to_sddl(&actual)? != descriptor_to_sddl(expected)? {
+        let mut control = 0u16;
+        let mut revision = 0u32;
+        // SAFETY: 上で得たセキュリティ記述子を渡す。
+        if unsafe { GetSecurityDescriptorControl(actual.0, &mut control, &mut revision) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // NULL DACLは誰でも使える。保護されていても、ACEの内容まで確かめる。
+        if dacl.is_null()
+            || control & SE_DACL_PROTECTED == 0
+            || descriptor_to_sddl(&actual)? != descriptor_to_sddl(expected)?
+        {
             return Err(io::Error::other("the file did not retain its private ACL"));
         }
         Ok(())
@@ -289,87 +300,147 @@ mod windows {
         Ok(unsafe { read_wide(string.0) })
     }
 
-    /// 通常のパスは絶対化し、UTF-16でMAX_PATH以上なら拡張接頭辞を付ける。
+    /// `CreateFileW`に渡すパス。std::fsと同じく、絶対パスにして`MAX_PATH`
+    /// 以上になるときは、`\\?\`を付ける（PR #678のレビュー）。短いパスは、
+    /// そのまま渡す
     fn long_path(path: &Path) -> io::Result<std::path::PathBuf> {
+        use std::os::windows::ffi::OsStringExt;
         const MAX_PATH: usize = 260;
-        let text = path.as_os_str().as_encoded_bytes();
-        if text.starts_with(br"\\?\") || text.starts_with(br"\\.\") {
+        let backslash = u16::from(b'\\');
+        let units: Vec<u16> = path.as_os_str().encode_wide().collect();
+        // 既に`\\?\`・`\\.\`の付いたパスは、そのまま
+        let device = |c: u8| {
+            units.len() >= 4
+                && units[0] == backslash
+                && units[1] == backslash
+                && units[2] == u16::from(c)
+                && units[3] == backslash
+        };
+        if device(b'?') || device(b'.') {
             return Ok(path.to_path_buf());
         }
-        // `absolute`は、`.`・`..`も解決する（GetFullPathNameW）。
+        // 短い相対パスでも、今のフォルダが深ければ長くなるので、絶対パスの
+        // 長さで決める。`absolute`は、`.`・`..`も解決する（GetFullPathNameW）
         let absolute = std::path::absolute(path)?;
-        let units: Vec<_> = absolute.as_os_str().encode_wide().collect();
-        if units.len() < MAX_PATH {
-            return Ok(absolute);
+        let absolute: Vec<u16> = absolute.as_os_str().encode_wide().collect();
+        if absolute.len() < MAX_PATH {
+            return Ok(path.to_path_buf());
         }
-        let (prefix, tail) = if let Some(unc) = units.strip_prefix(&[b'\\' as u16; 2]) {
-            (r"\\?\UNC\", unc)
-        } else {
-            (r"\\?\", units.as_slice())
+        // 単独のサロゲートも保つため、UTF-16の列のまま接頭辞を付ける
+        let (prefix, body): (&str, &[u16]) = match absolute.strip_prefix(&[backslash, backslash]) {
+            Some(unc) => (r"\\?\UNC\", unc),
+            None => (r"\\?\", &absolute[..]),
         };
-        let verbatim: Vec<_> = prefix.encode_utf16().chain(tail.iter().copied()).collect();
-        Ok(OsString::from_wide(&verbatim).into())
+        let verbatim: Vec<u16> = prefix.encode_utf16().chain(body.iter().copied()).collect();
+        Ok(std::path::PathBuf::from(std::ffi::OsString::from_wide(
+            &verbatim,
+        )))
     }
 
     #[cfg(test)]
-    #[test]
-    fn acl_fallback_checks_the_dacl_on_the_created_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let file = create_new_private(&dir.path().join("secret.toml")).unwrap();
-        let expected = security_descriptor(&private_sddl(&current_user_sid().unwrap())).unwrap();
-        verify_private_dacl(&file, &expected).unwrap();
-        let different = security_descriptor("D:P(A;;FA;;;WD)").unwrap();
-        assert!(verify_private_dacl(&file, &different).is_err());
-    }
+    mod tests {
+        use super::*;
 
-    #[cfg(test)]
-    #[test]
-    fn short_relative_path_can_point_to_a_long_absolute_path() {
-        const CHILD: &str = "MCP_RS_PRIVATE_FILE_LONG_PATH_TEST_CHILD";
-        let relative = format!("{}.toml", "a".repeat(60));
-        let relative = Path::new(&relative);
+        fn starts_with(path: &Path, prefix: &str) -> bool {
+            let units: Vec<u16> = path.as_os_str().encode_wide().collect();
+            let prefix: Vec<u16> = prefix.encode_utf16().collect();
+            units.starts_with(&prefix)
+        }
 
-        if std::env::var_os(CHILD).is_some() {
-            assert!(relative.as_os_str().encode_wide().count() < 260);
+        #[test]
+        fn acl_fallback_checks_the_dacl_on_the_created_file() {
+            let dir = tempfile::tempdir().unwrap();
+            let file = create_new_private(&dir.path().join("secret.toml")).unwrap();
+            let expected =
+                security_descriptor(&private_sddl(&current_user_sid().unwrap())).unwrap();
+            verify_private_dacl(&file, &expected).unwrap();
+            let different = security_descriptor("D:P(A;;FA;;;WD)").unwrap();
+            assert!(verify_private_dacl(&file, &different).is_err());
+
+            let inherited = dir.path().join("inherited.toml");
+            drop(File::create(&inherited).unwrap());
+            let file = File::open(&inherited).unwrap();
+            assert!(verify_private_dacl(&file, &expected).is_err());
+        }
+
+        #[test]
+        fn short_relative_path_can_point_to_a_long_absolute_path() {
+            const CHILD: &str = "MCP_RS_PRIVATE_FILE_LONG_PATH_TEST_CHILD";
+            let relative = format!("{}.toml", "a".repeat(60));
+            let relative = Path::new(&relative);
+
+            if std::env::var_os(CHILD).is_some() {
+                let short = Path::new("secret.toml");
+                assert_eq!(long_path(short).unwrap(), short);
+                assert!(relative.as_os_str().encode_wide().count() < 260);
+                assert!(
+                    std::path::absolute(relative)
+                        .unwrap()
+                        .as_os_str()
+                        .encode_wide()
+                        .count()
+                        >= 260
+                );
+                let path = long_path(relative).unwrap();
+                assert!(starts_with(&path, r"\\?\"));
+                assert_eq!(long_path(&path).unwrap(), path);
+                drop(create_new_private(relative).unwrap());
+                return;
+            }
+
+            // 子プロセスだけの作業ディレクトリを変え、並行するテストに影響させない。
+            let dir = tempfile::tempdir().unwrap();
+            let mut cwd = dir.path().to_path_buf();
+            while cwd.as_os_str().encode_wide().count() < 200 {
+                cwd.push("a".repeat(20));
+            }
+            std::fs::create_dir_all(&cwd).unwrap();
+            let test_name = module_path!().split_once("::").unwrap().1;
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .arg("--exact")
+                .arg(format!(
+                    "{test_name}::short_relative_path_can_point_to_a_long_absolute_path"
+                ))
+                .current_dir(&cwd)
+                .env(CHILD, "1")
+                .output()
+                .unwrap();
             assert!(
-                std::path::absolute(relative)
-                    .unwrap()
-                    .as_os_str()
-                    .encode_wide()
-                    .count()
-                    >= 260
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
             );
-            let path = long_path(relative).unwrap();
-            assert!(path.as_os_str().as_encoded_bytes().starts_with(br"\\?\"));
-            assert_eq!(long_path(&path).unwrap(), path);
-            drop(create_new_private(relative).unwrap());
-            return;
+            test_support::assert_private(&cwd.join(relative));
         }
 
-        // 子プロセスだけの作業ディレクトリを変え、並行するテストに影響させない。
-        let dir = tempfile::tempdir().unwrap();
-        let mut cwd = dir.path().to_path_buf();
-        while cwd.as_os_str().encode_wide().count() < 200 {
-            cwd.push("a".repeat(20));
+        #[test]
+        fn long_path_keeps_unc_and_device_paths() {
+            let unc = format!(r"\\server\share\{}\secret.toml", "a".repeat(250));
+            let converted = long_path(Path::new(&unc)).unwrap();
+            assert!(
+                starts_with(&converted, r"\\?\UNC\server\share\"),
+                "{converted:?}"
+            );
+
+            let verbatim = format!(r"\\?\C:\{}\secret.toml", "a".repeat(250));
+            assert_eq!(
+                long_path(Path::new(&verbatim)).unwrap(),
+                Path::new(&verbatim)
+            );
         }
-        std::fs::create_dir_all(&cwd).unwrap();
-        let test_name = module_path!().split_once("::").unwrap().1;
-        let output = std::process::Command::new(std::env::current_exe().unwrap())
-            .arg("--exact")
-            .arg(format!(
-                "{test_name}::short_relative_path_can_point_to_a_long_absolute_path"
-            ))
-            .current_dir(&cwd)
-            .env(CHILD, "1")
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "{}\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        test_support::assert_private(&cwd.join(relative));
+
+        /// 単独のサロゲートを、U+FFFDに変えずに保つ（PR #678のレビュー）
+        #[test]
+        fn long_path_keeps_lone_surrogates() {
+            use std::os::windows::ffi::OsStringExt;
+            let mut units: Vec<u16> = format!(r"C:\{}\", "a".repeat(260)).encode_utf16().collect();
+            units.push(0xD800);
+            let path = std::path::PathBuf::from(std::ffi::OsString::from_wide(&units));
+            let converted = long_path(&path).unwrap();
+            let converted: Vec<u16> = converted.as_os_str().encode_wide().collect();
+            assert_eq!(converted.last(), Some(&0xD800));
+        }
     }
 
     #[cfg(test)]
