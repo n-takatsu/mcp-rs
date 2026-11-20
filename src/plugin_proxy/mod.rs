@@ -322,11 +322,46 @@ impl Cleanup {
             use std::os::windows::process::CommandExt;
             command.creation_flags(0x0800_0000);
         }
-        // 終了を待って回収するため、別スレッドで実行する
-        std::thread::spawn(move || {
+        // 終了を待って回収するため、別スレッドで実行する。mcp-rsの終了前に
+        // `wait_for_cleanups`で待てるよう、スレッドを覚えておく（PR #672の
+        // レビュー）
+        let handle = std::thread::spawn(move || {
             let _ = command.status();
         });
+        let mut pending = PENDING_CLEANUPS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        pending.retain(|h| !h.is_finished());
+        pending.push(handle);
     }
+}
+
+/// 実行中の後片付けのコマンド（`Cleanup::run`）
+static PENDING_CLEANUPS: std::sync::Mutex<Vec<std::thread::JoinHandle<()>>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// 後片付けのコマンド（`docker rm -f`・`kubectl delete`）の終了を、最長
+/// `timeout`待つ。mcp-rsが終わる前に呼ぶ。待たないと、プロセスの終了で
+/// コマンドのスレッドも終わり、コンテナ・Job・Secretが残ることがある
+/// （PR #672のレビュー）。待ち終えずに残ったものがあれば`false`
+pub fn wait_for_cleanups(timeout: std::time::Duration) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    let handles = std::mem::take(
+        &mut *PENDING_CLEANUPS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+    );
+    for handle in handles {
+        // JoinHandleには時間を区切ったjoinが無いので、終わったかを見て待つ
+        while !handle.is_finished() {
+            if std::time::Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let _ = handle.join();
+    }
+    true
 }
 
 /// dockerコマンド自体に渡す、本体の環境変数
@@ -1192,6 +1227,18 @@ impl McpHandler for PluginHandler {
 pub(crate) mod tests {
     use super::*;
     use crate::config::{PluginKubernetesConfig, PluginMountConfig};
+
+    /// 後片付けのコマンドを覚えておき、終了を待てる（PR #672のレビュー）
+    #[test]
+    fn test_wait_for_cleanups() {
+        Cleanup {
+            program: "mcp-rs-test-no-such-command".to_string(),
+            args: Vec::new(),
+            env: Vec::new(),
+        }
+        .run();
+        assert!(wait_for_cleanups(std::time::Duration::from_secs(30)));
+    }
 
     const TEST_PLUGIN_ENV: &str = "MCP_RS_TEST_PLUGIN";
 

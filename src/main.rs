@@ -129,7 +129,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 既に1箇所だけ表示済み（"📂 ログ出力先: ..."）。ここで
     // log_config.log_dir（未解決の設定値）を別に表示すると、
     // フォールバックが発生した場合に2つの異なるパスが出て矛盾する。
-    info!("✅ 設定読み込み完了");
+    match &config.missing_config_file {
+        // 設定なしで起動した（#667）。クライアントには「起動しない」としか
+        // 出ないので、終わらずに、mcp_rs_statusでも直し方を伝える
+        Some(message) => tracing::warn!(
+            "{message}. Starting without a config file: only the mcp_rs_status tool is available"
+        ),
+        None => info!("✅ 設定読み込み完了"),
+    }
 
     // どちらのモードも、ハンドラー（WordPress・プラグイン）を登録した
     // McpServerでリクエストを処理する。HTTPモードは以前core::Runtime経由
@@ -154,7 +161,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     other
                 );
             }
-            run_stdio_server(&config).await
+            if run_stdio_server(&config).await? {
+                // 標準入力の読み込みは止められず、tokioの終了がそれを待つので、
+                // ログを書き終えてから、ここで終わる（#617）
+                drop(_log_guard);
+                std::process::exit(0);
+            }
+            Ok(())
         }
     }
 }
@@ -174,7 +187,8 @@ async fn load_config(config_path: Option<&str>) -> Result<McpConfig, Box<dyn std
             }
             load_config_from_file(&path).await
         }
-        None => McpConfig::load(),
+        // 設定ファイルが無ければ、STDIOモードでは設定なしで起動する（#667）
+        None => McpConfig::load_for_startup(),
     }
 }
 
@@ -320,6 +334,7 @@ async fn build_server(
     server.set_status_info(mcp_rs::mcp::StatusInfo {
         mode: if http_mode { "http" } else { "stdio" }.to_string(),
         config_file: config.config_file.clone(),
+        missing_config_file: config.missing_config_file.clone(),
         started_at: mcp_rs::mcp::process_started_at(),
         plugin_failures: startup_failures,
         // HTTPモードでは問い合わせない（#635）
@@ -401,11 +416,29 @@ async fn register_database(
     )
 }
 
-/// STDIOモードでMCPサーバーを実行（initialize / tools/list / tools/call 等に応答）
-async fn run_stdio_server(config: &McpConfig) -> Result<(), Box<dyn std::error::Error>> {
+/// STDIOモードでMCPサーバーを実行（initialize / tools/list / tools/call 等に応答）。
+/// 標準入力の終わり（EOF）か、Ctrl+C（#617）で終わる。Ctrl+Cで終わったら
+/// `true`
+async fn run_stdio_server(config: &McpConfig) -> Result<bool, Box<dyn std::error::Error>> {
     let server = build_server(config, false).await?;
     info!("🔌 STDIOモードで待機中");
-    server.run_stdio().await
+    let interrupted = tokio::select! {
+        result = server.run_stdio() => {
+            result?;
+            false
+        }
+        // Ctrl+Cを受けないと、Windowsが既定でプロセスを止め、終了コードが
+        // 0以外（STATUS_CONTROL_C_EXIT）になる
+        result = tokio::signal::ctrl_c() => {
+            result?;
+            info!("👋 MCP-RS終了（Ctrl+C）");
+            true
+        }
+    };
+    // serverを破棄すると、プラグインの子プロセスも終了する
+    drop(server);
+    wait_for_plugin_cleanups().await;
+    Ok(interrupted)
 }
 
 /// HTTPモードでMCPサーバーを実行する。`/mcp`（と`/`）へのPOST、および
@@ -433,5 +466,22 @@ async fn run_http_server(
     info!("👋 MCP-RS終了");
     // serverを破棄すると、プラグインの子プロセスも終了する
     drop(server);
+    wait_for_plugin_cleanups().await;
     Ok(())
+}
+
+/// コンテナ・Kubernetesのプラグインの後片付け（`docker rm -f`等）の終了を
+/// 待つ（PR #672のレビュー）。待たずに終わると、コンテナ等が残ることがある
+async fn wait_for_plugin_cleanups() {
+    let timeout = std::time::Duration::from_secs(10);
+    let finished =
+        tokio::task::spawn_blocking(move || mcp_rs::plugin_proxy::wait_for_cleanups(timeout))
+            .await
+            .unwrap_or(false);
+    if !finished {
+        tracing::warn!(
+            "Stopping plugin containers or Kubernetes jobs did not finish within {} seconds: remove any left over by hand (docker ps -a / kubectl get jobs)",
+            timeout.as_secs()
+        );
+    }
 }
