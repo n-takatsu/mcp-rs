@@ -57,8 +57,8 @@ mod windows {
         TOKEN_USER,
     };
     use windows_sys::Win32::Storage::FileSystem::{
-        CreateFileW, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_DELETE, FILE_SHARE_READ,
-        FILE_SHARE_WRITE,
+        CreateFileW, GetVolumeInformationByHandleW, CREATE_NEW, FILE_ATTRIBUTE_NORMAL,
+        FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
     };
     use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
@@ -172,7 +172,7 @@ mod windows {
             lpSecurityDescriptor: descriptor.0,
             bInheritHandle: 0,
         };
-        let name = wide(path.as_os_str());
+        let name = wide(long_path(path)?.as_os_str());
         // std::fs::OpenOptionsの`create_new`と同じく、既にあれば失敗する。
         // 共有の仕方もstdと同じ
         // SAFETY: 0で終わるパスと、生きているSECURITY_ATTRIBUTESを渡す
@@ -191,7 +191,65 @@ mod windows {
             return Err(io::Error::last_os_error());
         }
         // SAFETY: 開いたばかりのハンドルで、ほかに持ち主はいない
-        Ok(unsafe { File::from_raw_handle(handle) })
+        let file = unsafe { File::from_raw_handle(handle) };
+        // FAT32・exFAT等のACLの無いファイルシステムでは、渡したACLが付かない
+        // まま作られる。本人だけにできないので、何も書かずに消してエラーにする
+        // （PR #678のレビュー）
+        if !supports_acls(&file)? {
+            drop(file);
+            let _ = std::fs::remove_file(path);
+            return Err(io::Error::other(format!(
+                "cannot make {} readable by you only: the file system has no permissions (ACLs), such as FAT32 or exFAT. Use a folder on an NTFS drive",
+                path.display()
+            )));
+        }
+        Ok(file)
+    }
+
+    /// ファイルのあるボリュームが、ACLを保てるか（`FILE_PERSISTENT_ACLS`）
+    fn supports_acls(file: &File) -> io::Result<bool> {
+        use std::os::windows::io::AsRawHandle;
+        // Win32::System::SystemServicesの値（そのためだけに機能を足さない）
+        const FILE_PERSISTENT_ACLS: u32 = 0x0000_0008;
+        let mut flags = 0u32;
+        // SAFETY: 開いているファイルのハンドルと、書き込み先のポインターを
+        // 渡す。名前は要らないので、バッファは渡さない
+        if unsafe {
+            GetVolumeInformationByHandleW(
+                file.as_raw_handle(),
+                std::ptr::null_mut(),
+                0,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                &mut flags,
+                std::ptr::null_mut(),
+                0,
+            )
+        } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(flags & FILE_PERSISTENT_ACLS != 0)
+    }
+
+    /// `CreateFileW`に渡すパス。std::fsと同じく、長いパス（`MAX_PATH`以上）は
+    /// 絶対パスにして`\\?\`を付ける（PR #678のレビュー）。短いパスは、
+    /// そのまま渡す
+    fn long_path(path: &Path) -> io::Result<std::path::PathBuf> {
+        const MAX_PATH: usize = 260;
+        let length = path.as_os_str().encode_wide().count();
+        let text = path.as_os_str().to_string_lossy();
+        if length < MAX_PATH || text.starts_with(r"\\?\") || text.starts_with(r"\\.\") {
+            return Ok(path.to_path_buf());
+        }
+        // `absolute`は、`.`・`..`も解決する（GetFullPathNameW）
+        let absolute = std::path::absolute(path)?;
+        let absolute = absolute.as_os_str().to_string_lossy();
+        let verbatim = match absolute.strip_prefix(r"\\") {
+            Some(unc) => format!(r"\\?\UNC\{unc}"),
+            None => format!(r"\\?\{absolute}"),
+        };
+        Ok(std::path::PathBuf::from(verbatim))
     }
 
     #[cfg(test)]
@@ -209,7 +267,7 @@ mod windows {
 
         /// ファイルのACL（DACL）を、SDDLの文字列で返す
         pub(crate) fn dacl_sddl(path: &Path) -> String {
-            let name = wide(path.as_os_str());
+            let name = wide(super::long_path(path).unwrap().as_os_str());
             let mut descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
             // SAFETY: 0で終わるパスと、書き込み先のポインターを渡す
             let status = unsafe {
@@ -320,6 +378,24 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("secret.toml");
         drop(create_new_private(&path).unwrap());
+        assert_private_on_windows(&path);
+    }
+
+    /// 長いパス（MAX_PATH以上）にも作れる（PR #678のレビュー）
+    #[cfg(windows)]
+    #[test]
+    fn create_new_private_handles_a_long_path_on_windows() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut path = dir.path().to_path_buf();
+        while path.as_os_str().len() < 300 {
+            path.push("a".repeat(40));
+        }
+        std::fs::create_dir_all(&path).unwrap();
+        let path = path.join("secret.toml");
+        let mut file = create_new_private(&path).unwrap();
+        file.write_all(b"x").unwrap();
+        drop(file);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "x");
         assert_private_on_windows(&path);
     }
 
