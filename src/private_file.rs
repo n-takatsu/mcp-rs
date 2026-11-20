@@ -39,22 +39,24 @@ pub(crate) fn create_new_private(path: &Path) -> io::Result<File> {
 
 #[cfg(windows)]
 mod windows {
+    use std::ffi::OsString;
     use std::fs::File;
     use std::io;
-    use std::os::windows::ffi::OsStrExt;
-    use std::os::windows::io::FromRawHandle;
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+    use std::os::windows::io::{AsRawHandle, FromRawHandle};
     use std::path::Path;
 
     use windows_sys::Win32::Foundation::{
         CloseHandle, LocalFree, GENERIC_READ, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE,
     };
     use windows_sys::Win32::Security::Authorization::{
-        ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
-        SDDL_REVISION_1,
+        ConvertSecurityDescriptorToStringSecurityDescriptorW, ConvertSidToStringSidW,
+        ConvertStringSecurityDescriptorToSecurityDescriptorW, GetSecurityInfo, SDDL_REVISION_1,
+        SE_FILE_OBJECT,
     };
     use windows_sys::Win32::Security::{
-        GetTokenInformation, TokenUser, PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES, TOKEN_QUERY,
-        TOKEN_USER,
+        GetTokenInformation, TokenUser, DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
+        SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER,
     };
     use windows_sys::Win32::Storage::FileSystem::{
         CreateFileW, GetVolumeInformationByHandleW, CREATE_NEW, FILE_ATTRIBUTE_NORMAL,
@@ -151,8 +153,8 @@ mod windows {
         format!("D:P(A;;FA;;;{user_sid})(A;;FA;;;SY)(A;;FA;;;BA)")
     }
 
-    pub(super) fn create_new_private(path: &Path) -> io::Result<File> {
-        let sddl = wide(private_sddl(&current_user_sid()?).as_ref());
+    fn security_descriptor(sddl: &str) -> io::Result<LocalBox<std::ffi::c_void>> {
+        let sddl = wide(sddl.as_ref());
         let mut descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
         // SAFETY: 0で終わるSDDLと、書き込み先のポインターを渡す
         if unsafe {
@@ -166,13 +168,18 @@ mod windows {
         {
             return Err(io::Error::last_os_error());
         }
-        let descriptor = LocalBox(descriptor);
+        Ok(LocalBox(descriptor))
+    }
+
+    pub(super) fn create_new_private(path: &Path) -> io::Result<File> {
+        let descriptor = security_descriptor(&private_sddl(&current_user_sid()?))?;
         let attributes = SECURITY_ATTRIBUTES {
             nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
             lpSecurityDescriptor: descriptor.0,
             bInheritHandle: 0,
         };
-        let name = wide(long_path(path)?.as_os_str());
+        let path = long_path(path)?;
+        let name = wide(path.as_os_str());
         // std::fs::OpenOptionsの`create_new`と同じく、既にあれば失敗する。
         // 共有の仕方もstdと同じ
         // SAFETY: 0で終わるパスと、生きているSECURITY_ATTRIBUTESを渡す
@@ -192,23 +199,27 @@ mod windows {
         }
         // SAFETY: 開いたばかりのハンドルで、ほかに持ち主はいない
         let file = unsafe { File::from_raw_handle(handle) };
-        // FAT32・exFAT等のACLの無いファイルシステムでは、渡したACLが付かない
-        // まま作られる。本人だけにできないので、何も書かずに消してエラーにする
-        // （PR #678のレビュー）
-        if !supports_acls(&file)? {
-            drop(file);
-            let _ = std::fs::remove_file(path);
-            return Err(io::Error::other(format!(
+        // ACLを確認できるまでは、呼び出し元に渡さない。失敗時は空のファイルを消す。
+        let acl_result = match supports_acls(&file) {
+            Ok(true) => Ok(()),
+            Ok(false) => Err(io::Error::other(format!(
                 "cannot make {} readable by you only: the file system has no permissions (ACLs), such as FAT32 or exFAT. Use a folder on an NTFS drive",
                 path.display()
-            )));
+            ))),
+            // SMB 3.0等でボリューム情報を取得できないときは、作成時に渡した
+            // DACL（継承の保護も含む）が実際に付いたことをハンドルから確認する。
+            Err(_) => verify_private_dacl(&file, &descriptor),
+        };
+        if let Err(error) = acl_result {
+            drop(file);
+            let _ = std::fs::remove_file(&path);
+            return Err(error);
         }
         Ok(file)
     }
 
     /// ファイルのあるボリュームが、ACLを保てるか（`FILE_PERSISTENT_ACLS`）
     fn supports_acls(file: &File) -> io::Result<bool> {
-        use std::os::windows::io::AsRawHandle;
         // Win32::System::SystemServicesの値（そのためだけに機能を足さない）
         const FILE_PERSISTENT_ACLS: u32 = 0x0000_0008;
         let mut flags = 0u32;
@@ -232,38 +243,143 @@ mod windows {
         Ok(flags & FILE_PERSISTENT_ACLS != 0)
     }
 
-    /// `CreateFileW`に渡すパス。std::fsと同じく、長いパス（`MAX_PATH`以上）は
-    /// 絶対パスにして`\\?\`を付ける（PR #678のレビュー）。短いパスは、
-    /// そのまま渡す
+    fn verify_private_dacl(file: &File, expected: &LocalBox<std::ffi::c_void>) -> io::Result<()> {
+        let mut actual: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+        // SAFETY: GENERIC_READで開いたハンドル（READ_CONTROLを含む）と、
+        // セキュリティ記述子の書き込み先を渡す。
+        let status = unsafe {
+            GetSecurityInfo(
+                file.as_raw_handle(),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                &mut actual,
+            )
+        };
+        if status != 0 {
+            return Err(io::Error::from_raw_os_error(status as i32));
+        }
+        let actual = LocalBox(actual);
+        if descriptor_to_sddl(&actual)? != descriptor_to_sddl(expected)? {
+            return Err(io::Error::other("the file did not retain its private ACL"));
+        }
+        Ok(())
+    }
+
+    fn descriptor_to_sddl(descriptor: &LocalBox<std::ffi::c_void>) -> io::Result<String> {
+        let mut string: *mut u16 = std::ptr::null_mut();
+        // SAFETY: 生きているセキュリティ記述子と書き込み先を渡す。
+        let ok = unsafe {
+            ConvertSecurityDescriptorToStringSecurityDescriptorW(
+                descriptor.0,
+                SDDL_REVISION_1,
+                DACL_SECURITY_INFORMATION,
+                &mut string,
+                std::ptr::null_mut(),
+            )
+        };
+        if ok == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let string = LocalBox(string);
+        // SAFETY: Windowsが返した、0で終わる文字列。
+        Ok(unsafe { read_wide(string.0) })
+    }
+
+    /// 通常のパスは絶対化し、UTF-16でMAX_PATH以上なら拡張接頭辞を付ける。
     fn long_path(path: &Path) -> io::Result<std::path::PathBuf> {
         const MAX_PATH: usize = 260;
-        let length = path.as_os_str().encode_wide().count();
-        let text = path.as_os_str().to_string_lossy();
-        if length < MAX_PATH || text.starts_with(r"\\?\") || text.starts_with(r"\\.\") {
+        let text = path.as_os_str().as_encoded_bytes();
+        if text.starts_with(br"\\?\") || text.starts_with(br"\\.\") {
             return Ok(path.to_path_buf());
         }
-        // `absolute`は、`.`・`..`も解決する（GetFullPathNameW）
+        // `absolute`は、`.`・`..`も解決する（GetFullPathNameW）。
         let absolute = std::path::absolute(path)?;
-        let absolute = absolute.as_os_str().to_string_lossy();
-        let verbatim = match absolute.strip_prefix(r"\\") {
-            Some(unc) => format!(r"\\?\UNC\{unc}"),
-            None => format!(r"\\?\{absolute}"),
+        let units: Vec<_> = absolute.as_os_str().encode_wide().collect();
+        if units.len() < MAX_PATH {
+            return Ok(absolute);
+        }
+        let (prefix, tail) = if let Some(unc) = units.strip_prefix(&[b'\\' as u16; 2]) {
+            (r"\\?\UNC\", unc)
+        } else {
+            (r"\\?\", units.as_slice())
         };
-        Ok(std::path::PathBuf::from(verbatim))
+        let verbatim: Vec<_> = prefix.encode_utf16().chain(tail.iter().copied()).collect();
+        Ok(OsString::from_wide(&verbatim).into())
+    }
+
+    #[cfg(test)]
+    #[test]
+    fn acl_fallback_checks_the_dacl_on_the_created_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = create_new_private(&dir.path().join("secret.toml")).unwrap();
+        let expected = security_descriptor(&private_sddl(&current_user_sid().unwrap())).unwrap();
+        verify_private_dacl(&file, &expected).unwrap();
+        let different = security_descriptor("D:P(A;;FA;;;WD)").unwrap();
+        assert!(verify_private_dacl(&file, &different).is_err());
+    }
+
+    #[cfg(test)]
+    #[test]
+    fn short_relative_path_can_point_to_a_long_absolute_path() {
+        const CHILD: &str = "MCP_RS_PRIVATE_FILE_LONG_PATH_TEST_CHILD";
+        let relative = format!("{}.toml", "a".repeat(60));
+        let relative = Path::new(&relative);
+
+        if std::env::var_os(CHILD).is_some() {
+            assert!(relative.as_os_str().encode_wide().count() < 260);
+            assert!(
+                std::path::absolute(relative)
+                    .unwrap()
+                    .as_os_str()
+                    .encode_wide()
+                    .count()
+                    >= 260
+            );
+            let path = long_path(relative).unwrap();
+            assert!(path.as_os_str().as_encoded_bytes().starts_with(br"\\?\"));
+            assert_eq!(long_path(&path).unwrap(), path);
+            drop(create_new_private(relative).unwrap());
+            return;
+        }
+
+        // 子プロセスだけの作業ディレクトリを変え、並行するテストに影響させない。
+        let dir = tempfile::tempdir().unwrap();
+        let mut cwd = dir.path().to_path_buf();
+        while cwd.as_os_str().encode_wide().count() < 200 {
+            cwd.push("a".repeat(20));
+        }
+        std::fs::create_dir_all(&cwd).unwrap();
+        let test_name = module_path!().split_once("::").unwrap().1;
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("--exact")
+            .arg(format!(
+                "{test_name}::short_relative_path_can_point_to_a_long_absolute_path"
+            ))
+            .current_dir(&cwd)
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        test_support::assert_private(&cwd.join(relative));
     }
 
     #[cfg(test)]
     pub(crate) mod test_support {
         use std::path::Path;
 
-        use windows_sys::Win32::Security::Authorization::{
-            ConvertSecurityDescriptorToStringSecurityDescriptorW,
-            ConvertStringSecurityDescriptorToSecurityDescriptorW, GetNamedSecurityInfoW,
-            SDDL_REVISION_1, SE_FILE_OBJECT,
-        };
+        use windows_sys::Win32::Security::Authorization::{GetNamedSecurityInfoW, SE_FILE_OBJECT};
         use windows_sys::Win32::Security::{DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR};
 
-        use super::{read_wide, wide, LocalBox};
+        use super::{descriptor_to_sddl, security_descriptor, wide, LocalBox};
 
         /// ファイルのACL（DACL）を、SDDLの文字列で返す
         pub(crate) fn dacl_sddl(path: &Path) -> String {
@@ -289,29 +405,7 @@ mod windows {
                 path.display()
             );
             let descriptor = LocalBox(descriptor);
-            descriptor_to_sddl(descriptor.0)
-        }
-
-        /// セキュリティ記述子のDACLを、SDDLの文字列にする
-        fn descriptor_to_sddl(descriptor: PSECURITY_DESCRIPTOR) -> String {
-            let mut string: *mut u16 = std::ptr::null_mut();
-            // SAFETY: 呼び出し側が得た、生きているセキュリティ記述子を渡す
-            let ok = unsafe {
-                ConvertSecurityDescriptorToStringSecurityDescriptorW(
-                    descriptor,
-                    SDDL_REVISION_1,
-                    DACL_SECURITY_INFORMATION,
-                    &mut string,
-                    std::ptr::null_mut(),
-                )
-            };
-            assert_ne!(
-                ok, 0,
-                "ConvertSecurityDescriptorToStringSecurityDescriptorW failed"
-            );
-            let string = LocalBox(string);
-            // SAFETY: Windowsが返した、0で終わる文字列
-            unsafe { read_wide(string.0) }
+            descriptor_to_sddl(&descriptor).unwrap()
         }
 
         /// 本人・SYSTEM・Administratorsだけで、受け継いでいないACLか
@@ -319,23 +413,10 @@ mod windows {
             let sddl = dacl_sddl(path);
             // Windowsは、よく知られたSIDを短い名前で書く（組み込みの
             // Administratorは`LA`等）。期待する値も、同じ変換を通して比べる
-            let expected = wide(super::private_sddl(&super::current_user_sid().unwrap()).as_ref());
-            let mut descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
-            // SAFETY: 0で終わるSDDLと、書き込み先のポインターを渡す
-            let ok = unsafe {
-                ConvertStringSecurityDescriptorToSecurityDescriptorW(
-                    expected.as_ptr(),
-                    SDDL_REVISION_1,
-                    &mut descriptor,
-                    std::ptr::null_mut(),
-                )
-            };
-            assert_ne!(
-                ok, 0,
-                "ConvertStringSecurityDescriptorToSecurityDescriptorW failed"
-            );
-            let descriptor = LocalBox(descriptor);
-            let expected = descriptor_to_sddl(descriptor.0);
+            let descriptor =
+                security_descriptor(&super::private_sddl(&super::current_user_sid().unwrap()))
+                    .unwrap();
+            let expected = descriptor_to_sddl(&descriptor).unwrap();
             assert_eq!(sddl, expected, "ACL of {}", path.display());
         }
     }
