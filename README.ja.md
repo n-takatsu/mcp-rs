@@ -70,7 +70,7 @@ Claudeに頼んで、WordPressの記事の下書き・予約投稿・公開、�
 
 ## 🚀 クイックスタート
 
-HTTPSでつながる、アプリケーションパスワード（ユーザー → プロフィール → アプリケーションパスワード）を使えるWordPressのサイトが要ります。Rustは要りません。v0.25.0から、各リリースに、Windows（x64）・macOS（Apple Silicon）・Linux（x64）向けのビルド済みのmcp-rsが付きます。
+WordPressを使うには、HTTPSでつながる、アプリケーションパスワード（ユーザー → プロフィール → アプリケーションパスワード）を使えるWordPressのサイトが要ります。データベース（PostgreSQL・MySQL・MariaDB）だけを使うなら、WordPressのサイトは要りません。`mcp-rs init`の最初の質問で「2. A database」を選びます。Rustは要りません。v0.25.0から、各リリースに、Windows（x64）・macOS（Apple Silicon）・Linux（x64）向けのビルド済みのmcp-rsが付きます。
 
 **1. インストール** パッケージマネージャーで入れます（v0.29.0から）。リリースのビルド済みのmcp-rsを入れ、ほかのパッケージと一緒に更新できます（`scoop update`・`brew upgrade`）。
 
@@ -97,7 +97,7 @@ irm https://raw.githubusercontent.com/n-takatsu/mcp-rs/main/install/install.ps1 
 curl -fsSL https://raw.githubusercontent.com/n-takatsu/mcp-rs/main/install/install.sh | sh
 ```
 
-**2. セットアップ** `mcp-rs init`を動かします（インストールスクリプトは、動かすかを聞きます）。サイトのURL・ユーザー名・アプリケーションパスワードを聞き（ファイルではなく、OSの資格情報ストアに入れます。データベースも、WordPressと一緒にでも、データベースだけでも設定できます）、設定ファイル（`~/.config/mcp-rs/config.toml`）を書き、接続とサインインを確かめ、Claude Desktop・Claude Code・GitHub Copilot（VS Code）に登録します。変える前には、1つずつ確かめます。
+**2. セットアップ** `mcp-rs init`を動かします（インストールスクリプトは、動かすかを聞きます）。サイトのURL・ユーザー名・アプリケーションパスワードを聞き（ファイルではなく、OSの資格情報ストアに入れます。データベースも、WordPressと一緒にでも、データベースだけでも設定できます。データベースだけなら、WordPressのことは聞きません）、設定ファイル（`~/.config/mcp-rs/config.toml`）を書き、接続とサインインを確かめ、Claude Desktop・Claude Code・GitHub Copilot（VS Code）に登録します。変える前には、1つずつ確かめます。
 
 ```bash
 mcp-rs init

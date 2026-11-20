@@ -210,7 +210,7 @@ fn set(
                 "{} has no [database]. Answer a few questions to set it up.\n",
                 path.display()
             ));
-            let answers = ask_database(io, store, Some(name))?;
+            let answers = ask_database(io, store, Some(name), &[])?;
             if content.is_some() {
                 if confirm(io, &format!("Add [database] to {}?", path.display()), true)? {
                     let backup = append_to_config_file(path, &database_toml(&answers)?)?;

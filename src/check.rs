@@ -217,19 +217,26 @@ fn readable_by_others(path: &Path) -> Option<String> {
 
 /// 確かめる。表示はしない
 pub async fn check(args: &CheckArgs) -> Report {
-    let mut report = Report::default();
     // 起動と同じく、`MCP_RS_CONFIG`を`--config`より優先する（#632、PR #666のレビュー）
     let config_path = crate::config::config_path_from_env(
         std::env::var(crate::config::CONFIG_ENV_VAR).ok().as_deref(),
     )
     .or(args.config.clone());
-    let Some((config, credentials_ok)) = check_config(config_path.as_deref(), &mut report) else {
+    check_file(config_path.as_deref(), args.offline).await
+}
+
+/// `config_path`の設定ファイルを確かめる（`None`は既定の設定ファイル）。
+/// `MCP_RS_CONFIG`は見ない。`mcp-rs init`は、書いた設定ファイルそのものを
+/// 確かめる（PR #671のレビュー）
+pub async fn check_file(config_path: Option<&str>, offline: bool) -> Report {
+    let mut report = Report::default();
+    let Some((config, credentials_ok)) = check_config(config_path, &mut report) else {
         return report;
     };
-    check_version(&config, args.offline, &mut report).await;
-    check_wordpress(&config, credentials_ok, args.offline, &mut report).await;
-    check_database(&config, args.offline, &mut report).await;
-    check_plugins(&config.plugins, args.offline, &mut report).await;
+    check_version(&config, offline, &mut report).await;
+    check_wordpress(&config, credentials_ok, offline, &mut report).await;
+    check_database(&config, offline, &mut report).await;
+    check_plugins(&config.plugins, offline, &mut report).await;
     check_logs(&config, &mut report);
     check_audit_log(&config, &mut report).await;
     note_unchecked(&config, &mut report);
