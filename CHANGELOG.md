@@ -166,6 +166,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   プラグインの後片付け（`docker rm -f`・`kubectl delete`）の終了を、最長10秒
   待ってから終わる（PR #672のレビュー）。以前は待たずに終わり、コンテナ・
   Job・Secretが残ることがあった
+- HTTPモードの終了（Ctrl+C）で、プラグインを止め、後片付けの終了を最長10秒
+  待つ（#673）。以前は、HTTPの処理がプラグインを持ったまま終わり、コンテナ・
+  Job・Secretが残ることがあった。処理中のプラグインの呼び出しは、応答を
+  待たずにエラーで終わる。後片付けが10秒で終わらなければ、ログに警告を出す。
+  ライブラリとして使う場合: `McpHandler`に`shutdown`（既定は何もしない）、
+  `McpServer`に`shutdown`を足した
 
 ## [0.29.0] - 2026-11-19
 

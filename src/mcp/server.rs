@@ -64,6 +64,11 @@ pub trait McpHandler: Send + Sync {
     ) -> Result<serde_json::Value, McpError> {
         Err(McpError::InvalidParams(format!("Unknown prompt: {name}")))
     }
+
+    /// mcp-rsの終了の前に呼ぶ（#673）。外部のプラグインは、ここで子プロセス・
+    /// コンテナを止める。HTTPモードでは、ハンドラーをHTTPの処理と共有して
+    /// いて、破棄では止まらないため。既定は何もしない
+    async fn shutdown(&self) {}
 }
 
 /// 呼び出し元の制限（`@read_only`等）を当てはめるときに見る、ツールの形
@@ -501,6 +506,15 @@ impl McpServer {
             session: Arc::new(Session::default()),
             audit_logger: self.audit_logger.clone(),
             status: self.status.clone(),
+        }
+    }
+
+    /// 登録済みのハンドラーを止める（`McpHandler::shutdown`、#673）。
+    /// `dispatcher`で作った`RequestDispatcher`も同じハンドラーを共有するので、
+    /// HTTPモードでも、プラグインの子プロセス・コンテナがここで止まる
+    pub async fn shutdown(&self) {
+        for (_, handler) in &self.handlers {
+            handler.shutdown().await;
         }
     }
 

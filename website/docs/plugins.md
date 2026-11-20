@@ -84,7 +84,7 @@ By default, mcp-rs starts the container with:
 | `--memory=512m`, `--pids-limit=256` | Limits on memory and number of processes |
 | `--rm`, `--init` | The container is removed when the plugin stops |
 
-When mcp-rs stops the plugin (or exits), it also runs `docker rm -f` on the container. Containers are named `mcp-rs-<plugin name>-<random>` and labeled `mcp-rs.plugin=<plugin name>`, so you can list them with `docker ps --filter label=mcp-rs.plugin`.
+When mcp-rs stops the plugin (or exits, in STDIO or HTTP mode), it also runs `docker rm -f` on the container and waits up to 10 seconds for it to finish; if it takes longer, the log warns you to remove the container by hand. Containers are named `mcp-rs-<plugin name>-<random>` and labeled `mcp-rs.plugin=<plugin name>`, so you can list them with `docker ps --filter label=mcp-rs.plugin`.
 
 If the plugin cannot start (for example, Docker is not running or the image has not been pulled), the warning says so, and Docker's own message is in the log lines that start with `[plugin <name>]`.
 
@@ -139,7 +139,7 @@ The plugin's pod runs with:
 | `automountServiceAccountToken: false`, `enableServiceLinks: false` | No access token for the Kubernetes API, and no environment variables describing the cluster's services (Kubernetes still sets the API server's address, such as `KUBERNETES_SERVICE_HOST`) |
 | Label `mcp-rs.network=none` | Covered by the NetworkPolicy above (unless `network = "allow"`) |
 
-When mcp-rs stops the plugin (or exits), it runs `kubectl delete` on the Job and the Secret. If mcp-rs is killed, the plugin's standard input closes, the plugin exits, and Kubernetes deletes the Job 60 seconds later.
+When mcp-rs stops the plugin (or exits, in STDIO or HTTP mode), it runs `kubectl delete` on the Job and the Secret and waits up to 10 seconds for it to finish. A tool call still in progress when mcp-rs exits ends with an error. If mcp-rs is killed, the plugin's standard input closes, the plugin exits, and Kubernetes deletes the Job 60 seconds later.
 
 > **NetworkPolicy needs a network plugin that enforces it.** Most clusters do (for example, Calico and Cilium; also kind's default network). On a cluster whose network plugin ignores NetworkPolicy, `network = "none"` has no effect. Check with your cluster administrator.
 >

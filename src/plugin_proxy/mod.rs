@@ -781,6 +781,9 @@ pub struct PluginHandler {
     runtime: &'static str,
     /// ツールの「読み取りだけ」の印を、`@read_only`に使うか（#595）
     trust_annotations: bool,
+    /// mcp-rsの終了で`true`にする（#673）。処理中の呼び出しをやめさせ、
+    /// 接続のロックを空けて、子プロセス・コンテナを止められるようにする
+    shutting_down: tokio::sync::watch::Sender<bool>,
 }
 
 impl PluginHandler {
@@ -1021,6 +1024,7 @@ impl PluginHandler {
             rate_limiter: RateLimiter::new(config.rate_limit.clone().unwrap_or_default()),
             audit_logger,
             trust_annotations: config.trust_annotations.unwrap_or(false),
+            shutting_down: tokio::sync::watch::channel(false).0,
             runtime: if config.container.is_some() {
                 "container"
             } else if config.kubernetes.is_some() {
@@ -1130,22 +1134,37 @@ impl PluginHandler {
             "name": original,
             "arguments": arguments.unwrap_or_default()
         });
-        let result = tokio::time::timeout(self.call_timeout, async {
+        let mut shutting_down = self.shutting_down.subscribe();
+        let call = tokio::time::timeout(self.call_timeout, async {
             let mut connection = self.connection.lock().await;
             connection
                 .request("tools/call", params, self.max_response_bytes)
                 .await
-        })
-        .await
-        .unwrap_or_else(|_| {
-            Err(McpError::ExternalApi(format!(
-                "plugin '{}' did not respond within {} seconds",
-                self.name,
-                self.call_timeout.as_secs()
-            )))
-        })?;
+        });
+        // mcp-rsの終了では、応答を待たずにやめる（#673）。待っている間は
+        // 接続がロックされ、`shutdown`がプラグインを止められないため
+        let result = tokio::select! {
+            biased;
+            _ = shutting_down.wait_for(|stopping| *stopping) => {
+                Err(self.shutting_down_error())
+            }
+            result = call => result.unwrap_or_else(|_| {
+                Err(McpError::ExternalApi(format!(
+                    "plugin '{}' did not respond within {} seconds",
+                    self.name,
+                    self.call_timeout.as_secs()
+                )))
+            }),
+        }?;
 
         call_tool_result_for_client(&self.name, result)
+    }
+
+    fn shutting_down_error(&self) -> McpError {
+        McpError::ExternalApi(format!(
+            "plugin '{}' was stopped because mcp-rs is shutting down",
+            self.name
+        ))
     }
 
     #[cfg(test)]
@@ -1220,6 +1239,18 @@ impl McpHandler for PluginHandler {
 
     async fn read_resource(&self, params: ResourceReadParams) -> Result<Value, McpError> {
         Err(McpError::ResourceNotFound(params.uri))
+    }
+
+    async fn shutdown(&self) {
+        // 処理中の呼び出しをやめさせてから、接続のロックを取る（#673）
+        self.shutting_down.send_replace(true);
+        let mut connection = self.connection.lock().await;
+        if connection.stopped.is_none() {
+            // 後片付け（`docker rm -f`等）は`Cleanup::run`が始め、終了は
+            // `wait_for_cleanups`で待つ
+            connection.kill();
+            connection.stopped = Some("mcp-rs is shutting down".to_string());
+        }
     }
 }
 
@@ -1581,6 +1612,49 @@ pub(crate) mod tests {
             .await
             .unwrap();
         assert_eq!(text(&result), "after");
+    }
+
+    #[tokio::test]
+    async fn test_shutdown_stops_plugin_shared_with_dispatcher() {
+        // HTTPモードのように、`dispatcher`がハンドラーを共有していても、
+        // `McpServer::shutdown`でプラグインが止まる（#673）
+        let handler = Arc::new(
+            PluginHandler::start(&test_plugin_config("down"))
+                .await
+                .unwrap(),
+        );
+        let mut server = crate::mcp::McpServer::new();
+        server.add_handler("down".to_string(), handler.clone());
+        let _dispatcher = server.dispatcher();
+
+        // 処理中の呼び出しは、応答を待たずにエラーで終わる
+        let in_flight = {
+            let handler = handler.clone();
+            tokio::spawn(async move { call(&handler, "down__sleep", json!({ "ms": 20000 })).await })
+        };
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        tokio::time::timeout(Duration::from_secs(5), server.shutdown())
+            .await
+            .expect("shutdown should not wait for the call in progress");
+        let error = tokio::time::timeout(Duration::from_secs(5), in_flight)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap_err();
+        assert!(error.to_string().contains("shutting down"), "{}", error);
+
+        let status = handler.status().await.unwrap();
+        assert!(
+            status.contains("stopped (mcp-rs is shutting down)"),
+            "{}",
+            status
+        );
+        let error = call(&handler, "down__echo", json!({ "text": "late" }))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("shutting down"), "{}", error);
+        // 2回目は何もしない
+        server.shutdown().await;
     }
 
     #[tokio::test]
