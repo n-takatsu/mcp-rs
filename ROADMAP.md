@@ -61,6 +61,7 @@ MCPのクライアント（Claude Desktop・Claude Code等）から使える機�
 - #668 公式のMCP Registryに、`.mcpb`で登録する（#632の続き。v0.30.0のリリースの後に登録する）
 - #645 `mcp-rs init`で、WordPressを使わずにデータベースだけを設定する（#590で見送った）
 - #617 設定ファイルのエラーで項目の名前を伏せない・STDIOモードでCtrl+Cを受けて終わる
+- #667 設定ファイルが無くても、STDIOモードで`mcp_rs_status`だけで起動する（Glamaへの登録でつまずいた）
 
 **確かめること**
 
