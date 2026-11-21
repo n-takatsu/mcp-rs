@@ -5257,7 +5257,7 @@ impl McpHandler for WordPressHandler {
             Tool {
                 name: "get_posts".to_string(),
                 title: Some("List posts".to_string()),
-                description: "List WordPress posts (or the posts of an allowed custom post type), published ones by default. Use search, categories, tags, author, after and before to narrow them, and get_post to read one post's full content. Without search, filters or page options it returns every post; with them, one page and the total. Each post has its ID, title, status, date, link, slug and excerpt.".to_string(),
+                description: "List WordPress posts (or the posts of an allowed custom post type), published ones by default. Use search, categories, tags, author, after and before to narrow them, and get_post to read one post's full content. Without search, filters or page options it returns all posts, but at most 10,000; on larger sites pass page and per_page and read page after page. With them, it returns one page and the total. Each post has its ID, title, status, date, link, slug and excerpt.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -5317,7 +5317,7 @@ impl McpHandler for WordPressHandler {
             Tool {
                 name: "get_pages".to_string(),
                 title: Some("List pages".to_string()),
-                description: "List WordPress pages (static pages such as About or Contact, not blog posts), published ones by default. Use get_posts for posts and get_post with post_type 'page' to read one page's full content. Without search, filters or page options it returns every page; with them, one page and the total. Each page has its ID, title, status, date, link, slug and excerpt.".to_string(),
+                description: "List WordPress pages (static pages such as About or Contact, not blog posts), published ones by default. Use get_posts for posts and get_post with post_type 'page' to read one page's full content. Without search, filters or page options it returns all pages, but at most 10,000; on larger sites pass page and per_page and read page after page. With them, it returns one page and the total. Each page has its ID, title, status, date, link, slug and excerpt.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -5367,7 +5367,7 @@ impl McpHandler for WordPressHandler {
             Tool {
                 name: "get_all_content".to_string(),
                 title: Some("List all posts and pages".to_string()),
-                description: "List every published WordPress post and every published page in one call, for an overview of the whole site. Returns each item's ID, title, status, date, link, slug and excerpt, posts and pages separately. On large sites prefer get_posts or get_pages with search, filters or per_page, which return one page at a time.".to_string(),
+                description: "List the published WordPress posts and the published pages in one call (at most 10,000 of each), for an overview of the whole site. Returns each item's ID, title, status, date, link, slug and excerpt, posts and pages separately. On large sites prefer get_posts or get_pages with search, filters or per_page, which return one page at a time.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {},
@@ -5378,7 +5378,7 @@ impl McpHandler for WordPressHandler {
             Tool {
                 name: "get_post".to_string(),
                 title: Some("Read a post or page".to_string()),
-                description: "Read one WordPress post, page, or custom post type item by ID, with its full content. Returns the ID, title, status, date, slug, categories, tags, featured image and content. By default the content is the editable source (with Gutenberg block markup), which can be passed back to update_post unchanged. Use get_posts or get_pages to find the ID.".to_string(),
+                description: "Read one WordPress post, page, or custom post type item by ID, with its full content. Returns the ID, title, status, date, slug, categories, tags, featured image and content. By default the content is the editable source (with Gutenberg block markup), which can be passed back to update_post unchanged. If the credentials cannot edit the item, the content is rendered HTML instead and is labeled so; do not write that back with update_post, because it would replace the blocks. Use get_posts or get_pages to find the ID.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -5749,7 +5749,7 @@ impl McpHandler for WordPressHandler {
             Tool {
                 name: "get_media".to_string(),
                 title: Some("List media files".to_string()),
-                description: "List every file in the WordPress media library: ID, title, MIME type, URL, alt text and date, with the total. Use get_media_item for one file, update_media to change its title, alt text or caption, and the ID as featured_media_id or with set_featured_image.".to_string(),
+                description: "List the files in the WordPress media library (at most 10,000): ID, title, MIME type, URL, alt text and date, with the total number of files. Use get_media_item for one file, update_media to change its title, alt text or caption, and the ID as featured_media_id or with set_featured_image.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {},
@@ -5886,7 +5886,7 @@ impl McpHandler for WordPressHandler {
             Tool {
                 name: "get_categories".to_string(),
                 title: Some("List categories".to_string()),
-                description: "List every post category of the site: ID, name, slug, description, parent and number of posts. Use the IDs in the categories argument of the post tools and get_posts. For other taxonomies, use get_taxonomies and get_terms.".to_string(),
+                description: "List the post categories of the site (at most 10,000): ID, name, slug, description, parent and number of posts. Use the IDs in the categories argument of the post tools and get_posts. For other taxonomies, use get_taxonomies and get_terms.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {},
@@ -5977,7 +5977,7 @@ impl McpHandler for WordPressHandler {
             Tool {
                 name: "get_tags".to_string(),
                 title: Some("List tags".to_string()),
-                description: "List every post tag of the site: ID, name, slug, description and number of posts. Use the IDs in the tags argument of the post tools and get_posts.".to_string(),
+                description: "List the post tags of the site (at most 10,000): ID, name, slug, description and number of posts. Use the IDs in the tags argument of the post tools and get_posts.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {},
@@ -6223,7 +6223,7 @@ impl McpHandler for WordPressHandler {
             Tool {
                 name: "create_post_with_embeds".to_string(),
                 title: Some("Create a post with embedded videos".to_string()),
-                description: "Create a WordPress post or page whose content is followed by embedded media: each YouTube URL becomes a video player, and each other URL (for example X/Twitter, Instagram or TikTok) is added on its own line, which WordPress shows as an embed when it supports the service. It is a draft unless status says otherwise. To embed in the middle of the content, write the URLs or embed blocks into content and use create_post instead. Returns the new post's ID, title, status and slug.".to_string(),
+                description: "Create a WordPress post or page whose content is followed by embedded media: each YouTube video URL becomes a video player, and each X/Twitter, Instagram post, Facebook or TikTok URL is added on its own line, which WordPress shows as an embed. Other URLs are left out without an error. It is a draft unless status says otherwise. To embed in the middle of the content, write the URLs or embed blocks into content and use create_post instead. Returns the new post's ID, title, status and slug.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
