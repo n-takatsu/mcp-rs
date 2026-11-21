@@ -1333,7 +1333,7 @@ impl Setup<'_> {
             .iter()
             .filter(|url| !new_urls.contains(url))
             .map(|url| format!("the site {url}"))
-            .chain(self.changed_site_names(path))
+            .chain(self.changed_site_names(path, true))
             .chain(extras)
             .collect();
         if lost.is_empty() {
@@ -1361,10 +1361,10 @@ impl Setup<'_> {
 
     /// 設定ファイル（`path`）を新しい設定ファイルに置き換えると変わる、
     /// サイトの名前と`site`を省いた呼び出しのサイト（PR #688のレビュー）。
-    /// どちらかを読めなければ無し
-    fn changed_site_names(&self, path: &str) -> Vec<String> {
+    /// どちらかを読めなければ無し。`same_server`は`changed_site_names`を参照
+    fn changed_site_names(&self, path: &str, same_server: bool) -> Vec<String> {
         match (read_toml(Path::new(path)), read_toml(&self.config_path)) {
-            (Some(old), Some(new)) => changed_site_names(&old, &enabled_sites(&new)),
+            (Some(old), Some(new)) => changed_site_names(&old, &enabled_sites(&new), same_server),
             _ => Vec::new(),
         }
     }
@@ -1420,7 +1420,7 @@ impl Setup<'_> {
                         .collect();
                     // 変わるサイトの名前（PR #688のレビュー）
                     if let Some(path) = other_path.as_deref() {
-                        lost.extend(self.changed_site_names(path));
+                        lost.extend(self.changed_site_names(path, false));
                     }
                     lost.extend(extras);
                     (
@@ -1981,15 +1981,16 @@ fn enabled_sites(table: &toml::Table) -> EnabledSites {
                 .filter(|(_, site)| enabled(site, true))
                 .filter_map(|(name, site)| url(site).map(|url| (Some(name.clone()), url)))
                 .collect();
-            let default = wordpress
-                .get("default_site")
-                .and_then(toml::Value::as_str)
-                .and_then(|name| {
-                    sites
-                        .iter()
-                        .find(|(site, _)| site.as_deref() == Some(name))
-                        .map(|(_, url)| url.clone())
-                });
+            // 起動と同じく、`default_site`を省けるのは、使うサイトが1つの
+            // ときだけで、そのサイトが既定になる（PR #688のレビュー）
+            let default = match wordpress.get("default_site").and_then(toml::Value::as_str) {
+                Some(name) => sites
+                    .iter()
+                    .find(|(site, _)| site.as_deref() == Some(name))
+                    .map(|(_, url)| url.clone()),
+                None if sites.len() == 1 => Some(sites[0].1.clone()),
+                None => None,
+            };
             EnabledSites { sites, default }
         }
         _ => {
@@ -2007,7 +2008,13 @@ fn enabled_sites(table: &toml::Table) -> EnabledSites {
 /// 新しい設定にも同じURLがあるのに名前が違うと、`site`にその名前を渡す
 /// 呼び出しが失敗する。`site`を省いた呼び出しは、別のサイトに送られる。
 /// 新しい設定に無いサイトは、ほかで挙げるので、ここでは挙げない
-fn changed_site_names(old: &toml::Table, new: &EnabledSites) -> Vec<String> {
+///
+/// `site`を省いた呼び出しのサイトは、`same_server`（同じ名前の登録を置き換える。
+/// 同じサーバーへの呼び出しの送り先が変わる）なら、前の設定が1つのサイトの
+/// 形でも比べる。別の名前の登録を消すときは、前の設定が複数のサイトの形の
+/// ときだけ比べる。1つのサイトの登録を、ほかのサイトと同じmcp-rsへまとめる
+/// のは#657の流れで、そのサイトは引数`site`で選ぶ
+fn changed_site_names(old: &toml::Table, new: &EnabledSites, same_server: bool) -> Vec<String> {
     let old = enabled_sites(old);
     let mut changed: Vec<String> = old
         .sites
@@ -2026,9 +2033,9 @@ fn changed_site_names(old: &toml::Table, new: &EnabledSites) -> Vec<String> {
             renamed.then(|| format!("the site name '{name}' for {url}"))
         })
         .collect();
-    // 複数のサイトの形で、`site`を省いた呼び出しが使うサイトが変わる
+    // `site`を省いた呼び出しが使うサイトが変わる
     let named = old.sites.iter().any(|(name, _)| name.is_some());
-    if let Some(default) = old.default.as_ref().filter(|_| named) {
+    if let Some(default) = old.default.as_ref().filter(|_| named || same_server) {
         if new.default.as_ref() != Some(default) && new.sites.iter().any(|(_, url)| url == default)
         {
             changed.push(format!(
@@ -5507,27 +5514,54 @@ keyring = \"blog\"
         let old = parse(
             "[handlers.wordpress]\nenabled = true\ndefault_site = \"shop\"\n\n[handlers.wordpress.sites.shop]\nurl = \"https://shop.example.com\"\n\n[handlers.wordpress.sites.blog]\nurl = \"https://blog.example.com\"\n",
         );
+        let default_changed =
+            "tool calls without `site` going to https://shop.example.com (default_site)"
+                .to_string();
         // 同じ名前・同じ既定なら、変わらない
-        assert!(changed_site_names(&old, &enabled_sites(&old)).is_empty());
+        assert!(changed_site_names(&old, &enabled_sites(&old), true).is_empty());
         // 名前が変わり、既定も別のサイトになる
         let renamed = parse(
             "[handlers.wordpress]\nenabled = true\ndefault_site = \"blog\"\n\n[handlers.wordpress.sites.blog]\nurl = \"https://blog.example.com\"\n\n[handlers.wordpress.sites.store]\nurl = \"https://shop.example.com/\"\n",
         );
-        assert_eq!(
-            changed_site_names(&old, &enabled_sites(&renamed)),
-            [
-                "the site name 'shop' for https://shop.example.com".to_string(),
-                "tool calls without `site` going to https://shop.example.com (default_site)"
-                    .to_string(),
-            ]
-        );
+        for same_server in [true, false] {
+            assert_eq!(
+                changed_site_names(&old, &enabled_sites(&renamed), same_server),
+                [
+                    "the site name 'shop' for https://shop.example.com".to_string(),
+                    default_changed.clone(),
+                ]
+            );
+        }
         // 1つのサイトの形には、引数`site`が無いので、名前の変更には当たらない。
         // 無いサイト（blog）は、ほかで挙げる
         let single =
             parse("[handlers.wordpress]\nenabled = true\nurl = \"https://shop.example.com\"\n");
-        assert!(changed_site_names(&old, &enabled_sites(&single)).is_empty());
-        // 前の設定が1つのサイトの形なら、名前も既定の変更も無い
-        assert!(changed_site_names(&single, &enabled_sites(&renamed)).is_empty());
+        assert!(changed_site_names(&old, &enabled_sites(&single), true).is_empty());
+        // 前の設定が1つのサイトの形なら、名前の変更は無い。同じ名前の登録を
+        // 置き換えるときは、`site`を省いた呼び出しの送り先が変わることを挙げる。
+        // 別の名前の登録を消す（#657でまとめる）ときは挙げない
+        assert_eq!(
+            changed_site_names(&single, &enabled_sites(&renamed), true),
+            std::slice::from_ref(&default_changed)
+        );
+        assert!(changed_site_names(&single, &enabled_sites(&renamed), false).is_empty());
+        // `default_site`を省いた、名前付きのサイトが1つだけの設定は、そのサイトが
+        // 既定（起動と同じ）
+        let only_shop = parse(
+            "[handlers.wordpress]\nenabled = true\n\n[handlers.wordpress.sites.shop]\nurl = \"https://shop.example.com\"\n",
+        );
+        assert_eq!(
+            enabled_sites(&only_shop).default.as_deref(),
+            Some("https://shop.example.com")
+        );
+        let kept_name = parse(
+            "[handlers.wordpress]\nenabled = true\ndefault_site = \"blog\"\n\n[handlers.wordpress.sites.blog]\nurl = \"https://blog.example.com\"\n\n[handlers.wordpress.sites.shop]\nurl = \"https://shop.example.com\"\n",
+        );
+        assert_eq!(
+            changed_site_names(&only_shop, &enabled_sites(&kept_name), false),
+            [default_changed]
+        );
+        assert!(changed_site_names(&only_shop, &enabled_sites(&only_shop), false).is_empty());
     }
 
     /// サイトの名前が変わる別の名前の登録は、既定では消さない（PR #688の
