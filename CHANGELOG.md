@@ -199,6 +199,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   待たずにエラーで終わる。後片付けが10秒で終わらなければ、ログに警告を出す。
   ライブラリとして使う場合: `McpHandler`に`shutdown`（既定は何もしない）、
   `McpServer`に`shutdown`を足した
+- `mcp-rs init`・`mcp-rs uninstall`のレビューの指摘を直した（#684）
+  - サイトを足したとき、同じサイトだけを使う別の設定ファイルの登録でも、
+    サイトごとの設定（`post_types`・`upload_allowed_dirs`等）や
+    `[server]`・`[transport.http]`等があれば、既定では消さない。消すと
+    失われる設定を、質問に示す。以前は、`[database]`・`[[plugins]]`だけを
+    見ていて、設定の多い登録を既定で消していた
+  - `--config`を渡したとき、複数のサイトを使う前の設定ファイルに、黙って
+    切り替えない。どちらを使うかを聞く（既定は`--config`の場所）。
+    `--config`を渡さないときは、今までどおり
+  - 前の設定を写して、WordPressだけと選んだときは、写した`[database]`を
+    外す（そう表示する）。以前は、`allow_write`も含めて残り、データベースの
+    ツールも登録されていた
+  - `uninstall`は、資格情報ストアの項目を、設定ファイルの場所ではなく、
+    入っている種類（WordPress・データベース・mcp-rsのものではない）で
+    示す。場所と種類が合わなければ、実際の種類を示し、既定では消さない
+  - Unixで、本人だけが読めるファイル（設定ファイル・控え）を作った後、
+    実際のモードを確かめる。vfat等で、ほかの人も読めるモードになったら、
+    中身を書く前にファイルを消して、エラーで止める（WindowsのACLの確認と
+    同じ）
 
 ### Security
 

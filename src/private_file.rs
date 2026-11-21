@@ -1,6 +1,6 @@
 //! 本人だけが読み書きできるファイルを、作るときから制限して作る（#599・#674）。
 //!
-//! Unixでは、モード`600`で作る。Windowsでは、本人とSYSTEM・Administrators
+//! Unixでは、モード`600`で作り、実際のモードを確かめる（#684）。Windowsでは、本人とSYSTEM・Administrators
 //! だけが使えるACL（親フォルダから受け継がない）を付けて作る。書いた後に
 //! 制限すると、その間にほかの人に読まれ得るため、作るときに渡す。
 //!
@@ -17,12 +17,32 @@ use std::path::Path;
 pub(crate) fn create_new_private(path: &Path) -> io::Result<File> {
     #[cfg(unix)]
     {
-        use std::os::unix::fs::OpenOptionsExt;
-        std::fs::OpenOptions::new()
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        let file = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
             .mode(0o600)
-            .open(path)
+            .open(path)?;
+        // 実際のモードを、開いたファイルで確かめる（#684）。vfat等では、
+        // マウントの`fmask`で決まり、ほかの人も読めることがある。中身を
+        // 書く前に、作ったファイルを消して止める
+        let checked = file.metadata().and_then(|metadata| {
+            let mode = metadata.permissions().mode() & 0o777;
+            if mode & 0o077 == 0 {
+                Ok(())
+            } else {
+                Err(io::Error::other(format!(
+                    "cannot make {} readable by you only: the file system gave it mode {mode:o} instead of 600 (it does not keep file permissions, such as FAT32 or exFAT, or it is mounted that way). Use a folder on another file system",
+                    path.display()
+                )))
+            }
+        });
+        if let Err(error) = checked {
+            drop(file);
+            let _ = std::fs::remove_file(path);
+            return Err(error);
+        }
+        Ok(file)
     }
     #[cfg(windows)]
     {

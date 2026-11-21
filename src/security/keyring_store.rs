@@ -461,6 +461,35 @@ pub fn database_entry(
     ))
 }
 
+/// What kind of credentials a keyring entry holds, by its stored `kind`
+/// (#684). The secret itself is not read out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EntryKind {
+    /// mcp-rs WordPress credentials
+    WordPress,
+    /// mcp-rs database credentials
+    Database,
+    /// Not mcp-rs credentials (another program's secret, or an unknown kind)
+    Other,
+}
+
+/// The kind of the entry named `name`, or `None` if there is none.
+pub fn entry_kind(store: &dyn SecretStore, name: &str) -> Result<Option<EntryKind>, KeyringError> {
+    #[derive(Deserialize)]
+    struct Kind {
+        kind: String,
+    }
+    let name = check_name(name)?;
+    let Some(secret) = store.get(name)? else {
+        return Ok(None);
+    };
+    Ok(Some(match serde_json::from_str::<Kind>(&secret) {
+        Ok(stored) if stored.kind == STORED_KIND => EntryKind::WordPress,
+        Ok(stored) if stored.kind == STORED_DATABASE_KIND => EntryKind::Database,
+        _ => EntryKind::Other,
+    }))
+}
+
 /// Create or replace the database credentials named `name`, then read them
 /// back to make sure startup will find the same values.
 pub fn store_database_credentials(
