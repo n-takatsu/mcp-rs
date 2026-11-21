@@ -213,6 +213,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   許したカスタム投稿タイプを並べる（#684）。以前は、既定のサイトのものだけで、
   ほかのサイトだけで許した型を選べなかった。使えるかは、今までどおり
   サイトごとに確かめる
+- STDIOモードが、標準入出力の失敗（クライアントが去った等）で終わるときも、
+  プラグインを止め、後片付けの終了を待つ（#684）。以前は、エラーで先に
+  終わり、コンテナ・Job・Secretが残ることがあった。HTTPモードでも、
+  HTTPサーバーを始められなかったときに、プラグインを止める
+- プラグインの後片付け（`docker rm -f`・`kubectl delete`）が失敗した・
+  起動できなかったときに、ログに警告を出す（#684）。以前は、時間切れの
+  ときだけ警告し、失敗（権限・認証・接続）は見逃していた。警告には、
+  コマンド（環境変数は含めない）と理由を出す。手で消すか、
+  `docker ps -a --filter label=mcp-rs.plugin`・
+  `kubectl get jobs,secrets -l mcp-rs.plugin`で確かめる。既に消えていた
+  場合は、失敗にしない。ライブラリとして使う場合:
+  `plugin_proxy::wait_for_cleanups`は、`bool`ではなく`CleanupReport`
+  （時間切れと、失敗したコマンド）を返す
 - 本文（`editor`）・タイトル（`title`）に対応していないカスタム投稿タイプの
   投稿を読めるようにした（#684）。以前は、WordPressの応答に`content`・
   `title`が無く、読むのに失敗していた。本文の無い投稿は、`get_post`で
