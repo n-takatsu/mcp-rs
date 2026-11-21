@@ -98,10 +98,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("   - ID: {}", post.id.unwrap_or(0));
             println!("   - Title: {}", post.title.rendered);
             println!("   - Status: {}", post.status);
-            if post.content.rendered.len() > 200 {
-                println!("   - Content: {}...", &post.content.rendered[..200]);
+            let content = post.content.as_ref().map_or("", |c| c.rendered.as_str());
+            if content.len() > 200 {
+                println!("   - Content: {}...", &content[..200]);
             } else {
-                println!("   - Content: {}", post.content.rendered);
+                println!("   - Content: {}", content);
             }
         }
         Err(e) => {
