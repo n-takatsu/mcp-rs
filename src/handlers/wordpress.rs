@@ -2914,30 +2914,38 @@ impl WordPressHandler {
     /// のように、パスの中の文字列に引っかからないため）。受け付ける形は
     /// `youtube.com/watch?v=`（`v`は問い合わせのどこにあってもよい）・`youtu.be/`・
     /// `youtube.com/embed/`・`youtube.com/shorts/`・`youtube.com/live/`・
-    /// `youtube-nocookie.com/embed/`
+    /// `youtube-nocookie.com/embed/`。パスはこの形と同じ数の要素だけを受け付け
+    /// （末尾の`/`はよい）、`/shorts/<ID>/extra`のような余分な要素があれば断る
     pub fn extract_youtube_id(url: &str) -> Option<String> {
         let parsed = parse_web_url(url)?;
         let host = parsed.host_str()?;
-        let mut segments = parsed.path_segments()?;
-        let first = segments.next().unwrap_or("");
+        let segments: Vec<&str> = parsed.path_segments()?.collect();
+        // 末尾の`/`による空の要素を1つだけ外す
+        let path = match segments.as_slice() {
+            [rest @ .., ""] if !rest.is_empty() => rest,
+            all => all,
+        };
         if host == YOUTUBE_SHORT_LINK_HOST {
-            return youtube_video_id(first);
+            return match path {
+                [id] => youtube_video_id(id),
+                _ => None,
+            };
         }
         if YOUTUBE_NOCOOKIE_HOSTS.contains(&host) {
-            return match first {
-                "embed" => youtube_video_id(segments.next()?),
+            return match path {
+                ["embed", id] => youtube_video_id(id),
                 _ => None,
             };
         }
         if !YOUTUBE_HOSTS.contains(&host) {
             return None;
         }
-        match first {
-            "watch" => parsed
+        match path {
+            ["watch"] => parsed
                 .query_pairs()
                 .find(|(key, _)| key == "v")
                 .and_then(|(_, id)| youtube_video_id(&id)),
-            "embed" | "shorts" | "live" => youtube_video_id(segments.next()?),
+            ["embed" | "shorts" | "live", id] => youtube_video_id(id),
             _ => None,
         }
     }
@@ -6318,7 +6326,7 @@ impl McpHandler for WordPressHandler {
             Tool {
                 name: "create_post_with_embeds".to_string(),
                 title: Some("Create a post with embedded videos".to_string()),
-                description: "Create a WordPress post or page whose content is followed by embedded media: each YouTube video URL (a watch, youtu.be, embed, Shorts or live URL) becomes a video player, and each X/Twitter, Instagram post, Facebook or TikTok URL is added on its own line, which WordPress shows as an embed. Other URLs are left out, and the result lists them. It is a draft unless status says otherwise. To embed in the middle of the content, write the URLs or embed blocks into content and use create_post instead. Returns the new post's ID, title, status and slug.".to_string(),
+                description: "Create a WordPress post or page whose content is followed by embedded media: each YouTube video URL (a watch, youtu.be, embed, Shorts or live URL) becomes a video player, and each X/Twitter, Instagram post, Facebook or TikTok URL is added on its own line, for WordPress to show as an embed. WordPress itself does not embed Instagram or Facebook (since 5.5.2), so those stay plain links unless the site has a plugin for them; the result shows only that a URL was added, not how WordPress shows it. Other URLs are left out, and the result lists them. It is a draft unless status says otherwise. To embed in the middle of the content, write the URLs or embed blocks into content and use create_post instead. Returns the new post's ID, title, status and slug.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -6338,7 +6346,7 @@ impl McpHandler for WordPressHandler {
                         "social_urls": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": "Social media URLs to embed: X/Twitter, Instagram posts (instagram.com/p/...), Facebook or TikTok. Other URLs are left out and listed in the result"
+                            "description": "Social media URLs to embed: X/Twitter, Instagram posts (instagram.com/p/...), Facebook or TikTok. Instagram and Facebook stay plain links unless the site has a plugin that embeds them. Other URLs are left out and listed in the result"
                         },
                         "post_type": {
                             "type": "string",
@@ -8865,6 +8873,8 @@ mod tests {
             "https://www.youtube.com/watch?feature=shared&v=dQw4w9WgXcQ",
             // ホストの大文字・末尾のスラッシュ
             "https://WWW.YouTube.com/shorts/dQw4w9WgXcQ/",
+            "https://youtu.be/dQw4w9WgXcQ/",
+            "https://www.youtube.com/watch/?v=dQw4w9WgXcQ",
         ] {
             assert_eq!(
                 WordPressHandler::extract_youtube_id(url).as_deref(),
@@ -8888,6 +8898,12 @@ mod tests {
             "https://example.org/?u=youtu.be/dQw4w9WgXcQ",
             // nocookieは`/embed/`だけ
             "https://www.youtube-nocookie.com/watch?v=dQw4w9WgXcQ",
+            // IDの後ろに余分な要素がある
+            "https://www.youtube.com/shorts/dQw4w9WgXcQ/extra",
+            "https://www.youtube.com/watch/extra?v=dQw4w9WgXcQ",
+            "https://youtu.be/dQw4w9WgXcQ/extra",
+            "https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ/extra",
+            "https://youtu.be/",
             // `http`・`https`以外・IDに使えない文字
             "javascript://youtube.com/%0Aalert(1)//watch?v=dQw4w9WgXcQ",
             "https://www.youtube.com/watch?v=dQw4w9WgXcQ%22onload%3D",

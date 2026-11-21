@@ -173,7 +173,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   足さずに結果に出す。YouTube・SNS（`social_urls`）のURLは、URLを分解して、
   ホストが決まったもの（`youtube.com`・`www.x.com`等）と完全に一致するかで
   判定する。以前は文字列を含むかだけを見ていたので、ほかのサイトのURL
-  （`https://example.org/x.com/…`、`netflix.com/`等）も本文に足していた
+  （`https://example.org/x.com/…`、`netflix.com/`等）も本文に足していた。
+  YouTubeのURLは、IDの後ろに余分なパス（`/shorts/<ID>/extra`等）があれば
+  断る。ツールの説明・文書に、WordPressは5.5.2からInstagram・Facebookを
+  埋め込まない（プラグインが要る）ことと、結果はURLを本文に足したことだけを
+  示すことを書いた
 
 
 ### Fixed

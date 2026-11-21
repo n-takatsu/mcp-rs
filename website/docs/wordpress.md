@@ -258,6 +258,8 @@ Create a post or page with embedded YouTube videos and social media content appe
 - `tags` (array of numbers, optional): Tag IDs (posts only)
 - `slug` (string, optional): URL slug, for example an English slug for a post with a Japanese title. If omitted, WordPress generates one from the title. See [Slugs](#slugs)
 
+mcp-rs adds each social media URL to the post on its own line, and WordPress decides how to show it. WordPress itself has not embedded Instagram or Facebook since 5.5.2, because Meta requires a developer app and an access token: those URLs stay plain links unless the site has a plugin that embeds them (for example one that takes the app ID and token). The result `Created … with embedded content` means that the URLs were added to the post, not that WordPress shows them as embeds. Check the post's preview to see how they look.
+
 **Example Usage:**
 
 ```json
