@@ -226,6 +226,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   場合は、失敗にしない。ライブラリとして使う場合:
   `plugin_proxy::wait_for_cleanups`は、`bool`ではなく`CleanupReport`
   （時間切れと、失敗したコマンド）を返す
+- 本文（`editor`）・タイトル（`title`）に対応していないカスタム投稿タイプの
+  投稿を読めるようにした（#684）。以前は、WordPressの応答に`content`・
+  `title`が無く、読むのに失敗していた。本文の無い投稿は、`get_post`で
+  空の本文としては見せず、本文の項目が無いことを添える。タイトルの無い
+  投稿は、空のタイトルとして読む。ライブラリとして使う場合:
+  `WordPressPost`の`content`を`Option<WordPressContent>`にし（無ければ
+  `None`）、`WordPressContent`に`Default`を足した
+- `restore_revision`の説明と結果で、書き戻しを必ず元に戻せるとは言わない
+  （#684）。書き戻す前の内容がリビジョンとして残るのは、サイトでリビジョンが
+  有効なとき（`WP_POST_REVISIONS`）だけのため。残したいときは先に
+  `get_post`で読むよう案内する
+- `create_advanced_post`・`update_post`の`terms`で、投稿タイプに登録されて
+  いないタクソノミーを断る（#684）。以前は、WordPressが黙って無視し、成功と
+  出していた。`terms`があるときだけ、送る前にサイトの
+  `/wp/v2/taxonomies?type=<投稿タイプ>`で確かめ、使える`rest_base`を
+  エラーに出す
+- `get_revisions`・`get_revision`で、書いた人の名前を同時に聞き、全体で
+  10秒までしか待たない（#684）。以前は1人ずつ、再試行を含めて待ち、
+  上限が無かった。読めなかった人は今までどおり`user <ID>`と出す
 
 ### Security
 

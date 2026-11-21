@@ -128,6 +128,10 @@ const MAX_LIST_PAGES: u32 = 100;
 /// 一覧の全件取得で読む、応答の合計の大きさの上限（#598）
 const MAX_LIST_BYTES: usize = 64 * 1024 * 1024;
 
+/// リビジョンの書いた人の名前を読むのに、全体で待つ長さ（#684）。過ぎたら
+/// 読めなかった人は`user {ID}`のまま出す
+const AUTHOR_NAMES_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// 応答の本文を、`limit`バイトまで読む（#598）。超えたら、読むのをやめて
 /// エラーにする（`Content-Length`が上限を超えていれば、読まずに）
 async fn read_body_limited(
@@ -275,8 +279,13 @@ fn post_content_for_display(content: &WordPressContent, format: PostContentForma
 /// （タイトルと本文は同じ応答から取るため、どちらかだけが原文になる
 /// ことはない）。
 fn post_format_label(post: &WordPressPost, format: PostContentFormat) -> &'static str {
+    // 本文のない投稿タイプ（#684）ではタイトルで見る
+    let has_raw = post
+        .content
+        .as_ref()
+        .map_or(post.title.raw.is_some(), |content| content.raw.is_some());
     match format {
-        PostContentFormat::Raw if post.content.raw.is_some() => "raw",
+        PostContentFormat::Raw if has_raw => "raw",
         PostContentFormat::Raw => {
             "rendered HTML (raw source unavailable: it requires credentials with edit permission)"
         }
@@ -289,10 +298,16 @@ fn post_format_label(post: &WordPressPost, format: PostContentFormat) -> &'stati
 /// 本文を空にして返す。空の本文を見たエージェントが投稿を上書きして
 /// しまわないよう、その場合に添える注意書き。
 fn protected_content_note(post: &WordPressPost) -> Option<&'static str> {
-    (post.content.protected && post.content.raw.is_none()).then_some(
+    let content = post.content.as_ref()?;
+    (content.protected && content.raw.is_none()).then_some(
         "This post is password-protected, so its content is hidden. Do not treat the content as empty or overwrite it.",
     )
 }
+
+/// 本文のない投稿タイプ（`editor`に対応していないカスタム投稿タイプ）の
+/// 投稿に添える注意書き（#684）。空の本文と取り違えて書き込まないように
+const NO_CONTENT_FIELD_NOTE: &str =
+    "This post type has no content field, so there is no content to show or update.";
 
 /// `create_post_with_embeds`で動画プレーヤーにするYouTubeのホスト（#680）。
 /// どれも完全に一致するものだけを受け付ける（部分一致・後ろの一致では見ない）。
@@ -1320,8 +1335,14 @@ pub struct WordPressPost {
     #[serde(rename = "type")]
     pub post_type: Option<String>,
     pub link: Option<String>,
+    /// タイトル。`title`に対応していない投稿タイプ（#642で使えるようにした
+    /// カスタム投稿タイプ等）では応答にないため、空として読む（#684）
+    #[serde(default)]
     pub title: WordPressContent,
-    pub content: WordPressContent,
+    /// 本文。`editor`に対応していない投稿タイプでは応答にないため`None`
+    /// （空の本文とは区別する。#684）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<WordPressContent>,
     pub excerpt: Option<WordPressContent>,
     pub author: Option<u64>,
     pub featured_media: Option<u64>,
@@ -1337,7 +1358,7 @@ pub struct WordPressGuid {
     pub rendered: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 pub struct WordPressContent {
     pub rendered: String,
     /// 編集用の原文（Gutenbergのブロック区切り等を含む）。WordPressは
@@ -2276,6 +2297,8 @@ impl WordPressHandler {
 
         // 投稿タイプに応じてエンドポイントを決定
         let endpoint = self.post_type_endpoint(&params.post_type).await?;
+        self.check_terms_taxonomies(&params.post_type, params.terms.as_ref())
+            .await?;
         let url = format!("{}/wp-json/wp/v2/{}", self.base_url, endpoint);
         let post_data = advanced_post_body(params);
 
@@ -2467,6 +2490,45 @@ impl WordPressHandler {
         Ok(endpoint)
     }
 
+    /// `terms`のタクソノミーが、投稿タイプに登録されているかを確かめる（#684）。
+    /// WordPressは登録されていないタクソノミーの項目を黙って無視するため、
+    /// 送る前に`/wp/v2/taxonomies?type=<投稿タイプ>`で調べて、無いものは断る。
+    /// `terms`が空なら調べない
+    async fn check_terms_taxonomies(
+        &self,
+        post_type: &str,
+        terms: Option<&std::collections::BTreeMap<String, Vec<u64>>>,
+    ) -> Result<(), McpError> {
+        let Some(terms) = terms.filter(|terms| !terms.is_empty()) else {
+            return Ok(());
+        };
+        let url = format!(
+            "{}/wp-json/wp/v2/taxonomies?type={}",
+            self.base_url, post_type
+        );
+        let taxonomies: serde_json::Map<String, serde_json::Value> =
+            self.fetch_json(&url, None).await.map_err(|e| {
+                McpError::ExternalApi(format!(
+                    "could not check the taxonomies of post type '{post_type}' for terms: {e}"
+                ))
+            })?;
+        let valid: Vec<&str> = taxonomies
+            .values()
+            .filter_map(|info| info.get("rest_base").and_then(|b| b.as_str()))
+            .collect();
+        if let Some(unknown) = terms.keys().find(|key| !valid.contains(&key.as_str())) {
+            return Err(McpError::InvalidParams(format!(
+                "terms: '{unknown}' is not a taxonomy of post type '{post_type}'. Valid: {}",
+                if valid.is_empty() {
+                    "none".to_string()
+                } else {
+                    valid.join(", ")
+                }
+            )));
+        }
+        Ok(())
+    }
+
     /// 投稿の、独自のタクソノミーの項目（#642）。例: `product_cat: 12, 15`。
     /// タクソノミーが読めなければ`None`
     async fn custom_terms_label(&self, post_type: &str, post: &WordPressPost) -> Option<String> {
@@ -2580,8 +2642,10 @@ impl WordPressHandler {
     }
 
     /// 投稿を、リビジョンのタイトル・本文・抜粋に書き戻す（#641）。状態・
-    /// 公開日時・スラッグ等は変えない。WordPressは、書き戻す前の内容を
-    /// 新しいリビジョンとして残すので、書き戻しも元に戻せる
+    /// 公開日時・スラッグ等は変えない。リビジョンが有効なサイトでは、
+    /// WordPressが書き戻す前の内容をリビジョンとして残すので、たいていは
+    /// 元に戻せる。サイトの設定（`WP_POST_REVISIONS`で無効・1件だけ等）に
+    /// よっては残らないので、必ず残したいときは先に`get_post`で読んでおく（#684）
     async fn restore_revision(
         &self,
         post_id: u64,
@@ -2616,6 +2680,32 @@ impl WordPressHandler {
         );
         let post = self.execute_request_with_retry(request).await?;
         Ok((revision, post))
+    }
+
+    /// 投稿者の名前をまとめて読む（#684）。重ならないIDごとに同時に聞き、
+    /// 全体で`limit`（ふつうは`AUTHOR_NAMES_TIMEOUT`）までしか待たない。
+    /// 読めなかった人は`user {ID}`にする
+    async fn user_names(
+        &self,
+        user_ids: impl IntoIterator<Item = u64>,
+        limit: Duration,
+    ) -> HashMap<u64, String> {
+        let mut ids: Vec<u64> = user_ids.into_iter().collect();
+        ids.sort_unstable();
+        ids.dedup();
+        let deadline = tokio::time::Instant::now() + limit;
+        let names = futures::future::join_all(
+            ids.iter()
+                .map(|&id| tokio::time::timeout_at(deadline, self.user_name(id))),
+        )
+        .await;
+        ids.into_iter()
+            .zip(names)
+            .map(|(id, name)| {
+                let name = name.ok().flatten().unwrap_or_else(|| format!("user {id}"));
+                (id, name)
+            })
+            .collect()
     }
 
     /// 投稿者の名前（#641）。読めなければ`None`
@@ -3126,6 +3216,8 @@ impl WordPressHandler {
         params: PostUpdateParams,
     ) -> Result<WordPressPost, McpError> {
         let endpoint = self.post_type_endpoint(post_type).await?;
+        self.check_terms_taxonomies(post_type, params.terms.as_ref())
+            .await?;
         let url = format!("{}/wp-json/wp/v2/{}/{}", self.base_url, endpoint, post_id);
 
         info!("Updating WordPress {}: {}", post_type, post_id);
@@ -4063,10 +4155,17 @@ impl WordPressHandler {
                 // タイトルも本文と同じ形で返す（rawならHTMLエンティティ化
                 // されていない原文）
                 let title = post_content_for_display(&post.title, format);
-                let content_body = post_content_for_display(&post.content, format);
-                let mut note = protected_content_note(&post)
-                    .map(|note| format!("Note: {}\n", note))
-                    .unwrap_or_default();
+                // 本文のない投稿タイプ（#684）では、空の本文として見せない
+                let content_body = match &post.content {
+                    Some(content) => post_content_for_display(content, format),
+                    None => "(none)".to_string(),
+                };
+                let mut note = match &post.content {
+                    Some(_) => protected_content_note(&post),
+                    None => Some(NO_CONTENT_FIELD_NOTE),
+                }
+                .map(|note| format!("Note: {}\n", note))
+                .unwrap_or_default();
                 // カスタム投稿タイプの、独自のタクソノミーの項目（#642）
                 if !matches!(post_type, "post" | "page") {
                     if let Some(terms) = self.custom_terms_label(post_type, &post).await {
@@ -4901,16 +5000,15 @@ impl WordPressHandler {
                 let post_type = revision_post_type_arg(&args)?;
 
                 let revisions = self.get_revisions(post_id, post_type).await?;
-                let mut authors: HashMap<u64, String> = HashMap::new();
-                for revision in &revisions {
-                    if revision.author > 0 && !authors.contains_key(&revision.author) {
-                        let name = self
-                            .user_name(revision.author)
-                            .await
-                            .unwrap_or_else(|| format!("user {}", revision.author));
-                        authors.insert(revision.author, name);
-                    }
-                }
+                let authors = self
+                    .user_names(
+                        revisions
+                            .iter()
+                            .map(|revision| revision.author)
+                            .filter(|author| *author > 0),
+                        AUTHOR_NAMES_TIMEOUT,
+                    )
+                    .await;
                 let lines: Vec<String> = revisions
                     .iter()
                     .map(|revision| {
@@ -4947,10 +5045,11 @@ impl WordPressHandler {
                 let format = PostContentFormat::parse(args.get("format"))?;
 
                 let revision = self.get_revision(post_id, revision_id, post_type).await?;
-                let author = match self.user_name(revision.author).await {
-                    Some(name) => name,
-                    None => format!("user {}", revision.author),
-                };
+                let author = self
+                    .user_names([revision.author], AUTHOR_NAMES_TIMEOUT)
+                    .await
+                    .remove(&revision.author)
+                    .unwrap_or_else(|| format!("user {}", revision.author));
                 let format_label = match format {
                     PostContentFormat::Raw if revision.content.raw.is_some() => "raw",
                     PostContentFormat::Raw => "rendered HTML (raw source unavailable)",
@@ -4996,7 +5095,7 @@ impl WordPressHandler {
                     "content": [{
                         "type": "text",
                         "text": format!(
-                            "Restored {} {} to revision {} (from {}): title, content and excerpt. Title: {}, Status: {}. The status, date and slug were not changed. WordPress keeps the content before the restore as a new revision, so get_revisions and restore_revision can undo it",
+                            "Restored {} {} to revision {} (from {}): title, content and excerpt. Title: {}, Status: {}. The status, date and slug were not changed. When revisions are enabled on the site, WordPress keeps the content before the restore as a revision, so get_revisions and restore_revision can usually undo it.",
                             post_type,
                             post_id,
                             revision.id,
@@ -5722,7 +5821,7 @@ impl McpHandler for WordPressHandler {
             Tool {
                 name: "restore_revision".to_string(),
                 title: Some("Restore a revision".to_string()),
-                description: "Restore a post or page to one of its revisions: its title, content and excerpt are replaced with the revision's. The status, publish date, slug, categories and tags are not changed, so a published post stays published with the restored content. WordPress keeps the content before the restore as a new revision, so the restore can be undone the same way. Returns the post's ID, title and the restored revision.".to_string(),
+                description: "Restore a post or page to one of its revisions: its title, content and excerpt are replaced with the revision's. The status, publish date, slug, categories and tags are not changed, so a published post stays published with the restored content. The restore can usually be undone the same way, because WordPress keeps the previous content as a revision when revisions are enabled; depending on the site's revision settings it may not be kept, so read the current content with get_post first if it must be kept. Returns the post's ID, title and the restored revision.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -7280,11 +7379,11 @@ mod tests {
                 raw: None,
                 protected: false,
             },
-            content: WordPressContent {
+            content: Some(WordPressContent {
                 rendered: "full content".to_string(),
                 raw: None,
                 protected: false,
-            },
+            }),
             excerpt: Some(WordPressContent {
                 rendered: long_excerpt,
                 raw: None,
@@ -8557,7 +8656,7 @@ mod tests {
                 raw: content.raw.as_ref().map(|_| "Don't".to_string()),
                 protected: false,
             },
-            content,
+            content: Some(content),
             excerpt: None,
             author: None,
             featured_media: None,
@@ -8809,6 +8908,77 @@ mod tests {
                     );
                     let response = format!(
                         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    let _ = socket.write_all(response.as_bytes()).await;
+                    let _ = socket.shutdown().await;
+                });
+            }
+        });
+        (format!("http://{}", addr), captured)
+    }
+
+    /// パスの先頭で応答を選び（どれも200 OK）、届いた要求の
+    /// `メソッド パス`と本文を記録するサーバー（#684）
+    async fn spawn_routing_capturing_server(
+        routes: Vec<(&'static str, String)>,
+    ) -> (String, Arc<tokio::sync::Mutex<Vec<(String, String)>>>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let routes = Arc::new(routes);
+        let captured = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let server_captured = captured.clone();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    return;
+                };
+                let routes = routes.clone();
+                let captured = server_captured.clone();
+                tokio::spawn(async move {
+                    let mut buf = Vec::new();
+                    let mut chunk = [0u8; 4096];
+                    let header_end = loop {
+                        if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                            break pos + 4;
+                        }
+                        match socket.read(&mut chunk).await {
+                            Ok(0) | Err(_) => return,
+                            Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                        }
+                    };
+                    let headers = String::from_utf8_lossy(&buf[..header_end]).to_string();
+                    let content_length = headers
+                        .to_lowercase()
+                        .lines()
+                        .find_map(|l| l.strip_prefix("content-length:"))
+                        .and_then(|v| v.trim().parse::<usize>().ok())
+                        .unwrap_or(0);
+                    while buf.len() < header_end + content_length {
+                        match socket.read(&mut chunk).await {
+                            Ok(0) | Err(_) => return,
+                            Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                        }
+                    }
+                    let mut words = headers.split_whitespace();
+                    let method = words.next().unwrap_or("").to_string();
+                    let path = words.next().unwrap_or("").to_string();
+                    captured.lock().await.push((
+                        format!("{method} {path}"),
+                        String::from_utf8_lossy(&buf[header_end..header_end + content_length])
+                            .to_string(),
+                    ));
+                    let (status, body) = routes
+                        .iter()
+                        .find(|(prefix, _)| path.starts_with(prefix))
+                        .map(|(_, body)| ("200 OK", body.clone()))
+                        .unwrap_or(("404 Not Found", "{}".to_string()));
+                    let response = format!(
+                        "HTTP/1.1 {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        status,
                         body.len(),
                         body
                     );
@@ -9902,6 +10072,24 @@ mod tests {
         );
     }
 
+    /// 書いた人の名前は、重ならない人ごとに同時に聞き、全体の時間を過ぎたら
+    /// `user {ID}`にする（#684）
+    #[tokio::test]
+    async fn test_user_names_are_fetched_concurrently_within_limit() {
+        let (base, count) = spawn_silent_server().await;
+        let handler = handler_for_local_server(base);
+        let started = std::time::Instant::now();
+        let names = handler
+            .user_names([3, 2, 3, 5], Duration::from_millis(300))
+            .await;
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert_eq!(names.len(), 3);
+        assert_eq!(names[&2], "user 2");
+        assert_eq!(names[&5], "user 5");
+        // 同時に聞いている（1人ずつなら、最初の人で時間切れになる）
+        assert_eq!(request_count(&count), 3);
+    }
+
     #[tokio::test]
     async fn test_get_revisions_of_a_page_without_revisions() {
         let base = spawn_routing_server(vec![(
@@ -10163,7 +10351,7 @@ mod tests {
     /// `terms`で、独自のタクソノミーの項目を付け替える
     #[tokio::test]
     async fn test_update_post_sends_terms() {
-        let (base_url, captured) = spawn_body_capturing_server(product_json().to_string()).await;
+        let (base_url, captured) = spawn_routing_capturing_server(product_routes()).await;
         let handler = handler_for_local_server(base_url);
         call_tool_with(
             &handler,
@@ -10176,12 +10364,149 @@ mod tests {
         )
         .await
         .unwrap();
-        let bodies = captured.lock().await;
-        let sent: serde_json::Value = serde_json::from_str(bodies.last().unwrap()).unwrap();
+        let requests = captured.lock().await;
+        let (request, body) = requests.last().unwrap();
+        assert_eq!(request, "PUT /wp-json/wp/v2/products/21");
+        let sent: serde_json::Value = serde_json::from_str(body).unwrap();
         assert_eq!(
             sent,
             serde_json::json!({"product_cat": [12, 15], "product_tag": []})
         );
+    }
+
+    /// `product`の型・タクソノミー・投稿の応答（#684）
+    fn product_routes() -> Vec<(&'static str, String)> {
+        vec![
+            ("/wp-json/wp/v2/types/product", product_type_json()),
+            (
+                "/wp-json/wp/v2/taxonomies?type=product",
+                r#"{"product_cat":{"rest_base":"product_cat"},"product_tag":{"rest_base":"product_tag"}}"#
+                    .to_string(),
+            ),
+            ("/wp-json/wp/v2/products", product_json().to_string()),
+        ]
+    }
+
+    /// 投稿タイプに登録されていないタクソノミーの`terms`は、送らずに断る
+    /// （WordPressは黙って無視するため。#684）
+    #[tokio::test]
+    async fn test_terms_of_unregistered_taxonomy_are_refused() {
+        let (base_url, captured) = spawn_routing_capturing_server(product_routes()).await;
+        let handler = handler_for_local_server(base_url);
+        for (tool, args) in [
+            (
+                "update_post",
+                serde_json::json!({
+                    "post_id": 21,
+                    "post_type": "product",
+                    "terms": {"product_cat": [12], "genre": [3]}
+                }),
+            ),
+            (
+                "create_advanced_post",
+                serde_json::json!({
+                    "title": "マグカップ",
+                    "content": "説明",
+                    "post_type": "product",
+                    "terms": {"genre": [3]}
+                }),
+            ),
+        ] {
+            let result = call_tool_with(&handler, tool, args).await;
+            assert!(
+                matches!(result, Err(McpError::InvalidParams(ref msg))
+                    if msg.contains("'genre' is not a taxonomy of post type 'product'")
+                        && msg.contains("Valid: product_cat, product_tag")),
+                "{tool}: {:?}",
+                result
+            );
+        }
+        // 投稿は書き換えていない
+        let requests = captured.lock().await;
+        assert!(
+            requests
+                .iter()
+                .all(|(request, _)| request.starts_with("GET ")),
+            "{requests:?}"
+        );
+    }
+
+    /// `terms`が無ければ、タクソノミーを調べない（#684）
+    #[tokio::test]
+    async fn test_update_post_without_terms_skips_taxonomy_lookup() {
+        let (base_url, captured) = spawn_routing_capturing_server(product_routes()).await;
+        let handler = handler_for_local_server(base_url);
+        call_tool_with(
+            &handler,
+            "update_post",
+            serde_json::json!({"post_id": 21, "post_type": "product", "title": "x"}),
+        )
+        .await
+        .unwrap();
+        let requests = captured.lock().await;
+        assert!(
+            !requests
+                .iter()
+                .any(|(request, _)| request.contains("/taxonomies")),
+            "{requests:?}"
+        );
+    }
+
+    /// 本文のない投稿タイプ（`editor`に対応していない）の投稿も読め、
+    /// 空の本文としては見せない（#684）
+    #[tokio::test]
+    async fn test_get_post_of_type_without_content() {
+        let mut product = product_json();
+        let object = product.as_object_mut().unwrap();
+        object.remove("content");
+        object.remove("title");
+        let post: WordPressPost = serde_json::from_value(product.clone()).unwrap();
+        assert!(post.content.is_none());
+        assert_eq!(post.title.rendered, "");
+        // 本文のないまま書き出しても、`content`を含めない
+        assert!(serde_json::to_value(&post)
+            .unwrap()
+            .get("content")
+            .is_none());
+
+        let base = spawn_routing_server(vec![
+            (
+                "/wp-json/wp/v2/types/product",
+                "200 OK",
+                product_type_json(),
+            ),
+            ("/wp-json/wp/v2/products/21", "200 OK", product.to_string()),
+            (
+                "/wp-json/wp/v2/taxonomies?type=product",
+                "200 OK",
+                r#"{"product_cat":{"rest_base":"product_cat"}}"#.to_string(),
+            ),
+            (
+                "/wp-json/wp/v2/categories",
+                "200 OK\r\nX-WP-TotalPages: 1",
+                "[]".to_string(),
+            ),
+            (
+                "/wp-json/wp/v2/tags",
+                "200 OK\r\nX-WP-TotalPages: 1",
+                "[]".to_string(),
+            ),
+        ])
+        .await;
+        let handler = handler_for_local_server(base);
+        let result = call_tool_with(
+            &handler,
+            "get_post",
+            serde_json::json!({"post_id": 21, "post_type": "product"}),
+        )
+        .await
+        .unwrap();
+        let text = tool_text(&result);
+        assert!(
+            text.contains("Note: This post type has no content field"),
+            "{text}"
+        );
+        assert!(text.ends_with("Content:\n(none)"), "{text}");
     }
 
     #[test]

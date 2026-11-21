@@ -116,7 +116,8 @@ post_types = ["product"]
 - `get_post_types` lists the site's post types and taxonomies, and shows which ones mcp-rs may use
 - A listed type can be passed as `post_type` to `get_posts`, `get_post`, `create_advanced_post`, `update_post`, `delete_post` and the revision tools. The tools show only the allowed types in `post_type`
 - The post type must be in the REST API under `/wp/v2` (the type's `show_in_rest`). Types with their own API, such as WooCommerce products in `wc/v3` on some sites, are refused with the reason
-- `get_taxonomies` lists the taxonomies with their `rest_base`, and `get_terms` lists the terms of one. `create_advanced_post` and `update_post` take `terms`, such as `{"product_cat": [12, 15]}`, to set the terms of the listed taxonomies. `get_post` shows them for a custom post type. Creating and changing terms of custom taxonomies is not supported yet
+- `get_taxonomies` lists the taxonomies with their `rest_base`, and `get_terms` lists the terms of one. `create_advanced_post` and `update_post` take `terms`, such as `{"product_cat": [12, 15]}`, to set the terms of the listed taxonomies. A taxonomy that is not registered for the post type is refused with the valid ones (WordPress would ignore it). `get_post` shows them for a custom post type. Creating and changing terms of custom taxonomies is not supported yet
+- A post type without the editor (no `content`) can be used too. `get_post` then says that the type has no content field instead of showing empty content
 - The WordPress user's capabilities still apply: the Application Password user must be allowed to edit the post type
 
 ### Using more than one site {#sites}
@@ -333,7 +334,7 @@ WordPress keeps earlier versions (revisions) of posts and pages when they are sa
 - `get_revision`: one revision's title, excerpt and content. Parameters: `post_id`, `revision_id` (required), `post_type`, `format` (`raw`, the default, `rendered` or `text`, as in `get_post`)
 - `restore_revision`: replace the title, content and excerpt of the post with those of the revision. The status, publish date, slug, categories and tags are not changed, so a published post stays published with the restored content. Parameters: `post_id`, `revision_id` (required), `post_type`
 
-WordPress saves the content before the restore as a new revision, so a restore can be undone the same way. A revision of another post is refused. The site may limit the number of revisions it keeps (`WP_POST_REVISIONS`).
+When revisions are enabled on the site, WordPress saves the content before the restore as a revision, so a restore can usually be undone the same way. The site may turn revisions off or limit how many it keeps (`WP_POST_REVISIONS`); then the content before the restore may not be kept, so read it with `get_post` first if you must keep it. A revision of another post is refused.
 
 ### `delete_post`
 
