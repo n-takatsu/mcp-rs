@@ -304,6 +304,11 @@ struct Cleanup {
     program: String,
     args: Vec<String>,
     env: Vec<(String, String)>,
+    /// 失敗の文面が「既に消えていた」なら、成功とみなす。`docker rm -f`・
+    /// `podman rm -f`だけ。`kubectl delete`は`--ignore-not-found`で、既に無ければ
+    /// 成功で終わるので、失敗はいつも知らせる（認証のコマンドの失敗の文面に
+    /// `No such container`が入ることもあるため。PR #685のレビュー）
+    ignore_already_removed: bool,
 }
 
 impl Cleanup {
@@ -350,7 +355,7 @@ impl Cleanup {
             return Ok(());
         }
         let stderr = String::from_utf8_lossy(&output.stderr);
-        if is_already_removed(&stderr) {
+        if self.ignore_already_removed && is_already_removed(&stderr) {
             return Ok(());
         }
         let stderr = stderr.trim();
@@ -957,6 +962,7 @@ impl PluginHandler {
                     program: launch.program,
                     args: vec!["rm".into(), "-f".into(), launch.container_name],
                     env: docker_env,
+                    ignore_already_removed: true,
                 });
                 command
             }
@@ -1334,6 +1340,7 @@ pub(crate) mod tests {
             program: "mcp-rs-test-no-such-command".to_string(),
             args: vec!["job/test-684".to_string()],
             env: Vec::new(),
+            ignore_already_removed: false,
         }
         .run();
         let report = wait_for_cleanups(std::time::Duration::from_secs(30));
@@ -1356,6 +1363,7 @@ pub(crate) mod tests {
             program: program.to_string(),
             args,
             env: Vec::new(),
+            ignore_already_removed: false,
         }
     }
 
@@ -1365,6 +1373,37 @@ pub(crate) mod tests {
         let error = exit_cleanup(1).execute().unwrap_err();
         assert!(error.contains("exit 1`"), "{}", error);
         assert!(error.contains("failed"), "{}", error);
+    }
+
+    /// 「既に消えていた」の文面で成功とみなすのは、コンテナの後片付けだけ。
+    /// kubectlの失敗は、同じ文面でも知らせる（PR #685のレビュー）
+    #[test]
+    fn test_already_removed_only_for_container_cleanups() {
+        #[cfg(windows)]
+        let (program, args) = (
+            "cmd",
+            vec![
+                "/c".to_string(),
+                "echo No such container: x 1>&2 & exit 1".to_string(),
+            ],
+        );
+        #[cfg(not(windows))]
+        let (program, args) = (
+            "sh",
+            vec![
+                "-c".to_string(),
+                "echo 'No such container: x' >&2; exit 1".to_string(),
+            ],
+        );
+        let cleanup = |ignore_already_removed| Cleanup {
+            program: program.to_string(),
+            args: args.clone(),
+            env: Vec::new(),
+            ignore_already_removed,
+        };
+        assert_eq!(cleanup(true).execute(), Ok(()));
+        let error = cleanup(false).execute().unwrap_err();
+        assert!(error.contains("No such container"), "{}", error);
     }
 
     /// 後片付けのコマンドが成功したら、失敗にしない（#684）
