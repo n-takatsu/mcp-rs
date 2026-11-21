@@ -1,6 +1,6 @@
 # Running mcp-rs in Docker
 
-The image contains only the `mcp-rs` executable, on a distroless base (no shell), running as the non-root user `nonroot` (UID 65532). Settings come from a config file that you mount into the container.
+The image contains only the `mcp-rs` executable, on a distroless base (no shell), running as the non-root user `nonroot` (UID 65532). From v0.30.0, the executable is statically linked against musl and the base is `gcr.io/distroless/static-debian12:nonroot`, so the image has no C library or OpenSSL; it still has CA certificates and time zone data. Settings come from a config file that you mount into the container.
 
 ## Getting the image
 

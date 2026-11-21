@@ -6,6 +6,8 @@ on:
     paths:
       - '.github/workflows/container-integration-tests.yml'
       - 'docker-compose.test.yml'
+      # イメージの作り方を変えたときも、イメージを起動して確かめる（#631）
+      - 'Dockerfile'
       - 'tests/integration/**'
       - 'tests/common/**'
       - 'tests/database/**'
@@ -27,6 +29,8 @@ on:
     paths:
       - '.github/workflows/container-integration-tests.yml'
       - 'docker-compose.test.yml'
+      # イメージの作り方を変えたときも、イメージを起動して確かめる（#631）
+      - 'Dockerfile'
       - 'tests/integration/**'
       - 'tests/common/**'
       - 'tests/database/**'
