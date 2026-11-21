@@ -422,21 +422,29 @@ async fn register_database(
 async fn run_stdio_server(config: &McpConfig) -> Result<bool, Box<dyn std::error::Error>> {
     let server = build_server(config, false).await?;
     info!("🔌 STDIOモードで待機中");
-    let interrupted = tokio::select! {
-        result = server.run_stdio() => {
-            result?;
-            false
-        }
-        // Ctrl+Cを受けないと、Windowsが既定でプロセスを止め、終了コードが
-        // 0以外（STATUS_CONTROL_C_EXIT）になる
-        result = tokio::signal::ctrl_c() => {
-            result?;
-            info!("👋 MCP-RS終了（Ctrl+C）");
-            true
-        }
-    };
-    stop_plugins(server).await;
-    Ok(interrupted)
+    // 標準入出力の失敗（クライアントが去った等）で終わっても、プラグインを
+    // 止める（#684）
+    run_then_stop(
+        server,
+        async |server| -> Result<bool, Box<dyn std::error::Error>> {
+            let interrupted = tokio::select! {
+                result = server.run_stdio() => {
+                    result?;
+                    false
+                }
+                // Ctrl+Cを受けないと、Windowsが既定でプロセスを止め、終了コードが
+                // 0以外（STATUS_CONTROL_C_EXIT）になる
+                result = tokio::signal::ctrl_c() => {
+                    result?;
+                    info!("👋 MCP-RS終了（Ctrl+C）");
+                    true
+                }
+            };
+            Ok(interrupted)
+        },
+        stop_plugins,
+    )
+    .await
 }
 
 /// HTTPモードでMCPサーバーを実行する。`/mcp`（と`/`）へのPOST、および
@@ -448,22 +456,41 @@ async fn run_http_server(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let server = build_server(config, true).await?;
 
-    // 認証の失敗も、ツール呼び出しと同じ監査ログに記録する（#55）
-    let mut transport = mcp_rs::transport::HttpTransport::new(http_config)?;
-    if let Some(audit_logger) = server.audit_logger() {
-        transport = transport.with_audit_logger(audit_logger);
-    }
-    let transport = transport.with_request_handler(Arc::new(server.dispatcher()));
-    transport.start_server().await?;
-    if let Some(addr) = transport.bound_addr().await {
-        info!("🌐 HTTPモードで待機中: http://{}/mcp", addr);
-    }
-    info!("💡 Ctrl+C で終了");
+    // HTTPサーバーを始められなかったときも、プラグインを止める（#684）
+    run_then_stop(
+        server,
+        async |server| -> Result<(), Box<dyn std::error::Error>> {
+            // 認証の失敗も、ツール呼び出しと同じ監査ログに記録する（#55）
+            let mut transport = mcp_rs::transport::HttpTransport::new(http_config)?;
+            if let Some(audit_logger) = server.audit_logger() {
+                transport = transport.with_audit_logger(audit_logger);
+            }
+            let transport = transport.with_request_handler(Arc::new(server.dispatcher()));
+            transport.start_server().await?;
+            if let Some(addr) = transport.bound_addr().await {
+                info!("🌐 HTTPモードで待機中: http://{}/mcp", addr);
+            }
+            info!("💡 Ctrl+C で終了");
 
-    tokio::signal::ctrl_c().await?;
-    info!("👋 MCP-RS終了");
-    stop_plugins(server).await;
-    Ok(())
+            tokio::signal::ctrl_c().await?;
+            info!("👋 MCP-RS終了");
+            Ok(())
+        },
+        stop_plugins,
+    )
+    .await
+}
+
+/// `server`で`run`を実行し、その結果に関わらず`stop`で止めてから、結果を
+/// 返す（#684）。`run`がエラーで終わっても、プラグインの後片付けを飛ばさない
+async fn run_then_stop<S, T, E>(
+    server: S,
+    run: impl AsyncFnOnce(&S) -> Result<T, E>,
+    stop: impl AsyncFnOnce(S),
+) -> Result<T, E> {
+    let result = run(&server).await;
+    stop(server).await;
+    result
 }
 
 /// プラグインの子プロセス・コンテナを止め、後片付けの終了を待つ（#673）。
@@ -476,17 +503,64 @@ async fn stop_plugins(server: mcp_rs::mcp::McpServer) {
 }
 
 /// コンテナ・Kubernetesのプラグインの後片付け（`docker rm -f`等）の終了を
-/// 待つ（PR #672のレビュー）。待たずに終わると、コンテナ等が残ることがある
+/// 待つ（PR #672のレビュー）。待たずに終わると、コンテナ等が残ることがある。
+/// 後片付けのコマンドが失敗したら、そのコマンドと理由を知らせる（#684）
 async fn wait_for_plugin_cleanups() {
     let timeout = std::time::Duration::from_secs(10);
-    let finished =
+    let report =
         tokio::task::spawn_blocking(move || mcp_rs::plugin_proxy::wait_for_cleanups(timeout))
             .await
-            .unwrap_or(false);
-    if !finished {
+            .unwrap_or_else(|_| mcp_rs::plugin_proxy::CleanupReport {
+                timed_out: true,
+                failures: Vec::new(),
+            });
+    for failure in &report.failures {
         tracing::warn!(
-            "Stopping plugin containers or Kubernetes jobs did not finish within {} seconds: remove any left over by hand (docker ps -a / kubectl get jobs)",
+            "Could not remove a plugin container or Kubernetes job: {}. Run the command again by hand, or check for any left over (docker ps -a --filter label=mcp-rs.plugin / kubectl get jobs,secrets -l mcp-rs.plugin)",
+            failure
+        );
+    }
+    if report.timed_out {
+        tracing::warn!(
+            "Stopping plugin containers or Kubernetes jobs did not finish within {} seconds: remove any left over by hand (docker ps -a --filter label=mcp-rs.plugin / kubectl get jobs,secrets -l mcp-rs.plugin)",
             timeout.as_secs()
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::{Cell, RefCell};
+
+    /// `run`がエラーで終わっても、`stop`を実行してからエラーを返す（#684）
+    #[tokio::test]
+    async fn test_run_then_stop_stops_after_error() {
+        let stopped = Cell::new(false);
+        let result: Result<(), String> = run_then_stop(
+            "server",
+            async |_| Err("broken pipe".to_string()),
+            async |_| stopped.set(true),
+        )
+        .await;
+        assert_eq!(result, Err("broken pipe".to_string()));
+        assert!(stopped.get());
+    }
+
+    /// `run`が成功したら、`stop`を実行してから結果をそのまま返す
+    #[tokio::test]
+    async fn test_run_then_stop_returns_result() {
+        let order = RefCell::new(Vec::new());
+        let result: Result<bool, String> = run_then_stop(
+            "server",
+            async |server| {
+                order.borrow_mut().push(format!("run {}", server));
+                Ok(true)
+            },
+            async |server| order.borrow_mut().push(format!("stop {}", server)),
+        )
+        .await;
+        assert_eq!(result, Ok(true));
+        assert_eq!(*order.borrow(), vec!["run server", "stop server"]);
     }
 }
