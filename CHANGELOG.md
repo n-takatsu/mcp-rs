@@ -133,6 +133,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- WordPressのツールの説明を書き直した（#676）。AIのクライアントが、どの
+  ツールをいつ使うかを選びやすくするため。どのツールの説明にも、何をするか、
+  似たツールとの違い・いつ使うか、何を返すか、書き込み・削除の影響（下書きか
+  公開か、ゴミ箱か完全に削除か等）を書いた。どのツールにも、短い名前
+  （`title`）を付けた。引数の説明も直した。`delete_category`・`delete_tag`の
+  `force`は「ゴミ箱を通さずに消す」と書いていたが、WordPressはカテゴリー・
+  タグをゴミ箱に入れられないので、`true`が要る。`create_advanced_post`の
+  引数の説明に混ざっていた日本語を英語にした。`update_post`等の
+  `categories`・`tags`は、今のものを置き換えることを書いた。ツールの動きは
+  変わらない
 - 設定ファイルが無くても、STDIOモードでは起動する（#667）。`--config`が無く、
   `~/.config/mcp-rs/config.toml`も、環境変数による設定（`WORDPRESS_URL`等）も
   無いとき、エラーで終わらず、設定なし
