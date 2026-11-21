@@ -748,11 +748,11 @@ Update an existing WordPress category.
 
 ## `delete_category`
 
-Delete a WordPress category.
+Delete a WordPress category permanently. WordPress has no trash for categories, so `force` must be `true`; without it, WordPress refuses the request. Posts that were only in this category are moved to the default category, and the default category itself cannot be deleted.
 
 **Parameters:**
 - `category_id` (number): ID of category to delete
-- `force` (boolean, optional): Force delete (bypass trash)
+- `force` (boolean): Must be `true`
 
 **Example Usage:**
 
@@ -821,11 +821,11 @@ Update an existing WordPress tag.
 
 ## `delete_tag`
 
-Delete a WordPress tag.
+Delete a WordPress tag permanently. WordPress has no trash for tags, so `force` must be `true`; without it, WordPress refuses the request. The tag is removed from every post that has it.
 
 **Parameters:**
 - `tag_id` (number): ID of tag to delete
-- `force` (boolean, optional): Force delete (bypass trash)
+- `force` (boolean): Must be `true`
 
 **Example Usage:**
 

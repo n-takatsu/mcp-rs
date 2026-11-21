@@ -5245,7 +5245,8 @@ impl McpHandler for WordPressHandler {
         let tools = vec![
             Tool {
                 name: "wordpress_health_check".to_string(),
-                description: "Perform comprehensive WordPress environment health check".to_string(),
+                title: Some("Check the WordPress connection".to_string()),
+                description: "Check that mcp-rs can use the WordPress site: whether the site and its REST API answer, whether the credentials sign in, whether the user has the permissions the tools need, and whether the media library can be read. Changes nothing. Use it first when other tools fail. Returns a report with the site name and URL, each check's result, and the reason for each failure.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {},
@@ -5255,7 +5256,8 @@ impl McpHandler for WordPressHandler {
             },
             Tool {
                 name: "get_posts".to_string(),
-                description: "Retrieve WordPress posts (published ones by default). Without search, filters or page options, it returns all posts; with them, one page and the total".to_string(),
+                title: Some("List posts".to_string()),
+                description: "List WordPress posts (or the posts of an allowed custom post type), published ones by default. Use search, categories, tags, author, after and before to narrow them, and get_post to read one post's full content. Any argument other than status (search, a filter, sorting, per_page or page) makes it return one page and the total. With none of them, or with status alone, it returns all posts, but at most 10,000, without the total; on larger sites pass page and per_page and read page after page. Each post has its ID, title, status, date, link, slug and excerpt.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -5301,7 +5303,7 @@ impl McpHandler for WordPressHandler {
                         },
                         "per_page": {
                             "type": "number",
-                            "description": "Items per page, 1-100 (optional). With any of search, filters or page options, only one page is read (default 20 per page), and the result shows the total"
+                            "description": "Items per page, 1-100 (optional). With any argument other than status, only one page is read (default 20 per page), and the result shows the total"
                         },
                         "page": {
                             "type": "number",
@@ -5314,7 +5316,8 @@ impl McpHandler for WordPressHandler {
             },
             Tool {
                 name: "get_pages".to_string(),
-                description: "Retrieve WordPress pages. Without search, filters or page options, it returns all pages; with them, one page and the total".to_string(),
+                title: Some("List pages".to_string()),
+                description: "List WordPress pages (static pages such as About or Contact, not blog posts), published ones by default. Use get_posts for posts and get_post with post_type 'page' to read one page's full content. Any argument other than status (search, a filter, sorting, per_page or page) makes it return one page and the total. With none of them, or with status alone, it returns all pages, but at most 10,000, without the total; on larger sites pass page and per_page and read page after page. Each page has its ID, title, status, date, link, slug and excerpt.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -5350,7 +5353,7 @@ impl McpHandler for WordPressHandler {
                         },
                         "per_page": {
                             "type": "number",
-                            "description": "Items per page, 1-100 (optional). With any of search, filters or page options, only one page is read (default 20 per page), and the result shows the total"
+                            "description": "Items per page, 1-100 (optional). With any argument other than status, only one page is read (default 20 per page), and the result shows the total"
                         },
                         "page": {
                             "type": "number",
@@ -5363,7 +5366,8 @@ impl McpHandler for WordPressHandler {
             },
             Tool {
                 name: "get_all_content".to_string(),
-                description: "Retrieve both WordPress posts and pages".to_string(),
+                title: Some("List all posts and pages".to_string()),
+                description: "List the published WordPress posts and the published pages in one call (at most 10,000 of each), for an overview of the whole site. Returns each item's ID, title, status, date, link, slug and excerpt, posts and pages separately. On large sites prefer get_posts or get_pages with search, filters or per_page, which return one page at a time.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {},
@@ -5373,7 +5377,8 @@ impl McpHandler for WordPressHandler {
             },
             Tool {
                 name: "get_post".to_string(),
-                description: "Retrieve a single WordPress post or page by ID, including its full content. By default the content is the editable source (with Gutenberg block markup), which can be passed back to update_post unchanged.".to_string(),
+                title: Some("Read a post or page".to_string()),
+                description: "Read one WordPress post, page, or custom post type item by ID, with its full content. Returns the ID, title, status, date, slug, categories, tags, featured image and content. By default the content is the editable source (with Gutenberg block markup), which can be passed back to update_post unchanged. If the credentials cannot edit the item, the content is rendered HTML instead and is labeled so; do not write that back with update_post, because it would replace the blocks. Use get_posts or get_pages to find the ID.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -5400,7 +5405,8 @@ impl McpHandler for WordPressHandler {
             },
             Tool {
                 name: "create_post".to_string(),
-                description: "Create a new WordPress post (basic). Defaults to draft status so nothing is published unintentionally.".to_string(),
+                title: Some("Create a post".to_string()),
+                description: "Create a WordPress post with a title and content only. It is a draft unless status says otherwise, so nothing is published by accident. Use create_post_with_categories_tags to also set categories, tags or a featured image, and create_advanced_post for pages, custom post types, scheduling, custom taxonomies or SEO fields. Returns the new post's ID, status and slug.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -5410,7 +5416,7 @@ impl McpHandler for WordPressHandler {
                         },
                         "content": {
                             "type": "string",
-                            "description": "The post content"
+                            "description": "Body of the post as HTML or Gutenberg block markup (the format get_post returns)"
                         },
                         "status": {
                             "type": "string",
@@ -5429,8 +5435,8 @@ impl McpHandler for WordPressHandler {
             },
             Tool {
                 name: "create_advanced_post".to_string(),
-                description: "Create a new WordPress post or page with advanced options"
-                    .to_string(),
+                title: Some("Create a post or page with all options".to_string()),
+                description: "Create a WordPress post, page, or custom post type item with every option: categories, tags, terms of custom taxonomies, featured image, SEO meta fields, slug, and a publish date for scheduling (status 'future'). It is a draft unless status says otherwise. Use it to schedule a post or to create a page; create_post is enough for a plain draft post. Returns the new item's ID, status and slug.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -5445,17 +5451,17 @@ impl McpHandler for WordPressHandler {
                         },
                         "content": {
                             "type": "string",
-                            "description": "The post/page content"
+                            "description": "Body as HTML or Gutenberg block markup (the format get_post returns)"
                         },
                         "post_type": {
                             "type": "string",
-                            "description": "Post type: 'post' (投稿) or 'page' (固定ページ)",
+                            "description": "'post' (a blog post, the default), 'page' (a static page), or an allowed custom post type.",
                             "enum": ["post", "page"],
                             "default": "post"
                         },
                         "status": {
                             "type": "string",
-                            "description": "Post status: 'publish' (公開), 'draft' (下書き), 'pending' (レビュー待ち), 'private' (非公開), 'future' (予約投稿、'date'が必須). Defaults to 'draft' so nothing is published unintentionally.",
+                            "description": "'draft' (the default, not shown on the site), 'publish' (shown at once), 'pending' (awaiting review), 'private' (only for signed-in editors), or 'future' (scheduled; needs date).",
                             "enum": ["publish", "draft", "pending", "private", "future"],
                             "default": "draft"
                         },
@@ -5493,7 +5499,8 @@ impl McpHandler for WordPressHandler {
             },
             Tool {
                 name: "get_comments".to_string(),
-                description: "Retrieve WordPress comments (ID, post, parent, status, author name, date, content). By default only approved comments; use status 'hold' to see comments awaiting moderation. Commenters' email and IP addresses are not shown".to_string(),
+                title: Some("List comments".to_string()),
+                description: "List WordPress comments, optionally for one post: ID, post, parent, status, author name, date and content. Only approved comments by default; use status 'hold' to find comments awaiting moderation. Commenters' email and IP addresses are never returned. Use update_comment to approve, hold or mark as spam, create_comment to reply, and delete_comment to delete.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -5513,13 +5520,15 @@ impl McpHandler for WordPressHandler {
             },
             Tool {
                 name: "get_post_types".to_string(),
-                description: "List the site's post types (post, page, and custom ones such as products or events) with their taxonomies, and whether mcp-rs may use each. Custom post types are used only when listed in post_types in the mcp-rs config".to_string(),
+                title: Some("List post types".to_string()),
+                description: "List the site's post types (post, page, and custom ones such as products or events) with their taxonomies, and whether mcp-rs may use each. Custom post types are used only when listed in post_types in the mcp-rs config. Use it before working with custom post types, then get_taxonomies and get_terms for their categories.".to_string(),
                 input_schema: serde_json::json!({"type": "object", "properties": {}, "required": []}),
                 ..Default::default()
             },
             Tool {
                 name: "get_taxonomies".to_string(),
-                description: "List the site's taxonomies (categories, tags, and custom ones such as product categories) with the rest_base to use as the key in terms".to_string(),
+                title: Some("List taxonomies".to_string()),
+                description: "List the site's taxonomies (categories, tags, and custom ones such as product categories) with the post types they belong to and the rest_base to use as the key in the terms argument of create_advanced_post and update_post. Use get_terms next to get the term IDs of one taxonomy.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -5534,7 +5543,8 @@ impl McpHandler for WordPressHandler {
             },
             Tool {
                 name: "get_terms".to_string(),
-                description: "List the terms of a taxonomy (for example the product categories): ID, name, slug, parent and number of posts. Use the IDs in terms of create_advanced_post and update_post".to_string(),
+                title: Some("List the terms of a taxonomy".to_string()),
+                description: "List the terms of one taxonomy (for example the product categories of a shop): ID, name, slug, parent and number of posts. Use the IDs in the terms argument of create_advanced_post and update_post. For the built-in categories and tags, get_categories and get_tags return the same with descriptions.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -5549,7 +5559,8 @@ impl McpHandler for WordPressHandler {
             },
             Tool {
                 name: "get_revisions".to_string(),
-                description: "List the revisions (saved versions) of a post or page, newest first: revision ID, date, author, title, length and the start of the content. Needs credentials with edit permission on the post. Use get_revision to read one and restore_revision to go back to it".to_string(),
+                title: Some("List revisions".to_string()),
+                description: "List the revisions (saved earlier versions) of a post or page, newest first: revision ID, date, author, title, length and the start of the content. Needs credentials with edit permission on the post. Use get_revision to read one in full, and restore_revision to go back to it.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -5560,7 +5571,7 @@ impl McpHandler for WordPressHandler {
                         "post_type": {
                             "type": "string",
                             "enum": ["post", "page"],
-                            "description": "Defaults to 'post'",
+                            "description": "Post type of post_id: 'post' (the default), 'page', or an allowed custom post type.",
                             "default": "post"
                         }
                     },
@@ -5570,7 +5581,8 @@ impl McpHandler for WordPressHandler {
             },
             Tool {
                 name: "get_revision".to_string(),
-                description: "Read one revision of a post or page: title, excerpt and content".to_string(),
+                title: Some("Read a revision".to_string()),
+                description: "Read one revision (an earlier saved version) of a post or page: its title, excerpt and full content, as editable source by default. Use it to compare an old version with the current one (get_post) before restore_revision. Get the revision ID from get_revisions.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -5585,7 +5597,7 @@ impl McpHandler for WordPressHandler {
                         "post_type": {
                             "type": "string",
                             "enum": ["post", "page"],
-                            "description": "Defaults to 'post'",
+                            "description": "Post type of post_id: 'post' (the default), 'page', or an allowed custom post type.",
                             "default": "post"
                         },
                         "format": {
@@ -5601,7 +5613,8 @@ impl McpHandler for WordPressHandler {
             },
             Tool {
                 name: "restore_revision".to_string(),
-                description: "Restore a post or page to one of its revisions: its title, content and excerpt are replaced with the revision's. The status, publish date, slug, categories and tags are not changed, so a published post stays published with the restored content. WordPress keeps the content before the restore as a new revision, so the restore can be undone".to_string(),
+                title: Some("Restore a revision".to_string()),
+                description: "Restore a post or page to one of its revisions: its title, content and excerpt are replaced with the revision's. The status, publish date, slug, categories and tags are not changed, so a published post stays published with the restored content. WordPress keeps the content before the restore as a new revision, so the restore can be undone the same way. Returns the post's ID, title and the restored revision.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -5616,7 +5629,7 @@ impl McpHandler for WordPressHandler {
                         "post_type": {
                             "type": "string",
                             "enum": ["post", "page"],
-                            "description": "Defaults to 'post'",
+                            "description": "Post type of post_id: 'post' (the default), 'page', or an allowed custom post type.",
                             "default": "post"
                         }
                     },
@@ -5626,7 +5639,8 @@ impl McpHandler for WordPressHandler {
             },
             Tool {
                 name: "create_comment".to_string(),
-                description: "Create a comment, usually a reply to another comment (parent), as the configured WordPress user. WordPress comments have no drafts, so by default the comment is held for moderation and is not shown on the site until approved (update_comment with status 'approve', or in the WordPress admin). Pass status 'approve' to publish it at once".to_string(),
+                title: Some("Create a comment or reply".to_string()),
+                description: "Create a comment, usually a reply to another comment (parent), as the configured WordPress user. WordPress comments have no drafts, so by default the comment is held for moderation and is not shown on the site until approved (update_comment with status 'approve', or in the WordPress admin). Pass status 'approve' to publish it at once. Returns the new comment's ID, post, parent and status.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -5655,7 +5669,8 @@ impl McpHandler for WordPressHandler {
             },
             Tool {
                 name: "update_comment".to_string(),
-                description: "Change a comment's status (approve, hold for moderation, mark as spam, move to trash) or its text. Approving a comment publishes it on the site".to_string(),
+                title: Some("Moderate or edit a comment".to_string()),
+                description: "Change a comment's status (approve, hold for moderation, mark as spam, move to trash) or its text. Approving a comment publishes it on the site; marking it as spam or moving it to the trash takes it off the site. Use delete_comment to delete it permanently. Returns the comment's ID, post, parent and new status.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -5679,7 +5694,8 @@ impl McpHandler for WordPressHandler {
             },
             Tool {
                 name: "delete_comment".to_string(),
-                description: "Delete a comment. By default it is moved to the trash".to_string(),
+                title: Some("Delete a comment".to_string()),
+                description: "Delete a comment. By default it is moved to the trash, where it can be restored in the WordPress admin; with force: true it is deleted permanently and cannot be restored. To only hide a comment, use update_comment with status 'hold' or 'spam' instead. Returns the comment ID and whether it was trashed or deleted.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -5698,8 +5714,9 @@ impl McpHandler for WordPressHandler {
             },
             Tool {
                 name: "upload_media".to_string(),
+                title: Some("Upload a media file".to_string()),
                 description: format!(
-                    "Upload media file to WordPress. Pass either file_data (base64) or file_path. The filename extension and file content must match mime_type. Size is capped at {} MiB; with file_data, the transport's message size limit (including base64 overhead) usually applies first",
+                    "Upload an image, PDF, video or audio file to the WordPress media library. Pass either file_data (base64, with filename and mime_type) or file_path (a file on the machine where mcp-rs runs, when allowed by upload_allowed_dirs). The filename extension and the file's content must match mime_type. Size is capped at {} MiB; with file_data, the transport's message size limit (including base64 overhead) usually applies first. Returns the new media ID and URL; use the ID with set_featured_image or featured_media_id.",
                     MAX_UPLOAD_SIZE_BYTES / (1024 * 1024)
                 ),
                 input_schema: serde_json::json!({
@@ -5731,7 +5748,8 @@ impl McpHandler for WordPressHandler {
             },
             Tool {
                 name: "get_media".to_string(),
-                description: "Retrieve WordPress media files".to_string(),
+                title: Some("List media files".to_string()),
+                description: "List the files in the WordPress media library (at most 10,000): ID, title, MIME type, URL, alt text and date, with the total number of files. Use get_media_item for one file, update_media to change its title, alt text or caption, and the ID as featured_media_id or with set_featured_image.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {},
@@ -5741,7 +5759,8 @@ impl McpHandler for WordPressHandler {
             },
             Tool {
                 name: "get_media_item".to_string(),
-                description: "Retrieve a single WordPress media item by ID".to_string(),
+                title: Some("Read a media file's details".to_string()),
+                description: "Read one file of the WordPress media library by ID: its title, alt text and URL. Use get_media to find the ID, and update_media to change the title, alt text, caption or description.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -5756,9 +5775,8 @@ impl McpHandler for WordPressHandler {
             },
             Tool {
                 name: "update_media".to_string(),
-                description:
-                    "Update WordPress media metadata (title, alt text, caption, description)"
-                        .to_string(),
+                title: Some("Edit media details".to_string()),
+                description: "Change the details of a file in the WordPress media library: title, alt text, caption and description, or attach it to a post. Only the fields given are changed; the file itself is not replaced (upload a new file with upload_media for that). Returns the media ID.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -5784,7 +5802,7 @@ impl McpHandler for WordPressHandler {
                         },
                         "post": {
                             "type": "number",
-                            "description": "Post ID to attach media to"
+                            "description": "ID of the post or page to attach the file to (shown as 'Uploaded to' in the media library). It does not insert the file into the content"
                         }
                     },
                     "required": ["media_id"]
@@ -5793,7 +5811,8 @@ impl McpHandler for WordPressHandler {
             },
             Tool {
                 name: "delete_media".to_string(),
-                description: "Delete WordPress media file. WordPress does not support moving media to the trash by default, so force: true is usually required".to_string(),
+                title: Some("Delete a media file".to_string()),
+                description: "Delete a file from the WordPress media library, together with its resized copies. WordPress has no trash for media by default, so force: true is usually required, and the file is then deleted permanently and cannot be restored. Posts that show the file (in their content or as a featured image) will show a broken image. Returns the media ID.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -5812,7 +5831,8 @@ impl McpHandler for WordPressHandler {
             },
             Tool {
                 name: "create_post_with_featured_image".to_string(),
-                description: "Create a new WordPress post with featured image".to_string(),
+                title: Some("Create a post with a featured image".to_string()),
+                description: "Create a WordPress post with a title, content and a featured image (the media ID from upload_media or get_media). It is a draft unless status says otherwise. To add a featured image to an existing post, use set_featured_image instead. Returns the new post's ID, status and slug.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -5822,7 +5842,7 @@ impl McpHandler for WordPressHandler {
                         },
                         "content": {
                             "type": "string",
-                            "description": "The post content"
+                            "description": "Body of the post as HTML or Gutenberg block markup (the format get_post returns)"
                         },
                         "featured_media_id": {
                             "type": "number",
@@ -5845,7 +5865,8 @@ impl McpHandler for WordPressHandler {
             },
             Tool {
                 name: "set_featured_image".to_string(),
-                description: "Set featured image for existing post".to_string(),
+                title: Some("Set a post's featured image".to_string()),
+                description: "Set or replace the featured image (thumbnail) of an existing post, using a media ID from upload_media or get_media. Only the featured image is changed. Returns the post ID.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -5864,7 +5885,8 @@ impl McpHandler for WordPressHandler {
             },
             Tool {
                 name: "get_categories".to_string(),
-                description: "Retrieve WordPress categories".to_string(),
+                title: Some("List categories".to_string()),
+                description: "List the post categories of the site (at most 10,000): ID, name, slug, description, parent and number of posts. Use the IDs in the categories argument of the post tools and get_posts. For other taxonomies, use get_taxonomies and get_terms.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {},
@@ -5874,7 +5896,8 @@ impl McpHandler for WordPressHandler {
             },
             Tool {
                 name: "create_category".to_string(),
-                description: "Create a new WordPress category".to_string(),
+                title: Some("Create a category".to_string()),
+                description: "Create a post category, optionally under a parent category. Fails if a category with the same name already exists under the same parent: check get_categories first. Returns the new category's ID, to use in the categories argument of the post tools.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -5901,7 +5924,8 @@ impl McpHandler for WordPressHandler {
             },
             Tool {
                 name: "update_category".to_string(),
-                description: "Update an existing WordPress category".to_string(),
+                title: Some("Edit a category".to_string()),
+                description: "Change a category's name, description, parent or slug. Only the fields given are changed, and WordPress does not change the slug when the name changes. Posts in the category stay in it. Returns the category ID and name.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -5932,7 +5956,8 @@ impl McpHandler for WordPressHandler {
             },
             Tool {
                 name: "delete_category".to_string(),
-                description: "Delete a WordPress category".to_string(),
+                title: Some("Delete a category".to_string()),
+                description: "Delete a category permanently. WordPress has no trash for categories, so force must be true. Posts that were only in this category are moved to the default category. The default category itself cannot be deleted. Returns the category ID.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -5942,7 +5967,7 @@ impl McpHandler for WordPressHandler {
                         },
                         "force": {
                             "type": "boolean",
-                            "description": "Force delete (bypass trash)"
+                            "description": "Must be true: WordPress has no trash for categories, so they can only be deleted permanently"
                         }
                     },
                     "required": ["category_id"]
@@ -5951,7 +5976,8 @@ impl McpHandler for WordPressHandler {
             },
             Tool {
                 name: "get_tags".to_string(),
-                description: "Retrieve WordPress tags".to_string(),
+                title: Some("List tags".to_string()),
+                description: "List the post tags of the site (at most 10,000): ID, name, slug, description and number of posts. Use the IDs in the tags argument of the post tools and get_posts.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {},
@@ -5961,7 +5987,8 @@ impl McpHandler for WordPressHandler {
             },
             Tool {
                 name: "create_tag".to_string(),
-                description: "Create a new WordPress tag".to_string(),
+                title: Some("Create a tag".to_string()),
+                description: "Create a post tag. Fails if a tag with the same name already exists: check get_tags first. Returns the new tag's ID, to use in the tags argument of the post tools.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -5984,7 +6011,8 @@ impl McpHandler for WordPressHandler {
             },
             Tool {
                 name: "update_tag".to_string(),
-                description: "Update an existing WordPress tag".to_string(),
+                title: Some("Edit a tag".to_string()),
+                description: "Change a tag's name, description or slug. Only the fields given are changed, and WordPress does not change the slug when the name changes. Posts with the tag keep it. Returns the tag ID and name.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -6011,7 +6039,8 @@ impl McpHandler for WordPressHandler {
             },
             Tool {
                 name: "delete_tag".to_string(),
-                description: "Delete a WordPress tag".to_string(),
+                title: Some("Delete a tag".to_string()),
+                description: "Delete a tag permanently. WordPress has no trash for tags, so force must be true. The tag is removed from every post that has it; the posts themselves are not changed otherwise. Returns the tag ID.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -6021,7 +6050,7 @@ impl McpHandler for WordPressHandler {
                         },
                         "force": {
                             "type": "boolean",
-                            "description": "Force delete (bypass trash)"
+                            "description": "Must be true: WordPress has no trash for tags, so they can only be deleted permanently"
                         }
                     },
                     "required": ["tag_id"]
@@ -6030,7 +6059,8 @@ impl McpHandler for WordPressHandler {
             },
             Tool {
                 name: "create_post_with_categories_tags".to_string(),
-                description: "Create a new WordPress post with categories and tags. Defaults to draft status so nothing is published unintentionally.".to_string(),
+                title: Some("Create a post with categories and tags".to_string()),
+                description: "Create a WordPress post with categories, tags and optionally a featured image, by their IDs (from get_categories, get_tags and upload_media). It is a draft unless status says otherwise. Use create_advanced_post to schedule it or for pages and custom post types. Returns the new post's ID, status, slug, categories and tags.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -6040,7 +6070,7 @@ impl McpHandler for WordPressHandler {
                         },
                         "content": {
                             "type": "string",
-                            "description": "The post content"
+                            "description": "Body of the post as HTML or Gutenberg block markup (the format get_post returns)"
                         },
                         "status": {
                             "type": "string",
@@ -6051,12 +6081,12 @@ impl McpHandler for WordPressHandler {
                         "categories": {
                             "type": "array",
                             "items": {"type": "number"},
-                            "description": "Array of category IDs (optional)"
+                            "description": "Category IDs from get_categories (optional). Without it, WordPress uses the default category"
                         },
                         "tags": {
                             "type": "array",
                             "items": {"type": "number"},
-                            "description": "Array of tag IDs (optional)"
+                            "description": "Tag IDs from get_tags (optional)"
                         },
                         "featured_media_id": {
                             "type": "number",
@@ -6073,8 +6103,8 @@ impl McpHandler for WordPressHandler {
             },
             Tool {
                 name: "update_post_categories_tags".to_string(),
-                description: "Update categories and tags for an existing WordPress post or page"
-                    .to_string(),
+                title: Some("Change a post's categories and tags".to_string()),
+                description: "Replace the categories and/or tags of an existing post. Each list given replaces the post's current list, so include the IDs to keep; a list not given is not changed. Nothing else of the post is changed. Use update_post to change other fields at the same time. Returns the post ID with its new categories and tags.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -6091,12 +6121,12 @@ impl McpHandler for WordPressHandler {
                         "categories": {
                             "type": "array",
                             "items": {"type": "number"},
-                            "description": "Array of category IDs (optional)"
+                            "description": "Category IDs from get_categories (optional). Replaces all of the post's current categories, so include the ones to keep"
                         },
                         "tags": {
                             "type": "array",
                             "items": {"type": "number"},
-                            "description": "Array of tag IDs (optional)"
+                            "description": "Tag IDs from get_tags (optional). Replaces all of the post's current tags, so include the ones to keep; [] removes them all"
                         }
                     },
                     "required": ["post_id"]
@@ -6105,7 +6135,8 @@ impl McpHandler for WordPressHandler {
             },
             Tool {
                 name: "update_post".to_string(),
-                description: "Update an existing WordPress post or page".to_string(),
+                title: Some("Edit a post or page".to_string()),
+                description: "Change an existing post, page or custom post type item: title, content, status, publish date, slug, categories, tags, terms of custom taxonomies or featured image. Only the fields given are changed. Setting status 'publish' publishes it on the site, and status 'future' with a future date schedules it. When revisions are enabled, WordPress keeps the previous content as a revision (get_revisions, restore_revision). Returns the ID, title, status, date and slug.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -6143,12 +6174,12 @@ impl McpHandler for WordPressHandler {
                         "categories": {
                             "type": "array",
                             "items": {"type": "number"},
-                            "description": "Array of category IDs (optional)"
+                            "description": "Category IDs from get_categories (optional). Replaces all of the post's current categories, so include the ones to keep"
                         },
                         "tags": {
                             "type": "array",
                             "items": {"type": "number"},
-                            "description": "Array of tag IDs (optional)"
+                            "description": "Tag IDs from get_tags (optional). Replaces all of the post's current tags, so include the ones to keep; [] removes them all"
                         },
                         "featured_media_id": {
                             "type": "number",
@@ -6165,7 +6196,8 @@ impl McpHandler for WordPressHandler {
             },
             Tool {
                 name: "delete_post".to_string(),
-                description: "Delete a WordPress post or page".to_string(),
+                title: Some("Delete a post or page".to_string()),
+                description: "Delete a post, page or custom post type item. By default it is moved to the trash, where it can be restored in the WordPress admin; with force: true it is deleted permanently, with its revisions, and cannot be restored. To only take it off the site, use update_post with status 'draft' or 'private' instead. Returns the ID and whether it was trashed or deleted.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -6181,7 +6213,7 @@ impl McpHandler for WordPressHandler {
                         },
                         "force": {
                             "type": "boolean",
-                            "description": "Force delete (bypass trash, permanently delete)"
+                            "description": "Delete permanently instead of moving to the trash (optional, default false). It cannot be undone"
                         }
                     },
                     "required": ["post_id"]
@@ -6190,9 +6222,8 @@ impl McpHandler for WordPressHandler {
             },
             Tool {
                 name: "create_post_with_embeds".to_string(),
-                description:
-                    "Create WordPress post with embedded YouTube videos and social media content"
-                        .to_string(),
+                title: Some("Create a post with embedded videos".to_string()),
+                description: "Create a WordPress post or page whose content is followed by embedded media: each YouTube URL of the form youtube.com/watch?v=, youtu.be/ or youtube.com/embed/ becomes a video player, and each X/Twitter, Instagram post, Facebook or TikTok URL is added on its own line, which WordPress shows as an embed. Other URLs, including YouTube Shorts URLs, are left out without an error. It is a draft unless status says otherwise. To embed in the middle of the content, write the URLs or embed blocks into content and use create_post instead. Returns the new post's ID, title, status and slug.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -6207,7 +6238,7 @@ impl McpHandler for WordPressHandler {
                         "youtube_urls": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": "YouTube video URLs to embed"
+                            "description": "YouTube video URLs of the form youtube.com/watch?v=..., youtu.be/... or youtube.com/embed/...; other forms (such as youtube.com/shorts/...) are left out"
                         },
                         "social_urls": {
                             "type": "array",
@@ -6246,7 +6277,8 @@ impl McpHandler for WordPressHandler {
             },
             Tool {
                 name: "get_settings".to_string(),
-                description: "Get WordPress site settings".to_string(),
+                title: Some("Read site settings".to_string()),
+                description: "Read the main WordPress site settings: site title, tagline, what the front page shows, posts per page and language (time zone and the default category are not shown). Needs administrator credentials. Use update_settings to change them, or set_front_page and set_front_page_to_posts for the front page.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {},
@@ -6256,7 +6288,8 @@ impl McpHandler for WordPressHandler {
             },
             Tool {
                 name: "update_settings".to_string(),
-                description: "Update WordPress site settings".to_string(),
+                title: Some("Change site settings".to_string()),
+                description: "Change WordPress site settings: site title, tagline, time zone, language, posts per page, default category, and the front page. Only the fields given are changed, and the changes apply to the live site at once. Needs administrator credentials. Read the current values with get_settings first. Returns the site title, tagline and what the front page shows.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -6304,7 +6337,8 @@ impl McpHandler for WordPressHandler {
             },
             Tool {
                 name: "set_front_page".to_string(),
-                description: "Set a static page as the front page".to_string(),
+                title: Some("Show a page as the front page".to_string()),
+                description: "Make a static page (from get_pages) the site's front page, instead of the latest posts. This changes the live site at once. Use set_front_page_to_posts to go back to showing the latest posts. Needs administrator credentials. Returns the page ID.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -6319,13 +6353,14 @@ impl McpHandler for WordPressHandler {
             },
             Tool {
                 name: "set_front_page_to_posts".to_string(),
-                description: "Set front page to show latest posts".to_string(),
+                title: Some("Show latest posts on the front page".to_string()),
+                description: "Make the site's front page show the latest posts, instead of a static page. Optionally give the page that lists the posts. This changes the live site at once. Use set_front_page to show a static page instead. Needs administrator credentials.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
                         "posts_page_id": {
                             "type": "number",
-                            "description": "Optional page ID to use for blog posts"
+                            "description": "ID of a page (from get_pages) on which to list the posts, when the front page itself is not that list (optional)"
                         }
                     },
                     "required": []
@@ -6882,6 +6917,48 @@ mod tests {
                 "{}",
                 name
             );
+        }
+    }
+
+    /// ツールの説明は、AIのクライアントがツールを選ぶ材料（#676）。どの
+    /// ツールにも、名前（title）と、何をするか・いつ使うか・何を返すかを
+    /// 書いた説明があり、引数にも説明がある。説明は英語で書き、ほかの
+    /// ツールの名前は、実在するものだけを挙げる
+    #[tokio::test]
+    async fn test_every_tool_is_described() {
+        let handler = rate_limited_handler(RateLimitConfig::default());
+        let tools = handler.list_tools().await.unwrap();
+        let names: std::collections::HashSet<&str> =
+            tools.iter().map(|t| t.name.as_str()).collect();
+        // ツールの名前と同じ形の、ツールではない言葉（設定の項目）
+        let not_tools = ["upload_allowed_dirs"];
+        for tool in &tools {
+            let name = &tool.name;
+            let title = tool.title.as_deref().unwrap_or_default();
+            assert!(
+                !title.is_empty() && title.len() <= 60,
+                "{name}: title {title:?}"
+            );
+            let description = &tool.description;
+            assert!(description.len() >= 140, "{name}: description too short");
+            assert!(description.ends_with('.'), "{name}: {description}");
+            assert!(description.is_ascii(), "{name}: {description}");
+            for word in description.split(|c: char| !(c.is_ascii_lowercase() || c == '_')) {
+                let looks_like_a_tool = [
+                    "get_", "create_", "update_", "delete_", "set_", "restore_", "upload_",
+                ]
+                .iter()
+                .any(|prefix| word.starts_with(prefix));
+                if looks_like_a_tool && !not_tools.contains(&word) {
+                    assert!(names.contains(word), "{name}: mentions unknown tool {word}");
+                }
+            }
+            let properties = tool.input_schema["properties"].as_object().unwrap();
+            for (argument, schema) in properties {
+                let text = schema["description"].as_str().unwrap_or_default();
+                assert!(!text.is_empty(), "{name}.{argument}: no description");
+                assert!(text.is_ascii(), "{name}.{argument}: {text}");
+            }
         }
     }
 

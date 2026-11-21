@@ -228,7 +228,8 @@ Lists available tools.
     "tools": [
       {
         "name": "get_posts",
-        "description": "Retrieve WordPress posts",
+        "title": "List posts",
+        "description": "List WordPress posts (or the posts of an allowed custom post type), published ones by default. ...",
         "inputSchema": {
           "type": "object",
           "properties": {},
