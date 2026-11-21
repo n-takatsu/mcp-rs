@@ -405,6 +405,7 @@ pub(super) async fn prepare(
         program: kubectl.program.clone(),
         args: delete_args,
         env: kubectl.env.clone(),
+        ignore_already_removed: false,
     };
 
     // Secret → Jobの順に作る（PodがSecretを待たないように）。ここから
