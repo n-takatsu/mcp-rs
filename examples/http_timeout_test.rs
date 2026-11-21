@@ -104,8 +104,8 @@ async fn test_nonexistent_host_http() {
         rate_limit: None,
         encrypted_credentials: None, // 平文認証情報を使用
         keyring: None,
-        upload_allowed_dirs: Vec::new(),
-        post_types: Vec::new(),
+        upload_allowed_dirs: None,
+        post_types: None,
         default_site: None,
         sites: Default::default(),
     };
@@ -157,8 +157,8 @@ async fn test_invalid_url_http() {
         rate_limit: None,
         encrypted_credentials: None, // 平文認証情報を使用
         keyring: None,
-        upload_allowed_dirs: Vec::new(),
-        post_types: Vec::new(),
+        upload_allowed_dirs: None,
+        post_types: None,
         default_site: None,
         sites: Default::default(),
     };
