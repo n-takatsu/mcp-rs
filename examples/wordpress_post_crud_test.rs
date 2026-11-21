@@ -58,7 +58,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("   Status: {}", post.status);
             println!(
                 "   Content length: {} characters",
-                post.content.rendered.len()
+                post.content.as_ref().map_or(0, |c| c.rendered.len())
             );
         }
         Err(e) => {
