@@ -1333,6 +1333,7 @@ impl Setup<'_> {
             .iter()
             .filter(|url| !new_urls.contains(url))
             .map(|url| format!("the site {url}"))
+            .chain(self.changed_site_names(path))
             .chain(extras)
             .collect();
         if lost.is_empty() {
@@ -1351,17 +1352,21 @@ impl Setup<'_> {
     /// この実行で足したサイトのURL（比べる形。PR #688のレビュー）。
     /// `enabled = false`のサイトは、移したとはみなさない
     fn new_config_site_urls(&self) -> Vec<String> {
-        let mut urls = std::fs::read_to_string(&self.config_path)
-            .ok()
-            .and_then(|text| {
-                text.trim_start_matches('\u{feff}')
-                    .parse::<toml::Table>()
-                    .ok()
-            })
+        let mut urls = read_toml(&self.config_path)
             .map(|table| enabled_site_urls(&table))
             .unwrap_or_default();
         urls.extend(self.added_sites.iter().map(|url| comparable_site_url(url)));
         urls
+    }
+
+    /// 設定ファイル（`path`）を新しい設定ファイルに置き換えると変わる、
+    /// サイトの名前と`site`を省いた呼び出しのサイト（PR #688のレビュー）。
+    /// どちらかを読めなければ無し
+    fn changed_site_names(&self, path: &str) -> Vec<String> {
+        match (read_toml(Path::new(path)), read_toml(&self.config_path)) {
+            (Some(old), Some(new)) => changed_site_names(&old, &enabled_sites(&new)),
+            _ => Vec::new(),
+        }
     }
 
     /// 別の名前で登録された mcp-rs（手で登録したもの等）を、1つずつ消すかを
@@ -1413,6 +1418,10 @@ impl Setup<'_> {
                         .filter(|url| !is_added(url))
                         .map(|url| format!("the site {url}"))
                         .collect();
+                    // 変わるサイトの名前（PR #688のレビュー）
+                    if let Some(path) = other_path.as_deref() {
+                        lost.extend(self.changed_site_names(path));
+                    }
                     lost.extend(extras);
                     (
                         urls.iter().find(|url| is_added(url)).cloned(),
@@ -1924,12 +1933,30 @@ fn comparable_site_url(url: &str) -> String {
 }
 
 /// 設定で使う（`enabled`の）WordPressのサイトのURL（比べる形。PR #688の
-/// レビュー）。全体の`enabled`が`true`でなければ無し。`sites`の各サイトは、
-/// `enabled = false`と書いたもの以外（起動と同じ）。`${VAR}`のURLは、
-/// 登録が渡す環境変数で決まるので、含めない
+/// レビュー）
 fn enabled_site_urls(table: &toml::Table) -> Vec<String> {
+    enabled_sites(table)
+        .sites
+        .into_iter()
+        .map(|(_, url)| url)
+        .collect()
+}
+
+/// 設定で使うサイト（`sites`の名前と、比べる形のURL）と、`site`を省いた
+/// ツールの呼び出しが使うサイトのURL
+#[derive(Debug, Default, PartialEq, Eq)]
+struct EnabledSites {
+    /// 1つのサイトの形なら、名前は`None`
+    sites: Vec<(Option<String>, String)>,
+    default: Option<String>,
+}
+
+/// 設定で使うサイト（PR #688のレビュー）。全体の`enabled`が`true`で
+/// なければ無し。`sites`の各サイトは、`enabled = false`と書いたもの以外
+/// （起動と同じ）。`${VAR}`のURLは、登録が渡す環境変数で決まるので、含めない
+fn enabled_sites(table: &toml::Table) -> EnabledSites {
     let Some(wordpress) = table.get("handlers").and_then(|h| h.get("wordpress")) else {
-        return Vec::new();
+        return EnabledSites::default();
     };
     let enabled = |value: &toml::Value, default: bool| {
         value
@@ -1938,7 +1965,7 @@ fn enabled_site_urls(table: &toml::Table) -> Vec<String> {
             .unwrap_or(default)
     };
     if !enabled(wordpress, false) {
-        return Vec::new();
+        return EnabledSites::default();
     }
     let url = |value: &toml::Value| {
         value
@@ -1948,13 +1975,77 @@ fn enabled_site_urls(table: &toml::Table) -> Vec<String> {
             .map(comparable_site_url)
     };
     match wordpress.get("sites").and_then(toml::Value::as_table) {
-        Some(sites) if !sites.is_empty() => sites
-            .values()
-            .filter(|site| enabled(site, true))
-            .filter_map(url)
-            .collect(),
-        _ => url(wordpress).into_iter().collect(),
+        Some(sites) if !sites.is_empty() => {
+            let sites: Vec<(Option<String>, String)> = sites
+                .iter()
+                .filter(|(_, site)| enabled(site, true))
+                .filter_map(|(name, site)| url(site).map(|url| (Some(name.clone()), url)))
+                .collect();
+            let default = wordpress
+                .get("default_site")
+                .and_then(toml::Value::as_str)
+                .and_then(|name| {
+                    sites
+                        .iter()
+                        .find(|(site, _)| site.as_deref() == Some(name))
+                        .map(|(_, url)| url.clone())
+                });
+            EnabledSites { sites, default }
+        }
+        _ => {
+            let url = url(wordpress);
+            EnabledSites {
+                default: url.clone(),
+                sites: url.map(|url| (None, url)).into_iter().collect(),
+            }
+        }
     }
+}
+
+/// 別の設定ファイル（`old`）を新しい設定（`new`）に置き換えると、変わる
+/// サイトの名前と、`site`を省いた呼び出しが使うサイト（PR #688のレビュー）。
+/// 新しい設定にも同じURLがあるのに名前が違うと、`site`にその名前を渡す
+/// 呼び出しが失敗する。`site`を省いた呼び出しは、別のサイトに送られる。
+/// 新しい設定に無いサイトは、ほかで挙げるので、ここでは挙げない
+fn changed_site_names(old: &toml::Table, new: &EnabledSites) -> Vec<String> {
+    let old = enabled_sites(old);
+    let mut changed: Vec<String> = old
+        .sites
+        .iter()
+        .filter_map(|(name, url)| {
+            let name = name.as_ref()?;
+            // 新しい設定が1つのサイトの形なら、引数`site`は無く、どの呼び出しも
+            // そのサイトに送られるので、名前の変更には当たらない
+            let new_names: Vec<&String> = new
+                .sites
+                .iter()
+                .filter(|(_, new_url)| new_url == url)
+                .filter_map(|(new_name, _)| new_name.as_ref())
+                .collect();
+            let renamed = !new_names.is_empty() && !new_names.contains(&name);
+            renamed.then(|| format!("the site name '{name}' for {url}"))
+        })
+        .collect();
+    // 複数のサイトの形で、`site`を省いた呼び出しが使うサイトが変わる
+    let named = old.sites.iter().any(|(name, _)| name.is_some());
+    if let Some(default) = old.default.as_ref().filter(|_| named) {
+        if new.default.as_ref() != Some(default) && new.sites.iter().any(|(_, url)| url == default)
+        {
+            changed.push(format!(
+                "tool calls without `site` going to {default} (default_site)"
+            ));
+        }
+    }
+    changed
+}
+
+/// TOMLの設定ファイルを読む。読めなければ`None`
+fn read_toml(path: &Path) -> Option<toml::Table> {
+    std::fs::read_to_string(path)
+        .ok()?
+        .trim_start_matches('\u{feff}')
+        .parse()
+        .ok()
 }
 
 /// 設定にあるWordPressのサイト（#657）
@@ -5406,6 +5497,74 @@ keyring = \"blog\"
         setup.superseded.push(old.clone());
         let (question, default) = setup.replace_question("Claude Code", Some(&reading(old)));
         assert!(default, "{question}");
+    }
+
+    /// 置き換えると変わる、サイトの名前と`site`を省いた呼び出しのサイト
+    /// （PR #688のレビュー）
+    #[test]
+    fn test_changed_site_names() {
+        let parse = |text: &str| text.parse::<toml::Table>().unwrap();
+        let old = parse(
+            "[handlers.wordpress]\nenabled = true\ndefault_site = \"shop\"\n\n[handlers.wordpress.sites.shop]\nurl = \"https://shop.example.com\"\n\n[handlers.wordpress.sites.blog]\nurl = \"https://blog.example.com\"\n",
+        );
+        // 同じ名前・同じ既定なら、変わらない
+        assert!(changed_site_names(&old, &enabled_sites(&old)).is_empty());
+        // 名前が変わり、既定も別のサイトになる
+        let renamed = parse(
+            "[handlers.wordpress]\nenabled = true\ndefault_site = \"blog\"\n\n[handlers.wordpress.sites.blog]\nurl = \"https://blog.example.com\"\n\n[handlers.wordpress.sites.store]\nurl = \"https://shop.example.com/\"\n",
+        );
+        assert_eq!(
+            changed_site_names(&old, &enabled_sites(&renamed)),
+            [
+                "the site name 'shop' for https://shop.example.com".to_string(),
+                "tool calls without `site` going to https://shop.example.com (default_site)"
+                    .to_string(),
+            ]
+        );
+        // 1つのサイトの形には、引数`site`が無いので、名前の変更には当たらない。
+        // 無いサイト（blog）は、ほかで挙げる
+        let single =
+            parse("[handlers.wordpress]\nenabled = true\nurl = \"https://shop.example.com\"\n");
+        assert!(changed_site_names(&old, &enabled_sites(&single)).is_empty());
+        // 前の設定が1つのサイトの形なら、名前も既定の変更も無い
+        assert!(changed_site_names(&single, &enabled_sites(&renamed)).is_empty());
+    }
+
+    /// サイトの名前が変わる別の名前の登録は、既定では消さない（PR #688の
+    /// レビュー）
+    #[test]
+    fn test_registration_with_a_renamed_site_is_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let old_path = dir.path().join("sites.toml");
+        std::fs::write(
+            &old_path,
+            "[handlers.wordpress]\nenabled = true\ndefault_site = \"shop\"\n\n[handlers.wordpress.sites.shop]\nurl = \"https://shop.example.com\"\nkeyring = \"shop\"\n",
+        )
+        .unwrap();
+        let new_path = dir.path().join("new.toml");
+        std::fs::write(
+            &new_path,
+            "[handlers.wordpress]\nenabled = true\ndefault_site = \"blog\"\n\n[handlers.wordpress.sites.blog]\nurl = \"https://blog.example.com\"\nkeyring = \"blog\"\n\n[handlers.wordpress.sites.store]\nurl = \"https://shop.example.com\"\nkeyring = \"store\"\n",
+        )
+        .unwrap();
+        let store = MemoryStore::default();
+        let mut io = Script::new(&[""]);
+        let mut setup = setup(&mut io, &store);
+        setup.config_path = new_path;
+        let others = [OtherServer {
+            name: "mcp-rs-sites".to_string(),
+            config: Some(old_path.display().to_string()),
+            env_config: None,
+        }];
+        let remove = setup
+            .choose_duplicates_to_remove("Claude Desktop", &others, &launch())
+            .unwrap();
+        assert!(remove.is_empty(), "{remove:?}");
+        let shown = io.shown.join("\n");
+        assert!(
+            shown.contains("which would be lost: the site name 'shop' for https://shop.example.com, tool calls without `site` going to https://shop.example.com (default_site). Remove it? [y/N]"),
+            "{shown}"
+        );
     }
 
     /// 設定にある`mcp-rs`の登録が読む設定ファイル（PR #688のレビュー）
