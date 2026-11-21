@@ -137,7 +137,7 @@ pub async fn run(args: &[String]) -> Result<bool, String> {
         store: &OsKeyring,
         config_path,
         explicit_config,
-        kept_sites_config: None,
+        kept_config: None,
         previous: discover_registrations(),
         superseded: Vec::new(),
         suggested_url: None,
@@ -211,10 +211,12 @@ struct Setup<'a> {
     config_path: PathBuf,
     /// `config_path`を`--config`で渡されたか（#684）
     explicit_config: bool,
-    /// `--config`のファイルを設定すると選んだときの、今の登録が使う、
-    /// 複数サイトの設定ファイル（PR #688のレビュー）。同じ名前の登録を
-    /// 置き換えるときに、失われるサイトと設定を示す
-    kept_sites_config: Option<String>,
+    /// 今の登録が使う設定ファイルのうち、新しい設定ファイルに置き換えずに
+    /// 残すと選んだもの（`--config`のファイルを設定すると選んだときの複数
+    /// サイトの設定ファイルか、置き換える前の設定ではないと答えたもの。
+    /// PR #688のレビュー）。同じ名前の登録を置き換えるときに、失われる
+    /// サイトと設定を示す
+    kept_config: Option<String>,
     /// クライアントに今ある、mcp-rsの登録（#602）
     previous: Vec<Registration>,
     /// 新しい設定ファイルに置き換える、前の設定ファイル（#602）。これを使う
@@ -591,7 +593,7 @@ impl Setup<'_> {
                     match self.io.ask("Choose 1 or 2 [1]: ")?.as_str() {
                         "" | "1" => {
                             self.io.say(&format!("Keeping {path} as it is.\n"));
-                            self.kept_sites_config = Some(path.to_string());
+                            self.kept_config = Some(path.to_string());
                             return Ok(PreviousChoice::NotReplacing);
                         }
                         "2" => return Ok(PreviousChoice::UseAsIs),
@@ -633,6 +635,9 @@ impl Setup<'_> {
             true,
         )? {
             self.suggested_url = None;
+            // 同じ名前の登録が使っていれば、置き換える前に、失われるものを
+            // 示し、既定では置き換えない（PR #688のレビュー）
+            self.kept_config = Some(path.to_string());
             self.io.say("Keeping it as it is. To use that site from the new config file instead, add it when mcp-rs init asks to add another WordPress site; mcp-rs init then offers to remove the registration that uses the other config file.\n");
             return Ok(PreviousChoice::NotReplacing);
         }
@@ -1270,54 +1275,57 @@ impl Setup<'_> {
     }
 
     /// 同じ名前（`mcp-rs`）の登録を置き換えるかの質問と、その既定（PR #688の
-    /// レビュー）。`--config`のファイルを設定すると選び、今の登録が複数サイトの
-    /// 設定ファイルを使うときは、新しい設定ファイルに無いサイトと設定を挙げ、
-    /// 1つでもあれば、既定では置き換えない
+    /// レビュー）。今の登録が使う設定ファイルを残すと選んだとき（`kept_config`）
+    /// は、新しい設定ファイルに無いサイトと設定を挙げ、1つでもあれば、既定
+    /// では置き換えない
     ///
     /// 比べるのは、置き換える登録（`existing`）が実際に読む設定ファイル
-    /// （クライアントごとに違うことがある）。読めなければ、残すと選んだ設定
-    /// ファイル。サイトは、新しい設定ファイルにあるもの（最初のサイトも）と
-    /// この実行で足したものを、失われないとみなす（PR #688のレビュー）
+    /// （クライアントごとに違うことがある）。登録を読めなければ、残すと
+    /// 選んだ設定ファイル。その設定ファイルを確かめられない（相対パス・
+    /// 読めない）ときも、既定では置き換えない
     fn replace_question(&self, client: &str, existing: Option<&OtherServer>) -> (String, bool) {
         let question = format!("{client} already has a server named \"{SERVER_NAME}\".");
-        let replace = (format!("{question} Replace it?"), true);
-        let Some(kept) = self.kept_sites_config.as_deref() else {
-            return replace;
+        let Some(kept) = self.kept_config.as_deref() else {
+            return (format!("{question} Replace it?"), true);
         };
         let path = match existing {
-            Some(server) => match server.effective_config() {
-                Some(path) => crate::config::expand_config_path(path),
-                None => match crate::config::user_config_path() {
-                    Some(path) => path,
-                    None => return replace,
-                },
-            },
-            None => kept.to_string(),
+            Some(server) => server
+                .effective_config()
+                .map(crate::config::expand_config_path)
+                .or_else(crate::config::user_config_path),
+            None => Some(kept.to_string()),
         };
         let ours = self.config_path.display().to_string();
-        if same_config_file(Some(&path), &ours) {
-            return replace;
+        if path
+            .as_deref()
+            .is_some_and(|path| same_config_file(Some(path), &ours))
+        {
+            return (format!("{question} Replace it?"), true);
         }
-        let Some((urls, extras)) = other_config_sites(&path) else {
-            return replace;
+        // 相対パスは、クライアントが起動するフォルダで決まり、ここで読む
+        // ファイルと違うことがある（`choose_duplicates_to_remove`と同じ）
+        let checked = path
+            .as_deref()
+            .filter(|path| !Path::new(path).is_relative())
+            .and_then(|path| other_config_sites(path).map(|sites| (path, sites)));
+        let Some((path, (urls, extras))) = checked else {
+            return (
+                format!(
+                    "{question} It uses {}, which mcp-rs init cannot check, so it may have sites or settings that the new config file does not have. Replace it?",
+                    path.as_deref().unwrap_or("a config file mcp-rs init cannot find")
+                ),
+                false,
+            );
         };
-        let new_urls = other_config_sites(&ours)
-            .map(|(urls, _)| urls)
-            .unwrap_or_default();
+        let new_urls = self.new_config_site_urls();
         let lost: Vec<String> = urls
             .iter()
-            .filter(|url| {
-                !new_urls.contains(url)
-                    && !self
-                        .added_sites
-                        .iter()
-                        .any(|added| comparable_site_url(added) == **url)
-            })
+            .filter(|url| !new_urls.contains(url))
             .map(|url| format!("the site {url}"))
             .chain(extras)
             .collect();
         if lost.is_empty() {
-            return replace;
+            return (format!("{question} Replace it?"), true);
         }
         (
             format!(
@@ -1326,6 +1334,16 @@ impl Setup<'_> {
             ),
             false,
         )
+    }
+
+    /// 新しい設定ファイルにあるサイト（最初のサイトも、前からあるサイトも）と、
+    /// この実行で足したサイトのURL（比べる形。PR #688のレビュー）
+    fn new_config_site_urls(&self) -> Vec<String> {
+        let mut urls = other_config_sites(&self.config_path.display().to_string())
+            .map(|(urls, _)| urls)
+            .unwrap_or_default();
+        urls.extend(self.added_sites.iter().map(|url| comparable_site_url(url)));
+        urls
     }
 
     /// 別の名前で登録された mcp-rs（手で登録したもの等）を、1つずつ消すかを
@@ -1343,6 +1361,7 @@ impl Setup<'_> {
         launch: &Launch,
     ) -> io::Result<Vec<String>> {
         let mut remove = Vec::new();
+        let new_urls = self.new_config_site_urls();
         for other in others {
             let name = &other.name;
             // 起動で実際に読む設定ファイルで照合する（PR #671のレビュー）
@@ -1364,11 +1383,9 @@ impl Setup<'_> {
             let relative = other_path
                 .as_deref()
                 .is_some_and(|path| Path::new(path).is_relative());
-            let is_added = |url: &String| {
-                self.added_sites
-                    .iter()
-                    .any(|added| comparable_site_url(added) == *url)
-            };
+            // 新しい設定ファイルの最初のサイトも、足したサイトとみなす
+            // （PR #688のレビュー）
+            let is_added = |url: &String| new_urls.contains(url);
             // 足していないサイトと、サイトごとの設定（`post_types`等）・
             // `[server]`等を、消すと失われるものとして挙げる（#684）
             let (added, covered, lost) = match other_path.as_deref().and_then(other_config_sites) {
@@ -3165,7 +3182,7 @@ mod tests {
             store,
             config_path: PathBuf::from("unused.toml"),
             explicit_config: false,
-            kept_sites_config: None,
+            kept_config: None,
             previous: Vec::new(),
             superseded: Vec::new(),
             suggested_url: None,
@@ -3406,6 +3423,20 @@ file_path = "C:/Users/me/.mcp-rs/logs/audit.log"
         // 2つ目のサイトのURLを、新しい設定の既定にしない
         assert_eq!(setup.suggested_url, None);
         assert!(setup.superseded.is_empty());
+        // 同じ名前の登録がそれを使っていれば、既定では置き換えない
+        // （PR #688のレビュー）
+        setup.config_path = dir.path().join("new.toml");
+        let existing = OtherServer {
+            name: SERVER_NAME.to_string(),
+            config: Some(second.display().to_string()),
+            env_config: None,
+        };
+        let (question, default) = setup.replace_question("Claude Desktop", Some(&existing));
+        assert!(!default, "{question}");
+        assert!(
+            question.contains("which would be lost: the site "),
+            "{question}"
+        );
     }
 
     /// 複数のWordPressのサイトを使う設定は、聞かずにそのまま使う（#640）
@@ -4719,7 +4750,7 @@ file_path = "C:/Users/me/.mcp-rs/logs/audit.log"
             store: &store,
             config_path: PathBuf::from("unused.toml"),
             explicit_config: false,
-            kept_sites_config: None,
+            kept_config: None,
             previous: Vec::new(),
             superseded: Vec::new(),
             suggested_url: None,
@@ -5154,6 +5185,62 @@ keyring = \"blog\"
         };
         let (question, default) = setup.replace_question("Claude Code", Some(&existing));
         assert!(default, "{question}");
+
+        // 確かめられない設定ファイル（無い・相対パス）なら、既定では置き換えない
+        for config in [
+            dir.path().join("missing.toml").display().to_string(),
+            "sites.toml".to_string(),
+        ] {
+            let existing = OtherServer {
+                name: SERVER_NAME.to_string(),
+                config: Some(config.clone()),
+                env_config: None,
+            };
+            let (question, default) = setup.replace_question("Claude Code", Some(&existing));
+            assert!(!default, "{question}");
+            assert!(
+                question.contains(&format!("It uses {config}, which mcp-rs init cannot check")),
+                "{question}"
+            );
+        }
+    }
+
+    /// 新しい設定ファイルの最初のサイトを使う、別の名前の登録は、同じサイトの
+    /// 重複として消すかを聞く（PR #688のレビュー。最初のサイトは
+    /// `added_sites`に入らない）
+    #[test]
+    fn test_registration_for_the_first_site_is_a_duplicate() {
+        let dir = tempfile::tempdir().unwrap();
+        let shop = dir.path().join("shop.toml");
+        std::fs::write(
+            &shop,
+            "[handlers.wordpress]\nenabled = true\nurl = \"https://shop.example.com\"\nkeyring = \"shop\"\n",
+        )
+        .unwrap();
+        let new_path = dir.path().join("new.toml");
+        std::fs::write(
+            &new_path,
+            "[handlers.wordpress]\nenabled = true\nurl = \"https://shop.example.com/\"\nkeyring = \"shop-new\"\n",
+        )
+        .unwrap();
+        let store = MemoryStore::default();
+        let mut io = Script::new(&[""]);
+        let mut setup = setup(&mut io, &store);
+        setup.config_path = new_path;
+        let others = [OtherServer {
+            name: "mcp-rs-shop".to_string(),
+            config: Some(shop.display().to_string()),
+            env_config: None,
+        }];
+        let remove = setup
+            .choose_duplicates_to_remove("Claude Desktop", &others, &launch())
+            .unwrap();
+        assert_eq!(remove, ["mcp-rs-shop"]);
+        let shown = io.shown.join("\n");
+        assert!(
+            shown.contains("Remove it, so that only one mcp-rs uses the site? [Y/n]"),
+            "{shown}"
+        );
     }
 
     /// 設定にある`mcp-rs`の登録が読む設定ファイル（PR #688のレビュー）
