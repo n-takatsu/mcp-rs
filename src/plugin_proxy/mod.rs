@@ -304,29 +304,26 @@ struct Cleanup {
     program: String,
     args: Vec<String>,
     env: Vec<(String, String)>,
+    /// 失敗の文面が「既に消えていた」なら、成功とみなす。`docker rm -f`・
+    /// `podman rm -f`だけ。`kubectl delete`は`--ignore-not-found`で、既に無ければ
+    /// 成功で終わるので、失敗はいつも知らせる（認証のコマンドの失敗の文面に
+    /// `No such container`が入ることもあるため。PR #685のレビュー）
+    ignore_already_removed: bool,
 }
 
 impl Cleanup {
     /// コマンドを実行する（終了を待たない）。既に消えていれば何もしない。
     fn run(self) {
-        let mut command = std::process::Command::new(&self.program);
-        command
-            .args(&self.args)
-            .env_clear()
-            .envs(self.env)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            command.creation_flags(0x0800_0000);
-        }
         // 終了を待って回収するため、別スレッドで実行する。mcp-rsの終了前に
         // `wait_for_cleanups`で待てるよう、スレッドを覚えておく（PR #672の
-        // レビュー）
+        // レビュー）。失敗は、`wait_for_cleanups`が返す（#684）
         let handle = std::thread::spawn(move || {
-            let _ = command.status();
+            if let Err(error) = self.execute() {
+                CLEANUP_FAILURES
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(error);
+            }
         });
         let mut pending = PENDING_CLEANUPS
             .lock()
@@ -334,34 +331,109 @@ impl Cleanup {
         pending.retain(|h| !h.is_finished());
         pending.push(handle);
     }
+
+    /// コマンドを実行し、終了を待つ。起動できない・失敗したら、その理由を
+    /// 返す（#684）。既に消えていた場合は成功
+    fn execute(&self) -> Result<(), String> {
+        let mut command = std::process::Command::new(&self.program);
+        command
+            .args(&self.args)
+            .env_clear()
+            .envs(self.env.iter().map(|(key, value)| (key, value)))
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x0800_0000);
+        }
+        let output = command
+            .output()
+            .map_err(|e| format!("could not run `{}`: {}", self.command_line(), e))?;
+        if output.status.success() {
+            return Ok(());
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if self.ignore_already_removed && is_already_removed(&stderr) {
+            return Ok(());
+        }
+        let stderr = stderr.trim();
+        let mut message = format!("`{}` failed ({})", self.command_line(), output.status);
+        if !stderr.is_empty() {
+            message.push_str(": ");
+            message.push_str(&truncate(stderr, 300));
+        }
+        Err(message)
+    }
+
+    /// 表示用のコマンド。環境変数（資格情報を含むことがある）は含めない
+    fn command_line(&self) -> String {
+        std::iter::once(self.program.as_str())
+            .chain(self.args.iter().map(String::as_str))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+}
+
+/// 後片付けのコマンドが、消すものが既に無くて失敗したか。`docker run --rm`の
+/// コンテナは止まると自分で消えるので、`docker rm -f`と重なることがある
+fn is_already_removed(stderr: &str) -> bool {
+    let stderr = stderr.to_ascii_lowercase();
+    [
+        "no such container",
+        "already in progress",
+        "no container with name or id",
+    ]
+    .iter()
+    .any(|text| stderr.contains(text))
 }
 
 /// 実行中の後片付けのコマンド（`Cleanup::run`）
 static PENDING_CLEANUPS: std::sync::Mutex<Vec<std::thread::JoinHandle<()>>> =
     std::sync::Mutex::new(Vec::new());
 
+/// 失敗した後片付けのコマンドと、その理由（#684）
+static CLEANUP_FAILURES: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// 後片付けのコマンドを待った結果（`wait_for_cleanups`）
+#[derive(Debug, Default)]
+pub struct CleanupReport {
+    /// 待ち終えずに残ったコマンドがある
+    pub timed_out: bool,
+    /// 失敗した・起動できなかったコマンドと、その理由（#684）
+    pub failures: Vec<String>,
+}
+
 /// 後片付けのコマンド（`docker rm -f`・`kubectl delete`）の終了を、最長
 /// `timeout`待つ。mcp-rsが終わる前に呼ぶ。待たないと、プロセスの終了で
 /// コマンドのスレッドも終わり、コンテナ・Job・Secretが残ることがある
-/// （PR #672のレビュー）。待ち終えずに残ったものがあれば`false`
-pub fn wait_for_cleanups(timeout: std::time::Duration) -> bool {
+/// （PR #672のレビュー）。待ち終えなかったか、失敗したコマンドを返す（#684）
+pub fn wait_for_cleanups(timeout: std::time::Duration) -> CleanupReport {
     let deadline = std::time::Instant::now() + timeout;
     let handles = std::mem::take(
         &mut *PENDING_CLEANUPS
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner),
     );
-    for handle in handles {
+    let mut report = CleanupReport::default();
+    'handles: for handle in handles {
         // JoinHandleには時間を区切ったjoinが無いので、終わったかを見て待つ
         while !handle.is_finished() {
             if std::time::Instant::now() >= deadline {
-                return false;
+                report.timed_out = true;
+                break 'handles;
             }
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
         let _ = handle.join();
     }
-    true
+    report.failures = std::mem::take(
+        &mut *CLEANUP_FAILURES
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+    );
+    report
 }
 
 /// dockerコマンド自体に渡す、本体の環境変数
@@ -890,6 +962,7 @@ impl PluginHandler {
                     program: launch.program,
                     args: vec!["rm".into(), "-f".into(), launch.container_name],
                     env: docker_env,
+                    ignore_already_removed: true,
                 });
                 command
             }
@@ -1259,16 +1332,102 @@ pub(crate) mod tests {
     use super::*;
     use crate::config::{PluginKubernetesConfig, PluginMountConfig};
 
-    /// 後片付けのコマンドを覚えておき、終了を待てる（PR #672のレビュー）
+    /// 後片付けのコマンドを覚えておき、終了を待てる（PR #672のレビュー）。
+    /// 起動できなかったコマンドは、失敗として返す（#684）
     #[test]
     fn test_wait_for_cleanups() {
         Cleanup {
             program: "mcp-rs-test-no-such-command".to_string(),
-            args: Vec::new(),
+            args: vec!["job/test-684".to_string()],
             env: Vec::new(),
+            ignore_already_removed: false,
         }
         .run();
-        assert!(wait_for_cleanups(std::time::Duration::from_secs(30)));
+        let report = wait_for_cleanups(std::time::Duration::from_secs(30));
+        assert!(!report.timed_out);
+        assert!(
+            report.failures.iter().any(|failure| failure
+                .starts_with("could not run `mcp-rs-test-no-such-command job/test-684`")),
+            "{:?}",
+            report.failures
+        );
+    }
+
+    /// 終了コードを返すコマンド（Windowsでは`cmd /c exit N`）
+    fn exit_cleanup(code: u8) -> Cleanup {
+        #[cfg(windows)]
+        let (program, args) = ("cmd", vec!["/c".to_string(), format!("exit {}", code)]);
+        #[cfg(not(windows))]
+        let (program, args) = ("sh", vec!["-c".to_string(), format!("exit {}", code)]);
+        Cleanup {
+            program: program.to_string(),
+            args,
+            env: Vec::new(),
+            ignore_already_removed: false,
+        }
+    }
+
+    /// 後片付けのコマンドが失敗したら、コマンドと終了コードを返す（#684）
+    #[test]
+    fn test_cleanup_execute_reports_failure() {
+        let error = exit_cleanup(1).execute().unwrap_err();
+        assert!(error.contains("exit 1`"), "{}", error);
+        assert!(error.contains("failed"), "{}", error);
+    }
+
+    /// 「既に消えていた」の文面で成功とみなすのは、コンテナの後片付けだけ。
+    /// kubectlの失敗は、同じ文面でも知らせる（PR #685のレビュー）
+    #[test]
+    fn test_already_removed_only_for_container_cleanups() {
+        #[cfg(windows)]
+        let (program, args) = (
+            "cmd",
+            vec![
+                "/c".to_string(),
+                "echo No such container: x 1>&2 & exit 1".to_string(),
+            ],
+        );
+        #[cfg(not(windows))]
+        let (program, args) = (
+            "sh",
+            vec![
+                "-c".to_string(),
+                "echo 'No such container: x' >&2; exit 1".to_string(),
+            ],
+        );
+        let cleanup = |ignore_already_removed| Cleanup {
+            program: program.to_string(),
+            args: args.clone(),
+            env: Vec::new(),
+            ignore_already_removed,
+        };
+        assert_eq!(cleanup(true).execute(), Ok(()));
+        let error = cleanup(false).execute().unwrap_err();
+        assert!(error.contains("No such container"), "{}", error);
+    }
+
+    /// 後片付けのコマンドが成功したら、失敗にしない（#684）
+    #[test]
+    fn test_cleanup_execute_success() {
+        assert_eq!(exit_cleanup(0).execute(), Ok(()));
+    }
+
+    /// 消すものが既に無いだけの失敗は、成功とみなす（#684）
+    #[test]
+    fn test_is_already_removed() {
+        assert!(is_already_removed(
+            "Error response from daemon: No such container: mcp-rs-fs-1"
+        ));
+        assert!(is_already_removed(
+            "Error response from daemon: removal of container mcp-rs-fs-1 is already in progress"
+        ));
+        assert!(is_already_removed(
+            "Error: no container with name or ID \"mcp-rs-fs-1\" found: no such container"
+        ));
+        assert!(!is_already_removed(
+            "error: You must be logged in to the server (Unauthorized)"
+        ));
+        assert!(!is_already_removed(""));
     }
 
     const TEST_PLUGIN_ENV: &str = "MCP_RS_TEST_PLUGIN";
