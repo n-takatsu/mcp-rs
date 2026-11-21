@@ -7,6 +7,7 @@ Ask Claude to draft, schedule, and publish WordPress posts, upload media, or mod
 > 📖 **[English](README.md)** | **[日本語](README.ja.md)**
 
 [![Version](https://img.shields.io/badge/Version-v0.29.0-blue)](https://github.com/n-takatsu/mcp-rs/releases/tag/v0.29.0)
+[![Rust](https://img.shields.io/badge/dynamic/toml?url=https%3A%2F%2Fraw.githubusercontent.com%2FRedRing2020%2FRedRing%2Fdevelop%2Frust-toolchain.toml&query=%24.toolchain.channel&label=rust&logo=rust&color=orange)](rust-toolchain.toml)
 ![Implementation](https://img.shields.io/badge/WordPress_Tools-41_Available-green)
 ![License](https://img.shields.io/badge/License-MIT%2FApache--2.0-green)
 
