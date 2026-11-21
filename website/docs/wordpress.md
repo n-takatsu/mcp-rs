@@ -250,13 +250,15 @@ Create a post or page with embedded YouTube videos and social media content appe
 **Parameters:**
 - `title` (string): Post title
 - `content` (string): Base post content (embeds are added after it)
-- `youtube_urls` (array of strings, optional): YouTube video URLs to embed
-- `social_urls` (array of strings, optional): Social media URLs to embed (Twitter, Instagram, Facebook, TikTok)
+- `youtube_urls` (array of strings, optional): YouTube video URLs to embed as video players: `youtube.com/watch?v=…`, `youtu.be/…`, `youtube.com/embed/…`, `youtube.com/shorts/…`, `youtube.com/live/…` or `youtube-nocookie.com/embed/…` (Shorts, live and nocookie URLs from v0.30.0). URLs in other forms are not added; the result lists them after `Not embedded (unsupported URL):` (v0.30.0 and later)
+- `social_urls` (array of strings, optional): Social media URLs to embed: X/Twitter, Instagram posts (`instagram.com/p/…`), Facebook or TikTok. Other URLs are not added and are listed in the result in the same way. Both lists accept only URLs on the services' own hosts (for example `www.youtube.com` or `x.com`, not a URL on another site that contains these names)
 - `post_type` (string, optional): `post` or `page`
 - `status` (string, optional): `publish`, `draft`, `pending`, or `private`. Defaults to `draft`. `future` (scheduled) is not available because this tool has no date parameter
 - `categories` (array of numbers, optional): Category IDs (posts only)
 - `tags` (array of numbers, optional): Tag IDs (posts only)
 - `slug` (string, optional): URL slug, for example an English slug for a post with a Japanese title. If omitted, WordPress generates one from the title. See [Slugs](#slugs)
+
+mcp-rs adds each social media URL to the post on its own line, and WordPress decides how to show it. WordPress itself has not embedded Instagram or Facebook since 5.5.2, because Meta requires a developer app and an access token: those URLs stay plain links unless the site has a plugin that embeds them (for example one that takes the app ID and token). The result `Created … with embedded content` means that the URLs were added to the post, not that WordPress shows them as embeds. Check the post's preview to see how they look.
 
 **Example Usage:**
 

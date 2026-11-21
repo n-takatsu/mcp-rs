@@ -162,6 +162,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `extra`、`WordPressConfig`に`post_types`を足した
 - `get_comments`は、コメントした人のメールアドレスを出さない（#639）。
   コメントの管理には要らず、AIとの会話やログに残さないため
+- `create_post_with_embeds`で、YouTubeのShorts（`youtube.com/shorts/`）・
+  ライブ（`youtube.com/live/`）・`youtube-nocookie.com/embed/`のURLも、
+  動画プレーヤーにする（#680）。以前は、エラーにならずに本文に足さなかった。
+  `watch`のURLは、`v`が問い合わせの先頭でなくても
+  （`watch?feature=shared&v=…`）受け付ける。
+  本文に足さなかったURL（受け付けない形のYouTubeのURL、対応しないサービスの
+  URL）は、結果に「Not embedded (unsupported URL)」として出す（以前は黙って
+  捨てていた）。動画のIDを取り出せないYouTubeのURLは、URLのまま足していたが、
+  足さずに結果に出す。YouTube・SNS（`social_urls`）のURLは、URLを分解して、
+  ホストが決まったもの（`youtube.com`・`www.x.com`等）と完全に一致するかで
+  判定する。以前は文字列を含むかだけを見ていたので、ほかのサイトのURL
+  （`https://example.org/x.com/…`、`netflix.com/`等）も本文に足していた。
+  YouTubeのURLは、IDの後ろに余分なパス（`/shorts/<ID>/extra`等）があれば
+  断る。ツールの説明・文書に、WordPressは5.5.2からInstagram・Facebookを
+  埋め込まない（プラグインが要る）ことと、結果はURLを本文に足したことだけを
+  示すことを書いた
+
 
 ### Fixed
 
