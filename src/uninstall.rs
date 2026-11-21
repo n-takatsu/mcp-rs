@@ -220,11 +220,18 @@ impl Uninstall<'_> {
         &mut self,
         configs: &[PathBuf],
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let mut names: Vec<(String, EntryKind)> = Vec::new();
+        // 同じ名前を複数の場所（WordPressと`[database]`等）で使うことがあるので、
+        // 名前ごとに、見込む種類をすべて覚えておく（PR #688のレビュー）
+        let mut names: Vec<(String, Vec<EntryKind>)> = Vec::new();
         for config in configs {
-            for entry in keyring_entries(config) {
-                if !names.iter().any(|(name, _)| *name == entry.0) {
-                    names.push(entry);
+            for (name, kind) in keyring_entries(config) {
+                match names.iter_mut().find(|(known, _)| *known == name) {
+                    Some((_, kinds)) => {
+                        if !kinds.contains(&kind) {
+                            kinds.push(kind);
+                        }
+                    }
+                    None => names.push((name, vec![kind])),
                 }
             }
         }
@@ -234,8 +241,15 @@ impl Uninstall<'_> {
                 continue;
             };
             // 設定ファイルの場所ではなく、入っている中身（`kind`）で示す。
-            // 場所と合わなければ、中身を見せて、既定では消さない（#684）
-            let question = if stored == expected {
+            // どれか1つの場所とでも合わなければ、中身を見せて、既定では
+            // 消さない（#684）
+            let mismatched: Vec<&str> = expected
+                .iter()
+                .filter(|kind| **kind != stored)
+                .map(|kind| describe_kind(*kind))
+                .collect();
+            let matches = mismatched.is_empty();
+            let question = if matches {
                 format!(
                     "Delete the {} '{name}' from the OS credential store?",
                     describe_kind(stored)
@@ -243,11 +257,11 @@ impl Uninstall<'_> {
             } else {
                 format!(
                     "The config file uses '{name}' for {}, but the OS credential store holds {} under that name. Delete it anyway?",
-                    describe_kind(expected),
+                    mismatched.join(" and "),
                     describe_kind(stored)
                 )
             };
-            if confirm(self.io, &question, stored == expected)? {
+            if confirm(self.io, &question, matches)? {
                 self.store.delete(&name)?;
                 self.io
                     .say(&format!("Deleted '{name}' from the OS credential store.\n"));
@@ -652,6 +666,37 @@ mod tests {
                 ("shop.example.com".to_string(), EntryKind::WordPress),
                 ("app@localhost".to_string(), EntryKind::Database),
             ]
+        );
+    }
+
+    /// 同じ名前をWordPressと`[database]`の両方で使うときは、両方の場所と
+    /// 確かめる。1つでも合わなければ、既定では消さない（PR #688のレビュー）
+    #[test]
+    fn test_shared_credential_name_is_checked_for_every_use() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("config.toml");
+        std::fs::write(
+            &config,
+            "[handlers.wordpress]\nenabled = true\nurl = \"https://example.com\"\nkeyring = \"shared\"\n\n[database]\nengine = \"postgresql\"\ndatabase = \"app\"\nusername = \"reader\"\nkeyring = \"shared\"\n",
+        )
+        .unwrap();
+        let store = MemoryStore::default();
+        store_wordpress("shared", &store);
+        let mut io = Script::new(&[""]);
+        let mut steps = Uninstall {
+            io: &mut io,
+            store: &store,
+            desktop_configs: Vec::new(),
+            clis: Vec::new(),
+            default_config: None,
+            exe: None,
+        };
+        steps.remove_credentials(&[config]).unwrap();
+        assert!(matches!(store.get("shared"), Ok(Some(_))));
+        let shown = io.shown.join("\n");
+        assert!(
+            shown.contains("uses 'shared' for database credentials, but the OS credential store holds WordPress credentials under that name. Delete it anyway? [y/N]"),
+            "{shown}"
         );
     }
 

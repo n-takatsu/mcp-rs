@@ -1307,14 +1307,22 @@ impl Setup<'_> {
                     .iter()
                     .any(|added| comparable_site_url(added) == *url)
             };
-            // サイトごとの設定（`post_types`等）・`[server]`等も、消すと
-            // 失われる設定として数える（#684）
+            // 足していないサイトと、サイトごとの設定（`post_types`等）・
+            // `[server]`等を、消すと失われるものとして挙げる（#684）
             let (added, covered, lost) = match other_path.as_deref().and_then(other_config_sites) {
-                Some((urls, extras)) if !same_config => (
-                    urls.iter().find(|url| is_added(url)).cloned(),
-                    extras.is_empty() && urls.iter().all(is_added),
-                    extras,
-                ),
+                Some((urls, extras)) if !same_config => {
+                    let mut lost: Vec<String> = urls
+                        .iter()
+                        .filter(|url| !is_added(url))
+                        .map(|url| format!("the site {url}"))
+                        .collect();
+                    lost.extend(extras);
+                    (
+                        urls.iter().find(|url| is_added(url)).cloned(),
+                        lost.is_empty(),
+                        lost,
+                    )
+                }
                 _ => (None, false, Vec::new()),
             };
             let question = if let Some(url) = &added {
@@ -4506,6 +4514,36 @@ file_path = "C:/Users/me/.mcp-rs/logs/audit.log"
             .shown
             .iter()
             .any(|s| s.contains("which would be lost: [database]")));
+    }
+
+    /// 消すと失われるものには、新しい設定ファイルに足していないサイトも
+    /// 挙げる（PR #688のレビュー）
+    #[test]
+    fn test_lost_settings_include_sites_not_added() {
+        let dir = tempfile::tempdir().unwrap();
+        let other = dir.path().join("sites.toml");
+        std::fs::write(
+            &other,
+            "[handlers.wordpress]\nenabled = true\ndefault_site = \"shop\"\n\n[handlers.wordpress.sites.shop]\nurl = \"https://shop.example.com\"\nkeyring = \"shop\"\n\n[handlers.wordpress.sites.news]\nurl = \"https://news.example.com\"\nkeyring = \"news\"\n\n[database]\nengine = \"postgresql\"\ndatabase = \"x\"\nusername = \"y\"\n",
+        )
+        .unwrap();
+        let store = MemoryStore::default();
+        let mut io = Script::new(&[""]);
+        let mut setup = setup(&mut io, &store);
+        setup.added_sites = vec!["https://shop.example.com".to_string()];
+        let others = [OtherServer {
+            name: "mcp-rs-sites".to_string(),
+            config: Some(other.display().to_string()),
+            env_config: None,
+        }];
+        let remove = setup
+            .choose_duplicates_to_remove("Claude Desktop", &others, &launch())
+            .unwrap();
+        assert!(remove.is_empty(), "{remove:?}");
+        let shown = io.shown.join("\n");
+        assert!(shown.contains("which would be lost: "), "{shown}");
+        assert!(shown.contains("news.example.com"), "{shown}");
+        assert!(shown.contains("[database]"), "{shown}");
     }
 
     /// 無効な`[handlers.wordpress]`しか無い設定ファイルには、その節に書いて
