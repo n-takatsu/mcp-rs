@@ -5257,7 +5257,7 @@ impl McpHandler for WordPressHandler {
             Tool {
                 name: "get_posts".to_string(),
                 title: Some("List posts".to_string()),
-                description: "List WordPress posts (or the posts of an allowed custom post type), published ones by default. Use search, categories, tags, author, after and before to narrow them, and get_post to read one post's full content. Without search, filters or page options it returns all posts, but at most 10,000; on larger sites pass page and per_page and read page after page. With them, it returns one page and the total. Each post has its ID, title, status, date, link, slug and excerpt.".to_string(),
+                description: "List WordPress posts (or the posts of an allowed custom post type), published ones by default. Use search, categories, tags, author, after and before to narrow them, and get_post to read one post's full content. Any argument other than status (search, a filter, sorting, per_page or page) makes it return one page and the total. With none of them, or with status alone, it returns all posts, but at most 10,000, without the total; on larger sites pass page and per_page and read page after page. Each post has its ID, title, status, date, link, slug and excerpt.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -5303,7 +5303,7 @@ impl McpHandler for WordPressHandler {
                         },
                         "per_page": {
                             "type": "number",
-                            "description": "Items per page, 1-100 (optional). With any of search, filters or page options, only one page is read (default 20 per page), and the result shows the total"
+                            "description": "Items per page, 1-100 (optional). With any argument other than status, only one page is read (default 20 per page), and the result shows the total"
                         },
                         "page": {
                             "type": "number",
@@ -5317,7 +5317,7 @@ impl McpHandler for WordPressHandler {
             Tool {
                 name: "get_pages".to_string(),
                 title: Some("List pages".to_string()),
-                description: "List WordPress pages (static pages such as About or Contact, not blog posts), published ones by default. Use get_posts for posts and get_post with post_type 'page' to read one page's full content. Without search, filters or page options it returns all pages, but at most 10,000; on larger sites pass page and per_page and read page after page. With them, it returns one page and the total. Each page has its ID, title, status, date, link, slug and excerpt.".to_string(),
+                description: "List WordPress pages (static pages such as About or Contact, not blog posts), published ones by default. Use get_posts for posts and get_post with post_type 'page' to read one page's full content. Any argument other than status (search, a filter, sorting, per_page or page) makes it return one page and the total. With none of them, or with status alone, it returns all pages, but at most 10,000, without the total; on larger sites pass page and per_page and read page after page. Each page has its ID, title, status, date, link, slug and excerpt.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -5353,7 +5353,7 @@ impl McpHandler for WordPressHandler {
                         },
                         "per_page": {
                             "type": "number",
-                            "description": "Items per page, 1-100 (optional). With any of search, filters or page options, only one page is read (default 20 per page), and the result shows the total"
+                            "description": "Items per page, 1-100 (optional). With any argument other than status, only one page is read (default 20 per page), and the result shows the total"
                         },
                         "page": {
                             "type": "number",
@@ -6223,7 +6223,7 @@ impl McpHandler for WordPressHandler {
             Tool {
                 name: "create_post_with_embeds".to_string(),
                 title: Some("Create a post with embedded videos".to_string()),
-                description: "Create a WordPress post or page whose content is followed by embedded media: each YouTube video URL becomes a video player, and each X/Twitter, Instagram post, Facebook or TikTok URL is added on its own line, which WordPress shows as an embed. Other URLs are left out without an error. It is a draft unless status says otherwise. To embed in the middle of the content, write the URLs or embed blocks into content and use create_post instead. Returns the new post's ID, title, status and slug.".to_string(),
+                description: "Create a WordPress post or page whose content is followed by embedded media: each YouTube URL of the form youtube.com/watch?v=, youtu.be/ or youtube.com/embed/ becomes a video player, and each X/Twitter, Instagram post, Facebook or TikTok URL is added on its own line, which WordPress shows as an embed. Other URLs, including YouTube Shorts URLs, are left out without an error. It is a draft unless status says otherwise. To embed in the middle of the content, write the URLs or embed blocks into content and use create_post instead. Returns the new post's ID, title, status and slug.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -6238,7 +6238,7 @@ impl McpHandler for WordPressHandler {
                         "youtube_urls": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": "YouTube video URLs to embed"
+                            "description": "YouTube video URLs of the form youtube.com/watch?v=..., youtu.be/... or youtube.com/embed/...; other forms (such as youtube.com/shorts/...) are left out"
                         },
                         "social_urls": {
                             "type": "array",
