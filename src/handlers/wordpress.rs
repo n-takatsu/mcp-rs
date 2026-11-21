@@ -4,7 +4,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use std::time::Duration;
 use tracing::{debug, info, warn};
 
@@ -292,6 +292,65 @@ fn protected_content_note(post: &WordPressPost) -> Option<&'static str> {
     (post.content.protected && post.content.raw.is_none()).then_some(
         "This post is password-protected, so its content is hidden. Do not treat the content as empty or overwrite it.",
     )
+}
+
+/// `create_post_with_embeds`で動画プレーヤーにするYouTubeのホスト（#680）。
+/// どれも完全に一致するものだけを受け付ける（部分一致・後ろの一致では見ない）。
+/// 増やすときは、ここに足す
+const YOUTUBE_HOSTS: &[&str] = &["youtube.com", "www.youtube.com", "m.youtube.com"];
+/// `/embed/<ID>`だけを受け付ける、プライバシー強化モードのホスト
+const YOUTUBE_NOCOOKIE_HOSTS: &[&str] = &["youtube-nocookie.com", "www.youtube-nocookie.com"];
+/// `/<ID>`の短いリンクのホスト
+const YOUTUBE_SHORT_LINK_HOST: &str = "youtu.be";
+
+/// `create_post_with_embeds`で本文に足すSNSのURL（#680）。サービスの名前・
+/// 受け付けるホスト（完全に一致するもの）・パスの頭。増やすときは、ここに足す
+const SOCIAL_EMBED_HOSTS: &[(&str, &[&str], &str)] = &[
+    (
+        "twitter",
+        &[
+            "twitter.com",
+            "www.twitter.com",
+            "mobile.twitter.com",
+            "x.com",
+            "www.x.com",
+            "mobile.x.com",
+        ],
+        "/",
+    ),
+    ("instagram", &["instagram.com", "www.instagram.com"], "/p/"),
+    (
+        "facebook",
+        &["facebook.com", "www.facebook.com", "m.facebook.com"],
+        "/",
+    ),
+    (
+        "tiktok",
+        &[
+            "tiktok.com",
+            "www.tiktok.com",
+            "m.tiktok.com",
+            "vm.tiktok.com",
+            "vt.tiktok.com",
+        ],
+        "/",
+    ),
+];
+
+/// `http`・`https`のURLだけを分解する。ホストの大文字は小文字になる
+fn parse_web_url(url: &str) -> Option<url::Url> {
+    let parsed = url::Url::parse(url.trim()).ok()?;
+    matches!(parsed.scheme(), "http" | "https").then_some(parsed)
+}
+
+/// YouTubeの動画のIDとして使える文字（英数字・`_`・`-`）だけなら、そのまま返す。
+/// 埋め込みのHTMLに入れるので、ほかの文字は受け付けない
+fn youtube_video_id(id: &str) -> Option<String> {
+    (!id.is_empty()
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-'))
+    .then(|| id.to_string())
 }
 
 /// リソースのテンプレートで読むもの（#644）
@@ -2850,22 +2909,37 @@ impl WordPressHandler {
         Self::extract_youtube_id(url).is_some()
     }
 
-    /// YouTubeのURLから動画のIDを取り出す。受け付ける形は
-    /// `youtube.com/watch?v=`・`youtu.be/`・`youtube.com/embed/`・
-    /// `youtube.com/shorts/`・`youtube.com/live/`・`youtube-nocookie.com/embed/`
-    /// （#680でShorts・ライブ・nocookieを足した）。`www.`・`m.`は付いていてもよい
+    /// YouTubeのURLから動画のIDを取り出す（#680）。URLを分解し、ホストは
+    /// 下の一覧と完全に一致するものだけを受け付ける（`https://example.org/youtube.com/…`
+    /// のように、パスの中の文字列に引っかからないため）。受け付ける形は
+    /// `youtube.com/watch?v=`（`v`は問い合わせのどこにあってもよい）・`youtu.be/`・
+    /// `youtube.com/embed/`・`youtube.com/shorts/`・`youtube.com/live/`・
+    /// `youtube-nocookie.com/embed/`
     pub fn extract_youtube_id(url: &str) -> Option<String> {
-        static YOUTUBE_ID: OnceLock<Regex> = OnceLock::new();
-        let regex = YOUTUBE_ID.get_or_init(|| {
-            Regex::new(
-                r"(?:youtube\.com/(?:watch\?v=|embed/|shorts/|live/)|youtube-nocookie\.com/embed/|youtu\.be/)([a-zA-Z0-9_-]+)",
-            )
-            .expect("valid YouTube URL regex")
-        });
-        regex
-            .captures(url)
-            .and_then(|caps| caps.get(1))
-            .map(|id| id.as_str().to_string())
+        let parsed = parse_web_url(url)?;
+        let host = parsed.host_str()?;
+        let mut segments = parsed.path_segments()?;
+        let first = segments.next().unwrap_or("");
+        if host == YOUTUBE_SHORT_LINK_HOST {
+            return youtube_video_id(first);
+        }
+        if YOUTUBE_NOCOOKIE_HOSTS.contains(&host) {
+            return match first {
+                "embed" => youtube_video_id(segments.next()?),
+                _ => None,
+            };
+        }
+        if !YOUTUBE_HOSTS.contains(&host) {
+            return None;
+        }
+        match first {
+            "watch" => parsed
+                .query_pairs()
+                .find(|(key, _)| key == "v")
+                .and_then(|(_, id)| youtube_video_id(&id)),
+            "embed" | "shorts" | "live" => youtube_video_id(segments.next()?),
+            _ => None,
+        }
     }
 
     // Generate YouTube embed HTML
@@ -2882,19 +2956,19 @@ impl WordPressHandler {
         )
     }
 
-    // Validate social media URLs
+    /// 本文に足すSNSのURLなら、そのサービスの名前を返す。URLを分解し、ホストが
+    /// `SOCIAL_EMBED_HOSTS`と完全に一致し、パスが決まった形で始まるものだけを
+    /// 受け付ける（#680。以前は文字列を含むかだけを見ていて、`netflix.com/`も
+    /// `x.com/`として受け付けていた）
     pub fn validate_social_url(url: &str) -> Option<&'static str> {
-        if url.contains("twitter.com/") || url.contains("x.com/") {
-            Some("twitter")
-        } else if url.contains("instagram.com/p/") {
-            Some("instagram")
-        } else if url.contains("facebook.com/") {
-            Some("facebook")
-        } else if url.contains("tiktok.com/") {
-            Some("tiktok")
-        } else {
-            None
-        }
+        let parsed = parse_web_url(url)?;
+        let host = parsed.host_str()?;
+        SOCIAL_EMBED_HOSTS
+            .iter()
+            .find(|(_, hosts, path_prefix)| {
+                hosts.contains(&host) && parsed.path().starts_with(path_prefix)
+            })
+            .map(|(service, _, _)| *service)
     }
 
     /// `create_post_with_embeds`が本文に足さないURL（受け付けない形のYouTubeの
@@ -8787,6 +8861,10 @@ mod tests {
             "https://youtube.com/shorts/dQw4w9WgXcQ?feature=share",
             "https://www.youtube.com/live/dQw4w9WgXcQ",
             "https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ",
+            // `v`が問い合わせの先頭でなくてもよい
+            "https://www.youtube.com/watch?feature=shared&v=dQw4w9WgXcQ",
+            // ホストの大文字・末尾のスラッシュ
+            "https://WWW.YouTube.com/shorts/dQw4w9WgXcQ/",
         ] {
             assert_eq!(
                 WordPressHandler::extract_youtube_id(url).as_deref(),
@@ -8800,10 +8878,54 @@ mod tests {
             "https://vimeo.com/123456789",
             "https://www.youtube.com/@channel",
             "https://www.youtube.com/watch?v=",
+            "https://www.youtube.com/watch?feature=shared",
             "https://www.youtube.com/shorts/",
+            // パスの中の文字列・似たホスト・ユーザー名に引っかからない
+            "https://example.org/youtube.com/shorts/dQw4w9WgXcQ",
+            "https://notyoutube.com/watch?v=dQw4w9WgXcQ",
+            "https://youtube.com.example.org/watch?v=dQw4w9WgXcQ",
+            "https://youtube.com@example.org/watch?v=dQw4w9WgXcQ",
+            "https://example.org/?u=youtu.be/dQw4w9WgXcQ",
+            // nocookieは`/embed/`だけ
+            "https://www.youtube-nocookie.com/watch?v=dQw4w9WgXcQ",
+            // `http`・`https`以外・IDに使えない文字
+            "javascript://youtube.com/%0Aalert(1)//watch?v=dQw4w9WgXcQ",
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ%22onload%3D",
         ] {
             assert_eq!(WordPressHandler::extract_youtube_id(url), None, "{}", url);
             assert!(!WordPressHandler::validate_youtube_url(url), "{}", url);
+        }
+    }
+
+    #[test]
+    fn test_validate_social_url_checks_host() {
+        for (url, service) in [
+            ("https://twitter.com/user/status/1", "twitter"),
+            ("https://x.com/user/status/1", "twitter"),
+            ("https://mobile.x.com/user/status/1", "twitter"),
+            ("https://www.instagram.com/p/ABC123xyz/", "instagram"),
+            ("https://www.facebook.com/user/posts/1", "facebook"),
+            ("https://www.tiktok.com/@user/video/1", "tiktok"),
+            ("https://vm.tiktok.com/ZM123/", "tiktok"),
+        ] {
+            assert_eq!(
+                WordPressHandler::validate_social_url(url),
+                Some(service),
+                "{}",
+                url
+            );
+        }
+        for url in [
+            "https://example.org/x.com/user/status/1",
+            // 以前は`x.com/`を含むので受け付けていた
+            "https://www.netflix.com/title/1",
+            "https://x.com.example.org/user/status/1",
+            "https://notfacebook.com/user",
+            // Instagramは投稿（`/p/`）だけ
+            "https://www.instagram.com/user/",
+            "ftp://x.com/user/status/1",
+        ] {
+            assert_eq!(WordPressHandler::validate_social_url(url), None, "{}", url);
         }
     }
 
@@ -8826,7 +8948,7 @@ mod tests {
                 "social_urls".to_string(),
                 serde_json::json!([
                     "https://www.tiktok.com/@user/video/1",
-                    "https://example.com/post"
+                    "https://example.org/x.com/user/status/1"
                 ]),
             ),
         ]
@@ -8852,12 +8974,12 @@ mod tests {
         );
         assert!(content.contains("https://www.tiktok.com/@user/video/1"));
         assert!(!content.contains("vimeo.com"), "{}", content);
-        assert!(!content.contains("example.com"), "{}", content);
+        assert!(!content.contains("example.org"), "{}", content);
 
         let text = tool_text(&result);
         assert!(
             text.contains(
-                "Not embedded (unsupported URL): https://vimeo.com/123456789, https://example.com/post"
+                "Not embedded (unsupported URL): https://vimeo.com/123456789, https://example.org/x.com/user/status/1"
             ),
             "{}",
             text
