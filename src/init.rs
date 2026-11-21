@@ -1240,7 +1240,10 @@ impl Setup<'_> {
         let config = read_claude_desktop_config(path)?;
         let mut replace = false;
         if claude_desktop_has_entry(&config) {
-            let (question, default) = self.replace_question(&path.display().to_string());
+            let (question, default) = self.replace_question(
+                &path.display().to_string(),
+                same_name_server(&config).as_ref(),
+            );
             replace = confirm(self.io, &question, default)?;
             if !replace {
                 self.io.say("Kept the Claude Desktop settings as they are.");
@@ -1270,32 +1273,55 @@ impl Setup<'_> {
     /// レビュー）。`--config`のファイルを設定すると選び、今の登録が複数サイトの
     /// 設定ファイルを使うときは、新しい設定ファイルに無いサイトと設定を挙げ、
     /// 1つでもあれば、既定では置き換えない
-    fn replace_question(&self, client: &str) -> (String, bool) {
+    ///
+    /// 比べるのは、置き換える登録（`existing`）が実際に読む設定ファイル
+    /// （クライアントごとに違うことがある）。読めなければ、残すと選んだ設定
+    /// ファイル。サイトは、新しい設定ファイルにあるもの（最初のサイトも）と
+    /// この実行で足したものを、失われないとみなす（PR #688のレビュー）
+    fn replace_question(&self, client: &str, existing: Option<&OtherServer>) -> (String, bool) {
         let question = format!("{client} already has a server named \"{SERVER_NAME}\".");
-        let lost: Vec<String> = self
-            .kept_sites_config
-            .as_deref()
-            .and_then(other_config_sites)
-            .map(|(urls, extras)| {
-                urls.iter()
-                    .filter(|url| {
-                        !self
-                            .added_sites
-                            .iter()
-                            .any(|added| comparable_site_url(added) == **url)
-                    })
-                    .map(|url| format!("the site {url}"))
-                    .chain(extras)
-                    .collect()
-            })
+        let replace = (format!("{question} Replace it?"), true);
+        let Some(kept) = self.kept_sites_config.as_deref() else {
+            return replace;
+        };
+        let path = match existing {
+            Some(server) => match server.effective_config() {
+                Some(path) => crate::config::expand_config_path(path),
+                None => match crate::config::user_config_path() {
+                    Some(path) => path,
+                    None => return replace,
+                },
+            },
+            None => kept.to_string(),
+        };
+        let ours = self.config_path.display().to_string();
+        if same_config_file(Some(&path), &ours) {
+            return replace;
+        }
+        let Some((urls, extras)) = other_config_sites(&path) else {
+            return replace;
+        };
+        let new_urls = other_config_sites(&ours)
+            .map(|(urls, _)| urls)
             .unwrap_or_default();
+        let lost: Vec<String> = urls
+            .iter()
+            .filter(|url| {
+                !new_urls.contains(url)
+                    && !self
+                        .added_sites
+                        .iter()
+                        .any(|added| comparable_site_url(added) == **url)
+            })
+            .map(|url| format!("the site {url}"))
+            .chain(extras)
+            .collect();
         if lost.is_empty() {
-            return (format!("{question} Replace it?"), true);
+            return replace;
         }
         (
             format!(
-                "{question} It uses {}, which has settings that the new config file does not have, which would be lost: {}. Replace it?",
-                self.kept_sites_config.as_deref().unwrap_or_default(),
+                "{question} It uses {path}, which has settings that the new config file does not have, which would be lost: {}. Replace it?",
                 lost.join(", ")
             ),
             false,
@@ -1439,8 +1465,15 @@ impl Setup<'_> {
             .stderr(Stdio::null())
             .status()
             .is_ok_and(|status| status.success());
+        // クライアントの設定ファイル（内容は表示しない）
+        let client_config = cli
+            .config_file()
+            .and_then(|path| read_json_file(&path).ok());
         if exists {
-            let (question, default) = self.replace_question(cli.label);
+            // 別のスコープの登録は、ここでは読めない。そのときは、残すと
+            // 選んだ設定ファイルで比べる
+            let existing = client_config.as_ref().and_then(same_name_server);
+            let (question, default) = self.replace_question(cli.label, existing.as_ref());
             if !confirm(self.io, &question, default)? {
                 self.io
                     .say(&format!("Kept the {} settings as they are.", cli.label));
@@ -1455,11 +1488,10 @@ impl Setup<'_> {
                 ));
             }
         }
-        // 別の名前のmcp-rs（設定ファイルを読んで探す。内容は表示しない）
-        let others = cli
-            .config_file()
-            .and_then(|path| read_json_file(&path).ok())
-            .map(|config| other_mcp_rs_servers(&config))
+        // 別の名前のmcp-rs
+        let others = client_config
+            .as_ref()
+            .map(other_mcp_rs_servers)
             .unwrap_or_default();
         let remove = self.choose_duplicates_to_remove(cli.label, &others, launch)?;
         match run_quietly(&program, &cli.add_args(launch)) {
@@ -1665,25 +1697,37 @@ fn other_mcp_rs_servers(config: &serde_json::Value) -> Vec<OtherServer> {
                     .and_then(serde_json::Value::as_str)
                     .is_some_and(is_mcp_rs_command)
         })
-        .map(|(name, server)| {
-            let args: Vec<&str> = server
-                .get("args")
-                .and_then(serde_json::Value::as_array)
-                .map(|args| args.iter().filter_map(serde_json::Value::as_str).collect())
-                .unwrap_or_default();
-            let env_config = crate::config::config_path_from_env(
-                server
-                    .get("env")
-                    .and_then(|env| env.get(crate::config::CONFIG_ENV_VAR))
-                    .and_then(serde_json::Value::as_str),
-            );
-            OtherServer {
-                name: name.clone(),
-                config: config_arg(&args),
-                env_config,
-            }
-        })
+        .map(|(name, server)| mcp_rs_server(name, server))
         .collect()
+}
+
+/// `mcpServers`の`mcp-rs`の登録（PR #688のレビュー。置き換える前に、それが
+/// 読む設定ファイルを調べる）
+fn same_name_server(config: &serde_json::Value) -> Option<OtherServer> {
+    config
+        .get("mcpServers")
+        .and_then(|servers| servers.get(SERVER_NAME))
+        .map(|server| mcp_rs_server(SERVER_NAME, server))
+}
+
+/// `mcpServers`の1つの登録の、名前と設定ファイル
+fn mcp_rs_server(name: &str, server: &serde_json::Value) -> OtherServer {
+    let args: Vec<&str> = server
+        .get("args")
+        .and_then(serde_json::Value::as_array)
+        .map(|args| args.iter().filter_map(serde_json::Value::as_str).collect())
+        .unwrap_or_default();
+    let env_config = crate::config::config_path_from_env(
+        server
+            .get("env")
+            .and_then(|env| env.get(crate::config::CONFIG_ENV_VAR))
+            .and_then(serde_json::Value::as_str),
+    );
+    OtherServer {
+        name: name.to_string(),
+        config: config_arg(&args),
+        env_config,
+    }
 }
 
 /// mcp-rsの引数の`--config`の値
@@ -5036,21 +5080,95 @@ keyring = \"blog\"
         let mut io = Script::new(&[""]);
         let mut setup = setup(&mut io, &store);
         // 選ぶ前は、今までどおり既定で置き換える
-        let (question, default) = setup.replace_question("Claude Code");
+        let (question, default) = setup.replace_question("Claude Code", None);
         assert!(default);
         assert!(question.ends_with("Replace it?"), "{question}");
         setup.explicit_config = true;
-        setup.config_path = dir.path().join("new.toml");
+        let new_path = dir.path().join("new.toml");
+        setup.config_path = new_path.clone();
         let choice = setup.choose_previous(&old, &[]).unwrap();
         assert!(matches!(choice, PreviousChoice::NotReplacing));
         setup.added_sites = vec!["https://shop.example.com".to_string()];
-        let (question, default) = setup.replace_question("Claude Code");
+        let (question, default) = setup.replace_question("Claude Code", None);
         assert!(!default);
         assert!(
             question.contains("which would be lost: the site https://news.example.com"),
             "{question}"
         );
         assert!(!question.contains("shop.example.com"), "{question}");
+
+        // 新しい設定ファイルの最初のサイトは、足したサイトに無くても、
+        // 失われるものに挙げない
+        setup.added_sites.clear();
+        std::fs::write(
+            &new_path,
+            "[handlers.wordpress]\nenabled = true\nurl = \"https://shop.example.com/\"\nkeyring = \"shop\"\n",
+        )
+        .unwrap();
+        let (question, default) = setup.replace_question("Claude Code", None);
+        assert!(!default);
+        assert!(question.contains("https://news.example.com"), "{question}");
+        assert!(!question.contains("shop.example.com"), "{question}");
+
+        // 置き換える登録が、別の設定ファイルを読むときは、そのファイルで比べる
+        let other_path = dir.path().join("other.toml");
+        std::fs::write(
+            &other_path,
+            "[handlers.wordpress]\nenabled = true\nurl = \"https://blog.example.com\"\nkeyring = \"blog\"\n",
+        )
+        .unwrap();
+        let other = other_path.display().to_string();
+        let existing = OtherServer {
+            name: SERVER_NAME.to_string(),
+            config: Some(other.clone()),
+            env_config: None,
+        };
+        let (question, default) = setup.replace_question("Claude Code", Some(&existing));
+        assert!(!default);
+        assert!(question.contains(&format!("It uses {other}")), "{question}");
+        assert!(
+            question.contains("the site https://blog.example.com"),
+            "{question}"
+        );
+        assert!(!question.contains("news.example.com"), "{question}");
+        // `MCP_RS_CONFIG`が`--config`より優先される。新しい設定ファイルを
+        // 読む登録なら、何も失われないので、既定で置き換える
+        let existing = OtherServer {
+            name: SERVER_NAME.to_string(),
+            config: Some(other),
+            env_config: Some(new_path.display().to_string()),
+        };
+        let (question, default) = setup.replace_question("Claude Code", Some(&existing));
+        assert!(default, "{question}");
+        // 新しい設定ファイルの最初のサイトだけを持つ設定ファイルなら、
+        // 失われるものは無い
+        std::fs::write(
+            &other_path,
+            "[handlers.wordpress]\nenabled = true\nurl = \"https://shop.example.com\"\nkeyring = \"shop\"\n",
+        )
+        .unwrap();
+        let existing = OtherServer {
+            name: SERVER_NAME.to_string(),
+            config: Some(other_path.display().to_string()),
+            env_config: None,
+        };
+        let (question, default) = setup.replace_question("Claude Code", Some(&existing));
+        assert!(default, "{question}");
+    }
+
+    /// 設定にある`mcp-rs`の登録が読む設定ファイル（PR #688のレビュー）
+    #[test]
+    fn test_same_name_server() {
+        let config = serde_json::json!({
+            "mcpServers": {
+                "mcp-rs": {"command": "mcp-rs", "args": ["--config", "a.toml"]},
+                "mcp-rs-2": {"command": "mcp-rs", "args": ["--config", "b.toml"]}
+            }
+        });
+        let server = same_name_server(&config).unwrap();
+        assert_eq!(server.name, SERVER_NAME);
+        assert_eq!(server.effective_config(), Some("a.toml"));
+        assert!(same_name_server(&serde_json::json!({"mcpServers": {}})).is_none());
     }
 
     /// 前の設定を写しても、WordPressだけと選んだら`[database]`は写さない（#684）
