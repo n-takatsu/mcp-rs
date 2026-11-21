@@ -4,7 +4,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tracing::{debug, info, warn};
 
@@ -2844,32 +2844,28 @@ impl WordPressHandler {
         self.update_settings(params).await
     }
 
-    // YouTube video URL validation
+    /// 動画プレーヤーにできるYouTubeのURLかどうか。`extract_youtube_id`で
+    /// 動画のIDを取り出せるものだけを受け付ける（#680）
     pub fn validate_youtube_url(url: &str) -> bool {
-        url.contains("youtube.com/watch?v=")
-            || url.contains("youtu.be/")
-            || url.contains("youtube.com/embed/")
+        Self::extract_youtube_id(url).is_some()
     }
 
-    // Extract YouTube video ID from URL
+    /// YouTubeのURLから動画のIDを取り出す。受け付ける形は
+    /// `youtube.com/watch?v=`・`youtu.be/`・`youtube.com/embed/`・
+    /// `youtube.com/shorts/`・`youtube.com/live/`・`youtube-nocookie.com/embed/`
+    /// （#680でShorts・ライブ・nocookieを足した）。`www.`・`m.`は付いていてもよい
     pub fn extract_youtube_id(url: &str) -> Option<String> {
-        // YouTube URL patterns
-        let patterns = [
-            r"(?:youtube\.com/watch\?v=)([a-zA-Z0-9_-]+)",
-            r"(?:youtu\.be/)([a-zA-Z0-9_-]+)",
-            r"(?:youtube\.com/embed/)([a-zA-Z0-9_-]+)",
-        ];
-
-        for pattern in &patterns {
-            if let Ok(regex) = Regex::new(pattern) {
-                if let Some(caps) = regex.captures(url) {
-                    if let Some(video_id) = caps.get(1) {
-                        return Some(video_id.as_str().to_string());
-                    }
-                }
-            }
-        }
-        None
+        static YOUTUBE_ID: OnceLock<Regex> = OnceLock::new();
+        let regex = YOUTUBE_ID.get_or_init(|| {
+            Regex::new(
+                r"(?:youtube\.com/(?:watch\?v=|embed/|shorts/|live/)|youtube-nocookie\.com/embed/|youtu\.be/)([a-zA-Z0-9_-]+)",
+            )
+            .expect("valid YouTube URL regex")
+        });
+        regex
+            .captures(url)
+            .and_then(|caps| caps.get(1))
+            .map(|id| id.as_str().to_string())
     }
 
     // Generate YouTube embed HTML
@@ -2901,6 +2897,21 @@ impl WordPressHandler {
         }
     }
 
+    /// `create_post_with_embeds`が本文に足さないURL（受け付けない形のYouTubeの
+    /// URLと、対応しないサービスのURL）。黙って捨てずに応答で知らせる（#680）
+    fn skipped_embed_urls<'a>(youtube_urls: &[&'a str], social_urls: &[&'a str]) -> Vec<&'a str> {
+        youtube_urls
+            .iter()
+            .filter(|url| !Self::validate_youtube_url(url))
+            .chain(
+                social_urls
+                    .iter()
+                    .filter(|url| Self::validate_social_url(url).is_none()),
+            )
+            .copied()
+            .collect()
+    }
+
     // Create post with embedded content (YouTube, social media)
     pub async fn create_post_with_embeds(
         &self,
@@ -2913,15 +2924,11 @@ impl WordPressHandler {
         let mut full_content = content.to_string();
 
         // Add YouTube embeds
+        // 動画のIDを取り出せないURLは足さない（`skipped_embed_urls`で応答に出す）
         for url in youtube_urls {
-            if Self::validate_youtube_url(url) {
-                if let Some(video_id) = Self::extract_youtube_id(url) {
-                    let embed = Self::generate_youtube_embed(&video_id, None, None);
-                    full_content.push_str(&format!("\n\n{}", embed));
-                } else {
-                    // Fallback: just add the URL for WordPress oEmbed
-                    full_content.push_str(&format!("\n\n{}", url));
-                }
+            if let Some(video_id) = Self::extract_youtube_id(url) {
+                let embed = Self::generate_youtube_embed(&video_id, None, None);
+                full_content.push_str(&format!("\n\n{}", embed));
             }
         }
 
@@ -5084,6 +5091,8 @@ impl WordPressHandler {
                     ..Default::default()
                 };
 
+                let skipped = Self::skipped_embed_urls(&youtube_urls, &social_urls);
+
                 let post = self
                     .create_post_with_embeds(
                         title,
@@ -5094,17 +5103,29 @@ impl WordPressHandler {
                     )
                     .await?;
 
+                let mut text = format!(
+                    "Created {} with embedded content - ID: {}, Title: {}, Status: {}, Slug: {}",
+                    if post.post_type.as_ref().unwrap_or(&"post".to_string()) == "page" {
+                        "page"
+                    } else {
+                        "post"
+                    },
+                    display_opt_id(post.id),
+                    post.title.rendered,
+                    post.status,
+                    post_slug_label(&post)
+                );
+                if !skipped.is_empty() {
+                    text.push_str(&format!(
+                        "\nNot embedded (unsupported URL): {}",
+                        skipped.join(", ")
+                    ));
+                }
+
                 Ok(serde_json::json!({
                     "content": [{
                         "type": "text",
-                        "text": format!(
-                            "Created {} with embedded content - ID: {}, Title: {}, Status: {}, Slug: {}",
-                            if post.post_type.as_ref().unwrap_or(&"post".to_string()) == "page" { "page" } else { "post" },
-                            display_opt_id(post.id),
-                            post.title.rendered,
-                            post.status,
-                            post_slug_label(&post)
-                        )
+                        "text": text
                     }],
                     "isError": false
                 }))
@@ -6223,7 +6244,7 @@ impl McpHandler for WordPressHandler {
             Tool {
                 name: "create_post_with_embeds".to_string(),
                 title: Some("Create a post with embedded videos".to_string()),
-                description: "Create a WordPress post or page whose content is followed by embedded media: each YouTube URL of the form youtube.com/watch?v=, youtu.be/ or youtube.com/embed/ becomes a video player, and each X/Twitter, Instagram post, Facebook or TikTok URL is added on its own line, which WordPress shows as an embed. Other URLs, including YouTube Shorts URLs, are left out without an error. It is a draft unless status says otherwise. To embed in the middle of the content, write the URLs or embed blocks into content and use create_post instead. Returns the new post's ID, title, status and slug.".to_string(),
+                description: "Create a WordPress post or page whose content is followed by embedded media: each YouTube video URL (a watch, youtu.be, embed, Shorts or live URL) becomes a video player, and each X/Twitter, Instagram post, Facebook or TikTok URL is added on its own line, which WordPress shows as an embed. Other URLs are left out, and the result lists them. It is a draft unless status says otherwise. To embed in the middle of the content, write the URLs or embed blocks into content and use create_post instead. Returns the new post's ID, title, status and slug.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -6238,12 +6259,12 @@ impl McpHandler for WordPressHandler {
                         "youtube_urls": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": "YouTube video URLs of the form youtube.com/watch?v=..., youtu.be/... or youtube.com/embed/...; other forms (such as youtube.com/shorts/...) are left out"
+                            "description": "YouTube video URLs: youtube.com/watch?v=..., youtu.be/..., youtube.com/embed/..., youtube.com/shorts/..., youtube.com/live/... or youtube-nocookie.com/embed/.... Other forms are left out and listed in the result"
                         },
                         "social_urls": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": "Social media URLs to embed (Twitter, Instagram, Facebook, TikTok)"
+                            "description": "Social media URLs to embed: X/Twitter, Instagram posts (instagram.com/p/...), Facebook or TikTok. Other URLs are left out and listed in the result"
                         },
                         "post_type": {
                             "type": "string",
@@ -8753,6 +8774,94 @@ mod tests {
         // スラッグだけを送り、タイトル・本文等は送らない
         assert_eq!(sent, serde_json::json!({"slug": "my-first-post"}));
         assert!(tool_text(&result).contains("Slug: my-first-post"));
+    }
+
+    #[test]
+    fn test_extract_youtube_id_forms() {
+        for url in [
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+            "https://m.youtube.com/watch?v=dQw4w9WgXcQ&t=10s",
+            "https://youtu.be/dQw4w9WgXcQ?si=abc",
+            "https://www.youtube.com/embed/dQw4w9WgXcQ",
+            "https://www.youtube.com/shorts/dQw4w9WgXcQ",
+            "https://youtube.com/shorts/dQw4w9WgXcQ?feature=share",
+            "https://www.youtube.com/live/dQw4w9WgXcQ",
+            "https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ",
+        ] {
+            assert_eq!(
+                WordPressHandler::extract_youtube_id(url).as_deref(),
+                Some("dQw4w9WgXcQ"),
+                "{}",
+                url
+            );
+            assert!(WordPressHandler::validate_youtube_url(url), "{}", url);
+        }
+        for url in [
+            "https://vimeo.com/123456789",
+            "https://www.youtube.com/@channel",
+            "https://www.youtube.com/watch?v=",
+            "https://www.youtube.com/shorts/",
+        ] {
+            assert_eq!(WordPressHandler::extract_youtube_id(url), None, "{}", url);
+            assert!(!WordPressHandler::validate_youtube_url(url), "{}", url);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_create_post_with_embeds_lists_skipped_urls() {
+        let (base_url, captured) = spawn_body_capturing_server(post_response_json("hello")).await;
+        let handler = handler_for_local_server(base_url);
+
+        let args: HashMap<String, serde_json::Value> = [
+            ("title".to_string(), serde_json::json!("Videos")),
+            ("content".to_string(), serde_json::json!("<p>Intro</p>")),
+            (
+                "youtube_urls".to_string(),
+                serde_json::json!([
+                    "https://www.youtube.com/shorts/abc123_-X",
+                    "https://vimeo.com/123456789"
+                ]),
+            ),
+            (
+                "social_urls".to_string(),
+                serde_json::json!([
+                    "https://www.tiktok.com/@user/video/1",
+                    "https://example.com/post"
+                ]),
+            ),
+        ]
+        .into_iter()
+        .collect();
+        let result = handler
+            .call_tool(ToolCallParams {
+                name: "create_post_with_embeds".to_string(),
+                arguments: Some(args),
+            })
+            .await
+            .unwrap();
+
+        let bodies = captured.lock().await;
+        assert_eq!(bodies.len(), 1);
+        let sent: serde_json::Value = serde_json::from_str(&bodies[0]).unwrap();
+        let content = sent["content"].as_str().unwrap();
+        // Shortsは動画プレーヤーになり、対応しないURLは本文に入らない
+        assert!(
+            content.contains("https://www.youtube.com/embed/abc123_-X"),
+            "{}",
+            content
+        );
+        assert!(content.contains("https://www.tiktok.com/@user/video/1"));
+        assert!(!content.contains("vimeo.com"), "{}", content);
+        assert!(!content.contains("example.com"), "{}", content);
+
+        let text = tool_text(&result);
+        assert!(
+            text.contains(
+                "Not embedded (unsupported URL): https://vimeo.com/123456789, https://example.com/post"
+            ),
+            "{}",
+            text
+        );
     }
 
     #[tokio::test]
