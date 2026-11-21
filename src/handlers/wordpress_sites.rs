@@ -9,6 +9,7 @@
 use async_trait::async_trait;
 use std::sync::Arc;
 
+use crate::handlers::wordpress::CUSTOM_POST_TYPES_NOTE;
 use crate::mcp::{
     InitializeParams, McpError, McpHandler, Resource, ResourceReadParams, Tool, ToolCallParams,
 };
@@ -85,6 +86,79 @@ impl WordPressSites {
     }
 }
 
+/// ツールの引数`post_type`の`enum`（`post`・`page`と、許したカスタム投稿タイプ）
+fn post_type_values(tool: &Tool) -> Option<Vec<String>> {
+    let values = tool
+        .input_schema
+        .get("properties")?
+        .get("post_type")?
+        .get("enum")?
+        .as_array()?;
+    Some(
+        values
+            .iter()
+            .filter_map(|v| v.as_str().map(str::to_string))
+            .collect(),
+    )
+}
+
+/// ツールの引数`post_type`に、ほかのサイトの同じツール（`others`）で
+/// 許した型も足す（#684）。カスタム投稿タイプはサイトごとに決めるので、
+/// 全サイトのものを選べるようにする。使えるかは、呼ばれたサイトが確かめる
+fn merge_post_types(tool: &mut Tool, others: &[&Tool]) {
+    let lists: Vec<Option<Vec<String>>> = std::iter::once(&*tool)
+        .chain(others.iter().copied())
+        .map(post_type_values)
+        .collect();
+    let mut union: Vec<String> = Vec::new();
+    for value in lists.iter().flatten().flatten() {
+        if !union.contains(value) {
+            union.push(value.clone());
+        }
+    }
+    // どのサイトでも同じなら、そのまま
+    let same_everywhere = lists.iter().all(|list| {
+        list.as_ref()
+            .is_some_and(|list| union.iter().all(|v| list.contains(v)))
+    });
+    if union.is_empty() || same_everywhere {
+        return;
+    }
+    // 既定のサイトに引数が無ければ（get_posts等）、持っているサイトのものを使う
+    let Some(mut property) = std::iter::once(&*tool)
+        .chain(others.iter().copied())
+        .find_map(|t| t.input_schema.get("properties")?.get("post_type").cloned())
+    else {
+        return;
+    };
+    let description = property
+        .get("description")
+        .and_then(|d| d.as_str())
+        .unwrap_or("Content type");
+    let base = description
+        .split(&format!(" {CUSTOM_POST_TYPES_NOTE}"))
+        .next()
+        .unwrap_or(description);
+    let custom: Vec<&str> = union
+        .iter()
+        .map(String::as_str)
+        .filter(|t| !matches!(*t, "post" | "page"))
+        .collect();
+    let description = format!(
+        "{base} {CUSTOM_POST_TYPES_NOTE}: {}. Which ones can be used depends on the site",
+        custom.join(", ")
+    );
+    property["enum"] = serde_json::json!(union);
+    property["description"] = serde_json::json!(description);
+    if let Some(properties) = tool
+        .input_schema
+        .get_mut("properties")
+        .and_then(|p| p.as_object_mut())
+    {
+        properties.insert("post_type".to_string(), property);
+    }
+}
+
 #[async_trait]
 impl McpHandler for WordPressSites {
     async fn initialize(&self, params: InitializeParams) -> Result<serde_json::Value, McpError> {
@@ -92,10 +166,20 @@ impl McpHandler for WordPressSites {
     }
 
     async fn list_tools(&self) -> Result<Vec<Tool>, McpError> {
-        Ok(self
-            .default_site()
-            .list_tools()
-            .await?
+        let mut tools = self.default_site().list_tools().await?;
+        // 引数`post_type`は、全サイトで許した型を合わせる（#684）
+        let mut others = Vec::new();
+        for (_, handler) in &self.sites[1..] {
+            others.push(handler.list_tools().await?);
+        }
+        for tool in &mut tools {
+            let same: Vec<&Tool> = others
+                .iter()
+                .filter_map(|list| list.iter().find(|t| t.name == tool.name))
+                .collect();
+            merge_post_types(tool, &same);
+        }
+        Ok(tools
             .into_iter()
             .map(|tool| self.with_site_argument(tool))
             .collect())
@@ -324,6 +408,104 @@ mod tests {
                 .unwrap()
                 .contains("Defaults to 'blog'"));
         }
+    }
+
+    /// 既定でないサイトだけで許したカスタム投稿タイプも、`post_type`で
+    /// 選べる。使えるかは、サイトごとに確かめる（#684）
+    #[tokio::test]
+    async fn test_post_type_lists_types_of_every_site() {
+        use crate::handlers::wordpress::WordPressHandler;
+        let handler = |name: &str, post_types: &str| -> Arc<dyn McpHandler> {
+            let config: crate::config::WordPressConfig = toml::from_str(&format!(
+                "url = \"https://{name}.example.com\"
+enabled = true
+username = \"u\"
+password = \"p\"
+{post_types}"
+            ))
+            .unwrap();
+            Arc::new(WordPressHandler::try_new(config).unwrap())
+        };
+        let sites = WordPressSites::new(vec![
+            ("blog".to_string(), handler("blog", "")),
+            (
+                "shop".to_string(),
+                handler(
+                    "shop",
+                    "post_types = [\"product\"]
+",
+                ),
+            ),
+        ]);
+        let tools = sites.list_tools().await.unwrap();
+        let post_type = |name: &str| {
+            tools.iter().find(|t| t.name == name).unwrap().input_schema["properties"]["post_type"]
+                .clone()
+        };
+        assert_eq!(
+            post_type("get_post")["enum"],
+            serde_json::json!(["post", "page", "product"])
+        );
+        assert_eq!(
+            post_type("get_posts")["enum"],
+            serde_json::json!(["post", "product"])
+        );
+        let description = post_type("get_post")["description"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(
+            description.contains(
+                "allowed in the config: product. Which ones can be used depends on the site"
+            ),
+            "{description}"
+        );
+
+        // blogでは、今までどおり使えない
+        let result = sites
+            .call_tool(ToolCallParams {
+                name: "get_post".to_string(),
+                arguments: Some(
+                    serde_json::from_value(
+                        serde_json::json!({"site": "blog", "post_id": 1, "post_type": "product"}),
+                    )
+                    .unwrap(),
+                ),
+            })
+            .await;
+        assert!(
+            matches!(result, Err(McpError::InvalidParams(ref msg)) if msg.contains("post_type 'product' is not allowed")),
+            "{result:?}"
+        );
+
+        // どのサイトでも同じなら、1つのサイトのときと同じ
+        let same = WordPressSites::new(vec![
+            (
+                "blog".to_string(),
+                handler(
+                    "blog",
+                    "post_types = [\"product\"]
+",
+                ),
+            ),
+            (
+                "shop".to_string(),
+                handler(
+                    "shop",
+                    "post_types = [\"product\"]
+",
+                ),
+            ),
+        ]);
+        let tools = same.list_tools().await.unwrap();
+        let get_post = tools.iter().find(|t| t.name == "get_post").unwrap();
+        let description = get_post.input_schema["properties"]["post_type"]["description"]
+            .as_str()
+            .unwrap();
+        assert!(
+            !description.contains("depends on the site"),
+            "{description}"
+        );
     }
 
     #[tokio::test]
