@@ -1,6 +1,8 @@
 # ========================================
 # Multi-stage Dockerfile for mcp-rs
-# Runtime: distroless, non-root
+# Runtime: distroless/static, non-root. mcp-rs is one statically linked
+# executable (musl), so the image has no C library, OpenSSL or libstdc++
+# (#631: their Debian packages made most of the image scanner's alerts)
 # ========================================
 
 # Stage 1: Builder
@@ -8,11 +10,14 @@
 # Cargo.toml, #516). CI checks that the two match, so raise both together.
 FROM rust:1.98-slim-bookworm AS builder
 
-# Install build dependencies
-RUN apt-get update && apt-get install -y \
-    pkg-config \
-    libssl-dev \
-    && rm -rf /var/lib/apt/lists/*
+# musl-tools gives musl-gcc, which builds the C parts of the dependencies
+# (ring, aws-lc-sys, the bundled SQLite) for the musl target. The image is
+# built natively for each platform (linux/amd64, linux/arm64), so the target
+# follows the build machine
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    musl-tools \
+    && rm -rf /var/lib/apt/lists/* \
+    && rustup target add "$(uname -m)-unknown-linux-musl"
 
 WORKDIR /app
 
@@ -29,14 +34,20 @@ COPY website/assets/favicon-32.png website/assets/apple-touch-icon.png website/a
 # Build the application. The os-keyring feature (#533) is left out: a
 # container has no OS credential store, so credentials come from environment
 # variables (${VAR}) or encrypted_credentials
-RUN cargo build --release --bin mcp-rs --no-default-features --features database,mysql-backend
+RUN target="$(uname -m)-unknown-linux-musl" \
+    && cargo build --release --target "$target" --bin mcp-rs --no-default-features --features database,mysql-backend \
+    && cp "target/$target/release/mcp-rs" /app/mcp-rs \
+    && strip /app/mcp-rs
 
-# Strip debug symbols to reduce size
-RUN strip target/release/mcp-rs
+# The runtime image has no C library, so stop here if the executable still
+# needs a shared library or a dynamic loader (a static-pie has neither)
+RUN if readelf -d /app/mcp-rs | grep -q NEEDED || readelf -l /app/mcp-rs | grep -q interpreter; then \
+        echo "mcp-rs is not statically linked" >&2; exit 1; \
+    fi
 
 # ========================================
-# Stage 2: Runtime - Minimal distroless image
-FROM gcr.io/distroless/cc-debian12:nonroot
+# Stage 2: Runtime - distroless/static (CA certificates, tzdata, nonroot user)
+FROM gcr.io/distroless/static-debian12:nonroot
 
 # The version label is added by the release workflow (docker/metadata-action).
 LABEL org.opencontainers.image.title="mcp-rs" \
@@ -47,7 +58,7 @@ LABEL org.opencontainers.image.title="mcp-rs" \
 WORKDIR /app
 
 # Copy binary from builder
-COPY --from=builder --chown=nonroot:nonroot /app/target/release/mcp-rs /app/mcp-rs
+COPY --from=builder --chown=nonroot:nonroot /app/mcp-rs /app/mcp-rs
 
 # Non-root user (distroless defaults to nonroot uid 65532)
 USER nonroot:nonroot

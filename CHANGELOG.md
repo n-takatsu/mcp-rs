@@ -133,6 +133,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Dockerイメージを、muslで静的にリンクした1つの実行ファイルにし、土台を
+  `gcr.io/distroless/static-debian12:nonroot`にした（#631）。以前の土台
+  （`distroless/cc-debian12`）に入っていたDebianの`libc6`・`libssl3`・
+  `libstdc++6`等が無くなり、イメージの検査（Trivy）の警告のほとんどが消える。
+  mcp-rsはOpenSSLを使わない（通信はrustls）。CAの証明書・タイムゾーンの
+  データ・`nonroot`のユーザーは、今までどおりイメージに入っている。
+  C言語の標準ライブラリがglibcからmuslに変わるので、名前の解決（DNS）と
+  メモリーの割り当ての動きが少し変わる。リリースのLinuxの実行ファイル
+  （`x86_64-unknown-linux-gnu`）は変わらない
 - WordPressのツールの説明を書き直した（#676）。AIのクライアントが、どの
   ツールをいつ使うかを選びやすくするため。どのツールの説明にも、何をするか、
   似たツールとの違い・いつ使うか、何を返すか、書き込み・削除の影響（下書きか
