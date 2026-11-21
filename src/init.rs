@@ -137,6 +137,7 @@ pub async fn run(args: &[String]) -> Result<bool, String> {
         store: &OsKeyring,
         config_path,
         explicit_config,
+        kept_sites_config: None,
         previous: discover_registrations(),
         superseded: Vec::new(),
         suggested_url: None,
@@ -210,6 +211,10 @@ struct Setup<'a> {
     config_path: PathBuf,
     /// `config_path`を`--config`で渡されたか（#684）
     explicit_config: bool,
+    /// `--config`のファイルを設定すると選んだときの、今の登録が使う、
+    /// 複数サイトの設定ファイル（PR #688のレビュー）。同じ名前の登録を
+    /// 置き換えるときに、失われるサイトと設定を示す
+    kept_sites_config: Option<String>,
     /// クライアントに今ある、mcp-rsの登録（#602）
     previous: Vec<Registration>,
     /// 新しい設定ファイルに置き換える、前の設定ファイル（#602）。これを使う
@@ -586,6 +591,7 @@ impl Setup<'_> {
                     match self.io.ask("Choose 1 or 2 [1]: ")?.as_str() {
                         "" | "1" => {
                             self.io.say(&format!("Keeping {path} as it is.\n"));
+                            self.kept_sites_config = Some(path.to_string());
                             return Ok(PreviousChoice::NotReplacing);
                         }
                         "2" => return Ok(PreviousChoice::UseAsIs),
@@ -1234,14 +1240,8 @@ impl Setup<'_> {
         let config = read_claude_desktop_config(path)?;
         let mut replace = false;
         if claude_desktop_has_entry(&config) {
-            replace = confirm(
-                self.io,
-                &format!(
-                    "{} already has a server named \"{SERVER_NAME}\". Replace it?",
-                    path.display()
-                ),
-                true,
-            )?;
+            let (question, default) = self.replace_question(&path.display().to_string());
+            replace = confirm(self.io, &question, default)?;
             if !replace {
                 self.io.say("Kept the Claude Desktop settings as they are.");
                 return Ok(false);
@@ -1264,6 +1264,42 @@ impl Setup<'_> {
             )),
         }
         Ok(true)
+    }
+
+    /// 同じ名前（`mcp-rs`）の登録を置き換えるかの質問と、その既定（PR #688の
+    /// レビュー）。`--config`のファイルを設定すると選び、今の登録が複数サイトの
+    /// 設定ファイルを使うときは、新しい設定ファイルに無いサイトと設定を挙げ、
+    /// 1つでもあれば、既定では置き換えない
+    fn replace_question(&self, client: &str) -> (String, bool) {
+        let question = format!("{client} already has a server named \"{SERVER_NAME}\".");
+        let lost: Vec<String> = self
+            .kept_sites_config
+            .as_deref()
+            .and_then(other_config_sites)
+            .map(|(urls, extras)| {
+                urls.iter()
+                    .filter(|url| {
+                        !self
+                            .added_sites
+                            .iter()
+                            .any(|added| comparable_site_url(added) == **url)
+                    })
+                    .map(|url| format!("the site {url}"))
+                    .chain(extras)
+                    .collect()
+            })
+            .unwrap_or_default();
+        if lost.is_empty() {
+            return (format!("{question} Replace it?"), true);
+        }
+        (
+            format!(
+                "{question} It uses {}, which has settings that the new config file does not have, which would be lost: {}. Replace it?",
+                self.kept_sites_config.as_deref().unwrap_or_default(),
+                lost.join(", ")
+            ),
+            false,
+        )
     }
 
     /// 別の名前で登録された mcp-rs（手で登録したもの等）を、1つずつ消すかを
@@ -1404,14 +1440,8 @@ impl Setup<'_> {
             .status()
             .is_ok_and(|status| status.success());
         if exists {
-            if !confirm(
-                self.io,
-                &format!(
-                    "{} already has a server named \"{SERVER_NAME}\". Replace it?",
-                    cli.label
-                ),
-                true,
-            )? {
+            let (question, default) = self.replace_question(cli.label);
+            if !confirm(self.io, &question, default)? {
                 self.io
                     .say(&format!("Kept the {} settings as they are.", cli.label));
                 return Ok(false);
@@ -3091,6 +3121,7 @@ mod tests {
             store,
             config_path: PathBuf::from("unused.toml"),
             explicit_config: false,
+            kept_sites_config: None,
             previous: Vec::new(),
             superseded: Vec::new(),
             suggested_url: None,
@@ -4644,6 +4675,7 @@ file_path = "C:/Users/me/.mcp-rs/logs/audit.log"
             store: &store,
             config_path: PathBuf::from("unused.toml"),
             explicit_config: false,
+            kept_sites_config: None,
             previous: Vec::new(),
             superseded: Vec::new(),
             suggested_url: None,
@@ -4985,6 +5017,40 @@ keyring = \"blog\"
             .shown
             .iter()
             .any(|s| s.contains("the config file you gave with --config")));
+    }
+
+    /// `--config`のファイルを設定すると選んだ後、同じ名前の登録を置き換える
+    /// ときは、新しい設定ファイルに無いサイトと設定を挙げ、既定では置き換え
+    /// ない（PR #688のレビュー）
+    #[test]
+    fn test_replacing_a_sites_registration_shows_what_is_lost() {
+        let dir = tempfile::tempdir().unwrap();
+        let old_path = dir.path().join("sites.toml");
+        std::fs::write(
+            &old_path,
+            "[handlers.wordpress]\nenabled = true\ndefault_site = \"shop\"\n\n[handlers.wordpress.sites.shop]\nurl = \"https://shop.example.com\"\nkeyring = \"shop\"\n\n[handlers.wordpress.sites.news]\nurl = \"https://news.example.com\"\nkeyring = \"news\"\n",
+        )
+        .unwrap();
+        let old = old_path.display().to_string();
+        let store = MemoryStore::default();
+        let mut io = Script::new(&[""]);
+        let mut setup = setup(&mut io, &store);
+        // 選ぶ前は、今までどおり既定で置き換える
+        let (question, default) = setup.replace_question("Claude Code");
+        assert!(default);
+        assert!(question.ends_with("Replace it?"), "{question}");
+        setup.explicit_config = true;
+        setup.config_path = dir.path().join("new.toml");
+        let choice = setup.choose_previous(&old, &[]).unwrap();
+        assert!(matches!(choice, PreviousChoice::NotReplacing));
+        setup.added_sites = vec!["https://shop.example.com".to_string()];
+        let (question, default) = setup.replace_question("Claude Code");
+        assert!(!default);
+        assert!(
+            question.contains("which would be lost: the site https://news.example.com"),
+            "{question}"
+        );
+        assert!(!question.contains("shop.example.com"), "{question}");
     }
 
     /// 前の設定を写しても、WordPressだけと選んだら`[database]`は写さない（#684）
