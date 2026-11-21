@@ -1521,6 +1521,10 @@ fn terms_arg(
     Ok(Some(terms))
 }
 
+/// `post_type`の引数の説明で、許したカスタム投稿タイプを並べる前の文
+/// （#684。複数のサイトでは、全サイトのものに置き換える）
+pub(crate) const CUSTOM_POST_TYPES_NOTE: &str = "Custom post types allowed in the config";
+
 /// ツールの`post_type`の引数（`enum`が`post`・`page`のもの）に、設定で
 /// 許したカスタム投稿タイプを足す（#642）。AIには、使える型だけを見せる
 fn with_allowed_post_types(tool: &mut Tool, allowed: &[String]) {
@@ -1567,7 +1571,7 @@ fn with_allowed_post_types(tool: &mut Tool, allowed: &[String]) {
     post_type.insert(
         "description".to_string(),
         serde_json::json!(format!(
-            "{description} Custom post types allowed in the config: {}",
+            "{description} {CUSTOM_POST_TYPES_NOTE}: {}",
             allowed.join(", ")
         )),
     );
@@ -1836,7 +1840,8 @@ impl WordPressHandler {
         // セキュア認証情報の作成
         let secure_credentials = Some(config.create_secure_credentials());
 
-        let upload_allowed_dirs = canonicalize_upload_dirs(&config.upload_allowed_dirs)?;
+        let upload_allowed_dirs =
+            canonicalize_upload_dirs(config.upload_allowed_dirs.as_deref().unwrap_or_default())?;
         if !upload_allowed_dirs.is_empty() {
             info!(
                 "upload_media file_path is enabled for: {:?}",
@@ -1844,7 +1849,7 @@ impl WordPressHandler {
             );
         }
 
-        let allowed_post_types = config.post_types.clone();
+        let allowed_post_types = config.post_types.clone().unwrap_or_default();
         for post_type in &allowed_post_types {
             if !is_slug(post_type) || matches!(post_type.as_str(), "post" | "page") {
                 return Err(format!(
@@ -6804,8 +6809,8 @@ mod tests {
             rate_limit: Some(RateLimitConfig::default()),
             encrypted_credentials: None,
             keyring: None,
-            upload_allowed_dirs: Vec::new(),
-            post_types: Vec::new(),
+            upload_allowed_dirs: None,
+            post_types: None,
             default_site: None,
             sites: Default::default(),
         };
@@ -6829,8 +6834,8 @@ mod tests {
             rate_limit: Some(RateLimitConfig::default()),
             encrypted_credentials: None,
             keyring: None,
-            upload_allowed_dirs: Vec::new(),
-            post_types: Vec::new(),
+            upload_allowed_dirs: None,
+            post_types: None,
             default_site: None,
             sites: Default::default(),
         };
@@ -6850,8 +6855,8 @@ mod tests {
             rate_limit: Some(RateLimitConfig::default()),
             encrypted_credentials: None,
             keyring: None,
-            upload_allowed_dirs: Vec::new(),
-            post_types: Vec::new(),
+            upload_allowed_dirs: None,
+            post_types: None,
             default_site: None,
             sites: Default::default(),
         };
@@ -6878,8 +6883,8 @@ mod tests {
                 rate_limit: Some(RateLimitConfig::default()),
                 encrypted_credentials: None,
                 keyring: None,
-                upload_allowed_dirs: Vec::new(),
-                post_types: Vec::new(),
+                upload_allowed_dirs: None,
+                post_types: None,
                 default_site: None,
                 sites: Default::default(),
             };
@@ -6902,8 +6907,8 @@ mod tests {
             rate_limit: Some(rate_limit),
             encrypted_credentials: None,
             keyring: None,
-            upload_allowed_dirs: Vec::new(),
-            post_types: Vec::new(),
+            upload_allowed_dirs: None,
+            post_types: None,
             default_site: None,
             sites: Default::default(),
         };
@@ -7807,11 +7812,12 @@ mod tests {
             rate_limit: Some(RateLimitConfig::default()),
             encrypted_credentials: None,
             keyring: None,
-            upload_allowed_dirs: dirs
-                .iter()
-                .map(|d| d.to_string_lossy().into_owned())
-                .collect(),
-            post_types: Vec::new(),
+            upload_allowed_dirs: Some(
+                dirs.iter()
+                    .map(|d| d.to_string_lossy().into_owned())
+                    .collect(),
+            ),
+            post_types: None,
             default_site: None,
             sites: Default::default(),
         };
