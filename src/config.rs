@@ -915,18 +915,21 @@ pub struct WordPressConfig {
     /// `username`・`password`・`encrypted_credentials`とは一緒に書けない
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub keyring: Option<String>,
-    /// `upload_media`の`file_path`で読み込みを許可するフォルダ。空（既定）
-    /// なら`file_path`は使えない。mcp-rsが動いているマシン上のファイルを
+    /// `upload_media`の`file_path`で読み込みを許可するフォルダ。省略（既定）
+    /// か空なら`file_path`は使えない。mcp-rsが動いているマシン上のファイルを
     /// 読んでWordPressへ送る機能のため、明示的に許可したフォルダの中だけに
     /// 限定する（起動時に存在しないフォルダが指定されていればエラー）。
-    #[serde(default)]
-    pub upload_allowed_dirs: Vec<String>,
+    /// `sites`では、サイトで省くと`[handlers.wordpress]`のものを使い、
+    /// `[]`と書くと、そのサイトでは`file_path`を使わない（#684）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upload_allowed_dirs: Option<Vec<String>>,
     /// `post`・`page`のほかに使ってよい、カスタム投稿タイプ（#642。例:
-    /// `["product"]`）。既定は空（`post`・`page`だけ）。AIに商品等を
-    /// 書き換えさせるかは、ここで決める。`sites`では、サイトに無ければ
-    /// `[handlers.wordpress]`のものを使う
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub post_types: Vec<String>,
+    /// `["product"]`）。省略か空なら`post`・`page`だけ。AIに商品等を
+    /// 書き換えさせるかは、ここで決める。`sites`では、サイトで省くと
+    /// `[handlers.wordpress]`のものを使い、`[]`と書くと、そのサイトでは
+    /// `post`・`page`だけにする（#684）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub post_types: Option<Vec<String>>,
     /// ツールの`site`の引数を省いたときに使うサイトの名前（#640）。
     /// `[handlers.wordpress]`にだけ書く。使うサイトが1つなら省ける
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1031,8 +1034,8 @@ impl WordPressConfig {
             rate_limit,
             encrypted_credentials: Some(encrypted_credentials),
             keyring: None,
-            upload_allowed_dirs: Vec::new(),
-            post_types: Vec::new(),
+            upload_allowed_dirs: None,
+            post_types: None,
             default_site: None,
             sites: Default::default(),
         })
@@ -1139,6 +1142,11 @@ impl WordPressConfig {
         self.check_sites_layout()?;
         self.inherit_into_sites();
         for (name, site) in self.sites.iter_mut() {
+            // 使わないサイトの資格情報は読まない。`encrypted_credentials`の
+            // 復号に失敗して、ほかのサイトまで起動できなくなるのを防ぐ（#684）
+            if !site.enabled.unwrap_or(false) {
+                continue;
+            }
             let label = format!("handlers.wordpress.sites.{name}");
             site.resolve_site_credentials(store, &label).map_err(
                 |e| -> Box<dyn std::error::Error> {
@@ -1204,8 +1212,9 @@ impl WordPressConfig {
     /// - `sites`が無ければ、`[handlers.wordpress]`の1つ（名前は`default`）
     /// - `sites`があれば、使うサイトを、既定のサイト、残りを名前の順に。
     ///   全サイト共通の設定（`timeout_seconds`・`rate_limit`・
-    ///   `upload_allowed_dirs`）は、サイトに無ければ`[handlers.wordpress]`の
-    ///   ものを使う。使うサイトが2つ以上なら、`default_site`が要る
+    ///   `upload_allowed_dirs`・`post_types`）は、サイトに無ければ
+    ///   `[handlers.wordpress]`のものを使う（`[]`と書いたサイトは受け継がない）。
+    ///   使うサイトが2つ以上なら、`default_site`が要る
     ///
     /// 返す設定には、`sites`・`default_site`を含めない
     pub fn site_list(&self) -> Result<Vec<(String, WordPressConfig)>, String> {
@@ -1235,10 +1244,11 @@ impl WordPressConfig {
             if site.rate_limit.is_none() {
                 site.rate_limit = self.rate_limit.clone();
             }
-            if site.upload_allowed_dirs.is_empty() {
+            // 省いたときだけ受け継ぐ。`[]`と書けば、受け継がない（#684）
+            if site.upload_allowed_dirs.is_none() {
                 site.upload_allowed_dirs = self.upload_allowed_dirs.clone();
             }
-            if site.post_types.is_empty() {
+            if site.post_types.is_none() {
                 site.post_types = self.post_types.clone();
             }
             list.push((name.clone(), site));
@@ -1520,8 +1530,8 @@ fn apply_wordpress_env_overrides(
                 rate_limit: Some(RateLimitConfig::default()),
                 encrypted_credentials: None, // 環境変数では平文使用
                 keyring: None,
-                upload_allowed_dirs: Vec::new(),
-                post_types: Vec::new(),
+                upload_allowed_dirs: None,
+                post_types: None,
                 default_site: None,
                 sites: Default::default(),
             });
@@ -2184,8 +2194,8 @@ impl McpConfig {
                     rate_limit: Some(RateLimitConfig::default()),
                     encrypted_credentials: None, // デフォルトでは平文
                     keyring: None,
-                    upload_allowed_dirs: Vec::new(),
-                    post_types: Vec::new(),
+                    upload_allowed_dirs: None,
+                    post_types: None,
                     default_site: None,
                     sites: Default::default(),
                 }),
@@ -3477,8 +3487,8 @@ mod additional_tests {
             rate_limit: Some(RateLimitConfig::default()),
             encrypted_credentials: None,
             keyring: None,
-            upload_allowed_dirs: Vec::new(),
-            post_types: Vec::new(),
+            upload_allowed_dirs: None,
+            post_types: None,
             default_site: None,
             sites: Default::default(),
         };
@@ -3509,8 +3519,8 @@ mod additional_tests {
             rate_limit: Some(RateLimitConfig::default()),
             encrypted_credentials: Some(encrypted),
             keyring: None,
-            upload_allowed_dirs: Vec::new(),
-            post_types: Vec::new(),
+            upload_allowed_dirs: None,
+            post_types: None,
             default_site: None,
             sites: Default::default(),
         };
@@ -3551,8 +3561,8 @@ mod additional_tests {
             rate_limit: Some(RateLimitConfig::default()),
             encrypted_credentials: None,
             keyring: None,
-            upload_allowed_dirs: Vec::new(),
-            post_types: Vec::new(),
+            upload_allowed_dirs: None,
+            post_types: None,
             default_site: None,
             sites: Default::default(),
         };
@@ -3578,8 +3588,8 @@ mod additional_tests {
             rate_limit: Some(RateLimitConfig::default()),
             encrypted_credentials: None,
             keyring: None,
-            upload_allowed_dirs: Vec::new(),
-            post_types: Vec::new(),
+            upload_allowed_dirs: None,
+            post_types: None,
             default_site: None,
             sites: Default::default(),
         };
@@ -3601,8 +3611,8 @@ mod additional_tests {
             rate_limit: Some(RateLimitConfig::default()),
             encrypted_credentials: None,
             keyring: None,
-            upload_allowed_dirs: Vec::new(),
-            post_types: Vec::new(),
+            upload_allowed_dirs: None,
+            post_types: None,
             default_site: None,
             sites: Default::default(),
         };
@@ -3625,8 +3635,8 @@ mod additional_tests {
             rate_limit: Some(RateLimitConfig::default()),
             encrypted_credentials: None,
             keyring: None,
-            upload_allowed_dirs: Vec::new(),
-            post_types: Vec::new(),
+            upload_allowed_dirs: None,
+            post_types: None,
             default_site: None,
             sites: Default::default(),
         };
@@ -3701,10 +3711,19 @@ mod additional_tests {
         let (shop, blog) = (&list[0].1, &list[1].1);
         assert_eq!(shop.timeout_seconds, Some(5));
         assert_eq!(blog.timeout_seconds, Some(60));
-        assert_eq!(shop.upload_allowed_dirs, ["/shop"]);
-        assert_eq!(blog.upload_allowed_dirs, ["/shared"]);
-        assert_eq!(shop.post_types, ["event"]);
-        assert_eq!(blog.post_types, ["product"]);
+        assert_eq!(
+            shop.upload_allowed_dirs.as_deref(),
+            Some(&["/shop".to_string()][..])
+        );
+        assert_eq!(
+            blog.upload_allowed_dirs.as_deref(),
+            Some(&["/shared".to_string()][..])
+        );
+        assert_eq!(shop.post_types.as_deref(), Some(&["event".to_string()][..]));
+        assert_eq!(
+            blog.post_types.as_deref(),
+            Some(&["product".to_string()][..])
+        );
         assert!(list
             .iter()
             .all(|(_, c)| c.enabled == Some(true) && c.sites.is_empty()));
@@ -3719,6 +3738,98 @@ mod additional_tests {
         let list = single.site_list().unwrap();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].0, "default");
+    }
+
+    /// サイトに`[]`と書けば、`[handlers.wordpress]`のものを受け継がない。
+    /// 省けば受け継ぐ（#684）
+    #[test]
+    fn test_site_list_empty_list_does_not_inherit() {
+        let config = sites_config(
+            "enabled = true
+default_site = \"blog\"
+             upload_allowed_dirs = [\"/shared\"]
+post_types = [\"product\"]
+             [sites.blog]
+url = \"https://blog.example.com\"
+             [sites.shop]
+url = \"https://shop.example.com\"
+             upload_allowed_dirs = []
+post_types = []
+",
+        );
+        let list = config.site_list().unwrap();
+        let (blog, shop) = (&list[0].1, &list[1].1);
+        assert_eq!(list[1].0, "shop");
+        assert_eq!(shop.upload_allowed_dirs.as_deref(), Some(&[][..]));
+        assert_eq!(shop.post_types.as_deref(), Some(&[][..]));
+        assert_eq!(
+            blog.upload_allowed_dirs.as_deref(),
+            Some(&["/shared".to_string()][..])
+        );
+        assert_eq!(
+            blog.post_types.as_deref(),
+            Some(&["product".to_string()][..])
+        );
+
+        // 今までの形（sitesが無い）は、省いても`[]`でも、使えない
+        for extra in [
+            "",
+            "upload_allowed_dirs = []
+post_types = []
+",
+        ] {
+            let single = sites_config(&format!(
+                "url = \"https://blog.example.com\"
+enabled = true
+{extra}"
+            ));
+            let (_, site) = single.site_list().unwrap().remove(0);
+            assert!(site.upload_allowed_dirs.unwrap_or_default().is_empty());
+            assert!(site.post_types.unwrap_or_default().is_empty());
+        }
+    }
+
+    /// 使わないサイトの`encrypted_credentials`は復号しない。マスター
+    /// パスワードが無くても、ほかのサイトは読める（#684）
+    #[test]
+    fn test_resolve_credentials_skips_disabled_sites() {
+        let _env_guard = WORDPRESS_MASTER_PASSWORD_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        unsafe {
+            std::env::remove_var("WORDPRESS_MASTER_PASSWORD");
+        }
+        let encrypted = SecureCredentials::new("old-user".to_string(), "old-pass".to_string())
+            .encrypt("master")
+            .unwrap();
+        let mut config = sites_config(
+            "enabled = true
+default_site = \"blog\"
+             [sites.blog]
+url = \"https://blog.example.com\"
+username = \"u\"
+password = \"p\"
+             [sites.old]
+url = \"https://old.example.com\"
+enabled = false
+",
+        );
+        config.sites.get_mut("old").unwrap().encrypted_credentials = Some(encrypted);
+        let store = crate::security::keyring_store::MemoryStore::default();
+        config.resolve_credentials_with(&store).unwrap();
+        assert_eq!(config.sites["blog"].username, "u");
+        assert_eq!(config.sites["old"].username, "");
+        let list = config.site_list().unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].0, "blog");
+
+        // 使うサイトなら、今までどおり復号できなければ誤り
+        config.sites.get_mut("old").unwrap().enabled = None;
+        let err = config
+            .resolve_credentials_with(&store)
+            .unwrap_err()
+            .to_string();
+        assert!(err.starts_with("handlers.wordpress.sites.old: "), "{err}");
     }
 
     #[test]

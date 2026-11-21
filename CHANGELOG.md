@@ -199,6 +199,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   待たずにエラーで終わる。後片付けが10秒で終わらなければ、ログに警告を出す。
   ライブラリとして使う場合: `McpHandler`に`shutdown`（既定は何もしない）、
   `McpServer`に`shutdown`を足した
+- 複数のWordPressのサイト（`[handlers.wordpress.sites.<名前>]`）で、
+  サイトに`upload_allowed_dirs = []`・`post_types = []`と書くと、
+  `[handlers.wordpress]`のものを受け継がない（#684）。以前は、空のときも
+  受け継ぎ、そのサイトだけ`file_path`を止める・`post`・`page`だけにする
+  ことができなかった。省いたときは、今までどおり受け継ぐ。
+  ライブラリとして使う場合: `WordPressConfig`の`upload_allowed_dirs`・
+  `post_types`を`Option<Vec<String>>`にした（省いたときは`None`）
+- 複数のWordPressのサイトで、`enabled = false`のサイトの資格情報を読まない
+  （#684）。以前は、そのサイトの`encrypted_credentials`を復号し、
+  `WORDPRESS_MASTER_PASSWORD`が無い・違うと、ほかのサイトも起動できなかった
+- 複数のWordPressのサイトで、ツールの引数`post_type`に、どれかのサイトで
+  許したカスタム投稿タイプを並べる（#684）。以前は、既定のサイトのものだけで、
+  ほかのサイトだけで許した型を選べなかった。使えるかは、今までどおり
+  サイトごとに確かめる
 - STDIOモードが、標準入出力の失敗（クライアントが去った等）で終わるときも、
   プラグインを止め、後片付けの終了を待つ（#684）。以前は、エラーで先に
   終わり、コンテナ・Job・Secretが残ることがあった。HTTPモードでも、

@@ -260,7 +260,12 @@ async fn build_server(
                 // STDIOと違い、HTTP/WebSocketのクライアントは別のマシンにいる
                 // ことがある。その場合、file_pathで読まれるのはクライアントの
                 // 手元ではなく、このサーバー上のファイルになる
-                if http_mode && !site_config.upload_allowed_dirs.is_empty() {
+                if http_mode
+                    && site_config
+                        .upload_allowed_dirs
+                        .as_ref()
+                        .is_some_and(|dirs| !dirs.is_empty())
+                {
                     tracing::warn!(
                         "upload_allowed_dirs is set: clients connected over HTTP/WebSocket can upload files from these folders on this server via upload_media file_path"
                     );

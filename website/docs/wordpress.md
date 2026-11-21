@@ -112,7 +112,7 @@ Plugins add post types such as products (WooCommerce) and events, and taxonomies
 post_types = ["product"]
 ```
 
-- `post` and `page` are always allowed. With `sites`, a site without its own `post_types` uses the one in `[handlers.wordpress]`
+- `post` and `page` are always allowed. With `sites`, a site without its own `post_types` uses the one in `[handlers.wordpress]`, and a site with `post_types = []` uses only `post` and `page`. The `post_type` argument of the tools lists the types allowed on any of the sites; each site accepts only its own
 - `get_post_types` lists the site's post types and taxonomies, and shows which ones mcp-rs may use
 - A listed type can be passed as `post_type` to `get_posts`, `get_post`, `create_advanced_post`, `update_post`, `delete_post` and the revision tools. The tools show only the allowed types in `post_type`
 - The post type must be in the REST API under `/wp/v2` (the type's `show_in_rest`). Types with their own API, such as WooCommerce products in `wc/v3` on some sites, are refused with the reason
@@ -139,8 +139,8 @@ keyring = "shop"
 ```
 
 - **Tools**: the tools stay the same (the number of tools does not grow). Each tool gets a `site` argument: `get_posts` with `site: "shop"` reads the shop's posts. Without `site`, `default_site` is used, so ask the AI to name the site when it is not the default
-- **`[handlers.wordpress]`**: `enabled = true` turns on all the sites. `default_site` is required when two or more sites are used. `timeout_seconds`, `rate_limit` and `upload_allowed_dirs` apply to every site that does not set its own. Write `url` and the credentials (`keyring`, `username`/`password`, `encrypted_credentials`) only in the sites' tables
-- **Each site**: `url` and the credentials, and optionally `timeout_seconds`, `rate_limit` and `upload_allowed_dirs`. Write `enabled = false` to stop using one site. Site names use lowercase letters, digits, `_` and `-`, up to 32 characters
+- **`[handlers.wordpress]`**: `enabled = true` turns on all the sites. `default_site` is required when two or more sites are used. `timeout_seconds`, `rate_limit`, `upload_allowed_dirs` and `post_types` apply to every site that does not set its own. A site with `upload_allowed_dirs = []` or `post_types = []` does not use the ones in `[handlers.wordpress]`: `upload_allowed_dirs = []` turns off `file_path` for that site. Write `url` and the credentials (`keyring`, `username`/`password`, `encrypted_credentials`) only in the sites' tables
+- **Each site**: `url` and the credentials, and optionally `timeout_seconds`, `rate_limit`, `upload_allowed_dirs` and `post_types`. Write `enabled = false` to stop using one site; its credentials are then not read. Site names use lowercase letters, digits, `_` and `-`, up to 32 characters
 - **Credentials**: each site has its own, preferably a dedicated user with an Application Password on that site. Store them with `mcp-rs wordpress-keyring set <name>` for each site
 - **Rate limit and audit log**: each site has its own rate limit. The audit log records the site's URL with each tool call
 - `mcp-rs check` checks each site, and `mcp_rs_status` lists them. `mcp-rs uninstall` offers to delete each site's entry in the OS credential store
