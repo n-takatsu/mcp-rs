@@ -223,30 +223,33 @@ impl Uninstall<'_> {
     ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
         // 同じ名前を複数の場所（WordPressと`[database]`等）で使うことがあるので、
         // 名前ごとに、見込む種類をすべて覚えておく（PR #688のレビュー）
-        let mut names: Vec<(String, Vec<EntryKind>)> = Vec::new();
+        // 読めなかったときの案内のため、使う設定ファイルも覚えておく
+        let mut names: Vec<(String, Vec<EntryKind>, Vec<&PathBuf>)> = Vec::new();
         for config in configs {
             for (name, kind) in keyring_entries(config) {
-                match names.iter_mut().find(|(known, _)| *known == name) {
-                    Some((_, kinds)) => {
+                match names.iter_mut().find(|(known, _, _)| *known == name) {
+                    Some((_, kinds, used_by)) => {
                         if !kinds.contains(&kind) {
                             kinds.push(kind);
                         }
+                        if !used_by.contains(&config) {
+                            used_by.push(config);
+                        }
                     }
-                    None => names.push((name, vec![kind])),
+                    None => names.push((name, vec![kind], vec![config])),
                 }
             }
         }
         let mut unreadable = Vec::new();
-        for (name, expected) in names {
+        for (name, expected, used_by) in names {
             // 無い項目は聞かない。読めない項目（Secret Serviceが止まっている
             // 等）は、無いのと区別して知らせる（#692）
             let stored = match entry_kind(self.store, &name) {
                 Ok(Some(stored)) => stored,
                 Ok(None) => continue,
                 Err(e) => {
-                    self.io.say(&format!(
-                        "Could not read '{name}' from the OS credential store ({e}), so it was not deleted. Delete it yourself, or run mcp-rs uninstall again when the OS credential store can be used.\n"
-                    ));
+                    let message = self.unreadable_message(&name, &e, &expected, &used_by);
+                    self.io.say(&message);
                     unreadable.push(name);
                     continue;
                 }
@@ -279,6 +282,57 @@ impl Uninstall<'_> {
             }
         }
         Ok(unreadable)
+    }
+
+    /// 資格情報ストアで読めなかった項目の知らせ。登録は先に外しているので、
+    /// 既定以外の設定ファイルは、もう1度`mcp-rs uninstall`を実行しても
+    /// 見つからない。そのときは、設定ファイルと消し方を示す（PR #695のレビュー）
+    fn unreadable_message(
+        &self,
+        name: &str,
+        error: &dyn std::fmt::Display,
+        expected: &[EntryKind],
+        used_by: &[&PathBuf],
+    ) -> String {
+        let commands: Vec<String> = expected
+            .iter()
+            .filter_map(|kind| match kind {
+                EntryKind::WordPress => Some(format!(
+                    "`mcp-rs {} delete {name}`",
+                    crate::security::keyring_tool::SUBCOMMAND
+                )),
+                EntryKind::Database => Some(format!(
+                    "`mcp-rs {} delete {name}`",
+                    crate::database_keyring::SUBCOMMAND
+                )),
+                EntryKind::Other => None,
+            })
+            .collect();
+        let how = if commands.is_empty() {
+            "delete it in the OS credential store".to_string()
+        } else {
+            format!("delete it with {}", commands.join(" or "))
+        };
+        let only_default = used_by
+            .iter()
+            .all(|config| self.default_config.as_ref() == Some(*config));
+        let next = if only_default {
+            format!(
+                "When the OS credential store can be used, run mcp-rs uninstall again, or {how}."
+            )
+        } else {
+            let paths: Vec<String> = used_by
+                .iter()
+                .map(|config| config.display().to_string())
+                .collect();
+            format!(
+                "It is named in {}, which mcp-rs uninstall cannot find again once the registrations are removed: when the OS credential store can be used, {how}.",
+                paths.join(", ")
+            )
+        };
+        format!(
+            "Could not read '{name}' from the OS credential store ({error}), so it was not deleted. {next}\n"
+        )
     }
 
     /// 設定ファイルを消すかを聞く（既定は残す）。`unreadable`（資格情報
@@ -876,6 +930,52 @@ keyring = \"other\"
         );
         assert!(
             !shown.contains(&format!("Delete the config file {}?", broken.display())),
+            "{shown}"
+        );
+        // 既定以外の設定ファイルは、もう1度実行しても見つからないので、
+        // 設定ファイルと消し方を示す（PR #695のレビュー）
+        assert!(
+            shown.contains(&format!(
+                "It is named in {}, which mcp-rs uninstall cannot find again",
+                broken.display()
+            )),
+            "{shown}"
+        );
+        assert!(
+            shown.contains("delete it with `mcp-rs wordpress-keyring delete locked`"),
+            "{shown}"
+        );
+        assert!(!shown.contains("run mcp-rs uninstall again"), "{shown}");
+    }
+
+    /// 既定の設定ファイルだけが使う項目なら、もう1度実行すれば見つかる
+    #[test]
+    fn test_unreadable_credentials_in_the_default_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("config.toml");
+        std::fs::write(
+            &config,
+            "[database]\nengine = \"postgresql\"\ndatabase = \"app\"\nusername = \"reader\"\nkeyring = \"locked\"\n",
+        )
+        .unwrap();
+        let store = FailingStore {
+            inner: MemoryStore::default(),
+            failing: "locked",
+        };
+        let mut io = Script::new(&[]);
+        let mut steps = Uninstall {
+            io: &mut io,
+            store: &store,
+            desktop_configs: Vec::new(),
+            clis: Vec::new(),
+            default_config: Some(config.clone()),
+            exe: None,
+        };
+        let unreadable = steps.remove_credentials(&[config]).unwrap();
+        assert_eq!(unreadable, vec!["locked".to_string()]);
+        let shown = io.shown.join("\n");
+        assert!(
+            shown.contains("When the OS credential store can be used, run mcp-rs uninstall again, or delete it with `mcp-rs database-keyring delete locked`."),
             "{shown}"
         );
     }
