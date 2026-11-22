@@ -143,6 +143,7 @@ pub async fn run(args: &[String]) -> Result<bool, String> {
         suggested_url: None,
         added_sites: Vec::new(),
         new_entries: Vec::new(),
+        secret_backups: Vec::new(),
     }
     .run()
     .await;
@@ -230,6 +231,10 @@ struct Setup<'a> {
     /// この実行で新しく作った、WordPressの資格情報の項目（#657）。サイトを
     /// 設定ファイルに書けなかったときに消す（PR #671のレビュー）
     new_entries: Vec<String>,
+    /// この実行で作った、平文のパスワードを含む控え。消すかは、確認が
+    /// 通って登録した後に聞く（#705。以前は確認とサインインより前に聞き、
+    /// 後で失敗すると、前の設定が残らなかった）
+    secret_backups: Vec<PathBuf>,
 }
 
 impl Setup<'_> {
@@ -341,7 +346,7 @@ impl Setup<'_> {
                     "Kept the previous config file as {}",
                     backup.display()
                 ));
-                self.offer_to_delete_secret_backup(&backup)?;
+                self.remember_secret_backup(&backup);
             }
             self.io
                 .say(&format!("Wrote the config file: {config_display}\n"));
@@ -510,6 +515,7 @@ impl Setup<'_> {
                 "\nNote: {file} still has a password in plain text. mcp-rs no longer uses that file: delete it, or remove the password from it."
             ));
         }
+        self.offer_to_delete_secret_backups()?;
         Ok(true)
     }
 
@@ -557,14 +563,33 @@ impl Setup<'_> {
         path: &str,
         used_by: &[String],
     ) -> Result<PreviousChoice, Box<dyn std::error::Error>> {
-        let text = std::fs::read_to_string(path)?;
-        let table: toml::Table = match text.trim_start_matches('\u{feff}').parse() {
+        // 読めない（UTF-8でない・権限が無い）、またはTOMLでないときも、
+        // 置き換える設定かを聞く（#705。以前は聞かずに置き換えるものとし、
+        // 読めないときは`init`全体が止まった）
+        let parsed = std::fs::read_to_string(path)
+            .map_err(|e| e.to_string())
+            .and_then(|text| {
+                text.trim_start_matches('\u{feff}')
+                    .parse::<toml::Table>()
+                    .map_err(|_| "it is not valid TOML".to_string())
+            });
+        let table = match parsed {
             Ok(table) => table,
-            Err(_) => {
+            Err(reason) => {
                 self.io.say(&format!(
-                    "mcp-rs is registered with {path} ({}), but it cannot be read as TOML, so nothing is copied from it.\n",
+                    "mcp-rs is registered with another config file: {path} ({}), but it cannot be read ({reason}), so nothing is copied from it.",
                     used_by.join(", ")
                 ));
+                if !confirm(
+                    self.io,
+                    "Is it the setup that the new config file replaces? (answer n for a setup you keep, such as one for another site)",
+                    true,
+                )? {
+                    self.kept_config = Some(path.to_string());
+                    self.io.say("Keeping it as it is.\n");
+                    return Ok(PreviousChoice::NotReplacing);
+                }
+                self.io.say("");
                 return Ok(PreviousChoice::LeaveOut(false));
             }
         };
@@ -697,21 +722,42 @@ impl Setup<'_> {
         }
     }
 
-    /// 平文のパスワードを含む控えなら、消すかを聞く（#599）
-    fn offer_to_delete_secret_backup(&mut self, backup: &Path) -> io::Result<()> {
+    /// 平文のパスワードを含む控えなら、後で消すかを聞くために覚える（#599）
+    fn remember_secret_backup(&mut self, backup: &Path) {
         let plaintext = std::fs::read_to_string(backup)
             .ok()
-            .and_then(|text| text.parse::<toml::Table>().ok())
+            .and_then(|text| {
+                text.trim_start_matches('\u{feff}')
+                    .parse::<toml::Table>()
+                    .ok()
+            })
             .is_some_and(|table| has_plaintext_secret(&table));
-        if plaintext
-            && confirm(
+        if plaintext {
+            self.secret_backups.push(backup.to_path_buf());
+        }
+    }
+
+    /// 平文のパスワードを含む控えを、消すかを聞く（#599）。確認が通って
+    /// 登録した後に呼ぶ（#705）。消せなくても、知らせて続ける
+    fn offer_to_delete_secret_backups(&mut self) -> io::Result<()> {
+        for backup in std::mem::take(&mut self.secret_backups) {
+            if !confirm(
                 self.io,
-                "The backup copy has a password in plain text, which the new config file does not need. Delete the backup copy?",
+                &format!(
+                    "\nThe backup copy {} has a password in plain text, which the new config file does not need. It is the config file as it was before mcp-rs init changed it, so deleting it also deletes any settings that were not copied to the new one. Delete the backup copy?",
+                    backup.display()
+                ),
                 true,
-            )?
-        {
-            std::fs::remove_file(backup)?;
-            self.io.say("Deleted the backup copy.");
+            )? {
+                continue;
+            }
+            match std::fs::remove_file(&backup) {
+                Ok(()) => self.io.say("Deleted the backup copy."),
+                Err(e) => self.io.say(&format!(
+                    "Could not delete the backup copy ({e}). Delete it yourself: {}",
+                    backup.display()
+                )),
+            }
         }
         Ok(())
     }
@@ -951,7 +997,7 @@ impl Setup<'_> {
             "Kept the previous config file as {}",
             backup.display()
         ));
-        self.offer_to_delete_secret_backup(&backup)?;
+        self.remember_secret_backup(&backup);
         self.io.say(&format!(
             "Added [database] to the config file: {}\n",
             self.config_path.display()
@@ -1029,7 +1075,7 @@ impl Setup<'_> {
                     "Kept the previous config file as {}",
                     backup.display()
                 ));
-                self.offer_to_delete_secret_backup(&backup)?;
+                self.remember_secret_backup(&backup);
             }
             // 書けてから知らせる（PR #671のレビュー）
             if let Some(note) = note {
@@ -2729,6 +2775,10 @@ pub(crate) fn make_private(path: &Path) -> io::Result<()> {
 /// 読めるようにする（Unixは600、Windowsは本人・SYSTEM・Administratorsだけの
 /// ACL。#674）
 pub(crate) fn write_atomically(path: &Path, content: &str, private: bool) -> io::Result<()> {
+    // シンボリックリンク（dotfilesの管理等）は、リンク先に書く（#705）。
+    // リンクのまま名前を付け替えると、リンクが普通のファイルに置き換わる
+    let resolved = symlink_target(path)?;
+    let path = resolved.as_deref().unwrap_or(path);
     let name = path
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -2761,6 +2811,25 @@ pub(crate) fn write_atomically(path: &Path, content: &str, private: bool) -> io:
         let _ = std::fs::remove_file(&temporary);
     }
     result
+}
+
+/// `path`がシンボリックリンクなら、たどった先のパス（リンク先がまだ
+/// 無ければ、そのパス）。シンボリックリンクでなければ`None`
+fn symlink_target(path: &Path) -> io::Result<Option<PathBuf>> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {}
+        _ => return Ok(None),
+    }
+    if let Ok(target) = std::fs::canonicalize(path) {
+        return Ok(Some(target));
+    }
+    // リンク先がまだ無い。リンクを1段たどり、相対パスはリンクの場所から
+    let link = std::fs::read_link(path)?;
+    let target = match path.parent() {
+        Some(parent) if link.is_relative() => parent.join(link),
+        _ => link,
+    };
+    Ok(Some(target))
 }
 
 /// 2つのファイルのパスが同じか（区切り文字をそろえ、Windowsでは大文字・
@@ -3377,6 +3446,7 @@ mod tests {
             suggested_url: None,
             added_sites: Vec::new(),
             new_entries: Vec::new(),
+            secret_backups: Vec::new(),
         }
     }
 
@@ -3674,19 +3744,51 @@ file_path = "C:/Users/me/.mcp-rs/logs/audit.log"
         let backup = write_config_file(&path, "[server]\n").unwrap().unwrap();
         let store = MemoryStore::default();
         let mut io = Script::new(&[""]);
-        setup(&mut io, &store)
-            .offer_to_delete_secret_backup(&backup)
-            .unwrap();
+        let mut s = setup(&mut io, &store);
+        // 覚えるだけで、まだ聞かない（#705）
+        s.remember_secret_backup(&backup);
+        assert!(backup.exists());
+        s.offer_to_delete_secret_backups().unwrap();
         assert!(!backup.exists());
         // 平文のパスワードが無い控えは、聞かずに残す
         let backup = write_config_file(&path, "[server]\nlog_level = \"warn\"\n")
             .unwrap()
             .unwrap();
         let mut io = Script::new(&[]);
-        setup(&mut io, &store)
-            .offer_to_delete_secret_backup(&backup)
-            .unwrap();
+        let mut s = setup(&mut io, &store);
+        s.remember_secret_backup(&backup);
+        s.offer_to_delete_secret_backups().unwrap();
         assert!(backup.exists());
+    }
+
+    /// シンボリックリンクの設定ファイルは、リンクのまま、リンク先に書く（#705）
+    #[cfg(unix)]
+    #[test]
+    fn test_write_atomically_keeps_symlinks() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("dotfiles").join("config.toml");
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::write(&target, "old").unwrap();
+        let link = dir.path().join("config.toml");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        write_atomically(&link, "new", true).unwrap();
+        assert!(std::fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "new");
+        // リンク先がまだ無いとき（相対パスのリンク）も、リンク先に作る
+        let missing = dir.path().join("missing.toml");
+        std::os::unix::fs::symlink("dotfiles/missing.toml", &missing).unwrap();
+        write_atomically(&missing, "created", true).unwrap();
+        assert!(std::fs::symlink_metadata(&missing)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("dotfiles").join("missing.toml")).unwrap(),
+            "created"
+        );
     }
 
     /// Unixでは、書いた設定ファイル・控え・フォルダを本人だけにする（#599）
@@ -5066,6 +5168,7 @@ file_path = "C:/Users/me/.mcp-rs/logs/audit.log"
             suggested_url: None,
             added_sites: Vec::new(),
             new_entries: Vec::new(),
+            secret_backups: Vec::new(),
         };
         let (content, _) = setup.new_config(Uses::Database, None).unwrap();
         assert!(content.contains("[database]"), "{content}");
@@ -5403,6 +5506,44 @@ upload_allowed_dirs = [\"/data\"]
             shown.contains("which would be lost: [handlers.wordpress.sites.blog] upload_allowed_dirs. Remove it? [y/N]"),
             "{shown}"
         );
+    }
+
+    /// 前の設定ファイルがTOMLでない・読めないときも、置き換える設定かを
+    /// 聞く。読めなくても`init`を止めない（#705）
+    #[test]
+    fn test_unreadable_previous_config_asks_whether_it_is_replaced() {
+        let dir = tempfile::tempdir().unwrap();
+        let broken = dir.path().join("broken.toml");
+        std::fs::write(&broken, "[handlers.wordpress\n").unwrap();
+        let not_utf8 = dir.path().join("binary.toml");
+        std::fs::write(&not_utf8, [0xff, 0xfe, 0x00, 0x80]).unwrap();
+        let store = MemoryStore::default();
+        let mut io = Script::new(&["n", "", ""]);
+        let mut setup = setup(&mut io, &store);
+        // 「いいえ」なら残す
+        let choice = setup
+            .choose_previous(&broken.display().to_string(), &[])
+            .unwrap();
+        assert!(matches!(choice, PreviousChoice::NotReplacing));
+        assert_eq!(setup.kept_config, Some(broken.display().to_string()));
+        // 既定（はい）なら、何も写さずに置き換える
+        let choice = setup
+            .choose_previous(&broken.display().to_string(), &[])
+            .unwrap();
+        assert!(matches!(choice, PreviousChoice::LeaveOut(false)));
+        // UTF-8でないファイルも、止まらずに聞く
+        let choice = setup
+            .choose_previous(&not_utf8.display().to_string(), &[])
+            .unwrap();
+        assert!(matches!(choice, PreviousChoice::LeaveOut(false)));
+        assert_eq!(
+            io.shown
+                .iter()
+                .filter(|s| s.contains("Is it the setup that the new config file replaces?"))
+                .count(),
+            3
+        );
+        assert!(io.shown.iter().any(|s| s.contains("it is not valid TOML")));
     }
 
     /// `--config`で書く場所を決めたら、複数のサイトの前の設定ファイルに
