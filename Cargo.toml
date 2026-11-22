@@ -47,7 +47,10 @@ sqlparser = { version = "0.62", optional = true, features = ["visitor"] }
 # MySQL ([database] engine = "mysql", #527). TLS uses rustls with the ring
 # provider, as the HTTP server does, so no OpenSSL is needed. The default
 # features had no TLS at all
-mysql_async = { version = "0.36", optional = true, default-features = false, features = ["default-rustls-ring"] }
+mysql_async = { version = "0.37", optional = true, default-features = false, features = ["default-rustls-ring"] }
+# Not used directly. Sets the lower bound of mysql_async's lru (which allows
+# 0.18.0) to the version that fixes RUSTSEC-2026-0253
+lru = { version = "0.18.2", optional = true }
 redis = { version = "0.26", features = ["tokio-comp", "connection-manager"], optional = true }
 # MongoDB support
 mongodb = { version = "3.6", optional = true }
@@ -107,7 +110,7 @@ reqwest = { version = "0.12.24", default-features = false, features = ["json", "
 
 # Validation
 regex = "1.12"
-url = "2.5.7"
+url = "2.5.9"
 urlencoding = "2.1"
 ammonia = "4.1.9"
 
@@ -173,7 +176,7 @@ database = ["postgresql-backend", "dep:sqlparser"]
 redis-backend = ["redis"]
 # The MySQL engine is part of the database handler code. On by default
 # (#527), so release builds and the Docker image can use engine = "mysql"
-mysql-backend = ["database", "mysql_async"]
+mysql-backend = ["database", "mysql_async", "dep:lru"]
 postgresql-backend = []
 sqlite = []
 mongodb-backend = ["mongodb"]
