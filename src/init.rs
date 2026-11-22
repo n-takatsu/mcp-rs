@@ -24,9 +24,9 @@ use zeroize::Zeroizing;
 
 use crate::security::credential_tool::read_hidden;
 use crate::security::keyring_store::{
-    load_wordpress_credentials, site_origin, store_database_credentials,
-    store_wordpress_credentials, DatabaseKeyringCredentials, KeyringError, OsKeyring, SecretStore,
-    WordPressKeyringCredentials,
+    database_entry, load_wordpress_credentials, site_origin, store_database_credentials,
+    store_wordpress_credentials, DatabaseEntry, DatabaseKeyringCredentials, KeyringError,
+    OsKeyring, SecretStore, WordPressKeyringCredentials,
 };
 
 /// サブコマンドの名前
@@ -2402,6 +2402,9 @@ pub(crate) fn ask_database(
     let keyring = if password.is_empty() {
         None
     } else {
+        // パスワードを入れるときだけ、資格情報ストアが要る（PR #671のレビュー）。
+        // 既にある項目を確かめるので、名前を聞く前に確かめる
+        check_store(store)?;
         let entry = match entry {
             Some(entry) => entry.to_string(),
             None => {
@@ -2425,12 +2428,32 @@ pub(crate) fn ask_database(
                         ));
                         continue;
                     }
-                    break answer;
+                    // 設定ファイルに無い項目（別の設定ファイルのWordPressの
+                    // サイト等）も、確かめずに上書きしない（#692）
+                    match database_entry(store, &answer)? {
+                        None => break answer,
+                        Some(DatabaseEntry::Other) => io.say(&format!(
+                            "'{answer}' already holds other credentials (for example a WordPress site's) in the OS credential store. Choose another name."
+                        )),
+                        Some(DatabaseEntry::Database {
+                            host: stored_host,
+                            port: stored_port,
+                            username: stored_user,
+                        }) => {
+                            if confirm(
+                                io,
+                                &format!(
+                                    "'{answer}' already holds the database credentials for {stored_user}@{stored_host}:{stored_port}. Replace them?"
+                                ),
+                                false,
+                            )? {
+                                break answer;
+                            }
+                        }
+                    }
                 }
             }
         };
-        // パスワードを入れるときだけ、資格情報ストアが要る（PR #671のレビュー）
-        check_store(store)?;
         store_database_credentials(
             store,
             &entry,
@@ -2468,7 +2491,20 @@ pub(crate) fn ask_database(
             Err(e) => io.say(&e),
         }
     };
-    let ssl_root_cert = if ssl_mode.starts_with("verify") {
+    let mysql = crate::config::DatabaseSettings {
+        engine: engine.clone(),
+        ..Default::default()
+    }
+    .is_mysql();
+    let ssl_root_cert = if mysql && ssl_mode == "verify-ca" {
+        // MySQLの`verify-ca`は、CAファイルが無いと最後の確認で断る。
+        // パスワードを入れた後で止まらないよう、ここで必須にする（#692）
+        Some(ask_required(
+            io,
+            "CA certificate file (PEM) that signed the server certificate (required for verify-ca): ",
+            "verify-ca needs the CA certificate file. Enter its path.",
+        )?)
+    } else if ssl_mode.starts_with("verify") {
         let answer = io.ask(
             "CA certificate file (PEM) for a private CA, such as Amazon RDS (leave empty for a public CA): ",
         )?;
@@ -4399,6 +4435,127 @@ file_path = "C:/Users/me/.mcp-rs/logs/audit.log"
             .shown
             .iter()
             .any(|s| s.contains("change and delete data in 'shop'")));
+    }
+
+    /// MySQLの`verify-ca`では、CAのファイルを必須として聞き直す。空のまま
+    /// 進むと、パスワードを入れた後で最後の確認に断られるため（#692）
+    #[test]
+    fn test_database_step_requires_a_ca_for_mysql_verify_ca() {
+        let (_dir, path) = config_in_temp(WORDPRESS_ONLY_CONFIG);
+        let store = MemoryStore::default();
+        let mut io = Script::new(&[
+            "y",
+            "mysql",
+            "db.example.com",
+            "",
+            "shop",
+            "app",
+            "s3cret",
+            "",          // 項目の名前
+            "verify-ca", // MySQLでは使える
+            "",          // 空は断る
+            "/etc/ssl/db-ca.pem",
+            "",
+        ]);
+        database_setup(&mut io, &store, &path)
+            .database_step()
+            .unwrap();
+        let config: crate::config::McpConfig =
+            toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let db = config.database.unwrap();
+        assert_eq!(db.ssl_mode.as_deref(), Some("verify-ca"));
+        assert_eq!(db.ssl_root_cert.as_deref(), Some("/etc/ssl/db-ca.pem"));
+        assert!(io
+            .shown
+            .iter()
+            .any(|s| s == "verify-ca needs the CA certificate file. Enter its path."));
+    }
+
+    /// 資格情報ストアに既にある、ほかの種類の項目（別の設定ファイルの
+    /// WordPressのサイト等）の名前は使わない（#692）
+    #[test]
+    fn test_database_step_does_not_overwrite_other_credentials() {
+        let (_dir, path) = config_in_temp(WORDPRESS_ONLY_CONFIG);
+        let store = MemoryStore::default();
+        store
+            .set("app@db.example.com", "{\"kind\":\"wordpress\"}")
+            .unwrap();
+        let mut io = Script::new(&[
+            "y",
+            "",
+            "db.example.com",
+            "",
+            "app",
+            "reader",
+            "s3cret",
+            "",       // app@db.example.com（ほかの種類なので断る）
+            "app-db", // 別の名前
+            "",
+            "",
+            "",
+        ]);
+        database_setup(&mut io, &store, &path)
+            .database_step()
+            .unwrap();
+        assert_eq!(
+            store.get("app@db.example.com").unwrap().unwrap().as_str(),
+            "{\"kind\":\"wordpress\"}"
+        );
+        let config: crate::config::McpConfig =
+            toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(config.database.unwrap().keyring.as_deref(), Some("app-db"));
+        assert!(io
+            .shown
+            .iter()
+            .any(|s| s.contains("'app@db.example.com' already holds other credentials")));
+    }
+
+    /// 既にあるデータベースの資格情報は、置き換えるかを聞く（既定は置き換え
+    /// ない）（#692）
+    #[test]
+    fn test_database_step_asks_before_replacing_database_credentials() {
+        let (_dir, path) = config_in_temp(WORDPRESS_ONLY_CONFIG);
+        let store = MemoryStore::default();
+        store_database_credentials(
+            &store,
+            "app@db.example.com",
+            &DatabaseKeyringCredentials {
+                host: "old.example.com".to_string(),
+                port: 5432,
+                username: "old".to_string(),
+                password: Zeroizing::new("old-password".to_string()),
+            },
+        )
+        .unwrap();
+        let mut io = Script::new(&[
+            "y",
+            "",
+            "db.example.com",
+            "",
+            "app",
+            "reader",
+            "s3cret",
+            "",  // app@db.example.com
+            "",  // 置き換えない
+            "",  // もう1度、同じ名前
+            "y", // 今度は置き換える
+            "",
+            "",
+            "",
+        ]);
+        database_setup(&mut io, &store, &path)
+            .database_step()
+            .unwrap();
+        let shown = io.shown.join("\n");
+        assert!(
+            shown.contains("'app@db.example.com' already holds the database credentials for old@old.example.com:5432. Replace them? [y/N]"),
+            "{shown}"
+        );
+        let config: crate::config::McpConfig =
+            toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let mut resolved = config.database.unwrap();
+        crate::config::McpConfig::resolve_database_credentials_with(&mut resolved, &store).unwrap();
+        assert_eq!(resolved.password.as_deref(), Some("s3cret"));
     }
 
     #[test]

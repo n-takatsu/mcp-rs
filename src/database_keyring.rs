@@ -193,6 +193,11 @@ fn set(
     path: &Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     check_store(store)?;
+    // WordPressの資格情報等を、データベースの資格情報で上書きしない。
+    // データベースの資格情報なら、今までどおり入れ直せる（#692）
+    if let Some(DatabaseEntry::Other) = database_entry(store, name)? {
+        return Err(not_database(name).into());
+    }
     let content = std::fs::read_to_string(path).ok();
     let existing = match &content {
         Some(content) => database_section(content).map_err(|e| {
@@ -249,6 +254,26 @@ fn database_section(content: &str) -> Result<Option<DatabaseSettings>, String> {
     }
 }
 
+/// つなぐ先の値を聞く。展開できなかった`${VAR}`は既定にせず、値そのものを
+/// 聞く。既定がある場合も、`${...}`の答えは断る。資格情報には、mcp-rsが
+/// 実際につなぐ先を入れるため（#692・PR #696のレビュー）
+fn ask_resolved(io: &mut dyn Prompt, label: &str, value: &str) -> std::io::Result<String> {
+    let has_default = !value.contains("${");
+    loop {
+        let answer = if has_default {
+            ask_with_default(io, label, value)?
+        } else {
+            io.ask(&format!(
+                "{label} that mcp-rs connects to ({value} could not be expanded): "
+            ))?
+        };
+        if !answer.is_empty() && !answer.contains("${") {
+            return Ok(answer);
+        }
+        io.say("Enter the value itself, not an environment variable.");
+    }
+}
+
 /// `[database]`がある場合: そのホスト・ポート・ユーザー名を既定にして
 /// パスワードを入れ直し、`[database]`を`keyring`を使う形にするかを聞く
 fn update(
@@ -260,17 +285,19 @@ fn update(
     written: &DatabaseSettings,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // 既定は、`${VAR}`を展開した値（項目は、mcp-rsが実際につなぐ先と
-    // 結び付けるため）。展開できなければ、書いてあるまま
+    // 結び付けるため）。展開できなければ、書いてあるまま見せ、展開できな
+    // かった値は既定にしない（`ask_resolved`）
     let mut expanded = written.clone();
-    if crate::config::McpConfig::expand_database_config(&mut expanded).is_err() {
+    if let Err(e) = crate::config::McpConfig::expand_database_config(&mut expanded) {
         expanded = written.clone();
+        io.say(&format!("Could not expand [database] ({e})."));
     }
     io.say(&format!(
         "[database] in {}: {}",
         path.display(),
         expanded.describe()
     ));
-    let host = ask_with_default(io, "Host", expanded.host())?;
+    let host = ask_resolved(io, "Host", expanded.host())?;
     let default_port = expanded.port();
     let port = loop {
         let answer = io.ask(&format!("Port [{default_port}]: "))?;
@@ -282,7 +309,7 @@ fn update(
             _ => io.say("Enter a port number (1-65535)."),
         }
     };
-    let username = ask_with_default(io, "User name", &expanded.username)?;
+    let username = ask_resolved(io, "User name", &expanded.username)?;
     let password = ask_database_password(io)?;
     store_database_credentials(
         store,
@@ -569,6 +596,91 @@ ssl_mode = "verify-full"
         set(&mut io, &store, "app@db", &path).unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), HAND_WRITTEN);
         assert!(io.shown.iter().any(|s| s.contains("Kept the config file")));
+    }
+
+    /// WordPressの資格情報等の名前には、データベースの資格情報を入れない
+    /// （#692）
+    #[test]
+    fn test_set_refuses_an_entry_of_another_kind() {
+        let (_dir, path) = config_in_temp(HAND_WRITTEN);
+        let store = MemoryStore::default();
+        store_wordpress_credentials(
+            &store,
+            "site",
+            &WordPressKeyringCredentials {
+                site_url: "https://example.com".to_string(),
+                username: "editor".to_string(),
+                application_password: Zeroizing::new("app pass".to_string()),
+            },
+        )
+        .unwrap();
+        let mut io = Script::new(&[]);
+        let err = set(&mut io, &store, "site", &path).unwrap_err().to_string();
+        assert!(err.contains("is not mcp-rs database credentials"), "{err}");
+        // WordPressの資格情報は、そのまま
+        assert!(crate::security::keyring_store::load_wordpress_credentials(&store, "site").is_ok());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), HAND_WRITTEN);
+    }
+
+    /// 展開できない`${VAR}`のホストは既定にせず、値そのものを聞く。
+    /// 資格情報には、mcp-rsが実際につなぐ先を入れる（#692）
+    #[test]
+    fn test_set_does_not_store_an_unexpanded_host() {
+        let config = HAND_WRITTEN.replace(
+            "host = \"db.example.com\"",
+            "host = \"${MCP_RS_TEST_UNSET_DB_HOST_692}\"",
+        );
+        let (_dir, path) = config_in_temp(&config);
+        let store = MemoryStore::default();
+        let mut io = Script::new(&[
+            "",               // 既定は無いので、聞き直す
+            "${OTHER}",       // 環境変数は断る
+            "db.example.com", // ホスト
+            "",               // ポート
+            "",               // ユーザー名
+            "s3cret",
+            "n",
+        ]);
+        set(&mut io, &store, "app@db", &path).unwrap();
+        let stored =
+            load_database_credentials(&store, "app@db", "db.example.com", 5432, "reader").unwrap();
+        assert_eq!(stored.host, "db.example.com");
+        assert!(io
+            .shown
+            .iter()
+            .any(|s| s.starts_with("Could not expand [database]")));
+        assert!(io
+            .shown
+            .iter()
+            .any(|s| s == "Enter the value itself, not an environment variable."));
+    }
+
+    /// 既定がある（展開できた）ときも、`${...}`の答えは断る。空の答えは
+    /// 今までどおり既定（PR #696のレビュー）
+    #[test]
+    fn test_set_refuses_a_variable_as_the_answer() {
+        let (_dir, path) = config_in_temp(HAND_WRITTEN);
+        let store = MemoryStore::default();
+        let mut io = Script::new(&[
+            "${OTHER}", // ホストに環境変数は断る
+            "",         // 既定: db.example.com
+            "",         // ポート
+            "${USER}",  // ユーザー名に環境変数は断る
+            "",         // 既定: reader
+            "s3cret", "n",
+        ]);
+        set(&mut io, &store, "app@db", &path).unwrap();
+        let stored =
+            load_database_credentials(&store, "app@db", "db.example.com", 5432, "reader").unwrap();
+        assert_eq!(stored.host, "db.example.com");
+        assert_eq!(stored.username, "reader");
+        assert_eq!(
+            io.shown
+                .iter()
+                .filter(|s| *s == "Enter the value itself, not an environment variable.")
+                .count(),
+            2
+        );
     }
 
     /// `[database]`が無い: `mcp-rs init`と同じ質問で作り、書き足す

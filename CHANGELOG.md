@@ -191,6 +191,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `mcp-rs init`・`database-keyring set`で、資格情報ストアに既にある項目を、
+  確かめずにデータベースの資格情報で上書きしない（#692）。ほかの種類の項目
+  （別の設定ファイルのWordPressのサイト等）なら、`init`は別の名前を聞き、
+  `database-keyring set`は断る。データベースの資格情報なら、`init`は置き
+  換えるかを聞く（既定は置き換えない）。`database-keyring set`は、今までどおり
+  入れ直せる
+- `mcp-rs init`で、MySQL・MariaDBの`ssl_mode = "verify-ca"`では、CAの
+  ファイルを必須として聞き直す（#692）。以前は空で答えられ、パスワードを
+  資格情報ストアに入れた後で、最後の確認に断られて止まっていた
+- `mcp-rs database-keyring set`で、`[database]`の`${VAR}`を展開できない
+  とき、展開前の文字列（`${DB_HOST}`等）をホスト・ユーザー名の既定にしない
+  （#692）。以前は、そのまま資格情報のホストとして入り、起動時に見つから
+  なかった。値そのものを聞く
+- データベースの資格情報を使うとき、Unixソケットのパス（`/`で始まる
+  ホスト）は大文字小文字を区別して比べる（#692）。ホスト名は今までどおり
+  区別しない
 - `mcp-rs uninstall`で、資格情報ストアを読めなかった項目（Secret Serviceが
   止まっている等）を、無い項目と同じように黙って飛ばさない（#692）。読め
   なかったことと、消していないことを、消すコマンド（`wordpress-keyring
