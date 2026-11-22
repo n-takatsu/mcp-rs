@@ -294,18 +294,22 @@ impl Uninstall<'_> {
         expected: &[EntryKind],
         used_by: &[&PathBuf],
     ) -> String {
+        // 名前は、シェルで1つの引数になるように示す。どのシェルでも安全に
+        // 引用できない名前は、コマンドを組み立てず、引用するよう添える
+        // （PR #695のレビュー）
+        let argument = shell_argument(name);
         let commands: Vec<String> = expected
             .iter()
             .filter_map(|kind| match kind {
-                EntryKind::WordPress => Some(format!(
-                    "`mcp-rs {} delete {name}`",
-                    crate::security::keyring_tool::SUBCOMMAND
-                )),
-                EntryKind::Database => Some(format!(
-                    "`mcp-rs {} delete {name}`",
-                    crate::database_keyring::SUBCOMMAND
-                )),
+                EntryKind::WordPress => Some(crate::security::keyring_tool::SUBCOMMAND),
+                EntryKind::Database => Some(crate::database_keyring::SUBCOMMAND),
                 EntryKind::Other => None,
+            })
+            .map(|subcommand| match &argument {
+                Some(argument) => format!("`mcp-rs {subcommand} delete {argument}`"),
+                None => {
+                    format!("`mcp-rs {subcommand} delete <name>` (quote the name for your shell)")
+                }
             })
             .collect();
         let how = if commands.is_empty() {
@@ -452,6 +456,29 @@ fn describe_kind(kind: EntryKind) -> &'static str {
         EntryKind::Database => "database credentials",
         EntryKind::Other => "an entry that is not mcp-rs credentials",
     }
+}
+
+/// コマンドの引数として示す名前。記号の無い名前はそのまま、空白等を含む
+/// 名前は`"`で囲む（bash・PowerShell・cmdのどれでも1つの引数になる）。
+/// `"`で囲んでも展開・エスケープされる文字（`"` `$` `` ` `` `\` `!` `%`）や
+/// `'`を含む名前は、どのシェルでも同じに書けないので無し（PR #695のレビュー）
+fn shell_argument(name: &str) -> Option<String> {
+    // `,`（PowerShellでは配列）・先頭の`@`（PowerShellの展開）は囲む
+    if !name.is_empty()
+        && !name.starts_with('@')
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "-_.@:/".contains(c))
+    {
+        return Some(name.to_string());
+    }
+    if name
+        .chars()
+        .any(|c| "\"$`\\!%'".contains(c) || c.is_control())
+    {
+        return None;
+    }
+    Some(format!("\"{name}\""))
 }
 
 /// 設定ファイルの`keyring`の名前と、その場所から見込む種類（WordPress・
@@ -976,6 +1003,78 @@ keyring = \"other\"
         let shown = io.shown.join("\n");
         assert!(
             shown.contains("When the OS credential store can be used, run mcp-rs uninstall again, or delete it with `mcp-rs database-keyring delete locked`."),
+            "{shown}"
+        );
+    }
+
+    /// 消すコマンドの名前は、シェルで1つの引数になるように示す
+    /// （PR #695のレビュー）
+    #[test]
+    fn test_shell_argument() {
+        assert_eq!(
+            shell_argument("app@db.example.com").as_deref(),
+            Some("app@db.example.com")
+        );
+        assert_eq!(shell_argument("my blog").as_deref(), Some("\"my blog\""));
+        assert_eq!(shell_argument("a,b").as_deref(), Some("\"a,b\""));
+        assert_eq!(shell_argument("@site").as_deref(), Some("\"@site\""));
+        assert_eq!(shell_argument("ブログ").as_deref(), Some("\"ブログ\""));
+        for name in ["a\"b", "$HOME", "a`b", "a\\b", "a!b", "%PATH%", "it's"] {
+            assert_eq!(shell_argument(name), None, "{name}");
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("config.toml");
+        std::fs::write(
+            &config,
+            "[handlers.wordpress]\nenabled = true\nurl = \"https://example.com\"\nkeyring = \"my blog\"\n\n[database]\nengine = \"postgresql\"\ndatabase = \"app\"\nusername = \"reader\"\nkeyring = \"$db\"\n",
+        )
+        .unwrap();
+        // 2つとも読めないストア
+        struct Locked;
+        impl SecretStore for Locked {
+            fn get(
+                &self,
+                _name: &str,
+            ) -> Result<Option<Zeroizing<String>>, crate::security::keyring_store::KeyringError>
+            {
+                Err(crate::security::keyring_store::KeyringError::Unavailable(
+                    "locked".to_string(),
+                ))
+            }
+            fn set(
+                &self,
+                _name: &str,
+                _secret: &str,
+            ) -> Result<(), crate::security::keyring_store::KeyringError> {
+                Ok(())
+            }
+            fn delete(
+                &self,
+                _name: &str,
+            ) -> Result<bool, crate::security::keyring_store::KeyringError> {
+                Ok(false)
+            }
+        }
+        let mut io = Script::new(&[]);
+        let mut steps = Uninstall {
+            io: &mut io,
+            store: &Locked,
+            desktop_configs: Vec::new(),
+            clis: Vec::new(),
+            default_config: None,
+            exe: None,
+        };
+        steps.remove_credentials(&[config]).unwrap();
+        let shown = io.shown.join("\n");
+        assert!(
+            shown.contains("`mcp-rs wordpress-keyring delete \"my blog\"`"),
+            "{shown}"
+        );
+        assert!(
+            shown.contains(
+                "`mcp-rs database-keyring delete <name>` (quote the name for your shell)"
+            ),
             "{shown}"
         );
     }
