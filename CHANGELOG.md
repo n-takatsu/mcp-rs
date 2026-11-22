@@ -194,7 +194,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `mcp-rs check`で、KubernetesのプラグインのPodの準備中に、起動の確かめ
   （10秒）が打ち切られても、作ったJob・Secretを消す（#697）。以前は、準備の
   中でエラーになったときだけ消し、外から打ち切られたときは残っていた。
-  打ち切られても後片付けを実行するガードにした
+  打ち切られても後片付けを実行するガードにした。また、`check`は、止めた
+  プラグインの後片付け（`docker rm -f`・`kubectl delete`）の終了を、最長
+  10秒待ってから終わる。以前は待たずに終わり、コンテナ・Job・Secretが残る
+  ことがあった。失敗した・終わらなかったものは警告する
 - `mcp-rs check`で、コンテナのプラグインの`env`の名前も、起動するときと
   同じく確かめる（#697）。以前は、`DOCKER_HOST`のように起動時に断られる
   名前でも、`--offline`では通っていた

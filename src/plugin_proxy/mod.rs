@@ -1383,24 +1383,37 @@ pub(crate) mod tests {
     }
 
     /// `path`にファイルを作るコマンド
+    /// （このテストのバイナリを`test_touch_main`だけ動かす。シェルを通さない
+    /// ので、パスに空白等があってもよい。PR #698のレビュー）
     fn touch_cleanup(path: &std::path::Path) -> Cleanup {
-        #[cfg(windows)]
-        let (program, args) = (
-            "cmd",
-            // 引数の`"`はエスケープされてcmdに届くので、囲まない（一時
-            // フォルダのパスに空白は無い）
-            vec!["/c".to_string(), format!("type nul > {}", path.display())],
-        );
-        #[cfg(not(windows))]
-        let (program, args) = (
-            "sh",
-            vec!["-c".to_string(), format!(": > '{}'", path.display())],
-        );
         Cleanup {
-            program: program.to_string(),
-            args,
-            env: Vec::new(),
+            program: std::env::current_exe()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned(),
+            args: vec![
+                "--exact".to_string(),
+                "plugin_proxy::tests::test_touch_main".to_string(),
+                "--ignored".to_string(),
+                "--test-threads=1".to_string(),
+            ],
+            env: vec![(
+                TEST_TOUCH_ENV.to_string(),
+                path.to_string_lossy().into_owned(),
+            )],
             ignore_already_removed: false,
+        }
+    }
+
+    const TEST_TOUCH_ENV: &str = "MCP_RS_TEST_TOUCH";
+
+    /// `touch_cleanup`から動かすとき（`MCP_RS_TEST_TOUCH`があるとき）だけ、
+    /// そのパスにファイルを作る
+    #[test]
+    #[ignore]
+    fn test_touch_main() {
+        if let Some(path) = std::env::var_os(TEST_TOUCH_ENV) {
+            std::fs::write(path, b"").unwrap();
         }
     }
 
@@ -1421,7 +1434,8 @@ pub(crate) mod tests {
     #[test]
     fn test_cleanup_on_drop() {
         let dir = tempfile::tempdir().unwrap();
-        let dropped = dir.path().join("dropped");
+        // パスに空白があってもよい（PR #698のレビュー）
+        let dropped = dir.path().join("dropped marker");
         drop(CleanupOnDrop::new(touch_cleanup(&dropped)));
         assert!(wait_for_file(&dropped));
 

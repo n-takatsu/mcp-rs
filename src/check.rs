@@ -706,6 +706,46 @@ async fn check_plugins(plugins: &[PluginConfig], offline: bool, report: &mut Rep
         }
         report_plugin_start(plugin, &item, report).await;
     }
+    if !offline {
+        wait_for_plugin_cleanups(report).await;
+    }
+}
+
+/// 止めたプラグインの後片付け（`docker rm -f`・`kubectl delete`）の終了を
+/// 待つ。待たずに`check`が終わると、プロセスの終了でコマンドが動かず、
+/// コンテナ・Job・Secretが残ることがある（PR #698のレビュー）
+async fn wait_for_plugin_cleanups(report: &mut Report) {
+    let cleanups =
+        tokio::task::spawn_blocking(|| crate::plugin_proxy::wait_for_cleanups(CLEANUP_TIMEOUT))
+            .await
+            .unwrap_or_else(|_| crate::plugin_proxy::CleanupReport {
+                timed_out: true,
+                failures: Vec::new(),
+            });
+    report_plugin_cleanups(&cleanups, report);
+}
+
+/// 後片付けを待つ時間（サーバーとして終わるときと同じ）
+const CLEANUP_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// 後片付けで失敗した・終わらなかったものを、手で確かめるコマンドと合わせて
+/// 知らせる
+fn report_plugin_cleanups(cleanups: &crate::plugin_proxy::CleanupReport, report: &mut Report) {
+    const ITEM: &str = "plugin cleanup";
+    const HOW: &str = "check for any left over with docker ps -a --filter label=mcp-rs.plugin / kubectl get jobs,secrets -l mcp-rs.plugin";
+    for failure in &cleanups.failures {
+        report.push(Status::Warn, ITEM, format!("{failure}; {HOW}"));
+    }
+    if cleanups.timed_out {
+        report.push(
+            Status::Warn,
+            ITEM,
+            format!(
+                "removing the plugin containers or Kubernetes jobs did not finish within {} seconds; {HOW}",
+                CLEANUP_TIMEOUT.as_secs()
+            ),
+        );
+    }
 }
 
 /// プラグインを起動して、ツールの一覧まで受け取り、止める。監査ログは
@@ -1206,5 +1246,31 @@ mod tests {
             .unwrap_err()
             .contains("not found in PATH"));
         assert!(find_command("./mcp-rs-surely-missing-command").is_err());
+    }
+
+    /// プラグインの後片付けで失敗した・終わらなかったものは、手で確かめる
+    /// コマンドと合わせて警告する（PR #698のレビュー）
+    #[test]
+    fn test_report_plugin_cleanups() {
+        let mut report = Report::default();
+        report_plugin_cleanups(&crate::plugin_proxy::CleanupReport::default(), &mut report);
+        assert!(report.items.is_empty());
+
+        let cleanups = crate::plugin_proxy::CleanupReport {
+            timed_out: true,
+            failures: vec!["`kubectl delete job/x` failed (exit code: 1)".to_string()],
+        };
+        report_plugin_cleanups(&cleanups, &mut report);
+        let shown = report.render();
+        assert!(shown.contains("plugin cleanup"), "{shown}");
+        assert!(shown.contains("`kubectl delete job/x` failed"), "{shown}");
+        assert!(
+            shown.contains("did not finish within 10 seconds"),
+            "{shown}"
+        );
+        assert!(
+            shown.contains("kubectl get jobs,secrets -l mcp-rs.plugin"),
+            "{shown}"
+        );
     }
 }
