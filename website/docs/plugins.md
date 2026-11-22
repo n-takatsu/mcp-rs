@@ -126,7 +126,7 @@ What mcp-rs creates:
 |---|---|
 | NetworkPolicy `mcp-rs-plugin-deny-all` | Created once per namespace when `network = "none"`. Blocks all traffic to and from pods labeled `mcp-rs.network=none` |
 | Job `mcp-rs-<plugin name>-<random>` | `backoffLimit: 0` (never restarted), deleted by Kubernetes 60 seconds after it finishes |
-| Secret (same name as the Job) | Only when `env` is set. Owned by the Job |
+| Secret (same name as the Job) | Only when `env` is set. Owned by the Job from the moment it is created: mcp-rs creates the Job suspended, then the Secret, then resumes the Job. If the Job is gone, Kubernetes deletes the Secret |
 
 The plugin's pod runs with:
 
@@ -156,10 +156,10 @@ metadata:
 rules:
   - apiGroups: ["batch"]
     resources: ["jobs"]
-    verbs: ["create", "delete"]
+    verbs: ["get", "create", "patch", "delete"]
   - apiGroups: [""]
     resources: ["secrets"]
-    verbs: ["create", "patch", "delete"]
+    verbs: ["create", "delete"]
   - apiGroups: ["networking.k8s.io"]
     resources: ["networkpolicies"]
     verbs: ["get", "create", "patch"]
@@ -170,6 +170,10 @@ rules:
     resources: ["pods/attach"]
     verbs: ["create"]
 ```
+
+Until v0.29.0, mcp-rs needed `patch` on `secrets` instead of `get` and `patch` on `jobs`. `get` and `patch` on `jobs` are used only for plugins with `env` (`kubectl patch` reads the Job before changing it).
+
+Plugins with `env` need Kubernetes 1.22 or later (the Job's `spec.suspend`, on by default since 1.22). Plugins without `env` do not use it.
 
 If the plugin cannot start (for example, the image cannot be pulled, or the pod does not start within `start_timeout_seconds`), the warning says why, and `kubectl`'s own message is in the log lines that start with `[plugin <name>]`.
 

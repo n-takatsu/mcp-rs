@@ -2565,6 +2565,33 @@ for line in sys.stdin:
         eprintln!("probe (network = allow): {}", result);
         assert_eq!(result["network"], json!("ok"));
 
+        // Secretは、作る時点から同じプラグインのJobが所有者（#700）
+        for plugin in ["k8snone", "k8sallow"] {
+            let get = |kind: &str, jsonpath: &str| {
+                let output = std::process::Command::new("kubectl")
+                    .args([
+                        "get",
+                        kind,
+                        "-o",
+                        &format!("jsonpath={}", jsonpath),
+                        &format!("--selector={}={}", CONTAINER_LABEL, plugin),
+                    ])
+                    .output()
+                    .unwrap();
+                String::from_utf8_lossy(&output.stdout).trim().to_string()
+            };
+            let owner = get(
+                "secrets",
+                "{.items[0].metadata.ownerReferences[0].kind}/{.items[0].metadata.ownerReferences[0].name}/{.items[0].metadata.ownerReferences[0].uid}",
+            );
+            let job = get(
+                "jobs",
+                "Job/{.items[0].metadata.name}/{.items[0].metadata.uid}",
+            );
+            assert!(job.len() > "Job//".len(), "no job for {}", plugin);
+            assert_eq!(owner, job, "owner of the secret for {}", plugin);
+        }
+
         // 止めると、JobとSecretも残らない
         assert!(!kubernetes_resources_with_label("k8snone").is_empty());
         drop(isolated);

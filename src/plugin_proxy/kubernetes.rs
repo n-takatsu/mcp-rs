@@ -5,8 +5,9 @@
 //! クラスタ内のServiceAccount）をそのまま使う。
 //!
 //! - `env`の値はSecretに入れ、マニフェストとして標準入力で渡す（コマンド
-//!   ラインに載せない）。SecretはJobを所有者にして、Jobと一緒に消えるように
-//!   する
+//!   ラインに載せない）。SecretはJobを所有者にして作り、Jobと一緒に消える
+//!   ようにする。そのため、Jobを一時停止（`spec.suspend`）で先に作り、
+//!   Secretを作った後で一時停止を解く（#700）
 //! - Jobは`backoffLimit: 0`（再起動しない）・`ttlSecondsAfterFinished`付き。
 //!   mcp-rsが強制終了しても、Podは標準入力が閉じて終わり、Jobは消える
 //! - 停止時・終了時は、`kubectl delete`でJobとSecretを消す
@@ -249,12 +250,28 @@ fn network_policy_manifest() -> Value {
     })
 }
 
-fn secret_manifest(name: &str, labels: &Map<String, Value>, env: &[(String, String)]) -> Value {
+/// `job_uid`のJobを所有者にしたSecret。作成がいつ確定しても、Jobが
+/// もう無ければ、Kubernetesのガベージコレクションが消す（#700）
+fn secret_manifest(
+    name: &str,
+    labels: &Map<String, Value>,
+    env: &[(String, String)],
+    job_uid: &str,
+) -> Value {
     let data: Map<String, Value> = env.iter().map(|(k, v)| (k.clone(), json!(v))).collect();
     json!({
         "apiVersion": "v1",
         "kind": "Secret",
-        "metadata": { "name": name, "labels": labels },
+        "metadata": {
+            "name": name,
+            "labels": labels,
+            "ownerReferences": [{
+                "apiVersion": "batch/v1",
+                "kind": "Job",
+                "name": name,
+                "uid": job_uid
+            }]
+        },
         "type": "Opaque",
         "stringData": data
     })
@@ -312,7 +329,7 @@ fn job_manifest(
         container["envFrom"] = json!([{ "secretRef": { "name": name } }]);
     }
 
-    json!({
+    let mut job = json!({
         "apiVersion": "batch/v1",
         "kind": "Job",
         "metadata": { "name": name, "labels": labels },
@@ -340,7 +357,14 @@ fn job_manifest(
                 }
             }
         }
-    })
+    });
+    if with_secret {
+        // 一時停止で作り、Secretを作ってから一時停止を解く（Podは一時停止を
+        // 解くまで作られない）。`suspend`はKubernetes 1.21からのフィールドで、
+        // `env`を使わないプラグインには付けない（古い版でも今までどおり作れる）
+        job["spec"]["suspend"] = json!(true);
+    }
+    job
 }
 
 /// Jobを作り、Podが動き始めるまで待って、`kubectl attach`のコマンドを返す。
@@ -401,9 +425,11 @@ pub(super) async fn prepare(
     }
     delete_args.extend(strings(&["--ignore-not-found", "--wait=false"]));
     delete_args.extend(kubectl.target_args.iter().cloned());
-    // Secret → Jobの順に作る（PodがSecretを待たないように）。ここから
-    // 後で失敗したら、作ったものを消す。外から打ち切られた（このFutureが
-    // 落とされた）ときも、ガードが落ちるときに消す（#697）
+    // Job（Secretを使うなら一時停止）→ Jobを所有者にしたSecret → 一時停止を
+    // 解く、の順に作る。Secretの作成の途中で打ち切られ、後片付けの後に
+    // 作成が確定しても、所有者のJobが無いので、ガベージコレクションが消す
+    // （#700）。ここから後で失敗したら、作ったものを消す。外から打ち切られた
+    // （このFutureが落とされた）ときも、ガードが落ちるときに消す（#697）
     let cleanup = CleanupOnDrop::new(Cleanup {
         program: kubectl.program.clone(),
         args: delete_args,
@@ -411,14 +437,6 @@ pub(super) async fn prepare(
         ignore_already_removed: false,
     });
     let result = async {
-        if with_secret {
-            kubectl
-                .run(
-                    &strings(&["create", "-f", "-"]),
-                    Some(&secret_manifest(&name, &labels, env).to_string()),
-                )
-                .await?;
-        }
         let uid = kubectl
             .run(
                 &strings(&["create", "-f", "-", "-o", "jsonpath={.metadata.uid}"]),
@@ -426,26 +444,33 @@ pub(super) async fn prepare(
             )
             .await?;
         if with_secret {
-            // Jobを所有者にして、Jobが消えたらSecretも消えるようにする
-            let patch = json!({
-                "metadata": { "ownerReferences": [{
-                    "apiVersion": "batch/v1",
-                    "kind": "Job",
-                    "name": name,
-                    "uid": uid.trim()
-                }] }
-            });
+            let uid = uid.trim();
+            if uid.is_empty() {
+                return Err(format!("kubectl did not report the uid of job/{}", name));
+            }
+            kubectl
+                .run(
+                    &strings(&["create", "-f", "-"]),
+                    Some(&secret_manifest(&name, &labels, env, uid).to_string()),
+                )
+                .await?;
             kubectl
                 .run(
                     &[
                         "patch".to_string(),
-                        format!("secret/{}", name),
+                        format!("job/{}", name),
                         "--type=merge".to_string(),
-                        format!("--patch={}", patch),
+                        format!("--patch={}", json!({ "spec": { "suspend": false } })),
                     ],
                     None,
                 )
-                .await?;
+                .await
+                .map_err(|e| {
+                    format!(
+                        "{} (mcp-rs needs the \"get\" and \"patch\" permissions on jobs to start the job after creating its secret)",
+                        e
+                    )
+                })?;
         }
         wait_for_running_pod(&kubectl, &instance, start_timeout).await
     }
@@ -576,6 +601,8 @@ mod tests {
         let labels = labels(&config.name, "abc123");
         let job = job_manifest(&config, &kubernetes, &name, &labels, true);
 
+        // Secretを使うので、一時停止で作る
+        assert_eq!(job["spec"]["suspend"], json!(true));
         assert_eq!(job["spec"]["backoffLimit"], json!(0));
         assert_eq!(
             job["spec"]["ttlSecondsAfterFinished"],
@@ -647,6 +674,8 @@ mod tests {
         let pod = &job["spec"]["template"]["spec"];
         let container = &pod["containers"][0];
 
+        // Secretを使わないので、`suspend`を付けない
+        assert!(job["spec"].get("suspend").is_none());
         assert!(job["spec"]["template"]["metadata"]["labels"]
             .get(NETWORK_LABEL)
             .is_none());
@@ -670,10 +699,15 @@ mod tests {
     fn test_secret_and_network_policy_manifests() {
         let labels = labels("p", "x");
         let env = vec![("API_KEY".to_string(), "secret-value".to_string())];
-        let secret = secret_manifest("n", &labels, &env);
+        let secret = secret_manifest("n", &labels, &env, "uid-1");
         assert_eq!(secret["kind"], json!("Secret"));
         assert_eq!(secret["stringData"], json!({ "API_KEY": "secret-value" }));
         assert_eq!(secret["metadata"]["labels"]["mcp-rs.instance"], json!("x"));
+        // 作る時点で、Jobが所有者になっている
+        assert_eq!(
+            secret["metadata"]["ownerReferences"],
+            json!([{ "apiVersion": "batch/v1", "kind": "Job", "name": "n", "uid": "uid-1" }])
+        );
 
         let policy = network_policy_manifest();
         assert_eq!(policy["metadata"]["name"], json!(NETWORK_POLICY_NAME));
