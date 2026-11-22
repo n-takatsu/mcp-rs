@@ -1,0 +1,171 @@
+<#
+.SYNOPSIS
+    今の作業に関係のないビルド成果物を消してから、cargo build を実行します。
+
+.DESCRIPTION
+    消すもの:
+      1. このスクリプトを実行している worktree 以外の worktree にある target/
+         （作り直せるものだけです。ソースや未コミットの変更には触れません）
+      2. 各 worktree の直下にある target-* フォルダ
+         （CARGO_TARGET_DIR に一時的に使ったもの。CACHEDIR.TAG があるものだけ消します）
+      3. -RemoveWorktrees を付けたときだけ、次の条件をすべて満たす worktree そのもの
+         - detached HEAD である
+         - 未コミットの変更や追跡外のファイルがない（target/ などの無視されたファイルは除く）
+         - HEAD が origin/develop に取り込み済み
+      4. 今の target/ は、rustc のバージョンが前回と変わったときだけ cargo clean します。
+         cargo-sweep が入っていれば、-SweepDays 日より古い成果物も消します。
+
+.PARAMETER WhatIf
+    消すものを表示するだけで、実際には消さず、ビルドもしません。
+
+.PARAMETER RemoveWorktrees
+    取り込み済みで変更のない detached HEAD の worktree も消します。
+
+.PARAMETER NoBuild
+    掃除だけして、ビルドはしません。
+
+.PARAMETER SweepDays
+    cargo-sweep があるとき、この日数より古い成果物を消します（既定 14）。
+
+.PARAMETER CargoArgs
+    cargo build に渡す引数。例: -CargoArgs '--release'
+
+.EXAMPLE
+    ./scripts/clean-build.ps1 -WhatIf
+    ./scripts/clean-build.ps1
+    ./scripts/clean-build.ps1 -RemoveWorktrees -CargoArgs '--release'
+#>
+[CmdletBinding(SupportsShouldProcess = $true)]
+param(
+    [switch]$RemoveWorktrees,
+    [switch]$NoBuild,
+    [int]$SweepDays = 14,
+    [string[]]$CargoArgs = @()
+)
+
+$ErrorActionPreference = 'Stop'
+
+function Get-FullPath([string]$Path) {
+    [System.IO.Path]::GetFullPath($Path).TrimEnd('\', '/')
+}
+
+function Remove-BuildDir([string]$Path, [string]$Reason) {
+    if (-not (Test-Path -LiteralPath $Path)) { return }
+    if ($PSCmdlet.ShouldProcess($Path, "削除 ($Reason)")) {
+        Write-Host "削除: $Path ($Reason)"
+        # Remove-Item -Recurse は大きなフォルダでとても遅いため rd を使う
+        cmd /c rd /s /q "`"$Path`"" 2>$null
+        if (Test-Path -LiteralPath $Path) {
+            Write-Warning "消しきれませんでした（ビルド中のプロセスが使っている可能性があります）: $Path"
+        }
+    }
+}
+
+function Test-CargoTargetDir([string]$Path) {
+    # cargo は target ディレクトリに CACHEDIR.TAG を作る
+    Test-Path -LiteralPath (Join-Path $Path 'CACHEDIR.TAG')
+}
+
+function Get-FreeBytes([string]$Path) {
+    $root = [System.IO.Path]::GetPathRoot((Get-FullPath $Path))
+    (New-Object System.IO.DriveInfo($root)).AvailableFreeSpace
+}
+
+$current = Get-FullPath (git rev-parse --show-toplevel)
+if ($LASTEXITCODE -ne 0) { throw 'git リポジトリの中で実行してください。' }
+$freeBefore = Get-FreeBytes $current
+
+# --- worktree の一覧 -------------------------------------------------------
+$worktrees = @()
+$entry = $null
+foreach ($line in (git worktree list --porcelain)) {
+    if ($line -like 'worktree *') {
+        if ($entry) { $worktrees += $entry }
+        $entry = [ordered]@{ Path = Get-FullPath $line.Substring(9); Head = $null; Detached = $false; Branch = $null }
+    } elseif ($line -like 'HEAD *') {
+        $entry.Head = $line.Substring(5)
+    } elseif ($line -eq 'detached') {
+        $entry.Detached = $true
+    } elseif ($line -like 'branch *') {
+        $entry.Branch = $line.Substring(7)
+    }
+}
+if ($entry) { $worktrees += $entry }
+
+git fetch --quiet origin develop 2>$null
+
+foreach ($wt in $worktrees) {
+    $isCurrent = $wt.Path -ieq $current
+
+    # 直下の target-*（一時的な CARGO_TARGET_DIR）
+    Get-ChildItem -LiteralPath $wt.Path -Directory -Filter 'target-*' -ErrorAction SilentlyContinue |
+        Where-Object { Test-CargoTargetDir $_.FullName } |
+        ForEach-Object { Remove-BuildDir $_.FullName '一時的な target ディレクトリ' }
+
+    if ($isCurrent) { continue }
+
+    $label = if ($wt.Branch) { $wt.Branch -replace '^refs/heads/', '' } else { "detached $($wt.Head.Substring(0, 7))" }
+
+    if ($RemoveWorktrees -and $wt.Detached) {
+        $dirty = git -C $wt.Path status --porcelain
+        git merge-base --is-ancestor $wt.Head origin/develop 2>$null
+        $merged = $LASTEXITCODE -eq 0
+        if (-not $dirty -and $merged) {
+            if ($PSCmdlet.ShouldProcess($wt.Path, "worktree を削除 ($label, develop に取り込み済み)")) {
+                Write-Host "worktree を削除: $($wt.Path) ($label)"
+                # target/ は無視されたファイルなので、先に消してから worktree remove する
+                Remove-BuildDir (Join-Path $wt.Path 'target') '削除する worktree のビルド成果物'
+                git worktree remove $wt.Path
+            }
+            continue
+        }
+        $why = @()
+        if ($dirty) { $why += '未コミットの変更あり' }
+        if (-not $merged) { $why += 'develop に未取り込み' }
+        Write-Host "worktree は残します: $($wt.Path) ($label, $($why -join ', '))"
+    }
+
+    $target = Join-Path $wt.Path 'target'
+    if (Test-CargoTargetDir $target) {
+        Remove-BuildDir $target "別の worktree ($label) のビルド成果物"
+    }
+}
+
+if ($PSCmdlet.ShouldProcess('git worktree', 'prune')) { git worktree prune }
+
+# --- 今の target/ -----------------------------------------------------------
+$targetDir = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Path $current 'target' }
+$stamp = Join-Path $targetDir '.rustc-version'
+$rustc = (rustc -vV) -join "`n"
+if ((Test-Path -LiteralPath $stamp) -and ((Get-Content -Raw -LiteralPath $stamp).Trim() -ne $rustc.Trim())) {
+    if ($PSCmdlet.ShouldProcess($targetDir, 'cargo clean (rustc のバージョンが変わったため)')) {
+        Write-Host 'rustc のバージョンが変わったので cargo clean します。'
+        Push-Location $current
+        try { cargo clean } finally { Pop-Location }
+    }
+}
+
+if (Get-Command cargo-sweep -ErrorAction SilentlyContinue) {
+    if ($PSCmdlet.ShouldProcess($targetDir, "cargo sweep --time $SweepDays")) {
+        Push-Location $current
+        try { cargo sweep --time $SweepDays } finally { Pop-Location }
+    }
+}
+
+$freed = (Get-FreeBytes $current) - $freeBefore
+if (-not $WhatIfPreference) {
+    Write-Host ('空いた容量: {0:N1} GB' -f ($freed / 1GB))
+}
+
+# --- ビルド ---------------------------------------------------------------
+if ($NoBuild -or $WhatIfPreference) { return }
+
+Push-Location $current
+try {
+    cargo build @CargoArgs
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    New-Item -ItemType Directory -Force $targetDir | Out-Null
+    Set-Content -LiteralPath $stamp -Value $rustc -NoNewline
+} finally {
+    Pop-Location
+}
