@@ -1432,10 +1432,21 @@ pub fn config_path_from_env(value: Option<&str>) -> Option<String> {
 /// ホームフォルダを展開したパス。`mcp-rs init`の既定の書き先（#575）。
 /// ホームフォルダが分からなければ`None`
 pub fn user_config_path() -> Option<String> {
-    let home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .ok()?;
+    let home = home_dir_from_env()?;
     expand_home_dir(USER_CONFIG_PATH, Some(&home)).filter(|path| !path.starts_with('~'))
+}
+
+/// ホームフォルダ（`HOME`、無ければ`USERPROFILE`）。空の値は飛ばす（#710。
+/// 以前は`HOME`が空の文字列だと、`USERPROFILE`を見なかった）
+pub fn home_dir_from_env() -> Option<String> {
+    home_dir_from(|name| std::env::var(name).ok())
+}
+
+fn home_dir_from(var: impl Fn(&str) -> Option<String>) -> Option<String> {
+    ["HOME", "USERPROFILE"]
+        .into_iter()
+        .filter_map(var)
+        .find(|home| !home.trim().is_empty())
 }
 
 /// `--config`のパスの先頭の`~/`（Windowsでは`~\`も）を、ホームフォルダに
@@ -1444,9 +1455,7 @@ pub fn user_config_path() -> Option<String> {
 /// 起動したフォルダの中の`~`という名前のフォルダを探してしまう。ホーム
 /// フォルダが分からなければ、そのまま返す（相対パスの警告が出る）
 pub fn expand_config_path(path: &str) -> String {
-    let home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .ok();
+    let home = home_dir_from_env();
     expand_config_path_with(path, home.as_deref())
 }
 
@@ -2009,9 +2018,7 @@ impl McpConfig {
         // プロジェクトのフォルダで起動するクライアント（Claude Code等）では、
         // 開いたリポジトリの設定ファイルで、任意のコマンド（プラグイン）を
         // 実行させたり、資格情報を別のサイトへ送らせたりできた
-        let home = std::env::var("HOME")
-            .or_else(|_| std::env::var("USERPROFILE"))
-            .ok();
+        let home = home_dir_from_env();
 
         let mut config_file_found = false;
         let mut loaded_config_file = None;
@@ -4118,6 +4125,33 @@ enabled = false
             "{message}"
         );
         assert!(!message.contains("s3cret-cmd"), "{message}");
+    }
+
+    /// ホームフォルダは、空の`HOME`を飛ばして`USERPROFILE`を見る（#710）
+    #[test]
+    fn test_home_dir_from() {
+        let env = |home: Option<&str>, profile: Option<&str>| {
+            let home = home.map(str::to_string);
+            let profile = profile.map(str::to_string);
+            move |name: &str| match name {
+                "HOME" => home.clone(),
+                "USERPROFILE" => profile.clone(),
+                _ => None,
+            }
+        };
+        assert_eq!(
+            home_dir_from(env(Some("/home/me"), Some(r"C:\Users\me"))),
+            Some("/home/me".to_string())
+        );
+        assert_eq!(
+            home_dir_from(env(Some(""), Some(r"C:\Users\me"))),
+            Some(r"C:\Users\me".to_string())
+        );
+        assert_eq!(
+            home_dir_from(env(None, Some(r"C:\Users\me"))),
+            Some(r"C:\Users\me".to_string())
+        );
+        assert_eq!(home_dir_from(env(Some(" "), Some(""))), None);
     }
 
     /// `--config`の`~/`は、ホームフォルダに展開する（PR #551のレビュー）

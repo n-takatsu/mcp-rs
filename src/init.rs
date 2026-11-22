@@ -52,6 +52,13 @@ pub fn parse_args(args: &[String]) -> Result<InitArgs, String> {
         match arg.as_str() {
             "--help" | "-h" => parsed.help = true,
             "--config" => match rest.next() {
+                // 次のオプション（`--help`等）は、パスとして受け取らない（#710）。
+                // `-`で始まるパスは`--config=<path>`で渡せる
+                Some(path) if path.starts_with('-') => {
+                    return Err(format!(
+                        "--config needs a path, not the option {path}. For a path that starts with -, use --config=<path>"
+                    ))
+                }
                 Some(path) if !path.is_empty() => parsed.config = Some(path.clone()),
                 _ => return Err("--config needs a path".to_string()),
             },
@@ -144,6 +151,7 @@ pub async fn run(args: &[String]) -> Result<bool, String> {
         added_sites: Vec::new(),
         new_entries: Vec::new(),
         secret_backups: Vec::new(),
+        replaced_entries: Vec::new(),
     }
     .run()
     .await;
@@ -235,6 +243,10 @@ struct Setup<'a> {
     /// 通って登録した後に聞く（#705。以前は確認とサインインより前に聞き、
     /// 後で失敗すると、前の設定が残らなかった）
     secret_backups: Vec<PathBuf>,
+    /// この実行で入れ直した、既にあった資格情報の項目と、前の中身（#710）。
+    /// 確認が通らずに終わったら、前の中身に戻す（ほかの設定ファイルも
+    /// 同じ項目を使うことがある）
+    replaced_entries: Vec<(String, Zeroizing<String>)>,
 }
 
 impl Setup<'_> {
@@ -439,6 +451,7 @@ impl Setup<'_> {
                     continue;
                 }
             }
+            self.restore_replaced_entries();
             if uses_wordpress {
                 self.io.say(
                     "mcp-rs would not work with this config file yet, so it was not registered with any client. Fix the errors above, then run mcp-rs init again. To enter the credentials again, answer y to replacing the config file and n to using the stored credentials.",
@@ -726,6 +739,22 @@ impl Setup<'_> {
         }
     }
 
+    /// この実行で入れ直した、既にあった資格情報の項目を、前の中身に戻す
+    /// （#710）。確認が通らずに終わるときに呼ぶ
+    fn restore_replaced_entries(&mut self) {
+        for (entry, previous) in std::mem::take(&mut self.replaced_entries) {
+            match self.store.set(&entry, &previous) {
+                Ok(()) => self.io.say(&format!(
+                    "Restored the previous credentials named '{entry}' in the OS credential store (the ones entered now did not work)."
+                )),
+                Err(e) => self.io.say(&format!(
+                    "Could not restore the previous credentials named '{entry}' ({e}). Enter them again with: mcp-rs wordpress-keyring set {}",
+                    quote_arg(&entry)
+                )),
+            }
+        }
+    }
+
     /// 平文のパスワードを含む控えなら、後で消すかを聞くために覚える（#599）
     fn remember_secret_backup(&mut self, backup: &Path) {
         let plaintext = std::fs::read_to_string(backup)
@@ -800,6 +829,13 @@ impl Setup<'_> {
                     .io
                     .ask("Site URL (for example https://example.com): ")?,
             };
+            // 入力したURLは表示しない（パスワードがあるため）
+            if url_has_credentials(&answer) {
+                self.io.say(
+                    "Enter the URL without a username or password (mcp-rs asks for them next, and keeps them in the OS credential store).",
+                );
+                continue;
+            }
             match normalize_site_url(&answer) {
                 Some(url) => match taken.iter().find(|site| site.url == url) {
                     Some(site) => self.io.say(&format!(
@@ -890,6 +926,13 @@ impl Setup<'_> {
                 }
             }
             Err(e) => return Err(e.into()),
+        }
+        // 既にある項目を入れ直すときは、前の中身を覚えておき、確認が通らずに
+        // 終わったら戻す（#710。以前は、確かめる前に上書きしたままだった）
+        if !new_entry && !self.replaced_entries.iter().any(|(name, _)| *name == entry) {
+            if let Ok(Some(previous)) = self.store.get(&entry) {
+                self.replaced_entries.push((entry.clone(), previous));
+            }
         }
         self.enter_credentials(&url, &entry)?;
         if new_entry {
@@ -1735,10 +1778,7 @@ impl Cli {
 
 /// ホームフォルダ
 fn home_dir() -> Option<PathBuf> {
-    std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .filter(|home| !home.is_empty())
-        .map(PathBuf::from)
+    crate::config::home_dir_from_env().map(PathBuf::from)
 }
 
 /// Claude Codeのユーザーの設定（`--scope user`の登録）。
@@ -1852,12 +1892,10 @@ fn config_arg(args: &[&str]) -> Option<String> {
 /// Windowsでは大文字・小文字を区別しない
 fn same_config_file(other: Option<&str>, ours: &str) -> bool {
     let normalize = |path: &str| {
-        let path = crate::config::expand_config_path(path.trim()).replace('\\', "/");
-        if cfg!(windows) {
-            path.to_lowercase()
-        } else {
-            path
-        }
+        normalize_path(
+            &crate::config::expand_config_path(path.trim()),
+            cfg!(windows),
+        )
     };
     let other = match other {
         Some(path) => path.to_string(),
@@ -1869,13 +1907,50 @@ fn same_config_file(other: Option<&str>, ours: &str) -> bool {
     normalize(&other) == normalize(ours)
 }
 
-/// 表示するコマンドの引数を、空白等があれば`"`で囲む
+/// 表示するコマンドの引数を、貼り付けるシェル（WindowsはPowerShell、
+/// ほかはsh・bash）でそのまま渡る形にする（#710）。以前は空白と引用符
+/// だけを見て`"…"`で囲んだので、`$`・`` ` ``等を含むパスは、貼ると
+/// 展開されて別のパスになった
 fn quote_arg(arg: &str) -> String {
-    if !arg.is_empty() && !arg.contains(|c: char| c.is_whitespace() || c == '"' || c == '\'') {
-        arg.to_string()
+    quote_arg_for(arg, cfg!(windows))
+}
+
+fn quote_arg_for(arg: &str, powershell: bool) -> String {
+    // そのままで渡る文字（PowerShellでは、先頭の`@`と`,`は特別）
+    let bare = if powershell {
+        !arg.starts_with('@')
+            && arg
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || "-_./:\\".contains(c))
     } else {
-        format!("\"{}\"", arg.replace('"', "\\\""))
+        arg.chars()
+            .all(|c| c.is_ascii_alphanumeric() || "-_./:=+@%,".contains(c))
+    };
+    if !arg.is_empty() && bare {
+        return arg.to_string();
     }
+    // 単一引用符の中は、何も展開されない
+    if powershell {
+        // PowerShellは、`'`と同じく`‘`・`’`・`‚`・`‛`も引用符とみなす。
+        // 重ねると1文字になる
+        let mut quoted = String::from("'");
+        for c in arg.chars() {
+            if matches!(c, '\'' | '\u{2018}' | '\u{2019}' | '\u{201a}' | '\u{201b}') {
+                quoted.push(c);
+            }
+            quoted.push(c);
+        }
+        quoted.push('\'');
+        quoted
+    } else {
+        format!("'{}'", arg.replace('\'', r"'\''"))
+    }
+}
+
+/// URLにユーザー名・パスワード（`https://user:pass@…`）があるか
+fn url_has_credentials(input: &str) -> bool {
+    url::Url::parse(input.trim())
+        .is_ok_and(|url| !url.username().is_empty() || url.password().is_some())
 }
 
 /// 入力されたサイトのURLを、設定ファイルに書く形にする（前後の空白と、
@@ -1884,6 +1959,11 @@ fn quote_arg(arg: &str) -> String {
 fn normalize_site_url(input: &str) -> Option<String> {
     let url = input.trim().trim_end_matches('/');
     site_origin(url)?;
+    // ユーザー名・パスワードの入ったURLは、設定ファイルに平文で残るので
+    // 受け付けない（#710）
+    if url_has_credentials(url) {
+        return None;
+    }
     // ハンドラーと同じく、小文字の`https://`だけを受け付ける
     url.starts_with("https://").then(|| url.to_string())
 }
@@ -2859,18 +2939,21 @@ fn symlink_target(path: &Path) -> io::Result<Option<PathBuf>> {
     )))
 }
 
-/// 2つのファイルのパスが同じか（区切り文字をそろえ、Windowsでは大文字・
+/// 2つのファイルのパスが同じか（Windowsでは、区切り文字をそろえ、大文字・
 /// 小文字を区別しない）
 fn same_file(a: &str, b: &str) -> bool {
-    let normalize = |path: &str| {
-        let path = path.trim().replace('\\', "/");
-        if cfg!(windows) {
-            path.to_lowercase()
-        } else {
-            path
-        }
-    };
-    normalize(a) == normalize(b)
+    normalize_path(a, cfg!(windows)) == normalize_path(b, cfg!(windows))
+}
+
+/// パスを比べる形にする。Windowsでは、区切り文字（`\`）をそろえ、大文字・
+/// 小文字を区別しない。ほかでは、`\`は名前の文字なので変えない（#710）
+fn normalize_path(path: &str, windows: bool) -> String {
+    let path = path.trim();
+    if windows {
+        path.replace('\\', "/").to_lowercase()
+    } else {
+        path.to_string()
+    }
 }
 
 /// クライアントにある、mcp-rsの登録（#602）
@@ -3474,6 +3557,7 @@ mod tests {
             added_sites: Vec::new(),
             new_entries: Vec::new(),
             secret_backups: Vec::new(),
+            replaced_entries: Vec::new(),
         }
     }
 
@@ -3910,6 +3994,13 @@ file_path = "C:/Users/me/.mcp-rs/logs/audit.log"
         );
         assert!(parse_args(&args(&["--config"])).is_err());
         assert!(parse_args(&args(&["--config="])).is_err());
+        // 次のオプションは、パスとして受け取らない。`-`で始まるパスは
+        // `--config=`で渡せる（#710）
+        assert!(parse_args(&args(&["--config", "--help"])).is_err());
+        assert_eq!(
+            parse_args(&args(&["--config=-odd.toml"])).unwrap().config,
+            Some("-odd.toml".to_string())
+        );
         // 知らない引数は、表示しない（パスワードを渡してしまったとき）
         let err = parse_args(&args(&["secret-password"])).unwrap_err();
         assert!(!err.contains("secret-password"), "{err}");
@@ -3930,6 +4021,11 @@ file_path = "C:/Users/me/.mcp-rs/logs/audit.log"
         // mcp-rsは、https://でしかWordPressにつながない（PR #583のレビュー）
         assert_eq!(normalize_site_url("http://example.com"), None);
         assert_eq!(normalize_site_url("HTTPS://example.com"), None);
+        // ユーザー名・パスワードの入ったURLは、設定ファイルに書かない（#710）
+        assert_eq!(normalize_site_url("https://admin:secret@example.com"), None);
+        assert_eq!(normalize_site_url("https://admin@example.com"), None);
+        assert!(url_has_credentials("https://admin:secret@example.com"));
+        assert!(!url_has_credentials("https://example.com/blog"));
         assert_eq!(default_entry_name("https://example.com"), "example.com");
         assert_eq!(
             default_entry_name("http://localhost:8080/wp"),
@@ -4279,6 +4375,59 @@ file_path = "C:/Users/me/.mcp-rs/logs/audit.log"
         assert!(std::fs::read_to_string(&path).unwrap().contains("SECRET"));
     }
 
+    /// パスを比べる形。Windowsだけ、区切り文字と大文字・小文字をそろえる（#710）
+    #[test]
+    fn test_normalize_path() {
+        assert_eq!(
+            normalize_path(r"C:\Users\Me\a.toml", true),
+            normalize_path("c:/users/me/A.toml", true)
+        );
+        // Unixでは、`\`は名前の文字なので、`a\b.toml`と`a/b.toml`は別
+        assert_ne!(
+            normalize_path(r"/home/me/a\b.toml", false),
+            normalize_path("/home/me/a/b.toml", false)
+        );
+        assert_ne!(
+            normalize_path("/home/me/A.toml", false),
+            normalize_path("/home/me/a.toml", false)
+        );
+    }
+
+    /// 表示するコマンドの引数は、貼り付けたシェルで展開されない形にする（#710）
+    #[test]
+    fn test_quote_arg_for() {
+        // sh・bash
+        assert_eq!(
+            quote_arg_for("/home/me/config.toml", false),
+            "/home/me/config.toml"
+        );
+        assert_eq!(
+            quote_arg_for("/home/me/my site", false),
+            "'/home/me/my site'"
+        );
+        assert_eq!(quote_arg_for("/home/me/$site", false), "'/home/me/$site'");
+        assert_eq!(quote_arg_for("/tmp/a`b", false), "'/tmp/a`b'");
+        assert_eq!(quote_arg_for("it's", false), r"'it'\''s'");
+        assert_eq!(quote_arg_for("", false), "''");
+        // PowerShell
+        assert_eq!(
+            quote_arg_for(r"C:\Users\me\config.toml", true),
+            r"C:\Users\me\config.toml"
+        );
+        assert_eq!(
+            quote_arg_for(r"C:\Program Files\mcp-rs.exe", true),
+            r"'C:\Program Files\mcp-rs.exe'"
+        );
+        assert_eq!(
+            quote_arg_for(r"C:\$site\a.toml", true),
+            r"'C:\$site\a.toml'"
+        );
+        assert_eq!(quote_arg_for("a,b", true), "'a,b'");
+        assert_eq!(quote_arg_for("@x", true), "'@x'");
+        assert_eq!(quote_arg_for("it's", true), "'it''s'");
+        assert_eq!(quote_arg_for("it\u{2019}s", true), "'it\u{2019}\u{2019}s'");
+    }
+
     #[test]
     fn test_cli_commands() {
         let launch = Launch {
@@ -4305,7 +4454,10 @@ file_path = "C:/Users/me/.mcp-rs/logs/audit.log"
         );
         assert_eq!(
             Cli::COPILOT.add_command_text(&launch),
-            "copilot mcp add mcp-rs -- \"C:/Program Files/mcp-rs/mcp-rs.exe\" --config C:/cfg/config.toml"
+            format!(
+                "copilot mcp add mcp-rs -- {} --config C:/cfg/config.toml",
+                quote_arg("C:/Program Files/mcp-rs/mcp-rs.exe")
+            )
         );
         assert_eq!(
             Cli::COPILOT.remove_args("mcp-rs-wordpress"),
@@ -4474,6 +4626,40 @@ file_path = "C:/Users/me/.mcp-rs/logs/audit.log"
             "old password"
         );
         assert!(!io.shown.iter().any(|s| s.contains("old password")));
+    }
+
+    /// 既にある資格情報を入れ直し、確認が通らずに終わったら、前の中身に
+    /// 戻す（#710）
+    #[test]
+    fn test_replaced_credentials_are_restored() {
+        let store = MemoryStore::default();
+        store_wordpress_credentials(
+            &store,
+            "example.com",
+            &WordPressKeyringCredentials {
+                site_url: "https://example.com".to_string(),
+                username: "editor".to_string(),
+                application_password: Zeroizing::new("old password".to_string()),
+            },
+        )
+        .unwrap();
+        let mut io = Script::new(&["https://example.com", "", "n", "editor", "wrong"]);
+        let mut s = setup(&mut io, &store);
+        s.wordpress_credentials(&[], &[]).unwrap();
+        assert_eq!(
+            *load_wordpress_credentials(&store, "example.com")
+                .unwrap()
+                .application_password,
+            "wrong"
+        );
+        s.restore_replaced_entries();
+        assert_eq!(
+            *load_wordpress_credentials(&store, "example.com")
+                .unwrap()
+                .application_password,
+            "old password"
+        );
+        assert!(s.replaced_entries.is_empty());
     }
 
     /// 別のサイトの資格情報は、断れば変えない
@@ -5229,6 +5415,7 @@ file_path = "C:/Users/me/.mcp-rs/logs/audit.log"
             added_sites: Vec::new(),
             new_entries: Vec::new(),
             secret_backups: Vec::new(),
+            replaced_entries: Vec::new(),
         };
         let (content, _) = setup.new_config(Uses::Database, None).unwrap();
         assert!(content.contains("[database]"), "{content}");
