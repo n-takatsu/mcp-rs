@@ -240,6 +240,9 @@ async fn connect_pool(config: &DatabaseConfig) -> Result<(Pool, Opts, ServerKind
     // ここで決める。既に決まっていれば何もしない
     let _ = rustls::crypto::ring::default_provider().install_default();
     let connection = &config.connection;
+    // CAとTLSモードの組み合わせを、プールを作る前に確かめる（#717。ライブラリ
+    // として直接つなぐ場合も。`require`とCAを書くと、CAを使わずにつないでいた）
+    check_ssl_root_cert(connection).map_err(DatabaseError::ConfigurationError)?;
     let mode = ssl_mode(connection);
     let root_cert = ssl_root_cert(connection);
     let timeout = Duration::from_secs(u64::from(connection.timeout_seconds).max(1));
@@ -339,6 +342,8 @@ impl DatabaseEngine for MySqlEngine {
     }
 
     fn validate_config(&self, config: &DatabaseConfig) -> Result<(), DatabaseError> {
+        // CAとTLSモードの組み合わせも、接続と同じく確かめる（#717）
+        check_ssl_root_cert(&config.connection).map_err(DatabaseError::ConfigurationError)?;
         // 接続と同じCAを渡す（#705。以前は`None`を渡したので、CAを書いた
         // `verify-ca`も断った）
         ssl_opts(
@@ -411,6 +416,30 @@ mod tests {
         };
         assert!(engine.validate_config(&config(true)).is_ok());
         assert!(engine.validate_config(&config(false)).is_err());
+        // CAを書いた`require`（CAを使わない）は、確かめて断る（#717）
+        let require_with_ca = DatabaseConfig {
+            database_type: DatabaseType::MySQL,
+            connection: connection("db.example.com", Some("require"), true),
+            ..DatabaseConfig::default()
+        };
+        assert!(engine.validate_config(&require_with_ca).is_err());
+    }
+
+    /// ライブラリとして直接つなぐときも、CAとTLSモードの組み合わせを、
+    /// つなぐ前に確かめる（#717）
+    #[tokio::test]
+    async fn test_connect_checks_the_root_cert_before_connecting() {
+        let config = DatabaseConfig {
+            database_type: DatabaseType::MySQL,
+            connection: connection("db.example.invalid", Some("require"), true),
+            ..DatabaseConfig::default()
+        };
+        let engine = MySqlEngine::new(config.clone()).await.unwrap();
+        let error = engine.connect(&config).await.err().unwrap();
+        assert!(
+            matches!(error, DatabaseError::ConfigurationError(_)),
+            "{error:?}"
+        );
     }
 
     #[test]
