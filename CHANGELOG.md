@@ -214,6 +214,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `patch`が要り（`kubectl patch`は変える前にJobを読む）、`secrets`の`patch`は
   要らなくなった。`env`を使うプラグインは、Kubernetes 1.22以降が要る
   （`spec.suspend`が既定で有効な版）。`env`を使わないプラグインは変わらない
+- `tools/list`で、ツールを制限したキー・トークンの呼び出し元に、ハンドラーの
+  一覧を1回だけ取って返す（#705）。以前は、返す一覧と、制限の判定用に、
+  2回取っていた。2回目だけ一覧を返せなかったハンドラー（プラグイン等）の
+  ツールは、1回目に取れていても一覧から消えた
 - `mcp-rs check`で、ほかのユーザーが読める設定ファイルへの警告（v0.27.0）を、
   `--config`無しでも出す（#705）。以前は`--config`を付けたときだけで、
   `mcp-rs init`が既定で書く`~/.config/mcp-rs/config.toml`を`--config`無しで
@@ -372,6 +376,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- HTTPで、認証の失敗が続くアドレスを止める仕組み（#596、1分に20回）が、
+  覚えるアドレスの数の上限（1万件）に達すると、新しいアドレスを数えずに
+  通していた（#705）。たくさんのアドレス（IPv6等）で表を埋めると、後の
+  アドレスからは上限なく試せた。今は、覚えきれないアドレスを、まとめて
+  1つとして数える（メモリーの上限はそのまま）。また、前の1分の間に始めた
+  認証が、次の1分になってから通ったときに、次の1分の失敗の数を減らして
+  いたのを直した
 - Windowsで、`mcp-rs init`・`mcp-rs database-keyring`が書く設定ファイル・
   控え・一時ファイルを、本人・SYSTEM・Administratorsだけが使えるACL
   （親フォルダから受け継がない）で作るようにした（#674）。Unixの`600`と
