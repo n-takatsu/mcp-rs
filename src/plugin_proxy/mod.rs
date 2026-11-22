@@ -2565,6 +2565,19 @@ for line in sys.stdin:
         eprintln!("probe (network = allow): {}", result);
         assert_eq!(result["network"], json!("ok"));
 
+        // Secretは、作る時点からJobが所有者（#700）
+        let owner = std::process::Command::new("kubectl")
+            .args([
+                "get",
+                "secrets",
+                "-o",
+                "jsonpath={.items[0].metadata.ownerReferences[0].kind}",
+                "--selector=mcp-rs.plugin=k8snone",
+            ])
+            .output()
+            .unwrap();
+        assert_eq!(String::from_utf8_lossy(&owner.stdout).trim(), "Job");
+
         // 止めると、JobとSecretも残らない
         assert!(!kubernetes_resources_with_label("k8snone").is_empty());
         drop(isolated);

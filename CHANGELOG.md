@@ -204,6 +204,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   プラグインの後片付け（`docker rm -f`・`kubectl delete`）の終了を、最長
   10秒待ってから終わる。以前は待たずに終わり、コンテナ・Job・Secretが残る
   ことがあった。失敗した・終わらなかったものは警告する
+- Kubernetesのプラグインの`env`の値を入れるSecretを、作る時点でJobを
+  所有者にする（#700）。以前は、Secret → Job の順に作り、後からSecretの
+  所有者をJobにしていた。Secretを作る要求の途中で打ち切られ、作成の確定が
+  後片付けより遅れると、所有者の無いSecret（`env`の値を含む）が残ることが
+  あった。今は、Jobを一時停止（`spec.suspend`）で作り、Jobを所有者にした
+  Secretを作ってから、一時停止を解く。Secretがいつ作られても、Jobが
+  無ければKubernetesが消す。**`kubectl`の権限が変わる**：`jobs`に`patch`が
+  要り、`secrets`の`patch`は要らなくなった（`env`を使うプラグインのみ）
 - `mcp-rs check`で、コンテナのプラグインの`env`の名前も、起動するときと
   同じく確かめる（#697）。以前は、`DOCKER_HOST`のように起動時に断られる
   名前でも、`--offline`では通っていた
