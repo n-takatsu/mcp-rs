@@ -1229,6 +1229,9 @@ mod tests {
     /// 起動して、ツールの一覧を受け取り、止める
     #[tokio::test]
     async fn test_plugin_starts_and_stops() {
+        // 後片付けの結果を読み出すので、同じことをするテストと同時に動かさない
+        // （PR #698のレビュー）
+        let _registry = crate::plugin_proxy::CLEANUP_REGISTRY_TEST_LOCK.lock().await;
         let plugin = crate::plugin_proxy::tests::test_plugin_config("echo");
         let mut report = Report::default();
         check_plugins(&[plugin], false, &mut report).await;

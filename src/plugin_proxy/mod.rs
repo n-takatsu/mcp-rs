@@ -314,11 +314,30 @@ struct Cleanup {
 impl Cleanup {
     /// コマンドを実行する（終了を待たない）。既に消えていれば何もしない。
     fn run(self) {
+        self.spawn(None);
+    }
+
+    /// コマンドを実行し、`delay`の後にもう1度実行する（終了を待たない）。
+    /// 作る要求（`kubectl create`）の途中で打ち切ったとき、APIサーバーが
+    /// 受け取っていた要求は、消した後に作り終えることがある。少し後で
+    /// もう1度消して、残さない（PR #698のレビュー）。`--ignore-not-found`
+    /// なので、2回目に消すものが無くても成功する
+    fn run_twice(self, delay: std::time::Duration) {
+        self.spawn(Some(delay));
+    }
+
+    fn spawn(self, again_after: Option<std::time::Duration>) {
         // 終了を待って回収するため、別スレッドで実行する。mcp-rsの終了前に
         // `wait_for_cleanups`で待てるよう、スレッドを覚えておく（PR #672の
-        // レビュー）。失敗は、`wait_for_cleanups`が返す（#684）
+        // レビュー）。失敗は、`wait_for_cleanups`が返す（#684）。2回実行する
+        // ときは、最後の結果を返す
         let handle = std::thread::spawn(move || {
-            if let Err(error) = self.execute() {
+            let mut result = self.execute();
+            if let Some(delay) = again_after {
+                std::thread::sleep(delay);
+                result = self.execute();
+            }
+            if let Err(error) = result {
                 CLEANUP_FAILURES
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -397,10 +416,23 @@ impl CleanupOnDrop {
 impl Drop for CleanupOnDrop {
     fn drop(&mut self) {
         if let Some(cleanup) = self.0.take() {
-            cleanup.run();
+            // 作る要求の途中で落とされたときに、後から作り終えたものも消す
+            cleanup.run_twice(CLEANUP_RETRY_DELAY);
         }
     }
 }
+
+/// 準備の途中で落とされたときに、もう1度消すまでの時間。`check`等が後片付けを
+/// 待つ時間（10秒）に収まるようにする
+const CLEANUP_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// テストで、後片付けの結果（`PENDING_CLEANUPS`・`CLEANUP_FAILURES`）を
+/// 読み出す（`wait_for_cleanups`）テストを、同時に動かさないためのロック。
+/// 並べて動かすと、ほかのテストが登録した失敗を先に読み出してしまう
+/// （PR #698のレビュー）
+#[cfg(test)]
+pub(crate) static CLEANUP_REGISTRY_TEST_LOCK: tokio::sync::Mutex<()> =
+    tokio::sync::Mutex::const_new(());
 
 /// 後片付けのコマンドが、消すものが既に無くて失敗したか。`docker run --rm`の
 /// コンテナは止まると自分で消えるので、`docker rm -f`と重なることがある
@@ -1365,6 +1397,7 @@ pub(crate) mod tests {
     /// 起動できなかったコマンドは、失敗として返す（#684）
     #[test]
     fn test_wait_for_cleanups() {
+        let _registry = CLEANUP_REGISTRY_TEST_LOCK.blocking_lock();
         Cleanup {
             program: "mcp-rs-test-no-such-command".to_string(),
             args: vec!["job/test-684".to_string()],
@@ -1408,28 +1441,42 @@ pub(crate) mod tests {
     const TEST_TOUCH_ENV: &str = "MCP_RS_TEST_TOUCH";
 
     /// `touch_cleanup`から動かすとき（`MCP_RS_TEST_TOUCH`があるとき）だけ、
-    /// そのパスにファイルを作る
+    /// そのパスのファイルに1行足す（何回動いたかを数えられる）
     #[test]
     #[ignore]
     fn test_touch_main() {
+        use std::io::Write as _;
         if let Some(path) = std::env::var_os(TEST_TOUCH_ENV) {
-            std::fs::write(path, b"").unwrap();
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .unwrap();
+            file.write_all(b"ran\n").unwrap();
         }
     }
 
-    /// ファイルができるまで、最長10秒待つ
-    fn wait_for_file(path: &std::path::Path) -> bool {
+    /// ファイルの行数（無ければ0）
+    fn count_lines(path: &std::path::Path) -> usize {
+        std::fs::read_to_string(path)
+            .map(|text| text.lines().count())
+            .unwrap_or(0)
+    }
+
+    /// ファイルが`lines`行になるまで、最長10秒待つ
+    fn wait_for_lines(path: &std::path::Path, lines: usize) -> bool {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         while std::time::Instant::now() < deadline {
-            if path.exists() {
+            if count_lines(path) >= lines {
                 return true;
             }
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
-        path.exists()
+        count_lines(path) >= lines
     }
 
-    /// 準備の途中で落とされたら、後片付けを実行する。取り出した後は
+    /// 準備の途中で落とされたら、後片付けを実行し、少し後でもう1度実行する
+    /// （遅れて作り終えたものも消す。PR #698のレビュー）。取り出した後は
     /// 実行しない（#697）
     #[test]
     fn test_cleanup_on_drop() {
@@ -1437,14 +1484,14 @@ pub(crate) mod tests {
         // パスに空白があってもよい（PR #698のレビュー）
         let dropped = dir.path().join("dropped marker");
         drop(CleanupOnDrop::new(touch_cleanup(&dropped)));
-        assert!(wait_for_file(&dropped));
+        assert!(wait_for_lines(&dropped, 2), "{}", count_lines(&dropped));
 
         let disarmed = dir.path().join("disarmed");
         let cleanup = CleanupOnDrop::new(touch_cleanup(&disarmed)).disarm();
-        // 取り出した後片付けは、呼べば実行できる
-        assert!(!disarmed.exists());
+        // 取り出した後片付けは、呼べば1回だけ実行できる
+        assert_eq!(count_lines(&disarmed), 0);
         cleanup.execute().unwrap();
-        assert!(disarmed.exists());
+        assert_eq!(count_lines(&disarmed), 1);
     }
 
     /// `tokio::time::timeout`で打ち切られたFutureの中のガードも、後片付けを
@@ -1463,7 +1510,7 @@ pub(crate) mod tests {
         };
         let result = tokio::time::timeout(std::time::Duration::from_millis(50), preparing).await;
         assert!(result.is_err());
-        assert!(wait_for_file(&marker));
+        assert!(wait_for_lines(&marker, 1));
     }
 
     /// 終了コードを返すコマンド（Windowsでは`cmd /c exit N`）
