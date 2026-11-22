@@ -207,6 +207,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - データベースの資格情報を使うとき、Unixソケットのパス（`/`で始まる
   ホスト）は大文字小文字を区別して比べる（#692）。ホスト名は今までどおり
   区別しない
+- `mcp-rs uninstall`で、資格情報ストアを読めなかった項目（Secret Serviceが
+  止まっている等）を、無い項目と同じように黙って飛ばさない（#692）。読め
+  なかったことと、消していないことを、消すコマンド（`wordpress-keyring
+  delete`・`database-keyring delete`）と合わせて知らせる。既定以外の設定
+  ファイルの項目は、登録を外した後ではもう1度実行しても見つからないので、
+  その設定ファイルも示す。その名前を使う設定ファイルは、消すかを聞かずに
+  残す（消すと、残った資格情報を探す手がかりが無くなる）
+- `mcp-rs init`・`uninstall`で、Claude Desktopの設定ファイルを、本人だけが
+  読めるように書く（#692）。ほかのサーバーの`env`（トークン等）が入って
+  いることがある。以前は、控えだけを本人だけが読めるようにし、設定ファイル
+  そのものは既定の権限（Unixでは多くの場合644）で書き直していた
 - 一覧の全件取得（`get_posts`・`get_comments`・`get_media`・`get_categories`・
   `get_tags`・`get_terms`・`get_revisions`・`get_all_content`等）が上限の
   100ページ（10,000件）を超えるとき、エラーにする（#692）。以前は、最初の

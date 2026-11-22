@@ -3236,7 +3236,9 @@ pub(crate) fn remove_from_claude_desktop(
     }
     let content = serde_json::to_string_pretty(&config)? + "\n";
     let backup = make_backup(path, true)?;
-    write_atomically(path, &content, false)?;
+    // ほかのサーバーの`env`（トークン等）が入っていることがあるので、控えと
+    // 同じく本人だけが読めるように書く（#692）
+    write_atomically(path, &content, true)?;
     Ok(backup)
 }
 
@@ -3275,8 +3277,9 @@ fn add_to_claude_desktop(
         None
     };
     // Claude Desktopが同時に書いても、途中で止まっても、壊れたファイルを
-    // 残さない（#599）
-    write_atomically(path, &content, false)?;
+    // 残さない（#599）。ほかのサーバーの`env`（トークン等）が入っている
+    // ことがあるので、控えと同じく本人だけが読めるように書く（#692）
+    write_atomically(path, &content, true)?;
     Ok(backup)
 }
 
@@ -5211,6 +5214,43 @@ file_path = "C:/Users/me/.mcp-rs/logs/audit.log"
             .unwrap();
         let mode = std::fs::metadata(&backup).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o600);
+    }
+
+    /// Claude Desktopの設定ファイルそのものも、足すとき・外すときに本人
+    /// だけが読めるように書く。ほかのサーバーの`env`のトークン等が入って
+    /// いることがある（#692）
+    #[cfg(unix)]
+    #[test]
+    fn test_claude_desktop_config_is_written_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("claude_desktop_config.json");
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        std::fs::write(
+            &path,
+            "{\"mcpServers\":{\"other\":{\"command\":\"x\",\"env\":{\"TOKEN\":\"t\"}}}}",
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        add_to_claude_desktop(&path, &launch(), false, &[]).unwrap();
+        assert_eq!(mode(&path), 0o600);
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        remove_from_claude_desktop(&path, &[SERVER_NAME.to_string()]).unwrap();
+        assert_eq!(mode(&path), 0o600);
+    }
+
+    /// Windowsでは、本人・SYSTEM・Administratorsだけが使えるACLで書く（#692）
+    #[cfg(windows)]
+    #[test]
+    fn test_claude_desktop_config_is_written_private_on_windows() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("claude_desktop_config.json");
+        std::fs::write(&path, "{\"mcpServers\":{}}").unwrap();
+        add_to_claude_desktop(&path, &launch(), false, &[]).unwrap();
+        crate::private_file::assert_private_on_windows(&path);
+        std::fs::write(&path, "{\"mcpServers\":{\"mcp-rs\":{}}}").unwrap();
+        remove_from_claude_desktop(&path, &[SERVER_NAME.to_string()]).unwrap();
+        crate::private_file::assert_private_on_windows(&path);
     }
 
     /// 同じ秒に控えを作っても、前の控えを上書きしない

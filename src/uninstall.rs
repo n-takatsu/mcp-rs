@@ -113,8 +113,8 @@ impl Uninstall<'_> {
             }
         }
         let configs = dedup_paths(configs);
-        self.remove_credentials(&configs)?;
-        self.remove_config_files(&configs)?;
+        let unreadable = self.remove_credentials(&configs)?;
+        self.remove_config_files(&configs, &unreadable)?;
         self.explain_the_rest(removed > 0);
         Ok(())
     }
@@ -215,30 +215,44 @@ impl Uninstall<'_> {
         Ok(removed)
     }
 
-    /// 設定ファイルの`keyring`が指す、資格情報ストアの項目を消す
+    /// 設定ファイルの`keyring`が指す、資格情報ストアの項目を消す。読めな
+    /// かった項目の名前を返す
     fn remove_credentials(
         &mut self,
         configs: &[PathBuf],
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
         // 同じ名前を複数の場所（WordPressと`[database]`等）で使うことがあるので、
         // 名前ごとに、見込む種類をすべて覚えておく（PR #688のレビュー）
-        let mut names: Vec<(String, Vec<EntryKind>)> = Vec::new();
+        // 読めなかったときの案内のため、使う設定ファイルも覚えておく
+        let mut names: Vec<(String, Vec<EntryKind>, Vec<&PathBuf>)> = Vec::new();
         for config in configs {
             for (name, kind) in keyring_entries(config) {
-                match names.iter_mut().find(|(known, _)| *known == name) {
-                    Some((_, kinds)) => {
+                match names.iter_mut().find(|(known, _, _)| *known == name) {
+                    Some((_, kinds, used_by)) => {
                         if !kinds.contains(&kind) {
                             kinds.push(kind);
                         }
+                        if !used_by.contains(&config) {
+                            used_by.push(config);
+                        }
                     }
-                    None => names.push((name, vec![kind])),
+                    None => names.push((name, vec![kind], vec![config])),
                 }
             }
         }
-        for (name, expected) in names {
-            // 無い項目・読めない項目は聞かない
-            let Ok(Some(stored)) = entry_kind(self.store, &name) else {
-                continue;
+        let mut unreadable = Vec::new();
+        for (name, expected, used_by) in names {
+            // 無い項目は聞かない。読めない項目（Secret Serviceが止まっている
+            // 等）は、無いのと区別して知らせる（#692）
+            let stored = match entry_kind(self.store, &name) {
+                Ok(Some(stored)) => stored,
+                Ok(None) => continue,
+                Err(e) => {
+                    let message = self.unreadable_message(&name, &e, &expected, &used_by);
+                    self.io.say(&message);
+                    unreadable.push(name);
+                    continue;
+                }
             };
             // 設定ファイルの場所ではなく、入っている中身（`kind`）で示す。
             // どれか1つの場所とでも合わなければ、中身を見せて、既定では
@@ -267,15 +281,88 @@ impl Uninstall<'_> {
                     .say(&format!("Deleted '{name}' from the OS credential store.\n"));
             }
         }
-        Ok(())
+        Ok(unreadable)
     }
 
-    /// 設定ファイルを消すかを聞く（既定は残す）
+    /// 資格情報ストアで読めなかった項目の知らせ。登録は先に外しているので、
+    /// 既定以外の設定ファイルは、もう1度`mcp-rs uninstall`を実行しても
+    /// 見つからない。そのときは、設定ファイルと消し方を示す（PR #695のレビュー）
+    fn unreadable_message(
+        &self,
+        name: &str,
+        error: &dyn std::fmt::Display,
+        expected: &[EntryKind],
+        used_by: &[&PathBuf],
+    ) -> String {
+        // 名前は、シェルで1つの引数になるように示す。どのシェルでも安全に
+        // 引用できない名前は、コマンドを組み立てず、引用するよう添える
+        // （PR #695のレビュー）
+        let argument = shell_argument(name);
+        let commands: Vec<String> = expected
+            .iter()
+            .filter_map(|kind| match kind {
+                EntryKind::WordPress => Some(crate::security::keyring_tool::SUBCOMMAND),
+                EntryKind::Database => Some(crate::database_keyring::SUBCOMMAND),
+                EntryKind::Other => None,
+            })
+            .map(|subcommand| match &argument {
+                Some(argument) => format!("`mcp-rs {subcommand} delete {argument}`"),
+                None => {
+                    format!("`mcp-rs {subcommand} delete <name>` (quote the name for your shell)")
+                }
+            })
+            .collect();
+        let how = if commands.is_empty() {
+            "delete it in the OS credential store".to_string()
+        } else {
+            format!("delete it with {}", commands.join(" or "))
+        };
+        let only_default = used_by
+            .iter()
+            .all(|config| self.default_config.as_ref() == Some(*config));
+        let next = if only_default {
+            format!(
+                "When the OS credential store can be used, run mcp-rs uninstall again, or {how}."
+            )
+        } else {
+            let paths: Vec<String> = used_by
+                .iter()
+                .map(|config| config.display().to_string())
+                .collect();
+            format!(
+                "It is named in {}, which mcp-rs uninstall cannot find again once the registrations are removed: when the OS credential store can be used, {how}.",
+                paths.join(", ")
+            )
+        };
+        format!(
+            "Could not read '{name}' from the OS credential store ({error}), so it was not deleted. {next}\n"
+        )
+    }
+
+    /// 設定ファイルを消すかを聞く（既定は残す）。`unreadable`（資格情報
+    /// ストアで読めなかった項目）を使う設定ファイルは、聞かずに残す。消すと、
+    /// 残った資格情報を探す手がかりが無くなるため（#692）
     fn remove_config_files(
         &mut self,
         configs: &[PathBuf],
+        unreadable: &[String],
     ) -> Result<(), Box<dyn std::error::Error>> {
         for config in configs.iter().filter(|config| config.exists()) {
+            let mut names: Vec<String> = keyring_entries(config)
+                .into_iter()
+                .filter(|(name, _)| unreadable.contains(name))
+                .map(|(name, _)| format!("'{name}'"))
+                .collect();
+            names.sort();
+            names.dedup();
+            if !names.is_empty() {
+                self.io.say(&format!(
+                    "Kept {}: it names credentials that could not be checked ({}).\n",
+                    config.display(),
+                    names.join(", ")
+                ));
+                continue;
+            }
             if confirm(
                 self.io,
                 &format!("Delete the config file {}?", config.display()),
@@ -369,6 +456,31 @@ fn describe_kind(kind: EntryKind) -> &'static str {
         EntryKind::Database => "database credentials",
         EntryKind::Other => "an entry that is not mcp-rs credentials",
     }
+}
+
+/// コマンドの引数として示す名前。記号の無い名前はそのまま、空白等を含む
+/// 名前は`"`で囲む（bash・PowerShell・cmdのどれでも1つの引数になる）。
+/// 囲めるのは、`"`の中でどのシェルも文字どおりに扱う文字だけの名前。
+/// それ以外（`"` `$` `` ` `` `\` `!` `%` `'`、PowerShellが引用符とみなす
+/// `“` `”` `„` `‘` `’`等のUnicodeの記号、制御文字）を含む名前は、どの
+/// シェルでも同じに書けないので無し（PR #695のレビュー）
+fn shell_argument(name: &str) -> Option<String> {
+    // `,`（PowerShellでは配列）・先頭の`@`（PowerShellの展開）は囲む
+    if !name.is_empty()
+        && !name.starts_with('@')
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "-_.@:/".contains(c))
+    {
+        return Some(name.to_string());
+    }
+    // 除く文字を挙げるのではなく、囲んでよい文字を挙げる。Unicodeの
+    // 文字・数字（日本語等）は使える
+    let quotable = |c: char| c.is_alphanumeric() || " -_.@:/,+=#~()[]{}&|;<>^*?".contains(c);
+    if name.is_empty() || !name.chars().all(quotable) {
+        return None;
+    }
+    Some(format!("\"{name}\""))
 }
 
 /// 設定ファイルの`keyring`の名前と、その場所から見込む種類（WordPress・
@@ -760,6 +872,231 @@ keyring = \"other\"
         );
         assert!(
             shown.contains("holds an entry that is not mcp-rs credentials under that name. Delete it anyway? [y/N]"),
+            "{shown}"
+        );
+    }
+
+    /// 1つの名前だけ読めない資格情報ストア（Secret Serviceが止まっている等）
+    struct FailingStore {
+        inner: MemoryStore,
+        failing: &'static str,
+    }
+
+    impl SecretStore for FailingStore {
+        fn get(
+            &self,
+            name: &str,
+        ) -> Result<Option<Zeroizing<String>>, crate::security::keyring_store::KeyringError>
+        {
+            if name == self.failing {
+                return Err(crate::security::keyring_store::KeyringError::Unavailable(
+                    "no Secret Service".to_string(),
+                ));
+            }
+            self.inner.get(name)
+        }
+        fn set(
+            &self,
+            name: &str,
+            secret: &str,
+        ) -> Result<(), crate::security::keyring_store::KeyringError> {
+            self.inner.set(name, secret)
+        }
+        fn delete(&self, name: &str) -> Result<bool, crate::security::keyring_store::KeyringError> {
+            self.inner.delete(name)
+        }
+    }
+
+    /// 読めない資格情報は、無いのと区別して知らせ、それを使う設定ファイルは
+    /// 聞かずに残す（#692）
+    #[test]
+    fn test_unreadable_credentials_keep_their_config_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let broken = dir.path().join("broken.toml");
+        std::fs::write(
+            &broken,
+            "[handlers.wordpress]\nenabled = true\nurl = \"https://example.com\"\nkeyring = \"locked\"\n",
+        )
+        .unwrap();
+        let fine = dir.path().join("fine.toml");
+        std::fs::write(
+            &fine,
+            "[handlers.wordpress]\nenabled = true\nurl = \"https://blog.example.com\"\nkeyring = \"blog\"\n",
+        )
+        .unwrap();
+        let inner = MemoryStore::default();
+        store_wordpress("blog", &inner);
+        let store = FailingStore {
+            inner,
+            failing: "locked",
+        };
+        // blogを消す（既定）、fine.tomlを消す
+        let mut io = Script::new(&["", "y"]);
+        let mut steps = Uninstall {
+            io: &mut io,
+            store: &store,
+            desktop_configs: Vec::new(),
+            clis: Vec::new(),
+            default_config: None,
+            exe: None,
+        };
+        let configs = vec![broken.clone(), fine.clone()];
+        let unreadable = steps.remove_credentials(&configs).unwrap();
+        assert_eq!(unreadable, vec!["locked".to_string()]);
+        steps.remove_config_files(&configs, &unreadable).unwrap();
+        assert!(broken.exists());
+        assert!(!fine.exists());
+        assert!(matches!(store.get("blog"), Ok(None)));
+        let shown = io.shown.join("\n");
+        assert!(
+            shown.contains("Could not read 'locked' from the OS credential store (")
+                && shown.contains("so it was not deleted"),
+            "{shown}"
+        );
+        assert!(
+            shown.contains("it names credentials that could not be checked ('locked')"),
+            "{shown}"
+        );
+        assert!(
+            !shown.contains(&format!("Delete the config file {}?", broken.display())),
+            "{shown}"
+        );
+        // 既定以外の設定ファイルは、もう1度実行しても見つからないので、
+        // 設定ファイルと消し方を示す（PR #695のレビュー）
+        assert!(
+            shown.contains(&format!(
+                "It is named in {}, which mcp-rs uninstall cannot find again",
+                broken.display()
+            )),
+            "{shown}"
+        );
+        assert!(
+            shown.contains("delete it with `mcp-rs wordpress-keyring delete locked`"),
+            "{shown}"
+        );
+        assert!(!shown.contains("run mcp-rs uninstall again"), "{shown}");
+    }
+
+    /// 既定の設定ファイルだけが使う項目なら、もう1度実行すれば見つかる
+    #[test]
+    fn test_unreadable_credentials_in_the_default_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("config.toml");
+        std::fs::write(
+            &config,
+            "[database]\nengine = \"postgresql\"\ndatabase = \"app\"\nusername = \"reader\"\nkeyring = \"locked\"\n",
+        )
+        .unwrap();
+        let store = FailingStore {
+            inner: MemoryStore::default(),
+            failing: "locked",
+        };
+        let mut io = Script::new(&[]);
+        let mut steps = Uninstall {
+            io: &mut io,
+            store: &store,
+            desktop_configs: Vec::new(),
+            clis: Vec::new(),
+            default_config: Some(config.clone()),
+            exe: None,
+        };
+        let unreadable = steps.remove_credentials(&[config]).unwrap();
+        assert_eq!(unreadable, vec!["locked".to_string()]);
+        let shown = io.shown.join("\n");
+        assert!(
+            shown.contains("When the OS credential store can be used, run mcp-rs uninstall again, or delete it with `mcp-rs database-keyring delete locked`."),
+            "{shown}"
+        );
+    }
+
+    /// 消すコマンドの名前は、シェルで1つの引数になるように示す
+    /// （PR #695のレビュー）
+    #[test]
+    fn test_shell_argument() {
+        assert_eq!(
+            shell_argument("app@db.example.com").as_deref(),
+            Some("app@db.example.com")
+        );
+        assert_eq!(shell_argument("my blog").as_deref(), Some("\"my blog\""));
+        assert_eq!(shell_argument("a,b").as_deref(), Some("\"a,b\""));
+        assert_eq!(shell_argument("@site").as_deref(), Some("\"@site\""));
+        assert_eq!(shell_argument("ブログ").as_deref(), Some("\"ブログ\""));
+        assert_eq!(
+            shell_argument("shop (old) & blog").as_deref(),
+            Some("\"shop (old) & blog\"")
+        );
+        for name in [
+            "a\"b",
+            "$HOME",
+            "a`b",
+            "a\\b",
+            "a!b",
+            "%PATH%",
+            "it's",
+            // PowerShellは、Unicodeの引用符も引用符とみなす
+            "x\u{201D}; whoami; #",
+            "x\u{201C}y",
+            "x\u{201E}y",
+            "x\u{2018}y",
+            "x\u{2019}y",
+            "a\tb",
+            "",
+        ] {
+            assert_eq!(shell_argument(name), None, "{name}");
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("config.toml");
+        std::fs::write(
+            &config,
+            "[handlers.wordpress]\nenabled = true\nurl = \"https://example.com\"\nkeyring = \"my blog\"\n\n[database]\nengine = \"postgresql\"\ndatabase = \"app\"\nusername = \"reader\"\nkeyring = \"$db\"\n",
+        )
+        .unwrap();
+        // 2つとも読めないストア
+        struct Locked;
+        impl SecretStore for Locked {
+            fn get(
+                &self,
+                _name: &str,
+            ) -> Result<Option<Zeroizing<String>>, crate::security::keyring_store::KeyringError>
+            {
+                Err(crate::security::keyring_store::KeyringError::Unavailable(
+                    "locked".to_string(),
+                ))
+            }
+            fn set(
+                &self,
+                _name: &str,
+                _secret: &str,
+            ) -> Result<(), crate::security::keyring_store::KeyringError> {
+                Ok(())
+            }
+            fn delete(
+                &self,
+                _name: &str,
+            ) -> Result<bool, crate::security::keyring_store::KeyringError> {
+                Ok(false)
+            }
+        }
+        let mut io = Script::new(&[]);
+        let mut steps = Uninstall {
+            io: &mut io,
+            store: &Locked,
+            desktop_configs: Vec::new(),
+            clis: Vec::new(),
+            default_config: None,
+            exe: None,
+        };
+        steps.remove_credentials(&[config]).unwrap();
+        let shown = io.shown.join("\n");
+        assert!(
+            shown.contains("`mcp-rs wordpress-keyring delete \"my blog\"`"),
+            "{shown}"
+        );
+        assert!(
+            shown.contains(
+                "`mcp-rs database-keyring delete <name>` (quote the name for your shell)"
+            ),
             "{shown}"
         );
     }
