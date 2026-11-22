@@ -375,6 +375,17 @@ impl zeroize::Zeroize for StoredDatabaseCredentials {
 
 const STORED_DATABASE_KIND: &str = "database";
 
+/// Whether two database hosts are the same. Host names are compared without
+/// case, as DNS does; a Unix socket path (starting with `/`) is compared
+/// exactly, because file systems may tell case apart (#692).
+fn same_database_host(a: &str, b: &str) -> bool {
+    if a.starts_with('/') || b.starts_with('/') {
+        a == b
+    } else {
+        a.eq_ignore_ascii_case(b)
+    }
+}
+
 /// Read the database credentials named `name` and check that they are for
 /// `host`, `port` and `username` (the values of `[database]`).
 pub fn load_database_credentials(
@@ -401,7 +412,7 @@ pub fn load_database_credentials(
     if stored.kind != STORED_DATABASE_KIND || stored.username.is_empty() {
         return Err(not_database());
     }
-    if !stored.host.eq_ignore_ascii_case(host.trim())
+    if !same_database_host(&stored.host, host.trim())
         || stored.port != port
         || stored.username != username
     {
@@ -738,5 +749,31 @@ mod tests {
             err.contains("does not hold mcp-rs database credentials"),
             "{err}"
         );
+    }
+
+    /// ホスト名は大文字小文字を区別しないが、Unixソケットのパスは区別する
+    /// （#692）
+    #[test]
+    fn test_database_credentials_for_a_unix_socket() {
+        assert!(same_database_host("db.example.com", "DB.Example.COM"));
+        assert!(same_database_host(
+            "/var/run/postgresql",
+            "/var/run/postgresql"
+        ));
+        assert!(!same_database_host("/tmp/Db", "/tmp/db"));
+        assert!(!same_database_host("/tmp/db", "localhost"));
+
+        let store = MemoryStore::default();
+        let socket = DatabaseKeyringCredentials {
+            host: "/tmp/Db".to_string(),
+            port: 5432,
+            username: "reader".to_string(),
+            password: Zeroizing::new("s3cret".to_string()),
+        };
+        store_database_credentials(&store, "socket", &socket).unwrap();
+        assert!(load_database_credentials(&store, "socket", "/tmp/Db", 5432, "reader").is_ok());
+        let err =
+            load_database_credentials(&store, "socket", "/tmp/db", 5432, "reader").unwrap_err();
+        assert!(err.contains("not sent to another server"), "{err}");
     }
 }
