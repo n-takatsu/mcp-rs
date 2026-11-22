@@ -191,6 +191,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- MySQL・MariaDBの`execute_command`で、`COMMIT`を送った後に応答を確かめ
+  られなかったとき（時間切れ・接続が切れた等）は、「止めた」ではなく、
+  変更が保存されたか分からないので、やり直す前にデータを確かめるよう
+  返す（#717）。以前は、サーバーがコミットした後に応答だけが遅れても
+  「止めた」と返し、やり直すと行が重複し得た
+- MySQL・MariaDBの`execute_query`・`execute_command`の`params`に、JSONの
+  オブジェクト・配列も渡せる（#717）。MySQLのJSON列は`execute_query`が
+  オブジェクト・配列で返すが、引数の定義が許さず、そのまま渡し直せな
+  かった。説明の「JSONは文字列で返す」も直した（MariaDBは文字列で返す）
 - `mcp-rs init`・`mcp-rs uninstall`で、Copilot CLIの設定の場所を、
   環境変数`COPILOT_HOME`があればその中（`$COPILOT_HOME/mcp-config.json`）に
   する（#710）。Copilot CLIは`COPILOT_HOME`で設定の場所を変えられるが、

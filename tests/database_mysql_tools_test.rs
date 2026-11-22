@@ -429,6 +429,16 @@ async fn values_are_decoded_by_type(kind: Kind) {
     .await
     .unwrap();
     assert_eq!(result["rows"], json!([[1]]));
+    // 返したJSON（MySQLではオブジェクト）も、そのまま渡せる（#717）
+    let result = call(
+        &handler,
+        "execute_query",
+        json!({ "sql": "SELECT JSON_EXTRACT(?, '$.a') = 1 AS same",
+                "params": [json_value] }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(result["rows"], json!([[1]]));
 }
 
 async fn rows_are_limited_and_empty_results_keep_columns(kind: Kind) {
