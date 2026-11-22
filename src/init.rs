@@ -495,6 +495,16 @@ impl Setup<'_> {
             return Ok(false);
         }
 
+        // HTTPモードの設定ファイルは、クライアントに登録しない（#710）。
+        // クライアントはSTDIOで起動するが、この設定ではHTTPサーバーが動き、
+        // つながらない。`check`はHTTPの設定を確かめずに通す
+        if uses_http_transport(&config_display) {
+            self.io.say(&format!(
+                "{config_display} sets [transport] type = \"http\", so mcp-rs would start as an HTTP server, and MCP clients that start it (over STDIO) could not connect. It was not registered with any client. To use it from these clients, set type = \"stdio\" (or remove [transport]) and run mcp-rs init again. To run mcp-rs as an HTTP server, start it yourself and connect the clients to its URL."
+            ));
+            return Ok(false);
+        }
+
         // 4. クライアントに登録する
         let exe = stable_exe_path(&std::env::current_exe()?, |path| path.exists());
         let launch = Launch {
@@ -1629,9 +1639,21 @@ impl Setup<'_> {
             .status()
             .is_ok_and(|status| status.success());
         // クライアントの設定ファイル（内容は表示しない）
-        let client_config = cli
-            .config_file()
-            .and_then(|path| read_json_file(&path).ok());
+        let config_file = cli.config_file();
+        let client_config = config_file
+            .as_ref()
+            .and_then(|path| read_json_file(path).ok());
+        // 置き換える前の登録（登録に失敗したら戻す。#710）
+        let previous_entry = client_config
+            .as_ref()
+            .and_then(|config| config.get("mcpServers"))
+            .and_then(|servers| servers.get(SERVER_NAME))
+            .cloned();
+        // Claude Codeで、`mcp get`で見つかるのに、ユーザーの設定に無い登録は、
+        // 別のスコープ（このフォルダのlocal・project）にある。`--scope user`
+        // では消せず、このフォルダではそちらが使われ続ける（#710）
+        let in_other_scope =
+            cli.has_scopes() && exists && previous_entry.is_none() && client_config.is_some();
         if exists {
             // 別のスコープの登録は、ここでは読めない。そのときは、残すと
             // 選んだ設定ファイルで比べる
@@ -1642,24 +1664,48 @@ impl Setup<'_> {
                     .say(&format!("Kept the {} settings as they are.", cli.label));
                 return Ok(false);
             }
-            // 消せなくても、登録を試す（別のスコープの登録は、消さずに
-            // ユーザーのスコープへ足せることがある。PR #583のレビュー）
-            if let Err(reason) = run_quietly(&program, &cli.remove_args(SERVER_NAME)) {
-                self.io.say(&format!(
-                    "{}: could not remove the existing \"{SERVER_NAME}\" ({reason}). Trying to register mcp-rs anyway.",
-                    cli.label
-                ));
-            }
         }
-        // 別の名前のmcp-rs
+        // 別の名前のmcp-rs。消すかは、前の登録を消す前に聞き終える（#710。
+        // 以前は消してから聞き、途中で終わると、前の登録が失われた）
         let others = client_config
             .as_ref()
             .map(other_mcp_rs_servers)
             .unwrap_or_default();
         let remove = self.choose_duplicates_to_remove(cli.label, &others, launch)?;
+        let mut removed_previous = false;
+        if exists && !in_other_scope {
+            // 聞いている間に、別の手段（ほかのターミナルの`mcp add`等）で
+            // 登録が変わっていたら、消さずに残す（PR #711のレビュー。消して
+            // 登録に失敗すると、古い内容を戻してしまう）
+            let current_entry = config_file
+                .as_ref()
+                .and_then(|path| read_json_file(path).ok())
+                .and_then(|config| config.get("mcpServers")?.get(SERVER_NAME).cloned());
+            if current_entry != previous_entry {
+                self.io.say(&format!(
+                    "{}: \"{SERVER_NAME}\" was changed while mcp-rs init was asking, so it was kept as it is. Run mcp-rs init again to replace it.",
+                    cli.label
+                ));
+                return Ok(false);
+            }
+            // 消せなくても、登録を試す（PR #583のレビュー）
+            match run_quietly(&program, &cli.remove_args(SERVER_NAME)) {
+                Ok(()) => removed_previous = true,
+                Err(reason) => self.io.say(&format!(
+                    "{}: could not remove the existing \"{SERVER_NAME}\" ({reason}). Trying to register mcp-rs anyway.",
+                    cli.label
+                )),
+            }
+        }
         match run_quietly(&program, &cli.add_args(launch)) {
             Ok(()) => {
                 self.io.say(&format!("{}: registered.", cli.label));
+                if in_other_scope {
+                    self.io.say(&format!(
+                        "{}: another \"{SERVER_NAME}\" is registered outside your user settings (for example only for one folder, or in a project's .mcp.json). Where it applies, {} uses it instead of this one. Check with `{} mcp get {SERVER_NAME}`, and remove it there if it is an old one.",
+                        cli.label, cli.label, cli.program
+                    ));
+                }
                 for name in remove {
                     match run_quietly(&program, &cli.remove_args(&name)) {
                         Ok(()) => self.io.say(&format!("{}: removed \"{name}\".", cli.label)),
@@ -1678,10 +1724,66 @@ impl Setup<'_> {
                     "{}: registering failed ({reason}).\nRegister it yourself with:\n  {manual}\n",
                     cli.label
                 ));
+                // 消した前の登録を戻す（#710）
+                if let (true, Some(path), Some(entry)) =
+                    (removed_previous, config_file.as_ref(), previous_entry)
+                {
+                    match restore_server(path, SERVER_NAME, entry) {
+                        Ok(()) => self.io.say(&format!(
+                            "{}: restored the previous \"{SERVER_NAME}\".\n",
+                            cli.label
+                        )),
+                        Err(e) => self.io.say(&format!(
+                            "{}: could not restore the previous \"{SERVER_NAME}\" ({e}).\n",
+                            cli.label
+                        )),
+                    }
+                }
                 Ok(false)
             }
         }
     }
+}
+
+/// 設定ファイルがHTTPモード（`[transport] type = "http"`）か（#710）
+fn uses_http_transport(config_path: &str) -> bool {
+    // 起動と同じく、`type`と`transport_type`のどちらでも読む
+    std::fs::read_to_string(config_path)
+        .ok()
+        .and_then(|text| {
+            text.trim_start_matches('\u{feff}')
+                .parse::<toml::Table>()
+                .ok()
+        })
+        .and_then(|table| {
+            let transport = table.get("transport")?;
+            transport
+                .get("type")
+                .or_else(|| transport.get("transport_type"))
+                .and_then(toml::Value::as_str)
+                .map(|kind| kind.trim() == "http")
+        })
+        .unwrap_or(false)
+}
+
+/// クライアントの設定ファイルの`mcpServers`に、`name`の登録を戻す（#710）。
+/// 既に同じ名前があれば、何もしない
+fn restore_server(path: &Path, name: &str, entry: serde_json::Value) -> Result<(), String> {
+    let mut config = read_json_file(path)?;
+    let servers = config
+        .as_object_mut()
+        .ok_or_else(|| format!("{} is not a JSON object", path.display()))?
+        .entry("mcpServers")
+        .or_insert_with(|| serde_json::json!({}));
+    let servers = servers
+        .as_object_mut()
+        .ok_or_else(|| format!("mcpServers in {} is not an object", path.display()))?;
+    if servers.contains_key(name) {
+        return Ok(());
+    }
+    servers.insert(name.to_string(), entry);
+    let content = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
+    write_atomically(path, &content, true).map_err(|e| e.to_string())
 }
 
 /// 資格情報ストアが使えるかを確かめる（`os-keyring`無しのビルド、
@@ -1784,6 +1886,11 @@ impl Cli {
 
     pub(crate) fn config_file(&self) -> Option<PathBuf> {
         (self.config_file)()
+    }
+
+    /// 登録にスコープ（ユーザー・local・project）があるか（Claude Code）
+    fn has_scopes(&self) -> bool {
+        !self.remove_options.is_empty()
     }
 
     /// 手で実行するときのコマンド
@@ -4443,6 +4550,62 @@ file_path = "C:/Users/me/.mcp-rs/logs/audit.log"
         assert_eq!(quote_arg_for("@x", true), "'@x'");
         assert_eq!(quote_arg_for("it's", true), "'it''s'");
         assert_eq!(quote_arg_for("it\u{2019}s", true), "'it\u{2019}\u{2019}s'");
+    }
+
+    /// 登録に失敗したら、消した前の登録を戻す。ほかの設定は残し、既に同じ
+    /// 名前があれば変えない（#710）
+    #[test]
+    fn test_restore_server() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".claude.json");
+        std::fs::write(
+            &path,
+            r#"{"numStartups": 3, "mcpServers": {"other": {"command": "x"}}}"#,
+        )
+        .unwrap();
+        let entry = serde_json::json!({"command": "mcp-rs", "args": ["--config", "a.toml"]});
+        restore_server(&path, "mcp-rs", entry.clone()).unwrap();
+        let config = read_json_file(&path).unwrap();
+        assert_eq!(config["mcpServers"]["mcp-rs"], entry);
+        assert_eq!(config["mcpServers"]["other"]["command"], "x");
+        assert_eq!(config["numStartups"], 3);
+        // 既にあれば変えない
+        restore_server(&path, "mcp-rs", serde_json::json!({"command": "new"})).unwrap();
+        assert_eq!(
+            read_json_file(&path).unwrap()["mcpServers"]["mcp-rs"],
+            entry
+        );
+        // ファイルが無ければ作る
+        let missing = dir.path().join("mcp-config.json");
+        restore_server(&missing, "mcp-rs", entry.clone()).unwrap();
+        assert_eq!(
+            read_json_file(&missing).unwrap()["mcpServers"]["mcp-rs"],
+            entry
+        );
+    }
+
+    /// HTTPモードの設定ファイルは、クライアントに登録しない（#710）
+    #[test]
+    fn test_uses_http_transport() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = |name: &str, content: &str| {
+            let path = dir.path().join(name);
+            std::fs::write(&path, content).unwrap();
+            path.display().to_string()
+        };
+        assert!(uses_http_transport(&path(
+            "http.toml",
+            "[transport]\ntype = \"http\"\n"
+        )));
+        assert!(!uses_http_transport(&path(
+            "stdio.toml",
+            "[transport]\ntype = \"stdio\"\n"
+        )));
+        assert!(uses_http_transport(&path(
+            "legacy.toml",
+            "[transport]\ntransport_type = \"http\"\n"
+        )));
+        assert!(!uses_http_transport(&path("none.toml", "[server]\n")));
     }
 
     #[test]
