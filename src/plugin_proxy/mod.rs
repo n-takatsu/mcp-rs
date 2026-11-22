@@ -376,6 +376,32 @@ impl Cleanup {
     }
 }
 
+/// 落とされたら`Cleanup`を実行する。作ったもの（KubernetesのJob・Secret）を
+/// 準備の途中で外から打ち切られても（`tokio::time::timeout`等でFutureが
+/// 落とされても）、残さないため（#697）。準備ができたら`disarm`で取り出す
+struct CleanupOnDrop(Option<Cleanup>);
+
+impl CleanupOnDrop {
+    fn new(cleanup: Cleanup) -> Self {
+        Self(Some(cleanup))
+    }
+
+    /// 後片付けを取り出す。落としても、もう実行しない
+    fn disarm(mut self) -> Cleanup {
+        self.0
+            .take()
+            .expect("CleanupOnDrop holds the cleanup until it is disarmed")
+    }
+}
+
+impl Drop for CleanupOnDrop {
+    fn drop(&mut self) {
+        if let Some(cleanup) = self.0.take() {
+            cleanup.run();
+        }
+    }
+}
+
 /// 後片付けのコマンドが、消すものが既に無くて失敗したか。`docker run --rm`の
 /// コンテナは止まると自分で消えるので、`docker rm -f`と重なることがある
 fn is_already_removed(stderr: &str) -> bool {
@@ -499,7 +525,10 @@ pub fn launcher_program(config: &PluginConfig) -> Result<String, String> {
     match (&config.container, &config.kubernetes) {
         (Some(_), Some(_)) => Err("container and kubernetes cannot both be set".to_string()),
         (Some(container), None) => {
-            container_launch(config, container, &[], "check").map(|launch| launch.program)
+            // 起動するときと同じく、`env`の名前も確かめる（値は要らない。#697）
+            let mut env_keys: Vec<&str> = config.env.keys().map(String::as_str).collect();
+            env_keys.sort_unstable();
+            container_launch(config, container, &env_keys, "check").map(|launch| launch.program)
         }
         (None, Some(kubernetes)) => {
             kubernetes::validate(config, kubernetes)?;
@@ -1353,6 +1382,76 @@ pub(crate) mod tests {
         );
     }
 
+    /// `path`にファイルを作るコマンド
+    fn touch_cleanup(path: &std::path::Path) -> Cleanup {
+        #[cfg(windows)]
+        let (program, args) = (
+            "cmd",
+            // 引数の`"`はエスケープされてcmdに届くので、囲まない（一時
+            // フォルダのパスに空白は無い）
+            vec!["/c".to_string(), format!("type nul > {}", path.display())],
+        );
+        #[cfg(not(windows))]
+        let (program, args) = (
+            "sh",
+            vec!["-c".to_string(), format!(": > '{}'", path.display())],
+        );
+        Cleanup {
+            program: program.to_string(),
+            args,
+            env: Vec::new(),
+            ignore_already_removed: false,
+        }
+    }
+
+    /// ファイルができるまで、最長10秒待つ
+    fn wait_for_file(path: &std::path::Path) -> bool {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while std::time::Instant::now() < deadline {
+            if path.exists() {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        path.exists()
+    }
+
+    /// 準備の途中で落とされたら、後片付けを実行する。取り出した後は
+    /// 実行しない（#697）
+    #[test]
+    fn test_cleanup_on_drop() {
+        let dir = tempfile::tempdir().unwrap();
+        let dropped = dir.path().join("dropped");
+        drop(CleanupOnDrop::new(touch_cleanup(&dropped)));
+        assert!(wait_for_file(&dropped));
+
+        let disarmed = dir.path().join("disarmed");
+        let cleanup = CleanupOnDrop::new(touch_cleanup(&disarmed)).disarm();
+        // 取り出した後片付けは、呼べば実行できる
+        assert!(!disarmed.exists());
+        cleanup.execute().unwrap();
+        assert!(disarmed.exists());
+    }
+
+    /// `tokio::time::timeout`で打ち切られたFutureの中のガードも、後片付けを
+    /// 実行する（`mcp-rs check`がプラグインの起動を10秒で打ち切るとき。#697）
+    #[tokio::test]
+    async fn test_cleanup_runs_when_the_future_is_cancelled() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("cancelled");
+        let preparing = {
+            let marker = marker.clone();
+            async move {
+                let _guard = CleanupOnDrop::new(touch_cleanup(&marker));
+                // Podを待ち続ける代わり
+                std::future::pending::<()>().await;
+            }
+        };
+        let result = tokio::time::timeout(std::time::Duration::from_millis(50), preparing).await;
+        assert!(result.is_err());
+        assert!(wait_for_file(&marker));
+    }
+
     /// 終了コードを返すコマンド（Windowsでは`cmd /c exit N`）
     fn exit_cleanup(code: u8) -> Cleanup {
         #[cfg(windows)]
@@ -2018,6 +2117,22 @@ pub(crate) mod tests {
             launch.args[launch.args.len() - 4..],
             ["python:3.12-alpine", "python", "-c", "print(1)"]
         );
+    }
+
+    /// `mcp-rs check`（`launcher_program`）も、起動するときと同じく`env`の
+    /// 名前を確かめる（#697）
+    #[test]
+    fn test_launcher_program_checks_container_env_names() {
+        let mut config = container_plugin_config("tool", container_config("example/image"));
+        config
+            .env
+            .insert("API_KEY".to_string(), "${MCP_RS_TEST_API_KEY}".to_string());
+        assert!(launcher_program(&config).is_ok());
+        config
+            .env
+            .insert("DOCKER_HOST".to_string(), "tcp://example:2375".to_string());
+        let error = launcher_program(&config).unwrap_err();
+        assert!(error.contains("DOCKER_HOST"), "{error}");
     }
 
     #[test]

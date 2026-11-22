@@ -19,7 +19,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 use tracing::info;
 
-use super::{truncate, validate_option_value, Cleanup, CONTAINER_LABEL};
+use super::{truncate, validate_option_value, Cleanup, CleanupOnDrop, CONTAINER_LABEL};
 use crate::config::{PluginConfig, PluginKubernetesConfig};
 
 pub(super) const DEFAULT_KUBECTL_COMMAND: &str = "kubectl";
@@ -401,15 +401,15 @@ pub(super) async fn prepare(
     }
     delete_args.extend(strings(&["--ignore-not-found", "--wait=false"]));
     delete_args.extend(kubectl.target_args.iter().cloned());
-    let cleanup = Cleanup {
+    // Secret → Jobの順に作る（PodがSecretを待たないように）。ここから
+    // 後で失敗したら、作ったものを消す。外から打ち切られた（このFutureが
+    // 落とされた）ときも、ガードが落ちるときに消す（#697）
+    let cleanup = CleanupOnDrop::new(Cleanup {
         program: kubectl.program.clone(),
         args: delete_args,
         env: kubectl.env.clone(),
         ignore_already_removed: false,
-    };
-
-    // Secret → Jobの順に作る（PodがSecretを待たないように）。ここから
-    // 後で失敗したら、作ったものを消す
+    });
     let result = async {
         if with_secret {
             kubectl
@@ -450,13 +450,9 @@ pub(super) async fn prepare(
         wait_for_running_pod(&kubectl, &instance, start_timeout).await
     }
     .await;
-    let pod = match result {
-        Ok(pod) => pod,
-        Err(e) => {
-            cleanup.run();
-            return Err(e);
-        }
-    };
+    // 失敗なら、`cleanup`が落ちるときに消す
+    let pod = result?;
+    let cleanup = cleanup.disarm();
 
     let command = kubectl.command(&[
         "attach".to_string(),

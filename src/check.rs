@@ -154,7 +154,8 @@ when it starts:
   - [[plugins]]: the command can be found, and each plugin starts and
     answers MCP initialize and tools/list. It is stopped afterwards
   - where the log and the audit log are written
-Passwords, tokens and user names are not shown.
+Passwords, tokens and WordPress user names are not shown. For [database],
+the user name is shown with the server (such as reader@127.0.0.1:5432/app).
 
 Like starting mcp-rs, it creates the log and audit log folders and files
 if they do not exist, and adds a \"checked\" line to the log file to make

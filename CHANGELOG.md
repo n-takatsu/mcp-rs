@@ -191,6 +191,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `mcp-rs check`で、KubernetesのプラグインのPodの準備中に、起動の確かめ
+  （10秒）が打ち切られても、作ったJob・Secretを消す（#697）。以前は、準備の
+  中でエラーになったときだけ消し、外から打ち切られたときは残っていた。
+  打ち切られても後片付けを実行するガードにした
+- `mcp-rs check`で、コンテナのプラグインの`env`の名前も、起動するときと
+  同じく確かめる（#697）。以前は、`DOCKER_HOST`のように起動時に断られる
+  名前でも、`--offline`では通っていた
+- `mcp-rs check`の説明（`--help`・文書）で、表示しないのはWordPressの
+  ユーザー名だと書いた（#697）。`[database]`のユーザー名は、サーバーと
+  合わせて表示する（`reader@127.0.0.1:5432/app`等）
 - `mcp-rs init`・`database-keyring set`で、資格情報ストアに既にある項目を、
   確かめずにデータベースの資格情報で上書きしない（#692）。ほかの種類の項目
   （別の設定ファイルのWordPressのサイト等）なら、`init`は別の名前を聞き、
