@@ -624,19 +624,19 @@ impl McpServer {
             // `-32601`だった。2026-07-28には無いので、`-32601`のまま（#570）
             "ping" if modern.is_none() => Ok(serde_json::json!({})),
             "tools/list" => {
-                let mut tools = Self::list_all_tools(handlers).await;
-                if caller.access != crate::mcp::ToolAccess::All {
-                    // 制限は、印を信じないハンドラーの印を外した形で判定する
-                    // （#595）。返す一覧は元のまま
-                    let allowed: std::collections::HashSet<String> =
-                        Self::list_access_tools(handlers)
-                            .await
-                            .into_iter()
-                            .filter(|tool| caller.access.allows(tool))
-                            .map(|tool| tool.name)
-                            .collect();
-                    tools.retain(|tool| allowed.contains(&tool.name));
-                }
+                // 一覧は1回だけ取り、その結果で判定する（#705。以前は判定用に
+                // もう1回取ったので、2回目だけ失敗したハンドラーのツールが
+                // 消えた）。制限は、印を信じないハンドラーの印を外した形で
+                // 判定する（#595）。返す一覧は元のまま
+                let tools: Vec<Tool> = Self::collect_tools(handlers, true)
+                    .await
+                    .into_iter()
+                    .filter(|(tool, trusted)| {
+                        caller.access == crate::mcp::ToolAccess::All
+                            || caller.access.allows(&tool_for_access(tool, *trusted))
+                    })
+                    .map(|(tool, _)| tool)
+                    .collect();
                 Ok(tools_list_for_version(
                     version,
                     serde_json::json!({ "tools": tools }),
@@ -957,44 +957,46 @@ impl McpServer {
         serde_json::json!({ "content": [{ "type": "text", "text": text }] })
     }
 
-    /// 全ハンドラーのツールを登録順にまとめる。同じ名前のツールは、先に
-    /// 登録したハンドラーのものだけを残す（呼び出しもそちらに振り分ける）。
-    /// 一覧を取得できないハンドラーは警告を出して飛ばす。
-    /// 先頭は、本体の`mcp_rs_status`（#434）。
-    async fn list_all_tools(handlers: &[(String, Arc<dyn McpHandler>)]) -> Vec<Tool> {
-        Self::collect_tools(handlers, false).await
-    }
-
-    /// `list_all_tools`と同じ一覧を、呼び出し元の制限を当てはめる形
+    /// `collect_tools`の一覧を、呼び出し元の制限を当てはめる形
     /// （`tool_for_access`）で返す（#595）
     async fn list_access_tools(handlers: &[(String, Arc<dyn McpHandler>)]) -> Vec<Tool> {
-        Self::collect_tools(handlers, true).await
+        Self::collect_tools(handlers, false)
+            .await
+            .into_iter()
+            .map(|(tool, trusted)| tool_for_access(&tool, trusted).into_owned())
+            .collect()
     }
 
+    /// 全ハンドラーのツールを登録順にまとめる。同じ名前のツールは、先に
+    /// 登録したハンドラーのものだけを残す（呼び出しもそちらに振り分ける）。
+    /// 一覧を取得できないハンドラーは飛ばす。先頭は、本体の`mcp_rs_status`
+    /// （#434）。ツールごとに、そのハンドラーの印（`readOnlyHint`等）を
+    /// 信じるかも返す。`warn`のときは、隠れたツール・一覧を返せなかった
+    /// ハンドラーを警告する
     async fn collect_tools(
         handlers: &[(String, Arc<dyn McpHandler>)],
-        for_access: bool,
-    ) -> Vec<Tool> {
-        let mut tools: Vec<Tool> = vec![crate::mcp::status_tool()];
+        warn: bool,
+    ) -> Vec<(Tool, bool)> {
+        let mut tools: Vec<(Tool, bool)> = vec![(crate::mcp::status_tool(), true)];
         for (name, handler) in handlers {
-            let trusted = !for_access || handler.trusts_read_only_hints();
+            let trusted = handler.trusts_read_only_hints();
             match handler.list_tools().await {
                 Ok(handler_tools) => {
                     for tool in handler_tools {
-                        if tools.iter().any(|t| t.name == tool.name) {
-                            if !for_access {
+                        if tools.iter().any(|(t, _)| t.name == tool.name) {
+                            if warn {
                                 warn!(
                                     "Tool '{}' from handler '{}' is hidden: another handler registered earlier provides a tool with the same name",
                                     tool.name, name
                                 );
                             }
                         } else {
-                            tools.push(tool_for_access(&tool, trusted).into_owned());
+                            tools.push((tool, trusted));
                         }
                     }
                 }
                 Err(e) => {
-                    if !for_access {
+                    if warn {
                         warn!("Failed to list tools from handler '{}': {}", name, e)
                     }
                 }
@@ -1003,7 +1005,7 @@ impl McpServer {
         tools
     }
 
-    /// ツール名から呼び出し先のハンドラーを決めて呼ぶ。`list_all_tools`と
+    /// ツール名から呼び出し先のハンドラーを決めて呼ぶ。`collect_tools`と
     /// 同じく、登録順で最初にそのツールを持つハンドラーを使う。
     async fn call_tool_routed(
         handlers: &[(String, Arc<dyn McpHandler>)],
@@ -1982,6 +1984,78 @@ mod tests {
             }
         }
         vec![("a".to_string(), Arc::new(Annotated { trusted }))]
+    }
+
+    /// 制限のある呼び出し元の`tools/list`は、ハンドラーの一覧を1回だけ取る
+    /// （#705）。以前は判定用にもう1回取り、2回目だけ失敗したハンドラーの
+    /// ツールが一覧から消えた
+    #[tokio::test]
+    async fn test_restricted_tools_list_asks_handlers_once() {
+        struct Flaky {
+            calls: std::sync::atomic::AtomicUsize,
+        }
+        #[async_trait]
+        impl McpHandler for Flaky {
+            async fn initialize(
+                &self,
+                _params: InitializeParams,
+            ) -> Result<serde_json::Value, McpError> {
+                Ok(serde_json::json!({}))
+            }
+            async fn list_tools(&self) -> Result<Vec<Tool>, McpError> {
+                // 2回目ごとに失敗する
+                let n = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if n % 2 == 1 {
+                    return Err(McpError::Other("temporarily unavailable".to_string()));
+                }
+                Ok(vec![tool("get_post")])
+            }
+            async fn call_tool(
+                &self,
+                _params: ToolCallParams,
+            ) -> Result<serde_json::Value, McpError> {
+                Ok(serde_json::json!({}))
+            }
+            async fn list_resources(&self) -> Result<Vec<Resource>, McpError> {
+                Ok(vec![])
+            }
+            async fn read_resource(
+                &self,
+                _params: ResourceReadParams,
+            ) -> Result<serde_json::Value, McpError> {
+                Ok(serde_json::json!({}))
+            }
+        }
+        let flaky = Arc::new(Flaky {
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let mut server = McpServer::new();
+        server.add_handler("a".to_string(), flaky.clone());
+        let dispatcher = server.dispatcher();
+        let caller = Caller::new(
+            "api_key:reader",
+            crate::mcp::ToolAccess::from_patterns(Some(&["get_post".to_string()])).unwrap(),
+        );
+        let message = serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}
+        })
+        .to_string();
+        let tools = dispatcher
+            .handle_message_as(&message, &caller)
+            .await
+            .unwrap()
+            .unwrap()
+            .result
+            .unwrap()["tools"]
+            .clone();
+        let names: Vec<&str> = tools
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, vec!["get_post"]);
+        assert_eq!(flaky.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
     /// 印を信じないハンドラー（外部のプラグイン）のツールは、`@read_only`に
