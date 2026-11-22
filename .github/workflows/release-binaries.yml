@@ -183,7 +183,9 @@ jobs:
   publish:
     name: Attach to release
     needs: [build, mcpb]
-    if: github.ref_type == 'tag'
+    # タグのpushのときだけ。手動の実行でタグを選んでも、公開済みのリリースの
+    # ファイルを置き換えない（#717。`--clobber`で置き換えていた）
+    if: github.event_name == 'push' && github.ref_type == 'tag'
     runs-on: ubuntu-latest
     permissions:
       contents: write
