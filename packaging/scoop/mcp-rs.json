@@ -16,7 +16,9 @@
     },
     "bin": "mcp-rs.exe",
     "persist": "logs",
-    "checkver": "github",
+    "checkver": {
+        "github": "https://github.com/n-takatsu/mcp-rs"
+    },
     "autoupdate": {
         "architecture": {
             "64bit": {
