@@ -480,7 +480,7 @@ impl Setup<'_> {
             "MCP clients will start mcp-rs as:\n  {} --config {}\nIf you move mcp-rs or the config file, run mcp-rs init again.\n",
             launch.exe, launch.config
         ));
-        let mut restart = Vec::new();
+        let mut restart: Vec<&str> = Vec::new();
         if self.register_claude_desktop(&launch)? {
             restart.push("Claude Desktop: quit it from the system tray (menu bar on macOS) and start it again. Closing the window leaves it running. If mcp-rs does not appear, check Settings > Developer");
         }
@@ -494,7 +494,7 @@ impl Setup<'_> {
             self.io.say("\nmcp-rs was not registered with any client.");
         } else {
             self.io.say("\nDone. To start using mcp-rs:");
-            for line in restart {
+            for line in &restart {
                 self.io.say(&format!("  - {line}"));
             }
         }
@@ -515,7 +515,11 @@ impl Setup<'_> {
                 "\nNote: {file} still has a password in plain text. mcp-rs no longer uses that file: delete it, or remove the password from it."
             ));
         }
-        self.offer_to_delete_secret_backups()?;
+        // どのクライアントにも登録しなかったときは、聞かずに残す（PR #707の
+        // レビュー。新しい設定ファイルをまだ使っていないので、前の設定が
+        // 要るかもしれない）
+        let registered = !restart.is_empty();
+        self.offer_to_delete_secret_backups(registered)?;
         Ok(true)
     }
 
@@ -738,9 +742,18 @@ impl Setup<'_> {
     }
 
     /// 平文のパスワードを含む控えを、消すかを聞く（#599）。確認が通って
-    /// 登録した後に呼ぶ（#705）。消せなくても、知らせて続ける
-    fn offer_to_delete_secret_backups(&mut self) -> io::Result<()> {
+    /// 登録した後に呼ぶ（#705）。どのクライアントにも登録しなかったとき
+    /// （`registered`が`false`）は、聞かずに残し、場所を知らせる。消せなくても、
+    /// 知らせて続ける
+    fn offer_to_delete_secret_backups(&mut self, registered: bool) -> io::Result<()> {
         for backup in std::mem::take(&mut self.secret_backups) {
+            if !registered {
+                self.io.say(&format!(
+                    "\nNote: the backup copy {} has a password in plain text. mcp-rs was not registered with any client, so it was kept. Delete it, or remove the password from it, once mcp-rs works with the new config file.",
+                    backup.display()
+                ));
+                continue;
+            }
             if !confirm(
                 self.io,
                 &format!(
@@ -3748,8 +3761,18 @@ file_path = "C:/Users/me/.mcp-rs/logs/audit.log"
         // 覚えるだけで、まだ聞かない（#705）
         s.remember_secret_backup(&backup);
         assert!(backup.exists());
-        s.offer_to_delete_secret_backups().unwrap();
+        s.offer_to_delete_secret_backups(true).unwrap();
         assert!(!backup.exists());
+        // どのクライアントにも登録しなかったときは、聞かずに残す（PR #707の
+        // レビュー）
+        let backup = write_config_file(&path, "[server]\n").unwrap().unwrap();
+        std::fs::write(&backup, PREVIOUS_CONFIG).unwrap();
+        let mut io = Script::new(&[]);
+        let mut s = setup(&mut io, &store);
+        s.remember_secret_backup(&backup);
+        s.offer_to_delete_secret_backups(false).unwrap();
+        assert!(backup.exists());
+        assert!(io.shown.iter().any(|line| line.contains("so it was kept")));
         // 平文のパスワードが無い控えは、聞かずに残す
         let backup = write_config_file(&path, "[server]\nlog_level = \"warn\"\n")
             .unwrap()
@@ -3757,7 +3780,7 @@ file_path = "C:/Users/me/.mcp-rs/logs/audit.log"
         let mut io = Script::new(&[]);
         let mut s = setup(&mut io, &store);
         s.remember_secret_backup(&backup);
-        s.offer_to_delete_secret_backups().unwrap();
+        s.offer_to_delete_secret_backups(true).unwrap();
         assert!(backup.exists());
     }
 
