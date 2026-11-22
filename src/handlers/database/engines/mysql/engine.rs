@@ -195,6 +195,14 @@ pub fn weak_tls_warning(config: &ConnectionConfig) -> Option<String> {
     ))
 }
 
+/// `ssl_root_cert`（証明書を確かめるCAのファイル）
+fn ssl_root_cert(connection: &ConnectionConfig) -> Option<&str> {
+    connection
+        .options
+        .get(OPTION_SSL_ROOT_CERT)
+        .map(String::as_str)
+}
+
 /// `verify-ca`で`ssl_root_cert`が無いときのエラー（#594）
 const VERIFY_CA_NEEDS_ROOT_CERT: &str = "database.ssl_mode = \"verify-ca\" needs ssl_root_cert \
      (the CA that signed the server certificate): verify-ca does not check the host name, so \
@@ -233,10 +241,7 @@ async fn connect_pool(config: &DatabaseConfig) -> Result<(Pool, Opts, ServerKind
     let _ = rustls::crypto::ring::default_provider().install_default();
     let connection = &config.connection;
     let mode = ssl_mode(connection);
-    let root_cert = connection
-        .options
-        .get(OPTION_SSL_ROOT_CERT)
-        .map(String::as_str);
+    let root_cert = ssl_root_cert(connection);
     let timeout = Duration::from_secs(u64::from(connection.timeout_seconds).max(1));
     let try_connect = |opts: Opts| async move {
         let pool = Pool::new(opts.clone());
@@ -334,7 +339,13 @@ impl DatabaseEngine for MySqlEngine {
     }
 
     fn validate_config(&self, config: &DatabaseConfig) -> Result<(), DatabaseError> {
-        ssl_opts(ssl_mode(&config.connection), None).map(|_| ())
+        // 接続と同じCAを渡す（#705。以前は`None`を渡したので、CAを書いた
+        // `verify-ca`も断った）
+        ssl_opts(
+            ssl_mode(&config.connection),
+            ssl_root_cert(&config.connection),
+        )
+        .map(|_| ())
     }
 
     async fn get_version(&self) -> Result<String, DatabaseError> {
@@ -386,6 +397,20 @@ mod tests {
         assert!(!verify_full.disable_built_in_roots());
         // PostgreSQLの`allow`は、MySQLには無い
         assert!(ssl_opts("allow", None).is_err());
+    }
+
+    /// `validate_config`は、接続と同じCAで確かめる（#705。以前はCAを渡さず、
+    /// CAを書いた`verify-ca`も断った）
+    #[tokio::test]
+    async fn test_validate_config_uses_the_root_cert() {
+        let engine = MySqlEngine::new(DatabaseConfig::default()).await.unwrap();
+        let config = |root_cert: bool| DatabaseConfig {
+            database_type: DatabaseType::MySQL,
+            connection: connection("db.example.com", Some("verify-ca"), root_cert),
+            ..DatabaseConfig::default()
+        };
+        assert!(engine.validate_config(&config(true)).is_ok());
+        assert!(engine.validate_config(&config(false)).is_err());
     }
 
     #[test]
