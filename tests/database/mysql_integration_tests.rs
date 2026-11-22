@@ -44,13 +44,14 @@ mod tests {
         let url = std::env::var("TEST_MYSQL_URL")
             .ok()
             .filter(|url| !url.is_empty())?;
-        let url = url::Url::parse(&url).expect("TEST_MYSQL_URL must be a URL");
+        // ドライバーと同じ読み方にする（#717。パスワードの`%40`等を`@`に戻す）
+        let opts = mysql_async::Opts::from_url(&url).expect("TEST_MYSQL_URL must be a MySQL URL");
         let mut config = create_test_config();
-        config.connection.host = url.host_str().unwrap_or("localhost").to_string();
-        config.connection.port = url.port().unwrap_or(3306);
-        config.connection.database = url.path().trim_start_matches('/').to_string();
-        config.connection.username = url.username().to_string();
-        config.connection.password = url.password().unwrap_or_default().to_string();
+        config.connection.host = opts.ip_or_hostname().to_string();
+        config.connection.port = opts.tcp_port();
+        config.connection.database = opts.db_name().unwrap_or_default().to_string();
+        config.connection.username = opts.user().unwrap_or_default().to_string();
+        config.connection.password = opts.pass().unwrap_or_default().to_string();
         config.connection.ssl_mode = Some("disable".to_string());
         Some(config)
     }
