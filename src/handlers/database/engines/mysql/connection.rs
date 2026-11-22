@@ -510,6 +510,52 @@ async fn begin_read_only(
 /// `KEY_COLUMN_USAGE`の1行（表・制約・列・参照する表・参照する列）
 type KeyColumnRow = (String, String, String, Option<String>, Option<String>);
 
+/// `STATISTICS`の行（表・インデックス・列・一意でないか）から、表ごとの
+/// インデックス。式を含むインデックス（式の部分は`COLUMN_NAME`が`NULL`）は、
+/// 全体を除く（#717。以前は式の部分だけを除き、`(tenant_id, LOWER(email))`の
+/// 一意インデックスを、`tenant_id`だけで一意として返した）
+fn indexes_from_statistics(
+    rows: Vec<(String, String, Option<String>, i64)>,
+) -> BTreeMap<String, Vec<IndexInfo>> {
+    let mut indexes: BTreeMap<String, Vec<IndexInfo>> = BTreeMap::new();
+    let mut with_expression: Vec<(String, String)> = Vec::new();
+    for (table, index, column, non_unique) in rows {
+        let Some(column) = column else {
+            with_expression.push((table, index));
+            continue;
+        };
+        let list = indexes.entry(table).or_default();
+        match list.iter_mut().find(|i| i.name == index) {
+            Some(existing) => existing.columns.push(column),
+            None => list.push(IndexInfo {
+                is_primary: index == "PRIMARY",
+                is_unique: non_unique == 0,
+                name: index,
+                columns: vec![column],
+            }),
+        }
+    }
+    for (table, index) in with_expression {
+        if let Some(list) = indexes.get_mut(&table) {
+            list.retain(|i| i.name != index);
+        }
+    }
+    indexes.retain(|_, list| !list.is_empty());
+    indexes
+}
+
+/// ビューを、`get_table_schema`の形（キー・インデックスの無い表）にする
+fn view_as_table(view: ViewInfo) -> TableInfo {
+    TableInfo {
+        name: view.name,
+        schema: view.schema,
+        columns: view.columns,
+        primary_keys: Vec::new(),
+        foreign_keys: Vec::new(),
+        indexes: Vec::new(),
+    }
+}
+
 /// 今のデータベースの表・列・主キー・外部キー・インデックス・ビュー
 async fn read_schema(
     conn: &mut Conn,
@@ -584,30 +630,18 @@ async fn read_schema(
         }
     }
 
-    let mut indexes: BTreeMap<String, Vec<IndexInfo>> = BTreeMap::new();
-    let rows: Vec<(String, String, String, i64)> = conn
+    let rows: Vec<(String, String, Option<String>, i64)> = conn
         .exec(
             format!(
                 "SELECT TABLE_NAME, INDEX_NAME, COLUMN_NAME, NON_UNIQUE \
                  FROM information_schema.STATISTICS \
-                 WHERE TABLE_SCHEMA = DATABASE(){filter} AND COLUMN_NAME IS NOT NULL \
+                 WHERE TABLE_SCHEMA = DATABASE(){filter} \
                  ORDER BY TABLE_NAME, INDEX_NAME, SEQ_IN_INDEX"
             ),
             table_param(),
         )
         .await?;
-    for (table, index, column, non_unique) in rows {
-        let list = indexes.entry(table).or_default();
-        match list.iter_mut().find(|i| i.name == index) {
-            Some(existing) => existing.columns.push(column),
-            None => list.push(IndexInfo {
-                is_primary: index == "PRIMARY",
-                is_unique: non_unique == 0,
-                name: index,
-                columns: vec![column],
-            }),
-        }
-    }
+    let mut indexes = indexes_from_statistics(rows);
 
     let mut table_infos = Vec::new();
     let mut view_infos = Vec::new();
@@ -759,7 +793,7 @@ impl DatabaseConnection for MySqlConnection {
         let timeout_ms = self.statement_timeout_ms();
         let server = self.server;
         let table = table_name.to_string();
-        let (tables, _) = self
+        let (tables, views) = self
             .run(
                 conn,
                 move |conn| {
@@ -773,9 +807,12 @@ impl DatabaseConnection for MySqlConnection {
                 DatabaseError::QueryFailed,
             )
             .await?;
+        // ビューも、列を返す（#717。以前の`SHOW COLUMNS`と同じ。キー・
+        // インデックスは無い）
         tables
             .into_iter()
             .next()
+            .or_else(|| views.into_iter().next().map(view_as_table))
             .ok_or_else(|| DatabaseError::QueryFailed(format!("table not found: {table_name}")))
     }
 
@@ -816,6 +853,66 @@ mod tests {
 
     /// utf8mb4_general_ci
     const UTF8MB4: u16 = 45;
+
+    /// 式を含むインデックスは、全体を除く。ほかのインデックスは残す（#717）
+    #[test]
+    fn test_indexes_from_statistics() {
+        let row = |table: &str, index: &str, column: Option<&str>, non_unique: i64| {
+            (
+                table.to_string(),
+                index.to_string(),
+                column.map(str::to_string),
+                non_unique,
+            )
+        };
+        let indexes = indexes_from_statistics(vec![
+            row("users", "PRIMARY", Some("id"), 0),
+            row("users", "uq_email", Some("tenant_id"), 0),
+            row("users", "uq_email", None, 0),
+            row("users", "idx_name", Some("last"), 1),
+            row("users", "idx_name", Some("first"), 1),
+            row("logs", "idx_expr", None, 1),
+        ]);
+        let users: Vec<(&str, bool, Vec<&str>)> = indexes["users"]
+            .iter()
+            .map(|i| {
+                (
+                    i.name.as_str(),
+                    i.is_unique,
+                    i.columns.iter().map(String::as_str).collect(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            users,
+            vec![
+                ("PRIMARY", true, vec!["id"]),
+                ("idx_name", false, vec!["last", "first"]),
+            ]
+        );
+        // 式だけのインデックスしか無い表は、インデックス無し
+        assert!(!indexes.contains_key("logs"));
+    }
+
+    /// ビューは、キー・インデックスの無い表の形で返す（#717）
+    #[test]
+    fn test_view_as_table() {
+        let column = ColumnInfo {
+            name: "total".to_string(),
+            data_type: "decimal(10,2)".to_string(),
+            nullable: true,
+            max_length: None,
+        };
+        let table = view_as_table(ViewInfo {
+            name: "v_orders".to_string(),
+            schema: None,
+            definition: String::new(),
+            columns: vec![column],
+        });
+        assert_eq!(table.name, "v_orders");
+        assert_eq!(table.columns.len(), 1);
+        assert!(table.primary_keys.is_empty() && table.indexes.is_empty());
+    }
 
     /// `COMMIT`の応答を確かめられなければ、「止めた」とは言わず、保存されたか
     /// 分からないと返す（#717）

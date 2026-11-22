@@ -209,6 +209,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   オブジェクト・配列も渡せる（#717）。MySQLのJSON列は`execute_query`が
   オブジェクト・配列で返すが、引数の定義が許さず、そのまま渡し直せな
   かった。説明の「JSONは文字列で返す」も直した（MariaDBは文字列で返す）
+- MySQL・MariaDBの`get_schema`で、式を含むインデックス（`(tenant_id,
+  LOWER(email))`の一意インデックス等）を、全体として除く（#717）。以前は
+  式の部分だけを除き、`tenant_id`だけで一意のように返した
+- MySQL・MariaDBのエンジン（ライブラリ）で、`get_table_schema`にビューを
+  指定すると、列を返す（#717。以前は「table not found」）。また、
+  `MySqlEngine::connect`・`validate_config`でも、`ssl_root_cert`と
+  `ssl_mode`の組み合わせを確かめる（mcp-rs本体の経路では、以前から
+  確かめていた）
 - `mcp-rs init`・`mcp-rs uninstall`で、Copilot CLIの設定の場所を、
   環境変数`COPILOT_HOME`があればその中（`$COPILOT_HOME/mcp-config.json`）に
   する（#710）。Copilot CLIは`COPILOT_HOME`で設定の場所を変えられるが、
