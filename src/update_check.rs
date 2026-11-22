@@ -130,6 +130,9 @@ pub async fn check() -> UpdateStatus {
     check_at(LATEST_RELEASE_URL).await
 }
 
+/// GitHubの応答の本文の上限
+const MAX_BODY_BYTES: usize = 1024 * 1024;
+
 /// `url`（テストでは手元のサーバー）に問い合わせる
 async fn check_at(url: &str) -> UpdateStatus {
     let client = match reqwest::Client::builder().timeout(TIMEOUT).build() {
@@ -158,14 +161,31 @@ async fn check_at(url: &str) -> UpdateStatus {
         }
         Err(_) => return UpdateStatus::Unknown("could not reach GitHub".to_string()),
     };
-    // 応答は小さい（数KB）が、大きすぎる応答は読まない
-    let body = match response.bytes().await {
-        Ok(body) if body.len() <= 1024 * 1024 => body,
-        Ok(_) => return UpdateStatus::Unknown("the answer from GitHub is too large".to_string()),
-        Err(_) => {
-            return UpdateStatus::Unknown("could not read the answer from GitHub".to_string())
+    // 応答は小さい（数KB）が、大きすぎる応答は読まない。全部を読んでから
+    // 大きさを確かめるのではなく、読みながら上限で止める（#692）
+    let too_large = || UpdateStatus::Unknown("the answer from GitHub is too large".to_string());
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_BODY_BYTES as u64)
+    {
+        return too_large();
+    }
+    let mut response = response;
+    let mut body = Vec::new();
+    loop {
+        match response.chunk().await {
+            Ok(Some(chunk)) => {
+                if body.len() + chunk.len() > MAX_BODY_BYTES {
+                    return too_large();
+                }
+                body.extend_from_slice(&chunk);
+            }
+            Ok(None) => break,
+            Err(_) => {
+                return UpdateStatus::Unknown("could not read the answer from GitHub".to_string())
+            }
         }
-    };
+    }
     let tag = serde_json::from_slice::<serde_json::Value>(&body)
         .ok()
         .and_then(|value| value.get("tag_name")?.as_str().map(str::to_string));
@@ -322,5 +342,40 @@ mod tests {
             check_at("http://127.0.0.1:1/").await,
             UpdateStatus::Unknown(_)
         ));
+    }
+
+    /// 長さを言わずに送り続ける応答も、上限まで読んで止める（全部を読み
+    /// 込まない。#692）
+    #[tokio::test]
+    async fn test_check_at_stops_reading_a_large_answer() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            if let Ok((mut socket, _)) = listener.accept().await {
+                let mut buf = [0u8; 4096];
+                let _ = socket.read(&mut buf).await;
+                let _ = socket
+                    .write_all(
+                        b"HTTP/1.1 200 OK
+Content-Type: application/json
+Connection: close
+
+",
+                    )
+                    .await;
+                // 相手が読むのをやめる（つながりを切る）まで送り続ける
+                let chunk = vec![b' '; 64 * 1024];
+                while socket.write_all(&chunk).await.is_ok() {}
+            }
+        });
+        let url = format!("http://{addr}/");
+        let status = tokio::time::timeout(TIMEOUT / 2, check_at(&url))
+            .await
+            .expect("check_at did not stop reading");
+        assert!(
+            matches!(&status, UpdateStatus::Unknown(r) if r.contains("too large")),
+            "{status:?}"
+        );
     }
 }
