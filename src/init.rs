@@ -252,9 +252,10 @@ struct Setup<'a> {
 impl Setup<'_> {
     async fn run(mut self) -> Result<bool, Box<dyn std::error::Error>> {
         let result = self.run_steps().await;
-        // 確認が通る前に、どんな形で終わっても（エラー・入力の終わりを含む）、
+        // 確認が通る前に終わったら（確認の失敗・エラー・入力の終わり）、
         // 入れ直した資格情報を前の中身に戻す（PR #712のレビュー）。確認が
-        // 通っていれば、もう確定していて、何もしない
+        // 通っていれば、もう確定していて、何もしない。Ctrl+Cでプロセスごと
+        // 止めたときは、ここを通らないので戻らない
         self.restore_replaced_entries();
         result
     }
@@ -777,6 +778,29 @@ impl Setup<'_> {
         }
     }
 
+    /// `entry`を入れ直していれば、その項目だけを前の中身に戻す（PR #712の
+    /// レビュー。足せなかったサイトの項目）。戻したら`true`
+    fn restore_replaced_entry(&mut self, entry: &str) -> bool {
+        let Some(index) = self
+            .replaced_entries
+            .iter()
+            .position(|(name, _)| name == entry)
+        else {
+            return false;
+        };
+        let (entry, previous) = self.replaced_entries.remove(index);
+        match self.store.set(&entry, &previous) {
+            Ok(()) => true,
+            Err(e) => {
+                self.io.say(&format!(
+                    "Could not restore the previous credentials named '{entry}' ({e}). Enter them again with: mcp-rs wordpress-keyring set {}",
+                    quote_arg(&entry)
+                ));
+                false
+            }
+        }
+    }
+
     /// 平文のパスワードを含む控えなら、後で消すかを聞くために覚える（#599）
     fn remember_secret_backup(&mut self, backup: &Path) {
         let plaintext = std::fs::read_to_string(backup)
@@ -1172,6 +1196,10 @@ impl Setup<'_> {
     ) -> Result<(), Box<dyn std::error::Error>> {
         let credentials = if self.forget_new_entry(entry)? {
             format!("The credentials stored as '{entry}' were deleted again.")
+        } else if self.restore_replaced_entry(entry) {
+            // 足せなかったサイトのために入れ直した、既にあった項目は戻す
+            // （PR #712のレビュー。ほかのサイトの確認が通っても確定しない）
+            format!("The credentials named '{entry}' were put back as they were.")
         } else {
             format!("The credentials named '{entry}' are kept in the OS credential store.")
         };
@@ -5587,6 +5615,49 @@ file_path = "C:/Users/me/.mcp-rs/logs/audit.log"
         ));
         assert!(io.shown.iter().any(|s| s.contains("were deleted again")));
         assert!(!io.shown.iter().any(|s| s.starts_with("Added the site")));
+    }
+
+    /// 足せなかったサイトのために入れ直した、既にあった項目は、前の中身に
+    /// 戻す（PR #712のレビュー。ほかのサイトの確認が通っても確定しない）
+    #[test]
+    fn test_replaced_credentials_are_restored_when_the_site_is_not_added() {
+        let text = "[transport]\n[server]\n[handlers]\nwordpress = { enabled = true, url = \"https://example.com\", keyring = \"example.com\" }\n";
+        let (_dir, path) = config_in_temp(text);
+        let store = MemoryStore::default();
+        store_wordpress_credentials(
+            &store,
+            "shop.example.com",
+            &WordPressKeyringCredentials {
+                site_url: "https://shop.example.com".to_string(),
+                username: "editor".to_string(),
+                application_password: Zeroizing::new("old password".to_string()),
+            },
+        )
+        .unwrap();
+        let mut io = Script::new(&[
+            "y",
+            "",
+            "https://shop.example.com",
+            "",
+            "n",
+            "editor",
+            "new password",
+            "",
+        ]);
+        let mut setup = database_setup(&mut io, &store, &path);
+        let added = setup.wordpress_sites_step().unwrap();
+        assert!(added.is_empty());
+        assert!(setup.replaced_entries.is_empty());
+        assert_eq!(
+            *load_wordpress_credentials(&store, "shop.example.com")
+                .unwrap()
+                .application_password,
+            "old password"
+        );
+        assert!(io
+            .shown
+            .iter()
+            .any(|s| s.contains("were put back as they were")));
     }
 
     // ---- PR #671の2回目のレビュー ----
