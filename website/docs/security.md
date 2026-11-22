@@ -286,7 +286,7 @@ user_id = "user-1"
 
 - Use long random keys, such as the output of `openssl rand -hex 32`. mcp-rs logs a warning at startup for a key shorter than 16 characters (v0.27.0 and later)
 - A client address that fails authentication 20 times within a minute gets HTTP 429 for the rest of that minute, even with a valid key, so keys cannot be guessed quickly (v0.27.0 and later). Requests being checked at the same time count too, so sending many at once does not get past the limit. Behind a proxy in `trusted_proxies`, the address from `X-Forwarded-For` is counted. Behind a proxy that is not in `trusted_proxies`, or a NAT, every client shares the proxy's address: one client's failures then make everyone get 429 for the rest of the minute, so list the proxy in `trusted_proxies`
-- `mcp_rs_status` shows a key or token limited by `tools` only the mcp-rs version, the mode, the protocol versions, the update check, the OS, the process ID, the instance, the uptime, and the caller's name: the config file, the logs, and the state of the handlers and plugins are shown only to callers that may use every tool (v0.27.0 and later)
+- `mcp_rs_status` shows a key or token limited by `tools` only the mcp-rs version, the mode, the protocol versions, the update check (STDIO mode only; HTTP mode does not check for updates), the OS, the process ID, the instance, the uptime, and the caller's name: the config file, the logs, and the state of the handlers and plugins are shown only to callers that may use every tool (v0.27.0 and later)
 
 ## Limiting Tools per API Key or Token
 
