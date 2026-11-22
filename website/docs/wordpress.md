@@ -284,7 +284,7 @@ Update an existing WordPress post.
 - `title` (string, optional): New post title
 - `content` (string, optional): New post content
 - `status` (string, optional): New post status: `publish`, `draft`, `pending`, `private`, or `future` (scheduled). `future` needs `date`, unless the post is already scheduled
-- `date` (string, optional): Publication date, ISO8601 in the site's time zone (for example `2026-11-19T10:00:00`). See [Scheduling an existing post](#scheduling-an-existing-post) (v0.29.0 and later)
+- `date` (string, optional): Publication date, ISO8601 in the site's time zone (for example `2030-01-01T10:00:00`). See [Scheduling an existing post](#scheduling-an-existing-post) (v0.29.0 and later)
 - `categories` (array, optional): New category IDs
 - `tags` (array, optional): New tag IDs
 - `featured_media_id` (number, optional): New featured image ID
@@ -316,11 +316,12 @@ To check a draft first and schedule it afterwards, update it with `status: "futu
   "arguments": {
     "post_id": 123,
     "status": "future",
-    "date": "2026-11-19T10:00:00"
+    "date": "2030-01-01T10:00:00"
   }
 }
 ```
 
+- Replace `date` with the time you want, in the future. With a date in the past, WordPress publishes the post immediately instead of scheduling it
 - `date` is in the site's time zone (Settings → General). `get_post` shows the date with a `Date:` line, marked `scheduled` for a scheduled post
 - `status: "future"` without `date` is refused unless the post is already scheduled: WordPress would publish it immediately. Up to v0.28.0, `update_post` had no `date` and sent `future` as it was
 - To change the time of a scheduled post, send only `date`
@@ -394,7 +395,7 @@ Retrieve WordPress posts. By default, only published posts.
 - `order` (optional): `desc` (default) or `asc`
 - `per_page` (1-100), `page` (from 1) (optional)
 
-Without any of `search`, `categories`, `tags`, `author`, `after`, `before`, `orderby`, `order`, `per_page`, and `page`, `get_posts` returns all posts (up to 100 pages of 100). With any of them (v0.29.0 and later), it reads only one page (20 posts unless `per_page` is given), and the first line shows the page and the total, for example `Found 3 posts (page 1 of 3, 3 per page; 8 in total)`. Use `page` for the next ones:
+Without any of `search`, `categories`, `tags`, `author`, `after`, `before`, `orderby`, `order`, `per_page`, and `page`, `get_posts` returns all posts, up to 100 pages of 100 (10,000 posts). With more, it returns an error instead of a list that is missing posts: read them one page at a time with `per_page` and `page`, or narrow them down (v0.30.0 and later; up to v0.29.0, it returned the first 10,000 as if they were all). With any of them (v0.29.0 and later), it reads only one page (20 posts unless `per_page` is given), and the first line shows the page and the total, for example `Found 3 posts (page 1 of 3, 3 per page; 8 in total)`. Use `page` for the next ones:
 
 ```json
 {
