@@ -460,8 +460,10 @@ fn describe_kind(kind: EntryKind) -> &'static str {
 
 /// コマンドの引数として示す名前。記号の無い名前はそのまま、空白等を含む
 /// 名前は`"`で囲む（bash・PowerShell・cmdのどれでも1つの引数になる）。
-/// `"`で囲んでも展開・エスケープされる文字（`"` `$` `` ` `` `\` `!` `%`）や
-/// `'`を含む名前は、どのシェルでも同じに書けないので無し（PR #695のレビュー）
+/// 囲めるのは、`"`の中でどのシェルも文字どおりに扱う文字だけの名前。
+/// それ以外（`"` `$` `` ` `` `\` `!` `%` `'`、PowerShellが引用符とみなす
+/// `“` `”` `„` `‘` `’`等のUnicodeの記号、制御文字）を含む名前は、どの
+/// シェルでも同じに書けないので無し（PR #695のレビュー）
 fn shell_argument(name: &str) -> Option<String> {
     // `,`（PowerShellでは配列）・先頭の`@`（PowerShellの展開）は囲む
     if !name.is_empty()
@@ -472,10 +474,10 @@ fn shell_argument(name: &str) -> Option<String> {
     {
         return Some(name.to_string());
     }
-    if name
-        .chars()
-        .any(|c| "\"$`\\!%'".contains(c) || c.is_control())
-    {
+    // 除く文字を挙げるのではなく、囲んでよい文字を挙げる。Unicodeの
+    // 文字・数字（日本語等）は使える
+    let quotable = |c: char| c.is_alphanumeric() || " -_.@:/,+=#~()[]{}&|;<>^*?".contains(c);
+    if name.is_empty() || !name.chars().all(quotable) {
         return None;
     }
     Some(format!("\"{name}\""))
@@ -1019,7 +1021,27 @@ keyring = \"other\"
         assert_eq!(shell_argument("a,b").as_deref(), Some("\"a,b\""));
         assert_eq!(shell_argument("@site").as_deref(), Some("\"@site\""));
         assert_eq!(shell_argument("ブログ").as_deref(), Some("\"ブログ\""));
-        for name in ["a\"b", "$HOME", "a`b", "a\\b", "a!b", "%PATH%", "it's"] {
+        assert_eq!(
+            shell_argument("shop (old) & blog").as_deref(),
+            Some("\"shop (old) & blog\"")
+        );
+        for name in [
+            "a\"b",
+            "$HOME",
+            "a`b",
+            "a\\b",
+            "a!b",
+            "%PATH%",
+            "it's",
+            // PowerShellは、Unicodeの引用符も引用符とみなす
+            "x\u{201D}; whoami; #",
+            "x\u{201C}y",
+            "x\u{201E}y",
+            "x\u{2018}y",
+            "x\u{2019}y",
+            "a\tb",
+            "",
+        ] {
             assert_eq!(shell_argument(name), None, "{name}");
         }
 
