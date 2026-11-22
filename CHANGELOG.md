@@ -191,6 +191,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- HTTPで、2026-07-28のリクエスト（`_meta`で版を送るもの）の版を、
+  ハンドラーに渡す前に確かめる（#697）。対応していない版には、400と
+  `-32022`を返す。組み込みのハンドラーは以前から自分で確かめていたが、
+  ライブラリとして独自のハンドラー（`HttpTransport::with_request_handler`）を
+  使う場合は、対応していない版がそのまま届いていた
 - `mcp-rs init`・`database-keyring set`で、資格情報ストアに既にある項目を、
   確かめずにデータベースの資格情報で上書きしない（#692）。ほかの種類の項目
   （別の設定ファイルのWordPressのサイト等）なら、`init`は別の名前を聞き、
