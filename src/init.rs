@@ -1942,9 +1942,25 @@ fn claude_code_config_file() -> Option<PathBuf> {
     }
 }
 
-/// Copilot CLIのユーザーの設定
+/// Copilot CLIのユーザーの設定。`COPILOT_HOME`があれば、その中（#710。
+/// Copilot CLIは、`COPILOT_HOME`で設定の場所を変えられる。以前は見ず、
+/// 前の登録・別の名前の登録を、使っていないファイルで探していた）
 fn copilot_config_file() -> Option<PathBuf> {
-    Some(home_dir()?.join(".copilot").join("mcp-config.json"))
+    copilot_config_file_in(
+        std::env::var_os("COPILOT_HOME").filter(|dir| !dir.is_empty()),
+        home_dir(),
+    )
+}
+
+fn copilot_config_file_in(
+    copilot_home: Option<std::ffi::OsString>,
+    home: Option<PathBuf>,
+) -> Option<PathBuf> {
+    let dir = match copilot_home {
+        Some(dir) => PathBuf::from(dir),
+        None => home?.join(".copilot"),
+    };
+    Some(dir.join("mcp-config.json"))
 }
 
 /// `command`が mcp-rs の実行ファイルか（ファイル名で見分ける）
@@ -4634,6 +4650,25 @@ file_path = "C:/Users/me/.mcp-rs/logs/audit.log"
             "[transport]\ntransport_type = \"http\"\n"
         )));
         assert!(!uses_http_transport(&path("none.toml", "[server]\n")));
+    }
+
+    /// Copilot CLIの設定は、`COPILOT_HOME`があればその中（#710）
+    #[test]
+    fn test_copilot_config_file_in() {
+        let home = Some(PathBuf::from("/home/me"));
+        assert_eq!(
+            copilot_config_file_in(None, home.clone()),
+            Some(PathBuf::from("/home/me/.copilot/mcp-config.json"))
+        );
+        assert_eq!(
+            copilot_config_file_in(Some("/work/copilot".into()), home),
+            Some(PathBuf::from("/work/copilot/mcp-config.json"))
+        );
+        assert_eq!(
+            copilot_config_file_in(Some("/work/copilot".into()), None),
+            Some(PathBuf::from("/work/copilot/mcp-config.json"))
+        );
+        assert_eq!(copilot_config_file_in(None, None), None);
     }
 
     #[test]

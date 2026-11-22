@@ -249,7 +249,7 @@ More (Japanese): [Claude Code Integration Guide](https://github.com/n-takatsu/mc
 
 ### VS Code (GitHub Copilot) {#vs-code}
 
-The Copilot chat in VS Code runs on the Copilot CLI (the agent host; the older local harness, which reads `.vscode/mcp.json` itself, is to be removed in February 2027) and uses the MCP servers registered for it. Register mcp-rs with the `copilot` command, with absolute paths. Everything after `--` is the mcp-rs command line. This writes `~/.copilot/mcp-config.json`, which both the chat in VS Code and `copilot` in a terminal read:
+The Copilot chat in VS Code runs on the Copilot CLI (the agent host; the older local harness, which reads `.vscode/mcp.json` itself, is to be removed in February 2027) and uses the MCP servers registered for it. Register mcp-rs with the `copilot` command, with absolute paths. Everything after `--` is the mcp-rs command line. This writes `~/.copilot/mcp-config.json` (`$COPILOT_HOME/mcp-config.json` when the environment variable `COPILOT_HOME` is set; `mcp-rs init` and `mcp-rs uninstall` look there too, v0.30.0 and later), which both the chat in VS Code and `copilot` in a terminal read:
 
 ```bash
 copilot mcp add mcp-rs -- "C:/Users/you/.mcp-rs/bin/mcp-rs.exe" --config C:/Users/you/.config/mcp-rs/config.toml
