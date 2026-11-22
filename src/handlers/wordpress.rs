@@ -1666,6 +1666,18 @@ pub struct WordPressHealthCheck {
     pub log_destination: String,
 }
 
+/// サインインの後に確かめる項目（権限・メディア）の印。サインインが
+/// 通らなければ、確かめていないと示す（#710。`mcp-rs check`と同じ）
+fn health_mark_after_sign_in(health: &WordPressHealthCheck, ok: bool) -> &'static str {
+    if ok {
+        "✅"
+    } else if !health.authentication_valid {
+        "⏭️ not checked (the sign-in failed)"
+    } else {
+        "❌"
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct WordPressSiteInfo {
     pub name: String,
@@ -4007,21 +4019,15 @@ impl WordPressHandler {
                         "❌"
                     }
                 ));
+                // サインインが通らなければ、権限・メディアは確かめていない
+                // （#710。以前は❌と出し、失敗したように見えた）
                 report.push_str(&format!(
                     "  • Permissions Adequate: {}\n",
-                    if health.permissions_adequate {
-                        "✅"
-                    } else {
-                        "❌"
-                    }
+                    health_mark_after_sign_in(&health, health.permissions_adequate)
                 ));
                 report.push_str(&format!(
                     "  • Media Upload Possible: {}\n",
-                    if health.media_upload_possible {
-                        "✅"
-                    } else {
-                        "❌"
-                    }
+                    health_mark_after_sign_in(&health, health.media_upload_possible)
                 ));
 
                 if !health.error_details.is_empty() {
@@ -6795,6 +6801,25 @@ impl McpHandler for WordPressHandler {
 mod tests {
     use super::*;
     use crate::config::RateLimitConfig;
+
+    /// サインインが通らなければ、権限・メディアは「確かめていない」と出す
+    /// （#710）
+    #[test]
+    fn test_health_mark_after_sign_in() {
+        let health = |signed_in: bool| WordPressHealthCheck {
+            site_accessible: true,
+            rest_api_available: true,
+            authentication_valid: signed_in,
+            permissions_adequate: false,
+            media_upload_possible: false,
+            error_details: Vec::new(),
+            site_info: None,
+            log_destination: String::new(),
+        };
+        assert_eq!(health_mark_after_sign_in(&health(true), true), "✅");
+        assert_eq!(health_mark_after_sign_in(&health(true), false), "❌");
+        assert!(health_mark_after_sign_in(&health(false), false).contains("not checked"));
+    }
 
     #[test]
     fn test_https_enforcement() {
