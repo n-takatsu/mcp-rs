@@ -100,13 +100,17 @@ Windows (PowerShell):
 $v = "v0.29.0"; $name = "mcp-rs-$v-x86_64-pc-windows-msvc"
 Invoke-WebRequest "https://github.com/n-takatsu/mcp-rs/releases/download/$v/$name.zip" -OutFile "$name.zip"
 Invoke-WebRequest "https://github.com/n-takatsu/mcp-rs/releases/download/$v/$name.zip.sha256" -OutFile "$name.zip.sha256"
-# True if the file is the one built by the release workflow
-(Get-FileHash "$name.zip" -Algorithm SHA256).Hash.ToLower() -eq (Get-Content "$name.zip.sha256").Split(" ")[0]
-Expand-Archive "$name.zip" -DestinationPath .
-New-Item -ItemType Directory -Force "$env:USERPROFILE\.mcp-rs\bin" | Out-Null
-Copy-Item "$name\mcp-rs.exe" "$env:USERPROFILE\.mcp-rs\bin\"
-Unblock-File "$env:USERPROFILE\.mcp-rs\bin\mcp-rs.exe"
-& "$env:USERPROFILE\.mcp-rs\bin\mcp-rs.exe" --version
+# Install only if the download is complete (its SHA256 matches the release's)
+if ((Get-FileHash "$name.zip" -Algorithm SHA256).Hash.ToLower() -eq (Get-Content "$name.zip.sha256").Split(" ")[0]) {
+    # -Force replaces files left from an earlier download; any error stops here
+    Expand-Archive "$name.zip" -DestinationPath . -Force -ErrorAction Stop
+    New-Item -ItemType Directory -Force "$env:USERPROFILE\.mcp-rs\bin" -ErrorAction Stop | Out-Null
+    Copy-Item "$name\mcp-rs.exe" "$env:USERPROFILE\.mcp-rs\bin\" -ErrorAction Stop
+    Unblock-File "$env:USERPROFILE\.mcp-rs\bin\mcp-rs.exe" -ErrorAction Stop
+    & "$env:USERPROFILE\.mcp-rs\bin\mcp-rs.exe" --version
+} else {
+    Write-Error "SHA256 mismatch: do not use $name.zip"
+}
 ```
 
 macOS and Linux:
@@ -115,9 +119,9 @@ macOS and Linux:
 v=v0.29.0; name=mcp-rs-$v-aarch64-apple-darwin   # Linux: mcp-rs-$v-x86_64-unknown-linux-gnu
 curl -LO https://github.com/n-takatsu/mcp-rs/releases/download/$v/$name.tar.gz
 curl -LO https://github.com/n-takatsu/mcp-rs/releases/download/$v/$name.tar.gz.sha256
-shasum -a 256 -c $name.tar.gz.sha256   # Linux: sha256sum -c $name.tar.gz.sha256
-tar -xzf $name.tar.gz
-mkdir -p ~/.mcp-rs/bin && cp $name/mcp-rs ~/.mcp-rs/bin/
+shasum -a 256 -c $name.tar.gz.sha256 &&   # Linux: sha256sum -c $name.tar.gz.sha256 &&
+tar -xzf $name.tar.gz &&
+mkdir -p ~/.mcp-rs/bin && cp $name/mcp-rs ~/.mcp-rs/bin/ &&
 ~/.mcp-rs/bin/mcp-rs --version
 ```
 
