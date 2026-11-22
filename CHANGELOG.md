@@ -191,6 +191,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- リリースのファイルを作るワークフロー（`release-binaries.yml`）で、
+  手動の実行（`workflow_dispatch`）でタグを選んだとき、公開済みの
+  リリースのアーカイブ・チェックサムを置き換えない（#717）。公開する
+  ジョブは、タグのpushのときだけ動く
+- 手で入れる手順（ガイド）で、SHA256が合ったときだけ、展開・コピー・
+  実行に進む（#717）。以前は、合わなくてもPowerShellは`False`と出す
+  だけ、bashも止まらずに次へ進んだ。PowerShellでは、前のダウンロードを
+  展開したフォルダが残っていても上書きし、展開・コピーが失敗したら止まる
+  （以前は、古いファイルをコピーして実行し得た）
 - MySQL・MariaDBの`get_schema`で、式を含むインデックス（`(tenant_id,
   LOWER(email))`の一意インデックス等）を、全体として除く（#717）。以前は
   式の部分だけを除き、`tenant_id`だけで一意のように返した
