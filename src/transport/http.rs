@@ -2278,12 +2278,12 @@ async fn auth_middleware(
     // 確かめる前に1回分を数え、通ったら戻す（PR #608のレビュー）。「止めて
     // いるか」の確認と数えるのを1回のロックで行うので、同時に送られた
     // リクエストも、上限を越えて確かめない
-    if !state.auth_failures.begin(client, Instant::now()) {
+    let Some(attempt) = state.auth_failures.begin(client, Instant::now()) else {
         return StatusCode::TOO_MANY_REQUESTS.into_response();
-    }
+    };
     match check_auth(&state, request.headers(), remote_addr).await {
         Ok(authenticated) => {
-            state.auth_failures.succeeded(client);
+            state.auth_failures.succeeded(&attempt);
             request.extensions_mut().insert(authenticated);
             next.run(request).await
         }
@@ -2295,12 +2295,28 @@ async fn auth_middleware(
 /// `limit`回失敗したアドレスは、その間の残りを、確かめずに断る。確かめて
 /// いる最中のものも数える（同時に送られたリクエストで、上限を越えさせない）。
 /// 覚えるアドレスの数に上限を付ける（たくさんのアドレスからの失敗で、
-/// メモリーを使い切らせない）
+/// メモリーを使い切らせない）。覚えきれないアドレスは、まとめて1つとして
+/// 数える（#705。以前は数えずに通したので、たくさんのアドレスで表を
+/// 埋めると、後のアドレスは上限なく試せた）
 struct AuthFailureLimiter {
     limit: u32,
     window: std::time::Duration,
     max_clients: usize,
-    failures: std::sync::Mutex<HashMap<IpAddr, (u32, Instant)>>,
+    failures: std::sync::Mutex<AuthFailures>,
+}
+
+#[derive(Default)]
+struct AuthFailures {
+    /// アドレスごとの、数と、時間枠の始まり
+    clients: HashMap<IpAddr, (u32, Instant)>,
+    /// 覚えきれないアドレスの、まとめた数と、時間枠の始まり
+    overflow: Option<(u32, Instant)>,
+}
+
+/// `begin`で数えた1回分。どこで、どの時間枠で数えたか
+struct AuthAttempt {
+    client: Option<IpAddr>,
+    window_started: Instant,
 }
 
 impl AuthFailureLimiter {
@@ -2309,42 +2325,54 @@ impl AuthFailureLimiter {
             limit,
             window,
             max_clients,
-            failures: std::sync::Mutex::new(HashMap::new()),
+            failures: std::sync::Mutex::new(AuthFailures::default()),
         }
     }
 
-    /// 認証を確かめる前に呼ぶ。上限に達していれば`false`（確かめずに断る）。
-    /// そうでなければ1回分を数えて`true`。認証が通ったら`succeeded`で戻す
-    fn begin(&self, client: IpAddr, now: Instant) -> bool {
+    /// 認証を確かめる前に呼ぶ。上限に達していれば`None`（確かめずに断る）。
+    /// そうでなければ1回分を数えて返す。認証が通ったら`succeeded`で戻す
+    fn begin(&self, client: IpAddr, now: Instant) -> Option<AuthAttempt> {
         let mut failures = self
             .failures
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if failures.len() >= self.max_clients && !failures.contains_key(&client) {
-            failures.retain(|_, (_, started)| now.duration_since(*started) < self.window);
-            if failures.len() >= self.max_clients {
-                // 覚えきれないアドレスは数えない（メモリーの上限を優先する）
-                return true;
-            }
+        let AuthFailures { clients, overflow } = &mut *failures;
+        if clients.len() >= self.max_clients && !clients.contains_key(&client) {
+            clients.retain(|_, (_, started)| now.duration_since(*started) < self.window);
         }
-        let entry = failures.entry(client).or_insert((0, now));
+        let (key, entry) = if clients.len() >= self.max_clients && !clients.contains_key(&client) {
+            // 覚えきれないアドレスは、まとめて数える（メモリーの上限は
+            // 保ったまま、上限なく試させない。#705）
+            (None, overflow.get_or_insert((0, now)))
+        } else {
+            (Some(client), clients.entry(client).or_insert((0, now)))
+        };
         if now.duration_since(entry.1) >= self.window {
             *entry = (0, now);
         }
         if entry.0 >= self.limit {
-            return false;
+            return None;
         }
         entry.0 += 1;
-        true
+        Some(AuthAttempt {
+            client: key,
+            window_started: entry.1,
+        })
     }
 
-    /// 認証が通ったとき、`begin`で数えた1回分を戻す
-    fn succeeded(&self, client: IpAddr) {
+    /// 認証が通ったとき、`begin`で数えた1回分を戻す。数えたときと同じ
+    /// 時間枠のときだけ（#705。前の時間枠で始めた認証が、新しい時間枠の
+    /// 失敗を減らさないように）
+    fn succeeded(&self, attempt: &AuthAttempt) {
         let mut failures = self
             .failures
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if let Some(entry) = failures.get_mut(&client) {
+        let entry = match attempt.client {
+            Some(client) => failures.clients.get_mut(&client),
+            None => failures.overflow.as_mut(),
+        };
+        if let Some(entry) = entry.filter(|entry| entry.1 == attempt.window_started) {
             entry.0 = entry.0.saturating_sub(1);
         }
     }
@@ -5135,23 +5163,42 @@ mod tests {
         let c: IpAddr = "192.0.2.3".parse().unwrap();
         // 確かめている最中のもの（同時に送られたリクエスト）も数えるので、
         // 4つ目は、前の3つの結果を待たずに断る（PR #608のレビュー）
+        let mut attempts = Vec::new();
         for _ in 0..3 {
-            assert!(limiter.begin(a, start));
+            attempts.push(limiter.begin(a, start).unwrap());
         }
-        assert!(!limiter.begin(a, start));
+        assert!(limiter.begin(a, start).is_none());
         // 通ったものは戻すので、正しいキーの呼び出し元は止まらない
-        limiter.succeeded(a);
-        assert!(limiter.begin(a, start));
-        assert!(!limiter.begin(a, start));
+        limiter.succeeded(&attempts[0]);
+        assert!(limiter.begin(a, start).is_some());
+        assert!(limiter.begin(a, start).is_none());
         // ほかのアドレスは別に数える
-        assert!(limiter.begin(b, start));
+        assert!(limiter.begin(b, start).is_some());
         // 窓が過ぎれば、また確かめる
         let later = start + std::time::Duration::from_secs(61);
-        assert!(limiter.begin(a, later));
-        // 覚えるアドレスの数に上限がある（新しいアドレスは数えずに通す）
-        for _ in 0..5 {
-            assert!(limiter.begin(c, start));
+        assert!(limiter.begin(a, later).is_some());
+        // 前の窓で始めた認証が通っても、新しい窓の数は減らさない（#705）
+        assert!(limiter.begin(a, later).is_some());
+        assert!(limiter.begin(a, later).is_some());
+        assert!(limiter.begin(a, later).is_none());
+        limiter.succeeded(&attempts[1]);
+        assert!(limiter.begin(a, later).is_none());
+
+        // 覚えるアドレスの数（2）を超えたアドレスは、まとめて数える（#705。
+        // 以前は数えずに通した）
+        let d: IpAddr = "192.0.2.4".parse().unwrap();
+        let overflow = limiter.begin(c, start).unwrap();
+        assert_eq!(overflow.client, None);
+        for _ in 0..2 {
+            assert!(limiter.begin(c, start).is_some());
         }
+        assert!(limiter.begin(c, start).is_none());
+        assert!(limiter.begin(d, start).is_none());
+        // まとめた数も、通ったものは戻す
+        limiter.succeeded(&overflow);
+        assert!(limiter.begin(d, start).is_some());
+        // 窓が過ぎたアドレスは忘れるので、空いた分は、アドレスごとに数える
+        assert_eq!(limiter.begin(d, later).unwrap().client, Some(d));
     }
 
     #[tokio::test]
