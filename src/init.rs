@@ -2829,6 +2829,8 @@ pub(crate) fn write_atomically(path: &Path, content: &str, private: bool) -> io:
 /// `path`がシンボリックリンクなら、たどった先のパス（リンク先がまだ
 /// 無ければ、そのパス）。シンボリックリンクでなければ`None`
 fn symlink_target(path: &Path) -> io::Result<Option<PathBuf>> {
+    /// たどるリンクの数の上限（循環したリンクで止まらないように）
+    const MAX_LINKS: usize = 40;
     match std::fs::symlink_metadata(path) {
         Ok(metadata) if metadata.file_type().is_symlink() => {}
         _ => return Ok(None),
@@ -2836,13 +2838,25 @@ fn symlink_target(path: &Path) -> io::Result<Option<PathBuf>> {
     if let Ok(target) = std::fs::canonicalize(path) {
         return Ok(Some(target));
     }
-    // リンク先がまだ無い。リンクを1段たどり、相対パスはリンクの場所から
-    let link = std::fs::read_link(path)?;
-    let target = match path.parent() {
-        Some(parent) if link.is_relative() => parent.join(link),
-        _ => link,
-    };
-    Ok(Some(target))
+    // リンク先がまだ無い。リンクを末尾までたどる（途中のリンクを普通の
+    // ファイルに置き換えない。PR #707のレビュー）。相対パスは、そのリンクの
+    // 場所から
+    let mut current = path.to_path_buf();
+    for _ in 0..MAX_LINKS {
+        let link = std::fs::read_link(&current)?;
+        current = match current.parent() {
+            Some(parent) if link.is_relative() => parent.join(link),
+            _ => link,
+        };
+        match std::fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {}
+            _ => return Ok(Some(current)),
+        }
+    }
+    Err(io::Error::other(format!(
+        "{} has too many levels of symbolic links",
+        path.display()
+    )))
 }
 
 /// 2つのファイルのパスが同じか（区切り文字をそろえ、Windowsでは大文字・
@@ -3812,6 +3826,29 @@ file_path = "C:/Users/me/.mcp-rs/logs/audit.log"
             std::fs::read_to_string(dir.path().join("dotfiles").join("missing.toml")).unwrap(),
             "created"
         );
+        // 連鎖したリンク（a → b → c、cがまだ無い）は、末尾のcに作り、aとbは
+        // リンクのまま（PR #707のレビュー）
+        let a = dir.path().join("a.toml");
+        let b = dir.path().join("dotfiles").join("b.toml");
+        std::os::unix::fs::symlink("dotfiles/b.toml", &a).unwrap();
+        std::os::unix::fs::symlink("c.toml", &b).unwrap();
+        write_atomically(&a, "chained", true).unwrap();
+        for link in [&a, &b] {
+            assert!(std::fs::symlink_metadata(link)
+                .unwrap()
+                .file_type()
+                .is_symlink());
+        }
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("dotfiles").join("c.toml")).unwrap(),
+            "chained"
+        );
+        // 循環したリンクは、エラーにする
+        let loop_a = dir.path().join("loop-a.toml");
+        let loop_b = dir.path().join("loop-b.toml");
+        std::os::unix::fs::symlink("loop-b.toml", &loop_a).unwrap();
+        std::os::unix::fs::symlink("loop-a.toml", &loop_b).unwrap();
+        assert!(write_atomically(&loop_a, "x", true).is_err());
     }
 
     /// Unixでは、書いた設定ファイル・控え・フォルダを本人だけにする（#599）
