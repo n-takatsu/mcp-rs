@@ -54,16 +54,26 @@ jobs:
 
       # bucketの自動更新（checkver・autoupdate）で、今の版のURL・ハッシュが
       # 作り直せることを確かめる
+      # - `-Version`で、manifestの版に固定する。無いと、新しいリリースが出た
+      #   だけで別の版に作り直し、失敗する（#692）
+      # - checkverは、checkverの設定の誤り等では例外を出さず、そのmanifestを
+      #   飛ばすだけ。一時コピーのURL・ハッシュを変えておき、元に戻った
+      #   （作り直した）ことで確かめる（#692）
       - name: Check checkver and autoupdate
         shell: pwsh
         run: |
           $bucket = Join-Path $env:RUNNER_TEMP 'bucket'
           New-Item -ItemType Directory -Force $bucket | Out-Null
-          Copy-Item packaging\scoop\mcp-rs.json $bucket
-          $checkver = Join-Path $HOME 'scoop\apps\scoop\current\bin\checkver.ps1'
-          & $checkver -App mcp-rs -Dir $bucket -ForceUpdate
+          $copy = Join-Path $bucket 'mcp-rs.json'
           $original = Get-Content packaging\scoop\mcp-rs.json -Raw | ConvertFrom-Json
-          $updated = Get-Content (Join-Path $bucket 'mcp-rs.json') -Raw | ConvertFrom-Json
+          $stale = Get-Content packaging\scoop\mcp-rs.json -Raw | ConvertFrom-Json
+          $stale.architecture.'64bit'.url = 'https://example.invalid/stale.zip'
+          $stale.architecture.'64bit'.hash = '0' * 64
+          $stale.architecture.'64bit'.extract_dir = 'stale'
+          $stale | ConvertTo-Json -Depth 10 | Set-Content -Encoding utf8 $copy
+          $checkver = Join-Path $HOME 'scoop\apps\scoop\current\bin\checkver.ps1'
+          & $checkver -App mcp-rs -Dir $bucket -Version $original.version -ForceUpdate -ThrowError
+          $updated = Get-Content $copy -Raw | ConvertFrom-Json
           $o = $original.architecture.'64bit'
           $u = $updated.architecture.'64bit'
           if ($o.url -ne $u.url -or $o.hash -ne $u.hash -or $o.extract_dir -ne $u.extract_dir) {
