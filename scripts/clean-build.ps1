@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     今の作業に関係のないビルド成果物を消してから、cargo build を実行します。
 
@@ -92,7 +92,11 @@ foreach ($line in (git worktree list --porcelain)) {
 }
 if ($entry) { $worktrees += $entry }
 
-git fetch --quiet origin develop 2>$null
+if ($PSCmdlet.ShouldProcess('origin/develop', 'git fetch')) {
+    git fetch --quiet origin develop 2>$null
+} else {
+    Write-Host '取り込み判定は、手元にある origin/develop で行います（-WhatIf のため fetch しません）。'
+}
 
 foreach ($wt in $worktrees) {
     $isCurrent = $wt.Path -ieq $current
@@ -108,13 +112,19 @@ foreach ($wt in $worktrees) {
 
     if ($RemoveWorktrees -and $wt.Detached) {
         $dirty = git -C $wt.Path status --porcelain
-        git merge-base --is-ancestor $wt.Head origin/develop 2>$null
+        # 一覧を取ったあとに HEAD が動いていることがあるので、判定の直前に読み直す
+        $head = git -C $wt.Path rev-parse HEAD
+        git merge-base --is-ancestor $head origin/develop 2>$null
         $merged = $LASTEXITCODE -eq 0
         if (-not $dirty -and $merged) {
             if ($PSCmdlet.ShouldProcess($wt.Path, "worktree を削除 ($label, develop に取り込み済み)")) {
                 Write-Host "worktree を削除: $($wt.Path) ($label)"
                 # target/ は無視されたファイルなので、先に消してから worktree remove する
-                Remove-BuildDir (Join-Path $wt.Path 'target') '削除する worktree のビルド成果物'
+                # CACHEDIR.TAG のない target/ は追跡済みのファイルかもしれないので消さない
+                $wtTarget = Join-Path $wt.Path 'target'
+                if (Test-CargoTargetDir $wtTarget) {
+                    Remove-BuildDir $wtTarget '削除する worktree のビルド成果物'
+                }
                 git worktree remove $wt.Path
             }
             continue
@@ -134,21 +144,46 @@ foreach ($wt in $worktrees) {
 if ($PSCmdlet.ShouldProcess('git worktree', 'prune')) { git worktree prune }
 
 # --- 今の target/ -----------------------------------------------------------
-$targetDir = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Path $current 'target' }
-$stamp = Join-Path $targetDir '.rustc-version'
+# 掃除・ビルド・スタンプのすべてで、cargo build が実際に使う target ディレクトリを使う
+# （優先順: -CargoArgs の --target-dir、CARGO_TARGET_DIR、<worktree>/target）
+$targetDir = $null
+for ($i = 0; $i -lt $CargoArgs.Count; $i++) {
+    if ($CargoArgs[$i] -eq '--target-dir' -and $i + 1 -lt $CargoArgs.Count) {
+        $targetDir = $CargoArgs[$i + 1]
+    } elseif ($CargoArgs[$i] -like '--target-dir=*') {
+        $targetDir = $CargoArgs[$i].Substring('--target-dir='.Length)
+    }
+}
+if (-not $targetDir) { $targetDir = $env:CARGO_TARGET_DIR }
+if (-not $targetDir) { $targetDir = Join-Path $current 'target' }
+$targetDir = Get-FullPath ([System.IO.Path]::Combine($current, $targetDir))
+
+# cargo clean / cargo sweep を、決めた target ディレクトリに向けて実行する
+function Invoke-CargoInTarget([string[]]$Arguments) {
+    $saved = $env:CARGO_TARGET_DIR
+    $env:CARGO_TARGET_DIR = $targetDir
+    Push-Location $current
+    try {
+        cargo @Arguments
+        if ($LASTEXITCODE -ne 0) { throw "cargo $($Arguments -join ' ') が失敗しました（終了コード $LASTEXITCODE）。" }
+    } finally {
+        Pop-Location
+        $env:CARGO_TARGET_DIR = $saved
+    }
+}
+
+$stamp = [System.IO.Path]::Combine($targetDir, '.rustc-version')
 $rustc = (rustc -vV) -join "`n"
 if ((Test-Path -LiteralPath $stamp) -and ((Get-Content -Raw -LiteralPath $stamp).Trim() -ne $rustc.Trim())) {
     if ($PSCmdlet.ShouldProcess($targetDir, 'cargo clean (rustc のバージョンが変わったため)')) {
         Write-Host 'rustc のバージョンが変わったので cargo clean します。'
-        Push-Location $current
-        try { cargo clean } finally { Pop-Location }
+        Invoke-CargoInTarget @('clean')
     }
 }
 
 if (Get-Command cargo-sweep -ErrorAction SilentlyContinue) {
     if ($PSCmdlet.ShouldProcess($targetDir, "cargo sweep --time $SweepDays")) {
-        Push-Location $current
-        try { cargo sweep --time $SweepDays } finally { Pop-Location }
+        Invoke-CargoInTarget @('sweep', '--time', "$SweepDays")
     }
 }
 
