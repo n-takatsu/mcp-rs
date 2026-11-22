@@ -2666,6 +2666,7 @@ dependencies = [
  "keyring",
  "libc",
  "log",
+ "lru",
  "mongodb",
  "mysql_async",
  "pbkdf2 0.12.2",
