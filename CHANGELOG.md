@@ -191,6 +191,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `mcp-rs init`で、Claude Code・Copilot CLIの前の登録（`mcp-rs`）を消すのを、
+  別の名前のmcp-rsを消すかを聞き終えた後にする（#710）。新しい登録に失敗
+  したら、消した前の登録をクライアントの設定ファイルに戻す。以前は、先に
+  消してから聞き、途中で終わる・登録に失敗すると、前の登録（引数・環境
+  変数）が失われた
+- `mcp-rs init`で、Claude Codeの前の`mcp-rs`がユーザーの設定に無く、別の
+  スコープ（あるフォルダだけのlocal、プロジェクトの`.mcp.json`）にあるとき、
+  そちらが使われ続けることを知らせる（#710）。以前は、消せないまま
+  ユーザーの設定に足し、何も知らせなかった
+- `mcp-rs init`で、`[transport] type = "http"`の設定ファイルを、クライアントに
+  登録しない（#710）。クライアントはSTDIOでつなぐが、その設定ではHTTP
+  サーバーが動くので、つながらなかった。前の設定ファイルをそのまま使うと
+  選んだときに起きた
 - `wordpress_health_check`（MCPのツール）で、確かめていない項目は、
   理由を付けて「not checked」と出す（#710）。サインインが通らなければ
   権限とメディアのアップロード、サイトに届かなければREST API・サイン

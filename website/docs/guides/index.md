@@ -92,10 +92,12 @@ winget is not supported yet.
 
 Put `mcp-rs` (`mcp-rs.exe`) in a folder of your own, such as `~/.mcp-rs/bin` (`%USERPROFILE%\.mcp-rs\bin` on Windows). No administrator rights are needed, and updating means replacing the file. mcp-rs writes its log to `logs` next to it. On Windows, avoid folders under `AppData`: Claude Desktop from the Microsoft Store may redirect files written there, so the log can end up somewhere else.
 
+Set `v` to the [latest release](https://github.com/n-takatsu/mcp-rs/releases/latest) (`mcp-rs init` needs v0.26.0 or later).
+
 Windows (PowerShell):
 
 ```powershell
-$v = "v0.25.0"; $name = "mcp-rs-$v-x86_64-pc-windows-msvc"
+$v = "v0.29.0"; $name = "mcp-rs-$v-x86_64-pc-windows-msvc"
 Invoke-WebRequest "https://github.com/n-takatsu/mcp-rs/releases/download/$v/$name.zip" -OutFile "$name.zip"
 Invoke-WebRequest "https://github.com/n-takatsu/mcp-rs/releases/download/$v/$name.zip.sha256" -OutFile "$name.zip.sha256"
 # True if the file is the one built by the release workflow
@@ -110,7 +112,7 @@ Unblock-File "$env:USERPROFILE\.mcp-rs\bin\mcp-rs.exe"
 macOS and Linux:
 
 ```bash
-v=v0.25.0; name=mcp-rs-$v-aarch64-apple-darwin   # Linux: mcp-rs-$v-x86_64-unknown-linux-gnu
+v=v0.29.0; name=mcp-rs-$v-aarch64-apple-darwin   # Linux: mcp-rs-$v-x86_64-unknown-linux-gnu
 curl -LO https://github.com/n-takatsu/mcp-rs/releases/download/$v/$name.tar.gz
 curl -LO https://github.com/n-takatsu/mcp-rs/releases/download/$v/$name.tar.gz.sha256
 shasum -a 256 -c $name.tar.gz.sha256   # Linux: sha256sum -c $name.tar.gz.sha256
@@ -162,6 +164,12 @@ If a client already starts mcp-rs under another name (for example `mcp-rs-wordpr
 At the end, `init` shows how to restart each client. Then ask the client to call `mcp_rs_status` (see [Check](#check)).
 
 ## 3. Set up by hand {#by-hand}
+
+The commands below are written as `mcp-rs …`. The install script and a manual install do not add mcp-rs to `PATH` (Scoop and Homebrew do), so run it by its full path, such as `~/.mcp-rs/bin/mcp-rs`, or `& "$env:USERPROFILE\.mcp-rs\bin\mcp-rs.exe"` in PowerShell. For example:
+
+```powershell
+& "$env:USERPROFILE\.mcp-rs\bin\mcp-rs.exe" wordpress-keyring set example.com
+```
 
 ### WordPress credentials {#credentials}
 
