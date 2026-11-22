@@ -191,6 +191,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `mcp-rs init`・`mcp-rs uninstall`で、Copilot CLIの設定の場所を、
+  環境変数`COPILOT_HOME`があればその中（`$COPILOT_HOME/mcp-config.json`）に
+  する（#710）。Copilot CLIは`COPILOT_HOME`で設定の場所を変えられるが、
+  以前は`~/.copilot/mcp-config.json`だけを見たので、前の登録・別の名前の
+  mcp-rsを探す・消すとき、登録に失敗して前の登録を戻すときに、Copilot CLIが
+  使っていないファイルを読み書きした（登録そのものは`copilot mcp add`で
+  行うので、正しい場所に入っていた）
 - `mcp-rs init`で、Claude Code・Copilot CLIの前の登録（`mcp-rs`）を消すのを、
   別の名前のmcp-rsを消すかを聞き終えた後にする（#710）。新しい登録に失敗
   したら、消した前の登録をクライアントの設定ファイルに戻す。以前は、先に
