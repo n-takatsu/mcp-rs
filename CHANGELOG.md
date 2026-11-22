@@ -201,6 +201,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   大きさを確かめていた
 - 文書とツールの説明の、予約投稿の日付の例を先の日付にした（#692）。
   過去の日付では、予約ではなく公開になる
+- Scoopのmanifestの自動更新（`checkver`）が動いていなかった（#692）。
+  `"checkver": "github"`は`homepage`をGitHubのリポジトリとして読むが、
+  `homepage`はGitHub Pagesのため、エラーで飛ばしていた。`checkver.github`に
+  リポジトリのURLを書いた。CIの確かめも、エラーで何も作り直さなくても
+  通っていたので、一時コピーのURL・ハッシュを変えておき、作り直したことで
+  確かめる。版はmanifestの版に固定する（新しいリリースが出ただけで失敗しない）
 - 設定ファイルのエラーで、足りない項目・知らない項目の名前を伏せない
   （#617）。以前は``missing field `…` ``のように出て、どこを直せばよいか
   分からなかった。値は今までどおり伏せる（#543）。知らない項目の名前は、
