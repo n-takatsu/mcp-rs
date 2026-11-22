@@ -364,6 +364,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ローカルユーザーが読めた。前の版で作った控え等のACLは変えない。FAT32・
   exFAT等のACLの無いファイルシステムでは、本人だけにできないので、
   何も書かずにエラーにする
+- 依存クレートを、セキュリティ勧告の修正版に上げた。`Cargo.toml`の下限も
+  `url = "2.5.9"`・`mysql_async = "0.37"`に上げたので、mcp-rsをライブラリ
+  として使う側も、勧告の対象の版を選ばない
+  - `lru` 0.16.4 → 0.18.5（RUSTSEC-2026-0253: `LruCache::pop()`がパニック
+    に対して安全でなく、解放後の使用になり得る。健全性（unsound）の警告）。
+    `mysql_async` 0.36.2 → 0.37.1（`mysql_common` 0.35.5 → 0.37.3）に
+    上げた。0.36は`lru` 0.16を要求していた（MySQLを使うビルドのみ）
+  - `url` 2.5.7 → 2.5.9（RUSTSEC-2026-0592: 入れ子の`blob:`のURLで
+    `Url::origin()`がスタックオーバーフローする）
 
 ## [0.29.0] - 2026-11-19
 
