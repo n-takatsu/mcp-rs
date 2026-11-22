@@ -156,7 +156,7 @@ metadata:
 rules:
   - apiGroups: ["batch"]
     resources: ["jobs"]
-    verbs: ["create", "patch", "delete"]
+    verbs: ["get", "create", "patch", "delete"]
   - apiGroups: [""]
     resources: ["secrets"]
     verbs: ["create", "delete"]
@@ -171,7 +171,9 @@ rules:
     verbs: ["create"]
 ```
 
-Until v0.29.0, mcp-rs needed `patch` on `secrets` instead of on `jobs`. `patch` on `jobs` is used only for plugins with `env`.
+Until v0.29.0, mcp-rs needed `patch` on `secrets` instead of `get` and `patch` on `jobs`. `get` and `patch` on `jobs` are used only for plugins with `env` (`kubectl patch` reads the Job before changing it).
+
+Plugins with `env` need Kubernetes 1.22 or later (the Job's `spec.suspend`, on by default since 1.22). Plugins without `env` do not use it.
 
 If the plugin cannot start (for example, the image cannot be pulled, or the pod does not start within `start_timeout_seconds`), the warning says why, and `kubectl`'s own message is in the log lines that start with `[plugin <name>]`.
 

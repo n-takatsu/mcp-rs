@@ -329,14 +329,11 @@ fn job_manifest(
         container["envFrom"] = json!([{ "secretRef": { "name": name } }]);
     }
 
-    json!({
+    let mut job = json!({
         "apiVersion": "batch/v1",
         "kind": "Job",
         "metadata": { "name": name, "labels": labels },
         "spec": {
-            // Secretを使うときは、一時停止で作り、Secretを作ってから
-            // 一時停止を解く（Podは一時停止を解くまで作られない）
-            "suspend": with_secret,
             "backoffLimit": 0,
             "ttlSecondsAfterFinished": JOB_TTL_SECONDS,
             "template": {
@@ -360,7 +357,14 @@ fn job_manifest(
                 }
             }
         }
-    })
+    });
+    if with_secret {
+        // 一時停止で作り、Secretを作ってから一時停止を解く（Podは一時停止を
+        // 解くまで作られない）。`suspend`はKubernetes 1.21からのフィールドで、
+        // `env`を使わないプラグインには付けない（古い版でも今までどおり作れる）
+        job["spec"]["suspend"] = json!(true);
+    }
+    job
 }
 
 /// Jobを作り、Podが動き始めるまで待って、`kubectl attach`のコマンドを返す。
@@ -463,7 +467,7 @@ pub(super) async fn prepare(
                 .await
                 .map_err(|e| {
                     format!(
-                        "{} (mcp-rs needs the \"patch\" permission on jobs to start the job after creating its secret)",
+                        "{} (mcp-rs needs the \"get\" and \"patch\" permissions on jobs to start the job after creating its secret)",
                         e
                     )
                 })?;
@@ -670,8 +674,8 @@ mod tests {
         let pod = &job["spec"]["template"]["spec"];
         let container = &pod["containers"][0];
 
-        // Secretを使わないので、一時停止しない
-        assert_eq!(job["spec"]["suspend"], json!(false));
+        // Secretを使わないので、`suspend`を付けない
+        assert!(job["spec"].get("suspend").is_none());
         assert!(job["spec"]["template"]["metadata"]["labels"]
             .get(NETWORK_LABEL)
             .is_none());

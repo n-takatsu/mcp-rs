@@ -210,8 +210,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   後片付けより遅れると、所有者の無いSecret（`env`の値を含む）が残ることが
   あった。今は、Jobを一時停止（`spec.suspend`）で作り、Jobを所有者にした
   Secretを作ってから、一時停止を解く。Secretがいつ作られても、Jobが
-  無ければKubernetesが消す。**`kubectl`の権限が変わる**：`jobs`に`patch`が
-  要り、`secrets`の`patch`は要らなくなった（`env`を使うプラグインのみ）
+  無ければKubernetesが消す。**`kubectl`の権限が変わる**：`jobs`に`get`・
+  `patch`が要り（`kubectl patch`は変える前にJobを読む）、`secrets`の`patch`は
+  要らなくなった。`env`を使うプラグインは、Kubernetes 1.22以降が要る
+  （`spec.suspend`が既定で有効な版）。`env`を使わないプラグインは変わらない
 - `mcp-rs check`で、コンテナのプラグインの`env`の名前も、起動するときと
   同じく確かめる（#697）。以前は、`DOCKER_HOST`のように起動時に断られる
   名前でも、`--offline`では通っていた
