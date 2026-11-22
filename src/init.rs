@@ -251,6 +251,15 @@ struct Setup<'a> {
 
 impl Setup<'_> {
     async fn run(mut self) -> Result<bool, Box<dyn std::error::Error>> {
+        let result = self.run_steps().await;
+        // 確認が通る前に、どんな形で終わっても（エラー・入力の終わりを含む）、
+        // 入れ直した資格情報を前の中身に戻す（PR #712のレビュー）。確認が
+        // 通っていれば、もう確定していて、何もしない
+        self.restore_replaced_entries();
+        result
+    }
+
+    async fn run_steps(&mut self) -> Result<bool, Box<dyn std::error::Error>> {
         self.io.say(&format!(
             "mcp-rs {} init: set up mcp-rs for Claude Desktop, Claude Code and GitHub Copilot.\nPress Ctrl+C to stop at any time.\n",
             env!("CARGO_PKG_VERSION")
@@ -426,6 +435,9 @@ impl Setup<'_> {
                     );
                 }
                 log_file = report.find("log file").map(|(_, file)| file.to_string());
+                // 確認が通ったので、入れ直した資格情報を確定する（#710。この後の
+                // 登録の失敗では戻さない）
+                self.replaced_entries.clear();
                 break;
             }
             // 入れ直しで直るのは、サインインのエラーだけ（URLの誤り・サイトに
@@ -927,13 +939,7 @@ impl Setup<'_> {
             }
             Err(e) => return Err(e.into()),
         }
-        // 既にある項目を入れ直すときは、前の中身を覚えておき、確認が通らずに
-        // 終わったら戻す（#710。以前は、確かめる前に上書きしたままだった）
-        if !new_entry && !self.replaced_entries.iter().any(|(name, _)| *name == entry) {
-            if let Ok(Some(previous)) = self.store.get(&entry) {
-                self.replaced_entries.push((entry.clone(), previous));
-            }
-        }
+        // 既にある項目の前の中身は、`enter_credentials`が覚える（#710）
         self.enter_credentials(&url, &entry)?;
         if new_entry {
             self.new_entries.push(entry.clone());
@@ -1281,6 +1287,17 @@ impl Setup<'_> {
             }
             self.io.say("The Application Password is empty.");
         };
+        // 既にある項目は、書く前に前の中身を覚える（#710。確認が通らずに
+        // 終わったら戻す）。入れ直しのどの経路（使わないと答えた・サイン
+        // インに失敗して入れ直す）でも、最初の中身だけを覚える。読めなければ
+        // 戻せないので、書かない（PR #712のレビュー）
+        if !self.new_entries.iter().any(|name| name == entry)
+            && !self.replaced_entries.iter().any(|(name, _)| name == entry)
+        {
+            if let Some(previous) = self.store.get(entry)? {
+                self.replaced_entries.push((entry.to_string(), previous));
+            }
+        }
         store_wordpress_credentials(
             self.store,
             entry,
@@ -3544,7 +3561,7 @@ mod tests {
         }
     }
 
-    fn setup<'a>(io: &'a mut Script, store: &'a MemoryStore) -> Setup<'a> {
+    fn setup<'a>(io: &'a mut Script, store: &'a dyn SecretStore) -> Setup<'a> {
         Setup {
             io,
             store,
@@ -4659,6 +4676,35 @@ file_path = "C:/Users/me/.mcp-rs/logs/audit.log"
                 .application_password,
             "old password"
         );
+        assert!(s.replaced_entries.is_empty());
+
+        // サインインに失敗して入れ直す経路（使うと答えた後）でも、最初の
+        // 中身だけを覚えて戻す（PR #712のレビュー）
+        let mut io = Script::new(&["editor", "second", "editor", "third"]);
+        let mut s = setup(&mut io, &store);
+        s.enter_credentials("https://example.com", "example.com")
+            .unwrap();
+        s.enter_credentials("https://example.com", "example.com")
+            .unwrap();
+        assert_eq!(s.replaced_entries.len(), 1);
+        s.restore_replaced_entries();
+        assert_eq!(
+            *load_wordpress_credentials(&store, "example.com")
+                .unwrap()
+                .application_password,
+            "old password"
+        );
+    }
+
+    /// 前の中身を読めなければ、戻せないので上書きしない（PR #712のレビュー）
+    #[test]
+    fn test_credentials_are_not_replaced_when_the_previous_ones_cannot_be_read() {
+        let store = BrokenStore;
+        let mut io = Script::new(&["editor", "new"]);
+        let mut s = setup(&mut io, &store);
+        assert!(s
+            .enter_credentials("https://example.com", "example.com")
+            .is_err());
         assert!(s.replaced_entries.is_empty());
     }
 
