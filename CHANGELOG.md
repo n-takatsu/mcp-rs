@@ -191,6 +191,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- 一覧の全件取得（`get_posts`・`get_comments`・`get_media`・`get_categories`・
+  `get_tags`・`get_terms`・`get_revisions`・`get_all_content`等）が上限の
+  100ページ（10,000件）を超えるとき、エラーにする（#692）。以前は、最初の
+  10,000件を全件のように返し、結果は「Found 10000 posts」としか出なかった。
+  投稿・固定ページは、`per_page`・`page`で1ページずつ読める
+- 更新の確認（`mcp_rs_status`・`mcp-rs check`）で、GitHubの応答を
+  読みながら1MiBの上限で止める（#692）。以前は、全部を読み込んでから
+  大きさを確かめていた
+- 文書とツールの説明の、予約投稿の日付の例を先の日付にした（#692）。
+  過去の日付では、予約ではなく公開になる
 - 設定ファイルのエラーで、足りない項目・知らない項目の名前を伏せない
   （#617）。以前は``missing field `…` ``のように出て、どこを直せばよいか
   分からなかった。値は今までどおり伏せる（#543）。知らない項目の名前は、
