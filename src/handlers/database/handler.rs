@@ -1051,16 +1051,22 @@ impl McpHandler for DatabaseHandler {
         let params_description = if mysql {
             // MySQL・MariaDB（#527）は`?`。文字列は、データベースが列の型に
             // 変換する
-            format!("Values for the ? placeholders in the SQL, in order (bound as parameters, never inserted into the SQL text). {engine_name} converts strings to the column type, so values returned by execute_query (dates as 'YYYY-MM-DD HH:MM:SS', DECIMAL and JSON as text) can be passed back as they are. Binary values (BLOB, VARBINARY) are returned as base64; to pass one, use FROM_BASE64(?) in the SQL")
+            format!("Values for the ? placeholders in the SQL, in order (bound as parameters, never inserted into the SQL text). {engine_name} converts strings to the column type, so values returned by execute_query (dates as 'YYYY-MM-DD HH:MM:SS', DECIMAL as text, JSON as a JSON object or array on MySQL and as text on MariaDB) can be passed back as they are; a JSON object or array is sent as its JSON text. Binary values (BLOB, VARBINARY) are returned as base64; to pass one, use FROM_BASE64(?) in the SQL")
         } else {
             "Values for $1, $2, ... in the SQL (bound as parameters, never inserted into the SQL text). Strings are converted to the type PostgreSQL expects for that parameter (uuid, date, timestamp, numeric, json, bytea as base64, ...), so values returned by execute_query can be passed back as they are. Strings also work for text and enum columns. For other types (interval, money, inet, arrays, ...), pass a string and cast it through text in the SQL, e.g. $1::text::interval".to_string()
+        };
+        // MySQL・MariaDBのJSON列は、execute_queryがオブジェクト・配列で
+        // 返すので、そのまま渡し直せるようにする（#717。`json_to_value`が
+        // `Value::Json`にし、JSONの文字列として送る）
+        let param_types = if mysql {
+            json!(["null", "boolean", "number", "string", "object", "array"])
+        } else {
+            json!(["null", "boolean", "number", "string"])
         };
         let params_schema = json!({
             "type": "array",
             "description": params_description,
-            "items": {
-                "type": ["null", "boolean", "number", "string"]
-            }
+            "items": { "type": param_types }
         });
         let cast_hint = if mysql {
             "cast such columns to text with CAST(column AS CHAR)"
@@ -1337,6 +1343,43 @@ mod tests {
         assert_eq!(message, r#"invalid input syntax for type integer: "…""#);
         let long = redact_error_for_audit(&"x".repeat(2000));
         assert_eq!(long.chars().count(), 501);
+    }
+
+    /// MySQL・MariaDBでは、`params`にJSONのオブジェクト・配列も渡せる
+    /// （#717。execute_queryがJSON列をそのまま返すので、渡し直せるように）
+    #[tokio::test]
+    async fn test_params_schema_accepts_json_for_mysql() {
+        let param_types = |database_type: DatabaseType| async move {
+            let handler =
+                DatabaseHandler::new()
+                    .await
+                    .unwrap()
+                    .with_tool_options(DatabaseToolOptions {
+                        database_type,
+                        ..DatabaseToolOptions::default()
+                    });
+            let tools = handler.list_tools().await.unwrap();
+            let tool = tools.iter().find(|t| t.name == "execute_query").unwrap();
+            serde_json::to_value(&tool.input_schema).unwrap()["properties"]["params"]["items"]
+                ["type"]
+                .clone()
+        };
+        for database_type in [DatabaseType::MySQL, DatabaseType::MariaDB] {
+            let types = param_types(database_type).await;
+            assert!(
+                types.as_array().unwrap().contains(&json!("object")),
+                "{types}"
+            );
+            assert!(
+                types.as_array().unwrap().contains(&json!("array")),
+                "{types}"
+            );
+        }
+        let types = param_types(DatabaseType::PostgreSQL).await;
+        assert!(
+            !types.as_array().unwrap().contains(&json!("object")),
+            "{types}"
+        );
     }
 
     /// リソースは、読み取り専用の実在するツールと同じ扱いになる（#538）
