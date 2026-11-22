@@ -197,7 +197,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ジョブは、タグのpushのときだけ動く
 - 手で入れる手順（ガイド）で、SHA256が合ったときだけ、展開・コピー・
   実行に進む（#717）。以前は、合わなくてもPowerShellは`False`と出す
-  だけ、bashも止まらずに次へ進んだ
+  だけ、bashも止まらずに次へ進んだ。PowerShellでは、前のダウンロードを
+  展開したフォルダが残っていても上書きし、展開・コピーが失敗したら止まる
+  （以前は、古いファイルをコピーして実行し得た）
 - `mcp-rs init`・`mcp-rs uninstall`で、Copilot CLIの設定の場所を、
   環境変数`COPILOT_HOME`があればその中（`$COPILOT_HOME/mcp-config.json`）に
   する（#710）。Copilot CLIは`COPILOT_HOME`で設定の場所を変えられるが、
