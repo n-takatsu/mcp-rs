@@ -255,15 +255,18 @@ fn database_section(content: &str) -> Result<Option<DatabaseSettings>, String> {
 }
 
 /// つなぐ先の値を聞く。展開できなかった`${VAR}`は既定にせず、値そのものを
-/// 聞く。資格情報には、mcp-rsが実際につなぐ先を入れるため（#692）
+/// 聞く。既定がある場合も、`${...}`の答えは断る。資格情報には、mcp-rsが
+/// 実際につなぐ先を入れるため（#692・PR #696のレビュー）
 fn ask_resolved(io: &mut dyn Prompt, label: &str, value: &str) -> std::io::Result<String> {
-    if !value.contains("${") {
-        return ask_with_default(io, label, value);
-    }
+    let has_default = !value.contains("${");
     loop {
-        let answer = io.ask(&format!(
-            "{label} that mcp-rs connects to ({value} could not be expanded): "
-        ))?;
+        let answer = if has_default {
+            ask_with_default(io, label, value)?
+        } else {
+            io.ask(&format!(
+                "{label} that mcp-rs connects to ({value} could not be expanded): "
+            ))?
+        };
         if !answer.is_empty() && !answer.contains("${") {
             return Ok(answer);
         }
@@ -650,6 +653,34 @@ ssl_mode = "verify-full"
             .shown
             .iter()
             .any(|s| s == "Enter the value itself, not an environment variable."));
+    }
+
+    /// 既定がある（展開できた）ときも、`${...}`の答えは断る。空の答えは
+    /// 今までどおり既定（PR #696のレビュー）
+    #[test]
+    fn test_set_refuses_a_variable_as_the_answer() {
+        let (_dir, path) = config_in_temp(HAND_WRITTEN);
+        let store = MemoryStore::default();
+        let mut io = Script::new(&[
+            "${OTHER}", // ホストに環境変数は断る
+            "",         // 既定: db.example.com
+            "",         // ポート
+            "${USER}",  // ユーザー名に環境変数は断る
+            "",         // 既定: reader
+            "s3cret", "n",
+        ]);
+        set(&mut io, &store, "app@db", &path).unwrap();
+        let stored =
+            load_database_credentials(&store, "app@db", "db.example.com", 5432, "reader").unwrap();
+        assert_eq!(stored.host, "db.example.com");
+        assert_eq!(stored.username, "reader");
+        assert_eq!(
+            io.shown
+                .iter()
+                .filter(|s| *s == "Enter the value itself, not an environment variable.")
+                .count(),
+            2
+        );
     }
 
     /// `[database]`が無い: `mcp-rs init`と同じ質問で作り、書き足す
