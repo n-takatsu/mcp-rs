@@ -530,12 +530,17 @@ fn requested_protocol_version(
     {
         return Ok(Some(version));
     }
+    Err(unsupported_protocol_version(requested, request))
+}
+
+/// 対応していない版への400の応答（2026-07-28の`UnsupportedProtocolVersion`、
+/// #570。以前は`-32600`だった）。`data`で、対応する版（`initialize`で交渉
+/// する版も）を知らせる
+fn unsupported_protocol_version(requested: &str, request: &Value) -> Box<Response> {
     warn!(
         "Rejected request with unsupported MCP-Protocol-Version '{}'",
         requested
     );
-    // 2026-07-28の`UnsupportedProtocolVersion`（#570）。以前は`-32600`
-    // だった。`data`で、対応する版（`initialize`で交渉する版も）を知らせる
     let supported = crate::mcp::all_supported_protocol_versions();
     let body = serde_json::json!({
         "jsonrpc": "2.0",
@@ -550,9 +555,25 @@ fn requested_protocol_version(
         },
         "id": request.get("id").cloned().unwrap_or(Value::Null)
     });
-    Err(Box::new(
-        (StatusCode::BAD_REQUEST, Json(body)).into_response(),
-    ))
+    Box::new((StatusCode::BAD_REQUEST, Json(body)).into_response())
+}
+
+/// 2026-07-28のリクエスト（`is_modern_request`でヘッダーと本文が合うことを
+/// 確かめた後）の版が、対応するものか。ハンドラーに任せず、ここで断る。
+/// 組み込みの`RequestDispatcher`は自分でも確かめるが、ライブラリとして
+/// 独自のハンドラーを使う場合に、対応していない版を通さないため（#697）
+fn check_modern_protocol_version(
+    headers: &HeaderMap,
+    request: &Value,
+) -> std::result::Result<(), Box<Response>> {
+    let requested = header_value(headers, "mcp-protocol-version")
+        .map(str::trim)
+        .unwrap_or("");
+    if crate::mcp::is_modern_protocol_version(requested) {
+        Ok(())
+    } else {
+        Err(unsupported_protocol_version(requested, request))
+    }
 }
 
 /// ヘッダーと本文が合わないときのエラー（2026-07-28の`HeaderMismatch`）
@@ -1981,6 +2002,9 @@ async fn handle_jsonrpc_request(
         Err(response) => return Ok(*response),
     };
     let protocol_version = if modern {
+        if let Err(response) = check_modern_protocol_version(&headers, &request) {
+            return Ok(*response);
+        }
         None
     } else {
         match requested_protocol_version(&headers, &request) {
@@ -6470,6 +6494,47 @@ mod tests {
         let server_addr = transport.bound_addr().await.unwrap();
         wait_for_plain_server_ready(server_addr).await;
         (transport, server_addr)
+    }
+
+    /// 2026-07-28のリクエストの版は、ハンドラーに渡す前に確かめる。独自の
+    /// ハンドラー（版を確かめない）でも、対応していない版は400と`-32022`
+    /// （#697）
+    #[tokio::test]
+    async fn test_modern_request_with_unsupported_version_is_rejected_before_the_handler() {
+        let (_transport, server_addr) = start_version_echo_server(HttpConfig::default()).await;
+        let url = format!("http://127.0.0.1:{}/mcp", server_addr.port());
+        let client = reqwest::Client::new();
+        let post = |version: &'static str| {
+            let request = client
+                .post(&url)
+                .header("MCP-Protocol-Version", version)
+                .header("Mcp-Method", "tools/list")
+                .json(&serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": 7,
+                    "method": "tools/list",
+                    "params": { "_meta": {
+                        "io.modelcontextprotocol/protocolVersion": version,
+                        "io.modelcontextprotocol/clientCapabilities": {}
+                    } }
+                }));
+            async move {
+                let response = request.send().await.unwrap();
+                let status = response.status();
+                (status, response.json::<Value>().await.unwrap())
+            }
+        };
+
+        let (status, body) = post("2099-01-01").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["error"]["code"], serde_json::json!(-32022));
+        assert_eq!(body["error"]["data"]["requested"], "2099-01-01");
+        assert_eq!(body["id"], 7);
+
+        // 対応する版は、今までどおりハンドラーに届く
+        let (status, body) = post(crate::mcp::MODERN_PROTOCOL_VERSION).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(body.get("result").is_some(), "{body}");
     }
 
     /// `Origin`が許可していないオリジンなら403。`Origin`が無いリクエストと、
