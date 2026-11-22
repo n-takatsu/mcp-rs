@@ -105,8 +105,11 @@ function Invoke-CargoInTarget([string[]]$Arguments) {
     }
 }
 
+# 消そうとしているフォルダが、今のビルド先そのものか、ビルド先を中に含むか
+# （rd /s は中身ごと消すので、親フォルダを消してもビルド先が消える）
 function Test-ActiveTarget([string]$Path) {
-    (Get-FullPath $Path) -ieq $targetDir
+    $full = Get-FullPath $Path
+    ($targetDir -ieq $full) -or $targetDir.StartsWith($full + [System.IO.Path]::DirectorySeparatorChar, [System.StringComparison]::OrdinalIgnoreCase)
 }
 
 # --- worktree の一覧 -------------------------------------------------------
@@ -154,7 +157,8 @@ foreach ($wt in $worktrees) {
         $head = git -C $wt.Path rev-parse HEAD
         git merge-base --is-ancestor $head origin/develop 2>$null
         $merged = $LASTEXITCODE -eq 0
-        if (-not $dirty -and $merged) {
+        $active = Test-ActiveTarget $wt.Path
+        if (-not $dirty -and $merged -and -not $active) {
             if ($PSCmdlet.ShouldProcess($wt.Path, "worktree を削除 ($label, develop に取り込み済み)")) {
                 Write-Host "worktree を削除: $($wt.Path) ($label)"
                 # target/ は無視されたファイルなので、先に消してから worktree remove する
@@ -170,6 +174,7 @@ foreach ($wt in $worktrees) {
         $why = @()
         if ($dirty) { $why += '未コミットの変更あり' }
         if (-not $merged) { $why += 'develop に未取り込み' }
+        if ($active) { $why += '今のビルド先を含む' }
         Write-Host "worktree は残します: $($wt.Path) ($label, $($why -join ', '))"
     }
 
