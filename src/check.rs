@@ -258,6 +258,11 @@ fn check_config(path: Option<&str>, report: &mut Report) -> Option<(McpConfig, b
                     .map(|p| p.display().to_string())
                     .unwrap_or_else(|| "(environment variables only)".to_string());
                 report.push(Status::Ok, "config file", file);
+                // ほかのユーザーが読めるかは、`--config`無しでも見る（#705。
+                // `init`が既定で書く設定ファイルは、`--config`無しで読む）
+                if let Some(warning) = config.config_file.as_deref().and_then(readable_by_others) {
+                    report.push(Status::Warn, "config file permissions", warning);
+                }
                 // 置き場所（平文か等）は、段に分けて読む`--config`のときだけ見る
                 report.push(
                     Status::Ok,

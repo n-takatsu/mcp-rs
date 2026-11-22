@@ -214,6 +214,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `patch`が要り（`kubectl patch`は変える前にJobを読む）、`secrets`の`patch`は
   要らなくなった。`env`を使うプラグインは、Kubernetes 1.22以降が要る
   （`spec.suspend`が既定で有効な版）。`env`を使わないプラグインは変わらない
+- `mcp-rs check`で、ほかのユーザーが読める設定ファイルへの警告（v0.27.0）を、
+  `--config`無しでも出す（#705）。以前は`--config`を付けたときだけで、
+  `mcp-rs init`が既定で書く`~/.config/mcp-rs/config.toml`を`--config`無しで
+  確かめると、出なかった
+- MySQL・MariaDBのエンジンの`validate_config`が、`ssl_root_cert`を書いた
+  `ssl_mode = "verify-ca"`も断っていたのを直した（#705）。接続と同じCAで
+  確かめる。mcp-rs本体は使っていない（ライブラリとして使う場合のみ）
 - `mcp-rs check`で、コンテナのプラグインの`env`の名前も、起動するときと
   同じく確かめる（#697）。以前は、`DOCKER_HOST`のように起動時に断られる
   名前でも、`--offline`では通っていた
