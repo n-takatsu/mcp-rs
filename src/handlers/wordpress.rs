@@ -1666,11 +1666,26 @@ pub struct WordPressHealthCheck {
     pub log_destination: String,
 }
 
+/// サイトに届いた後に確かめる項目（REST API・サインイン）の印。サイトに
+/// 届かなければ、試していないと示す（PR #713のレビュー）
+fn health_mark_after_reaching_site(health: &WordPressHealthCheck, ok: bool) -> &'static str {
+    if ok {
+        "✅"
+    } else if !health.site_accessible {
+        "⏭️ not checked (the site could not be reached)"
+    } else {
+        "❌"
+    }
+}
+
 /// サインインの後に確かめる項目（権限・メディア）の印。サインインが
-/// 通らなければ、確かめていないと示す（#710。`mcp-rs check`と同じ）
+/// 通らなければ、確かめていないと示す（#710。`mcp-rs check`と同じ）。
+/// サイトに届かなければ、サインインも試していない（PR #713のレビュー）
 fn health_mark_after_sign_in(health: &WordPressHealthCheck, ok: bool) -> &'static str {
     if ok {
         "✅"
+    } else if !health.site_accessible {
+        "⏭️ not checked (the site could not be reached)"
     } else if !health.authentication_valid {
         "⏭️ not checked (the sign-in failed)"
     } else {
@@ -4003,21 +4018,15 @@ impl WordPressHandler {
                     "  • Site Accessible: {}\n",
                     if health.site_accessible { "✅" } else { "❌" }
                 ));
+                // サイトに届かなければ、REST API・サインインは試していない
+                // （PR #713のレビュー）
                 report.push_str(&format!(
                     "  • REST API Available: {}\n",
-                    if health.rest_api_available {
-                        "✅"
-                    } else {
-                        "❌"
-                    }
+                    health_mark_after_reaching_site(&health, health.rest_api_available)
                 ));
                 report.push_str(&format!(
                     "  • Authentication Valid: {}\n",
-                    if health.authentication_valid {
-                        "✅"
-                    } else {
-                        "❌"
-                    }
+                    health_mark_after_reaching_site(&health, health.authentication_valid)
                 ));
                 // サインインが通らなければ、権限・メディアは確かめていない
                 // （#710。以前は❌と出し、失敗したように見えた）
@@ -6818,7 +6827,19 @@ mod tests {
         };
         assert_eq!(health_mark_after_sign_in(&health(true), true), "✅");
         assert_eq!(health_mark_after_sign_in(&health(true), false), "❌");
-        assert!(health_mark_after_sign_in(&health(false), false).contains("not checked"));
+        assert!(health_mark_after_sign_in(&health(false), false).contains("the sign-in failed"));
+        // サイトに届かなければ、REST API・サインインも試していない（PR #713の
+        // レビュー）
+        let unreachable = WordPressHealthCheck {
+            site_accessible: false,
+            ..health(false)
+        };
+        assert!(health_mark_after_sign_in(&unreachable, false)
+            .contains("the site could not be reached"));
+        assert!(health_mark_after_reaching_site(&unreachable, false)
+            .contains("the site could not be reached"));
+        assert_eq!(health_mark_after_reaching_site(&health(false), false), "❌");
+        assert_eq!(health_mark_after_reaching_site(&health(true), true), "✅");
     }
 
     #[test]

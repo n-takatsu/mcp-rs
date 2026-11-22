@@ -191,10 +191,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- `wordpress_health_check`（MCPのツール）で、サインインが通らず、権限と
-  メディアのアップロードを確かめていないときは、「not checked」と出す
-  （#710）。以前は❌と出し、確かめて失敗したように見えた。`mcp-rs check`は
-  以前から区別していた
+- `wordpress_health_check`（MCPのツール）で、確かめていない項目は、
+  理由を付けて「not checked」と出す（#710）。サインインが通らなければ
+  権限とメディアのアップロード、サイトに届かなければREST API・サイン
+  イン・権限・メディア。以前は❌と出し、確かめて失敗したように見えた。
+  `mcp-rs check`は以前から区別していた
 - Windowsのインストールスクリプト（`install.ps1`）で、新しい`mcp-rs.exe`の
   コピーが途中で失敗したら、書きかけのファイルがあっても前の版に戻す
   （#710）。以前は`mcp-rs.exe`が無いときだけ戻したので、書きかけのまま
