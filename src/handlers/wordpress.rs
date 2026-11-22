@@ -2116,15 +2116,14 @@ impl WordPressHandler {
             if page >= total_pages.max(1) {
                 break reported_total;
             }
-            // `X-WP-TotalPages`をそのまま信じない（#598）
+            // `X-WP-TotalPages`をそのまま信じない（#598）。途中までの一覧を
+            // 全件として返さず、エラーにする（呼び出し元は件数しか出さない
+            // ので、欠けていることが伝わらない。#692）
             if page >= MAX_LIST_PAGES {
-                warn!(
-                    "fetch_all_pages: WordPress reports {} pages; read only the first {} ({} items)",
-                    total_pages,
-                    MAX_LIST_PAGES,
-                    all_items.len()
-                );
-                break reported_total;
+                return Err(McpError::ExternalApi(format!(
+                    "WordPress reports {total_pages} pages ({reported_total} items) for this list, more than the {MAX_LIST_PAGES} pages ({} items) mcp-rs reads for one list, so the list would be incomplete. For posts and pages, read one page at a time with per_page and page, or narrow the list with search or other filters",
+                    MAX_LIST_PAGES * 100
+                )));
             }
             page += 1;
         };
@@ -6376,7 +6375,7 @@ impl McpHandler for WordPressHandler {
                         },
                         "date": {
                             "type": "string",
-                            "description": "Publication date (optional, ISO8601 in the site's time zone, e.g. '2026-11-19T10:00:00'). With status 'future' and a future date, the post is scheduled. get_post shows the current date"
+                            "description": "Publication date (optional, ISO8601 in the site's time zone, e.g. '2030-01-01T10:00:00'). With status 'future' and a future date, the post is scheduled. get_post shows the current date"
                         },
                         "categories": {
                             "type": "array",
@@ -9586,7 +9585,8 @@ mod tests {
         assert_eq!(read_error_body(response_with("{}")).await, "{}");
     }
 
-    /// `X-WP-TotalPages`がとても大きくても、`MAX_LIST_PAGES`ページで止める
+    /// `X-WP-TotalPages`がとても大きくても、`MAX_LIST_PAGES`ページで止め、
+    /// 途中までの一覧を全件として返さない（#692）
     #[tokio::test]
     async fn test_fetch_all_pages_stops_at_the_page_limit() {
         use std::sync::atomic::Ordering;
@@ -9597,8 +9597,24 @@ mod tests {
         )
         .await;
         let handler = handler_for_local_server(base);
-        let posts = handler.get_posts(None).await.unwrap();
-        assert!(posts.is_empty());
+        let err = handler.get_posts(None).await.unwrap_err().to_string();
+        assert!(err.contains("4294967295 pages"), "{err}");
+        assert!(err.contains("per_page and page"), "{err}");
+        assert_eq!(count.load(Ordering::SeqCst), MAX_LIST_PAGES as usize);
+    }
+
+    /// ちょうど`MAX_LIST_PAGES`ページなら、エラーにせず全件を返す
+    #[tokio::test]
+    async fn test_fetch_all_pages_reads_exactly_the_page_limit() {
+        use std::sync::atomic::Ordering;
+        assert_eq!(MAX_LIST_PAGES, 100);
+        let (base, count) = spawn_fixed_response_server(
+            "200 OK\r\nX-WP-TotalPages: 100\r\nX-WP-Total: 0",
+            "[]".to_string(),
+        )
+        .await;
+        let handler = handler_for_local_server(base);
+        assert!(handler.get_posts(None).await.unwrap().is_empty());
         assert_eq!(count.load(Ordering::SeqCst), MAX_LIST_PAGES as usize);
     }
 
