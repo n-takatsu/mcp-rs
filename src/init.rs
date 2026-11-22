@@ -1614,6 +1614,20 @@ impl Setup<'_> {
         let remove = self.choose_duplicates_to_remove(cli.label, &others, launch)?;
         let mut removed_previous = false;
         if exists && !in_other_scope {
+            // 聞いている間に、別の手段（ほかのターミナルの`mcp add`等）で
+            // 登録が変わっていたら、消さずに残す（PR #711のレビュー。消して
+            // 登録に失敗すると、古い内容を戻してしまう）
+            let current_entry = config_file
+                .as_ref()
+                .and_then(|path| read_json_file(path).ok())
+                .and_then(|config| config.get("mcpServers")?.get(SERVER_NAME).cloned());
+            if current_entry != previous_entry {
+                self.io.say(&format!(
+                    "{}: \"{SERVER_NAME}\" was changed while mcp-rs init was asking, so it was kept as it is. Run mcp-rs init again to replace it.",
+                    cli.label
+                ));
+                return Ok(false);
+            }
             // 消せなくても、登録を試す（PR #583のレビュー）
             match run_quietly(&program, &cli.remove_args(SERVER_NAME)) {
                 Ok(()) => removed_previous = true,
