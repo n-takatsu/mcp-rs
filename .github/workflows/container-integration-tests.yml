@@ -100,7 +100,7 @@ jobs:
         ports:
           - 3307:3306
         options: >-
-          --health-cmd "mysqladmin ping -h 127.0.0.1 -ptestpass"
+          --health-cmd "mysql -h 127.0.0.1 -uroot -ptestpass mcptest -e 'SELECT 1'"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 10
@@ -141,8 +141,10 @@ jobs:
         run: |
           docker exec ${{ job.services.postgres.id }} pg_isready -U testuser -d mcptest
           docker exec ${{ job.services.redis.id }} redis-cli ping
-          docker exec ${{ job.services.mysql.id }} mysqladmin ping -h 127.0.0.1 -ptestpass
-          docker exec ${{ job.services.mariadb.id }} healthcheck.sh --connect --innodb_initialized
+          # テストと同じユーザーでmcptestを選び、SELECT 1が通るかで確かめる
+          # （#717。mysqladmin pingは、認証に失敗しても終了コードが0）
+          docker exec ${{ job.services.mysql.id }} mysql -h 127.0.0.1 -uroot -ptestpass mcptest -e 'SELECT 1'
+          docker exec ${{ job.services.mariadb.id }} mariadb -h 127.0.0.1 -uroot -ptestpass mcptest -e 'SELECT 1'
 
       - name: Build project
         run: cargo build --features integration-tests --release

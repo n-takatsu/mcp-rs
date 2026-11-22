@@ -64,15 +64,17 @@ async fn run(pool: &mysql_async::Pool, sql: &str) {
     conn.query_drop(sql).await.unwrap();
 }
 
+/// 接続先のURLから設定を作る。準備に使う`Pool::new`（ドライバー）と同じ
+/// 読み方にする（#717。パスワードの`%40`等を`@`に戻す）
 fn settings_from_url(url: &str, kind: Kind) -> DatabaseSettings {
-    let url = url::Url::parse(url).expect("the test database URL must be a URL");
+    let opts = mysql_async::Opts::from_url(url).expect("the test database URL must be a MySQL URL");
     DatabaseSettings {
         engine: kind.engine().to_string(),
-        host: url.host_str().map(str::to_string),
-        port: url.port(),
-        database: url.path().trim_start_matches('/').to_string(),
-        username: url.username().to_string(),
-        password: url.password().map(str::to_string),
+        host: Some(opts.ip_or_hostname().to_string()),
+        port: Some(opts.tcp_port()),
+        database: opts.db_name().unwrap_or_default().to_string(),
+        username: opts.user().unwrap_or_default().to_string(),
+        password: opts.pass().map(str::to_string),
         ssl_mode: Some("disable".to_string()),
         ..Default::default()
     }
@@ -182,6 +184,9 @@ async fn get_schema_returns_foreign_keys_and_indexes(kind: Kind) {
     let parent = unique_name("parent");
     let child = unique_name("child");
     let view = unique_name("v");
+    // 制約名はスキーマの中で一意なので、毎回別の名前にする（#717。途中で
+    // 失敗して消されないと、次の実行が名前の重複で失敗した）
+    let fk = unique_name("fk");
     run(
         &pool,
         &format!("CREATE TABLE {parent} (id int PRIMARY KEY, code varchar(10) UNIQUE)"),
@@ -192,7 +197,7 @@ async fn get_schema_returns_foreign_keys_and_indexes(kind: Kind) {
         &format!(
             "CREATE TABLE {child} (id int PRIMARY KEY, parent_id int NOT NULL, \
              note text, INDEX by_parent (parent_id, id), \
-             CONSTRAINT fk_parent FOREIGN KEY (parent_id) REFERENCES {parent} (id))"
+             CONSTRAINT {fk} FOREIGN KEY (parent_id) REFERENCES {parent} (id))"
         ),
     )
     .await;
@@ -218,7 +223,7 @@ async fn get_schema_returns_foreign_keys_and_indexes(kind: Kind) {
     let child_info = table(&child);
     assert_eq!(
         child_info["foreign_keys"],
-        json!([{ "name": "fk_parent", "column": "parent_id",
+        json!([{ "name": fk, "column": "parent_id",
                  "referenced_table": parent, "referenced_column": "id" }])
     );
     let by_parent = child_info["indexes"]
@@ -265,12 +270,13 @@ async fn execute_query_cannot_write(kind: Kind) {
     let function = unique_name("write_fn");
     run(&pool, &format!("CREATE TABLE {table} (id int)")).await;
     run(&pool, &format!("INSERT INTO {table} VALUES (1), (2)")).await;
-    // バイナリログが有効なMySQLで、書き込む関数を作れるようにする
-    run(&pool, "SET GLOBAL log_bin_trust_function_creators = 1").await;
+    // バイナリログが有効なMySQLでも、DETERMINISTICを付ければ、サーバー全体の
+    // 設定（log_bin_trust_function_creators）を変えずに作れる（#717。以前は
+    // テストの中で`SET GLOBAL`し、元に戻さなかった）
     run(
         &pool,
         &format!(
-            "CREATE FUNCTION {function}() RETURNS int MODIFIES SQL DATA \
+            "CREATE FUNCTION {function}() RETURNS int DETERMINISTIC MODIFIES SQL DATA \
              BEGIN DELETE FROM {table}; RETURN 0; END"
         ),
     )
@@ -425,6 +431,16 @@ async fn values_are_decoded_by_type(kind: Kind) {
         "execute_query",
         json!({ "sql": "SELECT CAST(? AS DATETIME) = TIMESTAMP '2026-11-16 09:05:07' AS same",
                 "params": ["2026-11-16 09:05:07"] }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(result["rows"], json!([[1]]));
+    // 返したJSON（MySQLではオブジェクト）も、そのまま渡せる（#717）
+    let result = call(
+        &handler,
+        "execute_query",
+        json!({ "sql": "SELECT JSON_EXTRACT(?, '$.a') = 1 AS same",
+                "params": [json_value] }),
     )
     .await
     .unwrap();

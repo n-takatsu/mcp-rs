@@ -370,6 +370,22 @@ fn is_text_column(column: &Column) -> bool {
     }
 }
 
+/// `COMMIT`を送った後に、応答を確かめられなかったときのエラー（#717）。
+/// サーバーはコミットしているかもしれないので、「止めた」とは言わず、
+/// やり直す前にデータを確かめるよう知らせる（やり直すと、行が重複し得る）
+fn commit_unconfirmed(error: DatabaseError, server: ServerKind) -> DatabaseError {
+    let check = "so the change may or may not have been saved. Check the data before running the statement again";
+    match error {
+        DatabaseError::TimeoutError(_) => DatabaseError::TimeoutError(format!(
+            "the statement ran, but {} did not confirm the COMMIT in time, {check}",
+            server.name()
+        )),
+        other => DatabaseError::OperationFailed(format!(
+            "the statement ran, but the COMMIT did not complete ({other}), {check}"
+        )),
+    }
+}
+
 /// `mysql_async`の値を、列の型に合わせて変換する
 fn convert_value(value: mysql_async::Value, column: &Column) -> Value {
     match value {
@@ -695,7 +711,11 @@ impl DatabaseConnection for MySqlConnection {
         let conn = self.get_conn().await?;
         let params = convert_params(params);
         let sql = sql.to_string();
-        let (rows_affected, last_insert_id) = self
+        // `COMMIT`を送ったか（#717）。送った後に応答を確かめられなければ、
+        // サーバーはコミットしているかもしれないので、「止めた」とは返さない
+        let commit_sent = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let sent = commit_sent.clone();
+        let result = self
             .run(
                 conn,
                 move |conn| {
@@ -704,13 +724,21 @@ impl DatabaseConnection for MySqlConnection {
                         conn.exec_drop(sql, params).await?;
                         let affected = conn.affected_rows();
                         let last_insert_id = conn.last_insert_id();
+                        sent.store(true, std::sync::atomic::Ordering::SeqCst);
                         conn.query_drop("COMMIT").await?;
                         Ok(Outcome::Done((affected, last_insert_id)))
                     })
                 },
                 DatabaseError::OperationFailed,
             )
-            .await?;
+            .await;
+        let (rows_affected, last_insert_id) = match result {
+            Ok(value) => value,
+            Err(e) if commit_sent.load(std::sync::atomic::Ordering::SeqCst) => {
+                return Err(commit_unconfirmed(e, self.server))
+            }
+            Err(e) => return Err(e),
+        };
         Ok(ExecuteResult {
             rows_affected,
             last_insert_id: last_insert_id
@@ -884,6 +912,40 @@ mod tests {
         assert_eq!(table.name, "v_orders");
         assert_eq!(table.columns.len(), 1);
         assert!(table.primary_keys.is_empty() && table.indexes.is_empty());
+    }
+
+    /// `COMMIT`の応答を確かめられなければ、「止めた」とは言わず、保存されたか
+    /// 分からないと返す（#717）
+    #[test]
+    fn test_commit_unconfirmed() {
+        let timeout = commit_unconfirmed(
+            DatabaseError::TimeoutError("stopped".to_string()),
+            ServerKind::MariaDb,
+        );
+        let DatabaseError::TimeoutError(message) = timeout else {
+            panic!("{timeout:?}")
+        };
+        assert!(
+            message.contains("MariaDB did not confirm the COMMIT"),
+            "{message}"
+        );
+        assert!(
+            message.contains("may or may not have been saved"),
+            "{message}"
+        );
+        assert!(!message.contains("stopped"), "{message}");
+        let lost = commit_unconfirmed(
+            DatabaseError::OperationFailed("connection reset".to_string()),
+            ServerKind::MySql,
+        );
+        let DatabaseError::OperationFailed(message) = lost else {
+            panic!("{lost:?}")
+        };
+        assert!(message.contains("connection reset"), "{message}");
+        assert!(
+            message.contains("may or may not have been saved"),
+            "{message}"
+        );
     }
 
     #[test]
