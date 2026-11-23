@@ -727,6 +727,26 @@ fn is_local(options: &PgConnectOptions) -> bool {
     options.get_socket().is_some() || host.starts_with('/') || super::super::is_loopback_host(host)
 }
 
+/// `PGSSLMODE`（`value`）に、使える値が書いてあるか（#722、PR #734の
+/// レビュー）。空・無しは`false`。読めない値は、sqlxが黙って`prefer`にする
+/// ので、エラーにする
+pub fn pgsslmode_is_set(value: Option<&std::ffi::OsStr>) -> Result<bool, String> {
+    let Some(value) = value.filter(|value| !value.is_empty()) else {
+        return Ok(false);
+    };
+    let invalid = || {
+        format!(
+            "PGSSLMODE = \"{}\" is not valid (use one of: disable, allow, prefer, require, \
+             verify-full), so it would be ignored. Fix or unset PGSSLMODE, or set \
+             database.ssl_mode",
+            value.to_string_lossy()
+        )
+    };
+    let mode = value.to_str().ok_or_else(invalid)?;
+    PgSslMode::from_str(mode).map_err(|_| invalid())?;
+    Ok(true)
+}
+
 /// ループバック・Unixソケット以外で、`ssl_mode`を設定ファイルにも
 /// `PGSSLMODE`にも書いていなければ、起動しない理由を返す（#722）。
 /// `explicit`は、どちらかに書いたか
@@ -1457,6 +1477,18 @@ mod tests {
             assert!(check_ssl_mode_set(false, &options(host)).is_ok(), "{host}");
         }
         assert!(check_ssl_mode_set(true, &options("db.example.com")).is_ok());
+        // PGSSLMODE: 使える値だけを「書いた」とみなす。読めない値はエラー
+        use std::ffi::OsStr;
+        assert_eq!(pgsslmode_is_set(None), Ok(false));
+        assert_eq!(pgsslmode_is_set(Some(OsStr::new(""))), Ok(false));
+        for mode in ["disable", "prefer", "require", "verify-full"] {
+            assert_eq!(pgsslmode_is_set(Some(OsStr::new(mode))), Ok(true), "{mode}");
+        }
+        let error = pgsslmode_is_set(Some(OsStr::new("strict"))).unwrap_err();
+        assert!(
+            error.contains("\"strict\"") && !error.contains("  "),
+            "{error}"
+        );
         let error = check_ssl_mode_set(false, &options("db.example.com")).unwrap_err();
         assert!(
             error.contains("not set for db.example.com") && error.contains("verify-full"),

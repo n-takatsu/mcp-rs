@@ -47,7 +47,7 @@ ssl_mode = "prefer"               # disable, allow, prefer, require, verify-full
 | `username` | yes | | `${VAR}` allowed |
 | `password` | | none | `${VAR}` allowed. Never written to logs, `mcp_rs_status`, or error messages |
 | `keyring` | | none | Name of the entry in the OS credential store that holds the password, instead of `password` (v0.29.0 and later). `mcp-rs init` or `mcp-rs database-keyring set <name>` stores it (see [Keeping the password in the OS credential store](#keyring)). The entry is tied to `host`, `port` and `username`: with other values in `[database]`, mcp-rs does not use it, so a config file someone else wrote cannot send the password to another server. Cannot be combined with `password` |
-| `ssl_mode` | when `host` is not local | `prefer` | Same meaning as libpq's `sslmode`. See [TLS](#tls). MySQL and MariaDB have no `allow`. From v0.30.0, it can be left out only when `host` is `localhost`, `127.0.0.1`, `::1`, or a Unix socket (PostgreSQL: or when `PGSSLMODE` is set) |
+| `ssl_mode` | when `host` is not local | `prefer` | Same meaning as libpq's `sslmode`. See [TLS](#tls). MySQL and MariaDB have no `allow`. From v0.30.0, it can be left out only when `host` is `localhost`, `127.0.0.1`, or `::1` (PostgreSQL: also a Unix socket path, or when `PGSSLMODE` is set to a valid mode) |
 | `ssl_root_cert` | | none | PEM file of the CA that signed the server certificate. A relative path is relative to the folder of the configuration file. Used only with `ssl_mode = "verify-full"` (MySQL and MariaDB: also `"verify-ca"`, which requires it): with a weaker `ssl_mode`, the database tools do not start |
 | `allow_write` | | `false` | See [Writing data](#writing-data) |
 | `max_rows` | | `1000` | `0` means the default |
@@ -73,7 +73,7 @@ The password is never taken as an argument and is not shown while typing. Use it
 
 ### TLS
 
-From v0.30.0, `ssl_mode` must be set when `host` is not `localhost`, `127.0.0.1`, `::1`, or a Unix socket. Without it, mcp-rs starts without the database tools and shows the reason in `mcp_rs_status`. For PostgreSQL, `PGSSLMODE` counts as setting it. `mcp-rs init` already writes `ssl_mode = "verify-full"` for such hosts; older configuration files that leave it out need one line, `ssl_mode = "verify-full"` (or the weaker mode you mean to use, for example `"require"`).
+From v0.30.0, `ssl_mode` must be set when `host` is not `localhost`, `127.0.0.1`, or `::1` (for PostgreSQL, also not a Unix socket path). Without it, mcp-rs starts without the database tools and shows the reason in `mcp_rs_status`. For PostgreSQL, `PGSSLMODE` counts as setting it; an invalid `PGSSLMODE` also stops the database tools, since it would otherwise be ignored. `mcp-rs init` already writes `ssl_mode = "verify-full"` for such hosts; older configuration files that leave it out need one line, `ssl_mode = "verify-full"` (or the weaker mode you mean to use, for example `"require"`).
 
 Without `ssl_mode`, `prefer` is used (on local hosts). `prefer` uses TLS when the server offers it, but does not check the server certificate, and silently connects without TLS when the server does not offer it. Anyone on the network path can then read the queries and results, or pose as the server and receive the password.
 

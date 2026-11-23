@@ -356,9 +356,9 @@ impl DatabaseHandler {
                 let connect = pg_connection::connect_options(&config.connection)
                     .map_err(|e| format!("cannot set up {}: {}", settings.describe(), e))?;
                 // 省略時の`prefer`は、リモートでは使わない（#722）。
-                // `PGSSLMODE`に書いたなら、それを選んだとみなす
+                // `PGSSLMODE`に正しい値を書いたなら、それを選んだとみなす
                 let explicit = config.connection.ssl_mode.is_some()
-                    || std::env::var_os("PGSSLMODE").is_some_and(|mode| !mode.is_empty());
+                    || pg_connection::pgsslmode_is_set(std::env::var_os("PGSSLMODE").as_deref())?;
                 pg_connection::check_ssl_mode_set(explicit, &connect)?;
                 pg_connection::check_ssl_root_cert(
                     config.connection.options.contains_key(OPTION_SSL_ROOT_CERT),
