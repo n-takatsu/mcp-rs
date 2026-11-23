@@ -14,6 +14,19 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+/// `use_tls`を使えるか（PR #730のレビュー）。redisクレートのTLSの機能を
+/// 有効にしていないので、`rediss://`ではつなげない。以前は`Client::open`が
+/// 「can't connect with TLS, the feature is not enabled」で失敗し、設定の
+/// どこが問題かが分かりにくかった
+fn check_tls_supported(config: &RedisConfig) -> Result<(), DatabaseError> {
+    if config.use_tls {
+        return Err(DatabaseError::ConfigurationError(
+            "Redis use_tls = true is not supported: this build of mcp-rs has no TLS support for Redis. Connect without TLS (for example through a local TLS tunnel), or set use_tls = false".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 /// 接続先のURL。パスワードはURLの形に符号化する（#724、PR #730のレビュー。
 /// redisクレートはURLの`%`の符号を戻すので、そのまま入れると、`@`・`%`・`/`
 /// 等を含むパスワードが別の値になり、認証に失敗した）
@@ -63,6 +76,8 @@ impl RedisConnection {
                 "Redis database number must be 0-15".to_string(),
             ));
         }
+
+        check_tls_supported(config)?;
 
         // Build Redis connection URL
         let url = redis_url(config);
@@ -679,6 +694,22 @@ mod tests {
             assert_eq!(info.redis.password.as_deref(), Some(password), "{url}");
             assert_eq!(info.redis.db, 2, "{url}");
         }
+    }
+
+    /// `use_tls = true`は、つなぐ前に、分かる理由で断る（PR #730のレビュー）
+    #[tokio::test]
+    async fn test_tls_is_rejected_before_connecting() {
+        let config = RedisConfig {
+            host: "localhost".to_string(),
+            use_tls: true,
+            ..RedisConfig::default()
+        };
+        let error = RedisConnection::connect(&config).await.err().unwrap();
+        assert!(
+            matches!(&error, DatabaseError::ConfigurationError(m) if m.contains("use_tls")),
+            "{error:?}"
+        );
+        assert!(check_tls_supported(&RedisConfig::default()).is_ok());
     }
 
     #[tokio::test]
