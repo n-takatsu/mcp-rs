@@ -932,7 +932,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `max_connections`・`websocket_idle_timeout_seconds`・
   `allow_unauthenticated_external`、`oauth::TokenInfo`に`expires_at`を
   足した（#540）。構造体を直接作っているコードは、これらを足すか、
-  `..Default::default()`を使う必要がある
+  `..Default::default()`を使う必要がある（`TokenInfo`は`Default`を
+  持たないので、`expires_at`を足す。#724で書き足した）
 - **互換性のない変更（ライブラリ）**: `WordPressConfig`に`keyring`
   （`Option<String>`）を足した（#533）。構造体を直接作っているコードは、
   `keyring: None`を足す必要がある。設定の読み込みでは、

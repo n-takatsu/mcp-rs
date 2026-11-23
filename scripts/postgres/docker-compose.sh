@@ -4,7 +4,8 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-COMPOSE_FILE="${SCRIPT_DIR}/docker-compose.postgres.yml"
+# テスト・開発用のcompose（#724。以前は、このフォルダの無いファイルを指していた）
+COMPOSE_FILE="${SCRIPT_DIR}/../../configs/docker/docker-compose.postgres.yml"
 ENV_FILE="${SCRIPT_DIR}/.env"
 
 # Color output

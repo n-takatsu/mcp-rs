@@ -13,8 +13,8 @@ services:
       - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres_primary_data:/var/lib/postgresql/data
-      - ./scripts/postgres/init.sql:/docker-entrypoint-initdb.d/01-init.sql
-      - ./scripts/postgres/test-schema.sql:/docker-entrypoint-initdb.d/02-test-schema.sql
+      - ../../scripts/postgres/init.sql:/docker-entrypoint-initdb.d/01-init.sql
+      - ../../scripts/postgres/test-schema.sql:/docker-entrypoint-initdb.d/02-test-schema.sql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres || exit 1"]
       interval: 10s
@@ -43,7 +43,7 @@ services:
       - "127.0.0.1:${POSTGRES_SECONDARY_PORT:-5433}:5432"
     volumes:
       - postgres_secondary_data:/var/lib/postgresql/data
-      - ./scripts/postgres/standby.sh:/usr/local/bin/standby.sh
+      - ../../scripts/postgres/standby.sh:/usr/local/bin/standby.sh
     entrypoint: /usr/local/bin/standby.sh
     depends_on:
       postgres-primary:
@@ -70,7 +70,7 @@ services:
       - "127.0.0.1:${PGADMIN_PORT:-5050}:80"
     volumes:
       - pgadmin_data:/var/lib/pgadmin
-      - ./scripts/pgadmin/servers.json:/pgadmin4/servers.json
+      - ../../scripts/pgadmin/servers.json:/pgadmin4/servers.json
     depends_on:
       - postgres-primary
     networks:
