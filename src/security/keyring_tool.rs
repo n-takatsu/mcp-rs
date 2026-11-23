@@ -187,9 +187,13 @@ fn check_input(
 ) -> Result<WordPressKeyringCredentials, Box<dyn std::error::Error>> {
     // 入力は文に入れない。2行の形のまま渡すと、1行目はユーザー名で、
     // 取り違えるとパスワードが表示される（PR #551のレビュー）
-    if super::keyring_store::site_origin(&site_url).is_none() {
+    // WordPressのハンドラーは`https://`のサイトしか使わないので、`http://`は
+    // 登録しない（#724。以前は登録でき、使えなかった）
+    if super::keyring_store::site_origin(&site_url).is_none()
+        || !site_url.trim().starts_with("https://")
+    {
         return Err(
-            "the first line (the site URL) is not a URL starting with https:// or http://. Provide three lines: site URL, username, Application Password"
+            "the first line (the site URL) is not a URL starting with https:// (mcp-rs connects to WordPress over HTTPS only). Provide three lines: site URL, username, Application Password"
                 .into(),
         );
     }
@@ -272,6 +276,12 @@ mod tests {
             .to_string();
         assert!(err.contains("the first line (the site URL)"), "{err}");
         assert!(!err.contains("secret-password"), "{err}");
+        // `http://`のサイトは、使えないので登録しない（#724）
+        let err = read_lines("http://example.com\neditor\npw\n".as_bytes())
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(err.contains("https://"), "{err}");
     }
 
     #[test]
