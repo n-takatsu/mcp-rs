@@ -2,8 +2,9 @@
 name: Release Image
 
 # リリースのDockerイメージを作るワークフロー。検証（fmt・clippy・テスト・
-# 監査）の後、イメージを作ってghcr.ioに送り、SBOMを作り（タグのときは
-# GitHubのリリースに添付）、イメージをTrivyでスキャンする。
+# 監査）の後、イメージを作ってghcr.ioに送り、SBOMを作り（タグのときは、
+# そのときにリリースがあれば添付。下のsbomのジョブを参照）、イメージを
+# Trivyでスキャンする。
 # どこかのサーバーへのデプロイはしない（デプロイ先が無いため、中身が
 # echoだけだったstaging・production・rollbackのジョブは削除した、#451）
 on:
@@ -127,6 +128,14 @@ jobs:
   # contents: writeが要るが、イメージをpushする権限（packages: write）は
   # 持たせない（#542）。外部のアクションが乗っ取られても、ghcr.ioの
   # イメージは上書きできない
+  #
+  # 添付されるのは、このジョブが動くときに、そのタグのリリース（下書きも
+  # よい）が既にあるときだけ（#741）。anchore/sbom-actionはリリースを作らず、
+  # 無ければ添付を飛ばす。後でリリースを作っても、このワークフローは動き
+  # 直さない。タグをpushしたら、このジョブの前にリリースを作る。添付され
+  # なかったときは、この実行の成果物（sbom）を取り出して添付する:
+  #   gh run download <実行のID> -n sbom
+  #   gh release upload vX.Y.Z sbom.spdx.json
   sbom:
     name: Generate SBOM
     needs: build-docker-image

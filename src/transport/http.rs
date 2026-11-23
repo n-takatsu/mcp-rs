@@ -442,10 +442,11 @@ fn is_port_suffix(text: &str) -> bool {
         .is_some_and(|port| !port.is_empty() && port.parse::<u16>().is_ok())
 }
 
-/// `Origin`を検証するミドルウェア（#484・#488）。`/`・`/mcp`・`/ws`に
-/// `route_layer`で付ける。ハンドラーの引数（`Json`の取り出し等）より先に
-/// 動くので、許可していないオリジンには、本文が壊れていても必ず403で
-/// 答える。Protected Resource Metadataは公開の情報なので付けない。
+/// `Origin`を検証するミドルウェア（#484・#488）。`/`・`/mcp`・`/ws`の
+/// いちばん外側（CORSより外、#741）に付ける。ハンドラーの引数（`Json`の
+/// 取り出し等）やCORSのpreflightより先に動くので、許可していないオリジンには、
+/// 本文が壊れていても、preflightでも、必ず403で答える。Protected Resource
+/// Metadataは公開の情報なので付けない。
 async fn origin_middleware(
     State(policy): State<Arc<OriginPolicy>>,
     request: axum::extract::Request,
@@ -1271,13 +1272,19 @@ impl HttpTransport {
                 state.clone(),
                 auth_middleware,
             ))
-            .route_layer(axum::middleware::from_fn_with_state(
-                origin_policy.clone(),
-                origin_middleware,
-            ))
             .layer(DefaultBodyLimit::max(self.config.max_request_size))
             .layer(RequestBodyTimeoutLayer::new(request_timeout))
-            .layer(mcp_cors_layer(self.config.cors_enabled, origin_policy));
+            .layer(mcp_cors_layer(
+                self.config.cors_enabled,
+                origin_policy.clone(),
+            ))
+            // `Origin`の検証は、CORSより外側（#741）。CORSは`OPTIONS`の
+            // preflightに内側を呼ばずに答えるので、内側では、許可していない
+            // オリジンのpreflightにも200を返していた
+            .layer(axum::middleware::from_fn_with_state(
+                origin_policy,
+                origin_middleware,
+            ));
         // Protected Resource Metadata: 公開の情報なので、どのオリジンにも返す
         let mut metadata_routes = Router::new();
         if let Some(validator) = &oauth {
@@ -6898,6 +6905,23 @@ mod tests {
             Some("https://app.example.com")
         );
         assert_eq!(allow_origin("http://attacker.example").await, None);
+
+        // 許可していないオリジンのpreflightは403、許可したオリジンは成功
+        // （#741。以前は、CORSが先に答えて200だった）
+        let preflight_status = |origin: &'static str| {
+            let request = client
+                .request(reqwest::Method::OPTIONS, &url)
+                .header("Origin", origin)
+                .header("Access-Control-Request-Method", "POST");
+            async move { request.send().await.unwrap().status() }
+        };
+        assert_eq!(
+            preflight_status("http://attacker.example").await,
+            reqwest::StatusCode::FORBIDDEN
+        );
+        assert!(preflight_status("https://app.example.com")
+            .await
+            .is_success());
     }
 
     /// `/ws`のアップグレードも、`Origin`を検証する（#484）
