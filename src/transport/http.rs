@@ -1957,6 +1957,7 @@ async fn handle_jsonrpc_request(
     request: std::result::Result<Json<Value>, JsonRejection>,
 ) -> std::result::Result<Response, StatusCode> {
     // ネットワークの制限と認証は、`auth_middleware`が本文を読む前に確かめた
+    let expires_at = authenticated.expires_at;
     let caller = authenticated
         .caller
         .with_ip_address(Some(remote_addr.ip().to_string()));
@@ -1973,22 +1974,10 @@ async fn handle_jsonrpc_request(
     };
     // 本文を読んでいる間に、OAuthのトークンの期限が切れていれば、処理しない
     // （#724。認証は本文を読む前に確かめるので、ゆっくり送ると、期限の後に
-    // 処理を始められた）
-    if authenticated
-        .expires_at
-        .is_some_and(|expires_at| unix_now_secs() > expires_at)
-    {
-        // ほかの無効なトークンと同じく、`WWW-Authenticate`を付ける（PR #726の
-        // レビュー。RFC 6750 §3）
-        return Ok(match &state.oauth {
-            Some(oauth) => oauth_error_response(
-                oauth.config(),
-                Some(&crate::transport::oauth::TokenError::Invalid(
-                    "the access token expired while the request body was being read".to_string(),
-                )),
-            ),
-            None => StatusCode::UNAUTHORIZED.into_response(),
-        });
+    // 処理を始められた）。この後の確認（リプレイ攻撃対策・IDS等）で待つ間に
+    // 切れることもあるので、振り分ける直前にも確かめる（PR #726のレビュー）
+    if let Some(response) = expired_token_response(&state, expires_at) {
+        return Ok(response);
     }
     // プロキシの付けるヘッダーは、信頼するプロキシからのものだけを使う（#543）
     let no_headers = HeaderMap::new();
@@ -2078,6 +2067,13 @@ async fn handle_jsonrpc_request(
         }
     };
 
+    // 振り分ける直前に、もう一度期限を確かめる（PR #726のレビュー）。ここより
+    // 後は、受け付けたリクエストとして最後まで処理する（ツールの実行中に
+    // 期限が切れても、途中で止めない）
+    if let Some(response) = expired_token_response(&state, expires_at) {
+        return Ok(response);
+    }
+
     if let Some(handler) = state.request_handler.clone() {
         return respond_with_request_handler(
             &state,
@@ -2104,6 +2100,11 @@ async fn handle_jsonrpc_request(
             pending.insert(id.clone(), response_tx);
         }
 
+        // ロックを待つ間に期限が切れていれば、送らない（PR #726のレビュー）
+        if let Some(response) = expired_token_response(&state, expires_at) {
+            state.pending_responses.write().await.remove(&id);
+            return Ok(response);
+        }
         if state.request_sender.send(request_str).await.is_err() {
             state.pending_responses.write().await.remove(&id);
             let mut stats = state.stats.write().await;
@@ -3363,6 +3364,25 @@ async fn close_ws(
         sender.lock().await.send(Message::Close(Some(frame))),
     )
     .await;
+}
+
+/// OAuthのトークンの期限（`expires_at`）が過ぎていれば、ほかの無効な
+/// トークンと同じ401（`WWW-Authenticate`付き、RFC 6750 §3）。過ぎていなければ
+/// `None`（#724、PR #726のレビュー）
+fn expired_token_response(state: &HttpTransportState, expires_at: Option<u64>) -> Option<Response> {
+    let expired = expires_at.is_some_and(|expires_at| unix_now_secs() > expires_at);
+    if !expired {
+        return None;
+    }
+    Some(match &state.oauth {
+        Some(oauth) => oauth_error_response(
+            oauth.config(),
+            Some(&crate::transport::oauth::TokenError::Invalid(
+                "the access token expired before the request was processed".to_string(),
+            )),
+        ),
+        None => StatusCode::UNAUTHORIZED.into_response(),
+    })
 }
 
 /// 今のUNIX時刻（秒）
