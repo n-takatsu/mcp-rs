@@ -198,7 +198,20 @@ impl LocalRollingAppender {
     /// 切り替えの時刻を過ぎていれば、今切り替える（先頭の行は、次の書き込みで
     /// 書く）。書く前に書き先を決め、その書き先の名前を行に入れるため（起動の
     /// 行、PR #745のレビュー）
+    ///
+    /// 今のファイルの先頭の行がまだ書けていなければ（書き込みが失敗した後）、
+    /// 切り替える前に書き終える。書けなければ切り替えない（その行を新しい
+    /// ファイルの行で置き換えて失わないように。PR #745のレビュー）
     pub(crate) fn roll_now(&mut self) {
+        let due = self
+            .next_rollover
+            .is_some_and(|next| (self.clock)() >= next);
+        if due
+            && self.pending_header.is_some()
+            && write_with_header(&mut self.file, &mut self.pending_header, b"").is_err()
+        {
+            return;
+        }
         if let Some(header) = self.roll_if_needed() {
             self.pending_header = Some(header.into_bytes());
         }
@@ -498,6 +511,37 @@ mod tests {
             read(dir.path(), "mcp-rs.log.2026-01-11"),
             "=== continued at 2026-01-11T00:05 / log: mcp-rs.log.2026-01-11 ===\nafter 1\nafter 2\n"
         );
+    }
+
+    /// 今のファイルの先頭の行が書けていないまま次の切り替えの時刻になったら、
+    /// その行を今のファイルに書き終えてから切り替える（PR #745のレビュー）。
+    /// 新しいファイルの行で置き換えて失わない
+    #[test]
+    fn test_pending_header_is_written_before_the_next_rollover() {
+        let dir = tempdir().unwrap();
+        let clock = TestClock::new(local(10, 23, 59));
+        let mut appender = LocalRollingAppender::with_clock(
+            dir.path(),
+            &LogRotation::Daily,
+            "mcp-rs.log",
+            clock.boxed(),
+        )
+        .unwrap()
+        .with_rollover_header(test_header());
+        // 10日のファイルの先頭の行が、書き込みの失敗で残っている状態
+        appender.pending_header = Some(b"=== pending for the 10th ===\n".to_vec());
+        clock.set(local(11, 0, 5));
+        appender.write_all(b"after\n").unwrap();
+
+        assert_eq!(
+            read(dir.path(), "mcp-rs.log.2026-01-10"),
+            "=== pending for the 10th ===\n"
+        );
+        assert_eq!(
+            read(dir.path(), "mcp-rs.log.2026-01-11"),
+            "=== continued at 2026-01-11T00:05 / log: mcp-rs.log.2026-01-11 ===\nafter\n"
+        );
+        assert!(appender.pending_header.is_none());
     }
 
     /// 夏時間で時刻が飛んだら、飛んだ後の最初の時刻で切り替える（#744）。
