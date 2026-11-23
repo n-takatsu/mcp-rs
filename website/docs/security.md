@@ -257,7 +257,7 @@ With `trusted_proxies`, mcp-rs also needs API keys or OAuth (see [Listening on t
 
 ## HTTP/WebSocket API Key Authentication
 
-When the HTTP transport listens on anything other than loopback, enable API key authentication. Each key is hashed in memory at startup and never logged. Startup fails if `auth_enabled = true` and no keys are configured, or if a key is empty or duplicated.
+When the HTTP transport listens on anything other than loopback, enable API key authentication. Each key is hashed in memory at startup and never logged. Startup fails if `auth_enabled = true` and no keys are configured, or if a key is empty or duplicated, or if two keys have the same `name` (v0.30.0 and later; the name identifies the caller in the audit log, the replay protection and the intrusion detection).
 
 ```toml
 [transport.http]
