@@ -191,6 +191,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- データベースの`execute_query`で、受け取った行がバイト数の上限
+  （`max_result_bytes`）を超えたら、`truncated: true`にする（#724）。
+  以前は、列の多い大きな行が1つだけ残り、値を切り詰めなかったとき、
+  後の行を落としているのに`truncated: false`だった
+- データベースのエラーを監査ログに書くとき、閉じた値の後に閉じていない
+  値が続く文（`value 'a' and 'secret`）でも、最後まで伏せる（#724）
+- 設定の型の誤り（`invalid type: string "…", expected u16 for key
+  \`transport.http.port\``）で、値だけを伏せ、項目の場所は残す（#724）。
+  以前は場所も伏せたので、どの項目を直せばよいか分からなかった
+- `mcp-rs wordpress-keyring set`で、`https://`でないサイトを登録しない
+  （#724）。WordPressのハンドラーは`https://`しか使わないので、以前は
+  `http://`で登録でき、使えなかった
+- Unixで、`--config`の`~/`を展開するとき、パスの`\`を`/`に変えない
+  （#724）。`~\`の展開と、`\`を区切り文字として扱うのは、Windowsだけ
 - HTTPで、`/ws`のOAuthのトークンの期限（`exp`）が小数なら、検証と同じく
   丸める（#724。以前は切り捨てて、最大1秒早く閉じた）
 - HTTPで、`trusted_proxies`に、IPv4をIPv6で表した範囲
