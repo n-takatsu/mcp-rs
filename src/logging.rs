@@ -338,16 +338,26 @@ fn user_state_dir() -> Option<PathBuf> {
 
     #[cfg(not(windows))]
     {
-        if let Some(xdg_state) = std::env::var_os("XDG_STATE_HOME") {
-            Some(PathBuf::from(xdg_state).join("mcp-rs"))
-        } else {
-            std::env::var_os("HOME").map(|home| {
-                PathBuf::from(home)
-                    .join(".local")
-                    .join("state")
-                    .join("mcp-rs")
-            })
-        }
+        unix_state_dir(std::env::var_os("XDG_STATE_HOME"), std::env::var_os("HOME"))
+    }
+}
+
+/// Windows以外の`user_state_dir`。`XDG_STATE_HOME`は、空か相対パスなら
+/// 使わない（#741。XDG Base Directoryの仕様のとおり。使うと、ログ・監査
+/// ログの既定の場所が、作業フォルダで変わる）
+#[cfg_attr(windows, allow(dead_code))]
+fn unix_state_dir(
+    xdg_state_home: Option<std::ffi::OsString>,
+    home: Option<std::ffi::OsString>,
+) -> Option<PathBuf> {
+    match xdg_state_home.map(PathBuf::from) {
+        Some(xdg_state) if xdg_state.is_absolute() => Some(xdg_state.join("mcp-rs")),
+        _ => home.map(|home| {
+            PathBuf::from(home)
+                .join(".local")
+                .join("state")
+                .join("mcp-rs")
+        }),
     }
 }
 
@@ -1196,6 +1206,22 @@ fn parse_module_separation_config(config: &crate::config::LogModuleConfig) -> Mo
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    /// `XDG_STATE_HOME`は、絶対パスのときだけ使う（#741）
+    #[test]
+    fn test_unix_state_dir_ignores_empty_or_relative_xdg_state_home() {
+        let home = || Some(std::ffi::OsString::from("/home/u"));
+        let from_home = Some(PathBuf::from("/home/u/.local/state/mcp-rs"));
+        assert_eq!(unix_state_dir(None, home()), from_home);
+        assert_eq!(unix_state_dir(Some("".into()), home()), from_home);
+        assert_eq!(unix_state_dir(Some("state".into()), home()), from_home);
+        assert_eq!(unix_state_dir(Some("".into()), None), None);
+        #[cfg(not(windows))]
+        assert_eq!(
+            unix_state_dir(Some("/var/state".into()), home()),
+            Some(PathBuf::from("/var/state/mcp-rs"))
+        );
+    }
 
     #[test]
     fn test_log_config_default() {

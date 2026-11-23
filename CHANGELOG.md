@@ -217,6 +217,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- 監査ログを、複数のプロセス（既定の場所は設定ファイルに関係なく同じ。
+  Claude Desktopは2つ起動する）が同時にローテーションすると、回した後の
+  `audit.log.N`を上書きし、記録を失うことがあった（#741）。隣の
+  `audit.log.lock`のロックを取ってから、大きさを確かめ直し、回し、追記する
+
+- Windows以外で、`XDG_STATE_HOME`が空か相対パスでも使い、ログ・監査ログの
+  既定の場所が作業フォルダで変わっていた（#741）。XDGの仕様どおり、空・
+  相対パスは無視して`~/.local/state`を使う
+
 - MySQL・MariaDBで、時間の上限を超えた文・読むのをやめた文を`KILL QUERY`で
   止める前に、止める接続で`information_schema.PROCESSLIST`を見て、そのIDの
   接続が同じユーザーで、同じサーバー（MySQLは`server_uuid`、MariaDBは

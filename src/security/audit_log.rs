@@ -7,7 +7,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::sync::Arc;
-use tokio::io::AsyncWriteExt;
 use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
 
@@ -616,38 +615,18 @@ impl AuditLogger {
             };
 
             let line = format!("{}\n", content);
+            // プロセスの中の順番は`file_lock`で、プロセスの間（Claude Desktopが
+            // 起動する2つ等、同じファイルに書くもの）は`append_line`のファイルの
+            // ロックで守る（#741）
             let _guard = self.file_lock.lock().await;
-            if self.config.rotation_enabled {
-                let current = tokio::fs::metadata(file_path)
-                    .await
-                    .map(|m| m.len())
-                    .unwrap_or(0);
-                if current > 0 && current + line.len() as u64 > self.config.rotation_size {
-                    rotate_files(file_path, self.config.max_files)
-                        .await
-                        .map_err(|e| {
-                            SecurityError::Configuration(format!("Log rotation failed: {}", e))
-                        })?;
-                }
-            }
-
-            // tokio::fs::writeは毎回ファイル全体を上書きするため、ここでは
-            // 追記モードで開く。そうしないと2件目以降のログ記録で直前の
-            // エントリしかディスクに残らず、プロセス再起動後やログ出荷時に
-            // 監査証跡がほぼ消えてしまう。
-            let mut file = private_append_options()
-                .open(file_path)
+            let path = file_path.to_string();
+            let rotation = self
+                .config
+                .rotation_enabled
+                .then_some((self.config.rotation_size, self.config.max_files));
+            tokio::task::spawn_blocking(move || append_line(&path, &line, rotation))
                 .await
-                .map_err(|e| SecurityError::Configuration(format!("File open failed: {}", e)))?;
-            file.write_all(line.as_bytes())
-                .await
-                .map_err(|e| SecurityError::Configuration(format!("File write failed: {}", e)))?;
-            // tokioのFileは、書き込みを裏で続けたまま閉じることがある。ロックを
-            // 手放す前に書き終える（次の書き込み・ローテーションと順番が
-            // 入れ替わらないように）
-            file.flush()
-                .await
-                .map_err(|e| SecurityError::Configuration(format!("File write failed: {}", e)))?;
+                .map_err(|e| SecurityError::Configuration(format!("File write failed: {}", e)))??;
         }
         Ok(())
     }
@@ -672,27 +651,84 @@ async fn create_private_dir_all(dir: &std::path::Path) -> std::io::Result<()> {
 /// 送ったファイルの権限もそのまま。
 /// シンボリックリンクもたどらない（`O_NOFOLLOW`、#543）
 fn private_append_options() -> tokio::fs::OpenOptions {
-    let mut options = tokio::fs::OpenOptions::new();
+    tokio::fs::OpenOptions::from(private_append_options_std())
+}
+
+/// `private_append_options`の、ブロックする版（`std::fs`）
+fn private_append_options_std() -> std::fs::OpenOptions {
+    let mut options = std::fs::OpenOptions::new();
     options.create(true).append(true);
     #[cfg(unix)]
-    options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    }
     options
+}
+
+/// `line`を`path`に追記する。`rotation`（大きさの上限・残す数）があれば、
+/// 上限を超えるときは先にローテーションする。
+///
+/// 別のプロセスも同じファイルに書き、回すことがある（既定の場所は設定
+/// ファイルに関係なく同じ。Claude Desktopは2つ起動する）。`<path>.lock`の
+/// 排他のロックを取ってから、大きさを確かめ、回し、追記する（#741）。
+/// ロックが無いと、2つが同時に回して、回した後の`path.N`を上書きし、
+/// 記録を失うことがある。
+///
+/// 追記モードで開く（毎回ファイル全体を上書きすると、直前の記録しか
+/// 残らない）。ブロックするので、`spawn_blocking`の中で呼ぶ
+fn append_line(path: &str, line: &str, rotation: Option<(u64, u32)>) -> Result<(), SecurityError> {
+    use std::io::Write;
+    // Windowsは、追記だけで開いたファイルにロックを取れないので、読み書きで
+    // 開く（中身は書かない）
+    let mut lock_options = std::fs::OpenOptions::new();
+    lock_options
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        lock_options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    }
+    let lock = lock_options
+        .open(format!("{path}.lock"))
+        .map_err(|e| SecurityError::Configuration(format!("File open failed: {}", e)))?;
+    lock.lock()
+        .map_err(|e| SecurityError::Configuration(format!("File lock failed: {}", e)))?;
+    if let Some((rotation_size, max_files)) = rotation {
+        // ロックを取った後の大きさで決める（ほかのプロセスが回した後かも
+        // しれない）
+        let current = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+        if current > 0 && current + line.len() as u64 > rotation_size {
+            rotate_files(path, max_files)
+                .map_err(|e| SecurityError::Configuration(format!("Log rotation failed: {}", e)))?;
+        }
+    }
+    let mut file = private_append_options_std()
+        .open(path)
+        .map_err(|e| SecurityError::Configuration(format!("File open failed: {}", e)))?;
+    file.write_all(line.as_bytes())
+        .map_err(|e| SecurityError::Configuration(format!("File write failed: {}", e)))?;
+    // `lock`を閉じると、ロックも外れる
+    Ok(())
 }
 
 /// `path`を`path.1`に、`path.1`を`path.2`に…と送り、`path.<max_files>`を
 /// 超える古いものを消す。`max_files`が0なら、`path`を消すだけ。
-async fn rotate_files(path: &str, max_files: u32) -> std::io::Result<()> {
+fn rotate_files(path: &str, max_files: u32) -> std::io::Result<()> {
     let numbered = |n: u32| format!("{}.{}", path, n);
     if max_files == 0 {
-        return tokio::fs::remove_file(path).await;
+        return std::fs::remove_file(path);
     }
-    let _ = tokio::fs::remove_file(numbered(max_files)).await;
+    let _ = std::fs::remove_file(numbered(max_files));
     for n in (1..max_files).rev() {
-        if tokio::fs::metadata(numbered(n)).await.is_ok() {
-            tokio::fs::rename(numbered(n), numbered(n + 1)).await?;
+        if std::fs::metadata(numbered(n)).is_ok() {
+            std::fs::rename(numbered(n), numbered(n + 1))?;
         }
     }
-    tokio::fs::rename(path, numbered(1)).await
+    std::fs::rename(path, numbered(1))
 }
 
 #[cfg(test)]
@@ -927,6 +963,8 @@ mod tests {
             .expect("Failed to read audit log file");
         let line_count = contents.lines().count();
 
+        // プロセスの間のロックのファイル（#741）も消す
+        let _ = tokio::fs::remove_file(format!("{path}.lock")).await;
         tokio::fs::remove_file(&path)
             .await
             .expect("Failed to clean up test audit log file");
@@ -948,6 +986,66 @@ mod tests {
 
     #[tokio::test]
     async fn test_file_output_rotates_by_size() {
+        test_file_output_rotates_by_size_inner().await;
+    }
+
+    /// 別々の`AuditLogger`（別のプロセスと同じく、`file_lock`を共有しない）が
+    /// 同じファイルに書いて回しても、記録を失わない（#741）
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn test_rotation_from_separate_loggers_keeps_every_entry() {
+        let dir = std::env::temp_dir().join(format!("mcp-rs-audit-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("audit.log");
+        let logger = || {
+            Arc::new(AuditLogger::new(AuditConfig {
+                enable_file_output: true,
+                log_file_path: Some(path.to_string_lossy().into_owned()),
+                // 1件は数百バイトなので、200件で十数回回す
+                rotation_size: 4000,
+                // 全部の記録が残るだけの数
+                max_files: 60,
+                ..Default::default()
+            }))
+        };
+        let tasks: Vec<_> = (0..4)
+            .map(|writer| {
+                let logger = logger();
+                tokio::spawn(async move {
+                    for i in 0..50 {
+                        logger
+                            .log(AuditLogEntry::new(
+                                AuditLevel::Info,
+                                AuditCategory::DataAccess,
+                                format!("writer {writer} entry {i}"),
+                            ))
+                            .await
+                            .unwrap();
+                    }
+                })
+            })
+            .collect();
+        for task in tasks {
+            task.await.unwrap();
+        }
+        let mut lines = 0;
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let entry = entry.unwrap();
+            if entry.file_name().to_string_lossy().ends_with(".lock") {
+                continue;
+            }
+            lines += std::fs::read_to_string(entry.path())
+                .unwrap()
+                .lines()
+                .count();
+        }
+        assert_eq!(lines, 200);
+        // 実際に何度も回した
+        assert!(dir.join("audit.log.5").exists());
+        assert!(!dir.join("audit.log.60").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    async fn test_file_output_rotates_by_size_inner() {
         let dir = std::env::temp_dir().join(format!("mcp-rs-audit-{}", Uuid::new_v4()));
         let path = dir.join("nested").join("audit.log");
         let path_str = path.to_string_lossy().into_owned();
