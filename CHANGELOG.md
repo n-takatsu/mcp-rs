@@ -217,6 +217,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- 文書で、ログの書き先を「`C:\Program Files\MCP-rs`に入れると必ずユーザーの
+  フォルダ」としていたが、そこにも書けなければ次の候補を使う。`${VAR}`の
+  変数が無いと起動が止まるものに、`[[transport.http.api_keys]]`の`key`を足し、
+  `[[plugins]]`の`env`はその項目を渡さないだけと書いた（#746）
+
+- `deploy.yml`のコメントに、リリースのタグの実行も、待っている間に`main`への
+  pushが来ると取り消され、バージョンのタグのイメージを公開しないことと、
+  やり直す手順を書いた（#746）。`.cargo/audit.toml`のSQLiteの説明を、
+  mcp-rsがSQLiteを開かない本当の理由（`[database]`が`engine = "sqlite"`を
+  受け付けない）に直した。例`examples/secure_config_test.rs`を、変数が無いと
+  読み込みが失敗する今の動きに合わせた
+
 - ログのファイルを切り替えた直後の書き込みが失敗すると（ディスクがいっぱい
   等）、新しいファイルの先頭の`=== … continued … / instance … ===`の行を
   失っていた（#744）。書けるまで残し、次の書き込みで書く
