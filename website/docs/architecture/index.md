@@ -40,13 +40,13 @@ Requests over HTTP pass these checks before they reach the server (`src/transpor
 | Authentication: API key or OAuth 2.1 access token | `auth_enabled`, `api_keys`, `[transport.http.oauth]` |
 | Tool limits per API key or token | `tools` (for example `@read_only`) |
 
-STDIO mode has none of these, because the client that starts mcp-rs is the only one that can talk to it. See [Security](../security.md) for the settings.
+STDIO mode has none of these, because the client that starts mcp-rs is the only one that can talk to it. See [Security]({{ site.baseurl }}/docs/security/) for the settings.
 
 In both modes, the WordPress handler and each plugin limit the rate of their tool calls (`[handlers.wordpress.rate_limit]`, and `rate_limit` of a plugin).
 
 ## Audit log
 
-Every tool call, from every handler and in both modes, is written to the audit log (`src/security/audit_log.rs`): who called which tool, and whether it succeeded. See [Audit log](../security.md#audit-log).
+Every tool call, from every handler and in both modes, is written to the audit log (`src/security/audit_log.rs`): who called which tool, and whether it succeeded. See [Audit log]({{ site.baseurl }}/docs/security/#audit-log).
 
 ## Source layout
 

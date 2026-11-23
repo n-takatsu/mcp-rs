@@ -16,7 +16,7 @@ Complete API documentation for MCP-RS v0.16.0+ - Multi-database support with MyS
 
 Comprehensive reference for database engine implementations:
 
-- [📄 Database Engine API](./database.md)
+- [📄 Database Engine API]({{ site.baseurl }}/docs/api/database/)
   - Core types (Value, DatabaseError, QueryResult, ExecuteResult)
   - DatabaseEngine trait
   - DatabaseConnection trait
@@ -39,9 +39,8 @@ Standard JSON-RPC 2.0 protocol methods:
 
 Step-by-step guides for each database:
 
-- [PostgreSQL Integration Guide](../guides/postgres-integration.md)
+- [PostgreSQL Integration Guide]({{ site.baseurl }}/docs/guides/postgres-integration/)
 - MySQL Integration Guide (coming soon)
-- [Performance Tuning Guide](../guides/performance-tuning.md)
 
 ---
 
@@ -626,6 +625,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 For more details, see:
 
-- [📄 Database Engine API](./database.md) - Complete API reference
-- [📖 PostgreSQL Integration Guide](../guides/postgres-integration.md) - Setup and usage
+- [📄 Database Engine API]({{ site.baseurl }}/docs/api/database/) - Complete API reference
+- [📖 PostgreSQL Integration Guide]({{ site.baseurl }}/docs/guides/postgres-integration/) - Setup and usage
 - [📖 Implementation Guides](../guides/) - All guides
