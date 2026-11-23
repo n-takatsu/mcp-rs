@@ -217,6 +217,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- 監査ログを、複数のプロセス（既定の場所は設定ファイルに関係なく同じ。
+  Claude Desktopは2つ起動する）が同時にローテーションすると、回した後の
+  `audit.log.N`を上書きし、記録を失うことがあった（#741）。隣の
+  `audit.log.lock`のロックを取ってから、大きさを確かめ直し、回し、追記する
+
+- Windows以外で、`XDG_STATE_HOME`が空か相対パスでも使い、ログ・監査ログの
+  既定の場所が作業フォルダで変わっていた（#741）。XDGの仕様どおり、空・
+  相対パスは無視して`~/.local/state`を使う
+
 - HTTPモードで、許可していない`Origin`を付けたCORSのpreflight（`OPTIONS /mcp`）に、
   403ではなく200を返していた（#741）。許可のヘッダーは付けないのでブラウザーは
   先に進めないが、MCPの仕様は、正しくない`Origin`に403を求める。`Origin`の
