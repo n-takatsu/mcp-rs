@@ -1895,6 +1895,16 @@ impl Transport for HttpTransport {
         Ok(())
     }
 
+    /// `with_request_handler`を使わないときに、HTTP・WebSocketで受けた要求を返す。
+    ///
+    /// 返す要求には、呼び出し元の情報（APIキー・トークンの名前、使えるツール、
+    /// 接続元のIPアドレス）が無い（#746）。受け取った側で`RequestDispatcher`に
+    /// 渡すときは、`handle_message`（制限の無い呼び出し元）ではなく、
+    /// `handle_message_as`で、認証していない遠隔の呼び出し元（例:
+    /// `Caller::unrestricted().with_ip_address(Some(..))`）として扱うこと。
+    /// そうしないと、`mcp_rs_status`はファイルのパス等を返し、ツールの制限も
+    /// 効かない。呼び出し元ごとの扱いが要るなら、`with_request_handler`
+    /// （`McpServer::dispatcher()`を渡す）を使う
     async fn receive_message(
         &mut self,
     ) -> std::result::Result<Option<JsonRpcRequest>, Self::Error> {
@@ -7088,10 +7098,17 @@ mod tests {
             )
             .await;
             assert_eq!(status, StatusCode::OK, "{body}");
-            assert!(body["result"]["content"][0]["text"]
-                .as_str()
-                .unwrap()
-                .contains("Protocol version: 2026-07-28"));
+            // 認証していない呼び出し元（接続元のIPアドレスがあり、名前が無い）
+            // なので、バージョンだけが返る（#746）
+            // （ほかの情報が足されたら失敗するよう、全体で比べる。PR #747の
+            // レビュー）
+            assert_eq!(
+                body["result"]["content"][0]["text"],
+                serde_json::json!(format!(
+                    "mcp-rs {}\nOther details are shown only to authenticated callers in HTTP mode (set auth_enabled or [transport.http.oauth]).",
+                    env!("CARGO_PKG_VERSION")
+                ))
+            );
         }
 
         // ヘッダーと本文が合わない・ヘッダーが無い
