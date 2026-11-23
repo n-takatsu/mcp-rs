@@ -84,6 +84,16 @@ impl ServerKind {
         }
     }
 
+    /// つないだサーバー（インスタンス）を見分ける式（#723、PR #735の
+    /// レビュー）。接続のIDは、サーバーの中でだけ重ならない。MySQLは
+    /// `server_uuid`。MariaDBには無いので、ホスト名・ポート・`server_id`
+    fn server_identity_expr(self) -> &'static str {
+        match self {
+            Self::MySql => "@@server_uuid",
+            Self::MariaDb => "CONCAT_WS(':', @@hostname, @@port, @@server_id)",
+        }
+    }
+
     /// SELECTの時間の上限を付けるSQL（`timeout_ms`はミリ秒、0は上限なし）。
     /// MySQLの`MAX_EXECUTION_TIME`はミリ秒でSELECTだけに効く。MariaDBには
     /// それが無く、`max_statement_time`（秒、小数も可）を使う
@@ -218,12 +228,24 @@ impl MySqlConnection {
         map_err: fn(String) -> DatabaseError,
     ) -> Result<T, DatabaseError> {
         let id = conn.id();
+        // 止めるときに、同じサーバーか確かめるため（PR #735のレビュー）。
+        // 読めなければ、文だけで確かめる
+        let server = conn
+            .query_first::<String, _>(format!("SELECT {}", self.server.server_identity_expr()))
+            .await
+            .ok()
+            .flatten();
+        let target = KillTarget {
+            id,
+            server,
+            statement,
+        };
         let future = work(&mut conn);
         let result = match self.client_timeout() {
             Some(limit) => match tokio::time::timeout(limit, future).await {
                 Ok(result) => result,
                 Err(_) => {
-                    self.abandon(conn, id, statement).await;
+                    self.abandon(conn, &target).await;
                     return Err(DatabaseError::TimeoutError(format!(
                         "the statement did not finish within {} seconds and was stopped",
                         self.statement_timeout.as_secs()
@@ -236,7 +258,7 @@ impl MySqlConnection {
             Ok(Outcome::Done(value)) => Ok(value),
             Ok(Outcome::Stopped(value)) => {
                 // 残りの行は受け取らない
-                self.abandon(conn, id, statement).await;
+                self.abandon(conn, &target).await;
                 Ok(value)
             }
             Err(e) => {
@@ -253,8 +275,9 @@ impl MySqlConnection {
     /// `disconnect`は読み残しを受信し続けるので、`DISCONNECT_TIMEOUT`で
     /// 打ち切る。打ち切った接続は`disconnected`の印が付いているので、
     /// プールは読み残しを受信せずに捨てる（PR #572のレビュー）
-    async fn abandon(&self, conn: Conn, id: u32, statement: Option<&str>) {
-        let killed = self.kill_query(id, statement).await;
+    async fn abandon(&self, conn: Conn, target: &KillTarget<'_>) {
+        let id = target.id;
+        let killed = self.kill_query(target).await;
         let closed = tokio::time::timeout(DISCONNECT_TIMEOUT, conn.disconnect())
             .await
             .is_ok();
@@ -270,22 +293,26 @@ impl MySqlConnection {
     /// 別の接続から、`id`の接続で実行中のSQLを止める。止めたら`true`。
     ///
     /// 止める前に、止める接続で`information_schema.PROCESSLIST`を見て、
-    /// そのIDの接続が自分のユーザーで`statement`を実行中か確かめる（#723）。
-    /// プロキシ・ロードバランサーで、止める接続が別のサーバーに届くと、
-    /// 同じ番号の関係ない文を止めてしまうため。違えば送らない（元の接続は
-    /// `abandon`が閉じる）。確かめてから送るまでの間に、相手の文が変わる
-    /// ことはあり得る
-    async fn kill_query(&self, id: u32, statement: Option<&str>) -> bool {
+    /// そのIDの接続が元の接続か確かめる（#723、`may_kill`）。プロキシ・
+    /// ロードバランサーで、止める接続が別のサーバーに届くと、同じ番号の
+    /// 関係ない文を止めてしまうため。違えば送らない（元の接続は`abandon`が
+    /// 閉じる）。確かめてから送るまでの間に、相手が変わることはあり得る
+    async fn kill_query(&self, target: &KillTarget<'_>) -> bool {
+        let id = target.id;
         let user = self.opts.user().unwrap_or_default();
         let kill = async {
             let mut conn = Conn::new(self.opts.clone()).await?;
-            let found: Option<(Option<String>, Option<String>)> = conn
+            let found: Option<(Option<String>, Option<String>, Option<String>)> = conn
                 .exec_first(
-                    "SELECT USER, INFO FROM information_schema.PROCESSLIST WHERE ID = ?",
+                    format!(
+                        "SELECT USER, INFO, {} FROM information_schema.PROCESSLIST WHERE ID = ?",
+                        self.server.server_identity_expr()
+                    ),
                     (id,),
                 )
                 .await?;
-            let ours = is_our_statement(found, user, statement);
+            let found = found.map(|(user, info, server)| ProcessRow { user, info, server });
+            let ours = may_kill(found, user, target);
             if ours {
                 conn.query_drop(format!("KILL QUERY {id}")).await?;
             } else {
@@ -311,24 +338,45 @@ impl MySqlConnection {
     }
 }
 
-/// `KILL QUERY`で止めてよい相手か（#723）。`found`は、PROCESSLISTの
-/// そのIDの行（`USER`・`INFO`）。ユーザーが同じで、文を実行中で、
-/// `statement`があれば、`INFO`がその始め（最初の`?`の前まで。プリペアド
-/// ステートメントの`?`は、値に置き換わって見えることがあるため）で始まる
-fn is_our_statement(
-    found: Option<(Option<String>, Option<String>)>,
-    user: &str,
-    statement: Option<&str>,
-) -> bool {
-    let Some((Some(found_user), Some(info))) = found else {
+/// `KILL QUERY`で止める相手（#723）
+struct KillTarget<'a> {
+    /// 接続のID（`conn.id()`）
+    id: u32,
+    /// 元の接続で見た、サーバーを見分ける値（`server_identity_expr`）
+    server: Option<String>,
+    /// 元の接続で送った利用者のSQL
+    statement: Option<&'a str>,
+}
+
+/// 止める接続で見た、PROCESSLISTのそのIDの行
+struct ProcessRow {
+    user: Option<String>,
+    info: Option<String>,
+    /// 止める接続がつながったサーバーを見分ける値
+    server: Option<String>,
+}
+
+/// `KILL QUERY`で止めてよい相手か（#723）。ユーザーが同じで、次の
+/// どちらか:
+///
+/// - 止める接続が、元の接続と同じサーバーに届いた（IDはサーバーの中で
+///   重ならないので、元の接続。文がトリガーの中でも止められる。PR #735の
+///   レビュー）
+/// - `INFO`が、送った文の始め（最初の`?`の前まで。プリペアドステートメントの
+///   `?`は、値に置き換わって見えることがあるため）で始まる
+fn may_kill(found: Option<ProcessRow>, user: &str, target: &KillTarget<'_>) -> bool {
+    let Some(found) = found else {
         return false;
     };
-    if found_user != user {
+    if found.user.as_deref() != Some(user) {
         return false;
     }
-    match statement {
-        None => true,
-        Some(sql) => info.trim_start().starts_with(statement_prefix(sql)),
+    if target.server.is_some() && found.server == target.server {
+        return true;
+    }
+    match (target.statement, found.info.as_deref()) {
+        (Some(sql), Some(info)) => info.trim_start().starts_with(statement_prefix(sql)),
+        _ => false,
     }
 }
 
@@ -917,48 +965,76 @@ mod tests {
     /// utf8mb4_general_ci
     const UTF8MB4: u16 = 45;
 
-    /// `KILL QUERY`は、自分のユーザーで自分の文を実行中の接続にだけ送る
-    /// （#723）
+    /// `KILL QUERY`は、自分のユーザーで、同じサーバーか自分の文を実行中の
+    /// 接続にだけ送る（#723）
     #[test]
-    fn test_is_our_statement() {
-        let row = |user: Option<&str>, info: Option<&str>| {
-            Some((user.map(str::to_string), info.map(str::to_string)))
+    fn test_may_kill() {
+        let row = |user: Option<&str>, info: Option<&str>, server: &str| {
+            Some(ProcessRow {
+                user: user.map(str::to_string),
+                info: info.map(str::to_string),
+                server: Some(server.to_string()),
+            })
         };
-        let sql = "  SELECT * FROM users WHERE id = ? AND name = ?";
+        let sql = "  UPDATE users SET name = ? WHERE id = ?";
+        let target = |server: Option<&str>, statement: Option<&'static str>| KillTarget {
+            id: 7,
+            server: server.map(str::to_string),
+            statement,
+        };
+        // 同じサーバーなら、文が違っても止める（トリガーの中の文等）
+        assert!(may_kill(
+            row(Some("app"), Some("DO SLEEP(60)"), "A"),
+            "app",
+            &target(Some("A"), Some(sql))
+        ));
+        assert!(may_kill(
+            row(Some("app"), None, "A"),
+            "app",
+            &target(Some("A"), None)
+        ));
+        // 別のサーバー（か、元の接続でサーバーを読めなかった）なら、文で確かめる。
         // プリペアドステートメントの`?`は、値に置き換わって見えることがある
-        for info in [
-            "SELECT * FROM users WHERE id = ? AND name = ?",
-            "SELECT * FROM users WHERE id = 5 AND name = 'a'",
-        ] {
-            assert!(is_our_statement(
-                row(Some("app"), Some(info)),
+        for server in [Some("A"), None] {
+            for info in [
+                "UPDATE users SET name = ? WHERE id = ?",
+                "UPDATE users SET name = 'a' WHERE id = 5",
+            ] {
+                assert!(may_kill(
+                    row(Some("app"), Some(info), "B"),
+                    "app",
+                    &target(server, Some(sql))
+                ));
+            }
+            assert!(!may_kill(
+                row(Some("app"), Some("UPDATE accounts SET x = 1"), "B"),
                 "app",
-                Some(sql)
+                &target(server, Some(sql))
+            ));
+            assert!(!may_kill(
+                row(Some("app"), None, "B"),
+                "app",
+                &target(server, Some(sql))
+            ));
+            // スキーマの読み取り（文を渡さない）は、別のサーバーなら止めない
+            assert!(!may_kill(
+                row(Some("app"), Some("SELECT 1"), "B"),
+                "app",
+                &target(server, None)
             ));
         }
-        // 別のユーザー・別の文・何も実行していない・見つからない
-        assert!(!is_our_statement(
-            row(Some("other"), Some("SELECT * FROM users WHERE id = 5")),
+        // 別のユーザー・見つからないなら、同じサーバーでも止めない
+        assert!(!may_kill(
+            row(Some("other"), Some("UPDATE users SET name = 'a'"), "A"),
             "app",
-            Some(sql)
+            &target(Some("A"), Some(sql))
         ));
-        assert!(!is_our_statement(
-            row(Some("app"), Some("UPDATE accounts SET x = 1")),
+        assert!(!may_kill(
+            row(None, None, "A"),
             "app",
-            Some(sql)
+            &target(Some("A"), None)
         ));
-        assert!(!is_our_statement(row(Some("app"), None), "app", Some(sql)));
-        assert!(!is_our_statement(row(None, Some("SELECT 1")), "app", None));
-        assert!(!is_our_statement(None, "app", None));
-        // 文を渡さないとき（スキーマの読み取り）は、ユーザーだけ確かめる
-        assert!(is_our_statement(
-            row(
-                Some("app"),
-                Some("SELECT TABLE_NAME FROM information_schema.TABLES")
-            ),
-            "app",
-            None
-        ));
+        assert!(!may_kill(None, "app", &target(Some("A"), Some(sql))));
     }
 
     /// 始めは、最初の`?`の前まで、長くても64文字（マルチバイトでも切れる）
