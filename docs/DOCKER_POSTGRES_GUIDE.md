@@ -64,14 +64,13 @@ docker compose -f configs/docker/docker-compose.postgres.yml up -d postgres-prim
 # Primary への接続テスト
 psql -h localhost -p 5432 -U postgres -d testdb -c "SELECT version();"
 
-# Secondary への接続テスト
-psql -h localhost -p 5433 -U postgres -d testdb -c "SELECT version();"
-
-# pgAdmin へアクセス
+# pgAdmin へアクセス（pgAdminも起動したとき）
 # http://localhost:5050
 # Email: admin@example.com
 # Password: admin
 ```
+
+Secondary は今は起動しないので（上の注意を参照）、Secondary への接続（`psql -h localhost -p 5433 ...`）は確かめられません。
 
 ## コンテナ管理
 
@@ -239,11 +238,10 @@ docker network inspect mcp-rs_postgres-network
 
 ### コンテナ間通信
 
-コンテナ内では `postgres-primary`, `postgres-secondary` のホスト名で接続可能：
+コンテナ内では `postgres-primary` のホスト名で接続可能（`postgres-secondary` は、今は起動しない）：
 
 ```bash
 postgresql://postgres:postgres@postgres-primary:5432/testdb
-postgresql://postgres:postgres@postgres-secondary:5432/testdb
 ```
 
 ## トラブルシューティング
