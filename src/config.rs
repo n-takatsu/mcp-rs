@@ -1731,11 +1731,18 @@ impl McpConfig {
         config: &mut WordPressConfig,
         prefix: &str,
     ) -> Result<(), ConfigEnvError> {
+        // `encrypted_credentials`があれば、`username`・`password`は復号した
+        // 値で上書きするので、展開しない（#746。古い`${VAR}`が残っていても、
+        // その変数が無いことで起動を止めない）
+        let encrypted = config.encrypted_credentials.is_some();
         for (field, value) in [
             ("url", &mut config.url),
             ("username", &mut config.username),
             ("password", &mut config.password),
         ] {
+            if encrypted && field != "url" {
+                continue;
+            }
             *value = Self::expand_env_vars(value).map_err(|reason| ConfigEnvError {
                 field: format!("{prefix}.{field}"),
                 reason,
@@ -3429,6 +3436,32 @@ resource = "https://mcp.example.com/mcp"
             err.to_string(),
             "handlers.wordpress.password: environment variable 'WP_PASSWORD_NOT_SET_454' is not set"
         );
+    }
+
+    /// `encrypted_credentials`があれば、上書きされる`username`・`password`は
+    /// 展開しない。`url`は展開する（#746）
+    #[test]
+    fn test_expand_wordpress_config_skips_credentials_with_encrypted_credentials() {
+        let mut wp: WordPressConfig = toml::from_str(
+            r#"
+            url = "${WP_URL_NOT_SET_746}"
+            username = "${WP_USERNAME_NOT_SET_746}"
+            password = "${WP_PASSWORD_NOT_SET_746}"
+            enabled = true
+
+            [encrypted_credentials]
+            username = "admin"
+            encrypted_password = "x"
+            nonce = "x"
+            salt = "x"
+            "#,
+        )
+        .unwrap();
+        let err = McpConfig::expand_wordpress_config(&mut wp).unwrap_err();
+        assert_eq!(err.field, "handlers.wordpress.url");
+        wp.url = "https://example.com".to_string();
+        assert!(McpConfig::expand_wordpress_config(&mut wp).is_ok());
+        assert_eq!(wp.password, "${WP_PASSWORD_NOT_SET_746}");
     }
 
     #[test]

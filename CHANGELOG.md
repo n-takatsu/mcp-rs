@@ -217,6 +217,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- WordPressの`url`に、ユーザー名・パスワード（`https://user:pass@…`）を書くと、
+  `mcp_rs_status`の表示と起動のエラーに、パスワードがそのまま出ていた（#746）。
+  そのような`url`と、URLとして読めない`url`は断る（`mcp-rs init`と同じ）。
+  エラーには、URLを出さない。
+  **互換性**: こう書いた設定ファイルでは、WordPressのツールが起動しなくなる。
+  資格情報は`username`・`password`（か`keyring`）に書く
+
+- WordPressの`encrypted_credentials`を使う設定で、使われない`username`・
+  `password`に`${VAR}`が残っていると、その変数が無いときに起動しなかった
+  （#746。この2つは復号した値で上書きする）。`encrypted_credentials`があれば
+  展開しない（`url`は今までどおり展開する）
+
+- ライブラリとして使う場合: `mcp_rs_status`で、認証していない呼び出し元かを、
+  動作のモードが`http`かで決めていた（#746）。モードを設定せずにHTTPで
+  使うと、認証していない相手にもファイルのパス等を見せていた。接続元の
+  IPアドレスがあり、名前の無い呼び出し元にも、バージョンだけを返す
+
+- `mcp-rs --config --version`で、`--version`を設定ファイルのパスとして
+  読んでいた（#746。`--help`・`-V`・`-h`も）。どの位置でも、表示して終わる
+
 - 文書で、ログの書き先を「`C:\Program Files\MCP-rs`に入れると必ずユーザーの
   フォルダ」としていたが、そこにも書けなければ次の候補を使う。`${VAR}`の
   変数が無いと起動が止まるものに、`[[transport.http.api_keys]]`の`key`を足し、
