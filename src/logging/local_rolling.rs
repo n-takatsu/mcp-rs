@@ -100,7 +100,7 @@ pub(crate) struct LocalRollingAppender {
     rollover_header: Option<RolloverHeader>,
     /// 切り替えたが、まだ書けていない先頭の行（#744。書き込みが失敗しても
     /// 失わず、次の書き込みで書く）
-    pending_header: Option<String>,
+    pending_header: Option<Vec<u8>>,
 }
 
 impl LocalRollingAppender {
@@ -194,11 +194,20 @@ impl LocalRollingAppender {
     }
 }
 
+impl LocalRollingAppender {
+    /// 切り替えの時刻を過ぎていれば、今切り替える（先頭の行は、次の書き込みで
+    /// 書く）。書く前に書き先を決め、その書き先の名前を行に入れるため（起動の
+    /// 行、PR #745のレビュー）
+    pub(crate) fn roll_now(&mut self) {
+        if let Some(header) = self.roll_if_needed() {
+            self.pending_header = Some(header.into_bytes());
+        }
+    }
+}
+
 impl Write for LocalRollingAppender {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        if let Some(header) = self.roll_if_needed() {
-            self.pending_header = Some(header);
-        }
+        self.roll_now();
         write_with_header(&mut self.file, &mut self.pending_header, buf)?;
         Ok(buf.len())
     }
@@ -210,21 +219,37 @@ impl Write for LocalRollingAppender {
 
 /// 1件のログ（`buf`）を1回で書く（途中で分けない）。切り替えた後の先頭の
 /// 行（`pending`）があれば、その後に続けて1回で書く（同じファイルに書く
-/// 別のプロセスの行と混ざらないように）。書けたら`pending`を消し、失敗
-/// したら残す（#744。次の書き込みで先頭の行を書く）
+/// 別のプロセスの行と混ざらないように）。
+///
+/// 先頭の行は、書けた分だけ消す（#744）。失敗したら、まだ書けていない残りを
+/// `pending`に残し、次の書き込みで続きから書く（途中まで書いた行を、もう一度
+/// 頭から書かない）
 fn write_with_header(
     file: &mut impl Write,
-    pending: &mut Option<String>,
+    pending: &mut Option<Vec<u8>>,
     buf: &[u8],
 ) -> io::Result<()> {
-    match pending.as_deref() {
-        Some(header) => {
-            let mut bytes = header.as_bytes().to_vec();
-            bytes.extend_from_slice(buf);
-            file.write_all(&bytes)?;
-            *pending = None;
+    let Some(header) = pending.take() else {
+        return file.write_all(buf);
+    };
+    let header_len = header.len();
+    let mut bytes = header;
+    bytes.extend_from_slice(buf);
+    let mut written = 0;
+    while written < bytes.len() {
+        let error = match file.write(&bytes[written..]) {
+            Ok(0) => io::Error::from(io::ErrorKind::WriteZero),
+            Ok(n) => {
+                written += n;
+                continue;
+            }
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => e,
+        };
+        if written < header_len {
+            *pending = Some(bytes[written..header_len].to_vec());
         }
-        None => file.write_all(buf)?,
+        return Err(error);
     }
     Ok(())
 }
@@ -507,34 +532,66 @@ mod tests {
     /// 書き込みが失敗しても、先頭の行は失わず、次に書けたときに書く（#744）
     #[test]
     fn test_pending_header_survives_a_failed_write() {
+        /// `accept`バイトまで書き、それを超えると失敗する書き先（`None`は
+        /// いくらでも書ける）
         struct Flaky {
-            fail: bool,
+            accept: Option<usize>,
             written: Vec<u8>,
         }
         impl Write for Flaky {
             fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-                if self.fail {
-                    return Err(io::Error::other("disk full"));
+                let n = match self.accept {
+                    Some(0) => return Err(io::Error::other("disk full")),
+                    Some(left) => left.min(buf.len()),
+                    None => buf.len(),
+                };
+                if let Some(left) = &mut self.accept {
+                    *left -= n;
                 }
-                self.written.extend_from_slice(buf);
-                Ok(buf.len())
+                self.written.extend_from_slice(&buf[..n]);
+                Ok(n)
             }
             fn flush(&mut self) -> io::Result<()> {
                 Ok(())
             }
         }
+        let header = || Some(b"=== continued ===\n".to_vec());
+
+        // 何も書けずに失敗: 先頭の行を全部残す
         let mut file = Flaky {
-            fail: true,
+            accept: Some(0),
             written: Vec::new(),
         };
-        let mut pending = Some("=== continued ===\n".to_string());
+        let mut pending = header();
         assert!(write_with_header(&mut file, &mut pending, b"lost\n").is_err());
-        assert!(pending.is_some());
-        file.fail = false;
+        assert_eq!(pending, header());
+        file.accept = None;
         write_with_header(&mut file, &mut pending, b"next\n").unwrap();
         assert!(pending.is_none());
         write_with_header(&mut file, &mut pending, b"more\n").unwrap();
         assert_eq!(file.written, b"=== continued ===\nnext\nmore\n");
+
+        // 先頭の行の途中で失敗: 残りから書き、頭から書き直さない（PR #745の
+        // レビュー）
+        let mut file = Flaky {
+            accept: Some(4),
+            written: Vec::new(),
+        };
+        let mut pending = header();
+        assert!(write_with_header(&mut file, &mut pending, b"lost\n").is_err());
+        assert_eq!(pending.as_deref(), Some(&b"continued ===\n"[..]));
+        file.accept = None;
+        write_with_header(&mut file, &mut pending, b"next\n").unwrap();
+        assert_eq!(file.written, b"=== continued ===\nnext\n");
+
+        // 先頭の行を書き終え、ログの途中で失敗: 先頭の行は残さない
+        let mut file = Flaky {
+            accept: Some(20),
+            written: Vec::new(),
+        };
+        let mut pending = header();
+        assert!(write_with_header(&mut file, &mut pending, b"partial\n").is_err());
+        assert!(pending.is_none());
     }
 
     /// 切り替えの時刻は過ぎたが、時計が戻っていて今のファイル以前の名前に

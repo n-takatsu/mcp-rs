@@ -623,6 +623,9 @@ fn write_startup_marker(appender: &mut LocalRollingAppender, event: &str) -> std
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
     };
+    // 先に書き先を決め、その名前を行に入れる（PR #745のレビュー。書く時に
+    // 切り替わると、行の`log:`が実際のファイルと違ってしまう）
+    appender.roll_now();
     let marker = header_line(event, started_at(), &current(&active));
 
     appender.write_all(marker.as_bytes())?;
