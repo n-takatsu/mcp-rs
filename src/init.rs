@@ -160,12 +160,26 @@ pub async fn run(args: &[String]) -> Result<bool, String> {
     .run()
     .await;
     interrupt.abort();
+    // 見えない入力（パスワード）でのCtrl+C等は、端末の設定でシグナルに
+    // ならず、入力の取り消しとして返る。資格情報は`run`が戻したので、
+    // Ctrl+Cで止めたときと同じ終了コードで終わる（PR #733のレビュー）
+    if result.as_ref().is_err_and(|e| is_cancelled(e.as_ref())) {
+        eprintln!("cancelled");
+        std::process::exit(130);
+    }
     // 途中の失敗（資格情報ストアが使えない等）は、使い方の誤りではないので、
     // 使い方は表示しない
     result.or_else(|e| {
         eprintln!("\nerror: {e}");
         Ok(false)
     })
+}
+
+/// 見えない入力をCtrl+C・Ctrl+D・Escで取り消したエラーか（PR #733のレビュー）
+fn is_cancelled(error: &(dyn std::error::Error + 'static)) -> bool {
+    error
+        .downcast_ref::<io::Error>()
+        .is_some_and(|e| e.kind() == io::ErrorKind::Interrupted)
 }
 
 /// Ctrl+Cを受けたら、入れ直した資格情報を前の中身に戻し、Ctrl+Cで止めた
@@ -177,7 +191,12 @@ async fn restore_on_interrupt(replaced: ReplacedEntries) {
         return;
     }
     eprintln!();
-    restore_entries(&OsKeyring, replaced.take(), |line| eprintln!("{line}"));
+    // 書き込み・戻している途中なら、終わるまで待つ。終わるまで放さないので、
+    // この後に資格情報を書くことは無い（PR #733のレビュー）
+    let mut entries = replaced.lock();
+    restore_entries(&OsKeyring, std::mem::take(&mut *entries), |line| {
+        eprintln!("{line}")
+    });
     std::process::exit(130);
 }
 
@@ -283,7 +302,9 @@ struct Setup<'a> {
 }
 
 /// 入れ直した資格情報の項目と、前の中身（#710・#715）。`run`の外の、Ctrl+Cを
-/// 受けるタスクからも戻せるように、共有する
+/// 受けるタスクからも戻せるように、共有する。資格情報ストアへの書き込み・
+/// 戻すのは、ロックを持ったまま行う（PR #733のレビュー。Ctrl+Cを受けた
+/// タスクが、途中の書き込みの前に戻して終わらないように）
 #[derive(Clone, Default)]
 struct ReplacedEntries(std::sync::Arc<std::sync::Mutex<ReplacedList>>);
 
@@ -297,29 +318,15 @@ impl ReplacedEntries {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    fn contains(&self, entry: &str) -> bool {
-        self.lock().iter().any(|(name, _)| name == entry)
-    }
-
-    fn push(&self, entry: String, previous: Zeroizing<String>) {
-        self.lock().push((entry, previous));
-    }
-
     /// 確認が通ったので、確定する（戻さない）
     fn clear(&self) {
         self.lock().clear();
     }
 
-    /// すべて取り出す（戻すため）
+    /// すべて取り出す
+    #[cfg(test)]
     fn take(&self) -> ReplacedList {
         std::mem::take(&mut *self.lock())
-    }
-
-    /// `entry`を取り出す（戻すため）
-    fn take_one(&self, entry: &str) -> Option<(String, Zeroizing<String>)> {
-        let mut entries = self.lock();
-        let index = entries.iter().position(|(name, _)| name == entry)?;
-        Some(entries.remove(index))
     }
 
     #[cfg(test)]
@@ -849,7 +856,9 @@ impl Setup<'_> {
     /// この実行で入れ直した、既にあった資格情報の項目を、前の中身に戻す
     /// （#710）。確認が通らずに終わるときに呼ぶ
     fn restore_replaced_entries(&mut self) {
-        for (entry, previous) in self.replaced_entries.take() {
+        // ロックを持ったまま戻す（Ctrl+Cを受けたタスクは、終わるまで待つ）
+        let mut replaced = self.replaced_entries.lock();
+        for (entry, previous) in std::mem::take(&mut *replaced) {
             match self.store.set(&entry, &previous) {
                 Ok(()) => self.io.say(&format!(
                     "Restored the previous credentials named '{entry}' in the OS credential store (the ones entered now did not work)."
@@ -865,9 +874,11 @@ impl Setup<'_> {
     /// `entry`を入れ直していれば、その項目だけを前の中身に戻す（PR #712の
     /// レビュー。足せなかったサイトの項目）。戻したら`true`
     fn restore_replaced_entry(&mut self, entry: &str) -> bool {
-        let Some((entry, previous)) = self.replaced_entries.take_one(entry) else {
+        let mut replaced = self.replaced_entries.lock();
+        let Some(index) = replaced.iter().position(|(name, _)| name == entry) else {
             return false;
         };
+        let (entry, previous) = replaced.remove(index);
         match self.store.set(&entry, &previous) {
             Ok(()) => true,
             Err(e) => {
@@ -1408,11 +1419,12 @@ impl Setup<'_> {
         // 終わったら戻す）。入れ直しのどの経路（使わないと答えた・サイン
         // インに失敗して入れ直す）でも、最初の中身だけを覚える。読めなければ
         // 戻せないので、書かない（PR #712のレビュー）
+        let mut replaced = self.replaced_entries.lock();
         if !self.new_entries.iter().any(|name| name == entry)
-            && !self.replaced_entries.contains(entry)
+            && !replaced.iter().any(|(name, _)| name == entry)
         {
             if let Some(previous) = self.store.get(entry)? {
-                self.replaced_entries.push(entry.to_string(), previous);
+                replaced.push((entry.to_string(), previous));
             }
         }
         store_wordpress_credentials(
@@ -1424,6 +1436,7 @@ impl Setup<'_> {
                 application_password,
             },
         )?;
+        drop(replaced);
         self.io.say(&format!(
             "Stored the credentials as '{entry}' in the OS credential store.\n"
         ));
@@ -4948,6 +4961,24 @@ file_path = "C:/Users/me/.mcp-rs/logs/audit.log"
             "old password"
         );
         assert!(!io.shown.iter().any(|s| s.contains("old password")));
+    }
+
+    /// 見えない入力の取り消し（`read_hidden`の`Interrupted`）は、`?`で
+    /// 伝わっても取り消しと分かる。ほかのエラーは違う（PR #733のレビュー）
+    #[test]
+    fn test_is_cancelled() {
+        fn ask() -> Result<(), Box<dyn std::error::Error>> {
+            Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "input cancelled",
+            ))?
+        }
+        assert!(is_cancelled(ask().unwrap_err().as_ref()));
+        let other: Box<dyn std::error::Error> = "cannot store".into();
+        assert!(!is_cancelled(other.as_ref()));
+        let eof: Box<dyn std::error::Error> =
+            io::Error::new(io::ErrorKind::UnexpectedEof, "end of input").into();
+        assert!(!is_cancelled(eof.as_ref()));
     }
 
     /// Ctrl+Cを受けるタスクは、`Setup`と同じ記録を見て、入れ直した資格情報を
