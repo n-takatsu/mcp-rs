@@ -304,7 +304,14 @@ async fn build_server(
                 .as_deref()
                 .and_then(std::path::Path::parent),
         );
-        let registered = match McpConfig::resolve_database_credentials(&mut db_config) {
+        // `database`機能の無いビルドでは、環境変数・資格情報を読む前に、
+        // 使えないことを伝える（#737。変数を設定しても使えないため）
+        let resolved = if cfg!(feature = "database") {
+            McpConfig::resolve_database_credentials(&mut db_config)
+        } else {
+            Ok(())
+        };
+        let registered = match resolved {
             Ok(()) => register_database(&mut server, &db_config, audit_logger.clone()).await,
             Err(e) => Err(e),
         };
