@@ -295,12 +295,33 @@ fn refuse_side_effects(statement: &Statement, read_only: bool) -> Result<(), Pro
 /// 中に書き込む文を書ける。本体（`body`）だけを見ると、これをSELECTとして
 /// 通してしまう。`SELECT … INTO 表`（表を作る）も拒否する。
 fn is_read_only_query(query: &Query) -> bool {
-    let ctes_are_read_only = query.with.as_ref().is_none_or(|with| {
+    is_read_only_with(query) && is_select_family(&query.body) && !selects_into(&query.body)
+}
+
+/// `query`の`WITH`の中が、読むだけか
+fn is_read_only_with(query: &Query) -> bool {
+    query.with.as_ref().is_none_or(|with| {
         with.cte_tables
             .iter()
-            .all(|cte| is_read_only_query(&cte.query))
-    });
-    ctes_are_read_only && is_select_family(&query.body) && !selects_into(&query.body)
+            .all(|cte| is_read_only_cte(&cte.query))
+    })
+}
+
+/// `WITH`の中の1つが、読むだけか。`WITH ids(id) AS (VALUES (1), (2))`の
+/// ように、`WITH`の中では`VALUES`も許す（#737。単独の`VALUES`は、
+/// `is_read_only_query`が今までどおり断る）
+fn is_read_only_cte(query: &Query) -> bool {
+    fn select_or_values(body: &SetExpr) -> bool {
+        match body {
+            SetExpr::Values(_) => true,
+            SetExpr::Query(query) => is_read_only_cte(query),
+            SetExpr::SetOperation { left, right, .. } => {
+                select_or_values(left) && select_or_values(right)
+            }
+            body => is_select_family(body),
+        }
+    }
+    is_read_only_with(query) && select_or_values(&query.body) && !selects_into(&query.body)
 }
 
 /// `SELECT … INTO 表`か
@@ -981,6 +1002,14 @@ mod tests {
         assert!(
             validate("WITH a AS (SELECT 1 AS x), b AS (SELECT x FROM a) SELECT * FROM b").is_ok()
         );
+        // WITHの中のVALUESも通す（#737）。単独のVALUESは断る
+        for sql in [
+            "WITH ids(id) AS (VALUES (1), (2)) SELECT id FROM ids",
+            "WITH ids(id) AS (SELECT 1 UNION ALL VALUES (2)) SELECT id FROM ids",
+        ] {
+            assert!(validate(sql).is_ok(), "{sql}");
+        }
+        assert!(validate("VALUES (1), (2)").is_err());
     }
 
     #[test]
