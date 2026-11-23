@@ -64,13 +64,11 @@ load_env() {
 }
 
 # Start environment
-# 起動するのはPrimaryとpgAdmin（#724。セカンダリは、レプリケーションの
-# 設定がPostgreSQL 15に合っていないので、今は起動しない）
-SERVICES=(postgres-primary pgadmin)
-
+# Primary・pgAdmin。以前のセカンダリ（#732で外した）のコンテナが残って
+# いれば、`--remove-orphans`で消す
 cmd_up() {
-    print_info "Starting Docker Compose environment (${SERVICES[*]})..."
-    docker-compose -f "$COMPOSE_FILE" up -d "${SERVICES[@]}"
+    print_info "Starting Docker Compose environment..."
+    docker-compose -f "$COMPOSE_FILE" up -d --remove-orphans
     print_info "Environment started"
     print_info "Waiting for services to be healthy..."
     sleep 10
@@ -80,14 +78,14 @@ cmd_up() {
 # Stop environment
 cmd_down() {
     print_info "Stopping Docker Compose environment..."
-    docker-compose -f "$COMPOSE_FILE" down
+    docker-compose -f "$COMPOSE_FILE" down --remove-orphans
     print_info "Environment stopped"
 }
 
 # Restart environment
 cmd_restart() {
     print_info "Restarting Docker Compose environment..."
-    docker-compose -f "$COMPOSE_FILE" restart "${SERVICES[@]}"
+    docker-compose -f "$COMPOSE_FILE" restart
     print_info "Environment restarted"
 }
 
@@ -122,14 +120,6 @@ cmd_test_connect() {
     else
         print_error "✗ Primary connection failed"
         return 1
-    fi
-    
-    print_info "Testing PostgreSQL Secondary connection..."
-    if psql -h localhost -p 5433 -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
-            -c "SELECT version();" 2>/dev/null; then
-        print_info "✓ Secondary connection successful"
-    else
-        print_warning "✗ Secondary connection failed (may be normal if replication not ready)"
     fi
     
     print_info "Testing database schema..."
@@ -183,7 +173,7 @@ cmd_clean() {
     read -p "Are you sure? (yes/no): " -r
     if [[ $REPLY =~ ^yes$ ]]; then
         print_info "Removing all containers and volumes..."
-        docker-compose -f "$COMPOSE_FILE" down -v
+        docker-compose -f "$COMPOSE_FILE" down -v --remove-orphans
         print_info "Cleanup completed"
     else
         print_info "Cleanup cancelled"

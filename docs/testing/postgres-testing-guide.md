@@ -36,9 +36,6 @@ docker-compose -f docker-compose.postgres.yml up -d
   - Password: postgres
   - テーブル: test_schema.users, test_schema.posts, test_schema.comments
 
-- **Secondary PostgreSQL** (Replication): localhost:5433
-  - ストリーミングレプリケーション有効
-
 - **pgAdmin**: localhost:5050
   - Web-based database management
 
