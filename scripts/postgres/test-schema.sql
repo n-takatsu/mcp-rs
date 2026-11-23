@@ -75,7 +75,7 @@ CREATE TABLE IF NOT EXISTS transaction_test.parameter_test (
 );
 
 -- Permissions
-GRANT ALL ON transaction_test.* TO testuser;
+GRANT ALL ON ALL TABLES IN SCHEMA transaction_test TO testuser;
 GRANT USAGE ON ALL SEQUENCES IN SCHEMA transaction_test TO testuser;
 
 -- Create schema for performance testing
@@ -116,7 +116,7 @@ CREATE INDEX IF NOT EXISTS idx_complex_source ON performance_test.complex_joins(
 CREATE INDEX IF NOT EXISTS idx_complex_target ON performance_test.complex_joins(target_id);
 CREATE INDEX IF NOT EXISTS idx_complex_type ON performance_test.complex_joins(rel_type);
 
-GRANT ALL ON performance_test.* TO testuser;
+GRANT ALL ON ALL TABLES IN SCHEMA performance_test TO testuser;
 GRANT USAGE ON ALL SEQUENCES IN SCHEMA performance_test TO testuser;
 
 -- Create schema for security testing
@@ -133,7 +133,7 @@ CREATE TABLE IF NOT EXISTS security_test.sensitive_data (
     accessed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
-GRANT ALL ON security_test.* TO testuser;
+GRANT ALL ON ALL TABLES IN SCHEMA security_test TO testuser;
 GRANT USAGE ON ALL SEQUENCES IN SCHEMA security_test TO testuser;
 
 -- Display schema creation complete message

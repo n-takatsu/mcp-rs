@@ -35,16 +35,32 @@ cp .env.example .env
 
 ### 2. コンテナ起動
 
+> **セカンダリ（`postgres-secondary`）は、今は起動しません。** レプリケーションの設定（`scripts/postgres/standby.sh`）が PostgreSQL 15 に合っていないためです。サービスを指定せずに`up`を実行すると、セカンダリも起動しようとして失敗し、再起動を繰り返します。起動するサービスを指定してください。前の手順でセカンダリを起動していたら、Primaryだけを`up`しても止まらないので、先に止めてください:
+>
+> ```bash
+> docker compose -f configs/docker/docker-compose.postgres.yml stop postgres-secondary
+> ```
+
 ```bash
-# プロダクション環境
-docker compose -f configs/docker/docker-compose.postgres.yml up -d
+# Primaryをバックグラウンドで起動（テストにはこれで足りる）
+docker compose -f configs/docker/docker-compose.postgres.yml up -d postgres-primary
 
-# 開発環境（ログ表示）
-docker compose -f configs/docker/docker-compose.postgres.yml up
+# ログを表示しながら起動
+docker compose -f configs/docker/docker-compose.postgres.yml up postgres-primary
 
-# バックグラウンド起動
-docker compose -f configs/docker/docker-compose.postgres.yml up -d
+# pgAdminも使うとき
+docker compose -f configs/docker/docker-compose.postgres.yml up -d postgres-primary pgadmin
 ```
+
+> **初期化のSQL（`scripts/postgres/init.sql`・`test-schema.sql`）は、ボリュームが空のときの最初の起動でだけ実行されます。** 以前の版で初期化が途中で止まったボリュームが残っていると、スキーマが足りないままになります。その場合は、Primaryのコンテナとボリュームだけを消してから起動し直してください（Primaryのデータも消えます）。`down -v`は、pgAdminとセカンダリのボリュームも消します:
+>
+> ```bash
+> docker compose -f configs/docker/docker-compose.postgres.yml rm -sf postgres-primary
+> # ボリュームの名前を確かめる（Composeが前にプロジェクトの名前を付ける。例: docker_postgres_primary_data）
+> docker volume ls --filter name=postgres_primary_data
+> docker volume rm <確かめた名前>
+> docker compose -f configs/docker/docker-compose.postgres.yml up -d postgres-primary
+> ```
 
 ### 3. 接続確認
 
@@ -52,14 +68,13 @@ docker compose -f configs/docker/docker-compose.postgres.yml up -d
 # Primary への接続テスト
 psql -h localhost -p 5432 -U postgres -d testdb -c "SELECT version();"
 
-# Secondary への接続テスト
-psql -h localhost -p 5433 -U postgres -d testdb -c "SELECT version();"
-
-# pgAdmin へアクセス
+# pgAdmin へアクセス（pgAdminも起動したとき）
 # http://localhost:5050
 # Email: admin@example.com
 # Password: admin
 ```
+
+Secondary は今は起動しないので（上の注意を参照）、Secondary への接続（`psql -h localhost -p 5433 ...`）は確かめられません。
 
 ## コンテナ管理
 
@@ -82,11 +97,12 @@ docker compose -f configs/docker/docker-compose.postgres.yml logs -f postgres-pr
 # 全コンテナ停止
 docker compose -f configs/docker/docker-compose.postgres.yml stop
 
-# 全コンテナ再起動
-docker compose -f configs/docker/docker-compose.postgres.yml restart
-
-# 特定コンテナ再起動
+# Primaryを再起動（サービスを指定しない`restart`は、止めてあるセカンダリも
+# 起動し直し、再起動を繰り返させる）
 docker compose -f configs/docker/docker-compose.postgres.yml restart postgres-primary
+
+# pgAdminも使っているとき
+docker compose -f configs/docker/docker-compose.postgres.yml restart pgadmin
 
 # コンテナ削除（データ保持）
 docker compose -f configs/docker/docker-compose.postgres.yml down
@@ -227,11 +243,10 @@ docker network inspect mcp-rs_postgres-network
 
 ### コンテナ間通信
 
-コンテナ内では `postgres-primary`, `postgres-secondary` のホスト名で接続可能：
+コンテナ内では `postgres-primary` のホスト名で接続可能（`postgres-secondary` は、今は起動しない）：
 
 ```bash
 postgresql://postgres:postgres@postgres-primary:5432/testdb
-postgresql://postgres:postgres@postgres-secondary:5432/testdb
 ```
 
 ## トラブルシューティング
@@ -242,11 +257,12 @@ postgresql://postgres:postgres@postgres-secondary:5432/testdb
 # ログ確認
 docker compose -f configs/docker/docker-compose.postgres.yml logs postgres-primary
 
-# ボリュームクリア（データ削除）
+# ボリュームクリア（すべてのデータを削除。pgAdmin・セカンダリのボリュームも消える。
+# Primaryだけを消すときは「2. コンテナ起動」の手順）
 docker compose -f configs/docker/docker-compose.postgres.yml down -v
 
-# 再起動
-docker compose -f configs/docker/docker-compose.postgres.yml up -d
+# 再起動（セカンダリは今は起動しないので、Primaryだけ）
+docker compose -f configs/docker/docker-compose.postgres.yml up -d postgres-primary
 ```
 
 ### ポート競合
@@ -256,7 +272,7 @@ docker compose -f configs/docker/docker-compose.postgres.yml up -d
 netstat -tulpn | grep 5432
 
 # 別ポート指定
-POSTGRES_PORT=5432 docker compose -f configs/docker/docker-compose.postgres.yml up -d
+POSTGRES_PORT=5432 docker compose -f configs/docker/docker-compose.postgres.yml up -d postgres-primary
 ```
 
 ### 接続タイムアウト
