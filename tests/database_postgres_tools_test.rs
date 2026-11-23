@@ -27,7 +27,8 @@ async fn test_database() -> Option<(String, PgPool)> {
 }
 
 /// 準備用のプール（sqlxがURLを読む）と同じように読む（#737）: ユーザー名・
-/// パスワード・データベース名の`%40`等を戻し、`sslmode`があれば使う
+/// パスワード・データベース名の`%40`等を戻し、`sslmode`・`sslrootcert`が
+/// あれば使う
 fn settings_from_url(url: &str) -> DatabaseSettings {
     let url = url::Url::parse(url).expect("TEST_DATABASE_URL must be a URL");
     let decode = |text: &str| {
@@ -35,11 +36,12 @@ fn settings_from_url(url: &str) -> DatabaseSettings {
             .expect("TEST_DATABASE_URL must be valid UTF-8 after decoding")
             .into_owned()
     };
-    let ssl_mode = url
-        .query_pairs()
-        .find(|(key, _)| key == "sslmode")
-        .map(|(_, value)| value.into_owned())
-        .unwrap_or_else(|| "disable".to_string());
+    let query = |name: &str| {
+        url.query_pairs()
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| value.into_owned())
+    };
+    let ssl_mode = query("sslmode").unwrap_or_else(|| "disable".to_string());
     DatabaseSettings {
         engine: "postgresql".to_string(),
         host: url.host_str().map(str::to_string),
@@ -48,6 +50,7 @@ fn settings_from_url(url: &str) -> DatabaseSettings {
         username: decode(url.username()),
         password: url.password().map(decode),
         ssl_mode: Some(ssl_mode),
+        ssl_root_cert: query("sslrootcert"),
         ..Default::default()
     }
 }
