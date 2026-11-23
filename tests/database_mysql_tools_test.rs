@@ -575,6 +575,28 @@ async fn slow_statements_time_out(kind: Kind) {
     .unwrap_err();
     assert!(err.contains("did not finish within 1 seconds"), "{err}");
     assert!(started.elapsed() < std::time::Duration::from_secs(8));
+    // サーバーでも止まっている（#723。PROCESSLISTで自分の文と確かめてから
+    // KILL QUERYを送る。送らなければ、SLEEPが10秒続く）
+    let still_running = |pool: mysql_async::Pool| async move {
+        let mut conn = pool.get_conn().await.unwrap();
+        let count: Option<i64> = conn
+            .query_first(
+                "SELECT COUNT(*) FROM information_schema.PROCESSLIST \
+                 WHERE INFO LIKE 'UPDATE %SLEEP(10)%'",
+            )
+            .await
+            .unwrap();
+        count.unwrap_or(0)
+    };
+    let mut remaining = still_running(pool.clone()).await;
+    for _ in 0..20 {
+        if remaining == 0 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        remaining = still_running(pool.clone()).await;
+    }
+    assert_eq!(remaining, 0, "the UPDATE was not stopped on the server");
 
     // 止めた後も使える
     let result = call(&handler, "execute_query", json!({ "sql": "SELECT 1" }))

@@ -202,10 +202,13 @@ impl MySqlConnection {
 
     /// `conn`で`work`を実行する。時間の上限を超えたら、別の接続から
     /// `KILL QUERY`で止め、`conn`は閉じる。上限で止めたとき（`Stopped`）も
-    /// 閉じる。それ以外は、プールに戻す（戻すときにセッションを元に戻す）
+    /// 閉じる。それ以外は、プールに戻す（戻すときにセッションを元に戻す）。
+    /// `statement`は、`work`が送る利用者のSQL。`KILL QUERY`の前に、止める
+    /// 相手がこの文か確かめる（#723。`None`は、ユーザーだけ確かめる）
     async fn run<T>(
         &self,
         mut conn: Conn,
+        statement: Option<&str>,
         work: impl for<'c> FnOnce(
             &'c mut Conn,
         ) -> futures::future::BoxFuture<
@@ -220,7 +223,7 @@ impl MySqlConnection {
             Some(limit) => match tokio::time::timeout(limit, future).await {
                 Ok(result) => result,
                 Err(_) => {
-                    self.abandon(conn, id).await;
+                    self.abandon(conn, id, statement).await;
                     return Err(DatabaseError::TimeoutError(format!(
                         "the statement did not finish within {} seconds and was stopped",
                         self.statement_timeout.as_secs()
@@ -233,7 +236,7 @@ impl MySqlConnection {
             Ok(Outcome::Done(value)) => Ok(value),
             Ok(Outcome::Stopped(value)) => {
                 // 残りの行は受け取らない
-                self.abandon(conn, id).await;
+                self.abandon(conn, id, statement).await;
                 Ok(value)
             }
             Err(e) => {
@@ -250,8 +253,8 @@ impl MySqlConnection {
     /// `disconnect`は読み残しを受信し続けるので、`DISCONNECT_TIMEOUT`で
     /// 打ち切る。打ち切った接続は`disconnected`の印が付いているので、
     /// プールは読み残しを受信せずに捨てる（PR #572のレビュー）
-    async fn abandon(&self, conn: Conn, id: u32) {
-        let killed = self.kill_query(id).await;
+    async fn abandon(&self, conn: Conn, id: u32, statement: Option<&str>) {
+        let killed = self.kill_query(id, statement).await;
         let closed = tokio::time::timeout(DISCONNECT_TIMEOUT, conn.disconnect())
             .await
             .is_ok();
@@ -264,15 +267,38 @@ impl MySqlConnection {
         }
     }
 
-    /// 別の接続から、`id`の接続で実行中のSQLを止める。止めたら`true`
-    async fn kill_query(&self, id: u32) -> bool {
+    /// 別の接続から、`id`の接続で実行中のSQLを止める。止めたら`true`。
+    ///
+    /// 止める前に、止める接続で`information_schema.PROCESSLIST`を見て、
+    /// そのIDの接続が自分のユーザーで`statement`を実行中か確かめる（#723）。
+    /// プロキシ・ロードバランサーで、止める接続が別のサーバーに届くと、
+    /// 同じ番号の関係ない文を止めてしまうため。違えば送らない（元の接続は
+    /// `abandon`が閉じる）。確かめてから送るまでの間に、相手の文が変わる
+    /// ことはあり得る
+    async fn kill_query(&self, id: u32, statement: Option<&str>) -> bool {
+        let user = self.opts.user().unwrap_or_default();
         let kill = async {
             let mut conn = Conn::new(self.opts.clone()).await?;
-            conn.query_drop(format!("KILL QUERY {id}")).await?;
-            conn.disconnect().await
+            let found: Option<(Option<String>, Option<String>)> = conn
+                .exec_first(
+                    "SELECT USER, INFO FROM information_schema.PROCESSLIST WHERE ID = ?",
+                    (id,),
+                )
+                .await?;
+            let ours = is_our_statement(found, user, statement);
+            if ours {
+                conn.query_drop(format!("KILL QUERY {id}")).await?;
+            } else {
+                debug!(
+                    "KILL QUERY {} not sent: the connection with that id is not running our statement",
+                    id
+                );
+            }
+            conn.disconnect().await?;
+            Ok::<_, mysql_async::Error>(ours)
         };
         match tokio::time::timeout(KILL_CONNECT_TIMEOUT, kill).await {
-            Ok(Ok(())) => true,
+            Ok(Ok(killed)) => killed,
             Ok(Err(e)) => {
                 debug!("KILL QUERY {} failed: {}", id, e);
                 false
@@ -283,6 +309,37 @@ impl MySqlConnection {
             }
         }
     }
+}
+
+/// `KILL QUERY`で止めてよい相手か（#723）。`found`は、PROCESSLISTの
+/// そのIDの行（`USER`・`INFO`）。ユーザーが同じで、文を実行中で、
+/// `statement`があれば、`INFO`がその始め（最初の`?`の前まで。プリペアド
+/// ステートメントの`?`は、値に置き換わって見えることがあるため）で始まる
+fn is_our_statement(
+    found: Option<(Option<String>, Option<String>)>,
+    user: &str,
+    statement: Option<&str>,
+) -> bool {
+    let Some((Some(found_user), Some(info))) = found else {
+        return false;
+    };
+    if found_user != user {
+        return false;
+    }
+    match statement {
+        None => true,
+        Some(sql) => info.trim_start().starts_with(statement_prefix(sql)),
+    }
+}
+
+/// `statement`の始め（最初の`?`の前まで、長くても64文字）
+fn statement_prefix(sql: &str) -> &str {
+    let sql = sql.trim_start();
+    let mut end = sql.find('?').unwrap_or(sql.len());
+    if let Some((limit, _)) = sql.char_indices().nth(64) {
+        end = end.min(limit);
+    }
+    sql[..end].trim_end()
 }
 
 /// 列の型の名前（`get_schema`・`execute_query`の`type`）
@@ -679,10 +736,12 @@ impl DatabaseConnection for MySqlConnection {
         let server = self.server;
         let params = convert_params(params);
         let (fetch_limit, byte_limit) = (self.fetch_limit, self.byte_limit);
+        let statement = sql.to_string();
         let sql = sql.to_string();
         let (columns, rows) = self
             .run(
                 conn,
+                Some(&statement),
                 move |conn| {
                     Box::pin(async move {
                         begin_read_only(conn, timeout_ms, server).await?;
@@ -710,6 +769,7 @@ impl DatabaseConnection for MySqlConnection {
         let started = std::time::Instant::now();
         let conn = self.get_conn().await?;
         let params = convert_params(params);
+        let statement = sql.to_string();
         let sql = sql.to_string();
         // `COMMIT`を送ったか（#717）。送った後に応答を確かめられなければ、
         // サーバーはコミットしているかもしれないので、「止めた」とは返さない
@@ -718,6 +778,7 @@ impl DatabaseConnection for MySqlConnection {
         let result = self
             .run(
                 conn,
+                Some(&statement),
                 move |conn| {
                     Box::pin(async move {
                         conn.query_drop("START TRANSACTION").await?;
@@ -769,6 +830,7 @@ impl DatabaseConnection for MySqlConnection {
         let (tables, views) = self
             .run(
                 conn,
+                None,
                 move |conn| {
                     Box::pin(async move {
                         begin_read_only(conn, timeout_ms, server).await?;
@@ -796,6 +858,7 @@ impl DatabaseConnection for MySqlConnection {
         let (tables, views) = self
             .run(
                 conn,
+                None,
                 move |conn| {
                     Box::pin(async move {
                         begin_read_only(conn, timeout_ms, server).await?;
@@ -853,6 +916,62 @@ mod tests {
 
     /// utf8mb4_general_ci
     const UTF8MB4: u16 = 45;
+
+    /// `KILL QUERY`は、自分のユーザーで自分の文を実行中の接続にだけ送る
+    /// （#723）
+    #[test]
+    fn test_is_our_statement() {
+        let row = |user: Option<&str>, info: Option<&str>| {
+            Some((user.map(str::to_string), info.map(str::to_string)))
+        };
+        let sql = "  SELECT * FROM users WHERE id = ? AND name = ?";
+        // プリペアドステートメントの`?`は、値に置き換わって見えることがある
+        for info in [
+            "SELECT * FROM users WHERE id = ? AND name = ?",
+            "SELECT * FROM users WHERE id = 5 AND name = 'a'",
+        ] {
+            assert!(is_our_statement(
+                row(Some("app"), Some(info)),
+                "app",
+                Some(sql)
+            ));
+        }
+        // 別のユーザー・別の文・何も実行していない・見つからない
+        assert!(!is_our_statement(
+            row(Some("other"), Some("SELECT * FROM users WHERE id = 5")),
+            "app",
+            Some(sql)
+        ));
+        assert!(!is_our_statement(
+            row(Some("app"), Some("UPDATE accounts SET x = 1")),
+            "app",
+            Some(sql)
+        ));
+        assert!(!is_our_statement(row(Some("app"), None), "app", Some(sql)));
+        assert!(!is_our_statement(row(None, Some("SELECT 1")), "app", None));
+        assert!(!is_our_statement(None, "app", None));
+        // 文を渡さないとき（スキーマの読み取り）は、ユーザーだけ確かめる
+        assert!(is_our_statement(
+            row(
+                Some("app"),
+                Some("SELECT TABLE_NAME FROM information_schema.TABLES")
+            ),
+            "app",
+            None
+        ));
+    }
+
+    /// 始めは、最初の`?`の前まで、長くても64文字（マルチバイトでも切れる）
+    #[test]
+    fn test_statement_prefix() {
+        assert_eq!(
+            statement_prefix("  SELECT a FROM t WHERE b = ?"),
+            "SELECT a FROM t WHERE b ="
+        );
+        assert_eq!(statement_prefix("SELECT 1"), "SELECT 1");
+        let long = format!("SELECT '{}'", "あ".repeat(100));
+        assert_eq!(statement_prefix(&long).chars().count(), 64);
+    }
 
     /// 式を含むインデックスは、全体を除く。ほかのインデックスは残す（#717）
     #[test]

@@ -191,6 +191,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- MySQL・MariaDBで、時間の上限を超えた文・読むのをやめた文を`KILL QUERY`で
+  止める前に、止める接続で`information_schema.PROCESSLIST`を見て、そのIDの
+  接続が同じユーザーで、mcp-rsが送った文を実行中か確かめる（#723）。
+  プロキシ・ロードバランサーで、止める接続が別のサーバーに届くと、同じ番号の
+  関係ない文を止めることがあった。違えば`KILL QUERY`を送らず、元の接続を
+  閉じるだけにする。`get_schema`は、ユーザーだけ確かめる。確かめてから
+  送るまでの間に、相手の文が変わることはあり得る
+
 - Redisのエンジン（`redis-backend`）で、パスワードに`@`・`%`・`/`等が
   あっても、つなげる（#724、PR #730のレビュー）。以前は、パスワードを接続の
   URLにそのまま入れ、redisクレートが`%`の符号を戻すので、別の値になって
