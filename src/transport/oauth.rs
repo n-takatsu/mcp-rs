@@ -329,10 +329,7 @@ impl OAuthValidator {
                 .and_then(Value::as_str)
                 .map(str::to_string),
             scopes: token_scopes(&claims),
-            expires_at: claims.get("exp").and_then(|exp| {
-                exp.as_u64()
-                    .or_else(|| exp.as_f64().filter(|f| *f >= 0.0).map(|f| f as u64))
-            }),
+            expires_at: claims.get("exp").and_then(exp_seconds),
         };
         if !self
             .config
@@ -572,6 +569,13 @@ fn select_key(keys: &[Jwk], kid: Option<&str>, alg: Algorithm) -> Option<Jwk> {
     }
 }
 
+/// トークンの`exp`（UNIX時刻の秒）。小数は、検証（jsonwebtoken）と同じく
+/// 丸める（#724。以前は切り捨てて、`/ws`を最大1秒早く閉じた）
+fn exp_seconds(exp: &Value) -> Option<u64> {
+    exp.as_u64()
+        .or_else(|| exp.as_f64().filter(|f| *f >= 0.0).map(|f| f.round() as u64))
+}
+
 /// トークンのスコープ。`scope`（空白区切りの文字列、RFC 8693等）か、`scp`
 /// （配列か文字列、Microsoft Entra ID等）
 fn token_scopes(claims: &serde_json::Map<String, Value>) -> Vec<String> {
@@ -775,6 +779,22 @@ pub(crate) mod test_support {
             header.kid = Some(self.kid.clone());
             encode(&header, claims, &key).unwrap()
         }
+    }
+}
+
+#[cfg(test)]
+mod exp_seconds_tests {
+    use super::exp_seconds;
+    use serde_json::json;
+
+    /// 小数の`exp`は丸める（#724。jsonwebtokenの検証と同じ）
+    #[test]
+    fn test_exp_seconds() {
+        assert_eq!(exp_seconds(&json!(1_800_000_000)), Some(1_800_000_000));
+        assert_eq!(exp_seconds(&json!(1_800_000_000.6)), Some(1_800_000_001));
+        assert_eq!(exp_seconds(&json!(1_800_000_000.4)), Some(1_800_000_000));
+        assert_eq!(exp_seconds(&json!(-1.5)), None);
+        assert_eq!(exp_seconds(&json!("soon")), None);
     }
 }
 
