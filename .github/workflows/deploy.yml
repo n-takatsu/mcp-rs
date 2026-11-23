@@ -2,8 +2,9 @@
 name: Release Image
 
 # リリースのDockerイメージを作るワークフロー。検証（fmt・clippy・テスト・
-# 監査）の後、イメージを作ってghcr.ioに送り、SBOMを作り（タグのときは
-# GitHubのリリースに添付）、イメージをTrivyでスキャンする。
+# 監査）の後、イメージを作ってghcr.ioに送り、SBOMを作り（タグのときは、
+# そのときにリリースがあれば添付。下のsbomのジョブを参照）、イメージを
+# Trivyでスキャンする。
 # どこかのサーバーへのデプロイはしない（デプロイ先が無いため、中身が
 # echoだけだったstaging・production・rollbackのジョブは削除した、#451）
 on:
@@ -127,13 +128,23 @@ jobs:
   # contents: writeが要るが、イメージをpushする権限（packages: write）は
   # 持たせない（#542）。外部のアクションが乗っ取られても、ghcr.ioの
   # イメージは上書きできない
+  #
+  # 添付されるのは、このジョブが動くときに、そのタグのリリース（下書きも
+  # よい）が既にあるときだけ（#741）。anchore/sbom-actionはリリースを作らず、
+  # 無ければ添付を飛ばす。後でリリースを作っても、このワークフローは動き
+  # 直さない。タグをpushしたら、このジョブの前にリリースを作る。添付するのは
+  # タグのpushのときだけ（workflow_dispatchでタグを選んだときは添付しない。
+  # PR #743のレビュー）。添付されなかったとき（添付に失敗したときも）は、
+  # この実行の成果物（sbom）を取り出して添付する:
+  #   gh run download <実行のID> -n sbom
+  #   gh release upload vX.Y.Z sbom.spdx.json
   sbom:
     name: Generate SBOM
     needs: build-docker-image
     runs-on: ubuntu-latest
     permissions:
       # write is required so the SBOM step below can attach sbom.spdx.json
-      # to the matching GitHub Release (upload-release-assets: true)
+      # to the matching GitHub Release (upload-release-assets, on tag pushes)
       contents: write
       packages: read
     steps:
@@ -145,8 +156,12 @@ jobs:
           registry-password: ${{ secrets.GITHUB_TOKEN }}
           format: spdx-json
           output-file: sbom.spdx.json
+          upload-release-assets: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
 
+      # リリースへの添付に失敗しても、作ったSBOMは成果物に残す（手で添付
+      # できるように。PR #743のレビュー）
       - name: Upload SBOM
+        if: ${{ !cancelled() && hashFiles('sbom.spdx.json') != '' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sbom

@@ -540,6 +540,14 @@ pub fn validate_plugin_name(name: &str) -> Result<(), String> {
 /// MCPのツールの名前の長さの上限（2025-11-25の仕様の`SHOULD`）
 const MAX_TOOL_NAME_LENGTH: usize = 128;
 
+/// `tools/list`のツール（`raw`）が、tasks（2025-11-25）でしか呼べないか
+/// （`execution.taskSupport`が`"required"`、#741）
+fn requires_task(raw: &Value) -> bool {
+    raw.pointer("/execution/taskSupport")
+        .and_then(Value::as_str)
+        == Some("required")
+}
+
 /// MCPのツールの名前の形か（#598）。英数字・`_`・`-`・`.`で、1〜128文字
 /// （2025-11-25の仕様の`SHOULD`）。プラグインの名前を前に付けた名前で確かめる
 fn is_valid_tool_name(name: &str) -> bool {
@@ -1122,6 +1130,15 @@ impl PluginHandler {
             if original_names.contains_key(&name) {
                 warn!(
                     "Plugin '{}' listed tool '{}' twice (ignored the second)",
+                    config.name, original
+                );
+                continue;
+            }
+            // tasks（2025-11-25）でしか呼べないツールは、使えない（#741）。
+            // mcp-rsはtasksを実装しておらず、`task`無しの`tools/call`は断られる
+            if requires_task(&raw) {
+                warn!(
+                    "Plugin '{}' listed tool '{}', which can only be called as a task (execution.taskSupport = \"required\"); mcp-rs does not support tasks (ignored)",
                     config.name, original
                 );
                 continue;
@@ -2606,6 +2623,22 @@ for line in sys.stdin:
                 tokio::time::sleep(Duration::from_secs(1)).await;
             }
             assert!(remaining.is_empty(), "left for {}: {}", plugin, remaining);
+        }
+    }
+
+    /// tasksでしか呼べないツールだけを除く（#741）
+    #[test]
+    fn test_requires_task() {
+        assert!(requires_task(
+            &json!({ "name": "t", "execution": { "taskSupport": "required" } })
+        ));
+        for tool in [
+            json!({ "name": "t" }),
+            json!({ "name": "t", "execution": {} }),
+            json!({ "name": "t", "execution": { "taskSupport": "optional" } }),
+            json!({ "name": "t", "execution": { "taskSupport": "forbidden" } }),
+        ] {
+            assert!(!requires_task(&tool), "{tool}");
         }
     }
 
