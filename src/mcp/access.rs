@@ -208,12 +208,49 @@ impl Caller {
     pub fn display_name(&self) -> &str {
         self.name.as_deref().unwrap_or("local")
     }
+
+    /// 呼び出し元を区別する値（リプレイ攻撃対策のnonce・IDSの記録、#724）。
+    /// 名前（`name`）に、利用者（`subject`）があれば加える。OAuthの名前は
+    /// `client_id`なので、同じクライアント（公開クライアント等）を使う別の
+    /// 利用者が、名前だけでは同じになり、記録・上限を共有していた。
+    /// ローカル・認証なしは`None`
+    pub fn identity(&self) -> Option<String> {
+        let name = self.name.as_deref()?;
+        Some(match self.subject.as_deref() {
+            Some(subject) if !subject.is_empty() => format!("{name} (sub {subject})"),
+            _ => name.to_string(),
+        })
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::mcp::ToolAnnotations;
+
+    /// 呼び出し元を区別する値は、名前に利用者を加える（#724。同じOAuthの
+    /// クライアントを使う別の利用者を、別の呼び出し元にする）
+    #[test]
+    fn test_caller_identity() {
+        let caller = |subject: Option<&str>| {
+            Caller::new("oauth:public-app", ToolAccess::All)
+                .with_subject(subject.map(str::to_string))
+        };
+        assert_eq!(
+            caller(Some("alice")).identity().as_deref(),
+            Some("oauth:public-app (sub alice)")
+        );
+        assert_ne!(
+            caller(Some("alice")).identity(),
+            caller(Some("bob")).identity()
+        );
+        assert_eq!(caller(None).identity().as_deref(), Some("oauth:public-app"));
+        assert_eq!(
+            caller(Some("")).identity().as_deref(),
+            Some("oauth:public-app")
+        );
+        assert_eq!(Caller::unrestricted().identity(), None);
+    }
 
     fn tool(name: &str, read_only: Option<bool>) -> Tool {
         Tool {
