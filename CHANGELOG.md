@@ -218,7 +218,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - 文書のサイトで、相対の`.md`リンク（`../security.md`・`./guides/postgres-integration.md`
-  等、17か所）が404になっていた（#737）。ページは`permalink`の`/docs/security/`
+  等、18か所）が404になっていた（#737）。ページは`permalink`の`/docs/security/`
   等に出るが、ビルドにリンクを書き換えるプラグインが無い。`{{ site.baseurl }}`と
   permalinkで書いた。無いページ（Performance Tuning Guide）へのリンクは消した
 
