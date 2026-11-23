@@ -37,6 +37,10 @@ pub struct TrafficPattern {
     pub path_distribution: HashMap<String, u64>,
     /// ユーザーエージェント
     pub user_agents: Vec<String>,
+    /// パスごとに、最後に見た時刻（PR #728のレビュー）。ポートスキャンは、
+    /// `port_scan_window_seconds`の間に見たパスの数で判定する
+    #[serde(default)]
+    pub path_last_seen: HashMap<String, DateTime<Utc>>,
     /// 最初の観測時刻
     pub first_seen: DateTime<Utc>,
     /// 最後の観測時刻
@@ -326,20 +330,37 @@ impl NetworkMonitor {
             failed_requests: 0,
             avg_interval_ms: 0.0,
             path_distribution: HashMap::new(),
+            path_last_seen: HashMap::new(),
             user_agents: Vec::new(),
             first_seen: Utc::now(),
             last_seen: Utc::now(),
             risk_score: 0.0,
         });
 
+        let now = Utc::now();
         pattern.total_requests += 1;
-        pattern.last_seen = Utc::now();
+        pattern.last_seen = now;
 
         // パス分布を更新（新しいパスは、上限まで。#543）
         if let Some(count) = pattern.path_distribution.get_mut(&request.path) {
             *count += 1;
         } else if pattern.path_distribution.len() < self.config.max_paths_per_ip() {
             pattern.path_distribution.insert(request.path.clone(), 1);
+        }
+        // パスを最後に見た時刻。上限に達したら、窓より前に見たパスを先に
+        // 忘れる（PR #728のレビュー）
+        if !pattern.path_last_seen.contains_key(&request.path)
+            && pattern.path_last_seen.len() >= self.config.max_paths_per_ip()
+        {
+            let window_start = now - Duration::seconds(self.config.port_scan_window_seconds);
+            pattern
+                .path_last_seen
+                .retain(|_, seen| *seen > window_start);
+        }
+        if pattern.path_last_seen.contains_key(&request.path)
+            || pattern.path_last_seen.len() < self.config.max_paths_per_ip()
+        {
+            pattern.path_last_seen.insert(request.path.clone(), now);
         }
 
         // User-Agentを記録
@@ -374,10 +395,15 @@ impl NetworkMonitor {
         let patterns = self.traffic_patterns.read().await;
         let pattern = patterns.get(&ip)?;
 
-        let _window_start = Utc::now() - Duration::seconds(self.config.port_scan_window_seconds);
+        let window_start = Utc::now() - Duration::seconds(self.config.port_scan_window_seconds);
 
-        // ウィンドウ内のユニークパス数をチェック
-        let unique_paths = pattern.path_distribution.len();
+        // ウィンドウ内のユニークパス数をチェック（PR #728のレビュー。以前は
+        // 累積の数で、ゆっくり多くのパスを使う相手も、ポートスキャンとした）
+        let unique_paths = pattern
+            .path_last_seen
+            .values()
+            .filter(|seen| **seen > window_start)
+            .count();
 
         if unique_paths > self.config.port_scan_threshold {
             let excess_ratio = unique_paths as f64 / self.config.port_scan_threshold as f64;
@@ -605,5 +631,46 @@ mod tests {
 
         let pattern = pattern.unwrap();
         assert_eq!(pattern.total_requests, 10);
+    }
+
+    /// ポートスキャンは、`port_scan_window_seconds`の間に見たパスの数で判定
+    /// する（PR #728のレビュー。累積の数では、ゆっくり多くのパスを使う相手も
+    /// ポートスキャンとした）
+    #[tokio::test]
+    async fn test_port_scan_counts_paths_within_the_window() {
+        let monitor = NetworkMonitor::with_config(NetworkMonitorConfig {
+            port_scan_threshold: 80,
+            port_scan_window_seconds: 60,
+            ..NetworkMonitorConfig::default()
+        })
+        .await
+        .unwrap();
+        let ip: IpAddr = "192.0.2.7".parse().unwrap();
+        for i in 0..129 {
+            let request = RequestData {
+                request_id: format!("r-{i}"),
+                method: "GET".to_string(),
+                path: format!("/p/{i}"),
+                query_params: HashMap::new(),
+                headers: HashMap::new(),
+                body: None,
+                source_ip: Some(ip),
+                caller_id: None,
+                timestamp: Utc::now(),
+            };
+            monitor.update_traffic_pattern(ip, &request).await;
+        }
+        // 窓の中に129個: 検知する
+        let score = monitor.check_port_scan(ip).await.unwrap();
+        assert!(score > 0.6, "{score}");
+        // どれも窓より前に見たことにすると、検知しない
+        {
+            let mut patterns = monitor.traffic_patterns.write().await;
+            let pattern = patterns.get_mut(&ip).unwrap();
+            for seen in pattern.path_last_seen.values_mut() {
+                *seen = Utc::now() - Duration::seconds(61);
+            }
+        }
+        assert_eq!(monitor.check_port_scan(ip).await, Some(0.0));
     }
 }

@@ -171,6 +171,11 @@ impl BehavioralDetector {
             .entry(identifier.clone())
             .or_insert_with(|| BehaviorBaseline::new(&identifier));
 
+        // パスは、このリクエストを覚える前の状態で判定する（PR #728の
+        // レビュー。覚えた後では、未知のパスも1回は見たことになり、上限で
+        // 入れ替えると、毎回違うパスを送られても検知しなかった）
+        let path_score = self.check_path_anomaly(&request.path, baseline);
+
         // ベースライン更新（学習）
         self.update_baseline(baseline, request);
 
@@ -200,8 +205,8 @@ impl BehavioralDetector {
             }
         }
 
-        // 2. パスの異常検知
-        if let Some(path_score) = self.check_path_anomaly(&request.path, baseline) {
+        // 2. パスの異常検知（覚える前の状態で判定したもの）
+        if let Some(path_score) = path_score {
             if path_score > self.config.anomaly_threshold {
                 anomaly_types.push(AnomalyType::UnusualPath);
                 anomaly_scores.push(path_score);
@@ -490,6 +495,37 @@ mod tests {
     async fn test_behavioral_detector_initialization() {
         let detector = BehavioralDetector::new().await;
         assert!(detector.is_ok());
+    }
+
+    /// 覚えたパスが上限に達した後も、未知のパスは、覚える前の状態で判定して
+    /// 検知する（PR #728のレビュー）
+    #[tokio::test]
+    async fn test_unknown_path_is_detected_after_the_paths_are_full() {
+        let detector = BehavioralDetector::new().await.unwrap();
+        let request = |path: String| RequestData {
+            request_id: "r".to_string(),
+            method: "GET".to_string(),
+            path,
+            query_params: HashMap::new(),
+            headers: HashMap::new(),
+            body: None,
+            source_ip: Some("192.0.2.1".parse().unwrap()),
+            caller_id: Some("api_key:worker".to_string()),
+            timestamp: Utc::now(),
+        };
+        // 毎回違うパスで、学習（`min_sample_size`）を終え、パスを上限まで埋める
+        for i in 0..MAX_PATHS_PER_BASELINE {
+            detector.analyze(&request(format!("/p/{i}"))).await.unwrap();
+        }
+        let result = detector
+            .analyze(&request("/never-seen".to_string()))
+            .await
+            .unwrap();
+        assert!(
+            matches!(result.anomaly_types.as_slice(), types if types.iter().any(|t| matches!(t, AnomalyType::UnusualPath))),
+            "{:?}",
+            result.anomaly_types
+        );
     }
 
     /// 覚えるパスが上限に達したら、いちばん少ないパスを忘れて、新しいパスを

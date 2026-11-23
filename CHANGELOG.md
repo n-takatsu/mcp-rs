@@ -197,10 +197,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     なかった）
   - IDSの`NetworkMonitor`で、IPごとの記録の上限を、しきい値
     （`ddos_threshold_rps`・`port_scan_threshold`）の2倍以上にする（以前は
-    固定で、しきい値を上げると、判定に届かなかった）
+    固定で、しきい値を上げると、判定に届かなかった）。ポートスキャンは、
+    `port_scan_window_seconds`の間に見たパスの数で判定する（以前は累積の
+    数で、ゆっくり多くのパスを使う相手もポートスキャンとした）。
+    **互換性のない変更**: `TrafficPattern`に`path_last_seen`を足した
+    （構造体を直接作っているコードは、足す必要がある）
   - IDSの`BehavioralDetector`で、覚えるパスが上限に達したら、いちばん
     少ないパスを忘れて、新しいパスを覚える（以前は覚えず、未知のパスの
-    ままだった）
+    ままだった）。パスの異常は、そのリクエストを覚える前の状態で判定する
+    （覚えた後では、未知のパスも見たことになり、検知しなかった）
 - `mcp-rs wordpress-keyring set`の後に表示する設定の例で、名前を
   TOMLの文字列として書く（#724。`"`・`\`を含む名前でも、そのまま読める）
 - リリースのファイルを作るワークフロー（`release-binaries.yml`）で、
