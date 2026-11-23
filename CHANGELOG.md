@@ -217,6 +217,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- MySQL・MariaDBで、時間の上限を超えた文・読むのをやめた文を`KILL QUERY`で
+  止める前に、止める接続で`information_schema.PROCESSLIST`を見て、そのIDの
+  接続が同じユーザーで、同じサーバー（MySQLは`server_uuid`、MariaDBは
+  ホスト名・ポート・`server_id`）か、mcp-rsが送った文（最初の`?`の前まで）を
+  実行中か確かめる（#723）。プロキシ・ロードバランサーで、止める接続が別の
+  サーバーに届くと、同じ番号の関係ない文を止めることがあった。違えば
+  `KILL QUERY`を送らず、元の接続を閉じるだけにする。同じサーバーなら、
+  トリガーの中の文を実行中でも止める。別のサーバーで、同じユーザーの同じ
+  始まりの文は見分けられず、確かめてから送るまでの間に相手が変わることも
+  あり得る（減らすが、無くせない）
+
 - 文書のサイトで、相対の`.md`リンク（`../security.md`・`./guides/postgres-integration.md`
   等、18か所）が404になっていた（#737）。ページは`permalink`の`/docs/security/`
   等に出るが、ビルドにリンクを書き換えるプラグインが無い。`{{ site.baseurl }}`と
