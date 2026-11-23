@@ -213,7 +213,7 @@ keyring = "example.com"   # the name used with `wordpress-keyring set`
 Add only what you use:
 
 - `[handlers.wordpress]`: see [WordPress]({{ site.baseurl }}/docs/wordpress/)
-- `[database]`: see [Database]({{ site.baseurl }}/docs/database/) and the [PostgreSQL Integration Guide](./postgres-integration.md)
+- `[database]`: see [Database]({{ site.baseurl }}/docs/database/) and the [PostgreSQL Integration Guide]({{ site.baseurl }}/docs/guides/postgres-integration/)
 - `[[plugins]]`: see [Plugins]({{ site.baseurl }}/docs/plugins/)
 - `[transport.http]` for HTTP mode, `[audit]` for the audit log: see [Security]({{ site.baseurl }}/docs/security/)
 
@@ -322,4 +322,4 @@ Set `type = "http"` under `[transport]` and the address under `[transport.http]`
 
 ## Guides
 
-- [PostgreSQL Integration Guide](./postgres-integration.md) - Connect a database with a read-only role
+- [PostgreSQL Integration Guide]({{ site.baseurl }}/docs/guides/postgres-integration/) - Connect a database with a read-only role

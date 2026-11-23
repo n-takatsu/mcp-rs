@@ -1080,7 +1080,7 @@ impl McpHandler for DatabaseHandler {
             // 変換する
             format!("Values for the ? placeholders in the SQL, in order (bound as parameters, never inserted into the SQL text). {engine_name} converts strings to the column type, so values returned by execute_query (dates as 'YYYY-MM-DD HH:MM:SS', DECIMAL as text, JSON as a JSON object or array on MySQL and as text on MariaDB) can be passed back as they are; a JSON object or array is sent as its JSON text. Binary values (BLOB, VARBINARY) are returned as base64; to pass one, use FROM_BASE64(?) in the SQL")
         } else {
-            "Values for $1, $2, ... in the SQL (bound as parameters, never inserted into the SQL text). Strings are converted to the type PostgreSQL expects for that parameter (uuid, date, timestamp, numeric, json, bytea as base64, ...), so values returned by execute_query can be passed back as they are. Strings also work for text and enum columns. For other types (interval, money, inet, arrays, ...), pass a string and cast it through text in the SQL, e.g. $1::text::interval".to_string()
+            "Values for $1, $2, ... in the SQL (bound as parameters, never inserted into the SQL text). Strings are converted to the type PostgreSQL expects for that parameter (uuid, date, timestamp, numeric, json, bytea as base64, ...), so values of these types returned by execute_query can be passed back as they are. Strings also work for text and enum columns. For other types (interval, money, inet, arrays, ...), pass a string and cast it through text in the SQL, e.g. $1::text::interval".to_string()
         };
         // MySQL・MariaDBのJSON列は、execute_queryがオブジェクト・配列で
         // 返すので、そのまま渡し直せるようにする（#717。`json_to_value`が

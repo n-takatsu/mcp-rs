@@ -12,7 +12,7 @@ mcp-rs can connect to one PostgreSQL, MySQL, or MariaDB database and give MCP cl
 
 - **Engines**: PostgreSQL, and MySQL and MariaDB from v0.25.0 (see [MySQL](#mysql) and [MariaDB](#mariadb)). Other engines (SQLite, Redis, MongoDB) exist as library code but cannot be configured yet
 - **Build**: all three are included in the default build, the [ready-built files](https://github.com/n-takatsu/mcp-rs/releases), and the Docker image. A build made with `--no-default-features` leaves them out, and reports that in `mcp_rs_status`
-- **Step-by-step setup**: [PostgreSQL Integration Guide](./guides/postgres-integration.md)
+- **Step-by-step setup**: [PostgreSQL Integration Guide]({{ site.baseurl }}/docs/guides/postgres-integration/)
 
 ## Configuration
 
@@ -107,7 +107,7 @@ mcp-rs connects once at startup. If the settings are invalid, an environment var
 | `get_schema` | always | `readOnlyHint` |
 | `execute_command` | only with `allow_write = true` | `destructiveHint` |
 
-The read-only tools can be allowed alone in HTTP mode with `@read_only` (see [Security](./security.md)).
+The read-only tools can be allowed alone in HTTP mode with `@read_only` (see [Security]({{ site.baseurl }}/docs/security/)).
 
 ### `execute_query`
 
@@ -172,7 +172,7 @@ Offered only with `allow_write = true`. Runs one `INSERT`, `UPDATE`, or `DELETE`
 Write `$1`, `$2`, … in the SQL and pass the values in `params`. Values are bound as parameters and never inserted into the SQL text.
 
 - `params` takes strings, numbers, booleans, and `null`
-- Strings are converted to the type PostgreSQL expects for the parameter: `uuid`, `date` (`YYYY-MM-DD`), `time`, `timestamp`, `timestamptz` (RFC 3339), `numeric`, integers, floats, `boolean`, `json`/`jsonb`, and `bytea` (base64). So values returned by `execute_query` can be passed back as they are
+- Strings are converted to the type PostgreSQL expects for the parameter: `uuid`, `date` (`YYYY-MM-DD`), `time`, `timestamp`, `timestamptz` (RFC 3339), `numeric`, integers, floats, `boolean`, `json`/`jsonb`, and `bytea` (base64). So values of these types returned by `execute_query` can be passed back as they are. Other types (arrays, `interval`, `inet`, …) need a cast: see below
 - Strings are also sent as they are to text columns and enum columns
 - For other types (`interval`, `money`, `inet`, arrays, …), pass a string and cast it through text in the SQL: `$1::text::interval`. Without the cast, mcp-rs refuses the parameter instead of sending it in the wrong format
 - A value that cannot be converted is refused with an error that names the parameter, for example `parameter $1 is not a valid uuid`. The error does not repeat the value
@@ -187,11 +187,11 @@ What mcp-rs does:
 - Each statement has a time limit (`query_timeout_seconds`, via `statement_timeout`). `get_schema` also runs in a read-only transaction with this limit. The limit applies to each statement, not to the whole tool call: `execute_query` reads rows with several `FETCH` statements, and `get_schema` runs a few statements per table, so one call can take longer in total
 - The result has a size limit (`max_rows`, `max_result_bytes`), so one query cannot fill the memory of mcp-rs
 - When a connection returns to the pool, mcp-rs resets what a statement may have changed for the session: session-level advisory locks (`pg_advisory_lock`) are released, and settings and the role changed with `set_config(…, false)` inside `execute_command` are reset (`SET SESSION AUTHORIZATION DEFAULT`, `RESET ROLE`, `RESET ALL`)
-- Each tool call is recorded in the [audit log](./security.md) with its SQL (shortened to 2,000 characters) and whether it succeeded. Parameter values are not recorded. Error messages are recorded with everything in quotes replaced by `…`, because PostgreSQL errors can contain a value (`invalid input syntax for type integer: "…"`). The MCP client receives the full message
+- Each tool call is recorded in the [audit log]({{ site.baseurl }}/docs/security/) with its SQL (shortened to 2,000 characters) and whether it succeeded. Parameter values are not recorded. Error messages are recorded with everything in quotes replaced by `…`, because PostgreSQL errors can contain a value (`invalid input syntax for type integer: "…"`). The MCP client receives the full message
 
 What you should do:
 
-- **Connect with a read-only role.** The read-only transaction cannot stop everything: extensions such as `dblink` open their own connections, which can write. A role that only has `SELECT` closes that gap, as long as such extensions are not installed or their functions are revoked from `PUBLIC` (they are executable by every role by default). See [Create a read-only role](./guides/postgres-integration.md#2-create-a-role-for-mcp-rs)
+- **Connect with a read-only role.** The read-only transaction cannot stop everything: extensions such as `dblink` open their own connections, which can write. A role that only has `SELECT` closes that gap, as long as such extensions are not installed or their functions are revoked from `PUBLIC` (they are executable by every role by default). See [Create a read-only role]({{ site.baseurl }}/docs/guides/postgres-integration/#2-create-a-role-for-mcp-rs)
 - Grant the role only the tables the AI client needs to see
 - Use `ssl_mode = "verify-full"` when the database is on another machine (see [TLS](#tls))
 - Use `allow_write = true` only with a role whose write permissions you are willing to give the AI client, and preferably not on a production database
@@ -261,4 +261,4 @@ ssl_mode = "verify-full"
 
 ## Library API
 
-The engines can also be used from Rust code. See the [Database Engine API](./api/database.md).
+The engines can also be used from Rust code. See the [Database Engine API]({{ site.baseurl }}/docs/api/database/).

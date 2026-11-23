@@ -217,6 +217,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- 文書のサイトで、相対の`.md`リンク（`../security.md`・`./guides/postgres-integration.md`
+  等、17か所）が404になっていた（#737）。ページは`permalink`の`/docs/security/`
+  等に出るが、ビルドにリンクを書き換えるプラグインが無い。`{{ site.baseurl }}`と
+  permalinkで書いた。無いページ（Performance Tuning Guide）へのリンクは消した
+
+- PostgreSQLのガイドで、一部の表だけを見せるときに、`ALTER DEFAULT PRIVILEGES`を
+  残すと、後で作った表（隠したい表も）を読めることを書いていなかった（#737）
+
+- Securityの文書（Listening on the Network）に、認証は通信を暗号化しないので、
+  ほかのPCからつなぐ前にTLS（`tls_enabled`か、TLSを終端するリバースプロキシ）を
+  使うよう書いた（#737。平文のHTTPでは、APIキー・トークンを読まれる）
+
+- `execute_query`が返した値をそのまま`params`に渡せるのは、挙げた型（uuid・日付・
+  numeric等）だけと分かるように、文書とPostgreSQLの`params`の説明を直した（#737。
+  配列等はキャストが要る）
+
 - Redisのエンジン（`redis-backend`）で、パスワードに`@`・`%`・`/`等が
   あっても、つなげる（#724、PR #730のレビュー）。以前は、パスワードを接続の
   URLにそのまま入れ、redisクレートが`%`の符号を戻すので、別の値になって

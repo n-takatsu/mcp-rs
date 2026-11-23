@@ -6,7 +6,7 @@ permalink: /docs/guides/postgres-integration/
 
 ## PostgreSQL Integration Guide
 
-Connect mcp-rs to a PostgreSQL database so that an MCP client (Claude Desktop, Claude Code, …) can read the schema and query the data. For every setting and tool, see the [Database Integration Guide](../database.md).
+Connect mcp-rs to a PostgreSQL database so that an MCP client (Claude Desktop, Claude Code, …) can read the schema and query the data. For every setting and tool, see the [Database Integration Guide]({{ site.baseurl }}/docs/database/).
 
 ---
 
@@ -28,7 +28,7 @@ GRANT SELECT ON ALL TABLES IN SCHEMA public TO mcp_reader;
 ALTER DEFAULT PRIVILEGES FOR ROLE app_owner IN SCHEMA public GRANT SELECT ON TABLES TO mcp_reader;
 ```
 
-To hide some tables, grant `SELECT` on the tables you want to show instead of `ALL TABLES`.
+To hide some tables, grant `SELECT` on the tables you want to show instead of `ALL TABLES`, and leave out the `ALTER DEFAULT PRIVILEGES` line: it grants `SELECT` on every table created later, including ones you want to keep hidden. Grant each new table to `mcp_reader` when you want it to be visible.
 
 `ALTER DEFAULT PRIVILEGES` applies only to tables that the given role (`app_owner` here) creates later. Without `FOR ROLE`, it applies to tables created by the role running the statement.
 
@@ -108,4 +108,4 @@ allow_write = true
 
 ---
 
-See also: [Database Integration Guide](../database.md), [Security](../security.md)
+See also: [Database Integration Guide]({{ site.baseurl }}/docs/database/), [Security]({{ site.baseurl }}/docs/security/)
