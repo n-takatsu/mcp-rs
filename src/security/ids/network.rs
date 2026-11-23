@@ -37,6 +37,10 @@ pub struct TrafficPattern {
     pub path_distribution: HashMap<String, u64>,
     /// ユーザーエージェント
     pub user_agents: Vec<String>,
+    /// パスごとに、最後に見た時刻（PR #728のレビュー）。ポートスキャンは、
+    /// `port_scan_window_seconds`の間に見たパスの数で判定する
+    #[serde(default)]
+    pub path_last_seen: HashMap<String, DateTime<Utc>>,
     /// 最初の観測時刻
     pub first_seen: DateTime<Utc>,
     /// 最後の観測時刻
@@ -71,13 +75,29 @@ fn default_max_tracked_ips() -> usize {
     10_000
 }
 
-/// 1つのIPアドレスについて覚えておく、リクエストの時刻の数の上限（#543）。
-/// 頻度の判定（1秒に`ddos_threshold_rps`、1分に60）には、これで足りる
+/// 1つのIPアドレスについて覚えておく、リクエストの時刻の数の上限の
+/// 最小（#543）。頻度の判定（1秒に`ddos_threshold_rps`、1分に60）には、
+/// 既定のしきい値ならこれで足りる
 const MAX_TIMESTAMPS_PER_IP: usize = 1_000;
 
-/// 1つのIPアドレスについて覚えておく、パスの数の上限（#543）。
-/// `port_scan_threshold`より十分に大きくする
+/// 1つのIPアドレスについて覚えておく、パスの数の上限の最小（#543）
 const MAX_PATHS_PER_IP: usize = 100;
+
+impl NetworkMonitorConfig {
+    /// 1つのIPアドレスについて覚えておく、リクエストの時刻の数の上限。
+    /// しきい値の2倍以上にする（#724。しきい値を上げると、固定の上限では
+    /// スコアが判定の値に届かなかった）
+    fn max_timestamps_per_ip(&self) -> usize {
+        let threshold = usize::try_from(self.ddos_threshold_rps).unwrap_or(usize::MAX);
+        MAX_TIMESTAMPS_PER_IP.max(threshold.saturating_mul(2))
+    }
+
+    /// 1つのIPアドレスについて覚えておく、パスの数の上限。しきい値の2倍以上
+    /// にする（#724）
+    fn max_paths_per_ip(&self) -> usize {
+        MAX_PATHS_PER_IP.max(self.port_scan_threshold.saturating_mul(2))
+    }
+}
 
 impl Default for NetworkMonitorConfig {
     fn default() -> Self {
@@ -287,7 +307,7 @@ impl NetworkMonitor {
 
         // 古いエントリを削除
         while let Some(timestamp) = counter.front() {
-            if *timestamp < cutoff || counter.len() > MAX_TIMESTAMPS_PER_IP {
+            if *timestamp < cutoff || counter.len() > self.config.max_timestamps_per_ip() {
                 counter.pop_front();
             } else {
                 break;
@@ -310,21 +330,40 @@ impl NetworkMonitor {
             failed_requests: 0,
             avg_interval_ms: 0.0,
             path_distribution: HashMap::new(),
+            path_last_seen: HashMap::new(),
             user_agents: Vec::new(),
             first_seen: Utc::now(),
             last_seen: Utc::now(),
             risk_score: 0.0,
         });
 
+        let now = Utc::now();
         pattern.total_requests += 1;
-        pattern.last_seen = Utc::now();
+        pattern.last_seen = now;
 
         // パス分布を更新（新しいパスは、上限まで。#543）
         if let Some(count) = pattern.path_distribution.get_mut(&request.path) {
             *count += 1;
-        } else if pattern.path_distribution.len() < MAX_PATHS_PER_IP {
+        } else if pattern.path_distribution.len() < self.config.max_paths_per_ip() {
             pattern.path_distribution.insert(request.path.clone(), 1);
         }
+        // パスを最後に見た時刻（PR #728のレビュー）。上限に達したら、最後に
+        // 見たのがいちばん古いパスを忘れて、新しいパスを必ず覚える（新しい
+        // パスを捨てると、窓の中のパスを少なく数えた）。覚えているパスは、
+        // 時刻を更新するだけ
+        if !pattern.path_last_seen.contains_key(&request.path)
+            && pattern.path_last_seen.len() >= self.config.max_paths_per_ip()
+        {
+            let oldest = pattern
+                .path_last_seen
+                .iter()
+                .min_by_key(|(_, seen)| **seen)
+                .map(|(path, _)| path.clone());
+            if let Some(oldest) = oldest {
+                pattern.path_last_seen.remove(&oldest);
+            }
+        }
+        pattern.path_last_seen.insert(request.path.clone(), now);
 
         // User-Agentを記録
         if let Some(ua) = request.headers.get("User-Agent") {
@@ -358,10 +397,15 @@ impl NetworkMonitor {
         let patterns = self.traffic_patterns.read().await;
         let pattern = patterns.get(&ip)?;
 
-        let _window_start = Utc::now() - Duration::seconds(self.config.port_scan_window_seconds);
+        let window_start = Utc::now() - Duration::seconds(self.config.port_scan_window_seconds);
 
-        // ウィンドウ内のユニークパス数をチェック
-        let unique_paths = pattern.path_distribution.len();
+        // ウィンドウ内のユニークパス数をチェック（PR #728のレビュー。以前は
+        // 累積の数で、ゆっくり多くのパスを使う相手も、ポートスキャンとした）
+        let unique_paths = pattern
+            .path_last_seen
+            .values()
+            .filter(|seen| **seen > window_start)
+            .count();
 
         if unique_paths > self.config.port_scan_threshold {
             let excess_ratio = unique_paths as f64 / self.config.port_scan_threshold as f64;
@@ -497,6 +541,21 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
 
+    /// IPごとの記録の上限は、しきい値の2倍以上（#724）
+    #[test]
+    fn test_per_ip_limits_follow_the_thresholds() {
+        let default = NetworkMonitorConfig::default();
+        assert_eq!(default.max_timestamps_per_ip(), MAX_TIMESTAMPS_PER_IP);
+        assert_eq!(default.max_paths_per_ip(), MAX_PATHS_PER_IP);
+        let high = NetworkMonitorConfig {
+            ddos_threshold_rps: 600,
+            port_scan_threshold: 80,
+            ..NetworkMonitorConfig::default()
+        };
+        assert_eq!(high.max_timestamps_per_ip(), 1200);
+        assert_eq!(high.max_paths_per_ip(), 160);
+    }
+
     #[tokio::test]
     async fn test_network_monitor_initialization() {
         let monitor = NetworkMonitor::new().await;
@@ -574,5 +633,88 @@ mod tests {
 
         let pattern = pattern.unwrap();
         assert_eq!(pattern.total_requests, 10);
+    }
+
+    /// ポートスキャンは、`port_scan_window_seconds`の間に見たパスの数で判定
+    /// する（PR #728のレビュー。累積の数では、ゆっくり多くのパスを使う相手も
+    /// ポートスキャンとした）
+    #[tokio::test]
+    async fn test_port_scan_counts_paths_within_the_window() {
+        let monitor = NetworkMonitor::with_config(NetworkMonitorConfig {
+            port_scan_threshold: 80,
+            port_scan_window_seconds: 60,
+            ..NetworkMonitorConfig::default()
+        })
+        .await
+        .unwrap();
+        let ip: IpAddr = "192.0.2.7".parse().unwrap();
+        for i in 0..129 {
+            let request = RequestData {
+                request_id: format!("r-{i}"),
+                method: "GET".to_string(),
+                path: format!("/p/{i}"),
+                query_params: HashMap::new(),
+                headers: HashMap::new(),
+                body: None,
+                source_ip: Some(ip),
+                caller_id: None,
+                timestamp: Utc::now(),
+            };
+            monitor.update_traffic_pattern(ip, &request).await;
+        }
+        // 窓の中に129個: 検知する
+        let score = monitor.check_port_scan(ip).await.unwrap();
+        assert!(score > 0.6, "{score}");
+        // どれも窓より前に見たことにすると、検知しない
+        {
+            let mut patterns = monitor.traffic_patterns.write().await;
+            let pattern = patterns.get_mut(&ip).unwrap();
+            for seen in pattern.path_last_seen.values_mut() {
+                *seen = Utc::now() - Duration::seconds(61);
+            }
+        }
+        assert_eq!(monitor.check_port_scan(ip).await, Some(0.0));
+    }
+
+    /// パスの記録が上限に達している間に来た新しいパスも、最後に見たのが
+    /// いちばん古いパスと入れ替えて覚える（PR #728のレビュー。以前は捨てた
+    /// ので、窓の中のパスを少なく数えた）
+    #[tokio::test]
+    async fn test_new_paths_are_kept_while_the_record_is_full() {
+        let monitor = NetworkMonitor::new().await.unwrap();
+        let ip: IpAddr = "192.0.2.8".parse().unwrap();
+        let request = |path: String| RequestData {
+            request_id: "r".to_string(),
+            method: "GET".to_string(),
+            path,
+            query_params: HashMap::new(),
+            headers: HashMap::new(),
+            body: None,
+            source_ip: Some(ip),
+            caller_id: None,
+            timestamp: Utc::now(),
+        };
+        let max = monitor.config.max_paths_per_ip();
+        for i in 0..max {
+            monitor
+                .update_traffic_pattern(ip, &request(format!("/old/{i}")))
+                .await;
+        }
+        // 古いパスは、59秒前（まだ窓の中）に見たことにする
+        {
+            let mut patterns = monitor.traffic_patterns.write().await;
+            for seen in patterns.get_mut(&ip).unwrap().path_last_seen.values_mut() {
+                *seen = Utc::now() - Duration::seconds(59);
+            }
+        }
+        for i in 0..33 {
+            monitor
+                .update_traffic_pattern(ip, &request(format!("/new/{i}")))
+                .await;
+        }
+        let patterns = monitor.traffic_patterns.read().await;
+        let seen = &patterns[&ip].path_last_seen;
+        assert_eq!(seen.len(), max);
+        assert!((0..33).all(|i| seen.contains_key(&format!("/new/{i}"))));
     }
 }

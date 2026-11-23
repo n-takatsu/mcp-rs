@@ -2310,9 +2310,27 @@ impl McpConfig {
         Ok(())
     }
 
+    /// ファイルに書く形。`keyring`のサイトは、資格情報ストアから読んだ
+    /// ユーザー名・パスワード（`resolve_site_credentials`が入れる）を書かない
+    /// （#724。以前は平文で書き、`keyring`と一緒にあるので読み直せなかった）
+    fn without_keyring_secrets(&self) -> Self {
+        let mut config = self.clone();
+        let strip = |site: &mut WordPressConfig| {
+            if site.keyring.is_some() {
+                site.username.clear();
+                site.password.clear();
+            }
+        };
+        if let Some(wordpress) = config.handlers.wordpress.as_mut() {
+            strip(wordpress);
+            wordpress.sites.values_mut().for_each(strip);
+        }
+        config
+    }
+
     /// 設定をファイルに保存
     pub fn save_to_file(&self, path: &str) -> Result<(), Box<dyn std::error::Error>> {
-        let toml_content = toml::to_string_pretty(self)?;
+        let toml_content = toml::to_string_pretty(&self.without_keyring_secrets())?;
 
         let content = format!(
             r#"# MCP-RS Configuration File
@@ -3511,6 +3529,49 @@ mod additional_tests {
         assert_eq!(config.username, "");
         assert_eq!(config.password, "");
         assert!(config.encrypted_credentials.is_some());
+    }
+
+    /// `keyring`のサイトは、資格情報ストアから読んだユーザー名・パスワードを
+    /// ファイルに書かない（#724）
+    #[test]
+    fn test_save_to_file_leaves_out_keyring_secrets() {
+        let site = |keyring: Option<&str>| WordPressConfig {
+            url: "https://example.com".to_string(),
+            username: "wp-user".to_string(),
+            password: "s3cret-from-keyring".to_string(),
+            enabled: Some(true),
+            timeout_seconds: None,
+            rate_limit: None,
+            encrypted_credentials: None,
+            keyring: keyring.map(str::to_string),
+            upload_allowed_dirs: None,
+            post_types: None,
+            default_site: None,
+            sites: Default::default(),
+        };
+        let mut config = McpConfig::default();
+        config.handlers.wordpress = Some(site(Some("example.com")));
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        config.save_to_file(path.to_str().unwrap()).unwrap();
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert!(!written.contains("s3cret-from-keyring"), "{written}");
+        assert!(!written.contains("wp-user"), "{written}");
+        assert!(written.contains("keyring = \"example.com\""), "{written}");
+        // 書いたものを読み直せる
+        McpConfig::read_file(path.to_str().unwrap()).unwrap();
+        // `keyring`の無いサイトは、今までどおり書く
+        let mut sites = site(None);
+        sites.url.clear();
+        sites.username.clear();
+        sites.password.clear();
+        sites.sites.insert("blog".to_string(), site(Some("blog")));
+        sites.sites.insert("plain".to_string(), site(None));
+        config.handlers.wordpress = Some(sites);
+        let saved = config.without_keyring_secrets();
+        let wordpress = saved.handlers.wordpress.unwrap();
+        assert!(wordpress.sites["blog"].password.is_empty());
+        assert_eq!(wordpress.sites["plain"].password, "s3cret-from-keyring");
     }
 
     #[test]
