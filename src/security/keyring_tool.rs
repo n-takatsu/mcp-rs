@@ -112,7 +112,9 @@ fn run_with(args: &[String], store: &dyn SecretStore) -> Result<(), Box<dyn std:
                 stored.username, stored.site_url
             );
             eprintln!("In the config file, write this under [handlers.wordpress] (or the site's [handlers.wordpress.sites.<site>]) and remove username, password and encrypted_credentials:");
-            eprintln!("  keyring = \"{name}\"");
+            // TOMLの文字列として書く（#724。`"`・`\`を含む名前でも、そのまま
+            // 貼って読める）
+            eprintln!("  keyring = {}", toml_string(&name));
         }
         Action::Show(name) => {
             let credentials = load_wordpress_credentials(store, &name)?;
@@ -178,6 +180,11 @@ fn read_interactive(name: &str) -> Result<WordPressKeyringCredentials, Box<dyn s
         username.trim().to_string(),
         application_password,
     )
+}
+
+/// TOMLの文字列（引用符とエスケープ付き）
+fn toml_string(value: &str) -> String {
+    toml::Value::String(value.to_string()).to_string()
 }
 
 fn check_input(
@@ -282,6 +289,16 @@ mod tests {
             .unwrap()
             .to_string();
         assert!(err.contains("https://"), "{err}");
+    }
+
+    /// 表示する設定の例は、TOMLの文字列として読める（#724）
+    #[test]
+    fn test_toml_string() {
+        for name in ["example.com", "a\"b", "c\\d"] {
+            let line = format!("keyring = {}", toml_string(name));
+            let table: toml::Table = line.parse().unwrap();
+            assert_eq!(table["keyring"].as_str(), Some(name), "{line}");
+        }
     }
 
     #[test]
