@@ -14,6 +14,26 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+/// 接続先のURL。パスワードはURLの形に符号化する（#724、PR #730のレビュー。
+/// redisクレートはURLの`%`の符号を戻すので、そのまま入れると、`@`・`%`・`/`
+/// 等を含むパスワードが別の値になり、認証に失敗した）
+fn redis_url(config: &RedisConfig) -> String {
+    let scheme = if config.use_tls { "rediss" } else { "redis" };
+    match &config.password {
+        Some(password) => format!(
+            "{scheme}://:{}@{}:{}/{}",
+            urlencoding::encode(password),
+            config.host,
+            config.port,
+            config.database
+        ),
+        None => format!(
+            "{scheme}://{}:{}/{}",
+            config.host, config.port, config.database
+        ),
+    }
+}
+
 /// Redis connection pool manager
 pub struct RedisConnection {
     config: RedisConfig,
@@ -45,29 +65,7 @@ impl RedisConnection {
         }
 
         // Build Redis connection URL
-        let url = if let Some(ref password) = config.password {
-            if config.use_tls {
-                format!(
-                    "rediss://:{}@{}:{}/{}",
-                    password, config.host, config.port, config.database
-                )
-            } else {
-                format!(
-                    "redis://:{}@{}:{}/{}",
-                    password, config.host, config.port, config.database
-                )
-            }
-        } else if config.use_tls {
-            format!(
-                "rediss://{}:{}/{}",
-                config.host, config.port, config.database
-            )
-        } else {
-            format!(
-                "redis://{}:{}/{}",
-                config.host, config.port, config.database
-            )
-        };
+        let url = redis_url(config);
 
         // Create Redis client
         let client = Client::open(url).map_err(|e| {
@@ -660,6 +658,28 @@ fn redis_value_to_db_value(redis_val: &RedisValue) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// パスワードは、URLの形に符号化し、redisクレートが戻すと元の値になる
+    /// （#724、PR #730のレビュー）
+    #[test]
+    fn test_redis_url_encodes_the_password() {
+        let config = |password: Option<&str>, use_tls: bool| RedisConfig {
+            host: "localhost".to_string(),
+            port: 6380,
+            database: 2,
+            password: password.map(str::to_string),
+            use_tls,
+            ..RedisConfig::default()
+        };
+        assert_eq!(redis_url(&config(None, false)), "redis://localhost:6380/2");
+        assert_eq!(redis_url(&config(None, true)), "rediss://localhost:6380/2");
+        for password in ["plain", "p@ss", "p%40ss", "a/b:c#d?e"] {
+            let url = redis_url(&config(Some(password), false));
+            let info = redis::IntoConnectionInfo::into_connection_info(url.as_str()).unwrap();
+            assert_eq!(info.redis.password.as_deref(), Some(password), "{url}");
+            assert_eq!(info.redis.db, 2, "{url}");
+        }
+    }
 
     #[tokio::test]
     #[ignore] // Requires actual Redis server
