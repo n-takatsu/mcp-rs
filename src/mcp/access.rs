@@ -213,13 +213,13 @@ impl Caller {
     /// 名前（`name`）に、利用者（`subject`）があれば加える。OAuthの名前は
     /// `client_id`なので、同じクライアント（公開クライアント等）を使う別の
     /// 利用者が、名前だけでは同じになり、記録・上限を共有していた。
-    /// ローカル・認証なしは`None`
+    /// 名前と利用者の組をJSONの配列で表す（PR #725のレビュー。区切りの文字で
+    /// つなぐと、名前・利用者に区切りを含めて、別の呼び出し元と同じ値に
+    /// できた）。ローカル・認証なしは`None`
     pub fn identity(&self) -> Option<String> {
         let name = self.name.as_deref()?;
-        Some(match self.subject.as_deref() {
-            Some(subject) if !subject.is_empty() => format!("{name} (sub {subject})"),
-            _ => name.to_string(),
-        })
+        let subject = self.subject.as_deref().unwrap_or_default();
+        Some(serde_json::json!([name, subject]).to_string())
     }
 }
 
@@ -238,18 +238,30 @@ mod tests {
         };
         assert_eq!(
             caller(Some("alice")).identity().as_deref(),
-            Some("oauth:public-app (sub alice)")
+            Some(r#"["oauth:public-app","alice"]"#)
         );
         assert_ne!(
             caller(Some("alice")).identity(),
             caller(Some("bob")).identity()
         );
-        assert_eq!(caller(None).identity().as_deref(), Some("oauth:public-app"));
         assert_eq!(
-            caller(Some("")).identity().as_deref(),
-            Some("oauth:public-app")
+            caller(None).identity().as_deref(),
+            Some(r#"["oauth:public-app",""]"#)
         );
+        assert_eq!(caller(Some("")).identity(), caller(None).identity());
         assert_eq!(Caller::unrestricted().identity(), None);
+        // 名前・利用者に区切りのような文字を入れても、別の組と同じ値にならない
+        // （PR #725のレビュー）
+        let pair = |name: &str, subject: &str| {
+            Caller::new(name, ToolAccess::All)
+                .with_subject(Some(subject.to_string()))
+                .identity()
+        };
+        assert_ne!(
+            pair("api_key:worker", "alice) (sub bob"),
+            pair("api_key:worker (sub alice)", "bob")
+        );
+        assert_ne!(pair("a\",\"b", "c"), pair("a", "b\",\"c"));
     }
 
     fn tool(name: &str, read_only: Option<bool>) -> Tool {
