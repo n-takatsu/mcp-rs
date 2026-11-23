@@ -3056,7 +3056,10 @@ start_timeout_seconds = 300
         McpConfig::expand_database_config(&mut db).unwrap();
         assert_eq!(db.password.as_deref(), Some("from-env"));
 
-        // 無い変数は、項目と変数の名前を返す（値は出さない）
+        // 無い変数は、項目と変数の名前を返す（値は出さない）。テストを
+        // 動かす環境に同じ名前があっても、無い状態にする（#737。名前は
+        // このテストだけが使う）
+        std::env::remove_var("MCP_RS_TEST_DB_MISSING_453");
         let mut missing = DatabaseSettings {
             password: Some("${MCP_RS_TEST_DB_MISSING_453}".to_string()),
             ..db.clone()
