@@ -108,6 +108,11 @@ impl Default for DatabaseToolOptions {
 /// 1つの値に必ず残すバイト数（列が多くても、値が読めないほど短くしない）
 const MIN_CELL_BYTES: usize = 1024;
 
+/// 行のだいたいのバイト数の合計
+fn rows_size(rows: &[Vec<Value>]) -> usize {
+    rows.iter().flatten().map(Value::approx_json_size).sum()
+}
+
 /// `rows`を、だいたいのバイト数が`max_bytes`に収まるところまで残す（#539）。
 /// 1行目は、それだけで超えても残す（`cut_cells`で切り詰める）。行を除いたら
 /// `true`を返す
@@ -161,6 +166,16 @@ fn redact_error_for_audit(message: &str) -> String {
             let open = &message[first..first + 1];
             let rest = &message[first + 1..];
             match rest.rfind(is_quote) {
+                // 最後の引用符のすぐ後に文字が続くなら、それは閉じていない値の
+                // 始まり（`value 'a' and 'secret`）なので、最後まで伏せる（#724）
+                Some(last)
+                    if rest[last + 1..]
+                        .chars()
+                        .next()
+                        .is_some_and(char::is_alphanumeric) =>
+                {
+                    format!("{}{open}…", &message[..first])
+                }
                 // 最後の引用符より後ろには、引用符が無い
                 Some(last) => format!("{}{open}…{}", &message[..first], &rest[last..]),
                 // 閉じていない引用符は、最後まで伏せる
@@ -695,7 +710,11 @@ impl DatabaseHandler {
         // ので、超えたかが分かる。暗号化の処理で値の大きさが変わる前に
         // 確かめる
         let max_result_bytes = self.tool_options.max_result_bytes;
-        let mut truncated = keep_rows_within(&mut result.rows, max_result_bytes);
+        // 受け取った行が上限を超えていれば、接続はそこで読むのを止めたので、
+        // 後の行を落としたかもしれない。1行だけ残る場合も、切り詰めたことに
+        // する（#724。以前は、値を切らなければ`truncated: false`だった）
+        let over_limit = rows_size(&result.rows) > max_result_bytes;
+        let mut truncated = keep_rows_within(&mut result.rows, max_result_bytes) || over_limit;
 
         if let Some(resolution) = provenance {
             let manager = self
@@ -1328,6 +1347,13 @@ mod tests {
         );
         // 閉じていない引用符は、最後まで伏せる
         assert_eq!(redact_error_for_audit("value 'secret"), "value '…");
+        // 閉じた値の後に、閉じていない値が続いても（#724）
+        assert_eq!(redact_error_for_audit("value 'a' and 'secret"), "value '…");
+        // 閉じた後に空白が続く引用符は、そこまでで伏せるのを終える（MySQL）
+        assert_eq!(
+            redact_error_for_audit("Incorrect integer value: 'abc' for column 'n' at row 1"),
+            "Incorrect integer value: '…' at row 1"
+        );
         // `'`と`"`が混ざっても、値の後半を残さない（PR #552の再レビュー）
         let message = redact_error_for_audit(r#"column 'a' got "ab'cd-secret""#);
         assert!(!message.contains("cd-secret"), "{message}");
