@@ -228,6 +228,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   始まりの文は見分けられず、確かめてから送るまでの間に相手が変わることも
   あり得る（減らすが、無くせない）
 
+- PostgreSQLで、`bigint`等の整数の列に、小数部の無い大きな数（`1e20`等）を
+  渡すと、`i64`の最大・最小に丸めて、違う値を書き込んでいた（#737）。範囲の
+  外は断る
+
+- `execute_query`で、`WITH ids(id) AS (VALUES (1), (2)) SELECT id FROM ids`の
+  ように、`WITH`の中で`VALUES`を使う読み取りのSQLを断っていた（#737）。
+  `WITH`の中の`VALUES`は通す（単独の`VALUES`は、今までどおり断る）
+
+- `database`機能なしでビルドしたmcp-rsで、`[database]`の`${VAR}`の環境変数が
+  無いと、「このビルドはデータベースを使えない」ではなく、環境変数のエラーを
+  出していた（#737）。機能が無ければ、先にそう伝える
+
+- PostgreSQLのNUMERICで、桁（1万進）が32768個以上（整数部が約13万桁）の値を、
+  送るのも読むのもできなかった（#737）
+
+- ライブラリとして使う場合: `PostgreSqlConnection::new()`・`from_config()`で
+  作った、その接続だけのプールを、`close()`で閉じなかった（#737）。共有の
+  プール（`with_pool`）は、今までどおり閉じない
+
 - 文書のサイトで、相対の`.md`リンク（`../security.md`・`./guides/postgres-integration.md`
   等、18か所）が404になっていた（#737）。ページは`permalink`の`/docs/security/`
   等に出るが、ビルドにリンクを書き換えるプラグインが無い。`{{ site.baseurl }}`と
