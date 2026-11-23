@@ -228,28 +228,46 @@ impl MySqlConnection {
         map_err: fn(String) -> DatabaseError,
     ) -> Result<T, DatabaseError> {
         let id = conn.id();
+        // 時間の上限は、次のサーバーを見分けるSELECTから数える（PR #735の
+        // レビュー）
+        let deadline = self
+            .client_timeout()
+            .map(|limit| tokio::time::Instant::now() + limit);
+        let timed_out = || {
+            DatabaseError::TimeoutError(format!(
+                "the statement did not finish within {} seconds and was stopped",
+                self.statement_timeout.as_secs()
+            ))
+        };
         // 止めるときに、同じサーバーか確かめるため（PR #735のレビュー）。
         // 読めなければ、文だけで確かめる
-        let server = conn
-            .query_first::<String, _>(format!("SELECT {}", self.server.server_identity_expr()))
-            .await
-            .ok()
-            .flatten();
+        let identify =
+            conn.query_first::<String, _>(format!("SELECT {}", self.server.server_identity_expr()));
+        let server = match deadline {
+            Some(deadline) => match tokio::time::timeout_at(deadline, identify).await {
+                Ok(server) => server,
+                Err(_) => {
+                    // 利用者のSQLはまだ送っていないので、閉じるだけ
+                    let _ = tokio::time::timeout(DISCONNECT_TIMEOUT, conn.disconnect()).await;
+                    return Err(timed_out());
+                }
+            },
+            None => identify.await,
+        }
+        .ok()
+        .flatten();
         let target = KillTarget {
             id,
             server,
             statement,
         };
         let future = work(&mut conn);
-        let result = match self.client_timeout() {
-            Some(limit) => match tokio::time::timeout(limit, future).await {
+        let result = match deadline {
+            Some(deadline) => match tokio::time::timeout_at(deadline, future).await {
                 Ok(result) => result,
                 Err(_) => {
                     self.abandon(conn, &target).await;
-                    return Err(DatabaseError::TimeoutError(format!(
-                        "the statement did not finish within {} seconds and was stopped",
-                        self.statement_timeout.as_secs()
-                    )));
+                    return Err(timed_out());
                 }
             },
             None => future.await,
