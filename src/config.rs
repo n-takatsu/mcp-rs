@@ -570,6 +570,22 @@ pub fn redact_config_error(message: &str) -> String {
         };
         return format!("{before}{prefix}{}`{rest}", sanitize_field_name(name));
     }
+    // 型の誤り等（`invalid type: string "…", expected u16 for key `a.b``）も、
+    // 最後の` for key `…``（項目の場所）は残す（#724。伏せると、どの項目を
+    // 直せばよいか分からない）。値は伏せる。最後の1つだけを、項目の名前に
+    // 使う文字だけのときに残す（値の中の同じ文字列は、最後にならない）
+    if let Some(at) = message.rfind(" for key `") {
+        let key = &message[at + " for key `".len()..];
+        if let Some(key) = key.strip_suffix('`') {
+            if !key.is_empty()
+                && key
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || "_-.[]".contains(c))
+            {
+                return format!("{} for key `{key}`", redact_quoted(&message[..at]));
+            }
+        }
+    }
     redact_quoted(message)
 }
 
@@ -1460,10 +1476,24 @@ pub fn expand_config_path(path: &str) -> String {
 }
 
 fn expand_config_path_with(path: &str, home: Option<&str>) -> String {
-    let rest = path.strip_prefix("~/").or_else(|| path.strip_prefix("~\\"));
+    expand_config_path_for(path, home, cfg!(windows))
+}
+
+/// `windows`のときだけ、`~\`と、区切り文字の`\`を扱う（#724。Unixでは、
+/// `\`は名前の文字なので、`/`に変えると別のファイルになる）
+fn expand_config_path_for(path: &str, home: Option<&str>, windows: bool) -> String {
+    let rest = path
+        .strip_prefix("~/")
+        .or_else(|| path.strip_prefix("~\\").filter(|_| windows));
     match rest {
-        Some(rest) => expand_home_dir(&format!("~/{}", rest.replace('\\', "/")), home)
-            .unwrap_or_else(|| path.to_string()),
+        Some(rest) => {
+            let rest = if windows {
+                rest.replace('\\', "/")
+            } else {
+                rest.to_string()
+            };
+            expand_home_dir(&format!("~/{rest}"), home).unwrap_or_else(|| path.to_string())
+        }
         None => path.to_string(),
     }
 }
@@ -4186,6 +4216,29 @@ enabled = false
             "{message}"
         );
         assert!(!message.contains("s3cret-cmd"), "{message}");
+
+        // 型の誤りでも、項目の場所は残し、値は伏せる（#724）
+        assert_eq!(
+            redact_config_error(
+                r#"invalid type: string "s3cret", expected u16 for key `transport.http.port`"#
+            ),
+            r#"invalid type: string "…", expected u16 for key `transport.http.port`"#
+        );
+        // 項目の名前に使わない文字があれば、伏せる
+        assert_eq!(
+            redact_config_error(r#"invalid type: string "a", expected u16 for key `s3 cret`"#),
+            r#"invalid type: string "…", expected u16 for key `…`"#
+        );
+        let content = "[transport.http]\nport = \"s3cret-pw\"\n";
+        let error = config::Config::builder()
+            .add_source(config::Config::try_from(&McpConfig::default()).unwrap())
+            .add_source(config::File::from_str(content, config::FileFormat::Toml))
+            .build()
+            .and_then(|built| built.try_deserialize::<McpConfig>())
+            .unwrap_err();
+        let message = redact_config_error(&error.to_string());
+        assert!(message.contains("transport.http.port"), "{message}");
+        assert!(!message.contains("s3cret-pw"), "{message}");
     }
 
     /// ホームフォルダは、空の`HOME`を飛ばして`USERPROFILE`を見る（#710）
@@ -4226,10 +4279,24 @@ enabled = false
             home.join(".config").join("mcp-rs").join("config.toml")
         );
         assert_eq!(relative_config_path_warning(&expanded), None);
-        let expanded = expand_config_path_with("~\\mcp-rs\\config.toml", Some(&home_str));
+        // Windowsでは`~\`も展開し、`\`を区切り文字として扱う
+        let expanded = expand_config_path_for("~\\mcp-rs\\config.toml", Some(&home_str), true);
         assert_eq!(
             std::path::PathBuf::from(&expanded),
             home.join("mcp-rs").join("config.toml")
+        );
+        // Unixでは、`\`は名前の文字なので変えない（#724）
+        assert_eq!(
+            expand_config_path_for("~\\mcp-rs\\config.toml", Some("/home/me"), false),
+            "~\\mcp-rs\\config.toml"
+        );
+        assert_eq!(
+            std::path::PathBuf::from(expand_config_path_for(
+                "~/a\\b.toml",
+                Some("/home/me"),
+                false
+            )),
+            std::path::Path::new("/home/me").join("a\\b.toml")
         );
         // ホームが分からなければそのまま（相対パスとして警告する）
         assert_eq!(
