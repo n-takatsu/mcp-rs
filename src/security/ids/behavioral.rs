@@ -312,10 +312,22 @@ impl BehavioralDetector {
     fn update_baseline(&self, baseline: &mut BehaviorBaseline, request: &RequestData) {
         baseline.sample_count += 1;
 
-        // パス頻度を更新（新しいパスは、上限まで。#543）
+        // パス頻度を更新（覚えるパスは、上限まで。#543）。上限に達したら、
+        // いちばん少ないパスを忘れて、新しいパスを覚える（#724。以前は新しい
+        // パスを覚えず、そのパスを何度使っても、未知のパスのままだった）
         if let Some(count) = baseline.typical_paths.get_mut(&request.path) {
             *count += 1.0;
-        } else if baseline.typical_paths.len() < MAX_PATHS_PER_BASELINE {
+        } else {
+            if baseline.typical_paths.len() >= MAX_PATHS_PER_BASELINE {
+                let rarest = baseline
+                    .typical_paths
+                    .iter()
+                    .min_by(|a, b| a.1.total_cmp(b.1))
+                    .map(|(path, _)| path.clone());
+                if let Some(rarest) = rarest {
+                    baseline.typical_paths.remove(&rarest);
+                }
+            }
             baseline.typical_paths.insert(request.path.clone(), 1.0);
         }
 
@@ -478,6 +490,38 @@ mod tests {
     async fn test_behavioral_detector_initialization() {
         let detector = BehavioralDetector::new().await;
         assert!(detector.is_ok());
+    }
+
+    /// 覚えるパスが上限に達したら、いちばん少ないパスを忘れて、新しいパスを
+    /// 覚える（#724）
+    #[tokio::test]
+    async fn test_baseline_paths_replace_the_rarest() {
+        let detector = BehavioralDetector::new().await.unwrap();
+        let mut baseline = BehaviorBaseline::new("user:test");
+        let request = |path: &str| RequestData {
+            request_id: "r".to_string(),
+            method: "GET".to_string(),
+            path: path.to_string(),
+            query_params: HashMap::new(),
+            headers: HashMap::new(),
+            body: None,
+            source_ip: None,
+            caller_id: None,
+            timestamp: Utc::now(),
+        };
+        // よく使うパスと、1回だけのパスで埋める
+        for _ in 0..5 {
+            detector.update_baseline(&mut baseline, &request("/mcp"));
+        }
+        for i in 1..MAX_PATHS_PER_BASELINE {
+            detector.update_baseline(&mut baseline, &request(&format!("/once/{i}")));
+        }
+        assert_eq!(baseline.typical_paths.len(), MAX_PATHS_PER_BASELINE);
+        detector.update_baseline(&mut baseline, &request("/new"));
+        assert_eq!(baseline.typical_paths.len(), MAX_PATHS_PER_BASELINE);
+        assert!(baseline.typical_paths.contains_key("/new"));
+        // よく使うパスは残る
+        assert_eq!(baseline.typical_paths["/mcp"], 5.0);
     }
 
     #[tokio::test]

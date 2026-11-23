@@ -71,13 +71,29 @@ fn default_max_tracked_ips() -> usize {
     10_000
 }
 
-/// 1つのIPアドレスについて覚えておく、リクエストの時刻の数の上限（#543）。
-/// 頻度の判定（1秒に`ddos_threshold_rps`、1分に60）には、これで足りる
+/// 1つのIPアドレスについて覚えておく、リクエストの時刻の数の上限の
+/// 最小（#543）。頻度の判定（1秒に`ddos_threshold_rps`、1分に60）には、
+/// 既定のしきい値ならこれで足りる
 const MAX_TIMESTAMPS_PER_IP: usize = 1_000;
 
-/// 1つのIPアドレスについて覚えておく、パスの数の上限（#543）。
-/// `port_scan_threshold`より十分に大きくする
+/// 1つのIPアドレスについて覚えておく、パスの数の上限の最小（#543）
 const MAX_PATHS_PER_IP: usize = 100;
+
+impl NetworkMonitorConfig {
+    /// 1つのIPアドレスについて覚えておく、リクエストの時刻の数の上限。
+    /// しきい値の2倍以上にする（#724。しきい値を上げると、固定の上限では
+    /// スコアが判定の値に届かなかった）
+    fn max_timestamps_per_ip(&self) -> usize {
+        let threshold = usize::try_from(self.ddos_threshold_rps).unwrap_or(usize::MAX);
+        MAX_TIMESTAMPS_PER_IP.max(threshold.saturating_mul(2))
+    }
+
+    /// 1つのIPアドレスについて覚えておく、パスの数の上限。しきい値の2倍以上
+    /// にする（#724）
+    fn max_paths_per_ip(&self) -> usize {
+        MAX_PATHS_PER_IP.max(self.port_scan_threshold.saturating_mul(2))
+    }
+}
 
 impl Default for NetworkMonitorConfig {
     fn default() -> Self {
@@ -287,7 +303,7 @@ impl NetworkMonitor {
 
         // 古いエントリを削除
         while let Some(timestamp) = counter.front() {
-            if *timestamp < cutoff || counter.len() > MAX_TIMESTAMPS_PER_IP {
+            if *timestamp < cutoff || counter.len() > self.config.max_timestamps_per_ip() {
                 counter.pop_front();
             } else {
                 break;
@@ -322,7 +338,7 @@ impl NetworkMonitor {
         // パス分布を更新（新しいパスは、上限まで。#543）
         if let Some(count) = pattern.path_distribution.get_mut(&request.path) {
             *count += 1;
-        } else if pattern.path_distribution.len() < MAX_PATHS_PER_IP {
+        } else if pattern.path_distribution.len() < self.config.max_paths_per_ip() {
             pattern.path_distribution.insert(request.path.clone(), 1);
         }
 
@@ -496,6 +512,21 @@ pub(super) fn evict_oldest<K: Clone + Eq + std::hash::Hash + Ord, V>(
 mod tests {
     use super::*;
     use std::collections::HashMap;
+
+    /// IPごとの記録の上限は、しきい値の2倍以上（#724）
+    #[test]
+    fn test_per_ip_limits_follow_the_thresholds() {
+        let default = NetworkMonitorConfig::default();
+        assert_eq!(default.max_timestamps_per_ip(), MAX_TIMESTAMPS_PER_IP);
+        assert_eq!(default.max_paths_per_ip(), MAX_PATHS_PER_IP);
+        let high = NetworkMonitorConfig {
+            ddos_threshold_rps: 600,
+            port_scan_threshold: 80,
+            ..NetworkMonitorConfig::default()
+        };
+        assert_eq!(high.max_timestamps_per_ip(), 1200);
+        assert_eq!(high.max_paths_per_ip(), 160);
+    }
 
     #[tokio::test]
     async fn test_network_monitor_initialization() {

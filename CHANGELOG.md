@@ -191,6 +191,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- ライブラリとして使う場合の修正（#724。mcp-rs本体の動作は変わらない）:
+  - `McpConfig::save_to_file`で、`keyring`のサイトの、資格情報ストアから
+    読んだユーザー名・パスワードを書かない（以前は平文で書き、読み直せ
+    なかった）
+  - IDSの`NetworkMonitor`で、IPごとの記録の上限を、しきい値
+    （`ddos_threshold_rps`・`port_scan_threshold`）の2倍以上にする（以前は
+    固定で、しきい値を上げると、判定に届かなかった）
+  - IDSの`BehavioralDetector`で、覚えるパスが上限に達したら、いちばん
+    少ないパスを忘れて、新しいパスを覚える（以前は覚えず、未知のパスの
+    ままだった）
+- `mcp-rs wordpress-keyring set`の後に表示する設定の例で、名前を
+  TOMLの文字列として書く（#724。`"`・`\`を含む名前でも、そのまま読める）
 - リリースのファイルを作るワークフロー（`release-binaries.yml`）で、
   手動の実行（`workflow_dispatch`）でタグを選んだとき、公開済みの
   リリースのアーカイブ・チェックサムを置き換えない（#717）。公開する
