@@ -40,17 +40,23 @@ fn required_env(name: &str, example: &str) -> String {
 
 fn parse(name: &str, raw: &str, default_port: u16, default_database: &str) -> ServerUrl {
     let url = url::Url::parse(raw).unwrap_or_else(|e| panic!("{name} is not a valid URL: {e}"));
-    let database = url.path().trim_start_matches('/');
+    // URLの`%40`等を戻す（#724。記号を含むパスワードで、認証に失敗した）
+    let decode = |value: &str| {
+        urlencoding::decode(value)
+            .unwrap_or_else(|e| panic!("{name} has an invalid %-escape: {e}"))
+            .into_owned()
+    };
+    let database = decode(url.path().trim_start_matches('/'));
     ServerUrl {
         host: url.host_str().unwrap_or("localhost").to_string(),
         port: url.port().unwrap_or(default_port),
         database: if database.is_empty() {
             default_database.to_string()
         } else {
-            database.to_string()
+            database
         },
-        username: url.username().to_string(),
-        password: url.password().unwrap_or("").to_string(),
+        username: decode(url.username()),
+        password: decode(url.password().unwrap_or("")),
     }
 }
 
@@ -70,5 +76,10 @@ pub fn postgres() -> ServerUrl {
 /// `TEST_REDIS_URL`を分解したもの
 pub fn redis() -> ServerUrl {
     let raw = required_env(REDIS_ENV, "redis://localhost:6380/0");
+    // TLS（`rediss://`）は扱えない。黙って暗号化せずにつながない（#724）
+    assert!(
+        !raw.starts_with("rediss://"),
+        "{REDIS_ENV} uses rediss:// (TLS), which these tests do not support; use redis://"
+    );
     parse(REDIS_ENV, &raw, 6379, "0")
 }

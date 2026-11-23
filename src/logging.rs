@@ -1263,9 +1263,10 @@ mod tests {
     /// Unix系では、共有の一時フォルダにログを書かない（#543）
     #[test]
     fn test_fallback_uses_temp_dir_only_on_windows() {
-        let uses_temp = fallback_log_dir_candidates()
-            .iter()
-            .any(|dir| dir.starts_with(std::env::temp_dir()));
+        // 一時フォルダの候補そのものと比べる（#724。前方一致では、
+        // `XDG_STATE_HOME`が`/tmp`の下にあるUnixで、ユーザーの候補にも当たった）
+        let temp_candidate = std::env::temp_dir().join("mcp-rs").join("logs");
+        let uses_temp = fallback_log_dir_candidates().contains(&temp_candidate);
         assert_eq!(uses_temp, cfg!(windows));
     }
 
