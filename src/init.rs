@@ -139,6 +139,10 @@ pub async fn run(args: &[String]) -> Result<bool, String> {
     let config_path =
         std::path::absolute(&config_path).map_err(|e| format!("cannot use {config_path}: {e}"))?;
     let mut terminal = Terminal;
+    // Ctrl+Cで止めたときも、入れ直した資格情報を前の中身に戻す（#715）。
+    // 質問の答えを待つ間はこのタスクが止まっているので、別のタスクで受ける
+    let replaced = ReplacedEntries::default();
+    let interrupt = tokio::spawn(restore_on_interrupt(replaced.clone()));
     let result = Setup {
         io: &mut terminal,
         store: &OsKeyring,
@@ -151,16 +155,45 @@ pub async fn run(args: &[String]) -> Result<bool, String> {
         added_sites: Vec::new(),
         new_entries: Vec::new(),
         secret_backups: Vec::new(),
-        replaced_entries: Vec::new(),
+        replaced_entries: replaced,
     }
     .run()
     .await;
+    interrupt.abort();
     // 途中の失敗（資格情報ストアが使えない等）は、使い方の誤りではないので、
     // 使い方は表示しない
     result.or_else(|e| {
         eprintln!("\nerror: {e}");
         Ok(false)
     })
+}
+
+/// Ctrl+Cを受けたら、入れ直した資格情報を前の中身に戻し、Ctrl+Cで止めた
+/// ときと同じ終了コード（130）で終わる（#715）。受けるようにすると、Ctrl+Cで
+/// プロセスが止まらなくなるので、何も無くても終わる
+async fn restore_on_interrupt(replaced: ReplacedEntries) {
+    if tokio::signal::ctrl_c().await.is_err() {
+        // 受けられない環境では、今までどおり（Ctrl+Cでそのまま止まる）
+        return;
+    }
+    eprintln!();
+    restore_entries(&OsKeyring, replaced.take(), |line| eprintln!("{line}"));
+    std::process::exit(130);
+}
+
+/// 入れ直した資格情報を、前の中身に戻す。`say`に結果を出す（#710・#715）
+fn restore_entries(store: &dyn SecretStore, entries: ReplacedList, mut say: impl FnMut(&str)) {
+    for (entry, previous) in entries {
+        match store.set(&entry, &previous) {
+            Ok(()) => say(&format!(
+                "Restored the previous credentials named '{entry}' in the OS credential store (the ones entered now were not checked)."
+            )),
+            Err(e) => say(&format!(
+                "Could not restore the previous credentials named '{entry}' ({e}). Enter them again with: mcp-rs wordpress-keyring set {}",
+                quote_arg(&entry)
+            )),
+        }
+    }
 }
 
 /// 質問と表示。テストでは、決めた答えを返すものに置き換える
@@ -245,8 +278,59 @@ struct Setup<'a> {
     secret_backups: Vec<PathBuf>,
     /// この実行で入れ直した、既にあった資格情報の項目と、前の中身（#710）。
     /// 確認が通らずに終わったら、前の中身に戻す（ほかの設定ファイルも
-    /// 同じ項目を使うことがある）
-    replaced_entries: Vec<(String, Zeroizing<String>)>,
+    /// 同じ項目を使うことがある）。Ctrl+Cを受けるタスクと共有する（#715）
+    replaced_entries: ReplacedEntries,
+}
+
+/// 入れ直した資格情報の項目と、前の中身（#710・#715）。`run`の外の、Ctrl+Cを
+/// 受けるタスクからも戻せるように、共有する
+#[derive(Clone, Default)]
+struct ReplacedEntries(std::sync::Arc<std::sync::Mutex<ReplacedList>>);
+
+/// 資格情報の項目の名前と、前の中身
+type ReplacedList = Vec<(String, Zeroizing<String>)>;
+
+impl ReplacedEntries {
+    fn lock(&self) -> std::sync::MutexGuard<'_, ReplacedList> {
+        self.0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn contains(&self, entry: &str) -> bool {
+        self.lock().iter().any(|(name, _)| name == entry)
+    }
+
+    fn push(&self, entry: String, previous: Zeroizing<String>) {
+        self.lock().push((entry, previous));
+    }
+
+    /// 確認が通ったので、確定する（戻さない）
+    fn clear(&self) {
+        self.lock().clear();
+    }
+
+    /// すべて取り出す（戻すため）
+    fn take(&self) -> ReplacedList {
+        std::mem::take(&mut *self.lock())
+    }
+
+    /// `entry`を取り出す（戻すため）
+    fn take_one(&self, entry: &str) -> Option<(String, Zeroizing<String>)> {
+        let mut entries = self.lock();
+        let index = entries.iter().position(|(name, _)| name == entry)?;
+        Some(entries.remove(index))
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.lock().len()
+    }
+
+    #[cfg(test)]
+    fn is_empty(&self) -> bool {
+        self.lock().is_empty()
+    }
 }
 
 impl Setup<'_> {
@@ -254,8 +338,8 @@ impl Setup<'_> {
         let result = self.run_steps().await;
         // 確認が通る前に終わったら（確認の失敗・エラー・入力の終わり）、
         // 入れ直した資格情報を前の中身に戻す（PR #712のレビュー）。確認が
-        // 通っていれば、もう確定していて、何もしない。Ctrl+Cでプロセスごと
-        // 止めたときは、ここを通らないので戻らない
+        // 通っていれば、もう確定していて、何もしない。Ctrl+Cで止めたときは、
+        // ここを通らないので、`restore_on_interrupt`が戻す（#715）
         self.restore_replaced_entries();
         result
     }
@@ -765,7 +849,7 @@ impl Setup<'_> {
     /// この実行で入れ直した、既にあった資格情報の項目を、前の中身に戻す
     /// （#710）。確認が通らずに終わるときに呼ぶ
     fn restore_replaced_entries(&mut self) {
-        for (entry, previous) in std::mem::take(&mut self.replaced_entries) {
+        for (entry, previous) in self.replaced_entries.take() {
             match self.store.set(&entry, &previous) {
                 Ok(()) => self.io.say(&format!(
                     "Restored the previous credentials named '{entry}' in the OS credential store (the ones entered now did not work)."
@@ -781,14 +865,9 @@ impl Setup<'_> {
     /// `entry`を入れ直していれば、その項目だけを前の中身に戻す（PR #712の
     /// レビュー。足せなかったサイトの項目）。戻したら`true`
     fn restore_replaced_entry(&mut self, entry: &str) -> bool {
-        let Some(index) = self
-            .replaced_entries
-            .iter()
-            .position(|(name, _)| name == entry)
-        else {
+        let Some((entry, previous)) = self.replaced_entries.take_one(entry) else {
             return false;
         };
-        let (entry, previous) = self.replaced_entries.remove(index);
         match self.store.set(&entry, &previous) {
             Ok(()) => true,
             Err(e) => {
@@ -1330,10 +1409,10 @@ impl Setup<'_> {
         // インに失敗して入れ直す）でも、最初の中身だけを覚える。読めなければ
         // 戻せないので、書かない（PR #712のレビュー）
         if !self.new_entries.iter().any(|name| name == entry)
-            && !self.replaced_entries.iter().any(|(name, _)| name == entry)
+            && !self.replaced_entries.contains(entry)
         {
             if let Some(previous) = self.store.get(entry)? {
-                self.replaced_entries.push((entry.to_string(), previous));
+                self.replaced_entries.push(entry.to_string(), previous);
             }
         }
         store_wordpress_credentials(
@@ -3725,7 +3804,7 @@ mod tests {
             added_sites: Vec::new(),
             new_entries: Vec::new(),
             secret_backups: Vec::new(),
-            replaced_entries: Vec::new(),
+            replaced_entries: ReplacedEntries::default(),
         }
     }
 
@@ -4871,6 +4950,48 @@ file_path = "C:/Users/me/.mcp-rs/logs/audit.log"
         assert!(!io.shown.iter().any(|s| s.contains("old password")));
     }
 
+    /// Ctrl+Cを受けるタスクは、`Setup`と同じ記録を見て、入れ直した資格情報を
+    /// 前の中身に戻す（#715）。確認が通って確定したものは戻さない
+    #[test]
+    fn test_interrupt_restores_the_shared_entries() {
+        let store = MemoryStore::default();
+        store_wordpress_credentials(
+            &store,
+            "example.com",
+            &WordPressKeyringCredentials {
+                site_url: "https://example.com".to_string(),
+                username: "editor".to_string(),
+                application_password: Zeroizing::new("old password".to_string()),
+            },
+        )
+        .unwrap();
+        let shared = ReplacedEntries::default();
+        let mut io = Script::new(&["editor", "new password"]);
+        let mut s = setup(&mut io, &store);
+        s.replaced_entries = shared.clone();
+        s.enter_credentials("https://example.com", "example.com")
+            .unwrap();
+        // Ctrl+Cを受けたタスクが、共有した記録から戻す
+        let mut shown = Vec::new();
+        restore_entries(&store, shared.take(), |line| shown.push(line.to_string()));
+        assert_eq!(
+            *load_wordpress_credentials(&store, "example.com")
+                .unwrap()
+                .application_password,
+            "old password"
+        );
+        assert!(shown[0].contains("Restored the previous credentials named 'example.com'"));
+        assert!(s.replaced_entries.is_empty());
+        // 確定した後は、戻すものが無い
+        let mut io = Script::new(&["editor", "newer password"]);
+        let mut s = setup(&mut io, &store);
+        s.replaced_entries = shared.clone();
+        s.enter_credentials("https://example.com", "example.com")
+            .unwrap();
+        s.replaced_entries.clear();
+        assert!(shared.take().is_empty());
+    }
+
     /// 既にある資格情報を入れ直し、確認が通らずに終わったら、前の中身に
     /// 戻す（#710）
     #[test]
@@ -5730,7 +5851,7 @@ file_path = "C:/Users/me/.mcp-rs/logs/audit.log"
             added_sites: Vec::new(),
             new_entries: Vec::new(),
             secret_backups: Vec::new(),
-            replaced_entries: Vec::new(),
+            replaced_entries: ReplacedEntries::default(),
         };
         let (content, _) = setup.new_config(Uses::Database, None).unwrap();
         assert!(content.contains("[database]"), "{content}");

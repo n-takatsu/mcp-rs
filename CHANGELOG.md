@@ -291,7 +291,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   前に上書きしたままで、同じ項目を使うほかの設定ファイルも、通らない資格
   情報を読んだ。前の中身を読めなければ、上書きしない。戻す書き込みが失敗
   したときは戻らないので、`mcp-rs wordpress-keyring set <name>`で入れ直すよう
-  知らせる。Ctrl+Cで止めたときは戻らない
+  知らせる。Ctrl+Cで止めたときも、前の中身に戻してから終わる（#715。終了
+  コードは130）
 - `mcp-rs init`で、ユーザー名・パスワードの入ったサイトのURL
   （`https://user:pass@example.com`）を受け付けない（#710）。以前は、
   設定ファイルの`url`に平文で書いた
