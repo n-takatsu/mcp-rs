@@ -189,6 +189,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   示すことを書いた
 
 
+### Removed
+
+- テスト・開発用のcompose（`configs/docker/docker-compose.postgres.yml`）から、
+  PostgreSQLのセカンダリ（`postgres-secondary`、ポート5433）と、その起動の
+  スクリプト（`scripts/postgres/standby.sh`）を外した（#732）。
+  レプリケーションの設定がPostgreSQL 15に合っておらず（`pg_basebackup -W`で
+  止まる・`recovery.conf`・rootでの起動等）、起動しなかった。使うテストも
+  無かった。pgAdminのサーバー一覧・`.env.example`（`POSTGRES_SECONDARY_PORT`・
+  `TEST_POSTGRESQL_SECONDARY_URL`）・ヘルパー（`scripts/postgres/docker-compose.sh`）・
+  ガイドからも消した。ヘルパーと`docs/DOCKER_POSTGRES_GUIDE.md`は、
+  サービスを指定せずに起動する手順に戻した。ヘルパーの`up`・`down`は、
+  残ったセカンダリのコンテナを`--remove-orphans`で消す。ボリュームの消し方は、
+  ガイドに書いた
+
 ### Fixed
 
 - Redisのエンジン（`redis-backend`）で、パスワードに`@`・`%`・`/`等が

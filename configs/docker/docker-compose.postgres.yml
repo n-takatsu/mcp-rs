@@ -30,33 +30,6 @@ services:
         max-size: "10m"
         max-file: "3"
 
-  # Secondary PostgreSQL instance for replication/failover testing
-  postgres-secondary:
-    image: postgres:15-alpine
-    container_name: mcp-rs-postgres-secondary
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER:-postgres}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
-      PGUSER: ${POSTGRES_USER:-postgres}
-      PGPASSWORD: ${POSTGRES_PASSWORD:-postgres}
-    ports:
-      - "127.0.0.1:${POSTGRES_SECONDARY_PORT:-5433}:5432"
-    volumes:
-      - postgres_secondary_data:/var/lib/postgresql/data
-      - ../../scripts/postgres/standby.sh:/usr/local/bin/standby.sh
-    entrypoint: /usr/local/bin/standby.sh
-    depends_on:
-      postgres-primary:
-        condition: service_healthy
-    networks:
-      - postgres-network
-    restart: unless-stopped
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
-
   # pgAdmin for PostgreSQL management (optional)
   pgadmin:
     image: dpage/pgadmin4:latest
@@ -88,5 +61,4 @@ networks:
 
 volumes:
   postgres_primary_data:
-  postgres_secondary_data:
   pgadmin_data:
