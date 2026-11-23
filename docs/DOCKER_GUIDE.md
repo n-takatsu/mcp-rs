@@ -144,7 +144,7 @@ export POSTGRES_PASSWORD='a long random password'
 docker compose -f docker-compose.yml -f docker-compose.postgres.yml up -d
 ```
 
-To give mcp-rs the database tools, add a `[database]` section with `host = "postgres"` to the config file. Up to v0.23.0, the PostgreSQL service was in `docker-compose.yml`, and its password was `changeme` unless you set one.
+To give mcp-rs the database tools, add a `[database]` section with `host = "postgres"` to the config file. Since `postgres` is not `localhost`, also set `ssl_mode` (v0.30.0 and later): this PostgreSQL has no TLS and is reached only on the Compose network, so write `ssl_mode = "disable"`. Up to v0.23.0, the PostgreSQL service was in `docker-compose.yml`, and its password was `changeme` unless you set one.
 
 `docker-compose.dev.yml` (for development) publishes PostgreSQL and Redis on `127.0.0.1` only (v0.24.0 and later), since its passwords are fixed in the file and Redis has none. Up to v0.23.0, they were reachable from other machines on the network.
 

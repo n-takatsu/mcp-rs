@@ -115,7 +115,9 @@ pub struct DatabaseSettings {
     /// `[database]`の値が違えば使わない。`password`とは一緒に書けない
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub keyring: Option<String>,
-    /// TLS: `disable`・`prefer`（省略時）・`require`・`verify-full`。
+    /// TLS: `disable`・`prefer`・`require`・`verify-full`。省略時は`prefer`だが、
+    /// ループバック（PostgreSQLはUnixソケットも）以外では省略できない
+    /// （#722。PostgreSQLは`PGSSLMODE`でもよい）。
     /// PostgreSQLは`allow`も使う。MySQL・MariaDBは、`ssl_root_cert`があれば
     /// `verify-ca`も使える（#594。PostgreSQLの`verify-ca`は使えない）。
     /// `verify-full`は、MySQLの`VERIFY_IDENTITY`

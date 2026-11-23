@@ -133,6 +133,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `[database]`の`host`がループバック（`localhost`・`127.0.0.1`・`::1`。
+  PostgreSQLはUnixソケットも）以外なら、`ssl_mode`を省略できないようにした（#722）。
+  省略時の`prefer`は、サーバーがTLSを使えなければ暗号化せずにつなぎ、
+  証明書も確かめないので、警告だけでは気付かれずに使われていた。省略すると、
+  データベースのツールを起動せず、理由と書き方（`ssl_mode = "verify-full"`、
+  確かめずにつなぐなら`"require"`等を書く）を`mcp_rs_status`に出す。
+  PostgreSQL・MySQL・MariaDBで同じ。PostgreSQLは、`PGSSLMODE`に書いて
+  あれば省略できる（読めない値は、sqlxが黙って`prefer`にするので、起動しない）。`mcp-rs check`も同じように止める。
+  **互換性のない変更**: リモートのデータベースで`ssl_mode`を書いていない
+  設定ファイルは、1行（`ssl_mode = "verify-full"`か、使うモード）を足す
+  必要がある。`mcp-rs init`が書く設定ファイルは、既に`verify-full`を書いている
+
 - Dockerイメージを、muslで静的にリンクした1つの実行ファイルにし、土台を
   `gcr.io/distroless/static-debian12:nonroot`にした（#631）。以前の土台
   （`distroless/cc-debian12`）に入っていたDebianの`libc6`・`libssl3`・
