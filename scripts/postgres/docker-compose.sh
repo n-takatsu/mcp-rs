@@ -64,9 +64,13 @@ load_env() {
 }
 
 # Start environment
+# 起動するのはPrimaryとpgAdmin（#724。セカンダリは、レプリケーションの
+# 設定がPostgreSQL 15に合っていないので、今は起動しない）
+SERVICES=(postgres-primary pgadmin)
+
 cmd_up() {
-    print_info "Starting Docker Compose environment..."
-    docker-compose -f "$COMPOSE_FILE" up -d
+    print_info "Starting Docker Compose environment (${SERVICES[*]})..."
+    docker-compose -f "$COMPOSE_FILE" up -d "${SERVICES[@]}"
     print_info "Environment started"
     print_info "Waiting for services to be healthy..."
     sleep 10
@@ -83,7 +87,7 @@ cmd_down() {
 # Restart environment
 cmd_restart() {
     print_info "Restarting Docker Compose environment..."
-    docker-compose -f "$COMPOSE_FILE" restart
+    docker-compose -f "$COMPOSE_FILE" restart "${SERVICES[@]}"
     print_info "Environment restarted"
 }
 

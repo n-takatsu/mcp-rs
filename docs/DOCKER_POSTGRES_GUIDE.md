@@ -35,7 +35,11 @@ cp .env.example .env
 
 ### 2. コンテナ起動
 
-> **セカンダリ（`postgres-secondary`）は、今は起動しません。** レプリケーションの設定（`scripts/postgres/standby.sh`）が PostgreSQL 15 に合っていないためです。サービスを指定せずに`up`を実行すると、セカンダリも起動しようとして失敗し、再起動を繰り返します。起動するサービスを指定してください。
+> **セカンダリ（`postgres-secondary`）は、今は起動しません。** レプリケーションの設定（`scripts/postgres/standby.sh`）が PostgreSQL 15 に合っていないためです。サービスを指定せずに`up`を実行すると、セカンダリも起動しようとして失敗し、再起動を繰り返します。起動するサービスを指定してください。前の手順でセカンダリを起動していたら、Primaryだけを`up`しても止まらないので、先に止めてください:
+>
+> ```bash
+> docker compose -f configs/docker/docker-compose.postgres.yml stop postgres-secondary
+> ```
 
 ```bash
 # Primaryをバックグラウンドで起動（テストにはこれで足りる）
@@ -93,11 +97,12 @@ docker compose -f configs/docker/docker-compose.postgres.yml logs -f postgres-pr
 # 全コンテナ停止
 docker compose -f configs/docker/docker-compose.postgres.yml stop
 
-# 全コンテナ再起動
-docker compose -f configs/docker/docker-compose.postgres.yml restart
-
-# 特定コンテナ再起動
+# Primaryを再起動（サービスを指定しない`restart`は、止めてあるセカンダリも
+# 起動し直し、再起動を繰り返させる）
 docker compose -f configs/docker/docker-compose.postgres.yml restart postgres-primary
+
+# pgAdminも使っているとき
+docker compose -f configs/docker/docker-compose.postgres.yml restart pgadmin
 
 # コンテナ削除（データ保持）
 docker compose -f configs/docker/docker-compose.postgres.yml down
