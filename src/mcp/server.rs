@@ -363,6 +363,10 @@ pub struct RequestDispatcher {
 impl RequestDispatcher {
     /// 1件のJSON-RPCメッセージを処理する。通知には`Ok(None)`。ツールは
     /// 制限しない（`handle_message_as`で、呼び出し元ごとに制限する）。
+    /// ローカル（STDIO等）の、信頼する呼び出し元のためのもの。ネットワークから
+    /// 来た要求（`HttpTransport::receive_message`等、呼び出し元の情報の無い
+    /// もの）には使わず、`handle_message_as`を使う（#746。`mcp_rs_status`が
+    /// ファイルのパス等を返してしまう）
     pub async fn handle_message(&self, message: &str) -> Result<Option<JsonRpcResponse>, McpError> {
         self.handle_message_as(message, &Caller::unrestricted())
             .await

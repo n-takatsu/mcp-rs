@@ -1895,6 +1895,16 @@ impl Transport for HttpTransport {
         Ok(())
     }
 
+    /// `with_request_handler`を使わないときに、HTTP・WebSocketで受けた要求を返す。
+    ///
+    /// 返す要求には、呼び出し元の情報（APIキー・トークンの名前、使えるツール、
+    /// 接続元のIPアドレス）が無い（#746）。受け取った側で`RequestDispatcher`に
+    /// 渡すときは、`handle_message`（制限の無い呼び出し元）ではなく、
+    /// `handle_message_as`で、認証していない遠隔の呼び出し元（例:
+    /// `Caller::unrestricted().with_ip_address(Some(..))`）として扱うこと。
+    /// そうしないと、`mcp_rs_status`はファイルのパス等を返し、ツールの制限も
+    /// 効かない。呼び出し元ごとの扱いが要るなら、`with_request_handler`
+    /// （`McpServer::dispatcher()`を渡す）を使う
     async fn receive_message(
         &mut self,
     ) -> std::result::Result<Option<JsonRpcRequest>, Self::Error> {
