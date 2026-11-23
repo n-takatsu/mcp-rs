@@ -7090,11 +7090,14 @@ mod tests {
             assert_eq!(status, StatusCode::OK, "{body}");
             // 認証していない呼び出し元（接続元のIPアドレスがあり、名前が無い）
             // なので、バージョンだけが返る（#746）
-            let text = body["result"]["content"][0]["text"].as_str().unwrap();
-            assert!(
-                text.starts_with(&format!("mcp-rs {}", env!("CARGO_PKG_VERSION")))
-                    && text.contains("shown only to authenticated callers"),
-                "{text}"
+            // （ほかの情報が足されたら失敗するよう、全体で比べる。PR #747の
+            // レビュー）
+            assert_eq!(
+                body["result"]["content"][0]["text"],
+                serde_json::json!(format!(
+                    "mcp-rs {}\nOther details are shown only to authenticated callers in HTTP mode (set auth_enabled or [transport.http.oauth]).",
+                    env!("CARGO_PKG_VERSION")
+                ))
             );
         }
 

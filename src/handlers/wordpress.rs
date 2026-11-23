@@ -1841,13 +1841,21 @@ impl WordPressHandler {
         // URLにユーザー名・パスワード（`https://user:pass@…`）を書くと、状態の
         // 表示・エラーにそのまま出るので断る（#746。`mcp-rs init`と同じ）。
         // エラーには、URLを出さない
-        if url::Url::parse(config.url.trim())
-            .is_ok_and(|url| !url.username().is_empty() || url.password().is_some())
-        {
-            return Err(
-                "handlers.wordpress.url must not contain a user name or password (https://user:pass@...): write the site address only, and put the credentials in username and password (or keyring)"
-                    .to_string(),
-            );
+        // 読めないURLも断る（読めないと、ユーザー名・パスワードがあるか確かめ
+        // られないため。PR #747のレビュー）
+        match url::Url::parse(config.url.trim()) {
+            Ok(url) if !url.username().is_empty() || url.password().is_some() => {
+                return Err(
+                    "handlers.wordpress.url must not contain a user name or password (https://user:pass@...): write the site address only, and put the credentials in username and password (or keyring)"
+                        .to_string(),
+                );
+            }
+            Ok(_) => {}
+            Err(e) => {
+                return Err(format!(
+                    "handlers.wordpress.url is not a valid URL ({e}): write the site address, such as https://example.com"
+                ));
+            }
         }
         // URL検証 - HTTPS強制
         if !config.url.starts_with("https://") {
@@ -6885,6 +6893,9 @@ mod tests {
             "https://alice:secret-pass@example.com",
             "https://alice@example.com",
             "http://alice:secret-pass@example.com",
+            // 読めないURL（PR #747のレビュー）
+            "https://alice:secret-pass@exa mple.com",
+            "https://alice:secret-pass@",
         ] {
             let config = WordPressConfig {
                 url: url.to_string(),
@@ -6902,7 +6913,8 @@ mod tests {
             };
             let error = WordPressHandler::try_new(config).err().unwrap();
             assert!(
-                error.contains("must not contain a user name or password"),
+                error.contains("must not contain a user name or password")
+                    || error.contains("is not a valid URL"),
                 "{error}"
             );
             assert!(

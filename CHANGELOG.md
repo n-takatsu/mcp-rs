@@ -219,7 +219,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - WordPressの`url`に、ユーザー名・パスワード（`https://user:pass@…`）を書くと、
   `mcp_rs_status`の表示と起動のエラーに、パスワードがそのまま出ていた（#746）。
-  そのような`url`は断る（`mcp-rs init`と同じ）。エラーには、URLを出さない。
+  そのような`url`と、URLとして読めない`url`は断る（`mcp-rs init`と同じ）。
+  エラーには、URLを出さない。
   **互換性**: こう書いた設定ファイルでは、WordPressのツールが起動しなくなる。
   資格情報は`username`・`password`（か`keyring`）に書く
 
