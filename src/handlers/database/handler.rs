@@ -166,13 +166,15 @@ fn redact_error_for_audit(message: &str) -> String {
             let open = &message[first..first + 1];
             let rest = &message[first + 1..];
             match rest.rfind(is_quote) {
-                // 最後の引用符のすぐ後に文字が続くなら、それは閉じていない値の
-                // 始まり（`value 'a' and 'secret`）なので、最後まで伏せる（#724）
+                // 最後の引用符のすぐ後に、閉じた後に来る文字（空白・`,`・`.`・
+                // `;`・`:`・`)`・`]`・`}`）以外が続くなら、それは閉じていない値の
+                // 始まり（`value 'a' and 'secret`・`'_secret`）なので、最後まで
+                // 伏せる（#724、PR #727のレビュー）
                 Some(last)
                     if rest[last + 1..]
                         .chars()
                         .next()
-                        .is_some_and(char::is_alphanumeric) =>
+                        .is_some_and(|c| !c.is_whitespace() && !",.;:)]}".contains(c)) =>
                 {
                     format!("{}{open}…", &message[..first])
                 }
@@ -1349,6 +1351,15 @@ mod tests {
         assert_eq!(redact_error_for_audit("value 'secret"), "value '…");
         // 閉じた値の後に、閉じていない値が続いても（#724）
         assert_eq!(redact_error_for_audit("value 'a' and 'secret"), "value '…");
+        // 記号で始まる閉じていない値も（PR #727のレビュー）
+        assert_eq!(redact_error_for_audit("value 'a' and '_secret"), "value '…");
+        assert_eq!(redact_error_for_audit("value 'a' and '-secret"), "value '…");
+        // 閉じた後に記号が続く形は、そこまでで伏せるのを終える
+        assert_eq!(
+            redact_error_for_audit("near 'x', line 1"),
+            "near '…', line 1"
+        );
+        assert_eq!(redact_error_for_audit("(at 'x')."), "(at '…').");
         // 閉じた後に空白が続く引用符は、そこまでで伏せるのを終える（MySQL）
         assert_eq!(
             redact_error_for_audit("Incorrect integer value: 'abc' for column 'n' at row 1"),
