@@ -47,13 +47,19 @@ fn next_rollover(rotation: &LogRotation, now: &DateTime<Local>) -> Option<DateTi
 }
 
 /// 夏時間の切り替えで、その時刻がローカル時刻に存在しない場合は、
-/// 存在する次の正時を使う。
+/// 存在する最初の時刻（分の単位）を使う。
 fn first_existing_local_time(start: NaiveDateTime) -> Option<DateTime<Local>> {
-    (0..48).find_map(|h| {
-        Local
-            .from_local_datetime(&(start + Duration::hours(h)))
-            .earliest()
-    })
+    first_existing_time(start, |time| Local.from_local_datetime(&time).earliest())
+}
+
+/// `start`から1分ずつ進め、`resolve`が時刻を返す最初の時刻（48時間まで）。
+/// 1時間ずつ進めると、30分だけ飛ぶ夏時間（`Australia/Lord_Howe`は02:00から
+/// 02:30）で03:00になり、02:30〜02:59のログが前の時間のファイルに入る（#744）
+fn first_existing_time<T>(
+    start: NaiveDateTime,
+    resolve: impl Fn(NaiveDateTime) -> Option<T>,
+) -> Option<T> {
+    (0..48 * 60).find_map(|minutes| resolve(start + Duration::minutes(minutes)))
 }
 
 /// ログのファイルを追記で開く（#543）。Unix系では、新しく作るファイルを
@@ -92,6 +98,9 @@ pub(crate) struct LocalRollingAppender {
     active_path: Arc<Mutex<PathBuf>>,
     /// 切り替えたときに新しいファイルの先頭に書く行（#472）
     rollover_header: Option<RolloverHeader>,
+    /// 切り替えたが、まだ書けていない先頭の行（#744。書き込みが失敗しても
+    /// 失わず、次の書き込みで書く）
+    pending_header: Option<String>,
 }
 
 impl LocalRollingAppender {
@@ -122,6 +131,7 @@ impl LocalRollingAppender {
             next_rollover: next_rollover(rotation, &now),
             active_path: Arc::new(Mutex::new(path)),
             rollover_header: None,
+            pending_header: None,
         })
     }
 
@@ -134,7 +144,8 @@ impl LocalRollingAppender {
         self
     }
 
-    /// 今書いているファイルの名前
+    /// 今書いているファイルの名前（テストで確かめる）
+    #[cfg(test)]
     pub(crate) fn current_file_name(&self) -> &str {
         &self.current_name
     }
@@ -185,23 +196,37 @@ impl LocalRollingAppender {
 
 impl Write for LocalRollingAppender {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        match self.roll_if_needed() {
-            // 切り替えたときは、先頭の行とこの1件のログを1回で書く
-            // （同じファイルに書く別のプロセスの行と混ざらないように）
-            Some(header) => {
-                let mut bytes = header.into_bytes();
-                bytes.extend_from_slice(buf);
-                self.file.write_all(&bytes)?;
-            }
-            // 1件のログを1回で書く（途中で分けない）
-            None => self.file.write_all(buf)?,
+        if let Some(header) = self.roll_if_needed() {
+            self.pending_header = Some(header);
         }
+        write_with_header(&mut self.file, &mut self.pending_header, buf)?;
         Ok(buf.len())
     }
 
     fn flush(&mut self) -> io::Result<()> {
         self.file.flush()
     }
+}
+
+/// 1件のログ（`buf`）を1回で書く（途中で分けない）。切り替えた後の先頭の
+/// 行（`pending`）があれば、その後に続けて1回で書く（同じファイルに書く
+/// 別のプロセスの行と混ざらないように）。書けたら`pending`を消し、失敗
+/// したら残す（#744。次の書き込みで先頭の行を書く）
+fn write_with_header(
+    file: &mut impl Write,
+    pending: &mut Option<String>,
+    buf: &[u8],
+) -> io::Result<()> {
+    match pending.as_deref() {
+        Some(header) => {
+            let mut bytes = header.as_bytes().to_vec();
+            bytes.extend_from_slice(buf);
+            file.write_all(&bytes)?;
+            *pending = None;
+        }
+        None => file.write_all(buf)?,
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -448,6 +473,68 @@ mod tests {
             read(dir.path(), "mcp-rs.log.2026-01-11"),
             "=== continued at 2026-01-11T00:05 / log: mcp-rs.log.2026-01-11 ===\nafter 1\nafter 2\n"
         );
+    }
+
+    /// 夏時間で時刻が飛んだら、飛んだ後の最初の時刻で切り替える（#744）。
+    /// 30分だけ飛ぶ地域（02:00〜02:29が無い）でも、03:00ではなく02:30
+    #[test]
+    fn test_first_existing_time_after_a_gap() {
+        let at = |h: u32, m: u32| {
+            chrono::NaiveDate::from_ymd_opt(2026, 10, 4)
+                .unwrap()
+                .and_hms_opt(h, m, 0)
+                .unwrap()
+        };
+        let skip = |from: NaiveDateTime, to: NaiveDateTime| {
+            move |time: NaiveDateTime| (time < from || time >= to).then_some(time)
+        };
+        assert_eq!(
+            first_existing_time(at(2, 0), skip(at(2, 0), at(2, 30))),
+            Some(at(2, 30))
+        );
+        assert_eq!(
+            first_existing_time(at(2, 0), skip(at(2, 0), at(3, 0))),
+            Some(at(3, 0))
+        );
+        // 時刻が飛ばない普通の日は、そのまま
+        assert_eq!(first_existing_time(at(2, 0), Some), Some(at(2, 0)));
+        assert_eq!(
+            first_existing_time(at(2, 0), |_| None::<NaiveDateTime>),
+            None
+        );
+    }
+
+    /// 書き込みが失敗しても、先頭の行は失わず、次に書けたときに書く（#744）
+    #[test]
+    fn test_pending_header_survives_a_failed_write() {
+        struct Flaky {
+            fail: bool,
+            written: Vec<u8>,
+        }
+        impl Write for Flaky {
+            fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+                if self.fail {
+                    return Err(io::Error::other("disk full"));
+                }
+                self.written.extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut file = Flaky {
+            fail: true,
+            written: Vec::new(),
+        };
+        let mut pending = Some("=== continued ===\n".to_string());
+        assert!(write_with_header(&mut file, &mut pending, b"lost\n").is_err());
+        assert!(pending.is_some());
+        file.fail = false;
+        write_with_header(&mut file, &mut pending, b"next\n").unwrap();
+        assert!(pending.is_none());
+        write_with_header(&mut file, &mut pending, b"more\n").unwrap();
+        assert_eq!(file.written, b"=== continued ===\nnext\nmore\n");
     }
 
     /// 切り替えの時刻は過ぎたが、時計が戻っていて今のファイル以前の名前に
