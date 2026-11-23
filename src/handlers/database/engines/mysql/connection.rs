@@ -320,16 +320,26 @@ impl MySqlConnection {
         let user = self.opts.user().unwrap_or_default();
         let kill = async {
             let mut conn = Conn::new(self.opts.clone()).await?;
-            let found: Option<(Option<String>, Option<String>, Option<String>)> = conn
+            let found: Option<(Option<String>, Option<String>)> = conn
                 .exec_first(
-                    format!(
-                        "SELECT USER, INFO, {} FROM information_schema.PROCESSLIST WHERE ID = ?",
-                        self.server.server_identity_expr()
-                    ),
+                    "SELECT USER, INFO FROM information_schema.PROCESSLIST WHERE ID = ?",
                     (id,),
                 )
                 .await?;
-            let found = found.map(|(user, info, server)| ProcessRow { user, info, server });
+            // 届いたサーバーは、別に読む。読めなくても（変数を読めない構成）、
+            // 文の始めで確かめる（PR #735のレビュー）
+            let server = match found {
+                Some(_) => conn
+                    .query_first::<String, _>(format!(
+                        "SELECT {}",
+                        self.server.server_identity_expr()
+                    ))
+                    .await
+                    .ok()
+                    .flatten(),
+                None => None,
+            };
+            let found = found.map(|(user, info)| ProcessRow { user, info, server });
             let ours = may_kill(found, user, target);
             if ours {
                 conn.query_drop(format!("KILL QUERY {id}")).await?;
