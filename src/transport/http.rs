@@ -2097,13 +2097,13 @@ async fn handle_jsonrpc_request(
         let (response_tx, response_rx) = tokio::sync::oneshot::channel();
         {
             let mut pending = state.pending_responses.write().await;
+            // ロックを待つ間に期限が切れていれば、登録せずに断る（PR #726の
+            // レビュー）。登録した後に消すと、同じ`id`で並行して届いた別の
+            // リクエストの登録を消してしまう
+            if let Some(response) = expired_token_response(&state, expires_at) {
+                return Ok(response);
+            }
             pending.insert(id.clone(), response_tx);
-        }
-
-        // ロックを待つ間に期限が切れていれば、送らない（PR #726のレビュー）
-        if let Some(response) = expired_token_response(&state, expires_at) {
-            state.pending_responses.write().await.remove(&id);
-            return Ok(response);
         }
         if state.request_sender.send(request_str).await.is_err() {
             state.pending_responses.write().await.remove(&id);
