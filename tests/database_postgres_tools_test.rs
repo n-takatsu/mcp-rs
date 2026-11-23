@@ -26,16 +26,28 @@ async fn test_database() -> Option<(String, PgPool)> {
     Some((url, pool))
 }
 
+/// 準備用のプール（sqlxがURLを読む）と同じように読む（#737）: ユーザー名・
+/// パスワード・データベース名の`%40`等を戻し、`sslmode`があれば使う
 fn settings_from_url(url: &str) -> DatabaseSettings {
     let url = url::Url::parse(url).expect("TEST_DATABASE_URL must be a URL");
+    let decode = |text: &str| {
+        urlencoding::decode(text)
+            .expect("TEST_DATABASE_URL must be valid UTF-8 after decoding")
+            .into_owned()
+    };
+    let ssl_mode = url
+        .query_pairs()
+        .find(|(key, _)| key == "sslmode")
+        .map(|(_, value)| value.into_owned())
+        .unwrap_or_else(|| "disable".to_string());
     DatabaseSettings {
         engine: "postgresql".to_string(),
         host: url.host_str().map(str::to_string),
         port: url.port(),
-        database: url.path().trim_start_matches('/').to_string(),
-        username: url.username().to_string(),
-        password: url.password().map(str::to_string),
-        ssl_mode: Some("disable".to_string()),
+        database: decode(url.path().trim_start_matches('/')),
+        username: decode(url.username()),
+        password: url.password().map(decode),
+        ssl_mode: Some(ssl_mode),
         ..Default::default()
     }
 }
@@ -312,6 +324,17 @@ async fn execute_query_cannot_write() {
     .await
     .unwrap_err();
     assert!(err.contains("read-only"), "{err}");
+    // 接続の既定は読み取り専用でなくても（`off`）、execute_queryの中は
+    // 読み取り専用（#737。上の拒否だけでは、既定に頼っているのか分からない）
+    let settings = call(
+        &handler,
+        "execute_query",
+        json!({ "sql": "SELECT current_setting('default_transaction_read_only'), \
+                        current_setting('transaction_read_only')" }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(settings["rows"], json!([["off", "on"]]));
 
     let count: i64 = sqlx::query_scalar(&format!("SELECT count(*) FROM {table}"))
         .fetch_one(&pool)
@@ -454,7 +477,14 @@ async fn string_and_null_parameters_follow_the_column_type() {
     // 同じSQLを、文字列と数値で続けて呼んでも動く（準備済みの文は、推論
     // された型で使い回される。int4のパラメーターに、文字列も数値も合わせる）
     let sql = format!("SELECT count(*)::int AS c FROM {table} WHERE n IS DISTINCT FROM $1");
-    for value in [json!("5"), json!(5), json!(5.0), json!(null)] {
+    // 表の1行の`n`はNULLなので、5とは異なり（1件）、NULLとは異ならない
+    // （0件）。件数で比べる（#737）
+    for (value, expected) in [
+        (json!("5"), 1),
+        (json!(5), 1),
+        (json!(5.0), 1),
+        (json!(null), 0),
+    ] {
         let result = call(
             &handler,
             "execute_query",
@@ -462,7 +492,7 @@ async fn string_and_null_parameters_follow_the_column_type() {
         )
         .await
         .unwrap_or_else(|e| panic!("{value}: {e}"));
-        assert!(result["rows"][0][0].is_number(), "{value}");
+        assert_eq!(result["rows"][0][0], json!(expected), "{value}");
     }
 
     // 変換できない値は、どのパラメーターかを示すエラー
