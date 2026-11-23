@@ -1401,17 +1401,17 @@ fn former_cwd_config_files(dir: &std::path::Path) -> Vec<String> {
 }
 
 /// 設定ファイルが見つからないときのエラーの文（#541）。`former`は、今の
-/// フォルダにあったが読まなかったファイル。案内するパスは絶対パスにする
-/// （相対パスの`--config`は、起動したフォルダから読むので、同じ問題が残る。
-/// PR #551のレビュー）
-fn no_config_file_message(home: Option<&str>, former: &[String]) -> String {
+/// フォルダ（`dir`）にあったが読まなかったファイル。案内するパスは絶対パスに
+/// する（相対パスの`--config`は、起動したフォルダから読むので、同じ問題が
+/// 残る。PR #551のレビュー）
+fn no_config_file_message(home: Option<&str>, dir: &std::path::Path, former: &[String]) -> String {
     let user_config =
         expand_home_dir(USER_CONFIG_PATH, home).unwrap_or_else(|| USER_CONFIG_PATH.to_string());
     let mut message = format!(
         "no config file: run `mcp-rs init` to create {user_config}, or pass one with --config <absolute path>"
     );
     if let Some(first) = former.first() {
-        let absolute = std::path::absolute(first)
+        let absolute = std::path::absolute(dir.join(first))
             .map(|p| p.display().to_string())
             .unwrap_or_else(|_| first.clone());
         message.push_str(&format!(
@@ -2073,10 +2073,9 @@ impl McpConfig {
         // なら設定なしで続ける、#667）。今のフォルダに以前の名前の設定ファイルが
         // あれば、読まずに、`--config`の付け方を案内する
         let missing_config_file = (!config_file_found && !Self::has_env_config()).then(|| {
-            no_config_file_message(
-                home.as_deref(),
-                &former_cwd_config_files(std::path::Path::new(".")),
-            )
+            // 今のフォルダ（空のパスに名前をつなぐと、以前と同じ相対パスになる）
+            let current = std::path::Path::new("");
+            no_config_file_message(home.as_deref(), current, &former_cwd_config_files(current))
         });
         if let Some(message) = &missing_config_file {
             if !allow_missing_file {
@@ -4078,7 +4077,7 @@ enabled = false
     fn test_former_cwd_config_files_are_only_mentioned() {
         let dir = tempfile::tempdir().unwrap();
         assert!(former_cwd_config_files(dir.path()).is_empty());
-        let message = no_config_file_message(Some("/home/u"), &[]);
+        let message = no_config_file_message(Some("/home/u"), dir.path(), &[]);
         assert!(message.contains("--config <absolute path>"), "{message}");
         assert!(message.contains("`mcp-rs init`"), "{message}");
         assert!(message.contains("config.toml"), "{message}");
@@ -4089,13 +4088,15 @@ enabled = false
         std::fs::write(dir.path().join("config").join("mcp.toml"), "").unwrap();
         let former = former_cwd_config_files(dir.path());
         assert_eq!(former, vec!["config.toml", "config/mcp.toml"]);
-        let message = no_config_file_message(Some("/home/u"), &former);
+        let message = no_config_file_message(Some("/home/u"), dir.path(), &former);
         assert!(
             message.contains("is not read without --config"),
             "{message}"
         );
-        // 案内は絶対パス（相対パスは、起動したフォルダから読むため）
-        let absolute = std::path::absolute("config.toml").unwrap();
+        // 案内は絶対パス（相対パスは、起動したフォルダから読むため）。見つけた
+        // フォルダのファイルを指す（#724。以前は作業フォルダから作ったので、
+        // 確かめたいことを確かめていなかった）
+        let absolute = std::path::absolute(dir.path().join("config.toml")).unwrap();
         assert!(
             message.contains(&format!("--config {}", absolute.display())),
             "{message}"

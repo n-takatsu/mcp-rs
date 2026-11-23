@@ -115,8 +115,13 @@ def problems(labels: list[str]) -> list[str]:
     return found
 
 
-def check(issue: Issue, apply: Optional[Callable[[int, list[str]], None]]) -> Result:
-    """1件のIssueを確かめる。applyがあれば、先に既定を付ける（--fix）。"""
+def check(
+    issue: Issue, apply: Optional[Callable[[int, list[str]], Optional[list[str]]]]
+) -> Result:
+    """1件のIssueを確かめる。applyがあれば、先に既定を付ける（--fix）。
+
+    applyが付けた後の実際のラベルを返せば、それで確かめる（#724。読んでから
+    付けるまでの間に、ほかの人が優先度を付けると、2つになり得る）。"""
     if any(label in EXCLUDED_LABELS for label in issue.labels):
         return Result(issue, excluded=True)
     result = Result(issue)
@@ -124,9 +129,9 @@ def check(issue: Issue, apply: Optional[Callable[[int, list[str]], None]]) -> Re
     add = defaults_to_add(labels)
     if apply is not None and add:
         try:
-            apply(issue.number, add)
+            after = apply(issue.number, add)
             result.added = add
-            labels += add
+            labels = list(after) if after is not None else labels + add
         except Exception as e:  # 1件で止めず、残りのIssueも確かめる
             result.edit_error = str(e)
             result.problems.append(f"既定のラベルを付けられなかった（{', '.join(add)}）")
@@ -165,8 +170,10 @@ def fetch_open_issues() -> list[Issue]:
     return [to_issue(d) for d in data]
 
 
-def add_labels(number: int, labels: list[str]) -> None:
+def add_labels(number: int, labels: list[str]) -> list[str]:
+    """ラベルを付け、付けた後の実際のラベルを返す（#724）。"""
     gh("issue", "edit", str(number), "--add-label", ",".join(labels))
+    return fetch_issue(number).labels
 
 
 # --- 出力 -------------------------------------------------------------------

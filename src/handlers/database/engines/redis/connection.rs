@@ -14,6 +14,39 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+/// `use_tls`を使えるか（PR #730のレビュー）。redisクレートのTLSの機能を
+/// 有効にしていないので、`rediss://`ではつなげない。以前は`Client::open`が
+/// 「can't connect with TLS, the feature is not enabled」で失敗し、設定の
+/// どこが問題かが分かりにくかった
+fn check_tls_supported(config: &RedisConfig) -> Result<(), DatabaseError> {
+    if config.use_tls {
+        return Err(DatabaseError::ConfigurationError(
+            "Redis use_tls = true is not supported: this build of mcp-rs has no TLS support for Redis. Connect without TLS (for example through a local TLS tunnel), or set use_tls = false".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// 接続先のURL。パスワードはURLの形に符号化する（#724、PR #730のレビュー。
+/// redisクレートはURLの`%`の符号を戻すので、そのまま入れると、`@`・`%`・`/`
+/// 等を含むパスワードが別の値になり、認証に失敗した）
+fn redis_url(config: &RedisConfig) -> String {
+    let scheme = if config.use_tls { "rediss" } else { "redis" };
+    match &config.password {
+        Some(password) => format!(
+            "{scheme}://:{}@{}:{}/{}",
+            urlencoding::encode(password),
+            config.host,
+            config.port,
+            config.database
+        ),
+        None => format!(
+            "{scheme}://{}:{}/{}",
+            config.host, config.port, config.database
+        ),
+    }
+}
+
 /// Redis connection pool manager
 pub struct RedisConnection {
     config: RedisConfig,
@@ -44,30 +77,10 @@ impl RedisConnection {
             ));
         }
 
+        check_tls_supported(config)?;
+
         // Build Redis connection URL
-        let url = if let Some(ref password) = config.password {
-            if config.use_tls {
-                format!(
-                    "rediss://:{}@{}:{}/{}",
-                    password, config.host, config.port, config.database
-                )
-            } else {
-                format!(
-                    "redis://:{}@{}:{}/{}",
-                    password, config.host, config.port, config.database
-                )
-            }
-        } else if config.use_tls {
-            format!(
-                "rediss://{}:{}/{}",
-                config.host, config.port, config.database
-            )
-        } else {
-            format!(
-                "redis://{}:{}/{}",
-                config.host, config.port, config.database
-            )
-        };
+        let url = redis_url(config);
 
         // Create Redis client
         let client = Client::open(url).map_err(|e| {
@@ -660,6 +673,44 @@ fn redis_value_to_db_value(redis_val: &RedisValue) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// パスワードは、URLの形に符号化し、redisクレートが戻すと元の値になる
+    /// （#724、PR #730のレビュー）
+    #[test]
+    fn test_redis_url_encodes_the_password() {
+        let config = |password: Option<&str>, use_tls: bool| RedisConfig {
+            host: "localhost".to_string(),
+            port: 6380,
+            database: 2,
+            password: password.map(str::to_string),
+            use_tls,
+            ..RedisConfig::default()
+        };
+        assert_eq!(redis_url(&config(None, false)), "redis://localhost:6380/2");
+        assert_eq!(redis_url(&config(None, true)), "rediss://localhost:6380/2");
+        for password in ["plain", "p@ss", "p%40ss", "a/b:c#d?e"] {
+            let url = redis_url(&config(Some(password), false));
+            let info = redis::IntoConnectionInfo::into_connection_info(url.as_str()).unwrap();
+            assert_eq!(info.redis.password.as_deref(), Some(password), "{url}");
+            assert_eq!(info.redis.db, 2, "{url}");
+        }
+    }
+
+    /// `use_tls = true`は、つなぐ前に、分かる理由で断る（PR #730のレビュー）
+    #[tokio::test]
+    async fn test_tls_is_rejected_before_connecting() {
+        let config = RedisConfig {
+            host: "localhost".to_string(),
+            use_tls: true,
+            ..RedisConfig::default()
+        };
+        let error = RedisConnection::connect(&config).await.err().unwrap();
+        assert!(
+            matches!(&error, DatabaseError::ConfigurationError(m) if m.contains("use_tls")),
+            "{error:?}"
+        );
+        assert!(check_tls_supported(&RedisConfig::default()).is_ok());
+    }
 
     #[tokio::test]
     #[ignore] // Requires actual Redis server

@@ -128,8 +128,13 @@ jobs:
             echo "### 🚨 High Priority Issues" >> health_report.md
             echo "- **$high_issues high priority issues** require attention" >> health_report.md
 
-            gh issue list --limit 1000 --label "priority: high" --state open --json number,title,url \
+            # 本文に載せるのは30件まで（#724。数百件になると、Issueの本文の
+            # 上限（65,536文字）を超え得る）。件数は上に、全体はリンク先に
+            gh issue list --limit 30 --label "priority: high" --state open --json number,title,url \
               --jq '.[] | "- [#" + (.number|tostring) + "](" + .url + "): " + .title' >> health_report.md
+            if [[ $high_issues -gt 30 ]]; then
+              echo "- …and $((high_issues - 30)) more (see High Priority Issues below)" >> health_report.md
+            fi
             echo "" >> health_report.md
           fi
 

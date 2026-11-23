@@ -191,6 +191,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Redisのエンジン（`redis-backend`）で、パスワードに`@`・`%`・`/`等が
+  あっても、つなげる（#724、PR #730のレビュー）。以前は、パスワードを接続の
+  URLにそのまま入れ、redisクレートが`%`の符号を戻すので、別の値になって
+  認証に失敗した。また、`use_tls = true`は、つなぐ前に「このビルドはRedisの
+  TLSを使えない」と断る（以前は、redisクレートのTLSの機能が無いという
+  分かりにくいエラーで失敗した）
 - データベースの`execute_query`で、受け取った行がバイト数の上限
   （`max_result_bytes`）を超えたら、`truncated: true`にする（#724）。
   以前は、列の多い大きな行が1つだけ残り、値を切り詰めなかったとき、
