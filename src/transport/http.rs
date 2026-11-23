@@ -3783,16 +3783,23 @@ fn validate_forwarded_tls_version(
     }
 }
 
+/// `actual`が`minimum`以上か。どちらかを読めなければ`false`（断る側。PR #729の
+/// レビュー。以前は読めないと`true`で、nginxの`$ssl_protocol`が送る
+/// `TLSv1.2`を読めず、`min_tls_version = "1.3"`でも通していた）
 fn is_tls_version_at_least(actual: &str, minimum: &str) -> bool {
-    parse_tls_version(actual)
-        .zip(parse_tls_version(minimum))
-        .map(|(actual_num, min_num)| actual_num >= min_num)
-        .unwrap_or(true)
+    match (parse_tls_version(actual), parse_tls_version(minimum)) {
+        (Some(actual_num), Some(min_num)) => actual_num >= min_num,
+        _ => false,
+    }
 }
 
+/// TLSの版を数にする。`1.3`・`TLS1.3`・`TLSv1.3`（nginxの`$ssl_protocol`）・
+/// `TLS 1.3`・`TLSv1_3`等を読む
 fn parse_tls_version(version: &str) -> Option<f32> {
-    let normalized = version.trim().to_ascii_lowercase().replace("tls", "");
-    normalized.parse::<f32>().ok()
+    let lower = version.trim().to_ascii_lowercase();
+    let number = lower.strip_prefix("tls").unwrap_or(&lower);
+    let number = number.trim_start_matches(['v', ' ', '_']).replace('_', ".");
+    number.parse::<f32>().ok()
 }
 
 fn normalize_fingerprint(fingerprint: &str) -> Option<String> {
@@ -4001,6 +4008,16 @@ mod tests {
         assert!(is_tls_version_at_least("1.3", "1.3"));
         assert!(is_tls_version_at_least("1.4", "1.3"));
         assert!(!is_tls_version_at_least("1.2", "1.3"));
+        // プロキシの書き方（nginxの`$ssl_protocol`等）も読む（PR #729のレビュー。
+        // 以前は`TLSv1.2`を読めず、通していた）
+        assert!(!is_tls_version_at_least("TLSv1.2", "1.3"));
+        assert!(is_tls_version_at_least("TLSv1.3", "1.3"));
+        assert!(!is_tls_version_at_least("TLS 1.2", "1.3"));
+        assert!(!is_tls_version_at_least("TLSv1_2", "1.3"));
+        assert!(is_tls_version_at_least("tls1.3", "1.3"));
+        // 読めない値は断る
+        assert!(!is_tls_version_at_least("SSLv3", "1.3"));
+        assert!(!is_tls_version_at_least("", "1.3"));
     }
 
     #[test]

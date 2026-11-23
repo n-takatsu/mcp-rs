@@ -471,6 +471,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- HTTPで、プロキシが送るTLSの版（`X-Forwarded-TLS-Version`・
+  `X-SSL-Protocol`）を、`TLSv1.2`（nginxの`$ssl_protocol`）・`TLS 1.2`の形でも
+  読み、読めない値は断る（#724、PR #729のレビュー）。以前は`1.2`・`TLS1.2`の
+  形しか読めず、読めない値を通していたので、`min_tls_version = "1.3"`でも、
+  nginxの後ろでTLS 1.2の接続を受け付けていた
 - HTTPで、認証の失敗が続くアドレスを止める仕組み（#596、1分に20回）が、
   覚えるアドレスの数の上限（1万件）に達すると、新しいアドレスを数えずに
   通していた（#705）。たくさんのアドレス（IPv6等）で表を埋めると、後の

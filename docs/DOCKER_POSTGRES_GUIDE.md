@@ -44,7 +44,19 @@ docker compose -f configs/docker/docker-compose.postgres.yml up
 
 # バックグラウンド起動
 docker compose -f configs/docker/docker-compose.postgres.yml up -d
+
+# Primaryだけを起動（セカンダリ・pgAdminを使わないとき）
+docker compose -f configs/docker/docker-compose.postgres.yml up -d postgres-primary
 ```
+
+> **セカンダリ（`postgres-secondary`）は、今は起動しません。** レプリケーションの設定（`scripts/postgres/standby.sh`）が PostgreSQL 15 に合っていないためです。Primary を使うテストには、上の「Primaryだけを起動」を使ってください。
+>
+> **初期化のSQL（`scripts/postgres/init.sql`・`test-schema.sql`）は、ボリュームが空のときの最初の起動でだけ実行されます。** 以前の版で初期化が途中で止まったボリュームが残っていると、スキーマが足りないままになります。その場合は、ボリュームごと消してから起動し直してください（データも消えます）:
+>
+> ```bash
+> docker compose -f configs/docker/docker-compose.postgres.yml down -v
+> docker compose -f configs/docker/docker-compose.postgres.yml up -d postgres-primary
+> ```
 
 ### 3. 接続確認
 
