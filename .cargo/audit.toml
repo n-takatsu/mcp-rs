@@ -34,8 +34,9 @@ ignore = [
     #               mcp-rs itself does not open SQLite: sqlx's "sqlite" feature
     #               is always built in (the "database" feature is on by
     #               default), but [database] refuses engine = "sqlite" (#528),
-    #               so only library code that uses SqliteEngine directly can
-    #               open a database file (#746)
+    #               so only library code that opens SQLite itself is exposed:
+    #               the public SQLite API (SqliteEngine, SqliteConnection::new,
+    #               ...) or sqlx's SQLite directly (#746)
     # - Remove this entry when sqlx allows libsqlite3-sys >= 0.39.0 (#449)
     "RUSTSEC-2026-0459",
 

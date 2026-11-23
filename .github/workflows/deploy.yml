@@ -27,6 +27,9 @@ on:
 # から、そのタグの実行をやり直す:
 #   gh run list --workflow deploy.yml --branch vX.Y.Z
 #   gh run rerun <実行のID>
+# やり直す前に、それより新しいvX.Y.Zのリリースが無いか確かめる。新しい
+# リリースがあれば、古いタグはやり直さない（latest・X等の共有のタグが古い
+# 版に戻るため）。共有のタグを直すなら、いちばん新しいタグの実行をやり直す
 concurrency:
   group: production-deployment
   cancel-in-progress: false
