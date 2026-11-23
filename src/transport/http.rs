@@ -987,17 +987,22 @@ impl HttpTransport {
         if let Some(reason) = unauthenticated_external_bind(&self.config) {
             return Err(Error::TransportError(TransportError::Configuration(reason)));
         }
-        if self.config.max_connections == 0 {
+        // 上限は`Semaphore`の許す数まで（#724。超えると、起動の後にパニック
+        // して、何も受け付けなかった）
+        let max_permits = tokio::sync::Semaphore::MAX_PERMITS;
+        if self.config.max_connections == 0 || self.config.max_connections > max_permits {
             return Err(Error::TransportError(TransportError::Configuration(
-                "max_connections must be greater than 0".to_string(),
+                format!("max_connections must be between 1 and {max_permits}"),
             )));
         }
 
-        if self.config.enable_websocket_upgrade && self.config.websocket_max_connections == 0 {
-            return Err(Error::TransportError(TransportError::Configuration(
-                "websocket_max_connections must be greater than 0 when enable_websocket_upgrade is enabled"
-                    .to_string(),
-            )));
+        // WebSocketを使わなくても、`Semaphore`は作るので、上は確かめる
+        if self.config.websocket_max_connections > max_permits
+            || (self.config.enable_websocket_upgrade && self.config.websocket_max_connections == 0)
+        {
+            return Err(Error::TransportError(TransportError::Configuration(format!(
+                "websocket_max_connections must be between 1 and {max_permits} when enable_websocket_upgrade is enabled"
+            ))));
         }
 
         if self.config.auth_enabled && self.config.api_keys.is_empty() {
@@ -1954,6 +1959,15 @@ async fn handle_jsonrpc_request(
         }
         Err(rejection) => return Err(rejection.status()),
     };
+    // 本文を読んでいる間に、OAuthのトークンの期限が切れていれば、処理しない
+    // （#724。認証は本文を読む前に確かめるので、ゆっくり送ると、期限の後に
+    // 処理を始められた）
+    if authenticated
+        .expires_at
+        .is_some_and(|expires_at| unix_now_secs() > expires_at)
+    {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
     // プロキシの付けるヘッダーは、信頼するプロキシからのものだけを使う（#543）
     let no_headers = HeaderMap::new();
     let forwarded = forwarded_headers(&state, remote_addr, &headers, &no_headers);
@@ -2384,7 +2398,12 @@ impl AuthFailureLimiter {
 async fn audit_auth_failure(state: &HttpTransportState, remote_addr: SocketAddr, reason: &str) {
     let (record, report) = state.auth_failure_audit.admit(Instant::now());
     if let Some(report) = report {
-        audit_suppressed_auth_failures(&state.audit_logger, report).await;
+        // このリクエストの処理とは別に書く（#724）。取り出した件数は、ここで
+        // 書かないと失われるので、接続が切れて処理が破棄されても書き終える
+        let audit_logger = state.audit_logger.clone();
+        tokio::spawn(async move {
+            audit_suppressed_auth_failures(&audit_logger, report).await;
+        });
     }
     if !record {
         return;
@@ -2669,6 +2688,17 @@ fn parse_query_params(query: Option<&str>) -> HashMap<String, String> {
 /// leftmost one was used. If the header has an entry that is not an IP
 /// address, or neither header is usable, the peer address is used.
 fn forwarded_client_ip(
+    remote_addr: SocketAddr,
+    headers: &HeaderMap,
+    trusted_proxies: Option<&[IpNet]>,
+) -> IpAddr {
+    // IPv4をIPv6で表したアドレス（`::ffff:192.0.2.1`）は、IPv4にそろえる
+    // （#724。ブロックリスト等で、同じアドレスが別のものとして数えられた）
+    forwarded_client_ip_as_sent(remote_addr, headers, trusted_proxies).to_canonical()
+}
+
+/// `forwarded_client_ip`の、表記をそろえる前の値
+fn forwarded_client_ip_as_sent(
     remote_addr: SocketAddr,
     headers: &HeaderMap,
     trusted_proxies: Option<&[IpNet]>,
@@ -3238,12 +3268,15 @@ async fn next_ws_event(
             None => std::future::pending().await,
         }
     };
+    // トークンの期限を先に見る（#724）。期限とメッセージが同時に準備できた
+    // とき、メッセージを選ぶと、期限の後のメッセージを処理してしまう
     tokio::select! {
+        biased;
+        _ = sleep_until_or_forever(token_deadline) => WsEvent::TokenExpired,
         next = receiver.next() => match next {
             Some(msg_result) => WsEvent::Message(msg_result),
             None => WsEvent::Closed,
         },
-        _ = sleep_until_or_forever(token_deadline) => WsEvent::TokenExpired,
         _ = sleep_until_or_forever(idle_deadline) => WsEvent::IdleTimeout,
         _ = ping_due => WsEvent::PingDue,
     }
@@ -3306,12 +3339,17 @@ async fn close_ws(
     .await;
 }
 
-/// UNIX時刻（秒）を、tokioの時刻にする。過ぎていれば今
-fn unix_time_to_instant(unix_seconds: u64) -> tokio::time::Instant {
-    let now = std::time::SystemTime::now()
+/// 今のUNIX時刻（秒）
+fn unix_now_secs() -> u64 {
+    std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
-        .unwrap_or(0);
+        .unwrap_or(0)
+}
+
+/// UNIX時刻（秒）を、tokioの時刻にする。過ぎていれば今
+fn unix_time_to_instant(unix_seconds: u64) -> tokio::time::Instant {
+    let now = unix_now_secs();
     tokio::time::Instant::now() + std::time::Duration::from_secs(unix_seconds.saturating_sub(now))
 }
 
@@ -3709,13 +3747,36 @@ fn parse_trusted_proxies(items: &[String]) -> std::result::Result<Vec<IpNet>, St
         .iter()
         .map(|item| {
             let item = item.trim();
-            item.parse::<IpNet>()
+            let net = item
+                .parse::<IpNet>()
                 .or_else(|_| item.parse::<IpAddr>().map(IpNet::from))
                 .map_err(|_| {
                     format!("trusted_proxies: '{item}' is not an IP address or a CIDR range")
-                })
+                })?;
+            canonical_net(net).map_err(|e| format!("trusted_proxies: '{item}' {e}"))
         })
         .collect()
+}
+
+/// IPv4をIPv6で表した範囲（`::ffff:10.0.0.5/128`）を、IPv4の範囲にする
+/// （#724）。接続元は`to_canonical()`でIPv4にして比べるので、IPv6のままでは
+/// 一致しなかった
+fn canonical_net(net: IpNet) -> std::result::Result<IpNet, String> {
+    let IpNet::V6(v6) = net else {
+        return Ok(net);
+    };
+    // 96ビットより短い範囲（`::/64`等）は、IPv6の範囲のまま。接続元は
+    // IPv4にそろえてから比べるので、その中のIPv4を表すアドレスには当たらない
+    let Some(v4) = v6
+        .network()
+        .to_ipv4_mapped()
+        .filter(|_| v6.prefix_len() >= 96)
+    else {
+        return Ok(net);
+    };
+    ipnet::Ipv4Net::new(v4, v6.prefix_len() - 96)
+        .map(|v4| IpNet::V4(v4.trunc()))
+        .map_err(|e| e.to_string())
 }
 
 /// 接続元が、信頼するプロキシか（#543）。IPv4をIPv6で表したアドレス
@@ -4656,6 +4717,67 @@ mod tests {
         assert!(is_trusted_proxy(&parsed, "192.168.3.4".parse().unwrap()));
         assert!(is_trusted_proxy(&parsed, "fd12::1".parse().unwrap()));
         assert!(parse_trusted_proxies(&["proxy.example.com".to_string()]).is_err());
+        // IPv4をIPv6で表した範囲は、IPv4の範囲にする（#724）
+        let mapped = proxies(&["::ffff:10.0.0.5/128", "::ffff:192.168.0.0/112"]);
+        assert!(is_trusted_proxy(&mapped, "10.0.0.5".parse().unwrap()));
+        assert!(is_trusted_proxy(
+            &mapped,
+            "::ffff:10.0.0.5".parse().unwrap()
+        ));
+        assert!(is_trusted_proxy(&mapped, "192.168.7.8".parse().unwrap()));
+        assert!(!is_trusted_proxy(&mapped, "10.0.0.6".parse().unwrap()));
+        // 96ビットより短い範囲は、IPv6の範囲のまま
+        let v6 = proxies(&["::/64"]);
+        assert!(is_trusted_proxy(&v6, "::1".parse().unwrap()));
+        assert!(!is_trusted_proxy(&v6, "10.0.0.5".parse().unwrap()));
+    }
+
+    /// プロキシのヘッダーのIPv4をIPv6で表したアドレスは、IPv4にそろえる
+    /// （#724。ブロックリスト等で、同じアドレスを別のものとして数えない）
+    #[test]
+    fn forwarded_client_ip_is_canonical() {
+        let remote_addr: SocketAddr = "10.0.0.5:12345".parse().unwrap();
+        let trusted = proxies(&["10.0.0.5"]);
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-for", "::ffff:198.51.100.1".parse().unwrap());
+        let ip = forwarded_client_ip(remote_addr, &headers, Some(&trusted));
+        assert_eq!(ip, "198.51.100.1".parse::<IpAddr>().unwrap());
+        let mut headers = HeaderMap::new();
+        headers.insert("x-real-ip", "::ffff:198.51.100.2".parse().unwrap());
+        let ip = forwarded_client_ip(remote_addr, &headers, Some(&trusted));
+        assert_eq!(ip, "198.51.100.2".parse::<IpAddr>().unwrap());
+        // 接続元そのものも
+        let mapped: SocketAddr = "[::ffff:203.0.113.9]:1".parse().unwrap();
+        assert_eq!(
+            forwarded_client_ip(mapped, &HeaderMap::new(), None),
+            "203.0.113.9".parse::<IpAddr>().unwrap()
+        );
+    }
+
+    /// 接続数の上限は、`Semaphore`の許す数まで（#724）
+    #[tokio::test]
+    async fn test_start_server_rejects_too_many_connections() {
+        for config in [
+            HttpConfig {
+                max_connections: tokio::sync::Semaphore::MAX_PERMITS + 1,
+                ..HttpConfig::default()
+            },
+            HttpConfig {
+                websocket_max_connections: tokio::sync::Semaphore::MAX_PERMITS + 1,
+                ..HttpConfig::default()
+            },
+        ] {
+            let config = HttpConfig {
+                bind_addr: "127.0.0.1:0".parse().unwrap(),
+                ..config
+            };
+            let transport = HttpTransport::new(config).unwrap();
+            let error = transport.start_server().await.err().unwrap();
+            assert!(
+                error.to_string().contains("must be between 1 and"),
+                "{error}"
+            );
+        }
     }
 
     #[test]
