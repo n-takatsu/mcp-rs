@@ -7088,10 +7088,14 @@ mod tests {
             )
             .await;
             assert_eq!(status, StatusCode::OK, "{body}");
-            assert!(body["result"]["content"][0]["text"]
-                .as_str()
-                .unwrap()
-                .contains("Protocol version: 2026-07-28"));
+            // 認証していない呼び出し元（接続元のIPアドレスがあり、名前が無い）
+            // なので、バージョンだけが返る（#746）
+            let text = body["result"]["content"][0]["text"].as_str().unwrap();
+            assert!(
+                text.starts_with(&format!("mcp-rs {}", env!("CARGO_PKG_VERSION")))
+                    && text.contains("shown only to authenticated callers"),
+                "{text}"
+            );
         }
 
         // ヘッダーと本文が合わない・ヘッダーが無い

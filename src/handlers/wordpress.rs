@@ -1838,6 +1838,17 @@ impl WordPressHandler {
     }
 
     pub fn try_new(config: WordPressConfig) -> Result<Self, String> {
+        // URLにユーザー名・パスワード（`https://user:pass@…`）を書くと、状態の
+        // 表示・エラーにそのまま出るので断る（#746。`mcp-rs init`と同じ）。
+        // エラーには、URLを出さない
+        if url::Url::parse(config.url.trim())
+            .is_ok_and(|url| !url.username().is_empty() || url.password().is_some())
+        {
+            return Err(
+                "handlers.wordpress.url must not contain a user name or password (https://user:pass@...): write the site address only, and put the credentials in username and password (or keyring)"
+                    .to_string(),
+            );
+        }
         // URL検証 - HTTPS強制
         if !config.url.starts_with("https://") {
             return Err(format!(
@@ -6865,6 +6876,40 @@ mod tests {
         let error_msg = result.unwrap_err();
         assert!(error_msg.contains("Insecure URL detected"));
         assert!(error_msg.contains("Only HTTPS connections are allowed"));
+    }
+
+    /// URLのユーザー名・パスワードは断り、エラーにも出さない（#746）
+    #[test]
+    fn test_url_with_credentials_is_refused() {
+        for url in [
+            "https://alice:secret-pass@example.com",
+            "https://alice@example.com",
+            "http://alice:secret-pass@example.com",
+        ] {
+            let config = WordPressConfig {
+                url: url.to_string(),
+                username: "test".to_string(),
+                password: "test".to_string(),
+                enabled: Some(true),
+                timeout_seconds: Some(30),
+                rate_limit: Some(RateLimitConfig::default()),
+                encrypted_credentials: None,
+                keyring: None,
+                upload_allowed_dirs: None,
+                post_types: None,
+                default_site: None,
+                sites: Default::default(),
+            };
+            let error = WordPressHandler::try_new(config).err().unwrap();
+            assert!(
+                error.contains("must not contain a user name or password"),
+                "{error}"
+            );
+            assert!(
+                !error.contains("secret-pass") && !error.contains("alice"),
+                "{error}"
+            );
+        }
     }
 
     #[test]
