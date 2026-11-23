@@ -5,7 +5,7 @@
 
 use super::types::{NonceEntry, ReplayError};
 use base64::Engine;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use rand::{thread_rng, Rng};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -21,6 +21,9 @@ struct NonceStore {
     scopes: HashMap<String, HashMap<String, NonceEntry>>,
     /// すべての呼び出し元の記録の数
     total: usize,
+    /// 記録の中で、いちばん早く期限が切れる時刻（無ければ`None`）。それより
+    /// 前は、消せる記録が無いので、全件を見ない（#724）
+    earliest_expiry: Option<DateTime<Utc>>,
 }
 
 impl NonceStore {
@@ -33,7 +36,33 @@ impl NonceStore {
             !nonces.is_empty()
         });
         self.total = self.scopes.values().map(HashMap::len).sum();
+        self.earliest_expiry = self
+            .scopes
+            .values()
+            .flat_map(HashMap::values)
+            .map(|entry| entry.expires_at)
+            .min();
         before - self.total
+    }
+
+    /// 期限の過ぎた記録があるときだけ、消す（#724）。以前は、上限に達した
+    /// 呼び出し元が送るたびに、書き込みのロックを持ったまま全件を見たので、
+    /// ほかの呼び出し元も待たされた
+    fn remove_expired_if_due(&mut self) -> usize {
+        match self.earliest_expiry {
+            Some(earliest) if earliest <= Utc::now() => self.remove_expired(),
+            _ => 0,
+        }
+    }
+
+    /// 記録を足したときに、いちばん早い期限を更新する
+    fn note_expiry(&mut self, expires_at: DateTime<Utc>) {
+        if self
+            .earliest_expiry
+            .is_none_or(|earliest| expires_at < earliest)
+        {
+            self.earliest_expiry = Some(expires_at);
+        }
     }
 }
 
@@ -119,7 +148,7 @@ impl NonceManager {
         // Check cache size limits
         let caller_count = store.scopes.get(&scope).map_or(0, HashMap::len);
         if caller_count >= self.max_per_caller || store.total >= self.max_cache_size {
-            let removed = store.remove_expired();
+            let removed = store.remove_expired_if_due();
             debug!("Nonce cache full, removed {} expired entries", removed);
 
             let caller_count = store.scopes.get(&scope).map_or(0, HashMap::len);
@@ -139,6 +168,7 @@ impl NonceManager {
 
         // Store the nonce (replacing an expired entry, if any)
         let entry = NonceEntry::new(nonce.to_string(), self.ttl.as_secs(), user_id);
+        store.note_expiry(entry.expires_at);
         if store
             .scopes
             .entry(scope)
@@ -266,6 +296,41 @@ mod tests {
         let long_nonce = "a".repeat(300);
         let result = manager.validate_and_consume(&long_nonce, None).await;
         assert!(matches!(result, Err(ReplayError::InvalidNonce(_))));
+    }
+
+    /// いちばん早い期限より前は、全件を見ない。期限を過ぎていれば消す（#724）
+    #[test]
+    fn test_remove_expired_only_when_due() {
+        let mut store = NonceStore::default();
+        assert_eq!(store.remove_expired_if_due(), 0);
+        let mut add = |nonce: &str, ttl_secs: u64| {
+            let entry = NonceEntry::new(nonce.to_string(), ttl_secs, None);
+            store.note_expiry(entry.expires_at);
+            store
+                .scopes
+                .entry(String::new())
+                .or_default()
+                .insert(nonce.to_string(), entry);
+            store.total += 1;
+        };
+        add("a", 300);
+        add("b", 600);
+        let earliest = store.earliest_expiry.unwrap();
+        // まだ期限の切れた記録は無い
+        assert_eq!(store.remove_expired_if_due(), 0);
+        assert_eq!(store.total, 2);
+        // いちばん早い期限を過ぎたことにすると、消して、次の期限に進む
+        store
+            .scopes
+            .get_mut("")
+            .unwrap()
+            .get_mut("a")
+            .unwrap()
+            .expires_at = Utc::now() - chrono::Duration::seconds(1);
+        store.earliest_expiry = Some(Utc::now() - chrono::Duration::seconds(1));
+        assert_eq!(store.remove_expired_if_due(), 1);
+        assert_eq!(store.total, 1);
+        assert!(store.earliest_expiry.unwrap() > earliest);
     }
 
     #[tokio::test]

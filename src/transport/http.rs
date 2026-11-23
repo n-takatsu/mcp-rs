@@ -1039,10 +1039,22 @@ impl HttpTransport {
             // hash-keyed storage), misattributing that key's usage to
             // whichever entry happened to be imported last.
             let mut seen_keys = HashSet::new();
+            // 名前も重ねない（#724）。名前は呼び出し元を区別する値になり
+            // （監査ログ・リプレイ攻撃対策・IDS）、重なると別のキーの記録が
+            // 混ざる
+            let mut seen_names = HashSet::new();
             for entry in &self.config.api_keys {
                 if !seen_keys.insert(&entry.key) {
                     return Err(Error::TransportError(TransportError::Configuration(
                         format!("api_keys contains a duplicate key (entry '{}')", entry.name),
+                    )));
+                }
+                if !seen_names.insert(&entry.name) {
+                    return Err(Error::TransportError(TransportError::Configuration(
+                        format!(
+                            "api_keys contains two entries named '{}'. Give each key its own name",
+                            entry.name
+                        ),
                     )));
                 }
             }
@@ -2554,8 +2566,10 @@ async fn check_anti_replay_handshake(
         ip_address: Some(client_ip),
     };
 
+    // 名前ではなく、利用者まで区別する値で、nonceを分ける（#724）
+    let caller_identity = caller.identity();
     if let Err(e) = anti_replay
-        .validate_headers(&security_headers, caller.name.as_deref())
+        .validate_headers(&security_headers, caller_identity.as_deref())
         .await
     {
         warn!(
@@ -2784,7 +2798,8 @@ async fn check_ids(
         headers: header_map_to_string_map(headers),
         body: Some(body_bytes),
         source_ip: Some(ip),
-        caller_id: caller.name.clone(),
+        // 名前ではなく、利用者まで区別する値（#724）
+        caller_id: caller.identity(),
         timestamp: chrono::Utc::now(),
     };
 
@@ -2959,8 +2974,9 @@ async fn handle_ws_socket(
 ) {
     let conn_id = Uuid::new_v4();
     let ids_caller = caller.clone();
-    // リプレイ攻撃対策のnonceを、呼び出し元ごとに覚えるため（#543）
-    let caller_name = caller.name.clone();
+    // リプレイ攻撃対策のnonceを、呼び出し元ごとに覚えるため（#543）。
+    // 名前ではなく、利用者まで区別する値で分ける（#724）
+    let caller_name = caller.identity();
     state.ws_callers.lock().await.insert(
         conn_id,
         WsClient {
@@ -6032,6 +6048,39 @@ mod tests {
             result.is_err(),
             "expected start_server() to reject duplicate api_keys entries instead of \
              silently keeping only the last one"
+        );
+    }
+
+    /// 名前の重なるAPIキーは、起動時に断る（#724。名前は呼び出し元を区別する
+    /// 値になり、重なると記録が混ざる）
+    #[tokio::test]
+    async fn test_start_server_rejects_duplicate_api_key_names() {
+        let config = HttpConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            auth_enabled: true,
+            api_keys: vec![
+                ApiKeyEntry {
+                    key: "first-key-0123456789abcdef0123456789".to_string(),
+                    name: "shared-name".to_string(),
+                    user_id: "user-1".to_string(),
+                    tools: None,
+                },
+                ApiKeyEntry {
+                    key: "second-key-0123456789abcdef012345678".to_string(),
+                    name: "shared-name".to_string(),
+                    user_id: "user-1".to_string(),
+                    tools: None,
+                },
+            ],
+            ..HttpConfig::default()
+        };
+        let transport = HttpTransport::new(config).unwrap();
+        let error = transport.start_server().await.err().unwrap();
+        assert!(
+            error
+                .to_string()
+                .contains("two entries named 'shared-name'"),
+            "{error}"
         );
     }
 

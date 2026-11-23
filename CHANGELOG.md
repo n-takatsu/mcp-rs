@@ -471,6 +471,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- HTTPで、リプレイ攻撃対策（`anti_replay_enabled`）のnonceの記録が、1つの
+  呼び出し元の上限に達すると、送られるたびに、書き込みのロックを持った
+  まま全件（既定で最大10万件）を見て、期限の切れた記録を探していた
+  （#724）。ほかの呼び出し元も待たされた。今は、いちばん早い期限を覚え、
+  それより前は見ない
+- HTTPで、リプレイ攻撃対策のnonceと侵入検知（IDS）の記録を、呼び出し元の
+  名前だけでなく、利用者（OAuthのトークンの`sub`、APIキーの`user_id`）まで
+  区別して分ける（#724）。以前は、OAuthで同じクライアント（公開クライアント
+  等）を使う別の利用者が、記録と上限を共有し、ほかの人の検知に巻き込まれ
+  得た。**同じ`name`のAPIキーが2つあると、起動しない**（名前で呼び出し元を
+  区別するため。以前は通り、記録が混ざった）
 - HTTPで、プロキシが送るTLSの版（`X-Forwarded-TLS-Version`・
   `X-SSL-Protocol`）を、`TLSv1.2`（nginxの`$ssl_protocol`）・`TLS 1.2`の形でも
   読み、読めない値は断る（#724、PR #729のレビュー）。以前は`1.2`・`TLS1.2`の
