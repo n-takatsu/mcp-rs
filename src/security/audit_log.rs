@@ -306,8 +306,14 @@ impl AuditLogger {
         private_append_options()
             .open(path)
             .await
+            .map_err(|e| format!("could not open {}: {}", path, e))?;
+        // 書くたびに使うロックのファイルも、開けるか確かめる（#741）
+        let lock = lock_file_path(path);
+        tokio::fs::OpenOptions::from(lock_file_options())
+            .open(&lock)
+            .await
             .map(|_| ())
-            .map_err(|e| format!("could not open {}: {}", path, e))
+            .map_err(|e| format!("could not open {}: {}", lock, e))
     }
 
     /// デフォルト設定で監査ログシステムを作成
@@ -666,6 +672,25 @@ fn private_append_options_std() -> std::fs::OpenOptions {
     options
 }
 
+/// プロセスの間のロックに使うファイル（`<path>.lock`、#741）
+fn lock_file_path(path: &str) -> String {
+    format!("{path}.lock")
+}
+
+/// ロックのファイルを開く設定。Windowsは、追記だけで開いたファイルに
+/// ロックを取れないので、読み書きで開く（中身は書かない）。Unix系では、
+/// 監査ログと同じく600・`O_NOFOLLOW`
+fn lock_file_options() -> std::fs::OpenOptions {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    }
+    options
+}
+
 /// `line`を`path`に追記する。`rotation`（大きさの上限・残す数）があれば、
 /// 上限を超えるときは先にローテーションする。
 ///
@@ -679,21 +704,8 @@ fn private_append_options_std() -> std::fs::OpenOptions {
 /// 残らない）。ブロックするので、`spawn_blocking`の中で呼ぶ
 fn append_line(path: &str, line: &str, rotation: Option<(u64, u32)>) -> Result<(), SecurityError> {
     use std::io::Write;
-    // Windowsは、追記だけで開いたファイルにロックを取れないので、読み書きで
-    // 開く（中身は書かない）
-    let mut lock_options = std::fs::OpenOptions::new();
-    lock_options
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        lock_options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
-    }
-    let lock = lock_options
-        .open(format!("{path}.lock"))
+    let lock = lock_file_options()
+        .open(lock_file_path(path))
         .map_err(|e| SecurityError::Configuration(format!("File open failed: {}", e)))?;
     lock.lock()
         .map_err(|e| SecurityError::Configuration(format!("File lock failed: {}", e)))?;
