@@ -76,10 +76,15 @@ pub fn postgres() -> ServerUrl {
 /// `TEST_REDIS_URL`を分解したもの
 pub fn redis() -> ServerUrl {
     let raw = required_env(REDIS_ENV, "redis://localhost:6380/0");
-    // TLS（`rediss://`）は扱えない。黙って暗号化せずにつながない（#724）
+    // TLS（`rediss`）は扱えない。黙って暗号化せずにつながない（#724）。
+    // 読んだ後のスキーム（小文字にそろう）で確かめる（PR #730のレビュー。
+    // `REDISS://`・`rediss:`も断る）
+    let scheme = url::Url::parse(&raw)
+        .map(|url| url.scheme().to_string())
+        .unwrap_or_default();
     assert!(
-        !raw.starts_with("rediss://"),
-        "{REDIS_ENV} uses rediss:// (TLS), which these tests do not support; use redis://"
+        scheme != "rediss",
+        "{REDIS_ENV} uses rediss (TLS), which these tests do not support; use redis://"
     );
     parse(REDIS_ENV, &raw, 6379, "0")
 }
