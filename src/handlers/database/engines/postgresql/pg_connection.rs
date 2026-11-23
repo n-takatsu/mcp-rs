@@ -721,22 +721,30 @@ pub fn connect_options(config: &ConnectionConfig) -> Result<PgConnectOptions, Da
     Ok(options)
 }
 
+/// ループバック（`localhost`・`127.0.0.1`・`::1`）かUnixソケットか
+fn is_local(options: &PgConnectOptions) -> bool {
+    let host = options.get_host();
+    options.get_socket().is_some() || host.starts_with('/') || super::super::is_loopback_host(host)
+}
+
+/// ループバック・Unixソケット以外で、`ssl_mode`を設定ファイルにも
+/// `PGSSLMODE`にも書いていなければ、起動しない理由を返す（#722）。
+/// `explicit`は、どちらかに書いたか
+pub fn check_ssl_mode_set(explicit: bool, options: &PgConnectOptions) -> Result<(), String> {
+    if !explicit && !is_local(options) {
+        return Err(super::super::ssl_mode_missing(options.get_host()));
+    }
+    Ok(())
+}
+
 /// TLSが、通信の盗み見・なりすましを防げない設定のとき、その理由を返す
 /// （#539）。ループバック（`localhost`・`127.0.0.1`・`::1`）とUnixソケット
 /// では返さない。`options`は、環境変数（`PGSSLMODE`等）を反映した後の値
 pub fn weak_tls_warning(options: &PgConnectOptions) -> Option<String> {
-    let host = options.get_host();
-    let loopback = options.get_socket().is_some()
-        || host.starts_with('/')
-        || host.eq_ignore_ascii_case("localhost")
-        || host
-            .trim_start_matches('[')
-            .trim_end_matches(']')
-            .parse::<std::net::IpAddr>()
-            .is_ok_and(|ip| ip.is_loopback());
-    if loopback {
+    if is_local(options) {
         return None;
     }
+    let host = options.get_host();
     let unencrypted = "the connection may not be encrypted";
     let mode = options.get_ssl_mode();
     let risk = match mode {
@@ -1432,6 +1440,28 @@ mod tests {
                 "{warning}"
             );
         }
+    }
+
+    /// ループバック・Unixソケット以外では、`ssl_mode`（か`PGSSLMODE`）を
+    /// 省略できない（#722）
+    #[test]
+    fn test_check_ssl_mode_set() {
+        let options = |host: &str| {
+            let config = ConnectionConfig {
+                host: host.to_string(),
+                ..ConnectionConfig::default()
+            };
+            connect_options(&config).unwrap()
+        };
+        for host in ["localhost", "127.0.0.1", "::1", "/var/run/postgresql"] {
+            assert!(check_ssl_mode_set(false, &options(host)).is_ok(), "{host}");
+        }
+        assert!(check_ssl_mode_set(true, &options("db.example.com")).is_ok());
+        let error = check_ssl_mode_set(false, &options("db.example.com")).unwrap_err();
+        assert!(
+            error.contains("not set for db.example.com") && error.contains("verify-full"),
+            "{error}"
+        );
     }
 
     /// `verify-ca`は使えない（#594）。sqlxが、ssl_root_certがあっても公開の

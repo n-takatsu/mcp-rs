@@ -165,18 +165,21 @@ pub fn connect_opts(config: &DatabaseConfig, tls: Option<SslOpts>) -> Opts {
     Opts::from(builder)
 }
 
+/// ループバック以外のホストで`ssl_mode`を省略したら、起動しない理由を
+/// 返す（#722。PostgreSQLと同じ）
+pub fn check_ssl_mode_set(config: &ConnectionConfig) -> Result<(), String> {
+    if config.ssl_mode.is_none() && !super::super::is_loopback_host(&config.host) {
+        return Err(super::super::ssl_mode_missing(&config.host));
+    }
+    Ok(())
+}
+
 /// TLSが、通信の盗み見・なりすましを防げない設定のとき、その理由を返す。
 /// ループバック（`localhost`・`127.0.0.1`・`::1`）では返さない
 /// （PostgreSQLの`weak_tls_warning`と同じ考え方）
 pub fn weak_tls_warning(config: &ConnectionConfig) -> Option<String> {
     let host = config.host.as_str();
-    let loopback = host.eq_ignore_ascii_case("localhost")
-        || host
-            .trim_start_matches('[')
-            .trim_end_matches(']')
-            .parse::<std::net::IpAddr>()
-            .is_ok_and(|ip| ip.is_loopback());
-    if loopback {
+    if super::super::is_loopback_host(host) {
         return None;
     }
     let mode = ssl_mode(config);
@@ -481,6 +484,26 @@ mod tests {
         assert!(prefer.contains("\"prefer\""), "{prefer}");
         let verify_ca = weak_tls_warning(&connection("db", Some("verify-ca"), false)).unwrap();
         assert!(verify_ca.contains("host name"), "{verify_ca}");
+    }
+
+    /// ループバック以外では、`ssl_mode`を省略できない（#722）
+    #[test]
+    fn test_check_ssl_mode_set() {
+        for host in ["localhost", "127.0.0.1", "::1", "[::1]"] {
+            assert!(
+                check_ssl_mode_set(&connection(host, None, false)).is_ok(),
+                "{host}"
+            );
+        }
+        for mode in ["disable", "prefer", "require", "verify-full"] {
+            assert!(check_ssl_mode_set(&connection("db", Some(mode), false)).is_ok());
+        }
+        let error = check_ssl_mode_set(&connection("db", None, false)).unwrap_err();
+        assert!(
+            error.contains("not set for db") && error.contains("ssl_mode = \"verify-full\""),
+            "{error}"
+        );
+        assert!(!error.contains("  "), "{error}");
     }
 
     #[test]

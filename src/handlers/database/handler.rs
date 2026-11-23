@@ -345,6 +345,7 @@ impl DatabaseHandler {
             DatabaseType::MySQL | DatabaseType::MariaDB => {
                 use crate::handlers::database::engines::mysql::engine as mysql;
                 let _ = settings;
+                mysql::check_ssl_mode_set(&config.connection)?;
                 mysql::check_ssl_root_cert(&config.connection)?;
                 Ok(mysql::weak_tls_warning(&config.connection))
             }
@@ -354,6 +355,11 @@ impl DatabaseHandler {
                 use crate::handlers::database::engines::OPTION_SSL_ROOT_CERT;
                 let connect = pg_connection::connect_options(&config.connection)
                     .map_err(|e| format!("cannot set up {}: {}", settings.describe(), e))?;
+                // 省略時の`prefer`は、リモートでは使わない（#722）。
+                // `PGSSLMODE`に書いたなら、それを選んだとみなす
+                let explicit = config.connection.ssl_mode.is_some()
+                    || std::env::var_os("PGSSLMODE").is_some_and(|mode| !mode.is_empty());
+                pg_connection::check_ssl_mode_set(explicit, &connect)?;
                 pg_connection::check_ssl_root_cert(
                     config.connection.options.contains_key(OPTION_SSL_ROOT_CERT),
                     &connect,
