@@ -554,8 +554,7 @@ fn resolve_log_destination_from_candidates(
             }
         };
 
-        let filename = appender.current_file_name().to_string();
-        if let Err(e) = write_startup_marker(&mut appender, dir, &filename, event) {
+        if let Err(e) = write_startup_marker(&mut appender, event) {
             failures.push(format!(
                 "{} accepted the write but it could not be verified: {}",
                 dir.display(),
@@ -616,18 +615,25 @@ fn header_line(event: &str, at: &chrono::DateTime<chrono::Local>, path: &Path) -
 /// （書き込みと読み込みの双方が同じようにリダイレクトされ、見かけ上は
 /// 一貫して成功するため）。このケースへの対策は
 /// `fallback_log_dir_candidates`側でAppData配下を避けること。
-fn write_startup_marker(
-    appender: &mut LocalRollingAppender,
-    dir: &Path,
-    filename: &str,
-    event: &str,
-) -> std::io::Result<()> {
-    let marker = header_line(event, started_at(), &dir.join(filename));
+fn write_startup_marker(appender: &mut LocalRollingAppender, event: &str) -> std::io::Result<()> {
+    let active = appender.active_path();
+    let current = |active: &Arc<Mutex<PathBuf>>| {
+        active
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    };
+    // 先に書き先を決め、その名前を行に入れる（PR #745のレビュー。書く時に
+    // 切り替わると、行の`log:`が実際のファイルと違ってしまう）
+    appender.roll_now();
+    let marker = header_line(event, started_at(), &current(&active));
 
     appender.write_all(marker.as_bytes())?;
     appender.flush()?;
 
-    let metadata = fs::metadata(dir.join(filename))?;
+    // 書いた後のファイルで確かめる（#744。書く間に日付が変わると、新しい
+    // ファイルに書かれ、前のファイルは空のまま）
+    let metadata = fs::metadata(current(&active))?;
     if metadata.len() == 0 {
         return Err(std::io::Error::other(
             "file exists but is empty after a successful write+flush",
@@ -1530,7 +1536,7 @@ mod tests {
 
         let mut appender =
             build_file_appender(&log_dir, &LogRotation::Never, "mcp-rs.log").unwrap();
-        let result = write_startup_marker(&mut appender, &log_dir, "mcp-rs.log", "started");
+        let result = write_startup_marker(&mut appender, "started");
         assert!(result.is_ok());
         drop(appender);
 
