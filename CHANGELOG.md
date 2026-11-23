@@ -238,11 +238,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Securityの文書（Listening on the Network）に、認証は通信を暗号化しないので、
   ほかのPCからつなぐ前にTLS（`tls_enabled`か、TLSを終端するリバースプロキシ）を
-  使うよう書いた（#737。平文のHTTPでは、APIキー・トークンを読まれる）
+  使うよう書いた（#737。平文のHTTPでは、APIキー・トークンを読まれる）。
+  プロキシとmcp-rsの間も、同じPCでループバックにするか、mcp-rsでもTLSを使う
 
 - `execute_query`が返した値をそのまま`params`に渡せるのは、挙げた型（uuid・日付・
   numeric等）だけと分かるように、文書とPostgreSQLの`params`の説明を直した（#737。
-  配列等はキャストが要る）
+  配列等はキャストが要る。`json`・`jsonb`は、JSONの値で返るので、JSONの文字列に
+  して渡す）
 
 - Redisのエンジン（`redis-backend`）で、パスワードに`@`・`%`・`/`等が
   あっても、つなげる（#724、PR #730のレビュー）。以前は、パスワードを接続の

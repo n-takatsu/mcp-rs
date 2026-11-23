@@ -172,7 +172,7 @@ Offered only with `allow_write = true`. Runs one `INSERT`, `UPDATE`, or `DELETE`
 Write `$1`, `$2`, … in the SQL and pass the values in `params`. Values are bound as parameters and never inserted into the SQL text.
 
 - `params` takes strings, numbers, booleans, and `null`
-- Strings are converted to the type PostgreSQL expects for the parameter: `uuid`, `date` (`YYYY-MM-DD`), `time`, `timestamp`, `timestamptz` (RFC 3339), `numeric`, integers, floats, `boolean`, `json`/`jsonb`, and `bytea` (base64). So values of these types returned by `execute_query` can be passed back as they are. Other types (arrays, `interval`, `inet`, …) need a cast: see below
+- Strings are converted to the type PostgreSQL expects for the parameter: `uuid`, `date` (`YYYY-MM-DD`), `time`, `timestamp`, `timestamptz` (RFC 3339), `numeric`, integers, floats, `boolean`, `json`/`jsonb`, and `bytea` (base64). So values of these types returned by `execute_query` can be passed back as they are, except `json`/`jsonb`: `execute_query` returns them as JSON values (objects, arrays, …), and `params` takes only strings, numbers, booleans and `null`, so pass them as a JSON string (for example `"{\"a\":1}"`). Other types (arrays, `interval`, `inet`, …) need a cast: see below
 - Strings are also sent as they are to text columns and enum columns
 - For other types (`interval`, `money`, `inet`, arrays, …), pass a string and cast it through text in the SQL: `$1::text::interval`. Without the cast, mcp-rs refuses the parameter instead of sending it in the wrong format
 - A value that cannot be converted is refused with an error that names the parameter, for example `parameter $1 is not a valid uuid`. The error does not repeat the value
