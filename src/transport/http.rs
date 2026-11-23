@@ -1966,7 +1966,17 @@ async fn handle_jsonrpc_request(
         .expires_at
         .is_some_and(|expires_at| unix_now_secs() > expires_at)
     {
-        return Err(StatusCode::UNAUTHORIZED);
+        // ほかの無効なトークンと同じく、`WWW-Authenticate`を付ける（PR #726の
+        // レビュー。RFC 6750 §3）
+        return Ok(match &state.oauth {
+            Some(oauth) => oauth_error_response(
+                oauth.config(),
+                Some(&crate::transport::oauth::TokenError::Invalid(
+                    "the access token expired while the request body was being read".to_string(),
+                )),
+            ),
+            None => StatusCode::UNAUTHORIZED.into_response(),
+        });
     }
     // プロキシの付けるヘッダーは、信頼するプロキシからのものだけを使う（#543）
     let no_headers = HeaderMap::new();
