@@ -103,10 +103,10 @@ docker compose -f configs/docker/docker-compose.postgres.yml restart
 docker compose -f configs/docker/docker-compose.postgres.yml restart postgres-primary
 
 # コンテナ削除（データ保持）
-docker compose -f configs/docker/docker-compose.postgres.yml down
+docker compose -f configs/docker/docker-compose.postgres.yml down --remove-orphans
 
 # コンテナとボリューム削除（データ削除）
-docker compose -f configs/docker/docker-compose.postgres.yml down -v
+docker compose -f configs/docker/docker-compose.postgres.yml down -v --remove-orphans
 ```
 
 ## テスト実行
@@ -220,7 +220,7 @@ docker volume inspect postgres_primary_data
 
 ```bash
 # 全ボリューム削除
-docker compose -f configs/docker/docker-compose.postgres.yml down -v
+docker compose -f configs/docker/docker-compose.postgres.yml down -v --remove-orphans
 
 # または個別削除
 docker volume rm postgres_primary_data
@@ -255,8 +255,14 @@ postgresql://postgres:postgres@postgres-primary:5432/testdb
 docker compose -f configs/docker/docker-compose.postgres.yml logs postgres-primary
 
 # ボリュームクリア（すべてのデータを削除。pgAdminのボリュームも消える。
-# Primaryだけを消すときは「2. コンテナ起動」の手順）
-docker compose -f configs/docker/docker-compose.postgres.yml down -v
+# Primaryだけを消すときは「2. コンテナ起動」の手順）。`--remove-orphans`は、
+# 以前のセカンダリのコンテナも消す
+docker compose -f configs/docker/docker-compose.postgres.yml down -v --remove-orphans
+
+# 以前のセカンダリのボリュームは、今の定義に無いので`down -v`では消えない。
+# 残っていれば、名前を確かめてから消す
+docker volume ls --filter name=postgres_secondary_data
+docker volume rm <確かめた名前>
 
 # 起動し直す
 docker compose -f configs/docker/docker-compose.postgres.yml up -d
