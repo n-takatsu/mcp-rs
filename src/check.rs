@@ -481,7 +481,7 @@ fn report_health(
         ("REST API check failed", "WordPress REST API"),
         ("Authentication failed", "WordPress sign-in"),
         ("Permissions check failed", "WordPress permissions"),
-        ("Media upload check failed", "WordPress media"),
+        ("Media read check failed", "WordPress media"),
     ];
     let mut shown = vec![false; health.error_details.len()];
     let mut detail = |prefix: &str| -> String {
