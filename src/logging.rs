@@ -920,17 +920,23 @@ fn format_retention_policy(retention: &LogRetention) -> String {
 /// 期間のファイルに書いていることや、切り替えの後にまだ書いておらず、前の
 /// 期間のファイルを開いたままのことがあるため
 fn apply_retention_policy(config: &LogConfig, log_dir: &Path, active: Option<&Path>) -> Result<()> {
-    let protected = protected_log_names(active, &chrono::Local::now());
+    // 始めた時刻は、保護する名前を決める前に1度だけ取り、同じ時刻で、その後に
+    // 書かれたファイルも除く（PR #761のレビュー。間に期間の境目を越えて、新しい
+    // 期間のファイルに書かれても消さない）
+    let started = std::time::SystemTime::now();
+    let protected = protected_log_names(active, &chrono::DateTime::<chrono::Local>::from(started));
     match &config.retention {
         LogRetention::External => {
             // 外部管理なので何もしない（推奨アプローチ）
             Ok(())
         }
-        LogRetention::Days(days) => cleanup_old_logs_by_age(log_dir, *days, &protected),
+        LogRetention::Days(days) => cleanup_old_logs_by_age(log_dir, *days, &protected, started),
         LogRetention::Count(max_count) => {
-            cleanup_old_logs_by_count(log_dir, *max_count, &protected)
+            cleanup_old_logs_by_count(log_dir, *max_count, &protected, started)
         }
-        LogRetention::Size(max_bytes) => cleanup_old_logs_by_size(log_dir, *max_bytes, &protected),
+        LogRetention::Size(max_bytes) => {
+            cleanup_old_logs_by_size(log_dir, *max_bytes, &protected, started)
+        }
     }
 }
 
@@ -1029,10 +1035,14 @@ fn is_retention_candidate(entry: &fs::DirEntry, protected: &[String]) -> bool {
 }
 
 /// 日数ベースでログファイルを削除
-fn cleanup_old_logs_by_age(log_dir: &Path, max_days: u32, protected: &[String]) -> Result<()> {
-    use std::time::{Duration, SystemTime};
+fn cleanup_old_logs_by_age(
+    log_dir: &Path,
+    max_days: u32,
+    protected: &[String],
+    started: std::time::SystemTime,
+) -> Result<()> {
+    use std::time::Duration;
 
-    let started = SystemTime::now();
     let cutoff_time = started - Duration::from_secs(max_days as u64 * 24 * 60 * 60);
     let mut removed_count = 0;
 
@@ -1068,8 +1078,12 @@ fn cleanup_old_logs_by_age(log_dir: &Path, max_days: u32, protected: &[String]) 
 }
 
 /// ファイル数ベースでログファイルを削除
-fn cleanup_old_logs_by_count(log_dir: &Path, max_count: u32, protected: &[String]) -> Result<()> {
-    let started = std::time::SystemTime::now();
+fn cleanup_old_logs_by_count(
+    log_dir: &Path,
+    max_count: u32,
+    protected: &[String],
+    started: std::time::SystemTime,
+) -> Result<()> {
     let mut log_files = Vec::new();
 
     for entry in fs::read_dir(log_dir)? {
@@ -1114,8 +1128,12 @@ fn cleanup_old_logs_by_count(log_dir: &Path, max_count: u32, protected: &[String
 }
 
 /// サイズベースでログファイルを削除
-fn cleanup_old_logs_by_size(log_dir: &Path, max_bytes: u64, protected: &[String]) -> Result<()> {
-    let started = std::time::SystemTime::now();
+fn cleanup_old_logs_by_size(
+    log_dir: &Path,
+    max_bytes: u64,
+    protected: &[String],
+    started: std::time::SystemTime,
+) -> Result<()> {
     let mut log_files = Vec::new();
     let mut total_size = 0u64;
 
@@ -1373,22 +1391,22 @@ mod tests {
         // 今のファイルが上限を超えていても消さない。上限を超える古いものは消す
         write(&active, 100);
         write(&old, 60);
-        cleanup_old_logs_by_size(dir.path(), 50, &protected).unwrap();
+        cleanup_old_logs_by_size(dir.path(), 50, &protected, std::time::SystemTime::now()).unwrap();
         assert!(active.exists());
         assert!(!old.exists());
 
         // 今のファイルは数えないので、上限の範囲の古いファイルは残る
         write(&old, 10);
-        cleanup_old_logs_by_size(dir.path(), 50, &protected).unwrap();
+        cleanup_old_logs_by_size(dir.path(), 50, &protected, std::time::SystemTime::now()).unwrap();
         assert!(old.exists());
 
         // Count(0)でも、今のファイルは残す
-        cleanup_old_logs_by_count(dir.path(), 0, &protected).unwrap();
+        cleanup_old_logs_by_count(dir.path(), 0, &protected, std::time::SystemTime::now()).unwrap();
         assert!(active.exists());
         assert!(!old.exists());
 
         // 今のファイルが分からなければ、今までどおり
-        cleanup_old_logs_by_count(dir.path(), 0, &[]).unwrap();
+        cleanup_old_logs_by_count(dir.path(), 0, &[], std::time::SystemTime::now()).unwrap();
         assert!(!active.exists());
 
         // 保持の処理を始めた後に書かれたファイル（処理の間に日付が変わって
@@ -1402,9 +1420,9 @@ mod tests {
             .unwrap()
             .set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(60))
             .unwrap();
-        cleanup_old_logs_by_count(dir.path(), 0, &protected).unwrap();
-        cleanup_old_logs_by_size(dir.path(), 0, &protected).unwrap();
-        cleanup_old_logs_by_age(dir.path(), 0, &protected).unwrap();
+        cleanup_old_logs_by_count(dir.path(), 0, &protected, std::time::SystemTime::now()).unwrap();
+        cleanup_old_logs_by_size(dir.path(), 0, &protected, std::time::SystemTime::now()).unwrap();
+        cleanup_old_logs_by_age(dir.path(), 0, &protected, std::time::SystemTime::now()).unwrap();
         assert!(switched.exists());
     }
 
@@ -1428,7 +1446,7 @@ mod tests {
         }
         fs::create_dir(dir.path().join("mcp-rs.log.2026-10-01")).unwrap();
 
-        cleanup_old_logs_by_count(dir.path(), 0, &[]).unwrap();
+        cleanup_old_logs_by_count(dir.path(), 0, &[], std::time::SystemTime::now()).unwrap();
 
         for name in ours {
             assert!(!dir.path().join(name).exists(), "{name}");
@@ -1482,7 +1500,7 @@ mod tests {
                 .unwrap();
         }
         let names = protected_log_names(None, &now);
-        cleanup_old_logs_by_count(dir.path(), 0, &names).unwrap();
+        cleanup_old_logs_by_count(dir.path(), 0, &names, std::time::SystemTime::now()).unwrap();
 
         assert!(previous_hour.exists());
         assert!(!older_hour.exists());
@@ -1515,6 +1533,23 @@ mod tests {
             .unwrap();
         let names = protected_log_names(None, &now);
         assert!(names.iter().any(|name| name == "mcp-rs.log.2026-11-01-00"));
+    }
+
+    /// 保持の処理を始めた（保護する名前を決めた）後に書かれたファイルは、
+    /// 保護する名前に無くても消さない（PR #761のレビュー。間に期間の境目を
+    /// 越え、別のプロセスが新しい期間のファイルに書いた場合）
+    #[test]
+    fn test_retention_keeps_files_written_after_it_started() {
+        let dir = tempdir().unwrap();
+        let started = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+        let next_period = dir.path().join("mcp-rs.log.2026-01-01-11");
+        fs::write(&next_period, b"x").unwrap();
+
+        cleanup_old_logs_by_count(dir.path(), 0, &[], started).unwrap();
+        cleanup_old_logs_by_size(dir.path(), 0, &[], started).unwrap();
+        cleanup_old_logs_by_age(dir.path(), 0, &[], started).unwrap();
+
+        assert!(next_period.exists());
     }
 
     /// 切り替えたときの保持の処理は、別のスレッドで古いログを消し、新しい
