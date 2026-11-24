@@ -238,6 +238,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   よらず`PostgreSQL 15 (Mock)`を返していた（#758）。`SHOW server_version`で
   読み、`PostgreSQL 16.4`の形で返す。つなげない・読めないときはエラー
 
+- ライブラリとして使う場合: PostgreSQLのエンジンは、最初に作ったプールを
+  以後の`connect`で共有するので、別の接続先（ホスト・ポート・データベース・
+  ユーザー）の設定で`connect`すると、最初の接続先のプールで動き、接続の
+  情報には後の接続先が出ていた（#758）。プールと違う接続先なら
+  `ConfigurationError`で断る（別の接続先には、別のエンジンを作る）
+
 - MongoDB・Redisのエンジン（`mongodb-backend`・`redis-backend`）は、
   データベースのハンドラー（`[database]`）では使えないことを、`Cargo.toml`・
   ドキュメントコメント・文書に書いた（#758）。v0.31.0で使えるようにする予定
