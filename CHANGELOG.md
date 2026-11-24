@@ -226,6 +226,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- IDSのCMD-002（Critical）が、バッククォートで囲んだ語なら何にでも一致して
+  いた（Markdownの`` `id` ``・`` `foo bar` ``でHTTP 403と永続ブロック）。
+  中がシェルのコマンドと引数らしいもの（`` `cat /etc/hosts` ``）、パスを
+  付けたコマンド（`` `/bin/id` ``）、`whoami`・`uname`、値に続けた
+  コマンド（`` name=`id` ``）だけを見る。CMD-001も、バッククォートを
+  区切りとして見ない（#759）
+
+- IDSのCMD-003（Critical）が`$(...)`なら何にでも一致していた（jQueryの
+  `$(document)`・`$('.x')`でHTTP 403と永続ブロック）。`$(`の中が
+  シェルのコマンド（`$(id)`・`$(cat /etc/hosts)`等）のときだけ見る（#759）
+
+- IDSのPATH-008（High）が`.env`・`.config`・`.ini`・`.conf`を語の途中でも
+  探していた（`.initial`・`.conference`でHTTP 403）。パス・値の始まりか
+  `/`・`\`・`=`の後のファイル名が、これらで終わるもの（`/.env`・
+  `/app/config.ini`・`../.env`・`.env.local`等）だけを見る（#759）
+
 - `ids_enabled = true`で、IDSのCMD-001（Critical）が`;`・`&`・`|`・`$`・
   `<`・`>`の1文字だけで一致していた。`Cookie: a=b; c=d`、ブラウザの
   User-Agentの`;`、本文の`&`・`<`だけでHTTP 403になり、送り元のアドレスも
