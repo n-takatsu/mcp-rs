@@ -13,10 +13,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `HttpTransport::stop_server`を足した（#760）。`receive_request_with_context`は、
   要求・呼び出し元と一緒に、`MCP-Protocol-Version`ヘッダーで選んだ版
   （`ReceivedRequest::protocol_version`）を返す。
-  `RequestDispatcher::handle_message_with_protocol_version`に渡せば、
-  `with_request_handler`と同じ版で答える（ヘッダーの無い要求は、今までどおり
-  共有の版）。`stop_server`は、待ち受けをやめ、接続を閉じる（`Transport::stop`
-  も同じ）。`receive_request_with_caller`は今までどおり
+  `RequestDispatcher::handle_message_with_protocol_version`に渡すと、版が
+  `Some`なら、`with_request_handler`と同じくその版で答える。`None`
+  （ヘッダーの無い要求）なら、ディスパッチャーの共有の版（それまでの
+  `initialize`で決まった版）で答える。`with_request_handler`の`/mcp`は、要求
+  ごとに新しい接続の状態で、対応する一番古い版で答えるので、ツールの`title`の
+  有無等が違うことがある（同じにするなら、`handle_message_in_session`に要求
+  ごとの新しい`Session`を渡す）。`stop_server`は、待ち受けをやめ、接続を
+  閉じる（`Transport::stop`も同じ）。`receive_request_with_caller`は今までどおり
 
 - ライブラリとして使う場合: `HttpTransport::receive_request_with_caller`を
   足した（#749）。`with_request_handler`を使わないときに、HTTP・WebSocketで
@@ -275,7 +279,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `receive_request_with_caller`）の応答を、クライアントの付けた`id`だけで
   照合していた（#760）。別のクライアントが同じ`id`を使うと、後の登録が先の
   登録を上書きし、応答が入れ替わった。要求ごとに内部の相関IDを付けて照合し、
-  返すときに元の`id`に戻す（期限の後に届いた遅い応答も、次の要求に届かない）。
+  返すときに元の`id`に戻す。期限の後に届いた遅い応答（待ち先の無い内部の
+  相関IDの応答）は、次の要求にも要求のキューにも入れずに捨てる。`id`が
+  文字列・数値でない要求（`id: true`・`id: null`等）は、置き換えずに、
+  `id: null`のInvalid Request（`-32600`、HTTPは400）で断る（`id`の無い
+  通知は今までどおり）。
   クライアントが切る等でHTTPの要求が途中で捨てられると、応答の待ち先の登録が
   残ったので、その要求の登録だけを消す。キュー（1000件）が埋まると、
   `send().await`が期限なしに待ち、応答の期限が始まらなかったので、HTTP・
@@ -290,8 +298,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   また呼ぶと、`bound_addr()`が消えるか、別のリスナーのアドレスで上書き
   されたので、起動を1つずつにし、アドレスを変えずにエラーを返す。
   `Transport::stop()`は何もせず、新しい接続を受け付け続けたので、待ち受けを
-  やめ（ポートを放し）、HTTPの接続を閉じ、`/ws`の接続も閉じる。
-  `connection_stats()`は、Tokioのタスクから呼ぶとパニックした
+  やめ（ポートを放し）、HTTPの接続を閉じ、`/ws`の接続も閉じる。止める途中で
+  捨てられても、止まるまでは`is_connected()`が`true`のままで、呼び直すと
+  同じタスクを待つ。`connection_stats()`は、Tokioのタスクから呼ぶとパニックした
   （`blocking_read()`）ので、同期のロックで写しを取る
 
 - ライブラリとして使う場合: `TransportError`への変換（`From<Error>`）で、
