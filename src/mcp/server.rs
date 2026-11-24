@@ -158,6 +158,13 @@ fn invalid_envelope_response(
         "Invalid Request: jsonrpc must be \"2.0\""
     } else if id.is_some() && valid_id.is_none() {
         "Invalid Request: id must be a string or a number"
+    } else if object
+        .get("params")
+        .is_some_and(|params| !(params.is_object() || params.is_array() || params.is_null()))
+    {
+        // `params`は構造（オブジェクト・配列）。`null`は省略と同じに扱う
+        // （PR #765のレビュー）
+        "Invalid Request: params must be an object or an array"
     } else {
         return None;
     };
@@ -186,11 +193,56 @@ fn cancelled_request_id(line: &str) -> Option<String> {
     {
         return None;
     }
-    object
-        .get("params")?
+    let params = object.get("params")?;
+    // `reason`があれば文字列（PR #765のレビュー）。違えば、取り消しとして
+    // 扱わない
+    if params
+        .get("reason")
+        .is_some_and(|reason| !reason.is_string())
+    {
+        return None;
+    }
+    params
         .get("requestId")
         .filter(|id| id.is_string() || id.is_number())
         .map(serde_json::Value::to_string)
+}
+
+tokio::task_local! {
+    /// STDIOで実行中の要求を、取り消しで止めてよいか（PR #765のレビュー）。
+    /// `CALL_ABORTABLE`・`CALL_NOT_ABORTABLE`・`CALL_ABORTED`
+    static CALL_ABORT_STATE: Arc<std::sync::atomic::AtomicU8>;
+}
+
+/// 取り消しで、処理を途中で止めてよい
+const CALL_ABORTABLE: u8 = 0;
+/// 途中で止めない（`keep_call_from_being_aborted`）
+const CALL_NOT_ABORTABLE: u8 = 1;
+/// 取り消しで止めた
+const CALL_ABORTED: u8 = 2;
+
+/// 実行中のツールの処理を、STDIOの`notifications/cancelled`で途中で止め
+/// させない（PR #765のレビュー）。止めると困る処理（プラグインへの送信の
+/// 途中で止めると、接続ごと止まり、監査ログも残らない）の始めに呼ぶ。取り
+/// 消しを受けても、処理は最後まで行い、応答だけを返さない。
+///
+/// 既に取り消しで止められていれば`false`（処理を始めずに終える）。STDIOの
+/// 要求の外（HTTP等）では、何もせず`true`
+pub fn keep_call_from_being_aborted() -> bool {
+    use std::sync::atomic::Ordering;
+    CALL_ABORT_STATE
+        .try_with(|state| {
+            match state.compare_exchange(
+                CALL_ABORTABLE,
+                CALL_NOT_ABORTABLE,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => true,
+                Err(current) => current == CALL_NOT_ABORTABLE,
+            }
+        })
+        .unwrap_or(true)
 }
 
 /// STDIOの1行が、取り消せる要求なら、その`id`（`cancelled_request_id`と
@@ -297,6 +349,8 @@ struct RunningLine {
     id: Option<String>,
     len: usize,
     abort: futures::future::AbortHandle,
+    /// 途中で止めてよいか（`keep_call_from_being_aborted`）
+    abort_state: Arc<std::sync::atomic::AtomicU8>,
     /// 取り消された（応答を返さない）
     cancelled: bool,
 }
@@ -322,17 +376,27 @@ impl StdioQueue {
         true
     }
 
-    /// 次の行を取り出し、実行中にする。止めるための登録を返す
-    fn start_next(&mut self) -> Option<(String, futures::future::AbortRegistration)> {
+    /// 次の行を取り出し、実行中にする。止めるための登録と、途中で止めて
+    /// よいかの状態（`CALL_ABORT_STATE`に渡す）を返す
+    #[allow(clippy::type_complexity)]
+    fn start_next(
+        &mut self,
+    ) -> Option<(
+        String,
+        futures::future::AbortRegistration,
+        Arc<std::sync::atomic::AtomicU8>,
+    )> {
         let line = self.pending.pop_front()?;
         let (abort, registration) = futures::future::AbortHandle::new_pair();
+        let abort_state = Arc::new(std::sync::atomic::AtomicU8::new(CALL_ABORTABLE));
         self.running = Some(RunningLine {
             id: line.id,
             len: line.message.len(),
             abort,
+            abort_state: abort_state.clone(),
             cancelled: false,
         });
-        Some((line.message, registration))
+        Some((line.message, registration, abort_state))
     }
 
     /// 実行中の行を終える。応答を返すなら`true`（取り消されていない）。
@@ -357,7 +421,22 @@ impl StdioQueue {
             .filter(|running| !running.cancelled && running.id.as_deref() == Some(id))
         {
             running.cancelled = true;
-            running.abort.abort();
+            // 途中で止めない処理（`keep_call_from_being_aborted`）は、最後まで
+            // 行わせ、応答だけを返さない
+            if running
+                .abort_state
+                .compare_exchange(
+                    CALL_ABORTABLE,
+                    CALL_ABORTED,
+                    std::sync::atomic::Ordering::SeqCst,
+                    std::sync::atomic::Ordering::SeqCst,
+                )
+                .is_ok()
+            {
+                running.abort.abort();
+            } else {
+                info!("The cancelled request cannot be stopped midway (a plugin tool call); it runs to the end, and its response is not sent");
+            }
             return true;
         }
         match self
@@ -1571,22 +1650,26 @@ impl McpServer {
                             None => None,
                         }
                     };
-                    let Some((message, registration)) = next else {
+                    let Some((message, registration, abort_state)) = next else {
                         // 足されるのを待つ（先に知らせが来ていれば、すぐ戻る）
                         queued.notified().await;
                         continue;
                     };
-                    let response = Abortable::new(
-                        Self::respond_to_line(
-                            &message,
-                            &handlers,
-                            &session,
-                            audit_logger.as_deref(),
-                            &status,
-                        ),
-                        registration,
-                    )
-                    .await;
+                    let response = CALL_ABORT_STATE
+                        .scope(
+                            abort_state,
+                            Abortable::new(
+                                Self::respond_to_line(
+                                    &message,
+                                    &handlers,
+                                    &session,
+                                    audit_logger.as_deref(),
+                                    &status,
+                                ),
+                                registration,
+                            ),
+                        )
+                        .await;
                     drop(message);
                     // 取り消しと同じロックの下で、応答を返すかを決める
                     let deliver = lock(&queue).finish_running();
@@ -1603,6 +1686,8 @@ impl McpServer {
         let mut line = String::new();
         // 読み取りの間に書き手が終わった（書けなくなった）ときの結果
         let mut writer_ended = None;
+        // 読み取りの間に実行のタスクが終わった（パニック等）ときの結果
+        let mut worker_ended = None;
         loop {
             line.clear();
             let bytes_read = tokio::select! {
@@ -1619,9 +1704,20 @@ impl McpServer {
                     writer_ended = Some(written);
                     break;
                 }
+                // 実行のタスクは、入力が終わるまで終わらない。終わったら
+                // （ハンドラーのパニック等）、それ以上は受け付けない（PR #765の
+                // レビュー。以前は`ping`に答え続け、要求は実行されなかった）
+                done = &mut worker.0 => {
+                    worker_ended = Some(done);
+                    break;
+                }
             };
             if bytes_read == 0 {
                 break; // EOF
+            }
+            // 空の行は無視する（順を待つ枠を使わない、PR #765のレビュー）
+            if line.trim().is_empty() {
+                continue;
             }
 
             if let Some(request_id) = cancelled_request_id(&line) {
@@ -1679,6 +1775,22 @@ impl McpServer {
             }
         }
 
+        if let Some(done) = worker_ended {
+            drop(responses);
+            return match done {
+                Err(e) => {
+                    error!("The STDIO request worker stopped: {}", e);
+                    writer.stop().await;
+                    Err(e.into())
+                }
+                // 応答を渡せなかった（書き手が終わった）。書けなかったエラーを返す
+                Ok(()) => {
+                    (&mut writer.0).await??;
+                    Err("the STDIO request worker stopped unexpectedly".into())
+                }
+            };
+        }
+
         // 受け付けた要求を終える。その間に書けなくなれば、終わらない要求を
         // 待たずに止め、書けなかったエラーを返す
         lock(&queue).closed = true;
@@ -1705,6 +1817,7 @@ impl McpServer {
         Ok(())
     }
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3162,6 +3275,20 @@ mod tests {
                 .await,
             serde_json::Value::Null,
         );
+        // `params`はオブジェクトか配列（`null`は省略と同じ、PR #765のレビュー）
+        for params in [
+            serde_json::json!(false),
+            serde_json::json!(1),
+            serde_json::json!("x"),
+        ] {
+            invalid(
+                ask(serde_json::json!({
+                    "jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": params
+                }))
+                .await,
+                serde_json::json!(4),
+            );
+        }
         // 型の並びが`JsonRpcRequest`に合う配列も、要求ではない
         invalid(
             ask(serde_json::json!(["2.0", "tools/call", call, 1])).await,
@@ -3609,7 +3736,8 @@ mod tests {
             }),
         );
         let (mut input, server_input) = tokio::io::duplex(64 * 1024);
-        let (output, _client_output) = tokio::io::duplex(64 * 1024);
+        let (output, client_output) = tokio::io::duplex(64 * 1024);
+        let mut lines = tokio::io::AsyncBufReadExt::lines(tokio::io::BufReader::new(client_output));
         let serve = tokio::spawn(async move {
             server
                 .serve_lines(tokio::io::BufReader::new(server_input), output)
@@ -3622,7 +3750,14 @@ mod tests {
             .await
             .expect("the tool did not start");
         write_line(&mut input, never_ending_call(2)).await;
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        // 2つ目の要求を読んだ（順を待っている）ことを、後の`ping`の応答で
+        // 確かめる
+        write_line(
+            &mut input,
+            serde_json::json!({ "jsonrpc": "2.0", "id": 3, "method": "ping" }),
+        )
+        .await;
+        assert_eq!(read_response(&mut lines).await["id"], serde_json::json!(3));
 
         // `serve_lines`のfutureを落とす
         serve.abort();
@@ -3653,7 +3788,7 @@ mod tests {
         let total = request(1).len() * 3;
         assert_eq!((queue.len(), queue.bytes), (3, total));
 
-        let (message, _registration) = queue.start_next().unwrap();
+        let (message, _registration, _state) = queue.start_next().unwrap();
         assert_eq!(message, request(1));
         // 実行中の要求を取り消すと、終えても応答を返さない
         assert!(queue.cancel("1"));
@@ -3665,7 +3800,7 @@ mod tests {
         // 順を待つ要求の取り消しは、その場で除く
         assert!(queue.cancel("3"));
         assert_eq!((queue.len(), queue.bytes), (1, request(2).len()));
-        let (message, _registration) = queue.start_next().unwrap();
+        let (message, _registration, _state) = queue.start_next().unwrap();
         assert_eq!(message, request(2));
         assert!(queue.finish_running());
         assert_eq!((queue.len(), queue.bytes), (0, 0));
@@ -3702,6 +3837,7 @@ mod tests {
             serde_json::json!({ "jsonrpc": "2.0", "id": 5, "method": 7 }),
             serde_json::json!({ "jsonrpc": "2.0", "id": 5, "result": {} }),
             serde_json::json!(["2.0", "tools/list", null, 1]),
+            serde_json::json!({ "jsonrpc": "2.0", "id": 5, "method": "tools/list", "params": false }),
         ] {
             assert!(
                 matches!(classify(message.clone()), OverCapacity::Process),
@@ -3709,6 +3845,225 @@ mod tests {
             );
         }
         assert!(matches!(over_capacity("{not json"), OverCapacity::Process));
+    }
+    /// ツールの処理を途中で止めさせないハンドラー（プラグインと同じ、PR #765
+    /// のレビュー）。`release`で終わり、終わると`finished`を立てる
+    struct NonAbortableToolHandler {
+        started: Arc<tokio::sync::Notify>,
+        release: Arc<tokio::sync::Notify>,
+        finished: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    #[async_trait]
+    impl McpHandler for NonAbortableToolHandler {
+        async fn initialize(
+            &self,
+            _params: InitializeParams,
+        ) -> Result<serde_json::Value, McpError> {
+            Ok(serde_json::json!({}))
+        }
+
+        async fn list_tools(&self) -> Result<Vec<Tool>, McpError> {
+            Ok(vec![tool("wait_forever")])
+        }
+
+        async fn call_tool(&self, _params: ToolCallParams) -> Result<serde_json::Value, McpError> {
+            assert!(keep_call_from_being_aborted());
+            self.started.notify_one();
+            self.release.notified().await;
+            self.finished
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(serde_json::json!({ "content": [] }))
+        }
+
+        async fn list_resources(&self) -> Result<Vec<Resource>, McpError> {
+            Ok(vec![])
+        }
+
+        async fn read_resource(
+            &self,
+            _params: ResourceReadParams,
+        ) -> Result<serde_json::Value, McpError> {
+            Err(McpError::InvalidRequest("no resources".to_string()))
+        }
+    }
+
+    /// 途中で止めさせない処理（`keep_call_from_being_aborted`）は、取り消し
+    /// でも最後まで行い、応答だけを返さない（PR #765のレビュー）
+    #[tokio::test]
+    async fn test_stdio_cancel_does_not_abort_a_non_abortable_call() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+        let started = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let finished = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut server = McpServer::new();
+        server.add_handler(
+            "plugin".to_string(),
+            Arc::new(NonAbortableToolHandler {
+                started: started.clone(),
+                release: release.clone(),
+                finished: finished.clone(),
+            }),
+        );
+        let (mut input, server_input) = tokio::io::duplex(64 * 1024);
+        let (output, client_output) = tokio::io::duplex(64 * 1024);
+        let mut lines = tokio::io::BufReader::new(client_output).lines();
+        let serve = tokio::spawn(async move {
+            server
+                .serve_lines(tokio::io::BufReader::new(server_input), output)
+                .await
+                .map_err(|e| e.to_string())
+        });
+        let limit = std::time::Duration::from_secs(5);
+        write_line(&mut input, never_ending_call(1)).await;
+        tokio::time::timeout(limit, started.notified())
+            .await
+            .expect("the tool did not start");
+        write_line(
+            &mut input,
+            serde_json::json!({
+                "jsonrpc": "2.0", "method": "notifications/cancelled",
+                "params": { "requestId": 1 }
+            }),
+        )
+        .await;
+        write_line(
+            &mut input,
+            serde_json::json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" }),
+        )
+        .await;
+        write_line(
+            &mut input,
+            serde_json::json!({ "jsonrpc": "2.0", "id": 3, "method": "ping" }),
+        )
+        .await;
+        assert_eq!(read_response(&mut lines).await["id"], serde_json::json!(3));
+        // 止められていない
+        assert!(!finished.load(std::sync::atomic::Ordering::SeqCst));
+        release.notify_one();
+        // 最後まで行い、取り消した要求（1）の応答は返さず、次の要求に進む
+        assert_eq!(read_response(&mut lines).await["id"], serde_json::json!(2));
+        assert!(finished.load(std::sync::atomic::Ordering::SeqCst));
+
+        input.shutdown().await.unwrap();
+        tokio::time::timeout(limit, serve)
+            .await
+            .expect("serve_lines did not end")
+            .unwrap()
+            .unwrap();
+        assert!(tokio::time::timeout(limit, lines.next_line())
+            .await
+            .unwrap()
+            .unwrap()
+            .is_none());
+    }
+
+    /// STDIOの要求の外（HTTP等）では、`keep_call_from_being_aborted`は何も
+    /// しない
+    #[test]
+    fn test_keep_call_from_being_aborted_outside_stdio() {
+        assert!(keep_call_from_being_aborted());
+    }
+
+    /// 呼ばれるとパニックするツール
+    struct PanickingToolHandler;
+
+    #[async_trait]
+    impl McpHandler for PanickingToolHandler {
+        async fn initialize(
+            &self,
+            _params: InitializeParams,
+        ) -> Result<serde_json::Value, McpError> {
+            Ok(serde_json::json!({}))
+        }
+
+        async fn list_tools(&self) -> Result<Vec<Tool>, McpError> {
+            Ok(vec![tool("wait_forever")])
+        }
+
+        async fn call_tool(&self, _params: ToolCallParams) -> Result<serde_json::Value, McpError> {
+            panic!("the tool panicked")
+        }
+
+        async fn list_resources(&self) -> Result<Vec<Resource>, McpError> {
+            Ok(vec![])
+        }
+
+        async fn read_resource(
+            &self,
+            _params: ResourceReadParams,
+        ) -> Result<serde_json::Value, McpError> {
+            Err(McpError::InvalidRequest("no resources".to_string()))
+        }
+    }
+
+    /// 実行のタスクが終われば（ハンドラーのパニック）、入力の終わりを待たずに
+    /// エラーで終わる（PR #765のレビュー。以前は`ping`に答え続け、要求は
+    /// 実行されなかった）
+    #[tokio::test]
+    async fn test_stdio_ends_with_an_error_when_the_worker_stops() {
+        let mut server = McpServer::new();
+        server.add_handler("panics".to_string(), Arc::new(PanickingToolHandler));
+        let (mut input, server_input) = tokio::io::duplex(64 * 1024);
+        let (output, _client_output) = tokio::io::duplex(64 * 1024);
+        let serve = tokio::spawn(async move {
+            server
+                .serve_lines(tokio::io::BufReader::new(server_input), output)
+                .await
+                .map_err(|e| e.to_string())
+        });
+        write_line(&mut input, never_ending_call(1)).await;
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), serve)
+            .await
+            .expect("serve_lines kept running after the worker stopped")
+            .unwrap();
+        assert!(result.is_err(), "{result:?}");
+        drop(input);
+    }
+
+    /// 空の行は、順を待つ枠を使わない（PR #765のレビュー）
+    #[tokio::test]
+    async fn test_stdio_blank_lines_do_not_use_the_queue() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+        let (output, client_output) = tokio::io::duplex(64 * 1024);
+        let (mut input, serve, started, _) = start_stdio_server(output, 64 * 1024);
+        let mut lines = tokio::io::BufReader::new(client_output).lines();
+        let limit = std::time::Duration::from_secs(5);
+        write_line(&mut input, never_ending_call(1)).await;
+        tokio::time::timeout(limit, started.notified())
+            .await
+            .expect("the tool did not start");
+        for _ in 0..(STDIO_MAX_QUEUED_REQUESTS * 2) {
+            input.write_all(b"\n  \r\n").await.unwrap();
+        }
+        // 実行中の1件と合わせて、上限まで受け付ける（空の行は数えない）
+        let last = 10 + STDIO_MAX_QUEUED_REQUESTS as u64 - 1;
+        for id in 10..last {
+            write_line(
+                &mut input,
+                serde_json::json!({ "jsonrpc": "2.0", "id": id, "method": "tools/list" }),
+            )
+            .await;
+        }
+        write_line(
+            &mut input,
+            serde_json::json!({
+                "jsonrpc": "2.0", "method": "notifications/cancelled",
+                "params": { "requestId": 1 }
+            }),
+        )
+        .await;
+        for id in 10..last {
+            let response = read_response(&mut lines).await;
+            assert_eq!(response["id"], serde_json::json!(id), "{response}");
+            assert!(response.get("result").is_some(), "{response}");
+        }
+        input.shutdown().await.unwrap();
+        tokio::time::timeout(limit, serve)
+            .await
+            .expect("serve_lines did not end")
+            .unwrap()
+            .unwrap();
     }
     /// 出力に書けない（`write`が失敗する）書き手
     struct FailingWriter;
@@ -3786,6 +4141,22 @@ mod tests {
                 "params": { "requestId": "7" }
             })),
             Some("\"7\"".to_string())
+        );
+        // `reason`は文字列なら受け付け、ほかの型なら取り消しとして扱わない
+        // （PR #765のレビュー）
+        assert_eq!(
+            cancel(serde_json::json!({
+                "jsonrpc": "2.0", "method": "notifications/cancelled",
+                "params": { "requestId": 7, "reason": "user cancelled" }
+            })),
+            Some("7".to_string())
+        );
+        assert_eq!(
+            cancel(serde_json::json!({
+                "jsonrpc": "2.0", "method": "notifications/cancelled",
+                "params": { "requestId": 7, "reason": 42 }
+            })),
+            None
         );
         for message in [
             serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": "notifications/cancelled", "params": { "requestId": 7 } }),

@@ -164,13 +164,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     other
                 );
             }
-            if run_stdio_server(&config, shutdown).await? {
-                // 標準入力の読み込みは止められず、tokioの終了がそれを待つので、
-                // ログを書き終えてから、ここで終わる（#617）
-                drop(_log_guard);
-                std::process::exit(0);
+            // 標準入力の読み込みは止められず、tokioの終了がそれを待つので、
+            // 読み終える前に終わるときは、ログを書き終えてから、ここで終わる
+            // （#617）。標準出力に書けずに終わったとき（クライアントが去った
+            // 等）も、標準入力の終わりを待たずに、0以外で終わる（PR #765の
+            // レビュー）。プラグインは`run_stdio_server`の中で止めてある
+            match run_stdio_server(&config, shutdown).await {
+                Ok(true) => {
+                    drop(_log_guard);
+                    std::process::exit(0);
+                }
+                // 標準入力の終わり（EOF）: 読み込みは終わっている
+                Ok(false) => Ok(()),
+                Err(e) => {
+                    tracing::error!("MCP-RS stopped: {}", e);
+                    drop(_log_guard);
+                    eprintln!("Error: {e:?}");
+                    std::process::exit(1);
+                }
             }
-            Ok(())
         }
     }
 }

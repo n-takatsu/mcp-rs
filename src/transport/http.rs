@@ -1663,17 +1663,29 @@ impl Drop for ActivityGuard {
 /// 同じ最低の速さ）。本文を送り終えるか捨てれば外す。期限を過ぎた接続は、
 /// `serve_connection`が閉じる。
 ///
-/// 最後のフレームを渡した後も、すぐには終わりを知らせない（PR #765の
+/// 最後のデータを送れるようになるまで、期限を外さない（PR #765の
 /// レビュー）。hyper（1.8）は、フレームを渡すたびに、次を読む前に送信の
-/// 余地（相手のウィンドウ）が1バイト以上空くのを待つ。h2は渡されたデータを
-/// ウィンドウが空くまで溜めておくので、余地が空くのは、溜めたデータを
-/// 送れるようになってから。そこで、最後のフレームの後も`is_end_stream`を
-/// `false`にし、次に読まれたとき（溜めたデータを送れるようになったとき）に
-/// 終わりを返して期限を外す。以前は、最後のフレームを渡した時点で本文が
-/// 捨てられ、データがh2に溜まったままでも期限が外れた。終わりは、空の
-/// DATAフレーム（END_STREAM）で送られる。
+/// 余地が1バイト以上空くのを待つ。h2は渡されたデータを相手のウィンドウが
+/// 空くまで溜めておくので、余地が空くのは、溜めたデータとさらに1バイトを
+/// 送れるようになってから。そこで、長さの決まった本文（`Full`等。終わりが
+/// 前もって分かる）の最後のデータは、最後の1バイトを残して渡し、余地が
+/// 空いて次に読まれたときに、その1バイトを終わり（END_STREAM）と一緒に
+/// 渡す。その時点で、それまでのデータと最後の1バイトは、どれも相手の
+/// ウィンドウに収まっている。本文はそこで捨てられ、期限も外れる。
+///
+/// 以前（1回目）は、最後のフレームを渡した時点で終わりを知らせたので、
+/// データがh2に溜まったままでも期限が外れた。2回目は、最後のフレームの後も
+/// 終わりを知らせず、空のDATAフレーム（END_STREAM）を次に送ったが、それにも
+/// 1バイトの余地を待つので、ウィンドウを本文の長さちょうどにして、
+/// END_STREAMまでWINDOW_UPDATEを送らない相手（RFC 9113で許される）には、
+/// 終わりを送れずに期限で切っていた。1バイトを残せば、その相手にも最後まで
+/// 送れる（最後の1バイトの分の余地は、ウィンドウに残っている）。
 ///
 /// 限界:
+/// - 終わりが前もって分からない本文（ストリーム等）は、最後のフレームの後、
+///   もう一度読まれて終わりを返すまで期限を外さない。その終わりにも1バイトの
+///   余地を待つので、上の相手には送り切れない。mcp-rsの応答は、どれも
+///   長さの決まった本文
 /// - 「送れる」はh2の流量制御の上でのこと。ソケットへの書き込み自体が
 ///   止まった相手（TCPで読まない相手）は、ここでは見ない。その場合は
 ///   keep-aliveのpingも送れず、`keep_alive_timeout`で接続が閉じる
@@ -1693,6 +1705,10 @@ struct SendProgressBody {
     timeout: std::time::Duration,
     /// データのフレームを1つ以上渡した
     sent_data: bool,
+    /// 最後のデータの、まだ渡していない最後の1バイト
+    tail: Option<axum::body::Bytes>,
+    /// 本文の最後まで渡した（次は終わりを返す）
+    finished: bool,
 }
 
 impl SendProgressBody {
@@ -1707,7 +1723,17 @@ impl SendProgressBody {
             guard,
             timeout,
             sent_data: false,
+            tail: None,
+            finished: false,
         }
+    }
+
+    /// `len`バイトを渡したので、送信の期限を延ばす
+    fn extend_deadline(&self, len: usize) {
+        let limit =
+            websocket_response_send_timeout(len, self.timeout, WEBSOCKET_MIN_SEND_BYTES_PER_SEC);
+        self.guard
+            .set_send_deadline(Some(std::time::Instant::now() + limit));
     }
 }
 
@@ -1720,28 +1746,58 @@ impl hyper::body::Body for SendProgressBody {
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<std::result::Result<hyper::body::Frame<Self::Data>, Self::Error>>>
     {
+        use std::task::Poll;
         let this = &mut *self;
-        let polled = std::pin::Pin::new(&mut this.inner).poll_frame(cx);
-        match &polled {
-            std::task::Poll::Ready(Some(Ok(frame))) => {
-                let len = frame.data_ref().map_or(0, |data| data.len());
-                let limit = websocket_response_send_timeout(
-                    len,
-                    this.timeout,
-                    WEBSOCKET_MIN_SEND_BYTES_PER_SEC,
-                );
-                this.guard
-                    .set_send_deadline(Some(std::time::Instant::now() + limit));
-                this.sent_data |= frame.is_data();
-            }
-            std::task::Poll::Ready(_) => this.guard.set_send_deadline(None),
-            std::task::Poll::Pending => {}
+        if let Some(tail) = this.tail.take() {
+            this.extend_deadline(tail.len());
+            this.finished = true;
+            return Poll::Ready(Some(Ok(hyper::body::Frame::data(tail))));
         }
-        polled
+        if this.finished {
+            this.guard.set_send_deadline(None);
+            return Poll::Ready(None);
+        }
+        match std::pin::Pin::new(&mut this.inner).poll_frame(cx) {
+            Poll::Ready(Some(Ok(frame))) => {
+                let frame = match frame.into_data() {
+                    Ok(mut data) => {
+                        this.sent_data = true;
+                        if this.inner.is_end_stream() {
+                            if data.len() > 1 {
+                                // 最後の1バイトは、余地が空いてから渡す
+                                this.tail = Some(data.split_off(data.len() - 1));
+                            } else {
+                                this.finished = true;
+                            }
+                        }
+                        this.extend_deadline(data.len());
+                        hyper::body::Frame::data(data)
+                    }
+                    Err(frame) => {
+                        this.extend_deadline(0);
+                        frame
+                    }
+                };
+                Poll::Ready(Some(Ok(frame)))
+            }
+            Poll::Ready(other) => {
+                this.guard.set_send_deadline(None);
+                this.finished = true;
+                Poll::Ready(other)
+            }
+            Poll::Pending => Poll::Pending,
+        }
     }
 
     fn is_end_stream(&self) -> bool {
-        // データを渡した後は、もう一度読まれて終わりを返すまで`false`
+        if self.tail.is_some() {
+            return false;
+        }
+        if self.finished {
+            return true;
+        }
+        // データを渡した後、終わりが分からない本文は、もう一度読まれて
+        // 終わりを返すまで`false`
         !self.sent_data && self.inner.is_end_stream()
     }
 
@@ -1749,7 +1805,6 @@ impl hyper::body::Body for SendProgressBody {
         self.inner.size_hint()
     }
 }
-
 /// 1つの接続で、HTTP/1.1かHTTP/2のリクエストを処理する。ヘッダーを読む
 /// 時間（HTTP/1.1）と、応答の無い接続を見つけるping（HTTP/2）に`timeout`を
 /// 使う（#540）。
@@ -8188,10 +8243,11 @@ mod tests {
         drop(response);
     }
 
-    /// 本文は、データのフレームを渡した後、もう一度読まれて終わりを返す
-    /// まで、期限を持ち続ける（PR #765のレビュー）
+    /// 長さの決まった本文は、最後の1バイトを残して渡し、もう一度読まれた
+    /// ときに、その1バイトを終わりと一緒に渡す。それまで期限を持ち続ける
+    /// （PR #765のレビュー）
     #[tokio::test]
-    async fn test_send_progress_body_reports_the_end_only_when_polled_again() {
+    async fn test_send_progress_body_holds_back_the_last_byte() {
         use http_body_util::BodyExt;
         use hyper::body::Body as _;
         let activity = Arc::new(ConnectionActivity::new());
@@ -8204,12 +8260,30 @@ mod tests {
         assert!(activity.send_deadline().is_some());
 
         let frame = body.frame().await.unwrap().unwrap();
-        assert_eq!(frame.into_data().unwrap(), "hello");
-        // 中身はもう無いが、まだ終わりとは言わず、期限も残す
+        assert_eq!(frame.into_data().unwrap(), "hell");
+        // 最後の1バイトがまだあるので、終わりとは言わず、期限も残す
         assert!(!body.is_end_stream());
         assert!(activity.send_deadline().is_some());
 
-        assert!(body.frame().await.is_none());
+        let frame = body.frame().await.unwrap().unwrap();
+        assert_eq!(frame.into_data().unwrap(), "o");
+        // ここで終わり（hyperは、このフレームと一緒にEND_STREAMを送り、
+        // 本文を捨てる。捨てれば期限も外れる）
+        assert!(body.is_end_stream());
+        assert!(activity.send_deadline().is_some());
+        drop(body);
+        assert_eq!(activity.send_deadline(), None);
+
+        // 1バイトの本文は、そのまま終わりと一緒に渡す
+        let mut one = SendProgressBody::new(
+            axum::body::Body::from("x"),
+            ActivityGuard::new(activity.clone()),
+            std::time::Duration::from_secs(1),
+        );
+        let frame = one.frame().await.unwrap().unwrap();
+        assert_eq!(frame.into_data().unwrap(), "x");
+        assert!(one.is_end_stream());
+        assert!(one.frame().await.is_none());
         assert_eq!(activity.send_deadline(), None);
 
         // 本文の無い応答には、期限を付けず、すぐ終わりと言う
@@ -8220,6 +8294,59 @@ mod tests {
         );
         assert!(empty.is_end_stream());
         assert_eq!(activity.send_deadline(), None);
+    }
+
+    /// 受信のウィンドウを本文の長さちょうどにして、END_STREAMまで
+    /// WINDOW_UPDATEを送らない相手にも、最後まで送る（PR #765のレビュー。
+    /// 以前は、データを送り切った後、終わりを送る1バイトの余地を待ち続け、
+    /// 期限で切っていた）
+    #[tokio::test]
+    async fn test_http2_response_fits_a_window_of_exactly_its_length() {
+        use http_body_util::BodyExt;
+        let port = start_test_server(|c| c.timeout_ms = 500).await;
+        let request = || {
+            hyper::Request::builder()
+                .method("POST")
+                .uri(format!("http://127.0.0.1:{port}/mcp"))
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from("not json"))
+                .unwrap()
+        };
+        let handshake = |window: Option<u32>| async move {
+            let stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
+                .await
+                .unwrap();
+            let (sender, connection) =
+                hyper::client::conn::http2::Builder::new(TokioExecutor::new())
+                    .initial_stream_window_size(window)
+                    .handshake::<_, axum::body::Body>(TokioIo::new(stream))
+                    .await
+                    .unwrap();
+            tokio::spawn(connection);
+            sender
+        };
+
+        // 本文の長さを知る
+        let mut sender = handshake(None).await;
+        let response = sender.send_request(request()).await.unwrap();
+        let expected = response.into_body().collect().await.unwrap().to_bytes();
+        assert!(expected.len() > 1);
+
+        // ウィンドウを本文の長さちょうどにする。hyperのクライアントは、
+        // 本文を読むまでWINDOW_UPDATEを送らない
+        let mut sender = handshake(Some(expected.len() as u32)).await;
+        let response = sender.send_request(request()).await.unwrap();
+        // 期限（500ms）を何度も過ぎるまで、読まずに待つ
+        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+        let body = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            response.into_body().collect(),
+        )
+        .await
+        .expect("the body did not end")
+        .expect("the connection was cut before the body ended")
+        .to_bytes();
+        assert_eq!(body, expected);
     }
     /// 送っている応答の期限は、本文を送り終えるか捨てれば外す（#759）
     #[test]
