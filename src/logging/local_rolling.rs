@@ -245,27 +245,35 @@ impl LocalRollingAppender {
     ///
     /// 今のファイルの先頭の行がまだ書けていなければ（書き込みが失敗した後）、
     /// 切り替える前に書き終える（その行を新しいファイルの行で置き換えて失わない
-    /// ように。PR #745のレビュー）。書けなければ、その行をあきらめて標準エラーに
-    /// 知らせ、切り替える（#774。今のファイルが書けない間、新しいファイルへ
-    /// 移れなくならないように）
+    /// ように。PR #745のレビュー）。書けなくても切り替え、切り替えたときだけ、
+    /// その行をあきらめて標準エラーに知らせる（#774。今のファイルが書けない間、
+    /// 新しいファイルへ移れなくならないように）。切り替えられなければ（新しい
+    /// ファイルを開けない）、今のファイルに書き続けるので、書けていない残りを
+    /// 残す（PR #776のレビュー）
     ///
     /// 時刻は1回だけ読み、切り替えの判定と切り替えの両方に使う（#774。2回
     /// 読むと、その間に境目を越えたとき、残った行を書かずに置き換える）
     pub(crate) fn roll_now(&mut self) {
         let now = (self.clock)();
         let due = self.next_rollover.is_some_and(|next| now >= next);
+        let mut unwritten = None;
         if due && self.pending_header.is_some() {
             if let Err(e) = write_with_header(&mut self.file, &mut self.pending_header, b"") {
-                eprintln!(
-                    "mcp-rs: could not write the log header to {} ({e}): switching to the next log file without it",
-                    self.dir.join(&self.current_name).display()
-                );
-                self.pending_header = None;
+                unwritten = Some((self.dir.join(&self.current_name), e));
             }
         }
-        if let Some(header) = self.roll_if_needed(now) {
-            self.pending_header = Some(header.into_bytes());
+        let previous_name = self.current_name.clone();
+        let header = self.roll_if_needed(now);
+        if self.current_name == previous_name {
+            return;
         }
+        if let Some((path, e)) = unwritten {
+            eprintln!(
+                "mcp-rs: could not write the log header to {} ({e}): switched to the next log file without it",
+                path.display()
+            );
+        }
+        self.pending_header = header.map(String::into_bytes);
     }
 
     /// 起動の印のように、書き先のパスを入れた1行を書く（#774）。切り替えは
@@ -639,6 +647,43 @@ mod tests {
             "=== continued at 2026-01-11T00:05 / log: mcp-rs.log.2026-01-11 ===\nafter\n"
         );
         assert_eq!(appender.current_file_name(), "mcp-rs.log.2026-01-11");
+    }
+
+    /// 先頭の行が書けず、新しいファイルも開けないときは、今のファイルに
+    /// 書き続けるので、その行を捨てない（PR #776のレビュー）。今のファイルが
+    /// 書けるようになったら、残った行から書く
+    #[test]
+    fn test_keeps_pending_header_when_the_switch_fails() {
+        let dir = tempdir().unwrap();
+        // 次の日のファイルと同じ名前のディレクトリを作り、開けないようにする
+        fs::create_dir(dir.path().join("mcp-rs.log.2026-01-11")).unwrap();
+        let clock = TestClock::new(local(10, 23, 59));
+        let mut appender = LocalRollingAppender::with_clock(
+            dir.path(),
+            &LogRotation::Daily,
+            "mcp-rs.log",
+            clock.boxed(),
+        )
+        .unwrap()
+        .with_rollover_header(test_header());
+        let old = dir.path().join("mcp-rs.log.2026-01-10");
+        appender.file = File::open(&old).unwrap();
+        appender.pending_header = Some(b"=== pending for the 10th ===\n".to_vec());
+        clock.set(local(11, 0, 5));
+        assert!(appender.write_all(b"lost\n").is_err());
+        assert_eq!(appender.current_file_name(), "mcp-rs.log.2026-01-10");
+        assert_eq!(
+            appender.pending_header.as_deref(),
+            Some(&b"=== pending for the 10th ===\n"[..])
+        );
+
+        // 今のファイルが書けるようになった
+        appender.file = open_append(&old).unwrap();
+        appender.write_all(b"b\n").unwrap();
+        assert_eq!(
+            read(dir.path(), "mcp-rs.log.2026-01-10"),
+            "=== pending for the 10th ===\nb\n"
+        );
     }
 
     /// 呼ぶたびに`times`の次の時刻を返す時計（最後の時刻の後は、最後のまま）
