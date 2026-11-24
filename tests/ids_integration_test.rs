@@ -40,7 +40,7 @@ async fn test_signature_detector_sql_injection() {
     let mut request = create_test_request("test-001", "GET", "/api/users", None);
     request.query_params.insert(
         "id".to_string(),
-        "1 UNION SELECT password FROM users".to_string(),
+        vec!["1 UNION SELECT password FROM users".to_string()],
     );
 
     let result = detector.detect(&request).await.unwrap();
@@ -87,7 +87,7 @@ async fn test_signature_detector_command_injection() {
     let mut request = create_test_request("test-004", "POST", "/api/execute", None);
     request
         .query_params
-        .insert("cmd".to_string(), "ls; rm -rf /".to_string());
+        .insert("cmd".to_string(), vec!["ls; rm -rf /".to_string()]);
 
     let result = detector.detect(&request).await.unwrap();
 
@@ -102,7 +102,7 @@ async fn test_signature_detector_benign_request() {
     let mut request = create_test_request("test-005", "GET", "/api/products", None);
     request
         .query_params
-        .insert("category".to_string(), "electronics".to_string());
+        .insert("category".to_string(), vec!["electronics".to_string()]);
 
     let result = detector.detect(&request).await.unwrap();
 
@@ -345,7 +345,7 @@ async fn test_ids_analyze_malicious_request() {
     );
     request
         .query_params
-        .insert("id".to_string(), "1 OR 1=1".to_string());
+        .insert("id".to_string(), vec!["1 OR 1=1".to_string()]);
 
     let result = ids.analyze_request(&request).await;
     assert!(result.is_ok());
@@ -373,7 +373,7 @@ async fn test_ids_analyze_benign_request() {
     );
     request
         .query_params
-        .insert("category".to_string(), "books".to_string());
+        .insert("category".to_string(), vec!["books".to_string()]);
 
     let result = ids.analyze_request(&request).await.unwrap();
 
@@ -465,7 +465,7 @@ async fn test_ids_severity_levels() {
     );
     critical_request.query_params.insert(
         "q".to_string(),
-        "1 UNION SELECT password FROM users".to_string(),
+        vec!["1 UNION SELECT password FROM users".to_string()],
     );
 
     let result = ids.analyze_request(&critical_request).await.unwrap();

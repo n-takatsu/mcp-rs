@@ -386,7 +386,10 @@ mod tests {
 
     fn sql_injection_request(source_ip: &str) -> RequestData {
         let mut query_params = std::collections::HashMap::new();
-        query_params.insert("id".to_string(), "1 UNION SELECT FROM users".to_string());
+        query_params.insert(
+            "id".to_string(),
+            vec!["1 UNION SELECT FROM users".to_string()],
+        );
 
         RequestData {
             request_id: "test-enforce-001".to_string(),

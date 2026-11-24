@@ -42,7 +42,20 @@ pub struct BehaviorBaseline {
     pub last_updated: DateTime<Utc>,
     /// サンプル数
     pub sample_count: usize,
+    /// 頻度を数えている1分の窓の始まり（PR #764のレビュー）。頻度は、
+    /// 要求のたびではなく、窓が終わるたびに、その窓の数で学習する
+    #[serde(default)]
+    pub rate_window_start: Option<DateTime<Utc>>,
+    /// 今の窓の中の要求の数
+    #[serde(default)]
+    pub rate_window_count: u64,
+    /// 頻度の学習に使った窓の数
+    #[serde(default)]
+    pub rate_samples: usize,
 }
+
+/// 頻度の異常を判定するのに要る、学習した窓（1分）の数の最小
+const MIN_RATE_SAMPLES: usize = 3;
 
 /// リクエスト記録（頻度の分析に使う。パス・サイズは`update_baseline`で
 /// ベースラインに反映するので、ここには持たない）
@@ -159,7 +172,7 @@ impl BehavioralDetector {
         // リクエスト記録を追加
         self.record_request(request, &identifier).await;
 
-        // この呼び出し元の、今の頻度（#759。学習にも、判定にも使う）
+        // この呼び出し元の、今の頻度（#759。判定に使う）
         let current_rate = self.current_request_rate(&identifier).await;
 
         // ベースラインを取得または作成
@@ -178,11 +191,13 @@ impl BehavioralDetector {
         // レビュー。覚えた後では、未知のパスも1回は見たことになり、上限で
         // 入れ替えると、毎回違うパスを送られても検知しなかった）
         let path_score = self.check_path_anomaly(&request.path, baseline);
-        // 頻度も、学習する前のベースラインと比べる（#759）
+        // 頻度も、学習する前のベースラインと比べる（#759）。頻度の
+        // ベースラインは窓（1分）ごとにしか変わらないので、窓の中の連続した
+        // 要求（バースト）に慣れてしまうことはない（PR #764のレビュー）
         let rate_score = self.check_request_rate_anomaly(current_rate, baseline);
 
         // ベースライン更新（学習）
-        self.update_baseline(baseline, request, current_rate);
+        self.update_baseline(baseline, request);
 
         // ベースラインが十分に確立されていない場合は学習モード
         if baseline.sample_count < self.config.min_sample_size {
@@ -316,14 +331,8 @@ impl BehavioralDetector {
         }
     }
 
-    /// ベースラインを更新。`current_rate`は、この呼び出し元の今の頻度
-    /// （1秒あたり。[`Self::current_request_rate`]）
-    fn update_baseline(
-        &self,
-        baseline: &mut BehaviorBaseline,
-        request: &RequestData,
-        current_rate: f64,
-    ) {
+    /// ベースラインを更新
+    fn update_baseline(&self, baseline: &mut BehaviorBaseline, request: &RequestData) {
         baseline.sample_count += 1;
 
         // パス頻度を更新（覚えるパスは、上限まで。#543）。上限に達したら、
@@ -357,22 +366,46 @@ impl BehavioralDetector {
         baseline.avg_request_size =
             alpha * request_size + (1.0 - alpha) * baseline.avg_request_size;
 
-        // リクエスト頻度の平均と標準偏差を、実測した頻度の指数移動平均で
-        // 更新する（#759。以前は、頻度を常に毎分1件として学習したので、
-        // 分散が0に近づき、普通の通信でも異常スコアが1.0になった）
-        if baseline.sample_count == 1 {
-            baseline.avg_request_rate = current_rate;
-            baseline.request_rate_std_dev = 0.0;
-        } else {
-            let alpha = 0.1;
-            let diff = current_rate - baseline.avg_request_rate;
-            let variance = baseline.request_rate_std_dev.powi(2);
-            baseline.avg_request_rate += alpha * diff;
-            baseline.request_rate_std_dev =
-                ((1.0 - alpha) * (variance + alpha * diff * diff)).sqrt();
-        }
+        Self::learn_request_rate(baseline, request.timestamp);
 
         baseline.last_updated = Utc::now();
+    }
+
+    /// リクエスト頻度を学習する（#759、PR #764のレビュー）。1分の窓の中の
+    /// 要求を数え、窓が終わったら（その後の最初の要求で）、その窓の頻度を
+    /// 1つのサンプルとして、平均と標準偏差（指数移動平均）に入れる。以前は、
+    /// 頻度を常に毎分1件として学習し（分散が0に近づき、普通の通信でも
+    /// 異常スコアが1.0になった）、その後は要求のたびに学習したので、
+    /// バーストの間にベースラインが追い付き、検知しなかった。要求の無い
+    /// 分は数えない（使っている間の頻度を学習する）
+    fn learn_request_rate(baseline: &mut BehaviorBaseline, timestamp: DateTime<Utc>) {
+        let window = Duration::minutes(1);
+        match baseline.rate_window_start {
+            Some(start) if timestamp < start + window => {
+                baseline.rate_window_count += 1;
+            }
+            Some(_) => {
+                let rate = baseline.rate_window_count as f64 / 60.0;
+                if baseline.rate_samples == 0 {
+                    baseline.avg_request_rate = rate;
+                    baseline.request_rate_std_dev = 0.0;
+                } else {
+                    let alpha = 0.1;
+                    let diff = rate - baseline.avg_request_rate;
+                    let variance = baseline.request_rate_std_dev.powi(2);
+                    baseline.avg_request_rate += alpha * diff;
+                    baseline.request_rate_std_dev =
+                        ((1.0 - alpha) * (variance + alpha * diff * diff)).sqrt();
+                }
+                baseline.rate_samples += 1;
+                baseline.rate_window_start = Some(timestamp);
+                baseline.rate_window_count = 1;
+            }
+            None => {
+                baseline.rate_window_start = Some(timestamp);
+                baseline.rate_window_count = 1;
+            }
+        }
     }
 
     /// この呼び出し元の今の頻度（1秒あたり。過去1分間の数から）
@@ -390,8 +423,12 @@ impl BehavioralDetector {
     /// 平均より多い側だけ、Zスコアで比べる（少ないのは攻撃ではない）。
     /// 標準偏差には下限を置く: 1分の数のばらつき（ポアソン分布の
     /// `sqrt(平均の数)`、少なくとも1件）より小さくしない。一定の頻度の
-    /// 呼び出し元でも、分散が0になって、1件の違いで異常にならないように
+    /// 呼び出し元でも、分散が0になって、1件の違いで異常にならないように。
+    /// 学習した窓が[`MIN_RATE_SAMPLES`]より少なければ判定しない（0.0）
     fn check_request_rate_anomaly(&self, current_rate: f64, baseline: &BehaviorBaseline) -> f64 {
+        if baseline.rate_samples < MIN_RATE_SAMPLES {
+            return 0.0;
+        }
         let mean_per_minute = baseline.avg_request_rate * 60.0;
         let std_dev_floor = mean_per_minute.max(1.0).sqrt() / 60.0;
         let std_dev = baseline.request_rate_std_dev.max(std_dev_floor);
@@ -485,6 +522,9 @@ impl BehaviorBaseline {
             avg_session_duration: 0.0,
             last_updated: Utc::now(),
             sample_count: 0,
+            rate_window_start: None,
+            rate_window_count: 0,
+            rate_samples: 0,
         }
     }
 }
@@ -550,13 +590,13 @@ mod tests {
         };
         // よく使うパスと、1回だけのパスで埋める
         for _ in 0..5 {
-            detector.update_baseline(&mut baseline, &request("/mcp"), 1.0 / 60.0);
+            detector.update_baseline(&mut baseline, &request("/mcp"));
         }
         for i in 1..MAX_PATHS_PER_BASELINE {
-            detector.update_baseline(&mut baseline, &request(&format!("/once/{i}")), 1.0 / 60.0);
+            detector.update_baseline(&mut baseline, &request(&format!("/once/{i}")));
         }
         assert_eq!(baseline.typical_paths.len(), MAX_PATHS_PER_BASELINE);
-        detector.update_baseline(&mut baseline, &request("/new"), 1.0 / 60.0);
+        detector.update_baseline(&mut baseline, &request("/new"));
         assert_eq!(baseline.typical_paths.len(), MAX_PATHS_PER_BASELINE);
         assert!(baseline.typical_paths.contains_key("/new"));
         // よく使うパスは残る
@@ -625,30 +665,25 @@ mod tests {
         assert!(baseline.typical_paths.contains_key("/api/products"));
     }
 
-    /// 頻度は、呼び出し元ごとの実測値で学習する（#759。以前は常に毎分1件と
-    /// して学習し、分散が0に近づいて、普通の通信でも異常スコアが1.0になった）
+    /// 頻度は、呼び出し元ごとの実測値で、1分の窓ごとに学習する（#759、
+    /// PR #764のレビュー。以前は常に毎分1件として学習し、分散が0に近づいて、
+    /// 普通の通信でも異常スコアが1.0になった）
     #[tokio::test]
-    async fn test_request_rate_baseline_learns_the_measured_rate() {
+    async fn test_request_rate_baseline_learns_the_measured_rate_per_window() {
         let detector = BehavioralDetector::new().await.unwrap();
         let mut baseline = BehaviorBaseline::new("caller:steady");
-        let request = RequestData {
-            request_id: "r".to_string(),
-            method: "POST".to_string(),
-            path: "/mcp".to_string(),
-            query_params: HashMap::new(),
-            headers: HashMap::new(),
-            body: None,
-            source_ip: None,
-            caller_id: Some("steady".to_string()),
-            timestamp: Utc::now(),
-        };
-        let per_minute = |n: f64| n / 60.0;
-        // 毎分2件のペースを続ける
-        for _ in 0..500 {
-            detector.update_baseline(&mut baseline, &request, per_minute(2.0));
+        let start = Utc::now() - Duration::hours(10);
+        // 毎分2件（30秒ごと）のペースを、300分続ける
+        for i in 0..600 {
+            BehavioralDetector::learn_request_rate(
+                &mut baseline,
+                start + Duration::seconds(30 * i),
+            );
         }
-        assert!((baseline.avg_request_rate - per_minute(2.0)).abs() < 1e-9);
+        assert_eq!(baseline.rate_samples, 299);
+        assert!((baseline.avg_request_rate - 2.0 / 60.0).abs() < 1e-9);
         let threshold = detector.config.anomaly_threshold;
+        let per_minute = |n: f64| n / 60.0;
         // 同じペースや、1件多いだけでは異常にしない
         assert_eq!(
             detector.check_request_rate_anomaly(per_minute(2.0), &baseline),
@@ -661,9 +696,34 @@ mod tests {
         assert!(detector.check_request_rate_anomaly(per_minute(30.0), &baseline) > threshold);
     }
 
-    /// `analyze`は、今の頻度を、学習する前のベースラインと比べる（#759）
+    /// 窓の中の要求では、頻度のベースラインは変わらない（PR #764の
+    /// レビュー）。学習した窓が少ないうちは、頻度を判定しない
+    #[test]
+    fn test_request_rate_baseline_is_frozen_within_a_window() {
+        let mut baseline = BehaviorBaseline::new("caller:x");
+        let start = Utc::now();
+        for i in 0..100 {
+            BehavioralDetector::learn_request_rate(
+                &mut baseline,
+                start + Duration::milliseconds(i),
+            );
+        }
+        assert_eq!(baseline.rate_samples, 0);
+        assert_eq!(baseline.rate_window_count, 100);
+        assert_eq!(baseline.avg_request_rate, 0.0);
+        // 窓が終わった後の最初の要求で、その窓の100件を1つのサンプルにする
+        BehavioralDetector::learn_request_rate(&mut baseline, start + Duration::seconds(61));
+        assert_eq!(baseline.rate_samples, 1);
+        assert!((baseline.avg_request_rate - 100.0 / 60.0).abs() < 1e-9);
+        assert_eq!(baseline.rate_window_count, 1);
+    }
+
+    /// 毎分2件を学習した呼び出し元に、続けて`analyze`を呼ぶ（PR #764の
+    /// レビュー）。同じペースや1件多いだけでは異常にせず、バーストは、
+    /// ベースラインに慣れる前に検知する（以前は要求のたびに学習したので、
+    /// 40件続けても、スコアは0.644までで、0.7を超えなかった）
     #[tokio::test]
-    async fn test_analyze_compares_the_current_rate_with_the_learned_baseline() {
+    async fn test_analyze_detects_a_burst_of_sequential_requests() {
         let detector = BehavioralDetector::new().await.unwrap();
         let now = Utc::now();
         let request = |caller: &str| RequestData {
@@ -677,11 +737,14 @@ mod tests {
             caller_id: Some(caller.to_string()),
             timestamp: now,
         };
-        // どちらも毎分2件を学習済み
-        for caller in ["steady", "burst"] {
+        // 毎分2件を学習済み（標準偏差0）。今の窓は始まったばかり
+        for caller in ["same", "plus-one", "burst"] {
             let mut baseline = BehaviorBaseline::new(&format!("caller:{caller}"));
             baseline.sample_count = 1_000;
             baseline.avg_request_rate = 2.0 / 60.0;
+            baseline.rate_samples = 1_000;
+            baseline.rate_window_start = Some(now);
+            baseline.rate_window_count = 0;
             baseline.typical_paths.insert("/mcp".to_string(), 1_000.0);
             baseline.typical_hours.push(now.hour());
             detector
@@ -690,31 +753,36 @@ mod tests {
                 .await
                 .insert(format!("caller:{caller}"), baseline);
         }
-        // 直前の1分に、steadyは1件、burstは40件
+        // 直前の1分の要求: sameは1件、plus-oneは2件、burstは2件
         {
             let mut history = detector.request_history.write().await;
-            history.push_back(RequestRecord {
-                identifier: "caller:steady".to_string(),
-                timestamp: now,
-            });
-            for _ in 0..40 {
-                history.push_back(RequestRecord {
-                    identifier: "caller:burst".to_string(),
-                    timestamp: now,
-                });
+            for (caller, count) in [("same", 1), ("plus-one", 2), ("burst", 2)] {
+                for _ in 0..count {
+                    history.push_back(RequestRecord {
+                        identifier: format!("caller:{caller}"),
+                        timestamp: now,
+                    });
+                }
             }
         }
 
-        let steady = detector.analyze(&request("steady")).await.unwrap();
-        assert!(!steady.is_anomalous, "{:?}", steady.anomaly_types);
+        // 今の要求を入れて、毎分2件・3件
+        let same = detector.analyze(&request("same")).await.unwrap();
+        assert!(!same.is_anomalous, "{:?}", same.anomaly_types);
+        let plus_one = detector.analyze(&request("plus-one")).await.unwrap();
+        assert!(!plus_one.is_anomalous, "{:?}", plus_one.anomaly_types);
 
-        let burst = detector.analyze(&request("burst")).await.unwrap();
-        assert!(
-            burst
+        // 40件を続けて送る
+        let mut max_score: f64 = 0.0;
+        let mut detected = false;
+        for _ in 0..40 {
+            let result = detector.analyze(&request("burst")).await.unwrap();
+            max_score = max_score.max(result.anomaly_score);
+            detected |= result
                 .anomaly_types
-                .contains(&AnomalyType::AbnormalRequestRate),
-            "{:?}",
-            burst.anomaly_types
-        );
+                .contains(&AnomalyType::AbnormalRequestRate);
+        }
+        assert!(detected, "max score {max_score}");
+        assert!(max_score > detector.config.anomaly_threshold);
     }
 }
