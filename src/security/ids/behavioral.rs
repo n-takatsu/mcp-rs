@@ -159,6 +159,9 @@ impl BehavioralDetector {
         // リクエスト記録を追加
         self.record_request(request, &identifier).await;
 
+        // この呼び出し元の、今の頻度（#759。学習にも、判定にも使う）
+        let current_rate = self.current_request_rate(&identifier).await;
+
         // ベースラインを取得または作成
         let mut baselines = self.baselines.write().await;
         if !baselines.contains_key(&identifier) {
@@ -175,9 +178,11 @@ impl BehavioralDetector {
         // レビュー。覚えた後では、未知のパスも1回は見たことになり、上限で
         // 入れ替えると、毎回違うパスを送られても検知しなかった）
         let path_score = self.check_path_anomaly(&request.path, baseline);
+        // 頻度も、学習する前のベースラインと比べる（#759）
+        let rate_score = self.check_request_rate_anomaly(current_rate, baseline);
 
         // ベースライン更新（学習）
-        self.update_baseline(baseline, request);
+        self.update_baseline(baseline, request, current_rate);
 
         // ベースラインが十分に確立されていない場合は学習モード
         if baseline.sample_count < self.config.min_sample_size {
@@ -197,12 +202,10 @@ impl BehavioralDetector {
         let mut anomaly_types = Vec::new();
         let mut anomaly_scores = Vec::new();
 
-        // 1. リクエスト頻度の異常検知
-        if let Some(rate_score) = self.check_request_rate_anomaly(&identifier, baseline).await {
-            if rate_score > self.config.anomaly_threshold {
-                anomaly_types.push(AnomalyType::AbnormalRequestRate);
-                anomaly_scores.push(rate_score);
-            }
+        // 1. リクエスト頻度の異常検知（学習する前のベースラインと比べたもの）
+        if rate_score > self.config.anomaly_threshold {
+            anomaly_types.push(AnomalyType::AbnormalRequestRate);
+            anomaly_scores.push(rate_score);
         }
 
         // 2. パスの異常検知（覚える前の状態で判定したもの）
@@ -313,8 +316,14 @@ impl BehavioralDetector {
         }
     }
 
-    /// ベースラインを更新
-    fn update_baseline(&self, baseline: &mut BehaviorBaseline, request: &RequestData) {
+    /// ベースラインを更新。`current_rate`は、この呼び出し元の今の頻度
+    /// （1秒あたり。[`Self::current_request_rate`]）
+    fn update_baseline(
+        &self,
+        baseline: &mut BehaviorBaseline,
+        request: &RequestData,
+        current_rate: f64,
+    ) {
         baseline.sample_count += 1;
 
         // パス頻度を更新（覚えるパスは、上限まで。#543）。上限に達したら、
@@ -348,53 +357,47 @@ impl BehavioralDetector {
         baseline.avg_request_size =
             alpha * request_size + (1.0 - alpha) * baseline.avg_request_size;
 
-        // リクエスト頻度の統計を更新（簡易的な移動平均）
-        // 1サンプルあたりの平均頻度を計算
-        let sample_rate = 1.0 / 60.0; // 1分あたり1リクエストと仮定
-        baseline.avg_request_rate = 0.1 * sample_rate + 0.9 * baseline.avg_request_rate;
-
-        // 標準偏差の簡易更新（実際の統計手法より簡略化）
-        if baseline.sample_count > 10 {
-            let deviation = (sample_rate - baseline.avg_request_rate).abs();
-            baseline.request_rate_std_dev = 0.1 * deviation + 0.9 * baseline.request_rate_std_dev;
+        // リクエスト頻度の平均と標準偏差を、実測した頻度の指数移動平均で
+        // 更新する（#759。以前は、頻度を常に毎分1件として学習したので、
+        // 分散が0に近づき、普通の通信でも異常スコアが1.0になった）
+        if baseline.sample_count == 1 {
+            baseline.avg_request_rate = current_rate;
+            baseline.request_rate_std_dev = 0.0;
+        } else {
+            let alpha = 0.1;
+            let diff = current_rate - baseline.avg_request_rate;
+            let variance = baseline.request_rate_std_dev.powi(2);
+            baseline.avg_request_rate += alpha * diff;
+            baseline.request_rate_std_dev =
+                ((1.0 - alpha) * (variance + alpha * diff * diff)).sqrt();
         }
 
         baseline.last_updated = Utc::now();
     }
 
-    /// リクエスト頻度の異常をチェック
-    async fn check_request_rate_anomaly(
-        &self,
-        identifier: &str,
-        baseline: &BehaviorBaseline,
-    ) -> Option<f64> {
+    /// この呼び出し元の今の頻度（1秒あたり。過去1分間の数から）
+    async fn current_request_rate(&self, identifier: &str) -> f64 {
         let history = self.request_history.read().await;
-
-        // 過去1分間のリクエスト数をカウント
         let one_minute_ago = Utc::now() - Duration::minutes(1);
         let recent_count = history
             .iter()
             .filter(|r| r.identifier == identifier && r.timestamp > one_minute_ago)
             .count();
+        recent_count as f64 / 60.0
+    }
 
-        let current_rate = recent_count as f64 / 60.0;
-
-        // Z-score計算（標準偏差が0の場合は0を返す）
-        if baseline.request_rate_std_dev > 0.0 {
-            let z_score =
-                (current_rate - baseline.avg_request_rate).abs() / baseline.request_rate_std_dev;
-
-            // Z-scoreを0-1のスコアに正規化
-            let score = (z_score / (self.config.statistical_sensitivity * 2.0)).min(1.0);
-            Some(score)
-        } else {
-            // 標準偏差がない場合は単純比較
-            if current_rate > baseline.avg_request_rate * 3.0 {
-                Some(0.8)
-            } else {
-                Some(0.0)
-            }
-        }
+    /// リクエスト頻度の異常をチェック（#759）。今の頻度を、ベースラインの
+    /// 平均より多い側だけ、Zスコアで比べる（少ないのは攻撃ではない）。
+    /// 標準偏差には下限を置く: 1分の数のばらつき（ポアソン分布の
+    /// `sqrt(平均の数)`、少なくとも1件）より小さくしない。一定の頻度の
+    /// 呼び出し元でも、分散が0になって、1件の違いで異常にならないように
+    fn check_request_rate_anomaly(&self, current_rate: f64, baseline: &BehaviorBaseline) -> f64 {
+        let mean_per_minute = baseline.avg_request_rate * 60.0;
+        let std_dev_floor = mean_per_minute.max(1.0).sqrt() / 60.0;
+        let std_dev = baseline.request_rate_std_dev.max(std_dev_floor);
+        let z_score = (current_rate - baseline.avg_request_rate).max(0.0) / std_dev;
+        // Z-scoreを0-1のスコアに正規化
+        (z_score / (self.config.statistical_sensitivity * 2.0)).min(1.0)
     }
 
     /// パスの異常をチェック
@@ -547,13 +550,13 @@ mod tests {
         };
         // よく使うパスと、1回だけのパスで埋める
         for _ in 0..5 {
-            detector.update_baseline(&mut baseline, &request("/mcp"));
+            detector.update_baseline(&mut baseline, &request("/mcp"), 1.0 / 60.0);
         }
         for i in 1..MAX_PATHS_PER_BASELINE {
-            detector.update_baseline(&mut baseline, &request(&format!("/once/{i}")));
+            detector.update_baseline(&mut baseline, &request(&format!("/once/{i}")), 1.0 / 60.0);
         }
         assert_eq!(baseline.typical_paths.len(), MAX_PATHS_PER_BASELINE);
-        detector.update_baseline(&mut baseline, &request("/new"));
+        detector.update_baseline(&mut baseline, &request("/new"), 1.0 / 60.0);
         assert_eq!(baseline.typical_paths.len(), MAX_PATHS_PER_BASELINE);
         assert!(baseline.typical_paths.contains_key("/new"));
         // よく使うパスは残る
@@ -620,5 +623,98 @@ mod tests {
         let baseline = baseline.unwrap();
         assert_eq!(baseline.sample_count, 10);
         assert!(baseline.typical_paths.contains_key("/api/products"));
+    }
+
+    /// 頻度は、呼び出し元ごとの実測値で学習する（#759。以前は常に毎分1件と
+    /// して学習し、分散が0に近づいて、普通の通信でも異常スコアが1.0になった）
+    #[tokio::test]
+    async fn test_request_rate_baseline_learns_the_measured_rate() {
+        let detector = BehavioralDetector::new().await.unwrap();
+        let mut baseline = BehaviorBaseline::new("caller:steady");
+        let request = RequestData {
+            request_id: "r".to_string(),
+            method: "POST".to_string(),
+            path: "/mcp".to_string(),
+            query_params: HashMap::new(),
+            headers: HashMap::new(),
+            body: None,
+            source_ip: None,
+            caller_id: Some("steady".to_string()),
+            timestamp: Utc::now(),
+        };
+        let per_minute = |n: f64| n / 60.0;
+        // 毎分2件のペースを続ける
+        for _ in 0..500 {
+            detector.update_baseline(&mut baseline, &request, per_minute(2.0));
+        }
+        assert!((baseline.avg_request_rate - per_minute(2.0)).abs() < 1e-9);
+        let threshold = detector.config.anomaly_threshold;
+        // 同じペースや、1件多いだけでは異常にしない
+        assert_eq!(
+            detector.check_request_rate_anomaly(per_minute(2.0), &baseline),
+            0.0
+        );
+        assert!(detector.check_request_rate_anomaly(per_minute(3.0), &baseline) < threshold);
+        // 少ないのは異常にしない
+        assert_eq!(detector.check_request_rate_anomaly(0.0, &baseline), 0.0);
+        // 大きく増えたら異常にする
+        assert!(detector.check_request_rate_anomaly(per_minute(30.0), &baseline) > threshold);
+    }
+
+    /// `analyze`は、今の頻度を、学習する前のベースラインと比べる（#759）
+    #[tokio::test]
+    async fn test_analyze_compares_the_current_rate_with_the_learned_baseline() {
+        let detector = BehavioralDetector::new().await.unwrap();
+        let now = Utc::now();
+        let request = |caller: &str| RequestData {
+            request_id: "r".to_string(),
+            method: "POST".to_string(),
+            path: "/mcp".to_string(),
+            query_params: HashMap::new(),
+            headers: HashMap::new(),
+            body: None,
+            source_ip: None,
+            caller_id: Some(caller.to_string()),
+            timestamp: now,
+        };
+        // どちらも毎分2件を学習済み
+        for caller in ["steady", "burst"] {
+            let mut baseline = BehaviorBaseline::new(&format!("caller:{caller}"));
+            baseline.sample_count = 1_000;
+            baseline.avg_request_rate = 2.0 / 60.0;
+            baseline.typical_paths.insert("/mcp".to_string(), 1_000.0);
+            baseline.typical_hours.push(now.hour());
+            detector
+                .baselines
+                .write()
+                .await
+                .insert(format!("caller:{caller}"), baseline);
+        }
+        // 直前の1分に、steadyは1件、burstは40件
+        {
+            let mut history = detector.request_history.write().await;
+            history.push_back(RequestRecord {
+                identifier: "caller:steady".to_string(),
+                timestamp: now,
+            });
+            for _ in 0..40 {
+                history.push_back(RequestRecord {
+                    identifier: "caller:burst".to_string(),
+                    timestamp: now,
+                });
+            }
+        }
+
+        let steady = detector.analyze(&request("steady")).await.unwrap();
+        assert!(!steady.is_anomalous, "{:?}", steady.anomaly_types);
+
+        let burst = detector.analyze(&request("burst")).await.unwrap();
+        assert!(
+            burst
+                .anomaly_types
+                .contains(&AnomalyType::AbnormalRequestRate),
+            "{:?}",
+            burst.anomaly_types
+        );
     }
 }

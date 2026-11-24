@@ -4646,6 +4646,58 @@ mod tests {
         );
     }
 
+    /// ブラウザのUser-Agent、複数のCookie、`&`・`<`・`;`・`base64`を含む
+    /// 本文は、IDSで断らない（#759。以前はCMD-001・XSS-011に当たり、
+    /// HTTP 403になって、送り元のアドレスもブロックした）
+    #[tokio::test]
+    async fn check_ids_allows_ordinary_browser_headers_and_bodies() {
+        let ids = Arc::new(
+            IntrusionDetectionSystem::new(IDSConfig {
+                auto_block_enabled: true,
+                ..IDSConfig::default()
+            })
+            .await
+            .unwrap(),
+        );
+        let remote_addr: SocketAddr = "203.0.113.7:12345".parse().unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "User-Agent",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                .parse()
+                .unwrap(),
+        );
+        headers.insert("Cookie", "a=b; c=d; theme=dark".parse().unwrap());
+        let body = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "create_post",
+                "arguments": {
+                    "title": "Q&A; tips",
+                    "content": "<p>a < b; c > d & e</p>",
+                    "encoding": "base64"
+                }
+            }
+        });
+        let uri: axum::http::Uri = "/mcp".parse().unwrap();
+
+        let result = check_ids(
+            Some(&ids),
+            remote_addr,
+            None,
+            &crate::mcp::Caller::default(),
+            &uri,
+            &headers,
+            Some(&body),
+        )
+        .await;
+
+        assert_eq!(result, Ok(()));
+        assert!(!ids.is_blocked(remote_addr.ip()).await);
+    }
+
     #[test]
     fn header_map_to_string_map_exposes_canonical_names_and_keeps_non_utf8_values() {
         let mut headers = HeaderMap::new();
