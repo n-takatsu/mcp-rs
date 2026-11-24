@@ -226,6 +226,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- MySQL・MariaDBの時間の上限で`KILL QUERY`を送る前の確認が、止める
+  接続の届いたサーバーの識別子が元と違っても、文の始めが同じなら止めて
+  いた（#759）。プロキシ越しに、別のサーバーの同じID・同じユーザー・同じ
+  文を止めうる。識別子が両方読めて違えば、止めない
+
+- MySQL・MariaDBの`KILL QUERY`の前の確認で、サーバーの識別子
+  （`@@server_uuid`等）が同じなら、文を確かめずに止めていた（#759）。
+  識別子は再起動しても変わらないので、再起動の後に同じユーザーの別の
+  セッションが同じ接続IDを得ると、止めうる。`Uptime`も読み、再起動して
+  いれば止めない。起動が同じか分からないときは、文の始めで確かめる
+
+- MySQL・MariaDBの時間の上限を超えたとき、`KILL QUERY`・切断が成功
+  したか、利用者のSQLを送ったかに関係なく「was stopped」と返していた
+  （#759）。`KILL QUERY`で止めた・接続を閉じただけ・止められず実行が
+  続きうる・送る前だった、を分けて返す
+
+- MySQL・MariaDBの`get_schema`で、ビューの`definition`が常に空だった
+  （#759）。`information_schema.VIEWS`の`VIEW_DEFINITION`を返す。読む
+  権限が無いビューは空のまま
+
 - STDIOモードで、ログをファイルに書けずコンソールだけにするとき（と、
   `console`・`file`のどちらも無効のとき）、標準出力にログを書いていた
   （#755）。起動のログ等が、MCPのJSON-RPCの流れに混ざった。標準エラー出力に
