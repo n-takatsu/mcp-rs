@@ -5853,12 +5853,15 @@ impl WordPressHandler {
                     .await
                     .remove(&revision.author)
                     .unwrap_or_else(|| format!("user {}", revision.author));
+                // 本文の無い型では、`get_post`と同じくタイトルで見る（PR #777の
+                // レビュー）
+                let has_raw = match (&revision.content, &revision.title) {
+                    (Some(content), _) => content.raw.is_some(),
+                    (None, Some(title)) => title.raw.is_some(),
+                    (None, None) => false,
+                };
                 let format_label = match format {
-                    PostContentFormat::Raw
-                        if revision.content.as_ref().is_some_and(|c| c.raw.is_some()) =>
-                    {
-                        "raw"
-                    }
+                    PostContentFormat::Raw if has_raw => "raw",
                     PostContentFormat::Raw => "rendered HTML (raw source unavailable)",
                     PostContentFormat::Rendered => "rendered HTML",
                     PostContentFormat::Text => "plain text",
@@ -11741,6 +11744,8 @@ X-WP-TotalPages: 1",
         .unwrap();
         let text = tool_text(&result);
         assert!(text.contains("Title: 前の題\n"), "{text}");
+        // 本文が無ければ、タイトルの原文で形を決める（PR #777のレビュー）
+        assert!(text.contains("Format: raw\n"), "{text}");
         assert!(text.ends_with("Content:\n(none)"), "{text}");
 
         let (base_url, captured) = spawn_body_capturing_server(revision.to_string()).await;
