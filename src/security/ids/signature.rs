@@ -371,12 +371,14 @@ impl SignatureDetector {
             // 使う）。スクリプト・HTMLとして実行される種類の`data:` URIを
             // base64で埋め込んだものだけを見る。種類と`;base64,`の間の
             // パラメーター（`charset=utf-8`・`foo=bar`等）は、いくつあっても
-            // よい（PR #764のレビュー）
+            // よい（PR #764のレビュー）。JavaScriptの種類は、WHATWGのMIME
+            // Sniffingの別名（`text/x-javascript`・`text/javascript1.0`〜`1.5`・
+            // `text/jscript`・`text/livescript`等）も含める
             AttackPattern::new(
                 "XSS-011",
                 "Base64 Encoded Script",
                 DetectionType::XssAttack,
-                r#"(?i)data\s*:\s*(?:text/(?:html|javascript|ecmascript|xml)|application/(?:x-)?(?:javascript|ecmascript|xhtml\+xml)|image/svg\+xml)\s*;\s*(?:[\w.+-]+\s*=\s*(?:"[^"]*"|[^;,"\s]*)\s*;\s*)*base64\s*,"#,
+                r#"(?i)data\s*:\s*(?:text/(?:html|xml|(?:x-)?(?:javascript|ecmascript)|javascript1\.[0-5]|jscript|livescript)|application/(?:x-)?(?:javascript|ecmascript|xhtml\+xml)|image/svg\+xml)\s*;\s*(?:[\w.+-]+\s*=\s*(?:"[^"]*"|[^;,"\s]*)\s*;\s*)*base64\s*,"#,
                 Severity::High,
                 "Base64 encoded XSS",
                 vec![],
@@ -1061,6 +1063,11 @@ mod tests {
             "data:text/html;foo=bar;charset=utf-8;base64,PHNjcmlwdD4=",
             "data:text/html;name=\"a b\";base64,PHNjcmlwdD4=",
             "DATA:application/javascript ; x-y=1 ; z=2 ; base64,YWxlcnQoMSk=",
+            // JavaScriptの種類の別名（PR #764のレビュー）
+            "data:text/x-javascript;base64,YWxlcnQoMSk=",
+            "data:text/javascript1.5;base64,YWxlcnQoMSk=",
+            "data:text/jscript;charset=utf-8;base64,YWxlcnQoMSk=",
+            "data:text/x-ecmascript;base64,YWxlcnQoMSk=",
         ] {
             let result = detector
                 .detect(&request_with(&[("u", value)], &[], None))
