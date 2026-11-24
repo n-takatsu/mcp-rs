@@ -186,7 +186,7 @@ mcp-rs v0.28.0 and later also accept version `2026-07-28`, which has no `initial
     },
     "serverInfo": {
       "name": "mcp-rs",
-      "version": "0.29.0",
+      "version": "0.30.0",
       "description": "Rust implementation of the Model Context Protocol (MCP) server for WordPress and other tools",
       "websiteUrl": "https://n-takatsu.github.io/mcp-rs/",
       "icons": [
@@ -257,11 +257,11 @@ Lists available tools.
 mcp-rs always provides the read-only tool `mcp_rs_status` (first in `tools/list`), with or without WordPress and plugins. It returns text such as:
 
 ```text
-mcp-rs 0.29.0
+mcp-rs 0.30.0
 Mode: stdio
 Protocol version: 2025-11-25 (legacy)
 Supported protocol versions: 2026-07-28, 2025-11-25, 2025-06-18, 2024-11-05
-Update check: 0.29.0 is the latest release
+Update check: 0.30.0 is the latest release
 OS: windows (x86_64)
 Process ID: 12345
 Instance: 12345-20261109T093000
@@ -572,7 +572,7 @@ For example, `resources/read` with `"uri": "wordpress://post/123"`. A missing it
 
 ## Version Information
 
-- **Current Version**: v0.29.0
+- **Current Version**: v0.30.0
 - **Phase 1**: MySQL (Complete)
 - **Phase 2**: PostgreSQL (Complete)
 - **Last Updated**: 2025-11-23
