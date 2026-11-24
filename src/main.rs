@@ -557,6 +557,28 @@ impl ShutdownSignal {
     }
 }
 
+fn optional_shutdown_listener<T>(name: &str, listener: std::io::Result<T>) -> Option<T> {
+    listener
+        .inspect_err(|e| {
+            tracing::warn!(
+                "Could not listen for {name} ({e}): plugins may be left running if mcp-rs is stopped by {name}"
+            );
+        })
+        .ok()
+}
+
+/// 2つ目の合図（SIGTERM・Ctrl+Break）の登録に失敗しても、1つ目（Ctrl+C）は
+/// 受け続ける（#759。登録済みのものを捨てて戻ると、Ctrl+Cでもプロセスが
+/// 止まらなくなる）。受けられない合図は、待っても終わらない
+async fn recv_optional<F: std::future::Future>(signal: Option<F>) {
+    match signal {
+        Some(signal) => {
+            signal.await;
+        }
+        None => std::future::pending().await,
+    }
+}
+
 /// Unix系: SIGINT（Ctrl+C）と、`docker stop`・`systemctl stop`等が送るSIGTERM
 #[cfg(unix)]
 mod signals {
@@ -579,13 +601,9 @@ mod signals {
 
     impl Signals {
         pub(super) async fn recv(&mut self) -> &'static str {
-            let Some(terminate) = &mut self.terminate else {
-                self.interrupt.recv().await;
-                return "Ctrl+C";
-            };
             tokio::select! {
                 _ = self.interrupt.recv() => "Ctrl+C",
-                _ = terminate.recv() => "SIGTERM",
+                _ = super::recv_optional(self.terminate.as_mut().map(Signal::recv)) => "SIGTERM",
             }
         }
     }
@@ -610,26 +628,12 @@ mod signals {
 
     impl Signals {
         pub(super) async fn recv(&mut self) -> &'static str {
-            let Some(ctrl_break) = &mut self.ctrl_break else {
-                self.ctrl_c.recv().await;
-                return "Ctrl+C";
-            };
             tokio::select! {
                 _ = self.ctrl_c.recv() => "Ctrl+C",
-                _ = ctrl_break.recv() => "Ctrl+Break",
+                _ = super::recv_optional(self.ctrl_break.as_mut().map(CtrlBreak::recv)) => "Ctrl+Break",
             }
         }
     }
-}
-
-fn optional_shutdown_listener<T>(name: &str, listener: std::io::Result<T>) -> Option<T> {
-    listener
-        .inspect_err(|e| {
-            tracing::warn!(
-                "Could not listen for {name} ({e}): plugins may be left running if mcp-rs is stopped by this signal"
-            );
-        })
-        .ok()
 }
 
 /// `server`で`run`を実行し、その結果に関わらず`stop`で止めてから、結果を
@@ -708,6 +712,18 @@ mod tests {
         sender.send(Some("SIGTERM")).unwrap();
         assert_eq!(shutdown.received(), Some("SIGTERM"));
         assert_eq!(shutdown.wait().await, "SIGTERM");
+    }
+
+    /// 登録できなかった2つ目の合図は、待っても終わらない。登録できた合図は
+    /// 受けられる（#759。2つ目の登録の失敗で、1つ目を捨てない）
+    #[tokio::test]
+    async fn test_recv_optional_waits_only_for_registered_signals() {
+        let missing: Option<std::future::Ready<()>> = None;
+        let waited =
+            tokio::time::timeout(std::time::Duration::from_millis(50), recv_optional(missing))
+                .await;
+        assert!(waited.is_err());
+        recv_optional(Some(std::future::ready(()))).await;
     }
 
     /// 合図を受けられないときは、待っても終わらない（終わったと扱わない）

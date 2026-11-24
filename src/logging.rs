@@ -920,7 +920,7 @@ fn format_retention_policy(retention: &LogRetention) -> String {
 /// 期間のファイルに書いていることや、切り替えの後にまだ書いておらず、前の
 /// 期間のファイルを開いたままのことがあるため
 fn apply_retention_policy(config: &LogConfig, log_dir: &Path, active: Option<&Path>) -> Result<()> {
-    let protected = protected_log_names(&config.rotation, active, &chrono::Local::now());
+    let protected = protected_log_names(active, &chrono::Local::now());
     match &config.retention {
         LogRetention::External => {
             // 外部管理なので何もしない（推奨アプローチ）
@@ -969,32 +969,43 @@ fn spawn_retention(
         .ok()
 }
 
-/// 保持の処理で消さないファイルの名前: 今書いているファイル（`active`）と、
-/// 日次・時間別それぞれの今（`now`）と1つ前の期間のファイル（#759）
-fn protected_log_names(
-    rotation: &LogRotation,
-    active: Option<&Path>,
-    now: &chrono::DateTime<chrono::Local>,
-) -> Vec<String> {
-    let local_now = now.naive_local();
-    let file_name = |rotation: &LogRotation, time: &chrono::NaiveDateTime| {
+/// 今（`now`）と1つ前の期間のファイルの名前（#759）。同じフォルダを使う別の
+/// プロセスは、別の`rotation`かもしれないので、どの形（`Never`・日・時）も
+/// 出す。前の日は暦で1日戻す（夏時間の切り替えの日は24時間でないため）。前の
+/// 時は、1時間前の名前が今と同じ（夏時間が終わる日に同じ時を2度通る）なら、
+/// 2時間前の名前にする
+fn period_log_names<Tz: chrono::TimeZone>(now: &chrono::DateTime<Tz>) -> Vec<String> {
+    let name = |rotation: &LogRotation, time: &chrono::NaiveDateTime| {
         local_rolling::file_name_for(LOG_FILE_PREFIX, rotation, time)
     };
+    let hour = |time: &chrono::DateTime<Tz>| name(&LogRotation::Hourly, &time.naive_local());
+    let local_now = now.naive_local();
+    let this_hour = hour(now);
+    let previous_hour = [1, 2]
+        .into_iter()
+        .map(|hours| hour(&(now.clone() - chrono::Duration::hours(hours))))
+        .find(|name| *name != this_hour);
     let mut names = vec![
-        file_name(&LogRotation::Daily, &local_now),
-        file_name(&LogRotation::Hourly, &local_now),
-        file_name(
-            &LogRotation::Hourly,
-            &(*now - chrono::Duration::hours(1)).naive_local(),
-        ),
+        name(&LogRotation::Never, &local_now),
+        name(&LogRotation::Daily, &local_now),
     ];
-    // 日次はローカルの暦日で戻す。夏時間で1日が24時間とは限らない。
-    if let Some(previous_day) = local_now.checked_sub_days(chrono::Days::new(1)) {
-        names.push(file_name(&LogRotation::Daily, &previous_day));
-    }
-    if matches!(rotation, LogRotation::Never) {
-        names.push(file_name(&LogRotation::Never, &local_now));
-    }
+    names.extend(
+        local_now
+            .checked_sub_days(chrono::Days::new(1))
+            .map(|previous_day| name(&LogRotation::Daily, &previous_day)),
+    );
+    names.push(this_hour);
+    names.extend(previous_hour);
+    names
+}
+
+/// 保持の処理で消さないファイルの名前: 今書いているファイル（`active`）と、
+/// 今（`now`）と1つ前の期間のファイル（[`period_log_names`]。#759）
+fn protected_log_names<Tz: chrono::TimeZone>(
+    active: Option<&Path>,
+    now: &chrono::DateTime<Tz>,
+) -> Vec<String> {
+    let mut names = period_log_names(now);
     names.extend(
         active
             .and_then(|active| active.file_name())
@@ -1433,28 +1444,34 @@ mod tests {
     #[test]
     fn test_protected_log_names_include_current_and_previous_period() {
         use chrono::TimeZone;
-        let now = chrono::Local
-            .with_ymd_and_hms(2026, 1, 10, 0, 30, 0)
-            .single()
-            .unwrap();
+        // どのrotationの形も出す（別のプロセスは別の設定かもしれない）
+        let now = chrono::Utc.with_ymd_and_hms(2026, 1, 10, 0, 30, 0).unwrap();
         let active = Path::new("/logs/mcp-rs.log.2026-01-08");
-        for rotation in [LogRotation::Daily, LogRotation::Hourly, LogRotation::Never] {
-            let names = protected_log_names(&rotation, Some(active), &now);
-            for name in [
+        assert_eq!(
+            protected_log_names(Some(active), &now),
+            vec![
+                "mcp-rs.log",
                 "mcp-rs.log.2026-01-10",
                 "mcp-rs.log.2026-01-09",
                 "mcp-rs.log.2026-01-10-00",
                 "mcp-rs.log.2026-01-09-23",
-                "mcp-rs.log.2026-01-08",
-            ] {
-                assert!(names.iter().any(|protected| protected == name), "{name}");
-            }
-            assert_eq!(
-                names.iter().any(|name| name == LOG_FILE_PREFIX),
-                matches!(rotation, LogRotation::Never)
-            );
-        }
+                "mcp-rs.log.2026-01-08"
+            ]
+        );
+        // 前の日は暦で戻す（月・年の境目も）
+        let now = chrono::Utc.with_ymd_and_hms(2026, 3, 1, 12, 0, 0).unwrap();
+        assert!(protected_log_names(None, &now).contains(&"mcp-rs.log.2026-02-28".to_string()));
+        let now = chrono::Utc.with_ymd_and_hms(2027, 1, 1, 0, 0, 0).unwrap();
+        let names = protected_log_names(None, &now);
+        assert!(names.contains(&"mcp-rs.log.2026-12-31".to_string()));
+        assert!(names.contains(&"mcp-rs.log.2026-12-31-23".to_string()));
+    }
 
+    #[test]
+    fn test_count_zero_keeps_previous_hour_but_removes_older_hour() {
+        use chrono::TimeZone;
+
+        let now = chrono::Utc.with_ymd_and_hms(2026, 1, 10, 0, 30, 0).unwrap();
         let dir = tempdir().unwrap();
         let previous_hour = dir.path().join("mcp-rs.log.2026-01-09-23");
         let older_hour = dir.path().join("mcp-rs.log.2026-01-09-22");
@@ -1464,7 +1481,7 @@ mod tests {
                 .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(60))
                 .unwrap();
         }
-        let names = protected_log_names(&LogRotation::Daily, Some(active), &now);
+        let names = protected_log_names(None, &now);
         cleanup_old_logs_by_count(dir.path(), 0, &names).unwrap();
 
         assert!(previous_hour.exists());
@@ -1481,10 +1498,23 @@ mod tests {
                 .with_ymd_and_hms(2026, 3, 9, hour, 30, 0)
                 .earliest()
                 .unwrap();
-            let names = protected_log_names(&LogRotation::Daily, None, &now);
+            let names = protected_log_names(None, &now);
             assert!(names.iter().any(|name| name == "mcp-rs.log.2026-03-08"));
             assert!(!names.iter().any(|name| name == "mcp-rs.log.2026-03-07"));
         }
+    }
+
+    #[test]
+    fn test_protected_hourly_log_uses_previous_distinct_hour() {
+        use chrono::TimeZone;
+
+        // TZ=America/New_York ではこの日の01:30を2度通る。
+        let now = chrono::Local
+            .with_ymd_and_hms(2026, 11, 1, 1, 30, 0)
+            .latest()
+            .unwrap();
+        let names = protected_log_names(None, &now);
+        assert!(names.iter().any(|name| name == "mcp-rs.log.2026-11-01-00"));
     }
 
     /// 切り替えたときの保持の処理は、別のスレッドで古いログを消し、新しい

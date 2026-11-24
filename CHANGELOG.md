@@ -228,7 +228,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - SIGTERM（`docker stop`・`systemctl stop`等）で終わると、プラグインを
   止めず、コンテナ・子プロセスが残っていた（#759。STDIO・HTTPとも）。
-  Ctrl+Cと同じく、プラグインを止めてから終わる（WindowsではCtrl+Breakも）
+  Ctrl+Cと同じく、プラグインを止めてから終わる（WindowsではCtrl+Breakも）。
+  SIGTERM（Ctrl+Break）を受けられないときも、警告してCtrl+Cは受ける
 
 - プラグインの起動中（HTTPモードはHTTPサーバーを始めるまで）にCtrl+Cを
   押すと、プラグインを止めずに終わっていた（#759）。終了の合図はプラグインを
@@ -246,7 +247,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 同じフォルダに複数のmcp-rsがログを書くとき、ログの保持が、別のプロセスが
   書いている今のファイルや、日付が変わった後にまだ書いていない別のプロセスの
   前日のファイルを消していた（#759。`Count(0)`・`Days(0)`・小さい`Size`）。
-  今の期間（日・時）と1つ前の期間のファイルは消さず、数・大きさにも数えない
+  今の期間と1つ前の期間のファイルは消さず、数・大きさにも数えない（別の
+  プロセスは別の`rotation`かもしれないので、日・時・切り替えない名前の
+  どれも。前の日は暦で求め、夏時間の切り替えの日も漏らさない）
 
 - STDIOモードで、ログをファイルに書けずコンソールだけにするとき（と、
   `console`・`file`のどちらも無効のとき）、標準出力にログを書いていた
