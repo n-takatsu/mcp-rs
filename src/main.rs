@@ -558,6 +558,18 @@ impl ShutdownSignal {
     }
 }
 
+/// 2つ目の合図（SIGTERM・Ctrl+Break）の登録に失敗しても、1つ目（Ctrl+C）は
+/// 受け続ける（#759。登録済みのものを捨てて戻ると、Ctrl+Cでもプロセスが
+/// 止まらなくなる）。受けられない合図は、待っても終わらない
+async fn recv_optional<F: std::future::Future>(signal: Option<F>) {
+    match signal {
+        Some(signal) => {
+            signal.await;
+        }
+        None => std::future::pending().await,
+    }
+}
+
 /// Unix系: SIGINT（Ctrl+C）と、`docker stop`・`systemctl stop`等が送るSIGTERM
 #[cfg(unix)]
 mod signals {
@@ -565,13 +577,21 @@ mod signals {
 
     pub(super) struct Signals {
         interrupt: Signal,
-        terminate: Signal,
+        terminate: Option<Signal>,
     }
 
     pub(super) fn register() -> std::io::Result<Signals> {
+        let interrupt = signal(SignalKind::interrupt())?;
+        let terminate = signal(SignalKind::terminate())
+            .inspect_err(|e| {
+                tracing::warn!(
+                    "Could not listen for SIGTERM ({e}): plugins may be left running if mcp-rs is stopped by SIGTERM"
+                )
+            })
+            .ok();
         Ok(Signals {
-            interrupt: signal(SignalKind::interrupt())?,
-            terminate: signal(SignalKind::terminate())?,
+            interrupt,
+            terminate,
         })
     }
 
@@ -579,7 +599,7 @@ mod signals {
         pub(super) async fn recv(&mut self) -> &'static str {
             tokio::select! {
                 _ = self.interrupt.recv() => "Ctrl+C",
-                _ = self.terminate.recv() => "SIGTERM",
+                _ = super::recv_optional(self.terminate.as_mut().map(Signal::recv)) => "SIGTERM",
             }
         }
     }
@@ -592,21 +612,22 @@ mod signals {
 
     pub(super) struct Signals {
         ctrl_c: CtrlC,
-        ctrl_break: CtrlBreak,
+        ctrl_break: Option<CtrlBreak>,
     }
 
     pub(super) fn register() -> std::io::Result<Signals> {
-        Ok(Signals {
-            ctrl_c: ctrl_c()?,
-            ctrl_break: ctrl_break()?,
-        })
+        let ctrl_c = ctrl_c()?;
+        let ctrl_break = ctrl_break()
+            .inspect_err(|e| tracing::warn!("Could not listen for Ctrl+Break ({e})"))
+            .ok();
+        Ok(Signals { ctrl_c, ctrl_break })
     }
 
     impl Signals {
         pub(super) async fn recv(&mut self) -> &'static str {
             tokio::select! {
                 _ = self.ctrl_c.recv() => "Ctrl+C",
-                _ = self.ctrl_break.recv() => "Ctrl+Break",
+                _ = super::recv_optional(self.ctrl_break.as_mut().map(CtrlBreak::recv)) => "Ctrl+Break",
             }
         }
     }
@@ -688,6 +709,18 @@ mod tests {
         sender.send(Some("SIGTERM")).unwrap();
         assert_eq!(shutdown.received(), Some("SIGTERM"));
         assert_eq!(shutdown.wait().await, "SIGTERM");
+    }
+
+    /// 登録できなかった2つ目の合図は、待っても終わらない。登録できた合図は
+    /// 受けられる（#759。2つ目の登録の失敗で、1つ目を捨てない）
+    #[tokio::test]
+    async fn test_recv_optional_waits_only_for_registered_signals() {
+        let missing: Option<std::future::Ready<()>> = None;
+        let waited =
+            tokio::time::timeout(std::time::Duration::from_millis(50), recv_optional(missing))
+                .await;
+        assert!(waited.is_err());
+        recv_optional(Some(std::future::ready(()))).await;
     }
 
     /// 合図を受けられないときは、待っても終わらない（終わったと扱わない）
