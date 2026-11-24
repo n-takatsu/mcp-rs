@@ -925,17 +925,23 @@ fn apply_retention_policy(config: &LogConfig, log_dir: &Path, active: Option<&Pa
     // 期間のファイルに書かれても消さない）
     let started = std::time::SystemTime::now();
     let protected = protected_log_names(active, &chrono::DateTime::<chrono::Local>::from(started));
+    // 最近（1期間の間）書かれたファイルも消さない（PR #761のレビュー）。
+    // 切り替えに失敗した別のプロセスは、古い期間のファイルに書き続けるため。
+    // ほかのプロセスが使っているかは、ファイルの更新時刻でしか分からない
+    let keep_since = started - recent_write_window(&config.rotation);
     match &config.retention {
         LogRetention::External => {
             // 外部管理なので何もしない（推奨アプローチ）
             Ok(())
         }
-        LogRetention::Days(days) => cleanup_old_logs_by_age(log_dir, *days, &protected, started),
+        LogRetention::Days(days) => {
+            cleanup_old_logs_by_age(log_dir, *days, &protected, started, keep_since)
+        }
         LogRetention::Count(max_count) => {
-            cleanup_old_logs_by_count(log_dir, *max_count, &protected, started)
+            cleanup_old_logs_by_count(log_dir, *max_count, &protected, keep_since)
         }
         LogRetention::Size(max_bytes) => {
-            cleanup_old_logs_by_size(log_dir, *max_bytes, &protected, started)
+            cleanup_old_logs_by_size(log_dir, *max_bytes, &protected, keep_since)
         }
     }
 }
@@ -1040,6 +1046,7 @@ fn cleanup_old_logs_by_age(
     max_days: u32,
     protected: &[String],
     started: std::time::SystemTime,
+    keep_since: std::time::SystemTime,
 ) -> Result<()> {
     use std::time::Duration;
 
@@ -1053,7 +1060,7 @@ fn cleanup_old_logs_by_age(
         if is_retention_candidate(&entry, protected) {
             if let Ok(metadata) = entry.metadata() {
                 if let Ok(modified) = metadata.modified() {
-                    if modified < cutoff_time && !written_since(modified, started) {
+                    if modified < cutoff_time && !written_since(modified, keep_since) {
                         if let Err(e) = fs::remove_file(&path) {
                             tracing::warn!("ログファイル削除失敗: {} - {}", path.display(), e);
                         } else {
@@ -1189,6 +1196,17 @@ fn cleanup_old_logs_by_size(
     }
 
     Ok(())
+}
+
+/// 保持の処理で、最近書かれたとして消さない長さ（PR #761のレビュー）。
+/// 切り替えの1期間（`Hourly`は1時間、ほかは1日）。それより長く書かれて
+/// いないファイルは、使っているプロセスがあっても消す（次に書くときに、
+/// そのプロセスは新しいファイルに切り替える）
+fn recent_write_window(rotation: &LogRotation) -> std::time::Duration {
+    match rotation {
+        LogRotation::Hourly => std::time::Duration::from_secs(60 * 60),
+        LogRotation::Daily | LogRotation::Never => std::time::Duration::from_secs(24 * 60 * 60),
+    }
 }
 
 /// 保持の処理を始めた（`started`）後に書かれたファイルか（PR #756の
@@ -1422,7 +1440,14 @@ mod tests {
             .unwrap();
         cleanup_old_logs_by_count(dir.path(), 0, &protected, std::time::SystemTime::now()).unwrap();
         cleanup_old_logs_by_size(dir.path(), 0, &protected, std::time::SystemTime::now()).unwrap();
-        cleanup_old_logs_by_age(dir.path(), 0, &protected, std::time::SystemTime::now()).unwrap();
+        cleanup_old_logs_by_age(
+            dir.path(),
+            0,
+            &protected,
+            std::time::SystemTime::now(),
+            std::time::SystemTime::now(),
+        )
+        .unwrap();
         assert!(switched.exists());
     }
 
@@ -1547,9 +1572,45 @@ mod tests {
 
         cleanup_old_logs_by_count(dir.path(), 0, &[], started).unwrap();
         cleanup_old_logs_by_size(dir.path(), 0, &[], started).unwrap();
-        cleanup_old_logs_by_age(dir.path(), 0, &[], started).unwrap();
+        cleanup_old_logs_by_age(dir.path(), 0, &[], started, started).unwrap();
 
         assert!(next_period.exists());
+    }
+
+    /// 古い期間の名前でも、1期間の間に書かれたファイルは消さない（PR #761の
+    /// レビュー。切り替えに失敗した別のプロセスが書き続けている）。それより
+    /// 前に書かれたものは消す
+    #[test]
+    fn test_retention_keeps_recently_written_old_files() {
+        let dir = tempdir().unwrap();
+        let stuck = dir.path().join("mcp-rs.log.2000-01-01-05");
+        let idle = dir.path().join("mcp-rs.log.2000-01-02-05");
+        fs::write(&stuck, b"x").unwrap();
+        fs::write(&idle, b"x").unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&stuck)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(30 * 60))
+            .unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&idle)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(2 * 3600))
+            .unwrap();
+        for retention in [
+            LogRetention::Count(0),
+            LogRetention::Size(0),
+            LogRetention::Days(0),
+        ] {
+            let config = LogConfig::default()
+                .with_rotation(LogRotation::Hourly)
+                .with_retention(retention);
+            apply_retention_policy(&config, dir.path(), None).unwrap();
+            assert!(stuck.exists());
+        }
+        assert!(!idle.exists());
     }
 
     /// 切り替えたときの保持の処理は、別のスレッドで古いログを消し、新しい
@@ -1571,6 +1632,13 @@ mod tests {
         for name in [current.as_str(), previous.as_str(), old] {
             fs::write(dir.path().join(name), b"x").unwrap();
         }
+        // 最近書かれたファイルは消さないので、古いファイルは2日前に書いたことにする
+        fs::File::options()
+            .write(true)
+            .open(dir.path().join(old))
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(2 * 86400))
+            .unwrap();
         let config = LogConfig::default()
             .with_rotation(LogRotation::Daily)
             .with_retention(LogRetention::Count(0));
