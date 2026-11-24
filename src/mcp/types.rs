@@ -134,7 +134,9 @@ pub struct ToolAnnotations {
 pub struct Resource {
     pub uri: String,
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mime_type: Option<String>,
 }
 
@@ -318,5 +320,25 @@ mod tests {
         let value = serde_json::to_value(&resource).unwrap();
         assert!(value.get("mimeType").is_some());
         assert!(value.get("mime_type").is_none());
+    }
+
+    /// 未設定の`description`・`mimeType`は、`null`にせず省く（#760）
+    #[test]
+    fn test_resource_omits_unset_optional_fields() {
+        let resource = Resource {
+            uri: "file:///example.txt".to_string(),
+            name: "example".to_string(),
+            description: None,
+            mime_type: None,
+        };
+
+        let value = serde_json::to_value(&resource).unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({"uri": "file:///example.txt", "name": "example"})
+        );
+        // 省いた形も読める
+        let back: Resource = serde_json::from_value(value).unwrap();
+        assert!(back.description.is_none() && back.mime_type.is_none());
     }
 }
