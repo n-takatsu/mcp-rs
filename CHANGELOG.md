@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- ライブラリとして使う場合: `HttpTransport::receive_request_with_caller`を
+  足した（#749）。`with_request_handler`を使わないときに、HTTP・WebSocketで
+  受けた要求を、呼び出し元（APIキー・トークンの名前と使えるツール、接続元の
+  IPアドレス）と一緒に返す。`RequestDispatcher::handle_message_as`に渡せば、
+  認証していない遠隔の呼び出し元には`mcp_rs_status`がバージョンだけを返し、
+  監査ログにも呼び出し元が残る。`Transport::receive_message`は今までどおり
+  （呼び出し元を返さない）。mcp-rs本体は`with_request_handler`を使うので、
+  動きは変わらない
+
 - `mcp-rs init`で、WordPressを使わずにデータベースだけを設定できるように
   した（#645）。設定ファイルを新しく書くときに、最初に何を使うか
   （WordPress・データベース・両方）を聞く。データベースだけなら、
