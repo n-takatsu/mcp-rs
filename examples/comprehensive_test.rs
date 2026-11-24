@@ -39,8 +39,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // 環境変数が正しく設定されているかチェック
         let env_vars = ["TEST_WP_URL", "TEST_WP_USER", "TEST_WP_PASS"];
         for var in &env_vars {
+            // 空の値は、WordPressのパスワードの表示と同じく未設定とする
             match env::var(var) {
-                Ok(value) => {
+                Ok(value) if !value.is_empty() => {
                     let display_value = if var.contains("PASS") {
                         "設定済み".to_string()
                     } else {
@@ -48,7 +49,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     };
                     println!("   ✅ {}: {}", var, display_value);
                 }
-                Err(_) => println!("   ⚠️  {}: 未設定", var),
+                _ => println!("   ⚠️  {}: 未設定", var),
             }
         }
     } else {
