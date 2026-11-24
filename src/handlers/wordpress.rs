@@ -609,8 +609,7 @@ fn post_list_query_arg(
         values
             .iter()
             .map(|v| {
-                v.as_u64()
-                    .filter(|n| *n > 0)
+                positive_integer_id(v)
                     .ok_or_else(|| invalid(format!("{name} must be positive integer IDs")))
             })
             .collect()
@@ -1213,7 +1212,9 @@ async fn read_upload_file(path: &Path) -> Result<Vec<u8>, McpError> {
 }
 
 /// ツールが操作の対象のIDに使う引数のキー（監査ログ用。#755）。対象の
-/// IDを持たないツール（作成・一覧等）は`None`
+/// IDを持たないツール（作成・一覧等）は`None`。`get_comments`の`post_id`は
+/// 絞り込み、`create_comment`の`post_id`は作るコメントの関連先で、操作の
+/// 対象ではないので記録しない（PR #757のレビュー）
 fn target_id_key(tool_name: &str) -> Option<&'static str> {
     Some(match tool_name {
         "get_post"
@@ -1223,9 +1224,7 @@ fn target_id_key(tool_name: &str) -> Option<&'static str> {
         | "set_featured_image"
         | "get_revisions"
         | "get_revision"
-        | "restore_revision"
-        | "get_comments"
-        | "create_comment" => "post_id",
+        | "restore_revision" => "post_id",
         "get_media_item" | "update_media" | "delete_media" => "media_id",
         "update_category" | "delete_category" => "category_id",
         "update_tag" | "delete_tag" => "tag_id",
@@ -1351,6 +1350,14 @@ fn optional_slug_arg(
         }
         Some(_) => Err(McpError::InvalidParams("slug must be a string".to_string())),
     }
+}
+
+/// 1つの一覧で読んだ量（`fetch_all_pages`の読み直しも含める。PR #757の
+/// レビュー）
+#[derive(Default)]
+struct ListReadBudget {
+    pages: u32,
+    bytes: usize,
 }
 
 /// 投稿・固定ページのスラッグの表示用の文字列。日本語のスラッグは
@@ -1660,13 +1667,44 @@ fn terms_arg(
             .and_then(|items| {
                 items
                     .iter()
-                    .map(|id| id.as_u64().filter(|n| *n > 0))
+                    .map(positive_integer_id)
                     .collect::<Option<Vec<u64>>>()
             })
             .ok_or_else(|| invalid(format!("terms.{taxonomy} must be a list of term IDs")))?;
         terms.insert(taxonomy.clone(), ids);
     }
     Ok(Some(terms))
+}
+
+/// 項目・投稿等のIDとして、正の整数を読む。JSONの`7`と`7.0`を同じIDと
+/// する（スキーマの`integer`は`7.0`も整数とみなすため。PR #757のレビュー）。
+/// 端数のある値・0以下・浮動小数点で正確に表せない大きさ（2^53超）は
+/// 丸めずに`None`
+fn positive_integer_id(value: &serde_json::Value) -> Option<u64> {
+    const MAX_EXACT_F64_INTEGER: f64 = 9_007_199_254_740_992.0; // 2^53
+    if let Some(n) = value.as_u64() {
+        return (n > 0).then_some(n);
+    }
+    let f = value.as_f64()?;
+    (f.fract() == 0.0 && f > 0.0 && f <= MAX_EXACT_F64_INTEGER).then_some(f as u64)
+}
+
+/// `categories`・`tags`と、`terms`の`categories`・`tags`を一緒に渡したら
+/// 断る（PR #757のレビュー）。同じ分類に2つの値があると、どちらを送るかが
+/// 作成と更新でずれ、片方を黙って捨てていた
+fn check_terms_conflict(
+    terms: Option<&std::collections::BTreeMap<String, Vec<u64>>>,
+    categories: bool,
+    tags: bool,
+) -> Result<(), McpError> {
+    for (key, given) in [("categories", categories), ("tags", tags)] {
+        if given && terms.is_some_and(|terms| terms.contains_key(key)) {
+            return Err(McpError::InvalidParams(format!(
+                "{key} is given both as {key} and as terms.{key}. Give it only once (as {key})"
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// 引数`categories`・`tags`（#755）。項目のIDの配列。正の整数でない要素が
@@ -1683,7 +1721,7 @@ fn term_ids_arg(
             .and_then(|items| {
                 items
                     .iter()
-                    .map(|id| id.as_u64().filter(|n| *n > 0))
+                    .map(positive_integer_id)
                     .collect::<Option<Vec<u64>>>()
             })
             .map(Some)
@@ -2338,13 +2376,19 @@ impl WordPressHandler {
     where
         T: for<'de> serde::Deserialize<'de>,
     {
-        let (all_items, total_items) = match self.fetch_all_pages_once(&url_for_page).await? {
+        // 読み直しも、1つの一覧で読む量の上限（ページ数・バイト数）に含める
+        // （PR #757のレビュー。読み直しで上限の2倍を読まないように）
+        let mut budget = ListReadBudget::default();
+        let (all_items, total_items) = match self
+            .fetch_all_pages_once(&url_for_page, &mut budget)
+            .await?
+        {
             Some(read) => read,
             None => {
                 warn!(
                     "fetch_all_pages: the list changed while it was being read; reading it again"
                 );
-                self.fetch_all_pages_once(&url_for_page)
+                self.fetch_all_pages_once(&url_for_page, &mut budget)
                     .await?
                     .ok_or_else(|| {
                         McpError::ExternalApi(
@@ -2384,11 +2428,11 @@ impl WordPressHandler {
     async fn fetch_all_pages_once(
         &self,
         url_for_page: &impl Fn(u32) -> String,
+        budget: &mut ListReadBudget,
     ) -> Result<Option<(Vec<serde_json::Value>, u64)>, McpError> {
         let mut all_items: Vec<serde_json::Value> = Vec::new();
         let mut seen_ids = std::collections::HashSet::new();
         let mut page: u32 = 1;
-        let mut read_bytes: usize = 0;
 
         let total_items: u64 = loop {
             let url = url_for_page(page);
@@ -2407,6 +2451,15 @@ impl WordPressHandler {
                 .execute_request_with_retry_capturing_total_pages(request)
                 .await?;
 
+            // 重なりを見つけて捨てるページも、読んだ量に数える
+            budget.pages += 1;
+            budget.bytes += bytes;
+            if budget.bytes > MAX_LIST_BYTES {
+                return Err(McpError::ExternalApi(format!(
+                    "the WordPress list is larger than {} MB in total, the most mcp-rs reads for one list",
+                    MAX_LIST_BYTES / (1024 * 1024)
+                )));
+            }
             // IDの無い項目は確かめない
             if items
                 .iter()
@@ -2416,13 +2469,6 @@ impl WordPressHandler {
                 return Ok(None);
             }
             all_items.extend(items);
-            read_bytes += bytes;
-            if read_bytes > MAX_LIST_BYTES {
-                return Err(McpError::ExternalApi(format!(
-                    "the WordPress list is larger than {} MB in total, the most mcp-rs reads for one list",
-                    MAX_LIST_BYTES / (1024 * 1024)
-                )));
-            }
 
             if page >= total_pages.max(1) {
                 break reported_total;
@@ -2430,7 +2476,13 @@ impl WordPressHandler {
             // `X-WP-TotalPages`をそのまま信じない（#598）。途中までの一覧を
             // 全件として返さず、エラーにする（呼び出し元は件数しか出さない
             // ので、欠けていることが伝わらない。#692）
-            if page >= MAX_LIST_PAGES {
+            if budget.pages >= MAX_LIST_PAGES {
+                if total_pages <= MAX_LIST_PAGES {
+                    // 一覧は上限に収まるが、読み直しの分で上限に達した
+                    return Err(McpError::ExternalApi(format!(
+                        "the WordPress list changed while mcp-rs was reading it, and reading it again would go over the {MAX_LIST_PAGES} pages mcp-rs reads for one list. Try again later"
+                    )));
+                }
                 return Err(McpError::ExternalApi(format!(
                     "WordPress reports {total_pages} pages ({reported_total} items) for this list, more than the {MAX_LIST_PAGES} pages ({} items) mcp-rs reads for one list, so the list would be incomplete. For posts and pages, read one page at a time with per_page and page, or narrow the list with search or other filters",
                     MAX_LIST_PAGES * 100
@@ -2599,6 +2651,11 @@ impl WordPressHandler {
 
         // 投稿タイプに応じてエンドポイントを決定
         let endpoint = self.post_type_endpoint(&params.post_type).await?;
+        check_terms_conflict(
+            params.terms.as_ref(),
+            params.categories.is_some(),
+            params.tags.is_some(),
+        )?;
         self.check_terms_taxonomies(
             &params.post_type,
             params.terms.as_ref(),
@@ -3545,6 +3602,11 @@ impl WordPressHandler {
         params: PostUpdateParams,
     ) -> Result<WordPressPost, McpError> {
         let endpoint = self.post_type_endpoint(post_type).await?;
+        check_terms_conflict(
+            params.terms.as_ref(),
+            params.categories.is_some(),
+            params.tags.is_some(),
+        )?;
         self.check_terms_taxonomies(
             post_type,
             params.terms.as_ref(),
@@ -5992,12 +6054,12 @@ impl McpHandler for WordPressHandler {
                         "categories": {
                             "type": "array",
                             "items": {"type": "integer", "minimum": 1},
-                            "description": "Category IDs (optional). Refused for pages and other post types without categories"
+                            "description": "Category IDs (optional). A non-empty list is refused for a post type without categories on the site (pages, unless a plugin adds them)"
                         },
                         "tags": {
                             "type": "array",
                             "items": {"type": "integer", "minimum": 1},
-                            "description": "Tag IDs (optional). Refused for pages and other post types without tags"
+                            "description": "Tag IDs (optional). A non-empty list is refused for a post type without tags on the site (pages, unless a plugin adds them)"
                         },
                         "featured_media_id": {
                             "type": "number",
@@ -6639,12 +6701,12 @@ impl McpHandler for WordPressHandler {
                         "categories": {
                             "type": "array",
                             "items": {"type": "integer", "minimum": 1},
-                            "description": "Category IDs from get_categories (optional). Replaces all of the post's current categories, so include the ones to keep; [] removes them all. Refused for pages, which have no categories"
+                            "description": "Category IDs from get_categories (optional). Replaces all of the post's current categories, so include the ones to keep; [] removes them all. A non-empty list is refused for a post type without categories on the site (pages, unless a plugin adds them)"
                         },
                         "tags": {
                             "type": "array",
                             "items": {"type": "integer", "minimum": 1},
-                            "description": "Tag IDs from get_tags (optional). Replaces all of the post's current tags, so include the ones to keep; [] removes them all. Refused for pages, which have no tags"
+                            "description": "Tag IDs from get_tags (optional). Replaces all of the post's current tags, so include the ones to keep; [] removes them all. A non-empty list is refused for a post type without tags on the site (pages, unless a plugin adds them)"
                         }
                     },
                     "required": ["post_id"]
@@ -6692,12 +6754,12 @@ impl McpHandler for WordPressHandler {
                         "categories": {
                             "type": "array",
                             "items": {"type": "integer", "minimum": 1},
-                            "description": "Category IDs from get_categories (optional). Replaces all of the post's current categories, so include the ones to keep; [] removes them all. Refused for pages, which have no categories"
+                            "description": "Category IDs from get_categories (optional). Replaces all of the post's current categories, so include the ones to keep; [] removes them all. A non-empty list is refused for a post type without categories on the site (pages, unless a plugin adds them)"
                         },
                         "tags": {
                             "type": "array",
                             "items": {"type": "integer", "minimum": 1},
-                            "description": "Tag IDs from get_tags (optional). Replaces all of the post's current tags, so include the ones to keep; [] removes them all. Refused for pages, which have no tags"
+                            "description": "Tag IDs from get_tags (optional). Replaces all of the post's current tags, so include the ones to keep; [] removes them all. A non-empty list is refused for a post type without tags on the site (pages, unless a plugin adds them)"
                         },
                         "featured_media_id": {
                             "type": "number",
@@ -6776,12 +6838,12 @@ impl McpHandler for WordPressHandler {
                         "categories": {
                             "type": "array",
                             "items": {"type": "integer", "minimum": 1},
-                            "description": "Category IDs (optional). Refused for pages and other post types without categories"
+                            "description": "Category IDs (optional). A non-empty list is refused for a post type without categories on the site (pages, unless a plugin adds them)"
                         },
                         "tags": {
                             "type": "array",
                             "items": {"type": "integer", "minimum": 1},
-                            "description": "Tag IDs (optional). Refused for pages and other post types without tags"
+                            "description": "Tag IDs (optional). A non-empty list is refused for a post type without tags on the site (pages, unless a plugin adds them)"
                         },
                         "slug": {
                             "type": "string",
@@ -7671,7 +7733,9 @@ mod tests {
                 .as_array()
                 .map(|keys| keys.iter().filter_map(|k| k.as_str()).collect())
                 .unwrap_or_default();
-            if required.iter().any(|key| TARGET_KEYS.contains(key)) {
+            // 一覧・作成で、`post_id`が絞り込み・関連先のツールは除く
+            let not_a_target = ["get_comments", "create_comment"].contains(&tool.name.as_str());
+            if !not_a_target && required.iter().any(|key| TARGET_KEYS.contains(key)) {
                 let key = target_id_key(&tool.name)
                     .unwrap_or_else(|| panic!("{} has no target id key", tool.name));
                 assert!(required.contains(&key), "{}: {key}", tool.name);
@@ -11663,6 +11727,13 @@ mod tests {
             term_ids_arg(&args(serde_json::json!({"tags": []})), "tags").unwrap(),
             Some(vec![])
         );
+        // `7.0`は、スキーマの`integer`に合うので`7`と同じ（PR #757のレビュー）。
+        // 生のJSONから読む
+        let raw: HashMap<String, serde_json::Value> =
+            serde_json::from_str(r#"{"tags": [7.0, 8], "terms": {"product_cat": [12.0]}}"#)
+                .unwrap();
+        assert_eq!(term_ids_arg(&raw, "tags").unwrap(), Some(vec![7, 8]));
+        assert_eq!(terms_arg(&raw).unwrap().unwrap()["product_cat"], vec![12]);
         assert_eq!(
             term_ids_arg(&args(serde_json::json!({})), "tags").unwrap(),
             None
@@ -11674,6 +11745,9 @@ mod tests {
         for bad in [
             serde_json::json!([7, 7.5]),
             serde_json::json!([7, 0]),
+            serde_json::json!([0.0]),
+            serde_json::json!([1e300]),
+            serde_json::json!([9007199254740994.0]),
             serde_json::json!([-1]),
             serde_json::json!(["7"]),
             serde_json::json!([7, null]),
@@ -11752,6 +11826,41 @@ mod tests {
             }
         }
         assert!(checked >= 10, "{checked}");
+    }
+
+    /// `categories`と`terms.categories`のように、同じ分類を2つの引数で
+    /// 渡したら断る（PR #757のレビュー）。作成と更新で、どちらを送るかが
+    /// ずれていた
+    #[tokio::test]
+    async fn test_categories_given_twice_are_refused() {
+        let terms: std::collections::BTreeMap<String, Vec<u64>> =
+            [("categories".to_string(), vec![])].into();
+        assert!(check_terms_conflict(Some(&terms), false, true).is_ok());
+        assert!(check_terms_conflict(None, true, true).is_ok());
+        let err = check_terms_conflict(Some(&terms), true, false).unwrap_err();
+        assert!(
+            matches!(err, McpError::InvalidParams(ref msg) if msg.contains("terms.categories")),
+            "{err:?}"
+        );
+
+        // 作成・更新とも、送る前に断る
+        let handler = handler_for_local_server("http://127.0.0.1:9".to_string());
+        for (tool, args) in [
+            (
+                "create_advanced_post",
+                serde_json::json!({"title": "t", "content": "c", "tags": [3], "terms": {"tags": [4]}}),
+            ),
+            (
+                "update_post",
+                serde_json::json!({"post_id": 5, "categories": [3], "terms": {"categories": []}}),
+            ),
+        ] {
+            let result = call_tool_with(&handler, tool, args.clone()).await;
+            assert!(
+                matches!(result, Err(McpError::InvalidParams(ref msg)) if msg.contains("given both")),
+                "{tool} {args}: {result:?}"
+            );
+        }
     }
 
     /// その分類の無い投稿タイプ（固定ページ等）にカテゴリー・タグを
@@ -11869,7 +11978,11 @@ mod tests {
     /// 使い切ったら最後の応答を返す。受けたリクエスト数を数える
     async fn spawn_sequence_server(
         responses: Vec<(&'static str, String)>,
-    ) -> (String, Arc<std::sync::atomic::AtomicUsize>) {
+    ) -> (
+        String,
+        Arc<std::sync::atomic::AtomicUsize>,
+        Arc<std::sync::Mutex<Vec<String>>>,
+    ) {
         use std::sync::atomic::{AtomicUsize, Ordering};
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -11877,6 +11990,9 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let count = Arc::new(AtomicUsize::new(0));
         let server_count = count.clone();
+        // 受けた要求の1行目（`GET /…?page=1 HTTP/1.1`）。接続の順に並ぶ
+        let request_lines = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let server_request_lines = request_lines.clone();
         let responses = Arc::new(responses);
         tokio::spawn(async move {
             loop {
@@ -11885,6 +12001,7 @@ mod tests {
                 };
                 let nth = server_count.fetch_add(1, Ordering::SeqCst);
                 let (status, body) = responses[nth.min(responses.len() - 1)].clone();
+                let request_lines = server_request_lines.clone();
                 tokio::spawn(async move {
                     let mut buf = Vec::new();
                     let mut chunk = [0u8; 4096];
@@ -11893,6 +12010,17 @@ mod tests {
                             Ok(0) | Err(_) => return,
                             Ok(n) => buf.extend_from_slice(&chunk[..n]),
                         }
+                    }
+                    let first_line = String::from_utf8_lossy(&buf)
+                        .lines()
+                        .next()
+                        .unwrap_or_default()
+                        .to_string();
+                    {
+                        let mut lines = request_lines.lock().unwrap();
+                        let len = lines.len().max(nth + 1);
+                        lines.resize(len, String::new());
+                        lines[nth] = first_line;
                     }
                     let response = format!(
                         "HTTP/1.1 {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -11905,7 +12033,22 @@ mod tests {
                 });
             }
         });
-        (format!("http://{}", addr), count)
+        (format!("http://{}", addr), count, request_lines)
+    }
+
+    /// 受けた要求の、`page`の値の並び
+    fn requested_pages(request_lines: &std::sync::Mutex<Vec<String>>) -> Vec<String> {
+        request_lines
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|line| {
+                line.split(['?', '&', ' '])
+                    .find_map(|part| part.strip_prefix("page="))
+                    .unwrap_or_default()
+                    .to_string()
+            })
+            .collect()
     }
 
     /// IDの投稿の一覧（全ページの取得の確かめ用）
@@ -11925,7 +12068,7 @@ mod tests {
     #[tokio::test]
     async fn test_fetch_all_pages_rereads_when_an_item_repeats() {
         use std::sync::atomic::Ordering;
-        let (base, count) = spawn_sequence_server(vec![
+        let (base, count, request_lines) = spawn_sequence_server(vec![
             (TWO_PAGES, posts_page(&[1, 2])),
             (TWO_PAGES, posts_page(&[2, 3])),
             (TWO_PAGES, posts_page(&[1, 2])),
@@ -11937,13 +12080,15 @@ mod tests {
         let ids: Vec<Option<u64>> = posts.iter().map(|post| post.id).collect();
         assert_eq!(ids, vec![Some(1), Some(2), Some(3), Some(4)]);
         assert_eq!(count.load(Ordering::SeqCst), 4);
+        // 読み直しは1ページ目から
+        assert_eq!(requested_pages(&request_lines), ["1", "2", "1", "2"]);
     }
 
     /// 読み直しても重なれば、不正確な一覧を返さずエラーにする（#755）
     #[tokio::test]
     async fn test_fetch_all_pages_fails_when_an_item_repeats_again() {
         use std::sync::atomic::Ordering;
-        let (base, count) = spawn_sequence_server(vec![
+        let (base, count, request_lines) = spawn_sequence_server(vec![
             (TWO_PAGES, posts_page(&[1, 2])),
             (TWO_PAGES, posts_page(&[2, 3])),
             (TWO_PAGES, posts_page(&[1, 2])),
@@ -11958,13 +12103,14 @@ mod tests {
             "{err:?}"
         );
         assert_eq!(count.load(Ordering::SeqCst), 4);
+        assert_eq!(requested_pages(&request_lines), ["1", "2", "1", "2"]);
     }
 
     /// 重ならなければ、1回で読み終える（#755）
     #[tokio::test]
     async fn test_fetch_all_pages_reads_once_without_repeats() {
         use std::sync::atomic::Ordering;
-        let (base, count) = spawn_sequence_server(vec![
+        let (base, count, request_lines) = spawn_sequence_server(vec![
             (TWO_PAGES, posts_page(&[1, 2])),
             (TWO_PAGES, posts_page(&[3, 4])),
         ])
@@ -11972,5 +12118,6 @@ mod tests {
         let handler = handler_for_local_server(base);
         assert_eq!(handler.get_posts(None).await.unwrap().len(), 4);
         assert_eq!(count.load(Ordering::SeqCst), 2);
+        assert_eq!(requested_pages(&request_lines), ["1", "2"]);
     }
 }

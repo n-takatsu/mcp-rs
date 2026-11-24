@@ -264,7 +264,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `create_post_with_categories_tags`・`create_post_with_embeds`）。`terms`と
   同じく、正の整数でない要素が1つでもあれば断る（`[]`は今までどおり受け付け、
   すべて外す）。配列でない値も断る。ツールのスキーマの要素も、`number`から
-  `integer`（`minimum: 1`）にした
+  `integer`（`minimum: 1`）にした。`7.0`は`7`と同じに読む（`terms`・`get_posts`の
+  絞り込みも）。同じ分類を`categories`と`terms.categories`のように2つの
+  引数で渡したら断る（作成と更新で、どちらを送るかがずれ、片方を黙って
+  捨てていた）
 
 - WordPressの監査ログの対象のID（`target_id`）を、決まった順のキー（`id`が
   先）で探していたので、`delete_post`に`post_id: 42`と余分な`id: 7`を渡すと、
