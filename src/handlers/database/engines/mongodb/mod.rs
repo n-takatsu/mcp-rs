@@ -2,6 +2,11 @@
 //!
 //! Provides MongoDB-specific implementations for database operations
 //! including document operations, aggregation pipelines, and GridFS support.
+//!
+//! **mcp-rsのデータベースのハンドラー（`[database]`）では使えない**（`engine`で
+//! 選べるのは`postgresql`・`mysql`・`mariadb`だけ）。ライブラリのコードとして
+//! あるだけで、v0.31.0で使えるようにする予定（#530）。それまでは、既知の不具合
+//! （#530に書いた）が残っている
 
 pub mod config;
 pub mod connection;

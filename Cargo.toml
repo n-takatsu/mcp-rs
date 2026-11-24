@@ -173,12 +173,16 @@ os-keyring = ["dep:keyring"]
 database = ["postgresql-backend", "dep:sqlparser"]
 
 # Storage backends
+# Redis engine: library code only. It cannot be selected in [database] (only
+# postgresql, mysql and mariadb); planned to become usable in v0.31.0 (#529)
 redis-backend = ["redis"]
 # The MySQL engine is part of the database handler code. On by default
 # (#527), so release builds and the Docker image can use engine = "mysql"
 mysql-backend = ["database", "mysql_async", "dep:lru"]
 postgresql-backend = []
 sqlite = []
+# MongoDB engine: library code only. It cannot be selected in [database]; planned
+# to become usable in v0.31.0 (#530)
 mongodb-backend = ["mongodb"]
 
 # Hardware Security Module integration via PKCS#11 (e.g. SoftHSM2 or a

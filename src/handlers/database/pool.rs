@@ -371,7 +371,7 @@ impl ConnectionPool {
         let pool_info = self.get_pool_info().await;
         let engine_health = self.engine.health_check().await?;
 
-        let status = if pool_info.total_connections == 0 {
+        let pool_status = if pool_info.total_connections == 0 {
             HealthStatusType::Critical
         } else if pool_info.idle_connections == 0
             && pool_info.active_connections >= self.config.max_connections
@@ -380,12 +380,15 @@ impl ConnectionPool {
         } else {
             HealthStatusType::Healthy
         };
+        // エンジンの確かめた結果（接続先が答えるか）と、悪いほうを返す
+        // （#758。以前はエンジンの結果の状態・理由を捨てていた）
+        let status = worse_health(pool_status, engine_health.status);
 
         Ok(HealthStatus {
             status,
             last_check: Utc::now(),
             response_time_ms: engine_health.response_time_ms,
-            error_message: None,
+            error_message: engine_health.error_message,
             connection_count: pool_info.total_connections,
             active_transactions: 0, // TODO: トランザクション数を追跡
         })
@@ -509,5 +512,37 @@ impl PoolManager {
         }
 
         results
+    }
+}
+
+/// 2つの健全性の状態のうち、悪いほう（`Healthy` < `Warning` < `Unknown` <
+/// `Critical`。#758）
+fn worse_health(a: HealthStatusType, b: HealthStatusType) -> HealthStatusType {
+    let rank = |status: &HealthStatusType| match status {
+        HealthStatusType::Healthy => 0,
+        HealthStatusType::Warning => 1,
+        HealthStatusType::Unknown => 2,
+        HealthStatusType::Critical => 3,
+    };
+    if rank(&b) > rank(&a) {
+        b
+    } else {
+        a
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 悪いほうの状態を返す（#758）
+    #[test]
+    fn test_worse_health() {
+        use HealthStatusType::*;
+        assert_eq!(worse_health(Healthy, Healthy), Healthy);
+        assert_eq!(worse_health(Healthy, Critical), Critical);
+        assert_eq!(worse_health(Critical, Warning), Critical);
+        assert_eq!(worse_health(Warning, Unknown), Unknown);
+        assert_eq!(worse_health(Warning, Healthy), Warning);
     }
 }
