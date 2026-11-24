@@ -135,6 +135,17 @@ const AUTHOR_NAMES_TIMEOUT: Duration = Duration::from_secs(10);
 /// 応答の本文を、`limit`バイトまで読む（#598）。超えたら、読むのをやめて
 /// エラーにする（`Content-Length`が上限を超えていれば、読まずに）
 async fn read_body_limited(response: reqwest::Response, limit: usize) -> Result<String, McpError> {
+    let body = read_body_bytes_limited(response, limit).await?;
+    Ok(String::from_utf8_lossy(&body).into_owned())
+}
+
+/// `read_body_limited`と同じだが、受け取ったバイトのまま返す。JSONとして
+/// 読むなら、文字列に直さず`serde_json::from_slice`に渡す（PR #763の
+/// レビュー。不正なUTF-8を置き換え文字にして読み進めないように）
+async fn read_body_bytes_limited(
+    response: reqwest::Response,
+    limit: usize,
+) -> Result<Vec<u8>, McpError> {
     read_body_counted(response, limit, &mut 0, || {
         McpError::ExternalApi(format!(
             "the WordPress response is larger than {} MB, the most mcp-rs reads for one request",
@@ -153,7 +164,7 @@ async fn read_body_counted(
     limit: usize,
     received: &mut usize,
     too_large: impl Fn() -> McpError,
-) -> Result<String, McpError> {
+) -> Result<Vec<u8>, McpError> {
     if response
         .content_length()
         .is_some_and(|length| length > limit as u64)
@@ -168,7 +179,7 @@ async fn read_body_counted(
         }
         body.extend_from_slice(&chunk);
     }
-    Ok(String::from_utf8_lossy(&body).into_owned())
+    Ok(body)
 }
 
 /// エラーの応答の本文を、`MAX_ERROR_BODY_BYTES`まで読む。読めなければ空。
@@ -231,6 +242,18 @@ fn format_wp_error(status: reqwest::StatusCode, body: &str) -> String {
         "WordPress API error {}: {}",
         status,
         truncate_chars_with_ellipsis(body, 200)
+    )
+}
+
+/// 一覧のページが範囲の外だという、WordPressの400のエラーか（PR #763の
+/// レビュー）。投稿は`rest_post_invalid_page_number`、コメント・ユーザー等は
+/// `rest_<種類>_invalid_page_number`
+fn is_invalid_page_number_error(error: &McpError) -> bool {
+    matches!(
+        error,
+        McpError::ExternalApi(msg)
+            if msg.starts_with("WordPress API error 400 ")
+                && msg.contains("_invalid_page_number)")
     )
 }
 
@@ -2279,6 +2302,14 @@ impl WordPressHandler {
         const RETRY_DELAY: Duration = Duration::from_millis(1000);
 
         for attempt in 1..=MAX_RETRIES {
+            // 一覧の残りが無ければ、送らない。本文の受信に失敗した試行で
+            // 残りを使い切ったときに、同じページを送り直さないように
+            // （PR #763のレビュー）
+            if let Some(budget) = budget.as_deref() {
+                if budget.bytes >= budget.max_bytes {
+                    return Err(budget.too_large());
+                }
+            }
             let request = build_request()?.build().map_err(McpError::Http)?;
             let method = request.method().clone();
             let resend_safe = is_safe_to_resend(&method);
@@ -2313,7 +2344,12 @@ impl WordPressHandler {
                             budget.bytes += received;
                         }
                         match read {
-                            Ok(body) => return Ok(ReceivedResponse { headers, body }),
+                            Ok(body) => {
+                                return Ok(ReceivedResponse {
+                                    headers,
+                                    body: String::from_utf8_lossy(&body).into_owned(),
+                                })
+                            }
                             // 本文の受信の途中で失敗した
                             Err(McpError::Http(e)) if resend_safe => {
                                 warn!(
@@ -2504,7 +2540,7 @@ impl WordPressHandler {
                     .await?
                     .ok_or_else(|| {
                         McpError::ExternalApi(
-                            "the WordPress list changed while mcp-rs was reading it page by page (the same item appeared on two pages, or the total changed, even after reading it again), so the list would be inaccurate. Try again later".to_string(),
+                            "the WordPress list changed while mcp-rs was reading it page by page (the same item appeared on two pages, the total changed, or a page went out of range, even after reading it again), so the list would be inaccurate. Try again later".to_string(),
                         )
                     })?
             }
@@ -2572,9 +2608,22 @@ impl WordPressHandler {
 
             // 本文は一覧の残りの量までしか読まず、読んだ分（受信に失敗した
             // 試行の分も）は`budget.bytes`に足される（#759）
-            let (items, total_pages, reported_total): (Vec<serde_json::Value>, u32, u64) = self
-                .execute_request_with_retry_capturing_total_pages(request, Some(&mut *budget))
-                .await?;
+            let (items, total_pages, reported_total): (Vec<serde_json::Value>, u32, u64) =
+                match self
+                    .execute_request_with_retry_capturing_total_pages(request, Some(&mut *budget))
+                    .await
+                {
+                    Ok(read) => read,
+                    // 読んでいる間に一覧が減り、このページが範囲の外になった
+                    // （WordPressは400の`rest_post_invalid_page_number`等を
+                    // 返す）。一覧が変わったとして、初めから読み直す（PR #763の
+                    // レビュー）
+                    Err(e) if page > 1 && is_invalid_page_number_error(&e) => {
+                        budget.pages += 1;
+                        return Ok(None);
+                    }
+                    Err(e) => return Err(e),
+                };
 
             // 重なりを見つけて捨てるページも、読んだ量に数える
             budget.pages += 1;
@@ -4272,9 +4321,10 @@ impl WordPressHandler {
             )));
         }
 
-        // 大きな応答でメモリーを使い切らせないよう、上限まで読む（#759）
-        let body = read_body_limited(response, MAX_RESPONSE_BYTES).await?;
-        let index: serde_json::Value = serde_json::from_str(&body)
+        // 大きな応答でメモリーを使い切らせないよう、上限まで読む（#759）。
+        // 受け取ったバイトのまま解析する（PR #763のレビュー）
+        let body = read_body_bytes_limited(response, MAX_RESPONSE_BYTES).await?;
+        let index: serde_json::Value = serde_json::from_slice(&body)
             .map_err(|e| McpError::ExternalApi(format!("Failed to parse site info: {}", e)))?;
         let text = |value: &serde_json::Value, key: &str| {
             value
@@ -4377,9 +4427,10 @@ impl WordPressHandler {
         }
 
         // Check if response contains expected namespace
-        // 大きな応答でメモリーを使い切らせないよう、上限まで読む（#759）
-        let body = read_body_limited(response, MAX_RESPONSE_BYTES).await?;
-        let api_info: serde_json::Value = serde_json::from_str(&body)
+        // 大きな応答でメモリーを使い切らせないよう、上限まで読む（#759）。
+        // 受け取ったバイトのまま解析する（PR #763のレビュー）
+        let body = read_body_bytes_limited(response, MAX_RESPONSE_BYTES).await?;
+        let api_info: serde_json::Value = serde_json::from_slice(&body)
             .map_err(|e| McpError::ExternalApi(format!("Invalid REST API response: {}", e)))?;
 
         if !api_info
@@ -4839,6 +4890,7 @@ impl WordPressHandler {
                         ))
                     }
                 };
+                let excerpt_given = excerpt.is_some();
 
                 let post = self
                     .create_advanced_post(PostCreateParams {
@@ -4857,17 +4909,28 @@ impl WordPressHandler {
                     })
                     .await?;
 
+                // 抜粋に対応しない投稿タイプ（固定ページ等）では、WordPressは
+                // 抜粋を黙って捨て、応答にも`excerpt`が無い（PR #763のレビュー）。
+                // 作り直させないよう、作ったことと、抜粋は保存されていない
+                // ことを伝える
+                let excerpt_note = if excerpt_given && post.excerpt.is_none() {
+                    ". WordPress did not save the excerpt: this post type does not support excerpts. The item is saved, so do not create it again"
+                } else {
+                    ""
+                };
+
                 // 要求した値ではなく、WordPressが実際に設定したステータスを
                 // 示す（権限不足でpendingに落とされる場合等がある）
                 Ok(serde_json::json!({
                     "content": [{
                         "type": "text",
                         "text": format!(
-                            "Created {} with ID: {} (Status: {}, Slug: {})",
+                            "Created {} with ID: {} (Status: {}, Slug: {}){}",
                             if post_type == "page" { "page" } else { "post" },
                             display_opt_id(post.id),
                             post.status,
-                            post_slug_label(&post)
+                            post_slug_label(&post),
+                            excerpt_note
                         )
                     }],
                     "isError": false
@@ -6283,7 +6346,7 @@ impl McpHandler for WordPressHandler {
                         },
                         "excerpt": {
                             "type": "string",
-                            "description": "A short summary of the post (optional), shown in post lists and often used as the meta description. If omitted, WordPress makes one from the content"
+                            "description": "A short summary of the post (optional), shown in post lists and often used as the meta description. If omitted, WordPress makes one from the content. Pages (and post types without excerpt support) do not keep it: the result then says that the excerpt was not saved"
                         }
                     },
                     "required": ["title", "content"]
@@ -12745,5 +12808,175 @@ mod tests {
                 .any(|(request, _)| request.starts_with("GET /wp-json/wp/v2/products")),
             "{requests:?}"
         );
+    }
+
+    // ---- PR #763のレビュー ----
+
+    /// 抜粋に対応しない投稿タイプ（固定ページ等）では、WordPressは抜粋を
+    /// 黙って捨てる。作ったことと、抜粋は保存されていないことを伝える
+    /// （PR #763のレビュー）
+    #[tokio::test]
+    async fn test_create_advanced_post_reports_unsaved_excerpt() {
+        let args = serde_json::json!({
+            "title": "t", "content": "c", "post_type": "page", "excerpt": "要約"
+        });
+        // 応答に`excerpt`が無い（固定ページ）
+        let (base_url, captured) = spawn_body_capturing_server(post_response_json("t")).await;
+        let handler = handler_for_local_server(base_url);
+        let result = call_tool_with(&handler, "create_advanced_post", args.clone())
+            .await
+            .unwrap();
+        let text = tool_text(&result);
+        assert!(
+            text.starts_with("Created page with ID: 7")
+                && text.contains("did not save the excerpt")
+                && text.contains("do not create it again"),
+            "{text}"
+        );
+        assert_eq!(result["isError"], false);
+        assert_eq!(captured.lock().await.len(), 1);
+
+        // 応答に`excerpt`があれば、注意を添えない
+        let mut post: serde_json::Value = serde_json::from_str(&post_response_json("t")).unwrap();
+        post["excerpt"] = serde_json::json!({"raw": "要約", "rendered": "<p>要約</p>"});
+        let (base_url, _) = spawn_body_capturing_server(post.to_string()).await;
+        let handler = handler_for_local_server(base_url);
+        let result = call_tool_with(&handler, "create_advanced_post", args)
+            .await
+            .unwrap();
+        assert!(
+            !tool_text(&result).contains("excerpt"),
+            "{}",
+            tool_text(&result)
+        );
+    }
+
+    /// 本文の受信に失敗した試行で一覧の残りを使い切ったら、同じページを
+    /// 送り直さない（PR #763のレビュー）
+    #[tokio::test]
+    async fn test_fetch_all_pages_does_not_resend_when_the_budget_is_used_up() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let page = posts_page(&[1, 2]);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let count = Arc::new(AtomicUsize::new(0));
+        let server_count = count.clone();
+        let server_page = page.clone();
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                server_count.fetch_add(1, Ordering::SeqCst);
+                let page = server_page.clone();
+                tokio::spawn(async move {
+                    let mut buf = Vec::new();
+                    let mut chunk = [0u8; 4096];
+                    while !buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                        match socket.read(&mut chunk).await {
+                            Ok(0) | Err(_) => return,
+                            Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                        }
+                    }
+                    // 長さの分からない（chunked）本文を、途中で切る
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n{:x}\r\n{}",
+                        page.len() + 100,
+                        page
+                    );
+                    let _ = socket.write_all(response.as_bytes()).await;
+                    let _ = socket.shutdown().await;
+                });
+            }
+        });
+        let base = format!("http://{addr}");
+        let handler = handler_for_local_server(base.clone());
+        let mut budget = ListReadBudget {
+            max_bytes: page.len(),
+            ..Default::default()
+        };
+        let err = handler
+            .fetch_all_pages_once(
+                &|n| format!("{base}/wp-json/wp/v2/posts?per_page=100&page={n}"),
+                &mut budget,
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, McpError::ExternalApi(ref msg) if msg.contains("in total, the most mcp-rs reads for one list")),
+            "{err:?}"
+        );
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+        assert_eq!(budget.bytes, page.len());
+    }
+
+    /// 本文がちょうど一覧の残りで終われば、成功のまま（PR #763のレビュー）
+    #[tokio::test]
+    async fn test_fetch_all_pages_accepts_a_body_that_ends_at_the_budget() {
+        let page = posts_page(&[1, 2]);
+        let (base, _, _) = spawn_sequence_server(vec![("200 OK", page.clone())]).await;
+        let handler = handler_for_local_server(base.clone());
+        let mut budget = ListReadBudget {
+            max_bytes: page.len(),
+            ..Default::default()
+        };
+        let (items, _) = handler
+            .fetch_all_pages_once(
+                &|n| format!("{base}/wp-json/wp/v2/posts?per_page=100&page={n}"),
+                &mut budget,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(items.len(), 2);
+        assert_eq!(budget.bytes, page.len());
+    }
+
+    /// 読んでいる間に一覧が減り、後ろのページが範囲の外になった（400の
+    /// `rest_post_invalid_page_number`）ら、初めから読み直す（PR #763の
+    /// レビュー）
+    #[tokio::test]
+    async fn test_fetch_all_pages_rereads_when_a_page_goes_out_of_range() {
+        use std::sync::atomic::Ordering;
+        const INVALID_PAGE: &str = r#"{"code":"rest_post_invalid_page_number","message":"The page number requested is larger than the number of pages available."}"#;
+        let (base, count, request_lines) = spawn_sequence_server(vec![
+            (TWO_PAGES, posts_page(&[1, 2])),
+            ("400 Bad Request", INVALID_PAGE.to_string()),
+            (
+                "200 OK\r\nX-WP-TotalPages: 1\r\nX-WP-Total: 2",
+                posts_page(&[1, 3]),
+            ),
+        ])
+        .await;
+        let handler = handler_for_local_server(base);
+        let posts = handler.get_posts(None).await.unwrap();
+        let ids: Vec<Option<u64>> = posts.iter().map(|post| post.id).collect();
+        assert_eq!(ids, vec![Some(1), Some(3)]);
+        assert_eq!(count.load(Ordering::SeqCst), 3);
+        assert_eq!(requested_pages(&request_lines), ["1", "2", "1"]);
+
+        // 1ページだけを読むときと、ほかの400は、そのままエラー
+        assert!(!is_invalid_page_number_error(&McpError::ExternalApi(
+            format_wp_error(
+                reqwest::StatusCode::BAD_REQUEST,
+                r#"{"code":"rest_invalid_param","message":"Invalid parameter(s): status"}"#,
+            )
+        )));
+        let (base, _, _) =
+            spawn_sequence_server(vec![("400 Bad Request", INVALID_PAGE.to_string())]).await;
+        let handler = handler_for_local_server(base);
+        let result = call_tool_with(&handler, "get_posts", serde_json::json!({"page": 9})).await;
+        assert!(
+            matches!(result, Err(McpError::ExternalApi(ref msg)) if msg.contains("rest_post_invalid_page_number")),
+            "{result:?}"
+        );
+    }
+
+    /// バイトのまま読む。不正なUTF-8を置き換え文字にしない（PR #763のレビュー）
+    #[tokio::test]
+    async fn test_read_body_bytes_limited_keeps_the_bytes() {
+        let bytes = vec![b'"', 0xff, b'"'];
+        let response = reqwest::Response::from(http::Response::new(bytes.clone()));
+        assert_eq!(read_body_bytes_limited(response, 10).await.unwrap(), bytes);
+        let response = reqwest::Response::from(http::Response::new(bytes));
+        assert!(read_body_bytes_limited(response, 2).await.is_err());
     }
 }

@@ -223,7 +223,7 @@ Create a new WordPress post or page with advanced options.
 - `featured_media_id` (number, optional): Featured image media ID
 - `meta` (object, optional): Meta fields for SEO (e.g., Yoast SEO fields)
 - `slug` (string, optional): URL slug, for example an English slug for a post with a Japanese title. If omitted, WordPress generates one from the title. See [Slugs](#slugs)
-- `excerpt` (string, optional): A short summary of the post, shown in post lists and often used as the meta description. If omitted, WordPress makes one from the content (v0.30.0 and later)
+- `excerpt` (string, optional): A short summary of the post, shown in post lists and often used as the meta description. If omitted, WordPress makes one from the content (v0.30.0 and later). Pages, and custom post types without excerpt support, do not keep it: WordPress ignores it, and the result says that the excerpt was not saved. The page is still created, so do not create it again
 
 **Example Usage:**
 
@@ -1232,16 +1232,16 @@ The health check performs five critical validation stages:
 
 ### 4. ✅ Permission Verification
 
-- **Purpose**: Check user has required capabilities
-- **Test**: Validate publish_posts, upload_files, and edit_posts permissions
-- **Success**: User has all required capabilities
-- **Failure**: Insufficient permissions for content operations
+- **Purpose**: Check that the credentials can read content
+- **Test**: Authenticated GET requests to the posts list (`/wp-json/wp/v2/posts`) and the media list (`/wp-json/wp/v2/media`)
+- **Success**: Both lists return a 2xx status. Write permissions (`publish_posts`, `upload_files`) are not verified
+- **Failure**: Either list is refused or returns an error
 
 ### 5. 📁 Media Readable
 
 - **Purpose**: Check that the media library can be read with the credentials
 - **Test**: GET request to `/wp-json/wp/v2/media`
-- **Success**: The media list is returned; the report shows `Media Readable: ✅`
+- **Success**: The media endpoint returned a 2xx status; the report shows `Media Readable: ✅`. The contents of the response are not read or validated
 - **Failure**: The media endpoint is blocked or returns an error
 - **Note**: This does not check the permission to upload (`upload_files`). Up to v0.29.0, the report called this line `Media Upload Possible`, although it was checked the same way
 

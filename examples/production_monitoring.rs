@@ -247,7 +247,7 @@ async fn api_endpoint_check(
         accessible_endpoints.push("Permissions".to_string());
     }
     if health_check.media_upload_possible {
-        accessible_endpoints.push("Media Upload".to_string());
+        accessible_endpoints.push("Media Read".to_string());
     }
 
     if accessible_endpoints.is_empty() {

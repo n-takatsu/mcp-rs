@@ -229,7 +229,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - WordPressの`create_advanced_post`に`excerpt`が無かった（#759）。
   `draft_post`のプロンプトは抜粋を書かせるのに、保存できなかった。
   `excerpt`を受け、WordPressに送る（省略時は、今までどおりWordPressが
-  本文から作る）
+  本文から作る）。固定ページ等、抜粋に対応しない投稿タイプでは
+  WordPressが黙って捨てるので、作ったことと、抜粋は保存されていない
+  ことを伝える
 
 - WordPressのリソースの読み取り（`resources/read`）が、エラーの本文に
   ` 404 `を含むだけで「リソースが無い」（`-32002`）にしていた（#759）。
@@ -250,7 +252,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   読み終えてから確かめていた（#759。上限の近くでも、次のページを最大
   32 MiBまで読んでいた）。本文の受信に失敗して読み直したページは、失敗した
   試行で受け取った分を数えていなかった。一覧の残りの量までしか読まず、
-  失敗した試行の分も数える
+  失敗した試行の分も数える。失敗した試行で残りを使い切ったら、同じ
+  ページを送り直さない
 
 - WordPressの`set_featured_image`が、応答の`featured_media`を確かめず、
   WordPressが画像を設定しなかったとき（無いメディアのID等）も成功と
@@ -282,7 +285,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - WordPressの一覧の全件取得で、読んでいる間に読み終えたページの項目が
   消えると、後ろのページがずれて1件欠けた（#759。件数の照合も通って
   いた）。1ページ目の総件数・総ページ数を覚え、変わったら初めから
-  読み直す
+  読み直す。減って後ろのページが範囲の外になり、WordPressが400の
+  `rest_post_invalid_page_number`等を返したときも、初めから読み直す
 
 - WordPressの`get_posts`に、カテゴリー・タグの無いカスタム投稿タイプで
   `categories`・`tags`を渡すと、そのまま送っていた（#759）。WordPressは

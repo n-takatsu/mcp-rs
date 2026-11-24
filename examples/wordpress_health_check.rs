@@ -117,6 +117,9 @@ fn display_health_results(health: &mcp_rs::handlers::wordpress::WordPressHealthC
         "   Media Readable:         {}",
         if health.media_upload_possible {
             "✅ YES"
+        } else if !health.site_accessible || !health.authentication_valid {
+            // サイトに届かない・サインインできないときは、メディアを確かめていない
+            "⏭️ 未確認"
         } else {
             "❌ NO"
         }
@@ -185,12 +188,13 @@ fn provide_recommendations(health: &mcp_rs::handlers::wordpress::WordPressHealth
         println!();
     }
 
-    if !health.media_upload_possible {
-        println!("🔧 Media Upload Issues:");
-        println!("   • Check file upload permissions on server");
-        println!("   • Verify upload_max_filesize is adequate");
-        println!("   • Check WordPress media upload settings");
-        println!("   • Ensure uploads directory is writable");
+    // メディアは、サインインできたときだけ確かめる（一覧のGETだけで、
+    // アップロードの権限は確かめない）
+    if !health.media_upload_possible && health.site_accessible && health.authentication_valid {
+        println!("🔧 Media Read Issues:");
+        println!("   • Check that /wp-json/wp/v2/media is reachable with these credentials");
+        println!("   • Check security plugins or a firewall that may block the media endpoint");
+        println!("   • See the error shown above under Issues Detected");
         println!();
     }
 
