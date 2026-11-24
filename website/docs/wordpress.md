@@ -9,7 +9,7 @@ nav_order: 4
 
 {: .no_toc }
 
-**[Home](../) > [Documentation](./) > WordPress Integration**
+**[Home]({{ site.baseurl }}/) > [Documentation]({{ site.baseurl }}/docs/) > WordPress Integration**
 
 Complete WordPress REST API integration with advanced media management capabilities.
 {: .fs-6 .fw-300 }
@@ -281,6 +281,7 @@ Update an existing WordPress post.
 
 **Parameters:**
 - `post_id` (number): ID of the post to update
+- `post_type` (string, optional): `post` (default) or `page`, or a type listed in [`post_types`](#custom-post-types). A page needs `"post_type": "page"`
 - `title` (string, optional): New post title
 - `content` (string, optional): New post content
 - `status` (string, optional): New post status: `publish`, `draft`, `pending`, `private`, or `future` (scheduled). `future` needs `date`, unless the post is already scheduled
@@ -580,6 +581,7 @@ Update an existing WordPress post with comprehensive options.
 
 **Parameters:**
 - `post_id` (number): ID of post to update
+- `post_type` (string, optional): `post` (default) or `page`, or a type listed in [`post_types`](#custom-post-types). A page needs `"post_type": "page"`
 - `title` (string, optional): New post title
 - `content` (string, optional): New post content
 - `status` (string, optional): `publish`, `draft`, `pending`, `private`, or `future` (scheduled, with `date`). Unchanged when omitted
