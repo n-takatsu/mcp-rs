@@ -317,6 +317,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - MySQL・MariaDBの`get_schema`で、ビューの`definition`が常に空だった
   （#759）。`information_schema.VIEWS`の`VIEW_DEFINITION`を返す。読む
   権限が無いビューは空のまま
+
 - IDSのCMD-002（Critical）が、バッククォートで囲んだ語なら何にでも一致して
   いた（Markdownの`` `id` ``・`` `foo bar` ``でHTTP 403と永続ブロック）。
   中がシェルのコマンドと引数らしいもの（`` `cat /etc/hosts` ``）、パスを
