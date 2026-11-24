@@ -204,6 +204,7 @@ hsts_enabled = true
 ```
 
 - `mtls_enabled = true` requires `tls_enabled = true` and `mtls_ca_cert_path`
+- With `tls_enabled = true`, mcp-rs serves TLS 1.3 only, so `min_tls_version` must be `"1.3"` (or not set). A higher version such as `"1.4"` cannot be met, and mcp-rs does not start (v0.30.0 and later; up to v0.29.0, it started and accepted TLS 1.3)
 - Clients without a valid certificate signed by the configured CA are rejected at the TLS handshake
 
 WebSocket is not a separate transport. In HTTP mode, `enable_websocket_upgrade = true` also accepts MCP requests on `/ws`, with the same authentication and limits as HTTP:
@@ -238,7 +239,7 @@ When mcp-rs runs behind a reverse proxy that handles TLS, some settings read hea
 
 | Setting | Header |
 |---------|--------|
-| `enforce_https` (without `tls_enabled`) | `X-Forwarded-Proto: https`, or `Forwarded: proto=https` |
+| `enforce_https` (without `tls_enabled`) | `X-Forwarded-Proto: https`, or `Forwarded` with `proto=https` in the element added by the proxy that received the request from the client |
 | `min_tls_version` (without `tls_enabled`) | `X-Forwarded-TLS-Version`, or `X-SSL-Protocol` |
 | `certificate_pinning_enabled` (without `tls_enabled`) | `certificate_pin_header` (default `x-tls-cert-sha256`) |
 | `ids_trust_forwarded_for` | `X-Forwarded-For`, or `X-Real-IP` |
@@ -256,6 +257,7 @@ With `enforce_https` and without `tls_enabled`, the proxy must also send the TLS
 With `trusted_proxies`, mcp-rs also needs API keys or OAuth (see [Listening on the Network](#httpwebsocket-listening-on-the-network)), unless the proxy authenticates the clients and you set `allow_unauthenticated_external = true`.
 
 - Without `trusted_proxies`, mcp-rs does not start with `enforce_https` or `certificate_pinning_enabled` (unless `tls_enabled = true`, where mcp-rs itself handles TLS and does not need the headers), or with `ids_trust_forwarded_for`. Without it, the TLS version header is ignored. Up to v0.23.0, mcp-rs used these headers from any client, so a client connecting over plain HTTP could pass `enforce_https` by adding `X-Forwarded-Proto: https`
+- `Forwarded` (RFC 7239): like the other headers, it is used only on connections from `trusted_proxies`. Proxies add elements to the right. mcp-rs reads the elements from the right, skips those whose `for` is one of `trusted_proxies` (hops between your proxies), and uses `proto` of the first other element, which the proxy that received the request from the client added. If the `for` of every element is one of `trusted_proxies` (for example, the client itself runs on a proxy's address), mcp-rs uses the rightmost element, which the proxy connected to mcp-rs added, not the leftmost, which the client may have sent. The value must be exactly `https`. Elements further left were sent by the client and are ignored. A malformed header (an unclosed quote, a parameter without `=`, the same parameter twice in an element) does not count as HTTPS (v0.30.0 and later; up to v0.29.0, mcp-rs looked for `proto=https` anywhere in the header, so a client could send it itself)
 - Make sure that clients cannot reach mcp-rs except through the proxy (for example, with `network_policy_ip_whitelist`), and that the proxy replaces these headers instead of passing on the ones the client sent
 - For `X-Forwarded-For`, mcp-rs takes the rightmost address that is not in `trusted_proxies`. A proxy adds the address it received the request from to the end, so the addresses to its left are whatever the client sent. Up to v0.23.0, mcp-rs took the leftmost one, so a client could make the intrusion detection block another address
 
