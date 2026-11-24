@@ -6,7 +6,7 @@ permalink: /docs/security/
 
 # Security
 
-**[Home](../) > [Documentation](./) > Security**
+**[Home]({{ site.baseurl }}/) > [Documentation]({{ site.baseurl }}/docs/) > Security**
 
 ## Overview
 
