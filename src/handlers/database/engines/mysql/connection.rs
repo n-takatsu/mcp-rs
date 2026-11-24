@@ -137,6 +137,35 @@ enum Outcome<T> {
     Stopped(T),
 }
 
+/// 実行中の文を、どう止めたか（`abandon`、#759）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Stop {
+    /// `KILL QUERY`を送った
+    Killed,
+    /// `KILL QUERY`は送れなかった（か、送らなかった）が、接続は閉じた
+    Closed,
+    /// `KILL QUERY`も、閉じるのも、時間内に終わらず、接続を捨てた
+    Dropped,
+}
+
+/// 時間の上限を超えたときのエラーの文（#759）。`stop`が`None`なら、
+/// 利用者のSQLは送る前だった
+fn timeout_message(server: ServerKind, secs: u64, stop: Option<Stop>) -> String {
+    let name = server.name();
+    match stop {
+        None => format!("{name} did not respond within {secs} seconds; the statement was not sent"),
+        Some(Stop::Killed) => format!(
+            "the statement did not finish within {secs} seconds and was stopped with KILL QUERY"
+        ),
+        Some(Stop::Closed) => format!(
+            "the statement did not finish within {secs} seconds; KILL QUERY did not succeed, so mcp-rs closed the connection, and {name} rolls back what the statement did not commit"
+        ),
+        Some(Stop::Dropped) => format!(
+            "the statement did not finish within {secs} seconds and could not be stopped: KILL QUERY did not succeed and the connection did not close in time, so {name} may keep running the statement until it finishes"
+        ),
+    }
+}
+
 impl MySqlConnection {
     /// プールを共有する接続を作る（プールは`MySqlEngine`が1つだけ作る）
     pub fn with_pool(pool: Pool, opts: Opts, database_name: String, user_name: String) -> Self {
@@ -233,29 +262,28 @@ impl MySqlConnection {
         let deadline = self
             .client_timeout()
             .map(|limit| tokio::time::Instant::now() + limit);
-        let timed_out = || {
-            DatabaseError::TimeoutError(format!(
-                "the statement did not finish within {} seconds and was stopped",
-                self.statement_timeout.as_secs()
+        // 止めた結果に合わせて伝える（#759）
+        let timed_out = |stop: Option<Stop>| {
+            DatabaseError::TimeoutError(timeout_message(
+                self.server,
+                self.statement_timeout.as_secs(),
+                stop,
             ))
         };
-        // 止めるときに、同じサーバーか確かめるため（PR #735のレビュー）。
-        // 読めなければ、文だけで確かめる
-        let identify =
-            conn.query_first::<String, _>(format!("SELECT {}", self.server.server_identity_expr()));
+        // 止めるときに、同じサーバー・同じ起動か確かめるため（PR #735の
+        // レビュー、#759）。読めなければ、文だけで確かめる
+        let identify = read_server(&mut conn, self.server);
         let server = match deadline {
             Some(deadline) => match tokio::time::timeout_at(deadline, identify).await {
                 Ok(server) => server,
                 Err(_) => {
                     // 利用者のSQLはまだ送っていないので、閉じるだけ
                     let _ = tokio::time::timeout(DISCONNECT_TIMEOUT, conn.disconnect()).await;
-                    return Err(timed_out());
+                    return Err(timed_out(None));
                 }
             },
             None => identify.await,
-        }
-        .ok()
-        .flatten();
+        };
         let target = KillTarget {
             id,
             server,
@@ -266,8 +294,8 @@ impl MySqlConnection {
             Some(deadline) => match tokio::time::timeout_at(deadline, future).await {
                 Ok(result) => result,
                 Err(_) => {
-                    self.abandon(conn, &target).await;
-                    return Err(timed_out());
+                    let stop = self.abandon(conn, &target).await;
+                    return Err(timed_out(Some(stop)));
                 }
             },
             None => future.await,
@@ -292,8 +320,9 @@ impl MySqlConnection {
     /// とき（接続の数の上限、プロキシで接続のIDがMySQLのスレッドと違う等）、
     /// `disconnect`は読み残しを受信し続けるので、`DISCONNECT_TIMEOUT`で
     /// 打ち切る。打ち切った接続は`disconnected`の印が付いているので、
-    /// プールは読み残しを受信せずに捨てる（PR #572のレビュー）
-    async fn abandon(&self, conn: Conn, target: &KillTarget<'_>) {
+    /// プールは読み残しを受信せずに捨てる（PR #572のレビュー）。
+    /// どう止めたかを返す（#759）
+    async fn abandon(&self, conn: Conn, target: &KillTarget<'_>) -> Stop {
         let id = target.id;
         let killed = self.kill_query(target).await;
         let closed = tokio::time::timeout(DISCONNECT_TIMEOUT, conn.disconnect())
@@ -305,6 +334,11 @@ impl MySqlConnection {
                 self.server.name(),
                 id
             );
+        }
+        match (killed, closed) {
+            (true, _) => Stop::Killed,
+            (false, true) => Stop::Closed,
+            (false, false) => Stop::Dropped,
         }
     }
 
@@ -328,18 +362,27 @@ impl MySqlConnection {
                 .await?;
             // 届いたサーバーは、別に読む。読めなくても（変数を読めない構成）、
             // 文の始めで確かめる（PR #735のレビュー）
-            let server = match found {
-                Some(_) => conn
-                    .query_first::<String, _>(format!(
-                        "SELECT {}",
-                        self.server.server_identity_expr()
-                    ))
-                    .await
-                    .ok()
-                    .flatten(),
+            let found = match found {
+                Some((user, info)) => {
+                    let seen = read_server(&mut conn, self.server).await;
+                    let same_boot = match (target.server.uptime, seen.uptime) {
+                        (Some(before), Some(now)) => same_boot(
+                            before.value,
+                            now.started.saturating_duration_since(before.finished),
+                            now.finished.saturating_duration_since(before.started),
+                            now.value,
+                        ),
+                        _ => None,
+                    };
+                    Some(ProcessRow {
+                        user,
+                        info,
+                        server: seen.id,
+                        same_boot,
+                    })
+                }
                 None => None,
             };
-            let found = found.map(|(user, info)| ProcessRow { user, info, server });
             let ours = may_kill(found, user, target);
             if ours {
                 conn.query_drop(format!("KILL QUERY {id}")).await?;
@@ -349,7 +392,11 @@ impl MySqlConnection {
                     id
                 );
             }
-            conn.disconnect().await?;
+            // `KILL QUERY`を送った後は、閉じるのを待たない。閉じるのに失敗・
+            // 時間がかかっても、止めたと数える（#759）
+            tokio::spawn(async move {
+                let _ = tokio::time::timeout(DISCONNECT_TIMEOUT, conn.disconnect()).await;
+            });
             Ok::<_, mysql_async::Error>(ours)
         };
         match tokio::time::timeout(KILL_CONNECT_TIMEOUT, kill).await {
@@ -370,10 +417,78 @@ impl MySqlConnection {
 struct KillTarget<'a> {
     /// 接続のID（`conn.id()`）
     id: u32,
-    /// 元の接続で見た、サーバーを見分ける値（`server_identity_expr`）
-    server: Option<String>,
+    /// 元の接続で見た、サーバー
+    server: ServerSeen,
     /// 元の接続で送った利用者のSQL
     statement: Option<&'a str>,
+}
+
+/// 接続から見た、サーバーを見分ける値（#723、#759）
+struct ServerSeen {
+    /// `server_identity_expr`の値
+    id: Option<String>,
+    /// `Uptime`（秒）。`server_uuid`は再起動しても変わらないので、起動した
+    /// 時刻を比べるため
+    uptime: Option<Uptime>,
+}
+
+/// 読んだ`Uptime`と、読み始めた・読み終えた時刻（#759）。サーバーが値を
+/// 採ったのは、この間のどこか（PR #762のレビュー）
+#[derive(Clone, Copy)]
+struct Uptime {
+    value: u64,
+    started: std::time::Instant,
+    finished: std::time::Instant,
+}
+
+/// `conn`のサーバーを見分ける値を読む。読めない値は`None`
+async fn read_server(conn: &mut Conn, kind: ServerKind) -> ServerSeen {
+    let id = conn
+        .query_first::<String, _>(format!("SELECT {}", kind.server_identity_expr()))
+        .await
+        .ok()
+        .flatten();
+    let started = std::time::Instant::now();
+    // `SHOW STATUS`は、権限が無くても読める（MySQL・MariaDBとも）
+    let uptime = conn
+        .query_first::<(String, String), _>("SHOW GLOBAL STATUS LIKE 'Uptime'")
+        .await
+        .ok()
+        .flatten()
+        .and_then(|(_, value)| value.trim().parse().ok())
+        .map(|value| Uptime {
+            value,
+            started,
+            finished: std::time::Instant::now(),
+        });
+    ServerSeen { id, uptime }
+}
+
+/// 起動した時刻を比べる誤差の上限（秒）。`Uptime`は秒単位で、読む時刻も
+/// 往復の時間だけずれる
+const BOOT_TOLERANCE_SECS: f64 = 3.0;
+
+/// 元の接続で`before`秒だった`Uptime`が、後で`now`秒なら、サーバーは同じ
+/// 起動のままか（#759）。2つの値を採った間の時間は、`min_elapsed`から
+/// `max_elapsed`の間（それぞれを読み始めた・読み終えた時刻から求める。
+/// 応答の遅れは、この幅に入る。PR #762のレビュー）。経った時間が最も短い
+/// としても`now`が小さすぎれば、再起動した（`Some(false)`）。比べられない
+/// （元の`Uptime`が誤差より小さい、最も長くても`now`が大きすぎる）ときは`None`
+fn same_boot(before: u64, min_elapsed: Duration, max_elapsed: Duration, now: u64) -> Option<bool> {
+    let (before, now) = (before as f64, now as f64);
+    if now + BOOT_TOLERANCE_SECS < before + min_elapsed.as_secs_f64() {
+        Some(false)
+    } else if now > before + max_elapsed.as_secs_f64() + BOOT_TOLERANCE_SECS
+        || before <= BOOT_TOLERANCE_SECS + 1.0
+        // 2つの値を採った間に再起動しても`now`になりうる（再起動からの時間が、
+        // 最も長く見た経過時間に収まる）なら、同じ起動とは決めない（PR #762の
+        // 2回目のレビュー）
+        || now <= max_elapsed.as_secs_f64() + BOOT_TOLERANCE_SECS
+    {
+        None
+    } else {
+        Some(true)
+    }
 }
 
 /// 止める接続で見た、PROCESSLISTのそのIDの行
@@ -382,16 +497,22 @@ struct ProcessRow {
     info: Option<String>,
     /// 止める接続がつながったサーバーを見分ける値
     server: Option<String>,
+    /// そのサーバーが、元の接続で見たときと同じ起動のままか（`same_boot`）
+    same_boot: Option<bool>,
 }
 
 /// `KILL QUERY`で止めてよい相手か（#723）。ユーザーが同じで、次の
 /// どちらか:
 ///
-/// - 止める接続が、元の接続と同じサーバーに届いた（IDはサーバーの中で
+/// - 止める接続が、元の接続と同じサーバーの同じ起動に届いた（IDはその中で
 ///   重ならないので、元の接続。文がトリガーの中でも止められる。PR #735の
 ///   レビュー）
-/// - `INFO`が、送った文の始め（最初の`?`の前まで。プリペアドステートメントの
-///   `?`は、値に置き換わって見えることがあるため）で始まる
+/// - サーバーの識別子を片方でも読めないか、同じでも起動が同じか分からない
+///   とき、`INFO`が、送った文の始め（最初の`?`の前まで。プリペアド
+///   ステートメントの`?`は、値に置き換わって見えることがあるため）で始まる
+///
+/// 識別子が両方読めて違う（別のサーバー）、または再起動した（元の接続は
+/// もう無い。識別子が読めなくても）なら、文が同じでも止めない（#759）
 fn may_kill(found: Option<ProcessRow>, user: &str, target: &KillTarget<'_>) -> bool {
     let Some(found) = found else {
         return false;
@@ -399,8 +520,19 @@ fn may_kill(found: Option<ProcessRow>, user: &str, target: &KillTarget<'_>) -> b
     if found.user.as_deref() != Some(user) {
         return false;
     }
-    if target.server.is_some() && found.server == target.server {
-        return true;
+    // 再起動したと分かれば、識別子が読めなくても止めない（PR #762の2回目の
+    // レビュー。SQLの始めが同じでも、別のセッション）
+    if found.same_boot == Some(false) {
+        return false;
+    }
+    if let (Some(ours), Some(theirs)) = (target.server.id.as_deref(), found.server.as_deref()) {
+        if ours != theirs {
+            return false;
+        }
+        // 同じ起動と分かるときだけ、SQLを比べずに止める
+        if found.same_boot == Some(true) {
+            return true;
+        }
     }
     match (target.statement, found.info.as_deref()) {
         (Some(sql), Some(info)) => info.trim_start().starts_with(statement_prefix(sql)),
@@ -776,15 +908,33 @@ async fn read_schema(
         .await?;
     let mut indexes = indexes_from_statistics(rows);
 
+    // ビューの定義（#759）。`SHOW VIEW`の権限が無い等で読めないビューは、
+    // MySQLが空の文字を返す
+    let mut definitions: BTreeMap<String, String> = BTreeMap::new();
+    if tables.iter().any(|(_, kind)| kind == "VIEW") {
+        let rows: Vec<(String, Option<String>)> = conn
+            .exec(
+                format!(
+                    "SELECT TABLE_NAME, VIEW_DEFINITION FROM information_schema.VIEWS \
+                     WHERE TABLE_SCHEMA = DATABASE(){filter}"
+                ),
+                table_param(),
+            )
+            .await?;
+        for (view, definition) in rows {
+            definitions.insert(view, definition.unwrap_or_default());
+        }
+    }
+
     let mut table_infos = Vec::new();
     let mut view_infos = Vec::new();
     for (name, kind) in tables {
         let table_columns = columns.remove(&name).unwrap_or_default();
         if kind == "VIEW" {
             view_infos.push(ViewInfo {
+                definition: definitions.remove(&name).unwrap_or_default(),
                 name,
                 schema: None,
-                definition: String::new(),
                 columns: table_columns,
             });
             continue;
@@ -993,76 +1143,158 @@ mod tests {
     /// utf8mb4_general_ci
     const UTF8MB4: u16 = 45;
 
-    /// `KILL QUERY`は、自分のユーザーで、同じサーバーか自分の文を実行中の
-    /// 接続にだけ送る（#723）
+    /// `KILL QUERY`は、自分のユーザーで、同じサーバーの同じ起動か、自分の文を
+    /// 実行中の接続にだけ送る（#723、#759）
     #[test]
     fn test_may_kill() {
-        let row = |user: Option<&str>, info: Option<&str>, server: &str| {
+        let row = |user: Option<&str>, info: Option<&str>, server: Option<&str>, boot| {
             Some(ProcessRow {
                 user: user.map(str::to_string),
                 info: info.map(str::to_string),
-                server: Some(server.to_string()),
+                server: server.map(str::to_string),
+                same_boot: boot,
             })
         };
         let sql = "  UPDATE users SET name = ? WHERE id = ?";
         let target = |server: Option<&str>, statement: Option<&'static str>| KillTarget {
             id: 7,
-            server: server.map(str::to_string),
+            server: ServerSeen {
+                id: server.map(str::to_string),
+                uptime: None,
+            },
             statement,
         };
-        // 同じサーバーなら、文が違っても止める（トリガーの中の文等）
+        let ours = "UPDATE users SET name = 'a' WHERE id = 5";
+        // 同じサーバーの同じ起動なら、文が違っても止める（トリガーの中の文等）
         assert!(may_kill(
-            row(Some("app"), Some("DO SLEEP(60)"), "A"),
+            row(Some("app"), Some("DO SLEEP(60)"), Some("A"), Some(true)),
             "app",
             &target(Some("A"), Some(sql))
         ));
         assert!(may_kill(
-            row(Some("app"), None, "A"),
+            row(Some("app"), None, Some("A"), Some(true)),
             "app",
             &target(Some("A"), None)
         ));
-        // 別のサーバー（か、元の接続でサーバーを読めなかった）なら、文で確かめる。
-        // プリペアドステートメントの`?`は、値に置き換わって見えることがある
-        for server in [Some("A"), None] {
-            for info in [
-                "UPDATE users SET name = ? WHERE id = ?",
-                "UPDATE users SET name = 'a' WHERE id = 5",
-            ] {
+        // 同じサーバーが再起動したなら、元の接続は無いので、文が同じでも
+        // 止めない（#759）
+        assert!(!may_kill(
+            row(Some("app"), Some(ours), Some("A"), Some(false)),
+            "app",
+            &target(Some("A"), Some(sql))
+        ));
+        // 識別子が両方読めて違うなら、文が同じでも止めない（#759）
+        for boot in [Some(true), Some(false), None] {
+            assert!(!may_kill(
+                row(Some("app"), Some(ours), Some("B"), boot),
+                "app",
+                &target(Some("A"), Some(sql))
+            ));
+        }
+        // 同じサーバーで起動が分からない、または識別子を片方でも読めない
+        // なら、文で確かめる。プリペアドステートメントの`?`は、値に置き換わって
+        // 見えることがある
+        let unknown: [(Option<&str>, Option<&str>); 4] = [
+            (Some("A"), Some("A")),
+            (Some("B"), None),
+            (None, Some("A")),
+            (None, None),
+        ];
+        for (theirs, mine) in unknown {
+            for info in ["UPDATE users SET name = ? WHERE id = ?", ours] {
                 assert!(may_kill(
-                    row(Some("app"), Some(info), "B"),
+                    row(Some("app"), Some(info), theirs, None),
                     "app",
-                    &target(server, Some(sql))
+                    &target(mine, Some(sql))
                 ));
             }
             assert!(!may_kill(
-                row(Some("app"), Some("UPDATE accounts SET x = 1"), "B"),
+                row(Some("app"), Some("UPDATE accounts SET x = 1"), theirs, None),
                 "app",
-                &target(server, Some(sql))
+                &target(mine, Some(sql))
             ));
             assert!(!may_kill(
-                row(Some("app"), None, "B"),
+                row(Some("app"), None, theirs, None),
                 "app",
-                &target(server, Some(sql))
+                &target(mine, Some(sql))
             ));
-            // スキーマの読み取り（文を渡さない）は、別のサーバーなら止めない
+            // スキーマの読み取り（文を渡さない）は、止めない
             assert!(!may_kill(
-                row(Some("app"), Some("SELECT 1"), "B"),
+                row(Some("app"), Some("SELECT 1"), theirs, None),
                 "app",
-                &target(server, None)
+                &target(mine, None)
             ));
         }
         // 別のユーザー・見つからないなら、同じサーバーでも止めない
         assert!(!may_kill(
-            row(Some("other"), Some("UPDATE users SET name = 'a'"), "A"),
+            row(Some("other"), Some(ours), Some("A"), Some(true)),
             "app",
             &target(Some("A"), Some(sql))
         ));
         assert!(!may_kill(
-            row(None, None, "A"),
+            row(None, None, Some("A"), Some(true)),
             "app",
             &target(Some("A"), None)
         ));
         assert!(!may_kill(None, "app", &target(Some("A"), Some(sql))));
+        // 再起動したと分かれば、識別子が読めなくても、SQLの始めが同じでも
+        // 止めない（PR #762の2回目のレビュー）
+        for (theirs, mine) in [(None, None), (Some("A"), None), (None, Some("A"))] {
+            assert!(!may_kill(
+                row(Some("app"), Some(ours), theirs, Some(false)),
+                "app",
+                &target(mine, Some(sql))
+            ));
+        }
+    }
+
+    /// `Uptime`から、サーバーが再起動したかを見分ける（#759）
+    #[test]
+    fn test_same_boot() {
+        let secs = Duration::from_secs;
+        // 同じ起動: 経った時間だけ増える（秒単位の切り捨て・往復の時間のずれは
+        // 許す）
+        assert_eq!(same_boot(1000, secs(40), secs(40), 1040), Some(true));
+        assert_eq!(
+            same_boot(1000, Duration::from_millis(40_900), secs(41), 1039),
+            Some(true)
+        );
+        assert_eq!(same_boot(1000, secs(40), secs(40), 1042), Some(true));
+        // 応答が遅れても、読み始め・読み終えの幅で説明できれば同じ起動（PR
+        // #762のレビュー。元の値が読み始めの4秒後に採られ、32秒後に読み終えた）
+        assert_eq!(same_boot(1004, secs(28), secs(32), 1032), Some(true));
+        assert_eq!(same_boot(1000, secs(30), secs(40), 1031), Some(true));
+        // 再起動: 最も短く見ても、経った時間より小さい
+        assert_eq!(same_boot(1000, secs(40), secs(40), 10), Some(false));
+        assert_eq!(same_boot(10, secs(40), secs(40), 0), Some(false));
+        assert_eq!(same_boot(1000, secs(30), secs(40), 1025), Some(false));
+        // 元の`Uptime`が誤差より小さいと、再起動と見分けられない
+        assert_eq!(same_boot(2, secs(40), secs(40), 42), None);
+        assert_eq!(same_boot(2, secs(40), secs(40), 41), None);
+        // 時計が合わない（最も長く見ても、経った時間より増えた）
+        assert_eq!(same_boot(1000, secs(40), secs(40), 1100), None);
+        // 間に再起動しても説明できる値は、同じ起動と決めない（PR #762の
+        // 2回目のレビュー。再起動から35秒なら、最も長い36秒に収まる）
+        assert_eq!(same_boot(5, secs(33), secs(36), 35), None);
+        assert_eq!(same_boot(100, secs(30), secs(32), 131), Some(true));
+    }
+
+    /// 時間の上限を超えたときは、止めた結果に合わせて伝える（#759）
+    #[test]
+    fn test_timeout_message() {
+        let message = |stop| timeout_message(ServerKind::MySql, 30, stop);
+        assert_eq!(
+            message(None),
+            "MySQL did not respond within 30 seconds; the statement was not sent"
+        );
+        assert!(message(Some(Stop::Killed)).ends_with("was stopped with KILL QUERY"));
+        let closed = message(Some(Stop::Closed));
+        assert!(closed.contains("closed the connection") && !closed.contains("was stopped"));
+        let dropped = message(Some(Stop::Dropped));
+        assert!(dropped.contains("could not be stopped"));
+        assert!(dropped.contains("MySQL may keep running the statement"));
+        assert!(timeout_message(ServerKind::MariaDb, 5, Some(Stop::Dropped))
+            .contains("MariaDB may keep running"));
     }
 
     /// 始めは、最初の`?`の前まで、長くても64文字（マルチバイトでも切れる）
