@@ -34,6 +34,34 @@ pub(crate) fn file_name_for(prefix: &str, rotation: &LogRotation, now: &DateTime
     }
 }
 
+/// `name`が、このwriterが`prefix`で作るファイルの名前か（#759）。どの
+/// `rotation`の形も受け付ける（設定を変える前に作ったファイルも含める）:
+/// `<prefix>`、`<prefix>.YYYY-MM-DD`、`<prefix>.YYYY-MM-DD-HH`
+pub(crate) fn is_file_name_of(prefix: &str, name: &str) -> bool {
+    if name == prefix {
+        return true;
+    }
+    let Some(suffix) = name
+        .strip_prefix(prefix)
+        .and_then(|rest| rest.strip_prefix('.'))
+    else {
+        return false;
+    };
+    // 数字と`-`の位置で比べる（`file_name_for`の`%Y-%m-%d`・`%Y-%m-%d-%H`）
+    let pattern: &[u8] = match suffix.len() {
+        10 => b"dddd-dd-dd",
+        13 => b"dddd-dd-dd-dd",
+        _ => return false,
+    };
+    suffix.bytes().zip(pattern).all(|(c, p)| {
+        if *p == b'd' {
+            c.is_ascii_digit()
+        } else {
+            c == *p
+        }
+    })
+}
+
 /// `now`の次の切り替えの時刻（ローカル時刻の翌日0時、または次の正時）。
 /// 切り替えない場合はNone。
 fn next_rollover(rotation: &LogRotation, now: &DateTime<Local>) -> Option<DateTime<Local>> {
@@ -84,6 +112,10 @@ type Clock = Box<dyn Fn() -> DateTime<Local> + Send>;
 /// （切り替えた時刻と、新しいファイルのパスを受け取る。末尾に改行を含める）
 pub(crate) type RolloverHeader = Box<dyn Fn(&DateTime<Local>, &Path) -> String + Send>;
 
+/// ファイルを切り替えた後に呼ぶ関数（新しいファイルのパスを受け取る）。
+/// ログを書く処理の中で呼ぶので、時間のかかる処理は別のスレッドで行う
+pub(crate) type RolloverHook = Box<dyn Fn(&Path) + Send>;
+
 /// ローカル時刻でファイルを切り替える、追記用のwriter。
 pub(crate) struct LocalRollingAppender {
     dir: PathBuf,
@@ -101,6 +133,8 @@ pub(crate) struct LocalRollingAppender {
     /// 切り替えたが、まだ書けていない先頭の行（#744。書き込みが失敗しても
     /// 失わず、次の書き込みで書く）
     pending_header: Option<Vec<u8>>,
+    /// 切り替えた後に呼ぶ関数（古いログの削除、#759）
+    rollover_hook: Option<RolloverHook>,
 }
 
 impl LocalRollingAppender {
@@ -132,6 +166,7 @@ impl LocalRollingAppender {
             active_path: Arc::new(Mutex::new(path)),
             rollover_header: None,
             pending_header: None,
+            rollover_hook: None,
         })
     }
 
@@ -141,6 +176,13 @@ impl LocalRollingAppender {
     /// 調べる必要がある。
     pub(crate) fn with_rollover_header(mut self, header: RolloverHeader) -> Self {
         self.rollover_header = Some(header);
+        self
+    }
+
+    /// ファイルを切り替えた後に呼ぶ関数を設定する（#759。起動したときだけで
+    /// なく、切り替えるたびに古いログを消す）
+    pub(crate) fn with_rollover_hook(mut self, hook: RolloverHook) -> Self {
+        self.rollover_hook = Some(hook);
         self
     }
 
@@ -180,7 +222,10 @@ impl LocalRollingAppender {
                     *self
                         .active_path
                         .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner()) = path;
+                        .unwrap_or_else(|poisoned| poisoned.into_inner()) = path.clone();
+                    if let Some(hook) = &self.rollover_hook {
+                        hook(&path);
+                    }
                 }
                 Err(_) => {
                     // 開けなければ今のファイルに書き続け、少し後に試し直す
@@ -636,6 +681,62 @@ mod tests {
         let mut pending = header();
         assert!(write_with_header(&mut file, &mut pending, b"partial\n").is_err());
         assert!(pending.is_none());
+    }
+
+    /// 切り替えたときだけ、新しいファイルのパスで切り替えの後の関数を呼ぶ
+    /// （#759。古いログを消す）
+    #[test]
+    fn test_rollover_hook_is_called_only_when_switching() {
+        let dir = tempdir().unwrap();
+        let clock = TestClock::new(local(10, 23, 59));
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&calls);
+        let mut appender = LocalRollingAppender::with_clock(
+            dir.path(),
+            &LogRotation::Daily,
+            "mcp-rs.log",
+            clock.boxed(),
+        )
+        .unwrap()
+        .with_rollover_hook(Box::new(move |path| {
+            recorded.lock().unwrap().push(path.to_path_buf())
+        }));
+
+        appender.write_all(b"a\n").unwrap();
+        assert!(calls.lock().unwrap().is_empty());
+        clock.set(local(11, 0, 5));
+        appender.write_all(b"b\n").unwrap();
+        appender.write_all(b"c\n").unwrap();
+
+        assert_eq!(
+            *calls.lock().unwrap(),
+            vec![dir.path().join("mcp-rs.log.2026-01-11")]
+        );
+    }
+
+    /// このwriterが作る名前の形だけを、ログのファイルとして扱う（#759）
+    #[test]
+    fn test_is_file_name_of_matches_only_generated_names() {
+        let prefix = "mcp-rs.log";
+        for name in [
+            "mcp-rs.log",
+            "mcp-rs.log.2026-01-10",
+            "mcp-rs.log.2026-01-10-23",
+        ] {
+            assert!(is_file_name_of(prefix, name), "{name}");
+        }
+        for name in [
+            "mcp-rs-backup.log",
+            "mcp-rs.log.bak",
+            "mcp-rs.log.2026-01-10.bak",
+            "mcp-rs.log.2026-01-1x",
+            "mcp-rs.log.2026-01-10-2",
+            "mcp-rs.log2026-01-10",
+            "mcp-rs.2026-01-10.log",
+            "other.log.2026-01-10",
+        ] {
+            assert!(!is_file_name_of(prefix, name), "{name}");
+        }
     }
 
     /// 切り替えの時刻は過ぎたが、時計が戻っていて今のファイル以前の名前に
