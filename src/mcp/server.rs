@@ -225,15 +225,39 @@ const STDIO_MAX_QUEUED_BYTES: usize = 16 * 1024 * 1024;
 /// 実行と読み取りを止める
 const STDIO_MAX_PENDING_RESPONSES: usize = 16;
 
-/// 順を待つ要求が多すぎるときの応答（`-32000`、PR #765のレビュー）。
-/// `id`（文字列・数値）の無いもの（通知等）には`None`
-fn busy_response(line: &str) -> Option<String> {
-    let value: serde_json::Value = serde_json::from_str(line.trim()).ok()?;
-    let id = value
-        .get("id")
-        .filter(|id| id.is_string() || id.is_number())?
-        .clone();
-    serde_json::to_string(&JsonRpcResponse {
+/// 順を待つ要求が多すぎるときに、STDIOの1行をどう扱うか（PR #765の
+/// レビュー）
+enum OverCapacity {
+    /// 形の正しい要求: `-32000`（server busy）を返す
+    Busy(String),
+    /// 形の正しい通知: 捨てる
+    Drop,
+    /// 形の正しくないもの: 実行せずにすぐ答えられる（`-32700`・`-32600`等）
+    /// ので、ふつうに処理する
+    Process,
+}
+
+/// 順を待つ要求が多すぎるときの扱い。JSON-RPCの形を先に確かめ、形の
+/// 正しい要求にだけ`-32000`を返す（PR #765のレビュー。以前は`jsonrpc`が
+/// 違う要求にも`-32000`を返し、`id`の無い不正なものは捨てていた）
+fn over_capacity(line: &str) -> OverCapacity {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(line.trim()) else {
+        return OverCapacity::Process;
+    };
+    let Some(object) = value.as_object() else {
+        return OverCapacity::Process;
+    };
+    if !object
+        .get("method")
+        .is_some_and(serde_json::Value::is_string)
+        || invalid_envelope_response(object).is_some()
+    {
+        return OverCapacity::Process;
+    }
+    let Some(id) = object.get("id") else {
+        return OverCapacity::Drop;
+    };
+    let busy = JsonRpcResponse {
         jsonrpc: "2.0".to_string(),
         result: None,
         error: Some(crate::mcp::JsonRpcError {
@@ -241,11 +265,134 @@ fn busy_response(line: &str) -> Option<String> {
             message: "Server busy: too many requests are waiting to be processed".to_string(),
             data: None,
         }),
-        id: Some(id),
-    })
-    .ok()
+        id: Some(id.clone()),
+    };
+    match serde_json::to_string(&busy) {
+        Ok(text) => OverCapacity::Busy(text),
+        Err(_) => OverCapacity::Drop,
+    }
 }
 
+/// STDIOで、順を待つ要求・通知と、実行中の要求（#759、PR #765のレビュー）。
+/// 読み取りと実行のタスクが、1つのロックの下で使う
+#[derive(Default)]
+struct StdioQueue {
+    pending: std::collections::VecDeque<QueuedLine>,
+    running: Option<RunningLine>,
+    /// `pending`と`running`の行の大きさの合計（バイト）
+    bytes: usize,
+    /// 入力が終わった（もう足されない）
+    closed: bool,
+}
+
+/// 順を待つ行
+struct QueuedLine {
+    message: String,
+    /// 取り消せる要求なら、`id`の表記（`cancellable_request_id`）
+    id: Option<String>,
+}
+
+/// 実行中の行
+struct RunningLine {
+    id: Option<String>,
+    len: usize,
+    abort: futures::future::AbortHandle,
+    /// 取り消された（応答を返さない）
+    cancelled: bool,
+}
+
+impl StdioQueue {
+    /// 受け付けて、まだ終わっていない行の数
+    fn len(&self) -> usize {
+        self.pending.len() + usize::from(self.running.is_some())
+    }
+
+    /// 上限の内なら、行を順の最後に足す
+    fn try_push(&mut self, message: &str) -> bool {
+        if self.len() >= STDIO_MAX_QUEUED_REQUESTS
+            || self.bytes + message.len() > STDIO_MAX_QUEUED_BYTES
+        {
+            return false;
+        }
+        self.bytes += message.len();
+        self.pending.push_back(QueuedLine {
+            message: message.to_string(),
+            id: cancellable_request_id(message),
+        });
+        true
+    }
+
+    /// 次の行を取り出し、実行中にする。止めるための登録を返す
+    fn start_next(&mut self) -> Option<(String, futures::future::AbortRegistration)> {
+        let line = self.pending.pop_front()?;
+        let (abort, registration) = futures::future::AbortHandle::new_pair();
+        self.running = Some(RunningLine {
+            id: line.id,
+            len: line.message.len(),
+            abort,
+            cancelled: false,
+        });
+        Some((line.message, registration))
+    }
+
+    /// 実行中の行を終える。応答を返すなら`true`（取り消されていない）。
+    /// 取り消しと同じロックの下で決めるので、取り消しを受け付けた要求の
+    /// 応答は返さない（PR #765のレビュー）
+    fn finish_running(&mut self) -> bool {
+        match self.running.take() {
+            Some(running) => {
+                self.bytes -= running.len;
+                !running.cancelled
+            }
+            None => false,
+        }
+    }
+
+    /// `id`の要求を取り消す。実行中なら止め、順を待っているなら、その場で
+    /// 除いて、数と大きさを返す（PR #765のレビュー）。取り消したら`true`
+    fn cancel(&mut self, id: &str) -> bool {
+        if let Some(running) = self
+            .running
+            .as_mut()
+            .filter(|running| !running.cancelled && running.id.as_deref() == Some(id))
+        {
+            running.cancelled = true;
+            running.abort.abort();
+            return true;
+        }
+        match self
+            .pending
+            .iter()
+            .position(|line| line.id.as_deref() == Some(id))
+        {
+            Some(position) => {
+                if let Some(line) = self.pending.remove(position) {
+                    self.bytes -= line.message.len();
+                }
+                true
+            }
+            None => false,
+        }
+    }
+}
+
+/// 落とされたら、タスクを止める（`serve_lines`の子のタスク、PR #765の
+/// レビュー）。`JoinHandle`は、落としてもタスクを止めない
+struct AbortOnDrop<T>(tokio::task::JoinHandle<T>);
+
+impl<T> Drop for AbortOnDrop<T> {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+impl<T> AbortOnDrop<T> {
+    /// 止めて、終わるまで待つ
+    async fn stop(&mut self) {
+        self.0.abort();
+        let _ = (&mut self.0).await;
+    }
+}
 /// STDIOの1行が`ping`の要求か（#759。順を待たずに答える）。形の確認は
 /// 処理（`process_request_as`）に任せる
 fn is_ping(line: &str) -> bool {
@@ -259,6 +406,7 @@ fn is_ping(line: &str) -> bool {
         })
         .unwrap_or(false)
 }
+
 /// サーバーの能力。`initialize`と`server/discover`で同じものを返す
 fn server_capabilities() -> serde_json::Value {
     serde_json::json!({
@@ -1352,16 +1500,21 @@ impl McpServer {
     ///   要求が版を正しく使い、応答も受け取った順に返るように）。実行は
     ///   別のタスクで、読み取りは止まらない
     /// - `ping`は、順を待たずにすぐ答える
-    /// - `notifications/cancelled`は、読んだときに、この接続で処理中か、
-    ///   順を待っている同じ`id`の要求を止める（応答は返さない）
+    /// - `notifications/cancelled`は、読んだときに、この接続で処理中の同じ
+    ///   `id`の要求を止めるか、順を待っている要求を除く（応答は返さない）
     /// - 応答は1つの書き手が1行ずつ書くので、混ざらない
     ///
     /// 溜める量には上限がある（PR #765のレビュー）。順を待つ要求は
     /// `STDIO_MAX_QUEUED_REQUESTS`件・`STDIO_MAX_QUEUED_BYTES`バイトまでで、
-    /// 超えた要求には`-32000`（server busy）を返し、通知は捨てる（`ping`と
-    /// 取り消しは上限があっても処理する）。書き出す前の応答は
+    /// 超えた形の正しい要求には`-32000`（server busy）を返し、通知は捨てる
+    /// （`ping`と取り消しは上限があっても処理する）。書き出す前の応答は
     /// `STDIO_MAX_PENDING_RESPONSES`件までで、相手が出力を読まなければ、
-    /// 実行も読み取りも止まる（以前と同じく、パイプで待たせる）
+    /// 実行も読み取りも止まる（以前と同じく、パイプで待たせる）。
+    ///
+    /// 実行・書き出しのタスクは、この関数より長く残らない（PR #765の
+    /// レビュー）。読み取り・書き出しのエラーでは止めて、終わるのを待って
+    /// から戻る。この関数のfutureが落とされたとき（Ctrl+C等）も止める
+    /// （待てないので、タスクは次のawaitで止まる）
     async fn serve_lines<R, W>(
         &self,
         mut input: R,
@@ -1371,29 +1524,25 @@ impl McpServer {
         R: tokio::io::AsyncBufRead + Unpin,
         W: tokio::io::AsyncWrite + Unpin + Send + 'static,
     {
-        use futures::future::{AbortHandle, Abortable};
-        use std::collections::HashMap;
+        use futures::future::Abortable;
         use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 
-        // 取り消せる要求（`id`の表記 → 受け付けた番号と、止めるためのハンドル）
-        type InFlight = HashMap<String, (u64, AbortHandle)>;
-        fn lock<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-            mutex
+        fn lock(queue: &std::sync::Mutex<StdioQueue>) -> std::sync::MutexGuard<'_, StdioQueue> {
+            queue
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
         }
 
         let handlers = Arc::new(self.handlers.clone());
         let session = Arc::new(Session::default());
-        let in_flight: Arc<std::sync::Mutex<InFlight>> = Arc::default();
-        // 受け付けて、まだ終わっていない要求・通知の（件数、バイト数）
-        let load: Arc<std::sync::Mutex<(usize, usize)>> = Arc::default();
+        let queue: Arc<std::sync::Mutex<StdioQueue>> = Arc::default();
+        let queued = Arc::new(tokio::sync::Notify::new());
 
         // 応答を書くのは、このタスクだけ。ほかのタスクは、書き終えた行を
         // 渡すだけなので、書く途中で止められて行が壊れることもない
         let (responses, mut pending) =
             tokio::sync::mpsc::channel::<String>(STDIO_MAX_PENDING_RESPONSES);
-        let mut writer = tokio::spawn(async move {
+        let mut writer = AbortOnDrop(tokio::spawn(async move {
             let mut output = output;
             while let Some(line) = pending.recv().await {
                 output.write_all(line.as_bytes()).await?;
@@ -1401,25 +1550,32 @@ impl McpServer {
                 output.flush().await?;
             }
             Ok::<(), std::io::Error>(())
-        });
+        }));
 
         // 要求・通知を順に実行するタスク
-        type Queued = (
-            String,
-            Option<(String, u64)>,
-            futures::future::AbortRegistration,
-        );
-        let (queue, mut queued) = tokio::sync::mpsc::unbounded_channel::<Queued>();
-        let mut worker = {
+        let mut worker = AbortOnDrop({
             let handlers = handlers.clone();
             let session = session.clone();
             let audit_logger = self.audit_logger.clone();
             let status = self.status.clone();
             let responses = responses.clone();
-            let in_flight = in_flight.clone();
-            let load = load.clone();
+            let queue = queue.clone();
+            let queued = queued.clone();
             tokio::spawn(async move {
-                while let Some((message, key, registration)) = queued.recv().await {
+                loop {
+                    let next = {
+                        let mut queue = lock(&queue);
+                        match queue.start_next() {
+                            Some(next) => Some(next),
+                            None if queue.closed => return,
+                            None => None,
+                        }
+                    };
+                    let Some((message, registration)) = next else {
+                        // 足されるのを待つ（先に知らせが来ていれば、すぐ戻る）
+                        queued.notified().await;
+                        continue;
+                    };
                     let response = Abortable::new(
                         Self::respond_to_line(
                             &message,
@@ -1431,19 +1587,10 @@ impl McpServer {
                         registration,
                     )
                     .await;
-                    // ここから応答を渡すまでは止められない（awaitが無い）
-                    if let Some((id, no)) = &key {
-                        let mut registry = lock(&in_flight);
-                        if registry.get(id).is_some_and(|(n, _)| n == no) {
-                            registry.remove(id);
-                        }
-                    }
-                    {
-                        let mut load = lock(&load);
-                        load.0 -= 1;
-                        load.1 -= message.len();
-                    }
-                    if let Ok(Some(text)) = response {
+                    drop(message);
+                    // 取り消しと同じロックの下で、応答を返すかを決める
+                    let deliver = lock(&queue).finish_running();
+                    if let (true, Ok(Some(text))) = (deliver, response) {
                         // 相手が出力を読まなければ、ここで待つ
                         if responses.send(text).await.is_err() {
                             return; // 書き手が止まった
@@ -1451,18 +1598,24 @@ impl McpServer {
                     }
                 }
             })
-        };
+        });
 
-        let mut next_no: u64 = 0;
         let mut line = String::new();
         // 読み取りの間に書き手が終わった（書けなくなった）ときの結果
         let mut writer_ended = None;
         loop {
             line.clear();
             let bytes_read = tokio::select! {
-                read = input.read_line(&mut line) => read?,
+                read = input.read_line(&mut line) => match read {
+                    Ok(bytes_read) => bytes_read,
+                    Err(e) => {
+                        worker.stop().await;
+                        writer.stop().await;
+                        return Err(e.into());
+                    }
+                },
                 // 書けなくなった（相手が閉じた等）。下でエラーを返す
-                written = &mut writer => {
+                written = &mut writer.0 => {
                     writer_ended = Some(written);
                     break;
                 }
@@ -1472,16 +1625,14 @@ impl McpServer {
             }
 
             if let Some(request_id) = cancelled_request_id(&line) {
-                match lock(&in_flight).remove(&request_id) {
-                    Some((_, handle)) => {
-                        handle.abort();
-                        info!("Cancelled request {} at the client's request", request_id);
-                    }
+                if lock(&queue).cancel(&request_id) {
+                    info!("Cancelled request {} at the client's request", request_id);
+                } else {
                     // 終わった後に届いた取り消し等。仕様どおり無視する
-                    None => debug!(
+                    debug!(
                         "Ignored a cancellation of request {}, which is not in progress",
                         request_id
-                    ),
+                    );
                 }
                 continue;
             }
@@ -1497,37 +1648,28 @@ impl McpServer {
                     &self.status,
                 )
                 .await
+            } else if lock(&queue).try_push(&line) {
+                queued.notify_one();
+                None
             } else {
-                let accepted = {
-                    let mut load = lock(&load);
-                    let accepted = load.0 < STDIO_MAX_QUEUED_REQUESTS
-                        && load.1 + line.len() <= STDIO_MAX_QUEUED_BYTES;
-                    if accepted {
-                        load.0 += 1;
-                        load.1 += line.len();
-                    }
-                    accepted
-                };
-                if accepted {
-                    let (handle, registration) = AbortHandle::new_pair();
-                    let key = cancellable_request_id(&line).map(|id| {
-                        let no = next_no;
-                        next_no += 1;
-                        lock(&in_flight).insert(id.clone(), (no, handle));
-                        (id, no)
-                    });
-                    if queue.send((line.clone(), key, registration)).is_err() {
-                        break;
-                    }
-                    None
-                } else {
-                    let busy = busy_response(&line);
-                    if busy.is_none() {
+                match over_capacity(&line) {
+                    OverCapacity::Busy(text) => Some(text),
+                    OverCapacity::Drop => {
                         warn!(
                             "Dropped a notification: too many requests are waiting to be processed"
                         );
+                        None
                     }
-                    busy
+                    OverCapacity::Process => {
+                        Self::respond_to_line(
+                            &line,
+                            &handlers,
+                            &session,
+                            self.audit_logger.as_deref(),
+                            &self.status,
+                        )
+                        .await
+                    }
                 }
             };
             if let Some(text) = immediate {
@@ -1538,23 +1680,24 @@ impl McpServer {
         }
 
         // 受け付けた要求を終える。その間に書けなくなれば、終わらない要求を
-        // 待たずに止め、書けなかったエラーを返す（PR #765のレビュー）
-        drop(queue);
+        // 待たずに止め、書けなかったエラーを返す
+        lock(&queue).closed = true;
+        queued.notify_one();
         drop(responses);
         let written = match writer_ended {
             Some(written) => {
-                worker.abort();
+                worker.stop().await;
                 written
             }
             None => tokio::select! {
                 biased;
-                written = &mut writer => {
-                    worker.abort();
+                written = &mut writer.0 => {
+                    worker.stop().await;
                     written
                 }
-                done = &mut worker => {
+                done = &mut worker.0 => {
                     done?;
-                    writer.await
+                    (&mut writer.0).await
                 }
             },
         };
@@ -3037,6 +3180,8 @@ mod tests {
     struct NeverEndingToolHandler {
         started: Arc<tokio::sync::Notify>,
         dropped: Arc<std::sync::atomic::AtomicBool>,
+        /// 呼ばれた回数
+        calls: Arc<std::sync::atomic::AtomicUsize>,
     }
 
     struct SetOnDrop(Arc<std::sync::atomic::AtomicBool>);
@@ -3062,6 +3207,7 @@ mod tests {
 
         async fn call_tool(&self, _params: ToolCallParams) -> Result<serde_json::Value, McpError> {
             let _guard = SetOnDrop(self.dropped.clone());
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             self.started.notify_one();
             std::future::pending().await
         }
@@ -3093,6 +3239,7 @@ mod tests {
             Arc::new(NeverEndingToolHandler {
                 started: started.clone(),
                 dropped: dropped.clone(),
+                calls: Default::default(),
             }),
         );
         let (client, server_side) = tokio::io::duplex(64 * 1024);
@@ -3276,6 +3423,7 @@ mod tests {
             Arc::new(NeverEndingToolHandler {
                 started: started.clone(),
                 dropped: dropped.clone(),
+                calls: Default::default(),
             }),
         );
         let (client, server_input) = tokio::io::duplex(input_buffer);
@@ -3349,8 +3497,42 @@ mod tests {
         )
         .await;
         assert_eq!(read_response(&mut lines).await["id"], serde_json::json!(98));
+        // 上限でも、形の正しくないものには、その誤りを返す（PR #765の
+        // レビュー。以前は`-32000`を返すか、`id`が無ければ捨てた）
+        write_line(
+            &mut input,
+            serde_json::json!({ "jsonrpc": "1.0", "id": 95, "method": "tools/list" }),
+        )
+        .await;
+        let invalid = read_response(&mut lines).await;
+        assert_eq!(invalid["id"], serde_json::json!(95));
+        assert_eq!(invalid["error"]["code"], serde_json::json!(-32600));
+        write_line(
+            &mut input,
+            serde_json::json!({ "jsonrpc": "1.0", "method": "notifications/initialized" }),
+        )
+        .await;
+        let invalid = read_response(&mut lines).await;
+        assert_eq!(invalid["id"], serde_json::Value::Null);
+        assert_eq!(invalid["error"]["code"], serde_json::json!(-32600));
 
-        // 取り消しも処理する。待っていた要求が順に終わる
+        // 順を待つ要求を取り消せば、その場で空く（PR #765のレビュー。以前は
+        // 実行のタスクが取り出すまで、数も大きさも残った）
+        write_line(
+            &mut input,
+            serde_json::json!({
+                "jsonrpc": "2.0", "method": "notifications/cancelled",
+                "params": { "requestId": 12 }
+            }),
+        )
+        .await;
+        write_line(
+            &mut input,
+            serde_json::json!({ "jsonrpc": "2.0", "id": 96, "method": "tools/list" }),
+        )
+        .await;
+
+        // 取り消しも処理する。待っていた要求が順に終わる（12は除かれた）
         write_line(
             &mut input,
             serde_json::json!({
@@ -3359,7 +3541,10 @@ mod tests {
             }),
         )
         .await;
-        for id in 10..(10 + STDIO_MAX_QUEUED_REQUESTS as u64 - 1) {
+        let expected = (10..(10 + STDIO_MAX_QUEUED_REQUESTS as u64 - 1))
+            .filter(|id| *id != 12)
+            .chain([96]);
+        for id in expected {
             let response = read_response(&mut lines).await;
             assert_eq!(response["id"], serde_json::json!(id), "{response}");
             assert!(response.get("result").is_some(), "{response}");
@@ -3406,6 +3591,125 @@ mod tests {
         serve.abort();
     }
 
+    /// `serve_lines`のfutureが落とされたら（Ctrl+C等）、実行中のツールを
+    /// 止め、順を待っていた要求も実行しない（PR #765のレビュー。以前は
+    /// 実行のタスクが残り、プラグインを止める間にも次の要求を実行しえた）
+    #[tokio::test]
+    async fn test_stdio_tasks_stop_when_serve_lines_is_dropped() {
+        let started = Arc::new(tokio::sync::Notify::new());
+        let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut server = McpServer::new();
+        server.add_handler(
+            "slow".to_string(),
+            Arc::new(NeverEndingToolHandler {
+                started: started.clone(),
+                dropped: dropped.clone(),
+                calls: calls.clone(),
+            }),
+        );
+        let (mut input, server_input) = tokio::io::duplex(64 * 1024);
+        let (output, _client_output) = tokio::io::duplex(64 * 1024);
+        let serve = tokio::spawn(async move {
+            server
+                .serve_lines(tokio::io::BufReader::new(server_input), output)
+                .await
+                .map_err(|e| e.to_string())
+        });
+        let limit = std::time::Duration::from_secs(5);
+        write_line(&mut input, never_ending_call(1)).await;
+        tokio::time::timeout(limit, started.notified())
+            .await
+            .expect("the tool did not start");
+        write_line(&mut input, never_ending_call(2)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        // `serve_lines`のfutureを落とす
+        serve.abort();
+        let _ = serve.await;
+        tokio::time::timeout(limit, async {
+            while !dropped.load(std::sync::atomic::Ordering::SeqCst) {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the running tool was not stopped");
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    /// 取り消しと実行の終わりを、同じロックの下で決める（PR #765の
+    /// レビュー）。実行が終わった直後に受け付けた取り消しでも、応答を返さない。
+    /// 順を待つ要求の取り消しは、数と大きさをその場で返す
+    #[test]
+    fn test_stdio_queue_cancellation() {
+        let request = |id: u64| {
+            serde_json::json!({ "jsonrpc": "2.0", "id": id, "method": "tools/list" }).to_string()
+        };
+        let mut queue = StdioQueue::default();
+        assert!(queue.try_push(&request(1)));
+        assert!(queue.try_push(&request(2)));
+        assert!(queue.try_push(&request(3)));
+        let total = request(1).len() * 3;
+        assert_eq!((queue.len(), queue.bytes), (3, total));
+
+        let (message, _registration) = queue.start_next().unwrap();
+        assert_eq!(message, request(1));
+        // 実行中の要求を取り消すと、終えても応答を返さない
+        assert!(queue.cancel("1"));
+        assert!(!queue.cancel("1"));
+        assert!(!queue.finish_running());
+        // 終わった要求の取り消しは、無視する
+        assert!(!queue.cancel("1"));
+
+        // 順を待つ要求の取り消しは、その場で除く
+        assert!(queue.cancel("3"));
+        assert_eq!((queue.len(), queue.bytes), (1, request(2).len()));
+        let (message, _registration) = queue.start_next().unwrap();
+        assert_eq!(message, request(2));
+        assert!(queue.finish_running());
+        assert_eq!((queue.len(), queue.bytes), (0, 0));
+        assert!(queue.start_next().is_none());
+
+        // 上限
+        for id in 0..STDIO_MAX_QUEUED_REQUESTS as u64 {
+            assert!(queue.try_push(&request(id)));
+        }
+        assert!(!queue.try_push(&request(99)));
+    }
+
+    /// 上限を超えたときは、形を確かめてから扱いを決める（PR #765の
+    /// レビュー）
+    #[test]
+    fn test_over_capacity_checks_the_envelope_first() {
+        let classify = |message: serde_json::Value| over_capacity(&message.to_string());
+        match classify(serde_json::json!({ "jsonrpc": "2.0", "id": 5, "method": "tools/list" })) {
+            OverCapacity::Busy(text) => {
+                let busy: serde_json::Value = serde_json::from_str(&text).unwrap();
+                assert_eq!(busy["id"], serde_json::json!(5));
+                assert_eq!(busy["error"]["code"], serde_json::json!(-32000));
+            }
+            _ => panic!("a valid request must get -32000"),
+        }
+        assert!(matches!(
+            classify(serde_json::json!({ "jsonrpc": "2.0", "method": "notifications/progress" })),
+            OverCapacity::Drop
+        ));
+        for message in [
+            serde_json::json!({ "jsonrpc": "1.0", "id": 5, "method": "tools/list" }),
+            serde_json::json!({ "jsonrpc": "2.0", "id": null, "method": "tools/list" }),
+            serde_json::json!({ "jsonrpc": "1.0", "method": "notifications/progress" }),
+            serde_json::json!({ "jsonrpc": "2.0", "id": 5, "method": 7 }),
+            serde_json::json!({ "jsonrpc": "2.0", "id": 5, "result": {} }),
+            serde_json::json!(["2.0", "tools/list", null, 1]),
+        ] {
+            assert!(
+                matches!(classify(message.clone()), OverCapacity::Process),
+                "{message}"
+            );
+        }
+        assert!(matches!(over_capacity("{not json"), OverCapacity::Process));
+    }
     /// 出力に書けない（`write`が失敗する）書き手
     struct FailingWriter;
 
