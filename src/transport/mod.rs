@@ -17,7 +17,7 @@ pub mod types;
 pub use config::TransportConfig;
 pub use connection::{ConnectionInfo, ConnectionStats};
 pub use error::TransportError;
-pub use http::{HttpConfig, HttpTransport};
+pub use http::{HttpConfig, HttpTransport, ReceivedRequest};
 pub use transport_trait::Transport;
 pub use types::{FramingMethod, TransportCapabilities, TransportInfo, TransportType};
 

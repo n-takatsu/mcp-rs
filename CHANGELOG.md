@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- ライブラリとして使う場合: `HttpTransport::receive_request_with_context`と
+  `HttpTransport::stop_server`を足した（#760）。`receive_request_with_context`は、
+  要求・呼び出し元と一緒に、`MCP-Protocol-Version`ヘッダーで選んだ版
+  （`ReceivedRequest::protocol_version`）を返す。
+  `RequestDispatcher::handle_message_with_protocol_version`に渡すと、版が
+  `Some`なら、`with_request_handler`と同じくその版で答える。`None`
+  （ヘッダーの無い要求）なら、ディスパッチャーの共有の版（それまでの
+  `initialize`で決まった版）で答える。`with_request_handler`の`/mcp`は、要求
+  ごとに新しい接続の状態で、対応する一番古い版で答えるので、ツールの`title`の
+  有無等が違うことがある（同じにするなら、`handle_message_in_session`に要求
+  ごとの新しい`Session`を渡す）。クライアントの付けた`id`
+  （`ReceivedRequest::original_id`、通知は`None`）も返す。`stop_server`は、
+  待ち受けをやめ、接続を閉じる（`Transport::stop`も同じ）。
+  `receive_request_with_caller`は今までどおり
+
 - ライブラリとして使う場合: `HttpTransport::receive_request_with_caller`を
   足した（#749）。`with_request_handler`を使わないときに、HTTP・WebSocketで
   受けた要求を、呼び出し元（APIキー・トークンの名前と使えるツール、接続元の
@@ -141,6 +156,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   状態・日時・リンクも出す
 
 ### Changed
+
+- ライブラリとして使う場合: `mcp_rs::types::JsonRpcRequest`の`id`を
+  `RequestId`から`Option<RequestId>`にした（#760）。通知（`id`なし）は
+  `None`で、書くときも`id`を付けない。以前は`id`が必須で、`HttpTransport`の
+  チャンネル（`receive_message`・`receive_request_with_caller`・
+  `receive_request_with_context`）に通知が届くと、"missing field `id`"の
+  エラーになり、受信側が読めなかった。通知には応答しない（`id`が`null`の
+  応答を`send_message`に渡しても、捨てる）。
+  **互換性のない変更**: `request.id`を`RequestId`として使うコードは、
+  `Option`を扱うよう直す必要がある。要求の`id`を応答に写すコード
+  （`JsonRpcResponse { id: request.id, .. }`）は、`None`（通知）なら応答せず、
+  `Some(id)`なら取り出した`id`（`HttpTransport`では内部の相関ID）を、その
+  まま応答の`id`に入れる（例: `let Some(id) = request.id else { continue };`）。mcp-rs本体は
+  `with_request_handler`を使うので、動きは変わらない
+
+- ライブラリとして使う場合: `HttpTransport`のチャンネル
+  （`receive_message`・`receive_request_with_caller`）で受け取る要求の`id`を、
+  クライアントの付けた`id`から、要求ごとの内部の相関ID（`"mcp-rs-1"`等の
+  文字列）に変えた（#760）。応答の`id`にそのまま入れて`send_message`で返せば、
+  クライアントには元の`id`で届く（今までどおり、要求の`id`を応答に写す
+  作りなら、変更は要らない）。取り消し（`notifications/cancelled`）の
+  `params.requestId`は、クライアントの`id`のまま届くので、同じ呼び出し元
+  （`caller`）の要求のうち、`ReceivedRequest::original_id`が同じものを
+  取り消す（ほかの呼び出し元の要求は、同じ`id`でも取り消さない）。
+  mcp-rs本体は`with_request_handler`を使うので、動きは変わらない
 
 - `[database]`の`host`がループバック（`localhost`・`127.0.0.1`・`::1`。
   PostgreSQLはUnixソケットも）以外なら、`ssl_mode`を省略できないようにした（#722）。
@@ -302,6 +342,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   出力先を公開するのは、設定できてから。使う側が既に`log`クレートの
   loggerを設定していても、`log`の橋渡しを設定できないことは警告（標準
   エラー出力）だけにし、ログは今までどおりファイル等に書く
+
+- ライブラリとして使う場合: `HttpTransport`のチャンネル（`receive_message`・
+  `receive_request_with_caller`）の応答を、クライアントの付けた`id`だけで
+  照合していた（#760）。別のクライアントが同じ`id`を使うと、後の登録が先の
+  登録を上書きし、応答が入れ替わった。要求ごとに内部の相関IDを付けて照合し、
+  返すときに元の`id`に戻す。期限の後に届いた遅い応答（待ち先の無い内部の
+  相関IDの応答）は、次の要求にも要求のキューにも入れずに捨てる。`id`が
+  文字列・数値でない要求（`id: true`・`id: null`等）は、置き換えずに、
+  `id: null`のInvalid Request（`-32600`、HTTPは400）で断る（`id`の無い
+  通知は今までどおり）。
+  クライアントが切る等でHTTPの要求が途中で捨てられると、応答の待ち先の登録が
+  残ったので、その要求の登録だけを消す。キュー（1000件）が埋まると、
+  `send().await`が期限なしに待ち、応答の期限が始まらなかったので、HTTP・
+  WebSocketとも、キューの枠を期限（30秒、応答を待つ時間を含む）付きで取る
+  （HTTPは取れなければ503）。キューに入れた後、受信側が取り出す前に、要求の
+  期限を過ぎたか、応答を待つ処理が捨てられた（HTTPの要求の処理が途中で
+  捨てられた等）要求は、受信側に渡さずに捨てる（408を返した後に処理され、
+  やり直しで副作用が重ならないように。通知は今までどおり渡す）。
+  WebSocketでは、応答を待つ間にクライアントが切っても、それだけでは捨てず、
+  期限まで待つ。受信側が要求として読めない本文（JSONのオブジェクトでない・
+  `jsonrpc`が`"2.0"`でない・`method`が文字列でない・`params`がオブジェクトか
+  配列でない）は、通知として渡さず、Invalid Request（`-32600`、HTTPは400）で
+  断る（受信側が読めずにエラーを返し、受信のループが止まらないように）。WebSocketで、枠を待つ間にアクセストークンの期限が切れたら、要求・
+  通知を渡さずに接続を閉じる（HTTPと同じ）。2026-07-28版の要求の応答に、直接処理と同じ
+  HTTPのステータス（`-32601`は404等）を付ける（以前は常に200）。mcp-rs本体は
+  `with_request_handler`を使うので、動きは変わらない
+
+- ライブラリとして使う場合: `HttpTransport`の管理のAPIを直した（#760）。
+  `is_connected()`は、起動の前や起動に失敗した後も`true`だったので、
+  待ち受けているときだけ`true`を返す。動いている間に`start_server()`を
+  また呼ぶと、`bound_addr()`が消えるか、別のリスナーのアドレスで上書き
+  されたので、起動を1つずつにし、アドレスを変えずにエラーを返す。
+  `Transport::stop()`は何もせず、新しい接続を受け付け続けたので、待ち受けを
+  やめ（ポートを放し）、HTTPの接続を閉じ、`/ws`の接続も閉じ、そのタスクが
+  終わってから返る（キューの枠・応答を待っていた`/ws`の要求や、読まない
+  相手への応答の送信も、そこでやめる）。止め始めた後は、HTTP（HTTP/2の
+  ストリームを含む）・`/ws`とも、要求をキューに入れない（HTTPは503）。止める途中で
+  捨てられても、止まるまでは`is_connected()`が`true`のままで、呼び直すと
+  同じタスクを待つ。`connection_stats()`は、Tokioのタスクから呼ぶとパニックした
+  （`blocking_read()`）ので、同期のロックで写しを取る
+
+- ライブラリとして使う場合: `TransportError`への変換（`From<Error>`）で、
+  `Error::TransportError`に包まれた元の種類（`Unauthorized`・
+  `Configuration`等）が`Internal`になっていた（#760）。そのまま返す。
+  `Transport::start()`のエラーも、`Internal`にせず元の種類で返す。
+  `TransportType::WebSocket`の表示は、URLに`ws://`・`wss://`があっても
+  `ws://`を付け、`ws://wss://...`になっていたので、スキームがあれば
+  そのまま出す
 
 - ライブラリとして使う場合: PostgreSQLのエンジンの`health_check`が、
   データベースに触れず、つなげなくても、接続先が止まっていても`Healthy`を

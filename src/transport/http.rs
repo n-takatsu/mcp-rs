@@ -313,6 +313,27 @@ struct HttpStats {
     started_at: Option<Instant>,
 }
 
+/// `HttpStats`を共有するもの。同期のロックで持つ（#760）。同期の
+/// `connection_stats()`をTokioのタスクから呼んでも、パニックしないように
+/// する（以前は`blocking_read()`で、非同期の文脈ではパニックした）。ロックは
+/// 数を足す間だけ持ち、持ったまま`.await`しない
+#[derive(Debug, Clone, Default)]
+struct SharedStats(Arc<std::sync::Mutex<HttpStats>>);
+
+impl SharedStats {
+    fn new(stats: HttpStats) -> Self {
+        Self(Arc::new(std::sync::Mutex::new(stats)))
+    }
+
+    /// 値は数だけで、書き込み中にパニックしても壊れた状態にはならないため、
+    /// ポイズンは無視する
+    fn lock(&self) -> std::sync::MutexGuard<'_, HttpStats> {
+        self.0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
 /// HTTP/WebSocketで受け付けたJSON-RPCメッセージを、その場で処理する
 /// ハンドラー（#400）。
 ///
@@ -734,6 +755,41 @@ fn jsonrpc_error_body(code: i32, message: &str) -> Value {
     })
 }
 
+/// チャンネルに渡せない要求なら、Invalid Requestのメッセージ（PR #771の
+/// レビュー）。JSONのオブジェクトでなければならない（配列等は、`id`が無く
+/// 通知に見え、Serdeは配列も要求として読むため）。`jsonrpc`は`"2.0"`、
+/// `method`は文字列、`params`はオブジェクトか配列（`null`は省略と同じ）。`id`が無ければ通知で、
+/// 正しい。あれば文字列か数値でなければならない（`null`は通知ではなく、
+/// 不正な要求。`RequestDispatcher`の確かめ方と同じ、#759）
+fn channel_request_error(request: &Value) -> Option<&'static str> {
+    if !request.is_object() {
+        return Some("Invalid Request: the message must be a JSON object");
+    }
+    if !request
+        .get("id")
+        .is_none_or(|id| id.is_string() || id.is_number())
+    {
+        return Some("Invalid Request: id must be a string or a number");
+    }
+    // 受信側が`JsonRpcRequest`として読める形か（PR #771のレビュー）。
+    // `RequestDispatcher`の`invalid_envelope_response`と同じ確かめ方。読めない
+    // ものを渡すと、受信側の`receive_request_*`がエラーを返し、`?`で回す
+    // 受信のループが止まる
+    if request.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
+        return Some("Invalid Request: jsonrpc must be \"2.0\"");
+    }
+    if !request.get("method").is_some_and(Value::is_string) {
+        return Some("Invalid Request: method must be a string");
+    }
+    if request
+        .get("params")
+        .is_some_and(|params| !(params.is_object() || params.is_array() || params.is_null()))
+    {
+        return Some("Invalid Request: params must be an object or an array");
+    }
+    None
+}
+
 /// `id`が`null`のJSON-RPCのエラー（リクエストとして読めなかったもの）か
 fn is_error_without_id(response: &Value) -> bool {
     response.get("error").is_some() && response.get("id").is_none_or(Value::is_null)
@@ -765,9 +821,17 @@ const MIN_RECOMMENDED_API_KEY_CHARS: usize = 16;
 #[derive(Clone)]
 struct HttpTransportState {
     request_handler: Option<Arc<dyn JsonRpcRequestHandler>>,
-    request_sender: tokio::sync::mpsc::Sender<ChannelRequest>,
-    pending_responses: Arc<RwLock<HashMap<Value, tokio::sync::oneshot::Sender<JsonRpcResponse>>>>,
-    stats: Arc<RwLock<HttpStats>>,
+    /// `with_request_handler`を使わないときに、要求を渡すチャンネル
+    channel: RequestChannel,
+    stats: SharedStats,
+    /// `stop()`で`true`になる（#760）。`/ws`の接続を閉じる
+    shutdown: tokio::sync::watch::Receiver<bool>,
+    /// 動いている`/ws`の接続のタスク（PR #771のレビュー）。止めるときに、
+    /// 終わるのを待つ
+    ws_tasks: Arc<ActiveTasks>,
+    /// 送っている途中の`/ws`の応答（テストで、送信が止まっているのを確かめる）
+    #[cfg(test)]
+    ws_response_sends: Arc<ActiveTasks>,
     network_policy: NetworkPolicy,
     tls_terminated_locally: bool,
     enforce_https: bool,
@@ -925,18 +989,344 @@ async fn audit_suppressed_auth_failures(
     }
 }
 
-/// `with_request_handler`を使わないときに、チャンネルで運ぶ要求（本文の
-/// 文字列）と、その呼び出し元（#749）
-type ChannelRequest = (String, crate::mcp::Caller);
+/// `with_request_handler`を使わないときに、チャンネルで運ぶ要求（#749・
+/// #760）
+#[derive(Debug)]
+struct QueuedRequest {
+    /// 本文。`id`は、内部の相関ID（`RequestChannel::forward_request`）に
+    /// 置き換えてある
+    message: String,
+    caller: crate::mcp::Caller,
+    /// `MCP-Protocol-Version`ヘッダーで選んだ版（検証済み）
+    protocol_version: Option<&'static str>,
+    /// 応答を待っている要求なら、その期限と取り消しの印（PR #771の
+    /// レビュー）。通知は`None`（いつでも渡す）
+    waiter: Option<QueuedWaiter>,
+}
+
+/// キューの中の要求が、まだ応答を待たれているか（PR #771のレビュー）
+#[derive(Debug)]
+struct QueuedWaiter {
+    /// 応答を待つ期限。過ぎたら、HTTPは408を返している
+    deadline: tokio::time::Instant,
+    /// 待つのをやめたら（期限切れ・クライアントが切った等）`true`
+    cancelled: Arc<std::sync::atomic::AtomicBool>,
+    /// クライアントの付けた`id`（`ReceivedRequest::original_id`、PR #771の
+    /// レビュー）
+    client_id: Value,
+}
+
+impl QueuedRequest {
+    /// もう誰も応答を待っていない要求か。受信側に渡さずに捨てる（処理を
+    /// 始めると、408の後に実行され、クライアントがやり直すと副作用が重なる）
+    fn is_abandoned(&self) -> bool {
+        self.waiter.as_ref().is_some_and(|waiter| {
+            waiter.cancelled.load(Ordering::SeqCst)
+                || tokio::time::Instant::now() >= waiter.deadline
+        })
+    }
+}
+
+/// `HttpTransport::receive_request_with_context`が返す要求（#760）
+#[derive(Debug, Clone)]
+pub struct ReceivedRequest {
+    /// 要求。`id`は、`HttpTransport`が要求ごとに付けた内部の相関IDで、
+    /// クライアントの付けた`id`ではない。応答の`id`には、これをそのまま
+    /// 入れる。`send_message`が、クライアントの`id`に戻して返す。
+    /// 通知は`id`が`None`で、応答しない（PR #771。`id`が`null`の応答を
+    /// `send_message`に渡しても、捨てる）
+    pub request: JsonRpcRequest,
+    /// クライアントの付けた`id`（JSONの値のまま。`1.5`等も変えない）。
+    /// 要求なら`Some`、通知は`None`（PR #771のレビュー）。
+    ///
+    /// 取り消し（`notifications/cancelled`）の`params.requestId`は、
+    /// クライアントの`id`のまま届く（内部の相関IDに置き換えない）。取り消す
+    /// 要求は、同じ呼び出し元（`caller`）から来た要求のうち、`original_id`が
+    /// `requestId`と同じものとして探す。ほかの呼び出し元の要求は、同じ
+    /// `id`でも取り消さない
+    pub original_id: Option<Value>,
+    /// 呼び出し元（APIキー・トークンの名前と使えるツール、接続元の
+    /// IPアドレス、#749）
+    pub caller: crate::mcp::Caller,
+    /// `MCP-Protocol-Version`ヘッダーで選んだ版（検証済み、#484）。
+    /// ヘッダーが無い要求・`initialize`・2026-07-28版の要求（版は本文の
+    /// `_meta`で決まる）・WebSocketでは`None`。
+    ///
+    /// `RequestDispatcher::handle_message_with_protocol_version`に渡すと:
+    /// - `Some(版)`: `with_request_handler`と同じく、その版で応答の項目が
+    ///   決まる
+    /// - `None`: ディスパッチャーの共有の版（それまでの`initialize`で決まった
+    ///   版、例: 2025-11-25）になる。`with_request_handler`の`/mcp`は、要求
+    ///   ごとに新しい接続の状態を使い、対応する一番古い版
+    ///   （`DEFAULT_PROTOCOL_VERSION`）で答えるので、ツールの`title`の有無等が
+    ///   違うことがある。同じにするなら、`handle_message_in_session`に要求ごとの
+    ///   新しい`Session`を渡す（PR #771のレビュー）
+    pub protocol_version: Option<&'static str>,
+}
+
+/// チャンネル経由の要求の、応答を待つ時間（キューの枠を待つ時間を含む）
+const CHANNEL_RESPONSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// チャンネル経由の要求に付ける、内部の相関IDの頭（#760）
+const CORRELATION_ID_PREFIX: &str = "mcp-rs-";
+
+/// チャンネル経由の要求1件の、応答の待ち先（#760）
+#[derive(Debug)]
+struct PendingResponse {
+    /// クライアントの付けた`id`。応答を送るときに戻す
+    client_id: Value,
+    response_tx: tokio::sync::oneshot::Sender<Value>,
+}
+
+/// 内部の相関ID → 応答の待ち先（#760）。以前はクライアントの付けた`id`で
+/// 照合し、別のクライアントが同じ`id`を使うと、応答が入れ替わった。
+/// 同期のロックで持つ（`Drop`で登録を消すため。持ったまま`.await`しない）
+#[derive(Debug, Clone, Default)]
+struct PendingResponses(Arc<std::sync::Mutex<HashMap<String, PendingResponse>>>);
+
+impl PendingResponses {
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, PendingResponse>> {
+        self.0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
+/// チャンネル経由の要求が処理できなかった理由（#760）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ChannelError {
+    /// 期限までにキューの枠が空かなかった（受信側が処理を止めている）
+    Busy,
+    /// チャンネルが閉じている
+    Closed,
+    /// 応答の待ち先が、応答を受けずに消えた
+    NoResponse,
+    /// 期限までに応答が無かった
+    TimedOut,
+    /// サーバーを止めている（`stop_server()`、PR #771のレビュー）
+    Stopped,
+}
+
+impl ChannelError {
+    fn status(self) -> StatusCode {
+        match self {
+            ChannelError::Busy | ChannelError::Stopped => StatusCode::SERVICE_UNAVAILABLE,
+            ChannelError::Closed | ChannelError::NoResponse => StatusCode::INTERNAL_SERVER_ERROR,
+            ChannelError::TimedOut => StatusCode::REQUEST_TIMEOUT,
+        }
+    }
+}
+
+/// `with_request_handler`を使わないときに、HTTP・WebSocketで受けた要求を
+/// 受信側（`receive_request_with_context`）に渡し、応答を待つ（#760）
+#[derive(Debug, Clone)]
+struct RequestChannel {
+    sender: tokio::sync::mpsc::Sender<QueuedRequest>,
+    pending: PendingResponses,
+    next_correlation_id: Arc<AtomicU64>,
+    /// キューの枠を待っている数（テストで、待っているのを確かめる）
+    #[cfg(test)]
+    waiting_reservations: Arc<ActiveTasks>,
+}
+
+impl RequestChannel {
+    /// `deadline`までにキューの枠を取る。以前は`send().await`で期限なしに
+    /// 待ち、キューが埋まると、応答の期限が始まる前に止まった。
+    ///
+    /// `stop`（`stop_server()`で`true`）が`true`なら、枠を待つのをやめ、
+    /// 取った枠も返して`Stopped`にする（PR #771のレビュー）。キューに入れる
+    /// 道は、HTTP（HTTP/2のストリームのタスクを含む）・`/ws`ともここを通るので、
+    /// ここで止めれば、止めた後に要求がキューに入らない（タスクごとに
+    /// 追わなくてよい）
+    async fn reserve(
+        &self,
+        deadline: tokio::time::Instant,
+        stop: &tokio::sync::watch::Receiver<bool>,
+    ) -> std::result::Result<tokio::sync::mpsc::Permit<'_, QueuedRequest>, ChannelError> {
+        #[cfg(test)]
+        let _waiting = self.waiting_reservations.start();
+        let mut stop = stop.clone();
+        let permit = tokio::select! {
+            biased;
+            _ = wait_for_shutdown(&mut stop) => return Err(ChannelError::Stopped),
+            permit = tokio::time::timeout_at(deadline, self.sender.reserve()) => permit,
+        };
+        match permit {
+            Ok(Ok(_)) if *stop.borrow() => Err(ChannelError::Stopped),
+            Ok(Ok(permit)) => Ok(permit),
+            Ok(Err(_)) => Err(ChannelError::Closed),
+            Err(_) => Err(ChannelError::Busy),
+        }
+    }
+
+    /// 通知（`id`なし）を渡す
+    fn forward_notification(
+        permit: tokio::sync::mpsc::Permit<'_, QueuedRequest>,
+        message: String,
+        caller: crate::mcp::Caller,
+        protocol_version: Option<&'static str>,
+    ) {
+        permit.send(QueuedRequest {
+            message,
+            caller,
+            protocol_version,
+            waiter: None,
+        });
+    }
+
+    /// 要求の`id`を内部の相関IDに置き換えて渡し、応答の待ち先を登録する。
+    /// 登録は渡す前にする（受信側が速く応答しても、待ち先がある）。
+    /// `deadline`を過ぎるか、待つのをやめたら、受信側はこの要求を受け取らない
+    fn forward_request(
+        &self,
+        permit: tokio::sync::mpsc::Permit<'_, QueuedRequest>,
+        mut request: Value,
+        caller: crate::mcp::Caller,
+        protocol_version: Option<&'static str>,
+        deadline: tokio::time::Instant,
+    ) -> PendingRequest {
+        let correlation_id = format!(
+            "{}{}",
+            CORRELATION_ID_PREFIX,
+            self.next_correlation_id.fetch_add(1, Ordering::Relaxed)
+        );
+        let client_id = request.get("id").cloned().unwrap_or(Value::Null);
+        if let Some(object) = request.as_object_mut() {
+            object.insert("id".to_string(), Value::String(correlation_id.clone()));
+        }
+        let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+        self.pending.lock().insert(
+            correlation_id.clone(),
+            PendingResponse {
+                client_id: client_id.clone(),
+                response_tx,
+            },
+        );
+        let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let registration = PendingRegistration {
+            pending: self.pending.clone(),
+            correlation_id,
+            cancelled: cancelled.clone(),
+        };
+        permit.send(QueuedRequest {
+            message: request.to_string(),
+            caller,
+            protocol_version,
+            waiter: Some(QueuedWaiter {
+                deadline,
+                cancelled,
+                client_id,
+            }),
+        });
+        PendingRequest {
+            registration,
+            response_rx,
+        }
+    }
+}
+
+/// 応答の待ち先の登録。捨てるときに、この要求の登録だけを消す（#760）。
+/// HTTPの要求が途中で捨てられても（クライアントが切った等）、登録が
+/// 残らないようにする
+struct PendingRegistration {
+    pending: PendingResponses,
+    correlation_id: String,
+    /// キューの中の要求に、待つのをやめたことを伝える（PR #771のレビュー）
+    cancelled: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Drop for PendingRegistration {
+    fn drop(&mut self) {
+        // 応答を受けた後なら、要求はもう受信側に渡っているので、影響しない
+        self.cancelled.store(true, Ordering::SeqCst);
+        self.pending.lock().remove(&self.correlation_id);
+    }
+}
+
+/// 渡した要求の応答を待つもの（#760）
+struct PendingRequest {
+    registration: PendingRegistration,
+    response_rx: tokio::sync::oneshot::Receiver<Value>,
+}
+
+impl PendingRequest {
+    /// `deadline`まで応答を待つ。応答の`id`は、クライアントの`id`に戻してある
+    async fn response(
+        self,
+        deadline: tokio::time::Instant,
+    ) -> std::result::Result<Value, ChannelError> {
+        let PendingRequest {
+            registration: _registration,
+            response_rx,
+        } = self;
+        match tokio::time::timeout_at(deadline, response_rx).await {
+            Ok(Ok(response)) => Ok(response),
+            Ok(Err(_)) => Err(ChannelError::NoResponse),
+            Err(_) => Err(ChannelError::TimedOut),
+        }
+    }
+}
+
+/// 動いているタスクの数（PR #771のレビュー）。`/ws`の接続は、axumが
+/// 別のタスクで動かすので、HTTPの接続のタスクとは別に数え、止めるときに
+/// 終わるのを待つ
+#[derive(Debug, Default)]
+struct ActiveTasks {
+    count: std::sync::atomic::AtomicUsize,
+    changed: tokio::sync::Notify,
+}
+
+impl ActiveTasks {
+    /// 1つ始める。返した値を捨てると、終わったとする
+    fn start(self: &Arc<Self>) -> ActiveTask {
+        self.count.fetch_add(1, Ordering::SeqCst);
+        ActiveTask(self.clone())
+    }
+
+    /// すべて終わるまで待つ
+    async fn wait_until_idle(&self) {
+        loop {
+            let changed = self.changed.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            if self.count.load(Ordering::SeqCst) == 0 {
+                return;
+            }
+            changed.await;
+        }
+    }
+}
+
+/// `ActiveTasks`に数えている1つのタスク
+struct ActiveTask(Arc<ActiveTasks>);
+
+impl Drop for ActiveTask {
+    fn drop(&mut self) {
+        self.0.count.fetch_sub(1, Ordering::SeqCst);
+        self.0.changed.notify_waiters();
+    }
+}
+
+/// 起動したサーバー（#760）
+#[derive(Debug)]
+struct RunningServer {
+    /// `true`を送ると、待ち受けをやめ、接続を閉じる
+    shutdown: tokio::sync::watch::Sender<bool>,
+    /// 待ち受けるタスクが終わると`true`になる（パニックで終わると、送る側が
+    /// 無くなる）。止めるのを待つ`stop_server()`が、途中で捨てられて
+    /// 呼び直されても、同じタスクを待てるようにする（PR #771のレビュー）
+    finished: tokio::sync::watch::Receiver<bool>,
+    /// 待ち受けるタスク。接続のタスクを終えてから終わる
+    task: tokio::task::JoinHandle<()>,
+}
 
 /// HTTP Transport implementation
 #[derive(Debug)]
 pub struct HttpTransport {
     config: HttpConfig,
-    receiver: Arc<tokio::sync::Mutex<tokio::sync::mpsc::Receiver<ChannelRequest>>>,
-    sender: tokio::sync::mpsc::Sender<ChannelRequest>,
-    pending_responses: Arc<RwLock<HashMap<Value, tokio::sync::oneshot::Sender<JsonRpcResponse>>>>,
-    stats: Arc<RwLock<HttpStats>>,
+    receiver: Arc<tokio::sync::Mutex<tokio::sync::mpsc::Receiver<QueuedRequest>>>,
+    channel: RequestChannel,
+    stats: SharedStats,
     /// `start_server()`で実際に待ち受けたアドレス。同期の`transport_info()`
     /// からも待たずに読めるよう、async版ではなく`std::sync::RwLock`を使う
     /// （ロックを持ったまま`.await`しない）（#265）
@@ -944,6 +1334,14 @@ pub struct HttpTransport {
     request_handler: RequestHandlerSlot,
     /// 認証の失敗等を記録する監査ログ（#55）。既定はメモリにだけ残すもの
     audit_logger: Arc<AuditLogger>,
+    /// 起動・停止を1つずつにする（#760）
+    lifecycle: Arc<tokio::sync::Mutex<()>>,
+    /// 動いているサーバー（#760）。同期の`is_connected()`からも読むため、
+    /// `std::sync::Mutex`を使う（ロックを持ったまま`.await`しない）
+    server: Arc<std::sync::Mutex<Option<RunningServer>>>,
+    /// 送っている途中の`/ws`の応答（テストで、送信が止まっているのを確かめる）
+    #[cfg(test)]
+    ws_response_sends: Arc<ActiveTasks>,
 }
 
 impl HttpTransport {
@@ -955,28 +1353,65 @@ impl HttpTransport {
     }
 
     /// `with_request_handler`を使わないときに、HTTP・WebSocketで受けた要求を、
+    /// その呼び出し元と、`MCP-Protocol-Version`ヘッダーで選んだ版と一緒に
+    /// 返す（#760）。チャンネルが閉じたら`None`。
+    ///
+    /// 要求は、`RequestDispatcher::handle_message_with_protocol_version`に、
+    /// 返った`caller`と`protocol_version`を渡して処理する。要求の`id`は
+    /// 内部の相関IDで、応答の`id`にそのまま入れて`send_message`で返す
+    pub async fn receive_request_with_context(
+        &self,
+    ) -> std::result::Result<Option<ReceivedRequest>, TransportError> {
+        let mut receiver = self.receiver.lock().await;
+
+        // もう誰も応答を待っていない要求（期限切れ・クライアントが切った）は
+        // 渡さずに、次を待つ（PR #771のレビュー）
+        let next = loop {
+            match receiver.recv().await {
+                Some(queued) if queued.is_abandoned() => {
+                    debug!("Skipped a request that is no longer waited for (it timed out or was cancelled)");
+                }
+                next => break next,
+            }
+        };
+        match next {
+            Some(queued) => {
+                debug!("HTTP transport received message: {}", queued.message);
+                let request: JsonRpcRequest =
+                    serde_json::from_str(&queued.message).map_err(|e| {
+                        TransportError::Internal(format!("Failed to parse request: {}", e))
+                    })?;
+                Ok(Some(ReceivedRequest {
+                    request,
+                    original_id: queued
+                        .waiter
+                        .as_ref()
+                        .map(|waiter| waiter.client_id.clone()),
+                    caller: queued.caller,
+                    protocol_version: queued.protocol_version,
+                }))
+            }
+            None => Ok(None), // Channel closed, no more messages
+        }
+    }
+
+    /// `with_request_handler`を使わないときに、HTTP・WebSocketで受けた要求を、
     /// その呼び出し元（APIキー・トークンの名前と使えるツール、接続元の
     /// IPアドレス）と一緒に返す（#749）。チャンネルが閉じたら`None`。
     ///
     /// 要求は、`RequestDispatcher::handle_message_as`に、返った`Caller`を
     /// 渡して処理する。認証していない呼び出し元は、名前が無く、IPアドレスの
     /// ある`Caller`になり、`mcp_rs_status`はバージョンだけを返す。
-    /// `Transport::receive_message`は、呼び出し元を捨てて要求だけを返す
+    /// `Transport::receive_message`は、呼び出し元を捨てて要求だけを返す。
+    /// `MCP-Protocol-Version`ヘッダーで選んだ版も要るなら、
+    /// `receive_request_with_context`を使う（#760）
     pub async fn receive_request_with_caller(
         &self,
     ) -> std::result::Result<Option<(JsonRpcRequest, crate::mcp::Caller)>, TransportError> {
-        let mut receiver = self.receiver.lock().await;
-
-        match receiver.recv().await {
-            Some((message_str, caller)) => {
-                debug!("HTTP transport received message: {}", message_str);
-                let request: JsonRpcRequest = serde_json::from_str(&message_str).map_err(|e| {
-                    TransportError::Internal(format!("Failed to parse request: {}", e))
-                })?;
-                Ok(Some((request, caller)))
-            }
-            None => Ok(None), // Channel closed, no more messages
-        }
+        Ok(self
+            .receive_request_with_context()
+            .await?
+            .map(|received| (received.request, received.caller)))
     }
 
     /// 受け付けたJSON-RPCメッセージを直接処理するハンドラーを設定する
@@ -998,17 +1433,40 @@ impl HttpTransport {
         Ok(Self {
             config,
             receiver: Arc::new(tokio::sync::Mutex::new(receiver)),
-            sender,
-            pending_responses: Arc::new(RwLock::new(HashMap::new())),
-            stats: Arc::new(RwLock::new(stats)),
+            channel: RequestChannel {
+                sender,
+                pending: PendingResponses::default(),
+                next_correlation_id: Arc::new(AtomicU64::new(1)),
+                #[cfg(test)]
+                waiting_reservations: Arc::default(),
+            },
+            stats: SharedStats::new(stats),
             bound_addr: Arc::new(std::sync::RwLock::new(None)),
             request_handler: RequestHandlerSlot::default(),
             audit_logger: Arc::new(AuditLogger::with_defaults()),
+            lifecycle: Arc::new(tokio::sync::Mutex::new(())),
+            server: Arc::new(std::sync::Mutex::new(None)),
+            #[cfg(test)]
+            ws_response_sends: Arc::default(),
         })
     }
 
     /// Start the HTTP server
+    ///
+    /// 動いている間に呼ぶと、待ち受けるアドレスを変えずにエラーを返す
+    /// （#760）。以前は、`bound_addr()`が消えるか、別のリスナーのアドレスで
+    /// 上書きされた。`stop_server()`の後は、また起動できる
     pub async fn start_server(&self) -> Result<()> {
+        // 起動・停止を1つずつにする（#760）
+        let _lifecycle = self.lifecycle.lock().await;
+        if self.is_running() {
+            return Err(Error::TransportError(TransportError::Internal(format!(
+                "HTTP server is already running on {}",
+                self.current_bound_addr()
+                    .map(|addr| addr.to_string())
+                    .unwrap_or_else(|| self.config.bind_addr.to_string())
+            ))));
+        }
         self.set_bound_addr(None);
 
         // Validate bind address
@@ -1172,10 +1630,15 @@ impl HttpTransport {
             .collect();
 
         let ws_callers = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let ws_tasks = Arc::new(ActiveTasks::default());
         let state = HttpTransportState {
-            request_sender: self.sender.clone(),
-            pending_responses: self.pending_responses.clone(),
+            ws_tasks: ws_tasks.clone(),
+            #[cfg(test)]
+            ws_response_sends: self.ws_response_sends.clone(),
+            channel: self.channel.clone(),
             stats: self.stats.clone(),
+            shutdown: shutdown_rx.clone(),
             network_policy: self.config.network_policy.clone(),
             tls_terminated_locally: self.config.tls_enabled,
             enforce_https: self.config.enforce_https,
@@ -1244,9 +1707,9 @@ impl HttpTransport {
             websocket_handler: Arc::new(JsonRpcWsHandler {
                 request_handler: self.request_handler.0.clone(),
                 callers: ws_callers,
-                request_sender: self.sender.clone(),
-                pending_responses: self.pending_responses.clone(),
+                channel: self.channel.clone(),
                 stats: self.stats.clone(),
+                shutdown: shutdown_rx.clone(),
             }),
             websocket_max_message_size: self.config.max_request_size,
             websocket_idle_timeout: (self.config.websocket_idle_timeout_secs > 0)
@@ -1384,8 +1847,15 @@ impl HttpTransport {
             timeout: request_timeout,
         };
         self.set_bound_addr(Some(local_addr));
-        tokio::spawn(async move {
-            serve_connections(listener, app, tls_acceptor, limits).await;
+        let (finished_tx, finished) = tokio::sync::watch::channel(false);
+        let task = tokio::spawn(async move {
+            serve_connections(listener, app, tls_acceptor, limits, shutdown_rx, ws_tasks).await;
+            let _ = finished_tx.send(true);
+        });
+        *self.lock_server() = Some(RunningServer {
+            shutdown: shutdown_tx,
+            finished,
+            task,
         });
 
         if self.config.bind_addr.port() == 0 {
@@ -1401,6 +1871,49 @@ impl HttpTransport {
         }
 
         Ok(())
+    }
+
+    /// サーバーを止める（#760）。待ち受けをやめ、HTTPの接続を閉じ、
+    /// `/ws`の接続にも閉じるよう伝える。待ち受けのタスクが終わってから返す。
+    /// 動いていなければ何もしない。以前の`Transport::stop()`は何もせず、
+    /// 新しい接続を受け付け続けた。`HttpTransport`を捨てるだけでは止まらない
+    ///
+    /// 止まるまで、動いているサーバーの記録を消さない（PR #771のレビュー）。
+    /// 待つ途中でこのfutureが捨てられても、`is_connected()`は止まるまで
+    /// `true`のままで、呼び直せば同じタスクを待つ
+    pub async fn stop_server(&self) {
+        let _lifecycle = self.lifecycle.lock().await;
+        let finished = self.lock_server().as_ref().map(|running| {
+            let _ = running.shutdown.send(true);
+            running.finished.clone()
+        });
+        if let Some(mut finished) = finished {
+            // パニックで終わったとき（送る側が無くなった）も、終わったとする。
+            // `finished`は、リスナーを閉じ、接続のタスクを終えた後に`true`に
+            // なるので、ここで記録を消してよい。`JoinHandle`は待たない（待つ
+            // 途中で捨てられると、終わる前に記録が消えるため、PR #771の
+            // レビュー）。記録を消すまでに`.await`は無い
+            if finished.wait_for(|finished| *finished).await.is_err() {
+                warn!("HTTP server task ended unexpectedly");
+            }
+            self.lock_server().take();
+        }
+        self.set_bound_addr(None);
+    }
+
+    fn lock_server(&self) -> std::sync::MutexGuard<'_, Option<RunningServer>> {
+        // 値は`Option`だけで、書き込み中にパニックしても壊れた状態には
+        // ならないため、ポイズンは無視する
+        self.server
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// 待ち受けるタスクが動いているか（#760）
+    fn is_running(&self) -> bool {
+        self.lock_server()
+            .as_ref()
+            .is_some_and(|running| !running.task.is_finished())
     }
 
     /// Returns the actual bound address once `start_server()` has completed,
@@ -1500,20 +2013,35 @@ type ConnectionService = axum::middleware::AddExtension<Router, ConnectInfo<Sock
 ///   合わない接続は、TLSのハンドシェイクもヘッダーの読み取りもせずに閉じる
 /// - TLSのハンドシェイクと、ヘッダーの読み取り（keep-aliveの次のリクエスト
 ///   を待つ時間も）に、`timeout`の上限を付ける
+/// - `shutdown`が`true`になったら、待ち受けをやめ（リスナーを閉じ）、
+///   接続のタスクを終えてから返す（#760）
 async fn serve_connections(
     listener: TcpListener,
     app: Router,
     tls_acceptor: Option<TlsAcceptor>,
     limits: ConnectionLimits,
+    mut shutdown: tokio::sync::watch::Receiver<bool>,
+    ws_tasks: Arc<ActiveTasks>,
 ) {
     let mut make_service = app.into_make_service_with_connect_info::<SocketAddr>();
     let connections = Arc::new(tokio::sync::Semaphore::new(limits.max_connections));
+    let mut tasks = tokio::task::JoinSet::new();
 
     loop {
-        let Ok(permit) = connections.clone().acquire_owned().await else {
-            return;
+        // 終わった接続のタスクを片付ける
+        while tasks.try_join_next().is_some() {}
+        let accepted = tokio::select! {
+            biased;
+            _ = wait_for_shutdown(&mut shutdown) => None,
+            accepted = async {
+                let permit = connections.clone().acquire_owned().await.ok()?;
+                Some((permit, listener.accept().await))
+            } => accepted,
         };
-        let (tcp_stream, remote_addr) = match listener.accept().await {
+        let Some((permit, accepted)) = accepted else {
+            break;
+        };
+        let (tcp_stream, remote_addr) = match accepted {
             Ok(connection) => connection,
             Err(e) => {
                 // ファイル記述子が足りない等。すぐにやり直すと空回りする
@@ -1537,7 +2065,7 @@ async fn serve_connections(
         let tls_acceptor = tls_acceptor.clone();
         let timeout = limits.timeout;
 
-        tokio::spawn(async move {
+        tasks.spawn(async move {
             let _permit = permit;
             match tls_acceptor {
                 Some(acceptor) => {
@@ -1560,6 +2088,27 @@ async fn serve_connections(
                 }
             }
         });
+    }
+
+    // 待ち受けをやめ（ポートを放し）、接続のタスクを終える（#760）。
+    // `/ws`の接続は、`HttpTransportState::shutdown`で閉じる。axumが別の
+    // タスクで動かすので、終わるのを待つ（PR #771のレビュー。待たないと、
+    // 止めた後に、キューの枠が空くのを待っていた接続が要求を渡しえた）
+    drop(listener);
+    tasks.shutdown().await;
+    ws_tasks.wait_until_idle().await;
+}
+
+/// `stop_server()`が呼ばれるまで待つ（#760）。`HttpTransport`が捨てられた
+/// だけ（送る側が無くなった）なら、終わらない（これまでどおり動き続ける）
+async fn wait_for_shutdown(shutdown: &mut tokio::sync::watch::Receiver<bool>) {
+    loop {
+        if *shutdown.borrow_and_update() {
+            return;
+        }
+        if shutdown.changed().await.is_err() {
+            std::future::pending::<()>().await;
+        }
     }
 }
 
@@ -2102,15 +2651,13 @@ impl Transport for HttpTransport {
 
     async fn start(&mut self) -> std::result::Result<(), Self::Error> {
         debug!("Starting HTTP transport server");
-        self.start_server()
-            .await
-            .map_err(|e| TransportError::Internal(e.to_string()))?;
+        self.start_server().await.map_err(TransportError::from)?;
         Ok(())
     }
 
     async fn stop(&mut self) -> std::result::Result<(), Self::Error> {
         debug!("Stopping HTTP transport server");
-        // HTTP server stops automatically when dropped
+        self.stop_server().await;
         Ok(())
     }
 
@@ -2124,26 +2671,60 @@ impl Transport for HttpTransport {
 
         debug!("HTTP transport sending message: {}", message_str);
 
-        // Check if this is a response to a pending request
-        let id_value = serde_json::to_value(&message.id).ok();
-        if let Some(id) = id_value {
-            let mut pending = self.pending_responses.write().await;
-            if let Some(response_tx) = pending.remove(&id) {
-                // Send response through oneshot channel
-                if response_tx.send(message).is_err() {
-                    error!(
-                        "Failed to send response - receiver dropped for ID: {:?}",
-                        id
-                    );
-                }
-                return Ok(());
+        // 待っている要求への応答なら、内部の相関IDで照合し、クライアントの
+        // `id`に戻して返す（#760）
+        // （クライアントの`id`は`RequestId`で表せない値（小数等）のことも
+        // あるので、JSONの値で戻す）
+        let correlation_id = match &message.id {
+            crate::types::RequestId::String(id) => Some(id.as_str()),
+            _ => None,
+        };
+        let pending = correlation_id.and_then(|id| self.channel.pending.lock().remove(id));
+        if let Some(pending) = pending {
+            let mut response = serde_json::to_value(&message).map_err(|e| {
+                TransportError::Internal(format!("Failed to serialize response: {}", e))
+            })?;
+            if let Some(object) = response.as_object_mut() {
+                object.insert("id".to_string(), pending.client_id);
             }
+            if pending.response_tx.send(response).is_err() {
+                error!(
+                    "Failed to send response - receiver dropped for ID: {:?}",
+                    correlation_id
+                );
+            }
+            return Ok(());
+        }
+        if matches!(message.id, crate::types::RequestId::Null) {
+            // 通知には応答しない（JSON-RPC 2.0）。通知の`id`は`None`なので、
+            // 応答を作ると`id`が`null`になる。要求のキューに入れずに捨てる
+            // （PR #771）
+            debug!("Dropped a response with a null id: notifications get no response");
+            return Ok(());
+        }
+        if correlation_id.is_some_and(|id| id.starts_with(CORRELATION_ID_PREFIX)) {
+            // 内部の相関IDの応答なのに待ち先が無い（期限を過ぎた・HTTPの
+            // 要求が捨てられた）。捨てる（PR #771のレビュー）。以前は下の
+            // 通知の道で要求のキューに入り、キューが埋まっていると、受信と
+            // 送信を1つのタスクで回す受信側が止まり、`receive_request_*`は
+            // （`method`が無いので）読めないエラーを返した
+            warn!(
+                "Dropped a response for {:?}: the request is no longer waiting (it timed out or was cancelled)",
+                correlation_id
+            );
+            return Ok(());
         }
 
         // Fallback: send through regular channel for notifications
         // （このプロセス自身が送るものなので、制限の無い呼び出し元とする）
-        self.sender
-            .send((message_str, crate::mcp::Caller::unrestricted()))
+        self.channel
+            .sender
+            .send(QueuedRequest {
+                message: message_str,
+                caller: crate::mcp::Caller::unrestricted(),
+                protocol_version: None,
+                waiter: None,
+            })
             .await
             .map_err(|e| TransportError::Internal(format!("HTTP send failed: {}", e)))?;
 
@@ -2167,9 +2748,10 @@ impl Transport for HttpTransport {
             .map(|(request, _caller)| request))
     }
 
+    /// サーバーが待ち受けているか（#760）。以前は、起動の前や、起動に
+    /// 失敗した後も`true`だった
     fn is_connected(&self) -> bool {
-        // HTTP server is always "connected" when running
-        true
+        self.is_running()
     }
 
     fn transport_info(&self) -> TransportInfo {
@@ -2191,7 +2773,9 @@ impl Transport for HttpTransport {
     }
 
     fn connection_stats(&self) -> ConnectionStats {
-        let stats = self.stats.blocking_read();
+        // 短い同期のロックで写しを取る（#760）。Tokioのタスクから呼んでも
+        // パニックしない
+        let stats = self.stats.lock().clone();
 
         let uptime = stats
             .started_at
@@ -2229,7 +2813,7 @@ async fn handle_jsonrpc_request(
         // 以前はaxumのテキストの400だった。Content-Typeの誤り（415）・
         // 大きすぎる本文（413）等は、これまでどおり
         Err(JsonRejection::JsonSyntaxError(_)) => {
-            state.stats.write().await.total_errors += 1;
+            state.stats.lock().total_errors += 1;
             return Ok(jsonrpc_error_response(-32700, "Parse error"));
         }
         Err(rejection) => return Err(rejection.status()),
@@ -2310,14 +2894,11 @@ async fn handle_jsonrpc_request(
 
     // Update statistics - request received
     {
-        let mut stats = state.stats.write().await;
-        stats.total_requests += 1;
         let request_size = serde_json::to_string(&request).unwrap_or_default().len() as u64;
+        let mut stats = state.stats.lock();
+        stats.total_requests += 1;
         stats.total_bytes_received += request_size;
     }
-
-    // Extract request ID for response correlation
-    let request_id = request.get("id").cloned();
 
     // Convert request to string and send through channel
     // `blocking_write()` must not be used here: this is an async handler on
@@ -2325,7 +2906,7 @@ async fn handle_jsonrpc_request(
     let request_str = match serde_json::to_string(&request) {
         Ok(request_str) => request_str,
         Err(_) => {
-            state.stats.write().await.total_errors += 1;
+            state.stats.lock().total_errors += 1;
             return Err(StatusCode::BAD_REQUEST);
         }
     };
@@ -2350,102 +2931,80 @@ async fn handle_jsonrpc_request(
         .await;
     }
 
-    // If request has ID, wait for actual response
-    if let Some(id) = request_id {
-        // Register the pending response *before* forwarding the request -
-        // otherwise a core that processes and replies fast enough could call
-        // send_message() before this entry exists, missing the pending map
-        // and falling back to the general notification channel instead of
-        // ever reaching this waiter (the same race JsonRpcWsHandler had).
-        let (response_tx, response_rx) = tokio::sync::oneshot::channel();
-        {
-            let mut pending = state.pending_responses.write().await;
-            // ロックを待つ間に期限が切れていれば、登録せずに断る（PR #726の
-            // レビュー）。登録した後に消すと、同じ`id`で並行して届いた別の
-            // リクエストの登録を消してしまう
-            if let Some(response) = expired_token_response(&state, expires_at) {
-                return Ok(response);
-            }
-            pending.insert(id.clone(), response_tx);
+    // `id`は文字列か数値（PR #771のレビュー）。内部の相関IDに置き換える
+    // 前に確かめる。以前は`id: true`等も通し、応答にそのまま戻していた
+    if let Some(message) = channel_request_error(&request) {
+        state.stats.lock().total_errors += 1;
+        return Ok(jsonrpc_error_response(-32600, message));
+    }
+
+    // チャンネル経由（#760）: キューの枠は期限付きで取る。期限には、枠を
+    // 待つ時間も含める（応答を待つのは、その残り）
+    let deadline = tokio::time::Instant::now() + CHANNEL_RESPONSE_TIMEOUT;
+    let permit = match state.channel.reserve(deadline, &state.shutdown).await {
+        Ok(permit) => permit,
+        Err(e) => {
+            warn!(
+                "Could not forward a JSON-RPC request to the channel: {:?}",
+                e
+            );
+            state.stats.lock().total_errors += 1;
+            return Err(e.status());
         }
-        if state
-            .request_sender
-            .send((request_str, caller.clone()))
-            .await
-            .is_err()
-        {
-            state.pending_responses.write().await.remove(&id);
-            let mut stats = state.stats.write().await;
-            stats.total_errors += 1;
-            return Err(StatusCode::INTERNAL_SERVER_ERROR);
-        }
+    };
+    // 枠を待つ間に期限が切れていれば、渡さずに断る（PR #726のレビュー）
+    if let Some(response) = expired_token_response(&state, expires_at) {
+        return Ok(response);
+    }
 
-        // Wait for response with timeout
-        let result =
-            match tokio::time::timeout(tokio::time::Duration::from_secs(30), response_rx).await {
-                Ok(Ok(response)) => {
-                    // Update response stats
-                    let elapsed = start_time.elapsed().as_millis() as u64;
-                    {
-                        let mut stats = state.stats.write().await;
-                        stats.total_responses += 1;
-                        stats.total_response_time_ms += elapsed;
-                    }
-
-                    // Convert JsonRpcResponse to JSON Value
-                    let response_value = serde_json::to_value(&response)
-                        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-                    let response_size = serde_json::to_string(&response_value)
-                        .unwrap_or_default()
-                        .len() as u64;
-
-                    {
-                        let mut stats = state.stats.write().await;
-                        stats.total_bytes_sent += response_size;
-                    }
-
-                    Ok((response_headers(&state), Json(response_value)).into_response())
-                }
-                Ok(Err(_)) => {
-                    // Channel closed without response
-                    let mut stats = state.stats.write().await;
-                    stats.total_errors += 1;
-                    Err(StatusCode::INTERNAL_SERVER_ERROR)
-                }
-                Err(_) => {
-                    // Timeout
-                    let mut pending = state.pending_responses.write().await;
-                    pending.remove(&id);
-                    let mut stats = state.stats.write().await;
-                    stats.total_errors += 1;
-                    Err(StatusCode::REQUEST_TIMEOUT)
-                }
-            };
-
-        result
-    } else {
-        // Notification (no ID) - no pending entry to race against, so
-        // forwarding it here (rather than before the branch) is safe.
-        // (Previously `blocking_write()` in this map_err closure, which
-        // panics on a tokio worker whenever the send fails - #374.)
-        if state
-            .request_sender
-            .send((request_str, caller.clone()))
-            .await
-            .is_err()
-        {
-            state.stats.write().await.total_errors += 1;
-            return Err(StatusCode::INTERNAL_SERVER_ERROR);
-        }
+    if request.get("id").is_none() {
+        // Notification (no ID)
+        RequestChannel::forward_notification(permit, request_str, caller, protocol_version);
 
         // JSON-RPC 2.0: the server MUST NOT reply to a notification. MCP's
         // HTTP transport acknowledges an accepted notification with
         // `202 Accepted` and no body (#374) - previously this returned a
         // `{"jsonrpc":"2.0","result":{"status":"accepted",...}}` body with no
         // `id`, which is not a valid JSON-RPC response either.
-        state.stats.write().await.total_responses += 1;
+        state.stats.lock().total_responses += 1;
 
-        Ok((StatusCode::ACCEPTED, response_headers(&state)).into_response())
+        return Ok((StatusCode::ACCEPTED, response_headers(&state)).into_response());
+    }
+
+    // 内部の相関IDで応答を待つ（#760）。この future が途中で捨てられても
+    // （クライアントが切った等）、待ち先の登録は`PendingRegistration`が消す
+    let pending =
+        state
+            .channel
+            .forward_request(permit, request, caller, protocol_version, deadline);
+    match pending.response(deadline).await {
+        Ok(response_value) => {
+            let response_size = response_value.to_string().len() as u64;
+            {
+                let mut stats = state.stats.lock();
+                stats.total_responses += 1;
+                stats.total_response_time_ms += start_time.elapsed().as_millis() as u64;
+                stats.total_bytes_sent += response_size;
+            }
+            // 直接処理（`respond_with_request_handler`）と同じHTTPの
+            // ステータスにする（#760。以前は常に200）
+            let status = if is_error_without_id(&response_value) {
+                StatusCode::BAD_REQUEST
+            } else if modern {
+                modern_response_status(&response_value)
+            } else {
+                StatusCode::OK
+            };
+            Ok((status, response_headers(&state), Json(response_value)).into_response())
+        }
+        Err(e) => {
+            warn!(
+                "No response from the channel for a JSON-RPC request: {:?}",
+                e
+            );
+            state.stats.lock().total_errors += 1;
+            Err(e.status())
+        }
     }
 }
 
@@ -3253,10 +3812,14 @@ async fn handle_ws_upgrade(
     // メッセージ・フレームの大きさの上限（#540）。以前はtungsteniteの既定
     // （メッセージ64MiB・フレーム16MiB）のままだった
     let max_message_size = state.websocket_max_message_size;
+    // 止めるときに、この接続のタスクが終わるのを待つ（PR #771のレビュー）。
+    // アップグレードに至らなければ、ここで捨てられて数えなくなる
+    let ws_task = state.ws_tasks.start();
     let mut response = ws
         .max_message_size(max_message_size)
         .max_frame_size(max_message_size)
-        .on_upgrade(move |socket| {
+        .on_upgrade(move |socket| async move {
+            let _ws_task = ws_task;
             handle_ws_socket(
                 socket,
                 state,
@@ -3267,6 +3830,7 @@ async fn handle_ws_upgrade(
                 permit,
                 WsRequest { uri, headers },
             )
+            .await
         });
     response.headers_mut().extend(hsts_headers);
     response
@@ -3302,6 +3866,7 @@ async fn handle_ws_socket(
         conn_id,
         WsClient {
             caller,
+            token_deadline: expires_at.map(unix_time_to_instant),
             session: Arc::new(crate::mcp::Session::default()),
         },
     );
@@ -3334,19 +3899,33 @@ async fn handle_ws_socket(
         tokio::time::interval_at(tokio::time::Instant::now() + period, period)
     });
     let mut last_received = tokio::time::Instant::now();
+    let mut shutdown = state.shutdown.clone();
 
     loop {
         let idle_deadline = state
             .websocket_idle_timeout
             .map(|idle| last_received + idle);
-        let msg_result = match next_ws_event(
-            &mut receiver,
-            idle_deadline,
-            token_deadline,
-            ping.as_mut(),
-        )
-        .await
-        {
+        // `stop_server()`で閉じる（#760）
+        let event = tokio::select! {
+            biased;
+            _ = wait_for_shutdown(&mut shutdown) => WsEvent::Shutdown,
+            event = next_ws_event(&mut receiver, idle_deadline, token_deadline, ping.as_mut()) => event,
+        };
+        let msg_result = match event {
+            WsEvent::Shutdown => {
+                debug!(
+                    "Closing WebSocket connection {} from {}: the server is stopping",
+                    conn_id, addr
+                );
+                close_ws_within(
+                    &sender,
+                    close_code::AWAY,
+                    "server stopping",
+                    WEBSOCKET_STOP_CLOSE_TIMEOUT,
+                )
+                .await;
+                break;
+            }
             WsEvent::Message(msg_result) => {
                 last_received = tokio::time::Instant::now();
                 msg_result
@@ -3480,7 +4059,48 @@ async fn handle_ws_socket(
                     break;
                 }
 
-                match state.websocket_handler.handle_message(conn_id, msg).await {
+                // 処理の途中（キューの枠・応答を待つ間等）でも、止めるときは
+                // そこでやめる（PR #771のレビュー）。枠を待っている要求は、
+                // キューに入らない
+                let handled = tokio::select! {
+                    biased;
+                    _ = wait_for_shutdown(&mut shutdown) => None,
+                    handled = state.websocket_handler.handle_message(conn_id, msg) => Some(handled),
+                };
+                let Some(handled) = handled else {
+                    debug!(
+                        "Closing WebSocket connection {} from {}: the server is stopping",
+                        conn_id, addr
+                    );
+                    close_ws_within(
+                        &sender,
+                        close_code::AWAY,
+                        "server stopping",
+                        WEBSOCKET_STOP_CLOSE_TIMEOUT,
+                    )
+                    .await;
+                    break;
+                };
+                match handled {
+                    // ハンドラーが閉じると決めた（キューの枠を待つ間に
+                    // トークンの期限が切れた等、PR #771のレビュー）
+                    Ok(Some(Message::Close(frame))) => {
+                        info!(
+                            "Closing WebSocket connection {} from {}: {}",
+                            conn_id,
+                            addr,
+                            frame
+                                .as_ref()
+                                .map(|frame| frame.reason.to_string())
+                                .unwrap_or_default()
+                        );
+                        let _ = tokio::time::timeout(
+                            WEBSOCKET_SEND_TIMEOUT,
+                            sender.lock().await.send(Message::Close(frame)),
+                        )
+                        .await;
+                        break;
+                    }
                     Ok(Some(response)) => {
                         // 相手が受信を止めていると、送信で止まり続け、接続の枠を
                         // 持ち続ける（#543）。大きさに合わせた時間内に送れなければ
@@ -3491,7 +4111,35 @@ async fn handle_ws_socket(
                             WEBSOCKET_MIN_SEND_BYTES_PER_SEC,
                         );
                         let mut s = sender.lock().await;
-                        match tokio::time::timeout(limit, s.send(response)).await {
+                        // 止めるときは、送るのをやめる（PR #771のレビュー）。
+                        // 読まない相手への大きな応答は、上の期限（大きさに
+                        // 合わせて長い）まで止まり、止めるのを待たせる
+                        #[cfg(test)]
+                        let sending = state.ws_response_sends.start();
+                        let sent = tokio::select! {
+                            biased;
+                            _ = wait_for_shutdown(&mut shutdown) => None,
+                            sent = tokio::time::timeout(limit, s.send(response)) => Some(sent),
+                        };
+                        #[cfg(test)]
+                        drop(sending);
+                        let Some(sent) = sent else {
+                            debug!(
+                                "Closing WebSocket connection {} from {}: the server is stopping while a response is being sent",
+                                conn_id, addr
+                            );
+                            // 閉じることを伝えるのは、短い間に送れるときだけ
+                            let _ = tokio::time::timeout(
+                                WEBSOCKET_STOP_CLOSE_TIMEOUT,
+                                s.send(Message::Close(Some(CloseFrame {
+                                    code: close_code::AWAY,
+                                    reason: "server stopping".into(),
+                                }))),
+                            )
+                            .await;
+                            break;
+                        };
+                        match sent {
                             Ok(Ok(())) => {}
                             Ok(Err(e)) => {
                                 error!("Failed to send WebSocket response: {}", e);
@@ -3554,6 +4202,8 @@ enum WsEvent {
     IdleTimeout,
     /// アクセストークンの期限が切れた
     TokenExpired,
+    /// サーバーを止める（`stop_server()`、#760）
+    Shutdown,
 }
 
 /// pingを送る間隔。無通信の時間の上限の間に、少なくとも2回送る
@@ -3611,6 +4261,10 @@ async fn next_ws_event(
 /// ここで止まらないようにする
 const WEBSOCKET_SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
+/// サーバーを止めるときに、`/ws`にCloseフレームを送る時間の上限（PR #771の
+/// レビュー）。送れなければ、そのまま切る（止めるのを待たせない）
+const WEBSOCKET_STOP_CLOSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
+
 /// `/ws`で応答を送る時間の上限の、大きさによらない部分（#543）
 #[cfg(not(test))]
 const WEBSOCKET_RESPONSE_SEND_BASE_TIMEOUT: std::time::Duration = WEBSOCKET_SEND_TIMEOUT;
@@ -3653,15 +4307,23 @@ async fn close_ws(
     code: u16,
     reason: &'static str,
 ) {
+    close_ws_within(sender, code, reason, WEBSOCKET_SEND_TIMEOUT).await;
+}
+
+/// `close_ws`と同じ。送る時間の上限を`limit`にする（サーバーを止めるとき、
+/// PR #771のレビュー）
+async fn close_ws_within(
+    sender: &tokio::sync::Mutex<futures::stream::SplitSink<WebSocket, Message>>,
+    code: u16,
+    reason: &'static str,
+    limit: std::time::Duration,
+) {
     let frame = CloseFrame {
         code,
         reason: reason.into(),
     };
-    let _ = tokio::time::timeout(
-        WEBSOCKET_SEND_TIMEOUT,
-        sender.lock().await.send(Message::Close(Some(frame))),
-    )
-    .await;
+    let _ =
+        tokio::time::timeout(limit, sender.lock().await.send(Message::Close(Some(frame)))).await;
 }
 
 /// OAuthのトークンの期限（`expires_at`）が過ぎていれば、ほかの無効な
@@ -3727,10 +4389,12 @@ async fn respond_with_request_handler(
     {
         Ok(Ok(Some(response_value))) => {
             {
-                let mut stats = state.stats.write().await;
+                // 大きさは、ロックの外で数える（PR #771のレビュー）
+                let response_size = response_value.to_string().len() as u64;
+                let mut stats = state.stats.lock();
                 stats.total_responses += 1;
                 stats.total_response_time_ms += start_time.elapsed().as_millis() as u64;
-                stats.total_bytes_sent += response_value.to_string().len() as u64;
+                stats.total_bytes_sent += response_size;
             }
             // リクエストとして読めなかったもの（バッチ等、#543）は400
             let status = if is_error_without_id(&response_value) {
@@ -3743,12 +4407,12 @@ async fn respond_with_request_handler(
             Ok((status, response_headers(state), Json(response_value)).into_response())
         }
         Ok(Ok(None)) => {
-            state.stats.write().await.total_responses += 1;
+            state.stats.lock().total_responses += 1;
             Ok((StatusCode::ACCEPTED, response_headers(state)).into_response())
         }
         Ok(Err(e)) => {
             warn!("Rejected an invalid JSON-RPC message: {}", e);
-            state.stats.write().await.total_errors += 1;
+            state.stats.lock().total_errors += 1;
             Ok(jsonrpc_error_response(-32600, "Invalid Request"))
         }
         Err(_) => {
@@ -3756,7 +4420,7 @@ async fn respond_with_request_handler(
                 "JSON-RPC request did not finish within {} seconds",
                 REQUEST_HANDLER_TIMEOUT.as_secs()
             );
-            state.stats.write().await.total_errors += 1;
+            state.stats.lock().total_errors += 1;
             Err(StatusCode::REQUEST_TIMEOUT)
         }
     }
@@ -3770,6 +4434,9 @@ type ConnectionId = Uuid;
 struct WsClient {
     /// 接続時の認証で決まる呼び出し元（#52）
     caller: crate::mcp::Caller,
+    /// アクセストークンの期限（`unix_time_to_instant`で変えたもの）。
+    /// キューの枠を待つ間に切れたら、要求を渡さない（PR #771のレビュー）
+    token_deadline: Option<tokio::time::Instant>,
     /// `initialize`で決まったプロトコルの版。接続ごとに持つ（#570・#596）。
     /// 以前は全クライアントで1つを共有していた
     session: Arc<crate::mcp::Session>,
@@ -3819,8 +4486,8 @@ trait MessageHandler: Send + Sync {
 }
 
 /// Bridges `/ws` text frames into the same JSON-RPC request/response
-/// correlation machinery `handle_jsonrpc_request` uses (`request_sender` /
-/// `pending_responses`), so `/ws` speaks MCP JSON-RPC rather than echoing
+/// correlation machinery `handle_jsonrpc_request` uses (`RequestChannel`),
+/// so `/ws` speaks MCP JSON-RPC rather than echoing
 /// frames back.
 struct JsonRpcWsHandler {
     /// 設定されていれば、フレームをチャンネルに流さず直接処理する（#400）
@@ -3828,9 +4495,10 @@ struct JsonRpcWsHandler {
     /// 接続 → 呼び出し元（#52）と接続の状態。見つからない接続は、どの
     /// ツールも使えない
     callers: WsClients,
-    request_sender: tokio::sync::mpsc::Sender<ChannelRequest>,
-    pending_responses: Arc<RwLock<HashMap<Value, tokio::sync::oneshot::Sender<JsonRpcResponse>>>>,
-    stats: Arc<RwLock<HttpStats>>,
+    channel: RequestChannel,
+    stats: SharedStats,
+    /// `stop_server()`で`true`になる（PR #771のレビュー）
+    shutdown: tokio::sync::watch::Receiver<bool>,
 }
 
 #[async_trait]
@@ -3850,13 +4518,13 @@ impl MessageHandler for JsonRpcWsHandler {
             Err(e) => {
                 // 以前は何も返さなかった（#543）
                 warn!("Failed to parse WebSocket JSON-RPC request: {}", e);
-                self.stats.write().await.total_errors += 1;
+                self.stats.lock().total_errors += 1;
                 return Ok(Some(jsonrpc_error_message(-32700, "Parse error")));
             }
         };
 
         {
-            let mut stats = self.stats.write().await;
+            let mut stats = self.stats.lock();
             stats.total_requests += 1;
             stats.total_bytes_received += text.len() as u64;
         }
@@ -3868,6 +4536,7 @@ impl MessageHandler for JsonRpcWsHandler {
             .get(&conn_id)
             .cloned()
             .unwrap_or_else(|| WsClient {
+                token_deadline: None,
                 caller: crate::mcp::Caller::new(
                     "unknown-websocket-connection",
                     crate::mcp::ToolAccess::any_of(Vec::new()),
@@ -3886,7 +4555,7 @@ impl MessageHandler for JsonRpcWsHandler {
                 Ok(Ok(response)) => response,
                 Ok(Err(e)) => {
                     warn!("Rejected an invalid WebSocket JSON-RPC message: {}", e);
-                    self.stats.write().await.total_errors += 1;
+                    self.stats.lock().total_errors += 1;
                     return Ok(Some(jsonrpc_error_message(-32600, "Invalid Request")));
                 }
                 Err(_) => {
@@ -3894,7 +4563,7 @@ impl MessageHandler for JsonRpcWsHandler {
                         "WebSocket JSON-RPC request did not finish within {} seconds",
                         REQUEST_HANDLER_TIMEOUT.as_secs()
                     );
-                    self.stats.write().await.total_errors += 1;
+                    self.stats.lock().total_errors += 1;
                     return Ok(None);
                 }
             };
@@ -3903,74 +4572,87 @@ impl MessageHandler for JsonRpcWsHandler {
             };
             let response_json = response.to_string();
             {
-                let mut stats = self.stats.write().await;
+                let mut stats = self.stats.lock();
                 stats.total_responses += 1;
                 stats.total_bytes_sent += response_json.len() as u64;
             }
             return Ok(Some(Message::Text(response_json.into())));
         }
 
-        let request_id = request.get("id").cloned();
+        // `id`は文字列か数値（PR #771のレビュー）
+        if let Some(message) = channel_request_error(&request) {
+            self.stats.lock().total_errors += 1;
+            return Ok(Some(jsonrpc_error_message(-32600, message)));
+        }
 
-        let Some(id) = request_id else {
-            // Notification (no `id`) - no response frame expected, so there
-            // is no pending entry to race against.
-            self.request_sender
-                .send((text.to_string(), client.caller.clone()))
-                .await
-                .map_err(|e| {
-                    Error::Internal(format!("Failed to forward WebSocket request: {e}"))
-                })?;
-            return Ok(None);
+        // チャンネル経由（#760）: キューの枠は期限付きで取る。期限には、枠を
+        // 待つ時間も含める。期限を過ぎたら、この応答だけを返さない（接続は
+        // 閉じない）
+        let deadline = tokio::time::Instant::now() + CHANNEL_RESPONSE_TIMEOUT;
+        let permit = match self.channel.reserve(deadline, &self.shutdown).await {
+            Ok(permit) => permit,
+            Err(ChannelError::Closed) => {
+                return Err(Error::Internal(
+                    "Failed to forward WebSocket request: the channel is closed".to_string(),
+                ));
+            }
+            Err(ChannelError::Stopped) => {
+                return Ok(Some(Message::Close(Some(CloseFrame {
+                    code: close_code::AWAY,
+                    reason: "server stopping".into(),
+                }))));
+            }
+            Err(e) => {
+                self.stats.lock().total_errors += 1;
+                warn!(
+                    "Could not forward a WebSocket request to the channel: {:?}",
+                    e
+                );
+                return Ok(None);
+            }
         };
-
-        // Register the pending response *before* forwarding the request -
-        // otherwise a core that processes and replies fast enough could call
-        // send_message() before this entry exists, missing the pending map
-        // and falling back to the general notification channel instead of
-        // reaching this waiter at all.
-        let (response_tx, response_rx) = tokio::sync::oneshot::channel();
-        {
-            let mut pending = self.pending_responses.write().await;
-            pending.insert(id.clone(), response_tx);
+        // 枠を待つ間にアクセストークンの期限が切れていれば、渡さずに
+        // （枠を返して）接続を閉じる（PR #771のレビュー。HTTPと同じ）
+        if token_expired(client.token_deadline) {
+            drop(permit);
+            return Ok(Some(Message::Close(Some(CloseFrame {
+                code: close_code::POLICY,
+                reason: "access token expired".into(),
+            }))));
         }
 
-        if let Err(e) = self
-            .request_sender
-            .send((text.to_string(), client.caller.clone()))
-            .await
-        {
-            self.pending_responses.write().await.remove(&id);
-            return Err(Error::Internal(format!(
-                "Failed to forward WebSocket request: {e}"
-            )));
+        if request.get("id").is_none() {
+            // Notification (no `id`) - no response frame expected
+            RequestChannel::forward_notification(
+                permit,
+                text.to_string(),
+                client.caller.clone(),
+                None,
+            );
+            return Ok(None);
         }
 
-        // Matches handle_jsonrpc_request's timeout; a slow/failed request
-        // drops just this one response frame rather than closing the socket.
-        match tokio::time::timeout(std::time::Duration::from_secs(30), response_rx).await {
-            Ok(Ok(response)) => {
-                let response_json = serde_json::to_string(&response).map_err(|e| {
-                    Error::Internal(format!("Failed to serialize WebSocket response: {e}"))
-                })?;
+        // 内部の相関IDで応答を待つ（#760）。別の接続が同じ`id`を使っても、
+        // 応答が入れ替わらない
+        let pending =
+            self.channel
+                .forward_request(permit, request, client.caller.clone(), None, deadline);
+        match pending.response(deadline).await {
+            Ok(response) => {
+                let response_json = response.to_string();
                 {
-                    let mut stats = self.stats.write().await;
+                    let mut stats = self.stats.lock();
                     stats.total_responses += 1;
                     stats.total_bytes_sent += response_json.len() as u64;
                 }
                 Ok(Some(Message::Text(response_json.into())))
             }
-            Ok(Err(_)) => {
-                let mut stats = self.stats.write().await;
-                stats.total_errors += 1;
-                warn!("WebSocket response channel closed for request id {:?}", id);
-                Ok(None)
-            }
-            Err(_) => {
-                self.pending_responses.write().await.remove(&id);
-                let mut stats = self.stats.write().await;
-                stats.total_errors += 1;
-                warn!("WebSocket request timed out for id {:?}", id);
+            Err(e) => {
+                self.stats.lock().total_errors += 1;
+                warn!(
+                    "No response from the channel for a WebSocket request: {:?}",
+                    e
+                );
                 Ok(None)
             }
         }
@@ -5832,7 +6514,7 @@ mod tests {
                     jsonrpc: "2.0".to_string(),
                     result: Some(serde_json::json!({"ok": true})),
                     error: None,
-                    id: request.id,
+                    id: request.id.unwrap_or(crate::types::RequestId::Null),
                 };
                 if transport.send_message(response).await.is_err() {
                     break;
@@ -7094,7 +7776,7 @@ mod tests {
                         "unauthenticated_remote": caller.is_unauthenticated_remote(),
                     })),
                     error: None,
-                    id: request.id,
+                    id: request.id.unwrap_or(crate::types::RequestId::Null),
                 };
                 if responder.send_message(response).await.is_err() {
                     break;
@@ -7163,7 +7845,7 @@ mod tests {
                     jsonrpc: "2.0".to_string(),
                     result: Some(serde_json::json!({ "name": caller.name })),
                     error: None,
-                    id: request.id,
+                    id: request.id.unwrap_or(crate::types::RequestId::Null),
                 };
                 if responder.send_message(response).await.is_err() {
                     break;
@@ -7181,6 +7863,996 @@ mod tests {
         assert!(response.status().is_success(), "{}", response.status());
         let body: Value = response.json().await.unwrap();
         assert_eq!(body["result"]["name"], serde_json::json!("api_key:reader"));
+    }
+
+    /// チャンネルで受けた要求に、`answer`の結果で答え続けるサーバー（#760）
+    async fn start_channel_server(
+        config: HttpConfig,
+        answer: impl Fn(&ReceivedRequest) -> JsonRpcResponse + Send + 'static,
+    ) -> SocketAddr {
+        let transport = HttpTransport::new(HttpConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            ..config
+        })
+        .unwrap();
+        transport.start_server().await.unwrap();
+        let server_addr = transport.bound_addr().await.unwrap();
+        wait_for_plain_server_ready(server_addr).await;
+        let mut responder = transport;
+        tokio::spawn(async move {
+            while let Ok(Some(received)) = responder.receive_request_with_context().await {
+                if responder.send_message(answer(&received)).await.is_err() {
+                    break;
+                }
+            }
+        });
+        server_addr
+    }
+
+    fn channel_result(received: &ReceivedRequest, result: Value) -> JsonRpcResponse {
+        JsonRpcResponse {
+            jsonrpc: "2.0".to_string(),
+            result: Some(result),
+            error: None,
+            id: received
+                .request
+                .id
+                .clone()
+                .unwrap_or(crate::types::RequestId::Null),
+        }
+    }
+
+    fn test_request_channel(
+        capacity: usize,
+    ) -> (RequestChannel, tokio::sync::mpsc::Receiver<QueuedRequest>) {
+        let (sender, receiver) = tokio::sync::mpsc::channel(capacity);
+        (
+            RequestChannel {
+                sender,
+                pending: PendingResponses::default(),
+                next_correlation_id: Arc::new(AtomicU64::new(1)),
+                #[cfg(test)]
+                waiting_reservations: Arc::default(),
+            },
+            receiver,
+        )
+    }
+
+    /// 止めていないサーバーの、止める合図（送る側が無いので、変わらない）
+    fn not_stopped() -> tokio::sync::watch::Receiver<bool> {
+        tokio::sync::watch::channel(false).1
+    }
+
+    /// `channel`のキューの枠を、誰かが待ち始めるまで待つ（PR #771のレビュー）
+    async fn wait_for_waiting_reservation(channel: &RequestChannel) {
+        let started = Instant::now();
+        while channel.waiting_reservations.count.load(Ordering::SeqCst) == 0 {
+            assert!(
+                started.elapsed() < Duration::from_secs(10),
+                "nobody started waiting for a queue slot"
+            );
+            sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    /// 止めるとき、キューの枠を待っている要求は、枠を取らずに`Stopped`に
+    /// なる。止めた後は、枠が空いていても取らない（PR #771のレビュー。
+    /// HTTP/2のストリームのタスク等、止めるときに待たないタスクからも、
+    /// キューに入らない）
+    #[tokio::test]
+    async fn test_reserve_gives_up_when_the_server_stops() {
+        let (channel, mut receiver) = test_request_channel(1);
+        let filler = QueuedRequest {
+            message: "{}".to_string(),
+            caller: crate::mcp::Caller::unrestricted(),
+            protocol_version: None,
+            waiter: None,
+        };
+        channel.sender.try_send(filler).unwrap();
+        let (stop_tx, stop) = tokio::sync::watch::channel(false);
+        let deadline = Instant::now() + Duration::from_secs(30);
+
+        let waiting = {
+            let channel = channel.clone();
+            let stop = stop.clone();
+            tokio::spawn(async move { channel.reserve(deadline, &stop).await.err() })
+        };
+        wait_for_waiting_reservation(&channel).await;
+        stop_tx.send(true).unwrap();
+        let result = tokio::time::timeout(Duration::from_secs(5), waiting)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(result, Some(ChannelError::Stopped));
+
+        // 枠が空いていても、止めた後は取らない
+        receiver.try_recv().unwrap();
+        assert!(matches!(
+            channel.reserve(deadline, &stop).await,
+            Err(ChannelError::Stopped)
+        ));
+        assert!(receiver.try_recv().is_err());
+    }
+
+    /// 別々のクライアントが同じ`id`を使っても、チャンネル経由の応答が
+    /// 入れ替わらない（#760）。受信側には内部の相関IDが渡り、応答の`id`は
+    /// クライアントの`id`に戻る
+    #[tokio::test]
+    async fn test_channel_responses_are_not_mixed_up_between_clients_using_the_same_id() {
+        let transport = HttpTransport::new(HttpConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            auth_enabled: true,
+            api_keys: vec![
+                api_key("first-key-0123456789", "first", None),
+                api_key("second-key-0123456789", "second", None),
+            ],
+            ..HttpConfig::default()
+        })
+        .unwrap();
+        transport.start_server().await.unwrap();
+        let server_addr = transport.bound_addr().await.unwrap();
+        wait_for_plain_server_ready(server_addr).await;
+
+        // 2件そろってから、後に届いた方から答える
+        let mut responder = transport;
+        let responder_task = tokio::spawn(async move {
+            let mut held = Vec::new();
+            while held.len() < 2 {
+                held.push(
+                    responder
+                        .receive_request_with_context()
+                        .await
+                        .unwrap()
+                        .unwrap(),
+                );
+            }
+            let ids: Vec<_> = held.iter().map(|r| r.request.id.clone()).collect();
+            for received in held.into_iter().rev() {
+                let response = channel_result(
+                    &received,
+                    serde_json::json!({ "name": received.caller.name }),
+                );
+                responder.send_message(response).await.unwrap();
+            }
+            ids
+        });
+
+        let url = format!("http://127.0.0.1:{}/mcp", server_addr.port());
+        let client = reqwest::Client::new();
+        let send = |key: &'static str| {
+            let request = client
+                .post(&url)
+                .header("Authorization", format!("Bearer {key}"))
+                .json(&serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }));
+            async move {
+                let response = request.send().await.unwrap();
+                assert_eq!(response.status(), StatusCode::OK);
+                response.json::<Value>().await.unwrap()
+            }
+        };
+        let (first, second) =
+            tokio::join!(send("first-key-0123456789"), send("second-key-0123456789"));
+        assert_eq!(first["id"], serde_json::json!(1));
+        assert_eq!(first["result"]["name"], serde_json::json!("api_key:first"));
+        assert_eq!(second["id"], serde_json::json!(1));
+        assert_eq!(
+            second["result"]["name"],
+            serde_json::json!("api_key:second")
+        );
+
+        let ids = tokio::time::timeout(Duration::from_secs(10), responder_task)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_ne!(ids[0], ids[1]);
+        for id in ids {
+            assert!(
+                matches!(&id, Some(crate::types::RequestId::String(s)) if s.starts_with("mcp-rs-")),
+                "{id:?}"
+            );
+        }
+    }
+
+    /// キューが埋まっていると、期限で諦める（#760。以前は`send().await`で
+    /// 期限なしに待った）。チャンネルが閉じていれば、すぐに分かる
+    #[tokio::test]
+    async fn test_request_channel_reserves_a_slot_with_a_deadline() {
+        let (channel, receiver) = test_request_channel(1);
+        let permit = channel
+            .reserve(Instant::now() + Duration::from_secs(1), &not_stopped())
+            .await
+            .unwrap();
+        RequestChannel::forward_notification(
+            permit,
+            "{}".to_string(),
+            crate::mcp::Caller::unrestricted(),
+            None,
+        );
+
+        let started = Instant::now();
+        let full = channel
+            .reserve(Instant::now() + Duration::from_millis(200), &not_stopped())
+            .await;
+        assert!(matches!(full, Err(ChannelError::Busy)));
+        assert!(started.elapsed() < Duration::from_secs(5));
+
+        drop(receiver);
+        let closed = channel
+            .reserve(Instant::now() + Duration::from_secs(5), &not_stopped())
+            .await;
+        assert!(matches!(closed, Err(ChannelError::Closed)));
+    }
+
+    /// 応答を待つものを捨てると（HTTPの要求が途中で捨てられた等）、その
+    /// 要求の登録だけが消える（#760）
+    #[tokio::test]
+    async fn test_dropping_a_pending_channel_request_removes_only_its_registration() {
+        let (channel, mut receiver) = test_request_channel(4);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let request = serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" });
+        let first = channel.forward_request(
+            channel.reserve(deadline, &not_stopped()).await.unwrap(),
+            request.clone(),
+            crate::mcp::Caller::unrestricted(),
+            None,
+            deadline,
+        );
+        let second = channel.forward_request(
+            channel.reserve(deadline, &not_stopped()).await.unwrap(),
+            request,
+            crate::mcp::Caller::unrestricted(),
+            Some("2025-11-25"),
+            deadline,
+        );
+        assert_eq!(channel.pending.lock().len(), 2);
+
+        let queued_first: Value =
+            serde_json::from_str(&receiver.recv().await.unwrap().message).unwrap();
+        let queued_second = receiver.recv().await.unwrap();
+        assert_eq!(queued_second.protocol_version, Some("2025-11-25"));
+        let queued_second: Value = serde_json::from_str(&queued_second.message).unwrap();
+        assert_ne!(queued_first["id"], serde_json::json!(1));
+        assert_ne!(queued_first["id"], queued_second["id"]);
+
+        drop(first);
+        let pending = channel.pending.lock();
+        assert_eq!(pending.len(), 1);
+        assert!(pending.contains_key(queued_second["id"].as_str().unwrap()));
+        drop(pending);
+
+        drop(second);
+        assert!(channel.pending.lock().is_empty());
+    }
+
+    /// チャンネル経由でも、2026-07-28版の要求の応答に、直接処理と同じ
+    /// HTTPのステータスを付ける（#760。`-32601`は404）
+    #[tokio::test]
+    async fn test_channel_modern_responses_get_the_same_http_status() {
+        let server_addr = start_channel_server(HttpConfig::default(), |received| {
+            if received.request.method == "tools/list" {
+                return channel_result(received, serde_json::json!({ "tools": [] }));
+            }
+            JsonRpcResponse {
+                jsonrpc: "2.0".to_string(),
+                result: None,
+                error: Some(crate::types::JsonRpcError {
+                    code: -32601,
+                    message: "Method not found".to_string(),
+                    data: None,
+                }),
+                id: received
+                    .request
+                    .id
+                    .clone()
+                    .unwrap_or(crate::types::RequestId::Null),
+            }
+        })
+        .await;
+        let url = format!("http://127.0.0.1:{}/mcp", server_addr.port());
+        let client = reqwest::Client::new();
+        let version = ("MCP-Protocol-Version", "2026-07-28");
+
+        let (status, body) = post_modern(
+            &client,
+            &url,
+            &[version, ("Mcp-Method", "no/such")],
+            &modern_body("no/such", serde_json::json!({})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+        assert_eq!(body["id"], serde_json::json!(9));
+        assert_eq!(body["error"]["code"], serde_json::json!(-32601));
+
+        let (status, body) = post_modern(
+            &client,
+            &url,
+            &[version, ("Mcp-Method", "tools/list")],
+            &modern_body("tools/list", serde_json::json!({})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+
+        // 2026-07-28版でない要求は、これまでどおり200
+        let response = client
+            .post(&url)
+            .json(&serde_json::json!({ "jsonrpc": "2.0", "id": 3, "method": "no/such" }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    /// チャンネル経由の要求にも、`MCP-Protocol-Version`ヘッダーで選んだ版が
+    /// 渡る（#760）。ヘッダーの無い要求は`None`（共有の版）
+    #[tokio::test]
+    async fn test_channel_requests_carry_the_protocol_version() {
+        let server_addr = start_channel_server(HttpConfig::default(), |received| {
+            channel_result(
+                received,
+                serde_json::json!({ "protocol_version": received.protocol_version }),
+            )
+        })
+        .await;
+        let url = format!("http://127.0.0.1:{}/mcp", server_addr.port());
+        let client = reqwest::Client::new();
+        let send = |header: Option<&'static str>| {
+            let mut request = client.post(&url).json(&serde_json::json!({
+                "jsonrpc": "2.0", "id": 7, "method": "tools/list"
+            }));
+            if let Some(header) = header {
+                request = request.header("MCP-Protocol-Version", header);
+            }
+            async move { request.send().await.unwrap().json::<Value>().await.unwrap() }
+        };
+
+        let body = send(None).await;
+        assert_eq!(body["result"]["protocol_version"], Value::Null);
+        let body = send(Some("2025-11-25")).await;
+        assert_eq!(
+            body["result"]["protocol_version"],
+            serde_json::json!("2025-11-25")
+        );
+    }
+
+    /// `is_connected()`は待ち受けの状態を返し、動いている間の
+    /// `start_server()`はアドレスを変えずに断り、`stop_server()`は待ち受けと
+    /// 接続を止める（#760）
+    #[tokio::test]
+    async fn test_server_start_and_stop() {
+        use futures::StreamExt as _;
+
+        let failing = HttpTransport::new(HttpConfig {
+            auth_enabled: true,
+            ..HttpConfig::default()
+        })
+        .unwrap();
+        assert!(!failing.is_connected());
+        assert!(failing.start_server().await.is_err());
+        assert!(!failing.is_connected());
+
+        let transport = HttpTransport::new(HttpConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            enable_websocket_upgrade: true,
+            ..HttpConfig::default()
+        })
+        .unwrap()
+        .with_request_handler(Arc::new(EchoRequestHandler));
+        assert!(!transport.is_connected());
+        transport.start_server().await.unwrap();
+        assert!(transport.is_connected());
+        let server_addr = transport.bound_addr().await.unwrap();
+        wait_for_plain_server_ready(server_addr).await;
+
+        // 動いている間は、アドレスを変えずに断る
+        assert!(transport.start_server().await.is_err());
+        assert_eq!(transport.bound_addr().await, Some(server_addr));
+        assert!(transport.is_connected());
+
+        let url = format!("ws://127.0.0.1:{}/ws", server_addr.port());
+        let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+
+        transport.stop_server().await;
+        assert!(!transport.is_connected());
+        assert_eq!(transport.bound_addr().await, None);
+
+        // 新しい接続を受け付けず、ポートも放す
+        assert!(reqwest::Client::new()
+            .post(format!("http://127.0.0.1:{}/mcp", server_addr.port()))
+            .json(&serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": "ping" }))
+            .send()
+            .await
+            .is_err());
+
+        // `/ws`の接続も閉じる。接続が終わる（読み切る）まで待ってから、
+        // ポートを確かめる（`stop_server()`は`/ws`のタスクを待たないので、
+        // 残った接続がポートを持つことがある。PR #771のレビュー）
+        let mut saw_close = false;
+        while let Some(Ok(frame)) = tokio::time::timeout(Duration::from_secs(10), ws.next())
+            .await
+            .expect("the WebSocket connection was not closed")
+        {
+            saw_close |= frame.is_close();
+        }
+        assert!(saw_close);
+        drop(ws);
+        drop(std::net::TcpListener::bind(server_addr).unwrap());
+
+        // 止めた後は、また起動できる
+        transport.start_server().await.unwrap();
+        assert!(transport.is_connected());
+        let restarted = transport.bound_addr().await.unwrap();
+        wait_for_plain_server_ready(restarted).await;
+        transport.stop_server().await;
+    }
+
+    /// `stop_server()`が途中で捨てられても、止まるまでサーバーの記録を
+    /// 消さず、呼び直すと同じタスクを待って止める（PR #771のレビュー）
+    #[tokio::test]
+    async fn test_cancelled_stop_server_can_be_retried() {
+        let transport = HttpTransport::new(HttpConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            ..HttpConfig::default()
+        })
+        .unwrap()
+        .with_request_handler(Arc::new(EchoRequestHandler));
+        transport.start_server().await.unwrap();
+        let server_addr = transport.bound_addr().await.unwrap();
+        wait_for_plain_server_ready(server_addr).await;
+
+        // 1回だけ進めて捨てる（待ち受けのタスクは、まだ終わっていない）
+        {
+            let mut stop = Box::pin(transport.stop_server());
+            assert!(futures::poll!(stop.as_mut()).is_pending());
+        }
+        assert!(transport.is_connected());
+        assert_eq!(transport.bound_addr().await, Some(server_addr));
+
+        tokio::time::timeout(Duration::from_secs(10), transport.stop_server())
+            .await
+            .unwrap();
+        assert!(!transport.is_connected());
+        assert_eq!(transport.bound_addr().await, None);
+        drop(std::net::TcpListener::bind(server_addr).unwrap());
+    }
+
+    /// 止めるとき、キューの枠を待っている`/ws`の要求はキューに入らず、
+    /// `stop_server()`は`/ws`の接続のタスクが終わってから返る（PR #771の
+    /// レビュー。以前は、止めた後に枠が空くと、古い接続が要求を渡せた）
+    #[tokio::test]
+    async fn test_stop_server_stops_a_websocket_waiting_for_a_queue_slot() {
+        use futures::{SinkExt as _, StreamExt as _};
+
+        let transport = HttpTransport::new(HttpConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            enable_websocket_upgrade: true,
+            ..HttpConfig::default()
+        })
+        .unwrap();
+        transport.start_server().await.unwrap();
+        let server_addr = transport.bound_addr().await.unwrap();
+        wait_for_plain_server_ready(server_addr).await;
+
+        // キューを埋める
+        let mut filled = 0;
+        while transport
+            .channel
+            .sender
+            .try_send(QueuedRequest {
+                message: "{}".to_string(),
+                caller: crate::mcp::Caller::unrestricted(),
+                protocol_version: None,
+                waiter: None,
+            })
+            .is_ok()
+        {
+            filled += 1;
+        }
+
+        let url = format!("ws://127.0.0.1:{}/ws", server_addr.port());
+        let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+        ws.send(tokio_tungstenite::tungstenite::Message::Text(
+            serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": "ping" })
+                .to_string()
+                .into(),
+        ))
+        .await
+        .unwrap();
+        // `/ws`のタスクが、キューの枠を待つまで（PR #771のレビュー。
+        // 決まった時間だけ待つのでは、待っていることを確かめられない）
+        wait_for_waiting_reservation(&transport.channel).await;
+
+        tokio::time::timeout(Duration::from_secs(10), transport.stop_server())
+            .await
+            .unwrap();
+
+        // 止めた後に枠を空けても、要求は入らない
+        let mut receiver = transport.receiver.lock().await;
+        receiver.try_recv().unwrap();
+        sleep(Duration::from_millis(300)).await;
+        let mut rest = 0;
+        while receiver.try_recv().is_ok() {
+            rest += 1;
+        }
+        assert_eq!(rest, filled - 1);
+
+        // `/ws`は、止めると伝えて閉じた
+        let mut close_code = None;
+        while let Ok(Some(Ok(frame))) =
+            tokio::time::timeout(Duration::from_secs(5), ws.next()).await
+        {
+            if let tokio_tungstenite::tungstenite::Message::Close(frame) = frame {
+                close_code = frame.map(|frame| u16::from(frame.code));
+            }
+        }
+        assert_eq!(close_code, Some(close_code::AWAY));
+    }
+
+    /// チャンネルに渡す要求の`id`は、文字列か数値（PR #771のレビュー）。
+    /// ほか（真偽値・`null`等）は、内部の相関IDに置き換えずに、`id: null`の
+    /// Invalid Requestで断る。`id`の無い通知は、これまでどおり受け付ける
+    #[tokio::test]
+    async fn test_channel_rejects_a_request_with_an_invalid_id() {
+        use futures::{SinkExt as _, StreamExt as _};
+
+        let server_addr = start_channel_server(
+            HttpConfig {
+                enable_websocket_upgrade: true,
+                ..HttpConfig::default()
+            },
+            |received| channel_result(received, serde_json::json!({})),
+        )
+        .await;
+        let url = format!("http://127.0.0.1:{}/mcp", server_addr.port());
+        let client = reqwest::Client::new();
+        for id in [serde_json::json!(true), Value::Null, serde_json::json!({})] {
+            let response = client
+                .post(&url)
+                .json(&serde_json::json!({ "jsonrpc": "2.0", "id": id, "method": "ping" }))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "id {id}");
+            let body: Value = response.json().await.unwrap();
+            assert_eq!(body["id"], Value::Null, "id {id}");
+            assert_eq!(body["error"]["code"], serde_json::json!(-32600), "id {id}");
+        }
+        // オブジェクトでない本文（配列等）も、通知として渡さずに断る
+        // 受信側が要求として読めないオブジェクト（`method`が無い等）も、
+        // 通知として渡さずに断る（PR #771のレビュー）
+        for body in [
+            serde_json::json!(["2.0", "ping", null]),
+            serde_json::json!("ping"),
+            serde_json::json!({ "jsonrpc": "2.0" }),
+            serde_json::json!({ "method": "notifications/initialized" }),
+            serde_json::json!({ "jsonrpc": "1.0", "method": "notifications/initialized" }),
+            serde_json::json!({ "jsonrpc": "2.0", "method": 1 }),
+            serde_json::json!({ "jsonrpc": "2.0", "method": "ping", "params": "x" }),
+        ] {
+            let response = client.post(&url).json(&body).send().await.unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{body}");
+            let reply: Value = response.json().await.unwrap();
+            assert_eq!(reply["error"]["code"], serde_json::json!(-32600), "{body}");
+        }
+        // 正しい`id`と通知は、これまでどおり（受信側は、上の不正な本文を
+        // 受け取っていない。受け取ると、読めずに止まる）
+        let response = client
+            .post(&url)
+            .json(&serde_json::json!({ "jsonrpc": "2.0", "id": "a", "method": "ping" }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.json::<Value>().await.unwrap()["id"],
+            serde_json::json!("a")
+        );
+        let response = client
+            .post(&url)
+            .json(&serde_json::json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+
+        let ws_url = format!("ws://127.0.0.1:{}/ws", server_addr.port());
+        let (mut ws, _) = tokio_tungstenite::connect_async(&ws_url).await.unwrap();
+        ws.send(tokio_tungstenite::tungstenite::Message::Text(
+            serde_json::json!({ "jsonrpc": "2.0", "id": true, "method": "ping" })
+                .to_string()
+                .into(),
+        ))
+        .await
+        .unwrap();
+        let frame = tokio::time::timeout(Duration::from_secs(10), ws.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let body: Value = serde_json::from_str(frame.to_text().unwrap()).unwrap();
+        assert_eq!(body["id"], Value::Null);
+        assert_eq!(body["error"]["code"], serde_json::json!(-32600));
+
+        // オブジェクトでないフレームも断り、その後の要求は答える
+        for frame in [
+            serde_json::json!(["2.0", "ping", null]),
+            serde_json::json!({ "jsonrpc": "2.0" }),
+            serde_json::json!({ "jsonrpc": "2.0", "id": 8, "method": "ping" }),
+        ] {
+            ws.send(tokio_tungstenite::tungstenite::Message::Text(
+                frame.to_string().into(),
+            ))
+            .await
+            .unwrap();
+        }
+        for expected in [Value::Null, Value::Null, serde_json::json!(8)] {
+            let frame = tokio::time::timeout(Duration::from_secs(10), ws.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            let body: Value = serde_json::from_str(frame.to_text().unwrap()).unwrap();
+            assert_eq!(body["id"], expected, "{body}");
+            if expected.is_null() {
+                assert_eq!(body["error"]["code"], serde_json::json!(-32600));
+            }
+        }
+    }
+
+    /// 内部の相関IDの応答で、待ち先がもう無いもの（期限切れ等）は捨てる
+    /// （PR #771のレビュー）。要求のキューに入れない（キューが埋まっていても
+    /// 止まらない）。内部の相関IDでないものは、これまでどおりキューに入る
+    #[tokio::test]
+    async fn test_late_channel_response_is_dropped_instead_of_queued() {
+        let mut transport = HttpTransport::new(HttpConfig::default()).unwrap();
+        // キューを埋める
+        while transport
+            .channel
+            .sender
+            .try_send(QueuedRequest {
+                message: "{}".to_string(),
+                caller: crate::mcp::Caller::unrestricted(),
+                protocol_version: None,
+                waiter: None,
+            })
+            .is_ok()
+        {}
+        let late = JsonRpcResponse {
+            jsonrpc: "2.0".to_string(),
+            result: Some(serde_json::json!({})),
+            error: None,
+            id: crate::types::RequestId::String("mcp-rs-42".to_string()),
+        };
+        tokio::time::timeout(Duration::from_secs(5), transport.send_message(late))
+            .await
+            .expect("send_message waited for the full queue")
+            .unwrap();
+
+        // 空けてから、内部の相関IDでないものを送ると、これまでどおり入る
+        let mut drained = 0;
+        {
+            let mut receiver = transport.receiver.lock().await;
+            while receiver.try_recv().is_ok() {
+                drained += 1;
+            }
+        }
+        assert_eq!(drained, 1000);
+        let other = JsonRpcResponse {
+            jsonrpc: "2.0".to_string(),
+            result: Some(serde_json::json!({})),
+            error: None,
+            id: crate::types::RequestId::Number(1),
+        };
+        transport.send_message(other).await.unwrap();
+        assert!(transport.receiver.lock().await.try_recv().is_ok());
+        assert!(transport.receiver.lock().await.try_recv().is_err());
+    }
+
+    /// もう誰も応答を待っていない要求（クライアントが切った・期限を過ぎた）は、
+    /// 受信側に渡さない（PR #771のレビュー）。408の後に処理されて、
+    /// やり直しで副作用が重ならないようにする。待たれている要求は
+    /// これまでどおり渡す
+    #[tokio::test]
+    async fn test_abandoned_channel_requests_are_not_handed_to_the_receiver() {
+        let transport = HttpTransport::new(HttpConfig::default()).unwrap();
+        let channel = transport.channel.clone();
+        let forward = |id: i64, deadline| {
+            let channel = channel.clone();
+            async move {
+                let permit = channel.reserve(deadline, &not_stopped()).await.unwrap();
+                channel.forward_request(
+                    permit,
+                    serde_json::json!({ "jsonrpc": "2.0", "id": id, "method": "ping" }),
+                    crate::mcp::Caller::unrestricted(),
+                    None,
+                    deadline,
+                )
+            }
+        };
+        let long = Instant::now() + Duration::from_secs(30);
+
+        // 1: クライアントが切った（待つものを捨てた）
+        drop(forward(1, long).await);
+        // 2: 期限を過ぎた（待つものは、まだ残っている）
+        let expired = forward(2, Instant::now() + Duration::from_millis(50)).await;
+        // 4: 待たれている要求
+        let waiting = forward(4, long).await;
+        sleep(Duration::from_millis(100)).await;
+
+        let received = transport
+            .receive_request_with_context()
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(received.request.method, "ping");
+        let Some(crate::types::RequestId::String(id)) = &received.request.id else {
+            panic!("{:?}", received.request.id);
+        };
+        assert!(channel.pending.lock().contains_key(id));
+        assert!(transport.receiver.lock().await.try_recv().is_err());
+        drop((expired, waiting));
+    }
+
+    /// `/ws`で、キューの枠を待つ間にアクセストークンの期限が切れたら、
+    /// 要求も通知も渡さずに、接続を閉じる（PR #771のレビュー）。有効な
+    /// トークンで、埋まったキューの枠を待たせ、期限が切れてから枠を空ける
+    #[tokio::test]
+    async fn test_websocket_request_is_not_queued_after_the_token_expired() {
+        let filler = || QueuedRequest {
+            message: "{}".to_string(),
+            caller: crate::mcp::Caller::unrestricted(),
+            protocol_version: None,
+            waiter: None,
+        };
+        for message in [
+            serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": "ping" }),
+            serde_json::json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }),
+        ] {
+            // 枠が1つのキューを埋め、まだ有効なトークンで送る
+            let (channel, mut receiver) = test_request_channel(1);
+            channel.sender.try_send(filler()).unwrap();
+            let callers: WsClients = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+            let conn_id = Uuid::new_v4();
+            callers.lock().await.insert(
+                conn_id,
+                WsClient {
+                    caller: crate::mcp::Caller::unrestricted(),
+                    token_deadline: Some(Instant::now() + Duration::from_millis(300)),
+                    session: Arc::new(crate::mcp::Session::default()),
+                },
+            );
+            let handler = JsonRpcWsHandler {
+                request_handler: None,
+                callers,
+                channel,
+                stats: SharedStats::default(),
+                shutdown: not_stopped(),
+            };
+            let mut handling = Box::pin(
+                handler.handle_message(conn_id, Message::Text(message.to_string().into())),
+            );
+            // 枠を待っている
+            assert!(futures::poll!(handling.as_mut()).is_pending());
+            // トークンの期限が切れてから、枠を空ける
+            sleep(Duration::from_millis(400)).await;
+            assert!(futures::poll!(handling.as_mut()).is_pending());
+            receiver.try_recv().unwrap();
+            let reply = tokio::time::timeout(Duration::from_secs(5), handling)
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(receiver.try_recv().is_err(), "{message}");
+            assert!(
+                matches!(
+                    &reply,
+                    Some(Message::Close(Some(frame))) if frame.code == close_code::POLICY
+                ),
+                "{reply:?}"
+            );
+        }
+    }
+
+    /// チャンネル経由の通知を、受信側が読める（PR #771。以前は
+    /// `JsonRpcRequest.id`が必須で、`receive_request_with_context`が
+    /// "missing field `id`"で失敗した）。HTTPは202、受信側には`id`が`None`で
+    /// 渡り、応答しない。WebSocketも同じ。要求はこれまでどおり答える
+    #[tokio::test]
+    async fn test_channel_notifications_reach_the_receiver() {
+        use futures::{SinkExt as _, StreamExt as _};
+
+        let transport = HttpTransport::new(HttpConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            enable_websocket_upgrade: true,
+            ..HttpConfig::default()
+        })
+        .unwrap();
+        transport.start_server().await.unwrap();
+        let server_addr = transport.bound_addr().await.unwrap();
+        wait_for_plain_server_ready(server_addr).await;
+
+        let (seen_tx, mut seen_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut responder = transport;
+        tokio::spawn(async move {
+            loop {
+                let received = match responder.receive_request_with_context().await {
+                    Ok(Some(received)) => received,
+                    Ok(None) => break,
+                    Err(e) => panic!("the receiver could not read a message: {e}"),
+                };
+                let _ =
+                    seen_tx.send((received.request.method.clone(), received.request.id.clone()));
+                // 通知には応答しない
+                let Some(id) = received.request.id else {
+                    continue;
+                };
+                let response = JsonRpcResponse {
+                    jsonrpc: "2.0".to_string(),
+                    result: Some(serde_json::json!({})),
+                    error: None,
+                    id,
+                };
+                responder.send_message(response).await.unwrap();
+            }
+        });
+        macro_rules! next_seen {
+            () => {
+                tokio::time::timeout(Duration::from_secs(10), seen_rx.recv())
+                    .await
+                    .unwrap()
+                    .unwrap()
+            };
+        }
+
+        let url = format!("http://127.0.0.1:{}/mcp", server_addr.port());
+        let client = reqwest::Client::new();
+        let response = client
+            .post(&url)
+            .json(&serde_json::json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        assert_eq!(
+            next_seen!(),
+            ("notifications/initialized".to_string(), None)
+        );
+
+        let ws_url = format!("ws://127.0.0.1:{}/ws", server_addr.port());
+        let (mut ws, _) = tokio_tungstenite::connect_async(&ws_url).await.unwrap();
+        for message in [
+            serde_json::json!({ "jsonrpc": "2.0", "method": "notifications/cancelled", "params": { "requestId": 1 } }),
+            serde_json::json!({ "jsonrpc": "2.0", "id": 5, "method": "ping" }),
+        ] {
+            ws.send(tokio_tungstenite::tungstenite::Message::Text(
+                message.to_string().into(),
+            ))
+            .await
+            .unwrap();
+        }
+        assert_eq!(next_seen!(), ("notifications/cancelled".to_string(), None));
+        let (method, id) = next_seen!();
+        assert_eq!(method, "ping");
+        assert!(id.is_some());
+        // 最初に届くフレームは、要求への応答（通知には何も返らない）
+        let frame = tokio::time::timeout(Duration::from_secs(10), ws.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let body: Value = serde_json::from_str(frame.to_text().unwrap()).unwrap();
+        assert_eq!(body["id"], serde_json::json!(5));
+    }
+
+    /// 受信側には、クライアントの付けた`id`も`original_id`で渡る（PR #771の
+    /// レビュー）。取り消し（`notifications/cancelled`）の`requestId`は
+    /// クライアントの`id`のまま届くので、受信側は`original_id`で照らし合わせる
+    #[tokio::test]
+    async fn test_channel_requests_carry_the_original_id_for_cancellation() {
+        let transport = HttpTransport::new(HttpConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            ..HttpConfig::default()
+        })
+        .unwrap();
+        transport.start_server().await.unwrap();
+        let server_addr = transport.bound_addr().await.unwrap();
+        wait_for_plain_server_ready(server_addr).await;
+        let url = format!("http://127.0.0.1:{}/mcp", server_addr.port());
+        let client = reqwest::Client::new();
+
+        let request = {
+            let request = client.post(&url).json(&serde_json::json!({
+                "jsonrpc": "2.0", "id": 7, "method": "tools/call",
+                "params": { "name": "slow", "arguments": {} }
+            }));
+            tokio::spawn(async move { request.send().await.unwrap() })
+        };
+        let received = tokio::time::timeout(
+            Duration::from_secs(10),
+            transport.receive_request_with_context(),
+        )
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+        assert_eq!(received.original_id, Some(serde_json::json!(7)));
+        assert!(
+            matches!(
+                &received.request.id,
+                Some(crate::types::RequestId::String(id)) if id.starts_with(CORRELATION_ID_PREFIX)
+            ),
+            "{:?}",
+            received.request.id
+        );
+
+        let response = client
+            .post(&url)
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0", "method": "notifications/cancelled",
+                "params": { "requestId": 7 }
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let cancel = tokio::time::timeout(
+            Duration::from_secs(10),
+            transport.receive_request_with_context(),
+        )
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+        assert_eq!(cancel.request.method, "notifications/cancelled");
+        assert_eq!(cancel.original_id, None);
+        // 同じ呼び出し元の要求の`original_id`と照らし合わせられる
+        assert_eq!(
+            cancel.request.params.as_ref().unwrap()["requestId"],
+            received.original_id.clone().unwrap()
+        );
+        assert_eq!(cancel.caller, received.caller);
+
+        // 取り消した要求の応答を返さなくても、HTTPは期限で終わる。ここでは
+        // 答えて、クライアントの`id`で返るのを確かめる
+        let mut transport = transport;
+        transport
+            .send_message(JsonRpcResponse {
+                jsonrpc: "2.0".to_string(),
+                result: Some(serde_json::json!({})),
+                error: None,
+                id: received.request.id.clone().unwrap(),
+            })
+            .await
+            .unwrap();
+        let response = request.await.unwrap();
+        assert_eq!(
+            response.json::<Value>().await.unwrap()["id"],
+            serde_json::json!(7)
+        );
+    }
+
+    /// 通知への応答（`id`が`null`）は、要求のキューに入れずに捨てる（PR #771）
+    #[tokio::test]
+    async fn test_response_with_a_null_id_is_dropped() {
+        let mut transport = HttpTransport::new(HttpConfig::default()).unwrap();
+        let response = JsonRpcResponse {
+            jsonrpc: "2.0".to_string(),
+            result: Some(serde_json::json!({})),
+            error: None,
+            id: crate::types::RequestId::Null,
+        };
+        transport.send_message(response).await.unwrap();
+        assert!(transport.receiver.lock().await.try_recv().is_err());
+    }
+
+    /// `connection_stats()`をTokioのタスクから呼んでも、パニックしない
+    /// （#760。以前は`blocking_read()`だった）
+    #[tokio::test]
+    async fn test_connection_stats_can_be_read_from_a_tokio_task() {
+        let transport = HttpTransport::new(HttpConfig::default()).unwrap();
+        let stats = tokio::spawn(async move { transport.connection_stats() })
+            .await
+            .unwrap();
+        assert_eq!(stats.messages_received, 0);
+        assert_eq!(stats.messages_sent, 0);
     }
 
     #[tokio::test]
@@ -8942,6 +10614,59 @@ mod tests {
             "params": { "size": LARGE_RESPONSE_SIZE }
         })
         .to_string()
+    }
+
+    /// 読まないクライアントへの大きな応答の送信で止まっている`/ws`も、
+    /// 止めるときはすぐにやめ、`stop_server()`を待たせない（PR #771の
+    /// レビュー。以前は、大きさに合わせた送信の期限まで待たせた）。
+    /// Windowsでは送信で止まらないので試さない（下のテストと同じ）
+    #[tokio::test]
+    #[cfg_attr(
+        windows,
+        ignore = "Windows accepts a large send at once, so the send does not stall"
+    )]
+    async fn test_stop_server_does_not_wait_for_a_stalled_websocket_response() {
+        let transport = HttpTransport::new(HttpConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            enable_websocket_upgrade: true,
+            ..HttpConfig::default()
+        })
+        .unwrap()
+        .with_request_handler(Arc::new(LargeResponseHandler));
+        transport.start_server().await.unwrap();
+        let addr = transport.bound_addr().await.unwrap();
+        wait_for_plain_server_ready(addr).await;
+        let mut stalled = raw_ws_connect(addr).await;
+        raw_ws_send_text(&mut stalled, &large_response_request()).await;
+        // 応答の送信が始まり、止まったままなのを確かめる（PR #771のレビュー。
+        // 送信の期限は、テストでも約5秒（1秒と、32MBを8MB/秒で送る時間））
+        let sends = &transport.ws_response_sends.count;
+        let waiting = Instant::now();
+        while sends.load(Ordering::SeqCst) == 0 {
+            assert!(
+                waiting.elapsed() < Duration::from_secs(10),
+                "the response was not sent"
+            );
+            sleep(Duration::from_millis(10)).await;
+        }
+        sleep(Duration::from_millis(1500)).await;
+        assert_eq!(
+            sends.load(Ordering::SeqCst),
+            1,
+            "the send did not stall (the client read the response?)"
+        );
+
+        // 止めるのは、Closeを送る上限（1秒）と少しの余裕で終わる
+        let started = Instant::now();
+        tokio::time::timeout(Duration::from_secs(10), transport.stop_server())
+            .await
+            .expect("stop_server waited for the stalled response");
+        assert!(
+            started.elapsed() < Duration::from_millis(2500),
+            "{:?}",
+            started.elapsed()
+        );
+        drop(stalled);
     }
 
     /// 応答を読まないクライアントは、時間内に送れないので閉じられ、接続の枠が
