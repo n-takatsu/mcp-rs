@@ -139,6 +139,14 @@ fn validate(input: &CredentialInput) -> Result<(), EncryptionError> {
             "the master password must be at least {MIN_MASTER_PASSWORD_LEN} characters"
         )));
     }
+    // The master password is later set as WORDPRESS_MASTER_PASSWORD, and an
+    // environment variable cannot hold NUL, so the generated config could never
+    // be decrypted at startup (#750). The error does not include the value.
+    if input.master_password.contains('\0') {
+        return Err(EncryptionError::InvalidInput(
+            "the master password must not contain NUL characters".to_string(),
+        ));
+    }
     Ok(())
 }
 
@@ -350,6 +358,15 @@ mod tests {
         assert!(err.contains(&MIN_MASTER_PASSWORD_LEN.to_string()));
         assert!(!err.contains(short));
         assert!(!err.contains("app-password"));
+
+        // NUL cannot be set in WORDPRESS_MASTER_PASSWORD (#750)
+        let with_nul = "long enough\0master password";
+        let err = encrypted_credentials_toml(&input("editor", "app-password", with_nul))
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(err.contains("NUL"));
+        assert!(!err.contains("long enough"));
     }
 
     #[test]

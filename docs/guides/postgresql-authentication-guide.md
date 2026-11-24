@@ -14,11 +14,12 @@ PostgreSQL実装の認証システム使用方法を説明します。
 
 ### 1. 依存関係
 
-`Cargo.toml`でPostgreSQL機能を有効化：
+mcp-rsはcrates.ioに公開していないので、GitHubのリリースのタグを指定する。
+PostgreSQLは既定の機能（`database`）に入っているので、`features`は要らない：
 
 ```toml
 [dependencies]
-mcp-rs = { version = "0.15", features = ["postgresql-backend"] }
+mcp-rs = { git = "https://github.com/n-takatsu/mcp-rs", tag = "v0.29.0" }
 ```
 
 ### 2. データベース準備
