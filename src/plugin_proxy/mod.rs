@@ -1488,6 +1488,16 @@ impl McpHandler for PluginHandler {
     }
 
     async fn call_tool(&self, params: ToolCallParams) -> Result<Value, McpError> {
+        // STDIOの取り消し（`notifications/cancelled`）で、途中で止めさせない
+        // （PR #765のレビュー）。送信の途中で止めると、`WriteInProgress`が
+        // 接続ごと止め、監査ログも残らない。取り消された呼び出しも最後まで
+        // 行い（`call_timeout`まで）、応答だけを返さない。プラグインに
+        // 取り消しを伝えることはしない
+        if !crate::mcp::keep_call_from_being_aborted() {
+            return Err(McpError::Other(
+                "the tool call was cancelled before it started".to_string(),
+            ));
+        }
         let started = std::time::Instant::now();
         let Some(original) = self.original_names.get(&params.name) else {
             return Err(McpError::ToolNotFound(params.name));

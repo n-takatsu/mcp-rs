@@ -554,9 +554,19 @@ fn unsupported_protocol_version(requested: &str, request: &Value) -> Box<Respons
             ),
             "data": { "supported": supported, "requested": requested }
         },
-        "id": request.get("id").cloned().unwrap_or(Value::Null)
+        "id": error_response_id(request)
     });
     Box::new((StatusCode::BAD_REQUEST, Json(body)).into_response())
+}
+
+/// 断るリクエストへのエラー応答に返す`id`。文字列・数値だけを返し、ほか
+/// （オブジェクト・配列・真偽値・無い）は`null`にする（#759）
+fn error_response_id(request: &Value) -> Value {
+    request
+        .get("id")
+        .filter(|id| id.is_string() || id.is_number())
+        .cloned()
+        .unwrap_or(Value::Null)
 }
 
 /// 2026-07-28のリクエスト（`is_modern_request`でヘッダーと本文が合うことを
@@ -615,11 +625,7 @@ fn is_modern_request(
         let body = serde_json::json!({
             "jsonrpc": "2.0",
             "error": { "code": HEADER_MISMATCH_CODE, "message": message },
-            "id": request
-                .get("id")
-                .filter(|id| id.is_string() || id.is_number())
-                .cloned()
-                .unwrap_or(Value::Null)
+            "id": error_response_id(request)
         });
         Err(Box::new(
             (StatusCode::BAD_REQUEST, Json(body)).into_response(),
@@ -1557,6 +1563,10 @@ async fn serve_connections(
 struct ConnectionActivity {
     in_flight: std::sync::atomic::AtomicUsize,
     last_change: std::sync::Mutex<std::time::Instant>,
+    /// 送っている応答ごとの、送信が次に進むべき期限（#759）。キーは
+    /// `ActivityGuard`の番号
+    send_deadlines: std::sync::Mutex<HashMap<u64, std::time::Instant>>,
+    next_guard_id: AtomicU64,
 }
 
 impl ConnectionActivity {
@@ -1564,7 +1574,21 @@ impl ConnectionActivity {
         Self {
             in_flight: std::sync::atomic::AtomicUsize::new(0),
             last_change: std::sync::Mutex::new(std::time::Instant::now()),
+            send_deadlines: std::sync::Mutex::new(HashMap::new()),
+            next_guard_id: AtomicU64::new(0),
         }
+    }
+
+    fn send_deadlines(&self) -> std::sync::MutexGuard<'_, HashMap<u64, std::time::Instant>> {
+        self.send_deadlines
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// 送っている応答のうち、いちばん早い送信の期限（#759）。送っている
+    /// 応答が無ければ`None`
+    fn send_deadline(&self) -> Option<std::time::Instant> {
+        self.send_deadlines().values().min().copied()
     }
 
     fn touch(&self) {
@@ -1588,7 +1612,10 @@ impl ConnectionActivity {
 
 /// リクエストを受けてから、応答の本文を送り終える（または捨てる）までの
 /// 間、処理中として数える（#592）
-struct ActivityGuard(Arc<ConnectionActivity>);
+struct ActivityGuard {
+    activity: Arc<ConnectionActivity>,
+    id: u64,
+}
 
 impl ActivityGuard {
     fn new(activity: Arc<ConnectionActivity>) -> Self {
@@ -1596,16 +1623,195 @@ impl ActivityGuard {
             .in_flight
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         activity.touch();
-        Self(activity)
+        let id = activity.next_guard_id.fetch_add(1, Ordering::Relaxed);
+        Self { activity, id }
+    }
+
+    /// この応答の送信が次に進むべき期限を決める。`None`なら外す（#759）
+    fn set_send_deadline(&self, deadline: Option<std::time::Instant>) {
+        let mut deadlines = self.activity.send_deadlines();
+        match deadline {
+            Some(deadline) => {
+                deadlines.insert(self.id, deadline);
+            }
+            None => {
+                deadlines.remove(&self.id);
+            }
+        }
     }
 }
 
 impl Drop for ActivityGuard {
     fn drop(&mut self) {
-        self.0.touch();
-        self.0
+        self.set_send_deadline(None);
+        self.activity.touch();
+        self.activity
             .in_flight
             .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// 応答の本文を包み、送信が進んでいるかを見る（#759）。
+///
+/// HTTP/2では、相手が応答を読まず、送信のウィンドウが空かないと、hyperは
+/// 本文を読み出さないまま待ち続ける。その間は本文（と`ActivityGuard`）が
+/// 残るので、処理中として数え、何もしていない接続として閉じることもない。
+/// pingは送信のウィンドウに縛られないので、keep-aliveでも見つからない。
+///
+/// そこで、本文のある応答を作った時点で、送信の期限（`timeout`後）を決め、
+/// 本文の各フレームを渡すたびに、その大きさに合わせて延ばす（`/ws`の応答と
+/// 同じ最低の速さ）。本文を送り終えるか捨てれば外す。期限を過ぎた接続は、
+/// `serve_connection`が閉じる。
+///
+/// 最後のデータを送れるようになるまで、期限を外さない（PR #765の
+/// レビュー）。hyper（1.8）は、フレームを渡すたびに、次を読む前に送信の
+/// 余地が1バイト以上空くのを待つ。h2は渡されたデータを相手のウィンドウが
+/// 空くまで溜めておくので、余地が空くのは、溜めたデータとさらに1バイトを
+/// 送れるようになってから。そこで、長さの決まった本文（`Full`等。終わりが
+/// 前もって分かる）の最後のデータは、最後の1バイトを残して渡し、余地が
+/// 空いて次に読まれたときに、その1バイトを終わり（END_STREAM）と一緒に
+/// 渡す。その時点で、それまでのデータと最後の1バイトは、どれも相手の
+/// ウィンドウに収まっている。本文はそこで捨てられ、期限も外れる。
+///
+/// 以前（1回目）は、最後のフレームを渡した時点で終わりを知らせたので、
+/// データがh2に溜まったままでも期限が外れた。2回目は、最後のフレームの後も
+/// 終わりを知らせず、空のDATAフレーム（END_STREAM）を次に送ったが、それにも
+/// 1バイトの余地を待つので、ウィンドウを本文の長さちょうどにして、
+/// END_STREAMまでWINDOW_UPDATEを送らない相手（RFC 9113で許される）には、
+/// 終わりを送れずに期限で切っていた。1バイトを残せば、その相手にも最後まで
+/// 送れる（最後の1バイトの分の余地は、ウィンドウに残っている）。
+///
+/// 限界:
+/// - 終わりが前もって分からない本文（ストリーム等）は、最後のフレームの後、
+///   もう一度読まれて終わりを返すまで期限を外さない。その終わりにも1バイトの
+///   余地を待つので、上の相手には送り切れない。mcp-rsの応答は、どれも
+///   長さの決まった本文
+/// - 「送れる」はh2の流量制御の上でのこと。ソケットへの書き込み自体が
+///   止まった相手（TCPで読まない相手）は、ここでは見ない。その場合は
+///   keep-aliveのpingも送れず、`keep_alive_timeout`で接続が閉じる
+/// - HTTP/1.1では、hyper（1.8）は、書き込みのバッファが埋まっている間は
+///   本文を読まないので、そこまでは期限が働く。ただし、長さの決まった本文
+///   （`Content-Length`）は、最後のデータを書き込みのバッファに入れた時点で、
+///   もう一度読まずに捨てる（PR #765のレビュー）。データがソケットに出る前に
+///   期限が外れ、処理中のリクエストも無くなる。相手がその後も読まなければ、
+///   何もしていない接続として、`timeout`の後に閉じる手続きを始め、さらに
+///   `timeout`の後に切る。相手がリクエストを送り続けると、本文のある応答は
+///   書き込みのバッファに入らずに期限で閉じるが、本文の無い応答（404・202
+///   等）だけを返すリクエストを送り続ける相手は、閉じられないことがある。
+///   hyperの外から、バッファのデータがソケットに出たかを知る方法が無い
+struct SendProgressBody {
+    inner: axum::body::Body,
+    guard: ActivityGuard,
+    timeout: std::time::Duration,
+    /// データのフレームを1つ以上渡した
+    sent_data: bool,
+    /// 最後のデータの、まだ渡していない最後の1バイト
+    tail: Option<axum::body::Bytes>,
+    /// 本文の最後まで渡した（次は終わりを返す）
+    finished: bool,
+}
+
+impl SendProgressBody {
+    fn new(inner: axum::body::Body, guard: ActivityGuard, timeout: std::time::Duration) -> Self {
+        use hyper::body::Body as _;
+        // 本文の無い応答（101・204等）はヘッダーだけで、ウィンドウを待たない
+        if !inner.is_end_stream() {
+            guard.set_send_deadline(Some(std::time::Instant::now() + timeout));
+        }
+        Self {
+            inner,
+            guard,
+            timeout,
+            sent_data: false,
+            tail: None,
+            finished: false,
+        }
+    }
+
+    /// `len`バイトを渡したので、送信の期限を延ばす
+    fn extend_deadline(&self, len: usize) {
+        let limit =
+            websocket_response_send_timeout(len, self.timeout, WEBSOCKET_MIN_SEND_BYTES_PER_SEC);
+        self.guard
+            .set_send_deadline(Some(std::time::Instant::now() + limit));
+    }
+}
+
+impl hyper::body::Body for SendProgressBody {
+    type Data = axum::body::Bytes;
+    type Error = axum::Error;
+
+    fn poll_frame(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<std::result::Result<hyper::body::Frame<Self::Data>, Self::Error>>>
+    {
+        use std::task::Poll;
+        let this = &mut *self;
+        if let Some(tail) = this.tail.take() {
+            this.extend_deadline(tail.len());
+            this.finished = true;
+            return Poll::Ready(Some(Ok(hyper::body::Frame::data(tail))));
+        }
+        if this.finished {
+            this.guard.set_send_deadline(None);
+            return Poll::Ready(None);
+        }
+        match std::pin::Pin::new(&mut this.inner).poll_frame(cx) {
+            Poll::Ready(Some(Ok(frame))) => {
+                let frame = match frame.into_data() {
+                    Ok(mut data) => {
+                        this.sent_data = true;
+                        if this.inner.is_end_stream() {
+                            if data.len() > 1 {
+                                // 最後の1バイトは、余地が空いてから渡す
+                                this.tail = Some(data.split_off(data.len() - 1));
+                            } else {
+                                this.finished = true;
+                            }
+                        }
+                        this.extend_deadline(data.len());
+                        hyper::body::Frame::data(data)
+                    }
+                    Err(frame) => {
+                        this.extend_deadline(0);
+                        frame
+                    }
+                };
+                Poll::Ready(Some(Ok(frame)))
+            }
+            Poll::Ready(other) => {
+                this.guard.set_send_deadline(None);
+                this.finished = true;
+                Poll::Ready(other)
+            }
+            Poll::Pending => Poll::Pending,
+        }
+    }
+
+    fn is_end_stream(&self) -> bool {
+        if self.tail.is_some() {
+            return false;
+        }
+        if self.finished {
+            return true;
+        }
+        // データを渡した後、終わりが分からない本文は、もう一度読まれて
+        // 終わりを返すまで`false`
+        !self.sent_data && self.inner.is_end_stream()
+    }
+
+    fn size_hint(&self) -> hyper::body::SizeHint {
+        // 残してある最後の1バイトも、まだ渡していない分に数える（PR #765の
+        // レビュー）
+        let inner = self.inner.size_hint();
+        let held = self.tail.as_ref().map_or(0, |tail| tail.len() as u64);
+        let mut hint = hyper::body::SizeHint::new();
+        hint.set_lower(inner.lower() + held);
+        if let Some(upper) = inner.upper() {
+            hint.set_upper(upper + held);
+        }
+        hint
     }
 }
 
@@ -1616,7 +1822,11 @@ impl Drop for ActivityGuard {
 /// 処理中のリクエストが無いまま`timeout`が過ぎた接続は、閉じる（#592）。
 /// HTTP/2には、HTTP/1.1の`header_read_timeout`にあたる上限が無く、pingに
 /// 答える相手は、何も送らなくても接続を持ち続けられた。接続を開いて何も
-/// 送らない相手で、`max_connections`を認証無しに埋められた
+/// 送らない相手で、`max_connections`を認証無しに埋められた。
+///
+/// 応答の送信が期限までに進まない接続も、閉じる（`SendProgressBody`、
+/// #759）。応答を読まない相手は、処理中のリクエストがあるように見えるので、
+/// 上の上限が働かなかった
 async fn serve_connection<I>(
     io: I,
     service: ConnectionService,
@@ -1625,7 +1835,6 @@ async fn serve_connection<I>(
 ) where
     I: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
-    use http_body_util::BodyExt;
     use hyper::service::Service as _;
 
     let io = TokioIo::new(io);
@@ -1647,13 +1856,12 @@ async fn serve_connection<I>(
         let response = inner.call(request);
         async move {
             let response = response.await?;
-            // 本文を送り終えるか捨てるまで、処理中として数える
-            Ok::<_, std::convert::Infallible>(response.map(|body| {
-                axum::body::Body::new(body.map_frame(move |frame| {
-                    let _ = &guard;
-                    frame
-                }))
-            }))
+            // 本文を送り終えるか捨てるまで、処理中として数える。送信が
+            // 進まなければ、接続を閉じる（#759）
+            Ok::<_, std::convert::Infallible>(
+                response
+                    .map(|body| axum::body::Body::new(SendProgressBody::new(body, guard, timeout))),
+            )
         }
     });
     let connection = builder.serve_connection_with_upgrades(io, hyper_service);
@@ -1661,6 +1869,7 @@ async fn serve_connection<I>(
     let mut closing = false;
     loop {
         let wait = timeout.saturating_sub(activity.idle_for());
+        let send_deadline = activity.send_deadline();
         tokio::select! {
             result = connection.as_mut() => {
                 if let Err(e) = result {
@@ -1668,6 +1877,18 @@ async fn serve_connection<I>(
                     debug!("HTTP connection error for {}: {}", remote_addr, e);
                 }
                 return;
+            }
+            _ = sleep_until_or_forever(send_deadline.map(tokio::time::Instant::from_std)) => {
+                if activity
+                    .send_deadline()
+                    .is_some_and(|deadline| deadline <= std::time::Instant::now())
+                {
+                    // 相手が応答を読まない。接続ごと捨てる（本文と
+                    // `ActivityGuard`も放され、接続の枠が返る）
+                    warn!("Closing connection from {}: a response was not sent within the time limit (the client is not reading it)", remote_addr);
+                    return;
+                }
+                // 送信が進み、期限が延びた
             }
             _ = tokio::time::sleep(wait.max(std::time::Duration::from_millis(10))) => {
                 if activity.idle_for() < timeout {
@@ -2023,6 +2244,7 @@ async fn handle_jsonrpc_request(
         state.enforce_https,
         state.tls_terminated_locally,
         forwarded,
+        &state.trusted_proxies,
         remote_addr,
     )?;
     check_min_tls_version(
@@ -2547,9 +2769,10 @@ fn check_https_enforcement(
     enforce_https: bool,
     tls_terminated_locally: bool,
     headers: &HeaderMap,
+    trusted_proxies: &[IpNet],
     remote_addr: SocketAddr,
 ) -> std::result::Result<(), StatusCode> {
-    if enforce_https && !tls_terminated_locally && !is_forwarded_https(headers) {
+    if enforce_https && !tls_terminated_locally && !is_forwarded_https(headers, trusted_proxies) {
         warn!(
             "Rejected non-HTTPS request from {} due to enforce_https policy",
             remote_addr
@@ -2947,6 +3170,7 @@ async fn handle_ws_upgrade(
         state.enforce_https,
         state.tls_terminated_locally,
         forwarded,
+        &state.trusted_proxies,
         remote_addr,
     ) {
         return status.into_response();
@@ -3235,6 +3459,18 @@ async fn handle_ws_socket(
                     }
                 }
 
+                // 期限の直前に受け取ったフレームが、リプレイ攻撃対策・IDSで
+                // 待つ間に期限を過ぎることもある。処理を始める直前に確かめ
+                // 直す（#759）。始めた処理は、そのまま終える
+                if token_expired(token_deadline) {
+                    info!(
+                        "Closing WebSocket connection {} from {}: the access token expired before the message was processed",
+                        conn_id, addr
+                    );
+                    close_ws(&sender, close_code::POLICY, "access token expired").await;
+                    break;
+                }
+
                 match state.websocket_handler.handle_message(conn_id, msg).await {
                     Ok(Some(response)) => {
                         // 相手が受信を止めていると、送信で止まり続け、接続の枠を
@@ -3316,6 +3552,12 @@ fn websocket_ping_interval(idle_timeout: std::time::Duration) -> std::time::Dura
     (idle_timeout / 2)
         .min(std::time::Duration::from_secs(30))
         .max(std::time::Duration::from_millis(100))
+}
+
+/// アクセストークンの期限（`/ws`、`unix_time_to_instant`で変えたもの）を
+/// 過ぎたか。期限が無ければ`false`（#759）
+fn token_expired(token_deadline: Option<tokio::time::Instant>) -> bool {
+    token_deadline.is_some_and(|deadline| tokio::time::Instant::now() >= deadline)
 }
 
 /// `deadline`まで待つ。`None`なら終わらない
@@ -3775,6 +4017,15 @@ fn validate_tls_security_settings(config: &HttpConfig) -> std::result::Result<()
                 min_tls_version
             ));
         }
+        // mcp-rsが自分でTLSを終えるとき（`build_tls_acceptor`）はTLS 1.3
+        // だけを使う。それより新しい版を求めても満たせないので、起動しない
+        // （#759。以前は起動し、TLS 1.3の接続を受け付けていた）
+        if config.tls_enabled && !is_tls_version_at_least("1.3", min_tls_version) {
+            return Err(format!(
+                "min_tls_version {} cannot be met with tls_enabled = true: mcp-rs serves TLS 1.3 only (use \"1.3\")",
+                min_tls_version
+            ));
+        }
     }
 
     if config.enforce_https && !config.hsts_enabled {
@@ -3908,9 +4159,145 @@ fn response_headers(state: &HttpTransportState) -> HeaderMap {
     headers
 }
 
-fn is_forwarded_https(headers: &HeaderMap) -> bool {
+fn is_forwarded_https(headers: &HeaderMap, trusted_proxies: &[IpNet]) -> bool {
     header_eq_ignore_ascii_case(headers, "x-forwarded-proto", "https")
-        || header_contains_token(headers, "forwarded", "proto=https")
+        || forwarded_proto_is_https(headers, trusted_proxies)
+}
+
+/// `Forwarded`ヘッダー（RFC 7239）で、クライアントから受けたプロキシが
+/// 付けた要素の`proto`が`https`か（#759）。
+///
+/// `headers`は、接続元が信頼するプロキシのときだけ渡される
+/// （`forwarded_headers`）。プロキシは要素を右に足していくので、右から順に
+/// 見て、`for`が信頼するプロキシの要素（プロキシの間の区間）を飛ばし、
+/// 最初のそれ以外の要素を使う（`forwarded_client_ip`の`X-Forwarded-For`と
+/// 同じ）。それより左はクライアントが送ったものなので見ない。すべての要素の
+/// `for`が信頼するプロキシなら、いちばん右の要素（mcp-rsにつないだ
+/// プロキシが足したもの）を使う（PR #765のレビュー。いちばん左は、
+/// クライアントが送ったものでありうる）。
+///
+/// 形の正しくないヘッダー（閉じていない引用符、`=`の無いパラメーター、
+/// 1つの要素に同じ名前が2つ等）は、HTTPSとみなさない（PR #765の
+/// レビュー。閉じていない引用符が、プロキシの足した要素を飲み込んだ）。
+///
+/// 以前はヘッダー全体から`proto=https`を部分文字列で探したため、
+/// クライアントが`Forwarded: for=192.0.2.1;proto=https`を送ると、プロキシが
+/// `proto=http`の要素を足しても通った
+fn forwarded_proto_is_https(headers: &HeaderMap, trusted_proxies: &[IpNet]) -> bool {
+    let Some(elements) = parse_forwarded(headers) else {
+        warn!("Ignored a malformed Forwarded header");
+        return false;
+    };
+    let chosen = elements
+        .iter()
+        .rev()
+        .find(|element| {
+            !element
+                .get("for")
+                .and_then(|node| parse_forwarded_node_ip(node))
+                .is_some_and(|ip| is_trusted_proxy(trusted_proxies, ip))
+        })
+        .or_else(|| elements.last());
+    chosen
+        .and_then(|element| element.get("proto"))
+        .is_some_and(|proto| proto.eq_ignore_ascii_case("https"))
+}
+
+/// `Forwarded`ヘッダーを、要素ごとの（小文字の名前 → 値）にする。複数の
+/// 行に分かれたヘッダーは、順につないだ1つの一覧と同じ。形が正しくなければ
+/// `None`
+fn parse_forwarded(headers: &HeaderMap) -> Option<Vec<HashMap<String, String>>> {
+    let mut elements = Vec::new();
+    for value in headers.get_all("forwarded") {
+        let value = value.to_str().ok()?;
+        for element in split_unquoted(value, ',')? {
+            let element = element.trim();
+            if element.is_empty() {
+                continue;
+            }
+            let mut params = HashMap::new();
+            for pair in split_unquoted(element, ';')? {
+                let pair = pair.trim();
+                if pair.is_empty() {
+                    continue;
+                }
+                let (key, value) = pair.split_once('=')?;
+                let key = key.trim();
+                if key.is_empty() || !key.chars().all(is_http_token_char) {
+                    return None;
+                }
+                let value = parse_forwarded_value(value.trim())?;
+                if params.insert(key.to_ascii_lowercase(), value).is_some() {
+                    return None; // 同じ名前が2つ
+                }
+            }
+            elements.push(params);
+        }
+    }
+    Some(elements)
+}
+
+/// `Forwarded`のパラメーターの値。引用符で囲んだ値は、囲みを外し、
+/// quoted-pair（`\x`）を`x`にする。囲んでいない値に、引用符・空白は使えない
+fn parse_forwarded_value(value: &str) -> Option<String> {
+    let Some(quoted) = value.strip_prefix('"') else {
+        if value.is_empty() || value.contains(['"', ' ', '\t']) {
+            return None;
+        }
+        return Some(value.to_string());
+    };
+    let mut unescaped = String::with_capacity(quoted.len());
+    let mut chars = quoted.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => unescaped.push(chars.next()?),
+            // 閉じる引用符の後には何も無いこと
+            '"' => return chars.next().is_none().then_some(unescaped),
+            c => unescaped.push(c),
+        }
+    }
+    None // 閉じていない
+}
+
+/// HTTPのtoken（RFC 9110）に使える文字か
+fn is_http_token_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || "!#$%&'*+-.^_`|~".contains(c)
+}
+
+/// `text`を`separator`で分ける。引用符（`"`）の中の区切りでは分けない。
+/// 引用符が閉じていなければ`None`
+fn split_unquoted(text: &str, separator: char) -> Option<Vec<&str>> {
+    let mut parts = Vec::new();
+    let mut start = 0;
+    let mut quoted = false;
+    let mut escaped = false;
+    for (index, c) in text.char_indices() {
+        if escaped {
+            escaped = false;
+        } else if quoted && c == '\\' {
+            escaped = true;
+        } else if c == '"' {
+            quoted = !quoted;
+        } else if c == separator && !quoted {
+            parts.push(&text[start..index]);
+            start = index + c.len_utf8();
+        }
+    }
+    if quoted || escaped {
+        return None;
+    }
+    parts.push(&text[start..]);
+    Some(parts)
+}
+/// `Forwarded`の`for`の値（`192.0.2.1`・`192.0.2.1:4711`・
+/// `[2001:db8::1]:4711`等）のIPアドレス。`unknown`・`_hidden`等は`None`
+fn parse_forwarded_node_ip(node: &str) -> Option<IpAddr> {
+    if let Some(rest) = node.strip_prefix('[') {
+        return rest.split_once(']')?.0.parse().ok();
+    }
+    node.parse::<IpAddr>()
+        .ok()
+        .or_else(|| node.parse::<SocketAddr>().ok().map(|addr| addr.ip()))
 }
 
 fn extract_forwarded_tls_version(headers: &HeaderMap) -> Option<&str> {
@@ -3984,12 +4371,6 @@ fn header_value<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
 fn header_eq_ignore_ascii_case(headers: &HeaderMap, name: &str, expected: &str) -> bool {
     header_value(headers, name)
         .map(|v| v.eq_ignore_ascii_case(expected))
-        .unwrap_or(false)
-}
-
-fn header_contains_token(headers: &HeaderMap, name: &str, token: &str) -> bool {
-    header_value(headers, name)
-        .map(|v| v.to_ascii_lowercase().contains(&token.to_ascii_lowercase()))
         .unwrap_or(false)
 }
 
@@ -4211,6 +4592,145 @@ mod tests {
         assert!(validate_tls_security_settings(&config).is_err());
     }
 
+    /// mcp-rsがTLSを終えるとき（TLS 1.3だけ）は、それより新しい
+    /// `min_tls_version`で起動しない（#759）。プロキシの後ろでは、
+    /// プロキシの知らせる版と比べるので、そのまま受け付ける
+    #[test]
+    fn test_tls_validation_rejects_min_version_above_direct_tls() {
+        let direct = |version: &str| HttpConfig {
+            tls_enabled: true,
+            tls_cert_path: Some("cert.pem".to_string()),
+            tls_key_path: Some("key.pem".to_string()),
+            min_tls_version: Some(version.to_string()),
+            ..HttpConfig::default()
+        };
+        let error = validate_tls_security_settings(&direct("1.4")).unwrap_err();
+        assert!(error.contains("TLS 1.3 only"), "{error}");
+        assert!(validate_tls_security_settings(&direct("1.3")).is_ok());
+        assert!(validate_tls_security_settings(&direct("TLSv1.3")).is_ok());
+        let behind_proxy = HttpConfig {
+            min_tls_version: Some("1.4".to_string()),
+            ..HttpConfig::default()
+        };
+        assert!(validate_tls_security_settings(&behind_proxy).is_ok());
+    }
+
+    /// 対応していない版を断る応答に、文字列・数値でない`id`を返さない（#759）
+    #[tokio::test]
+    async fn test_unsupported_protocol_version_does_not_echo_an_invalid_id() {
+        let id_of = |request: Value| async move {
+            let response = unsupported_protocol_version("2099-01-01", &request);
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            serde_json::from_slice::<Value>(&body).unwrap()["id"].clone()
+        };
+        assert_eq!(
+            id_of(serde_json::json!({ "id": { "nested": 1 } })).await,
+            Value::Null
+        );
+        assert_eq!(id_of(serde_json::json!({ "id": [1] })).await, Value::Null);
+        assert_eq!(id_of(serde_json::json!({ "id": true })).await, Value::Null);
+        assert_eq!(id_of(serde_json::json!({})).await, Value::Null);
+        assert_eq!(id_of(serde_json::json!({ "id": 7 })).await, 7);
+        assert_eq!(id_of(serde_json::json!({ "id": "a" })).await, "a");
+    }
+
+    /// `Forwarded`は、クライアントから受けたプロキシが足した要素の`proto`
+    /// だけを、完全一致で見る（#759）。以前はヘッダー全体の部分文字列で、
+    /// クライアントの送った`proto=https`でも通った
+    #[test]
+    fn test_forwarded_proto_uses_the_element_added_by_the_trusted_proxy() {
+        let trusted = vec!["127.0.0.1/32".parse::<IpNet>().unwrap()];
+        let https = |values: &[&str], trusted: &[IpNet]| {
+            let mut headers = HeaderMap::new();
+            for value in values {
+                headers.append("forwarded", value.parse().unwrap());
+            }
+            is_forwarded_https(&headers, trusted)
+        };
+        assert!(https(&["for=198.51.100.7;proto=https"], &trusted));
+        assert!(https(&["For=198.51.100.7;PROTO=HTTPS"], &trusted));
+        assert!(https(
+            &["for=\"[2001:db8::1]:4711\";proto=\"https\""],
+            &trusted
+        ));
+        // クライアントが送った要素の後ろに、プロキシが`proto=http`を足した
+        assert!(!https(
+            &["for=192.0.2.1;proto=https, for=198.51.100.7;proto=http"],
+            &trusted
+        ));
+        assert!(!https(
+            &["for=192.0.2.1;proto=https", "for=198.51.100.7;proto=http"],
+            &trusted
+        ));
+        // 引用符の中の区切りで、要素を偽れない
+        assert!(!https(
+            &["for=198.51.100.7;proto=http;x=\"a, for=1.2.3.4;proto=https\""],
+            &trusted
+        ));
+        // 部分文字列では一致しない
+        assert!(!https(&["for=198.51.100.7;proto=httpsx"], &trusted));
+        assert!(!https(&["for=198.51.100.7;xproto=https"], &trusted));
+        assert!(!https(&["for=198.51.100.7"], &trusted));
+        // 信頼するプロキシの間の要素は飛ばし、クライアントから受けた
+        // プロキシの要素を使う
+        let chain = vec![
+            "127.0.0.1/32".parse::<IpNet>().unwrap(),
+            "10.0.0.2/32".parse::<IpNet>().unwrap(),
+        ];
+        assert!(https(
+            &["for=198.51.100.7;proto=https, for=10.0.0.2;proto=http"],
+            &chain
+        ));
+        assert!(!https(
+            &["for=198.51.100.7;proto=http, for=10.0.0.2;proto=https"],
+            &chain
+        ));
+        // すべての要素の`for`が信頼するプロキシなら、いちばん右（mcp-rsに
+        // つないだプロキシが足したもの）を使う。いちばん左は、クライアントが
+        // 送ったものでありうる（PR #765のレビュー）
+        assert!(!https(
+            &["for=10.0.0.2;proto=https, for=127.0.0.1;proto=http"],
+            &chain
+        ));
+        assert!(https(
+            &["for=10.0.0.2;proto=http, for=127.0.0.1;proto=https"],
+            &chain
+        ));
+        // 形の正しくないヘッダーは、HTTPSとみなさない。閉じていない引用符が、
+        // プロキシの足した要素を飲み込まない（PR #765のレビュー）
+        assert!(!https(
+            &["for=192.0.2.1;proto=https;x=\"a, for=198.51.100.7;proto=http"],
+            &trusted
+        ));
+        assert!(!https(
+            &[
+                "for=192.0.2.1;proto=https;x=\"a",
+                "for=198.51.100.7;proto=http"
+            ],
+            &trusted
+        ));
+        assert!(!https(&["for=198.51.100.7;proto=https;junk"], &trusted));
+        assert!(!https(
+            &["for=198.51.100.7;proto=https;proto=https"],
+            &trusted
+        ));
+        assert!(!https(&["for=198.51.100.7;proto=\"https\"x"], &trusted));
+        assert!(!https(&["for=198.51.100.7;proto=htt ps"], &trusted));
+        assert!(!https(&[], &trusted));
+    }
+
+    /// `/ws`で、処理を始める直前にトークンの期限を確かめ直す（#759）
+    #[test]
+    fn test_token_expired() {
+        let now = tokio::time::Instant::now();
+        assert!(!token_expired(None));
+        assert!(token_expired(Some(now)));
+        assert!(!token_expired(Some(
+            now + std::time::Duration::from_secs(60)
+        )));
+    }
     #[test]
     fn test_tls_validation_requires_cert_and_key_paths() {
         let config = HttpConfig {
@@ -7631,6 +8151,239 @@ mod tests {
         assert!(activity.idle_for() >= std::time::Duration::from_millis(20));
     }
 
+    /// HTTP/2で応答を読まない相手は、送信が進まないまま`timeout`を過ぎると
+    /// 切る（#759）。以前は、本文が送信のウィンドウを待つ間、処理中として
+    /// 数え続け、接続（と接続の枠）を持ち続けられた
+    #[tokio::test]
+    async fn test_http2_client_that_does_not_read_the_response_is_closed() {
+        use http_body_util::BodyExt;
+        let port = start_test_server(|c| c.timeout_ms = 500).await;
+        let request = || {
+            hyper::Request::builder()
+                .method("POST")
+                .uri(format!("http://127.0.0.1:{port}/mcp"))
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from("not json"))
+                .unwrap()
+        };
+
+        // 読む相手には、本文のある応答を最後まで送る
+        let stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .unwrap();
+        let (mut sender, connection) =
+            hyper::client::conn::http2::handshake(TokioExecutor::new(), TokioIo::new(stream))
+                .await
+                .unwrap();
+        tokio::spawn(connection);
+        let response = sender.send_request(request()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        assert!(!body.is_empty());
+
+        // 受信のウィンドウを0にした相手（応答を読まないのと同じ）は、切る
+        let stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .unwrap();
+        let (mut sender, connection) =
+            hyper::client::conn::http2::Builder::new(TokioExecutor::new())
+                .initial_stream_window_size(0)
+                .handshake(TokioIo::new(stream))
+                .await
+                .unwrap();
+        let connection = tokio::spawn(connection);
+        let response = sender.send_request(request()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let started = std::time::Instant::now();
+        let closed = tokio::time::timeout(std::time::Duration::from_secs(5), connection).await;
+        assert!(closed.is_ok(), "the HTTP/2 connection was not closed");
+        assert!(started.elapsed() < std::time::Duration::from_secs(4));
+        drop(response);
+    }
+
+    /// 最後のフレームをh2に渡した後も、溜まったデータを送れるようになるまで
+    /// 期限を外さない（PR #765のレビュー）。以前は、データが送信の
+    /// ウィンドウを待って溜まったままでも本文が捨てられ、期限が外れた。
+    /// 相手が中身の無い応答（404）のリクエストを送り続ければ、接続は
+    /// 何もしていない接続にもならず、閉じられなかった
+    #[tokio::test]
+    async fn test_http2_response_buffered_in_h2_keeps_the_send_deadline() {
+        let port = start_test_server(|c| c.timeout_ms = 500).await;
+        let stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .unwrap();
+        // 本文（JSON-RPCのエラー）より小さいウィンドウ: 最初のフレームは
+        // h2に渡されるが、送り切れずに溜まる
+        let (mut sender, connection) =
+            hyper::client::conn::http2::Builder::new(TokioExecutor::new())
+                .initial_stream_window_size(10)
+                .handshake(TokioIo::new(stream))
+                .await
+                .unwrap();
+        let connection = tokio::spawn(connection);
+        let request = hyper::Request::builder()
+            .method("POST")
+            .uri(format!("http://127.0.0.1:{port}/mcp"))
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from("not json"))
+            .unwrap();
+        let response = sender.send_request(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        // 中身の無い応答のリクエストを送り続ける
+        let started = std::time::Instant::now();
+        let busy = async {
+            loop {
+                let request = hyper::Request::builder()
+                    .uri(format!("http://127.0.0.1:{port}/nothing-here"))
+                    .body(axum::body::Body::empty())
+                    .unwrap();
+                if sender.send_request(request).await.is_err() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+        };
+        let closed = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            tokio::join!(busy, connection)
+        })
+        .await;
+        assert!(closed.is_ok(), "the HTTP/2 connection was not closed");
+        assert!(started.elapsed() < std::time::Duration::from_secs(4));
+        drop(response);
+    }
+
+    /// 長さの決まった本文は、最後の1バイトを残して渡し、もう一度読まれた
+    /// ときに、その1バイトを終わりと一緒に渡す。それまで期限を持ち続ける
+    /// （PR #765のレビュー）
+    #[tokio::test]
+    async fn test_send_progress_body_holds_back_the_last_byte() {
+        use http_body_util::BodyExt;
+        use hyper::body::Body as _;
+        let activity = Arc::new(ConnectionActivity::new());
+        let mut body = SendProgressBody::new(
+            axum::body::Body::from("hello"),
+            ActivityGuard::new(activity.clone()),
+            std::time::Duration::from_secs(1),
+        );
+        assert!(!body.is_end_stream());
+        assert!(activity.send_deadline().is_some());
+        assert_eq!(body.size_hint().exact(), Some(5));
+
+        let frame = body.frame().await.unwrap().unwrap();
+        assert_eq!(frame.into_data().unwrap(), "hell");
+        // 残した1バイトも、残りの大きさに数える
+        assert_eq!(body.size_hint().exact(), Some(1));
+        // 最後の1バイトがまだあるので、終わりとは言わず、期限も残す
+        assert!(!body.is_end_stream());
+        assert!(activity.send_deadline().is_some());
+
+        let frame = body.frame().await.unwrap().unwrap();
+        assert_eq!(frame.into_data().unwrap(), "o");
+        assert_eq!(body.size_hint().exact(), Some(0));
+        // ここで終わり（hyperは、このフレームと一緒にEND_STREAMを送り、
+        // 本文を捨てる。捨てれば期限も外れる）
+        assert!(body.is_end_stream());
+        assert!(activity.send_deadline().is_some());
+        drop(body);
+        assert_eq!(activity.send_deadline(), None);
+
+        // 1バイトの本文は、そのまま終わりと一緒に渡す
+        let mut one = SendProgressBody::new(
+            axum::body::Body::from("x"),
+            ActivityGuard::new(activity.clone()),
+            std::time::Duration::from_secs(1),
+        );
+        let frame = one.frame().await.unwrap().unwrap();
+        assert_eq!(frame.into_data().unwrap(), "x");
+        assert!(one.is_end_stream());
+        assert!(one.frame().await.is_none());
+        assert_eq!(activity.send_deadline(), None);
+
+        // 本文の無い応答には、期限を付けず、すぐ終わりと言う
+        let empty = SendProgressBody::new(
+            axum::body::Body::empty(),
+            ActivityGuard::new(activity.clone()),
+            std::time::Duration::from_secs(1),
+        );
+        assert!(empty.is_end_stream());
+        assert_eq!(activity.send_deadline(), None);
+    }
+
+    /// 受信のウィンドウを本文の長さちょうどにして、END_STREAMまで
+    /// WINDOW_UPDATEを送らない相手にも、最後まで送る（PR #765のレビュー。
+    /// 以前は、データを送り切った後、終わりを送る1バイトの余地を待ち続け、
+    /// 期限で切っていた）
+    #[tokio::test]
+    async fn test_http2_response_fits_a_window_of_exactly_its_length() {
+        use http_body_util::BodyExt;
+        let port = start_test_server(|c| c.timeout_ms = 500).await;
+        let request = || {
+            hyper::Request::builder()
+                .method("POST")
+                .uri(format!("http://127.0.0.1:{port}/mcp"))
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from("not json"))
+                .unwrap()
+        };
+        let handshake = |window: Option<u32>| async move {
+            let stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
+                .await
+                .unwrap();
+            let (sender, connection) =
+                hyper::client::conn::http2::Builder::new(TokioExecutor::new())
+                    .initial_stream_window_size(window)
+                    .handshake::<_, axum::body::Body>(TokioIo::new(stream))
+                    .await
+                    .unwrap();
+            tokio::spawn(connection);
+            sender
+        };
+
+        // 本文の長さを知る
+        let mut sender = handshake(None).await;
+        let response = sender.send_request(request()).await.unwrap();
+        let expected = response.into_body().collect().await.unwrap().to_bytes();
+        assert!(expected.len() > 1);
+
+        // ウィンドウを本文の長さちょうどにする。hyperのクライアントは、
+        // 本文を読むまでWINDOW_UPDATEを送らない
+        let mut sender = handshake(Some(expected.len() as u32)).await;
+        let response = sender.send_request(request()).await.unwrap();
+        // 期限（500ms）を何度も過ぎるまで、読まずに待つ
+        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+        let body = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            response.into_body().collect(),
+        )
+        .await
+        .expect("the body did not end")
+        .expect("the connection was cut before the body ended")
+        .to_bytes();
+        assert_eq!(body, expected);
+    }
+    /// 送っている応答の期限は、本文を送り終えるか捨てれば外す（#759）
+    #[test]
+    fn test_send_deadline_is_cleared_when_the_response_is_done() {
+        let activity = Arc::new(ConnectionActivity::new());
+        let first = ActivityGuard::new(activity.clone());
+        let second = ActivityGuard::new(activity.clone());
+        assert_eq!(activity.send_deadline(), None);
+        let now = std::time::Instant::now();
+        first.set_send_deadline(Some(now + std::time::Duration::from_secs(5)));
+        second.set_send_deadline(Some(now + std::time::Duration::from_secs(1)));
+        assert_eq!(
+            activity.send_deadline(),
+            Some(now + std::time::Duration::from_secs(1))
+        );
+        drop(second);
+        assert_eq!(
+            activity.send_deadline(),
+            Some(now + std::time::Duration::from_secs(5))
+        );
+        first.set_send_deadline(None);
+        assert_eq!(activity.send_deadline(), None);
+    }
     /// 本文を送り終えないリクエストも、`timeout_ms`で打ち切る（#540）
     #[tokio::test]
     async fn test_slow_body_is_cut_off_after_the_timeout() {
