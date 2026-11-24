@@ -19,8 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `initialize`で決まった版）で答える。`with_request_handler`の`/mcp`は、要求
   ごとに新しい接続の状態で、対応する一番古い版で答えるので、ツールの`title`の
   有無等が違うことがある（同じにするなら、`handle_message_in_session`に要求
-  ごとの新しい`Session`を渡す）。`stop_server`は、待ち受けをやめ、接続を
-  閉じる（`Transport::stop`も同じ）。`receive_request_with_caller`は今までどおり
+  ごとの新しい`Session`を渡す）。クライアントの付けた`id`
+  （`ReceivedRequest::original_id`、通知は`None`）も返す。`stop_server`は、
+  待ち受けをやめ、接続を閉じる（`Transport::stop`も同じ）。
+  `receive_request_with_caller`は今までどおり
 
 - ライブラリとして使う場合: `HttpTransport::receive_request_with_caller`を
   足した（#749）。`with_request_handler`を使わないときに、HTTP・WebSocketで
@@ -174,8 +176,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   クライアントの付けた`id`から、要求ごとの内部の相関ID（`"mcp-rs-1"`等の
   文字列）に変えた（#760）。応答の`id`にそのまま入れて`send_message`で返せば、
   クライアントには元の`id`で届く（今までどおり、要求の`id`を応答に写す
-  作りなら、変更は要らない）。mcp-rs本体は`with_request_handler`を使うので、
-  動きは変わらない
+  作りなら、変更は要らない）。取り消し（`notifications/cancelled`）の
+  `params.requestId`は、クライアントの`id`のまま届くので、同じ呼び出し元
+  （`caller`）の要求のうち、`ReceivedRequest::original_id`が同じものを
+  取り消す（ほかの呼び出し元の要求は、同じ`id`でも取り消さない）。
+  mcp-rs本体は`with_request_handler`を使うので、動きは変わらない
 
 - `[database]`の`host`がループバック（`localhost`・`127.0.0.1`・`::1`。
   PostgreSQLはUnixソケットも）以外なら、`ssl_mode`を省略できないようにした（#722）。

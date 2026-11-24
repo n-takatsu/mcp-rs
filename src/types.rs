@@ -12,7 +12,12 @@ pub struct JsonRpcRequest {
     pub params: Option<Value>,
     /// 要求の`id`。通知（`id`なし）は`None`（PR #771）。以前は必須で、
     /// 通知を読めなかった。`"id": null`も`None`に読む（`HttpTransport`は、
-    /// `id`が文字列・数値でない要求を、渡す前に断る）
+    /// `id`が文字列・数値でない要求を、渡す前に断る）。
+    ///
+    /// `HttpTransport`のチャンネルでは、要求の`id`は内部の相関IDで、
+    /// クライアントの`id`は`ReceivedRequest::original_id`にある。
+    /// `notifications/cancelled`の`requestId`は、同じ呼び出し元の要求の
+    /// `original_id`と照らし合わせる（PR #771のレビュー）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<RequestId>,
 }

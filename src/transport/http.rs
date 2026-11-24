@@ -829,6 +829,9 @@ struct HttpTransportState {
     /// 動いている`/ws`の接続のタスク（PR #771のレビュー）。止めるときに、
     /// 終わるのを待つ
     ws_tasks: Arc<ActiveTasks>,
+    /// 送っている途中の`/ws`の応答（テストで、送信が止まっているのを確かめる）
+    #[cfg(test)]
+    ws_response_sends: Arc<ActiveTasks>,
     network_policy: NetworkPolicy,
     tls_terminated_locally: bool,
     enforce_https: bool,
@@ -1008,6 +1011,9 @@ struct QueuedWaiter {
     deadline: tokio::time::Instant,
     /// 待つのをやめたら（期限切れ・クライアントが切った等）`true`
     cancelled: Arc<std::sync::atomic::AtomicBool>,
+    /// クライアントの付けた`id`（`ReceivedRequest::original_id`、PR #771の
+    /// レビュー）
+    client_id: Value,
 }
 
 impl QueuedRequest {
@@ -1030,6 +1036,15 @@ pub struct ReceivedRequest {
     /// 通知は`id`が`None`で、応答しない（PR #771。`id`が`null`の応答を
     /// `send_message`に渡しても、捨てる）
     pub request: JsonRpcRequest,
+    /// クライアントの付けた`id`（JSONの値のまま。`1.5`等も変えない）。
+    /// 要求なら`Some`、通知は`None`（PR #771のレビュー）。
+    ///
+    /// 取り消し（`notifications/cancelled`）の`params.requestId`は、
+    /// クライアントの`id`のまま届く（内部の相関IDに置き換えない）。取り消す
+    /// 要求は、同じ呼び出し元（`caller`）から来た要求のうち、`original_id`が
+    /// `requestId`と同じものとして探す。ほかの呼び出し元の要求は、同じ
+    /// `id`でも取り消さない
+    pub original_id: Option<Value>,
     /// 呼び出し元（APIキー・トークンの名前と使えるツール、接続元の
     /// IPアドレス、#749）
     pub caller: crate::mcp::Caller,
@@ -1183,7 +1198,7 @@ impl RequestChannel {
         self.pending.lock().insert(
             correlation_id.clone(),
             PendingResponse {
-                client_id,
+                client_id: client_id.clone(),
                 response_tx,
             },
         );
@@ -1200,6 +1215,7 @@ impl RequestChannel {
             waiter: Some(QueuedWaiter {
                 deadline,
                 cancelled,
+                client_id,
             }),
         });
         PendingRequest {
@@ -1323,6 +1339,9 @@ pub struct HttpTransport {
     /// 動いているサーバー（#760）。同期の`is_connected()`からも読むため、
     /// `std::sync::Mutex`を使う（ロックを持ったまま`.await`しない）
     server: Arc<std::sync::Mutex<Option<RunningServer>>>,
+    /// 送っている途中の`/ws`の応答（テストで、送信が止まっているのを確かめる）
+    #[cfg(test)]
+    ws_response_sends: Arc<ActiveTasks>,
 }
 
 impl HttpTransport {
@@ -1364,6 +1383,10 @@ impl HttpTransport {
                     })?;
                 Ok(Some(ReceivedRequest {
                     request,
+                    original_id: queued
+                        .waiter
+                        .as_ref()
+                        .map(|waiter| waiter.client_id.clone()),
                     caller: queued.caller,
                     protocol_version: queued.protocol_version,
                 }))
@@ -1423,6 +1446,8 @@ impl HttpTransport {
             audit_logger: Arc::new(AuditLogger::with_defaults()),
             lifecycle: Arc::new(tokio::sync::Mutex::new(())),
             server: Arc::new(std::sync::Mutex::new(None)),
+            #[cfg(test)]
+            ws_response_sends: Arc::default(),
         })
     }
 
@@ -1609,6 +1634,8 @@ impl HttpTransport {
         let ws_tasks = Arc::new(ActiveTasks::default());
         let state = HttpTransportState {
             ws_tasks: ws_tasks.clone(),
+            #[cfg(test)]
+            ws_response_sends: self.ws_response_sends.clone(),
             channel: self.channel.clone(),
             stats: self.stats.clone(),
             shutdown: shutdown_rx.clone(),
@@ -4087,11 +4114,15 @@ async fn handle_ws_socket(
                         // 止めるときは、送るのをやめる（PR #771のレビュー）。
                         // 読まない相手への大きな応答は、上の期限（大きさに
                         // 合わせて長い）まで止まり、止めるのを待たせる
+                        #[cfg(test)]
+                        let sending = state.ws_response_sends.start();
                         let sent = tokio::select! {
                             biased;
                             _ = wait_for_shutdown(&mut shutdown) => None,
                             sent = tokio::time::timeout(limit, s.send(response)) => Some(sent),
                         };
+                        #[cfg(test)]
+                        drop(sending);
                         let Some(sent) = sent else {
                             debug!(
                                 "Closing WebSocket connection {} from {}: the server is stopping while a response is being sent",
@@ -8711,6 +8742,93 @@ mod tests {
         assert_eq!(body["id"], serde_json::json!(5));
     }
 
+    /// 受信側には、クライアントの付けた`id`も`original_id`で渡る（PR #771の
+    /// レビュー）。取り消し（`notifications/cancelled`）の`requestId`は
+    /// クライアントの`id`のまま届くので、受信側は`original_id`で照らし合わせる
+    #[tokio::test]
+    async fn test_channel_requests_carry_the_original_id_for_cancellation() {
+        let transport = HttpTransport::new(HttpConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            ..HttpConfig::default()
+        })
+        .unwrap();
+        transport.start_server().await.unwrap();
+        let server_addr = transport.bound_addr().await.unwrap();
+        wait_for_plain_server_ready(server_addr).await;
+        let url = format!("http://127.0.0.1:{}/mcp", server_addr.port());
+        let client = reqwest::Client::new();
+
+        let request = {
+            let request = client.post(&url).json(&serde_json::json!({
+                "jsonrpc": "2.0", "id": 7, "method": "tools/call",
+                "params": { "name": "slow", "arguments": {} }
+            }));
+            tokio::spawn(async move { request.send().await.unwrap() })
+        };
+        let received = tokio::time::timeout(
+            Duration::from_secs(10),
+            transport.receive_request_with_context(),
+        )
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+        assert_eq!(received.original_id, Some(serde_json::json!(7)));
+        assert!(
+            matches!(
+                &received.request.id,
+                Some(crate::types::RequestId::String(id)) if id.starts_with(CORRELATION_ID_PREFIX)
+            ),
+            "{:?}",
+            received.request.id
+        );
+
+        let response = client
+            .post(&url)
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0", "method": "notifications/cancelled",
+                "params": { "requestId": 7 }
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let cancel = tokio::time::timeout(
+            Duration::from_secs(10),
+            transport.receive_request_with_context(),
+        )
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+        assert_eq!(cancel.request.method, "notifications/cancelled");
+        assert_eq!(cancel.original_id, None);
+        // 同じ呼び出し元の要求の`original_id`と照らし合わせられる
+        assert_eq!(
+            cancel.request.params.as_ref().unwrap()["requestId"],
+            received.original_id.clone().unwrap()
+        );
+        assert_eq!(cancel.caller, received.caller);
+
+        // 取り消した要求の応答を返さなくても、HTTPは期限で終わる。ここでは
+        // 答えて、クライアントの`id`で返るのを確かめる
+        let mut transport = transport;
+        transport
+            .send_message(JsonRpcResponse {
+                jsonrpc: "2.0".to_string(),
+                result: Some(serde_json::json!({})),
+                error: None,
+                id: received.request.id.clone().unwrap(),
+            })
+            .await
+            .unwrap();
+        let response = request.await.unwrap();
+        assert_eq!(
+            response.json::<Value>().await.unwrap()["id"],
+            serde_json::json!(7)
+        );
+    }
+
     /// 通知への応答（`id`が`null`）は、要求のキューに入れずに捨てる（PR #771）
     #[tokio::test]
     async fn test_response_with_a_null_id_is_dropped() {
@@ -10520,14 +10638,34 @@ mod tests {
         wait_for_plain_server_ready(addr).await;
         let mut stalled = raw_ws_connect(addr).await;
         raw_ws_send_text(&mut stalled, &large_response_request()).await;
-        // 送信が止まるまで（送信の期限は、テストでも大きさに合わせて長い）
-        sleep(Duration::from_millis(500)).await;
+        // 応答の送信が始まり、止まったままなのを確かめる（PR #771のレビュー。
+        // 送信の期限は、テストでも約5秒（1秒と、32MBを8MB/秒で送る時間））
+        let sends = &transport.ws_response_sends.count;
+        let waiting = Instant::now();
+        while sends.load(Ordering::SeqCst) == 0 {
+            assert!(
+                waiting.elapsed() < Duration::from_secs(10),
+                "the response was not sent"
+            );
+            sleep(Duration::from_millis(10)).await;
+        }
+        sleep(Duration::from_millis(1500)).await;
+        assert_eq!(
+            sends.load(Ordering::SeqCst),
+            1,
+            "the send did not stall (the client read the response?)"
+        );
 
+        // 止めるのは、Closeを送る上限（1秒）と少しの余裕で終わる
         let started = Instant::now();
         tokio::time::timeout(Duration::from_secs(10), transport.stop_server())
             .await
             .expect("stop_server waited for the stalled response");
-        assert!(started.elapsed() < Duration::from_secs(5));
+        assert!(
+            started.elapsed() < Duration::from_millis(2500),
+            "{:?}",
+            started.elapsed()
+        );
         drop(stalled);
     }
 
