@@ -739,6 +739,13 @@ pub fn init_logging(config: &LogConfig) -> Result<Option<WorkerGuard>> {
     // 起動時刻（見出しの行とinstance_idで使う）を、起動の直後に決めておく
     let _ = instance_id();
 
+    // 全体のsubscriberが既にあれば（ライブラリとして使うホストが設定済み）、
+    // 起動マーカー等を書く前に断る（#760）。以前は`.init()`がpanicし、
+    // 使わない出力先に起動マーカーが残り、`LOG_DESTINATION`も公開された
+    if tracing::dispatcher::has_been_set() {
+        anyhow::bail!("a global tracing subscriber is already set");
+    }
+
     // EnvFilterを作成
     let env_filter = EnvFilter::try_new(&config.level).unwrap_or_else(|_| EnvFilter::new("info"));
 
@@ -747,7 +754,7 @@ pub fn init_logging(config: &LogConfig) -> Result<Option<WorkerGuard>> {
     // ケースも含めて必ずstderrへ告知し（トレーシング初期化前なので
     // eprintln!で直接出す）、プロセス全体から参照できるグローバル状態
     // にも記録する（wordpress_health_check等の診断用途）。
-    let file_appender = if config.file_enabled {
+    let (file_appender, destination) = if config.file_enabled {
         let (mut appender, destination) = resolve_log_destination(config, "started");
         eprintln!("[mcp-rs] log file: {}", destination.summary());
         // 切り替えるたびにも、保持ポリシーを適用する（#759）
@@ -758,10 +765,9 @@ pub fn init_logging(config: &LogConfig) -> Result<Option<WorkerGuard>> {
         {
             appender = appender.map(|appender| appender.with_rollover_hook(hook));
         }
-        let _ = LOG_DESTINATION.set(destination);
-        appender
+        (appender, Some(destination))
     } else {
-        None
+        (None, None)
     };
 
     // ログ設定に基づいて初期化
@@ -794,10 +800,15 @@ pub fn init_logging(config: &LogConfig) -> Result<Option<WorkerGuard>> {
                 .with_writer(std::io::stderr)
                 .with_max_level(tracing::Level::WARN)
                 .event_format(pid_formatter())
-                .init();
+                .try_init()
+                .map_err(subscriber_init_error)?;
             None
         }
     };
+    // 出力先は、subscriberを設定できてから公開する（#760）
+    if let Some(destination) = destination {
+        let _ = LOG_DESTINATION.set(destination);
+    }
 
     tracing::info!("📝 ログシステム初期化完了");
     match current_log_destination() {
@@ -1244,6 +1255,11 @@ fn is_log_file(name: &str) -> bool {
     local_rolling::is_file_name_of(LOG_FILE_PREFIX, name)
 }
 
+/// 全体のsubscriberを設定できなかったとき（既にある等）のエラー（#760）
+fn subscriber_init_error(e: impl std::fmt::Display) -> anyhow::Error {
+    anyhow::anyhow!("failed to set the global tracing subscriber: {e}")
+}
+
 /// 単一ファイルログ初期化（コンソール＋ファイル）
 /// `file_appender`は`init_logging`が`resolve_log_destination`で事前に
 /// 解決済み（フォールバック・失敗告知込み）のものを受け取る。
@@ -1277,7 +1293,8 @@ fn init_single_file_logging(
                 .with(env_filter)
                 .with(console_layer)
                 .with(file_layer)
-                .init();
+                .try_init()
+                .map_err(subscriber_init_error)?;
 
             Ok(Some(guard))
         }
@@ -1322,7 +1339,8 @@ fn init_console_only_logging(env_filter: EnvFilter) -> Result<()> {
         .with_writer(std::io::stderr)
         .with_env_filter(env_filter)
         .event_format(pid_formatter())
-        .init();
+        .try_init()
+        .map_err(subscriber_init_error)?;
 
     Ok(())
 }
@@ -1345,7 +1363,8 @@ fn init_file_only_logging(
                     .with_writer(non_blocking)
                     .with_ansi(false)
                     .event_format(pid_formatter())
-                    .init();
+                    .try_init()
+                    .map_err(subscriber_init_error)?;
 
                 Ok(Some(guard))
             }
@@ -2041,6 +2060,30 @@ mod tests {
             started.format("%Y-%m-%dT%H:%M:%S%.3f%:z")
         )));
         assert!(instance_id().ends_with(&started.format("%Y%m%dT%H%M%S").to_string()));
+    }
+
+    /// 全体のsubscriberが既にあれば、panicせずにエラーを返す。起動マーカーを
+    /// 書かず、出力先も公開しない（#760）
+    #[test]
+    fn test_init_logging_returns_an_error_when_a_subscriber_is_set() {
+        // このテストのプロセスの全体のsubscriberにする。他のテストは、
+        // 全体のsubscriberを設定しない
+        let _ =
+            tracing::subscriber::set_global_default(tracing::subscriber::NoSubscriber::default());
+        let temp_dir = tempdir().unwrap();
+        let log_dir = temp_dir.path().join("logs");
+        for console_enabled in [true, false] {
+            for file_enabled in [true, false] {
+                let config = LogConfig::default()
+                    .with_log_dir(&log_dir)
+                    .with_console(console_enabled)
+                    .with_file(file_enabled);
+                let result = init_logging(&config);
+                assert!(result.is_err(), "{console_enabled} {file_enabled}");
+            }
+        }
+        assert!(!log_dir.exists());
+        assert!(current_log_destination().is_none());
     }
 
     /// 切り替えたときの見出しの行は、起動したときと同じ形で`continued`になる
