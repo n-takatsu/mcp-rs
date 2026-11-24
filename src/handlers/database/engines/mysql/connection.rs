@@ -366,9 +366,12 @@ impl MySqlConnection {
                 Some((user, info)) => {
                     let seen = read_server(&mut conn, self.server).await;
                     let same_boot = match (target.server.uptime, seen.uptime) {
-                        (Some((before, read_at)), Some((now, now_at))) => {
-                            same_boot(before, now_at.saturating_duration_since(read_at), now)
-                        }
+                        (Some(before), Some(now)) => same_boot(
+                            before.value,
+                            now.started.saturating_duration_since(before.finished),
+                            now.finished.saturating_duration_since(before.started),
+                            now.value,
+                        ),
                         _ => None,
                     };
                     Some(ProcessRow {
@@ -424,9 +427,18 @@ struct KillTarget<'a> {
 struct ServerSeen {
     /// `server_identity_expr`の値
     id: Option<String>,
-    /// `Uptime`（秒）と、それを読み始めた時刻。`server_uuid`は再起動しても
-    /// 変わらないので、起動した時刻を比べるため
-    uptime: Option<(u64, std::time::Instant)>,
+    /// `Uptime`（秒）。`server_uuid`は再起動しても変わらないので、起動した
+    /// 時刻を比べるため
+    uptime: Option<Uptime>,
+}
+
+/// 読んだ`Uptime`と、読み始めた・読み終えた時刻（#759）。サーバーが値を
+/// 採ったのは、この間のどこか（PR #762のレビュー）
+#[derive(Clone, Copy)]
+struct Uptime {
+    value: u64,
+    started: std::time::Instant,
+    finished: std::time::Instant,
 }
 
 /// `conn`のサーバーを見分ける値を読む。読めない値は`None`
@@ -436,7 +448,7 @@ async fn read_server(conn: &mut Conn, kind: ServerKind) -> ServerSeen {
         .await
         .ok()
         .flatten();
-    let read_at = std::time::Instant::now();
+    let started = std::time::Instant::now();
     // `SHOW STATUS`は、権限が無くても読める（MySQL・MariaDBとも）
     let uptime = conn
         .query_first::<(String, String), _>("SHOW GLOBAL STATUS LIKE 'Uptime'")
@@ -444,7 +456,11 @@ async fn read_server(conn: &mut Conn, kind: ServerKind) -> ServerSeen {
         .ok()
         .flatten()
         .and_then(|(_, value)| value.trim().parse().ok())
-        .map(|uptime| (uptime, read_at));
+        .map(|value| Uptime {
+            value,
+            started,
+            finished: std::time::Instant::now(),
+        });
     ServerSeen { id, uptime }
 }
 
@@ -452,15 +468,19 @@ async fn read_server(conn: &mut Conn, kind: ServerKind) -> ServerSeen {
 /// 往復の時間だけずれる
 const BOOT_TOLERANCE_SECS: f64 = 3.0;
 
-/// 元の接続で`before`秒だった`Uptime`が、`elapsed`の後に`now`秒なら、
-/// サーバーは同じ起動のままか（#759）。再起動していれば`Some(false)`。
-/// 比べられない（元の`Uptime`が誤差より小さい、時計が合わない）ときは`None`
-fn same_boot(before: u64, elapsed: Duration, now: u64) -> Option<bool> {
-    // 同じ起動なら、ほぼ0。再起動したなら、`before`より少し小さい値以上
-    let gap = before as f64 + elapsed.as_secs_f64() - now as f64;
-    if gap > BOOT_TOLERANCE_SECS {
+/// 元の接続で`before`秒だった`Uptime`が、後で`now`秒なら、サーバーは同じ
+/// 起動のままか（#759）。2つの値を採った間の時間は、`min_elapsed`から
+/// `max_elapsed`の間（それぞれを読み始めた・読み終えた時刻から求める。
+/// 応答の遅れは、この幅に入る。PR #762のレビュー）。経った時間が最も短い
+/// としても`now`が小さすぎれば、再起動した（`Some(false)`）。比べられない
+/// （元の`Uptime`が誤差より小さい、最も長くても`now`が大きすぎる）ときは`None`
+fn same_boot(before: u64, min_elapsed: Duration, max_elapsed: Duration, now: u64) -> Option<bool> {
+    let (before, now) = (before as f64, now as f64);
+    if now + BOOT_TOLERANCE_SECS < before + min_elapsed.as_secs_f64() {
         Some(false)
-    } else if gap < -BOOT_TOLERANCE_SECS || (before as f64) <= BOOT_TOLERANCE_SECS + 1.0 {
+    } else if now > before + max_elapsed.as_secs_f64() + BOOT_TOLERANCE_SECS
+        || before <= BOOT_TOLERANCE_SECS + 1.0
+    {
         None
     } else {
         Some(true)
@@ -1215,20 +1235,25 @@ mod tests {
         let secs = Duration::from_secs;
         // 同じ起動: 経った時間だけ増える（秒単位の切り捨て・往復の時間のずれは
         // 許す）
-        assert_eq!(same_boot(1000, secs(40), 1040), Some(true));
+        assert_eq!(same_boot(1000, secs(40), secs(40), 1040), Some(true));
         assert_eq!(
-            same_boot(1000, Duration::from_millis(40_900), 1039),
+            same_boot(1000, Duration::from_millis(40_900), secs(41), 1039),
             Some(true)
         );
-        assert_eq!(same_boot(1000, secs(40), 1042), Some(true));
-        // 再起動: 経った時間より小さい
-        assert_eq!(same_boot(1000, secs(40), 10), Some(false));
-        assert_eq!(same_boot(10, secs(40), 0), Some(false));
+        assert_eq!(same_boot(1000, secs(40), secs(40), 1042), Some(true));
+        // 応答が遅れても、読み始め・読み終えの幅で説明できれば同じ起動（PR
+        // #762のレビュー。元の値が読み始めの4秒後に採られ、32秒後に読み終えた）
+        assert_eq!(same_boot(1004, secs(28), secs(32), 1032), Some(true));
+        assert_eq!(same_boot(1000, secs(30), secs(40), 1031), Some(true));
+        // 再起動: 最も短く見ても、経った時間より小さい
+        assert_eq!(same_boot(1000, secs(40), secs(40), 10), Some(false));
+        assert_eq!(same_boot(10, secs(40), secs(40), 0), Some(false));
+        assert_eq!(same_boot(1000, secs(30), secs(40), 1025), Some(false));
         // 元の`Uptime`が誤差より小さいと、再起動と見分けられない
-        assert_eq!(same_boot(2, secs(40), 42), None);
-        assert_eq!(same_boot(2, secs(40), 41), None);
-        // 時計が合わない（経った時間より増えた）
-        assert_eq!(same_boot(1000, secs(40), 1100), None);
+        assert_eq!(same_boot(2, secs(40), secs(40), 42), None);
+        assert_eq!(same_boot(2, secs(40), secs(40), 41), None);
+        // 時計が合わない（最も長く見ても、経った時間より増えた）
+        assert_eq!(same_boot(1000, secs(40), secs(40), 1100), None);
     }
 
     /// 時間の上限を超えたときは、止めた結果に合わせて伝える（#759）
