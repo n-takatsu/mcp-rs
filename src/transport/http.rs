@@ -967,6 +967,29 @@ struct QueuedRequest {
     caller: crate::mcp::Caller,
     /// `MCP-Protocol-Version`ヘッダーで選んだ版（検証済み）
     protocol_version: Option<&'static str>,
+    /// 応答を待っている要求なら、その期限と取り消しの印（PR #771の
+    /// レビュー）。通知は`None`（いつでも渡す）
+    waiter: Option<QueuedWaiter>,
+}
+
+/// キューの中の要求が、まだ応答を待たれているか（PR #771のレビュー）
+#[derive(Debug)]
+struct QueuedWaiter {
+    /// 応答を待つ期限。過ぎたら、HTTPは408を返している
+    deadline: tokio::time::Instant,
+    /// 待つのをやめたら（期限切れ・クライアントが切った等）`true`
+    cancelled: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl QueuedRequest {
+    /// もう誰も応答を待っていない要求か。受信側に渡さずに捨てる（処理を
+    /// 始めると、408の後に実行され、クライアントがやり直すと副作用が重なる）
+    fn is_abandoned(&self) -> bool {
+        self.waiter.as_ref().is_some_and(|waiter| {
+            waiter.cancelled.load(Ordering::SeqCst)
+                || tokio::time::Instant::now() >= waiter.deadline
+        })
+    }
 }
 
 /// `HttpTransport::receive_request_with_context`が返す要求（#760）
@@ -1080,17 +1103,20 @@ impl RequestChannel {
             message,
             caller,
             protocol_version,
+            waiter: None,
         });
     }
 
     /// 要求の`id`を内部の相関IDに置き換えて渡し、応答の待ち先を登録する。
-    /// 登録は渡す前にする（受信側が速く応答しても、待ち先がある）
+    /// 登録は渡す前にする（受信側が速く応答しても、待ち先がある）。
+    /// `deadline`を過ぎるか、待つのをやめたら、受信側はこの要求を受け取らない
     fn forward_request(
         &self,
         permit: tokio::sync::mpsc::Permit<'_, QueuedRequest>,
         mut request: Value,
         caller: crate::mcp::Caller,
         protocol_version: Option<&'static str>,
+        deadline: tokio::time::Instant,
     ) -> PendingRequest {
         let correlation_id = format!(
             "{}{}",
@@ -1109,14 +1135,20 @@ impl RequestChannel {
                 response_tx,
             },
         );
+        let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let registration = PendingRegistration {
             pending: self.pending.clone(),
             correlation_id,
+            cancelled: cancelled.clone(),
         };
         permit.send(QueuedRequest {
             message: request.to_string(),
             caller,
             protocol_version,
+            waiter: Some(QueuedWaiter {
+                deadline,
+                cancelled,
+            }),
         });
         PendingRequest {
             registration,
@@ -1131,10 +1163,14 @@ impl RequestChannel {
 struct PendingRegistration {
     pending: PendingResponses,
     correlation_id: String,
+    /// キューの中の要求に、待つのをやめたことを伝える（PR #771のレビュー）
+    cancelled: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Drop for PendingRegistration {
     fn drop(&mut self) {
+        // 応答を受けた後なら、要求はもう受信側に渡っているので、影響しない
+        self.cancelled.store(true, Ordering::SeqCst);
         self.pending.lock().remove(&self.correlation_id);
     }
 }
@@ -1217,7 +1253,17 @@ impl HttpTransport {
     ) -> std::result::Result<Option<ReceivedRequest>, TransportError> {
         let mut receiver = self.receiver.lock().await;
 
-        match receiver.recv().await {
+        // もう誰も応答を待っていない要求（期限切れ・クライアントが切った）は
+        // 渡さずに、次を待つ（PR #771のレビュー）
+        let next = loop {
+            match receiver.recv().await {
+                Some(queued) if queued.is_abandoned() => {
+                    debug!("Skipped a request that is no longer waited for (it timed out or was cancelled)");
+                }
+                next => break next,
+            }
+        };
+        match next {
             Some(queued) => {
                 debug!("HTTP transport received message: {}", queued.message);
                 let request: JsonRpcRequest =
@@ -1714,15 +1760,15 @@ impl HttpTransport {
             running.finished.clone()
         });
         if let Some(mut finished) = finished {
-            // パニックで終わったとき（送る側が無くなった）も、終わったとする
-            let _ = finished.wait_for(|finished| *finished).await;
-            // 終わったタスクの結果を読む（ロックは`.await`の前に放す）
-            let running = self.lock_server().take();
-            if let Some(running) = running {
-                if let Err(e) = running.task.await {
-                    warn!("HTTP server task ended with an error: {}", e);
-                }
+            // パニックで終わったとき（送る側が無くなった）も、終わったとする。
+            // `finished`は、リスナーを閉じ、接続のタスクを終えた後に`true`に
+            // なるので、ここで記録を消してよい。`JoinHandle`は待たない（待つ
+            // 途中で捨てられると、終わる前に記録が消えるため、PR #771の
+            // レビュー）。記録を消すまでに`.await`は無い
+            if finished.wait_for(|finished| *finished).await.is_err() {
+                warn!("HTTP server task ended unexpectedly");
             }
+            self.lock_server().take();
         }
         self.set_bound_addr(None);
     }
@@ -2538,6 +2584,7 @@ impl Transport for HttpTransport {
                 message: message_str,
                 caller: crate::mcp::Caller::unrestricted(),
                 protocol_version: None,
+                waiter: None,
             })
             .await
             .map_err(|e| TransportError::Internal(format!("HTTP send failed: {}", e)))?;
@@ -2790,9 +2837,10 @@ async fn handle_jsonrpc_request(
 
     // 内部の相関IDで応答を待つ（#760）。この future が途中で捨てられても
     // （クライアントが切った等）、待ち先の登録は`PendingRegistration`が消す
-    let pending = state
-        .channel
-        .forward_request(permit, request, caller, protocol_version);
+    let pending =
+        state
+            .channel
+            .forward_request(permit, request, caller, protocol_version, deadline);
     match pending.response(deadline).await {
         Ok(response_value) => {
             let response_size = response_value.to_string().len() as u64;
@@ -3677,6 +3725,7 @@ async fn handle_ws_socket(
         conn_id,
         WsClient {
             caller,
+            token_deadline: expires_at.map(unix_time_to_instant),
             session: Arc::new(crate::mcp::Session::default()),
         },
     );
@@ -3864,6 +3913,25 @@ async fn handle_ws_socket(
                 }
 
                 match state.websocket_handler.handle_message(conn_id, msg).await {
+                    // ハンドラーが閉じると決めた（キューの枠を待つ間に
+                    // トークンの期限が切れた等、PR #771のレビュー）
+                    Ok(Some(Message::Close(frame))) => {
+                        info!(
+                            "Closing WebSocket connection {} from {}: {}",
+                            conn_id,
+                            addr,
+                            frame
+                                .as_ref()
+                                .map(|frame| frame.reason.to_string())
+                                .unwrap_or_default()
+                        );
+                        let _ = tokio::time::timeout(
+                            WEBSOCKET_SEND_TIMEOUT,
+                            sender.lock().await.send(Message::Close(frame)),
+                        )
+                        .await;
+                        break;
+                    }
                     Ok(Some(response)) => {
                         // 相手が受信を止めていると、送信で止まり続け、接続の枠を
                         // 持ち続ける（#543）。大きさに合わせた時間内に送れなければ
@@ -4157,6 +4225,9 @@ type ConnectionId = Uuid;
 struct WsClient {
     /// 接続時の認証で決まる呼び出し元（#52）
     caller: crate::mcp::Caller,
+    /// アクセストークンの期限（`unix_time_to_instant`で変えたもの）。
+    /// キューの枠を待つ間に切れたら、要求を渡さない（PR #771のレビュー）
+    token_deadline: Option<tokio::time::Instant>,
     /// `initialize`で決まったプロトコルの版。接続ごとに持つ（#570・#596）。
     /// 以前は全クライアントで1つを共有していた
     session: Arc<crate::mcp::Session>,
@@ -4254,6 +4325,7 @@ impl MessageHandler for JsonRpcWsHandler {
             .get(&conn_id)
             .cloned()
             .unwrap_or_else(|| WsClient {
+                token_deadline: None,
                 caller: crate::mcp::Caller::new(
                     "unknown-websocket-connection",
                     crate::mcp::ToolAccess::any_of(Vec::new()),
@@ -4325,6 +4397,15 @@ impl MessageHandler for JsonRpcWsHandler {
                 return Ok(None);
             }
         };
+        // 枠を待つ間にアクセストークンの期限が切れていれば、渡さずに
+        // （枠を返して）接続を閉じる（PR #771のレビュー。HTTPと同じ）
+        if token_expired(client.token_deadline) {
+            drop(permit);
+            return Ok(Some(Message::Close(Some(CloseFrame {
+                code: close_code::POLICY,
+                reason: "access token expired".into(),
+            }))));
+        }
 
         if request.get("id").is_none() {
             // Notification (no `id`) - no response frame expected
@@ -4339,9 +4420,9 @@ impl MessageHandler for JsonRpcWsHandler {
 
         // 内部の相関IDで応答を待つ（#760）。別の接続が同じ`id`を使っても、
         // 応答が入れ替わらない
-        let pending = self
-            .channel
-            .forward_request(permit, request, client.caller.clone(), None);
+        let pending =
+            self.channel
+                .forward_request(permit, request, client.caller.clone(), None, deadline);
         match pending.response(deadline).await {
             Ok(response) => {
                 let response_json = response.to_string();
@@ -7738,12 +7819,14 @@ mod tests {
             request.clone(),
             crate::mcp::Caller::unrestricted(),
             None,
+            deadline,
         );
         let second = channel.forward_request(
             channel.reserve(deadline).await.unwrap(),
             request,
             crate::mcp::Caller::unrestricted(),
             Some("2025-11-25"),
+            deadline,
         );
         assert_eq!(channel.pending.lock().len(), 2);
 
@@ -7899,18 +7982,20 @@ mod tests {
             .send()
             .await
             .is_err());
-        drop(std::net::TcpListener::bind(server_addr).unwrap());
 
-        // `/ws`の接続も閉じる
-        loop {
-            match tokio::time::timeout(Duration::from_secs(10), ws.next())
-                .await
-                .expect("the WebSocket connection was not closed")
-            {
-                Some(Ok(frame)) if !frame.is_close() => continue,
-                _ => break,
-            }
+        // `/ws`の接続も閉じる。接続が終わる（読み切る）まで待ってから、
+        // ポートを確かめる（`stop_server()`は`/ws`のタスクを待たないので、
+        // 残った接続がポートを持つことがある。PR #771のレビュー）
+        let mut saw_close = false;
+        while let Some(Ok(frame)) = tokio::time::timeout(Duration::from_secs(10), ws.next())
+            .await
+            .expect("the WebSocket connection was not closed")
+        {
+            saw_close |= frame.is_close();
         }
+        assert!(saw_close);
+        drop(ws);
+        drop(std::net::TcpListener::bind(server_addr).unwrap());
 
         // 止めた後は、また起動できる
         transport.start_server().await.unwrap();
@@ -8032,6 +8117,7 @@ mod tests {
                 message: "{}".to_string(),
                 caller: crate::mcp::Caller::unrestricted(),
                 protocol_version: None,
+                waiter: None,
             })
             .is_ok()
         {}
@@ -8064,6 +8150,91 @@ mod tests {
         transport.send_message(other).await.unwrap();
         assert!(transport.receiver.lock().await.try_recv().is_ok());
         assert!(transport.receiver.lock().await.try_recv().is_err());
+    }
+
+    /// もう誰も応答を待っていない要求（クライアントが切った・期限を過ぎた）は、
+    /// 受信側に渡さない（PR #771のレビュー）。408の後に処理されて、
+    /// やり直しで副作用が重ならないようにする。待たれている要求は
+    /// これまでどおり渡す
+    #[tokio::test]
+    async fn test_abandoned_channel_requests_are_not_handed_to_the_receiver() {
+        let transport = HttpTransport::new(HttpConfig::default()).unwrap();
+        let channel = transport.channel.clone();
+        let forward = |id: i64, deadline| {
+            let channel = channel.clone();
+            async move {
+                let permit = channel.reserve(deadline).await.unwrap();
+                channel.forward_request(
+                    permit,
+                    serde_json::json!({ "jsonrpc": "2.0", "id": id, "method": "ping" }),
+                    crate::mcp::Caller::unrestricted(),
+                    None,
+                    deadline,
+                )
+            }
+        };
+        let long = Instant::now() + Duration::from_secs(30);
+
+        // 1: クライアントが切った（待つものを捨てた）
+        drop(forward(1, long).await);
+        // 2: 期限を過ぎた（待つものは、まだ残っている）
+        let expired = forward(2, Instant::now() + Duration::from_millis(50)).await;
+        // 4: 待たれている要求
+        let waiting = forward(4, long).await;
+        sleep(Duration::from_millis(100)).await;
+
+        let received = transport
+            .receive_request_with_context()
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(received.request.method, "ping");
+        let crate::types::RequestId::String(id) = &received.request.id else {
+            panic!("{:?}", received.request.id);
+        };
+        assert!(channel.pending.lock().contains_key(id));
+        assert!(transport.receiver.lock().await.try_recv().is_err());
+        drop((expired, waiting));
+    }
+
+    /// `/ws`で、キューの枠を待つ間にアクセストークンの期限が切れたら、
+    /// 要求も通知も渡さずに、接続を閉じる（PR #771のレビュー）
+    #[tokio::test]
+    async fn test_websocket_request_is_not_queued_after_the_token_expired() {
+        let (channel, mut receiver) = test_request_channel(4);
+        let callers: WsClients = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        let conn_id = Uuid::new_v4();
+        callers.lock().await.insert(
+            conn_id,
+            WsClient {
+                caller: crate::mcp::Caller::unrestricted(),
+                token_deadline: Some(Instant::now() - Duration::from_secs(1)),
+                session: Arc::new(crate::mcp::Session::default()),
+            },
+        );
+        let handler = JsonRpcWsHandler {
+            request_handler: None,
+            callers,
+            channel,
+            stats: SharedStats::default(),
+        };
+        for message in [
+            serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": "ping" }),
+            serde_json::json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }),
+        ] {
+            let reply = handler
+                .handle_message(conn_id, Message::Text(message.to_string().into()))
+                .await
+                .unwrap();
+            assert!(
+                matches!(
+                    &reply,
+                    Some(Message::Close(Some(frame))) if frame.code == close_code::POLICY
+                ),
+                "{reply:?}"
+            );
+        }
+        assert!(receiver.try_recv().is_err());
     }
 
     /// `connection_stats()`をTokioのタスクから呼んでも、パニックしない
