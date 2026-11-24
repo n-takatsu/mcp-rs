@@ -299,7 +299,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ログファイルに起動マーカーを書き、出力先（`current_log_destination`）も
   公開していた。先にsubscriberを設定し、設定できなければ（既にあれば）、
   何も書かずにエラーを返す。ログファイルを選んで起動マーカーを書き、
-  出力先を公開するのは、設定できてから
+  出力先を公開するのは、設定できてから。使う側が既に`log`クレートの
+  loggerを設定していても、`log`の橋渡しを設定できないことは警告（標準
+  エラー出力）だけにし、ログは今までどおりファイル等に書く
 
 - ライブラリとして使う場合: PostgreSQLのエンジンの`health_check`が、
   データベースに触れず、つなげなくても、接続先が止まっていても`Healthy`を

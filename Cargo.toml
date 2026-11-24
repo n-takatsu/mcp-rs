@@ -96,6 +96,8 @@ ipnet = "2.11"
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter", "json", "chrono"] }
 tracing-appender = "0.2.3"
+# `log`クレートの記録を`tracing`に流す（tracing-subscriberの`try_init`が使うものと同じ。PR #770）
+tracing-log = "0.2"
 
 # Configuration
 config = "0.15.18"

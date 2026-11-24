@@ -10,7 +10,7 @@ use tracing_subscriber::fmt::format::Writer;
 use tracing_subscriber::fmt::time::{ChronoLocal, FormatTime};
 use tracing_subscriber::fmt::{FmtContext, FormatEvent, FormatFields, FormattedFields};
 use tracing_subscriber::registry::LookupSpan;
-use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+use tracing_subscriber::{fmt, layer::SubscriberExt, EnvFilter};
 
 mod local_rolling;
 use local_rolling::LocalRollingAppender;
@@ -1313,6 +1313,23 @@ fn subscriber_init_error(e: impl std::fmt::Display) -> anyhow::Error {
     anyhow::anyhow!("failed to set the global tracing subscriber: {e}")
 }
 
+/// `subscriber`を全体のsubscriberに設定し、`log`クレートの記録も`tracing`に
+/// 流す（PR #770のレビュー）。`try_init()`は、subscriberを設定した後に`log`の
+/// 橋渡しを設定し、その失敗（使う側が既に`log`のloggerを設定している等）も
+/// エラーにするので、subscriberが残ったまま`init_logging`が途中で戻り、
+/// ファイルの書き先が決まらなくなっていた。橋渡しの失敗は警告だけにする
+/// （この時点ではファイルの書き先がまだ無いので、標準エラー出力に直接書く）
+fn set_global_subscriber<S>(subscriber: S) -> Result<()>
+where
+    S: tracing::Subscriber + Send + Sync + 'static,
+{
+    tracing::subscriber::set_global_default(subscriber).map_err(subscriber_init_error)?;
+    if let Err(e) = tracing_log::LogTracer::init() {
+        eprintln!("[mcp-rs] warning: records of the `log` crate are not logged: {e}");
+    }
+    Ok(())
+}
+
 /// 設定に従って、全体のsubscriberを組み立てて設定する。ファイルへの出力は
 /// `file_slot`に書く（書き先は、設定できてから`init_logging`が入れる）。
 /// コンソール（標準エラー出力。標準出力はSTDIOモードのMCPのJSON-RPCの流れ。
@@ -1333,33 +1350,36 @@ fn install_subscriber(
                 .with_writer(file_slot.clone())
                 .with_ansi(false)
                 .event_format(pid_formatter());
-            tracing_subscriber::registry()
-                .with(env_filter)
-                .with(console_layer)
-                .with(file_layer)
-                .try_init()
-                .map_err(subscriber_init_error)
+            set_global_subscriber(
+                tracing_subscriber::registry()
+                    .with(env_filter)
+                    .with(console_layer)
+                    .with(file_layer),
+            )
         }
-        (true, false) => tracing_subscriber::fmt()
-            .with_writer(std::io::stderr)
-            .with_env_filter(env_filter)
-            .event_format(pid_formatter())
-            .try_init()
-            .map_err(subscriber_init_error),
-        (false, true) => tracing_subscriber::fmt()
-            .with_env_filter(env_filter)
-            .with_writer(file_slot.clone())
-            .with_ansi(false)
-            .event_format(pid_formatter())
-            .try_init()
-            .map_err(subscriber_init_error),
+        (true, false) => set_global_subscriber(
+            tracing_subscriber::fmt()
+                .with_writer(std::io::stderr)
+                .with_env_filter(env_filter)
+                .event_format(pid_formatter())
+                .finish(),
+        ),
+        (false, true) => set_global_subscriber(
+            tracing_subscriber::fmt()
+                .with_env_filter(env_filter)
+                .with_writer(file_slot.clone())
+                .with_ansi(false)
+                .event_format(pid_formatter())
+                .finish(),
+        ),
         // 最低限のコンソール出力（標準エラー出力へ。#755）
-        (false, false) => tracing_subscriber::fmt()
-            .with_writer(std::io::stderr)
-            .with_max_level(tracing::Level::WARN)
-            .event_format(pid_formatter())
-            .try_init()
-            .map_err(subscriber_init_error),
+        (false, false) => set_global_subscriber(
+            tracing_subscriber::fmt()
+                .with_writer(std::io::stderr)
+                .with_max_level(tracing::Level::WARN)
+                .event_format(pid_formatter())
+                .finish(),
+        ),
     }
 }
 
