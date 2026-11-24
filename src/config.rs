@@ -485,15 +485,15 @@ pub fn legacy_plugins_conflict_hint(content: &str) -> Option<&'static str> {
                 .replace([' ', '\t'], "")
         })
         .collect();
-    let has_new = headers.iter().any(|h| h == "[[plugins]]");
-    // `[plugins.container]`・`[plugins.kubernetes]`は、直前の`[[plugins]]`の
-    // 設定（#411・#413）
-    let has_legacy = headers.iter().any(|h| {
+    let first_new = headers.iter().position(|h| h == "[[plugins]]");
+    let has_new = first_new.is_some();
+    // `[[plugins]]`より後の`[plugins.*]`（`container`・`kubernetes`・`env`・
+    // `rate_limit`等）は、直前の`[[plugins]]`の設定（#411・#413・#750）
+    let has_legacy = headers.iter().enumerate().any(|(i, h)| {
         h == "[plugins]"
             || (h.starts_with("[plugins.")
                 && h.ends_with(']')
-                && !h.starts_with("[plugins.container")
-                && !h.starts_with("[plugins.kubernetes"))
+                && first_new.is_none_or(|first| i < first))
     });
     (has_new && has_legacy).then_some(
         "The config file has both the old [plugins] section (v0.18.1 and earlier, never used by mcp-rs) and [[plugins]] entries. Delete the old [plugins] section, including [plugins.*] subsections",
@@ -662,25 +662,75 @@ pub fn with_config_hint(error: impl fmt::Display, content: &str) -> String {
 /// v0.18.1以前の`[plugins]`（テーブル、`PluginsConfig`）は本体が一度も
 /// 使っておらず、v0.18.2で「残っていても無視される」とした。その約束を
 /// 守るため、テーブルは警告を出して読み飛ばす。
+///
+/// `serde_json::Value`を経由すると、`enabled = nan`等のJSONに無い値が
+/// `null`（省略）になり、既定の値で動いてしまう（#750）。型を保つ
+/// `toml::Value`から`PluginConfig`として読み、不正な値は断る。
 fn deserialize_plugins<'de, D>(deserializer: D) -> Result<Vec<PluginConfig>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
-    let value = serde_json::Value::deserialize(deserializer)?;
-    match value {
-        serde_json::Value::Null => Ok(Vec::new()),
-        serde_json::Value::Array(_) => serde_json::from_value(value)
-            .map_err(|e| serde::de::Error::custom(format!("invalid [[plugins]] entry: {}", e))),
-        serde_json::Value::Object(_) => {
-            // ログはまだ初期化されていないことがあるため、標準エラー出力に書く
-            eprintln!(
-                "[mcp-rs] warning: the [plugins] table from v0.18.1 and earlier is ignored. To add a plugin, use [[plugins]] entries"
-            );
-            Ok(Vec::new())
+    deserializer.deserialize_any(PluginsVisitor)
+}
+
+struct PluginsVisitor;
+
+impl<'de> serde::de::Visitor<'de> for PluginsVisitor {
+    type Value = Vec<PluginConfig>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter.write_str("plugins must be [[plugins]] entries")
+    }
+
+    fn visit_unit<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+        Ok(Vec::new())
+    }
+
+    fn visit_none<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+        Ok(Vec::new())
+    }
+
+    fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_any(self)
+    }
+
+    fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+    where
+        A: serde::de::SeqAccess<'de>,
+    {
+        // 1つずつ`toml::Value`（型を保つ）として受け取ってから読む。
+        // `config`クレートから直接読むと、`nan`・`1`・`"yes"`も`bool`に、
+        // `nan`も数に変換されてしまう
+        let mut plugins = Vec::new();
+        while let Some(entry) = seq.next_element::<toml::Value>()? {
+            // `toml::de::Error`の表示は改行で終わるので、理由だけを使う
+            let plugin = PluginConfig::deserialize(entry).map_err(|e| {
+                serde::de::Error::custom(format!(
+                    "invalid [[plugins]] entry: {}",
+                    e.message().trim()
+                ))
+            })?;
+            plugins.push(plugin);
         }
-        _ => Err(serde::de::Error::custom(
-            "plugins must be [[plugins]] entries",
-        )),
+        Ok(plugins)
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: serde::de::MapAccess<'de>,
+    {
+        while map
+            .next_entry::<serde::de::IgnoredAny, serde::de::IgnoredAny>()?
+            .is_some()
+        {}
+        // ログはまだ初期化されていないことがあるため、標準エラー出力に書く
+        eprintln!(
+            "[mcp-rs] warning: the [plugins] table from v0.18.1 and earlier is ignored. To add a plugin, use [[plugins]] entries"
+        );
+        Ok(Vec::new())
     }
 }
 
@@ -2627,6 +2677,57 @@ command = "node"
             "[[plugins]]\nname = \"a\"\n[plugins.kubernetes]\nimage = \"i\"\n"
         )
         .is_none());
+        // `[[plugins]]`より後の`[plugins.env]`・`[plugins.rate_limit]`も、
+        // その`[[plugins]]`の設定（#750）
+        let entry_tables = "[[plugins]]\nname = \"a\"\ntype = \"x\"\ntransport_type = \"y\"\n[plugins.env]\nA = \"1\"\n[plugins.rate_limit]\nrequests_per_minute = 1\n";
+        assert!(legacy_plugins_conflict_hint(entry_tables).is_none());
+        // `[[plugins]]`より前の`[plugins.*]`は古い形式
+        assert!(legacy_plugins_conflict_hint(
+            "[plugins.isolation]\nenabled = true\n[[plugins]]\nname = \"a\"\n"
+        )
+        .is_some());
+    }
+
+    /// `enabled`・`call_timeout_seconds`等の不正な値（`nan`等）を、省略と
+    /// 同じに扱わず、読み込みのエラーにする（#750）
+    #[test]
+    fn test_invalid_plugin_values_are_rejected() {
+        for (field, value) in [
+            ("enabled", "nan"),
+            ("enabled", "inf"),
+            ("enabled", "1"),
+            ("call_timeout_seconds", "nan"),
+            ("call_timeout_seconds", "-1"),
+            ("max_response_bytes", "1.5"),
+        ] {
+            let content = format!(
+                "[transport]\n[server]\n[handlers]\n[[plugins]]\nname = \"x\"\ncommand = \"c\"\n{} = {}\n",
+                field, value
+            );
+            assert!(
+                toml::from_str::<McpConfig>(&content).is_err(),
+                "{} = {}",
+                field,
+                value
+            );
+
+            let content = normalize_transport_type_alias(&content).unwrap();
+            let result = config::Config::builder()
+                .add_source(config::Config::try_from(&McpConfig::default()).unwrap())
+                .add_source(config::File::from_str(&content, config::FileFormat::Toml))
+                .build()
+                .unwrap()
+                .try_deserialize::<McpConfig>();
+            assert!(result.is_err(), "{} = {} (config crate)", field, value);
+        }
+
+        // 省略すれば起動し、`false`なら起動しない（今までどおり）
+        let config: McpConfig = toml::from_str(
+            "[transport]\n[server]\n[handlers]\n[[plugins]]\nname = \"x\"\ncommand = \"c\"\n[[plugins]]\nname = \"y\"\ncommand = \"c\"\nenabled = false\n",
+        )
+        .unwrap();
+        assert_eq!(config.plugins[0].enabled, None);
+        assert_eq!(config.plugins[1].enabled, Some(false));
     }
 
     #[test]

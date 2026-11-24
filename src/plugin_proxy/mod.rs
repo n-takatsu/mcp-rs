@@ -58,9 +58,12 @@ const MAX_TOOL_LIST_PAGES: usize = 100;
 /// プラグインへの`initialize`で要求する版（#417）。プラグインが古い版で
 /// 答えた場合も、そのまま使う（mcp-rsは古い版の項目も読める）
 const PROTOCOL_VERSION: &str = LATEST_PROTOCOL_VERSION;
-/// プラグインが答えてよい版。これ以外は警告を出す（使い続ける）
+/// プラグインが答えてよい版。これ以外は、`notifications/initialized`を送る
+/// 前に起動のエラーにする（仕様では、クライアントは切断すべき、#750）
 const KNOWN_PLUGIN_PROTOCOL_VERSIONS: &[&str] =
     &["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
+/// 上限を超えて読み捨てる行のうち、`id`を読むために残す先頭の長さ（#750）
+const OVERSIZED_LINE_PREFIX_BYTES: usize = 1024;
 /// 標準エラー出力の1行としてログに記録する長さの上限
 const MAX_STDERR_LINE_BYTES: u64 = 8192;
 const RATE_LIMIT_CLIENT_ID: &str = "plugin-tool-calls";
@@ -642,8 +645,119 @@ pub async fn start_plugins_reporting_failures(
 
 enum ReadLine {
     Line(Vec<u8>),
-    /// 上限を超えた行（行末まで読み捨てた）
-    Oversized,
+    /// 上限を超えた行（行末まで読み捨てた）。先頭の
+    /// `OVERSIZED_LINE_PREFIX_BYTES`バイトだけを持つ
+    Oversized(Vec<u8>),
+}
+
+/// 行の長さを、末尾のLFと、その直前のCRを除いて数える（#750）。行末を
+/// まだ読んでいなければ（`complete`が`false`）、最後のCRは次のLFの直前
+/// かもしれないので数えない
+fn line_content_len(line: &[u8], complete: bool) -> usize {
+    let mut content = line;
+    if complete {
+        content = content.strip_suffix(b"\n").unwrap_or(content);
+    }
+    content.strip_suffix(b"\r").unwrap_or(content).len()
+}
+
+/// 読み捨てる行の先頭から、最上位の`"id"`の値を読む（#750）。先頭の範囲に
+/// `"id"`が無いとき（前の項目が長い等）・JSONとして読めないときは`None`
+fn leading_id(prefix: &[u8]) -> Option<Value> {
+    let mut i = skip_json_whitespace(prefix, 0);
+    if prefix.get(i) != Some(&b'{') {
+        return None;
+    }
+    i += 1;
+    loop {
+        i = skip_json_whitespace(prefix, i);
+        if prefix.get(i) != Some(&b'"') {
+            return None;
+        }
+        let key_end = json_value_end(prefix, i)?;
+        let key: String = serde_json::from_slice(&prefix[i..key_end]).ok()?;
+        i = skip_json_whitespace(prefix, key_end);
+        if prefix.get(i) != Some(&b':') {
+            return None;
+        }
+        i = skip_json_whitespace(prefix, i + 1);
+        let value_end = json_value_end(prefix, i)?;
+        if key == "id" {
+            return serde_json::from_slice(&prefix[i..value_end]).ok();
+        }
+        i = skip_json_whitespace(prefix, value_end);
+        if prefix.get(i) != Some(&b',') {
+            return None;
+        }
+        i += 1;
+    }
+}
+
+fn skip_json_whitespace(bytes: &[u8], mut i: usize) -> usize {
+    while matches!(bytes.get(i), Some(b' ' | b'\t' | b'\r' | b'\n')) {
+        i += 1;
+    }
+    i
+}
+
+/// `start`から始まるJSONの値の終わり（の次の位置）。値が途中で切れて
+/// いれば`None`
+fn json_value_end(bytes: &[u8], start: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    for (offset, &b) in bytes.get(start..)?.iter().enumerate() {
+        let at = start + offset;
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if b == b'\\' {
+                escaped = true;
+            } else if b == b'"' {
+                in_string = false;
+                if depth == 0 {
+                    return Some(at + 1);
+                }
+            }
+            continue;
+        }
+        match b {
+            b'"' => in_string = true,
+            b'{' | b'[' => depth += 1,
+            b'}' | b']' => {
+                if depth == 0 {
+                    // 数等の値が、外側の`}`で終わった
+                    return Some(at);
+                }
+                depth -= 1;
+                if depth == 0 {
+                    return Some(at + 1);
+                }
+            }
+            b',' | b' ' | b'\t' | b'\r' | b'\n' if depth == 0 => return Some(at),
+            _ => {}
+        }
+    }
+    None
+}
+
+/// 送信中の`write_message`が取り消された（期限切れ等）ら、接続を止める
+/// （#750）。送りかけのフレームがパイプに残り、次の要求がその続きになって、
+/// 子プロセスが独立したJSON-RPCのフレームとして読めなくなるため
+struct WriteInProgress<'a> {
+    connection: &'a mut Connection,
+    finished: bool,
+}
+
+impl Drop for WriteInProgress<'_> {
+    fn drop(&mut self) {
+        if !self.finished {
+            self.connection.stop(
+                "sending a message to the plugin was interrupted (the call timed out while writing)"
+                    .to_string(),
+            );
+        }
+    }
 }
 
 /// 子プロセスとの接続。リクエストは1つずつ送り、応答を待つ。
@@ -695,11 +809,18 @@ impl Connection {
     async fn write_message(&mut self, message: &Value) -> Result<(), McpError> {
         let mut bytes = serde_json::to_vec(message)?;
         bytes.push(b'\n');
+        // 書き終える前に取り消されたら、`WriteInProgress`が接続を止める
+        let mut writing = WriteInProgress {
+            connection: self,
+            finished: false,
+        };
         let result = async {
-            self.stdin.write_all(&bytes).await?;
-            self.stdin.flush().await
+            writing.connection.stdin.write_all(&bytes).await?;
+            writing.connection.stdin.flush().await
         }
         .await;
+        writing.finished = true;
+        drop(writing);
         if let Err(e) = result {
             let reason = format!("could not write to the plugin: {}", e);
             let error = self.not_running_error(&reason);
@@ -732,20 +853,25 @@ impl Connection {
                 Some(pos) => (pos + 1, true),
                 None => (available.len(), false),
             };
-            if !self.discarding {
+            if self.discarding {
+                // 読み捨てる行も、`id`を読むために先頭だけは残す
+                let room = OVERSIZED_LINE_PREFIX_BYTES.saturating_sub(self.line.len());
+                self.line.extend_from_slice(&available[..len.min(room)]);
+            } else {
                 self.line.extend_from_slice(&available[..len]);
             }
             self.stdout.consume(len);
 
-            // 行末の改行（と\r）は上限に数えない
-            if !self.discarding && self.line.len() > max_bytes + 2 {
+            // 行末のLFと、その直前のCRは上限に数えない
+            if !self.discarding && line_content_len(&self.line, newline) > max_bytes {
                 self.discarding = true;
-                self.line = Vec::new();
+                self.line.truncate(OVERSIZED_LINE_PREFIX_BYTES);
+                self.line.shrink_to_fit();
             }
             if newline {
                 if self.discarding {
                     self.discarding = false;
-                    return Ok(ReadLine::Oversized);
+                    return Ok(ReadLine::Oversized(std::mem::take(&mut self.line)));
                 }
                 return Ok(ReadLine::Line(std::mem::take(&mut self.line)));
             }
@@ -782,7 +908,16 @@ impl Connection {
         loop {
             let bytes = match self.read_line(max_bytes).await? {
                 ReadLine::Line(bytes) => bytes,
-                ReadLine::Oversized => {
+                ReadLine::Oversized(prefix) => {
+                    // 期限の切れた前の要求への応答なら、読み飛ばす（#750）。
+                    // 待っている要求への応答か、`id`が読めなければエラー
+                    if leading_id(&prefix).is_some_and(|other| other != json!(id)) {
+                        debug!(
+                            "Plugin '{}' sent an oversized response for another request (ignored)",
+                            self.plugin
+                        );
+                        continue;
+                    }
                     return Err(McpError::ExternalApi(format!(
                         "plugin '{}' sent a message larger than max_response_bytes ({} bytes)",
                         self.plugin, max_bytes
@@ -1208,17 +1343,19 @@ impl PluginHandler {
             .get("protocolVersion")
             .and_then(Value::as_str)
             .unwrap_or("");
-        if KNOWN_PLUGIN_PROTOCOL_VERSIONS.contains(&version) {
-            debug!(
-                "Plugin '{}' uses MCP protocol version {}",
-                connection.plugin, version
-            );
-        } else {
-            warn!(
-                "Plugin '{}' answered with MCP protocol version '{}', which mcp-rs does not know. Continuing anyway",
-                connection.plugin, version
-            );
+        // 知らない版なら、`notifications/initialized`を送る前にやめる（#750）
+        if !KNOWN_PLUGIN_PROTOCOL_VERSIONS.contains(&version) {
+            return Err(McpError::ExternalApi(format!(
+                "plugin '{}' answered with MCP protocol version '{}', which mcp-rs does not support (supported: {})",
+                connection.plugin,
+                truncate(version, 64),
+                KNOWN_PLUGIN_PROTOCOL_VERSIONS.join(", ")
+            )));
         }
+        debug!(
+            "Plugin '{}' uses MCP protocol version {}",
+            connection.plugin, version
+        );
         connection.notify("notifications/initialized").await?;
 
         let mut tools = Vec::new();
@@ -1253,7 +1390,12 @@ impl PluginHandler {
         result: &Result<Value, McpError>,
         started: std::time::Instant,
     ) {
-        let success = result.is_ok();
+        // 子プロセスが`isError: true`の結果を返したときも、失敗として記録する
+        // （#750）。中継する結果は変えない
+        let tool_error = result
+            .as_ref()
+            .is_ok_and(|value| value.get("isError") == Some(&Value::Bool(true)));
+        let success = result.is_ok() && !tool_error;
         let status = if success { "SUCCESS" } else { "FAILURE" };
         let mut entry = AuditLogEntry::new(
             if success {
@@ -1268,6 +1410,11 @@ impl PluginHandler {
         .with_result(status.to_string());
         if let Err(e) = result {
             entry = entry.add_metadata("error".to_string(), e.to_string());
+        } else if tool_error {
+            entry = entry.add_metadata(
+                "error".to_string(),
+                "the tool returned a result with isError: true".to_string(),
+            );
         }
         // 呼び出し元と所要時間（#55）
         let entry = crate::mcp::audit_tool_call_context(entry, started);
@@ -1608,6 +1755,8 @@ pub(crate) mod tests {
     }
 
     const TEST_PLUGIN_ENV: &str = "MCP_RS_TEST_PLUGIN";
+    /// テスト用のプラグインが`initialize`で答える版（省略時は`PROTOCOL_VERSION`）
+    const TEST_PLUGIN_VERSION_ENV: &str = "MCP_RS_TEST_PLUGIN_VERSION";
 
     /// テスト用のMCPサーバー。このテストバイナリ自身をプラグインとして
     /// 起動し、この関数だけを実行させる（`--exact`・`--ignored`）。通常の
@@ -1644,7 +1793,9 @@ pub(crate) mod tests {
             let method = request["method"].as_str().unwrap_or("");
             let result = match method {
                 "initialize" => json!({
-                    "protocolVersion": PROTOCOL_VERSION,
+                    // 知らない版で答えるプラグインのテスト（#750）
+                    "protocolVersion": std::env::var(TEST_PLUGIN_VERSION_ENV)
+                        .unwrap_or_else(|_| PROTOCOL_VERSION.to_string()),
                     "capabilities": { "tools": {} },
                     "serverInfo": { "name": "test-plugin", "version": "1.0.0" }
                 }),
@@ -1665,7 +1816,15 @@ pub(crate) mod tests {
                     };
                     // ページ分けを確かめるため、2ページに分ける
                     if request["params"]["cursor"] == json!("page2") {
-                        json!({ "tools": [tool("big"), tool("exit"), tool("noisy"), tool("fail")] })
+                        json!({ "tools": [
+                            tool("big"),
+                            tool("exit"),
+                            tool("noisy"),
+                            tool("fail"),
+                            tool("toolerror"),
+                            tool("slowbig"),
+                            tool("raw")
+                        ] })
                     } else {
                         json!({
                             "tools": [tool("echo"), tool("env"), tool("sleep")],
@@ -1701,6 +1860,37 @@ pub(crate) mod tests {
                             text_result("x".repeat(args["bytes"].as_u64().unwrap_or(0) as usize))
                         }
                         "exit" => std::process::exit(3),
+                        "toolerror" => json!({
+                            "content": [{ "type": "text", "text": "tool failed" }],
+                            "isError": true
+                        }),
+                        "slowbig" => {
+                            // 期限の切れた後に届く、上限を超える応答（#750）
+                            let ms = args["ms"].as_u64().unwrap_or(0);
+                            std::thread::sleep(Duration::from_millis(ms));
+                            text_result("x".repeat(args["bytes"].as_u64().unwrap_or(0) as usize))
+                        }
+                        "raw" => {
+                            // 改行を除いてちょうど`bytes`バイトの応答を、LFか
+                            // CRLFで終えて送る（#750）
+                            let bytes = args["bytes"].as_u64().unwrap_or(0) as usize;
+                            let line = |text: String| {
+                                json!({ "jsonrpc": "2.0", "id": id, "result": text_result(text) })
+                                    .to_string()
+                            };
+                            let padding = bytes.saturating_sub(line(String::new()).len());
+                            let mut text = line("x".repeat(padding));
+                            assert_eq!(text.len(), bytes);
+                            text.push_str(if args["crlf"] == json!(true) {
+                                "\r\n"
+                            } else {
+                                "\n"
+                            });
+                            let mut raw = std::io::stdout();
+                            raw.write_all(text.as_bytes()).unwrap();
+                            raw.flush().unwrap();
+                            continue;
+                        }
                         "fail" => {
                             send(json!({
                                 "jsonrpc": "2.0",
@@ -1862,7 +2052,10 @@ pub(crate) mod tests {
                 "demo__big",
                 "demo__exit",
                 "demo__noisy",
-                "demo__fail"
+                "demo__fail",
+                "demo__toolerror",
+                "demo__slowbig",
+                "demo__raw"
             ]
         );
         let tools = handler.list_tools().await.unwrap();
@@ -2040,7 +2233,176 @@ pub(crate) mod tests {
             .await
             .unwrap_err();
         assert!(error.to_string().contains("not running"), "{}", error);
-        assert_eq!(handler.list_tools().await.unwrap().len(), 7);
+        assert_eq!(handler.list_tools().await.unwrap().len(), 10);
+    }
+
+    /// 子プロセスが`isError: true`の結果を返したら、結果はそのまま中継し、
+    /// 監査ログには`FAILURE`と記録する（#750）
+    #[tokio::test]
+    async fn test_tool_error_result_is_audited_as_failure() {
+        let handler = PluginHandler::start(&test_plugin_config("toolerr"))
+            .await
+            .unwrap();
+        let result = call(&handler, "toolerr__toolerror", json!({}))
+            .await
+            .unwrap();
+        assert_eq!(result["isError"], json!(true));
+        assert_eq!(text(&result), "tool failed");
+        call(&handler, "toolerr__echo", json!({ "text": "ok" }))
+            .await
+            .unwrap();
+
+        let entries = handler.audit_logger().get_all_entries().await;
+        let results: Vec<Option<&str>> = entries.iter().map(|e| e.result.as_deref()).collect();
+        assert_eq!(results, vec![Some("FAILURE"), Some("SUCCESS")]);
+        assert_eq!(entries[0].level, AuditLevel::Error);
+    }
+
+    /// 知らない版で答えるプラグインは、起動のエラーにする（#750）
+    #[tokio::test]
+    async fn test_plugin_with_unknown_protocol_version_fails_to_start() {
+        let mut config = test_plugin_config("unknownver");
+        config.env.insert(
+            TEST_PLUGIN_VERSION_ENV.to_string(),
+            "2099-01-01".to_string(),
+        );
+        let error = PluginHandler::start(&config).await.err().unwrap();
+        assert!(error.contains("2099-01-01"), "{}", error);
+        assert!(error.contains("does not support"), "{}", error);
+
+        // 知っている古い版なら起動する
+        let mut config = test_plugin_config("oldver");
+        config.env.insert(
+            TEST_PLUGIN_VERSION_ENV.to_string(),
+            "2024-11-05".to_string(),
+        );
+        assert!(PluginHandler::start(&config).await.is_ok());
+    }
+
+    /// 送信の途中で期限が切れたら、送りかけのフレームが残った接続を止める。
+    /// 応答を待つ間の期限切れでは、接続を使い続ける（#750）
+    #[tokio::test]
+    async fn test_timeout_while_writing_stops_the_connection() {
+        let mut config = test_plugin_config("partial");
+        config.call_timeout_seconds = Some(1);
+        let handler = PluginHandler::start(&config).await.unwrap();
+
+        // 子プロセスが3秒間、標準入力を読まないようにする（応答を待つ間の
+        // 期限切れなので、接続は止めない）
+        let error = call(&handler, "partial__sleep", json!({ "ms": 3000 }))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("did not respond"), "{}", error);
+        assert!(handler.status().await.unwrap().contains(": running"));
+
+        // パイプに入りきらない要求は、書き終える前に期限が切れる
+        let error = call(
+            &handler,
+            "partial__echo",
+            json!({ "text": "x".repeat(8 * 1024 * 1024) }),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("did not respond"), "{}", error);
+        let status = handler.status().await.unwrap();
+        assert!(status.contains("interrupted"), "{}", status);
+
+        let error = call(&handler, "partial__echo", json!({ "text": "after" }))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("not running"), "{}", error);
+    }
+
+    /// 期限の切れた前の要求への、上限を超える応答は読み飛ばし、待っている
+    /// 要求の応答を返す（#750）
+    #[tokio::test]
+    async fn test_oversized_late_response_for_another_request_is_skipped() {
+        let mut config = test_plugin_config("latebig");
+        config.call_timeout_seconds = Some(1);
+        let handler = PluginHandler::start(&config).await.unwrap();
+
+        let error = call(
+            &handler,
+            "latebig__slowbig",
+            json!({ "ms": 1500, "bytes": 10000 }),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("did not respond"), "{}", error);
+
+        let result = call(&handler, "latebig__echo", json!({ "text": "after" }))
+            .await
+            .unwrap();
+        assert_eq!(text(&result), "after");
+    }
+
+    /// 行の上限は、末尾のLFと、その直前のCRを除いた長さで比べる（#750）
+    #[tokio::test]
+    async fn test_line_limit_excludes_only_the_line_ending() {
+        let handler = PluginHandler::start(&test_plugin_config("limit"))
+            .await
+            .unwrap();
+        // `test_plugin_config`の`max_response_bytes`は4096
+        for crlf in [false, true] {
+            let result = call(
+                &handler,
+                "limit__raw",
+                json!({ "bytes": 4096, "crlf": crlf }),
+            )
+            .await
+            .unwrap();
+            assert!(text(&result).starts_with('x'), "crlf: {}", crlf);
+
+            let error = call(
+                &handler,
+                "limit__raw",
+                json!({ "bytes": 4097, "crlf": crlf }),
+            )
+            .await
+            .unwrap_err();
+            assert!(
+                error.to_string().contains("max_response_bytes"),
+                "crlf: {}: {}",
+                crlf,
+                error
+            );
+        }
+    }
+
+    #[test]
+    fn test_line_content_len() {
+        assert_eq!(line_content_len(b"{}\n", true), 2);
+        assert_eq!(line_content_len(b"{}\r\n", true), 2);
+        // CRは、LFの直前の1つだけを除く
+        assert_eq!(line_content_len(b"{}\r\r\n", true), 3);
+        // 行末を読む前は、最後のCRを数えない（次がLFかもしれない）
+        assert_eq!(line_content_len(b"{}\r", false), 2);
+        assert_eq!(line_content_len(b"{}\rx", false), 4);
+        assert_eq!(line_content_len(b"{}", false), 2);
+    }
+
+    #[test]
+    fn test_leading_id() {
+        let big = format!(
+            "{{\"jsonrpc\":\"2.0\",\"id\":7,\"result\":{{\"text\":\"{}",
+            "x".repeat(100)
+        );
+        assert_eq!(leading_id(big.as_bytes()), Some(json!(7)));
+        assert_eq!(
+            leading_id(br#" { "id" : "a\"b", "result": "#),
+            Some(json!("a\"b"))
+        );
+        // 前の項目（入れ子・文字列の中の`"id"`）は飛ばす
+        assert_eq!(
+            leading_id(br#"{"meta":{"id":1,"x":[1,"}"]},"note":"\"id\":2","id":3,"#),
+            Some(json!(3))
+        );
+        assert_eq!(leading_id(br#"{"id":null}"#), Some(Value::Null));
+        // 先頭に`"id"`が無い・途中で切れている・JSONでない
+        assert_eq!(leading_id(br#"{"result":{"text":"xxxx"#), None);
+        assert_eq!(leading_id(br#"{"jsonrpc":"2.0","id":12"#), None);
+        assert_eq!(leading_id(b"not json"), None);
+        assert_eq!(leading_id(b""), None);
     }
 
     #[tokio::test]

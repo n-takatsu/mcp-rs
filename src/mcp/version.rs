@@ -180,7 +180,22 @@ pub fn call_tool_result_for_version(version: &str, mut result: Value) -> Value {
     let Value::Object(fields) = &mut result else {
         return result;
     };
-    fields.remove("structuredContent");
+    let structured = fields.remove("structuredContent");
+    // `content`が空で`structuredContent`だけのとき、除くと空の結果になる
+    // （#750）。`structuredContent`を文字列にしたテキストを入れる
+    if let Some(structured) = structured {
+        let empty = match fields.get("content") {
+            None | Some(Value::Null) => true,
+            Some(Value::Array(content)) => content.is_empty(),
+            Some(_) => false,
+        };
+        if empty {
+            fields.insert(
+                "content".to_string(),
+                serde_json::json!([{ "type": "text", "text": structured.to_string() }]),
+            );
+        }
+    }
     if let Some(Value::Array(content)) = fields.get_mut("content") {
         for item in content.iter_mut() {
             if let Some(text) = content_as_text(item) {
@@ -321,6 +336,28 @@ mod tests {
         );
         assert_eq!(content[2]["type"], json!("text"));
         assert!(content[2]["text"].as_str().unwrap().contains("audio/wav"));
+
+        // `content`が空・無くて`structuredContent`だけなら、それを文字列にした
+        // テキストを入れる（空の成功にしない、#750）
+        for result in [
+            json!({ "content": [], "structuredContent": { "count": 2 } }),
+            json!({ "structuredContent": { "count": 2 } }),
+        ] {
+            assert_eq!(
+                call_tool_result_for_version("2025-11-25", result.clone()),
+                result
+            );
+            let old = call_tool_result_for_version("2024-11-05", result);
+            assert_eq!(
+                old,
+                json!({ "content": [{ "type": "text", "text": "{\"count\":2}" }] })
+            );
+        }
+        // `structuredContent`が無ければ、空の`content`はそのまま
+        assert_eq!(
+            call_tool_result_for_version("2024-11-05", json!({ "content": [] })),
+            json!({ "content": [] })
+        );
     }
 
     #[test]
