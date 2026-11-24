@@ -15,8 +15,6 @@ use tracing::{debug, info, warn};
 pub struct BehavioralDetector {
     /// ベースライン
     baselines: Arc<RwLock<HashMap<String, BehaviorBaseline>>>,
-    /// リクエスト履歴（異常検知用）
-    request_history: Arc<RwLock<VecDeque<RequestRecord>>>,
     /// 設定
     config: BehavioralConfig,
 }
@@ -52,20 +50,17 @@ pub struct BehaviorBaseline {
     /// 頻度の学習に使った窓の数
     #[serde(default)]
     pub rate_samples: usize,
+    /// 直前の1分の要求の数を、1秒ごとに数えたもの（Unix時刻の秒, 数）
+    /// （PR #764のレビュー）。今の頻度は、全員で共有する履歴ではなく、
+    /// これで数える。以前の履歴は全体で10,000件までだったので、頻度の
+    /// 高い呼び出し元や、他の呼び出し元の要求が多いときに、少なく数えた。
+    /// 長さは高々60
+    #[serde(default)]
+    pub recent_request_counts: VecDeque<(i64, u64)>,
 }
 
 /// 頻度の異常を判定するのに要る、学習した窓（1分）の数の最小
 const MIN_RATE_SAMPLES: usize = 3;
-
-/// リクエスト記録（頻度の分析に使う。パス・サイズは`update_baseline`で
-/// ベースラインに反映するので、ここには持たない）
-#[derive(Debug, Clone)]
-struct RequestRecord {
-    /// 識別子（ユーザーID or IP）
-    identifier: String,
-    /// タイムスタンプ
-    timestamp: DateTime<Utc>,
-}
 
 /// 振る舞い検知設定
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -74,7 +69,9 @@ pub struct BehavioralConfig {
     pub learning_period_hours: i64,
     /// 異常スコアしきい値
     pub anomaly_threshold: f64,
-    /// リクエスト履歴保持数
+    /// リクエスト履歴保持数（使わない。PR #764のレビューから、頻度は
+    /// 呼び出し元ごとに[`BehaviorBaseline::recent_request_counts`]で数え、
+    /// 全体の履歴を持たない）
     pub max_history_size: usize,
     /// 統計的異常検知の感度（標準偏差の倍数）
     pub statistical_sensitivity: f64,
@@ -151,7 +148,6 @@ impl BehavioralDetector {
 
         Ok(Self {
             baselines: Arc::new(RwLock::new(HashMap::new())),
-            request_history: Arc::new(RwLock::new(VecDeque::new())),
             config,
         })
     }
@@ -169,12 +165,6 @@ impl BehavioralDetector {
         // 識別子を取得（ユーザーID優先、なければIP）
         let identifier = self.extract_identifier(request);
 
-        // リクエスト記録を追加
-        self.record_request(request, &identifier).await;
-
-        // この呼び出し元の、今の頻度（#759。判定に使う）
-        let current_rate = self.current_request_rate(&identifier).await;
-
         // ベースラインを取得または作成
         let mut baselines = self.baselines.write().await;
         if !baselines.contains_key(&identifier) {
@@ -191,6 +181,9 @@ impl BehavioralDetector {
         // レビュー。覚えた後では、未知のパスも1回は見たことになり、上限で
         // 入れ替えると、毎回違うパスを送られても検知しなかった）
         let path_score = self.check_path_anomaly(&request.path, baseline);
+        // この呼び出し元の、今の頻度（#759、PR #764のレビュー。この要求を
+        // 含む、直前の1分）
+        let current_rate = Self::record_request_rate(baseline, request.timestamp);
         // 頻度も、学習する前のベースラインと比べる（#759）。頻度の
         // ベースラインは窓（1分）ごとにしか変わらないので、窓の中の連続した
         // 要求（バースト）に慣れてしまうことはない（PR #764のレビュー）
@@ -315,22 +308,6 @@ impl BehavioralDetector {
         format!("unknown:{}", &request.request_id[..id_len])
     }
 
-    /// リクエストを記録
-    async fn record_request(&self, request: &RequestData, identifier: &str) {
-        let record = RequestRecord {
-            identifier: identifier.to_string(),
-            timestamp: request.timestamp,
-        };
-
-        let mut history = self.request_history.write().await;
-        history.push_back(record);
-
-        // 履歴サイズ制限
-        while history.len() > self.config.max_history_size {
-            history.pop_front();
-        }
-    }
-
     /// ベースラインを更新
     fn update_baseline(&self, baseline: &mut BehaviorBaseline, request: &RequestData) {
         baseline.sample_count += 1;
@@ -408,15 +385,23 @@ impl BehavioralDetector {
         }
     }
 
-    /// この呼び出し元の今の頻度（1秒あたり。過去1分間の数から）
-    async fn current_request_rate(&self, identifier: &str) -> f64 {
-        let history = self.request_history.read().await;
-        let one_minute_ago = Utc::now() - Duration::minutes(1);
-        let recent_count = history
-            .iter()
-            .filter(|r| r.identifier == identifier && r.timestamp > one_minute_ago)
-            .count();
-        recent_count as f64 / 60.0
+    /// この呼び出し元の要求を1件数え、今の頻度（1秒あたり。`timestamp`
+    /// までの1分の数から）を返す（PR #764のレビュー）。1秒ごとの数で
+    /// 持つので、頻度がどれだけ高くても、呼び出し元ごとに高々60個で、
+    /// 他の呼び出し元の要求には影響されない。時刻が戻った要求は、最後の
+    /// 1秒に数える
+    fn record_request_rate(baseline: &mut BehaviorBaseline, timestamp: DateTime<Utc>) -> f64 {
+        let second = timestamp.timestamp();
+        let counts = &mut baseline.recent_request_counts;
+        match counts.back_mut() {
+            Some((last, count)) if *last >= second => *count += 1,
+            _ => counts.push_back((second, 1)),
+        }
+        let newest = counts.back().map_or(second, |(last, _)| *last);
+        while counts.front().is_some_and(|(s, _)| *s <= newest - 60) {
+            counts.pop_front();
+        }
+        counts.iter().map(|(_, count)| *count).sum::<u64>() as f64 / 60.0
     }
 
     /// リクエスト頻度の異常をチェック（#759）。今の頻度を、ベースラインの
@@ -525,6 +510,7 @@ impl BehaviorBaseline {
             rate_window_start: None,
             rate_window_count: 0,
             rate_samples: 0,
+            recent_request_counts: VecDeque::new(),
         }
     }
 }
@@ -755,14 +741,13 @@ mod tests {
         }
         // 直前の1分の要求: sameは1件、plus-oneは2件、burstは2件
         {
-            let mut history = detector.request_history.write().await;
+            let mut baselines = detector.baselines.write().await;
             for (caller, count) in [("same", 1), ("plus-one", 2), ("burst", 2)] {
-                for _ in 0..count {
-                    history.push_back(RequestRecord {
-                        identifier: format!("caller:{caller}"),
-                        timestamp: now,
-                    });
-                }
+                baselines
+                    .get_mut(&format!("caller:{caller}"))
+                    .unwrap()
+                    .recent_request_counts
+                    .push_back((now.timestamp(), count));
             }
         }
 
@@ -784,5 +769,95 @@ mod tests {
         }
         assert!(detected, "max score {max_score}");
         assert!(max_score > detector.config.anomaly_threshold);
+    }
+
+    /// 今の頻度は、呼び出し元ごとに、上限なしで数える（PR #764の
+    /// レビュー。以前は全体で10,000件までの履歴で数えたので、毎分12,000件を
+    /// 学習した呼び出し元が毎分24,000件に増えても、今の頻度が学習した平均を
+    /// 超えず、他の呼び出し元の要求が多いときも少なく数えた）
+    #[tokio::test]
+    async fn test_request_rate_is_counted_per_caller_beyond_the_history_size() {
+        let detector = BehavioralDetector::new().await.unwrap();
+        let start = Utc::now() - Duration::minutes(10);
+        let request = |caller: &str, timestamp: DateTime<Utc>| RequestData {
+            request_id: "r".to_string(),
+            method: "POST".to_string(),
+            path: "/mcp".to_string(),
+            query_params: HashMap::new(),
+            headers: HashMap::new(),
+            body: None,
+            source_ip: None,
+            caller_id: Some(caller.to_string()),
+            timestamp,
+        };
+        // 毎分12,000件（5ミリ秒ごと）を5分。異常にはしない
+        let steady_end = 5 * 60 * 200;
+        for i in 0..steady_end {
+            let result = detector
+                .analyze(&request("heavy", start + Duration::milliseconds(5 * i)))
+                .await
+                .unwrap();
+            assert!(
+                !result
+                    .anomaly_types
+                    .contains(&AnomalyType::AbnormalRequestRate),
+                "request {i}: {:?}",
+                result.anomaly_types
+            );
+        }
+        {
+            let baselines = detector.baselines.read().await;
+            let heavy = &baselines["caller:heavy"];
+            assert!(heavy.rate_samples >= MIN_RATE_SAMPLES);
+            assert!((heavy.avg_request_rate - 200.0).abs() < 1e-6);
+        }
+        let doubling_start = start + Duration::milliseconds(5 * steady_end);
+        // 他の呼び出し元が20,000件送っても、heavyの頻度は変わらない
+        for i in 0..20_000 {
+            detector
+                .analyze(&request(
+                    &format!("noise-{}", i % 10),
+                    doubling_start + Duration::microseconds(i),
+                ))
+                .await
+                .unwrap();
+        }
+        // 毎分24,000件（2.5ミリ秒ごと）に増やすと、検知する
+        let mut detected = false;
+        for i in 0..24_000 {
+            let result = detector
+                .analyze(&request(
+                    "heavy",
+                    doubling_start + Duration::microseconds(2_500 * i),
+                ))
+                .await
+                .unwrap();
+            if result
+                .anomaly_types
+                .contains(&AnomalyType::AbnormalRequestRate)
+            {
+                detected = true;
+                break;
+            }
+        }
+        assert!(detected);
+    }
+
+    /// 1秒ごとの数は、1分より古いものを捨て、高々60個（PR #764のレビュー）
+    #[test]
+    fn test_recent_request_counts_keep_only_the_last_minute() {
+        let mut baseline = BehaviorBaseline::new("caller:x");
+        let start = Utc::now();
+        for i in 0..600 {
+            let rate = BehavioralDetector::record_request_rate(
+                &mut baseline,
+                start + Duration::milliseconds(500 * i),
+            );
+            // 毎秒2件。1分たつと、毎分120件
+            if i >= 120 {
+                assert!((rate * 60.0 - 120.0).abs() <= 2.0, "{i}: {}", rate * 60.0);
+            }
+        }
+        assert!(baseline.recent_request_counts.len() <= 60);
     }
 }

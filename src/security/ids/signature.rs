@@ -369,12 +369,14 @@ impl SignatureDetector {
             // `base64`という語だけでは判定しない（#759。本文の
             // `"encoding":"base64"`や画像の`data:image/png;base64,`は普通に
             // 使う）。スクリプト・HTMLとして実行される種類の`data:` URIを
-            // base64で埋め込んだものだけを見る
+            // base64で埋め込んだものだけを見る。種類と`;base64,`の間の
+            // パラメーター（`charset=utf-8`・`foo=bar`等）は、いくつあっても
+            // よい（PR #764のレビュー）
             AttackPattern::new(
                 "XSS-011",
                 "Base64 Encoded Script",
                 DetectionType::XssAttack,
-                r"(?i)data\s*:\s*(?:text/(?:html|javascript|ecmascript|xml)|application/(?:x-)?(?:javascript|ecmascript|xhtml\+xml)|image/svg\+xml)\s*;\s*(?:charset\s*=\s*[\w-]+\s*;\s*)?base64\s*,",
+                r#"(?i)data\s*:\s*(?:text/(?:html|javascript|ecmascript|xml)|application/(?:x-)?(?:javascript|ecmascript|xhtml\+xml)|image/svg\+xml)\s*;\s*(?:[\w.+-]+\s*=\s*(?:"[^"]*"|[^;,"\s]*)\s*;\s*)*base64\s*,"#,
                 Severity::High,
                 "Base64 encoded XSS",
                 vec![],
@@ -1014,6 +1016,40 @@ mod tests {
                 result.pattern_names
             );
             assert_eq!(result.detection_type, DetectionType::XssAttack);
+        }
+    }
+
+    /// XSS-011は、種類と`;base64,`の間のパラメーターがいくつあっても検知
+    /// する。画像は、パラメーターがあっても当たらない（PR #764のレビュー）
+    #[tokio::test]
+    async fn test_base64_script_data_uri_with_parameters() {
+        let detector = SignatureDetector::new().await.unwrap();
+        for value in [
+            "data:text/html;foo=bar;charset=utf-8;base64,PHNjcmlwdD4=",
+            "data:text/html;name=\"a b\";base64,PHNjcmlwdD4=",
+            "DATA:application/javascript ; x-y=1 ; z=2 ; base64,YWxlcnQoMSk=",
+        ] {
+            let result = detector
+                .detect(&request_with(&[("u", value)], &[], None))
+                .await
+                .unwrap();
+            assert!(
+                result
+                    .pattern_names
+                    .contains(&"Base64 Encoded Script".to_string()),
+                "{value}: {:?}",
+                result.pattern_names
+            );
+        }
+        for value in [
+            "data:image/png;foo=bar;charset=utf-8;base64,iVBORw0KGgo=",
+            "data:text/plain;foo=bar;base64,aGVsbG8=",
+        ] {
+            let result = detector
+                .detect(&request_with(&[("u", value)], &[], None))
+                .await
+                .unwrap();
+            assert!(!result.matched, "{value}: {:?}", result.pattern_names);
         }
     }
 
