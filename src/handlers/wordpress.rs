@@ -2435,6 +2435,15 @@ impl WordPressHandler {
         let mut page: u32 = 1;
 
         let total_items: u64 = loop {
+            // 読み直しで、前の読み込みの分と合わせて上限に達していれば、次の
+            // ページを要求しない（PR #757のレビュー。応答の後で確かめるだけ
+            // だと、上限を超えて1ページ読む）。最初の読み込みでは、応答の後の
+            // 確かめで先に止まるので、ここには来ない
+            if budget.pages >= MAX_LIST_PAGES {
+                return Err(McpError::ExternalApi(format!(
+                    "the WordPress list changed while mcp-rs was reading it, and reading it again would go over the {MAX_LIST_PAGES} pages mcp-rs reads for one list. Try again later"
+                )));
+            }
             let url = url_for_page(page);
             let mut request = self.client.get(&url);
 
