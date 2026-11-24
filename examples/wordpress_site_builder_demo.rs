@@ -329,6 +329,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 featured_media_id: None,
                 meta: None,
                 slug: None,
+                excerpt: None,
                 terms: None,
             })
             .await
@@ -571,6 +572,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 featured_media_id: None,
                 meta: None,
                 slug: None,
+                excerpt: None,
                 terms: None,
             })
             .await

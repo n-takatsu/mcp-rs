@@ -114,7 +114,7 @@ fn display_health_results(health: &mcp_rs::handlers::wordpress::WordPressHealthC
         }
     );
     println!(
-        "   Media Upload Possible:  {}",
+        "   Media Readable:         {}",
         if health.media_upload_possible {
             "✅ YES"
         } else {
