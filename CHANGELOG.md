@@ -163,7 +163,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   エラーになり、受信側が読めなかった。通知には応答しない（`id`が`null`の
   応答を`send_message`に渡しても、捨てる）。
   **互換性のない変更**: `request.id`を`RequestId`として使うコードは、
-  `Option`を扱うよう直す必要がある（要求なら`Some`）。mcp-rs本体は
+  `Option`を扱うよう直す必要がある。要求の`id`を応答に写すコード
+  （`JsonRpcResponse { id: request.id, .. }`）は、`None`（通知）なら応答せず、
+  `Some(id)`なら取り出した`id`（`HttpTransport`では内部の相関ID）を、その
+  まま応答の`id`に入れる（例: `let Some(id) = request.id else { continue };`）。mcp-rs本体は
   `with_request_handler`を使うので、動きは変わらない
 
 - ライブラリとして使う場合: `HttpTransport`のチャンネル
@@ -348,10 +351,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   残ったので、その要求の登録だけを消す。キュー（1000件）が埋まると、
   `send().await`が期限なしに待ち、応答の期限が始まらなかったので、HTTP・
   WebSocketとも、キューの枠を期限（30秒、応答を待つ時間を含む）付きで取る
-  （HTTPは取れなければ503）。枠を取った後、受信側が取り出すまでに期限を
-  過ぎた・クライアントが切った要求は、受信側に渡さずに捨てる（408を返した
-  後に処理され、やり直しで副作用が重ならないように。通知は今までどおり
-  渡す）。WebSocketで、枠を待つ間にアクセストークンの期限が切れたら、要求・
+  （HTTPは取れなければ503）。キューに入れた後、受信側が取り出す前に、要求の
+  期限を過ぎたか、応答を待つ処理が捨てられた（HTTPの要求の処理が途中で
+  捨てられた等）要求は、受信側に渡さずに捨てる（408を返した後に処理され、
+  やり直しで副作用が重ならないように。通知は今までどおり渡す）。
+  WebSocketでは、応答を待つ間にクライアントが切っても、それだけでは捨てず、
+  期限まで待つ。JSONのオブジェクトでない本文（配列等）は、通知として渡さず、
+  Invalid Request（`-32600`、HTTPは400）で断る。WebSocketで、枠を待つ間にアクセストークンの期限が切れたら、要求・
   通知を渡さずに接続を閉じる（HTTPと同じ）。2026-07-28版の要求の応答に、直接処理と同じ
   HTTPのステータス（`-32601`は404等）を付ける（以前は常に200）。mcp-rs本体は
   `with_request_handler`を使うので、動きは変わらない
@@ -362,7 +368,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   また呼ぶと、`bound_addr()`が消えるか、別のリスナーのアドレスで上書き
   されたので、起動を1つずつにし、アドレスを変えずにエラーを返す。
   `Transport::stop()`は何もせず、新しい接続を受け付け続けたので、待ち受けを
-  やめ（ポートを放し）、HTTPの接続を閉じ、`/ws`の接続も閉じる。止める途中で
+  やめ（ポートを放し）、HTTPの接続を閉じ、`/ws`の接続も閉じ、そのタスクが
+  終わってから返る（キューの枠や応答を待っていた`/ws`の要求も、そこで
+  やめ、止めた後にキューに入らない）。止める途中で
   捨てられても、止まるまでは`is_connected()`が`true`のままで、呼び直すと
   同じタスクを待つ。`connection_stats()`は、Tokioのタスクから呼ぶとパニックした
   （`blocking_read()`）ので、同期のロックで写しを取る
