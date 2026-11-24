@@ -73,11 +73,8 @@ src/security/ids/
 #### 5. **AlertManager** (`alerts.rs`)
 検知結果に基づいてアラートを生成・配信します。
 
-**通知チャネル**:
-- **Email**: SMTP経由での通知
-- **Slack**: Webhook経由での即時通知
-- **Log**: 構造化ログ出力
-- **Custom Webhook**: カスタムエンドポイント
+**通知**: ログに書く（構造化ログ）。メール・Slack・Webhookへの通知は、
+mcp-rs本体が使わないため外した（#760）
 
 **特徴**:
 - アラートレベル別のフィルタリング（Low/Medium/High/Critical）
@@ -139,26 +136,6 @@ let config = IDSConfig {
 };
 
 let ids = IntrusionDetectionSystem::with_config(config).await?;
-```
-
-### アラート通知の設定
-
-```rust
-use mcp_rs::security::ids::alerts::{AlertManager, NotificationChannel, AlertLevel};
-
-let manager = AlertManager::new().await?;
-
-// Slack通知を追加
-manager.add_notification_channel(NotificationChannel::Slack {
-    webhook_url: "https://hooks.slack.com/services/YOUR/WEBHOOK/URL".to_string(),
-    min_level: AlertLevel::High,
-}).await;
-
-// Email通知を追加
-manager.add_notification_channel(NotificationChannel::Email {
-    recipients: vec!["security@example.com".to_string()],
-    min_level: AlertLevel::Critical,
-}).await;
 ```
 
 ### 統計情報の取得
@@ -371,16 +348,6 @@ detector.update_patterns(new_patterns).await?;
 tracing_subscriber::fmt()
     .with_max_level(Level::DEBUG)
     .init();
-```
-
-### 4. アラート疲れの防止
-
-```rust
-// 重要度に応じた通知チャネル設定
-manager.add_notification_channel(NotificationChannel::Slack {
-    webhook_url: critical_webhook,
-    min_level: AlertLevel::Critical,  // Criticalのみ
-}).await;
 ```
 
 ## ロードマップ

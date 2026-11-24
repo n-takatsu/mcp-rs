@@ -20,12 +20,12 @@ pub use audit_log::{
     AuditStatistics,
 };
 pub use auth::{
-    ApiKey, ApiKeyConfig, ApiKeyManager, ApiKeyPermission, AuthError, AuthMethod, AuthProvider,
-    AuthResult, AuthUser, Credentials, PasswordHasher, Permission, Role,
+    ApiKey, ApiKeyManager, ApiKeyPermission, AuthError, AuthMethod, AuthProvider, AuthResult,
+    AuthUser, Credentials, PasswordHasher, Permission, Role,
 };
 pub use encryption::{EncryptedCredentials, EncryptionError, SecureCredentials};
 pub use ids::{
-    alerts::{AggregatedAlert, Alert, AlertConfig, AlertLevel, AlertManager, NotificationChannel},
+    alerts::{AggregatedAlert, Alert, AlertConfig, AlertLevel, AlertManager},
     behavioral::BehavioralDetector,
     network::NetworkMonitor,
     signature::SignatureDetector,

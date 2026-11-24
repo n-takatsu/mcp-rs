@@ -13,7 +13,6 @@ pub mod http;
 pub mod oauth;
 pub mod transport_trait;
 pub mod types;
-pub mod websocket;
 
 pub use config::TransportConfig;
 pub use connection::{ConnectionInfo, ConnectionStats};
@@ -21,7 +20,6 @@ pub use error::TransportError;
 pub use http::{HttpConfig, HttpTransport};
 pub use transport_trait::Transport;
 pub use types::{FramingMethod, TransportCapabilities, TransportInfo, TransportType};
-pub use websocket::{WebSocketConfig, WebSocketTransport};
 
 #[cfg(test)]
 mod tests {
