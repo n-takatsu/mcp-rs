@@ -217,6 +217,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- STDIOモードで、ログをファイルに書けずコンソールだけにするとき（と、
+  `console`・`file`のどちらも無効のとき）、標準出力にログを書いていた
+  （#755）。起動のログ等が、MCPのJSON-RPCの流れに混ざった。標準エラー出力に
+  書く
+
+- ログの保持（`retention`の`Size`・`Count`・`Days`）が、今書いているログ
+  ファイルも消していた（#755。`Size`で今のファイルが上限を超えているとき、
+  `Count(0)`等）。mcp-rsは開いたファイルに書き続けるが、そのパスからは
+  読めなくなった。今のファイルは消さず、数・大きさにも数えない
+
+- サイトが1つのWordPressの設定で、`enabled = false`（か省略）でも
+  `encrypted_credentials`を復号し、`WORDPRESS_MASTER_PASSWORD`が無いと
+  起動しなかった（#755。WordPress以外も）。使わない設定では復号しない
+  （複数のサイトの形は#684で直っていた）
+
+- ライブラリとして使う場合: `McpConfig::save_to_file`が、
+  `encrypted_credentials`から復号したユーザー名・パスワードを平文で
+  書いていた（#755）。`keyring`と同じく書かない。
+  `DynamicConfigManager`（`switch_config_file`・`reload_config`）が、
+  `[transport] type = "…"`と書いた設定ファイルを`duplicate field`で
+  読めなかった（#755）。`McpConfig::load`と同じく`transport_type`に
+  そろえてから読む（TOMLとして読む）
+
 - `mcp-rs encrypt-wordpress-credentials`で、NULを含むマスターパスワードを受け付けて
   いた（#750）。同じ値を`WORDPRESS_MASTER_PASSWORD`に設定できないので、
   作った設定では起動できなかった。暗号化する前に断る（エラーに値は出さない）
