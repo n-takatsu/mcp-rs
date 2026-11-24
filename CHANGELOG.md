@@ -317,6 +317,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - MySQL・MariaDBの`get_schema`で、ビューの`definition`が常に空だった
   （#759）。`information_schema.VIEWS`の`VIEW_DEFINITION`を返す。読む
   権限が無いビューは空のまま
+
 - SIGTERM（`docker stop`・`systemctl stop`等）で終わると、プラグインを
   止めず、コンテナ・子プロセスが残っていた（#759。STDIO・HTTPとも）。
   Ctrl+Cと同じく、プラグインを止めてから終わる（WindowsではCtrl+Breakも）。
