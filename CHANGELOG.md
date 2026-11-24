@@ -694,12 +694,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   接続が始まり、Windowsの資格情報が送られ得た（#750。`upload_allowed_dirs`
   を設定したときだけ）。ドライブ名で始まるパスだけ受け付け、UNC・デバイス
   （`\\.\…`）等のパスは、正規化の前に断る
+
 - WordPressの`upload_media`の`file_path`で、許可したフォルダの中かを
   確かめた後、同じパスでファイルを開き直していた（#750）。その間に、
   フォルダの中の項目をシンボリックリンク・ジャンクションに差し替えると、
   外のファイルを読んでWordPressに送れた（フォルダに書ける人が要る）。
   開いたファイルが、確かめたファイルかを比べる（Windowsは開いたファイルの
   実際のパス、Linux・macOSは正規化し直したパスとデバイス・inode）
+
 - HTTPで、リプレイ攻撃対策（`anti_replay_enabled`）のnonceの記録が、1つの
   呼び出し元の上限に達すると、送られるたびに、書き込みのロックを持った
   まま全件（既定で最大10万件）を見て、期限の切れた記録を探していた
