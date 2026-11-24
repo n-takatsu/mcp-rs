@@ -480,6 +480,10 @@ fn same_boot(before: u64, min_elapsed: Duration, max_elapsed: Duration, now: u64
         Some(false)
     } else if now > before + max_elapsed.as_secs_f64() + BOOT_TOLERANCE_SECS
         || before <= BOOT_TOLERANCE_SECS + 1.0
+        // 2つの値を採った間に再起動しても`now`になりうる（再起動からの時間が、
+        // 最も長く見た経過時間に収まる）なら、同じ起動とは決めない（PR #762の
+        // 2回目のレビュー）
+        || now <= max_elapsed.as_secs_f64() + BOOT_TOLERANCE_SECS
     {
         None
     } else {
@@ -507,8 +511,8 @@ struct ProcessRow {
 ///   とき、`INFO`が、送った文の始め（最初の`?`の前まで。プリペアド
 ///   ステートメントの`?`は、値に置き換わって見えることがあるため）で始まる
 ///
-/// 識別子が両方読めて違う（別のサーバー）、または同じサーバーが再起動した
-/// （元の接続はもう無い）なら、文が同じでも止めない（#759）
+/// 識別子が両方読めて違う（別のサーバー）、または再起動した（元の接続は
+/// もう無い。識別子が読めなくても）なら、文が同じでも止めない（#759）
 fn may_kill(found: Option<ProcessRow>, user: &str, target: &KillTarget<'_>) -> bool {
     let Some(found) = found else {
         return false;
@@ -516,12 +520,18 @@ fn may_kill(found: Option<ProcessRow>, user: &str, target: &KillTarget<'_>) -> b
     if found.user.as_deref() != Some(user) {
         return false;
     }
+    // 再起動したと分かれば、識別子が読めなくても止めない（PR #762の2回目の
+    // レビュー。SQLの始めが同じでも、別のセッション）
+    if found.same_boot == Some(false) {
+        return false;
+    }
     if let (Some(ours), Some(theirs)) = (target.server.id.as_deref(), found.server.as_deref()) {
         if ours != theirs {
             return false;
         }
-        if let Some(same) = found.same_boot {
-            return same;
+        // 同じ起動と分かるときだけ、SQLを比べずに止める
+        if found.same_boot == Some(true) {
+            return true;
         }
     }
     match (target.statement, found.info.as_deref()) {
@@ -1227,6 +1237,15 @@ mod tests {
             &target(Some("A"), None)
         ));
         assert!(!may_kill(None, "app", &target(Some("A"), Some(sql))));
+        // 再起動したと分かれば、識別子が読めなくても、SQLの始めが同じでも
+        // 止めない（PR #762の2回目のレビュー）
+        for (theirs, mine) in [(None, None), (Some("A"), None), (None, Some("A"))] {
+            assert!(!may_kill(
+                row(Some("app"), Some(ours), theirs, Some(false)),
+                "app",
+                &target(mine, Some(sql))
+            ));
+        }
     }
 
     /// `Uptime`から、サーバーが再起動したかを見分ける（#759）
@@ -1254,6 +1273,10 @@ mod tests {
         assert_eq!(same_boot(2, secs(40), secs(40), 41), None);
         // 時計が合わない（最も長く見ても、経った時間より増えた）
         assert_eq!(same_boot(1000, secs(40), secs(40), 1100), None);
+        // 間に再起動しても説明できる値は、同じ起動と決めない（PR #762の
+        // 2回目のレビュー。再起動から35秒なら、最も長い36秒に収まる）
+        assert_eq!(same_boot(5, secs(33), secs(36), 35), None);
+        assert_eq!(same_boot(100, secs(30), secs(32), 131), Some(true));
     }
 
     /// 時間の上限を超えたときは、止めた結果に合わせて伝える（#759）
