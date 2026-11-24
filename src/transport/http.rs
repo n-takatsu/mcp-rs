@@ -1551,6 +1551,10 @@ impl HttpTransport {
                         // auto_block_enabled false, which would otherwise
                         // silently make check_ids never block anything.
                         auto_block_enabled: true,
+                        // 信頼度の下限は設けない。既定（0.7）を当てはめると
+                        // （#760）、これまで拒否していた信頼度0.5以上0.7未満の
+                        // 深刻度Highの検知を通してしまう
+                        min_confidence_threshold: 0.0,
                         ..IDSConfig::default()
                     })
                     .await

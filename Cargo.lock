@@ -2697,6 +2697,7 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-appender",
+ "tracing-log",
  "tracing-subscriber",
  "tungstenite",
  "url",
