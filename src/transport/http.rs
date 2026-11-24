@@ -997,7 +997,9 @@ impl QueuedRequest {
 pub struct ReceivedRequest {
     /// 要求。`id`は、`HttpTransport`が要求ごとに付けた内部の相関IDで、
     /// クライアントの付けた`id`ではない。応答の`id`には、これをそのまま
-    /// 入れる。`send_message`が、クライアントの`id`に戻して返す
+    /// 入れる。`send_message`が、クライアントの`id`に戻して返す。
+    /// 通知は`id`が`None`で、応答しない（PR #771。`id`が`null`の応答を
+    /// `send_message`に渡しても、捨てる）
     pub request: JsonRpcRequest,
     /// 呼び出し元（APIキー・トークンの名前と使えるツール、接続元の
     /// IPアドレス、#749）
@@ -2561,6 +2563,13 @@ impl Transport for HttpTransport {
                     correlation_id
                 );
             }
+            return Ok(());
+        }
+        if matches!(message.id, crate::types::RequestId::Null) {
+            // 通知には応答しない（JSON-RPC 2.0）。通知の`id`は`None`なので、
+            // 応答を作ると`id`が`null`になる。要求のキューに入れずに捨てる
+            // （PR #771）
+            debug!("Dropped a response with a null id: notifications get no response");
             return Ok(());
         }
         if correlation_id.is_some_and(|id| id.starts_with(CORRELATION_ID_PREFIX)) {
@@ -6300,7 +6309,7 @@ mod tests {
                     jsonrpc: "2.0".to_string(),
                     result: Some(serde_json::json!({"ok": true})),
                     error: None,
-                    id: request.id,
+                    id: request.id.unwrap_or(crate::types::RequestId::Null),
                 };
                 if transport.send_message(response).await.is_err() {
                     break;
@@ -7562,7 +7571,7 @@ mod tests {
                         "unauthenticated_remote": caller.is_unauthenticated_remote(),
                     })),
                     error: None,
-                    id: request.id,
+                    id: request.id.unwrap_or(crate::types::RequestId::Null),
                 };
                 if responder.send_message(response).await.is_err() {
                     break;
@@ -7631,7 +7640,7 @@ mod tests {
                     jsonrpc: "2.0".to_string(),
                     result: Some(serde_json::json!({ "name": caller.name })),
                     error: None,
-                    id: request.id,
+                    id: request.id.unwrap_or(crate::types::RequestId::Null),
                 };
                 if responder.send_message(response).await.is_err() {
                     break;
@@ -7680,7 +7689,11 @@ mod tests {
             jsonrpc: "2.0".to_string(),
             result: Some(result),
             error: None,
-            id: received.request.id.clone(),
+            id: received
+                .request
+                .id
+                .clone()
+                .unwrap_or(crate::types::RequestId::Null),
         }
     }
 
@@ -7771,7 +7784,7 @@ mod tests {
         assert_ne!(ids[0], ids[1]);
         for id in ids {
             assert!(
-                matches!(&id, crate::types::RequestId::String(s) if s.starts_with("mcp-rs-")),
+                matches!(&id, Some(crate::types::RequestId::String(s)) if s.starts_with("mcp-rs-")),
                 "{id:?}"
             );
         }
@@ -7864,7 +7877,11 @@ mod tests {
                     message: "Method not found".to_string(),
                     data: None,
                 }),
-                id: received.request.id.clone(),
+                id: received
+                    .request
+                    .id
+                    .clone()
+                    .unwrap_or(crate::types::RequestId::Null),
             }
         })
         .await;
@@ -8189,7 +8206,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(received.request.method, "ping");
-        let crate::types::RequestId::String(id) = &received.request.id else {
+        let Some(crate::types::RequestId::String(id)) = &received.request.id else {
             panic!("{:?}", received.request.id);
         };
         assert!(channel.pending.lock().contains_key(id));
@@ -8235,6 +8252,111 @@ mod tests {
             );
         }
         assert!(receiver.try_recv().is_err());
+    }
+
+    /// チャンネル経由の通知を、受信側が読める（PR #771。以前は
+    /// `JsonRpcRequest.id`が必須で、`receive_request_with_context`が
+    /// "missing field `id`"で失敗した）。HTTPは202、受信側には`id`が`None`で
+    /// 渡り、応答しない。WebSocketも同じ。要求はこれまでどおり答える
+    #[tokio::test]
+    async fn test_channel_notifications_reach_the_receiver() {
+        use futures::{SinkExt as _, StreamExt as _};
+
+        let transport = HttpTransport::new(HttpConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            enable_websocket_upgrade: true,
+            ..HttpConfig::default()
+        })
+        .unwrap();
+        transport.start_server().await.unwrap();
+        let server_addr = transport.bound_addr().await.unwrap();
+        wait_for_plain_server_ready(server_addr).await;
+
+        let (seen_tx, mut seen_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut responder = transport;
+        tokio::spawn(async move {
+            loop {
+                let received = match responder.receive_request_with_context().await {
+                    Ok(Some(received)) => received,
+                    Ok(None) => break,
+                    Err(e) => panic!("the receiver could not read a message: {e}"),
+                };
+                let _ =
+                    seen_tx.send((received.request.method.clone(), received.request.id.clone()));
+                // 通知には応答しない
+                let Some(id) = received.request.id else {
+                    continue;
+                };
+                let response = JsonRpcResponse {
+                    jsonrpc: "2.0".to_string(),
+                    result: Some(serde_json::json!({})),
+                    error: None,
+                    id,
+                };
+                responder.send_message(response).await.unwrap();
+            }
+        });
+        macro_rules! next_seen {
+            () => {
+                tokio::time::timeout(Duration::from_secs(10), seen_rx.recv())
+                    .await
+                    .unwrap()
+                    .unwrap()
+            };
+        }
+
+        let url = format!("http://127.0.0.1:{}/mcp", server_addr.port());
+        let client = reqwest::Client::new();
+        let response = client
+            .post(&url)
+            .json(&serde_json::json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        assert_eq!(
+            next_seen!(),
+            ("notifications/initialized".to_string(), None)
+        );
+
+        let ws_url = format!("ws://127.0.0.1:{}/ws", server_addr.port());
+        let (mut ws, _) = tokio_tungstenite::connect_async(&ws_url).await.unwrap();
+        for message in [
+            serde_json::json!({ "jsonrpc": "2.0", "method": "notifications/cancelled", "params": { "requestId": 1 } }),
+            serde_json::json!({ "jsonrpc": "2.0", "id": 5, "method": "ping" }),
+        ] {
+            ws.send(tokio_tungstenite::tungstenite::Message::Text(
+                message.to_string().into(),
+            ))
+            .await
+            .unwrap();
+        }
+        assert_eq!(next_seen!(), ("notifications/cancelled".to_string(), None));
+        let (method, id) = next_seen!();
+        assert_eq!(method, "ping");
+        assert!(id.is_some());
+        // 最初に届くフレームは、要求への応答（通知には何も返らない）
+        let frame = tokio::time::timeout(Duration::from_secs(10), ws.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let body: Value = serde_json::from_str(frame.to_text().unwrap()).unwrap();
+        assert_eq!(body["id"], serde_json::json!(5));
+    }
+
+    /// 通知への応答（`id`が`null`）は、要求のキューに入れずに捨てる（PR #771）
+    #[tokio::test]
+    async fn test_response_with_a_null_id_is_dropped() {
+        let mut transport = HttpTransport::new(HttpConfig::default()).unwrap();
+        let response = JsonRpcResponse {
+            jsonrpc: "2.0".to_string(),
+            result: Some(serde_json::json!({})),
+            error: None,
+            id: crate::types::RequestId::Null,
+        };
+        transport.send_message(response).await.unwrap();
+        assert!(transport.receiver.lock().await.try_recv().is_err());
     }
 
     /// `connection_stats()`をTokioのタスクから呼んでも、パニックしない

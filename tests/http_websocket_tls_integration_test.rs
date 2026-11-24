@@ -59,7 +59,7 @@ fn spawn_responder(mut transport: HttpTransport) {
                 jsonrpc: "2.0".to_string(),
                 result: Some(serde_json::json!({"ok": true})),
                 error: None,
-                id: request.id,
+                id: request.id.unwrap_or(mcp_rs::types::RequestId::Null),
             };
             if transport.send_message(response).await.is_err() {
                 break;

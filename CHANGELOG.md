@@ -155,6 +155,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- ライブラリとして使う場合: `mcp_rs::types::JsonRpcRequest`の`id`を
+  `RequestId`から`Option<RequestId>`にした（#760）。通知（`id`なし）は
+  `None`で、書くときも`id`を付けない。以前は`id`が必須で、`HttpTransport`の
+  チャンネル（`receive_message`・`receive_request_with_caller`・
+  `receive_request_with_context`）に通知が届くと、"missing field `id`"の
+  エラーになり、受信側が読めなかった。通知には応答しない（`id`が`null`の
+  応答を`send_message`に渡しても、捨てる）。
+  **互換性のない変更**: `request.id`を`RequestId`として使うコードは、
+  `Option`を扱うよう直す必要がある（要求なら`Some`）。mcp-rs本体は
+  `with_request_handler`を使うので、動きは変わらない
+
 - ライブラリとして使う場合: `HttpTransport`のチャンネル
   （`receive_message`・`receive_request_with_caller`）で受け取る要求の`id`を、
   クライアントの付けた`id`から、要求ごとの内部の相関ID（`"mcp-rs-1"`等の

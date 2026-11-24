@@ -10,7 +10,11 @@ pub struct JsonRpcRequest {
     pub method: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub params: Option<Value>,
-    pub id: RequestId,
+    /// 要求の`id`。通知（`id`なし）は`None`（PR #771）。以前は必須で、
+    /// 通知を読めなかった。`"id": null`も`None`に読む（`HttpTransport`は、
+    /// `id`が文字列・数値でない要求を、渡す前に断る）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<RequestId>,
 }
 
 /// JSON-RPC response message
@@ -52,11 +56,27 @@ mod tests {
             jsonrpc: "2.0".to_string(),
             method: "test".to_string(),
             params: Some(serde_json::json!({"key": "value"})),
-            id: RequestId::Number(1),
+            id: Some(RequestId::Number(1)),
         };
         let json = serde_json::to_string(&req).unwrap();
         assert!(json.contains("\"jsonrpc\":\"2.0\""));
         assert!(json.contains("\"method\":\"test\""));
+        assert!(json.contains("\"id\":1"));
+    }
+
+    /// 通知（`id`なし）も読め、書くときも`id`を付けない（PR #771）
+    #[test]
+    fn test_json_rpc_notification_has_no_id() {
+        let notification: JsonRpcRequest =
+            serde_json::from_str(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#)
+                .unwrap();
+        assert!(notification.id.is_none());
+        let json = serde_json::to_value(&notification).unwrap();
+        assert!(json.get("id").is_none(), "{json}");
+
+        let request: JsonRpcRequest =
+            serde_json::from_str(r#"{"jsonrpc":"2.0","id":"a","method":"ping"}"#).unwrap();
+        assert_eq!(request.id, Some(RequestId::String("a".to_string())));
     }
 
     #[test]
