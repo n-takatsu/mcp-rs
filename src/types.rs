@@ -1,4 +1,4 @@
-//! Type definitions for MCP JSON-RPC messages.
+//! JSON-RPC message types used by the `Transport` trait.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -40,77 +40,6 @@ pub enum RequestId {
     String(String),
     Number(i64),
     Null,
-}
-
-/// MCP Tool definition
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Tool {
-    pub name: String,
-    pub description: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub input_schema: Option<Value>,
-}
-
-/// MCP Resource definition
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Resource {
-    pub uri: String,
-    pub name: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub mime_type: Option<String>,
-}
-
-/// MCP Prompt definition
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Prompt {
-    pub name: String,
-    pub description: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub arguments: Option<Vec<PromptArgument>>,
-}
-
-/// Prompt argument definition
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PromptArgument {
-    pub name: String,
-    pub description: String,
-    pub required: bool,
-}
-
-/// Server information
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ServerInfo {
-    pub name: String,
-    pub version: String,
-}
-
-/// Server capabilities
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct ServerCapabilities {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tools: Option<ToolsCapability>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub resources: Option<ResourcesCapability>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub prompts: Option<PromptsCapability>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolsCapability {
-    pub list_changed: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ResourcesCapability {
-    pub subscribe: bool,
-    pub list_changed: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PromptsCapability {
-    pub list_changed: bool,
 }
 
 #[cfg(test)]
