@@ -330,6 +330,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   かった。値を1つずつ調べる。`RequestData::query_params`は
   `HashMap<String, Vec<String>>`になる（#759）
 
+- IDSが、JSONの本文をエスケープ（`\"`等）が残ったまま調べていたので、
+  引用符付きのパラメーターのdata: URI（`"data:application/javascript;
+  name=\"a b\";base64,..."`）がXSS-011に当たらなかった。本文のままに
+  加え、デコードした文字列の値も1つずつ調べる（#759）
+
 - IDSのXSS-011（High）が`base64`という語だけで一致していた（本文の
   `"encoding":"base64"`でHTTP 403）。`data:text/html;base64,`等、
   スクリプト・HTMLとして実行される種類の`data:` URIだけを見る（種類と

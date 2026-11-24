@@ -488,12 +488,14 @@ impl SignatureDetector {
             // 等の語にも当たった）。始まり・`/`・`\`・`=`の後の名前が
             // `.env`等で終わり、その後が終わり・区切り・`.`のものと、引用符で
             // 囲んだ値の全体がそのファイル名のもの（JSONの`{"file":".env"}`、
-            // PR #764のレビュー。文の`"edit web.config to ..."`は当てない）
+            // PR #764のレビュー。文の`"edit web.config to ..."`は当てない）。
+            // 値の始めの名前は、後ろが終わり・区切り・`.`のときだけ（JSONの値を
+            // デコードして調べるので、`"web.config tips"`のような文に当てない）
             AttackPattern::new(
                 "PATH-008",
                 "Config File Access",
                 DetectionType::UnauthorizedAccess,
-                r#"(?i)(?:^|[/\\=])[\w.-]*\.(?:env|config|ini|conf)(?:$|[/\\?#&;.'"\s])|"[\w.-]*\.(?:env|config|ini|conf)"|'[\w.-]*\.(?:env|config|ini|conf)'"#,
+                r#"(?i)^[\w.-]*\.(?:env|config|ini|conf)(?:$|[/\\?#&;.])|[/\\=][\w.-]*\.(?:env|config|ini|conf)(?:$|[/\\?#&;.'"\s])|"[\w.-]*\.(?:env|config|ini|conf)"|'[\w.-]*\.(?:env|config|ini|conf)'"#,
                 Severity::High,
                 "Configuration file access",
                 vec![],
@@ -732,14 +734,39 @@ impl SignatureDetector {
             }
         }
 
-        // ボディ
+        // ボディ。JSONなら、デコードした文字列の値も1つずつ調べる（PR #764の
+        // レビュー。本文のままでは`\"`等のエスケープが残り、値の形を見る
+        // パターンが当たらない）
         if let Some(body) = &request.body {
             if let Ok(body_str) = String::from_utf8(body.clone()) {
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body_str) {
+                    collect_json_strings(&json, &mut strings);
+                }
                 strings.push(body_str);
             }
         }
 
         strings
+    }
+}
+
+/// JSONの文字列の値を、デコードして`out`に足す（キーは足さない。PR #764の
+/// レビュー）。本文の大きさはHTTP層で制限されているので、数は本文の長さを
+/// 超えない
+fn collect_json_strings(value: &serde_json::Value, out: &mut Vec<String>) {
+    match value {
+        serde_json::Value::String(text) => out.push(text.clone()),
+        serde_json::Value::Array(items) => {
+            for item in items {
+                collect_json_strings(item, out);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for item in map.values() {
+                collect_json_strings(item, out);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -1051,6 +1078,40 @@ mod tests {
                 .unwrap();
             assert!(!result.matched, "{value}: {:?}", result.pattern_names);
         }
+    }
+
+    /// JSONの本文の文字列の値は、デコードしてから調べる（PR #764の
+    /// レビュー。本文のままでは`\"`が残り、引用符付きのパラメーターの
+    /// data: URIが当たらなかった）
+    #[tokio::test]
+    async fn test_json_body_string_values_are_checked_decoded() {
+        let detector = SignatureDetector::new().await.unwrap();
+        let body = r#"{"u":"data:application/javascript;name=\"a b\";base64,YWxlcnQoMSk="}"#;
+        let result = detector
+            .detect(&request_with(&[], &[], Some(body)))
+            .await
+            .unwrap();
+        assert!(
+            result
+                .pattern_names
+                .contains(&"Base64 Encoded Script".to_string()),
+            "{:?}",
+            result.pattern_names
+        );
+        // 入れ子の配列・オブジェクトの中の値も
+        let body = r#"{"a":[{"b":"data:text/html;x=\"1\";base64,PHNjcmlwdD4="}]}"#;
+        let result = detector
+            .detect(&request_with(&[], &[], Some(body)))
+            .await
+            .unwrap();
+        assert!(result.matched, "{:?}", result.pattern_names);
+        // 普通の値は当たらない
+        let body = r#"{"text":"He said \"hello\" & left; see <b>docs</b>","n":1}"#;
+        let result = detector
+            .detect(&request_with(&[], &[], Some(body)))
+            .await
+            .unwrap();
+        assert!(!result.matched, "{:?}", result.pattern_names);
     }
 
     /// Markdownのコード・jQuery・`.ini`で始まる語・設定ファイルの名前を
