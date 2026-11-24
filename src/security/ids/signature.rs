@@ -493,12 +493,15 @@ impl SignatureDetector {
             // デコードして調べるので、`"web.config tips"`のような文に当てない）。
             // `/`・`\`の後の名前は空白を含んでもよい（`/app/my config.ini`、
             // PR #764のレビュー）が、そのときは後ろが終わり・区切り・引用符の
-            // ときだけ（文の`docs/notes about web.config tips`に当てない）
+            // ときだけ（文の`docs/notes about web.config tips`に当てない）。
+            // 名前は引用符・`,`・`:`・`?`・`#`・`&`・`;`を含まない（JSONの
+            // 本文のままで、値の境目を越えて`/example.com","text":"edit
+            // web.config"`のように当てない。PR #764のレビュー）
             AttackPattern::new(
                 "PATH-008",
                 "Config File Access",
                 DetectionType::UnauthorizedAccess,
-                r#"(?i)^[\w.-]*\.(?:env|config|ini|conf)(?:$|[/\\?#&;.])|[/\\=][\w.-]*\.(?:env|config|ini|conf)(?:$|[/\\?#&;.'"\s])|[/\\][^/\\\r\n]*\.(?:env|config|ini|conf)(?:$|[/\\?#&;'"])|"[\w.-]*\.(?:env|config|ini|conf)"|'[\w.-]*\.(?:env|config|ini|conf)'"#,
+                r#"(?i)^[\w.-]*\.(?:env|config|ini|conf)(?:$|[/\\?#&;.])|[/\\=][\w.-]*\.(?:env|config|ini|conf)(?:$|[/\\?#&;.'"\s])|[/\\][^/\\\r\n"',:?#&;]*\.(?:env|config|ini|conf)(?:$|[/\\?#&;'"])|"[\w.-]*\.(?:env|config|ini|conf)"|'[\w.-]*\.(?:env|config|ini|conf)'"#,
                 Severity::High,
                 "Configuration file access",
                 vec![],
@@ -1283,6 +1286,18 @@ mod tests {
                 "{value}: {:?}",
                 result.pattern_names
             );
+        }
+        // JSONの本文のまま調べても、値の境目を越えて当てない（PR #764の
+        // 5回目のレビュー）
+        for body in [
+            r#"{"url":"https://example.com","text":"edit web.config"}"#,
+            r#"{"path":"/docs/a","note":"see settings.ini"}"#,
+        ] {
+            let result = detector
+                .detect(&request_with(&[], &[], Some(body)))
+                .await
+                .unwrap();
+            assert!(!result.matched, "{body}: {:?}", result.pattern_names);
         }
         let body = r#"{"file":"/app/my config.ini"}"#;
         let result = detector
