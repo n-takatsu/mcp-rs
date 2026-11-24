@@ -1061,11 +1061,15 @@ fn cleanup_old_logs_by_age(
             if let Ok(metadata) = entry.metadata() {
                 if let Ok(modified) = metadata.modified() {
                     if modified < cutoff_time && !written_since(modified, keep_since) {
-                        if let Err(e) = fs::remove_file(&path) {
-                            tracing::warn!("ログファイル削除失敗: {} - {}", path.display(), e);
-                        } else {
-                            removed_count += 1;
-                            tracing::debug!("古いログファイル削除: {}", path.display());
+                        match remove_old_log(&path, keep_since) {
+                            Ok(true) => {
+                                removed_count += 1;
+                                tracing::debug!("古いログファイル削除: {}", path.display());
+                            }
+                            Ok(false) => {}
+                            Err(e) => {
+                                tracing::warn!("ログファイル削除失敗: {} - {}", path.display(), e)
+                            }
                         }
                     }
                 }
@@ -1115,11 +1119,13 @@ fn cleanup_old_logs_by_count(
 
     // 最大数を超えた古いファイルを削除
     for (path, _) in log_files.iter().skip(max_count as usize) {
-        if let Err(e) = fs::remove_file(path) {
-            tracing::warn!("ログファイル削除失敗: {} - {}", path.display(), e);
-        } else {
-            removed_count += 1;
-            tracing::debug!("古いログファイル削除: {}", path.display());
+        match remove_old_log(path, started) {
+            Ok(true) => {
+                removed_count += 1;
+                tracing::debug!("古いログファイル削除: {}", path.display());
+            }
+            Ok(false) => {}
+            Err(e) => tracing::warn!("ログファイル削除失敗: {} - {}", path.display(), e),
         }
     }
 
@@ -1177,11 +1183,13 @@ fn cleanup_old_logs_by_size(
             current_size += size;
         } else {
             // サイズ制限を超えるファイルを削除
-            if let Err(e) = fs::remove_file(path) {
-                tracing::warn!("ログファイル削除失敗: {} - {}", path.display(), e);
-            } else {
-                removed_count += 1;
-                tracing::debug!("古いログファイル削除: {}", path.display());
+            match remove_old_log(path, started) {
+                Ok(true) => {
+                    removed_count += 1;
+                    tracing::debug!("古いログファイル削除: {}", path.display());
+                }
+                Ok(false) => {}
+                Err(e) => tracing::warn!("ログファイル削除失敗: {} - {}", path.display(), e),
             }
         }
     }
@@ -1196,6 +1204,19 @@ fn cleanup_old_logs_by_size(
     }
 
     Ok(())
+}
+
+/// 古いログファイルを消す。集めた後に書かれていれば（`keep_since`の後に
+/// 更新されていれば）消さずに`false`（PR #761のレビュー。集めてから消すまでに、
+/// 切り替えに失敗した別のプロセスが書くことがある）。確かめてから消すまでの
+/// 短い間に書かれるのは防げない（プロセスの間で書き込みと排他していないため）
+fn remove_old_log(path: &Path, keep_since: std::time::SystemTime) -> std::io::Result<bool> {
+    let modified = fs::metadata(path)?.modified()?;
+    if written_since(modified, keep_since) {
+        return Ok(false);
+    }
+    fs::remove_file(path)?;
+    Ok(true)
 }
 
 /// 保持の処理で、最近書かれたとして消さない長さ（PR #761のレビュー）。
@@ -1575,6 +1596,28 @@ mod tests {
         cleanup_old_logs_by_age(dir.path(), 0, &[], started, started).unwrap();
 
         assert!(next_period.exists());
+    }
+
+    /// 消す直前に更新時刻を確かめ直し、集めた後に書かれていれば消さない
+    /// （PR #761のレビュー）
+    #[test]
+    fn test_remove_old_log_skips_files_written_after_collection() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("mcp-rs.log.2000-01-01");
+        fs::write(&path, b"x").unwrap();
+        let collected = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+        // 集めた後（`collected`の後）に書かれた
+        assert!(!remove_old_log(&path, collected).unwrap());
+        assert!(path.exists());
+        // 集めた時点より前のまま
+        fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(collected - std::time::Duration::from_secs(60))
+            .unwrap();
+        assert!(remove_old_log(&path, collected).unwrap());
+        assert!(!path.exists());
     }
 
     /// 古い期間の名前でも、1期間の間に書かれたファイルは消さない（PR #761の
