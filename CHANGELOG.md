@@ -231,14 +231,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   何もしていない接続として閉じることも、keep-aliveのpingで見つけることも
   なく、接続の枠（`max_connections`）を持ち続けられた。本文のある応答は、
   送信が`timeout_ms`（と、大きさに合わせた時間）の間に進まなければ、
-  接続を閉じる
+  接続を閉じる。最後のデータをh2に渡した後も、相手のウィンドウが空いて
+  送れるようになるまで、期限を外さない
 
 - HTTPの`enforce_https`（`tls_enabled`なし）で、`Forwarded`ヘッダー全体
   から`proto=https`を部分文字列で探していた（#759）。クライアントが
   `Forwarded: for=192.0.2.1;proto=https`を送ると、プロキシが`proto=http`の
   要素を足しても通った。要素・パラメーターに分け、クライアントから受けた
   プロキシが足した要素（右から見て、`for`が`trusted_proxies`でない最初の
-  要素）の`proto`だけを、完全一致で比べる
+  要素。すべてが`trusted_proxies`なら、いちばん右の要素）の`proto`だけを、
+  完全一致で比べる。形の正しくないヘッダー（閉じていない引用符等）は、
+  HTTPSとみなさない
 
 - HTTPの`/ws`で、OAuthのトークンの期限の直前に受け取ったメッセージが、
   リプレイ攻撃対策・IDSの確認の間に期限を過ぎても、そのまま処理していた
@@ -258,7 +261,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ログに出すだけだった。読み取りと実行を分け、`ping`にはすぐ答え、
   `notifications/cancelled`は、処理中か順を待っている同じ`id`の要求を止める
   （応答は返さない）。ほかの要求は今までどおり受け取った順に1つずつ実行し、
-  応答の書き込みは1つずつ行う
+  応答の書き込みは1つずつ行う。順を待つ要求は64件（合わせて16 MiB）までで、
+  超えた要求には`-32000`（server busy）を返し、通知は捨てる。相手が出力を
+  読まなければ、応答を溜め続けず、読み取りも止まる。出力に書けなくなれば、
+  実行中の要求を止めてエラーで終わる
 
 - JSON-RPCの形を確かめずに、通知か要求かを決めていた（#759）。`id: null`は
   通知として黙って捨て、`jsonrpc`が`"2.0"`でなくても処理し、型の並びが

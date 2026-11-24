@@ -1661,11 +1661,28 @@ impl Drop for ActivityGuard {
 /// そこで、本文のある応答を作った時点で、送信の期限（`timeout`後）を決め、
 /// 本文の各フレームを渡すたびに、その大きさに合わせて延ばす（`/ws`の応答と
 /// 同じ最低の速さ）。本文を送り終えるか捨てれば外す。期限を過ぎた接続は、
-/// `serve_connection`が閉じる
+/// `serve_connection`が閉じる。
+///
+/// 最後のフレームを渡した後も、すぐには終わりを知らせない（PR #765の
+/// レビュー）。hyper（1.8）は、フレームを渡すたびに、次を読む前に送信の
+/// 余地（相手のウィンドウ）が1バイト以上空くのを待つ。h2は渡されたデータを
+/// ウィンドウが空くまで溜めておくので、余地が空くのは、溜めたデータを
+/// 送れるようになってから。そこで、最後のフレームの後も`is_end_stream`を
+/// `false`にし、次に読まれたとき（溜めたデータを送れるようになったとき）に
+/// 終わりを返して期限を外す。以前は、最後のフレームを渡した時点で本文が
+/// 捨てられ、データがh2に溜まったままでも期限が外れた。終わりは、空の
+/// DATAフレーム（END_STREAM）で送られる。HTTP/1.1でも、書き込みのバッファに
+/// 空きができるまで次を読まないので、同じに働く。
+///
+/// 限界: 「送れる」はh2の流量制御の上でのこと。ソケットへの書き込み自体が
+/// 止まった相手（TCPで読まない相手）は、ここでは見ない。その場合は
+/// keep-aliveのpingも送れず、`keep_alive_timeout`で接続が閉じる
 struct SendProgressBody {
     inner: axum::body::Body,
     guard: ActivityGuard,
     timeout: std::time::Duration,
+    /// データのフレームを1つ以上渡した
+    sent_data: bool,
 }
 
 impl SendProgressBody {
@@ -1679,6 +1696,7 @@ impl SendProgressBody {
             inner,
             guard,
             timeout,
+            sent_data: false,
         }
     }
 }
@@ -1704,6 +1722,7 @@ impl hyper::body::Body for SendProgressBody {
                 );
                 this.guard
                     .set_send_deadline(Some(std::time::Instant::now() + limit));
+                this.sent_data |= frame.is_data();
             }
             std::task::Poll::Ready(_) => this.guard.set_send_deadline(None),
             std::task::Poll::Pending => {}
@@ -1712,7 +1731,8 @@ impl hyper::body::Body for SendProgressBody {
     }
 
     fn is_end_stream(&self) -> bool {
-        self.inner.is_end_stream()
+        // データを渡した後は、もう一度読まれて終わりを返すまで`false`
+        !self.sent_data && self.inner.is_end_stream()
     }
 
     fn size_hint(&self) -> hyper::body::SizeHint {
@@ -4072,43 +4092,106 @@ fn is_forwarded_https(headers: &HeaderMap, trusted_proxies: &[IpNet]) -> bool {
 /// `Forwarded`ヘッダー（RFC 7239）で、クライアントから受けたプロキシが
 /// 付けた要素の`proto`が`https`か（#759）。
 ///
-/// プロキシは要素を右に足していくので、右から順に見て、`for`が信頼する
-/// プロキシの要素（プロキシの間の区間）を飛ばし、最初のそれ以外の要素を
-/// 使う（`forwarded_client_ip`の`X-Forwarded-For`と同じ）。それより左は
-/// クライアントが送ったものなので見ない。以前はヘッダー全体から
-/// `proto=https`を部分文字列で探したため、クライアントが
-/// `Forwarded: for=192.0.2.1;proto=https`を送ると、プロキシが
+/// `headers`は、接続元が信頼するプロキシのときだけ渡される
+/// （`forwarded_headers`）。プロキシは要素を右に足していくので、右から順に
+/// 見て、`for`が信頼するプロキシの要素（プロキシの間の区間）を飛ばし、
+/// 最初のそれ以外の要素を使う（`forwarded_client_ip`の`X-Forwarded-For`と
+/// 同じ）。それより左はクライアントが送ったものなので見ない。すべての要素の
+/// `for`が信頼するプロキシなら、いちばん右の要素（mcp-rsにつないだ
+/// プロキシが足したもの）を使う（PR #765のレビュー。いちばん左は、
+/// クライアントが送ったものでありうる）。
+///
+/// 形の正しくないヘッダー（閉じていない引用符、`=`の無いパラメーター、
+/// 1つの要素に同じ名前が2つ等）は、HTTPSとみなさない（PR #765の
+/// レビュー。閉じていない引用符が、プロキシの足した要素を飲み込んだ）。
+///
+/// 以前はヘッダー全体から`proto=https`を部分文字列で探したため、
+/// クライアントが`Forwarded: for=192.0.2.1;proto=https`を送ると、プロキシが
 /// `proto=http`の要素を足しても通った
 fn forwarded_proto_is_https(headers: &HeaderMap, trusted_proxies: &[IpNet]) -> bool {
-    // 複数の行に分かれたヘッダーは、順につないだ1つの一覧と同じ
-    let values: Vec<&str> = headers
-        .get_all("forwarded")
+    let Some(elements) = parse_forwarded(headers) else {
+        warn!("Ignored a malformed Forwarded header");
+        return false;
+    };
+    let chosen = elements
         .iter()
-        .filter_map(|value| value.to_str().ok())
-        .collect();
-    let elements: Vec<&str> = values
-        .iter()
-        .flat_map(|value| split_unquoted(value, ','))
-        .map(str::trim)
-        .filter(|element| !element.is_empty())
-        .collect();
-    let mut chosen = None;
-    for element in elements.iter().rev() {
-        chosen = Some(*element);
-        let from_trusted_proxy = forwarded_param(element, "for")
-            .and_then(|node| parse_forwarded_node_ip(&node))
-            .is_some_and(|ip| is_trusted_proxy(trusted_proxies, ip));
-        if !from_trusted_proxy {
-            break;
-        }
-    }
+        .rev()
+        .find(|element| {
+            !element
+                .get("for")
+                .and_then(|node| parse_forwarded_node_ip(node))
+                .is_some_and(|ip| is_trusted_proxy(trusted_proxies, ip))
+        })
+        .or_else(|| elements.last());
     chosen
-        .and_then(|element| forwarded_param(element, "proto"))
+        .and_then(|element| element.get("proto"))
         .is_some_and(|proto| proto.eq_ignore_ascii_case("https"))
 }
 
-/// `text`を`separator`で分ける。引用符（`"`）の中の区切りでは分けない
-fn split_unquoted(text: &str, separator: char) -> Vec<&str> {
+/// `Forwarded`ヘッダーを、要素ごとの（小文字の名前 → 値）にする。複数の
+/// 行に分かれたヘッダーは、順につないだ1つの一覧と同じ。形が正しくなければ
+/// `None`
+fn parse_forwarded(headers: &HeaderMap) -> Option<Vec<HashMap<String, String>>> {
+    let mut elements = Vec::new();
+    for value in headers.get_all("forwarded") {
+        let value = value.to_str().ok()?;
+        for element in split_unquoted(value, ',')? {
+            let element = element.trim();
+            if element.is_empty() {
+                continue;
+            }
+            let mut params = HashMap::new();
+            for pair in split_unquoted(element, ';')? {
+                let pair = pair.trim();
+                if pair.is_empty() {
+                    continue;
+                }
+                let (key, value) = pair.split_once('=')?;
+                let key = key.trim();
+                if key.is_empty() || !key.chars().all(is_http_token_char) {
+                    return None;
+                }
+                let value = parse_forwarded_value(value.trim())?;
+                if params.insert(key.to_ascii_lowercase(), value).is_some() {
+                    return None; // 同じ名前が2つ
+                }
+            }
+            elements.push(params);
+        }
+    }
+    Some(elements)
+}
+
+/// `Forwarded`のパラメーターの値。引用符で囲んだ値は、囲みを外し、
+/// quoted-pair（`\x`）を`x`にする。囲んでいない値に、引用符・空白は使えない
+fn parse_forwarded_value(value: &str) -> Option<String> {
+    let Some(quoted) = value.strip_prefix('"') else {
+        if value.is_empty() || value.contains(['"', ' ', '\t']) {
+            return None;
+        }
+        return Some(value.to_string());
+    };
+    let mut unescaped = String::with_capacity(quoted.len());
+    let mut chars = quoted.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => unescaped.push(chars.next()?),
+            // 閉じる引用符の後には何も無いこと
+            '"' => return chars.next().is_none().then_some(unescaped),
+            c => unescaped.push(c),
+        }
+    }
+    None // 閉じていない
+}
+
+/// HTTPのtoken（RFC 9110）に使える文字か
+fn is_http_token_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || "!#$%&'*+-.^_`|~".contains(c)
+}
+
+/// `text`を`separator`で分ける。引用符（`"`）の中の区切りでは分けない。
+/// 引用符が閉じていなければ`None`
+fn split_unquoted(text: &str, separator: char) -> Option<Vec<&str>> {
     let mut parts = Vec::new();
     let mut start = 0;
     let mut quoted = false;
@@ -4125,48 +4208,12 @@ fn split_unquoted(text: &str, separator: char) -> Vec<&str> {
             start = index + c.len_utf8();
         }
     }
-    parts.push(&text[start..]);
-    parts
-}
-
-/// `Forwarded`の要素（`for=…;proto=…`）から、パラメーターの値を取る。
-/// 名前は大文字・小文字を区別しない。引用符は外す。同じ名前が2つあれば、
-/// 不正な要素として`None`
-fn forwarded_param(element: &str, name: &str) -> Option<String> {
-    let mut found = None;
-    for pair in split_unquoted(element, ';') {
-        let Some((key, value)) = pair.split_once('=') else {
-            continue;
-        };
-        if !key.trim().eq_ignore_ascii_case(name) {
-            continue;
-        }
-        if found.is_some() {
-            return None;
-        }
-        let value = value.trim();
-        let value = value
-            .strip_prefix('"')
-            .and_then(|v| v.strip_suffix('"'))
-            .map(|quoted| {
-                // quoted-pair（`\x`）は`x`にする
-                let mut unescaped = String::with_capacity(quoted.len());
-                let mut chars = quoted.chars();
-                while let Some(c) = chars.next() {
-                    unescaped.push(if c == '\\' {
-                        chars.next().unwrap_or(c)
-                    } else {
-                        c
-                    });
-                }
-                unescaped
-            })
-            .unwrap_or_else(|| value.to_string());
-        found = Some(value);
+    if quoted || escaped {
+        return None;
     }
-    found
+    parts.push(&text[start..]);
+    Some(parts)
 }
-
 /// `Forwarded`の`for`の値（`192.0.2.1`・`192.0.2.1:4711`・
 /// `[2001:db8::1]:4711`等）のIPアドレス。`unknown`・`_hidden`等は`None`
 fn parse_forwarded_node_ip(node: &str) -> Option<IpAddr> {
@@ -4565,6 +4612,38 @@ mod tests {
             &["for=198.51.100.7;proto=http, for=10.0.0.2;proto=https"],
             &chain
         ));
+        // すべての要素の`for`が信頼するプロキシなら、いちばん右（mcp-rsに
+        // つないだプロキシが足したもの）を使う。いちばん左は、クライアントが
+        // 送ったものでありうる（PR #765のレビュー）
+        assert!(!https(
+            &["for=10.0.0.2;proto=https, for=127.0.0.1;proto=http"],
+            &chain
+        ));
+        assert!(https(
+            &["for=10.0.0.2;proto=http, for=127.0.0.1;proto=https"],
+            &chain
+        ));
+        // 形の正しくないヘッダーは、HTTPSとみなさない。閉じていない引用符が、
+        // プロキシの足した要素を飲み込まない（PR #765のレビュー）
+        assert!(!https(
+            &["for=192.0.2.1;proto=https;x=\"a, for=198.51.100.7;proto=http"],
+            &trusted
+        ));
+        assert!(!https(
+            &[
+                "for=192.0.2.1;proto=https;x=\"a",
+                "for=198.51.100.7;proto=http"
+            ],
+            &trusted
+        ));
+        assert!(!https(&["for=198.51.100.7;proto=https;junk"], &trusted));
+        assert!(!https(
+            &["for=198.51.100.7;proto=https;proto=https"],
+            &trusted
+        ));
+        assert!(!https(&["for=198.51.100.7;proto=\"https\"x"], &trusted));
+        assert!(!https(&["for=198.51.100.7;proto=htt ps"], &trusted));
+        assert!(!https(&[], &trusted));
     }
 
     /// `/ws`で、処理を始める直前にトークンの期限を確かめ直す（#759）
@@ -8047,6 +8126,91 @@ mod tests {
         drop(response);
     }
 
+    /// 最後のフレームをh2に渡した後も、溜まったデータを送れるようになるまで
+    /// 期限を外さない（PR #765のレビュー）。以前は、データが送信の
+    /// ウィンドウを待って溜まったままでも本文が捨てられ、期限が外れた。
+    /// 相手が中身の無い応答（404）のリクエストを送り続ければ、接続は
+    /// 何もしていない接続にもならず、閉じられなかった
+    #[tokio::test]
+    async fn test_http2_response_buffered_in_h2_keeps_the_send_deadline() {
+        let port = start_test_server(|c| c.timeout_ms = 500).await;
+        let stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .unwrap();
+        // 本文（JSON-RPCのエラー）より小さいウィンドウ: 最初のフレームは
+        // h2に渡されるが、送り切れずに溜まる
+        let (mut sender, connection) =
+            hyper::client::conn::http2::Builder::new(TokioExecutor::new())
+                .initial_stream_window_size(10)
+                .handshake(TokioIo::new(stream))
+                .await
+                .unwrap();
+        let connection = tokio::spawn(connection);
+        let request = hyper::Request::builder()
+            .method("POST")
+            .uri(format!("http://127.0.0.1:{port}/mcp"))
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from("not json"))
+            .unwrap();
+        let response = sender.send_request(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        // 中身の無い応答のリクエストを送り続ける
+        let started = std::time::Instant::now();
+        let busy = async {
+            loop {
+                let request = hyper::Request::builder()
+                    .uri(format!("http://127.0.0.1:{port}/nothing-here"))
+                    .body(axum::body::Body::empty())
+                    .unwrap();
+                if sender.send_request(request).await.is_err() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+        };
+        let closed = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            tokio::join!(busy, connection)
+        })
+        .await;
+        assert!(closed.is_ok(), "the HTTP/2 connection was not closed");
+        assert!(started.elapsed() < std::time::Duration::from_secs(4));
+        drop(response);
+    }
+
+    /// 本文は、データのフレームを渡した後、もう一度読まれて終わりを返す
+    /// まで、期限を持ち続ける（PR #765のレビュー）
+    #[tokio::test]
+    async fn test_send_progress_body_reports_the_end_only_when_polled_again() {
+        use http_body_util::BodyExt;
+        use hyper::body::Body as _;
+        let activity = Arc::new(ConnectionActivity::new());
+        let mut body = SendProgressBody::new(
+            axum::body::Body::from("hello"),
+            ActivityGuard::new(activity.clone()),
+            std::time::Duration::from_secs(1),
+        );
+        assert!(!body.is_end_stream());
+        assert!(activity.send_deadline().is_some());
+
+        let frame = body.frame().await.unwrap().unwrap();
+        assert_eq!(frame.into_data().unwrap(), "hello");
+        // 中身はもう無いが、まだ終わりとは言わず、期限も残す
+        assert!(!body.is_end_stream());
+        assert!(activity.send_deadline().is_some());
+
+        assert!(body.frame().await.is_none());
+        assert_eq!(activity.send_deadline(), None);
+
+        // 本文の無い応答には、期限を付けず、すぐ終わりと言う
+        let empty = SendProgressBody::new(
+            axum::body::Body::empty(),
+            ActivityGuard::new(activity.clone()),
+            std::time::Duration::from_secs(1),
+        );
+        assert!(empty.is_end_stream());
+        assert_eq!(activity.send_deadline(), None);
+    }
     /// 送っている応答の期限は、本文を送り終えるか捨てれば外す（#759）
     #[test]
     fn test_send_deadline_is_cleared_when_the_response_is_done() {

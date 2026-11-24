@@ -210,6 +210,42 @@ fn cancellable_request_id(line: &str) -> Option<String> {
         .map(serde_json::Value::to_string)
 }
 
+/// STDIOで、順を待つ要求・通知の数の上限（PR #765のレビュー）。超えた
+/// 要求には`-32000`を返す
+#[cfg(not(test))]
+const STDIO_MAX_QUEUED_REQUESTS: usize = 64;
+/// テストでは小さくする（上限を超えるところを確かめるため）
+#[cfg(test)]
+const STDIO_MAX_QUEUED_REQUESTS: usize = 6;
+
+/// STDIOで、順を待つ要求・通知の大きさの合計の上限（バイト）
+const STDIO_MAX_QUEUED_BYTES: usize = 16 * 1024 * 1024;
+
+/// STDIOで、書き出す前の応答の数の上限。相手が出力を読まなければ、
+/// 実行と読み取りを止める
+const STDIO_MAX_PENDING_RESPONSES: usize = 16;
+
+/// 順を待つ要求が多すぎるときの応答（`-32000`、PR #765のレビュー）。
+/// `id`（文字列・数値）の無いもの（通知等）には`None`
+fn busy_response(line: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(line.trim()).ok()?;
+    let id = value
+        .get("id")
+        .filter(|id| id.is_string() || id.is_number())?
+        .clone();
+    serde_json::to_string(&JsonRpcResponse {
+        jsonrpc: "2.0".to_string(),
+        result: None,
+        error: Some(crate::mcp::JsonRpcError {
+            code: -32000,
+            message: "Server busy: too many requests are waiting to be processed".to_string(),
+            data: None,
+        }),
+        id: Some(id),
+    })
+    .ok()
+}
+
 /// STDIOの1行が`ping`の要求か（#759。順を待たずに答える）。形の確認は
 /// 処理（`process_request_as`）に任せる
 fn is_ping(line: &str) -> bool {
@@ -1319,6 +1355,13 @@ impl McpServer {
     /// - `notifications/cancelled`は、読んだときに、この接続で処理中か、
     ///   順を待っている同じ`id`の要求を止める（応答は返さない）
     /// - 応答は1つの書き手が1行ずつ書くので、混ざらない
+    ///
+    /// 溜める量には上限がある（PR #765のレビュー）。順を待つ要求は
+    /// `STDIO_MAX_QUEUED_REQUESTS`件・`STDIO_MAX_QUEUED_BYTES`バイトまでで、
+    /// 超えた要求には`-32000`（server busy）を返し、通知は捨てる（`ping`と
+    /// 取り消しは上限があっても処理する）。書き出す前の応答は
+    /// `STDIO_MAX_PENDING_RESPONSES`件までで、相手が出力を読まなければ、
+    /// 実行も読み取りも止まる（以前と同じく、パイプで待たせる）
     async fn serve_lines<R, W>(
         &self,
         mut input: R,
@@ -1334,8 +1377,8 @@ impl McpServer {
 
         // 取り消せる要求（`id`の表記 → 受け付けた番号と、止めるためのハンドル）
         type InFlight = HashMap<String, (u64, AbortHandle)>;
-        fn lock(in_flight: &std::sync::Mutex<InFlight>) -> std::sync::MutexGuard<'_, InFlight> {
-            in_flight
+        fn lock<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+            mutex
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
         }
@@ -1343,10 +1386,13 @@ impl McpServer {
         let handlers = Arc::new(self.handlers.clone());
         let session = Arc::new(Session::default());
         let in_flight: Arc<std::sync::Mutex<InFlight>> = Arc::default();
+        // 受け付けて、まだ終わっていない要求・通知の（件数、バイト数）
+        let load: Arc<std::sync::Mutex<(usize, usize)>> = Arc::default();
 
         // 応答を書くのは、このタスクだけ。ほかのタスクは、書き終えた行を
         // 渡すだけなので、書く途中で止められて行が壊れることもない
-        let (responses, mut pending) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let (responses, mut pending) =
+            tokio::sync::mpsc::channel::<String>(STDIO_MAX_PENDING_RESPONSES);
         let mut writer = tokio::spawn(async move {
             let mut output = output;
             while let Some(line) = pending.recv().await {
@@ -1364,13 +1410,14 @@ impl McpServer {
             futures::future::AbortRegistration,
         );
         let (queue, mut queued) = tokio::sync::mpsc::unbounded_channel::<Queued>();
-        let worker = {
+        let mut worker = {
             let handlers = handlers.clone();
             let session = session.clone();
             let audit_logger = self.audit_logger.clone();
             let status = self.status.clone();
             let responses = responses.clone();
             let in_flight = in_flight.clone();
+            let load = load.clone();
             tokio::spawn(async move {
                 while let Some((message, key, registration)) = queued.recv().await {
                     let response = Abortable::new(
@@ -1391,25 +1438,33 @@ impl McpServer {
                             registry.remove(id);
                         }
                     }
+                    {
+                        let mut load = lock(&load);
+                        load.0 -= 1;
+                        load.1 -= message.len();
+                    }
                     if let Ok(Some(text)) = response {
-                        let _ = responses.send(text);
+                        // 相手が出力を読まなければ、ここで待つ
+                        if responses.send(text).await.is_err() {
+                            return; // 書き手が止まった
+                        }
                     }
                 }
             })
         };
 
-        let mut pings = tokio::task::JoinSet::new();
         let mut next_no: u64 = 0;
         let mut line = String::new();
+        // 読み取りの間に書き手が終わった（書けなくなった）ときの結果
+        let mut writer_ended = None;
         loop {
-            while pings.try_join_next().is_some() {}
             line.clear();
             let bytes_read = tokio::select! {
                 read = input.read_line(&mut line) => read?,
-                // 書けなくなった（相手が閉じた等）
+                // 書けなくなった（相手が閉じた等）。下でエラーを返す
                 written = &mut writer => {
-                    written??;
-                    return Ok(());
+                    writer_ended = Some(written);
+                    break;
                 }
             };
             if bytes_read == 0 {
@@ -1431,46 +1486,79 @@ impl McpServer {
                 continue;
             }
 
-            if is_ping(&line) {
-                let message = line.clone();
-                let handlers = handlers.clone();
-                let session = session.clone();
-                let audit_logger = self.audit_logger.clone();
-                let status = self.status.clone();
-                let responses = responses.clone();
-                pings.spawn(async move {
-                    if let Some(text) = Self::respond_to_line(
-                        &message,
-                        &handlers,
-                        &session,
-                        audit_logger.as_deref(),
-                        &status,
-                    )
-                    .await
-                    {
-                        let _ = responses.send(text);
+            // `ping`はすぐ答える。相手が出力を読まず、応答が溜まっていれば、
+            // 読み取りもここで待つ
+            let immediate = if is_ping(&line) {
+                Self::respond_to_line(
+                    &line,
+                    &handlers,
+                    &session,
+                    self.audit_logger.as_deref(),
+                    &self.status,
+                )
+                .await
+            } else {
+                let accepted = {
+                    let mut load = lock(&load);
+                    let accepted = load.0 < STDIO_MAX_QUEUED_REQUESTS
+                        && load.1 + line.len() <= STDIO_MAX_QUEUED_BYTES;
+                    if accepted {
+                        load.0 += 1;
+                        load.1 += line.len();
                     }
-                });
-                continue;
-            }
-
-            let (handle, registration) = AbortHandle::new_pair();
-            let key = cancellable_request_id(&line).map(|id| {
-                let no = next_no;
-                next_no += 1;
-                lock(&in_flight).insert(id.clone(), (no, handle));
-                (id, no)
-            });
-            if queue.send((line.clone(), key, registration)).is_err() {
-                break;
+                    accepted
+                };
+                if accepted {
+                    let (handle, registration) = AbortHandle::new_pair();
+                    let key = cancellable_request_id(&line).map(|id| {
+                        let no = next_no;
+                        next_no += 1;
+                        lock(&in_flight).insert(id.clone(), (no, handle));
+                        (id, no)
+                    });
+                    if queue.send((line.clone(), key, registration)).is_err() {
+                        break;
+                    }
+                    None
+                } else {
+                    let busy = busy_response(&line);
+                    if busy.is_none() {
+                        warn!(
+                            "Dropped a notification: too many requests are waiting to be processed"
+                        );
+                    }
+                    busy
+                }
+            };
+            if let Some(text) = immediate {
+                if responses.send(text).await.is_err() {
+                    break; // 書き手が止まった。下でエラーを返す
+                }
             }
         }
 
+        // 受け付けた要求を終える。その間に書けなくなれば、終わらない要求を
+        // 待たずに止め、書けなかったエラーを返す（PR #765のレビュー）
         drop(queue);
-        worker.await?;
-        while pings.join_next().await.is_some() {}
         drop(responses);
-        writer.await??;
+        let written = match writer_ended {
+            Some(written) => {
+                worker.abort();
+                written
+            }
+            None => tokio::select! {
+                biased;
+                written = &mut writer => {
+                    worker.abort();
+                    written
+                }
+                done = &mut worker => {
+                    done?;
+                    writer.await
+                }
+            },
+        };
+        written??;
         Ok(())
     }
 }
@@ -3156,6 +3244,227 @@ mod tests {
         assert!(rest.is_none(), "unexpected response: {rest:?}");
     }
 
+    /// `serve_lines`の出力から、次の応答を読む
+    async fn read_response<R: tokio::io::AsyncBufRead + Unpin>(
+        lines: &mut tokio::io::Lines<R>,
+    ) -> serde_json::Value {
+        let line = tokio::time::timeout(std::time::Duration::from_secs(5), lines.next_line())
+            .await
+            .expect("no response")
+            .unwrap()
+            .expect("the output ended");
+        serde_json::from_str(&line).unwrap()
+    }
+    /// `serve_lines`を、`NeverEndingToolHandler`のサーバーで動かす。
+    /// 戻り値は（入力に書く側、出力を読む側、`serve_lines`のタスク、
+    /// ツールが始まった知らせ、ツールが止められた印）
+    #[allow(clippy::type_complexity)]
+    fn start_stdio_server(
+        output: impl tokio::io::AsyncWrite + Unpin + Send + 'static,
+        input_buffer: usize,
+    ) -> (
+        tokio::io::DuplexStream,
+        tokio::task::JoinHandle<Result<(), String>>,
+        Arc<tokio::sync::Notify>,
+        Arc<std::sync::atomic::AtomicBool>,
+    ) {
+        let started = Arc::new(tokio::sync::Notify::new());
+        let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut server = McpServer::new();
+        server.add_handler(
+            "slow".to_string(),
+            Arc::new(NeverEndingToolHandler {
+                started: started.clone(),
+                dropped: dropped.clone(),
+            }),
+        );
+        let (client, server_input) = tokio::io::duplex(input_buffer);
+        let serve = tokio::spawn(async move {
+            server
+                .serve_lines(tokio::io::BufReader::new(server_input), output)
+                .await
+                .map_err(|e| e.to_string())
+        });
+        (client, serve, started, dropped)
+    }
+
+    async fn write_line<W: tokio::io::AsyncWrite + Unpin>(
+        writer: &mut W,
+        message: serde_json::Value,
+    ) {
+        use tokio::io::AsyncWriteExt;
+        writer
+            .write_all(format!("{message}\n").as_bytes())
+            .await
+            .unwrap();
+    }
+
+    fn never_ending_call(id: u64) -> serde_json::Value {
+        serde_json::json!({
+            "jsonrpc": "2.0", "id": id, "method": "tools/call",
+            "params": { "name": "wait_forever", "arguments": {} }
+        })
+    }
+
+    /// 順を待つ要求の数には上限がある（PR #765のレビュー）。超えた要求には
+    /// `-32000`を返し、通知は捨てる。`ping`と取り消しは、上限でも処理する
+    #[tokio::test]
+    async fn test_stdio_rejects_requests_over_the_queue_limit() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+        let (output, client_output) = tokio::io::duplex(64 * 1024);
+        let (mut input, serve, started, dropped) = start_stdio_server(output, 64 * 1024);
+        let mut lines = tokio::io::BufReader::new(client_output).lines();
+        let limit = std::time::Duration::from_secs(5);
+
+        write_line(&mut input, never_ending_call(1)).await;
+        tokio::time::timeout(limit, started.notified())
+            .await
+            .expect("the tool did not start");
+        // 実行中の1件と合わせて、上限まで受け付ける
+        for id in 10..(10 + STDIO_MAX_QUEUED_REQUESTS as u64 - 1) {
+            write_line(
+                &mut input,
+                serde_json::json!({ "jsonrpc": "2.0", "id": id, "method": "tools/list" }),
+            )
+            .await;
+        }
+        // 上限を超えた要求には、すぐに`-32000`を返す
+        write_line(
+            &mut input,
+            serde_json::json!({ "jsonrpc": "2.0", "id": 99, "method": "tools/list" }),
+        )
+        .await;
+        let busy = read_response(&mut lines).await;
+        assert_eq!(busy["id"], serde_json::json!(99));
+        assert_eq!(busy["error"]["code"], serde_json::json!(-32000));
+        // 上限を超えた通知は捨てる（応答も無い）。`ping`には答える
+        write_line(
+            &mut input,
+            serde_json::json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }),
+        )
+        .await;
+        write_line(
+            &mut input,
+            serde_json::json!({ "jsonrpc": "2.0", "id": 98, "method": "ping" }),
+        )
+        .await;
+        assert_eq!(read_response(&mut lines).await["id"], serde_json::json!(98));
+
+        // 取り消しも処理する。待っていた要求が順に終わる
+        write_line(
+            &mut input,
+            serde_json::json!({
+                "jsonrpc": "2.0", "method": "notifications/cancelled",
+                "params": { "requestId": 1 }
+            }),
+        )
+        .await;
+        for id in 10..(10 + STDIO_MAX_QUEUED_REQUESTS as u64 - 1) {
+            let response = read_response(&mut lines).await;
+            assert_eq!(response["id"], serde_json::json!(id), "{response}");
+            assert!(response.get("result").is_some(), "{response}");
+        }
+        assert!(dropped.load(std::sync::atomic::Ordering::SeqCst));
+
+        // 空いたので、また受け付ける
+        write_line(
+            &mut input,
+            serde_json::json!({ "jsonrpc": "2.0", "id": 97, "method": "tools/list" }),
+        )
+        .await;
+        let response = read_response(&mut lines).await;
+        assert_eq!(response["id"], serde_json::json!(97));
+        assert!(response.get("result").is_some(), "{response}");
+
+        input.shutdown().await.unwrap();
+        drop(input);
+        tokio::time::timeout(limit, serve)
+            .await
+            .expect("serve_lines did not end")
+            .unwrap()
+            .unwrap();
+    }
+
+    /// 相手が出力を読まなければ、応答を溜め続けず、入力の読み取りも止まる
+    /// （PR #765のレビュー。以前の1行ずつの処理と同じく、パイプで待たせる）
+    #[tokio::test]
+    async fn test_stdio_stops_reading_when_the_output_is_not_read() {
+        let (output, _client_output) = tokio::io::duplex(64);
+        let (mut input, serve, _, _) = start_stdio_server(output, 1024);
+        let ping = serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": "ping" });
+        let flood = async {
+            for _ in 0..5000 {
+                write_line(&mut input, ping.clone()).await;
+            }
+        };
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(2), flood)
+                .await
+                .is_err(),
+            "the server kept reading without anyone reading its output"
+        );
+        serve.abort();
+    }
+
+    /// 出力に書けない（`write`が失敗する）書き手
+    struct FailingWriter;
+
+    impl tokio::io::AsyncWrite for FailingWriter {
+        fn poll_write(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+            _buf: &[u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
+            std::task::Poll::Ready(Err(std::io::ErrorKind::BrokenPipe.into()))
+        }
+
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    /// 書けなくなれば、終わらない要求を待たずに、書けなかったエラーを返す
+    /// （PR #765のレビュー。以前は、入力の終わりの後、実行中の要求を待ち
+    /// 続けた）
+    #[tokio::test]
+    async fn test_stdio_returns_the_write_error_without_waiting_for_a_running_tool() {
+        use tokio::io::AsyncWriteExt;
+        let (mut input, serve, started, dropped) = start_stdio_server(FailingWriter, 64 * 1024);
+        let limit = std::time::Duration::from_secs(5);
+        write_line(&mut input, never_ending_call(1)).await;
+        tokio::time::timeout(limit, started.notified())
+            .await
+            .expect("the tool did not start");
+        write_line(
+            &mut input,
+            serde_json::json!({ "jsonrpc": "2.0", "id": 2, "method": "ping" }),
+        )
+        .await;
+        input.shutdown().await.unwrap();
+        let result = tokio::time::timeout(limit, serve)
+            .await
+            .expect("serve_lines kept waiting for the running tool")
+            .unwrap();
+        let error = result.expect_err("the write error was not returned");
+        assert!(error.to_lowercase().contains("pipe"), "{error}");
+        tokio::time::timeout(limit, async {
+            while !dropped.load(std::sync::atomic::Ordering::SeqCst) {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the running tool was not stopped");
+    }
     /// 取り消しの通知・取り消せる要求を、形で見分ける（#759）
     #[test]
     fn test_cancellation_messages_are_recognized_by_their_shape() {
