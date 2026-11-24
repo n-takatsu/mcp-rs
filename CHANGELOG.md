@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- ライブラリとして使う場合: `HttpTransport::receive_request_with_context`と
+  `HttpTransport::stop_server`を足した（#760）。`receive_request_with_context`は、
+  要求・呼び出し元と一緒に、`MCP-Protocol-Version`ヘッダーで選んだ版
+  （`ReceivedRequest::protocol_version`）を返す。
+  `RequestDispatcher::handle_message_with_protocol_version`に渡せば、
+  `with_request_handler`と同じ版で答える（ヘッダーの無い要求は、今までどおり
+  共有の版）。`stop_server`は、待ち受けをやめ、接続を閉じる（`Transport::stop`
+  も同じ）。`receive_request_with_caller`は今までどおり
+
 - ライブラリとして使う場合: `HttpTransport::receive_request_with_caller`を
   足した（#749）。`with_request_handler`を使わないときに、HTTP・WebSocketで
   受けた要求を、呼び出し元（APIキー・トークンの名前と使えるツール、接続元の
@@ -142,6 +151,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- ライブラリとして使う場合: `HttpTransport`のチャンネル
+  （`receive_message`・`receive_request_with_caller`）で受け取る要求の`id`を、
+  クライアントの付けた`id`から、要求ごとの内部の相関ID（`"mcp-rs-1"`等の
+  文字列）に変えた（#760）。応答の`id`にそのまま入れて`send_message`で返せば、
+  クライアントには元の`id`で届く（今までどおり、要求の`id`を応答に写す
+  作りなら、変更は要らない）。mcp-rs本体は`with_request_handler`を使うので、
+  動きは変わらない
+
 - `[database]`の`host`がループバック（`localhost`・`127.0.0.1`・`::1`。
   PostgreSQLはUnixソケットも）以外なら、`ssl_mode`を省略できないようにした（#722）。
   省略時の`prefer`は、サーバーがTLSを使えなければ暗号化せずにつなぎ、
@@ -225,6 +242,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ガイドに書いた
 
 ### Fixed
+
+- ライブラリとして使う場合: `HttpTransport`のチャンネル（`receive_message`・
+  `receive_request_with_caller`）の応答を、クライアントの付けた`id`だけで
+  照合していた（#760）。別のクライアントが同じ`id`を使うと、後の登録が先の
+  登録を上書きし、応答が入れ替わった。要求ごとに内部の相関IDを付けて照合し、
+  返すときに元の`id`に戻す（期限の後に届いた遅い応答も、次の要求に届かない）。
+  クライアントが切る等でHTTPの要求が途中で捨てられると、応答の待ち先の登録が
+  残ったので、その要求の登録だけを消す。キュー（1000件）が埋まると、
+  `send().await`が期限なしに待ち、応答の期限が始まらなかったので、HTTP・
+  WebSocketとも、キューの枠を期限（30秒、応答を待つ時間を含む）付きで取る
+  （HTTPは取れなければ503）。2026-07-28版の要求の応答に、直接処理と同じ
+  HTTPのステータス（`-32601`は404等）を付ける（以前は常に200）。mcp-rs本体は
+  `with_request_handler`を使うので、動きは変わらない
+
+- ライブラリとして使う場合: `HttpTransport`の管理のAPIを直した（#760）。
+  `is_connected()`は、起動の前や起動に失敗した後も`true`だったので、
+  待ち受けているときだけ`true`を返す。動いている間に`start_server()`を
+  また呼ぶと、`bound_addr()`が消えるか、別のリスナーのアドレスで上書き
+  されたので、起動を1つずつにし、アドレスを変えずにエラーを返す。
+  `Transport::stop()`は何もせず、新しい接続を受け付け続けたので、待ち受けを
+  やめ（ポートを放し）、HTTPの接続を閉じ、`/ws`の接続も閉じる。
+  `connection_stats()`は、Tokioのタスクから呼ぶとパニックした
+  （`blocking_read()`）ので、同期のロックで写しを取る
+
+- ライブラリとして使う場合: `TransportError`への変換（`From<Error>`）で、
+  `Error::TransportError`に包まれた元の種類（`Unauthorized`・
+  `Configuration`等）が`Internal`になっていた（#760）。そのまま返す。
+  `Transport::start()`のエラーも、`Internal`にせず元の種類で返す。
+  `TransportType::WebSocket`の表示は、URLに`ws://`・`wss://`があっても
+  `ws://`を付け、`ws://wss://...`になっていたので、スキームがあれば
+  そのまま出す
 
 - ライブラリとして使う場合: PostgreSQLのエンジンの`health_check`が、
   データベースに触れず、つなげなくても、接続先が止まっていても`Healthy`を
