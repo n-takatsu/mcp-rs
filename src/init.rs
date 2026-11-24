@@ -1125,14 +1125,13 @@ impl Setup<'_> {
         if new_entry {
             self.unwritten_entries.push(&entry);
         }
-        // 既にある項目の前の中身は、`enter_credentials`が覚える（#710）
-        if let Err(e) = self.enter_credentials(&url, &entry) {
-            if new_entry {
-                self.unwritten_entries.remove(&entry);
-            }
-            return Err(e);
-        }
-        if new_entry {
+        // 既にある項目の前の中身は、`enter_credentials`が覚える（#710）。
+        // エラーでも消すものに残す（書いた後の読み戻しの失敗で、項目が
+        // 残ることがあるため。PR #778のレビュー）
+        self.enter_credentials(&url, &entry)?;
+        // 入れる間に別のところで作られた項目は、前の中身に戻すもので、新しい
+        // 項目ではない（`enter_credentials`が消すものから外す）
+        if new_entry && self.unwritten_entries.lock().contains(&entry) {
             self.new_entries.push(entry.clone());
         }
         Ok((url, entry))
@@ -1287,7 +1286,7 @@ impl Setup<'_> {
             };
             if let Some(url) = &disabled_url {
                 self.io.say(&format!(
-                    "[handlers.wordpress] is not enabled (url = \"{url}\"). A site added now replaces its url and keyring, and sets enabled = true."
+                    "[handlers.wordpress] is not enabled (url = \"{url}\"). A site added now replaces its url and keyring (removing username, password and encrypted_credentials), and sets enabled = true."
                 ));
             }
             let question = if sites.is_empty() {
@@ -1515,6 +1514,10 @@ impl Setup<'_> {
         {
             if let Some(previous) = self.store.get(entry)? {
                 replaced.push((entry.to_string(), previous));
+                // 前の中身に戻す項目は、新しい項目として消さない（PR #778の
+                // レビュー。質問の間に別のところで作られた場合）。ロックは
+                // `restore_on_interrupt`と同じ順（入れ直し、新しい項目）で取る
+                self.unwritten_entries.remove(entry);
             }
         }
         store_wordpress_credentials(
@@ -2824,6 +2827,11 @@ fn add_first_site_toml(text: &str, url: &str, entry: &str) -> Result<String, Str
             .and_then(|handlers| handlers.get_mut("wordpress"))
             .and_then(toml_edit::Item::as_table_like_mut)
             .ok_or("[handlers.wordpress] is not a table")?;
+        // 前の資格情報は`keyring`と一緒に使えないので消す。ほかの設定
+        // （`timeout_seconds`等）は残す（PR #778のレビュー）
+        for key in ["username", "password", "encrypted_credentials"] {
+            wordpress.remove(key);
+        }
         wordpress.insert("enabled", toml_edit::value(true));
         wordpress.insert("url", toml_edit::value(url));
         wordpress.insert("keyring", toml_edit::value(entry));
@@ -6155,7 +6163,7 @@ file_path = "C:/Users/me/.mcp-rs/logs/audit.log"
     /// 足す（`enabled = true`にする）。別のサイトとしては足さない（#774）
     #[test]
     fn test_disabled_wordpress_with_a_url_gets_the_first_site() {
-        let text = "[server]\n\n[transport]\ntype = \"stdio\"\n\n[handlers.wordpress]\nenabled = false\nurl = \"https://old.example.com\"\n\n[database]\nengine = \"postgresql\"\ndatabase = \"app\"\nusername = \"reader\"\n";
+        let text = "[server]\n\n[transport]\ntype = \"stdio\"\n\n[handlers.wordpress]\nenabled = false\nurl = \"https://old.example.com\"\nusername = \"old\"\npassword = \"old-pass\"\ntimeout_seconds = 45\n\n[database]\nengine = \"postgresql\"\ndatabase = \"app\"\nusername = \"reader\"\n";
         let (_dir, path) = config_in_temp(text);
         let store = MemoryStore::default();
         let mut io = Script::new(&[
@@ -6180,6 +6188,13 @@ file_path = "C:/Users/me/.mcp-rs/logs/audit.log"
         let wordpress = config.handlers.wordpress.unwrap();
         assert_eq!(wordpress.enabled, Some(true));
         assert_eq!(wordpress.url, "https://shop.example.com");
+        // 前の資格情報は消え（`keyring`と一緒に使えない）、ほかの設定は残る
+        // （PR #778のレビュー）
+        assert!(wordpress.username.is_empty());
+        assert!(wordpress.password.is_empty());
+        assert_eq!(wordpress.timeout_seconds, Some(45));
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(!content.contains("old-pass"), "{content}");
         let shown = io.shown.join("\n");
         assert!(
             shown.contains("[handlers.wordpress] is not enabled"),
@@ -6224,6 +6239,75 @@ file_path = "C:/Users/me/.mcp-rs/logs/audit.log"
         setup.wordpress_sites_step().unwrap();
         assert!(unwritten.lock().is_empty());
         assert!(load_wordpress_credentials(&store, "shop.example.com").is_ok());
+    }
+
+    /// 書いた後の読み戻しに失敗しても、新しい項目は消すものに残る
+    /// （PR #778のレビュー）
+    #[test]
+    fn test_new_entry_stays_unwritten_when_the_read_back_fails() {
+        let store = crate::security::keyring_store::ReadBackFailingStore::default();
+        let mut io = Script::new(&["https://shop.example.com", "", "editor", "pw"]);
+        let mut setup = setup(&mut io, &store);
+        assert!(setup.wordpress_credentials(&[], &[]).is_err());
+        let unwritten = std::mem::take(&mut *setup.unwritten_entries.lock());
+        assert_eq!(unwritten, ["shop.example.com"]);
+        assert!(store.inner.get("shop.example.com").unwrap().is_some());
+        delete_unwritten_entries(&store, unwritten, |_| {});
+        assert!(store.inner.get("shop.example.com").unwrap().is_none());
+    }
+
+    /// 入れている間に別のところで同じ名前の項目が作られたら、前の中身に
+    /// 戻すものとして扱い、新しい項目として消さない（PR #778のレビュー）
+    #[test]
+    fn test_entry_created_meanwhile_is_restored_not_deleted() {
+        struct Racing<'a> {
+            script: Script,
+            store: &'a MemoryStore,
+        }
+        impl Prompt for Racing<'_> {
+            fn ask(&mut self, question: &str) -> io::Result<String> {
+                self.script.ask(question)
+            }
+            fn ask_hidden(&mut self, question: &str) -> io::Result<Zeroizing<String>> {
+                self.store.set("shop.example.com", "other").unwrap();
+                self.script.ask_hidden(question)
+            }
+            fn say(&mut self, text: &str) {
+                self.script.say(text);
+            }
+        }
+        let store = MemoryStore::default();
+        let mut io = Racing {
+            script: Script::new(&["https://shop.example.com", "", "editor", "pw"]),
+            store: &store,
+        };
+        let mut setup = Setup {
+            io: &mut io,
+            store: &store,
+            config_path: PathBuf::from("unused.toml"),
+            explicit_config: false,
+            kept_config: None,
+            previous: Vec::new(),
+            superseded: Vec::new(),
+            suggested_url: None,
+            new_entries: Vec::new(),
+            secret_backups: Vec::new(),
+            replaced_entries: ReplacedEntries::default(),
+            unwritten_entries: UnwrittenEntries::default(),
+        };
+        setup.wordpress_credentials(&[], &[]).unwrap();
+        assert!(setup.unwritten_entries.lock().is_empty());
+        assert!(setup.new_entries.is_empty());
+        // 失敗で終わったら、前の中身に戻る（消さない）
+        setup.restore_replaced_entries();
+        assert_eq!(
+            store
+                .get("shop.example.com")
+                .unwrap()
+                .as_deref()
+                .map(String::as_str),
+            Some("other")
+        );
     }
 
     /// 相対パスの`MCP_RS_CONFIG`は、比べずに断る。クライアントは、それぞれの

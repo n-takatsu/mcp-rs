@@ -91,9 +91,20 @@ for ($i = 0; $i -lt $CargoArgs.Count; $i++) {
     }
 }
 if (-not $targetDir) {
+    # ビルド先に関わる引数（--config・--manifest-path）は metadata にも渡し、
+    # ビルドと同じ場所を求める。ビルドだけの引数（--release 等）は渡さない（PR #778）
+    $metadataArgs = @()
+    for ($i = 0; $i -lt $CargoArgs.Count; $i++) {
+        if ($CargoArgs[$i] -in @('--config', '--manifest-path') -and $i + 1 -lt $CargoArgs.Count) {
+            $metadataArgs += $CargoArgs[$i], $CargoArgs[$i + 1]
+            $i++
+        } elseif ($CargoArgs[$i] -like '--config=*' -or $CargoArgs[$i] -like '--manifest-path=*') {
+            $metadataArgs += $CargoArgs[$i]
+        }
+    }
     Push-Location $current
     try {
-        $metadata = cargo metadata --format-version 1 --no-deps 2>$null
+        $metadata = cargo metadata --format-version 1 --no-deps @metadataArgs 2>$null
         if ($LASTEXITCODE -eq 0 -and $metadata) {
             $targetDir = ($metadata | Out-String | ConvertFrom-Json).target_directory
         }

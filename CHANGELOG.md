@@ -162,7 +162,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   （`check`と終了時）に、Kubernetesではプラグインの`--context`・
   `--namespace`を付けて確かめるよう書いた。開発用の
   `scripts/clean-build.ps1`は、`cargo metadata`の`target_directory`
-  （`.cargo/config.toml`の`build.target-dir`も含む）で、ビルド先を決める
+  （`.cargo/config.toml`の`build.target-dir`も含む）で、ビルド先を決める。
+  `-CargoArgs`の`--config`・`--manifest-path`も`cargo metadata`に渡す
 
 - ライブラリとして使う場合: `mcp_rs::types::JsonRpcRequest`の`id`を
   `RequestId`から`Option<RequestId>`にした（#760）。通知（`id`なし）は
@@ -306,7 +307,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   とき、設定の変更を聞く前に項目を上書きしていた（#774）。断ったり、設定
   ファイルを書けなかったりすると、項目と設定が食い違い、起動でデータベースを
   使えなくなった。保存の前に聞き、断れば項目も設定ファイルも変えない。設定
-  ファイルを書けなければ、項目を前の中身に戻す。同じ接続先のパスワードの
+  ファイルを書けない・書いた項目の読み戻しに失敗したときは、項目を前の中身に
+  戻す。`keyring`は前後の空白を除いて比べる。同じ接続先のパスワードの
   入れ直しは今までどおり。保存の直前に、項目が別の種類（WordPressの資格
   情報等）になっていないかを確かめ直す。展開できた値は、`${`を含んでも
   既定にする
@@ -318,11 +320,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `mcp-rs init`で、Ctrl+Cで止めたとき、新しく作ったWordPressの資格情報の項目の
   うち、まだ設定ファイルに書いていないものを消さなかった（#774）。Ctrl+Cや
-  エラーで終わったときも消す
+  エラー（書いた後の読み戻しの失敗も含む）で終わったときも消す。入れている
+  間に別のところで同じ名前の項目が作られたら、消さずに前の中身に戻す
 
 - `mcp-rs init`で、`[handlers.wordpress]`が無効（`enabled = true`でない）で
   `url`が残っていると、「別のサイトを足す」に進み、資格情報を入れた後で
-  断られた（#774）。最初のサイトとして足し、`enabled = true`にする
+  断られた（#774）。最初のサイトとして足し、`enabled = true`にする。前の
+  `username`・`password`・`encrypted_credentials`は`keyring`と一緒に使えない
+  ので消す（`timeout_seconds`等は残す）
 
 - `mcp-rs init`で、環境変数`MCP_RS_CONFIG`が相対パスのとき、`init`の
   フォルダで絶対パスにして比べ、一致すれば進んでいた（#774）。クライアントは

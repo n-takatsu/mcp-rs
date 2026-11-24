@@ -331,7 +331,8 @@ fn update(
     };
 
     let changes = Changes {
-        keyring: written.keyring.as_deref() != Some(name),
+        // 読むときと同じく、前後の空白を除いて比べる（PR #778のレビュー）
+        keyring: written.keyring.as_deref().map(str::trim) != Some(name.trim()),
         password: written.password.is_some(),
         host: (host != expanded.host()).then(|| host.clone()),
         port: (port != expanded.port()).then_some(port),
@@ -368,11 +369,17 @@ fn update(
             return Ok(());
         }
         let previous = store.get(name.trim()).map_err(|e| e.to_string())?;
-        save(store, name, &credentials)?;
-        io.say(&format!(
-            "Stored the password as '{name}' in the OS credential store."
-        ));
-        if let Err(e) = change_config(io, path, content, name, &changes) {
+        check_kind(store, name)?;
+        // 書いた後の読み戻しの失敗でも、前の中身に戻す（PR #778のレビュー）
+        let result = store_database_credentials(store, name, &credentials)
+            .map_err(Into::into)
+            .and_then(|()| {
+                io.say(&format!(
+                    "Stored the password as '{name}' in the OS credential store."
+                ));
+                change_config(io, path, content, name, &changes)
+            });
+        if let Err(e) = result {
             let restored = match &previous {
                 Some(previous) => store.set(name.trim(), previous),
                 None => store.delete(name.trim()).map(|_| ()),
@@ -410,10 +417,16 @@ fn save(
     name: &str,
     credentials: &DatabaseKeyringCredentials,
 ) -> Result<(), String> {
-    if let Some(DatabaseEntry::Other) = database_entry(store, name)? {
-        return Err(not_database(name));
-    }
+    check_kind(store, name)?;
     store_database_credentials(store, name, credentials)
+}
+
+/// 項目が別の種類（WordPressの資格情報等）なら、エラー（#774）
+fn check_kind(store: &dyn SecretStore, name: &str) -> Result<(), String> {
+    match database_entry(store, name)? {
+        Some(DatabaseEntry::Other) => Err(not_database(name)),
+        _ => Ok(()),
+    }
 }
 
 /// `[database]`に`changes`を加えて書く。前のファイルは控えに残す
@@ -708,6 +721,60 @@ ssl_mode = "verify-full"
         let stored =
             load_database_credentials(&store, "app@db", "db2.example.com", 5432, "reader").unwrap();
         assert_eq!(*stored.password, "new-pass");
+    }
+
+    fn old_entry(store: &dyn SecretStore) {
+        store_database_credentials(
+            store,
+            "app@db",
+            &DatabaseKeyringCredentials {
+                host: "db.example.com".to_string(),
+                port: 5432,
+                username: "reader".to_string(),
+                password: Zeroizing::new("old-pass".to_string()),
+            },
+        )
+        .unwrap();
+    }
+
+    /// 前後に空白のある`keyring`も、この項目を指すとみなし、保存の前に
+    /// 聞く（PR #778のレビュー）
+    #[test]
+    fn test_set_trims_the_keyring_of_the_config() {
+        let config = HAND_WRITTEN.replace(
+            "password = \"${MCP_DB_PASSWORD}\"",
+            "keyring = \" app@db \"",
+        );
+        let store = MemoryStore::default();
+        old_entry(&store);
+        let (_dir, path) = config_in_temp(&config);
+        let mut io = Script::new(&["db2.example.com", "", "", "new-pass", "n"]);
+        set(&mut io, &store, "app@db", &path).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), config);
+        let stored =
+            load_database_credentials(&store, "app@db", "db.example.com", 5432, "reader").unwrap();
+        assert_eq!(*stored.password, "old-pass");
+        assert!(io.shown.iter().any(|s| s.contains("already uses 'app@db'")));
+    }
+
+    /// 書いた後の読み戻しに失敗しても、項目を前の中身に戻し、設定ファイルは
+    /// 変えない（PR #778のレビュー）
+    #[test]
+    fn test_set_restores_the_entry_when_the_read_back_fails() {
+        let config =
+            HAND_WRITTEN.replace("password = \"${MCP_DB_PASSWORD}\"", "keyring = \"app@db\"");
+        let store = crate::security::keyring_store::ReadBackFailingStore::default();
+        old_entry(&store.inner);
+        let (_dir, path) = config_in_temp(&config);
+        let mut io = Script::new(&["db2.example.com", "", "", "new-pass", "y"]);
+        let err = set(&mut io, &store, "app@db", &path)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("put 'app@db' back as it was"), "{err}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), config);
+        let stored =
+            load_database_credentials(&store, "app@db", "db.example.com", 5432, "reader").unwrap();
+        assert_eq!(*stored.password, "old-pass");
     }
 
     /// パスワードを聞いている間に、同じ名前でWordPressの資格情報が
