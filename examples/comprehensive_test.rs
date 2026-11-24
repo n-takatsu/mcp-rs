@@ -26,9 +26,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("   📝 WordPress設定:");
         println!("      URL: {}", wp_config.url);
         println!("      Username: {}", wp_config.username);
+        // パスワードは一部も出さない（ログを共有しても漏れないように。#750）
         println!(
-            "      Password: {}***",
-            wp_config.password.chars().take(8).collect::<String>()
+            "      Password: {}",
+            if wp_config.password.is_empty() {
+                "未設定"
+            } else {
+                "設定済み"
+            }
         );
 
         // 環境変数が正しく設定されているかチェック
@@ -37,7 +42,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             match env::var(var) {
                 Ok(value) => {
                     let display_value = if var.contains("PASS") {
-                        format!("{}***", value.chars().take(8).collect::<String>())
+                        "設定済み".to_string()
                     } else {
                         value
                     };

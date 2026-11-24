@@ -217,6 +217,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `mcp-rs encrypt-wordpress-credentials`で、NULを含むマスターパスワードを受け付けて
+  いた（#750）。同じ値を`WORDPRESS_MASTER_PASSWORD`に設定できないので、
+  作った設定では起動できなかった。暗号化する前に断る（エラーに値は出さない）
+
+- 例`examples/auth_diagnosis.rs`・`examples/comprehensive_test.rs`が、
+  パスワードの先頭8文字を出していた（#750）。設定済みかだけを出す
+
+- `tls_enabled = true`でも、起動のログの`/mcp`のURLが`http://`だった
+  （#750）。`https://`にする
+
+- 文書: `plugins.md`・`security.md`・`wordpress.md`のパンくずが、ホーム・
+  文書の一覧を指していなかった。`plugins.md`の「ログに起動の行が必ず出る」は、
+  `log_level`が`info`以上のときだけと書いた。PostgreSQLのガイドの依存の
+  書き方を、crates.ioではなくGitHubのタグにした。`update_post`の引数に
+  `post_type`を足した（#750）
+
 - WordPressの`url`に、ユーザー名・パスワード（`https://user:pass@…`）を書くと、
   `mcp_rs_status`の表示と起動のエラーに、パスワードがそのまま出ていた（#746）。
   そのような`url`と、URLとして読めない`url`は断る（`mcp-rs init`と同じ）。

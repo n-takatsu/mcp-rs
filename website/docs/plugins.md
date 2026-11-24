@@ -6,7 +6,7 @@ permalink: /docs/plugins/
 
 # Plugins
 
-**[Home](../) > [Documentation](./) > Plugins**
+**[Home]({{ site.baseurl }}/) > [Documentation]({{ site.baseurl }}/docs/) > Plugins**
 
 A plugin is a separate MCP server that mcp-rs starts as a child process, inside a Docker container, or as a Kubernetes Job. mcp-rs connects to it as an MCP client and offers its tools alongside the built-in ones. Plugins can be written in any language, as long as they speak MCP over standard input/output.
 
@@ -16,7 +16,7 @@ Plugins work in both STDIO mode (for example, Claude Desktop and Claude Code) an
 
 ## Before you add a plugin
 
-- **Edit the config file your MCP client actually uses.** That is the file passed with `--config` in your client's MCP settings (for Claude Desktop, the `args` of the mcp-rs entry in `claude_desktop_config.json`). If you keep more than one mcp-rs config file, changes to the others have no effect. When a plugin is configured, the mcp-rs log always has either `Plugin '<name>' started with N tools` or `Plugin '<name>' is not available: ...`. If neither appears, mcp-rs did not read your `[[plugins]]`
+- **Edit the config file your MCP client actually uses.** That is the file passed with `--config` in your client's MCP settings (for Claude Desktop, the `args` of the mcp-rs entry in `claude_desktop_config.json`). If you keep more than one mcp-rs config file, changes to the others have no effect. When a plugin is configured and `[server] log_level` is `info` (the default) or more detailed, the mcp-rs log always has either `Plugin '<name>' started with N tools` or `Plugin '<name>' is not available: ...`. With `warn`, only the second appears, and with `error`, neither does, so check `log_level` first. If neither appears at `info`, mcp-rs did not read your `[[plugins]]`
 - **Delete the old `[plugins]` section first.** Config files made from the templates of v0.18.1 and earlier may contain a `[plugins]` section (with keys such as `search_paths`, `auto_load`, and `max_plugins`) and `[plugins.*]` subsections. mcp-rs never used them, and ignores them on their own. But a file cannot contain both `[plugins]` and `[[plugins]]`: mcp-rs fails to start with a `duplicate key` error. Delete the old section, including its subsections, before adding `[[plugins]]`
 
 ## Adding a plugin

@@ -13,10 +13,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("📍 接続先情報:");
         println!("   URL: {}", wp_config.url);
         println!("   Username: {}", wp_config.username);
+        // パスワードは一部も出さない（ログを共有しても漏れないように。#750）
         println!(
-            "   Password: {}*** (長さ: {}文字)",
-            wp_config.password.chars().take(8).collect::<String>(),
-            wp_config.password.len()
+            "   Password: {}",
+            if wp_config.password.is_empty() {
+                "未設定"
+            } else {
+                "設定済み"
+            }
         );
 
         let handler = WordPressHandler::new(wp_config);

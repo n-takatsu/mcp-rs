@@ -468,6 +468,12 @@ async fn run_http_server(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let server = build_server(config, true).await?;
 
+    // TLSを有効にしたら、起動のログのURLもhttps://にする（#750）
+    let scheme = if http_config.tls_enabled {
+        "https"
+    } else {
+        "http"
+    };
     // HTTPサーバーを始められなかったときも、プラグインを止める（#684）
     run_then_stop(
         server,
@@ -480,7 +486,7 @@ async fn run_http_server(
             let transport = transport.with_request_handler(Arc::new(server.dispatcher()));
             transport.start_server().await?;
             if let Some(addr) = transport.bound_addr().await {
-                info!("🌐 HTTPモードで待機中: http://{}/mcp", addr);
+                info!("🌐 HTTPモードで待機中: {}://{}/mcp", scheme, addr);
             }
             info!("💡 Ctrl+C で終了");
 
