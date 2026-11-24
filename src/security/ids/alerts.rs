@@ -18,8 +18,6 @@ pub struct AlertManager {
     alert_history: Arc<RwLock<VecDeque<Alert>>>,
     /// アラート集約マップ
     alert_aggregation: Arc<RwLock<HashMap<String, AggregatedAlert>>>,
-    /// 通知チャネル
-    notification_channels: Arc<RwLock<Vec<NotificationChannel>>>,
     /// 設定
     config: AlertConfig,
 }
@@ -80,37 +78,6 @@ pub struct AggregatedAlert {
     pub affected_ips: Vec<IpAddr>,
 }
 
-/// 通知チャネル
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum NotificationChannel {
-    /// メール
-    Email {
-        /// 宛先メールアドレス
-        recipients: Vec<String>,
-        /// 最小レベル
-        min_level: AlertLevel,
-    },
-    /// Slack
-    Slack {
-        /// WebhookURL
-        webhook_url: String,
-        /// 最小レベル
-        min_level: AlertLevel,
-    },
-    /// ログ
-    Log {
-        /// 最小レベル
-        min_level: AlertLevel,
-    },
-    /// カスタムWebhook
-    CustomWebhook {
-        /// WebhookURL
-        url: String,
-        /// 最小レベル
-        min_level: AlertLevel,
-    },
-}
-
 /// アラート設定
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AlertConfig {
@@ -138,17 +105,6 @@ impl Default for AlertConfig {
     }
 }
 
-/// 通知結果
-#[derive(Debug)]
-pub struct NotificationResult {
-    /// 成功フラグ
-    pub success: bool,
-    /// チャネル数
-    pub channels_notified: usize,
-    /// エラーメッセージ
-    pub errors: Vec<String>,
-}
-
 impl AlertManager {
     /// 新しいアラート管理システムを作成
     pub async fn new() -> Result<Self, McpError> {
@@ -162,12 +118,6 @@ impl AlertManager {
         Ok(Self {
             alert_history: Arc::new(RwLock::new(VecDeque::new())),
             alert_aggregation: Arc::new(RwLock::new(HashMap::new())),
-            notification_channels: Arc::new(RwLock::new(vec![
-                // デフォルトでログ通知を有効化
-                NotificationChannel::Log {
-                    min_level: AlertLevel::Low,
-                },
-            ])),
             config,
         })
     }
@@ -186,22 +136,12 @@ impl AlertManager {
         let should_notify = self.check_aggregation(&alert).await;
 
         if should_notify {
-            // 通知を送信
-            let result = self.send_notifications(&alert).await?;
-
-            if !result.success {
-                warn!("Some notification channels failed: {:?}", result.errors);
-            }
+            // 通知はログに書く（メール・Slack・Webhookへの通知は、mcp-rs
+            // 本体が使わないため外した。#760）
+            self.send_log_notification(&alert);
         }
 
         Ok(())
-    }
-
-    /// 通知チャネルを追加
-    pub async fn add_notification_channel(&self, channel: NotificationChannel) {
-        let mut channels = self.notification_channels.write().await;
-        channels.push(channel);
-        info!("Added notification channel");
     }
 
     /// アラート履歴を取得
@@ -299,134 +239,8 @@ impl AlertManager {
         }
     }
 
-    /// 通知を送信
-    async fn send_notifications(&self, alert: &Alert) -> Result<NotificationResult, McpError> {
-        let channels = self.notification_channels.read().await;
-        let mut channels_notified = 0;
-        let mut errors = Vec::new();
-
-        for channel in channels.iter() {
-            if self.should_notify(alert.level, channel) {
-                match self.send_to_channel(alert, channel).await {
-                    Ok(_) => channels_notified += 1,
-                    Err(e) => errors.push(format!("Channel error: {}", e)),
-                }
-            }
-        }
-
-        Ok(NotificationResult {
-            success: errors.is_empty(),
-            channels_notified,
-            errors,
-        })
-    }
-
-    /// チャネルに通知すべきか判定
-    fn should_notify(&self, alert_level: AlertLevel, channel: &NotificationChannel) -> bool {
-        let min_level = match channel {
-            NotificationChannel::Email { min_level, .. } => *min_level,
-            NotificationChannel::Slack { min_level, .. } => *min_level,
-            NotificationChannel::Log { min_level } => *min_level,
-            NotificationChannel::CustomWebhook { min_level, .. } => *min_level,
-        };
-
-        alert_level >= min_level
-    }
-
-    /// チャネルに通知を送信
-    async fn send_to_channel(
-        &self,
-        alert: &Alert,
-        channel: &NotificationChannel,
-    ) -> Result<(), McpError> {
-        match channel {
-            NotificationChannel::Email { recipients, .. } => {
-                self.send_email_notification(alert, recipients).await
-            }
-            NotificationChannel::Slack { webhook_url, .. } => {
-                self.send_slack_notification(alert, webhook_url).await
-            }
-            NotificationChannel::Log { .. } => self.send_log_notification(alert).await,
-            NotificationChannel::CustomWebhook { url, .. } => {
-                self.send_webhook_notification(alert, url).await
-            }
-        }
-    }
-
-    /// メール通知を送信
-    async fn send_email_notification(
-        &self,
-        alert: &Alert,
-        _recipients: &[String],
-    ) -> Result<(), McpError> {
-        // 実装例（実際にはlettre crateなどを使用）
-        info!("Would send email notification for alert: {}", alert.id);
-        // TODO: 実装
-        Ok(())
-    }
-
-    /// Slack通知を送信
-    async fn send_slack_notification(
-        &self,
-        alert: &Alert,
-        webhook_url: &str,
-    ) -> Result<(), McpError> {
-        let payload = serde_json::json!({
-            "text": format!("🚨 Security Alert: {:?}", alert.level),
-            "attachments": [{
-                "color": self.get_color_for_level(alert.level),
-                "fields": [
-                    {
-                        "title": "Alert Level",
-                        "value": format!("{:?}", alert.level),
-                        "short": true
-                    },
-                    {
-                        "title": "Detection Type",
-                        "value": format!("{:?}", alert.detection_type),
-                        "short": true
-                    },
-                    {
-                        "title": "Confidence",
-                        "value": format!("{:.1}%", alert.confidence * 100.0),
-                        "short": true
-                    },
-                    {
-                        "title": "Source IP",
-                        "value": alert.source_ip.map(|ip| ip.to_string()).unwrap_or_else(|| "Unknown".to_string()),
-                        "short": true
-                    },
-                    {
-                        "title": "Description",
-                        "value": alert.description.clone(),
-                        "short": false
-                    },
-                    {
-                        "title": "Recommended Action",
-                        "value": format!("{:?}", alert.recommended_action),
-                        "short": false
-                    }
-                ],
-                "footer": "MCP-RS Intrusion Detection System",
-                "ts": alert.created_at.timestamp()
-            }]
-        });
-
-        // 実際のHTTPリクエスト（reqwestを使用）
-        let client = reqwest::Client::new();
-        client
-            .post(webhook_url)
-            .json(&payload)
-            .send()
-            .await
-            .map_err(|e| McpError::Config(format!("Slack notification failed: {}", e)))?;
-
-        info!("Sent Slack notification for alert: {}", alert.id);
-        Ok(())
-    }
-
     /// ログ通知を送信
-    async fn send_log_notification(&self, alert: &Alert) -> Result<(), McpError> {
+    fn send_log_notification(&self, alert: &Alert) {
         match alert.level {
             AlertLevel::Critical => {
                 error!(
@@ -460,35 +274,6 @@ impl AlertManager {
                     alert.confidence * 100.0
                 );
             }
-        }
-
-        Ok(())
-    }
-
-    /// Webhook通知を送信
-    async fn send_webhook_notification(&self, alert: &Alert, url: &str) -> Result<(), McpError> {
-        let payload = serde_json::to_value(alert)
-            .map_err(|e| McpError::Config(format!("Failed to serialize alert: {}", e)))?;
-
-        let client = reqwest::Client::new();
-        client
-            .post(url)
-            .json(&payload)
-            .send()
-            .await
-            .map_err(|e| McpError::Config(format!("Webhook notification failed: {}", e)))?;
-
-        info!("Sent webhook notification for alert: {}", alert.id);
-        Ok(())
-    }
-
-    /// レベルに応じた色を取得（Slack用）
-    fn get_color_for_level(&self, level: AlertLevel) -> &'static str {
-        match level {
-            AlertLevel::Critical => "danger",
-            AlertLevel::High => "warning",
-            AlertLevel::Medium => "#FFA500",
-            AlertLevel::Low => "good",
         }
     }
 
@@ -562,20 +347,5 @@ mod tests {
         assert!(AlertLevel::Critical > AlertLevel::High);
         assert!(AlertLevel::High > AlertLevel::Medium);
         assert!(AlertLevel::Medium > AlertLevel::Low);
-    }
-
-    #[tokio::test]
-    async fn test_notification_channel_addition() {
-        let manager = AlertManager::new().await.unwrap();
-
-        let channel = NotificationChannel::Email {
-            recipients: vec!["security@example.com".to_string()],
-            min_level: AlertLevel::High,
-        };
-
-        manager.add_notification_channel(channel).await;
-
-        let channels = manager.notification_channels.read().await;
-        assert_eq!(channels.len(), 2); // デフォルトのLog + 追加したEmail
     }
 }

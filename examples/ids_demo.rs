@@ -4,8 +4,7 @@
 
 use chrono::Utc;
 use mcp_rs::security::ids::{
-    alerts::{AlertLevel, AlertManager, NotificationChannel},
-    DetectionType, IDSConfig, IntrusionDetectionSystem, RequestData,
+    alerts::AlertManager, DetectionType, IDSConfig, IntrusionDetectionSystem, RequestData,
 };
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -238,32 +237,8 @@ async fn demo_alert_management() -> Result<(), Box<dyn std::error::Error>> {
 
     let manager = AlertManager::new().await?;
 
-    // 通知チャネルの追加
-    info!("Adding notification channels...");
-
-    // Slackチャネル（デモ用）
-    manager
-        .add_notification_channel(NotificationChannel::Slack {
-            webhook_url: "https://hooks.slack.com/services/DEMO/WEBHOOK".to_string(),
-            min_level: AlertLevel::High,
-        })
-        .await;
-    info!("✓ Slack notification channel added (High+)");
-
-    // Emailチャネル（デモ用）
-    manager
-        .add_notification_channel(NotificationChannel::Email {
-            recipients: vec![
-                "security@example.com".to_string(),
-                "admin@example.com".to_string(),
-            ],
-            min_level: AlertLevel::Critical,
-        })
-        .await;
-    info!("✓ Email notification channel added (Critical)");
-
-    // ログチャネルはデフォルトで有効
-    info!("✓ Log notification channel (default, Low+)");
+    // アラートはログに書く（Low以上）
+    info!("Alerts are written to the log (Low+)");
 
     // アラートの送信
     info!("\nSending test alerts...");

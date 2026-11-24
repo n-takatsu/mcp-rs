@@ -6,49 +6,6 @@ use std::collections::{HashMap, HashSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
-/// APIキー設定
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ApiKeyConfig {
-    /// キーの長さ
-    #[serde(default = "default_key_length")]
-    pub key_length: usize,
-
-    /// キープレフィックス
-    #[serde(default = "default_key_prefix")]
-    pub key_prefix: String,
-
-    /// デフォルトの有効期限（秒、Noneで無期限）
-    #[serde(default)]
-    pub default_expiration: Option<u64>,
-
-    /// レート制限（秒あたりのリクエスト数）
-    #[serde(default = "default_rate_limit")]
-    pub rate_limit: u32,
-}
-
-fn default_key_length() -> usize {
-    32
-}
-
-fn default_key_prefix() -> String {
-    "mcp".to_string()
-}
-
-fn default_rate_limit() -> u32 {
-    100
-}
-
-impl Default for ApiKeyConfig {
-    fn default() -> Self {
-        Self {
-            key_length: default_key_length(),
-            key_prefix: default_key_prefix(),
-            default_expiration: None,
-            rate_limit: default_rate_limit(),
-        }
-    }
-}
-
 /// APIキーパーミッション
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct ApiKeyPermission {
@@ -207,54 +164,19 @@ impl ApiKey {
 }
 
 /// APIキーマネージャー
+#[derive(Default)]
 pub struct ApiKeyManager {
-    config: ApiKeyConfig,
     keys: HashMap<String, ApiKey>,
 }
 
 impl ApiKeyManager {
-    pub fn new(config: ApiKeyConfig) -> Self {
-        Self {
-            config,
-            keys: HashMap::new(),
-        }
+    pub fn new() -> Self {
+        Self::default()
     }
 
-    /// 新しいAPIキーを生成
-    pub fn generate_key(
-        &mut self,
-        name: String,
-        user_id: String,
-        expires_in: Option<u64>,
-    ) -> AuthResult<(String, ApiKey)> {
-        // ランダムキーを生成
-        let raw_key = self.generate_random_key();
-        let full_key = format!("{}_{}", self.config.key_prefix, raw_key);
-
-        // キーをハッシュ化
-        let key_hash = self.hash_key(&full_key)?;
-
-        // 有効期限を計算
-        let expires_at = expires_in.or(self.config.default_expiration).map(|exp| {
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_secs()
-                + exp
-        });
-
-        // APIキーオブジェクトを作成
-        let api_key = ApiKey::new(key_hash.clone(), name, user_id, expires_at);
-
-        // 保存
-        self.keys.insert(key_hash, api_key.clone());
-
-        Ok((full_key, api_key))
-    }
-
-    /// 既存のキー文字列を取り込む。`generate_key`はランダムな新規キーを
-    /// 生成するが、設定ファイル等で運用者が既に配布済みのキー文字列を
-    /// そのまま登録したい場合に使う。
+    /// 既存のキー文字列を取り込む。設定ファイル等で運用者が既に配布済みの
+    /// キー文字列をそのまま登録する（ランダムなキーを作る`generate_key`は、
+    /// mcp-rs本体が使わないため外した。#760）
     pub fn import_key(
         &mut self,
         key: &str,
@@ -341,20 +263,6 @@ impl ApiKeyManager {
         Ok(())
     }
 
-    /// ランダムキーを生成
-    fn generate_random_key(&self) -> String {
-        use rand::Rng;
-        const CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-
-        let mut rng = rand::thread_rng();
-        (0..self.config.key_length)
-            .map(|_| {
-                let idx = rng.gen_range(0..CHARSET.len());
-                CHARSET[idx] as char
-            })
-            .collect()
-    }
-
     /// キーをハッシュ化
     fn hash_key(&self, key: &str) -> AuthResult<String> {
         use sha2::{Digest, Sha256};
@@ -368,32 +276,30 @@ impl ApiKeyManager {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_api_key_config_default() {
-        let config = ApiKeyConfig::default();
-        assert_eq!(config.key_length, 32);
-        assert_eq!(config.key_prefix, "mcp");
-    }
-
-    #[test]
-    fn test_generate_api_key() {
-        let config = ApiKeyConfig::default();
-        let mut manager = ApiKeyManager::new(config);
-
-        let (key, api_key) = manager
-            .generate_key("test-key".to_string(), "user-1".to_string(), None)
+    /// テスト用のキーを登録する（`expires_in`秒後に期限切れ）
+    fn add_test_key(
+        manager: &mut ApiKeyManager,
+        name: &str,
+        user_id: &str,
+        expires_in: Option<u64>,
+    ) -> String {
+        let key = format!("mcp_{}", Uuid::new_v4().simple());
+        let expires_at = expires_in.map(|exp| {
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+                + exp
+        });
+        manager
+            .import_key(&key, name.to_string(), user_id.to_string(), expires_at)
             .unwrap();
-
-        assert!(key.starts_with("mcp_"));
-        assert_eq!(api_key.name, "test-key");
-        assert_eq!(api_key.user_id, "user-1");
-        assert!(api_key.is_valid());
+        key
     }
 
     #[test]
     fn test_import_key_is_verifiable_and_revocable() {
-        let config = ApiKeyConfig::default();
-        let mut manager = ApiKeyManager::new(config);
+        let mut manager = ApiKeyManager::new();
 
         let raw_key = "mcp_preexisting-operator-provisioned-key";
         manager
@@ -416,12 +322,9 @@ mod tests {
 
     #[test]
     fn test_verify_api_key() {
-        let config = ApiKeyConfig::default();
-        let mut manager = ApiKeyManager::new(config);
+        let mut manager = ApiKeyManager::new();
 
-        let (key, _) = manager
-            .generate_key("test-key".to_string(), "user-1".to_string(), None)
-            .unwrap();
+        let key = add_test_key(&mut manager, "test-key", "user-1", None);
 
         let verified = manager.verify_key(&key).unwrap();
         assert_eq!(verified.name, "test-key");
@@ -430,12 +333,9 @@ mod tests {
 
     #[test]
     fn test_revoke_api_key() {
-        let config = ApiKeyConfig::default();
-        let mut manager = ApiKeyManager::new(config);
+        let mut manager = ApiKeyManager::new();
 
-        let (key, _) = manager
-            .generate_key("test-key".to_string(), "user-1".to_string(), None)
-            .unwrap();
+        let key = add_test_key(&mut manager, "test-key", "user-1", None);
 
         manager.revoke_key(&key).unwrap();
         assert!(manager.verify_key(&key).is_err());
@@ -443,18 +343,11 @@ mod tests {
 
     #[test]
     fn test_revoke_all_for_user() {
-        let config = ApiKeyConfig::default();
-        let mut manager = ApiKeyManager::new(config);
+        let mut manager = ApiKeyManager::new();
 
-        manager
-            .generate_key("key-1".to_string(), "user-1".to_string(), None)
-            .unwrap();
-        manager
-            .generate_key("key-2".to_string(), "user-1".to_string(), None)
-            .unwrap();
-        manager
-            .generate_key("key-3".to_string(), "user-2".to_string(), None)
-            .unwrap();
+        add_test_key(&mut manager, "key-1", "user-1", None);
+        add_test_key(&mut manager, "key-2", "user-1", None);
+        add_test_key(&mut manager, "key-3", "user-2", None);
 
         let revoked = manager.revoke_all_for_user("user-1");
 
@@ -465,12 +358,9 @@ mod tests {
 
     #[test]
     fn test_api_key_permissions() {
-        let config = ApiKeyConfig::default();
-        let mut manager = ApiKeyManager::new(config);
+        let mut manager = ApiKeyManager::new();
 
-        let (key, _) = manager
-            .generate_key("test-key".to_string(), "user-1".to_string(), None)
-            .unwrap();
+        let key = add_test_key(&mut manager, "test-key", "user-1", None);
 
         let permission = ApiKeyPermission::new("posts".to_string())
             .with_action("read")
@@ -486,13 +376,10 @@ mod tests {
 
     #[test]
     fn test_api_key_expiration() {
-        let config = ApiKeyConfig::default();
-        let mut manager = ApiKeyManager::new(config);
+        let mut manager = ApiKeyManager::new();
 
         // 1秒で期限切れ
-        let (key, _) = manager
-            .generate_key("test-key".to_string(), "user-1".to_string(), Some(1))
-            .unwrap();
+        let key = add_test_key(&mut manager, "test-key", "user-1", Some(1));
 
         // すぐに検証できる
         assert!(manager.verify_key(&key).is_ok());
