@@ -10,7 +10,7 @@ permalink: /docs/database/
 
 mcp-rs can connect to one PostgreSQL, MySQL, or MariaDB database and give MCP clients tools to read its schema and run SQL. By default it only reads: queries run in a read-only transaction, and the tool that changes data is not offered.
 
-- **Engines**: PostgreSQL, and MySQL and MariaDB from v0.25.0 (see [MySQL](#mysql) and [MariaDB](#mariadb)). Other engines (SQLite, Redis, MongoDB) exist as library code but cannot be configured yet
+- **Engines**: PostgreSQL, and MySQL and MariaDB from v0.25.0 (see [MySQL](#mysql) and [MariaDB](#mariadb)). Other engines (SQLite, Redis, MongoDB) exist as library code but cannot be configured yet. Redis and MongoDB are planned for v0.31.0
 - **Build**: all three are included in the default build, the [ready-built files](https://github.com/n-takatsu/mcp-rs/releases), and the Docker image. A build made with `--no-default-features` leaves them out, and reports that in `mcp_rs_status`
 - **Step-by-step setup**: [PostgreSQL Integration Guide]({{ site.baseurl }}/docs/guides/postgres-integration/)
 

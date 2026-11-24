@@ -15,6 +15,9 @@ use chrono::Utc;
 use std::sync::Arc;
 
 /// MongoDB Database Engine
+///
+/// データベースのハンドラー（`[database]`）では使えない。v0.31.0で使えるように
+/// する予定（#530）
 #[derive(Clone)]
 pub struct MongoEngine {
     mongo_config: Arc<MongoConfig>,
