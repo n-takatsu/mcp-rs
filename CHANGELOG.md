@@ -264,6 +264,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   エラーに、古い形式を消す案内を付けていた。`[[plugins]]`より後の
   `[plugins.*]`は古い形式としない
 
+- WordPressの`create_post_with_featured_image`で、無いメディアのIDを渡すと、
+  WordPressは画像なしで投稿を保存するのに、画像付きで作ったと返していた
+  （#750）。応答の`featured_media`と頼んだIDを比べ、違えば、作った投稿の
+  IDと、画像を設定していないことを返す（`set_featured_image`を案内する。
+  投稿は作ってあるので、エラーにはしない）
+
+- WordPressの`create_advanced_post`（と、それを通る投稿を作るツール）が、
+  `429`・接続の失敗でも再送しなかった（#750）。ほかのPOSTと同じく
+  `send_with_retry`を通し、WordPressに届いていない`429`・接続の失敗だけ
+  再送する（5xx・期限切れは、重なるので再送しない）
+
+- WordPressへのGET等で、成功の状態コードを受けた後、本文の受信が途中で
+  失敗すると（期限切れ・接続の切断）、再送しなかった（#750）。再送して
+  よいメソッドは、本文の受信まで再試行に含める（受信しきった不正なJSONは
+  再送しない）。POST（`upload_media`・投稿を作るツール）・DELETEでは、
+  再送せず、WordPressで保存・処理済みかもしれないので確かめてからやり直す
+  よう、エラーに書く（以前は、ただの通信のエラーで、やり直すとメディア・
+  投稿が重なり得た）
+
+- WordPressの投稿を作るツールのスキーマが、`status`を`enum`で標準の値に
+  縛っていたので、スキーマを確かめるクライアントは、サイトに登録された
+  独自のステータス（PublishPressの`pitch`等）を送れなかった（#750。
+  mcp-rsは通す）。`enum`を外し、標準の値は説明に書く
+
+- WordPressの`slug`に、文字・数字を含まない値（`!!!`・`&amp;`等）を渡せた（#750）。
+  WordPressはこれを空にするので、下書きの更新では今のスラッグが消えた。
+  空と同じく断る（日本語・パーセントエンコードのスラッグは通す）
+
 - WordPressの`url`に、ユーザー名・パスワード（`https://user:pass@…`）を書くと、
   `mcp_rs_status`の表示と起動のエラーに、パスワードがそのまま出ていた（#746）。
   そのような`url`と、URLとして読めない`url`は断る（`mcp-rs init`と同じ）。
@@ -707,6 +735,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     同じ）
 
 ### Security
+
+- Windowsで、WordPressの`upload_media`の`file_path`に`\\host\share\…`の
+  ようなUNCのパスを渡すと、許可したフォルダかを確かめる前の正規化で、SMBの
+  接続が始まり、Windowsの資格情報が送られ得た（#750。`upload_allowed_dirs`
+  を設定したときだけ）。ドライブ名で始まるパスだけ受け付け、UNC・デバイス
+  （`\\.\…`）等のパスは、正規化の前に断る
+
+- WordPressの`upload_media`の`file_path`で、許可したフォルダの中かを
+  確かめた後、同じパスでファイルを開き直していた（#750）。その間に、
+  フォルダの中の項目をシンボリックリンク・ジャンクションに差し替えると、
+  外のファイルを読んでWordPressに送れた（フォルダに書ける人が要る）。
+  開いたファイルが、確かめたファイルかを比べる（Windowsは開いたファイルの
+  実際のパス、Linux・macOSは正規化し直したパスとデバイス・inode）
 
 - HTTPで、リプレイ攻撃対策（`anti_replay_enabled`）のnonceの記録が、1つの
   呼び出し元の上限に達すると、送られるたびに、書き込みのロックを持った

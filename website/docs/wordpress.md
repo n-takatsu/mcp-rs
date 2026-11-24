@@ -214,7 +214,7 @@ Create a new WordPress post or page with advanced options.
 - `title` (string): Post/page title
 - `content` (string): Post/page content
 - `post_type` (string): "post" (投稿) or "page" (固定ページ) [default: "post"]
-- `status` (string, optional): "publish" (公開), "draft" (下書き), "pending" (レビュー待ち), "private" (非公開), "future" (予約投稿、`date`が必須) [default: "draft"]
+- `status` (string, optional): "publish" (公開), "draft" (下書き), "pending" (レビュー待ち), "private" (非公開), "future" (予約投稿、`date`が必須), or a custom status registered on the site (for example by a plugin) [default: "draft"]
 - `date` (string, optional): Publication date (ISO8601 format, required for "future" status)
 - `categories` (array, optional): Category IDs (posts only)
 - `tags` (array, optional): Tag IDs (posts only)
@@ -254,7 +254,7 @@ Create a post or page with embedded YouTube videos and social media content appe
 - `youtube_urls` (array of strings, optional): YouTube video URLs to embed as video players: `youtube.com/watch?v=…`, `youtu.be/…`, `youtube.com/embed/…`, `youtube.com/shorts/…`, `youtube.com/live/…` or `youtube-nocookie.com/embed/…` (Shorts, live and nocookie URLs from v0.30.0). URLs in other forms are not added; the result lists them after `Not embedded (unsupported URL):` (v0.30.0 and later)
 - `social_urls` (array of strings, optional): Social media URLs to embed: X/Twitter, Instagram posts (`instagram.com/p/…`), Facebook or TikTok. Other URLs are not added and are listed in the result in the same way. Both lists accept only URLs on the services' own hosts (for example `www.youtube.com` or `x.com`, not a URL on another site that contains these names)
 - `post_type` (string, optional): `post` or `page`
-- `status` (string, optional): `publish`, `draft`, `pending`, or `private`. Defaults to `draft`. `future` (scheduled) is not available because this tool has no date parameter
+- `status` (string, optional): `publish`, `draft`, `pending`, `private`, or a custom status registered on the site (for example by a plugin). Defaults to `draft`. `future` (scheduled) is not available because this tool has no date parameter
 - `categories` (array of numbers, optional): Category IDs (posts only)
 - `tags` (array of numbers, optional): Tag IDs (posts only)
 - `slug` (string, optional): URL slug, for example an English slug for a post with a Japanese title. If omitted, WordPress generates one from the title. See [Slugs](#slugs)
@@ -378,7 +378,7 @@ Notes:
 - WordPress may change the slug you pass. It removes characters that cannot be used in a URL, and appends `-2` and so on if another post already uses the slug. The tool result shows the actual slug, for example `Slug: my-first-post-2`
 - For a draft, WordPress keeps the slug as given and makes it unique when the post is published
 - Changing the slug of a published post changes its URL. Whether the old URL redirects depends on WordPress and your plugins; mcp-rs does not set up redirects
-- An empty `slug` is rejected. Omit `slug` to leave it unchanged
+- An empty `slug`, or one with no letters or digits once HTML tags and entities are removed (such as `!!!` or `&amp;`, which WordPress would make empty), is rejected. Omit `slug` to leave it unchanged
 
 ## Content Retrieval
 
@@ -449,7 +449,8 @@ The upload is rejected before anything is sent to WordPress if the MIME type is 
 
 **`file_path` restrictions:**
 - The path must be absolute
-- The file must be inside one of the `upload_allowed_dirs` folders. The check uses the resolved path, so `..` and symbolic links (or junctions on Windows) cannot point outside them
+- The file must be inside one of the `upload_allowed_dirs` folders. The check uses the resolved path, so `..` and symbolic links (or junctions on Windows) cannot point outside them. After opening the file, mcp-rs checks that it opened the file it checked, so replacing an item in the folder with a link at that moment does not let it read a file outside. On Windows, the check uses the opened file's actual path. On Linux and macOS, it re-resolves the path and compares the files; a folder inside an allowed folder that is replaced twice at exactly the right moments can still get past it, so do not let others write to the allowed folders
+- On Windows, the path must be on a drive (such as `C:\...`). Network paths (`\\server\share\...`) and device paths (`\\.\...`) are rejected before mcp-rs touches them, so it does not connect to the server (and send your Windows credentials) for a path it would not allow
 - A path outside the allowed folders and a file that does not exist give the same error, so the error does not reveal which files exist elsewhere
 - With STDIO (Claude Code, Claude Desktop), mcp-rs runs on the same machine as the client, so it reads the client's local files. Over HTTP/WebSocket, the client may be on another machine, and the files are read from the server. mcp-rs logs a warning at startup in that case
 - The uploaded file is public at once: WordPress gives every media file a URL that anyone can open (the `source_url` in the result), even before it is used in a post. Put only files you are willing to publish in `upload_allowed_dirs`
@@ -537,8 +538,8 @@ Create a post with a featured image in one operation.
 **Parameters:**
 - `title` (string): Post title
 - `content` (string): Post content
-- `featured_media_id` (number): Media ID from uploaded image
-- `status` (string, optional): `publish`, `draft`, `pending`, or `private`. Defaults to `draft`. `future` (scheduled) is not available because this tool has no date parameter
+- `featured_media_id` (number): Media ID from uploaded image. If WordPress does not set it (for example, the ID does not exist), the post is still created: the result says so and gives the post ID. Do not create the post again; check the media ID and use `set_featured_image`
+- `status` (string, optional): `publish`, `draft`, `pending`, `private`, or a custom status registered on the site (for example by a plugin). Defaults to `draft`. `future` (scheduled) is not available because this tool has no date parameter
 - `slug` (string, optional): URL slug, for example an English slug for a post with a Japanese title. If omitted, WordPress generates one from the title. See [Slugs](#slugs)
 
 ### `set_featured_image`
