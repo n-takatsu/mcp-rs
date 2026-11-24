@@ -223,7 +223,7 @@ Create a new WordPress post or page with advanced options.
 - `featured_media_id` (number, optional): Featured image media ID
 - `meta` (object, optional): Meta fields for SEO (e.g., Yoast SEO fields)
 - `slug` (string, optional): URL slug, for example an English slug for a post with a Japanese title. If omitted, WordPress generates one from the title. See [Slugs](#slugs)
-- `excerpt` (string, optional): A short summary of the post, shown in post lists and often used as the meta description. If omitted, WordPress makes one from the content (v0.30.0 and later). Pages, and custom post types without excerpt support, do not keep it: WordPress ignores it, and the result says that the excerpt was not saved. The page is still created, so do not create it again
+- `excerpt` (string, optional): A short summary of the post, shown in post lists and often used as the meta description. If omitted, WordPress makes one from the content (v0.30.0 and later). Posts and pages keep it. Custom post types without excerpt support do not: WordPress ignores it, and the result says that the excerpt was not saved. The item is still created, so do not create it again
 
 **Example Usage:**
 

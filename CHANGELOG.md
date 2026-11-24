@@ -229,9 +229,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - WordPressの`create_advanced_post`に`excerpt`が無かった（#759）。
   `draft_post`のプロンプトは抜粋を書かせるのに、保存できなかった。
   `excerpt`を受け、WordPressに送る（省略時は、今までどおりWordPressが
-  本文から作る）。固定ページ等、抜粋に対応しない投稿タイプでは
-  WordPressが黙って捨てるので、作ったことと、抜粋は保存されていない
-  ことを伝える
+  本文から作る）。抜粋に対応しない独自の投稿タイプでは、WordPressが
+  黙って捨てる（応答に`excerpt`が無い）ので、作ったことと、抜粋は保存
+  されていないことを伝える（投稿・固定ページは保存する）
 
 - WordPressのリソースの読み取り（`resources/read`）が、エラーの本文に
   ` 404 `を含むだけで「リソースが無い」（`-32002`）にしていた（#759）。

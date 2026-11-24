@@ -6346,7 +6346,7 @@ impl McpHandler for WordPressHandler {
                         },
                         "excerpt": {
                             "type": "string",
-                            "description": "A short summary of the post (optional), shown in post lists and often used as the meta description. If omitted, WordPress makes one from the content. Pages (and post types without excerpt support) do not keep it: the result then says that the excerpt was not saved"
+                            "description": "A short summary of the post (optional), shown in post lists and often used as the meta description. If omitted, WordPress makes one from the content. Custom post types without excerpt support do not keep it: the result then says that the excerpt was not saved (posts and pages keep it)"
                         }
                     },
                     "required": ["title", "content"]
@@ -12812,15 +12812,17 @@ mod tests {
 
     // ---- PR #763のレビュー ----
 
-    /// 抜粋に対応しない投稿タイプ（固定ページ等）では、WordPressは抜粋を
-    /// 黙って捨てる。作ったことと、抜粋は保存されていないことを伝える
-    /// （PR #763のレビュー）
+    /// 抜粋に対応しない投稿タイプ（`excerpt`の無い独自の投稿タイプ）では、
+    /// WordPressは抜粋を黙って捨て、応答にも`excerpt`が無い。作ったことと、
+    /// 抜粋は保存されていないことを伝える（PR #763のレビュー。固定ページは
+    /// RESTで抜粋を受け付けるので当たらない。ここでは、応答に`excerpt`の無い
+    /// ことだけを再現する）
     #[tokio::test]
     async fn test_create_advanced_post_reports_unsaved_excerpt() {
         let args = serde_json::json!({
             "title": "t", "content": "c", "post_type": "page", "excerpt": "要約"
         });
-        // 応答に`excerpt`が無い（固定ページ）
+        // 応答に`excerpt`が無い（抜粋に対応しない投稿タイプの応答を再現）
         let (base_url, captured) = spawn_body_capturing_server(post_response_json("t")).await;
         let handler = handler_for_local_server(base_url);
         let result = call_tool_with(&handler, "create_advanced_post", args.clone())
