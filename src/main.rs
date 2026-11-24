@@ -143,11 +143,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // だったが、受信ループが動いておらずリクエストを処理できなかった
     // （#400。core::Runtimeは#409で削除）
     let transport_config = config.to_transport_config();
+    // 終了の合図（Ctrl+C・SIGTERM）は、プラグインを起動する前から受ける
+    // （#759。起動の途中で受けても、起動した後にプラグインを止める）
+    let shutdown = ShutdownSignal::listen();
     match transport_config.transport_type {
         mcp_rs::transport::TransportType::Http { addr } => {
             let mut http_config = transport_config.http.clone();
             http_config.bind_addr = addr;
-            run_http_server(&config, http_config).await
+            run_http_server(&config, http_config, shutdown).await
         }
         _ => {
             if let Some(other) = config
@@ -161,7 +164,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     other
                 );
             }
-            if run_stdio_server(&config).await? {
+            if run_stdio_server(&config, shutdown).await? {
                 // 標準入力の読み込みは止められず、tokioの終了がそれを待つので、
                 // ログを書き終えてから、ここで終わる（#617）
                 drop(_log_guard);
@@ -429,9 +432,12 @@ async fn register_database(
 }
 
 /// STDIOモードでMCPサーバーを実行（initialize / tools/list / tools/call 等に応答）。
-/// 標準入力の終わり（EOF）か、Ctrl+C（#617）で終わる。Ctrl+Cで終わったら
-/// `true`
-async fn run_stdio_server(config: &McpConfig) -> Result<bool, Box<dyn std::error::Error>> {
+/// 標準入力の終わり（EOF）か、終了の合図（Ctrl+C（#617）・SIGTERM（#759））で
+/// 終わる。合図で終わったら`true`
+async fn run_stdio_server(
+    config: &McpConfig,
+    mut shutdown: ShutdownSignal,
+) -> Result<bool, Box<dyn std::error::Error>> {
     let server = build_server(config, false).await?;
     info!("🔌 STDIOモードで待機中");
     // 標準入出力の失敗（クライアントが去った等）で終わっても、プラグインを
@@ -440,16 +446,17 @@ async fn run_stdio_server(config: &McpConfig) -> Result<bool, Box<dyn std::error
         server,
         async |server| -> Result<bool, Box<dyn std::error::Error>> {
             let interrupted = tokio::select! {
+                // 起動の途中で合図を受けていたら、読み始めずに終わる
+                biased;
+                // Ctrl+Cを受けないと、Windowsが既定でプロセスを止め、終了コードが
+                // 0以外（STATUS_CONTROL_C_EXIT）になる
+                signal = shutdown.wait() => {
+                    info!("👋 MCP-RS終了（{}）", signal);
+                    true
+                }
                 result = server.run_stdio() => {
                     result?;
                     false
-                }
-                // Ctrl+Cを受けないと、Windowsが既定でプロセスを止め、終了コードが
-                // 0以外（STATUS_CONTROL_C_EXIT）になる
-                result = tokio::signal::ctrl_c() => {
-                    result?;
-                    info!("👋 MCP-RS終了（Ctrl+C）");
-                    true
                 }
             };
             Ok(interrupted)
@@ -461,10 +468,12 @@ async fn run_stdio_server(config: &McpConfig) -> Result<bool, Box<dyn std::error
 
 /// HTTPモードでMCPサーバーを実行する。`/mcp`（と`/`）へのPOST、および
 /// `enable_websocket_upgrade`が有効なら`/ws`のWebSocketで、STDIOと同じ
-/// 処理（McpServer）に応答させる（#400）。Ctrl+Cで終了する。
+/// 処理（McpServer）に応答させる（#400）。終了の合図（Ctrl+C・SIGTERM）で
+/// 終了する
 async fn run_http_server(
     config: &McpConfig,
     http_config: mcp_rs::transport::HttpConfig,
+    mut shutdown: ShutdownSignal,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let server = build_server(config, true).await?;
 
@@ -478,6 +487,11 @@ async fn run_http_server(
     run_then_stop(
         server,
         async |server| -> Result<(), Box<dyn std::error::Error>> {
+            // 起動の途中で合図を受けていたら、HTTPサーバーを始めずに終わる
+            if let Some(signal) = shutdown.received() {
+                info!("👋 MCP-RS終了（{}）", signal);
+                return Ok(());
+            }
             // 認証の失敗も、ツール呼び出しと同じ監査ログに記録する（#55）
             let mut transport = mcp_rs::transport::HttpTransport::new(http_config)?;
             if let Some(audit_logger) = server.audit_logger() {
@@ -490,13 +504,136 @@ async fn run_http_server(
             }
             info!("💡 Ctrl+C で終了");
 
-            tokio::signal::ctrl_c().await?;
-            info!("👋 MCP-RS終了");
+            let signal = shutdown.wait().await;
+            info!("👋 MCP-RS終了（{}）", signal);
             Ok(())
         },
         stop_plugins,
     )
     .await
+}
+
+/// 終了の合図（Ctrl+C・SIGTERM等）を受けたか（#759）。`listen`で受け始めると、
+/// 合図でプロセスが既定のとおり止まらなくなり、待ち始める前に受けた合図も
+/// 残る（プラグインの起動中に受けても、起動した後に止められる）
+struct ShutdownSignal(tokio::sync::watch::Receiver<Option<&'static str>>);
+
+impl ShutdownSignal {
+    /// 合図を今から受ける。登録に失敗した合図は警告し、登録できた合図を待つ
+    fn listen() -> Self {
+        let (sender, receiver) = tokio::sync::watch::channel(None);
+        match signals::register() {
+            Ok(mut signals) => {
+                tokio::spawn(async move {
+                    let signal = signals.recv().await;
+                    let _ = sender.send(Some(signal));
+                });
+            }
+            Err(e) => tracing::warn!(
+                "Could not listen for shutdown signals ({e}): plugins may be left running if mcp-rs is stopped by a signal"
+            ),
+        }
+        Self(receiver)
+    }
+
+    /// 既に受けた合図の名前（まだ受けていなければNone）
+    fn received(&self) -> Option<&'static str> {
+        *self.0.borrow()
+    }
+
+    /// 合図を受けるまで待ち、その名前を返す。既に受けていれば、すぐ返す
+    async fn wait(&mut self) -> &'static str {
+        let received = self
+            .0
+            .wait_for(Option::is_some)
+            .await
+            .ok()
+            .and_then(|signal| *signal);
+        match received {
+            Some(signal) => signal,
+            // 合図を受けられない（`listen`で警告済み）
+            None => std::future::pending().await,
+        }
+    }
+}
+
+fn optional_shutdown_listener<T>(name: &str, listener: std::io::Result<T>) -> Option<T> {
+    listener
+        .inspect_err(|e| {
+            tracing::warn!(
+                "Could not listen for {name} ({e}): plugins may be left running if mcp-rs is stopped by {name}"
+            );
+        })
+        .ok()
+}
+
+/// 2つ目の合図（SIGTERM・Ctrl+Break）の登録に失敗しても、1つ目（Ctrl+C）は
+/// 受け続ける（#759。登録済みのものを捨てて戻ると、Ctrl+Cでもプロセスが
+/// 止まらなくなる）。受けられない合図は、待っても終わらない
+async fn recv_optional<F: std::future::Future>(signal: Option<F>) {
+    match signal {
+        Some(signal) => {
+            signal.await;
+        }
+        None => std::future::pending().await,
+    }
+}
+
+/// Unix系: SIGINT（Ctrl+C）と、`docker stop`・`systemctl stop`等が送るSIGTERM
+#[cfg(unix)]
+mod signals {
+    use super::optional_shutdown_listener;
+    use tokio::signal::unix::{signal, Signal, SignalKind};
+
+    pub(super) struct Signals {
+        interrupt: Signal,
+        terminate: Option<Signal>,
+    }
+
+    pub(super) fn register() -> std::io::Result<Signals> {
+        let interrupt = signal(SignalKind::interrupt())?;
+        let terminate = optional_shutdown_listener("SIGTERM", signal(SignalKind::terminate()));
+        Ok(Signals {
+            interrupt,
+            terminate,
+        })
+    }
+
+    impl Signals {
+        pub(super) async fn recv(&mut self) -> &'static str {
+            tokio::select! {
+                _ = self.interrupt.recv() => "Ctrl+C",
+                _ = super::recv_optional(self.terminate.as_mut().map(Signal::recv)) => "SIGTERM",
+            }
+        }
+    }
+}
+
+/// Windows: Ctrl+CとCtrl+Break
+#[cfg(windows)]
+mod signals {
+    use super::optional_shutdown_listener;
+    use tokio::signal::windows::{ctrl_break, ctrl_c, CtrlBreak, CtrlC};
+
+    pub(super) struct Signals {
+        ctrl_c: CtrlC,
+        ctrl_break: Option<CtrlBreak>,
+    }
+
+    pub(super) fn register() -> std::io::Result<Signals> {
+        let ctrl_c = ctrl_c()?;
+        let ctrl_break = optional_shutdown_listener("Ctrl+Break", ctrl_break());
+        Ok(Signals { ctrl_c, ctrl_break })
+    }
+
+    impl Signals {
+        pub(super) async fn recv(&mut self) -> &'static str {
+            tokio::select! {
+                _ = self.ctrl_c.recv() => "Ctrl+C",
+                _ = super::recv_optional(self.ctrl_break.as_mut().map(CtrlBreak::recv)) => "Ctrl+Break",
+            }
+        }
+    }
 }
 
 /// `server`で`run`を実行し、その結果に関わらず`stop`で止めてから、結果を
@@ -563,6 +700,41 @@ mod tests {
         .await;
         assert_eq!(result, Err("broken pipe".to_string()));
         assert!(stopped.get());
+    }
+
+    /// 待ち始める前に受けた終了の合図も失わない（#759。プラグインの起動中に
+    /// 受けた合図）
+    #[tokio::test]
+    async fn test_shutdown_signal_received_before_waiting_is_kept() {
+        let (sender, receiver) = tokio::sync::watch::channel(None);
+        let mut shutdown = ShutdownSignal(receiver);
+        assert_eq!(shutdown.received(), None);
+        sender.send(Some("SIGTERM")).unwrap();
+        assert_eq!(shutdown.received(), Some("SIGTERM"));
+        assert_eq!(shutdown.wait().await, "SIGTERM");
+    }
+
+    /// 登録できなかった2つ目の合図は、待っても終わらない。登録できた合図は
+    /// 受けられる（#759。2つ目の登録の失敗で、1つ目を捨てない）
+    #[tokio::test]
+    async fn test_recv_optional_waits_only_for_registered_signals() {
+        let missing: Option<std::future::Ready<()>> = None;
+        let waited =
+            tokio::time::timeout(std::time::Duration::from_millis(50), recv_optional(missing))
+                .await;
+        assert!(waited.is_err());
+        recv_optional(Some(std::future::ready(()))).await;
+    }
+
+    /// 合図を受けられないときは、待っても終わらない（終わったと扱わない）
+    #[tokio::test]
+    async fn test_shutdown_signal_without_listener_never_fires() {
+        let (sender, receiver) = tokio::sync::watch::channel(None);
+        drop(sender);
+        let mut shutdown = ShutdownSignal(receiver);
+        let waited =
+            tokio::time::timeout(std::time::Duration::from_millis(50), shutdown.wait()).await;
+        assert!(waited.is_err());
     }
 
     /// `run`が成功したら、`stop`を実行してから結果をそのまま返す
