@@ -1,6 +1,5 @@
 use anyhow::Result;
 use std::fs;
-use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use tracing::{Event, Subscriber};
@@ -620,24 +619,13 @@ fn header_line(event: &str, at: &chrono::DateTime<chrono::Local>, path: &Path) -
 /// 一貫して成功するため）。このケースへの対策は
 /// `fallback_log_dir_candidates`側でAppData配下を避けること。
 fn write_startup_marker(appender: &mut LocalRollingAppender, event: &str) -> std::io::Result<()> {
-    let active = appender.active_path();
-    let current = |active: &Arc<Mutex<PathBuf>>| {
-        active
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone()
-    };
     // 先に書き先を決め、その名前を行に入れる（PR #745のレビュー。書く時に
-    // 切り替わると、行の`log:`が実際のファイルと違ってしまう）
-    appender.roll_now();
-    let marker = header_line(event, started_at(), &current(&active));
+    // 切り替わると、行の`log:`が実際のファイルと違ってしまう）。決めた書き先に
+    // 直接書き、その間にもう一度切り替えない（#774）
+    let written = appender.write_marker(|path| header_line(event, started_at(), path))?;
 
-    appender.write_all(marker.as_bytes())?;
-    appender.flush()?;
-
-    // 書いた後のファイルで確かめる（#744。書く間に日付が変わると、新しい
-    // ファイルに書かれ、前のファイルは空のまま）
-    let metadata = fs::metadata(current(&active))?;
+    // 書いたファイルで確かめる（#744）
+    let metadata = fs::metadata(written)?;
     if metadata.len() == 0 {
         return Err(std::io::Error::other(
             "file exists but is empty after a successful write+flush",
@@ -1228,6 +1216,12 @@ fn remove_old_log(path: &Path, keep_since: std::time::SystemTime) -> std::io::Re
 /// 切り替えの1期間（`Hourly`は1時間、ほかは1日）。それより長く書かれて
 /// いないファイルは、使っているプロセスがあっても消す（次に書くときに、
 /// そのプロセスは新しいファイルに切り替える）
+///
+/// 既知の制限（#774）: 別のプロセスが1期間より長く書かず、その後に新しい
+/// ファイルを開けない（ディスク・フォルダの問題）と、そのプロセスは消された
+/// ファイルに書き続け（Unix系）、その記録は残らない。今の期間と1つ前の期間の
+/// ファイルは消さず、開けない状態はふつう両方のプロセスに起きるので、
+/// プロセスの間の排他（ロックファイル等）は入れていない
 fn recent_write_window(rotation: &LogRotation) -> std::time::Duration {
     match rotation {
         LogRotation::Hourly => std::time::Duration::from_secs(60 * 60),
@@ -1342,21 +1336,12 @@ fn install_subscriber(
     file_slot: &FileSlot,
 ) -> Result<()> {
     match (config.console_enabled, config.file_enabled) {
-        (true, true) => {
-            let console_layer = fmt::layer()
-                .with_writer(std::io::stderr)
-                .event_format(pid_formatter());
-            let file_layer = fmt::layer()
-                .with_writer(file_slot.clone())
-                .with_ansi(false)
-                .event_format(pid_formatter());
-            set_global_subscriber(
-                tracing_subscriber::registry()
-                    .with(env_filter)
-                    .with(console_layer)
-                    .with(file_layer),
-            )
-        }
+        (true, true) => set_global_subscriber(console_and_file_subscriber(
+            env_filter,
+            std::io::stderr,
+            None,
+            file_slot.clone(),
+        )),
         (true, false) => set_global_subscriber(
             tracing_subscriber::fmt()
                 .with_writer(std::io::stderr)
@@ -1380,6 +1365,53 @@ fn install_subscriber(
                 .event_format(pid_formatter())
                 .finish(),
         ),
+    }
+}
+
+/// コンソールとファイルの両方に出すsubscriber。ファイル側は、spanの
+/// フィールドの整形に別の型（[`FileFields`]）を使う（#774）。同じ型だと、
+/// 先に動くコンソール側がANSIのエスケープ付きで整形した結果をspanに保存し、
+/// ファイル側もそれをそのまま書く。`console_ansi`は、コンソールのANSIを
+/// 決めるとき（テスト。`None`は既定のまま）
+fn console_and_file_subscriber<C, F>(
+    env_filter: EnvFilter,
+    console: C,
+    console_ansi: Option<bool>,
+    file: F,
+) -> impl tracing::Subscriber + Send + Sync + 'static
+where
+    C: for<'w> fmt::MakeWriter<'w> + Send + Sync + 'static,
+    F: for<'w> fmt::MakeWriter<'w> + Send + Sync + 'static,
+{
+    let mut console_layer = fmt::layer()
+        .with_writer(console)
+        .event_format(pid_formatter());
+    if let Some(ansi) = console_ansi {
+        console_layer = console_layer.with_ansi(ansi);
+    }
+    let file_layer = fmt::layer()
+        .with_writer(file)
+        .with_ansi(false)
+        .fmt_fields(FileFields::default())
+        .event_format(pid_formatter());
+    tracing_subscriber::registry()
+        .with(env_filter)
+        .with(console_layer)
+        .with(file_layer)
+}
+
+/// ファイルのlayerのフィールドの整形（#774）。中身は`DefaultFields`と同じで、
+/// 型だけを分ける（spanに保存する整形の結果を、コンソールと共有しない）
+#[derive(Default)]
+struct FileFields(fmt::format::DefaultFields);
+
+impl<'writer> FormatFields<'writer> for FileFields {
+    fn format_fields<R: tracing_subscriber::field::RecordFields>(
+        &self,
+        writer: Writer<'writer>,
+        fields: R,
+    ) -> std::fmt::Result {
+        self.0.format_fields(writer, fields)
     }
 }
 
@@ -1504,8 +1536,17 @@ mod tests {
             "mcp-rs.log.bak",
             "mcp-rs.2026-11-01.log",
         ];
+        // 更新時刻を過去にし、比べる時刻と重ならないようにする（#774。名前の
+        // 規則だけを確かめる）
         for name in ours.iter().chain(&others) {
-            fs::write(dir.path().join(name), b"x").unwrap();
+            let path = dir.path().join(name);
+            fs::write(&path, b"x").unwrap();
+            fs::File::options()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(60))
+                .unwrap();
         }
         fs::create_dir(dir.path().join("mcp-rs.log.2026-10-01")).unwrap();
 
@@ -2143,5 +2184,44 @@ mod tests {
 
         stats.total_size = 1536; // 1.5 KB
         assert_eq!(stats.format_size(), "1.50 KB");
+    }
+
+    /// コンソールとファイルの両方に出すとき、ファイルのspanのフィールドに
+    /// コンソールのANSIのエスケープが混ざらない（#774）
+    #[test]
+    fn test_file_span_fields_have_no_ansi_escapes() {
+        #[derive(Clone, Default)]
+        struct Buffer(Arc<Mutex<Vec<u8>>>);
+        impl std::io::Write for Buffer {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let console = Buffer::default();
+        let file = Buffer::default();
+        let subscriber = {
+            let (console, file) = (console.clone(), file.clone());
+            console_and_file_subscriber(
+                EnvFilter::new("info"),
+                move || console.clone(),
+                Some(true),
+                move || file.clone(),
+            )
+        };
+        tracing::subscriber::with_default(subscriber, || {
+            let span = tracing::info_span!("request", key = 1);
+            let _entered = span.enter();
+            tracing::info!("inside");
+        });
+
+        let file = String::from_utf8(file.0.lock().unwrap().clone()).unwrap();
+        assert!(file.contains("key=1"), "{file}");
+        assert!(!file.contains('\x1b'), "{file:?}");
+        // コンソールはANSIで整形している（共有すると、ファイルに混ざる）
+        assert!(console.0.lock().unwrap().contains(&0x1b));
     }
 }

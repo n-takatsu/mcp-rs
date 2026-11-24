@@ -658,6 +658,44 @@ fn lock_file_options() -> std::fs::OpenOptions {
     options
 }
 
+/// ほかのプロセスが持つ`<path>.lock`のロックを待つ長さ（#774）。ほかの
+/// プロセスが持つのは1行を書く間だけなので、ふつうはすぐ取れる。そのプロセスが
+/// 止められた（SIGSTOP等）ままでも、書き込みのタスクを止め続けない
+const FILE_LOCK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// ロックを取り直すまでの間隔
+const FILE_LOCK_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_millis(20);
+
+/// `file`の排他のロックを、`timeout`まで取り直しながら待つ（#774。以前は
+/// 期限なしに待った）。取れなければエラー（呼び出し元は警告し、メモリへの
+/// 記録は続ける）
+fn lock_with_timeout(
+    file: &std::fs::File,
+    timeout: std::time::Duration,
+) -> Result<(), SecurityError> {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        match file.try_lock() {
+            Ok(()) => return Ok(()),
+            Err(std::fs::TryLockError::WouldBlock) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(FILE_LOCK_RETRY_INTERVAL);
+            }
+            Err(std::fs::TryLockError::WouldBlock) => {
+                return Err(SecurityError::Configuration(format!(
+                    "File lock timed out after {} seconds",
+                    timeout.as_secs_f64()
+                )));
+            }
+            Err(std::fs::TryLockError::Error(e)) => {
+                return Err(SecurityError::Configuration(format!(
+                    "File lock failed: {}",
+                    e
+                )));
+            }
+        }
+    }
+}
+
 /// `line`を`path`に追記する。`rotation`（大きさの上限・残す数）があれば、
 /// 上限を超えるときは先にローテーションする。
 ///
@@ -674,8 +712,7 @@ fn append_line(path: &str, line: &str, rotation: Option<(u64, u32)>) -> Result<(
     let lock = lock_file_options()
         .open(lock_file_path(path))
         .map_err(|e| SecurityError::Configuration(format!("File open failed: {}", e)))?;
-    lock.lock()
-        .map_err(|e| SecurityError::Configuration(format!("File lock failed: {}", e)))?;
+    lock_with_timeout(&lock, FILE_LOCK_TIMEOUT)?;
     if let Some((rotation_size, max_files)) = rotation {
         // ロックを取った後の大きさで決める（ほかのプロセスが回した後かも
         // しれない）
@@ -912,6 +949,28 @@ mod tests {
         test_file_output_rotates_by_size_inner().await;
     }
 
+    /// ほかが持つロックは期限まで待ち、過ぎたらエラーで戻る（#774。以前は
+    /// 期限なしに待った）。外れた後は取れる
+    #[test]
+    fn test_file_lock_wait_has_a_deadline() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audit.log.lock");
+        let held = lock_file_options().open(&path).unwrap();
+        held.lock().unwrap();
+        let waiting = lock_file_options().open(&path).unwrap();
+
+        let started = std::time::Instant::now();
+        let result = lock_with_timeout(&waiting, std::time::Duration::from_millis(200));
+        assert!(
+            matches!(&result, Err(SecurityError::Configuration(message)) if message.contains("timed out")),
+            "{result:?}"
+        );
+        assert!(started.elapsed() >= std::time::Duration::from_millis(200));
+
+        held.unlock().unwrap();
+        lock_with_timeout(&waiting, std::time::Duration::from_millis(200)).unwrap();
+    }
+
     /// 別々の`AuditLogger`（別のプロセスと同じく、`file_lock`を共有しない）が
     /// 同じファイルに書いて回しても、記録を失わない（#741）
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -950,18 +1009,27 @@ mod tests {
         for task in tasks {
             task.await.unwrap();
         }
-        let mut lines = 0;
+        // 行数だけでなく、どの記録も1回ずつ残る（#774。欠けと重なりが同じ数
+        // だけ起きても見逃さない）
+        let mut messages = std::collections::BTreeSet::new();
         for entry in std::fs::read_dir(&dir).unwrap() {
             let entry = entry.unwrap();
             if entry.file_name().to_string_lossy().ends_with(".lock") {
                 continue;
             }
-            lines += std::fs::read_to_string(entry.path())
-                .unwrap()
-                .lines()
-                .count();
+            for line in std::fs::read_to_string(entry.path()).unwrap().lines() {
+                let logged: AuditLogEntry = serde_json::from_str(line).unwrap();
+                assert!(
+                    messages.insert(logged.message.clone()),
+                    "duplicated: {}",
+                    logged.message
+                );
+            }
         }
-        assert_eq!(lines, 200);
+        let expected: std::collections::BTreeSet<String> = (0..4)
+            .flat_map(|writer| (0..50).map(move |i| format!("writer {writer} entry {i}")))
+            .collect();
+        assert_eq!(messages, expected);
         // 実際に何度も回した
         assert!(dir.join("audit.log.5").exists());
         assert!(!dir.join("audit.log.60").exists());

@@ -333,14 +333,18 @@ mod tests {
             .await;
         assert!(blocklist.is_blocked(test_ip()).await);
 
+        // 有効な短いブロックを、長いブロックで延ばす（#774。0秒では、前の
+        // ブロックがその場で消え、延ばす分岐を通らなかった）。逆の順では、
+        // 期限を変えない
         let other = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 2));
         blocklist
             .block_temporarily(
                 other,
-                std::time::Duration::from_secs(0),
+                std::time::Duration::from_secs(60),
                 "short".to_string(),
             )
             .await;
+        let short_expiry = blocklist.entries.read().await[&other].expires_at.unwrap();
         blocklist
             .block_temporarily(
                 other,
@@ -349,6 +353,19 @@ mod tests {
             )
             .await;
         assert!(blocklist.is_blocked(other).await);
+        let long_expiry = blocklist.entries.read().await[&other].expires_at.unwrap();
+        assert!(long_expiry > short_expiry + Duration::seconds(3000));
+        blocklist
+            .block_temporarily(
+                other,
+                std::time::Duration::from_secs(60),
+                "short again".to_string(),
+            )
+            .await;
+        assert_eq!(
+            blocklist.entries.read().await[&other].expires_at,
+            Some(long_expiry)
+        );
 
         blocklist
             .block_permanently(test_ip(), "emergency".to_string())
