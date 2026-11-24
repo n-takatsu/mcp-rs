@@ -1374,6 +1374,22 @@ impl McpServer {
         for (name, handler) in handlers {
             match handler.list_tools().await {
                 Ok(tools) if tools.iter().any(|t| t.name == params.name) => {
+                    // 読み取りだけでないツールは、STDIOの取り消しで途中で止め
+                    // させない（PR #765のレビュー）。外部（WordPress等）に変更を
+                    // 加えた後、監査ログに残す前に止めると、記録の無い変更が
+                    // 残る。読み取りだけかは、制限の判定と同じく、印を信じない
+                    // ハンドラーの印を外して決める
+                    let read_only = tools
+                        .iter()
+                        .find(|t| t.name == params.name)
+                        .map(|tool| tool_for_access(tool, handler.trusts_read_only_hints()))
+                        .and_then(|tool| tool.annotations.as_ref()?.read_only_hint)
+                        == Some(true);
+                    if !read_only && !keep_call_from_being_aborted() {
+                        return Err(McpError::Other(
+                            "the tool call was cancelled before it started".to_string(),
+                        ));
+                    }
                     return handler.call_tool(params).await;
                 }
                 Ok(_) => {}
@@ -1769,8 +1785,22 @@ impl McpServer {
                 }
             };
             if let Some(text) = immediate {
-                if responses.send(text).await.is_err() {
-                    break; // 書き手が止まった。下でエラーを返す
+                // 相手が出力を読まなければ、ここで待つ。その間も、実行・書き出し
+                // のタスクが終われば、待たずにやめる（PR #765のレビュー）
+                tokio::select! {
+                    sent = responses.send(text) => {
+                        if sent.is_err() {
+                            break; // 書き手が止まった。下でエラーを返す
+                        }
+                    }
+                    written = &mut writer.0 => {
+                        writer_ended = Some(written);
+                        break;
+                    }
+                    done = &mut worker.0 => {
+                        worker_ended = Some(done);
+                        break;
+                    }
                 }
             }
         }
@@ -3329,7 +3359,14 @@ mod tests {
         }
 
         async fn list_tools(&self) -> Result<Vec<Tool>, McpError> {
-            Ok(vec![tool("wait_forever")])
+            // 読み取りだけのツール（取り消しで途中で止められる、PR #765）
+            Ok(vec![Tool {
+                annotations: Some(crate::mcp::ToolAnnotations {
+                    read_only_hint: Some(true),
+                    ..Default::default()
+                }),
+                ..tool("wait_forever")
+            }])
         }
 
         async fn call_tool(&self, _params: ToolCallParams) -> Result<serde_json::Value, McpError> {
@@ -3852,6 +3889,9 @@ mod tests {
         started: Arc<tokio::sync::Notify>,
         release: Arc<tokio::sync::Notify>,
         finished: Arc<std::sync::atomic::AtomicBool>,
+        /// 自分でも`keep_call_from_being_aborted`を呼ぶ（プラグインと同じ）。
+        /// 呼ばなくても、読み取りだけでないツールは止められない
+        marks: bool,
     }
 
     #[async_trait]
@@ -3868,7 +3908,9 @@ mod tests {
         }
 
         async fn call_tool(&self, _params: ToolCallParams) -> Result<serde_json::Value, McpError> {
-            assert!(keep_call_from_being_aborted());
+            if self.marks {
+                assert!(keep_call_from_being_aborted());
+            }
             self.started.notify_one();
             self.release.notified().await;
             self.finished
@@ -3892,6 +3934,18 @@ mod tests {
     /// でも最後まで行い、応答だけを返さない（PR #765のレビュー）
     #[tokio::test]
     async fn test_stdio_cancel_does_not_abort_a_non_abortable_call() {
+        check_cancel_does_not_abort(true).await;
+    }
+
+    /// 読み取りだけでないツール（`readOnlyHint`が`true`でない）は、
+    /// ハンドラーが何もしなくても、取り消しで途中で止めない（PR #765の
+    /// レビュー。WordPressへの書き込みの後、監査ログに残す前に止めえた）
+    #[tokio::test]
+    async fn test_stdio_cancel_does_not_abort_a_tool_that_is_not_read_only() {
+        check_cancel_does_not_abort(false).await;
+    }
+
+    async fn check_cancel_does_not_abort(marks: bool) {
         use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
         let started = Arc::new(tokio::sync::Notify::new());
         let release = Arc::new(tokio::sync::Notify::new());
@@ -3903,6 +3957,7 @@ mod tests {
                 started: started.clone(),
                 release: release.clone(),
                 finished: finished.clone(),
+                marks,
             }),
         );
         let (mut input, server_input) = tokio::io::duplex(64 * 1024);
@@ -4021,6 +4076,86 @@ mod tests {
         drop(input);
     }
 
+    /// `release`で知らされると、パニックするツール
+    struct PanicOnReleaseHandler {
+        started: Arc<tokio::sync::Notify>,
+        release: Arc<tokio::sync::Notify>,
+    }
+
+    #[async_trait]
+    impl McpHandler for PanicOnReleaseHandler {
+        async fn initialize(
+            &self,
+            _params: InitializeParams,
+        ) -> Result<serde_json::Value, McpError> {
+            Ok(serde_json::json!({}))
+        }
+
+        async fn list_tools(&self) -> Result<Vec<Tool>, McpError> {
+            Ok(vec![tool("wait_forever")])
+        }
+
+        async fn call_tool(&self, _params: ToolCallParams) -> Result<serde_json::Value, McpError> {
+            self.started.notify_one();
+            self.release.notified().await;
+            panic!("the tool panicked")
+        }
+
+        async fn list_resources(&self) -> Result<Vec<Resource>, McpError> {
+            Ok(vec![])
+        }
+
+        async fn read_resource(
+            &self,
+            _params: ResourceReadParams,
+        ) -> Result<serde_json::Value, McpError> {
+            Err(McpError::InvalidRequest("no resources".to_string()))
+        }
+    }
+
+    /// `ping`の応答を出力に渡せずに待っている間も、実行のタスクが終われば
+    /// （パニック）、相手が出力を読むのを待たずにエラーで終わる（PR #765の
+    /// レビュー）
+    #[tokio::test]
+    async fn test_stdio_notices_the_worker_stopping_while_waiting_to_send() {
+        let started = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let mut server = McpServer::new();
+        server.add_handler(
+            "panics".to_string(),
+            Arc::new(PanicOnReleaseHandler {
+                started: started.clone(),
+                release: release.clone(),
+            }),
+        );
+        let (mut input, server_input) = tokio::io::duplex(64 * 1024);
+        // 出力は読まない
+        let (output, _client_output) = tokio::io::duplex(64);
+        let serve = tokio::spawn(async move {
+            server
+                .serve_lines(tokio::io::BufReader::new(server_input), output)
+                .await
+                .map_err(|e| e.to_string())
+        });
+        let limit = std::time::Duration::from_secs(5);
+        write_line(&mut input, never_ending_call(1)).await;
+        tokio::time::timeout(limit, started.notified())
+            .await
+            .expect("the tool did not start");
+        // 応答の枠を埋め、読み取りを`ping`の応答の受け渡しで止める
+        let ping = serde_json::json!({ "jsonrpc": "2.0", "id": 2, "method": "ping" });
+        for _ in 0..(STDIO_MAX_PENDING_RESPONSES * 2 + 8) {
+            write_line(&mut input, ping.clone()).await;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        release.notify_one();
+        let result = tokio::time::timeout(limit, serve)
+            .await
+            .expect("serve_lines kept waiting for the client to read")
+            .unwrap();
+        assert!(result.is_err(), "{result:?}");
+        drop(input);
+    }
     /// 空の行は、順を待つ枠を使わない（PR #765のレビュー）
     #[tokio::test]
     async fn test_stdio_blank_lines_do_not_use_the_queue() {

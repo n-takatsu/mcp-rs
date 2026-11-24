@@ -1802,9 +1802,19 @@ impl hyper::body::Body for SendProgressBody {
     }
 
     fn size_hint(&self) -> hyper::body::SizeHint {
-        self.inner.size_hint()
+        // 残してある最後の1バイトも、まだ渡していない分に数える（PR #765の
+        // レビュー）
+        let inner = self.inner.size_hint();
+        let held = self.tail.as_ref().map_or(0, |tail| tail.len() as u64);
+        let mut hint = hyper::body::SizeHint::new();
+        hint.set_lower(inner.lower() + held);
+        if let Some(upper) = inner.upper() {
+            hint.set_upper(upper + held);
+        }
+        hint
     }
 }
+
 /// 1つの接続で、HTTP/1.1かHTTP/2のリクエストを処理する。ヘッダーを読む
 /// 時間（HTTP/1.1）と、応答の無い接続を見つけるping（HTTP/2）に`timeout`を
 /// 使う（#540）。
@@ -8258,15 +8268,19 @@ mod tests {
         );
         assert!(!body.is_end_stream());
         assert!(activity.send_deadline().is_some());
+        assert_eq!(body.size_hint().exact(), Some(5));
 
         let frame = body.frame().await.unwrap().unwrap();
         assert_eq!(frame.into_data().unwrap(), "hell");
+        // 残した1バイトも、残りの大きさに数える
+        assert_eq!(body.size_hint().exact(), Some(1));
         // 最後の1バイトがまだあるので、終わりとは言わず、期限も残す
         assert!(!body.is_end_stream());
         assert!(activity.send_deadline().is_some());
 
         let frame = body.frame().await.unwrap().unwrap();
         assert_eq!(frame.into_data().unwrap(), "o");
+        assert_eq!(body.size_hint().exact(), Some(0));
         // ここで終わり（hyperは、このフレームと一緒にEND_STREAMを送り、
         // 本文を捨てる。捨てれば期限も外れる）
         assert!(body.is_end_stream());
