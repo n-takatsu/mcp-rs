@@ -249,6 +249,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   読めなかった（#755）。`McpConfig::load`と同じく`transport_type`に
   そろえてから読む（TOMLとして読む）
 
+- WordPressの`update_post_categories_tags`・`update_post`に、固定ページ
+  （`post_type: "page"`）や、カテゴリー・タグの無いカスタム投稿タイプで
+  `categories`・`tags`を渡すと、そのまま送り、WordPressは黙って無視するのに、
+  成功と返していた（#755）。投稿を作るツール（`create_advanced_post`・
+  `create_post_with_embeds`）は、投稿以外では黙って落としていた。投稿タイプの
+  タクソノミーを調べ（`terms`と同じく`/wp/v2/taxonomies?type=`）、無ければ
+  送る前に断る（空の配列は断らない）。投稿（`post`）は調べない。カテゴリー・
+  タグを持つカスタム投稿タイプには送る
+
+- WordPressの`categories`・`tags`のIDの配列で、正の整数でない要素を黙って
+  落としていた（#755）。`tags: [7, 7.5]`は`[7]`になり、置き換えで今のタグが
+  外れた（`update_post_categories_tags`・`update_post`・`create_advanced_post`・
+  `create_post_with_categories_tags`・`create_post_with_embeds`）。`terms`と
+  同じく、正の整数でない要素が1つでもあれば断る（`[]`は今までどおり受け付け、
+  すべて外す）。配列でない値も断る。ツールのスキーマの要素も、`number`から
+  `integer`（`minimum: 1`）にした。`7.0`は`7`と同じに読む（`terms`・`get_posts`の
+  絞り込みも）。同じ分類を`categories`と`terms.categories`のように2つの
+  引数で渡したら断る（作成と更新で、どちらを送るかがずれ、片方を黙って
+  捨てていた）
+
+- WordPressの監査ログの対象のID（`target_id`）を、決まった順のキー（`id`が
+  先）で探していたので、`delete_post`に`post_id: 42`と余分な`id: 7`を渡すと、
+  42を消して7と記録していた（#755）。ツールごとに、操作に使うキー
+  （`post_id`・`media_id`等）から取る。対象のIDを持たないツール・知らない
+  ツールでは記録しない
+
+- WordPressの一覧の全件の取得で、ページの間に一覧が変わると（先頭に1件増え、
+  末尾が1件減る等）、前のページの最後が次のページに再び現れ、件数も合うので
+  気付かなかった（#755）。ページをまたいでIDの重なりを確かめ、重なれば初めから
+  1度だけ読み直し、それでも重なればエラーにする（後でやり直すよう案内する）
+
 - `mcp-rs encrypt-wordpress-credentials`で、NULを含むマスターパスワードを受け付けて
   いた（#750）。同じ値を`WORDPRESS_MASTER_PASSWORD`に設定できないので、
   作った設定では起動できなかった。暗号化する前に断る（エラーに値は出さない）

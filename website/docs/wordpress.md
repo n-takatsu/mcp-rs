@@ -216,8 +216,8 @@ Create a new WordPress post or page with advanced options.
 - `post_type` (string): "post" (投稿) or "page" (固定ページ) [default: "post"]
 - `status` (string, optional): "publish" (公開), "draft" (下書き), "pending" (レビュー待ち), "private" (非公開), "future" (予約投稿、`date`が必須), or a custom status registered on the site (for example by a plugin) [default: "draft"]
 - `date` (string, optional): Publication date (ISO8601 format, required for "future" status)
-- `categories` (array, optional): Category IDs (posts only)
-- `tags` (array, optional): Tag IDs (posts only)
+- `categories` (array of IDs, optional): Category IDs. Refused for a post type without categories on the site, such as a page. See [Category and tag IDs](#category-and-tag-ids)
+- `tags` (array of IDs, optional): Tag IDs. Refused for a post type without tags on the site, such as a page. See [Category and tag IDs](#category-and-tag-ids)
 - `featured_media_id` (number, optional): Featured image media ID
 - `meta` (object, optional): Meta fields for SEO (e.g., Yoast SEO fields)
 - `slug` (string, optional): URL slug, for example an English slug for a post with a Japanese title. If omitted, WordPress generates one from the title. See [Slugs](#slugs)
@@ -255,8 +255,8 @@ Create a post or page with embedded YouTube videos and social media content appe
 - `social_urls` (array of strings, optional): Social media URLs to embed: X/Twitter, Instagram posts (`instagram.com/p/…`), Facebook or TikTok. Other URLs are not added and are listed in the result in the same way. Both lists accept only URLs on the services' own hosts (for example `www.youtube.com` or `x.com`, not a URL on another site that contains these names)
 - `post_type` (string, optional): `post` or `page`
 - `status` (string, optional): `publish`, `draft`, `pending`, `private`, or a custom status registered on the site (for example by a plugin). Defaults to `draft`. `future` (scheduled) is not available because this tool has no date parameter
-- `categories` (array of numbers, optional): Category IDs (posts only)
-- `tags` (array of numbers, optional): Tag IDs (posts only)
+- `categories` (array of IDs, optional): Category IDs. Refused for a post type without categories on the site, such as a page. See [Category and tag IDs](#category-and-tag-ids)
+- `tags` (array of IDs, optional): Tag IDs. Refused for a post type without tags on the site, such as a page. See [Category and tag IDs](#category-and-tag-ids)
 - `slug` (string, optional): URL slug, for example an English slug for a post with a Japanese title. If omitted, WordPress generates one from the title. See [Slugs](#slugs)
 
 mcp-rs adds each social media URL to the post on its own line, and WordPress decides how to show it. WordPress itself has not embedded Instagram or Facebook since 5.5.2, because Meta requires a developer app and an access token: those URLs stay plain links unless the site has a plugin that embeds them (for example one that takes the app ID and token). The result `Created … with embedded content` means that the URLs were added to the post, not that WordPress shows them as embeds. Check the post's preview to see how they look.
@@ -286,8 +286,8 @@ Update an existing WordPress post.
 - `content` (string, optional): New post content
 - `status` (string, optional): New post status: `publish`, `draft`, `pending`, `private`, or `future` (scheduled). `future` needs `date`, unless the post is already scheduled
 - `date` (string, optional): Publication date, ISO8601 in the site's time zone (for example `2030-01-01T10:00:00`). See [Scheduling an existing post](#scheduling-an-existing-post) (v0.29.0 and later)
-- `categories` (array, optional): New category IDs
-- `tags` (array, optional): New tag IDs
+- `categories` (array of IDs, optional): New category IDs. Refused for a post type without categories on the site, such as a page. See [Category and tag IDs](#category-and-tag-ids)
+- `tags` (array of IDs, optional): New tag IDs. Refused for a post type without tags on the site, such as a page. See [Category and tag IDs](#category-and-tag-ids)
 - `featured_media_id` (number, optional): New featured image ID
 - `meta` (object, optional): New meta fields
 - `slug` (string, optional): New URL slug. WordPress does not change the slug when the title changes. See [Slugs](#slugs)
@@ -587,8 +587,8 @@ Update an existing WordPress post with comprehensive options.
 - `content` (string, optional): New post content
 - `status` (string, optional): `publish`, `draft`, `pending`, `private`, or `future` (scheduled, with `date`). Unchanged when omitted
 - `date` (string, optional): Publication date, ISO8601 in the site's time zone. See [Scheduling an existing post](#scheduling-an-existing-post)
-- `categories` (array, optional): Array of category IDs
-- `tags` (array, optional): Array of tag IDs
+- `categories` (array of IDs, optional): Array of category IDs. Refused for a post type without categories on the site, such as a page. See [Category and tag IDs](#category-and-tag-ids)
+- `tags` (array of IDs, optional): Array of tag IDs. Refused for a post type without tags on the site, such as a page. See [Category and tag IDs](#category-and-tag-ids)
 - `featured_media_id` (number, optional): Featured image media ID
 - `slug` (string, optional): New URL slug. WordPress does not change the slug when the title changes. See [Slugs](#slugs)
 
@@ -854,8 +854,8 @@ Create a new WordPress post with categories and tags.
 **Parameters:**
 - `title` (string): Post title
 - `content` (string): Post content
-- `categories` (array, optional): Array of category IDs
-- `tags` (array, optional): Array of tag IDs
+- `categories` (array of IDs, optional): Array of category IDs. See [Category and tag IDs](#category-and-tag-ids)
+- `tags` (array of IDs, optional): Array of tag IDs. See [Category and tag IDs](#category-and-tag-ids)
 - `featured_media_id` (number, optional): Featured image media ID
 - `slug` (string, optional): URL slug, for example an English slug for a post with a Japanese title. If omitted, WordPress generates one from the title. See [Slugs](#slugs)
 
@@ -881,8 +881,15 @@ Update categories and tags for an existing WordPress post.
 
 **Parameters:**
 - `post_id` (number): ID of post to update
-- `categories` (array, optional): Array of category IDs to set
-- `tags` (array, optional): Array of tag IDs to set
+- `post_type` (string, optional): `post` (default), `page`, or a type listed in [`post_types`](#custom-post-types). Non-empty `categories` or `tags` are refused for a type without them on the site (pages have neither, unless a plugin adds them)
+- `categories` (array of IDs, optional): Array of category IDs to set. It replaces the current categories; `[]` removes them all
+- `tags` (array of IDs, optional): Array of tag IDs to set. It replaces the current tags; `[]` removes them all
+
+### Category and tag IDs
+
+`categories` and `tags` take the IDs that `get_categories` and `get_tags` list, as positive integers. From v0.30.0, a list with any other value (such as `7.5`, `0` or `"7"`) is rejected; up to v0.29.0, mcp-rs dropped that value and sent the rest, so replacing the list could remove a category or tag the post had. An empty list (`[]`) is still accepted, and `7.0` is read as `7`.
+
+From v0.30.0, a non-empty `categories` or `tags` for a post type that does not have those taxonomies on the site is rejected: mcp-rs looks up the post type's taxonomies, and does not send the post. This is the case for a page (`"post_type": "page"`), unless a plugin registers categories or tags for pages, and for a custom post type that has its own taxonomies instead. WordPress would ignore them and report success. `get_taxonomies` with `post_type` shows the taxonomies; posts always have both. Custom taxonomies are set with `terms`, which `update_post` (to change a post) and `create_advanced_post` (to create one) take; `update_post_categories_tags` does not take `terms`. Passing the same taxonomy both directly and in `terms` (such as `categories` and `terms.categories`) is rejected. Up to v0.29.0, `update_post` and `update_post_categories_tags` sent them anyway, and the tools that create a post dropped them for anything but a post.
 
 **Example Usage:**
 
