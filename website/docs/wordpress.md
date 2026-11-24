@@ -377,7 +377,7 @@ Notes:
 - WordPress may change the slug you pass. It removes characters that cannot be used in a URL, and appends `-2` and so on if another post already uses the slug. The tool result shows the actual slug, for example `Slug: my-first-post-2`
 - For a draft, WordPress keeps the slug as given and makes it unique when the post is published
 - Changing the slug of a published post changes its URL. Whether the old URL redirects depends on WordPress and your plugins; mcp-rs does not set up redirects
-- An empty `slug`, or one with no letters or digits (such as `!!!`, which WordPress would make empty), is rejected. Omit `slug` to leave it unchanged
+- An empty `slug`, or one with no letters or digits once HTML tags and entities are removed (such as `!!!` or `&amp;`, which WordPress would make empty), is rejected. Omit `slug` to leave it unchanged
 
 ## Content Retrieval
 

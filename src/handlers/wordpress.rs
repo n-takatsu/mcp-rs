@@ -1271,11 +1271,38 @@ fn post_status_or_draft(args: &HashMap<String, serde_json::Value>) -> Result<Str
     }
 }
 
+/// WordPressがスラッグを作るときに取り除く、HTMLのタグ（`<…>`）と
+/// エンティティ（`&…;`。`sanitize_title_with_dashes`の`&.+?;`）を除いた
+/// 文字列（#750）。`&amp;`等だけのスラッグも、WordPressでは空になるため
+fn slug_without_markup(slug: &str) -> String {
+    let mut rest = slug;
+    let mut kept = String::new();
+    while let Some(i) = rest.find(['<', '&']) {
+        kept.push_str(&rest[..i]);
+        let (open, close) = if rest[i..].starts_with('<') {
+            ('<', '>')
+        } else {
+            ('&', ';')
+        };
+        // 閉じる文字が無ければ、そのまま残す（WordPressも取り除かない）
+        match rest[i + 1..].find(close) {
+            Some(end) if !(open == '&' && end == 0) => rest = &rest[i + 1 + end + 1..],
+            _ => {
+                kept.push(open);
+                rest = &rest[i + 1..];
+            }
+        }
+    }
+    kept.push_str(rest);
+    kept
+}
+
 /// ツール引数の`slug`を取り出す。省略時は`None`（WordPressに送らない）。
 /// 空文字列はWordPressにとって「自動生成に戻す」意味になり、意図せず
 /// 既存のスラッグを消しうるため受け付けない。文字・数字を含まない
 /// スラッグ（`!!!`等）も、WordPressが記号を取り除いて空にするので、同じく
-/// 受け付けない（#750）。日本語・パーセントエンコードのスラッグは通す。
+/// 受け付けない（#750）。HTMLのタグ・エンティティ（`&amp;`等）も、取り除いた
+/// 後で確かめる。日本語・パーセントエンコードのスラッグは通す。
 fn optional_slug_arg(
     args: &HashMap<String, serde_json::Value>,
 ) -> Result<Option<String>, McpError> {
@@ -1287,7 +1314,7 @@ fn optional_slug_arg(
                 Err(McpError::InvalidParams(
                     "slug must not be empty. Omit it to let WordPress generate one".to_string(),
                 ))
-            } else if !slug.chars().any(char::is_alphanumeric) {
+            } else if !slug_without_markup(slug).chars().any(char::is_alphanumeric) {
                 Err(McpError::InvalidParams(
                     "slug must contain at least one letter or digit: WordPress removes the other characters, which would leave it empty. Omit it to let WordPress generate one".to_string(),
                 ))
@@ -9312,7 +9339,16 @@ mod tests {
         ));
 
         // 文字・数字を含まないスラッグは、WordPressが空にするため拒否する（#750）
-        for slug in ["!!!", "-", " --_ ", "・。"] {
+        for slug in [
+            "!!!",
+            "-",
+            " --_ ",
+            "・。",
+            "&amp;",
+            "&#38;",
+            "<b></b>",
+            "<em>-</em>&nbsp;",
+        ] {
             args.insert("slug".to_string(), json!(slug));
             assert!(
                 matches!(
@@ -9324,7 +9360,15 @@ mod tests {
         }
 
         // 日本語・パーセントエンコードのスラッグは通す
-        for slug in ["テスト", "%e3%83%86%e3%82%b9%e3%83%88", "2024", "a-"] {
+        for slug in [
+            "テスト",
+            "%e3%83%86%e3%82%b9%e3%83%88",
+            "2024",
+            "a-",
+            "a&amp;b",
+            "<b>post</b>",
+            "a&b",
+        ] {
             args.insert("slug".to_string(), json!(slug));
             assert_eq!(optional_slug_arg(&args).unwrap().as_deref(), Some(slug));
         }
@@ -9553,12 +9597,15 @@ mod tests {
             assert_eq!(sent, serde_json::json!({"title": "新しい題"}));
         }
 
-        let result = call(serde_json::json!({"post_id": 7, "slug": "!!!"})).await;
-        assert!(
-            matches!(result, Err(McpError::InvalidParams(ref msg)) if msg.contains("letter or digit")),
-            "got: {:?}",
-            result
-        );
+        // `&amp;`もWordPressが取り除いて空にするので、送る前に断る（#750）
+        for slug in ["!!!", "&amp;"] {
+            let result = call(serde_json::json!({"post_id": 7, "slug": slug})).await;
+            assert!(
+                matches!(result, Err(McpError::InvalidParams(ref msg)) if msg.contains("letter or digit")),
+                "slug: {slug}, got: {:?}",
+                result
+            );
+        }
         assert_eq!(captured.lock().await.len(), 1);
     }
 

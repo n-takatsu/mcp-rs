@@ -241,7 +241,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   独自のステータス（PublishPressの`pitch`等）を送れなかった（#750。
   mcp-rsは通す）。`enum`を外し、標準の値は説明に書く
 
-- WordPressの`slug`に、文字・数字を含まない値（`!!!`等）を渡せた（#750）。
+- WordPressの`slug`に、文字・数字を含まない値（`!!!`・`&amp;`等）を渡せた（#750）。
   WordPressはこれを空にするので、下書きの更新では今のスラッグが消えた。
   空と同じく断る（日本語・パーセントエンコードのスラッグは通す）
 
