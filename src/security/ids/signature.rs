@@ -646,6 +646,10 @@ impl SignatureDetector {
 
         let mut matched_patterns = Vec::new();
         let mut max_severity = Severity::Low;
+        // 最初に一致したルール（組み込み、次にカスタムの順）の検知タイプ。
+        // 名前で引き直すと、カスタムルールだけの一致は`Other`に、組み込みと
+        // 名前が重なれば一致していない組み込みの型になった（#760）
+        let mut detection_type = None;
 
         // リクエスト全体を検査対象文字列に変換
         let check_strings = self.extract_check_strings(request);
@@ -661,6 +665,7 @@ impl SignatureDetector {
                     if regex.is_match(check_str) {
                         matched_patterns.push(pattern.name.clone());
                         max_severity = max_severity.max(pattern.severity);
+                        detection_type.get_or_insert(pattern.detection_type);
 
                         warn!(
                             "Attack pattern matched: {} ({}), severity: {:?}",
@@ -677,6 +682,7 @@ impl SignatureDetector {
             if (rule.matcher)(request) {
                 matched_patterns.push(rule.name.clone());
                 max_severity = max_severity.max(rule.severity);
+                detection_type.get_or_insert(rule.detection_type);
             }
         }
 
@@ -695,15 +701,7 @@ impl SignatureDetector {
         Ok(SignatureDetectionResult {
             matched,
             confidence,
-            detection_type: if matched {
-                self.patterns
-                    .iter()
-                    .find(|p| matched_patterns.contains(&p.name))
-                    .map(|p| p.detection_type)
-                    .unwrap_or(DetectionType::Other)
-            } else {
-                DetectionType::Other
-            },
+            detection_type: detection_type.unwrap_or(DetectionType::Other),
             pattern_names: matched_patterns,
             severity: max_severity,
         })
@@ -1328,5 +1326,44 @@ mod tests {
                 .unwrap();
             assert!(!result.matched, "{value}: {:?}", result.pattern_names);
         }
+    }
+
+    /// カスタムルールだけが一致したら、そのルールの検知タイプを返す。
+    /// 組み込みと名前が重なっても、一致していない組み込みの型にしない（#760）
+    #[tokio::test]
+    async fn test_custom_rule_detection_type_is_the_matched_rule() {
+        fn login_flood(request: &RequestData) -> bool {
+            request.path == "/login"
+        }
+        let mut request = request_with(&[], &[], None);
+        request.path = "/login".to_string();
+        for name in ["Login Flood", "UNION SELECT Attack"] {
+            let mut detector = SignatureDetector::new().await.unwrap();
+            detector.add_custom_rule(CustomRule {
+                id: "CUSTOM-1".to_string(),
+                name: name.to_string(),
+                matcher: login_flood,
+                detection_type: DetectionType::BruteForce,
+                severity: Severity::High,
+            });
+            let result = detector.detect(&request).await.unwrap();
+            assert!(result.matched);
+            assert_eq!(result.detection_type, DetectionType::BruteForce, "{name}");
+        }
+
+        // 組み込みが一致すれば、これまでどおり組み込みの型
+        let mut detector = SignatureDetector::new().await.unwrap();
+        detector.add_custom_rule(CustomRule {
+            id: "CUSTOM-1".to_string(),
+            name: "Login Flood".to_string(),
+            matcher: |_| true,
+            detection_type: DetectionType::BruteForce,
+            severity: Severity::Low,
+        });
+        let result = detector
+            .detect(&request_with(&[("id", "1 UNION SELECT x")], &[], None))
+            .await
+            .unwrap();
+        assert_eq!(result.detection_type, DetectionType::SqlInjection);
     }
 }

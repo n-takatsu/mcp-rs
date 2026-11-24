@@ -207,7 +207,7 @@ impl NetworkMonitor {
 
         // 2. ポートスキャン検知
         if let Some(scan_score) = self.check_port_scan(ip).await {
-            if scan_score > 0.6 {
+            if scan_score > PORT_SCAN_DETECTION_SCORE {
                 detected_patterns.push(NetworkAttackPattern::PortScan);
                 risk_scores.push(scan_score);
             }
@@ -400,14 +400,10 @@ impl NetworkMonitor {
             .filter(|seen| **seen > window_start)
             .count();
 
-        if unique_paths > self.config.port_scan_threshold {
-            let excess_ratio = unique_paths as f64 / self.config.port_scan_threshold as f64;
-            Some((excess_ratio - 1.0).min(1.0))
-        } else if unique_paths > self.config.port_scan_threshold / 2 {
-            Some(0.4)
-        } else {
-            Some(0.0)
-        }
+        Some(port_scan_score(
+            unique_paths,
+            self.config.port_scan_threshold,
+        ))
     }
 
     /// レート制限をチェック
@@ -524,6 +520,27 @@ fn ddos_score(recent_count: u64, threshold_rps: u64) -> f64 {
     }
     let excess_ratio = recent_count as f64 / threshold_rps.max(1) as f64 - 1.0;
     DDOS_MIN_SCORE + (1.0 - DDOS_MIN_SCORE) * excess_ratio.min(1.0)
+}
+
+/// しきい値を超えたときの最小のポートスキャンのスコア（#760）。
+/// [`PORT_SCAN_DETECTION_SCORE`]より大きくする。DDoSと同じく、IDSの既定の
+/// 最小の信頼度（0.7）よりも大きくする
+const PORT_SCAN_MIN_SCORE: f64 = 0.75;
+
+/// `check_traffic`がポートスキャンとするスコアの下限（これより大きいもの）
+const PORT_SCAN_DETECTION_SCORE: f64 = 0.6;
+
+/// 窓の中で見たパスの数から、ポートスキャンのスコアを出す（#760）。しきい値
+/// （`port_scan_threshold`）を超えたら、必ず判定の値（0.6）より大きく
+/// （0.75から）、しきい値の2倍で1.0にする。超えなければ0.0。以前は超過の
+/// 割合だけをスコアにしたので、既定（20）では21個で0.05になり、33個まで
+/// ポートスキャンとしなかった
+fn port_scan_score(unique_paths: usize, threshold: usize) -> f64 {
+    if unique_paths <= threshold {
+        return 0.0;
+    }
+    let excess_ratio = unique_paths as f64 / threshold.max(1) as f64 - 1.0;
+    PORT_SCAN_MIN_SCORE + (1.0 - PORT_SCAN_MIN_SCORE) * excess_ratio.min(1.0)
 }
 
 /// `map`が`max`以上なら、`last_seen`の古いものから消して、`max`の9割に
@@ -743,6 +760,60 @@ mod tests {
         assert_eq!(ddos_score(1000, 50), 1.0);
         assert!(ddos_score(2, 1) > DDOS_DETECTION_SCORE);
         assert!(ddos_score(1, 0) > DDOS_DETECTION_SCORE);
+    }
+
+    /// しきい値を超えたら、判定の値（0.6）より大きいスコアにする（#760）
+    #[test]
+    fn test_port_scan_score_follows_the_threshold() {
+        assert_eq!(port_scan_score(0, 20), 0.0);
+        assert_eq!(port_scan_score(11, 20), 0.0);
+        assert_eq!(port_scan_score(20, 20), 0.0);
+        assert!(port_scan_score(21, 20) > PORT_SCAN_DETECTION_SCORE);
+        assert!(port_scan_score(21, 20) < port_scan_score(30, 20));
+        assert_eq!(port_scan_score(40, 20), 1.0);
+        assert_eq!(port_scan_score(1000, 20), 1.0);
+        assert!(port_scan_score(1, 0) > PORT_SCAN_DETECTION_SCORE);
+    }
+
+    /// 既定（20パス）で、窓の中に21個のパスがあればポートスキャンとし、
+    /// 20個ならしない（#760。以前は33個までポートスキャンとしなかった）
+    #[tokio::test]
+    async fn test_port_scan_is_detected_just_above_the_threshold() {
+        let monitor = NetworkMonitor::new().await.unwrap();
+        let request = |ip: IpAddr, i: usize| RequestData {
+            request_id: format!("r-{i}"),
+            method: "GET".to_string(),
+            path: format!("/p/{i}"),
+            query_params: HashMap::new(),
+            headers: HashMap::new(),
+            body: None,
+            source_ip: Some(ip),
+            caller_id: None,
+            timestamp: Utc::now(),
+        };
+        let below: IpAddr = "192.0.2.30".parse().unwrap();
+        let mut last = None;
+        for i in 0..20 {
+            last = Some(monitor.check_traffic(&request(below, i)).await.unwrap());
+        }
+        assert!(!last
+            .unwrap()
+            .detected_patterns
+            .contains(&NetworkAttackPattern::PortScan));
+
+        let above: IpAddr = "192.0.2.31".parse().unwrap();
+        for i in 0..20 {
+            monitor.check_traffic(&request(above, i)).await.unwrap();
+        }
+        let result = monitor.check_traffic(&request(above, 20)).await.unwrap();
+        assert!(
+            result
+                .detected_patterns
+                .contains(&NetworkAttackPattern::PortScan),
+            "{:?}",
+            result.detected_patterns
+        );
+        assert!(result.risk_score > PORT_SCAN_DETECTION_SCORE);
     }
 
     /// 既定（50 rps）で、1秒に51件ならDDoSとし、50件ならしない（#759。
