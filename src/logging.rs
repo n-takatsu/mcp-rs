@@ -918,7 +918,8 @@ fn apply_retention_policy(config: &LogConfig, log_dir: &Path, active: Option<&Pa
 fn cleanup_old_logs_by_age(log_dir: &Path, max_days: u32, active: Option<&Path>) -> Result<()> {
     use std::time::{Duration, SystemTime};
 
-    let cutoff_time = SystemTime::now() - Duration::from_secs(max_days as u64 * 24 * 60 * 60);
+    let started = SystemTime::now();
+    let cutoff_time = started - Duration::from_secs(max_days as u64 * 24 * 60 * 60);
     let mut removed_count = 0;
 
     for entry in fs::read_dir(log_dir)? {
@@ -928,7 +929,7 @@ fn cleanup_old_logs_by_age(log_dir: &Path, max_days: u32, active: Option<&Path>)
         if is_log_file(&path) && !is_active_log(&path, active) {
             if let Ok(metadata) = entry.metadata() {
                 if let Ok(modified) = metadata.modified() {
-                    if modified < cutoff_time {
+                    if modified < cutoff_time && !written_since(modified, started) {
                         if let Err(e) = fs::remove_file(&path) {
                             tracing::warn!("ログファイル削除失敗: {} - {}", path.display(), e);
                         } else {
@@ -954,6 +955,7 @@ fn cleanup_old_logs_by_age(log_dir: &Path, max_days: u32, active: Option<&Path>)
 
 /// ファイル数ベースでログファイルを削除
 fn cleanup_old_logs_by_count(log_dir: &Path, max_count: u32, active: Option<&Path>) -> Result<()> {
+    let started = std::time::SystemTime::now();
     let mut log_files = Vec::new();
 
     for entry in fs::read_dir(log_dir)? {
@@ -963,7 +965,9 @@ fn cleanup_old_logs_by_count(log_dir: &Path, max_count: u32, active: Option<&Pat
         if is_log_file(&path) && !is_active_log(&path, active) {
             if let Ok(metadata) = entry.metadata() {
                 if let Ok(modified) = metadata.modified() {
-                    log_files.push((path, modified));
+                    if !written_since(modified, started) {
+                        log_files.push((path, modified));
+                    }
                 }
             }
         }
@@ -997,6 +1001,7 @@ fn cleanup_old_logs_by_count(log_dir: &Path, max_count: u32, active: Option<&Pat
 
 /// サイズベースでログファイルを削除
 fn cleanup_old_logs_by_size(log_dir: &Path, max_bytes: u64, active: Option<&Path>) -> Result<()> {
+    let started = std::time::SystemTime::now();
     let mut log_files = Vec::new();
     let mut total_size = 0u64;
 
@@ -1007,6 +1012,9 @@ fn cleanup_old_logs_by_size(log_dir: &Path, max_bytes: u64, active: Option<&Path
         if is_log_file(&path) && !is_active_log(&path, active) {
             if let Ok(metadata) = entry.metadata() {
                 if let Ok(modified) = metadata.modified() {
+                    if written_since(modified, started) {
+                        continue;
+                    }
                     let size = metadata.len();
                     log_files.push((path, modified, size));
                     total_size += size;
@@ -1049,6 +1057,14 @@ fn cleanup_old_logs_by_size(log_dir: &Path, max_bytes: u64, active: Option<&Path
     }
 
     Ok(())
+}
+
+/// 保持の処理を始めた（`started`）後に書かれたファイルか（PR #756の
+/// レビュー）。`active`は始めに1度だけ読むので、処理の間に日付が変わって
+/// 新しいファイルに切り替わると、そのファイルは`active`と違う。新しく
+/// 書かれたファイルは、今書いているものなので消さず、数えない
+fn written_since(modified: std::time::SystemTime, started: std::time::SystemTime) -> bool {
+    modified >= started
 }
 
 /// `path`が、今書いているログファイル（`active`）か（#755）。どちらも同じ
@@ -1236,7 +1252,17 @@ mod tests {
         let dir = tempdir().unwrap();
         let active = dir.path().join("mcp-rs.2026-11-24.log");
         let old = dir.path().join("mcp-rs.2026-11-01.log");
-        let write = |path: &Path, bytes: usize| fs::write(path, vec![b'x'; bytes]).unwrap();
+        // 古いファイルは、保持の処理を始める前に書かれたものにする（時刻の
+        // 細かさで、始めた時刻と同じにならないように）
+        let write = |path: &Path, bytes: usize| {
+            fs::write(path, vec![b'x'; bytes]).unwrap();
+            fs::File::options()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(60))
+                .unwrap();
+        };
 
         // 今のファイルが上限を超えていても消さない。上限を超える古いものは消す
         write(&active, 100);
@@ -1258,6 +1284,22 @@ mod tests {
         // 今のファイルが分からなければ、今までどおり
         cleanup_old_logs_by_count(dir.path(), 0, None).unwrap();
         assert!(!active.exists());
+
+        // 保持の処理を始めた後に書かれたファイル（処理の間に日付が変わって
+        // 切り替わった、新しい今のファイル）は、`active`と違っても消さない
+        // （PR #756のレビュー）
+        let switched = dir.path().join("mcp-rs.2026-11-25.log");
+        fs::write(&switched, b"new").unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&switched)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(60))
+            .unwrap();
+        cleanup_old_logs_by_count(dir.path(), 0, Some(&active)).unwrap();
+        cleanup_old_logs_by_size(dir.path(), 0, Some(&active)).unwrap();
+        cleanup_old_logs_by_age(dir.path(), 0, Some(&active)).unwrap();
+        assert!(switched.exists());
     }
 
     /// `XDG_STATE_HOME`は、絶対パスのときだけ使う（#741）
