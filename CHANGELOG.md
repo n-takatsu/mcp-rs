@@ -157,6 +157,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `mcp-rs check --help`に、環境変数`MCP_RS_CONFIG`があれば`--config`より
+  優先することを書いた（#774）。プラグインの後片付けに失敗したときの案内
+  （`check`と終了時）に、Kubernetesではプラグインの`--context`・
+  `--namespace`を付けて確かめるよう書いた。開発用の
+  `scripts/clean-build.ps1`は、`cargo metadata`の`target_directory`
+  （`.cargo/config.toml`の`build.target-dir`も含む）で、ビルド先を決める
+
 - ライブラリとして使う場合: `mcp_rs::types::JsonRpcRequest`の`id`を
   `RequestId`から`Option<RequestId>`にした（#760）。通知（`id`なし）は
   `None`で、書くときも`id`を付けない。以前は`id`が必須で、`HttpTransport`の
@@ -293,6 +300,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ガイドに書いた
 
 ### Fixed
+
+- `mcp-rs database-keyring set`で、`[database]`が既にその項目
+  （`keyring = "<名前>"`）を使っていて、ホスト・ポート・ユーザー名を変える
+  とき、設定の変更を聞く前に項目を上書きしていた（#774）。断ったり、設定
+  ファイルを書けなかったりすると、項目と設定が食い違い、起動でデータベースを
+  使えなくなった。保存の前に聞き、断れば項目も設定ファイルも変えない。設定
+  ファイルを書けなければ、項目を前の中身に戻す。同じ接続先のパスワードの
+  入れ直しは今までどおり。保存の直前に、項目が別の種類（WordPressの資格
+  情報等）になっていないかを確かめ直す。展開できた値は、`${`を含んでも
+  既定にする
+
+- `mcp-rs init`・`database-keyring set`で、データベースのパスワードを、TLS等の
+  残りの質問と設定の確認より前に資格情報ストアに入れていた（#774）。途中で
+  止めると、どの設定にも無い項目が残ったり、置き換えると答えた項目が前の
+  中身に戻らなかったりした。すべての質問と確認の後で入れる
+
+- `mcp-rs init`で、Ctrl+Cで止めたとき、新しく作ったWordPressの資格情報の項目の
+  うち、まだ設定ファイルに書いていないものを消さなかった（#774）。Ctrl+Cや
+  エラーで終わったときも消す
+
+- `mcp-rs init`で、`[handlers.wordpress]`が無効（`enabled = true`でない）で
+  `url`が残っていると、「別のサイトを足す」に進み、資格情報を入れた後で
+  断られた（#774）。最初のサイトとして足し、`enabled = true`にする
+
+- `mcp-rs init`で、環境変数`MCP_RS_CONFIG`が相対パスのとき、`init`の
+  フォルダで絶対パスにして比べ、一致すれば進んでいた（#774）。クライアントは
+  それぞれの作業フォルダで読むので、別のファイルを読みうる。相対パスなら
+  止め、変数を消すか絶対パスにするよう案内する。重複する登録を消すかの
+  判断は、今の設定ファイルだけで決める（実行中に手で消したサイトを、移した
+  とみなさない）
+
+- 環境変数`MCP_RS_CONFIG`のパスのフォルダ名等に`${`を含むと、拡張機能が
+  埋めなかった値とみなし、使わなかった（#774）。値の全体が`${...}`のとき
+  だけ無いものとする
+
+- `--config`無しで起動するとき、`~/.config/mcp-rs/config.toml`を権限等で
+  確かめられないと、無いものとして設定なしで起動していた（#774）。理由を
+  付けてエラーにする
+
+- MySQL・MariaDBで、`host = "[::1]"`のような角括弧付きのIPv6アドレスに
+  つなげなかった（#774）。角括弧を外して渡す
+
+- READMEのセキュリティの説明で、AES-GCM-256での暗号化をデータベースの
+  パスワードにも使えるように書いていた（#774）。WordPressの資格情報だけ
 
 - `resources/list`の`description`・`mimeType`が、無いときに省かれず`null`に
   なっていた（#760）。MCPのスキーマでは、どちらも省いてよい文字列で、厳しい
