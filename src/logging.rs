@@ -739,22 +739,33 @@ pub fn init_logging(config: &LogConfig) -> Result<Option<WorkerGuard>> {
     // 起動時刻（見出しの行とinstance_idで使う）を、起動の直後に決めておく
     let _ = instance_id();
 
-    // 全体のsubscriberが既にあれば（ライブラリとして使うホストが設定済み）、
-    // 起動マーカー等を書く前に断る（#760）。以前は`.init()`がpanicし、
-    // 使わない出力先に起動マーカーが残り、`LOG_DESTINATION`も公開された
-    if tracing::dispatcher::has_been_set() {
-        anyhow::bail!("a global tracing subscriber is already set");
-    }
-
     // EnvFilterを作成
     let env_filter = EnvFilter::try_new(&config.level).unwrap_or_else(|_| EnvFilter::new("info"));
 
+    // 先に全体のsubscriberを設定する。ログファイルの書き先は、設定できて
+    // から決める（#760、PR #770のレビュー）。既にsubscriberがある（ライブラリ
+    // として使うホストが設定済み）なら、起動マーカーを書かず、出力先も公開
+    // せずにエラーを返す。以前は`.init()`がpanicし、使わない出力先に起動
+    // マーカーが残り、`LOG_DESTINATION`も公開された。設定できるかは、
+    // 実際に設定した結果で決める（`tracing::dispatcher::has_been_set`は、
+    // `with_default`等で一時的に使っただけでも`true`になる）
+    let file_slot = FileSlot::default();
+    install_subscriber(config, env_filter, &file_slot)?;
+    match (config.file_enabled, &config.module_separation) {
+        (true, ModuleSeparation::Separated) => {
+            tracing::warn!("モジュール別分離ログは開発中です。暫定的に単一ファイルを使用します。")
+        }
+        (true, ModuleSeparation::Hybrid) => {
+            tracing::warn!("ハイブリッドログは開発中です。暫定的に単一ファイルを使用します。")
+        }
+        _ => {}
+    }
+
     // ファイル出力が有効な場合のみ、実際に書き込み可能なディレクトリを
     // フォールバック込みで解決する。結果はファイル書き込みに失敗する
-    // ケースも含めて必ずstderrへ告知し（トレーシング初期化前なので
-    // eprintln!で直接出す）、プロセス全体から参照できるグローバル状態
-    // にも記録する（wordpress_health_check等の診断用途）。
-    let (file_appender, destination) = if config.file_enabled {
+    // ケースも含めて必ずstderrへ告知し、プロセス全体から参照できる
+    // グローバル状態にも記録する（wordpress_health_check等の診断用途）。
+    let guard = if config.file_enabled {
         let (mut appender, destination) = resolve_log_destination(config, "started");
         eprintln!("[mcp-rs] log file: {}", destination.summary());
         // 切り替えるたびにも、保持ポリシーを適用する（#759）
@@ -765,50 +776,33 @@ pub fn init_logging(config: &LogConfig) -> Result<Option<WorkerGuard>> {
         {
             appender = appender.map(|appender| appender.with_rollover_hook(hook));
         }
-        (appender, Some(destination))
-    } else {
-        (None, None)
-    };
-
-    // ログ設定に基づいて初期化
-    let guard = match (
-        &config.console_enabled,
-        &config.file_enabled,
-        &config.module_separation,
-    ) {
-        (true, true, ModuleSeparation::Single) => {
-            init_single_file_logging(file_appender, env_filter)?
-        }
-        (true, true, ModuleSeparation::Separated) => {
-            init_separated_logging(file_appender, env_filter)?
-        }
-        (true, true, ModuleSeparation::Hybrid) => {
-            init_hybrid_full_logging(file_appender, env_filter)?
-        }
-        (true, false, _) => {
-            // コンソールのみ
-            init_console_only_logging(env_filter)?;
-            None
-        }
-        (false, true, separation) => {
-            // ファイルのみ
-            init_file_only_logging(file_appender, env_filter, separation)?
-        }
-        (false, false, _) => {
-            // 最低限のコンソール出力（標準エラー出力へ。#755）
-            tracing_subscriber::fmt()
-                .with_writer(std::io::stderr)
-                .with_max_level(tracing::Level::WARN)
-                .event_format(pid_formatter())
-                .try_init()
-                .map_err(subscriber_init_error)?;
-            None
-        }
-    };
-    // 出力先は、subscriberを設定できてから公開する（#760）
-    if let Some(destination) = destination {
         let _ = LOG_DESTINATION.set(destination);
-    }
+        match appender {
+            Some(appender) => {
+                // `guard`はここで即座にdropしてはならない。dropするとバック
+                // グラウンドの書き込みスレッドが終了し、以後のログ出力が
+                // 実際にはファイルへ届かなくなる。呼び出し元（最終的には
+                // `main`）がプロセス終了まで保持する。
+                let (writer, guard) = non_blocking(appender);
+                file_slot.set(FileTarget::File(writer));
+                Some(guard)
+            }
+            None => {
+                // どの候補ディレクトリにも書き込めなかった場合
+                // （resolve_log_destinationが既にstderrへ告知済み）。ログ
+                // 出力自体を失わないよう、コンソール出力に縮退させる
+                // （コンソールにも出すなら、ファイルの分は捨てる）
+                file_slot.set(if config.console_enabled {
+                    FileTarget::Discard
+                } else {
+                    FileTarget::Stderr
+                });
+                None
+            }
+        }
+    } else {
+        None
+    };
 
     tracing::info!("📝 ログシステム初期化完了");
     match current_log_destination() {
@@ -1255,133 +1249,117 @@ fn is_log_file(name: &str) -> bool {
     local_rolling::is_file_name_of(LOG_FILE_PREFIX, name)
 }
 
+/// ログファイルの書き先（#760、PR #770のレビュー）。全体のsubscriberを
+/// 設定してから、`init_logging`が決めて入れる。入るまでのログは捨てる
+#[derive(Clone, Default)]
+struct FileSlot(Arc<OnceLock<FileTarget>>);
+
+/// [`FileSlot`]に入れる書き先
+enum FileTarget {
+    /// ログファイル（非同期書き込み）
+    File(tracing_appender::non_blocking::NonBlocking),
+    /// 書けるログファイルが無く、コンソールにも出さないとき（標準エラー出力。
+    /// 標準出力はSTDIOモードのMCPのJSON-RPCの流れ。#755）
+    Stderr,
+    /// 書けるログファイルが無く、コンソールには別に出すとき
+    Discard,
+}
+
+impl FileSlot {
+    fn set(&self, target: FileTarget) {
+        let _ = self.0.set(target);
+    }
+}
+
+/// [`FileSlot`]の`make_writer`が返す書き手
+enum SlotWriter {
+    File(tracing_appender::non_blocking::NonBlocking),
+    Stderr(std::io::Stderr),
+    Discard,
+}
+
+impl std::io::Write for SlotWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        match self {
+            SlotWriter::File(writer) => writer.write(buf),
+            SlotWriter::Stderr(writer) => writer.write(buf),
+            SlotWriter::Discard => Ok(buf.len()),
+        }
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        match self {
+            SlotWriter::File(writer) => writer.flush(),
+            SlotWriter::Stderr(writer) => writer.flush(),
+            SlotWriter::Discard => Ok(()),
+        }
+    }
+}
+
+impl<'a> fmt::MakeWriter<'a> for FileSlot {
+    type Writer = SlotWriter;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        match self.0.get() {
+            Some(FileTarget::File(writer)) => SlotWriter::File(writer.clone()),
+            Some(FileTarget::Stderr) => SlotWriter::Stderr(std::io::stderr()),
+            Some(FileTarget::Discard) | None => SlotWriter::Discard,
+        }
+    }
+}
+
 /// 全体のsubscriberを設定できなかったとき（既にある等）のエラー（#760）
 fn subscriber_init_error(e: impl std::fmt::Display) -> anyhow::Error {
     anyhow::anyhow!("failed to set the global tracing subscriber: {e}")
 }
 
-/// 単一ファイルログ初期化（コンソール＋ファイル）
-/// `file_appender`は`init_logging`が`resolve_log_destination`で事前に
-/// 解決済み（フォールバック・失敗告知込み）のものを受け取る。
-fn init_single_file_logging(
-    file_appender: Option<LocalRollingAppender>,
+/// 設定に従って、全体のsubscriberを組み立てて設定する。ファイルへの出力は
+/// `file_slot`に書く（書き先は、設定できてから`init_logging`が入れる）。
+/// コンソール（標準エラー出力。標準出力はSTDIOモードのMCPのJSON-RPCの流れ。
+/// #755）とファイルは別々のlayerにし、ファイル側だけ`.with_ansi(false)`に
+/// する（1つのlayerに束ねると、ファイルにエスケープコードが混入する）。
+/// モジュール別分離・ハイブリッドは開発中なので、単一ファイルを使う
+fn install_subscriber(
+    config: &LogConfig,
     env_filter: EnvFilter,
-) -> Result<Option<WorkerGuard>> {
-    match file_appender {
-        Some(file_appender) => {
-            // `guard`はここで即座にdropしてはならない。dropするとバック
-            // グラウンドの書き込みスレッドが終了し、以後のログ出力が
-            // 実際にはファイルへ届かなくなる。呼び出し元（最終的には
-            // `main`）がプロセス終了まで保持する。
-            let (non_blocking, guard) = non_blocking(file_appender);
-
-            // コンソール（stderr）とファイルを1つのfmt layerに
-            // `.and()`で束ねると、ANSIカラー設定も両者に同じ値が
-            // 適用されてしまう（ファイルにエスケープコードが混入する）。
-            // そのため別々のlayerに分け、ファイル側だけ`.with_ansi(false)`
-            // にする。
+    file_slot: &FileSlot,
+) -> Result<()> {
+    match (config.console_enabled, config.file_enabled) {
+        (true, true) => {
             let console_layer = fmt::layer()
                 .with_writer(std::io::stderr)
                 .event_format(pid_formatter());
-
             let file_layer = fmt::layer()
-                .with_writer(non_blocking)
+                .with_writer(file_slot.clone())
                 .with_ansi(false)
                 .event_format(pid_formatter());
-
             tracing_subscriber::registry()
                 .with(env_filter)
                 .with(console_layer)
                 .with(file_layer)
                 .try_init()
-                .map_err(subscriber_init_error)?;
-
-            Ok(Some(guard))
+                .map_err(subscriber_init_error)
         }
-        None => {
-            // どの候補ディレクトリにも書き込めなかった場合
-            // （resolve_log_destinationが既にstderrへ告知済み）。
-            // 以前はrolling::daily()内部の.expect()でパニックし、サーバーが
-            // 起動できなくなっていたため、コンソール出力のみへ縮退させる。
-            init_console_only_logging(env_filter)?;
-            Ok(None)
-        }
-    }
-}
-
-/// 分離ログ初期化（本番推奨）
-fn init_separated_logging(
-    file_appender: Option<LocalRollingAppender>,
-    env_filter: EnvFilter,
-) -> Result<Option<WorkerGuard>> {
-    // 暫定実装：コンソール＋単一ファイル
-    // TODO: 真のモジュール別分離実装
-    tracing::warn!("モジュール別分離ログは開発中です。暫定的に単一ファイルを使用します。");
-    init_single_file_logging(file_appender, env_filter)
-}
-
-/// ハイブリッドログ初期化（概要＋詳細分離）
-fn init_hybrid_full_logging(
-    file_appender: Option<LocalRollingAppender>,
-    env_filter: EnvFilter,
-) -> Result<Option<WorkerGuard>> {
-    // 暫定実装：コンソール＋単一ファイル
-    // TODO: 概要＋詳細分離実装
-    tracing::warn!("ハイブリッドログは開発中です。暫定的に単一ファイルを使用します。");
-    init_single_file_logging(file_appender, env_filter)
-}
-
-/// コンソールのみログ初期化
-fn init_console_only_logging(env_filter: EnvFilter) -> Result<()> {
-    // 標準出力はSTDIOモードのMCPのJSON-RPCの流れなので、標準エラー出力に
-    // 書く（#755。既定の書き先は標準出力）
-    tracing_subscriber::fmt()
-        .with_writer(std::io::stderr)
-        .with_env_filter(env_filter)
-        .event_format(pid_formatter())
-        .try_init()
-        .map_err(subscriber_init_error)?;
-
-    Ok(())
-}
-
-/// ファイルのみログ初期化
-fn init_file_only_logging(
-    file_appender: Option<LocalRollingAppender>,
-    env_filter: EnvFilter,
-    separation: &ModuleSeparation,
-) -> Result<Option<WorkerGuard>> {
-    match separation {
-        ModuleSeparation::Single => match file_appender {
-            Some(file_appender) => {
-                // guardの扱いは`init_single_file_logging`と同じ理由で
-                // 呼び出し元へ返す（即dropしない）。
-                let (non_blocking, guard) = non_blocking(file_appender);
-
-                tracing_subscriber::fmt()
-                    .with_env_filter(env_filter)
-                    .with_writer(non_blocking)
-                    .with_ansi(false)
-                    .event_format(pid_formatter())
-                    .try_init()
-                    .map_err(subscriber_init_error)?;
-
-                Ok(Some(guard))
-            }
-            None => {
-                // ファイルのみモードでもログ出力自体を失わないよう、
-                // 書き込み失敗時はコンソール出力に縮退させる
-                // （resolve_log_destinationが既にstderrへ告知済み）。
-                init_console_only_logging(env_filter)?;
-                Ok(None)
-            }
-        },
-        _ => {
-            tracing::warn!(
-                "分離ログはファイルのみモードでは未実装です。単一ファイルを使用します。"
-            );
-            init_file_only_logging(file_appender, env_filter, &ModuleSeparation::Single)
-        }
+        (true, false) => tracing_subscriber::fmt()
+            .with_writer(std::io::stderr)
+            .with_env_filter(env_filter)
+            .event_format(pid_formatter())
+            .try_init()
+            .map_err(subscriber_init_error),
+        (false, true) => tracing_subscriber::fmt()
+            .with_env_filter(env_filter)
+            .with_writer(file_slot.clone())
+            .with_ansi(false)
+            .event_format(pid_formatter())
+            .try_init()
+            .map_err(subscriber_init_error),
+        // 最低限のコンソール出力（標準エラー出力へ。#755）
+        (false, false) => tracing_subscriber::fmt()
+            .with_writer(std::io::stderr)
+            .with_max_level(tracing::Level::WARN)
+            .event_format(pid_formatter())
+            .try_init()
+            .map_err(subscriber_init_error),
     }
 }
 

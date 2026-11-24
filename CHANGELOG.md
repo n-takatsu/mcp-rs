@@ -297,8 +297,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - ライブラリとして使う場合: `init_logging`は、全体のtracingのsubscriberが
   既にあると、`.init()`でpanicしていた（#760）。panicの前に、使わない
   ログファイルに起動マーカーを書き、出力先（`current_log_destination`）も
-  公開していた。subscriberが既にあれば、何も書かずにエラーを返す。
-  出力先は、subscriberを設定できてから公開する
+  公開していた。先にsubscriberを設定し、設定できなければ（既にあれば）、
+  何も書かずにエラーを返す。ログファイルを選んで起動マーカーを書き、
+  出力先を公開するのは、設定できてから
 
 - ライブラリとして使う場合: PostgreSQLのエンジンの`health_check`が、
   データベースに触れず、つなげなくても、接続先が止まっていても`Healthy`を
