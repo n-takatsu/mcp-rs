@@ -757,7 +757,8 @@ fn jsonrpc_error_body(code: i32, message: &str) -> Value {
 
 /// チャンネルに渡せない要求なら、Invalid Requestのメッセージ（PR #771の
 /// レビュー）。JSONのオブジェクトでなければならない（配列等は、`id`が無く
-/// 通知に見え、Serdeは配列も要求として読むため）。`id`が無ければ通知で、
+/// 通知に見え、Serdeは配列も要求として読むため）。`jsonrpc`は`"2.0"`、
+/// `method`は文字列、`params`はオブジェクトか配列（`null`は省略と同じ）。`id`が無ければ通知で、
 /// 正しい。あれば文字列か数値でなければならない（`null`は通知ではなく、
 /// 不正な要求。`RequestDispatcher`の確かめ方と同じ、#759）
 fn channel_request_error(request: &Value) -> Option<&'static str> {
@@ -769,6 +770,22 @@ fn channel_request_error(request: &Value) -> Option<&'static str> {
         .is_none_or(|id| id.is_string() || id.is_number())
     {
         return Some("Invalid Request: id must be a string or a number");
+    }
+    // 受信側が`JsonRpcRequest`として読める形か（PR #771のレビュー）。
+    // `RequestDispatcher`の`invalid_envelope_response`と同じ確かめ方。読めない
+    // ものを渡すと、受信側の`receive_request_*`がエラーを返し、`?`で回す
+    // 受信のループが止まる
+    if request.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
+        return Some("Invalid Request: jsonrpc must be \"2.0\"");
+    }
+    if !request.get("method").is_some_and(Value::is_string) {
+        return Some("Invalid Request: method must be a string");
+    }
+    if request
+        .get("params")
+        .is_some_and(|params| !(params.is_object() || params.is_array() || params.is_null()))
+    {
+        return Some("Invalid Request: params must be an object or an array");
     }
     None
 }
@@ -1071,12 +1088,14 @@ enum ChannelError {
     NoResponse,
     /// 期限までに応答が無かった
     TimedOut,
+    /// サーバーを止めている（`stop_server()`、PR #771のレビュー）
+    Stopped,
 }
 
 impl ChannelError {
     fn status(self) -> StatusCode {
         match self {
-            ChannelError::Busy => StatusCode::SERVICE_UNAVAILABLE,
+            ChannelError::Busy | ChannelError::Stopped => StatusCode::SERVICE_UNAVAILABLE,
             ChannelError::Closed | ChannelError::NoResponse => StatusCode::INTERNAL_SERVER_ERROR,
             ChannelError::TimedOut => StatusCode::REQUEST_TIMEOUT,
         }
@@ -1090,16 +1109,35 @@ struct RequestChannel {
     sender: tokio::sync::mpsc::Sender<QueuedRequest>,
     pending: PendingResponses,
     next_correlation_id: Arc<AtomicU64>,
+    /// キューの枠を待っている数（テストで、待っているのを確かめる）
+    #[cfg(test)]
+    waiting_reservations: Arc<ActiveTasks>,
 }
 
 impl RequestChannel {
     /// `deadline`までにキューの枠を取る。以前は`send().await`で期限なしに
-    /// 待ち、キューが埋まると、応答の期限が始まる前に止まった
+    /// 待ち、キューが埋まると、応答の期限が始まる前に止まった。
+    ///
+    /// `stop`（`stop_server()`で`true`）が`true`なら、枠を待つのをやめ、
+    /// 取った枠も返して`Stopped`にする（PR #771のレビュー）。キューに入れる
+    /// 道は、HTTP（HTTP/2のストリームのタスクを含む）・`/ws`ともここを通るので、
+    /// ここで止めれば、止めた後に要求がキューに入らない（タスクごとに
+    /// 追わなくてよい）
     async fn reserve(
         &self,
         deadline: tokio::time::Instant,
+        stop: &tokio::sync::watch::Receiver<bool>,
     ) -> std::result::Result<tokio::sync::mpsc::Permit<'_, QueuedRequest>, ChannelError> {
-        match tokio::time::timeout_at(deadline, self.sender.reserve()).await {
+        #[cfg(test)]
+        let _waiting = self.waiting_reservations.start();
+        let mut stop = stop.clone();
+        let permit = tokio::select! {
+            biased;
+            _ = wait_for_shutdown(&mut stop) => return Err(ChannelError::Stopped),
+            permit = tokio::time::timeout_at(deadline, self.sender.reserve()) => permit,
+        };
+        match permit {
+            Ok(Ok(_)) if *stop.borrow() => Err(ChannelError::Stopped),
             Ok(Ok(permit)) => Ok(permit),
             Ok(Err(_)) => Err(ChannelError::Closed),
             Err(_) => Err(ChannelError::Busy),
@@ -1376,6 +1414,8 @@ impl HttpTransport {
                 sender,
                 pending: PendingResponses::default(),
                 next_correlation_id: Arc::new(AtomicU64::new(1)),
+                #[cfg(test)]
+                waiting_reservations: Arc::default(),
             },
             stats: SharedStats::new(stats),
             bound_addr: Arc::new(std::sync::RwLock::new(None)),
@@ -1642,6 +1682,7 @@ impl HttpTransport {
                 callers: ws_callers,
                 channel: self.channel.clone(),
                 stats: self.stats.clone(),
+                shutdown: shutdown_rx.clone(),
             }),
             websocket_max_message_size: self.config.max_request_size,
             websocket_idle_timeout: (self.config.websocket_idle_timeout_secs > 0)
@@ -2873,7 +2914,7 @@ async fn handle_jsonrpc_request(
     // チャンネル経由（#760）: キューの枠は期限付きで取る。期限には、枠を
     // 待つ時間も含める（応答を待つのは、その残り）
     let deadline = tokio::time::Instant::now() + CHANNEL_RESPONSE_TIMEOUT;
-    let permit = match state.channel.reserve(deadline).await {
+    let permit = match state.channel.reserve(deadline, &state.shutdown).await {
         Ok(permit) => permit,
         Err(e) => {
             warn!(
@@ -3849,7 +3890,13 @@ async fn handle_ws_socket(
                     "Closing WebSocket connection {} from {}: the server is stopping",
                     conn_id, addr
                 );
-                close_ws(&sender, close_code::AWAY, "server stopping").await;
+                close_ws_within(
+                    &sender,
+                    close_code::AWAY,
+                    "server stopping",
+                    WEBSOCKET_STOP_CLOSE_TIMEOUT,
+                )
+                .await;
                 break;
             }
             WsEvent::Message(msg_result) => {
@@ -3998,7 +4045,13 @@ async fn handle_ws_socket(
                         "Closing WebSocket connection {} from {}: the server is stopping",
                         conn_id, addr
                     );
-                    close_ws(&sender, close_code::AWAY, "server stopping").await;
+                    close_ws_within(
+                        &sender,
+                        close_code::AWAY,
+                        "server stopping",
+                        WEBSOCKET_STOP_CLOSE_TIMEOUT,
+                    )
+                    .await;
                     break;
                 };
                 match handled {
@@ -4031,7 +4084,31 @@ async fn handle_ws_socket(
                             WEBSOCKET_MIN_SEND_BYTES_PER_SEC,
                         );
                         let mut s = sender.lock().await;
-                        match tokio::time::timeout(limit, s.send(response)).await {
+                        // 止めるときは、送るのをやめる（PR #771のレビュー）。
+                        // 読まない相手への大きな応答は、上の期限（大きさに
+                        // 合わせて長い）まで止まり、止めるのを待たせる
+                        let sent = tokio::select! {
+                            biased;
+                            _ = wait_for_shutdown(&mut shutdown) => None,
+                            sent = tokio::time::timeout(limit, s.send(response)) => Some(sent),
+                        };
+                        let Some(sent) = sent else {
+                            debug!(
+                                "Closing WebSocket connection {} from {}: the server is stopping while a response is being sent",
+                                conn_id, addr
+                            );
+                            // 閉じることを伝えるのは、短い間に送れるときだけ
+                            let _ = tokio::time::timeout(
+                                WEBSOCKET_STOP_CLOSE_TIMEOUT,
+                                s.send(Message::Close(Some(CloseFrame {
+                                    code: close_code::AWAY,
+                                    reason: "server stopping".into(),
+                                }))),
+                            )
+                            .await;
+                            break;
+                        };
+                        match sent {
                             Ok(Ok(())) => {}
                             Ok(Err(e)) => {
                                 error!("Failed to send WebSocket response: {}", e);
@@ -4153,6 +4230,10 @@ async fn next_ws_event(
 /// ここで止まらないようにする
 const WEBSOCKET_SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
+/// サーバーを止めるときに、`/ws`にCloseフレームを送る時間の上限（PR #771の
+/// レビュー）。送れなければ、そのまま切る（止めるのを待たせない）
+const WEBSOCKET_STOP_CLOSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
+
 /// `/ws`で応答を送る時間の上限の、大きさによらない部分（#543）
 #[cfg(not(test))]
 const WEBSOCKET_RESPONSE_SEND_BASE_TIMEOUT: std::time::Duration = WEBSOCKET_SEND_TIMEOUT;
@@ -4195,15 +4276,23 @@ async fn close_ws(
     code: u16,
     reason: &'static str,
 ) {
+    close_ws_within(sender, code, reason, WEBSOCKET_SEND_TIMEOUT).await;
+}
+
+/// `close_ws`と同じ。送る時間の上限を`limit`にする（サーバーを止めるとき、
+/// PR #771のレビュー）
+async fn close_ws_within(
+    sender: &tokio::sync::Mutex<futures::stream::SplitSink<WebSocket, Message>>,
+    code: u16,
+    reason: &'static str,
+    limit: std::time::Duration,
+) {
     let frame = CloseFrame {
         code,
         reason: reason.into(),
     };
-    let _ = tokio::time::timeout(
-        WEBSOCKET_SEND_TIMEOUT,
-        sender.lock().await.send(Message::Close(Some(frame))),
-    )
-    .await;
+    let _ =
+        tokio::time::timeout(limit, sender.lock().await.send(Message::Close(Some(frame)))).await;
 }
 
 /// OAuthのトークンの期限（`expires_at`）が過ぎていれば、ほかの無効な
@@ -4377,6 +4466,8 @@ struct JsonRpcWsHandler {
     callers: WsClients,
     channel: RequestChannel,
     stats: SharedStats,
+    /// `stop_server()`で`true`になる（PR #771のレビュー）
+    shutdown: tokio::sync::watch::Receiver<bool>,
 }
 
 #[async_trait]
@@ -4467,12 +4558,18 @@ impl MessageHandler for JsonRpcWsHandler {
         // 待つ時間も含める。期限を過ぎたら、この応答だけを返さない（接続は
         // 閉じない）
         let deadline = tokio::time::Instant::now() + CHANNEL_RESPONSE_TIMEOUT;
-        let permit = match self.channel.reserve(deadline).await {
+        let permit = match self.channel.reserve(deadline, &self.shutdown).await {
             Ok(permit) => permit,
             Err(ChannelError::Closed) => {
                 return Err(Error::Internal(
                     "Failed to forward WebSocket request: the channel is closed".to_string(),
                 ));
+            }
+            Err(ChannelError::Stopped) => {
+                return Ok(Some(Message::Close(Some(CloseFrame {
+                    code: close_code::AWAY,
+                    reason: "server stopping".into(),
+                }))));
             }
             Err(e) => {
                 self.stats.lock().total_errors += 1;
@@ -7783,9 +7880,67 @@ mod tests {
                 sender,
                 pending: PendingResponses::default(),
                 next_correlation_id: Arc::new(AtomicU64::new(1)),
+                #[cfg(test)]
+                waiting_reservations: Arc::default(),
             },
             receiver,
         )
+    }
+
+    /// 止めていないサーバーの、止める合図（送る側が無いので、変わらない）
+    fn not_stopped() -> tokio::sync::watch::Receiver<bool> {
+        tokio::sync::watch::channel(false).1
+    }
+
+    /// `channel`のキューの枠を、誰かが待ち始めるまで待つ（PR #771のレビュー）
+    async fn wait_for_waiting_reservation(channel: &RequestChannel) {
+        let started = Instant::now();
+        while channel.waiting_reservations.count.load(Ordering::SeqCst) == 0 {
+            assert!(
+                started.elapsed() < Duration::from_secs(10),
+                "nobody started waiting for a queue slot"
+            );
+            sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    /// 止めるとき、キューの枠を待っている要求は、枠を取らずに`Stopped`に
+    /// なる。止めた後は、枠が空いていても取らない（PR #771のレビュー。
+    /// HTTP/2のストリームのタスク等、止めるときに待たないタスクからも、
+    /// キューに入らない）
+    #[tokio::test]
+    async fn test_reserve_gives_up_when_the_server_stops() {
+        let (channel, mut receiver) = test_request_channel(1);
+        let filler = QueuedRequest {
+            message: "{}".to_string(),
+            caller: crate::mcp::Caller::unrestricted(),
+            protocol_version: None,
+            waiter: None,
+        };
+        channel.sender.try_send(filler).unwrap();
+        let (stop_tx, stop) = tokio::sync::watch::channel(false);
+        let deadline = Instant::now() + Duration::from_secs(30);
+
+        let waiting = {
+            let channel = channel.clone();
+            let stop = stop.clone();
+            tokio::spawn(async move { channel.reserve(deadline, &stop).await.err() })
+        };
+        wait_for_waiting_reservation(&channel).await;
+        stop_tx.send(true).unwrap();
+        let result = tokio::time::timeout(Duration::from_secs(5), waiting)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(result, Some(ChannelError::Stopped));
+
+        // 枠が空いていても、止めた後は取らない
+        receiver.try_recv().unwrap();
+        assert!(matches!(
+            channel.reserve(deadline, &stop).await,
+            Err(ChannelError::Stopped)
+        ));
+        assert!(receiver.try_recv().is_err());
     }
 
     /// 別々のクライアントが同じ`id`を使っても、チャンネル経由の応答が
@@ -7873,7 +8028,7 @@ mod tests {
     async fn test_request_channel_reserves_a_slot_with_a_deadline() {
         let (channel, receiver) = test_request_channel(1);
         let permit = channel
-            .reserve(Instant::now() + Duration::from_secs(1))
+            .reserve(Instant::now() + Duration::from_secs(1), &not_stopped())
             .await
             .unwrap();
         RequestChannel::forward_notification(
@@ -7885,14 +8040,14 @@ mod tests {
 
         let started = Instant::now();
         let full = channel
-            .reserve(Instant::now() + Duration::from_millis(200))
+            .reserve(Instant::now() + Duration::from_millis(200), &not_stopped())
             .await;
         assert!(matches!(full, Err(ChannelError::Busy)));
         assert!(started.elapsed() < Duration::from_secs(5));
 
         drop(receiver);
         let closed = channel
-            .reserve(Instant::now() + Duration::from_secs(5))
+            .reserve(Instant::now() + Duration::from_secs(5), &not_stopped())
             .await;
         assert!(matches!(closed, Err(ChannelError::Closed)));
     }
@@ -7905,14 +8060,14 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(5);
         let request = serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" });
         let first = channel.forward_request(
-            channel.reserve(deadline).await.unwrap(),
+            channel.reserve(deadline, &not_stopped()).await.unwrap(),
             request.clone(),
             crate::mcp::Caller::unrestricted(),
             None,
             deadline,
         );
         let second = channel.forward_request(
-            channel.reserve(deadline).await.unwrap(),
+            channel.reserve(deadline, &not_stopped()).await.unwrap(),
             request,
             crate::mcp::Caller::unrestricted(),
             Some("2025-11-25"),
@@ -8171,8 +8326,9 @@ mod tests {
         ))
         .await
         .unwrap();
-        // `/ws`のタスクが、キューの枠を待つまで
-        sleep(Duration::from_millis(300)).await;
+        // `/ws`のタスクが、キューの枠を待つまで（PR #771のレビュー。
+        // 決まった時間だけ待つのでは、待っていることを確かめられない）
+        wait_for_waiting_reservation(&transport.channel).await;
 
         tokio::time::timeout(Duration::from_secs(10), transport.stop_server())
             .await
@@ -8230,9 +8386,16 @@ mod tests {
             assert_eq!(body["error"]["code"], serde_json::json!(-32600), "id {id}");
         }
         // オブジェクトでない本文（配列等）も、通知として渡さずに断る
+        // 受信側が要求として読めないオブジェクト（`method`が無い等）も、
+        // 通知として渡さずに断る（PR #771のレビュー）
         for body in [
             serde_json::json!(["2.0", "ping", null]),
             serde_json::json!("ping"),
+            serde_json::json!({ "jsonrpc": "2.0" }),
+            serde_json::json!({ "method": "notifications/initialized" }),
+            serde_json::json!({ "jsonrpc": "1.0", "method": "notifications/initialized" }),
+            serde_json::json!({ "jsonrpc": "2.0", "method": 1 }),
+            serde_json::json!({ "jsonrpc": "2.0", "method": "ping", "params": "x" }),
         ] {
             let response = client.post(&url).json(&body).send().await.unwrap();
             assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{body}");
@@ -8281,6 +8444,7 @@ mod tests {
         // オブジェクトでないフレームも断り、その後の要求は答える
         for frame in [
             serde_json::json!(["2.0", "ping", null]),
+            serde_json::json!({ "jsonrpc": "2.0" }),
             serde_json::json!({ "jsonrpc": "2.0", "id": 8, "method": "ping" }),
         ] {
             ws.send(tokio_tungstenite::tungstenite::Message::Text(
@@ -8289,7 +8453,7 @@ mod tests {
             .await
             .unwrap();
         }
-        for expected in [Value::Null, serde_json::json!(8)] {
+        for expected in [Value::Null, Value::Null, serde_json::json!(8)] {
             let frame = tokio::time::timeout(Duration::from_secs(10), ws.next())
                 .await
                 .unwrap()
@@ -8363,7 +8527,7 @@ mod tests {
         let forward = |id: i64, deadline| {
             let channel = channel.clone();
             async move {
-                let permit = channel.reserve(deadline).await.unwrap();
+                let permit = channel.reserve(deadline, &not_stopped()).await.unwrap();
                 channel.forward_request(
                     permit,
                     serde_json::json!({ "jsonrpc": "2.0", "id": id, "method": "ping" }),
@@ -8430,6 +8594,7 @@ mod tests {
                 callers,
                 channel,
                 stats: SharedStats::default(),
+                shutdown: not_stopped(),
             };
             let mut handling = Box::pin(
                 handler.handle_message(conn_id, Message::Text(message.to_string().into())),
@@ -10331,6 +10496,39 @@ mod tests {
             "params": { "size": LARGE_RESPONSE_SIZE }
         })
         .to_string()
+    }
+
+    /// 読まないクライアントへの大きな応答の送信で止まっている`/ws`も、
+    /// 止めるときはすぐにやめ、`stop_server()`を待たせない（PR #771の
+    /// レビュー。以前は、大きさに合わせた送信の期限まで待たせた）。
+    /// Windowsでは送信で止まらないので試さない（下のテストと同じ）
+    #[tokio::test]
+    #[cfg_attr(
+        windows,
+        ignore = "Windows accepts a large send at once, so the send does not stall"
+    )]
+    async fn test_stop_server_does_not_wait_for_a_stalled_websocket_response() {
+        let transport = HttpTransport::new(HttpConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            enable_websocket_upgrade: true,
+            ..HttpConfig::default()
+        })
+        .unwrap()
+        .with_request_handler(Arc::new(LargeResponseHandler));
+        transport.start_server().await.unwrap();
+        let addr = transport.bound_addr().await.unwrap();
+        wait_for_plain_server_ready(addr).await;
+        let mut stalled = raw_ws_connect(addr).await;
+        raw_ws_send_text(&mut stalled, &large_response_request()).await;
+        // 送信が止まるまで（送信の期限は、テストでも大きさに合わせて長い）
+        sleep(Duration::from_millis(500)).await;
+
+        let started = Instant::now();
+        tokio::time::timeout(Duration::from_secs(10), transport.stop_server())
+            .await
+            .expect("stop_server waited for the stalled response");
+        assert!(started.elapsed() < Duration::from_secs(5));
+        drop(stalled);
     }
 
     /// 応答を読まないクライアントは、時間内に送れないので閉じられ、接続の枠が
