@@ -2952,16 +2952,21 @@ fn header_map_to_string_map(headers: &HeaderMap) -> HashMap<String, String> {
 }
 
 /// Decodes a URL query string (e.g. `"a=1&b=2"`, without the leading `?`)
-/// into a flat map. `None` (no query string at all) yields an empty map.
-fn parse_query_params(query: Option<&str>) -> HashMap<String, String> {
+/// into a map from each key to its values. `None` (no query string at all)
+/// yields an empty map.
+fn parse_query_params(query: Option<&str>) -> HashMap<String, Vec<String>> {
     let Some(query) = query else {
         return HashMap::new();
     };
-    let mut map = HashMap::new();
+    let mut map: HashMap<String, Vec<String>> = HashMap::new();
     // A repeated key (e.g. "a=malicious&a=benign") must not silently keep
-    // only one of the values - see append_multivalue.
+    // only one of the values. Each value stays separate (PR #764 review):
+    // joining them with ", " turned `q=x;id&q=benign` into `x;id, benign`,
+    // which patterns anchored on the end of a value (CMD-001) missed.
     for (key, value) in url::form_urlencoded::parse(query.as_bytes()) {
-        append_multivalue(&mut map, key.into_owned(), value.into_owned());
+        map.entry(key.into_owned())
+            .or_default()
+            .push(value.into_owned());
     }
     map
 }
@@ -5166,6 +5171,58 @@ mod tests {
         );
     }
 
+    /// ブラウザのUser-Agent、複数のCookie、`&`・`<`・`;`・`base64`を含む
+    /// 本文は、IDSで断らない（#759。以前はCMD-001・XSS-011に当たり、
+    /// HTTP 403になって、送り元のアドレスもブロックした）
+    #[tokio::test]
+    async fn check_ids_allows_ordinary_browser_headers_and_bodies() {
+        let ids = Arc::new(
+            IntrusionDetectionSystem::new(IDSConfig {
+                auto_block_enabled: true,
+                ..IDSConfig::default()
+            })
+            .await
+            .unwrap(),
+        );
+        let remote_addr: SocketAddr = "203.0.113.7:12345".parse().unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "User-Agent",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                .parse()
+                .unwrap(),
+        );
+        headers.insert("Cookie", "a=b; c=d; theme=dark".parse().unwrap());
+        let body = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "create_post",
+                "arguments": {
+                    "title": "Q&A; tips",
+                    "content": "<p>a < b; c > d & e</p>",
+                    "encoding": "base64"
+                }
+            }
+        });
+        let uri: axum::http::Uri = "/mcp".parse().unwrap();
+
+        let result = check_ids(
+            Some(&ids),
+            remote_addr,
+            None,
+            &crate::mcp::Caller::default(),
+            &uri,
+            &headers,
+            Some(&body),
+        )
+        .await;
+
+        assert_eq!(result, Ok(()));
+        assert!(!ids.is_blocked(remote_addr.ip()).await);
+    }
+
     #[test]
     fn header_map_to_string_map_exposes_canonical_names_and_keeps_non_utf8_values() {
         let mut headers = HeaderMap::new();
@@ -5247,11 +5304,44 @@ mod tests {
         // "a=malicious&a=benign" must not silently collapse to whichever
         // value HashMap::collect() happens to keep - both must be visible
         // to detection.
+        // Each value stays separate (PR #764 review).
         let map = parse_query_params(Some("a=malicious&a=benign"));
 
-        let value = &map["a"];
-        assert!(value.contains("malicious"), "got: {value}");
-        assert!(value.contains("benign"), "got: {value}");
+        assert_eq!(
+            map["a"],
+            vec!["malicious".to_string(), "benign".to_string()]
+        );
+    }
+
+    /// A repeated query key must not hide an attack in an earlier value by
+    /// joining it with a later benign one (PR #764 review: `x;id, benign`
+    /// did not match CMD-001).
+    #[tokio::test]
+    async fn check_ids_checks_each_value_of_a_repeated_query_key() {
+        let ids = Arc::new(
+            IntrusionDetectionSystem::new(IDSConfig {
+                auto_block_enabled: true,
+                ..IDSConfig::default()
+            })
+            .await
+            .unwrap(),
+        );
+        let remote_addr: SocketAddr = "203.0.113.8:12345".parse().unwrap();
+        let benign_body = serde_json::json!({"jsonrpc": "2.0", "method": "tools/list"});
+        let uri: axum::http::Uri = "/mcp?q=x%3Bid&q=benign".parse().unwrap();
+
+        let result = check_ids(
+            Some(&ids),
+            remote_addr,
+            None,
+            &crate::mcp::Caller::default(),
+            &uri,
+            &HeaderMap::new(),
+            Some(&benign_body),
+        )
+        .await;
+
+        assert_eq!(result, Err(StatusCode::FORBIDDEN));
     }
 
     #[test]

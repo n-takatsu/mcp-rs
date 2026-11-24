@@ -137,8 +137,10 @@ pub struct RequestData {
     pub method: String,
     /// パス
     pub path: String,
-    /// クエリパラメータ
-    pub query_params: HashMap<String, String>,
+    /// クエリパラメータ。同じ名前の値は、受け取った順に全部持つ（PR #764の
+    /// レビュー。以前は`, `でつないだ1つの文字列で、値ごとに調べられ
+    /// なかった）
+    pub query_params: HashMap<String, Vec<String>>,
     /// ヘッダー
     pub headers: HashMap<String, String>,
     /// ボディ

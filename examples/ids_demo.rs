@@ -83,7 +83,7 @@ async fn demo_signature_detection() -> Result<(), Box<dyn std::error::Error>> {
     let mut sql_request = create_request("sql-001", "GET", "/api/users");
     sql_request.query_params.insert(
         "id".to_string(),
-        "1 UNION SELECT password, email FROM users".to_string(),
+        vec!["1 UNION SELECT password, email FROM users".to_string()],
     );
 
     let result = ids.analyze_request(&sql_request).await?;
@@ -119,7 +119,7 @@ async fn demo_signature_detection() -> Result<(), Box<dyn std::error::Error>> {
     let mut benign_request = create_request("benign-001", "GET", "/api/products");
     benign_request
         .query_params
-        .insert("category".to_string(), "electronics".to_string());
+        .insert("category".to_string(), vec!["electronics".to_string()]);
 
     let _result = ids.analyze_request(&benign_request).await?;
     info!("✓ Benign request: No intrusion detected\n");
@@ -272,7 +272,7 @@ async fn demo_alert_management() -> Result<(), Box<dyn std::error::Error>> {
     let mut sql_request = create_request("alert-sql", "GET", "/api/data");
     sql_request.query_params.insert(
         "q".to_string(),
-        "1 UNION SELECT * FROM passwords".to_string(),
+        vec!["1 UNION SELECT * FROM passwords".to_string()],
     );
 
     let result = ids.analyze_request(&sql_request).await?;
@@ -367,7 +367,7 @@ fn create_sql_injection_request() -> RequestData {
     let mut request = create_request("demo-sql", "GET", "/api/users");
     request.query_params.insert(
         "id".to_string(),
-        "1 UNION SELECT password FROM users".to_string(),
+        vec!["1 UNION SELECT password FROM users".to_string()],
     );
     request.source_ip = Some("203.0.113.10".parse().unwrap());
     request
@@ -384,7 +384,7 @@ fn create_command_injection_request() -> RequestData {
     let mut request = create_request("demo-cmd", "POST", "/api/exec");
     request
         .query_params
-        .insert("cmd".to_string(), "ls; cat /etc/passwd".to_string());
+        .insert("cmd".to_string(), vec!["ls; cat /etc/passwd".to_string()]);
     request.source_ip = Some("203.0.113.30".parse().unwrap());
     request
 }

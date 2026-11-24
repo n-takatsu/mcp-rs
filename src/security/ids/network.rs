@@ -199,7 +199,7 @@ impl NetworkMonitor {
 
         // 1. DDoS攻撃検知
         if let Some(ddos_score) = self.check_ddos_attack(ip).await {
-            if ddos_score > 0.7 {
+            if ddos_score > DDOS_DETECTION_SCORE {
                 detected_patterns.push(NetworkAttackPattern::DdosAttack);
                 risk_scores.push(ddos_score);
             }
@@ -382,14 +382,7 @@ impl NetworkMonitor {
         let one_second_ago = Utc::now() - Duration::seconds(1);
         let recent_count = counter.iter().filter(|t| **t > one_second_ago).count() as u64;
 
-        if recent_count > self.config.ddos_threshold_rps {
-            let excess_ratio = recent_count as f64 / self.config.ddos_threshold_rps as f64;
-            Some((excess_ratio - 1.0).min(1.0))
-        } else if recent_count > self.config.ddos_threshold_rps / 2 {
-            Some(0.6)
-        } else {
-            Some(0.0)
-        }
+        Some(ddos_score(recent_count, self.config.ddos_threshold_rps))
     }
 
     /// ポートスキャンをチェック
@@ -511,6 +504,26 @@ impl NetworkMonitor {
             remaining
         );
     }
+}
+
+/// しきい値を超えたときの最小のDDoSのスコア（#759）。
+/// [`DDOS_DETECTION_SCORE`]より大きくする
+const DDOS_MIN_SCORE: f64 = 0.75;
+
+/// `check_traffic`がDDoSとするスコアの下限（これより大きいもの）
+const DDOS_DETECTION_SCORE: f64 = 0.7;
+
+/// 1秒の要求の数から、DDoSのスコアを出す（#759）。しきい値
+/// （`ddos_threshold_rps`）を超えたら、必ず判定の値（0.7）より大きく
+/// （0.75から）、しきい値の2倍で1.0にする。超えなければ0.0。以前は超過の
+/// 割合だけをスコアにしたので、既定（50）では51件で0.02になり、86件まで
+/// DDoSとしなかった
+fn ddos_score(recent_count: u64, threshold_rps: u64) -> f64 {
+    if recent_count <= threshold_rps {
+        return 0.0;
+    }
+    let excess_ratio = recent_count as f64 / threshold_rps.max(1) as f64 - 1.0;
+    DDOS_MIN_SCORE + (1.0 - DDOS_MIN_SCORE) * excess_ratio.min(1.0)
 }
 
 /// `map`が`max`以上なら、`last_seen`の古いものから消して、`max`の9割に
@@ -716,5 +729,60 @@ mod tests {
         let seen = &patterns[&ip].path_last_seen;
         assert_eq!(seen.len(), max);
         assert!((0..33).all(|i| seen.contains_key(&format!("/new/{i}"))));
+    }
+
+    /// しきい値を超えたら、判定の値（0.7）より大きいスコアにする（#759）
+    #[test]
+    fn test_ddos_score_follows_the_threshold() {
+        assert_eq!(ddos_score(0, 50), 0.0);
+        assert_eq!(ddos_score(26, 50), 0.0);
+        assert_eq!(ddos_score(50, 50), 0.0);
+        assert!(ddos_score(51, 50) > DDOS_DETECTION_SCORE);
+        assert!(ddos_score(51, 50) < ddos_score(75, 50));
+        assert_eq!(ddos_score(100, 50), 1.0);
+        assert_eq!(ddos_score(1000, 50), 1.0);
+        assert!(ddos_score(2, 1) > DDOS_DETECTION_SCORE);
+        assert!(ddos_score(1, 0) > DDOS_DETECTION_SCORE);
+    }
+
+    /// 既定（50 rps）で、1秒に51件ならDDoSとし、50件ならしない（#759。
+    /// 以前は86件までDDoSとしなかった）
+    #[tokio::test]
+    async fn test_ddos_is_detected_just_above_the_threshold() {
+        let monitor = NetworkMonitor::new().await.unwrap();
+        let request = |ip: IpAddr| RequestData {
+            request_id: "r".to_string(),
+            method: "POST".to_string(),
+            path: "/mcp".to_string(),
+            query_params: HashMap::new(),
+            headers: HashMap::new(),
+            body: None,
+            source_ip: Some(ip),
+            caller_id: None,
+            timestamp: Utc::now(),
+        };
+        let below: IpAddr = "192.0.2.20".parse().unwrap();
+        let mut last = None;
+        for _ in 0..50 {
+            last = Some(monitor.check_traffic(&request(below)).await.unwrap());
+        }
+        assert!(!last
+            .unwrap()
+            .detected_patterns
+            .contains(&NetworkAttackPattern::DdosAttack));
+
+        let above: IpAddr = "192.0.2.21".parse().unwrap();
+        for _ in 0..50 {
+            monitor.check_traffic(&request(above)).await.unwrap();
+        }
+        let result = monitor.check_traffic(&request(above)).await.unwrap();
+        assert!(
+            result
+                .detected_patterns
+                .contains(&NetworkAttackPattern::DdosAttack),
+            "{:?}",
+            result.detected_patterns
+        );
+        assert!(result.risk_score > DDOS_DETECTION_SCORE);
     }
 }
