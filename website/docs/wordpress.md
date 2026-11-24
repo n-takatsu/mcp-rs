@@ -118,7 +118,7 @@ post_types = ["product"]
 - `get_post_types` lists the site's post types and taxonomies, and shows which ones mcp-rs may use
 - A listed type can be passed as `post_type` to `get_posts`, `get_post`, `create_advanced_post`, `update_post`, `delete_post` and the revision tools. The tools show only the allowed types in `post_type`
 - The post type must be in the REST API under `/wp/v2` (the type's `show_in_rest`). Types with their own API, such as WooCommerce products in `wc/v3` on some sites, are refused with the reason
-- `get_taxonomies` lists the taxonomies with their `rest_base`, and `get_terms` lists the terms of one. `create_advanced_post` and `update_post` take `terms`, such as `{"product_cat": [12, 15]}`, to set the terms of the listed taxonomies. A taxonomy that is not registered for the post type is refused with the valid ones (WordPress would ignore it). `get_post` shows them for a custom post type. Creating and changing terms of custom taxonomies is not supported yet
+- `get_taxonomies` lists the taxonomies with their `rest_base`, and `get_terms` lists the terms of one. `create_advanced_post` and `update_post` take `terms`, such as `{"product_cat": [12, 15]}`, to set the terms of the listed taxonomies. A taxonomy that is not registered for the post type is refused with the valid ones (WordPress would ignore it). A term ID that is not in the taxonomy is refused too, before the post is changed: WordPress would skip it and still remove the other terms (v0.30.0 and later). `get_post` shows them for a custom post type. `get_terms` takes the taxonomy's name or `rest_base`; if a name of one taxonomy is the `rest_base` of another, the one with that `rest_base` is read. Creating and changing terms of custom taxonomies is not supported yet
 - A post type without the editor (no `content`) can be used too. `get_post` then says that the type has no content field instead of showing empty content
 - The WordPress user's capabilities still apply: the Application Password user must be allowed to edit the post type
 
@@ -287,6 +287,7 @@ Update an existing WordPress post.
 - `post_type` (string, optional): `post` (default) or `page`, or a type listed in [`post_types`](#custom-post-types). A page needs `"post_type": "page"`
 - `title` (string, optional): New post title
 - `content` (string, optional): New post content
+- `excerpt` (string, optional): New excerpt, the short summary shown in post lists and often used as the meta description. `""` lets WordPress make one from the content again. `get_post` shows the current one. A custom post type without excerpt support does not keep it, and the result says so (v0.30.0 and later)
 - `status` (string, optional): New post status: `publish`, `draft`, `pending`, `private`, or `future` (scheduled). `future` needs `date`, unless the post is already scheduled
 - `date` (string, optional): Publication date, ISO8601 in the site's time zone (for example `2030-01-01T10:00:00`). See [Scheduling an existing post](#scheduling-an-existing-post) (v0.29.0 and later)
 - `categories` (array of IDs, optional): New category IDs. Refused for a post type without categories on the site, such as a page. See [Category and tag IDs](#category-and-tag-ids)
@@ -338,7 +339,7 @@ WordPress keeps earlier versions (revisions) of posts and pages when they are sa
 
 - `get_revisions`: the revisions of a post or page, newest first, with the revision ID, date, author, title, length and the start of the content. Parameters: `post_id` (required), `post_type` (`post`, the default, or `page`)
 - `get_revision`: one revision's title, excerpt and content. Parameters: `post_id`, `revision_id` (required), `post_type`, `format` (`raw`, the default, `rendered` or `text`, as in `get_post`)
-- `restore_revision`: replace the title, content and excerpt of the post with those of the revision. The status, publish date, slug, categories and tags are not changed, so a published post stays published with the restored content. Parameters: `post_id`, `revision_id` (required), `post_type`
+- `restore_revision`: replace the title, content and excerpt of the post with those of the revision. For a post type without some of them (such as no editor), only the ones the revision has are replaced, and the result lists them. The status, publish date, slug, categories and tags are not changed, so a published post stays published with the restored content. Parameters: `post_id`, `revision_id` (required), `post_type`
 
 When revisions are enabled on the site, WordPress saves the content before the restore as a revision, so a restore can usually be undone the same way. The site may turn revisions off or limit how many it keeps (`WP_POST_REVISIONS`); then the content before the restore may not be kept, so read it with `get_post` first if you must keep it. A revision of another post is refused.
 
@@ -382,7 +383,7 @@ Notes:
 - WordPress may change the slug you pass. It removes characters that cannot be used in a URL, and appends `-2` and so on if another post already uses the slug. The tool result shows the actual slug, for example `Slug: my-first-post-2`
 - For a draft, WordPress keeps the slug as given and makes it unique when the post is published
 - Changing the slug of a published post changes its URL. Whether the old URL redirects depends on WordPress and your plugins; mcp-rs does not set up redirects
-- An empty `slug`, or one with no letters or digits once HTML tags and entities are removed (such as `!!!` or `&amp;`, which WordPress would make empty), is rejected. Omit `slug` to leave it unchanged
+- An empty `slug`, or one with no letters or digits once HTML tags and entities are removed and percent-encoding is decoded (such as `!!!`, `&amp;` or `%c2%a0`, which WordPress would make empty), is rejected. Omit `slug` to leave it unchanged
 
 ## Content Retrieval
 
@@ -400,7 +401,7 @@ Retrieve WordPress posts. By default, only published posts.
 - `order` (optional): `desc` (default) or `asc`
 - `per_page` (1-100), `page` (from 1) (optional)
 
-Without any of `search`, `categories`, `tags`, `author`, `after`, `before`, `orderby`, `order`, `per_page`, and `page`, `get_posts` returns all posts, up to 100 pages of 100 (10,000 posts). With more, it returns an error instead of a list that is missing posts: read them one page at a time with `per_page` and `page`, or narrow them down (v0.30.0 and later; up to v0.29.0, it returned the first 10,000 as if they were all). With any of them (v0.29.0 and later), it reads only one page (20 posts unless `per_page` is given), and the first line shows the page and the total, for example `Found 3 posts (page 1 of 3, 3 per page; 8 in total)`. Use `page` for the next ones:
+Without any of `search`, `categories`, `tags`, `author`, `after`, `before`, `orderby`, `order`, `per_page`, and `page`, `get_posts` returns all posts, up to 100 pages of 100 (10,000 posts). With more, it returns an error instead of a list that is missing posts: read them one page at a time with `per_page` and `page`, or narrow them down (v0.30.0 and later; up to v0.29.0, it returned the first 10,000 as if they were all). The full list is read 100 posts at a time, not as one snapshot: if posts are added, removed or re-dated while it is read, mcp-rs reads it again when the total changes or a post appears twice, but a post can still be missed in rare cases. With any of them (v0.29.0 and later), it reads only one page (20 posts unless `per_page` is given), and the first line shows the page and the total, for example `Found 3 posts (page 1 of 3, 3 per page; 8 in total)`. Use `page` for the next ones:
 
 ```json
 {
@@ -434,6 +435,8 @@ For a password-protected post read without edit permission, WordPress hides the 
 The output has a `Date:` line with the publication date in the site's time zone, marked `scheduled` for a scheduled post, for example `Date: 2026-11-19T10:00:00 (site time, scheduled)` (v0.29.0 and later).
 
 The output has a `Slug:` line with the post's URL slug (a Japanese slug is shown decoded). A draft created without a slug shows `none`, because WordPress generates the slug when the post is published.
+
+The output has an `Excerpt:` line with the post's excerpt, in the same format as the content, or `(none)` for a post type without excerpts (v0.30.0 and later).
 
 The output also has a `Featured Media:` line with the featured image's media ID and URL, for example `Featured Media: 123 (https://example.com/wp-content/uploads/photo.png)`. It shows `none` when no featured image is set. If the media item cannot be fetched, only the ID is shown.
 
@@ -591,6 +594,7 @@ Update an existing WordPress post with comprehensive options.
 - `post_type` (string, optional): `post` (default) or `page`, or a type listed in [`post_types`](#custom-post-types). A page needs `"post_type": "page"`
 - `title` (string, optional): New post title
 - `content` (string, optional): New post content
+- `excerpt` (string, optional): New excerpt, the short summary shown in post lists and often used as the meta description. `""` lets WordPress make one from the content again. `get_post` shows the current one. A custom post type without excerpt support does not keep it, and the result says so (v0.30.0 and later)
 - `status` (string, optional): `publish`, `draft`, `pending`, `private`, or `future` (scheduled, with `date`). Unchanged when omitted
 - `date` (string, optional): Publication date, ISO8601 in the site's time zone. See [Scheduling an existing post](#scheduling-an-existing-post)
 - `categories` (array of IDs, optional): Array of category IDs. Refused for a post type without categories on the site, such as a page. See [Category and tag IDs](#category-and-tag-ids)
@@ -647,7 +651,7 @@ Comments are read and changed as the configured WordPress user, who needs to be 
 Retrieve WordPress comments: ID, post, parent (the comment it replies to, `0` if none), status, author name, date, link, and content.
 
 **Parameters:**
-- `post_id` (number, optional): Filter comments by specific post
+- `post_id` (number, optional): Filter comments by specific post. A value that is not a positive integer is refused (v0.30.0 and later; before, it was ignored and the comments on all posts were returned)
 - `status` (string, optional): `approve` (approved, the default), `hold` (awaiting moderation), `spam`, `trash`, or `all` (approved and awaiting moderation). v0.30.0 and later
 
 **Example Usage:**
@@ -667,6 +671,8 @@ Retrieve WordPress comments: ID, post, parent (the comment it replies to, `0` if
 Create a comment as the configured WordPress user, usually a reply to another comment (v0.30.0 and later).
 
 WordPress comments have no drafts. So that you can check a reply the AI wrote before it appears on the site, the comment is held for moderation by default. Approve it with `update_comment` (`status: "approve"`) or in the WordPress admin (**Comments**). Pass `status: "approve"` to publish it at once.
+
+WordPress saves a new comment as approved and then sets the requested status within the same request. A held comment is not shown on the site, but plugins that run when a comment is saved (notifications, for example) may see it as approved for that moment. mcp-rs cannot avoid this through the REST API.
 
 **Parameters:**
 - `content` (string, required): Comment text
