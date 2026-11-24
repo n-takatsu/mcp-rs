@@ -143,13 +143,22 @@ impl DynamicConfigManager {
         }
 
         // Use a custom config loader that reads from specific file
+        // `[transport] type`を`transport_type`にそろえてから、既定値と重ねる
+        // （#755。そろえないと両方のキーが残り、`duplicate field`になる）
+        let content = std::fs::read_to_string(path)
+            .map_err(|e| Error::Config(format!("設定ファイルを読めません: {}: {}", path, e)))?;
+        let content = super::normalize_transport_type_alias(&content)
+            .map_err(|e| Error::Config(e.to_string()))?;
 
         let settings = ::config::Config::builder()
             .add_source(
                 ::config::Config::try_from(&McpConfig::default())
                     .map_err(|e| crate::error::Error::Internal(e.to_string()))?,
             )
-            .add_source(::config::File::with_name(path))
+            .add_source(::config::File::from_str(
+                &content,
+                ::config::FileFormat::Toml,
+            ))
             .build()
             .map_err(|e| crate::error::Error::Internal(e.to_string()))?;
 
@@ -215,6 +224,7 @@ mod tests {
             r#"
 [handlers.wordpress]
 url = "https://example.com"
+enabled = true
 
 [handlers.wordpress.encrypted_credentials]
 username = "{}"
@@ -254,5 +264,26 @@ kdf_iterations = {}
             .expect("wordpress config should be present");
         assert_eq!(wp_config.username, "wp-user");
         assert_eq!(wp_config.password, "wp-app-password");
+    }
+
+    /// `[transport] type = "stdio"`と書いたファイルも読める（#755。既定値の
+    /// `transport_type`と重ねると、`duplicate field`になっていた）
+    #[tokio::test]
+    async fn test_load_config_from_file_accepts_transport_type_alias() {
+        let mut file = tempfile::Builder::new().suffix(".toml").tempfile().unwrap();
+        file.write_all(
+            b"[transport]
+type = \"http\"
+",
+        )
+        .unwrap();
+        let path = file.path().to_str().unwrap().to_string();
+
+        let manager = DynamicConfigManager::new(McpConfig::default(), None);
+        let loaded = manager
+            .load_config_from_file(&path)
+            .await
+            .expect("config file should load successfully");
+        assert_eq!(loaded.transport.transport_type.as_deref(), Some("http"));
     }
 }

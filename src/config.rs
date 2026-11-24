@@ -1361,6 +1361,12 @@ impl WordPressConfig {
         label: &str,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let Some(name) = self.keyring.clone() else {
+            // 使わない設定（enabled = false）では、`encrypted_credentials`も
+            // 復号しない。`WORDPRESS_MASTER_PASSWORD`が無いだけで、ほかの
+            // 機能まで起動できなくなるのを防ぐ（#755。複数のサイトの形は#684）
+            if !self.enabled.unwrap_or(false) {
+                return Ok(());
+            }
             return Ok(self.resolve_encrypted_credentials()?);
         };
         // 使わない設定（enabled = false）では、資格情報ストアに触れない
@@ -2373,8 +2379,9 @@ impl McpConfig {
     /// （#724。以前は平文で書き、`keyring`と一緒にあるので読み直せなかった）
     fn without_keyring_secrets(&self) -> Self {
         let mut config = self.clone();
+        // `encrypted_credentials`から復号した値も、平文で書かない（#755）
         let strip = |site: &mut WordPressConfig| {
-            if site.keyring.is_some() {
+            if site.keyring.is_some() || site.encrypted_credentials.is_some() {
                 site.username.clear();
                 site.password.clear();
             }
@@ -3710,6 +3717,84 @@ mod additional_tests {
         let wordpress = saved.handlers.wordpress.unwrap();
         assert!(wordpress.sites["blog"].password.is_empty());
         assert_eq!(wordpress.sites["plain"].password, "s3cret-from-keyring");
+    }
+
+    /// `encrypted_credentials`から復号したユーザー名・パスワードも、
+    /// ファイルに書かない（#755）
+    #[test]
+    fn test_save_to_file_leaves_out_decrypted_secrets() {
+        let encrypted = SecureCredentials::new("wp-user".to_string(), "decrypted-pw".to_string())
+            .encrypt("correct-master-password")
+            .unwrap();
+        let mut config = McpConfig::default();
+        config.handlers.wordpress = Some(WordPressConfig {
+            url: "https://example.com".to_string(),
+            username: "wp-user".to_string(),
+            password: "decrypted-pw".to_string(),
+            enabled: Some(true),
+            timeout_seconds: None,
+            rate_limit: None,
+            encrypted_credentials: Some(encrypted),
+            keyring: None,
+            upload_allowed_dirs: None,
+            post_types: None,
+            default_site: None,
+            sites: Default::default(),
+        });
+        let saved = config.without_keyring_secrets();
+        let wordpress = saved.handlers.wordpress.unwrap();
+        assert!(wordpress.username.is_empty());
+        assert!(wordpress.password.is_empty());
+        assert!(wordpress.encrypted_credentials.is_some());
+    }
+
+    /// 使わない設定（`enabled = false`・省略）では、`encrypted_credentials`を
+    /// 復号しない。`WORDPRESS_MASTER_PASSWORD`が無くても読み込める（#755）
+    #[test]
+    fn test_disabled_wordpress_does_not_decrypt_encrypted_credentials() {
+        let _env_guard = WORDPRESS_MASTER_PASSWORD_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        unsafe {
+            std::env::remove_var("WORDPRESS_MASTER_PASSWORD");
+        }
+        let encrypted = SecureCredentials::new("wp-user".to_string(), "pw".to_string())
+            .encrypt("correct-master-password")
+            .unwrap();
+        for enabled in [Some(false), None] {
+            let mut config = WordPressConfig {
+                url: "https://example.com".to_string(),
+                username: String::new(),
+                password: String::new(),
+                enabled,
+                timeout_seconds: None,
+                rate_limit: None,
+                encrypted_credentials: Some(encrypted.clone()),
+                keyring: None,
+                upload_allowed_dirs: None,
+                post_types: None,
+                default_site: None,
+                sites: Default::default(),
+            };
+            config.resolve_credentials().unwrap();
+            assert!(config.password.is_empty());
+        }
+        // 使う設定では、今までどおり鍵が無ければエラー
+        let mut config = WordPressConfig {
+            url: "https://example.com".to_string(),
+            username: String::new(),
+            password: String::new(),
+            enabled: Some(true),
+            timeout_seconds: None,
+            rate_limit: None,
+            encrypted_credentials: Some(encrypted),
+            keyring: None,
+            upload_allowed_dirs: None,
+            post_types: None,
+            default_site: None,
+            sites: Default::default(),
+        };
+        assert!(config.resolve_credentials().is_err());
     }
 
     #[test]

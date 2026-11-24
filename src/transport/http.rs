@@ -759,7 +759,7 @@ const MIN_RECOMMENDED_API_KEY_CHARS: usize = 16;
 #[derive(Clone)]
 struct HttpTransportState {
     request_handler: Option<Arc<dyn JsonRpcRequestHandler>>,
-    request_sender: tokio::sync::mpsc::Sender<String>,
+    request_sender: tokio::sync::mpsc::Sender<ChannelRequest>,
     pending_responses: Arc<RwLock<HashMap<Value, tokio::sync::oneshot::Sender<JsonRpcResponse>>>>,
     stats: Arc<RwLock<HttpStats>>,
     network_policy: NetworkPolicy,
@@ -919,12 +919,16 @@ async fn audit_suppressed_auth_failures(
     }
 }
 
+/// `with_request_handler`を使わないときに、チャンネルで運ぶ要求（本文の
+/// 文字列）と、その呼び出し元（#749）
+type ChannelRequest = (String, crate::mcp::Caller);
+
 /// HTTP Transport implementation
 #[derive(Debug)]
 pub struct HttpTransport {
     config: HttpConfig,
-    receiver: Arc<tokio::sync::Mutex<tokio::sync::mpsc::Receiver<String>>>,
-    sender: tokio::sync::mpsc::Sender<String>,
+    receiver: Arc<tokio::sync::Mutex<tokio::sync::mpsc::Receiver<ChannelRequest>>>,
+    sender: tokio::sync::mpsc::Sender<ChannelRequest>,
     pending_responses: Arc<RwLock<HashMap<Value, tokio::sync::oneshot::Sender<JsonRpcResponse>>>>,
     stats: Arc<RwLock<HttpStats>>,
     /// `start_server()`で実際に待ち受けたアドレス。同期の`transport_info()`
@@ -942,6 +946,31 @@ impl HttpTransport {
     pub fn with_audit_logger(mut self, audit_logger: Arc<AuditLogger>) -> Self {
         self.audit_logger = audit_logger;
         self
+    }
+
+    /// `with_request_handler`を使わないときに、HTTP・WebSocketで受けた要求を、
+    /// その呼び出し元（APIキー・トークンの名前と使えるツール、接続元の
+    /// IPアドレス）と一緒に返す（#749）。チャンネルが閉じたら`None`。
+    ///
+    /// 要求は、`RequestDispatcher::handle_message_as`に、返った`Caller`を
+    /// 渡して処理する。認証していない呼び出し元は、名前が無く、IPアドレスの
+    /// ある`Caller`になり、`mcp_rs_status`はバージョンだけを返す。
+    /// `Transport::receive_message`は、呼び出し元を捨てて要求だけを返す
+    pub async fn receive_request_with_caller(
+        &self,
+    ) -> std::result::Result<Option<(JsonRpcRequest, crate::mcp::Caller)>, TransportError> {
+        let mut receiver = self.receiver.lock().await;
+
+        match receiver.recv().await {
+            Some((message_str, caller)) => {
+                debug!("HTTP transport received message: {}", message_str);
+                let request: JsonRpcRequest = serde_json::from_str(&message_str).map_err(|e| {
+                    TransportError::Internal(format!("Failed to parse request: {}", e))
+                })?;
+                Ok(Some((request, caller)))
+            }
+            None => Ok(None), // Channel closed, no more messages
+        }
     }
 
     /// 受け付けたJSON-RPCメッセージを直接処理するハンドラーを設定する
@@ -1887,8 +1916,9 @@ impl Transport for HttpTransport {
         }
 
         // Fallback: send through regular channel for notifications
+        // （このプロセス自身が送るものなので、制限の無い呼び出し元とする）
         self.sender
-            .send(message_str)
+            .send((message_str, crate::mcp::Caller::unrestricted()))
             .await
             .map_err(|e| TransportError::Internal(format!("HTTP send failed: {}", e)))?;
 
@@ -1898,28 +1928,18 @@ impl Transport for HttpTransport {
     /// `with_request_handler`を使わないときに、HTTP・WebSocketで受けた要求を返す。
     ///
     /// 返す要求には、呼び出し元の情報（APIキー・トークンの名前、使えるツール、
-    /// 接続元のIPアドレス）が無い（#746）。受け取った側で`RequestDispatcher`に
-    /// 渡すときは、`handle_message`（制限の無い呼び出し元）ではなく、
-    /// `handle_message_as`で、認証していない遠隔の呼び出し元（例:
-    /// `Caller::unrestricted().with_ip_address(Some(..))`）として扱うこと。
-    /// そうしないと、`mcp_rs_status`はファイルのパス等を返し、ツールの制限も
-    /// 効かない。呼び出し元ごとの扱いが要るなら、`with_request_handler`
-    /// （`McpServer::dispatcher()`を渡す）を使う
+    /// 接続元のIPアドレス）が無い（#746）。呼び出し元の情報が要るなら、
+    /// `HttpTransport::receive_request_with_caller`を使い、返った`Caller`で
+    /// `RequestDispatcher::handle_message_as`を呼ぶ（#749）。
+    /// `handle_message`（制限の無い呼び出し元）を使うと、`mcp_rs_status`は
+    /// ファイルのパス等を返し、ツールの制限も効かない
     async fn receive_message(
         &mut self,
     ) -> std::result::Result<Option<JsonRpcRequest>, Self::Error> {
-        let mut receiver = self.receiver.lock().await;
-
-        match receiver.recv().await {
-            Some(message_str) => {
-                debug!("HTTP transport received message: {}", message_str);
-                let request: JsonRpcRequest = serde_json::from_str(&message_str).map_err(|e| {
-                    TransportError::Internal(format!("Failed to parse request: {}", e))
-                })?;
-                Ok(Some(request))
-            }
-            None => Ok(None), // Channel closed, no more messages
-        }
+        Ok(self
+            .receive_request_with_caller()
+            .await?
+            .map(|(request, _caller)| request))
     }
 
     fn is_connected(&self) -> bool {
@@ -2122,7 +2142,12 @@ async fn handle_jsonrpc_request(
             }
             pending.insert(id.clone(), response_tx);
         }
-        if state.request_sender.send(request_str).await.is_err() {
+        if state
+            .request_sender
+            .send((request_str, caller.clone()))
+            .await
+            .is_err()
+        {
             state.pending_responses.write().await.remove(&id);
             let mut stats = state.stats.write().await;
             stats.total_errors += 1;
@@ -2177,7 +2202,12 @@ async fn handle_jsonrpc_request(
         // forwarding it here (rather than before the branch) is safe.
         // (Previously `blocking_write()` in this map_err closure, which
         // panics on a tokio worker whenever the send fails - #374.)
-        if state.request_sender.send(request_str).await.is_err() {
+        if state
+            .request_sender
+            .send((request_str, caller.clone()))
+            .await
+            .is_err()
+        {
             state.stats.write().await.total_errors += 1;
             return Err(StatusCode::INTERNAL_SERVER_ERROR);
         }
@@ -3547,7 +3577,7 @@ struct JsonRpcWsHandler {
     /// 接続 → 呼び出し元（#52）と接続の状態。見つからない接続は、どの
     /// ツールも使えない
     callers: WsClients,
-    request_sender: tokio::sync::mpsc::Sender<String>,
+    request_sender: tokio::sync::mpsc::Sender<ChannelRequest>,
     pending_responses: Arc<RwLock<HashMap<Value, tokio::sync::oneshot::Sender<JsonRpcResponse>>>>,
     stats: Arc<RwLock<HttpStats>>,
 }
@@ -3580,20 +3610,20 @@ impl MessageHandler for JsonRpcWsHandler {
             stats.total_bytes_received += text.len() as u64;
         }
 
+        let client = self
+            .callers
+            .lock()
+            .await
+            .get(&conn_id)
+            .cloned()
+            .unwrap_or_else(|| WsClient {
+                caller: crate::mcp::Caller::new(
+                    "unknown-websocket-connection",
+                    crate::mcp::ToolAccess::any_of(Vec::new()),
+                ),
+                session: Arc::new(crate::mcp::Session::default()),
+            });
         if let Some(handler) = &self.request_handler {
-            let client = self
-                .callers
-                .lock()
-                .await
-                .get(&conn_id)
-                .cloned()
-                .unwrap_or_else(|| WsClient {
-                    caller: crate::mcp::Caller::new(
-                        "unknown-websocket-connection",
-                        crate::mcp::ToolAccess::any_of(Vec::new()),
-                    ),
-                    session: Arc::new(crate::mcp::Session::default()),
-                });
             // `/ws`は、今までどおり`initialize`で版を決める（legacy、#570）。
             // 版は接続ごと
             let response = match tokio::time::timeout(
@@ -3635,7 +3665,7 @@ impl MessageHandler for JsonRpcWsHandler {
             // Notification (no `id`) - no response frame expected, so there
             // is no pending entry to race against.
             self.request_sender
-                .send(text.to_string())
+                .send((text.to_string(), client.caller.clone()))
                 .await
                 .map_err(|e| {
                     Error::Internal(format!("Failed to forward WebSocket request: {e}"))
@@ -3654,7 +3684,11 @@ impl MessageHandler for JsonRpcWsHandler {
             pending.insert(id.clone(), response_tx);
         }
 
-        if let Err(e) = self.request_sender.send(text.to_string()).await {
+        if let Err(e) = self
+            .request_sender
+            .send((text.to_string(), client.caller.clone()))
+            .await
+        {
             self.pending_responses.write().await.remove(&id);
             return Err(Error::Internal(format!(
                 "Failed to forward WebSocket request: {e}"
@@ -6415,6 +6449,124 @@ mod tests {
             caller_seen_by_handler(server_addr, "Bearer admin-key").await,
             (serde_json::json!("api_key:admin"), true, true)
         );
+    }
+
+    /// `with_request_handler`を使わないとき、`receive_request_with_caller`は
+    /// 要求と一緒に呼び出し元を返す（#749）。APIキーの名前、認証していない
+    /// 呼び出し元（名前が無く、IPアドレスがある）、WebSocketの接続も
+    #[tokio::test]
+    async fn test_channel_requests_carry_the_caller() {
+        use futures::{SinkExt as _, StreamExt as _};
+
+        let transport = HttpTransport::new(HttpConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            enable_websocket_upgrade: true,
+            ..HttpConfig::default()
+        })
+        .unwrap();
+        transport.start_server().await.unwrap();
+        let server_addr = transport.bound_addr().await.unwrap();
+        wait_for_plain_server_ready(server_addr).await;
+
+        // 受け取った呼び出し元を、そのまま応答に入れて返す
+        let mut responder = transport;
+        tokio::spawn(async move {
+            while let Ok(Some((request, caller))) = responder.receive_request_with_caller().await {
+                let response = JsonRpcResponse {
+                    jsonrpc: "2.0".to_string(),
+                    result: Some(serde_json::json!({
+                        "name": caller.name,
+                        "ip_address": caller.ip_address,
+                        "unauthenticated_remote": caller.is_unauthenticated_remote(),
+                    })),
+                    error: None,
+                    id: request.id,
+                };
+                if responder.send_message(response).await.is_err() {
+                    break;
+                }
+            }
+        });
+
+        let response = reqwest::Client::new()
+            .post(format!("http://127.0.0.1:{}/mcp", server_addr.port()))
+            .json(&serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }))
+            .send()
+            .await
+            .unwrap();
+        assert!(response.status().is_success(), "{}", response.status());
+        let body: Value = response.json().await.unwrap();
+        assert_eq!(
+            body["result"],
+            serde_json::json!({
+                "name": null,
+                "ip_address": "127.0.0.1",
+                "unauthenticated_remote": true,
+            })
+        );
+
+        let url = format!("ws://127.0.0.1:{}/ws", server_addr.port());
+        let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+        ws.send(tokio_tungstenite::tungstenite::Message::Text(
+            serde_json::json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" })
+                .to_string()
+                .into(),
+        ))
+        .await
+        .unwrap();
+        let frame = tokio::time::timeout(Duration::from_secs(10), ws.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let body: Value = serde_json::from_str(frame.to_text().unwrap()).unwrap();
+        assert_eq!(body["id"], serde_json::json!(2));
+        assert_eq!(body["result"]["ip_address"], serde_json::json!("127.0.0.1"));
+        assert_eq!(
+            body["result"]["unauthenticated_remote"],
+            serde_json::json!(true)
+        );
+    }
+
+    /// APIキーで認証した要求は、チャンネルでもキーの名前を運ぶ（#749）
+    #[tokio::test]
+    async fn test_channel_requests_carry_the_api_key_name() {
+        let transport = HttpTransport::new(HttpConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            auth_enabled: true,
+            api_keys: vec![api_key("reader-key", "reader", None)],
+            ..HttpConfig::default()
+        })
+        .unwrap();
+        transport.start_server().await.unwrap();
+        let server_addr = transport.bound_addr().await.unwrap();
+        wait_for_plain_server_ready(server_addr).await;
+
+        let mut responder = transport;
+        tokio::spawn(async move {
+            while let Ok(Some((request, caller))) = responder.receive_request_with_caller().await {
+                let response = JsonRpcResponse {
+                    jsonrpc: "2.0".to_string(),
+                    result: Some(serde_json::json!({ "name": caller.name })),
+                    error: None,
+                    id: request.id,
+                };
+                if responder.send_message(response).await.is_err() {
+                    break;
+                }
+            }
+        });
+
+        let response = reqwest::Client::new()
+            .post(format!("http://127.0.0.1:{}/mcp", server_addr.port()))
+            .header("Authorization", "Bearer reader-key")
+            .json(&serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }))
+            .send()
+            .await
+            .unwrap();
+        assert!(response.status().is_success(), "{}", response.status());
+        let body: Value = response.json().await.unwrap();
+        assert_eq!(body["result"]["name"], serde_json::json!("api_key:reader"));
     }
 
     #[tokio::test]

@@ -777,8 +777,9 @@ pub fn init_logging(config: &LogConfig) -> Result<Option<WorkerGuard>> {
             init_file_only_logging(file_appender, env_filter, separation)?
         }
         (false, false, _) => {
-            // 最低限のコンソール出力
+            // 最低限のコンソール出力（標準エラー出力へ。#755）
             tracing_subscriber::fmt()
+                .with_writer(std::io::stderr)
                 .with_max_level(tracing::Level::WARN)
                 .event_format(pid_formatter())
                 .init();
@@ -808,9 +809,12 @@ pub fn init_logging(config: &LogConfig) -> Result<Option<WorkerGuard>> {
 
     // ログ削除ポリシーを適用（External以外、かつ実際に書き込み先が
     // 解決できた場合のみ。解決できなかった場合は対象ディレクトリがない）
-    if let Some(log_dir) = current_log_destination().and_then(|d| d.dir) {
-        if let Err(e) = apply_retention_policy(config, &log_dir) {
-            tracing::warn!("ログ保持ポリシー適用に失敗: {}", e);
+    if let Some(destination) = current_log_destination() {
+        let active = destination.current_file_path();
+        if let Some(log_dir) = destination.dir {
+            if let Err(e) = apply_retention_policy(config, &log_dir, active.as_deref()) {
+                tracing::warn!("ログ保持ポリシー適用に失敗: {}", e);
+            }
         }
     }
 
@@ -894,34 +898,38 @@ fn format_retention_policy(retention: &LogRetention) -> String {
 /// ログ保持ポリシーを適用する。`log_dir`には実際に書き込みに使われている
 /// ディレクトリ（フォールバックが発生していればその先）を渡す必要がある
 /// （`config.log_dir`は第一候補にすぎず、そこへの書き込みが失敗して
-/// 他のディレクトリへフォールバックしている場合がある）。
-fn apply_retention_policy(config: &LogConfig, log_dir: &Path) -> Result<()> {
+/// 他のディレクトリへフォールバックしている場合がある）。`active`は今
+/// 書いているファイルで、消さず、`Count`・`Size`の数・大きさにも数えない
+/// （#755。消すと、プロセスは開いたファイルに書き続けるが、そのパスから
+/// 読めなくなる）
+fn apply_retention_policy(config: &LogConfig, log_dir: &Path, active: Option<&Path>) -> Result<()> {
     match &config.retention {
         LogRetention::External => {
             // 外部管理なので何もしない（推奨アプローチ）
             Ok(())
         }
-        LogRetention::Days(days) => cleanup_old_logs_by_age(log_dir, *days),
-        LogRetention::Count(max_count) => cleanup_old_logs_by_count(log_dir, *max_count),
-        LogRetention::Size(max_bytes) => cleanup_old_logs_by_size(log_dir, *max_bytes),
+        LogRetention::Days(days) => cleanup_old_logs_by_age(log_dir, *days, active),
+        LogRetention::Count(max_count) => cleanup_old_logs_by_count(log_dir, *max_count, active),
+        LogRetention::Size(max_bytes) => cleanup_old_logs_by_size(log_dir, *max_bytes, active),
     }
 }
 
 /// 日数ベースでログファイルを削除
-fn cleanup_old_logs_by_age(log_dir: &Path, max_days: u32) -> Result<()> {
+fn cleanup_old_logs_by_age(log_dir: &Path, max_days: u32, active: Option<&Path>) -> Result<()> {
     use std::time::{Duration, SystemTime};
 
-    let cutoff_time = SystemTime::now() - Duration::from_secs(max_days as u64 * 24 * 60 * 60);
+    let started = SystemTime::now();
+    let cutoff_time = started - Duration::from_secs(max_days as u64 * 24 * 60 * 60);
     let mut removed_count = 0;
 
     for entry in fs::read_dir(log_dir)? {
         let entry = entry?;
         let path = entry.path();
 
-        if is_log_file(&path) {
+        if is_log_file(&path) && !is_active_log(&path, active) {
             if let Ok(metadata) = entry.metadata() {
                 if let Ok(modified) = metadata.modified() {
-                    if modified < cutoff_time {
+                    if modified < cutoff_time && !written_since(modified, started) {
                         if let Err(e) = fs::remove_file(&path) {
                             tracing::warn!("ログファイル削除失敗: {} - {}", path.display(), e);
                         } else {
@@ -946,17 +954,20 @@ fn cleanup_old_logs_by_age(log_dir: &Path, max_days: u32) -> Result<()> {
 }
 
 /// ファイル数ベースでログファイルを削除
-fn cleanup_old_logs_by_count(log_dir: &Path, max_count: u32) -> Result<()> {
+fn cleanup_old_logs_by_count(log_dir: &Path, max_count: u32, active: Option<&Path>) -> Result<()> {
+    let started = std::time::SystemTime::now();
     let mut log_files = Vec::new();
 
     for entry in fs::read_dir(log_dir)? {
         let entry = entry?;
         let path = entry.path();
 
-        if is_log_file(&path) {
+        if is_log_file(&path) && !is_active_log(&path, active) {
             if let Ok(metadata) = entry.metadata() {
                 if let Ok(modified) = metadata.modified() {
-                    log_files.push((path, modified));
+                    if !written_since(modified, started) {
+                        log_files.push((path, modified));
+                    }
                 }
             }
         }
@@ -989,7 +1000,8 @@ fn cleanup_old_logs_by_count(log_dir: &Path, max_count: u32) -> Result<()> {
 }
 
 /// サイズベースでログファイルを削除
-fn cleanup_old_logs_by_size(log_dir: &Path, max_bytes: u64) -> Result<()> {
+fn cleanup_old_logs_by_size(log_dir: &Path, max_bytes: u64, active: Option<&Path>) -> Result<()> {
+    let started = std::time::SystemTime::now();
     let mut log_files = Vec::new();
     let mut total_size = 0u64;
 
@@ -997,9 +1009,12 @@ fn cleanup_old_logs_by_size(log_dir: &Path, max_bytes: u64) -> Result<()> {
         let entry = entry?;
         let path = entry.path();
 
-        if is_log_file(&path) {
+        if is_log_file(&path) && !is_active_log(&path, active) {
             if let Ok(metadata) = entry.metadata() {
                 if let Ok(modified) = metadata.modified() {
+                    if written_since(modified, started) {
+                        continue;
+                    }
                     let size = metadata.len();
                     log_files.push((path, modified, size));
                     total_size += size;
@@ -1042,6 +1057,20 @@ fn cleanup_old_logs_by_size(log_dir: &Path, max_bytes: u64) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// 保持の処理を始めた（`started`）後に書かれたファイルか（PR #756の
+/// レビュー）。`active`は始めに1度だけ読むので、処理の間に日付が変わって
+/// 新しいファイルに切り替わると、そのファイルは`active`と違う。新しく
+/// 書かれたファイルは、今書いているものなので消さず、数えない
+fn written_since(modified: std::time::SystemTime, started: std::time::SystemTime) -> bool {
+    modified >= started
+}
+
+/// `path`が、今書いているログファイル（`active`）か（#755）。どちらも同じ
+/// フォルダの中なので、ファイル名で比べる
+fn is_active_log(path: &Path, active: Option<&Path>) -> bool {
+    active.is_some_and(|active| active.file_name() == path.file_name())
 }
 
 /// ログファイルかどうかを判定
@@ -1125,7 +1154,10 @@ fn init_hybrid_full_logging(
 
 /// コンソールのみログ初期化
 fn init_console_only_logging(env_filter: EnvFilter) -> Result<()> {
+    // 標準出力はSTDIOモードのMCPのJSON-RPCの流れなので、標準エラー出力に
+    // 書く（#755。既定の書き先は標準出力）
     tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
         .with_env_filter(env_filter)
         .event_format(pid_formatter())
         .init();
@@ -1212,6 +1244,63 @@ fn parse_module_separation_config(config: &crate::config::LogModuleConfig) -> Mo
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    /// 古いログを消すとき、今書いているファイルは消さず、数・大きさにも
+    /// 数えない（#755）
+    #[test]
+    fn test_retention_keeps_the_active_log() {
+        let dir = tempdir().unwrap();
+        let active = dir.path().join("mcp-rs.2026-11-24.log");
+        let old = dir.path().join("mcp-rs.2026-11-01.log");
+        // 古いファイルは、保持の処理を始める前に書かれたものにする（時刻の
+        // 細かさで、始めた時刻と同じにならないように）
+        let write = |path: &Path, bytes: usize| {
+            fs::write(path, vec![b'x'; bytes]).unwrap();
+            fs::File::options()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(60))
+                .unwrap();
+        };
+
+        // 今のファイルが上限を超えていても消さない。上限を超える古いものは消す
+        write(&active, 100);
+        write(&old, 60);
+        cleanup_old_logs_by_size(dir.path(), 50, Some(&active)).unwrap();
+        assert!(active.exists());
+        assert!(!old.exists());
+
+        // 今のファイルは数えないので、上限の範囲の古いファイルは残る
+        write(&old, 10);
+        cleanup_old_logs_by_size(dir.path(), 50, Some(&active)).unwrap();
+        assert!(old.exists());
+
+        // Count(0)でも、今のファイルは残す
+        cleanup_old_logs_by_count(dir.path(), 0, Some(&active)).unwrap();
+        assert!(active.exists());
+        assert!(!old.exists());
+
+        // 今のファイルが分からなければ、今までどおり
+        cleanup_old_logs_by_count(dir.path(), 0, None).unwrap();
+        assert!(!active.exists());
+
+        // 保持の処理を始めた後に書かれたファイル（処理の間に日付が変わって
+        // 切り替わった、新しい今のファイル）は、`active`と違っても消さない
+        // （PR #756のレビュー）
+        let switched = dir.path().join("mcp-rs.2026-11-25.log");
+        fs::write(&switched, b"new").unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&switched)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(60))
+            .unwrap();
+        cleanup_old_logs_by_count(dir.path(), 0, Some(&active)).unwrap();
+        cleanup_old_logs_by_size(dir.path(), 0, Some(&active)).unwrap();
+        cleanup_old_logs_by_age(dir.path(), 0, Some(&active)).unwrap();
+        assert!(switched.exists());
+    }
 
     /// `XDG_STATE_HOME`は、絶対パスのときだけ使う（#741）
     #[test]
