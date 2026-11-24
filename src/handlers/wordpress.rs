@@ -174,6 +174,12 @@ async fn read_error_body(mut response: reqwest::Response) -> String {
     String::from_utf8_lossy(&body).into_owned()
 }
 
+/// `send_with_retry`が受け取った、成功（2xx）の応答のヘッダーと本文
+struct ReceivedResponse {
+    headers: reqwest::header::HeaderMap,
+    body: String,
+}
+
 /// POST・DELETEを再送しなかったときに、エラーメッセージに添える注意。
 /// MCPクライアントが結果を確かめずに同じ呼び出しを繰り返さないように。
 const NOT_RESENT_NOTE: &str = ". Not retried automatically: WordPress may have already processed this request. Check whether it took effect before trying again";
@@ -1050,6 +1056,11 @@ fn canonicalize_upload_dirs(dirs: &[String]) -> Result<Vec<PathBuf>, String> {
 /// `..`やリンクで許可フォルダの外に出ることはできない。許可フォルダの外を
 /// 指す場合と、ファイルが存在しない場合は同じエラーにする（許可フォルダ
 /// 外のファイルの有無が分からないように）。
+///
+/// Windowsでは、ドライブ名で始まるパス（`C:\…`・`\\?\C:\…`）だけ受け付ける。
+/// UNC（`\\host\share\…`）・デバイス（`\\.\…`）のパスは、正規化の時点で
+/// SMB等の接続が始まり、Windowsの資格情報が送られうるので、正規化の前に
+/// 断る（#750）。
 fn resolve_upload_path(file_path: &str, allowed_dirs: &[PathBuf]) -> Result<PathBuf, McpError> {
     if allowed_dirs.is_empty() {
         return Err(McpError::InvalidParams(
@@ -1064,6 +1075,14 @@ fn resolve_upload_path(file_path: &str, allowed_dirs: &[PathBuf]) -> Result<Path
         return Err(McpError::InvalidParams(
             "file_path must be an absolute path".to_string(),
         ));
+    }
+    if let Some(std::path::Component::Prefix(prefix)) = path.components().next() {
+        use std::path::Prefix;
+        if !matches!(prefix.kind(), Prefix::Disk(_) | Prefix::VerbatimDisk(_)) {
+            return Err(McpError::InvalidParams(
+                "file_path must be a path on a local drive (such as C:\\...), not a network (UNC) or device path".to_string(),
+            ));
+        }
     }
 
     std::fs::canonicalize(path)
@@ -1089,15 +1108,96 @@ fn mime_type_for_filename(filename: &str) -> Option<&'static str> {
         .map(|(mime_type, _)| *mime_type)
 }
 
-/// アップロードするファイルを読み込む。上限を超える分は読まない
+/// `resolve_upload_path`で確かめたファイル（正規化済みのパス）を開き、
+/// 開いたものが、確かめたファイルかを比べる（#750）。確かめた後に、許可
+/// フォルダの中の項目をシンボリックリンク・ジャンクションに差し替えて、
+/// 外のファイルを読ませないように。
+///
+/// - Windows: 開いたハンドルの実際のパス（`GetFinalPathNameByHandleW`。
+///   `std::fs::canonicalize`と同じ形）が、確かめたパスと同じか
+/// - Unix: 最後の項目のリンクはたどらずに開き（`O_NOFOLLOW`）、パスを
+///   正規化し直して同じか、そのパスのファイルと開いたファイルが同じ
+///   （デバイス・inode）かを比べる。途中のフォルダを、開く前と、比べる
+///   間とで2回差し替えられる場合は防げない
+fn open_checked_upload_file(canonical: &Path) -> Result<std::fs::File, McpError> {
+    let read_error =
+        |e: std::io::Error| McpError::InvalidParams(format!("Failed to read file_path: {}", e));
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    let file = options.open(canonical).map_err(read_error)?;
+
+    #[cfg(windows)]
+    let same = final_path_of(&file).map_err(read_error)? == canonical;
+    #[cfg(unix)]
+    let same = {
+        use std::os::unix::fs::MetadataExt as _;
+        let opened = file.metadata().map_err(read_error)?;
+        std::fs::canonicalize(canonical).is_ok_and(|again| again == canonical)
+            && std::fs::metadata(canonical)
+                .is_ok_and(|now| now.dev() == opened.dev() && now.ino() == opened.ino())
+    };
+    #[cfg(not(any(unix, windows)))]
+    let same = std::fs::canonicalize(canonical).is_ok_and(|again| again == canonical);
+
+    if !same {
+        return Err(McpError::InvalidParams(
+            "file_path changed while it was being opened (for example, replaced with a link), so it was not read".to_string(),
+        ));
+    }
+    Ok(file)
+}
+
+/// 開いたファイルの実際のパス（`\\?\C:\…`）。リンク・ジャンクションは
+/// 解決済み。`std::fs::canonicalize`も同じ関数・同じ形で返す
+#[cfg(windows)]
+fn final_path_of(file: &std::fs::File) -> std::io::Result<PathBuf> {
+    use std::os::windows::ffi::OsStringExt as _;
+    use std::os::windows::io::AsRawHandle as _;
+    use windows_sys::Win32::Storage::FileSystem::GetFinalPathNameByHandleW;
+
+    let mut buffer = vec![0u16; 512];
+    loop {
+        // SAFETY: 開いているファイルのハンドルと、`buffer.len()`文字を
+        // 書けるバッファーを渡す。フラグの0は、正規化した名前・ドライブ名
+        // の形（FILE_NAME_NORMALIZED | VOLUME_NAME_DOS）
+        let len = unsafe {
+            GetFinalPathNameByHandleW(
+                file.as_raw_handle(),
+                buffer.as_mut_ptr(),
+                buffer.len() as u32,
+                0,
+            )
+        } as usize;
+        if len == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        // 足りなければ、要る大きさ（終わりの0を含む）が返る
+        if len >= buffer.len() {
+            buffer.resize(len, 0);
+            continue;
+        }
+        buffer.truncate(len);
+        return Ok(PathBuf::from(std::ffi::OsString::from_wide(&buffer)));
+    }
+}
+
+/// アップロードするファイルを読み込む。`path`は`resolve_upload_path`が
+/// 返した正規化済みのパス。上限を超える分は読まない
 /// （確認後にファイルが大きくなった場合も含め、メモリに載せる量を
 /// 上限+1バイトに抑える）。
 async fn read_upload_file(path: &Path) -> Result<Vec<u8>, McpError> {
     use tokio::io::AsyncReadExt as _;
 
-    let file = tokio::fs::File::open(path)
+    let canonical = path.to_path_buf();
+    let file = tokio::task::spawn_blocking(move || open_checked_upload_file(&canonical))
         .await
-        .map_err(|e| McpError::InvalidParams(format!("Failed to read file_path: {}", e)))?;
+        .map_err(|e| McpError::Other(format!("Failed to read file_path: {}", e)))??;
+    let file = tokio::fs::File::from_std(file);
     let mut data = Vec::new();
     file.take(MAX_UPLOAD_SIZE_BYTES as u64 + 1)
         .read_to_end(&mut data)
@@ -1173,7 +1273,9 @@ fn post_status_or_draft(args: &HashMap<String, serde_json::Value>) -> Result<Str
 
 /// ツール引数の`slug`を取り出す。省略時は`None`（WordPressに送らない）。
 /// 空文字列はWordPressにとって「自動生成に戻す」意味になり、意図せず
-/// 既存のスラッグを消しうるため受け付けない。
+/// 既存のスラッグを消しうるため受け付けない。文字・数字を含まない
+/// スラッグ（`!!!`等）も、WordPressが記号を取り除いて空にするので、同じく
+/// 受け付けない（#750）。日本語・パーセントエンコードのスラッグは通す。
 fn optional_slug_arg(
     args: &HashMap<String, serde_json::Value>,
 ) -> Result<Option<String>, McpError> {
@@ -1184,6 +1286,10 @@ fn optional_slug_arg(
             if slug.is_empty() {
                 Err(McpError::InvalidParams(
                     "slug must not be empty. Omit it to let WordPress generate one".to_string(),
+                ))
+            } else if !slug.chars().any(char::is_alphanumeric) {
+                Err(McpError::InvalidParams(
+                    "slug must contain at least one letter or digit: WordPress removes the other characters, which would leave it empty. Omit it to let WordPress generate one".to_string(),
                 ))
             } else {
                 Ok(Some(slug.to_string()))
@@ -1958,15 +2064,19 @@ impl WordPressHandler {
         }
     }
 
-    /// リクエストを送り、成功（2xx）の応答を返す。一時的な失敗は最大
-    /// `MAX_RETRIES`回まで再送するが、再送するかどうかは失敗の種類と
-    /// HTTPメソッドで決める（#388）。
+    /// リクエストを送り、成功（2xx）の応答の本文まで受け取る。一時的な
+    /// 失敗は最大`MAX_RETRIES`回まで再送するが、再送するかどうかは失敗の
+    /// 種類とHTTPメソッドで決める（#388）。
     ///
     /// - 接続できなかった・429: リクエストはWordPressで処理されていない
     ///   ため、メソッドを問わず再送する
     /// - タイムアウト・送信後のエラー・5xx: WordPressで処理済みの可能性が
     ///   ある。GET・PUT等の繰り返しても結果が変わらないメソッドだけ再送し、
     ///   POST（作成の重複）・DELETE（2回目が404）は再送しない
+    /// - 成功の状態コードの後、本文の受信が途中で失敗した（期限切れ・接続の
+    ///   切断）: 再送してよいメソッドなら再送する（#750）。POST・DELETEは
+    ///   処理済みなので再送せず、結果を確かめる案内（`NOT_RESENT_NOTE`）を
+    ///   付ける。受信しきった本文の解析の失敗は、呼び出し元で扱い、再送しない
     ///
     /// `build_request`は試行ごとに呼ばれる。`multipart::Form`を使う
     /// リクエストは`try_clone()`で複製できない（内部でストリームを保持して
@@ -1974,7 +2084,7 @@ impl WordPressHandler {
     async fn send_with_retry(
         &self,
         build_request: impl Fn() -> Result<reqwest::RequestBuilder, McpError>,
-    ) -> Result<reqwest::Response, McpError> {
+    ) -> Result<ReceivedResponse, McpError> {
         const MAX_RETRIES: u32 = 3;
         const RETRY_DELAY: Duration = Duration::from_millis(1000);
 
@@ -1988,29 +2098,52 @@ impl WordPressHandler {
                 Ok(response) => {
                     let status = response.status();
                     if status.is_success() {
-                        return Ok(response);
-                    }
-
-                    let transient = is_retryable_status(status);
-                    let retry = status == reqwest::StatusCode::TOO_MANY_REQUESTS
-                        || (transient && resend_safe);
-                    if retry && !is_last {
-                        warn!(
-                            "HTTP error {} on attempt {} ({}), retrying...",
-                            status, attempt, method
-                        );
+                        let headers = response.headers().clone();
+                        match read_body_limited(response, MAX_RESPONSE_BYTES).await {
+                            Ok(body) => return Ok(ReceivedResponse { headers, body }),
+                            // 本文の受信の途中で失敗した
+                            Err(McpError::Http(e)) if resend_safe => {
+                                warn!(
+                                    "Failed to receive the response body on attempt {} ({}): {}",
+                                    attempt, method, e
+                                );
+                                if is_last {
+                                    return Err(McpError::Http(e));
+                                }
+                            }
+                            // POST・DELETEは、WordPressで処理済み（作成・削除
+                            // された）なので、やり直さないよう案内する
+                            Err(e) if !resend_safe => {
+                                return Err(McpError::ExternalApi(format!(
+                                    "WordPress accepted the request ({}), but receiving its response failed: {}{}",
+                                    status, e, NOT_RESENT_NOTE
+                                )));
+                            }
+                            // 大きすぎる応答は、再送しても同じ
+                            Err(e) => return Err(e),
+                        }
                     } else {
-                        // 本文のcode/messageを診断用に含める
-                        // （例: rest_post_invalid_id）
-                        let body = read_error_body(response).await;
-                        let mut message = format_wp_error(status, &body);
-                        if attempt > 1 {
-                            message.push_str(&format!(" (after {} attempts)", attempt));
+                        let transient = is_retryable_status(status);
+                        let retry = status == reqwest::StatusCode::TOO_MANY_REQUESTS
+                            || (transient && resend_safe);
+                        if retry && !is_last {
+                            warn!(
+                                "HTTP error {} on attempt {} ({}), retrying...",
+                                status, attempt, method
+                            );
+                        } else {
+                            // 本文のcode/messageを診断用に含める
+                            // （例: rest_post_invalid_id）
+                            let body = read_error_body(response).await;
+                            let mut message = format_wp_error(status, &body);
+                            if attempt > 1 {
+                                message.push_str(&format!(" (after {} attempts)", attempt));
+                            }
+                            if transient && !retry {
+                                message.push_str(NOT_RESENT_NOTE);
+                            }
+                            return Err(McpError::ExternalApi(message));
                         }
-                        if transient && !retry {
-                            message.push_str(NOT_RESENT_NOTE);
-                        }
-                        return Err(McpError::ExternalApi(message));
                     }
                 }
                 Err(e) => {
@@ -2063,9 +2196,8 @@ impl WordPressHandler {
             .await?;
         // 本文はログに出さない。context=editの応答には投稿の
         // 閲覧パスワードや未公開の下書き等が含まれうるため
-        let text = read_body_limited(response, MAX_RESPONSE_BYTES).await?;
-        debug!("Response body: {} bytes", text.len());
-        parse_success_body(&text)
+        debug!("Response body: {} bytes", response.body.len());
+        parse_success_body(&response.body)
     }
 
     /// `execute_request_with_retry`と同じだが、リクエストを`try_clone()`で
@@ -2080,8 +2212,7 @@ impl WordPressHandler {
         T: for<'de> serde::Deserialize<'de>,
     {
         let response = self.send_with_retry(|| Ok(build_request())).await?;
-        let text = read_body_limited(response, MAX_RESPONSE_BYTES).await?;
-        parse_success_body(&text)
+        parse_success_body(&response.body)
     }
 
     /// `execute_request_with_retry`と同じリトライ処理に加え、
@@ -2103,20 +2234,19 @@ impl WordPressHandler {
             })
             .await?;
         let total_pages = response
-            .headers()
+            .headers
             .get("x-wp-totalpages")
             .and_then(|v| v.to_str().ok())
             .and_then(|s| s.parse::<u32>().ok())
             .unwrap_or(1);
         let total_items = response
-            .headers()
+            .headers
             .get("x-wp-total")
             .and_then(|v| v.to_str().ok())
             .and_then(|s| s.parse::<u64>().ok())
             .unwrap_or(0);
-        let text = read_body_limited(response, MAX_RESPONSE_BYTES).await?;
-        let data = parse_success_body(&text)?;
-        Ok((data, total_pages, total_items, text.len()))
+        let data = parse_success_body(&response.body)?;
+        Ok((data, total_pages, total_items, response.body.len()))
     }
 
     /// 一覧系エンドポイントを`per_page=100`かつ`X-WP-TotalPages`に基づく
@@ -2347,25 +2477,16 @@ impl WordPressHandler {
         let url = format!("{}/wp-json/wp/v2/{}", self.base_url, endpoint);
         let post_data = advanced_post_body(params);
 
-        let mut request = self.client.post(&url);
+        let mut request = self.client.post(&url).json(&post_data);
 
         if let (Some(username), Some(password)) = (&self.username, &self.password) {
             request = request.basic_auth(username, Some(password));
         }
 
-        let response = request.json(&post_data).send().await?;
-
-        let status = response.status();
-        if !status.is_success() {
-            // WordPressのエラーコード（empty_content等）を含めないと、
-            // 失敗の原因が分からない
-            let body = read_error_body(response).await;
-            return Err(McpError::ExternalApi(format_wp_error(status, &body)));
-        }
-
-        let text = read_body_limited(response, MAX_RESPONSE_BYTES).await?;
-        let created_post: WordPressPost = serde_json::from_str(&text)?;
-        Ok(created_post)
+        // 429・接続の失敗だけ再送する（POSTなので、5xx・期限切れは再送せず、
+        // 確かめる案内を付ける。#750）。WordPressのエラーコード
+        // （empty_content等）は`format_wp_error`でエラーに含まれる
+        self.execute_request_with_retry(request).await
     }
 
     /// コメントの一覧。`status`を渡せば、その状態のコメント（#639）。
@@ -3183,9 +3304,9 @@ impl WordPressHandler {
     /// 読み取り用の`WordPressPost`をそのまま送っており、タイトル・本文が
     /// WordPressに読まれず常にHTTP 400になっていた。
     ///
-    /// 以前は`execute_request_with_retry`で5xx・429を再送していたが、
-    /// `create_advanced_post`は再送しない。投稿の作成（POST）を再送すると、
-    /// 1回目が実は成功していた場合に投稿が重複しうるため、意図的にそろえている。
+    /// 再送は`create_advanced_post`（`send_with_retry`）に任せる。POSTなので、
+    /// WordPressに届いていない`429`・接続の失敗だけ再送し、5xx・期限切れは
+    /// 再送しない（1回目が実は成功していた場合に、投稿が重複しうるため）。
     async fn create_post_with_featured_image(
         &self,
         title: String,
@@ -4566,10 +4687,30 @@ impl WordPressHandler {
                         slug,
                     )
                     .await?;
+                // 無いメディアのIDでも、WordPressは投稿を保存して201を返す
+                // （#750）。作り直させないよう、成功として投稿のIDを返し、
+                // 画像は付いていないことを伝える
+                let text = if post.featured_media == Some(featured_media_id) {
+                    format!(
+                        "Created post with featured image. Post ID: {}, Status: {}, Slug: {}",
+                        display_opt_id(post.id),
+                        post.status,
+                        post_slug_label(&post)
+                    )
+                } else {
+                    format!(
+                        "Created post, but WordPress did not set media {} as its featured image (featured_media is {}); the media ID may not exist. Post ID: {}, Status: {}, Slug: {}. The post is saved, so do not create it again: check the media ID with get_media, then use set_featured_image with this post ID",
+                        featured_media_id,
+                        display_opt_id(post.featured_media),
+                        display_opt_id(post.id),
+                        post.status,
+                        post_slug_label(&post)
+                    )
+                };
                 Ok(serde_json::json!({
                     "content": [{
                         "type": "text",
-                        "text": format!("Created post with featured image. Post ID: {}, Status: {}, Slug: {}", display_opt_id(post.id), post.status, post_slug_label(&post))
+                        "text": text
                     }],
                     "isError": false
                 }))
@@ -5660,8 +5801,7 @@ impl McpHandler for WordPressHandler {
                         },
                         "status": {
                             "type": "string",
-                            "enum": ["publish", "draft", "pending", "private"],
-                            "description": "Post status. Defaults to 'draft' to avoid accidental publication.",
+                            "description": "Post status: 'draft' (the default, to avoid accidental publication), 'publish', 'pending', 'private', or a custom status registered on the site (for example by a plugin). 'future' is not available because this tool has no date parameter.",
                             "default": "draft"
                         },
                         "slug": {
@@ -5701,8 +5841,7 @@ impl McpHandler for WordPressHandler {
                         },
                         "status": {
                             "type": "string",
-                            "description": "'draft' (the default, not shown on the site), 'publish' (shown at once), 'pending' (awaiting review), 'private' (only for signed-in editors), or 'future' (scheduled; needs date).",
-                            "enum": ["publish", "draft", "pending", "private", "future"],
+                            "description": "'draft' (the default, not shown on the site), 'publish' (shown at once), 'pending' (awaiting review), 'private' (only for signed-in editors), 'future' (scheduled; needs date), or a custom status registered on the site (for example by a plugin).",
                             "default": "draft"
                         },
                         "date": {
@@ -6090,8 +6229,7 @@ impl McpHandler for WordPressHandler {
                         },
                         "status": {
                             "type": "string",
-                            "description": "Post status. Defaults to 'draft' so nothing is published unintentionally. 'future' is not available because this tool has no date parameter.",
-                            "enum": ["publish", "draft", "pending", "private"],
+                            "description": "Post status: 'draft' (the default, so nothing is published unintentionally), 'publish', 'pending', 'private', or a custom status registered on the site (for example by a plugin). 'future' is not available because this tool has no date parameter.",
                             "default": "draft"
                         },
                         "slug": {
@@ -6314,8 +6452,7 @@ impl McpHandler for WordPressHandler {
                         },
                         "status": {
                             "type": "string",
-                            "enum": ["publish", "draft", "pending", "private"],
-                            "description": "Post status. Defaults to 'draft' to avoid accidental publication.",
+                            "description": "Post status: 'draft' (the default, to avoid accidental publication), 'publish', 'pending', 'private', or a custom status registered on the site (for example by a plugin). 'future' is not available because this tool has no date parameter.",
                             "default": "draft"
                         },
                         "categories": {
@@ -6492,8 +6629,7 @@ impl McpHandler for WordPressHandler {
                         },
                         "status": {
                             "type": "string",
-                            "description": "Post status. Defaults to 'draft' so nothing is published unintentionally. 'future' is not available because this tool has no date parameter.",
-                            "enum": ["publish", "draft", "pending", "private"],
+                            "description": "Post status: 'draft' (the default, so nothing is published unintentionally), 'publish', 'pending', 'private', or a custom status registered on the site (for example by a plugin). 'future' is not available because this tool has no date parameter.",
                             "default": "draft"
                         },
                         "categories": {
@@ -8074,6 +8210,82 @@ mod tests {
         );
     }
 
+    /// Windowsで、UNC・デバイスのパスは、正規化（SMBの接続）の前に断る（#750）
+    #[cfg(windows)]
+    #[test]
+    fn test_resolve_upload_path_rejects_unc_and_device_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let allowed_dirs =
+            canonicalize_upload_dirs(&[dir.path().to_string_lossy().into_owned()]).unwrap();
+        for path in [
+            r"\\host.invalid\share\a.png",
+            r"\\?\UNC\host.invalid\share\a.png",
+            r"\\.\pipe\a.png",
+            r"\\?\GLOBALROOT\Device\Mup\host.invalid\share\a.png",
+        ] {
+            let msg = invalid_params_message(
+                resolve_upload_path(path, &allowed_dirs).map(|_| serde_json::Value::Null),
+            );
+            assert!(msg.contains("UNC"), "path: {path}, got: {msg}");
+        }
+
+        // ドライブ名のパス（`\\?\`付きも）は、これまでどおり
+        std::fs::write(dir.path().join("a.png"), PNG_HEADER).unwrap();
+        let canonical = std::fs::canonicalize(dir.path().join("a.png")).unwrap();
+        assert_eq!(
+            resolve_upload_path(&canonical.to_string_lossy(), &allowed_dirs).unwrap(),
+            canonical
+        );
+    }
+
+    /// 確かめた後に、途中のフォルダをリンクに差し替えられた場合（#750）。
+    /// 確かめたパスのまま開くと外のファイルになるので、読まない
+    #[test]
+    fn test_open_checked_upload_file_rejects_replaced_path() {
+        let root = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(root.path()).unwrap();
+        let allowed = root.join("allowed");
+        let outside = root.join("outside");
+        std::fs::create_dir(&allowed).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        std::fs::write(allowed.join("a.png"), PNG_HEADER).unwrap();
+        std::fs::write(outside.join("a.png"), PNG_HEADER).unwrap();
+
+        // 確かめたファイルは開ける
+        assert!(open_checked_upload_file(&allowed.join("a.png")).is_ok());
+
+        // `allowed\sub`（確かめたときはフォルダ）が、外へのリンクになった
+        let link = allowed.join("sub");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, &link).unwrap();
+        #[cfg(windows)]
+        {
+            let status = std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(&link)
+                .arg(&outside)
+                .stdout(std::process::Stdio::null())
+                .status()
+                .unwrap();
+            assert!(status.success(), "mklink /J failed");
+        }
+        let msg = invalid_params_message(
+            open_checked_upload_file(&link.join("a.png")).map(|_| serde_json::Value::Null),
+        );
+        assert!(
+            msg.contains("changed while it was being opened"),
+            "got: {msg}"
+        );
+
+        // 最後の項目がリンクになった場合も
+        #[cfg(unix)]
+        {
+            let file_link = allowed.join("b.png");
+            std::os::unix::fs::symlink(outside.join("a.png"), &file_link).unwrap();
+            assert!(open_checked_upload_file(&file_link).is_err());
+        }
+    }
+
     #[test]
     fn test_mime_type_for_filename() {
         assert_eq!(mime_type_for_filename("a.png"), Some("image/png"));
@@ -8087,7 +8299,7 @@ mod tests {
     #[tokio::test]
     async fn test_read_upload_file_rejects_oversized_file() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("big.png");
+        let path = std::fs::canonicalize(dir.path()).unwrap().join("big.png");
         std::fs::write(&path, vec![0u8; MAX_UPLOAD_SIZE_BYTES + 1]).unwrap();
         let msg = invalid_params_message(
             read_upload_file(&path)
@@ -8196,6 +8408,54 @@ mod tests {
                         status_line,
                         body.len(),
                         body
+                    );
+                    let _ = socket.write_all(response.as_bytes()).await;
+                    let _ = socket.shutdown().await;
+                });
+            }
+        });
+        (format!("http://{}", addr), count)
+    }
+
+    /// 最初の`cut_off`回は、本文を途中で切って（`Content-Length`より短く
+    /// 送って）接続を閉じ、その後は全部返すHTTPサーバー。本文の受信の失敗の
+    /// 再現用（#750）。受けたリクエスト数を数える
+    async fn spawn_cut_off_body_server(
+        status_line: &'static str,
+        body: String,
+        cut_off: usize,
+    ) -> (String, Arc<std::sync::atomic::AtomicUsize>) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let count = Arc::new(AtomicUsize::new(0));
+        let server_count = count.clone();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    return;
+                };
+                let nth = server_count.fetch_add(1, Ordering::SeqCst);
+                let body = body.clone();
+                tokio::spawn(async move {
+                    let mut buf = Vec::new();
+                    let mut chunk = [0u8; 4096];
+                    while !buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                        match socket.read(&mut chunk).await {
+                            Ok(0) | Err(_) => return,
+                            Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                        }
+                    }
+                    let length = if nth < cut_off {
+                        body.len() + 100
+                    } else {
+                        body.len()
+                    };
+                    let response = format!(
+                        "HTTP/1.1 {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        status_line, length, body
                     );
                     let _ = socket.write_all(response.as_bytes()).await;
                     let _ = socket.shutdown().await;
@@ -8526,6 +8786,119 @@ mod tests {
             "status": "inherit",
             "source_url": "https://example.com/wp-content/uploads/a.png"
         })
+    }
+
+    /// GETは、本文の受信が途中で失敗しても再送する（#750）
+    #[tokio::test]
+    async fn test_get_is_resent_when_body_is_cut_off() {
+        let (base_url, count) =
+            spawn_cut_off_body_server("200 OK", sample_media_json(1).to_string(), 1).await;
+        let handler = handler_for_local_server(base_url);
+
+        let media = handler.get_media_item(1).await.unwrap();
+        assert_eq!(media.id, Some(1));
+        assert_eq!(request_count(&count), 2);
+    }
+
+    /// 受信しきった不正なJSONは、GETでも再送しない
+    #[tokio::test]
+    async fn test_get_with_unparseable_body_is_not_resent() {
+        let (base_url, count) =
+            spawn_fixed_response_server("200 OK", "{not json".to_string()).await;
+        let handler = handler_for_local_server(base_url);
+
+        let result = handler.get_media_item(1).await;
+        assert!(
+            matches!(result, Err(McpError::ExternalApi(ref msg)) if msg.contains("could not be parsed")),
+            "got: {:?}",
+            result
+        );
+        assert_eq!(request_count(&count), 1);
+    }
+
+    /// POSTで、成功の状態コードの後に本文の受信が失敗したら、再送せず、
+    /// 保存済みかもしれないことを伝える（#750）
+    #[tokio::test]
+    async fn test_post_body_cut_off_after_success_is_not_resent() {
+        let (base_url, count) =
+            spawn_cut_off_body_server("201 Created", sample_media_json(1).to_string(), 3).await;
+        let handler = handler_for_local_server(base_url);
+
+        let result = handler.upload_media(PNG_HEADER, "a.png", "image/png").await;
+        assert!(
+            matches!(result, Err(McpError::ExternalApi(ref msg))
+                if msg.contains("receiving its response failed") && msg.contains("Not retried automatically")),
+            "got: {:?}",
+            result
+        );
+        assert_eq!(request_count(&count), 1);
+
+        let result = handler
+            .create_advanced_post(PostCreateParams {
+                title: "t".to_string(),
+                content: "c".to_string(),
+                post_type: "post".to_string(),
+                status: "draft".to_string(),
+                ..Default::default()
+            })
+            .await;
+        assert!(
+            matches!(result, Err(McpError::ExternalApi(ref msg))
+                if msg.contains("receiving its response failed") && msg.contains("Not retried automatically")),
+            "got: {:?}",
+            result
+        );
+        assert_eq!(request_count(&count), 2);
+    }
+
+    fn draft_post_params() -> PostCreateParams {
+        PostCreateParams {
+            title: "t".to_string(),
+            content: "c".to_string(),
+            post_type: "post".to_string(),
+            status: "draft".to_string(),
+            ..Default::default()
+        }
+    }
+
+    /// `create_advanced_post`も`send_with_retry`を通る（#750）。429は再送し、
+    /// 5xxは再送しない
+    #[tokio::test]
+    async fn test_create_advanced_post_retries_only_too_many_requests() {
+        let (base_url, count) =
+            spawn_fixed_response_server("429 Too Many Requests", "{}".to_string()).await;
+        let handler = handler_for_local_server(base_url);
+        let result = handler.create_advanced_post(draft_post_params()).await;
+        assert!(
+            matches!(result, Err(McpError::ExternalApi(_))),
+            "got: {:?}",
+            result
+        );
+        assert_eq!(request_count(&count), 3);
+
+        let (base_url, count) =
+            spawn_fixed_response_server("500 Internal Server Error", "{}".to_string()).await;
+        let handler = handler_for_local_server(base_url);
+        let result = handler.create_advanced_post(draft_post_params()).await;
+        assert!(
+            matches!(result, Err(McpError::ExternalApi(ref msg)) if msg.contains("Not retried automatically")),
+            "got: {:?}",
+            result
+        );
+        assert_eq!(request_count(&count), 1);
+
+        // WordPressのエラーコードは、これまでどおりエラーに含める
+        let body = r#"{"code":"empty_content","message":"Content, title, and excerpt are empty."}"#;
+        let (base_url, count) =
+            spawn_fixed_response_server("400 Bad Request", body.to_string()).await;
+        let handler = handler_for_local_server(base_url);
+        let result = handler.create_advanced_post(draft_post_params()).await;
+        assert!(
+            matches!(result, Err(McpError::ExternalApi(ref msg)) if msg.contains("empty_content")),
+            "got: {:?}",
+            result
+        );
+        assert_eq!(request_count(&count), 1);
     }
 
     #[tokio::test]
@@ -8937,6 +9310,24 @@ mod tests {
             optional_slug_arg(&args),
             Err(McpError::InvalidParams(_))
         ));
+
+        // 文字・数字を含まないスラッグは、WordPressが空にするため拒否する（#750）
+        for slug in ["!!!", "-", " --_ ", "・。"] {
+            args.insert("slug".to_string(), json!(slug));
+            assert!(
+                matches!(
+                    optional_slug_arg(&args),
+                    Err(McpError::InvalidParams(ref msg)) if msg.contains("letter or digit")
+                ),
+                "slug: {slug}"
+            );
+        }
+
+        // 日本語・パーセントエンコードのスラッグは通す
+        for slug in ["テスト", "%e3%83%86%e3%82%b9%e3%83%88", "2024", "a-"] {
+            args.insert("slug".to_string(), json!(slug));
+            assert_eq!(optional_slug_arg(&args).unwrap().as_deref(), Some(slug));
+        }
     }
 
     #[test]
@@ -9134,6 +9525,86 @@ mod tests {
         // スラッグだけを送り、タイトル・本文等は送らない
         assert_eq!(sent, serde_json::json!({"slug": "my-first-post"}));
         assert!(tool_text(&result).contains("Slug: my-first-post"));
+    }
+
+    /// スラッグのある投稿の更新（#750）。スラッグを渡さなければ送らず、今の
+    /// スラッグのまま。文字・数字の無いスラッグは、送る前に断る
+    #[tokio::test]
+    async fn test_update_post_keeps_existing_slug_and_refuses_symbol_only_slug() {
+        let (base_url, captured) =
+            spawn_body_capturing_server(post_response_json("existing-slug")).await;
+        let handler = handler_for_local_server(base_url);
+        let call = |args: serde_json::Value| {
+            let args: HashMap<String, serde_json::Value> = serde_json::from_value(args).unwrap();
+            handler.call_tool(ToolCallParams {
+                name: "update_post".to_string(),
+                arguments: Some(args),
+            })
+        };
+
+        let result = call(serde_json::json!({"post_id": 7, "title": "新しい題"}))
+            .await
+            .unwrap();
+        assert!(tool_text(&result).contains("Slug: existing-slug"));
+        {
+            let bodies = captured.lock().await;
+            assert_eq!(bodies.len(), 1);
+            let sent: serde_json::Value = serde_json::from_str(&bodies[0]).unwrap();
+            assert_eq!(sent, serde_json::json!({"title": "新しい題"}));
+        }
+
+        let result = call(serde_json::json!({"post_id": 7, "slug": "!!!"})).await;
+        assert!(
+            matches!(result, Err(McpError::InvalidParams(ref msg)) if msg.contains("letter or digit")),
+            "got: {:?}",
+            result
+        );
+        assert_eq!(captured.lock().await.len(), 1);
+    }
+
+    /// 無いメディアのIDでも、WordPressは投稿を保存する（#750）。投稿は
+    /// 作ったと返し、画像は付いていないことと`set_featured_image`を伝える
+    #[tokio::test]
+    async fn test_create_post_with_featured_image_reports_unset_image() {
+        async fn call(handler: &WordPressHandler) -> Result<serde_json::Value, McpError> {
+            let args: HashMap<String, serde_json::Value> = serde_json::from_value(
+                serde_json::json!({"title": "t", "content": "c", "featured_media_id": 42}),
+            )
+            .unwrap();
+            handler
+                .call_tool(ToolCallParams {
+                    name: "create_post_with_featured_image".to_string(),
+                    arguments: Some(args),
+                })
+                .await
+        }
+        let post_with_media = |media: u64| {
+            let mut post: serde_json::Value =
+                serde_json::from_str(&post_response_json("t")).unwrap();
+            post["featured_media"] = serde_json::json!(media);
+            post.to_string()
+        };
+
+        let (base_url, captured) = spawn_body_capturing_server(post_with_media(0)).await;
+        let handler = handler_for_local_server(base_url);
+        let result = call(&handler).await.unwrap();
+        let text = tool_text(&result);
+        assert!(
+            text.contains("did not set media 42") && text.contains("Post ID: 7"),
+            "got: {text}"
+        );
+        assert!(text.contains("set_featured_image"), "got: {text}");
+        assert_eq!(result["isError"], false);
+        assert_eq!(captured.lock().await.len(), 1);
+
+        let (base_url, _) = spawn_body_capturing_server(post_with_media(42)).await;
+        let handler = handler_for_local_server(base_url);
+        let result = call(&handler).await.unwrap();
+        assert!(
+            tool_text(&result).starts_with("Created post with featured image. Post ID: 7"),
+            "got: {}",
+            tool_text(&result)
+        );
     }
 
     #[test]
