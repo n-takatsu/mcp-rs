@@ -23,7 +23,7 @@ fn shell_command_tail() -> String {
 
 /// CMD-001等で見るシェルのコマンド名（#759）
 const SHELL_COMMANDS: &str = "rm|curl|wget|nc|ncat|netcat|telnet|bash|sh|zsh|ksh|dash|cat|\
-     chmod|chown|python[23]?|perl|ruby|php|powershell|pwsh|cmd|id|whoami|uname|ls|ping|nslookup";
+     chmod|chown|kill|python[23]?|perl|ruby|php|powershell|pwsh|cmd|id|whoami|uname|ls|ping|nslookup";
 
 /// シェルのコマンドの前に付くパス（`/bin/`・`/usr/sbin/`等）
 const SHELL_COMMAND_DIR: &str = r"/(?:usr/)?s?bin/";
@@ -490,12 +490,15 @@ impl SignatureDetector {
             // 囲んだ値の全体がそのファイル名のもの（JSONの`{"file":".env"}`、
             // PR #764のレビュー。文の`"edit web.config to ..."`は当てない）。
             // 値の始めの名前は、後ろが終わり・区切り・`.`のときだけ（JSONの値を
-            // デコードして調べるので、`"web.config tips"`のような文に当てない）
+            // デコードして調べるので、`"web.config tips"`のような文に当てない）。
+            // `/`・`\`の後の名前は空白を含んでもよい（`/app/my config.ini`、
+            // PR #764のレビュー）が、そのときは後ろが終わり・区切り・引用符の
+            // ときだけ（文の`docs/notes about web.config tips`に当てない）
             AttackPattern::new(
                 "PATH-008",
                 "Config File Access",
                 DetectionType::UnauthorizedAccess,
-                r#"(?i)^[\w.-]*\.(?:env|config|ini|conf)(?:$|[/\\?#&;.])|[/\\=][\w.-]*\.(?:env|config|ini|conf)(?:$|[/\\?#&;.'"\s])|"[\w.-]*\.(?:env|config|ini|conf)"|'[\w.-]*\.(?:env|config|ini|conf)'"#,
+                r#"(?i)^[\w.-]*\.(?:env|config|ini|conf)(?:$|[/\\?#&;.])|[/\\=][\w.-]*\.(?:env|config|ini|conf)(?:$|[/\\?#&;.'"\s])|[/\\][^/\\\r\n]*\.(?:env|config|ini|conf)(?:$|[/\\?#&;'"])|"[\w.-]*\.(?:env|config|ini|conf)"|'[\w.-]*\.(?:env|config|ini|conf)'"#,
                 Severity::High,
                 "Configuration file access",
                 vec![],
@@ -1257,6 +1260,51 @@ mod tests {
                 .await
                 .unwrap();
             assert!(!result.matched, "{body}: {:?}", result.pattern_names);
+        }
+    }
+
+    /// PR #764の4回目のレビュー: 空白を含む設定ファイルのパスと、`kill`の
+    /// コマンドを検知する。文の中の語は今までどおり当たらない
+    #[tokio::test]
+    async fn test_pr764_fourth_review_paths_with_spaces_and_kill() {
+        let detector = SignatureDetector::new().await.unwrap();
+        for (value, pattern) in [
+            ("/app/my config.ini", "Config File Access"),
+            (r"C:\app\my settings.conf", "Config File Access"),
+            ("$(kill 1234)", "Dollar Parenthesis"),
+            ("x&&kill 1234", "Shell Command Injection"),
+        ] {
+            let result = detector
+                .detect(&request_with(&[("file", value)], &[], None))
+                .await
+                .unwrap();
+            assert!(
+                result.pattern_names.contains(&pattern.to_string()),
+                "{value}: {:?}",
+                result.pattern_names
+            );
+        }
+        let body = r#"{"file":"/app/my config.ini"}"#;
+        let result = detector
+            .detect(&request_with(&[], &[], Some(body)))
+            .await
+            .unwrap();
+        assert!(result.matched, "{:?}", result.pattern_names);
+        for value in [
+            "/docs/a.initial",
+            "web.config tips",
+            "docs/notes about web.config tips",
+            "$(document)",
+            "I kill time; kill switch",
+        ] {
+            // 文はJSONの本文の値として調べる（クエリは`q=...`の形でも調べ、
+            // `=`の後の名前はパスとして扱うため。前からの動き）
+            let body = serde_json::json!({ "text": value }).to_string();
+            let result = detector
+                .detect(&request_with(&[], &[], Some(&body)))
+                .await
+                .unwrap();
+            assert!(!result.matched, "{value}: {:?}", result.pattern_names);
         }
     }
 }

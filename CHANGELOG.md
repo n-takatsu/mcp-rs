@@ -334,14 +334,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   探していた（`.initial`・`.conference`でHTTP 403）。パス・値の始まりか
   `/`・`\`・`=`の後のファイル名が、これらで終わるもの（`/.env`・
   `/app/config.ini`・`../.env`・`.env.local`等）と、引用符で囲んだ値の
-  全体がそのファイル名のもの（JSONの`{"file":".env"}`）だけを見る（#759）
+  全体がそのファイル名のもの（JSONの`{"file":".env"}`）だけを見る。
+  `/`・`\`の後の名前は空白を含んでもよい（`/app/my config.ini`）（#759）
 
 - `ids_enabled = true`で、IDSのCMD-001（Critical）が`;`・`&`・`|`・`$`・
   `<`・`>`の1文字だけで一致していた。`Cookie: a=b; c=d`、ブラウザの
   User-Agentの`;`、本文の`&`・`<`だけでHTTP 403になり、送り元のアドレスも
-  ブロックした。区切りの後にシェルのコマンド（`rm`・`curl`・`sh`・`id`等）
-  と引数らしいもの（`-`・`/`等で始まるもの、数、`victim.txt`等の
-  ファイル名）等が続くときと、Shellshock（`() { :; };`）だけを見る。
+  ブロックした。区切りの後にシェルのコマンド（`rm`・`curl`・`sh`・`id`・
+  `kill`等）と引数らしいもの（`-`・`/`等で始まるもの、数、`victim.txt`
+  等のファイル名）等が続くときと、Shellshock（`() { :; };`）だけを見る。
   CMD-004（`| id`）・CMD-005（`; del`）も同じく絞り、`| identity`・
   Markdownの表の`| id |`・`; delivery`では一致しない（#759）
 
