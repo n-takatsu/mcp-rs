@@ -226,6 +226,78 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- WordPressの`create_advanced_post`に`excerpt`が無かった（#759）。
+  `draft_post`のプロンプトは抜粋を書かせるのに、保存できなかった。
+  `excerpt`を受け、WordPressに送る（省略時は、今までどおりWordPressが
+  本文から作る）。抜粋に対応しない独自の投稿タイプでは、WordPressが
+  黙って捨てる（応答に`excerpt`が無い）ので、作ったことと、抜粋は保存
+  されていないことを伝える（投稿・固定ページは保存する）
+
+- WordPressのリソースの読み取り（`resources/read`）が、エラーの本文に
+  ` 404 `を含むだけで「リソースが無い」（`-32002`）にしていた（#759）。
+  503の本文に`upstream 404 from proxy`等があっても、無いことになった。
+  WordPressの応答の状態コードが404のときだけにする
+
+- WordPressの`create_comment`は、いつも`status`（既定は`hold`）を送るので、
+  `moderate_comments`の権限の無いユーザー（投稿者・寄稿者）では、
+  WordPressが`rest_comment_invalid_status`で断り、作れなかった（#759）。
+  ツールの説明に権限が要ることを書き、断られたときは権限を案内する。
+  `status`を外して送り直すと、すぐに公開されうるので、そうしない
+
+- WordPressの`create_post_with_embeds`に`youtube-nocookie.com/embed/…`を
+  渡しても、`www.youtube.com`のプレーヤーを埋め込んでいた（#759）。
+  プライバシー強化モードのURLは、`www.youtube-nocookie.com`のまま埋め込む
+
+- WordPressの一覧の全件取得で、合計の上限（64 MiB）を、ページの本文を
+  読み終えてから確かめていた（#759。上限の近くでも、次のページを最大
+  32 MiBまで読んでいた）。本文の受信に失敗して読み直したページは、失敗した
+  試行で受け取った分を数えていなかった。一覧の残りの量までしか読まず、
+  失敗した試行の分も数える。失敗した試行で残りを使い切ったら、同じ
+  ページを送り直さない
+
+- WordPressの`set_featured_image`が、応答の`featured_media`を確かめず、
+  WordPressが画像を設定しなかったとき（無いメディアのID等）も成功と
+  返していた（#759）。`create_post_with_featured_image`と同じく、要求した
+  IDと照らし合わせ、違えばエラーにする
+
+- WordPressのサイトのURL（`url`）に問い合わせ・フラグメントがあっても
+  受け付けていた（#759）。`https://example.com/blog?lang=ja`だと、後ろに
+  付けるREST APIのパスが問い合わせの一部になり、REST APIに届かなかった。
+  起動のときに断る（`/blog`等のサブディレクトリはよい）
+
+- WordPressの`wordpress_health_check`が問題を見つけて`isError: true`を
+  返しても、監査ログには`SUCCESS`と残していた（#759）。WordPressの
+  ツールの結果が`isError: true`なら、失敗（`FAILURE`）として残す
+
+- WordPressの`wordpress_health_check`が、サイトに届くか・REST APIを
+  使えるかを確かめるとき、応答の大きさの上限（32 MB）無しに、本文を
+  全部読んでいた（#759）。ほかの読み取りと同じく、上限までしか読まない
+
+- WordPressの`get_post`が、カテゴリー・タグの無い投稿（固定ページ等）
+  でも、サイト全体のカテゴリー・タグの一覧を取得していた（#759）。
+  IDのある分類だけ、名前を解決する
+
+- WordPressの`update_post`で、予約済みの投稿に`status: "future"`だけ
+  （`date`無し）を渡すと、`future`を送り直していた（#759）。読んだ後に
+  別の編集者が予約を取り消していると、予約が戻るか、すぐに公開された。
+  予約を保つだけなら`status`を送らない
+
+- WordPressの一覧の全件取得で、読んでいる間に読み終えたページの項目が
+  消えると、後ろのページがずれて1件欠けた（#759。件数の照合も通って
+  いた）。1ページ目の総件数・総ページ数を覚え、変わったら初めから
+  読み直す。減って後ろのページが範囲の外になり、WordPressが400の
+  `rest_post_invalid_page_number`等を返したときも、初めから読み直す
+
+- WordPressの`get_posts`に、カテゴリー・タグの無いカスタム投稿タイプで
+  `categories`・`tags`を渡すと、そのまま送っていた（#759）。WordPressは
+  絞り込みを無視し、絞り込んでいない一覧を返した。書き込みと同じく、
+  投稿タイプのタクソノミーを調べ、無ければ送らずに断る
+
+- WordPressの`wordpress_health_check`の「Media Upload Possible」は、
+  メディアの一覧を読めるかで決めていて、アップロードの権限
+  （`upload_files`）が無くても✅になった（#759）。「Media Readable」と
+  出し、エラーの文も`Media read check failed`にする（`mcp-rs check`も）
+
 - SIGTERM（`docker stop`・`systemctl stop`等）で終わると、プラグインを
   止めず、コンテナ・子プロセスが残っていた（#759。STDIO・HTTPとも）。
   Ctrl+Cと同じく、プラグインを止めてから終わる（WindowsではCtrl+Breakも）。
