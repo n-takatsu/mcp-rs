@@ -1277,15 +1277,26 @@ fn post_status_or_draft(args: &HashMap<String, serde_json::Value>) -> Result<Str
 fn slug_without_markup(slug: &str) -> String {
     let mut rest = slug;
     let mut kept = String::new();
+    // 閉じる文字がもう残っていない（`>`・`;`）。後ろの`<`・`&`ごとに残り
+    // 全体を探し直すと、長い入力で時間が2乗で増えるため、覚えておく
+    let mut no_more_gt = false;
+    let mut no_more_semicolon = false;
     while let Some(i) = rest.find(['<', '&']) {
         kept.push_str(&rest[..i]);
-        let (open, close) = if rest[i..].starts_with('<') {
-            ('<', '>')
+        let (open, close, no_more) = if rest[i..].starts_with('<') {
+            ('<', '>', &mut no_more_gt)
         } else {
-            ('&', ';')
+            ('&', ';', &mut no_more_semicolon)
+        };
+        let found = if *no_more {
+            None
+        } else {
+            let found = rest[i + 1..].find(close);
+            *no_more = found.is_none();
+            found
         };
         // 閉じる文字が無ければ、そのまま残す（WordPressも取り除かない）
-        match rest[i + 1..].find(close) {
+        match found {
             Some(end) if !(open == '&' && end == 0) => rest = &rest[i + 1 + end + 1..],
             _ => {
                 kept.push(open);
@@ -9308,6 +9319,17 @@ mod tests {
         // 省略時は送らない（WordPressにタイトルから作らせる）
         let body = advanced_post_body(PostCreateParams::default());
         assert!(body.get("slug").is_none());
+    }
+
+    /// 閉じる文字の無い`&`・`<`が多い長いスラッグも、すぐに確かめ終わる
+    /// （残りを何度も探し直さない。#750）
+    #[test]
+    fn test_slug_without_markup_long_input() {
+        let slug = "&<".repeat(500_000);
+        let started = std::time::Instant::now();
+        assert_eq!(slug_without_markup(&slug), slug);
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert_eq!(slug_without_markup("a&amp;b<i>c</i>&x"), "abc&x");
     }
 
     #[test]
