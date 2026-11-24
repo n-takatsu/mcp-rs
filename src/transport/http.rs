@@ -5,9 +5,9 @@
 use crate::{
     error::{Error, Result},
     security::{
-        AntiReplayConfig, AntiReplayMiddleware, ApiKeyConfig, ApiKeyManager, AuditLogger,
-        IDSConfig, IntrusionDetectionSystem, NetworkPolicy, RecommendedAction, ReplayError,
-        RequestData, SecurityHeaders,
+        AntiReplayConfig, AntiReplayMiddleware, ApiKeyManager, AuditLogger, IDSConfig,
+        IntrusionDetectionSystem, NetworkPolicy, RecommendedAction, ReplayError, RequestData,
+        SecurityHeaders,
     },
     transport::{
         oauth::{www_authenticate, OAuthConfig, OAuthValidator, TokenError},
@@ -1371,7 +1371,7 @@ impl HttpTransport {
 
         let mut api_key_callers = HashMap::new();
         let api_key_manager = if self.config.auth_enabled {
-            let mut manager = ApiKeyManager::new(ApiKeyConfig::default());
+            let mut manager = ApiKeyManager::new();
             for entry in &self.config.api_keys {
                 let access = crate::mcp::ToolAccess::from_patterns(entry.tools.as_deref())
                     .map_err(|e| {

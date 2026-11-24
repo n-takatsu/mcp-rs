@@ -4,7 +4,7 @@
 
 use chrono::Utc;
 use mcp_rs::security::ids::{
-    alerts::{Alert, AlertLevel, AlertManager, NotificationChannel},
+    alerts::{Alert, AlertLevel, AlertManager},
     behavioral::BehavioralDetector,
     network::NetworkMonitor,
     signature::SignatureDetector,
@@ -297,28 +297,6 @@ async fn test_alert_manager_multiple_alerts() {
     let stats = manager.get_alert_stats().await;
     assert_eq!(stats.get(&AlertLevel::Critical).copied().unwrap_or(0), 2);
     assert_eq!(stats.get(&AlertLevel::Medium).copied().unwrap_or(0), 3);
-}
-
-#[tokio::test]
-async fn test_alert_manager_notification_channels() {
-    let manager = AlertManager::new().await.unwrap();
-
-    // Slackチャネルを追加
-    let slack_channel = NotificationChannel::Slack {
-        webhook_url: "https://hooks.slack.com/test".to_string(),
-        min_level: AlertLevel::High,
-    };
-    manager.add_notification_channel(slack_channel).await;
-
-    // Emailチャネルを追加
-    let email_channel = NotificationChannel::Email {
-        recipients: vec!["security@example.com".to_string()],
-        min_level: AlertLevel::Critical,
-    };
-    manager.add_notification_channel(email_channel).await;
-
-    // チャネルが追加されたか確認（内部実装による）
-    // 実際の通知送信はモックが必要
 }
 
 #[tokio::test]

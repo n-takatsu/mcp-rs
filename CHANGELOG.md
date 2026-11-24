@@ -229,6 +229,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- ライブラリとして使う場合: mcp-rs本体が使わない次のものを外した（#760）。
+  ライブラリとして使う場合には互換性の無い変更。これらへのレビューの指摘は、
+  外したので直さない
+  - 動的な設定（`config::dynamic`・`DynamicConfigManager`）
+  - WebSocketのクライアント（`transport::websocket`・`WebSocketTransport`・
+    `WebSocketConfig`等）と、そのテスト・例
+    （`websocket_transport_foundation`）。mcp-rs本体のWebSocket（HTTPの
+    トランスポートの`/ws`）は別の実装で、変わらない。設定ファイルの
+    `transport_type`は、今までどおり`stdio`・`http`だけを受け付ける
+  - `types`のMCPの型（`Tool`・`Resource`・`Prompt`・`PromptArgument`・
+    `ServerInfo`・`ServerCapabilities`・`ToolsCapability`・
+    `ResourcesCapability`・`PromptsCapability`）。mcp-rs本体は
+    `mcp::types`を使う。`Transport`が使うJSON-RPCの型（`JsonRpcRequest`等）は
+    残す
+  - 監査ログの`AuditLogger::redact_user`
+  - `RateLimiter`の認証の失敗の記録とブロック（`record_auth_failure_ip`・
+    `record_auth_failure_user`・`check_ip_blocked`・`check_user_blocked`・
+    `reset_auth_failures_*`・`get_auth_failure_count_*`・
+    `cleanup_auth_failures`）。HTTPのトランスポートの認証の失敗の制限は
+    別の実装で、変わらない
+  - IDSのアラートの通知のチャネル（`NotificationChannel`・
+    `AlertManager::add_notification_channel`・`NotificationResult`）。
+    メール・Slack・Webhookへは送らない。アラートは今までどおりログに書く
+  - APIキーの生成（`ApiKeyManager::generate_key`）と、`ApiKeyConfig`
+    （`key_length`等。生成のほかに使うところが無かった）。
+    `ApiKeyManager::new()`は引数を取らない。mcp-rs本体は、設定ファイルの
+    キーを`import_key`で取り込む
+
 - テスト・開発用のcompose（`configs/docker/docker-compose.postgres.yml`）から、
   PostgreSQLのセカンダリ（`postgres-secondary`、ポート5433）と、その起動の
   スクリプト（`scripts/postgres/standby.sh`）を外した（#732）。
