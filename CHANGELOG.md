@@ -237,8 +237,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - 2024-11-05の版のクライアントに、`content`が空で`structuredContent`だけの
   ツールの結果を返すと、`structuredContent`を除くので、空の成功になっていた
-  （#750）。`content`が空・無ければ、`structuredContent`を文字列にした
-  テキストを入れる
+  （#750）。`content`が空なら、`structuredContent`を文字列にした
+  テキストを入れる（プラグインの結果に`content`が無ければ、今までどおり
+  仕様に合わない結果としてエラーにする）
 
 - `[[plugins]]`の`enabled = nan`等の不正な値を、省略と同じに扱い、
   プラグインを既定の値で起動していた（#750。`call_timeout_seconds`等の数も）。
