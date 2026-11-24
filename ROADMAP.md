@@ -76,6 +76,7 @@ v0.15.0〜v0.21.0の変更と、v0.16.0以前からある`src`を、今のdevelo
 - ✅ #744・#746・#750・#755 各版の変更のレビューの指摘
 - ✅ #759 v0.16.0以前からある`src`の、本体に当たる35件（WordPress・HTTP・MCPのサーバー・IDS・ログ・終了・MySQL）
 - #760 本体が使わないライブラリのコードを非公開にし、公開のまま残すAPIの指摘を直す
+- #758 PostgreSQLのエンジン（ライブラリ）の`health_check`・`get_version`を接続先に問い合わせる。MongoDB・Redisは`[database]`で使えないことを書く
 
 ### 📅 v0.31.0: データベース（[マイルストーン](https://github.com/n-takatsu/mcp-rs/milestone/10)）
 
@@ -88,7 +89,6 @@ v0.15.0〜v0.21.0の変更と、v0.16.0以前からある`src`を、今のdevelo
 - #529 Redis、#530 MongoDB
 - #646 SQLの実行計画（EXPLAIN）を見るツール
 - #609 マイクロセグメンテーション（表ごとの許可）を、`execute_command`にもかける
-- #758 PostgreSQLのエンジンの`health_check`・`get_version`、MongoDB・Redisは使えないことを書く
 - #768 データベースのライブラリのコード（列の暗号化・ゼロトラスト・MySQL）のレビューの指摘
 
 ### 📅 v0.32.0: プラグインと配布（[マイルストーン](https://github.com/n-takatsu/mcp-rs/milestone/11)）
