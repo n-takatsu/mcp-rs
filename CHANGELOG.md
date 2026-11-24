@@ -241,8 +241,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - ライブラリとして使う場合: PostgreSQLのエンジンは、最初に作ったプールを
   以後の`connect`で共有するので、別の接続先（ホスト・ポート・データベース・
   ユーザー）の設定で`connect`すると、最初の接続先のプールで動き、接続の
-  情報には後の接続先が出ていた（#758）。プールと違う接続先なら
-  `ConfigurationError`で断る（別の接続先には、別のエンジンを作る）
+  情報には後の接続先が出ていた（#758）。エンジンを作った設定と違う接続先
+  なら`ConfigurationError`で断る（別の接続先には、別のエンジンを作る）。
+  プールはいつもエンジンの設定の接続先に作るので、`health_check`・
+  `get_version`が確かめる接続先とも合う
 
 - MongoDB・Redisのエンジン（`mongodb-backend`・`redis-backend`）は、
   データベースのハンドラー（`[database]`）では使えないことを、`Cargo.toml`・

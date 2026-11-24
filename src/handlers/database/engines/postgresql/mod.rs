@@ -25,8 +25,9 @@ use std::sync::Arc;
 // 接続の設定のキー。MySQL（#527）と共有するので、`engines`に置いた
 pub use super::{OPTION_BYTE_LIMIT, OPTION_FETCH_LIMIT, OPTION_SSL_ROOT_CERT};
 
-/// プールの接続先（PR #767のレビュー）。プールを作った設定と違う接続先の
-/// 設定で`connect`されたら断るために覚えておく（パスワードは持たない）
+/// 接続先（ホスト・ポート・データベース・ユーザー。PR #767のレビュー）。
+/// エンジンを作った設定と違う接続先で`connect`されたら断るために比べる
+/// （パスワードは持たない）
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct PoolTarget {
     host: String,
@@ -62,10 +63,10 @@ impl std::fmt::Display for PoolTarget {
 #[derive(Clone)]
 pub struct PostgreSqlEngine {
     config: DatabaseConfig,
-    /// 接続のプールと、その接続先。最初の`connect`（か`health_check`・
-    /// `get_version`）で作り、以後の接続で共有する（#453）。以前は`connect`の
-    /// たびに新しいプールを作っていた
-    pool: Arc<tokio::sync::OnceCell<(sqlx::PgPool, PoolTarget)>>,
+    /// 接続のプール。最初の`connect`（か`health_check`・`get_version`）で、
+    /// エンジンの設定の接続先に作り、以後の接続で共有する（#453）。以前は
+    /// `connect`のたびに新しいプールを作っていた
+    pool: Arc<tokio::sync::OnceCell<sqlx::PgPool>>,
 }
 
 impl PostgreSqlEngine {
@@ -89,23 +90,23 @@ impl PostgreSqlEngine {
         self.pool_for(&self.config).await
     }
 
-    /// `config`の接続先の、共有のプール。まだ無ければ`config`で作る。プールが
-    /// 別の接続先のものなら断る（PR #767のレビュー。プールは1つなので、
-    /// 断らないと、Bへの操作がAのプールで動き、接続の情報にはBが出る）
+    /// `config`の接続先の、共有のプール。まだ無ければ`config`で作る。
+    /// エンジンを作った設定と違う接続先なら断る（PR #767のレビュー）。
+    /// プールは1つなので、断らないと、Bへの操作がAのプールで動き、接続の
+    /// 情報にはBが出る。また、プールはいつもエンジンの設定の接続先なので、
+    /// `health_check`・`get_version`が確かめる接続先とも合う
     async fn pool_for(&self, config: &DatabaseConfig) -> Result<sqlx::PgPool, DatabaseError> {
-        let target = PoolTarget::of(config);
-        let (pool, pooled) = self
-            .pool
-            .get_or_try_init(|| async {
-                Ok::<_, DatabaseError>((pg_connection::connect_pool(config).await?, target.clone()))
-            })
-            .await?;
-        if *pooled != target {
+        let (engine_target, target) = (PoolTarget::of(&self.config), PoolTarget::of(config));
+        if target != engine_target {
             return Err(DatabaseError::ConfigurationError(format!(
-                "this PostgreSQL engine is already connected to {pooled}; create another engine to connect to {target}"
+                "this PostgreSQL engine was created for {engine_target}; create another engine to connect to {target}"
             )));
         }
-        Ok(pool.clone())
+        Ok(self
+            .pool
+            .get_or_try_init(|| pg_connection::connect_pool(config))
+            .await?
+            .clone())
     }
 
     /// `health_check`・`get_version`の待ち時間の上限（`query_timeout`秒。
@@ -182,7 +183,7 @@ impl DatabaseEngine for PostgreSqlEngine {
             })
             .await;
         let response_time_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-        let connection_count = self.pool.get().map_or(0, |(pool, _)| pool.size());
+        let connection_count = self.pool.get().map_or(0, |pool| pool.size());
         let (status, error_message) = match result {
             Ok(_) => (HealthStatusType::Healthy, None),
             Err(e) => (HealthStatusType::Critical, Some(e.to_string())),
@@ -255,10 +256,10 @@ mod tests {
         assert_eq!(health.connection_count, 0);
     }
 
-    /// プールを作った設定と違う接続先で`connect`されたら断る。同じ接続先なら
-    /// 共有のプールを使う（PR #767のレビュー）
+    /// エンジンを作った設定と違う接続先で`connect`されたら断る。同じ接続先
+    /// なら共有のプールを使う（PR #767のレビュー）
     #[tokio::test]
-    async fn test_connect_refuses_another_target_than_the_pool() {
+    async fn test_connect_refuses_another_target_than_the_engine() {
         let config = unreachable_config();
         let engine = PostgreSqlEngine::new(config.clone()).await.unwrap();
         // つながずにプールを用意する（`connect_lazy`は接続しない）
@@ -266,7 +267,7 @@ mod tests {
             .connect_lazy_with(sqlx::postgres::PgConnectOptions::new());
         engine
             .pool
-            .set((pool, PoolTarget::of(&config)))
+            .set(pool)
             .unwrap_or_else(|_| panic!("the pool was already set"));
 
         assert!(engine.connect(&config).await.is_ok());
@@ -278,6 +279,38 @@ mod tests {
             matches!(result, Err(DatabaseError::ConfigurationError(ref m)) if m.contains("/other")),
             "{:?}",
             result.err()
+        );
+    }
+
+    /// エンジンを作った設定（A）と違う接続先（B）で最初に`connect`されても、
+    /// プールをBに作らないので、`health_check`・`get_version`はAを確かめる
+    /// （PR #767の2回目のレビュー。以前はBのプールができ、Aとの比べで
+    /// `ConfigurationError`になった）
+    #[tokio::test]
+    async fn test_first_connect_to_another_target_does_not_break_health_check() {
+        let config = unreachable_config();
+        let engine = PostgreSqlEngine::new(config.clone()).await.unwrap();
+        let mut other = config.clone();
+        other.connection.database = "other".to_string();
+
+        let result = engine.connect(&other).await;
+        assert!(
+            matches!(result, Err(DatabaseError::ConfigurationError(_))),
+            "{:?}",
+            result.err()
+        );
+        assert!(engine.pool.get().is_none());
+
+        // Aはつなげない設定なので、つなげない理由で`Critical`・エラーになる
+        // （接続先の比べのエラーではない）
+        let health = engine.health_check().await.unwrap();
+        assert_eq!(health.status, HealthStatusType::Critical);
+        let message = health.error_message.unwrap_or_default();
+        assert!(!message.contains("create another engine"), "{message}");
+        let version = engine.get_version().await;
+        assert!(
+            !matches!(version, Err(DatabaseError::ConfigurationError(_))),
+            "{version:?}"
         );
     }
 
