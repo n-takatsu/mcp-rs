@@ -119,7 +119,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     );
     println!(
-        "      メディアアップロード: {}",
+        "      メディア読み取り: {}",
         if health_check.media_upload_possible {
             "✅"
         } else {

@@ -88,6 +88,8 @@ enabled = true
 
 `enabled = true` is required: without it, the WordPress tools are not registered (and `${...}` is not expanded), with no error.
 
+`url` is the site address only. A subdirectory such as `https://example.com/blog` is fine, but a query (`?lang=ja`) or fragment (`#...`) is refused at startup, because mcp-rs appends the REST API path (`/wp-json/wp/v2/...`) to the URL and it would end up inside the query (v0.30.0 and later).
+
 To keep the Application Password out of the config file in plaintext:
 
 - `keyring = "<name>"` instead of `username`/`password`: read them from the OS credential store (Windows Credential Manager, macOS Keychain, Secret Service). This works the same whether Claude Desktop, Claude Code, or a terminal starts mcp-rs. See [OS Credential Store](../security/#os-credential-store)
@@ -221,6 +223,7 @@ Create a new WordPress post or page with advanced options.
 - `featured_media_id` (number, optional): Featured image media ID
 - `meta` (object, optional): Meta fields for SEO (e.g., Yoast SEO fields)
 - `slug` (string, optional): URL slug, for example an English slug for a post with a Japanese title. If omitted, WordPress generates one from the title. See [Slugs](#slugs)
+- `excerpt` (string, optional): A short summary of the post, shown in post lists and often used as the meta description. If omitted, WordPress makes one from the content (v0.30.0 and later). Posts and pages keep it. Custom post types without excerpt support do not: WordPress ignores it, and the result says that the excerpt was not saved. The item is still created, so do not create it again
 
 **Example Usage:**
 
@@ -251,7 +254,7 @@ Create a post or page with embedded YouTube videos and social media content appe
 **Parameters:**
 - `title` (string): Post title
 - `content` (string): Base post content (embeds are added after it)
-- `youtube_urls` (array of strings, optional): YouTube video URLs to embed as video players: `youtube.com/watch?v=…`, `youtu.be/…`, `youtube.com/embed/…`, `youtube.com/shorts/…`, `youtube.com/live/…` or `youtube-nocookie.com/embed/…` (Shorts, live and nocookie URLs from v0.30.0). URLs in other forms are not added; the result lists them after `Not embedded (unsupported URL):` (v0.30.0 and later)
+- `youtube_urls` (array of strings, optional): YouTube video URLs to embed as video players: `youtube.com/watch?v=…`, `youtu.be/…`, `youtube.com/embed/…`, `youtube.com/shorts/…`, `youtube.com/live/…` or `youtube-nocookie.com/embed/…` (Shorts, live and nocookie URLs from v0.30.0). A `youtube-nocookie.com` URL is embedded with `www.youtube-nocookie.com` (privacy-enhanced mode); the others with `www.youtube.com`. URLs in other forms are not added; the result lists them after `Not embedded (unsupported URL):` (v0.30.0 and later)
 - `social_urls` (array of strings, optional): Social media URLs to embed: X/Twitter, Instagram posts (`instagram.com/p/…`), Facebook or TikTok. Other URLs are not added and are listed in the result in the same way. Both lists accept only URLs on the services' own hosts (for example `www.youtube.com` or `x.com`, not a URL on another site that contains these names)
 - `post_type` (string, optional): `post` or `page`
 - `status` (string, optional): `publish`, `draft`, `pending`, `private`, or a custom status registered on the site (for example by a plugin). Defaults to `draft`. `future` (scheduled) is not available because this tool has no date parameter
@@ -325,6 +328,7 @@ To check a draft first and schedule it afterwards, update it with `status: "futu
 - Replace `date` with the time you want, in the future. With a date in the past, WordPress publishes the post immediately instead of scheduling it
 - `date` is in the site's time zone (Settings → General). `get_post` shows the date with a `Date:` line, marked `scheduled` for a scheduled post
 - `status: "future"` without `date` is refused unless the post is already scheduled: WordPress would publish it immediately. Up to v0.28.0, `update_post` had no `date` and sent `future` as it was
+- For an already scheduled post, `status: "future"` without `date` keeps the schedule by not sending `status` at all (v0.30.0 and later). If another editor cancelled the schedule after mcp-rs read the post, sending `future` again would bring it back or publish the post immediately
 - To change the time of a scheduled post, send only `date`
 - `get_posts` with `status: "future"` lists the scheduled posts
 
@@ -389,7 +393,7 @@ Retrieve WordPress posts. By default, only published posts.
 **Parameters:**
 - `status` (string, optional): Which posts to list: `publish` (default), `future` (scheduled), `draft`, `pending`, `private`, or `any`. Several can be given with commas, for example `future,draft` (v0.29.0 and later). Other than `publish`, the credentials must be allowed to edit posts
 - `search` (string, optional): Keyword to search for in the title and content
-- `categories`, `tags` (arrays of IDs, optional): Only posts in any of these categories, or with any of these tags (`get_categories` and `get_tags` list the IDs)
+- `categories`, `tags` (arrays of IDs, optional): Only posts in any of these categories, or with any of these tags (`get_categories` and `get_tags` list the IDs). Refused for a custom post type without categories or tags on the site, because WordPress would ignore the filter and return the unfiltered list (v0.30.0 and later)
 - `author` (number, optional): Author user ID
 - `after`, `before` (string, optional): Only posts published after or before this date or date-time, in the site's time zone (`2026-11-01` or `2026-11-01T09:00:00`)
 - `orderby` (optional): `date` (default), `modified`, `title`, `id`, `slug`, `author`, or `relevance` (with `search`)
@@ -550,6 +554,8 @@ Set featured image for an existing post.
 - `post_id` (number): ID of the post to update
 - `media_id` (number): ID of the media to set as featured image
 
+If WordPress does not set the media (for example, the ID does not exist), the result is an error that says so, with the post's current `featured_media` (v0.30.0 and later; before, it reported success).
+
 ## Category & Tag Management
 
 **Returns:** Array of post objects with metadata
@@ -667,6 +673,8 @@ WordPress comments have no drafts. So that you can check a reply the AI wrote be
 - `parent` (number, optional): ID of the comment to reply to
 - `post_id` (number, optional): Post or page to comment on. Required without `parent`; with `parent`, the post of that comment is used
 - `status` (string, optional): `hold` (held for moderation, the default) or `approve` (published at once)
+
+mcp-rs always sends the status, and WordPress lets only users with the `moderate_comments` capability (Editor or Administrator role) set it. With an Author or Contributor account, WordPress refuses the comment with `rest_comment_invalid_status`, and the error says that the capability is needed. mcp-rs does not retry without the status, because WordPress could then publish the comment at once.
 
 **Example Usage:**
 
@@ -1224,17 +1232,18 @@ The health check performs five critical validation stages:
 
 ### 4. ✅ Permission Verification
 
-- **Purpose**: Check user has required capabilities
-- **Test**: Validate publish_posts, upload_files, and edit_posts permissions
-- **Success**: User has all required capabilities
-- **Failure**: Insufficient permissions for content operations
+- **Purpose**: Check that the credentials can read content
+- **Test**: Authenticated GET requests to the posts list (`/wp-json/wp/v2/posts`) and the media list (`/wp-json/wp/v2/media`)
+- **Success**: Both lists return a 2xx status. Write permissions (`publish_posts`, `upload_files`) are not verified
+- **Failure**: Either list is refused or returns an error
 
-### 5. 📁 Media Upload Capability
+### 5. 📁 Media Readable
 
-- **Purpose**: Test file upload functionality end-to-end
-- **Test**: Upload small test image to media library
-- **Success**: File uploaded successfully and media ID returned
-- **Failure**: Upload restrictions, storage issues, or API limitations
+- **Purpose**: Check that the media library can be read with the credentials
+- **Test**: GET request to `/wp-json/wp/v2/media`
+- **Success**: The media endpoint returned a 2xx status; the report shows `Media Readable: ✅`. The contents of the response are not read or validated
+- **Failure**: The media endpoint is blocked or returns an error
+- **Note**: This does not check the permission to upload (`upload_files`). Up to v0.29.0, the report called this line `Media Upload Possible`, although it was checked the same way
 
 ## Health Report
 
