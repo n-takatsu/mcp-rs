@@ -381,7 +381,11 @@ fn fallback_log_dir_candidates() -> Vec<PathBuf> {
 /// `rotation`と今のローカル時刻から、ログファイル名を求める
 /// （`LocalRollingAppender`と同じ`local_rolling::file_name_for`を使う）。
 fn resolved_log_filename(rotation: &LogRotation) -> String {
-    local_rolling::file_name_for(LOG_FILE_PREFIX, rotation, &chrono::Local::now())
+    local_rolling::file_name_for(
+        LOG_FILE_PREFIX,
+        rotation,
+        &chrono::Local::now().naive_local(),
+    )
 }
 
 /// 起動時に確定した、実際に使われているログ出力先の状態。
@@ -966,20 +970,31 @@ fn spawn_retention(
 }
 
 /// 保持の処理で消さないファイルの名前: 今書いているファイル（`active`）と、
-/// 今（`now`）と1つ前の期間のファイル（#759）
+/// 日次・時間別それぞれの今（`now`）と1つ前の期間のファイル（#759）
 fn protected_log_names(
     rotation: &LogRotation,
     active: Option<&Path>,
     now: &chrono::DateTime<chrono::Local>,
 ) -> Vec<String> {
-    let period = match rotation {
-        LogRotation::Hourly => chrono::Duration::hours(1),
-        LogRotation::Daily | LogRotation::Never => chrono::Duration::days(1),
+    let local_now = now.naive_local();
+    let file_name = |rotation: &LogRotation, time: &chrono::NaiveDateTime| {
+        local_rolling::file_name_for(LOG_FILE_PREFIX, rotation, time)
     };
     let mut names = vec![
-        local_rolling::file_name_for(LOG_FILE_PREFIX, rotation, now),
-        local_rolling::file_name_for(LOG_FILE_PREFIX, rotation, &(*now - period)),
+        file_name(&LogRotation::Daily, &local_now),
+        file_name(&LogRotation::Hourly, &local_now),
+        file_name(
+            &LogRotation::Hourly,
+            &(*now - chrono::Duration::hours(1)).naive_local(),
+        ),
     ];
+    // 日次はローカルの暦日で戻す。夏時間で1日が24時間とは限らない。
+    if let Some(previous_day) = local_now.checked_sub_days(chrono::Days::new(1)) {
+        names.push(file_name(&LogRotation::Daily, &previous_day));
+    }
+    if matches!(rotation, LogRotation::Never) {
+        names.push(file_name(&LogRotation::Never, &local_now));
+    }
     names.extend(
         active
             .and_then(|active| active.file_name())
@@ -1423,22 +1438,53 @@ mod tests {
             .single()
             .unwrap();
         let active = Path::new("/logs/mcp-rs.log.2026-01-08");
-        assert_eq!(
-            protected_log_names(&LogRotation::Daily, Some(active), &now),
-            vec![
+        for rotation in [LogRotation::Daily, LogRotation::Hourly, LogRotation::Never] {
+            let names = protected_log_names(&rotation, Some(active), &now);
+            for name in [
                 "mcp-rs.log.2026-01-10",
                 "mcp-rs.log.2026-01-09",
-                "mcp-rs.log.2026-01-08"
-            ]
-        );
-        assert_eq!(
-            protected_log_names(&LogRotation::Hourly, None, &now),
-            vec!["mcp-rs.log.2026-01-10-00", "mcp-rs.log.2026-01-09-23"]
-        );
-        assert_eq!(
-            protected_log_names(&LogRotation::Never, None, &now),
-            vec!["mcp-rs.log", "mcp-rs.log"]
-        );
+                "mcp-rs.log.2026-01-10-00",
+                "mcp-rs.log.2026-01-09-23",
+                "mcp-rs.log.2026-01-08",
+            ] {
+                assert!(names.iter().any(|protected| protected == name), "{name}");
+            }
+            assert_eq!(
+                names.iter().any(|name| name == LOG_FILE_PREFIX),
+                matches!(rotation, LogRotation::Never)
+            );
+        }
+
+        let dir = tempdir().unwrap();
+        let previous_hour = dir.path().join("mcp-rs.log.2026-01-09-23");
+        let older_hour = dir.path().join("mcp-rs.log.2026-01-09-22");
+        for path in [&previous_hour, &older_hour] {
+            fs::File::create(path)
+                .unwrap()
+                .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(60))
+                .unwrap();
+        }
+        let names = protected_log_names(&LogRotation::Daily, Some(active), &now);
+        cleanup_old_logs_by_count(dir.path(), 0, &names).unwrap();
+
+        assert!(previous_hour.exists());
+        assert!(!older_hour.exists());
+    }
+
+    #[test]
+    fn test_protected_daily_log_uses_previous_calendar_date() {
+        use chrono::TimeZone;
+
+        // TZ=America/New_York では前日が23時間で、前日の02:30は存在しない。
+        for hour in [0, 2] {
+            let now = chrono::Local
+                .with_ymd_and_hms(2026, 3, 9, hour, 30, 0)
+                .earliest()
+                .unwrap();
+            let names = protected_log_names(&LogRotation::Daily, None, &now);
+            assert!(names.iter().any(|name| name == "mcp-rs.log.2026-03-08"));
+            assert!(!names.iter().any(|name| name == "mcp-rs.log.2026-03-07"));
+        }
     }
 
     /// 切り替えたときの保持の処理は、別のスレッドで古いログを消し、新しい
@@ -1447,11 +1493,14 @@ mod tests {
     fn test_retention_on_rollover_removes_old_logs() {
         let dir = tempdir().unwrap();
         let now = chrono::Local::now();
-        let current = local_rolling::file_name_for(LOG_FILE_PREFIX, &LogRotation::Daily, &now);
-        let previous = local_rolling::file_name_for(
-            LOG_FILE_PREFIX,
-            &LogRotation::Daily,
-            &(now - chrono::Duration::days(1)),
+        let daily = |time: &chrono::NaiveDateTime| {
+            local_rolling::file_name_for(LOG_FILE_PREFIX, &LogRotation::Daily, time)
+        };
+        let current = daily(&now.naive_local());
+        let previous = daily(
+            &now.naive_local()
+                .checked_sub_days(chrono::Days::new(1))
+                .unwrap(),
         );
         let old = "mcp-rs.log.2000-01-01";
         for name in [current.as_str(), previous.as_str(), old] {

@@ -26,7 +26,7 @@ const RETRY_INTERVAL_SECS: i64 = 60;
 
 /// `now`の時点で使うログファイル名。起動時の表示・`mcp_rs_status`・
 /// writerの切り替えのすべてで、この関数を使う。
-pub(crate) fn file_name_for(prefix: &str, rotation: &LogRotation, now: &DateTime<Local>) -> String {
+pub(crate) fn file_name_for(prefix: &str, rotation: &LogRotation, now: &NaiveDateTime) -> String {
     match rotation {
         LogRotation::Never => prefix.to_string(),
         LogRotation::Daily => format!("{}.{}", prefix, now.format("%Y-%m-%d")),
@@ -151,7 +151,7 @@ impl LocalRollingAppender {
         clock: Clock,
     ) -> io::Result<Self> {
         let now = clock();
-        let current_name = file_name_for(prefix, rotation, &now);
+        let current_name = file_name_for(prefix, rotation, &now.naive_local());
         let path = dir.join(&current_name);
         let file = open_append(&path)?;
 
@@ -208,7 +208,7 @@ impl LocalRollingAppender {
 
         let mut header = None;
 
-        let name = file_name_for(&self.prefix, &self.rotation, &now);
+        let name = file_name_for(&self.prefix, &self.rotation, &now.naive_local());
         // 同じ形式の名前なので、文字列の比較で日付の前後が分かる。
         // 時計が戻っていた等で、今のファイル以前の名前になる場合は、
         // 切り替えずに今のファイルへ書き続ける。
@@ -356,7 +356,7 @@ mod tests {
 
     #[test]
     fn test_file_name_uses_local_date() {
-        let t = local(10, 1, 30);
+        let t = local(10, 1, 30).naive_local();
         assert_eq!(
             file_name_for("mcp-rs.log", &LogRotation::Daily, &t),
             "mcp-rs.log.2026-01-10"

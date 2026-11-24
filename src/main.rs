@@ -519,8 +519,7 @@ async fn run_http_server(
 struct ShutdownSignal(tokio::sync::watch::Receiver<Option<&'static str>>);
 
 impl ShutdownSignal {
-    /// 合図を今から受ける。受けられなければ警告し、合図を待っても終わらない
-    /// （合図でプロセスは既定のとおり止まる）
+    /// 合図を今から受ける。登録に失敗した合図は警告し、登録できた合図を待つ
     fn listen() -> Self {
         let (sender, receiver) = tokio::sync::watch::channel(None);
         match signals::register() {
@@ -561,25 +560,32 @@ impl ShutdownSignal {
 /// Unix系: SIGINT（Ctrl+C）と、`docker stop`・`systemctl stop`等が送るSIGTERM
 #[cfg(unix)]
 mod signals {
+    use super::optional_shutdown_listener;
     use tokio::signal::unix::{signal, Signal, SignalKind};
 
     pub(super) struct Signals {
         interrupt: Signal,
-        terminate: Signal,
+        terminate: Option<Signal>,
     }
 
     pub(super) fn register() -> std::io::Result<Signals> {
+        let interrupt = signal(SignalKind::interrupt())?;
+        let terminate = optional_shutdown_listener("SIGTERM", signal(SignalKind::terminate()));
         Ok(Signals {
-            interrupt: signal(SignalKind::interrupt())?,
-            terminate: signal(SignalKind::terminate())?,
+            interrupt,
+            terminate,
         })
     }
 
     impl Signals {
         pub(super) async fn recv(&mut self) -> &'static str {
+            let Some(terminate) = &mut self.terminate else {
+                self.interrupt.recv().await;
+                return "Ctrl+C";
+            };
             tokio::select! {
                 _ = self.interrupt.recv() => "Ctrl+C",
-                _ = self.terminate.recv() => "SIGTERM",
+                _ = terminate.recv() => "SIGTERM",
             }
         }
     }
@@ -588,28 +594,42 @@ mod signals {
 /// Windows: Ctrl+CとCtrl+Break
 #[cfg(windows)]
 mod signals {
+    use super::optional_shutdown_listener;
     use tokio::signal::windows::{ctrl_break, ctrl_c, CtrlBreak, CtrlC};
 
     pub(super) struct Signals {
         ctrl_c: CtrlC,
-        ctrl_break: CtrlBreak,
+        ctrl_break: Option<CtrlBreak>,
     }
 
     pub(super) fn register() -> std::io::Result<Signals> {
-        Ok(Signals {
-            ctrl_c: ctrl_c()?,
-            ctrl_break: ctrl_break()?,
-        })
+        let ctrl_c = ctrl_c()?;
+        let ctrl_break = optional_shutdown_listener("Ctrl+Break", ctrl_break());
+        Ok(Signals { ctrl_c, ctrl_break })
     }
 
     impl Signals {
         pub(super) async fn recv(&mut self) -> &'static str {
+            let Some(ctrl_break) = &mut self.ctrl_break else {
+                self.ctrl_c.recv().await;
+                return "Ctrl+C";
+            };
             tokio::select! {
                 _ = self.ctrl_c.recv() => "Ctrl+C",
-                _ = self.ctrl_break.recv() => "Ctrl+Break",
+                _ = ctrl_break.recv() => "Ctrl+Break",
             }
         }
     }
+}
+
+fn optional_shutdown_listener<T>(name: &str, listener: std::io::Result<T>) -> Option<T> {
+    listener
+        .inspect_err(|e| {
+            tracing::warn!(
+                "Could not listen for {name} ({e}): plugins may be left running if mcp-rs is stopped by this signal"
+            );
+        })
+        .ok()
 }
 
 /// `server`で`run`を実行し、その結果に関わらず`stop`で止めてから、結果を
