@@ -889,7 +889,7 @@ Update categories and tags for an existing WordPress post.
 
 `categories` and `tags` take the IDs that `get_categories` and `get_tags` list, as positive integers. From v0.30.0, a list with any other value (such as `7.5`, `0` or `"7"`) is rejected; up to v0.29.0, mcp-rs dropped that value and sent the rest, so replacing the list could remove a category or tag the post had. An empty list (`[]`) is still accepted.
 
-From v0.30.0, `categories` and `tags` for a post type without those taxonomies are rejected before anything is sent, for example for a page (`"post_type": "page"`), or a custom post type that has its own taxonomies instead (set those with `terms`). WordPress would ignore them and report success. mcp-rs checks the post type's taxonomies on the site (`get_taxonomies` with `post_type` shows them); posts always have both. Up to v0.29.0, `update_post` and `update_post_categories_tags` sent them anyway, and the tools that create a post dropped them for anything but a post.
+From v0.30.0, `categories` and `tags` (other than an empty list) for a post type without those taxonomies are rejected before anything is sent, for example for a page (`"post_type": "page"`), or a custom post type that has its own taxonomies instead (set those with `terms`). WordPress would ignore them and report success. mcp-rs checks the post type's taxonomies on the site (`get_taxonomies` with `post_type` shows them); posts always have both. Up to v0.29.0, `update_post` and `update_post_categories_tags` sent them anyway, and the tools that create a post dropped them for anything but a post.
 
 **Example Usage:**
 

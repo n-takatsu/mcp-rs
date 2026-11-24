@@ -223,8 +223,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   成功と返していた（#755）。投稿を作るツール（`create_advanced_post`・
   `create_post_with_embeds`）は、投稿以外では黙って落としていた。投稿タイプの
   タクソノミーを調べ（`terms`と同じく`/wp/v2/taxonomies?type=`）、無ければ
-  送る前に断る。投稿（`post`）は調べない。カテゴリー・タグを持つカスタム投稿
-  タイプには送る
+  送る前に断る（空の配列は断らない）。投稿（`post`）は調べない。カテゴリー・
+  タグを持つカスタム投稿タイプには送る
 
 - WordPressの`categories`・`tags`のIDの配列で、正の整数でない要素を黙って
   落としていた（#755）。`tags: [7, 7.5]`は`[7]`になり、置き換えで今のタグが

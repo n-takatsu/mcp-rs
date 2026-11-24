@@ -2602,8 +2602,11 @@ impl WordPressHandler {
         self.check_terms_taxonomies(
             &params.post_type,
             params.terms.as_ref(),
-            params.categories.is_some(),
-            params.tags.is_some(),
+            params
+                .categories
+                .as_ref()
+                .is_some_and(|ids| !ids.is_empty()),
+            params.tags.as_ref().is_some_and(|ids| !ids.is_empty()),
         )
         .await?;
         let url = format!("{}/wp-json/wp/v2/{}", self.base_url, endpoint);
@@ -2793,9 +2796,11 @@ impl WordPressHandler {
     /// 送る前に`/wp/v2/taxonomies?type=<投稿タイプ>`で調べて、無いものは断る。
     /// `terms`が空なら調べない。
     ///
-    /// `categories`・`tags`（引数を渡したか）も同じく確かめる（#755）。固定
-    /// ページ等、その分類の無い投稿タイプに送ると、WordPressは黙って無視し、
-    /// 成功と返してしまうため。投稿（`post`）はいつも両方を持つので調べない
+    /// `categories`・`tags`（空でないIDを渡したか）も同じく確かめる（#755）。
+    /// 固定ページ等、その分類の無い投稿タイプに送ると、WordPressは黙って
+    /// 無視し、成功と返してしまうため。空の配列は、無視されても結果が同じ
+    /// なので断らない（クライアントが空の配列を送ることがある）。投稿
+    /// （`post`）はいつも両方を持つので調べない
     async fn check_terms_taxonomies(
         &self,
         post_type: &str,
@@ -3543,8 +3548,11 @@ impl WordPressHandler {
         self.check_terms_taxonomies(
             post_type,
             params.terms.as_ref(),
-            params.categories.is_some(),
-            params.tags.is_some(),
+            params
+                .categories
+                .as_ref()
+                .is_some_and(|ids| !ids.is_empty()),
+            params.tags.as_ref().is_some_and(|ids| !ids.is_empty()),
         )
         .await?;
         let url = format!("{}/wp-json/wp/v2/{}/{}", self.base_url, endpoint, post_id);
@@ -11783,12 +11791,6 @@ mod tests {
                 "create_post_with_embeds",
                 serde_json::json!({"title": "t", "content": "c", "post_type": "page", "tags": [3]}),
                 "tags: post type 'page' has no tags taxonomy",
-            ),
-            // []（すべて外す）も、意味が無いので断る
-            (
-                "update_post",
-                serde_json::json!({"post_id": 21, "post_type": "product", "categories": []}),
-                "Taxonomies of 'product': product_cat, product_tag",
             ),
         ] {
             let result = call_tool_with(&handler, tool, args.clone()).await;
