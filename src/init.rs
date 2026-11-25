@@ -142,7 +142,9 @@ pub async fn run(args: &[String]) -> Result<bool, String> {
     // Ctrl+Cで止めたときも、入れ直した資格情報を前の中身に戻す（#715）。
     // 質問の答えを待つ間はこのタスクが止まっているので、別のタスクで受ける
     let replaced = ReplacedEntries::default();
-    let interrupt = tokio::spawn(restore_on_interrupt(replaced.clone()));
+    // 設定ファイルに書く前の新しい項目も、Ctrl+Cで消す（#774）
+    let unwritten = UnwrittenEntries::default();
+    let interrupt = tokio::spawn(restore_on_interrupt(replaced.clone(), unwritten.clone()));
     let result = Setup {
         io: &mut terminal,
         store: &OsKeyring,
@@ -152,10 +154,10 @@ pub async fn run(args: &[String]) -> Result<bool, String> {
         previous: discover_registrations(),
         superseded: Vec::new(),
         suggested_url: None,
-        added_sites: Vec::new(),
         new_entries: Vec::new(),
         secret_backups: Vec::new(),
         replaced_entries: replaced,
+        unwritten_entries: unwritten,
     }
     .run()
     .await;
@@ -182,10 +184,11 @@ fn is_cancelled(error: &(dyn std::error::Error + 'static)) -> bool {
         .is_some_and(|e| e.kind() == io::ErrorKind::Interrupted)
 }
 
-/// Ctrl+Cを受けたら、入れ直した資格情報を前の中身に戻し、Ctrl+Cで止めた
-/// ときと同じ終了コード（130）で終わる（#715）。受けるようにすると、Ctrl+Cで
-/// プロセスが止まらなくなるので、何も無くても終わる
-async fn restore_on_interrupt(replaced: ReplacedEntries) {
+/// Ctrl+Cを受けたら、入れ直した資格情報を前の中身に戻し、設定ファイルに
+/// 書く前の新しい項目を消して（#774）、Ctrl+Cで止めたときと同じ終了コード
+/// （130）で終わる（#715）。受けるようにすると、Ctrl+Cでプロセスが止まら
+/// なくなるので、何も無くても終わる
+async fn restore_on_interrupt(replaced: ReplacedEntries, unwritten: UnwrittenEntries) {
     if tokio::signal::ctrl_c().await.is_err() {
         // 受けられない環境では、今までどおり（Ctrl+Cでそのまま止まる）
         return;
@@ -195,6 +198,11 @@ async fn restore_on_interrupt(replaced: ReplacedEntries) {
     // この後に資格情報を書くことは無い（PR #733のレビュー）
     let mut entries = replaced.lock();
     restore_entries(&OsKeyring, std::mem::take(&mut *entries), |line| {
+        eprintln!("{line}")
+    });
+    // 設定ファイルを書いている途中なら、終わるまで待つ（書けた項目は外れる）
+    let mut new_entries = unwritten.lock();
+    delete_unwritten_entries(&OsKeyring, std::mem::take(&mut *new_entries), |line| {
         eprintln!("{line}")
     });
     std::process::exit(130);
@@ -285,9 +293,6 @@ struct Setup<'a> {
     superseded: Vec<String>,
     /// 前の設定ファイルにあった、WordPressのサイトのURL（#602）
     suggested_url: Option<String>,
-    /// この実行で足したWordPressのサイトのURL（#657）。同じサイトを使う、
-    /// 別の設定ファイルの登録（「2つ目のサイト用」）は、重複として既定で消す
-    added_sites: Vec<String>,
     /// この実行で新しく作った、WordPressの資格情報の項目（#657）。サイトを
     /// 設定ファイルに書けなかったときに消す（PR #671のレビュー）
     new_entries: Vec<String>,
@@ -299,6 +304,9 @@ struct Setup<'a> {
     /// 確認が通らずに終わったら、前の中身に戻す（ほかの設定ファイルも
     /// 同じ項目を使うことがある）。Ctrl+Cを受けるタスクと共有する（#715）
     replaced_entries: ReplacedEntries,
+    /// `new_entries`のうち、まだ設定ファイルに書いていないもの。Ctrl+Cを
+    /// 受けるタスクが消す（#774）
+    unwritten_entries: UnwrittenEntries,
 }
 
 /// 入れ直した資格情報の項目と、前の中身（#710・#715）。`run`の外の、Ctrl+Cを
@@ -340,6 +348,52 @@ impl ReplacedEntries {
     }
 }
 
+/// この実行で新しく作り、まだ設定ファイルに書いていない資格情報の項目
+/// （#774）。Ctrl+Cを受けるタスクが消せるように、共有する。設定ファイルに
+/// 書く間はロックを持ち、書けたら外す
+#[derive(Clone, Default)]
+struct UnwrittenEntries(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+
+impl UnwrittenEntries {
+    fn lock(&self) -> std::sync::MutexGuard<'_, Vec<String>> {
+        self.0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn push(&self, entry: &str) {
+        let mut entries = self.lock();
+        if !entries.iter().any(|name| name == entry) {
+            entries.push(entry.to_string());
+        }
+    }
+
+    fn remove(&self, entry: &str) {
+        self.lock().retain(|name| name != entry);
+    }
+}
+
+/// 設定ファイルに書いていない、新しい資格情報の項目を消す。`say`に結果を
+/// 出す（#774）
+fn delete_unwritten_entries(
+    store: &dyn SecretStore,
+    entries: Vec<String>,
+    mut say: impl FnMut(&str),
+) {
+    for entry in entries {
+        match store.delete(&entry) {
+            Ok(true) => say(&format!(
+                "Deleted the credentials named '{entry}' from the OS credential store (not in a config file yet)."
+            )),
+            Ok(false) => {}
+            Err(e) => say(&format!(
+                "Could not delete the credentials named '{entry}' ({e}). Delete them with: mcp-rs wordpress-keyring delete {}",
+                quote_arg(&entry)
+            )),
+        }
+    }
+}
+
 impl Setup<'_> {
     async fn run(mut self) -> Result<bool, Box<dyn std::error::Error>> {
         let result = self.run_steps().await;
@@ -348,6 +402,13 @@ impl Setup<'_> {
         // 通っていれば、もう確定していて、何もしない。Ctrl+Cで止めたときは、
         // ここを通らないので、`restore_on_interrupt`が戻す（#715）
         self.restore_replaced_entries();
+        // 設定ファイルに書く前に終わったら、新しく作った項目も消す（#774。
+        // Ctrl+Cでは`restore_on_interrupt`が消す）
+        if result.is_err() {
+            let entries = std::mem::take(&mut *self.unwritten_entries.lock());
+            let io = &mut *self.io;
+            delete_unwritten_entries(self.store, entries, |line| io.say(line));
+        }
         result
     }
 
@@ -383,23 +444,11 @@ impl Setup<'_> {
         // クライアント（Claude Code・VS Code等）は、ここで書く設定ファイルでは
         // なく、そちらで起動する。確かめた設定と起動する設定が違うまま登録
         // しない（PR #671のレビュー）
-        if let Some(other) = crate::config::config_path_from_env(
+        if let Some(error) = env_config_conflict(
             std::env::var(crate::config::CONFIG_ENV_VAR).ok().as_deref(),
+            &config_display,
         ) {
-            // 相対パスは、`init`と同じ基準で絶対パスにしてから比べる
-            // （PR #671のレビュー）
-            let expanded = crate::config::expand_config_path(&other);
-            let absolute = std::path::absolute(&expanded)
-                .map(|path| path.display().to_string())
-                .unwrap_or(expanded);
-            if !same_config_file(Some(&absolute), &config_display) {
-                return Err(format!(
-                    "the environment variable {} is set to {other}, and mcp-rs uses it instead of --config. MCP clients that pass it on (such as Claude Code and VS Code) would start mcp-rs with that file, not with {config_display}. Remove the variable and run mcp-rs init again, or run mcp-rs init --config {}",
-                    crate::config::CONFIG_ENV_VAR,
-                    quote_arg(&other)
-                )
-                .into());
-            }
+            return Err(error.into());
         }
 
         // 1・2. 資格情報と設定ファイル
@@ -453,7 +502,15 @@ impl Setup<'_> {
                 check_store(self.store)?;
             }
             let (content, wordpress) = self.new_config(uses, carry.as_ref())?;
-            let backup = write_config_file(&self.config_path, &content)?;
+            // 書く間はCtrl+Cで消さず、書けたら消すものから外す（#774）
+            let backup = {
+                let mut unwritten = self.unwritten_entries.lock();
+                let backup = write_config_file(&self.config_path, &content)?;
+                if let Some((_, entry)) = &wordpress {
+                    unwritten.retain(|name| name != entry);
+                }
+                backup
+            };
             if let Some(backup) = backup {
                 self.io.say(&format!(
                     "Kept the previous config file as {}",
@@ -551,7 +608,7 @@ impl Setup<'_> {
                         .to_string()
                 };
                 if confirm(self.io, &question, true)? {
-                    self.enter_credentials(&url, &entry)?;
+                    self.enter_credentials(&url, &entry, false)?;
                     continue;
                 }
             }
@@ -1018,7 +1075,6 @@ impl Setup<'_> {
             }
         };
 
-        let mut new_entry = false;
         match load_wordpress_credentials(self.store, &entry) {
             Ok(stored) if site_origin(&url).as_deref() == Some(stored.site_url.as_str()) => {
                 let reuse = confirm(
@@ -1047,7 +1103,7 @@ impl Setup<'_> {
                     .into());
                 }
             }
-            Err(KeyringError::NotFound(_)) => new_entry = true,
+            Err(KeyringError::NotFound(_)) => {}
             // 前の形の登録・mcp-rsのものではない登録は、上書きを聞く
             Err(KeyringError::Invalid(_)) | Err(KeyringError::MissingSiteUrl(_)) => {
                 if !confirm(
@@ -1063,9 +1119,13 @@ impl Setup<'_> {
             }
             Err(e) => return Err(e.into()),
         }
-        // 既にある項目の前の中身は、`enter_credentials`が覚える（#710）
-        self.enter_credentials(&url, &entry)?;
-        if new_entry {
+        // 新しい項目か、既にある項目の前の中身かは、`enter_credentials`が
+        // 入力の後に読み直して決める（#710・#774。入力の間に別のところで
+        // 作られた項目を、新しい項目として消さない。PR #778のレビュー）。
+        // 新しい項目は、書いた後のエラーでも消すものに残る（読み戻しの失敗で
+        // 項目が残ることがあるため）
+        self.enter_credentials(&url, &entry, true)?;
+        if self.unwritten_entries.lock().contains(&entry) && !self.new_entries.contains(&entry) {
             self.new_entries.push(entry.clone());
         }
         Ok((url, entry))
@@ -1208,7 +1268,21 @@ impl Setup<'_> {
             let Ok(table) = text.parse::<toml::Table>() else {
                 return Ok(added);
             };
-            let sites = configured_sites(&table);
+            // 無効な（`enabled = true`でない）1つのサイトの形の
+            // `[handlers.wordpress]`に残った`url`は、使うサイトではない。
+            // 最初のサイトとして書き直す（#774。別のサイトとして足すと、
+            // 資格情報を入れた後で断られる）
+            let disabled_url = disabled_single_site_url(&table);
+            let sites = if disabled_url.is_some() {
+                Vec::new()
+            } else {
+                configured_sites(&table)
+            };
+            if let Some(url) = &disabled_url {
+                self.io.say(&format!(
+                    "[handlers.wordpress] is not enabled (url = \"{url}\"). A site added now replaces its url and keyring (removing username, password and encrypted_credentials), and sets enabled = true."
+                ));
+            }
             let question = if sites.is_empty() {
                 "Also let the AI use a WordPress site?".to_string()
             } else {
@@ -1249,7 +1323,16 @@ impl Setup<'_> {
                 )?;
                 return Ok(added);
             }
-            let backup = match write_config_file(&self.config_path, &new_text) {
+            // 書く間はCtrl+Cで消さず、書けたら消すものから外す（#774）
+            let written = {
+                let mut unwritten = self.unwritten_entries.lock();
+                let written = write_config_file(&self.config_path, &new_text);
+                if written.is_ok() {
+                    unwritten.retain(|name| *name != entry);
+                }
+                written
+            };
+            let backup = match written {
                 Ok(backup) => backup,
                 Err(e) => {
                     self.could_not_add(&format!("cannot write the config file ({e})"), &entry)?;
@@ -1271,7 +1354,6 @@ impl Setup<'_> {
                 "Updated the config file: {}\n",
                 self.config_path.display()
             ));
-            self.added_sites.push(url.clone());
             added.push((url, entry));
         }
     }
@@ -1304,6 +1386,7 @@ impl Setup<'_> {
         match self.new_entries.iter().position(|name| name == entry) {
             Some(index) => {
                 self.new_entries.remove(index);
+                self.unwritten_entries.remove(entry);
                 self.store.delete(entry)?;
                 Ok(true)
             }
@@ -1393,11 +1476,16 @@ impl Setup<'_> {
         }
     }
 
-    /// ユーザー名とアプリケーションパスワードを聞き、`entry`の名前で入れる
+    /// ユーザー名とアプリケーションパスワードを聞き、`entry`の名前で入れる。
+    /// `not_in_config`は、`entry`をまだ設定ファイルに書いていないとき`true`。
+    /// そのときは、入力の後に読み直して無かった項目を、入れる前にCtrl+Cで
+    /// 消すものに加える（#774。入れた直後のCtrl+Cでも残さない。入力の失敗・
+    /// 入力の間に別のところで作られた項目は加えない。PR #778のレビュー）
     fn enter_credentials(
         &mut self,
         url: &str,
         entry: &str,
+        not_in_config: bool,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let username = loop {
             let answer = self.io.ask("WordPress username: ")?;
@@ -1423,8 +1511,12 @@ impl Setup<'_> {
         if !self.new_entries.iter().any(|name| name == entry)
             && !replaced.iter().any(|(name, _)| name == entry)
         {
-            if let Some(previous) = self.store.get(entry)? {
-                replaced.push((entry.to_string(), previous));
+            // ロックは`restore_on_interrupt`と同じ順（入れ直し、新しい項目）
+            // で取る
+            match self.store.get(entry)? {
+                Some(previous) => replaced.push((entry.to_string(), previous)),
+                None if not_in_config => self.unwritten_entries.push(entry),
+                None => {}
             }
         }
         store_wordpress_credentials(
@@ -1597,15 +1689,14 @@ impl Setup<'_> {
         )
     }
 
-    /// 新しい設定ファイルで使うサイト（最初のサイトも、前からあるサイトも）と、
-    /// この実行で足したサイトのURL（比べる形。PR #688のレビュー）。
-    /// `enabled = false`のサイトは、移したとはみなさない
+    /// 新しい設定ファイルで使うサイト（最初のサイトも、前からあるサイトも、
+    /// この実行で足したサイトも）のURL（比べる形。PR #688のレビュー）。
+    /// `enabled = false`のサイトは、移したとはみなさない。今の設定ファイル
+    /// だけで決める（#774。実行中に手で消したサイトは、移したとみなさない）
     fn new_config_site_urls(&self) -> Vec<String> {
-        let mut urls = read_toml(&self.config_path)
+        read_toml(&self.config_path)
             .map(|table| enabled_site_urls(&table))
-            .unwrap_or_default();
-        urls.extend(self.added_sites.iter().map(|url| comparable_site_url(url)));
-        urls
+            .unwrap_or_default()
     }
 
     /// 設定ファイル（`path`）を新しい設定ファイルに置き換えると変わる、
@@ -2147,6 +2238,27 @@ fn config_arg(args: &[&str]) -> Option<String> {
     None
 }
 
+/// 環境変数`MCP_RS_CONFIG`（`value`）が、ここで書く設定ファイル（`ours`）と
+/// 違うときのエラーの文。違わなければ`None`。相対パスは比べずに断る。
+/// クライアントは、それぞれの作業フォルダで読むため（#774）
+fn env_config_conflict(value: Option<&str>, ours: &str) -> Option<String> {
+    let other = crate::config::config_path_from_env(value)?;
+    let variable = crate::config::CONFIG_ENV_VAR;
+    let expanded = crate::config::expand_config_path(&other);
+    if Path::new(&expanded).is_relative() {
+        return Some(format!(
+            "the environment variable {variable} is set to the relative path {other}, and mcp-rs uses it instead of --config. MCP clients that pass it on (such as Claude Code and VS Code) read it from their own working folder, so it may not be {ours}. Remove the variable, or set it to an absolute path, and run mcp-rs init again"
+        ));
+    }
+    if same_config_file(Some(&expanded), ours) {
+        return None;
+    }
+    Some(format!(
+        "the environment variable {variable} is set to {other}, and mcp-rs uses it instead of --config. MCP clients that pass it on (such as Claude Code and VS Code) would start mcp-rs with that file, not with {ours}. Remove the variable and run mcp-rs init again, or run mcp-rs init --config {}",
+        quote_arg(&other)
+    ))
+}
+
 /// 2つの設定ファイルが同じか（`None`は`--config`無し、つまり
 /// `~/.config/mcp-rs/config.toml`）。`~/`を展開し、区切り文字をそろえ、
 /// Windowsでは大文字・小文字を区別しない
@@ -2454,6 +2566,24 @@ fn read_toml(path: &Path) -> Option<toml::Table> {
         .ok()
 }
 
+/// `[handlers.wordpress]`が1つのサイトの形（`sites`が無い）で、
+/// `enabled = true`でないときの、残った`url`（#774）。それ以外は`None`
+fn disabled_single_site_url(table: &toml::Table) -> Option<String> {
+    let wordpress = table.get("handlers")?.get("wordpress")?;
+    let has_sites = wordpress
+        .get("sites")
+        .and_then(toml::Value::as_table)
+        .is_some_and(|sites| !sites.is_empty());
+    let enabled = wordpress.get("enabled").and_then(toml::Value::as_bool) == Some(true);
+    if has_sites || enabled {
+        return None;
+    }
+    wordpress
+        .get("url")
+        .and_then(toml::Value::as_str)
+        .map(str::to_string)
+}
+
 /// 設定にあるWordPressのサイト（#657）
 fn configured_sites(table: &toml::Table) -> Vec<ConfiguredSite> {
     let Some(wordpress) = table.get("handlers").and_then(|h| h.get("wordpress")) else {
@@ -2696,6 +2826,11 @@ fn add_first_site_toml(text: &str, url: &str, entry: &str) -> Result<String, Str
             .and_then(|handlers| handlers.get_mut("wordpress"))
             .and_then(toml_edit::Item::as_table_like_mut)
             .ok_or("[handlers.wordpress] is not a table")?;
+        // 前の資格情報は`keyring`と一緒に使えないので消す。ほかの設定
+        // （`timeout_seconds`等）は残す（PR #778のレビュー）
+        for key in ["username", "password", "encrypted_credentials"] {
+            wordpress.remove(key);
+        }
         wordpress.insert("enabled", toml_edit::value(true));
         wordpress.insert("url", toml_edit::value(url));
         wordpress.insert("keyring", toml_edit::value(entry));
@@ -2853,19 +2988,6 @@ pub(crate) fn ask_database(
                 }
             }
         };
-        store_database_credentials(
-            store,
-            &entry,
-            &DatabaseKeyringCredentials {
-                host: host.clone(),
-                port,
-                username: username.clone(),
-                password,
-            },
-        )?;
-        io.say(&format!(
-            "Stored the password as '{entry}' in the OS credential store."
-        ));
         Some(entry)
     };
 
@@ -2934,6 +3056,31 @@ pub(crate) fn ask_database(
         allow_write,
     };
     answers.settings().validate()?;
+    // 資格情報は、すべての質問と確認が済んでから入れる（#774。途中で止めた
+    // ときに、どの設定にも無い項目を残したり、既にある項目を上書きしたまま
+    // にしたりしない）
+    if let Some(entry) = &answers.keyring {
+        // 質問の間に、別の種類の項目が作られていたら上書きしない（#774）
+        if let Some(DatabaseEntry::Other) = database_entry(store, entry)? {
+            return Err(format!(
+                "'{entry}' now holds other credentials (for example a WordPress site's) in the OS credential store. Run the command again and choose another name"
+            )
+            .into());
+        }
+        store_database_credentials(
+            store,
+            entry,
+            &DatabaseKeyringCredentials {
+                host: answers.host.clone(),
+                port: answers.port,
+                username: answers.username.clone(),
+                password,
+            },
+        )?;
+        io.say(&format!(
+            "Stored the password as '{entry}' in the OS credential store."
+        ));
+    }
     Ok(answers)
 }
 
@@ -3814,11 +3961,25 @@ mod tests {
             previous: Vec::new(),
             superseded: Vec::new(),
             suggested_url: None,
-            added_sites: Vec::new(),
             new_entries: Vec::new(),
             secret_backups: Vec::new(),
             replaced_entries: ReplacedEntries::default(),
+            unwritten_entries: UnwrittenEntries::default(),
         }
+    }
+
+    /// `urls`のサイトを使う新しい設定ファイルを`dir`に書き、`config_path`に
+    /// する（#774。足したサイトは、今の設定ファイルだけで決める）
+    fn write_new_sites(setup: &mut Setup, dir: &Path, urls: &[&str]) {
+        let mut text = String::from("[handlers.wordpress]\nenabled = true\n");
+        for (i, url) in urls.iter().enumerate() {
+            text.push_str(&format!(
+                "\n[handlers.wordpress.sites.s{i}]\nurl = \"{url}\"\nkeyring = \"s{i}\"\n"
+            ));
+        }
+        let path = dir.join("new-sites.toml");
+        std::fs::write(&path, text).unwrap();
+        setup.config_path = path;
     }
 
     /// 手で登録していた設定（#602の実機の例）
@@ -4888,11 +5049,11 @@ file_path = "C:/Users/me/.mcp-rs/logs/audit.log"
         let store = MemoryStore::default();
         let mut io = Script::new(&["editor", "wrong"]);
         setup(&mut io, &store)
-            .enter_credentials("https://example.com", "example.com")
+            .enter_credentials("https://example.com", "example.com", false)
             .unwrap();
         let mut io = Script::new(&["editor", "right"]);
         setup(&mut io, &store)
-            .enter_credentials("https://example.com", "example.com")
+            .enter_credentials("https://example.com", "example.com", false)
             .unwrap();
         assert_eq!(
             *load_wordpress_credentials(&store, "example.com")
@@ -5000,7 +5161,7 @@ file_path = "C:/Users/me/.mcp-rs/logs/audit.log"
         let mut io = Script::new(&["editor", "new password"]);
         let mut s = setup(&mut io, &store);
         s.replaced_entries = shared.clone();
-        s.enter_credentials("https://example.com", "example.com")
+        s.enter_credentials("https://example.com", "example.com", false)
             .unwrap();
         // Ctrl+Cを受けたタスクが、共有した記録から戻す
         let mut shown = Vec::new();
@@ -5017,7 +5178,7 @@ file_path = "C:/Users/me/.mcp-rs/logs/audit.log"
         let mut io = Script::new(&["editor", "newer password"]);
         let mut s = setup(&mut io, &store);
         s.replaced_entries = shared.clone();
-        s.enter_credentials("https://example.com", "example.com")
+        s.enter_credentials("https://example.com", "example.com", false)
             .unwrap();
         s.replaced_entries.clear();
         assert!(shared.take().is_empty());
@@ -5060,9 +5221,9 @@ file_path = "C:/Users/me/.mcp-rs/logs/audit.log"
         // 中身だけを覚えて戻す（PR #712のレビュー）
         let mut io = Script::new(&["editor", "second", "editor", "third"]);
         let mut s = setup(&mut io, &store);
-        s.enter_credentials("https://example.com", "example.com")
+        s.enter_credentials("https://example.com", "example.com", false)
             .unwrap();
-        s.enter_credentials("https://example.com", "example.com")
+        s.enter_credentials("https://example.com", "example.com", false)
             .unwrap();
         assert_eq!(s.replaced_entries.len(), 1);
         s.restore_replaced_entries();
@@ -5081,7 +5242,7 @@ file_path = "C:/Users/me/.mcp-rs/logs/audit.log"
         let mut io = Script::new(&["editor", "new"]);
         let mut s = setup(&mut io, &store);
         assert!(s
-            .enter_credentials("https://example.com", "example.com")
+            .enter_credentials("https://example.com", "example.com", false)
             .is_err());
         assert!(s.replaced_entries.is_empty());
     }
@@ -5180,6 +5341,67 @@ file_path = "C:/Users/me/.mcp-rs/logs/audit.log"
             })
             .count();
         assert_eq!(backups, 1);
+    }
+
+    /// 残りの質問の途中で止まったら、パスワードを入れない。既にある項目も
+    /// 前の中身のまま（#774）
+    #[test]
+    fn test_database_password_is_stored_after_the_last_question() {
+        let (_dir, path) = config_in_temp(WORDPRESS_ONLY_CONFIG);
+        let store = MemoryStore::default();
+        let answers = [
+            "y",              // データベースも使う
+            "",               // postgresql
+            "db.example.com", // ホスト
+            "",               // 5432
+            "app",            // データベース名
+            "reader",         // ユーザー名
+            "s3cret",         // パスワード
+            "",               // 項目の名前: app@db.example.com
+            "",               // ssl_mode: verify-full
+                              // CAのファイルの質問で、入力が終わる
+        ];
+        let mut io = Script::new(&answers);
+        assert!(database_setup(&mut io, &store, &path)
+            .database_step()
+            .is_err());
+        assert_eq!(database_entry(&store, "app@db.example.com").unwrap(), None);
+        assert!(!io
+            .shown
+            .iter()
+            .any(|s| s.starts_with("Stored the password")));
+
+        // 既にある項目を置き換えると答えても、止まったら前の中身のまま
+        store_database_credentials(
+            &store,
+            "app@db.example.com",
+            &DatabaseKeyringCredentials {
+                host: "db.example.com".to_string(),
+                port: 5432,
+                username: "reader".to_string(),
+                password: Zeroizing::new("old".to_string()),
+            },
+        )
+        .unwrap();
+        let mut answers = answers.to_vec();
+        answers.insert(8, "y"); // 置き換える
+        let mut io = Script::new(&answers);
+        assert!(database_setup(&mut io, &store, &path)
+            .database_step()
+            .is_err());
+        let stored = crate::security::keyring_store::load_database_credentials(
+            &store,
+            "app@db.example.com",
+            "db.example.com",
+            5432,
+            "reader",
+        )
+        .unwrap();
+        assert_eq!(*stored.password, "old");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            WORDPRESS_ONLY_CONFIG
+        );
     }
 
     #[test]
@@ -5544,7 +5766,6 @@ file_path = "C:/Users/me/.mcp-rs/logs/audit.log"
                 "shop.example.com".to_string()
             )]
         );
-        assert_eq!(setup.added_sites, ["https://shop.example.com"]);
         let config = crate::config::McpConfig::read_file(&path.display().to_string()).unwrap();
         let wordpress = config.handlers.wordpress.unwrap();
         assert_eq!(wordpress.default_site.as_deref(), Some("example"));
@@ -5642,7 +5863,7 @@ file_path = "C:/Users/me/.mcp-rs/logs/audit.log"
         let store = MemoryStore::default();
         let mut io = Script::new(&["", ""]);
         let mut setup = setup(&mut io, &store);
-        setup.added_sites = vec!["https://shop.example.com".to_string()];
+        write_new_sites(&mut setup, dir.path(), &["https://shop.example.com"]);
         let others = [
             OtherServer {
                 name: "mcp-rs-shop".to_string(),
@@ -5679,7 +5900,7 @@ file_path = "C:/Users/me/.mcp-rs/logs/audit.log"
         let store = MemoryStore::default();
         let mut io = Script::new(&["", ""]);
         let mut setup = setup(&mut io, &store);
-        setup.added_sites = vec!["https://shop.example.com".to_string()];
+        write_new_sites(&mut setup, dir.path(), &["https://shop.example.com"]);
         let others = [
             OtherServer {
                 name: "mcp-rs-shop".to_string(),
@@ -5718,7 +5939,7 @@ file_path = "C:/Users/me/.mcp-rs/logs/audit.log"
         let store = MemoryStore::default();
         let mut io = Script::new(&[""]);
         let mut setup = setup(&mut io, &store);
-        setup.added_sites = vec!["https://shop.example.com".to_string()];
+        write_new_sites(&mut setup, dir.path(), &["https://shop.example.com"]);
         let others = [OtherServer {
             name: "mcp-rs-sites".to_string(),
             config: Some(other.display().to_string()),
@@ -5879,10 +6100,10 @@ file_path = "C:/Users/me/.mcp-rs/logs/audit.log"
             previous: Vec::new(),
             superseded: Vec::new(),
             suggested_url: None,
-            added_sites: Vec::new(),
             new_entries: Vec::new(),
             secret_backups: Vec::new(),
             replaced_entries: ReplacedEntries::default(),
+            unwritten_entries: UnwrittenEntries::default(),
         };
         let (content, _) = setup.new_config(Uses::Database, None).unwrap();
         assert!(content.contains("[database]"), "{content}");
@@ -5937,6 +6158,208 @@ file_path = "C:/Users/me/.mcp-rs/logs/audit.log"
         ));
     }
 
+    /// 無効な`[handlers.wordpress]`に`url`が残っていても、最初のサイトとして
+    /// 足す（`enabled = true`にする）。別のサイトとしては足さない（#774）
+    #[test]
+    fn test_disabled_wordpress_with_a_url_gets_the_first_site() {
+        let text = "[server]\n\n[transport]\ntype = \"stdio\"\n\n[handlers.wordpress]\nenabled = false\nurl = \"https://old.example.com\"\nusername = \"old\"\npassword = \"old-pass\"\ntimeout_seconds = 45\n\n[database]\nengine = \"postgresql\"\ndatabase = \"app\"\nusername = \"reader\"\n";
+        let (_dir, path) = config_in_temp(text);
+        let store = MemoryStore::default();
+        let mut io = Script::new(&[
+            "y",
+            "https://shop.example.com",
+            "", // shop.example.com
+            "editor",
+            "pw",
+            "n",
+        ]);
+        let added = database_setup(&mut io, &store, &path)
+            .wordpress_sites_step()
+            .unwrap();
+        assert_eq!(
+            added,
+            [(
+                "https://shop.example.com".to_string(),
+                "shop.example.com".to_string()
+            )]
+        );
+        let config = crate::config::McpConfig::read_file(&path.display().to_string()).unwrap();
+        let wordpress = config.handlers.wordpress.unwrap();
+        assert_eq!(wordpress.enabled, Some(true));
+        assert_eq!(wordpress.url, "https://shop.example.com");
+        // 前の資格情報は消え（`keyring`と一緒に使えない）、ほかの設定は残る
+        // （PR #778のレビュー）
+        assert!(wordpress.username.is_empty());
+        assert!(wordpress.password.is_empty());
+        assert_eq!(wordpress.timeout_seconds, Some(45));
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(!content.contains("old-pass"), "{content}");
+        let shown = io.shown.join("\n");
+        assert!(
+            shown.contains("[handlers.wordpress] is not enabled"),
+            "{shown}"
+        );
+        assert!(
+            shown.contains("Also let the AI use a WordPress site?"),
+            "{shown}"
+        );
+        assert!(!shown.contains("Could not add the site"), "{shown}");
+    }
+
+    /// まだ設定ファイルに書いていない新しい項目は、Ctrl+Cの処理で消える。
+    /// 書けた項目は外れ、消えない（#774）
+    #[test]
+    fn test_unwritten_entries_are_deleted() {
+        let (_dir, path) = config_in_temp(&config_toml(None));
+        let store = MemoryStore::default();
+        let mut io = Script::new(&["https://shop.example.com", "", "editor", "pw"]);
+        let mut setup = database_setup(&mut io, &store, &path);
+        let unwritten = setup.unwritten_entries.clone();
+        // 書く前の項目
+        setup
+            .wordpress_credentials(&[], &[])
+            .map(|(_, entry)| assert_eq!(entry, "shop.example.com"))
+            .unwrap();
+        assert_eq!(*unwritten.lock(), ["shop.example.com"]);
+        let mut said = Vec::new();
+        delete_unwritten_entries(&store, std::mem::take(&mut *unwritten.lock()), |line| {
+            said.push(line.to_string())
+        });
+        assert!(matches!(
+            load_wordpress_credentials(&store, "shop.example.com"),
+            Err(KeyringError::NotFound(_))
+        ));
+        assert!(said[0].contains("Deleted the credentials named 'shop.example.com'"));
+
+        // 設定ファイルに書けた項目は、消すものから外れる
+        let mut io = Script::new(&["y", "https://shop.example.com", "", "editor", "pw", "n"]);
+        let mut setup = database_setup(&mut io, &store, &path);
+        let unwritten = setup.unwritten_entries.clone();
+        setup.wordpress_sites_step().unwrap();
+        assert!(unwritten.lock().is_empty());
+        assert!(load_wordpress_credentials(&store, "shop.example.com").is_ok());
+    }
+
+    /// 書いた後の読み戻しに失敗しても、新しい項目は消すものに残る
+    /// （PR #778のレビュー）
+    #[test]
+    fn test_new_entry_stays_unwritten_when_the_read_back_fails() {
+        let store = crate::security::keyring_store::ReadBackFailingStore::default();
+        let mut io = Script::new(&["https://shop.example.com", "", "editor", "pw"]);
+        let mut setup = setup(&mut io, &store);
+        assert!(setup.wordpress_credentials(&[], &[]).is_err());
+        let unwritten = std::mem::take(&mut *setup.unwritten_entries.lock());
+        assert_eq!(unwritten, ["shop.example.com"]);
+        assert!(store.inner.get("shop.example.com").unwrap().is_some());
+        delete_unwritten_entries(&store, unwritten, |_| {});
+        assert!(store.inner.get("shop.example.com").unwrap().is_none());
+    }
+
+    /// 入れている間に別のところで同じ名前の項目が作られたら、前の中身に
+    /// 戻すものとして扱い、新しい項目として消さない（PR #778のレビュー）
+    #[test]
+    fn test_entry_created_meanwhile_is_restored_not_deleted() {
+        struct Racing<'a> {
+            script: Script,
+            store: &'a MemoryStore,
+            fail: bool,
+        }
+        impl Prompt for Racing<'_> {
+            fn ask(&mut self, question: &str) -> io::Result<String> {
+                self.script.ask(question)
+            }
+            fn ask_hidden(&mut self, question: &str) -> io::Result<Zeroizing<String>> {
+                self.store.set("shop.example.com", "other").unwrap();
+                if self.fail {
+                    return Err(io::Error::new(io::ErrorKind::Interrupted, "stopped"));
+                }
+                self.script.ask_hidden(question)
+            }
+            fn say(&mut self, text: &str) {
+                self.script.say(text);
+            }
+        }
+        // 入力の読み取りに失敗しても、別のところで作られた項目を消すものに
+        // 加えない（PR #778のレビュー）
+        let store = MemoryStore::default();
+        let mut io = Racing {
+            script: Script::new(&["https://shop.example.com", "", "editor"]),
+            store: &store,
+            fail: true,
+        };
+        let mut setup = Setup {
+            io: &mut io,
+            store: &store,
+            config_path: PathBuf::from("unused.toml"),
+            explicit_config: false,
+            kept_config: None,
+            previous: Vec::new(),
+            superseded: Vec::new(),
+            suggested_url: None,
+            new_entries: Vec::new(),
+            secret_backups: Vec::new(),
+            replaced_entries: ReplacedEntries::default(),
+            unwritten_entries: UnwrittenEntries::default(),
+        };
+        assert!(setup.wordpress_credentials(&[], &[]).is_err());
+        assert!(setup.unwritten_entries.lock().is_empty());
+        assert!(setup.new_entries.is_empty());
+        assert!(store.get("shop.example.com").unwrap().is_some());
+
+        let store = MemoryStore::default();
+        let mut io = Racing {
+            script: Script::new(&["https://shop.example.com", "", "editor", "pw"]),
+            store: &store,
+            fail: false,
+        };
+        let mut setup = Setup {
+            io: &mut io,
+            store: &store,
+            config_path: PathBuf::from("unused.toml"),
+            explicit_config: false,
+            kept_config: None,
+            previous: Vec::new(),
+            superseded: Vec::new(),
+            suggested_url: None,
+            new_entries: Vec::new(),
+            secret_backups: Vec::new(),
+            replaced_entries: ReplacedEntries::default(),
+            unwritten_entries: UnwrittenEntries::default(),
+        };
+        setup.wordpress_credentials(&[], &[]).unwrap();
+        assert!(setup.unwritten_entries.lock().is_empty());
+        assert!(setup.new_entries.is_empty());
+        // 失敗で終わったら、前の中身に戻る（消さない）
+        setup.restore_replaced_entries();
+        assert_eq!(
+            store
+                .get("shop.example.com")
+                .unwrap()
+                .as_deref()
+                .map(String::as_str),
+            Some("other")
+        );
+    }
+
+    /// 相対パスの`MCP_RS_CONFIG`は、比べずに断る。クライアントは、それぞれの
+    /// 作業フォルダで読むため（#774）
+    #[test]
+    fn test_env_config_conflict() {
+        let dir = tempfile::tempdir().unwrap();
+        let ours = dir.path().join("config.toml").display().to_string();
+        assert_eq!(env_config_conflict(None, &ours), None);
+        assert_eq!(env_config_conflict(Some(&ours), &ours), None);
+        let error = env_config_conflict(Some("config.toml"), &ours).unwrap();
+        assert!(error.contains("relative path config.toml"), "{error}");
+        assert!(error.contains("absolute path"), "{error}");
+        let other = dir.path().join("other.toml").display().to_string();
+        let error = env_config_conflict(Some(&other), &ours).unwrap();
+        assert!(
+            error.contains("would start mcp-rs with that file"),
+            "{error}"
+        );
+    }
+
     /// 別の設定ファイルのURLが`${VAR}`なら、一致とはみなさず、既定で残す
     #[test]
     fn test_registration_with_a_url_variable_is_kept_by_default() {
@@ -5954,7 +6377,7 @@ file_path = "C:/Users/me/.mcp-rs/logs/audit.log"
         let store = MemoryStore::default();
         let mut io = Script::new(&[""]);
         let mut setup = setup(&mut io, &store);
-        setup.added_sites = vec!["https://shop.example.com".to_string()];
+        write_new_sites(&mut setup, dir.path(), &["https://shop.example.com"]);
         let remove = setup
             .choose_duplicates_to_remove(
                 "Claude Desktop",
@@ -6011,7 +6434,7 @@ file_path = "C:/Users/me/.mcp-rs/logs/audit.log"
         let store = MemoryStore::default();
         let mut io = Script::new(&[""]);
         let mut setup = setup(&mut io, &store);
-        setup.added_sites = vec!["https://shop.example.com".to_string()];
+        write_new_sites(&mut setup, dir.path(), &["https://shop.example.com"]);
         let remove = setup
             .choose_duplicates_to_remove("Claude Desktop", &others, &launch())
             .unwrap();
@@ -6188,10 +6611,15 @@ upload_allowed_dirs = [\"/data\"]
         let store = MemoryStore::default();
         let mut io = Script::new(&["", ""]);
         let mut setup = setup(&mut io, &store);
-        setup.added_sites = vec![
-            "https://shop.example.com".to_string(),
-            "https://blog.example.com".to_string(),
-        ];
+        // 足した2つのサイト（名前と`site`を省いた呼び出しのサイトは、
+        // 前の設定ファイルと同じ）
+        let new_path = dir.path().join("new.toml");
+        std::fs::write(
+            &new_path,
+            "[handlers.wordpress]\nenabled = true\ndefault_site = \"blog\"\n\n[handlers.wordpress.sites.shop]\nurl = \"https://shop.example.com\"\nkeyring = \"shop\"\n\n[handlers.wordpress.sites.blog]\nurl = \"https://blog.example.com\"\nkeyring = \"blog\"\n",
+        )
+        .unwrap();
+        setup.config_path = new_path;
         let others = [
             OtherServer {
                 name: "mcp-rs-shop".to_string(),
@@ -6321,7 +6749,11 @@ keyring = \"blog\"
         setup.config_path = new_path.clone();
         let choice = setup.choose_previous(&old, &[]).unwrap();
         assert!(matches!(choice, PreviousChoice::NotReplacing));
-        setup.added_sites = vec!["https://shop.example.com".to_string()];
+        std::fs::write(
+            &new_path,
+            "[handlers.wordpress]\nenabled = true\n\n[handlers.wordpress.sites.shop]\nurl = \"https://shop.example.com\"\nkeyring = \"shop\"\n",
+        )
+        .unwrap();
         let (question, default) = setup.replace_question("Claude Code", None);
         assert!(!default);
         assert!(
@@ -6330,9 +6762,8 @@ keyring = \"blog\"
         );
         assert!(!question.contains("shop.example.com"), "{question}");
 
-        // 新しい設定ファイルの最初のサイトは、足したサイトに無くても、
+        // 新しい設定ファイルの最初のサイト（1つのサイトの形）も、
         // 失われるものに挙げない
-        setup.added_sites.clear();
         std::fs::write(
             &new_path,
             "[handlers.wordpress]\nenabled = true\nurl = \"https://shop.example.com/\"\nkeyring = \"shop\"\n",
@@ -6408,8 +6839,7 @@ keyring = \"blog\"
     }
 
     /// 新しい設定ファイルの最初のサイトを使う、別の名前の登録は、同じサイトの
-    /// 重複として消すかを聞く（PR #688のレビュー。最初のサイトは
-    /// `added_sites`に入らない）
+    /// 重複として消すかを聞く（PR #688のレビュー）
     #[test]
     fn test_registration_for_the_first_site_is_a_duplicate() {
         let dir = tempfile::tempdir().unwrap();

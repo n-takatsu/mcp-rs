@@ -1492,11 +1492,13 @@ pub fn started_by_extension() -> bool {
 pub const CONFIG_ENV_VAR: &str = "MCP_RS_CONFIG";
 
 /// `MCP_RS_CONFIG`の値から、設定ファイルのパスを決める（#632）。空・空白、
-/// 拡張機能が埋めなかった`${user_config.…}`は、無いものとする
+/// 拡張機能が埋めなかった`${user_config.…}`は、無いものとする。値の全体が
+/// `${...}`のときだけ埋まらなかったとみなし、フォルダ名等に`${`を含む
+/// パスは使う（#774）
 pub fn config_path_from_env(value: Option<&str>) -> Option<String> {
     value
         .map(str::trim)
-        .filter(|path| !path.is_empty() && !path.contains("${"))
+        .filter(|path| !path.is_empty() && !(path.starts_with("${") && path.ends_with('}')))
         .map(str::to_string)
 }
 
@@ -2117,7 +2119,12 @@ impl McpConfig {
         // `~`はPathが展開しないため、自前でホームフォルダに置き換える。
         // ホームフォルダが分からない場合は、探さない
         if let Some(path) = expand_home_dir(USER_CONFIG_PATH, home.as_deref()) {
-            if std::path::Path::new(&path).exists() {
+            // 権限等で確かめられないときは、無いものとせず、理由を返す（#774。
+            // 無いものとすると、設定なしで起動し、理由が分からない）
+            let exists = std::path::Path::new(&path)
+                .try_exists()
+                .map_err(|e| format!("cannot check the config file {path}: {e}"))?;
+            if exists {
                 // 標準出力はSTDIOモードでJSON-RPCの通信専用のため、
                 // 標準エラー出力に書く（ログはこの時点で未初期化）
                 eprintln!("[mcp-rs] config file: {}", path);
@@ -4816,6 +4823,11 @@ enabled = false
         assert_eq!(
             config_path_from_env(Some(" C:/me/config.toml ")),
             Some("C:/me/config.toml".to_string())
+        );
+        // フォルダ名に`${`を含むパスは使う（#774）
+        assert_eq!(
+            config_path_from_env(Some("/home/me/${archive}/config.toml")),
+            Some("/home/me/${archive}/config.toml".to_string())
         );
         for value in [
             None,

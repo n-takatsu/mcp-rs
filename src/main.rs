@@ -694,13 +694,13 @@ async fn wait_for_plugin_cleanups() {
             });
     for failure in &report.failures {
         tracing::warn!(
-            "Could not remove a plugin container or Kubernetes job: {}. Run the command again by hand, or check for any left over (docker ps -a --filter label=mcp-rs.plugin / kubectl get jobs,secrets -l mcp-rs.plugin)",
+            "Could not remove a plugin container or Kubernetes job: {}. Run the command again by hand, or check for any left over (docker ps -a --filter label=mcp-rs.plugin / kubectl get jobs,secrets -l mcp-rs.plugin, with the --context and --namespace of the plugin)",
             failure
         );
     }
     if report.timed_out {
         tracing::warn!(
-            "Stopping plugin containers or Kubernetes jobs did not finish within {} seconds: remove any left over by hand (docker ps -a --filter label=mcp-rs.plugin / kubectl get jobs,secrets -l mcp-rs.plugin)",
+            "Stopping plugin containers or Kubernetes jobs did not finish within {} seconds: remove any left over by hand (docker ps -a --filter label=mcp-rs.plugin / kubectl get jobs,secrets -l mcp-rs.plugin, with the --context and --namespace of the plugin)",
             timeout.as_secs()
         );
     }

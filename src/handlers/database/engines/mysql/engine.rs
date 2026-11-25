@@ -142,8 +142,17 @@ pub fn connect_opts(config: &DatabaseConfig, tls: Option<SslOpts>) -> Opts {
     let connection = &config.connection;
     let constraints =
         PoolConstraints::new(0, config.pool.max_connections.max(1) as usize).unwrap_or_default();
+    // `[::1]`のような角括弧付きのIPv6アドレスは、角括弧を外す。付いたままでは
+    // IPアドレスとして読めず、名前解決に進んで失敗する（#774）
+    let host = connection
+        .host
+        .strip_prefix('[')
+        .and_then(|rest| rest.strip_suffix(']'))
+        .filter(|inner| inner.parse::<std::net::Ipv6Addr>().is_ok())
+        .unwrap_or(&connection.host)
+        .to_string();
     let builder = OptsBuilder::default()
-        .ip_or_hostname(connection.host.clone())
+        .ip_or_hostname(host)
         .tcp_port(connection.port)
         .user(Some(connection.username.clone()))
         .pass((!connection.password.is_empty()).then(|| connection.password.clone()))
@@ -461,6 +470,25 @@ mod tests {
         assert!(opts.pool_opts().reset_connection());
         // 新しい接続・リセットした接続で、検査と読み方が違うモードを外す（#574）
         assert_eq!(opts.setup(), [session_setup_sql()]);
+    }
+
+    /// 角括弧付きのIPv6アドレスは、角括弧を外して渡す。ほかのホストは
+    /// そのまま（#774）
+    #[test]
+    fn test_connect_opts_strip_brackets_of_an_ipv6_address() {
+        for (host, expected) in [
+            ("[::1]", "::1"),
+            ("[2001:db8::5]", "2001:db8::5"),
+            ("db.example.com", "db.example.com"),
+            ("[db.example.com]", "[db.example.com]"),
+        ] {
+            let config = DatabaseConfig {
+                database_type: DatabaseType::MySQL,
+                connection: connection(host, None, false),
+                ..DatabaseConfig::default()
+            };
+            assert_eq!(connect_opts(&config, None).ip_or_hostname(), expected);
+        }
     }
 
     /// 外すモードを、カンマで区切った名前として置き換える（`ANSI`で
