@@ -15,6 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   リリースのタグで`.mcpb`をリリースに付けた後に、その版・URL・SHA256を
   書き込んで登録する。認証はGitHub ActionsのOIDCで行い、鍵やトークンは
   持たない。`server.json`を変えたPRでは、登録せずに中身を確かめるだけ
+
+## [0.30.0] - 2026-11-26
+
+### Added
+
 - ライブラリとして使う場合: `HttpTransport::receive_request_with_context`と
   `HttpTransport::stop_server`を足した（#760）。`receive_request_with_context`は、
   要求・呼び出し元と一緒に、`MCP-Protocol-Version`ヘッダーで選んだ版
