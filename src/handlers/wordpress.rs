@@ -1374,6 +1374,9 @@ fn slug_without_markup(slug: &str) -> String {
     kept
 }
 
+/// WordPressがスラッグを符号化するとき（`utf8_uri_encode`）の長さの上限（#781）
+const SLUG_ENCODED_MAX_LENGTH: usize = 200;
+
 /// WordPressがスラッグを保存するとき（`sanitize_title_with_dashes`の`save`）に、
 /// ハイフンにする文字（NBSP・ダッシュ）のUTF-8（#779）
 const SLUG_DASH_OCTETS: &[&str] = &["%c2%a0", "%e2%80%93", "%e2%80%94"];
@@ -1446,29 +1449,47 @@ const SLUG_SPACE_OCTETS: &[&str] = &[
 /// `sanitize_title_with_dashes`（`save`）と同じく、ASCIIでない文字を
 /// `%xx`にし、パーセントエンコード（`%xx`）はそのまま残して、決まった
 /// 記号を取り除く・ハイフンにする。`%c3%97`（×）は`x`になる。残るのは
-/// 英数字・`_`・`%xx`だけ（ほかのASCIIの記号・空白・ハイフンは消える）
+/// 英数字・`_`・`%xx`だけ（ほかのASCIIの記号・空白・ハイフンは消える）。
+/// その前の`remove_accents`が消す`£`は先に取り除き、`utf8_uri_encode`と
+/// 同じく、符号化した後の200文字（ASCIIは1文字、ほかはUTF-8のバイト数×3）
+/// に収まる文字までを見る（#781）
 fn slug_survives_sanitizing(slug: &str) -> bool {
-    let stripped = slug_without_markup(slug);
-    let mut encoded = String::new();
-    let mut chars = stripped.chars().peekable();
+    let stripped = slug_without_markup(&slug.replace('£', ""));
+    // WordPressが符号化する前の文字。`%xx`は、ASCIIの3文字として数える
+    let mut lowered = String::new();
+    let mut chars = stripped.chars();
     while let Some(c) = chars.next() {
         if c == '%' {
             let octet: String = chars.clone().take(2).collect();
             if octet.len() == 2 && octet.chars().all(|h| h.is_ascii_hexdigit()) {
-                encoded.push('%');
-                encoded.push_str(&octet.to_ascii_lowercase());
+                lowered.push('%');
+                lowered.push_str(&octet);
                 chars.nth(1);
             }
             // オクテットでない`%`は、WordPressが取り除く
-        } else if c.is_ascii() {
-            encoded.push(c.to_ascii_lowercase());
         } else {
-            for lower in c.to_lowercase() {
-                let mut buf = [0u8; 4];
-                for byte in lower.encode_utf8(&mut buf).bytes() {
-                    encoded.push_str(&format!("%{byte:02x}"));
-                }
+            lowered.extend(c.to_lowercase());
+        }
+    }
+    let mut encoded = String::new();
+    let mut length = 0;
+    for c in lowered.chars() {
+        if c.is_ascii() {
+            if length >= SLUG_ENCODED_MAX_LENGTH {
+                break;
             }
+            encoded.push(c.to_ascii_lowercase());
+            length += 1;
+        } else {
+            let mut buf = [0u8; 4];
+            let bytes = c.encode_utf8(&mut buf).as_bytes();
+            if length + bytes.len() * 3 > SLUG_ENCODED_MAX_LENGTH {
+                break;
+            }
+            for byte in bytes {
+                encoded.push_str(&format!("%{byte:02x}"));
+            }
+            length += bytes.len() * 3;
         }
     }
     for octets in SLUG_DASH_OCTETS {
@@ -5780,15 +5801,22 @@ impl WordPressHandler {
                 };
                 let excerpt_given = excerpt.is_some();
                 let terms = terms_arg(&args)?;
+                // 抜粋のほかに、WordPressに送る項目があるか（#779）。空の`date`・
+                // 空の`terms`（`{}`）は送らない。日時の無い`future`も、予約済みの
+                // 投稿なら送らない（予約済みでなければ、`update_post`がエラーにする）
+                let date_given = date.as_deref().is_some_and(|d| !d.trim().is_empty());
+                let status_sent = status
+                    .as_deref()
+                    .is_some_and(|s| s != "future" || date_given);
                 let other_given = title.is_some()
                     || content.is_some()
-                    || status.is_some()
-                    || date.is_some()
+                    || status_sent
+                    || date_given
                     || categories.is_some()
                     || tags.is_some()
                     || featured_media_id.is_some()
                     || slug.is_some()
-                    || terms.is_some();
+                    || terms.as_ref().is_some_and(|t| !t.is_empty());
 
                 let post = self
                     .update_post(
@@ -10322,6 +10350,10 @@ mod tests {
             // 生の記号でも、WordPressが取り除くものだけなら断る（#779）
             "\u{a0}—“”…",
             "%e2%80%8b%e2%80%83",
+            // `remove_accents`が`£`を消す。符号化した後の200文字を超える
+            // 文字（…22個の後の→）は残らない（#781）
+            "£",
+            "£—£",
         ] {
             args.insert("slug".to_string(), json!(slug));
             assert!(
@@ -10350,6 +10382,9 @@ mod tests {
             "×",
             "%e2%86%92",
             "→",
+            // `%c2%a3`はASCIIのまま残る。`£`のほかに文字があれば残る（#781）
+            "%c2%a3",
+            "£abc",
             "・。",
             "_",
             "%c2%a0%e2%86%92",
@@ -10358,6 +10393,22 @@ mod tests {
             args.insert("slug".to_string(), json!(slug));
             assert_eq!(optional_slug_arg(&args).unwrap().as_deref(), Some(slug));
         }
+
+        // WordPressは、符号化した後の200文字を超える文字を捨ててから記号を
+        // 取り除く（#781）。…（9文字）22個で198文字になり、続く→は入らない
+        assert!(!slug_survives_sanitizing(&format!("{}→", "…".repeat(22))));
+        assert!(slug_survives_sanitizing(&format!("{}→", "…".repeat(21))));
+        assert!(!slug_survives_sanitizing(&format!("{}a", "-".repeat(200))));
+        assert!(slug_survives_sanitizing(&format!("{}a", "-".repeat(199))));
+        // `%xx`はASCIIの3文字として数える（2文字＋9文字×22個で200文字）
+        assert!(!slug_survives_sanitizing(&format!(
+            "--{}a",
+            "%e2%80%94".repeat(22)
+        )));
+        assert!(slug_survives_sanitizing(&format!(
+            "-{}a",
+            "%e2%80%94".repeat(22)
+        )));
     }
 
     #[test]
@@ -10627,6 +10678,16 @@ mod tests {
             "{}",
             tool_text(&result)
         );
+
+        // 空の`terms`・空の`date`は送らないので、変更に数えない（#779）
+        let result = call_tool_with(
+            &handler,
+            "update_post",
+            serde_json::json!({"post_id": 7, "excerpt": "短い要約", "terms": {}, "date": ""}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result["isError"], true, "{}", tool_text(&result));
 
         // ほかの項目もあれば、ほかの変更は保存されたと伝える
         let result = call_tool_with(
