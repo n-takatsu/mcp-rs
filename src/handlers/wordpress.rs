@@ -1340,23 +1340,28 @@ fn post_status_or_draft(args: &HashMap<String, serde_json::Value>) -> Result<Str
 /// `<?`の後の`instruction`で、処理命令が終わる位置（`?>`の`>`の次）。PHPの
 /// `strip_tags`と同じく、`"`の中（`'`は数えるが、終わりは止めない）と、
 /// `(`が`)`で閉じていない間は終えない。`\`の後の引用符は数えない。
-/// 終わらなければ`None`（PR #781のレビュー）
+/// 終わらなければ`None`（PR #781のレビュー）。引用符と括弧は、PHPと同じく
+/// 最後の1文字（`lc`）だけで追う（入れ子にしない。`'"'`の後は`'`の中とみ
+/// なし、`(`を数えない）
 fn processing_instruction_end(instruction: &str) -> Option<usize> {
-    let mut quote = None;
+    // PHPの`lc`。`<`で始まり、引用符が閉じたら空（`\0`）
+    let mut last = '<';
     let mut parentheses = 0i64;
     let mut previous = '?';
     for (i, c) in instruction.char_indices() {
         match c {
             '"' | '\'' if previous != '\\' => {
-                if quote == Some(c) {
-                    quote = None;
-                } else if quote.is_none() {
-                    quote = Some(c);
-                }
+                last = if last == c { '\0' } else { c };
             }
-            '(' if quote.is_none() => parentheses += 1,
-            ')' if quote.is_none() => parentheses -= 1,
-            '>' if parentheses == 0 && quote != Some('"') && previous == '?' => {
+            '(' if last != '"' && last != '\'' => {
+                last = '(';
+                parentheses += 1;
+            }
+            ')' if last != '"' && last != '\'' => {
+                last = ')';
+                parentheses -= 1;
+            }
+            '>' if parentheses == 0 && last != '"' && previous == '?' => {
                 return Some(i + 1);
             }
             _ => {}
@@ -10658,6 +10663,9 @@ mod tests {
         assert!(!slug_survives_sanitizing("<?\"?>→"));
         assert!(!slug_survives_sanitizing("<?(?>→"));
         assert!(slug_survives_sanitizing("<?\"x\"?>→"));
+        // PHPは最後の引用符だけを覚える。`'"'`の後は`'`の中なので、`(`を
+        // 数えない（PR #781のレビュー）
+        assert!(slug_survives_sanitizing("<?'\"'(?>a"));
         assert!(slug_survives_sanitizing(&format!("{}ǝ", "-".repeat(198))));
         assert!(!slug_survives_sanitizing(&format!(
             "{}%21",
