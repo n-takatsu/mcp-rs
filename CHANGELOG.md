@@ -339,6 +339,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   作ったプールを返していた（#774）。`ConfigurationError`で断る。mcp-rs本体は
   エンジンと接続に同じ設定を使うので、起きない
 
+- ゼロトラストのアクセスポリシー（ライブラリ）の時間の範囲が、終わりの時刻の
+  分の0秒で終わっていた（#774）。`time_end = "23:59"`のポリシーは、23:59:01から
+  23:59:59まで拒んでいた。終わりの分の終わりまでを含む
+
 - `resources/list`の`description`・`mimeType`が、無いときに省かれず`null`に
   なっていた（#760）。MCPのスキーマでは、どちらも省いてよい文字列で、厳しい
   クライアントは一覧ごと拒みうる。`resources/templates/list`と同じく、無い
