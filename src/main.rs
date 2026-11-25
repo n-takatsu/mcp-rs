@@ -516,13 +516,24 @@ async fn run_http_server(
             }
             info!("💡 Ctrl+C で終了");
 
-            let signal = shutdown.wait().await;
-            info!("👋 MCP-RS終了（{}）", signal);
+            serve_until_shutdown(&transport, &mut shutdown).await;
             Ok(())
         },
         stop_plugins,
     )
     .await
+}
+
+/// 終了の合図を待ち、HTTPの待ち受けを止める。プラグインを止める前に呼ぶ。
+/// `transport`を捨てるだけでは止まらず、止めたプラグインに要求が届きうる
+/// （#774）
+async fn serve_until_shutdown(
+    transport: &mcp_rs::transport::HttpTransport,
+    shutdown: &mut ShutdownSignal,
+) {
+    let signal = shutdown.wait().await;
+    info!("👋 MCP-RS終了（{}）", signal);
+    transport.stop_server().await;
 }
 
 /// 終了の合図（Ctrl+C・SIGTERM等）を受けたか（#759）。`listen`で受け始めると、
@@ -736,6 +747,26 @@ mod tests {
                 .await;
         assert!(waited.is_err());
         recv_optional(Some(std::future::ready(()))).await;
+    }
+
+    /// 合図を受けたら、HTTPの待ち受けを止めてから戻る（#774。この後に
+    /// プラグインを止める）
+    #[tokio::test]
+    async fn test_serve_until_shutdown_stops_http_server() {
+        use mcp_rs::transport::Transport as _;
+        let transport = mcp_rs::transport::HttpTransport::new(mcp_rs::transport::HttpConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            ..Default::default()
+        })
+        .unwrap();
+        transport.start_server().await.unwrap();
+        assert!(transport.is_connected());
+        let (sender, receiver) = tokio::sync::watch::channel(None);
+        let mut shutdown = ShutdownSignal(receiver);
+        sender.send(Some("SIGTERM")).unwrap();
+        serve_until_shutdown(&transport, &mut shutdown).await;
+        assert!(!transport.is_connected());
+        assert_eq!(transport.bound_addr().await, None);
     }
 
     /// 合図を受けられないときは、待っても終わらない（終わったと扱わない）

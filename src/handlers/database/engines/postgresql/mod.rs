@@ -57,6 +57,24 @@ impl std::fmt::Display for PoolTarget {
     }
 }
 
+/// TLSの設定（`ssl_mode`・`ssl_root_cert`、#774）。接続先が同じでも、
+/// エンジンを作った設定とTLSの設定が違う`connect`は断るために比べる（共有の
+/// プールは、エンジンの設定のTLSでつなぐため）
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PoolTls {
+    ssl_mode: Option<String>,
+    ssl_root_cert: Option<String>,
+}
+
+impl PoolTls {
+    fn of(config: &DatabaseConfig) -> Self {
+        Self {
+            ssl_mode: config.connection.ssl_mode.clone(),
+            ssl_root_cert: config.connection.options.get(OPTION_SSL_ROOT_CERT).cloned(),
+        }
+    }
+}
+
 /// PostgreSQL Database Engine
 ///
 /// Main entry point for PostgreSQL database operations
@@ -100,6 +118,13 @@ impl PostgreSqlEngine {
         if target != engine_target {
             return Err(DatabaseError::ConfigurationError(format!(
                 "this PostgreSQL engine was created for {engine_target}; create another engine to connect to {target}"
+            )));
+        }
+        // TLSの設定が違えば断る（#774。以前は、弱いTLSの設定で作ったプールを
+        // `verify-full`の`connect`にも返した）
+        if PoolTls::of(config) != PoolTls::of(&self.config) {
+            return Err(DatabaseError::ConfigurationError(format!(
+                "this PostgreSQL engine was created with other TLS settings (ssl_mode, ssl_root_cert) for {engine_target}; create another engine to connect with these TLS settings"
             )));
         }
         Ok(self
@@ -280,6 +305,32 @@ mod tests {
             "{:?}",
             result.err()
         );
+    }
+
+    /// 接続先が同じでも、TLSの設定（`ssl_mode`・`ssl_root_cert`）が
+    /// エンジンと違う`connect`は断る（#774）。つなぐ前に断るので、プールも
+    /// 作らない
+    #[tokio::test]
+    async fn test_connect_refuses_other_tls_settings_than_the_engine() {
+        let config = unreachable_config();
+        let engine = PostgreSqlEngine::new(config.clone()).await.unwrap();
+
+        let mut verify_full = config.clone();
+        verify_full.connection.ssl_mode = Some("verify-full".to_string());
+        let mut with_root_cert = config.clone();
+        with_root_cert
+            .connection
+            .options
+            .insert(OPTION_SSL_ROOT_CERT.to_string(), "/etc/ca.pem".to_string());
+        for other in [verify_full, with_root_cert] {
+            let result = engine.connect(&other).await;
+            assert!(
+                matches!(result, Err(DatabaseError::ConfigurationError(ref m)) if m.contains("TLS")),
+                "{:?}",
+                result.err()
+            );
+        }
+        assert!(engine.pool.get().is_none());
     }
 
     /// エンジンを作った設定（A）と違う接続先（B）で最初に`connect`されても、
