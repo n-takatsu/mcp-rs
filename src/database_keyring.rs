@@ -20,7 +20,8 @@ use std::path::{Path, PathBuf};
 use crate::config::DatabaseSettings;
 use crate::init::{
     append_to_config_file, ask_database, ask_database_password, ask_with_default, check_store,
-    check_unchanged, confirm, database_toml, make_backup, write_atomically, Prompt, Terminal,
+    check_unchanged, confirm, database_toml, make_backup, put_back_entry, write_atomically, Prompt,
+    Terminal,
 };
 use crate::security::keyring_store::{
     database_entry, store_database_credentials, DatabaseEntry, DatabaseKeyringCredentials,
@@ -215,12 +216,12 @@ fn set(
                 "{} has no [database]. Answer a few questions to set it up.\n",
                 path.display()
             ));
-            // 書き足せなかったら、項目を前の中身に戻す（PR #782のレビュー）
-            let previous = store.get(name.trim()).map_err(|e| e.to_string())?;
-            let answers = ask_database(io, store, Some(name), &[])?;
+            // 書き足せなかったら、項目を前の中身に戻す（PR #782のレビュー）。
+            // 入れられなかったときは、`ask_database`が戻す
+            let (answers, previous) = ask_database(io, store, Some(name), &[])?;
             if let Some(content) = &content {
                 let added = add_section(io, path, content, &answers)
-                    .map_err(|e| put_back(store, name, previous, e))?;
+                    .map_err(|e| put_back_entry(store, name, previous, e))?;
                 if let Some(backup) = added {
                     io.say(&format!(
                         "Added [database] to {} (kept the previous file as {}).",
@@ -399,7 +400,7 @@ fn update(
                 ));
                 change_config(io, path, content, name, &changes)
             });
-        return result.map_err(|e| put_back(store, name, previous, e));
+        return result.map_err(|e| put_back_entry(store, name, previous, e));
     }
     // 設定を変えると答えて書けなかったら、項目を前の中身に戻す（PR #782の
     // レビュー）。変えないと答えたら、項目は残す
@@ -424,26 +425,7 @@ fn update(
                 Ok(())
             }
         });
-    result.map_err(|e| put_back(store, name, previous, e))
-}
-
-/// 保存した項目を前の中身に戻し（前に無ければ消し）、エラーにその結果を
-/// 書き添える（#774・#779）
-fn put_back(
-    store: &dyn SecretStore,
-    name: &str,
-    previous: Option<zeroize::Zeroizing<String>>,
-    e: Box<dyn std::error::Error>,
-) -> Box<dyn std::error::Error> {
-    let restored = match &previous {
-        Some(previous) => store.set(name.trim(), previous),
-        None => store.delete(name.trim()).map(|_| ()),
-    };
-    match restored {
-        Ok(()) => format!("{e} (put '{name}' back as it was)"),
-        Err(r) => format!("{e} (and could not put '{name}' back as it was: {r})"),
-    }
-    .into()
+    result.map_err(|e| put_back_entry(store, name, previous, e))
 }
 
 /// 項目を保存する。保存の直前に、別の種類の項目になっていないかを
@@ -811,6 +793,23 @@ ssl_mode = "verify-full"
             .to_string();
         assert!(err.contains("put 'app@db' back as it was"), "{err}");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), config);
+        let stored =
+            load_database_credentials(&store, "app@db", "db.example.com", 5432, "reader").unwrap();
+        assert_eq!(*stored.password, "old-pass");
+
+        // `[database]`の無い設定ファイルで、質問の後に入れたときも同じ
+        // （PR #782のレビュー）
+        let without = "[server]\n\n[transport]\ntype = \"stdio\"\n\n[handlers]\n";
+        let store = crate::security::keyring_store::ReadBackFailingStore::default();
+        old_entry(&store.inner);
+        let (_dir, path) = config_in_temp(without);
+        // localhost（ssl_mode: prefer）、書き込みは許さない
+        let mut io = Script::new(&["", "", "", "app", "reader", "new-pass", "", ""]);
+        let err = set(&mut io, &store, "app@db", &path)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("put 'app@db' back as it was"), "{err}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), without);
         let stored =
             load_database_credentials(&store, "app@db", "db.example.com", 5432, "reader").unwrap();
         assert_eq!(*stored.password, "old-pass");

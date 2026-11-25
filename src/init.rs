@@ -2978,19 +2978,49 @@ impl Uses {
 /// `[database]`の値を聞く。パスワードは資格情報ストアに入れる（#590）。
 /// `entry`があれば、その名前で入れる（`database-keyring set <名前>`、#628。
 /// そのときは、パスワードを空にできない）。`reserved`は、ほかで使う
-/// 資格情報の項目の名前（WordPressのサイト等。PR #671のレビュー）
+/// 資格情報の項目の名前（WordPressのサイト等。PR #671のレビュー）。
+/// 入れる前の項目の中身も返す（無ければ・入れなければ`None`）。入れて
+/// 読み戻せなかったら、前の中身に戻す（PR #782のレビュー）
 pub(crate) fn ask_database(
     io: &mut dyn Prompt,
     store: &dyn SecretStore,
     entry: Option<&str>,
     reserved: &[String],
-) -> Result<DatabaseAnswers, Box<dyn std::error::Error>> {
+) -> Result<(DatabaseAnswers, PreviousEntry), Box<dyn std::error::Error>> {
     let questions = ask_database_questions(io, store, entry, reserved)?;
+    let mut previous = None;
     if let Some(entry) = &questions.answers.keyring {
         check_database_entry(store, entry, questions.new_name)?;
-        store_database_password(io, store, &questions.answers, entry, questions.password)?;
+        previous = store.get(entry.trim()).map_err(|e| e.to_string())?;
+        if let Err(e) =
+            store_database_password(io, store, &questions.answers, entry, questions.password)
+        {
+            return Err(put_back_entry(store, entry, previous, e));
+        }
     }
-    Ok(questions.answers)
+    Ok((questions.answers, previous))
+}
+
+/// 資格情報の項目の、入れる前の中身（無ければ`None`）
+pub(crate) type PreviousEntry = Option<Zeroizing<String>>;
+
+/// 入れた項目を前の中身に戻し（前に無ければ消し）、エラーにその結果を
+/// 書き添える（#774・#779）
+pub(crate) fn put_back_entry(
+    store: &dyn SecretStore,
+    name: &str,
+    previous: PreviousEntry,
+    e: Box<dyn std::error::Error>,
+) -> Box<dyn std::error::Error> {
+    let restored = match &previous {
+        Some(previous) => store.set(name.trim(), previous),
+        None => store.delete(name.trim()).map(|_| ()),
+    };
+    match restored {
+        Ok(()) => format!("{e} (put '{name}' back as it was)"),
+        Err(r) => format!("{e} (and could not put '{name}' back as it was: {r})"),
+    }
+    .into()
 }
 
 /// `ask_database_questions`の答え。パスワードは、まだ資格情報ストアに
