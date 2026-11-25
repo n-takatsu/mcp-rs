@@ -1337,51 +1337,379 @@ fn post_status_or_draft(args: &HashMap<String, serde_json::Value>) -> Result<Str
     }
 }
 
-/// WordPressがスラッグを作るときに取り除く、HTMLのタグ（`<…>`）と
-/// エンティティ（`&…;`。`sanitize_title_with_dashes`の`&.+?;`）を除いた
-/// 文字列（#750）。`&amp;`等だけのスラッグも、WordPressでは空になるため
-fn slug_without_markup(slug: &str) -> String {
-    let mut rest = slug;
-    let mut kept = String::new();
-    // 閉じる文字がもう残っていない（`>`・`;`）。後ろの`<`・`&`ごとに残り
-    // 全体を探し直すと、長い入力で時間が2乗で増えるため、覚えておく
-    let mut no_more_gt = false;
-    let mut no_more_semicolon = false;
-    while let Some(i) = rest.find(['<', '&']) {
-        kept.push_str(&rest[..i]);
-        let (open, close, no_more) = if rest[i..].starts_with('<') {
-            ('<', '>', &mut no_more_gt)
-        } else {
-            ('&', ';', &mut no_more_semicolon)
-        };
-        let found = if *no_more {
-            None
-        } else {
-            let found = rest[i + 1..].find(close);
-            *no_more = found.is_none();
-            found
-        };
-        // 閉じる文字が無ければ、そのまま残す（WordPressも取り除かない）
-        match found {
-            Some(end) if !(open == '&' && end == 0) => rest = &rest[i + 1 + end + 1..],
-            _ => {
-                kept.push(open);
-                rest = &rest[i + 1..];
+/// `<?`の後の`instruction`で、処理命令が終わる位置（`?>`の`>`の次）。PHPの
+/// `strip_tags`と同じく、`"`の中（`'`は数えるが、終わりは止めない）と、
+/// `(`が`)`で閉じていない間は終えない。`\`の後の引用符は数えない。
+/// 終わらなければ`None`（PR #781のレビュー）。引用符と括弧は、PHPと同じく
+/// 最後の1文字（`lc`）だけで追う（入れ子にしない。`'"'`の後は`'`の中とみ
+/// なし、`(`を数えない）
+fn processing_instruction_end(instruction: &str) -> Option<usize> {
+    // PHPの`lc`。`<`で始まり、引用符が閉じたら空（`\0`）
+    let mut last = '<';
+    let mut parentheses = 0i64;
+    let mut previous = '?';
+    for (i, c) in instruction.char_indices() {
+        match c {
+            '"' | '\'' if previous != '\\' => {
+                last = if last == c { '\0' } else { c };
             }
+            '(' if last != '"' && last != '\'' => {
+                last = '(';
+                parentheses += 1;
+            }
+            ')' if last != '"' && last != '\'' => {
+                last = ')';
+                parentheses -= 1;
+            }
+            '>' if parentheses == 0 && last != '"' && previous == '?' => {
+                return Some(i + 1);
+            }
+            _ => {}
+        }
+        previous = c;
+    }
+    None
+}
+
+/// WordPressがスラッグを作るときに取り除く、HTMLのタグを除いた文字列
+/// （#750）。PHPの`strip_tags`と同じく、引用符の中の`>`ではタグを閉じず
+/// （`<a title='>→'>`は全部消える）、入れ子の`<`は数え、`<!--`は`-->`まで
+/// 消し、`<?`は`?>`まで消す。閉じないタグは、残りを全部消す。`<`の後が
+/// 空白なら、タグではない
+/// （PR #781のレビュー）
+fn slug_without_tags(slug: &str) -> String {
+    let mut kept = String::new();
+    let mut rest = slug;
+    while let Some(i) = rest.find('<') {
+        kept.push_str(&rest[..i]);
+        let after = &rest[i + 1..];
+        if after.starts_with(|c: char| c.is_ascii_whitespace()) {
+            kept.push('<');
+            rest = after;
+            continue;
+        }
+        // `<?`（PHPの処理命令）は、`?>`まで消す（PR #781のレビュー）。
+        // `strip_tags`と同じく、`"`の中と、括弧が閉じていない間は終えない
+        // `<?xml`は、PHPでは普通のタグに戻る（PR #781のレビュー）
+        let xml = after
+            .get(..4)
+            .is_some_and(|head| head.eq_ignore_ascii_case("?xml"));
+        if let Some(instruction) = after.strip_prefix('?').filter(|_| !xml) {
+            match processing_instruction_end(instruction) {
+                Some(end) => {
+                    rest = &instruction[end..];
+                    continue;
+                }
+                None => return kept,
+            }
+        }
+        if let Some(comment) = after.strip_prefix("!--") {
+            match comment.find("-->") {
+                Some(end) => {
+                    rest = &comment[end + 3..];
+                    continue;
+                }
+                None => return kept,
+            }
+        }
+        let mut depth = 0usize;
+        let mut quote: Option<char> = None;
+        let mut previous = '<';
+        let mut closed_at = None;
+        for (j, c) in after.char_indices() {
+            match quote {
+                Some(q) => {
+                    if c == q && previous != '\\' {
+                        quote = None;
+                    }
+                }
+                None => match c {
+                    '"' | '\'' if previous != '\\' => quote = Some(c),
+                    '<' => depth += 1,
+                    '>' if depth > 0 => depth -= 1,
+                    '>' => {
+                        closed_at = Some(j);
+                        break;
+                    }
+                    _ => {}
+                },
+            }
+            previous = c;
+        }
+        match closed_at {
+            Some(j) => rest = &after[j + 1..],
+            // 閉じないタグは、残りを全部消す（`strip_tags`と同じ）
+            None => return kept,
         }
     }
     kept.push_str(rest);
     kept
 }
 
+/// WordPressがスラッグを作るときに取り除く、エンティティ（`&…;`。
+/// `sanitize_title_with_dashes`の`&.+?;`）を除いた文字列（#750）。`&amp;`等
+/// だけのスラッグも、WordPressでは空になるため。WordPressは、符号化して
+/// 200文字に切り詰めた後に取り除く（#781）
+fn slug_without_entities(slug: &str) -> String {
+    let mut rest = slug;
+    let mut kept = String::new();
+    while let Some(i) = rest.find('&') {
+        kept.push_str(&rest[..i]);
+        // `;`が無ければ、残りはそのまま（WordPressも取り除かない）。後ろの
+        // `&`ごとに残り全体を探し直すと、長い入力で時間が2乗で増えるため、
+        // ここで終える
+        let Some(end) = rest[i + 1..].find(';') else {
+            rest = &rest[i..];
+            break;
+        };
+        if end == 0 {
+            kept.push('&');
+            rest = &rest[i + 1..];
+        } else {
+            rest = &rest[i + 1 + end + 1..];
+        }
+    }
+    kept.push_str(rest);
+    kept
+}
+
+/// WordPressがスラッグを符号化するとき（`utf8_uri_encode`）の長さの上限（#781）
+const SLUG_ENCODED_MAX_LENGTH: usize = 200;
+
+/// WordPressがスラッグを保存するとき（`sanitize_title_with_dashes`の`save`）に、
+/// ハイフンにする文字（NBSP・ダッシュ）のUTF-8（#779）
+/// `%e2%80%91`（ノーブレークハイフン）は、WordPress 6.9から（PR #781のレビュー。
+/// それより前のWordPressでも、これだけのスラッグを断るだけ）
+const SLUG_DASH_OCTETS: &[&str] = &["%c2%a0", "%e2%80%91", "%e2%80%93", "%e2%80%94"];
+
+/// 同じく、取り除く文字（ソフトハイフン・¡¿・山括弧・曲がった引用符・
+/// •・©・®・°・…・™・アクセント・幅の無い制御文字等）のUTF-8（#779）
+const SLUG_STRIPPED_OCTETS: &[&str] = &[
+    "%c2%ad",
+    "%c2%a1",
+    "%c2%bf",
+    "%c2%ab",
+    "%c2%bb",
+    "%e2%80%b9",
+    "%e2%80%ba",
+    "%e2%80%98",
+    "%e2%80%99",
+    "%e2%80%9c",
+    "%e2%80%9d",
+    "%e2%80%9a",
+    "%e2%80%9b",
+    "%e2%80%9e",
+    "%e2%80%9f",
+    "%e2%80%a2",
+    "%c2%a9",
+    "%c2%ae",
+    "%c2%b0",
+    "%e2%80%a6",
+    "%e2%84%a2",
+    "%c2%b4",
+    "%cb%8a",
+    "%cc%81",
+    "%cd%81",
+    "%cc%80",
+    "%cc%84",
+    "%cc%8c",
+    "%e2%80%8b",
+    "%e2%80%8c",
+    "%e2%80%8d",
+    "%e2%80%8e",
+    "%e2%80%8f",
+    "%e2%80%aa",
+    "%e2%80%ab",
+    "%e2%80%ac",
+    "%e2%80%ad",
+    "%e2%80%ae",
+    "%ef%bb%bf",
+    "%ef%bf%bc",
+];
+
+/// 同じく、ハイフンにする幅のある空白（En quad〜Hair space・行区切り等）の
+/// UTF-8（#779）
+const SLUG_SPACE_OCTETS: &[&str] = &[
+    "%e2%80%80",
+    "%e2%80%81",
+    "%e2%80%82",
+    "%e2%80%83",
+    "%e2%80%84",
+    "%e2%80%85",
+    "%e2%80%86",
+    "%e2%80%87",
+    "%e2%80%88",
+    "%e2%80%89",
+    "%e2%80%8a",
+    "%e2%80%a8",
+    "%e2%80%a9",
+    "%e2%80%af",
+];
+
+/// WordPressが保存するとき（`sanitize_title`の`remove_accents`）に、ASCIIの
+/// 文字にする文字なら、その文字（#781）。Latin-1・ラテン文字拡張Aの文字
+/// （×・÷を除く）、`ª`・`º`、ラテン文字拡張Bの一部（`Ơ`・`Ư`・`Ǎ`〜`ǜ`・
+/// `Ș`〜`ț`）、ベトナム語の文字、`€`（`E`になる）。小文字で返す（WordPressも
+/// 後で小文字にする）。`%`の後で16進の数字になりうるので、文字そのものを
+/// 返す（PR #781のレビュー）。ここに無い文字は`None`で、符号化した長さで
+/// 数える（長いスラッグで、残る文字を見落として断ることはあっても、誤って
+/// 通さない）。言語ごとの変換（ドイツ語の`ä`→`ae`等）は扱わない
+fn remove_accents_ascii(c: char) -> Option<&'static str> {
+    Some(match c {
+        '\u{c6}' | '\u{e6}' => "ae",
+        '\u{de}' | '\u{fe}' => "th",
+        '\u{132}' | '\u{133}' => "ij",
+        '\u{152}' | '\u{153}' => "oe",
+        '\u{aa}'
+        | '\u{c0}'..='\u{c5}'
+        | '\u{e0}'..='\u{e5}'
+        | '\u{100}'..='\u{105}'
+        | '\u{1cd}'
+        | '\u{1ce}'
+        | '\u{1ea0}'..='\u{1eb7}' => "a",
+        '\u{c7}' | '\u{e7}' | '\u{106}'..='\u{10d}' => "c",
+        '\u{d0}' | '\u{f0}' | '\u{10e}'..='\u{111}' => "d",
+        '\u{c8}'..='\u{cb}'
+        | '\u{e8}'..='\u{eb}'
+        | '\u{112}'..='\u{11b}'
+        | '\u{18f}'
+        | '\u{1dd}'
+        | '\u{1eb8}'..='\u{1ec7}'
+        | '\u{20ac}' => "e",
+        '\u{11c}'..='\u{123}' => "g",
+        '\u{124}'..='\u{127}' => "h",
+        '\u{cc}'..='\u{cf}'
+        | '\u{ec}'..='\u{ef}'
+        | '\u{128}'..='\u{131}'
+        | '\u{1cf}'
+        | '\u{1d0}'
+        | '\u{1ec8}'..='\u{1ecb}' => "i",
+        '\u{134}' | '\u{135}' => "j",
+        '\u{136}'..='\u{138}' => "k",
+        '\u{139}'..='\u{142}' => "l",
+        '\u{d1}' | '\u{f1}' | '\u{143}'..='\u{14b}' => "n",
+        '\u{ba}'
+        | '\u{d2}'..='\u{d6}'
+        | '\u{d8}'
+        | '\u{f2}'..='\u{f6}'
+        | '\u{f8}'
+        | '\u{14c}'..='\u{151}'
+        | '\u{1a0}'
+        | '\u{1a1}'
+        | '\u{1d1}'
+        | '\u{1d2}'
+        | '\u{1ecc}'..='\u{1ee3}' => "o",
+        '\u{154}'..='\u{159}' => "r",
+        '\u{df}' | '\u{15a}'..='\u{161}' | '\u{17f}' | '\u{218}' | '\u{219}' => "s",
+        '\u{162}'..='\u{167}' | '\u{21a}' | '\u{21b}' => "t",
+        '\u{d9}'..='\u{dc}'
+        | '\u{f9}'..='\u{fc}'
+        | '\u{168}'..='\u{173}'
+        | '\u{1af}'
+        | '\u{1b0}'
+        | '\u{1d3}'..='\u{1dc}'
+        | '\u{1ee4}'..='\u{1ef1}' => "u",
+        '\u{174}' | '\u{175}' => "w",
+        '\u{dd}' | '\u{fd}' | '\u{ff}' | '\u{176}'..='\u{178}' | '\u{1ef2}'..='\u{1ef9}' => "y",
+        '\u{179}'..='\u{17e}' => "z",
+        _ => return None,
+    })
+}
+
+/// WordPressが保存するとき、スラッグに何か残るか（#779）。WordPressは、
+/// RESTの引数としてスラッグを1回整え（`sanitize_title`）、保存するときに
+/// もう1回整える。1回目で取り除かれた記号の後に`%xx`ができる（`%c2!%a0`は
+/// `%c2%a0`になり、2回目で空になる）ので、2回なぞる（PR #781のレビュー）
+fn slug_survives_sanitizing(slug: &str) -> bool {
+    sanitized_slug(&sanitized_slug(slug))
+        .chars()
+        .any(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// WordPressがスラッグを1回整えた結果（`sanitize_title`の`save`）。
+/// `sanitize_title_with_dashes`（`save`）と同じく、ASCIIでない文字を
+/// `%xx`にし、パーセントエンコード（`%xx`）はそのまま残して、決まった
+/// 記号を取り除く・ハイフンにする。`%c3%97`（×）は`x`になる。残るのは
+/// 英数字・`_`・`%xx`だけ（ほかのASCIIの記号・空白・ハイフンは消える）。
+/// その前の`remove_accents`が消す`£`は先に取り除き、`utf8_uri_encode`と
+/// 同じく、符号化した後の200文字（ASCIIは1文字、ほかはUTF-8のバイト数×3）
+/// に収まる文字までを見る。`remove_accents`がASCIIの文字にする文字（`é`等）
+/// は、その文字数で数える。エンティティは、切り詰めた後に取り除く（#781）。
+/// 最後に、`%`・英数字・空白・`_`・`-`のほかを取り除く（空白をハイフンに
+/// する等の、残るかに関わらない処理はしない）
+fn sanitized_slug(slug: &str) -> String {
+    let stripped = slug_without_tags(&slug.replace('£', ""));
+    // `remove_accents`は、`%xx`を探す前・小文字にする前に、アクセントの
+    // ある文字をASCIIの文字にする（`İ`は`i`＋結合文字ではなく`i`。
+    // `%c2%À0`は`%c2%a0`になる。PR #781のレビュー）
+    let mut converted = String::new();
+    for c in stripped.chars() {
+        match remove_accents_ascii(c) {
+            Some(ascii) => converted.push_str(ascii),
+            None => converted.push(c),
+        }
+    }
+    // WordPressが符号化する前の文字。`%xx`は、ASCIIの3文字として数える
+    let mut lowered = String::new();
+    let mut chars = converted.chars();
+    while let Some(c) = chars.next() {
+        if c == '%' {
+            let octet: String = chars.clone().take(2).collect();
+            if octet.len() == 2 && octet.chars().all(|h| h.is_ascii_hexdigit()) {
+                lowered.push('%');
+                lowered.push_str(&octet);
+                chars.nth(1);
+            }
+            // オクテットでない`%`は、WordPressが取り除く
+        } else {
+            lowered.extend(c.to_lowercase());
+        }
+    }
+    let mut encoded = String::new();
+    let mut length = 0;
+    for c in lowered.chars() {
+        if c.is_ascii() {
+            if length >= SLUG_ENCODED_MAX_LENGTH {
+                break;
+            }
+            encoded.push(c.to_ascii_lowercase());
+            length += 1;
+        } else {
+            let mut buf = [0u8; 4];
+            let bytes = c.encode_utf8(&mut buf).as_bytes();
+            if length + bytes.len() * 3 > SLUG_ENCODED_MAX_LENGTH {
+                break;
+            }
+            for byte in bytes {
+                encoded.push_str(&format!("%{byte:02x}"));
+            }
+            length += bytes.len() * 3;
+        }
+    }
+    for octets in SLUG_DASH_OCTETS {
+        encoded = encoded.replace(octets, "-");
+    }
+    for octets in SLUG_STRIPPED_OCTETS {
+        encoded = encoded.replace(octets, "");
+    }
+    for octets in SLUG_SPACE_OCTETS {
+        encoded = encoded.replace(octets, "-");
+    }
+    // 切り詰めで`%xx`の途中が切れた`%`は残るが、2回目で消える（PR #781の
+    // レビュー）
+    slug_without_entities(&encoded)
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '%' | ' ' | '_' | '-'))
+        .collect()
+}
+
 /// ツール引数の`slug`を取り出す。省略時は`None`（WordPressに送らない）。
 /// 空文字列はWordPressにとって「自動生成に戻す」意味になり、意図せず
-/// 既存のスラッグを消しうるため受け付けない。文字・数字を含まない
-/// スラッグ（`!!!`等）も、WordPressが記号を取り除いて空にするので、同じく
-/// 受け付けない（#750）。HTMLのタグ・エンティティ（`&amp;`等）も、取り除いた
-/// 後で確かめる。日本語・パーセントエンコードのスラッグは通す。
-/// パーセントエンコードは解いてから確かめる（#774）。`%c2%a0`（NBSP）・
-/// `%e2%80%94`（ダッシュ）等も、WordPressがハイフンにしたり消したりするので
+/// 既存のスラッグを消しうるため受け付けない。WordPressが保存のときに
+/// 記号を取り除いて空にするスラッグ（`!!!`・`%c2%a0`等）も、同じく
+/// 受け付けない（#750、#774）。HTMLのタグ・エンティティ（`&amp;`等）も、
+/// 取り除いた後で確かめる。WordPressが残す値（日本語・`%c3%97`・`→`等の
+/// 記号）は通す（#779）
 fn optional_slug_arg(
     args: &HashMap<String, serde_json::Value>,
 ) -> Result<Option<String>, McpError> {
@@ -1393,14 +1721,9 @@ fn optional_slug_arg(
                 Err(McpError::InvalidParams(
                     "slug must not be empty. Omit it to let WordPress generate one".to_string(),
                 ))
-            } else if !String::from_utf8_lossy(&urlencoding::decode_binary(
-                slug_without_markup(slug).as_bytes(),
-            ))
-            .chars()
-            .any(char::is_alphanumeric)
-            {
+            } else if !slug_survives_sanitizing(slug) {
                 Err(McpError::InvalidParams(
-                    "slug must contain at least one letter or digit: WordPress removes the other characters, which would leave it empty. Omit it to let WordPress generate one".to_string(),
+                    "slug must contain at least one letter or digit (or another character WordPress keeps): WordPress removes spaces, dashes, quotes and similar symbols, which would leave it empty. Omit it to let WordPress generate one".to_string(),
                 ))
             } else {
                 Ok(Some(slug.to_string()))
@@ -2869,11 +3192,9 @@ impl WordPressHandler {
         self.check_terms_taxonomies(
             &params.post_type,
             params.terms.as_ref(),
-            params
-                .categories
-                .as_ref()
-                .is_some_and(|ids| !ids.is_empty()),
-            params.tags.as_ref().is_some_and(|ids| !ids.is_empty()),
+            params.categories.as_deref(),
+            params.tags.as_deref(),
+            true,
         )
         .await?;
         let url = format!("{}/wp-json/wp/v2/{}", self.base_url, endpoint);
@@ -3081,23 +3402,56 @@ impl WordPressHandler {
     /// 固定ページ等、その分類の無い投稿タイプに送ると、WordPressは黙って
     /// 無視し、成功と返してしまうため。空の配列は、無視されても結果が同じ
     /// なので断らない（クライアントが空の配列を送ることがある）。投稿
-    /// （`post`）はいつも両方を持つので調べない
+    /// （`post`）はいつも両方を持つので、タクソノミーの一覧は読まない。
+    ///
+    /// `check_ids`なら、`terms`・`categories`・`tags`の項目IDが、サイトに
+    /// あるかも確かめる（#774、#779）。WordPressは無いIDを黙って飛ばし、
+    /// ほかの項目を外して成功と返すため。投稿（`post`）でも確かめる。空の
+    /// 配列（全部外す）は調べない。一覧の絞り込みでは、無いIDは結果が
+    /// 減るだけなので調べない
     async fn check_terms_taxonomies(
         &self,
         post_type: &str,
         terms: Option<&std::collections::BTreeMap<String, Vec<u64>>>,
-        categories: bool,
-        tags: bool,
+        categories: Option<&[u64]>,
+        tags: Option<&[u64]>,
+        check_ids: bool,
     ) -> Result<(), McpError> {
         let terms = terms.filter(|terms| !terms.is_empty());
-        let builtin: Vec<&str> = [("categories", categories), ("tags", tags)]
+        let builtin: Vec<(&str, &[u64])> = [("categories", categories), ("tags", tags)]
             .into_iter()
-            .filter(|(_, given)| *given && post_type != "post")
-            .map(|(name, _)| name)
+            .filter_map(|(name, ids)| ids.filter(|ids| !ids.is_empty()).map(|ids| (name, ids)))
             .collect();
-        if terms.is_none() && builtin.is_empty() {
-            return Ok(());
+        // 投稿（`post`）の`categories`・`tags`は、`/wp/v2`の標準のタクソノミー。
+        // ほかの投稿タイプでは、一覧で名前空間を確かめてから調べる（PR #781の
+        // レビュー）
+        if post_type == "post" {
+            if terms.is_some() {
+                self.check_taxonomies_of_type(post_type, terms, &[], check_ids)
+                    .await?;
+            }
+            if check_ids {
+                for (name, ids) in builtin {
+                    self.check_term_ids(name, name, ids).await?;
+                }
+            }
+        } else if terms.is_some() || !builtin.is_empty() {
+            self.check_taxonomies_of_type(post_type, terms, &builtin, check_ids)
+                .await?;
         }
+        Ok(())
+    }
+
+    /// `check_terms_taxonomies`のうち、`/wp/v2/taxonomies?type=<投稿タイプ>`を
+    /// 読んで確かめる部分。`builtin`は、確かめる`categories`・`tags`の名前と
+    /// ID
+    async fn check_taxonomies_of_type(
+        &self,
+        post_type: &str,
+        terms: Option<&std::collections::BTreeMap<String, Vec<u64>>>,
+        builtin: &[(&str, &[u64])],
+        check_ids: bool,
+    ) -> Result<(), McpError> {
         let url = format!(
             "{}/wp-json/wp/v2/taxonomies?type={}",
             self.base_url, post_type
@@ -3109,7 +3463,11 @@ impl WordPressHandler {
                     if terms.is_some() {
                         "terms".to_string()
                     } else {
-                        builtin.join(" and ")
+                        builtin
+                            .iter()
+                            .map(|(name, _)| *name)
+                            .collect::<Vec<_>>()
+                            .join(" and ")
                     }
                 ))
             })?;
@@ -3122,7 +3480,7 @@ impl WordPressHandler {
         } else {
             valid.join(", ")
         };
-        if let Some(missing) = builtin.iter().find(|name| !valid.contains(name)) {
+        if let Some((missing, _)) = builtin.iter().find(|(name, _)| !valid.contains(name)) {
             return Err(McpError::InvalidParams(format!(
                 "{missing}: post type '{post_type}' has no {missing} taxonomy, so WordPress would ignore them. Remove {missing}. Taxonomies of '{post_type}': {valid_label}"
             )));
@@ -3136,30 +3494,47 @@ impl WordPressHandler {
                 "terms: '{unknown}' is not a taxonomy of post type '{post_type}'. Valid: {valid_label}"
             )));
         }
+        if !check_ids {
+            return Ok(());
+        }
         // 項目のIDが、そのタクソノミーにあるかを確かめる（#774）。WordPressは
         // 無いIDを黙って飛ばし、ほかの項目を外して成功と返すため。空の配列
         // （全部外す）は調べない。`/wp/v2`の外のタクソノミーは、一覧の形が
-        // 違いうるので調べない
-        for (rest_base, ids) in terms.into_iter().flatten() {
-            let in_wp_v2 = taxonomies.values().any(|info| {
-                info.get("rest_base").and_then(|b| b.as_str()) == Some(rest_base.as_str())
+        // 違いうるので調べない（`categories`・`tags`も同じ。PR #781のレビュー）
+        let in_wp_v2 = |rest_base: &str| {
+            taxonomies.values().any(|info| {
+                info.get("rest_base").and_then(|b| b.as_str()) == Some(rest_base)
                     && info
                         .get("rest_namespace")
                         .and_then(|n| n.as_str())
                         .unwrap_or("wp/v2")
                         == "wp/v2"
-            });
-            if in_wp_v2 && !ids.is_empty() {
-                self.check_term_ids(rest_base, ids).await?;
+            })
+        };
+        for (rest_base, ids) in terms.into_iter().flatten() {
+            if in_wp_v2(rest_base) && !ids.is_empty() {
+                self.check_term_ids(&format!("terms.{rest_base}"), rest_base, ids)
+                    .await?;
+            }
+        }
+        for (name, ids) in builtin {
+            if in_wp_v2(name) {
+                self.check_term_ids(name, name, ids).await?;
             }
         }
         Ok(())
     }
 
-    /// `terms`の1つのタクソノミーの項目IDが、サイトにあるかを確かめる（#774）。
+    /// 1つのタクソノミーの項目IDが、サイトにあるかを確かめる（#774）。
     /// `/wp/v2/<rest_base>?include=<ID>`で読み、返らなかったIDは断る。1回に
-    /// 読めるのは100件なので、100件ずつ読む
-    async fn check_term_ids(&self, rest_base: &str, ids: &[u64]) -> Result<(), McpError> {
+    /// 読めるのは100件なので、100件ずつ読む。`field`は、エラーに出す引数の
+    /// 名前（`terms.<rest_base>`・`categories`・`tags`。#779）
+    async fn check_term_ids(
+        &self,
+        field: &str,
+        rest_base: &str,
+        ids: &[u64],
+    ) -> Result<(), McpError> {
         let ids: Vec<u64> = ids
             .iter()
             .copied()
@@ -3178,7 +3553,7 @@ impl WordPressHandler {
                 self.base_url, rest_base, include
             );
             let found: Vec<serde_json::Value> = self.fetch_json(&url, None).await.map_err(|e| {
-                McpError::ExternalApi(format!("could not check the IDs in terms.{rest_base}: {e}"))
+                McpError::ExternalApi(format!("could not check the IDs in {field}: {e}"))
             })?;
             let found: std::collections::HashSet<u64> = found
                 .iter()
@@ -3189,8 +3564,13 @@ impl WordPressHandler {
         if missing.is_empty() {
             return Ok(());
         }
+        let list_tool = match field {
+            "categories" => "get_categories",
+            "tags" => "get_tags",
+            _ => "get_terms",
+        };
         Err(McpError::InvalidParams(format!(
-            "terms.{rest_base}: no term with ID {} in '{rest_base}'. WordPress would skip it and still remove the other terms. See get_terms",
+            "{field}: no term with ID {} in '{rest_base}'. WordPress would skip it and still remove the other terms. See {list_tool}",
             missing
                 .iter()
                 .map(u64::to_string)
@@ -3929,13 +4309,15 @@ impl WordPressHandler {
         self.check_terms_taxonomies(
             post_type,
             params.terms.as_ref(),
-            params
-                .categories
-                .as_ref()
-                .is_some_and(|ids| !ids.is_empty()),
-            params.tags.as_ref().is_some_and(|ids| !ids.is_empty()),
+            params.categories.as_deref(),
+            params.tags.as_deref(),
+            true,
         )
         .await?;
+        // この確認は、書き込むときにもIDがあることまでは保証しない。確認の後、
+        // 書き込みの前に別の管理者が項目を消すと、WordPressはそのIDを黙って
+        // 飛ばし、ほかの項目を外して成功と返す（PR #781のレビュー。確認と
+        // 書き込みを1つにする方法がREST APIに無いため、そのままにする）
         let url = format!("{}/wp-json/wp/v2/{}/{}", self.base_url, endpoint, post_id);
 
         info!("Updating WordPress {}: {}", post_type, post_id);
@@ -4779,8 +5161,9 @@ impl WordPressHandler {
                     self.check_terms_taxonomies(
                         revision_post_type_arg(&args)?,
                         None,
-                        !query.categories.is_empty(),
-                        !query.tags.is_empty(),
+                        Some(&query.categories),
+                        Some(&query.tags),
+                        false,
                     )
                     .await?;
                 }
@@ -5633,6 +6016,27 @@ impl WordPressHandler {
                     }
                 };
                 let excerpt_given = excerpt.is_some();
+                let terms = terms_arg(&args)?;
+                // 抜粋のほかに、WordPressに送る項目があるか（#779）。空の`date`・
+                // 空の`terms`（`{}`）は送らない。日時の無い`future`も、予約済みの
+                // 投稿なら送らない（予約済みでなければ、`update_post`がエラーにする）
+                let date_given = date.as_deref().is_some_and(|d| !d.trim().is_empty());
+                let status_sent = status
+                    .as_deref()
+                    .is_some_and(|s| s != "future" || date_given);
+                // 空の`categories`・`tags`（全部外す）は、投稿タイプに無いかを
+                // 確かめずに送るので、応答にその項目があるときだけ数える
+                // （PR #781のレビュー）
+                let categories_cleared = categories.as_ref().is_some_and(|c| c.is_empty());
+                let tags_cleared = tags.as_ref().is_some_and(|t| t.is_empty());
+                let other_given = title.is_some()
+                    || content.is_some()
+                    || status_sent
+                    || date_given
+                    || categories.as_ref().is_some_and(|c| !c.is_empty())
+                    || tags.as_ref().is_some_and(|t| !t.is_empty())
+                    || slug.is_some()
+                    || terms.as_ref().is_some_and(|t| !t.is_empty());
 
                 let post = self
                     .update_post(
@@ -5649,14 +6053,35 @@ impl WordPressHandler {
                             featured_media_id,
                             meta: None,
                             slug,
-                            terms: terms_arg(&args)?,
+                            terms,
                         },
                     )
                     .await?;
 
                 // 抜粋に対応しない投稿タイプでは、WordPressは抜粋を黙って捨てる
                 // （`create_advanced_post`と同じ）
-                let excerpt_note = if excerpt_given && post.excerpt.is_none() {
+                let excerpt_dropped = excerpt_given && post.excerpt.is_none();
+                // アイキャッチ画像は、応答に反映されたときだけ数える（対応しない
+                // 投稿タイプでは、WordPressは黙って無視する。PR #781のレビュー）
+                let other_given = other_given
+                    || (categories_cleared && post.categories.is_some())
+                    || (tags_cleared && post.tags.is_some())
+                    || featured_media_id.is_some_and(|id| post.featured_media == Some(id));
+                // 抜粋だけを渡したなら、保存したいものが保存されていないので
+                // エラーにする（#779）。WordPressは更新日時だけは変えるので、
+                // 「何も変わっていない」とは言わない（PR #781のレビュー）
+                if excerpt_dropped && !other_given {
+                    return Ok(serde_json::json!({
+                        "content": [{
+                            "type": "text",
+                            "text": format!(
+                                "WordPress did not save the excerpt of {post_type} ID {post_id}, because this post type does not support excerpts. No other change was given"
+                            )
+                        }],
+                        "isError": true
+                    }));
+                }
+                let excerpt_note = if excerpt_dropped {
                     ". WordPress did not save the excerpt: this post type does not support excerpts. The other changes are saved"
                 } else {
                     ""
@@ -5854,11 +6279,14 @@ impl WordPressHandler {
                     .remove(&revision.author)
                     .unwrap_or_else(|| format!("user {}", revision.author));
                 // 本文の無い型では、`get_post`と同じくタイトルで見る（PR #777の
-                // レビュー）
+                // レビュー）。本文もタイトルも無ければ、抜粋で見る（#779）
                 let has_raw = match (&revision.content, &revision.title) {
                     (Some(content), _) => content.raw.is_some(),
                     (None, Some(title)) => title.raw.is_some(),
-                    (None, None) => false,
+                    (None, None) => revision
+                        .excerpt
+                        .as_ref()
+                        .is_some_and(|excerpt| excerpt.raw.is_some()),
                 };
                 let format_label = match format {
                     PostContentFormat::Raw if has_raw => "raw",
@@ -5949,6 +6377,32 @@ impl WordPressHandler {
                 let comment = self
                     .create_comment(post_id, parent, content, &status)
                     .await?;
+                // WordPressは、権限やディスカッション設定で、頼んだ状態と違う
+                // 状態にすることがある。作り直すと重複するので、作成済みで
+                // あることとIDを返し、update_commentでの直し方を示す（#779）
+                let requested = if status == "approve" {
+                    "approved"
+                } else {
+                    status.as_str()
+                };
+                if let Some(actual) = comment
+                    .status
+                    .as_deref()
+                    .filter(|actual| *actual != requested)
+                {
+                    return Ok(serde_json::json!({
+                        "content": [{
+                            "type": "text",
+                            "text": format!(
+                                "The comment was created, but WordPress set its status to '{actual}' instead of '{requested}'. Comment ID: {}. Do not create it again; change the status with update_comment (comment_id: {}, status: {status}) if allowed, or in the WordPress admin.\nCreated comment {}",
+                                display_opt_id(comment.id),
+                                display_opt_id(comment.id),
+                                comment_summary(&comment)
+                            )
+                        }],
+                        "isError": true
+                    }));
+                }
                 let note = if comment.status.as_deref() == Some("hold") {
                     "\nThe comment is held for moderation and not shown on the site. Approve it with update_comment (status: approve) or in the WordPress admin."
                 } else {
@@ -10072,11 +10526,35 @@ mod tests {
     /// （残りを何度も探し直さない。#750）
     #[test]
     fn test_slug_without_markup_long_input() {
-        let slug = "&<".repeat(500_000);
         let started = std::time::Instant::now();
-        assert_eq!(slug_without_markup(&slug), slug);
+        // 閉じないタグは残りを全部消す。`;`の無い`&`は残す
+        assert_eq!(slug_without_tags(&"&<".repeat(500_000)), "&");
+        assert_eq!(
+            slug_without_entities(&"&<".repeat(500_000)),
+            "&<".repeat(500_000)
+        );
+        assert_eq!(
+            slug_without_tags(&"< ".repeat(500_000)),
+            "< ".repeat(500_000)
+        );
         assert!(started.elapsed() < Duration::from_secs(2));
-        assert_eq!(slug_without_markup("a&amp;b<i>c</i>&x"), "abc&x");
+        assert_eq!(
+            slug_without_entities(&slug_without_tags("a&amp;b<i>c</i>&x")),
+            "abc&x"
+        );
+    }
+
+    /// PHPの`strip_tags`と同じく、タグを取り除く（PR #781のレビュー）
+    #[test]
+    fn test_slug_without_tags_like_strip_tags() {
+        assert_eq!(slug_without_tags("<a title='>→'>x"), "x");
+        assert_eq!(slug_without_tags(r#"<a title=">→">x"#), "x");
+        assert_eq!(slug_without_tags("<b>→</b>"), "→");
+        assert_eq!(slug_without_tags("a<b"), "a");
+        assert_eq!(slug_without_tags("a < b"), "a < b");
+        assert_eq!(slug_without_tags("<a<b>>x"), "x");
+        assert_eq!(slug_without_tags("<!-- > → -->x"), "x");
+        assert_eq!(slug_without_tags("<!-- → "), "");
     }
 
     #[test]
@@ -10107,12 +10585,11 @@ mod tests {
             Err(McpError::InvalidParams(_))
         ));
 
-        // 文字・数字を含まないスラッグは、WordPressが空にするため拒否する（#750）
+        // WordPressが保存のときに空にするスラッグは拒否する（#750）
         for slug in [
             "!!!",
             "-",
-            " --_ ",
-            "・。",
+            " -- ",
             "&amp;",
             "&#38;",
             "<b></b>",
@@ -10120,7 +10597,15 @@ mod tests {
             // パーセントエンコードの記号だけ（NBSP・ダッシュ）も断る（#774）
             "%c2%a0",
             "%E2%80%94",
+            "%e2%80%94",
             "-%c2%ad-",
+            // 生の記号でも、WordPressが取り除くものだけなら断る（#779）
+            "\u{a0}—“”…",
+            "%e2%80%8b%e2%80%83",
+            // `remove_accents`が`£`を消す。符号化した後の200文字を超える
+            // 文字（…22個の後の→）は残らない（#781）
+            "£",
+            "£—£",
         ] {
             args.insert("slug".to_string(), json!(slug));
             assert!(
@@ -10143,10 +10628,102 @@ mod tests {
             "a&b",
             "%e6%97%a5%e6%9c%ac",
             "hello-%c2%a0world",
+            // WordPressが残す値は通す（#779）。×は`x`になり、→等の記号は
+            // `%xx`のまま残る
+            "%c3%97",
+            "×",
+            "%e2%86%92",
+            "→",
+            // `%c2%a3`はASCIIのまま残る。`£`のほかに文字があれば残る（#781）
+            "%c2%a3",
+            "£abc",
+            "・。",
+            "_",
+            "%c2%a0%e2%86%92",
+            "%41",
         ] {
             args.insert("slug".to_string(), json!(slug));
             assert_eq!(optional_slug_arg(&args).unwrap().as_deref(), Some(slug));
         }
+
+        // WordPressは、符号化した後の200文字を超える文字を捨ててから記号を
+        // 取り除く（#781）。…（9文字）22個で198文字になり、続く→は入らない
+        assert!(!slug_survives_sanitizing(&format!("{}→", "…".repeat(22))));
+        assert!(slug_survives_sanitizing(&format!("{}→", "…".repeat(21))));
+        assert!(!slug_survives_sanitizing(&format!("{}a", "-".repeat(200))));
+        assert!(slug_survives_sanitizing(&format!("{}a", "-".repeat(199))));
+        // エンティティは200文字に切り詰めた後に取り除く。`remove_accents`が
+        // `e`にする`é`は、198文字の後でも収まる（#781）
+        assert!(!slug_survives_sanitizing(&format!(
+            "{}→",
+            "&amp;".repeat(40)
+        )));
+        assert!(slug_survives_sanitizing("&amp;→"));
+        assert!(slug_survives_sanitizing(&format!("{}é", "…".repeat(22))));
+        assert!(slug_survives_sanitizing("é"));
+        // エンティティの中の`é`も、エンティティごと消える（PR #781のレビュー）
+        assert!(!slug_survives_sanitizing("&é;"));
+        assert!(!slug_survives_sanitizing("&æ;"));
+        // `%xx`を探す前に`À`が`a`になり、`%c2%a0`（NBSP）としてハイフンに
+        // なる（PR #781のレビュー）
+        assert!(!slug_survives_sanitizing("%c2%À0"));
+        assert!(!slug_survives_sanitizing("%e2%80%à6"));
+        assert!(slug_survives_sanitizing("À"));
+        assert!(slug_survives_sanitizing("%c2%a0abc"));
+        // 引用符の中の`>`ではタグを閉じない。閉じないタグは全部消える。
+        // ノーブレークハイフンは、WordPress 6.9からハイフンになる
+        // （PR #781のレビュー）
+        assert!(!slug_survives_sanitizing("<a title='>→'>"));
+        assert!(!slug_survives_sanitizing("<b→"));
+        assert!(slug_survives_sanitizing("<b>→</b>"));
+        // `<?`は`?>`まで消える。`ǝ`は`e`になる。切り詰めで残った`%`だけでは
+        // 残らない（PR #781のレビュー）
+        assert!(!slug_survives_sanitizing("<?x>→"));
+        assert!(slug_survives_sanitizing("<?x?>→"));
+        assert!(slug_survives_sanitizing("<?>→"));
+        // `"`の中・閉じていない括弧の間の`?>`では終わらない（PR #781のレビュー）
+        assert!(!slug_survives_sanitizing("<?\"?>→"));
+        assert!(!slug_survives_sanitizing("<?(?>→"));
+        assert!(slug_survives_sanitizing("<?\"x\"?>→"));
+        // PHPは最後の引用符だけを覚える。`'"'`の後は`'`の中なので、`(`を
+        // 数えない（PR #781のレビュー）
+        assert!(slug_survives_sanitizing("<?'\"'(?>a"));
+        // `<?xml`は普通のタグ。1回目で取り除いた記号の後にできた`%xx`は、
+        // 2回目で消える（PR #781のレビュー）
+        assert!(slug_survives_sanitizing("-<?xml>a"));
+        assert!(slug_survives_sanitizing("-<?XML version='1.0'>a"));
+        assert!(!slug_survives_sanitizing("%c2!%a0"));
+        assert!(!slug_survives_sanitizing("%e2%80!%94"));
+        assert!(slug_survives_sanitizing(&format!("{}ǝ", "-".repeat(198))));
+        assert!(!slug_survives_sanitizing(&format!(
+            "{}%21",
+            "-".repeat(199)
+        )));
+        assert!(slug_survives_sanitizing("%41"));
+        assert!(!slug_survives_sanitizing("\u{2011}"));
+        assert!(!slug_survives_sanitizing("%e2%80%91"));
+        assert!(slug_survives_sanitizing("a\u{2011}b"));
+        // `İ`は、小文字にする前に`I`の1文字になる（`i`＋結合文字の9文字では
+        // ない）。`&I;`は消え、200文字の中の`a`が残る（PR #781のレビュー）
+        assert!(slug_survives_sanitizing(&format!(
+            "&İ;{}a",
+            "-".repeat(193)
+        )));
+        // `æ`は`ae`の2文字。198文字の後では、`a`だけが入る
+        assert!(slug_survives_sanitizing(&format!("{}æ", "…".repeat(22))));
+        assert!(!slug_survives_sanitizing(&format!(
+            "--{}é",
+            "%e2%80%94".repeat(22)
+        )));
+        // `%xx`はASCIIの3文字として数える（2文字＋9文字×22個で200文字）
+        assert!(!slug_survives_sanitizing(&format!(
+            "--{}a",
+            "%e2%80%94".repeat(22)
+        )));
+        assert!(slug_survives_sanitizing(&format!(
+            "-{}a",
+            "%e2%80%94".repeat(22)
+        )));
     }
 
     #[test]
@@ -10396,7 +10973,7 @@ mod tests {
     }
 
     /// 抜粋に対応しない投稿タイプで抜粋を渡したら、保存されていないことを
-    /// 伝える（#774）
+    /// 伝える（#774）。抜粋だけなら、何も変わらないのでエラーにする（#779）
     #[tokio::test]
     async fn test_update_post_says_when_excerpt_was_not_saved() {
         let (base_url, _captured) = spawn_body_capturing_server(post_response_json("x")).await;
@@ -10408,6 +10985,34 @@ mod tests {
         )
         .await
         .unwrap();
+        assert_eq!(result["isError"], true);
+        assert!(
+            tool_text(&result).starts_with(
+                "WordPress did not save the excerpt of post ID 7, because this post type does not support excerpts. No other change was given"
+            ),
+            "{}",
+            tool_text(&result)
+        );
+
+        // 空の`terms`・空の`date`は送らないので、変更に数えない（#779）
+        let result = call_tool_with(
+            &handler,
+            "update_post",
+            serde_json::json!({"post_id": 7, "excerpt": "短い要約", "terms": {}, "date": ""}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result["isError"], true, "{}", tool_text(&result));
+
+        // ほかの項目もあれば、ほかの変更は保存されたと伝える
+        let result = call_tool_with(
+            &handler,
+            "update_post",
+            serde_json::json!({"post_id": 7, "title": "新しい題", "excerpt": "短い要約"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result["isError"], false);
         assert!(
             tool_text(&result).ends_with("WordPress did not save the excerpt: this post type does not support excerpts. The other changes are saved"),
             "{}",
@@ -11424,6 +12029,40 @@ X-WP-TotalPages: 1",
         let sent: serde_json::Value = serde_json::from_str(&bodies[0]).unwrap();
         assert_eq!(sent["status"], "approve");
         assert!(!tool_text(&result).contains("held for moderation"));
+        assert_eq!(result["isError"], false);
+    }
+
+    /// 頼んだ状態と違う状態で作られたら、作成済みであること・ID・実際の
+    /// 状態・直し方を返し、エラーにする。作り直しは勧めない（#779）
+    #[tokio::test]
+    async fn test_create_comment_reports_status_differing_from_request() {
+        for (requested, returned) in [("approve", "hold"), ("hold", "approved")] {
+            let (base_url, _captured) =
+                spawn_body_capturing_server(comment_json(6, returned, 1).to_string()).await;
+            let handler = handler_for_local_server(base_url);
+            let result = call_tool_with(
+                &handler,
+                "create_comment",
+                serde_json::json!({"post_id": 7, "content": "返信", "status": requested}),
+            )
+            .await
+            .unwrap();
+            assert_eq!(result["isError"], true);
+            let text = tool_text(&result);
+            assert!(
+                text.starts_with("The comment was created, but WordPress set its status to"),
+                "{text}"
+            );
+            assert!(text.contains(&format!("'{returned}'")), "{text}");
+            assert!(text.contains("Comment ID: 6."), "{text}");
+            assert!(
+                text.contains(&format!(
+                    "update_comment (comment_id: 6, status: {requested})"
+                )),
+                "{text}"
+            );
+            assert!(text.contains("Do not create it again"), "{text}");
+        }
     }
 
     #[tokio::test]
@@ -11748,6 +12387,47 @@ X-WP-TotalPages: 1",
         assert!(text.contains("Format: raw\n"), "{text}");
         assert!(text.ends_with("Content:\n(none)"), "{text}");
 
+        // 抜粋だけを持つリビジョンは、抜粋の原文で形を決める（#779）
+        for (excerpt, format) in [
+            (
+                serde_json::json!({"raw": "前の抜粋", "rendered": "<p>前の抜粋</p>"}),
+                "Format: raw\n",
+            ),
+            (
+                serde_json::json!({"rendered": "<p>前の抜粋</p>"}),
+                "Format: rendered HTML (raw source unavailable)\n",
+            ),
+        ] {
+            let mut excerpt_only = revision.clone();
+            let object = excerpt_only.as_object_mut().unwrap();
+            object.remove("title");
+            object.insert("excerpt".to_string(), excerpt);
+            let base = spawn_routing_server(vec![
+                (
+                    "/wp-json/wp/v2/posts/7/revisions/11?context=edit",
+                    "200 OK",
+                    excerpt_only.to_string(),
+                ),
+                (
+                    "/wp-json/wp/v2/users/2",
+                    "200 OK",
+                    r#"{"id":2,"name":"編集者"}"#.to_string(),
+                ),
+            ])
+            .await;
+            let handler = handler_for_local_server(base);
+            let result = call_tool_with(
+                &handler,
+                "get_revision",
+                serde_json::json!({"post_id": 7, "revision_id": 11, "format": "raw"}),
+            )
+            .await
+            .unwrap();
+            let text = tool_text(&result);
+            assert!(text.contains(format), "{text}");
+            assert!(text.contains("Excerpt: "), "{text}");
+        }
+
         let (base_url, captured) = spawn_body_capturing_server(revision.to_string()).await;
         let handler = handler_for_local_server(base_url);
         let result = call_tool_with(
@@ -12057,6 +12737,153 @@ X-WP-TotalPages: 1",
                 .any(|(request, _)| request.contains("/product_tag")),
             "{requests:?}"
         );
+    }
+
+    /// `categories`・`tags`の項目IDも、無ければ送らずに断る（#779）。投稿
+    /// （`post`）でも確かめる。空の配列（全部外す）は調べない
+    #[tokio::test]
+    async fn test_categories_and_tags_with_unknown_ids_are_refused() {
+        let routes = || {
+            vec![
+                (
+                    "/wp-json/wp/v2/categories?include=",
+                    r#"[{"id":3}]"#.to_string(),
+                ),
+                ("/wp-json/wp/v2/tags?include=", r#"[{"id":5}]"#.to_string()),
+                ("/wp-json/wp/v2/posts", post_response_json("x")),
+            ]
+        };
+        let (base_url, captured) = spawn_routing_capturing_server(routes()).await;
+        let handler = handler_for_local_server(base_url);
+        for (tool, args, message) in [
+            (
+                "update_post",
+                serde_json::json!({"post_id": 7, "tags": [5, 99]}),
+                "tags: no term with ID 99 in 'tags'. WordPress would skip it and still remove the other terms. See get_tags",
+            ),
+            (
+                "update_post",
+                serde_json::json!({"post_id": 7, "categories": [99, 3], "tags": []}),
+                "categories: no term with ID 99 in 'categories'. WordPress would skip it and still remove the other terms. See get_categories",
+            ),
+            (
+                "create_advanced_post",
+                serde_json::json!({"title": "題", "content": "本文", "tags": [99]}),
+                "tags: no term with ID 99 in 'tags'",
+            ),
+        ] {
+            let result = call_tool_with(&handler, tool, args).await;
+            assert!(
+                matches!(result, Err(McpError::InvalidParams(ref msg)) if msg.starts_with(message)),
+                "{:?}",
+                result
+            );
+        }
+        {
+            let requests = captured.lock().await;
+            assert!(
+                requests
+                    .iter()
+                    .all(|(request, _)| request.starts_with("GET ")),
+                "{requests:?}"
+            );
+            assert!(
+                requests.iter().any(|(request, _)| request
+                    == "GET /wp-json/wp/v2/tags?include=5,99&per_page=100&_fields=id"),
+                "{requests:?}"
+            );
+            // 投稿（`post`）では、タクソノミーの一覧は読まない
+            assert!(
+                !requests
+                    .iter()
+                    .any(|(request, _)| request.contains("/taxonomies")),
+                "{requests:?}"
+            );
+        }
+
+        // 空の配列は調べずに送る
+        let (base_url, captured) = spawn_routing_capturing_server(routes()).await;
+        let handler = handler_for_local_server(base_url);
+        call_tool_with(
+            &handler,
+            "update_post",
+            serde_json::json!({"post_id": 7, "tags": []}),
+        )
+        .await
+        .unwrap();
+        let requests = captured.lock().await;
+        assert_eq!(requests.len(), 1, "{requests:?}");
+        let (request, body) = &requests[0];
+        assert_eq!(request, "PUT /wp-json/wp/v2/posts/7");
+        let sent: serde_json::Value = serde_json::from_str(body).unwrap();
+        assert_eq!(sent, serde_json::json!({"tags": []}));
+    }
+
+    /// カスタム投稿タイプの`categories`・`tags`が`/wp/v2`の外のタクソノミー
+    /// なら、`terms`と同じくIDを調べずに送る（PR #781のレビュー）
+    #[tokio::test]
+    async fn test_categories_outside_wp_v2_are_not_checked() {
+        let mut routes = product_routes();
+        routes[1].1 =
+            r#"{"genre":{"rest_base":"categories","rest_namespace":"shop/v1"}}"#.to_string();
+        let (base_url, captured) = spawn_routing_capturing_server(routes).await;
+        let handler = handler_for_local_server(base_url);
+        call_tool_with(
+            &handler,
+            "update_post",
+            serde_json::json!({"post_id": 21, "post_type": "product", "categories": [99]}),
+        )
+        .await
+        .unwrap();
+        let requests = captured.lock().await;
+        assert!(
+            !requests
+                .iter()
+                .any(|(request, _)| request.contains("/wp/v2/categories")),
+            "{requests:?}"
+        );
+        assert!(
+            requests
+                .iter()
+                .any(|(request, _)| request == "PUT /wp-json/wp/v2/products/21"),
+            "{requests:?}"
+        );
+    }
+
+    /// 抜粋とタグに対応しない投稿タイプに、抜粋と空の`tags`だけを渡したら、
+    /// どちらも保存されないのでエラー（PR #781のレビュー）
+    #[tokio::test]
+    async fn test_excerpt_with_unsupported_empty_tags_is_an_error() {
+        let (base_url, _captured) = spawn_routing_capturing_server(product_routes()).await;
+        let handler = handler_for_local_server(base_url);
+        let result = call_tool_with(
+            &handler,
+            "update_post",
+            serde_json::json!({
+                "post_id": 21,
+                "post_type": "product",
+                "excerpt": "要約",
+                "tags": []
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result["isError"], true, "{}", tool_text(&result));
+
+        // アイキャッチ画像も、応答に反映されていなければ数えない
+        let result = call_tool_with(
+            &handler,
+            "update_post",
+            serde_json::json!({
+                "post_id": 21,
+                "post_type": "product",
+                "excerpt": "要約",
+                "featured_media_id": 42
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result["isError"], true, "{}", tool_text(&result));
     }
 
     /// 投稿タイプに登録されていないタクソノミーの`terms`は、送らずに断る
@@ -12720,6 +13547,10 @@ X-WP-TotalPages: 1",
                 "/wp-json/wp/v2/taxonomies?type=product",
                 r#"{"category":{"rest_base":"categories"},"product_cat":{"rest_base":"product_cat"}}"#
                     .to_string(),
+            ),
+            (
+                "/wp-json/wp/v2/categories?include=",
+                r#"[{"id":3}]"#.to_string(),
             ),
             ("/wp-json/wp/v2/products", product_json().to_string()),
             ("/wp-json/wp/v2/posts", post_response_json("x")),

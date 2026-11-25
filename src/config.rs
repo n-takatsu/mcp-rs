@@ -859,7 +859,10 @@ pub struct HttpTransportConfig {
     /// Time limit in seconds for receiving a request (#540): the TLS
     /// handshake and the headers as a whole, and each wait for more of the
     /// body (not the whole body). It does not limit how long a tool call
-    /// takes. Defaults to 30.
+    /// takes. It also closes a connection with no request in progress for
+    /// this long, and a connection whose response body stops being sent:
+    /// each part of the body must be sent within this time plus the time it
+    /// takes at 64 KiB/s (#759, #779). Defaults to 30.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub request_timeout_seconds: Option<u64>,
     /// Maximum number of connections served at the same time, WebSocket
@@ -1494,12 +1497,21 @@ pub const CONFIG_ENV_VAR: &str = "MCP_RS_CONFIG";
 /// `MCP_RS_CONFIG`の値から、設定ファイルのパスを決める（#632）。空・空白、
 /// 拡張機能が埋めなかった`${user_config.…}`は、無いものとする。値の全体が
 /// `${...}`のときだけ埋まらなかったとみなし、フォルダ名等に`${`を含む
-/// パスは使う（#774）
+/// パスは使う（#774）。`${a}/b-${c}`のように、中に`{`・`}`があれば、1つの
+/// `${...}`ではないので使う（#779）
 pub fn config_path_from_env(value: Option<&str>) -> Option<String> {
     value
         .map(str::trim)
-        .filter(|path| !path.is_empty() && !(path.starts_with("${") && path.ends_with('}')))
+        .filter(|path| !path.is_empty() && !is_placeholder(path))
         .map(str::to_string)
+}
+
+/// 値の全体が、1つの`${...}`か（#779）
+fn is_placeholder(value: &str) -> bool {
+    value
+        .strip_prefix("${")
+        .and_then(|rest| rest.strip_suffix('}'))
+        .is_some_and(|inner| !inner.contains(['{', '}']))
 }
 
 /// ホームフォルダを展開したパス。`mcp-rs init`の既定の書き先（#575）。
@@ -4828,6 +4840,11 @@ enabled = false
         assert_eq!(
             config_path_from_env(Some("/home/me/${archive}/config.toml")),
             Some("/home/me/${archive}/config.toml".to_string())
+        );
+        // 値の全体が1つの`${...}`でなければ使う（#779）
+        assert_eq!(
+            config_path_from_env(Some("${archive}/settings-${team}")),
+            Some("${archive}/settings-${team}".to_string())
         );
         for value in [
             None,
