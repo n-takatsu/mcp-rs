@@ -4,6 +4,309 @@
 
 Our project follows a detailed 0.01 increment versioning strategy to provide granular tracking of development progress and feature implementation.
 
+## 🧱 v0.30.0 - 本体の強化（WordPress・MCP・導入）
+
+**Release Date:** 2026-11-26
+**Focus:** 1つのmcp-rsで複数のWordPressのサイトを使い、コメント・リビジョン・カスタム投稿タイプを扱う。MCPのプロンプトとリソースのテンプレートを出す。Claude Desktopの拡張機能（`.mcpb`）を付け、`mcp-rs init`でデータベースだけ・2つ目以降のサイトも設定できる。過去の版のレビュー（CodeRabbit）の指摘を直す。いくつかの修正は今の設定の動きを変えるので、更新の前に「互換性」を確かめる
+
+### ⚠️ 互換性（更新の前に確かめる）
+
+- **リモートのデータベースの`ssl_mode`**（#722）: `[database]`の`host`が
+  ループバック（`localhost`・`127.0.0.1`・`::1`。PostgreSQLはUnixソケット
+  も）でなければ、`ssl_mode`を省略できない。省略すると、データベースの
+  ツールを起動せず、理由と書き方を`mcp_rs_status`に出す（`mcp-rs check`も
+  止める）。`ssl_mode = "verify-full"`か、使うモード（`"require"`等）を
+  1行足す。PostgreSQLは、`PGSSLMODE`に正しい値があれば省略できる。
+  `mcp-rs init`が書く設定ファイルは、既に`verify-full`を書いている
+- **Dockerイメージ**（#631）: muslで静的にリンクした1つの実行ファイルにし、
+  土台を`gcr.io/distroless/static-debian12:nonroot`にした。Debianの
+  `libc6`・`libssl3`・`libstdc++6`等は入っていない。名前の解決（DNS）と
+  メモリーの割り当ての動きが少し変わる。CAの証明書・タイムゾーンのデータ・
+  `nonroot`のユーザーは今までどおり。リリースのLinuxの実行ファイル
+  （glibc）は変わらない
+- **WordPressの`url`**（#746・#759）: ユーザー名・パスワードを含むURL
+  （`https://user:pass@…`）、URLとして読めない値、問い合わせ・フラグメントの
+  あるURL（`?lang=ja`等）は、起動のときに断る（WordPressのツールが起動
+  しない）。資格情報は`username`・`password`（か`keyring`）に書く。`/blog`
+  等のサブディレクトリはよい
+- **知らない`post_type`**（#642）: `post`・`page`と、設定の`post_types`で
+  許したもの以外は断る。以前は、知らない値を投稿（`post`）として扱っていた
+- **一覧の全件取得の上限**（#692）: 100ページ（10,000件）を超える一覧は、
+  エラーにする。v0.29.0では、先頭の100ページを全件のように返していた。
+  投稿・固定ページは、`per_page`・`page`で1ページずつ読める
+- **`categories`・`tags`**（#750・#755）: 正の整数でない要素（`7.5`等）が
+  1つでもあれば断る（以前は黙って落とし、置き換えで今のタグが外れた）。
+  配列でない値も断る。固定ページや、カテゴリー・タグの無いカスタム投稿
+  タイプに渡すと、送る前に断る（以前は、WordPressが無視するのに成功と
+  返していた）。同じ分類を`categories`と`terms.categories`の2つで渡すのも断る
+- **`terms`・`categories`・`tags`**（#774・#779）: タクソノミーに無い項目の
+  IDを渡すと、送る前に断る（以前は、WordPressがそのIDを黙って飛ばし、
+  ほかの項目だけを外して成功と返していた）。空の配列（全部外す）と、
+  `/wp/v2`の外のタクソノミーは調べない
+- **`slug`**（#750・#774・#779）: WordPressが保存すると空になる値（`!!!`、
+  エンコードした`%c2%a0`、タグ・エンティティだけの値等）は、空と同じく
+  断る。WordPressが残す値（`→`等の記号、`%c3%97`、`_`等）は通す
+- **`get_comments`**（#639・#774）: コメントした人のメールアドレスを出さない。
+  `post_id`が正の整数でなければ断る（以前は、全投稿のコメントを返していた）
+- **`create_post_with_embeds`**（#680）: 本文に足さなかったURLを、結果に
+  「Not embedded (unsupported URL)」として出す。YouTube・SNSのURLは、
+  ホストが完全に一致するかで判定するので、ほかのサイトのURL
+  （`https://example.org/x.com/…`等）は足さない。動画のIDを取り出せない
+  YouTubeのURLも足さない
+- **`wordpress_health_check`**（#759・#710）: 「Media Upload Possible」を
+  「Media Readable」にした（`mcp-rs check`も）。確かめていない項目は、❌では
+  なく「not checked」と理由を出す
+- **プラグイン**（#750・#741）: `initialize`に、2025-11-25・2025-06-18・
+  2025-03-26・2024-11-05以外の版で答えるプラグインは、起動しない。
+  `[[plugins]]`の不正な値（`enabled = nan`等）は、読み込みのエラーにする。
+  tasksでしか呼べないツール（`execution.taskSupport = "required"`）は、
+  警告して登録しない
+- **Kubernetesのプラグインの権限**（#700）: `env`を使うプラグインでは、
+  `kubectl`に`jobs`の`get`・`patch`が要り、`secrets`の`patch`は要らなく
+  なった。Kubernetes 1.22以降が要る。`env`を使わないプラグインは変わらない
+- **HTTPモード**:
+  - 同じ`name`のAPIキーが2つあると、起動しない（#724）
+  - 許可していない`Origin`のCORSのpreflight（`OPTIONS /mcp`）に、200では
+    なく403を返す（#741）
+  - `tls_enabled = true`で、`min_tls_version`に1.3より新しい版
+    （`"1.4"`等）を書くと、起動しない（#759）
+  - `max_connections`・`websocket_max_connections`が大きすぎれば、起動で
+    断る（#724。以前は起動の後にパニックした）
+  - `enforce_https`（`tls_enabled`なし）は、`Forwarded`ヘッダーを要素に
+    分け、信頼するプロキシが足した要素の`proto`だけを完全一致で比べる。
+    形の正しくないヘッダーはHTTPSとみなさない（#759）
+  - プロキシが送るTLSの版（`X-Forwarded-TLS-Version`・`X-SSL-Protocol`）は、
+    `TLSv1.2`・`TLS 1.2`の形も読み、読めない値は断る（#724）
+- **JSON-RPCの形**（#759）: オブジェクトでない・`jsonrpc`が`"2.0"`でない・
+  `id`が文字列か数値でない（`id: null`を含む）・`params`がオブジェクトか
+  配列（か`null`）でない要求には、`-32600`を返す。以前は、`id: null`を通知
+  として黙って捨て、`jsonrpc`が違っても処理していた
+- **STDIOモード**（#759・#617・#667）: ツールの処理中も次の行を読み、`ping`に
+  すぐ答え、`notifications/cancelled`で同じ`id`の要求を止める（読み取り
+  だけでないツールは、最後まで行い、応答だけを返さない）。順を待つ要求は
+  64件（16 MiB）までで、超えれば`-32000`（server busy）。Ctrl+Cでは、
+  プラグインを止めてから終了コード0で終わる。設定ファイルが無くても、
+  エラーで終わらず、`mcp_rs_status`だけで起動する（HTTPモードと
+  `mcp-rs check`、`--config`で渡したファイルが無いときは、今までどおり
+  エラー）。既定の`~/.config/mcp-rs/config.toml`を権限等で確かめられない
+  ときは、設定なしで起動せずにエラーで終わる（#774）
+- **ログ**（#741・#759）: Windows以外で、空・相対パスの`XDG_STATE_HOME`は
+  無視して`~/.local/state`を使う（ログ・監査ログの既定の場所が変わり
+  うる）。ログの保持は、ファイルを切り替えるたびにも適用し、mcp-rsが作る
+  名前（`mcp-rs.log`・`mcp-rs.log.YYYY-MM-DD`等）のファイルだけを消す
+- **データベース**（#737）: PostgreSQLの整数の列に、範囲の外の数（`1e20`
+  等）を渡すと、丸めずに断る。`WITH`の中の`VALUES`を使う読み取りのSQLは
+  通す
+- **`mcp-rs init`・`wordpress-keyring`**（#710・#724・#674）: `[transport]
+  type = "http"`の設定ファイルは、クライアントに登録しない。Copilot CLIの
+  設定は、`COPILOT_HOME`があればその中を使う。`wordpress-keyring set`は、
+  `https://`でないサイトを登録しない。Windowsで、FAT32・exFAT等のACLの
+  無いファイルシステムには、設定ファイル等を書かずにエラーにする。
+  `init`は、環境変数`MCP_RS_CONFIG`が相対パスなら止める（クライアントは
+  それぞれの作業フォルダで読むため。#774）
+- **ライブラリとして使う場合**: mcp-rs本体の動きは変わらない
+  - 本体が使わないものを外した（#760）: 動的な設定（`config::dynamic`）、
+    WebSocketのクライアント（`transport::websocket`）、`types`のMCPの型
+    （`Tool`・`Resource`・`Prompt`・`ServerInfo`等）、`AuditLogger::
+    redact_user`、`RateLimiter`の認証の失敗の記録とブロック、IDSの通知の
+    チャネル、`ApiKeyManager::generate_key`と`ApiKeyConfig`
+    （`ApiKeyManager::new()`は引数を取らない）
+  - `JsonRpcRequest`の`id`を`Option<RequestId>`にした（#760。通知は
+    `None`）。`HttpTransport`のチャンネルで受け取る要求の`id`は、内部の
+    相関ID（`"mcp-rs-1"`等）になる。応答の`id`にそのまま入れれば、
+    クライアントには元の`id`で届く
+  - `init_logging`は、tracingのsubscriberが既にあれば、panicせずにエラーを
+    返す。IDSの`IDSConfig`の`enabled`・`alert_enabled`・
+    `min_confidence_threshold`が効くようになった（#760）
+  - `WordPressConfig`の`upload_allowed_dirs`・`post_types`と、
+    `WordPressPost`の`content`を`Option`にした。
+    `plugin_proxy::wait_for_cleanups`は`CleanupReport`を返す（#684）
+  - IDSの`TrafficPattern`に`path_last_seen`を足した（#724）。
+    `RequestData::query_params`は`HashMap<String, Vec<String>>`になる（#759）
+  - PostgreSQLのエンジンは、作った設定と違う接続先・`ssl_mode`・
+    `ssl_root_cert`の`connect`を`ConfigurationError`で断る（#758・#774）。
+    `health_check`・`get_version`は接続先に問い合わせる（#758）
+  - ゼロトラストのアクセスポリシーの時間の範囲は、終わりの分の終わり
+    （`23:59`なら23:59:59）までを含む（#774）
+  - `Cargo.toml`の下限を`url = "2.5.9"`・`mysql_async = "0.37"`に上げ、
+    `mysql-backend`の機能に`lru = "0.18.2"`を足した
+
+### 🌐 複数のWordPressのサイト（#640・#657）
+
+- 1つのmcp-rsで、複数のサイトを使える。各サイトを
+  `[handlers.wordpress.sites.<名前>]`に書き、`[handlers.wordpress]`には
+  `enabled`・`default_site`・全サイト共通の設定だけを書く
+- ツールは増やさず、各ツールに`site`の引数を足す（省けば既定のサイト）。
+  資格情報・レート制限・監査ログは、サイトごと
+- `mcp-rs check`はサイトごとに確かめ、`mcp_rs_status`はサイトを並べる。
+  リソースは既定のサイトだけ
+- 今までの形（`[handlers.wordpress]`に`url`を直接書く）は、そのまま使える
+- `mcp-rs init`で、2つ目以降のサイトを足せる。1つのサイトの形なら、今の
+  サイトにも名前を付けて`sites`の下に移し、`default_site`にする
+
+### 📝 WordPress（#639・#641・#642・#680）
+
+- **コメント**: `create_comment`（返信は`parent`）・`update_comment`（承認・
+  スパム・ゴミ箱・本文の変更）・`delete_comment`（既定はゴミ箱）。
+  `create_comment`は、既定で承認待ち（`hold`）で作る。WordPressが頼んだ
+  状態と違う状態で作ったら、作成済みであることとIDを返してエラーにする
+  （#779）。`get_comments`に`status`を足した
+- **リビジョン**: `get_revisions`・`get_revision`・`restore_revision`。
+  書き戻しは、題・本文・抜粋だけを変える。投稿タイプが対応しない項目
+  （本文の無いカスタム投稿タイプ等）は送らず、結果には書き戻した項目だけを
+  挙げる
+- **抜粋**: `update_post`で抜粋（`excerpt`）を変えられ、`get_post`は抜粋も
+  出す（#774）。抜粋に対応しない投稿タイプに抜粋だけを渡したら、エラーに
+  する（#779）。本文に対応しない投稿タイプでは、本文もほかの変更に数えない
+  （#784）
+- **カスタム投稿タイプと独自のタクソノミー**: 設定の`post_types`
+  （例: `["product"]`）に書いた型だけを使う（既定は今までどおり`post`・
+  `page`だけ）。新しいツール: `get_post_types`・`get_taxonomies`・
+  `get_terms`。`create_advanced_post`・`update_post`の`terms`で、
+  タクソノミーの項目を付け替える
+- **YouTube**: `create_post_with_embeds`で、Shorts・ライブ・
+  `youtube-nocookie.com`のURLも動画プレーヤーにする
+- `create_advanced_post`に`excerpt`を足した（#759）
+- ツールの説明を書き直し、どのツールにも短い名前（`title`）を付けた
+  （#676）。ツールの動きは変わらない
+
+### 💬 MCPのプロンプトとリソースのテンプレート（#643・#644）
+
+- **プロンプト**（`prompts/list`・`prompts/get`）: クライアントのメニュー
+  （Claude Desktopの「+」等）から選ぶ定型の頼み方。`draft_post`・
+  `review_post_seo`・`moderate_comments`・`summarize_table`
+  （`[database]`のとき）。HTTPモードでは、プロンプトが使うツールをすべて
+  使えるキー・トークンにだけ出す
+- **リソースのテンプレート**（`resources/templates/list`）:
+  `wordpress://post/{id}`・`wordpress://page/{id}`・`wordpress://media/{id}`
+  で1件ずつ読む。読める範囲は今のリソースと同じ
+- プラグインのプロンプトは、まだ中継しない
+
+### 🧩 Claude Desktopの拡張機能（#632）
+
+- リリースに`mcp-rs-<版>.mcpb`を付ける。Windows・macOS（Apple Silicon）・
+  Linuxのmcp-rsを1つにまとめ、サイトのURL・ユーザー名・アプリケーション
+  パスワードをClaude Desktopの画面で入力する
+- データベース・複数のサイト・プラグインには、画面で設定ファイルを選ぶ
+  （環境変数`MCP_RS_CONFIG`で渡す）
+- 署名はしない（SHA256と出所の証明は付ける）
+
+### 🧭 導入（#645・#667・#617・#674）
+
+- `mcp-rs init`で、WordPressを使わずにデータベースだけを設定できる。最初に
+  何を使うか（WordPress・データベース・両方）を聞く
+- 設定ファイルが無くても、STDIOモードで`mcp_rs_status`だけで起動し、
+  直し方（`mcp-rs init`か`--config`）を出す
+- 設定ファイルのエラーで、足りない項目・知らない項目の名前を伏せない
+  （値は今までどおり伏せる）
+- Windowsで、`init`・`database-keyring`が書く設定ファイル・控え・一時
+  ファイルを、本人・SYSTEM・Administratorsだけが使えるACLで作る
+
+### 🔒 セキュリティ
+
+- Windowsで、`upload_media`の`file_path`にUNCのパスを渡すと、SMBの接続が
+  始まり、Windowsの資格情報が送られ得た。ドライブ名で始まるパスだけを
+  受け付ける（#750）
+- `upload_media`で、確かめたファイルと開いたファイルが同じかを比べる
+  （シンボリックリンクへの差し替えを防ぐ）（#750）
+- HTTPで、リプレイ攻撃対策とIDSの記録を、利用者（`sub`・`user_id`）まで
+  分ける。本文を読む間にトークンの期限が切れたら401を返す。リプレイ
+  攻撃対策の記録が上限に達したときの、全件の走査をやめた（#724）
+- HTTPで、認証の失敗が続くアドレスを止める仕組みが、覚えるアドレスの上限に
+  達しても、後のアドレスを数える（#705）
+- 依存クレートを、勧告の修正版に上げた: `lru` 0.18.5（RUSTSEC-2026-0253）、
+  `url` 2.5.9（RUSTSEC-2026-0592）
+
+### 🔧 過去の版のレビューの指摘（#684・#692・#697・#705・#710・#717・#723・#724・#732・#737・#741・#744・#746・#750・#755・#758・#759・#760）
+
+v0.15.0〜v0.21.0の変更と、v0.16.0以前からある`src`のレビュー（CodeRabbit）の
+指摘のうち、本体に当たるものを直した。主なもの:
+
+- **WordPress**: 全件取得で、ページの間に一覧が変わり、同じIDが2つのページに
+  現れたとき（重なり）や、総件数・総ページ数が1ページ目から変わったとき
+  （消えた分の欠け）に、初めから読み直す。総件数の変わらない削除と追加で
+  1件欠けたときは気付けない（件数の照合は警告だけで、読み直さない）。
+  `set_featured_image`・`create_post_with_featured_image`が画像を設定
+  できなかったことを返す。`create_advanced_post`も、届いていない
+  `429`・接続の失敗を再送する。監査ログの対象のIDと`isError`の記録を直した
+- **HTTP**: 応答を読まないHTTP/2の相手の接続を閉じる。`/ws`のトークンの
+  期限を、処理の直前にも確かめる
+- **IDS**: CMD-001〜005・PATH-008・XSS-011の誤検知（Cookieの`;`、
+  Markdownの`` `id` ``、jQueryの`$(...)`等でHTTP 403になった）を絞った。
+  DDoS・頻度の学習・一時ブロックの判定を直した
+- **MySQL・MariaDB**: 時間の上限で`KILL QUERY`を送る前に、同じサーバー・
+  同じ接続かを確かめる（#723）。`COMMIT`の応答を確かめられなかったときは、
+  データを確かめるよう返す。`params`にJSONのオブジェクト・配列も渡せる
+- **終了とプラグイン**: SIGTERM・Ctrl+C・標準入出力の失敗で終わるときも、
+  プラグインを止め、コンテナ・Job・Secretの後片付けを最長10秒待つ
+  （#673・#759）
+- **`mcp-rs init`**: 前の登録・資格情報の項目を、失敗・Ctrl+Cのときに戻す
+  （#710・#715）。`uninstall`は戻さない。途中で止めたときは、Claude Desktopの
+  設定ファイルの控え（外す前に残し、その場所を表示する）を手で元の場所に
+  戻す。消した資格情報の項目は戻せないので、`init`で入れ直す
+- **`mcp-rs init`・`uninstall`**: Claude Desktopの設定ファイルを本人だけが
+  読めるように書く。シンボリックリンクの設定ファイルは、リンク先に書く
+- **ログ**: STDIOモードで、ログを標準出力に書かない。ログの保持が、今の
+  ファイルや別のプロセスのファイルを消さない
+- テスト・開発用のcomposeから、起動しなかったPostgreSQLのセカンダリを
+  外した（#732）
+- MongoDB・Redisのエンジンは、`[database]`では使えないことを書いた
+  （v0.31.0で使えるようにする予定）（#758）
+
+### 🔧 このリリースのPRのレビューの指摘（#774）
+
+v0.30.0のリリースのPR（#773）のレビュー（CodeRabbit）の指摘を、
+#776・#777・#778で直した。主なもの（上の互換性に書いたものを除く）:
+
+- **終了・ログ**: HTTPモードで、待ち受けを止めてからプラグインを止める。
+  ログの切り替えで、前のファイルの先頭の行が書けなくても、新しいファイルに
+  切り替わる。監査ログのファイルのロックは5秒まで待つ
+- **STDIO・HTTP**: EOFの後の処理のパニックはエラーで終わる。キーが重複した
+  JSONの要求を`-32600`で断る。`/ws`で期限までに終わらない要求には、`id`を
+  付けたエラー（`-32001`）を返す
+- **IDS**: CMD-005が`x;rm victim`のような普通の語の引数も検知する
+- **WordPress**: PUTで、成功の状態コードの後に本文の受信が失敗しても
+  送り直さない。不正なUTF-8の応答はエラーにする
+- **`mcp-rs init`・`database-keyring`**: `database-keyring set`は、設定が
+  使っている項目を変える前に聞き、断れば変えない。データベースの
+  パスワードは、すべての質問と確認の後で入れる。Ctrl+C・エラーで終わる
+  とき、設定ファイルに書いていない新しい資格情報の項目を消す。MySQL・
+  MariaDBで`[::1]`のような角括弧付きのIPv6アドレスにつなげる
+
+### 🔧 このリリースのPRの2回目・3回目のレビューの指摘（#779・#784）
+
+#773の2回目・3回目のレビュー（CodeRabbit）の指摘を、#780・#781・#782・
+#784で直した。主なもの（上に書いたものを除く）:
+
+- **HTTP**: 認証の失敗の数が0に戻ったアドレスを、覚える表から消す
+  （#705の変更で、認証の通るアドレスが表を埋め、新しいアドレスが429に
+  なりえた）。`timeout_ms`（`request_timeout_seconds`）が、本文のある応答の
+  送信の期限にも使われることを説明に書いた
+- **`mcp-rs init`**: データベースの資格情報も、設定ファイルを書けなかった
+  とき・Ctrl+Cのときに戻す。質問の間に設定ファイルが変わったら書かずに
+  止める。質問の間に別のところで作られた項目を上書きしない。WordPressと
+  データベースの両方を設定し、データベースにつながらなかったときは、
+  入れ直したデータベースの資格情報を前の中身に戻す（#784）
+- **`mcp-rs database-keyring set`**: 質問の間に設定ファイルが変わったら、
+  書かずに止め、入れたパスワードを前の中身に戻す。始めに無かった項目が
+  質問の間に作られていたら、上書きしない
+- **設定**: `${a}/b-${c}`のように、値全体が1つの`${...}`でないパスを、
+  埋まらなかった値として捨てない
+- **`mcp-rs check`**: `--help`に、`MCP_RS_CONFIG`が`--config`より先に使われる
+  ことを書いた。プラグインの後片付けの案内で、`docker_command`・
+  `kubectl_command`に読み替えると書いた
+
+### 確かめたこと
+
+- Copilot CLI（Windows）で、`initialize`に戻らずに2026-07-28版でつながる
+  こと（#570。2026-11-21、v0.29.0で確かめた）
+
+### 確かめていないこと
+
+- `.mcpb`を、Claude Desktopで入れて使えること（作るときに、公式のCLIで
+  確かめる）
+- 公式のMCP Registryへの登録（#668）は、このリリースの後に行う
+
 ## 🧭 v0.29.0 - 導入を簡単にする（続き）と使いやすさ
 
 **Release Date:** 2026-11-19
