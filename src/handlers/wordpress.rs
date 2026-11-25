@@ -6029,8 +6029,8 @@ impl WordPressHandler {
                 // （PR #781のレビュー）
                 let categories_cleared = categories.as_ref().is_some_and(|c| c.is_empty());
                 let tags_cleared = tags.as_ref().is_some_and(|t| t.is_empty());
+                let content_given = content.is_some();
                 let other_given = title.is_some()
-                    || content.is_some()
                     || status_sent
                     || date_given
                     || categories.as_ref().is_some_and(|c| !c.is_empty())
@@ -6063,7 +6063,10 @@ impl WordPressHandler {
                 let excerpt_dropped = excerpt_given && post.excerpt.is_none();
                 // アイキャッチ画像は、応答に反映されたときだけ数える（対応しない
                 // 投稿タイプでは、WordPressは黙って無視する。PR #781のレビュー）
+                // 本文も、応答に本文があるときだけ数える（本文に対応しない投稿
+                // タイプでは、WordPressは黙って無視する。PR #773の3回目のレビュー）
                 let other_given = other_given
+                    || (content_given && post.content.is_some())
                     || (categories_cleared && post.categories.is_some())
                     || (tags_cleared && post.tags.is_some())
                     || featured_media_id.is_some_and(|id| post.featured_media == Some(id));
@@ -12884,6 +12887,30 @@ X-WP-TotalPages: 1",
         .await
         .unwrap();
         assert_eq!(result["isError"], true, "{}", tool_text(&result));
+
+        // 本文も、応答に本文が無ければ数えない（PR #773の3回目のレビュー）。
+        // 本文に対応する投稿タイプなら、今までどおり一部成功
+        let mut without_content = product_json();
+        without_content.as_object_mut().unwrap().remove("content");
+        for (product, is_error) in [(without_content, true), (product_json(), false)] {
+            let mut routes = product_routes();
+            routes[3].1 = product.to_string();
+            let (base_url, _captured) = spawn_routing_capturing_server(routes).await;
+            let handler = handler_for_local_server(base_url);
+            let result = call_tool_with(
+                &handler,
+                "update_post",
+                serde_json::json!({
+                    "post_id": 21,
+                    "post_type": "product",
+                    "excerpt": "要約",
+                    "content": "本文"
+                }),
+            )
+            .await
+            .unwrap();
+            assert_eq!(result["isError"], is_error, "{}", tool_text(&result));
+        }
     }
 
     /// 投稿タイプに登録されていないタクソノミーの`terms`は、送らずに断る

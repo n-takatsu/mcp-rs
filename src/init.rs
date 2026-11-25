@@ -611,6 +611,12 @@ impl Setup<'_> {
                     );
                 }
                 log_file = report.find("log file").map(|(_, file)| file.to_string());
+                // データベースにつながらなかったら、入れ直したデータベースの
+                // 資格情報は確定せずに前の中身に戻す（同じ項目を使うほかの設定を
+                // 壊さない。PR #773の3回目のレビュー）。WordPressの登録は続ける
+                if !database_connected {
+                    self.restore_replaced_entries_of(|kind| kind == CredentialKind::Database);
+                }
                 // 確認が通ったので、入れ直した資格情報を確定する（#710。この後の
                 // 登録の失敗では戻さない）
                 self.replaced_entries.clear();
@@ -940,9 +946,20 @@ impl Setup<'_> {
     /// この実行で入れ直した、既にあった資格情報の項目を、前の中身に戻す
     /// （#710）。確認が通らずに終わるときに呼ぶ
     fn restore_replaced_entries(&mut self) {
+        self.restore_replaced_entries_of(|_| true);
+    }
+
+    /// 入れ直した項目のうち、`kind`が真になる種類だけを前の中身に戻す。
+    /// ほかの項目は残す（PR #773の3回目のレビュー。つながらなかった
+    /// データベースの項目だけを戻す）
+    fn restore_replaced_entries_of(&mut self, kind: impl Fn(CredentialKind) -> bool) {
         // ロックを持ったまま戻す（Ctrl+Cを受けたタスクは、終わるまで待つ）
         let mut replaced = self.replaced_entries.lock();
-        for (entry, previous, kind) in std::mem::take(&mut *replaced) {
+        let (restored, kept): (ReplacedList, ReplacedList) = std::mem::take(&mut *replaced)
+            .into_iter()
+            .partition(|(_, _, entry_kind)| kind(*entry_kind));
+        *replaced = kept;
+        for (entry, previous, kind) in restored {
             match self.store.set(&entry, &previous) {
                 Ok(()) => self.io.say(&format!(
                     "Restored the previous credentials named '{entry}' in the OS credential store (the ones entered now did not work)."
@@ -5424,6 +5441,43 @@ file_path = "C:/Users/me/.mcp-rs/logs/audit.log"
                 .application_password,
             "old password"
         );
+    }
+
+    /// データベースにつながらなかったときは、入れ直したデータベースの項目
+    /// だけを戻し、WordPressの項目は残す（PR #773の3回目のレビュー）
+    #[test]
+    fn test_restore_only_the_database_entries() {
+        let store = MemoryStore::default();
+        store.set("site", "new wp").unwrap();
+        store.set("db", "new db").unwrap();
+        let mut io = Script::new(&[]);
+        let mut s = setup(&mut io, &store);
+        s.replaced_entries.lock().push((
+            "site".to_string(),
+            Zeroizing::new("old wp".to_string()),
+            CredentialKind::WordPress,
+        ));
+        s.replaced_entries.lock().push((
+            "db".to_string(),
+            Zeroizing::new("old db".to_string()),
+            CredentialKind::Database,
+        ));
+        s.restore_replaced_entries_of(|kind| kind == CredentialKind::Database);
+        assert_eq!(
+            store.get("db").unwrap().as_deref().map(|s| s.as_str()),
+            Some("old db")
+        );
+        assert_eq!(
+            store.get("site").unwrap().as_deref().map(|s| s.as_str()),
+            Some("new wp")
+        );
+        let left = s.replaced_entries.take();
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].0, "site");
+        assert!(io
+            .shown
+            .iter()
+            .any(|s| s.contains("Restored the previous credentials named 'db'")));
     }
 
     /// 前の中身を読めなければ、戻せないので上書きしない（PR #712のレビュー）
