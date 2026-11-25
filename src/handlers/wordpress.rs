@@ -1487,30 +1487,25 @@ fn slug_survives_sanitizing(slug: &str) -> bool {
                 chars.nth(1);
             }
             // オクテットでない`%`は、WordPressが取り除く
+        } else if let Some(letters) = ascii_letters_after_remove_accents(c) {
+            // `remove_accents`が、小文字にする前にASCIIの文字にする（`İ`は
+            // `I`。小文字にすると`i`＋結合文字になる。PR #781のレビュー）。
+            // 文字そのものは決めず、16進の数字でない`z`で数える（エンティティ
+            // の中なら、後で消える）
+            lowered.extend(std::iter::repeat_n('z', letters));
         } else {
             lowered.extend(c.to_lowercase());
         }
     }
     let mut encoded = String::new();
     let mut length = 0;
-    'encode: for c in lowered.chars() {
+    for c in lowered.chars() {
         if c.is_ascii() {
             if length >= SLUG_ENCODED_MAX_LENGTH {
                 break;
             }
             encoded.push(c.to_ascii_lowercase());
             length += 1;
-        } else if let Some(letters) = ascii_letters_after_remove_accents(c) {
-            // `remove_accents`がASCIIの文字にする。文字そのものは決めず、
-            // 16進の数字でない`z`で数える（エンティティの中なら、後で消える。
-            // PR #781のレビュー）
-            for _ in 0..letters {
-                if length >= SLUG_ENCODED_MAX_LENGTH {
-                    break 'encode;
-                }
-                encoded.push('z');
-                length += 1;
-            }
         } else {
             let mut buf = [0u8; 4];
             let bytes = c.encode_utf8(&mut buf).as_bytes();
@@ -10449,6 +10444,12 @@ mod tests {
         // エンティティの中の`é`も、エンティティごと消える（PR #781のレビュー）
         assert!(!slug_survives_sanitizing("&é;"));
         assert!(!slug_survives_sanitizing("&æ;"));
+        // `İ`は、小文字にする前に`I`の1文字になる（`i`＋結合文字の9文字では
+        // ない）。`&I;`は消え、200文字の中の`a`が残る（PR #781のレビュー）
+        assert!(slug_survives_sanitizing(&format!(
+            "&İ;{}a",
+            "-".repeat(193)
+        )));
         // `æ`は`ae`の2文字。198文字の後では、`a`だけが入る
         assert!(slug_survives_sanitizing(&format!("{}æ", "…".repeat(22))));
         assert!(!slug_survives_sanitizing(&format!(
