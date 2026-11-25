@@ -222,9 +222,12 @@ Our project follows a detailed 0.01 increment versioning strategy to provide gra
 v0.15.0〜v0.21.0の変更と、v0.16.0以前からある`src`のレビュー（CodeRabbit）の
 指摘のうち、本体に当たるものを直した。主なもの:
 
-- **WordPress**: 全件取得で、ページの間に一覧が変わったときの重なり・欠けを
-  見つけて読み直す。`set_featured_image`・`create_post_with_featured_image`が
-  画像を設定できなかったことを返す。`create_advanced_post`も、届いていない
+- **WordPress**: 全件取得で、ページの間に一覧が変わり、同じIDが2つのページに
+  現れたとき（重なり）や、総件数・総ページ数が1ページ目から変わったとき
+  （消えた分の欠け）に、初めから読み直す。総件数の変わらない削除と追加で
+  1件欠けたときは気付けない（件数の照合は警告だけで、読み直さない）。
+  `set_featured_image`・`create_post_with_featured_image`が画像を設定
+  できなかったことを返す。`create_advanced_post`も、届いていない
   `429`・接続の失敗を再送する。監査ログの対象のIDと`isError`の記録を直した
 - **HTTP**: 応答を読まないHTTP/2の相手の接続を閉じる。`/ws`のトークンの
   期限を、処理の直前にも確かめる
@@ -237,8 +240,11 @@ v0.15.0〜v0.21.0の変更と、v0.16.0以前からある`src`のレビュー（
 - **終了とプラグイン**: SIGTERM・Ctrl+C・標準入出力の失敗で終わるときも、
   プラグインを止め、コンテナ・Job・Secretの後片付けを最長10秒待つ
   （#673・#759）
-- **`mcp-rs init`・`uninstall`**: 前の登録・資格情報の項目を、失敗・Ctrl+C
-  のときに戻す（#710・#715）。Claude Desktopの設定ファイルを本人だけが
+- **`mcp-rs init`**: 前の登録・資格情報の項目を、失敗・Ctrl+Cのときに戻す
+  （#710・#715）。`uninstall`は戻さない。途中で止めたときは、Claude Desktopの
+  設定ファイルの控え（外す前に残し、その場所を表示する）を手で元の場所に
+  戻す。消した資格情報の項目は戻せないので、`init`で入れ直す
+- **`mcp-rs init`・`uninstall`**: Claude Desktopの設定ファイルを本人だけが
   読めるように書く。シンボリックリンクの設定ファイルは、リンク先に書く
 - **ログ**: STDIOモードで、ログを標準出力に書かない。ログの保持が、今の
   ファイルや別のプロセスのファイルを消さない
