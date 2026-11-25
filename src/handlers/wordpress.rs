@@ -1337,26 +1337,83 @@ fn post_status_or_draft(args: &HashMap<String, serde_json::Value>) -> Result<Str
     }
 }
 
-/// WordPressがスラッグを作るときに取り除く、HTMLのタグ（`open`が`<`。
-/// `<…>`）またはエンティティ（`open`が`&`。`&…;`。`sanitize_title_with_dashes`
-/// の`&.+?;`）を除いた文字列（#750）。`&amp;`等だけのスラッグも、
-/// WordPressでは空になるため。WordPressは、タグを符号化の前に、エンティティを
-/// 符号化して200文字に切り詰めた後に取り除くので、別々に呼ぶ（#781）
-fn slug_without_markup(slug: &str, open: char) -> String {
-    let close = if open == '<' { '>' } else { ';' };
+/// WordPressがスラッグを作るときに取り除く、HTMLのタグを除いた文字列
+/// （#750）。PHPの`strip_tags`と同じく、引用符の中の`>`ではタグを閉じず
+/// （`<a title='>→'>`は全部消える）、入れ子の`<`は数え、`<!--`は`-->`まで
+/// 消す。閉じないタグは、残りを全部消す。`<`の後が空白なら、タグではない
+/// （PR #781のレビュー）
+fn slug_without_tags(slug: &str) -> String {
+    let mut kept = String::new();
+    let mut rest = slug;
+    while let Some(i) = rest.find('<') {
+        kept.push_str(&rest[..i]);
+        let after = &rest[i + 1..];
+        if after.starts_with(|c: char| c.is_ascii_whitespace()) {
+            kept.push('<');
+            rest = after;
+            continue;
+        }
+        if let Some(comment) = after.strip_prefix("!--") {
+            match comment.find("-->") {
+                Some(end) => {
+                    rest = &comment[end + 3..];
+                    continue;
+                }
+                None => return kept,
+            }
+        }
+        let mut depth = 0usize;
+        let mut quote: Option<char> = None;
+        let mut previous = '<';
+        let mut closed_at = None;
+        for (j, c) in after.char_indices() {
+            match quote {
+                Some(q) => {
+                    if c == q && previous != '\\' {
+                        quote = None;
+                    }
+                }
+                None => match c {
+                    '"' | '\'' if previous != '\\' => quote = Some(c),
+                    '<' => depth += 1,
+                    '>' if depth > 0 => depth -= 1,
+                    '>' => {
+                        closed_at = Some(j);
+                        break;
+                    }
+                    _ => {}
+                },
+            }
+            previous = c;
+        }
+        match closed_at {
+            Some(j) => rest = &after[j + 1..],
+            // 閉じないタグは、残りを全部消す（`strip_tags`と同じ）
+            None => return kept,
+        }
+    }
+    kept.push_str(rest);
+    kept
+}
+
+/// WordPressがスラッグを作るときに取り除く、エンティティ（`&…;`。
+/// `sanitize_title_with_dashes`の`&.+?;`）を除いた文字列（#750）。`&amp;`等
+/// だけのスラッグも、WordPressでは空になるため。WordPressは、符号化して
+/// 200文字に切り詰めた後に取り除く（#781）
+fn slug_without_entities(slug: &str) -> String {
     let mut rest = slug;
     let mut kept = String::new();
-    while let Some(i) = rest.find(open) {
+    while let Some(i) = rest.find('&') {
         kept.push_str(&rest[..i]);
-        // 閉じる文字が無ければ、残りはそのまま（WordPressも取り除かない）。
-        // 後ろの`open`ごとに残り全体を探し直すと、長い入力で時間が2乗で
-        // 増えるため、ここで終える
-        let Some(end) = rest[i + 1..].find(close) else {
+        // `;`が無ければ、残りはそのまま（WordPressも取り除かない）。後ろの
+        // `&`ごとに残り全体を探し直すと、長い入力で時間が2乗で増えるため、
+        // ここで終える
+        let Some(end) = rest[i + 1..].find(';') else {
             rest = &rest[i..];
             break;
         };
-        if open == '&' && end == 0 {
-            kept.push(open);
+        if end == 0 {
+            kept.push('&');
             rest = &rest[i + 1..];
         } else {
             rest = &rest[i + 1 + end + 1..];
@@ -1371,7 +1428,9 @@ const SLUG_ENCODED_MAX_LENGTH: usize = 200;
 
 /// WordPressがスラッグを保存するとき（`sanitize_title_with_dashes`の`save`）に、
 /// ハイフンにする文字（NBSP・ダッシュ）のUTF-8（#779）
-const SLUG_DASH_OCTETS: &[&str] = &["%c2%a0", "%e2%80%93", "%e2%80%94"];
+/// `%e2%80%91`（ノーブレークハイフン）は、WordPress 6.9から（PR #781のレビュー。
+/// それより前のWordPressでも、これだけのスラッグを断るだけ）
+const SLUG_DASH_OCTETS: &[&str] = &["%c2%a0", "%e2%80%91", "%e2%80%93", "%e2%80%94"];
 
 /// 同じく、取り除く文字（ソフトハイフン・¡¿・山括弧・曲がった引用符・
 /// •・©・®・°・…・™・アクセント・幅の無い制御文字等）のUTF-8（#779）
@@ -1515,7 +1574,7 @@ fn remove_accents_ascii(c: char) -> Option<&'static str> {
 /// に収まる文字までを見る。`remove_accents`がASCIIの文字にする文字（`é`等）
 /// は、その文字数で数える。エンティティは、切り詰めた後に取り除く（#781）
 fn slug_survives_sanitizing(slug: &str) -> bool {
-    let stripped = slug_without_markup(&slug.replace('£', ""), '<');
+    let stripped = slug_without_tags(&slug.replace('£', ""));
     // `remove_accents`は、`%xx`を探す前・小文字にする前に、アクセントの
     // ある文字をASCIIの文字にする（`İ`は`i`＋結合文字ではなく`i`。
     // `%c2%À0`は`%c2%a0`になる。PR #781のレビュー）
@@ -1572,7 +1631,7 @@ fn slug_survives_sanitizing(slug: &str) -> bool {
     for octets in SLUG_SPACE_OCTETS {
         encoded = encoded.replace(octets, "-");
     }
-    slug_without_markup(&encoded, '&')
+    slug_without_entities(&encoded)
         .chars()
         .any(|c| c.is_ascii_alphanumeric() || c == '_' || c == '%')
 }
@@ -10369,17 +10428,35 @@ mod tests {
     /// （残りを何度も探し直さない。#750）
     #[test]
     fn test_slug_without_markup_long_input() {
-        let slug = "&<".repeat(500_000);
         let started = std::time::Instant::now();
+        // 閉じないタグは残りを全部消す。`;`の無い`&`は残す
+        assert_eq!(slug_without_tags(&"&<".repeat(500_000)), "&");
         assert_eq!(
-            slug_without_markup(&slug_without_markup(&slug, '<'), '&'),
-            slug
+            slug_without_entities(&"&<".repeat(500_000)),
+            "&<".repeat(500_000)
+        );
+        assert_eq!(
+            slug_without_tags(&"< ".repeat(500_000)),
+            "< ".repeat(500_000)
         );
         assert!(started.elapsed() < Duration::from_secs(2));
         assert_eq!(
-            slug_without_markup(&slug_without_markup("a&amp;b<i>c</i>&x", '<'), '&'),
+            slug_without_entities(&slug_without_tags("a&amp;b<i>c</i>&x")),
             "abc&x"
         );
+    }
+
+    /// PHPの`strip_tags`と同じく、タグを取り除く（PR #781のレビュー）
+    #[test]
+    fn test_slug_without_tags_like_strip_tags() {
+        assert_eq!(slug_without_tags("<a title='>→'>x"), "x");
+        assert_eq!(slug_without_tags(r#"<a title=">→">x"#), "x");
+        assert_eq!(slug_without_tags("<b>→</b>"), "→");
+        assert_eq!(slug_without_tags("a<b"), "a");
+        assert_eq!(slug_without_tags("a < b"), "a < b");
+        assert_eq!(slug_without_tags("<a<b>>x"), "x");
+        assert_eq!(slug_without_tags("<!-- > → -->x"), "x");
+        assert_eq!(slug_without_tags("<!-- → "), "");
     }
 
     #[test]
@@ -10495,6 +10572,15 @@ mod tests {
         assert!(!slug_survives_sanitizing("%e2%80%à6"));
         assert!(slug_survives_sanitizing("À"));
         assert!(slug_survives_sanitizing("%c2%a0abc"));
+        // 引用符の中の`>`ではタグを閉じない。閉じないタグは全部消える。
+        // ノーブレークハイフンは、WordPress 6.9からハイフンになる
+        // （PR #781のレビュー）
+        assert!(!slug_survives_sanitizing("<a title='>→'>"));
+        assert!(!slug_survives_sanitizing("<b→"));
+        assert!(slug_survives_sanitizing("<b>→</b>"));
+        assert!(!slug_survives_sanitizing("\u{2011}"));
+        assert!(!slug_survives_sanitizing("%e2%80%91"));
+        assert!(slug_survives_sanitizing("a\u{2011}b"));
         // `İ`は、小文字にする前に`I`の1文字になる（`i`＋結合文字の9文字では
         // ない）。`&I;`は消え、200文字の中の`a`が残る（PR #781のレビュー）
         assert!(slug_survives_sanitizing(&format!(
